@@ -1,0 +1,128 @@
+name: foundry
+
+env:
+  API_KEY_ALCHEMY: ${{ secrets.API_KEY_ALCHEMY }}
+  ETH_RPC_URL: https://ethereum-rpc.publicnode.com
+  FOUNDRY_PROFILE: ci
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  lint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up environment
+        uses: ./.github/actions/foundry-setup
+
+      - name: Lint the code
+        run: bun run lint:sol
+
+      - name: Add lint summary
+        run: |
+          echo "## Lint result" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Passed" >> $GITHUB_STEP_SUMMARY
+
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up environment
+        uses: ./.github/actions/foundry-setup
+
+      - name: Build the contracts and print their size
+        run: forge build --sizes
+
+      - name: Add build summary
+        run: |
+          echo "## Build result" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Passed" >> $GITHUB_STEP_SUMMARY
+
+  test:
+    needs: [lint, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up environment
+        uses: ./.github/actions/foundry-setup
+
+      - name: Show the Foundry config
+        run: forge config
+
+      - name: Generate a fuzz seed that changes weekly to avoid burning through RPC allowance
+        run: >
+          echo "FOUNDRY_FUZZ_SEED=$(
+            echo $(($EPOCHSECONDS - $EPOCHSECONDS % 604800))
+          )" >> $GITHUB_ENV
+
+      - name: Limit the fuzz runs to 5000
+        run: echo "FOUNDRY_FUZZ_RUNS=5000" >> $GITHUB_ENV
+
+      - name: Run the tests
+        run: forge test
+
+      - name: Add test summary
+        run: |
+          echo "## Tests result" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Passed" >> $GITHUB_STEP_SUMMARY
+
+  security:
+    needs: [build]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up environment
+        uses: ./.github/actions/foundry-setup
+
+      - name: Install Python and Slither
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3 python3-pip
+          python3 -m pip install slither-analyzer
+
+      - name: Run Slither analysis
+        run: slither . --config-file .slither.config.json
+
+      - name: Add security summary
+        run: |
+          echo "## Security Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Slither analysis passed" >> $GITHUB_STEP_SUMMARY
+
+  coverage:
+    needs: [test]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Set up environment
+        uses: ./.github/actions/foundry-setup
+
+      - name: Install lcov
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y lcov
+
+      - name: Generate a fuzz seed that changes weekly to avoid burning through RPC allowance
+        run: >
+          echo "FOUNDRY_FUZZ_SEED=$(
+            echo $(($EPOCHSECONDS - $EPOCHSECONDS % 604800))
+          )" >> $GITHUB_ENV
+
+      - name: Limit the fuzz runs to 5000
+        run: echo "FOUNDRY_FUZZ_RUNS=5000" >> $GITHUB_ENV
+
+      - name: Run coverage
+        run: forge coverage --report lcov
+
+      - name: Remove the test directory from the coverage report
+        run: lcov --remove lcov.info "test/**" "scripts/**" -o lcov.info
+
+      - uses: codecov/codecov-action@v5
+        with:
+          exclude: test
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
