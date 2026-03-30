@@ -121,7 +121,7 @@ generate-fixtures-tendermint-light-client: install-relayer
 	@echo "Generating basic membership and update client fixtures..."
 	cd e2e/interchaintestv8 && GENERATE_TENDERMINT_LIGHT_CLIENT_FIXTURES=true go test -v -run '^TestWithCosmosRelayerTestSuite/Test_UpdateClient$' -timeout 40m
 
-# Generate go types for the e2e tests from the etheruem light client code
+# Generate go types for the e2e tests from the ethereum light client code
 [group('generate')]
 generate-ethereum-types:
 	cargo run --bin generate_json_schema --features test-utils
