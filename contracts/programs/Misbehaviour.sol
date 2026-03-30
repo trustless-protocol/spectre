@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.28;
 
 import { IMisbehaviour } from "../interfaces/IMisbehaviour.sol";
 import { IMisbehaviourMsgs } from "../light-clients/msgs/IMisbehaviourMsgs.sol";
