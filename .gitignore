@@ -1,0 +1,6 @@
+
+# Prover binary artifacts (large files, regenerate with `go run operator/prover/cmd/main.go`)
+operator/prover/bin/pk.bin
+operator/prover/bin/r1cs.bin
+operator/prover/data/pk.bin
+operator/prover/data/r1cs.bin
