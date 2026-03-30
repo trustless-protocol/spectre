@@ -1,0 +1,48 @@
+# directories
+cache
+coverage
+node_modules
+out
+bin
+
+# files
+*.env
+*.log
+.DS_Store
+.pnp.*
+lcov.info
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+soljson-latest.js
+config.json
+scripts/ethgenesis/client_state.json
+scripts/ethgenesis/consensus_state.json
+.envrc
+
+# broadcasts
+!broadcast
+broadcast/*
+broadcast/*/31337/
+
+# ide files
+.idea/
+*.iml
+*.code-workspace
+
+# contract temp data
+contracts/data/
+
+# Rust
+target
+artifacts
+bacon.toml
+.bacon-locations
+
+# Config files and test artifacts
+programs/relayer/config.json
+scripts/genesis.json
+network_params.yaml
+
+# Go operator build artifacts
+operator/bin/
