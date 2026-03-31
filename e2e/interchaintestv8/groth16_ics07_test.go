@@ -31,8 +31,8 @@ import (
 	tmclient "github.com/cosmos/ibc-go/v10/modules/light-clients/07-tendermint"
 	ibctesting "github.com/cosmos/ibc-go/v10/testing"
 
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ics26router"
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/sp1ics07tendermint"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/cosmos"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/e2esuite"
@@ -53,13 +53,13 @@ type Groth16ICS07TendermintTestSuite struct {
 	generateFixtures bool
 
 	// Addresses of the deployed contracts
-	sp1Ics07Address ethcommon.Address
+	groth16Ics07Address ethcommon.Address
 	ics26Address    ethcommon.Address
 
 	// The private key of a test account
 	key *ecdsa.PrivateKey
 	// The Groth16ICS07Tendermint contract
-	contract *sp1ics07tendermint.Contract
+	contract *groth16ics07tendermint.Contract
 	// The ICS26 router contract, needed for the relayer to pass proofs
 	ics26Contract *ics26router.Contract
 
@@ -111,9 +111,9 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 			beaconAPI = eth.BeaconAPIClient.GetBeaconAPIURL()
 		}
 
-		sp1Config := relayer.ProverConfig{
+		groth16Config := relayer.ProverConfig{
 			Type:           prover,
-			PrivateCluster: os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueSp1Prover_PrivateCluster,
+			PrivateCluster: os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueGroth16Prover_PrivateCluster,
 		}
 
 		config := relayer.NewConfig(relayer.CreateEthCosmosModules(
@@ -124,7 +124,7 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 				ICS26Address:   s.ics26Address.Hex(),
 				EthRPC:         eth.RPC,
 				BeaconAPI:      beaconAPI,
-				Groth16Config:      sp1Config,
+				Groth16Config:      groth16Config,
 				SignerAddress:  "",   // unused
 				MockWasmClient: true, // unused
 			}),
@@ -164,7 +164,7 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 		s.Require().NoError(err)
 
 		var verfierAddress string
-		if prover == testvalues.EnvValueSp1Prover_Mock {
+		if prover == testvalues.EnvValueGroth16Prover_Mock {
 			verfierAddress = contractAddresses.VerifierMock
 		} else {
 			switch proofType {
@@ -183,7 +183,7 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 				SrcChain: simd.Config().ChainID,
 				DstChain: eth.ChainID.String(),
 				Parameters: map[string]string{
-					testvalues.ParameterKey_Sp1Verifier: verfierAddress,
+					testvalues.ParameterKey_Groth16Verifier: verfierAddress,
 					testvalues.ParameterKey_ZkAlgorithm: proofType.String(),
 					testvalues.ParameterKey_RoleManager: ethcommon.Address{}.Hex(),
 				},
@@ -200,9 +200,9 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 			s.Require().NoError(err)
 			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
 			s.Require().NotEmpty(receipt.ContractAddress.Hex())
-			s.sp1Ics07Address = receipt.ContractAddress
+			s.groth16Ics07Address = receipt.ContractAddress
 
-			s.contract, err = sp1ics07tendermint.NewContract(receipt.ContractAddress, eth.RPCClient)
+			s.contract, err = groth16ics07tendermint.NewContract(receipt.ContractAddress, eth.RPCClient)
 			s.Require().NoError(err)
 		}))
 
@@ -211,7 +211,7 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 				ClientId:     testvalues.FirstWasmClientID,
 				MerklePrefix: [][]byte{[]byte(ibcexported.StoreKey), []byte("")},
 			}
-			tx, err := s.ics26Contract.AddClient(s.GetTransactOpts(s.key, eth), testvalues.CustomClientID, counterpartyInfo, s.sp1Ics07Address)
+			tx, err := s.ics26Contract.AddClient(s.GetTransactOpts(s.key, eth), testvalues.CustomClientID, counterpartyInfo, s.groth16Ics07Address)
 			s.Require().NoError(err)
 
 			receipt, err := eth.GetTxReciept(ctx, tx.Hash())
@@ -353,7 +353,7 @@ func (s *Groth16ICS07TendermintTestSuite) MembershipTest(ctx context.Context, pr
 		)
 		s.Require().NoError(err)
 
-		msg := sp1ics07tendermint.ILightClientMsgsMsgVerifyMembership{
+		msg := groth16ics07tendermint.ILightClientMsgsMsgVerifyMembership{
 			ProofHeight: *proofHeight,
 			Proof:       ucAndMemProof,
 			Path:        membershipKey,
@@ -391,7 +391,7 @@ func (s *Groth16ICS07TendermintTestSuite) MembershipTest(ctx context.Context, pr
 		)
 		s.Require().NoError(err)
 
-		msg := sp1ics07tendermint.ILightClientMsgsMsgVerifyNonMembership{
+		msg := groth16ics07tendermint.ILightClientMsgsMsgVerifyNonMembership{
 			ProofHeight: *proofHeight,
 			Proof:       ucAndMemProof,
 			Path:        nonMembershipKey,
@@ -474,7 +474,7 @@ func (s *Groth16ICS07TendermintTestSuite) UpdateClientAndMembershipTest(ctx cont
 		)
 		s.Require().NoError(err)
 
-		msg := sp1ics07tendermint.ILightClientMsgsMsgVerifyMembership{
+		msg := groth16ics07tendermint.ILightClientMsgsMsgVerifyMembership{
 			ProofHeight: *proofHeight,
 			Proof:       ucAndMemProof,
 			Path:        membershipKey,
@@ -773,7 +773,7 @@ func (s *Groth16ICS07TendermintTestSuite) largeMembershipTest(ctx context.Contex
 			)
 			s.Require().NoError(err)
 
-			msg := sp1ics07tendermint.ILightClientMsgsMsgVerifyMembership{
+			msg := groth16ics07tendermint.ILightClientMsgsMsgVerifyMembership{
 				ProofHeight: *proofHeight,
 				Proof:       memProof,
 				Path:        membershipKeys[rndIdx],
@@ -804,7 +804,7 @@ func (s *Groth16ICS07TendermintTestSuite) UpdateClient(ctx context.Context) clie
 		initialHeight = clientState.LatestHeight.RevisionHeight
 	}))
 
-	var finalHeight sp1ics07tendermint.IICS02ClientMsgsHeight
+	var finalHeight groth16ics07tendermint.IICS02ClientMsgsHeight
 	s.Require().True(s.Run("Update the client on Ethereum", func() {
 		var updateTxBodyBz []byte
 		s.Require().True(s.Run("Retrieve relay tx", func() {

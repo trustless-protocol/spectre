@@ -26,7 +26,7 @@ import { DeployAccessManagerWithRoles } from "../../scripts/deployments/DeployAc
 
 abstract contract FixtureTest is Test, IICS07TendermintMsgs, DeployAccessManagerWithRoles {
     ICS26Router public ics26Router;
-    Groth16ICS07Tendermint public sp1ICS07Tendermint;
+    Groth16ICS07Tendermint public groth16ICS07Tendermint;
     ICS20Transfer public ics20Transfer;
     AccessManager public accessManager;
 
@@ -135,15 +135,15 @@ abstract contract FixtureTest is Test, IICS07TendermintMsgs, DeployAccessManager
         string memory path = string.concat(root, FIXTURE_DIR, fixtureFileName);
         string memory json = vm.readFile(path);
 
-        bytes memory sp1GenesisBz = json.readBytes(".sp1GenesisFixture");
-        string memory sp1GenesisJSON = string(sp1GenesisBz);
+        bytes memory groth16GenesisBz = json.readBytes(".groth16GenesisFixture");
+        string memory groth16GenesisJSON = string(groth16GenesisBz);
         Groth16ICS07GenesisFixtureJson memory genesisFixture;
-        genesisFixture.trustedClientState = sp1GenesisJSON.readBytes(".trustedClientState");
-        genesisFixture.trustedConsensusStateHash = sp1GenesisJSON.readBytes32(".trustedConsensusStateHash");
-        genesisFixture.updateClientVkey = sp1GenesisJSON.readBytes32(".updateClientVkey");
-        genesisFixture.membershipVkey = sp1GenesisJSON.readBytes32(".membershipVkey");
-        genesisFixture.ucAndMembershipVkey = sp1GenesisJSON.readBytes32(".ucAndMembershipVkey");
-        genesisFixture.misbehaviourVkey = sp1GenesisJSON.readBytes32(".misbehaviourVkey");
+        genesisFixture.trustedClientState = groth16GenesisJSON.readBytes(".trustedClientState");
+        genesisFixture.trustedConsensusStateHash = groth16GenesisJSON.readBytes32(".trustedConsensusStateHash");
+        genesisFixture.updateClientVkey = groth16GenesisJSON.readBytes32(".updateClientVkey");
+        genesisFixture.membershipVkey = groth16GenesisJSON.readBytes32(".membershipVkey");
+        genesisFixture.ucAndMembershipVkey = groth16GenesisJSON.readBytes32(".ucAndMembershipVkey");
+        genesisFixture.misbehaviourVkey = groth16GenesisJSON.readBytes32(".misbehaviourVkey");
 
         bytes memory packetBz = json.readBytes(".packet");
         IICS26RouterMsgs.Packet memory packet = abi.decode(packetBz, (IICS26RouterMsgs.Packet));

@@ -8,14 +8,14 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ics26router"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/testvalues"
 )
 
 type SolidityFixtureGenerator struct {
 	Enabled           bool
-	sp1GenesisFixture *Sp1GenesisFixture
+	groth16GenesisFixture *Groth16GenesisFixture
 }
 
 // NewSolidityFixtureGenerator creates a new SolidityFixtureGenerator
@@ -25,11 +25,11 @@ func NewSolidityFixtureGenerator() *SolidityFixtureGenerator {
 	}
 }
 
-// Sp1GenesisFixture is the genesis fixture for the sp1 light client
-type Sp1GenesisFixture struct {
-	// The trusted client state of the sp1 light client
+// Groth16GenesisFixture is the genesis fixture for the groth16 light client
+type Groth16GenesisFixture struct {
+	// The trusted client state of the groth16 light client
 	TrustedClientState string `json:"trustedClientState"`
-	// The trusted consensus state of the sp1 light client
+	// The trusted consensus state of the groth16 light client
 	TrustedConsensusStateHash string `json:"trustedConsensusStateHash"`
 	// The vkey for the update client program
 	UpdateClientVkey string `json:"updateClientVkey"`
@@ -43,8 +43,8 @@ type Sp1GenesisFixture struct {
 
 // GenericSolidityFixture is the fixture to be unmarshalled into a test case in Solidity tests
 type GenericSolidityFixture struct {
-	// Hex encoded bytes for sp1 genesis fixture
-	Sp1GenesisFixture string `json:"sp1GenesisFixture"`
+	// Hex encoded bytes for groth16 genesis fixture
+	Groth16GenesisFixture string `json:"groth16GenesisFixture"`
 	// Hex encoded bytes to be fed into the router contract
 	Msg string `json:"msg"`
 	// Hex encoded bytes for the IICS26RouterMsgsPacket in the context of this fixture
@@ -89,7 +89,7 @@ func (g *SolidityFixtureGenerator) generateFixture(erc20Address string, msgBz []
 
 	// Generate the fixture
 	fixture := GenericSolidityFixture{
-		Sp1GenesisFixture: hex.EncodeToString(genesisBz),
+		Groth16GenesisFixture: hex.EncodeToString(genesisBz),
 		Msg:               hex.EncodeToString(msgBz),
 		Erc20Address:      erc20Address,
 		Timestamp:         time.Now().Unix(),
@@ -99,7 +99,7 @@ func (g *SolidityFixtureGenerator) generateFixture(erc20Address string, msgBz []
 }
 
 func (g *SolidityFixtureGenerator) GetGenesisFixture() ([]byte, error) {
-	genesisBz, err := json.Marshal(g.sp1GenesisFixture)
+	genesisBz, err := json.Marshal(g.groth16GenesisFixture)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +115,7 @@ func (g *SolidityFixtureGenerator) SetGenesisFixture(
 		return
 	}
 
-	g.sp1GenesisFixture = &Sp1GenesisFixture{
+	g.groth16GenesisFixture = &Groth16GenesisFixture{
 		TrustedClientState:        hex.EncodeToString(clientState),
 		TrustedConsensusStateHash: hex.EncodeToString(consensusStateHash[:]),
 		UpdateClientVkey:          hex.EncodeToString(updateClientVkey[:]),

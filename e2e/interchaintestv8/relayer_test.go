@@ -37,8 +37,8 @@ import (
 
 	"github.com/cosmos/interchaintest/v10/testutil"
 
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ibcerc20"
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ics20transfer"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ibcerc20"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ics20transfer"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/e2esuite"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/relayer"
@@ -1507,7 +1507,7 @@ func (s *RelayerTestSuite) UpdateClientToEthTest(ctx context.Context, proofType 
 
 	var initialHeight uint64
 	s.Require().True(s.Run("Get the initial height", func() {
-		clientState, err := s.sp1Ics07Contract.ClientState(nil)
+		clientState, err := s.groth16Ics07Contract.ClientState(nil)
 		s.Require().NoError(err)
 		s.Require().NotZero(clientState.LatestHeight.RevisionHeight)
 
@@ -1536,7 +1536,7 @@ func (s *RelayerTestSuite) UpdateClientToEthTest(ctx context.Context, proofType 
 		}))
 
 		s.Require().True(s.Run("Verify the client state is updated", func() {
-			clientState, err := s.sp1Ics07Contract.ClientState(nil)
+			clientState, err := s.groth16Ics07Contract.ClientState(nil)
 			s.Require().NoError(err)
 			s.Require().NotZero(clientState.LatestHeight.RevisionHeight)
 

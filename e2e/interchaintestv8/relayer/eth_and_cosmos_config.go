@@ -14,7 +14,7 @@ type EthCosmosConfigInfo struct {
 	EthRPC string
 	// Ethereum Beacon API URL
 	BeaconAPI string
-	// SP1 config
+	// Groth16 config
 	Groth16Config ProverConfig
 	// Signer address cosmos
 	SignerAddress string
@@ -47,8 +47,8 @@ func CreateEthCosmosModules(
 				TmRpcUrl:     configInfo.TmRPC,
 				Ics26Address: configInfo.ICS26Address,
 				EthRpcUrl:    configInfo.EthRPC,
-				Sp1Prover:    configInfo.Groth16Config,
-				Sp1Programs: ProgramPaths{
+				Groth16Prover:    configInfo.Groth16Config,
+				Groth16Programs: ProgramPaths{
 					UpdateClient:              "./programs/groth16-programs/target/elf-compilation/riscv32im-succinct-zkvm-elf/release/groth16-ics07-tendermint-update-client",
 					Membership:                "./programs/groth16-programs/target/elf-compilation/riscv32im-succinct-zkvm-elf/release/groth16-ics07-tendermint-membership",
 					UpdateClientAndMembership: "./programs/groth16-programs/target/elf-compilation/riscv32im-succinct-zkvm-elf/release/groth16-ics07-tendermint-uc-and-membership",

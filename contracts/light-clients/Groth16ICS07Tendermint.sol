@@ -28,7 +28,7 @@ import { AccessControl } from "@openzeppelin-contracts/access/AccessControl.sol"
 
 /// @title Groth16 ICS07 Tendermint Light Client
 /// @author srdtrk
-/// @notice This contract implements an ICS07 IBC tendermint light client using SP1.
+/// @notice This contract implements an ICS07 IBC tendermint light client using gnark Groth16.
 contract Groth16ICS07Tendermint is
     IGroth16ICS07TendermintErrors,
     IGroth16ICS07Tendermint,

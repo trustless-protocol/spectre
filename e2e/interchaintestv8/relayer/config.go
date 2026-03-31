@@ -52,8 +52,8 @@ type CosmosToEthModuleConfig struct {
 	TmRpcUrl     string          `json:"tm_rpc_url"`
 	Ics26Address string          `json:"ics26_address"`
 	EthRpcUrl    string          `json:"eth_rpc_url"`
-	Sp1Prover    ProverConfig `json:"groth16_prover"`
-	Sp1Programs  ProgramPaths `json:"groth16_programs"`
+	Groth16Prover    ProverConfig `json:"groth16_prover"`
+	Groth16Programs  ProgramPaths `json:"groth16_programs"`
 }
 
 // CosmosToCosmosModuleConfig represents the configuration for cosmos_to_cosmos module

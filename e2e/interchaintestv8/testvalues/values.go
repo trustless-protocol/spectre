@@ -14,7 +14,7 @@ import (
 
 	"github.com/cosmos/interchaintest/v10/chain/ethereum"
 
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ics26router"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
 )
 
 const (
@@ -103,8 +103,8 @@ const (
 	// We must use a client ID of the form `type-n` due to the issue above.
 	CustomClientID = "cosmoshub-1"
 
-	// Sp1 verifier address parameter key for the relayer's groth16 light client creation.
-	ParameterKey_Sp1Verifier = "groth16_verifier"
+	// Groth16 verifier address parameter key for the relayer's groth16 light client creation.
+	ParameterKey_Groth16Verifier = "groth16_verifier"
 	// Zk algorithm parameter key for the relayer's groth16 light client creation.
 	ParameterKey_ZkAlgorithm = "zk_algorithm"
 	// The role manager address parameter key for the relayer's groth16 light client creation.

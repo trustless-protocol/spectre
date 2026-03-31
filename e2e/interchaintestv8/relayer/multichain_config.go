@@ -22,7 +22,7 @@ type MultichainConfigInfo struct {
 	EthRPC string
 	// Ethereum Beacon API URL
 	BeaconAPI string
-	// SP1 config
+	// Groth16 config
 	Groth16Config ProverConfig
 	// Whether we use the mock client in the cosmos chains
 	MockWasmClient bool
