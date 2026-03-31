@@ -61,8 +61,8 @@ type MultichainTestSuite struct {
 	chainAsp1Ics07Address ethcommon.Address
 	chainBsp1Ics07Address ethcommon.Address
 
-	chainASP1Ics07Contract *sp1ics07tendermint.Contract
-	chainBSP1Ics07Contract *sp1ics07tendermint.Contract
+	chainAGroth16Ics07Contract *sp1ics07tendermint.Contract
+	chainBGroth16Ics07Contract *sp1ics07tendermint.Contract
 	ics26Contract          *ics26router.Contract
 	ics20Contract          *ics20transfer.Contract
 	erc20Contract          *erc20.Contract
@@ -136,7 +136,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			beaconAPI = eth.BeaconAPIClient.GetBeaconAPIURL()
 		}
 
-		sp1Config := relayer.SP1ProverConfig{
+		sp1Config := relayer.ProverConfig{
 			Type: prover,
 		}
 		if prover == testvalues.EnvValueSp1Prover_Network {
@@ -154,7 +154,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			ICS26Address:        s.contractAddresses.Ics26Router,
 			EthRPC:              eth.RPC,
 			BeaconAPI:           beaconAPI,
-			SP1Config:           sp1Config,
+			Groth16Config:           sp1Config,
 			MockWasmClient:      os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
 		}))
 
@@ -186,7 +186,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		s.Require().NoError(err)
 	}))
 
-	s.Require().True(s.Run("Deploy SP1 ICS07 contracts", func() {
+	s.Require().True(s.Run("Deploy Groth16 ICS07 contracts", func() {
 		var verfierAddress string
 		if prover == testvalues.EnvValueSp1Prover_Mock {
 			verfierAddress = s.contractAddresses.VerifierMock
@@ -224,7 +224,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
 
 			s.chainAsp1Ics07Address = receipt.ContractAddress
-			s.chainASP1Ics07Contract, err = sp1ics07tendermint.NewContract(s.chainAsp1Ics07Address, eth.RPCClient)
+			s.chainAGroth16Ics07Contract, err = sp1ics07tendermint.NewContract(s.chainAsp1Ics07Address, eth.RPCClient)
 			s.Require().NoError(err)
 		}))
 
@@ -250,7 +250,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
 
 			s.chainBsp1Ics07Address = receipt.ContractAddress
-			s.chainBSP1Ics07Contract, err = sp1ics07tendermint.NewContract(s.chainBsp1Ics07Address, eth.RPCClient)
+			s.chainBGroth16Ics07Contract, err = sp1ics07tendermint.NewContract(s.chainBsp1Ics07Address, eth.RPCClient)
 			s.Require().NoError(err)
 		}))
 	}))
@@ -455,8 +455,8 @@ func (s *MultichainTestSuite) Test_Deploy() {
 
 	eth, simdA, simdB := s.EthChain, s.CosmosChains[0], s.CosmosChains[1]
 
-	s.Require().True(s.Run("Verify SimdA SP1 Client", func() {
-		clientState, err := s.chainASP1Ics07Contract.ClientState(nil)
+	s.Require().True(s.Run("Verify SimdA Groth16 Client", func() {
+		clientState, err := s.chainAGroth16Ics07Contract.ClientState(nil)
 		s.Require().NoError(err)
 
 		stakingParams, err := simdA.StakingQueryParams(ctx)
@@ -472,8 +472,8 @@ func (s *MultichainTestSuite) Test_Deploy() {
 		s.Require().Greater(clientState.LatestHeight.RevisionHeight, uint64(0))
 	}))
 
-	s.Require().True(s.Run("Verify SimdB SP1 Client", func() {
-		clientState, err := s.chainBSP1Ics07Contract.ClientState(nil)
+	s.Require().True(s.Run("Verify SimdB Groth16 Client", func() {
+		clientState, err := s.chainBGroth16Ics07Contract.ClientState(nil)
 		s.Require().NoError(err)
 
 		stakingParams, err := simdB.StakingQueryParams(ctx)

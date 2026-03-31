@@ -8,12 +8,12 @@ import { IUpdateClientMsgs } from "./msgs/IUpdateClientMsgs.sol";
 import { IMembershipMsgs } from "./msgs/IMembershipMsgs.sol";
 import { IUpdateClientAndMembershipMsgs } from "./msgs/IUcAndMembershipMsgs.sol";
 import { IMisbehaviourMsgs } from "./msgs/IMisbehaviourMsgs.sol";
-import { ISP1Msgs } from "./msgs/ISP1Msgs.sol";
+import { IGroth16Msgs } from "./msgs/IGroth16Msgs.sol";
 import { ILightClientMsgs } from "../msgs/ILightClientMsgs.sol";
 import { IICS02ClientMsgs } from "../msgs/IICS02ClientMsgs.sol";
 
-import { ISP1ICS07TendermintErrors } from "./errors/ISP1ICS07TendermintErrors.sol";
-import { ISP1ICS07Tendermint } from "./ISP1ICS07Tendermint.sol";
+import { IGroth16ICS07TendermintErrors } from "./errors/IGroth16ICS07TendermintErrors.sol";
+import { IGroth16ICS07Tendermint } from "./IGroth16ICS07Tendermint.sol";
 import { IMembership } from "../interfaces/IMembership.sol";
 import { IMisbehaviour } from "../interfaces/IMisbehaviour.sol";
 import { IUpdateClient } from "../interfaces/IUpdateClient.sol";
@@ -26,19 +26,19 @@ import { Multicall } from "@openzeppelin-contracts/utils/Multicall.sol";
 import { TransientSlot } from "@openzeppelin-contracts/utils/TransientSlot.sol";
 import { AccessControl } from "@openzeppelin-contracts/access/AccessControl.sol";
 
-/// @title SP1 ICS07 Tendermint Light Client
+/// @title Groth16 ICS07 Tendermint Light Client
 /// @author srdtrk
 /// @notice This contract implements an ICS07 IBC tendermint light client using SP1.
-contract SP1ICS07Tendermint is
-    ISP1ICS07TendermintErrors,
-    ISP1ICS07Tendermint,
+contract Groth16ICS07Tendermint is
+    IGroth16ICS07TendermintErrors,
+    IGroth16ICS07Tendermint,
     ILightClient,
     Multicall,
     AccessControl
 {
     using TransientSlot for *;
 
-    /// @inheritdoc ISP1ICS07Tendermint
+    /// @inheritdoc IGroth16ICS07Tendermint
     IVerifier public immutable VERIFIER;
     IMembership public immutable MEMBERSHIP;
     IMisbehaviour public immutable MISBEHAVIOUR;
@@ -51,10 +51,10 @@ contract SP1ICS07Tendermint is
     /// @dev Revision number need not be keyed as it is not allowed to change.
     mapping(uint64 height => bytes32 hash) private _consensusStateHashes;
 
-    /// @inheritdoc ISP1ICS07Tendermint
-    uint16 public constant ALLOWED_SP1_CLOCK_DRIFT = 30 minutes;
+    /// @inheritdoc IGroth16ICS07Tendermint
+    uint16 public constant ALLOWED_CLOCK_DRIFT = 30 minutes;
 
-    /// @inheritdoc ISP1ICS07Tendermint
+    /// @inheritdoc IGroth16ICS07Tendermint
     bytes32 public constant PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
 
     /// @notice The constructor sets the program verification key and the initial client and consensus states.
@@ -80,7 +80,7 @@ contract SP1ICS07Tendermint is
         UPDATE_CLIENT = IUpdateClient(updateClient_);
 
         require(
-            clientState.trustingPeriod + ALLOWED_SP1_CLOCK_DRIFT <= clientState.unbondingPeriod,
+            clientState.trustingPeriod + ALLOWED_CLOCK_DRIFT <= clientState.unbondingPeriod,
             TrustingPeriodTooLong(clientState.trustingPeriod, clientState.unbondingPeriod)
         );
 
@@ -97,14 +97,14 @@ contract SP1ICS07Tendermint is
         return abi.encode(clientState);
     }
 
-    /// @inheritdoc ISP1ICS07Tendermint
+    /// @inheritdoc IGroth16ICS07Tendermint
     function getConsensusStateHash(uint64 revisionHeight) public view returns (bytes32) {
         bytes32 hash = _consensusStateHashes[revisionHeight];
         require(hash != 0, ConsensusStateNotFound());
         return hash;
     }
 
-    /// @dev This function verifies the public values and forwards the proof to the SP1 verifier.
+    /// @dev This function verifies the public values and forwards the proof to the Groth16 verifier.
     /// @inheritdoc ILightClient
     function updateClient(
         bytes calldata updateClientMsg
@@ -210,14 +210,14 @@ contract SP1ICS07Tendermint is
         if (membershipType == IMembershipMsgs.MembershipType.Membership) {
             return _handleMembership(height, kvPairs, merkleProofs, appHash, trustedConsensusState);
         } else if (membershipType == IMembershipMsgs.MembershipType.MembershipAndUpdateClient) {
-            // return _handleSP1UpdateClientAndMembership(height, membershipProof.proof, path, value);
+            // return _handleGroth16UpdateClientAndMembership(height, membershipProof.proof, path, value);
         }
 
         // unreachable
         revert UnknownMembershipType(uint8(membershipType));
     }
 
-    /// @dev The misbehavior is verfied in the sp1 program. Here we only check the public values which contain the
+    /// @dev The misbehavior is verfied in the gnark program. Here we only check the public values which contain the
     /// trusted headers.
     /// @inheritdoc ILightClient
     function misbehaviour(
@@ -240,7 +240,7 @@ contract SP1ICS07Tendermint is
             msg_.time
         );
 
-        // _verifyProof(msgSubmitMisbehaviour.sp1Proof);
+        // _verifyProof(msgSubmitMisbehaviour.groth16Proof);
 
         // If the misbehaviour and proof is valid, the client needs to be frozen
         clientState.isFrozen = true;
@@ -252,7 +252,7 @@ contract SP1ICS07Tendermint is
         revert FeatureNotSupported();
     }
 
-    /// @notice Handles the `SP1MembershipProof` proof type.
+    /// @notice Handles the `Groth16MembershipProof` proof type.
     /// @param height The height of the proof.
     /// @param kvPairs The path and value of the key-value pair.
     /// @param merkleProofs The merkle proofs of membership.
@@ -284,15 +284,15 @@ contract SP1ICS07Tendermint is
         return _getTimestampInSeconds(trustedConsensusState);
     }
 
-    /// @notice The entrypoint for handling the `SP1MembershipAndUpdateClientProof` proof type.
-    /// @dev This function verifies the public values and forwards the proof to the SP1 verifier.
+    /// @notice The entrypoint for handling the `Groth16MembershipAndUpdateClientProof` proof type.
+    /// @dev This function verifies the public values and forwards the proof to the Groth16 verifier.
     /// @param proofHeight The height of the proof.
     /// @param proofBytes The encoded proof.
     /// @param kvPath The path of the key-value pair.
     /// @param kvValue The value of the key-value pair.
     /// @return The timestamp of the new consensus state.
     // solhint-disable-next-line code-complexity,function-max-lines
-    function _handleSP1UpdateClientAndMembership(
+    function _handleGroth16UpdateClientAndMembership(
         IICS02ClientMsgs.Height calldata proofHeight,
         bytes memory proofBytes,
         bytes[] calldata kvPath,
@@ -304,14 +304,14 @@ contract SP1ICS07Tendermint is
         // validate proof and deserialize output
         IUpdateClientAndMembershipMsgs.UcAndMembershipOutput memory output;
         {
-            IMembershipMsgs.SP1MembershipAndUpdateClientProof memory proof =
-                abi.decode(proofBytes, (IMembershipMsgs.SP1MembershipAndUpdateClientProof));
+            IMembershipMsgs.Groth16MembershipAndUpdateClientProof memory proof =
+                abi.decode(proofBytes, (IMembershipMsgs.Groth16MembershipAndUpdateClientProof));
             // require(
-            //     proof.sp1Proof.vKey == UPDATE_CLIENT_AND_MEMBERSHIP_PROGRAM_VKEY,
-            //     VerificationKeyMismatch(UPDATE_CLIENT_AND_MEMBERSHIP_PROGRAM_VKEY, proof.sp1Proof.vKey)
+            //     proof.groth16Proof.vKey == UPDATE_CLIENT_AND_MEMBERSHIP_PROGRAM_VKEY,
+            //     VerificationKeyMismatch(UPDATE_CLIENT_AND_MEMBERSHIP_PROGRAM_VKEY, proof.groth16Proof.vKey)
             // );
 
-            output = abi.decode(proof.sp1Proof.publicValues, (IUpdateClientAndMembershipMsgs.UcAndMembershipOutput));
+            output = abi.decode(proof.groth16Proof.publicValues, (IUpdateClientAndMembershipMsgs.UcAndMembershipOutput));
             require(
                 output.kvPairs.length > 0 && output.kvPairs.length <= type(uint16).max,
                 LengthIsOutOfRange(output.kvPairs.length, 1, type(uint16).max)
@@ -331,7 +331,7 @@ contract SP1ICS07Tendermint is
             _validateUpdateClientOutput(output.updateClientOutput);
 
             // TODO: verify proof with input
-            // _verifyProof(proof.sp1Proof);
+            // _verifyProof(proof.groth16Proof);
         }
 
         // check update result
@@ -409,7 +409,7 @@ contract SP1ICS07Tendermint is
         );
     }
 
-    /// @notice Validates the SP1ICS07UpdateClientOutput public values.
+    /// @notice Validates the Groth16ICS07UpdateClientOutput public values.
     /// @param output The public values.
     function _validateUpdateClientOutput(IUpdateClientMsgs.UpdateClientOutput memory output) private view {
         _validateClientStateAndTime(output.clientState, output.time);
@@ -422,7 +422,7 @@ contract SP1ICS07Tendermint is
         );
     }
 
-    /// @notice Validates the SP1ICS07MisbehaviourOutput public values.
+    /// @notice Validates the Groth16ICS07MisbehaviourOutput public values.
     /// @param output The public values.
     function _validateMisbehaviourOutput(
         IMisbehaviourMsgs.MisbehaviourOutput memory output,
@@ -465,7 +465,7 @@ contract SP1ICS07Tendermint is
     {
         require(_nanosToSeconds(time) <= block.timestamp, ProofIsInTheFuture(block.timestamp, _nanosToSeconds(time)));
         require(
-            block.timestamp - _nanosToSeconds(time) <= ALLOWED_SP1_CLOCK_DRIFT,
+            block.timestamp - _nanosToSeconds(time) <= ALLOWED_CLOCK_DRIFT,
             ProofIsTooOld(block.timestamp, _nanosToSeconds(time))
         );
 
@@ -474,7 +474,7 @@ contract SP1ICS07Tendermint is
         // 1. Latest height can be updated by a frontrunner relayer in order to DOS the proof of another relayer.
         // 2. Each external call has the `notFrozen` modifier which checks if the client is frozen.
         // 3. The revision number is not allowed to change with us checking the chain-id and the implementation in the
-        // sp1 program.
+        // gnark program.
         require(
             bytes(publicClientState.chainId).length == bytes(clientState.chainId).length
                 && keccak256(bytes(publicClientState.chainId)) == keccak256(bytes(clientState.chainId)),
@@ -528,11 +528,11 @@ contract SP1ICS07Tendermint is
         }
     }
 
-    /// @notice Verifies the SP1 proof
-    /// @param proof The SP1 proof.
+    /// @notice Verifies the Groth16 proof
+    /// @param proof The Groth16 proof.
     /// @dev WARNING: proof.vKey must be verified before calling this function.
     // TODO: verify proof with given input
-    // function _verifyProof(ISP1Msgs.SP1Proof memory proof) private view {
+    // function _verifyProof(IGroth16Msgs.Groth16Proof memory proof) private view {
     //     VERIFIER.verifyProof(proof.vKey, proof.publicValues, proof.proof);
     // }
 

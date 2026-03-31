@@ -42,7 +42,7 @@
   },
   {
     "type": "function",
-    "name": "ALLOWED_SP1_CLOCK_DRIFT",
+    "name": "ALLOWED_CLOCK_DRIFT",
     "inputs": [],
     "outputs": [
       {

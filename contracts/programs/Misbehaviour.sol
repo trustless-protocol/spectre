@@ -5,7 +5,7 @@ import { IMisbehaviour } from "../interfaces/IMisbehaviour.sol";
 import { IMisbehaviourMsgs } from "../light-clients/msgs/IMisbehaviourMsgs.sol";
 import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
 import { IICS02ClientMsgs } from "../msgs/IICS02ClientMsgs.sol";
-import { ISP1ICS07TendermintErrors } from "../light-clients/errors/ISP1ICS07TendermintErrors.sol";
+import { IGroth16ICS07TendermintErrors } from "../light-clients/errors/IGroth16ICS07TendermintErrors.sol";
 import { Predicates } from "../utils/Predicates.sol";
 import { Header } from "../utils/Header.sol";
 import { HeightCmp } from "../utils/HeightCmp.sol";
@@ -94,7 +94,7 @@ contract Misbehaviour is IMisbehaviour {
         validateHeaderBasic(misbehaviour_.header2);
 
         if (keccak256(abi.encode(misbehaviour_.header1.signedHeader.header.chainId)) != keccak256(abi.encode(misbehaviour_.header2.signedHeader.header.chainId))) {
-            revert ISP1ICS07TendermintErrors.ChainIdMismatch ({
+            revert IGroth16ICS07TendermintErrors.ChainIdMismatch ({
                 expected: misbehaviour_.header1.signedHeader.header.chainId,
                 actual: misbehaviour_.header2.signedHeader.header.chainId
             });
@@ -114,7 +114,7 @@ contract Misbehaviour is IMisbehaviour {
         });
 
         if (HeightCmp.lt(header1Height, header2Height)) {
-            revert ISP1ICS07TendermintErrors.InsufficientMisbehaviourHeaderHeight ({
+            revert IGroth16ICS07TendermintErrors.InsufficientMisbehaviourHeaderHeight ({
                 height1: misbehaviour_.header1.signedHeader.header.height,
                 height2: misbehaviour_.header2.signedHeader.header.height
             });
@@ -170,13 +170,13 @@ contract Misbehaviour is IMisbehaviour {
         // ensure trusted consensus state is within trusting period
         {
             if (currentTimestamp < trustedTime) {
-                revert ISP1ICS07TendermintErrors.InvalidConsensusStateTimestamp({
+                revert IGroth16ICS07TendermintErrors.InvalidConsensusStateTimestamp({
                     timestamp: trustedTime
                 });
             }
             uint128 durationSinceConsensusState =currentTimestamp - trustedTime;
             if (durationSinceConsensusState >= options.trustingPeriod) {
-                revert ISP1ICS07TendermintErrors.InsufficientTrustingPeriod ({
+                revert IGroth16ICS07TendermintErrors.InsufficientTrustingPeriod ({
                     durationSinceConsensusState: durationSinceConsensusState,
                     trustingPeriod: options.trustingPeriod
                 });
@@ -205,7 +205,7 @@ contract Misbehaviour is IMisbehaviour {
         bytes32 validatorsHash = Header.hashValSet(header.trustedNextValidatorSet);
 
         if (validatorsHash != trustedNextValidatorHash) {
-            revert ISP1ICS07TendermintErrors.FailedToVerifyHeader({
+            revert IGroth16ICS07TendermintErrors.FailedToVerifyHeader({
                 description: "trusted next validator set hash does not match hash stored on chain"
             });
         }

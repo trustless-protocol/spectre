@@ -15,7 +15,7 @@ type EthCosmosConfigInfo struct {
 	// Ethereum Beacon API URL
 	BeaconAPI string
 	// SP1 config
-	SP1Config SP1ProverConfig
+	Groth16Config ProverConfig
 	// Signer address cosmos
 	SignerAddress string
 	// Whether we use the mock client in Cosmos
@@ -47,12 +47,12 @@ func CreateEthCosmosModules(
 				TmRpcUrl:     configInfo.TmRPC,
 				Ics26Address: configInfo.ICS26Address,
 				EthRpcUrl:    configInfo.EthRPC,
-				Sp1Prover:    configInfo.SP1Config,
-				Sp1Programs: SP1ProgramPaths{
-					UpdateClient:              "./programs/sp1-programs/target/elf-compilation/riscv32im-succinct-zkvm-elf/release/sp1-ics07-tendermint-update-client",
-					Membership:                "./programs/sp1-programs/target/elf-compilation/riscv32im-succinct-zkvm-elf/release/sp1-ics07-tendermint-membership",
-					UpdateClientAndMembership: "./programs/sp1-programs/target/elf-compilation/riscv32im-succinct-zkvm-elf/release/sp1-ics07-tendermint-uc-and-membership",
-					Misbehaviour:              "./programs/sp1-programs//target/elf-compilation/riscv32im-succinct-zkvm-elf/release/sp1-ics07-tendermint-misbehaviour",
+				Sp1Prover:    configInfo.Groth16Config,
+				Sp1Programs: ProgramPaths{
+					UpdateClient:              "./programs/groth16-programs/target/elf-compilation/riscv32im-succinct-zkvm-elf/release/groth16-ics07-tendermint-update-client",
+					Membership:                "./programs/groth16-programs/target/elf-compilation/riscv32im-succinct-zkvm-elf/release/groth16-ics07-tendermint-membership",
+					UpdateClientAndMembership: "./programs/groth16-programs/target/elf-compilation/riscv32im-succinct-zkvm-elf/release/groth16-ics07-tendermint-uc-and-membership",
+					Misbehaviour:              "./programs/groth16-programs//target/elf-compilation/riscv32im-succinct-zkvm-elf/release/groth16-ics07-tendermint-misbehaviour",
 				},
 			},
 		},

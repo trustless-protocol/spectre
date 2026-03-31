@@ -12,9 +12,9 @@ import (
 type SupportedProofType int
 
 const (
-	// ProofTypeGroth16 represents the Groth16 SP1 proof type.
+	// ProofTypeGroth16 represents the Groth16 Groth16 proof type.
 	ProofTypeGroth16 SupportedProofType = iota
-	// ProofTypePlonk represents the Plonk SP1 proof type.
+	// ProofTypePlonk represents the Plonk Groth16 proof type.
 	ProofTypePlonk
 )
 
@@ -28,7 +28,7 @@ func (pt SupportedProofType) ToOperatorArgs() []string {
 	return []string{"-p", pt.String()}
 }
 
-// GetEnvProofType returns a proof type based on the environment variable SP1_PROOF_TYPE.
+// GetEnvProofType returns a proof type based on the environment variable PROOF_TYPE.
 // If the variable is not set, it returns a random proof type.
 func GetEnvProofType() SupportedProofType {
 	envProofType := os.Getenv(testvalues.EnvKeyE2EProofType)

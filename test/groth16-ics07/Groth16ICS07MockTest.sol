@@ -9,13 +9,13 @@ import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07T
 import { IUpdateClientMsgs } from "../../contracts/light-clients/msgs/IUpdateClientMsgs.sol";
 import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
 import { IMisbehaviourMsgs } from "../../contracts/light-clients/msgs/IMisbehaviourMsgs.sol";
-import { ISP1Msgs } from "../../contracts/light-clients/msgs/ISP1Msgs.sol";
+import { IGroth16Msgs } from "../../contracts/light-clients/msgs/IGroth16Msgs.sol";
 
-import { SP1ICS07Tendermint } from "../../contracts/light-clients/SP1ICS07Tendermint.sol";
+import { Groth16ICS07Tendermint } from "../../contracts/light-clients/Groth16ICS07Tendermint.sol";
 
-import { SP1MockVerifier } from "@sp1-contracts/SP1MockVerifier.sol";
+import { MockGroth16Verifier } from "@groth16-contracts/MockGroth16Verifier.sol";
 
-abstract contract SP1ICS07MockTest is Test {
+abstract contract Groth16ICS07MockTest is Test {
     string public constant MOCK_CHAIN_ID = "mock-chain";
     bytes32 public constant MOCK_VKEY = keccak256("MOCK_VKEY");
     bytes32 public constant MOCK_ROOT = keccak256("MOCK_ROOT");
@@ -24,7 +24,7 @@ abstract contract SP1ICS07MockTest is Test {
     address public roleManager = makeAddr("roleManager");
     address public proofSubmitter = makeAddr("proofSubmitter");
 
-    SP1ICS07Tendermint public ics07Tendermint;
+    Groth16ICS07Tendermint public ics07Tendermint;
 
     bytes[] public membershipPath = [bytes("ibc"), bytes("path")];
     bytes public membershipValue = bytes("value");
@@ -32,12 +32,12 @@ abstract contract SP1ICS07MockTest is Test {
     function setUp() public {
         bytes32 firstConsensusStateHash = keccak256(abi.encode(newMockConsensusState(1)));
 
-        ics07Tendermint = new SP1ICS07Tendermint(
+        ics07Tendermint = new Groth16ICS07Tendermint(
             // MOCK_VKEY,
             // MOCK_VKEY,
             // MOCK_VKEY,
             // MOCK_VKEY,
-            address(new SP1MockVerifier()),
+            address(new MockGroth16Verifier()),
             address(0),
             address(0),
             address(0),
@@ -96,7 +96,7 @@ abstract contract SP1ICS07MockTest is Test {
 
     //     return abi.encode(
     //         IUpdateClientMsgs.MsgUpdateClient({
-    //             sp1Proof: ISP1Msgs.SP1Proof({ vKey: MOCK_VKEY, publicValues: abi.encode(output), proof: bytes("") })
+    //             groth16Proof: IGroth16Msgs.Groth16Proof({ vKey: MOCK_VKEY, publicValues: abi.encode(output), proof: bytes("") })
     //         })
     //     );
     // }
@@ -106,14 +106,14 @@ abstract contract SP1ICS07MockTest is Test {
     //         IMembershipMsgs.MembershipOutput({ commitmentRoot: MOCK_ROOT, kvPairs: new IMembershipMsgs.KVPair[](1) });
     //     output.kvPairs[0] = IMembershipMsgs.KVPair({ path: membershipPath, value: membershipValue });
 
-    //     IMembershipMsgs.SP1MembershipProof memory sp1Proof = IMembershipMsgs.SP1MembershipProof({
-    //         sp1Proof: ISP1Msgs.SP1Proof({ vKey: MOCK_VKEY, publicValues: abi.encode(output), proof: bytes("") }),
+    //     IMembershipMsgs.Groth16MembershipProof memory groth16Proof = IMembershipMsgs.Groth16MembershipProof({
+    //         groth16Proof: IGroth16Msgs.Groth16Proof({ vKey: MOCK_VKEY, publicValues: abi.encode(output), proof: bytes("") }),
     //         trustedConsensusState: newMockConsensusState(height)
     //     });
 
     //     IMembershipMsgs.MembershipProof memory proof = IMembershipMsgs.MembershipProof({
-    //         proofType: IMembershipMsgs.MembershipProofType.SP1MembershipProof,
-    //         proof: abi.encode(sp1Proof)
+    //         proofType: IMembershipMsgs.MembershipProofType.Groth16MembershipProof,
+    //         proof: abi.encode(groth16Proof)
     //     });
 
     //     return ILightClientMsgs.MsgVerifyMembership({
@@ -129,14 +129,14 @@ abstract contract SP1ICS07MockTest is Test {
     //         IMembershipMsgs.MembershipOutput({ commitmentRoot: MOCK_ROOT, kvPairs: new IMembershipMsgs.KVPair[](1) });
     //     output.kvPairs[0] = IMembershipMsgs.KVPair({ path: membershipPath, value: bytes("") });
 
-    //     IMembershipMsgs.SP1MembershipProof memory sp1Proof = IMembershipMsgs.SP1MembershipProof({
-    //         sp1Proof: ISP1Msgs.SP1Proof({ vKey: MOCK_VKEY, publicValues: abi.encode(output), proof: bytes("") }),
+    //     IMembershipMsgs.Groth16MembershipProof memory groth16Proof = IMembershipMsgs.Groth16MembershipProof({
+    //         groth16Proof: IGroth16Msgs.Groth16Proof({ vKey: MOCK_VKEY, publicValues: abi.encode(output), proof: bytes("") }),
     //         trustedConsensusState: newMockConsensusState(height)
     //     });
 
     //     IMembershipMsgs.MembershipProof memory proof = IMembershipMsgs.MembershipProof({
-    //         proofType: IMembershipMsgs.MembershipProofType.SP1MembershipProof,
-    //         proof: abi.encode(sp1Proof)
+    //         proofType: IMembershipMsgs.MembershipProofType.Groth16MembershipProof,
+    //         proof: abi.encode(groth16Proof)
     //     });
 
     //     return ILightClientMsgs.MsgVerifyNonMembership({
@@ -158,7 +158,7 @@ abstract contract SP1ICS07MockTest is Test {
 
     //     return abi.encode(
     //         IMisbehaviourMsgs.MsgSubmitMisbehaviour({
-    //             sp1Proof: ISP1Msgs.SP1Proof({ vKey: MOCK_VKEY, publicValues: abi.encode(output), proof: bytes("") })
+    //             groth16Proof: IGroth16Msgs.Groth16Proof({ vKey: MOCK_VKEY, publicValues: abi.encode(output), proof: bytes("") })
     //         })
     //     );
     }

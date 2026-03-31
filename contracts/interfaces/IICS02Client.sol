@@ -26,7 +26,7 @@ interface IICS02ClientAccessControlled {
     /// @notice Updates the client with the given client identifier.
     /// @dev Can only be called with the `RELAYER_ROLE`.
     /// @param clientId The client identifier
-    /// @param updateMsg The encoded update message e.g., an SP1 proof.
+    /// @param updateMsg The encoded update message e.g., an Groth16 proof.
     /// @return The result of the update operation
     function updateClient(
         string calldata clientId,

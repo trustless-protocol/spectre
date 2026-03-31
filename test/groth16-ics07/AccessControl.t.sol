@@ -5,9 +5,9 @@ import { ILightClientMsgs } from "../../contracts/msgs/ILightClientMsgs.sol";
 
 import { IAccessControl } from "@openzeppelin-contracts/access/IAccessControl.sol";
 
-import { SP1ICS07MockTest } from "./SP1ICS07MockTest.sol";
+import { Groth16ICS07MockTest } from "./Groth16ICS07MockTest.sol";
 
-contract SP1ICS07AccessControlTest is SP1ICS07MockTest {
+contract Groth16ICS07AccessControlTest is Groth16ICS07MockTest {
     function test_success_setProofSubmitter() public {
         bytes32 defaultAdminRole = ics07Tendermint.DEFAULT_ADMIN_ROLE();
         bytes32 proofSubmitterRole = ics07Tendermint.PROOF_SUBMITTER_ROLE();

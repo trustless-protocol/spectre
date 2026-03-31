@@ -13,7 +13,7 @@ Solidity IBC Eureka is a production IBC v2 implementation for Ethereum-Cosmos in
               │    ├─ IBCERC20       │                     ▲
               │    └─ Escrow         │                     │
               │         │            │              ┌──────┴──────┐
-              │  SP1ICS07Tendermint  │◄── proofs ──│  Go Operator │
+              │  Groth16ICS07Tendermint  │◄── proofs ──│  Go Operator │
               │    └─ WrapperVerifier│              │  (Groth16)  │
               │       └─ Groth16    │              └─────────────┘
               └──────────────────────┘
@@ -28,7 +28,7 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
     ├─ ICS20Transfer (UUPS) ─── ICS-20 fungible token transfers
     │   ├─ IBCERC20 (Beacon Proxy) ─── Wrapper ERC20 for bridged tokens
     │   └─ Escrow (Beacon Proxy) ─── Token custody during transfer
-    └─ SP1ICS07Tendermint (UUPS) ─── ZK light client for Cosmos chains
+    └─ Groth16ICS07Tendermint (UUPS) ─── ZK light client for Cosmos chains
         └─ WrapperVerifier ─── Ed25519 decompression + SHA512
             └─ Groth16Verifier ─── Auto-generated from circuit VK
 ```
@@ -41,7 +41,7 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
 3. Operator extracts validator Ed25519 signature (prover/extractor.go)
 4. Operator generates Groth16 proof: Ed25519 sig → gnark circuit → proof
 5. Operator submits to Ethereum:
-   a. SP1ICS07Tendermint.updateClient() — verifies header via Groth16
+   a. Groth16ICS07Tendermint.updateClient() — verifies header via Groth16
    b. ICS26Router.recvPacket() — routes to ICS20Transfer
    c. ICS20Transfer mints IBCERC20 tokens (or unlocks Escrow)
 ```
@@ -106,7 +106,7 @@ Cross-validated via `operator/cmd/encode_debug/` + `test/solidity-ibc/EncodeTest
 | `contracts/` | Solidity | Core IBC protocol, ICS20, light client, encoding |
 | `contracts/utils/` | Solidity | Encoding, hashing, verifiers, helpers |
 | `contracts/programs/` | Solidity | UpdateClient, Membership, Misbehaviour verification |
-| `contracts/light-clients/` | Solidity | SP1ICS07Tendermint + message types |
+| `contracts/light-clients/` | Solidity | Groth16ICS07Tendermint + message types |
 | `operator/` | Go | Relayer + Groth16 prover |
 | `operator/prover/` | Go | Ed25519 → Groth16 proof generation |
 | `operator/client/` | Go | Tendermint RPC + Ethereum Beacon API |
@@ -116,7 +116,7 @@ Cross-validated via `operator/cmd/encode_debug/` + `test/solidity-ibc/EncodeTest
 | `packages/relayer/` | Rust | Multi-chain relayer modules |
 | `packages/ethereum/` | Rust | Ethereum light client for CosmWasm |
 | `packages/tendermint-light-client/` | Rust | Tendermint client types and provers |
-| `programs/sp1-programs/` | Rust | RISC-V proving programs (legacy) |
+| `programs/groth16-programs/` | Rust | RISC-V proving programs (legacy) |
 | `e2e/interchaintestv8/` | Go | End-to-end tests with real chains |
 | `scripts/` | Solidity | Deployment scripts |
 | `test/` | Solidity | Foundry unit/integration/benchmark tests |

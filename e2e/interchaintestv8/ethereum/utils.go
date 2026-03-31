@@ -23,11 +23,11 @@ type ForgeDeployOutput struct {
 }
 
 type DeployedContracts struct {
-	// SP1Verifier for plonk
+	// Groth16Verifier for plonk
 	VerifierPlonk string `json:"verifierPlonk"`
-	// SP1Verifier for groth16
+	// Groth16Verifier for groth16
 	VerifierGroth16 string `json:"verifierGroth16"`
-	// Mock SP1 verifier
+	// Mock Groth16 verifier
 	VerifierMock  string `json:"verifierMock"`
 	Ics26Router   string `json:"ics26Router"`
 	Ics20Transfer string `json:"ics20Transfer"`

@@ -7,7 +7,7 @@ import (
 
 	"github.com/cometbft/cometbft/rpc/client/http"
 
-	tendermintContract "relayer/bindings/SP1ICS07Tendermint"
+	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	tendermintClient "relayer/client"
 )
 

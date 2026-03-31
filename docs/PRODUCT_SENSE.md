@@ -49,7 +49,7 @@ Multiple packets can be batched into a single proof submission:
 - `sendTransferWithSender()` — send on behalf of another address (requires DELEGATE_SENDER_ROLE)
 - `multiRecvPacket()` / `multiAckPacket()` — batched operations
 
-**SP1ICS07Tendermint** — light client:
+**Groth16ICS07Tendermint** — light client:
 - `updateClient()` — update with new Tendermint header + Groth16 proof
 - `membership()` / `nonMembership()` — verify ICS-23 Merkle proofs
 
@@ -62,7 +62,7 @@ Config in `operator/config.example.json`:
 ### Environment Variables
 
 Key variables from `.env.example`:
-- `SP1_PROVER`: `network` | `local` | `mock`
+- `PROVER_TYPE`: `network` | `local` | `mock`
 - `E2E_PROOF_TYPE`: `groth16` | `plonk`
 - `ETH_RPC_URL`: Ethereum RPC for shadowfork tests
 - `TENDERMINT_RPC_URL`: CometBFT node endpoint

@@ -50,7 +50,7 @@ See `docs/metrics.md` for full guide. Focus on:
 ## Health Checks
 
 - **Operator**: Logs startup success, connection to both chains
-- **Contracts**: `SP1ICS07Tendermint` stores `latestHeight` — compare against chain head to detect staleness
+- **Contracts**: `Groth16ICS07Tendermint` stores `latestHeight` — compare against chain head to detect staleness
 - **E2E tests**: 5 interchaintest suites validate full round-trip functionality
 
 ## Recovery Procedures

@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	tendermintContract "relayer/bindings/SP1ICS07Tendermint"
+	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	updateClientContract "relayer/bindings/UpdateClient"
 
 	"github.com/cometbft/cometbft/p2p"
@@ -279,7 +279,7 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) updateClientContract.II
 	return header
 }
 
-type SP1ICS07TendermintGenesis struct {
+type Groth16ICS07TendermintGenesis struct {
 	TrustedClientState    updateClientContract.IICS07TendermintMsgsClientState
 	TrustedConsensusState updateClientContract.IICS07TendermintMsgsConsensusState
 }
@@ -303,7 +303,7 @@ func (s SupportedZkAlgorithm) String() string {
 	}
 }
 
-func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32, trustLevel string, proofType string) (*SP1ICS07TendermintGenesis, error) {
+func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32, trustLevel string, proofType string) (*Groth16ICS07TendermintGenesis, error) {
 	status, err := client.Status(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
@@ -370,7 +370,7 @@ func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32,
 		NextValidatorsHash: bytesToBytes32(trustedLightBlock.SignedHeader.NextValidatorsHash),
 	}
 
-	genesis := SP1ICS07TendermintGenesis{
+	genesis := Groth16ICS07TendermintGenesis{
 		TrustedClientState:    clientState,
 		TrustedConsensusState: consensusState,
 	}

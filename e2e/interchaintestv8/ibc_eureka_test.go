@@ -143,7 +143,7 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 			beaconAPI = eth.BeaconAPIClient.GetBeaconAPIURL()
 		}
 
-		sp1Config := relayer.SP1ProverConfig{
+		sp1Config := relayer.ProverConfig{
 			Type:           prover,
 			PrivateCluster: os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueSp1Prover_PrivateCluster,
 		}
@@ -156,7 +156,7 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 				ICS26Address:   s.contractAddresses.Ics26Router,
 				EthRPC:         eth.RPC,
 				BeaconAPI:      beaconAPI,
-				SP1Config:      sp1Config,
+				Groth16Config:      sp1Config,
 				SignerAddress:  s.SimdRelayerSubmitter.FormattedAddress(),
 				MockWasmClient: os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
 			}),
@@ -188,7 +188,7 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 		s.Require().NoError(err)
 	}))
 
-	s.Require().True(s.Run("Deploy SP1 ICS07 contract", func() {
+	s.Require().True(s.Run("Deploy Groth16 ICS07 contract", func() {
 		var verfierAddress string
 		if prover == testvalues.EnvValueSp1Prover_Mock {
 			verfierAddress = s.contractAddresses.VerifierMock
@@ -338,7 +338,7 @@ func (s *IbcEurekaTestSuite) DeployTest(ctx context.Context, proofType types.Sup
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
 
-	s.Require().True(s.Run("Verify SP1 Client", func() {
+	s.Require().True(s.Run("Verify Groth16 Client", func() {
 		clientState, err := s.sp1Ics07Contract.ClientState(nil)
 		s.Require().NoError(err)
 

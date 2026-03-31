@@ -20,9 +20,9 @@ import { ERC1967Proxy } from "@openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy
 import { DeployAccessManagerWithRoles } from "./deployments/DeployAccessManagerWithRoles.sol";
 import { IBCERC20 } from "../contracts/utils/IBCERC20.sol";
 import { Escrow } from "../contracts/utils/Escrow.sol";
-import { SP1Verifier as SP1VerifierPlonk } from "@sp1-contracts/v5.0.0/SP1VerifierPlonk.sol";
-import { SP1Verifier as SP1VerifierGroth16 } from "@sp1-contracts/v5.0.0/SP1VerifierGroth16.sol";
-import { SP1MockVerifier } from "@sp1-contracts/SP1MockVerifier.sol";
+import { Groth16Verifier as PlonkVerifier } from "@groth16-contracts/v5.0.0/PlonkVerifier.sol";
+import { Groth16Verifier as Groth16Verifier } from "@groth16-contracts/v5.0.0/Groth16Verifier.sol";
+import { MockGroth16Verifier } from "@groth16-contracts/MockGroth16Verifier.sol";
 import { IGroth16Verifier } from "../contracts/interfaces/IVerifier.sol";
 import { Groth16Verifier } from "../contracts/utils/Groth16Verifier.sol";
 import { WrapperVerifier } from "../contracts/utils/WrapperVerifier.sol";
@@ -35,7 +35,7 @@ import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessMana
 contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithRoles {
     using stdJson for string;
 
-    string internal constant SP1_GENESIS_DIR = "/scripts/";
+    string internal constant GENESIS_DIR = "/scripts/";
 
     function run() public returns (string memory) {
         // ============ Step 1: Load parameters ==============
@@ -45,15 +45,15 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
 
         vm.startBroadcast();
 
-        // Deploy the SP1 verifiers for testing
-        // address verifierPlonk = address(new SP1VerifierPlonk());
+        // Deploy the Groth16 verifiers for testing
+        // address verifierPlonk = address(new PlonkVerifier());
         address verifierGroth16 = address(new Groth16Verifier());
         address wrapperVerifier = address(new WrapperVerifier(IGroth16Verifier(verifierGroth16)));
 
         address membership = address(new Membership());
         address updateClient = address(new UpdateClient());
         address misbehaviour = address(new Misbehaviour());
-        // address verifierMock = address(new SP1MockVerifier());
+        // address verifierMock = address(new MockGroth16Verifier());
 
         // Deploy IBC Eureka with proxy
         address ics26RouterLogic = address(new ICS26Router());

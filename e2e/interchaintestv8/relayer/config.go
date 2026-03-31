@@ -32,15 +32,15 @@ type ModuleConfig struct {
 	Config   any    `json:"config"`
 }
 
-// SP1ProverConfig represents the configuration for SP1 prover
-type SP1ProverConfig struct {
+// ProverConfig represents the configuration for Groth16 prover
+type ProverConfig struct {
 	Type              string `json:"type"`
 	NetworkPrivateKey string `json:"network_private_key,omitempty"`
 	NetworkRpcUrl     string `json:"network_rpc_url,omitempty"`
 	PrivateCluster    bool   `json:"private_cluster,omitempty"`
 }
 
-type SP1ProgramPaths struct {
+type ProgramPaths struct {
 	UpdateClient              string `json:"update_client"`
 	Membership                string `json:"membership"`
 	UpdateClientAndMembership string `json:"update_client_and_membership"`
@@ -52,8 +52,8 @@ type CosmosToEthModuleConfig struct {
 	TmRpcUrl     string          `json:"tm_rpc_url"`
 	Ics26Address string          `json:"ics26_address"`
 	EthRpcUrl    string          `json:"eth_rpc_url"`
-	Sp1Prover    SP1ProverConfig `json:"sp1_prover"`
-	Sp1Programs  SP1ProgramPaths `json:"sp1_programs"`
+	Sp1Prover    ProverConfig `json:"groth16_prover"`
+	Sp1Programs  ProgramPaths `json:"groth16_programs"`
 }
 
 // CosmosToCosmosModuleConfig represents the configuration for cosmos_to_cosmos module

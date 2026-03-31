@@ -44,9 +44,9 @@ import (
 	relayertypes "github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/relayer"
 )
 
-// SP1ICS07TendermintTestSuite is a suite of tests that wraps TestSuite
+// Groth16ICS07TendermintTestSuite is a suite of tests that wraps TestSuite
 // and can provide additional functionality
-type SP1ICS07TendermintTestSuite struct {
+type Groth16ICS07TendermintTestSuite struct {
 	e2esuite.TestSuite
 
 	// Whether to generate fixtures for the solidity tests
@@ -58,7 +58,7 @@ type SP1ICS07TendermintTestSuite struct {
 
 	// The private key of a test account
 	key *ecdsa.PrivateKey
-	// The SP1ICS07Tendermint contract
+	// The Groth16ICS07Tendermint contract
 	contract *sp1ics07tendermint.Contract
 	// The ICS26 router contract, needed for the relayer to pass proofs
 	ics26Contract *ics26router.Contract
@@ -67,9 +67,9 @@ type SP1ICS07TendermintTestSuite struct {
 	RelayerClient relayertypes.RelayerServiceClient
 }
 
-// SetupSuite calls the underlying SP1ICS07TendermintTestSuite's SetupSuite method
-// and deploys the SP1ICS07Tendermint contract
-func (s *SP1ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofType types.SupportedProofType) {
+// SetupSuite calls the underlying Groth16ICS07TendermintTestSuite's SetupSuite method
+// and deploys the Groth16ICS07Tendermint contract
+func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofType types.SupportedProofType) {
 	s.TestSuite.SetupSuite(ctx)
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
@@ -111,7 +111,7 @@ func (s *SP1ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofType 
 			beaconAPI = eth.BeaconAPIClient.GetBeaconAPIURL()
 		}
 
-		sp1Config := relayer.SP1ProverConfig{
+		sp1Config := relayer.ProverConfig{
 			Type:           prover,
 			PrivateCluster: os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueSp1Prover_PrivateCluster,
 		}
@@ -124,7 +124,7 @@ func (s *SP1ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofType 
 				ICS26Address:   s.ics26Address.Hex(),
 				EthRPC:         eth.RPC,
 				BeaconAPI:      beaconAPI,
-				SP1Config:      sp1Config,
+				Groth16Config:      sp1Config,
 				SignerAddress:  "",   // unused
 				MockWasmClient: true, // unused
 			}),
@@ -156,7 +156,7 @@ func (s *SP1ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofType 
 		s.Require().NoError(err)
 	}))
 
-	s.Require().True(s.Run("Deploy SP1 ICS07 contract", func() {
+	s.Require().True(s.Run("Deploy Groth16 ICS07 contract", func() {
 		stdout, err := eth.ForgeScript(s.key, testvalues.E2EDeployScriptPath)
 		s.Require().NoError(err)
 
@@ -225,19 +225,19 @@ func (s *SP1ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofType 
 	}))
 }
 
-// TestWithSP1ICS07TendermintTestSuite is the boilerplate code that allows the test suite to be run
-func TestWithSP1ICS07TendermintTestSuite(t *testing.T) {
-	suite.Run(t, new(SP1ICS07TendermintTestSuite))
+// TestWithGroth16ICS07TendermintTestSuite is the boilerplate code that allows the test suite to be run
+func TestWithGroth16ICS07TendermintTestSuite(t *testing.T) {
+	suite.Run(t, new(Groth16ICS07TendermintTestSuite))
 }
 
-func (s *SP1ICS07TendermintTestSuite) Test_Deploy() {
+func (s *Groth16ICS07TendermintTestSuite) Test_Deploy() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.DeployTest(ctx, proofType)
 }
 
-// DeployTest tests the deployment of the SP1ICS07Tendermint contract with the given arguments
-func (s *SP1ICS07TendermintTestSuite) DeployTest(ctx context.Context, proofType types.SupportedProofType) {
+// DeployTest tests the deployment of the Groth16ICS07Tendermint contract with the given arguments
+func (s *Groth16ICS07TendermintTestSuite) DeployTest(ctx context.Context, proofType types.SupportedProofType) {
 	s.SetupSuite(ctx, proofType)
 
 	_, simd := s.EthChain, s.CosmosChains[0]
@@ -260,14 +260,14 @@ func (s *SP1ICS07TendermintTestSuite) DeployTest(ctx context.Context, proofType 
 	}))
 }
 
-func (s *SP1ICS07TendermintTestSuite) Test_UpdateClient() {
+func (s *Groth16ICS07TendermintTestSuite) Test_UpdateClient() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.UpdateClientTest(ctx, proofType)
 }
 
 // UpdateClientTest tests the update client functionality
-func (s *SP1ICS07TendermintTestSuite) UpdateClientTest(ctx context.Context, proofType types.SupportedProofType) {
+func (s *Groth16ICS07TendermintTestSuite) UpdateClientTest(ctx context.Context, proofType types.SupportedProofType) {
 	s.SetupSuite(ctx, proofType)
 
 	_, simd := s.EthChain, s.CosmosChains[0]
@@ -301,14 +301,14 @@ func (s *SP1ICS07TendermintTestSuite) UpdateClientTest(ctx context.Context, proo
 	}))
 }
 
-func (s *SP1ICS07TendermintTestSuite) Test_Membership() {
+func (s *Groth16ICS07TendermintTestSuite) Test_Membership() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.MembershipTest(ctx, proofType)
 }
 
 // MembershipTest tests the verify (non)membership functionality with the given arguments
-func (s *SP1ICS07TendermintTestSuite) MembershipTest(ctx context.Context, proofType types.SupportedProofType) {
+func (s *Groth16ICS07TendermintTestSuite) MembershipTest(ctx context.Context, proofType types.SupportedProofType) {
 	s.SetupSuite(ctx, proofType)
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
@@ -408,14 +408,14 @@ func (s *SP1ICS07TendermintTestSuite) MembershipTest(ctx context.Context, proofT
 	}))
 }
 
-func (s *SP1ICS07TendermintTestSuite) Test_UpdateClientAndMembership() {
+func (s *Groth16ICS07TendermintTestSuite) Test_UpdateClientAndMembership() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.UpdateClientAndMembershipTest(ctx, proofType)
 }
 
 // UpdateClientAndMembershipTest tests the update client and membership functionality with the given arguments
-func (s *SP1ICS07TendermintTestSuite) UpdateClientAndMembershipTest(ctx context.Context, proofType types.SupportedProofType) {
+func (s *Groth16ICS07TendermintTestSuite) UpdateClientAndMembershipTest(ctx context.Context, proofType types.SupportedProofType) {
 	s.SetupSuite(ctx, proofType)
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
@@ -500,7 +500,7 @@ func (s *SP1ICS07TendermintTestSuite) UpdateClientAndMembershipTest(ctx context.
 	}))
 }
 
-func (s *SP1ICS07TendermintTestSuite) Test_DoubleSignMisbehaviour() {
+func (s *Groth16ICS07TendermintTestSuite) Test_DoubleSignMisbehaviour() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.DoubleSignMisbehaviourTest(ctx, "double_sign", proofType)
@@ -509,7 +509,7 @@ func (s *SP1ICS07TendermintTestSuite) Test_DoubleSignMisbehaviour() {
 // DoubleSignMisbehaviourTest tests the misbehaviour functionality with the given arguments
 // Fixture is only generated if the environment variable is set
 // Partially based on https://github.com/cosmos/relayer/blob/f9aaf3dd0ebfe99fbe98d190a145861d7df93804/interchaintest/misbehaviour_test.go#L38
-func (s *SP1ICS07TendermintTestSuite) DoubleSignMisbehaviourTest(ctx context.Context, fixName string, proofType types.SupportedProofType) {
+func (s *Groth16ICS07TendermintTestSuite) DoubleSignMisbehaviourTest(ctx context.Context, fixName string, proofType types.SupportedProofType) {
 	s.SetupSuite(ctx, proofType)
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
@@ -603,7 +603,7 @@ func (s *SP1ICS07TendermintTestSuite) DoubleSignMisbehaviourTest(ctx context.Con
 	}))
 }
 
-func (s *SP1ICS07TendermintTestSuite) Test_BreakingTimeMonotonicityMisbehaviour() {
+func (s *Groth16ICS07TendermintTestSuite) Test_BreakingTimeMonotonicityMisbehaviour() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.BreakingTimeMonotonicityMisbehaviourTest(ctx, "breaking_time_monotonicity", proofType)
@@ -612,7 +612,7 @@ func (s *SP1ICS07TendermintTestSuite) Test_BreakingTimeMonotonicityMisbehaviour(
 // TestBreakingTimeMonotonicityMisbehaviour tests the misbehaviour functionality
 // Fixture is only generated if the environment variable is set
 // Partially based on https://github.com/cosmos/relayer/blob/f9aaf3dd0ebfe99fbe98d190a145861d7df93804/interchaintest/misbehaviour_test.go#L38
-func (s *SP1ICS07TendermintTestSuite) BreakingTimeMonotonicityMisbehaviourTest(ctx context.Context, fixName string, proofType types.SupportedProofType) {
+func (s *Groth16ICS07TendermintTestSuite) BreakingTimeMonotonicityMisbehaviourTest(ctx context.Context, fixName string, proofType types.SupportedProofType) {
 	s.SetupSuite(ctx, proofType)
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
@@ -692,14 +692,14 @@ func (s *SP1ICS07TendermintTestSuite) BreakingTimeMonotonicityMisbehaviourTest(c
 	}))
 }
 
-func (s *SP1ICS07TendermintTestSuite) Test_100_Membership() {
+func (s *Groth16ICS07TendermintTestSuite) Test_100_Membership() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 
 	s.largeMembershipTest(ctx, 100, proofType)
 }
 
-func (s *SP1ICS07TendermintTestSuite) Test_25_Membership() {
+func (s *Groth16ICS07TendermintTestSuite) Test_25_Membership() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 
@@ -707,7 +707,7 @@ func (s *SP1ICS07TendermintTestSuite) Test_25_Membership() {
 }
 
 // largeMembershipTest tests membership proofs with a large number of key-value pairs
-func (s *SP1ICS07TendermintTestSuite) largeMembershipTest(ctx context.Context, n uint64, proofType types.SupportedProofType) {
+func (s *Groth16ICS07TendermintTestSuite) largeMembershipTest(ctx context.Context, n uint64, proofType types.SupportedProofType) {
 	s.SetupSuite(ctx, proofType)
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
@@ -791,8 +791,8 @@ func (s *SP1ICS07TendermintTestSuite) largeMembershipTest(ctx context.Context, n
 	}))
 }
 
-// UpdateClient updates the SP1ICS07Tendermint client and returns the new height
-func (s *SP1ICS07TendermintTestSuite) UpdateClient(ctx context.Context) clienttypes.Height {
+// UpdateClient updates the Groth16ICS07Tendermint client and returns the new height
+func (s *Groth16ICS07TendermintTestSuite) UpdateClient(ctx context.Context) clienttypes.Height {
 	eth, simd := s.EthChain, s.CosmosChains[0]
 
 	var initialHeight uint64
