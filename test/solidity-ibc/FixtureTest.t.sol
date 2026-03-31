@@ -7,7 +7,7 @@ import { Test } from "forge-std/Test.sol";
 import { IICS26RouterMsgs } from "../../contracts/msgs/IICS26RouterMsgs.sol";
 import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
 import { ICS26Router } from "../../contracts/ICS26Router.sol";
-import { SP1ICS07Tendermint } from "../../contracts/light-clients/SP1ICS07Tendermint.sol";
+import { Groth16ICS07Tendermint } from "../../contracts/light-clients/Groth16ICS07Tendermint.sol";
 import { ICS20Transfer } from "../../contracts/ICS20Transfer.sol";
 import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
 import { Membership } from "../../contracts/programs/Membership.sol";
@@ -16,8 +16,8 @@ import { UpdateClient } from "../../contracts/programs/UpdateClient.sol";
 import { ICS20Lib } from "../../contracts/utils/ICS20Lib.sol";
 import { stdJson } from "forge-std/StdJson.sol";
 import { ERC1967Proxy } from "@openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import { SP1Verifier as SP1VerifierPlonk } from "@sp1-contracts/v5.0.0/SP1VerifierPlonk.sol";
-import { SP1Verifier as SP1VerifierGroth16 } from "@sp1-contracts/v5.0.0/SP1VerifierGroth16.sol";
+import { Groth16Verifier as PlonkVerifier } from "@groth16-contracts/v5.0.0/PlonkVerifier.sol";
+import { Groth16Verifier as Groth16Verifier } from "@groth16-contracts/v5.0.0/Groth16Verifier.sol";
 import { IBCERC20 } from "../../contracts/utils/IBCERC20.sol";
 import { Escrow } from "../../contracts/utils/Escrow.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
@@ -26,7 +26,7 @@ import { DeployAccessManagerWithRoles } from "../../scripts/deployments/DeployAc
 
 abstract contract FixtureTest is Test, IICS07TendermintMsgs, DeployAccessManagerWithRoles {
     ICS26Router public ics26Router;
-    SP1ICS07Tendermint public sp1ICS07Tendermint;
+    Groth16ICS07Tendermint public groth16ICS07Tendermint;
     ICS20Transfer public ics20Transfer;
     AccessManager public accessManager;
 
@@ -39,7 +39,7 @@ abstract contract FixtureTest is Test, IICS07TendermintMsgs, DeployAccessManager
 
     using stdJson for string;
 
-    struct SP1ICS07GenesisFixtureJson {
+    struct Groth16ICS07GenesisFixtureJson {
         bytes trustedClientState;
         bytes32 trustedConsensusStateHash;
         bytes32 updateClientVkey;
@@ -49,7 +49,7 @@ abstract contract FixtureTest is Test, IICS07TendermintMsgs, DeployAccessManager
     }
 
     struct Fixture {
-        SP1ICS07GenesisFixtureJson genesisFixture;
+        Groth16ICS07GenesisFixtureJson genesisFixture;
         bytes msg;
         address erc20Address;
         uint256 timestamp;
@@ -94,9 +94,9 @@ abstract contract FixtureTest is Test, IICS07TendermintMsgs, DeployAccessManager
 
         address verifier;
         if (trustedClientState.zkAlgorithm == SupportedZkAlgorithm.Plonk) {
-            verifier = address(new SP1VerifierPlonk());
+            verifier = address(new PlonkVerifier());
         } else if (trustedClientState.zkAlgorithm == SupportedZkAlgorithm.Groth16) {
-            verifier = address(new SP1VerifierGroth16());
+            verifier = address(new Groth16Verifier());
         } else {
             revert("Unsupported zk algorithm");
         }
@@ -105,7 +105,7 @@ abstract contract FixtureTest is Test, IICS07TendermintMsgs, DeployAccessManager
         address misbehaviour = address(new Misbehaviour());
         address updateClient = address(new UpdateClient());
 
-        SP1ICS07Tendermint ics07Tendermint = new SP1ICS07Tendermint(
+        Groth16ICS07Tendermint ics07Tendermint = new Groth16ICS07Tendermint(
             // fixture.genesisFixture.updateClientVkey,
             // fixture.genesisFixture.membershipVkey,
             // fixture.genesisFixture.ucAndMembershipVkey,
@@ -135,15 +135,15 @@ abstract contract FixtureTest is Test, IICS07TendermintMsgs, DeployAccessManager
         string memory path = string.concat(root, FIXTURE_DIR, fixtureFileName);
         string memory json = vm.readFile(path);
 
-        bytes memory sp1GenesisBz = json.readBytes(".sp1GenesisFixture");
-        string memory sp1GenesisJSON = string(sp1GenesisBz);
-        SP1ICS07GenesisFixtureJson memory genesisFixture;
-        genesisFixture.trustedClientState = sp1GenesisJSON.readBytes(".trustedClientState");
-        genesisFixture.trustedConsensusStateHash = sp1GenesisJSON.readBytes32(".trustedConsensusStateHash");
-        genesisFixture.updateClientVkey = sp1GenesisJSON.readBytes32(".updateClientVkey");
-        genesisFixture.membershipVkey = sp1GenesisJSON.readBytes32(".membershipVkey");
-        genesisFixture.ucAndMembershipVkey = sp1GenesisJSON.readBytes32(".ucAndMembershipVkey");
-        genesisFixture.misbehaviourVkey = sp1GenesisJSON.readBytes32(".misbehaviourVkey");
+        bytes memory groth16GenesisBz = json.readBytes(".groth16GenesisFixture");
+        string memory groth16GenesisJSON = string(groth16GenesisBz);
+        Groth16ICS07GenesisFixtureJson memory genesisFixture;
+        genesisFixture.trustedClientState = groth16GenesisJSON.readBytes(".trustedClientState");
+        genesisFixture.trustedConsensusStateHash = groth16GenesisJSON.readBytes32(".trustedConsensusStateHash");
+        genesisFixture.updateClientVkey = groth16GenesisJSON.readBytes32(".updateClientVkey");
+        genesisFixture.membershipVkey = groth16GenesisJSON.readBytes32(".membershipVkey");
+        genesisFixture.ucAndMembershipVkey = groth16GenesisJSON.readBytes32(".ucAndMembershipVkey");
+        genesisFixture.misbehaviourVkey = groth16GenesisJSON.readBytes32(".misbehaviourVkey");
 
         bytes memory packetBz = json.readBytes(".packet");
         IICS26RouterMsgs.Packet memory packet = abi.decode(packetBz, (IICS26RouterMsgs.Packet));

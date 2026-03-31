@@ -14,33 +14,33 @@ import { ICS24Host } from "../../contracts/utils/ICS24Host.sol";
 import { FixtureTest } from "./FixtureTest.t.sol";
 
 contract BenchmarkTest is FixtureTest {
-    function test_ICS20TransferWithSP1Fixtures_Plonk() public {
-        ICS20TransferWithSP1FixturesTest("acknowledgeMultiPacket_1-plonk.json", "receiveMultiPacket_1-plonk.json", 1);
+    function test_ICS20TransferWithGroth16Fixtures_Plonk() public {
+        ICS20TransferWithGroth16FixturesTest("acknowledgeMultiPacket_1-plonk.json", "receiveMultiPacket_1-plonk.json", 1);
     }
 
-    function test_ICS20TransferWithSP1Fixtures_Groth16() public {
-        ICS20TransferWithSP1FixturesTest(
+    function test_ICS20TransferWithGroth16Fixtures_Groth16() public {
+        ICS20TransferWithGroth16FixturesTest(
             "acknowledgeMultiPacket_1-groth16.json", "receiveMultiPacket_1-groth16.json", 1
         );
     }
 
-    function test_ICS20TransferWithSP1Fixtures_50Packets_Plonk() public {
-        ICS20TransferWithSP1FixturesTest("acknowledgeMultiPacket_50-plonk.json", "receiveMultiPacket_50-plonk.json", 50);
+    function test_ICS20TransferWithGroth16Fixtures_50Packets_Plonk() public {
+        ICS20TransferWithGroth16FixturesTest("acknowledgeMultiPacket_50-plonk.json", "receiveMultiPacket_50-plonk.json", 50);
     }
 
-    function test_ICS20TransferWithSP1Fixtures_25Packets_Groth16() public {
-        ICS20TransferWithSP1FixturesTest(
+    function test_ICS20TransferWithGroth16Fixtures_25Packets_Groth16() public {
+        ICS20TransferWithGroth16FixturesTest(
             "acknowledgeMultiPacket_25-groth16.json", "receiveMultiPacket_25-groth16.json", 25
         );
     }
 
-    function test_ICS20TransferWithSP1Fixtures_50Packets_Groth16() public {
-        ICS20TransferWithSP1FixturesTest(
+    function test_ICS20TransferWithGroth16Fixtures_50Packets_Groth16() public {
+        ICS20TransferWithGroth16FixturesTest(
             "acknowledgeMultiPacket_50-groth16.json", "receiveMultiPacket_50-groth16.json", 50
         );
     }
 
-    function ICS20TransferWithSP1FixturesTest(string memory ackFix, string memory recvFix, uint64 numPackets) public {
+    function ICS20TransferWithGroth16FixturesTest(string memory ackFix, string memory recvFix, uint64 numPackets) public {
         Fixture memory ackFixture = loadInitialFixture(ackFix);
 
         // Step 1: Transfer from Ethereum to Cosmos
@@ -82,15 +82,15 @@ contract BenchmarkTest is FixtureTest {
         assertEq(storedAck, ICS24Host.packetAcknowledgementCommitmentBytes32(singleSuccessAck));
     }
 
-    function test_ICS20TransferNativeSdkCoinWithSP1Fixtures_Plonk() public {
-        ICS20TransferNativeSdkCoinWithSP1FixtureTest("receiveNativePacket-plonk.json");
+    function test_ICS20TransferNativeSdkCoinWithGroth16Fixtures_Plonk() public {
+        ICS20TransferNativeSdkCoinWithGroth16FixtureTest("receiveNativePacket-plonk.json");
     }
 
-    function test_ICS20TransferNativeSdkCoinWithSP1Fixtures_Groth16() public {
-        ICS20TransferNativeSdkCoinWithSP1FixtureTest("receiveNativePacket-groth16.json");
+    function test_ICS20TransferNativeSdkCoinWithGroth16Fixtures_Groth16() public {
+        ICS20TransferNativeSdkCoinWithGroth16FixtureTest("receiveNativePacket-groth16.json");
     }
 
-    function ICS20TransferNativeSdkCoinWithSP1FixtureTest(string memory recvNatFix) public {
+    function ICS20TransferNativeSdkCoinWithGroth16FixtureTest(string memory recvNatFix) public {
         Fixture memory recvNativeFixture = loadInitialFixture(recvNatFix);
 
         (bool success,) = address(ics26Router).call(recvNativeFixture.msg);
@@ -106,15 +106,15 @@ contract BenchmarkTest is FixtureTest {
         assertEq(storedAck, ICS24Host.packetAcknowledgementCommitmentBytes32(singleSuccessAck));
     }
 
-    function test_ICS20TimeoutWithSP1Fixtures_Plonk() public {
-        ICS20TimeoutWithSP1FixtureTest("timeoutMultiPacket_1-plonk.json");
+    function test_ICS20TimeoutWithGroth16Fixtures_Plonk() public {
+        ICS20TimeoutWithGroth16FixtureTest("timeoutMultiPacket_1-plonk.json");
     }
 
-    function test_ICS20TimeoutWithSP1Fixtures_Groth16() public {
-        ICS20TimeoutWithSP1FixtureTest("timeoutMultiPacket_1-groth16.json");
+    function test_ICS20TimeoutWithGroth16Fixtures_Groth16() public {
+        ICS20TimeoutWithGroth16FixtureTest("timeoutMultiPacket_1-groth16.json");
     }
 
-    function ICS20TimeoutWithSP1FixtureTest(string memory timeoutFix) public {
+    function ICS20TimeoutWithGroth16FixtureTest(string memory timeoutFix) public {
         Fixture memory timeoutFixture = loadInitialFixture(timeoutFix);
 
         // Step 1: Transfer from Ethereum to Cosmos
