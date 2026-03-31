@@ -11,7 +11,7 @@
 | Encoding cross-validation | `test/solidity-ibc/EncodeTest.t.sol` | `forge test --match-contract EncodeTest` |
 | Gas benchmarks | `test/solidity-ibc/BenchmarkTest.t.sol` | `just test-benchmark <name>` |
 | Shadowfork tests | `test/shadowfork/` | Requires `ETH_RPC_URL` env var |
-| SP1 light client | `test/groth16-ics07/` | `forge test --match-path test/groth16-ics07/` |
+| Groth16 light client | `test/groth16-ics07/` | `forge test --match-path test/groth16-ics07/` |
 
 Run a single test:
 ```bash
@@ -39,7 +39,7 @@ Test files: `prover/`, `client/`, `subscriber/`, `services/`, `keys/`, `utils/`
 | Groth16 ICS07 | `groth16_ics07_test.go` | `just test-e2e-groth16-ics07` |
 | Multi-chain | `multichain_test.go` | `just test-e2e-multichain` |
 
-Requires: Docker Desktop, Kurtosis, compiled operator/relayer binaries, SP1 network key.
+Requires: Docker Desktop, Kurtosis, compiled operator/relayer binaries, Groth16 network key.
 
 ### Rust
 
