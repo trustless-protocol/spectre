@@ -1,6 +1,6 @@
 # fast-ibc
 
-A Solidity implementation of IBC Eureka (IBC v2) with a Go operator using gnark Groth16 for Tendermint light client verification.
+A Solidity implementation of IBC Eureka (IBC v2) with a Go relayer using gnark Groth16 for Tendermint light client verification.
 
 ## Architecture
 
@@ -29,7 +29,7 @@ A Solidity implementation of IBC Eureka (IBC v2) with a Go operator using gnark 
 | Component | solidity-ibc-eureka (upstream) | fast-ibc |
 |-----------|-------------------------------|----------|
 | ZK prover | SP1 (Rust, RISC-V zkVM) | gnark Groth16 (Go, Ed25519) |
-| Operator | Rust binary | Go binary (`operator/`) |
+| Operator | Rust binary | Go binary (`relayer/`) |
 | On-chain verifier | SP1Verifier | Groth16Verifier.sol (custom) |
 | Membership verify | SP1 off-chain | Membership.sol (on-chain ICS23) |
 
@@ -49,8 +49,8 @@ bun install
 # Build Solidity contracts
 just build-contracts
 
-# Build the Go operator
-just build-operator
+# Build the Go relayer
+just build-relayer
 ```
 
 ## Contracts
@@ -72,7 +72,7 @@ The operator handles the relay loop between Cosmos and Ethereum:
 3. **RecvPacket** — submit packet with ICS23 membership proof to Ethereum
 
 ```bash
-cd operator
+cd relayer
 go build ./...
 ```
 
@@ -82,8 +82,8 @@ go build ./...
 # Run Solidity tests
 just test-foundry
 
-# Run Go operator tests
-cd operator && go test ./...
+# Run Go relayer tests
+cd relayer && go test ./...
 
 # Lint
 just lint
