@@ -16,7 +16,7 @@ Cosmos validator signs block
     → Ed25519 signature verified via Groth16 ZK proof
     → WrapperVerifier decompresses points + computes SHA512
     → Groth16Verifier checks proof against verification key
-    → SP1ICS07Tendermint updates client state
+    → Groth16ICS07Tendermint updates client state
     → ICS-23 Merkle proofs verify packet commitments
 ```
 

@@ -67,7 +67,7 @@ ICS26Router (UUPS) ← main IBC entry point
   ├─ ICS20Transfer (UUPS) ← token bridge
   │   ├─ IBCERC20 (Beacon) ← bridged token wrapper
   │   └─ Escrow (Beacon) ← token custody
-  └─ SP1ICS07Tendermint (UUPS) ← ZK light client
+  └─ Groth16ICS07Tendermint (UUPS) ← ZK light client
       └─ WrapperVerifier → Groth16Verifier
 ```
 

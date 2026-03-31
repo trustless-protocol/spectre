@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	tendermintContract "relayer/bindings/SP1ICS07Tendermint"
+	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	updateclientContract "relayer/bindings/UpdateClient"
 	relayerclient "relayer/client"
 	"relayer/prover"
@@ -75,7 +75,7 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 
 	if trustedBlock == 0 {
 		// First update: query on-chain client state for the initial trusted height
-		ics07, err := tendermintContract.NewContractSP1ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
+		ics07, err := tendermintContract.NewContractGroth16ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
 		if err != nil {
 			return nil, fmt.Errorf("failed to create ICS07 instance: %w", err)
 		}

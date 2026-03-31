@@ -10,7 +10,7 @@ import (
 	"time"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
-	tendermintContract "relayer/bindings/SP1ICS07Tendermint"
+	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	"relayer/client"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
@@ -24,7 +24,7 @@ var tendermintAbiJson *abi.ABI
 var initErr error
 
 func init() {
-	tendermintAbiJson, initErr = tendermintContract.ContractSP1ICS07TendermintMetaData.GetAbi()
+	tendermintAbiJson, initErr = tendermintContract.ContractGroth16ICS07TendermintMetaData.GetAbi()
 	if initErr != nil {
 		log.Fatal(initErr)
 	}

@@ -6,18 +6,18 @@ pragma solidity ^0.8.28;
 // solhint-disable-next-line no-global-import
 import "forge-std/console.sol";
 import { stdJson } from "forge-std/StdJson.sol";
-import { SP1ICS07TendermintTest } from "./SP1ICS07TendermintTest.sol";
+import { Groth16ICS07TendermintTest } from "./Groth16ICS07TendermintTest.sol";
 
-struct SP1ICS07UpdateClientFixtureJson {
+struct Groth16ICS07UpdateClientFixtureJson {
     bytes trustedClientState;
     bytes trustedConsensusState;
     bytes updateMsg;
 }
 
-contract SP1ICS07UpdateClientTest is SP1ICS07TendermintTest {
+contract Groth16ICS07UpdateClientTest is Groth16ICS07TendermintTest {
     using stdJson for string;
 
-    SP1ICS07UpdateClientFixtureJson public fixture;
+    Groth16ICS07UpdateClientFixtureJson public fixture;
 
     UpdateClientOutput public output;
 
@@ -27,7 +27,7 @@ contract SP1ICS07UpdateClientTest is SP1ICS07TendermintTest {
         setUpTest(fileName, address(0));
 
         // MsgUpdateClient memory updateMsg = abi.decode(fixture.updateMsg, (MsgUpdateClient));
-        // output = abi.decode(updateMsg.sp1Proof.publicValues, (UpdateClientOutput));
+        // output = abi.decode(updateMsg.groth16Proof.publicValues, (UpdateClientOutput));
 
         // ClientState memory clientState = abi.decode(mockIcs07Tendermint.getClientState(), (ClientState));
         // assert(clientState.latestHeight.revisionHeight < output.newHeight.revisionHeight);
@@ -106,7 +106,7 @@ contract SP1ICS07UpdateClientTest is SP1ICS07TendermintTest {
 
         // update mock client
         MsgUpdateClient memory updateMsg = abi.decode(fixture.updateMsg, (MsgUpdateClient));
-        // updateMsg.sp1Proof.proof = bytes("");
+        // updateMsg.groth16Proof.proof = bytes("");
 
         UpdateResult res = mockIcs07Tendermint.updateClient(abi.encode(updateMsg));
         assert(res == UpdateResult.Update);
@@ -114,7 +114,7 @@ contract SP1ICS07UpdateClientTest is SP1ICS07TendermintTest {
         // change output so that it is a misbehaviour
         output.newConsensusState.timestamp = output.time + 1;
         // re-encode output
-        // updateMsg.sp1Proof.publicValues = abi.encode(output);
+        // updateMsg.groth16Proof.publicValues = abi.encode(output);
 
         // run verify again
         res = mockIcs07Tendermint.updateClient(abi.encode(updateMsg));
@@ -135,7 +135,7 @@ contract SP1ICS07UpdateClientTest is SP1ICS07TendermintTest {
         mockIcs07Tendermint.upgradeClient(bytes(""));
     }
 
-    function loadFixture(string memory fileName) public view returns (SP1ICS07UpdateClientFixtureJson memory) {
+    function loadFixture(string memory fileName) public view returns (Groth16ICS07UpdateClientFixtureJson memory) {
         string memory root = vm.projectRoot();
         string memory path = string.concat(root, FIXTURE_DIR, fileName);
         string memory json = vm.readFile(path);
@@ -143,7 +143,7 @@ contract SP1ICS07UpdateClientTest is SP1ICS07TendermintTest {
         bytes memory trustedConsensusState = json.readBytes(".trustedConsensusState");
         bytes memory updateMsg = json.readBytes(".updateMsg");
 
-        SP1ICS07UpdateClientFixtureJson memory fix = SP1ICS07UpdateClientFixtureJson({
+        Groth16ICS07UpdateClientFixtureJson memory fix = Groth16ICS07UpdateClientFixtureJson({
             trustedClientState: trustedClientState,
             trustedConsensusState: trustedConsensusState,
             updateMsg: updateMsg

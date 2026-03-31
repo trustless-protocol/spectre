@@ -14,10 +14,10 @@ build-contracts: clean-foundry
 build-relayer:
 	cargo build --bin relayer --release --locked
 
-# Build the operator using `go build`
+# Build the relayer using `go build`
 [group('build')]
-build-operator:
-	cd operator && go build ./...
+build-go-relayer:
+	cd relayer && go build ./...
 
 # Build and optimize the eth wasm light client using `cosmwasm/optimizer`. Requires `docker` and `gzip`
 [group('build')]
@@ -31,10 +31,10 @@ build-cw-ics08-wasm-eth:
 build-relayer-image:
     docker build -t eureka-relayer:latest -f programs/relayer/Dockerfile .
 
-# Install the operator for use in the e2e tests
+# Install the Go relayer for use in the e2e tests
 [group('install')]
-install-operator:
-	cd operator && go install ./cmd/...
+install-go-relayer:
+	cd relayer && go install ./cmd/...
 
 # Install the relayer using `cargo install`
 [group('install')]
@@ -62,7 +62,7 @@ lint-solidity:
 [group('lint')]
 lint-go:
 	@echo "Linting the Go code..."
-	cd operator && golangci-lint run
+	cd relayer && golangci-lint run
 	cd e2e/interchaintestv8 && golangci-lint run
 	cd packages/go-abigen && golangci-lint run
 
@@ -85,21 +85,21 @@ lint-rust:
 generate-abi: build-contracts
 	jq '.abi' out/ICS26Router.sol/ICS26Router.json > abi/ICS26Router.json
 	jq '.abi' out/ICS20Transfer.sol/ICS20Transfer.json > abi/ICS20Transfer.json
-	jq '.abi' out/SP1ICS07Tendermint.sol/SP1ICS07Tendermint.json > abi/SP1ICS07Tendermint.json
+	jq '.abi' out/Groth16ICS07Tendermint.sol/Groth16ICS07Tendermint.json > abi/Groth16ICS07Tendermint.json
 	jq '.abi' out/ERC20.sol/ERC20.json > abi/ERC20.json
 	jq '.abi' out/IBCERC20.sol/IBCERC20.json > abi/IBCERC20.json
 	jq '.abi' out/RelayerHelper.sol/RelayerHelper.json > abi/RelayerHelper.json
 	abigen --abi abi/ERC20.json --pkg erc20 --type Contract --out e2e/interchaintestv8/types/erc20/contract.go
-	abigen --abi abi/SP1ICS07Tendermint.json --pkg sp1ics07tendermint --type Contract --out packages/go-abigen/sp1ics07tendermint/contract.go
+	abigen --abi abi/Groth16ICS07Tendermint.json --pkg groth16ics07tendermint --type Contract --out packages/go-abigen/groth16ics07tendermint/contract.go
 	abigen --abi abi/ICS20Transfer.json --pkg ics20transfer --type Contract --out packages/go-abigen/ics20transfer/contract.go
 	abigen --abi abi/ICS26Router.json --pkg ics26router --type Contract --out packages/go-abigen/ics26router/contract.go
 	abigen --abi abi/IBCERC20.json --pkg ibcerc20 --type Contract --out packages/go-abigen/ibcerc20/contract.go
 	abigen --abi abi/RelayerHelper.json --pkg relayerhelper --type Contract --out packages/go-abigen/relayerhelper/contract.go
 
-# Generate the ABI files with bytecode for the required contracts (only SP1ICS07Tendermint)
+# Generate the ABI files with bytecode for the required contracts (only Groth16ICS07Tendermint)
 [group('generate')]
 generate-abi-bytecode: build-contracts
-	cp out/SP1ICS07Tendermint.sol/SP1ICS07Tendermint.json abi/bytecode
+	cp out/Groth16ICS07Tendermint.sol/Groth16ICS07Tendermint.json abi/bytecode
 
 # Generate the fixtures for the wasm tests using the e2e tests
 [group('generate')]
@@ -161,11 +161,11 @@ test-abigen:
 	@echo "Running abigen tests..."
 	cd packages/go-abigen && go test -v ./...
 
-# Run Go operator tests
+# Run Go relayer tests
 [group('test')]
-test-operator:
-	@echo "Running operator tests..."
-	cd operator && go test -v ./...
+test-go-relayer:
+	@echo "Running Go relayer tests..."
+	cd relayer && go test -v ./...
 
 # Run any e2e test using the test's full name. For example, `just test-e2e TestWithIbcEurekaTestSuite/Test_Deploy`
 [group('test')]

@@ -17,14 +17,14 @@ import { IUpdateClientAndMembershipMsgs } from "../../contracts/light-clients/ms
 import { IMisbehaviourMsgs } from "../../contracts/light-clients/msgs/IMisbehaviourMsgs.sol";
 import { ILightClientMsgs } from "../../contracts/msgs/ILightClientMsgs.sol";
 import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
-import { ISP1Msgs } from "../../contracts/light-clients/msgs/ISP1Msgs.sol";
-import { SP1ICS07Tendermint } from "../../contracts/light-clients/SP1ICS07Tendermint.sol";
-import { ISP1ICS07TendermintErrors } from "../../contracts/light-clients/errors/ISP1ICS07TendermintErrors.sol";
-import { SP1MockVerifier } from "@sp1-contracts/SP1MockVerifier.sol";
-import { SP1Verifier as SP1VerifierPlonk } from "@sp1-contracts/v5.0.0/SP1VerifierPlonk.sol";
-import { SP1Verifier as SP1VerifierGroth16 } from "@sp1-contracts/v5.0.0/SP1VerifierGroth16.sol";
+import { IGroth16Msgs } from "../../contracts/light-clients/msgs/IGroth16Msgs.sol";
+import { Groth16ICS07Tendermint } from "../../contracts/light-clients/Groth16ICS07Tendermint.sol";
+import { IGroth16ICS07TendermintErrors } from "../../contracts/light-clients/errors/IGroth16ICS07TendermintErrors.sol";
+import { MockGroth16Verifier } from "@groth16-contracts/MockGroth16Verifier.sol";
+import { Groth16Verifier as PlonkVerifier } from "@groth16-contracts/v5.0.0/PlonkVerifier.sol";
+import { Groth16Verifier as Groth16Verifier } from "@groth16-contracts/v5.0.0/Groth16Verifier.sol";
 
-struct SP1ICS07GenesisFixtureJson {
+struct Groth16ICS07GenesisFixtureJson {
     bytes trustedClientState;
     bytes trustedConsensusState;
     bytes32 updateClientVkey;
@@ -33,26 +33,26 @@ struct SP1ICS07GenesisFixtureJson {
     bytes32 misbehaviourVkey;
 }
 
-abstract contract SP1ICS07TendermintTest is
+abstract contract Groth16ICS07TendermintTest is
     Test,
     IICS02ClientMsgs,
-    ISP1Msgs,
+    IGroth16Msgs,
     IICS07TendermintMsgs,
     IUpdateClientMsgs,
     IMembershipMsgs,
     IUpdateClientAndMembershipMsgs,
-    ISP1ICS07TendermintErrors,
+    IGroth16ICS07TendermintErrors,
     ILightClientMsgs
 {
     using stdJson for string;
     using stdStorage for StdStorage;
 
-    SP1ICS07Tendermint public ics07Tendermint;
-    SP1ICS07Tendermint public mockIcs07Tendermint;
+    Groth16ICS07Tendermint public ics07Tendermint;
+    Groth16ICS07Tendermint public mockIcs07Tendermint;
 
-    SP1ICS07GenesisFixtureJson internal genesisFixture;
+    Groth16ICS07GenesisFixtureJson internal genesisFixture;
 
-    string internal constant FIXTURE_DIR = "/test/sp1-ics07/fixtures/";
+    string internal constant FIXTURE_DIR = "/test/groth16-ics07/fixtures/";
 
     function setUpTest(string memory fileName, address roleManager) public {
         genesisFixture = loadGenesisFixture(fileName);
@@ -64,9 +64,9 @@ abstract contract SP1ICS07TendermintTest is
 
         address verifier;
         if (trustedClientState.zkAlgorithm == SupportedZkAlgorithm.Plonk) {
-            verifier = address(new SP1VerifierPlonk());
+            verifier = address(new PlonkVerifier());
         } else if (trustedClientState.zkAlgorithm == SupportedZkAlgorithm.Groth16) {
-            verifier = address(new SP1VerifierGroth16());
+            verifier = address(new Groth16Verifier());
         } else {
             revert("Unsupported zk algorithm");
         }
@@ -75,7 +75,7 @@ abstract contract SP1ICS07TendermintTest is
         address misbehaviour = address(new Misbehaviour());
         address updateClient = address(new UpdateClient());
 
-        ics07Tendermint = new SP1ICS07Tendermint(
+        ics07Tendermint = new Groth16ICS07Tendermint(
             // genesisFixture.updateClientVkey,
             // genesisFixture.membershipVkey,
             // genesisFixture.ucAndMembershipVkey,
@@ -89,12 +89,12 @@ abstract contract SP1ICS07TendermintTest is
             roleManager
         );
 
-        mockIcs07Tendermint = new SP1ICS07Tendermint(
+        mockIcs07Tendermint = new Groth16ICS07Tendermint(
             // genesisFixture.updateClientVkey,
             // genesisFixture.membershipVkey,
             // genesisFixture.ucAndMembershipVkey,
             // genesisFixture.misbehaviourVkey,
-            address(new SP1MockVerifier()),
+            address(new MockGroth16Verifier()),
             membership,
             misbehaviour,
             updateClient,
@@ -110,7 +110,7 @@ abstract contract SP1ICS07TendermintTest is
         assert(consensusHash == trustedConsensusHash);
     }
 
-    function loadGenesisFixture(string memory fileName) public view returns (SP1ICS07GenesisFixtureJson memory) {
+    function loadGenesisFixture(string memory fileName) public view returns (Groth16ICS07GenesisFixtureJson memory) {
         string memory root = vm.projectRoot();
         string memory path = string.concat(root, FIXTURE_DIR, fileName);
         string memory json = vm.readFile(path);
@@ -121,7 +121,7 @@ abstract contract SP1ICS07TendermintTest is
         bytes32 ucAndMembershipVkey = json.readBytes32(".ucAndMembershipVkey");
         bytes32 misbehaviourVkey = json.readBytes32(".misbehaviourVkey");
 
-        SP1ICS07GenesisFixtureJson memory fix = SP1ICS07GenesisFixtureJson({
+        Groth16ICS07GenesisFixtureJson memory fix = Groth16ICS07GenesisFixtureJson({
             trustedClientState: trustedClientState,
             trustedConsensusState: trustedConsensusState,
             updateClientVkey: updateClientVkey,

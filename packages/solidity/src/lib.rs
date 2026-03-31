@@ -4,7 +4,7 @@
 
 pub mod ics26;
 pub mod msgs;
-pub mod sp1_ics07;
+pub mod groth16_ics07;
 
 #[derive(thiserror::Error, Debug)]
 #[allow(missing_docs)]

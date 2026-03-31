@@ -2,9 +2,9 @@
 pragma solidity ^0.8.28;
 
 import { IVerifier } from "../interfaces/IVerifier.sol";
-/// @title ISP1ICS07Tendermint
-/// @notice ISP1ICS07Tendermint is the interface for the ICS07 Tendermint light client
-interface ISP1ICS07Tendermint {
+/// @title IGroth16ICS07Tendermint
+/// @notice IGroth16ICS07Tendermint is the interface for the ICS07 Tendermint light client
+interface IGroth16ICS07Tendermint {
     /// @notice The role identifier for the proof submitter role
     /// @dev The proof submitter role is used to whitelist addresses that can submit proofs
     /// @dev If `address(0)` has this role, then anyone can submit proofs
@@ -34,7 +34,7 @@ interface ISP1ICS07Tendermint {
 
     /// @notice Constant allowed prover clock drift in seconds.
     /// @return The allowed prover clock drift in seconds.
-    function ALLOWED_SP1_CLOCK_DRIFT() external view returns (uint16);
+    function ALLOWED_CLOCK_DRIFT() external view returns (uint16);
 
     /// @notice Returns the consensus state keccak256 hash at the given revision height.
     /// @param revisionHeight The revision height.

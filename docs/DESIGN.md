@@ -18,7 +18,7 @@ forge test --match-contract EncodeTest -vvv # Solidity must match
 
 ### Contract Patterns
 
-- **UUPS proxy**: Core contracts (ICS26Router, ICS20Transfer, SP1ICS07Tendermint)
+- **UUPS proxy**: Core contracts (ICS26Router, ICS20Transfer, Groth16ICS07Tendermint)
 - **Beacon proxy**: Instance contracts (IBCERC20, Escrow) — ICS20Transfer upgrades all atomically
 - **Access control**: OpenZeppelin `AccessManager` with roles in `IBCRolesLib.sol`
 - **Error handling**: Custom errors defined in `contracts/errors/` interfaces

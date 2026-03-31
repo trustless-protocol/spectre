@@ -30,7 +30,7 @@ contract Groth16VerifierTest is Test {
 
         // Load fixture
         string memory root = vm.projectRoot();
-        string memory path = string.concat(root, "/test/sp1-ics07/fixtures/groth16_fixture.json");
+        string memory path = string.concat(root, "/test/groth16-ics07/fixtures/groth16_fixture.json");
         string memory json = vm.readFile(path);
 
         fixture.proof[0] = json.readUint(".proof[0]");

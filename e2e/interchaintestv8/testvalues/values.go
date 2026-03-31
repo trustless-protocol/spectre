@@ -14,7 +14,7 @@ import (
 
 	"github.com/cosmos/interchaintest/v10/chain/ethereum"
 
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ics26router"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
 )
 
 const (
@@ -73,13 +73,13 @@ const (
 	// otherwise, it will download the version from the github release with the given tag
 	EnvKeyE2EWasmLightClientTag = "E2E_WASM_LIGHT_CLIENT_TAG"
 
-	// Sp1GenesisFilePath is the path to the genesis file for the SP1 chain.
+	// Groth16GenesisFilePath is the path to the genesis file for the Groth16 chain.
 	// This file is generated and then deleted by the test.
-	Sp1GenesisFilePath = "scripts/genesis.json"
+	Groth16GenesisFilePath = "scripts/genesis.json"
 	// SolidityFixturesDir is the directory where the Solidity fixtures are stored.
 	SolidityFixturesDir = "test/solidity-ibc/fixtures/"
-	// SP1ICS07FixturesDir is the directory where the SP1ICS07 fixtures are stored.
-	SP1ICS07FixturesDir = "test/sp1-ics07/fixtures"
+	// Groth16ICS07FixturesDir is the directory where the Groth16ICS07 fixtures are stored.
+	Groth16ICS07FixturesDir = "test/groth16-ics07/fixtures"
 	// WasmFixturesDir is the directory where the Rust fixtures are stored.
 	WasmFixturesDir = "packages/ethereum/light-client/src/test_utils/fixtures"
 	// RelayerConfigFilePath is the path to generate the relayer config file.
@@ -103,11 +103,11 @@ const (
 	// We must use a client ID of the form `type-n` due to the issue above.
 	CustomClientID = "cosmoshub-1"
 
-	// Sp1 verifier address parameter key for the relayer's sp1 light client creation.
-	ParameterKey_Sp1Verifier = "sp1_verifier"
-	// Zk algorithm parameter key for the relayer's sp1 light client creation.
+	// Groth16 verifier address parameter key for the relayer's groth16 light client creation.
+	ParameterKey_Groth16Verifier = "groth16_verifier"
+	// Zk algorithm parameter key for the relayer's groth16 light client creation.
 	ParameterKey_ZkAlgorithm = "zk_algorithm"
-	// The role manager address parameter key for the relayer's sp1 light client creation.
+	// The role manager address parameter key for the relayer's groth16 light client creation.
 	ParameterKey_RoleManager = "role_manager"
 	// Checksum hex parameter key for the relayer's ethereum light client creation.
 	ParameterKey_ChecksumHex = "checksum_hex"
@@ -124,10 +124,10 @@ var (
 	// StartingEthBalance is the amount of ETH to give to each user at the start of the test.
 	StartingEthBalance = math.NewInt(2 * ethereum.ETHER.Int64())
 
-	// DefaultTrustLevel is the trust level used by the SP1ICS07Tendermint contract.
+	// DefaultTrustLevel is the trust level used by the Groth16ICS07Tendermint contract.
 	DefaultTrustLevel = ibctm.Fraction{Numerator: 1, Denominator: 3}.ToTendermint()
 
-	// DefaultTrustPeriod is the trust period used by the SP1ICS07Tendermint contract.
+	// DefaultTrustPeriod is the trust period used by the Groth16ICS07Tendermint contract.
 	// 129600 seconds = 14 days
 	DefaultTrustPeriod = 1209600
 

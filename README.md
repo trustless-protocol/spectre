@@ -11,7 +11,7 @@ A Solidity implementation of IBC Eureka (IBC v2) with a Go relayer using gnark G
 │  IBC v2 Module  │────────▶│  ICS26Router.sol                     │
 │  (send_packet)  │         │      │                               │
 └─────────────────┘         │      ▼                               │
-                            │  SP1ICS07Tendermint.sol              │
+                            │  Groth16ICS07Tendermint.sol              │
          ┌──────────────────│      │  (light client)               │
          │                  │      ▼                               │
          │  Go Operator     │  Groth16Verifier.sol                 │
@@ -24,14 +24,6 @@ A Solidity implementation of IBC Eureka (IBC v2) with a Go relayer using gnark G
          └──────────────────└──────────────────────────────────────┘
 ```
 
-### Key differences from upstream solidity-ibc-eureka
-
-| Component | solidity-ibc-eureka (upstream) | fast-ibc |
-|-----------|-------------------------------|----------|
-| ZK prover | SP1 (Rust, RISC-V zkVM) | gnark Groth16 (Go, Ed25519) |
-| Operator | Rust binary | Go binary (`relayer/`) |
-| On-chain verifier | SP1Verifier | Groth16Verifier.sol (custom) |
-| Membership verify | SP1 off-chain | Membership.sol (on-chain ICS23) |
 
 ## Requirements
 
@@ -59,13 +51,13 @@ Core IBC protocol contracts:
 
 - `ICS26Router.sol` — IBC packet routing
 - `ICS20Transfer.sol` — Fungible token transfer (ICS-20)
-- `SP1ICS07Tendermint.sol` — Tendermint light client (uses gnark Groth16)
+- `Groth16ICS07Tendermint.sol` — Tendermint light client (uses gnark Groth16)
 - `Groth16Verifier.sol` — Custom Groth16 verifier (Ed25519 gnark circuit)
 - `Membership.sol` — On-chain ICS23 Merkle proof verification
 
-## Go Operator
+## Go Relayer
 
-The operator handles the relay loop between Cosmos and Ethereum:
+The relayer handles the relay loop between Cosmos and Ethereum:
 
 1. **Subscribe** to Cosmos `send_packet` events
 2. **UpdateClient** — generate gnark Groth16 ZK proof of Tendermint consensus

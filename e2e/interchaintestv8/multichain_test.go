@@ -33,10 +33,10 @@ import (
 
 	"github.com/cosmos/interchaintest/v10/ibc"
 
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ibcerc20"
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ics20transfer"
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ics26router"
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/sp1ics07tendermint"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ibcerc20"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ics20transfer"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/chainconfig"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/cosmos"
@@ -58,11 +58,11 @@ type MultichainTestSuite struct {
 	deployer *ecdsa.PrivateKey
 
 	contractAddresses     ethereum.DeployedContracts
-	chainAsp1Ics07Address ethcommon.Address
-	chainBsp1Ics07Address ethcommon.Address
+	chainAGroth16Ics07Address ethcommon.Address
+	chainBGroth16Ics07Address ethcommon.Address
 
-	chainASP1Ics07Contract *sp1ics07tendermint.Contract
-	chainBSP1Ics07Contract *sp1ics07tendermint.Contract
+	chainAGroth16Ics07Contract *groth16ics07tendermint.Contract
+	chainBGroth16Ics07Contract *groth16ics07tendermint.Contract
 	ics26Contract          *ics26router.Contract
 	ics20Contract          *ics20transfer.Contract
 	erc20Contract          *erc20.Contract
@@ -136,11 +136,11 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			beaconAPI = eth.BeaconAPIClient.GetBeaconAPIURL()
 		}
 
-		sp1Config := relayer.SP1ProverConfig{
+		groth16Config := relayer.ProverConfig{
 			Type: prover,
 		}
-		if prover == testvalues.EnvValueSp1Prover_Network {
-			sp1Config.PrivateCluster = os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueSp1Prover_PrivateCluster
+		if prover == testvalues.EnvValueGroth16Prover_Network {
+			groth16Config.PrivateCluster = os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueGroth16Prover_PrivateCluster
 		}
 
 		config := relayer.NewConfig(relayer.CreateMultichainModules(relayer.MultichainConfigInfo{
@@ -154,7 +154,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			ICS26Address:        s.contractAddresses.Ics26Router,
 			EthRPC:              eth.RPC,
 			BeaconAPI:           beaconAPI,
-			SP1Config:           sp1Config,
+			Groth16Config:           groth16Config,
 			MockWasmClient:      os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
 		}))
 
@@ -186,9 +186,9 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		s.Require().NoError(err)
 	}))
 
-	s.Require().True(s.Run("Deploy SP1 ICS07 contracts", func() {
+	s.Require().True(s.Run("Deploy Groth16 ICS07 contracts", func() {
 		var verfierAddress string
-		if prover == testvalues.EnvValueSp1Prover_Mock {
+		if prover == testvalues.EnvValueGroth16Prover_Mock {
 			verfierAddress = s.contractAddresses.VerifierMock
 		} else {
 			switch proofType {
@@ -207,7 +207,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 				SrcChain: simdA.Config().ChainID,
 				DstChain: eth.ChainID.String(),
 				Parameters: map[string]string{
-					testvalues.ParameterKey_Sp1Verifier: verfierAddress,
+					testvalues.ParameterKey_Groth16Verifier: verfierAddress,
 					testvalues.ParameterKey_ZkAlgorithm: proofType.String(),
 				},
 			})
@@ -223,8 +223,8 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			s.Require().NoError(err)
 			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
 
-			s.chainAsp1Ics07Address = receipt.ContractAddress
-			s.chainASP1Ics07Contract, err = sp1ics07tendermint.NewContract(s.chainAsp1Ics07Address, eth.RPCClient)
+			s.chainAGroth16Ics07Address = receipt.ContractAddress
+			s.chainAGroth16Ics07Contract, err = groth16ics07tendermint.NewContract(s.chainAGroth16Ics07Address, eth.RPCClient)
 			s.Require().NoError(err)
 		}))
 
@@ -233,7 +233,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 				SrcChain: simdB.Config().ChainID,
 				DstChain: eth.ChainID.String(),
 				Parameters: map[string]string{
-					testvalues.ParameterKey_Sp1Verifier: verfierAddress,
+					testvalues.ParameterKey_Groth16Verifier: verfierAddress,
 					testvalues.ParameterKey_ZkAlgorithm: proofType.String(),
 				},
 			})
@@ -249,8 +249,8 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			s.Require().NoError(err)
 			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
 
-			s.chainBsp1Ics07Address = receipt.ContractAddress
-			s.chainBSP1Ics07Contract, err = sp1ics07tendermint.NewContract(s.chainBsp1Ics07Address, eth.RPCClient)
+			s.chainBGroth16Ics07Address = receipt.ContractAddress
+			s.chainBGroth16Ics07Contract, err = groth16ics07tendermint.NewContract(s.chainBGroth16Ics07Address, eth.RPCClient)
 			s.Require().NoError(err)
 		}))
 	}))
@@ -296,7 +296,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			ClientId:     testvalues.FirstWasmClientID,
 			MerklePrefix: [][]byte{[]byte(ibcexported.StoreKey), []byte("")},
 		}
-		tx, err := s.ics26Contract.AddClient0(s.GetTransactOpts(s.deployer, eth), counterpartyInfo, s.chainAsp1Ics07Address)
+		tx, err := s.ics26Contract.AddClient0(s.GetTransactOpts(s.deployer, eth), counterpartyInfo, s.chainAGroth16Ics07Address)
 		s.Require().NoError(err)
 
 		receipt, err := eth.GetTxReciept(ctx, tx.Hash())
@@ -341,7 +341,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			ClientId:     testvalues.FirstWasmClientID,
 			MerklePrefix: [][]byte{[]byte(ibcexported.StoreKey), []byte("")},
 		}
-		tx, err := s.ics26Contract.AddClient0(s.GetTransactOpts(s.deployer, eth), counterpartyInfo, s.chainBsp1Ics07Address)
+		tx, err := s.ics26Contract.AddClient0(s.GetTransactOpts(s.deployer, eth), counterpartyInfo, s.chainBGroth16Ics07Address)
 		s.Require().NoError(err)
 
 		receipt, err := eth.GetTxReciept(ctx, tx.Hash())
@@ -455,8 +455,8 @@ func (s *MultichainTestSuite) Test_Deploy() {
 
 	eth, simdA, simdB := s.EthChain, s.CosmosChains[0], s.CosmosChains[1]
 
-	s.Require().True(s.Run("Verify SimdA SP1 Client", func() {
-		clientState, err := s.chainASP1Ics07Contract.ClientState(nil)
+	s.Require().True(s.Run("Verify SimdA Groth16 Client", func() {
+		clientState, err := s.chainAGroth16Ics07Contract.ClientState(nil)
 		s.Require().NoError(err)
 
 		stakingParams, err := simdA.StakingQueryParams(ctx)
@@ -472,8 +472,8 @@ func (s *MultichainTestSuite) Test_Deploy() {
 		s.Require().Greater(clientState.LatestHeight.RevisionHeight, uint64(0))
 	}))
 
-	s.Require().True(s.Run("Verify SimdB SP1 Client", func() {
-		clientState, err := s.chainBSP1Ics07Contract.ClientState(nil)
+	s.Require().True(s.Run("Verify SimdB Groth16 Client", func() {
+		clientState, err := s.chainBGroth16Ics07Contract.ClientState(nil)
 		s.Require().NoError(err)
 
 		stakingParams, err := simdB.StakingQueryParams(ctx)
@@ -492,7 +492,7 @@ func (s *MultichainTestSuite) Test_Deploy() {
 	s.Require().True(s.Run("Verify ICS02 Client", func() {
 		clientAddress, err := s.ics26Contract.GetClient(nil, testvalues.FirstUniversalClientID)
 		s.Require().NoError(err)
-		s.Require().Equal(s.chainAsp1Ics07Address, clientAddress)
+		s.Require().Equal(s.chainAGroth16Ics07Address, clientAddress)
 
 		counterpartyInfo, err := s.ics26Contract.GetCounterparty(nil, testvalues.FirstUniversalClientID)
 		s.Require().NoError(err)
@@ -500,7 +500,7 @@ func (s *MultichainTestSuite) Test_Deploy() {
 
 		clientAddress, err = s.ics26Contract.GetClient(nil, testvalues.SecondUniversalClientID)
 		s.Require().NoError(err)
-		s.Require().Equal(s.chainBsp1Ics07Address, clientAddress)
+		s.Require().Equal(s.chainBGroth16Ics07Address, clientAddress)
 
 		counterpartyInfo, err = s.ics26Contract.GetCounterparty(nil, testvalues.SecondUniversalClientID)
 		s.Require().NoError(err)

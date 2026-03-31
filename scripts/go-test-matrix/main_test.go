@@ -29,7 +29,7 @@ func TestGetGitHubActionMatrixForTests(t *testing.T) {
 	expectedTests := []string{
 		"TestWithIbcEurekaTestSuite/Test_Deploy",
 		"TestWithRelayerTestSuite/Test_2_ConcurrentRecvPacketToEth",
-		"TestWithSP1ICS07TendermintTestSuite/Test_UpdateClient",
+		"TestWithGroth16ICS07TendermintTestSuite/Test_UpdateClient",
 	}
 
 	for _, expected := range expectedTests {
@@ -40,7 +40,7 @@ func TestGetGitHubActionMatrixForTests(t *testing.T) {
 func TestFilterBySuiteEntrypoint(t *testing.T) {
 	e2eDir := filepath.Clean(filepath.Join("..", "..", "e2e", "interchaintestv8"))
 
-	suiteName := "TestWithSP1ICS07TendermintTestSuite"
+	suiteName := "TestWithGroth16ICS07TendermintTestSuite"
 	matrix, err := getGitHubActionMatrixForTests(e2eDir, suiteName, nil)
 	require.NoError(t, err)
 
@@ -66,7 +66,7 @@ func TestFilterByExclusions(t *testing.T) {
 func TestJSONOutput(t *testing.T) {
 	testPairs := []testSuitePair{
 		{Test: "Test_Deploy", EntryPoint: "TestWithIbcEurekaTestSuite"},
-		{Test: "Test_UpdateClient", EntryPoint: "TestWithSP1ICS07TendermintTestSuite"},
+		{Test: "Test_UpdateClient", EntryPoint: "TestWithGroth16ICS07TendermintTestSuite"},
 	}
 
 	matrix := actionTestMatrix{Include: testPairs}

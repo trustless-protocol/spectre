@@ -33,10 +33,10 @@ import (
 
 	"github.com/cosmos/interchaintest/v10/ibc"
 
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ibcerc20"
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ics20transfer"
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ics26router"
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/sp1ics07tendermint"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ibcerc20"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ics20transfer"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/cosmos"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/e2esuite"
@@ -64,9 +64,9 @@ type IbcEurekaTestSuite struct {
 	deployer *ecdsa.PrivateKey
 
 	contractAddresses ethereum.DeployedContracts
-	sp1Ics07Address   ethcommon.Address
+	groth16Ics07Address   ethcommon.Address
 
-	sp1Ics07Contract *sp1ics07tendermint.Contract
+	groth16Ics07Contract *groth16ics07tendermint.Contract
 	ics26Contract    *ics26router.Contract
 	ics20Contract    *ics20transfer.Contract
 	erc20Contract    *erc20.Contract
@@ -143,9 +143,9 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 			beaconAPI = eth.BeaconAPIClient.GetBeaconAPIURL()
 		}
 
-		sp1Config := relayer.SP1ProverConfig{
+		groth16Config := relayer.ProverConfig{
 			Type:           prover,
-			PrivateCluster: os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueSp1Prover_PrivateCluster,
+			PrivateCluster: os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueGroth16Prover_PrivateCluster,
 		}
 
 		config := relayer.NewConfig(relayer.CreateEthCosmosModules(
@@ -156,7 +156,7 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 				ICS26Address:   s.contractAddresses.Ics26Router,
 				EthRPC:         eth.RPC,
 				BeaconAPI:      beaconAPI,
-				SP1Config:      sp1Config,
+				Groth16Config:      groth16Config,
 				SignerAddress:  s.SimdRelayerSubmitter.FormattedAddress(),
 				MockWasmClient: os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
 			}),
@@ -188,9 +188,9 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 		s.Require().NoError(err)
 	}))
 
-	s.Require().True(s.Run("Deploy SP1 ICS07 contract", func() {
+	s.Require().True(s.Run("Deploy Groth16 ICS07 contract", func() {
 		var verfierAddress string
-		if prover == testvalues.EnvValueSp1Prover_Mock {
+		if prover == testvalues.EnvValueGroth16Prover_Mock {
 			verfierAddress = s.contractAddresses.VerifierMock
 		} else {
 			switch proofType {
@@ -209,7 +209,7 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 				SrcChain: simd.Config().ChainID,
 				DstChain: eth.ChainID.String(),
 				Parameters: map[string]string{
-					testvalues.ParameterKey_Sp1Verifier: verfierAddress,
+					testvalues.ParameterKey_Groth16Verifier: verfierAddress,
 					testvalues.ParameterKey_ZkAlgorithm: proofType.String(),
 				},
 			})
@@ -225,8 +225,8 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 			s.Require().NoError(err)
 			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
 
-			s.sp1Ics07Address = receipt.ContractAddress
-			s.sp1Ics07Contract, err = sp1ics07tendermint.NewContract(s.sp1Ics07Address, eth.RPCClient)
+			s.groth16Ics07Address = receipt.ContractAddress
+			s.groth16Ics07Contract, err = groth16ics07tendermint.NewContract(s.groth16Ics07Address, eth.RPCClient)
 			s.Require().NoError(err)
 		}))
 	}))
@@ -275,7 +275,7 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 			ClientId:     testvalues.FirstWasmClientID,
 			MerklePrefix: [][]byte{[]byte(ibcexported.StoreKey), []byte("")},
 		}
-		tx, err := s.ics26Contract.AddClient(s.GetTransactOpts(s.deployer, eth), testvalues.CustomClientID, counterpartyInfo, s.sp1Ics07Address)
+		tx, err := s.ics26Contract.AddClient(s.GetTransactOpts(s.deployer, eth), testvalues.CustomClientID, counterpartyInfo, s.groth16Ics07Address)
 		s.Require().NoError(err)
 
 		receipt, err := eth.GetTxReciept(ctx, tx.Hash())
@@ -304,19 +304,19 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 			s.T().Skip("Skipping solidity fixture generation")
 		}
 
-		clientState, err := s.sp1Ics07Contract.ClientState(nil)
+		clientState, err := s.groth16Ics07Contract.ClientState(nil)
 		s.Require().NoError(err)
-		clientStateBz, err := s.sp1Ics07Contract.GetClientState(nil)
+		clientStateBz, err := s.groth16Ics07Contract.GetClientState(nil)
 		s.Require().NoError(err)
-		consensusStateHash, err := s.sp1Ics07Contract.GetConsensusStateHash(nil, clientState.LatestHeight.RevisionHeight)
+		consensusStateHash, err := s.groth16Ics07Contract.GetConsensusStateHash(nil, clientState.LatestHeight.RevisionHeight)
 		s.Require().NoError(err)
-		updateClientVkey, err := s.sp1Ics07Contract.UPDATECLIENTPROGRAMVKEY(nil)
+		updateClientVkey, err := s.groth16Ics07Contract.UPDATECLIENTPROGRAMVKEY(nil)
 		s.Require().NoError(err)
-		membershipVkey, err := s.sp1Ics07Contract.MEMBERSHIPPROGRAMVKEY(nil)
+		membershipVkey, err := s.groth16Ics07Contract.MEMBERSHIPPROGRAMVKEY(nil)
 		s.Require().NoError(err)
-		ucAndMembershipVkey, err := s.sp1Ics07Contract.UPDATECLIENTANDMEMBERSHIPPROGRAMVKEY(nil)
+		ucAndMembershipVkey, err := s.groth16Ics07Contract.UPDATECLIENTANDMEMBERSHIPPROGRAMVKEY(nil)
 		s.Require().NoError(err)
-		misbehaviourVkey, err := s.sp1Ics07Contract.MISBEHAVIOURPROGRAMVKEY(nil)
+		misbehaviourVkey, err := s.groth16Ics07Contract.MISBEHAVIOURPROGRAMVKEY(nil)
 		s.Require().NoError(err)
 
 		s.solidityFixtureGenerator.SetGenesisFixture(
@@ -338,8 +338,8 @@ func (s *IbcEurekaTestSuite) DeployTest(ctx context.Context, proofType types.Sup
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
 
-	s.Require().True(s.Run("Verify SP1 Client", func() {
-		clientState, err := s.sp1Ics07Contract.ClientState(nil)
+	s.Require().True(s.Run("Verify Groth16 Client", func() {
+		clientState, err := s.groth16Ics07Contract.ClientState(nil)
 		s.Require().NoError(err)
 
 		stakingParams, err := simd.StakingQueryParams(ctx)
@@ -358,7 +358,7 @@ func (s *IbcEurekaTestSuite) DeployTest(ctx context.Context, proofType types.Sup
 	s.Require().True(s.Run("Verify ICS02 Client", func() {
 		clientAddress, err := s.ics26Contract.GetClient(nil, testvalues.CustomClientID)
 		s.Require().NoError(err)
-		s.Require().Equal(s.sp1Ics07Address, clientAddress)
+		s.Require().Equal(s.groth16Ics07Address, clientAddress)
 
 		counterpartyInfo, err := s.ics26Contract.GetCounterparty(nil, testvalues.CustomClientID)
 		s.Require().NoError(err)

@@ -14,7 +14,7 @@ import (
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	signing "github.com/cosmos/cosmos-sdk/types/tx/signing"
 	authtx "github.com/cosmos/cosmos-sdk/x/auth/tx"
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/ics20transfer"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/ics20transfer"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/chainconfig"

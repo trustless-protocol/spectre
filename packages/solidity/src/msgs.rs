@@ -1,12 +1,12 @@
 //! This module contains all the message types used in Solidity IBC Eureka.
-//! In case some message types are not found in the `ics26` module nor the `sp1_ics07` module,
+//! In case some message types are not found in the `ics26` module nor the `groth16_ics07` module,
 //! they are defined here.
 
 use std::str::FromStr;
 
 use crate::FromStrError;
 
-use super::sp1_ics07;
+use super::groth16_ics07;
 use alloy_sol_types::SolValue;
 use ibc_client_tendermint_types::ConsensusState as ICS07TendermintConsensusState;
 use ibc_core_commitment_types::{commitment::CommitmentRoot, merkle::MerklePath};
@@ -21,15 +21,15 @@ alloy_sol_types::sol!("../../contracts/msgs/IICS20TransferMsgs.sol");
 alloy_sol_types::sol!("../../contracts/msgs/IIBCAppCallbacks.sol");
 
 alloy_sol_types::sol!("../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol");
-alloy_sol_types::sol!("../../contracts/light-clients/msgs/ISP1Msgs.sol");
+alloy_sol_types::sol!("../../contracts/light-clients/msgs/IGroth16Msgs.sol");
 alloy_sol_types::sol!("../../contracts/light-clients/msgs/IMembershipMsgs.sol");
 alloy_sol_types::sol!("../../contracts/light-clients/msgs/IMisbehaviourMsgs.sol");
 alloy_sol_types::sol!("../../contracts/light-clients/msgs/IUpdateClientMsgs.sol");
 alloy_sol_types::sol!("../../contracts/light-clients/msgs/IUcAndMembershipMsgs.sol");
 
 #[cfg(feature = "rpc")]
-impl ISP1Msgs::SP1Proof {
-    /// Create a new [`SP1Proof`] instance.
+impl IGroth16Msgs::Groth16Proof {
+    /// Create a new [`Groth16Proof`] instance.
     ///
     /// # Panics
     /// Panics if the vkey is not a valid hex string, or if the bytes cannot be decoded.
@@ -109,28 +109,28 @@ impl From<IMembershipMsgs::KVPair> for (MerklePath, Vec<u8>) {
     }
 }
 
-impl From<IMembershipMsgs::SP1MembershipProof> for IMembershipMsgs::MembershipProof {
-    fn from(proof: IMembershipMsgs::SP1MembershipProof) -> Self {
+impl From<IMembershipMsgs::Groth16MembershipProof> for IMembershipMsgs::MembershipProof {
+    fn from(proof: IMembershipMsgs::Groth16MembershipProof) -> Self {
         Self {
-            proofType: IMembershipMsgs::MembershipProofType::SP1MembershipProof,
+            proofType: IMembershipMsgs::MembershipProofType::Groth16MembershipProof,
             proof: proof.abi_encode().into(),
         }
     }
 }
 
-impl From<IMembershipMsgs::SP1MembershipAndUpdateClientProof> for IMembershipMsgs::MembershipProof {
-    fn from(proof: IMembershipMsgs::SP1MembershipAndUpdateClientProof) -> Self {
+impl From<IMembershipMsgs::Groth16MembershipAndUpdateClientProof> for IMembershipMsgs::MembershipProof {
+    fn from(proof: IMembershipMsgs::Groth16MembershipAndUpdateClientProof) -> Self {
         Self {
-            proofType: IMembershipMsgs::MembershipProofType::SP1MembershipAndUpdateClientProof,
+            proofType: IMembershipMsgs::MembershipProofType::Groth16MembershipAndUpdateClientProof,
             proof: proof.abi_encode().into(),
         }
     }
 }
 
-impl From<sp1_ics07::IICS07TendermintMsgs::TrustThreshold>
+impl From<groth16_ics07::IICS07TendermintMsgs::TrustThreshold>
     for IICS07TendermintMsgs::TrustThreshold
 {
-    fn from(trust_threshold: sp1_ics07::IICS07TendermintMsgs::TrustThreshold) -> Self {
+    fn from(trust_threshold: groth16_ics07::IICS07TendermintMsgs::TrustThreshold) -> Self {
         Self {
             numerator: trust_threshold.numerator,
             denominator: trust_threshold.denominator,
@@ -138,8 +138,8 @@ impl From<sp1_ics07::IICS07TendermintMsgs::TrustThreshold>
     }
 }
 
-impl From<sp1_ics07::IICS02ClientMsgs::Height> for IICS02ClientMsgs::Height {
-    fn from(height: sp1_ics07::IICS02ClientMsgs::Height) -> Self {
+impl From<groth16_ics07::IICS02ClientMsgs::Height> for IICS02ClientMsgs::Height {
+    fn from(height: groth16_ics07::IICS02ClientMsgs::Height) -> Self {
         Self {
             revisionNumber: height.revisionNumber,
             revisionHeight: height.revisionHeight,
@@ -192,10 +192,10 @@ impl FromStr for IICS07TendermintMsgs::SupportedZkAlgorithm {
 
 #[cfg(feature = "rpc")]
 #[allow(clippy::fallible_impl_from)]
-impl From<sp1_ics07::sp1_ics07_tendermint::clientStateReturn>
+impl From<groth16_ics07::groth16_ics07_tendermint::clientStateReturn>
     for IICS07TendermintMsgs::ClientState
 {
-    fn from(client_state: sp1_ics07::sp1_ics07_tendermint::clientStateReturn) -> Self {
+    fn from(client_state: groth16_ics07::groth16_ics07_tendermint::clientStateReturn) -> Self {
         Self {
             chainId: client_state.chainId,
             trustLevel: client_state.trustLevel.into(),

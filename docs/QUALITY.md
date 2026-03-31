@@ -11,7 +11,7 @@
 | Encoding cross-validation | `test/solidity-ibc/EncodeTest.t.sol` | `forge test --match-contract EncodeTest` |
 | Gas benchmarks | `test/solidity-ibc/BenchmarkTest.t.sol` | `just test-benchmark <name>` |
 | Shadowfork tests | `test/shadowfork/` | Requires `ETH_RPC_URL` env var |
-| SP1 light client | `test/sp1-ics07/` | `forge test --match-path test/sp1-ics07/` |
+| Groth16 light client | `test/groth16-ics07/` | `forge test --match-path test/groth16-ics07/` |
 
 Run a single test:
 ```bash
@@ -36,10 +36,10 @@ Test files: `prover/`, `client/`, `subscriber/`, `services/`, `keys/`, `utils/`
 | IBC Eureka | `ibc_eureka_test.go` | `just test-e2e-eureka` |
 | Relayer | `relayer_test.go` | `just test-e2e-relayer` |
 | Cosmos Relayer | `cosmos_relayer_test.go` | `just test-e2e-cosmos-relayer` |
-| SP1 ICS07 | `sp1_ics07_test.go` | `just test-e2e-sp1-ics07` |
+| Groth16 ICS07 | `groth16_ics07_test.go` | `just test-e2e-groth16-ics07` |
 | Multi-chain | `multichain_test.go` | `just test-e2e-multichain` |
 
-Requires: Docker Desktop, Kurtosis, compiled operator/relayer binaries, SP1 network key.
+Requires: Docker Desktop, Kurtosis, compiled operator/relayer binaries, Groth16 network key.
 
 ### Rust
 
@@ -66,7 +66,7 @@ From `foundry.toml`:
 
 ## Test Fixtures
 
-Pre-generated SP1 proofs in `test/solidity-ibc/fixtures/` and `test/sp1-ics07/fixtures/`. Regenerate with:
+Pre-generated Groth16 proofs in `test/solidity-ibc/fixtures/` and `test/groth16-ics07/fixtures/`. Regenerate with:
 ```bash
 just generate-fixtures-solidity
 ```

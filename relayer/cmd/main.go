@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	tendermintContract "relayer/bindings/SP1ICS07Tendermint"
+	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	tendermintClient "relayer/client"
 	"relayer/keys"
 	"relayer/prover"
@@ -273,7 +273,7 @@ func MembershipCmd(logger *zap.Logger) *cobra.Command {
 			}
 
 			tendermintAddr := common.HexToAddress(hexAddress)
-			ics07Tendermint, err := tendermintContract.NewContractSP1ICS07Tendermint(
+			ics07Tendermint, err := tendermintContract.NewContractGroth16ICS07Tendermint(
 				tendermintAddr,
 				ethClient,
 			)

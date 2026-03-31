@@ -8,17 +8,17 @@ import "forge-std/console.sol";
 import { stdJson } from "forge-std/StdJson.sol";
 import { MembershipTest } from "./MembershipTest.sol";
 
-contract SP1ICS07UpdateClientAndMembershipTest is MembershipTest {
+contract Groth16ICS07UpdateClientAndMembershipTest is MembershipTest {
     using stdJson for string;
 
-    SP1MembershipAndUpdateClientProof public proof;
+    Groth16MembershipAndUpdateClientProof public proof;
 
     function setUpUcAndMemTestWithFixtures(string memory fileName) public {
         setUpTestWithFixtures(fileName);
 
-        proof = abi.decode(fixture.membershipProof.proof, (SP1MembershipAndUpdateClientProof));
+        proof = abi.decode(fixture.membershipProof.proof, (Groth16MembershipAndUpdateClientProof));
 
-        UcAndMembershipOutput memory output = abi.decode(proof.sp1Proof.publicValues, (UcAndMembershipOutput));
+        UcAndMembershipOutput memory output = abi.decode(proof.groth16Proof.publicValues, (UcAndMembershipOutput));
 
         ClientState memory clientState = abi.decode(mockIcs07Tendermint.getClientState(), (ClientState));
         assert(clientState.latestHeight.revisionHeight < output.updateClientOutput.newHeight.revisionHeight);
@@ -39,7 +39,7 @@ contract SP1ICS07UpdateClientAndMembershipTest is MembershipTest {
         for (uint256 i = 0; i < testCases.length; ++i) {
             setUpUcAndMemTestWithFixtures(testCases[i].fileName);
 
-            UcAndMembershipOutput memory output = abi.decode(proof.sp1Proof.publicValues, (UcAndMembershipOutput));
+            UcAndMembershipOutput memory output = abi.decode(proof.groth16Proof.publicValues, (UcAndMembershipOutput));
             // set a correct timestamp
             vm.warp(_nanosToSeconds(output.updateClientOutput.time) + 300);
 
@@ -74,7 +74,7 @@ contract SP1ICS07UpdateClientAndMembershipTest is MembershipTest {
         for (uint256 i = 0; i < testCases.length; ++i) {
             setUpUcAndMemTestWithFixtures(testCases[i].fileName);
 
-            UcAndMembershipOutput memory output = abi.decode(proof.sp1Proof.publicValues, (UcAndMembershipOutput));
+            UcAndMembershipOutput memory output = abi.decode(proof.groth16Proof.publicValues, (UcAndMembershipOutput));
             // set a correct timestamp
             vm.warp(_nanosToSeconds(output.updateClientOutput.time) + 300);
 
@@ -106,7 +106,7 @@ contract SP1ICS07UpdateClientAndMembershipTest is MembershipTest {
         // It doesn't matter which fixture we use since this is a cached proof
         setUpUcAndMemTestWithFixtures("uc_and_memberships_fixture-groth16.json");
 
-        UcAndMembershipOutput memory output = abi.decode(proof.sp1Proof.publicValues, (UcAndMembershipOutput));
+        UcAndMembershipOutput memory output = abi.decode(proof.groth16Proof.publicValues, (UcAndMembershipOutput));
         // set a correct timestamp
         vm.warp(_nanosToSeconds(output.updateClientOutput.time) + 300);
 
@@ -156,12 +156,12 @@ contract SP1ICS07UpdateClientAndMembershipTest is MembershipTest {
         // It doesn't matter which fixture we use since this is an invalid proof
         setUpUcAndMemTestWithFixtures("uc_and_memberships_fixture-groth16.json");
 
-        UcAndMembershipOutput memory output = abi.decode(proof.sp1Proof.publicValues, (UcAndMembershipOutput));
+        UcAndMembershipOutput memory output = abi.decode(proof.groth16Proof.publicValues, (UcAndMembershipOutput));
         // set a correct timestamp
         vm.warp(_nanosToSeconds(output.updateClientOutput.time) + 300);
 
-        SP1MembershipAndUpdateClientProof memory ucAndMemProof = proof;
-        ucAndMemProof.sp1Proof.proof = bytes("invalid");
+        Groth16MembershipAndUpdateClientProof memory ucAndMemProof = proof;
+        ucAndMemProof.groth16Proof.proof = bytes("invalid");
 
         MembershipProof memory nonMembershipProof = MembershipProof({
             proofType: MembershipType.MembershipAndUpdateClient,
@@ -182,12 +182,12 @@ contract SP1ICS07UpdateClientAndMembershipTest is MembershipTest {
         // It doesn't matter which fixture we use since this is a mock contract
         setUpUcAndMemTestWithFixtures("uc_and_memberships_fixture-groth16.json");
 
-        UcAndMembershipOutput memory output = abi.decode(proof.sp1Proof.publicValues, (UcAndMembershipOutput));
+        UcAndMembershipOutput memory output = abi.decode(proof.groth16Proof.publicValues, (UcAndMembershipOutput));
         // set a correct timestamp
         vm.warp(_nanosToSeconds(output.updateClientOutput.time) + 300);
 
-        SP1MembershipAndUpdateClientProof memory ucAndMemProof = proof;
-        ucAndMemProof.sp1Proof.proof = bytes("");
+        Groth16MembershipAndUpdateClientProof memory ucAndMemProof = proof;
+        ucAndMemProof.groth16Proof.proof = bytes("");
 
         MembershipProof memory nonMembershipProof = MembershipProof({
             proofType: MembershipType.MembershipAndUpdateClient,
@@ -205,7 +205,7 @@ contract SP1ICS07UpdateClientAndMembershipTest is MembershipTest {
         // change output so that it is a misbehaviour
         output.updateClientOutput.newConsensusState.timestamp = output.updateClientOutput.time + 1;
         // re-encode output
-        ucAndMemProof.sp1Proof.publicValues = abi.encode(output);
+        ucAndMemProof.groth16Proof.publicValues = abi.encode(output);
 
         nonMembershipProof.proof = abi.encode(ucAndMemProof);
         // nonMembershipMsg.proof = abi.encode(nonMembershipProof);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.28;
 
-import { ISP1Msgs } from "./ISP1Msgs.sol";
+import { IGroth16Msgs } from "./IGroth16Msgs.sol";
 import { IICS07TendermintMsgs } from "./IICS07TendermintMsgs.sol";
 import { IICS02ClientMsgs } from "../../msgs/IICS02ClientMsgs.sol";
 
@@ -27,7 +27,7 @@ interface IUpdateClientMsgs {
         uint256[2] commitmentPok;
     }
 
-    /// @notice The public value output for the sp1 update client program.
+    /// @notice The public value output for the gnark update client program.
     /// @param clientState The client state that was used to verify the header.
     /// @param trustedConsensusState The trusted consensus state.
     /// @param newConsensusState The new consensus state with the verified header.

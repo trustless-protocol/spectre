@@ -19,7 +19,7 @@ import (
 
 	tmclient "github.com/cosmos/ibc-go/v10/modules/light-clients/07-tendermint"
 
-	"github.com/cosmos/solidity-ibc-eureka/packages/go-abigen/sp1ics07tendermint"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/testvalues"
 )
@@ -53,9 +53,9 @@ func binaryPath() string {
 }
 
 // MembershipProof is a function that generates a membership proof and returns the proof height and proof
-func MembershipProof(trusted_height uint64, paths string, writeFixtureName string, args ...string) (*sp1ics07tendermint.IICS02ClientMsgsHeight, []byte, error) {
+func MembershipProof(trusted_height uint64, paths string, writeFixtureName string, args ...string) (*groth16ics07tendermint.IICS02ClientMsgsHeight, []byte, error) {
 	args = append([]string{"fixtures", "membership", "--trusted-block", strconv.FormatUint(trusted_height, 10), "--key-paths", paths}, args...)
-	isPrivateCluster := os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueSp1Prover_PrivateCluster
+	isPrivateCluster := os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueGroth16Prover_PrivateCluster
 	if isPrivateCluster {
 		args = append(args, "--private-cluster")
 	}
@@ -74,7 +74,7 @@ func MembershipProof(trusted_height uint64, paths string, writeFixtureName strin
 	output = output[jsonStartIdx:]
 
 	if writeFixtureName != "" {
-		fixtureFileName := fmt.Sprintf("%s/%s_fixture.json", testvalues.SP1ICS07FixturesDir, writeFixtureName)
+		fixtureFileName := fmt.Sprintf("%s/%s_fixture.json", testvalues.Groth16ICS07FixturesDir, writeFixtureName)
 		if err := os.WriteFile(fixtureFileName, output, 0o600); err != nil {
 			return nil, nil, err
 		}
@@ -109,7 +109,7 @@ func MembershipProof(trusted_height uint64, paths string, writeFixtureName strin
 		return nil, nil, err
 	}
 
-	height := abi.ConvertType(heightI[0], new(sp1ics07tendermint.IICS02ClientMsgsHeight)).(*sp1ics07tendermint.IICS02ClientMsgsHeight)
+	height := abi.ConvertType(heightI[0], new(groth16ics07tendermint.IICS02ClientMsgsHeight)).(*groth16ics07tendermint.IICS02ClientMsgsHeight)
 
 	if height.RevisionHeight != trusted_height {
 		return nil, nil, errors.New("heights do not match")
@@ -124,9 +124,9 @@ func MembershipProof(trusted_height uint64, paths string, writeFixtureName strin
 }
 
 // UpdateClientAndMembershipProof is a function that generates an update client and membership proof
-func UpdateClientAndMembershipProof(trusted_height, target_height uint64, paths string, args ...string) (*sp1ics07tendermint.IICS02ClientMsgsHeight, []byte, error) {
+func UpdateClientAndMembershipProof(trusted_height, target_height uint64, paths string, args ...string) (*groth16ics07tendermint.IICS02ClientMsgsHeight, []byte, error) {
 	args = append([]string{"fixtures", "update-client-and-membership", "--trusted-block", strconv.FormatUint(trusted_height, 10), "--target-block", strconv.FormatUint(target_height, 10), "--key-paths", paths}, args...)
-	isPrivateCluster := os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueSp1Prover_PrivateCluster
+	isPrivateCluster := os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueGroth16Prover_PrivateCluster
 	if isPrivateCluster {
 		args = append(args, "--private-cluster")
 	}
@@ -172,7 +172,7 @@ func UpdateClientAndMembershipProof(trusted_height, target_height uint64, paths 
 		return nil, nil, err
 	}
 
-	height := abi.ConvertType(heightI[0], new(sp1ics07tendermint.IICS02ClientMsgsHeight)).(*sp1ics07tendermint.IICS02ClientMsgsHeight)
+	height := abi.ConvertType(heightI[0], new(groth16ics07tendermint.IICS02ClientMsgsHeight)).(*groth16ics07tendermint.IICS02ClientMsgsHeight)
 
 	if height.RevisionHeight != target_height {
 		return nil, nil, errors.New("heights do not match")
@@ -201,7 +201,7 @@ func MisbehaviourProof(cdc codec.Codec, misbehaviour tmclient.Misbehaviour, writ
 	defer os.Remove(misbehaviourFileName)
 
 	args = append([]string{"fixtures", "misbehaviour", "--misbehaviour-json-path", misbehaviourFileName}, args...)
-	isPrivateCluster := os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueSp1Prover_PrivateCluster
+	isPrivateCluster := os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueGroth16Prover_PrivateCluster
 	if isPrivateCluster {
 		args = append(args, "--private-cluster")
 	}
@@ -224,7 +224,7 @@ func MisbehaviourProof(cdc codec.Codec, misbehaviour tmclient.Misbehaviour, writ
 	}
 
 	if writeFixtureName != "" {
-		fixtureFileName := fmt.Sprintf("%s/misbehaviour_%s_fixture.json", testvalues.SP1ICS07FixturesDir, writeFixtureName)
+		fixtureFileName := fmt.Sprintf("%s/misbehaviour_%s_fixture.json", testvalues.Groth16ICS07FixturesDir, writeFixtureName)
 		if err := os.WriteFile(fixtureFileName, output, 0o600); err != nil {
 			return nil, err
 		}

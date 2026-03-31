@@ -8,17 +8,17 @@ import "forge-std/console.sol";
 import { MembershipTest } from "./MembershipTest.sol";
 import { ILightClient } from "../../contracts/interfaces/ILightClient.sol";
 
-contract SP1ICS07LargeMembershipTest is MembershipTest {
-    SP1MembershipProof public proof;
+contract Groth16ICS07LargeMembershipTest is MembershipTest {
+    Groth16MembershipProof public proof;
 
     function setUpLargeMembershipTestWithFixture(string memory fileName) public {
         setUpTestWithFixtures(fileName);
 
-        proof = abi.decode(fixture.membershipProof.proof, (SP1MembershipProof));
+        proof = abi.decode(fixture.membershipProof.proof, (Groth16MembershipProof));
     }
 
     function getOutput() public view returns (MembershipOutput memory) {
-        return abi.decode(proof.sp1Proof.publicValues, (MembershipOutput));
+        return abi.decode(proof.groth16Proof.publicValues, (MembershipOutput));
     }
 
     function test_ValidLargeCachedVerifyMembership_25_plonk() public {

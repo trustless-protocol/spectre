@@ -46,7 +46,7 @@ func main() {
 	if len(os.Args) > 1 {
 		binDir = os.Args[1]
 	}
-	outPath := "test/sp1-ics07/fixtures/groth16_fixture.json"
+	outPath := "test/groth16-ics07/fixtures/groth16_fixture.json"
 	if len(os.Args) > 2 {
 		outPath = os.Args[2]
 	}

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.28;
 
-import { ISP1Msgs } from "./ISP1Msgs.sol";
+import { IGroth16Msgs } from "./IGroth16Msgs.sol";
 import { IICS07TendermintMsgs } from "./IICS07TendermintMsgs.sol";
 
 /// @title Membership Program Messages
@@ -17,7 +17,7 @@ interface IMembershipMsgs {
         bytes32 value;
     }
 
-    /// @notice The public value output for the sp1 verify (non)membership program.
+    /// @notice The public value output for the groth16 verify (non)membership program.
     /// @param commitmentRoot The app hash of the header.
     /// @param kvPairs The key-value pairs verified by the program.
     struct MembershipOutput {
@@ -25,7 +25,7 @@ interface IMembershipMsgs {
         KVPair[] kvPairs;
     }
 
-    /// @notice The membership proof that can be submitted to the SP1Verifier contract.
+    /// @notice The membership proof that can be submitted to the Groth16Verifier contract.
     /// @param proofType The type of the membership proof.
     /// @param proof The membership proof.
     struct MembershipProof {
@@ -33,18 +33,18 @@ interface IMembershipMsgs {
         bytes proof;
     }
 
-    /// @notice The membership proof for the sp1 verify (non)membership program.
-    /// @param sp1Proof The sp1 proof for the membership program.
+    /// @notice The membership proof for the groth16 verify (non)membership program.
+    /// @param groth16Proof The groth16 proof for the membership program.
     /// @param trustedConsensusState The trusted consensus state that the proof is based on.
-    struct SP1MembershipProof {
-        ISP1Msgs.SP1Proof sp1Proof;
+    struct Groth16MembershipProof {
+        IGroth16Msgs.Groth16Proof groth16Proof;
         IICS07TendermintMsgs.ConsensusState trustedConsensusState;
     }
 
-    /// @notice The membership proof for the sp1 verify (non)membership and update client program.
-    /// @param sp1Proof The sp1 proof for the membership and update client program.
-    struct SP1MembershipAndUpdateClientProof {
-        ISP1Msgs.SP1Proof sp1Proof;
+    /// @notice The membership proof for the groth16 verify (non)membership and update client program.
+    /// @param groth16Proof The groth16 proof for the membership and update client program.
+    struct Groth16MembershipAndUpdateClientProof {
+        IGroth16Msgs.Groth16Proof groth16Proof;
     }
 
     /// @notice The type of the membership proof.

@@ -3,21 +3,21 @@ pragma solidity ^0.8.28;
 
 // solhint-disable-next-line no-global-import
 import "forge-std/console.sol";
-import { SP1ICS07TendermintTest } from "./SP1ICS07TendermintTest.sol";
+import { Groth16ICS07TendermintTest } from "./Groth16ICS07TendermintTest.sol";
 import { IMisbehaviourMsgs } from "../../contracts/light-clients/msgs/IMisbehaviourMsgs.sol";
-import { SP1Verifier } from "@sp1-contracts/v5.0.0/SP1VerifierPlonk.sol";
+import { Groth16Verifier } from "@groth16-contracts/v5.0.0/PlonkVerifier.sol";
 import { stdJson } from "forge-std/StdJson.sol";
 
-struct SP1ICS07MisbehaviourFixtureJson {
+struct Groth16ICS07MisbehaviourFixtureJson {
     bytes trustedClientState;
     bytes trustedConsensusState;
     bytes submitMsg;
 }
 
-contract SP1ICS07MisbehaviourTest is SP1ICS07TendermintTest, IMisbehaviourMsgs {
+contract Groth16ICS07MisbehaviourTest is Groth16ICS07TendermintTest, IMisbehaviourMsgs {
     using stdJson for string;
 
-    SP1ICS07MisbehaviourFixtureJson public fixture;
+    Groth16ICS07MisbehaviourFixtureJson public fixture;
     MsgSubmitMisbehaviour public submitMsg;
     MisbehaviourOutput public output;
 
@@ -29,7 +29,7 @@ contract SP1ICS07MisbehaviourTest is SP1ICS07TendermintTest, IMisbehaviourMsgs {
         bytes memory trustedConsensusStateBz = json.readBytes(".trustedConsensusState");
         bytes memory submitMsgBz = json.readBytes(".submitMsg");
 
-        fixture = SP1ICS07MisbehaviourFixtureJson({
+        fixture = Groth16ICS07MisbehaviourFixtureJson({
             trustedClientState: trustedClientStateBz,
             trustedConsensusState: trustedConsensusStateBz,
             submitMsg: submitMsgBz
@@ -38,7 +38,7 @@ contract SP1ICS07MisbehaviourTest is SP1ICS07TendermintTest, IMisbehaviourMsgs {
         setUpTest(fileName, address(0));
 
         submitMsg = abi.decode(fixture.submitMsg, (IMisbehaviourMsgs.MsgSubmitMisbehaviour));
-        // output = abi.decode(submitMsg.sp1Proof.publicValues, (IMisbehaviourMsgs.MisbehaviourOutput));
+        // output = abi.decode(submitMsg.groth16Proof.publicValues, (IMisbehaviourMsgs.MisbehaviourOutput));
     }
 
     function test_ValidDoubleSignMisbehaviour() public {
@@ -116,7 +116,7 @@ contract SP1ICS07MisbehaviourTest is SP1ICS07TendermintTest, IMisbehaviourMsgs {
         ics07Tendermint.misbehaviour(fixture.submitMsg);
 
         // proof is too old
-        // vm.warp(output.time + ics07Tendermint.ALLOWED_SP1_CLOCK_DRIFT() + 300);
+        // vm.warp(output.time + ics07Tendermint.ALLOWED_CLOCK_DRIFT() + 300);
         // vm.expectRevert(abi.encodeWithSelector(ProofIsTooOld.selector, block.timestamp, _nanosToSeconds(output.time)));
         ics07Tendermint.misbehaviour(fixture.submitMsg);
 
@@ -125,13 +125,13 @@ contract SP1ICS07MisbehaviourTest is SP1ICS07TendermintTest, IMisbehaviourMsgs {
 
         // wrong vkey
         // MsgSubmitMisbehaviour memory badSubmitMsg = cloneSubmitMsg();
-        // badSubmitMsg.sp1Proof.vKey = bytes32(0);
+        // badSubmitMsg.groth16Proof.vKey = bytes32(0);
         // bytes memory submitMsgBz = abi.encode(badSubmitMsg);
         vm.expectRevert(
             abi.encodeWithSelector(
                 VerificationKeyMismatch.selector
                 // ics07Tendermint.MISBEHAVIOUR_PROGRAM_VKEY(),
-                // badSubmitMsg.sp1Proof.vKey
+                // badSubmitMsg.groth16Proof.vKey
             )
         );
         // ics07Tendermint.misbehaviour(submitMsgBz);
@@ -140,7 +140,7 @@ contract SP1ICS07MisbehaviourTest is SP1ICS07TendermintTest, IMisbehaviourMsgs {
         // badSubmitMsg = cloneSubmitMsg();
         // MisbehaviourOutput memory badOutput = cloneOutput();
         // badOutput.clientState.chainId = "bad-chain-id";
-        // badSubmitMsg.sp1Proof.publicValues = abi.encode(badOutput);
+        // badSubmitMsg.groth16Proof.publicValues = abi.encode(badOutput);
         // submitMsgBz = abi.encode(badSubmitMsg);
         // vm.expectRevert(
         //     abi.encodeWithSelector(ChainIdMismatch.selector, output.clientState.chainId, badOutput.clientState.chainId)
@@ -151,7 +151,7 @@ contract SP1ICS07MisbehaviourTest is SP1ICS07TendermintTest, IMisbehaviourMsgs {
         // badSubmitMsg = cloneSubmitMsg();
         // badOutput = cloneOutput();
         // badOutput.clientState.trustLevel = TrustThreshold({ numerator: 1, denominator: 2 });
-        // badSubmitMsg.sp1Proof.publicValues = abi.encode(badOutput);
+        // badSubmitMsg.groth16Proof.publicValues = abi.encode(badOutput);
         // submitMsgBz = abi.encode(badSubmitMsg);
         // vm.expectRevert(
         //     abi.encodeWithSelector(
@@ -168,7 +168,7 @@ contract SP1ICS07MisbehaviourTest is SP1ICS07TendermintTest, IMisbehaviourMsgs {
         // badSubmitMsg = cloneSubmitMsg();
         // badOutput = cloneOutput();
         // badOutput.clientState.trustingPeriod = 1;
-        // badSubmitMsg.sp1Proof.publicValues = abi.encode(badOutput);
+        // badSubmitMsg.groth16Proof.publicValues = abi.encode(badOutput);
         // submitMsgBz = abi.encode(badSubmitMsg);
         // vm.expectRevert(
         //     abi.encodeWithSelector(
@@ -181,9 +181,9 @@ contract SP1ICS07MisbehaviourTest is SP1ICS07TendermintTest, IMisbehaviourMsgs {
         // badSubmitMsg = cloneSubmitMsg();
         // badOutput = cloneOutput();
         // badOutput.time = badOutput.time + 1;
-        // badSubmitMsg.sp1Proof.publicValues = abi.encode(badOutput);
+        // badSubmitMsg.groth16Proof.publicValues = abi.encode(badOutput);
         // submitMsgBz = abi.encode(badSubmitMsg);
-        vm.expectRevert(abi.encodeWithSelector(SP1Verifier.InvalidProof.selector));
+        vm.expectRevert(abi.encodeWithSelector(Groth16Verifier.InvalidProof.selector));
         // ics07Tendermint.misbehaviour(submitMsgBz);
 
         // client state is frozen
@@ -194,10 +194,10 @@ contract SP1ICS07MisbehaviourTest is SP1ICS07TendermintTest, IMisbehaviourMsgs {
 
     // function cloneSubmitMsg() private view returns (MsgSubmitMisbehaviour memory) {
     //     MsgSubmitMisbehaviour memory clone = MsgSubmitMisbehaviour({
-    //         sp1Proof: SP1Proof({
-    //             vKey: submitMsg.sp1Proof.vKey,
-    //             publicValues: submitMsg.sp1Proof.publicValues,
-    //             proof: submitMsg.sp1Proof.proof
+    //         groth16Proof: Groth16Proof({
+    //             vKey: submitMsg.groth16Proof.vKey,
+    //             publicValues: submitMsg.groth16Proof.publicValues,
+    //             proof: submitMsg.groth16Proof.proof
     //         })
     //     });
     //     return clone;

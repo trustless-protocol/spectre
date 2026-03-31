@@ -13,7 +13,7 @@ import (
 
 	contractICS26Router "relayer/bindings/ICS26Router"
 	routerContract "relayer/bindings/ICS26Router"
-	tendermintContract "relayer/bindings/SP1ICS07Tendermint"
+	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	updateclient "relayer/bindings/UpdateClient"
 	relayerclient "relayer/client"
 	services "relayer/services"
@@ -84,7 +84,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	auth.GasLimit = uint64(10000000) // in units
 	auth.GasPrice = gasPrice
 
-	address, tx, _, err := tendermintContract.DeployContractSP1ICS07Tendermint(
+	address, tx, _, err := tendermintContract.DeployContractGroth16ICS07Tendermint(
 		auth,
 		ctx.EthClient(),
 		*ctx.VerifierContract(),
@@ -111,7 +111,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	ctx.SetClient(address)
 
 	// Grant PROOF_SUBMITTER_ROLE to ICS26Router so it can call verifyMembership
-	ics07Instance, err := tendermintContract.NewContractSP1ICS07Tendermint(address, ctx.EthClient())
+	ics07Instance, err := tendermintContract.NewContractGroth16ICS07Tendermint(address, ctx.EthClient())
 	if err != nil {
 		return fmt.Errorf("failed to instantiate ICS07 contract: %w", err)
 	}
@@ -212,7 +212,7 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	auth.GasLimit = uint64(3000000) // in units
 	auth.GasPrice = gasPrice
 
-	ics07Tendermint, err := tendermintContract.NewContractSP1ICS07Tendermint(
+	ics07Tendermint, err := tendermintContract.NewContractGroth16ICS07Tendermint(
 		*ctx.ClientContract(),
 		ctx.EthClient(),
 	)

@@ -7,13 +7,13 @@ pragma solidity ^0.8.28;
 import "forge-std/console.sol";
 import { MembershipTest } from "./MembershipTest.sol";
 
-contract SP1ICS07MembershipTest is MembershipTest {
-    SP1MembershipProof public proof;
+contract Groth16ICS07MembershipTest is MembershipTest {
+    Groth16MembershipProof public proof;
 
     function setUpMembershipTestWithFixture(string memory fileName) public {
         setUpTestWithFixtures(fileName);
 
-        proof = abi.decode(fixture.membershipProof.proof, (SP1MembershipProof));
+        proof = abi.decode(fixture.membershipProof.proof, (Groth16MembershipProof));
     }
 
     function fixtureTestCases() public pure returns (FixtureTestCase[] memory) {
@@ -31,7 +31,7 @@ contract SP1ICS07MembershipTest is MembershipTest {
             FixtureTestCase memory tc = testCases[i];
             setUpMembershipTestWithFixture(tc.fileName);
 
-            MembershipOutput memory output = abi.decode(proof.sp1Proof.publicValues, (MembershipOutput));
+            MembershipOutput memory output = abi.decode(proof.groth16Proof.publicValues, (MembershipOutput));
 
             assertEq(output.kvPairs.length, 2);
             assertEq(output.kvPairs[0].path, verifyMembershipPath);
@@ -137,8 +137,8 @@ contract SP1ICS07MembershipTest is MembershipTest {
             FixtureTestCase memory tc = testCases[i];
             setUpMembershipTestWithFixture(tc.fileName);
 
-            SP1MembershipProof memory proofMsg = proof;
-            proofMsg.sp1Proof.proof = bytes("invalid");
+            Groth16MembershipProof memory proofMsg = proof;
+            proofMsg.groth16Proof.proof = bytes("invalid");
 
             MembershipProof memory membershipProof =
                 MembershipProof({ proofType: MembershipType.Membership, proof: abi.encode(proofMsg) });
@@ -162,7 +162,7 @@ contract SP1ICS07MembershipTest is MembershipTest {
         MockInvalidMembershipTestCase[] memory testCases = new MockInvalidMembershipTestCase[](10);
         testCases[0] = MockInvalidMembershipTestCase({
             name: "success: valid mock",
-            sp1Proof: SP1Proof({ proof: bytes(""), publicValues: proof.sp1Proof.publicValues, vKey: proof.sp1Proof.vKey }),
+            groth16Proof: Groth16Proof({ proof: bytes(""), publicValues: proof.groth16Proof.publicValues, vKey: proof.groth16Proof.vKey }),
             proofHeight: fixture.proofHeight.revisionHeight,
             path: verifyNonMembershipPath,
             value: bytes(""),
@@ -170,10 +170,10 @@ contract SP1ICS07MembershipTest is MembershipTest {
         });
         testCases[1] = MockInvalidMembershipTestCase({
             name: "Invalid proof",
-            sp1Proof: SP1Proof({
+            groth16Proof: Groth16Proof({
                 proof: bytes("invalid"),
-                publicValues: proof.sp1Proof.publicValues,
-                vKey: proof.sp1Proof.vKey
+                publicValues: proof.groth16Proof.publicValues,
+                vKey: proof.groth16Proof.vKey
             }),
             proofHeight: fixture.proofHeight.revisionHeight,
             path: verifyNonMembershipPath,
@@ -182,7 +182,7 @@ contract SP1ICS07MembershipTest is MembershipTest {
         });
         testCases[2] = MockInvalidMembershipTestCase({
             name: "Invalid proof height",
-            sp1Proof: SP1Proof({ proof: bytes(""), publicValues: proof.sp1Proof.publicValues, vKey: proof.sp1Proof.vKey }),
+            groth16Proof: Groth16Proof({ proof: bytes(""), publicValues: proof.groth16Proof.publicValues, vKey: proof.groth16Proof.vKey }),
             proofHeight: fixture.proofHeight.revisionHeight + 1,
             path: verifyNonMembershipPath,
             value: bytes(""),
@@ -190,7 +190,7 @@ contract SP1ICS07MembershipTest is MembershipTest {
         });
         testCases[3] = MockInvalidMembershipTestCase({
             name: "Empty path",
-            sp1Proof: SP1Proof({ proof: bytes(""), publicValues: proof.sp1Proof.publicValues, vKey: proof.sp1Proof.vKey }),
+            groth16Proof: Groth16Proof({ proof: bytes(""), publicValues: proof.groth16Proof.publicValues, vKey: proof.groth16Proof.vKey }),
             proofHeight: fixture.proofHeight.revisionHeight,
             path: new bytes[](0),
             value: bytes(""),
@@ -198,7 +198,7 @@ contract SP1ICS07MembershipTest is MembershipTest {
         });
         testCases[4] = MockInvalidMembershipTestCase({
             name: "Invalid prefix",
-            sp1Proof: SP1Proof({ proof: bytes(""), publicValues: proof.sp1Proof.publicValues, vKey: proof.sp1Proof.vKey }),
+            groth16Proof: Groth16Proof({ proof: bytes(""), publicValues: proof.groth16Proof.publicValues, vKey: proof.groth16Proof.vKey }),
             proofHeight: fixture.proofHeight.revisionHeight,
             path: verifyNonMembershipPath,
             value: bytes(""),
@@ -207,7 +207,7 @@ contract SP1ICS07MembershipTest is MembershipTest {
         testCases[4].path[0] = bytes("abc");
         testCases[5] = MockInvalidMembershipTestCase({
             name: "Invalid prefix, same length",
-            sp1Proof: SP1Proof({ proof: bytes(""), publicValues: proof.sp1Proof.publicValues, vKey: proof.sp1Proof.vKey }),
+            groth16Proof: Groth16Proof({ proof: bytes(""), publicValues: proof.groth16Proof.publicValues, vKey: proof.groth16Proof.vKey }),
             proofHeight: fixture.proofHeight.revisionHeight,
             path: verifyNonMembershipPath,
             value: bytes(""),
@@ -216,7 +216,7 @@ contract SP1ICS07MembershipTest is MembershipTest {
         testCases[5].path[0] = bytes("invalid");
         testCases[6] = MockInvalidMembershipTestCase({
             name: "Invalid suffix",
-            sp1Proof: SP1Proof({ proof: bytes(""), publicValues: proof.sp1Proof.publicValues, vKey: proof.sp1Proof.vKey }),
+            groth16Proof: Groth16Proof({ proof: bytes(""), publicValues: proof.groth16Proof.publicValues, vKey: proof.groth16Proof.vKey }),
             proofHeight: fixture.proofHeight.revisionHeight,
             path: verifyNonMembershipPath,
             value: bytes(""),
@@ -225,7 +225,7 @@ contract SP1ICS07MembershipTest is MembershipTest {
         testCases[6].path[1] = bytes("invalid");
         testCases[7] = MockInvalidMembershipTestCase({
             name: "Invalid value",
-            sp1Proof: SP1Proof({ proof: bytes(""), publicValues: proof.sp1Proof.publicValues, vKey: proof.sp1Proof.vKey }),
+            groth16Proof: Groth16Proof({ proof: bytes(""), publicValues: proof.groth16Proof.publicValues, vKey: proof.groth16Proof.vKey }),
             proofHeight: fixture.proofHeight.revisionHeight,
             path: verifyNonMembershipPath,
             value: bytes("invalid"),
@@ -233,9 +233,9 @@ contract SP1ICS07MembershipTest is MembershipTest {
         });
         testCases[8] = MockInvalidMembershipTestCase({
             name: "Invalid vKey",
-            sp1Proof: SP1Proof({
+            groth16Proof: Groth16Proof({
                 proof: bytes(""),
-                publicValues: proof.sp1Proof.publicValues,
+                publicValues: proof.groth16Proof.publicValues,
                 vKey: genesisFixture.ucAndMembershipVkey
             }),
             proofHeight: fixture.proofHeight.revisionHeight,
@@ -245,7 +245,7 @@ contract SP1ICS07MembershipTest is MembershipTest {
         });
         testCases[9] = MockInvalidMembershipTestCase({
             name: "Invalid public values",
-            sp1Proof: SP1Proof({ proof: bytes(""), publicValues: bytes("invalid"), vKey: proof.sp1Proof.vKey }),
+            groth16Proof: Groth16Proof({ proof: bytes(""), publicValues: bytes("invalid"), vKey: proof.groth16Proof.vKey }),
             proofHeight: fixture.proofHeight.revisionHeight,
             path: verifyNonMembershipPath,
             value: bytes(""),
@@ -255,8 +255,8 @@ contract SP1ICS07MembershipTest is MembershipTest {
         for (uint256 i = 0; i < testCases.length; ++i) {
             MockInvalidMembershipTestCase memory tc = testCases[i];
 
-            SP1MembershipProof memory proofMsg = proof;
-            proofMsg.sp1Proof = tc.sp1Proof;
+            Groth16MembershipProof memory proofMsg = proof;
+            proofMsg.groth16Proof = tc.groth16Proof;
 
             MembershipProof memory membershipProof =
                 MembershipProof({ proofType: MembershipType.Membership, proof: abi.encode(proofMsg) });
@@ -307,7 +307,7 @@ contract SP1ICS07MembershipTest is MembershipTest {
     // solhint-disable-next-line gas-struct-packing
     struct MockInvalidMembershipTestCase {
         string name;
-        SP1Proof sp1Proof;
+        Groth16Proof groth16Proof;
         uint64 proofHeight;
         bytes[] path;
         bytes value;

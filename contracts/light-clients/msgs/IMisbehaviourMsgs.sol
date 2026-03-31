@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.28;
 
-import { ISP1Msgs } from "./ISP1Msgs.sol";
+import { IGroth16Msgs } from "./IGroth16Msgs.sol";
 import { IICS07TendermintMsgs } from "./IICS07TendermintMsgs.sol";
 import { IICS02ClientMsgs } from "../../msgs/IICS02ClientMsgs.sol";
 
@@ -17,7 +17,7 @@ interface IMisbehaviourMsgs {
         uint128 time;
     }
 
-    /// @notice The public value output for the sp1 misbehaviour program.
+    /// @notice The public value output for the gnark misbehaviour program.
     /// @param clientState The client state that was used to verify the misbehaviour.
     /// @param time The time which the misbehaviour was verified in unix nanoseconds.
     /// @param trustedHeight1 The trusted height of header 1
