@@ -13,13 +13,13 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version-file: operator/go.mod
+          go-version-file: relayer/go.mod
           cache: true
 
       - name: Build
-        working-directory: operator
+        working-directory: relayer
         run: go build ./...
 
       - name: Test
-        working-directory: operator
+        working-directory: relayer
         run: go test ./...

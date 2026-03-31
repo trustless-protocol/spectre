@@ -4,7 +4,7 @@ import (
 	"math/big"
 	"testing"
 
-	updateClientContract "operator/bindings/UpdateClient"
+	updateClientContract "relayer/bindings/UpdateClient"
 
 	ics23 "github.com/cosmos/ics23/go"
 )

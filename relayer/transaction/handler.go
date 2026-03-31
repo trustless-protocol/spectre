@@ -6,18 +6,18 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"operator/keys"
+	"relayer/keys"
 	"os"
 	"strings"
 	"time"
 
-	contractICS26Router "operator/bindings/ICS26Router"
-	routerContract "operator/bindings/ICS26Router"
-	tendermintContract "operator/bindings/SP1ICS07Tendermint"
-	updateclient "operator/bindings/UpdateClient"
-	operatorclient "operator/client"
-	services "operator/services"
-	utils "operator/utils"
+	contractICS26Router "relayer/bindings/ICS26Router"
+	routerContract "relayer/bindings/ICS26Router"
+	tendermintContract "relayer/bindings/SP1ICS07Tendermint"
+	updateclient "relayer/bindings/UpdateClient"
+	relayerclient "relayer/client"
+	services "relayer/services"
+	utils "relayer/utils"
 
 	sdkmath "cosmossdk.io/math"
 	"github.com/ethereum/go-ethereum"
@@ -232,7 +232,7 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	switch msg := msg.(type) {
 	case updateclient.IUpdateClientMsgsMsgUpdateClient:
 		log.Printf("[SendEthTx] Encoding updateClient msg...")
-		data, err := operatorclient.EncodeUpdateClientMsg(msg)
+		data, err := relayerclient.EncodeUpdateClientMsg(msg)
 		if err != nil {
 			return fmt.Errorf("failed to encode updateClient msg: %w", err)
 		}

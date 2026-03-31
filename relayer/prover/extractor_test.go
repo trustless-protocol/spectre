@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	operatorclient "operator/client"
+	relayerclient "relayer/client"
 
 	cmted25519 "github.com/cometbft/cometbft/crypto/ed25519"
 	"github.com/cometbft/cometbft/types"
@@ -22,7 +22,7 @@ func TestExtractValidatorSignature_NilLightBlock(t *testing.T) {
 }
 
 func TestExtractValidatorSignature_NilCommit(t *testing.T) {
-	lb := &operatorclient.LightBlock{
+	lb := &relayerclient.LightBlock{
 		SignedHeader: types.SignedHeader{
 			Commit: nil,
 		},
@@ -38,7 +38,7 @@ func TestExtractValidatorSignature_NilCommit(t *testing.T) {
 }
 
 func TestExtractValidatorSignature_EmptyValidators(t *testing.T) {
-	lb := &operatorclient.LightBlock{
+	lb := &relayerclient.LightBlock{
 		SignedHeader: types.SignedHeader{
 			Commit: &types.Commit{
 				Signatures: []types.CommitSig{},
@@ -68,7 +68,7 @@ func TestExtractValidatorSignature_AllAbsent(t *testing.T) {
 		VotingPower: 10,
 	}
 
-	lb := &operatorclient.LightBlock{
+	lb := &relayerclient.LightBlock{
 		SignedHeader: types.SignedHeader{
 			Commit: &types.Commit{
 				Signatures: []types.CommitSig{
@@ -142,7 +142,7 @@ func TestExtractValidatorSignature_ValidSingleValidator(t *testing.T) {
 	}
 	commit.Signatures[0].Signature = sig
 
-	lb := &operatorclient.LightBlock{
+	lb := &relayerclient.LightBlock{
 		SignedHeader: types.SignedHeader{
 			Header: header,
 			Commit: commit,

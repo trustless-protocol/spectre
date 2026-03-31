@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"operator/utils"
+	"relayer/utils"
 	"os"
 	"time"
 
-	contractICS26Router "operator/bindings/ICS26Router"
-	tendermintContract "operator/bindings/SP1ICS07Tendermint"
-	"operator/client"
+	contractICS26Router "relayer/bindings/ICS26Router"
+	tendermintContract "relayer/bindings/SP1ICS07Tendermint"
+	"relayer/client"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	ibcexported "github.com/cosmos/ibc-go/v10/modules/core/exported"

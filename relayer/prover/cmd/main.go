@@ -19,7 +19,7 @@ import (
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
 	"github.com/consensys/gnark/std/math/emulated"
 
-	"operator/prover"
+	"relayer/prover"
 )
 
 func main() {

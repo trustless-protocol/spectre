@@ -7,8 +7,8 @@ import (
 	"math/big"
 	"os"
 
-	contractICS26Router "operator/bindings/ICS26Router"
-	"operator/services"
+	contractICS26Router "relayer/bindings/ICS26Router"
+	"relayer/services"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"

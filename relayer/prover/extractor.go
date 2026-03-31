@@ -4,7 +4,7 @@ import (
 	"crypto/ed25519"
 	"fmt"
 
-	operatorclient "operator/client"
+	relayerclient "relayer/client"
 
 	"github.com/cometbft/cometbft/types"
 )
@@ -18,7 +18,7 @@ type ValidatorSignature struct {
 
 // ExtractValidatorSignature extracts the first non-absent commit signature from a LightBlock.
 // For single validator mode, this returns the first valid signature found.
-func ExtractValidatorSignature(lightBlock *operatorclient.LightBlock, chainID string) (*ValidatorSignature, error) {
+func ExtractValidatorSignature(lightBlock *relayerclient.LightBlock, chainID string) (*ValidatorSignature, error) {
 	if lightBlock == nil {
 		return nil, fmt.Errorf("light block is nil")
 	}

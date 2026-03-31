@@ -4,7 +4,7 @@ import (
 	"math/big"
 	"testing"
 
-	contractICS26Router "operator/bindings/ICS26Router"
+	contractICS26Router "relayer/bindings/ICS26Router"
 )
 
 func TestEthPacketToCosmosPacket_SinglePayload(t *testing.T) {

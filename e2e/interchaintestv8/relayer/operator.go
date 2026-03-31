@@ -1,4 +1,4 @@
-package operator
+package relayer
 
 import (
 	"bytes"
@@ -49,7 +49,7 @@ type misbehaviourFixture struct {
 
 // binaryPath is a function that returns the path to the operator binary
 func binaryPath() string {
-	return "operator"
+	return "relayer"
 }
 
 // MembershipProof is a function that generates a membership proof and returns the proof height and proof

@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"strings"
 
-	tendermintContract "operator/bindings/SP1ICS07Tendermint"
-	updateClientContract "operator/bindings/UpdateClient"
+	tendermintContract "relayer/bindings/SP1ICS07Tendermint"
+	updateClientContract "relayer/bindings/UpdateClient"
 
 	"github.com/cometbft/cometbft/p2p"
 	rpcclient "github.com/cometbft/cometbft/rpc/client"

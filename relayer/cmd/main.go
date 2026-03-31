@@ -17,14 +17,14 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	tendermintContract "operator/bindings/SP1ICS07Tendermint"
-	tendermintClient "operator/client"
-	"operator/keys"
-	"operator/prover"
-	"operator/runner"
-	"operator/services"
-	"operator/subscriber"
-	"operator/transaction"
+	tendermintContract "relayer/bindings/SP1ICS07Tendermint"
+	tendermintClient "relayer/client"
+	"relayer/keys"
+	"relayer/prover"
+	"relayer/runner"
+	"relayer/services"
+	"relayer/subscriber"
+	"relayer/transaction"
 )
 
 const (
@@ -46,7 +46,7 @@ func main() {
 	logger := zLogger.Sugar()
 
 	rootCmd := &cobra.Command{
-		Use:   "operator [command]",
+		Use:   "relayer [command]",
 		Short: "fast-ibc operator — relay IBC packets between Cosmos and Ethereum",
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.Help()
