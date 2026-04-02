@@ -20,9 +20,6 @@ import { ERC1967Proxy } from "@openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy
 import { DeployAccessManagerWithRoles } from "./deployments/DeployAccessManagerWithRoles.sol";
 import { IBCERC20 } from "../contracts/utils/IBCERC20.sol";
 import { Escrow } from "../contracts/utils/Escrow.sol";
-import { Groth16Verifier as PlonkVerifier } from "@groth16-contracts/v5.0.0/PlonkVerifier.sol";
-import { Groth16Verifier as Groth16Verifier } from "@groth16-contracts/v5.0.0/Groth16Verifier.sol";
-import { MockGroth16Verifier } from "@groth16-contracts/MockGroth16Verifier.sol";
 import { IGroth16Verifier } from "../contracts/interfaces/IVerifier.sol";
 import { Groth16Verifier } from "../contracts/utils/Groth16Verifier.sol";
 import { WrapperVerifier } from "../contracts/utils/WrapperVerifier.sol";
