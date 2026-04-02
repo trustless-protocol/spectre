@@ -148,6 +148,62 @@ func TestEncodeClientState(t *testing.T) {
 	})
 }
 
+func TestDecodeClientState(t *testing.T) {
+	original := updateClientContract.IICS07TendermintMsgsClientState{
+		ChainId: "cosmoshub-4",
+		TrustLevel: updateClientContract.IICS07TendermintMsgsTrustThreshold{
+			Numerator:   2,
+			Denominator: 3,
+		},
+		LatestHeight: updateClientContract.IICS02ClientMsgsHeight{
+			RevisionNumber: 4,
+			RevisionHeight: 100,
+		},
+		TrustingPeriod:  1209600,
+		UnbondingPeriod: 1814400,
+		IsFrozen:        false,
+		ZkAlgorithm:     uint8(Groth16),
+	}
+
+	encoded, err := EncodeClientState(original)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	decoded, err := DecodeClientState(encoded)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if decoded.ChainId != original.ChainId {
+		t.Errorf("ChainId: got %q, want %q", decoded.ChainId, original.ChainId)
+	}
+	if decoded.TrustLevel.Numerator != original.TrustLevel.Numerator {
+		t.Errorf("TrustLevel.Numerator: got %d, want %d", decoded.TrustLevel.Numerator, original.TrustLevel.Numerator)
+	}
+	if decoded.TrustLevel.Denominator != original.TrustLevel.Denominator {
+		t.Errorf("TrustLevel.Denominator: got %d, want %d", decoded.TrustLevel.Denominator, original.TrustLevel.Denominator)
+	}
+	if decoded.LatestHeight.RevisionNumber != original.LatestHeight.RevisionNumber {
+		t.Errorf("LatestHeight.RevisionNumber: got %d, want %d", decoded.LatestHeight.RevisionNumber, original.LatestHeight.RevisionNumber)
+	}
+	if decoded.LatestHeight.RevisionHeight != original.LatestHeight.RevisionHeight {
+		t.Errorf("LatestHeight.RevisionHeight: got %d, want %d", decoded.LatestHeight.RevisionHeight, original.LatestHeight.RevisionHeight)
+	}
+	if decoded.TrustingPeriod != original.TrustingPeriod {
+		t.Errorf("TrustingPeriod: got %d, want %d", decoded.TrustingPeriod, original.TrustingPeriod)
+	}
+	if decoded.UnbondingPeriod != original.UnbondingPeriod {
+		t.Errorf("UnbondingPeriod: got %d, want %d", decoded.UnbondingPeriod, original.UnbondingPeriod)
+	}
+	if decoded.IsFrozen != original.IsFrozen {
+		t.Errorf("IsFrozen: got %v, want %v", decoded.IsFrozen, original.IsFrozen)
+	}
+	if decoded.ZkAlgorithm != original.ZkAlgorithm {
+		t.Errorf("ZkAlgorithm: got %d, want %d", decoded.ZkAlgorithm, original.ZkAlgorithm)
+	}
+}
+
 func TestEncodeConsensusState(t *testing.T) {
 	t.Run("valid consensus state encodes without error", func(t *testing.T) {
 		consensusState := updateClientContract.IICS07TendermintMsgsConsensusState{
