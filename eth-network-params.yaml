@@ -1,0 +1,8 @@
+participants:
+  - el_type: geth
+    cl_type: lighthouse
+
+network_params:
+  # 1s per slot → epoch = 32s, finality ~64s
+  seconds_per_slot: 1
+  genesis_delay: 10
