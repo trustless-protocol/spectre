@@ -1,4 +1,4 @@
-module operator
+module relayer
 
 go 1.25.6
 
