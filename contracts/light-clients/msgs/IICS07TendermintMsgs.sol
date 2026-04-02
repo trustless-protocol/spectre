@@ -122,6 +122,8 @@ interface IICS07TendermintMsgs {
     }
 
     enum CommitSigFlag {
+        /// unknown flag (maps to CometBFT BlockIDFlagUnknown = 0).
+        BLOCK_ID_FLAG_UNKNOWN,
         /// no vote was received from a validator.
         BLOCK_ID_FLAG_ABSENT,
         /// voted for the Commit.BlockID.
