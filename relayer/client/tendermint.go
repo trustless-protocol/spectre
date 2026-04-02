@@ -171,9 +171,9 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) updateClientContract.II
 	commitSigs := []updateClientContract.IICS07TendermintMsgsCommitSig{}
 	for _, sig := range b.SignedHeader.Commit.Signatures {
 		// CometBFT: 0=UNKNOWN, 1=ABSENT, 2=COMMIT, 3=NIL
-		// Solidity:            0=ABSENT, 1=COMMIT, 2=NIL
+		// Solidity:  0=UNKNOWN, 1=ABSENT, 2=COMMIT, 3=NIL
 		commitSigs = append(commitSigs, updateClientContract.IICS07TendermintMsgsCommitSig{
-			Flag: uint8(sig.BlockIDFlag - 1),
+			Flag: uint8(sig.BlockIDFlag),
 			Data: updateClientContract.IICS07TendermintMsgsCommitSigData{
 				ValidatorAddress: sig.ValidatorAddress,
 				Timestamp:        big.NewInt(sig.Timestamp.UnixNano()),

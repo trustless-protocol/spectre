@@ -1,6 +1,7 @@
 package keys
 
 import (
+	"crypto/ecdsa"
 	"testing"
 
 	"github.com/ethereum/go-ethereum/crypto"
@@ -22,6 +23,7 @@ func TestRestoreKey(t *testing.T) {
 		{name: "0x prefix only", input: "0x", wantErr: true},
 	}
 
+	var keyWith, keyWithout *ecdsa.PrivateKey
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			key, err := RestoreKey(tc.input)
@@ -37,22 +39,16 @@ func TestRestoreKey(t *testing.T) {
 			if key == nil {
 				t.Fatal("expected non-nil key")
 			}
+			if tc.name == "valid hex with 0x prefix" {
+				keyWith = key
+			}
+			if tc.name == "valid hex without 0x prefix" {
+				keyWithout = key
+			}
 		})
 	}
-}
 
-func TestRestoreKey_WithWithoutPrefix(t *testing.T) {
-	keyWith, err := RestoreKey("0x" + knownPrivKeyHex)
-	if err != nil {
-		t.Fatalf("with prefix: %v", err)
-	}
-
-	keyWithout, err := RestoreKey(knownPrivKeyHex)
-	if err != nil {
-		t.Fatalf("without prefix: %v", err)
-	}
-
-	if keyWith.D.Cmp(keyWithout.D) != 0 {
+	if keyWith != nil && keyWithout != nil && keyWith.D.Cmp(keyWithout.D) != 0 {
 		t.Fatal("keys with and without 0x prefix differ")
 	}
 }
