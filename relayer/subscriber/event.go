@@ -138,8 +138,8 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 	}
 }
 
-// ethPacketToCosmosPacket converts an Ethereum ICS26Router packet to a Cosmos IBC v2 packet
-func ethPacketToCosmosPacket(ethPacket contractICS26Router.IICS26RouterMsgsPacket, sequence *big.Int) channeltypesv2.Packet {
+// EthPacketToCosmosPacket converts an Ethereum ICS26Router packet to a Cosmos IBC v2 packet
+func EthPacketToCosmosPacket(ethPacket contractICS26Router.IICS26RouterMsgsPacket, sequence *big.Int) channeltypesv2.Packet {
 	var payloads []channeltypesv2.Payload
 	for _, p := range ethPacket.Payloads {
 		payloads = append(payloads, channeltypesv2.Payload{
@@ -227,7 +227,7 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 		select {
 		case ev := <-sendPacketCh:
 			ctx.Logger.Printf("SendPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
-			cosmosPacket := ethPacketToCosmosPacket(ev.Packet, ev.Sequence)
+			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 			batchBuilder.InsertPacket(services.Packet{
 				PacketType: services.Send,
 				Packet:     &cosmosPacket,

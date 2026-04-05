@@ -24,7 +24,7 @@ func TestEthPacketToCosmosPacket_SinglePayload(t *testing.T) {
 	}
 
 	seq := big.NewInt(42)
-	result := ethPacketToCosmosPacket(ethPacket, seq)
+	result := EthPacketToCosmosPacket(ethPacket, seq)
 
 	if result.Sequence != 42 {
 		t.Errorf("Sequence: got %d, want 42", result.Sequence)
@@ -72,7 +72,7 @@ func TestEthPacketToCosmosPacket_MultiplePayloads(t *testing.T) {
 		},
 	}
 
-	result := ethPacketToCosmosPacket(ethPacket, big.NewInt(1))
+	result := EthPacketToCosmosPacket(ethPacket, big.NewInt(1))
 
 	if len(result.Payloads) != 3 {
 		t.Fatalf("Payloads length: got %d, want 3", len(result.Payloads))
@@ -95,7 +95,7 @@ func TestEthPacketToCosmosPacket_EmptyPayloads(t *testing.T) {
 		Payloads:         []contractICS26Router.IICS26RouterMsgsPayload{},
 	}
 
-	result := ethPacketToCosmosPacket(ethPacket, big.NewInt(0))
+	result := EthPacketToCosmosPacket(ethPacket, big.NewInt(0))
 
 	if len(result.Payloads) != 0 {
 		t.Errorf("expected 0 payloads, got %d", len(result.Payloads))
@@ -109,7 +109,7 @@ func TestEthPacketToCosmosPacket_LargeSequence(t *testing.T) {
 	}
 
 	seq := new(big.Int).SetUint64(^uint64(0)) // max uint64
-	result := ethPacketToCosmosPacket(ethPacket, seq)
+	result := EthPacketToCosmosPacket(ethPacket, seq)
 
 	if result.Sequence != ^uint64(0) {
 		t.Errorf("Sequence: got %d, want max uint64", result.Sequence)

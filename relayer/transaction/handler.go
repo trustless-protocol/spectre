@@ -110,30 +110,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	log.Printf("[CreateCosmosClient] ICS07 deployed at %s (block %d, gasUsed=%d)", address.String(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
 	ctx.SetClient(address)
 
-	// Grant PROOF_SUBMITTER_ROLE to ICS26Router so it can call verifyMembership
-	ics07Instance, err := tendermintContract.NewContractGroth16ICS07Tendermint(address, ctx.EthClient())
-	if err != nil {
-		return fmt.Errorf("failed to instantiate ICS07 contract: %w", err)
-	}
-	proofSubmitterRole := crypto.Keccak256Hash([]byte("PROOF_SUBMITTER_ROLE"))
-	nonce, err = ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
-	if err != nil {
-		return fmt.Errorf("failed to get nonce for grantRole: %w", err)
-	}
-	auth.Nonce = big.NewInt(int64(nonce))
-	tx, err = ics07Instance.GrantRole(auth, proofSubmitterRole, *ctx.RouterContract())
-	if err != nil {
-		return fmt.Errorf("failed to grant PROOF_SUBMITTER_ROLE to ICS26Router: %w", err)
-	}
-	log.Printf("[CreateCosmosClient] GrantRole tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
-	receipt, err = bind.WaitMined(context.Background(), ctx.EthClient(), tx)
-	if err != nil {
-		return fmt.Errorf("failed waiting for GrantRole receipt: %w", err)
-	}
-	if receipt.Status == 0 {
-		return fmt.Errorf("GrantRole tx %s reverted (gasUsed=%d)", tx.Hash().Hex(), receipt.GasUsed)
-	}
-	log.Printf("[CreateCosmosClient] PROOF_SUBMITTER_ROLE granted to ICS26Router (gasUsed=%d)", receipt.GasUsed)
+	// roleManager=address(0) means anyone can submit proofs, no grantRole needed
 
 	ics26Router, err := routerContract.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
 	if err != nil {
