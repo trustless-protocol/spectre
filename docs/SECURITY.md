@@ -45,13 +45,18 @@ Config (`.slither.config.json`):
 
 Roles defined in `IBCRolesLib.sol`:
 - Upgrades require admin (AccessManager)
-- Packet submission requires RELAYER_ROLE
 - Emergency controls via PAUSER/UNPAUSER roles
 - Rate limits managed by RATE_LIMITER_ROLE
+
+### Proof Submission (Groth16ICS07Tendermint)
+
+`PROOF_SUBMITTER_ROLE` controls who can call `verifyMembership`/`updateClient`:
+- **`roleManager = address(0)`**: Anyone can submit proofs (permissionless, suitable for dev/test). Proofs are still cryptographically verified by Groth16.
+- **`roleManager != address(0)`**: Only addresses granted `PROOF_SUBMITTER_ROLE` by the role manager can submit. Use for production to restrict relay to authorized operators.
 
 ## Known Considerations
 
 - `Groth16Verifier.sol` is auto-generated from circuit VK — do not manually edit
 - WrapperVerifier performs Ed25519 point decompression on-chain — gas-intensive but necessary
 - Shadowfork tests (`test/shadowfork/`) test against real mainnet/testnet state
-- `operator/go.mod` replace directives point to local paths — verify before building
+- `relayer/go.mod` replace directives point to local paths — verify before building
