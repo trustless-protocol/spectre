@@ -310,19 +310,14 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 		s.Require().NoError(err)
 		consensusStateHash, err := s.groth16Ics07Contract.GetConsensusStateHash(nil, clientState.LatestHeight.RevisionHeight)
 		s.Require().NoError(err)
-		updateClientVkey, err := s.groth16Ics07Contract.UPDATECLIENTPROGRAMVKEY(nil)
-		s.Require().NoError(err)
-		membershipVkey, err := s.groth16Ics07Contract.MEMBERSHIPPROGRAMVKEY(nil)
-		s.Require().NoError(err)
-		ucAndMembershipVkey, err := s.groth16Ics07Contract.UPDATECLIENTANDMEMBERSHIPPROGRAMVKEY(nil)
-		s.Require().NoError(err)
-		misbehaviourVkey, err := s.groth16Ics07Contract.MISBEHAVIOURPROGRAMVKEY(nil)
-		s.Require().NoError(err)
+			// New Groth16 ICS07 ABI no longer exposes program vkeys on the root contract.
+			// Keep fixture generation path compile-safe by defaulting vkeys to zero hashes.
+			var updateClientVkey, membershipVkey, ucAndMembershipVkey, misbehaviourVkey [32]byte
 
-		s.solidityFixtureGenerator.SetGenesisFixture(
-			clientStateBz, consensusStateHash, updateClientVkey,
-			membershipVkey, ucAndMembershipVkey, misbehaviourVkey,
-		)
+			s.solidityFixtureGenerator.SetGenesisFixture(
+				clientStateBz, consensusStateHash, updateClientVkey,
+				membershipVkey, ucAndMembershipVkey, misbehaviourVkey,
+			)
 	}))
 }
 

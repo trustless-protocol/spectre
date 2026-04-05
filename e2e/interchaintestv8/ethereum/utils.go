@@ -55,12 +55,16 @@ func GetEthContractsFromDeployOutput(stdout string) (DeployedContracts, error) {
 
 	if embeddedContracts.Erc20 == "" ||
 		embeddedContracts.Ics20Transfer == "" ||
-		embeddedContracts.VerifierPlonk == "" ||
-		embeddedContracts.VerifierGroth16 == "" ||
-		embeddedContracts.VerifierMock == "" ||
 		embeddedContracts.Ics26Router == "" {
+		return DeployedContracts{}, fmt.Errorf("one or more required contracts missing: %+v", embeddedContracts)
+	}
 
-		return DeployedContracts{}, fmt.Errorf("one or more contracts missing: %+v", embeddedContracts)
+	// Deploy scripts may only return a subset of verifier addresses depending on profile/config.
+	// Require at least one verifier to be present and let call sites enforce proof-specific needs.
+	if embeddedContracts.VerifierPlonk == "" &&
+		embeddedContracts.VerifierGroth16 == "" &&
+		embeddedContracts.VerifierMock == "" {
+		return DeployedContracts{}, fmt.Errorf("no verifier contract found in deploy output: %+v", embeddedContracts)
 	}
 
 	return embeddedContracts, nil

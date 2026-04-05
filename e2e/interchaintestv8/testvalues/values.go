@@ -83,7 +83,7 @@ const (
 	// WasmFixturesDir is the directory where the Rust fixtures are stored.
 	WasmFixturesDir = "packages/ethereum/light-client/src/test_utils/fixtures"
 	// RelayerConfigFilePath is the path to generate the relayer config file.
-	RelayerConfigFilePath = "programs/relayer/config.json"
+	RelayerConfigFilePath = "relayer/config.json"
 	// E2EDeployScriptPath is the path to the E2E deploy script.
 	E2EDeployScriptPath = "scripts/E2ETestDeploy.s.sol:E2ETestDeploy"
 	// TendermintLightClientFixturesDir is the directory where the Tendermint light client fixtures are stored.
@@ -111,6 +111,17 @@ const (
 	ParameterKey_RoleManager = "role_manager"
 	// Checksum hex parameter key for the relayer's ethereum light client creation.
 	ParameterKey_ChecksumHex = "checksum_hex"
+
+	// EnvKeyRustLog is the environment variable name for the RUST_LOG level.
+	EnvKeyRustLog = "RUST_LOG"
+	// EnvKeyNetworkPrivateCluster is the environment variable name for using a private prover cluster.
+	EnvKeyNetworkPrivateCluster = "NETWORK_PRIVATE_CLUSTER"
+	// EnvValueGroth16Prover_PrivateCluster is the value to enable private cluster for Groth16 prover.
+	EnvValueGroth16Prover_PrivateCluster = "true"
+	// EnvValueGroth16Prover_Mock is the value to use the mock Groth16 prover.
+	EnvValueGroth16Prover_Mock = "mock"
+	// EnvValueGroth16Prover_Network is the value to use the network Groth16 prover.
+	EnvValueGroth16Prover_Network = "network"
 )
 
 var (
