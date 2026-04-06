@@ -12,7 +12,7 @@ All encoding functions must match CometBFT's `proto.Marshal()` exactly:
 
 Cross-validate any encoding changes via:
 ```bash
-cd operator && go run ./cmd/encode_debug/  # Go reference hex
+cd relayer && go run ./cmd/encode_debug/  # Go reference hex
 forge test --match-contract EncodeTest -vvv # Solidity must match
 ```
 
@@ -38,11 +38,11 @@ Configured in `foundry.toml`:
 - **natlint**: NatSpec documentation required
 - **Slither**: Security static analysis, excludes low/informational
 
-## Go (Operator)
+## Go (Relayer)
 
 ### Module Dependencies
 
-`operator/go.mod` uses `replace` directives for local paths:
+`relayer/go.mod` uses `replace` directives for local paths:
 - `ecip-gnark` → `../../ecip-gnark`
 - `gnark` → `../../decentrio-gnark`
 
@@ -50,18 +50,26 @@ These must be adjusted per developer's local setup.
 
 ### Contract Bindings
 
-After modifying Solidity contracts the operator depends on:
+After modifying Solidity contracts the relayer depends on:
 ```bash
 bun install && forge build
-abigen --abi <abi_json> --bin <bin_hex> --pkg <PkgName> --out operator/bindings/<PkgName>/binding.go
+abigen --abi <abi_json> --pkg <PkgName> --out relayer/bindings/<PkgName>/binding.go
 ```
 
-ABI and Bin bytecode must stay in sync.
+Shared bindings also live in `packages/go-abigen/`.
+
+### Configuration
+
+Relayer uses JSON config file (see `relayer/config.example.json`):
+- `cosmos_to_eth` module: tm_rpc_url, ics26_address, eth_rpc_url, ics07_client, wrapper_verifier, membership, misbehaviour, update_client
+- `eth_to_cosmos` module: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address
+
+Secrets (private keys, prover paths) stay in `.env` file.
 
 ### Error Handling
 
-- Operator uses `log.Fatal` for unrecoverable errors (process exits)
-- Service loops return errors up the call chain
+- Relayer uses `log.Fatal` for unrecoverable errors (process exits)
+- `start` command logs per-packet errors without crashing the relay loop
 - Transaction handlers retry with re-queried account sequence on nonce errors
 
 ## Rust

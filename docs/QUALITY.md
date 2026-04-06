@@ -18,14 +18,14 @@ Run a single test:
 forge test --match-test testSendTransfer -vvv
 ```
 
-### Go (Operator)
+### Go (Relayer)
 
 | Type | Location | Command |
 |------|----------|---------|
-| Unit tests | `operator/*/` | `cd operator && go test ./...` |
-| Race detection | — | `cd operator && go test -race ./...` |
-| Single package | — | `cd operator && go test -v ./prover/...` |
-| Single test | — | `cd operator && go test -run TestName ./pkg/...` |
+| Unit tests | `relayer/*/` | `cd relayer && go test ./...` |
+| Race detection | — | `cd relayer && go test -race ./...` |
+| Single package | — | `cd relayer && go test -v ./prover/...` |
+| Single test | — | `cd relayer && go test -run TestName ./pkg/...` |
 
 Test files: `prover/`, `client/`, `subscriber/`, `services/`, `keys/`, `utils/`
 
@@ -39,7 +39,7 @@ Test files: `prover/`, `client/`, `subscriber/`, `services/`, `keys/`, `utils/`
 | Groth16 ICS07 | `groth16_ics07_test.go` | `just test-e2e-groth16-ics07` |
 | Multi-chain | `multichain_test.go` | `just test-e2e-multichain` |
 
-Requires: Docker Desktop, Kurtosis, compiled operator/relayer binaries, Groth16 network key.
+Requires: Docker Desktop, Kurtosis, compiled relayer binary, Groth16 network key.
 
 ### Rust
 
@@ -52,7 +52,7 @@ just test-cargo <name>       # Single test
 
 `Encode.sol` and `Header.sol` are cross-validated against Go `proto.Marshal()`:
 
-1. `cd operator && go run ./cmd/encode_debug/` — outputs Go reference hex
+1. `cd relayer && go run ./cmd/encode_debug/` — outputs Go reference hex
 2. `forge test --match-contract EncodeTest` — 34 tests compare Solidity output vs Go reference
 3. Any encoding change MUST pass both Go and Solidity validation
 

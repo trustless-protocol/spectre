@@ -19,7 +19,7 @@ just build-operator               # Build Go operator (go build)
 just test-foundry                 # All Solidity tests
 forge test --match-test <name> -vvv  # Single Solidity test
 just test-operator                # All Go operator tests
-cd operator && go test -run <TestName> ./...  # Single Go test
+cd relayer && go test -run <TestName> ./...  # Single Go test
 just test-e2e <name>              # E2E test by name
 
 # Lint
@@ -38,7 +38,33 @@ forge test --match-contract EncodeTest -vvv  # Solidity encoding tests
 
 **Prerequisites**: `bun` (not npm/yarn), `just`, Foundry, Go 1.21+. E2E also needs Docker + Kurtosis.
 
+## Relayer CLI
+
+```bash
+# One-time setup: deploy light clients on both chains
+cd relayer
+go run ./cmd/main.go create-clients \
+  --config config.json \
+  --trust-level 1/3 \
+  --wasm-checksum <hex>
+# Copy ICS07 address from log into config.json cosmos_to_eth.ics07_client
+
+# Start relay loop (Cosmos → ETH)
+go run ./cmd/main.go start --config config.json
+
+# Generate genesis state
+go run ./cmd/main.go genesis --trusted-block 0 --trusting-period 0
+
+# Verify membership proof on-chain
+go run ./cmd/main.go fixtures membership <key_path> <is_base64> <membership_type>
+```
+
+Config: JSON file with `cosmos_to_eth` and `eth_to_cosmos` modules (see `relayer/config.example.json`).
+Secrets: `.env` file for `ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, prover paths.
+
 ## Documentation Map
+
+**IMPORTANT: Read ALL docs/ files at the start of every conversation for full project context.**
 
 | Document | Contents |
 |----------|----------|
@@ -56,8 +82,9 @@ forge test --match-contract EncodeTest -vvv  # Solidity encoding tests
 - **Encoding**: `Encode.sol` must match Go `proto.Marshal()` exactly — cross-validate via `EncodeTest.t.sol`
 - **Proxy pattern**: UUPS for core contracts, Beacon for instances
 - **Solidity formatting**: line length 120, tab width 4, double quotes (`foundry.toml`)
-- **Go operator**: `go.mod` replace directives for local `ecip-gnark`/`decentrio-gnark` — adjust per dev setup
-- **Bindings**: After Solidity changes, regenerate Go bindings with `abigen`
+- **Go relayer**: `go.mod` replace directives for local `ecip-gnark`/`decentrio-gnark` — adjust per dev setup
+- **Bindings**: After Solidity changes, regenerate Go bindings with `abigen` (output: `packages/go-abigen/`)
+- **Relayer config**: JSON config file (not .env) for `start` command; `.env` only for secrets/prover paths
 - **E2E**: interchaintest suites require Docker + Kurtosis + compiled binaries
 
 ## Key Architecture
@@ -71,18 +98,31 @@ ICS26Router (UUPS) ← main IBC entry point
       └─ WrapperVerifier → Groth16Verifier
 ```
 
-ZK flow: Ed25519 sig → Groth16 proof (Go operator/gnark) → on-chain verification (Groth16Verifier.sol)
+ZK flow: Ed25519 sig → Groth16 proof (Go relayer/gnark) → on-chain verification (Groth16Verifier.sol)
 
-## Go Operator Structure
+## Go Relayer Structure
 
 ```
-operator/
+relayer/
 ├── bindings/       # Auto-generated Go bindings for Solidity contracts
-├── client/         # Tendermint + Ethereum RPC clients
+├── client/         # Tendermint + Ethereum RPC/Beacon API clients
 ├── keys/           # Key management
 ├── prover/         # gnark Groth16 circuit + prover (Ed25519)
-├── services/       # Relay loop: subscriber → batch builder → transaction handler
-├── subscriber/     # Cosmos event subscriber
-├── transaction/    # Ethereum transaction submission
-└── cmd/main.go     # CLI: start, genesis, membership
+├── services/       # Context, Worker, batch builder
+├── subscriber/     # Cosmos WebSocket + Ethereum event listeners
+├── transaction/    # Ethereum + Cosmos transaction submission
+├── utils/          # IBC path helpers, byte utils
+├── test/           # Manual test script (reference relay flow)
+└── cmd/main.go     # CLI: start, create-clients, genesis, fixtures
+```
+
+## Go Bindings Package
+
+```
+packages/go-abigen/
+├── groth16ics07tendermint/  # ICS07 Tendermint light client
+├── ics26router/             # IBC router
+├── ics20transfer/           # Token transfer
+├── ibcerc20/                # Bridged ERC20 wrapper
+└── relayerhelper/           # Helper contract
 ```
