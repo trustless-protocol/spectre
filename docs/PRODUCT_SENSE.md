@@ -53,19 +53,26 @@ Multiple packets can be batched into a single proof submission:
 - `updateClient()` — update with new Tendermint header + Groth16 proof
 - `membership()` / `nonMembership()` — verify ICS-23 Merkle proofs
 
-### Off-chain (Go Operator)
+### Off-chain (Go Relayer)
 
-Config in `operator/config.example.json`:
-- `cosmos_to_eth` module: contract addresses, RPC endpoints
-- `eth_to_cosmos` module: Beacon API URL, signer address
+**CLI commands:**
+- `relayer start --config config.json` — relay loop (Cosmos → ETH)
+- `relayer create-clients --config config.json` — one-time light client setup
+- `relayer genesis` — generate genesis state
+- `relayer fixtures membership` — verify membership proof on-chain
+
+**JSON config** (`relayer/config.example.json`):
+- `cosmos_to_eth` module: tm_rpc_url, ics26_address, eth_rpc_url, ics07_client, wrapper_verifier, membership, misbehaviour, update_client
+- `eth_to_cosmos` module: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address
 
 ### Environment Variables
 
-Key variables from `.env.example`:
-- `PROVER_TYPE`: `network` | `local` | `mock`
-- `E2E_PROOF_TYPE`: `groth16` | `plonk`
+Key variables from `.env`:
+- `ETH_PRIVATE_KEY`: Ethereum signer for relay transactions
+- `COSMOS_PRIVATE_KEY`: Cosmos signer for MsgCreateClient
+- `PROVER_R1CS_PATH`, `PROVER_PK_PATH`, `PROVER_VK_PATH`: Groth16 circuit artifacts
 - `ETH_RPC_URL`: Ethereum RPC for shadowfork tests
-- `TENDERMINT_RPC_URL`: CometBFT node endpoint
+- `TENDERMINT_RPC_URL`: CometBFT node endpoint (used by genesis/fixtures commands)
 
 ## Business Rules
 

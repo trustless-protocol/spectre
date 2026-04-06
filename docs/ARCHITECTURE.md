@@ -13,7 +13,7 @@ Solidity IBC Eureka is a production IBC v2 implementation for Ethereum-Cosmos in
               │    ├─ IBCERC20       │                     ▲
               │    └─ Escrow         │                     │
               │         │            │              ┌──────┴──────┐
-              │  Groth16ICS07Tendermint  │◄── proofs ──│  Go Operator │
+              │  Groth16ICS07Tendermint  │◄── proofs ──│  Go Relayer │
               │    └─ WrapperVerifier│              │  (Groth16)  │
               │       └─ Groth16    │              └─────────────┘
               └──────────────────────┘
@@ -37,10 +37,10 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
 
 ```
 1. Cosmos chain commits IBC packet
-2. Go Operator detects packet via CometBFT WebSocket (subscriber/)
-3. Operator extracts validator Ed25519 signature (prover/extractor.go)
-4. Operator generates Groth16 proof: Ed25519 sig → gnark circuit → proof
-5. Operator submits to Ethereum:
+2. Go Relayer detects packet via CometBFT WebSocket (subscriber/)
+3. Relayer extracts validator Ed25519 signature (prover/extractor.go)
+4. Relayer generates Groth16 proof: Ed25519 sig → gnark circuit → proof
+5. Relayer submits to Ethereum:
    a. Groth16ICS07Tendermint.updateClient() — verifies header via Groth16
    b. ICS26Router.recvPacket() — routes to ICS20Transfer
    c. ICS20Transfer mints IBCERC20 tokens (or unlocks Escrow)
@@ -52,8 +52,8 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
 1. User calls ICS20Transfer.sendTransfer() on Ethereum
 2. Tokens locked in Escrow (or IBCERC20 burned)
 3. ICS26Router records packet commitment
-4. Go Operator detects SendPacket event (subscriber/)
-5. Operator builds MsgRecvPacket with membership proof
+4. Go Relayer detects SendPacket event (subscriber/)
+5. Relayer builds MsgRecvPacket with membership proof
 6. Cosmos chain verifies via Ethereum light client (CosmWasm)
 7. Tokens released on Cosmos side
 ```
@@ -97,7 +97,7 @@ Header.hashValSet()               ↔   ValidatorSet.Hash() (proto-encoded → m
 Header.merkleHash()                ↔   merkle.HashFromByteSlices() (1-byte prefix)
 ```
 
-Cross-validated via `operator/cmd/encode_debug/` + `test/solidity-ibc/EncodeTest.t.sol` (34 tests).
+Cross-validated via `relayer/cmd/encode_debug/` + `test/solidity-ibc/EncodeTest.t.sol` (34 tests).
 
 ## Directory Map
 
@@ -107,13 +107,15 @@ Cross-validated via `operator/cmd/encode_debug/` + `test/solidity-ibc/EncodeTest
 | `contracts/utils/` | Solidity | Encoding, hashing, verifiers, helpers |
 | `contracts/programs/` | Solidity | UpdateClient, Membership, Misbehaviour verification |
 | `contracts/light-clients/` | Solidity | Groth16ICS07Tendermint + message types |
-| `operator/` | Go | Relayer + Groth16 prover |
-| `operator/prover/` | Go | Ed25519 → Groth16 proof generation |
-| `operator/client/` | Go | Tendermint RPC + Ethereum Beacon API |
-| `operator/services/` | Go | Main relay loop, batch processing |
-| `operator/subscriber/` | Go | CometBFT WebSocket + Ethereum event listeners |
-| `operator/bindings/` | Go | Auto-generated contract bindings |
-| `packages/relayer/` | Rust | Multi-chain relayer modules |
+| `relayer/` | Go | Relayer CLI + Groth16 prover |
+| `relayer/cmd/` | Go | CLI: start, create-clients, genesis, fixtures |
+| `relayer/prover/` | Go | Ed25519 → Groth16 proof generation |
+| `relayer/client/` | Go | Tendermint RPC + Ethereum Beacon API |
+| `relayer/services/` | Go | Context, Worker, batch processing |
+| `relayer/subscriber/` | Go | CometBFT WebSocket + Ethereum event listeners |
+| `relayer/transaction/` | Go | ETH + Cosmos transaction submission |
+| `relayer/bindings/` | Go | Auto-generated contract bindings |
+| `packages/go-abigen/` | Go | Shared Go bindings for Solidity contracts |
 | `packages/ethereum/` | Rust | Ethereum light client for CosmWasm |
 | `packages/tendermint-light-client/` | Rust | Tendermint client types and provers |
 | `programs/groth16-programs/` | Rust | RISC-V proving programs (legacy) |
@@ -126,14 +128,17 @@ Cross-validated via `operator/cmd/encode_debug/` + `test/solidity-ibc/EncodeTest
 ```
 test/ ──────────► contracts/ ◄────── scripts/
                      │
-                     ▼
-              operator/bindings/
+                     ▼ (abigen)
+              packages/go-abigen/
+              relayer/bindings/
                      │
                      ▼
-              operator/client/
-              operator/services/
-              operator/subscriber/
-              operator/prover/
+              relayer/cmd/ ─── CLI entry point
+              relayer/services/ ─── Context, Worker
+              relayer/subscriber/ ─── Event listeners
+              relayer/client/ ─── RPC clients
+              relayer/transaction/ ─── Tx submission
+              relayer/prover/ ─── Groth16 prover
                      │
                      ▼
               External: CometBFT, ecip-gnark, IBC-Go v10
