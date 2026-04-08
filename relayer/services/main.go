@@ -2,19 +2,23 @@ package services
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"math/big"
-	"relayer/utils"
 	"os"
+	"relayer/utils"
 	"time"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
 	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
-	"relayer/client"
+	client "relayer/client"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
+	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
+	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	ibcexported "github.com/cosmos/ibc-go/v10/modules/core/exported"
+	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
@@ -36,6 +40,7 @@ type TransactionHandler interface {
 	SendEthTx(ctx Context, msg any) error
 	SendCosmosTx(ctx Context, msg any) error
 	SendCosmosTxBatch(ctx Context, msgs []any) error
+	CosmosSignerAddress() (string, error)
 }
 
 type Prover interface {
@@ -441,6 +446,46 @@ func (s *Services) StartLoop() {
 				}
 
 				s.txHandler.SendEthTx(ctx, msgRecvPacket)
+
+			case WriteAck:
+				signerAddr, err := s.txHandler.CosmosSignerAddress()
+				if err != nil {
+					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to get cosmos signer: %w", err))
+					continue
+				}
+
+				// ack_path = destClientID + [0x03] + sequence.to_be_bytes(8)
+				seqBytes := make([]byte, 8)
+				binary.BigEndian.PutUint64(seqBytes, packet.Packet.Sequence)
+				ackPath := append([]byte(packet.Packet.DestinationClient), 0x03)
+				ackPath = append(ackPath, seqBytes...)
+
+				slot := ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT)
+				latestEthBlock, err := ctx.EthClient().BlockByNumber(context.Background(), nil)
+				if err != nil {
+					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to get latest ETH block: %w", err))
+					continue
+				}
+
+				proofBytes, err := client.GetEthMembershipProof(
+					ctx.EthClient(), *ctx.RouterContract(), ackPath, slot, latestEthBlock.Number())
+				if err != nil {
+					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to get ETH membership proof: %w", err))
+					continue
+				}
+
+				ackMsg := &channeltypesv2.MsgAcknowledgement{
+					Packet: *packet.Packet,
+					Acknowledgement: channeltypesv2.Acknowledgement{
+						AppAcknowledgements: packet.AckBytes,
+					},
+					ProofAcked:  proofBytes,
+					ProofHeight: clienttypes.Height{RevisionNumber: 0, RevisionHeight: latestEthBlock.NumberU64()},
+					Signer:      signerAddr,
+				}
+				if err := s.txHandler.SendCosmosTx(ctx, ackMsg); err != nil {
+					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to send MsgAcknowledgement: %w", err))
+				}
 
 			default:
 				ctx.Logger.Println(fmt.Errorf("Invalid packet type"))

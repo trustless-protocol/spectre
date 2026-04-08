@@ -514,6 +514,18 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	return nil
 }
 
+// CosmosSignerAddress returns the bech32 address derived from COSMOS_PRIVATE_KEY.
+// Used to populate the Signer field in Cosmos messages before calling SendCosmosTx.
+func (h *Handler) CosmosSignerAddress() (string, error) {
+	privKeyHex := strings.TrimPrefix(os.Getenv("COSMOS_PRIVATE_KEY"), "0x")
+	privKeyBytes, err := hex.DecodeString(privKeyHex)
+	if err != nil {
+		return "", fmt.Errorf("failed to decode COSMOS_PRIVATE_KEY: %w", err)
+	}
+	privKey := secp256k1.PrivKey{Key: privKeyBytes}
+	return sdk.AccAddress(privKey.PubKey().Address()).String(), nil
+}
+
 func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	protoMsg, ok := msg.(proto.Message)
 	if !ok {
