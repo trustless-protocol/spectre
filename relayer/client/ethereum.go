@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +16,10 @@ import (
 	"github.com/cosmos/gogoproto/proto"
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
+	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 type EthereumClientState struct {
@@ -621,4 +626,88 @@ func (s *BeaconSpec) ToForkParameters() (*ForkParameters, error) {
 			Epoch:   electraForkEpoch,
 		},
 	}, nil
+}
+
+// MembershipProof is the JSON format expected by the wasm ETH light client's verify_membership.
+// See packages/ethereum/light-client/src/membership.rs.
+type MembershipProof struct {
+	AccountProof accountProofData `json:"account_proof"`
+	StorageProof storageProofData `json:"storage_proof"`
+}
+
+type accountProofData struct {
+	StorageRoot string   `json:"storage_root"`
+	Proof       []string `json:"proof"`
+}
+
+type storageProofData struct {
+	Key   string   `json:"key"`
+	Value string   `json:"value"`
+	Proof []string `json:"proof"`
+}
+
+// internal types for eth_getProof JSON response
+type ethProofResult struct {
+	AccountProof []string            `json:"accountProof"`
+	StorageHash  ethcommon.Hash      `json:"storageHash"`
+	StorageProof []ethStorageProof   `json:"storageProof"`
+}
+
+type ethStorageProof struct {
+	Key   ethcommon.Hash `json:"key"`
+	Value *hexutil.Big   `json:"value"`
+	Proof []string       `json:"proof"`
+}
+
+// GetEthMembershipProof generates a JSON-encoded MembershipProof for MsgAcknowledgement.ProofAcked.
+//
+// ackPath is the raw IBC path bytes: destClientID + [0x03] + sequence.to_be_bytes(8)
+// slot is the ICS26Router ibc_commitment_slot (ICS26_IBC_STORAGE_SLOT constant)
+// blockNumber is the ETH block to prove against (use nil for latest)
+func GetEthMembershipProof(client *ethclient.Client, contractAddr ethcommon.Address, ackPath []byte, slot ethcommon.Hash, blockNumber *big.Int) ([]byte, error) {
+	// storage_key = keccak256(keccak256(ackPath) ++ slot)
+	pathHash := crypto.Keccak256(ackPath)
+	storageKey := crypto.Keccak256Hash(pathHash, slot.Bytes())
+
+	var result ethProofResult
+	err := client.Client().CallContext(
+		context.Background(),
+		&result,
+		"eth_getProof",
+		contractAddr,
+		[]string{storageKey.Hex()},
+		toBlockNumArg(blockNumber),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("eth_getProof failed: %w", err)
+	}
+	if len(result.StorageProof) == 0 {
+		return nil, fmt.Errorf("eth_getProof returned no storage proofs")
+	}
+
+	sp := result.StorageProof[0]
+	valueStr := "0x0"
+	if sp.Value != nil {
+		valueStr = sp.Value.String()
+	}
+
+	proof := MembershipProof{
+		AccountProof: accountProofData{
+			StorageRoot: result.StorageHash.Hex(),
+			Proof:       result.AccountProof,
+		},
+		StorageProof: storageProofData{
+			Key:   storageKey.Hex(),
+			Value: valueStr,
+			Proof: sp.Proof,
+		},
+	}
+	return json.Marshal(proof)
+}
+
+func toBlockNumArg(number *big.Int) string {
+	if number == nil {
+		return "latest"
+	}
+	return hexutil.EncodeBig(number)
 }

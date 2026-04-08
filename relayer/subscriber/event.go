@@ -234,9 +234,13 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 			})
 
 		case ev := <-writeAckCh:
-			// TODO: handle WriteAcknowledgement event
-			// This event is emitted when an acknowledgement is written on Ethereum
 			ctx.Logger.Printf("WriteAcknowledgement event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
+			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
+			batchBuilder.InsertPacket(services.Packet{
+				PacketType: services.WriteAck,
+				Packet:     &cosmosPacket,
+				AckBytes:   ev.Acknowledgements,
+			})
 
 		case ev := <-ackPacketCh:
 			// TODO: handle AckPacket event
