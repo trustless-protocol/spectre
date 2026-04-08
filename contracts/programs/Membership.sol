@@ -44,13 +44,12 @@ contract Membership  is IMembership {
      * @param appHash The root hash of the Merkle tree (32 bytes)
      * @param kvPairs Array of key-value pairs to verify
      * @param merkleProofs Array of corresponding Merkle proofs
-     * @return output The membership verification result
      */
     function membership(
         bytes32 appHash,
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs
-    ) public returns (IMembershipMsgs.MembershipOutput memory output) {
+    ) public view {
         if (kvPairs.length == 0) {
             revert EmptyRequest();
         }
@@ -59,9 +58,7 @@ contract Membership  is IMembership {
             revert InvalidLength();
         }
         
-        bytes32 commitmentRoot = appHash;
-        IMembershipMsgs.KVPair[] memory verifiedPairs = new IMembershipMsgs.KVPair[](kvPairs.length);
-        
+        bytes32 commitmentRoot = appHash;        
         for (uint256 i = 0; i < kvPairs.length; i++) {
             IMembershipMsgs.KVPair memory kvPair = kvPairs[i];
             IMembershipMsgs.MerkleProof memory merkleProof = merkleProofs[i];
@@ -80,17 +77,9 @@ contract Membership  is IMembership {
                 // Verify membership
                 verifyMembership(proofSpecs, commitmentRoot, kvPair.path, kvPair.value, 0, merkleProof);
             }
-            
-            verifiedPairs[i] = kvPair;
         }
-
-        output = IMembershipMsgs.MembershipOutput({
-            commitmentRoot: commitmentRoot,
-            kvPairs: verifiedPairs
-        });
         
         emit MembershipVerified(commitmentRoot, kvPairs.length);
-        return output;
     }
     
     function verifyMembership(

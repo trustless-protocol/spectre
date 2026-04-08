@@ -164,6 +164,9 @@ contract ICS26Router is
         bytes32 commitmentBz = ICS24Host.packetCommitmentBytes32(msg_.packet);
 
         ILightClientMsgs.MsgVerifyMembership memory membershipMsg = abi.decode(msg_.membershipMsg, (ILightClientMsgs.MsgVerifyMembership));
+        // inject path and value for packet commitment in storage
+        membershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, commitmentPath);
+        membershipMsg.value = abi.encodePacked(commitmentBz);
         getClient(msg_.packet.destClient).verifyMembership(membershipMsg);
 
         // recvPacket will no-op if the packet receipt already exists
@@ -219,6 +222,9 @@ contract ICS26Router is
 
         // verify the packet acknowledgement
         ILightClientMsgs.MsgVerifyMembership memory membershipMsg = abi.decode(msg_.membershipMsg, (ILightClientMsgs.MsgVerifyMembership));
+        // inject path and value for packet commitment in storage
+        membershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, commitmentPath);
+        membershipMsg.value = abi.encodePacked(commitmentBz);
         getClient(msg_.packet.sourceClient).verifyMembership(membershipMsg);
 
         // ackPacket will no-op if the packet commitment does not exist
@@ -258,6 +264,8 @@ contract ICS26Router is
         bytes memory receiptPath =
             ICS24Host.packetReceiptCommitmentPathCalldata(msg_.packet.destClient, msg_.packet.sequence);
         ILightClientMsgs.MsgVerifyNonMembership memory nonMembershipMsg = abi.decode(msg_.nonMembershipMsg, (ILightClientMsgs.MsgVerifyNonMembership));
+        // inject path for packet receipt commitment in storage
+        nonMembershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, receiptPath);
         uint256 counterpartyTimestamp = getClient(msg_.packet.sourceClient).verifyNonMembership(nonMembershipMsg);
         require(
             counterpartyTimestamp >= msg_.packet.timeoutTimestamp,

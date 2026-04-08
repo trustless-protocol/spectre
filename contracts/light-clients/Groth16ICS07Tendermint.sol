@@ -167,7 +167,7 @@ contract Groth16ICS07Tendermint is
         returns (uint256)
     {
         require(msg_.appHash.length > 0, EmptyValue());
-        return _membership(msg_.height, msg_.kvPairs, msg_.merkleProofs, msg_.appHash, msg_.trustedConsensusState, msg_.membershipType);
+        return _membership(msg_.height, msg_.kvPairs, msg_.merkleProofs, msg_.appHash, msg_.trustedConsensusState, msg_.membershipType, msg_.path, msg_.value);
     }
 
     /// @inheritdoc ILightClient
@@ -177,7 +177,7 @@ contract Groth16ICS07Tendermint is
         onlyProofSubmitter
         returns (uint256)
     {
-        return _membership(msg_.height, msg_.kvPairs, msg_.merkleProofs, msg_.appHash, msg_.trustedConsensusState, msg_.membershipType);
+        return _membership(msg_.height, msg_.kvPairs, msg_.merkleProofs, msg_.appHash, msg_.trustedConsensusState, msg_.membershipType, msg_.path, bytes(""));
     }
 
     /// @notice The entrypoint for verifying (non)membership proof.
@@ -196,7 +196,9 @@ contract Groth16ICS07Tendermint is
         IMembershipMsgs.MerkleProof[] calldata merkleProofs,
         bytes32 appHash,
         IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState,
-        IMembershipMsgs.MembershipType membershipType
+        IMembershipMsgs.MembershipType membershipType,
+        bytes[] calldata kvPath,
+        bytes memory kvValue
     )
         private
         returns (uint256)
@@ -208,7 +210,7 @@ contract Groth16ICS07Tendermint is
         // }
 
         if (membershipType == IMembershipMsgs.MembershipType.Membership) {
-            return _handleMembership(height, kvPairs, merkleProofs, appHash, trustedConsensusState);
+            return _handleMembership(height, kvPairs, merkleProofs, appHash, trustedConsensusState, kvPath, kvValue);
         } else if (membershipType == IMembershipMsgs.MembershipType.MembershipAndUpdateClient) {
             // return _handleGroth16UpdateClientAndMembership(height, membershipProof.proof, path, value);
         }
@@ -254,16 +256,20 @@ contract Groth16ICS07Tendermint is
 
     /// @notice Handles the `Groth16MembershipProof` proof type.
     /// @param height The height of the proof.
-    /// @param kvPairs The path and value of the key-value pair.
+    /// @param kvPairs The path and value of the key-value pair that need verify.
     /// @param merkleProofs The merkle proofs of membership.
     /// @param appHash The final hash value that needs to verify.
+    /// @param kvPath The path of the key-value pair in storage.
+    /// @param kvValue The value of the key-value pair in storage.
     /// @return The timestamp of the trusted consensus state.
     function _handleMembership(
         IICS02ClientMsgs.Height calldata height,
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs,
         bytes32 appHash,
-        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState
+        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState,
+        bytes[] calldata kvPath,
+        bytes memory kvValue
     )
         private
         returns (uint256)
@@ -273,13 +279,39 @@ contract Groth16ICS07Tendermint is
             LengthIsOutOfRange(kvPairs.length, 1, type(uint16).max)
         );
 
-        IMembershipMsgs.MembershipOutput memory output =
-            MEMBERSHIP.membership(appHash, kvPairs, merkleProofs);
-        _validateMembershipOutput(output.commitmentRoot, height.revisionHeight, trustedConsensusState);
+        // validate provided inputs
+        _validateMembershipInput(appHash, height.revisionHeight, trustedConsensusState);
+
+        {
+            // loop through the key-value pairs and validate them
+            // if provided kv pairs inputs don't contains path and value 
+            // from contract state return error
+            // if provided proofs contain kv path but value not match return an
+            // error
+            bool found = false;
+            for (uint256 i = 0; i < kvPairs.length; ++i) {
+                if (!Paths.equal(kvPairs[i].path, kvPath)) {
+                    continue;
+                }
+
+                bytes memory value = kvPairs[i].value;
+                require(
+                    value.length == kvValue.length && keccak256(value) == keccak256(kvValue),
+                    MembershipProofValueMismatch(kvValue, value)
+                );
+
+                found = true;
+                break;
+            }
+            require(found, MembershipProofKeyNotFound(kvPath));
+        }
+
+        //verify membership of input proofs
+        MEMBERSHIP.membership(appHash, kvPairs, merkleProofs);
 
         // We avoid the cost of caching for single kv pairs, as reusing the proof is not necessary
-        if (output.kvPairs.length > 1) {
-            _cacheKvPairs(height.revisionHeight, output.kvPairs, trustedConsensusState.timestamp);
+        if (kvPairs.length > 1) {
+            _cacheKvPairs(height.revisionHeight, kvPairs, trustedConsensusState.timestamp);
         }
         return _getTimestampInSeconds(trustedConsensusState);
     }
@@ -369,7 +401,7 @@ contract Groth16ICS07Tendermint is
             require(found, MembershipProofKeyNotFound(kvPath));
         }
 
-        _validateMembershipOutput(
+        _validateMembershipInput(
             output.updateClientOutput.newConsensusState.root,
             output.updateClientOutput.newHeight.revisionHeight,
             output.updateClientOutput.newConsensusState
@@ -384,12 +416,12 @@ contract Groth16ICS07Tendermint is
         return _getTimestampInSeconds(output.updateClientOutput.newConsensusState);
     }
 
-    /// @notice Validates the MembershipOutput public values.
-    /// @param outputCommitmentRoot The commitment root of the output.
+    /// @notice Validates the Membership input known values.
+    /// @param commitmentRoot The commitment root of the provided input.
     /// @param proofHeight The height of the proof.
     /// @param trustedConsensusState The trusted consensus state
-    function _validateMembershipOutput(
-        bytes32 outputCommitmentRoot,
+    function _validateMembershipInput(
+        bytes32 commitmentRoot,
         uint64 proofHeight,
         IICS07TendermintMsgs.ConsensusState memory trustedConsensusState
     )
@@ -404,8 +436,8 @@ contract Groth16ICS07Tendermint is
         );
 
         require(
-            outputCommitmentRoot == trustedConsensusState.root,
-            ConsensusStateRootMismatch(trustedConsensusState.root, outputCommitmentRoot)
+            commitmentRoot == trustedConsensusState.root,
+            ConsensusStateRootMismatch(trustedConsensusState.root, commitmentRoot)
         );
     }
 
