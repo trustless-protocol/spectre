@@ -536,12 +536,10 @@ func extractClientID(txResult *coretypes.ResultTx) string {
 		// (e.g. "create_client", "ibc_client", or attributes on generic events)
 		for _, attr := range event.Attributes {
 			if attr.Key == "client_id" {
-				log.Printf("[extractClientID] found client_id=%s in event.Type=%s", attr.Value, event.Type)
 				return attr.Value
 			}
 		}
 	}
-	log.Printf("[extractClientID] client_id not found in any event")
 	return ""
 }
 

@@ -102,7 +102,6 @@ func (sc *SyncCommittee) ToSummarizedSyncCommittee() (*SummarizedSyncCommittee, 
 	}, nil
 }
 
-// sszTreeHashBLSPubkeys computes the SSZ tree_hash_root for Vec<FixedBytes<48>>.
 // sszTreeHashBLSPubkeys computes the SSZ tree hash root of a Vec<FixedBytes<48>>,
 // matching the Rust [FixedBytes<48>]::tree_hash_root() (TreeHashType::Vector — no mix_in_length).
 //

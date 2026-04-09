@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"os"
 	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	updateclientContract "relayer/bindings/UpdateClient"
 	relayerclient "relayer/client"
@@ -17,8 +16,6 @@ import (
 	"time"
 
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
-	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
-	sdk "github.com/cosmos/cosmos-sdk/types"
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -428,21 +425,6 @@ func (w *Worker) updateEthClientWithPeriodCrossing(ctx Context, beaconAPIURL, et
 		return fmt.Errorf("no light client updates available for period range %d to %d", trustedPeriod, targetPeriod)
 	}
 
-	// Get the private key from environment variable
-	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
-	if privKeyHex == "" {
-		return fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required in .env file")
-	}
-
-	// Decode the private key
-	privKeyBytes, err := hex.DecodeString(strings.TrimPrefix(privKeyHex, "0x"))
-	if err != nil {
-		return fmt.Errorf("failed to decode private key: %w", err)
-	}
-
-	privKey := secp256k1.PrivKey{Key: privKeyBytes}
-	signerAddr := sdk.AccAddress(privKey.PubKey().Address()).String()
-
 	var msgs []any
 	latestTrustedSlot := trustedSlot
 	latestPeriod := trustedPeriod
@@ -482,7 +464,7 @@ func (w *Worker) updateEthClientWithPeriodCrossing(ctx Context, beaconAPIURL, et
 			TrustedSlot:     latestTrustedSlot,
 		}
 
-		msg, err := buildMsgUpdateClient(signerAddr, ethClientID, header)
+		msg, err := buildMsgUpdateClient("", ethClientID, header)
 		if err != nil {
 			return fmt.Errorf("failed to build update client message: %w", err)
 		}
@@ -529,7 +511,7 @@ func (w *Worker) updateEthClientWithPeriodCrossing(ctx Context, beaconAPIURL, et
 			TrustedSlot:     latestTrustedSlot,
 		}
 
-		msg, err := buildMsgUpdateClient(signerAddr, ethClientID, header)
+		msg, err := buildMsgUpdateClient("", ethClientID, header)
 		if err != nil {
 			return fmt.Errorf("failed to build update client message: %w", err)
 		}
