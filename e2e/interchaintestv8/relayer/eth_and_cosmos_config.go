@@ -14,12 +14,20 @@ type EthCosmosConfigInfo struct {
 	EthRPC string
 	// Ethereum Beacon API URL
 	BeaconAPI string
-	// Groth16 config
-	Groth16Config ProverConfig
 	// Signer address cosmos
 	SignerAddress string
 	// Whether we use the mock client in Cosmos
 	MockWasmClient bool
+	// ICS07 Tendermint light client address (set after create-clients)
+	ICS07Client string
+	// WrapperVerifier contract address
+	WrapperVerifier string
+	// Membership program contract address
+	Membership string
+	// Misbehaviour program contract address
+	Misbehaviour string
+	// UpdateClient program contract address
+	UpdateClient string
 }
 
 func CreateEthCosmosModules(
@@ -44,16 +52,14 @@ func CreateEthCosmosModules(
 			SrcChain: configInfo.CosmosChainID,
 			DstChain: configInfo.EthChainID,
 			Config: CosmosToEthModuleConfig{
-				TmRpcUrl:     configInfo.TmRPC,
-				Ics26Address: configInfo.ICS26Address,
-				EthRpcUrl:    configInfo.EthRPC,
-				Groth16Prover:    configInfo.Groth16Config,
-				Groth16Programs: ProgramPaths{
-					UpdateClient:              "./programs/groth16-programs/target/elf-compilation/riscv32im-succinct-zkvm-elf/release/groth16-ics07-tendermint-update-client",
-					Membership:                "./programs/groth16-programs/target/elf-compilation/riscv32im-succinct-zkvm-elf/release/groth16-ics07-tendermint-membership",
-					UpdateClientAndMembership: "./programs/groth16-programs/target/elf-compilation/riscv32im-succinct-zkvm-elf/release/groth16-ics07-tendermint-uc-and-membership",
-					Misbehaviour:              "./programs/groth16-programs//target/elf-compilation/riscv32im-succinct-zkvm-elf/release/groth16-ics07-tendermint-misbehaviour",
-				},
+				TmRpcUrl:        configInfo.TmRPC,
+				Ics26Address:    configInfo.ICS26Address,
+				EthRpcUrl:       configInfo.EthRPC,
+				ICS07Client:     configInfo.ICS07Client,
+				WrapperVerifier: configInfo.WrapperVerifier,
+				Membership:      configInfo.Membership,
+				Misbehaviour:    configInfo.Misbehaviour,
+				UpdateClient:    configInfo.UpdateClient,
 			},
 		},
 	}

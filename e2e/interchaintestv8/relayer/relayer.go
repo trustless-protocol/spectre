@@ -30,7 +30,17 @@ func DefaultRelayerGRPCAddress() string {
 
 // binaryPath returns the path to the relayer binary.
 func binaryPath() string {
-	return "relayer"
+	return "/Users/ducnt/Decentrio/fast-ibc/relayer/relayer"
+}
+
+// proverEnv returns env vars pointing to the relayer's prover bin files using absolute paths.
+func proverEnv() []string {
+	base := "/Users/ducnt/Decentrio/fast-ibc/relayer/bin"
+	return []string{
+		"PROVER_R1CS_PATH=" + base + "/r1cs.bin",
+		"PROVER_PK_PATH=" + base + "/pk.bin",
+		"PROVER_VK_PATH=" + base + "/vk.bin",
+	}
 }
 
 // StartRelayer starts the relayer with the given config file.
@@ -44,6 +54,7 @@ func StartRelayer(configPath string) (*os.Process, error) {
 	cmd := exec.Command(binaryPath(), "start", "--config", configPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), proverEnv()...)
 
 	// run this command in the background
 	err = cmd.Start()
@@ -55,6 +66,23 @@ func StartRelayer(configPath string) (*os.Process, error) {
 	time.Sleep(5 * time.Second)
 
 	return cmd.Process, nil
+}
+
+// RunCreateClients runs the relayer's create-clients command synchronously (blocks until completion).
+func RunCreateClients(configPath string, extraArgs ...string) error {
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Running create-clients with config:\n%s\n", config)
+
+	args := append([]string{"create-clients", "--config", configPath}, extraArgs...)
+	cmd := exec.Command(binaryPath(), args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), proverEnv()...)
+
+	return cmd.Run()
 }
 
 // GetGRPCClient returns a gRPC client for the relayer.

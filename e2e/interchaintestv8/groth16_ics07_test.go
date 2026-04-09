@@ -94,11 +94,6 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 			beaconAPI = eth.BeaconAPIClient.GetBeaconAPIURL()
 		}
 
-		groth16Config := relayer.ProverConfig{
-			Type:           prover,
-			PrivateCluster: os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueGroth16Prover_PrivateCluster,
-		}
-
 		config := relayer.NewConfig(relayer.CreateEthCosmosModules(
 			relayer.EthCosmosConfigInfo{
 				EthChainID:     eth.ChainID.String(),
@@ -107,7 +102,6 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 				ICS26Address:   s.ics26Address.Hex(),
 				EthRPC:         eth.RPC,
 				BeaconAPI:      beaconAPI,
-				Groth16Config:  groth16Config,
 				SignerAddress:  "",   // unused
 				MockWasmClient: true, // unused
 			}),

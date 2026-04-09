@@ -28,10 +28,14 @@ type DeployedContracts struct {
 	// Groth16Verifier for groth16
 	VerifierGroth16 string `json:"verifierGroth16"`
 	// Mock Groth16 verifier
-	VerifierMock  string `json:"verifierMock"`
-	Ics26Router   string `json:"ics26Router"`
-	Ics20Transfer string `json:"ics20Transfer"`
-	Erc20         string `json:"erc20"`
+	VerifierMock    string `json:"verifierMock"`
+	WrapperVerifier string `json:"wrapperVerifier"`
+	Membership      string `json:"membership"`
+	UpdateClient    string `json:"updateClient"`
+	Misbehaviour    string `json:"misbehaviour"`
+	Ics26Router     string `json:"ics26Router"`
+	Ics20Transfer   string `json:"ics20Transfer"`
+	Erc20           string `json:"erc20"`
 }
 
 func GetEthContractsFromDeployOutput(stdout string) (DeployedContracts, error) {
@@ -55,7 +59,11 @@ func GetEthContractsFromDeployOutput(stdout string) (DeployedContracts, error) {
 
 	if embeddedContracts.Erc20 == "" ||
 		embeddedContracts.Ics20Transfer == "" ||
-		embeddedContracts.Ics26Router == "" {
+		embeddedContracts.Ics26Router == "" ||
+		embeddedContracts.WrapperVerifier == "" ||
+		embeddedContracts.Membership == "" ||
+		embeddedContracts.UpdateClient == "" ||
+		embeddedContracts.Misbehaviour == "" {
 		return DeployedContracts{}, fmt.Errorf("one or more required contracts missing: %+v", embeddedContracts)
 	}
 
