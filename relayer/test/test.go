@@ -9,6 +9,7 @@ import (
 	"log"
 	"math/big"
 	"os"
+	"strconv"
 	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	contractICS26Router "relayer/bindings/ICS26Router"
 	"relayer/client"
@@ -88,7 +89,6 @@ func loadConfig(configPath string) (*AppConfig, error) {
 	for _, m := range appConfig.Modules {
 
 		if m.Name == "cosmos_to_eth" {
-			fmt.Println("m.Config: ", string(m.Config))
 			if err := json.Unmarshal(m.Config, &c2eCfg); err != nil {
 				return nil, fmt.Errorf("failed to parse cosmos_to_eth config: %w", err)
 			}
@@ -107,17 +107,8 @@ func loadConfig(configPath string) (*AppConfig, error) {
 	}, nil
 }
 
-// type EurekaEvent struct {
-// 	eventType string
-// 	packet    channeltypesv2.Packet
-// 	ack       *channeltypesv2.Acknowledgement
-// }
 
 func init() {
-	// tendermintAbiJson, initErr = os.ReadFile("../../abi/SP1ICS07Tendermint.json")
-	// if initErr != nil {
-	// 	log.Fatal(initErr)
-	// }
 	err := godotenv.Load()
 	if err != nil {
 		log.Fatal("Error loading .env file")
@@ -206,12 +197,6 @@ func (l *Listener) SubscribeCosmos(ctx services.Context, worker *services.Worker
 				continue
 			}
 			log.Printf("[Listener] Proof obtained, value len=%d, proofs count=%d", len(value), len(proof.Proofs))
-			log.Printf("[Listener] AppHash: %x", latestLightBlock.SignedHeader.AppHash)
-			log.Printf("[Listener] Value: %x", value)
-			log.Printf("[Listener] ConsensusState: timestamp=%d, root(appHash)=%x, nextValHash=%x",
-				latestLightBlock.SignedHeader.Header.Time.Unix(),
-				latestLightBlock.SignedHeader.AppHash,
-				latestLightBlock.SignedHeader.Header.NextValidatorsHash)
 
 			if len(value) == 0 {
 				ctx.Logger.Println("WARNING: packet commitment value is empty at this height, skipping")
@@ -348,41 +333,52 @@ func (l *Listener) SubscribeEth(ctx services.Context, worker *services.Worker) {
 				continue
 			}
 
-			// Update ETH light client on Cosmos — retry until finalization catches up
-			log.Printf("[Listener] Updating ETH client on Cosmos (WriteAck at ETH block %d)...", ev.Raw.BlockNumber)
-			var proofBlockNumber uint64
-			for attempt := 0; attempt < 30; attempt++ {
+			// Wait for beacon finality to cover the target block before updating
+			log.Printf("[Listener] Waiting for ETH finality to cover WriteAck block %d...", ev.Raw.BlockNumber)
+			finalized := false
+			for attempt := 0; attempt < 60; attempt++ {
 				if attempt > 0 {
-					// Wait for new finalized slot before retrying
-					log.Printf("[Listener] Waiting 10s for new finalized slot before retry...")
 					time.Sleep(10 * time.Second)
 				}
-
-				if err := worker.UpdateEthClient(ctx); err != nil {
-					log.Printf("[Listener] ETH client update attempt %d: %v", attempt+1, err)
+				finalityUpdate, err := client.GetFinalityUpdate(ctx.BeaconAPIURL())
+				if err != nil {
+					log.Printf("[Listener] Failed to get finality update: %v", err)
 					continue
 				}
-
-				ethClientState, err := client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
-				if err != nil {
-					ctx.Logger.Printf("[Listener] Failed to get ETH client state: %v", err)
+				execBlock, _ := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+				if execBlock >= ev.Raw.BlockNumber {
+					log.Printf("[Listener] Beacon finalized execution block %d >= WriteAck block %d, updating client...",
+						execBlock, ev.Raw.BlockNumber)
+					finalized = true
 					break
 				}
-				proofBlockNumber = ethClientState.LatestExecutionBlockNumber
-				if proofBlockNumber >= ev.Raw.BlockNumber {
-					log.Printf("[Listener] ETH client at execution block %d >= WriteAck block %d, ready to prove",
-						proofBlockNumber, ev.Raw.BlockNumber)
-					break
-				}
-				log.Printf("[Listener] ETH client at block %d < WriteAck block %d, waiting for finalization... (attempt %d/30)",
-					proofBlockNumber, ev.Raw.BlockNumber, attempt+1)
+				log.Printf("[Listener] Beacon finalized block %d < WriteAck block %d, waiting... (attempt %d/60)",
+					execBlock, ev.Raw.BlockNumber, attempt+1)
 			}
+			if !finalized {
+				ctx.Logger.Printf("[Listener] Beacon finality did not reach WriteAck block %d after retries, skipping", ev.Raw.BlockNumber)
+				continue
+			}
+
+			// Single update — beacon finality already covers the target
+			if err := worker.UpdateEthClient(ctx); err != nil {
+				log.Printf("[Listener] ETH client update failed: %v", err)
+				continue
+			}
+
+			ethClientState, err := client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
+			if err != nil {
+				ctx.Logger.Printf("[Listener] Failed to get ETH client state: %v", err)
+				continue
+			}
+			proofBlockNumber := ethClientState.LatestExecutionBlockNumber
+			proofSlot := ethClientState.LatestSlot
 			if proofBlockNumber < ev.Raw.BlockNumber {
-				ctx.Logger.Printf("[Listener] ETH client still at block %d < WriteAck block %d after retries, skipping",
+				ctx.Logger.Printf("[Listener] ETH client at block %d still < WriteAck block %d after update, skipping",
 					proofBlockNumber, ev.Raw.BlockNumber)
 				continue
 			}
-			log.Printf("[Listener] ETH client at execution block %d, proving WriteAck at block %d", proofBlockNumber, ev.Raw.BlockNumber)
+			log.Printf("[Listener] ETH client at execution block %d (slot %d), proving WriteAck at block %d", proofBlockNumber, proofSlot, ev.Raw.BlockNumber)
 
 			// ack_path = destClientID + [0x03] + sequence.to_be_bytes(8)
 			seqBytes := make([]byte, 8)
@@ -398,13 +394,14 @@ func (l *Listener) SubscribeEth(ctx services.Context, worker *services.Worker) {
 				continue
 			}
 
+			// ProofHeight uses slot (matching wasm client's IBC height), not execution block number
 			ackMsg := &channeltypesv2.MsgAcknowledgement{
 				Packet: cosmosPacket,
 				Acknowledgement: channeltypesv2.Acknowledgement{
 					AppAcknowledgements: ev.Acknowledgements,
 				},
 				ProofAcked:  proofBytes,
-				ProofHeight: clienttypes.Height{RevisionNumber: 0, RevisionHeight: proofBlockNumber},
+				ProofHeight: clienttypes.Height{RevisionNumber: 0, RevisionHeight: proofSlot},
 				Signer:      signerAddr,
 			}
 			log.Printf("[Listener] Sending MsgAcknowledgement to Cosmos for seq=%d...", cosmosPacket.Sequence)
@@ -428,7 +425,7 @@ func main() {
 	if err != nil {
 		panic(fmt.Errorf("failed to load config: %w", err).Error())
 	}
-	fmt.Println("cfg: ", cfg)
+	log.Printf("[main] config loaded: cosmos=%s eth=%s beacon=%s", cfg.CosmosToEthConfig.TmRpcUrl, cfg.EthToCosmosConfig.EthRpcUrl, cfg.EthToCosmosConfig.BeaconUrl)
 
 	ethRpcEndpoint := cfg.EthToCosmosConfig.EthRpcUrl
 	ethClient, err := ethclient.Dial(ethRpcEndpoint)
@@ -460,16 +457,16 @@ func main() {
 	defer ctx.CosmosClient().Stop()
 	listener := Listener{}
 
-	// unbondingPeriod, err := client.GetUnbondingTime(cosmosClient)
-	// if err != nil {
-	// 	panic(fmt.Errorf("failed to fetch unbonding time client: %w", err))
-	// }
-	// trustingPeriod := 2 * uint32(unbondingPeriod) / 3
-	// err = worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, "1/3")
-	// if err != nil {
-	// 	panic(fmt.Errorf("create client err: %w", err))
-	// }
-	ethClientID, err := worker.CreateEthClient(ctx, "0xc6d93045091f05f6c056ca8fa583126902967b4b829085042529d279c188391c")
+	unbondingPeriod, err := client.GetUnbondingTime(cosmosClient)
+	if err != nil {
+		panic(fmt.Errorf("failed to fetch unbonding time client: %w", err))
+	}
+	trustingPeriod := 2 * uint32(unbondingPeriod) / 3
+	err = worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, "1/3")
+	if err != nil {
+		panic(fmt.Errorf("create client err: %w", err))
+	}
+	ethClientID, err := worker.CreateEthClient(ctx, "0xd24688886ed8cec00c667fa69c173fbab9a08c75900ce18afe10517c82e55592")
 	if err != nil {
 		panic(fmt.Errorf("create client err: %w", err))
 	}

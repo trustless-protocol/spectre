@@ -129,7 +129,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		"cosmoshub-1",
 		routerContract.IICS02ClientMsgsCounterpartyInfo{
 			ClientId:     "08-wasm-0",
-			MerklePrefix: [][]byte{[]byte(exported.StoreKey), []byte("")},
+			MerklePrefix: [][]byte{[]byte("")},
 		},
 		*ctx.ClientContract(),
 	)
@@ -291,7 +291,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 
 	privKey := secp256k1.PrivKey{Key: privKeyBytes}
 	signerAddr := sdk.AccAddress(privKey.PubKey().Address())
-	fmt.Println("signerAddr: ", signerAddr.String())
+	log.Printf("[CreateEthClient] signer: %s", signerAddr.String())
 
 	// Get chain configuration from environment
 	chainID := os.Getenv("COSMOS_CHAIN_ID")
@@ -441,7 +441,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	// Build and broadcast MsgRegisterCounterparty as a separate transaction
 	registerMsg := clienttypesv2.NewMsgRegisterCounterparty(
 		newClientID,
-		[][]byte{[]byte(exported.StoreKey), []byte("")},
+		[][]byte{[]byte("")},
 		"cosmoshub-1",
 		signerAddr.String(),
 	)
@@ -596,13 +596,6 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 		feeDenom = "stake" // Default fee denom
 	}
 
-	feeAmount := int64(1000) // Default fee amount
-	if feeStr := os.Getenv("COSMOS_FEE_AMOUNT"); feeStr != "" {
-		if _, err := fmt.Sscanf(feeStr, "%d", &feeAmount); err != nil {
-			return fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
-		}
-	}
-
 	// Query account info (account number and sequence) from the chain
 	accountNumber, sequence, err := h.queryAccountInfo(svcCtx, signerAddr.String())
 	if err != nil {
@@ -632,12 +625,20 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 			msg.Signer = signerAddr.String()
 		}
 		if os.Getenv("COSMOS_GAS_LIMIT") == "" {
-			gasLimit = uint64(800000) // MsgUpdateClient requires significantly more gas
+			gasLimit = uint64(2000000) // MsgUpdateClient requires significantly more gas for wasm verification
 		}
 	}
 
 	if err := txBuilder.SetMsgs(sdkMsg); err != nil {
 		return fmt.Errorf("failed to set messages: %w", err)
+	}
+
+	// Set fee to match gas limit (gasPrice = 1stake per gas unit)
+	feeAmount := int64(gasLimit)
+	if feeStr := os.Getenv("COSMOS_FEE_AMOUNT"); feeStr != "" {
+		if _, err := fmt.Sscanf(feeStr, "%d", &feeAmount); err != nil {
+			return fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
+		}
 	}
 
 	txBuilder.SetGasLimit(gasLimit)
@@ -782,8 +783,8 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	// MsgUpdateClient requires significantly more gas due to wasm verification
 	for _, msg := range sdkMsgs {
 		if _, ok := msg.(*clienttypes.MsgUpdateClient); ok {
-			if baseGas < 800000 {
-				baseGas = 800000
+			if baseGas < 2000000 {
+				baseGas = 2000000
 			}
 			break
 		}
@@ -795,7 +796,8 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 		feeDenom = "stake" // Default fee denom
 	}
 
-	feeAmount := int64(1000) * int64(len(sdkMsgs)) // Scale fee with number of messages
+	// Set fee to match gas limit (gasPrice = 1stake per gas unit)
+	feeAmount := int64(gasLimit)
 	if feeStr := os.Getenv("COSMOS_FEE_AMOUNT"); feeStr != "" {
 		var baseFee int64
 		if _, err := fmt.Sscanf(feeStr, "%d", &baseFee); err != nil {

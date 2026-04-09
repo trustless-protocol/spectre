@@ -7,10 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"math/big"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
@@ -48,7 +46,6 @@ type EthereumConsensusState struct {
 	Timestamp            uint64                   `json:"timestamp"`
 	CurrentSyncCommittee SummarizedSyncCommittee  `json:"current_sync_committee"`
 	NextSyncCommittee    *SummarizedSyncCommittee `json:"next_sync_committee"`
-	StorageRoot          string                   `json:"storage_root"`
 }
 
 type ForkParameters struct {
@@ -69,6 +66,14 @@ type Fork struct {
 func (cs *EthereumClientState) ComputeSyncCommitteePeriodAtSlot(slot uint64) uint64 {
 	epoch := slot / cs.SlotsPerEpoch
 	return epoch / cs.EpochsPerSyncCommitteePeriod
+}
+
+// ComputeSlotAtTimestamp returns the slot number for a given unix timestamp.
+func (cs *EthereumClientState) ComputeSlotAtTimestamp(timestamp uint64) uint64 {
+	if timestamp < cs.GenesisTime {
+		return cs.GenesisSlot
+	}
+	return cs.GenesisSlot + (timestamp-cs.GenesisTime)/cs.SecondsPerSlot
 }
 
 type SyncCommittee struct {
@@ -571,20 +576,6 @@ func httpGet[T any](url string) (T, error) {
 
 func GetFinalityUpdate(beaconAPIURL string) (*LightClientFinalityUpdate, error) {
 	url := fmt.Sprintf("%s/eth/v1/beacon/light_client/finality_update", beaconAPIURL)
-
-	// Debug: save raw response to check for fields like requests_hash
-	if rawResp, err := http.Get(url); err == nil {
-		defer rawResp.Body.Close()
-		if rawBody, err := io.ReadAll(rawResp.Body); err == nil {
-			os.WriteFile("/tmp/finality_update_raw.json", rawBody, 0644)
-			log.Printf("[GetFinalityUpdate] Raw response saved to /tmp/finality_update_raw.json (%d bytes)", len(rawBody))
-			// Check for requests_hash in the raw response
-			if strings.Contains(string(rawBody), "requests_hash") {
-				log.Printf("[GetFinalityUpdate] WARNING: raw response contains 'requests_hash' field which is NOT in our Go struct!")
-			}
-		}
-	}
-
 	response, err := httpGet[FinalityUpdateResponse](url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get finality update: %w", err)
@@ -748,6 +739,15 @@ func (s *BeaconSpec) ToForkParameters() (*ForkParameters, error) {
 	if err != nil {
 		return nil, err
 	}
+	electraForkVersion := s.ElectraForkVersion
+	// The current Rust light-client type supports up to Electra.
+	// If Fulu is active from genesis, fold Fulu into Electra so domain computation
+	// uses the actual signing fork version.
+	if s.FuluForkVersion != "" && s.FuluForkEpoch != "" {
+		if fuluForkEpoch, err := strconv.ParseUint(s.FuluForkEpoch, 10, 64); err == nil && fuluForkEpoch == 0 {
+			electraForkVersion = s.FuluForkVersion
+		}
+	}
 	return &ForkParameters{
 		GenesisForkVersion: s.GenesisForkVersion,
 		GenesisSlot:        0,
@@ -768,7 +768,7 @@ func (s *BeaconSpec) ToForkParameters() (*ForkParameters, error) {
 			Epoch:   denebForkEpoch,
 		},
 		Electra: Fork{
-			Version: s.ElectraForkVersion,
+			Version: electraForkVersion,
 			Epoch:   electraForkEpoch,
 		},
 	}, nil
@@ -794,9 +794,9 @@ type storageProofData struct {
 
 // internal types for eth_getProof JSON response
 type ethProofResult struct {
-	AccountProof []string            `json:"accountProof"`
-	StorageHash  ethcommon.Hash      `json:"storageHash"`
-	StorageProof []ethStorageProof   `json:"storageProof"`
+	AccountProof []string          `json:"accountProof"`
+	StorageHash  ethcommon.Hash    `json:"storageHash"`
+	StorageProof []ethStorageProof `json:"storageProof"`
 }
 
 type ethStorageProof struct {
