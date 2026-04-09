@@ -678,44 +678,6 @@ func GetEthereumClientState(cosmosClient *rpchttp.HTTP, clientID string) (*Ether
 	return &ethClientState, nil
 }
 
-func GetEthereumConsensusState(cosmosClient *rpchttp.HTTP, clientID string, height uint64) (*EthereumConsensusState, error) {
-	queryReq := &clienttypes.QueryConsensusStateRequest{
-		ClientId:       clientID,
-		RevisionNumber: 0,
-		RevisionHeight: height,
-	}
-
-	reqBytes, err := proto.Marshal(queryReq)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal query request: %w", err)
-	}
-
-	result, err := cosmosClient.ABCIQuery(context.Background(), "/ibc.core.client.v1.Query/ConsensusState", reqBytes)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query consensus state: %w", err)
-	}
-
-	if result.Response.Code != 0 {
-		return nil, fmt.Errorf("query failed with code %d: %s", result.Response.Code, result.Response.Log)
-	}
-
-	var queryResp clienttypes.QueryConsensusStateResponse
-	if err := proto.Unmarshal(result.Response.Value, &queryResp); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal query response: %w", err)
-	}
-
-	var wasmConsensusState ibcwasmtypes.ConsensusState
-	if err := proto.Unmarshal(queryResp.ConsensusState.Value, &wasmConsensusState); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal wasm consensus state: %w", err)
-	}
-
-	var ethConsensusState EthereumConsensusState
-	if err := json.Unmarshal(wasmConsensusState.Data, &ethConsensusState); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal ethereum consensus state: %w", err)
-	}
-
-	return &ethConsensusState, nil
-}
 
 func (s *BeaconSpec) ToForkParameters() (*ForkParameters, error) {
 	altairForkEpoch, err := strconv.ParseUint(s.AltairForkEpoch, 10, 64)

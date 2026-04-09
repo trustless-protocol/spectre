@@ -53,7 +53,6 @@ func (w *Worker) CreateCosmosClient(ctx Context, proofType string, trustingPerio
 	if err != nil {
 		return fmt.Errorf("failed to encode client state: %w", err)
 	}
-	log.Printf("[CreateCosmosClient] clientStateEncoded len=%d hex=%x", len(clientStateEncoded), clientStateEncoded[:min(64, len(clientStateEncoded))])
 
 	consensusStateEncoded, err := relayerclient.EncodeConsensusState(consensusState)
 	if err != nil {
@@ -84,7 +83,6 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 		if err != nil {
 			return nil, fmt.Errorf("failed to get on-chain client state: %w", err)
 		}
-		log.Printf("[UpdateCosmosClient] GetClientState returned %d bytes: %x", len(clientStateBytes), clientStateBytes[:min(64, len(clientStateBytes))])
 		onChainClientState, err := relayerclient.DecodeClientState(clientStateBytes)
 		if err != nil {
 			return nil, fmt.Errorf("failed to decode on-chain client state: %w", err)
@@ -156,14 +154,6 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 		Root:               bytesToBytes32(trustedLightBlock.SignedHeader.Header.AppHash),
 		NextValidatorsHash: bytesToBytes32(trustedLightBlock.SignedHeader.NextValidatorsHash),
 	}
-
-	// Debug: log consensus state fields and hash for comparison with on-chain
-	csEncoded, _ := relayerclient.EncodeConsensusState(consensusState)
-	csHash := crypto.Keccak256(csEncoded)
-	log.Printf("[UpdateCosmosClient] trustedConsensusState: timestamp=%s root=%x nextValHash=%x",
-		consensusState.Timestamp.String(), consensusState.Root, consensusState.NextValidatorsHash)
-	log.Printf("[UpdateCosmosClient] csEncoded len=%d hex=%x", len(csEncoded), csEncoded)
-	log.Printf("[UpdateCosmosClient] csHash=%x", csHash)
 
 	proposedHeader := latestLightBlock.IntoHeader(*trustedLightBlock)
 

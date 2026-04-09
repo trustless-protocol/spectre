@@ -958,12 +958,7 @@ func (h *Handler) queryAccountInfo(svcCtx services.Context, address string) (uin
 	return account.GetAccountNumber(), account.GetSequence(), nil
 }
 
-// waitForTx polls the chain until the transaction with the given hash is included in a block or the timeout expires.
-func (h *Handler) waitForTx(svcCtx services.Context, txHash []byte, timeout time.Duration) error {
-	_, err := h.waitForTxResult(svcCtx, txHash, timeout)
-	return err
-}
-
+// waitForTxResult polls the chain until the transaction with the given hash is included in a block or the timeout expires.
 func (h *Handler) waitForTxResult(svcCtx services.Context, txHash []byte, timeout time.Duration) (*coretypes.ResultTx, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
