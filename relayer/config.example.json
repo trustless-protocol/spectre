@@ -12,7 +12,7 @@
       "config": {
         "tm_rpc_url": "http://127.0.0.1:26657",
         "ics26_address": "0x63e6dde6763c3466c7b45be880f7ee5dc2ca3e25",
-        "eth_rpc_url": "http://127.0.0.1:64675",
+        "eth_rpc_url": "http://127.0.0.1:55451",
         "ics07_client": "0xD1ea1592b7927a2f0EE5f8567928Df0cfA687C78",
         "wrapper_verifier": "0x422a3492e218383753d8006c7bfa97815b44373f",
         "membership": "0x0643d39d47cf0ea95dbea69bf11a7f8c4bc34968",
@@ -27,8 +27,8 @@
       "config": {
         "tm_rpc_url": "http://127.0.0.1:26657",
         "ics26_address": "0x63e6dde6763c3466c7b45be880f7ee5dc2ca3e25",
-        "eth_rpc_url": "http://127.0.0.1:64675",
-        "eth_beacon_api_url": "http://127.0.0.1:64679",
+        "eth_rpc_url": "http://127.0.0.1:55451",
+        "eth_beacon_api_url": "http://127.0.0.1:55461",
         "signer_address": "cosmos10d07y265gmmuvt4z0w9aw880jnsr700j6zn9kn"
       }
     }

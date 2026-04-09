@@ -2,16 +2,18 @@ package client
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 
-	"github.com/cometbft/cometbft/crypto/merkle"
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/cosmos/gogoproto/proto"
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
@@ -75,20 +77,87 @@ type SyncCommittee struct {
 }
 
 func (sc *SyncCommittee) ToSummarizedSyncCommittee() (*SummarizedSyncCommittee, error) {
-	pks := [][]byte{}
+	pks := make([][]byte, 0, len(sc.Pubkeys))
 	for _, pk := range sc.Pubkeys {
 		pkTrimmed := strings.TrimPrefix(pk, "0x")
 		pkBytes, err := hex.DecodeString(pkTrimmed)
 		if err != nil {
 			return nil, err
 		}
+		if len(pkBytes) != 48 {
+			return nil, fmt.Errorf("expected 48-byte BLS public key, got %d bytes", len(pkBytes))
+		}
 		pks = append(pks, pkBytes)
 	}
 
+	pubkeysHash := sszTreeHashBLSPubkeys(pks)
 	return &SummarizedSyncCommittee{
-		PubkeysHash:     hex.EncodeToString(merkle.HashFromByteSlices(pks)),
+		PubkeysHash:     "0x" + hex.EncodeToString(pubkeysHash[:]),
 		AggregatePubkey: sc.AggregatePubkey,
 	}, nil
+}
+
+// sszTreeHashBLSPubkeys computes the SSZ tree_hash_root for Vec<FixedBytes<48>>.
+// sszTreeHashBLSPubkeys computes the SSZ tree hash root of a Vec<FixedBytes<48>>,
+// matching the Rust [FixedBytes<48>]::tree_hash_root() (TreeHashType::Vector — no mix_in_length).
+//
+// Algorithm:
+//  1. Each 48-byte pubkey is hashed as a 2-chunk SSZ fixed-vector:
+//     leaf = sha256(pk[0:32] || pk[32:48] || zeros[16])
+//  2. Merkleize the leaf hashes (pad to next power of two, compute SHA256 binary tree)
+//     No length mixing — Vector type, not List.
+func sszTreeHashBLSPubkeys(pubkeys [][]byte) [32]byte {
+	// Step 1: leaf hash per pubkey (2-chunk SSZ vector hash)
+	leaves := make([][32]byte, len(pubkeys))
+	for i, pk := range pubkeys {
+		var chunk0, chunk1 [32]byte
+		copy(chunk0[:], pk[:32])
+		copy(chunk1[:], pk[32:]) // 16 bytes of key + 16 implicit zeros
+		h := sha256.New()
+		h.Write(chunk0[:])
+		h.Write(chunk1[:])
+		copy(leaves[i][:], h.Sum(nil))
+	}
+
+	// Step 2: merkleize (Vector type — no mix_in_length)
+	return sszMerkleize(leaves)
+}
+
+func sszMerkleize(chunks [][32]byte) [32]byte {
+	if len(chunks) == 0 {
+		return [32]byte{}
+	}
+	// Pad to next power of two
+	n := sszNextPowerOfTwo(len(chunks))
+	padded := make([][32]byte, n)
+	copy(padded, chunks)
+
+	// Iteratively hash pairs until one root remains
+	for len(padded) > 1 {
+		next := make([][32]byte, len(padded)/2)
+		for i := range next {
+			h := sha256.New()
+			h.Write(padded[2*i][:])
+			h.Write(padded[2*i+1][:])
+			copy(next[i][:], h.Sum(nil))
+		}
+		padded = next
+	}
+	return padded[0]
+}
+
+func sszNextPowerOfTwo(n int) int {
+	if n <= 1 {
+		return 1
+	}
+	n--
+	n |= n >> 1
+	n |= n >> 2
+	n |= n >> 4
+	n |= n >> 8
+	n |= n >> 16
+	n |= n >> 32
+	return n + 1
 }
 
 type SummarizedSyncCommittee struct {
@@ -128,11 +197,35 @@ type ExecutionPayloadHeader struct {
 	WithdrawalsRoot  string `json:"withdrawals_root"`
 	BlobGasUsed      string `json:"blob_gas_used"`
 	ExcessBlobGas    string `json:"excess_blob_gas"`
+	// Electra (EIP-7685): hash of the execution requests
+	RequestsHash string `json:"requests_hash,omitempty"`
 }
 
 type SyncAggregate struct {
 	SyncCommitteeBits      string `json:"sync_committee_bits"`
 	SyncCommitteeSignature string `json:"sync_committee_signature"`
+}
+
+// CountSyncCommitteeParticipants counts the number of set bits in a hex-encoded bitvector.
+func CountSyncCommitteeParticipants(bitsHex string) uint64 {
+	bitsHex = strings.TrimPrefix(bitsHex, "0x")
+	var count uint64
+	for _, c := range bitsHex {
+		var nibble uint64
+		switch {
+		case c >= '0' && c <= '9':
+			nibble = uint64(c - '0')
+		case c >= 'a' && c <= 'f':
+			nibble = uint64(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			nibble = uint64(c-'A') + 10
+		}
+		for nibble != 0 {
+			count += nibble & 1
+			nibble >>= 1
+		}
+	}
+	return count
 }
 
 type LightClientUpdate struct {
@@ -478,6 +571,20 @@ func httpGet[T any](url string) (T, error) {
 
 func GetFinalityUpdate(beaconAPIURL string) (*LightClientFinalityUpdate, error) {
 	url := fmt.Sprintf("%s/eth/v1/beacon/light_client/finality_update", beaconAPIURL)
+
+	// Debug: save raw response to check for fields like requests_hash
+	if rawResp, err := http.Get(url); err == nil {
+		defer rawResp.Body.Close()
+		if rawBody, err := io.ReadAll(rawResp.Body); err == nil {
+			os.WriteFile("/tmp/finality_update_raw.json", rawBody, 0644)
+			log.Printf("[GetFinalityUpdate] Raw response saved to /tmp/finality_update_raw.json (%d bytes)", len(rawBody))
+			// Check for requests_hash in the raw response
+			if strings.Contains(string(rawBody), "requests_hash") {
+				log.Printf("[GetFinalityUpdate] WARNING: raw response contains 'requests_hash' field which is NOT in our Go struct!")
+			}
+		}
+	}
+
 	response, err := httpGet[FinalityUpdateResponse](url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get finality update: %w", err)
@@ -579,6 +686,45 @@ func GetEthereumClientState(cosmosClient *rpchttp.HTTP, clientID string) (*Ether
 	}
 
 	return &ethClientState, nil
+}
+
+func GetEthereumConsensusState(cosmosClient *rpchttp.HTTP, clientID string, height uint64) (*EthereumConsensusState, error) {
+	queryReq := &clienttypes.QueryConsensusStateRequest{
+		ClientId:       clientID,
+		RevisionNumber: 0,
+		RevisionHeight: height,
+	}
+
+	reqBytes, err := proto.Marshal(queryReq)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal query request: %w", err)
+	}
+
+	result, err := cosmosClient.ABCIQuery(context.Background(), "/ibc.core.client.v1.Query/ConsensusState", reqBytes)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query consensus state: %w", err)
+	}
+
+	if result.Response.Code != 0 {
+		return nil, fmt.Errorf("query failed with code %d: %s", result.Response.Code, result.Response.Log)
+	}
+
+	var queryResp clienttypes.QueryConsensusStateResponse
+	if err := proto.Unmarshal(result.Response.Value, &queryResp); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal query response: %w", err)
+	}
+
+	var wasmConsensusState ibcwasmtypes.ConsensusState
+	if err := proto.Unmarshal(queryResp.ConsensusState.Value, &wasmConsensusState); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal wasm consensus state: %w", err)
+	}
+
+	var ethConsensusState EthereumConsensusState
+	if err := json.Unmarshal(wasmConsensusState.Data, &ethConsensusState); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal ethereum consensus state: %w", err)
+	}
+
+	return &ethConsensusState, nil
 }
 
 func (s *BeaconSpec) ToForkParameters() (*ForkParameters, error) {

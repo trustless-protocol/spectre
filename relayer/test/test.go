@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -20,9 +21,11 @@ import (
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/cosmos/gogoproto/proto"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 
+	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/joho/godotenv"
 )
@@ -294,6 +297,132 @@ func (l *Listener) SubscribeCosmos(ctx services.Context, worker *services.Worker
 		}
 	}
 }
+func (l *Listener) SubscribeEth(ctx services.Context, worker *services.Worker) {
+	filterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), ctx.EthClient())
+	if err != nil {
+		ctx.Logger.Printf("Failed to create ICS26Router filterer: %v", err)
+		return
+	}
+
+	latestBlock, err := ctx.EthClient().BlockNumber(context.Background())
+	if err != nil {
+		ctx.Logger.Printf("[Listener] Failed to get initial ETH block number: %v", err)
+		return
+	}
+	fromBlock := latestBlock
+
+	log.Printf("[Listener] Polling WriteAcknowledgement events from ETH block %d", fromBlock)
+
+	for {
+		time.Sleep(5 * time.Second)
+
+		currentBlock, err := ctx.EthClient().BlockNumber(context.Background())
+		if err != nil {
+			ctx.Logger.Printf("[Listener] Failed to get ETH block number: %v", err)
+			continue
+		}
+		if currentBlock <= fromBlock {
+			continue
+		}
+
+		filterOpts := &bind.FilterOpts{
+			Start:   fromBlock + 1,
+			End:     &currentBlock,
+			Context: context.Background(),
+		}
+		iter, err := filterer.FilterWriteAcknowledgement(filterOpts, nil, nil)
+		if err != nil {
+			ctx.Logger.Printf("[Listener] Failed to filter WriteAcknowledgement: %v", err)
+			continue
+		}
+
+		for iter.Next() {
+			ev := iter.Event
+			log.Printf("[Listener] WriteAcknowledgement found: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
+
+			cosmosPacket := subscriber.EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
+
+			signerAddr, err := worker.TxHandler.CosmosSignerAddress()
+			if err != nil {
+				ctx.Logger.Printf("[Listener] Failed to get cosmos signer: %v", err)
+				continue
+			}
+
+			// Update ETH light client on Cosmos — retry until finalization catches up
+			log.Printf("[Listener] Updating ETH client on Cosmos (WriteAck at ETH block %d)...", ev.Raw.BlockNumber)
+			var proofBlockNumber uint64
+			for attempt := 0; attempt < 30; attempt++ {
+				if attempt > 0 {
+					// Wait for new finalized slot before retrying
+					log.Printf("[Listener] Waiting 10s for new finalized slot before retry...")
+					time.Sleep(10 * time.Second)
+				}
+
+				if err := worker.UpdateEthClient(ctx); err != nil {
+					log.Printf("[Listener] ETH client update attempt %d: %v", attempt+1, err)
+					continue
+				}
+
+				ethClientState, err := client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
+				if err != nil {
+					ctx.Logger.Printf("[Listener] Failed to get ETH client state: %v", err)
+					break
+				}
+				proofBlockNumber = ethClientState.LatestExecutionBlockNumber
+				if proofBlockNumber >= ev.Raw.BlockNumber {
+					log.Printf("[Listener] ETH client at execution block %d >= WriteAck block %d, ready to prove",
+						proofBlockNumber, ev.Raw.BlockNumber)
+					break
+				}
+				log.Printf("[Listener] ETH client at block %d < WriteAck block %d, waiting for finalization... (attempt %d/30)",
+					proofBlockNumber, ev.Raw.BlockNumber, attempt+1)
+			}
+			if proofBlockNumber < ev.Raw.BlockNumber {
+				ctx.Logger.Printf("[Listener] ETH client still at block %d < WriteAck block %d after retries, skipping",
+					proofBlockNumber, ev.Raw.BlockNumber)
+				continue
+			}
+			log.Printf("[Listener] ETH client at execution block %d, proving WriteAck at block %d", proofBlockNumber, ev.Raw.BlockNumber)
+
+			// ack_path = destClientID + [0x03] + sequence.to_be_bytes(8)
+			seqBytes := make([]byte, 8)
+			binary.BigEndian.PutUint64(seqBytes, cosmosPacket.Sequence)
+			ackPath := append([]byte(cosmosPacket.DestinationClient), 0x03)
+			ackPath = append(ackPath, seqBytes...)
+
+			slot := common.HexToHash(services.ICS26_IBC_STORAGE_SLOT)
+			proofBytes, err := client.GetEthMembershipProof(
+				ctx.EthClient(), *ctx.RouterContract(), ackPath, slot, new(big.Int).SetUint64(proofBlockNumber))
+			if err != nil {
+				ctx.Logger.Printf("[Listener] Failed to get ETH membership proof: %v", err)
+				continue
+			}
+
+			ackMsg := &channeltypesv2.MsgAcknowledgement{
+				Packet: cosmosPacket,
+				Acknowledgement: channeltypesv2.Acknowledgement{
+					AppAcknowledgements: ev.Acknowledgements,
+				},
+				ProofAcked:  proofBytes,
+				ProofHeight: clienttypes.Height{RevisionNumber: 0, RevisionHeight: proofBlockNumber},
+				Signer:      signerAddr,
+			}
+			log.Printf("[Listener] Sending MsgAcknowledgement to Cosmos for seq=%d...", cosmosPacket.Sequence)
+			if err := worker.TxHandler.SendCosmosTx(ctx, ackMsg); err != nil {
+				ctx.Logger.Printf("[Listener] Failed to send MsgAcknowledgement: %v", err)
+				continue
+			}
+			log.Printf("[Listener] MsgAcknowledgement sent successfully for seq=%d", cosmosPacket.Sequence)
+		}
+		if err := iter.Error(); err != nil {
+			ctx.Logger.Printf("[Listener] WriteAcknowledgement iterator error: %v", err)
+		}
+		iter.Close()
+
+		fromBlock = currentBlock
+	}
+}
+
 func main() {
 	cfg, err := loadConfig("./config.example.json")
 	if err != nil {
@@ -319,8 +448,8 @@ func main() {
 	}
 	worker := services.NewWorker(&transaction.Handler{}, prover)
 
-	ctx := services.NewCtxWithBeacon(cosmosClient, ethClient, cfg.EthToCosmosConfig.BeaconUrl, "08-wasm-0")
-	ctx.SetAddresses(cfg.CosmosToEthConfig.ICS26Address, cfg.CosmosToEthConfig.WrapperVerifier, cfg.CosmosToEthConfig.Membership, cfg.CosmosToEthConfig.Misbehaviour, cfg.CosmosToEthConfig.UpdateClient, "0x8943545177806ED17B9F23F0a21ee5948eCaa776")
+	ctx := services.NewCtxWithBeacon(cosmosClient, ethClient, cfg.EthToCosmosConfig.BeaconUrl, "")
+	ctx.SetAddresses(cfg.CosmosToEthConfig.ICS26Address, cfg.CosmosToEthConfig.WrapperVerifier, cfg.CosmosToEthConfig.Membership, cfg.CosmosToEthConfig.Misbehaviour, cfg.CosmosToEthConfig.UpdateClient, "0x0000000000000000000000000000000000000000")
 
 	ics07 := common.HexToAddress("0xD1ea1592b7927a2f0EE5f8567928Df0cfA687C78")
 	ctx.SetClient(ics07)
@@ -331,19 +460,22 @@ func main() {
 	defer ctx.CosmosClient().Stop()
 	listener := Listener{}
 
-	unbondingPeriod, err := client.GetUnbondingTime(cosmosClient)
-	if err != nil {
-		panic(fmt.Errorf("failed to fetch unbonding time client: %w", err))
-	}
-	trustingPeriod := 2 * uint32(unbondingPeriod) / 3
-	err = worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, "1/3")
+	// unbondingPeriod, err := client.GetUnbondingTime(cosmosClient)
+	// if err != nil {
+	// 	panic(fmt.Errorf("failed to fetch unbonding time client: %w", err))
+	// }
+	// trustingPeriod := 2 * uint32(unbondingPeriod) / 3
+	// err = worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, "1/3")
+	// if err != nil {
+	// 	panic(fmt.Errorf("create client err: %w", err))
+	// }
+	ethClientID, err := worker.CreateEthClient(ctx, "0xc6d93045091f05f6c056ca8fa583126902967b4b829085042529d279c188391c")
 	if err != nil {
 		panic(fmt.Errorf("create client err: %w", err))
 	}
-	err = worker.CreateEthClient(ctx, "0xc6d93045091f05f6c056ca8fa583126902967b4b829085042529d279c188391c")
-	if err != nil {
-		panic(fmt.Errorf("create client err: %w", err))
-	}
+	ctx.SetEthClientID(ethClientID)
+	log.Printf("[main] ETH light client created: %s", ethClientID)
 
+	go listener.SubscribeEth(ctx, worker)
 	listener.SubscribeCosmos(ctx, worker)
 }

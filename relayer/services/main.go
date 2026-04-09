@@ -36,7 +36,7 @@ func init() {
 
 type TransactionHandler interface {
 	CreateCosmosClientContract(ctx Context, clientState, consensusHash []byte) error
-	CreateEthClient(ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) error
+	CreateEthClient(ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) (string, error)
 	SendEthTx(ctx Context, msg any) error
 	SendCosmosTx(ctx Context, msg any) error
 	SendCosmosTxBatch(ctx Context, msgs []any) error
@@ -300,10 +300,20 @@ func (s *Services) StartLoop() {
 
 				s.txHandler.SendEthTx(ctx, msgRecvPacket)
 			case Ack:
-				ibcPath := utils.IbcCommitmentPath(*packet.Packet, []byte{2})
+				if len(packet.AckBytes) == 0 {
+					ctx.Logger.Println(fmt.Errorf("acknowledgement bytes missing for packet seq=%d", packet.Packet.Sequence))
+					continue
+				}
+
+				ibcPath := utils.IbcCommitmentPath(*packet.Packet, []byte{3})
 
 				// target height are the latest block height
 				value, proof, err := client.ProvePath(ctx.CosmosClient(), latestLightBlock.BlockHeight, ibcPath)
+				if err != nil {
+					ctx.Logger.Println(fmt.Errorf("failed to prove path: %w", err))
+					continue
+				}
+
 				merkleProof := tendermintContract.IMembershipMsgsMerkleProof{
 					Proofs: []tendermintContract.IMembershipMsgsCommitmentProof{},
 				}
@@ -366,8 +376,8 @@ func (s *Services) StartLoop() {
 						TimeoutTimestamp: packet.Packet.TimeoutTimestamp,
 						Payloads:         payloads,
 					},
-
-					MembershipMsg: calldata,
+					Acknowledgement: packet.AckBytes[0],
+					MembershipMsg:   calldata,
 				}
 
 				s.txHandler.SendEthTx(ctx, msgAckPacket)
