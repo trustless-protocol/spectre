@@ -11,7 +11,7 @@ type PacketType int
 
 const (
 	Send     PacketType = iota // Cosmos→ETH: RecvPacket on ETH
-	Ack                        // ETH→Cosmos: AckPacket on ETH (triggered by Cosmos acknowledge_packet)
+	Ack                        // Cosmos→ETH: AckPacket on ETH
 	Timeout                    // Timeout
 	WriteAck                   // Cosmos→ETH: ETH wrote ack → submit MsgAcknowledgement to Cosmos
 )
@@ -19,7 +19,7 @@ const (
 type Packet struct {
 	PacketType PacketType
 	Packet     *channeltypesv2.Packet
-	AckBytes   [][]byte // populated for WriteAck packets (one entry per payload)
+	AckBytes   [][]byte // populated for ack/write-ack flows (one entry per payload)
 }
 
 type BatchPackets struct {

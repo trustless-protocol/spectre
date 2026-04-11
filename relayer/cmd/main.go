@@ -258,10 +258,11 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 
 			if wasmChecksum != "" && cfg.EthToCosmosConfig.BeaconUrl != "" {
 				logger.Sugar().Infof("Creating Ethereum light client on Cosmos (checksum=%s)...", wasmChecksum)
-				if err := worker.CreateEthClient(ctx, wasmChecksum); err != nil {
+				ethClientID, err := worker.CreateEthClient(ctx, wasmChecksum)
+				if err != nil {
 					return fmt.Errorf("failed to create Ethereum client on Cosmos: %w", err)
 				}
-				logger.Sugar().Info("Ethereum light client created on Cosmos")
+				logger.Sugar().Infof("Ethereum light client created on Cosmos: clientID=%s", ethClientID)
 			} else {
 				if wasmChecksum == "" {
 					logger.Sugar().Warn("Skipping ETH client creation: --wasm-checksum not provided")

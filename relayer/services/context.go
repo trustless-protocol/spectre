@@ -91,6 +91,10 @@ func (c *Context) EthClientID() string {
 	return c.ethClientID
 }
 
+func (c *Context) SetEthClientID(id string) {
+	c.ethClientID = id
+}
+
 func (c *Context) SetAddresses(ics26Router, verifier, membership, misbehaviour, updateClient, roleManager string) {
 	ics26RouterAddr := common.HexToAddress(ics26Router)
 	verifierAddr := common.HexToAddress(verifier)

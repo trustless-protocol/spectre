@@ -11,15 +11,12 @@
 ### Go Relayer
 
 - `log.Fatal` for unrecoverable startup errors
-- `start` command: direct event subscription (no batch builder), errors logged per-packet without crashing
+- `start` command: uses `services.StartLoop()` with batch processing (size/time thresholds), bi-directional relay (Cosmos ↔ ETH)
 - `create-clients` command: one-time setup, fails fast on deployment errors
 - Transaction handler retries with re-queried account sequence on nonce conflicts
-- `BatchBuilder` available for batch mode (services/main.go) but `cmd/main.go` uses direct relay
+- `BatchBuilder` manages packet batching with mutex-protected batch management
+- Timeout checking: packets past their timeout are skipped before submission
 
-### Rust Relayer
-
-- Structured logging via `tracing` crate (see `docs/logging.md`)
-- Error propagation with `anyhow`/`thiserror`
 
 ## Observability
 
@@ -47,7 +44,8 @@ See `docs/metrics.md` for full guide. Focus on:
 | Groth16 proof generation timeout | Stalled client update | Relayer restart |
 | Circuit artifact mismatch | Proof verification failure | Versioned `r1cs.bin`, `pk.bin`, `vk.bin` |
 | `go.mod` replace directive | Build failure on new dev machine | Document local path setup |
-| ETH→Cosmos relay incomplete | Only Cosmos→ETH direction works | ETH subscription needs WS + storage proofs (TODO) |
+| ETH→Cosmos ACK relay | Relies on Ethereum event subscription availability | Implemented via MsgAcknowledgement; full ETH→Cosmos RecvPacket relay still TODO |
+| Ethereum sync committee period crossing | Stale Ethereum light client on Cosmos | Multi-period update logic in routine.go handles period boundary transitions |
 
 ## Health Checks
 

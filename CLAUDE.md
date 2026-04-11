@@ -34,6 +34,13 @@ just generate-abi                 # Extract ABIs
 
 # Encoding cross-validation
 forge test --match-contract EncodeTest -vvv  # Solidity encoding tests
+
+# Node setup (local development)
+./run_cosmos_node.sh              # Local Cosmos node with test accounts
+./run_cosmos_node_docker.sh       # Docker-based Cosmos node setup
+./run_eth_node.sh                 # Ethereum testnet via Kurtosis + deploy contracts
+./wasm.sh                         # Submit Ethereum light client WASM via governance
+./wasm_docker.sh                  # Docker-based WASM submission
 ```
 
 **Prerequisites**: `bun` (not npm/yarn), `just`, Foundry, Go 1.21+. E2E also needs Docker + Kurtosis.
@@ -49,7 +56,7 @@ go run ./cmd/main.go create-clients \
   --wasm-checksum <hex>
 # Copy ICS07 address from log into config.json cosmos_to_eth.ics07_client
 
-# Start relay loop (Cosmos → ETH)
+# Start relay loop (bi-directional: Cosmos ↔ ETH)
 go run ./cmd/main.go start --config config.json
 
 # Generate genesis state
@@ -59,7 +66,7 @@ go run ./cmd/main.go genesis --trusted-block 0 --trusting-period 0
 go run ./cmd/main.go fixtures membership <key_path> <is_base64> <membership_type>
 ```
 
-Config: JSON file with `cosmos_to_eth` and `eth_to_cosmos` modules (see `relayer/config.example.json`).
+Config: JSON file with `modules` array containing `cosmos_to_eth` and `eth_to_cosmos` entries (see `relayer/config.example.json`).
 Secrets: `.env` file for `ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, prover paths.
 
 ## Documentation Map
@@ -104,11 +111,13 @@ ZK flow: Ed25519 sig → Groth16 proof (Go relayer/gnark) → on-chain verificat
 
 ```
 relayer/
+├── bin/            # Groth16 circuit artifacts (r1cs.bin, pk.bin, vk.bin)
 ├── bindings/       # Auto-generated Go bindings for Solidity contracts
 ├── client/         # Tendermint + Ethereum RPC/Beacon API clients
 ├── keys/           # Key management
 ├── prover/         # gnark Groth16 circuit + prover (Ed25519)
-├── services/       # Context, Worker, batch builder
+├── runner/         # Service runner utilities
+├── services/       # Context, Worker, batch builder, relay loop
 ├── subscriber/     # Cosmos WebSocket + Ethereum event listeners
 ├── transaction/    # Ethereum + Cosmos transaction submission
 ├── utils/          # IBC path helpers, byte utils

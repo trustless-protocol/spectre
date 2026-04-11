@@ -56,14 +56,16 @@ Multiple packets can be batched into a single proof submission:
 ### Off-chain (Go Relayer)
 
 **CLI commands:**
-- `relayer start --config config.json` — relay loop (Cosmos → ETH)
+- `relayer start --config config.json` — bi-directional relay loop (Cosmos ↔ ETH)
 - `relayer create-clients --config config.json` — one-time light client setup
 - `relayer genesis` — generate genesis state
 - `relayer fixtures membership` — verify membership proof on-chain
 
 **JSON config** (`relayer/config.example.json`):
-- `cosmos_to_eth` module: tm_rpc_url, ics26_address, eth_rpc_url, ics07_client, wrapper_verifier, membership, misbehaviour, update_client
-- `eth_to_cosmos` module: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address
+- Top-level `server` block: log_level, address, port
+- `modules` array with named entries (`cosmos_to_eth`, `eth_to_cosmos`), each with `src_chain`, `dst_chain`, and `config`:
+  - `cosmos_to_eth` config: tm_rpc_url, ics26_address, eth_rpc_url, ics07_client, wrapper_verifier, membership, misbehaviour, update_client
+  - `eth_to_cosmos` config: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address
 
 ### Environment Variables
 
