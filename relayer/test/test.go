@@ -9,7 +9,6 @@ import (
 	"log"
 	"math/big"
 	"os"
-	"strconv"
 	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	contractICS26Router "relayer/bindings/ICS26Router"
 	"relayer/client"
@@ -18,6 +17,7 @@ import (
 	"relayer/subscriber"
 	"relayer/transaction"
 	"relayer/utils"
+	"strconv"
 	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
@@ -106,7 +106,6 @@ func loadConfig(configPath string) (*AppConfig, error) {
 		EthToCosmosConfig: e2cfg,
 	}, nil
 }
-
 
 func init() {
 	err := godotenv.Load()

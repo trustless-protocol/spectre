@@ -58,6 +58,16 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
 7. Tokens released on Cosmos side
 ```
 
+## Request Flow: ACK Relay (Ethereum → Cosmos)
+
+```
+1. Ethereum ICS26Router emits WriteAcknowledgement event
+2. Go Relayer detects event via Ethereum event subscription (subscriber/)
+3. Relayer converts Ethereum packet format to Cosmos IBC v2 format
+4. Relayer submits MsgAcknowledgement to Cosmos chain
+5. Cosmos chain processes the acknowledgement
+```
+
 ## Data Flow: Groth16 Proof Generation
 
 ```
@@ -110,10 +120,11 @@ Cross-validated via `relayer/cmd/encode_debug/` + `test/solidity-ibc/EncodeTest.
 | `relayer/` | Go | Relayer CLI + Groth16 prover |
 | `relayer/cmd/` | Go | CLI: start, create-clients, genesis, fixtures |
 | `relayer/prover/` | Go | Ed25519 → Groth16 proof generation |
-| `relayer/client/` | Go | Tendermint RPC + Ethereum Beacon API |
-| `relayer/services/` | Go | Context, Worker, batch processing |
+| `relayer/client/` | Go | Tendermint RPC + Ethereum Beacon API + Ethereum light client state |
+| `relayer/runner/` | Go | Service runner utilities |
+| `relayer/services/` | Go | Context, Worker, batch processing, relay loop |
 | `relayer/subscriber/` | Go | CometBFT WebSocket + Ethereum event listeners |
-| `relayer/transaction/` | Go | ETH + Cosmos transaction submission |
+| `relayer/transaction/` | Go | ETH + Cosmos transaction submission (single + batch) |
 | `relayer/bindings/` | Go | Auto-generated contract bindings |
 | `packages/go-abigen/` | Go | Shared Go bindings for Solidity contracts |
 | `packages/ethereum/` | Rust | Ethereum light client for CosmWasm |
@@ -134,10 +145,11 @@ test/ ──────────► contracts/ ◄────── scripts
                      │
                      ▼
               relayer/cmd/ ─── CLI entry point
-              relayer/services/ ─── Context, Worker
-              relayer/subscriber/ ─── Event listeners
-              relayer/client/ ─── RPC clients
-              relayer/transaction/ ─── Tx submission
+              relayer/services/ ─── Context, Worker, relay loop
+              relayer/runner/ ─── Service runner utilities
+              relayer/subscriber/ ─── Event listeners (Cosmos + ETH)
+              relayer/client/ ─── RPC + Beacon API clients
+              relayer/transaction/ ─── Tx submission (single + batch)
               relayer/prover/ ─── Groth16 prover
                      │
                      ▼

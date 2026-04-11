@@ -61,15 +61,19 @@ Shared bindings also live in `packages/go-abigen/`.
 ### Configuration
 
 Relayer uses JSON config file (see `relayer/config.example.json`):
-- `cosmos_to_eth` module: tm_rpc_url, ics26_address, eth_rpc_url, ics07_client, wrapper_verifier, membership, misbehaviour, update_client
-- `eth_to_cosmos` module: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address
+- Top-level `server` block: log_level, address, port
+- `modules` array, each entry has `name`, `src_chain`, `dst_chain`, and `config`:
+  - `cosmos_to_eth` config: tm_rpc_url, ics26_address, eth_rpc_url, ics07_client, wrapper_verifier, membership, misbehaviour, update_client
+  - `eth_to_cosmos` config: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address
 
 Secrets (private keys, prover paths) stay in `.env` file.
 
 ### Error Handling
 
 - Relayer uses `log.Fatal` for unrecoverable errors (process exits)
-- `start` command logs per-packet errors without crashing the relay loop
+- `start` command uses batch processing via `services.StartLoop()` with size/time thresholds
+- Per-packet errors logged without crashing the relay loop
+- Timeout checking: packets past their timeout are skipped before submission
 - Transaction handlers retry with re-queried account sequence on nonce errors
 
 ## Rust
@@ -77,7 +81,6 @@ Secrets (private keys, prover paths) stay in `.env` file.
 ### Workspace Structure
 
 25 crate members in root `Cargo.toml`. Key packages:
-- `packages/relayer/` — multi-chain relay modules
 - `packages/ethereum/` — Ethereum light client for CosmWasm
 - `packages/tendermint-light-client/` — Tendermint proof verification
 
