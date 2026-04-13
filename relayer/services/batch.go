@@ -17,9 +17,10 @@ const (
 )
 
 type Packet struct {
-	PacketType PacketType
-	Packet     *channeltypesv2.Packet
-	AckBytes   [][]byte // populated for ack/write-ack flows (one entry per payload)
+	PacketType  PacketType
+	Packet      *channeltypesv2.Packet
+	AckBytes    [][]byte
+	BlockNumber uint64 // ETH block where event was emitted (for beacon finality checks)
 }
 
 type BatchPackets struct {

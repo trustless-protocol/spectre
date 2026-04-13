@@ -93,7 +93,16 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 		log.Printf("[UpdateCosmosClient] Using on-chain client height %d as trusted block", trustedBlock)
 	}
 	if trustedBlock >= status.SyncInfo.LatestBlockHeight {
-		return nil, fmt.Errorf("client is up to date (trusted=%d, latest=%d)", trustedBlock, status.SyncInfo.LatestBlockHeight)
+		if trustedBlock == status.SyncInfo.LatestBlockHeight {
+			log.Printf("[UpdateCosmosClient] client is up to date (trusted=%d, latest=%d), skipping tx",
+				trustedBlock, status.SyncInfo.LatestBlockHeight)
+			lightBlock, err := relayerclient.GetLightBlock(ctx.CosmosClient(), trustedBlock)
+			if err != nil {
+				return nil, fmt.Errorf("failed to get current light block while up-to-date: %w", err)
+			}
+			return lightBlock, nil
+		}
+		return nil, fmt.Errorf("trusted block is ahead of latest chain height (trusted=%d, latest=%d)", trustedBlock, status.SyncInfo.LatestBlockHeight)
 	}
 
 	log.Printf("[UpdateCosmosClient] Fetching trustedLightBlock at height %d, latestLightBlock at height %d", trustedBlock, status.SyncInfo.LatestBlockHeight)
