@@ -136,6 +136,7 @@ func (s *Services) StartLoop(ctx Context) {
 			break // Exit the loop when the channel is closed
 		}
 
+		//TODO: the way better than wait
 		log.Printf("[Listener] Waiting 2 blocks for packet commitment to be included in AppHash...")
 		time.Sleep(6 * time.Second)
 
