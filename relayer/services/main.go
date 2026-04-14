@@ -339,7 +339,7 @@ func (s *Services) StartLoop(ctx Context) {
 
 				s.worker.TxHandler.SendEthTx(ctx, msgAckPacket)
 			case Timeout:
-				ibcPath := utils.IbcCommitmentPath(*packet.Packet, []byte{3})
+				ibcPath := utils.IbcCommitmentPath(*packet.Packet, []byte{2})
 
 				// target height are the latest block height
 				value, proof, err := client.ProvePath(ctx.CosmosClient(), latestLightBlock.BlockHeight, ibcPath)
@@ -358,7 +358,7 @@ func (s *Services) StartLoop(ctx Context) {
 					merkleProof.Proofs = append(merkleProof.Proofs, *commitmentProof)
 				}
 
-				membershipMsg := tendermintContract.ILightClientMsgsMsgVerifyNonMembership{
+				nonMembershipMsg := tendermintContract.ILightClientMsgsMsgVerifyNonMembership{
 					Height: tendermintContract.IICS02ClientMsgsHeight{
 						RevisionHeight: uint64(latestLightBlock.BlockHeight),
 						RevisionNumber: 0,
@@ -383,7 +383,7 @@ func (s *Services) StartLoop(ctx Context) {
 					MembershipType: 0,
 				}
 
-				calldata, err := tendermintAbiJson.Pack("verifyMembership", membershipMsg)
+				calldata, err := tendermintAbiJson.Pack("verifyNonMembership", nonMembershipMsg)
 				if err != nil {
 					ctx.Logger.Println(fmt.Errorf("Failed to abi encode verify msg: %s", err.Error()))
 				}
@@ -401,7 +401,7 @@ func (s *Services) StartLoop(ctx Context) {
 					})
 				}
 
-				msgRecvPacket := contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
+				msgTimeoutPacket := contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket{
 					Packet: contractICS26Router.IICS26RouterMsgsPacket{
 						Sequence:         packet.Packet.Sequence,
 						SourceClient:     packet.Packet.SourceClient,
@@ -409,10 +409,10 @@ func (s *Services) StartLoop(ctx Context) {
 						TimeoutTimestamp: packet.Packet.TimeoutTimestamp,
 						Payloads:         payloads,
 					},
-					MembershipMsg: calldata,
+					NonMembershipMsg: calldata,
 				}
 
-				s.worker.TxHandler.SendEthTx(ctx, msgRecvPacket)
+				s.worker.TxHandler.SendEthTx(ctx, msgTimeoutPacket)
 
 			case WriteAck:
 				signerAddr, err := s.worker.TxHandler.CosmosSignerAddress()
