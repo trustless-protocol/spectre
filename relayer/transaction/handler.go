@@ -58,27 +58,27 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 
 	publicKey, err := keys.PublicKey(privateKey)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("[CreateCosmosClient] failed to derive public key: %w", err)
 	}
 
 	fromAddress := crypto.PubkeyToAddress(*publicKey)
 	nonce, err := ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("[CreateCosmosClient] failed to get nonce: %w", err)
 	}
 	gasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("[CreateCosmosClient] failed to suggest gas price: %w", err)
 	}
 
 	chainIdInt, err := ctx.EthClient().ChainID(context.Background())
 	if err != nil {
-		return fmt.Errorf("invalid chain id: %v", err)
+		return fmt.Errorf("[CreateCosmosClient] invalid chain id: %v", err)
 	}
 
 	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
 	if err != nil {
-		return fmt.Errorf("failed to create auth transactor: %w", err)
+		return fmt.Errorf("[CreateCosmosClient] failed to create auth transactor: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
 	auth.Value = big.NewInt(0)      // in wei
@@ -120,7 +120,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 
 	nonce, err = ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("[CreateCosmosClient] failed to get nonce for AddClient: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
 
@@ -163,27 +163,27 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 
 	publicKey, err := keys.PublicKey(privateKey)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("[SendEthTx] failed to derive public key: %w", err)
 	}
 
 	fromAddress := crypto.PubkeyToAddress(*publicKey)
 	nonce, err := ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("[SendEthTx] failed to get nonce: %w", err)
 	}
 	gasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("[SendEthTx] failed to suggest gas price: %w", err)
 	}
 
 	chainIdInt, err := ctx.EthClient().ChainID(context.Background())
 	if err != nil {
-		return fmt.Errorf("invalid chain id: %v", err)
+		return fmt.Errorf("[SendEthTx] invalid chain id: %v", err)
 	}
 
 	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
 	if err != nil {
-		return fmt.Errorf("failed to create auth transactor: %w", err)
+		return fmt.Errorf("[SendEthTx] failed to create auth transactor: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
 	auth.Value = big.NewInt(0)     // in wei
@@ -209,37 +209,41 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	var tx *types.Transaction
 	switch msg := msg.(type) {
 	case updateclient.IUpdateClientMsgsMsgUpdateClient:
-		log.Printf("[SendEthTx] Encoding updateClient msg...")
 		data, err := relayerclient.EncodeUpdateClientMsg(msg)
 		if err != nil {
-			return fmt.Errorf("failed to encode updateClient msg: %w", err)
+			return fmt.Errorf("[SendEthTx] failed to encode updateClient msg: %w", err)
 		}
-
 		log.Printf("[SendEthTx] Sending updateClient tx...")
 		tx, err = ics07Tendermint.UpdateClient(auth, data)
 		if err != nil {
-			return fmt.Errorf("failed to send updateClient tx: %w", err)
+			return fmt.Errorf("[SendEthTx] failed to send updateClient tx: %w", err)
 		}
 	case tendermintContract.ILightClientMsgsMsgVerifyMembership:
 		log.Printf("[SendEthTx] Sending verifyMembership tx...")
 		tx, err = ics07Tendermint.VerifyMembership(auth, msg)
 		if err != nil {
-			return fmt.Errorf("failed to verify membership: %w", err)
+			return fmt.Errorf("[SendEthTx] failed to verify membership: %w", err)
 		}
 	case tendermintContract.ILightClientMsgsMsgVerifyNonMembership:
 		log.Printf("[SendEthTx] Sending verifyNonMembership tx...")
 		tx, err = ics07Tendermint.VerifyNonMembership(auth, msg)
 		if err != nil {
-			return fmt.Errorf("failed to verify non-membership: %w", err)
+			return fmt.Errorf("[SendEthTx] failed to verify non-membership: %w", err)
 		}
 	case contractICS26Router.IICS26RouterMsgsMsgRecvPacket:
-		log.Printf("[SendEthTx] Sending recvPacket tx...")
+		log.Printf("[SendEthTx] Sending recvPacket seq=%d...", msg.Packet.Sequence)
 		tx, err = icS26Router.RecvPacket(auth, msg)
 		if err != nil {
-			return fmt.Errorf("failed to recv packet: %w", err)
+			return fmt.Errorf("[SendEthTx] failed to recv packet: %w", err)
+		}
+	case contractICS26Router.IICS26RouterMsgsMsgAckPacket:
+		log.Printf("[SendEthTx] Sending ackPacket seq=%d...", msg.Packet.Sequence)
+		tx, err = icS26Router.AckPacket(auth, msg)
+		if err != nil {
+			return fmt.Errorf("[SendEthTx] failed to ack packet: %w", err)
 		}
 	default:
-		return fmt.Errorf("unsupported message type: %T", msg)
+		return fmt.Errorf("[SendEthTx] unsupported message type: %T", msg)
 	}
 
 	log.Printf("[SendEthTx] Tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
@@ -420,7 +424,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 		return "", fmt.Errorf("transaction failed with code %d: %s", result.Code, result.Log)
 	}
 
-	log.Printf("MsgCreateClient broadcast successfully. Hash: %s", result.Hash.String())
+	log.Printf("[CreateEthClient] MsgCreateClient broadcast successfully. Hash: %s", result.Hash.String())
 
 	// Wait for MsgCreateClient tx and extract the new client ID from events
 	txResult, err := h.waitForTxResult(svcCtx, result.Hash, 30*time.Second)
@@ -521,7 +525,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 		return "", fmt.Errorf("register counterparty tx failed with code %d: %s", result2.Code, result2.Log)
 	}
 
-	log.Printf("MsgRegisterCounterparty broadcast successfully. Hash: %s", result2.Hash.String())
+	log.Printf("[CreateEthClient] MsgRegisterCounterparty broadcast successfully. Hash: %s", result2.Hash.String())
 
 	return newClientID, nil
 }
@@ -964,7 +968,7 @@ func (h *Handler) waitForTxResult(svcCtx services.Context, txHash []byte, timeou
 	for time.Now().Before(deadline) {
 		result, err := svcCtx.CosmosClient().Tx(context.Background(), txHash, false)
 		if err == nil && result != nil && result.Height > 0 {
-			log.Printf("Tx %X confirmed at height %d", txHash, result.Height)
+			log.Printf("[WaitForTx] Tx %X confirmed at height %d", txHash, result.Height)
 			return result, nil
 		}
 		time.Sleep(1 * time.Second)
