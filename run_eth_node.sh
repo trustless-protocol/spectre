@@ -21,6 +21,16 @@ ETH_RPC=$(kurtosis enclave inspect my-testnet \
   }
 ')
 
+ETH_WS=$(kurtosis enclave inspect my-testnet \
+| perl -ne '
+  if (/el-1-geth-lighthouse/) { $in=1 }
+  elsif ($in && /^\S/) { $in=0 }
+  elsif ($in && /^\s+ws:.*->\s+(127\.0\.0\.1:\d+)/) {
+    print "ws://$1\n";
+    exit;
+  }
+')
+
 ETH_BEACON_API=$(kurtosis enclave inspect my-testnet \
 | awk '
   $0 ~ /cl-1-lighthouse-geth/ {in_service=1}
@@ -33,6 +43,7 @@ ETH_BEACON_API=$(kurtosis enclave inspect my-testnet \
 ')
 
 echo "ETH_RPC: $ETH_RPC"
+echo "ETH_WS: $ETH_WS"
 echo "ETH_BEACON_API: $ETH_BEACON_API"
 
 # Deploy ETH contracts
@@ -97,6 +108,7 @@ echo "MISBEHAVIOUR_ADDRESS: $MISBEHAVIOUR_ADDRESS"
 cd relayer
 jq \
   --arg ETH_RPC "$ETH_RPC" \
+  --arg ETH_WS "$ETH_WS" \
   --arg ICS26 "$ICS26_ADDRESS" \
   --arg WRAP "$VERIFIER_ADDRESS" \
   --arg MEMB "$MEMBERSHIP_ADDRESS" \
@@ -104,6 +116,7 @@ jq \
   --arg MIS "$MISBEHAVIOUR_ADDRESS" \
   --arg ETH_BEACON "$ETH_BEACON_API" '
     (.. | objects | select(has("eth_rpc_url")) | .eth_rpc_url) = $ETH_RPC
+  | (.. | objects | select(has("eth_ws_url")) | .eth_ws_url) = $ETH_WS
   | (.. | objects | select(has("ics26_address")) | .ics26_address) = $ICS26
   | (.. | objects | select(has("wrapper_verifier")) | .wrapper_verifier) = $WRAP
   | (.. | objects | select(has("membership")) | .membership) = $MEMB
@@ -111,4 +124,3 @@ jq \
   | (.. | objects | select(has("misbehaviour")) | .misbehaviour) = $MIS
   | (.. | objects | select(has("eth_beacon_api_url")) | .eth_beacon_api_url) = $ETH_BEACON
   ' config.example.json > config.tmp && mv config.tmp config.example.json
-

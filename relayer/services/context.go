@@ -26,6 +26,7 @@ type Context struct {
 
 	cosmosClient *rpchttp.HTTP
 	ethClient    *ethclient.Client
+	ethWsClient  *ethclient.Client
 	beaconAPIURL string
 
 	// Ethereum light client configuration
@@ -57,11 +58,12 @@ func NewCtx(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client) Context {
 	}
 }
 
-func NewCtxWithBeacon(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client, beaconAPIURL string, ethClientID string) Context {
+func NewCtxWithBeacon(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client, ethWsClient *ethclient.Client, beaconAPIURL string, ethClientID string) Context {
 	return Context{
 		Logger:       log.Default(),
 		cosmosClient: cosmosClient,
 		ethClient:    ethClient,
+		ethWsClient:  ethWsClient,
 		beaconAPIURL: beaconAPIURL,
 		ethClientID:  ethClientID,
 		latestEthTimestamp: &Timestamp{
@@ -77,6 +79,10 @@ func NewCtxWithBeacon(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client, b
 
 func (c *Context) EthClient() *ethclient.Client {
 	return c.ethClient
+}
+
+func (c *Context) EthWsClient() *ethclient.Client {
+	return c.ethWsClient
 }
 
 func (c *Context) CosmosClient() *rpchttp.HTTP {
@@ -148,6 +154,9 @@ func (c *Context) StopClient() {
 		panic(fmt.Errorf("failed to terminate cosmos client: %v", err))
 	}
 	c.ethClient.Close()
+	if c.ethWsClient != nil {
+		c.ethWsClient.Close()
+	}
 }
 
 func (c *Context) LatestCosmosTimestamp() *Timestamp {

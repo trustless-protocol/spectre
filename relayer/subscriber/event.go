@@ -5,14 +5,12 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math/big"
-	"os"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
 	"relayer/services"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/gogo/protobuf/proto"
 )
 
@@ -180,18 +178,7 @@ func EthPacketToCosmosPacket(ethPacket contractICS26Router.IICS26RouterMsgsPacke
 
 // SubscribeEth subscribes to Ethereum events from the ICS26Router contract
 func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.BatchBuilder) {
-	// Get the ICS26Router contract address from environment variable
-	ics26RouterAddr := os.Getenv("ICS26_ROUTER_ADDRESS")
-	if ics26RouterAddr == "" {
-		ctx.Logger.Println("ICS26_ROUTER_ADDRESS environment variable is required")
-		return
-	}
-
-	// Parse the contract address
-	contractAddr := common.HexToAddress(ics26RouterAddr)
-
-	// Create a new ICS26Router filterer instance (only for event subscriptions)
-	filterer, err := contractICS26Router.NewContractICS26RouterFilterer(contractAddr, ctx.EthClient())
+	filterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), ctx.EthWsClient())
 	if err != nil {
 		ctx.Logger.Printf("Failed to create ICS26Router filterer instance: %v", err)
 		return
@@ -205,7 +192,6 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 
 	// Set up watch options (nil for all events, no filtering by clientId or sequence)
 	watchOpts := &bind.WatchOpts{Context: context.Background()}
-
 	// Subscribe to SendPacket events
 	sendPacketSub, err := filterer.WatchSendPacket(watchOpts, sendPacketCh, nil, nil)
 	if err != nil {
@@ -255,9 +241,10 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 			ctx.Logger.Printf("WriteAcknowledgement event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 			batchBuilder.InsertPacket(services.Packet{
-				PacketType: services.WriteAck,
-				Packet:     &cosmosPacket,
-				AckBytes:   ev.Acknowledgements,
+				PacketType:  services.WriteAck,
+				Packet:      &cosmosPacket,
+				AckBytes:    ev.Acknowledgements,
+				BlockNumber: ev.Raw.BlockNumber,
 			})
 
 		case ev := <-ackPacketCh:
