@@ -49,7 +49,7 @@ contract Membership  is IMembership {
         bytes32 appHash,
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs
-    ) public view {
+    ) public {
         if (kvPairs.length == 0) {
             revert EmptyRequest();
         }
@@ -201,6 +201,8 @@ contract Membership  is IMembership {
             1,
             proof
         );
+
+        return true;
     }
 
     function calculateExistenceRoot(IMembershipMsgs.ExistenceProof memory proof) 
