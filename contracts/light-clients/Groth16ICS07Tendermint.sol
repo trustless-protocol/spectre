@@ -141,7 +141,9 @@ contract Groth16ICS07Tendermint is
 
     /// @dev Enforces 2/3+ voting power over the UNIQUE signers in msg_.signerIndices
     ///      (duplicates from padding are skipped), then dispatches to the bucket's
-    ///      Groth16 verifier via the wrapper.
+    ///      Groth16 verifier via the wrapper. The SharedBlock passed to the verifier
+    ///      is built directly from msg_.proposedHeader so the on-chain quorum check
+    ///      and the in-circuit reconstruction agree on the signed bytes.
     function _verifyBatchAndQuorum(IUpdateClientMsgs.MsgUpdateClient memory msg_) internal {
         IICS07TendermintMsgs.ValidatorInfo[] memory vals = msg_.proposedHeader.validatorSet.validators;
         uint256 numVals = vals.length;
@@ -149,7 +151,8 @@ contract Groth16ICS07Tendermint is
             msg_.signerIndices.length == msg_.bucket
                 && msg_.signatures.length == msg_.bucket
                 && msg_.signerPubkeys.length == msg_.bucket
-                && msg_.signMessages.length == msg_.bucket,
+                && msg_.timestampSeconds.length == msg_.bucket
+                && msg_.timestampNanos.length == msg_.bucket,
             BatchLengthMismatch()
         );
 
@@ -170,6 +173,16 @@ contract Groth16ICS07Tendermint is
             InsufficientVotingPower(accumulated, msg_.proposedHeader.validatorSet.totalVotingPower)
         );
 
+        IICS07TendermintMsgs.BlockCommit memory commit = msg_.proposedHeader.signedHeader.commit;
+        IVerifier.SharedBlock memory shared = IVerifier.SharedBlock({
+            height: commit.height,
+            round: uint64(commit.round),
+            blockIDHash: commit.blockId.hashData,
+            partSetTotal: commit.blockId.partSetHeader.total,
+            partSetHash: commit.blockId.partSetHeader.hashData,
+            chainID: bytes(msg_.proposedHeader.signedHeader.header.chainId)
+        });
+
         require(
             VERIFIER.verifyBatchProof(
                 msg_.bucket,
@@ -178,7 +191,9 @@ contract Groth16ICS07Tendermint is
                 msg_.commitmentPok,
                 msg_.signatures,
                 msg_.signerPubkeys,
-                msg_.signMessages
+                msg_.timestampSeconds,
+                msg_.timestampNanos,
+                shared
             ),
             ProofVerificationFailed()
         );

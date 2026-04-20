@@ -34,14 +34,23 @@ contract WrapperVerifier is IVerifier {
     address constant MODEXP_PRECOMPILE =
         0x0000000000000000000000000000000000000005;
 
-    // MaxSignBytesLen mirrors relayer/prover.MaxSignBytesLen: the fixed width
-    // every vote-sign-bytes buffer is padded to before entering the circuit.
-    uint16 constant MAX_SIGN_BYTES_LEN = 256;
+    // MAX_CHAIN_ID_LEN mirrors canonvote.MaxChainIDLen — the padded width
+    // every chainID buffer is extended to before entering the circuit.
+    uint16 constant MAX_CHAIN_ID_LEN = 48;
 
-    // Per-slot public-input word count. BatchCircuit exposes (R.X, R.Y, S, A.X, A.Y)
-    // as 5 field elements × 4 limbs = 20, plus MAX_SIGN_BYTES_LEN message-byte words.
-    // SHA-512 hash is computed inside VerifyBatch so H is NOT a public input.
-    uint16 constant SLOT_WORDS = 20 + MAX_SIGN_BYTES_LEN;
+    // Per-slot public-input word count. Approach B: BatchCircuit exposes
+    // (R.X, R.Y, S, A.X, A.Y) as 5 field elements × 4 limbs = 20 words, plus
+    // (timestampSeconds, timestampNanos) as two single-word Variables = 22.
+    // Message bytes are NOT public input — the circuit reconstructs the
+    // canonical vote from shared block data + timestamps.
+    uint16 constant SLOT_WORDS = 22;
+
+    // Shared-block suffix word count: each byte in the 32-byte hashes and
+    // the 48-byte padded chainID becomes its own Fr public input (each U8 in
+    // the circuit is a single Variable), matching BatchCircuit's field order.
+    //   height (1) + round (1) + blockIDHash (32) + partSetTotal (1)
+    //   + partSetHash (32) + chainID (48) + chainIDLen (1) = 116 words.
+    uint16 constant SHARED_WORDS = 1 + 1 + 32 + 1 + 32 + MAX_CHAIN_ID_LEN + 1;
 
     /// @param verifier Address of the per-bucket gnark-generated Groth16 verifier.
     /// @param selector 4-byte function selector of that verifier's `verifyProof`.
@@ -57,7 +66,7 @@ contract WrapperVerifier is IVerifier {
 
     error UnknownBucket(uint16 bucket);
     error LengthMismatch();
-    error MessageTooLong(uint256 length);
+    error ChainIDTooLong(uint256 length);
     error NotOwner();
 
     constructor(address owner) {
@@ -77,31 +86,37 @@ contract WrapperVerifier is IVerifier {
         uint256[2] calldata commitmentPok,
         bytes32[2][] calldata signatures,
         bytes32[] calldata pubkeys,
-        bytes[] calldata messages
+        uint64[] calldata timestampSeconds,
+        uint32[] calldata timestampNanos,
+        IVerifier.SharedBlock calldata shared
     ) external override returns (bool) {
-        if (signatures.length != bucket || pubkeys.length != bucket || messages.length != bucket) {
-            revert LengthMismatch();
-        }
+        if (
+            signatures.length != bucket
+                || pubkeys.length != bucket
+                || timestampSeconds.length != bucket
+                || timestampNanos.length != bucket
+        ) revert LengthMismatch();
+        if (shared.chainID.length > MAX_CHAIN_ID_LEN) revert ChainIDTooLong(shared.chainID.length);
         BucketVerifier memory bv = buckets[bucket];
         if (bv.verifier == address(0)) revert UnknownBucket(bucket);
 
-        uint256 inputLen = uint256(bucket) * SLOT_WORDS;
+        uint256 inputLen = uint256(bucket) * SLOT_WORDS + SHARED_WORDS;
         uint256[] memory publicInputs = new uint256[](inputLen);
-        _packInputs(publicInputs, signatures, pubkeys, messages);
+        uint256 off = _packPerSlot(publicInputs, signatures, pubkeys, timestampSeconds, timestampNanos);
+        _packShared(publicInputs, off, shared);
 
         return _dispatch(bv, proof, commitments, commitmentPok, publicInputs);
     }
 
-    /// @dev Pack every slot's (R.X, R.Y, S, A.X, A.Y) limbs followed by the
-    ///      MAX_SIGN_BYTES_LEN message bytes, each as its own uint256 — matching
-    ///      BatchCircuit's per-slot `frontend.Variable` ordering.
-    function _packInputs(
+    /// @dev Pack every slot's (R.X, R.Y, S, A.X, A.Y, tsSec, tsNanos) —
+    ///      matching BatchCircuit's per-slot field ordering.
+    function _packPerSlot(
         uint256[] memory publicInputs,
         bytes32[2][] calldata signatures,
         bytes32[] calldata pubkeys,
-        bytes[] calldata messages
-    ) internal {
-        uint256 off = 0;
+        uint64[] calldata timestampSeconds,
+        uint32[] calldata timestampNanos
+    ) internal returns (uint256 off) {
         for (uint256 i = 0; i < signatures.length; i++) {
             bytes32 R = signatures[i][0];
             uint256 S = reverseBytes(uint256(signatures[i][1]));
@@ -114,13 +129,36 @@ contract WrapperVerifier is IVerifier {
             off = _writeLimbs(publicInputs, off, aX);
             off = _writeLimbs(publicInputs, off, aY);
 
-            bytes calldata msg_ = messages[i];
-            if (msg_.length > MAX_SIGN_BYTES_LEN) revert MessageTooLong(msg_.length);
-            for (uint256 j = 0; j < MAX_SIGN_BYTES_LEN; j++) {
-                publicInputs[off + j] = j < msg_.length ? uint256(uint8(msg_[j])) : 0;
-            }
-            off += MAX_SIGN_BYTES_LEN;
+            publicInputs[off++] = uint256(timestampSeconds[i]);
+            publicInputs[off++] = uint256(timestampNanos[i]);
         }
+    }
+
+    /// @dev Pack the SharedBlockData suffix: scalar Variables + per-byte U8s
+    ///      for the 32-byte hashes and the MAX_CHAIN_ID_LEN-padded chainID.
+    function _packShared(
+        uint256[] memory publicInputs,
+        uint256 off,
+        IVerifier.SharedBlock calldata shared
+    ) internal pure {
+        publicInputs[off++] = uint256(shared.height);
+        publicInputs[off++] = uint256(shared.round);
+        for (uint256 i = 0; i < 32; i++) {
+            publicInputs[off + i] = uint256(uint8(shared.blockIDHash[i]));
+        }
+        off += 32;
+        publicInputs[off++] = uint256(shared.partSetTotal);
+        for (uint256 i = 0; i < 32; i++) {
+            publicInputs[off + i] = uint256(uint8(shared.partSetHash[i]));
+        }
+        off += 32;
+        for (uint256 i = 0; i < MAX_CHAIN_ID_LEN; i++) {
+            publicInputs[off + i] = i < shared.chainID.length
+                ? uint256(uint8(shared.chainID[i]))
+                : 0;
+        }
+        off += MAX_CHAIN_ID_LEN;
+        publicInputs[off] = shared.chainID.length;
     }
 
     /// @dev Encode calldata matching gnark's fixed-size input ABI

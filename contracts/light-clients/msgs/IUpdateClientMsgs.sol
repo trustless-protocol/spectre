@@ -21,7 +21,12 @@ interface IUpdateClientMsgs {
     /// @param signerIndices Validator indices in proposedHeader.validatorSet. Length == bucket.
     /// @param signatures (R || S) bytes per slot. signatures[i][0] = R, signatures[i][1] = S. Length == bucket.
     /// @param signerPubkeys Compressed Ed25519 public keys per slot, matching signerIndices. Length == bucket.
-    /// @param signMessages Canonical vote sign-bytes per slot. Length == bucket.
+    /// @param timestampSeconds Per-validator google.protobuf.Timestamp.seconds. Length == bucket.
+    /// @param timestampNanos Per-validator google.protobuf.Timestamp.nanos. Length == bucket.
+    /// @dev The shared CanonicalVote fields (height, round, BlockID, chainID) are read directly
+    ///      from proposedHeader.signedHeader.commit and proposedHeader.signedHeader.header — no
+    ///      need to duplicate them in this message. The in-circuit reconstruction uses the same
+    ///      values.
     struct MsgUpdateClient {
         IICS07TendermintMsgs.ClientState clientState;
         IICS07TendermintMsgs.ConsensusState trustedConsensusState;
@@ -34,7 +39,8 @@ interface IUpdateClientMsgs {
         uint32[] signerIndices;
         bytes32[2][] signatures;
         bytes32[] signerPubkeys;
-        bytes[] signMessages;
+        uint64[] timestampSeconds;
+        uint32[] timestampNanos;
     }
 
     /// @notice The public value output for the gnark update client program.
