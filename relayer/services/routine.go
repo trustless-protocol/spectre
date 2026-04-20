@@ -170,18 +170,23 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 		clientState.LatestHeight.RevisionNumber, clientState.LatestHeight.RevisionHeight,
 		proposedHeader.SignedHeader.Header.Height, trustedLightBlock.BlockHeight, latestLightBlock.BlockHeight)
 
-	// TODO: proof for multiple sigs — currently only proves 1st valid validator signature
-	// Extract first non-absent validator signature from the latest block
-	valSig, err := prover.ExtractValidatorSignature(latestLightBlock, chainId)
+	// Extract enough non-absent validator signatures to hit 2/3 voting power,
+	// then batch-prove them in a single Groth16 proof that reconstructs each
+	// CanonicalVote in-circuit.
+	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId)
 	if err != nil {
-		return nil, fmt.Errorf("extract validator signature: %w", err)
+		return nil, fmt.Errorf("extract validator signatures: %w", err)
 	}
-	log.Printf("[UpdateCosmosClient] Generating Groth16 proof for validator signature...")
-	proof, commitments, commitmentPok, err := w.Prover.GenerateProof(valSig.Signature, valSig.PublicKey, valSig.SignBytes)
+	log.Printf("[UpdateCosmosClient] Generating Groth16 batch proof for %d validator signatures...", len(extracted.Signatures))
+	bucket, proof, commitments, commitmentPok, err := w.Prover.GenerateProof(extracted.Shared, extracted.Signatures)
 	if err != nil {
 		return nil, fmt.Errorf("error generating proof: %w", err)
 	}
-	log.Printf("[UpdateCosmosClient] Proof generated successfully. Sending Eth tx...")
+	log.Printf("[UpdateCosmosClient] Proof generated (bucket=%d). Sending Eth tx...", bucket)
+	// TODO(mulval): bindings regeneration pending — once IUpdateClientMsgsMsgUpdateClient
+	// exposes Bucket / SignerIndices / Signatures / SignerPubkeys / TimestampSeconds /
+	// TimestampNanos, populate them from `bucket` and `extracted` so the on-chain
+	// quorum check can run.
 	msg := updateclientContract.IUpdateClientMsgsMsgUpdateClient{
 		ClientState:           clientState,
 		TrustedConsensusState: consensusState,

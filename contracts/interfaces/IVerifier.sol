@@ -5,20 +5,27 @@ pragma solidity ^0.8.4;
 /// @notice Wrapper that decompresses Ed25519 points, constructs gnark public inputs,
 ///         and forwards to the underlying Groth16 verifier.
 interface IVerifier {
-    /// @notice Verify an Ed25519 signature using a Groth16 ZK proof
+    /// @notice Verify a batch of Ed25519 signatures via a single Groth16 proof.
+    /// @dev The relayer picks `bucket` (∈ {4,8,16,32,64,128}) as the smallest circuit
+    ///      that fits the number of signers needed to reach 2/3 voting power. Slots
+    ///      beyond the true signer count are padded with duplicates; the caller is
+    ///      responsible for rejecting duplicate validator indices when summing voting
+    ///      power so padding cannot inflate quorum.
+    /// @param bucket Validator-count bucket (selects which per-bucket Groth16Verifier to dispatch to)
     /// @param proof The Groth16 proof (8 uint256s: Ar, Bs, Krs)
     /// @param commitments The proof commitments (2 uint256s)
     /// @param commitmentPok The proof of knowledge for commitments (2 uint256s)
-    /// @param signature The Ed25519 signature: [R (32 bytes compressed), S (32 bytes scalar)]
-    /// @param pubkey The Ed25519 public key (32 bytes compressed)
-    /// @param message The raw signed message bytes (used in SHA512(R || pubkey || message))
-    function verifyProof(
+    /// @param signatures Per-slot Ed25519 signature: signatures[i][0] = R, signatures[i][1] = S. Length == bucket.
+    /// @param pubkeys Per-slot Ed25519 compressed public key. Length == bucket.
+    /// @param messages Per-slot canonical vote bytes. Length == bucket.
+    function verifyBatchProof(
+        uint16 bucket,
         uint256[8] calldata proof,
         uint256[2] calldata commitments,
         uint256[2] calldata commitmentPok,
-        bytes32[2] calldata signature,
-        bytes32 pubkey,
-        bytes calldata message
+        bytes32[2][] calldata signatures,
+        bytes32[] calldata pubkeys,
+        bytes[] calldata messages
     ) external returns (bool);
 }
 

@@ -154,4 +154,24 @@ interface IGroth16ICS07TendermintErrors {
 
     /// @notice Returned when the Groth16 proof verification fails.
     error ProofVerificationFailed();
+
+    /// @notice Returned when any of the per-slot arrays in MsgUpdateClient has a length
+    ///         different from the declared bucket size.
+    error BatchLengthMismatch();
+
+    /// @notice Returned when a signer index in the update-client message exceeds the
+    ///         proposed validator set size.
+    /// @param index the out-of-range signer index.
+    error SignerIndexOutOfRange(uint32 index);
+
+    /// @notice Returned when the pubkey bundled in the update-client message does not
+    ///         match the validator it claims to represent.
+    /// @param index the validator index with the mismatched pubkey.
+    error PubkeyMismatch(uint32 index);
+
+    /// @notice Returned when the accumulated voting power of the unique signers is
+    ///         not strictly greater than 2/3 of the total voting power.
+    /// @param accumulated summed voting power of unique signers.
+    /// @param total total voting power of the proposed validator set.
+    error InsufficientVotingPower(uint64 accumulated, uint64 total);
 }

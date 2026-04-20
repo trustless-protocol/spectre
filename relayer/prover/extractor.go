@@ -3,70 +3,133 @@ package prover
 import (
 	"crypto/ed25519"
 	"fmt"
+	"sort"
 
 	relayerclient "relayer/client"
 
 	"github.com/cometbft/cometbft/types"
 )
 
-// ValidatorSignature contains the extracted Ed25519 signature data from a LightBlock.
+// ValidatorSignature is the extracted Ed25519 signature data for one validator
+// in a block commit, alongside the per-validator Timestamp that feeds the
+// in-circuit CanonicalVote reconstruction.
 type ValidatorSignature struct {
-	Signature []byte // 64 bytes: R || S
-	PublicKey []byte // 32 bytes: compressed Ed25519 public key
-	SignBytes []byte // canonical vote sign bytes
+	Signature        []byte // 64 bytes: R || S
+	PublicKey        []byte // 32 bytes: compressed Ed25519 public key
+	Index            int    // index in the block's validator set
+	Power            int64  // validator voting power
+	TimestampSeconds int64  // google.protobuf.Timestamp seconds
+	TimestampNanos   int32  // google.protobuf.Timestamp nanos
 }
 
-// ExtractValidatorSignature extracts the first non-absent commit signature from a LightBlock.
-// For single validator mode, this returns the first valid signature found.
-func ExtractValidatorSignature(lightBlock *relayerclient.LightBlock, chainID string) (*ValidatorSignature, error) {
+// SharedBlockData is the subset of CanonicalVote fields that are identical
+// across every validator signing the same block. It flows alongside the
+// per-validator signatures into the prover.
+type SharedBlockData struct {
+	Height       int64
+	Round        int64
+	BlockIDHash  []byte // 32 bytes
+	PartSetTotal uint32
+	PartSetHash  []byte // 32 bytes
+	ChainID      string
+}
+
+// ExtractorResult bundles the greedy-by-power signer prefix with the shared
+// block data needed to reconstruct canonical vote bytes inside the circuit.
+type ExtractorResult struct {
+	Shared     SharedBlockData
+	Signatures []ValidatorSignature
+}
+
+// ExtractValidatorSignatures collects non-absent, locally-verified commit
+// signatures until their cumulative voting power exceeds 2/3 of
+// TotalVotingPower, returning them sorted by power descending along with the
+// shared block data.
+//
+// Returns an error if no quorum can be reached or the required signer count
+// would exceed the largest configured bucket.
+func ExtractValidatorSignatures(lightBlock *relayerclient.LightBlock, chainID string) (*ExtractorResult, error) {
 	if lightBlock == nil {
 		return nil, fmt.Errorf("light block is nil")
 	}
-
 	commit := lightBlock.SignedHeader.Commit
 	if commit == nil {
 		return nil, fmt.Errorf("commit is nil")
 	}
-
 	validators := lightBlock.ValSet
 	if len(validators.Validators) == 0 {
 		return nil, fmt.Errorf("validator set is empty")
 	}
 
+	candidates := make([]ValidatorSignature, 0, len(commit.Signatures))
 	for i, sig := range commit.Signatures {
 		if sig.BlockIDFlag == types.BlockIDFlagAbsent {
 			continue
 		}
-
 		if i >= len(validators.Validators) {
 			return nil, fmt.Errorf("validator index %d out of range (have %d validators)", i, len(validators.Validators))
 		}
-
 		validator := validators.Validators[i]
 		pubKeyBytes := validator.PubKey.Bytes()
 		if len(pubKeyBytes) != ed25519.PublicKeySize {
-			return nil, fmt.Errorf("invalid public key size: %d, expected %d", len(pubKeyBytes), ed25519.PublicKeySize)
+			continue
 		}
-
-		sigData := sig.Signature
-		if len(sigData) != ed25519.SignatureSize {
-			continue // skip invalid signatures
+		if len(sig.Signature) != ed25519.SignatureSize {
+			continue
 		}
-
-		// Get canonical vote sign bytes
 		voteData := commit.VoteSignBytes(chainID, int32(i))
-
-		// Verify the signature before using it
-		if !ed25519.Verify(pubKeyBytes, voteData, sigData) {
-			return nil, fmt.Errorf("signature verification failed for validator %d", i)
+		if !ed25519.Verify(pubKeyBytes, voteData, sig.Signature) {
+			continue
 		}
-
-		return &ValidatorSignature{
-			Signature: sigData,
-			PublicKey: pubKeyBytes,
-			SignBytes: voteData,
-		}, nil
+		candidates = append(candidates, ValidatorSignature{
+			Signature:        sig.Signature,
+			PublicKey:        pubKeyBytes,
+			Index:            i,
+			Power:            validator.VotingPower,
+			TimestampSeconds: sig.Timestamp.Unix(),
+			TimestampNanos:   int32(sig.Timestamp.Nanosecond()),
+		})
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no valid non-absent signatures found in commit")
 	}
 
-	return nil, fmt.Errorf("no valid non-absent signatures found in commit")
+	// Greedy by voting power so the smallest prefix hits quorum and the
+	// smallest bucket can be used.
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].Power > candidates[j].Power
+	})
+
+	totalPower := validators.TotalVotingPower()
+	quorum := totalPower*2/3 + 1
+
+	var accumulated int64
+	cutoff := len(candidates)
+	for i, c := range candidates {
+		accumulated += c.Power
+		if accumulated >= quorum {
+			cutoff = i + 1
+			break
+		}
+	}
+	if accumulated < quorum {
+		return nil, fmt.Errorf("insufficient voting power: have %d, need %d of %d", accumulated, quorum, totalPower)
+	}
+
+	selected := candidates[:cutoff]
+	if len(selected) > MaxBucket() {
+		return nil, fmt.Errorf("quorum requires %d signers but largest bucket is %d", len(selected), MaxBucket())
+	}
+
+	return &ExtractorResult{
+		Shared: SharedBlockData{
+			Height:       commit.Height,
+			Round:        int64(commit.Round),
+			BlockIDHash:  commit.BlockID.Hash,
+			PartSetTotal: commit.BlockID.PartSetHeader.Total,
+			PartSetHash:  commit.BlockID.PartSetHeader.Hash,
+			ChainID:      chainID,
+		},
+		Signatures: selected,
+	}, nil
 }

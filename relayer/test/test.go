@@ -438,7 +438,7 @@ func main() {
 		panic(fmt.Errorf("failed to create RPC client: %w", err))
 	}
 
-	prover, err := prover.NewProver("./bin/r1cs.bin", "./bin/pk.bin", "./bin/vk.bin")
+	prover, err := prover.NewProver("./bin")
 	if err != nil {
 		panic(fmt.Errorf("failed reading prover key: %w", err))
 	}

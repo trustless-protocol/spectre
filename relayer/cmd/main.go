@@ -188,12 +188,10 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 			}
 
-			// Load prover
-			r1csPath := envOrDefault("PROVER_R1CS_PATH", "./bin/r1cs.bin")
-			pkPath := envOrDefault("PROVER_PK_PATH", "./bin/pk.bin")
-			vkPath := envOrDefault("PROVER_VK_PATH", "./bin/vk.bin")
+			// Load prover (one bucket per supported validator count)
+			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
 
-			p, err := prover.NewProver(r1csPath, pkPath, vkPath)
+			p, err := prover.NewProver(binDir)
 			if err != nil {
 				return fmt.Errorf("failed to load prover: %w", err)
 			}
@@ -327,12 +325,10 @@ func Start(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 			}
 
-			// Load prover
-			r1csPath := envOrDefault("PROVER_R1CS_PATH", "./bin/r1cs.bin")
-			pkPath := envOrDefault("PROVER_PK_PATH", "./bin/pk.bin")
-			vkPath := envOrDefault("PROVER_VK_PATH", "./bin/vk.bin")
+			// Load prover (one bucket per supported validator count)
+			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
 
-			p, err := prover.NewProver(r1csPath, pkPath, vkPath)
+			p, err := prover.NewProver(binDir)
 			if err != nil {
 				return fmt.Errorf("failed to load prover: %w", err)
 			}

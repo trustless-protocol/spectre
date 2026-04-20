@@ -12,6 +12,7 @@ import (
 	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	contractICS26Router "relayer/bindings/ICS26Router"
 	client "relayer/client"
+	"relayer/prover"
 
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
@@ -41,7 +42,8 @@ type TransactionHandler interface {
 }
 
 type Prover interface {
-	GenerateProof(sig, pub, msg []byte) (
+	GenerateProof(shared prover.SharedBlockData, sigs []prover.ValidatorSignature) (
+		bucket int,
 		proof [8]*big.Int,
 		commitments [2]*big.Int,
 		commitmentPok [2]*big.Int,

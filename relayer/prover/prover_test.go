@@ -4,320 +4,194 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha512"
+	"strings"
 	"testing"
 
 	"0x5ea000000/ecip-gnark/utils"
 
-	curve_bn254 "github.com/consensys/gnark-crypto/ecc/bn254"
 	"filippo.io/edwards25519"
+	curve_bn254 "github.com/consensys/gnark-crypto/ecc/bn254"
 	"github.com/consensys/gnark/backend/groth16"
 	groth16_bn254 "github.com/consensys/gnark/backend/groth16/bn254"
 )
 
-// TestProveSignature_InvalidSigLength verifies that ProveSignature rejects
-// signatures that are not exactly 64 bytes.
-func TestProveSignature_InvalidSigLength(t *testing.T) {
-	p := &EcipProver{}
+// TestGenerateProof_InputValidation exercises the cheap preconditions that
+// run before we touch any circuit artifacts. It lets us verify the batch API
+// surface without needing compiled r1cs/pk/vk on disk.
+func TestGenerateProof_InputValidation(t *testing.T) {
+	p := &EcipProver{byBucket: map[int]*bucketArtifacts{}}
+	shared := SharedBlockData{
+		BlockIDHash: make([]byte, 32),
+		PartSetHash: make([]byte, 32),
+		ChainID:     "test",
+	}
 
-	tests := []struct {
-		name   string
-		sigLen int
+	t.Run("empty inputs", func(t *testing.T) {
+		_, _, _, _, err := p.GenerateProof(shared, nil)
+		if err == nil || !strings.Contains(err.Error(), "no signatures") {
+			t.Fatalf("want 'no signatures' error, got %v", err)
+		}
+	})
+
+	t.Run("bad blockIDHash", func(t *testing.T) {
+		bad := shared
+		bad.BlockIDHash = make([]byte, 31)
+		_, _, _, _, err := p.GenerateProof(bad, []ValidatorSignature{{Signature: make([]byte, 64), PublicKey: make([]byte, 32)}})
+		if err == nil || !strings.Contains(err.Error(), "BlockIDHash") {
+			t.Fatalf("want BlockIDHash error, got %v", err)
+		}
+	})
+
+	t.Run("exceeds max bucket", func(t *testing.T) {
+		n := MaxBucket() + 1
+		sigs := make([]ValidatorSignature, n)
+		_, _, _, _, err := p.GenerateProof(shared, sigs)
+		if err == nil || !strings.Contains(err.Error(), "largest bucket") {
+			t.Fatalf("want over-max error, got %v", err)
+		}
+	})
+}
+
+func TestSmallestBucketGEQ(t *testing.T) {
+	cases := []struct {
+		in   int
+		want int
+		err  bool
 	}{
-		{"empty signature", 0},
-		{"too short", 32},
-		{"too long", 128},
-		{"off by one short", 63},
-		{"off by one long", 65},
+		{1, 4, false},
+		{4, 4, false},
+		{5, 8, false},
+		{17, 32, false},
+		{128, 128, false},
+		{129, 0, true},
 	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			sig := make([]byte, tc.sigLen)
-			pub := make([]byte, 32)
-			msg := []byte("test message")
-
-			_, _, _, err := p.GenerateProof(sig, pub, msg)
+	for _, tc := range cases {
+		got, err := SmallestBucketGEQ(tc.in)
+		if tc.err {
 			if err == nil {
-				t.Fatalf("expected error for sig length %d, got nil", tc.sigLen)
+				t.Errorf("in=%d: expected error", tc.in)
 			}
-
-			expected := "invalid signature length"
-			if !containsSubstring(err.Error(), expected) {
-				t.Errorf("expected error containing %q, got %q", expected, err.Error())
-			}
-		})
+			continue
+		}
+		if err != nil {
+			t.Errorf("in=%d: unexpected error %v", tc.in, err)
+			continue
+		}
+		if got != tc.want {
+			t.Errorf("in=%d: got bucket %d, want %d", tc.in, got, tc.want)
+		}
 	}
 }
 
-// TestProveSignature_InvalidPubLength verifies that ProveSignature rejects
-// public keys that are not exactly 32 bytes.
-func TestProveSignature_InvalidPubLength(t *testing.T) {
-	p := &EcipProver{}
-
-	tests := []struct {
-		name   string
-		pubLen int
-	}{
-		{"empty public key", 0},
-		{"too short", 16},
-		{"too long", 64},
-		{"off by one short", 31},
-		{"off by one long", 33},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			sig := make([]byte, 64)
-			pub := make([]byte, tc.pubLen)
-			msg := []byte("test message")
-
-			_, _, _, err := p.GenerateProof(sig, pub, msg)
-			if err == nil {
-				t.Fatalf("expected error for pub length %d, got nil", tc.pubLen)
-			}
-
-			expected := "invalid public key length"
-			if !containsSubstring(err.Error(), expected) {
-				t.Errorf("expected error containing %q, got %q", expected, err.Error())
-			}
-		})
-	}
-}
-
-// TestProofToBigInts_NilProof verifies that ProofToBigInts returns an error
-// when given a nil proof.
-func TestProofToBigInts_NilProof(t *testing.T) {
-	_, _, _, err := ProofToBigInts(nil)
-	if err == nil {
-		t.Fatal("expected error for nil proof, got nil")
-	}
-
-	expected := "expected BN254 proof"
-	if !containsSubstring(err.Error(), expected) {
-		t.Errorf("expected error containing %q, got %q", expected, err.Error())
-	}
-}
-
-// TestProofToBigInts_WrongType verifies that ProofToBigInts returns an error
-// when given a proof that is not a BN254 proof type.
-func TestProofToBigInts_WrongType(t *testing.T) {
-	// Use a mock proof that implements groth16.Proof but is not *groth16_bn254.Proof
-	mockProof := &mockGnarkProof{}
-
-	_, _, _, err := ProofToBigInts(mockProof)
-	if err == nil {
-		t.Fatal("expected error for wrong proof type, got nil")
-	}
-
-	expected := "expected BN254 proof"
-	if !containsSubstring(err.Error(), expected) {
-		t.Errorf("expected error containing %q, got %q", expected, err.Error())
-	}
-}
-
-// TestProofToBigInts_ValidBN254Proof verifies that ProofToBigInts successfully
-// converts a zero-valued BN254 proof without error and returns non-nil big.Ints.
-func TestProofToBigInts_ValidBN254Proof(t *testing.T) {
-	p := &groth16_bn254.Proof{}
-	// Add one commitment point so Commitments[0] access doesn't panic
-	p.Commitments = make([]curve_bn254.G1Affine, 1)
-
-	proof, commitments, commitmentPok, err := ProofToBigInts(p)
+func TestPadSigsToBucket_FillsWithSlotZero(t *testing.T) {
+	sigs := []ValidatorSignature{{
+		Signature:        append(make([]byte, 63), 0xAB),
+		PublicKey:        append(make([]byte, 31), 0xCD),
+		Index:            7,
+		Power:            100,
+		TimestampSeconds: 42,
+		TimestampNanos:   7,
+	}}
+	padded, err := padSigsToBucket(sigs, 4)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	for i, v := range proof {
-		if v == nil {
-			t.Errorf("proof[%d] is nil", i)
-		}
+	if len(padded) != 4 {
+		t.Fatalf("expected 4 slots, got %d", len(padded))
 	}
-	for i, v := range commitments {
-		if v == nil {
-			t.Errorf("commitments[%d] is nil", i)
-		}
-	}
-	for i, v := range commitmentPok {
-		if v == nil {
-			t.Errorf("commitmentPok[%d] is nil", i)
+	for i, s := range padded {
+		if s.Index != 7 || s.Power != 100 || s.TimestampSeconds != 42 {
+			t.Errorf("slot[%d] not a copy of slot 0: %+v", i, s)
 		}
 	}
 }
 
-// TestSHA512HashScalar verifies that SHA512(R || A || msg) produces a 64-byte
-// digest that can be successfully reduced to an Ed25519 scalar via
-// edwards25519.NewScalar().SetUniformBytes().
-func TestSHA512HashScalar(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("failed to generate key: %v", err)
-	}
-
-	msg := []byte("test message for SHA512 hash scalar verification")
-	sig := ed25519.Sign(priv, msg)
-
-	R := sig[:32]
-	A := []byte(pub)
-
-	hasher := sha512.New()
-	hasher.Write(R)
-	hasher.Write(A)
-	hasher.Write(msg)
-	sum := hasher.Sum(nil)
-
-	if len(sum) != 64 {
-		t.Fatalf("SHA512 digest length = %d, expected 64", len(sum))
-	}
-
-	scalar, scalarErr := edwards25519.NewScalar().SetUniformBytes(sum)
-	if scalarErr != nil {
-		t.Fatalf("SetUniformBytes failed: %v", scalarErr)
-	}
-
-	scalarBytes := scalar.Bytes()
-	if len(scalarBytes) != 32 {
-		t.Fatalf("scalar byte length = %d, expected 32", len(scalarBytes))
-	}
-
-	// The scalar must be non-zero for a valid signature
-	allZero := true
-	for _, b := range scalarBytes {
-		if b != 0 {
-			allZero = false
-			break
-		}
-	}
-	if allZero {
-		t.Error("hash scalar is all zeros, expected non-zero")
+func TestPadSigsToBucket_TooBig(t *testing.T) {
+	_, err := padSigsToBucket(make([]ValidatorSignature, 5), 4)
+	if err == nil {
+		t.Fatal("expected too-small bucket error")
 	}
 }
 
-// TestPreComputationWithRealSignature verifies the pre-computation steps in
-// ProveSignature using a real Ed25519 keypair and signature. This exercises
-// point decompression, scalar extraction, and hash computation without
-// requiring R1CS files for full proof generation.
+// TestPreComputationWithRealSignature keeps coverage over the Ed25519 → gnark
+// field conversions we still rely on inside buildBatchAssignment.
 func TestPreComputationWithRealSignature(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
-		t.Fatalf("failed to generate key: %v", err)
+		t.Fatalf("generate key: %v", err)
 	}
-
 	msg := []byte("pre-computation test message")
 	sig := ed25519.Sign(priv, msg)
 
-	// Step 1: Extract R and S from signature
 	R := sig[:32]
-	S, sErr := edwards25519.NewScalar().SetCanonicalBytes(sig[32:])
-	if sErr != nil {
-		t.Fatalf("failed to parse S scalar: %v", sErr)
+	S, err := edwards25519.NewScalar().SetCanonicalBytes(sig[32:])
+	if err != nil {
+		t.Fatalf("parse S: %v", err)
 	}
-
-	// Step 2: Decompress public key to Weierstrass coordinates
-	aX, aY, decompErr := utils.DecompressPoint([]byte(pub))
-	if decompErr != nil {
-		t.Fatalf("failed to decompress public key: %v", decompErr)
+	aX, aY, err := utils.DecompressPoint([]byte(pub))
+	if err != nil {
+		t.Fatalf("decompress pub: %v", err)
 	}
 	if aX == nil || aY == nil {
-		t.Fatal("decompressed public key coordinates are nil")
+		t.Fatal("decompressed pub nil")
 	}
-	if aX.Sign() == 0 && aY.Sign() == 0 {
-		t.Error("decompressed public key is the point at infinity")
-	}
-
-	// Step 3: Decompress R point to Weierstrass coordinates
-	rX, rY, decompErr := utils.DecompressPoint(R)
-	if decompErr != nil {
-		t.Fatalf("failed to decompress R point: %v", decompErr)
+	rX, rY, err := utils.DecompressPoint(R)
+	if err != nil {
+		t.Fatalf("decompress R: %v", err)
 	}
 	if rX == nil || rY == nil {
-		t.Fatal("decompressed R point coordinates are nil")
+		t.Fatal("decompressed R nil")
 	}
-
-	// Step 4: Convert S to big.Int
-	s := utils.ScalarToBigInt(S)
-	if s == nil {
-		t.Fatal("ScalarToBigInt returned nil")
+	if utils.ScalarToBigInt(S).Sign() <= 0 {
+		t.Error("S big.Int should be positive")
 	}
-	if s.Sign() <= 0 {
-		t.Error("S scalar as big.Int should be positive")
-	}
-
-	// Step 5: Compute H = SHA512(R || A || msg) and reduce to scalar
 	hasher := sha512.New()
 	hasher.Write(R)
 	hasher.Write([]byte(pub))
 	hasher.Write(msg)
-	sum := hasher.Sum(nil)
-
-	H, hErr := edwards25519.NewScalar().SetUniformBytes(sum)
-	if hErr != nil {
-		t.Fatalf("failed to set hash scalar: %v", hErr)
-	}
-
-	h := utils.ScalarToBigInt(H)
-	if h == nil {
-		t.Fatal("hash ScalarToBigInt returned nil")
-	}
-	if h.Sign() <= 0 {
-		t.Error("hash scalar as big.Int should be positive")
+	if len(hasher.Sum(nil)) != 64 {
+		t.Fatal("sha512 output not 64 bytes")
 	}
 }
 
-// TestSHA512HashDeterminism verifies that the SHA512(R || A || msg)
-// computation is deterministic: the same inputs always produce the same scalar.
-func TestSHA512HashDeterminism(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+func TestProofToBigInts_NilProof(t *testing.T) {
+	_, _, _, err := ProofToBigInts(nil)
+	if err == nil || !strings.Contains(err.Error(), "expected BN254 proof") {
+		t.Fatalf("want 'expected BN254 proof' error, got %v", err)
+	}
+}
+
+func TestProofToBigInts_WrongType(t *testing.T) {
+	_, _, _, err := ProofToBigInts(&mockGnarkProof{})
+	if err == nil || !strings.Contains(err.Error(), "expected BN254 proof") {
+		t.Fatalf("want error, got %v", err)
+	}
+}
+
+func TestProofToBigInts_ValidBN254Proof(t *testing.T) {
+	p := &groth16_bn254.Proof{}
+	p.Commitments = make([]curve_bn254.G1Affine, 1)
+	proof, commitments, commitmentPok, err := ProofToBigInts(p)
 	if err != nil {
-		t.Fatalf("failed to generate key: %v", err)
+		t.Fatalf("unexpected: %v", err)
 	}
-
-	msg := []byte("determinism check")
-	sig := ed25519.Sign(priv, msg)
-	R := sig[:32]
-
-	computeScalar := func() []byte {
-		hasher := sha512.New()
-		hasher.Write(R)
-		hasher.Write([]byte(pub))
-		hasher.Write(msg)
-		sum := hasher.Sum(nil)
-
-		scalar, scalarErr := edwards25519.NewScalar().SetUniformBytes(sum)
-		if scalarErr != nil {
-			t.Fatalf("SetUniformBytes failed: %v", scalarErr)
+	for i, v := range proof {
+		if v == nil {
+			t.Errorf("proof[%d] nil", i)
 		}
-		return scalar.Bytes()
 	}
-
-	first := computeScalar()
-	second := computeScalar()
-
-	if len(first) != len(second) {
-		t.Fatalf("scalar lengths differ: %d vs %d", len(first), len(second))
+	for i, v := range commitments {
+		if v == nil {
+			t.Errorf("commitments[%d] nil", i)
+		}
 	}
-	for i := range first {
-		if first[i] != second[i] {
-			t.Fatalf("scalars differ at byte %d: %02x vs %02x", i, first[i], second[i])
+	for i, v := range commitmentPok {
+		if v == nil {
+			t.Errorf("commitmentPok[%d] nil", i)
 		}
 	}
 }
 
-// mockGnarkProof is a minimal implementation of groth16.Proof for testing
-// type assertion failures in ProofToBigInts.
 type mockGnarkProof struct {
 	groth16.Proof
-}
-
-// containsSubstring reports whether s contains substr.
-func containsSubstring(s, substr string) bool {
-	return len(s) >= len(substr) && searchSubstring(s, substr)
-}
-
-func searchSubstring(s, substr string) bool {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return true
-		}
-	}
-	return false
 }

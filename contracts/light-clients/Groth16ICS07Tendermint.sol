@@ -135,28 +135,53 @@ contract Groth16ICS07Tendermint is
             return ILightClientMsgs.UpdateResult.NoOp;
         }
 
-        // TODO: multi signatures
-	    string memory chainId = msg_.proposedHeader.signedHeader.header.chainId;
-        IICS07TendermintMsgs.BlockCommit memory untrustedHeaderCommit = msg_.proposedHeader.signedHeader.commit;
-        bytes32 pubkey = msg_.proposedHeader.validatorSet.validators[0].pubKey;
-        bytes memory sig = untrustedHeaderCommit.commitSigs[0].data.signature;
-        require(sig.length == 64, "invalid signature length");
-        bytes32[2] memory signature;
-        assembly {
-            mstore(signature, mload(add(sig, 32)))
-            mstore(add(signature, 32), mload(add(sig, 64)))
-        }
-        bool proofValid = VERIFIER.verifyProof(
-            msg_.proof,
-            msg_.commitments,
-            msg_.commitmentPok,
-            signature,
-            pubkey,
-            Encode.voteSignBytes(untrustedHeaderCommit, chainId, 0)
-        );
-        require(proofValid, ProofVerificationFailed());
-
+        _verifyBatchAndQuorum(msg_);
         return updateResult;
+    }
+
+    /// @dev Enforces 2/3+ voting power over the UNIQUE signers in msg_.signerIndices
+    ///      (duplicates from padding are skipped), then dispatches to the bucket's
+    ///      Groth16 verifier via the wrapper.
+    function _verifyBatchAndQuorum(IUpdateClientMsgs.MsgUpdateClient memory msg_) internal {
+        IICS07TendermintMsgs.ValidatorInfo[] memory vals = msg_.proposedHeader.validatorSet.validators;
+        uint256 numVals = vals.length;
+        require(
+            msg_.signerIndices.length == msg_.bucket
+                && msg_.signatures.length == msg_.bucket
+                && msg_.signerPubkeys.length == msg_.bucket
+                && msg_.signMessages.length == msg_.bucket,
+            BatchLengthMismatch()
+        );
+
+        bool[] memory seen = new bool[](numVals);
+        uint64 accumulated = 0;
+        for (uint256 i = 0; i < msg_.signerIndices.length; i++) {
+            uint32 idx = msg_.signerIndices[i];
+            require(idx < numVals, SignerIndexOutOfRange(idx));
+            require(vals[idx].pubKey == msg_.signerPubkeys[i], PubkeyMismatch(idx));
+            if (seen[idx]) {
+                continue; // padding duplicate
+            }
+            seen[idx] = true;
+            accumulated += vals[idx].votingPower;
+        }
+        require(
+            uint256(accumulated) * 3 > uint256(msg_.proposedHeader.validatorSet.totalVotingPower) * 2,
+            InsufficientVotingPower(accumulated, msg_.proposedHeader.validatorSet.totalVotingPower)
+        );
+
+        require(
+            VERIFIER.verifyBatchProof(
+                msg_.bucket,
+                msg_.proof,
+                msg_.commitments,
+                msg_.commitmentPok,
+                msg_.signatures,
+                msg_.signerPubkeys,
+                msg_.signMessages
+            ),
+            ProofVerificationFailed()
+        );
     }
 
     /// @inheritdoc ILightClient
