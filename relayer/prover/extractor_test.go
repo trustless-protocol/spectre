@@ -103,14 +103,21 @@ func TestExtractValidatorSignatures_ReachesQuorum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) < 3 {
-		t.Fatalf("expected at least 3 signers, got %d", len(got))
+	if got.Shared.ChainID != chainID {
+		t.Fatalf("shared.ChainID=%q want %q", got.Shared.ChainID, chainID)
 	}
-	for i, s := range got {
+	if len(got.Signatures) < 3 {
+		t.Fatalf("expected at least 3 signers, got %d", len(got.Signatures))
+	}
+	for i, s := range got.Signatures {
 		if len(s.Signature) != ed25519.SignatureSize {
 			t.Fatalf("sig[%d] wrong length %d", i, len(s.Signature))
 		}
-		if !ed25519.Verify(s.PublicKey, s.SignBytes, s.Signature) {
+		// Reconstruct signed bytes from commit to verify locally. The extractor
+		// already did this check, but we want the test to fail loudly if the
+		// reconstruction logic ever drifts.
+		voteBytes := lb.SignedHeader.Commit.VoteSignBytes(chainID, int32(s.Index))
+		if !ed25519.Verify(s.PublicKey, voteBytes, s.Signature) {
 			t.Fatalf("sig[%d] failed local verify", i)
 		}
 	}
@@ -143,10 +150,10 @@ func TestExtractValidatorSignatures_GreedyPicksSmallestPrefix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(got) != 1 {
-		t.Fatalf("expected 1 signer for dominant validator, got %d", len(got))
+	if len(got.Signatures) != 1 {
+		t.Fatalf("expected 1 signer for dominant validator, got %d", len(got.Signatures))
 	}
-	if got[0].Power != 70 {
-		t.Fatalf("expected dominant power 70, got %d", got[0].Power)
+	if got.Signatures[0].Power != 70 {
+		t.Fatalf("expected dominant power 70, got %d", got.Signatures[0].Power)
 	}
 }
