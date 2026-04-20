@@ -1171,6 +1171,11 @@
   },
   {
     "type": "error",
+    "name": "BatchLengthMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "CannotHandleMisbehavior",
     "inputs": []
   },
@@ -1303,6 +1308,22 @@
         "name": "trustingPeriod",
         "type": "uint128",
         "internalType": "uint128"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InsufficientVotingPower",
+    "inputs": [
+      {
+        "name": "accumulated",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "total",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ]
   },
@@ -1491,6 +1512,28 @@
     "type": "error",
     "name": "ProofVerificationFailed",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "PubkeyMismatch",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SignerIndexOutOfRange",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ]
   },
   {
     "type": "error",
