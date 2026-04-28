@@ -3,7 +3,6 @@ package services
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
 	"log"
 	"math/big"
 	"relayer/utils"
@@ -93,7 +92,7 @@ func (s *Services) StartLoop(ctx Context) {
 			if ctx.latestEthTimestamp.LatestUpdateTime.Add(routineInterval).Before(now) {
 				latestBlock, err := s.worker.UpdateCosmosClient(ctx, "groth16", int64(ctx.latestEthTimestamp.LatestUpdateHeight), "1/3")
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("Failed to update cosmos light client: %s", err.Error()))
+					log.Printf("[Routine] Failed to update cosmos light client: %v", err)
 					continue
 				}
 
@@ -132,22 +131,24 @@ func (s *Services) StartLoop(ctx Context) {
 	for {
 		batch, ok := <-s.BatchPackets
 		if !ok {
-			fmt.Println("Channel closed, exiting loop")
+			log.Println("[StartLoop] Batch channel closed, exiting loop")
 			break // Exit the loop when the channel is closed
 		}
 
+		log.Printf("[StartLoop] Received batch: %d packets", len(batch.Packets))
+
 		//TODO: the way better than wait
-		log.Printf("[Listener] Waiting 2 blocks for packet commitment to be included in AppHash...")
+		log.Printf("[StartLoop] Waiting 2 blocks for packet commitment to be included in AppHash...")
 		time.Sleep(6 * time.Second)
 
 		// update client
 		latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, "groth16", int64(ctx.latestEthTimestamp.LatestUpdateHeight), "1/3")
 		if err != nil {
-			ctx.Logger.Println(fmt.Errorf("Failed to update cosmos light client: %s", err.Error()))
+			log.Printf("[StartLoop] Failed to update cosmos light client: %v", err)
 			continue
 		}
 		if latestLightBlock == nil {
-			ctx.Logger.Println("Failed to update cosmos light client: latestLightBlock is nil")
+			log.Printf("[StartLoop] Failed to update cosmos light client: latestLightBlock is nil")
 			continue
 		}
 
@@ -161,7 +162,7 @@ func (s *Services) StartLoop(ctx Context) {
 		// Check current Eth block timestamp for timeout comparisons
 		ethHeader, err := ctx.EthClient().HeaderByNumber(context.Background(), nil)
 		if err != nil {
-			ctx.Logger.Println(fmt.Errorf("Failed to get eth block header: %s", err.Error()))
+			log.Printf("[StartLoop] Failed to get eth block header: %v", err)
 		}
 		ethBlockTime := uint64(0)
 		if ethHeader != nil {
@@ -183,13 +184,14 @@ func (s *Services) StartLoop(ctx Context) {
 
 				value, proof, err := client.ProvePath(ctx.CosmosClient(), latestLightBlock.BlockHeight, ibcPath)
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("failed to prove path: %w", err))
+					log.Printf("[RecvPacket] seq=%d: failed to prove path at height=%d: %v",
+						packet.Packet.Sequence, latestLightBlock.BlockHeight, err)
 					continue
 				}
 
 				if len(value) == 0 {
-					ctx.Logger.Println(fmt.Errorf("[RecvPacket] packet commitment empty at height %d, skipping seq=%d",
-						latestLightBlock.BlockHeight, packet.Packet.Sequence))
+					log.Printf("[RecvPacket] seq=%d: packet commitment empty at height=%d, skipping",
+						packet.Packet.Sequence, latestLightBlock.BlockHeight)
 					continue
 				}
 
@@ -199,7 +201,8 @@ func (s *Services) StartLoop(ctx Context) {
 				for _, p := range proof.Proofs {
 					commitmentProof, err := client.ParseCommitmentProof(p)
 					if err != nil {
-						ctx.Logger.Println(fmt.Errorf("failed to parse commitment proof: %w", err))
+						log.Printf("[RecvPacket] seq=%d: failed to parse commitment proof: %v",
+							packet.Packet.Sequence, err)
 					}
 					merkleProof.Proofs = append(merkleProof.Proofs, *commitmentProof)
 				}
@@ -229,7 +232,9 @@ func (s *Services) StartLoop(ctx Context) {
 
 				calldata, err := tendermintAbiJson.Pack("verifyMembership", membershipMsg)
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("Failed to abi encode verify msg: %s", err.Error()))
+					log.Printf("[RecvPacket] seq=%d: failed to ABI encode verifyMembership: %v",
+						packet.Packet.Sequence, err)
+					continue
 				}
 				calldata = calldata[4:]
 
@@ -255,10 +260,14 @@ func (s *Services) StartLoop(ctx Context) {
 					MembershipMsg: calldata,
 				}
 
-				s.worker.TxHandler.SendEthTx(ctx, msgRecvPacket)
+				if err := s.worker.TxHandler.SendEthTx(ctx, msgRecvPacket); err != nil {
+					log.Printf("[RecvPacket] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
+					continue
+				}
+				log.Printf("[RecvPacket] seq=%d: relay completed", packet.Packet.Sequence)
 			case Ack:
 				if len(packet.AckBytes) == 0 {
-					ctx.Logger.Println(fmt.Errorf("acknowledgement bytes missing for packet seq=%d", packet.Packet.Sequence))
+					log.Printf("[AckPacket] seq=%d: acknowledgement bytes missing, skipping", packet.Packet.Sequence)
 					continue
 				}
 
@@ -267,7 +276,8 @@ func (s *Services) StartLoop(ctx Context) {
 				// target height are the latest block height
 				value, proof, err := client.ProvePath(ctx.CosmosClient(), latestLightBlock.BlockHeight, ibcPath)
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("failed to prove path: %w", err))
+					log.Printf("[AckPacket] seq=%d: failed to prove path at height=%d: %v",
+						packet.Packet.Sequence, latestLightBlock.BlockHeight, err)
 					continue
 				}
 
@@ -277,7 +287,8 @@ func (s *Services) StartLoop(ctx Context) {
 				for _, p := range proof.Proofs {
 					commitmentProof, err := client.ParseCommitmentProof(p)
 					if err != nil {
-						ctx.Logger.Println(fmt.Errorf("failed to parse commitment proof: %w", err))
+						log.Printf("[AckPacket] seq=%d: failed to parse commitment proof: %v",
+							packet.Packet.Sequence, err)
 					}
 					merkleProof.Proofs = append(merkleProof.Proofs, *commitmentProof)
 				}
@@ -309,7 +320,9 @@ func (s *Services) StartLoop(ctx Context) {
 
 				calldata, err := tendermintAbiJson.Pack("verifyMembership", membershipMsg)
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("Failed to abi encode verify msg: %s", err.Error()))
+					log.Printf("[AckPacket] seq=%d: failed to ABI encode verifyMembership: %v",
+						packet.Packet.Sequence, err)
+					continue
 				}
 				// Strip 4-byte function selector — ICS26Router does abi.decode, not a function call
 				calldata = calldata[4:]
@@ -337,14 +350,20 @@ func (s *Services) StartLoop(ctx Context) {
 					MembershipMsg:   calldata,
 				}
 
-				s.worker.TxHandler.SendEthTx(ctx, msgAckPacket)
+				if err := s.worker.TxHandler.SendEthTx(ctx, msgAckPacket); err != nil {
+					log.Printf("[AckPacket] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
+					continue
+				}
+				log.Printf("[AckPacket] seq=%d: relay completed", packet.Packet.Sequence)
 			case Timeout:
 				ibcPath := utils.IbcCommitmentPath(*packet.Packet, []byte{2})
 
 				// target height are the latest block height
 				value, proof, err := client.ProvePath(ctx.CosmosClient(), latestLightBlock.BlockHeight, ibcPath)
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("failed to prove path: %w", err))
+					log.Printf("[Timeout] seq=%d: failed to prove path at height=%d: %v",
+						packet.Packet.Sequence, latestLightBlock.BlockHeight, err)
+					continue
 				}
 
 				merkleProof := tendermintContract.IMembershipMsgsMerkleProof{
@@ -353,7 +372,8 @@ func (s *Services) StartLoop(ctx Context) {
 				for _, p := range proof.Proofs {
 					commitmentProof, err := client.ParseCommitmentProof(p)
 					if err != nil {
-						ctx.Logger.Println(fmt.Errorf("failed to parse commitment proof: %w", err))
+						log.Printf("[Timeout] seq=%d: failed to parse commitment proof: %v",
+							packet.Packet.Sequence, err)
 					}
 					merkleProof.Proofs = append(merkleProof.Proofs, *commitmentProof)
 				}
@@ -385,7 +405,9 @@ func (s *Services) StartLoop(ctx Context) {
 
 				calldata, err := tendermintAbiJson.Pack("verifyNonMembership", nonMembershipMsg)
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("Failed to abi encode verify msg: %s", err.Error()))
+					log.Printf("[Timeout] seq=%d: failed to ABI encode verifyMembership: %v",
+						packet.Packet.Sequence, err)
+					continue
 				}
 				// Strip 4-byte function selector — ICS26Router does abi.decode, not a function call
 				calldata = calldata[4:]
@@ -412,15 +434,21 @@ func (s *Services) StartLoop(ctx Context) {
 					NonMembershipMsg: calldata,
 				}
 
-				s.worker.TxHandler.SendEthTx(ctx, msgTimeoutPacket)
+				if err := s.worker.TxHandler.SendEthTx(ctx, msgTimeoutPacket); err != nil {
+					log.Printf("[Timeout] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
+					continue
+				}
+				log.Printf("[Timeout] seq=%d: relay completed", packet.Packet.Sequence)
 
 			case WriteAck:
 				signerAddr, err := s.worker.TxHandler.CosmosSignerAddress()
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to get cosmos signer: %w", err))
+					log.Printf("[WriteAck] seq=%d: failed to get cosmos signer: %v", packet.Packet.Sequence, err)
 					continue
 				}
 
+				log.Printf("[WriteAck] seq=%d: waiting for beacon finality at block %d",
+					packet.Packet.Sequence, packet.BlockNumber)
 				finalized := false
 				for attempt := 0; attempt < 60; attempt++ {
 					if attempt > 0 {
@@ -428,39 +456,41 @@ func (s *Services) StartLoop(ctx Context) {
 					}
 					finalityUpdate, err := client.GetFinalityUpdate(ctx.BeaconAPIURL())
 					if err != nil {
-						log.Printf("[WriteAck] failed to get finality update: %v", err)
+						log.Printf("[WriteAck] seq=%d: failed to get finality update: %v", packet.Packet.Sequence, err)
 						continue
 					}
 					execBlock, _ := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
 					if execBlock >= packet.BlockNumber {
-						log.Printf("[WriteAck] Beacon finalized block %d >= event block %d", execBlock, packet.BlockNumber)
+						log.Printf("[WriteAck] seq=%d: beacon finalized block %d >= event block %d",
+							packet.Packet.Sequence, execBlock, packet.BlockNumber)
 						finalized = true
 						break
 					}
-					log.Printf("[WriteAck] Beacon finalized block %d < event block %d, waiting... (%d/60)",
-						execBlock, packet.BlockNumber, attempt+1)
+					log.Printf("[WriteAck] seq=%d: beacon finalized block %d < event block %d, waiting... (%d/60)",
+						packet.Packet.Sequence, execBlock, packet.BlockNumber, attempt+1)
 				}
 				if !finalized {
-					ctx.Logger.Println(fmt.Errorf("[WriteAck] beacon finality did not reach block %d after retries", packet.BlockNumber))
+					log.Printf("[WriteAck] seq=%d: beacon finality did not reach block %d after 60 retries",
+						packet.Packet.Sequence, packet.BlockNumber)
 					continue
 				}
 
 				if err := s.worker.UpdateEthClient(ctx); err != nil {
-					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to update ETH client: %w", err))
+					log.Printf("[WriteAck] seq=%d: failed to update ETH client: %v", packet.Packet.Sequence, err)
 					continue
 				}
 
 				ethClientState, err := client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to get ETH client state: %w", err))
+					log.Printf("[WriteAck] seq=%d: failed to get ETH client state: %v", packet.Packet.Sequence, err)
 					continue
 				}
 				proofBlockNumber := ethClientState.LatestExecutionBlockNumber
 				proofSlot := ethClientState.LatestSlot
 
 				if proofBlockNumber < packet.BlockNumber {
-					ctx.Logger.Println(fmt.Errorf("[WriteAck] ETH client at block %d still < event block %d after update, skipping",
-						proofBlockNumber, packet.BlockNumber))
+					log.Printf("[WriteAck] seq=%d: ETH client at block %d still < event block %d after update, skipping",
+						packet.Packet.Sequence, proofBlockNumber, packet.BlockNumber)
 					continue
 				}
 
@@ -474,7 +504,7 @@ func (s *Services) StartLoop(ctx Context) {
 				proofBytes, err := client.GetEthMembershipProof(
 					ctx.EthClient(), *ctx.RouterContract(), ackPath, slot, new(big.Int).SetUint64(proofBlockNumber))
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to get ETH membership proof: %w", err))
+					log.Printf("[WriteAck] seq=%d: failed to get ETH membership proof: %v", packet.Packet.Sequence, err)
 					continue
 				}
 
@@ -488,11 +518,13 @@ func (s *Services) StartLoop(ctx Context) {
 					Signer:      signerAddr,
 				}
 				if err := s.worker.TxHandler.SendCosmosTx(ctx, ackMsg); err != nil {
-					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to send MsgAcknowledgement: %w", err))
+					log.Printf("[WriteAck] seq=%d: failed to send MsgAcknowledgement: %v", packet.Packet.Sequence, err)
+					continue
 				}
+				log.Printf("[WriteAck] seq=%d: relay completed", packet.Packet.Sequence)
 
 			default:
-				ctx.Logger.Println(fmt.Errorf("Invalid packet type"))
+				log.Printf("[StartLoop] Unknown packet type: %d (seq=%d)", packet.PacketType, packet.Packet.Sequence)
 			}
 		}
 
