@@ -21,6 +21,9 @@ import { DeployAccessManagerWithRoles } from "./deployments/DeployAccessManagerW
 import { IBCERC20 } from "../contracts/utils/IBCERC20.sol";
 import { Escrow } from "../contracts/utils/Escrow.sol";
 import { WrapperVerifier } from "../contracts/utils/WrapperVerifier.sol";
+import { Groth16Verifier_N3 } from "../contracts/verifiers/Groth16Verifier_N3.sol";
+import { Groth16Verifier_N4 } from "../contracts/verifiers/Groth16Verifier_N4.sol";
+import { Groth16Verifier_N8 } from "../contracts/verifiers/Groth16Verifier_N8.sol";
 import { Membership } from "../contracts/programs/Membership.sol";
 import { UpdateClient } from "../contracts/programs/UpdateClient.sol";
 import { Misbehaviour } from "../contracts/programs/Misbehaviour.sol";
@@ -40,12 +43,20 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
 
         vm.startBroadcast();
 
-        // Deploy the multi-validator Groth16 batch verifier wrapper.
-        // Per-bucket Groth16Verifier_N{N}.sol verifiers are generated offline
-        // by `go run ./relayer/prover/cmd`; the deployer must call
-        // WrapperVerifier.setBucket(n, verifier, selector) for each bucket
-        // after deploy (out of scope for this test harness).
-        address wrapperVerifier = address(new WrapperVerifier(msg.sender));
+        // Deploy the multi-validator Groth16 batch verifier wrapper, then
+        // deploy one per-bucket gnark verifier and register it. Per-bucket
+        // Groth16Verifier_N{N}.sol files are generated offline by
+        // `go run ./relayer/prover/cmd`.
+        WrapperVerifier wrapperVerifier = new WrapperVerifier(msg.sender);
+
+        address verifierN3 = address(new Groth16Verifier_N3());
+        address verifierN4 = address(new Groth16Verifier_N4());
+        address verifierN8 = address(new Groth16Verifier_N8());
+        // Hash-aggregate exposes a fixed 32-byte SHA-256 digest as public input,
+        // so every bucket uses the same uint256[32] verifier ABI.
+        wrapperVerifier.setBucket(3, verifierN3, _verifyProofSelector());
+        wrapperVerifier.setBucket(4, verifierN4, _verifyProofSelector());
+        wrapperVerifier.setBucket(8, verifierN8, _verifyProofSelector());
 
         address membership = address(new Membership());
         address updateClient = address(new UpdateClient());
@@ -101,5 +112,17 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         string memory finalJson = json.serialize("erc20", Strings.toHexString(address(erc20)));
 
         return finalJson;
+    }
+
+    /// @dev Build the 4-byte selector for gnark's hash-aggregate verifier ABI:
+    ///      `verifyProof(uint256[8], uint256[2], uint256[2], uint256[32])`.
+    function _verifyProofSelector() internal pure returns (bytes4) {
+        return bytes4(
+            keccak256(
+                bytes(
+                    "verifyProof(uint256[8],uint256[2],uint256[2],uint256[32])"
+                )
+            )
+        );
     }
 }

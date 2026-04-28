@@ -82,11 +82,11 @@ contract UpdateClient is IUpdateClient {
 
     function verifyHeader(
         IICS07TendermintMsgs.Header memory proposedHeader,
-        string memory clientId_,
+        string memory,
         IICS07TendermintMsgs.ChainId memory chainId,
         IICS07TendermintMsgs.Options memory options,
         uint128 time,
-        IICS07TendermintMsgs.ClientConsensusStatePath memory path_,
+        IICS07TendermintMsgs.ClientConsensusStatePath memory,
         IICS07TendermintMsgs.ConsensusState memory trustedConsensusState
     ) internal pure {
         // Checks that the header fields are valid.
