@@ -318,13 +318,14 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			trustingPeriod := 2 * uint32(unbondingPeriod) / 3
 
 			logger.Sugar().Infof("Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s)...", trustingPeriod, trustLevel)
-			if err := worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, trustLevel); err != nil {
+			ics07Addr, err := worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, trustLevel)
+			if err != nil {
 				return fmt.Errorf("failed to create Cosmos client on Ethereum: %w", err)
 			}
-			ics07Addr := ctx.ClientContract()
-			if ics07Addr == nil || (*ics07Addr) == (common.Address{}) {
+			if (ics07Addr == common.Address{}) {
 				return fmt.Errorf("ics07 address missing after deploy")
 			}
+			ctx.SetClient(ics07Addr)
 			if err := writeICS07Address(configPath, ics07Addr.Hex()); err != nil {
 				return fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
 			}

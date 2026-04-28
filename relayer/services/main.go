@@ -33,7 +33,7 @@ func init() {
 }
 
 type TransactionHandler interface {
-	CreateCosmosClientContract(ctx Context, clientState, consensusHash []byte) error
+	CreateCosmosClientContract(ctx Context, clientState, consensusHash []byte) (ethcommon.Address, error)
 	CreateEthClient(ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) (string, error)
 	SendEthTx(ctx Context, msg any) error
 	SendCosmosTx(ctx Context, msg any) error
@@ -44,6 +44,7 @@ type TransactionHandler interface {
 type Prover interface {
 	GenerateProof(sigs []prover.ValidatorSignature) (
 		bucket int,
+		paddedSigs []prover.ValidatorSignature,
 		proof [8]*big.Int,
 		commitments [2]*big.Int,
 		commitmentPok [2]*big.Int,

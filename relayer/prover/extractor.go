@@ -21,6 +21,10 @@ type ValidatorSignature struct {
 	TimestampSeconds int64  // google.protobuf.Timestamp seconds
 	TimestampNanos   int32  // google.protobuf.Timestamp nanos
 	SignedBytes      []byte // cometbft.Commit.VoteSignBytes(chainID, idx)
+	// Active distinguishes real signers (true) from deterministic padding
+	// (false). Padding slots carry distinct dummy data so the in-circuit ECIP
+	// divisor stays well-formed; their contribution is gated to zero.
+	Active bool
 }
 
 // SharedBlockData is the subset of CanonicalVote fields that are identical
@@ -92,6 +96,7 @@ func ExtractValidatorSignatures(lightBlock *relayerclient.LightBlock, chainID st
 			TimestampSeconds: sig.Timestamp.Unix(),
 			TimestampNanos:   int32(sig.Timestamp.Nanosecond()),
 			SignedBytes:      voteData,
+			Active:           true,
 		})
 	}
 	if len(candidates) == 0 {

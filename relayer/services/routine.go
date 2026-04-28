@@ -18,6 +18,7 @@ import (
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
+	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
@@ -35,10 +36,10 @@ func NewWorker(txHandler TransactionHandler, prover Prover) *Worker {
 	}
 }
 
-func (w *Worker) CreateCosmosClient(ctx Context, proofType string, trustingPeriod uint32, trustedBlock int64, trustLevel string) error {
+func (w *Worker) CreateCosmosClient(ctx Context, proofType string, trustingPeriod uint32, trustedBlock int64, trustLevel string) (common.Address, error) {
 	genesis, err := relayerclient.GetGenesis(ctx.CosmosClient(), trustedBlock, trustingPeriod, trustLevel, proofType)
 	if err != nil {
-		return fmt.Errorf("failed to get genesis: %w", err)
+		return common.Address{}, fmt.Errorf("failed to get genesis: %w", err)
 	}
 
 	clientState := genesis.TrustedClientState
@@ -51,12 +52,12 @@ func (w *Worker) CreateCosmosClient(ctx Context, proofType string, trustingPerio
 
 	clientStateEncoded, err := relayerclient.EncodeClientState(clientState)
 	if err != nil {
-		return fmt.Errorf("failed to encode client state: %w", err)
+		return common.Address{}, fmt.Errorf("failed to encode client state: %w", err)
 	}
 
 	consensusStateEncoded, err := relayerclient.EncodeConsensusState(consensusState)
 	if err != nil {
-		return fmt.Errorf("failed to encode consensus state: %w", err)
+		return common.Address{}, fmt.Errorf("failed to encode consensus state: %w", err)
 	}
 
 	consensusHash := crypto.Keccak256(consensusStateEncoded)
@@ -178,25 +179,22 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 		return nil, fmt.Errorf("extract validator signatures: %w", err)
 	}
 	log.Printf("[UpdateCosmosClient] Generating Groth16 batch proof for %d validator signatures...", len(extracted.Signatures))
-	bucket, proof, commitments, commitmentPok, err := w.Prover.GenerateProof(extracted.Signatures)
+	bucket, paddedSigs, proof, commitments, commitmentPok, err := w.Prover.GenerateProof(extracted.Signatures)
 	if err != nil {
 		return nil, fmt.Errorf("error generating proof: %w", err)
 	}
 	log.Printf("[UpdateCosmosClient] Proof generated (bucket=%d). Sending Eth tx...", bucket)
 
-	// Pad the signer slice up to the bucket size so the on-chain quorum check
-	// sees the same per-slot layout the circuit committed to. Padding slots are
-	// duplicates of slot 0; Solidity dedupes by SignerIndices before summing
-	// voting power.
-	paddedSigs, err := prover.PadSigsToBucket(extracted.Signatures, bucket)
-	if err != nil {
-		return nil, fmt.Errorf("pad sigs to bucket: %w", err)
-	}
+	// paddedSigs is the prover's bucket-sized slice (real signers + dummy
+	// padding); the on-chain quorum check sees the same per-slot layout the
+	// circuit committed to. Padding slots have Active=false and zero voting
+	// power; Solidity skips them via the active flag.
 	signerIndices := make([]uint32, bucket)
 	signatures := make([][2][32]byte, bucket)
 	signerPubkeys := make([][32]byte, bucket)
 	timestampSeconds := make([]uint64, bucket)
 	timestampNanos := make([]uint32, bucket)
+	active := make([]bool, bucket)
 	for i, s := range paddedSigs {
 		signerIndices[i] = uint32(s.Index)
 		copy(signatures[i][0][:], s.Signature[:32])
@@ -204,6 +202,7 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 		copy(signerPubkeys[i][:], s.PublicKey)
 		timestampSeconds[i] = uint64(s.TimestampSeconds)
 		timestampNanos[i] = uint32(s.TimestampNanos)
+		active[i] = s.Active
 	}
 
 	msg := updateclientContract.IUpdateClientMsgsMsgUpdateClient{
@@ -220,6 +219,7 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 		SignerPubkeys:         signerPubkeys,
 		TimestampSeconds:      timestampSeconds,
 		TimestampNanos:        timestampNanos,
+		Active:                active,
 	}
 
 	err = w.TxHandler.SendEthTx(ctx, msg)

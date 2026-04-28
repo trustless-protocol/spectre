@@ -22,7 +22,7 @@ func TestGenerateProof_InputValidation(t *testing.T) {
 	p := &EcipProver{byBucket: map[int]*bucketArtifacts{}}
 
 	t.Run("empty inputs", func(t *testing.T) {
-		_, _, _, _, err := p.GenerateProof(nil)
+		_, _, _, _, _, err := p.GenerateProof(nil)
 		if err == nil || !strings.Contains(err.Error(), "no signatures") {
 			t.Fatalf("want 'no signatures' error, got %v", err)
 		}
@@ -31,7 +31,7 @@ func TestGenerateProof_InputValidation(t *testing.T) {
 	t.Run("exceeds max bucket", func(t *testing.T) {
 		n := MaxBucket() + 1
 		sigs := make([]ValidatorSignature, n)
-		_, _, _, _, err := p.GenerateProof(sigs)
+		_, _, _, _, _, err := p.GenerateProof(sigs)
 		if err == nil || !strings.Contains(err.Error(), "largest bucket") {
 			t.Fatalf("want over-max error, got %v", err)
 		}
@@ -69,31 +69,45 @@ func TestSmallestBucketGEQ(t *testing.T) {
 	}
 }
 
-func TestPadSigsToBucket_FillsWithSlotZero(t *testing.T) {
-	sigs := []ValidatorSignature{{
+func TestPadWithDummies_FillsTrailingSlotsWithDistinctDummies(t *testing.T) {
+	real := []ValidatorSignature{{
 		Signature:        append(make([]byte, 63), 0xAB),
 		PublicKey:        append(make([]byte, 31), 0xCD),
 		Index:            7,
 		Power:            100,
 		TimestampSeconds: 42,
 		TimestampNanos:   7,
+		Active:           true,
 	}}
-	padded, err := PadSigsToBucket(sigs, 4)
+	dummies := generateDummySlots(4)
+	padded, err := padWithDummies(real, dummies)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(padded) != 4 {
 		t.Fatalf("expected 4 slots, got %d", len(padded))
 	}
-	for i, s := range padded {
-		if s.Index != 7 || s.Power != 100 || s.TimestampSeconds != 42 {
-			t.Errorf("slot[%d] not a copy of slot 0: %+v", i, s)
+	if !padded[0].Active || padded[0].Index != 7 {
+		t.Errorf("slot 0 should be the real signer, got %+v", padded[0])
+	}
+	for i := 1; i < 4; i++ {
+		if padded[i].Active {
+			t.Errorf("slot %d should be inactive padding", i)
 		}
+	}
+	// Distinctness: every padding pubkey differs.
+	seen := map[string]bool{string(padded[0].PublicKey): true}
+	for i := 1; i < 4; i++ {
+		key := string(padded[i].PublicKey)
+		if seen[key] {
+			t.Errorf("duplicate pubkey at slot %d", i)
+		}
+		seen[key] = true
 	}
 }
 
-func TestPadSigsToBucket_TooBig(t *testing.T) {
-	_, err := PadSigsToBucket(make([]ValidatorSignature, 5), 4)
+func TestPadWithDummies_TooBig(t *testing.T) {
+	_, err := padWithDummies(make([]ValidatorSignature, 5), generateDummySlots(4))
 	if err == nil {
 		t.Fatal("expected too-small bucket error")
 	}

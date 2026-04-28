@@ -160,6 +160,7 @@ func init() {
 		{Name: "signerPubkeys", Type: "bytes32[]"},
 		{Name: "timestampSeconds", Type: "uint64[]"},
 		{Name: "timestampNanos", Type: "uint32[]"},
+		{Name: "active", Type: "bool[]"},
 	})
 }
 

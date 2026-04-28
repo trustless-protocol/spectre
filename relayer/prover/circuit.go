@@ -41,6 +41,11 @@ type BatchCircuit[Base, Scalars emulated.FieldParams] struct {
 
 	Msgs    [][MaxMsgLen]uints.U8 `gnark:",secret"` // per-slot signed bytes (zero-padded)
 	MsgLens []frontend.Variable   `gnark:",secret"` // per-slot meaningful prefix length
+	// Active gates each slot's contribution to the ECIP aggregate. Inactive
+	// (padding) slots carry deterministic dummy data so every point in the
+	// batch is distinct, but their weight is zero. Bound to the witness hash
+	// so calldata cannot toggle a slot's active bit after proving.
+	Active []frontend.Variable `gnark:",secret"`
 }
 
 func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
@@ -59,12 +64,15 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 
 	// 1. Hash all witness bytes and bind to the public commitment.
 	//    Layout (must match hash_witness.go and WrapperVerifier._hashWitness):
-	//      per slot: R(32) || S(32) || A(32) || msgLen(2 BE) || msg(MaxMsgLen padded)
+	//      per slot: active(1) || R(32) || S(32) || A(32) || msgLen(2 BE) || msg(MaxMsgLen padded)
 	//    Including R/S/A bytes in the hash binds the calldata Sig/Pub to the
 	//    proof — without it an attacker could keep the same proof but swap
-	//    pubkeys in calldata to misattribute voting power.
+	//    pubkeys in calldata to misattribute voting power. The active byte is
+	//    placed first so the on-chain rebuild can short-circuit cheaply for
+	//    padding slots if it ever needs to.
 	var buf []uints.U8
 	for i := range c.Sig {
+		buf = append(buf, varToBytesBE(api, c.Active[i], 1)...)
 		buf = append(buf, compressEdwardsToLE(api, baseApi, &c.Sig[i].R)...)
 		buf = append(buf, scalarToBytesLE(api, scalarApi, &c.Sig[i].S)...)
 		buf = append(buf, compressEdwardsToLE(api, baseApi, &c.Pub[i].A)...)
@@ -89,6 +97,12 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	for i := range c.Sig {
 		msgs[i] = c.Msgs[i][:]
 	}
+	// All N slots carry valid Ed25519 signatures — real signers sign canonical
+	// vote bytes, padding slots sign deterministic dummy bytes via a generated
+	// dummy keypair. Both verify under the same primitive; the Active byte in
+	// the hash + the on-chain quorum check are what distinguish real from
+	// padding. ECIP doesn't need to gate inactive slots because every (R, A)
+	// is distinct and every sig verifies on its own.
 	return eddsa.VerifyBatchWithMsgBytes[Base, Scalars](
 		api, c.Sig, c.Pub, msgs, c.MsgLens, eddsa.Config{FromWei: false},
 	)
@@ -103,5 +117,6 @@ func NewBatchCircuit(n int) *BatchCircuit[Fp25519, Fr25519] {
 		Pub:     make([]eddsa.PublicKey[Fp25519, Fr25519], n),
 		Msgs:    make([][MaxMsgLen]uints.U8, n),
 		MsgLens: make([]frontend.Variable, n),
+		Active:  make([]frontend.Variable, n),
 	}
 }

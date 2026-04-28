@@ -24,13 +24,14 @@ import (
 	"github.com/consensys/gnark/std/math/uints"
 )
 
-// bucketArtifacts holds the compiled circuit and Groth16 key pair for one
-// validator-count bucket.
+// bucketArtifacts holds the compiled circuit, Groth16 key pair, and the
+// deterministic dummy padding slots for one validator-count bucket.
 type bucketArtifacts struct {
-	n    int
-	r1cs constraint.ConstraintSystem
-	pk   groth16.ProvingKey
-	vk   groth16.VerifyingKey
+	n      int
+	r1cs   constraint.ConstraintSystem
+	pk     groth16.ProvingKey
+	vk     groth16.VerifyingKey
+	dummys []dummySignature
 }
 
 // EcipProver is a registry of compiled circuits keyed by bucket size. The
@@ -78,7 +79,13 @@ func loadBucketArtifacts(binDir string, n int) (*bucketArtifacts, error) {
 		return nil, fmt.Errorf("read vk: %w", err)
 	}
 
-	return &bucketArtifacts{n: n, r1cs: r1cs, pk: pk, vk: vk}, nil
+	return &bucketArtifacts{
+		n:      n,
+		r1cs:   r1cs,
+		pk:     pk,
+		vk:     vk,
+		dummys: generateDummySlots(n),
+	}, nil
 }
 
 type readerFrom interface {
@@ -111,6 +118,7 @@ func readFromFile(path string, kind string, bucket int, dst readerFrom) error {
 // caller which Solidity verifier to dispatch to.
 func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 	bucket int,
+	paddedSigs []ValidatorSignature,
 	proof [8]*big.Int,
 	commitments [2]*big.Int,
 	commitmentPok [2]*big.Int,
@@ -131,7 +139,7 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 		return
 	}
 
-	paddedSigs, err := PadSigsToBucket(sigs, bucket)
+	paddedSigs, err = padWithDummies(sigs, art.dummys)
 	if err != nil {
 		return
 	}
@@ -169,20 +177,20 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 	return
 }
 
-// PadSigsToBucket pads the signer slice up to `n` with copies of slot 0.
-// Duplicate slots are cryptographically sound — each slot still holds a real
-// signature; the on-chain voting-power counter dedupes by validator index.
-func PadSigsToBucket(sigs []ValidatorSignature, n int) ([]ValidatorSignature, error) {
+// padWithDummies fills the trailing slots of a bucket with deterministic dummy
+// signatures (active=false) so every (R, A) point in the batch is distinct.
+// Duplicating a real slot would re-introduce the ECIP doubling-branch issue;
+// distinct dummies keep the divisor well-formed while the active gate zeroes
+// their contribution to the aggregate.
+func padWithDummies(sigs []ValidatorSignature, dummies []dummySignature) ([]ValidatorSignature, error) {
+	n := len(dummies)
 	if len(sigs) > n {
 		return nil, fmt.Errorf("bucket n=%d too small for %d signers", n, len(sigs))
 	}
 	out := make([]ValidatorSignature, n)
-	for i := 0; i < n; i++ {
-		src := i
-		if src >= len(sigs) {
-			src = 0
-		}
-		out[i] = sigs[src]
+	copy(out, sigs)
+	for i := len(sigs); i < n; i++ {
+		out[i] = dummies[i].asValidatorSignature()
 	}
 	return out, nil
 }
@@ -198,6 +206,7 @@ func buildBatchAssignment(sigs []ValidatorSignature, hash [32]byte) (*BatchCircu
 		Pub:     make([]eddsa.PublicKey[Fp25519, Fr25519], n),
 		Msgs:    make([][MaxMsgLen]uints.U8, n),
 		MsgLens: make([]frontend.Variable, n),
+		Active:  make([]frontend.Variable, n),
 	}
 	for i := 0; i < 32; i++ {
 		a.Hash[i] = uints.NewU8(hash[i])
@@ -250,6 +259,11 @@ func buildBatchAssignment(sigs []ValidatorSignature, hash [32]byte) (*BatchCircu
 			}
 		}
 		a.MsgLens[i] = len(v.SignedBytes)
+		if v.Active {
+			a.Active[i] = 1
+		} else {
+			a.Active[i] = 0
+		}
 	}
 
 	return a, nil

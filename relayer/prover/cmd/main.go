@@ -108,6 +108,7 @@ func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16
 			Signature:   sig,
 			PublicKey:   pub,
 			SignedBytes: msg,
+			Active:      true,
 		}
 	}
 
@@ -150,6 +151,7 @@ func buildSmokeAssignment(
 		Pub:     make([]eddsa.PublicKey[prover.Fp25519, prover.Fr25519], n),
 		Msgs:    make([][prover.MaxMsgLen]uints.U8, n),
 		MsgLens: make([]frontend.Variable, n),
+		Active:  make([]frontend.Variable, n),
 	}
 	for i := 0; i < 32; i++ {
 		a.Hash[i] = uints.NewU8(hash[i])
@@ -190,6 +192,11 @@ func buildSmokeAssignment(
 			}
 		}
 		a.MsgLens[i] = len(v.SignedBytes)
+		if v.Active {
+			a.Active[i] = 1
+		} else {
+			a.Active[i] = 0
+		}
 	}
 	return a, nil
 }

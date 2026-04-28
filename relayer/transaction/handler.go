@@ -21,6 +21,7 @@ import (
 
 	sdkmath "cosmossdk.io/math"
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
 
 	"github.com/cosmos/cosmos-sdk/codec"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
@@ -48,39 +49,39 @@ type Handler struct {
 
 const ethTxReceiptTimeout = 45 * time.Second
 
-func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte) error {
+func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte) (common.Address, error) {
 	privKey := os.Getenv("ETH_PRIVATE_KEY")
 	if privKey == "" {
-		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
+		return common.Address{}, fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
 	}
 	privateKey, err := keys.RestoreKey(privKey)
 	if err != nil {
-		return fmt.Errorf("failed to restore private key: %w", err)
+		return common.Address{}, fmt.Errorf("failed to restore private key: %w", err)
 	}
 
 	publicKey, err := keys.PublicKey(privateKey)
 	if err != nil {
-		return fmt.Errorf("[CreateCosmosClient] failed to derive public key: %w", err)
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to derive public key: %w", err)
 	}
 
 	fromAddress := crypto.PubkeyToAddress(*publicKey)
 	nonce, err := ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
-		return fmt.Errorf("[CreateCosmosClient] failed to get nonce: %w", err)
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to get nonce: %w", err)
 	}
 	gasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
 	if err != nil {
-		return fmt.Errorf("[CreateCosmosClient] failed to suggest gas price: %w", err)
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to suggest gas price: %w", err)
 	}
 
 	chainIdInt, err := ctx.EthClient().ChainID(context.Background())
 	if err != nil {
-		return fmt.Errorf("[CreateCosmosClient] invalid chain id: %v", err)
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] invalid chain id: %v", err)
 	}
 
 	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
 	if err != nil {
-		return fmt.Errorf("[CreateCosmosClient] failed to create auth transactor: %w", err)
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to create auth transactor: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
 	auth.Value = big.NewInt(0)      // in wei
@@ -100,17 +101,17 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to deploy ics07 contract: %w", err)
+		return common.Address{}, fmt.Errorf("failed to deploy ics07 contract: %w", err)
 	}
 	log.Printf("[CreateCosmosClient] Deploy tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
 	receiptCtx, cancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
 	defer cancel()
 	receipt, err := bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
 	if err != nil {
-		return fmt.Errorf("failed waiting for deploy receipt: %w", err)
+		return common.Address{}, fmt.Errorf("failed waiting for deploy receipt: %w", err)
 	}
 	if receipt.Status == 0 {
-		return fmt.Errorf("deploy tx %s reverted (gasUsed=%d)", tx.Hash().Hex(), receipt.GasUsed)
+		return common.Address{}, fmt.Errorf("deploy tx %s reverted (gasUsed=%d)", tx.Hash().Hex(), receipt.GasUsed)
 	}
 	log.Printf("[CreateCosmosClient] ICS07 deployed at %s (block %d, gasUsed=%d)", address.String(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
 	ctx.SetClient(address)
@@ -119,12 +120,12 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 
 	ics26Router, err := routerContract.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
 	if err != nil {
-		return err
+		return common.Address{}, err
 	}
 
 	nonce, err = ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
-		return fmt.Errorf("[CreateCosmosClient] failed to get nonce for AddClient: %w", err)
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to get nonce for AddClient: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
 
@@ -139,22 +140,22 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to add client to ICS26Router: %w", err)
+		return common.Address{}, fmt.Errorf("failed to add client to ICS26Router: %w", err)
 	}
 	log.Printf("[CreateCosmosClient] AddClient tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
 	receiptCtx, cancel = context.WithTimeout(context.Background(), ethTxReceiptTimeout)
 	defer cancel()
 	receipt, err = bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
 	if err != nil {
-		return fmt.Errorf("failed waiting for AddClient receipt: %w", err)
+		return common.Address{}, fmt.Errorf("failed waiting for AddClient receipt: %w", err)
 	}
 	if receipt.Status == 0 {
 		log.Printf("[CreateCosmosClient] AddClient tx reverted (gasUsed=%d) — client may already exist, continuing...", receipt.GasUsed)
-		return nil
+		return address, nil
 	}
 	log.Printf("[CreateCosmosClient] AddClient confirmed (block %d, gasUsed=%d)", receipt.BlockNumber.Uint64(), receipt.GasUsed)
 
-	return nil
+	return address, nil
 }
 
 func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
