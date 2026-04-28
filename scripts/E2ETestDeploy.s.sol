@@ -21,9 +21,9 @@ import { DeployAccessManagerWithRoles } from "./deployments/DeployAccessManagerW
 import { IBCERC20 } from "../contracts/utils/IBCERC20.sol";
 import { Escrow } from "../contracts/utils/Escrow.sol";
 import { WrapperVerifier } from "../contracts/utils/WrapperVerifier.sol";
-import { Groth16Verifier_N3 } from "../contracts/verifiers/Groth16Verifier_N3.sol";
+
 import { Groth16Verifier_N4 } from "../contracts/verifiers/Groth16Verifier_N4.sol";
-import { Groth16Verifier_N8 } from "../contracts/verifiers/Groth16Verifier_N8.sol";
+
 import { Membership } from "../contracts/programs/Membership.sol";
 import { UpdateClient } from "../contracts/programs/UpdateClient.sol";
 import { Misbehaviour } from "../contracts/programs/Misbehaviour.sol";
@@ -49,14 +49,14 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         // `go run ./relayer/prover/cmd`.
         WrapperVerifier wrapperVerifier = new WrapperVerifier(msg.sender);
 
-        address verifierN3 = address(new Groth16Verifier_N3());
+
         address verifierN4 = address(new Groth16Verifier_N4());
-        address verifierN8 = address(new Groth16Verifier_N8());
+
         // Hash-aggregate exposes a fixed 32-byte SHA-256 digest as public input,
         // so every bucket uses the same uint256[32] verifier ABI.
-        wrapperVerifier.setBucket(3, verifierN3, _verifyProofSelector());
+     
         wrapperVerifier.setBucket(4, verifierN4, _verifyProofSelector());
-        wrapperVerifier.setBucket(8, verifierN8, _verifyProofSelector());
+      
 
         address membership = address(new Membership());
         address updateClient = address(new UpdateClient());

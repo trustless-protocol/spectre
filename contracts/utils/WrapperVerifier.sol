@@ -57,6 +57,7 @@ contract WrapperVerifier is IVerifier {
         bytes32[] calldata pubkeys,
         uint64[] calldata timestampSeconds,
         uint32[] calldata timestampNanos,
+        bool[] calldata active,
         IVerifier.SharedBlock calldata shared
     ) external view override returns (bool) {
         if (
@@ -64,12 +65,13 @@ contract WrapperVerifier is IVerifier {
                 || pubkeys.length != bucket
                 || timestampSeconds.length != bucket
                 || timestampNanos.length != bucket
+                || active.length != bucket
         ) revert LengthMismatch();
 
         BucketVerifier memory bv = buckets[bucket];
         if (bv.verifier == address(0)) revert UnknownBucket(bucket);
 
-        bytes32 h = _hashWitness(signatures, pubkeys, timestampSeconds, timestampNanos, shared);
+        bytes32 h = _hashWitness(bucket, signatures, pubkeys, timestampSeconds, timestampNanos, active, shared);
 
         uint256[32] memory publicInputs;
         for (uint256 i = 0; i < 32; i++) {
@@ -84,19 +86,28 @@ contract WrapperVerifier is IVerifier {
 
     /// @dev Canonical witness byte layout — must match Go's
     ///      prover.ComputeWitnessHash and BatchCircuit.Define exactly:
-    ///        per slot: R[32] || S[32] || A[32] || msgLen[2 BE] || msg[MAX_MSG_LEN padded]
-    ///      where msg = canonical-vote bytes signed by validator i, rebuilt on
-    ///      chain from (shared, timestampSeconds[i], timestampNanos[i]).
+    ///        per slot: active(1) || R(32) || S(32) || A(32) || msgLen(2 BE) || msg[MAX_MSG_LEN padded]
+    ///      For active slots msg = canonical-vote bytes rebuilt from
+    ///      (shared, timestampSeconds[i], timestampNanos[i]). For inactive
+    ///      (padding) slots msg = `dummyMagic || bucket(2 BE) || slot(2 BE)`,
+    ///      reproduced byte-for-byte from prover/dummy.go.
     function _hashWitness(
+        uint16 bucket,
         bytes32[2][] calldata signatures,
         bytes32[] calldata pubkeys,
         uint64[] calldata timestampSeconds,
         uint32[] calldata timestampNanos,
+        bool[] calldata active,
         IVerifier.SharedBlock calldata shared
     ) internal pure returns (bytes32) {
         bytes memory buf;
         for (uint256 i = 0; i < signatures.length; i++) {
-            bytes memory msgBytes = _voteSignBytes(shared, timestampSeconds[i], timestampNanos[i]);
+            bytes memory msgBytes;
+            if (active[i]) {
+                msgBytes = _voteSignBytes(shared, timestampSeconds[i], timestampNanos[i]);
+            } else {
+                msgBytes = _dummyMsgBytes(bucket, uint16(i));
+            }
             if (msgBytes.length > MAX_MSG_LEN) revert MsgTooLong(msgBytes.length);
             bytes memory padded = new bytes(MAX_MSG_LEN);
             for (uint256 j = 0; j < msgBytes.length; j++) {
@@ -104,6 +115,7 @@ contract WrapperVerifier is IVerifier {
             }
             buf = abi.encodePacked(
                 buf,
+                active[i] ? bytes1(0x01) : bytes1(0x00), // active (1)
                 signatures[i][0],          // R (32)
                 signatures[i][1],          // S (32)
                 pubkeys[i],                // A (32)
@@ -112,6 +124,13 @@ contract WrapperVerifier is IVerifier {
             );
         }
         return sha256(buf);
+    }
+
+    /// @dev Reproduces prover.DummyMsgBytes for a padding slot. Must stay in
+    ///      lock-step with relayer/prover/dummy.go — any drift breaks the
+    ///      circuit's hash assertion.
+    function _dummyMsgBytes(uint16 bucket, uint16 slot) internal pure returns (bytes memory) {
+        return abi.encodePacked("fast-ibc-dummy", bucket, slot);
     }
 
     /// @dev Build the cometbft canonical-vote bytes for a single validator

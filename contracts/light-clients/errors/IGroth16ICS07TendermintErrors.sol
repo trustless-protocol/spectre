@@ -174,4 +174,10 @@ interface IGroth16ICS07TendermintErrors {
     /// @param accumulated summed voting power of unique signers.
     /// @param total total voting power of the proposed validator set.
     error InsufficientVotingPower(uint64 accumulated, uint64 total);
+
+    /// @notice Returned when the same active validator index appears more than
+    ///         once in signerIndices — defends against malicious calldata that
+    ///         tries to inflate quorum past what active gating allows.
+    /// @param index the validator index that appears multiple times.
+    error DuplicateSigner(uint32 index);
 }

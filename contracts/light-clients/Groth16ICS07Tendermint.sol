@@ -139,11 +139,12 @@ contract Groth16ICS07Tendermint is
         return updateResult;
     }
 
-    /// @dev Enforces 2/3+ voting power over the UNIQUE signers in msg_.signerIndices
-    ///      (duplicates from padding are skipped), then dispatches to the bucket's
-    ///      Groth16 verifier via the wrapper. The SharedBlock passed to the verifier
-    ///      is built directly from msg_.proposedHeader so the on-chain quorum check
-    ///      and the in-circuit reconstruction agree on the signed bytes.
+    /// @dev Enforces 2/3+ voting power over the active signers in msg_.signerIndices,
+    ///      then dispatches to the bucket's Groth16 verifier via the wrapper. Padding
+    ///      slots (active=false) carry deterministic dummy data and are skipped here.
+    ///      The SharedBlock passed to the verifier is built directly from
+    ///      msg_.proposedHeader so the on-chain quorum check and the in-circuit
+    ///      reconstruction agree on the signed bytes.
     function _verifyBatchAndQuorum(IUpdateClientMsgs.MsgUpdateClient memory msg_) internal {
         IICS07TendermintMsgs.ValidatorInfo[] memory vals = msg_.proposedHeader.validatorSet.validators;
         uint256 numVals = vals.length;
@@ -152,19 +153,21 @@ contract Groth16ICS07Tendermint is
                 && msg_.signatures.length == msg_.bucket
                 && msg_.signerPubkeys.length == msg_.bucket
                 && msg_.timestampSeconds.length == msg_.bucket
-                && msg_.timestampNanos.length == msg_.bucket,
+                && msg_.timestampNanos.length == msg_.bucket
+                && msg_.active.length == msg_.bucket,
             BatchLengthMismatch()
         );
 
         bool[] memory seen = new bool[](numVals);
         uint64 accumulated = 0;
         for (uint256 i = 0; i < msg_.signerIndices.length; i++) {
+            if (!msg_.active[i]) {
+                continue; // dummy padding slot
+            }
             uint32 idx = msg_.signerIndices[i];
             require(idx < numVals, SignerIndexOutOfRange(idx));
             require(vals[idx].pubKey == msg_.signerPubkeys[i], PubkeyMismatch(idx));
-            if (seen[idx]) {
-                continue; // padding duplicate
-            }
+            require(!seen[idx], DuplicateSigner(idx));
             seen[idx] = true;
             accumulated += vals[idx].votingPower;
         }
@@ -193,6 +196,7 @@ contract Groth16ICS07Tendermint is
                 msg_.signerPubkeys,
                 msg_.timestampSeconds,
                 msg_.timestampNanos,
+                msg_.active,
                 shared
             ),
             ProofVerificationFailed()

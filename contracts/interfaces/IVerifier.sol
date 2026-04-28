@@ -20,9 +20,9 @@ interface IVerifier {
     /// @notice Verify a batch of Ed25519 signatures via a single Groth16 proof.
     /// @dev The relayer picks `bucket` (∈ {4,8,16,32,64,128}) as the smallest circuit
     ///      that fits the number of signers needed to reach 2/3 voting power. Slots
-    ///      beyond the true signer count are padded with duplicates; the caller is
-    ///      responsible for rejecting duplicate validator indices when summing voting
-    ///      power so padding cannot inflate quorum.
+    ///      beyond the true signer count are padded with deterministic dummy
+    ///      signatures whose `active[i] = false`. The on-circuit ECIP gate
+    ///      zeroes their contribution; the on-chain quorum check skips them.
     ///
     ///      The verifier wrapper hashes all per-slot witness data plus the
     ///      shared canonical-vote fields into a single SHA-256 digest. The
@@ -36,6 +36,7 @@ interface IVerifier {
     /// @param pubkeys Per-slot Ed25519 compressed public key. Length == bucket.
     /// @param timestampSeconds Per-slot google.protobuf.Timestamp.seconds. Length == bucket.
     /// @param timestampNanos Per-slot google.protobuf.Timestamp.nanos. Length == bucket.
+    /// @param active Per-slot real-signer flag (true = real validator, false = dummy padding). Length == bucket.
     /// @param shared CanonicalVote fields shared across all slots.
     function verifyBatchProof(
         uint16 bucket,
@@ -46,6 +47,7 @@ interface IVerifier {
         bytes32[] calldata pubkeys,
         uint64[] calldata timestampSeconds,
         uint32[] calldata timestampNanos,
+        bool[] calldata active,
         SharedBlock calldata shared
     ) external returns (bool);
 }

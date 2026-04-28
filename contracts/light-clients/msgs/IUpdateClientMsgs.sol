@@ -23,6 +23,7 @@ interface IUpdateClientMsgs {
     /// @param signerPubkeys Compressed Ed25519 public keys per slot, matching signerIndices. Length == bucket.
     /// @param timestampSeconds Per-validator google.protobuf.Timestamp.seconds. Length == bucket.
     /// @param timestampNanos Per-validator google.protobuf.Timestamp.nanos. Length == bucket.
+    /// @param active Per-slot real-signer flag. true = real validator (counts toward quorum); false = deterministic dummy padding (skipped on-chain). Length == bucket.
     /// @dev The shared CanonicalVote fields (height, round, BlockID, chainID) are read directly
     ///      from proposedHeader.signedHeader.commit and proposedHeader.signedHeader.header — no
     ///      need to duplicate them in this message. The in-circuit reconstruction uses the same
@@ -41,6 +42,7 @@ interface IUpdateClientMsgs {
         bytes32[] signerPubkeys;
         uint64[] timestampSeconds;
         uint32[] timestampNanos;
+        bool[] active;
     }
 
     /// @notice The public value output for the gnark update client program.
