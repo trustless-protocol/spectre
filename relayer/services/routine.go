@@ -178,15 +178,34 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 		return nil, fmt.Errorf("extract validator signatures: %w", err)
 	}
 	log.Printf("[UpdateCosmosClient] Generating Groth16 batch proof for %d validator signatures...", len(extracted.Signatures))
-	bucket, proof, commitments, commitmentPok, err := w.Prover.GenerateProof(extracted.Shared, extracted.Signatures)
+	bucket, proof, commitments, commitmentPok, err := w.Prover.GenerateProof(extracted.Signatures)
 	if err != nil {
 		return nil, fmt.Errorf("error generating proof: %w", err)
 	}
 	log.Printf("[UpdateCosmosClient] Proof generated (bucket=%d). Sending Eth tx...", bucket)
-	// TODO(mulval): bindings regeneration pending — once IUpdateClientMsgsMsgUpdateClient
-	// exposes Bucket / SignerIndices / Signatures / SignerPubkeys / TimestampSeconds /
-	// TimestampNanos, populate them from `bucket` and `extracted` so the on-chain
-	// quorum check can run.
+
+	// Pad the signer slice up to the bucket size so the on-chain quorum check
+	// sees the same per-slot layout the circuit committed to. Padding slots are
+	// duplicates of slot 0; Solidity dedupes by SignerIndices before summing
+	// voting power.
+	paddedSigs, err := prover.PadSigsToBucket(extracted.Signatures, bucket)
+	if err != nil {
+		return nil, fmt.Errorf("pad sigs to bucket: %w", err)
+	}
+	signerIndices := make([]uint32, bucket)
+	signatures := make([][2][32]byte, bucket)
+	signerPubkeys := make([][32]byte, bucket)
+	timestampSeconds := make([]uint64, bucket)
+	timestampNanos := make([]uint32, bucket)
+	for i, s := range paddedSigs {
+		signerIndices[i] = uint32(s.Index)
+		copy(signatures[i][0][:], s.Signature[:32])
+		copy(signatures[i][1][:], s.Signature[32:])
+		copy(signerPubkeys[i][:], s.PublicKey)
+		timestampSeconds[i] = uint64(s.TimestampSeconds)
+		timestampNanos[i] = uint32(s.TimestampNanos)
+	}
+
 	msg := updateclientContract.IUpdateClientMsgsMsgUpdateClient{
 		ClientState:           clientState,
 		TrustedConsensusState: consensusState,
@@ -195,6 +214,12 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 		Proof:                 proof,
 		Commitments:           commitments,
 		CommitmentPok:         commitmentPok,
+		Bucket:                uint16(bucket),
+		SignerIndices:         signerIndices,
+		Signatures:            signatures,
+		SignerPubkeys:         signerPubkeys,
+		TimestampSeconds:      timestampSeconds,
+		TimestampNanos:        timestampNanos,
 	}
 
 	err = w.TxHandler.SendEthTx(ctx, msg)
@@ -211,29 +236,41 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 	if beaconAPIURL == "" {
 		return "", fmt.Errorf("beacon API URL is not configured")
 	}
+	log.Printf("[CreateEthClient] starting: beacon=%s checksum=%s", beaconAPIURL, checksum)
 
+	log.Printf("[CreateEthClient] fetching beacon genesis")
 	genesis, err := relayerclient.GetBeaconGenesis(beaconAPIURL)
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client genesis: %w", err)
 	}
+	log.Printf("[CreateEthClient] beacon genesis fetched: genesisTime=%s genesisValidatorsRoot=%s", genesis.GenesisTime, genesis.GenesisValidatorsRoot)
 
+	log.Printf("[CreateEthClient] fetching beacon spec")
 	spec, err := relayerclient.GetBeaconSpec(beaconAPIURL)
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client spec: %w", err)
 	}
+	log.Printf("[CreateEthClient] beacon spec fetched: secondsPerSlot=%s slotsPerEpoch=%s syncCommitteeSize=%s",
+		spec.SecondsPerSlot, spec.SlotsPerEpoch, spec.SyncCommitteeSize)
 	// Use the finalized header from the finality update — this is always a checkpoint slot
 	// (epoch boundary), unlike GetBeaconBlock("finalized") which may return a non-checkpoint slot.
+	log.Printf("[CreateEthClient] fetching finality update")
 	finalityUpdate, err := relayerclient.GetFinalityUpdate(beaconAPIURL)
 	if err != nil {
 		return "", fmt.Errorf("failed to get finality update: %w", err)
 	}
 	checkpointSlot := finalityUpdate.FinalizedHeader.Beacon.Slot
+	log.Printf("[CreateEthClient] finality update fetched: attestedSlot=%s finalizedSlot=%s signatureSlot=%s",
+		finalityUpdate.AttestedHeader.Beacon.Slot, checkpointSlot, finalityUpdate.SignatureSlot)
 
+	log.Printf("[CreateEthClient] fetching beacon block root for slot=%s", checkpointSlot)
 	blockRoot, err := relayerclient.GetBeaconBlockRoot(beaconAPIURL, checkpointSlot)
 	if err != nil {
 		return "", fmt.Errorf("failed to get beacon block root: %w", err)
 	}
+	log.Printf("[CreateEthClient] beacon block root=%s", blockRoot)
 
+	log.Printf("[CreateEthClient] fetching light client bootstrap")
 	bootstrap, err := relayerclient.GetLightClientBootstrap(beaconAPIURL, blockRoot)
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client bootstrap: %w", err)
@@ -241,19 +278,23 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 	log.Printf("[CreateEthClient] checkpointSlot=%s syncCommittee.AggregatePubkey=%s",
 		checkpointSlot, bootstrap.Data.CurrentSyncCommittee.AggregatePubkey)
 
+	log.Printf("[CreateEthClient] fetching beacon block for slot=%s", checkpointSlot)
 	beaconBlock, err := relayerclient.GetBeaconBlock(beaconAPIURL, checkpointSlot)
 	if err != nil {
 		return "", fmt.Errorf("failed to get beacon block: %w", err)
 	}
+	log.Printf("[CreateEthClient] beacon block fetched: executionBlock=%s", beaconBlock.Message.Body.ExecutionPayload.BlockNumber)
 
 	if bootstrap.Data.Header.Execution.BlockNumber != beaconBlock.Message.Body.ExecutionPayload.BlockNumber {
 		return "", fmt.Errorf("light client bootstrap block number does not match execution block number")
 	}
 
+	log.Printf("[CreateEthClient] querying ethereum chain id")
 	chainId, err := ctx.EthClient().ChainID(context.Background())
 	if err != nil {
 		return "", fmt.Errorf("failed to get eth chain id: %w", err)
 	}
+	log.Printf("[CreateEthClient] ethereum chain id=%s", chainId.String())
 
 	forkParameters, err := spec.ToForkParameters()
 	if err != nil {
@@ -309,6 +350,8 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 		SlotsPerEpoch:                slotsPerEpoch,
 		SyncCommitteeSize:            syncCommitteeSize,
 	}
+	log.Printf("[CreateEthClient] clientState prepared: latestSlot=%d latestExecutionBlock=%d minSyncCommitteeParticipants=%d",
+		clientState.LatestSlot, clientState.LatestExecutionBlockNumber, clientState.MinSyncCommitteeParticipants)
 	clientStateBz, err := json.Marshal(clientState)
 	if err != nil {
 		return "", fmt.Errorf("error serializing client state: %w", err)
@@ -338,9 +381,14 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 	}
 
 	latestPeriod := clientState.ComputeSyncCommitteePeriodAtSlot(clientState.LatestSlot)
+	log.Printf("[CreateEthClient] fetching light client updates for latestPeriod=%d", latestPeriod)
 	lightClientUpdates, err := relayerclient.GetLightClientUpdates(ctx.BeaconAPIURL(), latestPeriod, 1)
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client updates: %w", err)
+	}
+	log.Printf("[CreateEthClient] fetched %d light client update(s)", len(lightClientUpdates))
+	if len(lightClientUpdates) == 0 {
+		return "", fmt.Errorf("no light client updates returned for period %d", latestPeriod)
 	}
 
 	nextSyncCommittee, err := lightClientUpdates[0].NextSyncCommittee.ToSummarizedSyncCommittee()
@@ -363,6 +411,7 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 	wasmConsensusState := ibcwasmtypes.ConsensusState{
 		Data: consensusStateBz,
 	}
+	log.Printf("[CreateEthClient] wasm client/consensus state prepared, broadcasting MsgCreateClient")
 
 	return w.TxHandler.CreateEthClient(ctx, &wasmClientState, &wasmConsensusState)
 }

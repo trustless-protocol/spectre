@@ -3,11 +3,11 @@ package prover
 import (
 	"fmt"
 	"io"
+	"log"
 	"math/big"
 	"os"
 	"path/filepath"
 
-	"0x5ea000000/ecip-gnark/signature/canonvote"
 	"0x5ea000000/ecip-gnark/signature/eddsa"
 	"0x5ea000000/ecip-gnark/utils"
 
@@ -44,32 +44,37 @@ type EcipProver struct {
 // binDir/n{N}/{r1cs,pk,vk}.bin. It errors if any bucket's artifacts are
 // missing — the operator must run `cmd/setup-circuits` first.
 func NewProver(binDir string) (*EcipProver, error) {
+	log.Printf("[NewProver] loading artifacts from %s", binDir)
 	p := &EcipProver{byBucket: make(map[int]*bucketArtifacts, len(Buckets))}
 	for _, n := range Buckets {
+		log.Printf("[NewProver] loading bucket n=%d", n)
 		art, err := loadBucketArtifacts(binDir, n)
 		if err != nil {
 			return nil, fmt.Errorf("load bucket n=%d: %w", n, err)
 		}
 		p.byBucket[n] = art
+		log.Printf("[NewProver] bucket n=%d loaded", n)
 	}
+	log.Printf("[NewProver] loaded %d bucket(s)", len(p.byBucket))
 	return p, nil
 }
 
 func loadBucketArtifacts(binDir string, n int) (*bucketArtifacts, error) {
 	dir := filepath.Join(binDir, fmt.Sprintf("n%d", n))
+	log.Printf("[NewProver] bucket n=%d dir=%s", n, dir)
 
 	r1cs := groth16.NewCS(ecc.BN254)
-	if err := readFromFile(filepath.Join(dir, "r1cs.bin"), r1cs); err != nil {
+	if err := readFromFile(filepath.Join(dir, "r1cs.bin"), "r1cs", n, r1cs); err != nil {
 		return nil, fmt.Errorf("read r1cs: %w", err)
 	}
 
 	pk := groth16.NewProvingKey(ecc.BN254)
-	if err := readFromFile(filepath.Join(dir, "pk.bin"), pk); err != nil {
+	if err := readFromFile(filepath.Join(dir, "pk.bin"), "pk", n, pk); err != nil {
 		return nil, fmt.Errorf("read pk: %w", err)
 	}
 
 	vk := groth16.NewVerifyingKey(ecc.BN254)
-	if err := readFromFile(filepath.Join(dir, "vk.bin"), vk); err != nil {
+	if err := readFromFile(filepath.Join(dir, "vk.bin"), "vk", n, vk); err != nil {
 		return nil, fmt.Errorf("read vk: %w", err)
 	}
 
@@ -80,22 +85,31 @@ type readerFrom interface {
 	ReadFrom(r io.Reader) (int64, error)
 }
 
-func readFromFile(path string, dst readerFrom) error {
+func readFromFile(path string, kind string, bucket int, dst readerFrom) error {
+	if fi, err := os.Stat(path); err == nil {
+		log.Printf("[NewProver] bucket n=%d reading %s from %s (%d bytes)", bucket, kind, path, fi.Size())
+	} else {
+		log.Printf("[NewProver] bucket n=%d stat failed for %s %s: %v", bucket, kind, path, err)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	log.Printf("[NewProver] bucket n=%d opened %s", bucket, kind)
 	_, err = dst.ReadFrom(f)
+	if err == nil {
+		log.Printf("[NewProver] bucket n=%d loaded %s", bucket, kind)
+	}
 	return err
 }
 
 // GenerateProof produces a Groth16 proof that every (sig[i], pub[i]) validly
-// signed the canonical-vote bytes reconstructed from (shared, timestamps[i]).
-// The prover picks the smallest bucket that fits len(sigs) and pads the
-// witness up to the bucket's N with copies of slot 0. The returned bucket
-// value tells the caller which Solidity verifier to dispatch to.
-func (p *EcipProver) GenerateProof(shared SharedBlockData, sigs []ValidatorSignature) (
+// signed the canonical-vote bytes carried in sigs[i].SignedBytes. The prover
+// picks the smallest bucket that fits len(sigs) and pads the witness up to
+// the bucket's N with copies of slot 0. The returned bucket value tells the
+// caller which Solidity verifier to dispatch to.
+func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 	bucket int,
 	proof [8]*big.Int,
 	commitments [2]*big.Int,
@@ -104,18 +118,6 @@ func (p *EcipProver) GenerateProof(shared SharedBlockData, sigs []ValidatorSigna
 ) {
 	if len(sigs) == 0 {
 		err = fmt.Errorf("no signatures provided")
-		return
-	}
-	if len(shared.BlockIDHash) != 32 {
-		err = fmt.Errorf("BlockIDHash must be 32 bytes, got %d", len(shared.BlockIDHash))
-		return
-	}
-	if len(shared.PartSetHash) != 32 {
-		err = fmt.Errorf("PartSetHash must be 32 bytes, got %d", len(shared.PartSetHash))
-		return
-	}
-	if len(shared.ChainID) > canonvote.MaxChainIDLen {
-		err = fmt.Errorf("chainID %q exceeds MaxChainIDLen=%d", shared.ChainID, canonvote.MaxChainIDLen)
 		return
 	}
 
@@ -129,12 +131,18 @@ func (p *EcipProver) GenerateProof(shared SharedBlockData, sigs []ValidatorSigna
 		return
 	}
 
-	paddedSigs, err := padSigsToBucket(sigs, bucket)
+	paddedSigs, err := PadSigsToBucket(sigs, bucket)
 	if err != nil {
 		return
 	}
 
-	assignment, err := buildBatchAssignment(shared, paddedSigs)
+	hash, err := ComputeWitnessHash(paddedSigs)
+	if err != nil {
+		err = fmt.Errorf("compute witness hash: %w", err)
+		return
+	}
+
+	assignment, err := buildBatchAssignment(paddedSigs, hash)
 	if err != nil {
 		return
 	}
@@ -161,10 +169,10 @@ func (p *EcipProver) GenerateProof(shared SharedBlockData, sigs []ValidatorSigna
 	return
 }
 
-// padSigsToBucket pads the signer slice up to `n` with copies of slot 0.
+// PadSigsToBucket pads the signer slice up to `n` with copies of slot 0.
 // Duplicate slots are cryptographically sound — each slot still holds a real
 // signature; the on-chain voting-power counter dedupes by validator index.
-func padSigsToBucket(sigs []ValidatorSignature, n int) ([]ValidatorSignature, error) {
+func PadSigsToBucket(sigs []ValidatorSignature, n int) ([]ValidatorSignature, error) {
 	if len(sigs) > n {
 		return nil, fmt.Errorf("bucket n=%d too small for %d signers", n, len(sigs))
 	}
@@ -179,18 +187,20 @@ func padSigsToBucket(sigs []ValidatorSignature, n int) ([]ValidatorSignature, er
 	return out, nil
 }
 
-// buildBatchAssignment builds the BatchCircuit witness assignment: shared
-// block data + per-slot (sig, pub, timestamp). Signature values are
-// decompressed off-circuit into gnark's emulated Ed25519 coordinates; the
-// canonical-vote bytes themselves are reconstructed inside the circuit so
-// they do not appear in this witness.
-func buildBatchAssignment(shared SharedBlockData, sigs []ValidatorSignature) (*BatchCircuit[Fp25519, Fr25519], error) {
+// buildBatchAssignment builds the BatchCircuit witness assignment: per-slot
+// (sig, pub, signed canonical-vote bytes, msgLen). Signature R/S and pubkey A
+// are decompressed off-circuit into gnark's emulated Ed25519 coordinates; the
+// raw canonical-vote bytes flow in via Msgs/MsgLens (right-padded to MaxMsgLen).
+func buildBatchAssignment(sigs []ValidatorSignature, hash [32]byte) (*BatchCircuit[Fp25519, Fr25519], error) {
 	n := len(sigs)
 	a := &BatchCircuit[Fp25519, Fr25519]{
-		Sig:       make([]eddsa.Signature[Fp25519, Fr25519], n),
-		Pub:       make([]eddsa.PublicKey[Fp25519, Fr25519], n),
-		TsSeconds: make([]frontend.Variable, n),
-		TsNanos:   make([]frontend.Variable, n),
+		Sig:     make([]eddsa.Signature[Fp25519, Fr25519], n),
+		Pub:     make([]eddsa.PublicKey[Fp25519, Fr25519], n),
+		Msgs:    make([][MaxMsgLen]uints.U8, n),
+		MsgLens: make([]frontend.Variable, n),
+	}
+	for i := 0; i < 32; i++ {
+		a.Hash[i] = uints.NewU8(hash[i])
 	}
 
 	for i := 0; i < n; i++ {
@@ -200,6 +210,9 @@ func buildBatchAssignment(shared SharedBlockData, sigs []ValidatorSignature) (*B
 		}
 		if len(v.PublicKey) != 32 {
 			return nil, fmt.Errorf("slot %d: invalid public key length %d", i, len(v.PublicKey))
+		}
+		if len(v.SignedBytes) > MaxMsgLen {
+			return nil, fmt.Errorf("slot %d: signed bytes length %d exceeds MaxMsgLen=%d", i, len(v.SignedBytes), MaxMsgLen)
 		}
 
 		R := v.Signature[:32]
@@ -229,26 +242,15 @@ func buildBatchAssignment(shared SharedBlockData, sigs []ValidatorSignature) (*B
 				Y: emulated.ValueOf[Fp25519](aY),
 			},
 		}
-		a.TsSeconds[i] = v.TimestampSeconds
-		a.TsNanos[i] = v.TimestampNanos
-	}
-
-	// Shared block data — fixed-width byte arrays padded with zeros.
-	for i := 0; i < 32; i++ {
-		a.BlockIDHash[i] = uints.NewU8(shared.BlockIDHash[i])
-		a.PartSetHash[i] = uints.NewU8(shared.PartSetHash[i])
-	}
-	for i := 0; i < canonvote.MaxChainIDLen; i++ {
-		if i < len(shared.ChainID) {
-			a.ChainID[i] = uints.NewU8(shared.ChainID[i])
-		} else {
-			a.ChainID[i] = uints.NewU8(0)
+		for j := 0; j < MaxMsgLen; j++ {
+			if j < len(v.SignedBytes) {
+				a.Msgs[i][j] = uints.NewU8(v.SignedBytes[j])
+			} else {
+				a.Msgs[i][j] = uints.NewU8(0)
+			}
 		}
+		a.MsgLens[i] = len(v.SignedBytes)
 	}
-	a.Height = shared.Height
-	a.Round = shared.Round
-	a.PartSetTotal = shared.PartSetTotal
-	a.ChainIDLen = len(shared.ChainID)
 
 	return a, nil
 }

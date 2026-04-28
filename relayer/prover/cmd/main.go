@@ -1,13 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
-	"0x5ea000000/ecip-gnark/signature/canonvote"
 	"0x5ea000000/ecip-gnark/signature/eddsa"
 	"0x5ea000000/ecip-gnark/utils"
 
@@ -68,15 +69,9 @@ func main() {
 		smokeTest(r1csObj, pk, vk, n)
 
 		solPath := filepath.Join(solOutDir, fmt.Sprintf("Groth16Verifier_N%d.sol", n))
-		solFile, err := os.Create(solPath)
-		if err != nil {
-			panic(err)
-		}
-		if err := vk.ExportSolidity(solFile); err != nil {
-			solFile.Close()
+		if err := exportSolidityVerifier(vk, solPath, n); err != nil {
 			panic(fmt.Errorf("export solidity n=%d: %w", n, err))
 		}
-		solFile.Close()
 		fmt.Printf("Saved %s\n", solPath)
 
 		mustWriteArtifact(filepath.Join(bucketDir, "r1cs.bin"), r1csObj)
@@ -88,39 +83,40 @@ func main() {
 }
 
 // smokeTest proves and verifies a fresh batch of n real Ed25519 signatures
-// over a synthetic CanonicalVote. It catches circuit-build regressions before
-// the operator ever loads the artifacts into the relayer.
+// over random per-slot message bytes (truncated to a typical canonical-vote
+// size). It exercises the full Sig/Pub decompression + msg-bytes hashing
+// path so a broken circuit fails fast before the operator loads the
+// artifacts into the relayer.
 func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, n int) {
-	chainID := "smoke-test-chain"
-	height := int64(1)
-	round := int64(0)
-	blockIDHash := bytesWithSeed(0x11, 32)
-	partSetTotal := uint32(1)
-	partSetHash := bytesWithSeed(0x22, 32)
+	// Use a per-slot length comparable to a Tendermint canonical vote
+	// (~110-175 bytes). Random bytes are fine for the circuit — semantics
+	// don't matter, only that what's signed matches what's hashed.
+	const smokeMsgLen = 113
 
-	sigs := make([][]byte, n)
-	pubs := make([][]byte, n)
-	tsSec := make([]int64, n)
-	tsNanos := make([]int32, n)
+	valSigs := make([]prover.ValidatorSignature, n)
 	for i := 0; i < n; i++ {
 		pub, priv, err := ed25519.GenerateKey(nil)
 		if err != nil {
 			panic(err)
 		}
-		tsSec[i] = int64(1700000000 + i)
-		tsNanos[i] = int32(i)
-		voteBytes := canonvote.ReferenceEncodeVote(
-			height, round, blockIDHash, partSetTotal, partSetHash,
-			tsSec[i], tsNanos[i], chainID,
-		)
-		sigs[i] = ed25519.Sign(priv, voteBytes)
-		pubs[i] = pub
+		msg := make([]byte, smokeMsgLen)
+		if _, err := rand.Read(msg); err != nil {
+			panic(err)
+		}
+		sig := ed25519.Sign(priv, msg)
+		valSigs[i] = prover.ValidatorSignature{
+			Signature:   sig,
+			PublicKey:   pub,
+			SignedBytes: msg,
+		}
 	}
 
-	assignment, err := buildSmokeAssignment(
-		height, round, blockIDHash, partSetTotal, partSetHash, chainID,
-		sigs, pubs, tsSec, tsNanos,
-	)
+	hash, err := prover.ComputeWitnessHash(valSigs)
+	if err != nil {
+		panic(fmt.Errorf("hash witness n=%d: %w", n, err))
+	}
+
+	assignment, err := buildSmokeAssignment(valSigs, hash)
 	if err != nil {
 		panic(fmt.Errorf("build assignment n=%d: %w", n, err))
 	}
@@ -145,26 +141,27 @@ func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16
 }
 
 func buildSmokeAssignment(
-	height, round int64,
-	blockIDHash []byte, partSetTotal uint32, partSetHash []byte,
-	chainID string,
-	sigs, pubs [][]byte, tsSec []int64, tsNanos []int32,
+	sigs []prover.ValidatorSignature,
+	hash [32]byte,
 ) (*prover.BatchCircuit[prover.Fp25519, prover.Fr25519], error) {
 	n := len(sigs)
 	a := &prover.BatchCircuit[prover.Fp25519, prover.Fr25519]{
-		Sig:       make([]eddsa.Signature[prover.Fp25519, prover.Fr25519], n),
-		Pub:       make([]eddsa.PublicKey[prover.Fp25519, prover.Fr25519], n),
-		TsSeconds: make([]frontend.Variable, n),
-		TsNanos:   make([]frontend.Variable, n),
+		Sig:     make([]eddsa.Signature[prover.Fp25519, prover.Fr25519], n),
+		Pub:     make([]eddsa.PublicKey[prover.Fp25519, prover.Fr25519], n),
+		Msgs:    make([][prover.MaxMsgLen]uints.U8, n),
+		MsgLens: make([]frontend.Variable, n),
+	}
+	for i := 0; i < 32; i++ {
+		a.Hash[i] = uints.NewU8(hash[i])
 	}
 	for i := 0; i < n; i++ {
-		sig, pub := sigs[i], pubs[i]
-		R := sig[:32]
-		S, err := edwards25519.NewScalar().SetCanonicalBytes(sig[32:])
+		v := sigs[i]
+		R := v.Signature[:32]
+		S, err := edwards25519.NewScalar().SetCanonicalBytes(v.Signature[32:])
 		if err != nil {
 			return nil, err
 		}
-		aX, aY, err := utils.DecompressPoint(pub)
+		aX, aY, err := utils.DecompressPoint(v.PublicKey)
 		if err != nil {
 			return nil, err
 		}
@@ -185,33 +182,33 @@ func buildSmokeAssignment(
 				Y: emulated.ValueOf[prover.Fp25519](aY),
 			},
 		}
-		a.TsSeconds[i] = tsSec[i]
-		a.TsNanos[i] = tsNanos[i]
-	}
-	for i := 0; i < 32; i++ {
-		a.BlockIDHash[i] = uints.NewU8(blockIDHash[i])
-		a.PartSetHash[i] = uints.NewU8(partSetHash[i])
-	}
-	for i := 0; i < canonvote.MaxChainIDLen; i++ {
-		if i < len(chainID) {
-			a.ChainID[i] = uints.NewU8(chainID[i])
-		} else {
-			a.ChainID[i] = uints.NewU8(0)
+		for j := 0; j < prover.MaxMsgLen; j++ {
+			if j < len(v.SignedBytes) {
+				a.Msgs[i][j] = uints.NewU8(v.SignedBytes[j])
+			} else {
+				a.Msgs[i][j] = uints.NewU8(0)
+			}
 		}
+		a.MsgLens[i] = len(v.SignedBytes)
 	}
-	a.Height = height
-	a.Round = round
-	a.PartSetTotal = partSetTotal
-	a.ChainIDLen = len(chainID)
 	return a, nil
 }
 
-func bytesWithSeed(seed byte, n int) []byte {
-	b := make([]byte, n)
-	for i := range b {
-		b[i] = seed + byte(i)
+// exportSolidityVerifier writes gnark's generated verifier and renames the
+// default `contract Verifier` to `contract Groth16Verifier_N{N}` so every
+// bucket can live in one Solidity import graph.
+func exportSolidityVerifier(vk groth16.VerifyingKey, path string, n int) error {
+	var buf bytes.Buffer
+	if err := vk.ExportSolidity(&buf); err != nil {
+		return err
 	}
-	return b
+	renamed := bytes.Replace(
+		buf.Bytes(),
+		[]byte("contract Verifier {"),
+		[]byte(fmt.Sprintf("contract Groth16Verifier_N%d {", n)),
+		1,
+	)
+	return os.WriteFile(path, renamed, 0o644)
 }
 
 func mustWriteArtifact(path string, value interface {

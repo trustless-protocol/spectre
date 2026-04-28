@@ -46,6 +46,8 @@ import (
 type Handler struct {
 }
 
+const ethTxReceiptTimeout = 45 * time.Second
+
 func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte) error {
 	privKey := os.Getenv("ETH_PRIVATE_KEY")
 	if privKey == "" {
@@ -101,7 +103,9 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		return fmt.Errorf("failed to deploy ics07 contract: %w", err)
 	}
 	log.Printf("[CreateCosmosClient] Deploy tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
-	receipt, err := bind.WaitMined(context.Background(), ctx.EthClient(), tx)
+	receiptCtx, cancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
+	defer cancel()
+	receipt, err := bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
 	if err != nil {
 		return fmt.Errorf("failed waiting for deploy receipt: %w", err)
 	}
@@ -138,7 +142,9 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		return fmt.Errorf("failed to add client to ICS26Router: %w", err)
 	}
 	log.Printf("[CreateCosmosClient] AddClient tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
-	receipt, err = bind.WaitMined(context.Background(), ctx.EthClient(), tx)
+	receiptCtx, cancel = context.WithTimeout(context.Background(), ethTxReceiptTimeout)
+	defer cancel()
+	receipt, err = bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
 	if err != nil {
 		return fmt.Errorf("failed waiting for AddClient receipt: %w", err)
 	}
@@ -247,7 +253,9 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	}
 
 	log.Printf("[SendEthTx] Tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
-	receipt, err := bind.WaitMined(context.Background(), ctx.EthClient(), tx)
+	receiptCtx, cancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
+	defer cancel()
+	receipt, err := bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
 	if err != nil {
 		return fmt.Errorf("failed waiting for tx receipt: %w", err)
 	}
@@ -280,6 +288,7 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 }
 
 func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.ClientState, consensusState exported.ConsensusState) (string, error) {
+	log.Printf("[CreateEthClientTx] starting")
 
 	// Get the private key from environment variable
 	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
@@ -304,7 +313,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	}
 
 	// Get gas and fee configuration
-	gasLimit := uint64(200000) // Default gas limit
+	gasLimit := uint64(1500000) // Default gas limit for MsgCreateClient with wasm payload
 	if gasStr := os.Getenv("COSMOS_GAS_LIMIT"); gasStr != "" {
 		if _, err := fmt.Sscanf(gasStr, "%d", &gasLimit); err != nil {
 			return "", fmt.Errorf("failed to parse COSMOS_GAS_LIMIT: %w", err)
@@ -322,12 +331,15 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 			return "", fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
 		}
 	}
+	log.Printf("[CreateEthClientTx] gas config: gasLimit=%d fee=%d%s", gasLimit, feeAmount, feeDenom)
 
 	// Query account info (account number and sequence) from the chain
+	log.Printf("[CreateEthClientTx] querying cosmos account info")
 	accountNumber, sequence, err := h.queryAccountInfo(svcCtx, signerAddr.String())
 	if err != nil {
 		return "", fmt.Errorf("failed to query account info: %w", err)
 	}
+	log.Printf("[CreateEthClientTx] account info: accountNumber=%d sequence=%d", accountNumber, sequence)
 
 	// Setup encoding config
 	interfaceRegistry := codectypes.NewInterfaceRegistry()
@@ -343,6 +355,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	if err != nil {
 		return "", err
 	}
+	log.Printf("[CreateEthClientTx] MsgCreateClient built")
 
 	// Build the transaction
 	txBuilder := txConfig.NewTxBuilder()
@@ -415,6 +428,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	}
 
 	// Broadcast the transaction
+	log.Printf("[CreateEthClientTx] broadcasting MsgCreateClient")
 	result, err := svcCtx.CosmosClient().BroadcastTxSync(context.Background(), txBytes)
 	if err != nil {
 		return "", fmt.Errorf("failed to broadcast transaction: %w", err)
@@ -427,6 +441,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	log.Printf("[CreateEthClient] MsgCreateClient broadcast successfully. Hash: %s", result.Hash.String())
 
 	// Wait for MsgCreateClient tx and extract the new client ID from events
+	log.Printf("[CreateEthClientTx] waiting for MsgCreateClient tx result")
 	txResult, err := h.waitForTxResult(svcCtx, result.Hash, 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("failed waiting for MsgCreateClient tx: %w", err)
@@ -449,12 +464,15 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 		"cosmoshub-1",
 		signerAddr.String(),
 	)
+	log.Printf("[CreateEthClientTx] MsgRegisterCounterparty built for clientID=%s", newClientID)
 
 	// Re-query account info (sequence incremented after first tx)
+	log.Printf("[CreateEthClientTx] querying cosmos account info for register counterparty")
 	accountNumber, sequence, err = h.queryAccountInfo(svcCtx, signerAddr.String())
 	if err != nil {
 		return "", fmt.Errorf("failed to query account info for register counterparty: %w", err)
 	}
+	log.Printf("[CreateEthClientTx] register counterparty account info: accountNumber=%d sequence=%d", accountNumber, sequence)
 
 	txBuilder2 := txConfig.NewTxBuilder()
 	if err := txBuilder2.SetMsgs(registerMsg); err != nil {
@@ -516,6 +534,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 		return "", fmt.Errorf("failed to encode register counterparty tx: %w", err)
 	}
 
+	log.Printf("[CreateEthClientTx] broadcasting MsgRegisterCounterparty")
 	result2, err := svcCtx.CosmosClient().BroadcastTxSync(context.Background(), txBytes2)
 	if err != nil {
 		return "", fmt.Errorf("failed to broadcast register counterparty tx: %w", err)

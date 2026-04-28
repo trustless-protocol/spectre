@@ -20,32 +20,18 @@ import (
 // surface without needing compiled r1cs/pk/vk on disk.
 func TestGenerateProof_InputValidation(t *testing.T) {
 	p := &EcipProver{byBucket: map[int]*bucketArtifacts{}}
-	shared := SharedBlockData{
-		BlockIDHash: make([]byte, 32),
-		PartSetHash: make([]byte, 32),
-		ChainID:     "test",
-	}
 
 	t.Run("empty inputs", func(t *testing.T) {
-		_, _, _, _, err := p.GenerateProof(shared, nil)
+		_, _, _, _, err := p.GenerateProof(nil)
 		if err == nil || !strings.Contains(err.Error(), "no signatures") {
 			t.Fatalf("want 'no signatures' error, got %v", err)
-		}
-	})
-
-	t.Run("bad blockIDHash", func(t *testing.T) {
-		bad := shared
-		bad.BlockIDHash = make([]byte, 31)
-		_, _, _, _, err := p.GenerateProof(bad, []ValidatorSignature{{Signature: make([]byte, 64), PublicKey: make([]byte, 32)}})
-		if err == nil || !strings.Contains(err.Error(), "BlockIDHash") {
-			t.Fatalf("want BlockIDHash error, got %v", err)
 		}
 	})
 
 	t.Run("exceeds max bucket", func(t *testing.T) {
 		n := MaxBucket() + 1
 		sigs := make([]ValidatorSignature, n)
-		_, _, _, _, err := p.GenerateProof(shared, sigs)
+		_, _, _, _, err := p.GenerateProof(sigs)
 		if err == nil || !strings.Contains(err.Error(), "largest bucket") {
 			t.Fatalf("want over-max error, got %v", err)
 		}
@@ -92,7 +78,7 @@ func TestPadSigsToBucket_FillsWithSlotZero(t *testing.T) {
 		TimestampSeconds: 42,
 		TimestampNanos:   7,
 	}}
-	padded, err := padSigsToBucket(sigs, 4)
+	padded, err := PadSigsToBucket(sigs, 4)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -107,7 +93,7 @@ func TestPadSigsToBucket_FillsWithSlotZero(t *testing.T) {
 }
 
 func TestPadSigsToBucket_TooBig(t *testing.T) {
-	_, err := padSigsToBucket(make([]ValidatorSignature, 5), 4)
+	_, err := PadSigsToBucket(make([]ValidatorSignature, 5), 4)
 	if err == nil {
 		t.Fatal("expected too-small bucket error")
 	}

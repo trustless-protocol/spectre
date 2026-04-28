@@ -42,7 +42,7 @@ type TransactionHandler interface {
 }
 
 type Prover interface {
-	GenerateProof(shared prover.SharedBlockData, sigs []prover.ValidatorSignature) (
+	GenerateProof(sigs []prover.ValidatorSignature) (
 		bucket int,
 		proof [8]*big.Int,
 		commitments [2]*big.Int,

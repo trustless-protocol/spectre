@@ -11,8 +11,8 @@ import (
 )
 
 // ValidatorSignature is the extracted Ed25519 signature data for one validator
-// in a block commit, alongside the per-validator Timestamp that feeds the
-// in-circuit CanonicalVote reconstruction.
+// in a block commit, alongside the per-validator timestamp + the canonical
+// vote bytes that validator actually signed (ready to feed into the circuit).
 type ValidatorSignature struct {
 	Signature        []byte // 64 bytes: R || S
 	PublicKey        []byte // 32 bytes: compressed Ed25519 public key
@@ -20,11 +20,14 @@ type ValidatorSignature struct {
 	Power            int64  // validator voting power
 	TimestampSeconds int64  // google.protobuf.Timestamp seconds
 	TimestampNanos   int32  // google.protobuf.Timestamp nanos
+	SignedBytes      []byte // cometbft.Commit.VoteSignBytes(chainID, idx)
 }
 
 // SharedBlockData is the subset of CanonicalVote fields that are identical
-// across every validator signing the same block. It flows alongside the
-// per-validator signatures into the prover.
+// across every validator signing the same block. The on-chain WrapperVerifier
+// uses these fields to recompute each slot's canonical vote bytes via Encode.sol;
+// the circuit itself doesn't see them — it consumes only the per-slot signed
+// bytes via ValidatorSignature.SignedBytes.
 type SharedBlockData struct {
 	Height       int64
 	Round        int64
@@ -35,7 +38,7 @@ type SharedBlockData struct {
 }
 
 // ExtractorResult bundles the greedy-by-power signer prefix with the shared
-// block data needed to reconstruct canonical vote bytes inside the circuit.
+// block data needed by the on-chain quorum + canonical-vote rebuild path.
 type ExtractorResult struct {
 	Shared     SharedBlockData
 	Signatures []ValidatorSignature
@@ -88,6 +91,7 @@ func ExtractValidatorSignatures(lightBlock *relayerclient.LightBlock, chainID st
 			Power:            validator.VotingPower,
 			TimestampSeconds: sig.Timestamp.Unix(),
 			TimestampNanos:   int32(sig.Timestamp.Nanosecond()),
+			SignedBytes:      voteData,
 		})
 	}
 	if len(candidates) == 0 {
