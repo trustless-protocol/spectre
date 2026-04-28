@@ -36,11 +36,11 @@ const MaxMsgLen = 192
 type BatchCircuit[Base, Scalars emulated.FieldParams] struct {
 	Hash [32]uints.U8 `gnark:",public"`
 
-	Sig []eddsa.Signature[Base, Scalars]
-	Pub []eddsa.PublicKey[Base, Scalars]
+	Sig []eddsa.Signature[Base, Scalars] `gnark:",secret"`
+	Pub []eddsa.PublicKey[Base, Scalars] `gnark:",secret"`
 
-	Msgs    [][MaxMsgLen]uints.U8 // per-slot signed bytes (zero-padded)
-	MsgLens []frontend.Variable   // per-slot meaningful prefix length
+	Msgs    [][MaxMsgLen]uints.U8 `gnark:",secret"` // per-slot signed bytes (zero-padded)
+	MsgLens []frontend.Variable   `gnark:",secret"` // per-slot meaningful prefix length
 }
 
 func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
