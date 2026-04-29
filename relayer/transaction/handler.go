@@ -6,14 +6,14 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"relayer/keys"
 	"os"
+	"relayer/keys"
 	"strings"
 	"time"
 
+	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	contractICS26Router "relayer/bindings/ICS26Router"
 	routerContract "relayer/bindings/ICS26Router"
-	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	updateclient "relayer/bindings/UpdateClient"
 	relayerclient "relayer/client"
 	services "relayer/services"
@@ -22,6 +22,7 @@ import (
 	sdkmath "cosmossdk.io/math"
 	"github.com/ethereum/go-ethereum"
 
+	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	"github.com/cosmos/cosmos-sdk/codec"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	cryptocodec "github.com/cosmos/cosmos-sdk/crypto/codec"
@@ -37,7 +38,6 @@ import (
 	clienttypesv2 "github.com/cosmos/ibc-go/v10/modules/core/02-client/v2/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	exported "github.com/cosmos/ibc-go/v10/modules/core/exported"
-	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -83,7 +83,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		return fmt.Errorf("[CreateCosmosClient] failed to create auth transactor: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
-	auth.Value = big.NewInt(0)      // in wei
+	auth.Value = big.NewInt(0)       // in wei
 	auth.GasLimit = uint64(10000000) // in units
 	auth.GasPrice = gasPrice
 
@@ -192,7 +192,7 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		return fmt.Errorf("[SendEthTx] failed to create auth transactor: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
-	auth.Value = big.NewInt(0)     // in wei
+	auth.Value = big.NewInt(0)      // in wei
 	auth.GasLimit = uint64(3000000) // in units
 	auth.GasPrice = gasPrice
 
@@ -247,6 +247,12 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		tx, err = icS26Router.AckPacket(auth, msg)
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to ack packet: %w", err)
+		}
+	case contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket:
+		log.Printf("[SendEthTx] Sending timeoutPacket seq=%d...", msg.Packet.Sequence)
+		tx, err = icS26Router.TimeoutPacket(auth, msg)
+		if err != nil {
+			return fmt.Errorf("[SendEthTx] failed to timeout packet: %w", err)
 		}
 	default:
 		return fmt.Errorf("[SendEthTx] unsupported message type: %T", msg)

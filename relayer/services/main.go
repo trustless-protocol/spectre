@@ -405,9 +405,9 @@ func (s *Services) StartLoop(ctx Context) {
 					MembershipType: 0,
 				}
 
-				calldata, err := tendermintAbiJson.Pack("verifyMembership", membershipMsg)
+				calldata, err := tendermintAbiJson.Pack("verifyNonMembership", membershipMsg)
 				if err != nil {
-					log.Printf("[Timeout] seq=%d: failed to ABI encode verifyMembership: %v",
+					log.Printf("[Timeout] seq=%d: failed to ABI encode verifyNonMembership: %v",
 						packet.Packet.Sequence, err)
 					continue
 				}
@@ -425,7 +425,7 @@ func (s *Services) StartLoop(ctx Context) {
 					})
 				}
 
-				msgRecvPacket := contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
+				msgTimeoutPacket := contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket{
 					Packet: contractICS26Router.IICS26RouterMsgsPacket{
 						Sequence:         packet.Packet.Sequence,
 						SourceClient:     packet.Packet.SourceClient,
@@ -433,10 +433,10 @@ func (s *Services) StartLoop(ctx Context) {
 						TimeoutTimestamp: packet.Packet.TimeoutTimestamp,
 						Payloads:         payloads,
 					},
-					MembershipMsg: calldata,
+					NonMembershipMsg: calldata,
 				}
 
-				if err := s.worker.TxHandler.SendEthTx(ctx, msgRecvPacket); err != nil {
+				if err := s.worker.TxHandler.SendEthTx(ctx, msgTimeoutPacket); err != nil {
 					log.Printf("[Timeout] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
 					continue
 				}
