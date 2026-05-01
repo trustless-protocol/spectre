@@ -9,92 +9,171 @@ import (
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
 
-func (p PacketType) String() string {
+func (p CosmosPacketType) String() string {
 	switch p {
-	case Send:
+	case CosmosSend:
 		return "Send"
-	case Ack:
+	case CosmosAck:
 		return "Ack"
-	case Timeout:
+	case CosmosTimeout:
 		return "Timeout"
-	case WriteAck:
-		return "WriteAck"
 	default:
 		return fmt.Sprintf("Unknown(%d)", int(p))
 	}
 }
 
-type PacketType int
-
-const (
-	Send     PacketType = iota // Cosmos→ETH: RecvPacket on ETH
-	Ack                        // Cosmos→ETH: AckPacket on ETH
-	Timeout                    // Timeout
-	WriteAck                   // Cosmos→ETH: ETH wrote ack → submit MsgAcknowledgement to Cosmos
-)
-
-type Packet struct {
-	PacketType  PacketType
-	Packet      *channeltypesv2.Packet
-	AckBytes    [][]byte
-	BlockNumber uint64 // ETH block where event was emitted (for beacon finality checks)
-}
-
-type BatchPackets struct {
-	Packets []Packet
-}
-
-type BatchBuilder struct {
-	mtx       sync.Mutex
-	timestamp time.Time
-	packets   []Packet
-}
-
-func NewBatchBuilder() *BatchBuilder {
-	return &BatchBuilder{
-		timestamp: time.Now(),
-		packets:   []Packet{},
+func (p EthPacketType) String() string {
+	switch p {
+	case EthSend:
+		return "Send"
+	case EthWriteAck:
+		return "WriteAck"
+	case EthAck:
+		return "Ack"
+	case EthTimeout:
+		return "Timeout"
+	default:
+		return fmt.Sprintf("Unknown(%d)", int(p))
 	}
 }
 
-func (b *BatchBuilder) InsertPacket(packet Packet) {
+type CosmosPacketType int
+
+const (
+	CosmosSend CosmosPacketType = iota
+	CosmosAck
+	CosmosTimeout
+)
+
+type EthPacketType int
+
+const (
+	EthSend EthPacketType = iota
+	EthWriteAck
+	EthAck
+	EthTimeout
+)
+
+type CosmosPacket struct {
+	Type        CosmosPacketType
+	Packet      *channeltypesv2.Packet
+	AckBytes    [][]byte
+	BlockNumber uint64
+}
+
+type EthPacket struct {
+	Type        EthPacketType
+	Packet      *channeltypesv2.Packet
+	AckBytes    [][]byte
+	BlockNumber uint64
+}
+
+type CosmosBatch struct {
+	Packets []CosmosPacket
+}
+
+type EthBatch struct {
+	Packets []EthPacket
+}
+
+type BatchBuilder struct {
+	mtx             sync.Mutex
+	cosmosTimestamp time.Time
+	ethTimestamp    time.Time
+	cosmosPackets   []CosmosPacket
+	ethPackets      []EthPacket
+}
+
+func NewBatchBuilder() *BatchBuilder {
+	now := time.Now()
+	return &BatchBuilder{
+		cosmosTimestamp: now,
+		ethTimestamp:    now,
+		cosmosPackets:   []CosmosPacket{},
+		ethPackets:      []EthPacket{},
+	}
+}
+
+func (b *BatchBuilder) AddCosmos(packet CosmosPacket) {
 	b.mtx.Lock()
-	b.packets = append(b.packets, packet)
-	count := len(b.packets)
+	b.cosmosPackets = append(b.cosmosPackets, packet)
+	count := len(b.cosmosPackets)
 	b.mtx.Unlock()
-	log.Printf("[BatchBuilder] Inserted packet: type=%s seq=%d (batch size: %d)",
-		packet.PacketType, packet.Packet.Sequence, count)
+	log.Printf("[BatchBuilder] Inserted cosmos packet: type=%s seq=%d (batch size: %d)",
+		packet.Type, packet.Packet.Sequence, count)
 }
 
-func (b *BatchBuilder) ClearBatch() {
-	b.timestamp = time.Now()
-	b.packets = []Packet{}
+func (b *BatchBuilder) AddEth(packet EthPacket) {
+	b.mtx.Lock()
+	b.ethPackets = append(b.ethPackets, packet)
+	count := len(b.ethPackets)
+	b.mtx.Unlock()
+	log.Printf("[BatchBuilder] Inserted eth packet: type=%s seq=%d (batch size: %d)",
+		packet.Type, packet.Packet.Sequence, count)
 }
 
-func (b *BatchBuilder) CheckBatch(config BatchConfig, ch chan<- BatchPackets) {
+func (b *BatchBuilder) ClearCosmos() {
+	b.cosmosTimestamp = time.Now()
+	b.cosmosPackets = []CosmosPacket{}
+}
+
+func (b *BatchBuilder) ClearEth() {
+	b.ethTimestamp = time.Now()
+	b.ethPackets = []EthPacket{}
+}
+
+func (b *BatchBuilder) CheckCosmos(config BatchConfig, ch chan<- CosmosBatch) {
 	b.mtx.Lock()
 	defer b.mtx.Unlock()
 
-	if len(b.packets) == 0 {
+	if len(b.cosmosPackets) == 0 {
 		return
 	}
 
 	flush := false
 	reason := ""
 
-	if len(b.packets) >= int(config.BatchSize) {
+	if len(b.cosmosPackets) >= int(config.BatchSize) {
 		flush = true
-		reason = fmt.Sprintf("size limit reached (%d >= %d)", len(b.packets), config.BatchSize)
-	} else if time.Now().After(b.timestamp.Add(config.BatchPeriods)) {
+		reason = fmt.Sprintf("size limit reached (%d >= %d)", len(b.cosmosPackets), config.BatchSize)
+	} else if time.Now().After(b.cosmosTimestamp.Add(config.BatchPeriods)) {
 		flush = true
-		reason = fmt.Sprintf("time limit reached (%v elapsed)", time.Since(b.timestamp).Round(time.Millisecond))
+		reason = fmt.Sprintf("time limit reached (%v elapsed)", time.Since(b.cosmosTimestamp).Round(time.Millisecond))
 	}
 
 	if flush {
-		log.Printf("[BatchBuilder] Flushing batch: %d packets (%s)", len(b.packets), reason)
-		ch <- BatchPackets{
-			Packets: b.packets,
+		log.Printf("[BatchBuilder] Flushing cosmos batch: %d packets (%s)", len(b.cosmosPackets), reason)
+		ch <- CosmosBatch{
+			Packets: b.cosmosPackets,
 		}
-		b.ClearBatch()
+		b.ClearCosmos()
+	}
+}
+
+func (b *BatchBuilder) CheckEth(config BatchConfig, ch chan<- EthBatch) {
+	b.mtx.Lock()
+	defer b.mtx.Unlock()
+
+	if len(b.ethPackets) == 0 {
+		return
+	}
+
+	flush := false
+	reason := ""
+
+	if len(b.ethPackets) >= int(config.BatchSize) {
+		flush = true
+		reason = fmt.Sprintf("size limit reached (%d >= %d)", len(b.ethPackets), config.BatchSize)
+	} else if time.Now().After(b.ethTimestamp.Add(config.BatchPeriods)) {
+		flush = true
+		reason = fmt.Sprintf("time limit reached (%v elapsed)", time.Since(b.ethTimestamp).Round(time.Millisecond))
+	}
+
+	if flush {
+		log.Printf("[BatchBuilder] Flushing eth batch: %d packets (%s)", len(b.ethPackets), reason)
+		ch <- EthBatch{
+			Packets: b.ethPackets,
+		}
+		b.ClearEth()
 	}
 }

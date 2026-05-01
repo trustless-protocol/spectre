@@ -8,11 +8,20 @@ import (
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
 
-func makePacket(seqNum uint64, pktType PacketType) Packet {
-	return Packet{
-		PacketType: pktType,
+func makeCosmosPacket(seq uint64, pktType CosmosPacketType) CosmosPacket {
+	return CosmosPacket{
+		Type: pktType,
 		Packet: &channeltypesv2.Packet{
-			Sequence: seqNum,
+			Sequence: seq,
+		},
+	}
+}
+
+func makeEthPacket(seq uint64, pktType EthPacketType) EthPacket {
+	return EthPacket{
+		Type: pktType,
+		Packet: &channeltypesv2.Packet{
+			Sequence: seq,
 		},
 	}
 }
@@ -22,55 +31,57 @@ func TestNewBatchBuilder(t *testing.T) {
 	if bb == nil {
 		t.Fatal("expected non-nil BatchBuilder")
 	}
-	if len(bb.packets) != 0 {
-		t.Fatalf("expected empty packets, got %d", len(bb.packets))
+	if len(bb.cosmosPackets) != 0 {
+		t.Fatalf("expected empty cosmos packets, got %d", len(bb.cosmosPackets))
 	}
-	if bb.timestamp.IsZero() {
-		t.Fatal("expected timestamp to be set")
+	if len(bb.ethPackets) != 0 {
+		t.Fatalf("expected empty eth packets, got %d", len(bb.ethPackets))
+	}
+	if bb.cosmosTimestamp.IsZero() {
+		t.Fatal("expected cosmos timestamp to be set")
+	}
+	if bb.ethTimestamp.IsZero() {
+		t.Fatal("expected eth timestamp to be set")
 	}
 }
 
-func TestInsertPacket_Single(t *testing.T) {
+func TestAddCosmos(t *testing.T) {
 	bb := NewBatchBuilder()
-	pkt := makePacket(1, Send)
-
-	bb.InsertPacket(pkt)
+	bb.AddCosmos(makeCosmosPacket(1, CosmosSend))
 
 	bb.mtx.Lock()
 	defer bb.mtx.Unlock()
 
-	if len(bb.packets) != 1 {
-		t.Fatalf("expected 1 packet, got %d", len(bb.packets))
+	if len(bb.cosmosPackets) != 1 {
+		t.Fatalf("expected 1 cosmos packet, got %d", len(bb.cosmosPackets))
 	}
-	if bb.packets[0].Packet.Sequence != 1 {
-		t.Fatalf("expected sequence 1, got %d", bb.packets[0].Packet.Sequence)
+	if bb.cosmosPackets[0].Packet.Sequence != 1 {
+		t.Fatalf("expected sequence 1, got %d", bb.cosmosPackets[0].Packet.Sequence)
 	}
-	if bb.packets[0].PacketType != Send {
-		t.Fatalf("expected PacketType Send, got %d", bb.packets[0].PacketType)
+	if bb.cosmosPackets[0].Type != CosmosSend {
+		t.Fatalf("expected CosmosSend, got %d", bb.cosmosPackets[0].Type)
 	}
 }
 
-func TestInsertPacket_Multiple(t *testing.T) {
+func TestAddEth(t *testing.T) {
 	bb := NewBatchBuilder()
-	count := 5
-	for i := 0; i < count; i++ {
-		bb.InsertPacket(makePacket(uint64(i+1), Send))
-	}
+	bb.AddEth(makeEthPacket(1, EthSend))
 
 	bb.mtx.Lock()
 	defer bb.mtx.Unlock()
 
-	if len(bb.packets) != count {
-		t.Fatalf("expected %d packets, got %d", count, len(bb.packets))
+	if len(bb.ethPackets) != 1 {
+		t.Fatalf("expected 1 eth packet, got %d", len(bb.ethPackets))
 	}
-	for i := 0; i < count; i++ {
-		if bb.packets[i].Packet.Sequence != uint64(i+1) {
-			t.Fatalf("packet %d: expected sequence %d, got %d", i, i+1, bb.packets[i].Packet.Sequence)
-		}
+	if bb.ethPackets[0].Packet.Sequence != 1 {
+		t.Fatalf("expected sequence 1, got %d", bb.ethPackets[0].Packet.Sequence)
+	}
+	if bb.ethPackets[0].Type != EthSend {
+		t.Fatalf("expected EthSend, got %d", bb.ethPackets[0].Type)
 	}
 }
 
-func TestInsertPacket_Concurrent(t *testing.T) {
+func TestAddCosmosConcurrent(t *testing.T) {
 	bb := NewBatchBuilder()
 	goroutines := 50
 	packetsPerGoroutine := 20
@@ -83,7 +94,7 @@ func TestInsertPacket_Concurrent(t *testing.T) {
 		go func(offset int) {
 			defer wg.Done()
 			for i := 0; i < packetsPerGoroutine; i++ {
-				bb.InsertPacket(makePacket(uint64(offset*packetsPerGoroutine+i), Send))
+				bb.AddCosmos(makeCosmosPacket(uint64(offset*packetsPerGoroutine+i), CosmosSend))
 			}
 		}(g)
 	}
@@ -93,48 +104,56 @@ func TestInsertPacket_Concurrent(t *testing.T) {
 	bb.mtx.Lock()
 	defer bb.mtx.Unlock()
 
-	if len(bb.packets) != total {
-		t.Fatalf("expected %d packets, got %d", total, len(bb.packets))
+	if len(bb.cosmosPackets) != total {
+		t.Fatalf("expected %d cosmos packets, got %d", total, len(bb.cosmosPackets))
 	}
 }
 
-func TestClearBatch(t *testing.T) {
+func TestClearCosmos(t *testing.T) {
 	bb := NewBatchBuilder()
 	for i := 0; i < 5; i++ {
-		bb.InsertPacket(makePacket(uint64(i+1), Send))
+		bb.AddCosmos(makeCosmosPacket(uint64(i+1), CosmosSend))
 	}
 
-	bb.mtx.Lock()
-	if len(bb.packets) != 5 {
-		bb.mtx.Unlock()
-		t.Fatalf("expected 5 packets before clear, got %d", len(bb.packets))
-	}
-	bb.mtx.Unlock()
-
-	bb.ClearBatch()
+	bb.ClearCosmos()
 
 	bb.mtx.Lock()
 	defer bb.mtx.Unlock()
 
-	if len(bb.packets) != 0 {
-		t.Fatalf("expected 0 packets after clear, got %d", len(bb.packets))
+	if len(bb.cosmosPackets) != 0 {
+		t.Fatalf("expected 0 cosmos packets after clear, got %d", len(bb.cosmosPackets))
 	}
 }
 
-func TestCheckBatch_ExceedsBatchSize(t *testing.T) {
+func TestClearEth(t *testing.T) {
+	bb := NewBatchBuilder()
+	for i := 0; i < 5; i++ {
+		bb.AddEth(makeEthPacket(uint64(i+1), EthSend))
+	}
+
+	bb.ClearEth()
+
+	bb.mtx.Lock()
+	defer bb.mtx.Unlock()
+
+	if len(bb.ethPackets) != 0 {
+		t.Fatalf("expected 0 eth packets after clear, got %d", len(bb.ethPackets))
+	}
+}
+
+func TestCheckCosmos_ExceedsBatchSize(t *testing.T) {
 	bb := NewBatchBuilder()
 	config := BatchConfig{
 		BatchSize:    3,
-		BatchPeriods: time.Minute * 10, // long period so only size triggers
+		BatchPeriods: time.Minute * 10,
 	}
 
-	// Insert more than BatchSize packets (> 3, so need 4+)
 	for i := 0; i < 5; i++ {
-		bb.InsertPacket(makePacket(uint64(i+1), Send))
+		bb.AddCosmos(makeCosmosPacket(uint64(i+1), CosmosSend))
 	}
 
-	ch := make(chan BatchPackets, 1)
-	bb.CheckBatch(config, ch)
+	ch := make(chan CosmosBatch, 1)
+	bb.CheckCosmos(config, ch)
 
 	select {
 	case batch := <-ch:
@@ -142,32 +161,30 @@ func TestCheckBatch_ExceedsBatchSize(t *testing.T) {
 			t.Fatalf("expected 5 packets in batch, got %d", len(batch.Packets))
 		}
 	default:
-		t.Fatal("expected batch to be sent to channel, but channel was empty")
+		t.Fatal("expected cosmos batch to be sent")
 	}
 
-	// Verify packets were cleared
 	bb.mtx.Lock()
 	defer bb.mtx.Unlock()
-	if len(bb.packets) != 0 {
-		t.Fatalf("expected packets to be cleared after check, got %d", len(bb.packets))
+	if len(bb.cosmosPackets) != 0 {
+		t.Fatalf("expected cosmos packets to be cleared, got %d", len(bb.cosmosPackets))
 	}
 }
 
-func TestCheckBatch_PastBatchPeriods(t *testing.T) {
+func TestCheckEth_PastBatchPeriods(t *testing.T) {
 	bb := NewBatchBuilder()
-	// Set timestamp in the past so the period has elapsed
-	bb.timestamp = time.Now().Add(-time.Minute * 5)
+	bb.ethTimestamp = time.Now().Add(-time.Minute * 5)
 
 	config := BatchConfig{
-		BatchSize:    10, // well above our packet count
-		BatchPeriods: time.Second * 1,
+		BatchSize:    10,
+		BatchPeriods: time.Second,
 	}
 
-	bb.InsertPacket(makePacket(1, Send))
-	bb.InsertPacket(makePacket(2, Send))
+	bb.AddEth(makeEthPacket(1, EthSend))
+	bb.AddEth(makeEthPacket(2, EthWriteAck))
 
-	ch := make(chan BatchPackets, 1)
-	bb.CheckBatch(config, ch)
+	ch := make(chan EthBatch, 1)
+	bb.CheckEth(config, ch)
 
 	select {
 	case batch := <-ch:
@@ -175,41 +192,38 @@ func TestCheckBatch_PastBatchPeriods(t *testing.T) {
 			t.Fatalf("expected 2 packets in batch, got %d", len(batch.Packets))
 		}
 	default:
-		t.Fatal("expected batch to be sent to channel when period elapsed, but channel was empty")
+		t.Fatal("expected eth batch to be sent")
 	}
 
 	bb.mtx.Lock()
 	defer bb.mtx.Unlock()
-	if len(bb.packets) != 0 {
-		t.Fatalf("expected packets to be cleared after check, got %d", len(bb.packets))
+	if len(bb.ethPackets) != 0 {
+		t.Fatalf("expected eth packets to be cleared, got %d", len(bb.ethPackets))
 	}
 }
 
-func TestCheckBatch_BelowSizeAndBeforePeriod(t *testing.T) {
+func TestCheckCosmos_BelowSizeAndBeforePeriod(t *testing.T) {
 	bb := NewBatchBuilder()
-	// Timestamp is now (just created), so period hasn't elapsed
 	config := BatchConfig{
 		BatchSize:    10,
 		BatchPeriods: time.Minute * 10,
 	}
 
-	bb.InsertPacket(makePacket(1, Send))
-	bb.InsertPacket(makePacket(2, Send))
+	bb.AddCosmos(makeCosmosPacket(1, CosmosSend))
+	bb.AddCosmos(makeCosmosPacket(2, CosmosAck))
 
-	ch := make(chan BatchPackets, 1)
-	bb.CheckBatch(config, ch)
+	ch := make(chan CosmosBatch, 1)
+	bb.CheckCosmos(config, ch)
 
 	select {
 	case <-ch:
-		t.Fatal("expected no batch to be sent, but channel had data")
+		t.Fatal("expected no cosmos batch to be sent")
 	default:
-		// correct: nothing sent
 	}
 
-	// Verify packets are still present (not cleared)
 	bb.mtx.Lock()
 	defer bb.mtx.Unlock()
-	if len(bb.packets) != 2 {
-		t.Fatalf("expected packets to remain, got %d", len(bb.packets))
+	if len(bb.cosmosPackets) != 2 {
+		t.Fatalf("expected cosmos packets to remain, got %d", len(bb.cosmosPackets))
 	}
 }
