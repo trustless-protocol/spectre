@@ -81,6 +81,46 @@ func TestAddEth(t *testing.T) {
 	}
 }
 
+func TestAddCosmosMultiple(t *testing.T) {
+	bb := NewBatchBuilder()
+	count := 5
+	for i := 0; i < count; i++ {
+		bb.AddCosmos(makeCosmosPacket(uint64(i+1), CosmosSend))
+	}
+
+	bb.mtx.Lock()
+	defer bb.mtx.Unlock()
+
+	if len(bb.cosmosPackets) != count {
+		t.Fatalf("expected %d cosmos packets, got %d", count, len(bb.cosmosPackets))
+	}
+	for i := 0; i < count; i++ {
+		if bb.cosmosPackets[i].Packet.Sequence != uint64(i+1) {
+			t.Fatalf("packet %d: expected sequence %d, got %d", i, i+1, bb.cosmosPackets[i].Packet.Sequence)
+		}
+	}
+}
+
+func TestAddEthMultiple(t *testing.T) {
+	bb := NewBatchBuilder()
+	count := 5
+	for i := 0; i < count; i++ {
+		bb.AddEth(makeEthPacket(uint64(i+1), EthSend))
+	}
+
+	bb.mtx.Lock()
+	defer bb.mtx.Unlock()
+
+	if len(bb.ethPackets) != count {
+		t.Fatalf("expected %d eth packets, got %d", count, len(bb.ethPackets))
+	}
+	for i := 0; i < count; i++ {
+		if bb.ethPackets[i].Packet.Sequence != uint64(i+1) {
+			t.Fatalf("packet %d: expected sequence %d, got %d", i, i+1, bb.ethPackets[i].Packet.Sequence)
+		}
+	}
+}
+
 func TestAddCosmosConcurrent(t *testing.T) {
 	bb := NewBatchBuilder()
 	goroutines := 50
