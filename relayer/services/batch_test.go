@@ -109,6 +109,34 @@ func TestAddCosmosConcurrent(t *testing.T) {
 	}
 }
 
+func TestAddEthConcurrent(t *testing.T) {
+	bb := NewBatchBuilder()
+	goroutines := 50
+	packetsPerGoroutine := 20
+	total := goroutines * packetsPerGoroutine
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	for g := 0; g < goroutines; g++ {
+		go func(offset int) {
+			defer wg.Done()
+			for i := 0; i < packetsPerGoroutine; i++ {
+				bb.AddEth(makeEthPacket(uint64(offset*packetsPerGoroutine+i), EthSend))
+			}
+		}(g)
+	}
+
+	wg.Wait()
+
+	bb.mtx.Lock()
+	defer bb.mtx.Unlock()
+
+	if len(bb.ethPackets) != total {
+		t.Fatalf("expected %d eth packets, got %d", total, len(bb.ethPackets))
+	}
+}
+
 func TestClearCosmos(t *testing.T) {
 	bb := NewBatchBuilder()
 	for i := 0; i < 5; i++ {
@@ -171,6 +199,36 @@ func TestCheckCosmos_ExceedsBatchSize(t *testing.T) {
 	}
 }
 
+func TestCheckEth_ExceedsBatchSize(t *testing.T) {
+	bb := NewBatchBuilder()
+	config := BatchConfig{
+		BatchSize:    3,
+		BatchPeriods: time.Minute * 10,
+	}
+
+	for i := 0; i < 5; i++ {
+		bb.AddEth(makeEthPacket(uint64(i+1), EthSend))
+	}
+
+	ch := make(chan EthBatch, 1)
+	bb.CheckEth(config, ch)
+
+	select {
+	case batch := <-ch:
+		if len(batch.Packets) != 5 {
+			t.Fatalf("expected 5 packets in batch, got %d", len(batch.Packets))
+		}
+	default:
+		t.Fatal("expected eth batch to be sent")
+	}
+
+	bb.mtx.Lock()
+	defer bb.mtx.Unlock()
+	if len(bb.ethPackets) != 0 {
+		t.Fatalf("expected eth packets to be cleared, got %d", len(bb.ethPackets))
+	}
+}
+
 func TestCheckEth_PastBatchPeriods(t *testing.T) {
 	bb := NewBatchBuilder()
 	bb.ethTimestamp = time.Now().Add(-time.Minute * 5)
@@ -199,6 +257,32 @@ func TestCheckEth_PastBatchPeriods(t *testing.T) {
 	defer bb.mtx.Unlock()
 	if len(bb.ethPackets) != 0 {
 		t.Fatalf("expected eth packets to be cleared, got %d", len(bb.ethPackets))
+	}
+}
+
+func TestCheckEth_BelowSizeAndBeforePeriod(t *testing.T) {
+	bb := NewBatchBuilder()
+	config := BatchConfig{
+		BatchSize:    10,
+		BatchPeriods: time.Minute * 10,
+	}
+
+	bb.AddEth(makeEthPacket(1, EthSend))
+	bb.AddEth(makeEthPacket(2, EthWriteAck))
+
+	ch := make(chan EthBatch, 1)
+	bb.CheckEth(config, ch)
+
+	select {
+	case <-ch:
+		t.Fatal("expected no eth batch to be sent")
+	default:
+	}
+
+	bb.mtx.Lock()
+	defer bb.mtx.Unlock()
+	if len(bb.ethPackets) != 2 {
+		t.Fatalf("expected eth packets to remain, got %d", len(bb.ethPackets))
 	}
 }
 
