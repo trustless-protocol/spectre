@@ -42,7 +42,8 @@ See `docs/metrics.md` for full guide. Focus on:
 | CometBFT WebSocket disconnect | Missed packets | Subscriber reconnection logic |
 | Ethereum RPC rate limiting | Delayed relaying | Configurable retry backoff |
 | Groth16 proof generation timeout | Stalled client update | Relayer restart |
-| Circuit artifact mismatch | Proof verification failure | Versioned `r1cs.bin`, `pk.bin`, `vk.bin` |
+| Circuit artifact mismatch | Proof verification failure | Per-bucket `bin/n{N}/{r1cs,pk,vk}.bin`; redeploy `Groth16Verifier_N{N}.sol` + WrapperVerifier bucket registry whenever artifacts are regenerated |
+| Quorum exceeds largest bucket | Cosmos→ETH updates stall | Add a larger entry to `prover.Buckets`, recompile via `prover/cmd`, redeploy verifiers |
 | `go.mod` replace directive | Build failure on new dev machine | Document local path setup |
 | ETH→Cosmos ACK relay | Relies on Ethereum event subscription availability | Implemented via MsgAcknowledgement; full ETH→Cosmos RecvPacket relay still TODO |
 | Ethereum sync committee period crossing | Stale Ethereum light client on Cosmos | Multi-period update logic in routine.go handles period boundary transitions |
@@ -58,4 +59,4 @@ See `docs/metrics.md` for full guide. Focus on:
 - **Stale client**: Re-run relayer with fresh headers to update client
 - **Frozen client**: Requires governance action (admin upgrade or new client deployment)
 - **Nonce error**: Relayer re-queries account sequence and retries
-- **Circuit update**: Run `go run ./prover/cmd/ <output_dir>` to regenerate artifacts, redeploy `Groth16Verifier.sol`
+- **Circuit update**: From `relayer/`, run `go run ./prover/cmd ./bin ../contracts/verifiers` to regenerate every bucket's artifacts and emit fresh `Groth16Verifier_N{N}.sol`; redeploy each per-bucket verifier and re-register them via `WrapperVerifier.setBucket(...)` before the next E2E run

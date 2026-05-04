@@ -12,8 +12,7 @@ All encoding functions must match CometBFT's `proto.Marshal()` exactly:
 
 Cross-validate any encoding changes via:
 ```bash
-cd relayer && go run ./cmd/encode_debug/  # Go reference hex
-forge test --match-contract EncodeTest -vvv # Solidity must match
+forge test --match-contract EncodeTest -vvv  # Solidity output must match the Go-reference hex baked into the fixtures
 ```
 
 ### Contract Patterns
