@@ -53,18 +53,43 @@ check skip them.
 - [Bun](https://bun.sh/)
 - [Just](https://github.com/casey/just)
 
-## Quick Start
+## Local E2E Test
+
+End-to-end run on local Cosmos + Ethereum nodes. Requires Docker + Kurtosis on
+top of the toolchain in [Requirements](#requirements).
 
 ```bash
-# Install dependencies
-bun install
+# 1. (One-time) compile per-bucket circuits + emit Groth16Verifier_N{N}.sol.
+#    Re-run only when circuit code changes. After this, redeploy contracts.
+cd relayer
+go run ./prover/cmd ./bin ../contracts/verifiers
 
-# Build Solidity contracts
-just build-contracts
+# 2. Build the relayer binary
+go build -o relayer ./cmd
 
-# Build the Go relayer
-just build-relayer
+# 3. Start Ethereum first and wait until the beacon node finalizes.
+#    Replace 56246 with your Kurtosis-mapped beacon RPC port.
+./run_eth_node.sh        # Kurtosis Ethereum testnet + deploys core contracts
+# Poll until finalized.epoch > 0:
+curl -s http://127.0.0.1:56246/eth/v1/beacon/states/head/finality_checkpoints
+
+# 4. Then start Cosmos and submit the Ethereum LC WASM via governance
+./run_cosmos_node.sh     # local Cosmos chain with funded test accounts
+./wasm.sh                # submit + vote-pass the Ethereum LC WASM proposal
+
+# 5. Deploy Tendermint light client on Ethereum.
+#    Copies the ICS07 address back into relayer/config.json automatically.
+./relayer create-clients \
+  --config config.json \
+  --trust-level 1/3 \
+  --wasm-checksum <hex-from-wasm.sh>
+
+# 6. Start the bi-directional relay loop
+./relayer start --config config.json
 ```
+
+Send an ICS-20 transfer from Cosmos to trigger an `updateClient` + `recvPacket`
+round-trip; the `[UpdateCosmosClient]` log line reports the chosen bucket.
 
 ## Contracts
 
