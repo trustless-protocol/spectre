@@ -81,7 +81,6 @@ curl -s http://127.0.0.1:56246/eth/v1/beacon/states/head/finality_checkpoints
 #    Copies the ICS07 address back into relayer/config.json automatically.
 ./relayer create-clients \
   --config config.json \
-  --trust-level 1/3 \
   --wasm-checksum <hex-from-wasm.sh>
 
 # 6. Start the bi-directional relay loop
@@ -101,41 +100,6 @@ Core IBC protocol contracts:
 - `WrapperVerifier.sol` — Rebuilds CanonicalVote bytes, hashes witness, dispatches per bucket
 - `Groth16Verifier_N{N}.sol` — Per-bucket Groth16 verifiers (N ∈ {4,8,16,32,64,128})
 - `Membership.sol` — On-chain ICS23 Merkle proof verification
-
-## Go Relayer
-
-The relayer handles the relay loop between Cosmos and Ethereum:
-
-1. **Subscribe** to Cosmos `send_packet` events
-2. **Extract quorum** — pick top validators by voting power until ≥ 2/3 power
-3. **UpdateClient** — pad to nearest bucket, generate Groth16 batch proof
-4. **RecvPacket** — submit packet with ICS23 membership proof to Ethereum
-
-```bash
-cd relayer
-go build ./...
-
-# One-time per-environment: compile every bucket's circuit + setup keys
-# and emit Groth16Verifier_N{N}.sol. Re-run if circuit code changes.
-go run ./cmd/setup-circuits
-```
-
-After regenerating circuit artifacts the verifier `vk` changes, so the
-per-bucket `Groth16Verifier_N{N}` and `WrapperVerifier` contracts must be
-redeployed before E2E.
-
-## Development
-
-```bash
-# Run Solidity tests
-just test-foundry
-
-# Run Go relayer tests
-cd relayer && go test ./...
-
-# Lint
-just lint
-```
 
 ## License
 
