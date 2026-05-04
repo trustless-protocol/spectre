@@ -19,7 +19,6 @@ interface IUpdateClientMsgs {
     /// @param commitmentPok The proof of knowledge for commitments (2 uint256s).
     /// @param bucket The validator-count bucket this proof was generated against; selects the per-bucket verifier on-chain.
     /// @param signerIndices Validator indices in proposedHeader.validatorSet. Length == bucket.
-    /// @param signatures (R || S) bytes per slot. signatures[i][0] = R, signatures[i][1] = S. Length == bucket.
     /// @param signerPubkeys Compressed Ed25519 public keys per slot, matching signerIndices. Length == bucket.
     /// @param timestampSeconds Per-validator google.protobuf.Timestamp.seconds. Length == bucket.
     /// @param timestampNanos Per-validator google.protobuf.Timestamp.nanos. Length == bucket.
@@ -38,7 +37,6 @@ interface IUpdateClientMsgs {
         uint256[2] commitmentPok;
         uint16 bucket;
         uint32[] signerIndices;
-        bytes32[2][] signatures;
         bytes32[] signerPubkeys;
         uint64[] timestampSeconds;
         uint32[] timestampNanos;

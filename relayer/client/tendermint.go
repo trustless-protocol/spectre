@@ -156,7 +156,6 @@ func init() {
 		{Name: "commitmentPok", Type: "uint256[2]"},
 		{Name: "bucket", Type: "uint16"},
 		{Name: "signerIndices", Type: "uint32[]"},
-		{Name: "signatures", Type: "bytes32[2][]"},
 		{Name: "signerPubkeys", Type: "bytes32[]"},
 		{Name: "timestampSeconds", Type: "uint64[]"},
 		{Name: "timestampNanos", Type: "uint32[]"},

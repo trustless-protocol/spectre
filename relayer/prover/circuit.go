@@ -53,10 +53,6 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	if err != nil {
 		return err
 	}
-	scalarApi, err := emulated.NewField[Scalars](api)
-	if err != nil {
-		return err
-	}
 	uapi, err := uints.New[uints.U32](api)
 	if err != nil {
 		return err
@@ -64,17 +60,17 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 
 	// 1. Hash all witness bytes and bind to the public commitment.
 	//    Layout (must match hash_witness.go and WrapperVerifier._hashWitness):
-	//      per slot: active(1) || R(32) || S(32) || A(32) || msgLen(2 BE) || msg(MaxMsgLen padded)
-	//    Including R/S/A bytes in the hash binds the calldata Sig/Pub to the
-	//    proof — without it an attacker could keep the same proof but swap
-	//    pubkeys in calldata to misattribute voting power. The active byte is
-	//    placed first so the on-chain rebuild can short-circuit cheaply for
-	//    padding slots if it ever needs to.
+	//      per slot: active(1) || A(32) || msgLen(2 BE) || msg(MaxMsgLen padded)
+	//    Binding A protects the on-chain quorum lookup — Solidity matches
+	//    pubkeys[i] against the validator set to attribute voting power, so
+	//    without this hash binding an attacker could swap calldata pubkeys.
+	//    R/S are NOT hashed and NOT in calldata: the Groth16 proof itself
+	//    binds them via the in-circuit Ed25519 verify, and no on-chain logic
+	//    consumes them. The active byte is placed first so the on-chain
+	//    rebuild can short-circuit cheaply for padding slots if needed.
 	var buf []uints.U8
 	for i := range c.Sig {
 		buf = append(buf, varToBytesBE(api, c.Active[i], 1)...)
-		buf = append(buf, compressEdwardsToLE(api, baseApi, &c.Sig[i].R)...)
-		buf = append(buf, scalarToBytesLE(api, scalarApi, &c.Sig[i].S)...)
 		buf = append(buf, compressEdwardsToLE(api, baseApi, &c.Pub[i].A)...)
 		buf = append(buf, varToBytesBE(api, c.MsgLens[i], 2)...)
 		buf = append(buf, c.Msgs[i][:]...)

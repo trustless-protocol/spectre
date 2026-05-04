@@ -190,15 +190,12 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 	// circuit committed to. Padding slots have Active=false and zero voting
 	// power; Solidity skips them via the active flag.
 	signerIndices := make([]uint32, bucket)
-	signatures := make([][2][32]byte, bucket)
 	signerPubkeys := make([][32]byte, bucket)
 	timestampSeconds := make([]uint64, bucket)
 	timestampNanos := make([]uint32, bucket)
 	active := make([]bool, bucket)
 	for i, s := range paddedSigs {
 		signerIndices[i] = uint32(s.Index)
-		copy(signatures[i][0][:], s.Signature[:32])
-		copy(signatures[i][1][:], s.Signature[32:])
 		copy(signerPubkeys[i][:], s.PublicKey)
 		timestampSeconds[i] = uint64(s.TimestampSeconds)
 		timestampNanos[i] = uint32(s.TimestampNanos)
@@ -215,7 +212,6 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 		CommitmentPok:         commitmentPok,
 		Bucket:                uint16(bucket),
 		SignerIndices:         signerIndices,
-		Signatures:            signatures,
 		SignerPubkeys:         signerPubkeys,
 		TimestampSeconds:      timestampSeconds,
 		TimestampNanos:        timestampNanos,

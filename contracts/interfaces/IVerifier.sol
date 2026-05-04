@@ -32,7 +32,6 @@ interface IVerifier {
     /// @param proof The Groth16 proof (8 uint256s: Ar, Bs, Krs)
     /// @param commitments The proof commitments (2 uint256s)
     /// @param commitmentPok The proof of knowledge for commitments (2 uint256s)
-    /// @param signatures Per-slot Ed25519 signature: signatures[i][0] = R, signatures[i][1] = S. Length == bucket.
     /// @param pubkeys Per-slot Ed25519 compressed public key. Length == bucket.
     /// @param timestampSeconds Per-slot google.protobuf.Timestamp.seconds. Length == bucket.
     /// @param timestampNanos Per-slot google.protobuf.Timestamp.nanos. Length == bucket.
@@ -43,7 +42,6 @@ interface IVerifier {
         uint256[8] calldata proof,
         uint256[2] calldata commitments,
         uint256[2] calldata commitmentPok,
-        bytes32[2][] calldata signatures,
         bytes32[] calldata pubkeys,
         uint64[] calldata timestampSeconds,
         uint32[] calldata timestampNanos,

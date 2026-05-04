@@ -18,17 +18,17 @@ import (
 //
 //	per slot i ∈ [0, bucket):
 //	  active[1]               // 0x00 padding slot, 0x01 real signer
-//	  R[32 LE]                // raw Ed25519 R, signature[:32]
-//	  S[32 LE]                // raw Ed25519 S, signature[32:]
 //	  A[32 LE]                // raw Ed25519 pubkey (compressed)
 //	  msgLen[2 BE]            // length of meaningful prefix in msg
 //	  msg[MaxMsgLen padded]   // canonical vote bytes, zero-padded right
 //
-// Including R / S / A bytes is what binds the calldata Sig/Pub to the proof.
-// Without it an attacker could substitute another validator's pubkey in
-// calldata, keep the proof unchanged (its public input only sees msg), and
-// have Solidity attribute voting power to a validator who never signed. The
-// active byte gates each slot's contribution to the in-circuit ECIP aggregate.
+// A is hashed because Solidity uses pubkeys[i] to look up validator voting
+// power; without binding it, an attacker could swap calldata pubkeys to
+// misattribute the quorum. R/S are deliberately NOT in calldata or hash —
+// the Groth16 proof itself binds them via the in-circuit Ed25519 verify, and
+// no on-chain logic consumes them, so omitting them saves calldata + hash
+// work without weakening security. The active byte gates each slot's
+// contribution to the in-circuit ECIP aggregate.
 
 // ComputeWitnessHash serializes the per-slot data into the canonical layout
 // and returns the SHA-256 digest. The on-chain WrapperVerifier recomputes the
@@ -42,12 +42,9 @@ func ComputeWitnessHash(sigs []ValidatorSignature) ([32]byte, error) {
 }
 
 func encodeWitnessBytes(sigs []ValidatorSignature) ([]byte, error) {
-	size := len(sigs) * (1 + 32 + 32 + 32 + 2 + MaxMsgLen)
+	size := len(sigs) * (1 + 32 + 2 + MaxMsgLen)
 	buf := make([]byte, 0, size)
 	for i, v := range sigs {
-		if len(v.Signature) != 64 {
-			return nil, fmt.Errorf("slot %d: signature length %d, want 64", i, len(v.Signature))
-		}
 		if len(v.PublicKey) != 32 {
 			return nil, fmt.Errorf("slot %d: public key length %d, want 32", i, len(v.PublicKey))
 		}
@@ -59,8 +56,6 @@ func encodeWitnessBytes(sigs []ValidatorSignature) ([]byte, error) {
 			activeByte = 1
 		}
 		buf = append(buf, activeByte)
-		buf = append(buf, v.Signature[:32]...)
-		buf = append(buf, v.Signature[32:]...)
 		buf = append(buf, v.PublicKey...)
 		buf = binary.BigEndian.AppendUint16(buf, uint16(len(v.SignedBytes)))
 		padded := make([]byte, MaxMsgLen)

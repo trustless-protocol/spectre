@@ -150,7 +150,6 @@ contract Groth16ICS07Tendermint is
         uint256 numVals = vals.length;
         require(
             msg_.signerIndices.length == msg_.bucket
-                && msg_.signatures.length == msg_.bucket
                 && msg_.signerPubkeys.length == msg_.bucket
                 && msg_.timestampSeconds.length == msg_.bucket
                 && msg_.timestampNanos.length == msg_.bucket
@@ -192,7 +191,6 @@ contract Groth16ICS07Tendermint is
                 msg_.proof,
                 msg_.commitments,
                 msg_.commitmentPok,
-                msg_.signatures,
                 msg_.signerPubkeys,
                 msg_.timestampSeconds,
                 msg_.timestampNanos,

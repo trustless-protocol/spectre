@@ -53,7 +53,6 @@ contract WrapperVerifier is IVerifier {
         uint256[8] calldata proof,
         uint256[2] calldata commitments,
         uint256[2] calldata commitmentPok,
-        bytes32[2][] calldata signatures,
         bytes32[] calldata pubkeys,
         uint64[] calldata timestampSeconds,
         uint32[] calldata timestampNanos,
@@ -61,8 +60,7 @@ contract WrapperVerifier is IVerifier {
         IVerifier.SharedBlock calldata shared
     ) external view override returns (bool) {
         if (
-            signatures.length != bucket
-                || pubkeys.length != bucket
+            pubkeys.length != bucket
                 || timestampSeconds.length != bucket
                 || timestampNanos.length != bucket
                 || active.length != bucket
@@ -71,7 +69,7 @@ contract WrapperVerifier is IVerifier {
         BucketVerifier memory bv = buckets[bucket];
         if (bv.verifier == address(0)) revert UnknownBucket(bucket);
 
-        bytes32 h = _hashWitness(bucket, signatures, pubkeys, timestampSeconds, timestampNanos, active, shared);
+        bytes32 h = _hashWitness(bucket, pubkeys, timestampSeconds, timestampNanos, active, shared);
 
         uint256[32] memory publicInputs;
         for (uint256 i = 0; i < 32; i++) {
@@ -86,14 +84,17 @@ contract WrapperVerifier is IVerifier {
 
     /// @dev Canonical witness byte layout — must match Go's
     ///      prover.ComputeWitnessHash and BatchCircuit.Define exactly:
-    ///        per slot: active(1) || R(32) || S(32) || A(32) || msgLen(2 BE) || msg[MAX_MSG_LEN padded]
+    ///        per slot: active(1) || A(32) || msgLen(2 BE) || msg[MAX_MSG_LEN padded]
+    ///      A is hashed because Solidity uses pubkeys[i] to look up validator
+    ///      voting power; binding it stops calldata pubkey swaps. R/S are not
+    ///      in calldata or hash — the Groth16 proof itself binds them via the
+    ///      in-circuit Ed25519 verify, and no on-chain logic consumes them.
     ///      For active slots msg = canonical-vote bytes rebuilt from
     ///      (shared, timestampSeconds[i], timestampNanos[i]). For inactive
     ///      (padding) slots msg = `dummyMagic || bucket(2 BE) || slot(2 BE)`,
     ///      reproduced byte-for-byte from prover/dummy.go.
     function _hashWitness(
         uint16 bucket,
-        bytes32[2][] calldata signatures,
         bytes32[] calldata pubkeys,
         uint64[] calldata timestampSeconds,
         uint32[] calldata timestampNanos,
@@ -101,7 +102,7 @@ contract WrapperVerifier is IVerifier {
         IVerifier.SharedBlock calldata shared
     ) internal pure returns (bytes32) {
         bytes memory buf;
-        for (uint256 i = 0; i < signatures.length; i++) {
+        for (uint256 i = 0; i < pubkeys.length; i++) {
             bytes memory msgBytes;
             if (active[i]) {
                 msgBytes = _voteSignBytes(shared, timestampSeconds[i], timestampNanos[i]);
@@ -116,8 +117,6 @@ contract WrapperVerifier is IVerifier {
             buf = abi.encodePacked(
                 buf,
                 active[i] ? bytes1(0x01) : bytes1(0x00), // active (1)
-                signatures[i][0],          // R (32)
-                signatures[i][1],          // S (32)
                 pubkeys[i],                // A (32)
                 uint16(msgBytes.length),   // msgLen (2 BE)
                 padded                     // msg (MAX_MSG_LEN padded)
