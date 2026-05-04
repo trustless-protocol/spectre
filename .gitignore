@@ -54,3 +54,6 @@ network_params.yaml
 relayer/bin/
 relayer/relayer
 .gocache/
+
+# Local Vietnamese design notes
+docs/*_VI.md
