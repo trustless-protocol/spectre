@@ -11,176 +11,149 @@ import (
 	"github.com/cometbft/cometbft/types"
 )
 
-func TestExtractValidatorSignature_NilLightBlock(t *testing.T) {
-	_, err := ExtractValidatorSignature(nil, "test-chain")
+func TestExtractValidatorSignatures_NilLightBlock(t *testing.T) {
+	_, err := ExtractValidatorSignatures(nil, "test-chain")
 	if err == nil {
-		t.Fatal("expected error for nil light block, got nil")
-	}
-	if err.Error() != "light block is nil" {
-		t.Fatalf("unexpected error message: %s", err.Error())
+		t.Fatal("expected error for nil light block")
 	}
 }
 
-func TestExtractValidatorSignature_NilCommit(t *testing.T) {
+func TestExtractValidatorSignatures_NilCommit(t *testing.T) {
+	lb := &relayerclient.LightBlock{
+		SignedHeader: types.SignedHeader{Commit: nil},
+	}
+	_, err := ExtractValidatorSignatures(lb, "test-chain")
+	if err == nil {
+		t.Fatal("expected error for nil commit")
+	}
+}
+
+func TestExtractValidatorSignatures_EmptyValidators(t *testing.T) {
 	lb := &relayerclient.LightBlock{
 		SignedHeader: types.SignedHeader{
-			Commit: nil,
+			Commit: &types.Commit{Signatures: []types.CommitSig{}},
 		},
+		ValSet: types.ValidatorSet{Validators: []*types.Validator{}},
 	}
-
-	_, err := ExtractValidatorSignature(lb, "test-chain")
+	_, err := ExtractValidatorSignatures(lb, "test-chain")
 	if err == nil {
-		t.Fatal("expected error for nil commit, got nil")
-	}
-	if err.Error() != "commit is nil" {
-		t.Fatalf("unexpected error message: %s", err.Error())
+		t.Fatal("expected error for empty validators")
 	}
 }
 
-func TestExtractValidatorSignature_EmptyValidators(t *testing.T) {
-	lb := &relayerclient.LightBlock{
-		SignedHeader: types.SignedHeader{
-			Commit: &types.Commit{
-				Signatures: []types.CommitSig{},
-			},
-		},
-		ValSet: types.ValidatorSet{
-			Validators: []*types.Validator{},
-		},
+// makeSignedCommit builds a LightBlock with n validators whose voting powers are
+// given by `powers`. A subset signs per `signs[i]`; others are marked absent.
+func makeSignedCommit(t *testing.T, chainID string, powers []int64, signs []bool) *relayerclient.LightBlock {
+	t.Helper()
+	if len(powers) != len(signs) {
+		t.Fatal("powers/signs length mismatch")
 	}
-
-	_, err := ExtractValidatorSignature(lb, "test-chain")
-	if err == nil {
-		t.Fatal("expected error for empty validators, got nil")
+	vals := make([]*types.Validator, len(powers))
+	privs := make([]cmted25519.PrivKey, len(powers))
+	for i := range powers {
+		privs[i] = cmted25519.GenPrivKey()
+		vals[i] = &types.Validator{
+			Address:     privs[i].PubKey().Address(),
+			PubKey:      privs[i].PubKey(),
+			VotingPower: powers[i],
+		}
 	}
-	if err.Error() != "validator set is empty" {
-		t.Fatalf("unexpected error message: %s", err.Error())
-	}
-}
-
-func TestExtractValidatorSignature_AllAbsent(t *testing.T) {
-	privKey := cmted25519.GenPrivKey()
-	pubKey := privKey.PubKey()
-
-	val := &types.Validator{
-		Address:     pubKey.Address(),
-		PubKey:      pubKey,
-		VotingPower: 10,
-	}
-
-	lb := &relayerclient.LightBlock{
-		SignedHeader: types.SignedHeader{
-			Commit: &types.Commit{
-				Signatures: []types.CommitSig{
-					{
-						BlockIDFlag: types.BlockIDFlagAbsent,
-					},
-				},
-			},
-		},
-		ValSet: types.ValidatorSet{
-			Validators: []*types.Validator{val},
-		},
-	}
-
-	_, err := ExtractValidatorSignature(lb, "test-chain")
-	if err == nil {
-		t.Fatal("expected error when all signatures are absent, got nil")
-	}
-	expected := "no valid non-absent signatures found in commit"
-	if err.Error() != expected {
-		t.Fatalf("unexpected error message: got %q, want %q", err.Error(), expected)
-	}
-}
-
-func TestExtractValidatorSignature_ValidSingleValidator(t *testing.T) {
-	chainID := "test-chain-1"
-
-	privKey := cmted25519.GenPrivKey()
-	pubKey := privKey.PubKey()
-
-	val := &types.Validator{
-		Address:     pubKey.Address(),
-		PubKey:      pubKey,
-		VotingPower: 10,
-	}
+	valSet := types.NewValidatorSet(vals)
 
 	blockID := types.BlockID{
-		Hash: make([]byte, 32),
-		PartSetHeader: types.PartSetHeader{
-			Total: 1,
-			Hash:  make([]byte, 32),
-		},
+		Hash:          make([]byte, 32),
+		PartSetHeader: types.PartSetHeader{Total: 1, Hash: make([]byte, 32)},
 	}
-
-	header := &types.Header{
-		ChainID: chainID,
-		Height:  100,
-		Time:    time.Now().UTC(),
-	}
-
+	header := &types.Header{ChainID: chainID, Height: 100, Time: time.Now().UTC()}
 	commit := &types.Commit{
-		Height:  100,
-		Round:   0,
-		BlockID: blockID,
-		Signatures: []types.CommitSig{
-			{
-				BlockIDFlag:      types.BlockIDFlagCommit,
-				ValidatorAddress: val.Address,
-				Timestamp:        header.Time,
-			},
-		},
+		Height:     100,
+		Round:      0,
+		BlockID:    blockID,
+		Signatures: make([]types.CommitSig, len(vals)),
+	}
+	for i, v := range vals {
+		cs := types.CommitSig{
+			BlockIDFlag:      types.BlockIDFlagAbsent,
+			ValidatorAddress: v.Address,
+			Timestamp:        header.Time,
+		}
+		if signs[i] {
+			cs.BlockIDFlag = types.BlockIDFlagCommit
+			sig, err := privs[i].Sign(commit.VoteSignBytes(chainID, int32(i)))
+			if err != nil {
+				t.Fatalf("sign[%d]: %v", i, err)
+			}
+			cs.Signature = sig
+		}
+		commit.Signatures[i] = cs
 	}
 
-	// Compute the vote sign bytes so we can sign them
-	voteSignBytes := commit.VoteSignBytes(chainID, 0)
-
-	// Sign the vote bytes with the private key
-	sig, err := privKey.Sign(voteSignBytes)
-	if err != nil {
-		t.Fatalf("failed to sign vote bytes: %v", err)
+	return &relayerclient.LightBlock{
+		SignedHeader: types.SignedHeader{Header: header, Commit: commit},
+		ValSet:       *valSet,
+		BlockHeight:  100,
 	}
-	commit.Signatures[0].Signature = sig
+}
 
-	lb := &relayerclient.LightBlock{
-		SignedHeader: types.SignedHeader{
-			Header: header,
-			Commit: commit,
-		},
-		ValSet: types.ValidatorSet{
-			Validators: []*types.Validator{val},
-		},
-		BlockHeight: 100,
-	}
-
-	result, err := ExtractValidatorSignature(lb, chainID)
+func TestExtractValidatorSignatures_ReachesQuorum(t *testing.T) {
+	chainID := "test-chain"
+	// 4 validators with equal power; 3 sign = 75% ≥ 2/3.
+	lb := makeSignedCommit(t, chainID, []int64{10, 10, 10, 10}, []bool{true, true, true, false})
+	got, err := ExtractValidatorSignatures(lb, chainID)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-
-	// Verify signature length
-	if len(result.Signature) != ed25519.SignatureSize {
-		t.Fatalf("expected signature length %d, got %d", ed25519.SignatureSize, len(result.Signature))
+	if got.Shared.ChainID != chainID {
+		t.Fatalf("shared.ChainID=%q want %q", got.Shared.ChainID, chainID)
 	}
-
-	// Verify public key length
-	if len(result.PublicKey) != ed25519.PublicKeySize {
-		t.Fatalf("expected public key length %d, got %d", ed25519.PublicKeySize, len(result.PublicKey))
+	if len(got.Signatures) < 3 {
+		t.Fatalf("expected at least 3 signers, got %d", len(got.Signatures))
 	}
-
-	// Verify the returned signature matches what we signed
-	if !ed25519.Verify(result.PublicKey, result.SignBytes, result.Signature) {
-		t.Fatal("returned signature does not verify against the returned public key and sign bytes")
-	}
-
-	// Verify sign bytes match what we expect
-	expectedSignBytes := commit.VoteSignBytes(chainID, 0)
-	if len(result.SignBytes) != len(expectedSignBytes) {
-		t.Fatalf("sign bytes length mismatch: got %d, want %d", len(result.SignBytes), len(expectedSignBytes))
-	}
-	for i := range result.SignBytes {
-		if result.SignBytes[i] != expectedSignBytes[i] {
-			t.Fatalf("sign bytes differ at index %d", i)
+	for i, s := range got.Signatures {
+		if len(s.Signature) != ed25519.SignatureSize {
+			t.Fatalf("sig[%d] wrong length %d", i, len(s.Signature))
 		}
+		// Reconstruct signed bytes from commit to verify locally. The extractor
+		// already did this check, but we want the test to fail loudly if the
+		// reconstruction logic ever drifts.
+		voteBytes := lb.SignedHeader.Commit.VoteSignBytes(chainID, int32(s.Index))
+		if !ed25519.Verify(s.PublicKey, voteBytes, s.Signature) {
+			t.Fatalf("sig[%d] failed local verify", i)
+		}
+	}
+}
+
+func TestExtractValidatorSignatures_InsufficientPower(t *testing.T) {
+	chainID := "test-chain"
+	// 4 validators; only 2 of 4 sign = 50% < 2/3.
+	lb := makeSignedCommit(t, chainID, []int64{10, 10, 10, 10}, []bool{true, true, false, false})
+	_, err := ExtractValidatorSignatures(lb, chainID)
+	if err == nil {
+		t.Fatal("expected insufficient voting power error")
+	}
+}
+
+func TestExtractValidatorSignatures_AllAbsent(t *testing.T) {
+	chainID := "test-chain"
+	lb := makeSignedCommit(t, chainID, []int64{10}, []bool{false})
+	_, err := ExtractValidatorSignatures(lb, chainID)
+	if err == nil {
+		t.Fatal("expected error when no signatures present")
+	}
+}
+
+func TestExtractValidatorSignatures_GreedyPicksSmallestPrefix(t *testing.T) {
+	chainID := "test-chain"
+	// One dominant validator (70%) covers quorum alone; extractor should stop at 1.
+	lb := makeSignedCommit(t, chainID, []int64{70, 10, 10, 10}, []bool{true, true, true, true})
+	got, err := ExtractValidatorSignatures(lb, chainID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got.Signatures) != 1 {
+		t.Fatalf("expected 1 signer for dominant validator, got %d", len(got.Signatures))
+	}
+	if got.Signatures[0].Power != 70 {
+		t.Fatalf("expected dominant power 70, got %d", got.Signatures[0].Power)
 	}
 }

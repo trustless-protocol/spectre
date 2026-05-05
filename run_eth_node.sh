@@ -7,7 +7,7 @@ killall gaiad || true
 rm -rf $HOME/.gaia
 
 # Run eth chain
-kurtosis run --enclave my-testnet github.com/ethpandaops/ethereum-package --args-file eth-network-params.yaml
+kurtosis run --enclave my-testnet github.com/ethpandaops/ethereum-package@6.1.0 --args-file eth-network-params.yaml
 
 sleep 30
 
@@ -57,48 +57,48 @@ RESULT=$(forge script scripts/E2ETestDeploy.s.sol:E2ETestDeploy \
 )
 
 ERC20_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)"$/\1/p' \
+  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.erc20')
 
 echo "ERC20_ADDRESS: $ERC20_ADDRESS"
 
 ICS20_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)"$/\1/p' \
+  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.ics20Transfer')
 
 echo "ICS20_ADDRESS: $ICS20_ADDRESS"
 
 ICS26_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)"$/\1/p' \
+  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.ics26Router')
 
 echo "ICS26_ADDRESS: $ICS26_ADDRESS"
 
 VERIFIER_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)"$/\1/p' \
+  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.wrapperVerifier')
 
 echo "VERIFIER_ADDRESS: $VERIFIER_ADDRESS"
 
 MEMBERSHIP_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)"$/\1/p' \
+  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.membership')
 
 echo "MEMBERSHIP_ADDRESS: $MEMBERSHIP_ADDRESS"
 
 UPDATE_CLIENT_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)"$/\1/p' \
+  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.updateClient')
 echo "UPDATE_CLIENT_ADDRESS: $UPDATE_CLIENT_ADDRESS"
 
 MISBEHAVIOUR_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)"$/\1/p' \
+  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.misbehaviour')
 echo "MISBEHAVIOUR_ADDRESS: $MISBEHAVIOUR_ADDRESS"

@@ -154,6 +154,12 @@ func init() {
 		{Name: "proof", Type: "uint256[8]"},
 		{Name: "commitments", Type: "uint256[2]"},
 		{Name: "commitmentPok", Type: "uint256[2]"},
+		{Name: "bucket", Type: "uint16"},
+		{Name: "signerIndices", Type: "uint32[]"},
+		{Name: "signerPubkeys", Type: "bytes32[]"},
+		{Name: "timestampSeconds", Type: "uint64[]"},
+		{Name: "timestampNanos", Type: "uint32[]"},
+		{Name: "active", Type: "bool[]"},
 	})
 }
 
@@ -172,11 +178,17 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) updateClientContract.II
 	for _, sig := range b.SignedHeader.Commit.Signatures {
 		// CometBFT: 0=UNKNOWN, 1=ABSENT, 2=COMMIT, 3=NIL
 		// Solidity:  0=UNKNOWN, 1=ABSENT, 2=COMMIT, 3=NIL
+		// Absent sigs carry a zero time.Time whose UnixNano is a huge negative
+		// value; clamp to 0 so abi.Pack into uint128 succeeds.
+		var tsNano int64
+		if !sig.Timestamp.IsZero() {
+			tsNano = sig.Timestamp.UnixNano()
+		}
 		commitSigs = append(commitSigs, updateClientContract.IICS07TendermintMsgsCommitSig{
 			Flag: uint8(sig.BlockIDFlag),
 			Data: updateClientContract.IICS07TendermintMsgsCommitSigData{
 				ValidatorAddress: sig.ValidatorAddress,
-				Timestamp:        big.NewInt(sig.Timestamp.UnixNano()),
+				Timestamp:        big.NewInt(tsNano),
 				HasSignature:     sig.Signature != nil,
 				Signature:        sig.Signature,
 			},

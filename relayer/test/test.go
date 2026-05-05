@@ -438,7 +438,7 @@ func main() {
 		panic(fmt.Errorf("failed to create RPC client: %w", err))
 	}
 
-	prover, err := prover.NewProver("./bin/r1cs.bin", "./bin/pk.bin", "./bin/vk.bin")
+	prover, err := prover.NewProver("./bin")
 	if err != nil {
 		panic(fmt.Errorf("failed reading prover key: %w", err))
 	}
@@ -461,10 +461,11 @@ func main() {
 		panic(fmt.Errorf("failed to fetch unbonding time client: %w", err))
 	}
 	trustingPeriod := 2 * uint32(unbondingPeriod) / 3
-	err = worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, "1/3")
+	ics07Addr, err := worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, "1/3")
 	if err != nil {
 		panic(fmt.Errorf("create client err: %w", err))
 	}
+	ctx.SetClient(ics07Addr)
 	ethClientID, err := worker.CreateEthClient(ctx, "0xd24688886ed8cec00c667fa69c173fbab9a08c75900ce18afe10517c82e55592")
 	if err != nil {
 		panic(fmt.Errorf("create client err: %w", err))
