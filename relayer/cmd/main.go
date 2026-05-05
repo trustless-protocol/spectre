@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"os"
 	"strings"
+	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -87,6 +88,46 @@ type appConfig struct {
 	EthToCosmosConfig ethToCosmosConfig
 }
 
+// writeICS07Address rewrites configPath in place, setting
+// modules[name=="cosmos_to_eth"].config.ics07_client = addr. Other fields and
+// JSON formatting are preserved as much as encoding/json indent allows.
+func writeICS07Address(configPath, addr string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	modules, ok := raw["modules"].([]any)
+	if !ok {
+		return fmt.Errorf("config has no modules array")
+	}
+	updated := false
+	for _, m := range modules {
+		mod, ok := m.(map[string]any)
+		if !ok || mod["name"] != "cosmos_to_eth" {
+			continue
+		}
+		cfg, ok := mod["config"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("cosmos_to_eth.config is not an object")
+		}
+		cfg["ics07_client"] = addr
+		updated = true
+		break
+	}
+	if !updated {
+		return fmt.Errorf("module cosmos_to_eth not found in config")
+	}
+	out, err := json.MarshalIndent(raw, "", "    ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, out, 0o644)
+}
+
 func loadConfig(configPath string) (*appConfig, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -118,6 +159,40 @@ func loadConfig(configPath string) (*appConfig, error) {
 		CosmosToEthConfig: c2e,
 		EthToCosmosConfig: e2c,
 	}, nil
+}
+
+func preflightCreateClients(cfg *appConfig) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	ethClient, err := ethclient.DialContext(ctx, cfg.CosmosToEthConfig.EthRpcUrl)
+	if err != nil {
+		return fmt.Errorf("ethereum rpc unavailable at %s: %w", cfg.CosmosToEthConfig.EthRpcUrl, err)
+	}
+	defer ethClient.Close()
+
+	chainID, err := ethClient.ChainID(ctx)
+	if err != nil {
+		return fmt.Errorf("ethereum rpc not responding at %s: %w", cfg.CosmosToEthConfig.EthRpcUrl, err)
+	}
+
+	cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
+	if err != nil {
+		return fmt.Errorf("failed to create cosmos rpc client for %s: %w", cfg.CosmosToEthConfig.TmRpcUrl, err)
+	}
+	status, err := cosmosClient.Status(ctx)
+	if err != nil {
+		return fmt.Errorf("cosmos rpc unavailable at %s: %w", cfg.CosmosToEthConfig.TmRpcUrl, err)
+	}
+
+	if cfg.EthToCosmosConfig.BeaconUrl != "" {
+		if _, err := tendermintClient.GetBeaconGenesis(cfg.EthToCosmosConfig.BeaconUrl); err != nil {
+			return fmt.Errorf("beacon api unavailable at %s: %w", cfg.EthToCosmosConfig.BeaconUrl, err)
+		}
+	}
+
+	log.Printf("[create-clients] preflight OK: cosmos_height=%d eth_chain_id=%s", status.SyncInfo.LatestBlockHeight, chainID.String())
+	return nil
 }
 
 func envOrDefault(key, defaultVal string) string {
@@ -175,30 +250,35 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
+			logger.Sugar().Infof("create-clients: config loaded from %s", configPath)
+			logger.Sugar().Infof(
+				"create-clients: endpoints cosmos_rpc=%s eth_rpc=%s beacon=%s",
+				cfg.CosmosToEthConfig.TmRpcUrl,
+				cfg.CosmosToEthConfig.EthRpcUrl,
+				cfg.EthToCosmosConfig.BeaconUrl,
+			)
+			if err := preflightCreateClients(cfg); err != nil {
+				return err
+			}
+			logger.Sugar().Info("create-clients: preflight passed")
 
 			// Connect to Ethereum
+			logger.Sugar().Infof("create-clients: dialing ethereum rpc %s", cfg.CosmosToEthConfig.EthRpcUrl)
 			ethClient, err := ethclient.Dial(cfg.CosmosToEthConfig.EthRpcUrl)
 			if err != nil {
 				return fmt.Errorf("failed to connect to Ethereum: %w", err)
 			}
+			logger.Sugar().Info("create-clients: ethereum rpc connected")
 
 			// Connect to Cosmos
+			logger.Sugar().Infof("create-clients: creating cosmos rpc client %s", cfg.CosmosToEthConfig.TmRpcUrl)
 			cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
 			if err != nil {
 				return fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 			}
+			logger.Sugar().Info("create-clients: cosmos rpc client created")
 
-			// Load prover
-			r1csPath := envOrDefault("PROVER_R1CS_PATH", "./bin/r1cs.bin")
-			pkPath := envOrDefault("PROVER_PK_PATH", "./bin/pk.bin")
-			vkPath := envOrDefault("PROVER_VK_PATH", "./bin/vk.bin")
-
-			p, err := prover.NewProver(r1csPath, pkPath, vkPath)
-			if err != nil {
-				return fmt.Errorf("failed to load prover: %w", err)
-			}
-
-			worker := services.NewWorker(&transaction.Handler{}, p)
+			worker := services.NewWorker(&transaction.Handler{}, nil)
 
 			// Create context (no WS client needed for create-clients)
 			ctx := services.NewCtxWithBeacon(
@@ -218,10 +298,12 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			)
 
 			// Start Cosmos WS (needed for queries)
+			logger.Sugar().Info("create-clients: starting cosmos websocket client")
 			if err := cosmosClient.Start(); err != nil {
 				return fmt.Errorf("failed to start Cosmos WS client: %w", err)
 			}
 			defer cosmosClient.Stop()
+			logger.Sugar().Info("create-clients: cosmos websocket client started")
 
 			// --- 1. Create Cosmos light client on Ethereum (deploy ICS07) ---
 			trustLevel, err := cmd.Flags().GetString(flagTrustLevel)
@@ -236,11 +318,18 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			trustingPeriod := 2 * uint32(unbondingPeriod) / 3
 
 			logger.Sugar().Infof("Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s)...", trustingPeriod, trustLevel)
-			if err := worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, trustLevel); err != nil {
+			ics07Addr, err := worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, trustLevel)
+			if err != nil {
 				return fmt.Errorf("failed to create Cosmos client on Ethereum: %w", err)
 			}
-			// ICS07 address is printed by handler: "[CreateCosmosClient] ICS07 deployed at <address>"
-			// Copy that address into config.json cosmos_to_eth.ics07_client
+			if (ics07Addr == common.Address{}) {
+				return fmt.Errorf("ics07 address missing after deploy")
+			}
+			ctx.SetClient(ics07Addr)
+			if err := writeICS07Address(configPath, ics07Addr.Hex()); err != nil {
+				return fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
+			}
+			logger.Sugar().Infof("create-clients: wrote ics07_client=%s into %s", ics07Addr.Hex(), configPath)
 
 			// --- 2. Create Ethereum light client on Cosmos (wasm) ---
 			wasmChecksum, err := cmd.Flags().GetString(flagWasmChecksum)
@@ -250,6 +339,7 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			if wasmChecksum == "" {
 				wasmChecksum = os.Getenv("WASM_CHECKSUM")
 			}
+			logger.Sugar().Infof("create-clients: wasm checksum present=%t", wasmChecksum != "")
 
 			if wasmChecksum != "" && cfg.EthToCosmosConfig.BeaconUrl != "" {
 				logger.Sugar().Infof("Creating Ethereum light client on Cosmos (checksum=%s)...", wasmChecksum)
@@ -268,7 +358,7 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			}
 
 			logger.Sugar().Infof("=== Setup Complete ===")
-			logger.Sugar().Infof("Copy ICS07 address from log above into config.json cosmos_to_eth.ics07_client before running 'start'")
+			logger.Sugar().Infof("ICS07 address has been persisted to %s; ready for 'start'", configPath)
 
 			return nil
 		},
@@ -327,12 +417,10 @@ func Start(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 			}
 
-			// Load prover
-			r1csPath := envOrDefault("PROVER_R1CS_PATH", "./bin/r1cs.bin")
-			pkPath := envOrDefault("PROVER_PK_PATH", "./bin/pk.bin")
-			vkPath := envOrDefault("PROVER_VK_PATH", "./bin/vk.bin")
+			// Load prover (one bucket per supported validator count)
+			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
 
-			p, err := prover.NewProver(r1csPath, pkPath, vkPath)
+			p, err := prover.NewProver(binDir)
 			if err != nil {
 				return fmt.Errorf("failed to load prover: %w", err)
 			}

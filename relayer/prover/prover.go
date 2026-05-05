@@ -1,10 +1,12 @@
 package prover
 
 import (
-	"crypto/sha512"
 	"fmt"
+	"io"
+	"log"
 	"math/big"
 	"os"
+	"path/filepath"
 
 	"0x5ea000000/ecip-gnark/signature/eddsa"
 	"0x5ea000000/ecip-gnark/utils"
@@ -19,148 +21,252 @@ import (
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
 	"github.com/consensys/gnark/std/math/emulated"
+	"github.com/consensys/gnark/std/math/uints"
 )
 
-type EcipProver struct {
-	r1cs constraint.ConstraintSystem
-	pk   groth16.ProvingKey
-	vk   groth16.VerifyingKey
+// bucketArtifacts holds the compiled circuit, Groth16 key pair, and the
+// deterministic dummy padding slots for one validator-count bucket.
+type bucketArtifacts struct {
+	n      int
+	r1cs   constraint.ConstraintSystem
+	pk     groth16.ProvingKey
+	vk     groth16.VerifyingKey
+	dummys []dummySignature
 }
 
-func NewProver(r1csPath, pkPath, vkPath string) (*EcipProver, error) {
-	r1csFile, err := os.Open(r1csPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open r1cs file: %w", err)
+// EcipProver is a registry of compiled circuits keyed by bucket size. The
+// prover selects the smallest bucket that fits the required signer count for
+// the current block and uses that bucket's artifacts to generate a proof.
+type EcipProver struct {
+	byBucket map[int]*bucketArtifacts
+}
+
+// NewProver loads every bucket's r1cs, proving key, and verifying key from
+// binDir/n{N}/{r1cs,pk,vk}.bin. It errors if any bucket's artifacts are
+// missing — the operator must run `cmd/setup-circuits` first.
+func NewProver(binDir string) (*EcipProver, error) {
+	log.Printf("[NewProver] loading artifacts from %s", binDir)
+	p := &EcipProver{byBucket: make(map[int]*bucketArtifacts, len(Buckets))}
+	for _, n := range Buckets {
+		log.Printf("[NewProver] loading bucket n=%d", n)
+		art, err := loadBucketArtifacts(binDir, n)
+		if err != nil {
+			return nil, fmt.Errorf("load bucket n=%d: %w", n, err)
+		}
+		p.byBucket[n] = art
+		log.Printf("[NewProver] bucket n=%d loaded", n)
 	}
-	defer r1csFile.Close()
+	log.Printf("[NewProver] loaded %d bucket(s)", len(p.byBucket))
+	return p, nil
+}
+
+func loadBucketArtifacts(binDir string, n int) (*bucketArtifacts, error) {
+	dir := filepath.Join(binDir, fmt.Sprintf("n%d", n))
+	log.Printf("[NewProver] bucket n=%d dir=%s", n, dir)
 
 	r1cs := groth16.NewCS(ecc.BN254)
-	if _, err := r1cs.ReadFrom(r1csFile); err != nil {
-		return nil, fmt.Errorf("failed to read r1cs: %w", err)
+	if err := readFromFile(filepath.Join(dir, "r1cs.bin"), "r1cs", n, r1cs); err != nil {
+		return nil, fmt.Errorf("read r1cs: %w", err)
 	}
 
 	pk := groth16.NewProvingKey(ecc.BN254)
-	pkFile, err := os.Open(pkPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open proving key file: %w", err)
-	}
-	defer pkFile.Close()
-
-	if _, err := pk.ReadFrom(pkFile); err != nil {
-		return nil, fmt.Errorf("failed to read proving key: %w", err)
+	if err := readFromFile(filepath.Join(dir, "pk.bin"), "pk", n, pk); err != nil {
+		return nil, fmt.Errorf("read pk: %w", err)
 	}
 
 	vk := groth16.NewVerifyingKey(ecc.BN254)
-	vkFile, err := os.Open(vkPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open verifying key file: %w", err)
-	}
-	defer vkFile.Close()
-	if _, err := vk.ReadFrom(vkFile); err != nil {
-		return nil, fmt.Errorf("failed to read verifying key: %w", err)
+	if err := readFromFile(filepath.Join(dir, "vk.bin"), "vk", n, vk); err != nil {
+		return nil, fmt.Errorf("read vk: %w", err)
 	}
 
-	return &EcipProver{
-		r1cs: r1cs,
-		pk:   pk,
-		vk:   vk,
+	return &bucketArtifacts{
+		n:      n,
+		r1cs:   r1cs,
+		pk:     pk,
+		vk:     vk,
+		dummys: generateDummySlots(n),
 	}, nil
 }
 
-func (p *EcipProver) GenerateProof(sig, pub, msg []byte) (
+type readerFrom interface {
+	ReadFrom(r io.Reader) (int64, error)
+}
+
+func readFromFile(path string, kind string, bucket int, dst readerFrom) error {
+	if fi, err := os.Stat(path); err == nil {
+		log.Printf("[NewProver] bucket n=%d reading %s from %s (%d bytes)", bucket, kind, path, fi.Size())
+	} else {
+		log.Printf("[NewProver] bucket n=%d stat failed for %s %s: %v", bucket, kind, path, err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	log.Printf("[NewProver] bucket n=%d opened %s", bucket, kind)
+	_, err = dst.ReadFrom(f)
+	if err == nil {
+		log.Printf("[NewProver] bucket n=%d loaded %s", bucket, kind)
+	}
+	return err
+}
+
+// GenerateProof produces a Groth16 proof that every (sig[i], pub[i]) validly
+// signed the canonical-vote bytes carried in sigs[i].SignedBytes. The prover
+// picks the smallest bucket that fits len(sigs) and pads the witness up to
+// the bucket's N with copies of slot 0. The returned bucket value tells the
+// caller which Solidity verifier to dispatch to.
+func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
+	bucket int,
+	paddedSigs []ValidatorSignature,
 	proof [8]*big.Int,
 	commitments [2]*big.Int,
 	commitmentPok [2]*big.Int,
 	err error,
 ) {
-	if len(sig) != 64 {
-		err = fmt.Errorf("invalid signature length: %d, expected 64", len(sig))
-		return
-	}
-	if len(pub) != 32 {
-		err = fmt.Errorf("invalid public key length: %d, expected 32", len(pub))
+	if len(sigs) == 0 {
+		err = fmt.Errorf("no signatures provided")
 		return
 	}
 
-	// Extract R (first 32 bytes) and S (last 32 bytes) from signature
-	R := sig[:32]
-	S, sErr := edwards25519.NewScalar().SetCanonicalBytes(sig[32:])
-	if sErr != nil {
-		err = fmt.Errorf("invalid signature scalar S: %w", sErr)
+	bucket, err = SmallestBucketGEQ(len(sigs))
+	if err != nil {
+		return
+	}
+	art, ok := p.byBucket[bucket]
+	if !ok {
+		err = fmt.Errorf("bucket n=%d not loaded", bucket)
 		return
 	}
 
-	// Decompress Ed25519 points to Weierstrass coordinates
-	aX, aY, decompErr := utils.DecompressPoint(pub)
-	if decompErr != nil {
-		err = fmt.Errorf("failed to decompress public key: %w", decompErr)
+	paddedSigs, err = padWithDummies(sigs, art.dummys)
+	if err != nil {
 		return
 	}
 
-	rX, rY, decompErr := utils.DecompressPoint(R)
-	if decompErr != nil {
-		err = fmt.Errorf("failed to decompress R point: %w", decompErr)
+	hash, err := ComputeWitnessHash(paddedSigs)
+	if err != nil {
+		err = fmt.Errorf("compute witness hash: %w", err)
 		return
 	}
 
-	// Convert S scalar to big.Int
-	s := utils.ScalarToBigInt(S)
-
-	// Compute H = SHA512(R || A || msg) off-chain
-	hasher := sha512.New()
-	hasher.Write(R)
-	hasher.Write(pub)
-	hasher.Write(msg)
-	sum := hasher.Sum(nil)
-
-	H, hErr := edwards25519.NewScalar().SetUniformBytes(sum)
-	if hErr != nil {
-		err = fmt.Errorf("failed to set hash scalar: %w", hErr)
+	assignment, err := buildBatchAssignment(paddedSigs, hash)
+	if err != nil {
 		return
 	}
-	h := utils.ScalarToBigInt(H)
 
-	// Build witness assignment
-	assignment := PreHashCircuit[Fp25519, Fr25519]{
-		Sig: eddsa.Signature[Fp25519, Fr25519]{
+	witness, err := frontend.NewWitness(assignment, ecc.BN254.ScalarField())
+	if err != nil {
+		err = fmt.Errorf("create witness: %w", err)
+		return
+	}
+
+	gnarkProof, err := groth16.Prove(art.r1cs, art.pk, witness, solidity.WithProverTargetSolidityVerifier(backend.GROTH16))
+	if err != nil {
+		err = fmt.Errorf("generate proof: %w", err)
+		return
+	}
+
+	pubWitness, _ := witness.Public()
+	if vErr := groth16.Verify(gnarkProof, art.vk, pubWitness, solidity.WithVerifierTargetSolidityVerifier(backend.GROTH16)); vErr != nil {
+		err = fmt.Errorf("local verification failed: %w", vErr)
+		return
+	}
+
+	proof, commitments, commitmentPok, err = ProofToBigInts(gnarkProof)
+	return
+}
+
+// padWithDummies fills the trailing slots of a bucket with deterministic dummy
+// signatures (active=false) so every (R, A) point in the batch is distinct.
+// Duplicating a real slot would re-introduce the ECIP doubling-branch issue;
+// distinct dummies keep the divisor well-formed while the active gate zeroes
+// their contribution to the aggregate.
+func padWithDummies(sigs []ValidatorSignature, dummies []dummySignature) ([]ValidatorSignature, error) {
+	n := len(dummies)
+	if len(sigs) > n {
+		return nil, fmt.Errorf("bucket n=%d too small for %d signers", n, len(sigs))
+	}
+	out := make([]ValidatorSignature, n)
+	copy(out, sigs)
+	for i := len(sigs); i < n; i++ {
+		out[i] = dummies[i].asValidatorSignature()
+	}
+	return out, nil
+}
+
+// buildBatchAssignment builds the BatchCircuit witness assignment: per-slot
+// (sig, pub, signed canonical-vote bytes, msgLen). Signature R/S and pubkey A
+// are decompressed off-circuit into gnark's emulated Ed25519 coordinates; the
+// raw canonical-vote bytes flow in via Msgs/MsgLens (right-padded to MaxMsgLen).
+func buildBatchAssignment(sigs []ValidatorSignature, hash [32]byte) (*BatchCircuit[Fp25519, Fr25519], error) {
+	n := len(sigs)
+	a := &BatchCircuit[Fp25519, Fr25519]{
+		Sig:     make([]eddsa.Signature[Fp25519, Fr25519], n),
+		Pub:     make([]eddsa.PublicKey[Fp25519, Fr25519], n),
+		Msgs:    make([][MaxMsgLen]uints.U8, n),
+		MsgLens: make([]frontend.Variable, n),
+		Active:  make([]frontend.Variable, n),
+	}
+	for i := 0; i < 32; i++ {
+		a.Hash[i] = uints.NewU8(hash[i])
+	}
+
+	for i := 0; i < n; i++ {
+		v := sigs[i]
+		if len(v.Signature) != 64 {
+			return nil, fmt.Errorf("slot %d: invalid signature length %d", i, len(v.Signature))
+		}
+		if len(v.PublicKey) != 32 {
+			return nil, fmt.Errorf("slot %d: invalid public key length %d", i, len(v.PublicKey))
+		}
+		if len(v.SignedBytes) > MaxMsgLen {
+			return nil, fmt.Errorf("slot %d: signed bytes length %d exceeds MaxMsgLen=%d", i, len(v.SignedBytes), MaxMsgLen)
+		}
+
+		R := v.Signature[:32]
+		S, err := edwards25519.NewScalar().SetCanonicalBytes(v.Signature[32:])
+		if err != nil {
+			return nil, fmt.Errorf("slot %d: scalar S: %w", i, err)
+		}
+		aX, aY, err := utils.DecompressPoint(v.PublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("slot %d: decompress pubkey: %w", i, err)
+		}
+		rX, rY, err := utils.DecompressPoint(R)
+		if err != nil {
+			return nil, fmt.Errorf("slot %d: decompress R: %w", i, err)
+		}
+
+		a.Sig[i] = eddsa.Signature[Fp25519, Fr25519]{
 			R: sw_emulated.AffinePoint[Fp25519]{
 				X: emulated.ValueOf[Fp25519](rX),
 				Y: emulated.ValueOf[Fp25519](rY),
 			},
-			S: emulated.ValueOf[Fr25519](s),
-		},
-		Hash: emulated.ValueOf[Fr25519](h),
-		Pub: eddsa.PublicKey[Fp25519, Fr25519]{
+			S: emulated.ValueOf[Fr25519](utils.ScalarToBigInt(S)),
+		}
+		a.Pub[i] = eddsa.PublicKey[Fp25519, Fr25519]{
 			A: sw_emulated.AffinePoint[Fp25519]{
 				X: emulated.ValueOf[Fp25519](aX),
 				Y: emulated.ValueOf[Fp25519](aY),
 			},
-		},
+		}
+		for j := 0; j < MaxMsgLen; j++ {
+			if j < len(v.SignedBytes) {
+				a.Msgs[i][j] = uints.NewU8(v.SignedBytes[j])
+			} else {
+				a.Msgs[i][j] = uints.NewU8(0)
+			}
+		}
+		a.MsgLens[i] = len(v.SignedBytes)
+		if v.Active {
+			a.Active[i] = 1
+		} else {
+			a.Active[i] = 0
+		}
 	}
 
-	// Create witness
-	witness, wErr := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
-	if wErr != nil {
-		err = fmt.Errorf("failed to create witness: %w", wErr)
-		return
-	}
-
-	// Generate proof — use keccak256 for commitment hash to match Solidity verifier
-	gnarkProof, pErr := groth16.Prove(p.r1cs, p.pk, witness, solidity.WithProverTargetSolidityVerifier(backend.GROTH16))
-	if pErr != nil {
-		err = fmt.Errorf("failed to generate proof: %w", pErr)
-		return
-	}
-
-	// Local verification with VK (same keccak256 hash as Solidity)
-	pubWitness, _ := witness.Public()
-	if vErr := groth16.Verify(gnarkProof, p.vk, pubWitness, solidity.WithVerifierTargetSolidityVerifier(backend.GROTH16)); vErr != nil {
-		err = fmt.Errorf("LOCAL VERIFICATION FAILED: %w", vErr)
-		return
-	}
-
-	// Convert to Solidity-compatible format
-	return ProofToBigInts(gnarkProof)
+	return a, nil
 }
 
 func ProofToBigInts(proof groth16.Proof) ([8]*big.Int, [2]*big.Int, [2]*big.Int, error) {
@@ -182,18 +288,14 @@ func ProofToBigInts(proof groth16.Proof) ([8]*big.Int, [2]*big.Int, [2]*big.Int,
 		return out, commitmentPoks, commitments, fmt.Errorf("expected BN254 proof")
 	}
 
-	// A (G1)
 	p.Ar.X.BigInt(out[0])
 	p.Ar.Y.BigInt(out[1])
 
-	// B (G2) — EIP-197 and gnark's MarshalSolidity expect (A1, A0) order
-	// A1 = imaginary part first, A0 = real part second
 	p.Bs.X.A1.BigInt(out[2])
 	p.Bs.X.A0.BigInt(out[3])
 	p.Bs.Y.A1.BigInt(out[4])
 	p.Bs.Y.A0.BigInt(out[5])
 
-	// C (G1)
 	p.Krs.X.BigInt(out[6])
 	p.Krs.Y.BigInt(out[7])
 

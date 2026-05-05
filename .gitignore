@@ -1,9 +1,9 @@
 
-# Prover binary artifacts (large files, regenerate with `go run operator/prover/cmd/main.go`)
-operator/prover/bin/pk.bin
-operator/prover/bin/r1cs.bin
-operator/prover/data/pk.bin
-operator/prover/data/r1cs.bin
+# Prover binary artifacts (large files, regenerate with `go run relayer/prover/cmd/main.go`)
+relayer/prover/bin/pk.bin
+relayer/prover/bin/r1cs.bin
+relayer/prover/data/pk.bin
+relayer/prover/data/r1cs.bin
 # directories
 cache
 coverage
@@ -50,5 +50,10 @@ programs/relayer/config.json
 scripts/genesis.json
 network_params.yaml
 
-# Go operator build artifacts
-operator/bin/
+# Go relayer build artifacts
+relayer/bin/
+relayer/relayer
+.gocache/
+
+# Local Vietnamese design notes
+docs/*_VI.md
