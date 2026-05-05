@@ -13,6 +13,7 @@ import (
 	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	contractICS26Router "relayer/bindings/ICS26Router"
 	client "relayer/client"
+	"relayer/prover"
 
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
@@ -33,7 +34,7 @@ func init() {
 }
 
 type TransactionHandler interface {
-	CreateCosmosClientContract(ctx Context, clientState, consensusHash []byte) error
+	CreateCosmosClientContract(ctx Context, clientState, consensusHash []byte) (ethcommon.Address, error)
 	CreateEthClient(ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) (string, error)
 	SendEthTx(ctx Context, msg any) error
 	SendCosmosTx(ctx Context, msg any) error
@@ -42,7 +43,9 @@ type TransactionHandler interface {
 }
 
 type Prover interface {
-	GenerateProof(sig, pub, msg []byte) (
+	GenerateProof(sigs []prover.ValidatorSignature) (
+		bucket int,
+		paddedSigs []prover.ValidatorSignature,
 		proof [8]*big.Int,
 		commitments [2]*big.Int,
 		commitmentPok [2]*big.Int,

@@ -1,6 +1,10 @@
 #!/bin/sh
 
 set -eux pipefail
+
+CHAIN_ID="test-ibc-eth"
+KEYRING="test"
+
 # Store Wasm code
 echo '{
  "messages": [
@@ -16,10 +20,47 @@ echo '{
  "expedited": false
 }' > proposal.json
 
-gaiad tx gov submit-proposal proposal.json --from test1 --keyring-backend test --gas 200000000 --gas-prices 1stake -y
+gaiad tx gov submit-proposal proposal.json \
+  --from val1 \
+  --home "$HOME/.gaia" \
+  --chain-id "$CHAIN_ID" \
+  --keyring-backend "$KEYRING" \
+  --gas 200000000 \
+  --gas-prices 1stake \
+  -y
 
 sleep 5
-gaiad tx gov vote 1 yes --from test --keyring-backend test --gas-prices 1stake -y
+
+PROPOSAL_ID=$(
+  gaiad q gov proposals -o json \
+    | jq -r '.proposals | sort_by(.id | tonumber) | last | .id'
+)
+
+sleep 5
+
+gaiad tx gov vote "$PROPOSAL_ID" yes \
+  --from val1 \
+  --home "$HOME/.gaia" \
+  --chain-id "$CHAIN_ID" \
+  --keyring-backend "$KEYRING" \
+  --gas-prices 1stake \
+  -y
+
+gaiad tx gov vote "$PROPOSAL_ID" yes \
+  --from val2 \
+  --home "$HOME/.gaia-val2" \
+  --chain-id "$CHAIN_ID" \
+  --keyring-backend "$KEYRING" \
+  --gas-prices 1stake \
+  -y
+
+gaiad tx gov vote "$PROPOSAL_ID" yes \
+  --from val3 \
+  --home "$HOME/.gaia-val3" \
+  --chain-id "$CHAIN_ID" \
+  --keyring-backend "$KEYRING" \
+  --gas-prices 1stake \
+  -y
 
 sleep 30
 
