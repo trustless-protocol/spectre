@@ -359,7 +359,7 @@ func (s *Services) StartLoop(ctx Context) {
 				}
 				log.Printf("[AckPacket] seq=%d: relay completed", packet.Packet.Sequence)
 			case Timeout:
-				ibcPath := utils.IbcCommitmentPath(*packet.Packet, []byte{3})
+				ibcPath := utils.IbcCommitmentPath(*packet.Packet, []byte{2})
 
 				// target height are the latest block height
 				value, proof, err := client.ProvePath(ctx.CosmosClient(), latestLightBlock.BlockHeight, ibcPath)
@@ -381,7 +381,7 @@ func (s *Services) StartLoop(ctx Context) {
 					merkleProof.Proofs = append(merkleProof.Proofs, *commitmentProof)
 				}
 
-				membershipMsg := tendermintContract.ILightClientMsgsMsgVerifyNonMembership{
+				nonMembershipMsg := tendermintContract.ILightClientMsgsMsgVerifyNonMembership{
 					Height: tendermintContract.IICS02ClientMsgsHeight{
 						RevisionHeight: uint64(latestLightBlock.BlockHeight),
 						RevisionNumber: 0,
@@ -406,7 +406,7 @@ func (s *Services) StartLoop(ctx Context) {
 					MembershipType: 0,
 				}
 
-				calldata, err := tendermintAbiJson.Pack("verifyNonMembership", membershipMsg)
+				calldata, err := tendermintAbiJson.Pack("verifyNonMembership", nonMembershipMsg)
 				if err != nil {
 					log.Printf("[Timeout] seq=%d: failed to ABI encode verifyNonMembership: %v",
 						packet.Packet.Sequence, err)
