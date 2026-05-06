@@ -3,25 +3,23 @@ package subscriber
 import (
 	"context"
 	"encoding/hex"
-	"fmt"
 	"math/big"
-	"os"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
 	"relayer/services"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/gogo/protobuf/proto"
 )
 
 const COMETBFT_SEND_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.applications.transfer.v1.MsgTransfer'"
-const COMETBFT_ACK_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.applications.transfer.v1.MsgAcknowledgement'"
+const COMETBFT_WRITE_ACK_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.core.channel.v2.MsgRecvPacket'"
 const COMETBFT_TIMEOUT_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.applications.transfer.v1.MsgTimeout'"
 
 const EVENT_SEND_PACKET_FIELD = "send_packet.encoded_packet_hex"
-const EVENT_ACK_PACKET_FIELD = "acknowledge_packet.encoded_packet_hex"
+const EVENT_WRITE_ACK_PACKET_FIELD = "write_acknowledgement.encoded_packet_hex"
+const EVENT_ACKNOWLEDGEMENT_FIELD = "write_acknowledgement.encoded_acknowledgement_hex"
 const EVENT_TIMEOUT_PACKET_FIELD = "timeout_packet.encoded_packet_hex"
 
 type Subscriber struct {
@@ -37,22 +35,22 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 
 	sendPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_SEND_PACKET_EVENT)
 	if err != nil {
-		ctx.Logger.Println(err.Error())
+		ctx.Logger.Printf("[SubscribeCosmos] Failed to subscribe to send_packet events: %v", err)
 	}
-	ackPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_ACK_PACKET_EVENT)
+	ackPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_WRITE_ACK_PACKET_EVENT)
 	if err != nil {
-		ctx.Logger.Println(err.Error())
+		ctx.Logger.Printf("[SubscribeCosmos] Failed to subscribe to write_acknowledgement events: %v", err)
 	}
 	timeoutPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_TIMEOUT_PACKET_EVENT)
 	if err != nil {
-		ctx.Logger.Println(err.Error())
+		ctx.Logger.Printf("[SubscribeCosmos] Failed to subscribe to timeout_packet events: %v", err)
 	}
+	ctx.Logger.Println("[SubscribeCosmos] Successfully subscribed to CometBFT events")
 	defer ctx.CosmosClient().UnsubscribeAll(context.Background(), "")
 
 	for {
 		select {
 		case e := <-sendPacketSub:
-			// handle event
 			sendPacketEvent := e.Events[EVENT_SEND_PACKET_FIELD]
 			if sendPacketEvent == nil {
 				continue
@@ -61,52 +59,71 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 			packetEncodedStr := sendPacketEvent[0]
 			packetBytes, err := hex.DecodeString(packetEncodedStr)
 			if err != nil {
-				// TODO handle log here
-				ctx.Logger.Println(fmt.Errorf("Failed to decode packet hex: %s", err.Error()))
+				ctx.Logger.Printf("[SubscribeCosmos] send_packet: failed to decode hex: %v", err)
 				continue
 			}
 
 			var packet channeltypesv2.Packet
 			err = proto.Unmarshal(packetBytes, &packet)
 			if err != nil {
-				// TODO handle log here
-				ctx.Logger.Println(fmt.Errorf("Failed to unmarshal packet: %s", err.Error()))
+				ctx.Logger.Printf("[SubscribeCosmos] send_packet: failed to unmarshal: %v", err)
 				continue
 			}
 
+			ctx.Logger.Printf("[SubscribeCosmos] send_packet received: seq=%d src=%s",
+				packet.Sequence, packet.SourceClient)
 			batchBuilder.InsertPacket(services.Packet{
 				PacketType: services.Send,
 				Packet:     &packet,
 			})
 		case e := <-ackPacketSub:
-			// handle event
-			ackPacketEvent := e.Events[EVENT_ACK_PACKET_FIELD]
-			if ackPacketEvent == nil {
+			ackPacketEvent := e.Events[EVENT_WRITE_ACK_PACKET_FIELD]
+			ackEvent := e.Events[EVENT_ACKNOWLEDGEMENT_FIELD]
+			if len(ackPacketEvent) == 0 || len(ackEvent) == 0 {
 				continue
 			}
 
 			packetEncodedStr := ackPacketEvent[0]
 			packetBytes, err := hex.DecodeString(packetEncodedStr)
 			if err != nil {
-				// TODO handle log here
-				ctx.Logger.Println(fmt.Errorf("Failed to decode packet hex: %s", err.Error()))
+				ctx.Logger.Printf("[SubscribeCosmos] write_ack: failed to decode packet hex: %v", err)
 				continue
 			}
 
 			var packet channeltypesv2.Packet
 			err = proto.Unmarshal(packetBytes, &packet)
 			if err != nil {
-				// TODO handle log here
-				ctx.Logger.Println(fmt.Errorf("Failed to unmarshal packet: %s", err.Error()))
+				ctx.Logger.Printf("[SubscribeCosmos] write_ack: failed to unmarshal packet: %v", err)
 				continue
 			}
 
+			ackBytes, err := hex.DecodeString(ackEvent[0])
+			if err != nil {
+				ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to decode ack hex: %v",
+					packet.Sequence, err)
+				continue
+			}
+
+			var acknowledgement channeltypesv2.Acknowledgement
+			err = proto.Unmarshal(ackBytes, &acknowledgement)
+			if err != nil {
+				ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to unmarshal ack: %v",
+					packet.Sequence, err)
+				continue
+			}
+			if len(acknowledgement.AppAcknowledgements) == 0 {
+				ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: missing app acknowledgements", packet.Sequence)
+				continue
+			}
+
+			ctx.Logger.Printf("[SubscribeCosmos] write_ack received: seq=%d src=%s",
+				packet.Sequence, packet.SourceClient)
 			batchBuilder.InsertPacket(services.Packet{
 				PacketType: services.Ack,
 				Packet:     &packet,
+				AckBytes:   acknowledgement.AppAcknowledgements,
 			})
 		case e := <-timeoutPacketSub:
-			// handle event
 			timeoutPacketEvent := e.Events[EVENT_TIMEOUT_PACKET_FIELD]
 			if timeoutPacketEvent == nil {
 				continue
@@ -115,19 +132,19 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 			packetEncodedStr := timeoutPacketEvent[0]
 			packetBytes, err := hex.DecodeString(packetEncodedStr)
 			if err != nil {
-				// TODO handle log here
-				ctx.Logger.Println(fmt.Errorf("Failed to decode packet hex: %s", err.Error()))
+				ctx.Logger.Printf("[SubscribeCosmos] timeout: failed to decode hex: %v", err)
 				continue
 			}
 
 			var packet channeltypesv2.Packet
 			err = proto.Unmarshal(packetBytes, &packet)
 			if err != nil {
-				// TODO handle log here
-				ctx.Logger.Println(fmt.Errorf("Failed to unmarshal packet: %s", err.Error()))
+				ctx.Logger.Printf("[SubscribeCosmos] timeout: failed to unmarshal: %v", err)
 				continue
 			}
 
+			ctx.Logger.Printf("[SubscribeCosmos] timeout received: seq=%d src=%s",
+				packet.Sequence, packet.SourceClient)
 			batchBuilder.InsertPacket(services.Packet{
 				PacketType: services.Timeout,
 				Packet:     &packet,
@@ -162,18 +179,7 @@ func EthPacketToCosmosPacket(ethPacket contractICS26Router.IICS26RouterMsgsPacke
 
 // SubscribeEth subscribes to Ethereum events from the ICS26Router contract
 func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.BatchBuilder) {
-	// Get the ICS26Router contract address from environment variable
-	ics26RouterAddr := os.Getenv("ICS26_ROUTER_ADDRESS")
-	if ics26RouterAddr == "" {
-		ctx.Logger.Println("ICS26_ROUTER_ADDRESS environment variable is required")
-		return
-	}
-
-	// Parse the contract address
-	contractAddr := common.HexToAddress(ics26RouterAddr)
-
-	// Create a new ICS26Router filterer instance (only for event subscriptions)
-	filterer, err := contractICS26Router.NewContractICS26RouterFilterer(contractAddr, ctx.EthClient())
+	filterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), ctx.EthWsClient())
 	if err != nil {
 		ctx.Logger.Printf("Failed to create ICS26Router filterer instance: %v", err)
 		return
@@ -187,7 +193,6 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 
 	// Set up watch options (nil for all events, no filtering by clientId or sequence)
 	watchOpts := &bind.WatchOpts{Context: context.Background()}
-
 	// Subscribe to SendPacket events
 	sendPacketSub, err := filterer.WatchSendPacket(watchOpts, sendPacketCh, nil, nil)
 	if err != nil {
@@ -237,9 +242,10 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 			ctx.Logger.Printf("WriteAcknowledgement event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 			batchBuilder.InsertPacket(services.Packet{
-				PacketType: services.WriteAck,
-				Packet:     &cosmosPacket,
-				AckBytes:   ev.Acknowledgements,
+				PacketType:  services.WriteAck,
+				Packet:      &cosmosPacket,
+				AckBytes:    ev.Acknowledgements,
+				BlockNumber: ev.Raw.BlockNumber,
 			})
 
 		case ev := <-ackPacketCh:

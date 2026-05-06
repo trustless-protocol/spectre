@@ -50,11 +50,9 @@ just test-cargo <name>       # Single test
 
 ## Encoding Cross-Validation
 
-`Encode.sol` and `Header.sol` are cross-validated against Go `proto.Marshal()`:
-
-1. `cd relayer && go run ./cmd/encode_debug/` — outputs Go reference hex
-2. `forge test --match-contract EncodeTest` — 34 tests compare Solidity output vs Go reference
-3. Any encoding change MUST pass both Go and Solidity validation
+`Encode.sol` and `Header.sol` are cross-validated against Go `proto.Marshal()`
+via `forge test --match-contract EncodeTest -vvv`. Test fixtures contain the
+expected Go-reference hex; any encoding change MUST keep these tests green.
 
 ## Foundry Configuration
 

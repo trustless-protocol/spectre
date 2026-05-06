@@ -249,8 +249,6 @@ contract Membership  is IMembership {
         bytes memory leafPrefix = proof.leaf.prefix;
         // ensure leaf prefix matches the spec
         if (spec.specType == IMembershipMsgs.SpecType.IAVL) {
-            uint256 offset = 0;
-            
             uint256 remainingLength = ensureIavlPrefix(leafPrefix, 0);
             if (remainingLength != 0) {
                 revert("bad prefix in leaf");
@@ -896,7 +894,7 @@ contract Membership  is IMembership {
             uint256 maxCount = remaining < 10 ? remaining : 10;
             for (uint256 count = 0; count < maxCount; count++) {
                 uint8 b = uint8(data[offset + count]);
-                value |= uint64(b & 0x7F) << (count * 7);
+                value |= uint64(b & 0x7F) << uint64(count * 7);
                 
                 if (b <= 0x7F) {
                     // Check for overflow on the final byte

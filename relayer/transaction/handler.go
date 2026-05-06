@@ -6,14 +6,14 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"relayer/keys"
 	"os"
+	"relayer/keys"
 	"strings"
 	"time"
 
+	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	contractICS26Router "relayer/bindings/ICS26Router"
 	routerContract "relayer/bindings/ICS26Router"
-	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	updateclient "relayer/bindings/UpdateClient"
 	relayerclient "relayer/client"
 	services "relayer/services"
@@ -21,7 +21,9 @@ import (
 
 	sdkmath "cosmossdk.io/math"
 	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/common"
 
+	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	"github.com/cosmos/cosmos-sdk/codec"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	cryptocodec "github.com/cosmos/cosmos-sdk/crypto/codec"
@@ -45,42 +47,44 @@ import (
 type Handler struct {
 }
 
-func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte) error {
+const ethTxReceiptTimeout = 45 * time.Second
+
+func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte) (common.Address, error) {
 	privKey := os.Getenv("ETH_PRIVATE_KEY")
 	if privKey == "" {
-		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
+		return common.Address{}, fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
 	}
 	privateKey, err := keys.RestoreKey(privKey)
 	if err != nil {
-		return fmt.Errorf("failed to restore private key: %w", err)
+		return common.Address{}, fmt.Errorf("failed to restore private key: %w", err)
 	}
 
 	publicKey, err := keys.PublicKey(privateKey)
 	if err != nil {
-		log.Fatal(err)
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to derive public key: %w", err)
 	}
 
 	fromAddress := crypto.PubkeyToAddress(*publicKey)
 	nonce, err := ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
-		log.Fatal(err)
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to get nonce: %w", err)
 	}
 	gasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
 	if err != nil {
-		log.Fatal(err)
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to suggest gas price: %w", err)
 	}
 
 	chainIdInt, err := ctx.EthClient().ChainID(context.Background())
 	if err != nil {
-		return fmt.Errorf("invalid chain id: %v", err)
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] invalid chain id: %v", err)
 	}
 
 	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
 	if err != nil {
-		return fmt.Errorf("failed to create auth transactor: %w", err)
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to create auth transactor: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
-	auth.Value = big.NewInt(0)      // in wei
+	auth.Value = big.NewInt(0)       // in wei
 	auth.GasLimit = uint64(10000000) // in units
 	auth.GasPrice = gasPrice
 
@@ -97,15 +101,17 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to deploy ics07 contract: %w", err)
+		return common.Address{}, fmt.Errorf("failed to deploy ics07 contract: %w", err)
 	}
 	log.Printf("[CreateCosmosClient] Deploy tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
-	receipt, err := bind.WaitMined(context.Background(), ctx.EthClient(), tx)
+	receiptCtx, cancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
+	defer cancel()
+	receipt, err := bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
 	if err != nil {
-		return fmt.Errorf("failed waiting for deploy receipt: %w", err)
+		return common.Address{}, fmt.Errorf("failed waiting for deploy receipt: %w", err)
 	}
 	if receipt.Status == 0 {
-		return fmt.Errorf("deploy tx %s reverted (gasUsed=%d)", tx.Hash().Hex(), receipt.GasUsed)
+		return common.Address{}, fmt.Errorf("deploy tx %s reverted (gasUsed=%d)", tx.Hash().Hex(), receipt.GasUsed)
 	}
 	log.Printf("[CreateCosmosClient] ICS07 deployed at %s (block %d, gasUsed=%d)", address.String(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
 	ctx.SetClient(address)
@@ -114,12 +120,12 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 
 	ics26Router, err := routerContract.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
 	if err != nil {
-		return err
+		return common.Address{}, err
 	}
 
 	nonce, err = ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
-		log.Fatal(err)
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to get nonce for AddClient: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
 
@@ -128,26 +134,28 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		"cosmoshub-1",
 		routerContract.IICS02ClientMsgsCounterpartyInfo{
 			ClientId:     "08-wasm-0",
-			MerklePrefix: [][]byte{[]byte(exported.StoreKey), []byte("")},
+			MerklePrefix: [][]byte{[]byte("")},
 		},
 		*ctx.ClientContract(),
 	)
 
 	if err != nil {
-		return fmt.Errorf("failed to add client to ICS26Router: %w", err)
+		return common.Address{}, fmt.Errorf("failed to add client to ICS26Router: %w", err)
 	}
 	log.Printf("[CreateCosmosClient] AddClient tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
-	receipt, err = bind.WaitMined(context.Background(), ctx.EthClient(), tx)
+	receiptCtx, cancel = context.WithTimeout(context.Background(), ethTxReceiptTimeout)
+	defer cancel()
+	receipt, err = bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
 	if err != nil {
-		return fmt.Errorf("failed waiting for AddClient receipt: %w", err)
+		return common.Address{}, fmt.Errorf("failed waiting for AddClient receipt: %w", err)
 	}
 	if receipt.Status == 0 {
 		log.Printf("[CreateCosmosClient] AddClient tx reverted (gasUsed=%d) — client may already exist, continuing...", receipt.GasUsed)
-		return nil
+		return address, nil
 	}
 	log.Printf("[CreateCosmosClient] AddClient confirmed (block %d, gasUsed=%d)", receipt.BlockNumber.Uint64(), receipt.GasUsed)
 
-	return nil
+	return address, nil
 }
 
 func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
@@ -162,30 +170,30 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 
 	publicKey, err := keys.PublicKey(privateKey)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("[SendEthTx] failed to derive public key: %w", err)
 	}
 
 	fromAddress := crypto.PubkeyToAddress(*publicKey)
 	nonce, err := ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("[SendEthTx] failed to get nonce: %w", err)
 	}
 	gasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
 	if err != nil {
-		log.Fatal(err)
+		return fmt.Errorf("[SendEthTx] failed to suggest gas price: %w", err)
 	}
 
 	chainIdInt, err := ctx.EthClient().ChainID(context.Background())
 	if err != nil {
-		return fmt.Errorf("invalid chain id: %v", err)
+		return fmt.Errorf("[SendEthTx] invalid chain id: %v", err)
 	}
 
 	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
 	if err != nil {
-		return fmt.Errorf("failed to create auth transactor: %w", err)
+		return fmt.Errorf("[SendEthTx] failed to create auth transactor: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
-	auth.Value = big.NewInt(0)     // in wei
+	auth.Value = big.NewInt(0)      // in wei
 	auth.GasLimit = uint64(3000000) // in units
 	auth.GasPrice = gasPrice
 
@@ -208,41 +216,53 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	var tx *types.Transaction
 	switch msg := msg.(type) {
 	case updateclient.IUpdateClientMsgsMsgUpdateClient:
-		log.Printf("[SendEthTx] Encoding updateClient msg...")
 		data, err := relayerclient.EncodeUpdateClientMsg(msg)
 		if err != nil {
-			return fmt.Errorf("failed to encode updateClient msg: %w", err)
+			return fmt.Errorf("[SendEthTx] failed to encode updateClient msg: %w", err)
 		}
-
 		log.Printf("[SendEthTx] Sending updateClient tx...")
 		tx, err = ics07Tendermint.UpdateClient(auth, data)
 		if err != nil {
-			return fmt.Errorf("failed to send updateClient tx: %w", err)
+			return fmt.Errorf("[SendEthTx] failed to send updateClient tx: %w", err)
 		}
 	case tendermintContract.ILightClientMsgsMsgVerifyMembership:
 		log.Printf("[SendEthTx] Sending verifyMembership tx...")
 		tx, err = ics07Tendermint.VerifyMembership(auth, msg)
 		if err != nil {
-			return fmt.Errorf("failed to verify membership: %w", err)
+			return fmt.Errorf("[SendEthTx] failed to verify membership: %w", err)
 		}
 	case tendermintContract.ILightClientMsgsMsgVerifyNonMembership:
 		log.Printf("[SendEthTx] Sending verifyNonMembership tx...")
 		tx, err = ics07Tendermint.VerifyNonMembership(auth, msg)
 		if err != nil {
-			return fmt.Errorf("failed to verify non-membership: %w", err)
+			return fmt.Errorf("[SendEthTx] failed to verify non-membership: %w", err)
 		}
 	case contractICS26Router.IICS26RouterMsgsMsgRecvPacket:
-		log.Printf("[SendEthTx] Sending recvPacket tx...")
+		log.Printf("[SendEthTx] Sending recvPacket seq=%d...", msg.Packet.Sequence)
 		tx, err = icS26Router.RecvPacket(auth, msg)
 		if err != nil {
-			return fmt.Errorf("failed to recv packet: %w", err)
+			return fmt.Errorf("[SendEthTx] failed to recv packet: %w", err)
+		}
+	case contractICS26Router.IICS26RouterMsgsMsgAckPacket:
+		log.Printf("[SendEthTx] Sending ackPacket seq=%d...", msg.Packet.Sequence)
+		tx, err = icS26Router.AckPacket(auth, msg)
+		if err != nil {
+			return fmt.Errorf("[SendEthTx] failed to ack packet: %w", err)
+		}
+	case contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket:
+		log.Printf("[SendEthTx] Sending timeoutPacket seq=%d...", msg.Packet.Sequence)
+		tx, err = icS26Router.TimeoutPacket(auth, msg)
+		if err != nil {
+			return fmt.Errorf("[SendEthTx] failed to timeout packet: %w", err)
 		}
 	default:
-		return fmt.Errorf("unsupported message type: %T", msg)
+		return fmt.Errorf("[SendEthTx] unsupported message type: %T", msg)
 	}
 
 	log.Printf("[SendEthTx] Tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
-	receipt, err := bind.WaitMined(context.Background(), ctx.EthClient(), tx)
+	receiptCtx, cancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
+	defer cancel()
+	receipt, err := bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
 	if err != nil {
 		return fmt.Errorf("failed waiting for tx receipt: %w", err)
 	}
@@ -274,35 +294,36 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	return nil
 }
 
-func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.ClientState, consensusState exported.ConsensusState) error {
+func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.ClientState, consensusState exported.ConsensusState) (string, error) {
+	log.Printf("[CreateEthClientTx] starting")
 
 	// Get the private key from environment variable
 	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
 	if privKeyHex == "" {
-		return fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required in .env file")
+		return "", fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required in .env file")
 	}
 
 	// Decode the private key
 	privKeyBytes, err := hex.DecodeString(strings.TrimPrefix(privKeyHex, "0x"))
 	if err != nil {
-		return fmt.Errorf("failed to decode private key: %w", err)
+		return "", fmt.Errorf("failed to decode private key: %w", err)
 	}
 
 	privKey := secp256k1.PrivKey{Key: privKeyBytes}
 	signerAddr := sdk.AccAddress(privKey.PubKey().Address())
-	fmt.Println("signerAddr: ", signerAddr.String())
+	log.Printf("[CreateEthClient] signer: %s", signerAddr.String())
 
 	// Get chain configuration from environment
 	chainID := os.Getenv("COSMOS_CHAIN_ID")
 	if chainID == "" {
-		return fmt.Errorf("COSMOS_CHAIN_ID environment variable is required in .env file")
+		return "", fmt.Errorf("COSMOS_CHAIN_ID environment variable is required in .env file")
 	}
 
 	// Get gas and fee configuration
-	gasLimit := uint64(200000) // Default gas limit
+	gasLimit := uint64(1500000) // Default gas limit for MsgCreateClient with wasm payload
 	if gasStr := os.Getenv("COSMOS_GAS_LIMIT"); gasStr != "" {
 		if _, err := fmt.Sscanf(gasStr, "%d", &gasLimit); err != nil {
-			return fmt.Errorf("failed to parse COSMOS_GAS_LIMIT: %w", err)
+			return "", fmt.Errorf("failed to parse COSMOS_GAS_LIMIT: %w", err)
 		}
 	}
 
@@ -314,15 +335,18 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	feeAmount := int64(10000000) // Default fee amount
 	if feeStr := os.Getenv("COSMOS_FEE_AMOUNT"); feeStr != "" {
 		if _, err := fmt.Sscanf(feeStr, "%d", &feeAmount); err != nil {
-			return fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
+			return "", fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
 		}
 	}
+	log.Printf("[CreateEthClientTx] gas config: gasLimit=%d fee=%d%s", gasLimit, feeAmount, feeDenom)
 
 	// Query account info (account number and sequence) from the chain
+	log.Printf("[CreateEthClientTx] querying cosmos account info")
 	accountNumber, sequence, err := h.queryAccountInfo(svcCtx, signerAddr.String())
 	if err != nil {
-		return fmt.Errorf("failed to query account info: %w", err)
+		return "", fmt.Errorf("failed to query account info: %w", err)
 	}
+	log.Printf("[CreateEthClientTx] account info: accountNumber=%d sequence=%d", accountNumber, sequence)
 
 	// Setup encoding config
 	interfaceRegistry := codectypes.NewInterfaceRegistry()
@@ -336,13 +360,14 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 
 	msg, err := clienttypes.NewMsgCreateClient(clientState, consensusState, signerAddr.String())
 	if err != nil {
-		return err
+		return "", err
 	}
+	log.Printf("[CreateEthClientTx] MsgCreateClient built")
 
 	// Build the transaction
 	txBuilder := txConfig.NewTxBuilder()
 	if err := txBuilder.SetMsgs(msg); err != nil {
-		return fmt.Errorf("failed to set messages: %w", err)
+		return "", fmt.Errorf("failed to set messages: %w", err)
 	}
 
 	txBuilder.SetGasLimit(gasLimit)
@@ -359,7 +384,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 		Sequence: sequence,
 	}
 	if err := txBuilder.SetSignatures(emptySig); err != nil {
-		return fmt.Errorf("failed to set empty signature: %w", err)
+		return "", fmt.Errorf("failed to set empty signature: %w", err)
 	}
 
 	// Create signer data
@@ -380,13 +405,13 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 		txBuilder.GetTx(),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to get sign bytes: %w", err)
+		return "", fmt.Errorf("failed to get sign bytes: %w", err)
 	}
 
 	// Sign the bytes
 	sigRaw, err := privKey.Sign(signBytes)
 	if err != nil {
-		return fmt.Errorf("failed to sign transaction: %w", err)
+		return "", fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
 	// Set the actual signature
@@ -400,49 +425,65 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	}
 
 	if err := txBuilder.SetSignatures(sigV2); err != nil {
-		return fmt.Errorf("failed to set signatures: %w", err)
+		return "", fmt.Errorf("failed to set signatures: %w", err)
 	}
 
 	// Encode the transaction
 	txBytes, err := txConfig.TxEncoder()(txBuilder.GetTx())
 	if err != nil {
-		return fmt.Errorf("failed to encode transaction: %w", err)
+		return "", fmt.Errorf("failed to encode transaction: %w", err)
 	}
 
 	// Broadcast the transaction
+	log.Printf("[CreateEthClientTx] broadcasting MsgCreateClient")
 	result, err := svcCtx.CosmosClient().BroadcastTxSync(context.Background(), txBytes)
 	if err != nil {
-		return fmt.Errorf("failed to broadcast transaction: %w", err)
+		return "", fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 
 	if result.Code != 0 {
-		return fmt.Errorf("transaction failed with code %d: %s", result.Code, result.Log)
+		return "", fmt.Errorf("transaction failed with code %d: %s", result.Code, result.Log)
 	}
 
-	log.Printf("MsgCreateClient broadcast successfully. Hash: %s", result.Hash.String())
+	log.Printf("[CreateEthClient] MsgCreateClient broadcast successfully. Hash: %s", result.Hash.String())
 
-	// Wait for MsgCreateClient tx to be included in a block before sending the next tx
-	if err := h.waitForTx(svcCtx, result.Hash, 30*time.Second); err != nil {
-		return fmt.Errorf("failed waiting for MsgCreateClient tx: %w", err)
+	// Wait for MsgCreateClient tx and extract the new client ID from events
+	log.Printf("[CreateEthClientTx] waiting for MsgCreateClient tx result")
+	txResult, err := h.waitForTxResult(svcCtx, result.Hash, 30*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("failed waiting for MsgCreateClient tx: %w", err)
 	}
+
+	if txResult.TxResult.Code != 0 {
+		return "", fmt.Errorf("MsgCreateClient tx failed at DeliverTx: code=%d log=%s", txResult.TxResult.Code, txResult.TxResult.Log)
+	}
+
+	newClientID := extractClientID(txResult)
+	if newClientID == "" {
+		return "", fmt.Errorf("MsgCreateClient tx confirmed but client_id not found in events")
+	}
+	log.Printf("[CreateEthClient] new ETH client ID: %s", newClientID)
 
 	// Build and broadcast MsgRegisterCounterparty as a separate transaction
 	registerMsg := clienttypesv2.NewMsgRegisterCounterparty(
-		"08-wasm-0",
-		[][]byte{[]byte(exported.StoreKey), []byte("")},
+		newClientID,
+		[][]byte{[]byte("")},
 		"cosmoshub-1",
 		signerAddr.String(),
 	)
+	log.Printf("[CreateEthClientTx] MsgRegisterCounterparty built for clientID=%s", newClientID)
 
 	// Re-query account info (sequence incremented after first tx)
+	log.Printf("[CreateEthClientTx] querying cosmos account info for register counterparty")
 	accountNumber, sequence, err = h.queryAccountInfo(svcCtx, signerAddr.String())
 	if err != nil {
-		return fmt.Errorf("failed to query account info for register counterparty: %w", err)
+		return "", fmt.Errorf("failed to query account info for register counterparty: %w", err)
 	}
+	log.Printf("[CreateEthClientTx] register counterparty account info: accountNumber=%d sequence=%d", accountNumber, sequence)
 
 	txBuilder2 := txConfig.NewTxBuilder()
 	if err := txBuilder2.SetMsgs(registerMsg); err != nil {
-		return fmt.Errorf("failed to set register counterparty message: %w", err)
+		return "", fmt.Errorf("failed to set register counterparty message: %w", err)
 	}
 	txBuilder2.SetGasLimit(gasLimit)
 	txBuilder2.SetFeeAmount(sdk.NewCoins(sdk.NewCoin(feeDenom, sdkmath.NewInt(feeAmount))))
@@ -456,7 +497,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 		Sequence: sequence,
 	}
 	if err := txBuilder2.SetSignatures(emptySig2); err != nil {
-		return fmt.Errorf("failed to set empty signature: %w", err)
+		return "", fmt.Errorf("failed to set empty signature: %w", err)
 	}
 
 	signerData2 := authsigning.SignerData{
@@ -475,12 +516,12 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 		txBuilder2.GetTx(),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to get sign bytes for register counterparty: %w", err)
+		return "", fmt.Errorf("failed to get sign bytes for register counterparty: %w", err)
 	}
 
 	sigRaw2, err := privKey.Sign(signBytes2)
 	if err != nil {
-		return fmt.Errorf("failed to sign register counterparty tx: %w", err)
+		return "", fmt.Errorf("failed to sign register counterparty tx: %w", err)
 	}
 
 	sigV22 := sdksigning.SignatureV2{
@@ -492,26 +533,44 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 		Sequence: sequence,
 	}
 	if err := txBuilder2.SetSignatures(sigV22); err != nil {
-		return fmt.Errorf("failed to set signatures: %w", err)
+		return "", fmt.Errorf("failed to set signatures: %w", err)
 	}
 
 	txBytes2, err := txConfig.TxEncoder()(txBuilder2.GetTx())
 	if err != nil {
-		return fmt.Errorf("failed to encode register counterparty tx: %w", err)
+		return "", fmt.Errorf("failed to encode register counterparty tx: %w", err)
 	}
 
+	log.Printf("[CreateEthClientTx] broadcasting MsgRegisterCounterparty")
 	result2, err := svcCtx.CosmosClient().BroadcastTxSync(context.Background(), txBytes2)
 	if err != nil {
-		return fmt.Errorf("failed to broadcast register counterparty tx: %w", err)
+		return "", fmt.Errorf("failed to broadcast register counterparty tx: %w", err)
 	}
 
 	if result2.Code != 0 {
-		return fmt.Errorf("register counterparty tx failed with code %d: %s", result2.Code, result2.Log)
+		return "", fmt.Errorf("register counterparty tx failed with code %d: %s", result2.Code, result2.Log)
 	}
 
-	log.Printf("MsgRegisterCounterparty broadcast successfully. Hash: %s", result2.Hash.String())
+	log.Printf("[CreateEthClient] MsgRegisterCounterparty broadcast successfully. Hash: %s", result2.Hash.String())
 
-	return nil
+	return newClientID, nil
+}
+
+// extractClientID parses the client_id from the MsgCreateClient tx result events.
+func extractClientID(txResult *coretypes.ResultTx) string {
+	if txResult == nil {
+		return ""
+	}
+	for _, event := range txResult.TxResult.Events {
+		// Try all events — different ibc-go versions use different event types
+		// (e.g. "create_client", "ibc_client", or attributes on generic events)
+		for _, attr := range event.Attributes {
+			if attr.Key == "client_id" {
+				return attr.Value
+			}
+		}
+	}
+	return ""
 }
 
 // CosmosSignerAddress returns the bech32 address derived from COSMOS_PRIVATE_KEY.
@@ -565,13 +624,6 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 		feeDenom = "stake" // Default fee denom
 	}
 
-	feeAmount := int64(1000) // Default fee amount
-	if feeStr := os.Getenv("COSMOS_FEE_AMOUNT"); feeStr != "" {
-		if _, err := fmt.Sscanf(feeStr, "%d", &feeAmount); err != nil {
-			return fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
-		}
-	}
-
 	// Query account info (account number and sequence) from the chain
 	accountNumber, sequence, err := h.queryAccountInfo(svcCtx, signerAddr.String())
 	if err != nil {
@@ -595,8 +647,26 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 		return fmt.Errorf("message does not implement sdk.Msg interface")
 	}
 
+	// Fill empty Signer fields and apply per-message gas overrides
+	if msg, ok := sdkMsg.(*clienttypes.MsgUpdateClient); ok {
+		if msg.Signer == "" {
+			msg.Signer = signerAddr.String()
+		}
+		if os.Getenv("COSMOS_GAS_LIMIT") == "" {
+			gasLimit = uint64(2000000) // MsgUpdateClient requires significantly more gas for wasm verification
+		}
+	}
+
 	if err := txBuilder.SetMsgs(sdkMsg); err != nil {
 		return fmt.Errorf("failed to set messages: %w", err)
+	}
+
+	// Set fee to match gas limit (gasPrice = 1stake per gas unit)
+	feeAmount := int64(gasLimit)
+	if feeStr := os.Getenv("COSMOS_FEE_AMOUNT"); feeStr != "" {
+		if _, err := fmt.Sscanf(feeStr, "%d", &feeAmount); err != nil {
+			return fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
+		}
 	}
 
 	txBuilder.SetGasLimit(gasLimit)
@@ -663,18 +733,26 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 		return fmt.Errorf("failed to encode transaction: %w", err)
 	}
 
-	// Broadcast the transaction
-	result, err := svcCtx.CosmosClient().BroadcastTxSync(context.Background(), txBytes)
+	// Broadcast the transaction using BroadcastTxCommit for detailed error info
+	commitResult, err := svcCtx.CosmosClient().BroadcastTxCommit(context.Background(), txBytes)
 	if err != nil {
 		return fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 
-	if result.Code != 0 {
-		return fmt.Errorf("transaction failed with code %d: %s", result.Code, result.Log)
+	if commitResult.CheckTx.Code != 0 {
+		log.Printf("[SendCosmosTx] CheckTx FAILED: code=%d codespace=%s log=%s info=%s data=%x",
+			commitResult.CheckTx.Code, commitResult.CheckTx.Codespace, commitResult.CheckTx.Log,
+			commitResult.CheckTx.Info, commitResult.CheckTx.Data)
+		return fmt.Errorf("transaction failed at CheckTx with code %d: %s", commitResult.CheckTx.Code, commitResult.CheckTx.Log)
 	}
 
-	log.Printf("Transaction broadcast successfully. Hash: %s", result.Hash.String())
+	if commitResult.TxResult.Code != 0 {
+		log.Printf("[SendCosmosTx] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
+			commitResult.TxResult.Code, commitResult.TxResult.Codespace, commitResult.TxResult.Log, commitResult.TxResult.Data)
+		return fmt.Errorf("transaction failed at DeliverTx with code %d: %s", commitResult.TxResult.Code, commitResult.TxResult.Log)
+	}
 
+	log.Printf("[SendCosmosTx] Tx confirmed at height %d hash=%s", commitResult.Height, commitResult.Hash.String())
 	return nil
 }
 
@@ -685,19 +763,6 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	}
 
 	// Convert all messages to sdk.Msg
-	var sdkMsgs []sdk.Msg
-	for i, msg := range msgs {
-		protoMsg, ok := msg.(proto.Message)
-		if !ok {
-			return fmt.Errorf("message %d must be a proto.Message", i)
-		}
-		sdkMsg, ok := protoMsg.(sdk.Msg)
-		if !ok {
-			return fmt.Errorf("message %d does not implement sdk.Msg interface", i)
-		}
-		sdkMsgs = append(sdkMsgs, sdkMsg)
-	}
-
 	// Get the private key from environment variable
 	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
 	if privKeyHex == "" {
@@ -713,6 +778,23 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	privKey := secp256k1.PrivKey{Key: privKeyBytes}
 	signerAddr := sdk.AccAddress(privKey.PubKey().Address())
 
+	// Convert all messages to sdk.Msg, filling empty Signer fields
+	var sdkMsgs []sdk.Msg
+	for i, msg := range msgs {
+		protoMsg, ok := msg.(proto.Message)
+		if !ok {
+			return fmt.Errorf("message %d must be a proto.Message", i)
+		}
+		sdkMsg, ok := protoMsg.(sdk.Msg)
+		if !ok {
+			return fmt.Errorf("message %d does not implement sdk.Msg interface", i)
+		}
+		if m, ok := sdkMsg.(*clienttypes.MsgUpdateClient); ok && m.Signer == "" {
+			m.Signer = signerAddr.String()
+		}
+		sdkMsgs = append(sdkMsgs, sdkMsg)
+	}
+
 	// Get chain configuration from environment
 	chainID := os.Getenv("COSMOS_CHAIN_ID")
 	if chainID == "" {
@@ -720,21 +802,30 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	}
 
 	// Get gas and fee configuration - use higher gas for batch transactions
-	gasLimit := uint64(200000) * uint64(len(sdkMsgs)) // Scale gas with number of messages
+	baseGas := uint64(200000)
 	if gasStr := os.Getenv("COSMOS_GAS_LIMIT"); gasStr != "" {
-		var baseGas uint64
 		if _, err := fmt.Sscanf(gasStr, "%d", &baseGas); err != nil {
 			return fmt.Errorf("failed to parse COSMOS_GAS_LIMIT: %w", err)
 		}
-		gasLimit = baseGas * uint64(len(sdkMsgs))
 	}
+	// MsgUpdateClient requires significantly more gas due to wasm verification
+	for _, msg := range sdkMsgs {
+		if _, ok := msg.(*clienttypes.MsgUpdateClient); ok {
+			if baseGas < 2000000 {
+				baseGas = 2000000
+			}
+			break
+		}
+	}
+	gasLimit := baseGas * uint64(len(sdkMsgs))
 
 	feeDenom := os.Getenv("COSMOS_FEE_DENOM")
 	if feeDenom == "" {
 		feeDenom = "stake" // Default fee denom
 	}
 
-	feeAmount := int64(1000) * int64(len(sdkMsgs)) // Scale fee with number of messages
+	// Set fee to match gas limit (gasPrice = 1stake per gas unit)
+	feeAmount := int64(gasLimit)
 	if feeStr := os.Getenv("COSMOS_FEE_AMOUNT"); feeStr != "" {
 		var baseFee int64
 		if _, err := fmt.Sscanf(feeStr, "%d", &baseFee); err != nil {
@@ -828,17 +919,26 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 		return fmt.Errorf("failed to encode transaction: %w", err)
 	}
 
-	// Broadcast the transaction
-	result, err := svcCtx.CosmosClient().BroadcastTxSync(context.Background(), txBytes)
+	// Broadcast the transaction using BroadcastTxCommit for detailed error info
+	commitResult, err := svcCtx.CosmosClient().BroadcastTxCommit(context.Background(), txBytes)
 	if err != nil {
 		return fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 
-	if result.Code != 0 {
-		return fmt.Errorf("transaction failed with code %d: %s", result.Code, result.Log)
+	if commitResult.CheckTx.Code != 0 {
+		log.Printf("[SendCosmosTxBatch] CheckTx FAILED: code=%d codespace=%s log=%s info=%s data=%x",
+			commitResult.CheckTx.Code, commitResult.CheckTx.Codespace, commitResult.CheckTx.Log,
+			commitResult.CheckTx.Info, commitResult.CheckTx.Data)
+		return fmt.Errorf("transaction failed at CheckTx with code %d: %s", commitResult.CheckTx.Code, commitResult.CheckTx.Log)
 	}
 
-	log.Printf("Batch transaction broadcast successfully. Hash: %s, Messages: %d", result.Hash.String(), len(sdkMsgs))
+	if commitResult.TxResult.Code != 0 {
+		log.Printf("[SendCosmosTxBatch] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
+			commitResult.TxResult.Code, commitResult.TxResult.Codespace, commitResult.TxResult.Log, commitResult.TxResult.Data)
+		return fmt.Errorf("transaction failed at DeliverTx with code %d: %s", commitResult.TxResult.Code, commitResult.TxResult.Log)
+	}
+
+	log.Printf("[SendCosmosTxBatch] Tx confirmed at height %d hash=%s (msgs=%d)", commitResult.Height, commitResult.Hash.String(), len(sdkMsgs))
 
 	return nil
 }
@@ -888,16 +988,16 @@ func (h *Handler) queryAccountInfo(svcCtx services.Context, address string) (uin
 	return account.GetAccountNumber(), account.GetSequence(), nil
 }
 
-// waitForTx polls the chain until the transaction with the given hash is included in a block or the timeout expires.
-func (h *Handler) waitForTx(svcCtx services.Context, txHash []byte, timeout time.Duration) error {
+// waitForTxResult polls the chain until the transaction with the given hash is included in a block or the timeout expires.
+func (h *Handler) waitForTxResult(svcCtx services.Context, txHash []byte, timeout time.Duration) (*coretypes.ResultTx, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		result, err := svcCtx.CosmosClient().Tx(context.Background(), txHash, false)
 		if err == nil && result != nil && result.Height > 0 {
-			log.Printf("Tx %X confirmed at height %d", txHash, result.Height)
-			return nil
+			log.Printf("[WaitForTx] Tx %X confirmed at height %d", txHash, result.Height)
+			return result, nil
 		}
 		time.Sleep(1 * time.Second)
 	}
-	return fmt.Errorf("timeout waiting for tx %X to be included in a block", txHash)
+	return nil, fmt.Errorf("timeout waiting for tx %X to be included in a block", txHash)
 }

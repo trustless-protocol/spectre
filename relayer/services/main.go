@@ -3,24 +3,22 @@ package services
 import (
 	"context"
 	"encoding/binary"
-	"fmt"
 	"log"
 	"math/big"
-	"os"
 	"relayer/utils"
+	"strconv"
 	"time"
 
-	contractICS26Router "relayer/bindings/ICS26Router"
 	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
+	contractICS26Router "relayer/bindings/ICS26Router"
 	client "relayer/client"
+	"relayer/prover"
 
-	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	ibcexported "github.com/cosmos/ibc-go/v10/modules/core/exported"
-	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/accounts/abi"
-	"github.com/ethereum/go-ethereum/ethclient"
+	ethcommon "github.com/ethereum/go-ethereum/common"
 )
 
 // read abi json file once in runtime
@@ -35,8 +33,8 @@ func init() {
 }
 
 type TransactionHandler interface {
-	CreateCosmosClientContract(ctx Context, clientState, consensusHash []byte) error
-	CreateEthClient(ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) error
+	CreateCosmosClientContract(ctx Context, clientState, consensusHash []byte) (ethcommon.Address, error)
+	CreateEthClient(ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) (string, error)
 	SendEthTx(ctx Context, msg any) error
 	SendCosmosTx(ctx Context, msg any) error
 	SendCosmosTxBatch(ctx Context, msgs []any) error
@@ -44,7 +42,9 @@ type TransactionHandler interface {
 }
 
 type Prover interface {
-	GenerateProof(sig, pub, msg []byte) (
+	GenerateProof(sigs []prover.ValidatorSignature) (
+		bucket int,
+		paddedSigs []prover.ValidatorSignature,
 		proof [8]*big.Int,
 		commitments [2]*big.Int,
 		commitmentPok [2]*big.Int,
@@ -57,7 +57,6 @@ type EventListener interface {
 }
 
 type Services struct {
-	// event listener
 	listener EventListener
 	worker   *Worker
 
@@ -66,11 +65,9 @@ type Services struct {
 
 	BatchPackets chan BatchPackets
 	BatchBuilder *BatchBuilder
-
-	txHandler TransactionHandler
 }
 
-func New(rpcEndpoint string, eventListener EventListener, txHandler TransactionHandler, prover Prover, ethConfig, cosmosConfig Config) *Services {
+func New(eventListener EventListener, txHandler TransactionHandler, prover Prover, ethConfig, cosmosConfig Config) *Services {
 	return &Services{
 		listener:     eventListener,
 		ethConfig:    ethConfig,
@@ -84,74 +81,22 @@ func New(rpcEndpoint string, eventListener EventListener, txHandler TransactionH
 	}
 }
 
-func (s *Services) StartLoop() {
-	rpcEndpoint := os.Getenv("TENDERMINT_RPC_URL")
-	if rpcEndpoint == "" {
-		panic(fmt.Errorf("TENDERMINT_RPC_URL environment variable is required in .env file"))
-	}
-	cosmosClient, err := rpchttp.New(rpcEndpoint, "/websocket")
-	if err != nil {
-		panic(fmt.Errorf("failed to create RPC client: %w", err))
-	}
-
-	ethRpcEndpoint := os.Getenv("ETH_RPC_URL")
-	if ethRpcEndpoint == "" {
-		panic(fmt.Errorf("ETH_RPC_URL environment variable is required in .env file"))
-	}
-	ethClient, err := ethclient.Dial(ethRpcEndpoint)
-	if err != nil {
-		panic(fmt.Errorf("failed to connect to client: %s: ", err.Error()))
-	}
-
-	ics26Router := os.Getenv("ICS26_ROUTER")
-	if ics26Router == "" {
-		panic(fmt.Errorf("ICS26_ROUTER environment variable is required in .env file"))
-	}
-	wrapVerifier := os.Getenv("WRAP_VERIFIER")
-	if wrapVerifier == "" {
-		panic(fmt.Errorf("WRAP_VERIFIER environment variable is required in .env file"))
-	}
-
-	membership := os.Getenv("MEMBERSHIP")
-	if membership == "" {
-		panic(fmt.Errorf("MEMBERSHIP environment variable is required in .env file"))
-	}
-	misbehaviour := os.Getenv("MISBEHAVIOUR")
-	if misbehaviour == "" {
-		panic(fmt.Errorf("MISBEHAVIOUR environment variable is required in .env file"))
-	}
-	updateClient := os.Getenv("UPDATE_CLIENT")
-	if updateClient == "" {
-		panic(fmt.Errorf("UPDATE_CLIENT environment variable is required in .env file"))
-	}
-	roleManager := os.Getenv("ROLE_MANAGER")
-	if roleManager == "" {
-		panic(fmt.Errorf("ROLE_MANAGER environment variable is required in .env file"))
-	}
-
-	ctx := NewCtx(cosmosClient, ethClient)
-	ctx.SetAddresses(ics26Router, wrapVerifier, membership, misbehaviour, updateClient, roleManager)
-
-	// listen to new tx events on Eth
-	// add it to handler queue
-	go func() {
-		s.listener.SubscribeCosmos(ctx, s.BatchBuilder)
-	}()
-
-	// listen to new tx events on Cosmos
-	// add it to handler queue
-	go func() {
-		s.listener.SubscribeEth(ctx, s.BatchBuilder)
-	}()
+func (s *Services) StartLoop(ctx Context) {
+	go s.listener.SubscribeCosmos(ctx, s.BatchBuilder)
+	go s.listener.SubscribeEth(ctx, s.BatchBuilder)
 
 	// routinely run update client
 	go func() {
+		// TODO: Revisit routine scheduling strategy (interval/backoff/event-driven mix) to ensure this is optimal for production.
+		routineInterval := 24 * time.Hour
 		for {
+			now := time.Now()
 			// update client on Eth side routinely
-			if ctx.latestEthTimestamp.LatestUpdateTime.Add(s.ethConfig.IntervalParams.blockTime).After(time.Now()) {
-				latestBlock, err := s.worker.UpdateCosmosClient(ctx, "groth16", int64(ctx.latestEthTimestamp.LatestUpdateHeight), "2/3")
+			if ctx.latestEthTimestamp.LatestUpdateTime.Add(routineInterval).Before(now) {
+				latestBlock, err := s.worker.UpdateCosmosClient(ctx, "groth16", int64(ctx.latestEthTimestamp.LatestUpdateHeight), "1/3")
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("Failed to update cosmos light client: %s", err.Error()))
+					log.Printf("[Routine] Failed to update cosmos light client: %v", err)
+					continue
 				}
 
 				// update latest update time
@@ -162,15 +107,17 @@ func (s *Services) StartLoop() {
 			}
 
 			// update client on Cosmos side routinely
-			if ctx.latestCosmosTimestamp.LatestUpdateTime.Add(s.cosmosConfig.IntervalParams.blockTime).After(time.Now()) {
+			if ctx.latestCosmosTimestamp.LatestUpdateTime.Add(routineInterval).Before(now) {
 				s.worker.UpdateEthClient(ctx)
 
 				// update latest update time
 				ctx.latestCosmosTimestamp.mtx.Lock()
-				ctx.latestCosmosTimestamp.LatestUpdateTime = time.Now()
+				ctx.latestCosmosTimestamp.LatestUpdateTime = now
 				ctx.latestCosmosTimestamp.mtx.Unlock()
 
 			}
+
+			time.Sleep(time.Second)
 		}
 	}()
 
@@ -187,14 +134,25 @@ func (s *Services) StartLoop() {
 	for {
 		batch, ok := <-s.BatchPackets
 		if !ok {
-			fmt.Println("Channel closed, exiting loop")
+			log.Println("[StartLoop] Batch channel closed, exiting loop")
 			break // Exit the loop when the channel is closed
 		}
 
+		log.Printf("[StartLoop] Received batch: %d packets", len(batch.Packets))
+
+		//TODO: the way better than wait
+		log.Printf("[StartLoop] Waiting 2 blocks for packet commitment to be included in AppHash...")
+		time.Sleep(6 * time.Second)
+
 		// update client
-		latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, "groth16", int64(ctx.latestEthTimestamp.LatestUpdateHeight), "2/3")
+		latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, "groth16", int64(ctx.latestEthTimestamp.LatestUpdateHeight), "1/3")
 		if err != nil {
-			ctx.Logger.Println(fmt.Errorf("Failed to update cosmos light client: %s", err.Error()))
+			log.Printf("[StartLoop] Failed to update cosmos light client: %v", err)
+			continue
+		}
+		if latestLightBlock == nil {
+			log.Printf("[StartLoop] Failed to update cosmos light client: latestLightBlock is nil")
+			continue
 		}
 
 		ctx.latestEthTimestamp.mtx.Lock()
@@ -207,7 +165,7 @@ func (s *Services) StartLoop() {
 		// Check current Eth block timestamp for timeout comparisons
 		ethHeader, err := ctx.EthClient().HeaderByNumber(context.Background(), nil)
 		if err != nil {
-			ctx.Logger.Println(fmt.Errorf("Failed to get eth block header: %s", err.Error()))
+			log.Printf("[StartLoop] Failed to get eth block header: %v", err)
 		}
 		ethBlockTime := uint64(0)
 		if ethHeader != nil {
@@ -227,10 +185,17 @@ func (s *Services) StartLoop() {
 
 				ibcPath := utils.IbcCommitmentPath(*packet.Packet, []byte{1})
 
-				// target height are the latest block height
 				value, proof, err := client.ProvePath(ctx.CosmosClient(), latestLightBlock.BlockHeight, ibcPath)
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("failed to prove path: %w", err))
+					log.Printf("[RecvPacket] seq=%d: failed to prove path at height=%d: %v",
+						packet.Packet.Sequence, latestLightBlock.BlockHeight, err)
+					continue
+				}
+
+				if len(value) == 0 {
+					log.Printf("[RecvPacket] seq=%d: packet commitment empty at height=%d, skipping",
+						packet.Packet.Sequence, latestLightBlock.BlockHeight)
+					continue
 				}
 
 				merkleProof := tendermintContract.IMembershipMsgsMerkleProof{
@@ -239,7 +204,8 @@ func (s *Services) StartLoop() {
 				for _, p := range proof.Proofs {
 					commitmentProof, err := client.ParseCommitmentProof(p)
 					if err != nil {
-						ctx.Logger.Println(fmt.Errorf("failed to parse commitment proof: %w", err))
+						log.Printf("[RecvPacket] seq=%d: failed to parse commitment proof: %v",
+							packet.Packet.Sequence, err)
 					}
 					merkleProof.Proofs = append(merkleProof.Proofs, *commitmentProof)
 				}
@@ -258,9 +224,7 @@ func (s *Services) StartLoop() {
 					MerkleProofs: []tendermintContract.IMembershipMsgsMerkleProof{
 						merkleProof,
 					},
-					// current appHash
 					AppHash: utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
-					// trusted consensus from revision height block
 					TrustedConsensusState: tendermintContract.IICS07TendermintMsgsConsensusState{
 						Timestamp:          big.NewInt(latestLightBlock.SignedHeader.Header.Time.UnixNano()),
 						Root:               utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
@@ -271,9 +235,10 @@ func (s *Services) StartLoop() {
 
 				calldata, err := tendermintAbiJson.Pack("verifyMembership", membershipMsg)
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("Failed to abi encode verify msg: %s", err.Error()))
+					log.Printf("[RecvPacket] seq=%d: failed to ABI encode verifyMembership: %v",
+						packet.Packet.Sequence, err)
+					continue
 				}
-				// Strip 4-byte function selector — ICS26Router does abi.decode, not a function call
 				calldata = calldata[4:]
 
 				payloads := make([]contractICS26Router.IICS26RouterMsgsPayload, 0, len(packet.Packet.Payloads))
@@ -298,19 +263,35 @@ func (s *Services) StartLoop() {
 					MembershipMsg: calldata,
 				}
 
-				s.txHandler.SendEthTx(ctx, msgRecvPacket)
+				if err := s.worker.TxHandler.SendEthTx(ctx, msgRecvPacket); err != nil {
+					log.Printf("[RecvPacket] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
+					continue
+				}
+				log.Printf("[RecvPacket] seq=%d: relay completed", packet.Packet.Sequence)
 			case Ack:
-				ibcPath := utils.IbcCommitmentPath(*packet.Packet, []byte{2})
+				if len(packet.AckBytes) == 0 {
+					log.Printf("[AckPacket] seq=%d: acknowledgement bytes missing, skipping", packet.Packet.Sequence)
+					continue
+				}
+
+				ibcPath := utils.IbcCommitmentPath(*packet.Packet, []byte{3})
 
 				// target height are the latest block height
 				value, proof, err := client.ProvePath(ctx.CosmosClient(), latestLightBlock.BlockHeight, ibcPath)
+				if err != nil {
+					log.Printf("[AckPacket] seq=%d: failed to prove path at height=%d: %v",
+						packet.Packet.Sequence, latestLightBlock.BlockHeight, err)
+					continue
+				}
+
 				merkleProof := tendermintContract.IMembershipMsgsMerkleProof{
 					Proofs: []tendermintContract.IMembershipMsgsCommitmentProof{},
 				}
 				for _, p := range proof.Proofs {
 					commitmentProof, err := client.ParseCommitmentProof(p)
 					if err != nil {
-						ctx.Logger.Println(fmt.Errorf("failed to parse commitment proof: %w", err))
+						log.Printf("[AckPacket] seq=%d: failed to parse commitment proof: %v",
+							packet.Packet.Sequence, err)
 					}
 					merkleProof.Proofs = append(merkleProof.Proofs, *commitmentProof)
 				}
@@ -342,7 +323,9 @@ func (s *Services) StartLoop() {
 
 				calldata, err := tendermintAbiJson.Pack("verifyMembership", membershipMsg)
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("Failed to abi encode verify msg: %s", err.Error()))
+					log.Printf("[AckPacket] seq=%d: failed to ABI encode verifyMembership: %v",
+						packet.Packet.Sequence, err)
+					continue
 				}
 				// Strip 4-byte function selector — ICS26Router does abi.decode, not a function call
 				calldata = calldata[4:]
@@ -366,18 +349,24 @@ func (s *Services) StartLoop() {
 						TimeoutTimestamp: packet.Packet.TimeoutTimestamp,
 						Payloads:         payloads,
 					},
-
-					MembershipMsg: calldata,
+					Acknowledgement: packet.AckBytes[0],
+					MembershipMsg:   calldata,
 				}
 
-				s.txHandler.SendEthTx(ctx, msgAckPacket)
+				if err := s.worker.TxHandler.SendEthTx(ctx, msgAckPacket); err != nil {
+					log.Printf("[AckPacket] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
+					continue
+				}
+				log.Printf("[AckPacket] seq=%d: relay completed", packet.Packet.Sequence)
 			case Timeout:
-				ibcPath := utils.IbcCommitmentPath(*packet.Packet, []byte{3})
+				ibcPath := utils.IbcCommitmentPath(*packet.Packet, []byte{2})
 
 				// target height are the latest block height
 				value, proof, err := client.ProvePath(ctx.CosmosClient(), latestLightBlock.BlockHeight, ibcPath)
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("failed to prove path: %w", err))
+					log.Printf("[Timeout] seq=%d: failed to prove path at height=%d: %v",
+						packet.Packet.Sequence, latestLightBlock.BlockHeight, err)
+					continue
 				}
 
 				merkleProof := tendermintContract.IMembershipMsgsMerkleProof{
@@ -386,12 +375,13 @@ func (s *Services) StartLoop() {
 				for _, p := range proof.Proofs {
 					commitmentProof, err := client.ParseCommitmentProof(p)
 					if err != nil {
-						ctx.Logger.Println(fmt.Errorf("failed to parse commitment proof: %w", err))
+						log.Printf("[Timeout] seq=%d: failed to parse commitment proof: %v",
+							packet.Packet.Sequence, err)
 					}
 					merkleProof.Proofs = append(merkleProof.Proofs, *commitmentProof)
 				}
 
-				membershipMsg := tendermintContract.ILightClientMsgsMsgVerifyNonMembership{
+				nonMembershipMsg := tendermintContract.ILightClientMsgsMsgVerifyNonMembership{
 					Height: tendermintContract.IICS02ClientMsgsHeight{
 						RevisionHeight: uint64(latestLightBlock.BlockHeight),
 						RevisionNumber: 0,
@@ -416,9 +406,11 @@ func (s *Services) StartLoop() {
 					MembershipType: 0,
 				}
 
-				calldata, err := tendermintAbiJson.Pack("verifyMembership", membershipMsg)
+				calldata, err := tendermintAbiJson.Pack("verifyNonMembership", nonMembershipMsg)
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("Failed to abi encode verify msg: %s", err.Error()))
+					log.Printf("[Timeout] seq=%d: failed to ABI encode verifyNonMembership: %v",
+						packet.Packet.Sequence, err)
+					continue
 				}
 				// Strip 4-byte function selector — ICS26Router does abi.decode, not a function call
 				calldata = calldata[4:]
@@ -434,7 +426,7 @@ func (s *Services) StartLoop() {
 					})
 				}
 
-				msgRecvPacket := contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
+				msgTimeoutPacket := contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket{
 					Packet: contractICS26Router.IICS26RouterMsgsPacket{
 						Sequence:         packet.Packet.Sequence,
 						SourceClient:     packet.Packet.SourceClient,
@@ -442,15 +434,66 @@ func (s *Services) StartLoop() {
 						TimeoutTimestamp: packet.Packet.TimeoutTimestamp,
 						Payloads:         payloads,
 					},
-					MembershipMsg: calldata,
+					NonMembershipMsg: calldata,
 				}
 
-				s.txHandler.SendEthTx(ctx, msgRecvPacket)
+				if err := s.worker.TxHandler.SendEthTx(ctx, msgTimeoutPacket); err != nil {
+					log.Printf("[Timeout] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
+					continue
+				}
+				log.Printf("[Timeout] seq=%d: relay completed", packet.Packet.Sequence)
 
 			case WriteAck:
-				signerAddr, err := s.txHandler.CosmosSignerAddress()
+				signerAddr, err := s.worker.TxHandler.CosmosSignerAddress()
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to get cosmos signer: %w", err))
+					log.Printf("[WriteAck] seq=%d: failed to get cosmos signer: %v", packet.Packet.Sequence, err)
+					continue
+				}
+
+				log.Printf("[WriteAck] seq=%d: waiting for beacon finality at block %d",
+					packet.Packet.Sequence, packet.BlockNumber)
+				finalized := false
+				for attempt := 0; attempt < 60; attempt++ {
+					if attempt > 0 {
+						time.Sleep(10 * time.Second)
+					}
+					finalityUpdate, err := client.GetFinalityUpdate(ctx.BeaconAPIURL())
+					if err != nil {
+						log.Printf("[WriteAck] seq=%d: failed to get finality update: %v", packet.Packet.Sequence, err)
+						continue
+					}
+					execBlock, _ := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+					if execBlock >= packet.BlockNumber {
+						log.Printf("[WriteAck] seq=%d: beacon finalized block %d >= event block %d",
+							packet.Packet.Sequence, execBlock, packet.BlockNumber)
+						finalized = true
+						break
+					}
+					log.Printf("[WriteAck] seq=%d: beacon finalized block %d < event block %d, waiting... (%d/60)",
+						packet.Packet.Sequence, execBlock, packet.BlockNumber, attempt+1)
+				}
+				if !finalized {
+					log.Printf("[WriteAck] seq=%d: beacon finality did not reach block %d after 60 retries",
+						packet.Packet.Sequence, packet.BlockNumber)
+					continue
+				}
+
+				if err := s.worker.UpdateEthClient(ctx); err != nil {
+					log.Printf("[WriteAck] seq=%d: failed to update ETH client: %v", packet.Packet.Sequence, err)
+					continue
+				}
+
+				ethClientState, err := client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
+				if err != nil {
+					log.Printf("[WriteAck] seq=%d: failed to get ETH client state: %v", packet.Packet.Sequence, err)
+					continue
+				}
+				proofBlockNumber := ethClientState.LatestExecutionBlockNumber
+				proofSlot := ethClientState.LatestSlot
+
+				if proofBlockNumber < packet.BlockNumber {
+					log.Printf("[WriteAck] seq=%d: ETH client at block %d still < event block %d after update, skipping",
+						packet.Packet.Sequence, proofBlockNumber, packet.BlockNumber)
 					continue
 				}
 
@@ -461,16 +504,10 @@ func (s *Services) StartLoop() {
 				ackPath = append(ackPath, seqBytes...)
 
 				slot := ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT)
-				latestEthBlock, err := ctx.EthClient().BlockByNumber(context.Background(), nil)
-				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to get latest ETH block: %w", err))
-					continue
-				}
-
 				proofBytes, err := client.GetEthMembershipProof(
-					ctx.EthClient(), *ctx.RouterContract(), ackPath, slot, latestEthBlock.Number())
+					ctx.EthClient(), *ctx.RouterContract(), ackPath, slot, new(big.Int).SetUint64(proofBlockNumber))
 				if err != nil {
-					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to get ETH membership proof: %w", err))
+					log.Printf("[WriteAck] seq=%d: failed to get ETH membership proof: %v", packet.Packet.Sequence, err)
 					continue
 				}
 
@@ -480,15 +517,17 @@ func (s *Services) StartLoop() {
 						AppAcknowledgements: packet.AckBytes,
 					},
 					ProofAcked:  proofBytes,
-					ProofHeight: clienttypes.Height{RevisionNumber: 0, RevisionHeight: latestEthBlock.NumberU64()},
+					ProofHeight: clienttypes.Height{RevisionNumber: 0, RevisionHeight: proofSlot},
 					Signer:      signerAddr,
 				}
-				if err := s.txHandler.SendCosmosTx(ctx, ackMsg); err != nil {
-					ctx.Logger.Println(fmt.Errorf("[WriteAck] failed to send MsgAcknowledgement: %w", err))
+				if err := s.worker.TxHandler.SendCosmosTx(ctx, ackMsg); err != nil {
+					log.Printf("[WriteAck] seq=%d: failed to send MsgAcknowledgement: %v", packet.Packet.Sequence, err)
+					continue
 				}
+				log.Printf("[WriteAck] seq=%d: relay completed", packet.Packet.Sequence)
 
 			default:
-				ctx.Logger.Println(fmt.Errorf("Invalid packet type"))
+				log.Printf("[StartLoop] Unknown packet type: %d (seq=%d)", packet.PacketType, packet.Packet.Sequence)
 			}
 		}
 
