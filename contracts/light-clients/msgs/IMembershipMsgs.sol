@@ -129,7 +129,7 @@ interface IMembershipMsgs {
 
     struct ExistenceProof {
         bytes key;
-        bytes32 value;
+        bytes value;
         LeafOp leaf;
         InnerOp[] path;
     }

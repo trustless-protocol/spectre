@@ -218,7 +218,7 @@ func (s *Services) StartLoop(ctx Context) {
 					KvPairs: []tendermintContract.IMembershipMsgsKVPair{
 						{
 							Path:  ibcPath,
-							Value: utils.BytesToBytes32(value),
+							Value: value,
 						},
 					},
 					MerkleProofs: []tendermintContract.IMembershipMsgsMerkleProof{
@@ -304,7 +304,7 @@ func (s *Services) StartLoop(ctx Context) {
 					KvPairs: []tendermintContract.IMembershipMsgsKVPair{
 						{
 							Path:  ibcPath,
-							Value: utils.BytesToBytes32(value),
+							Value: value,
 						},
 					},
 					MerkleProofs: []tendermintContract.IMembershipMsgsMerkleProof{
@@ -389,7 +389,7 @@ func (s *Services) StartLoop(ctx Context) {
 					KvPairs: []tendermintContract.IMembershipMsgsKVPair{
 						{
 							Path:  ibcPath,
-							Value: utils.BytesToBytes32(value),
+							Value: value,
 						},
 					},
 					MerkleProofs: []tendermintContract.IMembershipMsgsMerkleProof{

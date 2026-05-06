@@ -86,7 +86,7 @@ contract Membership  is IMembership {
         IMembershipMsgs.ProofSpec[] memory proofSpecs,
         bytes32 root,
         bytes[] memory path,
-        bytes32 value,
+        bytes memory value,
         uint256 startIndex,
         IMembershipMsgs.MerkleProof memory proof
     ) internal view {
@@ -113,8 +113,8 @@ contract Membership  is IMembership {
 
         // Process proofs from startIndex onwards
         // Keys are represented from root-to-leaf, so we iterate in reverse
-        bytes32 subroot = value;
-        bytes32 valueUpdate = value;
+        bytes32 subroot = bytesToBytes32(value);
+        bytes32 valueUpdate = subroot;
 
         uint256 pathLength = path.length;
         for (uint256 i = startIndex; i < proofLength; i++) {
@@ -131,7 +131,7 @@ contract Membership  is IMembership {
                 proofSpecs[i],
                 subroot,
                 keyPath,
-                valueUpdate
+                abi.encodePacked(valueUpdate)
                 )
             ) {
                 revert FailedToVerifyMembership();
@@ -197,7 +197,7 @@ contract Membership  is IMembership {
             proofSpecs,
             root,
             path,
-            subroot,
+            abi.encodePacked(subroot),
             1,
             proof
         );
@@ -335,7 +335,7 @@ contract Membership  is IMembership {
         IMembershipMsgs.ExistenceProof memory proof,
         IMembershipMsgs.ProofSpec memory spec
     ) internal pure returns (bytes32) {
-        if (proof.key.length == 0 || proof.value.length == 0) {
+        if (proof.key.length == 0 || proof.value.length == 0 ) {
             revert InvalidExistenceProof();
         }
         IMembershipMsgs.LeafOp memory leafOp = proof.leaf;
@@ -345,8 +345,7 @@ contract Membership  is IMembership {
             leafHash = applyInner(proof.path[i], leafHash);
 
             if (spec.hasInnerSpec) {
-                if (leafHash.length > uint256(spec.innerSpec.childSize) && 
-                    spec.innerSpec.childSize >= 32) {
+                if (uint256(spec.innerSpec.childSize) < 32) {
                     revert("Invalid inner operation (child_size)");
                 }
             }
@@ -362,10 +361,10 @@ contract Membership  is IMembership {
         IMembershipMsgs.ProofSpec memory spec,
         bytes32 subroot,
         bytes memory key,
-        bytes32 value
+        bytes memory value
     ) internal view returns (bool) {
         checkExistenceProof(proof, spec);
-        if (keccak256(abi.encode(proof.key)) != keccak256(abi.encode(key)) || proof.value != value) {
+        if (keccak256(abi.encode(proof.key)) != keccak256(abi.encode(key)) || keccak256(abi.encode(proof.value)) != keccak256(abi.encode(value))) {
             revert ProvidedKeyValueMismatch();
         }
 
@@ -486,15 +485,14 @@ contract Membership  is IMembership {
     function applyLeaf(
         IMembershipMsgs.LeafOp memory leafOp,
         bytes memory key,
-        bytes32 value
+        bytes memory value
     ) internal pure returns (bytes32) {
         bytes memory hashedData = leafOp.prefix;
 
         bytes memory prekey = prepareLeafData(leafOp.prehashKey, key);
         hashedData = abi.encodePacked(hashedData, prekey);
 
-        bytes memory valueBytes = bytes32ToBytes(value);
-        bytes memory preval = prepareLeafData(leafOp.prehashValue, valueBytes);
+        bytes memory preval = prepareLeafData(leafOp.prehashValue, value);
         hashedData = abi.encodePacked(hashedData, preval);
 
         return hashData(hashedData, leafOp.hashOp);

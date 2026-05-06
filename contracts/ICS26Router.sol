@@ -159,6 +159,10 @@ contract ICS26Router is
             IBCInvalidTimeoutTimestamp(msg_.packet.timeoutTimestamp, block.timestamp)
         );
 
+        bytes memory commitmentPath =
+            ICS24Host.packetCommitmentPathCalldata(msg_.packet.sourceClient, msg_.packet.sequence);
+        bytes32 commitmentBz = ICS24Host.packetCommitmentBytes32(msg_.packet);
+
         ILightClientMsgs.MsgVerifyMembership memory membershipMsg = abi.decode(msg_.membershipMsg, (ILightClientMsgs.MsgVerifyMembership));
         // Override path and value so the light client proves the actual packet commitment
         membershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, commitmentPath);
@@ -210,8 +214,11 @@ contract ICS26Router is
             IBCInvalidCounterparty(cInfo.clientId, msg_.packet.destClient)
         );
 
+        bytes memory commitmentPath =
+            ICS24Host.packetAcknowledgementCommitmentPathCalldata(msg_.packet.destClient, msg_.packet.sequence);
         bytes[] memory acks = new bytes[](1);
         acks[0] = msg_.acknowledgement;
+        bytes32 commitmentBz = ICS24Host.packetAcknowledgementCommitmentBytes32(acks);
 
         // verify the packet acknowledgement
         ILightClientMsgs.MsgVerifyMembership memory membershipMsg = abi.decode(msg_.membershipMsg, (ILightClientMsgs.MsgVerifyMembership));
@@ -254,6 +261,8 @@ contract ICS26Router is
             IBCInvalidCounterparty(cInfo.clientId, msg_.packet.destClient)
         );
 
+        bytes memory receiptPath =
+            ICS24Host.packetReceiptCommitmentPathCalldata(msg_.packet.destClient, msg_.packet.sequence);
         ILightClientMsgs.MsgVerifyNonMembership memory nonMembershipMsg = abi.decode(msg_.nonMembershipMsg, (ILightClientMsgs.MsgVerifyNonMembership));
         // Override path and value so the light client proves the actual packet commitment
         nonMembershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, receiptPath);

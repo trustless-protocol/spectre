@@ -208,7 +208,7 @@ contract Groth16ICS07Tendermint is
         onlyProofSubmitter
         returns (uint256)
     {
-        require(msg_.appHash.length > 0, EmptyValue());
+        require(msg_.value.length > 0, EmptyValue());
         return _membership(msg_.height, msg_.kvPairs, msg_.merkleProofs, msg_.appHash, msg_.trustedConsensusState, msg_.membershipType, msg_.path, msg_.value);
     }
 
@@ -370,7 +370,7 @@ contract Groth16ICS07Tendermint is
         IICS02ClientMsgs.Height calldata proofHeight,
         bytes memory proofBytes,
         bytes[] calldata kvPath,
-        bytes32 kvValue
+        bytes memory kvValue
     )
         private
         returns (uint256)
@@ -431,9 +431,9 @@ contract Groth16ICS07Tendermint is
                     continue;
                 }
 
-                bytes32 value = output.kvPairs[i].value;
+                bytes memory value = output.kvPairs[i].value;
                 require(
-                    value == kvValue,
+                    value.length == kvValue.length && keccak256(value) == keccak256(kvValue),
                     MembershipProofValueMismatch(kvValue, value)
                 );
 
