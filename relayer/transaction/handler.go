@@ -48,6 +48,8 @@ type Handler struct {
 }
 
 const ethTxReceiptTimeout = 45 * time.Second
+const cosmosClientID = "cosmoshub-1"
+const ethWasmClientID = "08-wasm-0"
 
 func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte) (common.Address, error) {
 	privKey := os.Getenv("ETH_PRIVATE_KEY")
@@ -77,6 +79,16 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	chainIdInt, err := ctx.EthClient().ChainID(context.Background())
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] invalid chain id: %v", err)
+	}
+
+	ics26Router, err := routerContract.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
+	if err != nil {
+		return common.Address{}, err
+	}
+	if registeredClient, err := ics26Router.GetClient(nil, cosmosClientID); err == nil && registeredClient != (common.Address{}) {
+		log.Printf("[CreateCosmosClient] Router already has client %s at %s; reusing registered client", cosmosClientID, registeredClient.Hex())
+		ctx.SetClient(registeredClient)
+		return registeredClient, nil
 	}
 
 	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
@@ -118,11 +130,6 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 
 	// roleManager=address(0) means anyone can submit proofs, no grantRole needed
 
-	ics26Router, err := routerContract.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
-	if err != nil {
-		return common.Address{}, err
-	}
-
 	nonce, err = ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to get nonce for AddClient: %w", err)
@@ -131,9 +138,9 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 
 	tx, err = ics26Router.AddClient(
 		auth,
-		"cosmoshub-1",
+		cosmosClientID,
 		routerContract.IICS02ClientMsgsCounterpartyInfo{
-			ClientId:     "08-wasm-0",
+			ClientId:     ethWasmClientID,
 			MerklePrefix: [][]byte{[]byte("")},
 		},
 		*ctx.ClientContract(),
@@ -150,8 +157,16 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		return common.Address{}, fmt.Errorf("failed waiting for AddClient receipt: %w", err)
 	}
 	if receipt.Status == 0 {
-		log.Printf("[CreateCosmosClient] AddClient tx reverted (gasUsed=%d) — client may already exist, continuing...", receipt.GasUsed)
-		return address, nil
+		registeredClient, err := ics26Router.GetClient(nil, cosmosClientID)
+		if err != nil {
+			return common.Address{}, fmt.Errorf("AddClient tx reverted (gasUsed=%d) and failed to fetch existing client %s: %w", receipt.GasUsed, cosmosClientID, err)
+		}
+		if registeredClient == (common.Address{}) {
+			return common.Address{}, fmt.Errorf("AddClient tx reverted (gasUsed=%d) and existing client %s is empty", receipt.GasUsed, cosmosClientID)
+		}
+		log.Printf("[CreateCosmosClient] AddClient tx reverted (gasUsed=%d); reusing router client %s at %s", receipt.GasUsed, cosmosClientID, registeredClient.Hex())
+		ctx.SetClient(registeredClient)
+		return registeredClient, nil
 	}
 	log.Printf("[CreateCosmosClient] AddClient confirmed (block %d, gasUsed=%d)", receipt.BlockNumber.Uint64(), receipt.GasUsed)
 

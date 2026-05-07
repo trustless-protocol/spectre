@@ -18,6 +18,7 @@ import (
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	ibcexported "github.com/cosmos/ibc-go/v10/modules/core/exported"
+	ics23 "github.com/cosmos/ics23/go"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 )
@@ -214,7 +215,7 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 				continue
 			}
 
-			calldata, err := s.cosmosMembership(ctx, *packet.Packet, packet.Packet.SourceClient, []byte{3}, latestLightBlock)
+			calldata, err := s.cosmosMembership(ctx, *packet.Packet, packet.Packet.DestinationClient, []byte{3}, latestLightBlock)
 			if err != nil {
 				log.Printf("[AckPacket] seq=%d: %v", packet.Packet.Sequence, err)
 				continue
@@ -475,7 +476,7 @@ func (s *Services) ethProofHeight(ctx Context, eventBlock uint64, sequence uint6
 	return ethClientState.LatestExecutionBlockNumber, ethClientState.LatestSlot, true
 }
 
-func parseMerkleProof(proofs [][]byte, sequence uint64) (tendermintContract.IMembershipMsgsMerkleProof, error) {
+func parseMerkleProof(proofs []*ics23.CommitmentProof, sequence uint64) (tendermintContract.IMembershipMsgsMerkleProof, error) {
 	merkleProof := tendermintContract.IMembershipMsgsMerkleProof{
 		Proofs: []tendermintContract.IMembershipMsgsCommitmentProof{},
 	}
