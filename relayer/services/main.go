@@ -160,20 +160,10 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	log.Printf("[StartLoop] Waiting 2 blocks for packet commitment to be included in AppHash...")
 	time.Sleep(6 * time.Second)
 
-	latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, "groth16", int64(ctx.latestEthTimestamp.LatestUpdateHeight), "1/3")
-	if err != nil {
-		log.Printf("[StartLoop] Failed to update cosmos light client: %v", err)
+	latestLightBlock, ok := s.updateCosmosClientForEth(ctx, "StartLoop")
+	if !ok {
 		return
 	}
-	if latestLightBlock == nil {
-		log.Printf("[StartLoop] Failed to update cosmos light client: latestLightBlock is nil")
-		return
-	}
-
-	ctx.latestEthTimestamp.mtx.Lock()
-	ctx.latestEthTimestamp.LatestUpdateTime = time.Now()
-	ctx.latestEthTimestamp.LatestUpdateHeight = uint64(latestLightBlock.BlockHeight)
-	ctx.latestEthTimestamp.mtx.Unlock()
 
 	ethHeader, err := ctx.EthClient().HeaderByNumber(context.Background(), nil)
 	if err != nil {
@@ -262,7 +252,7 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 		switch packet.Type {
 		case EthSend:
 			if packet.Packet.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= packet.Packet.TimeoutTimestamp {
-				log.Printf("[EthSend] Packet seq=%d timed out, skipping", packet.Packet.Sequence)
+				s.timeoutEthSend(ctx, packet)
 				continue
 			}
 
@@ -274,6 +264,10 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 
 			proofBlockNumber, proofSlot, ok := s.ethProofHeight(ctx, packet.BlockNumber, packet.Packet.Sequence, "EthSend")
 			if !ok {
+				continue
+			}
+			if packet.Packet.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= packet.Packet.TimeoutTimestamp {
+				s.timeoutEthSend(ctx, packet)
 				continue
 			}
 
@@ -343,6 +337,58 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 			log.Printf("[StartLoop] Unknown eth packet type: %d (seq=%d)", packet.Type, packet.Packet.Sequence)
 		}
 	}
+}
+
+func (s *Services) updateCosmosClientForEth(ctx Context, tag string) (*client.LightBlock, bool) {
+	latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, "groth16", int64(ctx.latestEthTimestamp.LatestUpdateHeight), "1/3")
+	if err != nil {
+		log.Printf("[%s] Failed to update cosmos light client: %v", tag, err)
+		return nil, false
+	}
+	if latestLightBlock == nil {
+		log.Printf("[%s] Failed to update cosmos light client: latestLightBlock is nil", tag)
+		return nil, false
+	}
+
+	ctx.latestEthTimestamp.mtx.Lock()
+	ctx.latestEthTimestamp.LatestUpdateTime = time.Now()
+	ctx.latestEthTimestamp.LatestUpdateHeight = uint64(latestLightBlock.BlockHeight)
+	ctx.latestEthTimestamp.mtx.Unlock()
+
+	return latestLightBlock, true
+}
+
+func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) {
+	log.Printf("[EthTimeout] seq=%d: packet expired, preparing timeout proof", packet.Packet.Sequence)
+
+	latestLightBlock, ok := s.updateCosmosClientForEth(ctx, "EthTimeout")
+	if !ok {
+		return
+	}
+
+	counterpartyTime := uint64(latestLightBlock.SignedHeader.Header.Time.Unix())
+	if counterpartyTime < packet.Packet.TimeoutTimestamp {
+		log.Printf("[EthTimeout] seq=%d: counterparty time %d < timeout %d, skipping",
+			packet.Packet.Sequence, counterpartyTime, packet.Packet.TimeoutTimestamp)
+		return
+	}
+
+	calldata, err := s.cosmosNonMembership(ctx, *packet.Packet, packet.Packet.DestinationClient, []byte{2}, latestLightBlock)
+	if err != nil {
+		log.Printf("[EthTimeout] seq=%d: %v", packet.Packet.Sequence, err)
+		return
+	}
+
+	msgTimeoutPacket := contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket{
+		Packet:           toEthPacket(*packet.Packet),
+		NonMembershipMsg: calldata,
+	}
+
+	if err := s.worker.TxHandler.SendEthTx(ctx, msgTimeoutPacket); err != nil {
+		log.Printf("[EthTimeout] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
+		return
+	}
+	log.Printf("[EthTimeout] seq=%d: relay completed", packet.Packet.Sequence)
 }
 
 func (s *Services) cosmosMembership(ctx Context, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {
