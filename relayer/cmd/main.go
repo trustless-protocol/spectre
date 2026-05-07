@@ -202,6 +202,10 @@ func envOrDefault(key, defaultVal string) string {
 	return defaultVal
 }
 
+func roleManagerOrDefault(cfg *appConfig) string {
+	return envOrDefault("ROLE_MANAGER", cfg.CosmosToEthConfig.ICS26Address)
+}
+
 // --- Main ---
 
 func main() {
@@ -287,7 +291,7 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				"08-wasm-0",
 			)
 
-			roleManager := envOrDefault("ROLE_MANAGER", "0x0000000000000000000000000000000000000000")
+			roleManager := roleManagerOrDefault(cfg)
 			ctx.SetAddresses(
 				cfg.CosmosToEthConfig.ICS26Address,
 				cfg.CosmosToEthConfig.WrapperVerifier,
@@ -433,7 +437,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 			)
 
 			// Set contract addresses from config
-			roleManager := envOrDefault("ROLE_MANAGER", "0x0000000000000000000000000000000000000000")
+			roleManager := roleManagerOrDefault(cfg)
 			ctx.SetAddresses(
 				cfg.CosmosToEthConfig.ICS26Address,
 				cfg.CosmosToEthConfig.WrapperVerifier,

@@ -445,7 +445,14 @@ func main() {
 	worker := services.NewWorker(&transaction.Handler{}, prover)
 
 	ctx := services.NewCtxWithBeacon(cosmosClient, ethClient, nil, cfg.EthToCosmosConfig.BeaconUrl, "")
-	ctx.SetAddresses(cfg.CosmosToEthConfig.ICS26Address, cfg.CosmosToEthConfig.WrapperVerifier, cfg.CosmosToEthConfig.Membership, cfg.CosmosToEthConfig.Misbehaviour, cfg.CosmosToEthConfig.UpdateClient, "0x0000000000000000000000000000000000000000")
+	ctx.SetAddresses(
+		cfg.CosmosToEthConfig.ICS26Address,
+		cfg.CosmosToEthConfig.WrapperVerifier,
+		cfg.CosmosToEthConfig.Membership,
+		cfg.CosmosToEthConfig.Misbehaviour,
+		cfg.CosmosToEthConfig.UpdateClient,
+		cfg.CosmosToEthConfig.ICS26Address,
+	)
 
 	ics07 := common.HexToAddress("0xD1ea1592b7927a2f0EE5f8567928Df0cfA687C78")
 	ctx.SetClient(ics07)

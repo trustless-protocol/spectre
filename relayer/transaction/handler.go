@@ -48,6 +48,19 @@ type Handler struct {
 }
 
 const ethTxReceiptTimeout = 45 * time.Second
+const cosmosLightClientRouterID = "cosmoshub-1"
+
+func routerManagesProofSubmission(ctx services.Context) bool {
+	roleManager := ctx.RoleManagerAddress()
+	router := ctx.RouterContract()
+	if roleManager == nil || router == nil {
+		return false
+	}
+	if *roleManager == (common.Address{}) || *router == (common.Address{}) {
+		return false
+	}
+	return *roleManager == *router
+}
 
 func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte) (common.Address, error) {
 	privKey := os.Getenv("ETH_PRIVATE_KEY")
@@ -116,7 +129,9 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	log.Printf("[CreateCosmosClient] ICS07 deployed at %s (block %d, gasUsed=%d)", address.String(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
 	ctx.SetClient(address)
 
-	// roleManager=address(0) means anyone can submit proofs, no grantRole needed
+	// In Eureka mode, the router is typically both the admin and proof submitter
+	// for the ICS07 client. Direct submission remains available only when the
+	// role manager is not the router.
 
 	ics26Router, err := routerContract.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
 	if err != nil {
@@ -131,7 +146,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 
 	tx, err = ics26Router.AddClient(
 		auth,
-		"cosmoshub-1",
+		cosmosLightClientRouterID,
 		routerContract.IICS02ClientMsgsCounterpartyInfo{
 			ClientId:     "08-wasm-0",
 			MerklePrefix: [][]byte{[]byte("")},
@@ -220,18 +235,36 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to encode updateClient msg: %w", err)
 		}
-		log.Printf("[SendEthTx] Sending updateClient tx...")
-		tx, err = ics07Tendermint.UpdateClient(auth, data)
-		if err != nil {
-			return fmt.Errorf("[SendEthTx] failed to send updateClient tx: %w", err)
+		if routerManagesProofSubmission(ctx) {
+			log.Printf("[SendEthTx] Sending ICS26Router.updateClient tx for clientId=%s...", cosmosLightClientRouterID)
+			tx, err = icS26Router.UpdateClient(auth, cosmosLightClientRouterID, data)
+			if err != nil {
+				return fmt.Errorf("[SendEthTx] failed to send router updateClient tx: %w", err)
+			}
+		} else {
+			log.Printf("[SendEthTx] Sending direct ICS07 updateClient tx...")
+			tx, err = ics07Tendermint.UpdateClient(auth, data)
+			if err != nil {
+				return fmt.Errorf("[SendEthTx] failed to send direct updateClient tx: %w", err)
+			}
 		}
 	case tendermintContract.ILightClientMsgsMsgVerifyMembership:
+		if routerManagesProofSubmission(ctx) {
+			return fmt.Errorf(
+				"[SendEthTx] direct verifyMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead",
+			)
+		}
 		log.Printf("[SendEthTx] Sending verifyMembership tx...")
 		tx, err = ics07Tendermint.VerifyMembership(auth, msg)
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to verify membership: %w", err)
 		}
 	case tendermintContract.ILightClientMsgsMsgVerifyNonMembership:
+		if routerManagesProofSubmission(ctx) {
+			return fmt.Errorf(
+				"[SendEthTx] direct verifyNonMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead",
+			)
+		}
 		log.Printf("[SendEthTx] Sending verifyNonMembership tx...")
 		tx, err = ics07Tendermint.VerifyNonMembership(auth, msg)
 		if err != nil {
