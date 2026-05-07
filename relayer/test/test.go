@@ -34,6 +34,7 @@ import (
 type CosmosToEthConfig struct {
 	TmRpcUrl        string `json:"tm_rpc_url"`
 	ICS26Address    string `json:"ics26_address"`
+	ICS26ClientID   string `json:"ics26_client_id"`
 	EthRpcUrl       string `json:"eth_rpc_url"`
 	WrapperVerifier string `json:"wrapper_verifier"`
 	Membership      string `json:"membership"`
@@ -91,6 +92,9 @@ func loadConfig(configPath string) (*AppConfig, error) {
 		if m.Name == "cosmos_to_eth" {
 			if err := json.Unmarshal(m.Config, &c2eCfg); err != nil {
 				return nil, fmt.Errorf("failed to parse cosmos_to_eth config: %w", err)
+			}
+			if c2eCfg.ICS26ClientID == "" {
+				c2eCfg.ICS26ClientID = m.SrcChain
 			}
 		}
 		if m.Name == "eth_to_cosmos" {
@@ -445,6 +449,7 @@ func main() {
 	worker := services.NewWorker(&transaction.Handler{}, prover)
 
 	ctx := services.NewCtxWithBeacon(cosmosClient, ethClient, nil, cfg.EthToCosmosConfig.BeaconUrl, "")
+	ctx.SetCosmosRouterClientID(cfg.CosmosToEthConfig.ICS26ClientID)
 	ctx.SetAddresses(
 		cfg.CosmosToEthConfig.ICS26Address,
 		cfg.CosmosToEthConfig.WrapperVerifier,

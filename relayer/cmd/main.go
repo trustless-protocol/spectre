@@ -47,6 +47,7 @@ const (
 type cosmosToEthConfig struct {
 	TmRpcUrl        string `json:"tm_rpc_url"`
 	ICS26Address    string `json:"ics26_address"`
+	ICS26ClientID   string `json:"ics26_client_id"`
 	EthRpcUrl       string `json:"eth_rpc_url"`
 	EthWsUrl        string `json:"eth_ws_url"`
 	ICS07Client     string `json:"ics07_client"`
@@ -147,6 +148,9 @@ func loadConfig(configPath string) (*appConfig, error) {
 			if err := json.Unmarshal(m.Config, &c2e); err != nil {
 				return nil, fmt.Errorf("failed to parse cosmos_to_eth config: %w", err)
 			}
+			if c2e.ICS26ClientID == "" {
+				c2e.ICS26ClientID = m.SrcChain
+			}
 		case "eth_to_cosmos":
 			if err := json.Unmarshal(m.Config, &e2c); err != nil {
 				return nil, fmt.Errorf("failed to parse eth_to_cosmos config: %w", err)
@@ -204,6 +208,10 @@ func envOrDefault(key, defaultVal string) string {
 
 func roleManagerOrDefault(cfg *appConfig) string {
 	return envOrDefault("ROLE_MANAGER", cfg.CosmosToEthConfig.ICS26Address)
+}
+
+func cosmosRouterClientIDOrDefault(cfg *appConfig) string {
+	return envOrDefault("ICS26_CLIENT_ID", cfg.CosmosToEthConfig.ICS26ClientID)
 }
 
 // --- Main ---
@@ -290,6 +298,7 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				cfg.EthToCosmosConfig.BeaconUrl,
 				"08-wasm-0",
 			)
+			ctx.SetCosmosRouterClientID(cosmosRouterClientIDOrDefault(cfg))
 
 			roleManager := roleManagerOrDefault(cfg)
 			ctx.SetAddresses(
@@ -435,6 +444,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 				cfg.EthToCosmosConfig.BeaconUrl,
 				"08-wasm-0",
 			)
+			ctx.SetCosmosRouterClientID(cosmosRouterClientIDOrDefault(cfg))
 
 			// Set contract addresses from config
 			roleManager := roleManagerOrDefault(cfg)

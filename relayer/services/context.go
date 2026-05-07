@@ -30,14 +30,15 @@ type Context struct {
 	beaconAPIURL string
 
 	// Ethereum light client configuration
-	ethClientID  string
-	verifier     *common.Address
-	membership   *common.Address
-	misbehaviour *common.Address
-	updateClient *common.Address
-	roleManager  *common.Address
-	ics26Router  *common.Address
-	ics07Client  *common.Address
+	ethClientID          string
+	cosmosRouterClientID string
+	verifier             *common.Address
+	membership           *common.Address
+	misbehaviour         *common.Address
+	updateClient         *common.Address
+	roleManager          *common.Address
+	ics26Router          *common.Address
+	ics07Client          *common.Address
 }
 
 func NewCtx(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client) Context {
@@ -99,6 +100,14 @@ func (c *Context) EthClientID() string {
 
 func (c *Context) SetEthClientID(id string) {
 	c.ethClientID = id
+}
+
+func (c *Context) CosmosRouterClientID() string {
+	return c.cosmosRouterClientID
+}
+
+func (c *Context) SetCosmosRouterClientID(id string) {
+	c.cosmosRouterClientID = id
 }
 
 func (c *Context) SetAddresses(ics26Router, verifier, membership, misbehaviour, updateClient, roleManager string) {

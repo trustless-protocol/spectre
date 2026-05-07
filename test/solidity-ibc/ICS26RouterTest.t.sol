@@ -8,6 +8,7 @@ import { Test } from "forge-std/Test.sol";
 import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
 import { IICS26RouterMsgs } from "../../contracts/msgs/IICS26RouterMsgs.sol";
 import { IIBCAppCallbacks } from "../../contracts/msgs/IIBCAppCallbacks.sol";
+import { ILightClientMsgs } from "../../contracts/msgs/ILightClientMsgs.sol";
 
 import { IICS26RouterErrors } from "../../contracts/errors/IICS26RouterErrors.sol";
 import { IICS26Router } from "../../contracts/interfaces/IICS26Router.sol";
@@ -16,6 +17,8 @@ import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessMa
 import { IIBCApp } from "../../contracts/interfaces/IIBCApp.sol";
 
 import { ICS26Router } from "../../contracts/ICS26Router.sol";
+import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
+import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
 import { ICS20Lib } from "../../contracts/utils/ICS20Lib.sol";
 import { ICS24Host } from "../../contracts/utils/ICS24Host.sol";
 import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
@@ -56,6 +59,23 @@ contract ICS26RouterTest is Test {
 
         ics26Router.addClient(
             IICS02ClientMsgs.CounterpartyInfo("42-dummy-01", testHelper.COSMOS_MERKLE_PREFIX()), mockClient
+        );
+    }
+
+    function dummyMembershipMsg() internal pure returns (bytes memory) {
+        return abi.encode(
+            ILightClientMsgs.MsgVerifyMembership({
+                height: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 0 }),
+                kvPairs: new IMembershipMsgs.KVPair[](0),
+                merkleProofs: new IMembershipMsgs.MerkleProof[](0),
+                appHash: bytes32(0),
+                trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+                    timestamp: 0,
+                    root: bytes32(0),
+                    nextValidatorsHash: bytes32(0)
+                }),
+                membershipType: IMembershipMsgs.MembershipType.Membership
+            })
         );
     }
 
@@ -175,7 +195,7 @@ contract ICS26RouterTest is Test {
 
         IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket = IICS26RouterMsgs.MsgRecvPacket({
             packet: packet,
-            membershipMsg: "0x" // doesn't matter
+            membershipMsg: dummyMembershipMsg()
          });
 
         vm.expectRevert(errorMsg);
@@ -213,7 +233,7 @@ contract ICS26RouterTest is Test {
 
         IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket = IICS26RouterMsgs.MsgRecvPacket({
             packet: packet,
-            membershipMsg: "0x" // doesn't matter
+            membershipMsg: dummyMembershipMsg()
          });
 
         bytes[] memory expAcks = new bytes[](1);
@@ -257,7 +277,7 @@ contract ICS26RouterTest is Test {
 
         IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket = IICS26RouterMsgs.MsgRecvPacket({
             packet: packet,
-            membershipMsg: "0x" // doesn't matter
+            membershipMsg: dummyMembershipMsg()
          });
 
         vm.expectRevert(abi.encodeWithSelector(IICS26RouterErrors.IBCFailedCallback.selector));

@@ -48,7 +48,6 @@ type Handler struct {
 }
 
 const ethTxReceiptTimeout = 45 * time.Second
-const cosmosLightClientRouterID = "cosmoshub-1"
 
 func routerManagesProofSubmission(ctx services.Context) bool {
 	roleManager := ctx.RoleManagerAddress()
@@ -62,7 +61,19 @@ func routerManagesProofSubmission(ctx services.Context) bool {
 	return *roleManager == *router
 }
 
+func cosmosRouterClientID(ctx services.Context) (string, error) {
+	clientID := ctx.CosmosRouterClientID()
+	if clientID == "" {
+		return "", fmt.Errorf("cosmos router client id is not configured")
+	}
+	return clientID, nil
+}
+
 func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte) (common.Address, error) {
+	cosmosClientID, err := cosmosRouterClientID(ctx)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
+	}
 	privKey := os.Getenv("ETH_PRIVATE_KEY")
 	if privKey == "" {
 		return common.Address{}, fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
@@ -146,7 +157,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 
 	tx, err = ics26Router.AddClient(
 		auth,
-		cosmosLightClientRouterID,
+		cosmosClientID,
 		routerContract.IICS02ClientMsgsCounterpartyInfo{
 			ClientId:     "08-wasm-0",
 			MerklePrefix: [][]byte{[]byte("")},
@@ -174,6 +185,10 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 }
 
 func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
+	cosmosClientID, err := cosmosRouterClientID(ctx)
+	if err != nil {
+		return fmt.Errorf("[SendEthTx] %w", err)
+	}
 	privKey := os.Getenv("ETH_PRIVATE_KEY")
 	if privKey == "" {
 		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
@@ -236,8 +251,8 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 			return fmt.Errorf("[SendEthTx] failed to encode updateClient msg: %w", err)
 		}
 		if routerManagesProofSubmission(ctx) {
-			log.Printf("[SendEthTx] Sending ICS26Router.updateClient tx for clientId=%s...", cosmosLightClientRouterID)
-			tx, err = icS26Router.UpdateClient(auth, cosmosLightClientRouterID, data)
+			log.Printf("[SendEthTx] Sending ICS26Router.updateClient tx for clientId=%s...", cosmosClientID)
+			tx, err = icS26Router.UpdateClient(auth, cosmosClientID, data)
 			if err != nil {
 				return fmt.Errorf("[SendEthTx] failed to send router updateClient tx: %w", err)
 			}
@@ -329,6 +344,10 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 
 func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.ClientState, consensusState exported.ConsensusState) (string, error) {
 	log.Printf("[CreateEthClientTx] starting")
+	cosmosClientID, err := cosmosRouterClientID(svcCtx)
+	if err != nil {
+		return "", fmt.Errorf("[CreateEthClientTx] %w", err)
+	}
 
 	// Get the private key from environment variable
 	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
@@ -501,7 +520,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	registerMsg := clienttypesv2.NewMsgRegisterCounterparty(
 		newClientID,
 		[][]byte{[]byte("")},
-		"cosmoshub-1",
+		cosmosClientID,
 		signerAddr.String(),
 	)
 	log.Printf("[CreateEthClientTx] MsgRegisterCounterparty built for clientID=%s", newClientID)
