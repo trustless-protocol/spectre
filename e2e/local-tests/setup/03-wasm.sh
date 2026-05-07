@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 
-set -euxo pipefail
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+LIB_DIR="$(cd "$SCRIPT_DIR/../lib" && pwd)"
+source "$LIB_DIR/sleep.sh"
 
 CHAIN_ID="test-ibc-eth"
 KEYRING="test"
@@ -29,14 +33,7 @@ gaiad tx gov submit-proposal proposal.json \
   --gas-prices 1stake \
   -y
 
-sleep 5
-
-PROPOSAL_ID=$(
-  gaiad q gov proposals -o json \
-    | jq -r '.proposals | sort_by(.id | tonumber) | last | .id'
-)
-
-sleep 5
+PROPOSAL_ID=$(wait_for_proposal_exists "$CHAIN_ID" "http://127.0.0.1:26657" 30 2)
 
 gaiad tx gov vote "$PROPOSAL_ID" yes \
   --from val1 \
@@ -62,7 +59,7 @@ gaiad tx gov vote "$PROPOSAL_ID" yes \
   --gas-prices 1stake \
   -y
 
-sleep 30
+wait_for_proposal_status "$PROPOSAL_ID" "PROPOSAL_STATUS_PASSED" "$CHAIN_ID" "http://127.0.0.1:26657" 60 5
 
 CHECKSUM=$(gaiad q ibc-wasm checksums -o json | jq -r '.checksums[-1].checksum')
 

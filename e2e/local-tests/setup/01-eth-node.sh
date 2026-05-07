@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 
-set -euxo pipefail
+set -euo pipefail
 
 kurtosis enclave rm -f my-testnet || true
 killall gaiad || true
 rm -rf $HOME/.gaia
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+LIB_DIR="$(cd "$(dirname "$0")/../lib" && pwd)"
+source "$LIB_DIR/sleep.sh"
 
 # Run eth chain
 kurtosis run --enclave my-testnet github.com/ethpandaops/ethereum-package@6.1.0 --args-file "$REPO_ROOT/eth-network-params.yaml"
 
-sleep 30
+# Wait for beacon API to become available, then wait for finality
+ETH_BEACON_API=$(wait_for_beacon_api my-testnet 60 10)
+wait_for_beacon_finality "$ETH_BEACON_API" 120 10
 
 KURTOSIS_ENCLAVE="${KURTOSIS_ENCLAVE:-my-testnet}"
 
@@ -25,7 +29,6 @@ ETH_RPC=$(kurtosis enclave inspect "$KURTOSIS_ENCLAVE" \
   }
 ')
 
-# Auto-detect beacon port for finality check
 ETH_BEACON_PORT=$(kurtosis enclave inspect "$KURTOSIS_ENCLAVE" \
 | awk '
   $0 ~ /cl-1-lighthouse-geth/ {in_service=1}
@@ -47,6 +50,7 @@ ETH_WS=$(kurtosis enclave inspect "$KURTOSIS_ENCLAVE" \
   }
 ')
 
+# Re-detect after finality in case endpoints changed
 ETH_BEACON_API=$(kurtosis enclave inspect my-testnet \
 | awk '
   $0 ~ /cl-1-lighthouse-geth/ {in_service=1}
@@ -57,10 +61,6 @@ ETH_BEACON_API=$(kurtosis enclave inspect my-testnet \
   }
   in_service && /^[^[:space:]]/ {in_service=0}
 ')
-
-echo "ETH_RPC: $ETH_RPC"
-echo "ETH_WS: $ETH_WS"
-echo "ETH_BEACON_API: $ETH_BEACON_API"
 
 # Deploy ETH contracts
 export E2E_FAUCET_ADDRESS=0x8943545177806ED17B9F23F0a21ee5948eCaa776
