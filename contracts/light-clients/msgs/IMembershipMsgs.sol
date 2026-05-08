@@ -14,7 +14,7 @@ interface IMembershipMsgs {
     /// @param value The value of the key-value pair.
     struct KVPair {
         bytes[] path;
-        bytes32 value;
+        bytes value;
     }
 
     /// @notice The public value output for the groth16 verify (non)membership program.
@@ -129,7 +129,7 @@ interface IMembershipMsgs {
 
     struct ExistenceProof {
         bytes key;
-        bytes32 value;
+        bytes value;
         LeafOp leaf;
         InnerOp[] path;
     }

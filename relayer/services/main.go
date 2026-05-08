@@ -433,7 +433,7 @@ func (s *Services) cosmosMembership(ctx Context, packet channeltypesv2.Packet, c
 		KvPairs: []tendermintContract.IMembershipMsgsKVPair{
 			{
 				Path:  ibcPath,
-				Value: utils.BytesToBytes32(value),
+				Value: value,
 			},
 		},
 		MerkleProofs: []tendermintContract.IMembershipMsgsMerkleProof{merkleProof},
@@ -474,7 +474,7 @@ func (s *Services) cosmosNonMembership(ctx Context, packet channeltypesv2.Packet
 		KvPairs: []tendermintContract.IMembershipMsgsKVPair{
 			{
 				Path:  ibcPath,
-				Value: utils.BytesToBytes32(value),
+				Value: value,
 			},
 		},
 		MerkleProofs: []tendermintContract.IMembershipMsgsMerkleProof{merkleProof},

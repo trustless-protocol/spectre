@@ -44,7 +44,7 @@ func RunMembership(client *http.HTTP, keyPathsStr string, trustedBlock int64, is
 
 		kvPair := tendermintContract.IMembershipMsgsKVPair{
 			Path:  path,
-			Value: bytesToBytes32(value),
+			Value: value,
 		}
 
 		kvPairs = append(kvPairs, kvPair)
@@ -62,10 +62,4 @@ func RunMembership(client *http.HTTP, keyPathsStr string, trustedBlock int64, is
 	}
 
 	return kvPairs, proofs, nil
-}
-
-func bytesToBytes32(data []byte) [32]byte {
-	var result [32]byte
-	copy(result[:], data)
-	return result
 }
