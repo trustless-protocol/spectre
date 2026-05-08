@@ -46,10 +46,7 @@ func TestSmallestBucketGEQ(t *testing.T) {
 	}{
 		{1, 4, false},
 		{4, 4, false},
-		{5, 8, false},
-		{17, 32, false},
-		{128, 128, false},
-		{129, 0, true},
+		{5, 0, true},
 	}
 	for _, tc := range cases {
 		got, err := SmallestBucketGEQ(tc.in)

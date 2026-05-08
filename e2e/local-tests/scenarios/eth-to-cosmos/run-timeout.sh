@@ -30,6 +30,10 @@ ETH_PRIVATE_KEY="${ETH_PRIVATE_KEY:-${ETH_USER_PK:-${PRIVATE_KEY:-}}}"
 RECEIVER="${RECEIVER:-}"
 load_cosmos_receiver
 
+uint_value() {
+  awk '{ print $1 }'
+}
+
 # ---- Validate ----
 require_cmd cast
 require_cmd jq
@@ -72,12 +76,12 @@ ETH_SENDER="$(cast wallet address --private-key "$ETH_PRIVATE_KEY")"
 # ---- Record pre-transfer state ----
 echo ""
 echo "=== Pre-transfer state ==="
-BEFORE_ETH_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ETH_SENDER" --rpc-url "$ETH_RPC_URL")"
+BEFORE_ETH_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ETH_SENDER" --rpc-url "$ETH_RPC_URL" | uint_value)"
 echo "Sender ERC20 balance (pre):  $BEFORE_ETH_BALANCE"
 
 ESCROW_ADDRESS="$(cast call "$ICS20_ADDRESS" 'getEscrow(string)(address)' "$SOURCE_CLIENT" --rpc-url "$ETH_RPC_URL" 2>/dev/null || echo "")"
 if [ -n "$ESCROW_ADDRESS" ] && [ "$ESCROW_ADDRESS" != "0x" ]; then
-  BEFORE_ESCROW_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ESCROW_ADDRESS" --rpc-url "$ETH_RPC_URL")"
+  BEFORE_ESCROW_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ESCROW_ADDRESS" --rpc-url "$ETH_RPC_URL" | uint_value)"
   echo "Escrow ERC20 balance (pre):   $BEFORE_ESCROW_BALANCE"
 fi
 
@@ -86,7 +90,7 @@ BEFORE_COSMOS_BALANCE="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_V
 echo "Cosmos voucher balance (pre): $BEFORE_COSMOS_BALANCE"
 
 # ---- Send transfer with short timeout ----
-TIMEOUT_SECONDS=2
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-10}"
 TIMEOUT=$(($(date +%s) + TIMEOUT_SECONDS))
 echo ""
 echo "=== Sending ICS20Transfer with ${TIMEOUT_SECONDS}s timeout ==="
@@ -123,10 +127,10 @@ while [ $poll -lt $MAX_POLLS ]; do
   sleep $POLL_INTERVAL
   poll=$((poll + 1))
 
-  CURRENT_ETH_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ETH_SENDER" --rpc-url "$ETH_RPC_URL")"
+  CURRENT_ETH_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ETH_SENDER" --rpc-url "$ETH_RPC_URL" | uint_value)"
   CURRENT_ESCROW="0"
   if [ -n "${ESCROW_ADDRESS:-}" ] && [ "$ESCROW_ADDRESS" != "0x" ]; then
-    CURRENT_ESCROW="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ESCROW_ADDRESS" --rpc-url "$ETH_RPC_URL")"
+    CURRENT_ESCROW="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ESCROW_ADDRESS" --rpc-url "$ETH_RPC_URL" | uint_value)"
   fi
   CURRENT_COSMOS="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_VOUCHER_DENOM" --node "$COSMOS_RPC_URL" --chain-id "$COSMOS_CHAIN_ID" --output json 2>/dev/null | jq -r '.balance.amount // "0"')"
 
@@ -142,11 +146,11 @@ done
 # ---- Final state ----
 echo ""
 echo "=== Final state ==="
-AFTER_ETH_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ETH_SENDER" --rpc-url "$ETH_RPC_URL")"
+AFTER_ETH_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ETH_SENDER" --rpc-url "$ETH_RPC_URL" | uint_value)"
 echo "Sender ERC20 balance (final): $AFTER_ETH_BALANCE"
 
 if [ -n "${ESCROW_ADDRESS:-}" ] && [ "$ESCROW_ADDRESS" != "0x" ]; then
-  AFTER_ESCROW_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ESCROW_ADDRESS" --rpc-url "$ETH_RPC_URL")"
+  AFTER_ESCROW_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ESCROW_ADDRESS" --rpc-url "$ETH_RPC_URL" | uint_value)"
   echo "Escrow ERC20 balance (final):  $AFTER_ESCROW_BALANCE"
 fi
 

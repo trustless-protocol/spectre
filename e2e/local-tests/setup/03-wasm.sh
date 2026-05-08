@@ -64,7 +64,7 @@ gaiad tx gov vote "$PROPOSAL_ID" yes \
 
 sleep 30
 
-CHECKSUM=$(gaiad q ibc-wasm checksums -o json | jq -r '.checksums[-1].checksum')
+CHECKSUM=$(gaiad q ibc-wasm checksums -o json | jq -r '.checksums[-1] | if type == "object" then .checksum else . end')
 
 STATE_DIR="$(cd "$(dirname "$0")/../.state" && pwd)"
 source "$STATE_DIR/../lib/common.sh" || true

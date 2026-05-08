@@ -1,6 +1,7 @@
 package services
 
 import (
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -78,6 +79,25 @@ func TestAddEth(t *testing.T) {
 	}
 	if bb.ethPackets[0].Type != EthSend {
 		t.Fatalf("expected EthSend, got %d", bb.ethPackets[0].Type)
+	}
+}
+
+func TestShouldTimeoutEthSend(t *testing.T) {
+	expired := makeEthPacket(1, EthSend)
+	expired.Packet.TimeoutTimestamp = uint64(time.Now().Add(-time.Second).Unix())
+
+	if !shouldTimeoutEthSend(expired, errors.New("receive packet verification failed: timeout elapsed")) {
+		t.Fatal("expected timeout fallback for expired packet with timeout error")
+	}
+
+	active := makeEthPacket(2, EthSend)
+	active.Packet.TimeoutTimestamp = uint64(time.Now().Add(time.Hour).Unix())
+	if shouldTimeoutEthSend(active, errors.New("receive packet verification failed: timeout elapsed")) {
+		t.Fatal("did not expect timeout fallback before timeout timestamp")
+	}
+
+	if shouldTimeoutEthSend(expired, errors.New("unrelated submit failure")) {
+		t.Fatal("did not expect timeout fallback for unrelated errors")
 	}
 }
 

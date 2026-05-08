@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"relayer/utils"
 	"strconv"
+	"strings"
 	"time"
 
 	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
@@ -251,7 +252,7 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	for _, packet := range batch.Packets {
 		switch packet.Type {
 		case EthSend:
-			if packet.Packet.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= packet.Packet.TimeoutTimestamp {
+			if ethPacketExpired(packet) {
 				s.timeoutEthSend(ctx, packet)
 				continue
 			}
@@ -266,7 +267,7 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 			if !ok {
 				continue
 			}
-			if packet.Packet.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= packet.Packet.TimeoutTimestamp {
+			if ethPacketExpired(packet) {
 				s.timeoutEthSend(ctx, packet)
 				continue
 			}
@@ -287,6 +288,9 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 			}
 			if err := s.worker.TxHandler.SendCosmosTx(ctx, recvMsg); err != nil {
 				log.Printf("[EthSend] seq=%d: failed to send MsgRecvPacket: %v", packet.Packet.Sequence, err)
+				if shouldTimeoutEthSend(packet, err) {
+					s.timeoutEthSend(ctx, packet)
+				}
 				continue
 			}
 			log.Printf("[EthSend] seq=%d: relay completed", packet.Packet.Sequence)
@@ -337,6 +341,20 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 			log.Printf("[StartLoop] Unknown eth packet type: %d (seq=%d)", packet.Type, packet.Packet.Sequence)
 		}
 	}
+}
+
+func ethPacketExpired(packet EthPacket) bool {
+	return packet.Packet.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= packet.Packet.TimeoutTimestamp
+}
+
+func shouldTimeoutEthSend(packet EthPacket, err error) bool {
+	if !ethPacketExpired(packet) {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "timeout elapsed") ||
+		strings.Contains(msg, "IBCInvalidTimeoutTimestamp") ||
+		strings.Contains(msg, "timed out")
 }
 
 func (s *Services) updateCosmosClientForEth(ctx Context, tag string) (*client.LightBlock, bool) {

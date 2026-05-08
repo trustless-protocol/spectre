@@ -70,8 +70,14 @@ key_address() {
     --home "$COSMOS_HOME" 2>/dev/null || true
 }
 
+ibc_denom() {
+  local trace="$1"
+  printf 'ibc/%s\n' "$(printf '%s' "$trace" | sha256sum | awk '{ print toupper($1) }')"
+}
+
 require_cmd "$COSMOS_BIN"
 require_cmd jq
+require_cmd sha256sum
 load_contract_addresses
 
 if [ -z "${ADDRESS:-}" ]; then
@@ -105,9 +111,11 @@ if [ -n "${ADDRESS:-}" ]; then
   cosmos_query bank balances "$ADDRESS" | jq .
 
   if [ -n "${ERC20_ADDRESS:-}" ]; then
-    VOUCHER_DENOM="transfer/$COSMOS_WASM_CLIENT_ID/$ERC20_ADDRESS"
+    VOUCHER_TRACE="transfer/$COSMOS_WASM_CLIENT_ID/$ERC20_ADDRESS"
+    VOUCHER_DENOM="$(ibc_denom "$VOUCHER_TRACE")"
     echo
     echo "== ETH -> Cosmos voucher balance =="
+    printf 'trace=%s\n' "$VOUCHER_TRACE"
     printf 'denom=%s\n' "$VOUCHER_DENOM"
     cosmos_query bank balance "$ADDRESS" "$VOUCHER_DENOM" | jq .
   fi
