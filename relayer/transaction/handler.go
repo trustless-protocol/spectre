@@ -247,7 +247,7 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		return fmt.Errorf("failed to create ICS07 Tendermint contract: %w", err)
 	}
 
-	icS26Router, err := contractICS26Router.NewContractICS26Router(
+	ics26Router, err := contractICS26Router.NewContractICS26Router(
 		*ctx.RouterContract(),
 		ctx.EthClient(),
 	)
@@ -264,7 +264,7 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		}
 		if routerManagesProofSubmission(ctx) {
 			log.Printf("[SendEthTx] Sending ICS26Router.updateClient tx for clientId=%s...", cosmosClientID)
-			tx, err = icS26Router.UpdateClient(auth, cosmosClientID, data)
+			tx, err = ics26Router.UpdateClient(auth, cosmosClientID, data)
 			if err != nil {
 				return fmt.Errorf("[SendEthTx] failed to send router updateClient tx: %w", err)
 			}
@@ -299,19 +299,19 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		}
 	case contractICS26Router.IICS26RouterMsgsMsgRecvPacket:
 		log.Printf("[SendEthTx] Sending recvPacket seq=%d...", msg.Packet.Sequence)
-		tx, err = icS26Router.RecvPacket(auth, msg)
+		tx, err = ics26Router.RecvPacket(auth, msg)
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to recv packet: %w", err)
 		}
 	case contractICS26Router.IICS26RouterMsgsMsgAckPacket:
 		log.Printf("[SendEthTx] Sending ackPacket seq=%d...", msg.Packet.Sequence)
-		tx, err = icS26Router.AckPacket(auth, msg)
+		tx, err = ics26Router.AckPacket(auth, msg)
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to ack packet: %w", err)
 		}
 	case contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket:
 		log.Printf("[SendEthTx] Sending timeoutPacket seq=%d...", msg.Packet.Sequence)
-		tx, err = icS26Router.TimeoutPacket(auth, msg)
+		tx, err = ics26Router.TimeoutPacket(auth, msg)
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to timeout packet: %w", err)
 		}
