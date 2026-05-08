@@ -733,6 +733,8 @@ func MembershipCmd(logger *zap.Logger) *cobra.Command {
 					AppHash:               genesis.TrustedConsensusState.Root,
 					TrustedConsensusState: tendermintContract.IICS07TendermintMsgsConsensusState(genesis.TrustedConsensusState),
 					MembershipType:        uint8(membershipType),
+					Path:                  kvPairs[0].Path,
+					Value:                 kvPairs[0].Value,
 				}
 
 				tx, err := ics07Tendermint.VerifyMembership(auth, msg)
@@ -748,6 +750,7 @@ func MembershipCmd(logger *zap.Logger) *cobra.Command {
 					AppHash:               genesis.TrustedConsensusState.Root,
 					TrustedConsensusState: tendermintContract.IICS07TendermintMsgsConsensusState(genesis.TrustedConsensusState),
 					MembershipType:        uint8(membershipType),
+					Path:                  kvPairs[0].Path,
 				}
 
 				tx, err := ics07Tendermint.VerifyNonMembership(auth, msg)

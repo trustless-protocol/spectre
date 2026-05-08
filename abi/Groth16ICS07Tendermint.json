@@ -448,8 +448,8 @@
               },
               {
                 "name": "value",
-                "type": "bytes32",
-                "internalType": "bytes32"
+                "type": "bytes",
+                "internalType": "bytes"
               }
             ]
           },
@@ -723,6 +723,16 @@
             "name": "membershipType",
             "type": "uint8",
             "internalType": "enum IMembershipMsgs.MembershipType"
+          },
+          {
+            "name": "path",
+            "type": "bytes[]",
+            "internalType": "bytes[]"
+          },
+          {
+            "name": "value",
+            "type": "bytes",
+            "internalType": "bytes"
           }
         ]
       }
@@ -774,8 +784,8 @@
               },
               {
                 "name": "value",
-                "type": "bytes32",
-                "internalType": "bytes32"
+                "type": "bytes",
+                "internalType": "bytes"
               }
             ]
           },
@@ -1049,6 +1059,11 @@
             "name": "membershipType",
             "type": "uint8",
             "internalType": "enum IMembershipMsgs.MembershipType"
+          },
+          {
+            "name": "path",
+            "type": "bytes[]",
+            "internalType": "bytes[]"
           }
         ]
       }
@@ -1250,6 +1265,17 @@
   },
   {
     "type": "error",
+    "name": "DuplicateSigner",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "EmptyValue",
     "inputs": []
   },
@@ -1365,8 +1391,8 @@
       },
       {
         "name": "value",
-        "type": "bytes32",
-        "internalType": "bytes32"
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ]
   },
@@ -1408,13 +1434,13 @@
     "inputs": [
       {
         "name": "expected",
-        "type": "bytes32",
-        "internalType": "bytes32"
+        "type": "bytes",
+        "internalType": "bytes"
       },
       {
         "name": "actual",
-        "type": "bytes32",
-        "internalType": "bytes32"
+        "type": "bytes",
+        "internalType": "bytes"
       }
     ]
   },

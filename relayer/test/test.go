@@ -226,7 +226,7 @@ func (l *Listener) SubscribeCosmos(ctx services.Context, worker *services.Worker
 				KvPairs: []tendermintContract.IMembershipMsgsKVPair{
 					{
 						Path:  ibcPath,
-						Value: utils.BytesToBytes32(value),
+						Value: value,
 					},
 				},
 				MerkleProofs: []tendermintContract.IMembershipMsgsMerkleProof{
