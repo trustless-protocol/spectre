@@ -32,13 +32,15 @@ import (
 )
 
 type CosmosToEthConfig struct {
-	TmRpcUrl        string `json:"tm_rpc_url"`
-	ICS26Address    string `json:"ics26_address"`
-	EthRpcUrl       string `json:"eth_rpc_url"`
-	WrapperVerifier string `json:"wrapper_verifier"`
-	Membership      string `json:"membership"`
-	Misbehaviour    string `json:"misbehaviour"`
-	UpdateClient    string `json:"update_client"`
+	TmRpcUrl           string `json:"tm_rpc_url"`
+	ICS26Address       string `json:"ics26_address"`
+	ICS26ClientID      string `json:"ics26_client_id"`
+	CosmosWasmClientID string `json:"cosmos_wasm_client_id"`
+	EthRpcUrl          string `json:"eth_rpc_url"`
+	WrapperVerifier    string `json:"wrapper_verifier"`
+	Membership         string `json:"membership"`
+	Misbehaviour       string `json:"misbehaviour"`
+	UpdateClient       string `json:"update_client"`
 }
 
 type EthToCosmosConfig struct {
@@ -91,6 +93,9 @@ func loadConfig(configPath string) (*AppConfig, error) {
 		if m.Name == "cosmos_to_eth" {
 			if err := json.Unmarshal(m.Config, &c2eCfg); err != nil {
 				return nil, fmt.Errorf("failed to parse cosmos_to_eth config: %w", err)
+			}
+			if c2eCfg.ICS26ClientID == "" {
+				c2eCfg.ICS26ClientID = m.SrcChain
 			}
 		}
 		if m.Name == "eth_to_cosmos" {
@@ -444,8 +449,16 @@ func main() {
 	}
 	worker := services.NewWorker(&transaction.Handler{}, prover)
 
-	ctx := services.NewCtxWithBeacon(cosmosClient, ethClient, nil, cfg.EthToCosmosConfig.BeaconUrl, "")
-	ctx.SetAddresses(cfg.CosmosToEthConfig.ICS26Address, cfg.CosmosToEthConfig.WrapperVerifier, cfg.CosmosToEthConfig.Membership, cfg.CosmosToEthConfig.Misbehaviour, cfg.CosmosToEthConfig.UpdateClient, "0x0000000000000000000000000000000000000000")
+	ctx := services.NewCtxWithBeacon(cosmosClient, ethClient, nil, cfg.EthToCosmosConfig.BeaconUrl, cfg.CosmosToEthConfig.CosmosWasmClientID)
+	ctx.SetCosmosRouterClientID(cfg.CosmosToEthConfig.ICS26ClientID)
+	ctx.SetAddresses(
+		cfg.CosmosToEthConfig.ICS26Address,
+		cfg.CosmosToEthConfig.WrapperVerifier,
+		cfg.CosmosToEthConfig.Membership,
+		cfg.CosmosToEthConfig.Misbehaviour,
+		cfg.CosmosToEthConfig.UpdateClient,
+		cfg.CosmosToEthConfig.ICS26Address,
+	)
 
 	ics07 := common.HexToAddress("0xD1ea1592b7927a2f0EE5f8567928Df0cfA687C78")
 	ctx.SetClient(ics07)

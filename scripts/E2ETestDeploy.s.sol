@@ -86,12 +86,12 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
             )
         );
 
-        // Wire up the IBCAdmin and access control
-        accessManagerSetTargetRoles(accessManager, address(routerProxy), address(transferProxy), true);
+        // Wire up the IBCAdmin and access control using Eureka's relayer roles.
+        accessManagerSetTargetRoles(accessManager, address(routerProxy), address(transferProxy), false);
 
-        accessManagerSetRoles(
-            accessManager, new address[](0), new address[](0), new address[](0), msg.sender, msg.sender, msg.sender
-        );
+        address[] memory relayers = new address[](1);
+        relayers[0] = msg.sender;
+        accessManagerSetRoles(accessManager, relayers, new address[](0), new address[](0), msg.sender, msg.sender, msg.sender);
 
         // Wire Transfer app
         ICS26Router(address(routerProxy)).addIBCApp(ICS20Lib.DEFAULT_PORT_ID, address(transferProxy));
