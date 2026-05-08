@@ -139,4 +139,18 @@ jq \
   | (.. | objects | select(has("update_client")) | .update_client) = $UPCL
   | (.. | objects | select(has("misbehaviour")) | .misbehaviour) = $MIS
   | (.. | objects | select(has("eth_beacon_api_url")) | .eth_beacon_api_url) = $ETH_BEACON
-  ' config.example.json > config.tmp && mv config.tmp config.example.json
+  ' config.json > config.tmp && mv config.tmp config.json
+
+echo "Waiting for beacon finality (polling until finalized.epoch > 0)..."
+for i in $(seq 1 60); do
+  FINALITY=$(curl -s "http://127.0.0.1:${ETH_BEACON_PORT}/eth/v1/beacon/states/head/finality_checkpoints" 2>/dev/null || echo "")
+  EPOCH=$(echo "$FINALITY" | jq -r '.data.finalized.epoch // empty' 2>/dev/null)
+  if [ -n "$EPOCH" ] && [ "$EPOCH" -gt 0 ] 2>/dev/null; then
+    echo "Beacon finalized at epoch $EPOCH"
+    break
+  fi
+  sleep 5
+done
+if [ -z "$EPOCH" ] || [ "$EPOCH" -le 0 ] 2>/dev/null; then
+  echo "Warning: beacon did not finalize within 5 minutes" >&2
+fi

@@ -29,10 +29,10 @@ if [ -z "$WASM_CHECKSUM" ]; then
   exit 1
 fi
 
-# Check if config.json exists, if not copy from config.example.json
-if [ ! -f "$CONFIG_FILE" ] && [ -f "$RELAYER_DIR/config.example.json" ]; then
-  cp "$RELAYER_DIR/config.example.json" "$CONFIG_FILE"
-  echo "Created $CONFIG_FILE from config.example.json"
+# config.json is the default config file; verify it exists
+if [ ! -f "$CONFIG_FILE" ]; then
+  echo "Error: $CONFIG_FILE not found. Create it from the example template." >&2
+  exit 1
 fi
 
 cd "$RELAYER_DIR"

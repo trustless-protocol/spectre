@@ -66,7 +66,7 @@ go build -o relayer ./cmd
 This script:
 - Starts a Kurtosis Ethereum testnet
 - Deploys core Solidity contracts (ICS26, ICS20, ICS07, Verifiers)
-- Configures `relayer/config.example.json` with deployed addresses
+- Configures `relayer/config.json` with deployed addresses
 
 Wait until beacon finalizes (poll until `finalized.epoch > 0`):
 ```bash
@@ -102,7 +102,7 @@ Waits for proposal to pass and outputs the WASM checksum.
 ```
 
 Auto-detects WASM checksum from `03-wasm.sh` (saved to `.state/wasm_checksum`).
-Copies `config.example.json` to `config.json` if needed.
+Uses `relayer/config.json` with deployed addresses.
 Deploys the ICS07 Tendermint light client on Ethereum and copies the address back into `config.json`.
 
 ## Step 6: Start Relayer
@@ -111,7 +111,7 @@ Deploys the ICS07 Tendermint light client on Ethereum and copies the address bac
 ./setup/05-relayer.sh
 ```
 
-Auto-copies `config.example.json` to `config.json` if needed.
+Uses `relayer/config.json` with deployed addresses.
 The relayer runs a bi-directional relay loop (Cosmos ↔ ETH).
 
 ## Scenarios
