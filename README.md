@@ -91,7 +91,7 @@ curl -s http://127.0.0.1:51180/eth/v1/beacon/states/head/finality_checkpoints
   --wasm-checksum <hex-from-wasm.sh>
 
 # 6. Start the bi-directional relay loop
-./relayer start --config config.json
+./relayer start --config config.example.json
 
 # 7. send tx
 
