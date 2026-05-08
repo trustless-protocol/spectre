@@ -69,8 +69,20 @@ func cosmosRouterClientID(ctx services.Context) (string, error) {
 	return clientID, nil
 }
 
+func cosmosWasmClientID(ctx services.Context) (string, error) {
+	clientID := ctx.EthClientID()
+	if clientID == "" {
+		return "", fmt.Errorf("cosmos wasm client id is not configured")
+	}
+	return clientID, nil
+}
+
 func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte) (common.Address, error) {
 	cosmosClientID, err := cosmosRouterClientID(ctx)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
+	}
+	wasmClientID, err := cosmosWasmClientID(ctx)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
@@ -159,7 +171,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		auth,
 		cosmosClientID,
 		routerContract.IICS02ClientMsgsCounterpartyInfo{
-			ClientId:     "08-wasm-0",
+			ClientId:     wasmClientID,
 			MerklePrefix: [][]byte{[]byte("")},
 		},
 		*ctx.ClientContract(),
