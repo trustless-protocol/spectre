@@ -69,6 +69,37 @@ func TestSmallestBucketGEQ(t *testing.T) {
 	}
 }
 
+func TestSmallestBucketGEQFrom(t *testing.T) {
+	cases := []struct {
+		name    string
+		buckets []int
+		in      int
+		want    int
+		err     bool
+	}{
+		{name: "fits loaded bucket", buckets: []int{4, 8, 16}, in: 9, want: 16},
+		{name: "exceeds loaded bucket", buckets: []int{4, 8, 16}, in: 17, err: true},
+		{name: "no buckets", buckets: nil, in: 1, err: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := SmallestBucketGEQFrom(tc.buckets, tc.in)
+			if tc.err {
+				if err == nil {
+					t.Fatalf("expected error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPadWithDummies_FillsTrailingSlotsWithDistinctDummies(t *testing.T) {
 	real := []ValidatorSignature{{
 		Signature:        append(make([]byte, 63), 0xAB),

@@ -71,11 +71,18 @@ go build -o relayer ./cmd
 #    Replace 56246 with your Kurtosis-mapped beacon RPC port.
 ./run_eth_node.sh        # Kurtosis Ethereum testnet + deploys core contracts
 # Poll until finalized.epoch > 0:
-curl -s http://127.0.0.1:56246/eth/v1/beacon/states/head/finality_checkpoints
+curl -s <eth_beacon_api_ur>/eth/v1/beacon/states/head/finality_checkpoints
+curl -s http://127.0.0.1:51180/eth/v1/beacon/states/head/finality_checkpoints
 
 # 4. Then start Cosmos and submit the Ethereum LC WASM via governance
-./run_cosmos_node.sh     # local Cosmos chain with funded test accounts
-./wasm.sh                # submit + vote-pass the Ethereum LC WASM proposal
+#    This requires a wasm-enabled Cosmos binary (08-wasm), e.g. simd:
+#    COSMOS_BIN=simd ./run_cosmos_node.sh
+#    COSMOS_BIN=simd ./wasm.sh
+#    If you only have stock gaiad, use the container flow instead:
+#    ./run_cosmos_node_docker.sh
+#    ./wasm_docker.sh
+./run_cosmos_node.sh
+./wasm.sh
 
 # 5. Deploy Tendermint light client on Ethereum.
 #    Copies the ICS07 address back into relayer/config.json automatically.
@@ -85,7 +92,13 @@ curl -s http://127.0.0.1:56246/eth/v1/beacon/states/head/finality_checkpoints
 
 # 6. Start the bi-directional relay loop
 ./relayer start --config config.json
+
+# 7. send tx
+
+gaiad tx ibc-transfer transfer cosmoshub-1 08-wasm-0 0x8943545177806ED17B9F23F0a21ee5948eCaa776 1000stake --from test1 --keyring-backend test --gas-prices 1stake --packet-timeout-timestamp 600 --generate-only | jq '.body.messages[0].encoding = "application/x-solidity-abi"' | gaiad tx sign /dev/stdin --from test1 --keyring-backend test | gaiad tx broadcast /dev/stdin -y
 ```
+
+
 
 Send an ICS-20 transfer from Cosmos to trigger an `updateClient` + `recvPacket`
 round-trip; the `[UpdateCosmosClient]` log line reports the chosen bucket.
