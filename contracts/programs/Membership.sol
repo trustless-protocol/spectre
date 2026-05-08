@@ -25,7 +25,7 @@ contract Membership  is IMembership {
     error VerificationMembershipFailed();
     error VerificationNonMembershipFailed();
     error MissingMerkleProof();
-    error InvalidValueLenght();
+    error InvalidValueLength();
     error MissingMerkleRoot();
     error MismatchedNumberOfProofs(uint256 expected, uint256 actual);
     error MissingVerifiedValue();
@@ -101,8 +101,8 @@ contract Membership  is IMembership {
 
         // ibc commitment value are exactly 32 bytes
         // for future commitment with different length we should remove this
-        if (value.length == 32) {
-            revert InvalidValueLenght();
+        if (value.length != 32) {
+            revert InvalidValueLength();
         }
 
         uint256 proofLength = proof.proofs.length;
