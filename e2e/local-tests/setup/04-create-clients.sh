@@ -40,7 +40,13 @@ refresh_relayer_eth_endpoints "$CONFIG_FILE"
 cd "$RELAYER_DIR"
 build_relayer_if_needed
 
+# Persist wasm checksum in .env so the relayer can find it
+ENV_FILE="$RELAYER_DIR/.env"
+source "$REPO_ROOT/e2e/local-tests/lib/cosmos.sh"
+upsert_env_var "$ENV_FILE" WASM_CHECKSUM "$WASM_CHECKSUM"
+
+PROVER_BIN_DIR="${PROVER_BIN_DIR:-$RELAYER_DIR/bin}" \
 LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-$HOME/works/ecip-gnark}" \
   ./relayer create-clients \
-    --config "$(basename "$CONFIG_FILE")" \
+    --config "$CONFIG_FILE" \
     --wasm-checksum "$WASM_CHECKSUM"

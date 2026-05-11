@@ -31,8 +31,13 @@ COSMOS_SIGNER_KEY="${COSMOS_SIGNER_KEY:-test1}"
 COSMOS_RPC_URL="${COSMOS_RPC_URL:-http://127.0.0.1:26657}"
 COSMOS_GRPC_ADDR="${COSMOS_GRPC_ADDR:-127.0.0.1:9090}"
 COSMOS_CHAIN_ID="${COSMOS_CHAIN_ID:-test-ibc-eth}"
-COSMOS_WASM_CLIENT_ID="${COSMOS_WASM_CLIENT_ID:-08-wasm-0}"
 COSMOS_TX_HASH="${COSMOS_TX_HASH:-${TX_HASH:-}}"
+
+# Read cosmos_wasm_client_id from config
+if [ -z "${COSMOS_WASM_CLIENT_ID:-}" ] && [ -f "$REPO_ROOT/relayer/config.json" ]; then
+  COSMOS_WASM_CLIENT_ID="$(jq -er '.. | objects | select(.name == "cosmos_to_eth") | .config.cosmos_wasm_client_id // empty' "$REPO_ROOT/relayer/config.json" 2>/dev/null || true)"
+fi
+COSMOS_WASM_CLIENT_ID="${COSMOS_WASM_CLIENT_ID:-08-wasm-0}"
 
 require_cmd() {
   local cmd="$1"

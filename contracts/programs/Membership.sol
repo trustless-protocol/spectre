@@ -415,9 +415,9 @@ contract Membership  is IMembership {
         if (!proof.hasLeft && !proof.hasRight) {
             revert("neither left nor right proof defined");
         } else if (!proof.hasLeft && proof.hasRight) {
-            ensureLeftMost(innerSpec, proof.left.path);
+            ensureLeftMost(innerSpec, proof.right.path);
         } else if (proof.hasLeft && !proof.hasRight) {
-            ensureRightMost(innerSpec, proof.right.path);
+            ensureRightMost(innerSpec, proof.left.path);
         } else if (proof.hasLeft && proof.hasRight) {
 
             uint256 leftIndex = proof.left.path.length -1;

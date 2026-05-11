@@ -117,6 +117,8 @@ upsert_env_var "$ENV_FILE" ETH_BEACON_API_URL "$ETH_BEACON_API"
 upsert_env_var "$ENV_FILE" ERC20_ADDRESS "$ERC20_ADDRESS"
 upsert_env_var "$ENV_FILE" ICS20_ADDRESS "$ICS20_ADDRESS"
 upsert_env_var "$ENV_FILE" ICS26_ADDRESS "$ICS26_ADDRESS"
+upsert_env_var "$ENV_FILE" ETH_PRIVATE_KEY "bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31"
+upsert_env_var "$ENV_FILE" PROVER_BIN_DIR "./bin"
 
 
 # Configure runtime relayer config

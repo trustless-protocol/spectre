@@ -26,8 +26,9 @@ refresh_relayer_eth_endpoints "$CONFIG_FILE"
 cd "$RELAYER_DIR"
 build_relayer_if_needed
 
+PROVER_BIN_DIR="${PROVER_BIN_DIR:-$RELAYER_DIR/bin}" \
 LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-$HOME/works/ecip-gnark}" \
-  ./relayer start --config "$(basename "$CONFIG_FILE")" &
+  ./relayer start --config "$CONFIG_FILE" &
 RELAYER_PID="$!"
 echo "$RELAYER_PID" > "$RELAYER_PID_FILE"
 cleanup() {

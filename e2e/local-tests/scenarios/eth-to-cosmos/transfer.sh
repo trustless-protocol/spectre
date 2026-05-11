@@ -132,6 +132,11 @@ load_cosmos_receiver() {
 require_cmd jq
 require_cmd cast
 
+# Read SOURCE_CLIENT from config if not set via env
+if [ -z "${SOURCE_CLIENT:-}" ] && [ -f "$REPO_ROOT/relayer/config.json" ]; then
+  SOURCE_CLIENT="$(jq -er '.. | objects | select(.name == "cosmos_to_eth") | .config.ics26_client_id // empty' "$REPO_ROOT/relayer/config.json" 2>/dev/null || true)"
+fi
+
 discover_kurtosis_endpoints
 load_contract_addresses
 load_cosmos_receiver

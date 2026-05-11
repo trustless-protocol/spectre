@@ -31,15 +31,57 @@ e2e/local-tests/
 **Backward compatibility:** Old paths in `scripts/` are wrappers that delegate
 to the new locations. You can use either `scripts/<name>.sh` or the new paths.
 
-## Prerequisites
+## Configuration
 
+The relayer uses two configuration files:
+
+| File | Purpose |
+|------|---------|
+| `relayer/config.json` | Module addresses, endpoints, client IDs (auto-generated) |
+| `relayer/.env` | Private keys, chain IDs, prover paths (written by scripts) |
+
+### `config.json` fields (`cosmos_to_eth` module)
+
+| Field | Description |
+|-------|-------------|
+| `tm_rpc_url` | Cosmos Tendermint RPC endpoint |
+| `ics26_address` | ICS26 Router contract address on Ethereum |
+| `ics26_client_id` | Client ID of the Cosmos light client on Ethereum's ICS26 Router |
+| `cosmos_wasm_client_id` | Client ID of the Ethereum wasm light client on Cosmos |
+| `eth_rpc_url` | Ethereum execution RPC URL |
+| `eth_ws_url` | Ethereum WebSocket URL (for event subscriptions) |
+| `ics07_client` | ICS07 Tendermint light client address on Ethereum |
+| `wrapper_verifier` | WrapperVerifier contract address |
+| `membership` | Membership contract address |
+| `misbehaviour` | Misbehaviour contract address |
+| `update_client` | UpdateClient contract address |
+
+### `.env` file
+
+| Variable | Set by | Used by |
+|----------|--------|---------|
+| `ETH_RPC_URL` | `01-eth-node.sh` | Relayer start, genesis, fixtures |
+| `ETH_WS_URL` | `01-eth-node.sh` | Relayer start |
+| `ETH_BEACON_API_URL` | `01-eth-node.sh` | Relayer create-clients, start |
+| `ETH_PRIVATE_KEY` | `01-eth-node.sh` | Relayer start, create-clients (Ethereum tx signing) |
+| `ERC20_ADDRESS` | `01-eth-node.sh` | Transfer/check scripts |
+| `ICS20_ADDRESS` | `01-eth-node.sh` | Transfer/check scripts |
+| `ICS26_ADDRESS` | `01-eth-node.sh` | Transfer/check scripts |
+| `COSMOS_PRIVATE_KEY` | `02-cosmos-node.sh` | Relayer create-clients, start (Cosmos tx signing) |
+| `COSMOS_CHAIN_ID` | `02-cosmos-node.sh` | Relayer create-clients, start |
+| `PROVER_BIN_DIR` | `01-eth-node.sh` | Relayer create-clients, start (ZK circuit artifacts) |
+| `WASM_CHECKSUM` | `04-create-clients.sh` | Relayer create-clients (Ethereum light client checksum) |
+| `PROVER_BIN_DIR` | default: `./bin` | Path to per-bucket ZK artifacts (r1cs, pk, vk) |
+
+### `LD_LIBRARY_PATH`
+
+The gnark prover requires the ECIP shared library at runtime. Set via:
 ```bash
-# Install dependencies (one-time setup)
-# Kurtosis: https://docs.kurtosis.com/install
-# Foundry: https://getfoundry.sh/
-# Bun: https://bun.sh/
-# Just: https://github.com/casey/just
+export LD_LIBRARY_PATH=$HOME/works/ecip-gnark${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 ```
+Both `04-create-clients.sh` and `05-relayer.sh` set this automatically, defaulting to `$HOME/works/ecip-gnark`.
+
+## Prerequisites
 
 ## Step 0: Compile Prover Circuits (One-time)
 
@@ -110,8 +152,9 @@ Creates `config.json` from `config.example.json` if needed, refreshes Kurtosis e
 ./setup/05-relayer.sh
 ```
 
-Creates `config.json` from `config.example.json` if needed and refreshes Kurtosis endpoints before starting.
-The relayer runs a bi-directional relay loop (Cosmos ↔ ETH).
+Creates `config.json` from `config.example.json` if needed, refreshes Kurtosis endpoints, and starts
+the relayer with `LD_LIBRARY_PATH` and `PROVER_BIN_DIR` configured. The relayer runs a bi-directional
+relay loop (Cosmos ↔ ETH). Requires the `.env` file to have `ETH_PRIVATE_KEY` and `COSMOS_PRIVATE_KEY`.
 
 ## Scenarios
 

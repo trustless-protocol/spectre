@@ -161,7 +161,8 @@ done
 COSMOS_PRIVATE_KEY="$(gaiad keys export test1 --unarmored-hex --unsafe --keyring-backend "$KEYRING" --home "$PRIMARY_HOME" -y)"
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_PRIVATE_KEY" "$COSMOS_PRIVATE_KEY"
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_CHAIN_ID" "$CHAIN_ID"
-echo "Updated $RELAYER_ENV_FILE with COSMOS_PRIVATE_KEY and COSMOS_CHAIN_ID"
+upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_GAS_LIMIT" "500000"
+echo "Updated $RELAYER_ENV_FILE with COSMOS_PRIVATE_KEY, COSMOS_CHAIN_ID, and COSMOS_GAS_LIMIT"
 
 PIDS=()
 for i in "${!HOMES[@]}"; do

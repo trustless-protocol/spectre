@@ -133,8 +133,26 @@ ensure_relayer_config() {
   cp "$template_file" "$config_file"
 }
 
+# Backfill new config fields (ics26_client_id, cosmos_wasm_client_id) that older
+# config.json files may be missing. Defaults to src_chain for ics26_client_id
+# and "08-wasm-0" for cosmos_wasm_client_id.
+backfill_relayer_config_fields() {
+  local config_file="$1"
+
+  if [ ! -f "$config_file" ]; then
+    return 0
+  fi
+
+  jq '
+    (.. | objects | select(.name == "cosmos_to_eth") | select(.config.cosmos_wasm_client_id == null) | .config.cosmos_wasm_client_id) = "08-wasm-0"
+  | (.. | objects | select(.name == "cosmos_to_eth") | select(.config.ics26_client_id == null) | .config.ics26_client_id) = (.src_chain // "test-ibc-eth")
+  ' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
+}
+
 refresh_relayer_eth_endpoints() {
   local config_file="$1"
+
+  backfill_relayer_config_fields "$config_file"
 
   ETH_RPC_URL=""
   ETH_WS_URL=""
@@ -187,6 +205,8 @@ update_relayer_deploy_config() {
   local update_client="$7"
   local misbehaviour="$8"
   local eth_beacon="$9"
+
+  backfill_relayer_config_fields "$config_file"
 
   jq \
     --arg ETH_RPC "$eth_rpc" \

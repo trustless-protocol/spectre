@@ -119,6 +119,12 @@ echo "Using ETH_RPC_URL: $ETH_RPC_URL"
 
 load_timeout_contract_addresses
 
+# Read cosmos_wasm_client_id from config
+if [ -z "${COSMOS_WASM_CLIENT_ID:-}" ] && [ -f "$CONFIG_FILE" ]; then
+  COSMOS_WASM_CLIENT_ID="$(jq -er '.. | objects | select(.name == "cosmos_to_eth") | .config.cosmos_wasm_client_id // empty' "$CONFIG_FILE" 2>/dev/null || true)"
+fi
+COSMOS_WASM_CLIENT_ID="${COSMOS_WASM_CLIENT_ID:-08-wasm-0}"
+
 RECEIVER="${RECEIVER:-}"
 load_cosmos_receiver
 
@@ -182,7 +188,7 @@ if [ -n "$ESCROW_ADDRESS" ] && [ "$ESCROW_ADDRESS" != "0x" ]; then
   echo "Escrow ERC20 balance (pre):   $BEFORE_ESCROW_BALANCE"
 fi
 
-COSMOS_VOUCHER_DENOM="transfer/08-wasm-0/$ERC20_ADDRESS"
+COSMOS_VOUCHER_DENOM="transfer/$COSMOS_WASM_CLIENT_ID/$ERC20_ADDRESS"
 BEFORE_COSMOS_BALANCE="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_VOUCHER_DENOM" --node "$COSMOS_RPC_URL" --chain-id "$COSMOS_CHAIN_ID" --output json 2>/dev/null | jq -r '.balance.amount // "0"')"
 echo "Cosmos voucher balance (pre): $BEFORE_COSMOS_BALANCE"
 
