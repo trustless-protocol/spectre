@@ -79,9 +79,11 @@ echo "ETH_BEACON_API: $ETH_BEACON_API"
 
 # Deploy ETH contracts
 export E2E_FAUCET_ADDRESS
+export FOUNDRY_OPTIMIZER_RUNS=200
 RESULT=$(forge script scripts/E2ETestDeploy.s.sol:E2ETestDeploy \
     --rpc-url $ETH_RPC \
     --broadcast \
+    --non-interactive \
     --ffi \
     --sender "$E2E_FAUCET_ADDRESS" --private-key "$E2E_FAUCET_PRIVATE_KEY" \
     2>/dev/null

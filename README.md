@@ -90,12 +90,42 @@ curl -s http://127.0.0.1:51180/eth/v1/beacon/states/head/finality_checkpoints
   --config config.json \
   --wasm-checksum <hex-from-wasm.sh>
 
+./relayer create-clients  --config config.example.json --wasm-checksum 0xd24688886ed8cec00c667fa69c173fbab9a08c75900ce18afe10517c82e55592
+
 # 6. Start the bi-directional relay loop
 ./relayer start --config config.example.json
 
 # 7. send tx
 
-gaiad tx ibc-transfer transfer cosmoshub-1 08-wasm-0 0x8943545177806ED17B9F23F0a21ee5948eCaa776 1000stake --from test1 --keyring-backend test --gas-prices 1stake --packet-timeout-timestamp 600 --generate-only | jq '.body.messages[0].encoding = "application/x-solidity-abi"' | gaiad tx sign /dev/stdin --from test1 --keyring-backend test | gaiad tx broadcast /dev/stdin -y
+ABS_TIMEOUT=$(($(date +%s) + 1800))
+
+gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21ee5948ecaa776 1000stake \
+  --from test1 \
+  --home /Users/donglieu/.gaia \
+  --chain-id test-ibc-eth \
+  --node tcp://127.0.0.1:26657 \
+  --keyring-backend test \
+  --gas-prices 1stake \
+  --absolute-timeouts \
+  --packet-timeout-timestamp "$ABS_TIMEOUT" \
+  --generate-only \
+| jq '.body.messages[0].encoding = "application/x-solidity-abi"' \
+| gaiad tx sign /dev/stdin \
+    --from test1 \
+    --home /Users/donglieu/.gaia \
+    --chain-id test-ibc-eth \
+    --keyring-backend test \
+| gaiad tx broadcast /dev/stdin \
+    --node tcp://127.0.0.1:26657 \
+    -y
+
+
+
+cast call 0xee0fcb8e5ccad0b4197baabd633333886f5c364d \
+  'ibcERC20Contract(string)(address)' \
+  'transfer/cosmoshub-1/stake' \
+  --rpc-url http://127.0.0.1:58724
+
 ```
 
 
