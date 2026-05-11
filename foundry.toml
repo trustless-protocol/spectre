@@ -9,7 +9,7 @@
   gas_reports = ["*"]
   optimizer = true
   via_ir = true # This is needed because of the `Groth16ICS07Tendermint` contract
-  optimizer_runs = 10_000
+  optimizer_runs = 1_000
   out = "out"
   script = "scripts"
   solc = "0.8.28"
