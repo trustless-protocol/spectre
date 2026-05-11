@@ -172,7 +172,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		cosmosClientID,
 		routerContract.IICS02ClientMsgsCounterpartyInfo{
 			ClientId:     wasmClientID,
-			MerklePrefix: [][]byte{[]byte("")},
+			MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
 		},
 		*ctx.ClientContract(),
 	)
@@ -188,7 +188,38 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		return common.Address{}, fmt.Errorf("failed waiting for AddClient receipt: %w", err)
 	}
 	if receipt.Status == 0 {
-		log.Printf("[CreateCosmosClient] AddClient tx reverted (gasUsed=%d) — client may already exist, continuing...", receipt.GasUsed)
+		log.Printf("[CreateCosmosClient] AddClient reverted (gasUsed=%d) — falling back to MigrateClient to repoint %s to new ICS07 %s",
+			receipt.GasUsed, cosmosClientID, address.Hex())
+
+		nonce, err = ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
+		if err != nil {
+			return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to get nonce for MigrateClient: %w", err)
+		}
+		auth.Nonce = big.NewInt(int64(nonce))
+
+		mtx, err := ics26Router.MigrateClient(
+			auth,
+			cosmosClientID,
+			routerContract.IICS02ClientMsgsCounterpartyInfo{
+				ClientId:     wasmClientID,
+				MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
+			},
+			*ctx.ClientContract(),
+		)
+		if err != nil {
+			return common.Address{}, fmt.Errorf("[CreateCosmosClient] MigrateClient call failed: %w", err)
+		}
+		log.Printf("[CreateCosmosClient] MigrateClient tx sent: %s. Waiting for receipt...", mtx.Hash().Hex())
+		mctx, mcancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
+		defer mcancel()
+		mreceipt, err := bind.WaitMined(mctx, ctx.EthClient(), mtx)
+		if err != nil {
+			return common.Address{}, fmt.Errorf("failed waiting for MigrateClient receipt: %w", err)
+		}
+		if mreceipt.Status == 0 {
+			return common.Address{}, fmt.Errorf("MigrateClient tx %s reverted (gasUsed=%d)", mtx.Hash().Hex(), mreceipt.GasUsed)
+		}
+		log.Printf("[CreateCosmosClient] MigrateClient confirmed (block %d, gasUsed=%d)", mreceipt.BlockNumber.Uint64(), mreceipt.GasUsed)
 		return address, nil
 	}
 	log.Printf("[CreateCosmosClient] AddClient confirmed (block %d, gasUsed=%d)", receipt.BlockNumber.Uint64(), receipt.GasUsed)
