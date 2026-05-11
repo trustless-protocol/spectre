@@ -102,8 +102,7 @@ Waits for proposal to pass and outputs the WASM checksum.
 ```
 
 Auto-detects WASM checksum from `03-wasm.sh` (saved to `.state/wasm_checksum`).
-Uses `relayer/config.json` with deployed addresses.
-Deploys the ICS07 Tendermint light client on Ethereum and copies the address back into `config.json`.
+Creates `config.json` from `config.example.json` if needed, refreshes Kurtosis endpoints, deploys the ICS07 Tendermint light client on Ethereum, and copies the address back into `config.json`.
 
 ## Step 6: Start Relayer
 
@@ -111,7 +110,7 @@ Deploys the ICS07 Tendermint light client on Ethereum and copies the address bac
 ./setup/05-relayer.sh
 ```
 
-Uses `relayer/config.json` with deployed addresses.
+Creates `config.json` from `config.example.json` if needed and refreshes Kurtosis endpoints before starting.
 The relayer runs a bi-directional relay loop (Cosmos ↔ ETH).
 
 ## Scenarios
@@ -137,7 +136,7 @@ Or run steps individually:
 ./scenarios/eth-to-cosmos/run-timeout.sh
 ```
 
-Sends a transfer with a 5-second timeout, waits for expiry, then verifies the
+Sends a transfer with a 10-second timeout, waits for expiry, then verifies the
 packet was NOT relayed to Cosmos. The relayer is stopped during this test so
 the packet cannot be relayed before the timeout.
 

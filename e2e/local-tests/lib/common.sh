@@ -116,3 +116,95 @@ load_env_file() {
     set +a
   fi
 }
+
+ensure_relayer_config() {
+  local config_file="$1"
+  local template_file="${2:-$REPO_ROOT/relayer/config.example.json}"
+
+  if [ -f "$config_file" ]; then
+    return 0
+  fi
+
+  if [ ! -f "$template_file" ]; then
+    echo "Error: $config_file not found and template $template_file is missing" >&2
+    exit 1
+  fi
+
+  cp "$template_file" "$config_file"
+}
+
+refresh_relayer_eth_endpoints() {
+  local config_file="$1"
+
+  ETH_RPC_URL=""
+  ETH_WS_URL=""
+  ETH_BEACON_API_URL=""
+  discover_kurtosis_endpoints
+
+  if [ -z "${ETH_RPC_URL:-}" ]; then
+    ETH_RPC_URL="$(jq -er '[.. | objects | .eth_rpc_url? // empty][0]' "$config_file" 2>/dev/null || true)"
+  fi
+  if [ -z "${ETH_WS_URL:-}" ]; then
+    ETH_WS_URL="$(jq -er '[.. | objects | .eth_ws_url? // empty][0]' "$config_file" 2>/dev/null || true)"
+  fi
+  if [ -z "${ETH_BEACON_API_URL:-}" ]; then
+    ETH_BEACON_API_URL="$(jq -er '[.. | objects | .eth_beacon_api_url? // empty][0]' "$config_file" 2>/dev/null || true)"
+  fi
+
+  if [ -z "${ETH_RPC_URL:-}" ]; then
+    echo "Error: ETH RPC URL not found in Kurtosis or $config_file" >&2
+    exit 1
+  fi
+
+  if ! cast chain-id --rpc-url "$ETH_RPC_URL" >/dev/null 2>&1; then
+    echo "Error: ethereum rpc not responding at $ETH_RPC_URL" >&2
+    echo "Run ./setup/01-eth-node.sh or refresh $config_file with the current Kurtosis RPC URL." >&2
+    exit 1
+  fi
+
+  echo "Using ETH_RPC_URL: $ETH_RPC_URL"
+  [ -n "${ETH_WS_URL:-}" ] && echo "Using ETH_WS_URL: $ETH_WS_URL"
+  [ -n "${ETH_BEACON_API_URL:-}" ] && echo "Using ETH_BEACON_API_URL: $ETH_BEACON_API_URL"
+
+  jq \
+    --arg ETH_RPC "$ETH_RPC_URL" \
+    --arg ETH_WS "${ETH_WS_URL:-}" \
+    --arg ETH_BEACON "${ETH_BEACON_API_URL:-}" '
+      (.. | objects | select(has("eth_rpc_url")) | .eth_rpc_url) = $ETH_RPC
+    | (.. | objects | select(has("eth_ws_url")) | .eth_ws_url) = $ETH_WS
+    | (.. | objects | select(has("eth_beacon_api_url")) | .eth_beacon_api_url) = $ETH_BEACON
+    ' "$config_file" > "$config_file.tmp"
+  mv "$config_file.tmp" "$config_file"
+}
+
+update_relayer_deploy_config() {
+  local config_file="$1"
+  local eth_rpc="$2"
+  local eth_ws="$3"
+  local ics26="$4"
+  local wrapper="$5"
+  local membership="$6"
+  local update_client="$7"
+  local misbehaviour="$8"
+  local eth_beacon="$9"
+
+  jq \
+    --arg ETH_RPC "$eth_rpc" \
+    --arg ETH_WS "$eth_ws" \
+    --arg ICS26 "$ics26" \
+    --arg WRAP "$wrapper" \
+    --arg MEMB "$membership" \
+    --arg UPCL "$update_client" \
+    --arg MIS "$misbehaviour" \
+    --arg ETH_BEACON "$eth_beacon" '
+      (.. | objects | select(has("eth_rpc_url")) | .eth_rpc_url) = $ETH_RPC
+    | (.. | objects | select(has("eth_ws_url")) | .eth_ws_url) = $ETH_WS
+    | (.. | objects | select(has("ics26_address")) | .ics26_address) = $ICS26
+    | (.. | objects | select(has("wrapper_verifier")) | .wrapper_verifier) = $WRAP
+    | (.. | objects | select(has("membership")) | .membership) = $MEMB
+    | (.. | objects | select(has("update_client")) | .update_client) = $UPCL
+    | (.. | objects | select(has("misbehaviour")) | .misbehaviour) = $MIS
+    | (.. | objects | select(has("eth_beacon_api_url")) | .eth_beacon_api_url) = $ETH_BEACON
+    ' "$config_file" > "$config_file.tmp"
+  mv "$config_file.tmp" "$config_file"
+}

@@ -4,9 +4,12 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
 RELAYER_DIR="$REPO_ROOT/relayer"
+KURTOSIS_ENCLAVE="${KURTOSIS_ENCLAVE:-my-testnet}"
 
 CONFIG_FILE="${CONFIG_FILE:-$RELAYER_DIR/config.json}"
 RELAYER_PID_FILE="${RELAYER_PID_FILE:-$RELAYER_DIR/relayer.pid}"
+
+source "$REPO_ROOT/e2e/local-tests/lib/common.sh"
 
 build_relayer_if_needed() {
   if [ ! -x "$RELAYER_DIR/relayer" ] || find "$RELAYER_DIR" -name '*.go' -newer "$RELAYER_DIR/relayer" | grep -q .; then
@@ -15,11 +18,10 @@ build_relayer_if_needed() {
   fi
 }
 
-# config.json is the default config file; verify it exists
-if [ ! -f "$CONFIG_FILE" ]; then
-  echo "Error: $CONFIG_FILE not found. Create it from the example template." >&2
-  exit 1
-fi
+require_cmd cast
+require_cmd jq
+ensure_relayer_config "$CONFIG_FILE" "$RELAYER_DIR/config.example.json"
+refresh_relayer_eth_endpoints "$CONFIG_FILE"
 
 cd "$RELAYER_DIR"
 build_relayer_if_needed

@@ -43,8 +43,14 @@ require_cmd() {
 }
 
 load_contract_addresses() {
+  if [ -n "${ERC20_ADDRESS:-}" ]; then
+    return 0
+  fi
+
   if [ -z "$BROADCAST_JSON" ]; then
-    BROADCAST_JSON="$(find "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" -path '*/run-latest.json' -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR == 1 { print $2 }')"
+    if [ -d "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" ]; then
+      BROADCAST_JSON="$(find "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" -path '*/run-latest.json' -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR == 1 { print $2 }')"
+    fi
   fi
 
   if [ ! -f "$BROADCAST_JSON" ]; then

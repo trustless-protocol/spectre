@@ -8,6 +8,7 @@ source "$REPO_ROOT/e2e/local-tests/lib/common.sh"
 source "$REPO_ROOT/e2e/local-tests/lib/cosmos.sh"
 
 ENV_FILE="${ENV_FILE:-$REPO_ROOT/relayer/.env}"
+CONFIG_FILE="${CONFIG_FILE:-$REPO_ROOT/relayer/config.json}"
 STATE_DIR="$REPO_ROOT/e2e/local-tests/.state"
 RELAYER_PID_FILE="$REPO_ROOT/relayer/relayer.pid"
 
@@ -22,21 +23,108 @@ SOURCE_CLIENT="${SOURCE_CLIENT:-cosmoshub-1}"
 DEST_PORT="${DEST_PORT:-transfer}"
 AMOUNT="${AMOUNT:-1000000000}"
 
-load_env_file
-discover_kurtosis_endpoints
-load_contract_addresses
+config_value() {
+  local key="$1"
+  if [ -f "$CONFIG_FILE" ]; then
+    jq -er --arg key "$key" '([.. | objects | .[$key]? // empty][0]) // empty' "$CONFIG_FILE" 2>/dev/null || true
+  fi
+}
 
+load_timeout_contract_addresses() {
+  if [ -z "${ICS26_ADDRESS:-}" ]; then
+    ICS26_ADDRESS="$(config_value ics26_address)"
+  fi
+  if [ -z "${ICS26_ADDRESS:-}" ]; then
+    ICS26_ADDRESS="$(config_value ics26Router)"
+  fi
+
+  if [ -z "${ICS20_ADDRESS:-}" ]; then
+    ICS20_ADDRESS="$(config_value ics20_address)"
+  fi
+  if [ -z "${ICS20_ADDRESS:-}" ]; then
+    ICS20_ADDRESS="$(config_value ics20Transfer)"
+  fi
+  if [ -z "${ERC20_ADDRESS:-}" ]; then
+    ERC20_ADDRESS="$(config_value erc20_address)"
+  fi
+  if [ -z "${ERC20_ADDRESS:-}" ]; then
+    ERC20_ADDRESS="$(config_value erc20)"
+  fi
+
+  if [ -z "${BROADCAST_JSON:-}" ]; then
+    local chain_id chain_broadcast
+    chain_id="$(cast chain-id --rpc-url "$ETH_RPC_URL" 2>/dev/null || true)"
+    chain_broadcast="$REPO_ROOT/broadcast/E2ETestDeploy.s.sol/$chain_id/run-latest.json"
+    if [ -n "$chain_id" ] && [ -f "$chain_broadcast" ]; then
+      BROADCAST_JSON="$chain_broadcast"
+    elif [ -d "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" ]; then
+      BROADCAST_JSON="$(find "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" -path '*/run-latest.json' -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR == 1 { print $2 }' || true)"
+    fi
+  fi
+
+  if [ -f "${BROADCAST_JSON:-}" ]; then
+    if [ -z "${ERC20_ADDRESS:-}" ]; then
+      ERC20_ADDRESS="$(jq -er '(.erc20 // (.returns["0"].value | gsub("\\\\\""; "\"") | fromjson | .erc20))' "$BROADCAST_JSON" 2>/dev/null || true)"
+    fi
+    if [ -z "${ICS20_ADDRESS:-}" ]; then
+      ICS20_ADDRESS="$(jq -er '(.ics20Transfer // (.returns["0"].value | gsub("\\\\\""; "\"") | fromjson | .ics20Transfer))' "$BROADCAST_JSON" 2>/dev/null || true)"
+    fi
+    if [ -z "${ICS26_ADDRESS:-}" ]; then
+      ICS26_ADDRESS="$(jq -er '(.ics26Router // (.returns["0"].value | gsub("\\\\\""; "\"") | fromjson | .ics26Router))' "$BROADCAST_JSON" 2>/dev/null || true)"
+    fi
+  fi
+
+  if [ -z "${ICS20_ADDRESS:-}" ] && [ -n "${ICS26_ADDRESS:-}" ] && contract_has_code "$ICS26_ADDRESS"; then
+    ICS20_ADDRESS="$(cast call "$ICS26_ADDRESS" 'getIBCApp(string)(address)' "$DEST_PORT" --rpc-url "$ETH_RPC_URL" 2>/dev/null || true)"
+  fi
+
+  if [ -z "${ERC20_ADDRESS:-}" ]; then
+    local mint_receiver
+    mint_receiver="${E2E_FAUCET_ADDRESS:-}"
+    if [ -z "$mint_receiver" ] && [ -n "${ETH_PRIVATE_KEY:-}" ]; then
+      mint_receiver="$(cast wallet address --private-key "$ETH_PRIVATE_KEY" 2>/dev/null || true)"
+    fi
+    if [ -n "$mint_receiver" ]; then
+      ERC20_ADDRESS="$(cast logs \
+        --from-block 0 \
+        --to-block latest \
+        --rpc-url "$ETH_RPC_URL" \
+        'Transfer(address indexed from,address indexed to,uint256 value)' \
+        0x0000000000000000000000000000000000000000 \
+        "$mint_receiver" 2>/dev/null \
+        | awk '/^- address:/ { print $3; exit }')"
+    fi
+  fi
+}
+
+# ---- Validate required local tools before discovery ----
+require_cmd cast
+require_cmd jq
+
+load_env_file
 ETH_PRIVATE_KEY="${ETH_PRIVATE_KEY:-${ETH_USER_PK:-${PRIVATE_KEY:-}}}"
+discover_kurtosis_endpoints
+
+if [ -z "${ETH_RPC_URL:-}" ] && [ -f "$CONFIG_FILE" ]; then
+  ETH_RPC_URL="$(config_value eth_rpc_url)"
+fi
+
+if [ -z "${ETH_RPC_URL:-}" ]; then
+  echo "ERROR: ETH_RPC_URL not set, Kurtosis endpoint not detected, and no eth_rpc_url found in $CONFIG_FILE" >&2
+  echo "Start ETH with ./setup/01-eth-node.sh or export ETH_RPC_URL manually." >&2
+  exit 1
+fi
+
+echo "Using ETH_RPC_URL: $ETH_RPC_URL"
+
+load_timeout_contract_addresses
+
 RECEIVER="${RECEIVER:-}"
 load_cosmos_receiver
 
 uint_value() {
   awk '{ print $1 }'
 }
-
-# ---- Validate ----
-require_cmd cast
-require_cmd jq
 
 if [ -z "${ETH_RPC_URL:-}" ]; then
   echo "ERROR: ETH_RPC_URL not set and Kurtosis not detected" >&2
@@ -52,6 +140,15 @@ if [ -z "${RECEIVER:-}" ]; then
 fi
 if [ -z "${ERC20_ADDRESS:-}" ] || [ -z "${ICS20_ADDRESS:-}" ]; then
   echo "ERROR: ERC20_ADDRESS or ICS20_ADDRESS not found" >&2
+  if [ -n "${ICS26_ADDRESS:-}" ]; then
+    echo "ICS26_ADDRESS candidate: $ICS26_ADDRESS" >&2
+    if ! contract_has_code "$ICS26_ADDRESS"; then
+      echo "No bytecode at ICS26_ADDRESS on $ETH_RPC_URL; relayer/config.json is stale for the current chain." >&2
+    fi
+  fi
+  echo "The script checks env, $CONFIG_FILE, Foundry broadcast JSON, ICS26Router.getIBCApp(\"$DEST_PORT\"), and ERC20 mint logs." >&2
+  echo "Run ./setup/01-eth-node.sh to deploy contracts, refresh relayer/config.json, or export ERC20_ADDRESS and ICS20_ADDRESS." >&2
+  echo "Expected Foundry broadcast path: $REPO_ROOT/broadcast/E2ETestDeploy.s.sol/<chain-id>/run-latest.json" >&2
   exit 1
 fi
 
@@ -115,7 +212,7 @@ echo "(relayer builds ZK proof for light client update, then calls timeoutPacket
 echo ""
 
 # ---- Poll for refund (ERC20 balance returning to original) ----
-MAX_POLLS=120
+MAX_POLLS=10
 POLL_INTERVAL=15
 poll=0
 

@@ -89,13 +89,17 @@ discover_kurtosis_endpoints() {
 }
 
 load_contract_addresses() {
+  if [ -n "${ERC20_ADDRESS:-}" ] && [ -n "${ICS20_ADDRESS:-}" ]; then
+    return 0
+  fi
+
   if [ -z "$BROADCAST_JSON" ]; then
     local chain_id chain_broadcast
     chain_id="$(cast chain-id --rpc-url "$ETH_RPC_URL")"
     chain_broadcast="$REPO_ROOT/broadcast/E2ETestDeploy.s.sol/$chain_id/run-latest.json"
     if [ -f "$chain_broadcast" ]; then
       BROADCAST_JSON="$chain_broadcast"
-    else
+    elif [ -d "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" ]; then
       BROADCAST_JSON="$(find "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" -path '*/run-latest.json' -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR == 1 { print $2 }')"
     fi
   fi
