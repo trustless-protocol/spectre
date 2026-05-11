@@ -8,6 +8,7 @@ rm -rf $HOME/.gaia
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 LIB_DIR="$(cd "$(dirname "$0")/../lib" && pwd)"
+source "$LIB_DIR/common.sh"
 source "$LIB_DIR/sleep.sh"
 
 # Run eth chain
@@ -29,17 +30,6 @@ ETH_RPC=$(kurtosis enclave inspect "$KURTOSIS_ENCLAVE" \
   }
 ')
 
-ETH_BEACON_PORT=$(kurtosis enclave inspect "$KURTOSIS_ENCLAVE" \
-| awk '
-  $0 ~ /cl-1-lighthouse-geth/ {in_service=1}
-  in_service && /http:/ {
-      match($0, /127\.0\.0\.1:[0-9]+/)
-      print substr($0, RSTART+10, RLENGTH-10)
-      exit
-  }
-  in_service && /^[^[:space:]]/ {in_service=0}
-')
-
 ETH_WS=$(kurtosis enclave inspect "$KURTOSIS_ENCLAVE" \
 | perl -ne '
   if (/el-1-geth-lighthouse/) { $in=1 }
@@ -51,7 +41,7 @@ ETH_WS=$(kurtosis enclave inspect "$KURTOSIS_ENCLAVE" \
 ')
 
 # Re-detect after finality in case endpoints changed
-ETH_BEACON_API=$(kurtosis enclave inspect my-testnet \
+ETH_BEACON_API=$(kurtosis enclave inspect "$KURTOSIS_ENCLAVE" \
 | awk '
   $0 ~ /cl-1-lighthouse-geth/ {in_service=1}
   in_service && /http:/ {

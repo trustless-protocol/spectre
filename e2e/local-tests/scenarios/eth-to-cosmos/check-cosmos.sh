@@ -39,52 +39,12 @@ if [ -z "${COSMOS_WASM_CLIENT_ID:-}" ] && [ -f "$REPO_ROOT/relayer/config.json" 
 fi
 COSMOS_WASM_CLIENT_ID="${COSMOS_WASM_CLIENT_ID:-08-wasm-0}"
 
-require_cmd() {
-  local cmd="$1"
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "missing required command: $cmd" >&2
-    exit 1
-  fi
-}
-
-load_contract_addresses() {
-  if [ -n "${ERC20_ADDRESS:-}" ]; then
-    return 0
-  fi
-
-  if [ -z "$BROADCAST_JSON" ]; then
-    if [ -d "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" ]; then
-      BROADCAST_JSON="$(find "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" -path '*/run-latest.json' -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR == 1 { print $2 }')"
-    fi
-  fi
-
-  if [ ! -f "$BROADCAST_JSON" ]; then
-    return 0
-  fi
-
-  if [ -z "${ERC20_ADDRESS:-}" ]; then
-    ERC20_ADDRESS="$(jq -er '(.erc20 // (.returns["0"].value | gsub("\\\\\""; "\"") | fromjson | .erc20))' "$BROADCAST_JSON" 2>/dev/null || true)"
-  fi
-}
-
-cosmos_query() {
-  "$COSMOS_BIN" query "$@" \
-    --node "$COSMOS_RPC_URL" \
-    --chain-id "$COSMOS_CHAIN_ID" \
-    --output json
-}
-
-key_address() {
-  local key="$1"
-  "$COSMOS_BIN" keys show "$key" -a \
-    --keyring-backend "$COSMOS_KEYRING" \
-    --home "$COSMOS_HOME" 2>/dev/null || true
-}
 
 ibc_denom() {
   local trace="$1"
   printf 'ibc/%s\n' "$(printf '%s' "$trace" | sha256sum | awk '{ print toupper($1) }')"
 }
+
 
 require_cmd "$COSMOS_BIN"
 require_cmd jq

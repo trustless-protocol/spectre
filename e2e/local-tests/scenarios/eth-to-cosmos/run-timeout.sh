@@ -221,6 +221,7 @@ echo ""
 MAX_POLLS=10
 POLL_INTERVAL=15
 poll=0
+REFUNDED=false
 
 # refund expected = original plus maybe tiny diff from gas
 # but balance is ERC20 not ETH, so no gas deduction on ERC20

@@ -30,77 +30,11 @@ ETH_PRIVATE_KEY="${ETH_PRIVATE_KEY:-${ETH_USER_PK:-${PRIVATE_KEY:-}}}"
 SOURCE_CLIENT="${SOURCE_CLIENT:-${ETH_SOURCE_CLIENT_ID:-cosmoshub-1}}"
 ETH_TX_HASH="${ETH_TX_HASH:-${TX_HASH:-}}"
 
-require_cmd() {
-  local cmd="$1"
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "missing required command: $cmd" >&2
-    exit 1
-  fi
-}
 
-discover_kurtosis_eth_rpc() {
-  if [ -n "$ETH_RPC_URL" ] || ! command -v kurtosis >/dev/null 2>&1; then
-    return 0
-  fi
-
-  local inspect
-  if ! inspect="$(kurtosis enclave inspect "$KURTOSIS_ENCLAVE" 2>/dev/null)"; then
-    return 0
-  fi
-
-  ETH_RPC_URL="$(printf '%s\n' "$inspect" | perl -ne '
-    if (/el-1-geth-lighthouse/) { $in=1 }
-    elsif ($in && /^\S/) { $in=0 }
-    elsif ($in && /^\s+rpc:.*->\s+(127\.0\.0\.1:\d+)/) {
-      print "http://$1\n";
-      exit;
-    }
-  ')"
-}
-
-load_contract_addresses() {
-  if [ -n "${ERC20_ADDRESS:-}" ] && [ -n "${ICS20_ADDRESS:-}" ]; then
-    return 0
-  fi
-
-  if [ -z "$BROADCAST_JSON" ]; then
-    local chain_id chain_broadcast
-    chain_id="$(cast chain-id --rpc-url "$ETH_RPC_URL")"
-    chain_broadcast="$REPO_ROOT/broadcast/E2ETestDeploy.s.sol/$chain_id/run-latest.json"
-    if [ -f "$chain_broadcast" ]; then
-      BROADCAST_JSON="$chain_broadcast"
-    elif [ -d "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" ]; then
-      BROADCAST_JSON="$(find "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" -path '*/run-latest.json' -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR == 1 { print $2 }')"
-    fi
-  fi
-
-  if [ ! -f "$BROADCAST_JSON" ]; then
-    return 0
-  fi
-
-  if [ -z "${ERC20_ADDRESS:-}" ]; then
-    ERC20_ADDRESS="$(jq -er '(.erc20 // (.returns["0"].value | gsub("\\\\\""; "\"") | fromjson | .erc20))' "$BROADCAST_JSON" 2>/dev/null || true)"
-  fi
-
-  if [ -z "${ICS20_ADDRESS:-}" ]; then
-    ICS20_ADDRESS="$(jq -er '(.ics20Transfer // (.returns["0"].value | gsub("\\\\\""; "\"") | fromjson | .ics20Transfer))' "$BROADCAST_JSON" 2>/dev/null || true)"
-  fi
-}
-
-safe_cast_call() {
-  cast call "$@" --rpc-url "$ETH_RPC_URL" 2>/dev/null || true
-}
-
-contract_has_code() {
-  local address="$1"
-  local code
-  code="$(cast code "$address" --rpc-url "$ETH_RPC_URL" 2>/dev/null || true)"
-  [ -n "$code" ] && [ "$code" != "0x" ]
-}
 
 require_cmd cast
 require_cmd jq
-discover_kurtosis_eth_rpc
+discover_kurtosis_endpoints
 load_contract_addresses
 
 if [ -z "$ETH_RPC_URL" ]; then
