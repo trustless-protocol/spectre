@@ -45,15 +45,17 @@ const (
 // --- Config types for JSON config file ---
 
 type cosmosToEthConfig struct {
-	TmRpcUrl        string `json:"tm_rpc_url"`
-	ICS26Address    string `json:"ics26_address"`
-	EthRpcUrl       string `json:"eth_rpc_url"`
-	EthWsUrl        string `json:"eth_ws_url"`
-	ICS07Client     string `json:"ics07_client"`
-	WrapperVerifier string `json:"wrapper_verifier"`
-	Membership      string `json:"membership"`
-	Misbehaviour    string `json:"misbehaviour"`
-	UpdateClient    string `json:"update_client"`
+	TmRpcUrl           string `json:"tm_rpc_url"`
+	ICS26Address       string `json:"ics26_address"`
+	ICS26ClientID      string `json:"ics26_client_id"`
+	CosmosWasmClientID string `json:"cosmos_wasm_client_id"`
+	EthRpcUrl          string `json:"eth_rpc_url"`
+	EthWsUrl           string `json:"eth_ws_url"`
+	ICS07Client        string `json:"ics07_client"`
+	WrapperVerifier    string `json:"wrapper_verifier"`
+	Membership         string `json:"membership"`
+	Misbehaviour       string `json:"misbehaviour"`
+	UpdateClient       string `json:"update_client"`
 }
 
 type ethToCosmosConfig struct {
@@ -147,6 +149,9 @@ func loadConfig(configPath string) (*appConfig, error) {
 			if err := json.Unmarshal(m.Config, &c2e); err != nil {
 				return nil, fmt.Errorf("failed to parse cosmos_to_eth config: %w", err)
 			}
+			if c2e.ICS26ClientID == "" {
+				c2e.ICS26ClientID = m.SrcChain
+			}
 		case "eth_to_cosmos":
 			if err := json.Unmarshal(m.Config, &e2c); err != nil {
 				return nil, fmt.Errorf("failed to parse eth_to_cosmos config: %w", err)
@@ -200,6 +205,18 @@ func envOrDefault(key, defaultVal string) string {
 		return v
 	}
 	return defaultVal
+}
+
+func roleManagerOrDefault(cfg *appConfig) string {
+	return envOrDefault("ROLE_MANAGER", cfg.CosmosToEthConfig.ICS26Address)
+}
+
+func cosmosRouterClientIDOrDefault(cfg *appConfig) string {
+	return envOrDefault("ICS26_CLIENT_ID", cfg.CosmosToEthConfig.ICS26ClientID)
+}
+
+func cosmosWasmClientIDOrDefault(cfg *appConfig) string {
+	return envOrDefault("COSMOS_WASM_CLIENT_ID", cfg.CosmosToEthConfig.CosmosWasmClientID)
 }
 
 // --- Main ---
@@ -280,14 +297,20 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 
 			worker := services.NewWorker(&transaction.Handler{}, nil)
 
+			cosmosWasmClientID := cosmosWasmClientIDOrDefault(cfg)
+			if cosmosWasmClientID == "" {
+				return fmt.Errorf("cosmos_wasm_client_id is required in cosmos_to_eth config")
+			}
+
 			// Create context (no WS client needed for create-clients)
 			ctx := services.NewCtxWithBeacon(
 				cosmosClient, ethClient, nil,
 				cfg.EthToCosmosConfig.BeaconUrl,
-				"08-wasm-0",
+				cosmosWasmClientID,
 			)
+			ctx.SetCosmosRouterClientID(cosmosRouterClientIDOrDefault(cfg))
 
-			roleManager := envOrDefault("ROLE_MANAGER", "0x0000000000000000000000000000000000000000")
+			roleManager := roleManagerOrDefault(cfg)
 			ctx.SetAddresses(
 				cfg.CosmosToEthConfig.ICS26Address,
 				cfg.CosmosToEthConfig.WrapperVerifier,
@@ -346,6 +369,12 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				ethClientID, err := worker.CreateEthClient(ctx, wasmChecksum)
 				if err != nil {
 					return fmt.Errorf("failed to create Ethereum client on Cosmos: %w", err)
+				}
+				if ethClientID != cosmosWasmClientID {
+					return fmt.Errorf(
+						"created Ethereum light client ID %s does not match configured cosmos_wasm_client_id %s",
+						ethClientID, cosmosWasmClientID,
+					)
 				}
 				logger.Sugar().Infof("Ethereum light client created on Cosmos: clientID=%s", ethClientID)
 			} else {
@@ -425,15 +454,21 @@ func Start(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to load prover: %w", err)
 			}
 
+			cosmosWasmClientID := cosmosWasmClientIDOrDefault(cfg)
+			if cosmosWasmClientID == "" {
+				return fmt.Errorf("cosmos_wasm_client_id is required in cosmos_to_eth config")
+			}
+
 			// Create context with beacon API
 			ctx := services.NewCtxWithBeacon(
 				cosmosClient, ethClient, ethWsClient,
 				cfg.EthToCosmosConfig.BeaconUrl,
-				"08-wasm-0",
+				cosmosWasmClientID,
 			)
+			ctx.SetCosmosRouterClientID(cosmosRouterClientIDOrDefault(cfg))
 
 			// Set contract addresses from config
-			roleManager := envOrDefault("ROLE_MANAGER", "0x0000000000000000000000000000000000000000")
+			roleManager := roleManagerOrDefault(cfg)
 			ctx.SetAddresses(
 				cfg.CosmosToEthConfig.ICS26Address,
 				cfg.CosmosToEthConfig.WrapperVerifier,

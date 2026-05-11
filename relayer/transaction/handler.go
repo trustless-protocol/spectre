@@ -51,7 +51,43 @@ const ethTxReceiptTimeout = 45 * time.Second
 const cosmosClientID = "cosmoshub-1"
 const ethWasmClientID = "08-wasm-0"
 
+func routerManagesProofSubmission(ctx services.Context) bool {
+	roleManager := ctx.RoleManagerAddress()
+	router := ctx.RouterContract()
+	if roleManager == nil || router == nil {
+		return false
+	}
+	if *roleManager == (common.Address{}) || *router == (common.Address{}) {
+		return false
+	}
+	return *roleManager == *router
+}
+
+func cosmosRouterClientID(ctx services.Context) (string, error) {
+	clientID := ctx.CosmosRouterClientID()
+	if clientID == "" {
+		return "", fmt.Errorf("cosmos router client id is not configured")
+	}
+	return clientID, nil
+}
+
+func cosmosWasmClientID(ctx services.Context) (string, error) {
+	clientID := ctx.EthClientID()
+	if clientID == "" {
+		return "", fmt.Errorf("cosmos wasm client id is not configured")
+	}
+	return clientID, nil
+}
+
 func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte) (common.Address, error) {
+	cosmosClientID, err := cosmosRouterClientID(ctx)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
+	}
+	wasmClientID, err := cosmosWasmClientID(ctx)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
+	}
 	privKey := os.Getenv("ETH_PRIVATE_KEY")
 	if privKey == "" {
 		return common.Address{}, fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
@@ -128,7 +164,9 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	log.Printf("[CreateCosmosClient] ICS07 deployed at %s (block %d, gasUsed=%d)", address.String(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
 	ctx.SetClient(address)
 
-	// roleManager=address(0) means anyone can submit proofs, no grantRole needed
+	// In Eureka mode, the router is typically both the admin and proof submitter
+	// for the ICS07 client. Direct submission remains available only when the
+	// role manager is not the router.
 
 	nonce, err = ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
@@ -140,8 +178,8 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		auth,
 		cosmosClientID,
 		routerContract.IICS02ClientMsgsCounterpartyInfo{
-			ClientId:     ethWasmClientID,
-			MerklePrefix: [][]byte{[]byte("")},
+			ClientId:     wasmClientID,
+			MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
 		},
 		*ctx.ClientContract(),
 	)
@@ -157,16 +195,39 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		return common.Address{}, fmt.Errorf("failed waiting for AddClient receipt: %w", err)
 	}
 	if receipt.Status == 0 {
-		registeredClient, err := ics26Router.GetClient(nil, cosmosClientID)
+		log.Printf("[CreateCosmosClient] AddClient reverted (gasUsed=%d) — falling back to MigrateClient to repoint %s to new ICS07 %s",
+			receipt.GasUsed, cosmosClientID, address.Hex())
+
+		nonce, err = ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
 		if err != nil {
-			return common.Address{}, fmt.Errorf("AddClient tx reverted (gasUsed=%d) and failed to fetch existing client %s: %w", receipt.GasUsed, cosmosClientID, err)
+			return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to get nonce for MigrateClient: %w", err)
 		}
-		if registeredClient == (common.Address{}) {
-			return common.Address{}, fmt.Errorf("AddClient tx reverted (gasUsed=%d) and existing client %s is empty", receipt.GasUsed, cosmosClientID)
+		auth.Nonce = big.NewInt(int64(nonce))
+
+		mtx, err := ics26Router.MigrateClient(
+			auth,
+			cosmosClientID,
+			routerContract.IICS02ClientMsgsCounterpartyInfo{
+				ClientId:     wasmClientID,
+				MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
+			},
+			*ctx.ClientContract(),
+		)
+		if err != nil {
+			return common.Address{}, fmt.Errorf("[CreateCosmosClient] MigrateClient call failed: %w", err)
 		}
-		log.Printf("[CreateCosmosClient] AddClient tx reverted (gasUsed=%d); reusing router client %s at %s", receipt.GasUsed, cosmosClientID, registeredClient.Hex())
-		ctx.SetClient(registeredClient)
-		return registeredClient, nil
+		log.Printf("[CreateCosmosClient] MigrateClient tx sent: %s. Waiting for receipt...", mtx.Hash().Hex())
+		mctx, mcancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
+		defer mcancel()
+		mreceipt, err := bind.WaitMined(mctx, ctx.EthClient(), mtx)
+		if err != nil {
+			return common.Address{}, fmt.Errorf("failed waiting for MigrateClient receipt: %w", err)
+		}
+		if mreceipt.Status == 0 {
+			return common.Address{}, fmt.Errorf("MigrateClient tx %s reverted (gasUsed=%d)", mtx.Hash().Hex(), mreceipt.GasUsed)
+		}
+		log.Printf("[CreateCosmosClient] MigrateClient confirmed (block %d, gasUsed=%d)", mreceipt.BlockNumber.Uint64(), mreceipt.GasUsed)
+		return address, nil
 	}
 	log.Printf("[CreateCosmosClient] AddClient confirmed (block %d, gasUsed=%d)", receipt.BlockNumber.Uint64(), receipt.GasUsed)
 
@@ -174,6 +235,10 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 }
 
 func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
+	cosmosClientID, err := cosmosRouterClientID(ctx)
+	if err != nil {
+		return fmt.Errorf("[SendEthTx] %w", err)
+	}
 	privKey := os.Getenv("ETH_PRIVATE_KEY")
 	if privKey == "" {
 		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
@@ -220,7 +285,7 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		return fmt.Errorf("failed to create ICS07 Tendermint contract: %w", err)
 	}
 
-	icS26Router, err := contractICS26Router.NewContractICS26Router(
+	ics26Router, err := contractICS26Router.NewContractICS26Router(
 		*ctx.RouterContract(),
 		ctx.EthClient(),
 	)
@@ -235,18 +300,36 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to encode updateClient msg: %w", err)
 		}
-		log.Printf("[SendEthTx] Sending updateClient tx...")
-		tx, err = ics07Tendermint.UpdateClient(auth, data)
-		if err != nil {
-			return fmt.Errorf("[SendEthTx] failed to send updateClient tx: %w", err)
+		if routerManagesProofSubmission(ctx) {
+			log.Printf("[SendEthTx] Sending ICS26Router.updateClient tx for clientId=%s...", cosmosClientID)
+			tx, err = ics26Router.UpdateClient(auth, cosmosClientID, data)
+			if err != nil {
+				return fmt.Errorf("[SendEthTx] failed to send router updateClient tx: %w", err)
+			}
+		} else {
+			log.Printf("[SendEthTx] Sending direct ICS07 updateClient tx...")
+			tx, err = ics07Tendermint.UpdateClient(auth, data)
+			if err != nil {
+				return fmt.Errorf("[SendEthTx] failed to send direct updateClient tx: %w", err)
+			}
 		}
 	case tendermintContract.ILightClientMsgsMsgVerifyMembership:
+		if routerManagesProofSubmission(ctx) {
+			return fmt.Errorf(
+				"[SendEthTx] direct verifyMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead",
+			)
+		}
 		log.Printf("[SendEthTx] Sending verifyMembership tx...")
 		tx, err = ics07Tendermint.VerifyMembership(auth, msg)
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to verify membership: %w", err)
 		}
 	case tendermintContract.ILightClientMsgsMsgVerifyNonMembership:
+		if routerManagesProofSubmission(ctx) {
+			return fmt.Errorf(
+				"[SendEthTx] direct verifyNonMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead",
+			)
+		}
 		log.Printf("[SendEthTx] Sending verifyNonMembership tx...")
 		tx, err = ics07Tendermint.VerifyNonMembership(auth, msg)
 		if err != nil {
@@ -254,19 +337,19 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		}
 	case contractICS26Router.IICS26RouterMsgsMsgRecvPacket:
 		log.Printf("[SendEthTx] Sending recvPacket seq=%d...", msg.Packet.Sequence)
-		tx, err = icS26Router.RecvPacket(auth, msg)
+		tx, err = ics26Router.RecvPacket(auth, msg)
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to recv packet: %w", err)
 		}
 	case contractICS26Router.IICS26RouterMsgsMsgAckPacket:
 		log.Printf("[SendEthTx] Sending ackPacket seq=%d...", msg.Packet.Sequence)
-		tx, err = icS26Router.AckPacket(auth, msg)
+		tx, err = ics26Router.AckPacket(auth, msg)
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to ack packet: %w", err)
 		}
 	case contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket:
 		log.Printf("[SendEthTx] Sending timeoutPacket seq=%d...", msg.Packet.Sequence)
-		tx, err = icS26Router.TimeoutPacket(auth, msg)
+		tx, err = ics26Router.TimeoutPacket(auth, msg)
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to timeout packet: %w", err)
 		}
@@ -311,6 +394,10 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 
 func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.ClientState, consensusState exported.ConsensusState) (string, error) {
 	log.Printf("[CreateEthClientTx] starting")
+	cosmosClientID, err := cosmosRouterClientID(svcCtx)
+	if err != nil {
+		return "", fmt.Errorf("[CreateEthClientTx] %w", err)
+	}
 
 	// Get the private key from environment variable
 	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
@@ -483,7 +570,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	registerMsg := clienttypesv2.NewMsgRegisterCounterparty(
 		newClientID,
 		[][]byte{[]byte("")},
-		"cosmoshub-1",
+		cosmosClientID,
 		signerAddr.String(),
 	)
 	log.Printf("[CreateEthClientTx] MsgRegisterCounterparty built for clientID=%s", newClientID)
