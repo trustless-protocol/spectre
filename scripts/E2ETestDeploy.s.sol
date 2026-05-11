@@ -98,7 +98,7 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
 
         // Mint some tokens
         TestERC20 erc20 = new TestERC20();
-        erc20.mint(e2eFaucet, type(uint256).max);
+        erc20.mint(e2eFaucet, 1_000_000 ether);
 
         vm.stopBroadcast();
 

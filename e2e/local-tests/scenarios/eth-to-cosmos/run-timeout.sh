@@ -21,7 +21,7 @@ COSMOS_RPC_URL="${COSMOS_RPC_URL:-http://127.0.0.1:26657}"
 COSMOS_CHAIN_ID="${COSMOS_CHAIN_ID:-test-ibc-eth}"
 SOURCE_CLIENT="${SOURCE_CLIENT:-cosmoshub-1}"
 DEST_PORT="${DEST_PORT:-transfer}"
-AMOUNT="${AMOUNT:-1000000000}"
+AMOUNT="${AMOUNT:-1000000000000000000}"  # default: 1 TERC (18 decimals)
 
 config_value() {
   local key="$1"

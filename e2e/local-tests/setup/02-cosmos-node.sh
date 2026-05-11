@@ -4,6 +4,8 @@ set -euo pipefail
 set -x
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+LIB_DIR="$(cd "$(dirname "$0")/../lib" && pwd)"
+source "$LIB_DIR/common.sh"
 
 killall gaiad || true
 rm -rf "$HOME/.gaia" "$HOME/.gaia-val2" "$HOME/.gaia-val3" "$HOME/.gaia-val4"
@@ -45,33 +47,7 @@ PROM_PORTS=(26660 26760 26860 26960)
 PRIMARY_HOME="${HOMES[0]}"
 RELAYER_ENV_FILE="${RELAYER_ENV_FILE:-$REPO_ROOT/relayer/.env}"
 
-upsert_env_var() {
-    local file="$1"
-    local key="$2"
-    local value="$3"
-    local tmp
 
-    mkdir -p "$(dirname "$file")"
-    touch "$file"
-    tmp="$(mktemp)"
-
-    awk -v key="$key" -v value="$value" '
-        BEGIN { updated = 0 }
-        $0 ~ ("^" key "=") {
-            print key "=\"" value "\""
-            updated = 1
-            next
-        }
-        { print }
-        END {
-            if (!updated) {
-                print key "=\"" value "\""
-            }
-        }
-    ' "$file" > "$tmp"
-
-    mv "$tmp" "$file"
-}
 
 for i in "${!HOMES[@]}"; do
     gaiad init "${VAL_KEYS[$i]}" --chain-id "$CHAIN_ID" --home "${HOMES[$i]}"

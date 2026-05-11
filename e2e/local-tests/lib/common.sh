@@ -10,6 +10,35 @@ require_cmd() {
   fi
 }
 
+upsert_env_var() {
+  local file="$1"
+  local key="$2"
+  local value="$3"
+  local tmp
+
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+  tmp="$(mktemp)"
+
+  awk -v key="$key" -v value="$value" '
+    BEGIN { updated = 0 }
+    $0 ~ ("^" key "=") {
+      print key "=\"" value "\""
+      updated = 1
+      next
+    }
+    { print }
+    END {
+      if (!updated) {
+        print key "=\"" value "\""
+      }
+    }
+  ' "$file" > "$tmp"
+
+  mv "$tmp" "$file"
+}
+
+
 discover_kurtosis_endpoints() {
   if ! command -v kurtosis >/dev/null 2>&1; then
     return 0
@@ -145,7 +174,7 @@ backfill_relayer_config_fields() {
 
   jq '
     (.. | objects | select(.name == "cosmos_to_eth") | select(.config.cosmos_wasm_client_id == null) | .config.cosmos_wasm_client_id) = "08-wasm-0"
-  | (.. | objects | select(.name == "cosmos_to_eth") | select(.config.ics26_client_id == null) | .config.ics26_client_id) = (.src_chain // "test-ibc-eth")
+  | (.. | objects | select(.name == "cosmos_to_eth") | select(.config.ics26_client_id == null) | .config.ics26_client_id) = (.src_chain // "cosmoshub-1")
   ' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
 }
 

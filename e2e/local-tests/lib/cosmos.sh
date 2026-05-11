@@ -16,33 +16,7 @@ key_address() {
     --home "${COSMOS_HOME:-$HOME/.gaia}" 2>/dev/null || true
 }
 
-upsert_env_var() {
-  local file="$1"
-  local key="$2"
-  local value="$3"
-  local tmp
 
-  mkdir -p "$(dirname "$file")"
-  touch "$file"
-  tmp="$(mktemp)"
-
-  awk -v key="$key" -v value="$value" '
-    BEGIN { updated = 0 }
-    $0 ~ ("^" key "=") {
-      print key "=\"" value "\""
-      updated = 1
-      next
-    }
-    { print }
-    END {
-      if (!updated) {
-        print key "=\"" value "\""
-      }
-    }
-  ' "$file" > "$tmp"
-
-  mv "$tmp" "$file"
-}
 
 wait_for_cosmos_block() {
   local before after
