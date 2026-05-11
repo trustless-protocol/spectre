@@ -560,7 +560,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 			ProofType: ProofType_EXIST,
 			ExistenceProof: tendermintContract.IMembershipMsgsExistenceProof{
 				Key:   p.Exist.Key,
-				Value: bytesToBytes32(p.Exist.Value),
+				Value: p.Exist.Value,
 				Leaf:  ParseLeafOp(p.Exist.Leaf),
 				Path:  []tendermintContract.IMembershipMsgsInnerOp{},
 			},
@@ -590,7 +590,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 			parsedProof.NonExistenceProof.HasLeft = true
 			parsedProof.NonExistenceProof.Left = tendermintContract.IMembershipMsgsExistenceProof{
 				Key:   p.Nonexist.Left.Key,
-				Value: bytesToBytes32(p.Nonexist.Left.Value),
+				Value: p.Nonexist.Left.Value,
 				Leaf:  ParseLeafOp(p.Nonexist.Left.Leaf),
 				Path:  []tendermintContract.IMembershipMsgsInnerOp{},
 			}
@@ -603,7 +603,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 			parsedProof.NonExistenceProof.HasRight = true
 			parsedProof.NonExistenceProof.Right = tendermintContract.IMembershipMsgsExistenceProof{
 				Key:   p.Nonexist.Right.Key,
-				Value: bytesToBytes32(p.Nonexist.Right.Value),
+				Value: p.Nonexist.Right.Value,
 				Leaf:  ParseLeafOp(p.Nonexist.Right.Leaf),
 				Path:  []tendermintContract.IMembershipMsgsInnerOp{},
 			}
@@ -622,7 +622,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 				ProofType: ProofType_EXIST,
 				ExistenceProof: tendermintContract.IMembershipMsgsExistenceProof{
 					Key:   e.Key,
-					Value: bytesToBytes32(e.Value),
+					Value: e.Value,
 					Leaf:  ParseLeafOp(e.Leaf),
 					Path:  []tendermintContract.IMembershipMsgsInnerOp{},
 				},
@@ -651,7 +651,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 				parsedProof.NonExistenceProof.HasLeft = true
 				parsedProof.NonExistenceProof.Left = tendermintContract.IMembershipMsgsExistenceProof{
 					Key:   n.Left.Key,
-					Value: bytesToBytes32(n.Left.Value),
+					Value: n.Left.Value,
 					Leaf:  ParseLeafOp(n.Left.Leaf),
 					Path:  []tendermintContract.IMembershipMsgsInnerOp{},
 				}
@@ -664,7 +664,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 				parsedProof.NonExistenceProof.HasRight = true
 				parsedProof.NonExistenceProof.Right = tendermintContract.IMembershipMsgsExistenceProof{
 					Key:   n.Right.Key,
-					Value: bytesToBytes32(n.Right.Value),
+					Value: n.Right.Value,
 					Leaf:  ParseLeafOp(n.Right.Leaf),
 					Path:  []tendermintContract.IMembershipMsgsInnerOp{},
 				}

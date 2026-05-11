@@ -32,14 +32,15 @@ import (
 )
 
 type CosmosToEthConfig struct {
-	TmRpcUrl        string `json:"tm_rpc_url"`
-	ICS26Address    string `json:"ics26_address"`
-	ICS26ClientID   string `json:"ics26_client_id"`
-	EthRpcUrl       string `json:"eth_rpc_url"`
-	WrapperVerifier string `json:"wrapper_verifier"`
-	Membership      string `json:"membership"`
-	Misbehaviour    string `json:"misbehaviour"`
-	UpdateClient    string `json:"update_client"`
+	TmRpcUrl           string `json:"tm_rpc_url"`
+	ICS26Address       string `json:"ics26_address"`
+	ICS26ClientID      string `json:"ics26_client_id"`
+	CosmosWasmClientID string `json:"cosmos_wasm_client_id"`
+	EthRpcUrl          string `json:"eth_rpc_url"`
+	WrapperVerifier    string `json:"wrapper_verifier"`
+	Membership         string `json:"membership"`
+	Misbehaviour       string `json:"misbehaviour"`
+	UpdateClient       string `json:"update_client"`
 }
 
 type EthToCosmosConfig struct {
@@ -225,7 +226,7 @@ func (l *Listener) SubscribeCosmos(ctx services.Context, worker *services.Worker
 				KvPairs: []tendermintContract.IMembershipMsgsKVPair{
 					{
 						Path:  ibcPath,
-						Value: utils.BytesToBytes32(value),
+						Value: value,
 					},
 				},
 				MerkleProofs: []tendermintContract.IMembershipMsgsMerkleProof{
@@ -448,7 +449,7 @@ func main() {
 	}
 	worker := services.NewWorker(&transaction.Handler{}, prover)
 
-	ctx := services.NewCtxWithBeacon(cosmosClient, ethClient, nil, cfg.EthToCosmosConfig.BeaconUrl, "")
+	ctx := services.NewCtxWithBeacon(cosmosClient, ethClient, nil, cfg.EthToCosmosConfig.BeaconUrl, cfg.CosmosToEthConfig.CosmosWasmClientID)
 	ctx.SetCosmosRouterClientID(cfg.CosmosToEthConfig.ICS26ClientID)
 	ctx.SetAddresses(
 		cfg.CosmosToEthConfig.ICS26Address,

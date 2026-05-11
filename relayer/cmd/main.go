@@ -45,16 +45,17 @@ const (
 // --- Config types for JSON config file ---
 
 type cosmosToEthConfig struct {
-	TmRpcUrl        string `json:"tm_rpc_url"`
-	ICS26Address    string `json:"ics26_address"`
-	ICS26ClientID   string `json:"ics26_client_id"`
-	EthRpcUrl       string `json:"eth_rpc_url"`
-	EthWsUrl        string `json:"eth_ws_url"`
-	ICS07Client     string `json:"ics07_client"`
-	WrapperVerifier string `json:"wrapper_verifier"`
-	Membership      string `json:"membership"`
-	Misbehaviour    string `json:"misbehaviour"`
-	UpdateClient    string `json:"update_client"`
+	TmRpcUrl           string `json:"tm_rpc_url"`
+	ICS26Address       string `json:"ics26_address"`
+	ICS26ClientID      string `json:"ics26_client_id"`
+	CosmosWasmClientID string `json:"cosmos_wasm_client_id"`
+	EthRpcUrl          string `json:"eth_rpc_url"`
+	EthWsUrl           string `json:"eth_ws_url"`
+	ICS07Client        string `json:"ics07_client"`
+	WrapperVerifier    string `json:"wrapper_verifier"`
+	Membership         string `json:"membership"`
+	Misbehaviour       string `json:"misbehaviour"`
+	UpdateClient       string `json:"update_client"`
 }
 
 type ethToCosmosConfig struct {
@@ -214,6 +215,10 @@ func cosmosRouterClientIDOrDefault(cfg *appConfig) string {
 	return envOrDefault("ICS26_CLIENT_ID", cfg.CosmosToEthConfig.ICS26ClientID)
 }
 
+func cosmosWasmClientIDOrDefault(cfg *appConfig) string {
+	return envOrDefault("COSMOS_WASM_CLIENT_ID", cfg.CosmosToEthConfig.CosmosWasmClientID)
+}
+
 // --- Main ---
 
 func main() {
@@ -292,11 +297,16 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 
 			worker := services.NewWorker(&transaction.Handler{}, nil)
 
+			cosmosWasmClientID := cosmosWasmClientIDOrDefault(cfg)
+			if cosmosWasmClientID == "" {
+				return fmt.Errorf("cosmos_wasm_client_id is required in cosmos_to_eth config")
+			}
+
 			// Create context (no WS client needed for create-clients)
 			ctx := services.NewCtxWithBeacon(
 				cosmosClient, ethClient, nil,
 				cfg.EthToCosmosConfig.BeaconUrl,
-				"08-wasm-0",
+				cosmosWasmClientID,
 			)
 			ctx.SetCosmosRouterClientID(cosmosRouterClientIDOrDefault(cfg))
 
@@ -359,6 +369,12 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				ethClientID, err := worker.CreateEthClient(ctx, wasmChecksum)
 				if err != nil {
 					return fmt.Errorf("failed to create Ethereum client on Cosmos: %w", err)
+				}
+				if ethClientID != cosmosWasmClientID {
+					return fmt.Errorf(
+						"created Ethereum light client ID %s does not match configured cosmos_wasm_client_id %s",
+						ethClientID, cosmosWasmClientID,
+					)
 				}
 				logger.Sugar().Infof("Ethereum light client created on Cosmos: clientID=%s", ethClientID)
 			} else {
@@ -438,11 +454,16 @@ func Start(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to load prover: %w", err)
 			}
 
+			cosmosWasmClientID := cosmosWasmClientIDOrDefault(cfg)
+			if cosmosWasmClientID == "" {
+				return fmt.Errorf("cosmos_wasm_client_id is required in cosmos_to_eth config")
+			}
+
 			// Create context with beacon API
 			ctx := services.NewCtxWithBeacon(
 				cosmosClient, ethClient, ethWsClient,
 				cfg.EthToCosmosConfig.BeaconUrl,
-				"08-wasm-0",
+				cosmosWasmClientID,
 			)
 			ctx.SetCosmosRouterClientID(cosmosRouterClientIDOrDefault(cfg))
 
@@ -712,6 +733,8 @@ func MembershipCmd(logger *zap.Logger) *cobra.Command {
 					AppHash:               genesis.TrustedConsensusState.Root,
 					TrustedConsensusState: tendermintContract.IICS07TendermintMsgsConsensusState(genesis.TrustedConsensusState),
 					MembershipType:        uint8(membershipType),
+					Path:                  kvPairs[0].Path,
+					Value:                 kvPairs[0].Value,
 				}
 
 				tx, err := ics07Tendermint.VerifyMembership(auth, msg)
@@ -727,6 +750,7 @@ func MembershipCmd(logger *zap.Logger) *cobra.Command {
 					AppHash:               genesis.TrustedConsensusState.Root,
 					TrustedConsensusState: tendermintContract.IICS07TendermintMsgsConsensusState(genesis.TrustedConsensusState),
 					MembershipType:        uint8(membershipType),
+					Path:                  kvPairs[0].Path,
 				}
 
 				tx, err := ics07Tendermint.VerifyNonMembership(auth, msg)

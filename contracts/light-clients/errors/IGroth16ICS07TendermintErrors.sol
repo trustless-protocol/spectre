@@ -68,7 +68,7 @@ interface IGroth16ICS07TendermintErrors {
     /// @notice The error that is returned when the key-value pair's value does not match the expected value.
     /// @param expected The expected value.
     /// @param actual The actual value.
-    error MembershipProofValueMismatch(bytes32 expected, bytes32 actual);
+    error MembershipProofValueMismatch(bytes expected, bytes actual);
 
     /// @notice The error that is returned when the key-value pair's path is not contained in the proof.
     /// @param path The path of the key-value pair.
@@ -117,7 +117,7 @@ interface IGroth16ICS07TendermintErrors {
     /// @notice Returned when a key-value pair is not in the cache.
     /// @param path The path of the key-value pair.
     /// @param value The value of the key-value pair.InsufficientTrustingPeriod    
-    error KeyValuePairNotInCache(bytes[] path, bytes32 value);
+    error KeyValuePairNotInCache(bytes[] path, bytes value);
 
     /// @notice Returned when the membership value is empty.
     error EmptyValue();

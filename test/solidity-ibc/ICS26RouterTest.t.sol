@@ -74,7 +74,9 @@ contract ICS26RouterTest is Test {
                     root: bytes32(0),
                     nextValidatorsHash: bytes32(0)
                 }),
-                membershipType: IMembershipMsgs.MembershipType.Membership
+                membershipType: IMembershipMsgs.MembershipType.Membership,
+                path: new bytes[](0),
+                value: bytes("")
             })
         );
     }
