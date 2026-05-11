@@ -121,7 +121,7 @@ gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21e
     -y
 
 
-
+# 8. check
 cast call 0xee0fcb8e5ccad0b4197baabd633333886f5c364d \
   'ibcERC20Contract(string)(address)' \
   'transfer/cosmoshub-1/stake' \
