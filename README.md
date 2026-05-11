@@ -69,6 +69,7 @@ go build -o relayer ./cmd
 
 # 3. Start Ethereum first and wait until the beacon node finalizes.
 #    Replace 56246 with your Kurtosis-mapped beacon RPC port.
+kurtosis enclave rm -f my-testnet
 ./run_eth_node.sh        # Kurtosis Ethereum testnet + deploys core contracts
 # Poll until finalized.epoch > 0:
 curl -s <eth_beacon_api_ur>/eth/v1/beacon/states/head/finality_checkpoints
@@ -97,7 +98,7 @@ curl -s http://127.0.0.1:51180/eth/v1/beacon/states/head/finality_checkpoints
 
 # 7. send tx
 
-ABS_TIMEOUT=$(($(date +%s) + 1800))
+ABS_TIMEOUT=$(($(date +%s) + 10))
 
 gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21ee5948ecaa776 1000stake \
   --from test1 \
