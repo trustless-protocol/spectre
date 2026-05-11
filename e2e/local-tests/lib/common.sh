@@ -170,19 +170,19 @@ refresh_relayer_eth_endpoints() {
   fi
 
   if [ -z "${ETH_RPC_URL:-}" ]; then
-    echo "Error: ETH RPC URL not found in Kurtosis or $config_file" >&2
+    echo "  ✗ ETH RPC URL not found in Kurtosis or $config_file" >&2
     exit 1
   fi
 
   if ! cast chain-id --rpc-url "$ETH_RPC_URL" >/dev/null 2>&1; then
-    echo "Error: ethereum rpc not responding at $ETH_RPC_URL" >&2
-    echo "Run ./setup/01-eth-node.sh or refresh $config_file with the current Kurtosis RPC URL." >&2
+    echo "  ✗ Ethereum RPC not responding at $ETH_RPC_URL" >&2
+    echo "    Run ./setup/01-eth-node.sh or refresh $config_file with the current Kurtosis RPC URL." >&2
     exit 1
   fi
 
-  echo "Using ETH_RPC_URL: $ETH_RPC_URL"
-  [ -n "${ETH_WS_URL:-}" ] && echo "Using ETH_WS_URL: $ETH_WS_URL"
-  [ -n "${ETH_BEACON_API_URL:-}" ] && echo "Using ETH_BEACON_API_URL: $ETH_BEACON_API_URL"
+  echo "  ETH_RPC_URL:        $ETH_RPC_URL"
+  [ -n "${ETH_WS_URL:-}" ] && echo "  ETH_WS_URL:         $ETH_WS_URL"
+  [ -n "${ETH_BEACON_API_URL:-}" ] && echo "  ETH_BEACON_API_URL: $ETH_BEACON_API_URL"
 
   jq \
     --arg ETH_RPC "$ETH_RPC_URL" \

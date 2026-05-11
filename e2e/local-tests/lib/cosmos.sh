@@ -47,7 +47,7 @@ upsert_env_var() {
 wait_for_cosmos_block() {
   local before after
   before="$("$COSMOS_BIN" status --node "${COSMOS_RPC_URL:-http://127.0.0.1:26657}" 2>/dev/null | jq -r '.sync_info.latest_block_height // .SyncInfo.latest_block_height // empty')"
-  echo "Current block: $before" >&2
+  echo "  Current block: $before" >&2
   local target=$((before + ${1:-1}))
   while true; do
     after="$("$COSMOS_BIN" status --node "${COSMOS_RPC_URL:-http://127.0.0.1:26657}" 2>/dev/null | jq -r '.sync_info.latest_block_height // .SyncInfo.latest_block_height // empty')"
@@ -56,5 +56,5 @@ wait_for_cosmos_block() {
     fi
     sleep 1
   done
-  echo "Reached block $after" >&2
+  echo "  Reached block $after" >&2
 }

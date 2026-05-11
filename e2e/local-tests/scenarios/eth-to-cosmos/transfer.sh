@@ -178,32 +178,33 @@ fi
 ETH_CHAIN_ID="$(cast chain-id --rpc-url "$ETH_RPC_URL")"
 ETH_SENDER="$(cast wallet address --private-key "$ETH_PRIVATE_KEY")"
 
-printf 'ENV_FILE=%s\n' "$ENV_FILE"
-printf 'KURTOSIS_ENCLAVE=%s\n' "$KURTOSIS_ENCLAVE"
-printf 'ETH_RPC_URL=%s\n' "$ETH_RPC_URL"
-printf 'ETH_BEACON_API_URL=%s\n' "${ETH_BEACON_API_URL:-}"
-printf 'ETH_CHAIN_ID=%s\n' "$ETH_CHAIN_ID"
-printf 'ETH_SENDER=%s\n' "$ETH_SENDER"
-printf 'BROADCAST_JSON=%s\n' "${BROADCAST_JSON:-}"
-printf 'COSMOS_RPC_URL=%s\n' "$COSMOS_RPC_URL"
-printf 'COSMOS_GRPC_ADDR=%s\n' "$COSMOS_GRPC_ADDR"
-printf 'COSMOS_CHAIN_ID=%s\n' "$COSMOS_CHAIN_ID"
-printf 'ERC20_ADDRESS=%s\n' "$ERC20_ADDRESS"
-printf 'ICS20_ADDRESS=%s\n' "$ICS20_ADDRESS"
-printf 'RECEIVER=%s\n' "$RECEIVER"
-printf 'AMOUNT=%s\n' "$AMOUNT"
-printf 'SOURCE_CLIENT=%s\n' "$SOURCE_CLIENT"
-printf 'DEST_PORT=%s\n' "$DEST_PORT"
-printf 'TIMEOUT=%s\n' "$TIMEOUT"
+echo "━━━ Transfer Configuration ━━━"
+printf "  %-20s %s\n" "ENV_FILE:"        "$ENV_FILE"
+printf "  %-20s %s\n" "KURTOSIS_ENCLAVE:" "$KURTOSIS_ENCLAVE"
+printf "  %-20s %s\n" "ETH_RPC_URL:"     "$ETH_RPC_URL"
+printf "  %-20s %s\n" "ETH_BEACON_API:"  "${ETH_BEACON_API_URL:-}"
+printf "  %-20s %s\n" "ETH_CHAIN_ID:"    "$ETH_CHAIN_ID"
+printf "  %-20s %s\n" "ETH_SENDER:"      "$ETH_SENDER"
+printf "  %-20s %s\n" "COSMOS_RPC_URL:"  "$COSMOS_RPC_URL"
+printf "  %-20s %s\n" "COSMOS_GRPC:"     "$COSMOS_GRPC_ADDR"
+printf "  %-20s %s\n" "COSMOS_CHAIN_ID:" "$COSMOS_CHAIN_ID"
+printf "  %-20s %s\n" "ERC20:"           "$ERC20_ADDRESS"
+printf "  %-20s %s\n" "ICS20:"           "$ICS20_ADDRESS"
+printf "  %-20s %s\n" "RECEIVER:"        "$RECEIVER"
+printf "  %-20s %s\n" "AMOUNT:"          "$AMOUNT"
+printf "  %-20s %s\n" "SOURCE_CLIENT:"   "$SOURCE_CLIENT"
+printf "  %-20s %s\n" "DEST_PORT:"       "$DEST_PORT"
+printf "  %-20s %s\n" "TIMEOUT:"         "$TIMEOUT"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-echo
-echo "Approving ERC20 to ICS20Transfer contract..."
+echo ""
+echo "▶ Approving ERC20 allowance..."
 cast send "$ERC20_ADDRESS" "approve(address,uint256)" "$ICS20_ADDRESS" "$AMOUNT" \
   --rpc-url "$ETH_RPC_URL" \
   --private-key "$ETH_PRIVATE_KEY"
 
-echo
-echo "Submitting ICS20Transfer.sendTransfer..."
+echo ""
+echo "▶ Submitting ICS20Transfer.sendTransfer..."
 TRANSFER_TUPLE="($ERC20_ADDRESS,$AMOUNT,$RECEIVER,$SOURCE_CLIENT,$DEST_PORT,$TIMEOUT,\"$MEMO\")"
 cast send "$ICS20_ADDRESS" \
   "sendTransfer((address,uint256,string,string,string,uint64,string))" \
@@ -211,5 +212,9 @@ cast send "$ICS20_ADDRESS" \
   --rpc-url "$ETH_RPC_URL" \
   --private-key "$ETH_PRIVATE_KEY"
 
-echo
-echo "Done. If the relayer is running, the packet should be relayed to Cosmos."
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Transfer submitted"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "  If the relayer is running, the packet will be relayed to Cosmos."

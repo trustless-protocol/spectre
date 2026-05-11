@@ -14,7 +14,7 @@ source "$REPO_ROOT/e2e/local-tests/lib/common.sh"
 
 build_relayer_if_needed() {
   if [ ! -x "$RELAYER_DIR/relayer" ] || find "$RELAYER_DIR" -name '*.go' -newer "$RELAYER_DIR/relayer" | grep -q .; then
-    echo "Building current relayer binary..."
+    echo "  Building relayer binary..."
     (cd "$RELAYER_DIR" && go build -o relayer ./cmd)
   fi
 }
@@ -23,12 +23,12 @@ build_relayer_if_needed() {
 WASM_CHECKSUM="${WASM_CHECKSUM:-}"
 if [ -z "$WASM_CHECKSUM" ] && [ -f "$WASM_CHECKSUM_FILE" ]; then
   WASM_CHECKSUM="$(cat "$WASM_CHECKSUM_FILE")"
-  echo "Auto-detected WASM checksum: $WASM_CHECKSUM"
+  echo "  Using auto-detected WASM checksum: $WASM_CHECKSUM"
 fi
 
 if [ -z "$WASM_CHECKSUM" ]; then
-  echo "Error: WASM checksum not found." >&2
-  echo "Please run ./scripts/03-wasm.sh first, or set WASM_CHECKSUM env var." >&2
+  echo "  ✗ WASM checksum not found." >&2
+  echo "    Please run ./scripts/03-wasm.sh first, or set WASM_CHECKSUM env var." >&2
   exit 1
 fi
 

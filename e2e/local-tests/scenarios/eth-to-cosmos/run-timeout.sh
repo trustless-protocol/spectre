@@ -115,7 +115,7 @@ if [ -z "${ETH_RPC_URL:-}" ]; then
   exit 1
 fi
 
-echo "Using ETH_RPC_URL: $ETH_RPC_URL"
+echo "  ETH_RPC_URL: $ETH_RPC_URL"
 
 load_timeout_contract_addresses
 
@@ -176,35 +176,36 @@ fi
 
 ETH_SENDER="$(cast wallet address --private-key "$ETH_PRIVATE_KEY")"
 
-# ---- Record pre-transfer state ----
+# ─── Record pre-transfer state ───
 echo ""
-echo "=== Pre-transfer state ==="
+echo "━━━ Pre-transfer State ━━━"
 BEFORE_ETH_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ETH_SENDER" --rpc-url "$ETH_RPC_URL" | uint_value)"
-echo "Sender ERC20 balance (pre):  $BEFORE_ETH_BALANCE"
+printf "  %-30s %s\n" "Sender ERC20 balance:"      "$BEFORE_ETH_BALANCE"
 
 ESCROW_ADDRESS="$(cast call "$ICS20_ADDRESS" 'getEscrow(string)(address)' "$SOURCE_CLIENT" --rpc-url "$ETH_RPC_URL" 2>/dev/null || echo "")"
 if [ -n "$ESCROW_ADDRESS" ] && [ "$ESCROW_ADDRESS" != "0x" ]; then
   BEFORE_ESCROW_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ESCROW_ADDRESS" --rpc-url "$ETH_RPC_URL" | uint_value)"
-  echo "Escrow ERC20 balance (pre):   $BEFORE_ESCROW_BALANCE"
+  printf "  %-30s %s\n" "Escrow ERC20 balance:"     "$BEFORE_ESCROW_BALANCE"
 fi
 
 COSMOS_VOUCHER_DENOM="transfer/$COSMOS_WASM_CLIENT_ID/$ERC20_ADDRESS"
 BEFORE_COSMOS_BALANCE="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_VOUCHER_DENOM" --node "$COSMOS_RPC_URL" --chain-id "$COSMOS_CHAIN_ID" --output json 2>/dev/null | jq -r '.balance.amount // "0"')"
-echo "Cosmos voucher balance (pre): $BEFORE_COSMOS_BALANCE"
+printf "  %-30s %s\n" "Cosmos voucher balance:"    "$BEFORE_COSMOS_BALANCE"
 
-# ---- Send transfer with short timeout ----
+# ─── Send transfer with short timeout ───
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-10}"
 TIMEOUT=$(($(date +%s) + TIMEOUT_SECONDS))
 echo ""
-echo "=== Sending ICS20Transfer with ${TIMEOUT_SECONDS}s timeout ==="
-echo "Timeout at epoch: $TIMEOUT ($(date -d "@$TIMEOUT" '+%H:%M:%S' 2>/dev/null || echo 'check `date`'))"
-
-echo "Approving ERC20 allowance..."
+echo "━━━ Sending ICS20Transfer (${TIMEOUT_SECONDS}s timeout) ━━━"
+echo "  Timeout at epoch: $TIMEOUT"
+echo "  Timeout (local):  $(date -d "@$TIMEOUT" '+%H:%M:%S' 2>/dev/null || echo 'N/A')"
+echo ""
+echo "  Approving ERC20 allowance..."
 cast send "$ERC20_ADDRESS" "approve(address,uint256)" "$ICS20_ADDRESS" "$AMOUNT" \
   --rpc-url "$ETH_RPC_URL" \
   --private-key "$ETH_PRIVATE_KEY" > /dev/null
 
-echo "Submitting sendTransfer..."
+echo "  Submitting sendTransfer..."
 TRANSFER_TUPLE="($ERC20_ADDRESS,$AMOUNT,$RECEIVER,$SOURCE_CLIENT,$DEST_PORT,$TIMEOUT,\"\")"
 cast send "$ICS20_ADDRESS" \
   "sendTransfer((address,uint256,string,string,string,uint64,string))" \
@@ -212,18 +213,14 @@ cast send "$ICS20_ADDRESS" \
   --rpc-url "$ETH_RPC_URL" \
   --private-key "$ETH_PRIVATE_KEY" > /dev/null
 
-echo ""
-echo "Waiting for relayer to detect timeout and submit refund..."
-echo "(relayer builds ZK proof for light client update, then calls timeoutPacket)"
+echo "  Transfer submitted (waiting for timeout...)"
 echo ""
 
-# ---- Poll for refund (ERC20 balance returning to original) ----
+# ─── Poll for refund (ERC20 balance returning to original) ───
 MAX_POLLS=10
 POLL_INTERVAL=15
 poll=0
 
-# refund expected = original plus maybe tiny diff from gas
-# but balance is ERC20 not ETH, so no gas deduction on ERC20
 REFUND_THRESHOLD=$((BEFORE_ETH_BALANCE - 1))
 
 while [ $poll -lt $MAX_POLLS ]; do
@@ -238,54 +235,54 @@ while [ $poll -lt $MAX_POLLS ]; do
   CURRENT_COSMOS="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_VOUCHER_DENOM" --node "$COSMOS_RPC_URL" --chain-id "$COSMOS_CHAIN_ID" --output json 2>/dev/null | jq -r '.balance.amount // "0"')"
 
   if [ "$CURRENT_ETH_BALANCE" -ge "$REFUND_THRESHOLD" ] 2>/dev/null; then
-    echo "[poll ${poll}/${MAX_POLLS}] ERC20 refunded! balance=$CURRENT_ETH_BALANCE (target >= $REFUND_THRESHOLD)"
+    echo "  [poll ${poll}/${MAX_POLLS}] ERC20 refunded │ sender=${CURRENT_ETH_BALANCE} (target ≥ ${REFUND_THRESHOLD})"
     REFUNDED=true
     break
   fi
 
-  echo "[poll ${poll}/${MAX_POLLS}] sender=$CURRENT_ETH_BALANCE escrow=$CURRENT_ESCROW cosmos=$CURRENT_COSMOS"
+  echo "  [poll ${poll}/${MAX_POLLS}] sender=${CURRENT_ETH_BALANCE}  escrow=${CURRENT_ESCROW}  cosmos=${CURRENT_COSMOS}"
 done
 
-# ---- Final state ----
+# ─── Final state ───
 echo ""
-echo "=== Final state ==="
+echo "━━━ Final State ━━━"
 AFTER_ETH_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ETH_SENDER" --rpc-url "$ETH_RPC_URL" | uint_value)"
-echo "Sender ERC20 balance (final): $AFTER_ETH_BALANCE"
+printf "  %-30s %s\n" "Sender ERC20 balance:"      "$AFTER_ETH_BALANCE"
 
 if [ -n "${ESCROW_ADDRESS:-}" ] && [ "$ESCROW_ADDRESS" != "0x" ]; then
   AFTER_ESCROW_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ESCROW_ADDRESS" --rpc-url "$ETH_RPC_URL" | uint_value)"
-  echo "Escrow ERC20 balance (final):  $AFTER_ESCROW_BALANCE"
+  printf "  %-30s %s\n" "Escrow ERC20 balance:"     "$AFTER_ESCROW_BALANCE"
 fi
 
 AFTER_COSMOS_BALANCE="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_VOUCHER_DENOM" --node "$COSMOS_RPC_URL" --chain-id "$COSMOS_CHAIN_ID" --output json 2>/dev/null | jq -r '.balance.amount // "0"')"
-echo "Cosmos voucher (final):        $AFTER_COSMOS_BALANCE"
+printf "  %-30s %s\n" "Cosmos voucher:"            "$AFTER_COSMOS_BALANCE"
 
-# ---- Summary ----
+# ─── Summary ───
 echo ""
-echo "=== Timeout Test Summary ==="
-echo "Direction:      ETH → Cosmos"
-echo "Amount sent:    $AMOUNT wei"
-echo "Timeout:        ${TIMEOUT_SECONDS}s"
+echo "━━━ Timeout Test Summary ━━━"
+printf "  %-20s %s\n" "Direction:"    "ETH → Cosmos"
+printf "  %-20s %s\n" "Amount sent:"  "${AMOUNT} wei"
+printf "  %-20s %s\n" "Timeout:"      "${TIMEOUT_SECONDS}s"
 echo ""
 
 if [ "${REFUNDED:-false}" = "true" ]; then
-  echo "RESULT: PASS"
-  echo "  - Relayer detected the expired packet"
-  echo "  - Built non-membership proof from Cosmos"
-  echo "  - Called timeoutPacket() on Ethereum ICS26Router"
-  echo "  - Sender refunded (ERC20 balance returned to original)"
-  echo "  - Cosmos voucher = 0 (packet never relayed)"
+  echo "  RESULT: PASS"
+  echo "    • Relayer detected the expired packet"
+  echo "    • Built non-membership proof from Cosmos"
+  echo "    • Called timeoutPacket() on Ethereum ICS26Router"
+  echo "    • Sender refunded (ERC20 balance returned to original)"
+  echo "    • Cosmos voucher = 0 (packet never relayed)"
 elif [ "$AFTER_ETH_BALANCE" -ge "$REFUND_THRESHOLD" ] 2>/dev/null; then
-  echo "RESULT: PASS (detected after final poll)"
-  echo "  - Sender ERC20 balance returned to original"
+  echo "  RESULT: PASS (detected after final poll)"
+  echo "    • Sender ERC20 balance returned to original"
 elif [ "$AFTER_COSMOS_BALANCE" = "0" ]; then
-  echo "RESULT: PARTIAL"
-  echo "  - Packet was NOT relayed to Cosmos (timeout prevented relay)"
-  echo "  - ERC20 balance still decreased — refund not yet submitted"
-  echo "  - The relayer may still be building the ZK proof"
-  echo "  - Check relayer logs: tail -f $REPO_ROOT/relayer/relayer.log"
+  echo "  RESULT: PARTIAL"
+  echo "    • Packet was NOT relayed to Cosmos (timeout prevented relay)"
+  echo "    • ERC20 balance still decreased — refund not yet submitted"
+  echo "    • The relayer may still be building the ZK proof"
+  echo "    • Check relayer logs: tail -f $REPO_ROOT/relayer/relayer.log"
 else
-  echo "RESULT: FAIL"
-  echo "  - Packet WAS relayed to Cosmos before timeout"
-  echo "  - Try with shorter TIMEOUT_SECONDS or check relayer status"
+  echo "  RESULT: FAIL"
+  echo "    • Packet WAS relayed to Cosmos before timeout"
+  echo "    • Try with shorter TIMEOUT_SECONDS or check relayer status"
 fi

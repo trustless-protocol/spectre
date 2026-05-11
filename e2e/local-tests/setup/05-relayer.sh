@@ -13,7 +13,7 @@ source "$REPO_ROOT/e2e/local-tests/lib/common.sh"
 
 build_relayer_if_needed() {
   if [ ! -x "$RELAYER_DIR/relayer" ] || find "$RELAYER_DIR" -name '*.go' -newer "$RELAYER_DIR/relayer" | grep -q .; then
-    echo "Building current relayer binary..."
+    echo "  Building relayer binary..."
     (cd "$RELAYER_DIR" && go build -o relayer ./cmd)
   fi
 }

@@ -101,44 +101,44 @@ fi
 
 SIGNER_ADDRESS="${COSMOS_SIGNER_ADDRESS:-$(key_address "$COSMOS_SIGNER_KEY")}"
 
-echo "== Cosmos endpoint =="
-printf 'COSMOS_BIN=%s\n' "$COSMOS_BIN"
-printf 'COSMOS_RPC_URL=%s\n' "$COSMOS_RPC_URL"
-printf 'COSMOS_GRPC_ADDR=%s\n' "$COSMOS_GRPC_ADDR"
-printf 'COSMOS_CHAIN_ID=%s\n' "$COSMOS_CHAIN_ID"
-printf 'latest_block=%s\n' "$("$COSMOS_BIN" status --node "$COSMOS_RPC_URL" 2>/dev/null | jq -r '.sync_info.latest_block_height // .SyncInfo.latest_block_height // empty')"
-printf 'BROADCAST_JSON=%s\n' "${BROADCAST_JSON:-}"
+echo "━━━ Cosmos Endpoint ━━━"
+printf "  %-20s %s\n" "COSMOS_BIN:"      "$COSMOS_BIN"
+printf "  %-20s %s\n" "COSMOS_RPC_URL:"  "$COSMOS_RPC_URL"
+printf "  %-20s %s\n" "COSMOS_GRPC:"     "$COSMOS_GRPC_ADDR"
+printf "  %-20s %s\n" "COSMOS_CHAIN_ID:" "$COSMOS_CHAIN_ID"
+printf "  %-20s %s\n" "latest_block:"    "$("$COSMOS_BIN" status --node "$COSMOS_RPC_URL" 2>/dev/null | jq -r '.sync_info.latest_block_height // .SyncInfo.latest_block_height // empty')"
+printf "  %-20s %s\n" "BROADCAST_JSON:"  "${BROADCAST_JSON:-}"
 
-echo
-echo "== Keys =="
-printf 'receiver_key=%s\n' "$COSMOS_RECEIVER_KEY"
-printf 'receiver_address=%s\n' "${ADDRESS:-}"
-printf 'signer_key=%s\n' "$COSMOS_SIGNER_KEY"
-printf 'signer_address=%s\n' "${SIGNER_ADDRESS:-}"
+echo ""
+echo "━━━ Keys ━━━"
+printf "  %-20s %s\n" "receiver_key:"    "$COSMOS_RECEIVER_KEY"
+printf "  %-20s %s\n" "receiver_address:" "${ADDRESS:-}"
+printf "  %-20s %s\n" "signer_key:"      "$COSMOS_SIGNER_KEY"
+printf "  %-20s %s\n" "signer_address:"  "${SIGNER_ADDRESS:-}"
 
 if [ -n "${ADDRESS:-}" ]; then
-  echo
-  echo "== Account balances =="
+  echo ""
+  echo "━━━ Account Balances ━━━"
   cosmos_query bank balances "$ADDRESS" | jq .
 
   if [ -n "${ERC20_ADDRESS:-}" ]; then
     VOUCHER_TRACE="transfer/$COSMOS_WASM_CLIENT_ID/$ERC20_ADDRESS"
     VOUCHER_DENOM="$(ibc_denom "$VOUCHER_TRACE")"
-    echo
-    echo "== ETH -> Cosmos voucher balance =="
-    printf 'trace=%s\n' "$VOUCHER_TRACE"
-    printf 'denom=%s\n' "$VOUCHER_DENOM"
+    echo ""
+    echo "━━━ ETH → Cosmos Voucher Balance ━━━"
+    printf "  %-20s %s\n" "trace:" "$VOUCHER_TRACE"
+    printf "  %-20s %s\n" "denom:" "$VOUCHER_DENOM"
     cosmos_query bank balance "$ADDRESS" "$VOUCHER_DENOM" | jq .
   fi
 fi
 
-echo
-echo "== IBC clients =="
+echo ""
+echo "━━━ IBC Clients ━━━"
 cosmos_query ibc client states | jq .
 
 if [ -n "$COSMOS_TX_HASH" ]; then
-  echo
-  echo "== Cosmos transaction =="
-  printf 'tx_hash=%s\n' "$COSMOS_TX_HASH"
+  echo ""
+  echo "━━━ Cosmos Transaction ━━━"
+  printf "  %-20s %s\n" "tx_hash:" "$COSMOS_TX_HASH"
   cosmos_query tx "$COSMOS_TX_HASH" | jq .
 fi

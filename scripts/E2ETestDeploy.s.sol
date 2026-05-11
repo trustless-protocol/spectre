@@ -49,14 +49,12 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         // `go run ./relayer/prover/cmd`.
         WrapperVerifier wrapperVerifier = new WrapperVerifier(msg.sender);
 
-
         address verifierN4 = address(new Groth16Verifier_N4());
 
         // Hash-aggregate exposes a fixed 32-byte SHA-256 digest as public input,
         // so every bucket uses the same uint256[32] verifier ABI.
-     
+
         wrapperVerifier.setBucket(4, verifierN4, _verifyProofSelector());
-      
 
         address membership = address(new Membership());
         address updateClient = address(new UpdateClient());
@@ -91,14 +89,16 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
 
         address[] memory relayers = new address[](1);
         relayers[0] = msg.sender;
-        accessManagerSetRoles(accessManager, relayers, new address[](0), new address[](0), msg.sender, msg.sender, msg.sender);
+        accessManagerSetRoles(
+            accessManager, relayers, new address[](0), new address[](0), msg.sender, msg.sender, msg.sender
+        );
 
         // Wire Transfer app
         ICS26Router(address(routerProxy)).addIBCApp(ICS20Lib.DEFAULT_PORT_ID, address(transferProxy));
 
         // Mint some tokens
         TestERC20 erc20 = new TestERC20();
-        erc20.mint(e2eFaucet, type(uint256).max);
+        erc20.mint(e2eFaucet, 1_000_000 * 10 ** 18);
 
         vm.stopBroadcast();
 
@@ -117,12 +117,6 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
     /// @dev Build the 4-byte selector for gnark's hash-aggregate verifier ABI:
     ///      `verifyProof(uint256[8], uint256[2], uint256[2], uint256[32])`.
     function _verifyProofSelector() internal pure returns (bytes4) {
-        return bytes4(
-            keccak256(
-                bytes(
-                    "verifyProof(uint256[8],uint256[2],uint256[2],uint256[32])"
-                )
-            )
-        );
+        return bytes4(keccak256(bytes("verifyProof(uint256[8],uint256[2],uint256[2],uint256[32])")));
     }
 }

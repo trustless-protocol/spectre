@@ -112,57 +112,57 @@ if [ -z "${ADDRESS:-}" ] && [ -n "$ETH_PRIVATE_KEY" ]; then
   ADDRESS="$(cast wallet address --private-key "$ETH_PRIVATE_KEY")"
 fi
 
-echo "== Ethereum endpoint =="
-printf 'KURTOSIS_ENCLAVE=%s\n' "$KURTOSIS_ENCLAVE"
-printf 'ETH_RPC_URL=%s\n' "$ETH_RPC_URL"
-printf 'chain_id=%s\n' "$(cast chain-id --rpc-url "$ETH_RPC_URL")"
-printf 'latest_block=%s\n' "$(cast block-number --rpc-url "$ETH_RPC_URL")"
-printf 'BROADCAST_JSON=%s\n' "${BROADCAST_JSON:-}"
+echo "━━━ Ethereum Endpoint ━━━"
+printf "  %-20s %s\n" "KURTOSIS_ENCLAVE:" "$KURTOSIS_ENCLAVE"
+printf "  %-20s %s\n" "ETH_RPC_URL:"      "$ETH_RPC_URL"
+printf "  %-20s %s\n" "chain_id:"         "$(cast chain-id --rpc-url "$ETH_RPC_URL")"
+printf "  %-20s %s\n" "latest_block:"     "$(cast block-number --rpc-url "$ETH_RPC_URL")"
+printf "  %-20s %s\n" "BROADCAST_JSON:"   "${BROADCAST_JSON:-}"
 
 if [ -n "${ADDRESS:-}" ]; then
-  echo
-  echo "== Account =="
-  printf 'address=%s\n' "$ADDRESS"
-  printf 'native_balance_wei=%s\n' "$(cast balance "$ADDRESS" --rpc-url "$ETH_RPC_URL")"
+  echo ""
+  echo "━━━ Account ━━━"
+  printf "  %-20s %s\n" "address:"             "$ADDRESS"
+  printf "  %-20s %s\n" "native_balance_wei:"  "$(cast balance "$ADDRESS" --rpc-url "$ETH_RPC_URL")"
 fi
 
 if [ -n "${ERC20_ADDRESS:-}" ]; then
-  echo
-  echo "== ERC20 =="
-  printf 'ERC20_ADDRESS=%s\n' "$ERC20_ADDRESS"
+  echo ""
+  echo "━━━ ERC20 ━━━"
+  printf "  %-20s %s\n" "address:" "$ERC20_ADDRESS"
   if contract_has_code "$ERC20_ADDRESS"; then
-    printf 'symbol=%s\n' "$(safe_cast_call "$ERC20_ADDRESS" 'symbol()(string)')"
-    printf 'decimals=%s\n' "$(safe_cast_call "$ERC20_ADDRESS" 'decimals()(uint8)')"
-    printf 'total_supply=%s\n' "$(safe_cast_call "$ERC20_ADDRESS" 'totalSupply()(uint256)')"
+    printf "  %-20s %s\n" "symbol:"        "$(safe_cast_call "$ERC20_ADDRESS" 'symbol()(string)')"
+    printf "  %-20s %s\n" "decimals:"      "$(safe_cast_call "$ERC20_ADDRESS" 'decimals()(uint8)')"
+    printf "  %-20s %s\n" "total_supply:"  "$(safe_cast_call "$ERC20_ADDRESS" 'totalSupply()(uint256)')"
     if [ -n "${ADDRESS:-}" ]; then
-      printf 'account_balance=%s\n' "$(safe_cast_call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ADDRESS")"
+      printf "  %-20s %s\n" "account_balance:" "$(safe_cast_call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ADDRESS")"
     fi
     if [ -n "${ADDRESS:-}" ] && [ -n "${ICS20_ADDRESS:-}" ]; then
-      printf 'allowance_to_ICS20=%s\n' "$(safe_cast_call "$ERC20_ADDRESS" 'allowance(address,address)(uint256)' "$ADDRESS" "$ICS20_ADDRESS")"
+      printf "  %-20s %s\n" "allowance_to_ICS20:" "$(safe_cast_call "$ERC20_ADDRESS" 'allowance(address,address)(uint256)' "$ADDRESS" "$ICS20_ADDRESS")"
     fi
   else
-    echo "warning=no bytecode at ERC20_ADDRESS on ETH_RPC_URL"
+    echo "  ! no bytecode at ERC20_ADDRESS on ETH_RPC_URL"
   fi
 fi
 
 if [ -n "${ICS20_ADDRESS:-}" ]; then
-  echo
-  echo "== ICS20Transfer =="
-  printf 'ICS20_ADDRESS=%s\n' "$ICS20_ADDRESS"
+  echo ""
+  echo "━━━ ICS20Transfer ━━━"
+  printf "  %-20s %s\n" "address:" "$ICS20_ADDRESS"
   if contract_has_code "$ICS20_ADDRESS"; then
-    printf 'ics26=%s\n' "$(safe_cast_call "$ICS20_ADDRESS" 'ics26()(address)')"
-    printf 'escrow_for_%s=%s\n' "$SOURCE_CLIENT" "$(safe_cast_call "$ICS20_ADDRESS" 'getEscrow(string)(address)' "$SOURCE_CLIENT")"
+    printf "  %-20s %s\n" "ics26:" "$(safe_cast_call "$ICS20_ADDRESS" 'ics26()(address)')"
+    printf "  %-20s %s\n" "escrow (${SOURCE_CLIENT}):" "$(safe_cast_call "$ICS20_ADDRESS" 'getEscrow(string)(address)' "$SOURCE_CLIENT")"
   else
-    echo "warning=no bytecode at ICS20_ADDRESS on ETH_RPC_URL"
+    echo "  ! no bytecode at ICS20_ADDRESS on ETH_RPC_URL"
   fi
 fi
 
 if [ -n "$ETH_TX_HASH" ]; then
-  echo
-  echo "== Ethereum transaction =="
-  printf 'tx_hash=%s\n' "$ETH_TX_HASH"
+  echo ""
+  echo "━━━ Ethereum Transaction ━━━"
+  printf "  %-20s %s\n" "tx_hash:" "$ETH_TX_HASH"
   cast tx "$ETH_TX_HASH" --rpc-url "$ETH_RPC_URL"
-  echo
-  echo "== Ethereum receipt =="
+  echo ""
+  echo "━━━ Ethereum Receipt ━━━"
   cast receipt "$ETH_TX_HASH" --rpc-url "$ETH_RPC_URL"
 fi

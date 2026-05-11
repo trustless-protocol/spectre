@@ -48,9 +48,11 @@ ETH_BEACON_API=$(kurtosis enclave inspect "$KURTOSIS_ENCLAVE" \
   in_service && /^[^[:space:]]/ {in_service=0}
 ')
 
-echo "ETH_RPC: $ETH_RPC"
-echo "ETH_WS: $ETH_WS"
-echo "ETH_BEACON_API: $ETH_BEACON_API"
+echo "━━━ Ethereum Endpoints ━━━"
+printf "  %-20s %s\n" "ETH_RPC:"        "$ETH_RPC"
+printf "  %-20s %s\n" "ETH_WS:"         "$ETH_WS"
+printf "  %-20s %s\n" "ETH_BEACON_API:" "$ETH_BEACON_API"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 # Deploy ETH contracts
 export E2E_FAUCET_ADDRESS=0x8943545177806ED17B9F23F0a21ee5948eCaa776
@@ -68,47 +70,46 @@ ERC20_ADDRESS=$(echo "$RESULT" \
   | sed 's/\\"/"/g' \
   | jq -r '.erc20')
 
-echo "ERC20_ADDRESS: $ERC20_ADDRESS"
-
 ICS20_ADDRESS=$(echo "$RESULT" \
   | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.ics20Transfer')
-
-echo "ICS20_ADDRESS: $ICS20_ADDRESS"
 
 ICS26_ADDRESS=$(echo "$RESULT" \
   | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.ics26Router')
 
-echo "ICS26_ADDRESS: $ICS26_ADDRESS"
-
 VERIFIER_ADDRESS=$(echo "$RESULT" \
   | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.wrapperVerifier')
-
-echo "VERIFIER_ADDRESS: $VERIFIER_ADDRESS"
 
 MEMBERSHIP_ADDRESS=$(echo "$RESULT" \
   | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.membership')
 
-echo "MEMBERSHIP_ADDRESS: $MEMBERSHIP_ADDRESS"
-
 UPDATE_CLIENT_ADDRESS=$(echo "$RESULT" \
   | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.updateClient')
-echo "UPDATE_CLIENT_ADDRESS: $UPDATE_CLIENT_ADDRESS"
 
 MISBEHAVIOUR_ADDRESS=$(echo "$RESULT" \
   | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
   | jq -r '.misbehaviour')
-echo "MISBEHAVIOUR_ADDRESS: $MISBEHAVIOUR_ADDRESS"
+
+echo ""
+echo "━━━ Deployed Contracts ━━━"
+printf "  %-22s %s\n" "ERC20:"        "$ERC20_ADDRESS"
+printf "  %-22s %s\n" "ICS20Transfer:" "$ICS20_ADDRESS"
+printf "  %-22s %s\n" "ICS26Router:"   "$ICS26_ADDRESS"
+printf "  %-22s %s\n" "Verifier:"      "$VERIFIER_ADDRESS"
+printf "  %-22s %s\n" "Membership:"    "$MEMBERSHIP_ADDRESS"
+printf "  %-22s %s\n" "UpdateClient:"  "$UPDATE_CLIENT_ADDRESS"
+printf "  %-22s %s\n" "Misbehaviour:"  "$MISBEHAVIOUR_ADDRESS"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 ENV_FILE="$REPO_ROOT/relayer/.env"
 upsert_env_var "$ENV_FILE" ETH_RPC_URL "$ETH_RPC"
@@ -135,7 +136,9 @@ update_relayer_deploy_config \
   "$MISBEHAVIOUR_ADDRESS" \
   "$ETH_BEACON_API"
 
-echo "Waiting for execution finality (polling until finalized block > 1)..."
+echo ""
+echo "━━━ Waiting for Execution Finality ━━━"
+
 FINALIZED_BLOCK=0
 for i in $(seq 1 60); do
   FINALIZED_BLOCK_HEX=$(curl -s \
@@ -149,12 +152,15 @@ for i in $(seq 1 60); do
   fi
 
   if [ "$FINALIZED_BLOCK" -gt 1 ]; then
-    echo "Execution finalized at block $FINALIZED_BLOCK"
+    echo "  Finalized at block $FINALIZED_BLOCK"
     break
   fi
+  printf "  [%2d/60] polling...\r" "$i"
   sleep 5
 done
+echo ""
 if [ "$FINALIZED_BLOCK" -le 1 ]; then
-  echo "Error: finalized block did not become > 1 within 5 minutes" >&2
+  echo "  ✗ finalized block did not become > 1 within 5 minutes" >&2
   exit 1
 fi
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"

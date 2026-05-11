@@ -162,7 +162,7 @@ COSMOS_PRIVATE_KEY="$(gaiad keys export test1 --unarmored-hex --unsafe --keyring
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_PRIVATE_KEY" "$COSMOS_PRIVATE_KEY"
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_CHAIN_ID" "$CHAIN_ID"
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_GAS_LIMIT" "500000"
-echo "Updated $RELAYER_ENV_FILE with COSMOS_PRIVATE_KEY, COSMOS_CHAIN_ID, and COSMOS_GAS_LIMIT"
+echo "  Written to $RELAYER_ENV_FILE: COSMOS_PRIVATE_KEY, COSMOS_CHAIN_ID, COSMOS_GAS_LIMIT"
 
 PIDS=()
 for i in "${!HOMES[@]}"; do
@@ -177,10 +177,13 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Started 4 Gaia validators:"
+echo ""
+echo "━━━ Cosmos Validators Started ━━━"
 for i in "${!HOMES[@]}"; do
-    echo "  ${VAL_KEYS[$i]} home=${HOMES[$i]} rpc=tcp://127.0.0.1:${RPC_PORTS[$i]} p2p=tcp://127.0.0.1:${P2P_PORTS[$i]}"
+    printf "  %-6s  rpc=tcp://127.0.0.1:%-5s  p2p=tcp://127.0.0.1:%-5s  home=%s\n" \
+        "${VAL_KEYS[$i]}" "${RPC_PORTS[$i]}" "${P2P_PORTS[$i]}" "${HOMES[$i]}"
 done
-echo "Logs are written to each validator home as gaiad.log"
+echo "  (logs: <home>/gaiad.log)"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 wait "${PIDS[@]}"

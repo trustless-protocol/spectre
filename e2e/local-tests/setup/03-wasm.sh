@@ -71,5 +71,8 @@ source "$STATE_DIR/../lib/common.sh" || true
 mkdir -p "$STATE_DIR"
 echo "0x$CHECKSUM" > "$STATE_DIR/wasm_checksum"
 
-echo "Checksum: 0x$CHECKSUM"
-echo "Saved to $STATE_DIR/wasm_checksum"
+echo ""
+echo "━━━ WASM Checksum ━━━"
+echo "  checksum: 0x$CHECKSUM"
+echo "  saved to: $STATE_DIR/wasm_checksum"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━"
