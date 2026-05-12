@@ -754,8 +754,8 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 		if msg.Signer == "" {
 			msg.Signer = signerAddr.String()
 		}
-		if gasLimit < 2000000 {
-			gasLimit = 2000000 // MsgUpdateClient requires significantly more gas for wasm verification
+		if os.Getenv("COSMOS_GAS_LIMIT") == "" {
+			gasLimit = uint64(2000000) // MsgUpdateClient requires significantly more gas for wasm verification
 		}
 	}
 
