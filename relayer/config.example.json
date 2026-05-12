@@ -3,9 +3,9 @@
         {
             "config": {
                 "cosmos_wasm_client_id": "08-wasm-0",
-                "eth_rpc_url": "http://127.0.0.1:56140",
-                "eth_ws_url": "ws://127.0.0.1:56141",
-                "ics07_client": "0x9DC3b7C24965a90a8e2eacf48F4DB47c0A5f7Eb0",
+                "eth_rpc_url": "http://127.0.0.1:65019",
+                "eth_ws_url": "ws://127.0.0.1:65020",
+                "ics07_client": "0xa3c616dd54F6BB35a736cD6968c8EF7176faCACc",
                 "ics26_address": "0x9f5eac3d8e082f47631f1551f1343f23cd427162",
                 "ics26_client_id": "cosmoshub-1",
                 "membership": "0x9f9f5fd89ad648f2c000c954d8d9c87743243ec5",
@@ -20,8 +20,8 @@
         },
         {
             "config": {
-                "eth_beacon_api_url": "http://127.0.0.1:56154",
-                "eth_rpc_url": "http://127.0.0.1:56140",
+                "eth_beacon_api_url": "http://127.0.0.1:50639",
+                "eth_rpc_url": "http://127.0.0.1:65019",
                 "ics26_address": "0x9f5eac3d8e082f47631f1551f1343f23cd427162",
                 "signer_address": "cosmos10d07y265gmmuvt4z0w9aw880jnsr700j6zn9kn",
                 "tm_rpc_url": "http://127.0.0.1:26657"

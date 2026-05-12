@@ -98,7 +98,7 @@ curl -s http://127.0.0.1:51180/eth/v1/beacon/states/head/finality_checkpoints
 
 # 7. send tx
 
-ABS_TIMEOUT=$(($(date +%s) + 10))
+ABS_TIMEOUT=$(($(date +%s) + 1))
 
 gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21ee5948ecaa776 1000stake \
   --from test1 \
