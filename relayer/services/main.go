@@ -136,6 +136,14 @@ func (s *Services) StartLoop(ctx Context) {
 		}
 	}()
 
+	// scan for cosmos-originated packets that have timed out on ETH
+	go func() {
+		for {
+			time.Sleep(time.Second * 30)
+			s.scanForCosmosTimeouts(ctx)
+		}
+	}()
+
 	// handle packets
 	for {
 		select {
@@ -178,8 +186,10 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	for _, packet := range batch.Packets {
 		switch packet.Type {
 		case CosmosSend:
+			s.BatchBuilder.PendingTracker.Add(*packet.Packet, packet.BlockNumber)
+
 			if ethBlockTime > 0 && packet.Packet.TimeoutTimestamp > 0 && ethBlockTime >= packet.Packet.TimeoutTimestamp {
-				log.Printf("[RecvPacket] Packet seq=%d timed out (timeout=%d <= eth_block_time=%d), skipping",
+				log.Printf("[RecvPacket] Packet seq=%d timed out (timeout=%d <= eth_block_time=%d), skipping relay",
 					packet.Packet.Sequence, packet.Packet.TimeoutTimestamp, ethBlockTime)
 				continue
 			}
@@ -199,6 +209,7 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 				log.Printf("[RecvPacket] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
 				continue
 			}
+			s.BatchBuilder.PendingTracker.Remove(packet.Packet.SourceClient, packet.Packet.Sequence)
 			log.Printf("[RecvPacket] seq=%d: relay completed", packet.Packet.Sequence)
 		case CosmosAck:
 			if len(packet.AckBytes) == 0 {
@@ -407,6 +418,79 @@ func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) {
 		return
 	}
 	log.Printf("[EthTimeout] seq=%d: relay completed", packet.Packet.Sequence)
+}
+
+func (s *Services) scanForCosmosTimeouts(ctx Context) {
+	pending := s.BatchBuilder.PendingTracker.GetAll()
+	if len(pending) == 0 {
+		return
+	}
+
+	ethHeader, err := ctx.EthClient().HeaderByNumber(context.Background(), nil)
+	if err != nil {
+		log.Printf("[CosmosTimeoutScan] Failed to get eth block header: %v", err)
+		return
+	}
+	ethBlockTime := ethHeader.Time
+	ethBlockNum := ethHeader.Number.Uint64()
+
+	log.Printf("[CosmosTimeoutScan] Checking %d pending packets against eth block time %d (block %d)",
+		len(pending), ethBlockTime, ethBlockNum)
+
+	var expired []pendingPacketInfo
+	for _, info := range pending {
+		if info.Packet.TimeoutTimestamp > 0 && ethBlockTime >= info.Packet.TimeoutTimestamp {
+			expired = append(expired, info)
+		}
+	}
+
+	if len(expired) == 0 {
+		return
+	}
+
+	log.Printf("[CosmosTimeoutScan] Found %d expired packets, processing timeouts", len(expired))
+
+	for _, info := range expired {
+		s.timeoutCosmosSend(ctx, info.Packet, ethBlockNum)
+	}
+}
+
+func (s *Services) timeoutCosmosSend(ctx Context, packet channeltypesv2.Packet, ethBlockNum uint64) {
+	log.Printf("[CosmosTimeout] seq=%d: packet expired, preparing timeout proof", packet.Sequence)
+
+	if err := s.worker.UpdateEthClient(ctx); err != nil {
+		log.Printf("[CosmosTimeout] seq=%d: failed to update ETH client: %v", packet.Sequence, err)
+		return
+	}
+
+	ethClientState, err := client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
+	if err != nil {
+		log.Printf("[CosmosTimeout] seq=%d: failed to get ETH client state: %v", packet.Sequence, err)
+		return
+	}
+
+	receiptPath := ethPath(packet.DestinationClient, packet.Sequence, 2)
+	proofBytes, err := client.GetEthNonMembershipProof(
+		ctx.EthClient(), *ctx.RouterContract(), receiptPath, ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(ethBlockNum))
+	if err != nil {
+		log.Printf("[CosmosTimeout] seq=%d: failed to get ETH non-membership proof: %v", packet.Sequence, err)
+		return
+	}
+
+	msgTimeout := channeltypesv2.NewMsgTimeout(
+		packet,
+		proofBytes,
+		clienttypes.Height{RevisionNumber: 0, RevisionHeight: ethClientState.LatestSlot},
+		"",
+	)
+
+	if err := s.worker.TxHandler.SendCosmosTx(ctx, msgTimeout); err != nil {
+		log.Printf("[CosmosTimeout] seq=%d: SendCosmosTx failed: %v", packet.Sequence, err)
+		return
+	}
+
+	s.BatchBuilder.PendingTracker.Remove(packet.SourceClient, packet.Sequence)
+	log.Printf("[CosmosTimeout] seq=%d: timeout relay completed", packet.Sequence)
 }
 
 func (s *Services) cosmosMembership(ctx Context, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {

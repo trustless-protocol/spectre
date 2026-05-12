@@ -83,6 +83,7 @@ type BatchBuilder struct {
 	ethTimestamp    time.Time
 	cosmosPackets   []CosmosPacket
 	ethPackets      []EthPacket
+	PendingTracker  *PendingPacketTracker
 }
 
 func NewBatchBuilder() *BatchBuilder {
@@ -92,6 +93,7 @@ func NewBatchBuilder() *BatchBuilder {
 		ethTimestamp:    now,
 		cosmosPackets:   []CosmosPacket{},
 		ethPackets:      []EthPacket{},
+		PendingTracker:  NewPendingPacketTracker(),
 	}
 }
 

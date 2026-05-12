@@ -248,6 +248,7 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 				AckBytes:    ev.Acknowledgements,
 				BlockNumber: ev.Raw.BlockNumber,
 			})
+			batchBuilder.PendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
 
 		case ev := <-ackPacketCh:
 			ctx.Logger.Printf("AckPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
@@ -257,6 +258,7 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 				Packet:   &cosmosPacket,
 				AckBytes: [][]byte{ev.Acknowledgement},
 			})
+			batchBuilder.PendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
 
 		case ev := <-timeoutPacketCh:
 			ctx.Logger.Printf("TimeoutPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
