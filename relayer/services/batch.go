@@ -77,7 +77,8 @@ type EthBatch struct {
 }
 
 type BatchBuilder struct {
-	mtx             sync.Mutex
+	cosmosMtx       sync.Mutex
+	ethMtx          sync.Mutex
 	cosmosTimestamp time.Time
 	ethTimestamp    time.Time
 	cosmosPackets   []CosmosPacket
@@ -95,19 +96,19 @@ func NewBatchBuilder() *BatchBuilder {
 }
 
 func (b *BatchBuilder) AddCosmos(packet CosmosPacket) {
-	b.mtx.Lock()
+	b.cosmosMtx.Lock()
 	b.cosmosPackets = append(b.cosmosPackets, packet)
 	count := len(b.cosmosPackets)
-	b.mtx.Unlock()
+	b.cosmosMtx.Unlock()
 	log.Printf("[BatchBuilder] Inserted cosmos packet: type=%s seq=%d (batch size: %d)",
 		packet.Type, packet.Packet.Sequence, count)
 }
 
 func (b *BatchBuilder) AddEth(packet EthPacket) {
-	b.mtx.Lock()
+	b.ethMtx.Lock()
 	b.ethPackets = append(b.ethPackets, packet)
 	count := len(b.ethPackets)
-	b.mtx.Unlock()
+	b.ethMtx.Unlock()
 	log.Printf("[BatchBuilder] Inserted eth packet: type=%s seq=%d (batch size: %d)",
 		packet.Type, packet.Packet.Sequence, count)
 }
@@ -123,10 +124,10 @@ func (b *BatchBuilder) ClearEth() {
 }
 
 func (b *BatchBuilder) CheckCosmos(config BatchConfig, ch chan<- CosmosBatch) {
-	b.mtx.Lock()
-	defer b.mtx.Unlock()
+	b.cosmosMtx.Lock()
 
 	if len(b.cosmosPackets) == 0 {
+		b.cosmosMtx.Unlock()
 		return
 	}
 
@@ -141,20 +142,24 @@ func (b *BatchBuilder) CheckCosmos(config BatchConfig, ch chan<- CosmosBatch) {
 		reason = fmt.Sprintf("time limit reached (%v elapsed)", time.Since(b.cosmosTimestamp).Round(time.Millisecond))
 	}
 
-	if flush {
-		log.Printf("[BatchBuilder] Flushing cosmos batch: %d packets (%s)", len(b.cosmosPackets), reason)
-		ch <- CosmosBatch{
-			Packets: b.cosmosPackets,
-		}
-		b.ClearCosmos()
+	if !flush {
+		b.cosmosMtx.Unlock()
+		return
 	}
+
+	log.Printf("[BatchBuilder] Flushing cosmos batch: %d packets (%s)", len(b.cosmosPackets), reason)
+	batch := CosmosBatch{Packets: b.cosmosPackets}
+	b.ClearCosmos()
+	b.cosmosMtx.Unlock()
+
+	ch <- batch
 }
 
 func (b *BatchBuilder) CheckEth(config BatchConfig, ch chan<- EthBatch) {
-	b.mtx.Lock()
-	defer b.mtx.Unlock()
+	b.ethMtx.Lock()
 
 	if len(b.ethPackets) == 0 {
+		b.ethMtx.Unlock()
 		return
 	}
 
@@ -169,11 +174,15 @@ func (b *BatchBuilder) CheckEth(config BatchConfig, ch chan<- EthBatch) {
 		reason = fmt.Sprintf("time limit reached (%v elapsed)", time.Since(b.ethTimestamp).Round(time.Millisecond))
 	}
 
-	if flush {
-		log.Printf("[BatchBuilder] Flushing eth batch: %d packets (%s)", len(b.ethPackets), reason)
-		ch <- EthBatch{
-			Packets: b.ethPackets,
-		}
-		b.ClearEth()
+	if !flush {
+		b.ethMtx.Unlock()
+		return
 	}
+
+	log.Printf("[BatchBuilder] Flushing eth batch: %d packets (%s)", len(b.ethPackets), reason)
+	batch := EthBatch{Packets: b.ethPackets}
+	b.ClearEth()
+	b.ethMtx.Unlock()
+
+	ch <- batch
 }

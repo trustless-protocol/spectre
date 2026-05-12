@@ -50,8 +50,8 @@ func TestAddCosmos(t *testing.T) {
 	bb := NewBatchBuilder()
 	bb.AddCosmos(makeCosmosPacket(1, CosmosSend))
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.cosmosMtx.Lock()
+	defer bb.cosmosMtx.Unlock()
 
 	if len(bb.cosmosPackets) != 1 {
 		t.Fatalf("expected 1 cosmos packet, got %d", len(bb.cosmosPackets))
@@ -68,8 +68,8 @@ func TestAddEth(t *testing.T) {
 	bb := NewBatchBuilder()
 	bb.AddEth(makeEthPacket(1, EthSend))
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.ethMtx.Lock()
+	defer bb.ethMtx.Unlock()
 
 	if len(bb.ethPackets) != 1 {
 		t.Fatalf("expected 1 eth packet, got %d", len(bb.ethPackets))
@@ -108,8 +108,8 @@ func TestAddCosmosMultiple(t *testing.T) {
 		bb.AddCosmos(makeCosmosPacket(uint64(i+1), CosmosSend))
 	}
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.cosmosMtx.Lock()
+	defer bb.cosmosMtx.Unlock()
 
 	if len(bb.cosmosPackets) != count {
 		t.Fatalf("expected %d cosmos packets, got %d", count, len(bb.cosmosPackets))
@@ -128,8 +128,8 @@ func TestAddEthMultiple(t *testing.T) {
 		bb.AddEth(makeEthPacket(uint64(i+1), EthSend))
 	}
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.ethMtx.Lock()
+	defer bb.ethMtx.Unlock()
 
 	if len(bb.ethPackets) != count {
 		t.Fatalf("expected %d eth packets, got %d", count, len(bb.ethPackets))
@@ -161,8 +161,8 @@ func TestAddCosmosConcurrent(t *testing.T) {
 
 	wg.Wait()
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.cosmosMtx.Lock()
+	defer bb.cosmosMtx.Unlock()
 
 	if len(bb.cosmosPackets) != total {
 		t.Fatalf("expected %d cosmos packets, got %d", total, len(bb.cosmosPackets))
@@ -189,8 +189,8 @@ func TestAddEthConcurrent(t *testing.T) {
 
 	wg.Wait()
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.ethMtx.Lock()
+	defer bb.ethMtx.Unlock()
 
 	if len(bb.ethPackets) != total {
 		t.Fatalf("expected %d eth packets, got %d", total, len(bb.ethPackets))
@@ -205,8 +205,8 @@ func TestClearCosmos(t *testing.T) {
 
 	bb.ClearCosmos()
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.cosmosMtx.Lock()
+	defer bb.cosmosMtx.Unlock()
 
 	if len(bb.cosmosPackets) != 0 {
 		t.Fatalf("expected 0 cosmos packets after clear, got %d", len(bb.cosmosPackets))
@@ -221,8 +221,8 @@ func TestClearEth(t *testing.T) {
 
 	bb.ClearEth()
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.ethMtx.Lock()
+	defer bb.ethMtx.Unlock()
 
 	if len(bb.ethPackets) != 0 {
 		t.Fatalf("expected 0 eth packets after clear, got %d", len(bb.ethPackets))
@@ -252,8 +252,8 @@ func TestCheckCosmos_ExceedsBatchSize(t *testing.T) {
 		t.Fatal("expected cosmos batch to be sent")
 	}
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.cosmosMtx.Lock()
+	defer bb.cosmosMtx.Unlock()
 	if len(bb.cosmosPackets) != 0 {
 		t.Fatalf("expected cosmos packets to be cleared, got %d", len(bb.cosmosPackets))
 	}
@@ -282,8 +282,8 @@ func TestCheckEth_ExceedsBatchSize(t *testing.T) {
 		t.Fatal("expected eth batch to be sent")
 	}
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.ethMtx.Lock()
+	defer bb.ethMtx.Unlock()
 	if len(bb.ethPackets) != 0 {
 		t.Fatalf("expected eth packets to be cleared, got %d", len(bb.ethPackets))
 	}
@@ -313,8 +313,8 @@ func TestCheckEth_PastBatchPeriods(t *testing.T) {
 		t.Fatal("expected eth batch to be sent")
 	}
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.ethMtx.Lock()
+	defer bb.ethMtx.Unlock()
 	if len(bb.ethPackets) != 0 {
 		t.Fatalf("expected eth packets to be cleared, got %d", len(bb.ethPackets))
 	}
@@ -339,8 +339,8 @@ func TestCheckEth_BelowSizeAndBeforePeriod(t *testing.T) {
 	default:
 	}
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.ethMtx.Lock()
+	defer bb.ethMtx.Unlock()
 	if len(bb.ethPackets) != 2 {
 		t.Fatalf("expected eth packets to remain, got %d", len(bb.ethPackets))
 	}
@@ -365,8 +365,8 @@ func TestCheckCosmos_BelowSizeAndBeforePeriod(t *testing.T) {
 	default:
 	}
 
-	bb.mtx.Lock()
-	defer bb.mtx.Unlock()
+	bb.cosmosMtx.Lock()
+	defer bb.cosmosMtx.Unlock()
 	if len(bb.cosmosPackets) != 2 {
 		t.Fatalf("expected cosmos packets to remain, got %d", len(bb.cosmosPackets))
 	}
