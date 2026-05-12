@@ -73,7 +73,7 @@ kurtosis enclave rm -f my-testnet
 ./run_eth_node.sh        # Kurtosis Ethereum testnet + deploys core contracts
 # Poll until finalized.epoch > 0:
 curl -s <eth_beacon_api_ur>/eth/v1/beacon/states/head/finality_checkpoints
-curl -s http://127.0.0.1:51180/eth/v1/beacon/states/head/finality_checkpoints
+curl -s http://127.0.0.1:56712/eth/v1/beacon/states/head/finality_checkpoints
 
 # 4. Then start Cosmos and submit the Ethereum LC WASM via governance
 #    This requires a wasm-enabled Cosmos binary (08-wasm), e.g. simd:
@@ -98,7 +98,7 @@ curl -s http://127.0.0.1:51180/eth/v1/beacon/states/head/finality_checkpoints
 
 # 7. send tx
 
-ABS_TIMEOUT=$(($(date +%s) + 1))
+ABS_TIMEOUT=$(($(date +%s) + 2000))
 
 gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21ee5948ecaa776 1000stake \
   --from test1 \
@@ -125,26 +125,29 @@ gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21e
 cast call 0xee0fcb8e5ccad0b4197baabd633333886f5c364d \
   'ibcERC20Contract(string)(address)' \
   'transfer/cosmoshub-1/stake' \
-  --rpc-url http://127.0.0.1:60123
+  --rpc-url http://127.0.0.1:62880
 
 cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
   'fullDenomPath()(string)' \
-  --rpc-url http://127.0.0.1:60123
+  --rpc-url http://127.0.0.1:62880
 
 cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
   'balanceOf(address)(uint256)' \
   0x8943545177806ed17b9f23f0a21ee5948ecaa776 \
-  --rpc-url http://127.0.0.1:60123
+  --rpc-url http://127.0.0.1:62880
 
 cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
   'escrow()(address)' \
-  --rpc-url http://127.0.0.1:60123
+  --rpc-url http://127.0.0.1:62880
 
 
 gaiad q txs \
   --query "message.action='/ibc.core.channel.v2.MsgAcknowledgement'" \
   --node tcp://127.0.0.1:26657 \
   -o json
+
+
+cast receipt 0x4d611d65a802bea81865e7f0e1f0413064518a79883b29481968804d0efa1692--rpc-url http://127.0.0.1:56310 | grep -A3 "IBCAppRecvPacket\|topics\|data"
 
 
 ```
