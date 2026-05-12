@@ -125,20 +125,20 @@ gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21e
 cast call 0xee0fcb8e5ccad0b4197baabd633333886f5c364d \
   'ibcERC20Contract(string)(address)' \
   'transfer/cosmoshub-1/stake' \
-  --rpc-url http://127.0.0.1:57920
+  --rpc-url http://127.0.0.1:60123
 
 cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
   'fullDenomPath()(string)' \
-  --rpc-url http://127.0.0.1:57920
+  --rpc-url http://127.0.0.1:60123
 
 cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
   'balanceOf(address)(uint256)' \
   0x8943545177806ed17b9f23f0a21ee5948ecaa776 \
-  --rpc-url http://127.0.0.1:57920
+  --rpc-url http://127.0.0.1:60123
 
 cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
   'escrow()(address)' \
-  --rpc-url http://127.0.0.1:57920
+  --rpc-url http://127.0.0.1:60123
 
 
 gaiad q txs \

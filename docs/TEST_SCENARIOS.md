@@ -12,12 +12,16 @@ Send a packet with an absolute timeout in the past (or a 1-second window), so th
 
 **Steps:**
 ```bash
-ABS_TIMEOUT=$(($(date +%s) + 1))   # 1-second window — expires immediately
+ABS_TIMEOUT=$(($(date +%s) + 1))   # chỉ còn 1 giây
 
-gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21ee5948ecaa776 100stake \
-  --absolute-timeouts --packet-timeout-timestamp "$ABS_TIMEOUT" \
+gaiad tx ibc-transfer transfer transfer 08-wasm-0 \
+  0x8943545177806ed17b9f23f0a21ee5948ecaa776 100stake \
+  --absolute-timeouts \
+  --packet-timeout-timestamp "$ABS_TIMEOUT" \
   --from test1 --home ~/.gaia --chain-id test-ibc-eth \
-  --node tcp://127.0.0.1:26657 --keyring-backend test --gas-prices 1stake -y
+  --node tcp://127.0.0.1:26657 --keyring-backend test \
+  --gas-prices 1stake -y
+
 ```
 
 **Expected outcome:**
@@ -27,6 +31,12 @@ gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21e
   ```bash
   gaiad q txs --query "message.action='/ibc.core.channel.v2.MsgTimeout'" \
     --node tcp://127.0.0.1:26657 -o json
+  ```
+
+  ```bash
+  gaiad q bank balances $(gaiad keys show test1 -a --home ~/.gaia --keyring-backend test) \
+  --node tcp://127.0.0.1:26657
+
   ```
 
 ### 1b. Timeout Race — Relayer Wins

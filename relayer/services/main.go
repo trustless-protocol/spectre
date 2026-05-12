@@ -187,6 +187,33 @@ func (s *Services) StartLoop(ctx Context) {
 						continue
 					}
 
+					// Wait for beacon to finalize an ETH block whose timestamp >= timeout timestamp.
+					// Cosmos IBC verifies: proof_block.timestamp >= timeout_timestamp.
+					finalized := false
+					for attempt := 0; attempt < 60; attempt++ {
+						if attempt > 0 {
+							time.Sleep(10 * time.Second)
+						}
+						finalityUpdate, err := client.GetFinalityUpdate(ctx.BeaconAPIURL())
+						if err != nil {
+							log.Printf("[CosmosTimeout] seq=%d: failed to get finality update: %v", packet.Packet.Sequence, err)
+							continue
+						}
+						execTimestamp, _ := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.Timestamp, 10, 64)
+						if execTimestamp >= packet.Packet.TimeoutTimestamp {
+							log.Printf("[CosmosTimeout] seq=%d: finalized ETH block timestamp %d >= timeout %d",
+								packet.Packet.Sequence, execTimestamp, packet.Packet.TimeoutTimestamp)
+							finalized = true
+							break
+						}
+						log.Printf("[CosmosTimeout] seq=%d: finalized ETH timestamp %d < timeout %d, waiting... (%d/60)",
+							packet.Packet.Sequence, execTimestamp, packet.Packet.TimeoutTimestamp, attempt+1)
+					}
+					if !finalized {
+						log.Printf("[CosmosTimeout] seq=%d: ETH finality did not reach timeout timestamp after 60 retries", packet.Packet.Sequence)
+						continue
+					}
+
 					if err := s.worker.UpdateEthClient(ctx); err != nil {
 						log.Printf("[CosmosTimeout] seq=%d: failed to update ETH client: %v", packet.Packet.Sequence, err)
 						continue
