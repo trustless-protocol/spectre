@@ -11,20 +11,13 @@ RELAYER_PID_FILE="${RELAYER_PID_FILE:-$RELAYER_DIR/relayer.pid}"
 
 source "$REPO_ROOT/e2e/local-tests/lib/common.sh"
 
-build_relayer_if_needed() {
-  if [ ! -x "$RELAYER_DIR/relayer" ] || find "$RELAYER_DIR" -name '*.go' -newer "$RELAYER_DIR/relayer" | grep -q .; then
-    echo "  Building relayer binary..."
-    (cd "$RELAYER_DIR" && go build -o relayer ./cmd)
-  fi
-}
-
 require_cmd cast
 require_cmd jq
 ensure_relayer_config "$CONFIG_FILE" "$RELAYER_DIR/config.example.json"
 refresh_relayer_eth_endpoints "$CONFIG_FILE"
 
 cd "$RELAYER_DIR"
-build_relayer_if_needed
+build_relayer_if_needed "$RELAYER_DIR"
 
 PROVER_BIN_DIR="${PROVER_BIN_DIR:-$RELAYER_DIR/bin}" \
 LD_LIBRARY_PATH="${LD_LIBRARY_PATH:-$HOME/works/ecip-gnark}" \

@@ -1,12 +1,24 @@
 #!/usr/bin/env bash
 
-set -euxo pipefail
+set -euo pipefail
+
+REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
+source "$REPO_ROOT/e2e/local-tests/lib/common.sh"
 
 CHAIN_ID="test-ibc-eth"
 KEYRING="test"
 
-# Store Wasm code
-echo '{
+log_header "Storing WASM code"
+log "Submitting governance proposal..."
+gaiad tx gov submit-proposal /dev/stdin \
+  --from val1 \
+  --home "$HOME/.gaia" \
+  --chain-id "$CHAIN_ID" \
+  --keyring-backend "$KEYRING" \
+  --gas 200000000 \
+  --gas-prices 1stake \
+  -y <<'EOF'
+{
  "messages": [
   {
    "@type": "/ibc.lightclients.wasm.v1.MsgStoreCode",
@@ -18,16 +30,8 @@ echo '{
  "deposit": "10000000stake",
  "summary": "ibc-eureka",
  "expedited": false
-}' > proposal.json
-
-gaiad tx gov submit-proposal proposal.json \
-  --from val1 \
-  --home "$HOME/.gaia" \
-  --chain-id "$CHAIN_ID" \
-  --keyring-backend "$KEYRING" \
-  --gas 200000000 \
-  --gas-prices 1stake \
-  -y
+}
+EOF
 
 sleep 5
 
@@ -35,6 +39,8 @@ PROPOSAL_ID=$(
   gaiad q gov proposals -o json \
     | jq -r '.proposals | sort_by(.id | tonumber) | last | .id'
 )
+
+log "Proposal $PROPOSAL_ID submitted, voting..."
 
 sleep 5
 
@@ -62,17 +68,25 @@ gaiad tx gov vote "$PROPOSAL_ID" yes \
   --gas-prices 1stake \
   -y
 
-sleep 30
+log "Waiting for proposal $PROPOSAL_ID to pass..."
+for i in $(seq 1 30); do
+  STATUS=$(gaiad q gov proposal "$PROPOSAL_ID" -o json 2>/dev/null | jq -r '.status // empty')
+  if [ "$STATUS" = "PROPOSAL_STATUS_PASSED" ]; then
+    log_ok "Proposal $PROPOSAL_ID passed"
+    break
+  fi
+  printf "  [%2d/30] status=%s\r" "$i" "${STATUS:-unknown}"
+  sleep 2
+done
+echo ""
 
 CHECKSUM=$(gaiad q ibc-wasm checksums -o json | jq -r '.checksums[-1] | if type == "object" then .checksum else . end')
 
-STATE_DIR="$(cd "$(dirname "$0")/../.state" && pwd)"
-source "$STATE_DIR/../lib/common.sh" || true
+STATE_DIR="$REPO_ROOT/e2e/local-tests/.state"
 mkdir -p "$STATE_DIR"
 echo "0x$CHECKSUM" > "$STATE_DIR/wasm_checksum"
 
-echo ""
-echo "━━━ WASM Checksum ━━━"
-echo "  checksum: 0x$CHECKSUM"
-echo "  saved to: $STATE_DIR/wasm_checksum"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━"
+log_header "WASM Checksum"
+log_kv "checksum" "0x$CHECKSUM"
+log_kv "saved to" "$STATE_DIR/wasm_checksum"
+log_ok "WASM code stored and checksum saved"

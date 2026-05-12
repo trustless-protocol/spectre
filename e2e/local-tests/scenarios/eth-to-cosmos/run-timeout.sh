@@ -109,14 +109,6 @@ if [ -z "${ETH_RPC_URL:-}" ] && [ -f "$CONFIG_FILE" ]; then
   ETH_RPC_URL="$(config_value eth_rpc_url)"
 fi
 
-if [ -z "${ETH_RPC_URL:-}" ]; then
-  echo "ERROR: ETH_RPC_URL not set, Kurtosis endpoint not detected, and no eth_rpc_url found in $CONFIG_FILE" >&2
-  echo "Start ETH with ./setup/01-eth-node.sh or export ETH_RPC_URL manually." >&2
-  exit 1
-fi
-
-echo "  ETH_RPC_URL: $ETH_RPC_URL"
-
 load_timeout_contract_addresses
 
 # Read cosmos_wasm_client_id from config
@@ -133,28 +125,29 @@ uint_value() {
 }
 
 if [ -z "${ETH_RPC_URL:-}" ]; then
-  echo "ERROR: ETH_RPC_URL not set and Kurtosis not detected" >&2
+  log_err "ETH_RPC_URL not set, Kurtosis endpoint not detected, and no eth_rpc_url found in $CONFIG_FILE"
+  log_err "Start ETH with ./setup/01-eth-node.sh or export ETH_RPC_URL manually."
   exit 1
 fi
 if [ -z "${ETH_PRIVATE_KEY:-}" ]; then
-  echo "ERROR: ETH_PRIVATE_KEY not set" >&2
+  log_err "ETH_PRIVATE_KEY not set"
   exit 1
 fi
 if [ -z "${RECEIVER:-}" ]; then
-  echo "ERROR: RECEIVER not set; start Cosmos node or set RECEIVER env" >&2
+  log_err "RECEIVER not set; start Cosmos node or set RECEIVER env"
   exit 1
 fi
 if [ -z "${ERC20_ADDRESS:-}" ] || [ -z "${ICS20_ADDRESS:-}" ]; then
-  echo "ERROR: ERC20_ADDRESS or ICS20_ADDRESS not found" >&2
+  log_err "ERC20_ADDRESS or ICS20_ADDRESS not found"
   if [ -n "${ICS26_ADDRESS:-}" ]; then
-    echo "ICS26_ADDRESS candidate: $ICS26_ADDRESS" >&2
+    log_err "ICS26_ADDRESS candidate: $ICS26_ADDRESS"
     if ! contract_has_code "$ICS26_ADDRESS"; then
-      echo "No bytecode at ICS26_ADDRESS on $ETH_RPC_URL; relayer/config.json is stale for the current chain." >&2
+      log_err "No bytecode at ICS26_ADDRESS on $ETH_RPC_URL; relayer/config.json is stale for the current chain."
     fi
   fi
-  echo "The script checks env, $CONFIG_FILE, Foundry broadcast JSON, ICS26Router.getIBCApp(\"$DEST_PORT\"), and ERC20 mint logs." >&2
-  echo "Run ./setup/01-eth-node.sh to deploy contracts, refresh relayer/config.json, or export ERC20_ADDRESS and ICS20_ADDRESS." >&2
-  echo "Expected Foundry broadcast path: $REPO_ROOT/broadcast/E2ETestDeploy.s.sol/<chain-id>/run-latest.json" >&2
+  log_err "The script checks env, $CONFIG_FILE, Foundry broadcast JSON, ICS26Router.getIBCApp(\"$DEST_PORT\"), and ERC20 mint logs."
+  log_err "Run ./setup/01-eth-node.sh to deploy contracts, refresh relayer/config.json, or export ERC20_ADDRESS and ICS20_ADDRESS."
+  log_err "Expected Foundry broadcast path: $REPO_ROOT/broadcast/E2ETestDeploy.s.sol/<chain-id>/run-latest.json"
   exit 1
 fi
 
@@ -162,50 +155,47 @@ fi
 if [ -f "$RELAYER_PID_FILE" ]; then
   RELAYER_PID="$(cat "$RELAYER_PID_FILE")"
   if kill -0 "$RELAYER_PID" 2>/dev/null; then
-    echo "Relayer running (PID $RELAYER_PID)"
+    log_ok "Relayer running (PID $RELAYER_PID)"
   else
-    echo "ERROR: relayer PID file exists but process not running. Start relayer first:" >&2
-    echo "  ./setup/05-relayer.sh" >&2
+    log_err "relayer PID file exists but process not running. Start relayer first:"
+    log_err "./setup/05-relayer.sh"
     exit 1
   fi
 else
-  echo "ERROR: relayer not running (no PID file). Start relayer first:" >&2
-  echo "  ./setup/05-relayer.sh" >&2
+  log_err "relayer not running (no PID file). Start relayer first:"
+  log_err "./setup/05-relayer.sh"
   exit 1
 fi
 
 ETH_SENDER="$(cast wallet address --private-key "$ETH_PRIVATE_KEY")"
 
 # ─── Record pre-transfer state ───
-echo ""
-echo "━━━ Pre-transfer State ━━━"
+log_header "Pre-transfer State"
 BEFORE_ETH_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ETH_SENDER" --rpc-url "$ETH_RPC_URL" | uint_value)"
-printf "  %-30s %s\n" "Sender ERC20 balance:"      "$BEFORE_ETH_BALANCE"
+log_kv "Sender ERC20 balance" "$BEFORE_ETH_BALANCE"
 
 ESCROW_ADDRESS="$(cast call "$ICS20_ADDRESS" 'getEscrow(string)(address)' "$SOURCE_CLIENT" --rpc-url "$ETH_RPC_URL" 2>/dev/null || echo "")"
 if [ -n "$ESCROW_ADDRESS" ] && [ "$ESCROW_ADDRESS" != "0x" ]; then
   BEFORE_ESCROW_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ESCROW_ADDRESS" --rpc-url "$ETH_RPC_URL" | uint_value)"
-  printf "  %-30s %s\n" "Escrow ERC20 balance:"     "$BEFORE_ESCROW_BALANCE"
+  log_kv "Escrow ERC20 balance" "$BEFORE_ESCROW_BALANCE"
 fi
 
 COSMOS_VOUCHER_DENOM="transfer/$COSMOS_WASM_CLIENT_ID/$ERC20_ADDRESS"
 BEFORE_COSMOS_BALANCE="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_VOUCHER_DENOM" --node "$COSMOS_RPC_URL" --chain-id "$COSMOS_CHAIN_ID" --output json 2>/dev/null | jq -r '.balance.amount // "0"')"
-printf "  %-30s %s\n" "Cosmos voucher balance:"    "$BEFORE_COSMOS_BALANCE"
+log_kv "Cosmos voucher balance" "$BEFORE_COSMOS_BALANCE"
 
 # ─── Send transfer with short timeout ───
 TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-10}"
 TIMEOUT=$(($(date +%s) + TIMEOUT_SECONDS))
-echo ""
-echo "━━━ Sending ICS20Transfer (${TIMEOUT_SECONDS}s timeout) ━━━"
-echo "  Timeout at epoch: $TIMEOUT"
-echo "  Timeout (local):  $(date -d "@$TIMEOUT" '+%H:%M:%S' 2>/dev/null || echo 'N/A')"
-echo ""
-echo "  Approving ERC20 allowance..."
+log_header "Sending ICS20Transfer (${TIMEOUT_SECONDS}s timeout)"
+log_kv "Timeout" "epoch $TIMEOUT ($(date -d "@$TIMEOUT" '+%H:%M:%S' 2>/dev/null || echo 'N/A'))"
+
+log "Approving ERC20 allowance..."
 cast send "$ERC20_ADDRESS" "approve(address,uint256)" "$ICS20_ADDRESS" "$AMOUNT" \
   --rpc-url "$ETH_RPC_URL" \
   --private-key "$ETH_PRIVATE_KEY" > /dev/null
 
-echo "  Submitting sendTransfer..."
+log "Submitting sendTransfer..."
 TRANSFER_TUPLE="($ERC20_ADDRESS,$AMOUNT,$RECEIVER,$SOURCE_CLIENT,$DEST_PORT,$TIMEOUT,\"\")"
 cast send "$ICS20_ADDRESS" \
   "sendTransfer((address,uint256,string,string,string,uint64,string))" \
@@ -213,11 +203,10 @@ cast send "$ICS20_ADDRESS" \
   --rpc-url "$ETH_RPC_URL" \
   --private-key "$ETH_PRIVATE_KEY" > /dev/null
 
-echo "  Transfer submitted (waiting for timeout...)"
-echo ""
+log "Transfer submitted (waiting for timeout...)"
 
 # ─── Poll for refund (ERC20 balance returning to original) ───
-MAX_POLLS=10
+MAX_POLLS=30
 POLL_INTERVAL=15
 poll=0
 
@@ -235,54 +224,51 @@ while [ $poll -lt $MAX_POLLS ]; do
   CURRENT_COSMOS="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_VOUCHER_DENOM" --node "$COSMOS_RPC_URL" --chain-id "$COSMOS_CHAIN_ID" --output json 2>/dev/null | jq -r '.balance.amount // "0"')"
 
   if [ "$CURRENT_ETH_BALANCE" -ge "$REFUND_THRESHOLD" ] 2>/dev/null; then
-    echo "  [poll ${poll}/${MAX_POLLS}] ERC20 refunded │ sender=${CURRENT_ETH_BALANCE} (target ≥ ${REFUND_THRESHOLD})"
+    log_ok "[poll ${poll}/${MAX_POLLS}] ERC20 refunded │ sender=${CURRENT_ETH_BALANCE} (target ≥ ${REFUND_THRESHOLD})"
     REFUNDED=true
     break
   fi
 
-  echo "  [poll ${poll}/${MAX_POLLS}] sender=${CURRENT_ETH_BALANCE}  escrow=${CURRENT_ESCROW}  cosmos=${CURRENT_COSMOS}"
+  log "[poll ${poll}/${MAX_POLLS}] sender=${CURRENT_ETH_BALANCE}  escrow=${CURRENT_ESCROW}  cosmos=${CURRENT_COSMOS}"
 done
 
 # ─── Final state ───
-echo ""
-echo "━━━ Final State ━━━"
+log_header "Final State"
 AFTER_ETH_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ETH_SENDER" --rpc-url "$ETH_RPC_URL" | uint_value)"
-printf "  %-30s %s\n" "Sender ERC20 balance:"      "$AFTER_ETH_BALANCE"
+log_kv "Sender ERC20 balance" "$AFTER_ETH_BALANCE"
 
 if [ -n "${ESCROW_ADDRESS:-}" ] && [ "$ESCROW_ADDRESS" != "0x" ]; then
   AFTER_ESCROW_BALANCE="$(cast call "$ERC20_ADDRESS" 'balanceOf(address)(uint256)' "$ESCROW_ADDRESS" --rpc-url "$ETH_RPC_URL" | uint_value)"
-  printf "  %-30s %s\n" "Escrow ERC20 balance:"     "$AFTER_ESCROW_BALANCE"
+  log_kv "Escrow ERC20 balance" "$AFTER_ESCROW_BALANCE"
 fi
 
 AFTER_COSMOS_BALANCE="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_VOUCHER_DENOM" --node "$COSMOS_RPC_URL" --chain-id "$COSMOS_CHAIN_ID" --output json 2>/dev/null | jq -r '.balance.amount // "0"')"
-printf "  %-30s %s\n" "Cosmos voucher:"            "$AFTER_COSMOS_BALANCE"
+log_kv "Cosmos voucher" "$AFTER_COSMOS_BALANCE"
 
 # ─── Summary ───
-echo ""
-echo "━━━ Timeout Test Summary ━━━"
-printf "  %-20s %s\n" "Direction:"    "ETH → Cosmos"
-printf "  %-20s %s\n" "Amount sent:"  "${AMOUNT} wei"
-printf "  %-20s %s\n" "Timeout:"      "${TIMEOUT_SECONDS}s"
-echo ""
+log_header "Timeout Test Summary"
+log_kv "Direction" "ETH → Cosmos"
+log_kv "Amount sent" "${AMOUNT} wei"
+log_kv "Timeout" "${TIMEOUT_SECONDS}s"
 
 if [ "${REFUNDED:-false}" = "true" ]; then
-  echo "  RESULT: PASS"
-  echo "    • Relayer detected the expired packet"
-  echo "    • Built non-membership proof from Cosmos"
-  echo "    • Called timeoutPacket() on Ethereum ICS26Router"
-  echo "    • Sender refunded (ERC20 balance returned to original)"
-  echo "    • Cosmos voucher = 0 (packet never relayed)"
+  log_ok "RESULT: PASS"
+  log "  • Relayer detected the expired packet"
+  log "  • Built non-membership proof from Cosmos"
+  log "  • Called timeoutPacket() on Ethereum ICS26Router"
+  log "  • Sender refunded (ERC20 balance returned to original)"
+  log "  • Cosmos voucher = 0 (packet never relayed)"
 elif [ "$AFTER_ETH_BALANCE" -ge "$REFUND_THRESHOLD" ] 2>/dev/null; then
-  echo "  RESULT: PASS (detected after final poll)"
-  echo "    • Sender ERC20 balance returned to original"
+  log_ok "RESULT: PASS (detected after final poll)"
+  log "  • Sender ERC20 balance returned to original"
 elif [ "$AFTER_COSMOS_BALANCE" = "0" ]; then
-  echo "  RESULT: PARTIAL"
-  echo "    • Packet was NOT relayed to Cosmos (timeout prevented relay)"
-  echo "    • ERC20 balance still decreased — refund not yet submitted"
-  echo "    • The relayer may still be building the ZK proof"
-  echo "    • Check relayer logs: tail -f $REPO_ROOT/relayer/relayer.log"
+  log_warn "RESULT: PARTIAL"
+  log_warn "  • Packet was NOT relayed to Cosmos (timeout prevented relay)"
+  log_warn "  • ERC20 balance still decreased — refund not yet submitted"
+  log_warn "  • The relayer may still be building the ZK proof"
+  log_warn "  • Check relayer logs: tail -f $REPO_ROOT/relayer/relayer.log"
 else
-  echo "  RESULT: FAIL"
-  echo "    • Packet WAS relayed to Cosmos before timeout"
-  echo "    • Try with shorter TIMEOUT_SECONDS or check relayer status"
+  log_err "RESULT: FAIL"
+  log_err "  • Packet WAS relayed to Cosmos before timeout"
+  log_err "  • Try with shorter TIMEOUT_SECONDS or check relayer status"
 fi

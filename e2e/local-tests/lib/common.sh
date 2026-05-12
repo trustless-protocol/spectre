@@ -2,6 +2,22 @@
 
 set -euo pipefail
 
+# ─── Logging ──────────────────────────────────────────────────────────
+if [ -t 1 ]; then
+  readonly C_RESET='\033[0m' C_BOLD='\033[1m' C_DIM='\033[2m'
+  readonly C_BLUE='\033[0;34m' C_GREEN='\033[0;32m' C_YELLOW='\033[0;33m'
+  readonly C_RED='\033[0;31m' C_CYAN='\033[0;36m'
+else
+  readonly C_RESET='' C_BOLD='' C_DIM='' C_BLUE='' C_GREEN='' C_YELLOW='' C_RED='' C_CYAN=''
+fi
+
+log()       { printf "${C_BLUE}  →${C_RESET} %s\n" "$*"; }
+log_ok()    { printf "${C_GREEN}  ✓${C_RESET} %s\n" "$*"; }
+log_warn()  { printf "${C_YELLOW}  ⚠${C_RESET} %s\n" "$*" >&2; }
+log_err()   { printf "${C_RED}  ✗${C_RESET} %s\n" "$*" >&2; }
+log_kv()    { printf "  ${C_DIM}%-22s${C_RESET} %s\n" "$1" "$2"; }
+log_header(){ printf "\n${C_BOLD}━━━ %s ━━━${C_RESET}\n" "$*"; }
+
 require_cmd() {
   local cmd="$1"
   if ! command -v "$cmd" >/dev/null 2>&1; then
@@ -170,19 +186,19 @@ refresh_relayer_eth_endpoints() {
   fi
 
   if [ -z "${ETH_RPC_URL:-}" ]; then
-    echo "  ✗ ETH RPC URL not found in Kurtosis or $config_file" >&2
+    log_err "ETH RPC URL not found in Kurtosis or $config_file"
     exit 1
   fi
 
   if ! cast chain-id --rpc-url "$ETH_RPC_URL" >/dev/null 2>&1; then
-    echo "  ✗ Ethereum RPC not responding at $ETH_RPC_URL" >&2
-    echo "    Run ./setup/01-eth-node.sh or refresh $config_file with the current Kurtosis RPC URL." >&2
+    log_err "Ethereum RPC not responding at $ETH_RPC_URL"
+    log_err "Run ./setup/01-eth-node.sh or refresh $config_file with the current Kurtosis RPC URL."
     exit 1
   fi
 
-  echo "  ETH_RPC_URL:        $ETH_RPC_URL"
-  [ -n "${ETH_WS_URL:-}" ] && echo "  ETH_WS_URL:         $ETH_WS_URL"
-  [ -n "${ETH_BEACON_API_URL:-}" ] && echo "  ETH_BEACON_API_URL: $ETH_BEACON_API_URL"
+  log_kv "ETH_RPC_URL" "$ETH_RPC_URL"
+  [ -n "${ETH_WS_URL:-}" ] && log_kv "ETH_WS_URL" "$ETH_WS_URL"
+  [ -n "${ETH_BEACON_API_URL:-}" ] && log_kv "ETH_BEACON_API_URL" "$ETH_BEACON_API_URL"
 
   jq \
     --arg ETH_RPC "$ETH_RPC_URL" \
@@ -193,6 +209,14 @@ refresh_relayer_eth_endpoints() {
     | (.. | objects | select(has("eth_beacon_api_url")) | .eth_beacon_api_url) = $ETH_BEACON
     ' "$config_file" > "$config_file.tmp"
   mv "$config_file.tmp" "$config_file"
+}
+
+build_relayer_if_needed() {
+  local dir="${1:-$REPO_ROOT/relayer}"
+  if [ ! -x "$dir/relayer" ] || find "$dir" -name '*.go' -newer "$dir/relayer" | grep -q .; then
+    log "Building relayer binary..."
+    (cd "$dir" && go build -o relayer ./cmd)
+  fi
 }
 
 update_relayer_deploy_config() {

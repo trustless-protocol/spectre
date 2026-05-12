@@ -12,23 +12,16 @@ CONFIG_FILE="${CONFIG_FILE:-$RELAYER_DIR/config.json}"
 
 source "$REPO_ROOT/e2e/local-tests/lib/common.sh"
 
-build_relayer_if_needed() {
-  if [ ! -x "$RELAYER_DIR/relayer" ] || find "$RELAYER_DIR" -name '*.go' -newer "$RELAYER_DIR/relayer" | grep -q .; then
-    echo "  Building relayer binary..."
-    (cd "$RELAYER_DIR" && go build -o relayer ./cmd)
-  fi
-}
-
 # Auto-detect wasm checksum if not provided
 WASM_CHECKSUM="${WASM_CHECKSUM:-}"
 if [ -z "$WASM_CHECKSUM" ] && [ -f "$WASM_CHECKSUM_FILE" ]; then
   WASM_CHECKSUM="$(cat "$WASM_CHECKSUM_FILE")"
-  echo "  Using auto-detected WASM checksum: $WASM_CHECKSUM"
+  log "Using auto-detected WASM checksum: $WASM_CHECKSUM"
 fi
 
 if [ -z "$WASM_CHECKSUM" ]; then
-  echo "  ✗ WASM checksum not found." >&2
-  echo "    Please run ./scripts/03-wasm.sh first, or set WASM_CHECKSUM env var." >&2
+  log_err "WASM checksum not found."
+  log_err "Please run ./scripts/03-wasm.sh first, or set WASM_CHECKSUM env var."
   exit 1
 fi
 
@@ -38,7 +31,7 @@ ensure_relayer_config "$CONFIG_FILE" "$RELAYER_DIR/config.example.json"
 refresh_relayer_eth_endpoints "$CONFIG_FILE"
 
 cd "$RELAYER_DIR"
-build_relayer_if_needed
+build_relayer_if_needed "$RELAYER_DIR"
 
 # Persist wasm checksum in .env so the relayer can find it
 ENV_FILE="$RELAYER_DIR/.env"

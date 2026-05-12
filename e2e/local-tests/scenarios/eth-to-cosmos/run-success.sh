@@ -2,29 +2,20 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
+source "$REPO_ROOT/e2e/local-tests/lib/common.sh"
 
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  ETH → Cosmos Transfer: Success Case"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
+log_header "ETH → Cosmos Transfer: Success Case"
 
-echo "▶ Step 1: Sending transfer..."
+log "Step 1: Sending transfer..."
 bash "$SCRIPT_DIR/transfer.sh"
-echo ""
 
-echo "▶ Step 2: Checking Ethereum state..."
+log "Step 2: Checking Ethereum state..."
 bash "$SCRIPT_DIR/check-eth.sh"
-echo ""
 
-echo "▶ Step 3: Checking Cosmos state (voucher balance)..."
+log "Step 3: Checking Cosmos state (voucher balance)..."
 bash "$SCRIPT_DIR/check-cosmos.sh"
-echo ""
 
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo "  Success case complete"
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "  If the relayer is running, tokens should have been transferred"
-echo "  from Ethereum to Cosmos. Check the output above for voucher"
-echo "  balances."
-echo ""
+log_header "Success case complete"
+log "If the relayer is running, tokens should have been transferred"
+log "from Ethereum to Cosmos. Check the output above for voucher balances."

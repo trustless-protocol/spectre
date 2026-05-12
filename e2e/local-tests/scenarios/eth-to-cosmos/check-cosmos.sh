@@ -39,48 +39,6 @@ if [ -z "${COSMOS_WASM_CLIENT_ID:-}" ] && [ -f "$REPO_ROOT/relayer/config.json" 
 fi
 COSMOS_WASM_CLIENT_ID="${COSMOS_WASM_CLIENT_ID:-08-wasm-0}"
 
-require_cmd() {
-  local cmd="$1"
-  if ! command -v "$cmd" >/dev/null 2>&1; then
-    echo "missing required command: $cmd" >&2
-    exit 1
-  fi
-}
-
-load_contract_addresses() {
-  if [ -n "${ERC20_ADDRESS:-}" ]; then
-    return 0
-  fi
-
-  if [ -z "$BROADCAST_JSON" ]; then
-    if [ -d "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" ]; then
-      BROADCAST_JSON="$(find "$REPO_ROOT/broadcast/E2ETestDeploy.s.sol" -path '*/run-latest.json' -type f -printf '%T@ %p\n' 2>/dev/null | sort -nr | awk 'NR == 1 { print $2 }')"
-    fi
-  fi
-
-  if [ ! -f "$BROADCAST_JSON" ]; then
-    return 0
-  fi
-
-  if [ -z "${ERC20_ADDRESS:-}" ]; then
-    ERC20_ADDRESS="$(jq -er '(.erc20 // (.returns["0"].value | gsub("\\\\\""; "\"") | fromjson | .erc20))' "$BROADCAST_JSON" 2>/dev/null || true)"
-  fi
-}
-
-cosmos_query() {
-  "$COSMOS_BIN" query "$@" \
-    --node "$COSMOS_RPC_URL" \
-    --chain-id "$COSMOS_CHAIN_ID" \
-    --output json
-}
-
-key_address() {
-  local key="$1"
-  "$COSMOS_BIN" keys show "$key" -a \
-    --keyring-backend "$COSMOS_KEYRING" \
-    --home "$COSMOS_HOME" 2>/dev/null || true
-}
-
 ibc_denom() {
   local trace="$1"
   printf 'ibc/%s\n' "$(printf '%s' "$trace" | sha256sum | awk '{ print toupper($1) }')"
@@ -101,44 +59,39 @@ fi
 
 SIGNER_ADDRESS="${COSMOS_SIGNER_ADDRESS:-$(key_address "$COSMOS_SIGNER_KEY")}"
 
-echo "━━━ Cosmos Endpoint ━━━"
-printf "  %-20s %s\n" "COSMOS_BIN:"      "$COSMOS_BIN"
-printf "  %-20s %s\n" "COSMOS_RPC_URL:"  "$COSMOS_RPC_URL"
-printf "  %-20s %s\n" "COSMOS_GRPC:"     "$COSMOS_GRPC_ADDR"
-printf "  %-20s %s\n" "COSMOS_CHAIN_ID:" "$COSMOS_CHAIN_ID"
-printf "  %-20s %s\n" "latest_block:"    "$("$COSMOS_BIN" status --node "$COSMOS_RPC_URL" 2>/dev/null | jq -r '.sync_info.latest_block_height // .SyncInfo.latest_block_height // empty')"
-printf "  %-20s %s\n" "BROADCAST_JSON:"  "${BROADCAST_JSON:-}"
+log_header "Cosmos Endpoint"
+log_kv "COSMOS_BIN" "$COSMOS_BIN"
+log_kv "COSMOS_RPC_URL" "$COSMOS_RPC_URL"
+log_kv "COSMOS_GRPC" "$COSMOS_GRPC_ADDR"
+log_kv "COSMOS_CHAIN_ID" "$COSMOS_CHAIN_ID"
+log_kv "latest_block" "$("$COSMOS_BIN" status --node "$COSMOS_RPC_URL" 2>/dev/null | jq -r '.sync_info.latest_block_height // .SyncInfo.latest_block_height // empty')"
+log_kv "BROADCAST_JSON" "${BROADCAST_JSON:-}"
 
-echo ""
-echo "━━━ Keys ━━━"
-printf "  %-20s %s\n" "receiver_key:"    "$COSMOS_RECEIVER_KEY"
-printf "  %-20s %s\n" "receiver_address:" "${ADDRESS:-}"
-printf "  %-20s %s\n" "signer_key:"      "$COSMOS_SIGNER_KEY"
-printf "  %-20s %s\n" "signer_address:"  "${SIGNER_ADDRESS:-}"
+log_header "Keys"
+log_kv "receiver_key" "$COSMOS_RECEIVER_KEY"
+log_kv "receiver_address" "${ADDRESS:-}"
+log_kv "signer_key" "$COSMOS_SIGNER_KEY"
+log_kv "signer_address" "${SIGNER_ADDRESS:-}"
 
 if [ -n "${ADDRESS:-}" ]; then
-  echo ""
-  echo "━━━ Account Balances ━━━"
+  log_header "Account Balances"
   cosmos_query bank balances "$ADDRESS" | jq .
 
   if [ -n "${ERC20_ADDRESS:-}" ]; then
     VOUCHER_TRACE="transfer/$COSMOS_WASM_CLIENT_ID/$ERC20_ADDRESS"
     VOUCHER_DENOM="$(ibc_denom "$VOUCHER_TRACE")"
-    echo ""
-    echo "━━━ ETH → Cosmos Voucher Balance ━━━"
-    printf "  %-20s %s\n" "trace:" "$VOUCHER_TRACE"
-    printf "  %-20s %s\n" "denom:" "$VOUCHER_DENOM"
+    log_header "ETH → Cosmos Voucher Balance"
+    log_kv "trace" "$VOUCHER_TRACE"
+    log_kv "denom" "$VOUCHER_DENOM"
     cosmos_query bank balance "$ADDRESS" "$VOUCHER_DENOM" | jq .
   fi
 fi
 
-echo ""
-echo "━━━ IBC Clients ━━━"
+log_header "IBC Clients"
 cosmos_query ibc client states | jq .
 
 if [ -n "$COSMOS_TX_HASH" ]; then
-  echo ""
-  echo "━━━ Cosmos Transaction ━━━"
-  printf "  %-20s %s\n" "tx_hash:" "$COSMOS_TX_HASH"
+  log_header "Cosmos Transaction"
+  log_kv "tx_hash" "$COSMOS_TX_HASH"
   cosmos_query tx "$COSMOS_TX_HASH" | jq .
 fi
