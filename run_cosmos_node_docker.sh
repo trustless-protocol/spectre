@@ -67,7 +67,7 @@ docker exec $CONTAINER_NAME simd genesis validate-genesis
 # Export test1 private key (for relayer)
 echo ""
 echo "=== test1 private key (hex) ==="
-docker exec $CONTAINER_NAME simd keys export test1 --unarmored-hex --unsafe --keyring-backend test -y
+docker exec $CONTAINER_NAME simd keys export test1 --unarmored-hex --unsafe --keyring-backend test
 echo ""
 
 # Print test1 address

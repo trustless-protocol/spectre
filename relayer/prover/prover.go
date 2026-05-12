@@ -38,26 +38,61 @@ type bucketArtifacts struct {
 // prover selects the smallest bucket that fits the required signer count for
 // the current block and uses that bucket's artifacts to generate a proof.
 type EcipProver struct {
-	byBucket map[int]*bucketArtifacts
+	byBucket      map[int]*bucketArtifacts
+	loadedBuckets []int
 }
 
 // NewProver loads every bucket's r1cs, proving key, and verifying key from
-// binDir/n{N}/{r1cs,pk,vk}.bin. It errors if any bucket's artifacts are
-// missing — the operator must run `cmd/setup-circuits` first.
+// binDir/n{N}/{r1cs,pk,vk}.bin. Buckets missing any required artifact are
+// skipped, which lets local setups run with only a subset of generated
+// circuits. At least one complete bucket must be present.
 func NewProver(binDir string) (*EcipProver, error) {
 	log.Printf("[NewProver] loading artifacts from %s", binDir)
 	p := &EcipProver{byBucket: make(map[int]*bucketArtifacts, len(Buckets))}
 	for _, n := range Buckets {
+		ok, missing, err := bucketArtifactsAvailable(binDir, n)
+		if err != nil {
+			return nil, fmt.Errorf("inspect bucket n=%d: %w", n, err)
+		}
+		if !ok {
+			log.Printf("[NewProver] skipping bucket n=%d: missing %v", n, missing)
+			continue
+		}
 		log.Printf("[NewProver] loading bucket n=%d", n)
 		art, err := loadBucketArtifacts(binDir, n)
 		if err != nil {
 			return nil, fmt.Errorf("load bucket n=%d: %w", n, err)
 		}
 		p.byBucket[n] = art
+		p.loadedBuckets = append(p.loadedBuckets, n)
 		log.Printf("[NewProver] bucket n=%d loaded", n)
 	}
-	log.Printf("[NewProver] loaded %d bucket(s)", len(p.byBucket))
+	if len(p.loadedBuckets) == 0 {
+		return nil, fmt.Errorf("no complete bucket artifacts found under %s", binDir)
+	}
+	log.Printf("[NewProver] loaded %d bucket(s): %v", len(p.byBucket), p.loadedBuckets)
 	return p, nil
+}
+
+func bucketArtifactsAvailable(binDir string, n int) (bool, []string, error) {
+	dir := filepath.Join(binDir, fmt.Sprintf("n%d", n))
+	required := []string{"r1cs.bin", "pk.bin", "vk.bin"}
+	missing := make([]string, 0, len(required))
+	for _, name := range required {
+		path := filepath.Join(dir, name)
+		fi, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				missing = append(missing, name)
+				continue
+			}
+			return false, nil, err
+		}
+		if fi.IsDir() {
+			missing = append(missing, name)
+		}
+	}
+	return len(missing) == 0, missing, nil
 }
 
 func loadBucketArtifacts(binDir string, n int) (*bucketArtifacts, error) {
@@ -129,7 +164,11 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 		return
 	}
 
-	bucket, err = SmallestBucketGEQ(len(sigs))
+	supported := p.loadedBuckets
+	if len(supported) == 0 {
+		supported = Buckets
+	}
+	bucket, err = SmallestBucketGEQFrom(supported, len(sigs))
 	if err != nil {
 		return
 	}

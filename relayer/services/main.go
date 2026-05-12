@@ -176,10 +176,55 @@ func (s *Services) StartLoop(ctx Context) {
 		for _, packet := range batch.Packets {
 			switch packet.PacketType {
 			case Send:
-				// Skip packets that have already timed out
+				// If the packet has timed out on ETH, submit MsgTimeout back to Cosmos to release escrow.
 				if ethBlockTime > 0 && packet.Packet.TimeoutTimestamp > 0 && ethBlockTime >= packet.Packet.TimeoutTimestamp {
-					log.Printf("[RecvPacket] Packet seq=%d timed out (timeout=%d <= eth_block_time=%d), skipping",
-						packet.Packet.Sequence, packet.Packet.TimeoutTimestamp, ethBlockTime)
+					log.Printf("[CosmosTimeout] seq=%d: timed out (eth_block_time=%d >= timeout=%d), submitting MsgTimeout to Cosmos",
+						packet.Packet.Sequence, ethBlockTime, packet.Packet.TimeoutTimestamp)
+
+					signerAddr, err := s.worker.TxHandler.CosmosSignerAddress()
+					if err != nil {
+						log.Printf("[CosmosTimeout] seq=%d: failed to get cosmos signer: %v", packet.Packet.Sequence, err)
+						continue
+					}
+
+					if err := s.worker.UpdateEthClient(ctx); err != nil {
+						log.Printf("[CosmosTimeout] seq=%d: failed to update ETH client: %v", packet.Packet.Sequence, err)
+						continue
+					}
+
+					ethClientState, err := client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
+					if err != nil {
+						log.Printf("[CosmosTimeout] seq=%d: failed to get ETH client state: %v", packet.Packet.Sequence, err)
+						continue
+					}
+					proofBlockNumber := ethClientState.LatestExecutionBlockNumber
+					proofSlot := ethClientState.LatestSlot
+
+					// receipt path = destClientID + [0x02] + sequence.to_be_bytes(8)
+					seqBytes := make([]byte, 8)
+					binary.BigEndian.PutUint64(seqBytes, packet.Packet.Sequence)
+					receiptPath := append([]byte(packet.Packet.DestinationClient), 0x02)
+					receiptPath = append(receiptPath, seqBytes...)
+
+					slot := ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT)
+					proofBytes, err := client.GetEthMembershipProof(
+						ctx.EthClient(), *ctx.RouterContract(), receiptPath, slot, new(big.Int).SetUint64(proofBlockNumber))
+					if err != nil {
+						log.Printf("[CosmosTimeout] seq=%d: failed to get ETH non-membership proof: %v", packet.Packet.Sequence, err)
+						continue
+					}
+
+					timeoutMsg := &channeltypesv2.MsgTimeout{
+						Packet:          *packet.Packet,
+						ProofUnreceived: proofBytes,
+						ProofHeight:     clienttypes.Height{RevisionNumber: 0, RevisionHeight: proofSlot},
+						Signer:          signerAddr,
+					}
+					if err := s.worker.TxHandler.SendCosmosTx(ctx, timeoutMsg); err != nil {
+						log.Printf("[CosmosTimeout] seq=%d: failed to send MsgTimeout: %v", packet.Packet.Sequence, err)
+						continue
+					}
+					log.Printf("[CosmosTimeout] seq=%d: relay completed", packet.Packet.Sequence)
 					continue
 				}
 

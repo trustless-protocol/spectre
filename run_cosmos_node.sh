@@ -9,6 +9,7 @@ rm -rf "$HOME/.gaia" "$HOME/.gaia-val2" "$HOME/.gaia-val3" "$HOME/.gaia-val4"
 CHAIN_ID="test-ibc-eth"
 DENOM="stake"
 KEYRING="test"
+COSMOS_BIN="${COSMOS_BIN:-gaiad}"
 
 HOMES=(
     "$HOME/.gaia"
@@ -43,6 +44,14 @@ PROM_PORTS=(26660 26760 26860 26960)
 PRIMARY_HOME="${HOMES[0]}"
 RELAYER_ENV_FILE="${RELAYER_ENV_FILE:-relayer/.env}"
 
+if ! "$COSMOS_BIN" tx ibc-wasm store-code --help >/dev/null 2>&1; then
+    echo "error: $COSMOS_BIN does not include the ibc-wasm (08-wasm) module." >&2
+    echo "Use a wasm-enabled binary (for example: COSMOS_BIN=simd ./run_cosmos_node.sh) or the container flow:" >&2
+    echo "  ./run_cosmos_node_docker.sh" >&2
+    echo "  ./wasm_docker.sh" >&2
+    exit 1
+fi
+
 upsert_env_var() {
     local file="$1"
     local key="$2"
@@ -72,13 +81,13 @@ upsert_env_var() {
 }
 
 for i in "${!HOMES[@]}"; do
-    gaiad init "${VAL_KEYS[$i]}" --chain-id "$CHAIN_ID" --home "${HOMES[$i]}"
-    gaiad keys add "${VAL_KEYS[$i]}" --keyring-backend "$KEYRING" --home "${HOMES[$i]}"
+    "$COSMOS_BIN" init "${VAL_KEYS[$i]}" --chain-id "$CHAIN_ID" --home "${HOMES[$i]}"
+    "$COSMOS_BIN" keys add "${VAL_KEYS[$i]}" --keyring-backend "$KEYRING" --home "${HOMES[$i]}"
 done
 
 # Keep the old local testing accounts available in the default Gaia home.
 for i in "${!USER_KEYS[@]}"; do
-    gaiad keys add "${USER_KEYS[$i]}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME"
+    "$COSMOS_BIN" keys add "${USER_KEYS[$i]}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME"
 done
 
 jq '.app_state["gov"]["params"]["voting_period"]="30s"' "$PRIMARY_HOME/config/genesis.json" > "$PRIMARY_HOME/config/tmp_genesis.json"
@@ -89,12 +98,12 @@ jq '.app_state["feemarket"]["params"]["max_block_utilization"]="300000000"' "$PR
 mv "$PRIMARY_HOME/config/tmp_genesis.json" "$PRIMARY_HOME/config/genesis.json"
 
 for i in "${!USER_KEYS[@]}"; do
-    gaiad genesis add-genesis-account "${USER_KEYS[$i]}" "${USER_BALANCES[$i]}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME"
+    "$COSMOS_BIN" genesis add-genesis-account "${USER_KEYS[$i]}" "${USER_BALANCES[$i]}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME"
 done
 
 for i in "${!VAL_KEYS[@]}"; do
-    val_addr=$(gaiad keys show "${VAL_KEYS[$i]}" -a --keyring-backend "$KEYRING" --home "${HOMES[$i]}")
-    gaiad genesis add-genesis-account "$val_addr" "2000000000000${DENOM}" --home "$PRIMARY_HOME"
+    val_addr=$("$COSMOS_BIN" keys show "${VAL_KEYS[$i]}" -a --keyring-backend "$KEYRING" --home "${HOMES[$i]}")
+    "$COSMOS_BIN" genesis add-genesis-account "$val_addr" "2000000000000${DENOM}" --home "$PRIMARY_HOME"
 done
 
 for i in 1 2 3; do
@@ -102,7 +111,7 @@ for i in 1 2 3; do
 done
 
 for i in "${!HOMES[@]}"; do
-    gaiad genesis gentx "${VAL_KEYS[$i]}" "${VAL_STAKES[$i]}" \
+    "$COSMOS_BIN" genesis gentx "${VAL_KEYS[$i]}" "${VAL_STAKES[$i]}" \
         --chain-id "$CHAIN_ID" \
         --keyring-backend "$KEYRING" \
         --home "${HOMES[$i]}"
@@ -113,8 +122,8 @@ for i in 1 2 3; do
     cp "${HOMES[$i]}"/config/gentx/*.json "$PRIMARY_HOME/config/gentx/"
 done
 
-gaiad genesis collect-gentxs --home "$PRIMARY_HOME"
-gaiad genesis validate-genesis --home "$PRIMARY_HOME"
+"$COSMOS_BIN" genesis collect-gentxs --home "$PRIMARY_HOME"
+"$COSMOS_BIN" genesis validate-genesis --home "$PRIMARY_HOME"
 
 for i in 1 2 3; do
     cp "$PRIMARY_HOME/config/genesis.json" "${HOMES[$i]}/config/genesis.json"
@@ -122,7 +131,7 @@ done
 
 NODE_IDS=()
 for i in "${!HOMES[@]}"; do
-    NODE_IDS+=("$(gaiad tendermint show-node-id --home "${HOMES[$i]}")")
+    NODE_IDS+=("$("$COSMOS_BIN" tendermint show-node-id --home "${HOMES[$i]}")")
 done
 
 configure_node() {
@@ -156,14 +165,14 @@ for i in "${!HOMES[@]}"; do
     configure_node "$i"
 done
 
-COSMOS_PRIVATE_KEY="$(gaiad keys export test1 --unarmored-hex --unsafe --keyring-backend "$KEYRING" --home "$PRIMARY_HOME" -y)"
+COSMOS_PRIVATE_KEY="$("$COSMOS_BIN" keys export test1 --unarmored-hex --unsafe --keyring-backend "$KEYRING" --home "$PRIMARY_HOME")"
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_PRIVATE_KEY" "$COSMOS_PRIVATE_KEY"
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_CHAIN_ID" "$CHAIN_ID"
 echo "Updated $RELAYER_ENV_FILE with COSMOS_PRIVATE_KEY and COSMOS_CHAIN_ID"
 
 PIDS=()
 for i in "${!HOMES[@]}"; do
-    gaiad start --home "${HOMES[$i]}" > "${HOMES[$i]}/gaiad.log" 2>&1 &
+    "$COSMOS_BIN" start --home "${HOMES[$i]}" > "${HOMES[$i]}/gaiad.log" 2>&1 &
     PIDS+=("$!")
 done
 

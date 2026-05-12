@@ -2,6 +2,37 @@
 
 set -euxo pipefail
 
+RELAYER_ENV_FILE="${RELAYER_ENV_FILE:-relayer/.env}"
+E2E_FAUCET_ADDRESS=0x8943545177806ED17B9F23F0a21ee5948eCaa776
+E2E_FAUCET_PRIVATE_KEY=bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31
+
+upsert_env_var() {
+  file="$1"
+  key="$2"
+  value="$3"
+  tmp="$(mktemp)"
+
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+
+  awk -v key="$key" -v value="$value" '
+    BEGIN { updated = 0 }
+    $0 ~ ("^" key "=") {
+      print key "=\"" value "\""
+      updated = 1
+      next
+    }
+    { print }
+    END {
+      if (!updated) {
+        print key "=\"" value "\""
+      }
+    }
+  ' "$file" > "$tmp"
+
+  mv "$tmp" "$file"
+}
+
 kurtosis enclave rm -f my-testnet || true
 killall gaiad || true
 rm -rf $HOME/.gaia
@@ -47,12 +78,14 @@ echo "ETH_WS: $ETH_WS"
 echo "ETH_BEACON_API: $ETH_BEACON_API"
 
 # Deploy ETH contracts
-export E2E_FAUCET_ADDRESS=0x8943545177806ED17B9F23F0a21ee5948eCaa776
+export E2E_FAUCET_ADDRESS
+export FOUNDRY_OPTIMIZER_RUNS=200
 RESULT=$(forge script scripts/E2ETestDeploy.s.sol:E2ETestDeploy \
     --rpc-url $ETH_RPC \
     --broadcast \
+    --non-interactive \
     --ffi \
-    --sender 0x8943545177806ED17B9F23F0a21ee5948eCaa776 --private-key bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31 \
+    --sender "$E2E_FAUCET_ADDRESS" --private-key "$E2E_FAUCET_PRIVATE_KEY" \
     2>/dev/null
 )
 
@@ -106,6 +139,8 @@ echo "MISBEHAVIOUR_ADDRESS: $MISBEHAVIOUR_ADDRESS"
 
 # Start relayer
 cd relayer
+upsert_env_var ".env" "ETH_PRIVATE_KEY" "$E2E_FAUCET_PRIVATE_KEY"
+echo "Updated .env with ETH_PRIVATE_KEY"
 jq \
   --arg ETH_RPC "$ETH_RPC" \
   --arg ETH_WS "$ETH_WS" \
