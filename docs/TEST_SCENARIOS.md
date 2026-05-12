@@ -43,6 +43,18 @@ gaiad tx ibc-transfer transfer transfer 08-wasm-0 \
 
 Set a 10-second window but delay the relay deliberately (e.g., pause the relayer for 8 s then resume).
 
+```
+
+# Terminal 1: gửi packet với 10-giây window
+ABS_TIMEOUT=$(($(date +%s) + 60))
+gaiad tx ibc-transfer transfer transfer 08-wasm-0 \
+  0x8943545177806ed17b9f23f0a21ee5948ecaa776 100stake \
+  --absolute-timeouts --packet-timeout-timestamp "$ABS_TIMEOUT" \
+  --from test1 --home ~/.gaia --chain-id test-ibc-eth \
+  --node tcp://127.0.0.1:26657 --keyring-backend test --gas-prices 1stake -y
+
+```
+
 **Expected outcome:** Packet is relayed successfully; no timeout.
 
 ---
@@ -61,6 +73,20 @@ Set a 10-second window but delay the relay deliberately (e.g., pause the relayer
 - `recvPacket` is submitted successfully without re-running `updateClient` (client is already up-to-date).
 - Cosmos ACK arrives; final balance matches expected.
 
+
+```bash
+cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
+  'balanceOf(address)(uint256)' \
+  0x8943545177806ed17b9f23f0a21ee5948ecaa776 \
+  --rpc-url http://127.0.0.1:62880
+
+
+gaiad q txs \
+  --query "message.action='/ibc.core.channel.v2.MsgAcknowledgement'" \
+  --node tcp://127.0.0.1:26657 -o json | jq '.total_count'
+
+```
+
 ### 2b. Network Partition Mid-Relay
 
 Simulate an Ethereum RPC outage (e.g., `iptables` block or stop Kurtosis Ethereum service) while the relay loop is running.
@@ -69,6 +95,23 @@ Simulate an Ethereum RPC outage (e.g., `iptables` block or stop Kurtosis Ethereu
 - Relayer logs an error and retries with backoff.
 - After connectivity is restored, the relay resumes and delivers all pending packets.
 
+
+```
+
+kurtosis service stop my-testnet el-1-geth-lighthouse
+
+
+kurtosis service start my-testnet el-1-geth-lighthouse
+
+
+
+kurtosis service stop my-testnet el-1-geth-lighthouse
+kurtosis service stop my-testnet cl-1-lighthouse-geth
+
+kurtosis service start my-testnet el-1-geth-lighthouse
+kurtosis service start my-testnet cl-1-lighthouse-geth
+
+```
 ---
 
 ## 3. Replay / Double-Relay Attack

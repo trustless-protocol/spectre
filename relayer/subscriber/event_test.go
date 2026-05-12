@@ -115,3 +115,59 @@ func TestEthPacketToCosmosPacket_LargeSequence(t *testing.T) {
 		t.Errorf("Sequence: got %d, want max uint64", result.Sequence)
 	}
 }
+
+func TestEthStartupRecoveryLookbackBlocksFromEnv(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+		raw  string
+		want uint64
+	}{
+		{name: "empty uses default", raw: "", want: defaultEthStartupRecoveryLookbackBlocks},
+		{name: "invalid uses default", raw: "not-a-number", want: defaultEthStartupRecoveryLookbackBlocks},
+		{name: "zero allowed", raw: "0", want: 0},
+		{name: "custom value", raw: "1024", want: 1024},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := ethStartupRecoveryLookbackBlocksFromEnv(tc.raw)
+			if got != tc.want {
+				t.Fatalf("ethStartupRecoveryLookbackBlocksFromEnv(%q) = %d, want %d", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEthStartupRecoveryStartBlock(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name      string
+		latest    uint64
+		lookback  uint64
+		wantStart uint64
+	}{
+		{name: "lookback smaller than latest", latest: 1000, lookback: 256, wantStart: 744},
+		{name: "lookback equals latest", latest: 256, lookback: 256, wantStart: 0},
+		{name: "lookback greater than latest", latest: 42, lookback: 100, wantStart: 0},
+		{name: "zero lookback", latest: 42, lookback: 0, wantStart: 42},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := ethStartupRecoveryStartBlock(tc.latest, tc.lookback)
+			if got != tc.wantStart {
+				t.Fatalf("ethStartupRecoveryStartBlock(%d, %d) = %d, want %d",
+					tc.latest, tc.lookback, got, tc.wantStart)
+			}
+		})
+	}
+}

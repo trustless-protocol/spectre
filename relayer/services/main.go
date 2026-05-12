@@ -148,10 +148,12 @@ func (s *Services) StartLoop(ctx Context) {
 		latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, "groth16", int64(ctx.latestEthTimestamp.LatestUpdateHeight), "1/3")
 		if err != nil {
 			log.Printf("[StartLoop] Failed to update cosmos light client: %v", err)
+			s.requeueBatch(batch)
 			continue
 		}
 		if latestLightBlock == nil {
 			log.Printf("[StartLoop] Failed to update cosmos light client: latestLightBlock is nil")
+			s.requeueBatch(batch)
 			continue
 		}
 
@@ -604,5 +606,16 @@ func (s *Services) StartLoop(ctx Context) {
 		}
 
 		defer ctx.StopClient()
+	}
+}
+
+func (s *Services) requeueBatch(batch BatchPackets) {
+	if len(batch.Packets) == 0 {
+		return
+	}
+
+	log.Printf("[StartLoop] Requeueing batch after recoverable failure: %d packets", len(batch.Packets))
+	for _, packet := range batch.Packets {
+		s.BatchBuilder.InsertPacket(packet)
 	}
 }

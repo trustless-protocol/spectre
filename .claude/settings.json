@@ -4,7 +4,8 @@
       "Bash(forge script *)",
       "Bash(grep -A 15 \"type MsgTimeout struct\" /Users/donglieu/go/pkg/mod/github.com/cosmos/ibc-go/v10@v10.0.0/modules/core/04-channel/v2/types/tx.pb.go)",
       "Read(//Users/donglieu/go/pkg/mod/github.com/cosmos/ibc-go/v10@v10.0.0/modules/core/04-channel/v2/types/**)",
-      "Bash(go build *)"
+      "Bash(go build *)",
+      "Bash(gaiad q *)"
     ]
   }
 }
