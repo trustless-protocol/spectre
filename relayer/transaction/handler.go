@@ -48,8 +48,6 @@ type Handler struct {
 }
 
 const ethTxReceiptTimeout = 45 * time.Second
-const cosmosClientID = "cosmoshub-1"
-const ethWasmClientID = "08-wasm-0"
 
 func routerManagesProofSubmission(ctx services.Context) bool {
 	roleManager := ctx.RoleManagerAddress()
@@ -115,16 +113,6 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	chainIdInt, err := ctx.EthClient().ChainID(context.Background())
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] invalid chain id: %v", err)
-	}
-
-	ics26Router, err := routerContract.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
-	if err != nil {
-		return common.Address{}, err
-	}
-	if registeredClient, err := ics26Router.GetClient(nil, cosmosClientID); err == nil && registeredClient != (common.Address{}) {
-		log.Printf("[CreateCosmosClient] Router already has client %s at %s; reusing registered client", cosmosClientID, registeredClient.Hex())
-		ctx.SetClient(registeredClient)
-		return registeredClient, nil
 	}
 
 	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
