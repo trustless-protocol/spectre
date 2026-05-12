@@ -460,6 +460,9 @@ func (s *Services) cosmosNonMembership(ctx Context, packet channeltypesv2.Packet
 	if err != nil {
 		return nil, err
 	}
+	if len(value) != 0 {
+		return nil, fmt.Errorf("non-membership expected empty value at height=%d, got %d bytes", height, len(value))
+	}
 
 	merkleProof, err := parseMerkleProof(proof.Proofs, packet.Sequence)
 	if err != nil {
