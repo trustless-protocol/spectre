@@ -156,6 +156,11 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	// for the ICS07 client. Direct submission remains available only when the
 	// role manager is not the router.
 
+	ics26Router, err := routerContract.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
+	if err != nil {
+		return common.Address{}, err
+	}
+
 	nonce, err = ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to get nonce for AddClient: %w", err)
