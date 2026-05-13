@@ -358,7 +358,7 @@ func shouldTimeoutEthSend(packet EthPacket, err error) bool {
 }
 
 func (s *Services) updateCosmosClientForEth(ctx Context, tag string) (*client.LightBlock, bool) {
-	latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, "groth16", int64(ctx.latestEthTimestamp.LatestUpdateHeight), "1/3")
+	latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ctx.latestEthTimestamp.LatestUpdateHeight), s.cosmosConfig.TrustLevel)
 	if err != nil {
 		log.Printf("[%s] Failed to update cosmos light client: %v", tag, err)
 		return nil, false
