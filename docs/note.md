@@ -90,3 +90,16 @@ Cho test ổn định hơn, tôi vẫn khuyên 2b chỉ stop/start el-1-geth-lig
 
 không có ack (MsgAcknowledgement), cũng không có MsgTimeout trên Cosmos
 nghĩa là trạng thái đang là: ETH đã mint, nhưng Cosmos chưa nhận ack
+
+## 3
+ok
+
+## 4a
+ok
+
+## 4b
+ok
+
+## 4c
+
+ok

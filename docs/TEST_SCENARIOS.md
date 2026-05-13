@@ -227,6 +227,20 @@ kurtosis service stop my-testnet cl-1-lighthouse-geth
 kurtosis service start my-testnet el-1-geth-lighthouse
 kurtosis service start my-testnet cl-1-lighthouse-geth
 
+
+cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
+  'balanceOf(address)(uint256)' \
+  0x8943545177806ed17b9f23f0a21ee5948ecaa776 \
+  --rpc-url http://127.0.0.1:59619
+
+
+gaiad q txs \
+  --query "message.action='/ibc.core.channel.v2.MsgAcknowledgement'" \
+  --node tcp://127.0.0.1:26657 -o json | jq '.total_count'
+
+
+gaiad q txs --query "message.action='/ibc.core.channel.v2.MsgTimeout'"  --node tcp://127.0.0.1:26657 -o json | jq '.total_count'
+
 ```
 ---
 
@@ -250,22 +264,55 @@ Attempt to submit the same `recvPacket` call-data twice.
 
 Modify one byte of the `proof` field in the `updateClient` calldata before broadcasting.
 
+**Recommended command (safe / `eth_call`):**
+```bash
+./scripts/test_invalid_updateclient.sh --case 4a \
+  --config relayer/config.example.json \
+  --env-file relayer/.env
+```
+
 **Expected outcome:**
-- `Groth16Verifier_N{N}.sol` reverts — pairing check fails.
+- Script prints `PASS: tampered eth_call reverted as expected`.
+- `eth_call` reverts and client state is unchanged.
 
 ### 4b. Wrong Public Input (Witness Hash Mismatch)
 
 Submit a valid proof from a previous `updateClient` call paired with a new header (different `appHash`).
 
+**Recommended command (safe / `eth_call`):**
+```bash
+./scripts/test_invalid_updateclient.sh --case 4b \
+  --config relayer/config.example.json \
+  --env-file relayer/.env
+```
+
 **Expected outcome:**
-- `WrapperVerifier` recomputes the SHA-256 witness commit from the supplied header and validators; the recomputed hash does not match the proof's public input → revert.
+- Script prints `PASS: tampered eth_call reverted as expected`.
+- On-chain verification rejects the forged payload (revert reason may vary by which validation step fails first).
 
 ### 4c. Pubkey Swap in Calldata
 
 Supply a real validator pubkey in calldata but submit a proof computed for a different pubkey.
 
+**Recommended command (safe / `eth_call`):**
+```bash
+./scripts/test_invalid_updateclient.sh --case 4c \
+  --config relayer/config.example.json \
+  --env-file relayer/.env
+```
+
 **Expected outcome:**
-- Because pubkey `A` is hashed into the witness commit on-chain, the recomputed public input diverges from the proof's → revert.
+- Script prints `PASS: tampered eth_call reverted as expected`.
+- Verification fails because pubkeys no longer match the proven witness.
+
+**Optional (broadcast failing tx on-chain):**
+```bash
+./scripts/test_invalid_updateclient.sh --case 4b --send
+```
+or
+```bash
+./scripts/test_invalid_updateclient.sh --case 4c --send
+```
 
 ---
 
@@ -435,9 +482,9 @@ Re-run `go run ./prover/cmd ./bin ../contracts/verifiers` (which generates fresh
 | 2a | Relayer crash post-updateClient | Relayer | Resumes on restart, delivers packet |
 | 2b | Ethereum RPC outage | Relayer | Retries, recovers automatically |
 | 3 | Replay / double recvPacket | Security | Second call reverts |
-| 4a | Tampered Groth16 proof | Security | Pairing check revert |
-| 4b | Wrong public input | Security | Witness hash mismatch revert |
-| 4c | Pubkey swap | Security | Witness hash mismatch revert |
+| 4a | Tampered Groth16 proof | Security | `updateClient` revert |
+| 4b | Wrong public input | Security | `updateClient` revert |
+| 4c | Pubkey swap | Security | `updateClient` revert |
 | 5a | Exactly 2/3 voting power | Quorum | Strict-greater check fails |
 | 5b | Duplicate signer index | Quorum | `seen[idx]` revert |
 | 5c | Exactly N active signers at bucket edge | Quorum | Correct bucket selected, success |
