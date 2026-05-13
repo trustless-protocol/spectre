@@ -72,9 +72,9 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 
 			ctx.Logger.Printf("[SubscribeCosmos] send_packet received: seq=%d src=%s",
 				packet.Sequence, packet.SourceClient)
-			batchBuilder.InsertPacket(services.Packet{
-				PacketType: services.Send,
-				Packet:     &packet,
+			batchBuilder.AddCosmos(services.CosmosPacket{
+				Type:   services.CosmosSend,
+				Packet: &packet,
 			})
 		case e := <-ackPacketSub:
 			ackPacketEvent := e.Events[EVENT_WRITE_ACK_PACKET_FIELD]
@@ -118,10 +118,10 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 
 			ctx.Logger.Printf("[SubscribeCosmos] write_ack received: seq=%d src=%s",
 				packet.Sequence, packet.SourceClient)
-			batchBuilder.InsertPacket(services.Packet{
-				PacketType: services.Ack,
-				Packet:     &packet,
-				AckBytes:   acknowledgement.AppAcknowledgements,
+			batchBuilder.AddCosmos(services.CosmosPacket{
+				Type:     services.CosmosAck,
+				Packet:   &packet,
+				AckBytes: acknowledgement.AppAcknowledgements,
 			})
 		case e := <-timeoutPacketSub:
 			timeoutPacketEvent := e.Events[EVENT_TIMEOUT_PACKET_FIELD]
@@ -145,9 +145,9 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 
 			ctx.Logger.Printf("[SubscribeCosmos] timeout received: seq=%d src=%s",
 				packet.Sequence, packet.SourceClient)
-			batchBuilder.InsertPacket(services.Packet{
-				PacketType: services.Timeout,
-				Packet:     &packet,
+			batchBuilder.AddCosmos(services.CosmosPacket{
+				Type:   services.CosmosTimeout,
+				Packet: &packet,
 			})
 		case <-c.Done():
 			return
@@ -233,30 +233,38 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 		case ev := <-sendPacketCh:
 			ctx.Logger.Printf("SendPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
-			batchBuilder.InsertPacket(services.Packet{
-				PacketType: services.Send,
-				Packet:     &cosmosPacket,
+			batchBuilder.AddEth(services.EthPacket{
+				Type:        services.EthSend,
+				Packet:      &cosmosPacket,
+				BlockNumber: ev.Raw.BlockNumber,
 			})
 
 		case ev := <-writeAckCh:
 			ctx.Logger.Printf("WriteAcknowledgement event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
-			batchBuilder.InsertPacket(services.Packet{
-				PacketType:  services.WriteAck,
+			batchBuilder.AddEth(services.EthPacket{
+				Type:        services.EthWriteAck,
 				Packet:      &cosmosPacket,
 				AckBytes:    ev.Acknowledgements,
 				BlockNumber: ev.Raw.BlockNumber,
 			})
 
 		case ev := <-ackPacketCh:
-			// TODO: handle AckPacket event
-			// This event is emitted when a packet acknowledgement is received on Ethereum
 			ctx.Logger.Printf("AckPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
+			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
+			batchBuilder.AddEth(services.EthPacket{
+				Type:     services.EthAck,
+				Packet:   &cosmosPacket,
+				AckBytes: [][]byte{ev.Acknowledgement},
+			})
 
 		case ev := <-timeoutPacketCh:
-			// TODO: handle TimeoutPacket event
-			// This event is emitted when a packet times out
 			ctx.Logger.Printf("TimeoutPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
+			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
+			batchBuilder.AddEth(services.EthPacket{
+				Type:   services.EthTimeout,
+				Packet: &cosmosPacket,
+			})
 
 		case err := <-sendPacketSub.Err():
 			ctx.Logger.Printf("SendPacket subscription error: %v", err)

@@ -415,12 +415,12 @@ contract Membership  is IMembership {
         if (!proof.hasLeft && !proof.hasRight) {
             revert("neither left nor right proof defined");
         } else if (!proof.hasLeft && proof.hasRight) {
-            ensureLeftMost(innerSpec, proof.left.path);
+            ensureLeftMost(innerSpec, proof.right.path, proof.right.path.length);
         } else if (proof.hasLeft && !proof.hasRight) {
-            ensureRightMost(innerSpec, proof.right.path);
+            ensureRightMost(innerSpec, proof.left.path, proof.left.path.length);
         } else if (proof.hasLeft && proof.hasRight) {
 
-            uint256 leftIndex = proof.left.path.length -1;
+            uint256 leftIndex = proof.left.path.length - 1;
             uint256 rightIndex = proof.right.path.length - 1;
 
             IMembershipMsgs.InnerOp memory topLeft = proof.left.path[leftIndex];
@@ -431,24 +431,21 @@ contract Membership  is IMembership {
             ) {
                 leftIndex--;
                 rightIndex--;
-
-                if (leftIndex < 0 || rightIndex < 0) {
-                    revert("Invalid non-existence proof");
-                }
-
                 topLeft = proof.left.path[leftIndex];
                 topRight = proof.right.path[rightIndex];
             }
 
             uint256 leftPaddingIdx = orderFromPadding(innerSpec, topLeft);
-            uint256 rightPaddingIdx = orderFromPadding(innerSpec, topRight); 
+            uint256 rightPaddingIdx = orderFromPadding(innerSpec, topRight);
 
             if (!(leftPaddingIdx + 1 == rightPaddingIdx)) {
                 revert("Not left neighbor at first divergent step");
             }
 
-            ensureLeftMost(innerSpec, proof.left.path);
-            ensureRightMost(innerSpec, proof.right.path);
+            // left neighbor (max of left subtree) must be rightmost below divergence
+            ensureRightMost(innerSpec, proof.left.path, leftIndex);
+            // right neighbor (min of right subtree) must be leftmost below divergence
+            ensureLeftMost(innerSpec, proof.right.path, rightIndex);
         } else {
             revert("Invalid non-existence proof");
         }
@@ -538,11 +535,12 @@ contract Membership  is IMembership {
     // true if this is the right-most path in the tree, excluding placeholder (empty child) nodes
     function ensureRightMost(
         IMembershipMsgs.InnerSpec memory innerSpec,
-        IMembershipMsgs.InnerOp[] memory path
+        IMembershipMsgs.InnerOp[] memory path,
+        uint256 length
     ) internal view {
         IMembershipMsgs.Padding memory padding = getPadding(innerSpec, innerSpec.childOrder.length - 1);
 
-        for (uint256 i = 0; i < path.length; i++) {
+        for (uint256 i = 0; i < length; i++) {
             IMembershipMsgs.InnerOp memory innerOp = path[i];
             bool rightHasPadding = hasPadding(innerOp, padding);
             uint256 rightBranches = innerSpec.childOrder.length - 1 - orderFromPadding(innerSpec, innerOp);
@@ -584,11 +582,12 @@ contract Membership  is IMembership {
 
     function ensureLeftMost(
         IMembershipMsgs.InnerSpec memory innerSpec,
-        IMembershipMsgs.InnerOp[] memory path
+        IMembershipMsgs.InnerOp[] memory path,
+        uint256 length
     ) internal view {
         // fails unless this is the left-most path in the tree, excluding placeholder (empty child) nodes
         IMembershipMsgs.Padding memory padding = getPadding(innerSpec, 0);
-        for (uint256 i = 0; i < path.length; i++) {
+        for (uint256 i = 0; i < length; i++) {
             IMembershipMsgs.InnerOp memory innerOp = path[i];
             bool leftHasPadding = hasPadding(innerOp, padding);
             uint256 leftBranches = orderFromPadding(innerSpec, innerOp);

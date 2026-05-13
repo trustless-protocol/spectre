@@ -49,7 +49,6 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         // `go run ./relayer/prover/cmd`.
         WrapperVerifier wrapperVerifier = new WrapperVerifier(msg.sender);
 
-
         address verifierN4 = address(new Groth16Verifier_N4());
 
         // Hash-aggregate exposes a fixed 32-byte SHA-256 digest as public input,
@@ -91,14 +90,16 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
 
         address[] memory relayers = new address[](1);
         relayers[0] = msg.sender;
-        accessManagerSetRoles(accessManager, relayers, new address[](0), new address[](0), msg.sender, msg.sender, msg.sender);
+        accessManagerSetRoles(
+            accessManager, relayers, new address[](0), new address[](0), msg.sender, msg.sender, msg.sender
+        );
 
         // Wire Transfer app
         ICS26Router(address(routerProxy)).addIBCApp(ICS20Lib.DEFAULT_PORT_ID, address(transferProxy));
 
         // Mint some tokens
         TestERC20 erc20 = new TestERC20();
-        erc20.mint(e2eFaucet, type(uint256).max);
+        erc20.mint(e2eFaucet, 1_000_000 * 10 ** 18);
 
         vm.stopBroadcast();
 
