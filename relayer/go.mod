@@ -1,6 +1,6 @@
 module relayer
 
-go 1.25.6
+go 1.25.7
 
 require (
 	0x5ea000000/ecip-gnark v0.0.0-00010101000000-000000000000
@@ -8,7 +8,7 @@ require (
 	filippo.io/edwards25519 v1.1.0
 	github.com/cometbft/cometbft v0.38.18
 	github.com/consensys/gnark v0.13.0
-	github.com/consensys/gnark-crypto v0.19.3-0.20260210233638-4abc1c162a65
+	github.com/consensys/gnark-crypto v0.20.1
 	github.com/cosmos/cosmos-sdk v0.53.3
 	github.com/cosmos/gogoproto v1.7.0
 	github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10 v10.3.0
@@ -17,7 +17,7 @@ require (
 	github.com/ethereum/go-ethereum v1.17.0
 	github.com/gogo/protobuf v1.3.2
 	github.com/joho/godotenv v1.5.1
-	github.com/spf13/cobra v1.9.1
+	github.com/spf13/cobra v1.10.2
 	go.uber.org/zap v1.27.0
 )
 
@@ -153,7 +153,7 @@ require (
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spf13/afero v1.12.0 // indirect
 	github.com/spf13/cast v1.8.0 // indirect
-	github.com/spf13/pflag v1.0.6 // indirect
+	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/spf13/viper v1.20.1 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/subosito/gotenv v1.6.0 // indirect
