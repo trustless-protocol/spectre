@@ -93,7 +93,7 @@ func (s *Services) StartLoop(ctx Context) {
 			now := time.Now()
 			// update client on Eth side routinely
 			if ctx.latestEthTimestamp.LatestUpdateTime.Add(routineInterval).Before(now) {
-				latestBlock, err := s.worker.UpdateCosmosClient(ctx, "groth16", int64(ctx.latestEthTimestamp.LatestUpdateHeight), "1/3")
+				latestBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ctx.latestEthTimestamp.LatestUpdateHeight), s.cosmosConfig.TrustLevel)
 				if err != nil {
 					log.Printf("[Routine] Failed to update cosmos light client: %v", err)
 					continue
@@ -145,7 +145,7 @@ func (s *Services) StartLoop(ctx Context) {
 		time.Sleep(6 * time.Second)
 
 		// update client
-		latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, "groth16", int64(ctx.latestEthTimestamp.LatestUpdateHeight), "1/3")
+		latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ctx.latestEthTimestamp.LatestUpdateHeight), s.cosmosConfig.TrustLevel)
 		if err != nil {
 			log.Printf("[StartLoop] Failed to update cosmos light client: %v", err)
 			continue

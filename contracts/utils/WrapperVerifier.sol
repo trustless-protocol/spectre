@@ -22,9 +22,13 @@ contract WrapperVerifier is IVerifier {
     uint16 constant MAX_MSG_LEN = 192;
 
     /// @param verifier Address of the per-bucket gnark-generated Groth16 verifier.
-    /// @param selector 4-byte function selector of that verifier's `verifyProof`
-    ///                 (always `uint256[8],uint256[2],uint256[2],uint256[32]`
-    ///                 — every bucket has L=32 under hash-aggregate).
+    /// @param selector 4-byte function selector of that verifier's `verifyProof`.
+    ///                 Upstream gnark PR #1554 (merged Feb 2026) switched the
+    ///                 BN254 Solidity verifier signature from
+    ///                 `verifyProof(uint256[8],uint256[2],uint256[2],uint256[N])`
+    ///                 to `verifyProof(bytes,uint256[N])` where the bytes blob
+    ///                 packs (proof || commitments || commitmentPok) = 384 bytes.
+    ///                 New selector: `0x3ae90dd1`.
     struct BucketVerifier {
         address verifier;
         bytes4 selector;
@@ -76,8 +80,8 @@ contract WrapperVerifier is IVerifier {
             publicInputs[i] = uint256(uint8(h[i]));
         }
 
-        bytes memory cd =
-            abi.encodePacked(bv.selector, proof, commitments, commitmentPok, publicInputs);
+        bytes memory proofBytes = abi.encodePacked(proof, commitments, commitmentPok);
+        bytes memory cd = abi.encodeWithSelector(bv.selector, proofBytes, publicInputs);
         (bool ok,) = bv.verifier.staticcall(cd);
         return ok;
     }

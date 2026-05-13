@@ -55,7 +55,7 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         // Hash-aggregate exposes a fixed 32-byte SHA-256 digest as public input,
         // so every bucket uses the same uint256[32] verifier ABI.
      
-        wrapperVerifier.setBucket(4, verifierN4, _verifyProofSelector());
+        wrapperVerifier.setBucket(4, verifierN4, Groth16Verifier_N4.verifyProof.selector);
       
 
         address membership = address(new Membership());
@@ -114,15 +114,4 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         return finalJson;
     }
 
-    /// @dev Build the 4-byte selector for gnark's hash-aggregate verifier ABI:
-    ///      `verifyProof(uint256[8], uint256[2], uint256[2], uint256[32])`.
-    function _verifyProofSelector() internal pure returns (bytes4) {
-        return bytes4(
-            keccak256(
-                bytes(
-                    "verifyProof(uint256[8],uint256[2],uint256[2],uint256[32])"
-                )
-            )
-        );
-    }
 }
