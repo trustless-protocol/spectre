@@ -56,6 +56,8 @@ type cosmosToEthConfig struct {
 	Membership         string `json:"membership"`
 	Misbehaviour       string `json:"misbehaviour"`
 	UpdateClient       string `json:"update_client"`
+	TrustLevel         string `json:"trust_level"`
+	ProofType          string `json:"proof_type"`
 }
 
 type ethToCosmosConfig struct {
@@ -394,7 +396,7 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 		},
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
-	cmd.Flags().String(flagTrustLevel, "1/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
+	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
 	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
 	return cmd
 }
@@ -494,12 +496,19 @@ func Start(logger *zap.Logger) *cobra.Command {
 
 			logger.Sugar().Info("Relayer started, subscribing to events...")
 
+			cosmosConfig := services.DefaultConfig()
+			if cfg.CosmosToEthConfig.TrustLevel != "" {
+				cosmosConfig.TrustLevel = cfg.CosmosToEthConfig.TrustLevel
+			}
+			if cfg.CosmosToEthConfig.ProofType != "" {
+				cosmosConfig.ProofType = cfg.CosmosToEthConfig.ProofType
+			}
 			svc := services.New(
 				subscriber.NewSubscriber(),
 				&transaction.Handler{},
 				p,
 				services.DefaultConfig(),
-				services.DefaultConfig(),
+				cosmosConfig,
 			)
 			svc.StartLoop(ctx)
 

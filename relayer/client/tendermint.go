@@ -571,7 +571,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 			parsedProof.ExistenceProof.Path = append(parsedProof.ExistenceProof.Path, ParseInnerOp(innerOp))
 		}
 	case *ics23.CommitmentProof_Nonexist:
-		if p.Nonexist.Left == nil || p.Nonexist.Right == nil {
+		if p.Nonexist.Left == nil && p.Nonexist.Right == nil {
 			return nil, fmt.Errorf("non-existence proof must at least left or right existence proofs")
 		}
 		parsedProof = &tendermintContract.IMembershipMsgsCommitmentProof{
