@@ -305,6 +305,7 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			// Create context (no WS client needed for create-clients)
 			ctx := services.NewCtxWithBeacon(
 				cosmosClient, ethClient, nil,
+				"",
 				cfg.EthToCosmosConfig.BeaconUrl,
 				cosmosWasmClientID,
 			)
@@ -462,6 +463,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// Create context with beacon API
 			ctx := services.NewCtxWithBeacon(
 				cosmosClient, ethClient, ethWsClient,
+				cfg.CosmosToEthConfig.EthWsUrl,
 				cfg.EthToCosmosConfig.BeaconUrl,
 				cosmosWasmClientID,
 			)

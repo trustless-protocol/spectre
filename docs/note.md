@@ -83,3 +83,10 @@ Sau khi ETH lên lại, khoảng vài giây sau batch sẽ được flush lại 
 Một lưu ý còn lại: nếu bạn stop cả EL/CL, WS subscription ETH có thể vẫn chết và không tự resubscribe. Nghĩa là fix này xử lý phần “mất batch khi ETH RPC outage”, nhưng nếu sau đó bạn vẫn miss WriteAcknowledgement thì bước tiếp theo sẽ là vá auto-resubscribe cho relayer/subscriber/event.go (line 393).
 
 Cho test ổn định hơn, tôi vẫn khuyên 2b chỉ stop/start el-1-geth-lighthouse.
+
+
+## 2b
+ fail vì:
+
+không có ack (MsgAcknowledgement), cũng không có MsgTimeout trên Cosmos
+nghĩa là trạng thái đang là: ETH đã mint, nhưng Cosmos chưa nhận ack
