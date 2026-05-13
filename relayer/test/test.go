@@ -449,7 +449,7 @@ func main() {
 	}
 	worker := services.NewWorker(&transaction.Handler{}, prover)
 
-	ctx := services.NewCtxWithBeacon(cosmosClient, ethClient, nil, cfg.EthToCosmosConfig.BeaconUrl, cfg.CosmosToEthConfig.CosmosWasmClientID)
+	ctx := services.NewCtxWithBeacon(cosmosClient, ethClient, nil, "", cfg.EthToCosmosConfig.BeaconUrl, cfg.CosmosToEthConfig.CosmosWasmClientID)
 	ctx.SetCosmosRouterClientID(cfg.CosmosToEthConfig.ICS26ClientID)
 	ctx.SetAddresses(
 		cfg.CosmosToEthConfig.ICS26Address,

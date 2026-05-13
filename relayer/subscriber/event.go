@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 	"strconv"
+	"time"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
 	"relayer/services"
@@ -14,6 +15,7 @@ import (
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gogo/protobuf/proto"
 )
 
@@ -28,6 +30,7 @@ const EVENT_TIMEOUT_PACKET_FIELD = "timeout_packet.encoded_packet_hex"
 
 const ethStartupRecoveryLookbackEnv = "ETH_STARTUP_LOOKBACK_BLOCKS"
 const defaultEthStartupRecoveryLookbackBlocks uint64 = 256
+const ethSubscriptionReconnectDelay = 2 * time.Second
 
 type Subscriber struct {
 }
@@ -293,79 +296,57 @@ func recoverEthWriteAcknowledgements(
 		startBlock, endBlock, recoveredCount, skippedCount)
 }
 
-// SubscribeEth subscribes to Ethereum events from the ICS26Router contract
-func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.BatchBuilder) {
-	if ctx.EthWsClient() == nil {
-		ctx.Logger.Printf("Failed to subscribe to Ethereum events: eth websocket client is not configured")
-		return
+func advanceRecoveryStart(nextRecoveryStartBlock *uint64, candidate uint64) {
+	if candidate > *nextRecoveryStartBlock {
+		*nextRecoveryStartBlock = candidate
+	}
+}
+
+func (s *Subscriber) subscribeEthOnce(
+	ctx services.Context,
+	batchBuilder *services.BatchBuilder,
+	watchClient *ethclient.Client,
+	watchStartBlock uint64,
+	nextWriteAckRecoveryStartBlock *uint64,
+) error {
+	watchFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), watchClient)
+	if err != nil {
+		return fmt.Errorf("failed to create ICS26Router watch filterer instance: %w", err)
 	}
 
-	recoveryFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), ctx.EthClient())
-	if err != nil {
-		ctx.Logger.Printf("Failed to create ICS26Router recovery filterer instance: %v", err)
-		return
-	}
-	watchFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), ctx.EthWsClient())
-	if err != nil {
-		ctx.Logger.Printf("Failed to create ICS26Router watch filterer instance: %v", err)
-		return
-	}
-
-	latestBlock, err := ctx.EthClient().BlockNumber(context.Background())
-	if err != nil {
-		ctx.Logger.Printf("Failed to get latest Ethereum block before subscription: %v", err)
-		return
-	}
-	lookback := ethStartupRecoveryLookbackBlocks()
-	recoveryStartBlock := ethStartupRecoveryStartBlock(latestBlock, lookback)
-	ctx.Logger.Printf("[SubscribeEth] startup recovery scanning WriteAcknowledgement logs in [%d,%d] (lookback=%d)",
-		recoveryStartBlock, latestBlock, lookback)
-	recoverEthWriteAcknowledgements(ctx, batchBuilder, recoveryFilterer, recoveryStartBlock, latestBlock)
-
-	// Create event channels for each event type
 	sendPacketCh := make(chan *contractICS26Router.ContractICS26RouterSendPacket)
 	writeAckCh := make(chan *contractICS26Router.ContractICS26RouterWriteAcknowledgement)
 	ackPacketCh := make(chan *contractICS26Router.ContractICS26RouterAckPacket)
 	timeoutPacketCh := make(chan *contractICS26Router.ContractICS26RouterTimeoutPacket)
 
-	// Start watching from the block after the recovery snapshot to avoid gaps on restart.
-	watchStartBlock := latestBlock + 1
 	watchOpts := &bind.WatchOpts{Start: &watchStartBlock, Context: context.Background()}
-	// Subscribe to SendPacket events
+
 	sendPacketSub, err := watchFilterer.WatchSendPacket(watchOpts, sendPacketCh, nil, nil)
 	if err != nil {
-		ctx.Logger.Printf("Failed to subscribe to SendPacket events: %v", err)
-		return
+		return fmt.Errorf("failed to subscribe to SendPacket events: %w", err)
 	}
 	defer sendPacketSub.Unsubscribe()
 
-	// Subscribe to WriteAcknowledgement events
 	writeAckSub, err := watchFilterer.WatchWriteAcknowledgement(watchOpts, writeAckCh, nil, nil)
 	if err != nil {
-		ctx.Logger.Printf("Failed to subscribe to WriteAcknowledgement events: %v", err)
-		return
+		return fmt.Errorf("failed to subscribe to WriteAcknowledgement events: %w", err)
 	}
 	defer writeAckSub.Unsubscribe()
 
-	// Subscribe to AckPacket events
 	ackPacketSub, err := watchFilterer.WatchAckPacket(watchOpts, ackPacketCh, nil, nil)
 	if err != nil {
-		ctx.Logger.Printf("Failed to subscribe to AckPacket events: %v", err)
-		return
+		return fmt.Errorf("failed to subscribe to AckPacket events: %w", err)
 	}
 	defer ackPacketSub.Unsubscribe()
 
-	// Subscribe to TimeoutPacket events
 	timeoutPacketSub, err := watchFilterer.WatchTimeoutPacket(watchOpts, timeoutPacketCh, nil, nil)
 	if err != nil {
-		ctx.Logger.Printf("Failed to subscribe to TimeoutPacket events: %v", err)
-		return
+		return fmt.Errorf("failed to subscribe to TimeoutPacket events: %w", err)
 	}
 	defer timeoutPacketSub.Unsubscribe()
 
-	ctx.Logger.Println("Successfully subscribed to ICS26Router events")
+	ctx.Logger.Printf("[SubscribeEth] Successfully subscribed to ICS26Router events from block %d", watchStartBlock)
 
-	// Event loop to handle incoming events
 	for {
 		select {
 		case ev := <-sendPacketCh:
@@ -378,33 +359,77 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 
 		case ev := <-writeAckCh:
 			ctx.Logger.Printf("WriteAcknowledgement event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
+			advanceRecoveryStart(nextWriteAckRecoveryStartBlock, ev.Raw.BlockNumber+1)
 			enqueueEthWriteAcknowledgement(batchBuilder, ev)
 
 		case ev := <-ackPacketCh:
-			// TODO: handle AckPacket event
-			// This event is emitted when a packet acknowledgement is received on Ethereum
 			ctx.Logger.Printf("AckPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 
 		case ev := <-timeoutPacketCh:
-			// TODO: handle TimeoutPacket event
-			// This event is emitted when a packet times out
 			ctx.Logger.Printf("TimeoutPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 
 		case err := <-sendPacketSub.Err():
-			ctx.Logger.Printf("SendPacket subscription error: %v", err)
-			return
+			return fmt.Errorf("SendPacket subscription error: %w", err)
 
 		case err := <-writeAckSub.Err():
-			ctx.Logger.Printf("WriteAcknowledgement subscription error: %v", err)
-			return
+			return fmt.Errorf("WriteAcknowledgement subscription error: %w", err)
 
 		case err := <-ackPacketSub.Err():
-			ctx.Logger.Printf("AckPacket subscription error: %v", err)
-			return
+			return fmt.Errorf("AckPacket subscription error: %w", err)
 
 		case err := <-timeoutPacketSub.Err():
-			ctx.Logger.Printf("TimeoutPacket subscription error: %v", err)
-			return
+			return fmt.Errorf("TimeoutPacket subscription error: %w", err)
 		}
+	}
+}
+
+// SubscribeEth subscribes to Ethereum events from the ICS26Router contract
+func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.BatchBuilder) {
+	if ctx.EthWsURL() == "" {
+		ctx.Logger.Printf("Failed to subscribe to Ethereum events: eth websocket URL is not configured")
+		return
+	}
+
+	recoveryFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), ctx.EthClient())
+	if err != nil {
+		ctx.Logger.Printf("Failed to create ICS26Router recovery filterer instance: %v", err)
+		return
+	}
+
+	lookback := ethStartupRecoveryLookbackBlocks()
+	var nextWriteAckRecoveryStartBlock uint64
+
+	for {
+		latestBlock, err := ctx.EthClient().BlockNumber(context.Background())
+		if err != nil {
+			ctx.Logger.Printf("[SubscribeEth] Failed to get latest Ethereum block before subscription: %v", err)
+			time.Sleep(ethSubscriptionReconnectDelay)
+			continue
+		}
+
+		if nextWriteAckRecoveryStartBlock == 0 {
+			nextWriteAckRecoveryStartBlock = ethStartupRecoveryStartBlock(latestBlock, lookback)
+		}
+
+		if latestBlock >= nextWriteAckRecoveryStartBlock {
+			ctx.Logger.Printf("[SubscribeEth] recovery scanning WriteAcknowledgement logs in [%d,%d]",
+				nextWriteAckRecoveryStartBlock, latestBlock)
+			recoverEthWriteAcknowledgements(ctx, batchBuilder, recoveryFilterer, nextWriteAckRecoveryStartBlock, latestBlock)
+		}
+
+		watchStartBlock := latestBlock + 1
+		nextWriteAckRecoveryStartBlock = watchStartBlock
+
+		watchClient, err := ethclient.DialContext(context.Background(), ctx.EthWsURL())
+		if err != nil {
+			ctx.Logger.Printf("[SubscribeEth] Failed to connect to Ethereum WS at %s: %v", ctx.EthWsURL(), err)
+			time.Sleep(ethSubscriptionReconnectDelay)
+			continue
+		}
+
+		err = s.subscribeEthOnce(ctx, batchBuilder, watchClient, watchStartBlock, &nextWriteAckRecoveryStartBlock)
+		watchClient.Close()
+		ctx.Logger.Printf("[SubscribeEth] Subscription loop ended: %v", err)
+		time.Sleep(ethSubscriptionReconnectDelay)
 	}
 }
