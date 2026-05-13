@@ -225,7 +225,7 @@ cast send "$ICS20_ADDRESS" \
 log "Transfer submitted (waiting for timeout...)"
 
 # ─── Poll for refund (ERC20 balance returning to original) ───
-MAX_POLLS=30
+MAX_POLLS=120
 POLL_INTERVAL=15
 poll=0
 REFUNDED=false

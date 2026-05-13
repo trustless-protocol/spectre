@@ -69,7 +69,7 @@ func cosmosRouterClientID(ctx services.Context) (string, error) {
 	return clientID, nil
 }
 
-func cosmosWasmClientID(ctx services.Context) (string, error) {
+func ethLightClientIDOnCosmos(ctx services.Context) (string, error) {
 	clientID := ctx.EthClientID()
 	if clientID == "" {
 		return "", fmt.Errorf("cosmos wasm client id is not configured")
@@ -82,7 +82,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
-	wasmClientID, err := cosmosWasmClientID(ctx)
+	wasmClientID, err := ethLightClientIDOnCosmos(ctx)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
