@@ -69,7 +69,7 @@ func cosmosRouterClientID(ctx services.Context) (string, error) {
 	return clientID, nil
 }
 
-func cosmosWasmClientID(ctx services.Context) (string, error) {
+func ethLightClientIDOnCosmos(ctx services.Context) (string, error) {
 	clientID := ctx.EthClientID()
 	if clientID == "" {
 		return "", fmt.Errorf("cosmos wasm client id is not configured")
@@ -82,7 +82,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
-	wasmClientID, err := cosmosWasmClientID(ctx)
+	wasmClientID, err := ethLightClientIDOnCosmos(ctx)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
@@ -751,6 +751,11 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 			gasLimit = uint64(2000000) // MsgUpdateClient requires significantly more gas for wasm verification
 		}
 	}
+	if msg, ok := sdkMsg.(*channeltypesv2.MsgTimeout); ok {
+		if msg.Signer == "" {
+			msg.Signer = signerAddr.String()
+		}
+	}
 
 	if err := txBuilder.SetMsgs(sdkMsg); err != nil {
 		return fmt.Errorf("failed to set messages: %w", err)
@@ -885,6 +890,9 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 			return fmt.Errorf("message %d does not implement sdk.Msg interface", i)
 		}
 		if m, ok := sdkMsg.(*clienttypes.MsgUpdateClient); ok && m.Signer == "" {
+			m.Signer = signerAddr.String()
+		}
+		if m, ok := sdkMsg.(*channeltypesv2.MsgTimeout); ok && m.Signer == "" {
 			m.Signer = signerAddr.String()
 		}
 		sdkMsgs = append(sdkMsgs, sdkMsg)

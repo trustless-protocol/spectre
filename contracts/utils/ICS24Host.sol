@@ -179,8 +179,12 @@ library ICS24Host {
     function prefixedPath(bytes[] memory merklePrefix, bytes memory path) internal pure returns (bytes[] memory) {
         require(merklePrefix.length > 0, IICS24HostErrors.InvalidMerklePrefix(merklePrefix));
 
-        merklePrefix[merklePrefix.length - 1] = abi.encodePacked(merklePrefix[merklePrefix.length - 1], path);
-        return merklePrefix;
+        bytes[] memory result = new bytes[](merklePrefix.length);
+        for (uint256 i = 0; i < merklePrefix.length - 1; i++) {
+            result[i] = merklePrefix[i];
+        }
+        result[merklePrefix.length - 1] = abi.encodePacked(merklePrefix[merklePrefix.length - 1], path);
+        return result;
     }
 
     /// @notice Convert a uint64 to big endian bytes representation

@@ -818,3 +818,57 @@ func toBlockNumArg(number *big.Int) string {
 	}
 	return hexutil.EncodeBig(number)
 }
+
+// GetEthNonMembershipProof generates a JSON-encoded MembershipProof for MsgTimeout.ProofUnreceived.
+//
+// It proves that no packet receipt commitment exists at the given IBC path on the ICS26Router contract.
+// The storage value at the computed key must be zero (empty), proving the packet was never received.
+//
+// receiptPath is the raw IBC path bytes: destClientID + [0x02] + sequence.to_be_bytes(8)
+// slot is the ICS26Router ibc_commitment_slot (ICS26_IBC_STORAGE_SLOT constant)
+// blockNumber is the ETH block to prove against (use nil for latest)
+func GetEthNonMembershipProof(client *ethclient.Client, contractAddr ethcommon.Address, receiptPath []byte, slot ethcommon.Hash, blockNumber *big.Int) ([]byte, error) {
+	// storage_key = keccak256(keccak256(receiptPath) ++ slot)
+	pathHash := crypto.Keccak256(receiptPath)
+	storageKey := crypto.Keccak256Hash(pathHash, slot.Bytes())
+
+	var result ethProofResult
+	err := client.Client().CallContext(
+		context.Background(),
+		&result,
+		"eth_getProof",
+		contractAddr,
+		[]string{storageKey.Hex()},
+		toBlockNumArg(blockNumber),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("eth_getProof failed: %w", err)
+	}
+	if len(result.StorageProof) == 0 {
+		return nil, fmt.Errorf("eth_getProof returned no storage proofs")
+	}
+
+	sp := result.StorageProof[0]
+	valueStr := "0x0"
+	if sp.Value != nil {
+		valueStr = sp.Value.String()
+	}
+
+	// Verify the value is empty (proving non-membership)
+	if sp.Value != nil && sp.Value.ToInt().Cmp(big.NewInt(0)) != 0 {
+		return nil, fmt.Errorf("storage slot not empty at key %s: value=%s (expected 0 for non-membership)", storageKey.Hex(), valueStr)
+	}
+
+	proof := MembershipProof{
+		AccountProof: accountProofData{
+			StorageRoot: result.StorageHash.Hex(),
+			Proof:       result.AccountProof,
+		},
+		StorageProof: storageProofData{
+			Key:   storageKey.Hex(),
+			Value: valueStr,
+			Proof: sp.Proof,
+		},
+	}
+	return json.Marshal(proof)
+}
