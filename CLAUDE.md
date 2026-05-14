@@ -34,6 +34,13 @@ just generate-abi                 # Extract ABIs
 
 # Encoding cross-validation
 forge test --match-contract EncodeTest -vvv  # Solidity encoding tests
+
+# Node setup (local development)
+./run_cosmos_node.sh              # Local Cosmos node with test accounts
+./run_cosmos_node_docker.sh       # Docker-based Cosmos node setup
+./run_eth_node.sh                 # Ethereum testnet via Kurtosis + deploy contracts
+./wasm.sh                         # Submit Ethereum light client WASM via governance
+./wasm_docker.sh                  # Docker-based WASM submission
 ```
 
 **Prerequisites**: `bun` (not npm/yarn), `just`, Foundry, Go 1.21+. E2E also needs Docker + Kurtosis.
@@ -49,7 +56,7 @@ go run ./cmd/main.go create-clients \
   --wasm-checksum <hex>
 # Copy ICS07 address from log into config.json cosmos_to_eth.ics07_client
 
-# Start relay loop (Cosmos → ETH)
+# Start relay loop (bi-directional: Cosmos ↔ ETH)
 go run ./cmd/main.go start --config config.json
 
 # Generate genesis state
@@ -59,7 +66,7 @@ go run ./cmd/main.go genesis --trusted-block 0 --trusting-period 0
 go run ./cmd/main.go fixtures membership <key_path> <is_base64> <membership_type>
 ```
 
-Config: JSON file with `cosmos_to_eth` and `eth_to_cosmos` modules (see `relayer/config.example.json`).
+Config: JSON file with `modules` array containing `cosmos_to_eth` and `eth_to_cosmos` entries (see `relayer/config.example.json`).
 Secrets: `.env` file for `ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, prover paths.
 
 ## Documentation Map
@@ -94,11 +101,17 @@ ICS26Router (UUPS) ← main IBC entry point
   ├─ ICS20Transfer (UUPS) ← token bridge
   │   ├─ IBCERC20 (Beacon) ← bridged token wrapper
   │   └─ Escrow (Beacon) ← token custody
-  └─ Groth16ICS07Tendermint (UUPS) ← ZK light client
-      └─ WrapperVerifier → Groth16Verifier
+  └─ Groth16ICS07Tendermint (UUPS) ← ZK light client + 2/3 quorum
+      └─ WrapperVerifier ← rebuilds CanonicalVote, hashes witness, dispatches by bucket
+          └─ Groth16Verifier_N{N} (one per N ∈ {4,8,16,32,64,128})
 ```
 
-ZK flow: Ed25519 sig → Groth16 proof (Go relayer/gnark) → on-chain verification (Groth16Verifier.sol)
+ZK flow: top-N validator Ed25519 sigs (≥2/3 voting power) → padded to nearest
+bucket with deterministic dummy keypairs → BatchCircuit hashes the witness
+into a single SHA-256 public input + ECIP batch verify → per-bucket
+`Groth16Verifier_N{N}.sol` checks the proof. R/S are bound only by the proof
+(not in calldata or witness hash); A is bound to keep the on-chain pubkey
+lookup honest.
 
 ## Go Relayer Structure
 
@@ -106,15 +119,28 @@ ZK flow: Ed25519 sig → Groth16 proof (Go relayer/gnark) → on-chain verificat
 relayer/
 ├── bindings/       # Auto-generated Go bindings for Solidity contracts
 ├── client/         # Tendermint + Ethereum RPC/Beacon API clients
-├── keys/           # Key management
-├── prover/         # gnark Groth16 circuit + prover (Ed25519)
-├── services/       # Context, Worker, batch builder
+├── prover/         # Bucketed Ed25519 batch prover
+│   ├── buckets.go      # Buckets + smallestBucketGEQ
+│   ├── circuit.go      # BatchCircuit (hash-aggregate witness commit)
+│   ├── hash_witness.go # Off-chain witness layout (matches WrapperVerifier)
+│   ├── dummy.go        # Deterministic dummy keypair padding
+│   ├── extractor.go    # Quorum selection from CometBFT commit
+│   ├── prover.go       # Bucket registry + GenerateProof
+│   ├── cmd/            # One-shot setup tool: compile every bucket + emit Groth16Verifier_N{N}.sol
+│   └── bin/            # Per-bucket artifacts: bin/n{N}/{r1cs,pk,vk}.bin
+├── runner/         # Service runner utilities
+├── services/       # Context, Worker, batch builder, relay loop
 ├── subscriber/     # Cosmos WebSocket + Ethereum event listeners
 ├── transaction/    # Ethereum + Cosmos transaction submission
 ├── utils/          # IBC path helpers, byte utils
 ├── test/           # Manual test script (reference relay flow)
 └── cmd/main.go     # CLI: start, create-clients, genesis, fixtures
 ```
+
+Setup-circuits entrypoint: from `relayer/`, run
+`go run ./prover/cmd ./bin ../contracts/verifiers`. After regeneration, the
+per-bucket verifier vk changes — redeploy `Groth16Verifier_N{N}.sol` and
+re-register them via `WrapperVerifier.setBucket(...)`.
 
 ## Go Bindings Package
 

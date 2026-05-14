@@ -16,6 +16,8 @@ interface ILightClientMsgs {
         bytes32 appHash;
         IICS07TendermintMsgs.ConsensusState trustedConsensusState;
         IMembershipMsgs.MembershipType membershipType;
+        bytes[] path;
+        bytes value;
     }
 
     /// @notice Message for querying the non-membership of a key in the Merkle root at a given height.
@@ -26,6 +28,7 @@ interface ILightClientMsgs {
         bytes32 appHash;
         IICS07TendermintMsgs.ConsensusState trustedConsensusState;
         IMembershipMsgs.MembershipType membershipType;
+        bytes[] path;
     }
 
     /// @notice The result of an update operation

@@ -1,8 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
-	"crypto/sha512"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"os"
@@ -14,128 +15,207 @@ import (
 	"filippo.io/edwards25519"
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend/groth16"
+	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
 	"github.com/consensys/gnark/std/math/emulated"
+	"github.com/consensys/gnark/std/math/uints"
 
 	"relayer/prover"
 )
 
+// setup-circuits: for each bucket in prover.Buckets, compile BatchCircuit,
+// run Groth16 setup, write bin/n{N}/{r1cs,pk,vk}.bin, then export the
+// corresponding Solidity verifier to contracts/verifiers/Groth16Verifier_N{N}.sol.
+//
+// Also runs a smoke prove+verify with real Ed25519 signatures so a broken
+// circuit fails fast before the operator tries to use it.
 func main() {
 	outDir := "bin"
+	solOutDir := filepath.Join("..", "contracts", "verifiers")
 	if len(os.Args) > 1 {
 		outDir = os.Args[1]
 	}
-	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		panic(fmt.Errorf("create output dir: %w", err))
+	if len(os.Args) > 2 {
+		solOutDir = os.Args[2]
+	}
+	if err := os.MkdirAll(solOutDir, 0o755); err != nil {
+		panic(fmt.Errorf("create solidity output dir: %w", err))
 	}
 
-	msg := []byte("setup-test")
+	for _, n := range prover.Buckets {
+		fmt.Printf("\n=== bucket n=%d ===\n", n)
+		bucketDir := filepath.Join(outDir, fmt.Sprintf("n%d", n))
+		if err := os.MkdirAll(bucketDir, 0o755); err != nil {
+			panic(fmt.Errorf("create %s: %w", bucketDir, err))
+		}
 
-	pub, priv, err := ed25519.GenerateKey(nil)
+		circuit := prover.NewBatchCircuit(n)
+		fmt.Printf("Compiling BatchCircuit (n=%d)...\n", n)
+		r1csObj, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, circuit)
+		if err != nil {
+			panic(fmt.Errorf("compile n=%d: %w", n, err))
+		}
+		fmt.Printf("R1CS: %d constraints, %d public witness values\n",
+			r1csObj.GetNbConstraints(), r1csObj.GetNbPublicVariables())
+
+		fmt.Println("Running Groth16 setup...")
+		pk, vk, err := groth16.Setup(r1csObj)
+		if err != nil {
+			panic(fmt.Errorf("setup n=%d: %w", n, err))
+		}
+
+		smokeTest(r1csObj, pk, vk, n)
+
+		solPath := filepath.Join(solOutDir, fmt.Sprintf("Groth16Verifier_N%d.sol", n))
+		if err := exportSolidityVerifier(vk, solPath, n); err != nil {
+			panic(fmt.Errorf("export solidity n=%d: %w", n, err))
+		}
+		fmt.Printf("Saved %s\n", solPath)
+
+		mustWriteArtifact(filepath.Join(bucketDir, "r1cs.bin"), r1csObj)
+		mustWriteArtifact(filepath.Join(bucketDir, "pk.bin"), pk)
+		mustWriteArtifact(filepath.Join(bucketDir, "vk.bin"), vk)
+	}
+
+	fmt.Println("\nAll buckets built.")
+}
+
+// smokeTest proves and verifies a fresh batch of n real Ed25519 signatures
+// over random per-slot message bytes (truncated to a typical canonical-vote
+// size). It exercises the full Sig/Pub decompression + msg-bytes hashing
+// path so a broken circuit fails fast before the operator loads the
+// artifacts into the relayer.
+func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, n int) {
+	// Use a per-slot length comparable to a Tendermint canonical vote
+	// (~110-175 bytes). Random bytes are fine for the circuit — semantics
+	// don't matter, only that what's signed matches what's hashed.
+	const smokeMsgLen = 113
+
+	valSigs := make([]prover.ValidatorSignature, n)
+	for i := 0; i < n; i++ {
+		pub, priv, err := ed25519.GenerateKey(nil)
+		if err != nil {
+			panic(err)
+		}
+		msg := make([]byte, smokeMsgLen)
+		if _, err := rand.Read(msg); err != nil {
+			panic(err)
+		}
+		sig := ed25519.Sign(priv, msg)
+		valSigs[i] = prover.ValidatorSignature{
+			Signature:   sig,
+			PublicKey:   pub,
+			SignedBytes: msg,
+			Active:      true,
+		}
+	}
+
+	hash, err := prover.ComputeWitnessHash(valSigs)
 	if err != nil {
-		panic(err)
+		panic(fmt.Errorf("hash witness n=%d: %w", n, err))
 	}
 
-	sig := ed25519.Sign(priv, msg)
-	R := sig[:32]
-	S, err := edwards25519.NewScalar().SetCanonicalBytes(sig[32:])
+	assignment, err := buildSmokeAssignment(valSigs, hash)
 	if err != nil {
-		panic("invalid signature scalar")
+		panic(fmt.Errorf("build assignment n=%d: %w", n, err))
 	}
-
-	hasher := sha512.New()
-	hasher.Write(R)
-	hasher.Write([]byte(pub))
-	hasher.Write(msg)
-	sum := hasher.Sum(nil)
-	H, err := edwards25519.NewScalar().SetUniformBytes(sum)
+	witness, err := frontend.NewWitness(assignment, ecc.BN254.ScalarField())
 	if err != nil {
-		panic("setting scalar failed")
-	}
-
-	if !ed25519.Verify(pub, msg, sig) {
-		panic("failed to verify signature outside circuit")
-	}
-
-	aX, aY, _ := utils.DecompressPoint([]byte(pub))
-	rX, rY, _ := utils.DecompressPoint(R)
-	h := utils.ScalarToBigInt(H)
-	s := utils.ScalarToBigInt(S)
-
-	// Compile circuit
-	fmt.Println("Compiling PreHashCircuit...")
-	var circuit prover.PreHashCircuit[prover.Fp25519, prover.Fr25519]
-	r1csObj, err := frontend.Compile(ecc.BN254.ScalarField(), r1cs.NewBuilder, &circuit)
-	if err != nil {
-		panic(fmt.Errorf("compile: %w", err))
-	}
-	fmt.Printf("R1CS: %d constraints\n", r1csObj.GetNbConstraints())
-
-	// Groth16 Setup
-	fmt.Println("Running Groth16 setup...")
-	pk, vk, err := groth16.Setup(r1csObj)
-	if err != nil {
-		panic(fmt.Errorf("setup: %w", err))
-	}
-
-	// Build assignment and prove
-	var assignment prover.PreHashCircuit[prover.Fp25519, prover.Fr25519]
-	assignment.Sig = eddsa.Signature[prover.Fp25519, prover.Fr25519]{
-		R: sw_emulated.AffinePoint[prover.Fp25519]{
-			X: emulated.ValueOf[prover.Fp25519](rX),
-			Y: emulated.ValueOf[prover.Fp25519](rY),
-		},
-		S: emulated.ValueOf[prover.Fr25519](s),
-	}
-	assignment.Hash = emulated.ValueOf[prover.Fr25519](h)
-	assignment.Pub = eddsa.PublicKey[prover.Fp25519, prover.Fr25519]{
-		A: sw_emulated.AffinePoint[prover.Fp25519]{
-			X: emulated.ValueOf[prover.Fp25519](aX),
-			Y: emulated.ValueOf[prover.Fp25519](aY),
-		},
-	}
-
-	witness, err := frontend.NewWitness(&assignment, ecc.BN254.ScalarField())
-	if err != nil {
-		panic(fmt.Errorf("witness: %w", err))
+		panic(fmt.Errorf("witness n=%d: %w", n, err))
 	}
 	publicWitness, err := witness.Public()
 	if err != nil {
-		panic(fmt.Errorf("public witness: %w", err))
-	}
-
-	fmt.Println("Generating test proof...")
-	proof, err := groth16.Prove(r1csObj, pk, witness)
-	if err != nil {
-		panic(fmt.Errorf("prove: %w", err))
-	}
-
-	fmt.Println("Verifying test proof...")
-	if err := groth16.Verify(proof, vk, publicWitness); err != nil {
-		panic(fmt.Errorf("verify: %w", err))
-	}
-	fmt.Println("Proof verified successfully!")
-
-	// Export Solidity verifier
-	solPath := filepath.Join(outDir, "Groth16Verifier.sol")
-	solFile, err := os.Create(solPath)
-	if err != nil {
 		panic(err)
 	}
-	defer solFile.Close()
-	if err := vk.ExportSolidity(solFile); err != nil {
-		panic(fmt.Errorf("export solidity: %w", err))
+
+	fmt.Printf("Proving smoke test (n=%d)...\n", n)
+	proof, err := groth16.Prove(cs, pk, witness)
+	if err != nil {
+		panic(fmt.Errorf("prove n=%d: %w", n, err))
 	}
-	fmt.Printf("Saved %s\n", solPath)
+	if err := groth16.Verify(proof, vk, publicWitness); err != nil {
+		panic(fmt.Errorf("verify n=%d: %w", n, err))
+	}
+	fmt.Printf("Smoke test passed for n=%d\n", n)
+}
 
-	// Save artifacts
-	mustWriteArtifact(filepath.Join(outDir, "r1cs.bin"), r1csObj)
-	mustWriteArtifact(filepath.Join(outDir, "pk.bin"), pk)
-	mustWriteArtifact(filepath.Join(outDir, "vk.bin"), vk)
+func buildSmokeAssignment(
+	sigs []prover.ValidatorSignature,
+	hash [32]byte,
+) (*prover.BatchCircuit[prover.Fp25519, prover.Fr25519], error) {
+	n := len(sigs)
+	a := &prover.BatchCircuit[prover.Fp25519, prover.Fr25519]{
+		Sig:     make([]eddsa.Signature[prover.Fp25519, prover.Fr25519], n),
+		Pub:     make([]eddsa.PublicKey[prover.Fp25519, prover.Fr25519], n),
+		Msgs:    make([][prover.MaxMsgLen]uints.U8, n),
+		MsgLens: make([]frontend.Variable, n),
+		Active:  make([]frontend.Variable, n),
+	}
+	for i := 0; i < 32; i++ {
+		a.Hash[i] = uints.NewU8(hash[i])
+	}
+	for i := 0; i < n; i++ {
+		v := sigs[i]
+		R := v.Signature[:32]
+		S, err := edwards25519.NewScalar().SetCanonicalBytes(v.Signature[32:])
+		if err != nil {
+			return nil, err
+		}
+		aX, aY, err := utils.DecompressPoint(v.PublicKey)
+		if err != nil {
+			return nil, err
+		}
+		rX, rY, err := utils.DecompressPoint(R)
+		if err != nil {
+			return nil, err
+		}
+		a.Sig[i] = eddsa.Signature[prover.Fp25519, prover.Fr25519]{
+			R: sw_emulated.AffinePoint[prover.Fp25519]{
+				X: emulated.ValueOf[prover.Fp25519](rX),
+				Y: emulated.ValueOf[prover.Fp25519](rY),
+			},
+			S: emulated.ValueOf[prover.Fr25519](utils.ScalarToBigInt(S)),
+		}
+		a.Pub[i] = eddsa.PublicKey[prover.Fp25519, prover.Fr25519]{
+			A: sw_emulated.AffinePoint[prover.Fp25519]{
+				X: emulated.ValueOf[prover.Fp25519](aX),
+				Y: emulated.ValueOf[prover.Fp25519](aY),
+			},
+		}
+		for j := 0; j < prover.MaxMsgLen; j++ {
+			if j < len(v.SignedBytes) {
+				a.Msgs[i][j] = uints.NewU8(v.SignedBytes[j])
+			} else {
+				a.Msgs[i][j] = uints.NewU8(0)
+			}
+		}
+		a.MsgLens[i] = len(v.SignedBytes)
+		if v.Active {
+			a.Active[i] = 1
+		} else {
+			a.Active[i] = 0
+		}
+	}
+	return a, nil
+}
 
-	fmt.Println("Done!")
+// exportSolidityVerifier writes gnark's generated verifier and renames the
+// default `contract Verifier` to `contract Groth16Verifier_N{N}` so every
+// bucket can live in one Solidity import graph.
+func exportSolidityVerifier(vk groth16.VerifyingKey, path string, n int) error {
+	var buf bytes.Buffer
+	if err := vk.ExportSolidity(&buf); err != nil {
+		return err
+	}
+	renamed := bytes.Replace(
+		buf.Bytes(),
+		[]byte("contract Verifier {"),
+		[]byte(fmt.Sprintf("contract Groth16Verifier_N%d {", n)),
+		1,
+	)
+	return os.WriteFile(path, renamed, 0o644)
 }
 
 func mustWriteArtifact(path string, value interface {

@@ -2,16 +2,15 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 	"math/big"
 	"os"
+	"strings"
 	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
-	"github.com/cosmos/gogoproto/proto"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -20,10 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
-
 	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
-	contractICS26Router "relayer/bindings/ICS26Router"
 	tendermintClient "relayer/client"
 	"relayer/keys"
 	"relayer/prover"
@@ -31,7 +27,6 @@ import (
 	"relayer/services"
 	"relayer/subscriber"
 	"relayer/transaction"
-	"relayer/utils"
 )
 
 const (
@@ -50,14 +45,19 @@ const (
 // --- Config types for JSON config file ---
 
 type cosmosToEthConfig struct {
-	TmRpcUrl        string `json:"tm_rpc_url"`
-	ICS26Address    string `json:"ics26_address"`
-	EthRpcUrl       string `json:"eth_rpc_url"`
-	ICS07Client     string `json:"ics07_client"`
-	WrapperVerifier string `json:"wrapper_verifier"`
-	Membership      string `json:"membership"`
-	Misbehaviour    string `json:"misbehaviour"`
-	UpdateClient    string `json:"update_client"`
+	TmRpcUrl           string `json:"tm_rpc_url"`
+	ICS26Address       string `json:"ics26_address"`
+	ICS26ClientID      string `json:"ics26_client_id"`
+	CosmosWasmClientID string `json:"cosmos_wasm_client_id"`
+	EthRpcUrl          string `json:"eth_rpc_url"`
+	EthWsUrl           string `json:"eth_ws_url"`
+	ICS07Client        string `json:"ics07_client"`
+	WrapperVerifier    string `json:"wrapper_verifier"`
+	Membership         string `json:"membership"`
+	Misbehaviour       string `json:"misbehaviour"`
+	UpdateClient       string `json:"update_client"`
+	TrustLevel         string `json:"trust_level"`
+	ProofType          string `json:"proof_type"`
 }
 
 type ethToCosmosConfig struct {
@@ -92,6 +92,46 @@ type appConfig struct {
 	EthToCosmosConfig ethToCosmosConfig
 }
 
+// writeICS07Address rewrites configPath in place, setting
+// modules[name=="cosmos_to_eth"].config.ics07_client = addr. Other fields and
+// JSON formatting are preserved as much as encoding/json indent allows.
+func writeICS07Address(configPath, addr string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	modules, ok := raw["modules"].([]any)
+	if !ok {
+		return fmt.Errorf("config has no modules array")
+	}
+	updated := false
+	for _, m := range modules {
+		mod, ok := m.(map[string]any)
+		if !ok || mod["name"] != "cosmos_to_eth" {
+			continue
+		}
+		cfg, ok := mod["config"].(map[string]any)
+		if !ok {
+			return fmt.Errorf("cosmos_to_eth.config is not an object")
+		}
+		cfg["ics07_client"] = addr
+		updated = true
+		break
+	}
+	if !updated {
+		return fmt.Errorf("module cosmos_to_eth not found in config")
+	}
+	out, err := json.MarshalIndent(raw, "", "    ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(configPath, out, 0o644)
+}
+
 func loadConfig(configPath string) (*appConfig, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -111,6 +151,9 @@ func loadConfig(configPath string) (*appConfig, error) {
 			if err := json.Unmarshal(m.Config, &c2e); err != nil {
 				return nil, fmt.Errorf("failed to parse cosmos_to_eth config: %w", err)
 			}
+			if c2e.ICS26ClientID == "" {
+				c2e.ICS26ClientID = m.SrcChain
+			}
 		case "eth_to_cosmos":
 			if err := json.Unmarshal(m.Config, &e2c); err != nil {
 				return nil, fmt.Errorf("failed to parse eth_to_cosmos config: %w", err)
@@ -125,11 +168,57 @@ func loadConfig(configPath string) (*appConfig, error) {
 	}, nil
 }
 
+func preflightCreateClients(cfg *appConfig) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	ethClient, err := ethclient.DialContext(ctx, cfg.CosmosToEthConfig.EthRpcUrl)
+	if err != nil {
+		return fmt.Errorf("ethereum rpc unavailable at %s: %w", cfg.CosmosToEthConfig.EthRpcUrl, err)
+	}
+	defer ethClient.Close()
+
+	chainID, err := ethClient.ChainID(ctx)
+	if err != nil {
+		return fmt.Errorf("ethereum rpc not responding at %s: %w", cfg.CosmosToEthConfig.EthRpcUrl, err)
+	}
+
+	cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
+	if err != nil {
+		return fmt.Errorf("failed to create cosmos rpc client for %s: %w", cfg.CosmosToEthConfig.TmRpcUrl, err)
+	}
+	status, err := cosmosClient.Status(ctx)
+	if err != nil {
+		return fmt.Errorf("cosmos rpc unavailable at %s: %w", cfg.CosmosToEthConfig.TmRpcUrl, err)
+	}
+
+	if cfg.EthToCosmosConfig.BeaconUrl != "" {
+		if _, err := tendermintClient.GetBeaconGenesis(cfg.EthToCosmosConfig.BeaconUrl); err != nil {
+			return fmt.Errorf("beacon api unavailable at %s: %w", cfg.EthToCosmosConfig.BeaconUrl, err)
+		}
+	}
+
+	log.Printf("[create-clients] preflight OK: cosmos_height=%d eth_chain_id=%s", status.SyncInfo.LatestBlockHeight, chainID.String())
+	return nil
+}
+
 func envOrDefault(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
 	return defaultVal
+}
+
+func roleManagerOrDefault(cfg *appConfig) string {
+	return envOrDefault("ROLE_MANAGER", cfg.CosmosToEthConfig.ICS26Address)
+}
+
+func cosmosRouterClientIDOrDefault(cfg *appConfig) string {
+	return envOrDefault("ICS26_CLIENT_ID", cfg.CosmosToEthConfig.ICS26ClientID)
+}
+
+func cosmosWasmClientIDOrDefault(cfg *appConfig) string {
+	return envOrDefault("COSMOS_WASM_CLIENT_ID", cfg.CosmosToEthConfig.CosmosWasmClientID)
 }
 
 // --- Main ---
@@ -180,39 +269,50 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
+			logger.Sugar().Infof("create-clients: config loaded from %s", configPath)
+			logger.Sugar().Infof(
+				"create-clients: endpoints cosmos_rpc=%s eth_rpc=%s beacon=%s",
+				cfg.CosmosToEthConfig.TmRpcUrl,
+				cfg.CosmosToEthConfig.EthRpcUrl,
+				cfg.EthToCosmosConfig.BeaconUrl,
+			)
+			if err := preflightCreateClients(cfg); err != nil {
+				return err
+			}
+			logger.Sugar().Info("create-clients: preflight passed")
 
 			// Connect to Ethereum
+			logger.Sugar().Infof("create-clients: dialing ethereum rpc %s", cfg.CosmosToEthConfig.EthRpcUrl)
 			ethClient, err := ethclient.Dial(cfg.CosmosToEthConfig.EthRpcUrl)
 			if err != nil {
 				return fmt.Errorf("failed to connect to Ethereum: %w", err)
 			}
+			logger.Sugar().Info("create-clients: ethereum rpc connected")
 
 			// Connect to Cosmos
+			logger.Sugar().Infof("create-clients: creating cosmos rpc client %s", cfg.CosmosToEthConfig.TmRpcUrl)
 			cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
 			if err != nil {
 				return fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 			}
+			logger.Sugar().Info("create-clients: cosmos rpc client created")
 
-			// Load prover
-			r1csPath := envOrDefault("PROVER_R1CS_PATH", "./bin/r1cs.bin")
-			pkPath := envOrDefault("PROVER_PK_PATH", "./bin/pk.bin")
-			vkPath := envOrDefault("PROVER_VK_PATH", "./bin/vk.bin")
+			worker := services.NewWorker(&transaction.Handler{}, nil)
 
-			p, err := prover.NewProver(r1csPath, pkPath, vkPath)
-			if err != nil {
-				return fmt.Errorf("failed to load prover: %w", err)
+			cosmosWasmClientID := cosmosWasmClientIDOrDefault(cfg)
+			if cosmosWasmClientID == "" {
+				return fmt.Errorf("cosmos_wasm_client_id is required in cosmos_to_eth config")
 			}
 
-			worker := services.NewWorker(&transaction.Handler{}, p)
-
-			// Create context
+			// Create context (no WS client needed for create-clients)
 			ctx := services.NewCtxWithBeacon(
-				cosmosClient, ethClient,
+				cosmosClient, ethClient, nil,
 				cfg.EthToCosmosConfig.BeaconUrl,
-				"08-wasm-0",
+				cosmosWasmClientID,
 			)
+			ctx.SetCosmosRouterClientID(cosmosRouterClientIDOrDefault(cfg))
 
-			roleManager := envOrDefault("ROLE_MANAGER", "0x0000000000000000000000000000000000000000")
+			roleManager := roleManagerOrDefault(cfg)
 			ctx.SetAddresses(
 				cfg.CosmosToEthConfig.ICS26Address,
 				cfg.CosmosToEthConfig.WrapperVerifier,
@@ -223,10 +323,12 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			)
 
 			// Start Cosmos WS (needed for queries)
+			logger.Sugar().Info("create-clients: starting cosmos websocket client")
 			if err := cosmosClient.Start(); err != nil {
 				return fmt.Errorf("failed to start Cosmos WS client: %w", err)
 			}
 			defer cosmosClient.Stop()
+			logger.Sugar().Info("create-clients: cosmos websocket client started")
 
 			// --- 1. Create Cosmos light client on Ethereum (deploy ICS07) ---
 			trustLevel, err := cmd.Flags().GetString(flagTrustLevel)
@@ -241,11 +343,18 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			trustingPeriod := 2 * uint32(unbondingPeriod) / 3
 
 			logger.Sugar().Infof("Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s)...", trustingPeriod, trustLevel)
-			if err := worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, trustLevel); err != nil {
+			ics07Addr, err := worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, trustLevel)
+			if err != nil {
 				return fmt.Errorf("failed to create Cosmos client on Ethereum: %w", err)
 			}
-			// ICS07 address is printed by handler: "[CreateCosmosClient] ICS07 deployed at <address>"
-			// Copy that address into config.json cosmos_to_eth.ics07_client
+			if (ics07Addr == common.Address{}) {
+				return fmt.Errorf("ics07 address missing after deploy")
+			}
+			ctx.SetClient(ics07Addr)
+			if err := writeICS07Address(configPath, ics07Addr.Hex()); err != nil {
+				return fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
+			}
+			logger.Sugar().Infof("create-clients: wrote ics07_client=%s into %s", ics07Addr.Hex(), configPath)
 
 			// --- 2. Create Ethereum light client on Cosmos (wasm) ---
 			wasmChecksum, err := cmd.Flags().GetString(flagWasmChecksum)
@@ -255,13 +364,21 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			if wasmChecksum == "" {
 				wasmChecksum = os.Getenv("WASM_CHECKSUM")
 			}
+			logger.Sugar().Infof("create-clients: wasm checksum present=%t", wasmChecksum != "")
 
 			if wasmChecksum != "" && cfg.EthToCosmosConfig.BeaconUrl != "" {
 				logger.Sugar().Infof("Creating Ethereum light client on Cosmos (checksum=%s)...", wasmChecksum)
-				if err := worker.CreateEthClient(ctx, wasmChecksum); err != nil {
+				ethClientID, err := worker.CreateEthClient(ctx, wasmChecksum)
+				if err != nil {
 					return fmt.Errorf("failed to create Ethereum client on Cosmos: %w", err)
 				}
-				logger.Sugar().Info("Ethereum light client created on Cosmos")
+				if ethClientID != cosmosWasmClientID {
+					return fmt.Errorf(
+						"created Ethereum light client ID %s does not match configured cosmos_wasm_client_id %s",
+						ethClientID, cosmosWasmClientID,
+					)
+				}
+				logger.Sugar().Infof("Ethereum light client created on Cosmos: clientID=%s", ethClientID)
 			} else {
 				if wasmChecksum == "" {
 					logger.Sugar().Warn("Skipping ETH client creation: --wasm-checksum not provided")
@@ -272,13 +389,13 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			}
 
 			logger.Sugar().Infof("=== Setup Complete ===")
-			logger.Sugar().Infof("Copy ICS07 address from log above into config.json cosmos_to_eth.ics07_client before running 'start'")
+			logger.Sugar().Infof("ICS07 address has been persisted to %s; ready for 'start'", configPath)
 
 			return nil
 		},
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
-	cmd.Flags().String(flagTrustLevel, "1/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
+	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
 	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
 	return cmd
 }
@@ -306,10 +423,23 @@ func Start(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 
-			// Connect to Ethereum
+			// Connect to Ethereum (HTTP for queries)
 			ethClient, err := ethclient.Dial(cfg.CosmosToEthConfig.EthRpcUrl)
 			if err != nil {
 				return fmt.Errorf("failed to connect to Ethereum: %w", err)
+			}
+
+			// Connect to Ethereum (WS for subscriptions)
+			var ethWsClient *ethclient.Client
+			if cfg.CosmosToEthConfig.EthWsUrl != "" {
+				if !strings.HasPrefix(cfg.CosmosToEthConfig.EthWsUrl, "ws://") &&
+					!strings.HasPrefix(cfg.CosmosToEthConfig.EthWsUrl, "wss://") {
+					return fmt.Errorf("eth_ws_url must use ws:// or wss://, got: %s", cfg.CosmosToEthConfig.EthWsUrl)
+				}
+				ethWsClient, err = ethclient.Dial(cfg.CosmosToEthConfig.EthWsUrl)
+				if err != nil {
+					return fmt.Errorf("failed to connect to Ethereum WS: %w", err)
+				}
 			}
 
 			// Connect to Cosmos
@@ -318,28 +448,29 @@ func Start(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 			}
 
-			// Load prover
-			r1csPath := envOrDefault("PROVER_R1CS_PATH", "./bin/r1cs.bin")
-			pkPath := envOrDefault("PROVER_PK_PATH", "./bin/pk.bin")
-			vkPath := envOrDefault("PROVER_VK_PATH", "./bin/vk.bin")
+			// Load prover (one bucket per supported validator count)
+			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
 
-			p, err := prover.NewProver(r1csPath, pkPath, vkPath)
+			p, err := prover.NewProver(binDir)
 			if err != nil {
 				return fmt.Errorf("failed to load prover: %w", err)
 			}
 
-			// Create worker
-			worker := services.NewWorker(&transaction.Handler{}, p)
+			cosmosWasmClientID := cosmosWasmClientIDOrDefault(cfg)
+			if cosmosWasmClientID == "" {
+				return fmt.Errorf("cosmos_wasm_client_id is required in cosmos_to_eth config")
+			}
 
 			// Create context with beacon API
 			ctx := services.NewCtxWithBeacon(
-				cosmosClient, ethClient,
+				cosmosClient, ethClient, ethWsClient,
 				cfg.EthToCosmosConfig.BeaconUrl,
-				"08-wasm-0",
+				cosmosWasmClientID,
 			)
+			ctx.SetCosmosRouterClientID(cosmosRouterClientIDOrDefault(cfg))
 
 			// Set contract addresses from config
-			roleManager := envOrDefault("ROLE_MANAGER", "0x0000000000000000000000000000000000000000")
+			roleManager := roleManagerOrDefault(cfg)
 			ctx.SetAddresses(
 				cfg.CosmosToEthConfig.ICS26Address,
 				cfg.CosmosToEthConfig.WrapperVerifier,
@@ -363,228 +494,27 @@ func Start(logger *zap.Logger) *cobra.Command {
 
 			logger.Sugar().Info("Relayer started, subscribing to events...")
 
-			// Cosmos → ETH relay (blocking)
-			// ETH → Cosmos is not yet fully implemented (needs WS endpoint + storage proofs)
-			subscribeCosmos(ctx, worker, logger)
+			cosmosConfig := services.DefaultConfig()
+			if cfg.CosmosToEthConfig.TrustLevel != "" {
+				cosmosConfig.TrustLevel = cfg.CosmosToEthConfig.TrustLevel
+			}
+			if cfg.CosmosToEthConfig.ProofType != "" {
+				cosmosConfig.ProofType = cfg.CosmosToEthConfig.ProofType
+			}
+			svc := services.New(
+				subscriber.NewSubscriber(),
+				&transaction.Handler{},
+				p,
+				services.DefaultConfig(),
+				cosmosConfig,
+			)
+			svc.StartLoop(ctx)
 
 			return nil
 		},
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	return cmd
-}
-
-// subscribeCosmos listens for send_packet events on Cosmos and relays them to Ethereum.
-func subscribeCosmos(ctx services.Context, worker *services.Worker, logger *zap.Logger) {
-	sub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", subscriber.COMETBFT_SEND_PACKET_EVENT)
-	if err != nil {
-		logger.Sugar().Fatalf("Failed to subscribe to Cosmos events: %v", err)
-	}
-
-	for e := range sub {
-		sendPacketEvent := e.Events[subscriber.EVENT_SEND_PACKET_FIELD]
-		if sendPacketEvent == nil {
-			continue
-		}
-
-		packetBytes, err := hex.DecodeString(sendPacketEvent[0])
-		if err != nil {
-			logger.Sugar().Errorf("Failed to decode packet hex: %v", err)
-			continue
-		}
-
-		var packet channeltypesv2.Packet
-		if err := proto.Unmarshal(packetBytes, &packet); err != nil {
-			logger.Sugar().Errorf("Failed to unmarshal packet: %v", err)
-			continue
-		}
-
-		log.Printf("[Relay] Received send_packet seq=%d, src=%s, dst=%s, timeout=%d",
-			packet.Sequence, packet.SourceClient, packet.DestinationClient, packet.TimeoutTimestamp)
-
-		if err := relayPacket(ctx, worker, logger, packet); err != nil {
-			logger.Sugar().Errorf("Failed to relay packet seq=%d: %v", packet.Sequence, err)
-		}
-	}
-}
-
-// relayPacket handles a single send_packet event: update client, prove membership, send recvPacket.
-func relayPacket(ctx services.Context, worker *services.Worker, logger *zap.Logger, packet channeltypesv2.Packet) error {
-	// Check if packet has already timed out
-	ethHeader, err := ctx.EthClient().HeaderByNumber(context.Background(), nil)
-	if err != nil {
-		return fmt.Errorf("failed to get eth block header: %w", err)
-	}
-	if packet.TimeoutTimestamp > 0 && ethHeader.Time >= packet.TimeoutTimestamp {
-		log.Printf("[Relay] Packet seq=%d already timed out, skipping", packet.Sequence)
-		return nil
-	}
-
-	// Wait for next block so AppHash includes the packet commitment
-	log.Printf("[Relay] Waiting 2 blocks for packet commitment in AppHash...")
-	time.Sleep(6 * time.Second)
-
-	// Update Cosmos light client on Ethereum
-	latestTimestamp := ctx.LatestCosmosTimestamp()
-	log.Printf("[Relay] Updating cosmos client from height %d...", latestTimestamp.LatestUpdateHeight)
-
-	latestLightBlock, err := worker.UpdateCosmosClient(ctx, "groth16", int64(latestTimestamp.LatestUpdateHeight), "1/3")
-	if err != nil {
-		return fmt.Errorf("failed to update cosmos light client: %w", err)
-	}
-
-	// Re-check timeout after updateClient (ZK proof takes time)
-	ethHeader, err = ctx.EthClient().HeaderByNumber(context.Background(), nil)
-	if err != nil {
-		return fmt.Errorf("failed to get eth block header: %w", err)
-	}
-	if packet.TimeoutTimestamp > 0 && ethHeader.Time >= packet.TimeoutTimestamp {
-		log.Printf("[Relay] Packet seq=%d timed out during updateClient, skipping", packet.Sequence)
-		return nil
-	}
-
-	latestTimestamp.LatestUpdateTime = time.Now()
-	latestTimestamp.LatestUpdateHeight = uint64(latestLightBlock.BlockHeight)
-	log.Printf("[Relay] Light client updated to height %d", latestLightBlock.BlockHeight)
-
-	// Prove membership of the packet commitment
-	ibcPath := utils.IbcCommitmentPath(packet, []byte{1})
-	log.Printf("[Relay] Proving membership at height %d...", latestLightBlock.BlockHeight)
-
-	value, proof, err := tendermintClient.ProvePath(ctx.CosmosClient(), latestLightBlock.BlockHeight, ibcPath)
-	if err != nil {
-		return fmt.Errorf("failed to prove path: %w", err)
-	}
-
-	if len(value) == 0 {
-		return fmt.Errorf("packet commitment value is empty at height %d", latestLightBlock.BlockHeight)
-	}
-
-	// Build membership proof
-	merkleProof := tendermintContract.IMembershipMsgsMerkleProof{
-		Proofs: []tendermintContract.IMembershipMsgsCommitmentProof{},
-	}
-	for _, p := range proof.Proofs {
-		commitmentProof, err := tendermintClient.ParseCommitmentProof(p)
-		if err != nil {
-			return fmt.Errorf("failed to parse commitment proof: %w", err)
-		}
-		merkleProof.Proofs = append(merkleProof.Proofs, *commitmentProof)
-	}
-
-	membershipMsg := tendermintContract.ILightClientMsgsMsgVerifyMembership{
-		Height: tendermintContract.IICS02ClientMsgsHeight{
-			RevisionHeight: uint64(latestLightBlock.BlockHeight),
-			RevisionNumber: 0,
-		},
-		KvPairs: []tendermintContract.IMembershipMsgsKVPair{
-			{
-				Path:  ibcPath,
-				Value: utils.BytesToBytes32(value),
-			},
-		},
-		MerkleProofs: []tendermintContract.IMembershipMsgsMerkleProof{
-			merkleProof,
-		},
-		AppHash: utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
-		TrustedConsensusState: tendermintContract.IICS07TendermintMsgsConsensusState{
-			Timestamp:          big.NewInt(latestLightBlock.SignedHeader.Header.Time.UnixNano()),
-			Root:               utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
-			NextValidatorsHash: utils.BytesToBytes32(latestLightBlock.SignedHeader.Header.NextValidatorsHash),
-		},
-		MembershipType: 0,
-	}
-
-	tendermintAbiJson, err := tendermintContract.ContractGroth16ICS07TendermintMetaData.GetAbi()
-	if err != nil {
-		return fmt.Errorf("failed to get ABI: %w", err)
-	}
-	calldata, err := tendermintAbiJson.Pack("verifyMembership", membershipMsg)
-	if err != nil {
-		return fmt.Errorf("failed to ABI encode verify msg: %w", err)
-	}
-	// Strip 4-byte function selector — ICS26Router does abi.decode, not a function call
-	calldata = calldata[4:]
-
-	// Build MsgRecvPacket
-	payloads := make([]contractICS26Router.IICS26RouterMsgsPayload, 0, len(packet.Payloads))
-	for _, p := range packet.Payloads {
-		payloads = append(payloads, contractICS26Router.IICS26RouterMsgsPayload{
-			SourcePort: p.SourcePort,
-			DestPort:   p.DestinationPort,
-			Version:    p.Version,
-			Encoding:   p.Encoding,
-			Value:      p.Value,
-		})
-	}
-
-	msgRecvPacket := contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
-		Packet: contractICS26Router.IICS26RouterMsgsPacket{
-			Sequence:         packet.Sequence,
-			SourceClient:     packet.SourceClient,
-			DestClient:       packet.DestinationClient,
-			TimeoutTimestamp: packet.TimeoutTimestamp,
-			Payloads:         payloads,
-		},
-		MembershipMsg: calldata,
-	}
-
-	log.Printf("[Relay] Sending recvPacket tx to Ethereum...")
-	if err := worker.TxHandler.SendEthTx(ctx, msgRecvPacket); err != nil {
-		return fmt.Errorf("failed to send recvPacket: %w", err)
-	}
-	log.Printf("[Relay] recvPacket tx succeeded for seq=%d!", packet.Sequence)
-	return nil
-}
-
-// subscribeEth listens for SendPacket events on Ethereum (ICS26Router) and relays them to Cosmos.
-func subscribeEth(ctx services.Context, worker *services.Worker, logger *zap.Logger) {
-	ics26RouterAddr := ctx.RouterContract()
-	if ics26RouterAddr == nil {
-		logger.Sugar().Fatal("ICS26Router address not set in context")
-	}
-
-	filterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ics26RouterAddr, ctx.EthClient())
-	if err != nil {
-		logger.Sugar().Fatalf("Failed to create ICS26Router filterer: %v", err)
-	}
-
-	sendPacketCh := make(chan *contractICS26Router.ContractICS26RouterSendPacket)
-	watchOpts := &bind.WatchOpts{Context: context.Background()}
-
-	sendPacketSub, err := filterer.WatchSendPacket(watchOpts, sendPacketCh, nil, nil)
-	if err != nil {
-		logger.Sugar().Fatalf("Failed to subscribe to ETH SendPacket events: %v", err)
-	}
-	defer sendPacketSub.Unsubscribe()
-
-	logger.Sugar().Info("Subscribed to ETH SendPacket events")
-
-	for {
-		select {
-		case ev := <-sendPacketCh:
-			packet := subscriber.EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
-			log.Printf("[ETH→Cosmos] Received SendPacket seq=%d, src=%s, dst=%s",
-				packet.Sequence, packet.SourceClient, packet.DestinationClient)
-
-			// Update ETH light client on Cosmos
-			if err := worker.UpdateEthClient(ctx); err != nil {
-				logger.Sugar().Errorf("Failed to update ETH light client: %v", err)
-				continue
-			}
-
-			// TODO: Prove ETH storage commitment and build MsgRecvPacket for Cosmos
-			// This requires:
-			// 1. Get ETH storage proof for the packet commitment slot
-			// 2. Build MsgRecvPacket with the proof
-			// 3. Send via worker.TxHandler.SendCosmosTx(ctx, msgRecvPacket)
-			logger.Sugar().Warnf("ETH→Cosmos relay not yet implemented for seq=%d", packet.Sequence)
-
-		case err := <-sendPacketSub.Err():
-			logger.Sugar().Errorf("ETH SendPacket subscription error: %v", err)
-			return
-		}
-	}
 }
 
 // Genesis generates the genesis state for a new client.
@@ -812,6 +742,8 @@ func MembershipCmd(logger *zap.Logger) *cobra.Command {
 					AppHash:               genesis.TrustedConsensusState.Root,
 					TrustedConsensusState: tendermintContract.IICS07TendermintMsgsConsensusState(genesis.TrustedConsensusState),
 					MembershipType:        uint8(membershipType),
+					Path:                  kvPairs[0].Path,
+					Value:                 kvPairs[0].Value,
 				}
 
 				tx, err := ics07Tendermint.VerifyMembership(auth, msg)
@@ -827,6 +759,7 @@ func MembershipCmd(logger *zap.Logger) *cobra.Command {
 					AppHash:               genesis.TrustedConsensusState.Root,
 					TrustedConsensusState: tendermintContract.IICS07TendermintMsgsConsensusState(genesis.TrustedConsensusState),
 					MembershipType:        uint8(membershipType),
+					Path:                  kvPairs[0].Path,
 				}
 
 				tx, err := ics07Tendermint.VerifyNonMembership(auth, msg)

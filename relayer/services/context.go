@@ -26,17 +26,19 @@ type Context struct {
 
 	cosmosClient *rpchttp.HTTP
 	ethClient    *ethclient.Client
+	ethWsClient  *ethclient.Client
 	beaconAPIURL string
 
 	// Ethereum light client configuration
-	ethClientID  string
-	verifier     *common.Address
-	membership   *common.Address
-	misbehaviour *common.Address
-	updateClient *common.Address
-	roleManager  *common.Address
-	ics26Router  *common.Address
-	ics07Client  *common.Address
+	ethClientID          string
+	cosmosRouterClientID string
+	verifier             *common.Address
+	membership           *common.Address
+	misbehaviour         *common.Address
+	updateClient         *common.Address
+	roleManager          *common.Address
+	ics26Router          *common.Address
+	ics07Client          *common.Address
 }
 
 func NewCtx(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client) Context {
@@ -57,11 +59,12 @@ func NewCtx(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client) Context {
 	}
 }
 
-func NewCtxWithBeacon(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client, beaconAPIURL string, ethClientID string) Context {
+func NewCtxWithBeacon(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client, ethWsClient *ethclient.Client, beaconAPIURL string, ethClientID string) Context {
 	return Context{
 		Logger:       log.Default(),
 		cosmosClient: cosmosClient,
 		ethClient:    ethClient,
+		ethWsClient:  ethWsClient,
 		beaconAPIURL: beaconAPIURL,
 		ethClientID:  ethClientID,
 		latestEthTimestamp: &Timestamp{
@@ -79,6 +82,10 @@ func (c *Context) EthClient() *ethclient.Client {
 	return c.ethClient
 }
 
+func (c *Context) EthWsClient() *ethclient.Client {
+	return c.ethWsClient
+}
+
 func (c *Context) CosmosClient() *rpchttp.HTTP {
 	return c.cosmosClient
 }
@@ -89,6 +96,18 @@ func (c *Context) BeaconAPIURL() string {
 
 func (c *Context) EthClientID() string {
 	return c.ethClientID
+}
+
+func (c *Context) SetEthClientID(id string) {
+	c.ethClientID = id
+}
+
+func (c *Context) CosmosRouterClientID() string {
+	return c.cosmosRouterClientID
+}
+
+func (c *Context) SetCosmosRouterClientID(id string) {
+	c.cosmosRouterClientID = id
 }
 
 func (c *Context) SetAddresses(ics26Router, verifier, membership, misbehaviour, updateClient, roleManager string) {
@@ -144,6 +163,9 @@ func (c *Context) StopClient() {
 		panic(fmt.Errorf("failed to terminate cosmos client: %v", err))
 	}
 	c.ethClient.Close()
+	if c.ethWsClient != nil {
+		c.ethWsClient.Close()
+	}
 }
 
 func (c *Context) LatestCosmosTimestamp() *Timestamp {

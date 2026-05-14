@@ -154,6 +154,12 @@ func init() {
 		{Name: "proof", Type: "uint256[8]"},
 		{Name: "commitments", Type: "uint256[2]"},
 		{Name: "commitmentPok", Type: "uint256[2]"},
+		{Name: "bucket", Type: "uint16"},
+		{Name: "signerIndices", Type: "uint32[]"},
+		{Name: "signerPubkeys", Type: "bytes32[]"},
+		{Name: "timestampSeconds", Type: "uint64[]"},
+		{Name: "timestampNanos", Type: "uint32[]"},
+		{Name: "active", Type: "bool[]"},
 	})
 }
 
@@ -172,11 +178,17 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) updateClientContract.II
 	for _, sig := range b.SignedHeader.Commit.Signatures {
 		// CometBFT: 0=UNKNOWN, 1=ABSENT, 2=COMMIT, 3=NIL
 		// Solidity:  0=UNKNOWN, 1=ABSENT, 2=COMMIT, 3=NIL
+		// Absent sigs carry a zero time.Time whose UnixNano is a huge negative
+		// value; clamp to 0 so abi.Pack into uint128 succeeds.
+		var tsNano int64
+		if !sig.Timestamp.IsZero() {
+			tsNano = sig.Timestamp.UnixNano()
+		}
 		commitSigs = append(commitSigs, updateClientContract.IICS07TendermintMsgsCommitSig{
 			Flag: uint8(sig.BlockIDFlag),
 			Data: updateClientContract.IICS07TendermintMsgsCommitSigData{
 				ValidatorAddress: sig.ValidatorAddress,
-				Timestamp:        big.NewInt(sig.Timestamp.UnixNano()),
+				Timestamp:        big.NewInt(tsNano),
 				HasSignature:     sig.Signature != nil,
 				Signature:        sig.Signature,
 			},
@@ -548,7 +560,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 			ProofType: ProofType_EXIST,
 			ExistenceProof: tendermintContract.IMembershipMsgsExistenceProof{
 				Key:   p.Exist.Key,
-				Value: bytesToBytes32(p.Exist.Value),
+				Value: p.Exist.Value,
 				Leaf:  ParseLeafOp(p.Exist.Leaf),
 				Path:  []tendermintContract.IMembershipMsgsInnerOp{},
 			},
@@ -559,7 +571,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 			parsedProof.ExistenceProof.Path = append(parsedProof.ExistenceProof.Path, ParseInnerOp(innerOp))
 		}
 	case *ics23.CommitmentProof_Nonexist:
-		if p.Nonexist.Left == nil || p.Nonexist.Right == nil {
+		if p.Nonexist.Left == nil && p.Nonexist.Right == nil {
 			return nil, fmt.Errorf("non-existence proof must at least left or right existence proofs")
 		}
 		parsedProof = &tendermintContract.IMembershipMsgsCommitmentProof{
@@ -578,7 +590,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 			parsedProof.NonExistenceProof.HasLeft = true
 			parsedProof.NonExistenceProof.Left = tendermintContract.IMembershipMsgsExistenceProof{
 				Key:   p.Nonexist.Left.Key,
-				Value: bytesToBytes32(p.Nonexist.Left.Value),
+				Value: p.Nonexist.Left.Value,
 				Leaf:  ParseLeafOp(p.Nonexist.Left.Leaf),
 				Path:  []tendermintContract.IMembershipMsgsInnerOp{},
 			}
@@ -591,7 +603,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 			parsedProof.NonExistenceProof.HasRight = true
 			parsedProof.NonExistenceProof.Right = tendermintContract.IMembershipMsgsExistenceProof{
 				Key:   p.Nonexist.Right.Key,
-				Value: bytesToBytes32(p.Nonexist.Right.Value),
+				Value: p.Nonexist.Right.Value,
 				Leaf:  ParseLeafOp(p.Nonexist.Right.Leaf),
 				Path:  []tendermintContract.IMembershipMsgsInnerOp{},
 			}
@@ -610,7 +622,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 				ProofType: ProofType_EXIST,
 				ExistenceProof: tendermintContract.IMembershipMsgsExistenceProof{
 					Key:   e.Key,
-					Value: bytesToBytes32(e.Value),
+					Value: e.Value,
 					Leaf:  ParseLeafOp(e.Leaf),
 					Path:  []tendermintContract.IMembershipMsgsInnerOp{},
 				},
@@ -639,7 +651,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 				parsedProof.NonExistenceProof.HasLeft = true
 				parsedProof.NonExistenceProof.Left = tendermintContract.IMembershipMsgsExistenceProof{
 					Key:   n.Left.Key,
-					Value: bytesToBytes32(n.Left.Value),
+					Value: n.Left.Value,
 					Leaf:  ParseLeafOp(n.Left.Leaf),
 					Path:  []tendermintContract.IMembershipMsgsInnerOp{},
 				}
@@ -652,7 +664,7 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 				parsedProof.NonExistenceProof.HasRight = true
 				parsedProof.NonExistenceProof.Right = tendermintContract.IMembershipMsgsExistenceProof{
 					Key:   n.Right.Key,
-					Value: bytesToBytes32(n.Right.Value),
+					Value: n.Right.Value,
 					Leaf:  ParseLeafOp(n.Right.Leaf),
 					Path:  []tendermintContract.IMembershipMsgsInnerOp{},
 				}

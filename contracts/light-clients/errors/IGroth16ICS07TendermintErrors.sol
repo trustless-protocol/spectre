@@ -68,7 +68,7 @@ interface IGroth16ICS07TendermintErrors {
     /// @notice The error that is returned when the key-value pair's value does not match the expected value.
     /// @param expected The expected value.
     /// @param actual The actual value.
-    error MembershipProofValueMismatch(bytes32 expected, bytes32 actual);
+    error MembershipProofValueMismatch(bytes expected, bytes actual);
 
     /// @notice The error that is returned when the key-value pair's path is not contained in the proof.
     /// @param path The path of the key-value pair.
@@ -117,7 +117,7 @@ interface IGroth16ICS07TendermintErrors {
     /// @notice Returned when a key-value pair is not in the cache.
     /// @param path The path of the key-value pair.
     /// @param value The value of the key-value pair.InsufficientTrustingPeriod    
-    error KeyValuePairNotInCache(bytes[] path, bytes32 value);
+    error KeyValuePairNotInCache(bytes[] path, bytes value);
 
     /// @notice Returned when the membership value is empty.
     error EmptyValue();
@@ -154,4 +154,30 @@ interface IGroth16ICS07TendermintErrors {
 
     /// @notice Returned when the Groth16 proof verification fails.
     error ProofVerificationFailed();
+
+    /// @notice Returned when any of the per-slot arrays in MsgUpdateClient has a length
+    ///         different from the declared bucket size.
+    error BatchLengthMismatch();
+
+    /// @notice Returned when a signer index in the update-client message exceeds the
+    ///         proposed validator set size.
+    /// @param index the out-of-range signer index.
+    error SignerIndexOutOfRange(uint32 index);
+
+    /// @notice Returned when the pubkey bundled in the update-client message does not
+    ///         match the validator it claims to represent.
+    /// @param index the validator index with the mismatched pubkey.
+    error PubkeyMismatch(uint32 index);
+
+    /// @notice Returned when the accumulated voting power of the unique signers is
+    ///         not strictly greater than 2/3 of the total voting power.
+    /// @param accumulated summed voting power of unique signers.
+    /// @param total total voting power of the proposed validator set.
+    error InsufficientVotingPower(uint64 accumulated, uint64 total);
+
+    /// @notice Returned when the same active validator index appears more than
+    ///         once in signerIndices — defends against malicious calldata that
+    ///         tries to inflate quorum past what active gating allows.
+    /// @param index the validator index that appears multiple times.
+    error DuplicateSigner(uint32 index);
 }

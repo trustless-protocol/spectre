@@ -25,6 +25,7 @@ contract Membership  is IMembership {
     error VerificationMembershipFailed();
     error VerificationNonMembershipFailed();
     error MissingMerkleProof();
+    error InvalidValueLength();
     error MissingMerkleRoot();
     error MismatchedNumberOfProofs(uint256 expected, uint256 actual);
     error MissingVerifiedValue();
@@ -44,13 +45,12 @@ contract Membership  is IMembership {
      * @param appHash The root hash of the Merkle tree (32 bytes)
      * @param kvPairs Array of key-value pairs to verify
      * @param merkleProofs Array of corresponding Merkle proofs
-     * @return output The membership verification result
      */
     function membership(
         bytes32 appHash,
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs
-    ) public returns (IMembershipMsgs.MembershipOutput memory output) {
+    ) public {
         if (kvPairs.length == 0) {
             revert EmptyRequest();
         }
@@ -59,9 +59,7 @@ contract Membership  is IMembership {
             revert InvalidLength();
         }
         
-        bytes32 commitmentRoot = appHash;
-        IMembershipMsgs.KVPair[] memory verifiedPairs = new IMembershipMsgs.KVPair[](kvPairs.length);
-        
+        bytes32 commitmentRoot = appHash;        
         for (uint256 i = 0; i < kvPairs.length; i++) {
             IMembershipMsgs.KVPair memory kvPair = kvPairs[i];
             IMembershipMsgs.MerkleProof memory merkleProof = merkleProofs[i];
@@ -80,24 +78,16 @@ contract Membership  is IMembership {
                 // Verify membership
                 verifyMembership(proofSpecs, commitmentRoot, kvPair.path, kvPair.value, 0, merkleProof);
             }
-            
-            verifiedPairs[i] = kvPair;
         }
-
-        output = IMembershipMsgs.MembershipOutput({
-            commitmentRoot: commitmentRoot,
-            kvPairs: verifiedPairs
-        });
         
         emit MembershipVerified(commitmentRoot, kvPairs.length);
-        return output;
     }
     
     function verifyMembership(
         IMembershipMsgs.ProofSpec[] memory proofSpecs,
         bytes32 root,
         bytes[] memory path,
-        bytes32 value,
+        bytes memory value,
         uint256 startIndex,
         IMembershipMsgs.MerkleProof memory proof
     ) internal view {
@@ -107,6 +97,12 @@ contract Membership  is IMembership {
 
         if (root == bytes32(0)) {
             revert MissingMerkleRoot();
+        }
+
+        // ibc commitment value are exactly 32 bytes
+        // for future commitment with different length we should remove this
+        if (value.length != 32) {
+            revert InvalidValueLength();
         }
 
         uint256 proofLength = proof.proofs.length;
@@ -124,8 +120,8 @@ contract Membership  is IMembership {
 
         // Process proofs from startIndex onwards
         // Keys are represented from root-to-leaf, so we iterate in reverse
-        bytes32 subroot = value;
-        bytes32 valueUpdate = value;
+        bytes32 subroot = bytesToBytes32(value);
+        bytes32 valueUpdate = subroot;
 
         uint256 pathLength = path.length;
         for (uint256 i = startIndex; i < proofLength; i++) {
@@ -142,7 +138,7 @@ contract Membership  is IMembership {
                 proofSpecs[i],
                 subroot,
                 keyPath,
-                valueUpdate
+                abi.encodePacked(valueUpdate)
                 )
             ) {
                 revert FailedToVerifyMembership();
@@ -208,10 +204,12 @@ contract Membership  is IMembership {
             proofSpecs,
             root,
             path,
-            subroot,
+            abi.encodePacked(subroot),
             1,
             proof
         );
+
+        return true;
     }
 
     function calculateExistenceRoot(IMembershipMsgs.ExistenceProof memory proof) 
@@ -258,8 +256,6 @@ contract Membership  is IMembership {
         bytes memory leafPrefix = proof.leaf.prefix;
         // ensure leaf prefix matches the spec
         if (spec.specType == IMembershipMsgs.SpecType.IAVL) {
-            uint256 offset = 0;
-            
             uint256 remainingLength = ensureIavlPrefix(leafPrefix, 0);
             if (remainingLength != 0) {
                 revert("bad prefix in leaf");
@@ -346,7 +342,7 @@ contract Membership  is IMembership {
         IMembershipMsgs.ExistenceProof memory proof,
         IMembershipMsgs.ProofSpec memory spec
     ) internal pure returns (bytes32) {
-        if (proof.key.length == 0 || proof.value.length == 0) {
+        if (proof.key.length == 0 || proof.value.length == 0 ) {
             revert InvalidExistenceProof();
         }
         IMembershipMsgs.LeafOp memory leafOp = proof.leaf;
@@ -356,8 +352,7 @@ contract Membership  is IMembership {
             leafHash = applyInner(proof.path[i], leafHash);
 
             if (spec.hasInnerSpec) {
-                if (leafHash.length > uint256(spec.innerSpec.childSize) && 
-                    spec.innerSpec.childSize >= 32) {
+                if (uint256(spec.innerSpec.childSize) < 32) {
                     revert("Invalid inner operation (child_size)");
                 }
             }
@@ -373,10 +368,10 @@ contract Membership  is IMembership {
         IMembershipMsgs.ProofSpec memory spec,
         bytes32 subroot,
         bytes memory key,
-        bytes32 value
+        bytes memory value
     ) internal view returns (bool) {
         checkExistenceProof(proof, spec);
-        if (keccak256(abi.encode(proof.key)) != keccak256(abi.encode(key)) || proof.value != value) {
+        if (keccak256(abi.encode(proof.key)) != keccak256(abi.encode(key)) || keccak256(abi.encode(proof.value)) != keccak256(abi.encode(value))) {
             revert ProvidedKeyValueMismatch();
         }
 
@@ -420,12 +415,12 @@ contract Membership  is IMembership {
         if (!proof.hasLeft && !proof.hasRight) {
             revert("neither left nor right proof defined");
         } else if (!proof.hasLeft && proof.hasRight) {
-            ensureLeftMost(innerSpec, proof.left.path);
+            ensureLeftMost(innerSpec, proof.right.path, proof.right.path.length);
         } else if (proof.hasLeft && !proof.hasRight) {
-            ensureRightMost(innerSpec, proof.right.path);
+            ensureRightMost(innerSpec, proof.left.path, proof.left.path.length);
         } else if (proof.hasLeft && proof.hasRight) {
 
-            uint256 leftIndex = proof.left.path.length -1;
+            uint256 leftIndex = proof.left.path.length - 1;
             uint256 rightIndex = proof.right.path.length - 1;
 
             IMembershipMsgs.InnerOp memory topLeft = proof.left.path[leftIndex];
@@ -436,24 +431,21 @@ contract Membership  is IMembership {
             ) {
                 leftIndex--;
                 rightIndex--;
-
-                if (leftIndex < 0 || rightIndex < 0) {
-                    revert("Invalid non-existence proof");
-                }
-
                 topLeft = proof.left.path[leftIndex];
                 topRight = proof.right.path[rightIndex];
             }
 
             uint256 leftPaddingIdx = orderFromPadding(innerSpec, topLeft);
-            uint256 rightPaddingIdx = orderFromPadding(innerSpec, topRight); 
+            uint256 rightPaddingIdx = orderFromPadding(innerSpec, topRight);
 
             if (!(leftPaddingIdx + 1 == rightPaddingIdx)) {
                 revert("Not left neighbor at first divergent step");
             }
 
-            ensureLeftMost(innerSpec, proof.left.path);
-            ensureRightMost(innerSpec, proof.right.path);
+            // left neighbor (max of left subtree) must be rightmost below divergence
+            ensureRightMost(innerSpec, proof.left.path, leftIndex);
+            // right neighbor (min of right subtree) must be leftmost below divergence
+            ensureLeftMost(innerSpec, proof.right.path, rightIndex);
         } else {
             revert("Invalid non-existence proof");
         }
@@ -497,15 +489,14 @@ contract Membership  is IMembership {
     function applyLeaf(
         IMembershipMsgs.LeafOp memory leafOp,
         bytes memory key,
-        bytes32 value
+        bytes memory value
     ) internal pure returns (bytes32) {
         bytes memory hashedData = leafOp.prefix;
 
         bytes memory prekey = prepareLeafData(leafOp.prehashKey, key);
         hashedData = abi.encodePacked(hashedData, prekey);
 
-        bytes memory valueBytes = bytes32ToBytes(value);
-        bytes memory preval = prepareLeafData(leafOp.prehashValue, valueBytes);
+        bytes memory preval = prepareLeafData(leafOp.prehashValue, value);
         hashedData = abi.encodePacked(hashedData, preval);
 
         return hashData(hashedData, leafOp.hashOp);
@@ -544,11 +535,12 @@ contract Membership  is IMembership {
     // true if this is the right-most path in the tree, excluding placeholder (empty child) nodes
     function ensureRightMost(
         IMembershipMsgs.InnerSpec memory innerSpec,
-        IMembershipMsgs.InnerOp[] memory path
+        IMembershipMsgs.InnerOp[] memory path,
+        uint256 length
     ) internal view {
         IMembershipMsgs.Padding memory padding = getPadding(innerSpec, innerSpec.childOrder.length - 1);
 
-        for (uint256 i = 0; i < path.length; i++) {
+        for (uint256 i = 0; i < length; i++) {
             IMembershipMsgs.InnerOp memory innerOp = path[i];
             bool rightHasPadding = hasPadding(innerOp, padding);
             uint256 rightBranches = innerSpec.childOrder.length - 1 - orderFromPadding(innerSpec, innerOp);
@@ -590,11 +582,12 @@ contract Membership  is IMembership {
 
     function ensureLeftMost(
         IMembershipMsgs.InnerSpec memory innerSpec,
-        IMembershipMsgs.InnerOp[] memory path
+        IMembershipMsgs.InnerOp[] memory path,
+        uint256 length
     ) internal view {
         // fails unless this is the left-most path in the tree, excluding placeholder (empty child) nodes
         IMembershipMsgs.Padding memory padding = getPadding(innerSpec, 0);
-        for (uint256 i = 0; i < path.length; i++) {
+        for (uint256 i = 0; i < length; i++) {
             IMembershipMsgs.InnerOp memory innerOp = path[i];
             bool leftHasPadding = hasPadding(innerOp, padding);
             uint256 leftBranches = orderFromPadding(innerSpec, innerOp);
@@ -905,7 +898,7 @@ contract Membership  is IMembership {
             uint256 maxCount = remaining < 10 ? remaining : 10;
             for (uint256 count = 0; count < maxCount; count++) {
                 uint8 b = uint8(data[offset + count]);
-                value |= uint64(b & 0x7F) << (count * 7);
+                value |= uint64(b & 0x7F) << uint64(count * 7);
                 
                 if (b <= 0x7F) {
                     // Check for overflow on the final byte
