@@ -207,3 +207,21 @@ Lưu ý khi chạy local:
 - `timeoutTimestamp` trong setup này phải dùng `unix seconds`
 - nếu dùng account `test1` làm signer cho relayer thì số dư ví Cosmos sẽ bị nhiễu do relayer cũng trả gas từ cùng account đó
 - vì vậy với case `ETH -> Cosmos`, bằng chứng sạch nhất là event `coin_received 500stake` và `fungible_token_packet success=true` trong tx recv trên Cosmos
+
+## 8
+
+pass
+
+Kết quả local:
+
+- set rate limit `1500` cho wrapped `stake` trên escrow
+- packet đầu gửi `1000stake` thành công
+- sau packet đầu, `dailyUsage=1000` và wrapped balance của faucet tăng lên `1500`
+- packet tiếp theo gửi `600stake` không được credit trên ETH
+- sau packet thứ hai, `dailyUsage` vẫn `1000` và wrapped balance vẫn `1500`
+- phía Cosmos nhận `MsgAcknowledgement` error cho `seq=3`
+
+Lưu ý khi chạy local:
+
+- deployment E2E hiện chưa wire sẵn `RATE_LIMITER_ROLE` cho escrow, nên cần bật role này trên `AccessManager` rồi mới `setRateLimit(...)` được
+- nếu relayer và các tx manual cùng dùng account `test1` trên Cosmos thì có thể gặp `account sequence mismatch`; restart relayer là đủ để recovery và gửi lại ack pending

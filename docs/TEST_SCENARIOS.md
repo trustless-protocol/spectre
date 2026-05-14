@@ -507,13 +507,42 @@ Send a token transfer from Ethereum to Cosmos (the reverse of the happy path).
 Send many transfers in quick succession to hit the `RateLimitUpgradeable` cap.
 
 **Steps:**
-1. Check the configured rate limit for the `stake` denom.
-2. Send transfers summing to just below the cap (should succeed).
-3. Send one more transfer that crosses the cap.
+1. Complete the happy path first so the wrapped `stake` token already exists on Ethereum.
+2. Resolve the wrapped token and escrow:
+   ```bash
+   cast call <ICS20_ADDRESS> 'ibcERC20Contract(string)(address)' \
+     'transfer/cosmoshub-1/stake' \
+     --rpc-url http://127.0.0.1:<eth_rpc_port>
+
+   cast call <ICS20_ADDRESS> 'getEscrow(string)(address)' \
+     'cosmoshub-1' \
+     --rpc-url http://127.0.0.1:<eth_rpc_port>
+   ```
+3. Configure a rate limit on that escrowed wrapped token.
+   In the current local E2E deployment, `RATE_LIMITER_ROLE` is not wired by default, so you must first grant the selector role on the escrow via the deployed `AccessManager`, then call:
+   ```bash
+   cast send <ESCROW_ADDRESS> 'setRateLimit(address,uint256)' <IBCERC20_ADDRESS> 1500 \
+     --rpc-url http://127.0.0.1:<eth_rpc_port> --private-key $ETH_PRIVATE_KEY
+   ```
+4. Send transfers summing to just below the cap, for example one packet of `1000stake` (should succeed).
+5. Send one more transfer that crosses the cap, for example `600stake`.
 
 **Expected outcome:**
 - The packet that crosses the cap is accepted on Cosmos but reverted on Ethereum by `ICS20Transfer` with a rate-limit error.
 - The relayer submits a write-acknowledgement with an error back to Cosmos so the sender can reclaim funds.
+
+**Observed result on local test:**
+- `PASS`
+- Rate limit was set to `1500`.
+- First packet sent `1000stake` and succeeded.
+- After the first packet, escrow `dailyUsage=1000` and wrapped balance of the faucet was `1500`.
+- Second packet sent `600stake` and was not credited on Ethereum.
+- After the second packet, escrow `dailyUsage` remained `1000` and wrapped balance remained `1500`.
+- Cosmos acknowledgement tx for the failed packet was `F909DEDDBD75D9310A7E4EF23CFE4C5B356F0251E22960DE53684A1508583831`.
+- That tx included `fungible_token_packet acknowledgement = error:"ABCI code: 16: error handling packet: see events for details"`.
+
+**Notes:**
+- The current relayer/CLI setup often reuses `test1` both for manual Cosmos sends and for relayer-submitted Cosmos txs. That can cause `account sequence mismatch` while relaying the final acknowledgement; restarting the relayer is enough to recover and clear the pending historical `WriteAcknowledgement`.
 
 ---
 
