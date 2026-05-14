@@ -353,31 +353,97 @@ Configure a local Cosmos chain with 200+ validators all with equal voting power 
 ---
 
 ## 6. Light Client Staleness and Misbehaviour
-
 ### 6a. Trusting Period Expiry
 
-1. Stop the relay loop.
-2. Wait until `now > lastUpdateTime + trustingPeriod`.
-3. Attempt to relay a new packet.
+This repo now supports a custom `trusting_period` via `./relayer create-clients --trusting-period`.
+
+**Setup:**
+1. Create a dedicated test client with a short trusting period:
+   ```bash
+   cd relayer
+   cp config.example.json config.expiry-test.json
+   ./relayer create-clients \
+     --config config.expiry-test.json \
+     --wasm-checksum 0xd24688886ed8cec00c667fa69c173fbab9a08c75900ce18afe10517c82e55592 \
+     --trust-level 2/3 \
+     --trusting-period 60
+   ```
+2. Start the relayer with that config:
+   ```bash
+   ./relayer start --config config.expiry-test.json
+   ```
+
+**Steps:**
+1. Stop the relay loop using `config.expiry-test.json`.
+2. Wait longer than the configured trusting period, for example `75-90s` when `--trusting-period 60` was used.
+3. Send a new Cosmos -> ETH packet.
+4. Start the relayer again with `config.expiry-test.json`.
 
 **Expected outcome:**
 - `Groth16ICS07Tendermint` rejects the header: client is expired.
-- Relayer logs a "client expired" error and does not submit the packet.
+- Relayer logs an `updateClient` failure and does not submit the packet.
+- A representative revert reason is:
+  ```text
+  invalid block: untrusted state is outside of trusting period
+  ```
+
+**Observed result on local test:**
+- `PASS`
+- Final relayer logs included:
+  ```text
+  [UpdateCosmosClient] SendEthTx failed: tx ... reverted
+  [StartLoop] Failed to update cosmos light client: tx ... reverted
+  ```
 
 ### 6b. Misbehaviour — Equivocation
 
-Submit two conflicting headers at the same height (same `trustedHeight` but different `appHash`) as a misbehaviour report.
+The repo now includes a helper at `relayer/cmd/misbehaviour_attack` to build and submit `submitMisbehaviour`.
+
+Important note: on the current honest Gaia setup, we do not have a source of two valid conflicting headers at the same height. The exercised path below uses two valid headers from different heights with different `appHash`, which is enough to trigger the current on-chain misbehaviour implementation and freeze the client.
 
 ```bash
-# Pseudo-call via cast
-cast send <ICS07_ADDRESS> 'submitMisbehaviour(bytes)' <misbehaviour_abi_encoded> \
-  --rpc-url http://127.0.0.1:<eth_rpc_port> --private-key $ETH_PRIVATE_KEY
+cd relayer
+
+# 1. Create a dedicated client for the misbehaviour test.
+cp config.example.json config.misbehaviour-test.json
+./relayer create-clients \
+  --config config.misbehaviour-test.json \
+  --wasm-checksum 0xd24688886ed8cec00c667fa69c173fbab9a08c75900ce18afe10517c82e55592 \
+  --trust-level 2/3 \
+  --trusting-period 600
+
+# 2. Start the relayer and send at least 2 Cosmos -> ETH packets
+# so the client accumulates 2 updateClient txs on Ethereum.
+./relayer start --config config.misbehaviour-test.json
+
+# 3. Run the helper in dry-run mode first.
+GOCACHE=/tmp/go-build go run ./cmd/misbehaviour_attack \
+  --config config.misbehaviour-test.json \
+  --tx1 <newer_updateClient_tx_hash> \
+  --tx2 <older_updateClient_tx_hash>
+
+# 4. If simulation succeeds, submit the misbehaviour tx.
+GOCACHE=/tmp/go-build go run ./cmd/misbehaviour_attack \
+  --config config.misbehaviour-test.json \
+  --tx1 <newer_updateClient_tx_hash> \
+  --tx2 <older_updateClient_tx_hash> \
+  --submit
 ```
 
 **Expected outcome:**
 - Client transitions to a frozen state.
-- Subsequent `updateClient` and `verifyMembership` calls revert with "client frozen".
+- Subsequent `updateClient` and `verifyMembership` calls revert with `FrozenClientState`.
 - Governance / admin must unfreeze or create a new client to resume relaying.
+
+**Observed result on local test:**
+- `PASS`
+- Pre-submit simulation returned `simulate_ok=true`.
+- After submit, rerunning the helper returned:
+  ```text
+  simulate_error=execution reverted
+  simulate_decoded_error=FrozenClientState
+  client_frozen_before=true
+  ```
 
 ---
 

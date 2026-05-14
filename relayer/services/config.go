@@ -27,6 +27,7 @@ type Config struct {
 	IntervalParams IntervalConfig
 	IntervalType   IntervalType
 	BatchConfig    BatchConfig
+	TrustingPeriod uint32
 	TrustLevel     string
 	ProofType      string
 }
