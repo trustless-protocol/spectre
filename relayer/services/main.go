@@ -425,7 +425,11 @@ func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) {
 	log.Printf("[EthTimeout] seq=%d: relay completed", packet.Packet.Sequence)
 }
 
+const pendingTrackerMaxAge = 1 * time.Hour
+
 func (s *Services) scanForCosmosTimeouts(ctx Context) {
+	s.BatchBuilder.PendingTracker.PurgeStale(pendingTrackerMaxAge)
+
 	pending := s.BatchBuilder.PendingTracker.GetAll()
 	if len(pending) == 0 {
 		return

@@ -62,3 +62,14 @@ func (t *PendingPacketTracker) Len() int {
 	defer t.mtx.Unlock()
 	return len(t.packets)
 }
+
+func (t *PendingPacketTracker) PurgeStale(maxAge time.Duration) {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	now := time.Now()
+	for key, info := range t.packets {
+		if now.Sub(info.ObservedAt) > maxAge {
+			delete(t.packets, key)
+		}
+	}
+}
