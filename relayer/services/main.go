@@ -428,6 +428,12 @@ func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) {
 const pendingTrackerMaxAge = 1 * time.Hour
 
 func (s *Services) scanForCosmosTimeouts(ctx Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[CosmosTimeoutScan] Panic recovered: %v", r)
+		}
+	}()
+
 	s.BatchBuilder.PendingTracker.PurgeStale(pendingTrackerMaxAge)
 
 	pending := s.BatchBuilder.PendingTracker.GetAll()
@@ -473,46 +479,57 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 		}
 	}
 
+	var timeoutMsgs []any
+	var processed []pendingPacketInfo
 	for _, info := range expired {
-		s.timeoutCosmosSendWithState(ctx, info.Packet, ethClientState, updateResult)
+		msgTimeout, err := s.buildCosmosTimeoutMsg(ctx, info.Packet, ethClientState)
+		if err != nil {
+			log.Printf("[CosmosTimeout] seq=%d: %v", info.Packet.Sequence, err)
+			continue
+		}
+		timeoutMsgs = append(timeoutMsgs, msgTimeout)
+		processed = append(processed, info)
 	}
-}
 
-func (s *Services) timeoutCosmosSendWithState(ctx Context, packet channeltypesv2.Packet, ethClientState *client.EthereumClientState, updateResult *EthClientUpdateResult) {
-	log.Printf("[CosmosTimeout] seq=%d: packet expired, preparing timeout proof", packet.Sequence)
-
-	receiptPath := ethPath(packet.DestinationClient, packet.Sequence, 2)
-	proofBytes, err := client.GetEthNonMembershipProof(
-		ctx.EthClient(), *ctx.RouterContract(), receiptPath, ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber))
-	if err != nil {
-		log.Printf("[CosmosTimeout] seq=%d: failed to get ETH non-membership proof: %v", packet.Sequence, err)
+	if len(timeoutMsgs) == 0 {
 		return
 	}
-
-	msgTimeout := channeltypesv2.NewMsgTimeout(
-		packet,
-		proofBytes,
-		clienttypes.Height{RevisionNumber: 0, RevisionHeight: ethClientState.LatestSlot},
-		"",
-	)
 
 	var batchMsgs []any
 	if len(updateResult.Msgs) > 0 {
 		batchMsgs = append(batchMsgs, updateResult.Msgs...)
 	}
-	batchMsgs = append(batchMsgs, msgTimeout)
+	batchMsgs = append(batchMsgs, timeoutMsgs...)
 
 	if len(updateResult.Msgs) > 0 {
 		s.worker.waitForCosmosCatchUp(ctx, updateResult.EthClientState, updateResult.SigSlot)
 	}
 
 	if err := s.worker.TxHandler.SendCosmosTxBatch(ctx, batchMsgs); err != nil {
-		log.Printf("[CosmosTimeout] seq=%d: SendCosmosTxBatch failed: %v", packet.Sequence, err)
+		log.Printf("[CosmosTimeoutScan] SendCosmosTxBatch failed: %v", err)
 		return
 	}
 
-	s.BatchBuilder.PendingTracker.Remove(packet.SourceClient, packet.Sequence)
-	log.Printf("[CosmosTimeout] seq=%d: timeout relay completed (bundled with %d update msgs)", packet.Sequence, len(updateResult.Msgs))
+	for _, info := range processed {
+		s.BatchBuilder.PendingTracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
+		log.Printf("[CosmosTimeout] seq=%d: timeout relay completed (bundled with %d update msgs)", info.Packet.Sequence, len(updateResult.Msgs))
+	}
+}
+
+func (s *Services) buildCosmosTimeoutMsg(ctx Context, packet channeltypesv2.Packet, ethClientState *client.EthereumClientState) (*channeltypesv2.MsgTimeout, error) {
+	receiptPath := ethPath(packet.DestinationClient, packet.Sequence, 2)
+	proofBytes, err := client.GetEthNonMembershipProof(
+		ctx.EthClient(), *ctx.RouterContract(), receiptPath, ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ETH non-membership proof: %w", err)
+	}
+
+	return channeltypesv2.NewMsgTimeout(
+		packet,
+		proofBytes,
+		clienttypes.Height{RevisionNumber: 0, RevisionHeight: ethClientState.LatestSlot},
+		"",
+	), nil
 }
 
 func (s *Services) cosmosMembership(ctx Context, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {
