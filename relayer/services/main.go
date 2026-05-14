@@ -236,6 +236,11 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 			}
 			log.Printf("[AckPacket] seq=%d: relay completed", packet.Packet.Sequence)
 		case CosmosTimeout:
+			if packet.Packet.SourceClient == ctx.CosmosRouterClientID() {
+				log.Printf("[Timeout] seq=%d: Cosmos-originated packet timeout already handled locally, skipping ETH relay", packet.Packet.Sequence)
+				continue
+			}
+
 			calldata, err := s.cosmosNonMembership(ctx, *packet.Packet, packet.Packet.DestinationClient, []byte{2}, latestLightBlock)
 			if err != nil {
 				log.Printf("[Timeout] seq=%d: %v", packet.Packet.Sequence, err)
