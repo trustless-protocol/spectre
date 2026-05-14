@@ -29,18 +29,33 @@ func DefaultRelayerGRPCAddress() string {
 }
 
 // binaryPath returns the path to the relayer binary.
+//
+// Resolution order:
+//  1. $RELAYER_BINARY (absolute path, used by the justfile test-e2e target)
+//  2. `relayer` on $PATH (works after `just install-go-relayer`)
+//
+// Panics with a clear hint if neither is available — tests cannot proceed without the binary.
 func binaryPath() string {
-	return "/Users/ducnt/Decentrio/fast-ibc/relayer/relayer"
+	if p := os.Getenv("RELAYER_BINARY"); p != "" {
+		return p
+	}
+	if p, err := exec.LookPath("relayer"); err == nil {
+		return p
+	}
+	panic("relayer binary not found: set $RELAYER_BINARY or run `just install-go-relayer`")
 }
 
-// proverEnv returns env vars pointing to the relayer's prover bin files using absolute paths.
+// proverEnv exposes the per-bucket prover artifact directory to the spawned relayer process.
+//
+// The relayer loads artifacts via prover.NewProver(binDir) and expects a directory layout of
+// $PROVER_BIN_DIR/n{N}/{r1cs.bin,pk.bin,vk.bin} for each compiled bucket. Run
+// `just build-prover-artifacts` (or `go run ./relayer/prover/cmd`) to populate it.
 func proverEnv() []string {
-	base := "/Users/ducnt/Decentrio/fast-ibc/relayer/bin"
-	return []string{
-		"PROVER_R1CS_PATH=" + base + "/r1cs.bin",
-		"PROVER_PK_PATH=" + base + "/pk.bin",
-		"PROVER_VK_PATH=" + base + "/vk.bin",
+	dir := os.Getenv("PROVER_BIN_DIR")
+	if dir == "" {
+		panic("PROVER_BIN_DIR not set: must point to relayer/bin with n{N}/ subdirs (run `just build-prover-artifacts`)")
 	}
+	return []string{"PROVER_BIN_DIR=" + dir}
 }
 
 // StartRelayer starts the relayer with the given config file.

@@ -33,16 +33,21 @@ type ModuleConfig struct {
 }
 
 // CosmosToEthModuleConfig represents the configuration for cosmos_to_eth module.
-// Fields match the relayer's cosmosToEthConfig JSON schema.
+// Fields match the relayer's cosmosToEthConfig JSON schema in relayer/cmd/main.go.
 type CosmosToEthModuleConfig struct {
-	TmRpcUrl        string `json:"tm_rpc_url"`
-	Ics26Address    string `json:"ics26_address"`
-	EthRpcUrl       string `json:"eth_rpc_url"`
-	ICS07Client     string `json:"ics07_client,omitempty"`
-	WrapperVerifier string `json:"wrapper_verifier"`
-	Membership      string `json:"membership"`
-	Misbehaviour    string `json:"misbehaviour"`
-	UpdateClient    string `json:"update_client"`
+	TmRpcUrl           string `json:"tm_rpc_url"`
+	Ics26Address       string `json:"ics26_address"`
+	ICS26ClientID      string `json:"ics26_client_id,omitempty"`
+	CosmosWasmClientID string `json:"cosmos_wasm_client_id"`
+	EthRpcUrl          string `json:"eth_rpc_url"`
+	EthWsUrl           string `json:"eth_ws_url,omitempty"`
+	ICS07Client        string `json:"ics07_client,omitempty"`
+	WrapperVerifier    string `json:"wrapper_verifier"`
+	Membership         string `json:"membership"`
+	Misbehaviour       string `json:"misbehaviour"`
+	UpdateClient       string `json:"update_client"`
+	TrustLevel         string `json:"trust_level,omitempty"`
+	ProofType          string `json:"proof_type,omitempty"`
 }
 
 // CosmosToCosmosModuleConfig represents the configuration for cosmos_to_cosmos module
