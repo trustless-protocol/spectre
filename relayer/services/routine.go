@@ -411,40 +411,57 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 
 	return w.TxHandler.CreateEthClient(ctx, &wasmClientState, &wasmConsensusState)
 }
+type EthClientUpdateResult struct {
+	Msgs           []any
+	EthClientState *relayerclient.EthereumClientState
+	SigSlot        uint64
+}
+
 func (w *Worker) UpdateEthClient(ctx Context) error {
+	result, err := w.BuildEthClientUpdateMsgs(ctx)
+	if err != nil {
+		return err
+	}
+	if len(result.Msgs) == 0 {
+		return nil
+	}
+	w.waitForCosmosCatchUp(ctx, result.EthClientState, result.SigSlot)
+	return w.TxHandler.SendCosmosTxBatch(ctx, result.Msgs)
+}
+
+func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, error) {
 	beaconAPIURL := ctx.BeaconAPIURL()
 	if beaconAPIURL == "" {
-		return fmt.Errorf("beacon API URL is not configured")
+		return nil, fmt.Errorf("beacon API URL is not configured")
 	}
 
 	ethClientID := ctx.EthClientID()
 	if ethClientID == "" {
-		return fmt.Errorf("ethereum client ID is not configured")
+		return nil, fmt.Errorf("ethereum client ID is not configured")
 	}
 
 	ethClientState, err := relayerclient.GetEthereumClientState(ctx.CosmosClient(), ethClientID)
 	if err != nil {
-		return fmt.Errorf("failed to get ethereum client state: %w", err)
+		return nil, fmt.Errorf("failed to get ethereum client state: %w", err)
 	}
 	trustedSlot := ethClientState.LatestSlot
 
 	finalityUpdate, err := relayerclient.GetFinalityUpdate(beaconAPIURL)
 	if err != nil {
-		return fmt.Errorf("failed to get finality update: %w", err)
+		return nil, fmt.Errorf("failed to get finality update: %w", err)
 	}
 
-	// Check sync committee participation before wasting gas
 	participation := relayerclient.CountSyncCommitteeParticipants(finalityUpdate.SyncAggregate.SyncCommitteeBits)
 	syncCommitteeSize := ethClientState.SyncCommitteeSize
 	log.Printf("[UpdateEthClient] sync committee participation: %d/%d (%.1f%%)",
 		participation, syncCommitteeSize, float64(participation)*100/float64(syncCommitteeSize))
 	if participation*3 < syncCommitteeSize*2 {
-		return fmt.Errorf("insufficient sync committee participation: %d/%d (need 2/3 = %d)", participation, syncCommitteeSize, syncCommitteeSize*2/3)
+		return nil, fmt.Errorf("insufficient sync committee participation: %d/%d (need 2/3 = %d)", participation, syncCommitteeSize, syncCommitteeSize*2/3)
 	}
 
 	finalizedSlot, err := parseSlot(finalityUpdate.FinalizedHeader.Beacon.Slot)
 	if err != nil {
-		return fmt.Errorf("failed to parse finalized slot: %w", err)
+		return nil, fmt.Errorf("failed to parse finalized slot: %w", err)
 	}
 
 	log.Printf("[UpdateEthClient] trustedSlot=%d finalizedSlot=%d latestExecBlock=%d",
@@ -452,7 +469,7 @@ func (w *Worker) UpdateEthClient(ctx Context) error {
 
 	if finalizedSlot <= trustedSlot {
 		log.Printf("[UpdateEthClient] already up to date, skipping")
-		return nil
+		return &EthClientUpdateResult{Msgs: nil, EthClientState: ethClientState}, nil
 	}
 
 	trustedPeriod := ethClientState.ComputeSyncCommitteePeriodAtSlot(trustedSlot)
@@ -460,18 +477,41 @@ func (w *Worker) UpdateEthClient(ctx Context) error {
 
 	log.Printf("[UpdateEthClient] trustedPeriod=%d targetPeriod=%d", trustedPeriod, targetPeriod)
 
-	return w.updateEthClientWithPeriodCrossing(ctx, beaconAPIURL, ethClientID, ethClientState, trustedSlot, trustedPeriod, targetPeriod, finalityUpdate, finalizedSlot)
+	msgs, err := w.buildEthClientUpdateMsgsWithPeriodCrossing(ctx, beaconAPIURL, ethClientID, ethClientState, trustedSlot, trustedPeriod, targetPeriod, finalityUpdate, finalizedSlot)
+	if err != nil {
+		return nil, err
+	}
+
+	sigSlot, _ := parseSlot(finalityUpdate.SignatureSlot)
+	return &EthClientUpdateResult{Msgs: msgs, EthClientState: ethClientState, SigSlot: sigSlot}, nil
 }
 
-func (w *Worker) updateEthClientWithPeriodCrossing(ctx Context, beaconAPIURL, ethClientID string, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) error {
+func (w *Worker) waitForCosmosCatchUp(ctx Context, ethClientState *relayerclient.EthereumClientState, sigSlot uint64) {
+	for range 60 {
+		status, err := ctx.CosmosClient().Status(context.Background())
+		if err != nil {
+			break
+		}
+		cosmosTime := uint64(status.SyncInfo.LatestBlockTime.Unix())
+		currentSlot := ethClientState.ComputeSlotAtTimestamp(cosmosTime)
+		if currentSlot > sigSlot {
+			log.Printf("[updateEthClient] timing OK: currentSlot=%d > signatureSlot=%d", currentSlot, sigSlot)
+			break
+		}
+		log.Printf("[updateEthClient] waiting for target chain to catch up to slot %d (current=%d)", sigSlot, currentSlot)
+		time.Sleep(5 * time.Second)
+	}
+}
+
+func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconAPIURL, ethClientID string, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) ([]any, error) {
 	count := targetPeriod - trustedPeriod + 1
 	lightClientUpdates, err := relayerclient.GetLightClientUpdates(beaconAPIURL, trustedPeriod, count)
 	if err != nil {
-		return fmt.Errorf("failed to get light client updates: %w", err)
+		return nil, fmt.Errorf("failed to get light client updates: %w", err)
 	}
 
 	if len(lightClientUpdates) == 0 {
-		return fmt.Errorf("no light client updates available for period range %d to %d", trustedPeriod, targetPeriod)
+		return nil, fmt.Errorf("no light client updates available for period range %d to %d", trustedPeriod, targetPeriod)
 	}
 
 	var msgs []any
@@ -481,7 +521,7 @@ func (w *Worker) updateEthClientWithPeriodCrossing(ctx Context, beaconAPIURL, et
 	for _, update := range lightClientUpdates {
 		updateFinalizedSlot, err := parseSlot(update.FinalizedHeader.Beacon.Slot)
 		if err != nil {
-			return fmt.Errorf("failed to parse update finalized slot: %w", err)
+			return nil, fmt.Errorf("failed to parse update finalized slot: %w", err)
 		}
 
 		if updateFinalizedSlot <= latestTrustedSlot {
@@ -495,12 +535,12 @@ func (w *Worker) updateEthClientWithPeriodCrossing(ctx Context, beaconAPIURL, et
 
 		blockRoot, err := relayerclient.GetBeaconBlockRoot(beaconAPIURL, fmt.Sprintf("%d", updateFinalizedSlot))
 		if err != nil {
-			return fmt.Errorf("failed to get beacon block root: %w", err)
+			return nil, fmt.Errorf("failed to get beacon block root: %w", err)
 		}
 
 		bootstrap, err := relayerclient.GetLightClientBootstrap(beaconAPIURL, blockRoot)
 		if err != nil {
-			return fmt.Errorf("failed to get light client bootstrap: %w", err)
+			return nil, fmt.Errorf("failed to get light client bootstrap: %w", err)
 		}
 
 		syncCommittee := bootstrap.Data.CurrentSyncCommittee
@@ -515,7 +555,7 @@ func (w *Worker) updateEthClientWithPeriodCrossing(ctx Context, beaconAPIURL, et
 
 		msg, err := buildMsgUpdateClient("", ethClientID, header)
 		if err != nil {
-			return fmt.Errorf("failed to build update client message: %w", err)
+			return nil, fmt.Errorf("failed to build update client message: %w", err)
 		}
 
 		msgs = append(msgs, msg)
@@ -532,12 +572,12 @@ func (w *Worker) updateEthClientWithPeriodCrossing(ctx Context, beaconAPIURL, et
 		// Get sync committee from attested slot's bootstrap (matches eureka relayer behavior)
 		blockRoot, err := relayerclient.GetBeaconBlockRoot(beaconAPIURL, attestedSlot)
 		if err != nil {
-			return fmt.Errorf("failed to get beacon block root: %w", err)
+			return nil, fmt.Errorf("failed to get beacon block root: %w", err)
 		}
 
 		bootstrap, err := relayerclient.GetLightClientBootstrap(beaconAPIURL, blockRoot)
 		if err != nil {
-			return fmt.Errorf("failed to get light client bootstrap: %w", err)
+			return nil, fmt.Errorf("failed to get light client bootstrap: %w", err)
 		}
 
 		syncCommittee := bootstrap.Data.CurrentSyncCommittee
@@ -562,36 +602,13 @@ func (w *Worker) updateEthClientWithPeriodCrossing(ctx Context, beaconAPIURL, et
 
 		msg, err := buildMsgUpdateClient("", ethClientID, header)
 		if err != nil {
-			return fmt.Errorf("failed to build update client message: %w", err)
+			return nil, fmt.Errorf("failed to build update client message: %w", err)
 		}
 
 		msgs = append(msgs, msg)
 	}
 
-	if len(msgs) == 0 {
-		return nil
-	}
-
-	// Wait for Cosmos chain to catch up to the signature slot before broadcasting.
-	// The wasm contract computes current_slot from block.time and rejects if
-	// current_slot < signature_slot.
-	sigSlot, _ := parseSlot(finalityUpdate.SignatureSlot)
-	for range 60 {
-		status, err := ctx.CosmosClient().Status(context.Background())
-		if err != nil {
-			break
-		}
-		cosmosTime := uint64(status.SyncInfo.LatestBlockTime.Unix())
-		currentSlot := ethClientState.ComputeSlotAtTimestamp(cosmosTime)
-		if currentSlot > sigSlot {
-			log.Printf("[updateEthClient] timing OK: currentSlot=%d > signatureSlot=%d", currentSlot, sigSlot)
-			break
-		}
-		log.Printf("[updateEthClient] waiting for target chain to catch up to slot %d (current=%d)", sigSlot, currentSlot)
-		time.Sleep(5 * time.Second)
-	}
-
-	return w.TxHandler.SendCosmosTxBatch(ctx, msgs)
+	return msgs, nil
 }
 
 // parseSlot parses a slot string to uint64

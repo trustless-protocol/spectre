@@ -463,23 +463,27 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 
 	log.Printf("[CosmosTimeoutScan] Found %d expired packets, processing timeouts", len(expired))
 
-	if err := s.worker.UpdateEthClient(ctx); err != nil {
-		log.Printf("[CosmosTimeoutScan] Failed to update ETH client: %v", err)
+	updateResult, err := s.worker.BuildEthClientUpdateMsgs(ctx)
+	if err != nil {
+		log.Printf("[CosmosTimeoutScan] Failed to build ETH client update messages: %v", err)
 		return
 	}
 
-	ethClientState, err := client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
-	if err != nil {
-		log.Printf("[CosmosTimeoutScan] Failed to get ETH client state: %v", err)
-		return
+	ethClientState := updateResult.EthClientState
+	if ethClientState == nil {
+		ethClientState, err = client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
+		if err != nil {
+			log.Printf("[CosmosTimeoutScan] Failed to get ETH client state: %v", err)
+			return
+		}
 	}
 
 	for _, info := range expired {
-		s.timeoutCosmosSendWithState(ctx, info.Packet, ethClientState)
+		s.timeoutCosmosSendWithState(ctx, info.Packet, ethClientState, updateResult)
 	}
 }
 
-func (s *Services) timeoutCosmosSendWithState(ctx Context, packet channeltypesv2.Packet, ethClientState *client.EthereumClientState) {
+func (s *Services) timeoutCosmosSendWithState(ctx Context, packet channeltypesv2.Packet, ethClientState *client.EthereumClientState, updateResult *EthClientUpdateResult) {
 	log.Printf("[CosmosTimeout] seq=%d: packet expired, preparing timeout proof", packet.Sequence)
 
 	receiptPath := ethPath(packet.DestinationClient, packet.Sequence, 2)
@@ -497,13 +501,23 @@ func (s *Services) timeoutCosmosSendWithState(ctx Context, packet channeltypesv2
 		"",
 	)
 
-	if err := s.worker.TxHandler.SendCosmosTx(ctx, msgTimeout); err != nil {
-		log.Printf("[CosmosTimeout] seq=%d: SendCosmosTx failed: %v", packet.Sequence, err)
+	var batchMsgs []any
+	if len(updateResult.Msgs) > 0 {
+		batchMsgs = append(batchMsgs, updateResult.Msgs...)
+	}
+	batchMsgs = append(batchMsgs, msgTimeout)
+
+	if len(updateResult.Msgs) > 0 {
+		s.worker.waitForCosmosCatchUp(ctx, updateResult.EthClientState, updateResult.SigSlot)
+	}
+
+	if err := s.worker.TxHandler.SendCosmosTxBatch(ctx, batchMsgs); err != nil {
+		log.Printf("[CosmosTimeout] seq=%d: SendCosmosTxBatch failed: %v", packet.Sequence, err)
 		return
 	}
 
 	s.BatchBuilder.PendingTracker.Remove(packet.SourceClient, packet.Sequence)
-	log.Printf("[CosmosTimeout] seq=%d: timeout relay completed", packet.Sequence)
+	log.Printf("[CosmosTimeout] seq=%d: timeout relay completed (bundled with %d update msgs)", packet.Sequence, len(updateResult.Msgs))
 }
 
 func (s *Services) cosmosMembership(ctx Context, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {
