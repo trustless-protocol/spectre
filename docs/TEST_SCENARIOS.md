@@ -19,13 +19,17 @@ kurtosis enclave rm -f my-testnet
 curl -s <eth_beacon_api_ur>/eth/v1/beacon/states/head/finality_checkpoints
 curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 
-# 4. Then start Cosmos and submit the Ethereum LC WASM via governance
+# 4. Then start Cosmos and submit the Ethereum LC WASM.
 #    This requires a wasm-enabled Cosmos binary (08-wasm), e.g. simd:
 #    COSMOS_BIN=simd ./run_cosmos_node.sh
 #    COSMOS_BIN=simd ./wasm.sh
 #    If you only have stock gaiad, use the container flow instead:
 #    ./run_cosmos_node_docker.sh
 #    ./wasm_docker.sh
+#    The container flow now copies
+#    e2e/interchaintestv8/wasm/cw_ics08_wasm_eth.wasm.gz into the simd container
+#    and runs `simd tx ibc-wasm store-code` directly, instead of generating an
+#    older proposal.json payload.
 ./run_cosmos_node.sh
 ./wasm.sh
 
@@ -63,6 +67,8 @@ gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21e
 | gaiad tx broadcast /dev/stdin \
     --node tcp://127.0.0.1:26657 \
     -y
+
+# timeoutTimestamp in this setup is interpreted as unix seconds, not nanoseconds.
 
 
 # 8. check
@@ -227,6 +233,20 @@ kurtosis service stop my-testnet cl-1-lighthouse-geth
 kurtosis service start my-testnet el-1-geth-lighthouse
 kurtosis service start my-testnet cl-1-lighthouse-geth
 
+
+cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
+  'balanceOf(address)(uint256)' \
+  0x8943545177806ed17b9f23f0a21ee5948ecaa776 \
+  --rpc-url http://127.0.0.1:59619
+
+
+gaiad q txs \
+  --query "message.action='/ibc.core.channel.v2.MsgAcknowledgement'" \
+  --node tcp://127.0.0.1:26657 -o json | jq '.total_count'
+
+
+gaiad q txs --query "message.action='/ibc.core.channel.v2.MsgTimeout'"  --node tcp://127.0.0.1:26657 -o json | jq '.total_count'
+
 ```
 ---
 
@@ -250,22 +270,55 @@ Attempt to submit the same `recvPacket` call-data twice.
 
 Modify one byte of the `proof` field in the `updateClient` calldata before broadcasting.
 
+**Recommended command (safe / `eth_call`):**
+```bash
+./scripts/test_invalid_updateclient.sh --case 4a \
+  --config relayer/config.example.json \
+  --env-file relayer/.env
+```
+
 **Expected outcome:**
-- `Groth16Verifier_N{N}.sol` reverts — pairing check fails.
+- Script prints `PASS: tampered eth_call reverted as expected`.
+- `eth_call` reverts and client state is unchanged.
 
 ### 4b. Wrong Public Input (Witness Hash Mismatch)
 
 Submit a valid proof from a previous `updateClient` call paired with a new header (different `appHash`).
 
+**Recommended command (safe / `eth_call`):**
+```bash
+./scripts/test_invalid_updateclient.sh --case 4b \
+  --config relayer/config.example.json \
+  --env-file relayer/.env
+```
+
 **Expected outcome:**
-- `WrapperVerifier` recomputes the SHA-256 witness commit from the supplied header and validators; the recomputed hash does not match the proof's public input → revert.
+- Script prints `PASS: tampered eth_call reverted as expected`.
+- On-chain verification rejects the forged payload (revert reason may vary by which validation step fails first).
 
 ### 4c. Pubkey Swap in Calldata
 
 Supply a real validator pubkey in calldata but submit a proof computed for a different pubkey.
 
+**Recommended command (safe / `eth_call`):**
+```bash
+./scripts/test_invalid_updateclient.sh --case 4c \
+  --config relayer/config.example.json \
+  --env-file relayer/.env
+```
+
 **Expected outcome:**
-- Because pubkey `A` is hashed into the witness commit on-chain, the recomputed public input diverges from the proof's → revert.
+- Script prints `PASS: tampered eth_call reverted as expected`.
+- Verification fails because pubkeys no longer match the proven witness.
+
+**Optional (broadcast failing tx on-chain):**
+```bash
+./scripts/test_invalid_updateclient.sh --case 4b --send
+```
+or
+```bash
+./scripts/test_invalid_updateclient.sh --case 4c --send
+```
 
 ---
 
@@ -306,31 +359,97 @@ Configure a local Cosmos chain with 200+ validators all with equal voting power 
 ---
 
 ## 6. Light Client Staleness and Misbehaviour
-
 ### 6a. Trusting Period Expiry
 
-1. Stop the relay loop.
-2. Wait until `now > lastUpdateTime + trustingPeriod`.
-3. Attempt to relay a new packet.
+This repo now supports a custom `trusting_period` via `./relayer create-clients --trusting-period`.
+
+**Setup:**
+1. Create a dedicated test client with a short trusting period:
+   ```bash
+   cd relayer
+   cp config.example.json config.expiry-test.json
+   ./relayer create-clients \
+     --config config.expiry-test.json \
+     --wasm-checksum 0xd24688886ed8cec00c667fa69c173fbab9a08c75900ce18afe10517c82e55592 \
+     --trust-level 2/3 \
+     --trusting-period 60
+   ```
+2. Start the relayer with that config:
+   ```bash
+   ./relayer start --config config.expiry-test.json
+   ```
+
+**Steps:**
+1. Stop the relay loop using `config.expiry-test.json`.
+2. Wait longer than the configured trusting period, for example `75-90s` when `--trusting-period 60` was used.
+3. Send a new Cosmos -> ETH packet.
+4. Start the relayer again with `config.expiry-test.json`.
 
 **Expected outcome:**
 - `Groth16ICS07Tendermint` rejects the header: client is expired.
-- Relayer logs a "client expired" error and does not submit the packet.
+- Relayer logs an `updateClient` failure and does not submit the packet.
+- A representative revert reason is:
+  ```text
+  invalid block: untrusted state is outside of trusting period
+  ```
+
+**Observed result on local test:**
+- `PASS`
+- Final relayer logs included:
+  ```text
+  [UpdateCosmosClient] SendEthTx failed: tx ... reverted
+  [StartLoop] Failed to update cosmos light client: tx ... reverted
+  ```
 
 ### 6b. Misbehaviour — Equivocation
 
-Submit two conflicting headers at the same height (same `trustedHeight` but different `appHash`) as a misbehaviour report.
+The repo now includes a helper at `relayer/cmd/misbehaviour_attack` to build and submit `submitMisbehaviour`.
+
+Important note: on the current honest Gaia setup, we do not have a source of two valid conflicting headers at the same height. The exercised path below uses two valid headers from different heights with different `appHash`, which is enough to trigger the current on-chain misbehaviour implementation and freeze the client.
 
 ```bash
-# Pseudo-call via cast
-cast send <ICS07_ADDRESS> 'submitMisbehaviour(bytes)' <misbehaviour_abi_encoded> \
-  --rpc-url http://127.0.0.1:<eth_rpc_port> --private-key $ETH_PRIVATE_KEY
+cd relayer
+
+# 1. Create a dedicated client for the misbehaviour test.
+cp config.example.json config.misbehaviour-test.json
+./relayer create-clients \
+  --config config.misbehaviour-test.json \
+  --wasm-checksum 0xd24688886ed8cec00c667fa69c173fbab9a08c75900ce18afe10517c82e55592 \
+  --trust-level 2/3 \
+  --trusting-period 600
+
+# 2. Start the relayer and send at least 2 Cosmos -> ETH packets
+# so the client accumulates 2 updateClient txs on Ethereum.
+./relayer start --config config.misbehaviour-test.json
+
+# 3. Run the helper in dry-run mode first.
+GOCACHE=/tmp/go-build go run ./cmd/misbehaviour_attack \
+  --config config.misbehaviour-test.json \
+  --tx1 <newer_updateClient_tx_hash> \
+  --tx2 <older_updateClient_tx_hash>
+
+# 4. If simulation succeeds, submit the misbehaviour tx.
+GOCACHE=/tmp/go-build go run ./cmd/misbehaviour_attack \
+  --config config.misbehaviour-test.json \
+  --tx1 <newer_updateClient_tx_hash> \
+  --tx2 <older_updateClient_tx_hash> \
+  --submit
 ```
 
 **Expected outcome:**
 - Client transitions to a frozen state.
-- Subsequent `updateClient` and `verifyMembership` calls revert with "client frozen".
+- Subsequent `updateClient` and `verifyMembership` calls revert with `FrozenClientState`.
 - Governance / admin must unfreeze or create a new client to resume relaying.
+
+**Observed result on local test:**
+- `PASS`
+- Pre-submit simulation returned `simulate_ok=true`.
+- After submit, rerunning the helper returned:
+  ```text
+  simulate_error=execution reverted
+  simulate_decoded_error=FrozenClientState
+  client_frozen_before=true
+  ```
 
 ---
 
@@ -340,19 +459,46 @@ Send a token transfer from Ethereum to Cosmos (the reverse of the happy path).
 
 **Steps:**
 1. Complete the happy path first so `IBCERC20` tokens exist on Ethereum.
-2. Approve the `ICS20Transfer` contract to spend the `IBCERC20` tokens:
+2. Resolve the wrapped token address on Ethereum:
+   ```bash
+   cast call <ICS20_ADDRESS> 'ibcERC20Contract(string)(address)' \
+     'transfer/cosmoshub-1/stake' \
+     --rpc-url http://127.0.0.1:<eth_rpc_port>
+   ```
+3. Approve the `ICS20Transfer` contract to spend the `IBCERC20` tokens:
    ```bash
    cast send <IBCERC20_ADDRESS> 'approve(address,uint256)' <ICS20_ADDRESS> 500 \
      --rpc-url http://127.0.0.1:<eth_rpc_port> --private-key $ETH_PRIVATE_KEY
    ```
-3. Call `ICS20Transfer.sendTransfer` on Ethereum.
-4. Let the relay loop pick it up.
-5. Verify that the original Cosmos sender receives the tokens back.
+4. Call `ICS20Transfer.sendTransfer` on Ethereum:
+   ```bash
+   ABS_TIMEOUT=$(($(date +%s) + 600))
+
+   cast send <ICS20_ADDRESS> \
+     'sendTransfer((address,uint256,string,string,string,uint64,string))' \
+     "(<IBCERC20_ADDRESS>,500,'<cosmos_receiver>','cosmoshub-1','transfer',$ABS_TIMEOUT,'')" \
+     --rpc-url http://127.0.0.1:<eth_rpc_port> \
+     --private-key $ETH_PRIVATE_KEY
+   ```
+5. Let the relay loop pick it up.
+6. Verify that the original Cosmos receiver gets the tokens back.
 
 **Expected outcome:**
 - Tokens are burned/escrowed on Ethereum.
 - Cosmos chain credits the recipient.
 - Ethereum light client on Cosmos is updated via the Go relayer.
+
+**Observed result on local test:**
+- `PASS`
+- Happy path first minted `1000` wrapped `stake` on ETH token `0x016f5f33DbCb653e6393698Beba9DC19d828D75e`.
+- Reverse transfer then sent `500` back to Cosmos from Ethereum tx `0x071aa593c808f88c413e9ce85284689599c72c24a82d64fde0e655942a385cc9`.
+- After relay completion, `balanceOf(faucet)` on that wrapped token was `500`.
+- Cosmos receive tx was `66DF08567603D5D9E841937E78F97B050655532E4D9FA9B8EA1109B2EF0C31B5`.
+- That tx included `coin_received=500stake` and `fungible_token_packet success=true`.
+
+**Notes:**
+- In this setup, `timeoutTimestamp` is interpreted as unix seconds.
+- If the relayer signer reuses the same Cosmos account as the recipient, wallet balance alone is noisy because relayer fees are paid from that account. For verification, prefer the `coin_received` and `fungible_token_packet` events in the Cosmos recv tx.
 
 ---
 
@@ -435,9 +581,9 @@ Re-run `go run ./prover/cmd ./bin ../contracts/verifiers` (which generates fresh
 | 2a | Relayer crash post-updateClient | Relayer | Resumes on restart, delivers packet |
 | 2b | Ethereum RPC outage | Relayer | Retries, recovers automatically |
 | 3 | Replay / double recvPacket | Security | Second call reverts |
-| 4a | Tampered Groth16 proof | Security | Pairing check revert |
-| 4b | Wrong public input | Security | Witness hash mismatch revert |
-| 4c | Pubkey swap | Security | Witness hash mismatch revert |
+| 4a | Tampered Groth16 proof | Security | `updateClient` revert |
+| 4b | Wrong public input | Security | `updateClient` revert |
+| 4c | Pubkey swap | Security | `updateClient` revert |
 | 5a | Exactly 2/3 voting power | Quorum | Strict-greater check fails |
 | 5b | Duplicate signer index | Quorum | `seen[idx]` revert |
 | 5c | Exactly N active signers at bucket edge | Quorum | Correct bucket selected, success |

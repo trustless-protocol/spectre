@@ -57,3 +57,6 @@ relayer/relayer
 
 # Local Vietnamese design notes
 docs/*_VI.md
+
+.state
+*.pid

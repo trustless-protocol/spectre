@@ -27,6 +27,9 @@ type Config struct {
 	IntervalParams IntervalConfig
 	IntervalType   IntervalType
 	BatchConfig    BatchConfig
+	TrustingPeriod uint32
+	TrustLevel     string
+	ProofType      string
 }
 
 func NewConfig(KeyPath string, params IntervalConfig, intervalType IntervalType) Config {
@@ -47,5 +50,7 @@ func DefaultConfig() Config {
 			BatchPeriods: time.Second * 3, // default each batch waits for 10 seconds
 			BatchSize:    10,              // default 10 packets per batch
 		},
+		TrustLevel: "2/3",
+		ProofType:  "groth16",
 	}
 }

@@ -90,3 +90,120 @@ Cho test ổn định hơn, tôi vẫn khuyên 2b chỉ stop/start el-1-geth-lig
 
 không có ack (MsgAcknowledgement), cũng không có MsgTimeout trên Cosmos
 nghĩa là trạng thái đang là: ETH đã mint, nhưng Cosmos chưa nhận ack
+
+## 3
+ok
+
+## 4a
+ok
+
+## 4b
+ok
+
+## 4c
+
+ok
+
+## 5a 
+pass
+
+## 5b
+
+pass
+
+## 5c 
+skip
+
+trên setup hiện tại. Payload on-chain gần nhất có bucket=4, active_count=3, unique_active=3, nên không phải case “exact boundary”.
+
+## 5d
+skip
+
+trên setup hiện tại. MAX_BUCKET=4, min_signers_for_2of3=3, nên không rơi vào case “requires more than largest bucket”.
+
+## 6a
+
+Nếu không sửa thì không test được case này theo cách thực tế.
+
+Nguyên nhân là:
+
+- `./relayer create-clients` ban đầu không support `--trusting-period`
+- runtime relayer cũng chưa đọc `trusting_period` từ config test
+- vì vậy client luôn dùng trusting period mặc định dài theo chain thật, dẫn tới muốn test expiry phải chờ rất lâu
+
+### giải pháp
+
+thêm support cho `trusting_period` ở flow tạo client và ở runtime config của relayer
+
+Sau đó có thể tạo một client test riêng với trusting period ngắn, ví dụ `60s`, rồi chạy theo flow:
+
+- start relayer với config test
+- stop relayer
+- chờ quá trusting period
+- gửi một packet Cosmos -> ETH mới
+- start relayer lại
+
+Kết quả mong đợi và cũng là kết quả local:
+
+- relayer nhận packet, cố `updateClient`
+- ETH revert với:
+  `invalid block: untrusted state is outside of trusting period`
+- log cuối:
+  `[UpdateCosmosClient] SendEthTx failed: tx ... reverted`
+  `[StartLoop] Failed to update cosmos light client: tx ... reverted`
+
+pass
+
+## 6b
+
+Nếu không sửa thì path misbehaviour hiện tại không freeze được client.
+
+Nguyên nhân là:
+
+- `Misbehaviour.sol` trả `trustedHeight1/2` theo `header.signedHeader.header.height`
+- nhưng phía `Groth16ICS07Tendermint` lại verify `trustedConsensusState1/2` theo `header.trustedHeight`
+- tức là input và output đang lệch semantics, làm cho path misbehaviour gần như không thể thỏa đúng điều kiện verify
+
+Ngoài ra còn một lỗi nữa:
+
+- check trusting period trong `Misbehaviour.sol` đang so timestamp nanosecond trực tiếp với `trustingPeriod` tính theo second
+- vì vậy payload hợp lệ vẫn có thể revert do hết trusting period giả
+
+### giải pháp
+
+sửa logic misbehaviour như sau:
+
+- `trustedHeight1/2` phải trả theo `header.trustedHeight`
+- khi check trusting period phải đổi timestamp từ nanosecond sang second trước khi so với `trustingPeriod`
+
+Sau khi sửa, path misbehaviour có thể freeze client thành công.
+
+Kết quả local:
+
+- submit misbehaviour thành công
+- chạy lại kiểm tra thì client đã ở trạng thái frozen
+- các call tiếp theo revert với `FrozenClientState`
+
+Lưu ý:
+
+- case này hiện pass theo implementation on-chain hiện tại
+- test local đang dùng 2 header hợp lệ khác height nhưng khác `appHash`, chưa phải same-height equivocation đúng nghĩa trên một Gaia honest chain
+
+pass
+
+## 7
+
+pass
+
+Kết quả local:
+
+- happy path `Cosmos -> ETH` mint ra `1000` wrapped `stake` trên ETH
+- sau đó `ETH -> Cosmos` gửi ngược `500`
+- balance wrapped token trên ETH còn `500`
+- phía Cosmos nhận lại `500stake` thành công qua `MsgRecvPacket`
+
+Lưu ý khi chạy local:
+
+- `timeoutTimestamp` trong setup này phải dùng `unix seconds`
+- nếu dùng account `test1` làm signer cho relayer thì số dư ví Cosmos sẽ bị nhiễu do relayer cũng trả gas từ cùng account đó
+- vì vậy với case `ETH -> Cosmos`, bằng chứng sạch nhất là event `coin_received 500stake` và `fungible_token_packet success=true` trong tx recv trên Cosmos

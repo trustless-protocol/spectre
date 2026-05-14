@@ -56,6 +56,9 @@ type cosmosToEthConfig struct {
 	Membership         string `json:"membership"`
 	Misbehaviour       string `json:"misbehaviour"`
 	UpdateClient       string `json:"update_client"`
+	TrustingPeriod     uint32 `json:"trusting_period"`
+	TrustLevel         string `json:"trust_level"`
+	ProofType          string `json:"proof_type"`
 }
 
 type ethToCosmosConfig struct {
@@ -335,11 +338,17 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to get trust level: %w", err)
 			}
 
-			unbondingPeriod, err := tendermintClient.GetUnbondingTime(cosmosClient)
+			trustingPeriod, err := cmd.Flags().GetUint32(flagTrustingPeriod)
 			if err != nil {
-				return fmt.Errorf("failed to fetch unbonding time: %w", err)
+				return fmt.Errorf("failed to get trusting period: %w", err)
 			}
-			trustingPeriod := 2 * uint32(unbondingPeriod) / 3
+			if trustingPeriod == 0 {
+				unbondingPeriod, err := tendermintClient.GetUnbondingTime(cosmosClient)
+				if err != nil {
+					return fmt.Errorf("failed to fetch unbonding time: %w", err)
+				}
+				trustingPeriod = 2 * uint32(unbondingPeriod) / 3
+			}
 
 			logger.Sugar().Infof("Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s)...", trustingPeriod, trustLevel)
 			ics07Addr, err := worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, trustLevel)
@@ -394,7 +403,8 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 		},
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
-	cmd.Flags().String(flagTrustLevel, "1/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
+	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
+	cmd.Flags().Uint32(flagTrustingPeriod, 0, "trusting period in seconds for Cosmos light client (default: 2/3 of chain unbonding period)")
 	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
 	return cmd
 }
@@ -494,12 +504,23 @@ func Start(logger *zap.Logger) *cobra.Command {
 
 			logger.Sugar().Info("Relayer started, subscribing to events...")
 
+			cosmosConfig := services.DefaultConfig()
+			if cfg.CosmosToEthConfig.TrustingPeriod != 0 {
+				cosmosConfig.TrustingPeriod = cfg.CosmosToEthConfig.TrustingPeriod
+			}
+			if cfg.CosmosToEthConfig.TrustLevel != "" {
+				cosmosConfig.TrustLevel = cfg.CosmosToEthConfig.TrustLevel
+			}
+			if cfg.CosmosToEthConfig.ProofType != "" {
+				cosmosConfig.ProofType = cfg.CosmosToEthConfig.ProofType
+			}
+			ctx.Config = cosmosConfig
 			svc := services.New(
 				subscriber.NewSubscriber(),
 				&transaction.Handler{},
 				p,
 				services.DefaultConfig(),
-				services.DefaultConfig(),
+				cosmosConfig,
 			)
 			svc.StartLoop(ctx)
 

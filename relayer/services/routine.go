@@ -123,6 +123,9 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 	}
 
 	trustingPeriod := uint32(unbondingPeriod * 2 / 3)
+	if ctx.Config.TrustingPeriod != 0 {
+		trustingPeriod = ctx.Config.TrustingPeriod
+	}
 
 	if trustingPeriod > uint32(unbondingPeriod) {
 		return nil, fmt.Errorf("trusting period %d cannot be greater than unbonding period %d", trustingPeriod, uint32(unbondingPeriod))
