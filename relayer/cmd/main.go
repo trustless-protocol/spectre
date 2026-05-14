@@ -11,6 +11,8 @@ import (
 	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
+	proto "github.com/cosmos/gogoproto/proto"
+	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
@@ -203,6 +205,36 @@ func preflightCreateClients(cfg *appConfig) error {
 	return nil
 }
 
+func cosmosHasWasmChecksum(cosmosClient *rpchttp.HTTP, checksum string) (bool, error) {
+	checksum = strings.ToLower(strings.TrimPrefix(checksum, "0x"))
+
+	reqBytes, err := proto.Marshal(&ibcwasmtypes.QueryChecksumsRequest{})
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal checksum query: %w", err)
+	}
+
+	result, err := cosmosClient.ABCIQuery(context.Background(), "/ibc.lightclients.wasm.v1.Query/Checksums", reqBytes)
+	if err != nil {
+		return false, fmt.Errorf("failed to query wasm checksums: %w", err)
+	}
+	if result.Response.Code != 0 {
+		return false, fmt.Errorf("checksum query failed with code %d: %s", result.Response.Code, result.Response.Log)
+	}
+
+	var resp ibcwasmtypes.QueryChecksumsResponse
+	if err := proto.Unmarshal(result.Response.Value, &resp); err != nil {
+		return false, fmt.Errorf("failed to unmarshal checksum query response: %w", err)
+	}
+
+	for _, existing := range resp.Checksums {
+		if strings.ToLower(existing) == checksum {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 func envOrDefault(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -216,6 +248,25 @@ func roleManagerOrDefault(cfg *appConfig) string {
 
 func cosmosRouterClientIDOrDefault(cfg *appConfig) string {
 	return envOrDefault("ICS26_CLIENT_ID", cfg.CosmosToEthConfig.ICS26ClientID)
+}
+
+func validateStartupKeys() error {
+	ethPrivKey := os.Getenv("ETH_PRIVATE_KEY")
+	if ethPrivKey == "" {
+		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
+	}
+	if _, err := keys.RestoreKey(ethPrivKey); err != nil {
+		return fmt.Errorf("failed to restore ETH private key: %w", err)
+	}
+
+	if _, err := (&transaction.Handler{}).CosmosSignerAddress(); err != nil {
+		if os.Getenv("COSMOS_PRIVATE_KEY") == "" {
+			return fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required in .env file")
+		}
+		return fmt.Errorf("failed to decode COSMOS_PRIVATE_KEY: %w", err)
+	}
+
+	return nil
 }
 
 func cosmosWasmClientIDOrDefault(cfg *appConfig) string {
@@ -332,6 +383,27 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			defer cosmosClient.Stop()
 			logger.Sugar().Info("create-clients: cosmos websocket client started")
 
+			wasmChecksum, err := cmd.Flags().GetString(flagWasmChecksum)
+			if err != nil {
+				return fmt.Errorf("failed to get wasm checksum: %w", err)
+			}
+			if wasmChecksum == "" {
+				wasmChecksum = os.Getenv("WASM_CHECKSUM")
+			}
+			logger.Sugar().Infof("create-clients: wasm checksum present=%t", wasmChecksum != "")
+
+			if wasmChecksum != "" && cfg.EthToCosmosConfig.BeaconUrl != "" {
+				logger.Sugar().Infof("create-clients: validating wasm checksum on Cosmos before mutating ETH/config: %s", wasmChecksum)
+				ok, err := cosmosHasWasmChecksum(cosmosClient, wasmChecksum)
+				if err != nil {
+					return fmt.Errorf("failed to validate wasm checksum on Cosmos: %w", err)
+				}
+				if !ok {
+					return fmt.Errorf("wasm checksum %s has not been previously stored on Cosmos", wasmChecksum)
+				}
+				logger.Sugar().Info("create-clients: wasm checksum preflight passed")
+			}
+
 			// --- 1. Create Cosmos light client on Ethereum (deploy ICS07) ---
 			trustLevel, err := cmd.Flags().GetString(flagTrustLevel)
 			if err != nil {
@@ -359,21 +431,8 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("ics07 address missing after deploy")
 			}
 			ctx.SetClient(ics07Addr)
-			if err := writeICS07Address(configPath, ics07Addr.Hex()); err != nil {
-				return fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
-			}
-			logger.Sugar().Infof("create-clients: wrote ics07_client=%s into %s", ics07Addr.Hex(), configPath)
 
 			// --- 2. Create Ethereum light client on Cosmos (wasm) ---
-			wasmChecksum, err := cmd.Flags().GetString(flagWasmChecksum)
-			if err != nil {
-				return fmt.Errorf("failed to get wasm checksum: %w", err)
-			}
-			if wasmChecksum == "" {
-				wasmChecksum = os.Getenv("WASM_CHECKSUM")
-			}
-			logger.Sugar().Infof("create-clients: wasm checksum present=%t", wasmChecksum != "")
-
 			if wasmChecksum != "" && cfg.EthToCosmosConfig.BeaconUrl != "" {
 				logger.Sugar().Infof("Creating Ethereum light client on Cosmos (checksum=%s)...", wasmChecksum)
 				ethClientID, err := worker.CreateEthClient(ctx, wasmChecksum)
@@ -395,6 +454,11 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 					logger.Sugar().Warn("Skipping ETH client creation: beacon URL not configured")
 				}
 			}
+
+			if err := writeICS07Address(configPath, ics07Addr.Hex()); err != nil {
+				return fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
+			}
+			logger.Sugar().Infof("create-clients: wrote ics07_client=%s into %s", ics07Addr.Hex(), configPath)
 
 			logger.Sugar().Infof("=== Setup Complete ===")
 			logger.Sugar().Infof("ICS07 address has been persisted to %s; ready for 'start'", configPath)
@@ -425,6 +489,10 @@ func Start(logger *zap.Logger) *cobra.Command {
 
 			// Load .env for prover paths, private keys, etc.
 			_ = godotenv.Load()
+
+			if err := validateStartupKeys(); err != nil {
+				return err
+			}
 
 			// Load JSON config
 			cfg, err := loadConfig(configPath)
