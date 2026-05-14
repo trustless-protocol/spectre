@@ -564,6 +564,21 @@ done
 - Final Ethereum balance equals 500 wrapped-stake tokens.
 - All 5 ACKs arrive back on Cosmos.
 
+**Observed result on local test:**
+- `PASS`
+- Local run used an isolated ETH receiver `0x1111111111111111111111111111111111111111`, starting from balance `0`.
+- Five packets were created with `seq=4..8`.
+- ETH receiver final wrapped balance was `500`.
+- Cosmos acknowledgement query ended with `total_count=8`, and the latest five `MsgAcknowledgement` txs corresponded to `seq=4..8`.
+- Relayer logs showed mixed batching due timing:
+  `seq=4` was relayed first,
+  `seq=5` followed,
+  and `seq=6..8` were queued together and later flushed as one Cosmos batch of `3` packets.
+
+**Notes:**
+- If the relayer signer already uses `test1` on Cosmos, avoid using the same account for the rapid manual sends in this test. Using other funded local accounts such as `test2` and `test3` avoids `account sequence mismatch`.
+- In this setup, the `application/x-solidity-abi` encoding patch is still required for the generated Cosmos transfer messages, same as the other Cosmos -> ETH scenarios above.
+
 ---
 
 ## 10. Wrong WASM Checksum During Client Creation

@@ -225,3 +225,19 @@ Lưu ý khi chạy local:
 
 - deployment E2E hiện chưa wire sẵn `RATE_LIMITER_ROLE` cho escrow, nên cần bật role này trên `AccessManager` rồi mới `setRateLimit(...)` được
 - nếu relayer và các tx manual cùng dùng account `test1` trên Cosmos thì có thể gặp `account sequence mismatch`; restart relayer là đủ để recovery và gửi lại ack pending
+
+## 9
+
+pass
+
+Kết quả local:
+
+- gửi 5 packet liên tiếp với `seq=4..8`
+- phía ETH nhận đủ cả 5 packet
+- balance cuối của receiver ETH mới là `500`
+- phía Cosmos có đủ 5 `MsgAcknowledgement` tương ứng `seq=4..8`
+
+Lưu ý khi chạy local:
+
+- nếu relayer signer đang dùng `test1` trên Cosmos thì không nên dùng lại `test1` để bắn packet nhanh; dùng account khác như `test2`, `test3` sẽ tránh lỗi `account sequence mismatch`
+- khi reuse môi trường cũ, nên dùng một receiver ETH mới có balance `0` để kết quả cuối `500` dễ kiểm tra hơn
