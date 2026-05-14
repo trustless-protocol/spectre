@@ -136,6 +136,14 @@ func (s *Services) StartLoop(ctx Context) {
 		}
 	}()
 
+	// scan for cosmos-originated packets that have timed out on ETH
+	go func() {
+		for {
+			time.Sleep(time.Second * 30)
+			s.scanForCosmosTimeouts(ctx)
+		}
+	}()
+
 	// handle packets
 	for {
 		select {
@@ -178,8 +186,10 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	for _, packet := range batch.Packets {
 		switch packet.Type {
 		case CosmosSend:
+			s.BatchBuilder.PendingTracker.Add(*packet.Packet, packet.BlockNumber)
+
 			if ethBlockTime > 0 && packet.Packet.TimeoutTimestamp > 0 && ethBlockTime >= packet.Packet.TimeoutTimestamp {
-				log.Printf("[RecvPacket] Packet seq=%d timed out (timeout=%d <= eth_block_time=%d), skipping",
+				log.Printf("[RecvPacket] Packet seq=%d timed out (timeout=%d <= eth_block_time=%d), skipping relay",
 					packet.Packet.Sequence, packet.Packet.TimeoutTimestamp, ethBlockTime)
 				continue
 			}
@@ -199,6 +209,7 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 				log.Printf("[RecvPacket] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
 				continue
 			}
+			s.BatchBuilder.PendingTracker.Remove(packet.Packet.SourceClient, packet.Packet.Sequence)
 			log.Printf("[RecvPacket] seq=%d: relay completed", packet.Packet.Sequence)
 		case CosmosAck:
 			if len(packet.AckBytes) == 0 {
@@ -224,6 +235,11 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 			}
 			log.Printf("[AckPacket] seq=%d: relay completed", packet.Packet.Sequence)
 		case CosmosTimeout:
+			if packet.Packet.SourceClient == ctx.CosmosRouterClientID() {
+				log.Printf("[Timeout] seq=%d: Cosmos-originated packet timeout already handled locally, skipping ETH relay", packet.Packet.Sequence)
+				continue
+			}
+
 			calldata, err := s.cosmosNonMembership(ctx, *packet.Packet, packet.Packet.DestinationClient, []byte{2}, latestLightBlock)
 			if err != nil {
 				log.Printf("[Timeout] seq=%d: %v", packet.Packet.Sequence, err)
@@ -407,6 +423,113 @@ func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) {
 		return
 	}
 	log.Printf("[EthTimeout] seq=%d: relay completed", packet.Packet.Sequence)
+}
+
+const pendingTrackerMaxAge = 1 * time.Hour
+
+func (s *Services) scanForCosmosTimeouts(ctx Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[CosmosTimeoutScan] Panic recovered: %v", r)
+		}
+	}()
+
+	s.BatchBuilder.PendingTracker.PurgeStale(pendingTrackerMaxAge)
+
+	pending := s.BatchBuilder.PendingTracker.GetAll()
+	if len(pending) == 0 {
+		return
+	}
+
+	ethHeader, err := ctx.EthClient().HeaderByNumber(context.Background(), nil)
+	if err != nil {
+		log.Printf("[CosmosTimeoutScan] Failed to get eth block header: %v", err)
+		return
+	}
+	ethBlockTime := ethHeader.Time
+
+	log.Printf("[CosmosTimeoutScan] Checking %d pending packets against eth block time %d",
+		len(pending), ethBlockTime)
+
+	var expired []pendingPacketInfo
+	for _, info := range pending {
+		if info.Packet.TimeoutTimestamp > 0 && ethBlockTime >= info.Packet.TimeoutTimestamp {
+			expired = append(expired, info)
+		}
+	}
+
+	if len(expired) == 0 {
+		return
+	}
+
+	log.Printf("[CosmosTimeoutScan] Found %d expired packets, processing timeouts", len(expired))
+
+	updateResult, err := s.worker.BuildEthClientUpdateMsgs(ctx)
+	if err != nil {
+		log.Printf("[CosmosTimeoutScan] Failed to build ETH client update messages: %v", err)
+		return
+	}
+
+	ethClientState := updateResult.EthClientState
+	if ethClientState == nil {
+		ethClientState, err = client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
+		if err != nil {
+			log.Printf("[CosmosTimeoutScan] Failed to get ETH client state: %v", err)
+			return
+		}
+	}
+
+	var timeoutMsgs []any
+	var processed []pendingPacketInfo
+	for _, info := range expired {
+		msgTimeout, err := s.buildCosmosTimeoutMsg(ctx, info.Packet, ethClientState)
+		if err != nil {
+			log.Printf("[CosmosTimeout] seq=%d: %v", info.Packet.Sequence, err)
+			continue
+		}
+		timeoutMsgs = append(timeoutMsgs, msgTimeout)
+		processed = append(processed, info)
+	}
+
+	if len(timeoutMsgs) == 0 {
+		return
+	}
+
+	var batchMsgs []any
+	if len(updateResult.Msgs) > 0 {
+		batchMsgs = append(batchMsgs, updateResult.Msgs...)
+	}
+	batchMsgs = append(batchMsgs, timeoutMsgs...)
+
+	if len(updateResult.Msgs) > 0 {
+		s.worker.waitForCosmosCatchUp(ctx, updateResult.EthClientState, updateResult.SigSlot)
+	}
+
+	if err := s.worker.TxHandler.SendCosmosTxBatch(ctx, batchMsgs); err != nil {
+		log.Printf("[CosmosTimeoutScan] SendCosmosTxBatch failed: %v", err)
+		return
+	}
+
+	for _, info := range processed {
+		s.BatchBuilder.PendingTracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
+		log.Printf("[CosmosTimeout] seq=%d: timeout relay completed (bundled with %d update msgs)", info.Packet.Sequence, len(updateResult.Msgs))
+	}
+}
+
+func (s *Services) buildCosmosTimeoutMsg(ctx Context, packet channeltypesv2.Packet, ethClientState *client.EthereumClientState) (*channeltypesv2.MsgTimeout, error) {
+	receiptPath := ethPath(packet.DestinationClient, packet.Sequence, 2)
+	proofBytes, err := client.GetEthNonMembershipProof(
+		ctx.EthClient(), *ctx.RouterContract(), receiptPath, ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ETH non-membership proof: %w", err)
+	}
+
+	return channeltypesv2.NewMsgTimeout(
+		packet,
+		proofBytes,
+		clienttypes.Height{RevisionNumber: 0, RevisionHeight: ethClientState.LatestSlot},
+		"",
+	), nil
 }
 
 func (s *Services) cosmosMembership(ctx Context, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {
