@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-Production Solidity implementation of **IBC v2** for Ethereum ↔ Cosmos interoperability. Three language layers: Solidity (contracts), Go (operator), Rust (CosmWasm only).
+Production Solidity implementation of **IBC v2** for Ethereum ↔ Cosmos interoperability. Three language layers: Solidity (contracts), Go (relayer), Rust (CosmWasm only).
 
 Key difference from upstream `solidity-ibc-eureka`: uses **gnark Groth16** (Go, Ed25519) instead of SP1 (Rust, RISC-V zkVM) for Tendermint light client verification.
 
@@ -13,12 +13,12 @@ Key difference from upstream `solidity-ibc-eureka`: uses **gnark Groth16** (Go, 
 ```bash
 # Build
 just build-contracts              # Compile Solidity
-just build-operator               # Build Go operator (go build)
+just build-go-relayer             # Build Go relayer (go build ./...)
 
 # Test
 just test-foundry                 # All Solidity tests
 forge test --match-test <name> -vvv  # Single Solidity test
-just test-operator                # All Go operator tests
+just test-go-relayer              # All Go relayer tests
 cd relayer && go test -run <TestName> ./...  # Single Go test
 just test-e2e <name>              # E2E test by name
 
@@ -129,7 +129,8 @@ relayer/
 │   ├── cmd/            # One-shot setup tool: compile every bucket + emit Groth16Verifier_N{N}.sol
 │   └── bin/            # Per-bucket artifacts: bin/n{N}/{r1cs,pk,vk}.bin
 ├── runner/         # Service runner utilities
-├── services/       # Context, Worker, batch builder, relay loop
+├── services/       # Context, Worker, batch builder, relay loop, PendingPacketTracker
+│   └── pending.go      # In-memory tracker for Cosmos-originated packets pending ETH delivery (1h TTL)
 ├── subscriber/     # Cosmos WebSocket + Ethereum event listeners
 ├── transaction/    # Ethereum + Cosmos transaction submission
 ├── utils/          # IBC path helpers, byte utils
