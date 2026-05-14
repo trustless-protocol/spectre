@@ -75,22 +75,3 @@ func TestPendingTracker_Concurrent(t *testing.T) {
 		}
 	}
 }
-
-func TestTimeoutTimestampSeconds(t *testing.T) {
-	cases := []struct {
-		input    uint64
-		expected uint64
-	}{
-		{1_000_000_000_000, 1_000_000_000}, // nanoseconds → seconds
-		{1_000, 1_000},                     // already seconds, unchanged
-		{0, 0},
-		{1_700_000_000_000_000_000, 1_700_000_000_000_000}, // far-future nanoseconds
-	}
-
-	for _, c := range cases {
-		got := timeoutTimestampSeconds(c.input)
-		if got != c.expected {
-			t.Fatalf("timeoutTimestampSeconds(%d) = %d, want %d", c.input, got, c.expected)
-		}
-	}
-}

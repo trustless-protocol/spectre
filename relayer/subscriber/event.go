@@ -22,6 +22,16 @@ const EVENT_WRITE_ACK_PACKET_FIELD = "write_acknowledgement.encoded_packet_hex"
 const EVENT_ACKNOWLEDGEMENT_FIELD = "write_acknowledgement.encoded_acknowledgement_hex"
 const EVENT_TIMEOUT_PACKET_FIELD = "timeout_packet.encoded_packet_hex"
 
+// normalizeTimeoutSeconds converts IBC v2 timeout timestamps from nanoseconds to seconds.
+// ibc-go stores TimeoutTimestamp in nanoseconds, but the ETH side uses seconds.
+// Values <= 1e12 are assumed to already be in seconds (year ~33658 CE in seconds).
+func normalizeTimeoutSeconds(ts uint64) uint64 {
+	if ts > 1e12 {
+		return ts / 1e9
+	}
+	return ts
+}
+
 type Subscriber struct {
 }
 
@@ -72,6 +82,7 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 
 			ctx.Logger.Printf("[SubscribeCosmos] send_packet received: seq=%d src=%s",
 				packet.Sequence, packet.SourceClient)
+			packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
 			batchBuilder.AddCosmos(services.CosmosPacket{
 				Type:   services.CosmosSend,
 				Packet: &packet,
@@ -118,6 +129,7 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 
 			ctx.Logger.Printf("[SubscribeCosmos] write_ack received: seq=%d src=%s",
 				packet.Sequence, packet.SourceClient)
+			packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
 			batchBuilder.AddCosmos(services.CosmosPacket{
 				Type:     services.CosmosAck,
 				Packet:   &packet,
@@ -145,6 +157,7 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 
 			ctx.Logger.Printf("[SubscribeCosmos] timeout received: seq=%d src=%s",
 				packet.Sequence, packet.SourceClient)
+			packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
 			batchBuilder.AddCosmos(services.CosmosPacket{
 				Type:   services.CosmosTimeout,
 				Packet: &packet,

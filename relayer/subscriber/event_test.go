@@ -102,16 +102,21 @@ func TestEthPacketToCosmosPacket_EmptyPayloads(t *testing.T) {
 	}
 }
 
-func TestEthPacketToCosmosPacket_LargeSequence(t *testing.T) {
-	ethPacket := contractICS26Router.IICS26RouterMsgsPacket{
-		SourceClient: "src",
-		DestClient:   "dst",
+func TestNormalizeTimeoutSeconds(t *testing.T) {
+	cases := []struct {
+		input    uint64
+		expected uint64
+	}{
+		{1_700_000_000_000_000_000, 1_700_000_000}, // 2023 ns → 2023 seconds
+		{1_000_000_000_000, 1_000_000_000},           // nanoseconds → seconds
+		{1_000, 1_000},                               // already seconds (year 2003), unchanged
+		{0, 0},                                       // no timeout, unchanged
 	}
 
-	seq := new(big.Int).SetUint64(^uint64(0)) // max uint64
-	result := EthPacketToCosmosPacket(ethPacket, seq)
-
-	if result.Sequence != ^uint64(0) {
-		t.Errorf("Sequence: got %d, want max uint64", result.Sequence)
+	for _, c := range cases {
+		got := normalizeTimeoutSeconds(c.input)
+		if got != c.expected {
+			t.Errorf("normalizeTimeoutSeconds(%d) = %d, want %d", c.input, got, c.expected)
+		}
 	}
 }

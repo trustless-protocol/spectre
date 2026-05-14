@@ -188,10 +188,9 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 		case CosmosSend:
 			s.BatchBuilder.PendingTracker.Add(*packet.Packet, packet.BlockNumber)
 
-			timeoutSec := timeoutTimestampSeconds(packet.Packet.TimeoutTimestamp)
-			if ethBlockTime > 0 && timeoutSec > 0 && ethBlockTime >= timeoutSec {
+			if ethBlockTime > 0 && packet.Packet.TimeoutTimestamp > 0 && ethBlockTime >= packet.Packet.TimeoutTimestamp {
 				log.Printf("[RecvPacket] Packet seq=%d timed out (timeout=%d <= eth_block_time=%d), skipping relay",
-					packet.Packet.Sequence, timeoutSec, ethBlockTime)
+					packet.Packet.Sequence, packet.Packet.TimeoutTimestamp, ethBlockTime)
 				continue
 			}
 
@@ -426,13 +425,6 @@ func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) {
 	log.Printf("[EthTimeout] seq=%d: relay completed", packet.Packet.Sequence)
 }
 
-func timeoutTimestampSeconds(ts uint64) uint64 {
-	if ts > 1e12 { // nanoseconds if > year 2001 in seconds
-		return ts / 1e9
-	}
-	return ts
-}
-
 func (s *Services) scanForCosmosTimeouts(ctx Context) {
 	pending := s.BatchBuilder.PendingTracker.GetAll()
 	if len(pending) == 0 {
@@ -451,8 +443,7 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 
 	var expired []pendingPacketInfo
 	for _, info := range pending {
-		tsSec := timeoutTimestampSeconds(info.Packet.TimeoutTimestamp)
-		if info.Packet.TimeoutTimestamp > 0 && ethBlockTime >= tsSec {
+		if info.Packet.TimeoutTimestamp > 0 && ethBlockTime >= info.Packet.TimeoutTimestamp {
 			expired = append(expired, info)
 		}
 	}
