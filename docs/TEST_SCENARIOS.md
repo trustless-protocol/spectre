@@ -507,13 +507,42 @@ Send a token transfer from Ethereum to Cosmos (the reverse of the happy path).
 Send many transfers in quick succession to hit the `RateLimitUpgradeable` cap.
 
 **Steps:**
-1. Check the configured rate limit for the `stake` denom.
-2. Send transfers summing to just below the cap (should succeed).
-3. Send one more transfer that crosses the cap.
+1. Complete the happy path first so the wrapped `stake` token already exists on Ethereum.
+2. Resolve the wrapped token and escrow:
+   ```bash
+   cast call <ICS20_ADDRESS> 'ibcERC20Contract(string)(address)' \
+     'transfer/cosmoshub-1/stake' \
+     --rpc-url http://127.0.0.1:<eth_rpc_port>
+
+   cast call <ICS20_ADDRESS> 'getEscrow(string)(address)' \
+     'cosmoshub-1' \
+     --rpc-url http://127.0.0.1:<eth_rpc_port>
+   ```
+3. Configure a rate limit on that escrowed wrapped token.
+   In the current local E2E deployment, `RATE_LIMITER_ROLE` is not wired by default, so you must first grant the selector role on the escrow via the deployed `AccessManager`, then call:
+   ```bash
+   cast send <ESCROW_ADDRESS> 'setRateLimit(address,uint256)' <IBCERC20_ADDRESS> 1500 \
+     --rpc-url http://127.0.0.1:<eth_rpc_port> --private-key $ETH_PRIVATE_KEY
+   ```
+4. Send transfers summing to just below the cap, for example one packet of `1000stake` (should succeed).
+5. Send one more transfer that crosses the cap, for example `600stake`.
 
 **Expected outcome:**
 - The packet that crosses the cap is accepted on Cosmos but reverted on Ethereum by `ICS20Transfer` with a rate-limit error.
 - The relayer submits a write-acknowledgement with an error back to Cosmos so the sender can reclaim funds.
+
+**Observed result on local test:**
+- `PASS`
+- Rate limit was set to `1500`.
+- First packet sent `1000stake` and succeeded.
+- After the first packet, escrow `dailyUsage=1000` and wrapped balance of the faucet was `1500`.
+- Second packet sent `600stake` and was not credited on Ethereum.
+- After the second packet, escrow `dailyUsage` remained `1000` and wrapped balance remained `1500`.
+- Cosmos acknowledgement tx for the failed packet was `F909DEDDBD75D9310A7E4EF23CFE4C5B356F0251E22960DE53684A1508583831`.
+- That tx included `fungible_token_packet acknowledgement = error:"ABCI code: 16: error handling packet: see events for details"`.
+
+**Notes:**
+- The current relayer/CLI setup often reuses `test1` both for manual Cosmos sends and for relayer-submitted Cosmos txs. That can cause `account sequence mismatch` while relaying the final acknowledgement; restarting the relayer is enough to recover and clear the pending historical `WriteAcknowledgement`.
 
 ---
 
@@ -535,6 +564,21 @@ done
 - Final Ethereum balance equals 500 wrapped-stake tokens.
 - All 5 ACKs arrive back on Cosmos.
 
+**Observed result on local test:**
+- `PASS`
+- Local run used an isolated ETH receiver `0x1111111111111111111111111111111111111111`, starting from balance `0`.
+- Five packets were created with `seq=4..8`.
+- ETH receiver final wrapped balance was `500`.
+- Cosmos acknowledgement query ended with `total_count=8`, and the latest five `MsgAcknowledgement` txs corresponded to `seq=4..8`.
+- Relayer logs showed mixed batching due timing:
+  `seq=4` was relayed first,
+  `seq=5` followed,
+  and `seq=6..8` were queued together and later flushed as one Cosmos batch of `3` packets.
+
+**Notes:**
+- If the relayer signer already uses `test1` on Cosmos, avoid using the same account for the rapid manual sends in this test. Using other funded local accounts such as `test2` and `test3` avoids `account sequence mismatch`.
+- In this setup, the `application/x-solidity-abi` encoding patch is still required for the generated Cosmos transfer messages, same as the other Cosmos -> ETH scenarios above.
+
 ---
 
 ## 10. Wrong WASM Checksum During Client Creation
@@ -550,6 +594,17 @@ Pass a checksum that does not match the uploaded WASM binary.
 - Cosmos rejects the `MsgCreateClient` with a checksum-mismatch error.
 - Relayer exits with a descriptive error; no partial state is left on-chain.
 
+**Observed result on local test:**
+- `PASS`
+- `create-clients` failed early with:
+  `wasm checksum 0x0000000000000000000000000000000000000000000000000000000000000000 has not been previously stored on Cosmos`
+- The command exited before any new ICS07 deploy or router migration on Ethereum.
+- The test config file was not rewritten.
+- Cosmos did not create a new wasm client; client-state count remained `1`.
+
+**Notes:**
+- The flow now validates the wasm checksum on Cosmos before mutating ETH state or rewriting config, which aligns the implementation with the intended semantics of this test.
+
 ---
 
 ## 11. Missing or Invalid Environment Variables
@@ -558,6 +613,19 @@ Start the relayer with a missing or malformed `ETH_PRIVATE_KEY` or `COSMOS_PRIVA
 
 **Expected outcome:**
 - Relayer fails at startup with a clear key-load error before attempting any RPC calls.
+
+**Observed result on local test:**
+- `PASS`
+- `env ETH_PRIVATE_KEY= ./relayer start --config config.example.json`
+  failed immediately with:
+  `ETH_PRIVATE_KEY environment variable is required in .env file`
+- `env COSMOS_PRIVATE_KEY=notvalidhex ./relayer start --config config.example.json`
+  failed immediately with:
+  `failed to decode COSMOS_PRIVATE_KEY`
+
+**Notes:**
+- The startup flow now validates both private keys immediately after `.env` is loaded.
+- In both local runs, the command exited before attempting Cosmos or Ethereum RPC connections.
 
 ---
 
@@ -569,6 +637,19 @@ Re-run `go run ./prover/cmd ./bin ../contracts/verifiers` (which generates fresh
 - `WrapperVerifier` dispatches to the old verifier contract whose VK no longer matches the new proving key.
 - `updateClient` reverts on every call (pairing check fails).
 - Fix: redeploy all `Groth16Verifier_N{N}.sol` contracts atomically and re-register them via `WrapperVerifier.setBucket(...)`.
+
+**Observed result on local test:**
+- `PASS`
+- I generated fresh prover artifacts into `/private/tmp/test12-bin` and started relayer with
+  `PROVER_BIN_DIR=/private/tmp/test12-bin`, while keeping the existing on-chain verifier set unchanged.
+- Sending a new Cosmos -> ETH packet produced Cosmos tx
+  `2BA3AFC0FF4C9FFDF37B5345360201F55C043B0708D4D3F0943F2B38946E9C74`
+  with `seq=9`.
+- Relayer built the proof locally, but the on-chain `updateClient` tx reverted:
+  `0x9151f794bc6bfaa5171b86b25ff1df0d5976fc7240b7bf402c495d4676cc1314`
+  and returned revert data `0xd611c318`.
+- The ETH receiver `0x2222222222222222222222222222222222222222` stayed at balance `0`,
+  confirming the packet was not credited after the verifier mismatch.
 
 ---
 

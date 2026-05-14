@@ -64,11 +64,34 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
 ```
 1. User calls ICS20Transfer.sendTransfer() on Ethereum
 2. Tokens locked in Escrow (or IBCERC20 burned)
-3. ICS26Router records packet commitment
-4. Go Relayer detects SendPacket event (subscriber/)
-5. Relayer builds MsgRecvPacket with membership proof
-6. Cosmos chain verifies via Ethereum light client (CosmWasm)
-7. Tokens released on Cosmos side
+3. ICS26Router records packet commitment; emits SendPacket event
+4. Go Relayer detects SendPacket via Ethereum log subscription (subscriber/)
+5. ethProofHeight: poll Beacon API GetFinalityUpdate (≤ 60 × 10 s) until the
+   event's exec-block is finalised
+6. UpdateEthClient: relay sync-committee updates into 08-wasm on Cosmos so
+   LatestExecutionBlockNumber catches up to the event
+7. Fetch ETH storage proof at the finalised block via
+   client.GetEthMembershipProof(ICS26_STORAGE_SLOT, clientID||1||seq)
+8. Broadcast MsgRecvPacket{packet, proof, height={0, LatestSlot}, signer}
+   on Cosmos; 08-wasm verifies membership, then ICS Core dispatches to the
+   destination app (mint / unlock)
+9. If the packet times out before step 8 lands, timeoutEthSend bounces back
+   through Groth16ICS07Tendermint to submit MsgTimeoutPacket on ETH
+```
+
+## Request Flow: Cosmos-originated Timeout (background)
+
+```
+1. Every cosmos send_packet logged into BatchBuilder.PendingTracker on
+   intake
+2. scanForCosmosTimeouts (30 s tick) walks the tracker, picks entries whose
+   TimeoutTimestamp < current ETH block.time
+3. For each expired packet, build a non-membership proof of the receipt
+   path on ETH at the finalised height
+4. Bundle one MsgUpdateClient + N MsgTimeout into a single Cosmos tx; on
+   success, remove the entries from the tracker
+5. PurgeStale(1h) drops any entry that never settles, preventing tracker
+   growth from leaked packets
 ```
 
 ## Request Flow: ACK Relay (Ethereum → Cosmos)
@@ -151,7 +174,7 @@ Cross-validated via `test/solidity-ibc/EncodeTest.t.sol`.
 | `relayer/prover/bin/` | binary | Per-bucket circuit artifacts (`bin/n{N}/{r1cs,pk,vk}.bin`) |
 | `relayer/client/` | Go | Tendermint RPC + Ethereum Beacon API + Ethereum light client state |
 | `relayer/runner/` | Go | Service runner utilities |
-| `relayer/services/` | Go | Context, Worker, batch processing, relay loop |
+| `relayer/services/` | Go | Context, Worker, batch processing, relay loop, PendingPacketTracker (Cosmos→ETH timeout fallback) |
 | `relayer/subscriber/` | Go | CometBFT WebSocket + Ethereum event listeners |
 | `relayer/transaction/` | Go | ETH + Cosmos transaction submission (single + batch) |
 | `relayer/bindings/` | Go | Auto-generated contract bindings |

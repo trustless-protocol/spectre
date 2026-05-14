@@ -207,3 +207,94 @@ Lưu ý khi chạy local:
 - `timeoutTimestamp` trong setup này phải dùng `unix seconds`
 - nếu dùng account `test1` làm signer cho relayer thì số dư ví Cosmos sẽ bị nhiễu do relayer cũng trả gas từ cùng account đó
 - vì vậy với case `ETH -> Cosmos`, bằng chứng sạch nhất là event `coin_received 500stake` và `fungible_token_packet success=true` trong tx recv trên Cosmos
+
+## 8
+
+pass
+
+Kết quả local:
+
+- set rate limit `1500` cho wrapped `stake` trên escrow
+- packet đầu gửi `1000stake` thành công
+- sau packet đầu, `dailyUsage=1000` và wrapped balance của faucet tăng lên `1500`
+- packet tiếp theo gửi `600stake` không được credit trên ETH
+- sau packet thứ hai, `dailyUsage` vẫn `1000` và wrapped balance vẫn `1500`
+- phía Cosmos nhận `MsgAcknowledgement` error cho `seq=3`
+
+Lưu ý khi chạy local:
+
+- deployment E2E hiện chưa wire sẵn `RATE_LIMITER_ROLE` cho escrow, nên cần bật role này trên `AccessManager` rồi mới `setRateLimit(...)` được
+- nếu relayer và các tx manual cùng dùng account `test1` trên Cosmos thì có thể gặp `account sequence mismatch`; restart relayer là đủ để recovery và gửi lại ack pending
+
+## 9
+
+pass
+
+Kết quả local:
+
+- gửi 5 packet liên tiếp với `seq=4..8`
+- phía ETH nhận đủ cả 5 packet
+- balance cuối của receiver ETH mới là `500`
+- phía Cosmos có đủ 5 `MsgAcknowledgement` tương ứng `seq=4..8`
+
+Lưu ý khi chạy local:
+
+- nếu relayer signer đang dùng `test1` trên Cosmos thì không nên dùng lại `test1` để bắn packet nhanh; dùng account khác như `test2`, `test3` sẽ tránh lỗi `account sequence mismatch`
+- khi reuse môi trường cũ, nên dùng một receiver ETH mới có balance `0` để kết quả cuối `500` dễ kiểm tra hơn
+
+## 10
+
+pass
+
+Kết quả local:
+
+- `create-clients` fail sớm ở bước preflight checksum
+- lỗi trả về là:
+  `wasm checksum 0x0000000000000000000000000000000000000000000000000000000000000000 has not been previously stored on Cosmos`
+- không có deploy ICS07 mới trên ETH
+- config tạm không bị rewrite `ics07_client`
+- Cosmos không tạo thêm wasm client mới, tổng số client state vẫn là `1`
+
+Lưu ý khi chạy local:
+
+- flow đã được sửa để validate checksum trên Cosmos trước khi mutate state bên ETH/config
+
+## 11
+
+pass
+
+Kết quả local:
+
+- start relayer với `ETH_PRIVATE_KEY` rỗng fail ngay với:
+  `ETH_PRIVATE_KEY environment variable is required in .env file`
+- start relayer với `COSMOS_PRIVATE_KEY=notvalidhex` fail ngay với:
+  `failed to decode COSMOS_PRIVATE_KEY`
+
+Lưu ý khi chạy local:
+
+- flow startup đã được sửa để validate key ngay sau `godotenv.Load()`
+- relayer fail trước khi dial RPC Cosmos hoặc Ethereum
+
+## 12
+
+pass
+
+Kết quả local:
+
+- generate bộ artifact prover mới vào thư mục tạm và start relayer với
+  `PROVER_BIN_DIR=/private/tmp/test12-bin`
+- không redeploy `Groth16Verifier_N{N}.sol` và không update `WrapperVerifier`
+- gửi 1 packet Cosmos -> ETH mới, tx hash Cosmos là
+  `2BA3AFC0FF4C9FFDF37B5345360201F55C043B0708D4D3F0943F2B38946E9C74`,
+  `seq=9`
+- relayer build proof local thành công nhưng `updateClient` trên ETH revert, tx hash là
+  `0x9151f794bc6bfaa5171b86b25ff1df0d5976fc7240b7bf402c495d4676cc1314`
+- revert data trả về là `0xd611c318`
+- receiver ETH `0x2222222222222222222222222222222222222222` giữ nguyên balance `0`
+
+Lưu ý khi chạy local:
+
+- case này xác nhận mismatch giữa proving key mới và verifying key cũ trên chain sẽ làm mọi lần
+  `updateClient` fail
+- fix vận hành là redeploy toàn bộ verifier tương ứng và re-register bucket trong
+  `WrapperVerifier` trước khi dùng bộ artifact prover mới

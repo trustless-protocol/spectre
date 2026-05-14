@@ -5,6 +5,35 @@ set -euxo pipefail
 CONTAINER_NAME="ibc-wasm-simd"
 IMAGE="ghcr.io/cosmos/ibc-go-wasm-simd:modules-light-clients-08-wasm-v10.3.0"
 CHAIN_ID="test-ibc-eth"
+RELAYER_ENV_FILE="${RELAYER_ENV_FILE:-relayer/.env}"
+HOST_GAIA_HOME="${HOST_GAIA_HOME:-$HOME/.gaia}"
+
+upsert_env_var() {
+  file="$1"
+  key="$2"
+  value="$3"
+  tmp="$(mktemp)"
+
+  mkdir -p "$(dirname "$file")"
+  touch "$file"
+
+  awk -v key="$key" -v value="$value" '
+    BEGIN { updated = 0 }
+    $0 ~ ("^" key "=") {
+      print key "=\"" value "\""
+      updated = 1
+      next
+    }
+    { print }
+    END {
+      if (!updated) {
+        print key "=\"" value "\""
+      }
+    }
+  ' "$file" > "$tmp"
+
+  mv "$tmp" "$file"
+}
 
 # Stop and remove existing container
 docker rm -f $CONTAINER_NAME 2>/dev/null || true
@@ -67,7 +96,21 @@ docker exec $CONTAINER_NAME simd genesis validate-genesis
 # Export test1 private key (for relayer)
 echo ""
 echo "=== test1 private key (hex) ==="
-docker exec $CONTAINER_NAME simd keys export test1 --unarmored-hex --unsafe --keyring-backend test -y
+TEST1_PRIVATE_KEY=$(docker exec $CONTAINER_NAME simd keys export test1 --unarmored-hex --unsafe --keyring-backend test -y)
+echo "$TEST1_PRIVATE_KEY"
+echo ""
+
+# Update relayer env with the fresh Cosmos signer for this chain
+upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_PRIVATE_KEY" "$TEST1_PRIVATE_KEY"
+upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_CHAIN_ID" "$CHAIN_ID"
+echo "Updated $RELAYER_ENV_FILE with Cosmos signer"
+echo ""
+
+# Sync the container home so host-side `gaiad --home ~/.gaia` commands work too.
+rm -rf "$HOST_GAIA_HOME"
+mkdir -p "$HOST_GAIA_HOME"
+docker cp "$CONTAINER_NAME":/root/.simapp/. "$HOST_GAIA_HOME"
+echo "Synced Cosmos home to $HOST_GAIA_HOME"
 echo ""
 
 # Print test1 address

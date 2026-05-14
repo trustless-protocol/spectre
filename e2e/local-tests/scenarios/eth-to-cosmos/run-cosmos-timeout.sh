@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Local E2E scenario: ETH → Cosmos packet timeout on the Cosmos side.
+#
+# This script sends a transfer from Ethereum with a short timeout while the
+# relayer is running. The packet is considered "timed out on the Cosmos side"
+# when the timeout expires before the relayer can build the ZK proof and
+# deliver the packet to Cosmos. The relayer then detects the expired packet,
+# builds a non-membership proof from Cosmos, and calls timeoutPacket() on
+# Ethereum's ICS26Router to refund the sender.
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../../.." && pwd)"
 
@@ -9,8 +18,8 @@ source "$REPO_ROOT/e2e/local-tests/lib/cosmos.sh"
 
 ENV_FILE="${ENV_FILE:-$REPO_ROOT/relayer/.env}"
 CONFIG_FILE="${CONFIG_FILE:-$REPO_ROOT/relayer/config.json}"
-STATE_DIR="$REPO_ROOT/e2e/local-tests/.state"
-RELAYER_PID_FILE="$REPO_ROOT/relayer/relayer.pid"
+RELAYER_PID_FILE="${RELAYER_PID_FILE:-$REPO_ROOT/relayer/relayer.pid}"
+RELAYER_DIR="$REPO_ROOT/relayer"
 
 KURTOSIS_ENCLAVE="${KURTOSIS_ENCLAVE:-my-testnet}"
 COSMOS_BIN="${COSMOS_BIN:-gaiad}"
@@ -30,7 +39,7 @@ config_value() {
   fi
 }
 
-load_timeout_contract_addresses() {
+load_scenario_contract_addresses() {
   if [ -z "${ICS26_ADDRESS:-}" ]; then
     ICS26_ADDRESS="$(config_value ics26_address)"
   fi
@@ -109,7 +118,7 @@ if [ -z "${ETH_RPC_URL:-}" ] && [ -f "$CONFIG_FILE" ]; then
   ETH_RPC_URL="$(config_value eth_rpc_url)"
 fi
 
-load_timeout_contract_addresses
+load_scenario_contract_addresses
 
 # Read cosmos_wasm_client_id from config
 if [ -z "${COSMOS_WASM_CLIENT_ID:-}" ] && [ -f "$CONFIG_FILE" ]; then
@@ -122,6 +131,16 @@ load_cosmos_receiver
 
 uint_value() {
   awk '{ print $1 }'
+}
+
+# Big-integer helpers (bash arithmetic overflows > 2^63)
+bc_sub1() {
+  echo "$1 - 1" | bc
+}
+
+bc_ge() {
+  local a="$1" b="$2"
+  [ "$(echo "$a >= $b" | bc)" = "1" ]
 }
 
 if [ -z "${ETH_RPC_URL:-}" ]; then
@@ -151,7 +170,7 @@ if [ -z "${ERC20_ADDRESS:-}" ] || [ -z "${ICS20_ADDRESS:-}" ]; then
   exit 1
 fi
 
-# ---- Ensure relayer is running ----
+# ─── Ensure relayer is running ───
 if [ -f "$RELAYER_PID_FILE" ]; then
   RELAYER_PID="$(cat "$RELAYER_PID_FILE")"
   if kill -0 "$RELAYER_PID" 2>/dev/null; then
@@ -185,7 +204,7 @@ BEFORE_COSMOS_BALANCE="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_V
 log_kv "Cosmos voucher balance" "$BEFORE_COSMOS_BALANCE"
 
 # ─── Send transfer with short timeout ───
-TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-10}"
+TIMEOUT_SECONDS="${TIMEOUT_SECONDS:-15}"
 TIMEOUT=$(($(date +%s) + TIMEOUT_SECONDS))
 log_header "Sending ICS20Transfer (${TIMEOUT_SECONDS}s timeout)"
 log_kv "Timeout" "epoch $TIMEOUT ($(date -d "@$TIMEOUT" '+%H:%M:%S' 2>/dev/null || echo 'N/A'))"
@@ -209,9 +228,11 @@ log "Transfer submitted (waiting for timeout...)"
 MAX_POLLS=120
 POLL_INTERVAL=15
 poll=0
+REFUNDED=false
 
-REFUND_THRESHOLD=$((BEFORE_ETH_BALANCE - 1))
+REFUND_THRESHOLD="$(bc_sub1 "$BEFORE_ETH_BALANCE")"
 
+log_header "Polling for Refund"
 while [ $poll -lt $MAX_POLLS ]; do
   sleep $POLL_INTERVAL
   poll=$((poll + 1))
@@ -223,7 +244,7 @@ while [ $poll -lt $MAX_POLLS ]; do
   fi
   CURRENT_COSMOS="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_VOUCHER_DENOM" --node "$COSMOS_RPC_URL" --chain-id "$COSMOS_CHAIN_ID" --output json 2>/dev/null | jq -r '.balance.amount // "0"')"
 
-  if [ "$CURRENT_ETH_BALANCE" -ge "$REFUND_THRESHOLD" ] 2>/dev/null; then
+  if bc_ge "$CURRENT_ETH_BALANCE" "$REFUND_THRESHOLD"; then
     log_ok "[poll ${poll}/${MAX_POLLS}] ERC20 refunded │ sender=${CURRENT_ETH_BALANCE} (target ≥ ${REFUND_THRESHOLD})"
     REFUNDED=true
     break
@@ -246,7 +267,7 @@ AFTER_COSMOS_BALANCE="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_VO
 log_kv "Cosmos voucher" "$AFTER_COSMOS_BALANCE"
 
 # ─── Summary ───
-log_header "Timeout Test Summary"
+log_header "Cosmos Timeout Test Summary"
 log_kv "Direction" "ETH → Cosmos"
 log_kv "Amount sent" "${AMOUNT} wei"
 log_kv "Timeout" "${TIMEOUT_SECONDS}s"
@@ -258,7 +279,7 @@ if [ "${REFUNDED:-false}" = "true" ]; then
   log "  • Called timeoutPacket() on Ethereum ICS26Router"
   log "  • Sender refunded (ERC20 balance returned to original)"
   log "  • Cosmos voucher = 0 (packet never relayed)"
-elif [ "$AFTER_ETH_BALANCE" -ge "$REFUND_THRESHOLD" ] 2>/dev/null; then
+elif bc_ge "$AFTER_ETH_BALANCE" "$REFUND_THRESHOLD"; then
   log_ok "RESULT: PASS (detected after final poll)"
   log "  • Sender ERC20 balance returned to original"
 elif [ "$AFTER_COSMOS_BALANCE" = "0" ]; then
@@ -266,7 +287,7 @@ elif [ "$AFTER_COSMOS_BALANCE" = "0" ]; then
   log_warn "  • Packet was NOT relayed to Cosmos (timeout prevented relay)"
   log_warn "  • ERC20 balance still decreased — refund not yet submitted"
   log_warn "  • The relayer may still be building the ZK proof"
-  log_warn "  • Check relayer logs: tail -f $REPO_ROOT/relayer/relayer.log"
+  log_warn "  • Check relayer logs: tail -f $RELAYER_DIR/relayer.log"
 else
   log_err "RESULT: FAIL"
   log_err "  • Packet WAS relayed to Cosmos before timeout"
