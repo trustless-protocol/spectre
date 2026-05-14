@@ -3,19 +3,28 @@
 set -euxo pipefail
 
 CONTAINER_NAME="ibc-wasm-simd"
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+WASM_FILE="${WASM_FILE:-$SCRIPT_DIR/e2e/interchaintestv8/wasm/cw_ics08_wasm_eth.wasm.gz}"
 
-# Generate proposal.json locally from wasm.sh (lines 6-17 are the JSON body, line 5 is echo '{', line 18 is }' > ...)
-echo '{' > /tmp/proposal.json
-sed -n '6,17p' wasm.sh >> /tmp/proposal.json
-echo '}' >> /tmp/proposal.json
+if [ ! -f "$WASM_FILE" ]; then
+  echo "error: wasm file not found: $WASM_FILE" >&2
+  exit 1
+fi
 
-# Copy proposal.json into container
-docker cp /tmp/proposal.json $CONTAINER_NAME:/root/proposal.json
+# Copy wasm into container
+docker cp "$WASM_FILE" $CONTAINER_NAME:/root/cw_ics08_wasm_eth.wasm.gz
 
-# Submit governance proposal
-docker exec $CONTAINER_NAME simd tx gov submit-proposal /root/proposal.json \
-  --from test1 --keyring-backend test --gas 200000000 --fees 200000000stake \
-  --chain-id test-ibc-eth -y
+# Submit store-code proposal through the current simd ibc-wasm CLI
+docker exec $CONTAINER_NAME simd tx ibc-wasm store-code /root/cw_ics08_wasm_eth.wasm.gz \
+  --from test1 \
+  --keyring-backend test \
+  --gas 200000000 \
+  --fees 200000000stake \
+  --chain-id test-ibc-eth \
+  --title ibc-eureka \
+  --summary ibc-eureka \
+  --deposit 10000000stake \
+  -y
 
 sleep 5
 

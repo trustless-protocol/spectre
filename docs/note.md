@@ -190,3 +190,20 @@ Lưu ý:
 - test local đang dùng 2 header hợp lệ khác height nhưng khác `appHash`, chưa phải same-height equivocation đúng nghĩa trên một Gaia honest chain
 
 pass
+
+## 7
+
+pass
+
+Kết quả local:
+
+- happy path `Cosmos -> ETH` mint ra `1000` wrapped `stake` trên ETH
+- sau đó `ETH -> Cosmos` gửi ngược `500`
+- balance wrapped token trên ETH còn `500`
+- phía Cosmos nhận lại `500stake` thành công qua `MsgRecvPacket`
+
+Lưu ý khi chạy local:
+
+- `timeoutTimestamp` trong setup này phải dùng `unix seconds`
+- nếu dùng account `test1` làm signer cho relayer thì số dư ví Cosmos sẽ bị nhiễu do relayer cũng trả gas từ cùng account đó
+- vì vậy với case `ETH -> Cosmos`, bằng chứng sạch nhất là event `coin_received 500stake` và `fungible_token_packet success=true` trong tx recv trên Cosmos

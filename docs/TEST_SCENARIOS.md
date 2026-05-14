@@ -19,13 +19,17 @@ kurtosis enclave rm -f my-testnet
 curl -s <eth_beacon_api_ur>/eth/v1/beacon/states/head/finality_checkpoints
 curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 
-# 4. Then start Cosmos and submit the Ethereum LC WASM via governance
+# 4. Then start Cosmos and submit the Ethereum LC WASM.
 #    This requires a wasm-enabled Cosmos binary (08-wasm), e.g. simd:
 #    COSMOS_BIN=simd ./run_cosmos_node.sh
 #    COSMOS_BIN=simd ./wasm.sh
 #    If you only have stock gaiad, use the container flow instead:
 #    ./run_cosmos_node_docker.sh
 #    ./wasm_docker.sh
+#    The container flow now copies
+#    e2e/interchaintestv8/wasm/cw_ics08_wasm_eth.wasm.gz into the simd container
+#    and runs `simd tx ibc-wasm store-code` directly, instead of generating an
+#    older proposal.json payload.
 ./run_cosmos_node.sh
 ./wasm.sh
 
@@ -63,6 +67,8 @@ gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21e
 | gaiad tx broadcast /dev/stdin \
     --node tcp://127.0.0.1:26657 \
     -y
+
+# timeoutTimestamp in this setup is interpreted as unix seconds, not nanoseconds.
 
 
 # 8. check
@@ -453,19 +459,46 @@ Send a token transfer from Ethereum to Cosmos (the reverse of the happy path).
 
 **Steps:**
 1. Complete the happy path first so `IBCERC20` tokens exist on Ethereum.
-2. Approve the `ICS20Transfer` contract to spend the `IBCERC20` tokens:
+2. Resolve the wrapped token address on Ethereum:
+   ```bash
+   cast call <ICS20_ADDRESS> 'ibcERC20Contract(string)(address)' \
+     'transfer/cosmoshub-1/stake' \
+     --rpc-url http://127.0.0.1:<eth_rpc_port>
+   ```
+3. Approve the `ICS20Transfer` contract to spend the `IBCERC20` tokens:
    ```bash
    cast send <IBCERC20_ADDRESS> 'approve(address,uint256)' <ICS20_ADDRESS> 500 \
      --rpc-url http://127.0.0.1:<eth_rpc_port> --private-key $ETH_PRIVATE_KEY
    ```
-3. Call `ICS20Transfer.sendTransfer` on Ethereum.
-4. Let the relay loop pick it up.
-5. Verify that the original Cosmos sender receives the tokens back.
+4. Call `ICS20Transfer.sendTransfer` on Ethereum:
+   ```bash
+   ABS_TIMEOUT=$(($(date +%s) + 600))
+
+   cast send <ICS20_ADDRESS> \
+     'sendTransfer((address,uint256,string,string,string,uint64,string))' \
+     "(<IBCERC20_ADDRESS>,500,'<cosmos_receiver>','cosmoshub-1','transfer',$ABS_TIMEOUT,'')" \
+     --rpc-url http://127.0.0.1:<eth_rpc_port> \
+     --private-key $ETH_PRIVATE_KEY
+   ```
+5. Let the relay loop pick it up.
+6. Verify that the original Cosmos receiver gets the tokens back.
 
 **Expected outcome:**
 - Tokens are burned/escrowed on Ethereum.
 - Cosmos chain credits the recipient.
 - Ethereum light client on Cosmos is updated via the Go relayer.
+
+**Observed result on local test:**
+- `PASS`
+- Happy path first minted `1000` wrapped `stake` on ETH token `0x016f5f33DbCb653e6393698Beba9DC19d828D75e`.
+- Reverse transfer then sent `500` back to Cosmos from Ethereum tx `0x071aa593c808f88c413e9ce85284689599c72c24a82d64fde0e655942a385cc9`.
+- After relay completion, `balanceOf(faucet)` on that wrapped token was `500`.
+- Cosmos receive tx was `66DF08567603D5D9E841937E78F97B050655532E4D9FA9B8EA1109B2EF0C31B5`.
+- That tx included `coin_received=500stake` and `fungible_token_packet success=true`.
+
+**Notes:**
+- In this setup, `timeoutTimestamp` is interpreted as unix seconds.
+- If the relayer signer reuses the same Cosmos account as the recipient, wallet balance alone is noisy because relayer fees are paid from that account. For verification, prefer the `coin_received` and `fungible_token_packet` events in the Cosmos recv tx.
 
 ---
 
