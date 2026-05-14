@@ -463,24 +463,24 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 
 	log.Printf("[CosmosTimeoutScan] Found %d expired packets, processing timeouts", len(expired))
 
-	for _, info := range expired {
-		s.timeoutCosmosSend(ctx, info.Packet)
-	}
-}
-
-func (s *Services) timeoutCosmosSend(ctx Context, packet channeltypesv2.Packet) {
-	log.Printf("[CosmosTimeout] seq=%d: packet expired, preparing timeout proof", packet.Sequence)
-
 	if err := s.worker.UpdateEthClient(ctx); err != nil {
-		log.Printf("[CosmosTimeout] seq=%d: failed to update ETH client: %v", packet.Sequence, err)
+		log.Printf("[CosmosTimeoutScan] Failed to update ETH client: %v", err)
 		return
 	}
 
 	ethClientState, err := client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
 	if err != nil {
-		log.Printf("[CosmosTimeout] seq=%d: failed to get ETH client state: %v", packet.Sequence, err)
+		log.Printf("[CosmosTimeoutScan] Failed to get ETH client state: %v", err)
 		return
 	}
+
+	for _, info := range expired {
+		s.timeoutCosmosSendWithState(ctx, info.Packet, ethClientState)
+	}
+}
+
+func (s *Services) timeoutCosmosSendWithState(ctx Context, packet channeltypesv2.Packet, ethClientState *client.EthereumClientState) {
+	log.Printf("[CosmosTimeout] seq=%d: packet expired, preparing timeout proof", packet.Sequence)
 
 	receiptPath := ethPath(packet.DestinationClient, packet.Sequence, 2)
 	proofBytes, err := client.GetEthNonMembershipProof(
