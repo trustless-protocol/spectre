@@ -594,6 +594,17 @@ Pass a checksum that does not match the uploaded WASM binary.
 - Cosmos rejects the `MsgCreateClient` with a checksum-mismatch error.
 - Relayer exits with a descriptive error; no partial state is left on-chain.
 
+**Observed result on local test:**
+- `PASS`
+- `create-clients` failed early with:
+  `wasm checksum 0x0000000000000000000000000000000000000000000000000000000000000000 has not been previously stored on Cosmos`
+- The command exited before any new ICS07 deploy or router migration on Ethereum.
+- The test config file was not rewritten.
+- Cosmos did not create a new wasm client; client-state count remained `1`.
+
+**Notes:**
+- The flow now validates the wasm checksum on Cosmos before mutating ETH state or rewriting config, which aligns the implementation with the intended semantics of this test.
+
 ---
 
 ## 11. Missing or Invalid Environment Variables
@@ -602,6 +613,19 @@ Start the relayer with a missing or malformed `ETH_PRIVATE_KEY` or `COSMOS_PRIVA
 
 **Expected outcome:**
 - Relayer fails at startup with a clear key-load error before attempting any RPC calls.
+
+**Observed result on local test:**
+- `PASS`
+- `env ETH_PRIVATE_KEY= ./relayer start --config config.example.json`
+  failed immediately with:
+  `ETH_PRIVATE_KEY environment variable is required in .env file`
+- `env COSMOS_PRIVATE_KEY=notvalidhex ./relayer start --config config.example.json`
+  failed immediately with:
+  `failed to decode COSMOS_PRIVATE_KEY`
+
+**Notes:**
+- The startup flow now validates both private keys immediately after `.env` is loaded.
+- In both local runs, the command exited before attempting Cosmos or Ethereum RPC connections.
 
 ---
 
@@ -613,6 +637,19 @@ Re-run `go run ./prover/cmd ./bin ../contracts/verifiers` (which generates fresh
 - `WrapperVerifier` dispatches to the old verifier contract whose VK no longer matches the new proving key.
 - `updateClient` reverts on every call (pairing check fails).
 - Fix: redeploy all `Groth16Verifier_N{N}.sol` contracts atomically and re-register them via `WrapperVerifier.setBucket(...)`.
+
+**Observed result on local test:**
+- `PASS`
+- I generated fresh prover artifacts into `/private/tmp/test12-bin` and started relayer with
+  `PROVER_BIN_DIR=/private/tmp/test12-bin`, while keeping the existing on-chain verifier set unchanged.
+- Sending a new Cosmos -> ETH packet produced Cosmos tx
+  `2BA3AFC0FF4C9FFDF37B5345360201F55C043B0708D4D3F0943F2B38946E9C74`
+  with `seq=9`.
+- Relayer built the proof locally, but the on-chain `updateClient` tx reverted:
+  `0x9151f794bc6bfaa5171b86b25ff1df0d5976fc7240b7bf402c495d4676cc1314`
+  and returned revert data `0xd611c318`.
+- The ETH receiver `0x2222222222222222222222222222222222222222` stayed at balance `0`,
+  confirming the packet was not credited after the verifier mismatch.
 
 ---
 
