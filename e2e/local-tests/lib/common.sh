@@ -219,6 +219,64 @@ build_relayer_if_needed() {
   fi
 }
 
+uint_value() {
+  awk '{ print $1 }'
+}
+
+# Big-integer helpers (bash arithmetic overflows > 2^63)
+bc_sub1() {
+  echo "$1 - 1" | bc
+}
+
+bc_ge() {
+  local a="$1" b="$2"
+  [ "$(echo "$a >= $b" | bc)" = "1" ]
+}
+
+poll_eth_balance() {
+  local token="$1" address="$2" target="$3" timeout_sec="${4:-120}" poll_interval="${5:-15}"
+  local poll=0 current
+  while [ $poll -lt "$timeout_sec" ]; do
+    current="$(cast call "$token" 'balanceOf(address)(uint256)' "$address" --rpc-url "${ETH_RPC_URL:?}" 2>/dev/null | uint_value || true)"
+    if [ "$current" = "$target" ] 2>/dev/null || { [ -n "$current" ] && [ -n "$target" ] && bc_ge "$current" "$target"; } 2>/dev/null; then
+      echo "$current"
+      return 0
+    fi
+    sleep "$poll_interval"
+    poll=$((poll + poll_interval))
+  done
+  echo "$current"
+  return 1
+}
+
+get_escrow_address() {
+  local ics20="$1" client_id="$2"
+  cast call "$ics20" 'getEscrow(string)(address)' "$client_id" --rpc-url "${ETH_RPC_URL:?}" 2>/dev/null || true
+}
+
+derive_ibc_denom() {
+  local trace="$1"
+  printf 'ibc/%s\n' "$(printf '%s' "$trace" | sha256sum | awk '{ print toupper($1) }')"
+}
+
+require_relayer_running() {
+  local pid_file="${1:-$REPO_ROOT/relayer/relayer.pid}"
+  if [ -f "$pid_file" ]; then
+    local pid
+    pid="$(cat "$pid_file")"
+    if kill -0 "$pid" 2>/dev/null; then
+      log_ok "Relayer running (PID $pid)"
+      return 0
+    else
+      log_err "Relayer PID file exists but process not running"
+      return 1
+    fi
+  else
+    log_err "Relayer not running (no PID file at $pid_file)"
+    return 1
+  fi
+}
+
 update_relayer_deploy_config() {
   local config_file="$1"
   local eth_rpc="$2"

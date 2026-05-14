@@ -44,6 +44,25 @@ upsert_env_var() {
   mv "$tmp" "$file"
 }
 
+poll_cosmos_balance() {
+  local address="$1" denom="$2" target="$3" timeout_sec="${4:-120}" poll_interval="${5:-15}"
+  local poll=0 current
+  while [ $poll -lt "$timeout_sec" ]; do
+    current="$("$COSMOS_BIN" query bank balance "$address" "$denom" \
+      --node "${COSMOS_RPC_URL:-http://127.0.0.1:26657}" \
+      --chain-id "${COSMOS_CHAIN_ID:-test-ibc-eth}" \
+      --output json 2>/dev/null | jq -r '.balance.amount // "0"' || true)"
+    if [ "$current" = "$target" ] 2>/dev/null; then
+      echo "$current"
+      return 0
+    fi
+    sleep "$poll_interval"
+    poll=$((poll + poll_interval))
+  done
+  echo "$current"
+  return 1
+}
+
 wait_for_cosmos_block() {
   local before after
   before="$("$COSMOS_BIN" status --node "${COSMOS_RPC_URL:-http://127.0.0.1:26657}" 2>/dev/null | jq -r '.sync_info.latest_block_height // .SyncInfo.latest_block_height // empty')"
