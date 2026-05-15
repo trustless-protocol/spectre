@@ -42,8 +42,8 @@ type EcipProver struct {
 }
 
 // NewProver loads every bucket's r1cs, proving key, and verifying key from
-// binDir/n{N}/{r1cs,pk,vk}.bin. Buckets missing any required artifact are
-// skipped, which lets local setups run with only a subset of generated
+// binDir/n{N}/{r1cs,pk,vk}.bin. It errors if any bucket's artifacts are
+// missing — the operator must run `cmd/setup-circuits` first.
 func NewProver(binDir string) (*EcipProver, error) {
 	log.Printf("[NewProver] loading artifacts from %s", binDir)
 	p := &EcipProver{byBucket: make(map[int]*bucketArtifacts, len(Buckets))}
