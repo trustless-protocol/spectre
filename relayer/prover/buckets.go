@@ -11,21 +11,12 @@ var Buckets = []int{4}
 // exceeds the largest bucket — the operator must add a larger bucket and
 // recompile.
 func SmallestBucketGEQ(n int) (int, error) {
-	return SmallestBucketGEQFrom(Buckets, n)
-}
-
-// SmallestBucketGEQFrom returns the smallest bucket size ≥ n from the provided
-// ordered bucket list.
-func SmallestBucketGEQFrom(buckets []int, n int) (int, error) {
-	if len(buckets) == 0 {
-		return 0, fmt.Errorf("no buckets configured")
-	}
-	for _, b := range buckets {
+	for _, b := range Buckets {
 		if b >= n {
 			return b, nil
 		}
 	}
-	return 0, fmt.Errorf("signer count %d exceeds largest bucket %d", n, buckets[len(buckets)-1])
+	return 0, fmt.Errorf("signer count %d exceeds largest bucket %d", n, Buckets[len(Buckets)-1])
 }
 
 // MaxBucket returns the largest configured bucket.

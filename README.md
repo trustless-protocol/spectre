@@ -72,7 +72,6 @@ kurtosis enclave rm -f my-testnet
 ./run_eth_node.sh        # Kurtosis Ethereum testnet + deploys core contracts
 # Poll until finalized.epoch > 0:
 curl -s <eth_beacon_api_ur>/eth/v1/beacon/states/head/finality_checkpoints
-curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 
 # 4. Then start Cosmos and submit the Ethereum LC WASM via governance
 #    This requires a wasm-enabled Cosmos binary (08-wasm), e.g. simd:
@@ -89,8 +88,6 @@ curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 ./relayer create-clients \
   --config config.json \
   --wasm-checksum <hex-from-wasm.sh>
-
-./relayer create-clients  --config config.example.json --wasm-checksum 0xd24688886ed8cec00c667fa69c173fbab9a08c75900ce18afe10517c82e55592
 
 # 6. Start the bi-directional relay loop
 ./relayer start --config config.example.json
