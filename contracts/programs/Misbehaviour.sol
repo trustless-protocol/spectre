@@ -120,7 +120,12 @@ contract Misbehaviour is IMisbehaviour {
             });
         }
 
-        if (misbehaviour_.header1.signedHeader.header.appHash == misbehaviour_.header2.signedHeader.header.appHash) {
+        // Tendermint misbehaviour at the same logical height is defined by
+        // conflicting signed block IDs, not only by appHash divergence. Use
+        // the commit block hash that validators actually signed so conflicts on
+        // validatorsHash / nextValidatorsHash / timestamp / lastCommitHash /
+        // other header fields are also detected.
+        if (misbehaviour_.header1.signedHeader.commit.blockId.hashData == misbehaviour_.header2.signedHeader.commit.blockId.hashData) {
             revert MisbehaviourNotDetected();
         }
     }
