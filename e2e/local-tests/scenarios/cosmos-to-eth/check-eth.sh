@@ -27,12 +27,13 @@ COSMOS_NATIVE_DENOM="${COSMOS_NATIVE_DENOM:-stake}"
 require_cmd cast
 require_cmd jq
 discover_kurtosis_endpoints
-load_contract_addresses
 
 if [ -z "$ETH_RPC_URL" ]; then
   log_err "missing ETH_RPC_URL"
   exit 1
 fi
+
+load_contract_addresses
 
 if [ -z "${ADDRESS:-}" ] && [ -n "$ETH_PRIVATE_KEY" ]; then
   ADDRESS="$(cast wallet address --private-key "$ETH_PRIVATE_KEY")"

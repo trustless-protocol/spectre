@@ -30,7 +30,10 @@ COSMOS_NATIVE_DENOM="${COSMOS_NATIVE_DENOM:-stake}"
 require_cmd "$COSMOS_BIN"
 require_cmd jq
 require_cmd sha256sum
-load_contract_addresses
+
+if [ -n "${ETH_RPC_URL:-}" ]; then
+  load_contract_addresses
+fi
 
 if [ -z "${ADDRESS:-}" ]; then
   ADDRESS="$(key_address "$COSMOS_RECEIVER_KEY")"

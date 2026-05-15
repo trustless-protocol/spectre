@@ -191,14 +191,14 @@ eth_send_transfer "$ICS20_ADDRESS" "$ERC20_ADDRESS" "$AMOUNT" "$RECEIVER" "$SOUR
 log "Transfer submitted (waiting for relay to Cosmos...)"
 
 # Poll for Cosmos voucher balance increase
-TARGET_COSMOS_BALANCE=$((BEFORE_COSMOS_BALANCE + AMOUNT))
+TARGET_COSMOS_BALANCE="$(echo "$BEFORE_COSMOS_BALANCE + $AMOUNT" | bc)"
 log "Polling Cosmos for voucher balance (target ≥ $TARGET_COSMOS_BALANCE)..."
 AFTER_COSMOS_BALANCE="$(poll_cosmos_balance "$RECEIVER" "$VOUCHER_DENOM" "$TARGET_COSMOS_BALANCE" 300 15 || true)"
 if [ -z "$AFTER_COSMOS_BALANCE" ] || [ "$AFTER_COSMOS_BALANCE" = "0" ]; then
   AFTER_COSMOS_BALANCE="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$VOUCHER_DENOM" --node "$COSMOS_RPC_URL" --chain-id "$COSMOS_CHAIN_ID" --output json 2>/dev/null | jq -r '.balance.amount // "0"')"
 fi
 
-if [ "$AFTER_COSMOS_BALANCE" -ge "$TARGET_COSMOS_BALANCE" ] 2>/dev/null; then
+if bc_ge "$AFTER_COSMOS_BALANCE" "$TARGET_COSMOS_BALANCE"; then
   log_ok "Cosmos voucher received: $AFTER_COSMOS_BALANCE"
 else
   log_err "Cosmos voucher not received after polling (balance: $AFTER_COSMOS_BALANCE)"

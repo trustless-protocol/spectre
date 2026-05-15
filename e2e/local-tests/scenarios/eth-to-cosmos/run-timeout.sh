@@ -210,7 +210,7 @@ MAX_POLLS=120
 POLL_INTERVAL=15
 poll=0
 
-REFUND_THRESHOLD=$((BEFORE_ETH_BALANCE - 1))
+REFUND_THRESHOLD="$(bc_sub1 "$BEFORE_ETH_BALANCE")"
 
 while [ $poll -lt $MAX_POLLS ]; do
   sleep $POLL_INTERVAL
@@ -223,7 +223,7 @@ while [ $poll -lt $MAX_POLLS ]; do
   fi
   CURRENT_COSMOS="$("$COSMOS_BIN" query bank balance "$RECEIVER" "$COSMOS_VOUCHER_DENOM" --node "$COSMOS_RPC_URL" --chain-id "$COSMOS_CHAIN_ID" --output json 2>/dev/null | jq -r '.balance.amount // "0"')"
 
-  if [ "$CURRENT_ETH_BALANCE" -ge "$REFUND_THRESHOLD" ] 2>/dev/null; then
+  if bc_ge "$CURRENT_ETH_BALANCE" "$REFUND_THRESHOLD"; then
     log_ok "[poll ${poll}/${MAX_POLLS}] ERC20 refunded │ sender=${CURRENT_ETH_BALANCE} (target ≥ ${REFUND_THRESHOLD})"
     REFUNDED=true
     break
@@ -258,7 +258,7 @@ if [ "${REFUNDED:-false}" = "true" ]; then
   log "  • Called timeoutPacket() on Ethereum ICS26Router"
   log "  • Sender refunded (ERC20 balance returned to original)"
   log "  • Cosmos voucher = 0 (packet never relayed)"
-elif [ "$AFTER_ETH_BALANCE" -ge "$REFUND_THRESHOLD" ] 2>/dev/null; then
+elif bc_ge "$AFTER_ETH_BALANCE" "$REFUND_THRESHOLD"; then
   log_ok "RESULT: PASS (detected after final poll)"
   log "  • Sender ERC20 balance returned to original"
 elif [ "$AFTER_COSMOS_BALANCE" = "0" ]; then

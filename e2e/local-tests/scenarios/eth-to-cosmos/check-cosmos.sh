@@ -39,15 +39,13 @@ if [ -z "${COSMOS_WASM_CLIENT_ID:-}" ] && [ -f "$REPO_ROOT/relayer/config.json" 
 fi
 COSMOS_WASM_CLIENT_ID="${COSMOS_WASM_CLIENT_ID:-08-wasm-0}"
 
-ibc_denom() {
-  local trace="$1"
-  printf 'ibc/%s\n' "$(printf '%s' "$trace" | sha256sum | awk '{ print toupper($1) }')"
-}
-
 require_cmd "$COSMOS_BIN"
 require_cmd jq
 require_cmd sha256sum
-load_contract_addresses
+
+if [ -n "${ETH_RPC_URL:-}" ]; then
+  load_contract_addresses
+fi
 
 if [ -z "${ADDRESS:-}" ]; then
   ADDRESS="${COSMOS_RECEIVER_ADDRESS:-}"
@@ -79,7 +77,7 @@ if [ -n "${ADDRESS:-}" ]; then
 
   if [ -n "${ERC20_ADDRESS:-}" ]; then
     VOUCHER_TRACE="transfer/$COSMOS_WASM_CLIENT_ID/$ERC20_ADDRESS"
-    VOUCHER_DENOM="$(ibc_denom "$VOUCHER_TRACE")"
+    VOUCHER_DENOM="$(derive_ibc_denom "$VOUCHER_TRACE")"
     log_header "ETH → Cosmos Voucher Balance"
     log_kv "trace" "$VOUCHER_TRACE"
     log_kv "denom" "$VOUCHER_DENOM"

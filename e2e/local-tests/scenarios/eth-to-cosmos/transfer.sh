@@ -55,7 +55,6 @@ if [ -z "${SOURCE_CLIENT:-}" ] && [ -f "$REPO_ROOT/relayer/config.json" ]; then
 fi
 
 discover_kurtosis_endpoints
-load_contract_addresses
 load_cosmos_receiver
 
 if [ -z "$ETH_RPC_URL" ]; then
@@ -63,6 +62,8 @@ if [ -z "$ETH_RPC_URL" ]; then
   log_err "Set ETH_RPC_URL in $ENV_FILE or start Kurtosis with ./run_eth_node.sh."
   exit 1
 fi
+
+load_contract_addresses
 
 if [ -z "$ETH_PRIVATE_KEY" ]; then
   log_err "missing ETH_PRIVATE_KEY"

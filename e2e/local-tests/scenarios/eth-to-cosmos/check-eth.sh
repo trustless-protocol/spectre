@@ -33,12 +33,13 @@ ETH_TX_HASH="${ETH_TX_HASH:-${TX_HASH:-}}"
 require_cmd cast
 require_cmd jq
 discover_kurtosis_endpoints
-load_contract_addresses
 
 if [ -z "$ETH_RPC_URL" ]; then
   log_err "missing ETH_RPC_URL; set it in $ENV_FILE or start Kurtosis with ./run_eth_node.sh"
   exit 1
 fi
+
+load_contract_addresses
 
 if [ -z "${ADDRESS:-}" ] && [ -n "$ETH_PRIVATE_KEY" ]; then
   ADDRESS="$(cast wallet address --private-key "$ETH_PRIVATE_KEY")"

@@ -39,11 +39,15 @@ eth_send_transfer_with_receipt() {
 eth_call_multicall() {
   local ics20="$1"
   shift
-  # Remaining arguments are hex-encoded call data strings.
-  # Foundry cast send expects space-separated arguments for dynamic arrays.
+  local arr=""
+  local sep=""
+  for arg in "$@"; do
+    arr="${arr}${sep}${arg}"
+    sep=", "
+  done
   cast send "$ics20" \
     "multicall(bytes[])" \
-    "$@" \
+    "[$arr]" \
     --rpc-url "${ETH_RPC_URL:?}" \
     --private-key "${ETH_PRIVATE_KEY:?}" > /dev/null
 }
