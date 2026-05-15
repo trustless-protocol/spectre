@@ -3,8 +3,12 @@ package subscriber
 import (
 	"math/big"
 	"testing"
+	"time"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
+	"relayer/services"
+
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
 func TestEthPacketToCosmosPacket_SinglePayload(t *testing.T) {
@@ -108,9 +112,9 @@ func TestNormalizeTimeoutSeconds(t *testing.T) {
 		expected uint64
 	}{
 		{1_700_000_000_000_000_000, 1_700_000_000}, // 2023 ns → 2023 seconds
-		{1_000_000_000_000, 1_000},                   // nanoseconds → seconds
-		{1_000, 1_000},                               // already seconds (year 2003), unchanged
-		{0, 0},                                       // no timeout, unchanged
+		{1_000_000_000_000, 1_000},                 // nanoseconds → seconds
+		{1_000, 1_000},                             // already seconds (year 2003), unchanged
+		{0, 0},                                     // no timeout, unchanged
 	}
 
 	for _, c := range cases {
@@ -174,5 +178,132 @@ func TestEthStartupRecoveryStartBlock(t *testing.T) {
 					tc.latest, tc.lookback, got, tc.wantStart)
 			}
 		})
+	}
+}
+
+func TestAdvanceRecoveryStart(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		initial   uint64
+		candidate uint64
+		want      uint64
+	}{
+		{name: "advance forward", initial: 10, candidate: 15, want: 15},
+		{name: "equal keeps current", initial: 10, candidate: 10, want: 10},
+		{name: "smaller keeps current", initial: 10, candidate: 5, want: 10},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := tc.initial
+			advanceRecoveryStart(&got, tc.candidate)
+			if got != tc.want {
+				t.Fatalf("advanceRecoveryStart(%d, %d) = %d, want %d", tc.initial, tc.candidate, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEnqueueEthSendPacket(t *testing.T) {
+	t.Parallel()
+
+	bb := services.NewBatchBuilder()
+	ev := &contractICS26Router.ContractICS26RouterSendPacket{
+		Sequence: big.NewInt(7),
+		Packet: contractICS26Router.IICS26RouterMsgsPacket{
+			SourceClient:     "eth-client-0",
+			DestClient:       "cosmos-client-0",
+			TimeoutTimestamp: 1234,
+			Payloads: []contractICS26Router.IICS26RouterMsgsPayload{
+				{
+					SourcePort: "transfer",
+					DestPort:   "transfer",
+					Version:    "ics20-1",
+					Encoding:   "proto3",
+					Value:      []byte("payload"),
+				},
+			},
+		},
+		Raw: gethtypes.Log{BlockNumber: 88},
+	}
+
+	enqueueEthSendPacket(bb, ev)
+
+	got := flushSingleEthPacket(t, bb)
+	if got.Type != services.EthSend {
+		t.Fatalf("packet type = %v, want %v", got.Type, services.EthSend)
+	}
+	if got.Packet.Sequence != 7 {
+		t.Fatalf("packet sequence = %d, want 7", got.Packet.Sequence)
+	}
+	if got.BlockNumber != 88 {
+		t.Fatalf("block number = %d, want 88", got.BlockNumber)
+	}
+}
+
+func TestEnqueueEthWriteAcknowledgement(t *testing.T) {
+	t.Parallel()
+
+	bb := services.NewBatchBuilder()
+	ev := &contractICS26Router.ContractICS26RouterWriteAcknowledgement{
+		Sequence:         big.NewInt(9),
+		Acknowledgements: [][]byte{[]byte("ack")},
+		Packet: contractICS26Router.IICS26RouterMsgsPacket{
+			SourceClient:     "eth-client-0",
+			DestClient:       "cosmos-client-0",
+			TimeoutTimestamp: 5678,
+			Payloads: []contractICS26Router.IICS26RouterMsgsPayload{
+				{
+					SourcePort: "transfer",
+					DestPort:   "transfer",
+					Version:    "ics20-1",
+					Encoding:   "proto3",
+					Value:      []byte("payload"),
+				},
+			},
+		},
+		Raw: gethtypes.Log{BlockNumber: 99},
+	}
+
+	enqueueEthWriteAcknowledgement(bb, ev)
+
+	got := flushSingleEthPacket(t, bb)
+	if got.Type != services.EthWriteAck {
+		t.Fatalf("packet type = %v, want %v", got.Type, services.EthWriteAck)
+	}
+	if got.Packet.Sequence != 9 {
+		t.Fatalf("packet sequence = %d, want 9", got.Packet.Sequence)
+	}
+	if got.BlockNumber != 99 {
+		t.Fatalf("block number = %d, want 99", got.BlockNumber)
+	}
+	if len(got.AckBytes) != 1 || string(got.AckBytes[0]) != "ack" {
+		t.Fatalf("ack bytes = %q, want [ack]", got.AckBytes)
+	}
+}
+
+func flushSingleEthPacket(t *testing.T, bb *services.BatchBuilder) services.EthPacket {
+	t.Helper()
+
+	ch := make(chan services.EthBatch, 1)
+	bb.CheckEth(services.BatchConfig{
+		BatchSize:    1,
+		BatchPeriods: time.Hour,
+	}, ch)
+
+	select {
+	case batch := <-ch:
+		if len(batch.Packets) != 1 {
+			t.Fatalf("batch packet count = %d, want 1", len(batch.Packets))
+		}
+		return batch.Packets[0]
+	default:
+		t.Fatal("expected one flushed eth batch")
+		return services.EthPacket{}
 	}
 }
