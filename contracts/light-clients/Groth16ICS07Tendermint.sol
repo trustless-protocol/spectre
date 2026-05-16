@@ -57,6 +57,11 @@ contract Groth16ICS07Tendermint is
     /// @inheritdoc IGroth16ICS07Tendermint
     bytes32 public constant PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
 
+    /// @notice Benchmark-only: emits remaining gas at named checkpoints.
+    /// @dev Used by the `benchmark` branch to profile gas across the light client.
+    ///      Remove before mainnet.
+    event BenchGas(string label, uint256 gasLeft);
+
     /// @notice The constructor sets the program verification key and the initial client and consensus states.
     /// @param verifier The address of the Groth16 verifier contract.
     /// @param _clientState The encoded initial client state.
@@ -114,11 +119,13 @@ contract Groth16ICS07Tendermint is
         onlyProofSubmitter
         returns (ILightClientMsgs.UpdateResult)
     {
+        emit BenchGas("updateClient:start", gasleft());
         IUpdateClientMsgs.MsgUpdateClient memory msg_ = abi.decode(updateClientMsg, (IUpdateClientMsgs.MsgUpdateClient));
         IUpdateClientMsgs.UpdateClientOutput memory output =
             UPDATE_CLIENT.updateClient(
                 msg_
             );
+        emit BenchGas("updateClient:afterUpdate", gasleft());
 
         _validateUpdateClientOutput(output);
 
@@ -135,7 +142,9 @@ contract Groth16ICS07Tendermint is
             return ILightClientMsgs.UpdateResult.NoOp;
         }
 
+        emit BenchGas("updateClient:beforeBatch", gasleft());
         _verifyBatchAndQuorum(msg_);
+        emit BenchGas("updateClient:end", gasleft());
         return updateResult;
     }
 
@@ -208,8 +217,11 @@ contract Groth16ICS07Tendermint is
         onlyProofSubmitter
         returns (uint256)
     {
+        emit BenchGas("verifyMembership:start", gasleft());
         require(msg_.value.length > 0, EmptyValue());
-        return _membership(msg_.height, msg_.kvPairs, msg_.merkleProofs, msg_.appHash, msg_.trustedConsensusState, msg_.membershipType, msg_.path, msg_.value);
+        uint256 ts = _membership(msg_.height, msg_.kvPairs, msg_.merkleProofs, msg_.appHash, msg_.trustedConsensusState, msg_.membershipType, msg_.path, msg_.value);
+        emit BenchGas("verifyMembership:end", gasleft());
+        return ts;
     }
 
     /// @inheritdoc ILightClient
@@ -219,7 +231,10 @@ contract Groth16ICS07Tendermint is
         onlyProofSubmitter
         returns (uint256)
     {
-        return _membership(msg_.height, msg_.kvPairs, msg_.merkleProofs, msg_.appHash, msg_.trustedConsensusState, msg_.membershipType, msg_.path, bytes(""));
+        emit BenchGas("verifyNonMembership:start", gasleft());
+        uint256 ts = _membership(msg_.height, msg_.kvPairs, msg_.merkleProofs, msg_.appHash, msg_.trustedConsensusState, msg_.membershipType, msg_.path, bytes(""));
+        emit BenchGas("verifyNonMembership:end", gasleft());
+        return ts;
     }
 
     /// @notice The entrypoint for verifying (non)membership proof.

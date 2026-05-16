@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"time"
 
 	"0x5ea000000/ecip-gnark/signature/eddsa"
 	"0x5ea000000/ecip-gnark/utils"
@@ -129,6 +130,8 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 		return
 	}
 
+	totalStart := time.Now()
+
 	bucket, err = SmallestBucketGEQ(len(sigs))
 	if err != nil {
 		return
@@ -138,12 +141,14 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 		err = fmt.Errorf("bucket n=%d not loaded", bucket)
 		return
 	}
+	log.Printf("[bench][prover] start sigs=%d bucket=%d", len(sigs), bucket)
 
 	paddedSigs, err = padWithDummies(sigs, art.dummys)
 	if err != nil {
 		return
 	}
 
+	witnessStart := time.Now()
 	hash, err := ComputeWitnessHash(paddedSigs)
 	if err != nil {
 		err = fmt.Errorf("compute witness hash: %w", err)
@@ -160,20 +165,27 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 		err = fmt.Errorf("create witness: %w", err)
 		return
 	}
+	witnessDur := time.Since(witnessStart)
 
+	proveStart := time.Now()
 	gnarkProof, err := groth16.Prove(art.r1cs, art.pk, witness, solidity.WithProverTargetSolidityVerifier(backend.GROTH16))
 	if err != nil {
 		err = fmt.Errorf("generate proof: %w", err)
 		return
 	}
+	proveDur := time.Since(proveStart)
 
+	verifyStart := time.Now()
 	pubWitness, _ := witness.Public()
 	if vErr := groth16.Verify(gnarkProof, art.vk, pubWitness, solidity.WithVerifierTargetSolidityVerifier(backend.GROTH16)); vErr != nil {
 		err = fmt.Errorf("local verification failed: %w", vErr)
 		return
 	}
+	verifyDur := time.Since(verifyStart)
 
 	proof, commitments, commitmentPok, err = ProofToBigInts(gnarkProof)
+	log.Printf("[bench][prover] done sigs=%d bucket=%d witness=%s prove=%s verify=%s total=%s",
+		len(sigs), bucket, witnessDur, proveDur, verifyDur, time.Since(totalStart))
 	return
 }
 

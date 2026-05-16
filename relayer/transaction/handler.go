@@ -287,8 +287,11 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	}
 
 	var tx *types.Transaction
+	var txLabel string
+	benchStart := time.Now()
 	switch msg := msg.(type) {
 	case updateclient.IUpdateClientMsgsMsgUpdateClient:
+		txLabel = "updateClient"
 		data, err := relayerclient.EncodeUpdateClientMsg(msg)
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to encode updateClient msg: %w", err)
@@ -307,6 +310,7 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 			}
 		}
 	case tendermintContract.ILightClientMsgsMsgVerifyMembership:
+		txLabel = "verifyMembership"
 		if routerManagesProofSubmission(ctx) {
 			return fmt.Errorf(
 				"[SendEthTx] direct verifyMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead",
@@ -318,6 +322,7 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 			return fmt.Errorf("[SendEthTx] failed to verify membership: %w", err)
 		}
 	case tendermintContract.ILightClientMsgsMsgVerifyNonMembership:
+		txLabel = "verifyNonMembership"
 		if routerManagesProofSubmission(ctx) {
 			return fmt.Errorf(
 				"[SendEthTx] direct verifyNonMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead",
@@ -329,18 +334,21 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 			return fmt.Errorf("[SendEthTx] failed to verify non-membership: %w", err)
 		}
 	case contractICS26Router.IICS26RouterMsgsMsgRecvPacket:
+		txLabel = fmt.Sprintf("recvPacket seq=%d", msg.Packet.Sequence)
 		log.Printf("[SendEthTx] Sending recvPacket seq=%d...", msg.Packet.Sequence)
 		tx, err = ics26Router.RecvPacket(auth, msg)
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to recv packet: %w", err)
 		}
 	case contractICS26Router.IICS26RouterMsgsMsgAckPacket:
+		txLabel = fmt.Sprintf("ackPacket seq=%d", msg.Packet.Sequence)
 		log.Printf("[SendEthTx] Sending ackPacket seq=%d...", msg.Packet.Sequence)
 		tx, err = ics26Router.AckPacket(auth, msg)
 		if err != nil {
 			return fmt.Errorf("[SendEthTx] failed to ack packet: %w", err)
 		}
 	case contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket:
+		txLabel = fmt.Sprintf("timeoutPacket seq=%d", msg.Packet.Sequence)
 		log.Printf("[SendEthTx] Sending timeoutPacket seq=%d...", msg.Packet.Sequence)
 		tx, err = ics26Router.TimeoutPacket(auth, msg)
 		if err != nil {
@@ -350,7 +358,9 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		return fmt.Errorf("[SendEthTx] unsupported message type: %T", msg)
 	}
 
+	submitDur := time.Since(benchStart)
 	log.Printf("[SendEthTx] Tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
+	waitStart := time.Now()
 	receiptCtx, cancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
 	defer cancel()
 	receipt, err := bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
@@ -380,7 +390,10 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		}
 		return fmt.Errorf("tx %s reverted (status=0, gasUsed=%d)", tx.Hash().Hex(), receipt.GasUsed)
 	}
+	waitDur := time.Since(waitStart)
 	log.Printf("[SendEthTx] Tx %s confirmed in block %d (gasUsed=%d)", tx.Hash().Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
+	log.Printf("[bench][eth] %s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
+		txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
 
 	return nil
 }
@@ -681,10 +694,12 @@ func (h *Handler) CosmosSignerAddress() (string, error) {
 }
 
 func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
+	benchStart := time.Now()
 	protoMsg, ok := msg.(proto.Message)
 	if !ok {
 		return fmt.Errorf("message must be a proto.Message")
 	}
+	msgLabel := fmt.Sprintf("%T", protoMsg)
 	// Get the private key from environment variable
 	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
 	if privKeyHex == "" {
@@ -834,10 +849,12 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	}
 
 	// Broadcast the transaction using BroadcastTxCommit for detailed error info
+	broadcastStart := time.Now()
 	commitResult, err := svcCtx.CosmosClient().BroadcastTxCommit(context.Background(), txBytes)
 	if err != nil {
 		return fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
+	broadcastDur := time.Since(broadcastStart)
 
 	if commitResult.CheckTx.Code != 0 {
 		log.Printf("[SendCosmosTx] CheckTx FAILED: code=%d codespace=%s log=%s info=%s data=%x",
@@ -853,6 +870,9 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	}
 
 	log.Printf("[SendCosmosTx] Tx confirmed at height %d hash=%s", commitResult.Height, commitResult.Hash.String())
+	log.Printf("[bench][cosmos] %s gasWanted=%d gasUsed=%d broadcast=%s total=%s height=%d hash=%s",
+		msgLabel, commitResult.TxResult.GasWanted, commitResult.TxResult.GasUsed,
+		broadcastDur, time.Since(benchStart), commitResult.Height, commitResult.Hash.String())
 	return nil
 }
 
@@ -861,6 +881,7 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	if len(msgs) == 0 {
 		return nil
 	}
+	benchStart := time.Now()
 
 	// Convert all messages to sdk.Msg
 	// Get the private key from environment variable
@@ -1023,10 +1044,12 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	}
 
 	// Broadcast the transaction using BroadcastTxCommit for detailed error info
+	broadcastStart := time.Now()
 	commitResult, err := svcCtx.CosmosClient().BroadcastTxCommit(context.Background(), txBytes)
 	if err != nil {
 		return fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
+	broadcastDur := time.Since(broadcastStart)
 
 	if commitResult.CheckTx.Code != 0 {
 		log.Printf("[SendCosmosTxBatch] CheckTx FAILED: code=%d codespace=%s log=%s info=%s data=%x",
@@ -1042,6 +1065,9 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	}
 
 	log.Printf("[SendCosmosTxBatch] Tx confirmed at height %d hash=%s (msgs=%d)", commitResult.Height, commitResult.Hash.String(), len(sdkMsgs))
+	log.Printf("[bench][cosmos] batch msgs=%d gasWanted=%d gasUsed=%d broadcast=%s total=%s height=%d hash=%s",
+		len(sdkMsgs), commitResult.TxResult.GasWanted, commitResult.TxResult.GasUsed,
+		broadcastDur, time.Since(benchStart), commitResult.Height, commitResult.Hash.String())
 
 	return nil
 }
