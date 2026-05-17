@@ -123,6 +123,15 @@ contract_has_code() {
   [ -n "$code" ] && [ "$code" != "0x" ]
 }
 
+CONFIG_FILE="${CONFIG_FILE:-$REPO_ROOT/relayer/config.json}"
+
+config_value() {
+  local key="$1"
+  if [ -f "$CONFIG_FILE" ]; then
+    jq -er --arg key "$key" '([.. | objects | .[$key]? // empty][0]) // empty' "$CONFIG_FILE" 2>/dev/null || true
+  fi
+}
+
 load_env_file() {
   local env_file="${ENV_FILE:-$REPO_ROOT/relayer/.env}"
   if [ -f "$env_file" ]; then

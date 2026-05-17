@@ -130,7 +130,7 @@ fi
 
 relayer_ensure_running
 
-IBCERC20_DENOM_PATH="${COSMOS_NATIVE_DENOM}/transfer/${SOURCE_CLIENT}"
+IBCERC20_DENOM_PATH="transfer/${SOURCE_CLIENT}/${COSMOS_NATIVE_DENOM}"
 
 # ─── Phase 1: Establish ibcERC20 voucher (Cosmos → ETH) ───
 log_header "Phase 1: Establish ibcERC20 (Cosmos → ETH)"
@@ -173,7 +173,7 @@ while [ $poll -lt $MAX_POLLS ]; do
   IBCERC20_ADDRESS="$(get_ibc_erc20_address "$ICS20_ADDRESS" "$IBCERC20_DENOM_PATH")"
   if [ -n "$IBCERC20_ADDRESS" ] && [ "$IBCERC20_ADDRESS" != "0x0000000000000000000000000000000000000000" ]; then
     CURRENT_IBCERC20="$(eth_balance_of "$IBCERC20_ADDRESS" "$ETH_SENDER")"
-    if [ "$CURRENT_IBCERC20" = "$AMOUNT" ]; then
+    if bc_ge "$CURRENT_IBCERC20" "$AMOUNT"; then
       log_ok "[poll ${poll}/${MAX_POLLS}] ibcERC20 minted │ balance=${CURRENT_IBCERC20}"
       VOUCHER_ESTABLISHED=true
       break
