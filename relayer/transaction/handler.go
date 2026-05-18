@@ -266,8 +266,11 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		return fmt.Errorf("[SendEthTx] failed to create auth transactor: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
-	auth.Value = big.NewInt(0)      // in wei
-	auth.GasLimit = uint64(3000000) // in units
+	auth.Value = big.NewInt(0) // in wei
+	// DEV-ONLY (benchmark branch): bumped from 3M to fit bucket 32/64. Mainnet
+	// requires the WrapperVerifier._hashWitness O(N^2) fix before this can
+	// drop back to a sane value.
+	auth.GasLimit = uint64(30000000)
 	auth.GasPrice = gasPrice
 
 	ics07Tendermint, err := tendermintContract.NewContractGroth16ICS07Tendermint(
