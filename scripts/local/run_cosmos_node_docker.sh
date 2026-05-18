@@ -2,6 +2,8 @@
 
 set -euxo pipefail
 
+cd "$(dirname "$0")/../.."
+
 CONTAINER_NAME="ibc-wasm-simd"
 IMAGE="ghcr.io/cosmos/ibc-go-wasm-simd:modules-light-clients-08-wasm-v10.3.0"
 CHAIN_ID="test-ibc-eth"
