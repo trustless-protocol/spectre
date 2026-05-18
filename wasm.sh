@@ -4,15 +4,6 @@ set -eux pipefail
 
 CHAIN_ID="test-ibc-eth"
 KEYRING="test"
-COSMOS_BIN="${COSMOS_BIN:-gaiad}"
-
-if ! "$COSMOS_BIN" tx ibc-wasm store-code --help >/dev/null 2>&1; then
-  echo "error: $COSMOS_BIN does not include the ibc-wasm (08-wasm) module." >&2
-  echo "Use a wasm-enabled binary (for example: COSMOS_BIN=simd ./wasm.sh) or the container flow:" >&2
-  echo "  ./run_cosmos_node_docker.sh" >&2
-  echo "  ./wasm_docker.sh" >&2
-  exit 1
-fi
 
 # Store Wasm code
 echo '{
@@ -29,7 +20,7 @@ echo '{
  "expedited": false
 }' > proposal.json
 
-"$COSMOS_BIN" tx gov submit-proposal proposal.json \
+gaiad tx gov submit-proposal proposal.json \
   --from val1 \
   --home "$HOME/.gaia" \
   --chain-id "$CHAIN_ID" \
@@ -41,13 +32,13 @@ echo '{
 sleep 5
 
 PROPOSAL_ID=$(
-  "$COSMOS_BIN" q gov proposals -o json \
+  gaiad q gov proposals -o json \
     | jq -r '.proposals | sort_by(.id | tonumber) | last | .id'
 )
 
 sleep 5
 
-"$COSMOS_BIN" tx gov vote "$PROPOSAL_ID" yes \
+gaiad tx gov vote "$PROPOSAL_ID" yes \
   --from val1 \
   --home "$HOME/.gaia" \
   --chain-id "$CHAIN_ID" \
@@ -55,7 +46,7 @@ sleep 5
   --gas-prices 1stake \
   -y
 
-"$COSMOS_BIN" tx gov vote "$PROPOSAL_ID" yes \
+gaiad tx gov vote "$PROPOSAL_ID" yes \
   --from val2 \
   --home "$HOME/.gaia-val2" \
   --chain-id "$CHAIN_ID" \
@@ -63,7 +54,7 @@ sleep 5
   --gas-prices 1stake \
   -y
 
-"$COSMOS_BIN" tx gov vote "$PROPOSAL_ID" yes \
+gaiad tx gov vote "$PROPOSAL_ID" yes \
   --from val3 \
   --home "$HOME/.gaia-val3" \
   --chain-id "$CHAIN_ID" \
@@ -73,6 +64,6 @@ sleep 5
 
 sleep 30
 
-CHECKSUM=$("$COSMOS_BIN" q ibc-wasm checksums -o json | jq -r '.checksums[0]')
+CHECKSUM=$(gaiad q ibc-wasm checksums | yq '.checksums[0]')
 
 echo "Checksum: 0x$CHECKSUM"
