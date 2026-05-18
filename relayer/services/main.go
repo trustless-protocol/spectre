@@ -189,9 +189,8 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 			s.BatchBuilder.PendingTracker.Add(*packet.Packet, packet.BlockNumber)
 
 			if ethBlockTime > 0 && packet.Packet.TimeoutTimestamp > 0 && ethBlockTime >= packet.Packet.TimeoutTimestamp {
-				log.Printf("[RecvPacket] Packet seq=%d timed out (timeout=%d <= eth_block_time=%d), submitting MsgTimeout to Cosmos",
+				log.Printf("[RecvPacket] Packet seq=%d timed out (timeout=%d <= eth_block_time=%d), deferring to async timeout scanner",
 					packet.Packet.Sequence, packet.Packet.TimeoutTimestamp, ethBlockTime)
-				s.timeoutCosmosSend(ctx, packet)
 				continue
 			}
 
@@ -208,9 +207,6 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 
 			if err := s.worker.TxHandler.SendEthTx(ctx, msgRecvPacket); err != nil {
 				log.Printf("[RecvPacket] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
-				if shouldTimeoutCosmosSend(packet, err) {
-					s.timeoutCosmosSend(ctx, packet)
-				}
 				continue
 			}
 			s.BatchBuilder.PendingTracker.Remove(packet.Packet.SourceClient, packet.Packet.Sequence)
@@ -371,16 +367,6 @@ func cosmosPacketExpiredOnEth(packet CosmosPacket, ethBlockTime uint64) bool {
 	return ethBlockTime > 0 && packet.Packet.TimeoutTimestamp > 0 && ethBlockTime >= packet.Packet.TimeoutTimestamp
 }
 
-func shouldTimeoutCosmosSend(packet CosmosPacket, err error) bool {
-	if packet.Packet.TimeoutTimestamp == 0 {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "timeout elapsed") ||
-		strings.Contains(msg, "IBCInvalidTimeoutTimestamp") ||
-		strings.Contains(msg, "timed out")
-}
-
 func shouldTimeoutEthSend(packet EthPacket, err error) bool {
 	if !ethPacketExpired(packet) {
 		return false
@@ -408,86 +394,6 @@ func (s *Services) updateCosmosClientForEth(ctx Context, tag string) (*client.Li
 	ctx.latestEthTimestamp.mtx.Unlock()
 
 	return latestLightBlock, true
-}
-
-func (s *Services) timeoutCosmosSend(ctx Context, packet CosmosPacket) {
-	if packet.Packet.TimeoutTimestamp == 0 {
-		log.Printf("[CosmosTimeout] seq=%d: packet has no timeout timestamp, skipping", packet.Packet.Sequence)
-		return
-	}
-
-	log.Printf("[CosmosTimeout] seq=%d: packet expired, preparing timeout proof", packet.Packet.Sequence)
-
-	signerAddr, err := s.worker.TxHandler.CosmosSignerAddress()
-	if err != nil {
-		log.Printf("[CosmosTimeout] seq=%d: failed to get cosmos signer: %v", packet.Packet.Sequence, err)
-		return
-	}
-
-	finalized := false
-	for attempt := 0; attempt < 60; attempt++ {
-		if attempt > 0 {
-			time.Sleep(10 * time.Second)
-		}
-		finalityUpdate, err := client.GetFinalityUpdate(ctx.BeaconAPIURL())
-		if err != nil {
-			log.Printf("[CosmosTimeout] seq=%d: failed to get finality update: %v", packet.Packet.Sequence, err)
-			continue
-		}
-		execTimestamp, _ := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.Timestamp, 10, 64)
-		if execTimestamp >= packet.Packet.TimeoutTimestamp {
-			log.Printf("[CosmosTimeout] seq=%d: finalized ETH block timestamp %d >= timeout %d",
-				packet.Packet.Sequence, execTimestamp, packet.Packet.TimeoutTimestamp)
-			finalized = true
-			break
-		}
-		log.Printf("[CosmosTimeout] seq=%d: finalized ETH timestamp %d < timeout %d, waiting... (%d/60)",
-			packet.Packet.Sequence, execTimestamp, packet.Packet.TimeoutTimestamp, attempt+1)
-	}
-	if !finalized {
-		log.Printf("[CosmosTimeout] seq=%d: ETH finality did not reach timeout timestamp after 60 retries", packet.Packet.Sequence)
-		return
-	}
-
-	if err := s.worker.UpdateEthClient(ctx); err != nil {
-		log.Printf("[CosmosTimeout] seq=%d: failed to update ETH client: %v", packet.Packet.Sequence, err)
-		return
-	}
-
-	ethClientState, err := client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
-	if err != nil {
-		log.Printf("[CosmosTimeout] seq=%d: failed to get ETH client state: %v", packet.Packet.Sequence, err)
-		return
-	}
-
-	proofBytes, err := client.GetEthMembershipProof(
-		ctx.EthClient(),
-		*ctx.RouterContract(),
-		ethPath(packet.Packet.DestinationClient, packet.Packet.Sequence, 2),
-		ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT),
-		new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber),
-	)
-	if err != nil {
-		log.Printf("[CosmosTimeout] seq=%d: failed to get ETH non-membership proof: %v", packet.Packet.Sequence, err)
-		return
-	}
-
-	timeoutMsg := &channeltypesv2.MsgTimeout{
-		Packet:          *packet.Packet,
-		ProofUnreceived: proofBytes,
-		ProofHeight: clienttypes.Height{
-			RevisionNumber: 0,
-			RevisionHeight: ethClientState.LatestSlot,
-		},
-		Signer: signerAddr,
-	}
-	if err := s.worker.TxHandler.SendCosmosTx(ctx, timeoutMsg); err != nil {
-		log.Printf("[CosmosTimeout] seq=%d: failed to send MsgTimeout: %v", packet.Packet.Sequence, err)
-		return
-	}
-
-	s.BatchBuilder.PendingTracker.Remove(packet.Packet.SourceClient, packet.Packet.Sequence)
-	log.Printf("[CosmosTimeout] seq=%d: relay completed", packet.Packet.Sequence)
 }
 
 func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) {

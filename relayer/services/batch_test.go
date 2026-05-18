@@ -114,25 +114,6 @@ func TestCosmosPacketExpiredOnEth(t *testing.T) {
 	}
 }
 
-func TestShouldTimeoutCosmosSend(t *testing.T) {
-	packet := makeCosmosPacket(1, CosmosSend)
-	packet.Packet.TimeoutTimestamp = uint64(time.Now().Add(time.Hour).Unix())
-
-	if !shouldTimeoutCosmosSend(packet, errors.New("execution reverted: IBCInvalidTimeoutTimestamp")) {
-		t.Fatal("expected timeout fallback for contract timeout error")
-	}
-
-	packet.Packet.TimeoutTimestamp = 0
-	if shouldTimeoutCosmosSend(packet, errors.New("execution reverted: IBCInvalidTimeoutTimestamp")) {
-		t.Fatal("did not expect timeout fallback without timeout timestamp")
-	}
-
-	packet.Packet.TimeoutTimestamp = uint64(time.Now().Add(time.Hour).Unix())
-	if shouldTimeoutCosmosSend(packet, errors.New("unrelated submit failure")) {
-		t.Fatal("did not expect timeout fallback for unrelated errors")
-	}
-}
-
 func TestAddCosmosMultiple(t *testing.T) {
 	bb := NewBatchBuilder()
 	count := 5
