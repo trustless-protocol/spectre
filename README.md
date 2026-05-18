@@ -114,7 +114,7 @@ go build -o relayer ./cmd
 #    Replace 56246 with your Kurtosis-mapped beacon RPC port.
 ./scripts/local/run_eth_node.sh   # Kurtosis Ethereum testnet + deploys core contracts
 # Poll until finalized.epoch > 0:
-curl -s <eth_beacon_api_ur>/eth/v1/beacon/states/head/finality_checkpoints
+curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 
 # 4. Then start Cosmos and submit the Ethereum LC WASM via governance
 ./scripts/local/run_cosmos_node.sh   # local Cosmos chain with funded test accounts
