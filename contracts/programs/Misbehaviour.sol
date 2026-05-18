@@ -79,11 +79,11 @@ contract Misbehaviour is IMisbehaviour {
         IMisbehaviourMsgs.MisbehaviourOutput memory output = IMisbehaviourMsgs.MisbehaviourOutput({
             trustedHeight1: IICS02ClientMsgs.Height({
                 revisionNumber: chainId.revisionNumber,
-                revisionHeight: misbehaviour_.header1.signedHeader.header.height
+                revisionHeight: misbehaviour_.header1.trustedHeight.revisionHeight
             }),
             trustedHeight2: IICS02ClientMsgs.Height({
                 revisionNumber: chainId.revisionNumber,
-                revisionHeight: misbehaviour_.header2.signedHeader.header.height
+                revisionHeight: misbehaviour_.header2.trustedHeight.revisionHeight
             })
         });
         return output;
@@ -118,6 +118,15 @@ contract Misbehaviour is IMisbehaviour {
                 height1: misbehaviour_.header1.signedHeader.header.height,
                 height2: misbehaviour_.header2.signedHeader.header.height
             });
+        }
+
+        // Tendermint misbehaviour at the same logical height is defined by
+        // conflicting signed block IDs, not only by appHash divergence. Use
+        // the commit block hash that validators actually signed so conflicts on
+        // validatorsHash / nextValidatorsHash / timestamp / lastCommitHash /
+        // other header fields are also detected.
+        if (misbehaviour_.header1.signedHeader.commit.blockId.hashData == misbehaviour_.header2.signedHeader.commit.blockId.hashData) {
+            revert MisbehaviourNotDetected();
         }
     }
 
@@ -169,12 +178,15 @@ contract Misbehaviour is IMisbehaviour {
 
         // ensure trusted consensus state is within trusting period
         {
-            if (currentTimestamp < trustedTime) {
+            uint128 currentTimeInSeconds = nanosToSeconds(currentTimestamp);
+            uint128 trustedTimeInSeconds = nanosToSeconds(trustedTime);
+
+            if (currentTimeInSeconds < trustedTimeInSeconds) {
                 revert IGroth16ICS07TendermintErrors.InvalidConsensusStateTimestamp({
                     timestamp: trustedTime
                 });
             }
-            uint128 durationSinceConsensusState =currentTimestamp - trustedTime;
+            uint128 durationSinceConsensusState = currentTimeInSeconds - trustedTimeInSeconds;
             if (durationSinceConsensusState >= options.trustingPeriod) {
                 revert IGroth16ICS07TendermintErrors.InsufficientTrustingPeriod ({
                     durationSinceConsensusState: durationSinceConsensusState,
@@ -335,5 +347,9 @@ contract Misbehaviour is IMisbehaviour {
             id: id, 
             revisionNumber: revisionNumber
         });
+    }
+
+    function nanosToSeconds(uint128 timestamp) internal pure returns (uint128) {
+        return timestamp / 1e9;
     }
 }

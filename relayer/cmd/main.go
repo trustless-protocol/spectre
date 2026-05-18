@@ -10,6 +10,8 @@ import (
 	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
+	proto "github.com/cosmos/gogoproto/proto"
+	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/joho/godotenv"
@@ -17,6 +19,7 @@ import (
 	"go.uber.org/zap"
 
 	tendermintClient "relayer/client"
+	"relayer/keys"
 	"relayer/prover"
 	"relayer/services"
 	"relayer/subscriber"
@@ -49,6 +52,7 @@ type cosmosToEthConfig struct {
 	Membership         string `json:"membership"`
 	Misbehaviour       string `json:"misbehaviour"`
 	UpdateClient       string `json:"update_client"`
+	TrustingPeriod     uint32 `json:"trusting_period"`
 	TrustLevel         string `json:"trust_level"`
 	ProofType          string `json:"proof_type"`
 }
@@ -195,6 +199,36 @@ func preflightCreateClients(cfg *appConfig) error {
 	return nil
 }
 
+func cosmosHasWasmChecksum(cosmosClient *rpchttp.HTTP, checksum string) (bool, error) {
+	checksum = strings.ToLower(strings.TrimPrefix(checksum, "0x"))
+
+	reqBytes, err := proto.Marshal(&ibcwasmtypes.QueryChecksumsRequest{})
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal checksum query: %w", err)
+	}
+
+	result, err := cosmosClient.ABCIQuery(context.Background(), "/ibc.lightclients.wasm.v1.Query/Checksums", reqBytes)
+	if err != nil {
+		return false, fmt.Errorf("failed to query wasm checksums: %w", err)
+	}
+	if result.Response.Code != 0 {
+		return false, fmt.Errorf("checksum query failed with code %d: %s", result.Response.Code, result.Response.Log)
+	}
+
+	var resp ibcwasmtypes.QueryChecksumsResponse
+	if err := proto.Unmarshal(result.Response.Value, &resp); err != nil {
+		return false, fmt.Errorf("failed to unmarshal checksum query response: %w", err)
+	}
+
+	for _, existing := range resp.Checksums {
+		if strings.ToLower(existing) == checksum {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 func envOrDefault(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -208,6 +242,25 @@ func roleManagerOrDefault(cfg *appConfig) string {
 
 func cosmosRouterClientIDOrDefault(cfg *appConfig) string {
 	return envOrDefault("ICS26_CLIENT_ID", cfg.CosmosToEthConfig.ICS26ClientID)
+}
+
+func validateStartupKeys() error {
+	ethPrivKey := os.Getenv("ETH_PRIVATE_KEY")
+	if ethPrivKey == "" {
+		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
+	}
+	if _, err := keys.RestoreKey(ethPrivKey); err != nil {
+		return fmt.Errorf("failed to restore ETH private key: %w", err)
+	}
+
+	if _, err := (&transaction.Handler{}).CosmosSignerAddress(); err != nil {
+		if os.Getenv("COSMOS_PRIVATE_KEY") == "" {
+			return fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required in .env file")
+		}
+		return fmt.Errorf("failed to decode COSMOS_PRIVATE_KEY: %w", err)
+	}
+
+	return nil
 }
 
 func cosmosWasmClientIDOrDefault(cfg *appConfig) string {
@@ -299,6 +352,7 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			// Create context (no WS client needed for create-clients)
 			ctx := services.NewCtxWithBeacon(
 				cosmosClient, ethClient, nil,
+				"",
 				cfg.EthToCosmosConfig.BeaconUrl,
 				cosmosWasmClientID,
 			)
@@ -322,17 +376,44 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			defer cosmosClient.Stop()
 			logger.Sugar().Info("create-clients: cosmos websocket client started")
 
+			wasmChecksum, err := cmd.Flags().GetString(flagWasmChecksum)
+			if err != nil {
+				return fmt.Errorf("failed to get wasm checksum: %w", err)
+			}
+			if wasmChecksum == "" {
+				wasmChecksum = os.Getenv("WASM_CHECKSUM")
+			}
+			logger.Sugar().Infof("create-clients: wasm checksum present=%t", wasmChecksum != "")
+
+			if wasmChecksum != "" && cfg.EthToCosmosConfig.BeaconUrl != "" {
+				logger.Sugar().Infof("create-clients: validating wasm checksum on Cosmos before mutating ETH/config: %s", wasmChecksum)
+				ok, err := cosmosHasWasmChecksum(cosmosClient, wasmChecksum)
+				if err != nil {
+					return fmt.Errorf("failed to validate wasm checksum on Cosmos: %w", err)
+				}
+				if !ok {
+					return fmt.Errorf("wasm checksum %s has not been previously stored on Cosmos", wasmChecksum)
+				}
+				logger.Sugar().Info("create-clients: wasm checksum preflight passed")
+			}
+
 			// --- 1. Create Cosmos light client on Ethereum (deploy ICS07) ---
 			trustLevel, err := cmd.Flags().GetString(flagTrustLevel)
 			if err != nil {
 				return fmt.Errorf("failed to get trust level: %w", err)
 			}
 
-			unbondingPeriod, err := tendermintClient.GetUnbondingTime(cosmosClient)
+			trustingPeriod, err := cmd.Flags().GetUint32(flagTrustingPeriod)
 			if err != nil {
-				return fmt.Errorf("failed to fetch unbonding time: %w", err)
+				return fmt.Errorf("failed to get trusting period: %w", err)
 			}
-			trustingPeriod := 2 * uint32(unbondingPeriod) / 3
+			if trustingPeriod == 0 {
+				unbondingPeriod, err := tendermintClient.GetUnbondingTime(cosmosClient)
+				if err != nil {
+					return fmt.Errorf("failed to fetch unbonding time: %w", err)
+				}
+				trustingPeriod = 2 * uint32(unbondingPeriod) / 3
+			}
 
 			logger.Sugar().Infof("Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s)...", trustingPeriod, trustLevel)
 			ics07Addr, err := worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, trustLevel)
@@ -343,21 +424,8 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("ics07 address missing after deploy")
 			}
 			ctx.SetClient(ics07Addr)
-			if err := writeICS07Address(configPath, ics07Addr.Hex()); err != nil {
-				return fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
-			}
-			logger.Sugar().Infof("create-clients: wrote ics07_client=%s into %s", ics07Addr.Hex(), configPath)
 
 			// --- 2. Create Ethereum light client on Cosmos (wasm) ---
-			wasmChecksum, err := cmd.Flags().GetString(flagWasmChecksum)
-			if err != nil {
-				return fmt.Errorf("failed to get wasm checksum: %w", err)
-			}
-			if wasmChecksum == "" {
-				wasmChecksum = os.Getenv("WASM_CHECKSUM")
-			}
-			logger.Sugar().Infof("create-clients: wasm checksum present=%t", wasmChecksum != "")
-
 			if wasmChecksum != "" && cfg.EthToCosmosConfig.BeaconUrl != "" {
 				logger.Sugar().Infof("Creating Ethereum light client on Cosmos (checksum=%s)...", wasmChecksum)
 				ethClientID, err := worker.CreateEthClient(ctx, wasmChecksum)
@@ -380,6 +448,11 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				}
 			}
 
+			if err := writeICS07Address(configPath, ics07Addr.Hex()); err != nil {
+				return fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
+			}
+			logger.Sugar().Infof("create-clients: wrote ics07_client=%s into %s", ics07Addr.Hex(), configPath)
+
 			logger.Sugar().Infof("=== Setup Complete ===")
 			logger.Sugar().Infof("ICS07 address has been persisted to %s; ready for 'start'", configPath)
 
@@ -388,6 +461,7 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
+	cmd.Flags().Uint32(flagTrustingPeriod, 0, "trusting period in seconds for Cosmos light client (default: 2/3 of chain unbonding period)")
 	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
 	return cmd
 }
@@ -408,6 +482,10 @@ func Start(logger *zap.Logger) *cobra.Command {
 
 			// Load .env for prover paths, private keys, etc.
 			_ = godotenv.Load()
+
+			if err := validateStartupKeys(); err != nil {
+				return err
+			}
 
 			// Load JSON config
 			cfg, err := loadConfig(configPath)
@@ -456,6 +534,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// Create context with beacon API
 			ctx := services.NewCtxWithBeacon(
 				cosmosClient, ethClient, ethWsClient,
+				cfg.CosmosToEthConfig.EthWsUrl,
 				cfg.EthToCosmosConfig.BeaconUrl,
 				cosmosWasmClientID,
 			)
@@ -487,12 +566,16 @@ func Start(logger *zap.Logger) *cobra.Command {
 			logger.Sugar().Info("Relayer started, subscribing to events...")
 
 			cosmosConfig := services.DefaultConfig()
+			if cfg.CosmosToEthConfig.TrustingPeriod != 0 {
+				cosmosConfig.TrustingPeriod = cfg.CosmosToEthConfig.TrustingPeriod
+			}
 			if cfg.CosmosToEthConfig.TrustLevel != "" {
 				cosmosConfig.TrustLevel = cfg.CosmosToEthConfig.TrustLevel
 			}
 			if cfg.CosmosToEthConfig.ProofType != "" {
 				cosmosConfig.ProofType = cfg.CosmosToEthConfig.ProofType
 			}
+			ctx.Config = cosmosConfig
 			svc := services.New(
 				subscriber.NewSubscriber(),
 				&transaction.Handler{},
@@ -586,4 +669,3 @@ func Genesis(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().Uint32(flagTrustingPeriod, 0, "the trusting period for the genesis state")
 	return cmd
 }
-
