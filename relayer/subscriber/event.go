@@ -13,12 +13,17 @@ import (
 	"github.com/gogo/protobuf/proto"
 )
 
-// IBC v2 sends packets via channeltypesv2.MsgSendPacket and times them out via
-// channeltypesv2.MsgTimeout. The legacy applications/transfer MsgTransfer / MsgTimeout
-// filters never fire for the v2 flow that fast-ibc relays, so we match on the v2 msg.
-const COMETBFT_SEND_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.core.channel.v2.MsgSendPacket'"
-const COMETBFT_WRITE_ACK_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.core.channel.v2.MsgRecvPacket'"
-const COMETBFT_TIMEOUT_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.core.channel.v2.MsgTimeout'"
+// Match by IBC v2 event TYPE (send_packet / write_acknowledgement / timeout_packet)
+// rather than by message.action. The Rust upstream relayer takes the same approach
+// (packages/relayer/lib/src/events/eureka.rs::TryFrom<TmEvent>) — it iterates the tx's
+// events and matches event.kind against cosmos_sdk::EVENT_TYPE_*. Using event TYPE
+// here means we catch any tx that produces a send_packet (whether triggered by
+// gaiad's MsgTransfer wrapper, a direct channeltypesv2.MsgSendPacket from a test
+// harness, or any other module that ends up calling the v2 channel keeper), instead
+// of being tied to one specific message.action.
+const COMETBFT_SEND_PACKET_EVENT = "tm.event = 'Tx' AND send_packet.encoded_packet_hex EXISTS"
+const COMETBFT_WRITE_ACK_PACKET_EVENT = "tm.event = 'Tx' AND write_acknowledgement.encoded_packet_hex EXISTS"
+const COMETBFT_TIMEOUT_PACKET_EVENT = "tm.event = 'Tx' AND timeout_packet.encoded_packet_hex EXISTS"
 
 const EVENT_SEND_PACKET_FIELD = "send_packet.encoded_packet_hex"
 const EVENT_WRITE_ACK_PACKET_FIELD = "write_acknowledgement.encoded_packet_hex"
