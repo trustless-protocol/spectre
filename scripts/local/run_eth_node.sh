@@ -2,6 +2,10 @@
 
 set -euxo pipefail
 
+# All internal paths (eth-network-params.yaml, scripts/E2ETestDeploy.s.sol, relayer/)
+# are repo-root relative — cd up so this script works regardless of where it's invoked from.
+cd "$(dirname "$0")/../.."
+
 kurtosis enclave rm -f my-testnet || true
 killall gaiad || true
 rm -rf $HOME/.gaia
