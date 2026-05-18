@@ -180,13 +180,16 @@ library Predicates {
             }
 
             // Early exit if threshold already met
-            if (talliedPower * trustThreshold.denominator > totalVotingPower * trustThreshold.numerator) {
+            // Cast to uint256 before multiplication to prevent overflow:
+            // Tendermint voting power is int64 (max ~9.2e18); multiplying by
+            // trustThreshold.denominator overflows uint64 and can flip the comparison.
+            if (uint256(talliedPower) * uint256(trustThreshold.denominator) > uint256(totalVotingPower) * uint256(trustThreshold.numerator)) {
                 return;
             }
         }
 
         require(
-            talliedPower * trustThreshold.denominator > totalVotingPower * trustThreshold.numerator,
+            uint256(talliedPower) * uint256(trustThreshold.denominator) > uint256(totalVotingPower) * uint256(trustThreshold.numerator),
             "insufficient voting power overlap"
         );
     }
