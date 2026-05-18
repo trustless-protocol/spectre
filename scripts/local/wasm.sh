@@ -2,6 +2,8 @@
 
 set -eux pipefail
 
+cd "$(dirname "$0")/../.."
+
 CHAIN_ID="test-ibc-eth"
 KEYRING="test"
 
