@@ -129,7 +129,7 @@ curl -s <eth_beacon_api_ur>/eth/v1/beacon/states/head/finality_checkpoints
 # 6. Start the bi-directional relay loop
 ./relayer start --config config.example.json
 
-# 7. send tx
+# 7. send packet
 
 ABS_TIMEOUT=$(($(date +%s) + 2000))
 

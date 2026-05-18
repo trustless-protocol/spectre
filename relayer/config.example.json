@@ -23,7 +23,7 @@
                 "eth_beacon_api_url": "http://127.0.0.1:59717",
                 "eth_rpc_url": "http://127.0.0.1:59619",
                 "ics26_address": "0x9f5eac3d8e082f47631f1551f1343f23cd427162",
-                "signer_address": "cosmos18gm0p9e9fxjnw4vcuhyx7yz5tc7pxwux3497wy",
+                "signer_address": "cosmos10d07y265gmmuvt4z0w9aw880jnsr700j6zn9kn",
                 "tm_rpc_url": "http://127.0.0.1:26657"
             },
             "dst_chain": "test-ibc-eth",
