@@ -3,6 +3,9 @@
 set -euo pipefail
 set -x
 
+# Internal paths (relayer/.env, etc.) are repo-root relative.
+cd "$(dirname "$0")/../.."
+
 killall gaiad || true
 rm -rf "$HOME/.gaia" "$HOME/.gaia-val2" "$HOME/.gaia-val3" "$HOME/.gaia-val4"
 

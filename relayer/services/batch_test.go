@@ -101,6 +101,19 @@ func TestShouldTimeoutEthSend(t *testing.T) {
 	}
 }
 
+func TestCosmosPacketExpiredOnEth(t *testing.T) {
+	packet := makeCosmosPacket(1, CosmosSend)
+	packet.Packet.TimeoutTimestamp = 100
+
+	if !cosmosPacketExpiredOnEth(packet, 100) {
+		t.Fatal("expected packet to be expired when ETH timestamp reaches timeout")
+	}
+
+	if cosmosPacketExpiredOnEth(packet, 99) {
+		t.Fatal("did not expect packet to be expired before timeout")
+	}
+}
+
 func TestAddCosmosMultiple(t *testing.T) {
 	bb := NewBatchBuilder()
 	count := 5

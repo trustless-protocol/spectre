@@ -5,25 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math/big"
 	"os"
 	"strings"
 	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
-	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	proto "github.com/cosmos/gogoproto/proto"
+	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	tendermintClient "relayer/client"
 	"relayer/keys"
 	"relayer/prover"
-	"relayer/runner"
 	"relayer/services"
 	"relayer/subscriber"
 	"relayer/transaction"
@@ -38,7 +35,6 @@ const (
 	flagTrustLevel     = "trust-level"
 	flagTrustingPeriod = "trusting-period"
 	flagTrustedBlock   = "trusted-block"
-	flagMembership     = "membership"
 	flagWasmChecksum   = "wasm-checksum"
 )
 
@@ -56,6 +52,7 @@ type cosmosToEthConfig struct {
 	Membership         string `json:"membership"`
 	Misbehaviour       string `json:"misbehaviour"`
 	UpdateClient       string `json:"update_client"`
+	TrustingPeriod     uint32 `json:"trusting_period"`
 	TrustLevel         string `json:"trust_level"`
 	ProofType          string `json:"proof_type"`
 }
@@ -202,6 +199,36 @@ func preflightCreateClients(cfg *appConfig) error {
 	return nil
 }
 
+func cosmosHasWasmChecksum(cosmosClient *rpchttp.HTTP, checksum string) (bool, error) {
+	checksum = strings.ToLower(strings.TrimPrefix(checksum, "0x"))
+
+	reqBytes, err := proto.Marshal(&ibcwasmtypes.QueryChecksumsRequest{})
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal checksum query: %w", err)
+	}
+
+	result, err := cosmosClient.ABCIQuery(context.Background(), "/ibc.lightclients.wasm.v1.Query/Checksums", reqBytes)
+	if err != nil {
+		return false, fmt.Errorf("failed to query wasm checksums: %w", err)
+	}
+	if result.Response.Code != 0 {
+		return false, fmt.Errorf("checksum query failed with code %d: %s", result.Response.Code, result.Response.Log)
+	}
+
+	var resp ibcwasmtypes.QueryChecksumsResponse
+	if err := proto.Unmarshal(result.Response.Value, &resp); err != nil {
+		return false, fmt.Errorf("failed to unmarshal checksum query response: %w", err)
+	}
+
+	for _, existing := range resp.Checksums {
+		if strings.ToLower(existing) == checksum {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 func envOrDefault(key, defaultVal string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
@@ -215,6 +242,25 @@ func roleManagerOrDefault(cfg *appConfig) string {
 
 func cosmosRouterClientIDOrDefault(cfg *appConfig) string {
 	return envOrDefault("ICS26_CLIENT_ID", cfg.CosmosToEthConfig.ICS26ClientID)
+}
+
+func validateStartupKeys() error {
+	ethPrivKey := os.Getenv("ETH_PRIVATE_KEY")
+	if ethPrivKey == "" {
+		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
+	}
+	if _, err := keys.RestoreKey(ethPrivKey); err != nil {
+		return fmt.Errorf("failed to restore ETH private key: %w", err)
+	}
+
+	if _, err := (&transaction.Handler{}).CosmosSignerAddress(); err != nil {
+		if os.Getenv("COSMOS_PRIVATE_KEY") == "" {
+			return fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required in .env file")
+		}
+		return fmt.Errorf("failed to decode COSMOS_PRIVATE_KEY: %w", err)
+	}
+
+	return nil
 }
 
 func cosmosWasmClientIDOrDefault(cfg *appConfig) string {
@@ -241,7 +287,6 @@ func main() {
 		Start(zLogger),
 		CreateClients(zLogger),
 		Genesis(zLogger),
-		Fixtures(zLogger),
 	)
 
 	if err := rootCmd.Execute(); err != nil {
@@ -307,6 +352,7 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			// Create context (no WS client needed for create-clients)
 			ctx := services.NewCtxWithBeacon(
 				cosmosClient, ethClient, nil,
+				"",
 				cfg.EthToCosmosConfig.BeaconUrl,
 				cosmosWasmClientID,
 			)
@@ -330,17 +376,44 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 			defer cosmosClient.Stop()
 			logger.Sugar().Info("create-clients: cosmos websocket client started")
 
+			wasmChecksum, err := cmd.Flags().GetString(flagWasmChecksum)
+			if err != nil {
+				return fmt.Errorf("failed to get wasm checksum: %w", err)
+			}
+			if wasmChecksum == "" {
+				wasmChecksum = os.Getenv("WASM_CHECKSUM")
+			}
+			logger.Sugar().Infof("create-clients: wasm checksum present=%t", wasmChecksum != "")
+
+			if wasmChecksum != "" && cfg.EthToCosmosConfig.BeaconUrl != "" {
+				logger.Sugar().Infof("create-clients: validating wasm checksum on Cosmos before mutating ETH/config: %s", wasmChecksum)
+				ok, err := cosmosHasWasmChecksum(cosmosClient, wasmChecksum)
+				if err != nil {
+					return fmt.Errorf("failed to validate wasm checksum on Cosmos: %w", err)
+				}
+				if !ok {
+					return fmt.Errorf("wasm checksum %s has not been previously stored on Cosmos", wasmChecksum)
+				}
+				logger.Sugar().Info("create-clients: wasm checksum preflight passed")
+			}
+
 			// --- 1. Create Cosmos light client on Ethereum (deploy ICS07) ---
 			trustLevel, err := cmd.Flags().GetString(flagTrustLevel)
 			if err != nil {
 				return fmt.Errorf("failed to get trust level: %w", err)
 			}
 
-			unbondingPeriod, err := tendermintClient.GetUnbondingTime(cosmosClient)
+			trustingPeriod, err := cmd.Flags().GetUint32(flagTrustingPeriod)
 			if err != nil {
-				return fmt.Errorf("failed to fetch unbonding time: %w", err)
+				return fmt.Errorf("failed to get trusting period: %w", err)
 			}
-			trustingPeriod := 2 * uint32(unbondingPeriod) / 3
+			if trustingPeriod == 0 {
+				unbondingPeriod, err := tendermintClient.GetUnbondingTime(cosmosClient)
+				if err != nil {
+					return fmt.Errorf("failed to fetch unbonding time: %w", err)
+				}
+				trustingPeriod = 2 * uint32(unbondingPeriod) / 3
+			}
 
 			logger.Sugar().Infof("Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s)...", trustingPeriod, trustLevel)
 			ics07Addr, err := worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, trustLevel)
@@ -351,21 +424,8 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("ics07 address missing after deploy")
 			}
 			ctx.SetClient(ics07Addr)
-			if err := writeICS07Address(configPath, ics07Addr.Hex()); err != nil {
-				return fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
-			}
-			logger.Sugar().Infof("create-clients: wrote ics07_client=%s into %s", ics07Addr.Hex(), configPath)
 
 			// --- 2. Create Ethereum light client on Cosmos (wasm) ---
-			wasmChecksum, err := cmd.Flags().GetString(flagWasmChecksum)
-			if err != nil {
-				return fmt.Errorf("failed to get wasm checksum: %w", err)
-			}
-			if wasmChecksum == "" {
-				wasmChecksum = os.Getenv("WASM_CHECKSUM")
-			}
-			logger.Sugar().Infof("create-clients: wasm checksum present=%t", wasmChecksum != "")
-
 			if wasmChecksum != "" && cfg.EthToCosmosConfig.BeaconUrl != "" {
 				logger.Sugar().Infof("Creating Ethereum light client on Cosmos (checksum=%s)...", wasmChecksum)
 				ethClientID, err := worker.CreateEthClient(ctx, wasmChecksum)
@@ -388,6 +448,11 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				}
 			}
 
+			if err := writeICS07Address(configPath, ics07Addr.Hex()); err != nil {
+				return fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
+			}
+			logger.Sugar().Infof("create-clients: wrote ics07_client=%s into %s", ics07Addr.Hex(), configPath)
+
 			logger.Sugar().Infof("=== Setup Complete ===")
 			logger.Sugar().Infof("ICS07 address has been persisted to %s; ready for 'start'", configPath)
 
@@ -396,6 +461,7 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
+	cmd.Flags().Uint32(flagTrustingPeriod, 0, "trusting period in seconds for Cosmos light client (default: 2/3 of chain unbonding period)")
 	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
 	return cmd
 }
@@ -416,6 +482,10 @@ func Start(logger *zap.Logger) *cobra.Command {
 
 			// Load .env for prover paths, private keys, etc.
 			_ = godotenv.Load()
+
+			if err := validateStartupKeys(); err != nil {
+				return err
+			}
 
 			// Load JSON config
 			cfg, err := loadConfig(configPath)
@@ -464,6 +534,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// Create context with beacon API
 			ctx := services.NewCtxWithBeacon(
 				cosmosClient, ethClient, ethWsClient,
+				cfg.CosmosToEthConfig.EthWsUrl,
 				cfg.EthToCosmosConfig.BeaconUrl,
 				cosmosWasmClientID,
 			)
@@ -495,12 +566,16 @@ func Start(logger *zap.Logger) *cobra.Command {
 			logger.Sugar().Info("Relayer started, subscribing to events...")
 
 			cosmosConfig := services.DefaultConfig()
+			if cfg.CosmosToEthConfig.TrustingPeriod != 0 {
+				cosmosConfig.TrustingPeriod = cfg.CosmosToEthConfig.TrustingPeriod
+			}
 			if cfg.CosmosToEthConfig.TrustLevel != "" {
 				cosmosConfig.TrustLevel = cfg.CosmosToEthConfig.TrustLevel
 			}
 			if cfg.CosmosToEthConfig.ProofType != "" {
 				cosmosConfig.ProofType = cfg.CosmosToEthConfig.ProofType
 			}
+			ctx.Config = cosmosConfig
 			svc := services.New(
 				subscriber.NewSubscriber(),
 				&transaction.Handler{},
@@ -592,191 +667,5 @@ func Genesis(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().String(flagOutputPath, "./data/genesis.json", "the path to the output file for the genesis state")
 	cmd.Flags().String(flagTrustLevel, "2/3", "the trust level for the genesis state (e.g., 2/3)")
 	cmd.Flags().Uint32(flagTrustingPeriod, 0, "the trusting period for the genesis state")
-	return cmd
-}
-
-// Fixtures generates fixture files for testing.
-func Fixtures(logger *zap.Logger) *cobra.Command {
-	fixturesCmd := &cobra.Command{
-		Use:   "fixtures",
-		Short: "fixtures",
-		Run: func(cmd *cobra.Command, args []string) {
-			cmd.Help()
-		},
-	}
-
-	fixturesCmd.AddCommand(MembershipCmd(logger))
-
-	return fixturesCmd
-}
-
-// MembershipCmd verifies a membership/non-membership proof on-chain.
-func MembershipCmd(logger *zap.Logger) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "membership",
-		Short: "membership <key_path> <is_base64> <membership_type>",
-		Args:  cobra.ExactArgs(3),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			err := godotenv.Load()
-			if err != nil {
-				return fmt.Errorf("error loading .env file: %v", err)
-			}
-
-			tendermintRpcEndpoint := os.Getenv("TENDERMINT_RPC_URL")
-			if tendermintRpcEndpoint == "" {
-				return fmt.Errorf("TENDERMINT_RPC_URL environment variable is required in .env file")
-			}
-			tendermintRpcClient, err := rpchttp.New(tendermintRpcEndpoint, "/websocket")
-			if err != nil {
-				return fmt.Errorf("failed to create RPC client: %w", err)
-			}
-			ethRpcEndpoint := os.Getenv("ETH_RPC_URL")
-			if ethRpcEndpoint == "" {
-				return fmt.Errorf("ETH_RPC_URL environment variable is required in .env file")
-			}
-
-			hexAddress := os.Getenv("CONTRACT_ADDRESS")
-			if hexAddress == "" {
-				return fmt.Errorf("CONTRACT_ADDRESS environment variable is required in .env file")
-			}
-
-			privKey := os.Getenv("PRIVATE_KEY")
-			if privKey == "" {
-				return fmt.Errorf("PRIVATE_KEY environment variable is required in .env file")
-			}
-			privateKey, err := keys.RestoreKey(privKey)
-			if err != nil {
-				return fmt.Errorf("failed to restore private key: %w", err)
-			}
-
-			chainIdEth := os.Getenv("CHAIN_ID")
-			if chainIdEth == "" {
-				return fmt.Errorf("CHAIN_ID environment variable is required in .env file")
-			}
-
-			chainIdInt := big.NewInt(0)
-			chainIdInt, ok := chainIdInt.SetString(chainIdEth, 10)
-			if !ok {
-				return fmt.Errorf("invalid chain id: %v", chainIdEth)
-			}
-
-			ethClient, err := ethclient.Dial(ethRpcEndpoint)
-			if err != nil {
-				return fmt.Errorf("failed to create Ethereum client: %w", err)
-			}
-
-			trustedBlock, err := cmd.Flags().GetInt64(flagTrustedBlock)
-			if err != nil {
-				return fmt.Errorf("failed to get trusted block: %w", err)
-			}
-			trustingPeriod, err := cmd.Flags().GetUint32(flagTrustingPeriod)
-			if err != nil {
-				return fmt.Errorf("failed to get trusting period: %w", err)
-			}
-			trustLevel, err := cmd.Flags().GetString(flagTrustLevel)
-			if err != nil {
-				return fmt.Errorf("failed to get trust level from flag: %w", err)
-			}
-			proofType, err := cmd.Flags().GetString(flagProofType)
-			if err != nil {
-				return fmt.Errorf("failed to get proof type from flag: %w", err)
-			}
-			genesis, err := tendermintClient.GetGenesis(tendermintRpcClient, trustedBlock, trustingPeriod, trustLevel, proofType)
-			if err != nil {
-				return fmt.Errorf("failed to get genesis: %w", err)
-			}
-
-			tendermintAddr := common.HexToAddress(hexAddress)
-			ics07Tendermint, err := tendermintContract.NewContractGroth16ICS07Tendermint(
-				tendermintAddr,
-				ethClient,
-			)
-			if err != nil {
-				return fmt.Errorf("failed to create ICS07 Tendermint contract: %w", err)
-			}
-
-			isMembership, err := cmd.Flags().GetBool(flagMembership)
-			if err != nil {
-				return fmt.Errorf("failed to get membership flag: %w", err)
-			}
-
-			publicKey, err := keys.PublicKey(privateKey)
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			fromAddress := crypto.PubkeyToAddress(*publicKey)
-			nonce, err := ethClient.PendingNonceAt(context.Background(), fromAddress)
-			if err != nil {
-				log.Fatal(err)
-			}
-			gasPrice, err := ethClient.SuggestGasPrice(context.Background())
-			if err != nil {
-				log.Fatal(err)
-			}
-
-			auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
-			if err != nil {
-				return fmt.Errorf("failed to create auth transactor: %w", err)
-			}
-			auth.Nonce = big.NewInt(int64(nonce))
-			auth.Value = big.NewInt(0)
-			auth.GasLimit = uint64(300000)
-			auth.GasPrice = gasPrice
-
-			kvPairs, proofs, err := runner.RunMembership(tendermintRpcClient, args[0], trustedBlock, args[1] == "true")
-			if err != nil {
-				return err
-			}
-
-			membershipType, err := cmd.Flags().GetInt(flagMembership)
-			if err != nil {
-				membershipType = 0
-			}
-
-			if isMembership {
-				msg := tendermintContract.ILightClientMsgsMsgVerifyMembership{
-					Height:                tendermintContract.IICS02ClientMsgsHeight(genesis.TrustedClientState.LatestHeight),
-					KvPairs:               kvPairs,
-					MerkleProofs:          proofs,
-					AppHash:               genesis.TrustedConsensusState.Root,
-					TrustedConsensusState: tendermintContract.IICS07TendermintMsgsConsensusState(genesis.TrustedConsensusState),
-					MembershipType:        uint8(membershipType),
-					Path:                  kvPairs[0].Path,
-					Value:                 kvPairs[0].Value,
-				}
-
-				tx, err := ics07Tendermint.VerifyMembership(auth, msg)
-				if err != nil {
-					return fmt.Errorf("failed to verify membership: %w", err)
-				}
-				fmt.Println("tx hash:", tx.Hash().Hex())
-			} else {
-				msg := tendermintContract.ILightClientMsgsMsgVerifyNonMembership{
-					Height:                tendermintContract.IICS02ClientMsgsHeight(genesis.TrustedClientState.LatestHeight),
-					KvPairs:               kvPairs,
-					MerkleProofs:          proofs,
-					AppHash:               genesis.TrustedConsensusState.Root,
-					TrustedConsensusState: tendermintContract.IICS07TendermintMsgsConsensusState(genesis.TrustedConsensusState),
-					MembershipType:        uint8(membershipType),
-					Path:                  kvPairs[0].Path,
-				}
-
-				tx, err := ics07Tendermint.VerifyNonMembership(auth, msg)
-				if err != nil {
-					return fmt.Errorf("failed to verify non-membership: %w", err)
-				}
-				fmt.Println("tx hash:", tx.Hash().Hex())
-			}
-			return nil
-		},
-	}
-	cmd.Flags().String(flagProofType, "groth16", "the type of proof to use (groth16, plonk)")
-	cmd.Flags().Int64(flagTrustedBlock, 0, "the trusted block height, if <height> is 0 then catch latest block")
-	cmd.Flags().String(flagOutput, "json", "the output structure for the genesis state (json, file)")
-	cmd.Flags().String(flagOutputPath, "./data/genesis.json", "the path to the output file for the genesis state")
-	cmd.Flags().String(flagTrustLevel, "2/3", "the trust level for the genesis state (e.g., 2/3)")
-	cmd.Flags().Uint32(flagTrustingPeriod, 0, "the trusting period for the genesis state")
-	cmd.Flags().Bool(flagMembership, true, "verify membership/non-membership proof")
 	return cmd
 }

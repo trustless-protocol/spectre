@@ -2,11 +2,17 @@
 
 set -euxo pipefail
 
+# The sed snippet below pulls lines from the sibling wasm.sh — anchor cwd so the
+# script works regardless of where it's invoked from.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 CONTAINER_NAME="ibc-wasm-simd"
 
-# Generate proposal.json locally from wasm.sh (lines 6-17 are the JSON body, line 5 is echo '{', line 18 is }' > ...)
+# Generate proposal.json locally by pulling the JSON body out of wasm.sh.
+# In wasm.sh, `echo '{` is at line 11, the body fills lines 12-22, and `}'…`
+# closes at line 23 — re-anchor this sed range if you edit those lines.
 echo '{' > /tmp/proposal.json
-sed -n '6,17p' wasm.sh >> /tmp/proposal.json
+sed -n '12,22p' "$SCRIPT_DIR/wasm.sh" >> /tmp/proposal.json
 echo '}' >> /tmp/proposal.json
 
 # Copy proposal.json into container

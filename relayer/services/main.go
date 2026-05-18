@@ -189,7 +189,7 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 			s.BatchBuilder.PendingTracker.Add(*packet.Packet, packet.BlockNumber)
 
 			if ethBlockTime > 0 && packet.Packet.TimeoutTimestamp > 0 && ethBlockTime >= packet.Packet.TimeoutTimestamp {
-				log.Printf("[RecvPacket] Packet seq=%d timed out (timeout=%d <= eth_block_time=%d), skipping relay",
+				log.Printf("[RecvPacket] Packet seq=%d timed out (timeout=%d <= eth_block_time=%d), deferring to async timeout scanner",
 					packet.Packet.Sequence, packet.Packet.TimeoutTimestamp, ethBlockTime)
 				continue
 			}
@@ -361,6 +361,10 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 
 func ethPacketExpired(packet EthPacket) bool {
 	return packet.Packet.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= packet.Packet.TimeoutTimestamp
+}
+
+func cosmosPacketExpiredOnEth(packet CosmosPacket, ethBlockTime uint64) bool {
+	return ethBlockTime > 0 && packet.Packet.TimeoutTimestamp > 0 && ethBlockTime >= packet.Packet.TimeoutTimestamp
 }
 
 func shouldTimeoutEthSend(packet EthPacket, err error) bool {
