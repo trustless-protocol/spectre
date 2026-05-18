@@ -13,6 +13,9 @@ import (
 	"github.com/gogo/protobuf/proto"
 )
 
+// IBC v2 sends packets via channeltypesv2.MsgSendPacket and times them out via
+// channeltypesv2.MsgTimeout. The legacy applications/transfer MsgTransfer / MsgTimeout
+// filters never fire for the v2 flow that fast-ibc relays, so we match on the v2 msg.
 const COMETBFT_SEND_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.core.channel.v2.MsgSendPacket'"
 const COMETBFT_WRITE_ACK_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.core.channel.v2.MsgRecvPacket'"
 const COMETBFT_TIMEOUT_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.core.channel.v2.MsgTimeout'"

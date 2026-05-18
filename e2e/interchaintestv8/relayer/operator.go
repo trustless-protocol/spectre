@@ -47,11 +47,6 @@ type misbehaviourFixture struct {
 	SubmitMsg string `json:"submitMsg"`
 }
 
-// binaryPath is a function that returns the path to the operator binary
-func binaryPath() string {
-	return "relayer"
-}
-
 // MembershipProof is a function that generates a membership proof and returns the proof height and proof
 func MembershipProof(trusted_height uint64, paths string, writeFixtureName string, args ...string) (*groth16ics07tendermint.IICS02ClientMsgsHeight, []byte, error) {
 	args = append([]string{"fixtures", "membership", "--trusted-block", strconv.FormatUint(trusted_height, 10), "--key-paths", paths}, args...)
