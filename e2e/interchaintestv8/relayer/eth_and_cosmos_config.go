@@ -53,6 +53,11 @@ type EthCosmosConfigInfo struct {
 	UpdateClient string
 	// Cosmos wasm client ID (e.g. "08-wasm-0") — required by relayer cosmos_to_eth config.
 	CosmosWasmClientID string
+	// ICS26 client ID = the Cosmos light client ID registered on ETH's ICS26Router
+	// (e.g. "cosmoshub-1"). The relayer uses this to set the CounterpartyClientId when
+	// registering the wasm-eth-client on Cosmos, and the ETH-side packet's SourceClient
+	// field must match it for Cosmos's verification to succeed.
+	ICS26ClientID string
 	// Trust level fraction for the Tendermint light client (e.g. "1/3", "2/3"). Empty = use relayer default.
 	TrustLevel string
 	// Proof type used by create-clients / update-client (e.g. "groth16"). Empty = use relayer default.
@@ -86,7 +91,7 @@ func CreateEthCosmosModules(
 			Config: CosmosToEthModuleConfig{
 				TmRpcUrl:           configInfo.TmRPC,
 				Ics26Address:       configInfo.ICS26Address,
-				ICS26ClientID:      configInfo.CosmosChainID,
+				ICS26ClientID:      configInfo.ICS26ClientID,
 				CosmosWasmClientID: configInfo.CosmosWasmClientID,
 				EthRpcUrl:          configInfo.EthRPC,
 				EthWsUrl:           configInfo.EthWs,

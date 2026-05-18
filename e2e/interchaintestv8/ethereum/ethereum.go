@@ -30,6 +30,7 @@ import (
 type Ethereum struct {
 	ChainID         *big.Int
 	RPC             string
+	WS              string
 	EthAPI          EthAPI
 	BeaconAPIClient *BeaconAPIClient
 	RPCClient       *ethclient.Client
@@ -37,7 +38,7 @@ type Ethereum struct {
 	Faucet *ecdsa.PrivateKey
 }
 
-func NewEthereum(ctx context.Context, rpc string, beaconAPIClient *BeaconAPIClient, faucet *ecdsa.PrivateKey) (Ethereum, error) {
+func NewEthereum(ctx context.Context, rpc, ws string, beaconAPIClient *BeaconAPIClient, faucet *ecdsa.PrivateKey) (Ethereum, error) {
 	ethClient, err := ethclient.Dial(rpc)
 	if err != nil {
 		return Ethereum{}, err
@@ -54,6 +55,7 @@ func NewEthereum(ctx context.Context, rpc string, beaconAPIClient *BeaconAPIClie
 	return Ethereum{
 		ChainID:         chainID,
 		RPC:             rpc,
+		WS:              ws,
 		EthAPI:          ethAPI,
 		BeaconAPIClient: beaconAPIClient,
 		RPCClient:       ethClient,

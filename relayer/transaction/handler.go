@@ -742,18 +742,40 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 		return fmt.Errorf("message does not implement sdk.Msg interface")
 	}
 
-	// Fill empty Signer fields and apply per-message gas overrides
+	// Fill empty Signer fields and apply per-message gas overrides.
+	// Wasm light client verification (MsgUpdateClient, MsgRecvPacket, MsgAcknowledgement,
+	// MsgTimeout) runs the cw-ics08-wasm-eth contract and exceeds the 200k default.
+	wasmHeavyGas := os.Getenv("COSMOS_GAS_LIMIT") == ""
 	if msg, ok := sdkMsg.(*clienttypes.MsgUpdateClient); ok {
 		if msg.Signer == "" {
 			msg.Signer = signerAddr.String()
 		}
-		if os.Getenv("COSMOS_GAS_LIMIT") == "" {
-			gasLimit = uint64(2000000) // MsgUpdateClient requires significantly more gas for wasm verification
+		if wasmHeavyGas {
+			gasLimit = uint64(2000000)
+		}
+	}
+	if msg, ok := sdkMsg.(*channeltypesv2.MsgRecvPacket); ok {
+		if msg.Signer == "" {
+			msg.Signer = signerAddr.String()
+		}
+		if wasmHeavyGas {
+			gasLimit = uint64(2000000)
+		}
+	}
+	if msg, ok := sdkMsg.(*channeltypesv2.MsgAcknowledgement); ok {
+		if msg.Signer == "" {
+			msg.Signer = signerAddr.String()
+		}
+		if wasmHeavyGas {
+			gasLimit = uint64(2000000)
 		}
 	}
 	if msg, ok := sdkMsg.(*channeltypesv2.MsgTimeout); ok {
 		if msg.Signer == "" {
 			msg.Signer = signerAddr.String()
+		}
+		if wasmHeavyGas {
+			gasLimit = uint64(2000000)
 		}
 	}
 

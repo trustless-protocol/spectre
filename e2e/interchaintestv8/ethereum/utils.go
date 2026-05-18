@@ -67,13 +67,10 @@ func GetEthContractsFromDeployOutput(stdout string) (DeployedContracts, error) {
 		return DeployedContracts{}, fmt.Errorf("one or more required contracts missing: %+v", embeddedContracts)
 	}
 
-	// Deploy scripts may only return a subset of verifier addresses depending on profile/config.
-	// Require at least one verifier to be present and let call sites enforce proof-specific needs.
-	if embeddedContracts.VerifierPlonk == "" &&
-		embeddedContracts.VerifierGroth16 == "" &&
-		embeddedContracts.VerifierMock == "" {
-		return DeployedContracts{}, fmt.Errorf("no verifier contract found in deploy output: %+v", embeddedContracts)
-	}
+	// VerifierPlonk/Groth16/Mock are upstream (SP1) artifacts. fast-ibc's E2ETestDeploy
+	// script doesn't emit them — the equivalent verifiers live behind WrapperVerifier as
+	// per-bucket Groth16Verifier_N{N} contracts (see scripts/E2ETestDeploy.s.sol setBucket
+	// calls). WrapperVerifier presence is enforced above; that's sufficient.
 
 	return embeddedContracts, nil
 }

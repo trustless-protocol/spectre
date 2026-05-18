@@ -77,8 +77,11 @@ func StartRelayer(configPath string) (*os.Process, error) {
 		return nil, err
 	}
 
-	// wait for the relayer to start
-	time.Sleep(5 * time.Second)
+	// Wait long enough for the relayer to finish loading the gnark prover artifacts
+	// (per-bucket r1cs/pk ~200MB, takes ~20s on first read) AND set up both Cosmos and
+	// Ethereum event subscriptions. If the test sends a SendPacket tx before WatchSendPacket
+	// is active, the event is missed (Watch defaults to fromBlock=latest).
+	time.Sleep(60 * time.Second)
 
 	return cmd.Process, nil
 }

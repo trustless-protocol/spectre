@@ -31,16 +31,19 @@ build-cw-ics08-wasm-eth:
 build-relayer-image:
     docker build -t eureka-relayer:latest -f programs/relayer/Dockerfile .
 
-# Install the Go relayer for use in the e2e tests
+# Install the Go relayer for use in the e2e tests.
+# Builds with an explicit -o name because the package dir is `cmd/`, so a plain
+# `go install ./cmd/...` would land at $GOPATH/bin/cmd, not $GOPATH/bin/relayer.
 [group('install')]
 install-go-relayer:
-	cd relayer && go install ./cmd/...
+	cd relayer && go build -o $(go env GOPATH)/bin/relayer ./cmd
 
 # Generate per-bucket prover artifacts (r1cs/pk/vk + Solidity verifiers) if missing.
-# Probes for bucket-4 vk.bin as the cheapest "present?" signal.
+# Probes for the bucket-4 vk.bin AND the bucket-4 Solidity verifier — the cheapest
+# "present?" signal because bucket 4 is the smallest and is always built first.
 [group('build')]
 build-prover-artifacts:
-	@if [ ! -f relayer/bin/n4/vk.bin ]; then \
+	@if [ ! -f relayer/bin/n4/vk.bin ] || [ ! -f contracts/verifiers/Groth16Verifier_N4.sol ]; then \
 		echo "Building prover artifacts..."; \
 		cd relayer && go run ./prover/cmd ./bin ../contracts/verifiers ; \
 	else \
@@ -174,12 +177,17 @@ test-go-relayer:
 	cd relayer && go test -v ./...
 
 # Run any e2e test using the test's full name. For example, `just test-e2e TestWithIbcEurekaTestSuite/Test_Deploy`
+#
+# ETH_TESTNET_TYPE=pos picks the Kurtosis PoS network (with beacon API), which is what
+# the wasm light client + the cosmos→eth direction need. Override to "pow" only if the
+# test explicitly targets the anvil/PoW path.
 [group('test')]
 test-e2e testname: clean-foundry install-go-relayer build-prover-artifacts
 	@echo "Running {{testname}} test..."
 	cd e2e/interchaintestv8 && \
 		RELAYER_BINARY="$(go env GOPATH)/bin/relayer" \
 		PROVER_BIN_DIR="$(git rev-parse --show-toplevel)/relayer/bin" \
+		ETH_TESTNET_TYPE=pos \
 		go test -v -run '^{{testname}}$' -timeout 120m
 
 # Run any e2e test in the IbcEurekaTestSuite. For example, `just test-e2e-eureka Test_Deploy`

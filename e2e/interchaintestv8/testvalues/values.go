@@ -145,8 +145,11 @@ var (
 	// MaxUint256 is the maximum value for a uint256.
 	MaxUint256 = uint256.MustFromHex("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
 
-	// StartingERC20Balance is the starting balance for the ERC20 contract.
-	StartingERC20Balance = new(big.Int).Div(MaxUint256.ToBig(), big.NewInt(2))
+	// StartingERC20Balance is the per-user starting balance funded by the test
+	// ERC20 faucet. Must be ≤ the mint amount in scripts/E2ETestDeploy.s.sol
+	// (which mints 1_000_000 * 10^18 = 10^24). 100_000 * 10^18 leaves plenty of
+	// headroom for 10+ funded users per run while staying well below the mint cap.
+	StartingERC20Balance = new(big.Int).Mul(big.NewInt(100_000), new(big.Int).Exp(big.NewInt(10), big.NewInt(18), nil))
 
 	// DefaultAdminRole is the default admin role for AccessControl contract.
 	DefaultAdminRole = [32]byte{0x00}
