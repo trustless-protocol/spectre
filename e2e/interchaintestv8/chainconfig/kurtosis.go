@@ -68,6 +68,7 @@ func getKurtosisPreset() string {
 
 type EthKurtosisChain struct {
 	RPC             string
+	WS              string
 	BeaconApiClient ethereum.BeaconAPIClient
 	Faucet          *ecdsa.PrivateKey
 
@@ -151,6 +152,13 @@ func SpinUpKurtosisPoS(ctx context.Context) (EthKurtosisChain, error) {
 	}
 	rpcPortSpec := executionCtx.GetPublicPorts()["rpc"]
 	rpc := fmt.Sprintf("http://localhost:%d", rpcPortSpec.GetNumber())
+	// ethereum-package exposes geth's WebSocket endpoint on a separate port from HTTP RPC.
+	// The fast-ibc relayer subscribes to ICS26Router events via this WS endpoint.
+	wsPortSpec, ok := executionCtx.GetPublicPorts()["ws"]
+	if !ok {
+		return EthKurtosisChain{}, fmt.Errorf("ws port not exposed by %s service — check ethereum-package version", executionService)
+	}
+	ws := fmt.Sprintf("ws://localhost:%d", wsPortSpec.GetNumber())
 
 	// consensusCtx is the service context (kurtosis concept) for the consensus node that allows us to get the public ports
 	consensusCtx, err := enclaveCtx.GetServiceContext(consensusService)
@@ -194,6 +202,7 @@ func SpinUpKurtosisPoS(ctx context.Context) (EthKurtosisChain, error) {
 
 	return EthKurtosisChain{
 		RPC:             rpc,
+		WS:              ws,
 		BeaconApiClient: beaconAPIClient,
 		Faucet:          faucet,
 		kurtosisCtx:     kurtosisCtx,

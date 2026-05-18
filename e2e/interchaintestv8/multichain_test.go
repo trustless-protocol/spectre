@@ -136,13 +136,6 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			beaconAPI = eth.BeaconAPIClient.GetBeaconAPIURL()
 		}
 
-		groth16Config := relayer.ProverConfig{
-			Type: prover,
-		}
-		if prover == testvalues.EnvValueGroth16Prover_Network {
-			groth16Config.PrivateCluster = os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueGroth16Prover_PrivateCluster
-		}
-
 		config := relayer.NewConfig(relayer.CreateMultichainModules(relayer.MultichainConfigInfo{
 			ChainAID:            simdA.Config().ChainID,
 			ChainBID:            simdB.Config().ChainID,
@@ -154,7 +147,6 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			ICS26Address:        s.contractAddresses.Ics26Router,
 			EthRPC:              eth.RPC,
 			BeaconAPI:           beaconAPI,
-			Groth16Config:           groth16Config,
 			MockWasmClient:      os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
 		}))
 

@@ -32,28 +32,22 @@ type ModuleConfig struct {
 	Config   any    `json:"config"`
 }
 
-// ProverConfig represents the configuration for Groth16 prover
-type ProverConfig struct {
-	Type              string `json:"type"`
-	NetworkPrivateKey string `json:"network_private_key,omitempty"`
-	NetworkRpcUrl     string `json:"network_rpc_url,omitempty"`
-	PrivateCluster    bool   `json:"private_cluster,omitempty"`
-}
-
-type ProgramPaths struct {
-	UpdateClient              string `json:"update_client"`
-	Membership                string `json:"membership"`
-	UpdateClientAndMembership string `json:"update_client_and_membership"`
-	Misbehaviour              string `json:"misbehaviour"`
-}
-
-// CosmosToEthModuleConfig represents the configuration for cosmos_to_eth module
+// CosmosToEthModuleConfig represents the configuration for cosmos_to_eth module.
+// Fields match the relayer's cosmosToEthConfig JSON schema in relayer/cmd/main.go.
 type CosmosToEthModuleConfig struct {
-	TmRpcUrl     string          `json:"tm_rpc_url"`
-	Ics26Address string          `json:"ics26_address"`
-	EthRpcUrl    string          `json:"eth_rpc_url"`
-	Groth16Prover    ProverConfig `json:"groth16_prover"`
-	Groth16Programs  ProgramPaths `json:"groth16_programs"`
+	TmRpcUrl           string `json:"tm_rpc_url"`
+	Ics26Address       string `json:"ics26_address"`
+	ICS26ClientID      string `json:"ics26_client_id,omitempty"`
+	CosmosWasmClientID string `json:"cosmos_wasm_client_id"`
+	EthRpcUrl          string `json:"eth_rpc_url"`
+	EthWsUrl           string `json:"eth_ws_url,omitempty"`
+	ICS07Client        string `json:"ics07_client,omitempty"`
+	WrapperVerifier    string `json:"wrapper_verifier"`
+	Membership         string `json:"membership"`
+	Misbehaviour       string `json:"misbehaviour"`
+	UpdateClient       string `json:"update_client"`
+	TrustLevel         string `json:"trust_level,omitempty"`
+	ProofType          string `json:"proof_type,omitempty"`
 }
 
 // CosmosToCosmosModuleConfig represents the configuration for cosmos_to_cosmos module
