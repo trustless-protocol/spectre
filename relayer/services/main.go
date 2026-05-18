@@ -367,6 +367,20 @@ func cosmosPacketExpiredOnEth(packet CosmosPacket, ethBlockTime uint64) bool {
 	return ethBlockTime > 0 && packet.Packet.TimeoutTimestamp > 0 && ethBlockTime >= packet.Packet.TimeoutTimestamp
 }
 
+func pendingPacketsTimedOutAtTimestamp(pending []pendingPacketInfo, timestamp uint64) []pendingPacketInfo {
+	if timestamp == 0 {
+		return nil
+	}
+
+	expired := make([]pendingPacketInfo, 0, len(pending))
+	for _, info := range pending {
+		if info.Packet.TimeoutTimestamp > 0 && timestamp >= info.Packet.TimeoutTimestamp {
+			expired = append(expired, info)
+		}
+	}
+	return expired
+}
+
 func shouldTimeoutEthSend(packet EthPacket, err error) bool {
 	if !ethPacketExpired(packet) {
 		return false
@@ -455,18 +469,12 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 	log.Printf("[CosmosTimeoutScan] Checking %d pending packets against eth block time %d",
 		len(pending), ethBlockTime)
 
-	var expired []pendingPacketInfo
-	for _, info := range pending {
-		if info.Packet.TimeoutTimestamp > 0 && ethBlockTime >= info.Packet.TimeoutTimestamp {
-			expired = append(expired, info)
-		}
-	}
-
+	expired := pendingPacketsTimedOutAtTimestamp(pending, ethBlockTime)
 	if len(expired) == 0 {
 		return
 	}
 
-	log.Printf("[CosmosTimeoutScan] Found %d expired packets, processing timeouts", len(expired))
+	log.Printf("[CosmosTimeoutScan] Found %d head-expired packets, building proof state", len(expired))
 
 	updateResult, err := s.worker.BuildEthClientUpdateMsgs(ctx)
 	if err != nil {
@@ -482,6 +490,16 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 			return
 		}
 	}
+
+	proofTimestamp := updateResult.ProofTimestamp
+	expired = pendingPacketsTimedOutAtTimestamp(expired, proofTimestamp)
+	if len(expired) == 0 {
+		log.Printf("[CosmosTimeoutScan] Proof state timestamp %d has not reached any candidate timeout yet; retrying later", proofTimestamp)
+		return
+	}
+
+	log.Printf("[CosmosTimeoutScan] Found %d proof-expired packets at proof timestamp %d (proof slot=%d exec_block=%d)",
+		len(expired), proofTimestamp, ethClientState.LatestSlot, ethClientState.LatestExecutionBlockNumber)
 
 	var timeoutMsgs []any
 	var processed []pendingPacketInfo
