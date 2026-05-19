@@ -19,9 +19,14 @@ import (
 	"github.com/gogo/protobuf/proto"
 )
 
-// Match on the concrete event fields instead of message.action. The transfer app
-// emits send_packet/write_acknowledgement/timeout_packet consistently, while the
-// action string may vary between app-level MsgTransfer and core MsgSendPacket.
+// Match by IBC v2 event TYPE (send_packet / write_acknowledgement / timeout_packet)
+// rather than by message.action. The Rust upstream relayer takes the same approach
+// (packages/relayer/lib/src/events/eureka.rs::TryFrom<TmEvent>) — it iterates the tx's
+// events and matches event.kind against cosmos_sdk::EVENT_TYPE_*. Using event TYPE
+// here means we catch any tx that produces a send_packet (whether triggered by
+// gaiad's MsgTransfer wrapper, a direct channeltypesv2.MsgSendPacket from a test
+// harness, or any other module that ends up calling the v2 channel keeper), instead
+// of being tied to one specific message.action.
 const COMETBFT_SEND_PACKET_EVENT = "tm.event = 'Tx' AND send_packet.encoded_packet_hex EXISTS"
 const COMETBFT_WRITE_ACK_PACKET_EVENT = "tm.event = 'Tx' AND write_acknowledgement.encoded_packet_hex EXISTS"
 const COMETBFT_TIMEOUT_PACKET_EVENT = "tm.event = 'Tx' AND timeout_packet.encoded_packet_hex EXISTS"
