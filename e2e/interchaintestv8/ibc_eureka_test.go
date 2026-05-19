@@ -1087,46 +1087,20 @@ func (s *IbcEurekaTestSuite) ICS20TransferNativeCosmosCoinsToEthereumAndBackTest
 		s.Require().NotNil(ethWriteAckEvent, "WriteAcknowledgement event not found on Ethereum")
 	}))
 
-	// Reconstruct the original Cosmos packet for MsgAcknowledgement
-	cosmosSendPacket := channeltypesv2.Packet{
-		Sequence:          1,
-		SourceClient:      testvalues.FirstWasmClientID,
-		DestinationClient: testvalues.CustomClientID,
-		TimeoutTimestamp:  sendTimeout,
-		Payloads:          []channeltypesv2.Payload{cosmosSendPayload},
-	}
+	s.Require().NotEmpty(ethWriteAckEvent.Acknowledgements)
 
 	s.Require().True(s.Run("Acknowledge packet on Cosmos chain", func() {
-		s.Require().True(s.Run("Verify commitments exists", func() {
-			resp, err := e2esuite.GRPCQuery[channeltypesv2.QueryPacketCommitmentResponse](ctx, simd, &channeltypesv2.QueryPacketCommitmentRequest{
-				ClientId: testvalues.FirstWasmClientID,
-				Sequence: 1,
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Commitment)
-		}))
-
-		s.Require().NotEmpty(ethWriteAckEvent.Acknowledgements)
-		ackBytes := ethWriteAckEvent.Acknowledgements[0]
-
-		// Submit MsgAcknowledgement with minimal proof (accepted by mock/dummy wasm client)
-		msg := &channeltypesv2.MsgAcknowledgement{
-			Packet:          cosmosSendPacket,
-			Acknowledgement: channeltypesv2.Acknowledgement{AppAcknowledgements: [][]byte{ackBytes}},
-			ProofAcked:      []byte{0x01},
-			ProofHeight:     clienttypes.Height{RevisionNumber: 0, RevisionHeight: 1},
-			Signer:          s.SimdRelayerSubmitter.FormattedAddress(),
-		}
-		_, err := s.BroadcastMessages(ctx, simd, s.SimdRelayerSubmitter, 2_000_000, msg)
-		s.Require().NoError(err)
-
-		s.Require().True(s.Run("Verify commitments removed", func() {
+		// The auto-relayer picks up Ethereum's WriteAcknowledgement event and submits
+		// MsgAcknowledgement on Cosmos with a real wasm proof; just wait for the packet
+		// commitment to disappear.
+		require.Eventuallyf(s.T(), func() bool {
 			_, err := e2esuite.GRPCQuery[channeltypesv2.QueryPacketCommitmentResponse](ctx, simd, &channeltypesv2.QueryPacketCommitmentRequest{
 				ClientId: testvalues.FirstWasmClientID,
 				Sequence: 1,
 			})
-			s.Require().ErrorContains(err, "packet commitment hash not found")
-		}))
+			return err != nil && strings.Contains(err.Error(), "packet commitment hash not found")
+		}, 5*time.Minute, 5*time.Second,
+			"auto-relay did not clear the Cosmos packet commitment within timeout")
 	}))
 
 	s.Require().True(s.Run("Approve the ICS20Transfer.sol contract to spend the erc20 tokens", func() {
@@ -1180,42 +1154,23 @@ func (s *IbcEurekaTestSuite) ICS20TransferNativeCosmosCoinsToEthereumAndBackTest
 		}))
 	}))
 
-	// Convert ETH packet to Cosmos channeltypesv2.Packet for MsgRecvPacket
-	ethPkt := ethSendPacketEvent.Packet
-	var ethToCosmosPayloads []channeltypesv2.Payload
-	for _, p := range ethPkt.Payloads {
-		ethToCosmosPayloads = append(ethToCosmosPayloads, channeltypesv2.Payload{
-			SourcePort:      p.SourcePort,
-			DestinationPort: p.DestPort,
-			Version:         p.Version,
-			Encoding:        p.Encoding,
-			Value:           p.Value,
-		})
-	}
-	ethToCosmosPacket := channeltypesv2.Packet{
-		Sequence:          ethPkt.Sequence,
-		SourceClient:      ethPkt.SourceClient,
-		DestinationClient: ethPkt.DestClient,
-		TimeoutTimestamp:  ethPkt.TimeoutTimestamp,
-		Payloads:          ethToCosmosPayloads,
-	}
+	_ = ethSendPacketEvent.Packet // kept for parity with debug logs; not needed by the auto-relay path
 
-	var cosmosWriteAckBytes []byte
 	s.Require().True(s.Run("Receive packet on Cosmos chain", func() {
-		// Submit MsgRecvPacket with minimal proof (accepted by mock/dummy wasm client)
-		recvMsg := &channeltypesv2.MsgRecvPacket{
-			Packet:          ethToCosmosPacket,
-			ProofCommitment: []byte{0x01},
-			ProofHeight:     clienttypes.Height{RevisionNumber: 0, RevisionHeight: 1},
-			Signer:          s.SimdRelayerSubmitter.FormattedAddress(),
-		}
-		resp, err := s.BroadcastMessages(ctx, simd, s.SimdRelayerSubmitter, 2_000_000, recvMsg)
-		s.Require().NoError(err)
-
-		// Extract ack bytes from the WriteAcknowledgement event for later use on ETH
-		if ackHex, err := cosmos.GetEventValue(resp.Events, channeltypesv2.EventTypeWriteAck, channeltypesv2.AttributeKeyEncodedAckHex); err == nil {
-			cosmosWriteAckBytes, _ = hex.DecodeString(ackHex)
-		}
+		// Auto-relayer picks up the ETH SendPacket event, builds a real Ethereum-LC proof,
+		// and submits MsgRecvPacket on Cosmos. Wait for the user's native-coin balance
+		// to be credited back (transfer round-trip complete).
+		require.Eventuallyf(s.T(), func() bool {
+			resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simd, &banktypes.QueryBalanceRequest{
+				Address: cosmosUserAddress,
+				Denom:   transferCoin.Denom,
+			})
+			if err != nil || resp.Balance == nil {
+				return false
+			}
+			return resp.Balance.Amount.Int64() == testvalues.InitialBalance
+		}, 5*time.Minute, 5*time.Second,
+			"auto-relay did not deliver Cosmos return packet within timeout")
 
 		s.Require().True(s.Run("Verify balances on Cosmos chain", func() {
 			resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simd, &banktypes.QueryBalanceRequest{
@@ -1229,44 +1184,28 @@ func (s *IbcEurekaTestSuite) ICS20TransferNativeCosmosCoinsToEthereumAndBackTest
 	}))
 
 	s.Require().True(s.Run("Acknowledge packet on Ethereum", func() {
-		s.Require().True(s.Run("Verify commitment exists", func() {
-			packetCommitmentPath := ibchostv2.PacketCommitmentKey(testvalues.CustomClientID, 1)
-			var ethPath [32]byte
-			copy(ethPath[:], crypto.Keccak256(packetCommitmentPath))
+		// Auto-relayer picks up Cosmos's write_acknowledgement event and submits MsgAck
+		// on ETH (via ICS26Router.ackPacket), which clears the ETH packet commitment.
+		packetCommitmentPath := ibchostv2.PacketCommitmentKey(testvalues.CustomClientID, 1)
+		var ethPath [32]byte
+		copy(ethPath[:], crypto.Keccak256(packetCommitmentPath))
 
+		s.Require().True(s.Run("Verify commitment exists", func() {
 			resp, err := s.ics26Contract.GetCommitment(nil, ethPath)
 			s.Require().NoError(err)
 			s.Require().NotZero(resp)
 		}))
 
-		// Use ack bytes obtained from Cosmos WriteAcknowledgement event.
-		// NOTE: AckPacket on ETH verifies a Tendermint membership proof via the ICS07 contract.
-		// The relayer must have updated the ICS07 client to the height where the ack was stored.
-		ackBytes := cosmosWriteAckBytes
-		if len(ackBytes) == 0 {
-			ackBytes = []byte(`{"result":"AQ=="}`)
-		}
-
-		ackMsg := ics26router.IICS26RouterMsgsMsgAckPacket{
-			Packet:          ethPkt,
-			Acknowledgement: ackBytes,
-			MembershipMsg:   []byte{},
-		}
-		tx, err := s.ics26Contract.AckPacket(s.GetTransactOpts(s.EthRelayerSubmitter, eth), ackMsg)
-		s.Require().NoError(err)
-
-		receipt, err := eth.GetTxReciept(ctx, tx.Hash())
-		s.Require().NoError(err)
-		s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status)
-
-		_, err = e2esuite.GetEvmEvent(receipt, s.ics26Contract.ParseAckPacket)
-		s.Require().NoError(err)
+		require.Eventuallyf(s.T(), func() bool {
+			resp, err := s.ics26Contract.GetCommitment(nil, ethPath)
+			if err != nil {
+				return false
+			}
+			return resp == [32]byte{}
+		}, 5*time.Minute, 5*time.Second,
+			"auto-relay did not clear the ETH packet commitment within timeout")
 
 		s.Require().True(s.Run("Verify commitment removed", func() {
-			packetCommitmentPath := ibchostv2.PacketCommitmentKey(testvalues.CustomClientID, 1)
-			var ethPath [32]byte
-			copy(ethPath[:], crypto.Keccak256(packetCommitmentPath))
-
 			resp, err := s.ics26Contract.GetCommitment(nil, ethPath)
 			s.Require().NoError(err)
 			s.Require().Zero(resp)
