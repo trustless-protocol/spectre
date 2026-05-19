@@ -76,6 +76,14 @@ func (cs *EthereumClientState) ComputeSlotAtTimestamp(timestamp uint64) uint64 {
 	return cs.GenesisSlot + (timestamp-cs.GenesisTime)/cs.SecondsPerSlot
 }
 
+// ComputeTimestampAtSlot returns the unix timestamp for a given slot.
+func (cs *EthereumClientState) ComputeTimestampAtSlot(slot uint64) uint64 {
+	if slot <= cs.GenesisSlot {
+		return cs.GenesisTime
+	}
+	return cs.GenesisTime + (slot-cs.GenesisSlot)*cs.SecondsPerSlot
+}
+
 type SyncCommittee struct {
 	Pubkeys         []string `json:"pubkeys"`
 	AggregatePubkey string   `json:"aggregate_pubkey"`
@@ -677,7 +685,6 @@ func GetEthereumClientState(cosmosClient *rpchttp.HTTP, clientID string) (*Ether
 
 	return &ethClientState, nil
 }
-
 
 func (s *BeaconSpec) ToForkParameters() (*ForkParameters, error) {
 	altairForkEpoch, err := strconv.ParseUint(s.AltairForkEpoch, 10, 64)

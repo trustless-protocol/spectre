@@ -34,6 +34,32 @@ func TestComputeSyncCommitteePeriodAtSlot(t *testing.T) {
 	}
 }
 
+func TestComputeTimestampAtSlot(t *testing.T) {
+	cs := &EthereumClientState{
+		GenesisSlot:    0,
+		GenesisTime:    1_700_000_000,
+		SecondsPerSlot: 12,
+	}
+
+	tests := []struct {
+		name string
+		slot uint64
+		want uint64
+	}{
+		{name: "genesis slot", slot: 0, want: 1_700_000_000},
+		{name: "later slot", slot: 160, want: 1_700_001_920},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cs.ComputeTimestampAtSlot(tc.slot)
+			if got != tc.want {
+				t.Fatalf("slot %d: got timestamp %d, want %d", tc.slot, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestToSummarizedSyncCommittee(t *testing.T) {
 	t.Run("valid pubkeys with 0x prefix", func(t *testing.T) {
 		sc := &SyncCommittee{
