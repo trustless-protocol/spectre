@@ -51,8 +51,9 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
 
         address verifierN4 = address(new Groth16Verifier_N4());
 
-        // Hash-aggregate exposes a fixed 32-byte SHA-256 digest as public input,
-        // so every bucket uses the same uint256[32] verifier ABI.
+        // Hash-aggregate exposes the fixed 32-byte SHA-256 digest as two
+        // 128-bit field elements, so every bucket uses the same uint256[2]
+        // verifier ABI.
      
         wrapperVerifier.setBucket(4, verifierN4, Groth16Verifier_N4.verifyProof.selector);
       

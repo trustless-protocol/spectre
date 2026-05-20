@@ -4,14 +4,12 @@ pragma solidity ^0.8.28;
 import { Test, console } from "forge-std/Test.sol";
 import { Groth16Verifier_N4 } from "../../contracts/verifiers/Groth16Verifier_N4.sol";
 
-/// Replays a single failing relayer proof against the locally-compiled
-/// Groth16Verifier_N4_N4. If this test PASSES the verifier accepts the proof —
-/// meaning the on-chain revert is caused by something outside the verifier
-/// (deploy artifact mismatch, bucket dispatch, etc.). If it FAILS the
-/// rejection is reproducible from prover output alone, so the bug is in
-/// prover serialization, commitment ordering, or VK constants.
+/// Replays a pre-packing failing relayer proof against the locally-compiled
+/// verifier. The circuit now exposes the witness digest as two 128-bit public
+/// inputs instead of 32 byte-sized ones, so the historical proof should no
+/// longer verify against the regenerated VK.
 contract ReplayProofTest is Test {
-    function test_ReplayFailingProof() public {
+    function test_ReplayLegacyProofFailsAgainstPackedDigestVerifier() public {
         Groth16Verifier_N4 verifier = new Groth16Verifier_N4();
 
         uint256[8] memory proof = [
@@ -35,13 +33,14 @@ contract ReplayProofTest is Test {
 
         // witnessHash = 3bbb741e27fe3429a6de507cacefd4f3a4b478995eae56e546c869910c0a6b8d
         bytes32 h = 0x3bbb741e27fe3429a6de507cacefd4f3a4b478995eae56e546c869910c0a6b8d;
-        uint256[32] memory publicInputs;
-        for (uint256 i = 0; i < 32; i++) {
-            publicInputs[i] = uint256(uint8(h[i]));
-        }
+        uint256 digest = uint256(h);
+        uint256[2] memory publicInputs;
+        publicInputs[0] = digest >> 128;
+        publicInputs[1] = digest & type(uint128).max;
 
         bytes memory proofBytes = abi.encodePacked(proof, commitments, commitmentPok);
+        vm.expectRevert();
         verifier.verifyProof(proofBytes, publicInputs);
-        console.log("Groth16Verifier_N4_N4 accepted the proof.");
+        console.log("Legacy proof rejected by packed-digest verifier as expected.");
     }
 }

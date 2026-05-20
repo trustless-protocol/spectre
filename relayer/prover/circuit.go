@@ -21,20 +21,20 @@ type Fr25519 = emulated.Curve25519Fr
 const MaxMsgLen = 192
 
 // BatchCircuit verifies N Tendermint precommit Ed25519 signatures and commits
-// to its entire witness via a single SHA-256 public input. Collapsing the
-// public-input vector to 32 field elements keeps the generated Groth16
-// verifier under Ethereum's EIP-170 contract size limit (24576 bytes).
+// to its entire witness via a single SHA-256 digest, exposed publicly as two
+// 128-bit field elements. This keeps the generated Groth16 verifier compact
+// without losing the full 256-bit binding of the witness commitment.
 //
 // Each slot carries the canonical vote bytes the validator actually signed,
 // padded to MaxMsgLen and gated by a per-slot length variable. The on-chain
 // WrapperVerifier rebuilds those bytes from `(blockHeader, timestamp_i)` via
 // Solidity proto encoding, hashes the witness exactly the same way, and
-// passes the digest in as the proof's single public input.
+// passes the digest in as two packed public inputs.
 //
 // N (slice lengths) is fixed per bucket; one circuit/(pk,vk) triple is built
 // per bucket in prover.Buckets.
 type BatchCircuit[Base, Scalars emulated.FieldParams] struct {
-	Hash [32]uints.U8 `gnark:",public"`
+	Hash [WitnessDigestFieldElements]frontend.Variable `gnark:",public"`
 
 	Sig []eddsa.Signature[Base, Scalars] `gnark:",secret"`
 	Pub []eddsa.PublicKey[Base, Scalars] `gnark:",secret"`
@@ -50,10 +50,6 @@ type BatchCircuit[Base, Scalars emulated.FieldParams] struct {
 
 func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	baseApi, err := emulated.NewField[Base](api)
-	if err != nil {
-		return err
-	}
-	uapi, err := uints.New[uints.U32](api)
 	if err != nil {
 		return err
 	}
@@ -82,8 +78,10 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	}
 	h.Write(buf)
 	digest := h.Sum()
-	for i := 0; i < 32; i++ {
-		uapi.ByteAssertEq(c.Hash[i], digest[i])
+	for i := 0; i < WitnessDigestFieldElements; i++ {
+		start := i * WitnessDigestFieldBytes
+		end := start + WitnessDigestFieldBytes
+		api.AssertIsEqual(c.Hash[i], packBytesToVariableBE(api, digest[start:end]))
 	}
 
 	// 2. Run Ed25519 batch verify over the per-slot signed bytes. SHA-512
@@ -115,4 +113,12 @@ func NewBatchCircuit(n int) *BatchCircuit[Fp25519, Fr25519] {
 		MsgLens: make([]frontend.Variable, n),
 		Active:  make([]frontend.Variable, n),
 	}
+}
+
+func packBytesToVariableBE(api frontend.API, bs []uints.U8) frontend.Variable {
+	var acc frontend.Variable = 0
+	for _, b := range bs {
+		acc = api.Add(api.Mul(acc, 256), b.Val)
+	}
+	return acc
 }
