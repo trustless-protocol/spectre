@@ -21,6 +21,14 @@ contract PredicatesWrapper {
     ) external pure {
         Predicates.validateCommit(signedHeader, validators);
     }
+
+    function verifyTrustedCommitOverlap(
+        IICS07TendermintMsgs.UntrustedBlockState memory untrustedState,
+        IICS07TendermintMsgs.TrustedBlockState memory trustedState,
+        IICS07TendermintMsgs.Options memory options
+    ) external pure {
+        Predicates.verifyTrustedCommitOverlap(untrustedState, trustedState, options);
+    }
 }
 
 contract PredicatesTest is Test, IICS07TendermintMsgs {
@@ -325,5 +333,92 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
 
         vm.expectRevert("invalid commit: faulty signer");
         wrapper.validateCommit(untrusted.signedHeader, untrusted.validatorSet);
+    }
+
+    function testValidateCommitIndexMismatchReverts() public {
+        ValidatorInfo[] memory vals = new ValidatorInfo[](2);
+        vals[0] = _makeValidator("val1", bytes32(uint256(1)), 50);
+        vals[1] = _makeValidator("val2", bytes32(uint256(2)), 50);
+
+        CommitSig[] memory sigs = new CommitSig[](2);
+        sigs[0] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val2");
+        sigs[1] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val1");
+
+        SignedHeader memory sh = _makeSignedHeader(sigs, bytes32(uint256(0xabc)));
+        UntrustedBlockState memory untrusted = UntrustedBlockState({
+            signedHeader: sh,
+            validatorSet: _makeValidatorSet(vals)
+        });
+
+        vm.expectRevert("invalid commit: faulty signer");
+        wrapper.validateCommit(untrusted.signedHeader, untrusted.validatorSet);
+    }
+
+    function testVerifyTrustedCommitOverlapAdjacentNoOp() public view {
+        ValidatorInfo[] memory vals = new ValidatorInfo[](3);
+        vals[0] = _makeValidator("val1", bytes32(uint256(1)), 10);
+        vals[1] = _makeValidator("val2", bytes32(uint256(2)), 40);
+        vals[2] = _makeValidator("val3", bytes32(uint256(3)), 50);
+
+        CommitSig[] memory sigs = new CommitSig[](3);
+        sigs[0] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val1");
+        sigs[1] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_ABSENT, "val2");
+        sigs[2] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_ABSENT, "val3");
+
+        UntrustedBlockState memory untrusted = UntrustedBlockState({
+            signedHeader: _makeSignedHeader(sigs, bytes32(uint256(0xabc))),
+            validatorSet: _makeValidatorSet(vals)
+        });
+        TrustedBlockState memory trusted = TrustedBlockState({
+            chainId: "test-chain",
+            headerTime: 900,
+            height: 99,
+            nextValidatorSet: _makeValidatorSet(vals),
+            nextValidatorHash: bytes32(0)
+        });
+        Options memory opts = Options({
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }),
+            trustingPeriod: 1000,
+            clockDrift: 10
+        });
+
+        wrapper.verifyTrustedCommitOverlap(untrusted, trusted, opts);
+    }
+
+    function testVerifyTrustedCommitOverlapNonAdjacentReverts() public {
+        ValidatorInfo[] memory trustedVals = new ValidatorInfo[](3);
+        trustedVals[0] = _makeValidator("val1", bytes32(uint256(1)), 10);
+        trustedVals[1] = _makeValidator("val2", bytes32(uint256(2)), 40);
+        trustedVals[2] = _makeValidator("val3", bytes32(uint256(3)), 50);
+
+        ValidatorInfo[] memory untrustedVals = new ValidatorInfo[](3);
+        untrustedVals[0] = _makeValidator("val4", bytes32(uint256(4)), 10);
+        untrustedVals[1] = _makeValidator("val5", bytes32(uint256(5)), 40);
+        untrustedVals[2] = _makeValidator("val6", bytes32(uint256(6)), 50);
+
+        CommitSig[] memory sigs = new CommitSig[](3);
+        sigs[0] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val4");
+        sigs[1] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_ABSENT, "val5");
+        sigs[2] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_ABSENT, "val6");
+
+        UntrustedBlockState memory untrusted = UntrustedBlockState({
+            signedHeader: _makeSignedHeader(sigs, bytes32(uint256(0xabc))),
+            validatorSet: _makeValidatorSet(untrustedVals)
+        });
+        TrustedBlockState memory trusted = TrustedBlockState({
+            chainId: "test-chain",
+            headerTime: 900,
+            height: 98,
+            nextValidatorSet: _makeValidatorSet(trustedVals),
+            nextValidatorHash: bytes32(0)
+        });
+        Options memory opts = Options({
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }),
+            trustingPeriod: 1000,
+            clockDrift: 10
+        });
+
+        vm.expectRevert("insufficient voting power overlap");
+        wrapper.verifyTrustedCommitOverlap(untrusted, trusted, opts);
     }
 }

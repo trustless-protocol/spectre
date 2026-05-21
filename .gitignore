@@ -4,6 +4,12 @@ relayer/prover/bin/pk.bin
 relayer/prover/bin/r1cs.bin
 relayer/prover/data/pk.bin
 relayer/prover/data/r1cs.bin
+contracts/verifiers/Groth16Verifier_N4.sol
+contracts/verifiers/Groth16Verifier_N8.sol
+contracts/verifiers/Groth16Verifier_N16.sol
+contracts/verifiers/Groth16Verifier_N32.sol
+contracts/verifiers/Groth16Verifier_N64.sol
+contracts/verifiers/Groth16Verifier_N128.sol
 # directories
 cache
 coverage

@@ -123,6 +123,7 @@ contract Groth16ICS07Tendermint is
         _validateUpdateClientOutput(output);
 
         ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output);
+        _verifyBatchAndQuorum(msg_);
         if (updateResult == ILightClientMsgs.UpdateResult.Update) {
             // adding the new consensus state to the mapping
             if (output.newHeight.revisionHeight > clientState.latestHeight.revisionHeight) {
@@ -135,7 +136,6 @@ contract Groth16ICS07Tendermint is
             return ILightClientMsgs.UpdateResult.NoOp;
         }
 
-        _verifyBatchAndQuorum(msg_);
         return updateResult;
     }
 
@@ -157,22 +157,31 @@ contract Groth16ICS07Tendermint is
             BatchLengthMismatch()
         );
 
-        bool[] memory seen = new bool[](numVals);
+        uint64 totalVotingPower = 0;
+        for (uint256 i = 0; i < numVals; i++) {
+            totalVotingPower += vals[i].votingPower;
+        }
+
         uint64 accumulated = 0;
+        bool hasPrevSigner = false;
+        uint32 prevIdx = 0;
         for (uint256 i = 0; i < msg_.signerIndices.length; i++) {
             if (!msg_.active[i]) {
                 continue; // dummy padding slot
             }
             uint32 idx = msg_.signerIndices[i];
             require(idx < numVals, SignerIndexOutOfRange(idx));
+            if (hasPrevSigner) {
+                require(idx > prevIdx, DuplicateSigner(idx));
+            }
             require(vals[idx].pubKey == msg_.signerPubkeys[i], PubkeyMismatch(idx));
-            require(!seen[idx], DuplicateSigner(idx));
-            seen[idx] = true;
+            hasPrevSigner = true;
+            prevIdx = idx;
             accumulated += vals[idx].votingPower;
         }
         require(
-            uint256(accumulated) * 3 > uint256(msg_.proposedHeader.validatorSet.totalVotingPower) * 2,
-            InsufficientVotingPower(accumulated, msg_.proposedHeader.validatorSet.totalVotingPower)
+            uint256(accumulated) * 3 > uint256(totalVotingPower) * 2,
+            InsufficientVotingPower(accumulated, totalVotingPower)
         );
 
         IICS07TendermintMsgs.BlockCommit memory commit = msg_.proposedHeader.signedHeader.commit;
