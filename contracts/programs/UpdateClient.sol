@@ -141,7 +141,7 @@ contract UpdateClient is IUpdateClient {
         /// Check that the untrusted header is from past.
         uint128 drifted = time + uint128(options.clockDrift) * 1_000_000_000;
         require(untrustedState.signedHeader.header.time < drifted, "invalid block: header is from the future");
-        Predicates.verifyCommitAgainstTrusted(untrustedState, trustedState, options);
+        Predicates.verifyTrustedCommitOverlap(untrustedState, trustedState, options);
     }
 
     function verifyChainIdVersion(

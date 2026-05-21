@@ -72,13 +72,17 @@ func makeSignedCommit(t *testing.T, chainID string, powers []int64, signs []bool
 		Signatures: make([]types.CommitSig, len(vals)),
 	}
 	for i, v := range vals {
-		cs := types.CommitSig{
+		commit.Signatures[i] = types.CommitSig{
 			BlockIDFlag:      types.BlockIDFlagAbsent,
 			ValidatorAddress: v.Address,
 			Timestamp:        header.Time,
 		}
+	}
+	for i := range vals {
+		cs := commit.Signatures[i]
 		if signs[i] {
 			cs.BlockIDFlag = types.BlockIDFlagCommit
+			commit.Signatures[i] = cs
 			sig, err := privs[i].Sign(commit.VoteSignBytes(chainID, int32(i)))
 			if err != nil {
 				t.Fatalf("sign[%d]: %v", i, err)
@@ -155,5 +159,17 @@ func TestExtractValidatorSignatures_GreedyPicksSmallestPrefix(t *testing.T) {
 	}
 	if got.Signatures[0].Power != 70 {
 		t.Fatalf("expected dominant power 70, got %d", got.Signatures[0].Power)
+	}
+}
+
+func TestExtractValidatorSignatures_SortsSelectedSignersByIndex(t *testing.T) {
+	sigs := []ValidatorSignature{
+		{Index: 2, Power: 70},
+		{Index: 0, Power: 20},
+		{Index: 1, Power: 10},
+	}
+	sortSelectedSignaturesByIndex(sigs)
+	if sigs[0].Index != 0 || sigs[1].Index != 1 || sigs[2].Index != 2 {
+		t.Fatalf("expected sorted indices [0 1 2], got [%d %d %d]", sigs[0].Index, sigs[1].Index, sigs[2].Index)
 	}
 }

@@ -103,47 +103,54 @@ library Predicates {
         }
     }
 
+    /// @notice Check only the trust-threshold overlap against the trusted next
+    /// validator set. Adjacent headers do not need this overlap check because
+    /// the trusted next-validator hash already pins the next validator set; the
+    /// outer Groth16ICS07 contract enforces the >2/3 proof-backed quorum over
+    /// the untrusted validator set for all update results, including NoOp.
+    function verifyTrustedCommitOverlap(
+        IICS07TendermintMsgs.UntrustedBlockState memory untrustedState,
+        IICS07TendermintMsgs.TrustedBlockState memory trustedState,
+        IICS07TendermintMsgs.Options memory options
+    ) internal pure {
+        uint64 trustedNextHeight = trustedState.height + 1;
+        if (untrustedState.signedHeader.header.height == trustedNextHeight) {
+            return;
+        }
+        _checkVotingPowerOverlap(
+            untrustedState.signedHeader,
+            trustedState.nextValidatorSet,
+            options.trustThreshold
+        );
+    }
+
     function validateCommit(
         IICS07TendermintMsgs.SignedHeader memory signedHeader,
         IICS07TendermintMsgs.ValidatorSet memory validators
     ) internal pure {
         IICS07TendermintMsgs.CommitSig[] memory commitSigs = signedHeader.commit.commitSigs;
 
+        if (commitSigs.length != validators.validators.length) {
+            revert("invalid commit: number of signatures does not match number of validators");
+        }
+
         bool hasPresentSignature = false;
         for (uint256 i = 0; i < commitSigs.length; i++) {
-            if (commitSigs[i].flag != IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT) {
-                hasPresentSignature = true;
+            IICS07TendermintMsgs.CommitSig memory sig = commitSigs[i];
+            if (sig.flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT) {
+                continue;
+            }
+            hasPresentSignature = true;
+            if (
+                keccak256(abi.encodePacked(validators.validators[i].valAddress))
+                    != keccak256(abi.encodePacked(sig.data.validatorAddress))
+            ) {
+                revert("invalid commit: faulty signer");
             }
         }
 
         if (!hasPresentSignature) {
             revert("invalid commit: no present signatures");
-        }
-
-        if (commitSigs.length != validators.validators.length) {
-            revert("invalid commit: number of signatures does not match number of validators");
-        }
-
-        for (uint256 i = 0; i < commitSigs.length; i++) {
-            IICS07TendermintMsgs.CommitSig memory sig = commitSigs[i];
-            bytes memory validatorAddress;
-
-            if (sig.flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT) {
-                continue;
-            } else {
-                validatorAddress = sig.data.validatorAddress;
-            }
-
-            bool found = false;
-            for (uint256 j = 0; j < validators.validators.length; j++) {
-                if (keccak256(abi.encodePacked(validators.validators[j].valAddress)) == keccak256(abi.encodePacked(validatorAddress))) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                revert("invalid commit: faulty signer");
-            }
         }
     }
 
@@ -157,7 +164,6 @@ library Predicates {
     ) internal pure {
         IICS07TendermintMsgs.CommitSig[] memory commitSigs = signedHeader.commit.commitSigs;
 
-        // Calculate total voting power
         uint64 totalVotingPower = 0;
         for (uint256 i = 0; i < validatorSet.validators.length; i++) {
             totalVotingPower += validatorSet.validators[i].votingPower;
@@ -171,6 +177,20 @@ library Predicates {
             }
 
             bytes memory signerAddress = commitSigs[i].data.validatorAddress;
+            if (
+                i < validatorSet.validators.length
+                    && keccak256(abi.encodePacked(validatorSet.validators[i].valAddress))
+                        == keccak256(abi.encodePacked(signerAddress))
+            ) {
+                talliedPower += validatorSet.validators[i].votingPower;
+                if (
+                    uint256(talliedPower) * uint256(trustThreshold.denominator)
+                        > uint256(totalVotingPower) * uint256(trustThreshold.numerator)
+                ) {
+                    return;
+                }
+                continue;
+            }
 
             for (uint256 j = 0; j < validatorSet.validators.length; j++) {
                 if (keccak256(abi.encodePacked(validatorSet.validators[j].valAddress)) == keccak256(abi.encodePacked(signerAddress))) {
