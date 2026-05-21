@@ -7,20 +7,23 @@ library Header {
     function hashValSet(
         IICS07TendermintMsgs.ValidatorSet memory valset
     ) pure public returns (bytes32) {
-        bytes[] memory validatorBytes = new bytes[](valset.validators.length);
+        uint256 validatorCount = valset.validators.length;
+        if (validatorCount == 0) {
+            return bytes32(0);
+        }
+
+        bytes32[] memory leafHashes = new bytes32[](validatorCount);
         for (uint256 i = 0; i < valset.validators.length; i++) {
-            bytes memory validatorHash = Encode.encodeValidator(
+            bytes memory validatorBytes = Encode.encodeValidator(
                 IICS07TendermintMsgs.SimpleValidator({
                     pubKey: valset.validators[i].pubKey,
                     votingPower: valset.validators[i].votingPower
                 })
             );
-            validatorBytes[i] = validatorHash;
-
+            leafHashes[i] = _leafHash(validatorBytes);
         }
 
-        bytes32 root = merkleHash(validatorBytes);
-        return root;
+        return _merkleHashRange(leafHashes, 0, validatorCount);
     }
 
     function hashHeader(
@@ -28,67 +31,24 @@ library Header {
     ) pure public returns (bytes32) {
         // CometBFT Header.Hash() ALWAYS hashes 14 fields via merkle.
         // Missing fields are encoded as empty bytes (nil in Go).
-        bytes[] memory headerBytes = new bytes[](14);
+        bytes32[] memory leafHashes = new bytes32[](14);
 
-        // Field 0: Version (proto.Marshal)
-        headerBytes[0] = Encode.encodeVersion(header.version);
+        leafHashes[0] = _leafHash(Encode.encodeVersion(header.version));
+        leafHashes[1] = _leafHash(Encode.cdcEncodeString(header.chainId));
+        leafHashes[2] = _leafHash(Encode.cdcEncodeInt64(uint256(header.height)));
+        leafHashes[3] = _leafHash(Encode.encodeTimestamp(header.time));
+        leafHashes[4] = header.hasLastBlockId ? _leafHash(Encode.encodeBlockId(header.lastBlockId)) : _emptyLeafHash();
+        leafHashes[5] = header.hasLastCommitHash ? _leafHash(Encode.cdcEncodeBytes32(header.lastCommitHash)) : _emptyLeafHash();
+        leafHashes[6] = header.hasDataHash ? _leafHash(Encode.cdcEncodeBytes32(header.dataHash)) : _emptyLeafHash();
+        leafHashes[7] = _leafHash(Encode.cdcEncodeBytes32(header.validatorsHash));
+        leafHashes[8] = _leafHash(Encode.cdcEncodeBytes32(header.nextValidatorsHash));
+        leafHashes[9] = _leafHash(Encode.cdcEncodeBytes32(header.consensusHash));
+        leafHashes[10] = _leafHash(Encode.cdcEncodeBytes32(header.appHash));
+        leafHashes[11] = header.hasLastResultsHash ? _leafHash(Encode.cdcEncodeBytes32(header.lastResultsHash)) : _emptyLeafHash();
+        leafHashes[12] = header.hasEvidenceHash ? _leafHash(Encode.cdcEncodeBytes32(header.evidenceHash)) : _emptyLeafHash();
+        leafHashes[13] = _leafHash(Encode.cdcEncodeBytes(header.proposerAddress));
 
-        // Field 1: ChainID (cdcEncode → StringValue)
-        headerBytes[1] = Encode.cdcEncodeString(header.chainId);
-
-        // Field 2: Height (cdcEncode → Int64Value)
-        headerBytes[2] = Encode.cdcEncodeInt64(uint256(header.height));
-
-        // Field 3: Time (StdTimeMarshal → Timestamp)
-        headerBytes[3] = Encode.encodeTimestamp(header.time);
-
-        // Field 4: LastBlockId (proto.Marshal, empty if not present)
-        if (header.hasLastBlockId) {
-            headerBytes[4] = Encode.encodeBlockId(header.lastBlockId);
-        } else {
-            headerBytes[4] = new bytes(0);
-        }
-
-        // Field 5: LastCommitHash (cdcEncode → BytesValue)
-        if (header.hasLastCommitHash) {
-            headerBytes[5] = Encode.cdcEncodeBytes32(header.lastCommitHash);
-        } else {
-            headerBytes[5] = new bytes(0);
-        }
-
-        // Field 6: DataHash (cdcEncode → BytesValue)
-        if (header.hasDataHash) {
-            headerBytes[6] = Encode.cdcEncodeBytes32(header.dataHash);
-        } else {
-            headerBytes[6] = new bytes(0);
-        }
-
-        // Field 7-9: Always present hashes (cdcEncode → BytesValue)
-        headerBytes[7] = Encode.cdcEncodeBytes32(header.validatorsHash);
-        headerBytes[8] = Encode.cdcEncodeBytes32(header.nextValidatorsHash);
-        headerBytes[9] = Encode.cdcEncodeBytes32(header.consensusHash);
-
-        // Field 10: AppHash (cdcEncode → BytesValue)
-        headerBytes[10] = Encode.cdcEncodeBytes32(header.appHash);
-
-        // Field 11: LastResultsHash (cdcEncode → BytesValue)
-        if (header.hasLastResultsHash) {
-            headerBytes[11] = Encode.cdcEncodeBytes32(header.lastResultsHash);
-        } else {
-            headerBytes[11] = new bytes(0);
-        }
-
-        // Field 12: EvidenceHash (cdcEncode → BytesValue)
-        if (header.hasEvidenceHash) {
-            headerBytes[12] = Encode.cdcEncodeBytes32(header.evidenceHash);
-        } else {
-            headerBytes[12] = new bytes(0);
-        }
-
-        // Field 13: ProposerAddress (cdcEncode → BytesValue)
-        headerBytes[13] = Encode.cdcEncodeBytes(header.proposerAddress);
-
-        return merkleHash(headerBytes);
+        return _merkleHashRange(leafHashes, 0, leafHashes.length);
     }
 
     function merkleHash(
@@ -98,17 +58,12 @@ library Header {
             return bytes32(0);
         }
 
-        // tmhash(0x00 || leaf) — 1-byte leaf prefix per Tendermint spec
-        if (bytesArray.length == 1) {
-            return sha256(abi.encodePacked(bytes1(0x00), bytesArray[0]));
+        bytes32[] memory leafHashes = new bytes32[](bytesArray.length);
+        for (uint256 i = 0; i < bytesArray.length; i++) {
+            leafHashes[i] = _leafHash(bytesArray[i]);
         }
 
-        uint256 split = nextPowerOfTwo(bytesArray.length) / 2;
-        bytes32 left = merkleHash(getSlice(bytesArray, 0, split));
-        bytes32 right = merkleHash(getSlice(bytesArray, split, bytesArray.length));
-
-        // tmhash(0x01 || left || right) — 1-byte inner prefix per Tendermint spec
-        return sha256(abi.encodePacked(bytes1(0x01), left, right));
+        return _merkleHashRange(leafHashes, 0, bytesArray.length);
     }
 
     function getSlice(bytes[] memory bytesArray, uint256 from, uint256 to)
@@ -141,5 +96,78 @@ library Header {
             power <<= 1;
         }
         return power;
+    }
+
+    function _merkleHashRange(
+        bytes32[] memory leafHashes,
+        uint256 from,
+        uint256 to
+    ) private pure returns (bytes32) {
+        uint256 length = to - from;
+        if (length == 1) {
+            return leafHashes[from];
+        }
+
+        uint256 split = _splitPoint(length);
+        bytes32 left = _merkleHashRange(leafHashes, from, from + split);
+        bytes32 right = _merkleHashRange(leafHashes, from + split, to);
+        return _innerHash(left, right);
+    }
+
+    function _splitPoint(uint256 n) private pure returns (uint256 split) {
+        split = 1;
+        while ((split << 1) < n) {
+            split <<= 1;
+        }
+    }
+
+    function _leafHash(bytes memory leaf) private pure returns (bytes32) {
+        bytes memory prefixed = new bytes(leaf.length + 1);
+        prefixed[0] = bytes1(0x00);
+        _copyBytes(prefixed, 1, leaf);
+        return sha256(prefixed);
+    }
+
+    function _emptyLeafHash() private pure returns (bytes32) {
+        bytes memory prefixed = new bytes(1);
+        prefixed[0] = bytes1(0x00);
+        return sha256(prefixed);
+    }
+
+    function _innerHash(bytes32 left, bytes32 right) private pure returns (bytes32) {
+        bytes memory prefixed = new bytes(65);
+        prefixed[0] = bytes1(0x01);
+        assembly {
+            mstore(add(prefixed, 0x21), left)
+            mstore(add(prefixed, 0x41), right)
+        }
+        return sha256(prefixed);
+    }
+
+    function _copyBytes(bytes memory out, uint256 dstOffset, bytes memory src) private pure returns (uint256) {
+        uint256 len = src.length;
+        if (len == 0) {
+            return dstOffset;
+        }
+
+        assembly {
+            let srcPtr := add(src, 0x20)
+            let dstPtr := add(add(out, 0x20), dstOffset)
+            let fullWords := and(len, not(31))
+
+            for { let copied := 0 } lt(copied, fullWords) { copied := add(copied, 0x20) } {
+                mstore(add(dstPtr, copied), mload(add(srcPtr, copied)))
+            }
+
+            let rem := and(len, 31)
+            if rem {
+                let mask := sub(shl(mul(8, sub(32, rem)), 1), 1)
+                let srcWord := mload(add(srcPtr, fullWords))
+                let dstWord := mload(add(dstPtr, fullWords))
+                mstore(add(dstPtr, fullWords), or(and(dstWord, mask), and(srcWord, not(mask))))
+            }
+        }
+
+        return dstOffset + len;
     }
 }

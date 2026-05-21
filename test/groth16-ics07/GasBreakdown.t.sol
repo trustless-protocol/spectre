@@ -15,6 +15,7 @@ import {IMisbehaviourMsgs} from "../../contracts/light-clients/msgs/IMisbehaviou
 import {UpdateClient} from "../../contracts/programs/UpdateClient.sol";
 import {Predicates} from "../../contracts/utils/Predicates.sol";
 import {Header as HeaderLib} from "../../contracts/utils/Header.sol";
+import {Encode} from "../../contracts/utils/Encode.sol";
 import {WrapperVerifier} from "../../contracts/utils/WrapperVerifier.sol";
 import {IUpdateClient} from "../../contracts/interfaces/IUpdateClient.sol";
 import {BenchGroth16Verifier_N4} from "./BenchGroth16Verifier_N4.sol";
@@ -91,6 +92,14 @@ contract PredicatesGasHarness {
         IICS07TendermintMsgs.Options memory options
     ) external pure {
         Predicates.verifyCommitAgainstTrusted(untrustedState, trustedState, options);
+    }
+
+    function verifyTrustedCommitOverlap(
+        IICS07TendermintMsgs.UntrustedBlockState memory untrustedState,
+        IICS07TendermintMsgs.TrustedBlockState memory trustedState,
+        IICS07TendermintMsgs.Options memory options
+    ) external pure {
+        Predicates.verifyTrustedCommitOverlap(untrustedState, trustedState, options);
     }
 }
 
@@ -377,10 +386,38 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
         emit log_named_uint("Predicates.verifyCommitAgainstTrusted", g0 - gasleft());
     }
 
+    function testGas_PredicatesVerifyTrustedCommitOverlap_Bucket4() public {
+        uint256 g0 = gasleft();
+        predicatesHarness.verifyTrustedCommitOverlap(untrusted_, trusted_, options_);
+        emit log_named_uint("Predicates.verifyTrustedCommitOverlap", g0 - gasleft());
+    }
+
     function testGas_UpdateClientProgram_Bucket4() public {
         uint256 g0 = gasleft();
         updateClientProgram.updateClient(updateMsg);
         emit log_named_uint("UpdateClient.updateClient", g0 - gasleft());
+    }
+
+    function testGas_HeaderHashValSet_Bucket4() public {
+        uint256 g0 = gasleft();
+        HeaderLib.hashValSet(updateMsg.proposedHeader.validatorSet);
+        emit log_named_uint("Header.hashValSet", g0 - gasleft());
+    }
+
+    function testGas_HeaderHashHeader_Bucket4() public {
+        uint256 g0 = gasleft();
+        HeaderLib.hashHeader(updateMsg.proposedHeader.signedHeader.header);
+        emit log_named_uint("Header.hashHeader", g0 - gasleft());
+    }
+
+    function testGas_EncodeVoteSignBytes_Bucket4() public {
+        uint256 g0 = gasleft();
+        Encode.voteSignBytes(
+            updateMsg.proposedHeader.signedHeader.commit,
+            updateMsg.proposedHeader.signedHeader.header.chainId,
+            0
+        );
+        emit log_named_uint("Encode.voteSignBytes", g0 - gasleft());
     }
 
     function testGas_WrapperHashWitness_Bucket4() public {

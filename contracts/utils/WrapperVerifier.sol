@@ -145,9 +145,10 @@ contract WrapperVerifier is IVerifier {
         }
     }
 
-    function _copyBytes(bytes memory dst, uint256 dstOffset, bytes memory src) private pure {
+    function _copyBytes(bytes memory dst, uint256 dstOffset, bytes memory src) private pure returns (uint256) {
+        uint256 len;
         assembly {
-            let len := mload(src)
+            len := mload(src)
             let dstPtr := add(add(dst, 0x20), dstOffset)
             let srcPtr := add(src, 0x20)
             let fullWords := and(len, not(31))
@@ -167,6 +168,7 @@ contract WrapperVerifier is IVerifier {
                 )
             }
         }
+        return dstOffset + len;
     }
 
     /// @dev Reproduces prover.DummyMsgBytes for a padding slot. Must stay in
@@ -196,44 +198,105 @@ contract WrapperVerifier is IVerifier {
         bytes memory encodedBlockId = Encode.encodeBlockId(blockId);
 
         // Compose Timestamp{seconds, nanos} — gogoproto omits zero scalars.
-        bytes memory encodedTs;
+        uint256 encodedTsLen = 0;
         if (tsSec > 0) {
-            encodedTs = abi.encodePacked(uint8(0x08), Encode.encodeVarint(uint256(tsSec)));
+            encodedTsLen += 1 + _varintLen(uint256(tsSec));
         }
         if (tsNanos > 0) {
-            encodedTs = abi.encodePacked(encodedTs, uint8(0x10), Encode.encodeVarint(uint256(tsNanos)));
+            encodedTsLen += 1 + _varintLen(uint256(tsNanos));
         }
 
-        bytes memory encoded;
+        bytes memory encodedTs = new bytes(encodedTsLen);
+        uint256 tsOffset = 0;
+        if (tsSec > 0) {
+            _storeByte(encodedTs, tsOffset, 0x08);
+            tsOffset = _writeVarint(encodedTs, tsOffset + 1, uint256(tsSec));
+        }
+        if (tsNanos > 0) {
+            _storeByte(encodedTs, tsOffset, 0x10);
+            _writeVarint(encodedTs, tsOffset + 1, uint256(tsNanos));
+        }
+
+        uint256 encodedLen = 2; // field 1: tag + PRECOMMIT value
+        if (shared.height > 0) {
+            encodedLen += 9;
+        }
+        if (shared.round > 0) {
+            encodedLen += 9;
+        }
+        if (encodedBlockId.length > 0) {
+            encodedLen += 1 + _varintLen(encodedBlockId.length) + encodedBlockId.length;
+        }
+        if (encodedTs.length > 0) {
+            encodedLen += 1 + _varintLen(encodedTs.length) + encodedTs.length;
+        }
+        if (shared.chainID.length > 0) {
+            encodedLen += 1 + _varintLen(shared.chainID.length) + shared.chainID.length;
+        }
+
+        bytes memory out = new bytes(_varintLen(encodedLen) + encodedLen);
+        uint256 offset = _writeVarint(out, 0, encodedLen);
+
         // Field 1: type = PRECOMMIT (2), tag 0x08
-        encoded = abi.encodePacked(uint8(0x08), uint8(0x02));
+        _storeByte(out, offset, 0x08);
+        _storeByte(out, offset + 1, 0x02);
+        offset += 2;
 
         // Field 2: height, sfixed64, tag 0x11
         if (shared.height > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x11), Encode.encodeSfixed64(int64(uint64(shared.height))));
+            _storeByte(out, offset, 0x11);
+            offset = _copyBytes(out, offset + 1, Encode.encodeSfixed64(int64(uint64(shared.height))));
         }
 
         // Field 3: round, sfixed64, tag 0x19
         if (shared.round > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x19), Encode.encodeSfixed64(int64(uint64(shared.round))));
+            _storeByte(out, offset, 0x19);
+            offset = _copyBytes(out, offset + 1, Encode.encodeSfixed64(int64(uint64(shared.round))));
         }
 
         // Field 4: block_id, length-delimited, tag 0x22
         if (encodedBlockId.length > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x22), Encode.encodeVarint(encodedBlockId.length), encodedBlockId);
+            _storeByte(out, offset, 0x22);
+            offset = _writeVarint(out, offset + 1, encodedBlockId.length);
+            offset = _copyBytes(out, offset, encodedBlockId);
         }
 
         // Field 5: timestamp, length-delimited, tag 0x2a
         if (encodedTs.length > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x2A), Encode.encodeVarint(encodedTs.length), encodedTs);
+            _storeByte(out, offset, 0x2A);
+            offset = _writeVarint(out, offset + 1, encodedTs.length);
+            offset = _copyBytes(out, offset, encodedTs);
         }
 
         // Field 6: chain_id, length-delimited, tag 0x32
         if (shared.chainID.length > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x32), Encode.encodeVarint(shared.chainID.length), shared.chainID);
+            _storeByte(out, offset, 0x32);
+            offset = _writeVarint(out, offset + 1, shared.chainID.length);
+            _copyBytes(out, offset, shared.chainID);
         }
 
-        // Wrap with overall varint length prefix (cometbft MarshalDelimited).
-        return abi.encodePacked(Encode.encodeVarint(encoded.length), encoded);
+        return out;
+    }
+
+    function _varintLen(uint256 value) private pure returns (uint256 len) {
+        len = 1;
+        while (value >= 128) {
+            value >>= 7;
+            unchecked {
+                ++len;
+            }
+        }
+    }
+
+    function _writeVarint(bytes memory out, uint256 offset, uint256 value) private pure returns (uint256) {
+        while (value >= 128) {
+            _storeByte(out, offset, uint8((value & 0x7F) | 0x80));
+            unchecked {
+                ++offset;
+            }
+            value >>= 7;
+        }
+        _storeByte(out, offset, uint8(value));
+        return offset + 1;
     }
 }
