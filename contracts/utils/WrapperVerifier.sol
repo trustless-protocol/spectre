@@ -21,6 +21,7 @@ contract WrapperVerifier is IVerifier {
     /// prover.MaxMsgLen exactly — anything larger fails LengthExceeded; shorter
     /// payloads are right-padded with zeros.
     uint16 constant MAX_MSG_LEN = 192;
+    uint256 constant WITNESS_SLOT_LEN = 1 + 32 + 2 + MAX_MSG_LEN;
 
     /// @param verifier Address of the per-bucket gnark-generated Groth16 verifier.
     /// @param selector 4-byte function selector of that verifier's `verifyProof`.
@@ -104,7 +105,8 @@ contract WrapperVerifier is IVerifier {
         bool[] calldata active,
         IVerifier.SharedBlock calldata shared
     ) internal pure returns (bytes32) {
-        bytes memory buf;
+        bytes memory buf = new bytes(pubkeys.length * WITNESS_SLOT_LEN);
+        uint256 offset = 0;
         for (uint256 i = 0; i < pubkeys.length; i++) {
             bytes memory msgBytes;
             if (active[i]) {
@@ -112,18 +114,15 @@ contract WrapperVerifier is IVerifier {
             } else {
                 msgBytes = _dummyMsgBytes(bucket, uint16(i));
             }
-            if (msgBytes.length > MAX_MSG_LEN) revert MsgTooLong(msgBytes.length);
-            bytes memory padded = new bytes(MAX_MSG_LEN);
-            for (uint256 j = 0; j < msgBytes.length; j++) {
-                padded[j] = msgBytes[j];
-            }
-            buf = abi.encodePacked(
-                buf,
-                active[i] ? bytes1(0x01) : bytes1(0x00), // active (1)
-                pubkeys[i],                // A (32)
-                uint16(msgBytes.length),   // msgLen (2 BE)
-                padded                     // msg (MAX_MSG_LEN padded)
-            );
+            uint256 msgLen = msgBytes.length;
+            if (msgLen > MAX_MSG_LEN) revert MsgTooLong(msgLen);
+
+            _storeByte(buf, offset, active[i] ? 1 : 0);
+            _storeBytes32(buf, offset + 1, pubkeys[i]);
+            _storeByte(buf, offset + 33, msgLen >> 8);
+            _storeByte(buf, offset + 34, msgLen);
+            _copyBytes(buf, offset + 35, msgBytes);
+            offset += WITNESS_SLOT_LEN;
         }
         return sha256(buf);
     }
@@ -132,6 +131,42 @@ contract WrapperVerifier is IVerifier {
         uint256 digest = uint256(h);
         publicInputs[0] = digest >> 128;
         publicInputs[1] = digest & type(uint128).max;
+    }
+
+    function _storeByte(bytes memory dst, uint256 offset, uint256 value) private pure {
+        assembly {
+            mstore8(add(add(dst, 0x20), offset), value)
+        }
+    }
+
+    function _storeBytes32(bytes memory dst, uint256 offset, bytes32 value) private pure {
+        assembly {
+            mstore(add(add(dst, 0x20), offset), value)
+        }
+    }
+
+    function _copyBytes(bytes memory dst, uint256 dstOffset, bytes memory src) private pure {
+        assembly {
+            let len := mload(src)
+            let dstPtr := add(add(dst, 0x20), dstOffset)
+            let srcPtr := add(src, 0x20)
+            let fullWords := and(len, not(31))
+
+            for { let i := 0 } lt(i, fullWords) { i := add(i, 0x20) } {
+                mstore(add(dstPtr, i), mload(add(srcPtr, i)))
+            }
+
+            let rem := and(len, 31)
+            if rem {
+                let srcWord := mload(add(srcPtr, fullWords))
+                let dstWord := mload(add(dstPtr, fullWords))
+                let keepMask := sub(shl(mul(sub(32, rem), 8), 1), 1)
+                mstore(
+                    add(dstPtr, fullWords),
+                    or(and(srcWord, not(keepMask)), and(dstWord, keepMask))
+                )
+            }
+        }
     }
 
     /// @dev Reproduces prover.DummyMsgBytes for a padding slot. Must stay in
