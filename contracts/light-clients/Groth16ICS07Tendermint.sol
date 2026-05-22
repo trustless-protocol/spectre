@@ -123,6 +123,10 @@ contract Groth16ICS07Tendermint is
         _validateUpdateClientOutput(output);
 
         ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output);
+        // Verify the batch proof before branching so NoOp/Misbehaviour paths
+        // cannot accept a junk proof when the consensus state already matches.
+        // This adds gas for race-loser relayers on the NoOp path, but keeps
+        // "accepted tx => valid proof" as a consistent invariant.
         _verifyBatchAndQuorum(msg_);
         if (updateResult == ILightClientMsgs.UpdateResult.Update) {
             // adding the new consensus state to the mapping
