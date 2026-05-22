@@ -55,7 +55,7 @@ contract Groth16ICS07Tendermint is
     uint16 public constant ALLOWED_CLOCK_DRIFT = 30 minutes;
 
     /// @inheritdoc IGroth16ICS07Tendermint
-    bytes32 public constant PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
+    bytes32 public immutable PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
 
     /// @notice The constructor sets the program verification key and the initial client and consensus states.
     /// @param verifier The address of the Groth16 verifier contract.
@@ -139,6 +139,8 @@ contract Groth16ICS07Tendermint is
         _validateUpdateClientOutput(output);
 
         ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output);
+        IUpdateClientMsgs.MsgUpdateClient memory msg_ = abi.decode(updateClientMsg, (IUpdateClientMsgs.MsgUpdateClient));
+        _verifyBatchAndQuorum(msg_);
         if (updateResult == ILightClientMsgs.UpdateResult.Update) {
             // adding the new consensus state to the mapping
             if (output.newHeight.revisionHeight > clientState.latestHeight.revisionHeight) {
@@ -150,9 +152,6 @@ contract Groth16ICS07Tendermint is
         } else if (updateResult == ILightClientMsgs.UpdateResult.NoOp) {
             return ILightClientMsgs.UpdateResult.NoOp;
         }
-
-        IUpdateClientMsgs.MsgUpdateClient memory msg_ = abi.decode(updateClientMsg, (IUpdateClientMsgs.MsgUpdateClient));
-        _verifyBatchAndQuorum(msg_);
         return updateResult;
     }
 
@@ -352,7 +351,7 @@ contract Groth16ICS07Tendermint is
 
         {
             // loop through the key-value pairs and validate them
-            // if provided kv pairs inputs don't contains path and value 
+            // if provided kv pairs inputs don't contains path and value
             // from contract state return error
             // if provided proofs contain kv path but value not match return an
             // error
