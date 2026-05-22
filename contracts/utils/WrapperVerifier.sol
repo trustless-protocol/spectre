@@ -7,10 +7,11 @@ import {Encode} from "./Encode.sol";
 
 /// @title WrapperVerifier
 /// @notice Rebuilds each validator's canonical-vote bytes on-chain, hashes the
-///         witness with SHA-256, and forwards the 32-byte digest to the
-///         per-bucket gnark Groth16 verifier. One `BucketVerifier` must be
-///         registered per supported bucket via `setBucket` before
-///         `verifyBatchProof` can succeed for that size.
+///         witness with SHA-256, and forwards the 32-byte digest packed into
+///         two 128-bit public field elements to the per-bucket gnark Groth16
+///         verifier. One `BucketVerifier` must be registered per supported
+///         bucket via `setBucket` before `verifyBatchProof` can succeed for
+///         that size.
 ///
 ///         The in-circuit hash (see prover/hash_witness.go) reproduces the same
 ///         byte layout; any drift between this file, hash_witness.go, and
@@ -28,7 +29,8 @@ contract WrapperVerifier is IVerifier {
     ///                 `verifyProof(uint256[8],uint256[2],uint256[2],uint256[N])`
     ///                 to `verifyProof(bytes,uint256[N])` where the bytes blob
     ///                 packs (proof || commitments || commitmentPok) = 384 bytes.
-    ///                 New selector: `0x3ae90dd1`.
+    ///                 `N` now equals 2 because the SHA-256 digest is exposed
+    ///                 as two 128-bit public field elements.
     struct BucketVerifier {
         address verifier;
         bytes4 selector;
@@ -75,10 +77,7 @@ contract WrapperVerifier is IVerifier {
 
         bytes32 h = _hashWitness(bucket, pubkeys, timestampSeconds, timestampNanos, active, shared);
 
-        uint256[32] memory publicInputs;
-        for (uint256 i = 0; i < 32; i++) {
-            publicInputs[i] = uint256(uint8(h[i]));
-        }
+        uint256[2] memory publicInputs = _digestPublicInputs(h);
 
         bytes memory proofBytes = abi.encodePacked(proof, commitments, commitmentPok);
         bytes memory cd = abi.encodeWithSelector(bv.selector, proofBytes, publicInputs);
@@ -127,6 +126,12 @@ contract WrapperVerifier is IVerifier {
             );
         }
         return sha256(buf);
+    }
+
+    function _digestPublicInputs(bytes32 h) internal pure returns (uint256[2] memory publicInputs) {
+        uint256 digest = uint256(h);
+        publicInputs[0] = digest >> 128;
+        publicInputs[1] = digest & type(uint128).max;
     }
 
     /// @dev Reproduces prover.DummyMsgBytes for a padding slot. Must stay in

@@ -4,11 +4,24 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"math/big"
 
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
 	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/std/math/uints"
+)
+
+const (
+	// WitnessDigestBytes is the width of the SHA-256 witness commitment.
+	WitnessDigestBytes = sha256.Size
+	// WitnessDigestFieldElements is the number of BN254 field elements we use
+	// to expose the 32-byte SHA-256 digest as public inputs. We intentionally
+	// use two 128-bit limbs instead of one field element: a single BN254 scalar
+	// cannot injectively encode a full 256-bit digest without truncation or
+	// modular reduction.
+	WitnessDigestFieldElements = 2
+	WitnessDigestFieldBytes    = WitnessDigestBytes / WitnessDigestFieldElements
 )
 
 // Witness byte layout. Same byte sequence is hashed in three places — Go off-
@@ -32,13 +45,26 @@ import (
 
 // ComputeWitnessHash serializes the per-slot data into the canonical layout
 // and returns the SHA-256 digest. The on-chain WrapperVerifier recomputes the
-// same hash from calldata and feeds it as the proof's single public input.
+// same hash from calldata and feeds it as the proof's two packed public inputs.
 func ComputeWitnessHash(sigs []ValidatorSignature) ([32]byte, error) {
 	buf, err := encodeWitnessBytes(sigs)
 	if err != nil {
 		return [32]byte{}, err
 	}
 	return sha256.Sum256(buf), nil
+}
+
+// DigestPublicInputs splits the 32-byte witness SHA-256 digest into two
+// 128-bit big-endian limbs so the circuit can expose it as two BN254 public
+// inputs instead of 32 separate byte-sized inputs.
+func DigestPublicInputs(hash [WitnessDigestBytes]byte) [WitnessDigestFieldElements]*big.Int {
+	var out [WitnessDigestFieldElements]*big.Int
+	for i := 0; i < WitnessDigestFieldElements; i++ {
+		start := i * WitnessDigestFieldBytes
+		end := start + WitnessDigestFieldBytes
+		out[i] = new(big.Int).SetBytes(hash[start:end])
+	}
+	return out
 }
 
 func encodeWitnessBytes(sigs []ValidatorSignature) ([]byte, error) {
