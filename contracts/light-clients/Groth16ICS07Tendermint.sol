@@ -114,20 +114,31 @@ contract Groth16ICS07Tendermint is
         onlyProofSubmitter
         returns (ILightClientMsgs.UpdateResult)
     {
-        IUpdateClientMsgs.MsgUpdateClient memory msg_ = abi.decode(updateClientMsg, (IUpdateClientMsgs.MsgUpdateClient));
+        bytes4 sel = IUpdateClient.updateClient.selector;
+        address _updateClient = address(UPDATE_CLIENT);
+        bytes memory ret;
+        assembly ("memory-safe") {
+            let fmp := mload(0x40)
+            // Prepend 4-byte selector (left-aligned in first word) then copy raw calldata bytes
+            mstore(fmp, sel)
+            calldatacopy(add(fmp, 4), updateClientMsg.offset, updateClientMsg.length)
+            if iszero(staticcall(gas(), _updateClient, fmp, add(4, updateClientMsg.length), 0, 0)) {
+                returndatacopy(fmp, 0, returndatasize())
+                revert(fmp, returndatasize())
+            }
+            // Reuse fmp for the return bytes memory (input calldata no longer needed)
+            let retLen := returndatasize()
+            mstore(fmp, retLen)
+            returndatacopy(add(fmp, 32), 0, retLen)
+            mstore(0x40, and(add(add(fmp, add(retLen, 32)), 31), not(31)))
+            ret := fmp
+        }
         IUpdateClientMsgs.UpdateClientOutput memory output =
-            UPDATE_CLIENT.updateClient(
-                msg_
-            );
+            abi.decode(ret, (IUpdateClientMsgs.UpdateClientOutput));
 
         _validateUpdateClientOutput(output);
 
         ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output);
-        // Verify the batch proof before branching so NoOp/Misbehaviour paths
-        // cannot accept a junk proof when the consensus state already matches.
-        // This adds gas for race-loser relayers on the NoOp path, but keeps
-        // "accepted tx => valid proof" as a consistent invariant.
-        _verifyBatchAndQuorum(msg_);
         if (updateResult == ILightClientMsgs.UpdateResult.Update) {
             // adding the new consensus state to the mapping
             if (output.newHeight.revisionHeight > clientState.latestHeight.revisionHeight) {
@@ -140,6 +151,8 @@ contract Groth16ICS07Tendermint is
             return ILightClientMsgs.UpdateResult.NoOp;
         }
 
+        IUpdateClientMsgs.MsgUpdateClient memory msg_ = abi.decode(updateClientMsg, (IUpdateClientMsgs.MsgUpdateClient));
+        _verifyBatchAndQuorum(msg_);
         return updateResult;
     }
 
