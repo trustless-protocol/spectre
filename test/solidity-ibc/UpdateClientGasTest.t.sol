@@ -17,7 +17,7 @@ import { ILightClientMsgs } from "../../contracts/msgs/ILightClientMsgs.sol";
 ///      `UPDATE_CLIENT.updateClient`, `_verifyBatchAndQuorum`, `_hashWitness`,
 ///      `_voteSignBytes`) runs unmodified.
 contract AlwaysTrueVerifier {
-    function verifyProof(bytes calldata, uint256[32] calldata) external pure returns (bool) {
+    function verifyProof(bytes calldata, uint256[2] calldata) external pure returns (bool) {
         return true;
     }
 }

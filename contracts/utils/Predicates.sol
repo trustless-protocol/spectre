@@ -1,7 +1,6 @@
 pragma solidity ^0.8.0;
 
 import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
-import { VotingPowerCalculator } from "./VotingPowerCalculator.sol";
 import { Header } from "./Header.sol";
 
 /// @title Predicates
@@ -73,7 +72,7 @@ library Predicates {
 
         if (needBoth) {
             // Check trust overlap between trusted validators and untrusted header
-            _checkVotingPowerOverlap(
+            _checkVotingPowerOverlapByAddress(
                 untrustedState.signedHeader,
                 trustedState.nextValidatorSet,
                 options.trustThreshold
@@ -83,7 +82,7 @@ library Predicates {
                 numerator: 2,
                 denominator: 3
             });
-            _checkVotingPowerOverlap(
+            _checkVotingPowerOverlapByIndex(
                 untrustedState.signedHeader,
                 untrustedState.validatorSet,
                 twoThirds
@@ -95,12 +94,33 @@ library Predicates {
                 numerator: 2,
                 denominator: 3
             });
-            _checkVotingPowerOverlap(
+            _checkVotingPowerOverlapByIndex(
                 untrustedState.signedHeader,
                 untrustedState.validatorSet,
                 trustThreshold
             );
         }
+    }
+
+    /// @notice Check only the trust-threshold overlap against the trusted next
+    /// validator set. Adjacent headers do not need this overlap check because
+    /// the trusted next-validator hash already pins the next validator set; the
+    /// outer Groth16ICS07 contract enforces the >2/3 proof-backed quorum over
+    /// the untrusted validator set for all update results, including NoOp.
+    function verifyTrustedCommitOverlap(
+        IICS07TendermintMsgs.UntrustedBlockState memory untrustedState,
+        IICS07TendermintMsgs.TrustedBlockState memory trustedState,
+        IICS07TendermintMsgs.Options memory options
+    ) internal pure {
+        uint64 trustedNextHeight = trustedState.height + 1;
+        if (untrustedState.signedHeader.header.height == trustedNextHeight) {
+            return;
+        }
+        _checkVotingPowerOverlapByAddress(
+            untrustedState.signedHeader,
+            trustedState.nextValidatorSet,
+            options.trustThreshold
+        );
     }
 
     function validateCommit(
@@ -109,88 +129,122 @@ library Predicates {
     ) internal pure {
         IICS07TendermintMsgs.CommitSig[] memory commitSigs = signedHeader.commit.commitSigs;
 
+        if (commitSigs.length != validators.validators.length) {
+            revert("invalid commit: number of signatures does not match number of validators");
+        }
+
         bool hasPresentSignature = false;
         for (uint256 i = 0; i < commitSigs.length; i++) {
-            if (commitSigs[i].flag != IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT) {
-                hasPresentSignature = true;
+            IICS07TendermintMsgs.CommitSig memory sig = commitSigs[i];
+            if (sig.flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT) {
+                continue;
+            }
+            hasPresentSignature = true;
+            if (
+                keccak256(abi.encodePacked(validators.validators[i].valAddress))
+                    != keccak256(abi.encodePacked(sig.data.validatorAddress))
+            ) {
+                revert("invalid commit: faulty signer");
             }
         }
 
         if (!hasPresentSignature) {
             revert("invalid commit: no present signatures");
         }
-
-        if (commitSigs.length != validators.validators.length) {
-            revert("invalid commit: number of signatures does not match number of validators");
-        }
-
-        for (uint256 i = 0; i < commitSigs.length; i++) {
-            IICS07TendermintMsgs.CommitSig memory sig = commitSigs[i];
-            bytes memory validatorAddress;
-
-            if (sig.flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT) {
-                continue;
-            } else {
-                validatorAddress = sig.data.validatorAddress;
-            }
-
-            bool found = false;
-            for (uint256 j = 0; j < validators.validators.length; j++) {
-                if (keccak256(abi.encodePacked(validators.validators[j].valAddress)) == keccak256(abi.encodePacked(validatorAddress))) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                revert("invalid commit: faulty signer");
-            }
-        }
     }
 
     /// @notice Check that enough validators from the given set signed the header
     /// to meet the trust threshold. Ed25519 signature verification is delegated
     /// to the ZK proof — this function only checks voting power.
-    function _checkVotingPowerOverlap(
+    function _checkVotingPowerOverlapByAddress(
         IICS07TendermintMsgs.SignedHeader memory signedHeader,
         IICS07TendermintMsgs.ValidatorSet memory validatorSet,
         IICS07TendermintMsgs.TrustThreshold memory trustThreshold
     ) internal pure {
         IICS07TendermintMsgs.CommitSig[] memory commitSigs = signedHeader.commit.commitSigs;
+        IICS07TendermintMsgs.ValidatorInfo[] memory validators = validatorSet.validators;
 
-        // Calculate total voting power
-        uint64 totalVotingPower = 0;
-        for (uint256 i = 0; i < validatorSet.validators.length; i++) {
-            totalVotingPower += validatorSet.validators[i].votingPower;
-        }
+        uint64 totalVotingPower = _sumVotingPower(validators);
 
         // Tally voting power of non-absent signers that match validators
         uint64 talliedPower = 0;
         for (uint256 i = 0; i < commitSigs.length; i++) {
-            if (commitSigs[i].flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT) {
+            IICS07TendermintMsgs.CommitSig memory sig = commitSigs[i];
+            if (sig.flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT) {
                 continue;
             }
 
-            bytes memory signerAddress = commitSigs[i].data.validatorAddress;
-
-            for (uint256 j = 0; j < validatorSet.validators.length; j++) {
-                if (keccak256(abi.encodePacked(validatorSet.validators[j].valAddress)) == keccak256(abi.encodePacked(signerAddress))) {
-                    talliedPower += validatorSet.validators[j].votingPower;
+            bytes32 signerAddressHash = keccak256(sig.data.validatorAddress);
+            for (uint256 j = 0; j < validators.length; j++) {
+                if (keccak256(validators[j].valAddress) == signerAddressHash) {
+                    talliedPower += validators[j].votingPower;
                     break;
                 }
             }
 
-            // Early exit if threshold already met
-            // Cast to uint256 before multiplication to prevent overflow:
-            // Tendermint voting power is int64 (max ~9.2e18); multiplying by
-            // trustThreshold.denominator overflows uint64 and can flip the comparison.
-            if (uint256(talliedPower) * uint256(trustThreshold.denominator) > uint256(totalVotingPower) * uint256(trustThreshold.numerator)) {
+            if (_meetsTrustThreshold(talliedPower, totalVotingPower, trustThreshold)) {
                 return;
             }
         }
 
         require(
-            uint256(talliedPower) * uint256(trustThreshold.denominator) > uint256(totalVotingPower) * uint256(trustThreshold.numerator),
+            _meetsTrustThreshold(talliedPower, totalVotingPower, trustThreshold),
             "insufficient voting power overlap"
         );
+    }
+
+    /// @notice Check that enough voting power is present in the untrusted
+    /// validator set itself. This path relies on `validateCommit()` having
+    /// already established index alignment between `commitSigs[i]` and
+    /// `validatorSet.validators[i]`.
+    function _checkVotingPowerOverlapByIndex(
+        IICS07TendermintMsgs.SignedHeader memory signedHeader,
+        IICS07TendermintMsgs.ValidatorSet memory validatorSet,
+        IICS07TendermintMsgs.TrustThreshold memory trustThreshold
+    ) internal pure {
+        IICS07TendermintMsgs.CommitSig[] memory commitSigs = signedHeader.commit.commitSigs;
+        IICS07TendermintMsgs.ValidatorInfo[] memory validators = validatorSet.validators;
+
+        require(
+            commitSigs.length == validators.length,
+            "invalid commit: number of signatures does not match number of validators"
+        );
+
+        uint64 totalVotingPower = _sumVotingPower(validators);
+        uint64 talliedPower = 0;
+
+        for (uint256 i = 0; i < commitSigs.length; i++) {
+            if (commitSigs[i].flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT) {
+                continue;
+            }
+
+            talliedPower += validators[i].votingPower;
+            if (_meetsTrustThreshold(talliedPower, totalVotingPower, trustThreshold)) {
+                return;
+            }
+        }
+
+        require(
+            _meetsTrustThreshold(talliedPower, totalVotingPower, trustThreshold),
+            "insufficient voting power overlap"
+        );
+    }
+
+    function _sumVotingPower(
+        IICS07TendermintMsgs.ValidatorInfo[] memory validators
+    ) private pure returns (uint64 totalVotingPower) {
+        for (uint256 i = 0; i < validators.length; i++) {
+            totalVotingPower += validators[i].votingPower;
+        }
+    }
+
+    function _meetsTrustThreshold(
+        uint64 talliedPower,
+        uint64 totalVotingPower,
+        IICS07TendermintMsgs.TrustThreshold memory trustThreshold
+    ) private pure returns (bool) {
+        return
+            uint256(talliedPower) * uint256(trustThreshold.denominator)
+                > uint256(totalVotingPower) * uint256(trustThreshold.numerator);
     }
 }

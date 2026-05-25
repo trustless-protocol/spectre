@@ -39,33 +39,28 @@ func TestGenerateProof_InputValidation(t *testing.T) {
 }
 
 func TestSmallestBucketGEQ(t *testing.T) {
-	cases := []struct {
-		in   int
-		want int
-		err  bool
-	}{
-		{1, 4, false},
-		{4, 4, false},
-		{5, 8, false},
-		{17, 32, false},
-		{128, 128, false},
-		{129, 0, true},
+	if len(Buckets) == 0 {
+		t.Fatal("Buckets must not be empty")
 	}
-	for _, tc := range cases {
-		got, err := SmallestBucketGEQ(tc.in)
-		if tc.err {
-			if err == nil {
-				t.Errorf("in=%d: expected error", tc.in)
+
+	for i, bucket := range Buckets {
+		for n := 1; n <= bucket; n++ {
+			if i > 0 && n <= Buckets[i-1] {
+				continue
 			}
-			continue
+			got, err := SmallestBucketGEQ(n)
+			if err != nil {
+				t.Fatalf("n=%d: unexpected error %v", n, err)
+			}
+			if got != bucket {
+				t.Fatalf("n=%d: got bucket %d, want %d", n, got, bucket)
+			}
 		}
-		if err != nil {
-			t.Errorf("in=%d: unexpected error %v", tc.in, err)
-			continue
-		}
-		if got != tc.want {
-			t.Errorf("in=%d: got bucket %d, want %d", tc.in, got, tc.want)
-		}
+	}
+
+	_, err := SmallestBucketGEQ(MaxBucket() + 1)
+	if err == nil {
+		t.Fatalf("n=%d: expected error", MaxBucket()+1)
 	}
 }
 
