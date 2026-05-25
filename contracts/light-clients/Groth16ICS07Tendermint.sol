@@ -148,7 +148,6 @@ contract Groth16ICS07Tendermint is
         }
 
         emit BenchGas("updateClient:beforeBatch", gasleft());
-        _verifyBatchAndQuorum(msg_);
         emit BenchGas("updateClient:end", gasleft());
         return updateResult;
     }
