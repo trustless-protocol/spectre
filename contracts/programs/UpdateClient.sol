@@ -196,7 +196,7 @@ contract UpdateClient is IUpdateClient {
         if (lastDashIndex == -1) {
             if (1 <= chainIdBytes.length && chainIdBytes.length < 64) {
                 return IICS07TendermintMsgs.ChainId({
-                    id: id, 
+                    id: id,
                     revisionNumber: 0
                 });
             } else {
@@ -216,7 +216,7 @@ contract UpdateClient is IUpdateClient {
         if (revisionBytes.length == 0 || (revisionBytes[0] == 0x30 && revisionBytes.length > 1)) {
             if (1 <= chainIdBytes.length && chainIdBytes.length < 64) {
                 return IICS07TendermintMsgs.ChainId({
-                    id: id, 
+                    id: id,
                     revisionNumber: 0
                 });
             } else {
@@ -228,7 +228,7 @@ contract UpdateClient is IUpdateClient {
         if (! success || parsedRevisionNumber > type(uint64).max) {
             if (1 <= chainIdBytes.length && chainIdBytes.length < 64) {
                 return IICS07TendermintMsgs.ChainId({
-                    id: id, 
+                    id: id,
                     revisionNumber: 0
                 });
             } else {
@@ -237,7 +237,7 @@ contract UpdateClient is IUpdateClient {
         }
 
         uint64 revisionNumber = uint64(parsedRevisionNumber);
-        
+
         // Extract chain name
         bytes memory chainNameBytes = new bytes(dashIndex);
         for (uint256 i = 0; i < dashIndex; i++) {
@@ -254,7 +254,7 @@ contract UpdateClient is IUpdateClient {
         }
 
         return IICS07TendermintMsgs.ChainId({
-            id: id, 
+            id: id,
             revisionNumber: revisionNumber
         });
     }

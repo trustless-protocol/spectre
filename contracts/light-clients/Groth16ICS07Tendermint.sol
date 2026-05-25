@@ -55,7 +55,7 @@ contract Groth16ICS07Tendermint is
     uint16 public constant ALLOWED_CLOCK_DRIFT = 30 minutes;
 
     /// @inheritdoc IGroth16ICS07Tendermint
-    bytes32 public constant PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
+    bytes32 public immutable PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
 
     /// @notice The constructor sets the program verification key and the initial client and consensus states.
     /// @param verifier The address of the Groth16 verifier contract.
@@ -114,19 +114,32 @@ contract Groth16ICS07Tendermint is
         onlyProofSubmitter
         returns (ILightClientMsgs.UpdateResult)
     {
-        IUpdateClientMsgs.MsgUpdateClient memory msg_ = abi.decode(updateClientMsg, (IUpdateClientMsgs.MsgUpdateClient));
+        bytes4 sel = IUpdateClient.updateClient.selector;
+        address _updateClient = address(UPDATE_CLIENT);
+        bytes memory ret;
+        assembly ("memory-safe") {
+            let fmp := mload(0x40)
+            // Prepend 4-byte selector (left-aligned in first word) then copy raw calldata bytes
+            mstore(fmp, sel)
+            calldatacopy(add(fmp, 4), updateClientMsg.offset, updateClientMsg.length)
+            if iszero(staticcall(gas(), _updateClient, fmp, add(4, updateClientMsg.length), 0, 0)) {
+                returndatacopy(fmp, 0, returndatasize())
+                revert(fmp, returndatasize())
+            }
+            // Reuse fmp for the return bytes memory (input calldata no longer needed)
+            let retLen := returndatasize()
+            mstore(fmp, retLen)
+            returndatacopy(add(fmp, 32), 0, retLen)
+            mstore(0x40, and(add(add(fmp, add(retLen, 32)), 31), not(31)))
+            ret := fmp
+        }
         IUpdateClientMsgs.UpdateClientOutput memory output =
-            UPDATE_CLIENT.updateClient(
-                msg_
-            );
+            abi.decode(ret, (IUpdateClientMsgs.UpdateClientOutput));
 
         _validateUpdateClientOutput(output);
 
         ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output);
-        // Verify the batch proof before branching so NoOp/Misbehaviour paths
-        // cannot accept a junk proof when the consensus state already matches.
-        // This adds gas for race-loser relayers on the NoOp path, but keeps
-        // "accepted tx => valid proof" as a consistent invariant.
+        IUpdateClientMsgs.MsgUpdateClient memory msg_ = abi.decode(updateClientMsg, (IUpdateClientMsgs.MsgUpdateClient));
         _verifyBatchAndQuorum(msg_);
         if (updateResult == ILightClientMsgs.UpdateResult.Update) {
             // adding the new consensus state to the mapping
@@ -139,7 +152,6 @@ contract Groth16ICS07Tendermint is
         } else if (updateResult == ILightClientMsgs.UpdateResult.NoOp) {
             return ILightClientMsgs.UpdateResult.NoOp;
         }
-
         return updateResult;
     }
 
@@ -339,7 +351,7 @@ contract Groth16ICS07Tendermint is
 
         {
             // loop through the key-value pairs and validate them
-            // if provided kv pairs inputs don't contains path and value 
+            // if provided kv pairs inputs don't contains path and value
             // from contract state return error
             // if provided proofs contain kv path but value not match return an
             // error
