@@ -411,6 +411,12 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 		return fmt.Errorf("[SendEthTxBatch] failed to load ICS26Router ABI: %w", err)
 	}
 
+	// cosmosClientID is only consulted when the batch contains an updateClient
+	// inner call; resolved lazily to avoid coupling pure-recvPacket batches to
+	// the router-managed config check.
+	var cosmosClientID string
+	var clientIDResolved bool
+
 	// Pack each per-packet call into raw calldata bytes that MulticallUpgradeable
 	// will delegatecall back into the same contract.
 	calldata := make([][]byte, 0, len(msgs))
@@ -431,8 +437,31 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 		case contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket:
 			data, perr = parsedABI.Pack("timeoutPacket", m)
 			lbl = fmt.Sprintf("timeoutPacket:%d", m.Packet.Sequence)
+		case updateclient.IUpdateClientMsgsMsgUpdateClient:
+			// Folding updateClient into a multicall only works when the
+			// ICS26Router is the proof submitter — the multicall is dispatched
+			// on the router, so every inner call must target a router method.
+			// In direct-submission mode SendEthTx calls ICS07 directly; that
+			// path can't be expressed inside multicall, so caller must submit
+			// updateClient as a standalone tx.
+			if !routerManagesProofSubmission(ctx) {
+				return fmt.Errorf("[SendEthTxBatch] updateClient cannot be batched when ICS26Router is not the proof submitter; submit it via SendEthTx instead")
+			}
+			if !clientIDResolved {
+				cosmosClientID, perr = cosmosRouterClientID(ctx)
+				if perr != nil {
+					return fmt.Errorf("[SendEthTxBatch] resolve cosmos client id: %w", perr)
+				}
+				clientIDResolved = true
+			}
+			encoded, encErr := relayerclient.EncodeUpdateClientMsg(m)
+			if encErr != nil {
+				return fmt.Errorf("[SendEthTxBatch] encode updateClient msg %d: %w", i, encErr)
+			}
+			data, perr = parsedABI.Pack("updateClient", cosmosClientID, encoded)
+			lbl = "updateClient"
 		default:
-			return fmt.Errorf("[SendEthTxBatch] unsupported message type at index %d: %T (only recvPacket/ackPacket/timeoutPacket allowed in multicall)", i, msg)
+			return fmt.Errorf("[SendEthTxBatch] unsupported message type at index %d: %T (only updateClient/recvPacket/ackPacket/timeoutPacket allowed in multicall)", i, msg)
 		}
 		if perr != nil {
 			return fmt.Errorf("[SendEthTxBatch] pack msg %d (%s): %w", i, lbl, perr)
