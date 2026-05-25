@@ -45,7 +45,6 @@ public input. This keeps the on-chain verifier well under EIP-170. Padding
 slots carry `active=false`; both the in-circuit hash and the on-chain quorum
 check skip them.
 
-
 ## Requirements
 
 - [Go](https://golang.org/) >= 1.21
@@ -53,10 +52,54 @@ check skip them.
 - [Bun](https://bun.sh/)
 - [Just](https://github.com/casey/just)
 
+## Sibling repos (required to build the relayer)
+
+The Go relayer's `relayer/go.mod` has `replace` directives pointing at two sibling
+repos via relative paths:
+
+```
+replace (
+    0x5ea000000/ecip-gnark      => ../../ecip-gnark
+    github.com/consensys/gnark  => ../../decentrio-gnark
+)
+```
+
+Clone both **next to** `fast-ibc` (so they sit two directories up from
+`relayer/`) before running `just install-go-relayer` / `just build-prover-artifacts`:
+
+```bash
+# from the parent directory that contains fast-ibc
+git clone https://github.com/decentrio/ecip-gnark
+git clone https://github.com/decentrio/gnark decentrio-gnark
+```
+
+Resulting layout:
+
+```
+parent/
+├── fast-ibc/
+├── ecip-gnark/        # provides 0x5ea000000/ecip-gnark (Ed25519 in-circuit ops, garaga_rs FFI)
+└── decentrio-gnark/   # fork of consensys/gnark v0.13.0 with hash-aggregate verifier tweaks
+```
+
+Without these, `go build ./...` under `relayer/` fails with
+`replacement directory ../../ecip-gnark does not exist`.
+
 ## Local E2E Test
 
 End-to-end run on local Cosmos + Ethereum nodes. Requires Docker + Kurtosis on
 top of the toolchain in [Requirements](#requirements).
+
+> **Tip for local dev**: `relayer/prover/buckets.go` defaults to
+> `Buckets = []int{4, 8, 16, 32, 64, 128}`. Compiling all six takes 30+ minutes
+> (bucket 128 alone is ~30 min) and the local single-validator chain only ever
+> uses bucket 4. For local iteration, temporarily edit it to:
+>
+> ```go
+> var Buckets = []int{4}
+> ```
+>
+> before step 1 below. Revert before pushing — production needs the full set.
 
 ```bash
 # 1. (One-time) compile per-bucket circuits + emit Groth16Verifier_N{N}.sol.
@@ -69,13 +112,13 @@ go build -o relayer ./cmd
 
 # 3. Start Ethereum first and wait until the beacon node finalizes.
 #    Replace 56246 with your Kurtosis-mapped beacon RPC port.
-./run_eth_node.sh        # Kurtosis Ethereum testnet + deploys core contracts
+./scripts/local/run_eth_node.sh   # Kurtosis Ethereum testnet + deploys core contracts
 # Poll until finalized.epoch > 0:
-curl -s http://127.0.0.1:56246/eth/v1/beacon/states/head/finality_checkpoints
+curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 
 # 4. Then start Cosmos and submit the Ethereum LC WASM via governance
-./run_cosmos_node.sh     # local Cosmos chain with funded test accounts
-./wasm.sh                # submit + vote-pass the Ethereum LC WASM proposal
+./scripts/local/run_cosmos_node.sh   # local Cosmos chain with funded test accounts
+./scripts/local/wasm.sh              # submit + vote-pass the Ethereum LC WASM proposal
 
 # 5. Deploy Tendermint light client on Ethereum.
 #    Copies the ICS07 address back into relayer/config.json automatically.
@@ -84,7 +127,62 @@ curl -s http://127.0.0.1:56246/eth/v1/beacon/states/head/finality_checkpoints
   --wasm-checksum <hex-from-wasm.sh>
 
 # 6. Start the bi-directional relay loop
-./relayer start --config config.json
+./relayer start --config config.example.json
+
+# 7. send packet
+
+ABS_TIMEOUT=$(($(date +%s) + 2000))
+
+gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21ee5948ecaa776 1000stake \
+  --from test1 \
+  --home /Users/donglieu/.gaia \
+  --chain-id test-ibc-eth \
+  --node tcp://127.0.0.1:26657 \
+  --keyring-backend test \
+  --gas-prices 1stake \
+  --absolute-timeouts \
+  --packet-timeout-timestamp "$ABS_TIMEOUT" \
+  --generate-only \
+| jq '.body.messages[0].encoding = "application/x-solidity-abi"' \
+| gaiad tx sign /dev/stdin \
+    --from test1 \
+    --home /Users/donglieu/.gaia \
+    --chain-id test-ibc-eth \
+    --keyring-backend test \
+| gaiad tx broadcast /dev/stdin \
+    --node tcp://127.0.0.1:26657 \
+    -y
+
+
+# 8. check
+cast call 0xee0fcb8e5ccad0b4197baabd633333886f5c364d \
+  'ibcERC20Contract(string)(address)' \
+  'transfer/cosmoshub-1/stake' \
+  --rpc-url http://127.0.0.1:59619
+
+cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
+  'fullDenomPath()(string)' \
+  --rpc-url http://127.0.0.1:59619
+
+cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
+  'balanceOf(address)(uint256)' \
+  0x8943545177806ed17b9f23f0a21ee5948ecaa776 \
+  --rpc-url http://127.0.0.1:59619
+
+cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
+  'escrow()(address)' \
+  --rpc-url http://127.0.0.1:59619
+
+
+gaiad q txs \
+  --query "message.action='/ibc.core.channel.v2.MsgAcknowledgement'" \
+  --node tcp://127.0.0.1:26657 \
+  -o json
+
+
+cast receipt 0x4d611d65a802bea81865e7f0e1f0413064518a79883b29481968804d0efa1692--rpc-url http://127.0.0.1:56310 | grep -A3 "IBCAppRecvPacket\|topics\|data"
+
+
 ```
 
 Send an ICS-20 transfer from Cosmos to trigger an `updateClient` + `recvPacket`

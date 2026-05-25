@@ -4,28 +4,19 @@ import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs
 import { IICS02ClientMsgs } from "../msgs/IICS02ClientMsgs.sol";
 library Encode {
     function encodeVarint(uint256 value) public pure returns (bytes memory) {
-        if (value < 128) {
-            return abi.encodePacked(uint8(value));
-        }
-        
-        bytes memory result;
-        while (value >= 128) {
-            result = abi.encodePacked(result, uint8((value & 0x7F) | 0x80));
-            value >>= 7;
-        }
-        result = abi.encodePacked(result, uint8(value));
-        return result;
+        bytes memory out = new bytes(_varintLen(value));
+        _writeVarint(out, 0, value);
+        return out;
     }
 
     function encodeString(string memory value) public pure returns (bytes memory) {
         bytes memory valueBytes = bytes(value);
-        uint256 length = valueBytes.length;
-        
-        // Encode length as varint
-        bytes memory lengthBytes = encodeVarint(length);
-
-        // Concatenate length and value
-        return abi.encodePacked(lengthBytes, valueBytes);
+        uint256 valueLen = valueBytes.length;
+        uint256 prefixLen = _varintLen(valueLen);
+        bytes memory out = new bytes(prefixLen + valueLen);
+        uint256 offset = _writeVarint(out, 0, valueLen);
+        _copyBytes(out, offset, valueBytes);
+        return out;
     }
 
     /// @notice Encodes a nanosecond timestamp as a protobuf google.protobuf.Timestamp.
@@ -33,77 +24,98 @@ library Encode {
     function encodeTimestamp(uint128 nanos) public pure returns (bytes memory) {
         uint128 secs = nanos / 1_000_000_000;
         uint128 ns = nanos % 1_000_000_000;
-        bytes memory encoded = new bytes(0);
+        uint256 totalLen = 0;
 
-        // Field 1: seconds (tag = 1, wire type = 0 for varint)
         if (secs > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x08)); // tag: (1 << 3) | 0
-            encoded = abi.encodePacked(encoded, encodeVarint(uint256(secs)));
+            totalLen += 1 + _varintLen(uint256(secs));
         }
-        // Field 2: nanos (tag = 2, wire type = 0 for varint)
         if (ns > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x10)); // tag: (2 << 3) | 0
-            encoded = abi.encodePacked(encoded, encodeVarint(uint256(ns)));
+            totalLen += 1 + _varintLen(uint256(ns));
         }
 
-        return encoded;
+        bytes memory out = new bytes(totalLen);
+        uint256 offset = 0;
+        if (secs > 0) {
+            offset = _storeByte(out, offset, 0x08);
+            offset = _writeVarint(out, offset, uint256(secs));
+        }
+        if (ns > 0) {
+            offset = _storeByte(out, offset, 0x10);
+            _writeVarint(out, offset, uint256(ns));
+        }
+        return out;
     }
 
     function encodeValidator(
         IICS07TendermintMsgs.SimpleValidator memory validator
     ) public pure returns (bytes memory) {
-        bytes memory encoded = new bytes(0);
-
-        // Field 1: pub_key (tag = 1, wire type = 2 for length-delimited)
-        // PubKey is a nested message: crypto.PublicKey{Sum: &PublicKey_Ed25519{Ed25519: pubKey}}
-        // Inner encoding: Ed25519 oneof field 1 (tag=0x0A), length=32, data
-        bytes memory pubKeyInner = abi.encodePacked(uint8(0x0A), uint8(32), validator.pubKey);
-        encoded = abi.encodePacked(encoded, uint8(0x0A)); // tag: (1 << 3) | 2
-        encoded = abi.encodePacked(encoded, encodeVarint(pubKeyInner.length)); // length of nested PublicKey message
-        encoded = abi.encodePacked(encoded, pubKeyInner); // nested PublicKey message
-
-        // Field 2: voting_power (tag = 2, wire type = 0 for varint)
-        // Proto3: skip zero-value fields
+        uint256 totalLen = 36;
         if (validator.votingPower > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x10)); // tag: (2 << 3) | 0
-            encoded = abi.encodePacked(encoded, encodeVarint(uint256(validator.votingPower)));
+            totalLen += 1 + _varintLen(uint256(validator.votingPower));
         }
 
-        return encoded;
+        bytes memory out = new bytes(totalLen);
+        uint256 offset = 0;
+
+        // Field 1: pub_key (tag = 1, wire type = 2 for length-delimited)
+        // Nested PublicKey{Ed25519: pubKey} is always 34 bytes: 0x0A 0x20 <32-byte key>.
+        offset = _storeByte(out, offset, 0x0A);
+        offset = _storeByte(out, offset, 0x22);
+        offset = _storeByte(out, offset, 0x0A);
+        offset = _storeByte(out, offset, 0x20);
+        offset = _storeBytes32(out, offset, validator.pubKey);
+
+        // Field 2: voting_power (tag = 2, wire type = 0 for varint)
+        if (validator.votingPower > 0) {
+            offset = _storeByte(out, offset, 0x10);
+            _writeVarint(out, offset, uint256(validator.votingPower));
+        }
+
+        return out;
     }
 
     function encodeVersion(IICS07TendermintMsgs.Version memory version) public pure returns (bytes memory) {
-        bytes memory encoded = new bytes(0);
+        uint256 totalLen = 0;
 
-        // Proto3: skip zero-value fields
         if (version.blockVersion > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x08)); // tag: (1 << 3) | 0
-            encoded = abi.encodePacked(encoded, encodeVarint(uint256(version.blockVersion)));
+            totalLen += 1 + _varintLen(uint256(version.blockVersion));
         }
 
         if (version.appVersion > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x10)); // tag: (2 << 3) | 0
-            encoded = abi.encodePacked(encoded, encodeVarint(uint256(version.appVersion)));
+            totalLen += 1 + _varintLen(uint256(version.appVersion));
         }
 
-        return encoded;
+        bytes memory out = new bytes(totalLen);
+        uint256 offset = 0;
+        if (version.blockVersion > 0) {
+            offset = _storeByte(out, offset, 0x08);
+            offset = _writeVarint(out, offset, uint256(version.blockVersion));
+        }
+        if (version.appVersion > 0) {
+            offset = _storeByte(out, offset, 0x10);
+            _writeVarint(out, offset, uint256(version.appVersion));
+        }
+
+        return out;
     }
 
     function encodeBlockId(IICS07TendermintMsgs.BlockId memory blockId) public pure returns (bytes memory) {
-        bytes memory encoded = new bytes(0);
-        
-        // Field 1: hashData (tag = 1, wire type = 2 for bytes)
-        encoded = abi.encodePacked(encoded, uint8(0x0A)); // tag: (1 << 3) | 2
-        encoded = abi.encodePacked(encoded, uint8(32)); // 32 bytes length
-        encoded = abi.encodePacked(encoded, blockId.hashData);
-        
-        // Field 2: partSetHeader (tag = 2, wire type = 2 for message)
         bytes memory partSetHeaderEncoded = encodePartSetHeader(blockId.partSetHeader);
-        encoded = abi.encodePacked(encoded, uint8(0x12)); // tag: (2 << 3) | 2
-        encoded = abi.encodePacked(encoded, encodeVarint(partSetHeaderEncoded.length));
-        encoded = abi.encodePacked(encoded, partSetHeaderEncoded);
-        
-        return encoded;
+        uint256 partSetLen = partSetHeaderEncoded.length;
+        bytes memory out = new bytes(34 + 1 + _varintLen(partSetLen) + partSetLen);
+
+        uint256 offset = 0;
+        // Field 1: hashData (tag = 1, wire type = 2 for bytes)
+        offset = _storeByte(out, offset, 0x0A);
+        offset = _storeByte(out, offset, 0x20);
+        offset = _storeBytes32(out, offset, blockId.hashData);
+
+        // Field 2: partSetHeader (tag = 2, wire type = 2 for message)
+        offset = _storeByte(out, offset, 0x12);
+        offset = _writeVarint(out, offset, partSetLen);
+        _copyBytes(out, offset, partSetHeaderEncoded);
+
+        return out;
     }
 
     /// @notice Wraps a string in gogoproto StringValue{Value: str} for header hashing.
@@ -111,32 +123,43 @@ library Encode {
     function cdcEncodeString(string memory value) public pure returns (bytes memory) {
         bytes memory valueBytes = bytes(value);
         if (valueBytes.length == 0) return new bytes(0);
-        // StringValue field 1 (tag=0x0A, wire type 2) + varint(len) + bytes
-        return abi.encodePacked(uint8(0x0A), encodeVarint(valueBytes.length), valueBytes);
+        bytes memory out = new bytes(1 + _varintLen(valueBytes.length) + valueBytes.length);
+        uint256 offset = _storeByte(out, 0, 0x0A);
+        offset = _writeVarint(out, offset, valueBytes.length);
+        _copyBytes(out, offset, valueBytes);
+        return out;
     }
 
     /// @notice Wraps an int64 in gogoproto Int64Value{Value: n} for header hashing.
     /// Matches CometBFT's cdcEncode(int64) used in Header.Hash().
     function cdcEncodeInt64(uint256 value) public pure returns (bytes memory) {
         if (value == 0) return new bytes(0);
-        // Int64Value field 1 (tag=0x08, wire type 0) + varint(value)
-        return abi.encodePacked(uint8(0x08), encodeVarint(value));
+        bytes memory out = new bytes(1 + _varintLen(value));
+        uint256 offset = _storeByte(out, 0, 0x08);
+        _writeVarint(out, offset, value);
+        return out;
     }
 
     /// @notice Wraps variable-length bytes in gogoproto BytesValue{Value: bz} for header hashing.
     /// Matches CometBFT's cdcEncode([]byte) used in Header.Hash().
     function cdcEncodeBytes(bytes memory value) public pure returns (bytes memory) {
         if (value.length == 0) return new bytes(0);
-        // BytesValue field 1 (tag=0x0A, wire type 2) + varint(len) + bytes
-        return abi.encodePacked(uint8(0x0A), encodeVarint(value.length), value);
+        bytes memory out = new bytes(1 + _varintLen(value.length) + value.length);
+        uint256 offset = _storeByte(out, 0, 0x0A);
+        offset = _writeVarint(out, offset, value.length);
+        _copyBytes(out, offset, value);
+        return out;
     }
 
     /// @notice Wraps a bytes32 hash in gogoproto BytesValue{Value: hash} for header hashing.
     /// Matches CometBFT's cdcEncode(HexBytes) used in Header.Hash().
     function cdcEncodeBytes32(bytes32 value) public pure returns (bytes memory) {
         if (value == bytes32(0)) return new bytes(0);
-        // BytesValue field 1 (tag=0x0A, wire type 2) + length 32 + hash
-        return abi.encodePacked(uint8(0x0A), uint8(32), value);
+        bytes memory out = new bytes(34);
+        uint256 offset = _storeByte(out, 0, 0x0A);
+        offset = _storeByte(out, offset, 0x20);
+        _storeBytes32(out, offset, value);
+        return out;
     }
 
     /// @notice Encodes a signed 64-bit integer as 8-byte little-endian (protobuf sfixed64).
@@ -155,18 +178,19 @@ library Encode {
     }
 
     function encodePartSetHeader(IICS07TendermintMsgs.PartSetHeader memory partSetHeader) public pure returns (bytes memory) {
-        bytes memory encoded = new bytes(0);
-        
+        bytes memory out = new bytes(1 + _varintLen(uint256(partSetHeader.total)) + 34);
+        uint256 offset = 0;
+
         // Field 1: total (tag = 1, wire type = 0 for varint)
-        encoded = abi.encodePacked(encoded, uint8(0x08)); // tag: (1 << 3) | 0
-        encoded = abi.encodePacked(encoded, encodeVarint(uint256(partSetHeader.total)));
-        
+        offset = _storeByte(out, offset, 0x08);
+        offset = _writeVarint(out, offset, uint256(partSetHeader.total));
+
         // Field 2: hashData (tag = 2, wire type = 2 for bytes)
-        encoded = abi.encodePacked(encoded, uint8(0x12)); // tag: (2 << 3) | 2
-        encoded = abi.encodePacked(encoded, uint8(32)); // 32 bytes length
-        encoded = abi.encodePacked(encoded, partSetHeader.hashData);
-        
-        return encoded;
+        offset = _storeByte(out, offset, 0x12);
+        offset = _storeByte(out, offset, 0x20);
+        _storeBytes32(out, offset, partSetHeader.hashData);
+
+        return out;
     }
 
     /// @notice Encodes a CanonicalVote as protobuf bytes (equivalent to CometBFT's VoteSignBytes).
@@ -185,45 +209,126 @@ library Encode {
         bytes memory encodedBlockId = useCommitBlockId ? encodeBlockId(commit.blockId) : new bytes(0);
         bytes memory encodedTimestamp = encodeTimestamp(commitSig.data.timestamp);
         bytes memory chainIdBytes = bytes(chainId);
+        uint256 encodedLen = 2; // field 1: tag + PrecommitType(2)
 
-        bytes memory encoded = new bytes(0);
+        if (commit.height > 0) {
+            encodedLen += 9;
+        }
+        if (commit.round > 0) {
+            encodedLen += 9;
+        }
+        if (encodedBlockId.length > 0) {
+            encodedLen += 1 + _varintLen(encodedBlockId.length) + encodedBlockId.length;
+        }
+        if (encodedTimestamp.length > 0) {
+            encodedLen += 1 + _varintLen(encodedTimestamp.length) + encodedTimestamp.length;
+        }
+        if (chainIdBytes.length > 0) {
+            encodedLen += 1 + _varintLen(chainIdBytes.length) + chainIdBytes.length;
+        }
+
+        uint256 prefixLen = _varintLen(encodedLen);
+        bytes memory out = new bytes(prefixLen + encodedLen);
+        uint256 offset = _writeVarint(out, 0, encodedLen);
 
         // Field 1: type = PrecommitType (2), varint, tag 0x08
-        encoded = abi.encodePacked(encoded, uint8(0x08), uint8(0x02));
+        offset = _storeByte(out, offset, 0x08);
+        offset = _storeByte(out, offset, 0x02);
 
         // Field 2: height, sfixed64 (fixed 8-byte little-endian), tag 0x11
         if (commit.height > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x11));
-            encoded = abi.encodePacked(encoded, encodeSfixed64(int64(uint64(commit.height))));
+            offset = _storeByte(out, offset, 0x11);
+            offset = _copyBytes(out, offset, encodeSfixed64(int64(uint64(commit.height))));
         }
 
         // Field 3: round, sfixed64 (fixed 8-byte little-endian), tag 0x19
         if (commit.round > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x19));
-            encoded = abi.encodePacked(encoded, encodeSfixed64(int64(uint64(commit.round))));
+            offset = _storeByte(out, offset, 0x19);
+            offset = _copyBytes(out, offset, encodeSfixed64(int64(uint64(commit.round))));
         }
 
         // Field 4: block_id, length-delimited, tag 0x22
         if (encodedBlockId.length > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x22));
-            encoded = abi.encodePacked(encoded, encodeVarint(encodedBlockId.length));
-            encoded = abi.encodePacked(encoded, encodedBlockId);
+            offset = _storeByte(out, offset, 0x22);
+            offset = _writeVarint(out, offset, encodedBlockId.length);
+            offset = _copyBytes(out, offset, encodedBlockId);
         }
 
         // Field 5: timestamp, length-delimited, tag 0x2a
         if (encodedTimestamp.length > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x2A));
-            encoded = abi.encodePacked(encoded, encodeVarint(encodedTimestamp.length));
-            encoded = abi.encodePacked(encoded, encodedTimestamp);
+            offset = _storeByte(out, offset, 0x2A);
+            offset = _writeVarint(out, offset, encodedTimestamp.length);
+            offset = _copyBytes(out, offset, encodedTimestamp);
         }
 
         // Field 6: chain_id, length-delimited string, tag 0x32
         if (chainIdBytes.length > 0) {
-            encoded = abi.encodePacked(encoded, uint8(0x32));
-            encoded = abi.encodePacked(encoded, encodeString(chainId));
+            offset = _storeByte(out, offset, 0x32);
+            offset = _writeVarint(out, offset, chainIdBytes.length);
+            _copyBytes(out, offset, chainIdBytes);
         }
 
-        // Wrap with varint length prefix (MarshalDelimited for Amino compatibility)
-        return abi.encodePacked(encodeVarint(encoded.length), encoded);
+        return out;
+    }
+
+    function _varintLen(uint256 value) private pure returns (uint256 len) {
+        len = 1;
+        while (value >= 128) {
+            value >>= 7;
+            unchecked {
+                ++len;
+            }
+        }
+    }
+
+    function _writeVarint(bytes memory out, uint256 offset, uint256 value) private pure returns (uint256) {
+        while (value >= 128) {
+            out[offset] = bytes1(uint8((value & 0x7F) | 0x80));
+            unchecked {
+                ++offset;
+            }
+            value >>= 7;
+        }
+        out[offset] = bytes1(uint8(value));
+        return offset + 1;
+    }
+
+    function _storeByte(bytes memory out, uint256 offset, uint8 value) private pure returns (uint256) {
+        out[offset] = bytes1(value);
+        return offset + 1;
+    }
+
+    function _storeBytes32(bytes memory out, uint256 offset, bytes32 value) private pure returns (uint256) {
+        assembly {
+            mstore(add(add(out, 0x20), offset), value)
+        }
+        return offset + 32;
+    }
+
+    function _copyBytes(bytes memory out, uint256 dstOffset, bytes memory src) private pure returns (uint256) {
+        uint256 len = src.length;
+        if (len == 0) {
+            return dstOffset;
+        }
+
+        assembly {
+            let srcPtr := add(src, 0x20)
+            let dstPtr := add(add(out, 0x20), dstOffset)
+            let fullWords := and(len, not(31))
+
+            for { let copied := 0 } lt(copied, fullWords) { copied := add(copied, 0x20) } {
+                mstore(add(dstPtr, copied), mload(add(srcPtr, copied)))
+            }
+
+            let rem := and(len, 31)
+            if rem {
+                let mask := sub(shl(mul(8, sub(32, rem)), 1), 1)
+                let srcWord := mload(add(srcPtr, fullWords))
+                let dstWord := mload(add(dstPtr, fullWords))
+                mstore(add(dstPtr, fullWords), or(and(dstWord, mask), and(srcWord, not(mask))))
+            }
+        }
+
+        return dstOffset + len;
     }
 }

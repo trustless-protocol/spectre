@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+set -x
 
-REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
-source "$REPO_ROOT/e2e/local-tests/lib/common.sh"
-source "$REPO_ROOT/e2e/local-tests/lib/cosmos.sh"
+# Internal paths (relayer/.env, etc.) are repo-root relative.
+cd "$(dirname "$0")/../.."
 
-log_header "Cleaning previous state"
-killall gaiad 2>/dev/null || true
+killall gaiad || true
 rm -rf "$HOME/.gaia" "$HOME/.gaia-val2" "$HOME/.gaia-val3" "$HOME/.gaia-val4"
 
 CHAIN_ID="test-ibc-eth"
@@ -45,20 +44,46 @@ PPROF_PORTS=(6060 6070 6080 6090)
 PROM_PORTS=(26660 26760 26860 26960)
 
 PRIMARY_HOME="${HOMES[0]}"
-RELAYER_ENV_FILE="${RELAYER_ENV_FILE:-$REPO_ROOT/relayer/.env}"
+RELAYER_ENV_FILE="${RELAYER_ENV_FILE:-relayer/.env}"
 
-log_header "Initializing validators"
+upsert_env_var() {
+    local file="$1"
+    local key="$2"
+    local value="$3"
+    local tmp
+
+    mkdir -p "$(dirname "$file")"
+    touch "$file"
+    tmp="$(mktemp)"
+
+    awk -v key="$key" -v value="$value" '
+        BEGIN { updated = 0 }
+        $0 ~ ("^" key "=") {
+            print key "=\"" value "\""
+            updated = 1
+            next
+        }
+        { print }
+        END {
+            if (!updated) {
+                print key "=\"" value "\""
+            }
+        }
+    ' "$file" > "$tmp"
+
+    mv "$tmp" "$file"
+}
+
 for i in "${!HOMES[@]}"; do
-    gaiad init "${VAL_KEYS[$i]}" --chain-id "$CHAIN_ID" --home "${HOMES[$i]}" 2>/dev/null
-    gaiad keys add "${VAL_KEYS[$i]}" --keyring-backend "$KEYRING" --home "${HOMES[$i]}" 2>/dev/null
+    gaiad init "${VAL_KEYS[$i]}" --chain-id "$CHAIN_ID" --home "${HOMES[$i]}"
+    gaiad keys add "${VAL_KEYS[$i]}" --keyring-backend "$KEYRING" --home "${HOMES[$i]}"
 done
 
-log "Adding user keys..."
+# Keep the old local testing accounts available in the default Gaia home.
 for i in "${!USER_KEYS[@]}"; do
-    gaiad keys add "${USER_KEYS[$i]}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME" 2>/dev/null
+    gaiad keys add "${USER_KEYS[$i]}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME"
 done
 
-log "Configuring genesis..."
 jq '.app_state["gov"]["params"]["voting_period"]="30s"' "$PRIMARY_HOME/config/genesis.json" > "$PRIMARY_HOME/config/tmp_genesis.json"
 mv "$PRIMARY_HOME/config/tmp_genesis.json" "$PRIMARY_HOME/config/genesis.json"
 jq '.app_state["gov"]["params"]["expedited_voting_period"]="20s"' "$PRIMARY_HOME/config/genesis.json" > "$PRIMARY_HOME/config/tmp_genesis.json"
@@ -66,7 +91,6 @@ mv "$PRIMARY_HOME/config/tmp_genesis.json" "$PRIMARY_HOME/config/genesis.json"
 jq '.app_state["feemarket"]["params"]["max_block_utilization"]="300000000"' "$PRIMARY_HOME/config/genesis.json" > "$PRIMARY_HOME/config/tmp_genesis.json"
 mv "$PRIMARY_HOME/config/tmp_genesis.json" "$PRIMARY_HOME/config/genesis.json"
 
-log "Funding accounts..."
 for i in "${!USER_KEYS[@]}"; do
     gaiad genesis add-genesis-account "${USER_KEYS[$i]}" "${USER_BALANCES[$i]}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME"
 done
@@ -80,7 +104,6 @@ for i in 1 2 3; do
     cp "$PRIMARY_HOME/config/genesis.json" "${HOMES[$i]}/config/genesis.json"
 done
 
-log "Creating gentx..."
 for i in "${!HOMES[@]}"; do
     gaiad genesis gentx "${VAL_KEYS[$i]}" "${VAL_STAKES[$i]}" \
         --chain-id "$CHAIN_ID" \
@@ -93,9 +116,8 @@ for i in 1 2 3; do
     cp "${HOMES[$i]}"/config/gentx/*.json "$PRIMARY_HOME/config/gentx/"
 done
 
-gaiad genesis collect-gentxs --home "$PRIMARY_HOME" > /dev/null
-gaiad genesis validate-genesis --home "$PRIMARY_HOME" > /dev/null
-log_ok "Genesis valid"
+gaiad genesis collect-gentxs --home "$PRIMARY_HOME"
+gaiad genesis validate-genesis --home "$PRIMARY_HOME"
 
 for i in 1 2 3; do
     cp "$PRIMARY_HOME/config/genesis.json" "${HOMES[$i]}/config/genesis.json"
@@ -140,8 +162,7 @@ done
 COSMOS_PRIVATE_KEY="$(gaiad keys export test1 --unarmored-hex --unsafe --keyring-backend "$KEYRING" --home "$PRIMARY_HOME" -y)"
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_PRIVATE_KEY" "$COSMOS_PRIVATE_KEY"
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_CHAIN_ID" "$CHAIN_ID"
-upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_GAS_LIMIT" "500000"
-log_ok "Written to $RELAYER_ENV_FILE: COSMOS_PRIVATE_KEY, COSMOS_CHAIN_ID, COSMOS_GAS_LIMIT"
+echo "Updated $RELAYER_ENV_FILE with COSMOS_PRIVATE_KEY and COSMOS_CHAIN_ID"
 
 PIDS=()
 for i in "${!HOMES[@]}"; do
@@ -156,11 +177,10 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-log_header "Cosmos Validators Started"
+echo "Started 4 Gaia validators:"
 for i in "${!HOMES[@]}"; do
-    printf "  ${C_DIM}%-6s${C_RESET}  rpc=tcp://127.0.0.1:${C_CYAN}%-5s${C_RESET}  p2p=tcp://127.0.0.1:${C_CYAN}%-5s${C_RESET}  ${C_DIM}home=%s${C_RESET}\n" \
-        "${VAL_KEYS[$i]}" "${RPC_PORTS[$i]}" "${P2P_PORTS[$i]}" "${HOMES[$i]}"
+    echo "  ${VAL_KEYS[$i]} home=${HOMES[$i]} rpc=tcp://127.0.0.1:${RPC_PORTS[$i]} p2p=tcp://127.0.0.1:${P2P_PORTS[$i]}"
 done
-echo "  (logs: <home>/gaiad.log)"
+echo "Logs are written to each validator home as gaiad.log"
 
 wait "${PIDS[@]}"

@@ -22,8 +22,6 @@ type MultichainConfigInfo struct {
 	EthRPC string
 	// Ethereum Beacon API URL
 	BeaconAPI string
-	// Groth16 config
-	Groth16Config ProverConfig
 	// Whether we use the mock client in the cosmos chains
 	MockWasmClient bool
 }
@@ -40,7 +38,6 @@ func CreateMultichainModules(
 			ICS26Address:   configInfo.ICS26Address,
 			EthRPC:         configInfo.EthRPC,
 			BeaconAPI:      configInfo.BeaconAPI,
-			Groth16Config:      configInfo.Groth16Config,
 			SignerAddress:  configInfo.ChainASignerAddress,
 			MockWasmClient: configInfo.MockWasmClient,
 		},
@@ -54,7 +51,6 @@ func CreateMultichainModules(
 			ICS26Address:   configInfo.ICS26Address,
 			EthRPC:         configInfo.EthRPC,
 			BeaconAPI:      configInfo.BeaconAPI,
-			Groth16Config:      configInfo.Groth16Config,
 			SignerAddress:  configInfo.ChainBSignerAddress,
 			MockWasmClient: configInfo.MockWasmClient,
 		},

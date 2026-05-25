@@ -29,6 +29,8 @@ type Worker struct {
 	Prover    Prover
 }
 
+const cosmosCatchUpSafetySlots uint64 = 3
+
 func NewWorker(txHandler TransactionHandler, prover Prover) *Worker {
 	return &Worker{
 		txHandler,
@@ -123,6 +125,9 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 	}
 
 	trustingPeriod := uint32(unbondingPeriod * 2 / 3)
+	if ctx.Config.TrustingPeriod != 0 {
+		trustingPeriod = ctx.Config.TrustingPeriod
+	}
 
 	if trustingPeriod > uint32(unbondingPeriod) {
 		return nil, fmt.Errorf("trusting period %d cannot be greater than unbonding period %d", trustingPeriod, uint32(unbondingPeriod))
@@ -411,9 +416,11 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 
 	return w.TxHandler.CreateEthClient(ctx, &wasmClientState, &wasmConsensusState)
 }
+
 type EthClientUpdateResult struct {
 	Msgs           []any
 	EthClientState *relayerclient.EthereumClientState
+	ProofTimestamp uint64
 	SigSlot        uint64
 }
 
@@ -469,7 +476,11 @@ func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, 
 
 	if finalizedSlot <= trustedSlot {
 		log.Printf("[UpdateEthClient] already up to date, skipping")
-		return &EthClientUpdateResult{Msgs: nil, EthClientState: ethClientState}, nil
+		return &EthClientUpdateResult{
+			Msgs:           nil,
+			EthClientState: cloneEthereumClientState(ethClientState),
+			ProofTimestamp: ethClientState.ComputeTimestampAtSlot(trustedSlot),
+		}, nil
 	}
 
 	trustedPeriod := ethClientState.ComputeSyncCommitteePeriodAtSlot(trustedSlot)
@@ -482,11 +493,22 @@ func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, 
 		return nil, err
 	}
 
+	proofState, proofTimestamp, err := ethProofStateFromFinalityUpdate(ethClientState, finalityUpdate, finalizedSlot)
+	if err != nil {
+		return nil, err
+	}
+
 	sigSlot, _ := parseSlot(finalityUpdate.SignatureSlot)
-	return &EthClientUpdateResult{Msgs: msgs, EthClientState: ethClientState, SigSlot: sigSlot}, nil
+	return &EthClientUpdateResult{
+		Msgs:           msgs,
+		EthClientState: proofState,
+		ProofTimestamp: proofTimestamp,
+		SigSlot:        sigSlot,
+	}, nil
 }
 
 func (w *Worker) waitForCosmosCatchUp(ctx Context, ethClientState *relayerclient.EthereumClientState, sigSlot uint64) {
+	requiredSlot := sigSlot + cosmosCatchUpSafetySlots
 	for range 60 {
 		status, err := ctx.CosmosClient().Status(context.Background())
 		if err != nil {
@@ -494,13 +516,19 @@ func (w *Worker) waitForCosmosCatchUp(ctx Context, ethClientState *relayerclient
 		}
 		cosmosTime := uint64(status.SyncInfo.LatestBlockTime.Unix())
 		currentSlot := ethClientState.ComputeSlotAtTimestamp(cosmosTime)
-		if currentSlot > sigSlot {
-			log.Printf("[updateEthClient] timing OK: currentSlot=%d > signatureSlot=%d", currentSlot, sigSlot)
+		if cosmosCurrentSlotReady(currentSlot, sigSlot) {
+			log.Printf("[updateEthClient] timing OK: currentSlot=%d >= requiredSlot=%d (signatureSlot=%d safety=%d)",
+				currentSlot, requiredSlot, sigSlot, cosmosCatchUpSafetySlots)
 			break
 		}
-		log.Printf("[updateEthClient] waiting for target chain to catch up to slot %d (current=%d)", sigSlot, currentSlot)
+		log.Printf("[updateEthClient] waiting for target chain to catch up to required slot %d (signatureSlot=%d current=%d safety=%d)",
+			requiredSlot, sigSlot, currentSlot, cosmosCatchUpSafetySlots)
 		time.Sleep(5 * time.Second)
 	}
+}
+
+func cosmosCurrentSlotReady(currentSlot, sigSlot uint64) bool {
+	return currentSlot >= sigSlot+cosmosCatchUpSafetySlots
 }
 
 func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconAPIURL, ethClientID string, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) ([]any, error) {
@@ -609,6 +637,34 @@ func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconA
 	}
 
 	return msgs, nil
+}
+
+func cloneEthereumClientState(state *relayerclient.EthereumClientState) *relayerclient.EthereumClientState {
+	if state == nil {
+		return nil
+	}
+	cloned := *state
+	return &cloned
+}
+
+func ethProofStateFromFinalityUpdate(base *relayerclient.EthereumClientState, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) (*relayerclient.EthereumClientState, uint64, error) {
+	proofState := cloneEthereumClientState(base)
+	if proofState == nil {
+		return nil, 0, fmt.Errorf("ethereum client state is nil")
+	}
+
+	finalizedExecutionBlock, err := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to parse finalized execution block number: %w", err)
+	}
+	finalizedTimestamp, err := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.Timestamp, 10, 64)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to parse finalized execution timestamp: %w", err)
+	}
+
+	proofState.LatestSlot = finalizedSlot
+	proofState.LatestExecutionBlockNumber = finalizedExecutionBlock
+	return proofState, finalizedTimestamp, nil
 }
 
 // parseSlot parses a slot string to uint64

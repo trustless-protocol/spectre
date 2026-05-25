@@ -3,30 +3,48 @@ package subscriber
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"math/big"
+	"os"
+	"strconv"
+	"time"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
 	"relayer/services"
+	"relayer/utils"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gogo/protobuf/proto"
 )
 
-const COMETBFT_SEND_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.applications.transfer.v1.MsgTransfer'"
-const COMETBFT_WRITE_ACK_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.core.channel.v2.MsgRecvPacket'"
-const COMETBFT_TIMEOUT_PACKET_EVENT = "tm.event = 'Tx' AND message.action = '/ibc.applications.transfer.v1.MsgTimeout'"
+// Match by IBC v2 event TYPE (send_packet / write_acknowledgement / timeout_packet)
+// rather than by message.action. The Rust upstream relayer takes the same approach
+// (packages/relayer/lib/src/events/eureka.rs::TryFrom<TmEvent>) — it iterates the tx's
+// events and matches event.kind against cosmos_sdk::EVENT_TYPE_*. Using event TYPE
+// here means we catch any tx that produces a send_packet (whether triggered by
+// gaiad's MsgTransfer wrapper, a direct channeltypesv2.MsgSendPacket from a test
+// harness, or any other module that ends up calling the v2 channel keeper), instead
+// of being tied to one specific message.action.
+const COMETBFT_SEND_PACKET_EVENT = "tm.event = 'Tx' AND send_packet.encoded_packet_hex EXISTS"
+const COMETBFT_WRITE_ACK_PACKET_EVENT = "tm.event = 'Tx' AND write_acknowledgement.encoded_packet_hex EXISTS"
+const COMETBFT_TIMEOUT_PACKET_EVENT = "tm.event = 'Tx' AND timeout_packet.encoded_packet_hex EXISTS"
 
 const EVENT_SEND_PACKET_FIELD = "send_packet.encoded_packet_hex"
 const EVENT_WRITE_ACK_PACKET_FIELD = "write_acknowledgement.encoded_packet_hex"
 const EVENT_ACKNOWLEDGEMENT_FIELD = "write_acknowledgement.encoded_acknowledgement_hex"
 const EVENT_TIMEOUT_PACKET_FIELD = "timeout_packet.encoded_packet_hex"
 
+const ethStartupRecoveryLookbackEnv = "ETH_STARTUP_LOOKBACK_BLOCKS"
+const defaultEthStartupRecoveryLookbackBlocks uint64 = 256
+const ethSubscriptionReconnectDelay = 2 * time.Second
+
 // normalizeTimeoutSeconds converts IBC v2 timeout timestamps from nanoseconds to seconds.
 // ibc-go stores TimeoutTimestamp in nanoseconds, but the ETH side uses seconds.
-// Values <= 1e12 are assumed to already be in seconds (year ~33658 CE in seconds).
+// Values < 1e12 are assumed to already be in seconds (year ~33658 CE in seconds).
 func normalizeTimeoutSeconds(ts uint64) uint64 {
-	if ts > 1e12 {
+	if ts >= 1e12 {
 		return ts / 1e9
 	}
 	return ts
@@ -190,78 +208,253 @@ func EthPacketToCosmosPacket(ethPacket contractICS26Router.IICS26RouterMsgsPacke
 	}
 }
 
-// SubscribeEth subscribes to Ethereum events from the ICS26Router contract
-func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.BatchBuilder) {
-	filterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), ctx.EthWsClient())
+func ethStartupRecoveryLookbackBlocksFromEnv(raw string) uint64 {
+	if raw == "" {
+		return defaultEthStartupRecoveryLookbackBlocks
+	}
+
+	lookback, err := strconv.ParseUint(raw, 10, 64)
 	if err != nil {
-		ctx.Logger.Printf("Failed to create ICS26Router filterer instance: %v", err)
+		return defaultEthStartupRecoveryLookbackBlocks
+	}
+
+	return lookback
+}
+
+func ethStartupRecoveryLookbackBlocks() uint64 {
+	return ethStartupRecoveryLookbackBlocksFromEnv(os.Getenv(ethStartupRecoveryLookbackEnv))
+}
+
+func ethStartupRecoveryStartBlock(latestBlock, lookback uint64) uint64 {
+	if lookback >= latestBlock {
+		return 0
+	}
+
+	return latestBlock - lookback
+}
+
+func enqueueEthWriteAcknowledgement(batchBuilder *services.BatchBuilder, ev *contractICS26Router.ContractICS26RouterWriteAcknowledgement) {
+	cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
+	batchBuilder.AddEth(services.EthPacket{
+		Type:        services.EthWriteAck,
+		Packet:      &cosmosPacket,
+		AckBytes:    ev.Acknowledgements,
+		BlockNumber: ev.Raw.BlockNumber,
+	})
+}
+
+func enqueueEthSendPacket(batchBuilder *services.BatchBuilder, ev *contractICS26Router.ContractICS26RouterSendPacket) {
+	cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
+	batchBuilder.AddEth(services.EthPacket{
+		Type:        services.EthSend,
+		Packet:      &cosmosPacket,
+		BlockNumber: ev.Raw.BlockNumber,
+	})
+}
+
+func hasCosmosIBCPathValue(ctx services.Context, path [][]byte) (bool, error) {
+	queryPath := fmt.Sprintf("store/%s/key", string(path[0]))
+	request := path[1]
+
+	result, err := ctx.CosmosClient().ABCIQuery(context.Background(), queryPath, request)
+	if err != nil {
+		return false, fmt.Errorf("ABCI query failed: %w", err)
+	}
+	if result.Response.Code != 0 {
+		return false, fmt.Errorf("query failed with code %d: %s", result.Response.Code, result.Response.Log)
+	}
+
+	return len(result.Response.Value) > 0, nil
+}
+
+func hasPendingCosmosPacketCommitment(ctx services.Context, packet channeltypesv2.Packet) (bool, error) {
+	return hasCosmosIBCPathValue(ctx, utils.IbcCommitmentPath(packet, []byte{1}))
+}
+
+func hasCosmosPacketReceipt(ctx services.Context, packet channeltypesv2.Packet) (bool, error) {
+	return hasCosmosIBCPathValue(ctx, utils.IbcPath(packet.DestinationClient, packet.Sequence, []byte{2}))
+}
+
+func recoverEthSendPackets(
+	ctx services.Context,
+	batchBuilder *services.BatchBuilder,
+	filterer *contractICS26Router.ContractICS26RouterFilterer,
+	startBlock uint64,
+	endBlock uint64,
+) {
+	if endBlock < startBlock {
 		return
 	}
 
-	// Create event channels for each event type
+	filterOpts := &bind.FilterOpts{
+		Start:   startBlock,
+		End:     &endBlock,
+		Context: context.Background(),
+	}
+	iter, err := filterer.FilterSendPacket(filterOpts, nil, nil)
+	if err != nil {
+		ctx.Logger.Printf("[SubscribeEth] startup recovery: failed to filter SendPacket logs in [%d,%d]: %v",
+			startBlock, endBlock, err)
+		return
+	}
+	defer iter.Close()
+
+	var recoveredCount uint64
+	var skippedCount uint64
+	for iter.Next() {
+		ev := iter.Event
+		cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
+
+		received, err := hasCosmosPacketReceipt(ctx, cosmosPacket)
+		if err != nil {
+			ctx.Logger.Printf("[SubscribeEth] startup recovery: seq=%d failed to check Cosmos packet receipt: %v",
+				cosmosPacket.Sequence, err)
+			continue
+		}
+		if received {
+			skippedCount++
+			ctx.Logger.Printf("[SubscribeEth] startup recovery: seq=%d already received on Cosmos, skipping historical SendPacket from ETH block %d",
+				cosmosPacket.Sequence, ev.Raw.BlockNumber)
+			continue
+		}
+
+		ctx.Logger.Printf("[SubscribeEth] startup recovery: recovered SendPacket seq=%d from ETH block %d",
+			cosmosPacket.Sequence, ev.Raw.BlockNumber)
+		enqueueEthSendPacket(batchBuilder, ev)
+		recoveredCount++
+	}
+
+	if err := iter.Error(); err != nil {
+		ctx.Logger.Printf("[SubscribeEth] startup recovery: SendPacket iterator error in [%d,%d]: %v",
+			startBlock, endBlock, err)
+	}
+
+	ctx.Logger.Printf("[SubscribeEth] startup recovery complete for SendPacket: scanned [%d,%d], recovered=%d skipped=%d",
+		startBlock, endBlock, recoveredCount, skippedCount)
+}
+
+func recoverEthWriteAcknowledgements(
+	ctx services.Context,
+	batchBuilder *services.BatchBuilder,
+	filterer *contractICS26Router.ContractICS26RouterFilterer,
+	startBlock uint64,
+	endBlock uint64,
+) {
+	if endBlock < startBlock {
+		return
+	}
+
+	filterOpts := &bind.FilterOpts{
+		Start:   startBlock,
+		End:     &endBlock,
+		Context: context.Background(),
+	}
+	iter, err := filterer.FilterWriteAcknowledgement(filterOpts, nil, nil)
+	if err != nil {
+		ctx.Logger.Printf("[SubscribeEth] startup recovery: failed to filter WriteAcknowledgement logs in [%d,%d]: %v",
+			startBlock, endBlock, err)
+		return
+	}
+	defer iter.Close()
+
+	var recoveredCount uint64
+	var skippedCount uint64
+	for iter.Next() {
+		ev := iter.Event
+		cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
+
+		pending, err := hasPendingCosmosPacketCommitment(ctx, cosmosPacket)
+		if err != nil {
+			ctx.Logger.Printf("[SubscribeEth] startup recovery: seq=%d failed to check Cosmos packet commitment: %v",
+				cosmosPacket.Sequence, err)
+			continue
+		}
+		if !pending {
+			skippedCount++
+			ctx.Logger.Printf("[SubscribeEth] startup recovery: seq=%d already cleared on Cosmos, skipping historical WriteAcknowledgement from ETH block %d",
+				cosmosPacket.Sequence, ev.Raw.BlockNumber)
+			continue
+		}
+
+		ctx.Logger.Printf("[SubscribeEth] startup recovery: recovered WriteAcknowledgement seq=%d from ETH block %d",
+			cosmosPacket.Sequence, ev.Raw.BlockNumber)
+		enqueueEthWriteAcknowledgement(batchBuilder, ev)
+		recoveredCount++
+	}
+
+	if err := iter.Error(); err != nil {
+		ctx.Logger.Printf("[SubscribeEth] startup recovery: iterator error in [%d,%d]: %v",
+			startBlock, endBlock, err)
+	}
+
+	ctx.Logger.Printf("[SubscribeEth] startup recovery complete: scanned [%d,%d], recovered=%d skipped=%d",
+		startBlock, endBlock, recoveredCount, skippedCount)
+}
+
+func advanceRecoveryStart(nextRecoveryStartBlock *uint64, candidate uint64) {
+	if candidate > *nextRecoveryStartBlock {
+		*nextRecoveryStartBlock = candidate
+	}
+}
+
+func (s *Subscriber) subscribeEthOnce(
+	ctx services.Context,
+	batchBuilder *services.BatchBuilder,
+	watchClient *ethclient.Client,
+	watchStartBlock uint64,
+	nextSendRecoveryStartBlock *uint64,
+	nextWriteAckRecoveryStartBlock *uint64,
+) error {
+	watchFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), watchClient)
+	if err != nil {
+		return fmt.Errorf("failed to create ICS26Router watch filterer instance: %w", err)
+	}
+
 	sendPacketCh := make(chan *contractICS26Router.ContractICS26RouterSendPacket)
 	writeAckCh := make(chan *contractICS26Router.ContractICS26RouterWriteAcknowledgement)
 	ackPacketCh := make(chan *contractICS26Router.ContractICS26RouterAckPacket)
 	timeoutPacketCh := make(chan *contractICS26Router.ContractICS26RouterTimeoutPacket)
 
-	// Set up watch options (nil for all events, no filtering by clientId or sequence)
-	watchOpts := &bind.WatchOpts{Context: context.Background()}
-	// Subscribe to SendPacket events
-	sendPacketSub, err := filterer.WatchSendPacket(watchOpts, sendPacketCh, nil, nil)
+	watchOpts := &bind.WatchOpts{Start: &watchStartBlock, Context: context.Background()}
+
+	sendPacketSub, err := watchFilterer.WatchSendPacket(watchOpts, sendPacketCh, nil, nil)
 	if err != nil {
-		ctx.Logger.Printf("Failed to subscribe to SendPacket events: %v", err)
-		return
+		return fmt.Errorf("failed to subscribe to SendPacket events: %w", err)
 	}
 	defer sendPacketSub.Unsubscribe()
 
-	// Subscribe to WriteAcknowledgement events
-	writeAckSub, err := filterer.WatchWriteAcknowledgement(watchOpts, writeAckCh, nil, nil)
+	writeAckSub, err := watchFilterer.WatchWriteAcknowledgement(watchOpts, writeAckCh, nil, nil)
 	if err != nil {
-		ctx.Logger.Printf("Failed to subscribe to WriteAcknowledgement events: %v", err)
-		return
+		return fmt.Errorf("failed to subscribe to WriteAcknowledgement events: %w", err)
 	}
 	defer writeAckSub.Unsubscribe()
 
-	// Subscribe to AckPacket events
-	ackPacketSub, err := filterer.WatchAckPacket(watchOpts, ackPacketCh, nil, nil)
+	ackPacketSub, err := watchFilterer.WatchAckPacket(watchOpts, ackPacketCh, nil, nil)
 	if err != nil {
-		ctx.Logger.Printf("Failed to subscribe to AckPacket events: %v", err)
-		return
+		return fmt.Errorf("failed to subscribe to AckPacket events: %w", err)
 	}
 	defer ackPacketSub.Unsubscribe()
 
-	// Subscribe to TimeoutPacket events
-	timeoutPacketSub, err := filterer.WatchTimeoutPacket(watchOpts, timeoutPacketCh, nil, nil)
+	timeoutPacketSub, err := watchFilterer.WatchTimeoutPacket(watchOpts, timeoutPacketCh, nil, nil)
 	if err != nil {
-		ctx.Logger.Printf("Failed to subscribe to TimeoutPacket events: %v", err)
-		return
+		return fmt.Errorf("failed to subscribe to TimeoutPacket events: %w", err)
 	}
 	defer timeoutPacketSub.Unsubscribe()
 
-	ctx.Logger.Println("Successfully subscribed to ICS26Router events")
+	ctx.Logger.Printf("[SubscribeEth] Successfully subscribed to ICS26Router events from block %d", watchStartBlock)
 
-	// Event loop to handle incoming events
 	for {
 		select {
 		case ev := <-sendPacketCh:
 			ctx.Logger.Printf("SendPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
-			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
-			batchBuilder.AddEth(services.EthPacket{
-				Type:        services.EthSend,
-				Packet:      &cosmosPacket,
-				BlockNumber: ev.Raw.BlockNumber,
-			})
+			advanceRecoveryStart(nextSendRecoveryStartBlock, ev.Raw.BlockNumber+1)
+			enqueueEthSendPacket(batchBuilder, ev)
 
 		case ev := <-writeAckCh:
 			ctx.Logger.Printf("WriteAcknowledgement event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
-			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
-			batchBuilder.AddEth(services.EthPacket{
-				Type:        services.EthWriteAck,
-				Packet:      &cosmosPacket,
-				AckBytes:    ev.Acknowledgements,
-				BlockNumber: ev.Raw.BlockNumber,
-			})
-			batchBuilder.PendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
+			advanceRecoveryStart(nextWriteAckRecoveryStartBlock, ev.Raw.BlockNumber+1)
+			enqueueEthWriteAcknowledgement(batchBuilder, ev)
+			batchBuilder.PendingTracker.Remove(ev.Packet.SourceClient, ev.Sequence.Uint64())
 
 		case ev := <-ackPacketCh:
 			ctx.Logger.Printf("AckPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
@@ -281,20 +474,78 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 			})
 
 		case err := <-sendPacketSub.Err():
-			ctx.Logger.Printf("SendPacket subscription error: %v", err)
-			return
+			return fmt.Errorf("SendPacket subscription error: %w", err)
 
 		case err := <-writeAckSub.Err():
-			ctx.Logger.Printf("WriteAcknowledgement subscription error: %v", err)
-			return
+			return fmt.Errorf("WriteAcknowledgement subscription error: %w", err)
 
 		case err := <-ackPacketSub.Err():
-			ctx.Logger.Printf("AckPacket subscription error: %v", err)
-			return
+			return fmt.Errorf("AckPacket subscription error: %w", err)
 
 		case err := <-timeoutPacketSub.Err():
-			ctx.Logger.Printf("TimeoutPacket subscription error: %v", err)
-			return
+			return fmt.Errorf("TimeoutPacket subscription error: %w", err)
 		}
+	}
+}
+
+// SubscribeEth subscribes to Ethereum events from the ICS26Router contract
+func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.BatchBuilder) {
+	if ctx.EthWsURL() == "" {
+		ctx.Logger.Printf("Failed to subscribe to Ethereum events: eth websocket URL is not configured")
+		return
+	}
+
+	recoveryFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), ctx.EthClient())
+	if err != nil {
+		ctx.Logger.Printf("Failed to create ICS26Router recovery filterer instance: %v", err)
+		return
+	}
+
+	lookback := ethStartupRecoveryLookbackBlocks()
+	var nextSendRecoveryStartBlock uint64
+	var nextWriteAckRecoveryStartBlock uint64
+
+	for {
+		latestBlock, err := ctx.EthClient().BlockNumber(context.Background())
+		if err != nil {
+			ctx.Logger.Printf("[SubscribeEth] Failed to get latest Ethereum block before subscription: %v", err)
+			time.Sleep(ethSubscriptionReconnectDelay)
+			continue
+		}
+
+		if nextSendRecoveryStartBlock == 0 {
+			nextSendRecoveryStartBlock = ethStartupRecoveryStartBlock(latestBlock, lookback)
+		}
+		if nextWriteAckRecoveryStartBlock == 0 {
+			nextWriteAckRecoveryStartBlock = ethStartupRecoveryStartBlock(latestBlock, lookback)
+		}
+
+		if latestBlock >= nextSendRecoveryStartBlock {
+			ctx.Logger.Printf("[SubscribeEth] recovery scanning SendPacket logs in [%d,%d]",
+				nextSendRecoveryStartBlock, latestBlock)
+			recoverEthSendPackets(ctx, batchBuilder, recoveryFilterer, nextSendRecoveryStartBlock, latestBlock)
+		}
+
+		if latestBlock >= nextWriteAckRecoveryStartBlock {
+			ctx.Logger.Printf("[SubscribeEth] recovery scanning WriteAcknowledgement logs in [%d,%d]",
+				nextWriteAckRecoveryStartBlock, latestBlock)
+			recoverEthWriteAcknowledgements(ctx, batchBuilder, recoveryFilterer, nextWriteAckRecoveryStartBlock, latestBlock)
+		}
+
+		watchStartBlock := latestBlock + 1
+		nextSendRecoveryStartBlock = watchStartBlock
+		nextWriteAckRecoveryStartBlock = watchStartBlock
+
+		watchClient, err := ethclient.DialContext(context.Background(), ctx.EthWsURL())
+		if err != nil {
+			ctx.Logger.Printf("[SubscribeEth] Failed to connect to Ethereum WS at %s: %v", ctx.EthWsURL(), err)
+			time.Sleep(ethSubscriptionReconnectDelay)
+			continue
+		}
+
+		err = s.subscribeEthOnce(ctx, batchBuilder, watchClient, watchStartBlock, &nextSendRecoveryStartBlock, &nextWriteAckRecoveryStartBlock)
+		watchClient.Close()
+		ctx.Logger.Printf("[SubscribeEth] Subscription loop ended: %v", err)
+		time.Sleep(ethSubscriptionReconnectDelay)
 	}
 }

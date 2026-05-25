@@ -153,8 +153,9 @@ func buildSmokeAssignment(
 		MsgLens: make([]frontend.Variable, n),
 		Active:  make([]frontend.Variable, n),
 	}
-	for i := 0; i < 32; i++ {
-		a.Hash[i] = uints.NewU8(hash[i])
+	publicInputs := prover.DigestPublicInputs(hash)
+	for i := range publicInputs {
+		a.Hash[i] = publicInputs[i]
 	}
 	for i := 0; i < n; i++ {
 		v := sigs[i]

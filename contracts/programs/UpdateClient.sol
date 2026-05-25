@@ -12,8 +12,6 @@ import { HeightCmp } from "../utils/HeightCmp.sol";
 import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
 
 contract UpdateClient is IUpdateClient {
-    string clientId = "07-tendermint-0";
-
     error MismatchedRevisionHeight(
         uint64 expected,
         uint64 actual
@@ -43,19 +41,11 @@ contract UpdateClient is IUpdateClient {
             clockDrift: 15
         });
 
-        IICS07TendermintMsgs.ClientConsensusStatePath memory path = IICS07TendermintMsgs.ClientConsensusStatePath({
-            clientId: clientId,
-            revisionNumber: msg_.proposedHeader.trustedHeight.revisionNumber,
-            revisionHeight: msg_.proposedHeader.trustedHeight.revisionHeight
-        });
-
         verifyHeader(
             msg_.proposedHeader,
-            clientId,
             chainId,
             options,
             msg_.time,
-            path,
             msg_.trustedConsensusState
         );
 
@@ -82,19 +72,18 @@ contract UpdateClient is IUpdateClient {
 
     function verifyHeader(
         IICS07TendermintMsgs.Header memory proposedHeader,
-        string memory,
         IICS07TendermintMsgs.ChainId memory chainId,
         IICS07TendermintMsgs.Options memory options,
         uint128 time,
-        IICS07TendermintMsgs.ClientConsensusStatePath memory,
         IICS07TendermintMsgs.ConsensusState memory trustedConsensusState
     ) internal pure {
+        IICS07TendermintMsgs.ChainId memory headerChainId = getChainId(proposedHeader.signedHeader.header.chainId);
         // Checks that the header fields are valid.
-        validateBasic(proposedHeader);
+        validateBasic(proposedHeader, headerChainId);
 
         // The tendermint-light-client crate though works on heights that are assumed
         // to have the same revision number. We ensure this here.
-        verifyChainIdVersion(chainId, proposedHeader);
+        verifyChainIdVersion(chainId, headerChainId);
 
         // Delegate to tendermint-light-client, which contains the required checks
         // of the new header against the trusted consensus state.
@@ -141,35 +130,34 @@ contract UpdateClient is IUpdateClient {
         /// Check that the untrusted header is from past.
         uint128 drifted = time + uint128(options.clockDrift) * 1_000_000_000;
         require(untrustedState.signedHeader.header.time < drifted, "invalid block: header is from the future");
-        Predicates.verifyCommitAgainstTrusted(untrustedState, trustedState, options);
+        Predicates.verifyTrustedCommitOverlap(untrustedState, trustedState, options);
     }
 
     function verifyChainIdVersion(
         IICS07TendermintMsgs.ChainId memory chainId,
-        IICS07TendermintMsgs.Header memory header
+        IICS07TendermintMsgs.ChainId memory headerChainId
     ) internal pure {
-        IICS07TendermintMsgs.ChainId memory headerChainId = getChainId(header.signedHeader.header.chainId);
         if (chainId.revisionNumber != headerChainId.revisionNumber) {
             revert HeaderChainIdMismatch(
-                header.signedHeader.header.chainId,
+                headerChainId.id,
                 chainId.id
             );
         }
     }
 
     function validateBasic(
-        IICS07TendermintMsgs.Header memory header
+        IICS07TendermintMsgs.Header memory header,
+        IICS07TendermintMsgs.ChainId memory headerChainId
     ) internal pure {
-        IICS07TendermintMsgs.ChainId memory chainId = getChainId(header.signedHeader.header.chainId);
-        if (chainId.revisionNumber != header.trustedHeight.revisionNumber) {
+        if (headerChainId.revisionNumber != header.trustedHeight.revisionNumber) {
             revert MismatchedRevisionHeight(
-                chainId.revisionNumber,
+                headerChainId.revisionNumber,
                 header.trustedHeight.revisionNumber
             );
         }
 
         IICS02ClientMsgs.Height memory height = IICS02ClientMsgs.Height({
-            revisionNumber: chainId.revisionNumber,
+            revisionNumber: headerChainId.revisionNumber,
             revisionHeight: header.signedHeader.header.height
         });
 

@@ -3,8 +3,9 @@ pragma solidity ^0.8.4;
 
 /// @title IVerifier - Ed25519 signature verification via Groth16 proof
 /// @notice Wrapper that recomputes the hash-aggregate witness commitment from
-///         calldata and forwards that 32-byte digest to the underlying Groth16
-///         verifier selected by bucket.
+///         calldata and forwards that 32-byte digest, packed into two public
+///         field elements, to the underlying Groth16 verifier selected by
+///         bucket.
 interface IVerifier {
     /// @notice Shared CanonicalVote fields that are identical across every
     ///         validator signing the same Tendermint block.
@@ -18,7 +19,7 @@ interface IVerifier {
     }
 
     /// @notice Verify a batch of Ed25519 signatures via a single Groth16 proof.
-    /// @dev The relayer picks `bucket` (∈ {4,8,16,32,64,128}) as the smallest circuit
+    /// @dev The relayer picks `bucket` (∈ {4,8,16}) as the smallest circuit
     ///      that fits the number of signers needed to reach 2/3 voting power. Slots
     ///      beyond the true signer count are padded with deterministic dummy
     ///      signatures whose `active[i] = false`. The on-circuit ECIP gate
@@ -26,8 +27,9 @@ interface IVerifier {
     ///
     ///      The verifier wrapper hashes all per-slot witness data plus the
     ///      shared canonical-vote fields into a single SHA-256 digest. The
-    ///      circuit recomputes the same digest internally, so generated
-    ///      per-bucket verifiers use a fixed `uint256[32]` public input ABI.
+    ///      circuit recomputes the same digest internally and exposes it as
+    ///      two 128-bit BN254 public inputs, so generated per-bucket
+    ///      verifiers use a fixed `uint256[2]` public input ABI.
     /// @param bucket Validator-count bucket (selects which per-bucket Groth16Verifier to dispatch to)
     /// @param proof The Groth16 proof (8 uint256s: Ar, Bs, Krs)
     /// @param commitments The proof commitments (2 uint256s)

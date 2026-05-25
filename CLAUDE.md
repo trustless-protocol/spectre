@@ -35,12 +35,12 @@ just generate-abi                 # Extract ABIs
 # Encoding cross-validation
 forge test --match-contract EncodeTest -vvv  # Solidity encoding tests
 
-# Node setup (local development)
-./run_cosmos_node.sh              # Local Cosmos node with test accounts
-./run_cosmos_node_docker.sh       # Docker-based Cosmos node setup
-./run_eth_node.sh                 # Ethereum testnet via Kurtosis + deploy contracts
-./wasm.sh                         # Submit Ethereum light client WASM via governance
-./wasm_docker.sh                  # Docker-based WASM submission
+# Node setup (local development) — invoke from any cwd; each script self-anchors to repo root
+./scripts/local/run_cosmos_node.sh         # Local Cosmos node with test accounts
+./scripts/local/run_cosmos_node_docker.sh  # Docker-based Cosmos node setup
+./scripts/local/run_eth_node.sh            # Ethereum testnet via Kurtosis + deploy contracts
+./scripts/local/wasm.sh                    # Submit Ethereum light client WASM via governance
+./scripts/local/wasm_docker.sh             # Docker-based WASM submission
 ```
 
 **Prerequisites**: `bun` (not npm/yarn), `just`, Foundry, Go 1.21+. E2E also needs Docker + Kurtosis.
@@ -61,13 +61,10 @@ go run ./cmd/main.go start --config config.json
 
 # Generate genesis state
 go run ./cmd/main.go genesis --trusted-block 0 --trusting-period 0
-
-# Verify membership proof on-chain
-go run ./cmd/main.go fixtures membership <key_path> <is_base64> <membership_type>
 ```
 
 Config: JSON file with `modules` array containing `cosmos_to_eth` and `eth_to_cosmos` entries (see `relayer/config.example.json`).
-Secrets: `.env` file for `ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, prover paths.
+Secrets: `relayer/.env` ships with default sample keys for the local Kurtosis devnet (`ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, `COSMOS_CHAIN_ID`, `PROVER_BIN_DIR`) — replace before any real deployment.
 
 ## Documentation Map
 

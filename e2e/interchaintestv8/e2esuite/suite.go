@@ -3,6 +3,7 @@ package e2esuite
 import (
 	"context"
 	"os"
+	"strings"
 
 	dockerclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/suite"
@@ -61,7 +62,7 @@ func (s *TestSuite) SetupSuite(ctx context.Context) {
 	case testvalues.EthTestnetTypePoS:
 		kurtosisChain, err := chainconfig.SpinUpKurtosisPoS(ctx) // TODO: Run this in a goroutine and wait for it to be ready
 		s.Require().NoError(err)
-		s.EthChain, err = ethereum.NewEthereum(ctx, kurtosisChain.RPC, &kurtosisChain.BeaconApiClient, kurtosisChain.Faucet)
+		s.EthChain, err = ethereum.NewEthereum(ctx, kurtosisChain.RPC, kurtosisChain.WS, &kurtosisChain.BeaconApiClient, kurtosisChain.Faucet)
 		s.Require().NoError(err)
 		s.T().Cleanup(func() {
 			ctx := context.Background()
@@ -104,7 +105,11 @@ func (s *TestSuite) SetupSuite(ctx context.Context) {
 		faucet, err := crypto.ToECDSA(ethcommon.FromHex(anvilFaucetPrivateKey))
 		s.Require().NoError(err)
 
-		s.EthChain, err = ethereum.NewEthereum(ctx, anvil.GetHostRPCAddress(), nil, faucet)
+		// Anvil exposes WS on the same endpoint via the same HTTP port — clients can
+		// initiate WS on the http scheme too. Use ws:// with the same host:port.
+		anvilRPC := anvil.GetHostRPCAddress()
+		anvilWS := "ws" + strings.TrimPrefix(anvilRPC, "http")
+		s.EthChain, err = ethereum.NewEthereum(ctx, anvilRPC, anvilWS, nil, faucet)
 		s.Require().NoError(err)
 
 		// Remove the Ethereum chain from the cosmos chains

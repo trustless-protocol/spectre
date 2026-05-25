@@ -220,8 +220,9 @@ func buildBatchAssignment(sigs []ValidatorSignature, hash [32]byte) (*BatchCircu
 		MsgLens: make([]frontend.Variable, n),
 		Active:  make([]frontend.Variable, n),
 	}
-	for i := 0; i < 32; i++ {
-		a.Hash[i] = uints.NewU8(hash[i])
+	publicInputs := DigestPublicInputs(hash)
+	for i := range publicInputs {
+		a.Hash[i] = publicInputs[i]
 	}
 
 	for i := 0; i < n; i++ {

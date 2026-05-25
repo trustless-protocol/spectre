@@ -126,6 +126,7 @@ func ExtractValidatorSignatures(lightBlock *relayerclient.LightBlock, chainID st
 	}
 
 	selected := candidates[:cutoff]
+	sortSelectedSignaturesByIndex(selected)
 	if len(selected) > MaxBucket() {
 		return nil, fmt.Errorf("quorum requires %d signers but largest bucket is %d", len(selected), MaxBucket())
 	}
@@ -141,4 +142,10 @@ func ExtractValidatorSignatures(lightBlock *relayerclient.LightBlock, chainID st
 		},
 		Signatures: selected,
 	}, nil
+}
+
+func sortSelectedSignaturesByIndex(sigs []ValidatorSignature) {
+	sort.Slice(sigs, func(i, j int) bool {
+		return sigs[i].Index < sigs[j].Index
+	})
 }

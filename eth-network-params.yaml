@@ -6,3 +6,14 @@ network_params:
   # 1s per slot → epoch = 32s, finality ~64s
   seconds_per_slot: 2
   genesis_delay: 10
+
+# Pin host-visible public port ranges so relayer endpoints stay stable across
+# enclave recreation. EL and CL ranges are separated to avoid future overlap if
+# the package exposes additional public ports for either service group.
+port_publisher:
+  el:
+    enabled: true
+    public_port_start: 59616
+  cl:
+    enabled: true
+    public_port_start: 59716
