@@ -6,21 +6,16 @@ Current values are the `bucket= ... gas= ...` logs emitted by
 ## Command
 
 ```bash
-forge test --match-path test/solidity-ibc/UpdateClientGasTest.t.sol --match-test test_gas_n4 -vv
-forge test --match-path test/solidity-ibc/UpdateClientGasTest.t.sol --match-test test_gas_n8 -vv
-forge test --match-path test/solidity-ibc/UpdateClientGasTest.t.sol --match-test test_gas_n16 -vv
-forge test --match-path test/solidity-ibc/UpdateClientGasTest.t.sol --match-test test_gas_n32 -vv
-forge test --match-path test/solidity-ibc/UpdateClientGasTest.t.sol --match-test test_gas_n64 -vv
-forge test --match-path test/solidity-ibc/UpdateClientGasTest.t.sol --match-test test_gas_n128 -vv
+forge test --match-contract UpdateClientGasTest -vv
 ```
 
 ## Results
 
 | bucket | gas |
 |---|---:|
-| 4 | 305,370 |
-| 8 | 526,640 |
-| 16 | 909,463 |
-| 32 | 1,323,663 |
-| 64 | 2,536,467 |
-| 128 | 5,078,009 |
+| 4 | 292,912 |
+| 8 | 504,175 |
+| 16 | 868,891 |
+| 32 | 1,260,993 |
+| 64 | 2,408,551 |
+| 128 | 4,795,736 |
