@@ -149,9 +149,19 @@ func (b *BatchBuilder) CheckCosmos(config BatchConfig, ch chan<- CosmosBatch) {
 		return
 	}
 
-	log.Printf("[BatchBuilder] Flushing cosmos batch: %d packets (%s)", len(b.cosmosPackets), reason)
-	batch := CosmosBatch{Packets: b.cosmosPackets}
-	b.ClearCosmos()
+	// Slice up to BatchSize so a backlog (queue >> BatchSize) is flushed in
+	// fixed-size chunks instead of one oversized multicall that would blow
+	// past the EVM 128KB tx size limit.
+	chunkSize := int(config.BatchSize)
+	if chunkSize <= 0 || chunkSize > len(b.cosmosPackets) {
+		chunkSize = len(b.cosmosPackets)
+	}
+	chunk := b.cosmosPackets[:chunkSize]
+	b.cosmosPackets = b.cosmosPackets[chunkSize:]
+	b.cosmosTimestamp = time.Now()
+	log.Printf("[BatchBuilder] Flushing cosmos batch: %d packets (%s, queue remaining: %d)",
+		len(chunk), reason, len(b.cosmosPackets))
+	batch := CosmosBatch{Packets: chunk}
 	b.cosmosMtx.Unlock()
 
 	ch <- batch
@@ -181,9 +191,16 @@ func (b *BatchBuilder) CheckEth(config BatchConfig, ch chan<- EthBatch) {
 		return
 	}
 
-	log.Printf("[BatchBuilder] Flushing eth batch: %d packets (%s)", len(b.ethPackets), reason)
-	batch := EthBatch{Packets: b.ethPackets}
-	b.ClearEth()
+	chunkSize := int(config.BatchSize)
+	if chunkSize <= 0 || chunkSize > len(b.ethPackets) {
+		chunkSize = len(b.ethPackets)
+	}
+	chunk := b.ethPackets[:chunkSize]
+	b.ethPackets = b.ethPackets[chunkSize:]
+	b.ethTimestamp = time.Now()
+	log.Printf("[BatchBuilder] Flushing eth batch: %d packets (%s, queue remaining: %d)",
+		len(chunk), reason, len(b.ethPackets))
+	batch := EthBatch{Packets: chunk}
 	b.ethMtx.Unlock()
 
 	ch <- batch

@@ -272,10 +272,12 @@ func TestCheckCosmos_ExceedsBatchSize(t *testing.T) {
 	ch := make(chan CosmosBatch, 1)
 	bb.CheckCosmos(config, ch)
 
+	// Flush chunks at most BatchSize (3) packets per call; the remaining 2
+	// stay in the queue for the next tick to chunk-flush again.
 	select {
 	case batch := <-ch:
-		if len(batch.Packets) != 5 {
-			t.Fatalf("expected 5 packets in batch, got %d", len(batch.Packets))
+		if len(batch.Packets) != 3 {
+			t.Fatalf("expected 3 packets in batch (BatchSize chunk), got %d", len(batch.Packets))
 		}
 	default:
 		t.Fatal("expected cosmos batch to be sent")
@@ -283,8 +285,8 @@ func TestCheckCosmos_ExceedsBatchSize(t *testing.T) {
 
 	bb.cosmosMtx.Lock()
 	defer bb.cosmosMtx.Unlock()
-	if len(bb.cosmosPackets) != 0 {
-		t.Fatalf("expected cosmos packets to be cleared, got %d", len(bb.cosmosPackets))
+	if len(bb.cosmosPackets) != 2 {
+		t.Fatalf("expected 2 cosmos packets remaining in queue, got %d", len(bb.cosmosPackets))
 	}
 }
 
@@ -304,8 +306,8 @@ func TestCheckEth_ExceedsBatchSize(t *testing.T) {
 
 	select {
 	case batch := <-ch:
-		if len(batch.Packets) != 5 {
-			t.Fatalf("expected 5 packets in batch, got %d", len(batch.Packets))
+		if len(batch.Packets) != 3 {
+			t.Fatalf("expected 3 packets in batch (BatchSize chunk), got %d", len(batch.Packets))
 		}
 	default:
 		t.Fatal("expected eth batch to be sent")
@@ -313,8 +315,8 @@ func TestCheckEth_ExceedsBatchSize(t *testing.T) {
 
 	bb.ethMtx.Lock()
 	defer bb.ethMtx.Unlock()
-	if len(bb.ethPackets) != 0 {
-		t.Fatalf("expected eth packets to be cleared, got %d", len(bb.ethPackets))
+	if len(bb.ethPackets) != 2 {
+		t.Fatalf("expected 2 eth packets remaining in queue, got %d", len(bb.ethPackets))
 	}
 }
 
