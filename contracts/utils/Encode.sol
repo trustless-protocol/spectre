@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 pragma solidity ^0.8.0;
 
 import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
@@ -166,14 +168,24 @@ library Encode {
     function encodeSfixed64(int64 value) public pure returns (bytes memory) {
         bytes memory result = new bytes(8);
         uint64 v = uint64(value);
-        result[0] = bytes1(uint8(v));
-        result[1] = bytes1(uint8(v >> 8));
-        result[2] = bytes1(uint8(v >> 16));
-        result[3] = bytes1(uint8(v >> 24));
-        result[4] = bytes1(uint8(v >> 32));
-        result[5] = bytes1(uint8(v >> 40));
-        result[6] = bytes1(uint8(v >> 48));
-        result[7] = bytes1(uint8(v >> 56));
+        assembly {
+            // mstore is big-endian, so each byte of v must be placed in the most-significant
+            // 8 bytes of the 256-bit word. Byte i of little-endian output = bits [(i*8)+7:(i*8)]
+            // of v, which must land at word bits [255-(i*8):248-(i*8)].
+            mstore(
+                add(result, 0x20),
+                or(
+                    or(
+                        or(shl(248, and(v, 0xff)), shl(232, and(v, 0xff00))),
+                        or(shl(216, and(v, 0xff0000)), shl(200, and(v, 0xff000000)))
+                    ),
+                    or(
+                        or(shl(184, and(v, 0xff00000000)), shl(168, and(v, 0xff0000000000))),
+                        or(shl(152, and(v, 0xff000000000000)), shl(136, and(v, 0xff00000000000000)))
+                    )
+                )
+            )
+        }
         return result;
     }
 
