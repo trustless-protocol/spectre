@@ -25,7 +25,8 @@ contract WrapperVerifierHashHarness is WrapperVerifier {
 
 contract WrapperVerifierHashEquivalenceTest is Test {
     uint16 internal constant MAX_MSG_LEN = 192;
-    uint256 internal constant WITNESS_SLOT_LEN = 1 + 32 + 2 + MAX_MSG_LEN;
+    uint256 internal constant WITNESS_SLOT_MSG_OFFSET = 1 + 32 + 2;
+    uint256 internal constant WITNESS_SLOT_LEN = WITNESS_SLOT_MSG_OFFSET + MAX_MSG_LEN;
 
     WrapperVerifierHashHarness internal harness;
 
@@ -129,7 +130,7 @@ contract WrapperVerifierHashEquivalenceTest is Test {
             _storeBytes32(buf, offset + 1, pubkeys[i]);
             _storeByte(buf, offset + 33, msgBytes.length >> 8);
             _storeByte(buf, offset + 34, msgBytes.length);
-            _copyBytes(buf, offset + 35, msgBytes);
+            _copyBytes(buf, offset + WITNESS_SLOT_MSG_OFFSET, msgBytes);
             offset += WITNESS_SLOT_LEN;
         }
         return sha256(buf);

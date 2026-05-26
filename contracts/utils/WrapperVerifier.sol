@@ -20,9 +20,12 @@ contract WrapperVerifier is IVerifier {
     /// Per-slot canonical-vote buffer width baked into the circuit. Must match
     /// prover.MaxMsgLen exactly — anything larger fails LengthExceeded; shorter
     /// payloads are right-padded with zeros.
+    // Must match relayer/prover/dummy.go::dummyMagic exactly. The circuit
+    // asserts SHA-256 over this layout, so drift invalidates every proof.
     bytes14 constant DUMMY_MAGIC = 0x666173742d6962632d64756d6d79; // "fast-ibc-dummy"
     uint16 constant MAX_MSG_LEN = 192;
-    uint256 constant WITNESS_SLOT_LEN = 1 + 32 + 2 + MAX_MSG_LEN;
+    uint256 constant WITNESS_SLOT_MSG_OFFSET = 1 + 32 + 2;
+    uint256 constant WITNESS_SLOT_LEN = WITNESS_SLOT_MSG_OFFSET + MAX_MSG_LEN;
 
     /// @param verifier Address of the per-bucket gnark-generated Groth16 verifier.
     /// @param selector 4-byte function selector of that verifier's `verifyProof`.
@@ -117,14 +120,14 @@ contract WrapperVerifier is IVerifier {
             if (active[i]) {
                 msgLen = _writeVoteSignBytes(
                     buf,
-                    offset + 35,
+                    offset + WITNESS_SLOT_MSG_OFFSET,
                     commonVotePrefix,
                     chainSuffix,
                     timestampSeconds[i],
                     timestampNanos[i]
                 );
             } else {
-                msgLen = _writeDummyMsgBytes(buf, offset + 35, bucket, uint16(i));
+                msgLen = _writeDummyMsgBytes(buf, offset + WITNESS_SLOT_MSG_OFFSET, bucket, uint16(i));
             }
 
             _storeByte(buf, offset, active[i] ? 1 : 0);
