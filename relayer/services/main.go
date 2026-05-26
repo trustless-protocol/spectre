@@ -170,10 +170,23 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	log.Printf("[StartLoop] Waiting 2 blocks for packet commitment to be included in AppHash...")
 	time.Sleep(6 * time.Second)
 
-	latestLightBlock, ok := s.updateCosmosClientForEth(ctx, "StartLoop")
-	if !ok {
+	// V2: build the Cosmos→ETH updateClient msg but do NOT submit it as its
+	// own tx. It will be the first inner call of the multicall so we save
+	// one round-trip + ~21k base intrinsic gas per flush.
+	updateBuild, err := s.worker.BuildCosmosClientUpdateMsg(
+		ctx, s.cosmosConfig.ProofType,
+		int64(ctx.latestEthTimestamp.LatestUpdateHeight),
+		s.cosmosConfig.TrustLevel,
+	)
+	if err != nil {
+		log.Printf("[StartLoop] Failed to build cosmos light client update: %v", err)
 		return
 	}
+	if updateBuild == nil || updateBuild.LightBlock == nil {
+		log.Printf("[StartLoop] BuildCosmosClientUpdateMsg returned nil light block")
+		return
+	}
+	latestLightBlock := updateBuild.LightBlock
 
 	ethHeader, err := ctx.EthClient().HeaderByNumber(context.Background(), nil)
 	if err != nil {
@@ -195,7 +208,14 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 		sourceClient string                // for PendingTracker.Remove
 		isRecv       bool                  // true → call PendingTracker.Remove after success
 	}
-	msgs := make([]batchedMsg, 0, len(batch.Packets))
+	// +1 capacity for the optional updateClient prepend.
+	msgs := make([]batchedMsg, 0, len(batch.Packets)+1)
+	if updateBuild.HasMsg {
+		msgs = append(msgs, batchedMsg{
+			msg:   updateBuild.Msg,
+			label: "UpdateClient",
+		})
+	}
 
 	for _, packet := range batch.Packets {
 		switch packet.Type {
@@ -303,36 +323,127 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 		if m.isRecv {
 			s.BatchBuilder.PendingTracker.Remove(m.sourceClient, m.sequence)
 		}
-		log.Printf("[%s] seq=%d: relay completed", m.label, m.sequence)
+		if m.label == "UpdateClient" {
+			log.Printf("[UpdateClient] relay completed (folded into batch)")
+		} else {
+			log.Printf("[%s] seq=%d: relay completed", m.label, m.sequence)
+		}
+	}
+
+	// Advance the trusted ETH-side height only after the batch (including the
+	// folded updateClient, if any) confirmed on-chain.
+	if updateBuild.HasMsg {
+		ctx.latestEthTimestamp.mtx.Lock()
+		ctx.latestEthTimestamp.LatestUpdateTime = time.Now()
+		ctx.latestEthTimestamp.LatestUpdateHeight = uint64(latestLightBlock.BlockHeight)
+		ctx.latestEthTimestamp.mtx.Unlock()
 	}
 }
 
 func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	log.Printf("[StartLoop] Received eth batch: %d packets", len(batch.Packets))
 
-	for _, packet := range batch.Packets {
+	// V2: build per-packet Cosmos msgs into a single slice, fold the wasm
+	// MsgUpdateClient(s) at the head, and submit one SendCosmosTxBatch.
+	// Cosmos tx is atomic ⇒ MsgUpdateClient applies first, packet msgs verify
+	// against the freshly-advanced state in the same block.
+	type batchedCosmosMsg struct {
+		msg      any
+		label    string // log label, e.g. "EthSend", "EthWriteAck", "UpdateClient"
+		sequence uint64
+	}
+	cosmosMsgs := make([]batchedCosmosMsg, 0, len(batch.Packets)+1)
+
+	// Pre-filter expired EthSend packets — they bypass the batch and go to the
+	// async timeout scanner. Anything else is kept for proof generation.
+	type relayablePacket struct {
+		packet EthPacket
+		signer string
+	}
+	var relayable []relayablePacket
+	maxEventBlock := uint64(0)
+	for _, p := range batch.Packets {
+		switch p.Type {
+		case EthSend:
+			if ethPacketExpired(p) {
+				s.timeoutEthSend(ctx, p)
+				continue
+			}
+			relayable = append(relayable, relayablePacket{packet: p})
+		case EthWriteAck:
+			if len(p.AckBytes) == 0 {
+				log.Printf("[EthWriteAck] seq=%d: acknowledgement bytes missing, skipping", p.Packet.Sequence)
+				continue
+			}
+			relayable = append(relayable, relayablePacket{packet: p})
+		case EthAck:
+			log.Printf("[EthAck] seq=%d: terminal event handled", p.Packet.Sequence)
+		case EthTimeout:
+			log.Printf("[EthTimeout] seq=%d: terminal event handled", p.Packet.Sequence)
+		default:
+			log.Printf("[StartLoop] Unknown eth packet type: %d (seq=%d)", p.Type, p.Packet.Sequence)
+		}
+		if p.BlockNumber > maxEventBlock {
+			maxEventBlock = p.BlockNumber
+		}
+	}
+	if len(relayable) == 0 {
+		return
+	}
+
+	// Wait once for beacon finality to cover the highest event block in the
+	// batch. Subsequent packets in the same batch are by definition at
+	// smaller-or-equal block numbers, so a single wait suffices.
+	if !s.waitBeaconFinality(ctx, maxEventBlock, "EthBatch") {
+		return
+	}
+
+	// Build wasm MsgUpdateClient(s) without submitting; the same EthClientState
+	// output gives us the proof slot we'd see on-chain after the update applies.
+	buildResult, err := s.worker.BuildEthClientUpdateMsgs(ctx)
+	if err != nil {
+		log.Printf("[EthBatch] BuildEthClientUpdateMsgs failed: %v", err)
+		return
+	}
+	if buildResult == nil || buildResult.EthClientState == nil {
+		log.Printf("[EthBatch] BuildEthClientUpdateMsgs returned nil result")
+		return
+	}
+
+	// If we have update msgs, make sure the Cosmos chain has caught up enough
+	// for the signature slot of the wasm update before we broadcast.
+	if len(buildResult.Msgs) > 0 {
+		s.worker.waitForCosmosCatchUp(ctx, buildResult.EthClientState, buildResult.SigSlot)
+	}
+
+	signerAddr, err := s.worker.TxHandler.CosmosSignerAddress()
+	if err != nil {
+		log.Printf("[EthBatch] failed to get cosmos signer: %v", err)
+		return
+	}
+
+	proofBlockNumber := buildResult.EthClientState.LatestExecutionBlockNumber
+	proofSlot := buildResult.EthClientState.LatestSlot
+	if proofBlockNumber < maxEventBlock {
+		log.Printf("[EthBatch] post-update proof block %d still < max event block %d, skipping",
+			proofBlockNumber, maxEventBlock)
+		return
+	}
+
+	// Prepend wasm MsgUpdateClient(s) — atomicity of the Cosmos tx applies them
+	// before any packet msg verifies against the updated client state.
+	for _, m := range buildResult.Msgs {
+		cosmosMsgs = append(cosmosMsgs, batchedCosmosMsg{msg: m, label: "UpdateClient"})
+	}
+
+	for _, r := range relayable {
+		packet := r.packet
 		switch packet.Type {
 		case EthSend:
 			if ethPacketExpired(packet) {
 				s.timeoutEthSend(ctx, packet)
 				continue
 			}
-
-			signerAddr, err := s.worker.TxHandler.CosmosSignerAddress()
-			if err != nil {
-				log.Printf("[EthSend] seq=%d: failed to get cosmos signer: %v", packet.Packet.Sequence, err)
-				continue
-			}
-
-			proofBlockNumber, proofSlot, ok := s.ethProofHeight(ctx, packet.BlockNumber, packet.Packet.Sequence, "EthSend")
-			if !ok {
-				continue
-			}
-			if ethPacketExpired(packet) {
-				s.timeoutEthSend(ctx, packet)
-				continue
-			}
-
 			proofBytes, err := client.GetEthMembershipProof(
 				ctx.EthClient(), *ctx.RouterContract(), ethPath(packet.Packet.SourceClient, packet.Packet.Sequence, 1),
 				ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(proofBlockNumber))
@@ -340,38 +451,17 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 				log.Printf("[EthSend] seq=%d: failed to get ETH membership proof: %v", packet.Packet.Sequence, err)
 				continue
 			}
-
-			recvMsg := &channeltypesv2.MsgRecvPacket{
-				Packet:          *packet.Packet,
-				ProofCommitment: proofBytes,
-				ProofHeight:     clienttypes.Height{RevisionNumber: 0, RevisionHeight: proofSlot},
-				Signer:          signerAddr,
-			}
-			if err := s.worker.TxHandler.SendCosmosTx(ctx, recvMsg); err != nil {
-				log.Printf("[EthSend] seq=%d: failed to send MsgRecvPacket: %v", packet.Packet.Sequence, err)
-				if shouldTimeoutEthSend(packet, err) {
-					s.timeoutEthSend(ctx, packet)
-				}
-				continue
-			}
-			log.Printf("[EthSend] seq=%d: relay completed", packet.Packet.Sequence)
+			cosmosMsgs = append(cosmosMsgs, batchedCosmosMsg{
+				msg: &channeltypesv2.MsgRecvPacket{
+					Packet:          *packet.Packet,
+					ProofCommitment: proofBytes,
+					ProofHeight:     clienttypes.Height{RevisionNumber: 0, RevisionHeight: proofSlot},
+					Signer:          signerAddr,
+				},
+				label:    "EthSend",
+				sequence: packet.Packet.Sequence,
+			})
 		case EthWriteAck:
-			if len(packet.AckBytes) == 0 {
-				log.Printf("[EthWriteAck] seq=%d: acknowledgement bytes missing, skipping", packet.Packet.Sequence)
-				continue
-			}
-
-			signerAddr, err := s.worker.TxHandler.CosmosSignerAddress()
-			if err != nil {
-				log.Printf("[EthWriteAck] seq=%d: failed to get cosmos signer: %v", packet.Packet.Sequence, err)
-				continue
-			}
-
-			proofBlockNumber, proofSlot, ok := s.ethProofHeight(ctx, packet.BlockNumber, packet.Packet.Sequence, "EthWriteAck")
-			if !ok {
-				continue
-			}
-
 			proofBytes, err := client.GetEthMembershipProof(
 				ctx.EthClient(), *ctx.RouterContract(), ethPath(packet.Packet.DestinationClient, packet.Packet.Sequence, 3),
 				ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(proofBlockNumber))
@@ -379,29 +469,84 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 				log.Printf("[EthWriteAck] seq=%d: failed to get ETH membership proof: %v", packet.Packet.Sequence, err)
 				continue
 			}
-
-			ackMsg := &channeltypesv2.MsgAcknowledgement{
-				Packet: *packet.Packet,
-				Acknowledgement: channeltypesv2.Acknowledgement{
-					AppAcknowledgements: packet.AckBytes,
+			cosmosMsgs = append(cosmosMsgs, batchedCosmosMsg{
+				msg: &channeltypesv2.MsgAcknowledgement{
+					Packet: *packet.Packet,
+					Acknowledgement: channeltypesv2.Acknowledgement{
+						AppAcknowledgements: packet.AckBytes,
+					},
+					ProofAcked:  proofBytes,
+					ProofHeight: clienttypes.Height{RevisionNumber: 0, RevisionHeight: proofSlot},
+					Signer:      signerAddr,
 				},
-				ProofAcked:  proofBytes,
-				ProofHeight: clienttypes.Height{RevisionNumber: 0, RevisionHeight: proofSlot},
-				Signer:      signerAddr,
-			}
-			if err := s.worker.TxHandler.SendCosmosTx(ctx, ackMsg); err != nil {
-				log.Printf("[EthWriteAck] seq=%d: failed to send MsgAcknowledgement: %v", packet.Packet.Sequence, err)
-				continue
-			}
-			log.Printf("[EthWriteAck] seq=%d: relay completed", packet.Packet.Sequence)
-		case EthAck:
-			log.Printf("[EthAck] seq=%d: terminal event handled", packet.Packet.Sequence)
-		case EthTimeout:
-			log.Printf("[EthTimeout] seq=%d: terminal event handled", packet.Packet.Sequence)
-		default:
-			log.Printf("[StartLoop] Unknown eth packet type: %d (seq=%d)", packet.Type, packet.Packet.Sequence)
+				label:    "EthWriteAck",
+				sequence: packet.Packet.Sequence,
+			})
 		}
 	}
+
+	if len(cosmosMsgs) == 0 {
+		return
+	}
+
+	rawMsgs := make([]any, len(cosmosMsgs))
+	for i, m := range cosmosMsgs {
+		rawMsgs[i] = m.msg
+	}
+
+	log.Printf("[EthBatch] Submitting %d-msg batch to Cosmos", len(rawMsgs))
+	if err := s.worker.TxHandler.SendCosmosTxBatch(ctx, rawMsgs); err != nil {
+		for _, m := range cosmosMsgs {
+			if m.label == "UpdateClient" {
+				log.Printf("[UpdateClient] batch submission failed: %v", err)
+			} else {
+				log.Printf("[%s] seq=%d: batch submission failed: %v", m.label, m.sequence, err)
+			}
+		}
+		return
+	}
+
+	for _, m := range cosmosMsgs {
+		if m.label == "UpdateClient" {
+			log.Printf("[UpdateClient] relay completed (folded into Cosmos batch)")
+		} else {
+			log.Printf("[%s] seq=%d: relay completed", m.label, m.sequence)
+		}
+	}
+
+	// Advance latestCosmosTimestamp only after the batch (including the folded
+	// wasm updateClient, if any) confirmed on-chain.
+	if len(buildResult.Msgs) > 0 {
+		ctx.latestCosmosTimestamp.mtx.Lock()
+		ctx.latestCosmosTimestamp.LatestUpdateTime = time.Now()
+		ctx.latestCosmosTimestamp.mtx.Unlock()
+	}
+}
+
+// waitBeaconFinality polls beacon finality until execution block ≥ target.
+// Extracted from the per-packet ethProofHeight so handleEth can amortize the
+// wait over a whole batch. Returns false on timeout (60 polls × 10s = 10min).
+func (s *Services) waitBeaconFinality(ctx Context, eventBlock uint64, tag string) bool {
+	log.Printf("[%s] waiting for beacon finality at block %d", tag, eventBlock)
+	for attempt := 0; attempt < 60; attempt++ {
+		if attempt > 0 {
+			time.Sleep(10 * time.Second)
+		}
+		finalityUpdate, err := client.GetFinalityUpdate(ctx.BeaconAPIURL())
+		if err != nil {
+			log.Printf("[%s] failed to get finality update: %v", tag, err)
+			continue
+		}
+		execBlock, _ := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+		if execBlock >= eventBlock {
+			log.Printf("[%s] beacon finalized block %d >= event block %d", tag, execBlock, eventBlock)
+			return true
+		}
+		log.Printf("[%s] beacon finalized block %d < event block %d, waiting... (%d/60)",
+			tag, execBlock, eventBlock, attempt+1)
+	}
+	log.Printf("[%s] beacon finality did not reach block %d after 60 retries", tag, eventBlock)
+	return false
 }
 
 func ethPacketExpired(packet EthPacket) bool {

@@ -67,7 +67,46 @@ func (w *Worker) CreateCosmosClient(ctx Context, proofType string, trustingPerio
 	return w.TxHandler.CreateCosmosClientContract(ctx, clientStateEncoded, consensusHash)
 }
 
+// CosmosClientUpdateBuildResult is the output of BuildCosmosClientUpdateMsg.
+// When HasMsg is false the on-chain client is already at the latest height
+// and no updateClient tx is needed — only LightBlock is populated.
+type CosmosClientUpdateBuildResult struct {
+	Msg        updateclientContract.IUpdateClientMsgsMsgUpdateClient
+	HasMsg     bool
+	LightBlock *relayerclient.LightBlock
+}
+
+// UpdateCosmosClient builds the next MsgUpdateClient for the Tendermint light
+// client on Ethereum and submits it via SendEthTx. Used by background routines
+// that want to advance the client without packets attached. handleCosmos uses
+// the split BuildCosmosClientUpdateMsg builder so it can fold updateClient
+// into the same multicall as its packet calls (issue #67 V2).
 func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock int64, trustLevel string) (*relayerclient.LightBlock, error) {
+	result, err := w.BuildCosmosClientUpdateMsg(ctx, proofType, trustedBlock, trustLevel)
+	if err != nil {
+		return nil, err
+	}
+	if !result.HasMsg {
+		return result.LightBlock, nil
+	}
+	if err := w.TxHandler.SendEthTx(ctx, result.Msg); err != nil {
+		log.Printf("[UpdateCosmosClient] SendEthTx failed: %v", err)
+		return nil, err
+	}
+	log.Printf("[UpdateCosmosClient] SendEthTx succeeded")
+	return result.LightBlock, nil
+}
+
+// BuildCosmosClientUpdateMsg fetches the latest Tendermint light block,
+// generates the Groth16 batch proof, and returns the resulting
+// IUpdateClientMsgsMsgUpdateClient WITHOUT submitting it. Callers either
+// pass the msg to SendEthTx directly (UpdateCosmosClient) or fold it into
+// a multicall alongside packet calls (handleCosmos / V2).
+//
+// HasMsg=false signals the on-chain client is already at the latest block
+// — no update needed; LightBlock still returned so callers can use it for
+// membership proofs.
+func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trustedBlock int64, trustLevel string) (*CosmosClientUpdateBuildResult, error) {
 	status, err := ctx.CosmosClient().Status(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
@@ -103,7 +142,7 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 			if err != nil {
 				return nil, fmt.Errorf("failed to get current light block while up-to-date: %w", err)
 			}
-			return lightBlock, nil
+			return &CosmosClientUpdateBuildResult{LightBlock: lightBlock}, nil
 		}
 		return nil, fmt.Errorf("trusted block is ahead of latest chain height (trusted=%d, latest=%d)", trustedBlock, status.SyncInfo.LatestBlockHeight)
 	}
@@ -223,13 +262,11 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 		Active:                active,
 	}
 
-	err = w.TxHandler.SendEthTx(ctx, msg)
-	if err != nil {
-		log.Printf("[UpdateCosmosClient] SendEthTx failed: %v", err)
-		return nil, err
-	}
-	log.Printf("[UpdateCosmosClient] SendEthTx succeeded")
-	return latestLightBlock, nil
+	return &CosmosClientUpdateBuildResult{
+		Msg:        msg,
+		HasMsg:     true,
+		LightBlock: latestLightBlock,
+	}, nil
 }
 
 func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
