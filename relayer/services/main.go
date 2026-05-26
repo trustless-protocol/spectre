@@ -39,6 +39,7 @@ type TransactionHandler interface {
 	CreateCosmosClientContract(ctx Context, clientState, consensusHash []byte) (ethcommon.Address, error)
 	CreateEthClient(ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) (string, error)
 	SendEthTx(ctx Context, msg any) error
+	SendEthTxBatch(ctx Context, msgs []any) error
 	SendCosmosTx(ctx Context, msg any) error
 	SendCosmosTxBatch(ctx Context, msgs []any) error
 	CosmosSignerAddress() (string, error)
@@ -183,6 +184,19 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 		ethBlockTime = ethHeader.Time
 	}
 
+	// Build per-packet msgs into a single slice and submit one multicall when
+	// N >= 2 (issue #67 / benchmark V1). Failures during pre-msg construction
+	// (membership proof, missing ack bytes, etc.) still cause a per-packet
+	// `continue` — that packet is just excluded from the batch.
+	type batchedMsg struct {
+		msg          any
+		label        string                // log label, e.g. "RecvPacket"
+		sequence     uint64                // for log lines
+		sourceClient string                // for PendingTracker.Remove
+		isRecv       bool                  // true → call PendingTracker.Remove after success
+	}
+	msgs := make([]batchedMsg, 0, len(batch.Packets))
+
 	for _, packet := range batch.Packets {
 		switch packet.Type {
 		case CosmosSend:
@@ -200,17 +214,16 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 				continue
 			}
 
-			msgRecvPacket := contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
-				Packet:        toEthPacket(*packet.Packet),
-				MembershipMsg: calldata,
-			}
-
-			if err := s.worker.TxHandler.SendEthTx(ctx, msgRecvPacket); err != nil {
-				log.Printf("[RecvPacket] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
-				continue
-			}
-			s.BatchBuilder.PendingTracker.Remove(packet.Packet.SourceClient, packet.Packet.Sequence)
-			log.Printf("[RecvPacket] seq=%d: relay completed", packet.Packet.Sequence)
+			msgs = append(msgs, batchedMsg{
+				msg: contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
+					Packet:        toEthPacket(*packet.Packet),
+					MembershipMsg: calldata,
+				},
+				label:        "RecvPacket",
+				sequence:     packet.Packet.Sequence,
+				sourceClient: packet.Packet.SourceClient,
+				isRecv:       true,
+			})
 		case CosmosAck:
 			if len(packet.AckBytes) == 0 {
 				log.Printf("[AckPacket] seq=%d: acknowledgement bytes missing, skipping", packet.Packet.Sequence)
@@ -223,17 +236,15 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 				continue
 			}
 
-			msgAckPacket := contractICS26Router.IICS26RouterMsgsMsgAckPacket{
-				Packet:          toEthPacket(*packet.Packet),
-				Acknowledgement: packet.AckBytes[0],
-				MembershipMsg:   calldata,
-			}
-
-			if err := s.worker.TxHandler.SendEthTx(ctx, msgAckPacket); err != nil {
-				log.Printf("[AckPacket] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
-				continue
-			}
-			log.Printf("[AckPacket] seq=%d: relay completed", packet.Packet.Sequence)
+			msgs = append(msgs, batchedMsg{
+				msg: contractICS26Router.IICS26RouterMsgsMsgAckPacket{
+					Packet:          toEthPacket(*packet.Packet),
+					Acknowledgement: packet.AckBytes[0],
+					MembershipMsg:   calldata,
+				},
+				label:    "AckPacket",
+				sequence: packet.Packet.Sequence,
+			})
 		case CosmosTimeout:
 			if packet.Packet.SourceClient == ctx.CosmosRouterClientID() {
 				log.Printf("[Timeout] seq=%d: Cosmos-originated packet timeout already handled locally, skipping ETH relay", packet.Packet.Sequence)
@@ -246,19 +257,53 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 				continue
 			}
 
-			msgTimeoutPacket := contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket{
-				Packet:           toEthPacket(*packet.Packet),
-				NonMembershipMsg: calldata,
-			}
-
-			if err := s.worker.TxHandler.SendEthTx(ctx, msgTimeoutPacket); err != nil {
-				log.Printf("[Timeout] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
-				continue
-			}
-			log.Printf("[Timeout] seq=%d: relay completed", packet.Packet.Sequence)
+			msgs = append(msgs, batchedMsg{
+				msg: contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket{
+					Packet:           toEthPacket(*packet.Packet),
+					NonMembershipMsg: calldata,
+				},
+				label:    "Timeout",
+				sequence: packet.Packet.Sequence,
+			})
 		default:
 			log.Printf("[StartLoop] Unknown cosmos packet type: %d (seq=%d)", packet.Type, packet.Packet.Sequence)
 		}
+	}
+
+	if len(msgs) == 0 {
+		return
+	}
+
+	// V1 threshold: only use multicall when there are at least 2 msgs. Single-
+	// msg flushes go through SendEthTx to avoid the tiny multicall overhead.
+	rawMsgs := make([]any, len(msgs))
+	for i, m := range msgs {
+		rawMsgs[i] = m.msg
+	}
+
+	var sendErr error
+	if len(msgs) >= 2 {
+		log.Printf("[StartLoop] Submitting %d-packet multicall to ETH", len(msgs))
+		sendErr = s.worker.TxHandler.SendEthTxBatch(ctx, rawMsgs)
+	} else {
+		sendErr = s.worker.TxHandler.SendEthTx(ctx, rawMsgs[0])
+	}
+
+	if sendErr != nil {
+		for _, m := range msgs {
+			log.Printf("[%s] seq=%d: batch submission failed: %v", m.label, m.sequence, sendErr)
+		}
+		return
+	}
+
+	// Multicall is all-or-nothing: on success, every inner call applied. Remove
+	// CosmosSend entries from the pending tracker and emit per-packet completion
+	// logs to preserve the existing log shape consumers expect.
+	for _, m := range msgs {
+		if m.isRecv {
+			s.BatchBuilder.PendingTracker.Remove(m.sourceClient, m.sequence)
+		}
+		log.Printf("[%s] seq=%d: relay completed", m.label, m.sequence)
 	}
 }
 
