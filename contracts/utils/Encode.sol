@@ -293,16 +293,24 @@ library Encode {
         }
     }
 
-    function _writeVarint(bytes memory out, uint256 offset, uint256 value) private pure returns (uint256) {
-        while (value >= 128) {
-            out[offset] = bytes1(uint8((value & 0x7F) | 0x80));
-            unchecked {
-                ++offset;
+    /// @notice Encodes `value` as a protobuf varint into `out` starting at `offset`.
+    /// @dev Each byte holds 7 bits of value; the MSB is 1 if more bytes follow, 0 on the last byte.
+    /// @return newOffset The offset of the next unwritten byte after the varint.
+    function _writeVarint(bytes memory out, uint256 offset, uint256 value) private pure returns (uint256 newOffset) {
+        assembly {
+            // Point ptr at out[offset]: skip the 32-byte length prefix (0x20), then advance by offset.
+            let ptr := add(add(out, 0x20), offset)
+            // Each iteration emits one continuation byte: low 7 bits of value | 0x80 (MSB = "more follows").
+            for {} iszero(lt(value, 0x80)) {} {
+                mstore8(ptr, or(and(value, 0x7f), 0x80))
+                ptr := add(ptr, 1)
+                offset := add(offset, 1)
+                value := shr(7, value) // consume the 7 bits just written
             }
-            value >>= 7;
+            // Final byte: value < 0x80, so MSB is 0 — signals end of varint.
+            mstore8(ptr, value)
+            newOffset := add(offset, 1)
         }
-        out[offset] = bytes1(uint8(value));
-        return offset + 1;
     }
 
     function _storeByte(bytes memory out, uint256 offset, uint8 value) private pure returns (uint256) {
