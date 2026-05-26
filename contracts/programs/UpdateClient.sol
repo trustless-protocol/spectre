@@ -33,7 +33,7 @@ contract UpdateClient is IUpdateClient {
 
     function updateClient(
         IUpdateClientMsgs.MsgUpdateClient calldata msg_
-    ) view external returns (IUpdateClientMsgs.UpdateClientOutput memory) {
+    ) pure external returns (IUpdateClientMsgs.UpdateClientOutput memory) {
         IICS07TendermintMsgs.ChainId memory chainId = getChainId(msg_.clientState.chainId);
         IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
             trustThreshold: msg_.clientState.trustLevel,
