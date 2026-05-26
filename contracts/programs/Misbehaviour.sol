@@ -205,7 +205,7 @@ contract Misbehaviour is IMisbehaviour {
             header
         );
 
-        Predicates.verifyValSets(untrustedState);
+        Predicates.verifyHeaderMatchesCommit(untrustedState);
         Predicates.verifyAgainstTrusted(untrustedState, trustedState, options.trustingPeriod, currentTimestamp);
         Predicates.verifyCommitAgainstTrusted(untrustedState, trustedState, options);
     }

@@ -5,7 +5,9 @@ import { Header } from "./Header.sol";
 
 /// @title Predicates
 library Predicates {
-    function verifyValSets(
+    /// Verify that the header hashes to the committed block ID and that the
+    /// commit shape is consistent with the supplied validator set.
+    function verifyHeaderMatchesCommit(
         IICS07TendermintMsgs.UntrustedBlockState memory untrustedState
     ) internal pure {
         // Ensure the header matches the commit

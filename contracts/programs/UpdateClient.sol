@@ -125,7 +125,7 @@ contract UpdateClient is IUpdateClient {
         IICS07TendermintMsgs.Options memory options,
         uint128 time
     ) internal pure {
-        Predicates.verifyValSets(untrustedState);
+        Predicates.verifyHeaderMatchesCommit(untrustedState);
         Predicates.verifyAgainstTrusted(untrustedState, trustedState, options.trustingPeriod, time);
         /// Check that the untrusted header is from past.
         uint128 drifted = time + uint128(options.clockDrift) * 1_000_000_000;
