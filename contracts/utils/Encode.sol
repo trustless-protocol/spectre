@@ -329,28 +329,11 @@ library Encode {
 
     function _copyBytes(bytes memory out, uint256 dstOffset, bytes memory src) private pure returns (uint256) {
         uint256 len = src.length;
-        if (len == 0) {
-            return dstOffset;
-        }
-
+        if (len == 0) return dstOffset;
+        // mcopy (EIP-5656, Cancun): 3 + 3*ceil(len/32) gas vs ~18-20 gas/word with a manual loop.
         assembly {
-            let srcPtr := add(src, 0x20)
-            let dstPtr := add(add(out, 0x20), dstOffset)
-            let fullWords := and(len, not(31))
-
-            for { let copied := 0 } lt(copied, fullWords) { copied := add(copied, 0x20) } {
-                mstore(add(dstPtr, copied), mload(add(srcPtr, copied)))
-            }
-
-            let rem := and(len, 31)
-            if rem {
-                let mask := sub(shl(mul(8, sub(32, rem)), 1), 1)
-                let srcWord := mload(add(srcPtr, fullWords))
-                let dstWord := mload(add(dstPtr, fullWords))
-                mstore(add(dstPtr, fullWords), or(and(dstWord, mask), and(srcWord, not(mask))))
-            }
+            mcopy(add(add(out, 0x20), dstOffset), add(src, 0x20), len)
         }
-
         return dstOffset + len;
     }
 }
