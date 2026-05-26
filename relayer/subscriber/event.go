@@ -84,102 +84,115 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 				continue
 			}
 
-			packetEncodedStr := sendPacketEvent[0]
-			packetBytes, err := hex.DecodeString(packetEncodedStr)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] send_packet: failed to decode hex: %v", err)
-				continue
-			}
+			// A single Cosmos tx can emit N send_packet events (e.g. a batch of
+			// MsgSendPacket); CometBFT collapses same-name attributes into a
+			// parallel slice, so we must iterate every entry, not just [0].
+			for _, packetEncodedStr := range sendPacketEvent {
+				packetBytes, err := hex.DecodeString(packetEncodedStr)
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] send_packet: failed to decode hex: %v", err)
+					continue
+				}
 
-			var packet channeltypesv2.Packet
-			err = proto.Unmarshal(packetBytes, &packet)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] send_packet: failed to unmarshal: %v", err)
-				continue
-			}
+				var packet channeltypesv2.Packet
+				err = proto.Unmarshal(packetBytes, &packet)
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] send_packet: failed to unmarshal: %v", err)
+					continue
+				}
 
-			ctx.Logger.Printf("[SubscribeCosmos] send_packet received: seq=%d src=%s",
-				packet.Sequence, packet.SourceClient)
-			packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
-			batchBuilder.AddCosmos(services.CosmosPacket{
-				Type:   services.CosmosSend,
-				Packet: &packet,
-			})
+				ctx.Logger.Printf("[SubscribeCosmos] send_packet received: seq=%d src=%s",
+					packet.Sequence, packet.SourceClient)
+				packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
+				batchBuilder.AddCosmos(services.CosmosPacket{
+					Type:   services.CosmosSend,
+					Packet: &packet,
+				})
+			}
 		case e := <-ackPacketSub:
 			ackPacketEvent := e.Events[EVENT_WRITE_ACK_PACKET_FIELD]
 			ackEvent := e.Events[EVENT_ACKNOWLEDGEMENT_FIELD]
 			if len(ackPacketEvent) == 0 || len(ackEvent) == 0 {
 				continue
 			}
-
-			packetEncodedStr := ackPacketEvent[0]
-			packetBytes, err := hex.DecodeString(packetEncodedStr)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] write_ack: failed to decode packet hex: %v", err)
+			if len(ackPacketEvent) != len(ackEvent) {
+				ctx.Logger.Printf("[SubscribeCosmos] write_ack: packet/ack count mismatch (%d vs %d), skipping",
+					len(ackPacketEvent), len(ackEvent))
 				continue
 			}
 
-			var packet channeltypesv2.Packet
-			err = proto.Unmarshal(packetBytes, &packet)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] write_ack: failed to unmarshal packet: %v", err)
-				continue
-			}
+			// Same multi-event handling as send_packet: iterate every parallel
+			// (packet, ack) pair in the tx, not just [0].
+			for i := range ackPacketEvent {
+				packetBytes, err := hex.DecodeString(ackPacketEvent[i])
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] write_ack: failed to decode packet hex: %v", err)
+					continue
+				}
 
-			ackBytes, err := hex.DecodeString(ackEvent[0])
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to decode ack hex: %v",
-					packet.Sequence, err)
-				continue
-			}
+				var packet channeltypesv2.Packet
+				err = proto.Unmarshal(packetBytes, &packet)
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] write_ack: failed to unmarshal packet: %v", err)
+					continue
+				}
 
-			var acknowledgement channeltypesv2.Acknowledgement
-			err = proto.Unmarshal(ackBytes, &acknowledgement)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to unmarshal ack: %v",
-					packet.Sequence, err)
-				continue
-			}
-			if len(acknowledgement.AppAcknowledgements) == 0 {
-				ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: missing app acknowledgements", packet.Sequence)
-				continue
-			}
+				ackBytes, err := hex.DecodeString(ackEvent[i])
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to decode ack hex: %v",
+						packet.Sequence, err)
+					continue
+				}
 
-			ctx.Logger.Printf("[SubscribeCosmos] write_ack received: seq=%d src=%s",
-				packet.Sequence, packet.SourceClient)
-			packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
-			batchBuilder.AddCosmos(services.CosmosPacket{
-				Type:     services.CosmosAck,
-				Packet:   &packet,
-				AckBytes: acknowledgement.AppAcknowledgements,
-			})
+				var acknowledgement channeltypesv2.Acknowledgement
+				err = proto.Unmarshal(ackBytes, &acknowledgement)
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to unmarshal ack: %v",
+						packet.Sequence, err)
+					continue
+				}
+				if len(acknowledgement.AppAcknowledgements) == 0 {
+					ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: missing app acknowledgements", packet.Sequence)
+					continue
+				}
+
+				ctx.Logger.Printf("[SubscribeCosmos] write_ack received: seq=%d src=%s",
+					packet.Sequence, packet.SourceClient)
+				packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
+				batchBuilder.AddCosmos(services.CosmosPacket{
+					Type:     services.CosmosAck,
+					Packet:   &packet,
+					AckBytes: acknowledgement.AppAcknowledgements,
+				})
+			}
 		case e := <-timeoutPacketSub:
 			timeoutPacketEvent := e.Events[EVENT_TIMEOUT_PACKET_FIELD]
 			if timeoutPacketEvent == nil {
 				continue
 			}
 
-			packetEncodedStr := timeoutPacketEvent[0]
-			packetBytes, err := hex.DecodeString(packetEncodedStr)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] timeout: failed to decode hex: %v", err)
-				continue
-			}
+			for _, packetEncodedStr := range timeoutPacketEvent {
+				packetBytes, err := hex.DecodeString(packetEncodedStr)
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] timeout: failed to decode hex: %v", err)
+					continue
+				}
 
-			var packet channeltypesv2.Packet
-			err = proto.Unmarshal(packetBytes, &packet)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] timeout: failed to unmarshal: %v", err)
-				continue
-			}
+				var packet channeltypesv2.Packet
+				err = proto.Unmarshal(packetBytes, &packet)
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] timeout: failed to unmarshal: %v", err)
+					continue
+				}
 
-			ctx.Logger.Printf("[SubscribeCosmos] timeout received: seq=%d src=%s",
-				packet.Sequence, packet.SourceClient)
-			packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
-			batchBuilder.AddCosmos(services.CosmosPacket{
-				Type:   services.CosmosTimeout,
-				Packet: &packet,
-			})
+				ctx.Logger.Printf("[SubscribeCosmos] timeout received: seq=%d src=%s",
+					packet.Sequence, packet.SourceClient)
+				packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
+				batchBuilder.AddCosmos(services.CosmosPacket{
+					Type:   services.CosmosTimeout,
+					Packet: &packet,
+				})
+			}
 		case <-c.Done():
 			return
 		}

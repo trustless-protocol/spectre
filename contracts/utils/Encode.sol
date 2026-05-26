@@ -294,7 +294,9 @@ library Encode {
     }
 
     function _storeByte(bytes memory out, uint256 offset, uint8 value) private pure returns (uint256) {
-        out[offset] = bytes1(value);
+        assembly {
+            mstore8(add(add(out, 0x20), offset), value)
+        }
         return offset + 1;
     }
 
