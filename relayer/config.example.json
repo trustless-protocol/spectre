@@ -10,7 +10,7 @@
                 "ics26_client_id": "cosmoshub-1",
                 "membership": "0x9f9f5fd89ad648f2c000c954d8d9c87743243ec5",
                 "misbehaviour": "0x72ae2643518179cf01bca3278a37cead408de8b2",
-                "tm_rpc_url": "http://127.0.0.1:26657",
+                "tm_rpc_url": "http://127.0.0.1:31000",
                 "update_client": "0x8f0342a7060e76dfc7f6e9debfad9b9ec919952c",
                 "wrapper_verifier": "0x703848f4c85f18e3acd8196c8ec91eb0b7bd0797"
             },
@@ -24,7 +24,7 @@
                 "eth_rpc_url": "http://127.0.0.1:59619",
                 "ics26_address": "0x9f5eac3d8e082f47631f1551f1343f23cd427162",
                 "signer_address": "cosmos10d07y265gmmuvt4z0w9aw880jnsr700j6zn9kn",
-                "tm_rpc_url": "http://127.0.0.1:26657"
+                "tm_rpc_url": "http://127.0.0.1:31000"
             },
             "dst_chain": "test-ibc-eth",
             "name": "eth_to_cosmos",
