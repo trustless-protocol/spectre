@@ -22,6 +22,7 @@ import { IVerifier } from "../interfaces/IVerifier.sol";
 
 import { Paths } from "./utils/Paths.sol";
 import { Encode } from "../utils/Encode.sol";
+import { ChainId } from "../utils/ChainId.sol";
 import { Multicall } from "@openzeppelin-contracts/utils/Multicall.sol";
 import { TransientSlot } from "@openzeppelin-contracts/utils/TransientSlot.sol";
 import { AccessControl } from "@openzeppelin-contracts/access/AccessControl.sol";
@@ -57,6 +58,12 @@ contract Groth16ICS07Tendermint is
     /// @inheritdoc IGroth16ICS07Tendermint
     bytes32 public immutable PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
 
+    /// @notice keccak256 of the client's chain ID, cached at construction.
+    /// @dev The chain ID never changes for the lifetime of the client, so the
+    ///      per-update equality check reads this immutable instead of hashing
+    ///      the storage string on every call.
+    bytes32 internal immutable CHAIN_ID_HASH;
+
     /// @notice The constructor sets the program verification key and the initial client and consensus states.
     /// @param verifier The address of the Groth16 verifier contract.
     /// @param _clientState The encoded initial client state.
@@ -72,6 +79,18 @@ contract Groth16ICS07Tendermint is
         address roleManager
     ) {
         clientState = abi.decode(_clientState, (IICS07TendermintMsgs.ClientState));
+        CHAIN_ID_HASH = keccak256(bytes(clientState.chainId));
+
+        // updateClient/misbehaviour now read the chain-ID revision from
+        // clientState.latestHeight.revisionNumber instead of re-parsing the
+        // chain-ID string on every call. Assert the two agree at construction so
+        // a misconfigured client fails fast at deploy time rather than silently
+        // using the wrong revision (defense-in-depth, suggested in review of #75).
+        uint64 parsedRevision = ChainId.get(clientState.chainId).revisionNumber;
+        require(
+            parsedRevision == clientState.latestHeight.revisionNumber,
+            MismatchedRevisionHeights(parsedRevision, clientState.latestHeight.revisionNumber)
+        );
         _consensusStateHashes[clientState.latestHeight.revisionHeight] = _consensusState;
 
         VERIFIER = IVerifier(verifier);
@@ -106,9 +125,7 @@ contract Groth16ICS07Tendermint is
 
     /// @dev This function verifies the public values and forwards the proof to the Groth16 verifier.
     /// @inheritdoc ILightClient
-    function updateClient(
-        bytes calldata updateClientMsg
-    )
+    function updateClient(bytes calldata updateClientMsg)
         external
         notFrozen
         onlyProofSubmitter
@@ -133,8 +150,7 @@ contract Groth16ICS07Tendermint is
             mstore(0x40, and(add(add(fmp, add(retLen, 32)), 31), not(31)))
             ret := fmp
         }
-        IUpdateClientMsgs.UpdateClientOutput memory output =
-            abi.decode(ret, (IUpdateClientMsgs.UpdateClientOutput));
+        IUpdateClientMsgs.UpdateClientOutput memory output = abi.decode(ret, (IUpdateClientMsgs.UpdateClientOutput));
 
         _validateUpdateClientOutput(output);
 
@@ -165,10 +181,8 @@ contract Groth16ICS07Tendermint is
         IICS07TendermintMsgs.ValidatorInfo[] memory vals = msg_.proposedHeader.validatorSet.validators;
         uint256 numVals = vals.length;
         require(
-            msg_.signerIndices.length == msg_.bucket
-                && msg_.signerPubkeys.length == msg_.bucket
-                && msg_.timestampSeconds.length == msg_.bucket
-                && msg_.timestampNanos.length == msg_.bucket
+            msg_.signerIndices.length == msg_.bucket && msg_.signerPubkeys.length == msg_.bucket
+                && msg_.timestampSeconds.length == msg_.bucket && msg_.timestampNanos.length == msg_.bucket
                 && msg_.active.length == msg_.bucket,
             BatchLengthMismatch()
         );
@@ -234,7 +248,16 @@ contract Groth16ICS07Tendermint is
         returns (uint256)
     {
         require(msg_.value.length > 0, EmptyValue());
-        return _membership(msg_.height, msg_.kvPairs, msg_.merkleProofs, msg_.appHash, msg_.trustedConsensusState, msg_.membershipType, msg_.path, msg_.value);
+        return _membership(
+            msg_.height,
+            msg_.kvPairs,
+            msg_.merkleProofs,
+            msg_.appHash,
+            msg_.trustedConsensusState,
+            msg_.membershipType,
+            msg_.path,
+            msg_.value
+        );
     }
 
     /// @inheritdoc ILightClient
@@ -244,7 +267,16 @@ contract Groth16ICS07Tendermint is
         onlyProofSubmitter
         returns (uint256)
     {
-        return _membership(msg_.height, msg_.kvPairs, msg_.merkleProofs, msg_.appHash, msg_.trustedConsensusState, msg_.membershipType, msg_.path, bytes(""));
+        return _membership(
+            msg_.height,
+            msg_.kvPairs,
+            msg_.merkleProofs,
+            msg_.appHash,
+            msg_.trustedConsensusState,
+            msg_.membershipType,
+            msg_.path,
+            bytes("")
+        );
     }
 
     /// @notice The entrypoint for verifying (non)membership proof.
@@ -289,24 +321,15 @@ contract Groth16ICS07Tendermint is
     /// @dev The misbehavior is verfied in the gnark program. Here we only check the public values which contain the
     /// trusted headers.
     /// @inheritdoc ILightClient
-    function misbehaviour(
-        bytes calldata misbehaviourMsg
-    ) external notFrozen onlyProofSubmitter {
-        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = abi.decode(misbehaviourMsg, (IMisbehaviourMsgs.MsgSubmitMisbehaviour));
+    function misbehaviour(bytes calldata misbehaviourMsg) external notFrozen onlyProofSubmitter {
+        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ =
+            abi.decode(misbehaviourMsg, (IMisbehaviourMsgs.MsgSubmitMisbehaviour));
         IMisbehaviourMsgs.MisbehaviourOutput memory output = MISBEHAVIOUR.misbehaviour(
-            msg_.clientState,
-            msg_.misbehaviour,
-            msg_.trustedConsensusState1,
-            msg_.trustedConsensusState2,
-            msg_.time
+            msg_.clientState, msg_.misbehaviour, msg_.trustedConsensusState1, msg_.trustedConsensusState2, msg_.time
         );
 
         _validateMisbehaviourOutput(
-            output,
-            msg_.clientState,
-            msg_.trustedConsensusState1,
-            msg_.trustedConsensusState2,
-            msg_.time
+            output, msg_.clientState, msg_.trustedConsensusState1, msg_.trustedConsensusState2, msg_.time
         );
 
         // _verifyProof(msgSubmitMisbehaviour.groth16Proof);
@@ -529,7 +552,10 @@ contract Groth16ICS07Tendermint is
         IICS07TendermintMsgs.ConsensusState memory trustedConsensusState1,
         IICS07TendermintMsgs.ConsensusState memory trustedConsensusState2,
         uint128 time
-    ) private view {
+    )
+        private
+        view
+    {
         _validateClientStateAndTime(clientState_, time);
 
         // make sure the trusted consensus state from header 1 is known (trusted) by matching it with the one in the
@@ -575,8 +601,7 @@ contract Groth16ICS07Tendermint is
         // 3. The revision number is not allowed to change with us checking the chain-id and the implementation in the
         // gnark program.
         require(
-            bytes(publicClientState.chainId).length == bytes(clientState.chainId).length
-                && keccak256(bytes(publicClientState.chainId)) == keccak256(bytes(clientState.chainId)),
+            keccak256(bytes(publicClientState.chainId)) == CHAIN_ID_HASH,
             ChainIdMismatch(clientState.chainId, publicClientState.chainId)
         );
         require(
@@ -652,14 +677,7 @@ contract Groth16ICS07Tendermint is
     /// @param proofHeight The height of the proof.
     /// @param kvPair The key-value pair.
     /// @return The timestamp of the cached key-value pair in unix nanoseconds.
-    function _getCachedKvPair(
-        uint64 proofHeight,
-        IMembershipMsgs.KVPair memory kvPair
-    )
-        private
-        view
-        returns (uint256)
-    {
+    function _getCachedKvPair(uint64 proofHeight, IMembershipMsgs.KVPair memory kvPair) private view returns (uint256) {
         bytes32 kvPairHash = keccak256(abi.encode(proofHeight, kvPair));
         uint256 timestamp = kvPairHash.asUint256().tload();
         require(timestamp != 0, KeyValuePairNotInCache(kvPair.path, kvPair.value));

@@ -22,11 +22,15 @@ contract SolidityLightClient is ILightClient {
     }
 
     function verifyMembership(ILightClientMsgs.MsgVerifyMembership calldata msg_) external view returns (uint256) {
-        require(msg_.kvPairs[0].path.length == 1, "only support single path");
-        bytes32 solidityPath = keccak256(msg_.kvPairs[0].path[0]);
+        // The router overrides `path` and `value` on the message before forwarding.
+        require(msg_.path.length == 1, "only support single path");
+        bytes32 solidityPath = keccak256(msg_.path[0]);
         bytes32 commitment = _COUNTERPARTY_ICS26.getCommitment(solidityPath);
         require(commitment != bytes32(0), "invalid path");
-        require(keccak256(abi.encodePacked(commitment)) == keccak256(abi.encodePacked(msg_.kvPairs[0].value)), "invalid commitment");
+        require(
+            keccak256(abi.encodePacked(commitment)) == keccak256(abi.encodePacked(msg_.value)),
+            "invalid commitment"
+        );
         return block.timestamp;
     }
 
@@ -35,8 +39,8 @@ contract SolidityLightClient is ILightClient {
         view
         returns (uint256)
     {
-        require(msg_.kvPairs[0].path.length == 1, "only support single path");
-        bytes32 solidityPath = keccak256(msg_.kvPairs[0].path[0]);
+        require(msg_.path.length == 1, "only support single path");
+        bytes32 solidityPath = keccak256(msg_.path[0]);
         bytes32 commitment = _COUNTERPARTY_ICS26.getCommitment(solidityPath);
         require(commitment == bytes32(0), "invalid path");
         return block.timestamp;

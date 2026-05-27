@@ -1,0 +1,6 @@
+UpdateClientGasTest:test_gas_n128() (gas: 8636191)
+UpdateClientGasTest:test_gas_n16() (gas: 4396828)
+UpdateClientGasTest:test_gas_n32() (gas: 4819127)
+UpdateClientGasTest:test_gas_n4() (gas: 3787071)
+UpdateClientGasTest:test_gas_n64() (gas: 6049855)
+UpdateClientGasTest:test_gas_n8() (gas: 4011498)

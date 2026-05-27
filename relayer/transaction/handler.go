@@ -514,6 +514,39 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 		return fmt.Errorf("[SendEthTxBatch] failed to bind ICS26Router: %w", err)
 	}
 
+	// Optional per-inner-call gas breakdown. Each prefix multicall(calldata[:i])
+	// is estimated against the current pre-tx state; the delta between
+	// successive prefixes ≈ gas of the i-th inner call. Adds N estimateGas
+	// RPC roundtrips so it's gated behind RELAYER_BENCH_INNER_GAS=1 — dev/bench
+	// only, do not enable in production.
+	if os.Getenv("RELAYER_BENCH_INNER_GAS") != "" {
+		var prev uint64
+		for i := 1; i <= len(calldata); i++ {
+			partial, perr := parsedABI.Pack("multicall", calldata[:i])
+			if perr != nil {
+				log.Printf("[bench][eth] inner gas estimate prefix=%d pack failed: %v", i, perr)
+				continue
+			}
+			to := *ctx.RouterContract()
+			est, perr := ctx.EthClient().EstimateGas(context.Background(), ethereum.CallMsg{
+				From: fromAddress,
+				To:   &to,
+				Data: partial,
+			})
+			if perr != nil {
+				log.Printf("[bench][eth] inner gas estimate prefix=%d failed: %v", i, perr)
+				continue
+			}
+			delta := est
+			if i > 1 {
+				delta = est - prev
+			}
+			log.Printf("[bench][eth] inner[%d] %s estGas=%d (cumulative %d, delta %d)",
+				i-1, labels[i-1], est, est, delta)
+			prev = est
+		}
+	}
+
 	benchStart := time.Now()
 	log.Printf("[SendEthTxBatch] Submitting multicall: %d inner calls (%s)", len(calldata), labelStr)
 	tx, err := ics26Router.Multicall(auth, calldata)

@@ -16,7 +16,7 @@ library VotingPowerCalculator {
     //     IICS07TendermintMsgs.ValidatorSet untrustedValidators
     // ) {
     //     let trust_threshold = TrustThreshold::TWO_THIRDS;
-    //     self.voting_power_in(untrustedHeader, untrustedValidators, trust_threshold)    
+    //     self.voting_power_in(untrustedHeader, untrustedValidators, trust_threshold)
     // }
 
     // function votingPowerIn(

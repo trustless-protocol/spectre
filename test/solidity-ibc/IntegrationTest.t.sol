@@ -10,6 +10,8 @@ import { ILightClientMsgs } from "../../contracts/msgs/ILightClientMsgs.sol";
 import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
 import { IICS26RouterMsgs } from "../../contracts/msgs/IICS26RouterMsgs.sol";
 import { IICS20TransferMsgs } from "../../contracts/msgs/IICS20TransferMsgs.sol";
+import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
+import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
 
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { IICS26Router, IICS26RouterAccessControlled } from "../../contracts/interfaces/IICS26Router.sol";
@@ -155,14 +157,14 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
             IICS26RouterAccessControlled.recvPacket,
             IICS26RouterMsgs.MsgRecvPacket({
                 packet: recvPacket,
-                membershipMsg: bytes("doesntmatter") // dummy client will accept
+                membershipMsg: _dummyMembershipMsg()
              })
         );
         multicallData[1] = abi.encodeCall(
             IICS26RouterAccessControlled.recvPacket,
             IICS26RouterMsgs.MsgRecvPacket({
                 packet: recvPacket2,
-                membershipMsg: bytes("doesntmatter") // dummy client will accept
+                membershipMsg: _dummyMembershipMsg()
              })
         );
 
@@ -216,14 +218,14 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
             IICS26RouterAccessControlled.recvPacket,
             IICS26RouterMsgs.MsgRecvPacket({
                 packet: receivePacket,
-                membershipMsg: bytes("doesntmatter") // dummy client will accept
+                membershipMsg: _dummyMembershipMsg()
              })
         );
         multicallData[1] = abi.encodeCall(
             IICS26RouterAccessControlled.recvPacket,
             IICS26RouterMsgs.MsgRecvPacket({
-                packet: receivePacket,
-                membershipMsg: bytes("doesntmatter") // dummy client will accept
+                packet: invalidPacket,
+                membershipMsg: _dummyMembershipMsg()
              })
         );
 
@@ -533,7 +535,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         ics26Router.recvPacket(
             IICS26RouterMsgs.MsgRecvPacket({
                 packet: receivePacket,
-                membershipMsg: bytes("doesntmatter") // dummy client will accept
+                membershipMsg: _dummyMembershipMsg()
              })
         );
 
@@ -564,6 +566,28 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
             value: data
         });
         return payloads;
+    }
+
+    /// @dev The router decodes `membershipMsg` into a `MsgVerifyMembership`
+    /// struct before forwarding. The DummyLightClient ignores its content, so
+    /// any well-formed ABI encoding is sufficient.
+    function _dummyMembershipMsg() internal pure returns (bytes memory) {
+        return abi.encode(
+            ILightClientMsgs.MsgVerifyMembership({
+                height: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 0 }),
+                kvPairs: new IMembershipMsgs.KVPair[](0),
+                merkleProofs: new IMembershipMsgs.MerkleProof[](0),
+                appHash: bytes32(0),
+                trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+                    timestamp: 0,
+                    root: bytes32(0),
+                    nextValidatorsHash: bytes32(0)
+                }),
+                membershipType: IMembershipMsgs.MembershipType.Membership,
+                path: new bytes[](0),
+                value: bytes("")
+            })
+        );
     }
 
     function _getPacketFromSendEvent() internal returns (IICS26RouterMsgs.Packet memory) {
