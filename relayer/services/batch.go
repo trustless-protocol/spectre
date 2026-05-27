@@ -59,6 +59,10 @@ type CosmosPacket struct {
 	Packet      *channeltypesv2.Packet
 	AckBytes    [][]byte
 	BlockNumber uint64
+	// Retries counts how many times this packet's batch failed to submit and
+	// was re-queued. Bounded by maxPacketRetries so a permanently-broken packet
+	// (corrupt proof, etc.) can't starve the queue forever (issue #80).
+	Retries int
 }
 
 type EthPacket struct {
@@ -66,6 +70,8 @@ type EthPacket struct {
 	Packet      *channeltypesv2.Packet
 	AckBytes    [][]byte
 	BlockNumber uint64
+	// Retries — see CosmosPacket.Retries.
+	Retries int
 }
 
 type CosmosBatch struct {
@@ -123,6 +129,68 @@ func (b *BatchBuilder) ClearCosmos() {
 func (b *BatchBuilder) ClearEth() {
 	b.ethTimestamp = time.Now()
 	b.ethPackets = []EthPacket{}
+}
+
+// maxPacketRetries caps how many times a packet whose batch failed to submit is
+// re-queued before being dropped. Without a cap, a permanently-invalid packet
+// (corrupt proof, perpetually-reverting inner call) prepended to the queue would
+// block every later packet forever. 5 covers transient faults (RPC blips,
+// insufficient sync-committee participation that recovers within a few epochs)
+// while still giving up on a genuine poison packet.
+const maxPacketRetries = 5
+
+// RequeueCosmos prepends packets back onto the Cosmos queue after a failed batch
+// submission so the next flush retries them, preserving their order relative to
+// each other and ahead of newer arrivals (issue #80). Packets that have already
+// failed maxPacketRetries times are dropped with a log line instead of looping
+// forever.
+func (b *BatchBuilder) RequeueCosmos(packets []CosmosPacket) {
+	if len(packets) == 0 {
+		return
+	}
+	kept := make([]CosmosPacket, 0, len(packets))
+	for _, p := range packets {
+		p.Retries++
+		if p.Retries > maxPacketRetries {
+			log.Printf("[BatchBuilder] dropping cosmos packet type=%s seq=%d after %d failed attempts",
+				p.Type, p.Packet.Sequence, maxPacketRetries)
+			continue
+		}
+		kept = append(kept, p)
+	}
+	if len(kept) == 0 {
+		return
+	}
+	b.cosmosMtx.Lock()
+	b.cosmosPackets = append(kept, b.cosmosPackets...)
+	remaining := len(b.cosmosPackets)
+	b.cosmosMtx.Unlock()
+	log.Printf("[BatchBuilder] re-queued %d cosmos packet(s) for retry (queue now %d)", len(kept), remaining)
+}
+
+// RequeueEth — see RequeueCosmos. Mirror for the ETH→Cosmos direction.
+func (b *BatchBuilder) RequeueEth(packets []EthPacket) {
+	if len(packets) == 0 {
+		return
+	}
+	kept := make([]EthPacket, 0, len(packets))
+	for _, p := range packets {
+		p.Retries++
+		if p.Retries > maxPacketRetries {
+			log.Printf("[BatchBuilder] dropping eth packet type=%s seq=%d after %d failed attempts",
+				p.Type, p.Packet.Sequence, maxPacketRetries)
+			continue
+		}
+		kept = append(kept, p)
+	}
+	if len(kept) == 0 {
+		return
+	}
+	b.ethMtx.Lock()
+	b.ethPackets = append(kept, b.ethPackets...)
+	remaining := len(b.ethPackets)
+	b.ethMtx.Unlock()
+	log.Printf("[BatchBuilder] re-queued %d eth packet(s) for retry (queue now %d)", len(kept), remaining)
 }
 
 func (b *BatchBuilder) CheckCosmos(config BatchConfig, ch chan<- CosmosBatch) {

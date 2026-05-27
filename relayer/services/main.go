@@ -179,11 +179,16 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 		s.cosmosConfig.TrustLevel,
 	)
 	if err != nil {
+		// The whole chunk was already sliced off the queue by CheckCosmos; if we
+		// bail here without re-queueing it is lost. Re-queue so the next flush
+		// retries once the transient cause (proof gen, RPC) clears (issue #80).
 		log.Printf("[StartLoop] Failed to build cosmos light client update: %v", err)
+		s.BatchBuilder.RequeueCosmos(batch.Packets)
 		return
 	}
 	if updateBuild == nil || updateBuild.LightBlock == nil {
 		log.Printf("[StartLoop] BuildCosmosClientUpdateMsg returned nil light block")
+		s.BatchBuilder.RequeueCosmos(batch.Packets)
 		return
 	}
 	latestLightBlock := updateBuild.LightBlock
@@ -203,10 +208,11 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	// `continue` — that packet is just excluded from the batch.
 	type batchedMsg struct {
 		msg          any
-		label        string                // log label, e.g. "RecvPacket"
-		sequence     uint64                // for log lines
-		sourceClient string                // for PendingTracker.Remove
-		isRecv       bool                  // true → call PendingTracker.Remove after success
+		label        string        // log label, e.g. "RecvPacket"
+		sequence     uint64        // for log lines
+		sourceClient string        // for PendingTracker.Remove
+		isRecv       bool          // true → call PendingTracker.Remove after success
+		origin       *CosmosPacket // source packet to re-queue on failure; nil for folded updateClient
 	}
 	// +1 capacity for the optional updateClient prepend.
 	msgs := make([]batchedMsg, 0, len(batch.Packets)+1)
@@ -243,6 +249,7 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 				sequence:     packet.Packet.Sequence,
 				sourceClient: packet.Packet.SourceClient,
 				isRecv:       true,
+				origin:       &packet,
 			})
 		case CosmosAck:
 			if len(packet.AckBytes) == 0 {
@@ -264,6 +271,7 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 				},
 				label:    "AckPacket",
 				sequence: packet.Packet.Sequence,
+				origin:   &packet,
 			})
 		case CosmosTimeout:
 			if packet.Packet.SourceClient == ctx.CosmosRouterClientID() {
@@ -284,6 +292,7 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 				},
 				label:    "Timeout",
 				sequence: packet.Packet.Sequence,
+				origin:   &packet,
 			})
 		default:
 			log.Printf("[StartLoop] Unknown cosmos packet type: %d (seq=%d)", packet.Type, packet.Packet.Sequence)
@@ -310,9 +319,16 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	}
 
 	if sendErr != nil {
+		failed := make([]CosmosPacket, 0, len(msgs))
 		for _, m := range msgs {
 			log.Printf("[%s] seq=%d: batch submission failed: %v", m.label, m.sequence, sendErr)
+			if m.origin != nil {
+				failed = append(failed, *m.origin)
+			}
 		}
+		// The folded updateClient (origin == nil) is rebuilt fresh each flush, so
+		// only the packet msgs need re-queueing (issue #80).
+		s.BatchBuilder.RequeueCosmos(failed)
 		return
 	}
 
@@ -349,8 +365,9 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	// against the freshly-advanced state in the same block.
 	type batchedCosmosMsg struct {
 		msg      any
-		label    string // log label, e.g. "EthSend", "EthWriteAck", "UpdateClient"
+		label    string     // log label, e.g. "EthSend", "EthWriteAck", "UpdateClient"
 		sequence uint64
+		origin   *EthPacket // source packet to re-queue on failure; nil for folded updateClient
 	}
 	cosmosMsgs := make([]batchedCosmosMsg, 0, len(batch.Packets)+1)
 
@@ -391,10 +408,23 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 		return
 	}
 
+	// requeueRelayable puts the chunk's relayable packets back on the queue when
+	// we bail before a successful submit. Every early return below would
+	// otherwise drop the packets, which CheckEth already sliced off the queue
+	// (issue #80) — the insufficient-sync-committee path is the common trigger.
+	requeueRelayable := func() {
+		pkts := make([]EthPacket, len(relayable))
+		for i, r := range relayable {
+			pkts[i] = r.packet
+		}
+		s.BatchBuilder.RequeueEth(pkts)
+	}
+
 	// Wait once for beacon finality to cover the highest event block in the
 	// batch. Subsequent packets in the same batch are by definition at
 	// smaller-or-equal block numbers, so a single wait suffices.
 	if !s.waitBeaconFinality(ctx, maxEventBlock, "EthBatch") {
+		requeueRelayable()
 		return
 	}
 
@@ -403,10 +433,12 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	buildResult, err := s.worker.BuildEthClientUpdateMsgs(ctx)
 	if err != nil {
 		log.Printf("[EthBatch] BuildEthClientUpdateMsgs failed: %v", err)
+		requeueRelayable()
 		return
 	}
 	if buildResult == nil || buildResult.EthClientState == nil {
 		log.Printf("[EthBatch] BuildEthClientUpdateMsgs returned nil result")
+		requeueRelayable()
 		return
 	}
 
@@ -419,6 +451,7 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	signerAddr, err := s.worker.TxHandler.CosmosSignerAddress()
 	if err != nil {
 		log.Printf("[EthBatch] failed to get cosmos signer: %v", err)
+		requeueRelayable()
 		return
 	}
 
@@ -427,6 +460,7 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	if proofBlockNumber < maxEventBlock {
 		log.Printf("[EthBatch] post-update proof block %d still < max event block %d, skipping",
 			proofBlockNumber, maxEventBlock)
+		requeueRelayable()
 		return
 	}
 
@@ -438,6 +472,7 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 
 	for _, r := range relayable {
 		packet := r.packet
+		origin := packet
 		switch packet.Type {
 		case EthSend:
 			if ethPacketExpired(packet) {
@@ -460,6 +495,7 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 				},
 				label:    "EthSend",
 				sequence: packet.Packet.Sequence,
+				origin:   &origin,
 			})
 		case EthWriteAck:
 			proofBytes, err := client.GetEthMembershipProof(
@@ -481,6 +517,7 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 				},
 				label:    "EthWriteAck",
 				sequence: packet.Packet.Sequence,
+				origin:   &origin,
 			})
 		}
 	}
@@ -496,13 +533,20 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 
 	log.Printf("[EthBatch] Submitting %d-msg batch to Cosmos", len(rawMsgs))
 	if err := s.worker.TxHandler.SendCosmosTxBatch(ctx, rawMsgs); err != nil {
+		failed := make([]EthPacket, 0, len(cosmosMsgs))
 		for _, m := range cosmosMsgs {
 			if m.label == "UpdateClient" {
 				log.Printf("[UpdateClient] batch submission failed: %v", err)
 			} else {
 				log.Printf("[%s] seq=%d: batch submission failed: %v", m.label, m.sequence, err)
 			}
+			if m.origin != nil {
+				failed = append(failed, *m.origin)
+			}
 		}
+		// Folded wasm updateClient (origin == nil) is rebuilt each flush; only
+		// packet msgs are re-queued (issue #80).
+		s.BatchBuilder.RequeueEth(failed)
 		return
 	}
 
