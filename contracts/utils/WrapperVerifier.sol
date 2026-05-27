@@ -161,24 +161,7 @@ contract WrapperVerifier is IVerifier {
         uint256 len;
         assembly {
             len := mload(src)
-            let dstPtr := add(add(dst, 0x20), dstOffset)
-            let srcPtr := add(src, 0x20)
-            let fullWords := and(len, not(31))
-
-            for { let i := 0 } lt(i, fullWords) { i := add(i, 0x20) } {
-                mstore(add(dstPtr, i), mload(add(srcPtr, i)))
-            }
-
-            let rem := and(len, 31)
-            if rem {
-                let srcWord := mload(add(srcPtr, fullWords))
-                let dstWord := mload(add(dstPtr, fullWords))
-                let keepMask := sub(shl(mul(sub(32, rem), 8), 1), 1)
-                mstore(
-                    add(dstPtr, fullWords),
-                    or(and(srcWord, not(keepMask)), and(dstWord, keepMask))
-                )
-            }
+            mcopy(add(add(dst, 0x20), dstOffset), add(src, 0x20), len)
         }
         return dstOffset + len;
     }

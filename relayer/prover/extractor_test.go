@@ -49,15 +49,24 @@ func makeSignedCommit(t *testing.T, chainID string, powers []int64, signs []bool
 		t.Fatal("powers/signs length mismatch")
 	}
 	vals := make([]*types.Validator, len(powers))
-	privs := make([]cmted25519.PrivKey, len(powers))
+	privByAddr := make(map[string]cmted25519.PrivKey, len(powers))
+	signByAddr := make(map[string]bool, len(powers))
 	for i := range powers {
-		privs[i] = cmted25519.GenPrivKey()
+		priv := cmted25519.GenPrivKey()
+		addr := priv.PubKey().Address()
 		vals[i] = &types.Validator{
-			Address:     privs[i].PubKey().Address(),
-			PubKey:      privs[i].PubKey(),
+			Address:     addr,
+			PubKey:      priv.PubKey(),
 			VotingPower: powers[i],
 		}
+		privByAddr[addr.String()] = priv
+		signByAddr[addr.String()] = signs[i]
 	}
+	// NewValidatorSet sorts validators (power desc, then address). CometBFT
+	// requires commit.Signatures[i] to be index-aligned with
+	// valSet.Validators[i], so we must build the signatures in the *sorted*
+	// order — not the original `vals` order — otherwise verification pairs each
+	// signature with the wrong validator (issue: flaky quorum test).
 	valSet := types.NewValidatorSet(vals)
 
 	blockID := types.BlockID{
@@ -69,26 +78,27 @@ func makeSignedCommit(t *testing.T, chainID string, powers []int64, signs []bool
 		Height:     100,
 		Round:      0,
 		BlockID:    blockID,
-		Signatures: make([]types.CommitSig, len(vals)),
+		Signatures: make([]types.CommitSig, len(valSet.Validators)),
 	}
-	for i, v := range vals {
+	for i, v := range valSet.Validators {
 		commit.Signatures[i] = types.CommitSig{
 			BlockIDFlag:      types.BlockIDFlagAbsent,
 			ValidatorAddress: v.Address,
 			Timestamp:        header.Time,
 		}
 	}
-	for i := range vals {
-		cs := commit.Signatures[i]
-		if signs[i] {
-			cs.BlockIDFlag = types.BlockIDFlagCommit
-			commit.Signatures[i] = cs
-			sig, err := privs[i].Sign(commit.VoteSignBytes(chainID, int32(i)))
-			if err != nil {
-				t.Fatalf("sign[%d]: %v", i, err)
-			}
-			cs.Signature = sig
+	for i, v := range valSet.Validators {
+		if !signByAddr[v.Address.String()] {
+			continue
 		}
+		cs := commit.Signatures[i]
+		cs.BlockIDFlag = types.BlockIDFlagCommit
+		commit.Signatures[i] = cs
+		sig, err := privByAddr[v.Address.String()].Sign(commit.VoteSignBytes(chainID, int32(i)))
+		if err != nil {
+			t.Fatalf("sign[%d]: %v", i, err)
+		}
+		cs.Signature = sig
 		commit.Signatures[i] = cs
 	}
 

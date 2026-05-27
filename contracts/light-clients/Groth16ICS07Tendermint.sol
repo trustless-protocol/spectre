@@ -23,6 +23,7 @@ import { IVerifier } from "../interfaces/IVerifier.sol";
 import { Paths } from "./utils/Paths.sol";
 import { Encode } from "../utils/Encode.sol";
 import { Header } from "../utils/Header.sol";
+import { ChainId } from "../utils/ChainId.sol";
 import { Multicall } from "@openzeppelin-contracts/utils/Multicall.sol";
 import { TransientSlot } from "@openzeppelin-contracts/utils/TransientSlot.sol";
 import { AccessControl } from "@openzeppelin-contracts/access/AccessControl.sol";
@@ -89,6 +90,17 @@ contract Groth16ICS07Tendermint is
     ) {
         clientState = abi.decode(_clientState, (IICS07TendermintMsgs.ClientState));
         CHAIN_ID_HASH = keccak256(bytes(clientState.chainId));
+
+        // updateClient/misbehaviour now read the chain-ID revision from
+        // clientState.latestHeight.revisionNumber instead of re-parsing the
+        // chain-ID string on every call. Assert the two agree at construction so
+        // a misconfigured client fails fast at deploy time rather than silently
+        // using the wrong revision (defense-in-depth, suggested in review of #75).
+        uint64 parsedRevision = ChainId.get(clientState.chainId).revisionNumber;
+        require(
+            parsedRevision == clientState.latestHeight.revisionNumber,
+            MismatchedRevisionHeights(parsedRevision, clientState.latestHeight.revisionNumber)
+        );
         _consensusStateHashes[clientState.latestHeight.revisionHeight] = _consensusState;
 
         VERIFIER = IVerifier(verifier);
