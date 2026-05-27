@@ -70,6 +70,21 @@ type Services struct {
 	CosmosPackets chan CosmosBatch
 	EthPackets    chan EthBatch
 	BatchBuilder  *BatchBuilder
+
+	// Cross-chunk memoization. handleCosmos/handleEth run sequentially on the
+	// single StartLoop goroutine, so these need no locking. They let a chunked
+	// flush skip setup work already done for an earlier chunk of the same
+	// source block (issue #76).
+	//
+	// lastCosmosAppHashHeight: highest Cosmos height we've already confirmed is
+	// committed into the AppHash. handleCosmos skips the AppHash wait when the
+	// batch's packets are all at or below this height.
+	//
+	// lastFinalizedExecBlock: highest beacon-finalized ETH execution block
+	// observed. waitBeaconFinality returns immediately when the requested
+	// event block is at or below this value.
+	lastCosmosAppHashHeight uint64
+	lastFinalizedExecBlock  uint64
 }
 
 func New(eventListener EventListener, txHandler TransactionHandler, prover Prover, ethConfig, cosmosConfig Config) *Services {
@@ -167,8 +182,17 @@ func (s *Services) StartLoop(ctx Context) {
 func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	log.Printf("[StartLoop] Received cosmos batch: %d packets", len(batch.Packets))
 
-	log.Printf("[StartLoop] Waiting 2 blocks for packet commitment to be included in AppHash...")
-	time.Sleep(6 * time.Second)
+	// A packet commitment written at block H is only reflected in the AppHash
+	// queried at H+2. Wait until the chain has advanced that far instead of
+	// sleeping a fixed 6s on every chunk: later chunks of the same source block
+	// find the chain already advanced and return immediately (issue #76 #1).
+	var maxPacketHeight uint64
+	for _, p := range batch.Packets {
+		if p.BlockNumber > maxPacketHeight {
+			maxPacketHeight = p.BlockNumber
+		}
+	}
+	s.waitCosmosAppHash(ctx, maxPacketHeight+2)
 
 	// V2: build the Cosmos→ETH updateClient msg but do NOT submit it as its
 	// own tx. It will be the first inner call of the multicall so we save
@@ -203,10 +227,10 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	// `continue` — that packet is just excluded from the batch.
 	type batchedMsg struct {
 		msg          any
-		label        string                // log label, e.g. "RecvPacket"
-		sequence     uint64                // for log lines
-		sourceClient string                // for PendingTracker.Remove
-		isRecv       bool                  // true → call PendingTracker.Remove after success
+		label        string // log label, e.g. "RecvPacket"
+		sequence     uint64 // for log lines
+		sourceClient string // for PendingTracker.Remove
+		isRecv       bool   // true → call PendingTracker.Remove after success
 	}
 	// +1 capacity for the optional updateClient prepend.
 	msgs := make([]batchedMsg, 0, len(batch.Packets)+1)
@@ -523,10 +547,51 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	}
 }
 
+// waitCosmosAppHash blocks until the Cosmos chain height reaches targetHeight,
+// at which point a packet commitment written ≤ targetHeight-2 is guaranteed to
+// be reflected in the queried AppHash. It memoizes the highest confirmed height
+// so later chunks of the same source block skip the RPC entirely (issue #76 #1).
+//
+// Timeout: 30 polls × 1s = 30s. On timeout it logs and returns — the caller's
+// subsequent membership-proof query will fail loudly if the AppHash truly isn't
+// ready, which is preferable to blocking the relay loop indefinitely.
+func (s *Services) waitCosmosAppHash(ctx Context, targetHeight uint64) {
+	if targetHeight <= s.lastCosmosAppHashHeight {
+		return
+	}
+	for attempt := 0; attempt < 30; attempt++ {
+		status, err := ctx.CosmosClient().Status(context.Background())
+		if err != nil {
+			log.Printf("[StartLoop] failed to query cosmos status: %v", err)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+		current := uint64(status.SyncInfo.LatestBlockHeight)
+		if current >= targetHeight {
+			s.lastCosmosAppHashHeight = current
+			return
+		}
+		if attempt == 0 {
+			log.Printf("[StartLoop] waiting for cosmos AppHash to cover height %d (current %d)...",
+				targetHeight, current)
+		}
+		time.Sleep(1 * time.Second)
+	}
+	log.Printf("[StartLoop] cosmos AppHash wait for height %d timed out after 30s", targetHeight)
+}
+
 // waitBeaconFinality polls beacon finality until execution block ≥ target.
 // Extracted from the per-packet ethProofHeight so handleEth can amortize the
 // wait over a whole batch. Returns false on timeout (60 polls × 10s = 10min).
+//
+// It memoizes the highest finalized execution block seen, so later chunks whose
+// event block is already covered return immediately without an RPC (issue #76 #3).
 func (s *Services) waitBeaconFinality(ctx Context, eventBlock uint64, tag string) bool {
+	if eventBlock <= s.lastFinalizedExecBlock {
+		log.Printf("[%s] beacon finality already covers block %d (finalized %d)",
+			tag, eventBlock, s.lastFinalizedExecBlock)
+		return true
+	}
 	log.Printf("[%s] waiting for beacon finality at block %d", tag, eventBlock)
 	for attempt := 0; attempt < 60; attempt++ {
 		if attempt > 0 {
@@ -538,6 +603,9 @@ func (s *Services) waitBeaconFinality(ctx Context, eventBlock uint64, tag string
 			continue
 		}
 		execBlock, _ := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+		if execBlock > s.lastFinalizedExecBlock {
+			s.lastFinalizedExecBlock = execBlock
+		}
 		if execBlock >= eventBlock {
 			log.Printf("[%s] beacon finalized block %d >= event block %d", tag, execBlock, eventBlock)
 			return true
