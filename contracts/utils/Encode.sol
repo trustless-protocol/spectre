@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 pragma solidity ^0.8.0;
 
 import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
@@ -166,14 +168,24 @@ library Encode {
     function encodeSfixed64(int64 value) public pure returns (bytes memory) {
         bytes memory result = new bytes(8);
         uint64 v = uint64(value);
-        result[0] = bytes1(uint8(v));
-        result[1] = bytes1(uint8(v >> 8));
-        result[2] = bytes1(uint8(v >> 16));
-        result[3] = bytes1(uint8(v >> 24));
-        result[4] = bytes1(uint8(v >> 32));
-        result[5] = bytes1(uint8(v >> 40));
-        result[6] = bytes1(uint8(v >> 48));
-        result[7] = bytes1(uint8(v >> 56));
+        assembly {
+            // mstore is big-endian, so each byte of v must be placed in the most-significant
+            // 8 bytes of the 256-bit word. Byte i of little-endian output = bits [(i*8)+7:(i*8)]
+            // of v, which must land at word bits [255-(i*8):248-(i*8)].
+            mstore(
+                add(result, 0x20),
+                or(
+                    or(
+                        or(shl(248, and(v, 0xff)), shl(232, and(v, 0xff00))),
+                        or(shl(216, and(v, 0xff0000)), shl(200, and(v, 0xff000000)))
+                    ),
+                    or(
+                        or(shl(184, and(v, 0xff00000000)), shl(168, and(v, 0xff0000000000))),
+                        or(shl(152, and(v, 0xff000000000000)), shl(136, and(v, 0xff00000000000000)))
+                    )
+                )
+            )
+        }
         return result;
     }
 
@@ -281,16 +293,24 @@ library Encode {
         }
     }
 
-    function _writeVarint(bytes memory out, uint256 offset, uint256 value) private pure returns (uint256) {
-        while (value >= 128) {
-            out[offset] = bytes1(uint8((value & 0x7F) | 0x80));
-            unchecked {
-                ++offset;
+    /// @notice Encodes `value` as a protobuf varint into `out` starting at `offset`.
+    /// @dev Each byte holds 7 bits of value; the MSB is 1 if more bytes follow, 0 on the last byte.
+    /// @return newOffset The offset of the next unwritten byte after the varint.
+    function _writeVarint(bytes memory out, uint256 offset, uint256 value) private pure returns (uint256 newOffset) {
+        assembly {
+            // Point ptr at out[offset]: skip the 32-byte length prefix (0x20), then advance by offset.
+            let ptr := add(add(out, 0x20), offset)
+            // Each iteration emits one continuation byte: low 7 bits of value | 0x80 (MSB = "more follows").
+            for {} iszero(lt(value, 0x80)) {} {
+                mstore8(ptr, or(and(value, 0x7f), 0x80))
+                ptr := add(ptr, 1)
+                offset := add(offset, 1)
+                value := shr(7, value) // consume the 7 bits just written
             }
-            value >>= 7;
+            // Final byte: value < 0x80, so MSB is 0 — signals end of varint.
+            mstore8(ptr, value)
+            newOffset := add(offset, 1)
         }
-        out[offset] = bytes1(uint8(value));
-        return offset + 1;
     }
 
     function _storeByte(bytes memory out, uint256 offset, uint8 value) private pure returns (uint256) {
@@ -309,28 +329,11 @@ library Encode {
 
     function _copyBytes(bytes memory out, uint256 dstOffset, bytes memory src) private pure returns (uint256) {
         uint256 len = src.length;
-        if (len == 0) {
-            return dstOffset;
-        }
-
+        if (len == 0) return dstOffset;
+        // mcopy (EIP-5656, Cancun): 3 + 3*ceil(len/32) gas vs ~18-20 gas/word with a manual loop.
         assembly {
-            let srcPtr := add(src, 0x20)
-            let dstPtr := add(add(out, 0x20), dstOffset)
-            let fullWords := and(len, not(31))
-
-            for { let copied := 0 } lt(copied, fullWords) { copied := add(copied, 0x20) } {
-                mstore(add(dstPtr, copied), mload(add(srcPtr, copied)))
-            }
-
-            let rem := and(len, 31)
-            if rem {
-                let mask := sub(shl(mul(8, sub(32, rem)), 1), 1)
-                let srcWord := mload(add(srcPtr, fullWords))
-                let dstWord := mload(add(dstPtr, fullWords))
-                mstore(add(dstPtr, fullWords), or(and(dstWord, mask), and(srcWord, not(mask))))
-            }
+            mcopy(add(add(out, 0x20), dstOffset), add(src, 0x20), len)
         }
-
         return dstOffset + len;
     }
 }
