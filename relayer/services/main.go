@@ -71,18 +71,20 @@ type Services struct {
 	EthPackets    chan EthBatch
 	BatchBuilder  *BatchBuilder
 
-	// Cross-chunk memoization. handleCosmos/handleEth run sequentially on the
-	// single StartLoop goroutine, so these need no locking. They let a chunked
-	// flush skip setup work already done for an earlier chunk of the same
-	// source block (issue #76).
+	// Cross-chunk memoization (issue #76). Each field is touched by exactly one
+	// handler goroutine, so no locking is needed even after the #4 split:
+	//   - lastCosmosAppHashHeight: written/read only by handleCosmos.
+	//   - lastFinalizedExecBlock:  written/read only by handleEth.
+	// They let a chunked flush skip setup work already done for an earlier chunk
+	// of the same source block.
 	//
-	// lastCosmosAppHashHeight: highest Cosmos height we've already confirmed is
-	// committed into the AppHash. handleCosmos skips the AppHash wait when the
-	// batch's packets are all at or below this height.
+	// lastCosmosAppHashHeight: highest Cosmos height confirmed committed into the
+	// AppHash. handleCosmos skips the AppHash wait when the batch's packets are
+	// all at or below this height.
 	//
 	// lastFinalizedExecBlock: highest beacon-finalized ETH execution block
-	// observed. waitBeaconFinality returns immediately when the requested
-	// event block is at or below this value.
+	// observed. waitBeaconFinality returns immediately when the requested event
+	// block is at or below this value.
 	lastCosmosAppHashHeight uint64
 	lastFinalizedExecBlock  uint64
 }
@@ -113,29 +115,22 @@ func (s *Services) StartLoop(ctx Context) {
 		for {
 			now := time.Now()
 			// update client on Eth side routinely
-			if ctx.latestEthTimestamp.LatestUpdateTime.Add(routineInterval).Before(now) {
-				latestBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ctx.latestEthTimestamp.LatestUpdateHeight), s.cosmosConfig.TrustLevel)
+			ethUpdateTime, ethUpdateHeight := ctx.latestEthTimestamp.Snapshot()
+			if ethUpdateTime.Add(routineInterval).Before(now) {
+				latestBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ethUpdateHeight), s.cosmosConfig.TrustLevel)
 				if err != nil {
 					log.Printf("[Routine] Failed to update cosmos light client: %v", err)
 					continue
 				}
 
-				// update latest update time
-				ctx.latestEthTimestamp.mtx.Lock()
-				ctx.latestEthTimestamp.LatestUpdateTime = time.Now()
-				ctx.latestEthTimestamp.LatestUpdateHeight = uint64(latestBlock.BlockHeight)
-				ctx.latestEthTimestamp.mtx.Unlock()
+				ctx.latestEthTimestamp.Set(time.Now(), uint64(latestBlock.BlockHeight))
 			}
 
 			// update client on Cosmos side routinely
-			if ctx.latestCosmosTimestamp.LatestUpdateTime.Add(routineInterval).Before(now) {
+			cosmosUpdateTime, _ := ctx.latestCosmosTimestamp.Snapshot()
+			if cosmosUpdateTime.Add(routineInterval).Before(now) {
 				s.worker.UpdateEthClient(ctx)
-
-				// update latest update time
-				ctx.latestCosmosTimestamp.mtx.Lock()
-				ctx.latestCosmosTimestamp.LatestUpdateTime = now
-				ctx.latestCosmosTimestamp.mtx.Unlock()
-
+				ctx.latestCosmosTimestamp.SetTime(now)
 			}
 
 			time.Sleep(time.Second)
@@ -160,23 +155,24 @@ func (s *Services) StartLoop(ctx Context) {
 		}
 	}()
 
-	// handle packets
-	for {
-		select {
-		case batch, ok := <-s.CosmosPackets:
-			if !ok {
-				log.Println("[StartLoop] Cosmos batch channel closed, exiting loop")
-				return
-			}
+	// Handle the two directions on independent goroutines so a slow Cosmos→ETH
+	// chunk (proof gen, beacon-finality wait) doesn't stall the next ETH→Cosmos
+	// chunk and vice versa (issue #76 #4). The two handlers touch disjoint
+	// mutable state: handleCosmos owns latestEthTimestamp + lastCosmosAppHashHeight,
+	// handleEth owns latestCosmosTimestamp + lastFinalizedExecBlock. Shared
+	// dependencies (TxHandler nonce paths, BatchBuilder.PendingTracker, the
+	// Timestamp accessors) are each independently goroutine-safe.
+	go func() {
+		for batch := range s.CosmosPackets {
 			s.handleCosmos(ctx, batch)
-		case batch, ok := <-s.EthPackets:
-			if !ok {
-				log.Println("[StartLoop] Eth batch channel closed, exiting loop")
-				return
-			}
-			s.handleEth(ctx, batch)
 		}
+		log.Println("[StartLoop] Cosmos batch channel closed, cosmos handler exiting")
+	}()
+
+	for batch := range s.EthPackets {
+		s.handleEth(ctx, batch)
 	}
+	log.Println("[StartLoop] Eth batch channel closed, exiting loop")
 }
 
 func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
@@ -197,9 +193,14 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	// V2: build the Cosmos→ETH updateClient msg but do NOT submit it as its
 	// own tx. It will be the first inner call of the multicall so we save
 	// one round-trip + ~21k base intrinsic gas per flush.
+	//
+	// Pass the cached height as a hint only; BuildCosmosClientUpdateMsg
+	// re-checks the authoritative on-chain trusted height before deciding to
+	// regenerate the (expensive) Groth16 proof (issue #76 #2).
+	_, ethTrustedHeight := ctx.latestEthTimestamp.Snapshot()
 	updateBuild, err := s.worker.BuildCosmosClientUpdateMsg(
 		ctx, s.cosmosConfig.ProofType,
-		int64(ctx.latestEthTimestamp.LatestUpdateHeight),
+		int64(ethTrustedHeight),
 		s.cosmosConfig.TrustLevel,
 	)
 	if err != nil {
@@ -357,10 +358,7 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	// Advance the trusted ETH-side height only after the batch (including the
 	// folded updateClient, if any) confirmed on-chain.
 	if updateBuild.HasMsg {
-		ctx.latestEthTimestamp.mtx.Lock()
-		ctx.latestEthTimestamp.LatestUpdateTime = time.Now()
-		ctx.latestEthTimestamp.LatestUpdateHeight = uint64(latestLightBlock.BlockHeight)
-		ctx.latestEthTimestamp.mtx.Unlock()
+		ctx.latestEthTimestamp.Set(time.Now(), uint64(latestLightBlock.BlockHeight))
 	}
 }
 
@@ -541,9 +539,7 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	// Advance latestCosmosTimestamp only after the batch (including the folded
 	// wasm updateClient, if any) confirmed on-chain.
 	if len(buildResult.Msgs) > 0 {
-		ctx.latestCosmosTimestamp.mtx.Lock()
-		ctx.latestCosmosTimestamp.LatestUpdateTime = time.Now()
-		ctx.latestCosmosTimestamp.mtx.Unlock()
+		ctx.latestCosmosTimestamp.SetTime(time.Now())
 	}
 }
 
@@ -650,7 +646,8 @@ func shouldTimeoutEthSend(packet EthPacket, err error) bool {
 }
 
 func (s *Services) updateCosmosClientForEth(ctx Context, tag string) (*client.LightBlock, bool) {
-	latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ctx.latestEthTimestamp.LatestUpdateHeight), s.cosmosConfig.TrustLevel)
+	_, ethTrustedHeight := ctx.latestEthTimestamp.Snapshot()
+	latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ethTrustedHeight), s.cosmosConfig.TrustLevel)
 	if err != nil {
 		log.Printf("[%s] Failed to update cosmos light client: %v", tag, err)
 		return nil, false
@@ -660,10 +657,7 @@ func (s *Services) updateCosmosClientForEth(ctx Context, tag string) (*client.Li
 		return nil, false
 	}
 
-	ctx.latestEthTimestamp.mtx.Lock()
-	ctx.latestEthTimestamp.LatestUpdateTime = time.Now()
-	ctx.latestEthTimestamp.LatestUpdateHeight = uint64(latestLightBlock.BlockHeight)
-	ctx.latestEthTimestamp.mtx.Unlock()
+	ctx.latestEthTimestamp.Set(time.Now(), uint64(latestLightBlock.BlockHeight))
 
 	return latestLightBlock, true
 }
