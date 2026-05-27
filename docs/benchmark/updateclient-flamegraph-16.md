@@ -24,21 +24,21 @@ This is not an isolated micro-benchmark for each component:
 
 | frame | gas | share |
 |---|---:|---:|
-| `all` | 4,368,116 | 100.00% |
-| `UpdateClientGasTest.test_gas_n16()` | 4,368,116 | 100.00% |
-| `new Groth16ICS07Tendermint` | 3,363,959 | 77.01% |
-| `Groth16ICS07Tendermint.updateClient(bytes)` | 660,666 | 15.12% |
+| `all` | 4,353,287 | 100.00% |
+| `UpdateClientGasTest.test_gas_n16()` | 4,353,287 | 100.00% |
+| `new Groth16ICS07Tendermint` | 3,359,820 | 77.18% |
+| `Groth16ICS07Tendermint.updateClient(bytes)` | 649,856 | 14.93% |
 
 ## Notable frames inside the executed path
 
 | frame | gas | share |
 |---|---:|---:|
-| `UpdateClient.updateClient(...)` | 416,881 | 9.54% |
-| `WrapperVerifier.verifyBatchProof(...)` | 85,666 | 1.96% |
-| `WrapperVerifier::_hashWitness` | 77,398 | 1.77% |
+| `UpdateClient.updateClient(...)` | 406,888 | 9.35% |
+| `WrapperVerifier.verifyBatchProof(...)` | 85,666 | 1.97% |
+| `WrapperVerifier::_hashWitness` | 77,398 | 1.78% |
 | `WrapperVerifier::_writeVoteSignBytes` | 43,570 | 1.00% |
-| `Header.hashValSet(uint8)` | 242,158 | 5.54% |
-| `Header.hashValSet(uint8)` | 123,579 | 2.83% |
+| `Header.hashValSet(uint8)` | 242,158 | 5.56% |
+| `Header.hashValSet(uint8)` | 123,579 | 2.84% |
 | `Header.hashHeader(uint8)` | 44,934 | 1.03% |
 | `Header.hashHeader(uint8)` | 44,934 | 1.03% |
 
@@ -47,7 +47,7 @@ This is not an isolated micro-benchmark for each component:
 From the same `forge test` run, the benchmark log for bucket `16` is:
 
 ```text
-bucket= 16   gas= 669744
+bucket= 16   gas= 658934
 ```
 
 This log is usually the better number for comparing update-path gas across buckets. The flamegraph is more useful for seeing where gas concentrates inside the executed call tree.
