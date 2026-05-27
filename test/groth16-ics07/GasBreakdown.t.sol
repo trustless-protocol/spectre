@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {Test} from "forge-std/Test.sol";
+import { Test } from "forge-std/Test.sol";
 
-import {Groth16ICS07Tendermint} from "../../contracts/light-clients/Groth16ICS07Tendermint.sol";
-import {IICS07TendermintMsgs} from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
-import {IUpdateClientMsgs} from "../../contracts/light-clients/msgs/IUpdateClientMsgs.sol";
-import {IICS02ClientMsgs} from "../../contracts/msgs/IICS02ClientMsgs.sol";
-import {IVerifier} from "../../contracts/interfaces/IVerifier.sol";
-import {IMembership} from "../../contracts/interfaces/IMembership.sol";
-import {IMisbehaviour} from "../../contracts/interfaces/IMisbehaviour.sol";
-import {IMembershipMsgs} from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
-import {IMisbehaviourMsgs} from "../../contracts/light-clients/msgs/IMisbehaviourMsgs.sol";
-import {UpdateClient} from "../../contracts/programs/UpdateClient.sol";
-import {Predicates} from "../../contracts/utils/Predicates.sol";
-import {Header as HeaderLib} from "../../contracts/utils/Header.sol";
-import {Encode} from "../../contracts/utils/Encode.sol";
-import {WrapperVerifier} from "../../contracts/utils/WrapperVerifier.sol";
-import {IUpdateClient} from "../../contracts/interfaces/IUpdateClient.sol";
-import {BenchGroth16Verifier_N4} from "./BenchGroth16Verifier_N4.sol";
+import { Groth16ICS07Tendermint } from "../../contracts/light-clients/Groth16ICS07Tendermint.sol";
+import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
+import { IUpdateClientMsgs } from "../../contracts/light-clients/msgs/IUpdateClientMsgs.sol";
+import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
+import { IVerifier } from "../../contracts/interfaces/IVerifier.sol";
+import { IMembership } from "../../contracts/interfaces/IMembership.sol";
+import { IMisbehaviour } from "../../contracts/interfaces/IMisbehaviour.sol";
+import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
+import { IMisbehaviourMsgs } from "../../contracts/light-clients/msgs/IMisbehaviourMsgs.sol";
+import { UpdateClient } from "../../contracts/programs/UpdateClient.sol";
+import { Predicates } from "../../contracts/utils/Predicates.sol";
+import { Header as HeaderLib } from "../../contracts/utils/Header.sol";
+import { Encode } from "../../contracts/utils/Encode.sol";
+import { WrapperVerifier } from "../../contracts/utils/WrapperVerifier.sol";
+import { IUpdateClient } from "../../contracts/interfaces/IUpdateClient.sol";
+import { BenchGroth16Verifier_N4 } from "./BenchGroth16Verifier_N4.sol";
 
 contract MockBatchVerifier is IVerifier {
     function verifyBatchProof(
@@ -31,7 +31,11 @@ contract MockBatchVerifier is IVerifier {
         uint32[] calldata,
         bool[] calldata,
         IVerifier.SharedBlock calldata
-    ) external pure returns (bool) {
+    )
+        external
+        pure
+        returns (bool)
+    {
         return true;
     }
 }
@@ -43,7 +47,13 @@ contract MockBucketVerifier {
 }
 
 contract DummyMembership is IMembership {
-    function membership(bytes32, IMembershipMsgs.KVPair[] calldata, IMembershipMsgs.MerkleProof[] calldata) external pure {}
+    function membership(
+        bytes32,
+        IMembershipMsgs.KVPair[] calldata,
+        IMembershipMsgs.MerkleProof[] calldata
+    )
+        external
+        pure { }
 }
 
 contract DummyMisbehaviour is IMisbehaviour {
@@ -53,15 +63,37 @@ contract DummyMisbehaviour is IMisbehaviour {
         IICS07TendermintMsgs.ConsensusState memory,
         IICS07TendermintMsgs.ConsensusState memory,
         uint128
-    ) external pure returns (IMisbehaviourMsgs.MisbehaviourOutput memory) {
+    )
+        external
+        pure
+        returns (IMisbehaviourMsgs.MisbehaviourOutput memory)
+    {
         revert("unused");
     }
 }
 
 contract MockUpdateClientPassThrough is IUpdateClient {
-    function updateClient(
-        IUpdateClientMsgs.MsgUpdateClient calldata msg_
-    ) external pure returns (IUpdateClientMsgs.UpdateClientOutput memory output) {
+    function updateClient(IUpdateClientMsgs.MsgUpdateClient calldata msg_)
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory output)
+    {
+        return _buildOutput(msg_);
+    }
+
+    function updateClientResolved(IUpdateClientMsgs.MsgUpdateClient calldata msg_)
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory output)
+    {
+        return _buildOutput(msg_);
+    }
+
+    function _buildOutput(IUpdateClientMsgs.MsgUpdateClient calldata msg_)
+        private
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory output)
+    {
         output.clientState = msg_.clientState;
         output.trustedConsensusState = msg_.trustedConsensusState;
         output.newConsensusState = IICS07TendermintMsgs.ConsensusState({
@@ -82,7 +114,10 @@ contract PredicatesGasHarness {
     function validateCommit(
         IICS07TendermintMsgs.SignedHeader memory signedHeader,
         IICS07TendermintMsgs.ValidatorSet memory validators
-    ) external pure {
+    )
+        external
+        pure
+    {
         Predicates.validateCommit(signedHeader, validators);
     }
 
@@ -90,7 +125,10 @@ contract PredicatesGasHarness {
         IICS07TendermintMsgs.UntrustedBlockState memory untrustedState,
         IICS07TendermintMsgs.TrustedBlockState memory trustedState,
         IICS07TendermintMsgs.Options memory options
-    ) external pure {
+    )
+        external
+        pure
+    {
         Predicates.verifyCommitAgainstTrusted(untrustedState, trustedState, options);
     }
 
@@ -98,13 +136,16 @@ contract PredicatesGasHarness {
         IICS07TendermintMsgs.UntrustedBlockState memory untrustedState,
         IICS07TendermintMsgs.TrustedBlockState memory trustedState,
         IICS07TendermintMsgs.Options memory options
-    ) external pure {
+    )
+        external
+        pure
+    {
         Predicates.verifyTrustedCommitOverlap(untrustedState, trustedState, options);
     }
 }
 
 contract WrapperVerifierHarness is WrapperVerifier {
-    constructor(address owner) WrapperVerifier(owner) {}
+    constructor(address owner) WrapperVerifier(owner) { }
 
     function hashWitness(
         uint16 bucket,
@@ -113,7 +154,11 @@ contract WrapperVerifierHarness is WrapperVerifier {
         uint32[] calldata timestampNanos,
         bool[] calldata active,
         IVerifier.SharedBlock calldata shared
-    ) external pure returns (bytes32) {
+    )
+        external
+        pure
+        returns (bytes32)
+    {
         return _hashWitness(bucket, pubkeys, timestampSeconds, timestampNanos, active, shared);
     }
 }
@@ -129,15 +174,9 @@ contract Groth16ICS07Harness is Groth16ICS07Tendermint {
         address roleManager
     )
         Groth16ICS07Tendermint(
-            verifier,
-            membership_,
-            misbehaviour_,
-            updateClient_,
-            clientState_,
-            consensusStateHash_,
-            roleManager
+            verifier, membership_, misbehaviour_, updateClient_, clientState_, consensusStateHash_, roleManager
         )
-    {}
+    { }
 
     function verifyBatchAndQuorumExternal(IUpdateClientMsgs.MsgUpdateClient memory msg_) external {
         _verifyBatchAndQuorum(msg_);
@@ -196,20 +235,19 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
         vals[3] = _validator("val3", bytes32(uint256(4)), 25);
 
         ValidatorSet memory valset = ValidatorSet({
-            validators: vals,
-            hasProposer: false,
-            proposer: _validator("", bytes32(0), 0),
-            totalVotingPower: 100
+            validators: vals, hasProposer: false, proposer: _validator("", bytes32(0), 0), totalVotingPower: 100
         });
         bytes32 valSetHash = HeaderLib.hashValSet(valset);
 
         BlockHeader memory header = BlockHeader({
-            version: Version({blockVersion: 11, appVersion: 0}),
+            version: Version({ blockVersion: 11, appVersion: 0 }),
             chainId: "test-chain",
             height: 10,
             time: headerTime,
             hasLastBlockId: false,
-            lastBlockId: BlockId({hashData: bytes32(0), partSetHeader: PartSetHeader({total: 0, hashData: bytes32(0)})}),
+            lastBlockId: BlockId({
+                hashData: bytes32(0), partSetHeader: PartSetHeader({ total: 0, hashData: bytes32(0) })
+            }),
             hasLastCommitHash: false,
             lastCommitHash: bytes32(0),
             hasDataHash: false,
@@ -236,24 +274,19 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
             height: 10,
             round: 0,
             blockId: BlockId({
-                hashData: headerHash,
-                partSetHeader: PartSetHeader({total: 1, hashData: bytes32(uint256(0x1234))})
+                hashData: headerHash, partSetHeader: PartSetHeader({ total: 1, hashData: bytes32(uint256(0x1234)) })
             }),
             commitSigs: sigs
         });
 
-        SignedHeader memory signedHeader = SignedHeader({header: header, commit: commit});
-        IICS02ClientMsgs.Height memory trustedHeight =
-            IICS02ClientMsgs.Height({revisionNumber: 0, revisionHeight: 9});
-        ConsensusState memory trustedConsensusState = ConsensusState({
-            timestamp: trustedTime,
-            root: bytes32(uint256(0xABCD)),
-            nextValidatorsHash: valSetHash
-        });
+        SignedHeader memory signedHeader = SignedHeader({ header: header, commit: commit });
+        IICS02ClientMsgs.Height memory trustedHeight = IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 9 });
+        ConsensusState memory trustedConsensusState =
+            ConsensusState({ timestamp: trustedTime, root: bytes32(uint256(0xABCD)), nextValidatorsHash: valSetHash });
 
         ClientState memory clientState = ClientState({
             chainId: "test-chain",
-            trustLevel: TrustThreshold({numerator: 1, denominator: 3}),
+            trustLevel: TrustThreshold({ numerator: 1, denominator: 3 }),
             latestHeight: trustedHeight,
             trustingPeriod: 3600,
             unbondingPeriod: 7200,
@@ -315,7 +348,7 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
         });
         clientState_ = clientState;
         trustedConsensusState_ = trustedConsensusState;
-        untrusted_ = UntrustedBlockState({signedHeader: signedHeader, validatorSet: valset});
+        untrusted_ = UntrustedBlockState({ signedHeader: signedHeader, validatorSet: valset });
         trusted_ = TrustedBlockState({
             chainId: "test-chain",
             headerTime: trustedTime,
@@ -324,7 +357,7 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
             nextValidatorHash: valSetHash
         });
         options_ = Options({
-            trustThreshold: TrustThreshold({numerator: 1, denominator: 3}),
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }),
             trustingPeriod: clientState.trustingPeriod,
             clockDrift: 15
         });
@@ -413,9 +446,7 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
     function testGas_EncodeVoteSignBytes_Bucket4() public {
         uint256 g0 = gasleft();
         Encode.voteSignBytes(
-            updateMsg.proposedHeader.signedHeader.commit,
-            updateMsg.proposedHeader.signedHeader.header.chainId,
-            0
+            updateMsg.proposedHeader.signedHeader.commit, updateMsg.proposedHeader.signedHeader.header.chainId, 0
         );
         emit log_named_uint("Encode.voteSignBytes", g0 - gasleft());
     }
@@ -507,24 +538,19 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
         emit log_named_uint("Groth16ICS07.updateClient(pass-through, real proof)", g0 - gasleft());
     }
 
-    function _validator(
-        string memory addr,
-        bytes32 pubkey,
-        uint64 power
-    ) internal pure returns (ValidatorInfo memory) {
-        return ValidatorInfo({
-            valAddress: bytes(addr),
-            pubKey: pubkey,
-            votingPower: power,
-            proposerPriority: 0
-        });
+    function _validator(string memory addr, bytes32 pubkey, uint64 power) internal pure returns (ValidatorInfo memory) {
+        return ValidatorInfo({ valAddress: bytes(addr), pubKey: pubkey, votingPower: power, proposerPriority: 0 });
     }
 
     function _commitSig(
         CommitSigFlag flag,
         string memory addr,
         uint128 timestamp
-    ) internal pure returns (CommitSig memory) {
+    )
+        internal
+        pure
+        returns (CommitSig memory)
+    {
         return CommitSig({
             flag: flag,
             data: CommitSigData({
@@ -544,10 +570,7 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
             bytes32(0x824abac67081a745a713bb4c9e93840978f5151b911beabc4380b1c0c5e67e84)
         ];
         uint64[4] memory secs = [
-            uint64(1700000000),
-            uint64(1700000001),
-            uint64(1700000002),
-            uint64(1700000003)
+            uint64(1_700_000_000), uint64(1_700_000_001), uint64(1_700_000_002), uint64(1_700_000_003)
         ];
         uint32[4] memory nanos = [uint32(111), uint32(112), uint32(113), uint32(114)];
 
@@ -559,19 +582,18 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
             vals[i] = _validator(string(abi.encodePacked("rval", vm.toString(i))), pubkeys[i], 25);
         }
         ValidatorSet memory valset = ValidatorSet({
-            validators: vals,
-            hasProposer: false,
-            proposer: _validator("", bytes32(0), 0),
-            totalVotingPower: 100
+            validators: vals, hasProposer: false, proposer: _validator("", bytes32(0), 0), totalVotingPower: 100
         });
 
         BlockHeader memory header = BlockHeader({
-            version: Version({blockVersion: 11, appVersion: 0}),
+            version: Version({ blockVersion: 11, appVersion: 0 }),
             chainId: "test-chain",
             height: 10,
             time: trustedTime + 1_000_000_000,
             hasLastBlockId: false,
-            lastBlockId: BlockId({hashData: bytes32(0), partSetHeader: PartSetHeader({total: 0, hashData: bytes32(0)})}),
+            lastBlockId: BlockId({
+                hashData: bytes32(0), partSetHeader: PartSetHeader({ total: 0, hashData: bytes32(0) })
+            }),
             hasLastCommitHash: false,
             lastCommitHash: bytes32(0),
             hasDataHash: false,
@@ -589,7 +611,11 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
 
         CommitSig[] memory sigs = new CommitSig[](4);
         for (uint256 i = 0; i < 4; i++) {
-            sigs[i] = _commitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, string(abi.encodePacked("rval", vm.toString(i))), trustedTime + 1_000_000_000);
+            sigs[i] = _commitSig(
+                CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+                string(abi.encodePacked("rval", vm.toString(i))),
+                trustedTime + 1_000_000_000
+            );
         }
 
         SignedHeader memory signedHeader = SignedHeader({
@@ -600,16 +626,14 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
                 blockId: BlockId({
                     hashData: 0x1c8b79e9812723bfec40c7f6a7dd9fdff68715b6021a6c52547df4f141cfd861,
                     partSetHeader: PartSetHeader({
-                        total: 1,
-                        hashData: 0x50c42d1bf78be36edaa071b196077cda4ac3334520e15609f145d7bfabf77c27
+                        total: 1, hashData: 0x50c42d1bf78be36edaa071b196077cda4ac3334520e15609f145d7bfabf77c27
                     })
                 }),
                 commitSigs: sigs
             })
         });
 
-        IICS02ClientMsgs.Height memory trustedHeight =
-            IICS02ClientMsgs.Height({revisionNumber: 0, revisionHeight: 9});
+        IICS02ClientMsgs.Height memory trustedHeight = IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 9 });
         realUpdateMsg_ = IUpdateClientMsgs.MsgUpdateClient({
             clientState: clientState_,
             trustedConsensusState: trustedConsensusState_,
@@ -646,7 +670,8 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
             active: _boolArray4(true, true, true, true)
         });
         realEncodedUpdateMsg_ = abi.encode(realUpdateMsg_);
-        realProofBytes_ = abi.encodePacked(realUpdateMsg_.proof, realUpdateMsg_.commitments, realUpdateMsg_.commitmentPok);
+        realProofBytes_ =
+            abi.encodePacked(realUpdateMsg_.proof, realUpdateMsg_.commitments, realUpdateMsg_.commitmentPok);
 
         bytes32 h = wrapperReal.hashWitness(
             realUpdateMsg_.bucket,

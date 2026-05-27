@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import { IVerifier } from "../interfaces/IVerifier.sol";
+
 /// @title IGroth16ICS07Tendermint
 /// @notice IGroth16ICS07Tendermint is the interface for the ICS07 Tendermint light client
 interface IGroth16ICS07Tendermint {
@@ -40,4 +41,9 @@ interface IGroth16ICS07Tendermint {
     /// @param revisionHeight The revision height.
     /// @return The consensus state at the given revision height.
     function getConsensusStateHash(uint64 revisionHeight) external view returns (bytes32);
+
+    /// @notice Returns whether a validator-set hash is already cached on-chain.
+    /// @param validatorsHash The validator-set hash.
+    /// @return True if the validator set is cached.
+    function hasCachedValidatorSet(bytes32 validatorsHash) external view returns (bool);
 }
