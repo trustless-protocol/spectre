@@ -57,6 +57,12 @@ contract Groth16ICS07Tendermint is
     /// @inheritdoc IGroth16ICS07Tendermint
     bytes32 public immutable PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
 
+    /// @notice keccak256 of the client's chain ID, cached at construction.
+    /// @dev The chain ID never changes for the lifetime of the client, so the
+    ///      per-update equality check reads this immutable instead of hashing
+    ///      the storage string on every call.
+    bytes32 internal immutable CHAIN_ID_HASH;
+
     /// @notice The constructor sets the program verification key and the initial client and consensus states.
     /// @param verifier The address of the Groth16 verifier contract.
     /// @param _clientState The encoded initial client state.
@@ -72,6 +78,7 @@ contract Groth16ICS07Tendermint is
         address roleManager
     ) {
         clientState = abi.decode(_clientState, (IICS07TendermintMsgs.ClientState));
+        CHAIN_ID_HASH = keccak256(bytes(clientState.chainId));
         _consensusStateHashes[clientState.latestHeight.revisionHeight] = _consensusState;
 
         VERIFIER = IVerifier(verifier);
@@ -575,8 +582,7 @@ contract Groth16ICS07Tendermint is
         // 3. The revision number is not allowed to change with us checking the chain-id and the implementation in the
         // gnark program.
         require(
-            bytes(publicClientState.chainId).length == bytes(clientState.chainId).length
-                && keccak256(bytes(publicClientState.chainId)) == keccak256(bytes(clientState.chainId)),
+            keccak256(bytes(publicClientState.chainId)) == CHAIN_ID_HASH,
             ChainIdMismatch(clientState.chainId, publicClientState.chainId)
         );
         require(
