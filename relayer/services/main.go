@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -183,12 +184,12 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 		// bail here without re-queueing it is lost. Re-queue so the next flush
 		// retries once the transient cause (proof gen, RPC) clears (issue #80).
 		log.Printf("[StartLoop] Failed to build cosmos light client update: %v", err)
-		s.BatchBuilder.RequeueCosmos(batch.Packets)
+		s.BatchBuilder.RequeueCosmosTransient(batch.Packets)
 		return
 	}
 	if updateBuild == nil || updateBuild.LightBlock == nil {
 		log.Printf("[StartLoop] BuildCosmosClientUpdateMsg returned nil light block")
-		s.BatchBuilder.RequeueCosmos(batch.Packets)
+		s.BatchBuilder.RequeueCosmosTransient(batch.Packets)
 		return
 	}
 	latestLightBlock := updateBuild.LightBlock
@@ -327,8 +328,15 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 			}
 		}
 		// The folded updateClient (origin == nil) is rebuilt fresh each flush, so
-		// only the packet msgs need re-queueing (issue #80).
-		s.BatchBuilder.RequeueCosmos(failed)
+		// only the packet msgs need re-queueing (issue #80). Classify the failure:
+		// an on-chain revert is deterministic (consumes retry budget → eventual
+		// dead-letter); anything else (RPC, timeout) is transient and must not
+		// burn the budget for a valid packet (issue #80 review).
+		if errors.Is(sendErr, ErrPermanentRelayFailure) {
+			s.BatchBuilder.RequeueCosmosPermanent(failed)
+		} else {
+			s.BatchBuilder.RequeueCosmosTransient(failed)
+		}
 		return
 	}
 
@@ -412,12 +420,15 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	// we bail before a successful submit. Every early return below would
 	// otherwise drop the packets, which CheckEth already sliced off the queue
 	// (issue #80) — the insufficient-sync-committee path is the common trigger.
+	// Every early-return below is an infrastructure (transient) failure, so the
+	// packets re-queue WITHOUT consuming the retry budget — a valid packet must
+	// not be dropped just because finality/RPC was briefly unavailable.
 	requeueRelayable := func() {
 		pkts := make([]EthPacket, len(relayable))
 		for i, r := range relayable {
 			pkts[i] = r.packet
 		}
-		s.BatchBuilder.RequeueEth(pkts)
+		s.BatchBuilder.RequeueEthTransient(pkts)
 	}
 
 	// Wait once for beacon finality to cover the highest event block in the
@@ -545,8 +556,14 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 			}
 		}
 		// Folded wasm updateClient (origin == nil) is rebuilt each flush; only
-		// packet msgs are re-queued (issue #80).
-		s.BatchBuilder.RequeueEth(failed)
+		// packet msgs are re-queued (issue #80). Classify: a Cosmos DeliverTx
+		// revert is deterministic (consumes budget → dead-letter); CheckTx /
+		// broadcast / RPC errors are transient and must not burn the budget.
+		if errors.Is(err, ErrPermanentRelayFailure) {
+			s.BatchBuilder.RequeueEthPermanent(failed)
+		} else {
+			s.BatchBuilder.RequeueEthTransient(failed)
+		}
 		return
 	}
 
