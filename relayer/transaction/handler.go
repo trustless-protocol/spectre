@@ -597,8 +597,11 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 			if i > 1 {
 				delta = est - prev
 			}
-			log.Printf("[bench][eth] inner[%d] %s estGas=%d mode=%s (cumulative %d, delta %d)",
-				i-1, labels[i-1], est, mode, est, delta)
+			// delta = gas contributed by THIS inner alone (prefix[i] - prefix[i-1]).
+			// est = cumulative gas for the multicall prefix up through this inner.
+			// Headline the delta — that's the per-call cost the reader wants.
+			log.Printf("[bench][eth] inner[%d] %s gas=%d mode=%s (multicall cumulative=%d)",
+				i-1, labels[i-1], delta, mode, est)
 			prev = est
 		}
 	}
