@@ -42,20 +42,34 @@ type bucketArtifacts struct {
 // the current block and uses that bucket's artifacts to generate a proof.
 type EcipProver struct {
 	byBucket map[int]*bucketArtifacts
+	backend  ProofBackend
 }
 
 // NewProver loads every bucket's r1cs, proving key, and verifying key from
 // binDir/n{N}/{r1cs,pk,vk}.bin. It errors if any bucket's artifacts are
 // missing — the operator must run `cmd/setup-circuits` first.
 func NewProver(binDir string) (*EcipProver, error) {
-	start := time.Now()
-	log.Printf("[prover] loading circuit artifacts from %s (buckets=%v)", binDir, Buckets)
+	b, err := NewProofBackend(GPUProveEnvEnabled())
+	if err != nil {
+		return nil, err
+	}
+	return NewProverWithBackend(binDir, b)
+}
 
-	p := &EcipProver{byBucket: make(map[int]*bucketArtifacts, len(Buckets))}
+// NewProverWithBackend loads circuit artifacts using the supplied proof
+// backend. Passing nil falls back to native gnark proving.
+func NewProverWithBackend(binDir string, b ProofBackend) (*EcipProver, error) {
+	if b == nil {
+		b = nativeProofBackend{}
+	}
+	start := time.Now()
+	log.Printf("[prover] loading circuit artifacts from %s (buckets=%v, backend=%s)", binDir, Buckets, b.Name())
+
+	p := &EcipProver{byBucket: make(map[int]*bucketArtifacts, len(Buckets)), backend: b}
 	for _, n := range Buckets {
 		bucketStart := time.Now()
 		log.Printf("[prover] bucket n=%d loading artifacts", n)
-		art, err := loadBucketArtifacts(binDir, n)
+		art, err := loadBucketArtifacts(binDir, n, b)
 		if err != nil {
 			return nil, fmt.Errorf("load bucket n=%d: %w", n, err)
 		}
@@ -66,7 +80,7 @@ func NewProver(binDir string) (*EcipProver, error) {
 	return p, nil
 }
 
-func loadBucketArtifacts(binDir string, n int) (*bucketArtifacts, error) {
+func loadBucketArtifacts(binDir string, n int, b ProofBackend) (*bucketArtifacts, error) {
 	dir := filepath.Join(binDir, fmt.Sprintf("n%d", n))
 	log.Printf("[prover] bucket n=%d artifact dir=%s", n, dir)
 
@@ -75,7 +89,7 @@ func loadBucketArtifacts(binDir string, n int) (*bucketArtifacts, error) {
 		return nil, fmt.Errorf("read r1cs: %w", err)
 	}
 
-	pk := groth16.NewProvingKey(ecc.BN254)
+	pk := b.NewProvingKey(ecc.BN254)
 	if err := readFromFile(filepath.Join(dir, "pk.bin"), "pk", n, pk); err != nil {
 		return nil, fmt.Errorf("read pk: %w", err)
 	}
@@ -186,11 +200,15 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 		witnessDur = time.Since(witnessStart)
 	}
 
+	proofBackend := p.backend
+	if proofBackend == nil {
+		proofBackend = nativeProofBackend{}
+	}
 	var proveStart time.Time
 	if benchEnabled {
 		proveStart = time.Now()
 	}
-	gnarkProof, err := groth16.Prove(art.r1cs, art.pk, witness, solidity.WithProverTargetSolidityVerifier(backend.GROTH16))
+	gnarkProof, err := proofBackend.Prove(art.r1cs, art.pk, witness, solidity.WithProverTargetSolidityVerifier(backend.GROTH16))
 	if err != nil {
 		err = fmt.Errorf("generate proof: %w", err)
 		return

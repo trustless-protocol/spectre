@@ -29,6 +29,7 @@ import (
 
 const (
 	flagConfigPath     = "config"
+	flagGPUProve       = "gpu-prove"
 	flagOnlyOnce       = "only-once"
 	flagProofType      = "proof-type"
 	flagOutput         = "output"
@@ -267,6 +268,32 @@ func validateStartupKeys() error {
 
 func cosmosWasmClientIDOrDefault(cfg *appConfig) string {
 	return envOrDefault("COSMOS_WASM_CLIENT_ID", cfg.CosmosToEthConfig.CosmosWasmClientID)
+}
+
+// proofBackendFromFlags resolves the GPU/CPU backend from --gpu-prove or the
+// GPU_PROVE env var. Returns (backend, true) when an explicit selection was
+// made, otherwise (nil, false) so the caller falls back to env-only defaults.
+func proofBackendFromFlags(cmd *cobra.Command) (prover.ProofBackend, bool, error) {
+	flagSet := cmd.Flags().Changed(flagGPUProve)
+	envSet := prover.GPUProveEnvEnabled()
+	if !flagSet && !envSet {
+		return nil, false, nil
+	}
+
+	useGPU := envSet
+	if flagSet {
+		v, err := cmd.Flags().GetBool(flagGPUProve)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to get gpu prove flag: %w", err)
+		}
+		useGPU = v
+	}
+
+	backend, err := prover.NewProofBackend(useGPU)
+	if err != nil {
+		return nil, false, err
+	}
+	return backend, true, nil
 }
 
 // --- Main ---
@@ -531,8 +558,18 @@ func Start(logger *zap.Logger) *cobra.Command {
 
 			// Load prover (one bucket per supported validator count)
 			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
+			selectedBackend, hasBackendOverride, err := proofBackendFromFlags(cmd)
+			if err != nil {
+				return fmt.Errorf("failed to resolve proof backend: %w", err)
+			}
 
-			p, err := prover.NewProver(binDir)
+			var p *prover.EcipProver
+			if hasBackendOverride {
+				logger.Sugar().Infof("start: overriding proof backend via flags: %s", selectedBackend.Name())
+				p, err = prover.NewProverWithBackend(binDir, selectedBackend)
+			} else {
+				p, err = prover.NewProver(binDir)
+			}
 			if err != nil {
 				return fmt.Errorf("failed to load prover: %w", err)
 			}
@@ -600,6 +637,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 		},
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
+	cmd.Flags().Bool(flagGPUProve, false, "use the ICICLE GPU backend for proving (or set GPU_PROVE=1); requires an icicle-enabled build")
 	cmd.Flags().Bool(flagBenchmark, false, "enable detailed benchmark gas/timing logs (or set RELAYER_BENCHMARK=1)")
 	return cmd
 }
