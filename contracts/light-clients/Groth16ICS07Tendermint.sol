@@ -22,6 +22,7 @@ import { IVerifier } from "../interfaces/IVerifier.sol";
 
 import { Paths } from "./utils/Paths.sol";
 import { Encode } from "../utils/Encode.sol";
+import { Header } from "../utils/Header.sol";
 import { ChainId } from "../utils/ChainId.sol";
 import { Multicall } from "@openzeppelin-contracts/utils/Multicall.sol";
 import { TransientSlot } from "@openzeppelin-contracts/utils/TransientSlot.sol";
@@ -39,6 +40,13 @@ contract Groth16ICS07Tendermint is
 {
     using TransientSlot for *;
 
+    struct CachedValidatorSet {
+        bool exists;
+        bytes[] valAddresses;
+        bytes32[] pubKeys;
+        uint64[] votingPowers;
+    }
+
     /// @inheritdoc IGroth16ICS07Tendermint
     IVerifier public immutable VERIFIER;
     IMembership public immutable MEMBERSHIP;
@@ -51,6 +59,8 @@ contract Groth16ICS07Tendermint is
     /// @notice The mapping from height to consensus state keccak256 hashes.
     /// @dev Revision number need not be keyed as it is not allowed to change.
     mapping(uint64 height => bytes32 hash) private _consensusStateHashes;
+    /// @notice Validator-set cache keyed by the CometBFT validators hash.
+    mapping(bytes32 validatorsHash => CachedValidatorSet) private _cachedValidatorSets;
 
     /// @inheritdoc IGroth16ICS07Tendermint
     uint16 public constant ALLOWED_CLOCK_DRIFT = 30 minutes;
@@ -123,6 +133,11 @@ contract Groth16ICS07Tendermint is
         return hash;
     }
 
+    /// @inheritdoc IGroth16ICS07Tendermint
+    function hasCachedValidatorSet(bytes32 validatorsHash) public view returns (bool) {
+        return _cachedValidatorSets[validatorsHash].exists;
+    }
+
     /// @dev This function verifies the public values and forwards the proof to the Groth16 verifier.
     /// @inheritdoc ILightClient
     function updateClient(bytes calldata updateClientMsg)
@@ -131,32 +146,28 @@ contract Groth16ICS07Tendermint is
         onlyProofSubmitter
         returns (ILightClientMsgs.UpdateResult)
     {
-        bytes4 sel = IUpdateClient.updateClient.selector;
-        address _updateClient = address(UPDATE_CLIENT);
-        bytes memory ret;
-        assembly ("memory-safe") {
-            let fmp := mload(0x40)
-            // Prepend 4-byte selector (left-aligned in first word) then copy raw calldata bytes
-            mstore(fmp, sel)
-            calldatacopy(add(fmp, 4), updateClientMsg.offset, updateClientMsg.length)
-            if iszero(staticcall(gas(), _updateClient, fmp, add(4, updateClientMsg.length), 0, 0)) {
-                returndatacopy(fmp, 0, returndatasize())
-                revert(fmp, returndatasize())
-            }
-            // Reuse fmp for the return bytes memory (input calldata no longer needed)
-            let retLen := returndatasize()
-            mstore(fmp, retLen)
-            returndatacopy(add(fmp, 32), 0, retLen)
-            mstore(0x40, and(add(add(fmp, add(retLen, 32)), 31), not(31)))
-            ret := fmp
-        }
-        IUpdateClientMsgs.UpdateClientOutput memory output = abi.decode(ret, (IUpdateClientMsgs.UpdateClientOutput));
+        IUpdateClientMsgs.MsgUpdateClient memory msg_ = abi.decode(updateClientMsg, (IUpdateClientMsgs.MsgUpdateClient));
+        (
+            bool useResolvedUpdatePath,
+            bytes32 currentValidatorsHash,
+            bool cacheCurrentValidatorSet,
+            bytes32 trustedNextValidatorsHash,
+            bool cacheTrustedNextValidatorSet
+        ) = _prepareUpdateClientMessage(msg_);
+
+        IUpdateClientMsgs.UpdateClientOutput memory output =
+            useResolvedUpdatePath ? UPDATE_CLIENT.updateClientResolved(msg_) : _callUpdateClient(updateClientMsg);
 
         _validateUpdateClientOutput(output);
 
         ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output);
-        IUpdateClientMsgs.MsgUpdateClient memory msg_ = abi.decode(updateClientMsg, (IUpdateClientMsgs.MsgUpdateClient));
         _verifyBatchAndQuorum(msg_);
+        if (cacheCurrentValidatorSet) {
+            _cacheValidatorSet(currentValidatorsHash, msg_.proposedHeader.validatorSet);
+        }
+        if (cacheTrustedNextValidatorSet) {
+            _cacheValidatorSet(trustedNextValidatorsHash, msg_.proposedHeader.trustedNextValidatorSet);
+        }
         if (updateResult == ILightClientMsgs.UpdateResult.Update) {
             // adding the new consensus state to the mapping
             if (output.newHeight.revisionHeight > clientState.latestHeight.revisionHeight) {
@@ -169,6 +180,160 @@ contract Groth16ICS07Tendermint is
             return ILightClientMsgs.UpdateResult.NoOp;
         }
         return updateResult;
+    }
+
+    function _callUpdateClient(bytes calldata updateClientMsg)
+        private
+        view
+        returns (IUpdateClientMsgs.UpdateClientOutput memory output)
+    {
+        bytes4 sel = IUpdateClient.updateClient.selector;
+        address updateClient_ = address(UPDATE_CLIENT);
+        bytes memory ret;
+        assembly ("memory-safe") {
+            let fmp := mload(0x40)
+            mstore(fmp, sel)
+            calldatacopy(add(fmp, 4), updateClientMsg.offset, updateClientMsg.length)
+            if iszero(staticcall(gas(), updateClient_, fmp, add(4, updateClientMsg.length), 0, 0)) {
+                returndatacopy(fmp, 0, returndatasize())
+                revert(fmp, returndatasize())
+            }
+            let retLen := returndatasize()
+            mstore(fmp, retLen)
+            returndatacopy(add(fmp, 32), 0, retLen)
+            mstore(0x40, and(add(add(fmp, add(retLen, 32)), 31), not(31)))
+            ret := fmp
+        }
+        output = abi.decode(ret, (IUpdateClientMsgs.UpdateClientOutput));
+    }
+
+    function _prepareUpdateClientMessage(IUpdateClientMsgs.MsgUpdateClient memory msg_)
+        private
+        view
+        returns (
+            bool useResolvedUpdatePath,
+            bytes32 currentValidatorsHash,
+            bool cacheCurrentValidatorSet,
+            bytes32 trustedNextValidatorsHash,
+            bool cacheTrustedNextValidatorSet
+        )
+    {
+        currentValidatorsHash = msg_.proposedHeader.signedHeader.header.validatorsHash;
+        trustedNextValidatorsHash = msg_.trustedConsensusState.nextValidatorsHash;
+
+        bool adjacent = _isAdjacentUpdate(msg_.proposedHeader);
+        bool currentCached = hasCachedValidatorSet(currentValidatorsHash);
+        bool trustedMatchesCurrent = trustedNextValidatorsHash == currentValidatorsHash;
+        bool trustedCached =
+            !adjacent && (trustedMatchesCurrent ? currentCached : hasCachedValidatorSet(trustedNextValidatorsHash));
+
+        useResolvedUpdatePath = currentCached || adjacent || trustedCached || trustedMatchesCurrent;
+        if (!useResolvedUpdatePath) {
+            return (false, currentValidatorsHash, true, trustedNextValidatorsHash, true);
+        }
+
+        if (currentCached) {
+            msg_.proposedHeader.validatorSet = _loadCachedValidatorSet(currentValidatorsHash);
+        } else {
+            _validateSuppliedValidatorSetHash(currentValidatorsHash, msg_.proposedHeader.validatorSet);
+            cacheCurrentValidatorSet = true;
+        }
+
+        if (adjacent) {
+            msg_.proposedHeader.trustedNextValidatorSet = _emptyValidatorSet();
+            return (true, currentValidatorsHash, cacheCurrentValidatorSet, trustedNextValidatorsHash, false);
+        }
+
+        if (trustedMatchesCurrent) {
+            msg_.proposedHeader.trustedNextValidatorSet = msg_.proposedHeader.validatorSet;
+            return (true, currentValidatorsHash, cacheCurrentValidatorSet, trustedNextValidatorsHash, false);
+        }
+
+        if (trustedCached) {
+            msg_.proposedHeader.trustedNextValidatorSet = _loadCachedValidatorSet(trustedNextValidatorsHash);
+        } else {
+            _validateSuppliedValidatorSetHash(trustedNextValidatorsHash, msg_.proposedHeader.trustedNextValidatorSet);
+            cacheTrustedNextValidatorSet = true;
+        }
+
+        return (
+            true,
+            currentValidatorsHash,
+            cacheCurrentValidatorSet,
+            trustedNextValidatorsHash,
+            cacheTrustedNextValidatorSet
+        );
+    }
+
+    function _isAdjacentUpdate(IICS07TendermintMsgs.Header memory header) private pure returns (bool) {
+        return header.signedHeader.header.height == header.trustedHeight.revisionHeight + 1;
+    }
+
+    function _validateSuppliedValidatorSetHash(
+        bytes32 expectedHash,
+        IICS07TendermintMsgs.ValidatorSet memory validatorSet
+    )
+        private
+        pure
+    {
+        if (validatorSet.validators.length == 0) {
+            revert ValidatorSetCacheMiss(expectedHash);
+        }
+        bytes32 actualHash = Header.hashValSet(validatorSet);
+        require(actualHash == expectedHash, MismatchedValidatorHashes(expectedHash, actualHash));
+    }
+
+    function _loadCachedValidatorSet(bytes32 validatorsHash)
+        private
+        view
+        returns (IICS07TendermintMsgs.ValidatorSet memory validatorSet)
+    {
+        CachedValidatorSet storage cached = _cachedValidatorSets[validatorsHash];
+        if (!cached.exists) {
+            revert ValidatorSetCacheMiss(validatorsHash);
+        }
+
+        uint256 len = cached.pubKeys.length;
+        if (len != cached.valAddresses.length || len != cached.votingPowers.length) {
+            revert CachedValidatorSetCorrupted(validatorsHash);
+        }
+
+        IICS07TendermintMsgs.ValidatorInfo[] memory validators = new IICS07TendermintMsgs.ValidatorInfo[](len);
+        for (uint256 i = 0; i < len; i++) {
+            validators[i] = IICS07TendermintMsgs.ValidatorInfo({
+                valAddress: cached.valAddresses[i],
+                pubKey: cached.pubKeys[i],
+                votingPower: cached.votingPowers[i],
+                proposerPriority: 0
+            });
+        }
+
+        validatorSet = IICS07TendermintMsgs.ValidatorSet({
+            validators: validators,
+            hasProposer: false,
+            proposer: IICS07TendermintMsgs.ValidatorInfo({
+                valAddress: "", pubKey: bytes32(0), votingPower: 0, proposerPriority: 0
+            }),
+            totalVotingPower: 0
+        });
+    }
+
+    function _cacheValidatorSet(bytes32 validatorsHash, IICS07TendermintMsgs.ValidatorSet memory validatorSet) private {
+        if (_cachedValidatorSets[validatorsHash].exists) {
+            return;
+        }
+
+        CachedValidatorSet storage cached = _cachedValidatorSets[validatorsHash];
+        cached.exists = true;
+        for (uint256 i = 0; i < validatorSet.validators.length; i++) {
+            cached.valAddresses.push(validatorSet.validators[i].valAddress);
+            cached.pubKeys.push(validatorSet.validators[i].pubKey);
+            cached.votingPowers.push(validatorSet.validators[i].votingPower);
+        }
+    }
+
+    function _emptyValidatorSet() private pure returns (IICS07TendermintMsgs.ValidatorSet memory validatorSet) {
+        validatorSet.validators = new IICS07TendermintMsgs.ValidatorInfo[](0);
     }
 
     /// @dev Enforces 2/3+ voting power over the active signers in msg_.signerIndices,

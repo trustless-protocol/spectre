@@ -97,6 +97,28 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 	return result.LightBlock, nil
 }
 
+// fetchOnChainTrustedHeight reads the ICS07 client state on ETH and returns its
+// latest trusted revision height. This is a cheap eth_call relative to the
+// Groth16 proof, so it's always worth doing before committing to proof gen.
+func fetchOnChainTrustedHeight(ctx Context) (int64, error) {
+	ics07, err := tendermintContract.NewContractGroth16ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
+	if err != nil {
+		return 0, fmt.Errorf("failed to create ICS07 instance: %w", err)
+	}
+	clientStateBytes, err := ics07.GetClientState(nil)
+	if err != nil {
+		return 0, fmt.Errorf("failed to get on-chain client state: %w", err)
+	}
+	onChainClientState, err := relayerclient.DecodeClientState(clientStateBytes)
+	if err != nil {
+		return 0, fmt.Errorf("failed to decode on-chain client state: %w", err)
+	}
+	log.Printf("[UpdateCosmosClient] On-chain client state: chainId=%s height=(%d,%d) frozen=%v",
+		onChainClientState.ChainId, onChainClientState.LatestHeight.RevisionNumber,
+		onChainClientState.LatestHeight.RevisionHeight, onChainClientState.IsFrozen)
+	return int64(onChainClientState.LatestHeight.RevisionHeight), nil
+}
+
 // BuildCosmosClientUpdateMsg fetches the latest Tendermint light block,
 // generates the Groth16 batch proof, and returns the resulting
 // IUpdateClientMsgsMsgUpdateClient WITHOUT submitting it. Callers either
@@ -114,25 +136,22 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 
 	log.Printf("[UpdateCosmosClient] called with trustedBlock=%d, latestBlockHeight=%d", trustedBlock, status.SyncInfo.LatestBlockHeight)
 
-	if trustedBlock == 0 {
-		// First update: query on-chain client state for the initial trusted height
-		ics07, err := tendermintContract.NewContractGroth16ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
-		if err != nil {
-			return nil, fmt.Errorf("failed to create ICS07 instance: %w", err)
-		}
-		log.Printf("[UpdateCosmosClient] Querying on-chain client state at ICS07=%s", ctx.ClientContract().Hex())
-		clientStateBytes, err := ics07.GetClientState(nil)
-		if err != nil {
-			return nil, fmt.Errorf("failed to get on-chain client state: %w", err)
-		}
-		onChainClientState, err := relayerclient.DecodeClientState(clientStateBytes)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode on-chain client state: %w", err)
-		}
-		log.Printf("[UpdateCosmosClient] On-chain client state: chainId=%s height=(%d,%d) frozen=%v",
-			onChainClientState.ChainId, onChainClientState.LatestHeight.RevisionNumber, onChainClientState.LatestHeight.RevisionHeight, onChainClientState.IsFrozen)
-		trustedBlock = int64(onChainClientState.LatestHeight.RevisionHeight)
-		log.Printf("[UpdateCosmosClient] Using on-chain client height %d as trusted block", trustedBlock)
+	// Always read the authoritative on-chain trusted height before deciding
+	// whether to (re)generate the expensive Groth16 proof. The caller passes a
+	// cached `trustedBlock` hint, but across chunked flushes — or after another
+	// relayer / a crash-replay advanced the client — that cache can lag the real
+	// chain state, causing redundant proofs for a range already on-chain
+	// (issue #76 #2). The on-chain height wins when it is ahead.
+	onChainTrusted, err := fetchOnChainTrustedHeight(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if onChainTrusted > trustedBlock {
+		log.Printf("[UpdateCosmosClient] on-chain trusted height %d ahead of cached hint %d; using on-chain",
+			onChainTrusted, trustedBlock)
+		trustedBlock = onChainTrusted
+	} else if trustedBlock == 0 {
+		trustedBlock = onChainTrusted
 	}
 	if trustedBlock >= status.SyncInfo.LatestBlockHeight {
 		if trustedBlock == status.SyncInfo.LatestBlockHeight {

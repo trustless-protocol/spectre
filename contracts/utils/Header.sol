@@ -69,27 +69,21 @@ library Header {
     function getSlice(bytes[] memory bytesArray, uint256 from, uint256 to)
         public pure returns (bytes[] memory result) {
         require(from <= to && to <= bytesArray.length, "Invalid range");
-        
+
         uint256 length = to - from;
         result = new bytes[](length);
-        
+
         assembly {
-            let src := add(add(bytesArray, 0x20), mul(from, 0x20))
-            let dst := add(result, 0x20)
-            let size := mul(length, 0x20)
-            
-            for { let i := 0 } lt(i, size) { i := add(i, 0x20) } {
-                mstore(add(dst, i), mload(add(src, i)))
-            }
+            mcopy(add(result, 0x20), add(add(bytesArray, 0x20), mul(from, 0x20)), mul(length, 0x20))
         }
     }
 
     function nextPowerOfTwo(uint256 n) public pure returns (uint256) {
         if (n == 0) return 1;
-        
+
         // Handle the case where n is already a power of 2
         if (n & (n - 1) == 0) return n;
-        
+
         // Find the next power of 2
         uint256 power = 1;
         while (power < n) {
@@ -151,21 +145,7 @@ library Header {
         }
 
         assembly {
-            let srcPtr := add(src, 0x20)
-            let dstPtr := add(add(out, 0x20), dstOffset)
-            let fullWords := and(len, not(31))
-
-            for { let copied := 0 } lt(copied, fullWords) { copied := add(copied, 0x20) } {
-                mstore(add(dstPtr, copied), mload(add(srcPtr, copied)))
-            }
-
-            let rem := and(len, 31)
-            if rem {
-                let mask := sub(shl(mul(8, sub(32, rem)), 1), 1)
-                let srcWord := mload(add(srcPtr, fullWords))
-                let dstWord := mload(add(dstPtr, fullWords))
-                mstore(add(dstPtr, fullWords), or(and(dstWord, mask), and(srcWord, not(mask))))
-            }
+            mcopy(add(add(out, 0x20), dstOffset), add(src, 0x20), len)
         }
 
         return dstOffset + len;
