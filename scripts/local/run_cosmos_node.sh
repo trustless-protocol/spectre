@@ -7,22 +7,25 @@ set -x
 cd "$(dirname "$0")/../.."
 
 killall gaiad || true
+rm -rf "$HOME/.gaia" "$HOME/.gaia-val2" "$HOME/.gaia-val3" "$HOME/.gaia-val4"
 
 CHAIN_ID="test-ibc-eth"
 DENOM="stake"
 KEYRING="test"
-VALIDATOR_COUNT="${GAIA_VALIDATOR_COUNT:-4}"
 
-if ! [[ "$VALIDATOR_COUNT" =~ ^[0-9]+$ ]] || [ "$VALIDATOR_COUNT" -lt 1 ]; then
-    echo "GAIA_VALIDATOR_COUNT must be a positive integer" >&2
-    exit 1
-fi
-
-rm -rf "$HOME/.gaia" "$HOME"/.gaia-val*
-
-HOMES=()
-VAL_KEYS=()
-VAL_STAKES=()
+HOMES=(
+    "$HOME/.gaia"
+    "$HOME/.gaia-val2"
+    "$HOME/.gaia-val3"
+    "$HOME/.gaia-val4"
+)
+VAL_KEYS=(val1 val2 val3 val4)
+VAL_STAKES=(
+    "1000000000000${DENOM}"
+    "1000000000000${DENOM}"
+    "1000000000000${DENOM}"
+    "1000000000000${DENOM}"
+)
 USER_KEYS=(test test1 test2 test3)
 USER_BALANCES=(
     "1100000000000${DENOM}"
@@ -31,35 +34,14 @@ USER_BALANCES=(
     "200000000000${DENOM}"
 )
 
-P2P_PORTS=()
-RPC_PORTS=()
-PROXY_PORTS=()
-API_PORTS=()
-GRPC_PORTS=()
-GRPC_WEB_PORTS=()
-PPROF_PORTS=()
-PROM_PORTS=()
-
-for ((i = 1; i <= VALIDATOR_COUNT; i++)); do
-    if [ "$i" -eq 1 ]; then
-        HOMES+=("$HOME/.gaia")
-    else
-        HOMES+=("$HOME/.gaia-val${i}")
-    fi
-
-    VAL_KEYS+=("val${i}")
-    VAL_STAKES+=("1000000000000${DENOM}")
-
-    idx=$((i - 1))
-    P2P_PORTS+=("$((26656 + idx * 100))")
-    RPC_PORTS+=("$((26657 + idx * 100))")
-    PROXY_PORTS+=("$((26658 + idx * 100))")
-    API_PORTS+=("$((1317 + idx * 10))")
-    GRPC_PORTS+=("$((9090 + idx * 10))")
-    GRPC_WEB_PORTS+=("$((9091 + idx * 10))")
-    PPROF_PORTS+=("$((6060 + idx * 10))")
-    PROM_PORTS+=("$((26660 + idx * 100))")
-done
+P2P_PORTS=(26656 26756 26856 26956)
+RPC_PORTS=(26657 26757 26857 26957)
+PROXY_PORTS=(26658 26758 26858 26958)
+API_PORTS=(1317 1327 1337 1347)
+GRPC_PORTS=(9090 9100 9110 9120)
+GRPC_WEB_PORTS=(9091 9101 9111 9121)
+PPROF_PORTS=(6060 6070 6080 6090)
+PROM_PORTS=(26660 26760 26860 26960)
 
 PRIMARY_HOME="${HOMES[0]}"
 RELAYER_ENV_FILE="${RELAYER_ENV_FILE:-relayer/.env}"
@@ -118,7 +100,7 @@ for i in "${!VAL_KEYS[@]}"; do
     gaiad genesis add-genesis-account "$val_addr" "2000000000000${DENOM}" --home "$PRIMARY_HOME"
 done
 
-for i in $(seq 1 $((VALIDATOR_COUNT - 1))); do
+for i in 1 2 3; do
     cp "$PRIMARY_HOME/config/genesis.json" "${HOMES[$i]}/config/genesis.json"
 done
 
@@ -130,14 +112,14 @@ for i in "${!HOMES[@]}"; do
 done
 
 mkdir -p "$PRIMARY_HOME/config/gentx"
-for i in $(seq 1 $((VALIDATOR_COUNT - 1))); do
+for i in 1 2 3; do
     cp "${HOMES[$i]}"/config/gentx/*.json "$PRIMARY_HOME/config/gentx/"
 done
 
 gaiad genesis collect-gentxs --home "$PRIMARY_HOME"
 gaiad genesis validate-genesis --home "$PRIMARY_HOME"
 
-for i in $(seq 1 $((VALIDATOR_COUNT - 1))); do
+for i in 1 2 3; do
     cp "$PRIMARY_HOME/config/genesis.json" "${HOMES[$i]}/config/genesis.json"
 done
 
@@ -195,7 +177,7 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-echo "Started ${VALIDATOR_COUNT} Gaia validators:"
+echo "Started 4 Gaia validators:"
 for i in "${!HOMES[@]}"; do
     echo "  ${VAL_KEYS[$i]} home=${HOMES[$i]} rpc=tcp://127.0.0.1:${RPC_PORTS[$i]} p2p=tcp://127.0.0.1:${P2P_PORTS[$i]}"
 done

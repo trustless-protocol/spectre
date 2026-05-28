@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/sh
 
 set -eux pipefail
 
@@ -6,12 +6,6 @@ cd "$(dirname "$0")/../.."
 
 CHAIN_ID="test-ibc-eth"
 KEYRING="test"
-VALIDATOR_COUNT="${GAIA_VALIDATOR_COUNT:-4}"
-
-if ! [[ "$VALIDATOR_COUNT" =~ ^[0-9]+$ ]] || [ "$VALIDATOR_COUNT" -lt 1 ]; then
-  echo "GAIA_VALIDATOR_COUNT must be a positive integer" >&2
-  exit 1
-fi
 
 # Store Wasm code
 echo '{
@@ -46,24 +40,32 @@ PROPOSAL_ID=$(
 
 sleep 5
 
-for i in $(seq 1 "$VALIDATOR_COUNT"); do
-  if [ "$i" -eq 1 ]; then
-    home="$HOME/.gaia"
-  else
-    home="$HOME/.gaia-val${i}"
-  fi
+gaiad tx gov vote "$PROPOSAL_ID" yes \
+  --from val1 \
+  --home "$HOME/.gaia" \
+  --chain-id "$CHAIN_ID" \
+  --keyring-backend "$KEYRING" \
+  --gas-prices 1stake \
+  -y
 
-  gaiad tx gov vote "$PROPOSAL_ID" yes \
-    --from "val${i}" \
-    --home "$home" \
-    --chain-id "$CHAIN_ID" \
-    --keyring-backend "$KEYRING" \
-    --gas-prices 1stake \
-    -y
-done
+gaiad tx gov vote "$PROPOSAL_ID" yes \
+  --from val2 \
+  --home "$HOME/.gaia-val2" \
+  --chain-id "$CHAIN_ID" \
+  --keyring-backend "$KEYRING" \
+  --gas-prices 1stake \
+  -y
+
+gaiad tx gov vote "$PROPOSAL_ID" yes \
+  --from val3 \
+  --home "$HOME/.gaia-val3" \
+  --chain-id "$CHAIN_ID" \
+  --keyring-backend "$KEYRING" \
+  --gas-prices 1stake \
+  -y
 
 sleep 30
 
-CHECKSUM=$(gaiad q ibc-wasm checksums -o json | jq -r '.checksums[0]')
+CHECKSUM=$(gaiad q ibc-wasm checksums | yq '.checksums[0]')
 
 echo "Checksum: 0x$CHECKSUM"
