@@ -62,4 +62,4 @@ See `docs/metrics.md` for full guide. Focus on:
 - **Stale client**: Re-run relayer with fresh headers to update client
 - **Frozen client**: Requires governance action (admin upgrade or new client deployment)
 - **Nonce error**: Relayer re-queries account sequence and retries
-- **Circuit update**: From `relayer/`, run `go run ./prover/cmd ./bin ../contracts/verifiers` to regenerate every bucket's artifacts and emit fresh `Groth16Verifier_N{N}.sol`; redeploy each per-bucket verifier and re-register them via `WrapperVerifier.setBucket(...)` before the next E2E run
+- **Circuit update**: From `relayer/`, run `go run ./prover/cmd ./bin ../contracts/verifiers` to regenerate every bucket's artifacts and emit fresh `Groth16Verifier_N{N}.sol`; for GPU proving use `go run -tags=icicle ./prover/cmd -gpu-prove ./bin ../contracts/verifiers`; redeploy each per-bucket verifier and re-register them via `WrapperVerifier.setBucket(...)` before the next E2E run

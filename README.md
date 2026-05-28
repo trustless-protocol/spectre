@@ -51,6 +51,8 @@ check skip them.
 - [Foundry](https://getfoundry.sh/)
 - [Bun](https://bun.sh/)
 - [Just](https://github.com/casey/just)
+- Optional for GPU proving: ICICLE runtime/libs installed on the host, plus an
+  `icicle` build of the relayer/prover tool
 
 ## Sibling repos (required to build the relayer)
 
@@ -85,6 +87,49 @@ parent/
 Without these, `go build ./...` under `relayer/` fails with
 `replacement directory ../../ecip-gnark does not exist`.
 
+## Optional GPU Proving
+
+CPU proving remains the default. GPU proving is opt-in and follows the
+`test/gnark-gpu` approach: build with `-tags=icicle`, then enable the ICICLE
+backend via env or flag when needed.
+
+Build requirements for the GPU path:
+
+- ICICLE runtime libraries must be installed and visible to the linker/runtime
+- the relayer and prover tool must be built or run with `-tags=icicle`
+
+Backend selection:
+
+- default: native CPU backend
+- env: `GPU_PROVE=1` or `GNARK_PROVER_BACKEND=icicle`
+- flag: `--gpu-prove` or `--prover-backend icicle`
+
+Examples:
+
+```bash
+# Regenerate prover artifacts with GPU proving enabled
+cd relayer
+go run -tags=icicle ./prover/cmd -gpu-prove ./bin ../contracts/verifiers
+
+# Build a relayer binary with ICICLE support
+go build -tags=icicle -o relayer ./cmd
+
+# Run the relayer on GPU
+./relayer start --config config.example.json --gpu-prove
+
+# Equivalent env-based run
+GPU_PROVE=1 ./relayer start --config config.example.json
+```
+
+Optional ICICLE tuning env vars supported by the prover:
+
+- `GNARK_ICICLE_DEVICE_ID`
+- `GNARK_ICICLE_BACKEND_LIBS`
+- `GNARK_ICICLE_PIN_KEYS`
+
+If the ICICLE runtime is missing, the `icicle` build typically fails at link or
+startup with errors such as `library 'icicle_device' not found`.
+
 ## Local E2E Test
 
 End-to-end run on local Cosmos + Ethereum nodes. Requires Docker + Kurtosis on
@@ -104,11 +149,16 @@ top of the toolchain in [Requirements](#requirements).
 ```bash
 # 1. (One-time) compile per-bucket circuits + emit Groth16Verifier_N{N}.sol.
 #    Re-run only when circuit code changes. After this, redeploy contracts.
+#    CPU default:
 cd relayer
 go run ./prover/cmd ./bin ../contracts/verifiers
+#    GPU variant:
+#    go run -tags=icicle ./prover/cmd -gpu-prove ./bin ../contracts/verifiers
 
 # 2. Build the relayer binary
 go build -o relayer ./cmd
+#    GPU build:
+#    go build -tags=icicle -o relayer ./cmd
 
 # 3. Start Ethereum first and wait until the beacon node finalizes.
 #    Replace 56246 with your Kurtosis-mapped beacon RPC port.
@@ -128,6 +178,8 @@ curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 
 # 6. Start the bi-directional relay loop
 ./relayer start --config config.example.json
+#    GPU run:
+#    ./relayer start --config config.example.json --gpu-prove
 
 # 7. send packet
 

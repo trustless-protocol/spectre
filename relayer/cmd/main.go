@@ -28,8 +28,10 @@ import (
 
 const (
 	flagConfigPath     = "config"
+	flagGPUProve       = "gpu-prove"
 	flagOnlyOnce       = "only-once"
 	flagProofType      = "proof-type"
+	flagProverBackend  = "prover-backend"
 	flagOutput         = "output"
 	flagOutputPath     = "output-path"
 	flagTrustLevel     = "trust-level"
@@ -265,6 +267,27 @@ func validateStartupKeys() error {
 
 func cosmosWasmClientIDOrDefault(cfg *appConfig) string {
 	return envOrDefault("COSMOS_WASM_CLIENT_ID", cfg.CosmosToEthConfig.CosmosWasmClientID)
+}
+
+func proofBackendFromFlags(cmd *cobra.Command) (prover.ProofBackend, bool, error) {
+	if !cmd.Flags().Changed(flagProverBackend) && !cmd.Flags().Changed(flagGPUProve) {
+		return nil, false, nil
+	}
+
+	backendName, err := cmd.Flags().GetString(flagProverBackend)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to get prover backend: %w", err)
+	}
+	gpuProve, err := cmd.Flags().GetBool(flagGPUProve)
+	if err != nil {
+		return nil, false, fmt.Errorf("failed to get gpu prove flag: %w", err)
+	}
+
+	backend, err := prover.NewProofBackendFromSelection(backendName, gpuProve)
+	if err != nil {
+		return nil, false, err
+	}
+	return backend, true, nil
 }
 
 // --- Main ---
@@ -520,8 +543,18 @@ func Start(logger *zap.Logger) *cobra.Command {
 
 			// Load prover (one bucket per supported validator count)
 			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
+			selectedBackend, hasBackendOverride, err := proofBackendFromFlags(cmd)
+			if err != nil {
+				return fmt.Errorf("failed to resolve proof backend: %w", err)
+			}
 
-			p, err := prover.NewProver(binDir)
+			var p *prover.EcipProver
+			if hasBackendOverride {
+				logger.Sugar().Infof("start: overriding proof backend via flags: %s", selectedBackend.Name())
+				p, err = prover.NewProverWithBackend(binDir, selectedBackend)
+			} else {
+				p, err = prover.NewProver(binDir)
+			}
 			if err != nil {
 				return fmt.Errorf("failed to load prover: %w", err)
 			}
@@ -589,6 +622,8 @@ func Start(logger *zap.Logger) *cobra.Command {
 		},
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
+	cmd.Flags().String(flagProverBackend, "", "override proof backend for setup/proving (native or icicle)")
+	cmd.Flags().Bool(flagGPUProve, false, "shorthand for --prover-backend=icicle; requires an icicle-enabled build")
 	return cmd
 }
 
