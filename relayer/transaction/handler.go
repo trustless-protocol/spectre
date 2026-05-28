@@ -61,6 +61,66 @@ func routerManagesProofSubmission(ctx services.Context) bool {
 	return *roleManager == *router
 }
 
+func estimateMulticallPrefixGas(
+	ctx services.Context,
+	from common.Address,
+	to common.Address,
+	data []byte,
+	gasCap uint64,
+) (uint64, string, error) {
+	callMsg := ethereum.CallMsg{
+		From: from,
+		To:   &to,
+		Data: data,
+	}
+
+	est, err := ctx.EthClient().EstimateGas(context.Background(), callMsg)
+	if err == nil {
+		return est, "estimateGas", nil
+	}
+
+	callMsg.Gas = gasCap
+	if _, callErr := ctx.EthClient().CallContract(context.Background(), callMsg, nil); callErr != nil {
+		return 0, "", fmt.Errorf(
+			"estimateGas failed: %s; high-gas eth_call failed: %s",
+			formatCallErr(err),
+			formatCallErr(callErr),
+		)
+	}
+
+	// Fall back to a binary search over eth_call when estimateGas is flaky on
+	// large multicall prefixes. This is dev-only bench instrumentation.
+	var lo uint64 = 21_000
+	hi := gasCap
+	for lo+1 < hi {
+		mid := lo + (hi-lo)/2
+		callMsg.Gas = mid
+		_, callErr := ctx.EthClient().CallContract(context.Background(), callMsg, nil)
+		if callErr == nil {
+			hi = mid
+			continue
+		}
+		lo = mid
+	}
+
+	return hi, "callBinarySearch", nil
+}
+
+func formatCallErr(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	msg := err.Error()
+	type dataErr interface {
+		ErrorData() interface{}
+	}
+	if de, ok := err.(dataErr); ok && de.ErrorData() != nil {
+		msg = fmt.Sprintf("%s (data=%v)", msg, de.ErrorData())
+	}
+	return msg
+}
+
 func cosmosRouterClientID(ctx services.Context) (string, error) {
 	clientID := ctx.CosmosRouterClientID()
 	if clientID == "" {
@@ -528,11 +588,7 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 				continue
 			}
 			to := *ctx.RouterContract()
-			est, perr := ctx.EthClient().EstimateGas(context.Background(), ethereum.CallMsg{
-				From: fromAddress,
-				To:   &to,
-				Data: partial,
-			})
+			est, mode, perr := estimateMulticallPrefixGas(ctx, fromAddress, to, partial, auth.GasLimit)
 			if perr != nil {
 				log.Printf("[bench][eth] inner gas estimate prefix=%d failed: %v", i, perr)
 				continue
@@ -541,8 +597,8 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 			if i > 1 {
 				delta = est - prev
 			}
-			log.Printf("[bench][eth] inner[%d] %s estGas=%d (cumulative %d, delta %d)",
-				i-1, labels[i-1], est, est, delta)
+			log.Printf("[bench][eth] inner[%d] %s estGas=%d mode=%s (cumulative %d, delta %d)",
+				i-1, labels[i-1], est, mode, est, delta)
 			prev = est
 		}
 	}

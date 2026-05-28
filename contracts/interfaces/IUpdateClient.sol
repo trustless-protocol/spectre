@@ -3,8 +3,15 @@ pragma solidity ^0.8.28;
 
 import { IUpdateClientMsgs } from "../light-clients/msgs/IUpdateClientMsgs.sol";
 import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
+
 interface IUpdateClient {
-     function updateClient(
-        IUpdateClientMsgs.MsgUpdateClient calldata msg
-    ) view external returns (IUpdateClientMsgs.UpdateClientOutput calldata);
+    function updateClient(IUpdateClientMsgs.MsgUpdateClient calldata msg)
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory);
+
+    function updateClientResolved(IUpdateClientMsgs.MsgUpdateClient calldata msg)
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory);
 }

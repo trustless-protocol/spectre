@@ -11,28 +11,36 @@ import { HeightCmp } from "../utils/HeightCmp.sol";
 import { ChainId } from "../utils/ChainId.sol";
 
 contract UpdateClient is IUpdateClient {
-    error MismatchedRevisionHeight(
-        uint64 expected,
-        uint64 actual
-    );
-    error InvalidHeaderHeight(
-        uint64 height
-    );
-    error ValSetHashMismatch(
-        bytes32 expected,
-        bytes32 actual
-    );
-    error HeaderChainIdMismatch(
-        string expected,
-        string actual
-    );
-    error FailedToVerifyHeader(
-        string reason
-    );
+    error MismatchedRevisionHeight(uint64 expected, uint64 actual);
+    error InvalidHeaderHeight(uint64 height);
+    error ValSetHashMismatch(bytes32 expected, bytes32 actual);
+    error HeaderChainIdMismatch(string expected, string actual);
+    error FailedToVerifyHeader(string reason);
 
-    function updateClient(
-        IUpdateClientMsgs.MsgUpdateClient calldata msg_
-    ) view external returns (IUpdateClientMsgs.UpdateClientOutput memory) {
+    function updateClient(IUpdateClientMsgs.MsgUpdateClient calldata msg_)
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory)
+    {
+        return _updateClient(msg_, false);
+    }
+
+    function updateClientResolved(IUpdateClientMsgs.MsgUpdateClient calldata msg_)
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory)
+    {
+        return _updateClient(msg_, true);
+    }
+
+    function _updateClient(
+        IUpdateClientMsgs.MsgUpdateClient calldata msg_,
+        bool assumeResolvedValidatorSets
+    )
+        internal
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory)
+    {
         // Reuse the revision number already cached in clientState.latestHeight
         // (populated from the chain ID at client init time). Parsing the
         // chainId string here would cost ~9K gas per update and never change
@@ -42,38 +50,16 @@ contract UpdateClient is IUpdateClient {
             revisionNumber: msg_.clientState.latestHeight.revisionNumber
         });
         IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
-            trustThreshold: msg_.clientState.trustLevel,
-            trustingPeriod: msg_.clientState.trustingPeriod,
-            clockDrift: 15
+            trustThreshold: msg_.clientState.trustLevel, trustingPeriod: msg_.clientState.trustingPeriod, clockDrift: 15
         });
 
-        verifyHeader(
-            msg_.proposedHeader,
-            chainId,
-            options,
-            msg_.time,
-            msg_.trustedConsensusState
-        );
+        if (assumeResolvedValidatorSets) {
+            verifyHeaderResolved(msg_.proposedHeader, chainId, options, msg_.time, msg_.trustedConsensusState);
+        } else {
+            verifyHeader(msg_.proposedHeader, chainId, options, msg_.time, msg_.trustedConsensusState);
+        }
 
-        IICS07TendermintMsgs.ConsensusState memory newConsensusState = IICS07TendermintMsgs.ConsensusState({
-            timestamp: msg_.proposedHeader.signedHeader.header.time,
-            root: msg_.proposedHeader.signedHeader.header.appHash,
-            nextValidatorsHash: msg_.proposedHeader.signedHeader.header.nextValidatorsHash
-        });
-
-        IICS02ClientMsgs.Height memory newHeight = IICS02ClientMsgs.Height({
-            revisionNumber: chainId.revisionNumber,
-            revisionHeight: msg_.proposedHeader.signedHeader.header.height
-        });
-        IUpdateClientMsgs.UpdateClientOutput memory output = IUpdateClientMsgs.UpdateClientOutput({
-            clientState: msg_.clientState,
-            trustedConsensusState: msg_.trustedConsensusState,
-            newConsensusState: newConsensusState,
-            time: msg_.time,
-            trustedHeight: msg_.proposedHeader.trustedHeight,
-            newHeight: newHeight
-        });
-        return output;
+        return _buildOutput(msg_, chainId.revisionNumber);
     }
 
     function verifyHeader(
@@ -82,7 +68,10 @@ contract UpdateClient is IUpdateClient {
         IICS07TendermintMsgs.Options memory options,
         uint128 time,
         IICS07TendermintMsgs.ConsensusState memory trustedConsensusState
-    ) internal pure {
+    )
+        internal
+        pure
+    {
         IICS07TendermintMsgs.ChainId memory headerChainId = ChainId.get(proposedHeader.signedHeader.header.chainId);
         // Checks that the header fields are valid.
         validateBasic(proposedHeader, headerChainId);
@@ -96,9 +85,7 @@ contract UpdateClient is IUpdateClient {
         {
             bytes32 nextValSetHash = Header.hashValSet(proposedHeader.trustedNextValidatorSet);
             if (nextValSetHash != trustedConsensusState.nextValidatorsHash) {
-                revert FailedToVerifyHeader(
-                    "trusted next validator set hash does not match hash stored on chain"
-                );
+                revert FailedToVerifyHeader("trusted next validator set hash does not match hash stored on chain");
             }
 
             IICS07TendermintMsgs.TrustedBlockState memory trustedState = IICS07TendermintMsgs.TrustedBlockState({
@@ -110,19 +97,52 @@ contract UpdateClient is IUpdateClient {
             });
 
             IICS07TendermintMsgs.UntrustedBlockState memory untrustedState = IICS07TendermintMsgs.UntrustedBlockState({
-                signedHeader: proposedHeader.signedHeader,
-                validatorSet: proposedHeader.validatorSet
+                signedHeader: proposedHeader.signedHeader, validatorSet: proposedHeader.validatorSet
             });
 
-            verifyUpdateHeader(
-                untrustedState,
-                trustedState,
-                options,
-                time
-            );
+            verifyUpdateHeader(untrustedState, trustedState, options, time);
+        }
+    }
+
+    function verifyHeaderResolved(
+        IICS07TendermintMsgs.Header memory proposedHeader,
+        IICS07TendermintMsgs.ChainId memory chainId,
+        IICS07TendermintMsgs.Options memory options,
+        uint128 time,
+        IICS07TendermintMsgs.ConsensusState memory trustedConsensusState
+    )
+        internal
+        pure
+    {
+        IICS07TendermintMsgs.ChainId memory headerChainId = ChainId.get(proposedHeader.signedHeader.header.chainId);
+        validateBasicResolved(proposedHeader, headerChainId);
+        verifyChainIdVersion(chainId, headerChainId);
+
+        IICS07TendermintMsgs.TrustedBlockState memory trustedState = IICS07TendermintMsgs.TrustedBlockState({
+            chainId: chainId.id,
+            headerTime: trustedConsensusState.timestamp,
+            height: proposedHeader.trustedHeight.revisionHeight,
+            nextValidatorSet: proposedHeader.trustedNextValidatorSet,
+            nextValidatorHash: trustedConsensusState.nextValidatorsHash
+        });
+
+        IICS07TendermintMsgs.UntrustedBlockState memory untrustedState = IICS07TendermintMsgs.UntrustedBlockState({
+            signedHeader: proposedHeader.signedHeader, validatorSet: proposedHeader.validatorSet
+        });
+
+        if (proposedHeader.validatorSet.validators.length == 0) {
+            revert FailedToVerifyHeader("proposed validator set not resolved");
         }
 
+        uint64 trustedNextHeight = proposedHeader.trustedHeight.revisionHeight + 1;
+        if (
+            proposedHeader.signedHeader.header.height != trustedNextHeight
+                && proposedHeader.trustedNextValidatorSet.validators.length == 0
+        ) {
+            revert FailedToVerifyHeader("trusted next validator set not resolved");
+        }
 
+        verifyUpdateHeader(untrustedState, trustedState, options, time);
     }
 
     function verifyUpdateHeader(
@@ -130,7 +150,10 @@ contract UpdateClient is IUpdateClient {
         IICS07TendermintMsgs.TrustedBlockState memory trustedState,
         IICS07TendermintMsgs.Options memory options,
         uint128 time
-    ) internal pure {
+    )
+        internal
+        pure
+    {
         Predicates.verifyHeaderMatchesCommit(untrustedState);
         Predicates.verifyAgainstTrusted(untrustedState, trustedState, options.trustingPeriod, time);
         /// Check that the untrusted header is from past.
@@ -142,29 +165,28 @@ contract UpdateClient is IUpdateClient {
     function verifyChainIdVersion(
         IICS07TendermintMsgs.ChainId memory chainId,
         IICS07TendermintMsgs.ChainId memory headerChainId
-    ) internal pure {
+    )
+        internal
+        pure
+    {
         if (chainId.revisionNumber != headerChainId.revisionNumber) {
-            revert HeaderChainIdMismatch(
-                headerChainId.id,
-                chainId.id
-            );
+            revert HeaderChainIdMismatch(headerChainId.id, chainId.id);
         }
     }
 
     function validateBasic(
         IICS07TendermintMsgs.Header memory header,
         IICS07TendermintMsgs.ChainId memory headerChainId
-    ) internal pure {
+    )
+        internal
+        pure
+    {
         if (headerChainId.revisionNumber != header.trustedHeight.revisionNumber) {
-            revert MismatchedRevisionHeight(
-                headerChainId.revisionNumber,
-                header.trustedHeight.revisionNumber
-            );
+            revert MismatchedRevisionHeight(headerChainId.revisionNumber, header.trustedHeight.revisionNumber);
         }
 
         IICS02ClientMsgs.Height memory height = IICS02ClientMsgs.Height({
-            revisionNumber: headerChainId.revisionNumber,
-            revisionHeight: header.signedHeader.header.height
+            revisionNumber: headerChainId.revisionNumber, revisionHeight: header.signedHeader.header.height
         });
 
         // We need to ensure that the trusted height (representing the
@@ -172,18 +194,54 @@ contract UpdateClient is IUpdateClient {
         // based on) must be smaller than height of the new header that we're
         // installing.
         if (HeightCmp.ge(header.trustedHeight, height)) {
-            revert InvalidHeaderHeight(
-                height.revisionHeight
-            );
+            revert InvalidHeaderHeight(height.revisionHeight);
         }
 
         bytes32 valSetHash = Header.hashValSet(header.validatorSet);
         if (valSetHash != header.signedHeader.header.validatorsHash) {
-            revert ValSetHashMismatch(
-                header.signedHeader.header.validatorsHash,
-                valSetHash
-            );
+            revert ValSetHashMismatch(header.signedHeader.header.validatorsHash, valSetHash);
         }
     }
 
+    function validateBasicResolved(
+        IICS07TendermintMsgs.Header memory header,
+        IICS07TendermintMsgs.ChainId memory headerChainId
+    )
+        internal
+        pure
+    {
+        if (headerChainId.revisionNumber != header.trustedHeight.revisionNumber) {
+            revert MismatchedRevisionHeight(headerChainId.revisionNumber, header.trustedHeight.revisionNumber);
+        }
+
+        IICS02ClientMsgs.Height memory height = IICS02ClientMsgs.Height({
+            revisionNumber: headerChainId.revisionNumber, revisionHeight: header.signedHeader.header.height
+        });
+
+        if (HeightCmp.ge(header.trustedHeight, height)) {
+            revert InvalidHeaderHeight(height.revisionHeight);
+        }
+    }
+
+    function _buildOutput(
+        IUpdateClientMsgs.MsgUpdateClient calldata msg_,
+        uint64 revisionNumber
+    )
+        private
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory output)
+    {
+        output.clientState = msg_.clientState;
+        output.trustedConsensusState = msg_.trustedConsensusState;
+        output.newConsensusState = IICS07TendermintMsgs.ConsensusState({
+            timestamp: msg_.proposedHeader.signedHeader.header.time,
+            root: msg_.proposedHeader.signedHeader.header.appHash,
+            nextValidatorsHash: msg_.proposedHeader.signedHeader.header.nextValidatorsHash
+        });
+        output.time = msg_.time;
+        output.trustedHeight = msg_.proposedHeader.trustedHeight;
+        output.newHeight = IICS02ClientMsgs.Height({
+            revisionNumber: revisionNumber, revisionHeight: msg_.proposedHeader.signedHeader.header.height
+        });
+    }
 }
