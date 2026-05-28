@@ -18,7 +18,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	benchcfg "relayer/benchmark"
+	utils "relayer/utils"
 	tendermintClient "relayer/client"
 	"relayer/keys"
 	"relayer/prover"
@@ -489,8 +489,8 @@ func Start(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to get benchmark flag: %w", err)
 			}
-			benchcfg.SetEnabled(benchmarkFlag || benchcfg.Enabled())
-			if benchcfg.Enabled() {
+			utils.SetBenchEnabled(benchmarkFlag || utils.BenchEnabled())
+			if utils.BenchEnabled() {
 				log.Printf("[benchmark] enabled: detailed gas/timing logs are active")
 			}
 

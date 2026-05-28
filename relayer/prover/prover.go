@@ -24,7 +24,7 @@ import (
 	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/std/math/uints"
 
-	benchcfg "relayer/benchmark"
+	relayerutils "relayer/utils"
 )
 
 // bucketArtifacts holds the compiled circuit, Groth16 key pair, and the
@@ -137,7 +137,7 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 		return
 	}
 
-	benchEnabled := benchcfg.Enabled()
+	benchEnabled := relayerutils.BenchEnabled()
 	var totalStart time.Time
 	if benchEnabled {
 		totalStart = time.Now()

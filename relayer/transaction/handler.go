@@ -7,11 +7,9 @@ import (
 	"log"
 	"math/big"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
-	benchcfg "relayer/benchmark"
 	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	contractICS26Router "relayer/bindings/ICS26Router"
 	routerContract "relayer/bindings/ICS26Router"
@@ -50,22 +48,6 @@ type Handler struct {
 }
 
 const ethTxReceiptTimeout = 45 * time.Second
-const defaultEthGasLimit uint64 = 3_000_000
-const benchmarkEthGasLimit uint64 = 16_000_000
-
-func ethGasLimit() (uint64, error) {
-	if raw := strings.TrimSpace(os.Getenv("ETH_GAS_LIMIT")); raw != "" {
-		gasLimit, err := strconv.ParseUint(raw, 10, 64)
-		if err != nil {
-			return 0, fmt.Errorf("parse ETH_GAS_LIMIT: %w", err)
-		}
-		return gasLimit, nil
-	}
-	if benchcfg.Enabled() {
-		return benchmarkEthGasLimit, nil
-	}
-	return defaultEthGasLimit, nil
-}
 
 func routerManagesProofSubmission(ctx services.Context) bool {
 	roleManager := ctx.RoleManagerAddress()
@@ -145,7 +127,7 @@ type benchGasLog struct {
 }
 
 func logEthBenchGasEvents(ctx services.Context, receipt *types.Receipt) {
-	if !benchcfg.Enabled() || receipt == nil {
+	if !utils.BenchEnabled() || receipt == nil {
 		return
 	}
 
@@ -411,12 +393,8 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		return fmt.Errorf("[SendEthTx] failed to create auth transactor: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
-	auth.Value = big.NewInt(0) // in wei
-	gasLimit, err := ethGasLimit()
-	if err != nil {
-		return fmt.Errorf("[SendEthTx] %w", err)
-	}
-	auth.GasLimit = gasLimit
+	auth.Value = big.NewInt(0)      // in wei
+	auth.GasLimit = uint64(3000000) // in units
 	auth.GasPrice = gasPrice
 
 	ics07Tendermint, err := tendermintContract.NewContractGroth16ICS07Tendermint(
@@ -437,7 +415,7 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 
 	var tx *types.Transaction
 	var txLabel string
-	benchEnabled := benchcfg.Enabled()
+	benchEnabled := utils.BenchEnabled()
 	var benchStart time.Time
 	if benchEnabled {
 		benchStart = time.Now()
@@ -682,11 +660,7 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
 	auth.Value = big.NewInt(0)
-	gasLimit, err := ethGasLimit()
-	if err != nil {
-		return fmt.Errorf("[SendEthTxBatch] %w", err)
-	}
-	auth.GasLimit = gasLimit
+	auth.GasLimit = uint64(16000000)
 	auth.GasPrice = gasPrice
 
 	ics26Router, err := contractICS26Router.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
@@ -697,7 +671,7 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 	// Optional per-inner-call gas breakdown. Each prefix multicall(calldata[:i])
 	// is estimated against the current pre-tx state; the delta between
 	// successive prefixes approximates the gas of the i-th inner call.
-	if benchcfg.InnerGasEnabled() {
+	if utils.BenchInnerGasEnabled() {
 		var prev uint64
 		for i := 1; i <= len(calldata); i++ {
 			partial, perr := parsedABI.Pack("multicall", calldata[:i])
@@ -724,7 +698,7 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 		}
 	}
 
-	benchEnabled := benchcfg.Enabled()
+	benchEnabled := utils.BenchEnabled()
 	var benchStart time.Time
 	if benchEnabled {
 		benchStart = time.Now()
@@ -1084,7 +1058,7 @@ func (h *Handler) CosmosSignerAddress() (string, error) {
 }
 
 func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
-	benchEnabled := benchcfg.Enabled()
+	benchEnabled := utils.BenchEnabled()
 	var benchStart time.Time
 	if benchEnabled {
 		benchStart = time.Now()
@@ -1305,7 +1279,7 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	if len(msgs) == 0 {
 		return nil
 	}
-	benchEnabled := benchcfg.Enabled()
+	benchEnabled := utils.BenchEnabled()
 	var benchStart time.Time
 	if benchEnabled {
 		benchStart = time.Now()
