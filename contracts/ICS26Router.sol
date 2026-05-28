@@ -49,11 +49,6 @@ contract ICS26Router is
     /// @notice The maximum timeout duration for a packet
     uint256 private constant MAX_TIMEOUT_DURATION = 1 days;
 
-    /// @notice Benchmark-only: emits remaining gas at named checkpoints.
-    /// @dev Used by the `benchmark` branch to profile gas across packet flows.
-    ///      Remove before mainnet — increases bytecode and per-call gas slightly.
-    event BenchGas(string label, uint256 gasLeft);
-
     /// @dev This contract is meant to be deployed by a proxy, so the constructor is not used
     // natlint-disable-next-line MissingNotice
     constructor() {
@@ -149,7 +144,6 @@ contract ICS26Router is
     // NOTE: Reentrancy disabled for this function via the `nonReentrant` modifier.
     // slither-disable-next-line reentrancy-no-eth
     function recvPacket(IICS26RouterMsgs.MsgRecvPacket calldata msg_) external nonReentrant restricted {
-        emit BenchGas("recvPacket:start", gasleft());
         // TODO: Support multi-payload packets (#93)
         require(msg_.packet.payloads.length == 1, IBCMultiPayloadPacketNotSupported());
         IICS26RouterMsgs.Payload calldata payload = msg_.packet.payloads[0];
@@ -173,9 +167,7 @@ contract ICS26Router is
         // Override path and value so the light client proves the actual packet commitment
         membershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, commitmentPath);
         membershipMsg.value = abi.encodePacked(commitmentBz);
-        emit BenchGas("recvPacket:beforeVerify", gasleft());
         getClient(msg_.packet.destClient).verifyMembership(membershipMsg);
-        emit BenchGas("recvPacket:afterVerify", gasleft());
 
         // recvPacket will no-op if the packet receipt already exists
         // This no-op check must happen after the membership verification for proofs to be cached
@@ -206,14 +198,12 @@ contract ICS26Router is
 
         commitPacketAcknowledgement(msg_.packet, acks);
         emit WriteAcknowledgement(msg_.packet.destClient, msg_.packet.sequence, msg_.packet, acks);
-        emit BenchGas("recvPacket:end", gasleft());
     }
 
     /// @inheritdoc IICS26RouterAccessControlled
     // NOTE: Reentrancy disabled for this function via the `nonReentrant` modifier.
     // slither-disable-next-line reentrancy-no-eth
     function ackPacket(IICS26RouterMsgs.MsgAckPacket calldata msg_) external nonReentrant restricted {
-        emit BenchGas("ackPacket:start", gasleft());
         // TODO: Support multi-payload packets #93
         require(msg_.packet.payloads.length == 1, IBCMultiPayloadPacketNotSupported());
         IICS26RouterMsgs.Payload calldata payload = msg_.packet.payloads[0];
@@ -235,9 +225,7 @@ contract ICS26Router is
         // Override path and value so the light client proves the actual packet commitment
         membershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, commitmentPath);
         membershipMsg.value = abi.encodePacked(commitmentBz);
-        emit BenchGas("ackPacket:beforeVerify", gasleft());
         getClient(msg_.packet.sourceClient).verifyMembership(membershipMsg);
-        emit BenchGas("ackPacket:afterVerify", gasleft());
 
         // ackPacket will no-op if the packet commitment does not exist
         // This no-op check must happen after the membership verification for proofs to be cached
@@ -259,12 +247,10 @@ contract ICS26Router is
         );
 
         emit AckPacket(msg_.packet.sourceClient, msg_.packet.sequence, msg_.packet, msg_.acknowledgement);
-        emit BenchGas("ackPacket:end", gasleft());
     }
 
     /// @inheritdoc IICS26RouterAccessControlled
     function timeoutPacket(IICS26RouterMsgs.MsgTimeoutPacket calldata msg_) external nonReentrant restricted {
-        emit BenchGas("timeoutPacket:start", gasleft());
         // TODO: Support multi-payload packets #93
         require(msg_.packet.payloads.length == 1, IBCMultiPayloadPacketNotSupported());
         IICS26RouterMsgs.Payload calldata payload = msg_.packet.payloads[0];
@@ -280,9 +266,7 @@ contract ICS26Router is
         ILightClientMsgs.MsgVerifyNonMembership memory nonMembershipMsg = abi.decode(msg_.nonMembershipMsg, (ILightClientMsgs.MsgVerifyNonMembership));
         // Override path and value so the light client proves the actual packet commitment
         nonMembershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, receiptPath);
-        emit BenchGas("timeoutPacket:beforeVerify", gasleft());
         uint256 counterpartyTimestamp = getClient(msg_.packet.sourceClient).verifyNonMembership(nonMembershipMsg);
-        emit BenchGas("timeoutPacket:afterVerify", gasleft());
         require(
             counterpartyTimestamp >= msg_.packet.timeoutTimestamp,
             IBCInvalidTimeoutTimestamp(msg_.packet.timeoutTimestamp, counterpartyTimestamp)
@@ -307,7 +291,6 @@ contract ICS26Router is
         );
 
         emit TimeoutPacket(msg_.packet.sourceClient, msg_.packet.sequence, msg_.packet);
-        emit BenchGas("timeoutPacket:end", gasleft());
     }
 
     /// @notice Returns the storage of the ICS26Router contract
