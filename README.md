@@ -188,6 +188,54 @@ cast receipt 0x4d611d65a802bea81865e7f0e1f0413064518a79883b29481968804d0efa1692-
 Send an ICS-20 transfer from Cosmos to trigger an `updateClient` + `recvPacket`
 round-trip; the `[UpdateCosmosClient]` log line reports the chosen bucket.
 
+## Benchmark mode
+
+Detailed per-step gas + timing logs are off by default (production noise) and
+opt-in via flag or env. When enabled, the relayer emits `[bench][prover]`,
+`[bench][eth]`, `[bench][cosmos]`, and (in batches) `[bench][gas]` lines so a
+single E2E run can be diffed for performance regressions without rebuilding.
+
+### Enable
+
+```bash
+# CLI flag
+./relayer start --config config.example.json --benchmark
+
+# Env (equivalent)
+RELAYER_BENCHMARK=1 ./relayer start --config config.example.json
+```
+
+Either source turns it on; flag is the override. The relayer logs
+`[benchmark] enabled: detailed gas/timing logs are active` at startup so it's
+obvious which mode you're in.
+
+### What each line carries
+
+| Prefix | Where | Fields |
+|---|---|---|
+| `[bench][prover]` | per `GenerateProof` | `sigs`, `bucket`, `witness`, `prove`, `verify`, `total` |
+| `[bench][eth]` | per `SendEthTx` / `SendEthTxBatch` | label or `multicall labels=...`, `gasUsed`, `submit`, `wait`, `total`, `tx` |
+| `[bench][cosmos]` | per `SendCosmosTx` / `SendCosmosTxBatch` | msg type or `batch msgs=N`, `gasWanted`, `gasUsed`, `broadcast`, `total`, `height`, `hash` |
+| `[bench][gas]` | per multicall (when `BenchGas` events present) | per-checkpoint `gasLeft` + `delta` for each ICS26Router event label |
+
+### Optional: per-inner-call gas in multicall
+
+`SendEthTxBatch` packs N inner calls; the receipt only reports the total. To
+estimate per-inner gas (one `eth_estimateGas` RPC per inner — dev-only):
+
+```bash
+RELAYER_BENCH_INNER_GAS=1 ./relayer start --config config.example.json --benchmark
+```
+
+`RELAYER_BENCH_INNER_GAS` falls back to `RELAYER_BENCHMARK` when unset, so the
+flag alone gives you both unless you explicitly want to disable the inner
+estimates (`RELAYER_BENCH_INNER_GAS=0`).
+
+### Tests
+
+`utils.SetBenchEnabled(true|false)` lets tests force the flag without touching
+env. Definitions live in `relayer/utils/bench.go`.
+
 ## Contracts
 
 Core IBC protocol contracts:
