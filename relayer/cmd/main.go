@@ -18,6 +18,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
+	utils "relayer/utils"
 	tendermintClient "relayer/client"
 	"relayer/keys"
 	"relayer/prover"
@@ -37,6 +38,7 @@ const (
 	flagTrustingPeriod = "trusting-period"
 	flagTrustedBlock   = "trusted-block"
 	flagWasmChecksum   = "wasm-checksum"
+	flagBenchmark      = "benchmark"
 )
 
 // --- Config types for JSON config file ---
@@ -510,6 +512,15 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// Load .env for prover paths, private keys, etc.
 			_ = godotenv.Load()
 
+			benchmarkFlag, err := cmd.Flags().GetBool(flagBenchmark)
+			if err != nil {
+				return fmt.Errorf("failed to get benchmark flag: %w", err)
+			}
+			utils.SetBenchEnabled(benchmarkFlag || utils.BenchEnabled())
+			if utils.BenchEnabled() {
+				log.Printf("[benchmark] enabled: detailed gas/timing logs are active")
+			}
+
 			if err := validateStartupKeys(); err != nil {
 				return err
 			}
@@ -627,6 +638,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	cmd.Flags().Bool(flagGPUProve, false, "use the ICICLE GPU backend for proving (or set GPU_PROVE=1); requires an icicle-enabled build")
+	cmd.Flags().Bool(flagBenchmark, false, "enable detailed benchmark gas/timing logs (or set RELAYER_BENCHMARK=1)")
 	return cmd
 }
 
