@@ -46,7 +46,7 @@ contract Misbehaviour is IMisbehaviour {
         uint128 time
     ) external pure returns (IMisbehaviourMsgs.MisbehaviourOutput memory) {
         // check client state id and misbehaviour chain id
-        require(keccak256(abi.encode((clientState.chainId))) == keccak256(abi.encode(misbehaviour_.header1.signedHeader.header.chainId)), ChainIdMismatch());
+        require(keccak256(bytes(clientState.chainId)) == keccak256(bytes(misbehaviour_.header1.signedHeader.header.chainId)), ChainIdMismatch());
 
         validateBasic(misbehaviour_);
 
@@ -98,7 +98,7 @@ contract Misbehaviour is IMisbehaviour {
         validateHeaderBasic(misbehaviour_.header1);
         validateHeaderBasic(misbehaviour_.header2);
 
-        if (keccak256(abi.encode(misbehaviour_.header1.signedHeader.header.chainId)) != keccak256(abi.encode(misbehaviour_.header2.signedHeader.header.chainId))) {
+        if (keccak256(bytes(misbehaviour_.header1.signedHeader.header.chainId)) != keccak256(bytes(misbehaviour_.header2.signedHeader.header.chainId))) {
             revert IGroth16ICS07TendermintErrors.ChainIdMismatch ({
                 expected: misbehaviour_.header1.signedHeader.header.chainId,
                 actual: misbehaviour_.header2.signedHeader.header.chainId
