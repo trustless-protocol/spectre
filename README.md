@@ -101,8 +101,8 @@ Build requirements for the GPU path:
 Backend selection:
 
 - default: native CPU backend
-- env: `GPU_PROVE=1` or `GNARK_PROVER_BACKEND=icicle`
-- flag: `--gpu-prove` or `--prover-backend icicle`
+- env: `GPU_PROVE=1`
+- flag: `--gpu-prove`
 
 Examples:
 

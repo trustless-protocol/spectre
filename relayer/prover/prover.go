@@ -46,7 +46,7 @@ type EcipProver struct {
 // binDir/n{N}/{r1cs,pk,vk}.bin. It errors if any bucket's artifacts are
 // missing — the operator must run `cmd/setup-circuits` first.
 func NewProver(binDir string) (*EcipProver, error) {
-	b, err := NewProofBackendFromEnv()
+	b, err := NewProofBackend(GPUProveEnvEnabled())
 	if err != nil {
 		return nil, err
 	}

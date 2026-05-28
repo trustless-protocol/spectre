@@ -1,7 +1,6 @@
 package prover
 
 import (
-	"fmt"
 	"os"
 	"strings"
 
@@ -45,7 +44,9 @@ func (nativeProofBackend) Prove(r1cs constraint.ConstraintSystem, pk groth16.Pro
 	return groth16.Prove(r1cs, pk, fullWitness, opts...)
 }
 
-func gpuProveEnvEnabled() bool {
+// GPUProveEnvEnabled reports whether GPU_PROVE is set to a truthy value.
+// Accepts: 1, true, yes, on (case-insensitive).
+func GPUProveEnvEnabled() bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("GPU_PROVE"))) {
 	case "1", "true", "yes", "on":
 		return true
@@ -54,26 +55,13 @@ func gpuProveEnvEnabled() bool {
 	}
 }
 
-// NewProofBackendFromSelection selects the proving backend from explicit
-// inputs. Native proving is the default so hosts without CUDA/ICICLE keep
-// working. useGPU is a shorthand for selecting the ICICLE backend.
-func NewProofBackendFromSelection(name string, useGPU bool) (ProofBackend, error) {
+// NewProofBackend returns the ICICLE backend when useGPU is true, otherwise
+// the native gnark backend. Native is the default so hosts without CUDA/ICICLE
+// keep working. Selecting ICICLE on a build without -tags=icicle returns a
+// clear error.
+func NewProofBackend(useGPU bool) (ProofBackend, error) {
 	if useGPU {
 		return newICICLEProofBackendFromEnv()
 	}
-	name = strings.ToLower(strings.TrimSpace(name))
-	switch name {
-	case "", proverBackendNative, "cpu":
-		return nativeProofBackend{}, nil
-	case proverBackendICICLE, "gpu":
-		return newICICLEProofBackendFromEnv()
-	default:
-		return nil, fmt.Errorf("unsupported GNARK_PROVER_BACKEND=%q (supported: native, icicle)", name)
-	}
-}
-
-// NewProofBackendFromEnv selects the proving backend from environment
-// variables. GPU_PROVE=1 is a shorthand for GNARK_PROVER_BACKEND=icicle.
-func NewProofBackendFromEnv() (ProofBackend, error) {
-	return NewProofBackendFromSelection(os.Getenv("GNARK_PROVER_BACKEND"), gpuProveEnvEnabled())
+	return nativeProofBackend{}, nil
 }

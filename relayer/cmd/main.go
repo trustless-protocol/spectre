@@ -31,7 +31,6 @@ const (
 	flagGPUProve       = "gpu-prove"
 	flagOnlyOnce       = "only-once"
 	flagProofType      = "proof-type"
-	flagProverBackend  = "prover-backend"
 	flagOutput         = "output"
 	flagOutputPath     = "output-path"
 	flagTrustLevel     = "trust-level"
@@ -269,21 +268,26 @@ func cosmosWasmClientIDOrDefault(cfg *appConfig) string {
 	return envOrDefault("COSMOS_WASM_CLIENT_ID", cfg.CosmosToEthConfig.CosmosWasmClientID)
 }
 
+// proofBackendFromFlags resolves the GPU/CPU backend from --gpu-prove or the
+// GPU_PROVE env var. Returns (backend, true) when an explicit selection was
+// made, otherwise (nil, false) so the caller falls back to env-only defaults.
 func proofBackendFromFlags(cmd *cobra.Command) (prover.ProofBackend, bool, error) {
-	if !cmd.Flags().Changed(flagProverBackend) && !cmd.Flags().Changed(flagGPUProve) {
+	flagSet := cmd.Flags().Changed(flagGPUProve)
+	envSet := prover.GPUProveEnvEnabled()
+	if !flagSet && !envSet {
 		return nil, false, nil
 	}
 
-	backendName, err := cmd.Flags().GetString(flagProverBackend)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to get prover backend: %w", err)
-	}
-	gpuProve, err := cmd.Flags().GetBool(flagGPUProve)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to get gpu prove flag: %w", err)
+	useGPU := envSet
+	if flagSet {
+		v, err := cmd.Flags().GetBool(flagGPUProve)
+		if err != nil {
+			return nil, false, fmt.Errorf("failed to get gpu prove flag: %w", err)
+		}
+		useGPU = v
 	}
 
-	backend, err := prover.NewProofBackendFromSelection(backendName, gpuProve)
+	backend, err := prover.NewProofBackend(useGPU)
 	if err != nil {
 		return nil, false, err
 	}
@@ -622,8 +626,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 		},
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
-	cmd.Flags().String(flagProverBackend, "", "override proof backend for setup/proving (native or icicle)")
-	cmd.Flags().Bool(flagGPUProve, false, "shorthand for --prover-backend=icicle; requires an icicle-enabled build")
+	cmd.Flags().Bool(flagGPUProve, false, "use the ICICLE GPU backend for proving (or set GPU_PROVE=1); requires an icicle-enabled build")
 	return cmd
 }
 

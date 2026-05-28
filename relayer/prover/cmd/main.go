@@ -33,10 +33,8 @@ import (
 // Also runs a smoke prove+verify with real Ed25519 signatures so a broken
 // circuit fails fast before the operator tries to use it.
 func main() {
-	var backendName string
 	var gpuProve bool
-	flag.StringVar(&backendName, "prover-backend", "", "proof backend to use for setup/proving (native or icicle)")
-	flag.BoolVar(&gpuProve, "gpu-prove", false, "shorthand for -prover-backend=icicle")
+	flag.BoolVar(&gpuProve, "gpu-prove", false, "use the ICICLE GPU backend for setup/proving (or set GPU_PROVE=1); requires an icicle-enabled build")
 	flag.Parse()
 
 	outDir := "bin"
@@ -50,10 +48,9 @@ func main() {
 	if err := os.MkdirAll(solOutDir, 0o755); err != nil {
 		panic(fmt.Errorf("create solidity output dir: %w", err))
 	}
-	proofBackend, err := prover.NewProofBackendFromEnv()
-	if backendName != "" || gpuProve {
-		proofBackend, err = prover.NewProofBackendFromSelection(backendName, gpuProve)
-	}
+
+	useGPU := gpuProve || prover.GPUProveEnvEnabled()
+	proofBackend, err := prover.NewProofBackend(useGPU)
 	if err != nil {
 		panic(err)
 	}

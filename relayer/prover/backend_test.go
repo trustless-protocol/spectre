@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-func TestNewProofBackendFromSelection_DefaultsToNative(t *testing.T) {
-	backend, err := NewProofBackendFromSelection("", false)
+func TestNewProofBackend_DefaultsToNative(t *testing.T) {
+	backend, err := NewProofBackend(false)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -15,21 +15,11 @@ func TestNewProofBackendFromSelection_DefaultsToNative(t *testing.T) {
 	}
 }
 
-func TestNewProofBackendFromEnv_RejectsUnsupportedBackend(t *testing.T) {
-	t.Setenv("GPU_PROVE", "")
-	t.Setenv("GNARK_PROVER_BACKEND", "bogus")
-
-	_, err := NewProofBackendFromEnv()
-	if err == nil || !strings.Contains(err.Error(), "unsupported GNARK_PROVER_BACKEND") {
-		t.Fatalf("want unsupported backend error, got %v", err)
-	}
-}
-
-func TestNewProofBackendFromEnv_GPUProveAliasWins(t *testing.T) {
-	t.Setenv("GPU_PROVE", "1")
-	t.Setenv("GNARK_PROVER_BACKEND", "native")
-
-	backend, err := NewProofBackendFromEnv()
+// On a non-icicle build NewProofBackend(true) must return a clear error
+// pointing at the missing build tag; on an icicle build it must return the
+// ICICLE backend. One test, covers both modes.
+func TestNewProofBackend_GPURequiresIcicleBuild(t *testing.T) {
+	backend, err := NewProofBackend(true)
 	if err != nil {
 		if !strings.Contains(err.Error(), "requires building with -tags=icicle") {
 			t.Fatalf("unexpected error: %v", err)
@@ -38,5 +28,29 @@ func TestNewProofBackendFromEnv_GPUProveAliasWins(t *testing.T) {
 	}
 	if backend.Name() != proverBackendICICLE {
 		t.Fatalf("got backend %q, want %q", backend.Name(), proverBackendICICLE)
+	}
+}
+
+func TestGPUProveEnvEnabled(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want bool
+	}{
+		{"", false},
+		{"0", false},
+		{"false", false},
+		{"no", false},
+		{"1", true},
+		{"true", true},
+		{"YES", true},
+		{"On", true},
+	}
+	for _, c := range cases {
+		t.Run(c.raw, func(t *testing.T) {
+			t.Setenv("GPU_PROVE", c.raw)
+			if got := GPUProveEnvEnabled(); got != c.want {
+				t.Fatalf("GPU_PROVE=%q → %v, want %v", c.raw, got, c.want)
+			}
+		})
 	}
 }
