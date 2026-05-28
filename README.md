@@ -117,8 +117,8 @@ go build -o relayer ./cmd
 curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 
 # 4. Then start Cosmos and submit the Ethereum LC WASM via governance
-GAIA_VALIDATOR_COUNT=<16, defaut=4> ./scripts/local/run_cosmos_node.sh   # local Cosmos chain with funded test accounts
-GAIA_VALIDATOR_COUNT=<16, defaut=4> ./scripts/local/wasm.sh              # submit + vote-pass the Ethereum LC WASM proposal
+./scripts/local/run_cosmos_node.sh   # local Cosmos chain with funded test accounts
+./scripts/local/wasm.sh              # submit + vote-pass the Ethereum LC WASM proposal
 
 # 5. Deploy Tendermint light client on Ethereum.
 #    Copies the ICS07 address back into relayer/config.json automatically.
