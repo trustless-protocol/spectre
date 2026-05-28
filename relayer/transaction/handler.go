@@ -7,15 +7,17 @@ import (
 	"log"
 	"math/big"
 	"os"
-	"relayer/keys"
+	"strconv"
 	"strings"
 	"time"
 
+	benchcfg "relayer/benchmark"
 	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	contractICS26Router "relayer/bindings/ICS26Router"
 	routerContract "relayer/bindings/ICS26Router"
 	updateclient "relayer/bindings/UpdateClient"
 	relayerclient "relayer/client"
+	"relayer/keys"
 	services "relayer/services"
 	utils "relayer/utils"
 
@@ -48,6 +50,22 @@ type Handler struct {
 }
 
 const ethTxReceiptTimeout = 45 * time.Second
+const defaultEthGasLimit uint64 = 3_000_000
+const benchmarkEthGasLimit uint64 = 16_000_000
+
+func ethGasLimit() (uint64, error) {
+	if raw := strings.TrimSpace(os.Getenv("ETH_GAS_LIMIT")); raw != "" {
+		gasLimit, err := strconv.ParseUint(raw, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("parse ETH_GAS_LIMIT: %w", err)
+		}
+		return gasLimit, nil
+	}
+	if benchcfg.Enabled() {
+		return benchmarkEthGasLimit, nil
+	}
+	return defaultEthGasLimit, nil
+}
 
 func routerManagesProofSubmission(ctx services.Context) bool {
 	roleManager := ctx.RoleManagerAddress()
@@ -119,6 +137,73 @@ func formatCallErr(err error) string {
 		msg = fmt.Sprintf("%s (data=%v)", msg, de.ErrorData())
 	}
 	return msg
+}
+
+type benchGasLog struct {
+	Label   string
+	GasLeft *big.Int
+}
+
+func logEthBenchGasEvents(ctx services.Context, receipt *types.Receipt) {
+	if !benchcfg.Enabled() || receipt == nil {
+		return
+	}
+
+	parsedABI, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
+	if err != nil {
+		log.Printf("[bench][gas] failed to load BenchGas ABI: %v", err)
+		return
+	}
+	benchEvent, ok := parsedABI.Events["BenchGas"]
+	if !ok {
+		log.Printf("[bench][gas] BenchGas event missing from ICS26Router ABI")
+		return
+	}
+
+	router := ctx.RouterContract()
+	client := ctx.ClientContract()
+	prevGasLeft := make(map[string]*big.Int)
+	count := 0
+	for _, rawLog := range receipt.Logs {
+		if rawLog == nil || len(rawLog.Topics) == 0 || rawLog.Topics[0] != benchEvent.ID {
+			continue
+		}
+
+		source := ""
+		switch {
+		case router != nil && rawLog.Address == *router:
+			source = "ICS26Router"
+		case client != nil && rawLog.Address == *client:
+			source = "ICS07"
+		default:
+			continue
+		}
+
+		var event benchGasLog
+		if err := parsedABI.UnpackIntoInterface(&event, "BenchGas", rawLog.Data); err != nil {
+			log.Printf("[bench][gas] parse %s logIndex=%d failed: %v", source, rawLog.Index, err)
+			continue
+		}
+		count++
+		logBenchGasPoint(source, event.Label, event.GasLeft, prevGasLeft)
+	}
+
+	if count == 0 {
+		log.Printf("[bench][gas] no BenchGas events found in tx %s", receipt.TxHash.Hex())
+	}
+}
+
+func logBenchGasPoint(source string, label string, gasLeft *big.Int, prevGasLeft map[string]*big.Int) {
+	if gasLeft == nil {
+		log.Printf("[bench][gas] %s %s gasLeft=<nil> delta=n/a", source, label)
+		return
+	}
+	delta := "n/a"
+	if prev, ok := prevGasLeft[source]; ok && prev.Cmp(gasLeft) >= 0 {
+		delta = new(big.Int).Sub(prev, gasLeft).String()
+	}
+	log.Printf("[bench][gas] %s %s gasLeft=%s delta=%s", source, label, gasLeft.String(), delta)
+	prevGasLeft[source] = new(big.Int).Set(gasLeft)
 }
 
 func cosmosRouterClientID(ctx services.Context) (string, error) {
@@ -327,10 +412,11 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
 	auth.Value = big.NewInt(0) // in wei
-	// DEV-ONLY (benchmark branch): bumped from 3M to fit bucket 32/64. Mainnet
-	// requires the WrapperVerifier._hashWitness O(N^2) fix before this can
-	// drop back to a sane value.
-	auth.GasLimit = uint64(16000000)
+	gasLimit, err := ethGasLimit()
+	if err != nil {
+		return fmt.Errorf("[SendEthTx] %w", err)
+	}
+	auth.GasLimit = gasLimit
 	auth.GasPrice = gasPrice
 
 	ics07Tendermint, err := tendermintContract.NewContractGroth16ICS07Tendermint(
@@ -351,7 +437,11 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 
 	var tx *types.Transaction
 	var txLabel string
-	benchStart := time.Now()
+	benchEnabled := benchcfg.Enabled()
+	var benchStart time.Time
+	if benchEnabled {
+		benchStart = time.Now()
+	}
 	switch msg := msg.(type) {
 	case updateclient.IUpdateClientMsgsMsgUpdateClient:
 		txLabel = "updateClient"
@@ -421,9 +511,15 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		return fmt.Errorf("[SendEthTx] unsupported message type: %T", msg)
 	}
 
-	submitDur := time.Since(benchStart)
+	var submitDur time.Duration
+	if benchEnabled {
+		submitDur = time.Since(benchStart)
+	}
 	log.Printf("[SendEthTx] Tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
-	waitStart := time.Now()
+	var waitStart time.Time
+	if benchEnabled {
+		waitStart = time.Now()
+	}
 	receiptCtx, cancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
 	defer cancel()
 	receipt, err := bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
@@ -453,10 +549,16 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		}
 		return fmt.Errorf("tx %s reverted (status=0, gasUsed=%d)", tx.Hash().Hex(), receipt.GasUsed)
 	}
-	waitDur := time.Since(waitStart)
+	var waitDur time.Duration
+	if benchEnabled {
+		waitDur = time.Since(waitStart)
+	}
 	log.Printf("[SendEthTx] Tx %s confirmed in block %d (gasUsed=%d)", tx.Hash().Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
-	log.Printf("[bench][eth] %s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
-		txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
+	if benchEnabled {
+		logEthBenchGasEvents(ctx, receipt)
+		log.Printf("[bench][eth] %s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
+			txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
+	}
 
 	return nil
 }
@@ -580,9 +682,11 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
 	auth.Value = big.NewInt(0)
-	// DEV-ONLY (benchmark branch): same 16M cap as SendEthTx. Multicall sums
-	// the gas of every inner call so this may need to grow with batch size.
-	auth.GasLimit = uint64(16000000)
+	gasLimit, err := ethGasLimit()
+	if err != nil {
+		return fmt.Errorf("[SendEthTxBatch] %w", err)
+	}
+	auth.GasLimit = gasLimit
 	auth.GasPrice = gasPrice
 
 	ics26Router, err := contractICS26Router.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
@@ -592,10 +696,8 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 
 	// Optional per-inner-call gas breakdown. Each prefix multicall(calldata[:i])
 	// is estimated against the current pre-tx state; the delta between
-	// successive prefixes ≈ gas of the i-th inner call. Adds N estimateGas
-	// RPC roundtrips so it's gated behind RELAYER_BENCH_INNER_GAS=1 — dev/bench
-	// only, do not enable in production.
-	if os.Getenv("RELAYER_BENCH_INNER_GAS") != "" {
+	// successive prefixes approximates the gas of the i-th inner call.
+	if benchcfg.InnerGasEnabled() {
 		var prev uint64
 		for i := 1; i <= len(calldata); i++ {
 			partial, perr := parsedABI.Pack("multicall", calldata[:i])
@@ -622,16 +724,26 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 		}
 	}
 
-	benchStart := time.Now()
+	benchEnabled := benchcfg.Enabled()
+	var benchStart time.Time
+	if benchEnabled {
+		benchStart = time.Now()
+	}
 	log.Printf("[SendEthTxBatch] Submitting multicall: %d inner calls (%s)", len(calldata), labelStr)
 	tx, err := ics26Router.Multicall(auth, calldata)
 	if err != nil {
 		return fmt.Errorf("[SendEthTxBatch] failed to submit multicall: %w", err)
 	}
-	submitDur := time.Since(benchStart)
+	var submitDur time.Duration
+	if benchEnabled {
+		submitDur = time.Since(benchStart)
+	}
 	log.Printf("[SendEthTxBatch] Tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
 
-	waitStart := time.Now()
+	var waitStart time.Time
+	if benchEnabled {
+		waitStart = time.Now()
+	}
 	receiptCtx, cancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
 	defer cancel()
 	receipt, err := bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
@@ -661,11 +773,17 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 		}
 		return fmt.Errorf("multicall tx %s reverted (status=0, gasUsed=%d, labels=%s)", tx.Hash().Hex(), receipt.GasUsed, labelStr)
 	}
-	waitDur := time.Since(waitStart)
+	var waitDur time.Duration
+	if benchEnabled {
+		waitDur = time.Since(waitStart)
+	}
 	log.Printf("[SendEthTxBatch] Tx %s confirmed in block %d (gasUsed=%d, inner=%d)",
 		tx.Hash().Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed, len(calldata))
-	log.Printf("[bench][eth] multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
-		labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
+	if benchEnabled {
+		logEthBenchGasEvents(ctx, receipt)
+		log.Printf("[bench][eth] multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
+			labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
+	}
 
 	return nil
 }
@@ -966,7 +1084,11 @@ func (h *Handler) CosmosSignerAddress() (string, error) {
 }
 
 func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
-	benchStart := time.Now()
+	benchEnabled := benchcfg.Enabled()
+	var benchStart time.Time
+	if benchEnabled {
+		benchStart = time.Now()
+	}
 	protoMsg, ok := msg.(proto.Message)
 	if !ok {
 		return fmt.Errorf("message must be a proto.Message")
@@ -1143,12 +1265,18 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	}
 
 	// Broadcast the transaction using BroadcastTxCommit for detailed error info
-	broadcastStart := time.Now()
+	var broadcastStart time.Time
+	if benchEnabled {
+		broadcastStart = time.Now()
+	}
 	commitResult, err := svcCtx.CosmosClient().BroadcastTxCommit(context.Background(), txBytes)
 	if err != nil {
 		return fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
-	broadcastDur := time.Since(broadcastStart)
+	var broadcastDur time.Duration
+	if benchEnabled {
+		broadcastDur = time.Since(broadcastStart)
+	}
 
 	if commitResult.CheckTx.Code != 0 {
 		log.Printf("[SendCosmosTx] CheckTx FAILED: code=%d codespace=%s log=%s info=%s data=%x",
@@ -1164,9 +1292,11 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	}
 
 	log.Printf("[SendCosmosTx] Tx confirmed at height %d hash=%s", commitResult.Height, commitResult.Hash.String())
-	log.Printf("[bench][cosmos] %s gasWanted=%d gasUsed=%d broadcast=%s total=%s height=%d hash=%s",
-		msgLabel, commitResult.TxResult.GasWanted, commitResult.TxResult.GasUsed,
-		broadcastDur, time.Since(benchStart), commitResult.Height, commitResult.Hash.String())
+	if benchEnabled {
+		log.Printf("[bench][cosmos] %s gasWanted=%d gasUsed=%d broadcast=%s total=%s height=%d hash=%s",
+			msgLabel, commitResult.TxResult.GasWanted, commitResult.TxResult.GasUsed,
+			broadcastDur, time.Since(benchStart), commitResult.Height, commitResult.Hash.String())
+	}
 	return nil
 }
 
@@ -1175,7 +1305,11 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	if len(msgs) == 0 {
 		return nil
 	}
-	benchStart := time.Now()
+	benchEnabled := benchcfg.Enabled()
+	var benchStart time.Time
+	if benchEnabled {
+		benchStart = time.Now()
+	}
 
 	// Convert all messages to sdk.Msg
 	// Get the private key from environment variable
@@ -1338,12 +1472,18 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	}
 
 	// Broadcast the transaction using BroadcastTxCommit for detailed error info
-	broadcastStart := time.Now()
+	var broadcastStart time.Time
+	if benchEnabled {
+		broadcastStart = time.Now()
+	}
 	commitResult, err := svcCtx.CosmosClient().BroadcastTxCommit(context.Background(), txBytes)
 	if err != nil {
 		return fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
-	broadcastDur := time.Since(broadcastStart)
+	var broadcastDur time.Duration
+	if benchEnabled {
+		broadcastDur = time.Since(broadcastStart)
+	}
 
 	if commitResult.CheckTx.Code != 0 {
 		log.Printf("[SendCosmosTxBatch] CheckTx FAILED: code=%d codespace=%s log=%s info=%s data=%x",
@@ -1359,9 +1499,11 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	}
 
 	log.Printf("[SendCosmosTxBatch] Tx confirmed at height %d hash=%s (msgs=%d)", commitResult.Height, commitResult.Hash.String(), len(sdkMsgs))
-	log.Printf("[bench][cosmos] batch msgs=%d gasWanted=%d gasUsed=%d broadcast=%s total=%s height=%d hash=%s",
-		len(sdkMsgs), commitResult.TxResult.GasWanted, commitResult.TxResult.GasUsed,
-		broadcastDur, time.Since(benchStart), commitResult.Height, commitResult.Hash.String())
+	if benchEnabled {
+		log.Printf("[bench][cosmos] batch msgs=%d gasWanted=%d gasUsed=%d broadcast=%s total=%s height=%d hash=%s",
+			len(sdkMsgs), commitResult.TxResult.GasWanted, commitResult.TxResult.GasUsed,
+			broadcastDur, time.Since(benchStart), commitResult.Height, commitResult.Hash.String())
+	}
 
 	return nil
 }

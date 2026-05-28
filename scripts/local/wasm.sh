@@ -22,19 +22,9 @@ echo '{
  "expedited": false
 }' > proposal.json
 
-# Multi-node layout (matches run_cosmos_node_n.sh):
-#   homes : $GAIA_BASE/val<i>     (default GAIA_BASE=$HOME/.gaia-multi)
-#   keys  : val<i>                (i in [0, NUM_NODES))
-#   rpc   : tcp://127.0.0.1:$((RPC_BASE + i))
-NUM_NODES="${NUM_NODES:-20}"
-GAIA_BASE="${GAIA_BASE:-$HOME/.gaia-multi}"
-RPC_BASE="${RPC_BASE:-31000}"
-PRIMARY_NODE="tcp://127.0.0.1:${RPC_BASE}"
-
 gaiad tx gov submit-proposal proposal.json \
-  --from val0 \
-  --home "$GAIA_BASE/val0" \
-  --node "$PRIMARY_NODE" \
+  --from val1 \
+  --home "$HOME/.gaia" \
   --chain-id "$CHAIN_ID" \
   --keyring-backend "$KEYRING" \
   --gas 200000000 \
@@ -44,30 +34,38 @@ gaiad tx gov submit-proposal proposal.json \
 sleep 5
 
 PROPOSAL_ID=$(
-  gaiad q gov proposals --node "$PRIMARY_NODE" -o json \
+  gaiad q gov proposals -o json \
     | jq -r '.proposals | sort_by(.id | tonumber) | last | .id'
 )
 
 sleep 5
 
-# Vote yes from every validator so we cross the 2/3 quorum regardless of stake
-# distribution. Each vote goes through that validator's own RPC to spread load.
-i=0
-while [ "$i" -lt "$NUM_NODES" ]; do
-  NODE_RPC="tcp://127.0.0.1:$((RPC_BASE + i))"
-  gaiad tx gov vote "$PROPOSAL_ID" yes \
-    --from "val$i" \
-    --home "$GAIA_BASE/val$i" \
-    --node "$NODE_RPC" \
-    --chain-id "$CHAIN_ID" \
-    --keyring-backend "$KEYRING" \
-    --gas-prices 1stake \
-    -y
-  i=$((i + 1))
-done
+gaiad tx gov vote "$PROPOSAL_ID" yes \
+  --from val1 \
+  --home "$HOME/.gaia" \
+  --chain-id "$CHAIN_ID" \
+  --keyring-backend "$KEYRING" \
+  --gas-prices 1stake \
+  -y
+
+gaiad tx gov vote "$PROPOSAL_ID" yes \
+  --from val2 \
+  --home "$HOME/.gaia-val2" \
+  --chain-id "$CHAIN_ID" \
+  --keyring-backend "$KEYRING" \
+  --gas-prices 1stake \
+  -y
+
+gaiad tx gov vote "$PROPOSAL_ID" yes \
+  --from val3 \
+  --home "$HOME/.gaia-val3" \
+  --chain-id "$CHAIN_ID" \
+  --keyring-backend "$KEYRING" \
+  --gas-prices 1stake \
+  -y
 
 sleep 30
 
-CHECKSUM=$(gaiad q ibc-wasm checksums --node "$PRIMARY_NODE" | yq '.checksums[0]')
+CHECKSUM=$(gaiad q ibc-wasm checksums | yq '.checksums[0]')
 
 echo "Checksum: 0x$CHECKSUM"
