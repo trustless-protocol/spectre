@@ -48,11 +48,16 @@ type EcipProver struct {
 // binDir/n{N}/{r1cs,pk,vk}.bin. It errors if any bucket's artifacts are
 // missing — the operator must run `cmd/setup-circuits` first.
 func NewProver(binDir string) (*EcipProver, error) {
+	start := time.Now()
+	log.Printf("[prover] loading circuit artifacts from %s (buckets=%v)", binDir, Buckets)
+
 	if benchcfg.Enabled() {
 		log.Printf("[NewProver] loading artifacts from %s", binDir)
 	}
 	p := &EcipProver{byBucket: make(map[int]*bucketArtifacts, len(Buckets))}
 	for _, n := range Buckets {
+		bucketStart := time.Now()
+		log.Printf("[prover] bucket n=%d loading artifacts", n)
 		if benchcfg.Enabled() {
 			log.Printf("[NewProver] loading bucket n=%d", n)
 		}
@@ -61,10 +66,12 @@ func NewProver(binDir string) (*EcipProver, error) {
 			return nil, fmt.Errorf("load bucket n=%d: %w", n, err)
 		}
 		p.byBucket[n] = art
+		log.Printf("[prover] bucket n=%d loaded in %s", n, time.Since(bucketStart))
 		if benchcfg.Enabled() {
 			log.Printf("[NewProver] bucket n=%d loaded", n)
 		}
 	}
+	log.Printf("[prover] loaded %d bucket(s) in %s", len(p.byBucket), time.Since(start))
 	if benchcfg.Enabled() {
 		log.Printf("[NewProver] loaded %d bucket(s)", len(p.byBucket))
 	}
@@ -73,6 +80,7 @@ func NewProver(binDir string) (*EcipProver, error) {
 
 func loadBucketArtifacts(binDir string, n int) (*bucketArtifacts, error) {
 	dir := filepath.Join(binDir, fmt.Sprintf("n%d", n))
+	log.Printf("[prover] bucket n=%d artifact dir=%s", n, dir)
 	if benchcfg.Enabled() {
 		log.Printf("[NewProver] bucket n=%d dir=%s", n, dir)
 	}
@@ -106,6 +114,14 @@ type readerFrom interface {
 }
 
 func readFromFile(path string, kind string, bucket int, dst readerFrom) error {
+	start := time.Now()
+	size := "unknown size"
+	if fi, err := os.Stat(path); err == nil {
+		size = fmt.Sprintf("%d bytes", fi.Size())
+	} else {
+		log.Printf("[prover] bucket n=%d stat failed for %s path=%s err=%v", bucket, kind, path, err)
+	}
+	log.Printf("[prover] bucket n=%d loading %s from %s (%s)", bucket, kind, path, size)
 	if benchcfg.Enabled() {
 		if fi, err := os.Stat(path); err == nil {
 			log.Printf("[NewProver] bucket n=%d reading %s from %s (%d bytes)", bucket, kind, path, fi.Size())
@@ -121,7 +137,10 @@ func readFromFile(path string, kind string, bucket int, dst readerFrom) error {
 	if benchcfg.Enabled() {
 		log.Printf("[NewProver] bucket n=%d opened %s", bucket, kind)
 	}
-	_, err = dst.ReadFrom(f)
+	readBytes, err := dst.ReadFrom(f)
+	if err == nil {
+		log.Printf("[prover] bucket n=%d loaded %s readBytes=%d elapsed=%s", bucket, kind, readBytes, time.Since(start))
+	}
 	if err == nil && benchcfg.Enabled() {
 		log.Printf("[NewProver] bucket n=%d loaded %s", bucket, kind)
 	}
