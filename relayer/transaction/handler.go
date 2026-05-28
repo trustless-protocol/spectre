@@ -61,6 +61,66 @@ func routerManagesProofSubmission(ctx services.Context) bool {
 	return *roleManager == *router
 }
 
+func estimateMulticallPrefixGas(
+	ctx services.Context,
+	from common.Address,
+	to common.Address,
+	data []byte,
+	gasCap uint64,
+) (uint64, string, error) {
+	callMsg := ethereum.CallMsg{
+		From: from,
+		To:   &to,
+		Data: data,
+	}
+
+	est, err := ctx.EthClient().EstimateGas(context.Background(), callMsg)
+	if err == nil {
+		return est, "estimateGas", nil
+	}
+
+	callMsg.Gas = gasCap
+	if _, callErr := ctx.EthClient().CallContract(context.Background(), callMsg, nil); callErr != nil {
+		return 0, "", fmt.Errorf(
+			"estimateGas failed: %s; high-gas eth_call failed: %s",
+			formatCallErr(err),
+			formatCallErr(callErr),
+		)
+	}
+
+	// Fall back to a binary search over eth_call when estimateGas is flaky on
+	// large multicall prefixes. This is dev-only bench instrumentation.
+	var lo uint64 = 21_000
+	hi := gasCap
+	for lo+1 < hi {
+		mid := lo + (hi-lo)/2
+		callMsg.Gas = mid
+		_, callErr := ctx.EthClient().CallContract(context.Background(), callMsg, nil)
+		if callErr == nil {
+			hi = mid
+			continue
+		}
+		lo = mid
+	}
+
+	return hi, "callBinarySearch", nil
+}
+
+func formatCallErr(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	msg := err.Error()
+	type dataErr interface {
+		ErrorData() interface{}
+	}
+	if de, ok := err.(dataErr); ok && de.ErrorData() != nil {
+		msg = fmt.Sprintf("%s (data=%v)", msg, de.ErrorData())
+	}
+	return msg
+}
+
 func cosmosRouterClientID(ctx services.Context) (string, error) {
 	clientID := ctx.CosmosRouterClientID()
 	if clientID == "" {
@@ -397,6 +457,215 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	log.Printf("[SendEthTx] Tx %s confirmed in block %d (gasUsed=%d)", tx.Hash().Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
 	log.Printf("[bench][eth] %s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 		txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
+
+	return nil
+}
+
+// SendEthTxBatch packs N packet-level ICS26Router calls into a single
+// `multicall(bytes[])` tx. V1 supports only the per-packet msg types that
+// `ICS26Router` exposes directly (recvPacket / ackPacket / timeoutPacket).
+// `updateClient`, `verifyMembership` and `verifyNonMembership` are NOT
+// permitted in a batch — they have separate submission paths.
+//
+// Empty input is a no-op. A single-msg input is forwarded to SendEthTx to
+// avoid the multicall wrapper's small overhead for N=1 (matches the
+// threshold contract in the V1 plan).
+//
+// Semantics: MulticallUpgradeable runs each inner call via delegatecall and
+// reverts the whole tx if any inner call reverts — so caller can treat
+// success as "every packet in the batch was relayed".
+func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	if len(msgs) == 1 {
+		return h.SendEthTx(ctx, msgs[0])
+	}
+
+	parsedABI, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
+	if err != nil {
+		return fmt.Errorf("[SendEthTxBatch] failed to load ICS26Router ABI: %w", err)
+	}
+
+	// cosmosClientID is only consulted when the batch contains an updateClient
+	// inner call; resolved lazily to avoid coupling pure-recvPacket batches to
+	// the router-managed config check.
+	var cosmosClientID string
+	var clientIDResolved bool
+
+	// Pack each per-packet call into raw calldata bytes that MulticallUpgradeable
+	// will delegatecall back into the same contract.
+	calldata := make([][]byte, 0, len(msgs))
+	labels := make([]string, 0, len(msgs))
+	for i, msg := range msgs {
+		var (
+			data []byte
+			lbl  string
+			perr error
+		)
+		switch m := msg.(type) {
+		case contractICS26Router.IICS26RouterMsgsMsgRecvPacket:
+			data, perr = parsedABI.Pack("recvPacket", m)
+			lbl = fmt.Sprintf("recvPacket:%d", m.Packet.Sequence)
+		case contractICS26Router.IICS26RouterMsgsMsgAckPacket:
+			data, perr = parsedABI.Pack("ackPacket", m)
+			lbl = fmt.Sprintf("ackPacket:%d", m.Packet.Sequence)
+		case contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket:
+			data, perr = parsedABI.Pack("timeoutPacket", m)
+			lbl = fmt.Sprintf("timeoutPacket:%d", m.Packet.Sequence)
+		case updateclient.IUpdateClientMsgsMsgUpdateClient:
+			// Folding updateClient into a multicall only works when the
+			// ICS26Router is the proof submitter — the multicall is dispatched
+			// on the router, so every inner call must target a router method.
+			// In direct-submission mode SendEthTx calls ICS07 directly; that
+			// path can't be expressed inside multicall, so caller must submit
+			// updateClient as a standalone tx.
+			if !routerManagesProofSubmission(ctx) {
+				return fmt.Errorf("[SendEthTxBatch] updateClient cannot be batched when ICS26Router is not the proof submitter; submit it via SendEthTx instead")
+			}
+			if !clientIDResolved {
+				cosmosClientID, perr = cosmosRouterClientID(ctx)
+				if perr != nil {
+					return fmt.Errorf("[SendEthTxBatch] resolve cosmos client id: %w", perr)
+				}
+				clientIDResolved = true
+			}
+			encoded, encErr := relayerclient.EncodeUpdateClientMsg(m)
+			if encErr != nil {
+				return fmt.Errorf("[SendEthTxBatch] encode updateClient msg %d: %w", i, encErr)
+			}
+			data, perr = parsedABI.Pack("updateClient", cosmosClientID, encoded)
+			lbl = "updateClient"
+		default:
+			return fmt.Errorf("[SendEthTxBatch] unsupported message type at index %d: %T (only updateClient/recvPacket/ackPacket/timeoutPacket allowed in multicall)", i, msg)
+		}
+		if perr != nil {
+			return fmt.Errorf("[SendEthTxBatch] pack msg %d (%s): %w", i, lbl, perr)
+		}
+		calldata = append(calldata, data)
+		labels = append(labels, lbl)
+	}
+
+	labelStr := strings.Join(labels, ",")
+
+	privKey := os.Getenv("ETH_PRIVATE_KEY")
+	if privKey == "" {
+		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
+	}
+	privateKey, err := keys.RestoreKey(privKey)
+	if err != nil {
+		return fmt.Errorf("[SendEthTxBatch] failed to restore private key: %w", err)
+	}
+	publicKey, err := keys.PublicKey(privateKey)
+	if err != nil {
+		return fmt.Errorf("[SendEthTxBatch] failed to derive public key: %w", err)
+	}
+	fromAddress := crypto.PubkeyToAddress(*publicKey)
+
+	nonce, err := ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
+	if err != nil {
+		return fmt.Errorf("[SendEthTxBatch] failed to get nonce: %w", err)
+	}
+	gasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
+	if err != nil {
+		return fmt.Errorf("[SendEthTxBatch] failed to suggest gas price: %w", err)
+	}
+	chainIdInt, err := ctx.EthClient().ChainID(context.Background())
+	if err != nil {
+		return fmt.Errorf("[SendEthTxBatch] invalid chain id: %v", err)
+	}
+	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
+	if err != nil {
+		return fmt.Errorf("[SendEthTxBatch] failed to create auth transactor: %w", err)
+	}
+	auth.Nonce = big.NewInt(int64(nonce))
+	auth.Value = big.NewInt(0)
+	// DEV-ONLY (benchmark branch): same 16M cap as SendEthTx. Multicall sums
+	// the gas of every inner call so this may need to grow with batch size.
+	auth.GasLimit = uint64(16000000)
+	auth.GasPrice = gasPrice
+
+	ics26Router, err := contractICS26Router.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
+	if err != nil {
+		return fmt.Errorf("[SendEthTxBatch] failed to bind ICS26Router: %w", err)
+	}
+
+	// Optional per-inner-call gas breakdown. Each prefix multicall(calldata[:i])
+	// is estimated against the current pre-tx state; the delta between
+	// successive prefixes ≈ gas of the i-th inner call. Adds N estimateGas
+	// RPC roundtrips so it's gated behind RELAYER_BENCH_INNER_GAS=1 — dev/bench
+	// only, do not enable in production.
+	if os.Getenv("RELAYER_BENCH_INNER_GAS") != "" {
+		var prev uint64
+		for i := 1; i <= len(calldata); i++ {
+			partial, perr := parsedABI.Pack("multicall", calldata[:i])
+			if perr != nil {
+				log.Printf("[bench][eth] inner gas estimate prefix=%d pack failed: %v", i, perr)
+				continue
+			}
+			to := *ctx.RouterContract()
+			est, mode, perr := estimateMulticallPrefixGas(ctx, fromAddress, to, partial, auth.GasLimit)
+			if perr != nil {
+				log.Printf("[bench][eth] inner gas estimate prefix=%d failed: %v", i, perr)
+				continue
+			}
+			delta := est
+			if i > 1 {
+				delta = est - prev
+			}
+			// delta = gas contributed by THIS inner alone (prefix[i] - prefix[i-1]).
+			// est = cumulative gas for the multicall prefix up through this inner.
+			// Headline the delta — that's the per-call cost the reader wants.
+			log.Printf("[bench][eth] inner[%d] %s gas=%d mode=%s (multicall cumulative=%d)",
+				i-1, labels[i-1], delta, mode, est)
+			prev = est
+		}
+	}
+
+	benchStart := time.Now()
+	log.Printf("[SendEthTxBatch] Submitting multicall: %d inner calls (%s)", len(calldata), labelStr)
+	tx, err := ics26Router.Multicall(auth, calldata)
+	if err != nil {
+		return fmt.Errorf("[SendEthTxBatch] failed to submit multicall: %w", err)
+	}
+	submitDur := time.Since(benchStart)
+	log.Printf("[SendEthTxBatch] Tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
+
+	waitStart := time.Now()
+	receiptCtx, cancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
+	defer cancel()
+	receipt, err := bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
+	if err != nil {
+		return fmt.Errorf("[SendEthTxBatch] failed waiting for tx receipt: %w", err)
+	}
+	if receipt.Status == 0 {
+		// Replay against the same calldata so MulticallUpgradeable re-throws the
+		// first inner revert and we can extract its selector + args.
+		callMsg := ethereum.CallMsg{
+			From:     fromAddress,
+			To:       tx.To(),
+			Gas:      tx.Gas(),
+			GasPrice: tx.GasPrice(),
+			Value:    tx.Value(),
+			Data:     tx.Data(),
+		}
+		_, callErr := ctx.EthClient().CallContract(context.Background(), callMsg, receipt.BlockNumber)
+		if callErr != nil {
+			log.Printf("[SendEthTxBatch] Revert reason: %v", callErr)
+			type dataErr interface {
+				ErrorData() interface{}
+			}
+			if de, ok := callErr.(dataErr); ok {
+				log.Printf("[SendEthTxBatch] Revert data (hex): %v", de.ErrorData())
+			}
+		}
+		return fmt.Errorf("multicall tx %s reverted (status=0, gasUsed=%d, labels=%s)", tx.Hash().Hex(), receipt.GasUsed, labelStr)
+	}
+	waitDur := time.Since(waitStart)
+	log.Printf("[SendEthTxBatch] Tx %s confirmed in block %d (gasUsed=%d, inner=%d)",
+		tx.Hash().Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed, len(calldata))
+	log.Printf("[bench][eth] multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
+		labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
 
 	return nil
 }

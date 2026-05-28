@@ -9,7 +9,7 @@ import { IGroth16ICS07TendermintErrors } from "../light-clients/errors/IGroth16I
 import { Predicates } from "../utils/Predicates.sol";
 import { Header } from "../utils/Header.sol";
 import { HeightCmp } from "../utils/HeightCmp.sol";
-import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
+import { ChainId } from "../utils/ChainId.sol";
 import {Math} from "@openzeppelin-contracts/utils/math/Math.sol";
 /**
  * @title Misbehavior
@@ -57,7 +57,12 @@ contract Misbehaviour is IMisbehaviour {
         });
 
         // TODO: convert timestamp nanos to secs
-        IICS07TendermintMsgs.ChainId memory chainId = getChainId(clientState.chainId);
+        // Reuse cached revisionNumber from clientState.latestHeight (set at
+        // client init from the parsed chain ID).
+        IICS07TendermintMsgs.ChainId memory chainId = IICS07TendermintMsgs.ChainId({
+            id: clientState.chainId,
+            revisionNumber: clientState.latestHeight.revisionNumber
+        });
 
         verifyMisbehaviourHeader(
             misbehaviour_.header1,
@@ -100,16 +105,17 @@ contract Misbehaviour is IMisbehaviour {
             });
         }
 
-        IICS07TendermintMsgs.ChainId memory header1ChainId = getChainId(misbehaviour_.header1.signedHeader.header.chainId);
-        IICS07TendermintMsgs.ChainId memory header2ChainId = getChainId(misbehaviour_.header2.signedHeader.header.chainId);
+        // Both headers proven equal by the keccak check above; parse once.
+        IICS07TendermintMsgs.ChainId memory headerChainId =
+            ChainId.get(misbehaviour_.header1.signedHeader.header.chainId);
 
         IICS02ClientMsgs.Height memory header1Height = IICS02ClientMsgs.Height({
-            revisionNumber: header1ChainId.revisionNumber,
+            revisionNumber: headerChainId.revisionNumber,
             revisionHeight: misbehaviour_.header1.signedHeader.header.height
         });
 
         IICS02ClientMsgs.Height memory header2Height = IICS02ClientMsgs.Height({
-            revisionNumber: header2ChainId.revisionNumber,
+            revisionNumber: headerChainId.revisionNumber,
             revisionHeight: misbehaviour_.header2.signedHeader.header.height
         });
 
@@ -133,7 +139,7 @@ contract Misbehaviour is IMisbehaviour {
     function validateHeaderBasic(
         IICS07TendermintMsgs.Header memory header
     ) internal pure {
-        IICS07TendermintMsgs.ChainId memory chainId = getChainId(header.signedHeader.header.chainId);
+        IICS07TendermintMsgs.ChainId memory chainId = ChainId.get(header.signedHeader.header.chainId);
         if (chainId.revisionNumber != header.trustedHeight.revisionNumber) {
             revert MismatchedRevisionHeight(
                 chainId.revisionNumber,
@@ -205,7 +211,7 @@ contract Misbehaviour is IMisbehaviour {
             header
         );
 
-        Predicates.verifyValSets(untrustedState);
+        Predicates.verifyHeaderMatchesCommit(untrustedState);
         Predicates.verifyAgainstTrusted(untrustedState, trustedState, options.trustingPeriod, currentTimestamp);
         Predicates.verifyCommitAgainstTrusted(untrustedState, trustedState, options);
     }
@@ -270,84 +276,6 @@ contract Misbehaviour is IMisbehaviour {
         }
     }
 
-    function getChainId(string memory id) pure internal returns (IICS07TendermintMsgs.ChainId memory) {
-        // TODO: validate id
-        bytes memory chainIdBytes = bytes(id);
-
-        // Find the last occurrence of '-'
-        int256 lastDashIndex = -1;
-        for (uint256 i = chainIdBytes.length-1; i >= 0; i--) {
-            if (chainIdBytes[i] == 0x2D) { // '-' character
-                lastDashIndex = int256(i);
-                break;
-            }
-        }
-
-        if (lastDashIndex == -1) {
-            if (1 <= chainIdBytes.length && chainIdBytes.length < 64) {
-                return IICS07TendermintMsgs.ChainId({
-                    id: id, 
-                    revisionNumber: 0
-                });
-            } else {
-                revert("Invalid chain ID length");
-            }
-        }
-
-        uint256 dashIndex = uint256(lastDashIndex);
-        // Extract revision number string
-        bytes memory revisionBytes = new bytes(chainIdBytes.length - dashIndex - 1);
-        for (uint256 i = 0; i < revisionBytes.length; i++) {
-            revisionBytes[i] = chainIdBytes[dashIndex + 1 + i];
-        }
-
-        // Validates the revision number not to start with leading zeros, like "01".
-        // Zero is the only allowed revision number with leading zero.
-        if (revisionBytes.length == 0 || (revisionBytes[0] == 0x30 && revisionBytes.length > 1)) {
-            if (1 <= chainIdBytes.length && chainIdBytes.length < 64) {
-                return IICS07TendermintMsgs.ChainId({
-                    id: id, 
-                    revisionNumber: 0
-                });
-            } else {
-                revert("Invalid chain ID length");
-            }
-        }
-
-        (bool success, uint256 parsedRevisionNumber) = Strings.tryParseUint(string(revisionBytes));
-        if (! success || parsedRevisionNumber > type(uint64).max) {
-            if (1 <= chainIdBytes.length && chainIdBytes.length < 64) {
-                return IICS07TendermintMsgs.ChainId({
-                    id: id, 
-                    revisionNumber: 0
-                });
-            } else {
-                revert("Invalid chain ID length");
-            }
-        }
-
-        uint64 revisionNumber = uint64(parsedRevisionNumber);
-        
-        // Extract chain name
-        bytes memory chainNameBytes = new bytes(dashIndex);
-        for (uint256 i = 0; i < dashIndex; i++) {
-            chainNameBytes[i] = chainIdBytes[i];
-        }
-
-        uint256 min = 1;
-        // Prefix must be at most `max_id_length - 21` characters long since the
-        // longest identifier we can construct is `{prefix}-{u64::MAX}` which
-        // extends prefix by 21 characters.
-        uint256 max = 43;
-        if (chainNameBytes.length <= min || chainNameBytes.length >= max) {
-            revert("Invalid chain prefix length");
-        }
-
-        return IICS07TendermintMsgs.ChainId({
-            id: id, 
-            revisionNumber: revisionNumber
-        });
-    }
 
     function nanosToSeconds(uint128 timestamp) internal pure returns (uint128) {
         return timestamp / 1e9;

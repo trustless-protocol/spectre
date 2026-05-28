@@ -230,7 +230,9 @@ contract EncodeTest is Test {
 
     function test_encodeTimestamp() public pure {
         // Go: gogotypes.StdTimeMarshal(time.Unix(1700000000, 0))
-        assertEq(Encode.encodeTimestamp(1700000000), hex"0880e2cfaa06");
+        // Encode.encodeTimestamp now takes nanoseconds and emits both
+        // seconds (field 1) and nanos (field 2) when non-zero.
+        assertEq(Encode.encodeTimestamp(uint128(1700000000) * 1e9), hex"0880e2cfaa06");
     }
 
     // ─── hashValSet tests ───
@@ -276,7 +278,7 @@ contract EncodeTest is Test {
             version: IICS07TendermintMsgs.Version({ blockVersion: 11, appVersion: 0 }),
             chainId: "cosmoshub-4",
             height: 12345,
-            time: 1700000000,
+            time: uint128(1700000000) * 1e9,
             hasLastBlockId: true,
             lastBlockId: IICS07TendermintMsgs.BlockId({
                 hashData: _hash2(),

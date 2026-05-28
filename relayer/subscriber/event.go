@@ -13,6 +13,7 @@ import (
 	"relayer/services"
 	"relayer/utils"
 
+	commettypes "github.com/cometbft/cometbft/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -35,6 +36,7 @@ const EVENT_SEND_PACKET_FIELD = "send_packet.encoded_packet_hex"
 const EVENT_WRITE_ACK_PACKET_FIELD = "write_acknowledgement.encoded_packet_hex"
 const EVENT_ACKNOWLEDGEMENT_FIELD = "write_acknowledgement.encoded_acknowledgement_hex"
 const EVENT_TIMEOUT_PACKET_FIELD = "timeout_packet.encoded_packet_hex"
+const EVENT_TX_HEIGHT_FIELD = "tx.height"
 
 const ethStartupRecoveryLookbackEnv = "ETH_STARTUP_LOOKBACK_BLOCKS"
 const defaultEthStartupRecoveryLookbackBlocks uint64 = 256
@@ -83,107 +85,149 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 			if sendPacketEvent == nil {
 				continue
 			}
+			blockNumber := txHeightFromEvent(e.Data, e.Events)
 
-			packetEncodedStr := sendPacketEvent[0]
-			packetBytes, err := hex.DecodeString(packetEncodedStr)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] send_packet: failed to decode hex: %v", err)
-				continue
+			// A single Cosmos tx can emit N send_packet events (e.g. a batch of
+			// MsgSendPacket); CometBFT collapses same-name attributes into a
+			// parallel slice, so we must iterate every entry, not just [0].
+			for _, packetEncodedStr := range sendPacketEvent {
+				packetBytes, err := hex.DecodeString(packetEncodedStr)
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] send_packet: failed to decode hex: %v", err)
+					continue
+				}
+
+				var packet channeltypesv2.Packet
+				err = proto.Unmarshal(packetBytes, &packet)
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] send_packet: failed to unmarshal: %v", err)
+					continue
+				}
+
+				ctx.Logger.Printf("[SubscribeCosmos] send_packet received: seq=%d src=%s",
+					packet.Sequence, packet.SourceClient)
+				packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
+				batchBuilder.AddCosmos(services.CosmosPacket{
+					Type:        services.CosmosSend,
+					Packet:      &packet,
+					BlockNumber: blockNumber,
+				})
 			}
-
-			var packet channeltypesv2.Packet
-			err = proto.Unmarshal(packetBytes, &packet)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] send_packet: failed to unmarshal: %v", err)
-				continue
-			}
-
-			ctx.Logger.Printf("[SubscribeCosmos] send_packet received: seq=%d src=%s",
-				packet.Sequence, packet.SourceClient)
-			packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
-			batchBuilder.AddCosmos(services.CosmosPacket{
-				Type:   services.CosmosSend,
-				Packet: &packet,
-			})
 		case e := <-ackPacketSub:
 			ackPacketEvent := e.Events[EVENT_WRITE_ACK_PACKET_FIELD]
 			ackEvent := e.Events[EVENT_ACKNOWLEDGEMENT_FIELD]
 			if len(ackPacketEvent) == 0 || len(ackEvent) == 0 {
 				continue
 			}
-
-			packetEncodedStr := ackPacketEvent[0]
-			packetBytes, err := hex.DecodeString(packetEncodedStr)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] write_ack: failed to decode packet hex: %v", err)
+			if len(ackPacketEvent) != len(ackEvent) {
+				ctx.Logger.Printf("[SubscribeCosmos] write_ack: packet/ack count mismatch (%d vs %d), skipping",
+					len(ackPacketEvent), len(ackEvent))
 				continue
 			}
+			blockNumber := txHeightFromEvent(e.Data, e.Events)
 
-			var packet channeltypesv2.Packet
-			err = proto.Unmarshal(packetBytes, &packet)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] write_ack: failed to unmarshal packet: %v", err)
-				continue
-			}
+			// Same multi-event handling as send_packet: iterate every parallel
+			// (packet, ack) pair in the tx, not just [0].
+			for i := range ackPacketEvent {
+				packetBytes, err := hex.DecodeString(ackPacketEvent[i])
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] write_ack: failed to decode packet hex: %v", err)
+					continue
+				}
 
-			ackBytes, err := hex.DecodeString(ackEvent[0])
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to decode ack hex: %v",
-					packet.Sequence, err)
-				continue
-			}
+				var packet channeltypesv2.Packet
+				err = proto.Unmarshal(packetBytes, &packet)
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] write_ack: failed to unmarshal packet: %v", err)
+					continue
+				}
 
-			var acknowledgement channeltypesv2.Acknowledgement
-			err = proto.Unmarshal(ackBytes, &acknowledgement)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to unmarshal ack: %v",
-					packet.Sequence, err)
-				continue
-			}
-			if len(acknowledgement.AppAcknowledgements) == 0 {
-				ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: missing app acknowledgements", packet.Sequence)
-				continue
-			}
+				ackBytes, err := hex.DecodeString(ackEvent[i])
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to decode ack hex: %v",
+						packet.Sequence, err)
+					continue
+				}
 
-			ctx.Logger.Printf("[SubscribeCosmos] write_ack received: seq=%d src=%s",
-				packet.Sequence, packet.SourceClient)
-			packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
-			batchBuilder.AddCosmos(services.CosmosPacket{
-				Type:     services.CosmosAck,
-				Packet:   &packet,
-				AckBytes: acknowledgement.AppAcknowledgements,
-			})
+				var acknowledgement channeltypesv2.Acknowledgement
+				err = proto.Unmarshal(ackBytes, &acknowledgement)
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to unmarshal ack: %v",
+						packet.Sequence, err)
+					continue
+				}
+				if len(acknowledgement.AppAcknowledgements) == 0 {
+					ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: missing app acknowledgements", packet.Sequence)
+					continue
+				}
+
+				ctx.Logger.Printf("[SubscribeCosmos] write_ack received: seq=%d src=%s",
+					packet.Sequence, packet.SourceClient)
+				packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
+				batchBuilder.AddCosmos(services.CosmosPacket{
+					Type:        services.CosmosAck,
+					Packet:      &packet,
+					AckBytes:    acknowledgement.AppAcknowledgements,
+					BlockNumber: blockNumber,
+				})
+			}
 		case e := <-timeoutPacketSub:
 			timeoutPacketEvent := e.Events[EVENT_TIMEOUT_PACKET_FIELD]
 			if timeoutPacketEvent == nil {
 				continue
 			}
+			blockNumber := txHeightFromEvent(e.Data, e.Events)
 
-			packetEncodedStr := timeoutPacketEvent[0]
-			packetBytes, err := hex.DecodeString(packetEncodedStr)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] timeout: failed to decode hex: %v", err)
-				continue
+			for _, packetEncodedStr := range timeoutPacketEvent {
+				packetBytes, err := hex.DecodeString(packetEncodedStr)
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] timeout: failed to decode hex: %v", err)
+					continue
+				}
+
+				var packet channeltypesv2.Packet
+				err = proto.Unmarshal(packetBytes, &packet)
+				if err != nil {
+					ctx.Logger.Printf("[SubscribeCosmos] timeout: failed to unmarshal: %v", err)
+					continue
+				}
+
+				ctx.Logger.Printf("[SubscribeCosmos] timeout received: seq=%d src=%s",
+					packet.Sequence, packet.SourceClient)
+				packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
+				batchBuilder.AddCosmos(services.CosmosPacket{
+					Type:        services.CosmosTimeout,
+					Packet:      &packet,
+					BlockNumber: blockNumber,
+				})
 			}
-
-			var packet channeltypesv2.Packet
-			err = proto.Unmarshal(packetBytes, &packet)
-			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] timeout: failed to unmarshal: %v", err)
-				continue
-			}
-
-			ctx.Logger.Printf("[SubscribeCosmos] timeout received: seq=%d src=%s",
-				packet.Sequence, packet.SourceClient)
-			packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
-			batchBuilder.AddCosmos(services.CosmosPacket{
-				Type:   services.CosmosTimeout,
-				Packet: &packet,
-			})
 		case <-c.Done():
 			return
 		}
 	}
+}
+
+func txHeightFromEvent(data commettypes.TMEventData, events map[string][]string) uint64 {
+	switch txData := data.(type) {
+	case commettypes.EventDataTx:
+		if txData.Height > 0 {
+			return uint64(txData.Height)
+		}
+	case *commettypes.EventDataTx:
+		if txData != nil && txData.Height > 0 {
+			return uint64(txData.Height)
+		}
+	}
+
+	values := events[EVENT_TX_HEIGHT_FIELD]
+	if len(values) == 0 {
+		return 0
+	}
+	height, err := strconv.ParseUint(values[0], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return height
 }
 
 // EthPacketToCosmosPacket converts an Ethereum ICS26Router packet to a Cosmos IBC v2 packet

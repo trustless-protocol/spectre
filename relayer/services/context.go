@@ -17,6 +17,31 @@ type Timestamp struct {
 	LatestUpdateHeight uint64
 }
 
+// Snapshot returns the fields under lock. Use this for every read now that
+// handleCosmos and handleEth run on separate goroutines (issue #76 #4) and the
+// routine / timeout-scanner goroutines also touch these timestamps.
+func (t *Timestamp) Snapshot() (time.Time, uint64) {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	return t.LatestUpdateTime, t.LatestUpdateHeight
+}
+
+// Set updates both fields under lock.
+func (t *Timestamp) Set(updateTime time.Time, height uint64) {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	t.LatestUpdateTime = updateTime
+	t.LatestUpdateHeight = height
+}
+
+// SetTime updates only the timestamp under lock (height is not tracked on the
+// Cosmos side).
+func (t *Timestamp) SetTime(updateTime time.Time) {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	t.LatestUpdateTime = updateTime
+}
+
 type Context struct {
 	Logger *log.Logger
 	Config Config

@@ -3,6 +3,7 @@ package client
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"strings"
 	"testing"
 )
 
@@ -61,9 +62,14 @@ func TestComputeTimestampAtSlot(t *testing.T) {
 }
 
 func TestToSummarizedSyncCommittee(t *testing.T) {
+	// BLS sync-committee pubkeys are exactly 48 bytes (96 hex chars).
+	// ToSummarizedSyncCommittee validates the length before SSZ-hashing.
+	pk48a := strings.Repeat("aa", 48)
+	pk48b := strings.Repeat("bb", 48)
+
 	t.Run("valid pubkeys with 0x prefix", func(t *testing.T) {
 		sc := &SyncCommittee{
-			Pubkeys:         []string{"0xaabbccdd", "0x11223344"},
+			Pubkeys:         []string{"0x" + pk48a, "0x" + pk48b},
 			AggregatePubkey: "0xdeadbeef",
 		}
 		result, err := sc.ToSummarizedSyncCommittee()
@@ -80,7 +86,7 @@ func TestToSummarizedSyncCommittee(t *testing.T) {
 
 	t.Run("valid pubkeys without prefix", func(t *testing.T) {
 		sc := &SyncCommittee{
-			Pubkeys:         []string{"aabbccdd"},
+			Pubkeys:         []string{pk48a},
 			AggregatePubkey: "aggregate",
 		}
 		result, err := sc.ToSummarizedSyncCommittee()
@@ -89,6 +95,15 @@ func TestToSummarizedSyncCommittee(t *testing.T) {
 		}
 		if result.PubkeysHash == "" {
 			t.Error("expected non-empty PubkeysHash")
+		}
+	})
+
+	t.Run("wrong-length pubkey rejected", func(t *testing.T) {
+		sc := &SyncCommittee{
+			Pubkeys: []string{"0xaabbccdd"}, // 4 bytes, not 48
+		}
+		if _, err := sc.ToSummarizedSyncCommittee(); err == nil {
+			t.Fatal("expected error for non-48-byte pubkey")
 		}
 	})
 

@@ -116,20 +116,20 @@ interface IGroth16ICS07TendermintErrors {
 
     /// @notice Returned when a key-value pair is not in the cache.
     /// @param path The path of the key-value pair.
-    /// @param value The value of the key-value pair.InsufficientTrustingPeriod    
+    /// @param value The value of the key-value pair.InsufficientTrustingPeriod
     error KeyValuePairNotInCache(bytes[] path, bytes value);
 
     /// @notice Returned when the membership value is empty.
     error EmptyValue();
 
-    /// @notice insufficient misbehaviour header height: header1 height `{height_1}` should be >= header2 height `{height_2}`.
-    /// @param height1 header1 height.
-    /// @param height2 header2 height. 
+    /// @notice insufficient misbehaviour header height: header1 height `{height_1}` should be >= header2 height
+    /// `{height_2}`. @param height1 header1 height.
+    /// @param height2 header2 height.
     error InsufficientMisbehaviourHeaderHeight(uint64 height1, uint64 height2);
 
     /// @notice mismatched revision heights.
     /// @param expected height.
-    /// @param actual height. 
+    /// @param actual height.
     error MismatchedRevisionHeights(uint64 expected, uint64 actual);
 
     /// @notice invalid header height.
@@ -180,4 +180,13 @@ interface IGroth16ICS07TendermintErrors {
     ///         tries to inflate quorum past what active gating allows.
     /// @param index the validator index that appears multiple times.
     error DuplicateSigner(uint32 index);
+
+    /// @notice Returned when the contract is asked to reuse a cached validator
+    ///         set but no cache entry exists for the requested hash.
+    /// @param validatorsHash the missing validator-set hash.
+    error ValidatorSetCacheMiss(bytes32 validatorsHash);
+
+    /// @notice Returned when a cached validator set is internally inconsistent.
+    /// @param validatorsHash the corrupted validator-set hash.
+    error CachedValidatorSetCorrupted(bytes32 validatorsHash);
 }

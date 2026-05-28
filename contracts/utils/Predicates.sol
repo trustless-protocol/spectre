@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 pragma solidity ^0.8.0;
 
 import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
@@ -5,15 +7,11 @@ import { Header } from "./Header.sol";
 
 /// @title Predicates
 library Predicates {
-    function verifyValSets(
+    /// Verify that the header hashes to the committed block ID and that the
+    /// commit shape is consistent with the supplied validator set.
+    function verifyHeaderMatchesCommit(
         IICS07TendermintMsgs.UntrustedBlockState memory untrustedState
     ) internal pure {
-        // Ensure the header validator hashes match the given validators
-        bytes32 valSetHash = Header.hashValSet(untrustedState.validatorSet);
-        if (valSetHash != untrustedState.signedHeader.header.validatorsHash) {
-            revert("invalid block: validator set hash mismatch");
-        }
-
         // Ensure the header matches the commit
         bytes32 headerHash = Header.hashHeader(untrustedState.signedHeader.header);
         if (headerHash != untrustedState.signedHeader.commit.blockId.hashData) {

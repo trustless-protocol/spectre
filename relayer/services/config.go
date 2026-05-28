@@ -47,8 +47,8 @@ func DefaultConfig() Config {
 		},
 		IntervalType: timestamp,
 		BatchConfig: BatchConfig{
-			BatchPeriods: time.Second * 3, // default each batch waits for 10 seconds
-			BatchSize:    10,              // default 10 packets per batch
+			BatchPeriods: time.Second * 3, // default each batch waits for 3 seconds
+			BatchSize:    5,               // default 5 packets per batch (multicall gas budget: ~5×2M wasm verify ≈ 10M, fits prod block limit)
 		},
 		TrustLevel: "2/3",
 		ProofType:  "groth16",

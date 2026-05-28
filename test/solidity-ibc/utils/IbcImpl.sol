@@ -10,6 +10,9 @@ import { Test } from "forge-std/Test.sol";
 import { IICS02ClientMsgs } from "../../../contracts/msgs/IICS02ClientMsgs.sol";
 import { IICS26RouterMsgs } from "../../../contracts/msgs/IICS26RouterMsgs.sol";
 import { IICS20TransferMsgs } from "../../../contracts/msgs/IICS20TransferMsgs.sol";
+import { ILightClientMsgs } from "../../../contracts/msgs/ILightClientMsgs.sol";
+import { IMembershipMsgs } from "../../../contracts/light-clients/msgs/IMembershipMsgs.sol";
+import { IICS07TendermintMsgs } from "../../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
 
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { IICS26Router } from "../../../contracts/interfaces/IICS26Router.sol";
@@ -207,6 +210,7 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
     function recvPacket(IICS26RouterMsgs.Packet calldata packet) external returns (bytes[] memory acks) {
         IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;
         msgRecvPacket.packet = packet;
+        msgRecvPacket.membershipMsg = _emptyMembershipMsg();
         vm.recordLogs();
         ics26Router.recvPacket(msgRecvPacket);
 
@@ -220,6 +224,7 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
         IICS26RouterMsgs.MsgAckPacket memory msgWriteAck;
         msgWriteAck.packet = packet;
         msgWriteAck.acknowledgement = acks[0];
+        msgWriteAck.membershipMsg = _emptyMembershipMsg();
 
         ics26Router.ackPacket(msgWriteAck);
     }
@@ -227,8 +232,57 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
     function timeoutPacket(IICS26RouterMsgs.Packet calldata packet) external {
         IICS26RouterMsgs.MsgTimeoutPacket memory msgTimeoutPacket;
         msgTimeoutPacket.packet = packet;
+        msgTimeoutPacket.nonMembershipMsg = _emptyNonMembershipMsg();
         vm.recordLogs();
         ics26Router.timeoutPacket(msgTimeoutPacket);
+    }
+
+    /// @dev Public wrapper for `_emptyMembershipMsg` so tests that bypass the
+    /// IbcImpl helpers (e.g. when exercising direct router calls for replay
+    /// protection) can still produce a well-formed encoded payload.
+    function emptyMembershipMsg() external pure returns (bytes memory) {
+        return _emptyMembershipMsg();
+    }
+
+    /// @dev The router decodes `membershipMsg` into a `MsgVerifyMembership`
+    /// struct before forwarding to the light client. With a dummy/Solidity
+    /// light client that ignores the proof, the payload only has to be
+    /// well-formed ABI for the struct — empty fields are fine.
+    function _emptyMembershipMsg() internal pure returns (bytes memory) {
+        return abi.encode(
+            ILightClientMsgs.MsgVerifyMembership({
+                height: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 0 }),
+                kvPairs: new IMembershipMsgs.KVPair[](0),
+                merkleProofs: new IMembershipMsgs.MerkleProof[](0),
+                appHash: bytes32(0),
+                trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+                    timestamp: 0,
+                    root: bytes32(0),
+                    nextValidatorsHash: bytes32(0)
+                }),
+                membershipType: IMembershipMsgs.MembershipType.Membership,
+                path: new bytes[](0),
+                value: bytes("")
+            })
+        );
+    }
+
+    function _emptyNonMembershipMsg() internal pure returns (bytes memory) {
+        return abi.encode(
+            ILightClientMsgs.MsgVerifyNonMembership({
+                height: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 0 }),
+                kvPairs: new IMembershipMsgs.KVPair[](0),
+                merkleProofs: new IMembershipMsgs.MerkleProof[](0),
+                appHash: bytes32(0),
+                trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+                    timestamp: 0,
+                    root: bytes32(0),
+                    nextValidatorsHash: bytes32(0)
+                }),
+                membershipType: IMembershipMsgs.MembershipType.Membership,
+                path: new bytes[](0)
+            })
+        );
     }
 
     function cheatPacketCommitment(IICS26RouterMsgs.Packet calldata packet) external {

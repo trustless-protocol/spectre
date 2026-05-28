@@ -238,6 +238,7 @@ contract Integration2Test is Test {
         // Check replay protection
         IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;
         msgRecvPacket.packet = sentPacket;
+        msgRecvPacket.membershipMsg = ibcImplB.emptyMembershipMsg();
         vm.recordLogs();
         ibcImplB.ics26Router().recvPacket(msgRecvPacket);
         th.getValueFromEvent(IICS26Router.Noop.selector);
@@ -305,6 +306,7 @@ contract Integration2Test is Test {
         // Check replay protection
         IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;
         msgRecvPacket.packet = sentPacket;
+        msgRecvPacket.membershipMsg = ibcImplB.emptyMembershipMsg();
         vm.recordLogs();
         ibcImplB.ics26Router().recvPacket(msgRecvPacket);
         th.getValueFromEvent(IICS26Router.Noop.selector);
@@ -355,6 +357,7 @@ contract Integration2Test is Test {
         // Check replay protection
         IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;
         msgRecvPacket.packet = sentPacket;
+        msgRecvPacket.membershipMsg = ibcImplB.emptyMembershipMsg();
         vm.recordLogs();
         ibcImplB.ics26Router().recvPacket(msgRecvPacket);
         th.getValueFromEvent(IICS26Router.Noop.selector);

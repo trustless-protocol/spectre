@@ -8,6 +8,8 @@ import (
 	contractICS26Router "relayer/bindings/ICS26Router"
 	"relayer/services"
 
+	abcitypes "github.com/cometbft/cometbft/abci/types"
+	commettypes "github.com/cometbft/cometbft/types"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -122,6 +124,50 @@ func TestNormalizeTimeoutSeconds(t *testing.T) {
 		if got != c.expected {
 			t.Errorf("normalizeTimeoutSeconds(%d) = %d, want %d", c.input, got, c.expected)
 		}
+	}
+}
+
+func TestTxHeightFromEvent(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name   string
+		data   commettypes.TMEventData
+		events map[string][]string
+		want   uint64
+	}{
+		{
+			name:   "uses tx result height when available",
+			data:   commettypes.EventDataTx{TxResult: abcitypes.TxResult{Height: 77}},
+			events: map[string][]string{EVENT_TX_HEIGHT_FIELD: {"12"}},
+			want:   77,
+		},
+		{
+			name:   "falls back to tx height event field",
+			events: map[string][]string{EVENT_TX_HEIGHT_FIELD: {"77"}},
+			want:   77,
+		},
+		{
+			name:   "missing tx height returns zero",
+			events: map[string][]string{},
+			want:   0,
+		},
+		{
+			name:   "invalid tx height returns zero",
+			events: map[string][]string{EVENT_TX_HEIGHT_FIELD: {"not-a-height"}},
+			want:   0,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := txHeightFromEvent(tc.data, tc.events); got != tc.want {
+				t.Fatalf("txHeightFromEvent(%v, %v) = %d, want %d", tc.data, tc.events, got, tc.want)
+			}
+		})
 	}
 }
 
