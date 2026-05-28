@@ -76,6 +76,24 @@ contract MockUpdateClientPassThrough is IUpdateClient {
             revisionHeight: msg_.proposedHeader.signedHeader.header.height
         });
     }
+
+    function updateClientResolved(
+        IUpdateClientMsgs.MsgUpdateClient calldata msg_
+    ) external pure returns (IUpdateClientMsgs.UpdateClientOutput memory output) {
+        output.clientState = msg_.clientState;
+        output.trustedConsensusState = msg_.trustedConsensusState;
+        output.newConsensusState = IICS07TendermintMsgs.ConsensusState({
+            timestamp: msg_.proposedHeader.signedHeader.header.time,
+            root: msg_.proposedHeader.signedHeader.header.appHash,
+            nextValidatorsHash: msg_.proposedHeader.signedHeader.header.nextValidatorsHash
+        });
+        output.time = msg_.time;
+        output.trustedHeight = msg_.proposedHeader.trustedHeight;
+        output.newHeight = IICS02ClientMsgs.Height({
+            revisionNumber: msg_.clientState.latestHeight.revisionNumber,
+            revisionHeight: msg_.proposedHeader.signedHeader.header.height
+        });
+    }
 }
 
 contract PredicatesGasHarness {

@@ -28,7 +28,6 @@ contract Membership  is IMembership {
     error InvalidValueLength();
     error MissingMerkleRoot();
     error MismatchedNumberOfProofs(uint256 expected, uint256 actual);
-    error MissingVerifiedValue();
     error InvalidMerkleProof();
     error InvalidExistenceProof();
     error FailedToVerifyMembership();
@@ -129,16 +128,12 @@ contract Membership  is IMembership {
                 revert InvalidMerkleProof();
             }
 
-            subroot = calculateExistenceRoot(commitmentProof.existenceProof);
-            if (!_verifyExistenceProofBytes32(
+            subroot = _verifyExistenceProofBytes32(
                 commitmentProof.existenceProof,
                 proofSpecs[i],
                 keyPath,
                 valueUpdate
-                )
-            ) {
-                revert FailedToVerifyMembership();
-            }
+            );
             valueUpdate = subroot;
         }
 
@@ -364,12 +359,15 @@ contract Membership  is IMembership {
         IMembershipMsgs.ProofSpec memory spec,
         bytes memory key,
         bytes32 value
-    ) internal view returns (bool) {
+    ) internal view returns (bytes32) {
         checkExistenceProof(proof, spec);
+        if (proof.value.length != 32) {
+            revert InvalidValueLength();
+        }
         if (keccak256(proof.key) != keccak256(key) || bytesToBytes32(proof.value) != value) {
             revert ProvidedKeyValueMismatch();
         }
-        return true;
+        return calculateExistenceRoot(proof);
     }
     
     function verifyNonExistenceProof(
