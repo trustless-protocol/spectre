@@ -53,11 +53,12 @@ contract Groth16ICS07Tendermint is
     /// @notice The mapping from height to consensus state keccak256 hashes.
     /// @dev Revision number need not be keyed as it is not allowed to change.
     mapping(uint64 height => bytes32 hash) private _consensusStateHashes;
-    /// @notice SSTORE2 pointer to a packed quorum subset keyed by the CometBFT validators hash.
+    /// @notice SSTORE2 pointer to packed validator metadata keyed by the CometBFT validators hash.
     mapping(bytes32 validatorsHash => address pointer) private _cachedValidatorSets;
 
-    uint256 private constant QUORUM_CACHE_HEADER_LEN = 10;
-    uint256 private constant QUORUM_CACHE_ENTRY_LEN = 44;
+    uint32 private constant VALIDATOR_CACHE_MAGIC = 0x56414c31; // "VAL1"
+    uint256 private constant VALIDATOR_CACHE_HEADER_LEN = 14;
+    uint256 private constant VALIDATOR_CACHE_ENTRY_LEN = 44;
 
     /// @inheritdoc IGroth16ICS07Tendermint
     uint16 public constant ALLOWED_CLOCK_DRIFT = 30 minutes;
@@ -132,7 +133,34 @@ contract Groth16ICS07Tendermint is
 
     /// @inheritdoc IGroth16ICS07Tendermint
     function hasCachedValidatorSet(bytes32 validatorsHash) public view returns (bool) {
-        return _cachedValidatorSets[validatorsHash] != address(0);
+        return _hasUsableValidatorCache(validatorsHash);
+    }
+
+    /// @inheritdoc IGroth16ICS07Tendermint
+    function getCachedValidatorSet(bytes32 validatorsHash)
+        external
+        view
+        returns (uint32[] memory indices, bytes32[] memory pubkeys, uint64[] memory votingPowers)
+    {
+        address pointer = _cachedValidatorSets[validatorsHash];
+        if (pointer == address(0)) {
+            return (new uint32[](0), new bytes32[](0), new uint64[](0));
+        }
+        bytes memory cacheData = SSTORE2.read(pointer);
+        if (!_isValidatorCacheData(cacheData)) {
+            return (new uint32[](0), new bytes32[](0), new uint64[](0));
+        }
+        (, uint16 entryCount) = _readValidatorCacheHeader(validatorsHash, cacheData);
+
+        indices = new uint32[](entryCount);
+        pubkeys = new bytes32[](entryCount);
+        votingPowers = new uint64[](entryCount);
+        for (uint16 i = 0; i < entryCount; i++) {
+            uint256 offset = VALIDATOR_CACHE_HEADER_LEN + uint256(i) * VALIDATOR_CACHE_ENTRY_LEN;
+            indices[i] = _readUint32(cacheData, offset);
+            votingPowers[i] = _readUint64(cacheData, offset + 4);
+            pubkeys[i] = _readBytes32(cacheData, offset + 12);
+        }
     }
 
     /// @dev This function verifies the public values and forwards the proof to the Groth16 verifier.
@@ -255,49 +283,40 @@ contract Groth16ICS07Tendermint is
     )
         private
     {
-        if (_cachedValidatorSets[validatorsHash] != address(0)) {
+        if (_hasUsableValidatorCache(validatorsHash)) {
             return;
         }
 
-        _cachedValidatorSets[validatorsHash] = SSTORE2.write(_buildQuorumCache(msg_, totalVotingPower));
+        _cachedValidatorSets[validatorsHash] =
+            SSTORE2.write(_buildValidatorSetCache(msg_.proposedHeader.validatorSet, totalVotingPower));
     }
 
-    function _buildQuorumCache(
-        IUpdateClientMsgs.MsgUpdateClient memory msg_,
+    function _buildValidatorSetCache(
+        IICS07TendermintMsgs.ValidatorSet memory validatorSet,
         uint64 totalVotingPower
     )
         private
         pure
         returns (bytes memory data)
     {
-        uint256 activeCount = 0;
-        for (uint256 i = 0; i < msg_.active.length; i++) {
-            if (msg_.active[i]) {
-                activeCount++;
-            }
-        }
-
-        if (activeCount > type(uint16).max) {
+        IICS07TendermintMsgs.ValidatorInfo[] memory vals = validatorSet.validators;
+        uint256 validatorCount = vals.length;
+        if (validatorCount > type(uint16).max) {
             revert BatchLengthMismatch();
         }
 
-        data = new bytes(QUORUM_CACHE_HEADER_LEN + activeCount * QUORUM_CACHE_ENTRY_LEN);
-        _writeUint64(data, 0, totalVotingPower);
-        _writeUint16(data, 8, activeCount);
+        data = new bytes(VALIDATOR_CACHE_HEADER_LEN + validatorCount * VALIDATOR_CACHE_ENTRY_LEN);
+        _writeUint32(data, 0, VALIDATOR_CACHE_MAGIC);
+        _writeUint64(data, 4, totalVotingPower);
+        _writeUint16(data, 12, validatorCount);
 
-        IICS07TendermintMsgs.ValidatorInfo[] memory vals = msg_.proposedHeader.validatorSet.validators;
-        uint256 offset = QUORUM_CACHE_HEADER_LEN;
-        for (uint256 i = 0; i < msg_.signerIndices.length; i++) {
-            if (!msg_.active[i]) {
-                continue;
-            }
-
-            uint32 idx = msg_.signerIndices[i];
-            IICS07TendermintMsgs.ValidatorInfo memory val = vals[idx];
-            _writeUint32(data, offset, idx);
+        uint256 offset = VALIDATOR_CACHE_HEADER_LEN;
+        for (uint256 i = 0; i < vals.length; i++) {
+            IICS07TendermintMsgs.ValidatorInfo memory val = vals[i];
+            _writeUint32(data, offset, uint32(i));
             _writeUint64(data, offset + 4, val.votingPower);
             _writeBytes32(data, offset + 12, val.pubKey);
-            offset += QUORUM_CACHE_ENTRY_LEN;
+            offset += VALIDATOR_CACHE_ENTRY_LEN;
         }
     }
 
@@ -378,7 +397,7 @@ contract Groth16ICS07Tendermint is
 
         bytes memory cacheData = SSTORE2.read(pointer);
         uint16 entryCount;
-        (totalVotingPower, entryCount) = _readQuorumCacheHeader(validatorsHash, cacheData);
+        (totalVotingPower, entryCount) = _readValidatorCacheHeader(validatorsHash, cacheData);
 
         uint64 accumulated = 0;
         uint256 entryCursor = 0;
@@ -412,6 +431,25 @@ contract Groth16ICS07Tendermint is
         _verifyBatchProof(msg_);
     }
 
+    function _hasUsableValidatorCache(bytes32 validatorsHash) private view returns (bool) {
+        address pointer = _cachedValidatorSets[validatorsHash];
+        if (pointer == address(0)) {
+            return false;
+        }
+        return _isValidatorCacheData(SSTORE2.read(pointer));
+    }
+
+    function _isValidatorCacheData(bytes memory cacheData) private pure returns (bool) {
+        if (cacheData.length < VALIDATOR_CACHE_HEADER_LEN) {
+            return false;
+        }
+        if (_readUint32(cacheData, 0) != VALIDATOR_CACHE_MAGIC) {
+            return false;
+        }
+        uint16 entryCount = _readUint16(cacheData, 12);
+        return cacheData.length == VALIDATOR_CACHE_HEADER_LEN + uint256(entryCount) * VALIDATOR_CACHE_ENTRY_LEN;
+    }
+
     function _verifyBatchProof(IUpdateClientMsgs.MsgUpdateClient memory msg_) private {
         IICS07TendermintMsgs.BlockCommit memory commit = msg_.proposedHeader.signedHeader.commit;
         IVerifier.SharedBlock memory shared = IVerifier.SharedBlock({
@@ -439,7 +477,7 @@ contract Groth16ICS07Tendermint is
         );
     }
 
-    function _readQuorumCacheHeader(
+    function _readValidatorCacheHeader(
         bytes32 validatorsHash,
         bytes memory cacheData
     )
@@ -447,13 +485,17 @@ contract Groth16ICS07Tendermint is
         pure
         returns (uint64 totalVotingPower, uint16 entryCount)
     {
-        if (cacheData.length < QUORUM_CACHE_HEADER_LEN) {
+        if (cacheData.length < VALIDATOR_CACHE_HEADER_LEN) {
             revert CachedValidatorSetCorrupted(validatorsHash);
         }
 
-        totalVotingPower = _readUint64(cacheData, 0);
-        entryCount = _readUint16(cacheData, 8);
-        if (cacheData.length != QUORUM_CACHE_HEADER_LEN + uint256(entryCount) * QUORUM_CACHE_ENTRY_LEN) {
+        if (_readUint32(cacheData, 0) != VALIDATOR_CACHE_MAGIC) {
+            revert CachedValidatorSetCorrupted(validatorsHash);
+        }
+
+        totalVotingPower = _readUint64(cacheData, 4);
+        entryCount = _readUint16(cacheData, 12);
+        if (cacheData.length != VALIDATOR_CACHE_HEADER_LEN + uint256(entryCount) * VALIDATOR_CACHE_ENTRY_LEN) {
             revert CachedValidatorSetCorrupted(validatorsHash);
         }
     }
@@ -471,7 +513,7 @@ contract Groth16ICS07Tendermint is
     {
         nextCursor = entryCursor;
         while (nextCursor < entryCount) {
-            uint256 offset = QUORUM_CACHE_HEADER_LEN + nextCursor * QUORUM_CACHE_ENTRY_LEN;
+            uint256 offset = VALIDATOR_CACHE_HEADER_LEN + nextCursor * VALIDATOR_CACHE_ENTRY_LEN;
             uint32 cachedIndex = _readUint32(cacheData, offset);
             if (cachedIndex == signerIndex) {
                 votingPower = _readUint64(cacheData, offset + 4);

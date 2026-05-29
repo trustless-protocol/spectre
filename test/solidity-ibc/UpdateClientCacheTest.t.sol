@@ -104,6 +104,35 @@ contract UpdateClientCacheTest is Test {
         assertEq(uint8(second), uint8(ILightClientMsgs.UpdateResult.NoOp), "cache-hit replay should NoOp");
     }
 
+    function test_updateClient_cacheHit_allowsDifferentSignerSubsetForSameValidatorSet() public {
+        BucketConfig memory cfg = _cfg(16);
+        IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
+        bytes32 hashA = Header.hashValSet(valA);
+
+        IICS07TendermintMsgs.ConsensusState memory trustedCS0 =
+            _consensusState(TRUSTED_TS_NS, hashA, bytes32(uint256(0xAAA1)));
+        Groth16ICS07Tendermint ics07 = _deployLightClient(trustedCS0);
+
+        IICS07TendermintMsgs.Header memory header1001 =
+            _buildHeader(TRUSTED_HEIGHT, HEIGHT_1001, valA, valA, hashA, TS_1001_NS, cfg.activeCount);
+        IUpdateClientMsgs.MsgUpdateClient memory msg1001 =
+            _buildMsg(_clientState(), trustedCS0, header1001, cfg.bucket, cfg.activeCount);
+        assertEq(uint8(ics07.updateClient(abi.encode(msg1001))), uint8(ILightClientMsgs.UpdateResult.Update));
+
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1001 =
+            _consensusState(TS_1001_NS, hashA, header1001.signedHeader.header.appHash);
+        IICS07TendermintMsgs.Header memory header1002 =
+            _buildHeader(HEIGHT_1001, HEIGHT_1002, valA, _emptyValidatorSet(), hashA, TS_1002_NS, cfg.activeCount);
+        IUpdateClientMsgs.MsgUpdateClient memory cacheMsg =
+            _buildMsg(_clientState(), trustedCS1001, header1002, cfg.bucket, cfg.activeCount);
+        _setSignerRange(cacheMsg, valA, 6, cfg.activeCount);
+        cacheMsg.proposedHeader.validatorSet = _emptyValidatorSet();
+        cacheMsg.proposedHeader.trustedNextValidatorSet = _emptyValidatorSet();
+
+        ILightClientMsgs.UpdateResult result = ics07.updateClient(abi.encode(cacheMsg));
+        assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update), "cache should cover all validator slots");
+    }
+
     function test_updateClient_adjacent_skipsTrustedNextSetEvenBeforeCacheExists() public {
         BucketConfig memory cfg = _cfg(16);
         IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
@@ -284,6 +313,29 @@ contract UpdateClientCacheTest is Test {
             timestampNanos: tsN,
             active: act
         });
+    }
+
+    function _setSignerRange(
+        IUpdateClientMsgs.MsgUpdateClient memory msg_,
+        IICS07TendermintMsgs.ValidatorSet memory validatorSet,
+        uint32 start,
+        uint16 activeCount
+    )
+        internal
+        pure
+    {
+        for (uint256 i = 0; i < msg_.signerIndices.length; i++) {
+            if (i < activeCount) {
+                uint32 idx = start + uint32(i);
+                msg_.signerIndices[i] = idx;
+                msg_.signerPubkeys[i] = validatorSet.validators[idx].pubKey;
+                msg_.active[i] = true;
+            } else {
+                msg_.signerIndices[i] = 0;
+                msg_.signerPubkeys[i] = bytes32(0);
+                msg_.active[i] = false;
+            }
+        }
     }
 
     function _buildHeader(

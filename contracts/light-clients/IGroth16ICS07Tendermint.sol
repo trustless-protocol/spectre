@@ -46,4 +46,14 @@ interface IGroth16ICS07Tendermint {
     /// @param validatorsHash The validator-set hash.
     /// @return True if the validator set is cached.
     function hasCachedValidatorSet(bytes32 validatorsHash) external view returns (bool);
+
+    /// @notice Returns cached validator metadata for the given validators hash.
+    /// @param validatorsHash The CometBFT validators hash.
+    /// @return indices      Validator indices in the original set, sorted ascending.
+    /// @return pubkeys      Ed25519 public keys for each cached validator.
+    /// @return votingPowers Voting power for each cached validator.
+    function getCachedValidatorSet(bytes32 validatorsHash)
+        external
+        view
+        returns (uint32[] memory indices, bytes32[] memory pubkeys, uint64[] memory votingPowers);
 }
