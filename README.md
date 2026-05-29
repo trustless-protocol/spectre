@@ -169,6 +169,14 @@ top of the toolchain in [Requirements](#requirements).
 > ```
 >
 > before step 1 below. Revert before pushing — production needs the full set.
+>
+> The repo currently ships pre-generated `Groth16Verifier_N{4,8,16}.sol` only
+> (`contracts/verifiers/`). If you keep the larger buckets in
+> `relayer/prover/buckets.go` or expect chains with larger quorum sets,
+> re-run `go run ./prover/cmd ./bin ../contracts/verifiers` from the
+> `relayer/` directory to emit the missing `Groth16Verifier_N{32,64,128}.sol`
+> before redeploying contracts — otherwise `WrapperVerifier.verifyBatchProof`
+> will revert with `UnknownBucket(N)` for any signer count > 16.
 
 ```bash
 # 1. (One-time) compile per-bucket circuits + emit Groth16Verifier_N{N}.sol.
@@ -193,6 +201,16 @@ curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 # 4. Then start Cosmos and submit the Ethereum LC WASM via governance
 ./scripts/local/run_cosmos_node.sh   # local Cosmos chain with funded test accounts
 ./scripts/local/wasm.sh              # submit + vote-pass the Ethereum LC WASM proposal
+#
+# Multi-validator alternative — spin up N nodes (180 default) with a
+# Cosmos-Hub-like staked-power distribution so the relayer exercises a
+# real signer-selection path (top ~20 hold ~2/3). Each node's RPC is
+# striped from :31000.
+#    NUM_NODES=20 ./scripts/local/run_cosmos_node_n.sh
+#    NUM_NODES=20 ./scripts/local/wasm_n.sh
+# After multi-node bring-up, point `relayer/config.example.json` and any
+# `gaiad` --node / --home flags at the val0 home + RPC (defaults
+# $HOME/.gaia-multi/val0 + tcp://127.0.0.1:31000).
 
 # 5. Deploy Tendermint light client on Ethereum.
 #    Copies the ICS07 address back into relayer/config.json automatically.
@@ -211,7 +229,7 @@ ABS_TIMEOUT=$(($(date +%s) + 2000))
 
 gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21ee5948ecaa776 1000stake \
   --from test1 \
-  --home /Users/donglieu/.gaia \
+  --home "$HOME/.gaia" \
   --chain-id test-ibc-eth \
   --node tcp://127.0.0.1:26657 \
   --keyring-backend test \
@@ -222,7 +240,7 @@ gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21e
 | jq '.body.messages[0].encoding = "application/x-solidity-abi"' \
 | gaiad tx sign /dev/stdin \
     --from test1 \
-    --home /Users/donglieu/.gaia \
+    --home "$HOME/.gaia" \
     --chain-id test-ibc-eth \
     --keyring-backend test \
 | gaiad tx broadcast /dev/stdin \
