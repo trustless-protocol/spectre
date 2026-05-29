@@ -121,73 +121,6 @@ func formatCallErr(err error) string {
 	return msg
 }
 
-type benchGasLog struct {
-	Label   string
-	GasLeft *big.Int
-}
-
-func logEthBenchGasEvents(ctx services.Context, receipt *types.Receipt) {
-	if !utils.BenchEnabled() || receipt == nil {
-		return
-	}
-
-	parsedABI, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
-	if err != nil {
-		log.Printf("[bench][gas] failed to load BenchGas ABI: %v", err)
-		return
-	}
-	benchEvent, ok := parsedABI.Events["BenchGas"]
-	if !ok {
-		log.Printf("[bench][gas] BenchGas event missing from ICS26Router ABI")
-		return
-	}
-
-	router := ctx.RouterContract()
-	client := ctx.ClientContract()
-	prevGasLeft := make(map[string]*big.Int)
-	count := 0
-	for _, rawLog := range receipt.Logs {
-		if rawLog == nil || len(rawLog.Topics) == 0 || rawLog.Topics[0] != benchEvent.ID {
-			continue
-		}
-
-		source := ""
-		switch {
-		case router != nil && rawLog.Address == *router:
-			source = "ICS26Router"
-		case client != nil && rawLog.Address == *client:
-			source = "ICS07"
-		default:
-			continue
-		}
-
-		var event benchGasLog
-		if err := parsedABI.UnpackIntoInterface(&event, "BenchGas", rawLog.Data); err != nil {
-			log.Printf("[bench][gas] parse %s logIndex=%d failed: %v", source, rawLog.Index, err)
-			continue
-		}
-		count++
-		logBenchGasPoint(source, event.Label, event.GasLeft, prevGasLeft)
-	}
-
-	if count == 0 {
-		log.Printf("[bench][gas] no BenchGas events found in tx %s", receipt.TxHash.Hex())
-	}
-}
-
-func logBenchGasPoint(source string, label string, gasLeft *big.Int, prevGasLeft map[string]*big.Int) {
-	if gasLeft == nil {
-		log.Printf("[bench][gas] %s %s gasLeft=<nil> delta=n/a", source, label)
-		return
-	}
-	delta := "n/a"
-	if prev, ok := prevGasLeft[source]; ok && prev.Cmp(gasLeft) >= 0 {
-		delta = new(big.Int).Sub(prev, gasLeft).String()
-	}
-	log.Printf("[bench][gas] %s %s gasLeft=%s delta=%s", source, label, gasLeft.String(), delta)
-	prevGasLeft[source] = new(big.Int).Set(gasLeft)
-}
-
 func cosmosRouterClientID(ctx services.Context) (string, error) {
 	clientID := ctx.CosmosRouterClientID()
 	if clientID == "" {
@@ -533,7 +466,6 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	}
 	log.Printf("[SendEthTx] Tx %s confirmed in block %d (gasUsed=%d)", tx.Hash().Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
 	if benchEnabled {
-		logEthBenchGasEvents(ctx, receipt)
 		log.Printf("[bench][eth] %s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
 	}
@@ -754,7 +686,6 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 	log.Printf("[SendEthTxBatch] Tx %s confirmed in block %d (gasUsed=%d, inner=%d)",
 		tx.Hash().Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed, len(calldata))
 	if benchEnabled {
-		logEthBenchGasEvents(ctx, receipt)
 		log.Printf("[bench][eth] multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
 	}
