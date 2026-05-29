@@ -51,6 +51,8 @@ check skip them.
 - [Foundry](https://getfoundry.sh/)
 - [Bun](https://bun.sh/)
 - [Just](https://github.com/casey/just)
+- Optional for GPU proving: ICICLE runtime/libs installed on the host, plus an
+  `icicle` build of the relayer/prover tool
 
 ## Sibling repos (required to build the relayer)
 
@@ -85,6 +87,73 @@ parent/
 Without these, `go build ./...` under `relayer/` fails with
 `replacement directory ../../ecip-gnark does not exist`.
 
+## Optional GPU Proving
+
+CPU proving remains the default. GPU proving is opt-in and follows the
+`test/gnark-gpu` approach: build with `-tags=icicle`, then enable the ICICLE
+backend via env or flag when needed.
+
+Build requirements for the GPU path:
+
+- NVIDIA GPU with a working CUDA driver/toolkit
+- ICICLE runtime libraries must be installed and visible to the linker/runtime
+- the relayer and prover tool must be built or run with `-tags=icicle`
+
+The linker/runtime must be able to find libraries such as:
+
+- `libicicle_device`
+- `libicicle_field_bn254`
+- `libicicle_curve_bn254`
+
+If they are not in a default loader path, export `LD_LIBRARY_PATH` before
+building or running:
+
+```bash
+export LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH}
+```
+
+Backend selection:
+
+- default: native CPU backend
+- env: `GPU_PROVE=1`
+- flag: `--gpu-prove`
+
+Examples:
+
+```bash
+# Regenerate prover artifacts with GPU proving enabled
+cd relayer
+go run -tags=icicle ./prover/cmd -gpu-prove ./bin ../contracts/verifiers
+
+# Build a relayer binary with ICICLE support
+go build -tags=icicle -o relayer ./cmd
+
+# Run the relayer on GPU
+./relayer start --config config.example.json --gpu-prove
+
+# Equivalent env-based run
+GPU_PROVE=1 ./relayer start --config config.example.json
+```
+
+### ICICLE Environment
+
+Optional ICICLE tuning env vars read by `relayer/prover/backend_icicle.go`:
+
+```bash
+export GNARK_ICICLE_DEVICE_ID=0
+export GNARK_ICICLE_BACKEND_LIBS=/usr/local/lib
+export GNARK_ICICLE_PIN_KEYS=true
+```
+
+- `GNARK_ICICLE_DEVICE_ID`: GPU device index.
+- `GNARK_ICICLE_BACKEND_LIBS`: backend library location passed into ICICLE.
+- `GNARK_ICICLE_PIN_KEYS`: whether proving keys should be pinned to GPU memory.
+
+If the ICICLE runtime is missing, the `icicle` build typically fails at link or
+startup with errors such as `library 'icicle_device' not found`. In that case,
+ensure ICICLE shared libraries are installed and `LD_LIBRARY_PATH` covers the
+directory containing the `libicicle_*` files.
+
 ## Local E2E Test
 
 End-to-end run on local Cosmos + Ethereum nodes. Requires Docker + Kurtosis on
@@ -104,11 +173,16 @@ top of the toolchain in [Requirements](#requirements).
 ```bash
 # 1. (One-time) compile per-bucket circuits + emit Groth16Verifier_N{N}.sol.
 #    Re-run only when circuit code changes. After this, redeploy contracts.
+#    CPU default:
 cd relayer
 go run ./prover/cmd ./bin ../contracts/verifiers
+#    GPU variant:
+#    go run -tags=icicle ./prover/cmd -gpu-prove ./bin ../contracts/verifiers
 
 # 2. Build the relayer binary
 go build -o relayer ./cmd
+#    GPU build:
+#    go build -tags=icicle -o relayer ./cmd
 
 # 3. Start Ethereum first and wait until the beacon node finalizes.
 #    Replace 56246 with your Kurtosis-mapped beacon RPC port.
@@ -128,6 +202,8 @@ curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 
 # 6. Start the bi-directional relay loop
 ./relayer start --config config.example.json
+#    GPU run:
+#    ./relayer start --config config.example.json --gpu-prove
 
 # 7. send packet
 
@@ -187,6 +263,54 @@ cast receipt 0x4d611d65a802bea81865e7f0e1f0413064518a79883b29481968804d0efa1692-
 
 Send an ICS-20 transfer from Cosmos to trigger an `updateClient` + `recvPacket`
 round-trip; the `[UpdateCosmosClient]` log line reports the chosen bucket.
+
+## Benchmark mode
+
+Detailed per-step gas + timing logs are off by default (production noise) and
+opt-in via flag or env. When enabled, the relayer emits `[bench][prover]`,
+`[bench][eth]`, `[bench][cosmos]`, and (in batches) `[bench][gas]` lines so a
+single E2E run can be diffed for performance regressions without rebuilding.
+
+### Enable
+
+```bash
+# CLI flag
+./relayer start --config config.example.json --benchmark
+
+# Env (equivalent)
+RELAYER_BENCHMARK=1 ./relayer start --config config.example.json
+```
+
+Either source turns it on; flag is the override. The relayer logs
+`[benchmark] enabled: detailed gas/timing logs are active` at startup so it's
+obvious which mode you're in.
+
+### What each line carries
+
+| Prefix | Where | Fields |
+|---|---|---|
+| `[bench][prover]` | per `GenerateProof` | `sigs`, `bucket`, `witness`, `prove`, `verify`, `total` |
+| `[bench][eth]` | per `SendEthTx` / `SendEthTxBatch` | label or `multicall labels=...`, `gasUsed`, `submit`, `wait`, `total`, `tx` |
+| `[bench][cosmos]` | per `SendCosmosTx` / `SendCosmosTxBatch` | msg type or `batch msgs=N`, `gasWanted`, `gasUsed`, `broadcast`, `total`, `height`, `hash` |
+| `[bench][gas]` | per multicall (when `BenchGas` events present) | per-checkpoint `gasLeft` + `delta` for each ICS26Router event label |
+
+### Optional: per-inner-call gas in multicall
+
+`SendEthTxBatch` packs N inner calls; the receipt only reports the total. To
+estimate per-inner gas (one `eth_estimateGas` RPC per inner — dev-only):
+
+```bash
+RELAYER_BENCH_INNER_GAS=1 ./relayer start --config config.example.json --benchmark
+```
+
+`RELAYER_BENCH_INNER_GAS` falls back to `RELAYER_BENCHMARK` when unset, so the
+flag alone gives you both unless you explicitly want to disable the inner
+estimates (`RELAYER_BENCH_INNER_GAS=0`).
+
+### Tests
+
+`utils.SetBenchEnabled(true|false)` lets tests force the flag without touching
+env. Definitions live in `relayer/utils/bench.go`.
 
 ## Contracts
 

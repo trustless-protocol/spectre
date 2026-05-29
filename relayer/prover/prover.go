@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"time"
 
 	"0x5ea000000/ecip-gnark/signature/eddsa"
 	"0x5ea000000/ecip-gnark/utils"
@@ -22,6 +23,8 @@ import (
 	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
 	"github.com/consensys/gnark/std/math/emulated"
 	"github.com/consensys/gnark/std/math/uints"
+
+	relayerutils "relayer/utils"
 )
 
 // bucketArtifacts holds the compiled circuit, Groth16 key pair, and the
@@ -39,37 +42,54 @@ type bucketArtifacts struct {
 // the current block and uses that bucket's artifacts to generate a proof.
 type EcipProver struct {
 	byBucket map[int]*bucketArtifacts
+	backend  ProofBackend
 }
 
 // NewProver loads every bucket's r1cs, proving key, and verifying key from
 // binDir/n{N}/{r1cs,pk,vk}.bin. It errors if any bucket's artifacts are
 // missing — the operator must run `cmd/setup-circuits` first.
 func NewProver(binDir string) (*EcipProver, error) {
-	log.Printf("[NewProver] loading artifacts from %s", binDir)
-	p := &EcipProver{byBucket: make(map[int]*bucketArtifacts, len(Buckets))}
+	b, err := NewProofBackend(GPUProveEnvEnabled())
+	if err != nil {
+		return nil, err
+	}
+	return NewProverWithBackend(binDir, b)
+}
+
+// NewProverWithBackend loads circuit artifacts using the supplied proof
+// backend. Passing nil falls back to native gnark proving.
+func NewProverWithBackend(binDir string, b ProofBackend) (*EcipProver, error) {
+	if b == nil {
+		b = nativeProofBackend{}
+	}
+	start := time.Now()
+	log.Printf("[prover] loading circuit artifacts from %s (buckets=%v, backend=%s)", binDir, Buckets, b.Name())
+
+	p := &EcipProver{byBucket: make(map[int]*bucketArtifacts, len(Buckets)), backend: b}
 	for _, n := range Buckets {
-		log.Printf("[NewProver] loading bucket n=%d", n)
-		art, err := loadBucketArtifacts(binDir, n)
+		bucketStart := time.Now()
+		log.Printf("[prover] bucket n=%d loading artifacts", n)
+		art, err := loadBucketArtifacts(binDir, n, b)
 		if err != nil {
 			return nil, fmt.Errorf("load bucket n=%d: %w", n, err)
 		}
 		p.byBucket[n] = art
-		log.Printf("[NewProver] bucket n=%d loaded", n)
+		log.Printf("[prover] bucket n=%d loaded in %s", n, time.Since(bucketStart))
 	}
-	log.Printf("[NewProver] loaded %d bucket(s)", len(p.byBucket))
+	log.Printf("[prover] loaded %d bucket(s) in %s", len(p.byBucket), time.Since(start))
 	return p, nil
 }
 
-func loadBucketArtifacts(binDir string, n int) (*bucketArtifacts, error) {
+func loadBucketArtifacts(binDir string, n int, b ProofBackend) (*bucketArtifacts, error) {
 	dir := filepath.Join(binDir, fmt.Sprintf("n%d", n))
-	log.Printf("[NewProver] bucket n=%d dir=%s", n, dir)
+	log.Printf("[prover] bucket n=%d artifact dir=%s", n, dir)
 
 	r1cs := groth16.NewCS(ecc.BN254)
 	if err := readFromFile(filepath.Join(dir, "r1cs.bin"), "r1cs", n, r1cs); err != nil {
 		return nil, fmt.Errorf("read r1cs: %w", err)
 	}
 
-	pk := groth16.NewProvingKey(ecc.BN254)
+	pk := b.NewProvingKey(ecc.BN254)
 	if err := readFromFile(filepath.Join(dir, "pk.bin"), "pk", n, pk); err != nil {
 		return nil, fmt.Errorf("read pk: %w", err)
 	}
@@ -93,20 +113,22 @@ type readerFrom interface {
 }
 
 func readFromFile(path string, kind string, bucket int, dst readerFrom) error {
+	start := time.Now()
+	size := "unknown size"
 	if fi, err := os.Stat(path); err == nil {
-		log.Printf("[NewProver] bucket n=%d reading %s from %s (%d bytes)", bucket, kind, path, fi.Size())
+		size = fmt.Sprintf("%d bytes", fi.Size())
 	} else {
-		log.Printf("[NewProver] bucket n=%d stat failed for %s %s: %v", bucket, kind, path, err)
+		log.Printf("[prover] bucket n=%d stat failed for %s path=%s err=%v", bucket, kind, path, err)
 	}
+	log.Printf("[prover] bucket n=%d loading %s from %s (%s)", bucket, kind, path, size)
 	f, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	log.Printf("[NewProver] bucket n=%d opened %s", bucket, kind)
-	_, err = dst.ReadFrom(f)
+	readBytes, err := dst.ReadFrom(f)
 	if err == nil {
-		log.Printf("[NewProver] bucket n=%d loaded %s", bucket, kind)
+		log.Printf("[prover] bucket n=%d loaded %s readBytes=%d elapsed=%s", bucket, kind, readBytes, time.Since(start))
 	}
 	return err
 }
@@ -129,6 +151,12 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 		return
 	}
 
+	benchEnabled := relayerutils.BenchEnabled()
+	var totalStart time.Time
+	if benchEnabled {
+		totalStart = time.Now()
+	}
+
 	bucket, err = SmallestBucketGEQ(len(sigs))
 	if err != nil {
 		return
@@ -138,12 +166,19 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 		err = fmt.Errorf("bucket n=%d not loaded", bucket)
 		return
 	}
+	if benchEnabled {
+		log.Printf("[bench][prover] start sigs=%d bucket=%d", len(sigs), bucket)
+	}
 
 	paddedSigs, err = padWithDummies(sigs, art.dummys)
 	if err != nil {
 		return
 	}
 
+	var witnessStart time.Time
+	if benchEnabled {
+		witnessStart = time.Now()
+	}
 	hash, err := ComputeWitnessHash(paddedSigs)
 	if err != nil {
 		err = fmt.Errorf("compute witness hash: %w", err)
@@ -160,20 +195,48 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 		err = fmt.Errorf("create witness: %w", err)
 		return
 	}
+	var witnessDur time.Duration
+	if benchEnabled {
+		witnessDur = time.Since(witnessStart)
+	}
 
-	gnarkProof, err := groth16.Prove(art.r1cs, art.pk, witness, solidity.WithProverTargetSolidityVerifier(backend.GROTH16))
+	proofBackend := p.backend
+	if proofBackend == nil {
+		proofBackend = nativeProofBackend{}
+	}
+	var proveStart time.Time
+	if benchEnabled {
+		proveStart = time.Now()
+	}
+	gnarkProof, err := proofBackend.Prove(art.r1cs, art.pk, witness, solidity.WithProverTargetSolidityVerifier(backend.GROTH16))
 	if err != nil {
 		err = fmt.Errorf("generate proof: %w", err)
 		return
 	}
+	var proveDur time.Duration
+	if benchEnabled {
+		proveDur = time.Since(proveStart)
+	}
 
+	var verifyStart time.Time
+	if benchEnabled {
+		verifyStart = time.Now()
+	}
 	pubWitness, _ := witness.Public()
 	if vErr := groth16.Verify(gnarkProof, art.vk, pubWitness, solidity.WithVerifierTargetSolidityVerifier(backend.GROTH16)); vErr != nil {
 		err = fmt.Errorf("local verification failed: %w", vErr)
 		return
 	}
+	var verifyDur time.Duration
+	if benchEnabled {
+		verifyDur = time.Since(verifyStart)
+	}
 
 	proof, commitments, commitmentPok, err = ProofToBigInts(gnarkProof)
+	if benchEnabled {
+		log.Printf("[bench][prover] done sigs=%d bucket=%d witness=%s prove=%s verify=%s total=%s",
+			len(sigs), bucket, witnessDur, proveDur, verifyDur, time.Since(totalStart))
+	}
 	return
 }
 

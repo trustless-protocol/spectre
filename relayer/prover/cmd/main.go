@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -32,17 +33,28 @@ import (
 // Also runs a smoke prove+verify with real Ed25519 signatures so a broken
 // circuit fails fast before the operator tries to use it.
 func main() {
+	var gpuProve bool
+	flag.BoolVar(&gpuProve, "gpu-prove", false, "use the ICICLE GPU backend for setup/proving (or set GPU_PROVE=1); requires an icicle-enabled build")
+	flag.Parse()
+
 	outDir := "bin"
 	solOutDir := filepath.Join("..", "contracts", "verifiers")
-	if len(os.Args) > 1 {
-		outDir = os.Args[1]
+	if args := flag.Args(); len(args) > 0 {
+		outDir = args[0]
 	}
-	if len(os.Args) > 2 {
-		solOutDir = os.Args[2]
+	if args := flag.Args(); len(args) > 1 {
+		solOutDir = args[1]
 	}
 	if err := os.MkdirAll(solOutDir, 0o755); err != nil {
 		panic(fmt.Errorf("create solidity output dir: %w", err))
 	}
+
+	useGPU := gpuProve || prover.GPUProveEnvEnabled()
+	proofBackend, err := prover.NewProofBackend(useGPU)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Printf("Using proof backend: %s\n", proofBackend.Name())
 
 	for _, n := range prover.Buckets {
 		fmt.Printf("\n=== bucket n=%d ===\n", n)
@@ -61,12 +73,12 @@ func main() {
 			r1csObj.GetNbConstraints(), r1csObj.GetNbPublicVariables())
 
 		fmt.Println("Running Groth16 setup...")
-		pk, vk, err := groth16.Setup(r1csObj)
+		pk, vk, err := proofBackend.Setup(r1csObj)
 		if err != nil {
 			panic(fmt.Errorf("setup n=%d: %w", n, err))
 		}
 
-		smokeTest(r1csObj, pk, vk, n)
+		smokeTest(r1csObj, pk, vk, n, proofBackend)
 
 		solPath := filepath.Join(solOutDir, fmt.Sprintf("Groth16Verifier_N%d.sol", n))
 		if err := exportSolidityVerifier(vk, solPath, n); err != nil {
@@ -87,7 +99,7 @@ func main() {
 // size). It exercises the full Sig/Pub decompression + msg-bytes hashing
 // path so a broken circuit fails fast before the operator loads the
 // artifacts into the relayer.
-func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, n int) {
+func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, n int, proofBackend prover.ProofBackend) {
 	// Use a per-slot length comparable to a Tendermint canonical vote
 	// (~110-175 bytes). Random bytes are fine for the circuit — semantics
 	// don't matter, only that what's signed matches what's hashed.
@@ -131,7 +143,7 @@ func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16
 	}
 
 	fmt.Printf("Proving smoke test (n=%d)...\n", n)
-	proof, err := groth16.Prove(cs, pk, witness)
+	proof, err := proofBackend.Prove(cs, pk, witness)
 	if err != nil {
 		panic(fmt.Errorf("prove n=%d: %w", n, err))
 	}
