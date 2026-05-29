@@ -61,64 +61,67 @@ func routerManagesProofSubmission(ctx services.Context) bool {
 	return *roleManager == *router
 }
 
-func estimateMulticallPrefixGas(
-	ctx services.Context,
-	from common.Address,
-	to common.Address,
-	data []byte,
-	gasCap uint64,
-) (uint64, string, error) {
-	callMsg := ethereum.CallMsg{
-		From: from,
-		To:   &to,
-		Data: data,
-	}
-
-	est, err := ctx.EthClient().EstimateGas(context.Background(), callMsg)
-	if err == nil {
-		return est, "estimateGas", nil
-	}
-
-	callMsg.Gas = gasCap
-	if _, callErr := ctx.EthClient().CallContract(context.Background(), callMsg, nil); callErr != nil {
-		return 0, "", fmt.Errorf(
-			"estimateGas failed: %s; high-gas eth_call failed: %s",
-			formatCallErr(err),
-			formatCallErr(callErr),
-		)
-	}
-
-	// Fall back to a binary search over eth_call when estimateGas is flaky on
-	// large multicall prefixes. This is dev-only bench instrumentation.
-	var lo uint64 = 21_000
-	hi := gasCap
-	for lo+1 < hi {
-		mid := lo + (hi-lo)/2
-		callMsg.Gas = mid
-		_, callErr := ctx.EthClient().CallContract(context.Background(), callMsg, nil)
-		if callErr == nil {
-			hi = mid
-			continue
-		}
-		lo = mid
-	}
-
-	return hi, "callBinarySearch", nil
+// callTrace mirrors the geth callTracer output. We only need the gasUsed of
+// the top-level call's direct children (one entry per multicall inner). Other
+// fields are ignored.
+type callTrace struct {
+	GasUsed string      `json:"gasUsed"`
+	Calls   []callTrace `json:"calls"`
 }
 
-func formatCallErr(err error) string {
-	if err == nil {
-		return ""
+// logInnerGasFromTrace runs debug_traceTransaction with the callTracer against
+// txHash and logs the gasUsed of each multicall inner call. It returns nil on
+// success and an error if the trace could not be obtained or parsed — callers
+// log the error and continue (this is best-effort instrumentation).
+//
+// Requires the RPC endpoint to expose the `debug_` namespace. Kurtosis-Geth
+// devnets enable it by default; production endpoints typically do not.
+func logInnerGasFromTrace(ctx services.Context, txHash common.Hash, labels []string) error {
+	rpcClient := ctx.EthClient().Client()
+	if rpcClient == nil {
+		return fmt.Errorf("nil rpc client")
 	}
 
-	msg := err.Error()
-	type dataErr interface {
-		ErrorData() interface{}
+	var root callTrace
+	tracerCfg := map[string]any{"tracer": "callTracer"}
+	if err := rpcClient.CallContext(context.Background(), &root, "debug_traceTransaction", txHash, tracerCfg); err != nil {
+		return fmt.Errorf("debug_traceTransaction: %w", err)
 	}
-	if de, ok := err.(dataErr); ok && de.ErrorData() != nil {
-		msg = fmt.Sprintf("%s (data=%v)", msg, de.ErrorData())
+
+	if len(root.Calls) == 0 {
+		return fmt.Errorf("trace returned no inner calls")
 	}
-	return msg
+
+	for i, child := range root.Calls {
+		gasUsed, perr := hexToUint64(child.GasUsed)
+		if perr != nil {
+			log.Printf("[bench][eth] inner[%d] gas parse failed: %v", i, perr)
+			continue
+		}
+		label := fmt.Sprintf("inner[%d]", i)
+		if i < len(labels) {
+			label = fmt.Sprintf("inner[%d] %s", i, labels[i])
+		}
+		log.Printf("[bench][eth] %s gas=%d (from trace)", label, gasUsed)
+	}
+	return nil
+}
+
+func hexToUint64(s string) (uint64, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty hex string")
+	}
+	if strings.HasPrefix(s, "0x") || strings.HasPrefix(s, "0X") {
+		s = s[2:]
+	}
+	if s == "" {
+		return 0, nil
+	}
+	var v uint64
+	if _, err := fmt.Sscanf(s, "%x", &v); err != nil {
+		return 0, fmt.Errorf("parse %q: %w", s, err)
+	}
+	return v, nil
 }
 
 func cosmosRouterClientID(ctx services.Context) (string, error) {
@@ -600,43 +603,6 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 		return fmt.Errorf("[SendEthTxBatch] failed to bind ICS26Router: %w", err)
 	}
 
-	// Optional per-inner-call gas breakdown. Each prefix multicall(calldata[:i])
-	// is estimated against the current pre-tx state; the delta between
-	// successive prefixes approximates the gas of the i-th inner call.
-	//
-	// estimateGas runs on the pre-tx EVM state, so contract checks that depend
-	// on block.timestamp (e.g. trusting-period / header staleness) can revert
-	// here even when the real tx submitted a few seconds later succeeds. When
-	// a prefix reverts, the inner-gas breakdown is meaningless for the rest of
-	// the batch — bail early with one summary line instead of N noisy ones.
-	if utils.BenchInnerGasEnabled() {
-		var prev uint64
-		for i := 1; i <= len(calldata); i++ {
-			partial, perr := parsedABI.Pack("multicall", calldata[:i])
-			if perr != nil {
-				log.Printf("[bench][eth] inner gas breakdown skipped: pack prefix=%d failed: %v", i, perr)
-				break
-			}
-			to := *ctx.RouterContract()
-			est, mode, perr := estimateMulticallPrefixGas(ctx, fromAddress, to, partial, auth.GasLimit)
-			if perr != nil {
-				log.Printf("[bench][eth] inner gas breakdown skipped at prefix=%d (transient estimateGas revert, real tx will retry): %v",
-					i, perr)
-				break
-			}
-			delta := est
-			if i > 1 {
-				delta = est - prev
-			}
-			// delta = gas contributed by THIS inner alone (prefix[i] - prefix[i-1]).
-			// est = cumulative gas for the multicall prefix up through this inner.
-			// Headline the delta — that's the per-call cost the reader wants.
-			log.Printf("[bench][eth] inner[%d] %s gas=%d mode=%s (multicall cumulative=%d)",
-				i-1, labels[i-1], delta, mode, est)
-			prev = est
-		}
-	}
-
 	benchEnabled := utils.BenchEnabled()
 	var benchStart time.Time
 	if benchEnabled {
@@ -695,6 +661,11 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 	if benchEnabled {
 		log.Printf("[bench][eth] multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
+	}
+	if utils.BenchInnerGasEnabled() {
+		if traceErr := logInnerGasFromTrace(ctx, tx.Hash(), labels); traceErr != nil {
+			log.Printf("[bench][eth] inner gas trace unavailable (RPC may lack debug_ namespace): %v", traceErr)
+		}
 	}
 
 	return nil
