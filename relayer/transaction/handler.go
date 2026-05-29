@@ -76,6 +76,11 @@ type callTrace struct {
 //
 // Requires the RPC endpoint to expose the `debug_` namespace. Kurtosis-Geth
 // devnets enable it by default; production endpoints typically do not.
+//
+// UUPS proxies (e.g. ICS26Router) introduce an intermediate proxy→impl
+// delegatecall frame between the tx entry and the multicall body. Descend
+// single-child wrapper frames until we find the frame whose children count
+// matches the expected inner-call count.
 func logInnerGasFromTrace(ctx services.Context, txHash common.Hash, labels []string) error {
 	rpcClient := ctx.EthClient().Client()
 	if rpcClient == nil {
@@ -88,11 +93,12 @@ func logInnerGasFromTrace(ctx services.Context, txHash common.Hash, labels []str
 		return fmt.Errorf("debug_traceTransaction: %w", err)
 	}
 
-	if len(root.Calls) == 0 {
-		return fmt.Errorf("trace returned no inner calls")
+	frame := findMulticallFrame(&root, len(labels))
+	if frame == nil || len(frame.Calls) == 0 {
+		return fmt.Errorf("trace returned no inner calls (expected %d)", len(labels))
 	}
 
-	for i, child := range root.Calls {
+	for i, child := range frame.Calls {
 		gasUsed, perr := hexToUint64(child.GasUsed)
 		if perr != nil {
 			log.Printf("[bench][eth] inner[%d] gas parse failed: %v", i, perr)
@@ -105,6 +111,28 @@ func logInnerGasFromTrace(ctx services.Context, txHash common.Hash, labels []str
 		log.Printf("[bench][eth] %s gas=%d (from trace)", label, gasUsed)
 	}
 	return nil
+}
+
+// findMulticallFrame walks down the trace, skipping single-child wrapper
+// frames (UUPS proxy → impl delegatecall) until it finds the frame whose
+// direct children match the expected inner-call count. If no exact match is
+// found, returns the deepest single-chain frame — its children are still
+// the best approximation of the inner calls.
+func findMulticallFrame(node *callTrace, expectedInners int) *callTrace {
+	if node == nil {
+		return nil
+	}
+	cur := node
+	for {
+		if expectedInners > 0 && len(cur.Calls) == expectedInners {
+			return cur
+		}
+		if len(cur.Calls) == 1 {
+			cur = &cur.Calls[0]
+			continue
+		}
+		return cur
+	}
 }
 
 func hexToUint64(s string) (uint64, error) {
