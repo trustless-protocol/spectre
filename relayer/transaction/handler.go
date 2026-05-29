@@ -603,19 +603,26 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 	// Optional per-inner-call gas breakdown. Each prefix multicall(calldata[:i])
 	// is estimated against the current pre-tx state; the delta between
 	// successive prefixes approximates the gas of the i-th inner call.
+	//
+	// estimateGas runs on the pre-tx EVM state, so contract checks that depend
+	// on block.timestamp (e.g. trusting-period / header staleness) can revert
+	// here even when the real tx submitted a few seconds later succeeds. When
+	// a prefix reverts, the inner-gas breakdown is meaningless for the rest of
+	// the batch — bail early with one summary line instead of N noisy ones.
 	if utils.BenchInnerGasEnabled() {
 		var prev uint64
 		for i := 1; i <= len(calldata); i++ {
 			partial, perr := parsedABI.Pack("multicall", calldata[:i])
 			if perr != nil {
-				log.Printf("[bench][eth] inner gas estimate prefix=%d pack failed: %v", i, perr)
-				continue
+				log.Printf("[bench][eth] inner gas breakdown skipped: pack prefix=%d failed: %v", i, perr)
+				break
 			}
 			to := *ctx.RouterContract()
 			est, mode, perr := estimateMulticallPrefixGas(ctx, fromAddress, to, partial, auth.GasLimit)
 			if perr != nil {
-				log.Printf("[bench][eth] inner gas estimate prefix=%d failed: %v", i, perr)
-				continue
+				log.Printf("[bench][eth] inner gas breakdown skipped at prefix=%d (transient estimateGas revert, real tx will retry): %v",
+					i, perr)
+				break
 			}
 			delta := est
 			if i > 1 {
