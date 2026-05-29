@@ -267,11 +267,7 @@ round-trip; the `[UpdateCosmosClient]` log line reports the chosen bucket.
 ## Benchmark mode
 
 Detailed per-step gas + timing logs are off by default (production noise) and
-opt-in via flag or env. When enabled, the relayer emits `[bench][prover]`,
-`[bench][eth]`, and `[bench][cosmos]` lines so a single E2E run can be diffed
-for performance regressions without rebuilding.
-
-### Enable
+opt-in via flag or env:
 
 ```bash
 # CLI flag
@@ -285,26 +281,21 @@ Either source turns it on; flag is the override. The relayer logs
 `[benchmark] enabled: detailed gas/timing logs are active` at startup so it's
 obvious which mode you're in.
 
-### What each line carries
+When enabled, the relayer emits the following lines so a single E2E run can be
+diffed for performance regressions without rebuilding:
 
 | Prefix | Where | Fields |
 |---|---|---|
 | `[bench][prover]` | per `GenerateProof` | `sigs`, `bucket`, `witness`, `prove`, `verify`, `total` |
 | `[bench][eth]` | per `SendEthTx` / `SendEthTxBatch` | label or `multicall labels=...`, `gasUsed`, `submit`, `wait`, `total`, `tx` |
+| `[bench][eth] inner[i]` | per multicall inner | `label`, `gas` from `debug_traceTransaction` callTracer |
 | `[bench][cosmos]` | per `SendCosmosTx` / `SendCosmosTxBatch` | msg type or `batch msgs=N`, `gasWanted`, `gasUsed`, `broadcast`, `total`, `height`, `hash` |
 
-### Optional: per-inner-call gas in multicall
-
-`SendEthTxBatch` packs N inner calls; the receipt only reports the total. To
-see the gasUsed of each inner separately, opt in:
-
-```bash
-RELAYER_BENCH_INNER_GAS=1 ./relayer start --config config.example.json --benchmark
-```
-
-After a multicall tx confirms, the relayer calls `debug_traceTransaction`
-with the `callTracer`, descends past the UUPS proxy → impl wrapper frame,
-and logs one line per direct child of the multicall body:
+`SendEthTxBatch` packs N inner calls but the receipt only reports the total.
+For each multicall, after the tx confirms the relayer calls
+`debug_traceTransaction` with the `callTracer`, descends past the UUPS
+proxy → impl wrapper frame, and logs one `inner[i]` line per direct child of
+the multicall body. Sample output:
 
 ```
 [bench][eth] multicall labels=updateClient,recvPacket:1 gasUsed=3322538 ...
@@ -313,25 +304,19 @@ and logs one line per direct child of the multicall body:
 ```
 
 `gas=... (from trace)` is the **real on-chain gasUsed** of that inner CALL,
-not an estimate. This bypasses the time-sensitive reverts that `eth_estimateGas`
-ran into when checking trusting-period / header staleness against the pre-tx
-EVM state.
+not an estimate.
 
-**Requirements:**
-- The RPC endpoint must expose the `debug_` namespace
-  (`--http.api=...,debug` on geth). Verify with
-  `curl -X POST <rpc> -d '{"jsonrpc":"2.0","method":"rpc_modules","params":[],"id":1}'`
-  — look for `"debug": "1.0"` in the response.
-- Kurtosis ethereum-package presets typically include it; production
-  endpoints typically do not.
-- If unavailable, the relayer logs one error line and continues — the rest of
-  the benchmark output is unaffected.
+The inner-gas trace requires the RPC endpoint to expose the `debug_` namespace
+(`--http.api=...,debug` on geth). Verify with:
 
-`RELAYER_BENCH_INNER_GAS` falls back to `RELAYER_BENCHMARK` when unset, so the
-flag alone gives you both unless you explicitly want to disable the inner
-trace (`RELAYER_BENCH_INNER_GAS=0`).
+```bash
+curl -X POST <rpc> -d '{"jsonrpc":"2.0","method":"rpc_modules","params":[],"id":1}'
+# look for "debug": "1.0" in the response
+```
 
-### Tests
+Kurtosis ethereum-package presets typically include it; production endpoints
+typically do not. If unavailable, the relayer logs one error line and
+continues — the rest of the benchmark output is unaffected.
 
 `utils.SetBenchEnabled(true|false)` lets tests force the flag without touching
 env. Definitions live in `relayer/utils/bench.go`.

@@ -690,7 +690,7 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 		log.Printf("[bench][eth] multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
 	}
-	if utils.BenchInnerGasEnabled() {
+	if benchEnabled {
 		if traceErr := logInnerGasFromTrace(ctx, tx.Hash(), labels); traceErr != nil {
 			log.Printf("[bench][eth] inner gas trace unavailable (RPC may lack debug_ namespace): %v", traceErr)
 		}
