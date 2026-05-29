@@ -95,8 +95,22 @@ backend via env or flag when needed.
 
 Build requirements for the GPU path:
 
+- NVIDIA GPU with a working CUDA driver/toolkit
 - ICICLE runtime libraries must be installed and visible to the linker/runtime
 - the relayer and prover tool must be built or run with `-tags=icicle`
+
+The linker/runtime must be able to find libraries such as:
+
+- `libicicle_device`
+- `libicicle_field_bn254`
+- `libicicle_curve_bn254`
+
+If they are not in a default loader path, export `LD_LIBRARY_PATH` before
+building or running:
+
+```bash
+export LD_LIBRARY_PATH=/usr/local/lib:${LD_LIBRARY_PATH}
+```
 
 Backend selection:
 
@@ -121,14 +135,24 @@ go build -tags=icicle -o relayer ./cmd
 GPU_PROVE=1 ./relayer start --config config.example.json
 ```
 
-Optional ICICLE tuning env vars supported by the prover:
+### ICICLE Environment
 
-- `GNARK_ICICLE_DEVICE_ID`
-- `GNARK_ICICLE_BACKEND_LIBS`
-- `GNARK_ICICLE_PIN_KEYS`
+Optional ICICLE tuning env vars read by `relayer/prover/backend_icicle.go`:
+
+```bash
+export GNARK_ICICLE_DEVICE_ID=0
+export GNARK_ICICLE_BACKEND_LIBS=/usr/local/lib
+export GNARK_ICICLE_PIN_KEYS=true
+```
+
+- `GNARK_ICICLE_DEVICE_ID`: GPU device index.
+- `GNARK_ICICLE_BACKEND_LIBS`: backend library location passed into ICICLE.
+- `GNARK_ICICLE_PIN_KEYS`: whether proving keys should be pinned to GPU memory.
 
 If the ICICLE runtime is missing, the `icicle` build typically fails at link or
-startup with errors such as `library 'icicle_device' not found`.
+startup with errors such as `library 'icicle_device' not found`. In that case,
+ensure ICICLE shared libraries are installed and `LD_LIBRARY_PATH` covers the
+directory containing the `libicicle_*` files.
 
 ## Local E2E Test
 
