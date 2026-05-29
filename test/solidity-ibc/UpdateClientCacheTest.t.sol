@@ -129,7 +129,7 @@ contract UpdateClientCacheTest is Test {
         assertTrue(ics07.hasCachedValidatorSet(hashA), "current validator set should still be cached");
     }
 
-    function test_updateClient_nonAdjacent_usesCachedCurrentAndTrustedNextSets() public {
+    function test_updateClient_nonAdjacent_usesCachedCurrentAndSuppliedTrustedNextSet() public {
         BucketConfig memory cfg = _cfg(16);
 
         IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
@@ -163,7 +163,7 @@ contract UpdateClientCacheTest is Test {
         IUpdateClientMsgs.MsgUpdateClient memory cacheMsg =
             _buildMsg(_clientState(), trustedCS0, nonAdjacentHeader, cfg.bucket, cfg.activeCount);
         cacheMsg.proposedHeader.validatorSet = _emptyValidatorSet();
-        cacheMsg.proposedHeader.trustedNextValidatorSet = _emptyValidatorSet();
+        cacheMsg.proposedHeader.trustedNextValidatorSet = valA;
 
         ILightClientMsgs.UpdateResult result = ics07.updateClient(abi.encode(cacheMsg));
         assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.NoOp), "non-adjacent cache-hit replay should NoOp");

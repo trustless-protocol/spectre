@@ -119,6 +119,23 @@ func fetchOnChainTrustedHeight(ctx Context) (int64, error) {
 	return int64(onChainClientState.LatestHeight.RevisionHeight), nil
 }
 
+func hasCachedCosmosValidatorSet(ctx Context, validatorsHash [32]byte) (bool, error) {
+	ics07, err := tendermintContract.NewContractGroth16ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
+	if err != nil {
+		return false, fmt.Errorf("failed to create ICS07 instance: %w", err)
+	}
+	return ics07.HasCachedValidatorSet(nil, validatorsHash)
+}
+
+func emptyContractValidatorSet() updateclientContract.IICS07TendermintMsgsValidatorSet {
+	return updateclientContract.IICS07TendermintMsgsValidatorSet{
+		Validators:       []updateclientContract.IICS07TendermintMsgsValidatorInfo{},
+		HasProposer:      false,
+		Proposer:         updateclientContract.IICS07TendermintMsgsValidatorInfo{},
+		TotalVotingPower: 0,
+	}
+}
+
 // BuildCosmosClientUpdateMsg fetches the latest Tendermint light block,
 // generates the Groth16 batch proof, and returns the resulting
 // IUpdateClientMsgsMsgUpdateClient WITHOUT submitting it. Callers either
@@ -229,6 +246,22 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	}
 
 	proposedHeader := latestLightBlock.IntoHeader(*trustedLightBlock)
+	currentValidatorsHash := proposedHeader.SignedHeader.Header.ValidatorsHash
+	currentValidatorsCached, err := hasCachedCosmosValidatorSet(ctx, currentValidatorsHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query validator-set cache: %w", err)
+	}
+	if currentValidatorsCached {
+		log.Printf("[UpdateCosmosClient] validator quorum cache hit: hash=%x; omitting current validator set", currentValidatorsHash)
+		proposedHeader.ValidatorSet = emptyContractValidatorSet()
+	} else {
+		log.Printf("[UpdateCosmosClient] validator quorum cache miss: hash=%x; sending full validator set", currentValidatorsHash)
+	}
+
+	adjacentUpdate := proposedHeader.SignedHeader.Header.Height == proposedHeader.TrustedHeight.RevisionHeight+1
+	if adjacentUpdate || (!currentValidatorsCached && proposedHeader.SignedHeader.Header.ValidatorsHash == consensusState.NextValidatorsHash) {
+		proposedHeader.TrustedNextValidatorSet = emptyContractValidatorSet()
+	}
 
 	log.Printf("[UpdateCosmosClient] clientState.LatestHeight=(%d,%d) proposedHeader.Height=%d trustedBlock=%d latestBlock=%d",
 		clientState.LatestHeight.RevisionNumber, clientState.LatestHeight.RevisionHeight,

@@ -14,4 +14,9 @@ interface IUpdateClient {
         external
         pure
         returns (IUpdateClientMsgs.UpdateClientOutput memory);
+
+    function updateClientCachedCurrent(IUpdateClientMsgs.MsgUpdateClient calldata msg)
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory);
 }
