@@ -268,8 +268,8 @@ round-trip; the `[UpdateCosmosClient]` log line reports the chosen bucket.
 
 Detailed per-step gas + timing logs are off by default (production noise) and
 opt-in via flag or env. When enabled, the relayer emits `[bench][prover]`,
-`[bench][eth]`, `[bench][cosmos]`, and (in batches) `[bench][gas]` lines so a
-single E2E run can be diffed for performance regressions without rebuilding.
+`[bench][eth]`, and `[bench][cosmos]` lines so a single E2E run can be diffed
+for performance regressions without rebuilding.
 
 ### Enable
 
@@ -292,20 +292,44 @@ obvious which mode you're in.
 | `[bench][prover]` | per `GenerateProof` | `sigs`, `bucket`, `witness`, `prove`, `verify`, `total` |
 | `[bench][eth]` | per `SendEthTx` / `SendEthTxBatch` | label or `multicall labels=...`, `gasUsed`, `submit`, `wait`, `total`, `tx` |
 | `[bench][cosmos]` | per `SendCosmosTx` / `SendCosmosTxBatch` | msg type or `batch msgs=N`, `gasWanted`, `gasUsed`, `broadcast`, `total`, `height`, `hash` |
-| `[bench][gas]` | per multicall (when `BenchGas` events present) | per-checkpoint `gasLeft` + `delta` for each ICS26Router event label |
 
 ### Optional: per-inner-call gas in multicall
 
 `SendEthTxBatch` packs N inner calls; the receipt only reports the total. To
-estimate per-inner gas (one `eth_estimateGas` RPC per inner — dev-only):
+see the gasUsed of each inner separately, opt in:
 
 ```bash
 RELAYER_BENCH_INNER_GAS=1 ./relayer start --config config.example.json --benchmark
 ```
 
+After a multicall tx confirms, the relayer calls `debug_traceTransaction`
+with the `callTracer`, descends past the UUPS proxy → impl wrapper frame,
+and logs one line per direct child of the multicall body:
+
+```
+[bench][eth] multicall labels=updateClient,recvPacket:1 gasUsed=3322538 ...
+[bench][eth] inner[0] updateClient gas=2491085 (from trace)
+[bench][eth] inner[1] recvPacket:1 gas=833989 (from trace)
+```
+
+`gas=... (from trace)` is the **real on-chain gasUsed** of that inner CALL,
+not an estimate. This bypasses the time-sensitive reverts that `eth_estimateGas`
+ran into when checking trusting-period / header staleness against the pre-tx
+EVM state.
+
+**Requirements:**
+- The RPC endpoint must expose the `debug_` namespace
+  (`--http.api=...,debug` on geth). Verify with
+  `curl -X POST <rpc> -d '{"jsonrpc":"2.0","method":"rpc_modules","params":[],"id":1}'`
+  — look for `"debug": "1.0"` in the response.
+- Kurtosis ethereum-package presets typically include it; production
+  endpoints typically do not.
+- If unavailable, the relayer logs one error line and continues — the rest of
+  the benchmark output is unaffected.
+
 `RELAYER_BENCH_INNER_GAS` falls back to `RELAYER_BENCHMARK` when unset, so the
 flag alone gives you both unless you explicitly want to disable the inner
-estimates (`RELAYER_BENCH_INNER_GAS=0`).
+trace (`RELAYER_BENCH_INNER_GAS=0`).
 
 ### Tests
 
