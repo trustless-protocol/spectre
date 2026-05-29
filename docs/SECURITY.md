@@ -37,8 +37,10 @@ Cosmos validators sign block (Ed25519 over CanonicalVote bytes)
 | Forged headers | Groth16 batch proof + 2/3 unique-signer voting-power quorum |
 | Calldata pubkey swap | Pubkey A bound into the SHA-256 witness commit; tampering changes the public input and breaks proof |
 | Padding inflating quorum | `active=false` slots skipped on-chain; active byte hashed so calldata can't toggle it |
-| Duplicate signer in calldata | `seen[idx]` check rejects an active validator index appearing twice |
+| Duplicate signer in calldata | Sorted-index invariant (`idx > prevIdx`) rejects an active validator index appearing twice |
 | Bucket spoofing | `WrapperVerifier.buckets[bucket]` lookup; only owner can `setBucket`; verifier dispatch matches the circuit each `(pk, vk)` was built for |
+| Cache poisoning (validator-set cache) | `_cacheValidatorSet` runs only after `_verifyBatchAndQuorum` and the full update path succeed; a cache-miss entry that bypasses the resolved path must pass `Header.hashValSet(...) == validatorsHash` before it can be cached |
+| Stale-revision cache (chain ID vs latestHeight drift) | Constructor invariant: `ChainId.get(clientState.chainId).revisionNumber == clientState.latestHeight.revisionNumber`. `updateClient`/`misbehaviour` rely on `latestHeight.revisionNumber` instead of re-parsing `chainId` per call |
 | Replay attacks | Packet sequencing in ICS26Router |
 | Double-spend | Commitment storage in ICS24Host |
 | Validator equivocation | Misbehaviour detection → client freeze |
@@ -74,3 +76,5 @@ Roles defined in `IBCRolesLib.sol`:
 - Each `groth16.Setup` run uses fresh randomness; the VK changes every regeneration, so per-bucket verifiers and the WrapperVerifier bucket registry must be redeployed atomically
 - The relayer's set of buckets (`prover.Buckets`) caps the maximum number of distinct active signers; chains with quorum sets larger than the biggest bucket cannot be served until a larger bucket is added and deployed
 - `relayer/go.mod` replace directives point to local paths — verify before building
+- `contracts/compile.sh` hard-codes the deterministic Foundry-script deploy addresses for the `Encode` and `Header` libraries when stamping the Go-binding bytecode. If `scripts/E2ETestDeploy.s.sol`'s deploy order ever changes (so the libraries land at different CREATE addresses), update `ENCODE_LIB_ADDR` / `HEADER_LIB_ADDR` to match — a mismatch silently produces a contract that delegatecalls an empty address (`FailedCall()` revert).
+- `_cachedValidatorSets` grows monotonically — one entry per unique `validatorsHash` ever observed by `updateClient`. There is no eviction. For chains with frequent validator-set churn this is an unbounded storage cost over the client's lifetime; the relayer / operator owns the SSTORE bill.

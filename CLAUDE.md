@@ -52,12 +52,16 @@ forge test --match-contract EncodeTest -vvv  # Solidity encoding tests
 cd relayer
 go run ./cmd/main.go create-clients \
   --config config.json \
-  --trust-level 1/3 \
+  --trust-level 2/3 \
   --wasm-checksum <hex>
 # Copy ICS07 address from log into config.json cosmos_to_eth.ics07_client
 
 # Start relay loop (bi-directional: Cosmos ↔ ETH)
 go run ./cmd/main.go start --config config.json
+
+# Start with detailed per-inner-call gas + timing benchmark logs
+go run ./cmd/main.go start --config config.json --benchmark
+# (Equivalent to RELAYER_BENCHMARK=1; replaces the older RELAYER_BENCH_INNER_GAS env.)
 
 # Generate genesis state
 go run ./cmd/main.go genesis --trusted-block 0 --trusting-period 0
@@ -127,7 +131,11 @@ relayer/
 │   └── bin/            # Per-bucket artifacts: bin/n{N}/{r1cs,pk,vk}.bin
 ├── runner/         # Service runner utilities
 ├── services/       # Context, Worker, batch builder, relay loop, PendingPacketTracker
-│   └── pending.go      # In-memory tracker for Cosmos-originated packets pending ETH delivery (1h TTL)
+│   ├── main.go         # StartLoop: Cosmos and ETH handler goroutines (one per direction),
+│   │                   # per-source-block memoization for AppHash wait and beacon finality (issue #76)
+│   ├── pending.go      # In-memory tracker for Cosmos-originated packets pending ETH delivery (1h TTL)
+│   └── routine.go      # BuildCosmosClientUpdateMsg with on-chain trusted-height re-check
+│                       # (skip proof gen when client already up-to-date — issue #76 #2)
 ├── subscriber/     # Cosmos WebSocket + Ethereum event listeners
 ├── transaction/    # Ethereum + Cosmos transaction submission
 ├── utils/          # IBC path helpers, byte utils

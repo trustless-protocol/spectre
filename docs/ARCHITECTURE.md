@@ -29,6 +29,11 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
     │   ├─ IBCERC20 (Beacon Proxy) ─── Wrapper ERC20 for bridged tokens
     │   └─ Escrow (Beacon Proxy) ─── Token custody during transfer
     └─ Groth16ICS07Tendermint (UUPS) ─── ZK light client + 2/3 quorum check
+        ├─ _cachedValidatorSets ─── Storage cache (validatorsHash → ValidatorSet)
+        │                          populated only after a full update succeeds; lets
+        │                          subsequent updates skip the per-call Header.hashValSet
+        │                          for unchanged sets, and lets the relayer omit the
+        │                          val-set bytes from calldata on cache hits.
         └─ WrapperVerifier ─── Rebuilds CanonicalVote bytes per slot,
             │                  hashes the full witness (active flag, pubkey,
             │                  msgLen, msg) into a single SHA-256 digest, and
@@ -37,6 +42,19 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
                                         (N ∈ {4, 8, 16, 32, 64, 128}),
                                         auto-generated from each bucket's VK
 ```
+
+`updateClient` dispatches to one of two `UpdateClient` library entry points
+depending on whether the validator-set hashes for this update are already
+cached (or implied by the adjacent fast-path):
+
+- `updateClientResolved(msg)` — used when the validator set hashes are known
+  good (cache hit, adjacent update, or trustedNext matches current). Skips
+  the per-call `Header.hashValSet(...)` re-derivation, since
+  `_prepareUpdateClientMessage` has already either loaded the cached set or
+  validated the supplied one against `validatorsHash`.
+- `updateClient(msg)` (raw calldata pass-through) — used on the cold path
+  when neither side is resolvable, performing the full hashValSet check
+  inside `validateBasic`.
 
 ## Request Flow: IBC Transfer (Cosmos → Ethereum)
 
@@ -51,6 +69,12 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
 5. Relayer submits to Ethereum:
    a. Groth16ICS07Tendermint.updateClient() — checks unique-signer 2/3
       quorum, then dispatches to WrapperVerifier.verifyBatchProof().
+      `_prepareUpdateClientMessage` first decides whether each validator set
+      can be served from `_cachedValidatorSets` (cache hit) or — for an
+      adjacent update — skipped via the `trustedNext == current` shortcut.
+      A cache hit serves the on-chain pubkeys + voting powers directly and
+      lets the call route through `UPDATE_CLIENT.updateClientResolved`,
+      which skips the `Header.hashValSet` re-derivation entirely.
    b. WrapperVerifier rebuilds each slot's CanonicalVote bytes from the
       shared block header + per-slot Timestamp, hashes the witness, and
       forwards the SHA-256 digest as the proof's only public input to the
@@ -58,6 +82,14 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
    c. ICS26Router.recvPacket() — routes to ICS20Transfer
    d. ICS20Transfer mints IBCERC20 tokens (or unlocks Escrow)
 ```
+
+The Cosmos→ETH `updateClient` and the packet's `recvPacket` are submitted
+as a single `ICS26Router.multicall(...)` so the update + packet apply
+atomically. The relayer's `BuildCosmosClientUpdateMsg` queries the
+authoritative on-chain trusted height before regenerating a Groth16 proof,
+so subsequent chunks of the same source block (or any race where another
+relayer or a crashed-replayer has already advanced the client) short-
+circuit to `HasMsg=false` and skip the ~90 s proof gen.
 
 ## Request Flow: IBC Transfer (Ethereum → Cosmos)
 
@@ -93,6 +125,38 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
 5. PurgeStale(1h) drops any entry that never settles, preventing tracker
    growth from leaked packets
 ```
+
+## Relayer Concurrency Model
+
+`StartLoop` (`relayer/services/main.go`) drains the two batch channels on
+**independent goroutines** — one for Cosmos→ETH (`handleCosmos`), one for
+ETH→Cosmos (`handleEth`) — so a slow direction (proof gen, beacon-finality
+wait) never stalls the other.
+
+The two handlers touch disjoint mutable state:
+
+| State                          | Owner              |
+| ------------------------------ | ------------------ |
+| `ctx.latestEthTimestamp`       | handleCosmos       |
+| `ctx.latestCosmosTimestamp`    | handleEth          |
+| `Services.lastCosmosAppHashHeight` | handleCosmos   |
+| `Services.lastFinalizedExecBlock`  | handleEth      |
+
+`Timestamp.Snapshot/Set/SetTime` accessors guard the shared
+`latestEth/CosmosTimestamp` fields against the routine + timeout-scanner
+goroutines. The two `Services.last*` memoization fields are single-writer
+per goroutine and need no locking.
+
+Two per-chunk waits are memoized so chunked flushes don't repeat
+identical setup work:
+
+- `waitCosmosAppHash(targetHeight)` polls Cosmos height until it covers
+  `maxPacketHeight + 2` (so the packet commitment is in the queried
+  AppHash). Memoizes the highest confirmed height; later chunks of the
+  same source block return without an RPC.
+- `waitBeaconFinality(eventBlock)` memoizes the highest finalized exec
+  block; subsequent chunks whose event block is already covered return
+  immediately without re-pinging the beacon API.
 
 ## Request Flow: ACK Relay (Ethereum → Cosmos)
 
