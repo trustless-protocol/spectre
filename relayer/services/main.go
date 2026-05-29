@@ -291,7 +291,7 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 				sequence: packet.Packet.Sequence,
 			})
 		case CosmosTimeout:
-			if packet.Packet.SourceClient == ctx.CosmosRouterClientID() {
+			if !shouldRelayCosmosTimeoutToEth(packet.Packet, ctx.CosmosRouterClientID()) {
 				log.Printf("[Timeout] seq=%d: Cosmos-originated packet timeout already handled locally, skipping ETH relay", packet.Packet.Sequence)
 				continue
 			}
@@ -615,6 +615,34 @@ func (s *Services) waitBeaconFinality(ctx Context, eventBlock uint64, tag string
 
 func ethPacketExpired(packet EthPacket) bool {
 	return packet.Packet.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= packet.Packet.TimeoutTimestamp
+}
+
+// shouldRelayCosmosTimeoutToEth decides whether a CosmosTimeout event needs a
+// follow-up ICS26Router.timeoutPacket on the ETH side.
+//
+// IBC v2 timeout is submitted to the *source* chain: it deletes the source-side
+// packet commitment and refunds the sender. For a Cosmos→ETH packet, that
+// MsgTimeout fires on Cosmos and the destination (ETH) never held a commitment
+// for the packet — calling ETH's timeoutPacket would be a NoOp at best and a
+// wasted Groth16 proof + tx in any case.
+//
+// The Cosmos-originated case is identified by `destination_client` matching the
+// router client ID we know ETH uses for this Cosmos chain (`ICS26ClientID` in
+// the config). When the destination is *not* our Cosmos chain's ETH-side ID,
+// the packet came from ETH and ETH still owns a commitment that needs the
+// timeoutPacket call to delete + refund.
+//
+// NOTE: this predicate previously compared `source_client` against the same
+// router ID, which never matched for Cosmos-originated packets (their
+// source_client is the Cosmos-side client name e.g. "08-wasm-0"). That fired
+// the no-op ETH relay for every Cosmos→ETH timeout — wasted gas at best, and
+// blocked the relay loop entirely whenever the ETH-side updateClient was
+// failing for unrelated reasons.
+func shouldRelayCosmosTimeoutToEth(packet *channeltypesv2.Packet, cosmosRouterClientID string) bool {
+	if packet == nil {
+		return false
+	}
+	return packet.DestinationClient != cosmosRouterClientID
 }
 
 func cosmosPacketExpiredOnEth(packet CosmosPacket, ethBlockTime uint64) bool {
