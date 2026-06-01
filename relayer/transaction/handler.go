@@ -489,7 +489,7 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 				log.Printf("[SendEthTx] Revert data (hex): %v", de.ErrorData())
 			}
 		}
-		return fmt.Errorf("tx %s reverted (status=0, gasUsed=%d)", tx.Hash().Hex(), receipt.GasUsed)
+		return fmt.Errorf("tx %s reverted (status=0, gasUsed=%d): %w", tx.Hash().Hex(), receipt.GasUsed, services.ErrPermanentRelayFailure)
 	}
 	var waitDur time.Duration
 	if benchEnabled {
@@ -678,7 +678,7 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 				log.Printf("[SendEthTxBatch] Revert data (hex): %v", de.ErrorData())
 			}
 		}
-		return fmt.Errorf("multicall tx %s reverted (status=0, gasUsed=%d, labels=%s)", tx.Hash().Hex(), receipt.GasUsed, labelStr)
+		return fmt.Errorf("multicall tx %s reverted (status=0, gasUsed=%d, labels=%s): %w", tx.Hash().Hex(), receipt.GasUsed, labelStr, services.ErrPermanentRelayFailure)
 	}
 	var waitDur time.Duration
 	if benchEnabled {
@@ -1199,7 +1199,9 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	if commitResult.TxResult.Code != 0 {
 		log.Printf("[SendCosmosTx] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
 			commitResult.TxResult.Code, commitResult.TxResult.Codespace, commitResult.TxResult.Log, commitResult.TxResult.Data)
-		return fmt.Errorf("transaction failed at DeliverTx with code %d: %s", commitResult.TxResult.Code, commitResult.TxResult.Log)
+		// DeliverTx execution failure is deterministic (msg/proof rejected) — mark
+		// permanent so the relay loop counts it toward the retry cap.
+		return fmt.Errorf("transaction failed at DeliverTx with code %d: %s: %w", commitResult.TxResult.Code, commitResult.TxResult.Log, services.ErrPermanentRelayFailure)
 	}
 
 	log.Printf("[SendCosmosTx] Tx confirmed at height %d hash=%s", commitResult.Height, commitResult.Hash.String())
@@ -1406,7 +1408,8 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	if commitResult.TxResult.Code != 0 {
 		log.Printf("[SendCosmosTxBatch] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
 			commitResult.TxResult.Code, commitResult.TxResult.Codespace, commitResult.TxResult.Log, commitResult.TxResult.Data)
-		return fmt.Errorf("transaction failed at DeliverTx with code %d: %s", commitResult.TxResult.Code, commitResult.TxResult.Log)
+		// DeliverTx execution failure is deterministic — mark permanent.
+		return fmt.Errorf("transaction failed at DeliverTx with code %d: %s: %w", commitResult.TxResult.Code, commitResult.TxResult.Log, services.ErrPermanentRelayFailure)
 	}
 
 	log.Printf("[SendCosmosTxBatch] Tx confirmed at height %d hash=%s (msgs=%d)", commitResult.Height, commitResult.Hash.String(), len(sdkMsgs))
