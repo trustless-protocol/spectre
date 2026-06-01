@@ -28,7 +28,6 @@ contract Membership  is IMembership {
     error InvalidValueLength();
     error MissingMerkleRoot();
     error MismatchedNumberOfProofs(uint256 expected, uint256 actual);
-    error MissingVerifiedValue();
     error InvalidMerkleProof();
     error InvalidExistenceProof();
     error FailedToVerifyMembership();
@@ -60,13 +59,14 @@ contract Membership  is IMembership {
         }
         
         bytes32 commitmentRoot = appHash;        
+        IMembershipMsgs.ProofSpec[] memory proofSpecs = new IMembershipMsgs.ProofSpec[](2);
+        proofSpecs[0] = iavlSpec();
+        proofSpecs[1] = tendermintSpec();
+
         for (uint256 i = 0; i < kvPairs.length; i++) {
             IMembershipMsgs.KVPair memory kvPair = kvPairs[i];
             IMembershipMsgs.MerkleProof memory merkleProof = merkleProofs[i];
 
-            IMembershipMsgs.ProofSpec[] memory proofSpecs = new IMembershipMsgs.ProofSpec[](2);
-            proofSpecs[0] = iavlSpec();
-            proofSpecs[1] = tendermintSpec();
             // Check if this is a non-membership proof (empty value)
             if (kvPair.value.length == 0) {
                 // Verify non-membership
@@ -114,10 +114,6 @@ contract Membership  is IMembership {
             revert MismatchedNumberOfProofs(path.length, proofLength);
         }
 
-        if (value.length == 0) {
-            revert MissingVerifiedValue();
-        }
-
         // Process proofs from startIndex onwards
         // Keys are represented from root-to-leaf, so we iterate in reverse
         bytes32 subroot = bytesToBytes32(value);
@@ -132,21 +128,16 @@ contract Membership  is IMembership {
                 revert InvalidMerkleProof();
             }
 
-            subroot = calculateExistenceRoot(commitmentProof.existenceProof);
-            if (!verifyExistenceProof(
+            subroot = _verifyExistenceProofBytes32(
                 commitmentProof.existenceProof,
                 proofSpecs[i],
-                subroot,
                 keyPath,
-                abi.encodePacked(valueUpdate)
-                )
-            ) {
-                revert FailedToVerifyMembership();
-            }
+                valueUpdate
+            );
             valueUpdate = subroot;
         }
 
-        if (!(keccak256(abi.encode(root)) == keccak256(abi.encode(subroot)))) {
+        if (root != subroot) {
             revert FailedToVerifyMembership();
         }
     }
@@ -214,7 +205,7 @@ contract Membership  is IMembership {
 
     function calculateExistenceRoot(IMembershipMsgs.ExistenceProof memory proof) 
         internal 
-        pure 
+        view 
         returns (bytes32) 
     {
         if (proof.key.length == 0 || proof.value.length == 0) {
@@ -233,7 +224,7 @@ contract Membership  is IMembership {
 
     function calculateNonExistenceRoot(IMembershipMsgs.NonExistenceProof memory proof) 
         internal 
-        pure 
+        view 
         returns (bytes32) 
     {
         if (proof.hasLeft) {
@@ -251,6 +242,12 @@ contract Membership  is IMembership {
     ) internal view {
         if (!spec.hasLeafSpec) {
             revert MissingLeafSpec();
+        }
+
+        if (spec.hasInnerSpec) {
+            if (spec.innerSpec.childSize < 32) {
+                revert("Invalid inner operation (child_size)");
+            }
         }
 
         bytes memory leafPrefix = proof.leaf.prefix;
@@ -275,7 +272,7 @@ contract Membership  is IMembership {
         }
         bytes memory leafSpecPrefix = spec.leafOp.prefix;
         if (leafSpecPrefix.length > leafPrefix.length ||
-            !(keccak256(abi.encode(leafSpecPrefix)) == keccak256(abi.encode(getSlice(leafPrefix, 0, leafSpecPrefix.length))))) {
+            !(keccak256(leafSpecPrefix) == keccak256(getSlice(leafPrefix, 0, leafSpecPrefix.length)))) {
             revert("Incorrect prefix on leaf");
         }
 
@@ -314,7 +311,7 @@ contract Membership  is IMembership {
                 }
 
                 if (leafSpecPrefix.length <= innerOp.prefix.length &&
-                    keccak256(abi.encode(leafSpecPrefix)) == keccak256(abi.encode(getSlice(innerOp.prefix, 0, leafSpecPrefix.length)))) {
+                    keccak256(leafSpecPrefix) == keccak256(getSlice(innerOp.prefix, 0, leafSpecPrefix.length))) {
                     revert("Inner node with leaf prefix");
                 }
 
@@ -338,31 +335,6 @@ contract Membership  is IMembership {
         }
     }
 
-    function calculateExistenceRootForSpec(
-        IMembershipMsgs.ExistenceProof memory proof,
-        IMembershipMsgs.ProofSpec memory spec
-    ) internal pure returns (bytes32) {
-        if (proof.key.length == 0 || proof.value.length == 0 ) {
-            revert InvalidExistenceProof();
-        }
-        IMembershipMsgs.LeafOp memory leafOp = proof.leaf;
-        bytes32 leafHash = applyLeaf(leafOp, proof.key, proof.value);
-
-        for (uint256 i = 0; i < proof.path.length; i++) {
-            leafHash = applyInner(proof.path[i], leafHash);
-
-            if (spec.hasInnerSpec) {
-                if (uint256(spec.innerSpec.childSize) < 32) {
-                    revert("Invalid inner operation (child_size)");
-                }
-            }
-        }
-
-        return leafHash;
-    }
-
-
-
     function verifyExistenceProof(
         IMembershipMsgs.ExistenceProof memory proof,
         IMembershipMsgs.ProofSpec memory spec,
@@ -371,15 +343,31 @@ contract Membership  is IMembership {
         bytes memory value
     ) internal view returns (bool) {
         checkExistenceProof(proof, spec);
-        if (keccak256(abi.encode(proof.key)) != keccak256(abi.encode(key)) || keccak256(abi.encode(proof.value)) != keccak256(abi.encode(value))) {
+        if (keccak256(proof.key) != keccak256(key) || keccak256(proof.value) != keccak256(value)) {
             revert ProvidedKeyValueMismatch();
         }
 
-        bytes32 calculateRoot = calculateExistenceRootForSpec(proof, spec);
-        if (keccak256(abi.encode(calculateRoot)) != keccak256(abi.encode(subroot))) {
+        bytes32 calculateRoot = calculateExistenceRoot(proof);
+        if (calculateRoot != subroot) {
             revert RootMismatch();
         }
         return true;
+    }
+
+    function _verifyExistenceProofBytes32(
+        IMembershipMsgs.ExistenceProof memory proof,
+        IMembershipMsgs.ProofSpec memory spec,
+        bytes memory key,
+        bytes32 value
+    ) internal view returns (bytes32) {
+        checkExistenceProof(proof, spec);
+        if (proof.value.length != 32) {
+            revert InvalidValueLength();
+        }
+        if (keccak256(proof.key) != keccak256(key) || bytesToBytes32(proof.value) != value) {
+            revert ProvidedKeyValueMismatch();
+        }
+        return calculateExistenceRoot(proof);
     }
     
     function verifyNonExistenceProof(
@@ -426,8 +414,8 @@ contract Membership  is IMembership {
             IMembershipMsgs.InnerOp memory topLeft = proof.left.path[leftIndex];
             IMembershipMsgs.InnerOp memory topRight = proof.right.path[rightIndex];
             while (leftIndex > 0 && rightIndex > 0
-                && keccak256(abi.encode(topLeft.prefix)) == keccak256(abi.encode(topRight.prefix))
-                && keccak256(abi.encode(topLeft.suffix)) == keccak256(abi.encode(topRight.suffix))
+                && keccak256(topLeft.prefix) == keccak256(topRight.prefix)
+                && keccak256(topLeft.suffix) == keccak256(topRight.suffix)
             ) {
                 leftIndex--;
                 rightIndex--;
@@ -494,24 +482,120 @@ contract Membership  is IMembership {
         bytes memory hashedData = leafOp.prefix;
 
         bytes memory prekey = prepareLeafData(leafOp.prehashKey, key);
-        hashedData = abi.encodePacked(hashedData, prekey);
-
         bytes memory preval = prepareLeafData(leafOp.prehashValue, value);
-        hashedData = abi.encodePacked(hashedData, preval);
 
-        return hashData(hashedData, leafOp.hashOp);
+        uint256 prefixLen = hashedData.length;
+        uint256 prekeyLen = prekey.length;
+        uint256 prevalLen = preval.length;
+        uint256 totalLen = prefixLen + prekeyLen + prevalLen;
+
+        bytes memory result = new bytes(totalLen);
+        assembly ("memory-safe") {
+            let dest := add(result, 0x20)
+            
+            // Copy prefix
+            let src := add(hashedData, 0x20)
+            let i := 0
+            for { } lt(i, prefixLen) { i := add(i, 32) } {
+                mstore(add(dest, i), mload(add(src, i)))
+            }
+            
+            // Copy prekey
+            src := add(prekey, 0x20)
+            dest := add(dest, prefixLen)
+            i := 0
+            for { } lt(i, prekeyLen) { i := add(i, 32) } {
+                mstore(add(dest, i), mload(add(src, i)))
+            }
+            
+            // Copy preval
+            src := add(preval, 0x20)
+            dest := add(dest, prekeyLen)
+            i := 0
+            for { } lt(i, prevalLen) { i := add(i, 32) } {
+                mstore(add(dest, i), mload(add(src, i)))
+            }
+        }
+
+        return hashData(result, leafOp.hashOp);
     }
 
     function applyInner(
         IMembershipMsgs.InnerOp memory inner,
         bytes32 child
-    ) internal pure returns (bytes32) {
+    ) internal view returns (bytes32) {
         if (child == bytes32(0)) {
             revert("missing child hash");
         }
 
-        bytes memory image = abi.encodePacked(inner.prefix, child, inner.suffix);
-        return hashData(image, inner.hashOp);
+        bytes32 result;
+        bytes memory prefix = inner.prefix;
+        bytes memory suffix = inner.suffix;
+        uint256 prefixLen = prefix.length;
+        uint256 suffixLen = suffix.length;
+        uint256 totalLen = prefixLen + 32 + suffixLen;
+
+        if (inner.hashOp == IMembershipMsgs.HashOp.SHA256) {
+            assembly ("memory-safe") {
+                let freeMem := mload(0x40)
+                
+                // Copy prefix
+                let src := add(prefix, 0x20)
+                let dest := freeMem
+                let i := 0
+                for { } lt(i, prefixLen) { i := add(i, 32) } {
+                    mstore(add(dest, i), mload(add(src, i)))
+                }
+                
+                // Copy child hash
+                mstore(add(dest, prefixLen), child)
+                
+                // Copy suffix
+                src := add(suffix, 0x20)
+                dest := add(add(freeMem, prefixLen), 32)
+                i := 0
+                for { } lt(i, suffixLen) { i := add(i, 32) } {
+                    mstore(add(dest, i), mload(add(src, i)))
+                }
+                
+                // Call sha256 precompile (0x02)
+                let success := staticcall(gas(), 0x02, freeMem, totalLen, freeMem, 32)
+                if iszero(success) {
+                    revert(0, 0)
+                }
+                result := mload(freeMem)
+            }
+            return result;
+        } else if (inner.hashOp == IMembershipMsgs.HashOp.KECCAK256) {
+            assembly ("memory-safe") {
+                let freeMem := mload(0x40)
+                
+                // Copy prefix
+                let src := add(prefix, 0x20)
+                let dest := freeMem
+                let i := 0
+                for { } lt(i, prefixLen) { i := add(i, 32) } {
+                    mstore(add(dest, i), mload(add(src, i)))
+                }
+                
+                // Copy child hash
+                mstore(add(dest, prefixLen), child)
+                
+                // Copy suffix
+                src := add(suffix, 0x20)
+                dest := add(add(freeMem, prefixLen), 32)
+                i := 0
+                for { } lt(i, suffixLen) { i := add(i, 32) } {
+                    mstore(add(dest, i), mload(add(src, i)))
+                }
+                
+                result := keccak256(freeMem, totalLen)
+            }
+            return result;
+        } else {
+            bytes memory image = abi.encodePacked(inner.prefix, child, inner.suffix);
+            return hashData(image, inner.hashOp);
+        }
     }
 
     function prepareLeafData(
@@ -524,12 +608,42 @@ contract Membership  is IMembership {
 
         if (prehashOp == IMembershipMsgs.HashOp.NO_HASH) {
             bytes memory encodedLen = encodeVarint(data.length);
-            return abi.encodePacked(encodedLen, data);
+            uint256 len1 = encodedLen.length;
+            uint256 len2 = data.length;
+            bytes memory res1 = new bytes(len1 + len2);
+            assembly ("memory-safe") {
+                let dest := add(res1, 0x20)
+                // Copy encodedLen
+                let src := add(encodedLen, 0x20)
+                let i := 0
+                for { } lt(i, len1) { i := add(i, 32) } {
+                    mstore(add(dest, i), mload(add(src, i)))
+                }
+                // Copy data
+                src := add(data, 0x20)
+                dest := add(dest, len1)
+                i := 0
+                for { } lt(i, len2) { i := add(i, 32) } {
+                    mstore(add(dest, i), mload(add(src, i)))
+                }
+            }
+            return res1;
         }
 
         bytes32 hashedData = hashData(data, prehashOp);
         bytes memory encodedLength = encodeVarint(uint256(32));
-        return abi.encodePacked(encodedLength, hashedData);
+        uint256 lenLength = encodedLength.length;
+        bytes memory res2 = new bytes(lenLength + 32);
+        assembly ("memory-safe") {
+            let dest := add(res2, 0x20)
+            let src := add(encodedLength, 0x20)
+            let i := 0
+            for { } lt(i, lenLength) { i := add(i, 32) } {
+                mstore(add(dest, i), mload(add(src, i)))
+            }
+            mstore(add(dest, lenLength), hashedData)
+        }
+        return res2;
     }
 
     // true if this is the right-most path in the tree, excluding placeholder (empty child) nodes
@@ -568,7 +682,7 @@ contract Membership  is IMembership {
                     }
 
                     uint256 from = idx * childSize;
-                    if (keccak256(abi.encode(innerSpec.emptyChild)) != keccak256(abi.encode(getSlice(innerOp.suffix, from, from + childSize)))) {
+                    if (keccak256(innerSpec.emptyChild) != keccak256(getSlice(innerOp.suffix, from, from + childSize))) {
                         isEmpty = false;
                         break;
                     }
@@ -619,7 +733,7 @@ contract Membership  is IMembership {
                         }
 
                         uint256 from = actualPrefix + idx * childSize;
-                        if (keccak256(abi.encode(innerSpec.emptyChild)) != keccak256(abi.encode(getSlice(innerOp.prefix, from, from + childSize)))) {
+                        if (keccak256(innerSpec.emptyChild) != keccak256(getSlice(innerOp.prefix, from, from + childSize))) {
                             isEmpty = false;
                             break;
                         }
@@ -686,7 +800,7 @@ contract Membership  is IMembership {
         );
     }
 
-     function compareBytes(bytes memory a, bytes memory b) public pure returns (int8) {
+     function compareBytes(bytes memory a, bytes memory b) internal pure returns (int8) {
         if (a.length != b.length) {
             // For different lengths, we still need to compare byte by byte
             // up to the shorter length, then compare lengths
@@ -700,18 +814,13 @@ contract Membership  is IMembership {
             return a.length < b.length ? int8(-1) : int8(1);
         }
         
-        // Same length - we can use keccak256 for equality check first
-        if (keccak256(a) == keccak256(b)) {
-            return 0;
-        }
-        
-        // Different content, same length - compare byte by byte
+        // compare byte by byte
         for (uint256 i = 0; i < a.length; i++) {
             if (a[i] < b[i]) return -1;
             if (a[i] > b[i]) return 1;
         }
         
-        return 0; // Should never reach here
+        return 0;
     }
 
     /**
@@ -743,7 +852,7 @@ contract Membership  is IMembership {
     }
 
     function getSlice(bytes memory array, uint256 from, uint256 to) 
-        public 
+        internal 
         view 
         returns (bytes memory) 
     {
@@ -757,8 +866,11 @@ contract Membership  is IMembership {
             let src := add(add(array, 0x20), from)
             let dest := add(result, 0x20)
             
-            // Use identity precompile for efficient copying
+            // Use identity precompile for efficient copying and check success
             let success := staticcall(gas(), 0x04, src, length, dest, length)
+            if iszero(success) {
+                revert(0, 0)
+            }
         }
         
         return result;
@@ -799,16 +911,21 @@ contract Membership  is IMembership {
     
     function encodeVarint(uint256 value) internal pure returns (bytes memory) {
         if (value < 128) {
-            return abi.encodePacked(uint8(value));
+            bytes memory b = new bytes(1);
+            b[0] = bytes1(uint8(value));
+            return b;
         }
-        
-        bytes memory result;
+        bytes memory buf = new bytes(10); // max varint bytes
+        uint256 i = 0;
         while (value >= 128) {
-            result = abi.encodePacked(result, uint8((value & 0x7F) | 0x80));
+            buf[i] = bytes1(uint8((value & 0x7F) | 0x80));
+            i++;
             value >>= 7;
         }
-        result = abi.encodePacked(result, uint8(value));
-        return result;
+        buf[i] = bytes1(uint8(value));
+        i++;
+        assembly ("memory-safe") { mstore(buf, i) } // truncate to actual length
+        return buf;
     }
 
     function decodeVarint(bytes memory data, uint256 offset) internal pure returns (uint64, uint256) {
