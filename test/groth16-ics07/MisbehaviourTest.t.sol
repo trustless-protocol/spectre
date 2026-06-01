@@ -260,7 +260,9 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
         vm.prank(unauthorized);
         vm.expectRevert(
-            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, misbehaviourRole)
+            abi.encodeWithSelector(
+                IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, misbehaviourRole
+            )
         );
         managedClient.misbehaviour(encoded);
 
@@ -310,9 +312,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
         vm.prank(unauthorized);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, bytes32(0)
-            )
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, unauthorized, bytes32(0))
         );
         managedClient.unfreeze();
     }
@@ -386,9 +386,8 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
         SignedHeader memory signedHeader = SignedHeader({ header: blockHeader, commit: commit });
 
-        IICS02ClientMsgs.Height memory trustedHeight = IICS02ClientMsgs.Height({
-            revisionNumber: 0, revisionHeight: 10
-        });
+        IICS02ClientMsgs.Height memory trustedHeight =
+            IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 10 });
 
         return IICS07TendermintMsgs.Header({
             signedHeader: signedHeader,
