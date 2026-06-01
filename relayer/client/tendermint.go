@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"github.com/cometbft/cometbft/p2p"
 	rpcclient "github.com/cometbft/cometbft/rpc/client"
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
+	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	commettypes "github.com/cometbft/cometbft/types"
 	"github.com/cosmos/cosmos-sdk/codec"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
@@ -425,6 +427,43 @@ func GetLatestLightBlock(client *rpchttp.HTTP) (*LightBlock, error) {
 	return GetLightBlock(client, status.SyncInfo.LatestBlockHeight)
 }
 
+// cometBFTMaxPerPage is the largest page size the CometBFT /validators RPC
+// honors (rpc/core/env.go maxPerPage). Requesting this many per page minimizes
+// round-trips while still reading the full set.
+const cometBFTMaxPerPage = 100
+
+// validatorsPager is the subset of the CometBFT RPC client used to page the
+// validator set. *rpchttp.HTTP satisfies it; tests supply a fake.
+type validatorsPager interface {
+	Validators(ctx context.Context, height *int64, page, perPage *int) (*coretypes.ResultValidators, error)
+}
+
+// fetchAllValidators returns the complete validator set at the given height.
+//
+// The CometBFT /validators RPC paginates and defaults to perPage=30 when perPage
+// is nil (rpc/core/env.go validatePerPage). Calling it once with nil therefore
+// silently truncates the set to the first 30 validators on any chain with more
+// than 30 — the assembled set then has the wrong hash and signer extraction
+// fails for indices >= 30. We page explicitly and loop until the reported Total
+// is collected (issue #105).
+func fetchAllValidators(client validatorsPager, height int64) ([]*commettypes.Validator, error) {
+	var collected []*commettypes.Validator
+	perPage := cometBFTMaxPerPage
+	for page := 1; ; page++ {
+		p := page
+		resp, err := client.Validators(context.Background(), &height, &p, &perPage)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch validators (height %d, page %d): %w", height, page, err)
+		}
+		collected = append(collected, resp.Validators...)
+		// Stop once we have the full set, or defensively if a page is empty.
+		if len(collected) >= resp.Total || len(resp.Validators) == 0 {
+			break
+		}
+	}
+	return collected, nil
+}
+
 func GetLightBlock(client *rpchttp.HTTP, height int64) (*LightBlock, error) {
 	status, err := client.Status(context.Background())
 	if err != nil {
@@ -440,12 +479,12 @@ func GetLightBlock(client *rpchttp.HTTP, height int64) (*LightBlock, error) {
 	signedHeader := commitResp.SignedHeader
 	proposerAddr := signedHeader.Header.ProposerAddress
 	var proposer *commettypes.Validator
-	validatorResp, err := client.Validators(context.Background(), &height, nil, nil)
+	validators, err := fetchAllValidators(client, height)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch validators: %w", err)
+		return nil, err
 	}
 
-	for _, resp := range validatorResp.Validators {
+	for _, resp := range validators {
 		if resp != nil {
 			if slices.Equal(resp.Address.Bytes(), proposerAddr.Bytes()) {
 				proposer = resp
@@ -454,16 +493,24 @@ func GetLightBlock(client *rpchttp.HTTP, height int64) (*LightBlock, error) {
 		}
 	}
 
-	valSet := commettypes.NewValidatorSet(validatorResp.Validators)
+	valSet := commettypes.NewValidatorSet(validators)
 	valSet.Proposer = proposer
+	// Guard against a truncated/incomplete fetch: the assembled set must hash to
+	// the value committed in the header, otherwise the on-chain validator-set
+	// hash check would fail and signer indices would be misaligned (issue #105).
+	if !bytes.Equal(valSet.Hash(), signedHeader.Header.ValidatorsHash) {
+		return nil, fmt.Errorf(
+			"validator set hash mismatch at height %d: assembled %X != header ValidatorsHash %X (got %d validators)",
+			height, valSet.Hash(), signedHeader.Header.ValidatorsHash.Bytes(), len(validators))
+	}
 
 	nextHeight := height + 1
-	nextValidatorResp, err := client.Validators(context.Background(), &nextHeight, nil, nil)
+	nextValidators, err := fetchAllValidators(client, nextHeight)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch next validators: %w", err)
+		return nil, err
 	}
 
-	for _, resp := range nextValidatorResp.Validators {
+	for _, resp := range nextValidators {
 		if resp != nil {
 			if slices.Equal(resp.Address.Bytes(), proposerAddr.Bytes()) {
 				proposer = resp
@@ -472,8 +519,13 @@ func GetLightBlock(client *rpchttp.HTTP, height int64) (*LightBlock, error) {
 		}
 	}
 
-	nextValSet := commettypes.NewValidatorSet(nextValidatorResp.Validators)
+	nextValSet := commettypes.NewValidatorSet(nextValidators)
 	nextValSet.Proposer = proposer
+	if !bytes.Equal(nextValSet.Hash(), signedHeader.Header.NextValidatorsHash) {
+		return nil, fmt.Errorf(
+			"next validator set hash mismatch at height %d: assembled %X != header NextValidatorsHash %X (got %d validators)",
+			nextHeight, nextValSet.Hash(), signedHeader.Header.NextValidatorsHash.Bytes(), len(nextValidators))
+	}
 
 	return &LightBlock{
 		SignedHeader: signedHeader,
