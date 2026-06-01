@@ -229,100 +229,40 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	}
 
 	// Build per-packet msgs into a single slice and submit one multicall when
-	// N >= 2 (issue #67 / benchmark V1). Failures during pre-msg construction
-	// (membership proof, missing ack bytes, etc.) still cause a per-packet
-	// `continue` — that packet is just excluded from the batch.
-	type batchedMsg struct {
-		msg          any
-		label        string        // log label, e.g. "RecvPacket"
-		sequence     uint64        // for log lines
-		sourceClient string        // for PendingTracker.Remove
-		isRecv       bool          // true → call PendingTracker.Remove after success
-		origin       *CosmosPacket // source packet to re-queue on failure; nil for folded updateClient
+	// N >= 2 (issue #67 / benchmark V1). The per-packet planning (including the
+	// proof-build failure routing) is extracted into planCosmosPacketMsgs so the
+	// failure branches are unit-tested without a live Context/RPC (issue #106).
+	membershipFn := func(packet channeltypesv2.Packet, clientID string, pathType []byte) ([]byte, error) {
+		return s.cosmosMembership(ctx, packet, clientID, pathType, latestLightBlock)
 	}
+	nonMembershipFn := func(packet channeltypesv2.Packet, clientID string, pathType []byte) ([]byte, error) {
+		return s.cosmosNonMembership(ctx, packet, clientID, pathType, latestLightBlock)
+	}
+	planned, trackerAdds, transientFailures, trackerRemoves := planCosmosPacketMsgs(
+		batch.Packets, ethBlockTime, ctx.CosmosRouterClientID(), membershipFn, nonMembershipFn)
+
+	for _, p := range trackerAdds {
+		s.BatchBuilder.PendingTracker.Add(*p.Packet, p.BlockNumber)
+	}
+
 	// +1 capacity for the optional updateClient prepend.
-	msgs := make([]batchedMsg, 0, len(batch.Packets)+1)
+	msgs := make([]cosmosBatchMsg, 0, len(planned)+1)
 	if updateBuild.HasMsg {
-		msgs = append(msgs, batchedMsg{
+		msgs = append(msgs, cosmosBatchMsg{
 			msg:   updateBuild.Msg,
 			label: "UpdateClient",
 		})
 	}
+	msgs = append(msgs, planned...)
 
-	for _, packet := range batch.Packets {
-		switch packet.Type {
-		case CosmosSend:
-			s.BatchBuilder.PendingTracker.Add(*packet.Packet, packet.BlockNumber)
-
-			if ethBlockTime > 0 && packet.Packet.TimeoutTimestamp > 0 && ethBlockTime >= packet.Packet.TimeoutTimestamp {
-				log.Printf("[RecvPacket] Packet seq=%d timed out (timeout=%d <= eth_block_time=%d), deferring to async timeout scanner",
-					packet.Packet.Sequence, packet.Packet.TimeoutTimestamp, ethBlockTime)
-				continue
-			}
-
-			calldata, err := s.cosmosMembership(ctx, *packet.Packet, packet.Packet.SourceClient, []byte{1}, latestLightBlock)
-			if err != nil {
-				log.Printf("[RecvPacket] seq=%d: %v", packet.Packet.Sequence, err)
-				continue
-			}
-
-			msgs = append(msgs, batchedMsg{
-				msg: contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
-					Packet:        toEthPacket(*packet.Packet),
-					MembershipMsg: calldata,
-				},
-				label:        "RecvPacket",
-				sequence:     packet.Packet.Sequence,
-				sourceClient: packet.Packet.SourceClient,
-				isRecv:       true,
-				origin:       &packet,
-			})
-		case CosmosAck:
-			if len(packet.AckBytes) == 0 {
-				log.Printf("[AckPacket] seq=%d: acknowledgement bytes missing, skipping", packet.Packet.Sequence)
-				continue
-			}
-
-			calldata, err := s.cosmosMembership(ctx, *packet.Packet, packet.Packet.DestinationClient, []byte{3}, latestLightBlock)
-			if err != nil {
-				log.Printf("[AckPacket] seq=%d: %v", packet.Packet.Sequence, err)
-				continue
-			}
-
-			msgs = append(msgs, batchedMsg{
-				msg: contractICS26Router.IICS26RouterMsgsMsgAckPacket{
-					Packet:          toEthPacket(*packet.Packet),
-					Acknowledgement: packet.AckBytes[0],
-					MembershipMsg:   calldata,
-				},
-				label:    "AckPacket",
-				sequence: packet.Packet.Sequence,
-				origin:   &packet,
-			})
-		case CosmosTimeout:
-			if !shouldRelayCosmosTimeoutToEth(packet.Packet, ctx.CosmosRouterClientID()) {
-				log.Printf("[Timeout] seq=%d: Cosmos-originated packet timeout already handled locally, skipping ETH relay", packet.Packet.Sequence)
-				continue
-			}
-
-			calldata, err := s.cosmosNonMembership(ctx, *packet.Packet, packet.Packet.DestinationClient, []byte{2}, latestLightBlock)
-			if err != nil {
-				log.Printf("[Timeout] seq=%d: %v", packet.Packet.Sequence, err)
-				continue
-			}
-
-			msgs = append(msgs, batchedMsg{
-				msg: contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket{
-					Packet:           toEthPacket(*packet.Packet),
-					NonMembershipMsg: calldata,
-				},
-				label:    "Timeout",
-				sequence: packet.Packet.Sequence,
-				origin:   &packet,
-			})
-		default:
-			log.Printf("[StartLoop] Unknown cosmos packet type: %d (seq=%d)", packet.Type, packet.Packet.Sequence)
-		}
+	// Re-queue packets that failed proof construction this round (transient) so a
+	// brief RPC/AppHash hiccup does not permanently drop a valid packet (issue #106).
+	// CheckCosmos already sliced them off the queue, so without this they are lost.
+	if len(transientFailures) > 0 {
+		s.BatchBuilder.RequeueCosmosTransient(transientFailures)
+	}
+	for _, p := range trackerRemoves {
+		s.BatchBuilder.PendingTracker.Remove(p.Packet.SourceClient, p.Packet.Sequence)
 	}
 
 	if len(msgs) == 0 {
@@ -393,20 +333,10 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	// MsgUpdateClient(s) at the head, and submit one SendCosmosTxBatch.
 	// Cosmos tx is atomic ⇒ MsgUpdateClient applies first, packet msgs verify
 	// against the freshly-advanced state in the same block.
-	type batchedCosmosMsg struct {
-		msg      any
-		label    string     // log label, e.g. "EthSend", "EthWriteAck", "UpdateClient"
-		sequence uint64
-		origin   *EthPacket // source packet to re-queue on failure; nil for folded updateClient
-	}
-	cosmosMsgs := make([]batchedCosmosMsg, 0, len(batch.Packets)+1)
+	cosmosMsgs := make([]ethBatchMsg, 0, len(batch.Packets)+1)
 
 	// Pre-filter expired EthSend packets — they bypass the batch and go to the
 	// async timeout scanner. Anything else is kept for proof generation.
-	type relayablePacket struct {
-		packet EthPacket
-		signer string
-	}
 	var relayable []relayablePacket
 	maxEventBlock := uint64(0)
 	for _, p := range batch.Packets {
@@ -500,59 +430,27 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	// Prepend wasm MsgUpdateClient(s) — atomicity of the Cosmos tx applies them
 	// before any packet msg verifies against the updated client state.
 	for _, m := range buildResult.Msgs {
-		cosmosMsgs = append(cosmosMsgs, batchedCosmosMsg{msg: m, label: "UpdateClient"})
+		cosmosMsgs = append(cosmosMsgs, ethBatchMsg{msg: m, label: "UpdateClient"})
 	}
 
-	for _, r := range relayable {
-		packet := r.packet
-		origin := packet
-		switch packet.Type {
-		case EthSend:
-			if ethPacketExpired(packet) {
-				s.timeoutEthSend(ctx, packet)
-				continue
-			}
-			proofBytes, err := client.GetEthMembershipProof(
-				ctx.EthClient(), *ctx.RouterContract(), ethPath(packet.Packet.SourceClient, packet.Packet.Sequence, 1),
-				ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(proofBlockNumber))
-			if err != nil {
-				log.Printf("[EthSend] seq=%d: failed to get ETH membership proof: %v", packet.Packet.Sequence, err)
-				continue
-			}
-			cosmosMsgs = append(cosmosMsgs, batchedCosmosMsg{
-				msg: &channeltypesv2.MsgRecvPacket{
-					Packet:          *packet.Packet,
-					ProofCommitment: proofBytes,
-					ProofHeight:     clienttypes.Height{RevisionNumber: 0, RevisionHeight: proofSlot},
-					Signer:          signerAddr,
-				},
-				label:    "EthSend",
-				sequence: packet.Packet.Sequence,
-				origin:   &origin,
-			})
-		case EthWriteAck:
-			proofBytes, err := client.GetEthMembershipProof(
-				ctx.EthClient(), *ctx.RouterContract(), ethPath(packet.Packet.DestinationClient, packet.Packet.Sequence, 3),
-				ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(proofBlockNumber))
-			if err != nil {
-				log.Printf("[EthWriteAck] seq=%d: failed to get ETH membership proof: %v", packet.Packet.Sequence, err)
-				continue
-			}
-			cosmosMsgs = append(cosmosMsgs, batchedCosmosMsg{
-				msg: &channeltypesv2.MsgAcknowledgement{
-					Packet: *packet.Packet,
-					Acknowledgement: channeltypesv2.Acknowledgement{
-						AppAcknowledgements: packet.AckBytes,
-					},
-					ProofAcked:  proofBytes,
-					ProofHeight: clienttypes.Height{RevisionNumber: 0, RevisionHeight: proofSlot},
-					Signer:      signerAddr,
-				},
-				label:    "EthWriteAck",
-				sequence: packet.Packet.Sequence,
-				origin:   &origin,
-			})
-		}
+	// Plan the per-packet msgs; the proof builder is injected so the failure
+	// branches are unit-tested without RPC (issue #106).
+	buildProof := func(path []byte) ([]byte, error) {
+		return client.GetEthMembershipProof(
+			ctx.EthClient(), *ctx.RouterContract(), path,
+			ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(proofBlockNumber))
+	}
+	planned, expired, failedRelayable := planEthPacketMsgs(relayable, proofSlot, signerAddr, buildProof)
+	for _, p := range expired {
+		s.timeoutEthSend(ctx, p)
+	}
+	cosmosMsgs = append(cosmosMsgs, planned...)
+
+	// Re-queue packets that failed proof construction this round (transient) so a
+	// brief RPC/finality hiccup does not permanently drop a valid packet (issue #106).
+	// CheckEth already sliced them off the queue, so without this they are lost.
+	if len(failedRelayable) > 0 {
+		s.BatchBuilder.RequeueEthTransient(failedRelayable)
 	}
 
 	if len(cosmosMsgs) == 0 {
