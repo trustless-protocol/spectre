@@ -17,6 +17,9 @@
 - `BatchBuilder` manages packet batching with separate mutexes for Cosmos / ETH queues; also owns a `PendingPacketTracker` for Cosmos-originated packets awaiting ETH delivery
 - Timeout checking: packets past their timeout are skipped before submission; subscriber normalises IBC v2 timeouts from ns → s at ingest (`normalizeTimeoutSeconds`)
 - Cosmos→ETH timeout fallback: `scanForCosmosTimeouts` goroutine (every 30 s) scans `PendingPacketTracker`, builds `MsgTimeout` for each expired entry, batches all timeouts plus a `MsgUpdateClient` into one Cosmos tx, and `Recover()`s from panic so a single bad packet can't kill the goroutine
+- `handleCosmos` skips the auto-relay of a Cosmos-emitted `timeout_packet` event back to ETH for Cosmos-originated packets (`shouldRelayCosmosTimeoutToEth`): the source-side MsgTimeout on Cosmos already refunded the sender and ETH never held a commitment, so calling `ICS26Router.timeoutPacket` would be a NoOp at best
+- Cross-chunk dedup: `waitCosmosAppHash` and `waitBeaconFinality` each memoize their last-confirmed height on the `Services` struct; chunked flushes (`BatchSize` chunking) reuse the wait for the same source block instead of repeating it per chunk
+- updateClient idempotence: `BuildCosmosClientUpdateMsg` always re-queries the on-chain ICS07 client state and short-circuits to `HasMsg=false` when on-chain trusted height already covers the chunk's source block — avoids regenerating a Groth16 proof that another chunk (or a frontrunner relayer) already submitted
 
 
 ## Observability
