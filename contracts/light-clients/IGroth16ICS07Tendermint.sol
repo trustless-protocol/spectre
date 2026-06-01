@@ -13,6 +13,17 @@ interface IGroth16ICS07Tendermint {
     /// @return The role identifier
     function PROOF_SUBMITTER_ROLE() external view returns (bytes32);
 
+    /// @notice The role identifier for the misbehaviour submitter role
+    /// @dev The misbehaviour submitter role is used to whitelist addresses that can submit misbehaviour reports
+    /// @dev If `address(0)` has this role, then anyone can submit misbehaviour reports
+    /// @dev This role is distinct from PROOF_SUBMITTER_ROLE to allow separate access control
+    /// @return The role identifier
+    function MISBEHAVIOUR_SUBMITTER_ROLE() external view returns (bytes32);
+
+    /// @notice Unfreezes a previously frozen client.
+    /// @dev Can only be called by an address with the `DEFAULT_ADMIN_ROLE`.
+    function unfreeze() external;
+
     // /// @notice Immutable update client program verification key.
     // /// @return The verification key for the update client program.
     // function UPDATE_CLIENT_PROGRAM_VKEY() external view returns (bytes32);

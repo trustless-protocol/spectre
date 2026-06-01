@@ -66,6 +66,9 @@ contract Groth16ICS07Tendermint is
     /// @inheritdoc IGroth16ICS07Tendermint
     bytes32 public immutable PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
 
+    /// @inheritdoc IGroth16ICS07Tendermint
+    bytes32 public immutable MISBEHAVIOUR_SUBMITTER_ROLE = keccak256("MISBEHAVIOUR_SUBMITTER_ROLE");
+
     /// @notice keccak256 of the client's chain ID, cached at construction.
     /// @dev The chain ID never changes for the lifetime of the client, so the
     ///      per-update equality check reads this immutable instead of hashing
@@ -113,9 +116,11 @@ contract Groth16ICS07Tendermint is
 
         if (roleManager == address(0)) {
             _grantRole(PROOF_SUBMITTER_ROLE, address(0)); // Allow anyone to submit proofs
+            _grantRole(MISBEHAVIOUR_SUBMITTER_ROLE, address(0)); // Allow anyone to submit misbehaviour
         } else {
             _grantRole(DEFAULT_ADMIN_ROLE, roleManager); // Allow the role manager to manage roles
             _grantRole(PROOF_SUBMITTER_ROLE, roleManager); // Allow the role manager to submit proofs
+            _grantRole(MISBEHAVIOUR_SUBMITTER_ROLE, roleManager); // Allow the role manager to submit misbehaviour
         }
     }
 
@@ -680,9 +685,9 @@ contract Groth16ICS07Tendermint is
     /// @dev The misbehavior is verfied in the gnark program. Here we only check the public values which contain the
     /// trusted headers.
     /// @inheritdoc ILightClient
-    function misbehaviour(bytes calldata misbehaviourMsg) external notFrozen onlyProofSubmitter {
+    function misbehaviour(bytes calldata misbehaviourMsg) external view notFrozen onlyMisbehaviourSubmitter {
         IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ =
-            abi.decode(misbehaviourMsg, (IMisbehaviourMsgs.MsgSubmitMisbehaviour));
+        abi.decode(misbehaviourMsg, (IMisbehaviourMsgs.MsgSubmitMisbehaviour));
         IMisbehaviourMsgs.MisbehaviourOutput memory output = MISBEHAVIOUR.misbehaviour(
             msg_.clientState, msg_.misbehaviour, msg_.trustedConsensusState1, msg_.trustedConsensusState2, msg_.time
         );
@@ -695,6 +700,14 @@ contract Groth16ICS07Tendermint is
 
         // If the misbehaviour and proof is valid, the client needs to be frozen
         clientState.isFrozen = true;
+        // NOTE: This feature will not be supported until ZK proof verification is implemented and enforced. (#130)
+        revert FeatureNotSupported();
+    }
+
+    /// @inheritdoc IGroth16ICS07Tendermint
+    function unfreeze() external override(IGroth16ICS07Tendermint, ILightClient) onlyRole(DEFAULT_ADMIN_ROLE) {
+        require(clientState.isFrozen, ClientNotFrozen());
+        clientState.isFrozen = false;
     }
 
     /// @inheritdoc ILightClient
@@ -1071,6 +1084,15 @@ contract Groth16ICS07Tendermint is
     modifier onlyProofSubmitter() {
         if (!hasRole(PROOF_SUBMITTER_ROLE, address(0))) {
             _checkRole(PROOF_SUBMITTER_ROLE);
+        }
+        _;
+    }
+
+    /// @notice Modifier to check if the caller has the misbehaviour submitter role or if the role is permitted for
+    /// anyone.
+    modifier onlyMisbehaviourSubmitter() {
+        if (!hasRole(MISBEHAVIOUR_SUBMITTER_ROLE, address(0))) {
+            _checkRole(MISBEHAVIOUR_SUBMITTER_ROLE);
         }
         _;
     }

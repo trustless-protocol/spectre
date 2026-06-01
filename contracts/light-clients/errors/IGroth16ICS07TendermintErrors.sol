@@ -12,6 +12,9 @@ interface IGroth16ICS07TendermintErrors {
     /// @notice The error that is returned when the client state is frozen.
     error FrozenClientState();
 
+    /// @notice The error that is returned when attempting to unfreeze a client that is not frozen.
+    error ClientNotFrozen();
+
     /// @notice The error that is returned when a proof is in the future.
     /// @param now The current timestamp in seconds.
     /// @param proofTimestamp The timestamp in the proof in seconds.

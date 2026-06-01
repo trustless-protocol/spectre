@@ -38,6 +38,9 @@ library IBCRolesLib {
     /// @notice Can set custom ERC20 contracts for IBC denoms in ICS20Transfer.
     uint64 internal constant ERC20_CUSTOMIZER_ROLE = 7;
 
+    /// @notice Only addresses with this role may submit misbehaviour reports.
+    uint64 internal constant MISBEHAVIOUR_SUBMITTER_ROLE = 8;
+
     /// @notice The functions that can be called by the RELAYER_ROLE in ICS26Router.
     /// @return An array of function selectors that can be called by the RELAYER_ROLE.
     function ics26RelayerSelectors() internal pure returns (bytes4[] memory) {
@@ -56,6 +59,14 @@ library IBCRolesLib {
         idCustomizerFunctions[0] = IICS26RouterAccessControlled.addIBCApp.selector;
         idCustomizerFunctions[1] = IICS02ClientAccessControlled.addClient.selector;
         return idCustomizerFunctions;
+    }
+
+    /// @notice The functions that can be called by the MISBEHAVIOUR_SUBMITTER_ROLE.
+    /// @return An array of function selectors that can be called by the MISBEHAVIOUR_SUBMITTER_ROLE.
+    function ics26MisbehaviourSelectors() internal pure returns (bytes4[] memory) {
+        bytes4[] memory fns = new bytes4[](1);
+        fns[0] = IICS02ClientAccessControlled.submitMisbehaviour.selector;
+        return fns;
     }
 
     /// @notice The functions that can be called by the ERC20_CUSTOMIZER_ROLE in ICS20Transfer.

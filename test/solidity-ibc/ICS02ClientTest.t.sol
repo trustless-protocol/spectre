@@ -35,6 +35,7 @@ contract ICS02ClientTest is Test {
 
     address public idCustomizer = makeAddr("idCustomizer");
     address public relayer = makeAddr("relayer");
+    address public misbehaviourSubmitter = makeAddr("misbehaviourSubmitter");
 
     TestHelper public th = new TestHelper();
 
@@ -55,9 +56,13 @@ contract ICS02ClientTest is Test {
         accessManager.setTargetFunctionRole(
             address(ics02Client), IBCRolesLib.ics26RelayerSelectors(), IBCRolesLib.RELAYER_ROLE
         );
+        accessManager.setTargetFunctionRole(
+            address(ics02Client), IBCRolesLib.ics26MisbehaviourSelectors(), IBCRolesLib.MISBEHAVIOUR_SUBMITTER_ROLE
+        );
 
         accessManager.grantRole(IBCRolesLib.ID_CUSTOMIZER_ROLE, idCustomizer, 0);
         accessManager.grantRole(IBCRolesLib.RELAYER_ROLE, relayer, 0);
+        accessManager.grantRole(IBCRolesLib.MISBEHAVIOUR_SUBMITTER_ROLE, misbehaviourSubmitter, 0);
 
         string memory counterpartyId = "42-dummy-01";
         IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
@@ -134,7 +139,34 @@ contract ICS02ClientTest is Test {
         vm.mockCall(lightClient, misbehaviourCall, bytes(""));
 
         vm.expectCall(lightClient, misbehaviourCall);
+        vm.prank(misbehaviourSubmitter);
         ics02Client.submitMisbehaviour(clientIdentifier, misbehaviourMsg);
+    }
+
+    function test_failure_submitMisbehaviour() public {
+        address unauthorized = makeAddr("unauthorized");
+        bytes memory misbehaviourMsg = "testMisbehaviourMsg";
+
+        vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
+        vm.prank(unauthorized);
+        ics02Client.submitMisbehaviour(clientIdentifier, misbehaviourMsg);
+    }
+
+    function test_unfreezeClient() public {
+        bytes memory unfreezeCall = abi.encodeCall(ILightClient.unfreeze, ());
+        vm.mockCall(lightClient, unfreezeCall, bytes(""));
+
+        vm.expectEmit();
+        emit IICS02Client.ICS02ClientUnfrozen(clientIdentifier);
+        ics02Client.unfreezeClient(clientIdentifier);
+    }
+
+    function test_failure_unfreezeClient() public {
+        address unauthorized = makeAddr("unauthorized");
+
+        vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
+        vm.prank(unauthorized);
+        ics02Client.unfreezeClient(clientIdentifier);
     }
 
     function test_success_updateClient() public {
