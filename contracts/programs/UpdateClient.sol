@@ -33,6 +33,23 @@ contract UpdateClient is IUpdateClient {
         return _updateClient(msg_, true);
     }
 
+    function updateClientCachedCurrent(IUpdateClientMsgs.MsgUpdateClient calldata msg_)
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory)
+    {
+        IICS07TendermintMsgs.ChainId memory chainId = IICS07TendermintMsgs.ChainId({
+            id: msg_.clientState.chainId,
+            revisionNumber: msg_.clientState.latestHeight.revisionNumber
+        });
+        IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
+            trustThreshold: msg_.clientState.trustLevel, trustingPeriod: msg_.clientState.trustingPeriod, clockDrift: 15
+        });
+
+        verifyHeaderCachedCurrent(msg_.proposedHeader, chainId, options, msg_.time, msg_.trustedConsensusState);
+        return _buildOutput(msg_, chainId.revisionNumber);
+    }
+
     function _updateClient(
         IUpdateClientMsgs.MsgUpdateClient calldata msg_,
         bool assumeResolvedValidatorSets
@@ -143,6 +160,51 @@ contract UpdateClient is IUpdateClient {
         }
 
         verifyUpdateHeader(untrustedState, trustedState, options, time);
+    }
+
+    function verifyHeaderCachedCurrent(
+        IICS07TendermintMsgs.Header memory proposedHeader,
+        IICS07TendermintMsgs.ChainId memory chainId,
+        IICS07TendermintMsgs.Options memory options,
+        uint128 time,
+        IICS07TendermintMsgs.ConsensusState memory trustedConsensusState
+    )
+        internal
+        pure
+    {
+        IICS07TendermintMsgs.ChainId memory headerChainId = ChainId.get(proposedHeader.signedHeader.header.chainId);
+        validateBasicResolved(proposedHeader, headerChainId);
+        verifyChainIdVersion(chainId, headerChainId);
+
+        bytes32 headerHash = Header.hashHeader(proposedHeader.signedHeader.header);
+        if (headerHash != proposedHeader.signedHeader.commit.blockId.hashData) {
+            revert FailedToVerifyHeader("invalid block: header hash mismatch");
+        }
+
+        uint64 trustedNextHeight = proposedHeader.trustedHeight.revisionHeight + 1;
+        if (proposedHeader.signedHeader.header.height != trustedNextHeight) {
+            bytes32 nextValSetHash = Header.hashValSet(proposedHeader.trustedNextValidatorSet);
+            if (nextValSetHash != trustedConsensusState.nextValidatorsHash) {
+                revert FailedToVerifyHeader("trusted next validator set hash does not match hash stored on chain");
+            }
+        }
+
+        IICS07TendermintMsgs.TrustedBlockState memory trustedState = IICS07TendermintMsgs.TrustedBlockState({
+            chainId: chainId.id,
+            headerTime: trustedConsensusState.timestamp,
+            height: proposedHeader.trustedHeight.revisionHeight,
+            nextValidatorSet: proposedHeader.trustedNextValidatorSet,
+            nextValidatorHash: trustedConsensusState.nextValidatorsHash
+        });
+
+        IICS07TendermintMsgs.UntrustedBlockState memory untrustedState = IICS07TendermintMsgs.UntrustedBlockState({
+            signedHeader: proposedHeader.signedHeader, validatorSet: proposedHeader.validatorSet
+        });
+
+        Predicates.verifyAgainstTrusted(untrustedState, trustedState, options.trustingPeriod, time);
+        uint128 drifted = time + uint128(options.clockDrift) * 1_000_000_000;
+        require(untrustedState.signedHeader.header.time < drifted, "invalid block: header is from the future");
+        Predicates.verifyTrustedCommitOverlap(untrustedState, trustedState, options);
     }
 
     function verifyUpdateHeader(

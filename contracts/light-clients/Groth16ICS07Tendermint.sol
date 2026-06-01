@@ -24,6 +24,7 @@ import { Paths } from "./utils/Paths.sol";
 import { Encode } from "../utils/Encode.sol";
 import { Header } from "../utils/Header.sol";
 import { ChainId } from "../utils/ChainId.sol";
+import { SSTORE2 } from "../utils/SSTORE2.sol";
 import { Multicall } from "@openzeppelin-contracts/utils/Multicall.sol";
 import { TransientSlot } from "@openzeppelin-contracts/utils/TransientSlot.sol";
 import { AccessControl } from "@openzeppelin-contracts/access/AccessControl.sol";
@@ -40,13 +41,6 @@ contract Groth16ICS07Tendermint is
 {
     using TransientSlot for *;
 
-    struct CachedValidatorSet {
-        bool exists;
-        bytes[] valAddresses;
-        bytes32[] pubKeys;
-        uint64[] votingPowers;
-    }
-
     /// @inheritdoc IGroth16ICS07Tendermint
     IVerifier public immutable VERIFIER;
     IMembership public immutable MEMBERSHIP;
@@ -59,8 +53,12 @@ contract Groth16ICS07Tendermint is
     /// @notice The mapping from height to consensus state keccak256 hashes.
     /// @dev Revision number need not be keyed as it is not allowed to change.
     mapping(uint64 height => bytes32 hash) private _consensusStateHashes;
-    /// @notice Validator-set cache keyed by the CometBFT validators hash.
-    mapping(bytes32 validatorsHash => CachedValidatorSet) private _cachedValidatorSets;
+    /// @notice SSTORE2 pointer to packed validator metadata keyed by the CometBFT validators hash.
+    mapping(bytes32 validatorsHash => address pointer) private _cachedValidatorSets;
+
+    uint32 private constant VALIDATOR_CACHE_MAGIC = 0x56414c31; // "VAL1"
+    uint256 private constant VALIDATOR_CACHE_HEADER_LEN = 14;
+    uint256 private constant VALIDATOR_CACHE_ENTRY_LEN = 44;
 
     /// @inheritdoc IGroth16ICS07Tendermint
     uint16 public constant ALLOWED_CLOCK_DRIFT = 30 minutes;
@@ -135,7 +133,34 @@ contract Groth16ICS07Tendermint is
 
     /// @inheritdoc IGroth16ICS07Tendermint
     function hasCachedValidatorSet(bytes32 validatorsHash) public view returns (bool) {
-        return _cachedValidatorSets[validatorsHash].exists;
+        return _hasUsableValidatorCache(validatorsHash);
+    }
+
+    /// @inheritdoc IGroth16ICS07Tendermint
+    function getCachedValidatorSet(bytes32 validatorsHash)
+        external
+        view
+        returns (uint32[] memory indices, bytes32[] memory pubkeys, uint64[] memory votingPowers)
+    {
+        address pointer = _cachedValidatorSets[validatorsHash];
+        if (pointer == address(0)) {
+            return (new uint32[](0), new bytes32[](0), new uint64[](0));
+        }
+        bytes memory cacheData = SSTORE2.read(pointer);
+        if (!_isValidatorCacheData(cacheData)) {
+            return (new uint32[](0), new bytes32[](0), new uint64[](0));
+        }
+        (, uint16 entryCount) = _readValidatorCacheHeader(validatorsHash, cacheData);
+
+        indices = new uint32[](entryCount);
+        pubkeys = new bytes32[](entryCount);
+        votingPowers = new uint64[](entryCount);
+        for (uint16 i = 0; i < entryCount; i++) {
+            uint256 offset = VALIDATOR_CACHE_HEADER_LEN + uint256(i) * VALIDATOR_CACHE_ENTRY_LEN;
+            indices[i] = _readUint32(cacheData, offset);
+            votingPowers[i] = _readUint64(cacheData, offset + 4);
+            pubkeys[i] = _readBytes32(cacheData, offset + 12);
+        }
     }
 
     /// @dev This function verifies the public values and forwards the proof to the Groth16 verifier.
@@ -147,26 +172,20 @@ contract Groth16ICS07Tendermint is
         returns (ILightClientMsgs.UpdateResult)
     {
         IUpdateClientMsgs.MsgUpdateClient memory msg_ = abi.decode(updateClientMsg, (IUpdateClientMsgs.MsgUpdateClient));
-        (
-            bool useResolvedUpdatePath,
-            bytes32 currentValidatorsHash,
-            bool cacheCurrentValidatorSet,
-            bytes32 trustedNextValidatorsHash,
-            bool cacheTrustedNextValidatorSet
-        ) = _prepareUpdateClientMessage(msg_);
+        (bool currentCached, bytes32 currentValidatorsHash, bool cacheCurrentValidatorSet) =
+            _prepareUpdateClientMessage(msg_);
 
         IUpdateClientMsgs.UpdateClientOutput memory output =
-            useResolvedUpdatePath ? UPDATE_CLIENT.updateClientResolved(msg_) : _callUpdateClient(updateClientMsg);
+            currentCached ? UPDATE_CLIENT.updateClientCachedCurrent(msg_) : UPDATE_CLIENT.updateClientResolved(msg_);
 
         _validateUpdateClientOutput(output);
 
         ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output);
-        _verifyBatchAndQuorum(msg_);
+        uint64 totalVotingPower = currentCached
+            ? _verifyCachedBatchAndQuorum(currentValidatorsHash, msg_)
+            : _verifyFullBatchAndQuorum(msg_);
         if (cacheCurrentValidatorSet) {
-            _cacheValidatorSet(currentValidatorsHash, msg_.proposedHeader.validatorSet);
-        }
-        if (cacheTrustedNextValidatorSet) {
-            _cacheValidatorSet(trustedNextValidatorsHash, msg_.proposedHeader.trustedNextValidatorSet);
+            _cacheValidatorSet(currentValidatorsHash, msg_, totalVotingPower);
         }
         if (updateResult == ILightClientMsgs.UpdateResult.Update) {
             // adding the new consensus state to the mapping
@@ -210,59 +229,42 @@ contract Groth16ICS07Tendermint is
     function _prepareUpdateClientMessage(IUpdateClientMsgs.MsgUpdateClient memory msg_)
         private
         view
-        returns (
-            bool useResolvedUpdatePath,
-            bytes32 currentValidatorsHash,
-            bool cacheCurrentValidatorSet,
-            bytes32 trustedNextValidatorsHash,
-            bool cacheTrustedNextValidatorSet
-        )
+        returns (bool currentCached, bytes32 currentValidatorsHash, bool cacheCurrentValidatorSet)
     {
         currentValidatorsHash = msg_.proposedHeader.signedHeader.header.validatorsHash;
-        trustedNextValidatorsHash = msg_.trustedConsensusState.nextValidatorsHash;
+        bytes32 trustedNextValidatorsHash = msg_.trustedConsensusState.nextValidatorsHash;
 
         bool adjacent = _isAdjacentUpdate(msg_.proposedHeader);
-        bool currentCached = hasCachedValidatorSet(currentValidatorsHash);
-        bool trustedMatchesCurrent = trustedNextValidatorsHash == currentValidatorsHash;
-        bool trustedCached =
-            !adjacent && (trustedMatchesCurrent ? currentCached : hasCachedValidatorSet(trustedNextValidatorsHash));
+        currentCached = hasCachedValidatorSet(currentValidatorsHash);
 
-        useResolvedUpdatePath = currentCached || adjacent || trustedCached || trustedMatchesCurrent;
-        if (!useResolvedUpdatePath) {
-            return (false, currentValidatorsHash, true, trustedNextValidatorsHash, true);
-        }
-
-        if (currentCached) {
-            msg_.proposedHeader.validatorSet = _loadCachedValidatorSet(currentValidatorsHash);
-        } else {
+        if (!currentCached) {
             _validateSuppliedValidatorSetHash(currentValidatorsHash, msg_.proposedHeader.validatorSet);
             cacheCurrentValidatorSet = true;
+        } else {
+            msg_.proposedHeader.validatorSet = _emptyValidatorSet();
         }
 
         if (adjacent) {
             msg_.proposedHeader.trustedNextValidatorSet = _emptyValidatorSet();
-            return (true, currentValidatorsHash, cacheCurrentValidatorSet, trustedNextValidatorsHash, false);
+            return (currentCached, currentValidatorsHash, cacheCurrentValidatorSet);
         }
 
-        if (trustedMatchesCurrent) {
+        if (!currentCached && trustedNextValidatorsHash == currentValidatorsHash) {
             msg_.proposedHeader.trustedNextValidatorSet = msg_.proposedHeader.validatorSet;
-            return (true, currentValidatorsHash, cacheCurrentValidatorSet, trustedNextValidatorsHash, false);
-        }
-
-        if (trustedCached) {
-            msg_.proposedHeader.trustedNextValidatorSet = _loadCachedValidatorSet(trustedNextValidatorsHash);
-        } else {
+        } else if (!currentCached) {
             _validateSuppliedValidatorSetHash(trustedNextValidatorsHash, msg_.proposedHeader.trustedNextValidatorSet);
-            cacheTrustedNextValidatorSet = true;
         }
+        // When `currentCached == true` and the update is non-adjacent, the
+        // caller-supplied `trustedNextValidatorSet` is intentionally left
+        // unvalidated here. Validation is delegated to
+        // `UPDATE_CLIENT.updateClientCachedCurrent` → `verifyHeaderCachedCurrent`,
+        // which checks `Header.hashValSet(trustedNextValidatorSet) ==
+        // trustedConsensusState.nextValidatorsHash` before any header decision.
+        // Do NOT remove that delegated check without restoring an equivalent
+        // guard here, otherwise non-adjacent cached updates would accept an
+        // arbitrary next-validator set.
 
-        return (
-            true,
-            currentValidatorsHash,
-            cacheCurrentValidatorSet,
-            trustedNextValidatorsHash,
-            cacheTrustedNextValidatorSet
-        );
+        return (currentCached, currentValidatorsHash, cacheCurrentValidatorSet);
     }
 
     function _isAdjacentUpdate(IICS07TendermintMsgs.Header memory header) private pure returns (bool) {
@@ -283,52 +285,47 @@ contract Groth16ICS07Tendermint is
         require(actualHash == expectedHash, MismatchedValidatorHashes(expectedHash, actualHash));
     }
 
-    function _loadCachedValidatorSet(bytes32 validatorsHash)
+    function _cacheValidatorSet(
+        bytes32 validatorsHash,
+        IUpdateClientMsgs.MsgUpdateClient memory msg_,
+        uint64 totalVotingPower
+    )
         private
-        view
-        returns (IICS07TendermintMsgs.ValidatorSet memory validatorSet)
     {
-        CachedValidatorSet storage cached = _cachedValidatorSets[validatorsHash];
-        if (!cached.exists) {
-            revert ValidatorSetCacheMiss(validatorsHash);
-        }
-
-        uint256 len = cached.pubKeys.length;
-        if (len != cached.valAddresses.length || len != cached.votingPowers.length) {
-            revert CachedValidatorSetCorrupted(validatorsHash);
-        }
-
-        IICS07TendermintMsgs.ValidatorInfo[] memory validators = new IICS07TendermintMsgs.ValidatorInfo[](len);
-        for (uint256 i = 0; i < len; i++) {
-            validators[i] = IICS07TendermintMsgs.ValidatorInfo({
-                valAddress: cached.valAddresses[i],
-                pubKey: cached.pubKeys[i],
-                votingPower: cached.votingPowers[i],
-                proposerPriority: 0
-            });
-        }
-
-        validatorSet = IICS07TendermintMsgs.ValidatorSet({
-            validators: validators,
-            hasProposer: false,
-            proposer: IICS07TendermintMsgs.ValidatorInfo({
-                valAddress: "", pubKey: bytes32(0), votingPower: 0, proposerPriority: 0
-            }),
-            totalVotingPower: 0
-        });
-    }
-
-    function _cacheValidatorSet(bytes32 validatorsHash, IICS07TendermintMsgs.ValidatorSet memory validatorSet) private {
-        if (_cachedValidatorSets[validatorsHash].exists) {
+        if (_hasUsableValidatorCache(validatorsHash)) {
             return;
         }
 
-        CachedValidatorSet storage cached = _cachedValidatorSets[validatorsHash];
-        cached.exists = true;
-        for (uint256 i = 0; i < validatorSet.validators.length; i++) {
-            cached.valAddresses.push(validatorSet.validators[i].valAddress);
-            cached.pubKeys.push(validatorSet.validators[i].pubKey);
-            cached.votingPowers.push(validatorSet.validators[i].votingPower);
+        _cachedValidatorSets[validatorsHash] =
+            SSTORE2.write(_buildValidatorSetCache(msg_.proposedHeader.validatorSet, totalVotingPower));
+    }
+
+    function _buildValidatorSetCache(
+        IICS07TendermintMsgs.ValidatorSet memory validatorSet,
+        uint64 totalVotingPower
+    )
+        private
+        pure
+        returns (bytes memory data)
+    {
+        IICS07TendermintMsgs.ValidatorInfo[] memory vals = validatorSet.validators;
+        uint256 validatorCount = vals.length;
+        if (validatorCount > type(uint16).max) {
+            revert BatchLengthMismatch();
+        }
+
+        data = new bytes(VALIDATOR_CACHE_HEADER_LEN + validatorCount * VALIDATOR_CACHE_ENTRY_LEN);
+        _writeUint32(data, 0, VALIDATOR_CACHE_MAGIC);
+        _writeUint64(data, 4, totalVotingPower);
+        _writeUint16(data, 12, validatorCount);
+
+        uint256 offset = VALIDATOR_CACHE_HEADER_LEN;
+        for (uint256 i = 0; i < vals.length; i++) {
+            IICS07TendermintMsgs.ValidatorInfo memory val = vals[i];
+            _writeUint32(data, offset, uint32(i));
+            _writeUint64(data, offset + 4, val.votingPower);
+            _writeBytes32(data, offset + 12, val.pubKey);
+            offset += VALIDATOR_CACHE_ENTRY_LEN;
         }
     }
 
@@ -342,7 +339,10 @@ contract Groth16ICS07Tendermint is
     ///      The SharedBlock passed to the verifier is built directly from
     ///      msg_.proposedHeader so the on-chain quorum check and the in-circuit
     ///      reconstruction agree on the signed bytes.
-    function _verifyBatchAndQuorum(IUpdateClientMsgs.MsgUpdateClient memory msg_) internal {
+    function _verifyFullBatchAndQuorum(IUpdateClientMsgs.MsgUpdateClient memory msg_)
+        internal
+        returns (uint64 totalVotingPower)
+    {
         IICS07TendermintMsgs.ValidatorInfo[] memory vals = msg_.proposedHeader.validatorSet.validators;
         uint256 numVals = vals.length;
         require(
@@ -352,7 +352,6 @@ contract Groth16ICS07Tendermint is
             BatchLengthMismatch()
         );
 
-        uint64 totalVotingPower = 0;
         for (uint256 i = 0; i < numVals; i++) {
             totalVotingPower += vals[i].votingPower;
         }
@@ -379,6 +378,88 @@ contract Groth16ICS07Tendermint is
             InsufficientVotingPower(accumulated, totalVotingPower)
         );
 
+        _verifyBatchProof(msg_);
+    }
+
+    function _verifyBatchAndQuorum(IUpdateClientMsgs.MsgUpdateClient memory msg_) internal {
+        _verifyFullBatchAndQuorum(msg_);
+    }
+
+    function _verifyCachedBatchAndQuorum(
+        bytes32 validatorsHash,
+        IUpdateClientMsgs.MsgUpdateClient memory msg_
+    )
+        internal
+        returns (uint64 totalVotingPower)
+    {
+        require(
+            msg_.signerIndices.length == msg_.bucket && msg_.signerPubkeys.length == msg_.bucket
+                && msg_.timestampSeconds.length == msg_.bucket && msg_.timestampNanos.length == msg_.bucket
+                && msg_.active.length == msg_.bucket,
+            BatchLengthMismatch()
+        );
+
+        address pointer = _cachedValidatorSets[validatorsHash];
+        if (pointer == address(0)) {
+            revert ValidatorSetCacheMiss(validatorsHash);
+        }
+
+        bytes memory cacheData = SSTORE2.read(pointer);
+        uint16 entryCount;
+        (totalVotingPower, entryCount) = _readValidatorCacheHeader(validatorsHash, cacheData);
+
+        uint64 accumulated = 0;
+        uint256 entryCursor = 0;
+        bool hasPrevSigner = false;
+        uint32 prevIdx = 0;
+        for (uint256 i = 0; i < msg_.signerIndices.length; i++) {
+            if (!msg_.active[i]) {
+                continue; // dummy padding slot
+            }
+
+            uint32 idx = msg_.signerIndices[i];
+            if (hasPrevSigner) {
+                require(idx > prevIdx, DuplicateSigner(idx));
+            }
+            hasPrevSigner = true;
+            prevIdx = idx;
+
+            uint64 votingPower;
+            bytes32 pubKey;
+            (entryCursor, votingPower, pubKey) =
+                _findCachedSigner(validatorsHash, cacheData, entryCount, entryCursor, idx);
+            require(pubKey == msg_.signerPubkeys[i], PubkeyMismatch(idx));
+            accumulated += votingPower;
+        }
+
+        require(
+            uint256(accumulated) * 3 > uint256(totalVotingPower) * 2,
+            InsufficientVotingPower(accumulated, totalVotingPower)
+        );
+
+        _verifyBatchProof(msg_);
+    }
+
+    function _hasUsableValidatorCache(bytes32 validatorsHash) private view returns (bool) {
+        address pointer = _cachedValidatorSets[validatorsHash];
+        if (pointer == address(0)) {
+            return false;
+        }
+        return _isValidatorCacheData(SSTORE2.read(pointer));
+    }
+
+    function _isValidatorCacheData(bytes memory cacheData) private pure returns (bool) {
+        if (cacheData.length < VALIDATOR_CACHE_HEADER_LEN) {
+            return false;
+        }
+        if (_readUint32(cacheData, 0) != VALIDATOR_CACHE_MAGIC) {
+            return false;
+        }
+        uint16 entryCount = _readUint16(cacheData, 12);
+        return cacheData.length == VALIDATOR_CACHE_HEADER_LEN + uint256(entryCount) * VALIDATOR_CACHE_ENTRY_LEN;
+    }
+
+    function _verifyBatchProof(IUpdateClientMsgs.MsgUpdateClient memory msg_) private {
         IICS07TendermintMsgs.BlockCommit memory commit = msg_.proposedHeader.signedHeader.commit;
         IVerifier.SharedBlock memory shared = IVerifier.SharedBlock({
             height: commit.height,
@@ -403,6 +484,119 @@ contract Groth16ICS07Tendermint is
             ),
             ProofVerificationFailed()
         );
+    }
+
+    function _readValidatorCacheHeader(
+        bytes32 validatorsHash,
+        bytes memory cacheData
+    )
+        private
+        pure
+        returns (uint64 totalVotingPower, uint16 entryCount)
+    {
+        if (cacheData.length < VALIDATOR_CACHE_HEADER_LEN) {
+            revert CachedValidatorSetCorrupted(validatorsHash);
+        }
+
+        if (_readUint32(cacheData, 0) != VALIDATOR_CACHE_MAGIC) {
+            revert CachedValidatorSetCorrupted(validatorsHash);
+        }
+
+        totalVotingPower = _readUint64(cacheData, 4);
+        entryCount = _readUint16(cacheData, 12);
+        if (cacheData.length != VALIDATOR_CACHE_HEADER_LEN + uint256(entryCount) * VALIDATOR_CACHE_ENTRY_LEN) {
+            revert CachedValidatorSetCorrupted(validatorsHash);
+        }
+    }
+
+    function _findCachedSigner(
+        bytes32 validatorsHash,
+        bytes memory cacheData,
+        uint16 entryCount,
+        uint256 entryCursor,
+        uint32 signerIndex
+    )
+        private
+        pure
+        returns (uint256 nextCursor, uint64 votingPower, bytes32 pubKey)
+    {
+        nextCursor = entryCursor;
+        while (nextCursor < entryCount) {
+            uint256 offset = VALIDATOR_CACHE_HEADER_LEN + nextCursor * VALIDATOR_CACHE_ENTRY_LEN;
+            uint32 cachedIndex = _readUint32(cacheData, offset);
+            if (cachedIndex == signerIndex) {
+                votingPower = _readUint64(cacheData, offset + 4);
+                pubKey = _readBytes32(cacheData, offset + 12);
+                return (nextCursor + 1, votingPower, pubKey);
+            }
+            if (cachedIndex > signerIndex) {
+                break;
+            }
+            nextCursor++;
+        }
+        revert CachedSignerNotFound(validatorsHash, signerIndex);
+    }
+
+    function _writeUint16(bytes memory data, uint256 offset, uint256 value) private pure {
+        assembly ("memory-safe") {
+            let ptr := add(add(data, 0x20), offset)
+            mstore8(ptr, shr(8, value))
+            mstore8(add(ptr, 1), value)
+        }
+    }
+
+    function _writeUint32(bytes memory data, uint256 offset, uint32 value) private pure {
+        assembly ("memory-safe") {
+            let ptr := add(add(data, 0x20), offset)
+            mstore8(ptr, shr(24, value))
+            mstore8(add(ptr, 1), shr(16, value))
+            mstore8(add(ptr, 2), shr(8, value))
+            mstore8(add(ptr, 3), value)
+        }
+    }
+
+    function _writeUint64(bytes memory data, uint256 offset, uint64 value) private pure {
+        assembly ("memory-safe") {
+            let ptr := add(add(data, 0x20), offset)
+            mstore8(ptr, shr(56, value))
+            mstore8(add(ptr, 1), shr(48, value))
+            mstore8(add(ptr, 2), shr(40, value))
+            mstore8(add(ptr, 3), shr(32, value))
+            mstore8(add(ptr, 4), shr(24, value))
+            mstore8(add(ptr, 5), shr(16, value))
+            mstore8(add(ptr, 6), shr(8, value))
+            mstore8(add(ptr, 7), value)
+        }
+    }
+
+    function _writeBytes32(bytes memory data, uint256 offset, bytes32 value) private pure {
+        assembly ("memory-safe") {
+            mstore(add(add(data, 0x20), offset), value)
+        }
+    }
+
+    function _readUint16(bytes memory data, uint256 offset) private pure returns (uint16 value) {
+        assembly ("memory-safe") {
+            value := shr(240, mload(add(add(data, 0x20), offset)))
+        }
+    }
+
+    function _readUint32(bytes memory data, uint256 offset) private pure returns (uint32 value) {
+        assembly ("memory-safe") {
+            value := shr(224, mload(add(add(data, 0x20), offset)))
+        }
+    }
+
+    function _readUint64(bytes memory data, uint256 offset) private pure returns (uint64 value) {
+        assembly ("memory-safe") {
+            value := shr(192, mload(add(add(data, 0x20), offset)))
+        }
+    }
+
+    function _readBytes32(bytes memory data, uint256 offset) private pure returns (bytes32 value) {
+        assembly ("memory-safe") {
+            value := mload(add(add(data, 0x20), offset))
+        }
     }
 
     /// @inheritdoc ILightClient

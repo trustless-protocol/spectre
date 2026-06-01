@@ -189,4 +189,9 @@ interface IGroth16ICS07TendermintErrors {
     /// @notice Returned when a cached validator set is internally inconsistent.
     /// @param validatorsHash the corrupted validator-set hash.
     error CachedValidatorSetCorrupted(bytes32 validatorsHash);
+
+    /// @notice Returned when an active signer is not present in the cached quorum subset.
+    /// @param validatorsHash the validator-set hash used for the cache lookup.
+    /// @param index the missing validator index.
+    error CachedSignerNotFound(bytes32 validatorsHash, uint32 index);
 }

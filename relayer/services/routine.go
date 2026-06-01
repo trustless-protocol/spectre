@@ -18,6 +18,8 @@ import (
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
+	ethereum "github.com/ethereum/go-ethereum"
+	ethereumABI "github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
@@ -117,6 +119,55 @@ func fetchOnChainTrustedHeight(ctx Context) (int64, error) {
 		onChainClientState.ChainId, onChainClientState.LatestHeight.RevisionNumber,
 		onChainClientState.LatestHeight.RevisionHeight, onChainClientState.IsFrozen)
 	return int64(onChainClientState.LatestHeight.RevisionHeight), nil
+}
+
+func hasCachedCosmosValidatorSet(ctx Context, validatorsHash [32]byte) (bool, error) {
+	ics07, err := tendermintContract.NewContractGroth16ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
+	if err != nil {
+		return false, fmt.Errorf("failed to create ICS07 instance: %w", err)
+	}
+	return ics07.HasCachedValidatorSet(nil, validatorsHash)
+}
+
+// getCachedCosmosValidatorIndices fetches the signer indices that were stored
+// in the on-chain quorum cache for the given validatorsHash. The returned map
+// is used to constrain ExtractValidatorSignatures to the cached subset so that
+// the proof only references indices already present in the contract cache.
+func getCachedCosmosValidatorIndices(ctx Context, validatorsHash [32]byte) (map[uint32]bool, error) {
+	const abiJSON = `[{"type":"function","name":"getCachedValidatorSet","inputs":[{"name":"validatorsHash","type":"bytes32"}],"outputs":[{"name":"indices","type":"uint32[]"},{"name":"pubkeys","type":"bytes32[]"},{"name":"votingPowers","type":"uint64[]"}],"stateMutability":"view"}]`
+
+	parsedABI, err := ethereumABI.JSON(strings.NewReader(abiJSON))
+	if err != nil {
+		return nil, fmt.Errorf("parse getCachedValidatorSet ABI: %w", err)
+	}
+	data, err := parsedABI.Pack("getCachedValidatorSet", validatorsHash)
+	if err != nil {
+		return nil, fmt.Errorf("pack getCachedValidatorSet: %w", err)
+	}
+	addr := *ctx.ClientContract()
+	result, err := ctx.EthClient().CallContract(context.Background(), ethereum.CallMsg{To: &addr, Data: data}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("eth_call getCachedValidatorSet: %w", err)
+	}
+	out, err := parsedABI.Unpack("getCachedValidatorSet", result)
+	if err != nil {
+		return nil, fmt.Errorf("unpack getCachedValidatorSet: %w", err)
+	}
+	indices := out[0].([]uint32)
+	allowed := make(map[uint32]bool, len(indices))
+	for _, idx := range indices {
+		allowed[idx] = true
+	}
+	return allowed, nil
+}
+
+func emptyContractValidatorSet() updateclientContract.IICS07TendermintMsgsValidatorSet {
+	return updateclientContract.IICS07TendermintMsgsValidatorSet{
+		Validators:       []updateclientContract.IICS07TendermintMsgsValidatorInfo{},
+		HasProposer:      false,
+		Proposer:         updateclientContract.IICS07TendermintMsgsValidatorInfo{},
+		TotalVotingPower: 0,
+	}
 }
 
 // BuildCosmosClientUpdateMsg fetches the latest Tendermint light block,
@@ -229,6 +280,41 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	}
 
 	proposedHeader := latestLightBlock.IntoHeader(*trustedLightBlock)
+	currentValidatorsHash := proposedHeader.SignedHeader.Header.ValidatorsHash
+	currentValidatorsCacheExists, err := hasCachedCosmosValidatorSet(ctx, currentValidatorsHash)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query validator-set cache: %w", err)
+	}
+	// Fetch the set of cached signer indices before potentially clearing the
+	// validator set. When non-nil this constrains extraction to only use slots
+	// already stored in the contract cache, guaranteeing _findCachedSigner
+	// succeeds on-chain.
+	//
+	// Failing fast here is important: once `currentValidatorsCacheExists` is
+	// true, the on-chain dispatch routes to `updateClientCachedCurrent` regardless
+	// of what the relayer sends, so extracting signers from the full live
+	// validator set without the cached-index constraint produces a tx that
+	// reverts on-chain with `CachedSignerNotFound`. Treat the fetch failure as a
+	// hard error rather than silently submitting wasted gas.
+	var allowedIndices map[uint32]bool
+	if currentValidatorsCacheExists {
+		allowedIndices, err = getCachedCosmosValidatorIndices(ctx, currentValidatorsHash)
+		if err != nil {
+			return nil, fmt.Errorf("cache hit for validatorsHash=%x but failed to fetch cached indices: %w", currentValidatorsHash, err)
+		}
+	}
+
+	if currentValidatorsCacheExists {
+		log.Printf("[UpdateCosmosClient] validator quorum cache hit: hash=%x; omitting current validator set", currentValidatorsHash)
+		proposedHeader.ValidatorSet = emptyContractValidatorSet()
+	} else {
+		log.Printf("[UpdateCosmosClient] validator quorum cache miss: hash=%x; sending full validator set", currentValidatorsHash)
+	}
+
+	adjacentUpdate := proposedHeader.SignedHeader.Header.Height == proposedHeader.TrustedHeight.RevisionHeight+1
+	if adjacentUpdate || (!currentValidatorsCacheExists && proposedHeader.SignedHeader.Header.ValidatorsHash == consensusState.NextValidatorsHash) {
+		proposedHeader.TrustedNextValidatorSet = emptyContractValidatorSet()
+	}
 
 	log.Printf("[UpdateCosmosClient] clientState.LatestHeight=(%d,%d) proposedHeader.Height=%d trustedBlock=%d latestBlock=%d",
 		clientState.LatestHeight.RevisionNumber, clientState.LatestHeight.RevisionHeight,
@@ -237,7 +323,10 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	// Extract enough non-absent validator signatures to hit 2/3 voting power,
 	// then batch-prove them in a single Groth16 proof that reconstructs each
 	// CanonicalVote in-circuit.
-	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId)
+	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId, allowedIndices)
+	if err != nil && allowedIndices != nil {
+		return nil, fmt.Errorf("cached validator subset cannot form quorum for validatorsHash=%x; cannot fall back to full validator set while this hash is cached on-chain: %w", currentValidatorsHash, err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("extract validator signatures: %w", err)
 	}
