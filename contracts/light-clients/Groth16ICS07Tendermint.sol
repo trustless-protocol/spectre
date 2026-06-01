@@ -254,6 +254,15 @@ contract Groth16ICS07Tendermint is
         } else if (!currentCached) {
             _validateSuppliedValidatorSetHash(trustedNextValidatorsHash, msg_.proposedHeader.trustedNextValidatorSet);
         }
+        // When `currentCached == true` and the update is non-adjacent, the
+        // caller-supplied `trustedNextValidatorSet` is intentionally left
+        // unvalidated here. Validation is delegated to
+        // `UPDATE_CLIENT.updateClientCachedCurrent` → `verifyHeaderCachedCurrent`,
+        // which checks `Header.hashValSet(trustedNextValidatorSet) ==
+        // trustedConsensusState.nextValidatorsHash` before any header decision.
+        // Do NOT remove that delegated check without restoring an equivalent
+        // guard here, otherwise non-adjacent cached updates would accept an
+        // arbitrary next-validator set.
 
         return (currentCached, currentValidatorsHash, cacheCurrentValidatorSet);
     }

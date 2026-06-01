@@ -288,14 +288,19 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	// Fetch the set of cached signer indices before potentially clearing the
 	// validator set. When non-nil this constrains extraction to only use slots
 	// already stored in the contract cache, guaranteeing _findCachedSigner
-	// succeeds on-chain. If the getter is unavailable on the deployed contract,
-	// keep the on-chain cache-hit semantics and extract unconstrained instead.
+	// succeeds on-chain.
+	//
+	// Failing fast here is important: once `currentValidatorsCacheExists` is
+	// true, the on-chain dispatch routes to `updateClientCachedCurrent` regardless
+	// of what the relayer sends, so extracting signers from the full live
+	// validator set without the cached-index constraint produces a tx that
+	// reverts on-chain with `CachedSignerNotFound`. Treat the fetch failure as a
+	// hard error rather than silently submitting wasted gas.
 	var allowedIndices map[uint32]bool
 	if currentValidatorsCacheExists {
 		allowedIndices, err = getCachedCosmosValidatorIndices(ctx, currentValidatorsHash)
 		if err != nil {
-			log.Printf("[UpdateCosmosClient] failed to fetch cached indices (hash=%x): %v; continuing with cached validator set without signer constraint", currentValidatorsHash, err)
-			allowedIndices = nil
+			return nil, fmt.Errorf("cache hit for validatorsHash=%x but failed to fetch cached indices: %w", currentValidatorsHash, err)
 		}
 	}
 
