@@ -1,6 +1,7 @@
 package client
 
 import (
+	"encoding/json"
 	"math/big"
 	"testing"
 
@@ -219,6 +220,117 @@ func TestEncodeConsensusState(t *testing.T) {
 			t.Fatal("encoded result should not be empty")
 		}
 	})
+}
+
+func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
+	var validatorsHash [32]byte
+	validatorsHash[0] = 0x88
+	validatorsHash[1] = 0xbe
+
+	var deltaBaseHash [32]byte
+	deltaBaseHash[0] = 0xaa
+
+	zero8 := [8]*big.Int{}
+	for i := range zero8 {
+		zero8[i] = big.NewInt(0)
+	}
+	zero2 := [2]*big.Int{big.NewInt(0), big.NewInt(0)}
+
+	msg := updateClientContract.IUpdateClientMsgsMsgUpdateClient{
+		ClientState: updateClientContract.IICS07TendermintMsgsClientState{
+			ChainId: "test-0",
+			TrustLevel: updateClientContract.IICS07TendermintMsgsTrustThreshold{
+				Numerator:   1,
+				Denominator: 3,
+			},
+			LatestHeight: updateClientContract.IICS02ClientMsgsHeight{
+				RevisionNumber: 0,
+				RevisionHeight: 19,
+			},
+			TrustingPeriod:  1209600,
+			UnbondingPeriod: 1814400,
+			ZkAlgorithm:     uint8(Groth16),
+		},
+		TrustedConsensusState: updateClientContract.IICS07TendermintMsgsConsensusState{
+			Timestamp:          big.NewInt(1700000000000000000),
+			NextValidatorsHash: validatorsHash,
+		},
+		ProposedHeader: updateClientContract.IICS07TendermintMsgsHeader{
+			SignedHeader: updateClientContract.IICS07TendermintMsgsSignedHeader{
+				Header: updateClientContract.IICS07TendermintMsgsBlockHeader{
+					ChainId:            "test-0",
+					Time:               big.NewInt(1700000001000000000),
+					ValidatorsHash:     validatorsHash,
+					NextValidatorsHash: validatorsHash,
+				},
+				Commit: updateClientContract.IICS07TendermintMsgsBlockCommit{
+					Height: 58,
+				},
+			},
+			TrustedHeight: updateClientContract.IICS02ClientMsgsHeight{
+				RevisionNumber: 0,
+				RevisionHeight: 19,
+			},
+		},
+		Time:             big.NewInt(1700000002000000000),
+		Proof:            zero8,
+		Commitments:      zero2,
+		CommitmentPok:    zero2,
+		Bucket:           16,
+		SignerIndices:    []uint32{0, 1},
+		SignerPubkeys:    [][32]byte{{0x01}, {0x02}},
+		TimestampSeconds: []uint64{1700000001, 1700000001},
+		TimestampNanos:   []uint32{0, 1},
+		Active:           []bool{true, true},
+		CurrentValidatorSetDelta: updateClientContract.IUpdateClientMsgsValidatorSetDelta{
+			BaseValidatorsHash: deltaBaseHash,
+			ChangedIndex:       7,
+			NewVotingPower:     110,
+		},
+	}
+
+	encoded, err := EncodeUpdateClientMsg(msg)
+	if err != nil {
+		t.Fatalf("encode update client msg: %v", err)
+	}
+
+	contractABI, err := updateClientContract.ContractUpdateClientMetaData.GetAbi()
+	if err != nil {
+		t.Fatalf("parse generated ABI: %v", err)
+	}
+	unpacked, err := contractABI.Methods["updateClient"].Inputs.Unpack(encoded)
+	if err != nil {
+		t.Fatalf("generated ABI failed to unpack encoded msg: %v", err)
+	}
+	if len(unpacked) != 1 {
+		t.Fatalf("unpacked %d values, want 1", len(unpacked))
+	}
+
+	jsonBytes, err := json.Marshal(unpacked[0])
+	if err != nil {
+		t.Fatalf("marshal unpacked tuple: %v", err)
+	}
+	var decoded updateClientContract.IUpdateClientMsgsMsgUpdateClient
+	if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
+		t.Fatalf("unmarshal decoded update msg: %v", err)
+	}
+	if decoded.ProposedHeader.SignedHeader.Header.ValidatorsHash != validatorsHash {
+		t.Fatalf(
+			"validatorsHash decoded incorrectly: got %x want %x",
+			decoded.ProposedHeader.SignedHeader.Header.ValidatorsHash,
+			validatorsHash,
+		)
+	}
+	if decoded.CurrentValidatorSetDelta.BaseValidatorsHash != deltaBaseHash {
+		t.Fatalf(
+			"delta base hash decoded incorrectly: got %x want %x",
+			decoded.CurrentValidatorSetDelta.BaseValidatorsHash,
+			deltaBaseHash,
+		)
+	}
+	if decoded.CurrentValidatorSetDelta.ChangedIndex != 7 || decoded.CurrentValidatorSetDelta.NewVotingPower != 110 {
+		t.Fatalf("delta decoded incorrectly: %+v", decoded.CurrentValidatorSetDelta)
+	}
 }
 
 func TestBytesToBytes32(t *testing.T) {

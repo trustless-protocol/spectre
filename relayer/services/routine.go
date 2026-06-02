@@ -18,8 +18,6 @@ import (
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
-	ethereum "github.com/ethereum/go-ethereum"
-	ethereumABI "github.com/ethereum/go-ethereum/accounts/abi"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
@@ -121,44 +119,101 @@ func fetchOnChainTrustedHeight(ctx Context) (int64, error) {
 	return int64(onChainClientState.LatestHeight.RevisionHeight), nil
 }
 
-func hasCachedCosmosValidatorSet(ctx Context, validatorsHash [32]byte) (bool, error) {
-	ics07, err := tendermintContract.NewContractGroth16ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
-	if err != nil {
-		return false, fmt.Errorf("failed to create ICS07 instance: %w", err)
-	}
-	return ics07.HasCachedValidatorSet(nil, validatorsHash)
+type cachedCosmosValidatorSet struct {
+	indices      []uint32
+	pubkeys      [][32]byte
+	votingPowers []uint64
 }
 
-// getCachedCosmosValidatorIndices fetches the signer indices that were stored
-// in the on-chain quorum cache for the given validatorsHash. The returned map
-// is used to constrain ExtractValidatorSignatures to the cached subset so that
-// the proof only references indices already present in the contract cache.
-func getCachedCosmosValidatorIndices(ctx Context, validatorsHash [32]byte) (map[uint32]bool, error) {
-	const abiJSON = `[{"type":"function","name":"getCachedValidatorSet","inputs":[{"name":"validatorsHash","type":"bytes32"}],"outputs":[{"name":"indices","type":"uint32[]"},{"name":"pubkeys","type":"bytes32[]"},{"name":"votingPowers","type":"uint64[]"}],"stateMutability":"view"}]`
+func (s cachedCosmosValidatorSet) isEmpty() bool {
+	return len(s.indices) == 0
+}
 
-	parsedABI, err := ethereumABI.JSON(strings.NewReader(abiJSON))
-	if err != nil {
-		return nil, fmt.Errorf("parse getCachedValidatorSet ABI: %w", err)
-	}
-	data, err := parsedABI.Pack("getCachedValidatorSet", validatorsHash)
-	if err != nil {
-		return nil, fmt.Errorf("pack getCachedValidatorSet: %w", err)
-	}
-	addr := *ctx.ClientContract()
-	result, err := ctx.EthClient().CallContract(context.Background(), ethereum.CallMsg{To: &addr, Data: data}, nil)
-	if err != nil {
-		return nil, fmt.Errorf("eth_call getCachedValidatorSet: %w", err)
-	}
-	out, err := parsedABI.Unpack("getCachedValidatorSet", result)
-	if err != nil {
-		return nil, fmt.Errorf("unpack getCachedValidatorSet: %w", err)
-	}
-	indices := out[0].([]uint32)
-	allowed := make(map[uint32]bool, len(indices))
-	for _, idx := range indices {
+func (s cachedCosmosValidatorSet) allowedIndices() map[uint32]bool {
+	allowed := make(map[uint32]bool, len(s.indices))
+	for _, idx := range s.indices {
 		allowed[idx] = true
 	}
-	return allowed, nil
+	return allowed
+}
+
+// getCachedCosmosValidatorSet fetches the on-chain validator cache snapshot for
+// a validatorsHash. The contract returns an empty snapshot when the hash is not
+// cached or the stored data is unusable.
+func getCachedCosmosValidatorSet(ctx Context, validatorsHash [32]byte) (cachedCosmosValidatorSet, error) {
+	ics07, err := tendermintContract.NewContractGroth16ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
+	if err != nil {
+		return cachedCosmosValidatorSet{}, fmt.Errorf("failed to create ICS07 instance: %w", err)
+	}
+	out, err := ics07.GetCachedValidatorSet(nil, validatorsHash)
+	if err != nil {
+		return cachedCosmosValidatorSet{}, fmt.Errorf("getCachedValidatorSet(%x): %w", validatorsHash, err)
+	}
+	if len(out.Indices) != len(out.Pubkeys) || len(out.Indices) != len(out.VotingPowers) {
+		return cachedCosmosValidatorSet{}, fmt.Errorf(
+			"cached validator set length mismatch for hash=%x: indices=%d pubkeys=%d powers=%d",
+			validatorsHash, len(out.Indices), len(out.Pubkeys), len(out.VotingPowers),
+		)
+	}
+	for i, idx := range out.Indices {
+		if idx != uint32(i) {
+			return cachedCosmosValidatorSet{}, fmt.Errorf(
+				"cached validator set index mismatch for hash=%x at position %d: got %d",
+				validatorsHash, i, idx,
+			)
+		}
+	}
+	return cachedCosmosValidatorSet{
+		indices:      out.Indices,
+		pubkeys:      out.Pubkeys,
+		votingPowers: out.VotingPowers,
+	}, nil
+}
+
+func detectSingleVotingPowerDelta(
+	baseHash [32]byte,
+	baseSet cachedCosmosValidatorSet,
+	currentSet updateclientContract.IICS07TendermintMsgsValidatorSet,
+) (updateclientContract.IUpdateClientMsgsValidatorSetDelta, bool, string) {
+	if baseSet.isEmpty() {
+		return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false, "base validator set is not cached"
+	}
+	if len(baseSet.pubkeys) != len(currentSet.Validators) {
+		return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false, fmt.Sprintf(
+			"validator count changed: base=%d current=%d",
+			len(baseSet.pubkeys), len(currentSet.Validators),
+		)
+	}
+
+	var changedIndex uint32
+	var newVotingPower uint64
+	changeCount := 0
+	for i, current := range currentSet.Validators {
+		if baseSet.pubkeys[i] != current.PubKey {
+			return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false, fmt.Sprintf(
+				"validator pubkey/order changed at index=%d",
+				i,
+			)
+		}
+		if baseSet.votingPowers[i] == current.VotingPower {
+			continue
+		}
+		changeCount++
+		if changeCount > 1 {
+			return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false, "more than one voting power changed"
+		}
+		changedIndex = uint32(i)
+		newVotingPower = current.VotingPower
+	}
+
+	if changeCount != 1 {
+		return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false, "no voting power change detected"
+	}
+	return updateclientContract.IUpdateClientMsgsValidatorSetDelta{
+		BaseValidatorsHash: baseHash,
+		ChangedIndex:       changedIndex,
+		NewVotingPower:     newVotingPower,
+	}, true, ""
 }
 
 func emptyContractValidatorSet() updateclientContract.IICS07TendermintMsgsValidatorSet {
@@ -281,34 +336,58 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 
 	proposedHeader := latestLightBlock.IntoHeader(*trustedLightBlock)
 	currentValidatorsHash := proposedHeader.SignedHeader.Header.ValidatorsHash
-	currentValidatorsCacheExists, err := hasCachedCosmosValidatorSet(ctx, currentValidatorsHash)
+	currentValidatorCache, err := getCachedCosmosValidatorSet(ctx, currentValidatorsHash)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query validator-set cache: %w", err)
 	}
-	// Fetch the set of cached signer indices before potentially clearing the
-	// validator set. When non-nil this constrains extraction to only use slots
-	// already stored in the contract cache, guaranteeing _findCachedSigner
-	// succeeds on-chain.
+	currentValidatorsCacheExists := !currentValidatorCache.isEmpty()
+	currentValidatorSetDelta := updateclientContract.IUpdateClientMsgsValidatorSetDelta{}
+	// On an exact current-cache hit, constrain extraction to slots already
+	// stored in the contract cache, guaranteeing _findCachedSigner succeeds
+	// on-chain.
 	//
-	// Failing fast here is important: once `currentValidatorsCacheExists` is
-	// true, the on-chain dispatch routes to `updateClientCachedCurrent` regardless
-	// of what the relayer sends, so extracting signers from the full live
-	// validator set without the cached-index constraint produces a tx that
-	// reverts on-chain with `CachedSignerNotFound`. Treat the fetch failure as a
-	// hard error rather than silently submitting wasted gas.
+	// Failing fast here is important: once an exact current cache exists, the
+	// on-chain dispatch routes to `updateClientCachedCurrent` regardless of what
+	// the relayer sends, so extracting signers from the full live validator set
+	// without the cached-index constraint produces a tx that reverts on-chain
+	// with `CachedSignerNotFound`.
 	var allowedIndices map[uint32]bool
 	if currentValidatorsCacheExists {
-		allowedIndices, err = getCachedCosmosValidatorIndices(ctx, currentValidatorsHash)
-		if err != nil {
-			return nil, fmt.Errorf("cache hit for validatorsHash=%x but failed to fetch cached indices: %w", currentValidatorsHash, err)
-		}
+		allowedIndices = currentValidatorCache.allowedIndices()
 	}
 
 	if currentValidatorsCacheExists {
 		log.Printf("[UpdateCosmosClient] validator quorum cache hit: hash=%x; omitting current validator set", currentValidatorsHash)
 		proposedHeader.ValidatorSet = emptyContractValidatorSet()
 	} else {
-		log.Printf("[UpdateCosmosClient] validator quorum cache miss: hash=%x; sending full validator set", currentValidatorsHash)
+		baseValidatorsHash := consensusState.NextValidatorsHash
+		baseValidatorCache, err := getCachedCosmosValidatorSet(ctx, baseValidatorsHash)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query validator-set delta base cache: %w", err)
+		}
+		if delta, ok, reason := detectSingleVotingPowerDelta(
+			baseValidatorsHash,
+			baseValidatorCache,
+			proposedHeader.ValidatorSet,
+		); ok {
+			currentValidatorSetDelta = delta
+			currentValidatorsCacheExists = true
+			log.Printf(
+				"[UpdateCosmosClient] validator quorum delta-cache hit: currentHash=%x baseHash=%x changedIndex=%d newVotingPower=%d; omitting current validator set",
+				currentValidatorsHash,
+				baseValidatorsHash,
+				delta.ChangedIndex,
+				delta.NewVotingPower,
+			)
+			proposedHeader.ValidatorSet = emptyContractValidatorSet()
+		} else {
+			log.Printf(
+				"[UpdateCosmosClient] validator quorum cache miss: hash=%x; delta unavailable from baseHash=%x (%s); sending full validator set",
+				currentValidatorsHash,
+				baseValidatorsHash,
+				reason,
+			)
+		}
 	}
 
 	adjacentUpdate := proposedHeader.SignedHeader.Header.Height == proposedHeader.TrustedHeight.RevisionHeight+1
@@ -355,19 +434,20 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	}
 
 	msg := updateclientContract.IUpdateClientMsgsMsgUpdateClient{
-		ClientState:           clientState,
-		TrustedConsensusState: consensusState,
-		Time:                  big.NewInt(time.Now().UnixNano()),
-		ProposedHeader:        proposedHeader,
-		Proof:                 proof,
-		Commitments:           commitments,
-		CommitmentPok:         commitmentPok,
-		Bucket:                uint16(bucket),
-		SignerIndices:         signerIndices,
-		SignerPubkeys:         signerPubkeys,
-		TimestampSeconds:      timestampSeconds,
-		TimestampNanos:        timestampNanos,
-		Active:                active,
+		ClientState:              clientState,
+		TrustedConsensusState:    consensusState,
+		Time:                     big.NewInt(time.Now().UnixNano()),
+		ProposedHeader:           proposedHeader,
+		Proof:                    proof,
+		Commitments:              commitments,
+		CommitmentPok:            commitmentPok,
+		Bucket:                   uint16(bucket),
+		SignerIndices:            signerIndices,
+		SignerPubkeys:            signerPubkeys,
+		TimestampSeconds:         timestampSeconds,
+		TimestampNanos:           timestampNanos,
+		Active:                   active,
+		CurrentValidatorSetDelta: currentValidatorSetDelta,
 	}
 
 	return &CosmosClientUpdateBuildResult{

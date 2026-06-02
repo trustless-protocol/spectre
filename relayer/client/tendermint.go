@@ -148,6 +148,12 @@ func init() {
 		{Name: "trustedNextValidatorSet", Type: "tuple", Components: validatorSetComponents},
 	}
 
+	validatorSetDeltaComponents := []abi.ArgumentMarshaling{
+		{Name: "baseValidatorsHash", Type: "bytes32"},
+		{Name: "changedIndex", Type: "uint32"},
+		{Name: "newVotingPower", Type: "uint64"},
+	}
+
 	updateClientMsgType, _ = abi.NewType("tuple", "", []abi.ArgumentMarshaling{
 		{Name: "clientState", Type: "tuple", Components: clientStateComponents},
 		{Name: "trustedConsensusState", Type: "tuple", Components: consensusStateComponents},
@@ -162,6 +168,7 @@ func init() {
 		{Name: "timestampSeconds", Type: "uint64[]"},
 		{Name: "timestampNanos", Type: "uint32[]"},
 		{Name: "active", Type: "bool[]"},
+		{Name: "currentValidatorSetDelta", Type: "tuple", Components: validatorSetDeltaComponents},
 	})
 }
 
