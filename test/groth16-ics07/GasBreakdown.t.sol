@@ -80,6 +80,14 @@ contract MockUpdateClientPassThrough is IUpdateClient {
         return _passThrough(msg_);
     }
 
+    function updateClientCachedCurrentWithHeaderCache(
+        IUpdateClientMsgs.MsgUpdateClient calldata msg_,
+        bytes32,
+        bytes32
+    ) external pure returns (IUpdateClientMsgs.UpdateClientOutput memory output) {
+        return _passThrough(msg_);
+    }
+
     function _passThrough(
         IUpdateClientMsgs.MsgUpdateClient calldata msg_
     ) private pure returns (IUpdateClientMsgs.UpdateClientOutput memory output) {
