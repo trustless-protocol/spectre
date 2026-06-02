@@ -222,6 +222,15 @@ contract Membership  is IMembership {
             revert InvalidExistenceProof();
         }
 
+        // Bound the inner-op loop at its source (issue #110/#134). This is the
+        // function that actually iterates proof.path, and it is reachable from the
+        // non-membership path (calculateNonExistenceRoot → here) BEFORE
+        // checkExistenceProof runs, so capping only in checkExistenceProof would
+        // leave nonExistenceProof.left/right.path unbounded.
+        if (proof.path.length > MAX_PROOF_DEPTH) {
+            revert ProofPathTooLong(proof.path.length, MAX_PROOF_DEPTH);
+        }
+
         IMembershipMsgs.LeafOp memory leafOp = proof.leaf;
         bytes32 current = applyLeaf(leafOp, proof.key, proof.value);
         for (uint256 i = 0; i < proof.path.length; i++) {
