@@ -38,6 +38,16 @@ contract Membership  is IMembership {
     error InvalidVarint();
     error InvalidOffset();
     error BranchNotFound(uint256 branch);
+    /// @notice Thrown when an existence proof's inner-op path is longer than MAX_PROOF_DEPTH (issue #110).
+    error ProofPathTooLong(uint256 length, uint256 maxDepth);
+
+    /// @notice Hard upper bound on the number of inner ops (tree depth) in any
+    /// existence proof, enforced for every spec regardless of its min/max depth.
+    /// Both shipped specs set min/max depth = 0, so the spec-defined bounds never
+    /// run; a legitimate ICS-23 / IAVL path equals the tree depth and stays well
+    /// under this, while an over-long path only burns gas before the root check
+    /// rejects it. Bounding it up front prevents gas griefing (issue #110).
+    uint256 internal constant MAX_PROOF_DEPTH = 128;
 
     /**
      * @dev Verify membership of multiple key-value pairs in the Merkle tree
@@ -276,7 +286,15 @@ contract Membership  is IMembership {
             revert("Incorrect prefix on leaf");
         }
 
-        // ensure min/max depths
+        // Hard cap on proof depth for every spec (issue #110). The spec-defined
+        // bounds below only run when the spec sets them (both shipped specs leave
+        // min/max depth = 0), so without this an attacker-supplied path could be
+        // arbitrarily long and burn gas before the root check rejects it.
+        if (proof.path.length > MAX_PROOF_DEPTH) {
+            revert ProofPathTooLong(proof.path.length, MAX_PROOF_DEPTH);
+        }
+
+        // ensure min/max depths (when the spec sets them)
         if (spec.minDepth != 0) {
             if (proof.path.length < uint256(spec.minDepth)) {
                 revert("Too few InnerOps");
