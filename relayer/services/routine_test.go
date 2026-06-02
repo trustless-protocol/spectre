@@ -20,7 +20,7 @@ func TestCosmosCurrentSlotReady(t *testing.T) {
 	}
 }
 
-func TestDetectSingleVotingPowerDelta(t *testing.T) {
+func TestDetectValidatorSetDelta(t *testing.T) {
 	baseHash := [32]byte{0x88, 0xbe}
 	pubkey0 := [32]byte{0x01}
 	pubkey1 := [32]byte{0x02}
@@ -39,22 +39,62 @@ func TestDetectSingleVotingPowerDelta(t *testing.T) {
 		},
 	}
 
-	delta, ok, reason := detectSingleVotingPowerDelta(baseHash, baseSet, currentSet)
+	delta, ok, reason := detectValidatorSetDelta(baseHash, baseSet, currentSet)
 	if !ok {
 		t.Fatalf("expected delta, got reason=%q", reason)
 	}
 	if delta.BaseValidatorsHash != baseHash {
 		t.Fatalf("base hash: got %x want %x", delta.BaseValidatorsHash, baseHash)
 	}
-	if delta.ChangedIndex != 1 {
-		t.Fatalf("changed index: got %d want 1", delta.ChangedIndex)
+	if delta.LeafCount != 1 {
+		t.Fatalf("leaf count: got %d want 1", delta.LeafCount)
 	}
-	if delta.NewVotingPower != 125 {
-		t.Fatalf("new voting power: got %d want 125", delta.NewVotingPower)
+	if delta.Indices[0] != 1 {
+		t.Fatalf("changed index: got %d want 1", delta.Indices[0])
+	}
+	if delta.PubKeys[0] != pubkey1 {
+		t.Fatalf("new pubkey: got %x want %x", delta.PubKeys[0], pubkey1)
+	}
+	if delta.VotingPowers[0] != 125 {
+		t.Fatalf("new voting power: got %d want 125", delta.VotingPowers[0])
 	}
 }
 
-func TestDetectSingleVotingPowerDeltaRejectsUnsafeCases(t *testing.T) {
+func TestDetectValidatorSetDeltaMultiLeafReorder(t *testing.T) {
+	baseHash := [32]byte{0x88, 0xbe}
+	pubkey0 := [32]byte{0x01}
+	pubkey1 := [32]byte{0x02}
+	pubkey2 := [32]byte{0x03}
+	baseSet := cachedCosmosValidatorSet{
+		indices:      []uint32{0, 1, 2},
+		pubkeys:      [][32]byte{pubkey0, pubkey1, pubkey2},
+		votingPowers: []uint64{100, 100, 100},
+	}
+
+	currentSet := updateclientContract.IICS07TendermintMsgsValidatorSet{
+		Validators: []updateclientContract.IICS07TendermintMsgsValidatorInfo{
+			{PubKey: pubkey0, VotingPower: 100},
+			{PubKey: pubkey2, VotingPower: 125},
+			{PubKey: pubkey1, VotingPower: 100},
+		},
+	}
+
+	delta, ok, reason := detectValidatorSetDelta(baseHash, baseSet, currentSet)
+	if !ok {
+		t.Fatalf("expected multi-leaf delta, got reason=%q", reason)
+	}
+	if delta.LeafCount != 2 {
+		t.Fatalf("leaf count: got %d want 2", delta.LeafCount)
+	}
+	if delta.Indices[0] != 1 || delta.PubKeys[0] != pubkey2 || delta.VotingPowers[0] != 125 {
+		t.Fatalf("first changed leaf decoded incorrectly: %+v", delta)
+	}
+	if delta.Indices[1] != 2 || delta.PubKeys[1] != pubkey1 || delta.VotingPowers[1] != 100 {
+		t.Fatalf("second changed leaf decoded incorrectly: %+v", delta)
+	}
+}
+
+func TestDetectValidatorSetDeltaRejectsUnsafeCases(t *testing.T) {
 	baseHash := [32]byte{0x88, 0xbe}
 	pubkey0 := [32]byte{0x01}
 	pubkey1 := [32]byte{0x02}
@@ -80,26 +120,6 @@ func TestDetectSingleVotingPowerDeltaRejectsUnsafeCases(t *testing.T) {
 			},
 		},
 		{
-			name: "multiple power changes",
-			set: updateclientContract.IICS07TendermintMsgsValidatorSet{
-				Validators: []updateclientContract.IICS07TendermintMsgsValidatorInfo{
-					{PubKey: pubkey0, VotingPower: 101},
-					{PubKey: pubkey1, VotingPower: 125},
-					{PubKey: pubkey2, VotingPower: 100},
-				},
-			},
-		},
-		{
-			name: "validator reorder",
-			set: updateclientContract.IICS07TendermintMsgsValidatorSet{
-				Validators: []updateclientContract.IICS07TendermintMsgsValidatorInfo{
-					{PubKey: pubkey1, VotingPower: 125},
-					{PubKey: pubkey0, VotingPower: 100},
-					{PubKey: pubkey2, VotingPower: 100},
-				},
-			},
-		},
-		{
 			name: "validator count changed",
 			set: updateclientContract.IICS07TendermintMsgsValidatorSet{
 				Validators: []updateclientContract.IICS07TendermintMsgsValidatorInfo{
@@ -112,9 +132,35 @@ func TestDetectSingleVotingPowerDeltaRejectsUnsafeCases(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, ok, _ := detectSingleVotingPowerDelta(baseHash, baseSet, tc.set); ok {
+			if _, ok, _ := detectValidatorSetDelta(baseHash, baseSet, tc.set); ok {
 				t.Fatal("did not expect delta")
 			}
 		})
+	}
+}
+
+func TestDetectValidatorSetDeltaRejectsTooManyLeaves(t *testing.T) {
+	baseHash := [32]byte{0x88, 0xbe}
+	baseSet := cachedCosmosValidatorSet{
+		indices:      make([]uint32, 17),
+		pubkeys:      make([][32]byte, 17),
+		votingPowers: make([]uint64, 17),
+	}
+	currentSet := updateclientContract.IICS07TendermintMsgsValidatorSet{
+		Validators: make([]updateclientContract.IICS07TendermintMsgsValidatorInfo, 17),
+	}
+	for i := 0; i < 17; i++ {
+		pubkey := [32]byte{byte(i + 1)}
+		baseSet.indices[i] = uint32(i)
+		baseSet.pubkeys[i] = pubkey
+		baseSet.votingPowers[i] = 100
+		currentSet.Validators[i] = updateclientContract.IICS07TendermintMsgsValidatorInfo{
+			PubKey:      pubkey,
+			VotingPower: uint64(101 + i),
+		}
+	}
+
+	if _, ok, _ := detectValidatorSetDelta(baseHash, baseSet, currentSet); ok {
+		t.Fatal("did not expect delta over max leaf count")
 	}
 }

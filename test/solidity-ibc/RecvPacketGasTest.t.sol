@@ -229,9 +229,6 @@ contract RecvPacketGasTest is IntegrationTest {
         m.timestampSeconds = tsS;
         m.timestampNanos = tsN;
         m.active = act;
-        m.currentValidatorSetDelta = IUpdateClientMsgs.ValidatorSetDelta({
-            baseValidatorsHash: bytes32(0), changedIndex: 0, newVotingPower: 0
-        });
         bytes memory encodedUpdate = abi.encode(m);
 
         // First, update the client state to seed the consensus state height 1001

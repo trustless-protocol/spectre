@@ -318,9 +318,6 @@ contract UpdateClientGasTest is Test {
         msg_.timestampSeconds = tsS;
         msg_.timestampNanos = tsN;
         msg_.active = act;
-        msg_.currentValidatorSetDelta = IUpdateClientMsgs.ValidatorSetDelta({
-            baseValidatorsHash: bytes32(0), changedIndex: 0, newVotingPower: 0
-        });
     }
 
     function _measure(uint16 bucket) internal {

@@ -46,14 +46,18 @@ interface IUpdateClientMsgs {
         ValidatorSetDelta currentValidatorSetDelta;
     }
 
-    /// @notice Single-validator current validator-set delta from a cached base root.
+    /// @notice Current validator-set delta from a cached base root.
     /// @param baseValidatorsHash Cached validator-set hash to derive from.
-    /// @param changedIndex Validator index whose voting power changed.
-    /// @param newVotingPower New voting power for the validator at `changedIndex`.
+    /// @param leafCount Number of active entries in the fixed-size arrays.
+    /// @param indices Sorted validator-set indices whose leaves changed.
+    /// @param pubKeys New compressed Ed25519 public keys for `indices`.
+    /// @param votingPowers New voting powers for `indices`.
     struct ValidatorSetDelta {
         bytes32 baseValidatorsHash;
-        uint32 changedIndex;
-        uint64 newVotingPower;
+        uint8 leafCount;
+        uint32[16] indices;
+        bytes32[16] pubKeys;
+        uint64[16] votingPowers;
     }
 
     /// @notice The public value output for the gnark update client program.

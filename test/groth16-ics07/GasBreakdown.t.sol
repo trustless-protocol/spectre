@@ -340,9 +340,6 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
         updateMsg.timestampSeconds = timestampSeconds;
         updateMsg.timestampNanos = timestampNanos;
         updateMsg.active = active;
-        updateMsg.currentValidatorSetDelta = IUpdateClientMsgs.ValidatorSetDelta({
-            baseValidatorsHash: bytes32(0), changedIndex: 0, newVotingPower: 0
-        });
         clientState_ = clientState;
         trustedConsensusState_ = trustedConsensusState;
         untrusted_ = UntrustedBlockState({signedHeader: signedHeader, validatorSet: valset});
@@ -683,9 +680,6 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
         realUpdateMsg_.timestampSeconds = _uint64Array4(secs[0], secs[1], secs[2], secs[3]);
         realUpdateMsg_.timestampNanos = _uint32Array4(nanos[0], nanos[1], nanos[2], nanos[3]);
         realUpdateMsg_.active = _boolArray4(true, true, true, true);
-        realUpdateMsg_.currentValidatorSetDelta = IUpdateClientMsgs.ValidatorSetDelta({
-            baseValidatorsHash: bytes32(0), changedIndex: 0, newVotingPower: 0
-        });
         realEncodedUpdateMsg_ = abi.encode(realUpdateMsg_);
         realProofBytes_ = abi.encodePacked(realUpdateMsg_.proof, realUpdateMsg_.commitments, realUpdateMsg_.commitmentPok);
 

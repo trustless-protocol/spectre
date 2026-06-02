@@ -235,6 +235,12 @@ func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
 		zero8[i] = big.NewInt(0)
 	}
 	zero2 := [2]*big.Int{big.NewInt(0), big.NewInt(0)}
+	var deltaIndices [16]uint32
+	var deltaPubKeys [16][32]byte
+	var deltaVotingPowers [16]uint64
+	deltaIndices[0] = 7
+	deltaPubKeys[0] = [32]byte{0x07}
+	deltaVotingPowers[0] = 110
 
 	msg := updateClientContract.IUpdateClientMsgsMsgUpdateClient{
 		ClientState: updateClientContract.IICS07TendermintMsgsClientState{
@@ -284,8 +290,10 @@ func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
 		Active:           []bool{true, true},
 		CurrentValidatorSetDelta: updateClientContract.IUpdateClientMsgsValidatorSetDelta{
 			BaseValidatorsHash: deltaBaseHash,
-			ChangedIndex:       7,
-			NewVotingPower:     110,
+			LeafCount:          1,
+			Indices:            deltaIndices,
+			PubKeys:            deltaPubKeys,
+			VotingPowers:       deltaVotingPowers,
 		},
 	}
 
@@ -328,7 +336,10 @@ func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
 			deltaBaseHash,
 		)
 	}
-	if decoded.CurrentValidatorSetDelta.ChangedIndex != 7 || decoded.CurrentValidatorSetDelta.NewVotingPower != 110 {
+	if decoded.CurrentValidatorSetDelta.LeafCount != 1 ||
+		decoded.CurrentValidatorSetDelta.Indices[0] != 7 ||
+		decoded.CurrentValidatorSetDelta.PubKeys[0] != deltaPubKeys[0] ||
+		decoded.CurrentValidatorSetDelta.VotingPowers[0] != 110 {
 		t.Fatalf("delta decoded incorrectly: %+v", decoded.CurrentValidatorSetDelta)
 	}
 }

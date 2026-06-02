@@ -56,12 +56,13 @@ contract Groth16ICS07Tendermint is
     /// @notice SSTORE2 pointer to packed validator metadata keyed by the CometBFT validators hash.
     mapping(bytes32 validatorsHash => address pointer) private _cachedValidatorSets;
 
-    uint32 private constant VALIDATOR_CACHE_MAGIC = 0x56414c33; // "VAL3"
+    uint32 private constant VALIDATOR_CACHE_MAGIC = 0x56414c34; // "VAL4"
     uint8 private constant VALIDATOR_CACHE_KIND_FULL = 0;
     uint8 private constant VALIDATOR_CACHE_KIND_DELTA = 1;
     uint8 private constant MAX_DELTA_DEPTH = 8;
     uint16 private constant MAX_VALIDATOR_COUNT = 180;
-    uint16 private constant MAX_DELTA_NODE_COUNT = 9; // leaf + ceil(log2(180)) ancestors
+    uint16 private constant MAX_DELTA_LEAF_COUNT = 16;
+    uint16 private constant MAX_DELTA_NODE_COUNT = 144; // MAX_DELTA_LEAF_COUNT * (leaf + ceil(log2(180)) ancestors)
     uint256 private constant VALIDATOR_CACHE_HEADER_LEN = 126;
     uint256 private constant VALIDATOR_CACHE_ENTRY_LEN = 44;
     uint256 private constant VALIDATOR_CACHE_NODE_LEN = 32;
@@ -74,10 +75,17 @@ contract Groth16ICS07Tendermint is
         uint8 cacheKind;
         uint8 deltaDepth;
         bytes32 parentHash;
-        uint32 changedIndex;
-        uint64 changedVotingPower;
-        bytes32 changedPubKey;
+        uint16 changedCount;
         uint16 nodeCount;
+    }
+
+    struct DeltaRecomputeContext {
+        bytes32 baseValidatorsHash;
+        uint16 validatorCount;
+        IUpdateClientMsgs.ValidatorSetDelta delta;
+        bytes32[] newLeafHashes;
+        uint16[] nodeIndexes;
+        bytes32[] nodeHashes;
     }
 
     /// @inheritdoc IGroth16ICS07Tendermint
@@ -346,26 +354,49 @@ contract Groth16ICS07Tendermint is
         bytes memory baseData = SSTORE2.read(basePointer);
         ValidatorCacheHeader memory baseHeader = _readValidatorCacheHeader(delta.baseValidatorsHash, baseData);
         require(baseHeader.deltaDepth < MAX_DELTA_DEPTH, CachedValidatorSetCorrupted(delta.baseValidatorsHash));
-        require(delta.changedIndex < baseHeader.entryCount, SignerIndexOutOfRange(delta.changedIndex));
 
-        (uint64 oldVotingPower, bytes32 pubKey) =
-            _resolveCachedValidator(delta.baseValidatorsHash, baseData, baseHeader, delta.changedIndex, 0);
-        require(oldVotingPower != delta.newVotingPower, CachedValidatorSetCorrupted(delta.baseValidatorsHash));
+        uint256 changedCount = delta.leafCount;
+        require(
+            changedCount > 0 && changedCount <= MAX_DELTA_LEAF_COUNT,
+            CachedValidatorSetCorrupted(delta.baseValidatorsHash)
+        );
 
-        uint256 newTotalVotingPower =
-            uint256(baseHeader.totalVotingPower) - uint256(oldVotingPower) + uint256(delta.newVotingPower);
+        bytes32[] memory newLeafHashes = new bytes32[](changedCount);
+        uint256 newTotalVotingPower = uint256(baseHeader.totalVotingPower);
+        uint32 previousIndex = 0;
+        for (uint256 i = 0; i < changedCount; i++) {
+            uint32 changedIndex = delta.indices[i];
+            uint64 changedVotingPower = delta.votingPowers[i];
+            bytes32 changedPubKey = delta.pubKeys[i];
+            require(changedIndex < baseHeader.entryCount, SignerIndexOutOfRange(changedIndex));
+            if (i > 0) {
+                require(changedIndex > previousIndex, CachedValidatorSetCorrupted(delta.baseValidatorsHash));
+            }
+            previousIndex = changedIndex;
+
+            (uint64 oldVotingPower, bytes32 oldPubKey) =
+                _resolveCachedValidator(delta.baseValidatorsHash, baseData, baseHeader, changedIndex, 0);
+            require(
+                oldVotingPower != changedVotingPower || oldPubKey != changedPubKey,
+                CachedValidatorSetCorrupted(delta.baseValidatorsHash)
+            );
+            newTotalVotingPower = newTotalVotingPower - uint256(oldVotingPower) + uint256(changedVotingPower);
+            newLeafHashes[i] = Header.simpleValidatorLeafHash(changedPubKey, changedVotingPower);
+        }
         require(newTotalVotingPower <= type(uint64).max, CachedValidatorSetCorrupted(delta.baseValidatorsHash));
 
         uint16[] memory nodeIndexes = new uint16[](MAX_DELTA_NODE_COUNT);
         bytes32[] memory nodeHashes = new bytes32[](MAX_DELTA_NODE_COUNT);
-        bytes32 newLeaf = Header.simpleValidatorLeafHash(pubKey, delta.newVotingPower);
         (bytes32 computedRoot, uint16 nodeCount) = _recomputeDeltaRoot(
-            delta.baseValidatorsHash, baseHeader.entryCount, delta.changedIndex, newLeaf, nodeIndexes, nodeHashes
+            delta.baseValidatorsHash, baseHeader.entryCount, delta, newLeafHashes, nodeIndexes, nodeHashes
         );
         require(computedRoot == validatorsHash, MismatchedValidatorHashes(validatorsHash, computedRoot));
 
         validatorsHashLeaf = Header.bytes32LeafHash(validatorsHash);
-        bytes memory data = new bytes(VALIDATOR_CACHE_HEADER_LEN + uint256(nodeCount) * VALIDATOR_CACHE_DELTA_NODE_LEN);
+        bytes memory data = new bytes(
+            VALIDATOR_CACHE_HEADER_LEN + changedCount * VALIDATOR_CACHE_ENTRY_LEN + uint256(nodeCount)
+                * VALIDATOR_CACHE_DELTA_NODE_LEN
+        );
         _writeUint32(data, 0, VALIDATOR_CACHE_MAGIC);
         _writeUint64(data, 4, uint64(newTotalVotingPower));
         _writeUint16(data, 12, baseHeader.entryCount);
@@ -373,12 +404,16 @@ contract Groth16ICS07Tendermint is
         _writeUint8(data, 46, VALIDATOR_CACHE_KIND_DELTA);
         _writeUint8(data, 47, baseHeader.deltaDepth + 1);
         _writeBytes32(data, 48, delta.baseValidatorsHash);
-        _writeUint32(data, 80, delta.changedIndex);
-        _writeUint64(data, 84, delta.newVotingPower);
-        _writeBytes32(data, 92, pubKey);
+        _writeUint16(data, 80, uint16(changedCount));
         _writeUint16(data, 124, nodeCount);
 
         uint256 offset = VALIDATOR_CACHE_HEADER_LEN;
+        for (uint256 i = 0; i < changedCount; i++) {
+            _writeUint32(data, offset, delta.indices[i]);
+            _writeUint64(data, offset + 4, delta.votingPowers[i]);
+            _writeBytes32(data, offset + 12, delta.pubKeys[i]);
+            offset += VALIDATOR_CACHE_ENTRY_LEN;
+        }
         for (uint256 i = 0; i < nodeCount; i++) {
             _writeUint16(data, offset, nodeIndexes[i]);
             _writeBytes32(data, offset + 2, nodeHashes[i]);
@@ -437,9 +472,7 @@ contract Groth16ICS07Tendermint is
         _writeUint8(data, 46, VALIDATOR_CACHE_KIND_FULL);
         _writeUint8(data, 47, 0);
         _writeBytes32(data, 48, bytes32(0));
-        _writeUint32(data, 80, 0);
-        _writeUint64(data, 84, 0);
-        _writeBytes32(data, 92, bytes32(0));
+        _writeUint16(data, 80, 0);
         _writeUint16(data, 124, nodeCount);
 
         uint256 offset = VALIDATOR_CACHE_HEADER_LEN;
@@ -607,6 +640,7 @@ contract Groth16ICS07Tendermint is
         }
         uint16 entryCount = _readUint16(cacheData, 12);
         uint8 cacheKind = _readUint8(cacheData, 46);
+        uint16 changedCount = _readUint16(cacheData, 80);
         uint16 nodeCount = _readUint16(cacheData, 124);
         if (cacheKind == VALIDATOR_CACHE_KIND_FULL) {
             if (entryCount == 0 || entryCount > MAX_VALIDATOR_COUNT || nodeCount != entryCount * 2 - 1) {
@@ -618,12 +652,14 @@ contract Groth16ICS07Tendermint is
         }
         if (cacheKind == VALIDATOR_CACHE_KIND_DELTA) {
             if (
-                entryCount == 0 || entryCount > MAX_VALIDATOR_COUNT || nodeCount == 0
-                    || nodeCount > MAX_DELTA_NODE_COUNT
+                entryCount == 0 || entryCount > MAX_VALIDATOR_COUNT || changedCount == 0
+                    || changedCount > MAX_DELTA_LEAF_COUNT || nodeCount == 0 || nodeCount > MAX_DELTA_NODE_COUNT
             ) {
                 return false;
             }
-            return cacheData.length == VALIDATOR_CACHE_HEADER_LEN + uint256(nodeCount) * VALIDATOR_CACHE_DELTA_NODE_LEN;
+            return cacheData.length
+                == VALIDATOR_CACHE_HEADER_LEN + uint256(changedCount) * VALIDATOR_CACHE_ENTRY_LEN + uint256(nodeCount)
+                    * VALIDATOR_CACHE_DELTA_NODE_LEN;
         }
         return false;
     }
@@ -678,9 +714,7 @@ contract Groth16ICS07Tendermint is
             cacheKind: _readUint8(cacheData, 46),
             deltaDepth: _readUint8(cacheData, 47),
             parentHash: _readBytes32(cacheData, 48),
-            changedIndex: _readUint32(cacheData, 80),
-            changedVotingPower: _readUint64(cacheData, 84),
-            changedPubKey: _readBytes32(cacheData, 92),
+            changedCount: _readUint16(cacheData, 80),
             nodeCount: _readUint16(cacheData, 124)
         });
 
@@ -742,8 +776,18 @@ contract Groth16ICS07Tendermint is
             return (votingPower, pubKey);
         }
 
-        if (index == cacheHeader.changedIndex) {
-            return (cacheHeader.changedVotingPower, cacheHeader.changedPubKey);
+        uint256 deltaOffset = VALIDATOR_CACHE_HEADER_LEN;
+        for (uint256 i = 0; i < cacheHeader.changedCount; i++) {
+            uint32 changedIndex = _readUint32(cacheData, deltaOffset);
+            if (changedIndex == index) {
+                votingPower = _readUint64(cacheData, deltaOffset + 4);
+                pubKey = _readBytes32(cacheData, deltaOffset + 12);
+                return (votingPower, pubKey);
+            }
+            if (changedIndex > index) {
+                break;
+            }
+            deltaOffset += VALIDATOR_CACHE_ENTRY_LEN;
         }
 
         address parentPointer = _cachedValidatorSets[cacheHeader.parentHash];
@@ -758,8 +802,8 @@ contract Groth16ICS07Tendermint is
     function _recomputeDeltaRoot(
         bytes32 baseValidatorsHash,
         uint16 validatorCount,
-        uint32 changedIndex,
-        bytes32 newLeaf,
+        IUpdateClientMsgs.ValidatorSetDelta memory delta,
+        bytes32[] memory newLeafHashes,
         uint16[] memory nodeIndexes,
         bytes32[] memory nodeHashes
     )
@@ -767,84 +811,71 @@ contract Groth16ICS07Tendermint is
         view
         returns (bytes32 root, uint16 nodeCount)
     {
-        (root, nodeCount) = _recomputeDeltaRange(
-            baseValidatorsHash, validatorCount, 0, validatorCount, 0, changedIndex, newLeaf, nodeIndexes, nodeHashes, 0
-        );
+        DeltaRecomputeContext memory ctx = DeltaRecomputeContext({
+            baseValidatorsHash: baseValidatorsHash,
+            validatorCount: validatorCount,
+            delta: delta,
+            newLeafHashes: newLeafHashes,
+            nodeIndexes: nodeIndexes,
+            nodeHashes: nodeHashes
+        });
+        (root, nodeCount) = _recomputeDeltaRange(ctx, 0, validatorCount, 0, 0, delta.leafCount, 0);
     }
 
     function _recomputeDeltaRange(
-        bytes32 baseValidatorsHash,
-        uint16 validatorCount,
+        DeltaRecomputeContext memory ctx,
         uint256 from,
         uint256 to,
         uint256 nodeIndex,
-        uint32 changedIndex,
-        bytes32 newLeaf,
-        uint16[] memory nodeIndexes,
-        bytes32[] memory nodeHashes,
+        uint256 changedFrom,
+        uint256 changedTo,
         uint16 nodeCount
     )
         private
         view
         returns (bytes32 nodeHash, uint16 nextNodeCount)
     {
+        if (changedFrom == changedTo) {
+            return (_getCachedNodeHash(ctx.baseValidatorsHash, ctx.validatorCount, nodeIndex, 0), nodeCount);
+        }
+
         if (nodeCount >= MAX_DELTA_NODE_COUNT || nodeIndex > type(uint16).max) {
             revert BatchLengthMismatch();
         }
 
         uint256 length = to - from;
         if (length == 1) {
-            if (from != changedIndex) {
-                revert SignerIndexOutOfRange(changedIndex);
+            if (changedTo != changedFrom + 1 || from != ctx.delta.indices[changedFrom]) {
+                revert CachedValidatorSetCorrupted(ctx.baseValidatorsHash);
             }
-            nodeIndexes[nodeCount] = uint16(nodeIndex);
-            nodeHashes[nodeCount] = newLeaf;
-            return (newLeaf, nodeCount + 1);
+            nodeHash = ctx.newLeafHashes[changedFrom];
+            ctx.nodeIndexes[nodeCount] = uint16(nodeIndex);
+            ctx.nodeHashes[nodeCount] = nodeHash;
+            return (nodeHash, nodeCount + 1);
         }
 
         uint256 split = _splitPoint(length);
         uint256 mid = from + split;
         uint256 leftNodeIndex = nodeIndex + 1;
         uint256 rightNodeIndex = nodeIndex + 1 + (split * 2 - 1);
+        uint256 rightChangedFrom = changedFrom;
+        while (rightChangedFrom < changedTo && ctx.delta.indices[rightChangedFrom] < mid) {
+            rightChangedFrom++;
+        }
 
         bytes32 left;
         bytes32 right;
-        if (changedIndex < mid) {
-            (left, nodeCount) = _recomputeDeltaRange(
-                baseValidatorsHash,
-                validatorCount,
-                from,
-                mid,
-                leftNodeIndex,
-                changedIndex,
-                newLeaf,
-                nodeIndexes,
-                nodeHashes,
-                nodeCount
-            );
-            right = _getCachedNodeHash(baseValidatorsHash, validatorCount, rightNodeIndex, 0);
-        } else {
-            left = _getCachedNodeHash(baseValidatorsHash, validatorCount, leftNodeIndex, 0);
-            (right, nodeCount) = _recomputeDeltaRange(
-                baseValidatorsHash,
-                validatorCount,
-                mid,
-                to,
-                rightNodeIndex,
-                changedIndex,
-                newLeaf,
-                nodeIndexes,
-                nodeHashes,
-                nodeCount
-            );
-        }
+        (left, nodeCount) =
+            _recomputeDeltaRange(ctx, from, mid, leftNodeIndex, changedFrom, rightChangedFrom, nodeCount);
+        (right, nodeCount) =
+            _recomputeDeltaRange(ctx, mid, to, rightNodeIndex, rightChangedFrom, changedTo, nodeCount);
 
         nodeHash = Header.innerHash(left, right);
         if (nodeCount >= MAX_DELTA_NODE_COUNT || nodeIndex > type(uint16).max) {
             revert BatchLengthMismatch();
         }
-        nodeIndexes[nodeCount] = uint16(nodeIndex);
-        nodeHashes[nodeCount] = nodeHash;
+        ctx.nodeIndexes[nodeCount] = uint16(nodeIndex);
+        ctx.nodeHashes[nodeCount] = nodeHash;
         nextNodeCount = nodeCount + 1;
     }
 
@@ -881,7 +912,8 @@ contract Groth16ICS07Tendermint is
             return _readBytes32(cacheData, offset);
         }
 
-        uint256 deltaOffset = VALIDATOR_CACHE_HEADER_LEN;
+        uint256 deltaOffset =
+            VALIDATOR_CACHE_HEADER_LEN + uint256(cacheHeader.changedCount) * VALIDATOR_CACHE_ENTRY_LEN;
         for (uint256 i = 0; i < cacheHeader.nodeCount; i++) {
             uint16 cachedNodeIndex = _readUint16(cacheData, deltaOffset);
             if (cachedNodeIndex == nodeIndex) {

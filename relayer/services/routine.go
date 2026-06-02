@@ -30,6 +30,7 @@ type Worker struct {
 }
 
 const cosmosCatchUpSafetySlots uint64 = 3
+const maxValidatorDeltaLeafCount = 16
 
 func NewWorker(txHandler TransactionHandler, prover Prover) *Worker {
 	return &Worker{
@@ -170,7 +171,7 @@ func getCachedCosmosValidatorSet(ctx Context, validatorsHash [32]byte) (cachedCo
 	}, nil
 }
 
-func detectSingleVotingPowerDelta(
+func detectValidatorSetDelta(
 	baseHash [32]byte,
 	baseSet cachedCosmosValidatorSet,
 	currentSet updateclientContract.IICS07TendermintMsgsValidatorSet,
@@ -185,35 +186,29 @@ func detectSingleVotingPowerDelta(
 		)
 	}
 
-	var changedIndex uint32
-	var newVotingPower uint64
+	delta := updateclientContract.IUpdateClientMsgsValidatorSetDelta{
+		BaseValidatorsHash: baseHash,
+	}
 	changeCount := 0
 	for i, current := range currentSet.Validators {
-		if baseSet.pubkeys[i] != current.PubKey {
-			return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false, fmt.Sprintf(
-				"validator pubkey/order changed at index=%d",
-				i,
-			)
-		}
-		if baseSet.votingPowers[i] == current.VotingPower {
+		if baseSet.pubkeys[i] == current.PubKey && baseSet.votingPowers[i] == current.VotingPower {
 			continue
 		}
-		changeCount++
-		if changeCount > 1 {
-			return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false, "more than one voting power changed"
+		if changeCount >= maxValidatorDeltaLeafCount {
+			return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false,
+				fmt.Sprintf("more than %d validator leaves changed", maxValidatorDeltaLeafCount)
 		}
-		changedIndex = uint32(i)
-		newVotingPower = current.VotingPower
+		delta.Indices[changeCount] = uint32(i)
+		delta.PubKeys[changeCount] = current.PubKey
+		delta.VotingPowers[changeCount] = current.VotingPower
+		changeCount++
 	}
 
-	if changeCount != 1 {
-		return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false, "no voting power change detected"
+	if changeCount == 0 {
+		return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false, "no validator leaf change detected"
 	}
-	return updateclientContract.IUpdateClientMsgsValidatorSetDelta{
-		BaseValidatorsHash: baseHash,
-		ChangedIndex:       changedIndex,
-		NewVotingPower:     newVotingPower,
-	}, true, ""
+	delta.LeafCount = uint8(changeCount)
+	return delta, true, ""
 }
 
 func emptyContractValidatorSet() updateclientContract.IICS07TendermintMsgsValidatorSet {
@@ -365,7 +360,7 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		if err != nil {
 			return nil, fmt.Errorf("failed to query validator-set delta base cache: %w", err)
 		}
-		if delta, ok, reason := detectSingleVotingPowerDelta(
+		if delta, ok, reason := detectValidatorSetDelta(
 			baseValidatorsHash,
 			baseValidatorCache,
 			proposedHeader.ValidatorSet,
@@ -373,11 +368,10 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 			currentValidatorSetDelta = delta
 			currentValidatorsCacheExists = true
 			log.Printf(
-				"[UpdateCosmosClient] validator quorum delta-cache hit: currentHash=%x baseHash=%x changedIndex=%d newVotingPower=%d; omitting current validator set",
+				"[UpdateCosmosClient] validator quorum delta-cache hit: currentHash=%x baseHash=%x changedLeaves=%d; omitting current validator set",
 				currentValidatorsHash,
 				baseValidatorsHash,
-				delta.ChangedIndex,
-				delta.NewVotingPower,
+				delta.LeafCount,
 			)
 			proposedHeader.ValidatorSet = emptyContractValidatorSet()
 		} else {
