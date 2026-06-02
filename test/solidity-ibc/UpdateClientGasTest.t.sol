@@ -287,7 +287,7 @@ contract UpdateClientGasTest is Test {
     )
         internal
         pure
-        returns (IUpdateClientMsgs.MsgUpdateClient memory)
+        returns (IUpdateClientMsgs.MsgUpdateClient memory msg_)
     {
         // Build per-slot bucket arrays (active = first cfg.activeCount, rest = padding).
         uint32[] memory idx = new uint32[](bucket);
@@ -305,20 +305,21 @@ contract UpdateClientGasTest is Test {
             tsN[i] = uint32(i * 1_000_000);
         }
 
-        return IUpdateClientMsgs.MsgUpdateClient({
-            clientState: cs,
-            trustedConsensusState: trustedCS,
-            proposedHeader: header,
-            time: header.signedHeader.header.time,
-            proof: [uint256(0), 0, 0, 0, 0, 0, 0, 0],
-            commitments: [uint256(0), 0],
-            commitmentPok: [uint256(0), 0],
-            bucket: bucket,
-            signerIndices: idx,
-            signerPubkeys: pks,
-            timestampSeconds: tsS,
-            timestampNanos: tsN,
-            active: act
+        msg_.clientState = cs;
+        msg_.trustedConsensusState = trustedCS;
+        msg_.proposedHeader = header;
+        msg_.time = header.signedHeader.header.time;
+        msg_.proof = [uint256(0), 0, 0, 0, 0, 0, 0, 0];
+        msg_.commitments = [uint256(0), 0];
+        msg_.commitmentPok = [uint256(0), 0];
+        msg_.bucket = bucket;
+        msg_.signerIndices = idx;
+        msg_.signerPubkeys = pks;
+        msg_.timestampSeconds = tsS;
+        msg_.timestampNanos = tsN;
+        msg_.active = act;
+        msg_.currentValidatorSetDelta = IUpdateClientMsgs.ValidatorSetDelta({
+            baseValidatorsHash: bytes32(0), changedIndex: 0, newVotingPower: 0
         });
     }
 
