@@ -169,7 +169,7 @@ contract Groth16ICS07Harness is Groth16ICS07Tendermint {
     {}
 
     function verifyBatchAndQuorumExternal(IUpdateClientMsgs.MsgUpdateClient memory msg_) external {
-        _verifyBatchAndQuorum(msg_);
+        _verifyFullBatchAndQuorum(msg_);
     }
 }
 
