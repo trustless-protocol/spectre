@@ -374,6 +374,59 @@ contract UpdateClientCacheTest is Test {
         console.log("bucket=16 post-delta cache-hit adjacent update gas=", used);
     }
 
+    function test_updateClient_deltaCache_consecutiveSiblingVotingPowerChanges() public {
+        BucketConfig memory cfg = _cfg(16);
+        IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
+        IICS07TendermintMsgs.ValidatorSet memory valB = _changeVotingPower(valA, 0, 110);
+        IICS07TendermintMsgs.ValidatorSet memory valC = _changeVotingPower(valB, 1, 90);
+        bytes32 hashA = Header.hashValSet(valA);
+        bytes32 hashB = Header.hashValSet(valB);
+        bytes32 hashC = Header.hashValSet(valC);
+
+        IICS07TendermintMsgs.ConsensusState memory trustedCS0 =
+            _consensusState(TRUSTED_TS_NS, hashA, bytes32(uint256(0xAAA1)));
+        Groth16ICS07Tendermint ics07 = _deployLightClient(trustedCS0);
+
+        IICS07TendermintMsgs.Header memory header1001 =
+            _buildHeader(TRUSTED_HEIGHT, HEIGHT_1001, valA, valA, hashB, TS_1001_NS, cfg.activeCount);
+        IUpdateClientMsgs.MsgUpdateClient memory msg1001 =
+            _buildMsg(_clientState(), trustedCS0, header1001, cfg.bucket, cfg.activeCount);
+        assertEq(uint8(ics07.updateClient(abi.encode(msg1001))), uint8(ILightClientMsgs.UpdateResult.Update));
+
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1001 =
+            _consensusState(TS_1001_NS, hashB, header1001.signedHeader.header.appHash);
+        IICS07TendermintMsgs.Header memory header1002 =
+            _buildHeader(HEIGHT_1001, HEIGHT_1002, valB, _emptyValidatorSet(), hashC, TS_1002_NS, cfg.activeCount);
+        IUpdateClientMsgs.MsgUpdateClient memory deltaMsgB =
+            _buildMsg(_clientState(), trustedCS1001, header1002, cfg.bucket, cfg.activeCount);
+        deltaMsgB.proposedHeader.validatorSet = _emptyValidatorSet();
+        deltaMsgB.proposedHeader.trustedNextValidatorSet = _emptyValidatorSet();
+        deltaMsgB.currentValidatorSetDelta = _singleLeafDelta(hashA, valB, 0);
+        assertEq(uint8(ics07.updateClient(abi.encode(deltaMsgB))), uint8(ILightClientMsgs.UpdateResult.Update));
+
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1002 =
+            _consensusState(TS_1002_NS, hashC, header1002.signedHeader.header.appHash);
+        IICS07TendermintMsgs.Header memory header1003 = _buildHeader(
+            HEIGHT_1002, HEIGHT_1002 + 1, valC, _emptyValidatorSet(), hashC, TS_1002_NS + 10, cfg.activeCount
+        );
+        IUpdateClientMsgs.MsgUpdateClient memory deltaMsgC =
+            _buildMsg(_clientState(), trustedCS1002, header1003, cfg.bucket, cfg.activeCount);
+        deltaMsgC.proposedHeader.validatorSet = _emptyValidatorSet();
+        deltaMsgC.proposedHeader.trustedNextValidatorSet = _emptyValidatorSet();
+        deltaMsgC.currentValidatorSetDelta = _singleLeafDelta(hashB, valC, 1);
+
+        ILightClientMsgs.UpdateResult result = ics07.updateClient(abi.encode(deltaMsgC));
+        assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update), "second sibling delta should succeed");
+
+        (uint32[] memory indices, bytes32[] memory pubkeys, uint64[] memory votingPowers) =
+            ics07.getCachedValidatorSet(hashC);
+        assertEq(indices.length, valC.validators.length, "cached C length");
+        assertEq(pubkeys[0], valC.validators[0].pubKey, "cached first sibling pubkey");
+        assertEq(votingPowers[0], valC.validators[0].votingPower, "cached first sibling power");
+        assertEq(pubkeys[1], valC.validators[1].pubKey, "cached second sibling pubkey");
+        assertEq(votingPowers[1], valC.validators[1].votingPower, "cached second sibling power");
+    }
+
     function test_gas_n16_cacheHit_emptySets() public {
         BucketConfig memory cfg = _cfg(16);
         IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
@@ -515,6 +568,30 @@ contract UpdateClientCacheTest is Test {
                 msg_.active[i] = false;
             }
         }
+    }
+
+    function _singleLeafDelta(
+        bytes32 baseValidatorsHash,
+        IICS07TendermintMsgs.ValidatorSet memory validatorSet,
+        uint32 changedIndex
+    )
+        internal
+        pure
+        returns (IUpdateClientMsgs.ValidatorSetDelta memory delta)
+    {
+        uint32[16] memory deltaIndices;
+        bytes32[16] memory deltaPubKeys;
+        uint64[16] memory deltaVotingPowers;
+        deltaIndices[0] = changedIndex;
+        deltaPubKeys[0] = validatorSet.validators[changedIndex].pubKey;
+        deltaVotingPowers[0] = validatorSet.validators[changedIndex].votingPower;
+        delta = IUpdateClientMsgs.ValidatorSetDelta({
+            baseValidatorsHash: baseValidatorsHash,
+            leafCount: 1,
+            indices: deltaIndices,
+            pubKeys: deltaPubKeys,
+            votingPowers: deltaVotingPowers
+        });
     }
 
     function _buildHeader(
