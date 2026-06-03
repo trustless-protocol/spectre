@@ -40,6 +40,9 @@ contract Membership  is IMembership {
     error BranchNotFound(uint256 branch);
     /// @notice Thrown when an existence proof's inner-op path is longer than MAX_PROOF_DEPTH (issue #110).
     error ProofPathTooLong(uint256 length, uint256 maxDepth);
+    /// @notice Thrown when a non-existence proof's left and right neighbours hash to
+    /// different subtree roots, i.e. they are not in the same tree (issue #112).
+    error NonExistenceRootMismatch(bytes32 leftRoot, bytes32 rightRoot);
 
     /// @notice Hard upper bound on the number of inner ops (tree depth) in any
     /// existence proof, enforced for every spec regardless of its min/max depth.
@@ -247,12 +250,25 @@ contract Membership  is IMembership {
         return current;
     }
 
-    function calculateNonExistenceRoot(IMembershipMsgs.NonExistenceProof memory proof) 
-        internal 
-        view 
-        returns (bytes32) 
+    function calculateNonExistenceRoot(IMembershipMsgs.NonExistenceProof memory proof)
+        internal
+        view
+        returns (bytes32)
     {
-        if (proof.hasLeft) {
+        if (proof.hasLeft && proof.hasRight) {
+            // Both neighbours must live in the SAME subtree. Assert their existence
+            // roots match explicitly here (issue #112): the returned root is reused
+            // as the *expected* root for both neighbours in verifyNonExistenceProof,
+            // so checking the side it was derived from is otherwise self-referential.
+            // Make the cross-check explicit instead of relying on that implicit
+            // structure + the outer membership binding.
+            bytes32 leftRoot = calculateExistenceRoot(proof.left);
+            bytes32 rightRoot = calculateExistenceRoot(proof.right);
+            if (leftRoot != rightRoot) {
+                revert NonExistenceRootMismatch(leftRoot, rightRoot);
+            }
+            return leftRoot;
+        } else if (proof.hasLeft) {
             return calculateExistenceRoot(proof.left);
         } else if (proof.hasRight) {
             return calculateExistenceRoot(proof.right);
