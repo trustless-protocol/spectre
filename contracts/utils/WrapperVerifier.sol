@@ -48,6 +48,7 @@ contract WrapperVerifier is IVerifier {
     error LengthMismatch();
     error MsgTooLong(uint256 length);
     error NotOwner();
+    error NoVerifierCode(address verifier);
 
     constructor(address owner) {
         OWNER = owner;
@@ -55,6 +56,7 @@ contract WrapperVerifier is IVerifier {
 
     function setBucket(uint16 bucket, address verifier, bytes4 selector) external {
         if (msg.sender != OWNER) revert NotOwner();
+        if (verifier.code.length == 0) revert NoVerifierCode(verifier);
         buckets[bucket] = BucketVerifier({verifier: verifier, selector: selector});
     }
 
@@ -79,6 +81,7 @@ contract WrapperVerifier is IVerifier {
 
         BucketVerifier memory bv = buckets[bucket];
         if (bv.verifier == address(0)) revert UnknownBucket(bucket);
+        if (bv.verifier.code.length == 0) revert NoVerifierCode(bv.verifier);
 
         bytes32 h = _hashWitness(bucket, pubkeys, timestampSeconds, timestampNanos, active, shared);
 
