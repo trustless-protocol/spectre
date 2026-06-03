@@ -539,31 +539,16 @@ contract Membership  is IMembership {
         uint256 totalLen = prefixLen + prekeyLen + prevalLen;
 
         bytes memory result = new bytes(totalLen);
+        // Bounded mcopy (exact length) keeps every write inside `result`'s allocation,
+        // so the memory-safe annotation holds. A word-copy loop would overshoot by up
+        // to 31 bytes on non-32-aligned segments (issue #114).
         assembly ("memory-safe") {
             let dest := add(result, 0x20)
-            
-            // Copy prefix
-            let src := add(hashedData, 0x20)
-            let i := 0
-            for { } lt(i, prefixLen) { i := add(i, 32) } {
-                mstore(add(dest, i), mload(add(src, i)))
-            }
-            
-            // Copy prekey
-            src := add(prekey, 0x20)
+            mcopy(dest, add(hashedData, 0x20), prefixLen)
             dest := add(dest, prefixLen)
-            i := 0
-            for { } lt(i, prekeyLen) { i := add(i, 32) } {
-                mstore(add(dest, i), mload(add(src, i)))
-            }
-            
-            // Copy preval
-            src := add(preval, 0x20)
+            mcopy(dest, add(prekey, 0x20), prekeyLen)
             dest := add(dest, prekeyLen)
-            i := 0
-            for { } lt(i, prevalLen) { i := add(i, 32) } {
-                mstore(add(dest, i), mload(add(src, i)))
-            }
+            mcopy(dest, add(preval, 0x20), prevalLen)
         }
 
         return hashData(result, leafOp.hashOp);
@@ -586,27 +571,13 @@ contract Membership  is IMembership {
 
         if (inner.hashOp == IMembershipMsgs.HashOp.SHA256) {
             assembly ("memory-safe") {
+                // Scratch starts at the free-memory pointer (not advanced — consumed in place).
+                // Bounded mcopy avoids the word-copy overshoot of issue #114.
                 let freeMem := mload(0x40)
-                
-                // Copy prefix
-                let src := add(prefix, 0x20)
-                let dest := freeMem
-                let i := 0
-                for { } lt(i, prefixLen) { i := add(i, 32) } {
-                    mstore(add(dest, i), mload(add(src, i)))
-                }
-                
-                // Copy child hash
-                mstore(add(dest, prefixLen), child)
-                
-                // Copy suffix
-                src := add(suffix, 0x20)
-                dest := add(add(freeMem, prefixLen), 32)
-                i := 0
-                for { } lt(i, suffixLen) { i := add(i, 32) } {
-                    mstore(add(dest, i), mload(add(src, i)))
-                }
-                
+                mcopy(freeMem, add(prefix, 0x20), prefixLen)
+                mstore(add(freeMem, prefixLen), child)
+                mcopy(add(add(freeMem, prefixLen), 32), add(suffix, 0x20), suffixLen)
+
                 // Call sha256 precompile (0x02)
                 let success := staticcall(gas(), 0x02, freeMem, totalLen, freeMem, 32)
                 if iszero(success) {
@@ -617,27 +588,13 @@ contract Membership  is IMembership {
             return result;
         } else if (inner.hashOp == IMembershipMsgs.HashOp.KECCAK256) {
             assembly ("memory-safe") {
+                // Scratch starts at the free-memory pointer (not advanced — consumed in place).
+                // Bounded mcopy avoids the word-copy overshoot of issue #114.
                 let freeMem := mload(0x40)
-                
-                // Copy prefix
-                let src := add(prefix, 0x20)
-                let dest := freeMem
-                let i := 0
-                for { } lt(i, prefixLen) { i := add(i, 32) } {
-                    mstore(add(dest, i), mload(add(src, i)))
-                }
-                
-                // Copy child hash
-                mstore(add(dest, prefixLen), child)
-                
-                // Copy suffix
-                src := add(suffix, 0x20)
-                dest := add(add(freeMem, prefixLen), 32)
-                i := 0
-                for { } lt(i, suffixLen) { i := add(i, 32) } {
-                    mstore(add(dest, i), mload(add(src, i)))
-                }
-                
+                mcopy(freeMem, add(prefix, 0x20), prefixLen)
+                mstore(add(freeMem, prefixLen), child)
+                mcopy(add(add(freeMem, prefixLen), 32), add(suffix, 0x20), suffixLen)
+
                 result := keccak256(freeMem, totalLen)
             }
             return result;
@@ -660,21 +617,11 @@ contract Membership  is IMembership {
             uint256 len1 = encodedLen.length;
             uint256 len2 = data.length;
             bytes memory res1 = new bytes(len1 + len2);
+            // Bounded mcopy keeps writes inside res1's allocation (issue #114).
             assembly ("memory-safe") {
                 let dest := add(res1, 0x20)
-                // Copy encodedLen
-                let src := add(encodedLen, 0x20)
-                let i := 0
-                for { } lt(i, len1) { i := add(i, 32) } {
-                    mstore(add(dest, i), mload(add(src, i)))
-                }
-                // Copy data
-                src := add(data, 0x20)
-                dest := add(dest, len1)
-                i := 0
-                for { } lt(i, len2) { i := add(i, 32) } {
-                    mstore(add(dest, i), mload(add(src, i)))
-                }
+                mcopy(dest, add(encodedLen, 0x20), len1)
+                mcopy(add(dest, len1), add(data, 0x20), len2)
             }
             return res1;
         }
@@ -683,13 +630,10 @@ contract Membership  is IMembership {
         bytes memory encodedLength = encodeVarint(uint256(32));
         uint256 lenLength = encodedLength.length;
         bytes memory res2 = new bytes(lenLength + 32);
+        // Bounded mcopy keeps writes inside res2's allocation (issue #114).
         assembly ("memory-safe") {
             let dest := add(res2, 0x20)
-            let src := add(encodedLength, 0x20)
-            let i := 0
-            for { } lt(i, lenLength) { i := add(i, 32) } {
-                mstore(add(dest, i), mload(add(src, i)))
-            }
+            mcopy(dest, add(encodedLength, 0x20), lenLength)
             mstore(add(dest, lenLength), hashedData)
         }
         return res2;
