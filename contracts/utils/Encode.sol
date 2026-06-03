@@ -232,9 +232,8 @@ library Encode {
         if (encodedBlockId.length > 0) {
             encodedLen += 1 + _varintLen(encodedBlockId.length) + encodedBlockId.length;
         }
-        if (encodedTimestamp.length > 0) {
-            encodedLen += 1 + _varintLen(encodedTimestamp.length) + encodedTimestamp.length;
-        }
+        // Timestamp is always present in CanonicalVote (matches Go/CometBFT).
+        encodedLen += 1 + _varintLen(encodedTimestamp.length) + encodedTimestamp.length;
         if (chainIdBytes.length > 0) {
             encodedLen += 1 + _varintLen(chainIdBytes.length) + chainIdBytes.length;
         }
@@ -267,11 +266,10 @@ library Encode {
         }
 
         // Field 5: timestamp, length-delimited, tag 0x2a
-        if (encodedTimestamp.length > 0) {
-            offset = _storeByte(out, offset, 0x2A);
-            offset = _writeVarint(out, offset, encodedTimestamp.length);
-            offset = _copyBytes(out, offset, encodedTimestamp);
-        }
+        // Always included to match Go/CometBFT CanonicalVote encoding.
+        offset = _storeByte(out, offset, 0x2A);
+        offset = _writeVarint(out, offset, encodedTimestamp.length);
+        offset = _copyBytes(out, offset, encodedTimestamp);
 
         // Field 6: chain_id, length-delimited string, tag 0x32
         if (chainIdBytes.length > 0) {
