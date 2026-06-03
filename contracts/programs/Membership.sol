@@ -109,8 +109,14 @@ contract Membership  is IMembership {
             revert MissingMerkleRoot();
         }
 
-        // ibc commitment value are exactly 32 bytes
-        // for future commitment with different length we should remove this
+        // Intentional invariant (issue #111): every value proven on this path is a
+        // 32-byte commitment. In IBC v2 the committed value at a packet/ack path is
+        // a SHA-256 hash (32 bytes), and the intermediate subroots chained between
+        // proof levels are tree roots (also 32 bytes), so the whole chain below is
+        // built on `bytes32`. This is NOT a generic ICS-23 verifier: if a future
+        // commitment format stores raw, variable-length values, generalize the leaf
+        // level to hash the full value (keeping this 32-byte fast path) rather than
+        // relaxing this check blindly.
         if (value.length != 32) {
             revert InvalidValueLength();
         }
