@@ -833,7 +833,12 @@ contract Membership  is IMembership {
         );
     }
 
-     function compareBytes(bytes memory a, bytes memory b) internal pure returns (int8) {
+    /// @notice Lexicographic byte comparison matching Go's `bytes.Compare` (the ordering
+    /// Cosmos/IAVL uses), which non-membership proofs depend on: bytes are compared
+    /// UNSIGNED up to the shorter length, then the shorter slice sorts first (a prefix
+    /// sorts before its extension). Returns -1 if a < b, 1 if a > b, 0 if equal.
+    /// See MembershipCompareBytesTest for boundary + fuzz coverage (issue #113).
+    function compareBytes(bytes memory a, bytes memory b) internal pure returns (int8) {
         if (a.length != b.length) {
             // For different lengths, we still need to compare byte by byte
             // up to the shorter length, then compare lengths
