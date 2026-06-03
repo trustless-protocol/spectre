@@ -685,22 +685,7 @@ contract Groth16ICS07Tendermint is
     /// @dev The misbehavior is verfied in the gnark program. Here we only check the public values which contain the
     /// trusted headers.
     /// @inheritdoc ILightClient
-    function misbehaviour(bytes calldata misbehaviourMsg) external view notFrozen onlyMisbehaviourSubmitter {
-        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ =
-        abi.decode(misbehaviourMsg, (IMisbehaviourMsgs.MsgSubmitMisbehaviour));
-        IMisbehaviourMsgs.MisbehaviourOutput memory output = MISBEHAVIOUR.misbehaviour(
-            msg_.clientState, msg_.misbehaviour, msg_.trustedConsensusState1, msg_.trustedConsensusState2, msg_.time
-        );
-
-        _validateMisbehaviourOutput(
-            output, msg_.clientState, msg_.trustedConsensusState1, msg_.trustedConsensusState2, msg_.time
-        );
-
-        // _verifyProof(msgSubmitMisbehaviour.groth16Proof);
-
-        // If the misbehaviour and proof is valid, the client needs to be frozen
-        clientState.isFrozen = true;
-        // NOTE: This feature will not be supported until ZK proof verification is implemented and enforced. (#130)
+    function misbehaviour(bytes calldata) external view notFrozen onlyMisbehaviourSubmitter {
         revert FeatureNotSupported();
     }
 
