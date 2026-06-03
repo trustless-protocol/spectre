@@ -38,15 +38,50 @@ contract UpdateClient is IUpdateClient {
         pure
         returns (IUpdateClientMsgs.UpdateClientOutput memory)
     {
+        return _updateClientCachedCurrent(
+            msg_,
+            Header.chainIdLeafHash(msg_.clientState.chainId),
+            Header.bytes32LeafHash(msg_.proposedHeader.signedHeader.header.validatorsHash)
+        );
+    }
+
+    function updateClientCachedCurrentWithHeaderCache(
+        IUpdateClientMsgs.MsgUpdateClient calldata msg_,
+        bytes32 chainIdLeafHash,
+        bytes32 validatorsHashLeaf
+    )
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory)
+    {
+        return _updateClientCachedCurrent(msg_, chainIdLeafHash, validatorsHashLeaf);
+    }
+
+    function _updateClientCachedCurrent(
+        IUpdateClientMsgs.MsgUpdateClient calldata msg_,
+        bytes32 chainIdLeafHash,
+        bytes32 validatorsHashLeaf
+    )
+        private
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory)
+    {
         IICS07TendermintMsgs.ChainId memory chainId = IICS07TendermintMsgs.ChainId({
-            id: msg_.clientState.chainId,
-            revisionNumber: msg_.clientState.latestHeight.revisionNumber
+            id: msg_.clientState.chainId, revisionNumber: msg_.clientState.latestHeight.revisionNumber
         });
         IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
             trustThreshold: msg_.clientState.trustLevel, trustingPeriod: msg_.clientState.trustingPeriod, clockDrift: 15
         });
 
-        verifyHeaderCachedCurrent(msg_.proposedHeader, chainId, options, msg_.time, msg_.trustedConsensusState);
+        verifyHeaderCachedCurrent(
+            msg_.proposedHeader,
+            chainId,
+            options,
+            msg_.time,
+            msg_.trustedConsensusState,
+            chainIdLeafHash,
+            validatorsHashLeaf
+        );
         return _buildOutput(msg_, chainId.revisionNumber);
     }
 
@@ -63,8 +98,7 @@ contract UpdateClient is IUpdateClient {
         // chainId string here would cost ~9K gas per update and never change
         // for the lifetime of the client.
         IICS07TendermintMsgs.ChainId memory chainId = IICS07TendermintMsgs.ChainId({
-            id: msg_.clientState.chainId,
-            revisionNumber: msg_.clientState.latestHeight.revisionNumber
+            id: msg_.clientState.chainId, revisionNumber: msg_.clientState.latestHeight.revisionNumber
         });
         IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
             trustThreshold: msg_.clientState.trustLevel, trustingPeriod: msg_.clientState.trustingPeriod, clockDrift: 15
@@ -167,7 +201,9 @@ contract UpdateClient is IUpdateClient {
         IICS07TendermintMsgs.ChainId memory chainId,
         IICS07TendermintMsgs.Options memory options,
         uint128 time,
-        IICS07TendermintMsgs.ConsensusState memory trustedConsensusState
+        IICS07TendermintMsgs.ConsensusState memory trustedConsensusState,
+        bytes32 chainIdLeafHash,
+        bytes32 validatorsHashLeaf
     )
         internal
         pure
@@ -176,7 +212,8 @@ contract UpdateClient is IUpdateClient {
         validateBasicResolved(proposedHeader, headerChainId);
         verifyChainIdVersion(chainId, headerChainId);
 
-        bytes32 headerHash = Header.hashHeader(proposedHeader.signedHeader.header);
+        bytes32 headerHash =
+            Header.hashHeaderWithCachedLeaves(proposedHeader.signedHeader.header, chainIdLeafHash, validatorsHashLeaf);
         if (headerHash != proposedHeader.signedHeader.commit.blockId.hashData) {
             revert FailedToVerifyHeader("invalid block: header hash mismatch");
         }

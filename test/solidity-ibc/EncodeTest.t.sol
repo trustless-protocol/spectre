@@ -306,6 +306,84 @@ contract EncodeTest is Test {
         );
     }
 
+    function test_hashHeaderWithCachedChainId_matchesHashHeader() public pure {
+        IICS07TendermintMsgs.BlockHeader memory header = IICS07TendermintMsgs.BlockHeader({
+            version: IICS07TendermintMsgs.Version({ blockVersion: 11, appVersion: 0 }),
+            chainId: "cosmoshub-4",
+            height: 12345,
+            time: uint128(1700000000) * 1e9,
+            hasLastBlockId: true,
+            lastBlockId: IICS07TendermintMsgs.BlockId({
+                hashData: _hash2(),
+                partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+            }),
+            hasLastCommitHash: true,
+            lastCommitHash: _hash3(),
+            hasDataHash: true,
+            dataHash: _hash4(),
+            validatorsHash: _hash5(),
+            nextValidatorsHash: _hash6(),
+            consensusHash: _hash7(),
+            appHash: bytes32(0xa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf),
+            hasLastResultsHash: true,
+            lastResultsHash: _hash1(),
+            hasEvidenceHash: true,
+            evidenceHash: _hash2(),
+            proposerAddress: hex"f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff00010203"
+        });
+
+        assertEq(
+            Header.hashHeaderWithCachedChainId(header, Header.chainIdLeafHash(header.chainId)),
+            Header.hashHeader(header)
+        );
+    }
+
+    function test_hashHeaderWithCachedLeaves_matchesHashHeader() public pure {
+        IICS07TendermintMsgs.BlockHeader memory header = IICS07TendermintMsgs.BlockHeader({
+            version: IICS07TendermintMsgs.Version({ blockVersion: 11, appVersion: 0 }),
+            chainId: "cosmoshub-4",
+            height: 12345,
+            time: uint128(1700000000) * 1e9,
+            hasLastBlockId: true,
+            lastBlockId: IICS07TendermintMsgs.BlockId({
+                hashData: _hash2(),
+                partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+            }),
+            hasLastCommitHash: true,
+            lastCommitHash: _hash3(),
+            hasDataHash: true,
+            dataHash: _hash4(),
+            validatorsHash: _hash5(),
+            nextValidatorsHash: _hash6(),
+            consensusHash: _hash7(),
+            appHash: bytes32(0xa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf),
+            hasLastResultsHash: true,
+            lastResultsHash: _hash1(),
+            hasEvidenceHash: true,
+            evidenceHash: _hash2(),
+            proposerAddress: hex"f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff00010203"
+        });
+
+        assertEq(
+            Header.hashHeaderWithCachedLeaves(
+                header,
+                Header.chainIdLeafHash(header.chainId),
+                Header.bytes32LeafHash(header.validatorsHash)
+            ),
+            Header.hashHeader(header)
+        );
+
+        header.nextValidatorsHash = header.validatorsHash;
+        assertEq(
+            Header.hashHeaderWithCachedLeaves(
+                header,
+                Header.chainIdLeafHash(header.chainId),
+                Header.bytes32LeafHash(header.validatorsHash)
+            ),
+            Header.hashHeader(header)
+        );
+    }
+
     // ─── merkleHash tests ───
 
     function test_merkleHash_empty() public pure {
