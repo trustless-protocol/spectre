@@ -41,15 +41,14 @@ contract Groth16ICS07Tendermint is
 {
     using TransientSlot for *;
 
-    /// @inheritdoc IGroth16ICS07Tendermint
-    IVerifier public immutable VERIFIER;
-    IMembership public immutable MEMBERSHIP;
-    IMisbehaviour public immutable MISBEHAVIOUR;
-    IUpdateClient public immutable UPDATE_CLIENT;
+    IVerifier private immutable VERIFIER;
+    IMembership private immutable MEMBERSHIP;
+    IMisbehaviour private immutable MISBEHAVIOUR;
+    IUpdateClient private immutable UPDATE_CLIENT;
 
     /// @notice The ICS07Tendermint client state
     // natlint-disable-next-line MissingInheritdoc
-    IICS07TendermintMsgs.ClientState public clientState;
+    IICS07TendermintMsgs.ClientState private clientState;
     /// @notice The mapping from height to consensus state keccak256 hashes.
     /// @dev Revision number need not be keyed as it is not allowed to change.
     mapping(uint64 height => bytes32 hash) private _consensusStateHashes;
@@ -57,42 +56,22 @@ contract Groth16ICS07Tendermint is
     mapping(bytes32 validatorsHash => address pointer) private _cachedValidatorSets;
 
     uint32 private constant VALIDATOR_CACHE_MAGIC = 0x56414c34; // "VAL4"
-    uint8 private constant VALIDATOR_CACHE_KIND_FULL = 0;
-    uint8 private constant VALIDATOR_CACHE_KIND_DELTA = 1;
-    uint8 private constant MAX_DELTA_DEPTH = 8;
     uint16 private constant MAX_VALIDATOR_COUNT = 180;
     uint16 private constant MAX_DELTA_LEAF_COUNT = 16;
-    uint16 private constant MAX_DELTA_NODE_COUNT = 144; // MAX_DELTA_LEAF_COUNT * (leaf + ceil(log2(180)) ancestors)
-    uint256 private constant VALIDATOR_CACHE_HEADER_LEN = 126;
+    uint256 private constant VALIDATOR_CACHE_HEADER_LEN = 48;
     uint256 private constant VALIDATOR_CACHE_ENTRY_LEN = 44;
     uint256 private constant VALIDATOR_CACHE_NODE_LEN = 32;
-    uint256 private constant VALIDATOR_CACHE_DELTA_NODE_LEN = 34;
 
     struct ValidatorCacheHeader {
         uint64 totalVotingPower;
         uint16 entryCount;
         bytes32 validatorsHashLeaf;
-        uint8 cacheKind;
-        uint8 deltaDepth;
-        bytes32 parentHash;
-        uint16 changedCount;
         uint16 nodeCount;
     }
 
-    struct DeltaRecomputeContext {
-        bytes32 baseValidatorsHash;
-        uint16 validatorCount;
-        IUpdateClientMsgs.ValidatorSetDelta delta;
-        bytes32[] newLeafHashes;
-        uint16[] nodeIndexes;
-        bytes32[] nodeHashes;
-    }
+    uint16 private constant ALLOWED_CLOCK_DRIFT = 30 minutes;
 
-    /// @inheritdoc IGroth16ICS07Tendermint
-    uint16 public constant ALLOWED_CLOCK_DRIFT = 30 minutes;
-
-    /// @inheritdoc IGroth16ICS07Tendermint
-    bytes32 public immutable PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
+    bytes32 private constant PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
 
     /// @notice keccak256 of the client's chain ID, cached at construction.
     /// @dev The chain ID never changes for the lifetime of the client, so the
@@ -155,16 +134,10 @@ contract Groth16ICS07Tendermint is
         return abi.encode(clientState);
     }
 
-    /// @inheritdoc IGroth16ICS07Tendermint
-    function getConsensusStateHash(uint64 revisionHeight) public view returns (bytes32) {
+    function _getConsensusStateHash(uint64 revisionHeight) private view returns (bytes32) {
         bytes32 hash = _consensusStateHashes[revisionHeight];
         require(hash != 0, ConsensusStateNotFound());
         return hash;
-    }
-
-    /// @inheritdoc IGroth16ICS07Tendermint
-    function hasCachedValidatorSet(bytes32 validatorsHash) public view returns (bool) {
-        return _hasUsableValidatorCache(validatorsHash);
     }
 
     /// @inheritdoc IGroth16ICS07Tendermint
@@ -1129,7 +1102,7 @@ contract Groth16ICS07Tendermint is
     }
 
     /// @inheritdoc ILightClient
-    function upgradeClient(bytes calldata) external view notFrozen onlyProofSubmitter {
+    function upgradeClient(bytes calldata) external pure {
         // NOTE: This feature will not be supported. (#130)
         revert FeatureNotSupported();
     }
@@ -1309,7 +1282,7 @@ contract Groth16ICS07Tendermint is
         view
     {
         bytes32 trustedConsensusStateHash = keccak256(abi.encode(trustedConsensusState));
-        bytes32 storedConsensusStateHash = getConsensusStateHash(proofHeight);
+        bytes32 storedConsensusStateHash = _getConsensusStateHash(proofHeight);
         require(
             trustedConsensusStateHash == storedConsensusStateHash,
             ConsensusStateHashMismatch(storedConsensusStateHash, trustedConsensusStateHash)
@@ -1327,7 +1300,7 @@ contract Groth16ICS07Tendermint is
         _validateClientStateAndTime(output.clientState, output.time);
 
         bytes32 outputConsensusStateHash = keccak256(abi.encode(output.trustedConsensusState));
-        bytes32 storedConsensusStateHash = getConsensusStateHash(output.trustedHeight.revisionHeight);
+        bytes32 storedConsensusStateHash = _getConsensusStateHash(output.trustedHeight.revisionHeight);
         require(
             outputConsensusStateHash == storedConsensusStateHash,
             ConsensusStateHashMismatch(storedConsensusStateHash, outputConsensusStateHash)
@@ -1351,7 +1324,7 @@ contract Groth16ICS07Tendermint is
         // make sure the trusted consensus state from header 1 is known (trusted) by matching it with the one in the
         // mapping
         bytes32 outputConsensusStateHash1 = keccak256(abi.encode(trustedConsensusState1));
-        bytes32 storedConsensusStateHash1 = getConsensusStateHash(output.trustedHeight1.revisionHeight);
+        bytes32 storedConsensusStateHash1 = _getConsensusStateHash(output.trustedHeight1.revisionHeight);
         require(
             outputConsensusStateHash1 == storedConsensusStateHash1,
             ConsensusStateHashMismatch(storedConsensusStateHash1, outputConsensusStateHash1)
@@ -1360,7 +1333,7 @@ contract Groth16ICS07Tendermint is
         // make sure the trusted consensus state from header 2 is known (trusted) by matching it with the one in the
         // mapping
         bytes32 outputConsensusStateHash2 = keccak256(abi.encode(trustedConsensusState2));
-        bytes32 storedConsensusStateHash2 = getConsensusStateHash(output.trustedHeight2.revisionHeight);
+        bytes32 storedConsensusStateHash2 = _getConsensusStateHash(output.trustedHeight2.revisionHeight);
         require(
             outputConsensusStateHash2 == storedConsensusStateHash2,
             ConsensusStateHashMismatch(storedConsensusStateHash2, outputConsensusStateHash2)

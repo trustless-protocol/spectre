@@ -93,7 +93,7 @@ contract UpdateClientCacheTest is Test {
 
         ILightClientMsgs.UpdateResult first = ics07.updateClient(abi.encode(fullMsg));
         assertEq(uint8(first), uint8(ILightClientMsgs.UpdateResult.Update), "first update should succeed");
-        assertTrue(ics07.hasCachedValidatorSet(hashA), "validator set should be cached");
+        assertTrue(_hasCachedValidatorSet(ics07, hashA), "validator set should be cached");
 
         IUpdateClientMsgs.MsgUpdateClient memory cacheMsg =
             _buildMsg(_clientState(), trustedCS, header, cfg.bucket, cfg.activeCount);
@@ -155,7 +155,7 @@ contract UpdateClientCacheTest is Test {
             uint8(ILightClientMsgs.UpdateResult.Update),
             "adjacent update should not need trusted next set"
         );
-        assertTrue(ics07.hasCachedValidatorSet(hashA), "current validator set should still be cached");
+        assertTrue(_hasCachedValidatorSet(ics07, hashA), "current validator set should still be cached");
     }
 
     function test_updateClient_nonAdjacent_usesCachedCurrentAndSuppliedTrustedNextSet() public {
@@ -176,7 +176,7 @@ contract UpdateClientCacheTest is Test {
         IUpdateClientMsgs.MsgUpdateClient memory msg1001 =
             _buildMsg(_clientState(), trustedCS0, header1001, cfg.bucket, cfg.activeCount);
         assertEq(uint8(ics07.updateClient(abi.encode(msg1001))), uint8(ILightClientMsgs.UpdateResult.Update));
-        assertTrue(ics07.hasCachedValidatorSet(hashA), "validator set A should be cached");
+        assertTrue(_hasCachedValidatorSet(ics07, hashA), "validator set A should be cached");
 
         IICS07TendermintMsgs.ConsensusState memory trustedCS1001 =
             _consensusState(TS_1001_NS, hashB, header1001.signedHeader.header.appHash);
@@ -185,7 +185,7 @@ contract UpdateClientCacheTest is Test {
         IUpdateClientMsgs.MsgUpdateClient memory msg1002 =
             _buildMsg(_clientState(), trustedCS1001, header1002, cfg.bucket, cfg.activeCount);
         assertEq(uint8(ics07.updateClient(abi.encode(msg1002))), uint8(ILightClientMsgs.UpdateResult.Update));
-        assertTrue(ics07.hasCachedValidatorSet(hashB), "validator set B should be cached");
+        assertTrue(_hasCachedValidatorSet(ics07, hashB), "validator set B should be cached");
 
         IICS07TendermintMsgs.Header memory nonAdjacentHeader =
             _buildHeader(TRUSTED_HEIGHT, HEIGHT_1002, valB, valA, hashB, TS_1002_NS, cfg.activeCount);
@@ -214,7 +214,7 @@ contract UpdateClientCacheTest is Test {
         IUpdateClientMsgs.MsgUpdateClient memory msg1001 =
             _buildMsg(_clientState(), trustedCS0, header1001, cfg.bucket, cfg.activeCount);
         assertEq(uint8(ics07.updateClient(abi.encode(msg1001))), uint8(ILightClientMsgs.UpdateResult.Update));
-        assertTrue(ics07.hasCachedValidatorSet(hashA), "validator set A should be cached");
+        assertTrue(_hasCachedValidatorSet(ics07, hashA), "validator set A should be cached");
 
         IICS07TendermintMsgs.ConsensusState memory trustedCS1001 =
             _consensusState(TS_1001_NS, hashB, header1001.signedHeader.header.appHash);
@@ -243,7 +243,7 @@ contract UpdateClientCacheTest is Test {
         ILightClientMsgs.UpdateResult result = ics07.updateClient(abi.encode(deltaMsg));
         uint256 used = g0 - gasleft();
         assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update), "delta update should succeed");
-        assertTrue(ics07.hasCachedValidatorSet(hashB), "delta-derived validator set B should be cached");
+        assertTrue(_hasCachedValidatorSet(ics07, hashB), "delta-derived validator set B should be cached");
         console.log("bucket=16 delta-cache adjacent update gas=", used);
 
         (uint32[] memory indices, bytes32[] memory pubkeys, uint64[] memory votingPowers) =
@@ -303,7 +303,7 @@ contract UpdateClientCacheTest is Test {
         ILightClientMsgs.UpdateResult result = ics07.updateClient(abi.encode(deltaMsg));
         uint256 used = g0 - gasleft();
         assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update), "multi-leaf delta should succeed");
-        assertTrue(ics07.hasCachedValidatorSet(hashB), "multi-leaf delta-derived validator set should be cached");
+        assertTrue(_hasCachedValidatorSet(ics07, hashB), "multi-leaf delta-derived validator set should be cached");
         console.log("bucket=16 delta-cache two-leaf update gas=", used);
 
         (uint32[] memory indices, bytes32[] memory pubkeys, uint64[] memory votingPowers) =
@@ -387,6 +387,15 @@ contract UpdateClientCacheTest is Test {
             keccak256(abi.encode(trustedCS)),
             address(0)
         );
+    }
+
+    function _hasCachedValidatorSet(Groth16ICS07Tendermint ics07, bytes32 validatorsHash)
+        internal
+        view
+        returns (bool)
+    {
+        (uint32[] memory indices,,) = ics07.getCachedValidatorSet(validatorsHash);
+        return indices.length != 0;
     }
 
     function _buildMsg(
