@@ -228,6 +228,24 @@ contract EncodeTest is Test {
         );
     }
 
+    /// @notice Reproduces issue.md: cdcEncodeBytes32(bytes32(0)) wrongly returns empty bytes.
+    /// CometBFT's cdcEncode(HexBytes) on a 32-byte all-zero hash emits BytesValue{Value: zeros}
+    /// = 0x0a 0x20 followed by 32 zero bytes (34 bytes total). The current implementation
+    /// short-circuits on `value == bytes32(0)` and returns 0 bytes, causing a header-hash
+    /// mismatch whenever any unconditionally-hashed field (e.g. appHash) is all zero.
+    function test_cdcEncodeBytes32_allZero_matchesCometBFT() public pure {
+        bytes memory expected = hex"0a200000000000000000000000000000000000000000000000000000000000000000";
+        assertEq(Encode.cdcEncodeBytes32(bytes32(0)), expected);
+    }
+
+    /// @notice Sanity cross-check: cdcEncodeBytes on a 32-byte zero buffer (which CometBFT
+    /// treats identically to cdcEncodeBytes32(bytes32(0))) emits the full BytesValue,
+    /// proving the bug is isolated to the bytes32 overload.
+    function test_cdcEncodeBytes32_allZero_matchesBytesOverload() public pure {
+        bytes memory zeros32 = new bytes(32);
+        assertEq(Encode.cdcEncodeBytes32(bytes32(0)), Encode.cdcEncodeBytes(zeros32));
+    }
+
     function test_encodeTimestamp() public pure {
         // Go: gogotypes.StdTimeMarshal(time.Unix(1700000000, 0))
         // Encode.encodeTimestamp now takes nanoseconds and emits both
