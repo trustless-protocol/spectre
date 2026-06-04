@@ -38,6 +38,19 @@ contract Membership  is IMembership {
     error InvalidVarint();
     error InvalidOffset();
     error BranchNotFound(uint256 branch);
+    /// @notice Thrown when an existence proof's inner-op path is longer than MAX_PROOF_DEPTH (issue #110).
+    error ProofPathTooLong(uint256 length, uint256 maxDepth);
+    /// @notice Thrown when a non-existence proof's left and right neighbours hash to
+    /// different subtree roots, i.e. they are not in the same tree (issue #112).
+    error NonExistenceRootMismatch(bytes32 leftRoot, bytes32 rightRoot);
+
+    /// @notice Hard upper bound on the number of inner ops (tree depth) in any
+    /// existence proof, enforced for every spec regardless of its min/max depth.
+    /// Both shipped specs set min/max depth = 0, so the spec-defined bounds never
+    /// run; a legitimate ICS-23 / IAVL path equals the tree depth and stays well
+    /// under this, while an over-long path only burns gas before the root check
+    /// rejects it. Bounding it up front prevents gas griefing (issue #110).
+    uint256 internal constant MAX_PROOF_DEPTH = 128;
 
     /**
      * @dev Verify membership of multiple key-value pairs in the Merkle tree
@@ -99,8 +112,14 @@ contract Membership  is IMembership {
             revert MissingMerkleRoot();
         }
 
-        // ibc commitment value are exactly 32 bytes
-        // for future commitment with different length we should remove this
+        // Intentional invariant (issue #111): every value proven on this path is a
+        // 32-byte commitment. In IBC v2 the committed value at a packet/ack path is
+        // a SHA-256 hash (32 bytes), and the intermediate subroots chained between
+        // proof levels are tree roots (also 32 bytes), so the whole chain below is
+        // built on `bytes32`. This is NOT a generic ICS-23 verifier: if a future
+        // commitment format stores raw, variable-length values, generalize the leaf
+        // level to hash the full value (keeping this 32-byte fast path) rather than
+        // relaxing this check blindly.
         if (value.length != 32) {
             revert InvalidValueLength();
         }
@@ -212,6 +231,15 @@ contract Membership  is IMembership {
             revert InvalidExistenceProof();
         }
 
+        // Bound the inner-op loop at its source (issue #110/#134). This is the
+        // function that actually iterates proof.path, and it is reachable from the
+        // non-membership path (calculateNonExistenceRoot → here) BEFORE
+        // checkExistenceProof runs, so capping only in checkExistenceProof would
+        // leave nonExistenceProof.left/right.path unbounded.
+        if (proof.path.length > MAX_PROOF_DEPTH) {
+            revert ProofPathTooLong(proof.path.length, MAX_PROOF_DEPTH);
+        }
+
         IMembershipMsgs.LeafOp memory leafOp = proof.leaf;
         bytes32 current = applyLeaf(leafOp, proof.key, proof.value);
         for (uint256 i = 0; i < proof.path.length; i++) {
@@ -222,12 +250,25 @@ contract Membership  is IMembership {
         return current;
     }
 
-    function calculateNonExistenceRoot(IMembershipMsgs.NonExistenceProof memory proof) 
-        internal 
-        view 
-        returns (bytes32) 
+    function calculateNonExistenceRoot(IMembershipMsgs.NonExistenceProof memory proof)
+        internal
+        view
+        returns (bytes32)
     {
-        if (proof.hasLeft) {
+        if (proof.hasLeft && proof.hasRight) {
+            // Both neighbours must live in the SAME subtree. Assert their existence
+            // roots match explicitly here (issue #112): the returned root is reused
+            // as the *expected* root for both neighbours in verifyNonExistenceProof,
+            // so checking the side it was derived from is otherwise self-referential.
+            // Make the cross-check explicit instead of relying on that implicit
+            // structure + the outer membership binding.
+            bytes32 leftRoot = calculateExistenceRoot(proof.left);
+            bytes32 rightRoot = calculateExistenceRoot(proof.right);
+            if (leftRoot != rightRoot) {
+                revert NonExistenceRootMismatch(leftRoot, rightRoot);
+            }
+            return leftRoot;
+        } else if (proof.hasLeft) {
             return calculateExistenceRoot(proof.left);
         } else if (proof.hasRight) {
             return calculateExistenceRoot(proof.right);
@@ -276,7 +317,15 @@ contract Membership  is IMembership {
             revert("Incorrect prefix on leaf");
         }
 
-        // ensure min/max depths
+        // Hard cap on proof depth for every spec (issue #110). The spec-defined
+        // bounds below only run when the spec sets them (both shipped specs leave
+        // min/max depth = 0), so without this an attacker-supplied path could be
+        // arbitrarily long and burn gas before the root check rejects it.
+        if (proof.path.length > MAX_PROOF_DEPTH) {
+            revert ProofPathTooLong(proof.path.length, MAX_PROOF_DEPTH);
+        }
+
+        // ensure min/max depths (when the spec sets them)
         if (spec.minDepth != 0) {
             if (proof.path.length < uint256(spec.minDepth)) {
                 revert("Too few InnerOps");
@@ -490,31 +539,16 @@ contract Membership  is IMembership {
         uint256 totalLen = prefixLen + prekeyLen + prevalLen;
 
         bytes memory result = new bytes(totalLen);
+        // Bounded mcopy (exact length) keeps every write inside `result`'s allocation,
+        // so the memory-safe annotation holds. A word-copy loop would overshoot by up
+        // to 31 bytes on non-32-aligned segments (issue #114).
         assembly ("memory-safe") {
             let dest := add(result, 0x20)
-            
-            // Copy prefix
-            let src := add(hashedData, 0x20)
-            let i := 0
-            for { } lt(i, prefixLen) { i := add(i, 32) } {
-                mstore(add(dest, i), mload(add(src, i)))
-            }
-            
-            // Copy prekey
-            src := add(prekey, 0x20)
+            mcopy(dest, add(hashedData, 0x20), prefixLen)
             dest := add(dest, prefixLen)
-            i := 0
-            for { } lt(i, prekeyLen) { i := add(i, 32) } {
-                mstore(add(dest, i), mload(add(src, i)))
-            }
-            
-            // Copy preval
-            src := add(preval, 0x20)
+            mcopy(dest, add(prekey, 0x20), prekeyLen)
             dest := add(dest, prekeyLen)
-            i := 0
-            for { } lt(i, prevalLen) { i := add(i, 32) } {
-                mstore(add(dest, i), mload(add(src, i)))
-            }
+            mcopy(dest, add(preval, 0x20), prevalLen)
         }
 
         return hashData(result, leafOp.hashOp);
@@ -537,27 +571,13 @@ contract Membership  is IMembership {
 
         if (inner.hashOp == IMembershipMsgs.HashOp.SHA256) {
             assembly ("memory-safe") {
+                // Scratch starts at the free-memory pointer (not advanced — consumed in place).
+                // Bounded mcopy avoids the word-copy overshoot of issue #114.
                 let freeMem := mload(0x40)
-                
-                // Copy prefix
-                let src := add(prefix, 0x20)
-                let dest := freeMem
-                let i := 0
-                for { } lt(i, prefixLen) { i := add(i, 32) } {
-                    mstore(add(dest, i), mload(add(src, i)))
-                }
-                
-                // Copy child hash
-                mstore(add(dest, prefixLen), child)
-                
-                // Copy suffix
-                src := add(suffix, 0x20)
-                dest := add(add(freeMem, prefixLen), 32)
-                i := 0
-                for { } lt(i, suffixLen) { i := add(i, 32) } {
-                    mstore(add(dest, i), mload(add(src, i)))
-                }
-                
+                mcopy(freeMem, add(prefix, 0x20), prefixLen)
+                mstore(add(freeMem, prefixLen), child)
+                mcopy(add(add(freeMem, prefixLen), 32), add(suffix, 0x20), suffixLen)
+
                 // Call sha256 precompile (0x02)
                 let success := staticcall(gas(), 0x02, freeMem, totalLen, freeMem, 32)
                 if iszero(success) {
@@ -568,27 +588,13 @@ contract Membership  is IMembership {
             return result;
         } else if (inner.hashOp == IMembershipMsgs.HashOp.KECCAK256) {
             assembly ("memory-safe") {
+                // Scratch starts at the free-memory pointer (not advanced — consumed in place).
+                // Bounded mcopy avoids the word-copy overshoot of issue #114.
                 let freeMem := mload(0x40)
-                
-                // Copy prefix
-                let src := add(prefix, 0x20)
-                let dest := freeMem
-                let i := 0
-                for { } lt(i, prefixLen) { i := add(i, 32) } {
-                    mstore(add(dest, i), mload(add(src, i)))
-                }
-                
-                // Copy child hash
-                mstore(add(dest, prefixLen), child)
-                
-                // Copy suffix
-                src := add(suffix, 0x20)
-                dest := add(add(freeMem, prefixLen), 32)
-                i := 0
-                for { } lt(i, suffixLen) { i := add(i, 32) } {
-                    mstore(add(dest, i), mload(add(src, i)))
-                }
-                
+                mcopy(freeMem, add(prefix, 0x20), prefixLen)
+                mstore(add(freeMem, prefixLen), child)
+                mcopy(add(add(freeMem, prefixLen), 32), add(suffix, 0x20), suffixLen)
+
                 result := keccak256(freeMem, totalLen)
             }
             return result;
@@ -611,21 +617,11 @@ contract Membership  is IMembership {
             uint256 len1 = encodedLen.length;
             uint256 len2 = data.length;
             bytes memory res1 = new bytes(len1 + len2);
+            // Bounded mcopy keeps writes inside res1's allocation (issue #114).
             assembly ("memory-safe") {
                 let dest := add(res1, 0x20)
-                // Copy encodedLen
-                let src := add(encodedLen, 0x20)
-                let i := 0
-                for { } lt(i, len1) { i := add(i, 32) } {
-                    mstore(add(dest, i), mload(add(src, i)))
-                }
-                // Copy data
-                src := add(data, 0x20)
-                dest := add(dest, len1)
-                i := 0
-                for { } lt(i, len2) { i := add(i, 32) } {
-                    mstore(add(dest, i), mload(add(src, i)))
-                }
+                mcopy(dest, add(encodedLen, 0x20), len1)
+                mcopy(add(dest, len1), add(data, 0x20), len2)
             }
             return res1;
         }
@@ -634,13 +630,10 @@ contract Membership  is IMembership {
         bytes memory encodedLength = encodeVarint(uint256(32));
         uint256 lenLength = encodedLength.length;
         bytes memory res2 = new bytes(lenLength + 32);
+        // Bounded mcopy keeps writes inside res2's allocation (issue #114).
         assembly ("memory-safe") {
             let dest := add(res2, 0x20)
-            let src := add(encodedLength, 0x20)
-            let i := 0
-            for { } lt(i, lenLength) { i := add(i, 32) } {
-                mstore(add(dest, i), mload(add(src, i)))
-            }
+            mcopy(dest, add(encodedLength, 0x20), lenLength)
             mstore(add(dest, lenLength), hashedData)
         }
         return res2;
@@ -800,7 +793,12 @@ contract Membership  is IMembership {
         );
     }
 
-     function compareBytes(bytes memory a, bytes memory b) internal pure returns (int8) {
+    /// @notice Lexicographic byte comparison matching Go's `bytes.Compare` (the ordering
+    /// Cosmos/IAVL uses), which non-membership proofs depend on: bytes are compared
+    /// UNSIGNED up to the shorter length, then the shorter slice sorts first (a prefix
+    /// sorts before its extension). Returns -1 if a < b, 1 if a > b, 0 if equal.
+    /// See MembershipCompareBytesTest for boundary + fuzz coverage (issue #113).
+    function compareBytes(bytes memory a, bytes memory b) internal pure returns (int8) {
         if (a.length != b.length) {
             // For different lengths, we still need to compare byte by byte
             // up to the shorter length, then compare lengths

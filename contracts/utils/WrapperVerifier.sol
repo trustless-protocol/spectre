@@ -48,6 +48,7 @@ contract WrapperVerifier is IVerifier {
     error LengthMismatch();
     error MsgTooLong(uint256 length);
     error NotOwner();
+    error NoVerifierCode(address verifier);
 
     constructor(address owner) {
         OWNER = owner;
@@ -55,6 +56,7 @@ contract WrapperVerifier is IVerifier {
 
     function setBucket(uint16 bucket, address verifier, bytes4 selector) external {
         if (msg.sender != OWNER) revert NotOwner();
+        if (verifier.code.length == 0) revert NoVerifierCode(verifier);
         buckets[bucket] = BucketVerifier({verifier: verifier, selector: selector});
     }
 
@@ -79,6 +81,7 @@ contract WrapperVerifier is IVerifier {
 
         BucketVerifier memory bv = buckets[bucket];
         if (bv.verifier == address(0)) revert UnknownBucket(bucket);
+        if (bv.verifier.code.length == 0) revert NoVerifierCode(bv.verifier);
 
         bytes32 h = _hashWitness(bucket, pubkeys, timestampSeconds, timestampNanos, active, shared);
 
@@ -253,9 +256,8 @@ contract WrapperVerifier is IVerifier {
         }
 
         uint256 encodedLen = commonVotePrefix.length + chainSuffix.length;
-        if (encodedTsLen > 0) {
-            encodedLen += 1 + _varintLen(encodedTsLen) + encodedTsLen;
-        }
+        // Timestamp is always present in CanonicalVote (matches Go/CometBFT).
+        encodedLen += 1 + _varintLen(encodedTsLen) + encodedTsLen;
 
         msgLen = _varintLen(encodedLen) + encodedLen;
         if (msgLen > MAX_MSG_LEN) revert MsgTooLong(msgLen);
@@ -263,17 +265,15 @@ contract WrapperVerifier is IVerifier {
         uint256 offset = _writeVarint(dst, dstOffset, encodedLen);
         offset = _copyBytes(dst, offset, commonVotePrefix);
 
-        if (encodedTsLen > 0) {
-            _storeByte(dst, offset, 0x2A);
-            offset = _writeVarint(dst, offset + 1, encodedTsLen);
-            if (tsSec > 0) {
-                _storeByte(dst, offset, 0x08);
-                offset = _writeVarint(dst, offset + 1, uint256(tsSec));
-            }
-            if (tsNanos > 0) {
-                _storeByte(dst, offset, 0x10);
-                offset = _writeVarint(dst, offset + 1, uint256(tsNanos));
-            }
+        _storeByte(dst, offset, 0x2A);
+        offset = _writeVarint(dst, offset + 1, encodedTsLen);
+        if (tsSec > 0) {
+            _storeByte(dst, offset, 0x08);
+            offset = _writeVarint(dst, offset + 1, uint256(tsSec));
+        }
+        if (tsNanos > 0) {
+            _storeByte(dst, offset, 0x10);
+            offset = _writeVarint(dst, offset + 1, uint256(tsNanos));
         }
 
         _copyBytes(dst, offset, chainSuffix);

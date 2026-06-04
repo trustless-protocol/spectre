@@ -179,9 +179,8 @@ contract WrapperVerifierHashEquivalenceTest is Test {
         if (encodedBlockId.length > 0) {
             encodedLen += 1 + _varintLen(encodedBlockId.length) + encodedBlockId.length;
         }
-        if (encodedTs.length > 0) {
-            encodedLen += 1 + _varintLen(encodedTs.length) + encodedTs.length;
-        }
+        // Timestamp is always present in CanonicalVote (matches Go/CometBFT).
+        encodedLen += 1 + _varintLen(encodedTs.length) + encodedTs.length;
         if (shared.chainID.length > 0) {
             encodedLen += 1 + _varintLen(shared.chainID.length) + shared.chainID.length;
         }
@@ -205,11 +204,9 @@ contract WrapperVerifierHashEquivalenceTest is Test {
             offset = _writeVarint(out, offset + 1, encodedBlockId.length);
             offset = _copyBytes(out, offset, encodedBlockId);
         }
-        if (encodedTs.length > 0) {
-            _storeByte(out, offset, 0x2A);
-            offset = _writeVarint(out, offset + 1, encodedTs.length);
-            offset = _copyBytes(out, offset, encodedTs);
-        }
+        _storeByte(out, offset, 0x2A);
+        offset = _writeVarint(out, offset + 1, encodedTs.length);
+        offset = _copyBytes(out, offset, encodedTs);
         if (shared.chainID.length > 0) {
             _storeByte(out, offset, 0x32);
             offset = _writeVarint(out, offset + 1, shared.chainID.length);

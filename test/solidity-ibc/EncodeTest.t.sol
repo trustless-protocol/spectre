@@ -228,6 +228,24 @@ contract EncodeTest is Test {
         );
     }
 
+    /// @notice Reproduces issue.md: cdcEncodeBytes32(bytes32(0)) wrongly returns empty bytes.
+    /// CometBFT's cdcEncode(HexBytes) on a 32-byte all-zero hash emits BytesValue{Value: zeros}
+    /// = 0x0a 0x20 followed by 32 zero bytes (34 bytes total). The current implementation
+    /// short-circuits on `value == bytes32(0)` and returns 0 bytes, causing a header-hash
+    /// mismatch whenever any unconditionally-hashed field (e.g. appHash) is all zero.
+    function test_cdcEncodeBytes32_allZero_matchesCometBFT() public pure {
+        bytes memory expected = hex"0a200000000000000000000000000000000000000000000000000000000000000000";
+        assertEq(Encode.cdcEncodeBytes32(bytes32(0)), expected);
+    }
+
+    /// @notice Sanity cross-check: cdcEncodeBytes on a 32-byte zero buffer (which CometBFT
+    /// treats identically to cdcEncodeBytes32(bytes32(0))) emits the full BytesValue,
+    /// proving the bug is isolated to the bytes32 overload.
+    function test_cdcEncodeBytes32_allZero_matchesBytesOverload() public pure {
+        bytes memory zeros32 = new bytes(32);
+        assertEq(Encode.cdcEncodeBytes32(bytes32(0)), Encode.cdcEncodeBytes(zeros32));
+    }
+
     function test_encodeTimestamp() public pure {
         // Go: gogotypes.StdTimeMarshal(time.Unix(1700000000, 0))
         // Encode.encodeTimestamp now takes nanoseconds and emits both
@@ -381,6 +399,147 @@ contract EncodeTest is Test {
                 Header.bytes32LeafHash(header.validatorsHash)
             ),
             Header.hashHeader(header)
+        );
+    }
+
+    // ─── voteSignBytes golden-vector tests ───
+    // Golden vectors derived from Go/CometBFT types.Commit.VoteSignBytes().
+    // These MUST be kept in sync with Go — a divergence indicates a serious
+    // encoding bug that would break mainnet relaying.
+
+    function _makeBlockCommit(
+        uint64 height,
+        uint32 round,
+        IICS07TendermintMsgs.CommitSigFlag flag,
+        uint128 timestamp
+    ) internal pure returns (IICS07TendermintMsgs.BlockCommit memory) {
+        IICS07TendermintMsgs.CommitSig[] memory sigs = new IICS07TendermintMsgs.CommitSig[](1);
+        sigs[0] = IICS07TendermintMsgs.CommitSig({
+            flag: flag,
+            data: IICS07TendermintMsgs.CommitSigData({
+                validatorAddress: hex"",
+                timestamp: timestamp,
+                hasSignature: false,
+                signature: hex""
+            })
+        });
+
+        return IICS07TendermintMsgs.BlockCommit({
+            height: height,
+            round: round,
+            blockId: IICS07TendermintMsgs.BlockId({
+                hashData: _hash2(),
+                partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+            }),
+            commitSigs: sigs
+        });
+    }
+
+    function test_voteSignBytes_full() public pure {
+        IICS07TendermintMsgs.BlockCommit memory commit = _makeBlockCommit(
+            100,
+            0,
+            IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+            uint128(1704067200) * 1e9
+        );
+        assertEq(
+            Encode.voteSignBytes(commit, "test-chain", 0),
+            hex"69080211640000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
+        );
+    }
+
+    function test_voteSignBytes_zeroHeightZeroRound() public pure {
+        // When height and round are 0 the fields are omitted entirely.
+        IICS07TendermintMsgs.BlockCommit memory commit = _makeBlockCommit(
+            0,
+            0,
+            IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+            uint128(1704067200) * 1e9
+        );
+        assertEq(
+            Encode.voteSignBytes(commit, "test-chain", 0),
+            hex"60080222480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
+        );
+    }
+
+    function test_voteSignBytes_zeroHeightNonZeroRound() public pure {
+        IICS07TendermintMsgs.BlockCommit memory commit = _makeBlockCommit(
+            0,
+            5,
+            IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+            uint128(1704067200) * 1e9
+        );
+        assertEq(
+            Encode.voteSignBytes(commit, "test-chain", 0),
+            hex"69080219050000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
+        );
+    }
+
+    function test_voteSignBytes_nonZeroHeightZeroRound() public pure {
+        IICS07TendermintMsgs.BlockCommit memory commit = _makeBlockCommit(
+            10,
+            0,
+            IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+            uint128(1704067200) * 1e9
+        );
+        assertEq(
+            Encode.voteSignBytes(commit, "test-chain", 0),
+            hex"690802110a0000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
+        );
+    }
+
+    function test_voteSignBytes_absentFlag() public pure {
+        // Absent flag => block_id is omitted.
+        IICS07TendermintMsgs.BlockCommit memory commit = _makeBlockCommit(
+            100,
+            0,
+            IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT,
+            uint128(1704067200) * 1e9
+        );
+        assertEq(
+            Encode.voteSignBytes(commit, "test-chain", 0),
+            hex"1f08021164000000000000002a06088081c8ac06320a746573742d636861696e"
+        );
+    }
+
+    function test_voteSignBytes_noChainId() public pure {
+        IICS07TendermintMsgs.BlockCommit memory commit = _makeBlockCommit(
+            100,
+            0,
+            IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+            uint128(1704067200) * 1e9
+        );
+        assertEq(
+            Encode.voteSignBytes(commit, "", 0),
+            hex"5d080211640000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06"
+        );
+    }
+
+    function test_voteSignBytes_zeroTimestamp() public pure {
+        // Zero timestamp is encoded as an empty length-delimited message (2a00),
+        // matching Go/CometBFT CanonicalVote behavior.
+        IICS07TendermintMsgs.BlockCommit memory commit = _makeBlockCommit(
+            100,
+            0,
+            IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+            0
+        );
+        assertEq(
+            Encode.voteSignBytes(commit, "test-chain", 0),
+            hex"63080211640000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a00320a746573742d636861696e"
+        );
+    }
+
+    function test_voteSignBytes_nonZeroHeightAndRound() public pure {
+        IICS07TendermintMsgs.BlockCommit memory commit = _makeBlockCommit(
+            128,
+            127,
+            IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+            uint128(1704067200) * 1e9
+        );
+        assertEq(
+            Encode.voteSignBytes(commit, "test-chain", 0),
+            hex"720802118000000000000000197f0000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
         );
     }
 

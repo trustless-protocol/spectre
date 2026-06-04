@@ -43,6 +43,8 @@ contract DummyLightClient is ILightClient, ILightClientMsgs {
 
     function misbehaviour(bytes calldata misbehaviourMsg) external { }
 
+    function unfreeze() external { }
+
     function upgradeClient(bytes calldata upgradeMsg) external { }
 
     // custom functions to return values we want

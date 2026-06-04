@@ -158,10 +158,16 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
         emit ICS02ClientMigrated(clientId, counterpartyInfo, client);
     }
 
-    /// @inheritdoc IICS02Client
-    function submitMisbehaviour(string calldata clientId, bytes calldata misbehaviourMsg) external {
+    /// @inheritdoc IICS02ClientAccessControlled
+    function submitMisbehaviour(string calldata clientId, bytes calldata misbehaviourMsg) external restricted {
         getClient(clientId).misbehaviour(misbehaviourMsg);
         emit ICS02MisbehaviourSubmitted(clientId);
+    }
+
+    /// @inheritdoc IICS02ClientAccessControlled
+    function unfreezeClient(string calldata clientId) external restricted {
+        getClient(clientId).unfreeze();
+        emit ICS02ClientUnfrozen(clientId);
     }
 
     /// @notice Returns the storage of the ICS02Client contract
