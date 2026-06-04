@@ -156,7 +156,6 @@ library Encode {
     /// @notice Wraps a bytes32 hash in gogoproto BytesValue{Value: hash} for header hashing.
     /// Matches CometBFT's cdcEncode(HexBytes) used in Header.Hash().
     function cdcEncodeBytes32(bytes32 value) public pure returns (bytes memory) {
-        if (value == bytes32(0)) return new bytes(0);
         bytes memory out = new bytes(34);
         uint256 offset = _storeByte(out, 0, 0x0A);
         offset = _storeByte(out, offset, 0x20);
