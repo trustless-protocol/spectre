@@ -189,24 +189,3 @@ impl FromStr for IICS07TendermintMsgs::SupportedZkAlgorithm {
         }
     }
 }
-
-#[cfg(feature = "rpc")]
-#[allow(clippy::fallible_impl_from)]
-impl From<groth16_ics07::groth16_ics07_tendermint::clientStateReturn>
-    for IICS07TendermintMsgs::ClientState
-{
-    fn from(client_state: groth16_ics07::groth16_ics07_tendermint::clientStateReturn) -> Self {
-        Self {
-            chainId: client_state.chainId,
-            trustLevel: client_state.trustLevel.into(),
-            trustingPeriod: client_state.trustingPeriod,
-            unbondingPeriod: client_state.unbondingPeriod,
-            latestHeight: client_state.latestHeight.into(),
-            isFrozen: client_state.isFrozen,
-            zkAlgorithm: IICS07TendermintMsgs::SupportedZkAlgorithm::try_from(
-                client_state.zkAlgorithm,
-            )
-            .unwrap(),
-        }
-    }
-}

@@ -45,6 +45,11 @@ public input. This keeps the on-chain verifier well under EIP-170. Padding
 slots carry `active=false`; both the in-circuit hash and the on-chain quorum
 check skip them.
 
+The current Tendermint light-client cache supports at most **180 active
+validators**. Any update whose current validator set has more than 180 active
+validators reverts with `ValidatorCountExceedsLimit(count, 180)`, so chains
+above that bound need a larger cache layout before they can use this client.
+
 ## Requirements
 
 - [Go](https://golang.org/) >= 1.21

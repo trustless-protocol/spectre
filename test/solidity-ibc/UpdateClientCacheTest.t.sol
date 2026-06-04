@@ -76,6 +76,27 @@ contract UpdateClientCacheTest is Test {
         ics07.updateClient(abi.encode(msg_));
     }
 
+    function test_updateClient_reverts_whenValidatorSetExceedsLimit() public {
+        IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(181, 0);
+        bytes32 hashA = Header.hashValSet(valA);
+
+        IICS07TendermintMsgs.Header memory header =
+            _buildHeader(TRUSTED_HEIGHT, HEIGHT_1001, valA, valA, hashA, TS_1001_NS, 121);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS =
+            _consensusState(TRUSTED_TS_NS, hashA, bytes32(uint256(0xAAA1)));
+
+        Groth16ICS07Tendermint ics07 = _deployLightClient(trustedCS);
+
+        IUpdateClientMsgs.MsgUpdateClient memory msg_ = _buildMsg(_clientState(), trustedCS, header, 128, 121);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IGroth16ICS07TendermintErrors.ValidatorCountExceedsLimit.selector, uint256(181), uint256(180)
+            )
+        );
+        ics07.updateClient(abi.encode(msg_));
+    }
+
     function test_updateClient_populatesCache_andUsesItOnEmptyAdjacentNoOp() public {
         BucketConfig memory cfg = _cfg(16);
         IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);

@@ -4,13 +4,6 @@ pragma solidity ^0.8.28;
 /// @title IGroth16ICS07Tendermint
 /// @notice IGroth16ICS07Tendermint is the interface for the ICS07 Tendermint light client
 interface IGroth16ICS07Tendermint {
-    /// @notice The role identifier for the proof submitter role
-    /// @dev The proof submitter role is used to whitelist addresses that can submit proofs
-    /// @dev If `address(0)` has this role, then anyone can submit proofs
-    /// @dev If this client is hooked up to ICS26Router, the router must be given this role
-    /// @return The role identifier
-    function PROOF_SUBMITTER_ROLE() external view returns (bytes32);
-
     /// @notice The role identifier for the misbehaviour submitter role
     /// @dev The misbehaviour submitter role is used to whitelist addresses that can submit misbehaviour reports
     /// @dev If `address(0)` has this role, then anyone can submit misbehaviour reports

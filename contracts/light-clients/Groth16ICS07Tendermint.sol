@@ -46,9 +46,8 @@ contract Groth16ICS07Tendermint is
     IMisbehaviour private immutable MISBEHAVIOUR;
     IUpdateClient private immutable UPDATE_CLIENT;
 
-    /// @notice The ICS07Tendermint client state
-    // natlint-disable-next-line MissingInheritdoc
-    IICS07TendermintMsgs.ClientState public clientState;
+    /// @notice The ICS07Tendermint client state, exposed through `getClientState()`.
+    IICS07TendermintMsgs.ClientState private clientState;
     /// @notice The mapping from height to consensus state keccak256 hashes.
     /// @dev Revision number need not be keyed as it is not allowed to change.
     mapping(uint64 height => bytes32 hash) private _consensusStateHashes;
@@ -64,6 +63,9 @@ contract Groth16ICS07Tendermint is
     mapping(uint16 index => uint64 votingPower) private _validatorVotingPowerOverrides;
 
     uint32 private constant VALIDATOR_CACHE_MAGIC = 0x56414c34; // "VAL4"
+    /// @dev Hard active-validator limit for this client. The delta cache stores per-index
+    ///      override bitmaps in uint256 words, and the packed SSTORE2 cache stays below
+    ///      EIP-170 with margin at this bound.
     uint16 private constant MAX_VALIDATOR_COUNT = 180;
     uint16 private constant MAX_DELTA_LEAF_COUNT = 16;
     uint256 private constant VALIDATOR_CACHE_HEADER_LEN = 48;
@@ -90,8 +92,7 @@ contract Groth16ICS07Tendermint is
 
     uint16 private constant ALLOWED_CLOCK_DRIFT = 30 minutes;
 
-    /// @inheritdoc IGroth16ICS07Tendermint
-    bytes32 public constant PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
+    bytes32 private constant PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
 
     /// @inheritdoc IGroth16ICS07Tendermint
     bytes32 public immutable MISBEHAVIOUR_SUBMITTER_ROLE = keccak256("MISBEHAVIOUR_SUBMITTER_ROLE");
@@ -324,8 +325,12 @@ contract Groth16ICS07Tendermint is
         private
         pure
     {
-        if (validatorSet.validators.length == 0) {
+        uint256 validatorCount = validatorSet.validators.length;
+        if (validatorCount == 0) {
             revert ValidatorSetCacheMiss(expectedHash);
+        }
+        if (validatorCount > MAX_VALIDATOR_COUNT) {
+            revert ValidatorCountExceedsLimit(validatorCount, MAX_VALIDATOR_COUNT);
         }
         bytes32 actualHash = Header.hashValSet(validatorSet);
         require(actualHash == expectedHash, MismatchedValidatorHashes(expectedHash, actualHash));
@@ -445,8 +450,11 @@ contract Groth16ICS07Tendermint is
     {
         IICS07TendermintMsgs.ValidatorInfo[] memory vals = validatorSet.validators;
         uint256 validatorCount = vals.length;
-        if (validatorCount == 0 || validatorCount > MAX_VALIDATOR_COUNT) {
+        if (validatorCount == 0) {
             revert BatchLengthMismatch();
+        }
+        if (validatorCount > MAX_VALIDATOR_COUNT) {
+            revert ValidatorCountExceedsLimit(validatorCount, MAX_VALIDATOR_COUNT);
         }
 
         bytes32[] memory leafHashes = new bytes32[](validatorCount);

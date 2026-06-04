@@ -162,6 +162,11 @@ interface IGroth16ICS07TendermintErrors {
     ///         different from the declared bucket size.
     error BatchLengthMismatch();
 
+    /// @notice Returned when the active validator set exceeds this light client's hard cache limit.
+    /// @param validatorCount active validators in the supplied set.
+    /// @param maxValidatorCount maximum active validators supported by this client.
+    error ValidatorCountExceedsLimit(uint256 validatorCount, uint256 maxValidatorCount);
+
     /// @notice Returned when a signer index in the update-client message exceeds the
     ///         proposed validator set size.
     /// @param index the out-of-range signer index.
