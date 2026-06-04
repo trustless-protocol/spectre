@@ -37,20 +37,57 @@ GRPC_WEB_BASE="${GRPC_WEB_BASE:-35000}"
 PPROF_BASE="${PPROF_BASE:-36000}"
 PROM_BASE="${PROM_BASE:-37000}"
 
-# Voting-power distribution mimicking Cosmos Hub mainnet: top ~20 validators
-# hold ~2/3 of total voting power. Tier boundaries + per-tier stakes are env-
-# configurable so you can reshape the curve (e.g. for stress tests).
+# Voting-power distribution. For the common 16-node local testnet we use an
+# explicit weight curve so small delegation changes can alter one validator's
+# voting power without reordering CometBFT's power-sorted validator set.
+#
+# 16-node default weights (basis points): 10%, 8%, 7.5%, 7.3%, 7.1%,
+# 7%, 6.9%, 6.8%, 6.5%, 6%, 5.5%, 5.2%, 5%, 4.3%, 4%, 3%.
+# These weights sum to 100.1%, so val_stake_amount normalizes by the sum.
+# CUSTOM_16_TOTAL_STAKE defaults to 10,000T to make the smallest 0.1% gap
+# roughly 10T, larger than typical local test delegations.
+CUSTOM_16_TOTAL_STAKE="${CUSTOM_16_TOTAL_STAKE:-10000000000000000}"
+CUSTOM_16_WEIGHTS_BPS=(
+    1000
+    800
+    750
+    730
+    710
+    700
+    690
+    680
+    650
+    600
+    550
+    520
+    500
+    430
+    400
+    300
+)
+
+# Fallback distribution for larger validator counts mimicking Cosmos Hub:
+# top ~20 validators hold ~2/3 of total voting power. Tier boundaries +
+# per-tier stakes are env-configurable so you can reshape the curve.
 #
 # Default tiers (N=180):
 #   ranks [0, 20)   -> 33.5T stake each  -> 20 * 33.5T  = 670T  (~67%)
 #   ranks [20, 60)  -> 6T    stake each  -> 40 * 6T     = 240T  (~24%)
 #   ranks [60,180)  -> 0.75T stake each  -> 120 * 0.75T = 90T   (~9%)
 #                                                 total = 1000T
+#
+# A per-validator staircase offset is added on top of each fallback tier base:
+#   stake(i) = tierStake(i) + tierLocalIndex(i) * <tier>_TIER_STAKE_STEP
+# This keeps voting powers distinct from genesis while preserving the broad
+# top/mid/tail distribution for large validator sets.
 TOP_TIER_END="${TOP_TIER_END:-20}"
 MID_TIER_END="${MID_TIER_END:-60}"
 TOP_TIER_STAKE="${TOP_TIER_STAKE:-33500000000000}"
 MID_TIER_STAKE="${MID_TIER_STAKE:-6000000000000}"
 TAIL_TIER_STAKE="${TAIL_TIER_STAKE:-750000000000}"
+TOP_TIER_STAKE_STEP="${TOP_TIER_STAKE_STEP:-2000000000000}"
+MID_TIER_STAKE_STEP="${MID_TIER_STAKE_STEP:-100000000000}"
+TAIL_TIER_STAKE_STEP="${TAIL_TIER_STAKE_STEP:-1000000000}"
 
 # Buffer added to each validator's genesis balance on top of its self-stake
 # so the account can still pay fees after delegating into its own validator.
@@ -58,13 +95,34 @@ GENESIS_BAL_BUFFER="${GENESIS_BAL_BUFFER:-1000000000}"
 
 val_stake_amount() {
     local i="$1"
-    if [ "$i" -lt "$TOP_TIER_END" ]; then
-        printf '%s' "$TOP_TIER_STAKE"
-    elif [ "$i" -lt "$MID_TIER_END" ]; then
-        printf '%s' "$MID_TIER_STAKE"
-    else
-        printf '%s' "$TAIL_TIER_STAKE"
+    if [ "$NUM_NODES" -eq 16 ]; then
+        local total_weight=0
+        local weight
+        for weight in "${CUSTOM_16_WEIGHTS_BPS[@]}"; do
+            total_weight=$((total_weight + weight))
+        done
+        local stake_unit=$((CUSTOM_16_TOTAL_STAKE / total_weight))
+        printf '%s' "$((stake_unit * CUSTOM_16_WEIGHTS_BPS[$i]))"
+        return
     fi
+
+    local tier_stake
+    local tier_step
+    local tier_local_index
+    if [ "$i" -lt "$TOP_TIER_END" ]; then
+        tier_stake="$TOP_TIER_STAKE"
+        tier_step="$TOP_TIER_STAKE_STEP"
+        tier_local_index="$i"
+    elif [ "$i" -lt "$MID_TIER_END" ]; then
+        tier_stake="$MID_TIER_STAKE"
+        tier_step="$MID_TIER_STAKE_STEP"
+        tier_local_index="$((i - TOP_TIER_END))"
+    else
+        tier_stake="$TAIL_TIER_STAKE"
+        tier_step="$TAIL_TIER_STAKE_STEP"
+        tier_local_index="$((i - MID_TIER_END))"
+    fi
+    printf '%s' "$((tier_stake + tier_local_index * tier_step))"
 }
 
 val_stake() {
@@ -173,7 +231,7 @@ for ((i = 1; i < NUM_NODES; i++)); do
     cp "$PRIMARY_HOME/config/genesis.json" "${HOMES[$i]}/config/genesis.json"
 done
 
-echo "Generating gentx for each validator (tiered stakes)..."
+echo "Generating gentx for each validator (weighted stakes)..."
 for i in "${!HOMES[@]}"; do
     gaiad genesis gentx "${VAL_KEYS[$i]}" "$(val_stake "$i")" \
         --chain-id "$CHAIN_ID" \
@@ -181,16 +239,40 @@ for i in "${!HOMES[@]}"; do
         --home "${HOMES[$i]}" >/dev/null 2>&1
 done
 
-# Sanity-check that 2/3 voting power is concentrated as intended.
-top_total=$((TOP_TIER_END * TOP_TIER_STAKE))
-mid_total=$(((MID_TIER_END - TOP_TIER_END) * MID_TIER_STAKE))
-tail_total=$(((NUM_NODES - MID_TIER_END) * TAIL_TIER_STAKE))
-grand_total=$((top_total + mid_total + tail_total))
-if [ "$grand_total" -gt 0 ]; then
-    top_pct=$((top_total * 100 / grand_total))
-    mid_pct=$((mid_total * 100 / grand_total))
-    tail_pct=$((tail_total * 100 / grand_total))
-    echo "Stake distribution: top($TOP_TIER_END)=${top_pct}% mid($((MID_TIER_END - TOP_TIER_END)))=${mid_pct}% tail($((NUM_NODES - MID_TIER_END)))=${tail_pct}%"
+# Sanity-check the voting-power distribution.
+if [ "$NUM_NODES" -eq 16 ]; then
+    total_weight=0
+    for weight in "${CUSTOM_16_WEIGHTS_BPS[@]}"; do
+        total_weight=$((total_weight + weight))
+    done
+    echo "Stake distribution: custom16 totalStake=$CUSTOM_16_TOTAL_STAKE weightSum=${total_weight}bps"
+else
+    top_total=0
+    mid_total=0
+    tail_total=0
+    top_count=0
+    mid_count=0
+    tail_count=0
+    for ((i = 0; i < NUM_NODES; i++)); do
+        stake_amount="$(val_stake_amount "$i")"
+        if [ "$i" -lt "$TOP_TIER_END" ]; then
+            top_total=$((top_total + stake_amount))
+            top_count=$((top_count + 1))
+        elif [ "$i" -lt "$MID_TIER_END" ]; then
+            mid_total=$((mid_total + stake_amount))
+            mid_count=$((mid_count + 1))
+        else
+            tail_total=$((tail_total + stake_amount))
+            tail_count=$((tail_count + 1))
+        fi
+    done
+    grand_total=$((top_total + mid_total + tail_total))
+    if [ "$grand_total" -gt 0 ]; then
+        top_pct=$((top_total * 100 / grand_total))
+        mid_pct=$((mid_total * 100 / grand_total))
+        tail_pct=$((tail_total * 100 / grand_total))
+        echo "Stake distribution: top($top_count)=${top_pct}% mid($mid_count)=${mid_pct}% tail($tail_count)=${tail_pct}%"
+    fi
 fi
 
 mkdir -p "$PRIMARY_HOME/config/gentx"
@@ -285,7 +367,9 @@ Started $NUM_NODES Gaia validators.
   primary p2p    : tcp://127.0.0.1:${P2P_PORTS[0]}
   last  rpc      : tcp://127.0.0.1:${RPC_PORTS[$((NUM_NODES - 1))]}
   peers per node : $PEERS_PER_NODE
+  custom16 stake : total=$CUSTOM_16_TOTAL_STAKE weights=${CUSTOM_16_WEIGHTS_BPS[*]}
   stake tiers    : top[0,$TOP_TIER_END)=$TOP_TIER_STAKE mid[$TOP_TIER_END,$MID_TIER_END)=$MID_TIER_STAKE tail[$MID_TIER_END,$NUM_NODES)=$TAIL_TIER_STAKE
+  stake steps    : top=+$TOP_TIER_STAKE_STEP mid=+$MID_TIER_STAKE_STEP tail=+$TAIL_TIER_STAKE_STEP per tier index
 Logs: \$GAIA_BASE/val<i>/gaiad.log
 EOF
 

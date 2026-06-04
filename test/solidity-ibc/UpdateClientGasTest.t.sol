@@ -42,35 +42,35 @@ contract UpdateClientGasTest is Test {
     UpdateClient updateClientImpl;
     AlwaysTrueVerifier stubBucket;
 
-    address constant STUB_MEMBERSHIP   = address(0xBABE);
+    address constant STUB_MEMBERSHIP = address(0xBABE);
     address constant STUB_MISBEHAVIOUR = address(0xBEEF);
 
     // chainId revisionNumber must match latestHeight.revisionNumber.
     // "cosmoshub-0" → revisionNumber=0.
-    string  constant CHAIN_ID         = "cosmoshub-0";
-    uint64  constant TRUSTED_HEIGHT   = 1_000;
-    uint64  constant NEW_HEIGHT       = 1_001;
-    uint64  constant NEXT_HEIGHT      = 1_002;
-    uint128 constant TRUSTED_TS_NS    = 1_700_000_000 * 1e9;
-    uint128 constant NEW_TS_NS        = 1_700_000_010 * 1e9;
-    uint128 constant NEXT_TS_NS       = 1_700_000_020 * 1e9;
-    uint32  constant TRUSTING_PERIOD  = 14 days;
-    uint32  constant UNBONDING_PERIOD = 21 days;
+    string constant CHAIN_ID = "cosmoshub-0";
+    uint64 constant TRUSTED_HEIGHT = 1000;
+    uint64 constant NEW_HEIGHT = 1001;
+    uint64 constant NEXT_HEIGHT = 1002;
+    uint128 constant TRUSTED_TS_NS = 1_700_000_000 * 1e9;
+    uint128 constant NEW_TS_NS = 1_700_000_010 * 1e9;
+    uint128 constant NEXT_TS_NS = 1_700_000_020 * 1e9;
+    uint32 constant TRUSTING_PERIOD = 14 days;
+    uint32 constant UNBONDING_PERIOD = 21 days;
 
     struct BucketConfig {
-        uint16 bucket;       // padded slot count (== per-slot array lengths)
-        uint16 valCount;     // validators in proposedHeader.validatorSet
-        uint16 activeCount;  // real signers; padding = bucket - activeCount
+        uint16 bucket; // padded slot count (== per-slot array lengths)
+        uint16 valCount; // validators in proposedHeader.validatorSet
+        uint16 activeCount; // real signers; padding = bucket - activeCount
     }
 
     /// Bench-matched: active just clears 2/3 quorum of valCount.
     function _cfg(uint16 bucket) internal pure returns (BucketConfig memory) {
-        if (bucket == 4)   return BucketConfig(4,   4,  3);
-        if (bucket == 8)   return BucketConfig(8,  10,  7);
-        if (bucket == 16)  return BucketConfig(16, 20, 14);
-        if (bucket == 32)  return BucketConfig(32, 30, 21);
-        if (bucket == 64)  return BucketConfig(64, 60, 42);
-        if (bucket == 128) return BucketConfig(128,120, 84);
+        if (bucket == 4) return BucketConfig(4, 4, 3);
+        if (bucket == 8) return BucketConfig(8, 10, 7);
+        if (bucket == 16) return BucketConfig(16, 20, 14);
+        if (bucket == 32) return BucketConfig(32, 30, 21);
+        if (bucket == 64) return BucketConfig(64, 60, 42);
+        if (bucket == 128) return BucketConfig(128, 120, 84);
         revert("unknown bucket");
     }
 
@@ -92,8 +92,8 @@ contract UpdateClientGasTest is Test {
     function _clientState() internal pure returns (IICS07TendermintMsgs.ClientState memory) {
         return IICS07TendermintMsgs.ClientState({
             chainId: CHAIN_ID,
-            trustLevel: IICS07TendermintMsgs.TrustThreshold({numerator: 1, denominator: 3}),
-            latestHeight: IICS02ClientMsgs.Height({revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT}),
+            trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
+            latestHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
             isFrozen: false,
@@ -114,10 +114,7 @@ contract UpdateClientGasTest is Test {
             total += 100;
         }
         vs = IICS07TendermintMsgs.ValidatorSet({
-            validators: vals,
-            hasProposer: false,
-            proposer: vals[0],
-            totalVotingPower: total
+            validators: vals, hasProposer: false, proposer: vals[0], totalVotingPower: total
         });
     }
 
@@ -126,10 +123,7 @@ contract UpdateClientGasTest is Test {
             validators: new IICS07TendermintMsgs.ValidatorInfo[](0),
             hasProposer: false,
             proposer: IICS07TendermintMsgs.ValidatorInfo({
-                valAddress: "",
-                pubKey: bytes32(0),
-                votingPower: 0,
-                proposerPriority: 0
+                valAddress: "", pubKey: bytes32(0), votingPower: 0, proposerPriority: 0
             }),
             totalVotingPower: 0
         });
@@ -138,8 +132,13 @@ contract UpdateClientGasTest is Test {
     /// Build commit signatures: first `activeCount` are COMMIT (with matching
     /// validator address), rest are ABSENT. Length == val_count per Tendermint
     /// invariant (`Predicates.validateCommit` enforces commit.length == vals.length).
-    function _buildCommitSigs(IICS07TendermintMsgs.ValidatorSet memory vs, uint16 activeCount)
-        internal pure returns (IICS07TendermintMsgs.CommitSig[] memory sigs)
+    function _buildCommitSigs(
+        IICS07TendermintMsgs.ValidatorSet memory vs,
+        uint16 activeCount
+    )
+        internal
+        pure
+        returns (IICS07TendermintMsgs.CommitSig[] memory sigs)
     {
         sigs = new IICS07TendermintMsgs.CommitSig[](vs.validators.length);
         for (uint256 i = 0; i < vs.validators.length; i++) {
@@ -157,10 +156,7 @@ contract UpdateClientGasTest is Test {
                 sigs[i] = IICS07TendermintMsgs.CommitSig({
                     flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT,
                     data: IICS07TendermintMsgs.CommitSigData({
-                        validatorAddress: "",
-                        timestamp: 0,
-                        hasSignature: false,
-                        signature: ""
+                        validatorAddress: "", timestamp: 0, hasSignature: false, signature: ""
                     })
                 });
             }
@@ -196,15 +192,15 @@ contract UpdateClientGasTest is Test {
             round: 0,
             blockId: IICS07TendermintMsgs.BlockId({
                 hashData: headerHash,
-                partSetHeader: IICS07TendermintMsgs.PartSetHeader({total: 1, hashData: bytes32(uint256(0x9A57))})
+                partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
             }),
             commitSigs: _buildCommitSigs(currentValSet, activeCount)
         });
 
         header = IICS07TendermintMsgs.Header({
-            signedHeader: IICS07TendermintMsgs.SignedHeader({header: bh, commit: bc}),
+            signedHeader: IICS07TendermintMsgs.SignedHeader({ header: bh, commit: bc }),
             validatorSet: currentValSet,
-            trustedHeight: IICS02ClientMsgs.Height({revisionNumber: 0, revisionHeight: trustedHeight}),
+            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: trustedHeight }),
             trustedNextValidatorSet: trustedNextValSet
         });
     }
@@ -215,10 +211,7 @@ contract UpdateClientGasTest is Test {
     function _buildSelfConsistent(BucketConfig memory cfg)
         internal
         pure
-        returns (
-            IICS07TendermintMsgs.Header memory header,
-            IICS07TendermintMsgs.ConsensusState memory trustedCS
-        )
+        returns (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS)
     {
         IICS07TendermintMsgs.ValidatorSet memory vs = _buildValSet(cfg.valCount);
         bytes32 valSetHash = Header.hashValSet(vs);
@@ -237,24 +230,22 @@ contract UpdateClientGasTest is Test {
             round: 0,
             blockId: IICS07TendermintMsgs.BlockId({
                 hashData: headerHash,
-                partSetHeader: IICS07TendermintMsgs.PartSetHeader({total: 1, hashData: bytes32(uint256(0x9A57))})
+                partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
             }),
             commitSigs: _buildCommitSigs(vs, cfg.activeCount)
         });
 
         header = IICS07TendermintMsgs.Header({
-            signedHeader: IICS07TendermintMsgs.SignedHeader({header: bh, commit: bc}),
+            signedHeader: IICS07TendermintMsgs.SignedHeader({ header: bh, commit: bc }),
             validatorSet: vs,
-            trustedHeight: IICS02ClientMsgs.Height({revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT}),
+            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
             trustedNextValidatorSet: vs
         });
 
         // trustedConsensusState.nextValidatorsHash must equal hashValSet(trustedNextValSet)
         // (we reuse the same set, so the hash is identical).
         trustedCS = IICS07TendermintMsgs.ConsensusState({
-            timestamp: TRUSTED_TS_NS,
-            root: bytes32(uint256(0xAAA)),
-            nextValidatorsHash: valSetHash
+            timestamp: TRUSTED_TS_NS, root: bytes32(uint256(0xAAA)), nextValidatorsHash: valSetHash
         });
     }
 
@@ -287,7 +278,7 @@ contract UpdateClientGasTest is Test {
     )
         internal
         pure
-        returns (IUpdateClientMsgs.MsgUpdateClient memory)
+        returns (IUpdateClientMsgs.MsgUpdateClient memory msg_)
     {
         // Build per-slot bucket arrays (active = first cfg.activeCount, rest = padding).
         uint32[] memory idx = new uint32[](bucket);
@@ -305,21 +296,19 @@ contract UpdateClientGasTest is Test {
             tsN[i] = uint32(i * 1_000_000);
         }
 
-        return IUpdateClientMsgs.MsgUpdateClient({
-            clientState: cs,
-            trustedConsensusState: trustedCS,
-            proposedHeader: header,
-            time: header.signedHeader.header.time,
-            proof: [uint256(0), 0, 0, 0, 0, 0, 0, 0],
-            commitments: [uint256(0), 0],
-            commitmentPok: [uint256(0), 0],
-            bucket: bucket,
-            signerIndices: idx,
-            signerPubkeys: pks,
-            timestampSeconds: tsS,
-            timestampNanos: tsN,
-            active: act
-        });
+        msg_.clientState = cs;
+        msg_.trustedConsensusState = trustedCS;
+        msg_.proposedHeader = header;
+        msg_.time = header.signedHeader.header.time;
+        msg_.proof = [uint256(0), 0, 0, 0, 0, 0, 0, 0];
+        msg_.commitments = [uint256(0), 0];
+        msg_.commitmentPok = [uint256(0), 0];
+        msg_.bucket = bucket;
+        msg_.signerIndices = idx;
+        msg_.signerPubkeys = pks;
+        msg_.timestampSeconds = tsS;
+        msg_.timestampNanos = tsN;
+        msg_.active = act;
     }
 
     function _measure(uint16 bucket) internal {
@@ -349,7 +338,9 @@ contract UpdateClientGasTest is Test {
         Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS);
 
         IUpdateClientMsgs.MsgUpdateClient memory fullMsg = _buildMsg(cs, trustedCS, header, bucket, cfg.activeCount);
-        assertEq(uint8(ics07.updateClient(abi.encode(fullMsg))), uint8(ILightClientMsgs.UpdateResult.Update), "warmup Update");
+        assertEq(
+            uint8(ics07.updateClient(abi.encode(fullMsg))), uint8(ILightClientMsgs.UpdateResult.Update), "warmup Update"
+        );
 
         IUpdateClientMsgs.MsgUpdateClient memory cacheMsg = _buildMsg(cs, trustedCS, header, bucket, cfg.activeCount);
         cacheMsg.proposedHeader.validatorSet = _emptyValSet();
@@ -369,33 +360,26 @@ contract UpdateClientGasTest is Test {
         bytes32 valSetHash = Header.hashValSet(valSet);
 
         IICS07TendermintMsgs.ConsensusState memory trustedCS0 = IICS07TendermintMsgs.ConsensusState({
-            timestamp: TRUSTED_TS_NS,
-            root: bytes32(uint256(0xAAA1)),
-            nextValidatorsHash: valSetHash
+            timestamp: TRUSTED_TS_NS, root: bytes32(uint256(0xAAA1)), nextValidatorsHash: valSetHash
         });
 
         Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS0);
 
-        IICS07TendermintMsgs.Header memory header1001 =
-            _buildHeader(TRUSTED_HEIGHT, NEW_HEIGHT, NEW_TS_NS, bytes32(uint256(0xCCC1)), valSet, valSet, cfg.activeCount);
+        IICS07TendermintMsgs.Header memory header1001 = _buildHeader(
+            TRUSTED_HEIGHT, NEW_HEIGHT, NEW_TS_NS, bytes32(uint256(0xCCC1)), valSet, valSet, cfg.activeCount
+        );
         IUpdateClientMsgs.MsgUpdateClient memory msg1001 =
             _buildMsg(cs, trustedCS0, header1001, bucket, cfg.activeCount);
-        assertEq(uint8(ics07.updateClient(abi.encode(msg1001))), uint8(ILightClientMsgs.UpdateResult.Update), "warmup Update");
+        assertEq(
+            uint8(ics07.updateClient(abi.encode(msg1001))), uint8(ILightClientMsgs.UpdateResult.Update), "warmup Update"
+        );
 
         IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = IICS07TendermintMsgs.ConsensusState({
-            timestamp: NEW_TS_NS,
-            root: header1001.signedHeader.header.appHash,
-            nextValidatorsHash: valSetHash
+            timestamp: NEW_TS_NS, root: header1001.signedHeader.header.appHash, nextValidatorsHash: valSetHash
         });
 
         IICS07TendermintMsgs.Header memory header1002 = _buildHeader(
-            NEW_HEIGHT,
-            NEXT_HEIGHT,
-            NEXT_TS_NS,
-            bytes32(uint256(0xCCC2)),
-            valSet,
-            _emptyValSet(),
-            cfg.activeCount
+            NEW_HEIGHT, NEXT_HEIGHT, NEXT_TS_NS, bytes32(uint256(0xCCC2)), valSet, _emptyValSet(), cfg.activeCount
         );
 
         IUpdateClientMsgs.MsgUpdateClient memory cacheMsg =
@@ -410,12 +394,43 @@ contract UpdateClientGasTest is Test {
         console.log("bucket=", bucket, "  cache-hit adjacent update gas=", used);
     }
 
-    function test_gas_n4() public { _measure(4); }
-    function test_gas_n8() public { _measure(8); }
-    function test_gas_n16() public { _measure(16); }
-    function test_gas_n16_cacheHitReplay() public { _measureCacheHitReplay(16); }
-    function test_gas_n16_cacheHitAdjacentUpdate() public { _measureCacheHitAdjacentUpdate(16); }
-    function test_gas_n32() public { _measure(32); }
-    function test_gas_n64() public { _measure(64); }
-    function test_gas_n128() public { _measure(128); }
+    function test_gas_n4() public {
+        _measure(4);
+    }
+
+    function test_gas_n8() public {
+        _measure(8);
+    }
+
+    function test_gas_n16() public {
+        _measure(16);
+    }
+
+    function test_gas_n16_cacheHitReplay() public {
+        _measureCacheHitReplay(16);
+    }
+
+    function test_gas_n16_cacheHitAdjacentUpdate() public {
+        _measureCacheHitAdjacentUpdate(16);
+    }
+
+    function test_gas_n32() public {
+        _measure(32);
+    }
+
+    function test_gas_n64() public {
+        _measure(64);
+    }
+
+    function test_gas_n128() public {
+        _measure(128);
+    }
+
+    function test_gas_n128_cacheHitReplay() public {
+        _measureCacheHitReplay(128);
+    }
+
+    function test_gas_n128_cacheHitAdjacentUpdate() public {
+        _measureCacheHitAdjacentUpdate(128);
+    }
 }

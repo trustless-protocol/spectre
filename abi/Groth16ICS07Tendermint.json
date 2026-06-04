@@ -42,19 +42,6 @@
   },
   {
     "type": "function",
-    "name": "ALLOWED_CLOCK_DRIFT",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "uint16",
-        "internalType": "uint16"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
     "name": "DEFAULT_ADMIN_ROLE",
     "inputs": [],
     "outputs": [
@@ -68,33 +55,7 @@
   },
   {
     "type": "function",
-    "name": "MEMBERSHIP",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract IMembership"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "MISBEHAVIOUR",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "",
-        "type": "address",
-        "internalType": "contract IMisbehaviour"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "PROOF_SUBMITTER_ROLE",
+    "name": "MISBEHAVIOUR_SUBMITTER_ROLE",
     "inputs": [],
     "outputs": [
       {
@@ -107,93 +68,29 @@
   },
   {
     "type": "function",
-    "name": "UPDATE_CLIENT",
-    "inputs": [],
-    "outputs": [
+    "name": "getCachedValidatorSet",
+    "inputs": [
       {
-        "name": "",
-        "type": "address",
-        "internalType": "contract IUpdateClient"
+        "name": "validatorsHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "VERIFIER",
-    "inputs": [],
     "outputs": [
       {
-        "name": "",
-        "type": "address",
-        "internalType": "contract IVerifier"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "clientState",
-    "inputs": [],
-    "outputs": [
-      {
-        "name": "chainId",
-        "type": "string",
-        "internalType": "string"
+        "name": "indices",
+        "type": "uint32[]",
+        "internalType": "uint32[]"
       },
       {
-        "name": "trustLevel",
-        "type": "tuple",
-        "internalType": "struct IICS07TendermintMsgs.TrustThreshold",
-        "components": [
-          {
-            "name": "numerator",
-            "type": "uint8",
-            "internalType": "uint8"
-          },
-          {
-            "name": "denominator",
-            "type": "uint8",
-            "internalType": "uint8"
-          }
-        ]
+        "name": "pubkeys",
+        "type": "bytes32[]",
+        "internalType": "bytes32[]"
       },
       {
-        "name": "latestHeight",
-        "type": "tuple",
-        "internalType": "struct IICS02ClientMsgs.Height",
-        "components": [
-          {
-            "name": "revisionNumber",
-            "type": "uint64",
-            "internalType": "uint64"
-          },
-          {
-            "name": "revisionHeight",
-            "type": "uint64",
-            "internalType": "uint64"
-          }
-        ]
-      },
-      {
-        "name": "trustingPeriod",
-        "type": "uint32",
-        "internalType": "uint32"
-      },
-      {
-        "name": "unbondingPeriod",
-        "type": "uint32",
-        "internalType": "uint32"
-      },
-      {
-        "name": "isFrozen",
-        "type": "bool",
-        "internalType": "bool"
-      },
-      {
-        "name": "zkAlgorithm",
-        "type": "uint8",
-        "internalType": "enum IICS07TendermintMsgs.SupportedZkAlgorithm"
+        "name": "votingPowers",
+        "type": "uint64[]",
+        "internalType": "uint64[]"
       }
     ],
     "stateMutability": "view"
@@ -207,25 +104,6 @@
         "name": "",
         "type": "bytes",
         "internalType": "bytes"
-      }
-    ],
-    "stateMutability": "view"
-  },
-  {
-    "type": "function",
-    "name": "getConsensusStateHash",
-    "inputs": [
-      {
-        "name": "revisionHeight",
-        "type": "uint64",
-        "internalType": "uint64"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "",
-        "type": "bytes32",
-        "internalType": "bytes32"
       }
     ],
     "stateMutability": "view"
@@ -296,13 +174,13 @@
     "name": "misbehaviour",
     "inputs": [
       {
-        "name": "misbehaviourMsg",
+        "name": "",
         "type": "bytes",
         "internalType": "bytes"
       }
     ],
     "outputs": [],
-    "stateMutability": "nonpayable"
+    "stateMutability": "view"
   },
   {
     "type": "function",
@@ -380,6 +258,13 @@
   },
   {
     "type": "function",
+    "name": "unfreeze",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "updateClient",
     "inputs": [
       {
@@ -408,7 +293,7 @@
       }
     ],
     "outputs": [],
-    "stateMutability": "view"
+    "stateMutability": "pure"
   },
   {
     "type": "function",
@@ -480,8 +365,8 @@
                       },
                       {
                         "name": "value",
-                        "type": "bytes32",
-                        "internalType": "bytes32"
+                        "type": "bytes",
+                        "internalType": "bytes"
                       },
                       {
                         "name": "leaf",
@@ -561,8 +446,8 @@
                           },
                           {
                             "name": "value",
-                            "type": "bytes32",
-                            "internalType": "bytes32"
+                            "type": "bytes",
+                            "internalType": "bytes"
                           },
                           {
                             "name": "leaf",
@@ -632,8 +517,8 @@
                           },
                           {
                             "name": "value",
-                            "type": "bytes32",
-                            "internalType": "bytes32"
+                            "type": "bytes",
+                            "internalType": "bytes"
                           },
                           {
                             "name": "leaf",
@@ -816,8 +701,8 @@
                       },
                       {
                         "name": "value",
-                        "type": "bytes32",
-                        "internalType": "bytes32"
+                        "type": "bytes",
+                        "internalType": "bytes"
                       },
                       {
                         "name": "leaf",
@@ -897,8 +782,8 @@
                           },
                           {
                             "name": "value",
-                            "type": "bytes32",
-                            "internalType": "bytes32"
+                            "type": "bytes",
+                            "internalType": "bytes"
                           },
                           {
                             "name": "leaf",
@@ -968,8 +853,8 @@
                           },
                           {
                             "name": "value",
-                            "type": "bytes32",
-                            "internalType": "bytes32"
+                            "type": "bytes",
+                            "internalType": "bytes"
                           },
                           {
                             "name": "leaf",
@@ -1191,6 +1076,33 @@
   },
   {
     "type": "error",
+    "name": "CachedSignerNotFound",
+    "inputs": [
+      {
+        "name": "validatorsHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "index",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "CachedValidatorSetCorrupted",
+    "inputs": [
+      {
+        "name": "validatorsHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "CannotHandleMisbehavior",
     "inputs": []
   },
@@ -1209,6 +1121,11 @@
         "internalType": "string"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "ClientNotFrozen",
+    "inputs": []
   },
   {
     "type": "error",
@@ -1352,6 +1269,16 @@
         "internalType": "uint64"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidChainIdLength",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidChainPrefixLength",
+    "inputs": []
   },
   {
     "type": "error",
@@ -1552,6 +1479,33 @@
   },
   {
     "type": "error",
+    "name": "SSTORE2DataTooLarge",
+    "inputs": [
+      {
+        "name": "length",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SSTORE2InvalidPointer",
+    "inputs": [
+      {
+        "name": "pointer",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "SSTORE2WriteFailed",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "SignerIndexOutOfRange",
     "inputs": [
       {
@@ -1654,6 +1608,33 @@
         "name": "algorithm",
         "type": "uint8",
         "internalType": "uint8"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ValidatorCountExceedsLimit",
+    "inputs": [
+      {
+        "name": "validatorCount",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "maxValidatorCount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ValidatorSetCacheMiss",
+    "inputs": [
+      {
+        "name": "validatorsHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ]
   },

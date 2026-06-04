@@ -106,6 +106,16 @@ library Header {
         return _leafHash(Encode.cdcEncodeBytes32(value));
     }
 
+    function simpleValidatorLeafHash(bytes32 pubKey, uint64 votingPower) public pure returns (bytes32) {
+        return _leafHash(
+            Encode.encodeValidator(IICS07TendermintMsgs.SimpleValidator({ pubKey: pubKey, votingPower: votingPower }))
+        );
+    }
+
+    function innerHash(bytes32 left, bytes32 right) public pure returns (bytes32) {
+        return _innerHash(left, right);
+    }
+
     function merkleHash(bytes[] memory bytesArray) public pure returns (bytes32) {
         if (bytesArray.length == 0) {
             return bytes32(0);

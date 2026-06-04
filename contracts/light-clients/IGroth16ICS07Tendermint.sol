@@ -1,18 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IVerifier } from "../interfaces/IVerifier.sol";
-
 /// @title IGroth16ICS07Tendermint
 /// @notice IGroth16ICS07Tendermint is the interface for the ICS07 Tendermint light client
 interface IGroth16ICS07Tendermint {
-    /// @notice The role identifier for the proof submitter role
-    /// @dev The proof submitter role is used to whitelist addresses that can submit proofs
-    /// @dev If `address(0)` has this role, then anyone can submit proofs
-    /// @dev If this client is hooked up to ICS26Router, the router must be given this role
-    /// @return The role identifier
-    function PROOF_SUBMITTER_ROLE() external view returns (bytes32);
-
     /// @notice The role identifier for the misbehaviour submitter role
     /// @dev The misbehaviour submitter role is used to whitelist addresses that can submit misbehaviour reports
     /// @dev If `address(0)` has this role, then anyone can submit misbehaviour reports
@@ -39,24 +30,6 @@ interface IGroth16ICS07Tendermint {
     // /// @notice Immutable misbehaviour program verification key.
     // /// @return The verification key for the misbehaviour program.
     // function MISBEHAVIOUR_PROGRAM_VKEY() external view returns (bytes32);
-
-    /// @notice Immutable groth16 verifier contract address.
-    /// @return The Groth16 verifier contract.
-    function VERIFIER() external view returns (IVerifier);
-
-    /// @notice Constant allowed prover clock drift in seconds.
-    /// @return The allowed prover clock drift in seconds.
-    function ALLOWED_CLOCK_DRIFT() external view returns (uint16);
-
-    /// @notice Returns the consensus state keccak256 hash at the given revision height.
-    /// @param revisionHeight The revision height.
-    /// @return The consensus state at the given revision height.
-    function getConsensusStateHash(uint64 revisionHeight) external view returns (bytes32);
-
-    /// @notice Returns whether a validator-set hash is already cached on-chain.
-    /// @param validatorsHash The validator-set hash.
-    /// @return True if the validator set is cached.
-    function hasCachedValidatorSet(bytes32 validatorsHash) external view returns (bool);
 
     /// @notice Returns cached validator metadata for the given validators hash.
     /// @param validatorsHash The CometBFT validators hash.

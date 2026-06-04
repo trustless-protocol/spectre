@@ -16,12 +16,7 @@ library SSTORE2 {
             revert SSTORE2DataTooLarge(data.length);
         }
 
-        bytes memory creation = abi.encodePacked(
-            hex"61",
-            bytes2(uint16(runtime.length)),
-            hex"80600a3d393df3",
-            runtime
-        );
+        bytes memory creation = abi.encodePacked(hex"61", bytes2(uint16(runtime.length)), hex"80600a3d393df3", runtime);
 
         assembly ("memory-safe") {
             pointer := create(0, add(creation, 0x20), mload(creation))
@@ -44,6 +39,26 @@ library SSTORE2 {
         data = new bytes(len);
         assembly ("memory-safe") {
             extcodecopy(pointer, add(data, 0x20), 1, len)
+        }
+    }
+
+    function read(address pointer, uint256 start, uint256 len) internal view returns (bytes memory data) {
+        uint256 size;
+        assembly ("memory-safe") {
+            size := extcodesize(pointer)
+        }
+        if (size <= 1) {
+            revert SSTORE2InvalidPointer(pointer);
+        }
+
+        uint256 dataSize = size - 1;
+        if (start > dataSize || len > dataSize - start) {
+            revert SSTORE2InvalidPointer(pointer);
+        }
+
+        data = new bytes(len);
+        assembly ("memory-safe") {
+            extcodecopy(pointer, add(data, 0x20), add(start, 1), len)
         }
     }
 }

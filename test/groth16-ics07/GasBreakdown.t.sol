@@ -169,7 +169,7 @@ contract Groth16ICS07Harness is Groth16ICS07Tendermint {
     {}
 
     function verifyBatchAndQuorumExternal(IUpdateClientMsgs.MsgUpdateClient memory msg_) external {
-        _verifyBatchAndQuorum(msg_);
+        _verifyFullBatchAndQuorum(msg_);
     }
 }
 
@@ -327,21 +327,19 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
         active[2] = true;
         active[3] = false;
 
-        updateMsg = IUpdateClientMsgs.MsgUpdateClient({
-            clientState: clientState,
-            trustedConsensusState: trustedConsensusState,
-            proposedHeader: proposedHeader,
-            time: currentTime,
-            proof: [uint256(0), 0, 0, 0, 0, 0, 0, 0],
-            commitments: [uint256(0), 0],
-            commitmentPok: [uint256(0), 0],
-            bucket: 4,
-            signerIndices: signerIndices,
-            signerPubkeys: signerPubkeys,
-            timestampSeconds: timestampSeconds,
-            timestampNanos: timestampNanos,
-            active: active
-        });
+        updateMsg.clientState = clientState;
+        updateMsg.trustedConsensusState = trustedConsensusState;
+        updateMsg.proposedHeader = proposedHeader;
+        updateMsg.time = currentTime;
+        updateMsg.proof = [uint256(0), 0, 0, 0, 0, 0, 0, 0];
+        updateMsg.commitments = [uint256(0), 0];
+        updateMsg.commitmentPok = [uint256(0), 0];
+        updateMsg.bucket = 4;
+        updateMsg.signerIndices = signerIndices;
+        updateMsg.signerPubkeys = signerPubkeys;
+        updateMsg.timestampSeconds = timestampSeconds;
+        updateMsg.timestampNanos = timestampNanos;
+        updateMsg.active = active;
         clientState_ = clientState;
         trustedConsensusState_ = trustedConsensusState;
         untrusted_ = UntrustedBlockState({signedHeader: signedHeader, validatorSet: valset});
@@ -649,41 +647,39 @@ contract GasBreakdownTest is Test, IICS07TendermintMsgs {
 
         IICS02ClientMsgs.Height memory trustedHeight =
             IICS02ClientMsgs.Height({revisionNumber: 0, revisionHeight: 9});
-        realUpdateMsg_ = IUpdateClientMsgs.MsgUpdateClient({
-            clientState: clientState_,
-            trustedConsensusState: trustedConsensusState_,
-            proposedHeader: IICS07TendermintMsgs.Header({
-                signedHeader: signedHeader,
-                validatorSet: valset,
-                trustedHeight: trustedHeight,
-                trustedNextValidatorSet: valset
-            }),
-            time: currentTime,
-            proof: [
-                uint256(0x26d41e6e9ef6a11bb4abbdbea1a3c620f0548066783931f8674a0f01bf1808f6),
-                uint256(0x09f1008b60ab7219fa5ea4bef3c7185cb3362b181da1b3ea1a927e69b5cf5d7e),
-                uint256(0x294be1a7050b617f8948d59df41c3b75bda75ecde0af70642a275a78e6a36c90),
-                uint256(0x1792946d5c4f07612f7e6288baacf5ebd1a56b1fbfdb1e3abecc50ed4bebe97d),
-                uint256(0x1b574bdcda35d3e6d522b87f332130c9978c389f860f7377dd24e8783a268557),
-                uint256(0x1bee4aab912f3b73c1fb10e8cb08040da46c985b2f0d3f99125db23215fc191e),
-                uint256(0x1ef31028533e56a0fc21e85182ea35b4dd070af141715d75b6c36225e67a5c03),
-                uint256(0x18103286e2eab5d95b2f4863c05deed65b92cba1f17a977da855f649aa02f5c2)
-            ],
-            commitments: [
-                uint256(0x05711513982327bd1d4b0b254ce68e8d983835dc8a133f4971db5f757bc1ee17),
-                uint256(0x189aac9c90b9e6ec4829afb815fac8dfcbbee8c4cd324c6aed2349883a3c4b87)
-            ],
-            commitmentPok: [
-                uint256(0x2b6017cf2bb6f2f4c688272e61f95163948b8f690b73530b69b445a3e00922e6),
-                uint256(0x1518ed238a807760ce31e4b64e2b5cbf17840907e5452a3312a69bbaf77f9db9)
-            ],
-            bucket: 4,
-            signerIndices: _uint32Array4(0, 1, 2, 3),
-            signerPubkeys: _bytes32Array4(pubkeys[0], pubkeys[1], pubkeys[2], pubkeys[3]),
-            timestampSeconds: _uint64Array4(secs[0], secs[1], secs[2], secs[3]),
-            timestampNanos: _uint32Array4(nanos[0], nanos[1], nanos[2], nanos[3]),
-            active: _boolArray4(true, true, true, true)
+        realUpdateMsg_.clientState = clientState_;
+        realUpdateMsg_.trustedConsensusState = trustedConsensusState_;
+        realUpdateMsg_.proposedHeader = IICS07TendermintMsgs.Header({
+            signedHeader: signedHeader,
+            validatorSet: valset,
+            trustedHeight: trustedHeight,
+            trustedNextValidatorSet: valset
         });
+        realUpdateMsg_.time = currentTime;
+        realUpdateMsg_.proof = [
+            uint256(0x26d41e6e9ef6a11bb4abbdbea1a3c620f0548066783931f8674a0f01bf1808f6),
+            uint256(0x09f1008b60ab7219fa5ea4bef3c7185cb3362b181da1b3ea1a927e69b5cf5d7e),
+            uint256(0x294be1a7050b617f8948d59df41c3b75bda75ecde0af70642a275a78e6a36c90),
+            uint256(0x1792946d5c4f07612f7e6288baacf5ebd1a56b1fbfdb1e3abecc50ed4bebe97d),
+            uint256(0x1b574bdcda35d3e6d522b87f332130c9978c389f860f7377dd24e8783a268557),
+            uint256(0x1bee4aab912f3b73c1fb10e8cb08040da46c985b2f0d3f99125db23215fc191e),
+            uint256(0x1ef31028533e56a0fc21e85182ea35b4dd070af141715d75b6c36225e67a5c03),
+            uint256(0x18103286e2eab5d95b2f4863c05deed65b92cba1f17a977da855f649aa02f5c2)
+        ];
+        realUpdateMsg_.commitments = [
+            uint256(0x05711513982327bd1d4b0b254ce68e8d983835dc8a133f4971db5f757bc1ee17),
+            uint256(0x189aac9c90b9e6ec4829afb815fac8dfcbbee8c4cd324c6aed2349883a3c4b87)
+        ];
+        realUpdateMsg_.commitmentPok = [
+            uint256(0x2b6017cf2bb6f2f4c688272e61f95163948b8f690b73530b69b445a3e00922e6),
+            uint256(0x1518ed238a807760ce31e4b64e2b5cbf17840907e5452a3312a69bbaf77f9db9)
+        ];
+        realUpdateMsg_.bucket = 4;
+        realUpdateMsg_.signerIndices = _uint32Array4(0, 1, 2, 3);
+        realUpdateMsg_.signerPubkeys = _bytes32Array4(pubkeys[0], pubkeys[1], pubkeys[2], pubkeys[3]);
+        realUpdateMsg_.timestampSeconds = _uint64Array4(secs[0], secs[1], secs[2], secs[3]);
+        realUpdateMsg_.timestampNanos = _uint32Array4(nanos[0], nanos[1], nanos[2], nanos[3]);
+        realUpdateMsg_.active = _boolArray4(true, true, true, true);
         realEncodedUpdateMsg_ = abi.encode(realUpdateMsg_);
         realProofBytes_ = abi.encodePacked(realUpdateMsg_.proof, realUpdateMsg_.commitments, realUpdateMsg_.commitmentPok);
 

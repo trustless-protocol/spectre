@@ -72,6 +72,18 @@ contract DummyUpdateClientForMisbehaviour is IUpdateClient {
     {
         revert("unused");
     }
+
+    function updateClientCachedCurrentWithHeaderCache(
+        IUpdateClientMsgs.MsgUpdateClient calldata,
+        bytes32,
+        bytes32
+    )
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory)
+    {
+        revert("unused");
+    }
 }
 
 contract Groth16ICS07MisbehaviourHarness is Groth16ICS07Tendermint {
@@ -183,8 +195,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
         lightClient.misbehaviour(encoded);
 
-        (,,,,, bool isFrozen,) = lightClient.clientState();
-        assertFalse(isFrozen, "client must not be frozen when misbehaviour is disabled");
+        assertFalse(_isFrozen(lightClient), "client must not be frozen when misbehaviour is disabled");
     }
 
     function test_misbehaviour_cannotFreezeClientWithFakeSignatures() public {
@@ -201,8 +212,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
         lightClient.misbehaviour(encoded);
 
-        (,,,,, bool isFrozen,) = lightClient.clientState();
-        assertFalse(isFrozen, "client must not be frozen with fake signatures");
+        assertFalse(_isFrozen(lightClient), "client must not be frozen with fake signatures");
     }
 
     function test_misbehaviour_cannotFreezeClientWithEmptySignatures() public {
@@ -221,8 +231,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
         lightClient.misbehaviour(encoded);
 
-        (,,,,, bool isFrozen,) = lightClient.clientState();
-        assertFalse(isFrozen, "client must not be frozen with empty signatures");
+        assertFalse(_isFrozen(lightClient), "client must not be frozen with empty signatures");
     }
 
     function test_misbehaviour_cannotFreezeClientFromAnyAddress() public {
@@ -235,8 +244,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
         lightClient.misbehaviour(encoded);
 
-        (,,,,, bool isFrozen,) = lightClient.clientState();
-        assertFalse(isFrozen, "client must not be frozen by arbitrary attacker");
+        assertFalse(_isFrozen(lightClient), "client must not be frozen by arbitrary attacker");
     }
 
     function test_misbehaviour_revertsForUnauthorizedCallerWhenManaged() public {
@@ -266,13 +274,12 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         );
         managedClient.misbehaviour(encoded);
 
-        (,,,,, bool isFrozen,) = managedClient.clientState();
-        assertFalse(isFrozen, "client must not be frozen by unauthorized caller");
+        assertFalse(_isFrozen(managedClient), "client must not be frozen by unauthorized caller");
     }
 
     function test_misbehaviour_distinctRoleFromProofSubmitter() public view {
         assertNotEq(
-            lightClient.PROOF_SUBMITTER_ROLE(),
+            keccak256("PROOF_SUBMITTER_ROLE"),
             lightClient.MISBEHAVIOUR_SUBMITTER_ROLE(),
             "MISBEHAVIOUR_SUBMITTER_ROLE must be distinct from PROOF_SUBMITTER_ROLE"
         );
@@ -332,6 +339,11 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
             trustedConsensusState2: consensusState_,
             time: uint128(block.timestamp) * 1_000_000_000
         });
+    }
+
+    function _isFrozen(Groth16ICS07Tendermint client) internal view returns (bool) {
+        ClientState memory state = abi.decode(client.getClientState(), (ClientState));
+        return state.isFrozen;
     }
 
     function _buildHeader(

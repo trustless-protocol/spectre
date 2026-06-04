@@ -44,10 +44,52 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
+var validatorCacheRaceErrorSelectors = map[[4]byte]string{
+	errorSelector("ValidatorSetCacheMiss(bytes32)"): "ValidatorSetCacheMiss",
+}
+
+func errorSelector(signature string) [4]byte {
+	hash := crypto.Keccak256([]byte(signature))
+	var selector [4]byte
+	copy(selector[:], hash[:4])
+	return selector
+}
+
+func validatorCacheRaceErrorName(callErr error) (string, bool) {
+	type dataErr interface {
+		ErrorData() interface{}
+	}
+	de, ok := callErr.(dataErr)
+	if !ok {
+		return "", false
+	}
+
+	var data []byte
+	switch raw := de.ErrorData().(type) {
+	case string:
+		data = common.FromHex(raw)
+	case fmt.Stringer:
+		data = common.FromHex(raw.String())
+	case []byte:
+		data = raw
+	default:
+		return "", false
+	}
+	if len(data) < 4 {
+		return "", false
+	}
+
+	var selector [4]byte
+	copy(selector[:], data[:4])
+	name, ok := validatorCacheRaceErrorSelectors[selector]
+	return name, ok
+}
+
 type Handler struct {
 }
 
 const ethTxReceiptTimeout = 45 * time.Second
+const ethDeployGasHeadroomPercent uint64 = 20
 
 func routerManagesProofSubmission(ctx services.Context) bool {
 	roleManager := ctx.RoleManagerAddress()
@@ -168,6 +210,60 @@ func ethLightClientIDOnCosmos(ctx services.Context) (string, error) {
 	return clientID, nil
 }
 
+func estimateCosmosClientDeployGas(
+	ctx services.Context,
+	from common.Address,
+	gasPrice *big.Int,
+	clientState []byte,
+	consensusHash []byte,
+) (uint64, uint64, error) {
+	parsed, err := tendermintContract.ContractGroth16ICS07TendermintMetaData.GetAbi()
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse ICS07 ABI: %w", err)
+	}
+	constructorInput, err := parsed.Pack(
+		"",
+		*ctx.VerifierContract(),
+		*ctx.MembershipContract(),
+		*ctx.MisbehaviourContract(),
+		*ctx.UpdateClientContract(),
+		clientState,
+		utils.BytesToBytes32(consensusHash),
+		*ctx.RoleManagerAddress(),
+	)
+	if err != nil {
+		return 0, 0, fmt.Errorf("pack ICS07 constructor args: %w", err)
+	}
+	deployData := append(common.FromHex(tendermintContract.ContractGroth16ICS07TendermintBin), constructorInput...)
+	estimate, err := ctx.EthClient().EstimateGas(context.Background(), ethereum.CallMsg{
+		From:     from,
+		GasPrice: gasPrice,
+		Value:    big.NewInt(0),
+		Data:     deployData,
+	})
+	if err != nil {
+		return 0, 0, fmt.Errorf("estimate ICS07 deploy gas: %w", err)
+	}
+
+	gasLimit := estimate + (estimate*ethDeployGasHeadroomPercent)/100
+	if gasLimit < estimate {
+		gasLimit = estimate
+	}
+	if header, err := ctx.EthClient().HeaderByNumber(context.Background(), nil); err == nil && header.GasLimit > 0 {
+		if estimate >= header.GasLimit {
+			return estimate, 0, fmt.Errorf(
+				"estimated ICS07 deploy gas %d exceeds latest block gas limit %d",
+				estimate,
+				header.GasLimit,
+			)
+		}
+		if gasLimit >= header.GasLimit {
+			gasLimit = header.GasLimit - 1
+		}
+	}
+	return estimate, gasLimit, nil
+}
+
 func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte) (common.Address, error) {
 	cosmosClientID, err := cosmosRouterClientID(ctx)
 	if err != nil {
@@ -211,9 +307,18 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to create auth transactor: %w", err)
 	}
 	auth.Nonce = big.NewInt(int64(nonce))
-	auth.Value = big.NewInt(0)       // in wei
-	auth.GasLimit = uint64(10000000) // in units
+	auth.Value = big.NewInt(0) // in wei
 	auth.GasPrice = gasPrice
+	estimatedDeployGas, deployGasLimit, err := estimateCosmosClientDeployGas(ctx, fromAddress, gasPrice, clientState, consensusHash)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
+	}
+	auth.GasLimit = deployGasLimit
+	log.Printf(
+		"[CreateCosmosClient] ICS07 deploy gas estimate=%d limit=%d",
+		estimatedDeployGas,
+		deployGasLimit,
+	)
 
 	address, tx, _, err := tendermintContract.DeployContractGroth16ICS07Tendermint(
 		auth,
@@ -488,6 +593,10 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 			if de, ok := callErr.(dataErr); ok {
 				log.Printf("[SendEthTx] Revert data (hex): %v", de.ErrorData())
 			}
+			if name, ok := validatorCacheRaceErrorName(callErr); ok {
+				return fmt.Errorf("tx %s reverted with %s (status=0, gasUsed=%d): %w",
+					tx.Hash().Hex(), name, receipt.GasUsed, services.ErrValidatorCacheRace)
+			}
 		}
 		return fmt.Errorf("tx %s reverted (status=0, gasUsed=%d): %w", tx.Hash().Hex(), receipt.GasUsed, services.ErrPermanentRelayFailure)
 	}
@@ -676,6 +785,10 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 			}
 			if de, ok := callErr.(dataErr); ok {
 				log.Printf("[SendEthTxBatch] Revert data (hex): %v", de.ErrorData())
+			}
+			if name, ok := validatorCacheRaceErrorName(callErr); ok {
+				return fmt.Errorf("multicall tx %s reverted with %s (status=0, gasUsed=%d, labels=%s): %w",
+					tx.Hash().Hex(), name, receipt.GasUsed, labelStr, services.ErrValidatorCacheRace)
 			}
 		}
 		return fmt.Errorf("multicall tx %s reverted (status=0, gasUsed=%d, labels=%s): %w", tx.Hash().Hex(), receipt.GasUsed, labelStr, services.ErrPermanentRelayFailure)

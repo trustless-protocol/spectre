@@ -18,3 +18,9 @@ import "errors"
 // fmt.Errorf("...: %w", ErrPermanentRelayFailure); callers classify with
 // errors.Is.
 var ErrPermanentRelayFailure = errors.New("permanent relay failure (on-chain revert)")
+
+// ErrValidatorCacheRace marks an updateClient revert caused by the validator
+// cache changing after the relayer built a cached/delta update. Rebuilding the
+// update from fresh on-chain state, or retrying with the full validator set, can
+// make progress, so packet retry budgets should not be consumed.
+var ErrValidatorCacheRace = errors.New("validator cache race")

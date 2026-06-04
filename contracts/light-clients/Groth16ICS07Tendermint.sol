@@ -41,30 +41,58 @@ contract Groth16ICS07Tendermint is
 {
     using TransientSlot for *;
 
-    /// @inheritdoc IGroth16ICS07Tendermint
-    IVerifier public immutable VERIFIER;
-    IMembership public immutable MEMBERSHIP;
-    IMisbehaviour public immutable MISBEHAVIOUR;
-    IUpdateClient public immutable UPDATE_CLIENT;
+    IVerifier private immutable VERIFIER;
+    IMembership private immutable MEMBERSHIP;
+    IMisbehaviour private immutable MISBEHAVIOUR;
+    IUpdateClient private immutable UPDATE_CLIENT;
 
-    /// @notice The ICS07Tendermint client state
-    // natlint-disable-next-line MissingInheritdoc
-    IICS07TendermintMsgs.ClientState public clientState;
+    /// @notice The ICS07Tendermint client state, exposed through `getClientState()`.
+    IICS07TendermintMsgs.ClientState private clientState;
     /// @notice The mapping from height to consensus state keccak256 hashes.
     /// @dev Revision number need not be keyed as it is not allowed to change.
     mapping(uint64 height => bytes32 hash) private _consensusStateHashes;
-    /// @notice SSTORE2 pointer to packed validator metadata keyed by the CometBFT validators hash.
-    mapping(bytes32 validatorsHash => address pointer) private _cachedValidatorSets;
+    /// @notice Latest packed validator metadata keyed by the CometBFT validators hash.
+    bytes32 private _cachedValidatorSetHash;
+    bytes32 private _cachedValidatorsHashLeaf;
+    address private _cachedValidatorSetPointer;
+    uint64 private _cachedValidatorTotalVotingPower;
+    uint16 private _cachedValidatorEntryCount;
+    uint256 private _validatorPubKeyOverrideBits;
+    uint256 private _validatorVotingPowerOverrideBits;
+    mapping(uint16 index => bytes32 pubKey) private _validatorPubKeyOverrides;
+    mapping(uint16 index => uint64 votingPower) private _validatorVotingPowerOverrides;
 
-    uint32 private constant VALIDATOR_CACHE_MAGIC = 0x56414c32; // "VAL2"
-    uint256 private constant VALIDATOR_CACHE_HEADER_LEN = 46;
+    uint32 private constant VALIDATOR_CACHE_MAGIC = 0x56414c34; // "VAL4"
+    /// @dev Hard active-validator limit for this client. The delta cache stores per-index
+    ///      override bitmaps in uint256 words, and the packed SSTORE2 cache stays below
+    ///      EIP-170 with margin at this bound.
+    uint16 private constant MAX_VALIDATOR_COUNT = 180;
+    uint16 private constant MAX_DELTA_LEAF_COUNT = 16;
+    uint256 private constant VALIDATOR_CACHE_HEADER_LEN = 48;
     uint256 private constant VALIDATOR_CACHE_ENTRY_LEN = 44;
+    uint256 private constant VALIDATOR_CACHE_NODE_LEN = 32;
 
-    /// @inheritdoc IGroth16ICS07Tendermint
-    uint16 public constant ALLOWED_CLOCK_DRIFT = 30 minutes;
+    struct ValidatorCacheHeader {
+        uint64 totalVotingPower;
+        uint16 entryCount;
+        bytes32 validatorsHashLeaf;
+        uint16 nodeCount;
+    }
 
-    /// @inheritdoc IGroth16ICS07Tendermint
-    bytes32 public immutable PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
+    struct DeltaRecomputeContext {
+        bytes32 validatorsHash;
+        bytes baseData;
+        uint16 validatorCount;
+        IUpdateClientMsgs.ValidatorSetDelta delta;
+        bytes32[] newLeafHashes;
+        uint256 pubKeyBits;
+        uint256 votingPowerBits;
+        uint256 overrideBits;
+    }
+
+    uint16 private constant ALLOWED_CLOCK_DRIFT = 30 minutes;
+
+    bytes32 private constant PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
 
     /// @inheritdoc IGroth16ICS07Tendermint
     bytes32 public immutable MISBEHAVIOUR_SUBMITTER_ROLE = keccak256("MISBEHAVIOUR_SUBMITTER_ROLE");
@@ -132,16 +160,10 @@ contract Groth16ICS07Tendermint is
         return abi.encode(clientState);
     }
 
-    /// @inheritdoc IGroth16ICS07Tendermint
-    function getConsensusStateHash(uint64 revisionHeight) public view returns (bytes32) {
+    function _getConsensusStateHash(uint64 revisionHeight) private view returns (bytes32) {
         bytes32 hash = _consensusStateHashes[revisionHeight];
         require(hash != 0, ConsensusStateNotFound());
         return hash;
-    }
-
-    /// @inheritdoc IGroth16ICS07Tendermint
-    function hasCachedValidatorSet(bytes32 validatorsHash) public view returns (bool) {
-        return _hasUsableValidatorCache(validatorsHash);
     }
 
     /// @inheritdoc IGroth16ICS07Tendermint
@@ -150,24 +172,23 @@ contract Groth16ICS07Tendermint is
         view
         returns (uint32[] memory indices, bytes32[] memory pubkeys, uint64[] memory votingPowers)
     {
-        address pointer = _cachedValidatorSets[validatorsHash];
+        address pointer = _validatorCachePointer(validatorsHash);
         if (pointer == address(0)) {
             return (new uint32[](0), new bytes32[](0), new uint64[](0));
         }
-        bytes memory cacheData = SSTORE2.read(pointer);
-        if (!_isValidatorCacheData(cacheData)) {
-            return (new uint32[](0), new bytes32[](0), new uint64[](0));
-        }
-        (, uint16 entryCount,) = _readValidatorCacheHeader(validatorsHash, cacheData);
+        bytes memory cacheData = SSTORE2.read(pointer, 0, _validatorCacheEntryDataLen(_cachedValidatorEntryCount));
+        ValidatorCacheHeader memory cacheHeader = _readValidatorCacheHeader(validatorsHash, cacheData);
 
-        indices = new uint32[](entryCount);
-        pubkeys = new bytes32[](entryCount);
-        votingPowers = new uint64[](entryCount);
-        for (uint16 i = 0; i < entryCount; i++) {
-            uint256 offset = VALIDATOR_CACHE_HEADER_LEN + uint256(i) * VALIDATOR_CACHE_ENTRY_LEN;
-            indices[i] = _readUint32(cacheData, offset);
-            votingPowers[i] = _readUint64(cacheData, offset + 4);
-            pubkeys[i] = _readBytes32(cacheData, offset + 12);
+        indices = new uint32[](cacheHeader.entryCount);
+        pubkeys = new bytes32[](cacheHeader.entryCount);
+        votingPowers = new uint64[](cacheHeader.entryCount);
+        uint256 pubKeyBits = _validatorPubKeyOverrideBits;
+        uint256 votingPowerBits = _validatorVotingPowerOverrideBits;
+        for (uint16 i = 0; i < cacheHeader.entryCount; i++) {
+            indices[i] = uint32(i);
+            (votingPowers[i], pubkeys[i]) = _resolveCurrentCachedValidator(
+                validatorsHash, cacheData, cacheHeader.entryCount, pubKeyBits, votingPowerBits, i
+            );
         }
     }
 
@@ -242,7 +263,6 @@ contract Groth16ICS07Tendermint is
 
     function _prepareUpdateClientMessage(IUpdateClientMsgs.MsgUpdateClient memory msg_)
         private
-        view
         returns (
             bool currentCached,
             bytes32 currentValidatorsHash,
@@ -257,8 +277,15 @@ contract Groth16ICS07Tendermint is
         (currentCached, currentValidatorsHashLeaf) = _getUsableValidatorHashLeaf(currentValidatorsHash);
 
         if (!currentCached) {
-            _validateSuppliedValidatorSetHash(currentValidatorsHash, msg_.proposedHeader.validatorSet);
-            cacheCurrentValidatorSet = true;
+            if (msg_.currentValidatorSetDelta.baseValidatorsHash != bytes32(0)) {
+                currentValidatorsHashLeaf =
+                    _cacheDeltaValidatorSet(currentValidatorsHash, msg_.currentValidatorSetDelta);
+                currentCached = true;
+                msg_.proposedHeader.validatorSet = _emptyValidatorSet();
+            } else {
+                _validateSuppliedValidatorSetHash(currentValidatorsHash, msg_.proposedHeader.validatorSet);
+                cacheCurrentValidatorSet = true;
+            }
         } else {
             msg_.proposedHeader.validatorSet = _emptyValidatorSet();
         }
@@ -298,11 +325,102 @@ contract Groth16ICS07Tendermint is
         private
         pure
     {
-        if (validatorSet.validators.length == 0) {
+        uint256 validatorCount = validatorSet.validators.length;
+        if (validatorCount == 0) {
             revert ValidatorSetCacheMiss(expectedHash);
+        }
+        if (validatorCount > MAX_VALIDATOR_COUNT) {
+            revert ValidatorCountExceedsLimit(validatorCount, MAX_VALIDATOR_COUNT);
         }
         bytes32 actualHash = Header.hashValSet(validatorSet);
         require(actualHash == expectedHash, MismatchedValidatorHashes(expectedHash, actualHash));
+    }
+
+    function _cacheDeltaValidatorSet(
+        bytes32 validatorsHash,
+        IUpdateClientMsgs.ValidatorSetDelta memory delta
+    )
+        private
+        returns (bytes32 validatorsHashLeaf)
+    {
+        address basePointer = _validatorCachePointer(delta.baseValidatorsHash);
+        if (basePointer == address(0)) {
+            revert ValidatorSetCacheMiss(delta.baseValidatorsHash);
+        }
+
+        bytes memory baseData = SSTORE2.read(basePointer);
+        ValidatorCacheHeader memory baseHeader = _readValidatorCacheHeader(delta.baseValidatorsHash, baseData);
+        require(
+            baseHeader.entryCount == _cachedValidatorEntryCount, CachedValidatorSetCorrupted(delta.baseValidatorsHash)
+        );
+
+        uint256 changedCount = delta.leafCount;
+        require(
+            changedCount > 0 && changedCount <= MAX_DELTA_LEAF_COUNT,
+            CachedValidatorSetCorrupted(delta.baseValidatorsHash)
+        );
+
+        uint256 pubKeyBits = _validatorPubKeyOverrideBits;
+        uint256 votingPowerBits = _validatorVotingPowerOverrideBits;
+        uint256 newTotalVotingPower = uint256(_cachedValidatorTotalVotingPower);
+        bytes32[] memory newLeafHashes = new bytes32[](changedCount);
+        uint32 previousIndex = 0;
+        for (uint256 i = 0; i < changedCount; i++) {
+            uint32 changedIndex = delta.indices[i];
+            require(changedIndex < baseHeader.entryCount, SignerIndexOutOfRange(changedIndex));
+            if (i > 0) {
+                require(changedIndex > previousIndex, CachedValidatorSetCorrupted(delta.baseValidatorsHash));
+            }
+            previousIndex = changedIndex;
+
+            (uint64 oldVotingPower, bytes32 oldPubKey) = _resolveCurrentCachedValidator(
+                delta.baseValidatorsHash, baseData, baseHeader.entryCount, pubKeyBits, votingPowerBits, changedIndex
+            );
+            uint64 changedVotingPower = delta.votingPowers[i];
+            bytes32 changedPubKey = delta.pubKeys[i];
+            require(
+                oldVotingPower != changedVotingPower || oldPubKey != changedPubKey,
+                CachedValidatorSetCorrupted(delta.baseValidatorsHash)
+            );
+            newTotalVotingPower = newTotalVotingPower - uint256(oldVotingPower) + uint256(changedVotingPower);
+            newLeafHashes[i] = Header.simpleValidatorLeafHash(changedPubKey, changedVotingPower);
+        }
+        require(newTotalVotingPower <= type(uint64).max, CachedValidatorSetCorrupted(delta.baseValidatorsHash));
+
+        bytes32 computedRoot = _recomputeCurrentDeltaRoot(
+            delta.baseValidatorsHash, baseData, baseHeader.entryCount, delta, newLeafHashes, pubKeyBits, votingPowerBits
+        );
+        require(computedRoot == validatorsHash, MismatchedValidatorHashes(validatorsHash, computedRoot));
+
+        for (uint256 i = 0; i < changedCount; i++) {
+            uint16 changedIndex = uint16(delta.indices[i]);
+            uint256 mask = uint256(1) << changedIndex;
+            uint64 changedVotingPower = delta.votingPowers[i];
+            bytes32 changedPubKey = delta.pubKeys[i];
+            (uint64 baseVotingPower, bytes32 basePubKey) =
+                _resolveCachedValidator(delta.baseValidatorsHash, baseData, baseHeader, changedIndex);
+
+            if (changedVotingPower == baseVotingPower) {
+                votingPowerBits &= ~mask;
+            } else {
+                _validatorVotingPowerOverrides[changedIndex] = changedVotingPower;
+                votingPowerBits |= mask;
+            }
+
+            if (changedPubKey == basePubKey) {
+                pubKeyBits &= ~mask;
+            } else {
+                _validatorPubKeyOverrides[changedIndex] = changedPubKey;
+                pubKeyBits |= mask;
+            }
+        }
+
+        validatorsHashLeaf = Header.bytes32LeafHash(validatorsHash);
+        _validatorPubKeyOverrideBits = pubKeyBits;
+        _validatorVotingPowerOverrideBits = votingPowerBits;
+        _cachedValidatorTotalVotingPower = uint64(newTotalVotingPower);
+        _cachedValidatorsHashLeaf = validatorsHashLeaf;
+        _cachedValidatorSetHash = validatorsHash;
     }
 
     function _cacheValidatorSet(
@@ -316,8 +434,9 @@ contract Groth16ICS07Tendermint is
             return;
         }
 
-        _cachedValidatorSets[validatorsHash] =
-            SSTORE2.write(_buildValidatorSetCache(validatorsHash, msg_.proposedHeader.validatorSet, totalVotingPower));
+        _setValidatorCache(
+            validatorsHash, _buildValidatorSetCache(validatorsHash, msg_.proposedHeader.validatorSet, totalVotingPower)
+        );
     }
 
     function _buildValidatorSetCache(
@@ -331,15 +450,30 @@ contract Groth16ICS07Tendermint is
     {
         IICS07TendermintMsgs.ValidatorInfo[] memory vals = validatorSet.validators;
         uint256 validatorCount = vals.length;
-        if (validatorCount > type(uint16).max) {
+        if (validatorCount == 0) {
             revert BatchLengthMismatch();
         }
+        if (validatorCount > MAX_VALIDATOR_COUNT) {
+            revert ValidatorCountExceedsLimit(validatorCount, MAX_VALIDATOR_COUNT);
+        }
 
-        data = new bytes(VALIDATOR_CACHE_HEADER_LEN + validatorCount * VALIDATOR_CACHE_ENTRY_LEN);
+        bytes32[] memory leafHashes = new bytes32[](validatorCount);
+        for (uint256 i = 0; i < vals.length; i++) {
+            leafHashes[i] = Header.simpleValidatorLeafHash(vals[i].pubKey, vals[i].votingPower);
+        }
+        uint256 nodeCount = validatorCount * 2 - 1;
+        bytes32[] memory nodeHashes = new bytes32[](nodeCount);
+        _writeMerkleNodes(leafHashes, 0, validatorCount, nodeHashes, 0);
+
+        data = new bytes(
+            VALIDATOR_CACHE_HEADER_LEN + validatorCount * VALIDATOR_CACHE_ENTRY_LEN + nodeCount
+                * VALIDATOR_CACHE_NODE_LEN
+        );
         _writeUint32(data, 0, VALIDATOR_CACHE_MAGIC);
         _writeUint64(data, 4, totalVotingPower);
         _writeUint16(data, 12, validatorCount);
         _writeBytes32(data, 14, Header.bytes32LeafHash(validatorsHash));
+        _writeUint16(data, 46, nodeCount);
 
         uint256 offset = VALIDATOR_CACHE_HEADER_LEN;
         for (uint256 i = 0; i < vals.length; i++) {
@@ -348,6 +482,10 @@ contract Groth16ICS07Tendermint is
             _writeUint64(data, offset + 4, val.votingPower);
             _writeBytes32(data, offset + 12, val.pubKey);
             offset += VALIDATOR_CACHE_ENTRY_LEN;
+        }
+        for (uint256 i = 0; i < nodeHashes.length; i++) {
+            _writeBytes32(data, offset, nodeHashes[i]);
+            offset += VALIDATOR_CACHE_NODE_LEN;
         }
     }
 
@@ -403,10 +541,6 @@ contract Groth16ICS07Tendermint is
         _verifyBatchProof(msg_);
     }
 
-    function _verifyBatchAndQuorum(IUpdateClientMsgs.MsgUpdateClient memory msg_) internal {
-        _verifyFullBatchAndQuorum(msg_);
-    }
-
     function _verifyCachedBatchAndQuorum(
         bytes32 validatorsHash,
         IUpdateClientMsgs.MsgUpdateClient memory msg_
@@ -421,19 +555,19 @@ contract Groth16ICS07Tendermint is
             BatchLengthMismatch()
         );
 
-        address pointer = _cachedValidatorSets[validatorsHash];
+        address pointer = _validatorCachePointer(validatorsHash);
         if (pointer == address(0)) {
             revert ValidatorSetCacheMiss(validatorsHash);
         }
 
-        bytes memory cacheData = SSTORE2.read(pointer);
-        uint16 entryCount;
-        (totalVotingPower, entryCount,) = _readValidatorCacheHeader(validatorsHash, cacheData);
-
+        bytes memory cacheData = SSTORE2.read(pointer, 0, _validatorCacheEntryDataLen(_cachedValidatorEntryCount));
+        ValidatorCacheHeader memory cacheHeader = _readValidatorCacheHeader(validatorsHash, cacheData);
+        totalVotingPower = _cachedValidatorTotalVotingPower;
         uint64 accumulated = 0;
-        uint256 entryCursor = 0;
         bool hasPrevSigner = false;
         uint32 prevIdx = 0;
+        uint256 pubKeyBits = _validatorPubKeyOverrideBits;
+        uint256 votingPowerBits = _validatorVotingPowerOverrideBits;
         for (uint256 i = 0; i < msg_.signerIndices.length; i++) {
             if (!msg_.active[i]) {
                 continue; // dummy padding slot
@@ -448,8 +582,9 @@ contract Groth16ICS07Tendermint is
 
             uint64 votingPower;
             bytes32 pubKey;
-            (entryCursor, votingPower, pubKey) =
-                _findCachedSigner(validatorsHash, cacheData, entryCount, entryCursor, idx);
+            (votingPower, pubKey) = _resolveCurrentCachedValidator(
+                validatorsHash, cacheData, cacheHeader.entryCount, pubKeyBits, votingPowerBits, idx
+            );
             require(pubKey == msg_.signerPubkeys[i], PubkeyMismatch(idx));
             accumulated += votingPower;
         }
@@ -463,11 +598,7 @@ contract Groth16ICS07Tendermint is
     }
 
     function _hasUsableValidatorCache(bytes32 validatorsHash) private view returns (bool) {
-        address pointer = _cachedValidatorSets[validatorsHash];
-        if (pointer == address(0)) {
-            return false;
-        }
-        return _isValidatorCacheData(SSTORE2.read(pointer));
+        return _validatorCachePointer(validatorsHash) != address(0) && _cachedValidatorEntryCount != 0;
     }
 
     function _getUsableValidatorHashLeaf(bytes32 validatorsHash)
@@ -475,29 +606,25 @@ contract Groth16ICS07Tendermint is
         view
         returns (bool usable, bytes32 validatorsHashLeaf)
     {
-        address pointer = _cachedValidatorSets[validatorsHash];
-        if (pointer == address(0)) {
+        if (_validatorCachePointer(validatorsHash) == address(0)) {
             return (false, bytes32(0));
         }
-
-        bytes memory cacheData = SSTORE2.read(pointer);
-        if (!_isValidatorCacheData(cacheData)) {
-            return (false, bytes32(0));
-        }
-
-        (,, validatorsHashLeaf) = _readValidatorCacheHeader(validatorsHash, cacheData);
-        usable = true;
+        return (true, _cachedValidatorsHashLeaf);
     }
 
-    function _isValidatorCacheData(bytes memory cacheData) private pure returns (bool) {
-        if (cacheData.length < VALIDATOR_CACHE_HEADER_LEN) {
-            return false;
-        }
-        if (_readUint32(cacheData, 0) != VALIDATOR_CACHE_MAGIC) {
-            return false;
-        }
-        uint16 entryCount = _readUint16(cacheData, 12);
-        return cacheData.length == VALIDATOR_CACHE_HEADER_LEN + uint256(entryCount) * VALIDATOR_CACHE_ENTRY_LEN;
+    function _validatorCachePointer(bytes32 validatorsHash) private view returns (address) {
+        return validatorsHash == _cachedValidatorSetHash ? _cachedValidatorSetPointer : address(0);
+    }
+
+    function _setValidatorCache(bytes32 validatorsHash, bytes memory cacheData) private {
+        ValidatorCacheHeader memory cacheHeader = _readValidatorCacheHeader(validatorsHash, cacheData);
+        _cachedValidatorSetPointer = SSTORE2.write(cacheData);
+        _cachedValidatorSetHash = validatorsHash;
+        _cachedValidatorsHashLeaf = cacheHeader.validatorsHashLeaf;
+        _cachedValidatorTotalVotingPower = cacheHeader.totalVotingPower;
+        _cachedValidatorEntryCount = cacheHeader.entryCount;
+        _validatorPubKeyOverrideBits = 0;
+        _validatorVotingPowerOverrideBits = 0;
     }
 
     function _verifyBatchProof(IUpdateClientMsgs.MsgUpdateClient memory msg_) private {
@@ -533,7 +660,7 @@ contract Groth16ICS07Tendermint is
     )
         private
         pure
-        returns (uint64 totalVotingPower, uint16 entryCount, bytes32 validatorsHashLeaf)
+        returns (ValidatorCacheHeader memory cacheHeader)
     {
         if (cacheData.length < VALIDATOR_CACHE_HEADER_LEN) {
             revert CachedValidatorSetCorrupted(validatorsHash);
@@ -543,40 +670,221 @@ contract Groth16ICS07Tendermint is
             revert CachedValidatorSetCorrupted(validatorsHash);
         }
 
-        totalVotingPower = _readUint64(cacheData, 4);
-        entryCount = _readUint16(cacheData, 12);
-        validatorsHashLeaf = _readBytes32(cacheData, 14);
-        if (cacheData.length != VALIDATOR_CACHE_HEADER_LEN + uint256(entryCount) * VALIDATOR_CACHE_ENTRY_LEN) {
+        cacheHeader = ValidatorCacheHeader({
+            totalVotingPower: _readUint64(cacheData, 4),
+            entryCount: _readUint16(cacheData, 12),
+            validatorsHashLeaf: _readBytes32(cacheData, 14),
+            nodeCount: _readUint16(cacheData, 46)
+        });
+
+        if (
+            cacheHeader.entryCount == 0 || cacheHeader.entryCount > MAX_VALIDATOR_COUNT
+                || cacheHeader.nodeCount != cacheHeader.entryCount * 2 - 1
+                || !_isValidValidatorCacheDataLength(cacheData.length, cacheHeader.entryCount, cacheHeader.nodeCount)
+        ) {
             revert CachedValidatorSetCorrupted(validatorsHash);
         }
     }
 
-    function _findCachedSigner(
-        bytes32 validatorsHash,
-        bytes memory cacheData,
+    function _validatorCacheEntryDataLen(uint16 entryCount) private pure returns (uint256) {
+        return VALIDATOR_CACHE_HEADER_LEN + uint256(entryCount) * VALIDATOR_CACHE_ENTRY_LEN;
+    }
+
+    function _isValidValidatorCacheDataLength(
+        uint256 dataLength,
         uint16 entryCount,
-        uint256 entryCursor,
-        uint32 signerIndex
+        uint16 nodeCount
     )
         private
         pure
-        returns (uint256 nextCursor, uint64 votingPower, bytes32 pubKey)
+        returns (bool)
     {
-        nextCursor = entryCursor;
-        while (nextCursor < entryCount) {
-            uint256 offset = VALIDATOR_CACHE_HEADER_LEN + nextCursor * VALIDATOR_CACHE_ENTRY_LEN;
-            uint32 cachedIndex = _readUint32(cacheData, offset);
-            if (cachedIndex == signerIndex) {
-                votingPower = _readUint64(cacheData, offset + 4);
-                pubKey = _readBytes32(cacheData, offset + 12);
-                return (nextCursor + 1, votingPower, pubKey);
-            }
-            if (cachedIndex > signerIndex) {
-                break;
-            }
-            nextCursor++;
+        uint256 entryDataLen = _validatorCacheEntryDataLen(entryCount);
+        return dataLength == entryDataLen || dataLength == entryDataLen + uint256(nodeCount) * VALIDATOR_CACHE_NODE_LEN;
+    }
+
+    function _resolveCachedValidator(
+        bytes32 validatorsHash,
+        bytes memory cacheData,
+        ValidatorCacheHeader memory cacheHeader,
+        uint32 index
+    )
+        private
+        pure
+        returns (uint64 votingPower, bytes32 pubKey)
+    {
+        if (index >= cacheHeader.entryCount) {
+            revert CachedSignerNotFound(validatorsHash, index);
         }
-        revert CachedSignerNotFound(validatorsHash, signerIndex);
+
+        uint256 offset = VALIDATOR_CACHE_HEADER_LEN + uint256(index) * VALIDATOR_CACHE_ENTRY_LEN;
+        if (_readUint32(cacheData, offset) != index) {
+            revert CachedValidatorSetCorrupted(validatorsHash);
+        }
+        votingPower = _readUint64(cacheData, offset + 4);
+        pubKey = _readBytes32(cacheData, offset + 12);
+    }
+
+    function _resolveCurrentCachedValidator(
+        bytes32 validatorsHash,
+        bytes memory baseData,
+        uint16 entryCount,
+        uint256 pubKeyBits,
+        uint256 votingPowerBits,
+        uint32 index
+    )
+        private
+        view
+        returns (uint64 votingPower, bytes32 pubKey)
+    {
+        if (index >= entryCount) {
+            revert CachedSignerNotFound(validatorsHash, index);
+        }
+
+        uint16 shortIndex = uint16(index);
+        uint256 offset = VALIDATOR_CACHE_HEADER_LEN + uint256(index) * VALIDATOR_CACHE_ENTRY_LEN;
+        if (_readUint32(baseData, offset) != index) {
+            revert CachedValidatorSetCorrupted(validatorsHash);
+        }
+        uint256 mask = uint256(1) << uint256(index);
+        votingPower = (votingPowerBits & mask) == 0
+            ? _readUint64(baseData, offset + 4)
+            : _validatorVotingPowerOverrides[shortIndex];
+        pubKey = (pubKeyBits & mask) == 0 ? _readBytes32(baseData, offset + 12) : _validatorPubKeyOverrides[shortIndex];
+    }
+
+    function _recomputeCurrentDeltaRoot(
+        bytes32 validatorsHash,
+        bytes memory baseData,
+        uint16 validatorCount,
+        IUpdateClientMsgs.ValidatorSetDelta memory delta,
+        bytes32[] memory newLeafHashes,
+        uint256 pubKeyBits,
+        uint256 votingPowerBits
+    )
+        private
+        view
+        returns (bytes32 root)
+    {
+        DeltaRecomputeContext memory ctx = DeltaRecomputeContext({
+            validatorsHash: validatorsHash,
+            baseData: baseData,
+            validatorCount: validatorCount,
+            delta: delta,
+            newLeafHashes: newLeafHashes,
+            pubKeyBits: pubKeyBits,
+            votingPowerBits: votingPowerBits,
+            overrideBits: pubKeyBits | votingPowerBits
+        });
+        root = _recomputeCurrentDeltaRange(ctx, 0, validatorCount, 0, 0, delta.leafCount);
+    }
+
+    function _recomputeCurrentDeltaRange(
+        DeltaRecomputeContext memory ctx,
+        uint256 from,
+        uint256 to,
+        uint256 nodeIndex,
+        uint256 changedFrom,
+        uint256 changedTo
+    )
+        private
+        view
+        returns (bytes32 nodeHash)
+    {
+        if (changedFrom == changedTo && !_rangeHasOverride(ctx.overrideBits, from, to)) {
+            return _getBaseNodeHash(ctx.validatorsHash, ctx.baseData, ctx.validatorCount, nodeIndex);
+        }
+
+        if (nodeIndex > type(uint16).max) {
+            revert BatchLengthMismatch();
+        }
+
+        uint256 length = to - from;
+        if (length == 1) {
+            if (changedFrom != changedTo) {
+                if (changedTo != changedFrom + 1 || from != ctx.delta.indices[changedFrom]) {
+                    revert CachedValidatorSetCorrupted(ctx.validatorsHash);
+                }
+                return ctx.newLeafHashes[changedFrom];
+            }
+
+            (uint64 votingPower, bytes32 pubKey) = _resolveCurrentCachedValidator(
+                ctx.validatorsHash, ctx.baseData, ctx.validatorCount, ctx.pubKeyBits, ctx.votingPowerBits, uint32(from)
+            );
+            return Header.simpleValidatorLeafHash(pubKey, votingPower);
+        }
+
+        uint256 split = _splitPoint(length);
+        uint256 mid = from + split;
+        uint256 leftNodeIndex = nodeIndex + 1;
+        uint256 rightNodeIndex = nodeIndex + 1 + (split * 2 - 1);
+        uint256 rightChangedFrom = changedFrom;
+        while (rightChangedFrom < changedTo && ctx.delta.indices[rightChangedFrom] < mid) {
+            rightChangedFrom++;
+        }
+
+        bytes32 left;
+        bytes32 right;
+        left = _recomputeCurrentDeltaRange(ctx, from, mid, leftNodeIndex, changedFrom, rightChangedFrom);
+        right = _recomputeCurrentDeltaRange(ctx, mid, to, rightNodeIndex, rightChangedFrom, changedTo);
+
+        return Header.innerHash(left, right);
+    }
+
+    function _rangeHasOverride(uint256 overrideBits, uint256 from, uint256 to) private pure returns (bool) {
+        uint256 width = to - from;
+        uint256 mask = ((uint256(1) << width) - 1) << from;
+        return (overrideBits & mask) != 0;
+    }
+
+    function _getBaseNodeHash(
+        bytes32 validatorsHash,
+        bytes memory baseData,
+        uint16 entryCount,
+        uint256 nodeIndex
+    )
+        private
+        pure
+        returns (bytes32)
+    {
+        uint256 offset = VALIDATOR_CACHE_HEADER_LEN + uint256(entryCount) * VALIDATOR_CACHE_ENTRY_LEN + nodeIndex
+            * VALIDATOR_CACHE_NODE_LEN;
+        if (offset + VALIDATOR_CACHE_NODE_LEN > baseData.length) {
+            revert CachedValidatorSetCorrupted(validatorsHash);
+        }
+        return _readBytes32(baseData, offset);
+    }
+
+    function _writeMerkleNodes(
+        bytes32[] memory leafHashes,
+        uint256 from,
+        uint256 to,
+        bytes32[] memory nodeHashes,
+        uint256 nodeIndex
+    )
+        private
+        pure
+        returns (bytes32 nodeHash)
+    {
+        uint256 length = to - from;
+        if (length == 1) {
+            nodeHash = leafHashes[from];
+            nodeHashes[nodeIndex] = nodeHash;
+            return nodeHash;
+        }
+
+        uint256 split = _splitPoint(length);
+        bytes32 left = _writeMerkleNodes(leafHashes, from, from + split, nodeHashes, nodeIndex + 1);
+        bytes32 right = _writeMerkleNodes(leafHashes, from + split, to, nodeHashes, nodeIndex + 1 + (split * 2 - 1));
+        nodeHash = Header.innerHash(left, right);
+        nodeHashes[nodeIndex] = nodeHash;
+    }
+
+    function _splitPoint(uint256 n) private pure returns (uint256 split) {
+        split = 1;
+        while ((split << 1) < n) {
+            split <<= 1;
+        }
     }
 
     function _writeUint16(bytes memory data, uint256 offset, uint256 value) private pure {
@@ -733,7 +1041,7 @@ contract Groth16ICS07Tendermint is
     }
 
     /// @inheritdoc ILightClient
-    function upgradeClient(bytes calldata) external view notFrozen onlyProofSubmitter {
+    function upgradeClient(bytes calldata) external pure {
         // NOTE: This feature will not be supported. (#130)
         revert FeatureNotSupported();
     }
@@ -913,7 +1221,7 @@ contract Groth16ICS07Tendermint is
         view
     {
         bytes32 trustedConsensusStateHash = keccak256(abi.encode(trustedConsensusState));
-        bytes32 storedConsensusStateHash = getConsensusStateHash(proofHeight);
+        bytes32 storedConsensusStateHash = _getConsensusStateHash(proofHeight);
         require(
             trustedConsensusStateHash == storedConsensusStateHash,
             ConsensusStateHashMismatch(storedConsensusStateHash, trustedConsensusStateHash)
@@ -931,7 +1239,7 @@ contract Groth16ICS07Tendermint is
         _validateClientStateAndTime(output.clientState, output.time);
 
         bytes32 outputConsensusStateHash = keccak256(abi.encode(output.trustedConsensusState));
-        bytes32 storedConsensusStateHash = getConsensusStateHash(output.trustedHeight.revisionHeight);
+        bytes32 storedConsensusStateHash = _getConsensusStateHash(output.trustedHeight.revisionHeight);
         require(
             outputConsensusStateHash == storedConsensusStateHash,
             ConsensusStateHashMismatch(storedConsensusStateHash, outputConsensusStateHash)
@@ -955,7 +1263,7 @@ contract Groth16ICS07Tendermint is
         // make sure the trusted consensus state from header 1 is known (trusted) by matching it with the one in the
         // mapping
         bytes32 outputConsensusStateHash1 = keccak256(abi.encode(trustedConsensusState1));
-        bytes32 storedConsensusStateHash1 = getConsensusStateHash(output.trustedHeight1.revisionHeight);
+        bytes32 storedConsensusStateHash1 = _getConsensusStateHash(output.trustedHeight1.revisionHeight);
         require(
             outputConsensusStateHash1 == storedConsensusStateHash1,
             ConsensusStateHashMismatch(storedConsensusStateHash1, outputConsensusStateHash1)
@@ -964,7 +1272,7 @@ contract Groth16ICS07Tendermint is
         // make sure the trusted consensus state from header 2 is known (trusted) by matching it with the one in the
         // mapping
         bytes32 outputConsensusStateHash2 = keccak256(abi.encode(trustedConsensusState2));
-        bytes32 storedConsensusStateHash2 = getConsensusStateHash(output.trustedHeight2.revisionHeight);
+        bytes32 storedConsensusStateHash2 = _getConsensusStateHash(output.trustedHeight2.revisionHeight);
         require(
             outputConsensusStateHash2 == storedConsensusStateHash2,
             ConsensusStateHashMismatch(storedConsensusStateHash2, outputConsensusStateHash2)

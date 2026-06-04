@@ -27,6 +27,8 @@ interface IUpdateClientMsgs {
     ///      from proposedHeader.signedHeader.commit and proposedHeader.signedHeader.header — no
     ///      need to duplicate them in this message. The in-circuit reconstruction uses the same
     ///      values.
+    /// @param currentValidatorSetDelta Optional delta used when `proposedHeader.validatorSet`
+    ///      is omitted and the current validators hash can be derived from a cached base set.
     struct MsgUpdateClient {
         IICS07TendermintMsgs.ClientState clientState;
         IICS07TendermintMsgs.ConsensusState trustedConsensusState;
@@ -41,6 +43,21 @@ interface IUpdateClientMsgs {
         uint64[] timestampSeconds;
         uint32[] timestampNanos;
         bool[] active;
+        ValidatorSetDelta currentValidatorSetDelta;
+    }
+
+    /// @notice Current validator-set delta from a cached base root.
+    /// @param baseValidatorsHash Cached validator-set hash to derive from.
+    /// @param leafCount Number of active entries in the fixed-size arrays.
+    /// @param indices Sorted validator-set indices whose leaves changed.
+    /// @param pubKeys New compressed Ed25519 public keys for `indices`.
+    /// @param votingPowers New voting powers for `indices`.
+    struct ValidatorSetDelta {
+        bytes32 baseValidatorsHash;
+        uint8 leafCount;
+        uint32[16] indices;
+        bytes32[16] pubKeys;
+        uint64[16] votingPowers;
     }
 
     /// @notice The public value output for the gnark update client program.

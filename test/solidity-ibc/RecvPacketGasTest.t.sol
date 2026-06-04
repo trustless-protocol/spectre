@@ -215,21 +215,20 @@ contract RecvPacketGasTest is IntegrationTest {
             tsN[i] = uint32(i * 1_000_000);
         }
 
-        IUpdateClientMsgs.MsgUpdateClient memory m = IUpdateClientMsgs.MsgUpdateClient({
-            clientState: cs,
-            trustedConsensusState: trustedCS,
-            proposedHeader: header,
-            time: NEW_TS_NS,
-            proof: [uint256(0), 0, 0, 0, 0, 0, 0, 0],
-            commitments: [uint256(0), 0],
-            commitmentPok: [uint256(0), 0],
-            bucket: bucket,
-            signerIndices: idx,
-            signerPubkeys: pks,
-            timestampSeconds: tsS,
-            timestampNanos: tsN,
-            active: act
-        });
+        IUpdateClientMsgs.MsgUpdateClient memory m;
+        m.clientState = cs;
+        m.trustedConsensusState = trustedCS;
+        m.proposedHeader = header;
+        m.time = NEW_TS_NS;
+        m.proof = [uint256(0), 0, 0, 0, 0, 0, 0, 0];
+        m.commitments = [uint256(0), 0];
+        m.commitmentPok = [uint256(0), 0];
+        m.bucket = bucket;
+        m.signerIndices = idx;
+        m.signerPubkeys = pks;
+        m.timestampSeconds = tsS;
+        m.timestampNanos = tsN;
+        m.active = act;
         bytes memory encodedUpdate = abi.encode(m);
 
         // First, update the client state to seed the consensus state height 1001
