@@ -40,10 +40,8 @@ contract MembershipDepthTest is Test {
         m = new MembershipDepthHarness();
     }
 
-    // Build an existence proof whose leaf matches the Tendermint spec (so the leaf
-    // checks pass and we reach the depth gate) with a path of `pathLen` inner ops.
-    // The Tendermint spec skips the IAVL inner-op loop, so the path contents are
-    // irrelevant past the depth gate.
+    // Build an existence proof whose leaf and inner ops match the Tendermint spec
+    // (so validation reaches the depth gate) with a path of `pathLen` inner ops.
     function _proofWithPath(
         uint256 pathLen,
         IMembershipMsgs.ProofSpec memory spec
@@ -82,7 +80,7 @@ contract MembershipDepthTest is Test {
         IMembershipMsgs.ExistenceProof memory proof = _proofWithPath(MAX_DEPTH, spec);
 
         // Reaching here without ProofPathTooLong means the boundary (== MAX_PROOF_DEPTH)
-        // is accepted; the Tendermint spec skips the IAVL inner-op loop afterwards.
+        // is accepted.
         m.exposedCheckExistenceProof(proof, spec);
     }
 

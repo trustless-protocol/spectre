@@ -335,51 +335,51 @@ contract Membership  is IMembership {
             }
         }
 
-        if (spec.specType == IMembershipMsgs.SpecType.IAVL) {
-            uint256 stepLength = proof.path.length;
-            for (uint256 i = 0; i < stepLength; i++) {
-                uint256 remainingLength = ensureIavlPrefix(proof.path[i].prefix, 0);
-                IMembershipMsgs.InnerOp memory step = proof.path[i];
+        uint256 stepLength = proof.path.length;
+        for (uint256 i = 0; i < stepLength; i++) {
+            IMembershipMsgs.InnerOp memory innerOp = proof.path[i];
+
+            if (spec.specType == IMembershipMsgs.SpecType.IAVL) {
+                uint256 remainingLength = ensureIavlPrefix(innerOp.prefix, 0);
                 if (remainingLength != 0) {
                     // 1 byte due to containing length prefix for left hash.
                     // 33 bytes due to IAVL length prefix + left hash + next IAVL legnth prefix
                     if (remainingLength != 1 && remainingLength != 34) {
                         revert("bad prefix in inner op");
                     }
-                    if (step.hashOp != IMembershipMsgs.HashOp.SHA256) {
+                    if (innerOp.hashOp != IMembershipMsgs.HashOp.SHA256) {
                         revert("bad hash operation");
                     }
                 }
+            }
 
-                if (!spec.hasInnerSpec) {
-                    revert("InnerSpec is required");
-                }
-                IMembershipMsgs.InnerOp memory innerOp = proof.path[i];
-                if (spec.innerSpec.hashOp != innerOp.hashOp) {
-                    revert("Unexpected inner hash operation");
-                }
+            if (!spec.hasInnerSpec) {
+                revert("InnerSpec is required");
+            }
+            if (spec.innerSpec.hashOp != innerOp.hashOp) {
+                revert("Unexpected inner hash operation");
+            }
 
-                if (leafSpecPrefix.length <= innerOp.prefix.length &&
-                    keccak256(leafSpecPrefix) == keccak256(getSlice(innerOp.prefix, 0, leafSpecPrefix.length))) {
-                    revert("Inner node with leaf prefix");
-                }
+            if (leafSpecPrefix.length <= innerOp.prefix.length &&
+                keccak256(leafSpecPrefix) == keccak256(getSlice(innerOp.prefix, 0, leafSpecPrefix.length))) {
+                revert("Inner node with leaf prefix");
+            }
 
-                if (innerOp.prefix.length < spec.innerSpec.minPrefixLength) {
-                    revert("Inner prefix too short");
-                }
+            if (innerOp.prefix.length < spec.innerSpec.minPrefixLength) {
+                revert("Inner prefix too short");
+            }
 
-                uint32 maxLeftChild = uint32(spec.innerSpec.childOrder.length - 1) * (spec.innerSpec.childSize);
-                if (innerOp.prefix.length > maxLeftChild + spec.innerSpec.maxPrefixLength) {
-                    revert("Inner prefix too long");
-                }
+            uint32 maxLeftChild = uint32(spec.innerSpec.childOrder.length - 1) * (spec.innerSpec.childSize);
+            if (innerOp.prefix.length > maxLeftChild + spec.innerSpec.maxPrefixLength) {
+                revert("Inner prefix too long");
+            }
 
-                if (spec.innerSpec.childSize == 0) {
-                    revert("Inner child size must >=1");
-                }
+            if (spec.innerSpec.childSize == 0) {
+                revert("Inner child size must >=1");
+            }
 
-                if (innerOp.suffix.length % spec.innerSpec.childSize != 0) {
-                    revert("Inner suffix malformed");
-                }
+            if (innerOp.suffix.length % spec.innerSpec.childSize != 0) {
+                revert("Inner suffix malformed");
             }
         }
     }
