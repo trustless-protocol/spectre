@@ -50,6 +50,10 @@ contract SolidityLightClient is ILightClient {
         revert("not implemented");
     }
 
+    function unfreeze() external pure {
+        revert("not implemented");
+    }
+
     function upgradeClient(bytes calldata) external pure {
         revert("not implemented");
     }

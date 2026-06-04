@@ -46,6 +46,17 @@ interface IICS02ClientAccessControlled {
         address client
     )
         external;
+
+    /// @notice Submits misbehaviour to the client with the given client identifier.
+    /// @dev Can only be called with the `MISBEHAVIOUR_SUBMITTER_ROLE`.
+    /// @param clientId The client identifier
+    /// @param misbehaviourMsg The misbehaviour message
+    function submitMisbehaviour(string calldata clientId, bytes calldata misbehaviourMsg) external;
+
+    /// @notice Unfreezes a previously frozen client.
+    /// @dev Can only be called with the `ADMIN_ROLE` (governance recovery path).
+    /// @param clientId The client identifier of the frozen client
+    function unfreezeClient(string calldata clientId) external;
 }
 
 /// @title ICS02 Light Client Router Interface
@@ -80,11 +91,6 @@ interface IICS02Client is IICS02ClientAccessControlled {
         external
         returns (string memory);
 
-    /// @notice Submits misbehaviour to the client with the given client identifier.
-    /// @param clientId The client identifier
-    /// @param misbehaviourMsg The misbehaviour message
-    function submitMisbehaviour(string calldata clientId, bytes calldata misbehaviourMsg) external;
-
     // ============ Events ============
 
     /// @notice Emitted when a new client is added to the client router.
@@ -107,4 +113,8 @@ interface IICS02Client is IICS02ClientAccessControlled {
     /// @notice Emitted when a misbehaviour is submitted to a client and the client is frozen.
     /// @param clientId The client identifier of the frozen client
     event ICS02MisbehaviourSubmitted(string clientId);
+
+    /// @notice Emitted when a frozen client is unfrozen via governance recovery.
+    /// @param clientId The client identifier of the unfrozen client
+    event ICS02ClientUnfrozen(string clientId);
 }

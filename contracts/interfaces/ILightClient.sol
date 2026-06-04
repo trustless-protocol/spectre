@@ -29,6 +29,9 @@ interface ILightClient {
     /// @param misbehaviourMsg The misbehaviour message
     function misbehaviour(bytes calldata misbehaviourMsg) external;
 
+    /// @notice Unfreezes a previously frozen client. Governance recovery path.
+    function unfreeze() external;
+
     /// @notice Upgrading the client
     /// @param upgradeMsg The upgrade message
     function upgradeClient(bytes calldata upgradeMsg) external;
