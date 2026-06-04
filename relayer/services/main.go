@@ -284,6 +284,21 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 		sendErr = s.worker.TxHandler.SendEthTx(ctx, rawMsgs[0])
 	}
 
+	cacheFallbackAttempted := false
+	if sendErr != nil && errors.Is(sendErr, ErrValidatorCacheRace) && updateBuild.HasMsg && updateBuild.UsedValidatorCache {
+		cacheFallbackAttempted = true
+		log.Printf("[UpdateClient] validator cache changed during batch submission; retrying with full validator set")
+		rawMsgs[0] = updateBuild.FullValidatorSetFallbackMsg
+		if len(msgs) >= 2 {
+			sendErr = s.worker.TxHandler.SendEthTxBatch(ctx, rawMsgs)
+		} else {
+			sendErr = s.worker.TxHandler.SendEthTx(ctx, rawMsgs[0])
+		}
+		if sendErr != nil {
+			log.Printf("[UpdateClient] full validator-set batch retry failed: %v", sendErr)
+		}
+	}
+
 	if sendErr != nil {
 		failed := make([]CosmosPacket, 0, len(msgs))
 		for _, m := range msgs {
@@ -297,7 +312,9 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 		// an on-chain revert is deterministic (consumes retry budget → eventual
 		// dead-letter); anything else (RPC, timeout) is transient and must not
 		// burn the budget for a valid packet (issue #80 review).
-		if errors.Is(sendErr, ErrPermanentRelayFailure) {
+		if errors.Is(sendErr, ErrValidatorCacheRace) || cacheFallbackAttempted {
+			s.BatchBuilder.RequeueCosmosTransient(failed)
+		} else if errors.Is(sendErr, ErrPermanentRelayFailure) {
 			s.BatchBuilder.RequeueCosmosPermanent(failed)
 		} else {
 			s.BatchBuilder.RequeueCosmosTransient(failed)

@@ -44,6 +44,47 @@ import (
 	"github.com/ethereum/go-ethereum/crypto"
 )
 
+var validatorCacheRaceErrorSelectors = map[[4]byte]string{
+	errorSelector("ValidatorSetCacheMiss(bytes32)"): "ValidatorSetCacheMiss",
+}
+
+func errorSelector(signature string) [4]byte {
+	hash := crypto.Keccak256([]byte(signature))
+	var selector [4]byte
+	copy(selector[:], hash[:4])
+	return selector
+}
+
+func validatorCacheRaceErrorName(callErr error) (string, bool) {
+	type dataErr interface {
+		ErrorData() interface{}
+	}
+	de, ok := callErr.(dataErr)
+	if !ok {
+		return "", false
+	}
+
+	var data []byte
+	switch raw := de.ErrorData().(type) {
+	case string:
+		data = common.FromHex(raw)
+	case fmt.Stringer:
+		data = common.FromHex(raw.String())
+	case []byte:
+		data = raw
+	default:
+		return "", false
+	}
+	if len(data) < 4 {
+		return "", false
+	}
+
+	var selector [4]byte
+	copy(selector[:], data[:4])
+	name, ok := validatorCacheRaceErrorSelectors[selector]
+	return name, ok
+}
+
 type Handler struct {
 }
 
@@ -552,6 +593,10 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 			if de, ok := callErr.(dataErr); ok {
 				log.Printf("[SendEthTx] Revert data (hex): %v", de.ErrorData())
 			}
+			if name, ok := validatorCacheRaceErrorName(callErr); ok {
+				return fmt.Errorf("tx %s reverted with %s (status=0, gasUsed=%d): %w",
+					tx.Hash().Hex(), name, receipt.GasUsed, services.ErrValidatorCacheRace)
+			}
 		}
 		return fmt.Errorf("tx %s reverted (status=0, gasUsed=%d): %w", tx.Hash().Hex(), receipt.GasUsed, services.ErrPermanentRelayFailure)
 	}
@@ -740,6 +785,10 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 			}
 			if de, ok := callErr.(dataErr); ok {
 				log.Printf("[SendEthTxBatch] Revert data (hex): %v", de.ErrorData())
+			}
+			if name, ok := validatorCacheRaceErrorName(callErr); ok {
+				return fmt.Errorf("multicall tx %s reverted with %s (status=0, gasUsed=%d, labels=%s): %w",
+					tx.Hash().Hex(), name, receipt.GasUsed, labelStr, services.ErrValidatorCacheRace)
 			}
 		}
 		return fmt.Errorf("multicall tx %s reverted (status=0, gasUsed=%d, labels=%s): %w", tx.Hash().Hex(), receipt.GasUsed, labelStr, services.ErrPermanentRelayFailure)

@@ -8,6 +8,18 @@ import (
 	contractICS26Router "relayer/bindings/ICS26Router"
 )
 
+type testDataError struct {
+	data interface{}
+}
+
+func (e testDataError) Error() string {
+	return "execution reverted"
+}
+
+func (e testDataError) ErrorData() interface{} {
+	return e.data
+}
+
 // These tests cover the calldata packing layer that SendEthTxBatch relies on.
 // We do not exercise the RPC submission path here — that requires a full
 // services.Context + ethclient mock and is validated end-to-end via the
@@ -36,11 +48,11 @@ func samplePacket() contractICS26Router.IICS26RouterMsgsPacket {
 		DestClient:       "08-wasm-0",
 		TimeoutTimestamp: 1_700_000_000,
 		Payloads: []contractICS26Router.IICS26RouterMsgsPayload{{
-			SourcePort:  "transfer",
-			DestPort:    "transfer",
-			Version:     "ics20-2",
-			Encoding:    "abi",
-			Value:       []byte{0x01, 0x02, 0x03},
+			SourcePort: "transfer",
+			DestPort:   "transfer",
+			Version:    "ics20-2",
+			Encoding:   "abi",
+			Value:      []byte{0x01, 0x02, 0x03},
 		}},
 	}
 }
@@ -102,6 +114,23 @@ func TestSelectorsForBatchedMsgs(t *testing.T) {
 				t.Fatalf("selector mismatch: got %s, want %s", gotSelector, tc.selector)
 			}
 		})
+	}
+}
+
+func TestValidatorCacheRaceErrorName(t *testing.T) {
+	selector := errorSelector("ValidatorSetCacheMiss(bytes32)")
+	data := append(selector[:], make([]byte, 32)...)
+	name, ok := validatorCacheRaceErrorName(testDataError{data: "0x" + hex.EncodeToString(data)})
+	if !ok {
+		t.Fatal("expected ValidatorSetCacheMiss to be classified as a cache race")
+	}
+	if name != "ValidatorSetCacheMiss" {
+		t.Fatalf("error name: got %q want ValidatorSetCacheMiss", name)
+	}
+
+	unknown := errorSelector("ProofVerificationFailed()")
+	if name, ok := validatorCacheRaceErrorName(testDataError{data: unknown[:]}); ok {
+		t.Fatalf("did not expect unknown selector to be classified, got %q", name)
 	}
 }
 
