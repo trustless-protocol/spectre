@@ -12,6 +12,7 @@ import { IICS20Errors } from "../../contracts/errors/IICS20Errors.sol";
 import { IIBCAppCallbacks } from "../../contracts/msgs/IIBCAppCallbacks.sol";
 import { IERC20Errors } from "@openzeppelin-contracts/interfaces/draft-IERC6093.sol";
 import { IICS26Router } from "../../contracts/interfaces/IICS26Router.sol";
+import { IICS20Transfer } from "../../contracts/interfaces/IICS20Transfer.sol";
 import { IIBCSenderCallbacks } from "../../contracts/interfaces/IIBCSenderCallbacks.sol";
 
 import { ICS20Transfer } from "../../contracts/ICS20Transfer.sol";
@@ -25,7 +26,11 @@ import { Escrow } from "../../contracts/utils/Escrow.sol";
 import { ISignatureTransfer } from "@uniswap/permit2/src/interfaces/ISignatureTransfer.sol";
 import { DeployPermit2 } from "@uniswap/permit2/test/utils/DeployPermit2.sol";
 import { PermitSignature } from "./utils/PermitSignature.sol";
-import { CallbackReceiver } from "./mocks/CallbackReceiver.sol";
+import {
+    CallbackReceiver,
+    GasConsumingCallbackReceiver,
+    RevertingCallbackReceiver
+} from "./mocks/CallbackReceiver.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 import { IBCRolesLib } from "../../contracts/utils/IBCRolesLib.sol";
 import { TestHelper } from "./utils/TestHelper.sol";
@@ -419,6 +424,85 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
         ics20Transfer.onAcknowledgementPacket(callbackMsg);
     }
 
+    function testFuzz_success_onAcknowledgementPacketRevertingCallback(uint256 amount, uint64 seq) public {
+        address sender = address(new RevertingCallbackReceiver());
+        string memory sourceClient = th.randomString();
+        string memory destClient = th.randomString();
+        string memory memo = th.randomString();
+        string memory receiver = th.randomString();
+        address relayer = makeAddr("relayer");
+
+        IIBCAppCallbacks.OnAcknowledgementPacketCallback memory callbackMsg =
+            IIBCAppCallbacks.OnAcknowledgementPacketCallback({
+                sourceClient: sourceClient,
+                destinationClient: destClient,
+                sequence: seq,
+                payload: IICS26RouterMsgs.Payload({
+                    sourcePort: ICS20Lib.DEFAULT_PORT_ID,
+                    destPort: ICS20Lib.DEFAULT_PORT_ID,
+                    version: ICS20Lib.ICS20_VERSION,
+                    encoding: ICS20Lib.ICS20_ENCODING,
+                    value: abi.encode(
+                        IICS20TransferMsgs.FungibleTokenPacketData({
+                            denom: Strings.toHexString(address(env.erc20())),
+                            amount: amount,
+                            sender: Strings.toHexString(sender),
+                            receiver: receiver,
+                            memo: memo
+                        })
+                    )
+                }),
+                acknowledgement: ICS20Lib.SUCCESSFUL_ACKNOWLEDGEMENT_JSON,
+                relayer: relayer
+            });
+
+        bytes memory reason = abi.encodeWithSignature("Error(string)", "ack callback failed");
+        vm.expectEmit(true, false, false, true, address(ics20Transfer));
+        emit IICS20Transfer.IBCSenderAckPacketCallbackError(sender, reason);
+
+        vm.prank(ics26);
+        ics20Transfer.onAcknowledgementPacket(callbackMsg);
+    }
+
+    function testFuzz_success_onAcknowledgementPacketOOGCallback(uint256 amount, uint64 seq) public {
+        address sender = address(new GasConsumingCallbackReceiver());
+        string memory sourceClient = th.randomString();
+        string memory destClient = th.randomString();
+        string memory memo = th.randomString();
+        string memory receiver = th.randomString();
+        address relayer = makeAddr("relayer");
+
+        IIBCAppCallbacks.OnAcknowledgementPacketCallback memory callbackMsg =
+            IIBCAppCallbacks.OnAcknowledgementPacketCallback({
+                sourceClient: sourceClient,
+                destinationClient: destClient,
+                sequence: seq,
+                payload: IICS26RouterMsgs.Payload({
+                    sourcePort: ICS20Lib.DEFAULT_PORT_ID,
+                    destPort: ICS20Lib.DEFAULT_PORT_ID,
+                    version: ICS20Lib.ICS20_VERSION,
+                    encoding: ICS20Lib.ICS20_ENCODING,
+                    value: abi.encode(
+                        IICS20TransferMsgs.FungibleTokenPacketData({
+                            denom: Strings.toHexString(address(env.erc20())),
+                            amount: amount,
+                            sender: Strings.toHexString(sender),
+                            receiver: receiver,
+                            memo: memo
+                        })
+                    )
+                }),
+                acknowledgement: ICS20Lib.SUCCESSFUL_ACKNOWLEDGEMENT_JSON,
+                relayer: relayer
+            });
+
+        vm.expectEmit(true, false, false, true, address(ics20Transfer));
+        emit IICS20Transfer.IBCSenderAckPacketCallbackError(sender, bytes(""));
+
+        vm.prank(ics26);
+        ics20Transfer.onAcknowledgementPacket{ gas: 500_000 }(callbackMsg);
+    }
+
     function testFuzz_failure_onAcknowledgementPacket(uint256 amount, uint64 seq) public {
         address sender = makeAddr("sender");
         string memory sourceClient = th.randomString();
@@ -587,6 +671,93 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
         vm.expectCall(sender, abi.encodeCall(IIBCSenderCallbacks.onTimeoutPacket, (callbackMsg)));
         vm.prank(ics26);
         ics20Transfer.onTimeoutPacket(callbackMsg);
+    }
+
+    function testFuzz_success_onTimeoutPacketRevertingCallback(uint256 amount, uint64 seq) public {
+        address sender = address(new RevertingCallbackReceiver());
+        string memory sourceClient = th.randomString();
+        string memory destClient = th.randomString();
+        string memory memo = th.randomString();
+        string memory receiver = th.randomString();
+        address relayer = makeAddr("relayer");
+
+        IIBCAppCallbacks.OnTimeoutPacketCallback memory callbackMsg = IIBCAppCallbacks.OnTimeoutPacketCallback({
+            sourceClient: sourceClient,
+            destinationClient: destClient,
+            sequence: seq,
+            payload: IICS26RouterMsgs.Payload({
+                sourcePort: ICS20Lib.DEFAULT_PORT_ID,
+                destPort: ICS20Lib.DEFAULT_PORT_ID,
+                version: ICS20Lib.ICS20_VERSION,
+                encoding: ICS20Lib.ICS20_ENCODING,
+                value: abi.encode(
+                    IICS20TransferMsgs.FungibleTokenPacketData({
+                        denom: Strings.toHexString(address(env.erc20())),
+                        amount: amount,
+                        sender: Strings.toHexString(sender),
+                        receiver: receiver,
+                        memo: memo
+                    })
+                )
+            }),
+            relayer: relayer
+        });
+
+        bytes32 someAddress = keccak256("someAddress");
+        vm.store(address(ics20Transfer), _getEscrowMappingSlot(sourceClient), someAddress);
+
+        address escrowAddress = address(uint160(uint256(someAddress)));
+        vm.mockCall(escrowAddress, Escrow.recvCallback.selector, bytes(""));
+
+        bytes memory reason = abi.encodeWithSignature("Error(string)", "timeout callback failed");
+        vm.expectEmit(true, false, false, true, address(ics20Transfer));
+        emit IICS20Transfer.IBCSenderTimeoutPacketCallbackError(sender, reason);
+
+        vm.prank(ics26);
+        ics20Transfer.onTimeoutPacket(callbackMsg);
+    }
+
+    function testFuzz_success_onTimeoutPacketOOGCallback(uint256 amount, uint64 seq) public {
+        address sender = address(new GasConsumingCallbackReceiver());
+        string memory sourceClient = th.randomString();
+        string memory destClient = th.randomString();
+        string memory memo = th.randomString();
+        string memory receiver = th.randomString();
+        address relayer = makeAddr("relayer");
+
+        IIBCAppCallbacks.OnTimeoutPacketCallback memory callbackMsg = IIBCAppCallbacks.OnTimeoutPacketCallback({
+            sourceClient: sourceClient,
+            destinationClient: destClient,
+            sequence: seq,
+            payload: IICS26RouterMsgs.Payload({
+                sourcePort: ICS20Lib.DEFAULT_PORT_ID,
+                destPort: ICS20Lib.DEFAULT_PORT_ID,
+                version: ICS20Lib.ICS20_VERSION,
+                encoding: ICS20Lib.ICS20_ENCODING,
+                value: abi.encode(
+                    IICS20TransferMsgs.FungibleTokenPacketData({
+                        denom: Strings.toHexString(address(env.erc20())),
+                        amount: amount,
+                        sender: Strings.toHexString(sender),
+                        receiver: receiver,
+                        memo: memo
+                    })
+                )
+            }),
+            relayer: relayer
+        });
+
+        bytes32 someAddress = keccak256("someAddress");
+        vm.store(address(ics20Transfer), _getEscrowMappingSlot(sourceClient), someAddress);
+
+        address escrowAddress = address(uint160(uint256(someAddress)));
+        vm.mockCall(escrowAddress, Escrow.recvCallback.selector, bytes(""));
+
+        vm.expectEmit(true, false, false, true, address(ics20Transfer));
+        emit IICS20Transfer.IBCSenderTimeoutPacketCallbackError(sender, bytes(""));
+
+        vm.prank(ics26);
+        ics20Transfer.onTimeoutPacket{ gas: 500_000 }(callbackMsg);
     }
 
     function testFuzz_failure_onTimeoutPacket(uint256 amount, uint64 seq) public {
