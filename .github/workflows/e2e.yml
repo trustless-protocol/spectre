@@ -68,6 +68,9 @@ jobs:
           sudo apt update
           sudo apt install -y kurtosis-cli
           kurtosis analytics disable
+          # The interchaintest suite connects to a running local Kurtosis engine
+          # (127.0.0.1:9710); the CLI does not auto-start it.
+          kurtosis engine start
 
       - name: Run E2E test
         # The just test-e2e recipe builds contracts, installs the relayer binary,
