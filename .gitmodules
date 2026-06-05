@@ -1,0 +1,6 @@
+[submodule "third_party/decentrio-gnark"]
+	path = third_party/decentrio-gnark
+	url = https://github.com/decentrio/gnark.git
+[submodule "third_party/ecip-gnark"]
+	path = third_party/ecip-gnark
+	url = https://github.com/decentrio/ecip-gnark.git
