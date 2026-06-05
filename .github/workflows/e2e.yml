@@ -27,11 +27,17 @@ jobs:
     steps:
       # Private gnark submodules need a token with read access to
       # decentrio/gnark + decentrio/ecip-gnark (SUBMODULE_TOKEN secret).
+      # fast-ibc via the default GITHUB_TOKEN; private gnark submodules are
+      # initialised separately below with SUBMODULE_TOKEN.
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.ref }}
-          submodules: recursive
-          token: ${{ secrets.SUBMODULE_TOKEN }}
+
+      - name: Checkout private gnark submodules
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.SUBMODULE_TOKEN }}@github.com/decentrio/gnark".insteadOf "https://github.com/decentrio/gnark"
+          git config --global url."https://x-access-token:${{ secrets.SUBMODULE_TOKEN }}@github.com/decentrio/ecip-gnark".insteadOf "https://github.com/decentrio/ecip-gnark"
+          git submodule update --init --recursive
 
       - uses: dtolnay/rust-toolchain@stable
 

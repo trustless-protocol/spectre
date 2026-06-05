@@ -9,14 +9,19 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      # The gnark forks live as private submodules (third_party/decentrio-gnark,
-      # third_party/ecip-gnark). The default GITHUB_TOKEN cannot read other private
-      # repos, so a PAT/deploy token with read access to decentrio/gnark and
-      # decentrio/ecip-gnark must be provided as the SUBMODULE_TOKEN secret.
+      # Check out fast-ibc with the default GITHUB_TOKEN (which only has access to
+      # this repo), then init the submodules separately — see below.
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.SUBMODULE_TOKEN }}
+
+      # The gnark forks are private submodules in OTHER repos, which GITHUB_TOKEN
+      # cannot read. Authenticate just those two URLs with SUBMODULE_TOKEN (a PAT
+      # with read access to decentrio/gnark + decentrio/ecip-gnark) and init them.
+      # Scoped insteadOf so go mod / bun fetches of public repos are unaffected.
+      - name: Checkout private gnark submodules
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.SUBMODULE_TOKEN }}@github.com/decentrio/gnark".insteadOf "https://github.com/decentrio/gnark"
+          git config --global url."https://x-access-token:${{ secrets.SUBMODULE_TOKEN }}@github.com/decentrio/ecip-gnark".insteadOf "https://github.com/decentrio/ecip-gnark"
+          git submodule update --init --recursive
 
       - uses: dtolnay/rust-toolchain@stable
 
