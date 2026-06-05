@@ -91,6 +91,12 @@ type Handler struct {
 const ethTxReceiptTimeout = 45 * time.Second
 const ethDeployGasHeadroomPercent uint64 = 20
 
+// Cosmos RPC deadlines (issue #119): bound every Cosmos broadcast/query so a
+// stalled node can never wedge the relay goroutine. The relay path previously
+// used BroadcastTxCommit, which blocks until the tx is committed — or forever.
+const cosmosRPCTimeout = 30 * time.Second       // a single Cosmos RPC call (query / sync broadcast)
+const cosmosInclusionTimeout = 90 * time.Second // total bounded wait for a broadcast tx to land in a block
+
 func routerManagesProofSubmission(ctx services.Context) bool {
 	roleManager := ctx.RoleManagerAddress()
 	router := ctx.RouterContract()
@@ -958,7 +964,9 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 
 	// Broadcast the transaction
 	log.Printf("[CreateEthClientTx] broadcasting MsgCreateClient")
-	result, err := svcCtx.CosmosClient().BroadcastTxSync(context.Background(), txBytes)
+	bctx, bcancel := context.WithTimeout(context.Background(), cosmosRPCTimeout)
+	result, err := svcCtx.CosmosClient().BroadcastTxSync(bctx, txBytes)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
@@ -1064,7 +1072,9 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	}
 
 	log.Printf("[CreateEthClientTx] broadcasting MsgRegisterCounterparty")
-	result2, err := svcCtx.CosmosClient().BroadcastTxSync(context.Background(), txBytes2)
+	bctx2, bcancel2 := context.WithTimeout(context.Background(), cosmosRPCTimeout)
+	result2, err := svcCtx.CosmosClient().BroadcastTxSync(bctx2, txBytes2)
+	bcancel2()
 	if err != nil {
 		return "", fmt.Errorf("failed to broadcast register counterparty tx: %w", err)
 	}
@@ -1288,40 +1298,51 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 		return fmt.Errorf("failed to encode transaction: %w", err)
 	}
 
-	// Broadcast the transaction using BroadcastTxCommit for detailed error info
+	// Broadcast via BroadcastTxSync (returns right after the mempool CheckTx and
+	// never blocks on block production), then wait for inclusion with a bounded
+	// deadline — replaces BroadcastTxCommit, which can wedge the relay goroutine
+	// indefinitely on a stalled node (issue #119).
 	var broadcastStart time.Time
 	if benchEnabled {
 		broadcastStart = time.Now()
 	}
-	commitResult, err := svcCtx.CosmosClient().BroadcastTxCommit(context.Background(), txBytes)
+	bctx, bcancel := context.WithTimeout(context.Background(), cosmosRPCTimeout)
+	syncResult, err := svcCtx.CosmosClient().BroadcastTxSync(bctx, txBytes)
+	bcancel()
 	if err != nil {
 		return fmt.Errorf("failed to broadcast transaction: %w", err)
+	}
+	if syncResult.Code != 0 {
+		log.Printf("[SendCosmosTx] CheckTx FAILED: code=%d codespace=%s log=%s data=%x",
+			syncResult.Code, syncResult.Codespace, syncResult.Log, syncResult.Data)
+		return fmt.Errorf("transaction failed at CheckTx with code %d: %s", syncResult.Code, syncResult.Log)
+	}
+
+	txResult, err := h.waitForTxResult(svcCtx, syncResult.Hash, cosmosInclusionTimeout)
+	if err != nil {
+		// Accepted into the mempool but not observed in a block within the deadline.
+		// Transient: the relay loop retries, and the account sequence guards the
+		// chain against a duplicate landing.
+		return fmt.Errorf("failed to confirm transaction inclusion: %w", err)
 	}
 	var broadcastDur time.Duration
 	if benchEnabled {
 		broadcastDur = time.Since(broadcastStart)
 	}
 
-	if commitResult.CheckTx.Code != 0 {
-		log.Printf("[SendCosmosTx] CheckTx FAILED: code=%d codespace=%s log=%s info=%s data=%x",
-			commitResult.CheckTx.Code, commitResult.CheckTx.Codespace, commitResult.CheckTx.Log,
-			commitResult.CheckTx.Info, commitResult.CheckTx.Data)
-		return fmt.Errorf("transaction failed at CheckTx with code %d: %s", commitResult.CheckTx.Code, commitResult.CheckTx.Log)
-	}
-
-	if commitResult.TxResult.Code != 0 {
+	if txResult.TxResult.Code != 0 {
 		log.Printf("[SendCosmosTx] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
-			commitResult.TxResult.Code, commitResult.TxResult.Codespace, commitResult.TxResult.Log, commitResult.TxResult.Data)
+			txResult.TxResult.Code, txResult.TxResult.Codespace, txResult.TxResult.Log, txResult.TxResult.Data)
 		// DeliverTx execution failure is deterministic (msg/proof rejected) — mark
 		// permanent so the relay loop counts it toward the retry cap.
-		return fmt.Errorf("transaction failed at DeliverTx with code %d: %s: %w", commitResult.TxResult.Code, commitResult.TxResult.Log, services.ErrPermanentRelayFailure)
+		return fmt.Errorf("transaction failed at DeliverTx with code %d: %s: %w", txResult.TxResult.Code, txResult.TxResult.Log, services.ErrPermanentRelayFailure)
 	}
 
-	log.Printf("[SendCosmosTx] Tx confirmed at height %d hash=%s", commitResult.Height, commitResult.Hash.String())
+	log.Printf("[SendCosmosTx] Tx confirmed at height %d hash=%s", txResult.Height, txResult.Hash.String())
 	if benchEnabled {
 		log.Printf("[bench][cosmos] %s gasWanted=%d gasUsed=%d broadcast=%s total=%s height=%d hash=%s",
-			msgLabel, commitResult.TxResult.GasWanted, commitResult.TxResult.GasUsed,
-			broadcastDur, time.Since(benchStart), commitResult.Height, commitResult.Hash.String())
+			msgLabel, txResult.TxResult.GasWanted, txResult.TxResult.GasUsed,
+			broadcastDur, time.Since(benchStart), txResult.Height, txResult.Hash.String())
 	}
 	return nil
 }
@@ -1497,39 +1518,49 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 		return fmt.Errorf("failed to encode transaction: %w", err)
 	}
 
-	// Broadcast the transaction using BroadcastTxCommit for detailed error info
+	// Broadcast via BroadcastTxSync + bounded inclusion wait instead of
+	// BroadcastTxCommit, so a stalled node cannot wedge the relay goroutine
+	// indefinitely (issue #119).
 	var broadcastStart time.Time
 	if benchEnabled {
 		broadcastStart = time.Now()
 	}
-	commitResult, err := svcCtx.CosmosClient().BroadcastTxCommit(context.Background(), txBytes)
+	bctx, bcancel := context.WithTimeout(context.Background(), cosmosRPCTimeout)
+	syncResult, err := svcCtx.CosmosClient().BroadcastTxSync(bctx, txBytes)
+	bcancel()
 	if err != nil {
 		return fmt.Errorf("failed to broadcast transaction: %w", err)
+	}
+	if syncResult.Code != 0 {
+		log.Printf("[SendCosmosTxBatch] CheckTx FAILED: code=%d codespace=%s log=%s data=%x",
+			syncResult.Code, syncResult.Codespace, syncResult.Log, syncResult.Data)
+		return fmt.Errorf("transaction failed at CheckTx with code %d: %s", syncResult.Code, syncResult.Log)
+	}
+
+	txResult, err := h.waitForTxResult(svcCtx, syncResult.Hash, cosmosInclusionTimeout)
+	if err != nil {
+		// Accepted into the mempool but not observed in a block within the deadline.
+		// Transient: the relay loop retries, and the account sequence guards the
+		// chain against a duplicate landing.
+		return fmt.Errorf("failed to confirm transaction inclusion: %w", err)
 	}
 	var broadcastDur time.Duration
 	if benchEnabled {
 		broadcastDur = time.Since(broadcastStart)
 	}
 
-	if commitResult.CheckTx.Code != 0 {
-		log.Printf("[SendCosmosTxBatch] CheckTx FAILED: code=%d codespace=%s log=%s info=%s data=%x",
-			commitResult.CheckTx.Code, commitResult.CheckTx.Codespace, commitResult.CheckTx.Log,
-			commitResult.CheckTx.Info, commitResult.CheckTx.Data)
-		return fmt.Errorf("transaction failed at CheckTx with code %d: %s", commitResult.CheckTx.Code, commitResult.CheckTx.Log)
-	}
-
-	if commitResult.TxResult.Code != 0 {
+	if txResult.TxResult.Code != 0 {
 		log.Printf("[SendCosmosTxBatch] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
-			commitResult.TxResult.Code, commitResult.TxResult.Codespace, commitResult.TxResult.Log, commitResult.TxResult.Data)
+			txResult.TxResult.Code, txResult.TxResult.Codespace, txResult.TxResult.Log, txResult.TxResult.Data)
 		// DeliverTx execution failure is deterministic — mark permanent.
-		return fmt.Errorf("transaction failed at DeliverTx with code %d: %s: %w", commitResult.TxResult.Code, commitResult.TxResult.Log, services.ErrPermanentRelayFailure)
+		return fmt.Errorf("transaction failed at DeliverTx with code %d: %s: %w", txResult.TxResult.Code, txResult.TxResult.Log, services.ErrPermanentRelayFailure)
 	}
 
-	log.Printf("[SendCosmosTxBatch] Tx confirmed at height %d hash=%s (msgs=%d)", commitResult.Height, commitResult.Hash.String(), len(sdkMsgs))
+	log.Printf("[SendCosmosTxBatch] Tx confirmed at height %d hash=%s (msgs=%d)", txResult.Height, txResult.Hash.String(), len(sdkMsgs))
 	if benchEnabled {
 		log.Printf("[bench][cosmos] batch msgs=%d gasWanted=%d gasUsed=%d broadcast=%s total=%s height=%d hash=%s",
-			len(sdkMsgs), commitResult.TxResult.GasWanted, commitResult.TxResult.GasUsed,
-			broadcastDur, time.Since(benchStart), commitResult.Height, commitResult.Hash.String())
+			len(sdkMsgs), txResult.TxResult.GasWanted, txResult.TxResult.GasUsed,
+			broadcastDur, time.Since(benchStart), txResult.Height, txResult.Hash.String())
 	}
 
 	return nil
@@ -1551,7 +1582,9 @@ func (h *Handler) queryAccountInfo(svcCtx services.Context, address string) (uin
 	queryPath := "/cosmos.auth.v1beta1.Query/Account"
 
 	// Make ABCI query
-	result, err := svcCtx.CosmosClient().ABCIQuery(context.Background(), queryPath, reqBytes)
+	qctx, qcancel := context.WithTimeout(context.Background(), cosmosRPCTimeout)
+	result, err := svcCtx.CosmosClient().ABCIQuery(qctx, queryPath, reqBytes)
+	qcancel()
 	if err != nil {
 		return 0, 0, fmt.Errorf("ABCI query failed: %w", err)
 	}
@@ -1584,7 +1617,9 @@ func (h *Handler) queryAccountInfo(svcCtx services.Context, address string) (uin
 func (h *Handler) waitForTxResult(svcCtx services.Context, txHash []byte, timeout time.Duration) (*coretypes.ResultTx, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		result, err := svcCtx.CosmosClient().Tx(context.Background(), txHash, false)
+		qctx, qcancel := context.WithTimeout(context.Background(), cosmosRPCTimeout)
+		result, err := svcCtx.CosmosClient().Tx(qctx, txHash, false)
+		qcancel()
 		if err == nil && result != nil && result.Height > 0 {
 			log.Printf("[WaitForTx] Tx %X confirmed at height %d", txHash, result.Height)
 			return result, nil
