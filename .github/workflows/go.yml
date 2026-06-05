@@ -9,7 +9,25 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
+      # The gnark forks live as private submodules (third_party/decentrio-gnark,
+      # third_party/ecip-gnark). The default GITHUB_TOKEN cannot read other private
+      # repos, so a PAT/deploy token with read access to decentrio/gnark and
+      # decentrio/ecip-gnark must be provided as the SUBMODULE_TOKEN secret.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.SUBMODULE_TOKEN }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # ecip-gnark's prover links a Rust FFI (libgaraga_rs). Build it and drop the
+      # shared object at the ecip-gnark root, where the cgo `-L` lookup expects it
+      # (see third_party/ecip-gnark/README.md).
+      - name: Build Garaga FFI (libgaraga_rs)
+        working-directory: third_party/ecip-gnark/ffi/garaga_rs
+        run: |
+          cargo build --release
+          cp target/release/libgaraga_rs.so ../..
 
       - uses: actions/setup-go@v5
         with:
@@ -22,4 +40,7 @@ jobs:
 
       - name: Test
         working-directory: relayer
+        # libgaraga_rs.so is not on the default loader path; point the runtime at it.
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/ecip-gnark
         run: go test ./...

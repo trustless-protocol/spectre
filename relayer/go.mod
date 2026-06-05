@@ -196,6 +196,6 @@ require (
 )
 
 replace (
-	0x5ea000000/ecip-gnark => ../../ecip-gnark
-	github.com/consensys/gnark => ../../decentrio-gnark
+	0x5ea000000/ecip-gnark => ../third_party/ecip-gnark
+	github.com/consensys/gnark => ../third_party/decentrio-gnark
 )
