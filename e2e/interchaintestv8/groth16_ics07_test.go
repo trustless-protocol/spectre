@@ -220,7 +220,7 @@ func (s *Groth16ICS07TendermintTestSuite) DeployTest(ctx context.Context, proofT
 	_, simd := s.EthChain, s.CosmosChains[0]
 
 	s.Require().True(s.Run("Verify deployment", func() {
-		clientState, err := s.contract.ClientState(nil)
+		clientState, err := getGroth16ClientState(s.contract)
 		s.Require().NoError(err)
 
 		stakingParams, err := simd.StakingQueryParams(ctx)
@@ -254,14 +254,14 @@ func (s *Groth16ICS07TendermintTestSuite) UpdateClientTest(ctx context.Context, 
 	}
 
 	s.Require().True(s.Run("Update client", func() {
-		clientState, err := s.contract.ClientState(nil)
+		clientState, err := getGroth16ClientState(s.contract)
 		s.Require().NoError(err)
 
 		initialHeight := clientState.LatestHeight.RevisionHeight
 
 		s.UpdateClient(ctx)
 
-		clientState, err = s.contract.ClientState(nil)
+		clientState, err = getGroth16ClientState(s.contract)
 		s.Require().NoError(err)
 
 		stakingParams, err := simd.StakingQueryParams(ctx)
@@ -283,7 +283,7 @@ func (s *Groth16ICS07TendermintTestSuite) UpdateClient(ctx context.Context) clie
 
 	var initialHeight uint64
 	s.Require().True(s.Run("Get the initial height", func() {
-		clientState, err := s.contract.ClientState(nil)
+		clientState, err := getGroth16ClientState(s.contract)
 		s.Require().NoError(err)
 		s.Require().NotZero(clientState.LatestHeight.RevisionHeight)
 
@@ -313,7 +313,7 @@ func (s *Groth16ICS07TendermintTestSuite) UpdateClient(ctx context.Context) clie
 		}))
 
 		s.Require().True(s.Run("Verify the client state is updated", func() {
-			clientState, err := s.contract.ClientState(nil)
+			clientState, err := getGroth16ClientState(s.contract)
 			s.Require().NoError(err)
 			s.Require().NotZero(clientState.LatestHeight.RevisionHeight)
 
