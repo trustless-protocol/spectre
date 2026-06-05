@@ -1507,7 +1507,7 @@ func (s *RelayerTestSuite) UpdateClientToEthTest(ctx context.Context, proofType 
 
 	var initialHeight uint64
 	s.Require().True(s.Run("Get the initial height", func() {
-		clientState, err := s.groth16Ics07Contract.ClientState(nil)
+		clientState, err := getGroth16ClientState(s.groth16Ics07Contract)
 		s.Require().NoError(err)
 		s.Require().NotZero(clientState.LatestHeight.RevisionHeight)
 
@@ -1536,7 +1536,7 @@ func (s *RelayerTestSuite) UpdateClientToEthTest(ctx context.Context, proofType 
 		}))
 
 		s.Require().True(s.Run("Verify the client state is updated", func() {
-			clientState, err := s.groth16Ics07Contract.ClientState(nil)
+			clientState, err := getGroth16ClientState(s.groth16Ics07Contract)
 			s.Require().NoError(err)
 			s.Require().NotZero(clientState.LatestHeight.RevisionHeight)
 

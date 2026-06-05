@@ -376,14 +376,13 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 			s.T().Skip("Skipping solidity fixture generation")
 		}
 
-		clientState, err := s.groth16Ics07Contract.ClientState(nil)
-		s.Require().NoError(err)
 		clientStateBz, err := s.groth16Ics07Contract.GetClientState(nil)
 		s.Require().NoError(err)
-		consensusStateHash, err := s.groth16Ics07Contract.GetConsensusStateHash(nil, clientState.LatestHeight.RevisionHeight)
-		s.Require().NoError(err)
-		// Groth16 ICS07 ABI does not expose program vkeys on the root contract.
-		var updateClientVkey, membershipVkey, ucAndMembershipVkey, misbehaviourVkey [32]byte
+		// The Groth16 ICS07 contract ABI exposes neither the program vkeys nor a
+		// consensus-state-hash getter (the consensus hash mapping is private), so
+		// these genesis-fixture fields are left zero. Genesis fixture generation is
+		// a dev-only path (skipped in CI via the Enabled guard above).
+		var consensusStateHash, updateClientVkey, membershipVkey, ucAndMembershipVkey, misbehaviourVkey [32]byte
 		s.solidityFixtureGenerator.SetGenesisFixture(
 			clientStateBz, consensusStateHash, updateClientVkey,
 			membershipVkey, ucAndMembershipVkey, misbehaviourVkey,
@@ -404,7 +403,7 @@ func (s *IbcEurekaTestSuite) DeployTest(ctx context.Context, proofType types.Sup
 	_, simd := s.EthChain, s.CosmosChains[0] // eth used only by the removed gRPC Info blocks
 
 	s.Require().True(s.Run("Verify Groth16 Client", func() {
-		clientState, err := s.groth16Ics07Contract.ClientState(nil)
+		clientState, err := getGroth16ClientState(s.groth16Ics07Contract)
 		s.Require().NoError(err)
 
 		stakingParams, err := simd.StakingQueryParams(ctx)
