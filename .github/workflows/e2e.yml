@@ -63,7 +63,10 @@ jobs:
 
       - name: Install Kurtosis
         run: |
-          echo "deb [trusted=yes] https://apt.fury.io/kurtosis-tech/ /" \
+          # Kurtosis' new apt repo. The legacy Gemfury repo
+          # (apt.fury.io/kurtosis-tech) is no longer maintained and tops out at
+          # 1.15.x, which can't serve the version the SDK expects.
+          echo "deb [trusted=yes] https://sdk.kurtosis.com/kurtosis-cli-release-artifacts/ /" \
             | sudo tee /etc/apt/sources.list.d/kurtosis.list
           sudo apt update
           # Pin the CLI to the engine API version the interchaintest SDK expects
