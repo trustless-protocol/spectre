@@ -193,7 +193,7 @@ func preflightCreateClients(cfg *appConfig) error {
 	}
 
 	if cfg.EthToCosmosConfig.BeaconUrl != "" {
-		if _, err := tendermintClient.GetBeaconGenesis(cfg.EthToCosmosConfig.BeaconUrl); err != nil {
+		if _, err := tendermintClient.GetBeaconGenesis(ctx, cfg.EthToCosmosConfig.BeaconUrl); err != nil {
 			return fmt.Errorf("beacon api unavailable at %s: %w", cfg.EthToCosmosConfig.BeaconUrl, err)
 		}
 	}
