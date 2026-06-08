@@ -7,6 +7,7 @@ import { Test } from "forge-std/Test.sol";
 
 import { ILightClientMsgs } from "../../contracts/msgs/ILightClientMsgs.sol";
 import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
+import { IICS26RouterMsgs } from "../../contracts/msgs/IICS26RouterMsgs.sol";
 import { IICS20TransferMsgs } from "../../contracts/msgs/IICS20TransferMsgs.sol";
 
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
@@ -134,14 +135,26 @@ contract IBCAdminTest is Test, DeployAccessManagerWithRoles {
         ics20Transfer.pause();
         assert(ics20Transfer.paused());
 
+        vm.prank(ics20Pauser);
+        ics26Router.pause();
+        assert(ics26Router.paused());
+
         // Try to call a paused function
         IICS20TransferMsgs.SendTransferMsg memory sendMsg;
         vm.expectRevert(abi.encodeWithSelector(PausableUpgradeable.EnforcedPause.selector));
         ics20Transfer.sendTransfer(sendMsg);
 
+        IICS26RouterMsgs.MsgSendPacket memory sendPacketMsg;
+        vm.expectRevert(abi.encodeWithSelector(PausableUpgradeable.EnforcedPause.selector));
+        ics26Router.sendPacket(sendPacketMsg);
+
         vm.prank(ics20Unpauser);
         ics20Transfer.unpause();
         assert(!ics20Transfer.paused());
+
+        vm.prank(ics20Unpauser);
+        ics26Router.unpause();
+        assert(!ics26Router.paused());
     }
 
     function test_failure_pauseAndUnpause() public {

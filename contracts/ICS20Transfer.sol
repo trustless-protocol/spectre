@@ -381,7 +381,6 @@ contract ICS20Transfer is
         external
         onlyRouter
         nonReentrant
-        whenNotPaused
     {
         IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
             abi.decode(msg_.payload.value, (IICS20TransferMsgs.FungibleTokenPacketData));
@@ -401,7 +400,6 @@ contract ICS20Transfer is
         external
         onlyRouter
         nonReentrant
-        whenNotPaused
     {
         IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
             abi.decode(msg_.payload.value, (IICS20TransferMsgs.FungibleTokenPacketData));

@@ -424,6 +424,70 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
         ics20Transfer.onAcknowledgementPacket(callbackMsg);
     }
 
+    function testFuzz_success_refundCallbacksWhenPaused(uint256 amount, uint64 seq) public {
+        amount = (amount % type(uint128).max) + 1;
+
+        address sender = address(new CallbackReceiver());
+        string memory sourceClient = th.randomString();
+        string memory destClient = th.randomString();
+        string memory memo = th.randomString();
+        string memory receiver = th.randomString();
+        address relayer = makeAddr("relayer");
+
+        IICS26RouterMsgs.Payload memory payload = IICS26RouterMsgs.Payload({
+            sourcePort: ICS20Lib.DEFAULT_PORT_ID,
+            destPort: ICS20Lib.DEFAULT_PORT_ID,
+            version: ICS20Lib.ICS20_VERSION,
+            encoding: ICS20Lib.ICS20_ENCODING,
+            value: abi.encode(
+                IICS20TransferMsgs.FungibleTokenPacketData({
+                    denom: Strings.toHexString(address(env.erc20())),
+                    amount: amount,
+                    sender: Strings.toHexString(sender),
+                    receiver: receiver,
+                    memo: memo
+                })
+            )
+        });
+
+        Escrow escrowLogic = new Escrow();
+        ERC1967Proxy escrowProxy = new ERC1967Proxy(
+            address(escrowLogic), abi.encodeCall(Escrow.initialize, (address(ics20Transfer), address(accessManager)))
+        );
+        address escrowAddress = address(escrowProxy);
+        vm.store(address(ics20Transfer), _getEscrowMappingSlot(sourceClient), bytes32(uint256(uint160(escrowAddress))));
+        env.erc20().mint(escrowAddress, amount * 2);
+
+        uint256 startingBalance = env.erc20().balanceOf(sender);
+
+        ics20Transfer.pause();
+        assert(ics20Transfer.paused());
+
+        IIBCAppCallbacks.OnAcknowledgementPacketCallback memory ackCallbackMsg =
+            IIBCAppCallbacks.OnAcknowledgementPacketCallback({
+                sourceClient: sourceClient,
+                destinationClient: destClient,
+                sequence: seq,
+                payload: payload,
+                acknowledgement: ICS24Host.UNIVERSAL_ERROR_ACK,
+                relayer: relayer
+            });
+
+        vm.expectCall(sender, abi.encodeCall(IIBCSenderCallbacks.onAckPacket, (false, ackCallbackMsg)));
+        vm.prank(ics26);
+        ics20Transfer.onAcknowledgementPacket(ackCallbackMsg);
+        assertEq(env.erc20().balanceOf(sender), startingBalance + amount);
+
+        IIBCAppCallbacks.OnTimeoutPacketCallback memory timeoutCallbackMsg = IIBCAppCallbacks.OnTimeoutPacketCallback({
+            sourceClient: sourceClient, destinationClient: destClient, sequence: seq, payload: payload, relayer: relayer
+        });
+
+        vm.expectCall(sender, abi.encodeCall(IIBCSenderCallbacks.onTimeoutPacket, (timeoutCallbackMsg)));
+        vm.prank(ics26);
+        ics20Transfer.onTimeoutPacket(timeoutCallbackMsg);
+        assertEq(env.erc20().balanceOf(sender), startingBalance + amount * 2);
+    }
+
     function testFuzz_success_onAcknowledgementPacketRevertingCallback(uint256 amount, uint64 seq) public {
         address sender = address(new RevertingCallbackReceiver());
         string memory sourceClient = th.randomString();
