@@ -8,17 +8,19 @@ import { AccessManagedUpgradeable } from "@openzeppelin-upgradeable/access/manag
 
 /// @title Rate Limit Upgradeable contract
 /// @notice This contract is an abstract contract for adding rate limiting to escrow contracts.
-/// @dev Rate limits are set per token address by the rate limiter role and are enforced per day.
+/// @dev Rate limits are set per token address by the rate limiter role and are enforced with a rolling window.
 /// @dev Rate limits are applied to tokens leaving the escrow contract.
 abstract contract RateLimitUpgradeable is IRateLimitErrors, IRateLimit, AccessManagedUpgradeable {
     /// @notice Storage of the RateLimit contract
     /// @dev It's implemented on a custom ERC-7201 namespace to reduce the risk of storage collisions when using with
     /// upgradeable contracts.
     /// @param _rateLimits Mapping of token addresses to their rate limits, 0 means no limit
-    /// @param _dailyUsage Mapping of daily token keys to their usage
+    /// @param _usage Mapping of token addresses to their current usage
+    /// @param _lastUpdate Mapping of token addresses to the timestamp of the last usage update
     struct RateLimitStorage {
         mapping(address token => uint256 limit) _rateLimits;
-        mapping(bytes32 dailyTokenKey => uint256 usage) _dailyUsage;
+        mapping(address token => uint256 usage) _usage;
+        mapping(address token => uint256 lastUpdate) _lastUpdate;
     }
 
     /// @notice ERC-7201 slot for the RateLimit storage
@@ -46,10 +48,10 @@ abstract contract RateLimitUpgradeable is IRateLimitErrors, IRateLimit, AccessMa
 
     /// @inheritdoc IRateLimit
     function getDailyUsage(address token) external view returns (uint256) {
-        return _getRateLimitStorage()._dailyUsage[_getDailyTokenKey(token)];
+        return _getCurrentUsage(token);
     }
 
-    /// @notice Checks the rate limit for a token and updates the daily usage
+    /// @notice Checks the rate limit for a token and updates the usage
     /// @param token The token address
     /// @param amount The amount to check against the rate limit
     function _assertAndUpdateRateLimit(address token, uint256 amount) internal {
@@ -60,18 +62,18 @@ abstract contract RateLimitUpgradeable is IRateLimitErrors, IRateLimit, AccessMa
             return;
         }
 
-        bytes32 dailyTokenKey = _getDailyTokenKey(token);
-        uint256 usage = $._dailyUsage[dailyTokenKey] + amount;
+        uint256 usage = _getCurrentUsage(token) + amount;
         // solhint-disable-next-line gas-strict-inequalities
         require(usage <= rateLimit, RateLimitExceeded(rateLimit, usage));
 
-        $._dailyUsage[dailyTokenKey] = usage;
+        $._usage[token] = usage;
+        $._lastUpdate[token] = block.timestamp;
     }
 
-    /// @notice Reduces the daily usage for a token
+    /// @notice Reduces the usage for a token
     /// @dev This function is used in order to track the net usage a token
     /// @param token The token address
-    /// @param amount The amount to reduce from the daily usage
+    /// @param amount The amount to reduce from the usage
     function _reduceDailyUsage(address token, uint256 amount) internal {
         RateLimitStorage storage $ = _getRateLimitStorage();
 
@@ -80,20 +82,34 @@ abstract contract RateLimitUpgradeable is IRateLimitErrors, IRateLimit, AccessMa
             return;
         }
 
-        bytes32 dailyTokenKey = _getDailyTokenKey(token);
-        uint256 usage = $._dailyUsage[dailyTokenKey];
+        uint256 usage = _getCurrentUsage(token);
         if (usage > amount) {
-            $._dailyUsage[dailyTokenKey] = usage - amount;
+            $._usage[token] = usage - amount;
         } else {
-            $._dailyUsage[dailyTokenKey] = 0;
+            $._usage[token] = 0;
         }
+        $._lastUpdate[token] = block.timestamp;
     }
 
-    /// @notice Returns the daily token key for the current timestamp and token
+    /// @notice Returns the current decayed usage for a token in the rolling window
     /// @param token The token address
-    /// @return The daily token key
-    function _getDailyTokenKey(address token) internal view returns (bytes32) {
-        return keccak256(abi.encodePacked(block.timestamp / RATE_LIMIT_PERIOD, token));
+    /// @return The current usage (decayed from last update)
+    function _getCurrentUsage(address token) internal view returns (uint256) {
+        RateLimitStorage storage $ = _getRateLimitStorage();
+        uint256 lastUpdate = $._lastUpdate[token];
+        if (lastUpdate == 0) {
+            return 0;
+        }
+        uint256 elapsed = block.timestamp - lastUpdate;
+        if (elapsed >= RATE_LIMIT_PERIOD) {
+            return 0;
+        }
+        uint256 decay = (elapsed * $._rateLimits[token]) / RATE_LIMIT_PERIOD;
+        uint256 usage = $._usage[token];
+        if (decay >= usage) {
+            return 0;
+        }
+        return usage - decay;
     }
 
     /// @notice Returns the storage of the RateLimit contract

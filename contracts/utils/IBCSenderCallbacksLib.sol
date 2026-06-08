@@ -9,6 +9,17 @@ import { ERC165Checker } from "@openzeppelin-contracts/utils/introspection/ERC16
 /// @title IBC Callbacks Library
 /// @notice This library provides utility functions for IBC Apps to make callbacks to sender contracts.
 library IBCSenderCallbacksLib {
+    uint256 internal constant SENDER_CALLBACK_GAS_LIMIT = 100_000;
+
+    /// @notice Emitted when a sender acknowledgement callback reverts or runs out of gas
+    /// @param callbackAddress The address of the sender callback contract
+    /// @param reason The revert reason, or empty bytes if unavailable
+    event IBCSenderAckPacketCallbackError(address indexed callbackAddress, bytes reason);
+    /// @notice Emitted when a sender timeout callback reverts or runs out of gas
+    /// @param callbackAddress The address of the sender callback contract
+    /// @param reason The revert reason, or empty bytes if unavailable
+    event IBCSenderTimeoutPacketCallbackError(address indexed callbackAddress, bytes reason);
+
     /// @notice Checks if the given address implements the IIBCSenderCallbacks interface.
     /// @param sender The address to check
     /// @return bool True if the address implements IIBCSenderCallbacks, false otherwise
@@ -28,7 +39,10 @@ library IBCSenderCallbacksLib {
         internal
     {
         if (_supportsCallbacks(callbackAddress)) {
-            IIBCSenderCallbacks(callbackAddress).onAckPacket(success, msg_);
+            try IIBCSenderCallbacks(callbackAddress).onAckPacket{ gas: SENDER_CALLBACK_GAS_LIMIT }(success, msg_) { }
+            catch (bytes memory reason) {
+                emit IBCSenderAckPacketCallbackError(callbackAddress, reason);
+            }
         }
     }
 
@@ -42,7 +56,10 @@ library IBCSenderCallbacksLib {
         internal
     {
         if (_supportsCallbacks(callbackAddress)) {
-            IIBCSenderCallbacks(callbackAddress).onTimeoutPacket(msg_);
+            try IIBCSenderCallbacks(callbackAddress).onTimeoutPacket{ gas: SENDER_CALLBACK_GAS_LIMIT }(msg_) { }
+            catch (bytes memory reason) {
+                emit IBCSenderTimeoutPacketCallbackError(callbackAddress, reason);
+            }
         }
     }
 }

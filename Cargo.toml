@@ -8,6 +8,10 @@ members = [
 
     "programs/cw-ics08-wasm-eth",
 ]
+# Keep the gnark submodules out of this workspace: their Rust crate
+# (third_party/ecip-gnark/ffi/garaga_rs) must build standalone, not get pulled
+# into this workspace when cargo walks up from the submodule directory (#156 CI).
+exclude = ["third_party"]
 resolver = "2"
 
 [workspace.package]
