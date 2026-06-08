@@ -152,9 +152,14 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
     {
         getClient(clientId); // Ensure subject client exists
 
-        (bool isMember,) =
+        // We manually check the migrator role here rather than using the `restricted` modifier.
+        // This allows client-specific migration roles (scoped by clientId) rather than a single
+        // global migration role. However, manual role checks bypass the AccessManager's delay
+        // enforcement. Therefore, we explicitly require that the role is granted with an execution
+        // delay of 0, meaning only immediate, delay-0 migrators are supported on this path.
+        (bool isMember, uint32 executionDelay) =
             IAccessManager(authority()).hasRole(IBCRolesLib.getLightClientMigratorRole(clientId), _msgSender());
-        require(isMember, IBCUnauthorizedMigrator(clientId, _msgSender()));
+        require(isMember && executionDelay == 0, IBCUnauthorizedMigrator(clientId, _msgSender()));
 
         ICS02ClientStorage storage $ = _getICS02ClientStorage();
         $.counterpartyInfos[clientId] = counterpartyInfo;

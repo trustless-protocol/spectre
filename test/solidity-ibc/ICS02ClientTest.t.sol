@@ -153,6 +153,26 @@ contract ICS02ClientTest is Test {
         ics02Client.migrateClient(otherClientId, otherCounterparty, newLightClient);
     }
 
+    function test_failure_MigrateClient_withDelay() public {
+        address delayedMigrator = makeAddr("delayedMigrator");
+
+        // Grant the per-clientId migrator role for clientIdentifier to delayedMigrator with a non-zero execution delay.
+        uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
+        accessManager.grantRole(migratorRole, delayedMigrator, 60); // 60 seconds delay
+
+        string memory counterpartyId = "42-dummy-01";
+        address newLightClient = makeAddr("newLightClient");
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, randomPrefix);
+
+        // Even though they have the role, because it has a non-zero delay, the migration should revert immediately.
+        vm.prank(delayedMigrator);
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, delayedMigrator)
+        );
+        ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
+    }
+
     function test_Misbehaviour() public {
         bytes memory misbehaviourMsg = "testMisbehaviourMsg";
         bytes memory misbehaviourCall = abi.encodeCall(ILightClient.misbehaviour, (misbehaviourMsg));
