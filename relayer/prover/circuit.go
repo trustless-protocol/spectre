@@ -66,6 +66,7 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	//    rebuild can short-circuit cheaply for padding slots if needed.
 	var buf []uints.U8
 	for i := range c.Sig {
+		api.AssertIsBoolean(c.Active[i])
 		buf = append(buf, varToBytesBE(api, c.Active[i], 1)...)
 		buf = append(buf, compressEdwardsToLE(api, baseApi, &c.Pub[i].A)...)
 		buf = append(buf, varToBytesBE(api, c.MsgLens[i], 2)...)
