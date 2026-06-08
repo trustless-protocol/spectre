@@ -1231,6 +1231,27 @@ contract Groth16ICS07Tendermint is
             commitmentRoot == trustedConsensusState.root,
             ConsensusStateRootMismatch(trustedConsensusState.root, commitmentRoot)
         );
+
+        _validateConsensusStateTrustingPeriod(trustedConsensusState.timestamp);
+    }
+
+    /// @notice Validates the trusted consensus state timestamp for membership proofs.
+    /// @param consensusStateTimestamp The trusted consensus state timestamp in unix nanoseconds.
+    function _validateConsensusStateTrustingPeriod(uint128 consensusStateTimestamp) private view {
+        uint256 consensusStateTimestampSeconds = _nanosToSeconds(consensusStateTimestamp);
+        require(
+            // Membership proof freshness is defined against the destination chain clock.
+            // forge-lint: disable-next-line(block-timestamp)
+            consensusStateTimestampSeconds <= block.timestamp,
+            ProofIsInTheFuture(block.timestamp, consensusStateTimestampSeconds)
+        );
+
+        // forge-lint: disable-next-line(unsafe-typecast)
+        uint128 durationSinceConsensusState = uint128(block.timestamp - consensusStateTimestampSeconds);
+        require(
+            durationSinceConsensusState < clientState.trustingPeriod,
+            InsufficientTrustingPeriod(durationSinceConsensusState, uint128(clientState.trustingPeriod))
+        );
     }
 
     /// @notice Validates the Groth16ICS07UpdateClientOutput public values.

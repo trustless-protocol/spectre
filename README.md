@@ -59,38 +59,72 @@ above that bound need a larger cache layout before they can use this client.
 - Optional for GPU proving: ICICLE runtime/libs installed on the host, plus an
   `icicle` build of the relayer/prover tool
 
-## Sibling repos (required to build the relayer)
+## gnark submodules (required to build the relayer)
 
-The Go relayer's `relayer/go.mod` has `replace` directives pointing at two sibling
-repos via relative paths:
+The relayer/prover depend on two forks of gnark, vendored as **git submodules**
+under `third_party/` and wired through `relayer/go.mod`:
 
 ```
 replace (
-    0x5ea000000/ecip-gnark      => ../../ecip-gnark
-    github.com/consensys/gnark  => ../../decentrio-gnark
+    0x5ea000000/ecip-gnark      => ../third_party/ecip-gnark
+    github.com/consensys/gnark  => ../third_party/decentrio-gnark
 )
 ```
 
-Clone both **next to** `fast-ibc` (so they sit two directories up from
-`relayer/`) before running `just install-go-relayer` / `just build-prover-artifacts`:
+- `third_party/ecip-gnark` → [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) — Ed25519 in-circuit ops + the `garaga_rs` Rust FFI.
+- `third_party/decentrio-gnark` → [`decentrio/gnark`](https://github.com/decentrio/gnark) — fork of consensys/gnark v0.13.0 with hash-aggregate verifier tweaks.
+
+fast-ibc stores only a **pinned commit** of each fork (a submodule pointer), not
+their files.
+
+### First checkout
+
+Clone with submodules, or initialise them in an existing clone:
 
 ```bash
-# from the parent directory that contains fast-ibc
-git clone https://github.com/decentrio/ecip-gnark
-git clone https://github.com/decentrio/gnark decentrio-gnark
+git clone --recurse-submodules https://github.com/decentrio/fast-ibc
+# or, after a plain clone:
+git submodule update --init --recursive
 ```
 
-Resulting layout:
+`ecip-gnark`'s prover links a Rust FFI (`libgaraga_rs`) that cgo expects at the
+ecip-gnark root. Build it once (and after any garaga change):
 
-```
-parent/
-├── fast-ibc/
-├── ecip-gnark/        # provides 0x5ea000000/ecip-gnark (Ed25519 in-circuit ops, garaga_rs FFI)
-└── decentrio-gnark/   # fork of consensys/gnark v0.13.0 with hash-aggregate verifier tweaks
+```bash
+cd third_party/ecip-gnark/ffi/garaga_rs
+cargo build --release
+cp target/release/libgaraga_rs.so ../..      # Linux; on macOS: libgaraga_rs.dylib
 ```
 
-Without these, `go build ./...` under `relayer/` fails with
-`replacement directory ../../ecip-gnark does not exist`.
+Without `submodule update --init`, `go build ./...` under `relayer/` fails with
+`replacement directory ../third_party/ecip-gnark does not exist`; without the
+built FFI it fails at link with `library 'garaga_rs' not found`.
+
+> **CI:** the fork repos are **private**, so the `Go` and `E2E (manual)`
+> workflows check the submodules out with a `SUBMODULE_TOKEN` secret (a
+> fine-grained PAT with read access to `decentrio/gnark` + `decentrio/ecip-gnark`)
+> and build `libgaraga_rs` before `go build`. See `.github/workflows/go.yml`.
+
+### Updating the forks (bump workflow)
+
+Develop in the fork repos themselves and push there as usual — fast-ibc only
+pins a commit, so do **not** edit inside `third_party/` and forget to push the
+fork (CI fetches by SHA and an unpushed commit fails checkout). When a fork has
+changes fast-ibc should pick up, bump the pinned commit:
+
+```bash
+# pull the tracked branch's latest into the submodule…
+git submodule update --remote third_party/ecip-gnark
+#   …or pin an exact commit/tag:
+#   cd third_party/ecip-gnark && git fetch && git checkout <sha-or-tag> && cd -
+
+git add third_party/ecip-gnark      # stage the new pointer
+git commit -m "chore: bump ecip-gnark to <sha>"
+git push                            # the PR diff is just a one-line submodule pointer
+```
+
+- fast-ibc builds against the **pinned** commit, not your in-progress fork work, until you push + bump. For a tight fork↔fast-ibc co-development loop, temporarily point the `go.mod` replace at a local clone (e.g. `=> ../../ecip-gnark`) and do **not** commit that change; revert + bump when stable.
+- After someone else bumps, run `git submodule update --init --recursive` to sync your local tree.
 
 ## Optional GPU Proving
 

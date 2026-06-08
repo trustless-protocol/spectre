@@ -1,15 +1,41 @@
 name: Go
 
+# Temporarily disabled: this workflow only runs on manual dispatch for now.
+# Re-enable auto-runs by restoring the push/pull_request triggers below.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+  # pull_request:
 
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
+      # Check out fast-ibc with the default GITHUB_TOKEN (which only has access to
+      # this repo), then init the submodules separately — see below.
       - uses: actions/checkout@v4
+
+      # The gnark forks are private submodules in OTHER repos, which GITHUB_TOKEN
+      # cannot read. Authenticate just those two URLs with SUBMODULE_TOKEN (a PAT
+      # with read access to decentrio/gnark + decentrio/ecip-gnark) and init them.
+      # Scoped insteadOf so go mod / bun fetches of public repos are unaffected.
+      - name: Checkout private gnark submodules
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.SUBMODULE_TOKEN }}@github.com/decentrio/gnark".insteadOf "https://github.com/decentrio/gnark"
+          git config --global url."https://x-access-token:${{ secrets.SUBMODULE_TOKEN }}@github.com/decentrio/ecip-gnark".insteadOf "https://github.com/decentrio/ecip-gnark"
+          git submodule update --init --recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # ecip-gnark's prover links a Rust FFI (libgaraga_rs). Build it and drop the
+      # shared object at the ecip-gnark root, where the cgo `-L` lookup expects it
+      # (see third_party/ecip-gnark/README.md).
+      - name: Build Garaga FFI (libgaraga_rs)
+        working-directory: third_party/ecip-gnark/ffi/garaga_rs
+        run: |
+          cargo build --release
+          cp target/release/libgaraga_rs.so ../..
 
       - uses: actions/setup-go@v5
         with:
@@ -22,4 +48,7 @@ jobs:
 
       - name: Test
         working-directory: relayer
+        # libgaraga_rs.so is not on the default loader path; point the runtime at it.
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/ecip-gnark
         run: go test ./...
