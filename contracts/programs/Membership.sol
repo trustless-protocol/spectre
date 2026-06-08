@@ -15,10 +15,6 @@ contract Membership  is IMembership {
     using Math for uint256;
     using Bytes for *;
      
-    // Events
-    event MembershipVerified(bytes32 indexed commitmentRoot, uint256 pairsCount);
-    event NonMembershipVerified(bytes32 indexed commitmentRoot, bytes[] key);
-    
     // Custom errors
     error InvalidLength();
     error EmptyRequest();
@@ -62,7 +58,7 @@ contract Membership  is IMembership {
         bytes32 appHash,
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs
-    ) public {
+    ) public view {
         if (kvPairs.length == 0) {
             revert EmptyRequest();
         }
@@ -86,14 +82,11 @@ contract Membership  is IMembership {
                 if (!verifyNonMembership(proofSpecs, commitmentRoot, kvPair.path, merkleProof)) {
                     revert VerificationNonMembershipFailed();
                 }
-                emit NonMembershipVerified(commitmentRoot, kvPair.path);
             } else {
                 // Verify membership
                 verifyMembership(proofSpecs, commitmentRoot, kvPair.path, kvPair.value, 0, merkleProof);
             }
         }
-        
-        emit MembershipVerified(commitmentRoot, kvPairs.length);
     }
     
     function verifyMembership(

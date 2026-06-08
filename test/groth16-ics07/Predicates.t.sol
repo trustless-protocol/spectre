@@ -385,6 +385,85 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
         wrapper.verifyTrustedCommitOverlap(untrusted, trusted, opts);
     }
 
+    // ---------------------------------------------------------------
+    // Tests: _checkVotingPowerOverlapByAddress duplicate-signer dedup
+    // ---------------------------------------------------------------
+
+    /// A duplicate commitSig address must NOT be counted twice toward the trust
+    /// threshold. val1 has 25/100 power; the threshold is 1/3 (>33.33).
+    /// Without dedup, counting val1 twice sums to 50 and would falsely pass.
+    /// With dedup only 25 is tallied → 25*3=75 < 100 → correctly reverts.
+    function testCheckVotingPowerOverlapDuplicateSignerNoDoubleCount() public {
+        ValidatorInfo[] memory trustedVals = new ValidatorInfo[](3);
+        trustedVals[0] = _makeValidator("val1", bytes32(uint256(1)), 25);
+        trustedVals[1] = _makeValidator("val2", bytes32(uint256(2)), 25);
+        trustedVals[2] = _makeValidator("val3", bytes32(uint256(3)), 50);
+
+        // val1 appears twice in commitSigs
+        CommitSig[] memory sigs = new CommitSig[](2);
+        sigs[0] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val1");
+        sigs[1] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val1");
+
+        SignedHeader memory sh = _makeSignedHeader(sigs, bytes32(uint256(0xabc)));
+        // height=100 with trusted.height=98 → non-adjacent → _checkVotingPowerOverlapByAddress fires
+        sh.header.height = 100;
+
+        UntrustedBlockState memory untrusted = UntrustedBlockState({
+            signedHeader: sh,
+            validatorSet: _makeValidatorSet(trustedVals)
+        });
+        TrustedBlockState memory trusted = TrustedBlockState({
+            chainId: "test-chain",
+            headerTime: 900,
+            height: 98,
+            nextValidatorSet: _makeValidatorSet(trustedVals),
+            nextValidatorHash: bytes32(0)
+        });
+        Options memory opts = Options({
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }),
+            trustingPeriod: 1000,
+            clockDrift: 10
+        });
+
+        vm.expectRevert("insufficient voting power overlap");
+        wrapper.verifyTrustedCommitOverlap(untrusted, trusted, opts);
+    }
+
+    /// Sanity: a single legitimate vote that meets the threshold should still pass
+    /// after the dedup fix (not inadvertently reject valid proofs).
+    function testCheckVotingPowerOverlapSingleSignerPassesThreshold() public view {
+        ValidatorInfo[] memory trustedVals = new ValidatorInfo[](3);
+        trustedVals[0] = _makeValidator("val1", bytes32(uint256(1)), 50);
+        trustedVals[1] = _makeValidator("val2", bytes32(uint256(2)), 25);
+        trustedVals[2] = _makeValidator("val3", bytes32(uint256(3)), 25);
+
+        CommitSig[] memory sigs = new CommitSig[](1);
+        sigs[0] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val1");
+
+        SignedHeader memory sh = _makeSignedHeader(sigs, bytes32(uint256(0xabc)));
+        sh.header.height = 100;
+
+        UntrustedBlockState memory untrusted = UntrustedBlockState({
+            signedHeader: sh,
+            validatorSet: _makeValidatorSet(trustedVals)
+        });
+        TrustedBlockState memory trusted = TrustedBlockState({
+            chainId: "test-chain",
+            headerTime: 900,
+            height: 98,
+            nextValidatorSet: _makeValidatorSet(trustedVals),
+            nextValidatorHash: bytes32(0)
+        });
+        Options memory opts = Options({
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }),
+            trustingPeriod: 1000,
+            clockDrift: 10
+        });
+
+        // 50*3=150 > 100*1=100 → passes
+        wrapper.verifyTrustedCommitOverlap(untrusted, trusted, opts);
+    }
+
     function testVerifyTrustedCommitOverlapNonAdjacentReverts() public {
         ValidatorInfo[] memory trustedVals = new ValidatorInfo[](3);
         trustedVals[0] = _makeValidator("val1", bytes32(uint256(1)), 10);
