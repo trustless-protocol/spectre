@@ -236,31 +236,6 @@ contract Groth16ICS07Tendermint is
         return updateResult;
     }
 
-    function _callUpdateClient(bytes calldata updateClientMsg)
-        private
-        view
-        returns (IUpdateClientMsgs.UpdateClientOutput memory output)
-    {
-        bytes4 sel = IUpdateClient.updateClient.selector;
-        address updateClient_ = address(UPDATE_CLIENT);
-        bytes memory ret;
-        assembly ("memory-safe") {
-            let fmp := mload(0x40)
-            mstore(fmp, sel)
-            calldatacopy(add(fmp, 4), updateClientMsg.offset, updateClientMsg.length)
-            if iszero(staticcall(gas(), updateClient_, fmp, add(4, updateClientMsg.length), 0, 0)) {
-                returndatacopy(fmp, 0, returndatasize())
-                revert(fmp, returndatasize())
-            }
-            let retLen := returndatasize()
-            mstore(fmp, retLen)
-            returndatacopy(add(fmp, 32), 0, retLen)
-            mstore(0x40, and(add(add(fmp, add(retLen, 32)), 31), not(31)))
-            ret := fmp
-        }
-        output = abi.decode(ret, (IUpdateClientMsgs.UpdateClientOutput));
-    }
-
     function _prepareUpdateClientMessage(IUpdateClientMsgs.MsgUpdateClient memory msg_)
         private
         returns (
@@ -1011,19 +986,10 @@ contract Groth16ICS07Tendermint is
         private
         returns (uint256)
     {
-        // TODO: cached proof
-        // if (merkleProofs.length == 0) {
-        //     // cached proof
-        //     return _nanosToSeconds(_getCachedKvPair(height.revisionHeight, IMembershipMsgs.KVPair(path, value)));
-        // }
-
         if (membershipType == IMembershipMsgs.MembershipType.Membership) {
             return _handleMembership(height, kvPairs, merkleProofs, appHash, trustedConsensusState, kvPath, kvValue);
-        } else if (membershipType == IMembershipMsgs.MembershipType.MembershipAndUpdateClient) {
-            // return _handleGroth16UpdateClientAndMembership(height, membershipProof.proof, path, value);
         }
 
-        // unreachable
         revert UnknownMembershipType(uint8(membershipType));
     }
 
@@ -1106,106 +1072,6 @@ contract Groth16ICS07Tendermint is
             _cacheKvPairs(height.revisionHeight, kvPairs, trustedConsensusState.timestamp);
         }
         return _getTimestampInSeconds(trustedConsensusState);
-    }
-
-    /// @notice The entrypoint for handling the `Groth16MembershipAndUpdateClientProof` proof type.
-    /// @dev This function verifies the public values and forwards the proof to the Groth16 verifier.
-    /// @param proofHeight The height of the proof.
-    /// @param proofBytes The encoded proof.
-    /// @param kvPath The path of the key-value pair.
-    /// @param kvValue The value of the key-value pair.
-    /// @return The timestamp of the new consensus state.
-    // solhint-disable-next-line code-complexity,function-max-lines
-    function _handleGroth16UpdateClientAndMembership(
-        IICS02ClientMsgs.Height calldata proofHeight,
-        bytes memory proofBytes,
-        bytes[] calldata kvPath,
-        bytes memory kvValue
-    )
-        private
-        returns (uint256)
-    {
-        // validate proof and deserialize output
-        IUpdateClientAndMembershipMsgs.UcAndMembershipOutput memory output;
-        {
-            IMembershipMsgs.Groth16MembershipAndUpdateClientProof memory proof =
-                abi.decode(proofBytes, (IMembershipMsgs.Groth16MembershipAndUpdateClientProof));
-            // require(
-            //     proof.groth16Proof.vKey == UPDATE_CLIENT_AND_MEMBERSHIP_PROGRAM_VKEY,
-            //     VerificationKeyMismatch(UPDATE_CLIENT_AND_MEMBERSHIP_PROGRAM_VKEY, proof.groth16Proof.vKey)
-            // );
-
-            output = abi.decode(proof.groth16Proof.publicValues, (IUpdateClientAndMembershipMsgs.UcAndMembershipOutput));
-            require(
-                output.kvPairs.length > 0 && output.kvPairs.length <= type(uint16).max,
-                LengthIsOutOfRange(output.kvPairs.length, 1, type(uint16).max)
-            );
-
-            require(
-                proofHeight.revisionHeight == output.updateClientOutput.newHeight.revisionHeight
-                    && proofHeight.revisionNumber == output.updateClientOutput.newHeight.revisionNumber,
-                ProofHeightMismatch(
-                    proofHeight.revisionNumber,
-                    proofHeight.revisionHeight,
-                    output.updateClientOutput.newHeight.revisionNumber,
-                    output.updateClientOutput.newHeight.revisionHeight
-                )
-            );
-
-            _validateUpdateClientOutput(output.updateClientOutput);
-
-            // TODO: verify proof with input
-            // _verifyProof(proof.groth16Proof);
-        }
-
-        // check update result
-        {
-            ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output.updateClientOutput);
-            if (updateResult == ILightClientMsgs.UpdateResult.Update) {
-                // adding the new consensus state to the mapping
-                if (proofHeight.revisionHeight > clientState.latestHeight.revisionHeight) {
-                    clientState.latestHeight = proofHeight;
-                }
-                _consensusStateHashes[proofHeight.revisionHeight] =
-                    keccak256(abi.encode(output.updateClientOutput.newConsensusState));
-            } else if (updateResult == ILightClientMsgs.UpdateResult.Misbehaviour) {
-                revert CannotHandleMisbehavior();
-            } // else: NoOp
-        }
-
-        // loop through the key-value pairs and validate them
-        {
-            bool found = false;
-            for (uint256 i = 0; i < output.kvPairs.length; i++) {
-                if (!Paths.equal(output.kvPairs[i].path, kvPath)) {
-                    continue;
-                }
-
-                bytes memory value = output.kvPairs[i].value;
-                require(
-                    value.length == kvValue.length && keccak256(value) == keccak256(kvValue),
-                    MembershipProofValueMismatch(kvValue, value)
-                );
-
-                found = true;
-                break;
-            }
-            require(found, MembershipProofKeyNotFound(kvPath));
-        }
-
-        _validateMembershipInput(
-            output.updateClientOutput.newConsensusState.root,
-            output.updateClientOutput.newHeight.revisionHeight,
-            output.updateClientOutput.newConsensusState
-        );
-
-        // We avoid the cost of caching for single kv pairs, as reusing the proof is not necessary
-        if (output.kvPairs.length > 1) {
-            _cacheKvPairs(
-                proofHeight.revisionHeight, output.kvPairs, output.updateClientOutput.newConsensusState.timestamp
-            );
-        }
-        return _getTimestampInSeconds(output.updateClientOutput.newConsensusState);
     }
 
     /// @notice Validates the Membership input known values.
@@ -1375,14 +1241,6 @@ contract Groth16ICS07Tendermint is
         }
     }
 
-    /// @notice Verifies the Groth16 proof
-    /// @param proof The Groth16 proof.
-    /// @dev WARNING: proof.vKey must be verified before calling this function.
-    // TODO: verify proof with given input
-    // function _verifyProof(IGroth16Msgs.Groth16Proof memory proof) private view {
-    //     VERIFIER.verifyProof(proof.vKey, proof.publicValues, proof.proof);
-    // }
-
     /// @notice Caches the key-value pairs to the transient storage with the timestamp.
     /// @param proofHeight The height of the proof.
     /// @param kvPairs The key-value pairs.
@@ -1394,17 +1252,6 @@ contract Groth16ICS07Tendermint is
             bytes32 kvPairHash = keccak256(abi.encode(proofHeight, kvPairs[i]));
             kvPairHash.asUint256().tstore(timestamp);
         }
-    }
-
-    /// @notice Gets the timestamp of the cached key-value pair from the transient storage.
-    /// @param proofHeight The height of the proof.
-    /// @param kvPair The key-value pair.
-    /// @return The timestamp of the cached key-value pair in unix nanoseconds.
-    function _getCachedKvPair(uint64 proofHeight, IMembershipMsgs.KVPair memory kvPair) private view returns (uint256) {
-        bytes32 kvPairHash = keccak256(abi.encode(proofHeight, kvPair));
-        uint256 timestamp = kvPairHash.asUint256().tload();
-        require(timestamp != 0, KeyValuePairNotInCache(kvPair.path, kvPair.value));
-        return timestamp;
     }
 
     /// @notice Returns the timestamp of the trusted consensus state in unix seconds.
