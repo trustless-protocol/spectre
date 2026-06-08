@@ -205,14 +205,22 @@ contract Groth16ICS07Tendermint is
             bool currentCached,
             bytes32 currentValidatorsHash,
             bytes32 currentValidatorsHashLeaf,
-            bool cacheCurrentValidatorSet
+            bool cacheCurrentValidatorSet,
+            bool trustedNextResolved
         ) = _prepareUpdateClientMessage(msg_);
 
-        IUpdateClientMsgs.UpdateClientOutput memory output = currentCached
-            ? UPDATE_CLIENT.updateClientCachedCurrentWithHeaderCache(
-                msg_, CHAIN_ID_LEAF_HASH, currentValidatorsHashLeaf
-            )
-            : UPDATE_CLIENT.updateClientResolved(msg_);
+        IUpdateClientMsgs.UpdateClientOutput memory output;
+        if (currentCached) {
+            output = trustedNextResolved
+                ? UPDATE_CLIENT.updateClientCachedCurrentTrustedNextResolvedWithHeaderCache(
+                    msg_, CHAIN_ID_LEAF_HASH, currentValidatorsHashLeaf
+                )
+                : UPDATE_CLIENT.updateClientCachedCurrentWithHeaderCache(
+                    msg_, CHAIN_ID_LEAF_HASH, currentValidatorsHashLeaf
+                );
+        } else {
+            output = UPDATE_CLIENT.updateClientResolved(msg_);
+        }
 
         _validateUpdateClientOutput(output);
 
@@ -267,7 +275,8 @@ contract Groth16ICS07Tendermint is
             bool currentCached,
             bytes32 currentValidatorsHash,
             bytes32 currentValidatorsHashLeaf,
-            bool cacheCurrentValidatorSet
+            bool cacheCurrentValidatorSet,
+            bool trustedNextResolved
         )
     {
         currentValidatorsHash = msg_.proposedHeader.signedHeader.header.validatorsHash;
@@ -292,26 +301,34 @@ contract Groth16ICS07Tendermint is
 
         if (adjacent) {
             msg_.proposedHeader.trustedNextValidatorSet = _emptyValidatorSet();
-            return (currentCached, currentValidatorsHash, currentValidatorsHashLeaf, cacheCurrentValidatorSet);
+            return (currentCached, currentValidatorsHash, currentValidatorsHashLeaf, cacheCurrentValidatorSet, false);
         }
 
         if (!currentCached && trustedNextValidatorsHash == currentValidatorsHash) {
             msg_.proposedHeader.trustedNextValidatorSet = msg_.proposedHeader.validatorSet;
+            trustedNextResolved = true;
         } else if (!currentCached) {
             _validateSuppliedValidatorSetHash(trustedNextValidatorsHash, msg_.proposedHeader.trustedNextValidatorSet);
+            trustedNextResolved = true;
+        } else if (trustedNextValidatorsHash == currentValidatorsHash) {
+            _validateTrustedNextAgainstCachedCurrent(currentValidatorsHash, msg_.proposedHeader.trustedNextValidatorSet);
+            trustedNextResolved = true;
         }
-        // When `currentCached == true` and the update is non-adjacent, the
-        // caller-supplied `trustedNextValidatorSet` is intentionally left
-        // unvalidated here. Validation is delegated to
-        // `UPDATE_CLIENT.updateClientCachedCurrentWithHeaderCache` →
-        // `verifyHeaderCachedCurrent`, which checks
-        // `Header.hashValSet(trustedNextValidatorSet) ==
-        // trustedConsensusState.nextValidatorsHash` before any header decision.
-        // Do NOT remove that delegated check without restoring an equivalent
-        // guard here, otherwise non-adjacent cached updates would accept an
-        // arbitrary next-validator set.
+        // When `currentCached == true` and the trusted-next hash is not the
+        // cached current hash, validation is delegated to
+        // `UPDATE_CLIENT.updateClientCachedCurrentWithHeaderCache`, which checks
+        // `Header.hashValSet(trustedNextValidatorSet) == trustedConsensusState.nextValidatorsHash`.
+        // If the hashes match, `_validateTrustedNextAgainstCachedCurrent` already
+        // proved the supplied set's pubkeys and voting powers against cache, so
+        // the pure program can skip re-running `Header.hashValSet`.
 
-        return (currentCached, currentValidatorsHash, currentValidatorsHashLeaf, cacheCurrentValidatorSet);
+        return (
+            currentCached,
+            currentValidatorsHash,
+            currentValidatorsHashLeaf,
+            cacheCurrentValidatorSet,
+            trustedNextResolved
+        );
     }
 
     function _isAdjacentUpdate(IICS07TendermintMsgs.Header memory header) private pure returns (bool) {
@@ -334,6 +351,37 @@ contract Groth16ICS07Tendermint is
         }
         bytes32 actualHash = Header.hashValSet(validatorSet);
         require(actualHash == expectedHash, MismatchedValidatorHashes(expectedHash, actualHash));
+    }
+
+    function _validateTrustedNextAgainstCachedCurrent(
+        bytes32 validatorsHash,
+        IICS07TendermintMsgs.ValidatorSet memory trustedNextValidatorSet
+    )
+        private
+        view
+    {
+        address pointer = _validatorCachePointer(validatorsHash);
+        if (pointer == address(0)) {
+            revert ValidatorSetCacheMiss(validatorsHash);
+        }
+
+        bytes memory cacheData = SSTORE2.read(pointer, 0, _validatorCacheEntryDataLen(_cachedValidatorEntryCount));
+        ValidatorCacheHeader memory cacheHeader = _readValidatorCacheHeader(validatorsHash, cacheData);
+        IICS07TendermintMsgs.ValidatorInfo[] memory validators = trustedNextValidatorSet.validators;
+        if (validators.length != cacheHeader.entryCount) {
+            revert MismatchedValidatorHashes(validatorsHash, bytes32(0));
+        }
+
+        uint256 pubKeyBits = _validatorPubKeyOverrideBits;
+        uint256 votingPowerBits = _validatorVotingPowerOverrideBits;
+        for (uint256 i = 0; i < validators.length; i++) {
+            (uint64 cachedVotingPower, bytes32 cachedPubKey) = _resolveCurrentCachedValidator(
+                validatorsHash, cacheData, cacheHeader.entryCount, pubKeyBits, votingPowerBits, uint32(i)
+            );
+            if (validators[i].pubKey != cachedPubKey || validators[i].votingPower != cachedVotingPower) {
+                revert MismatchedValidatorHashes(validatorsHash, bytes32(0));
+            }
+        }
     }
 
     function _cacheDeltaValidatorSet(
@@ -508,7 +556,7 @@ contract Groth16ICS07Tendermint is
         require(
             msg_.signerIndices.length == msg_.bucket && msg_.signerPubkeys.length == msg_.bucket
                 && msg_.timestampSeconds.length == msg_.bucket && msg_.timestampNanos.length == msg_.bucket
-                && msg_.active.length == msg_.bucket,
+                && msg_.active.length == msg_.bucket && msg_.trustedOverlapIndices.length == msg_.bucket,
             BatchLengthMismatch()
         );
 
@@ -551,7 +599,7 @@ contract Groth16ICS07Tendermint is
         require(
             msg_.signerIndices.length == msg_.bucket && msg_.signerPubkeys.length == msg_.bucket
                 && msg_.timestampSeconds.length == msg_.bucket && msg_.timestampNanos.length == msg_.bucket
-                && msg_.active.length == msg_.bucket,
+                && msg_.active.length == msg_.bucket && msg_.trustedOverlapIndices.length == msg_.bucket,
             BatchLengthMismatch()
         );
 

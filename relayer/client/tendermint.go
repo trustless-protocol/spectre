@@ -170,6 +170,7 @@ func init() {
 		{Name: "timestampSeconds", Type: "uint64[]"},
 		{Name: "timestampNanos", Type: "uint32[]"},
 		{Name: "active", Type: "bool[]"},
+		{Name: "trustedOverlapIndices", Type: "uint32[]"},
 		{Name: "currentValidatorSetDelta", Type: "tuple", Components: validatorSetDeltaComponents},
 	})
 }

@@ -286,11 +286,14 @@ contract UpdateClientGasTest is Test {
         uint64[] memory tsS = new uint64[](bucket);
         uint32[] memory tsN = new uint32[](bucket);
         bool[] memory act = new bool[](bucket);
+        uint32[] memory trustedOverlap = new uint32[](bucket);
         for (uint256 i = 0; i < bucket; i++) {
+            trustedOverlap[i] = type(uint32).max;
             if (i < activeCount) {
                 idx[i] = uint32(i);
                 pks[i] = header.validatorSet.validators[i].pubKey;
                 act[i] = true;
+                trustedOverlap[i] = uint32(i);
             }
             tsS[i] = uint64(1_700_000_000 + i);
             tsN[i] = uint32(i * 1_000_000);
@@ -309,6 +312,7 @@ contract UpdateClientGasTest is Test {
         msg_.timestampSeconds = tsS;
         msg_.timestampNanos = tsN;
         msg_.active = act;
+        msg_.trustedOverlapIndices = trustedOverlap;
     }
 
     function _measure(uint16 bucket) internal {
