@@ -15,8 +15,8 @@ interface IRateLimit {
     /// @return The rate limit for the token
     function getRateLimit(address token) external view returns (uint256);
 
-    /// @notice Gets a token's actual usage for the current date
+    /// @notice Gets a token's current usage in the rolling window
     /// @param token The token address
-    /// @return The daily usage for the token
+    /// @return The current usage for the token
     function getDailyUsage(address token) external view returns (uint256);
 }
