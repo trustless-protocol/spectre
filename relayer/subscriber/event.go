@@ -7,12 +7,14 @@ import (
 	"math/big"
 	"os"
 	"strconv"
+	"sync"
 	"time"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
 	"relayer/services"
 	"relayer/utils"
 
+	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	commettypes "github.com/cometbft/cometbft/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -41,6 +43,11 @@ const EVENT_TX_HEIGHT_FIELD = "tx.height"
 const ethStartupRecoveryLookbackEnv = "ETH_STARTUP_LOOKBACK_BLOCKS"
 const defaultEthStartupRecoveryLookbackBlocks uint64 = 256
 const ethSubscriptionReconnectDelay = 2 * time.Second
+const cosmosStartupRecoveryLookbackEnv = "COSMOS_STARTUP_LOOKBACK_BLOCKS"
+const defaultCosmosStartupRecoveryLookbackBlocks uint64 = 256
+const cosmosRecoveryPollInterval = 5 * time.Second
+const cosmosTxSearchPerPage = 100
+const cosmosSeenRetentionBlocks uint64 = 1024
 
 // normalizeTimeoutSeconds converts IBC v2 timeout timestamps from nanoseconds to seconds.
 // ibc-go stores TimeoutTimestamp in nanoseconds, but the ETH side uses seconds.
@@ -53,158 +60,407 @@ func normalizeTimeoutSeconds(ts uint64) uint64 {
 }
 
 type Subscriber struct {
+	cosmosSeenMtx sync.Mutex
+	cosmosSeen    map[string]uint64
 }
 
 func NewSubscriber() *Subscriber {
-	return &Subscriber{}
+	return &Subscriber{cosmosSeen: make(map[string]uint64)}
 }
 
 func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *services.BatchBuilder) {
-	c, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	lookback := cosmosStartupRecoveryLookbackBlocks()
+	var nextSendRecoveryStartBlock uint64
+	var nextAckRecoveryStartBlock uint64
+	var nextTimeoutRecoveryStartBlock uint64
+	for {
+		latestBlock, err := latestCosmosBlockHeight(ctx)
+		if err != nil {
+			ctx.Logger.Printf("[SubscribeCosmos] failed to get latest Cosmos block before subscription: %v", err)
+			time.Sleep(ethSubscriptionReconnectDelay)
+			continue
+		}
+		if nextSendRecoveryStartBlock == 0 {
+			nextSendRecoveryStartBlock = cosmosStartupRecoveryStartBlock(latestBlock, lookback)
+		}
+		if nextAckRecoveryStartBlock == 0 {
+			nextAckRecoveryStartBlock = cosmosStartupRecoveryStartBlock(latestBlock, lookback)
+		}
+		if nextTimeoutRecoveryStartBlock == 0 {
+			nextTimeoutRecoveryStartBlock = cosmosStartupRecoveryStartBlock(latestBlock, lookback)
+		}
 
-	sendPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_SEND_PACKET_EVENT)
-	if err != nil {
-		ctx.Logger.Printf("[SubscribeCosmos] Failed to subscribe to send_packet events: %v", err)
+		s.recoverCosmosGaps(ctx, batchBuilder, latestBlock,
+			&nextSendRecoveryStartBlock,
+			&nextAckRecoveryStartBlock,
+			&nextTimeoutRecoveryStartBlock,
+		)
+
+		err = s.subscribeCosmosOnce(ctx, batchBuilder,
+			&nextSendRecoveryStartBlock,
+			&nextAckRecoveryStartBlock,
+			&nextTimeoutRecoveryStartBlock,
+		)
+		ctx.Logger.Printf("[SubscribeCosmos] Subscription loop ended: %v", err)
+		time.Sleep(ethSubscriptionReconnectDelay)
 	}
-	ackPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_WRITE_ACK_PACKET_EVENT)
+}
+
+func (s *Subscriber) subscribeCosmosOnce(
+	ctx services.Context,
+	batchBuilder *services.BatchBuilder,
+	nextSendRecoveryStartBlock *uint64,
+	nextAckRecoveryStartBlock *uint64,
+	nextTimeoutRecoveryStartBlock *uint64,
+) error {
+	subCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	defer ctx.CosmosClient().UnsubscribeAll(context.Background(), "")
+
+	sendPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(subCtx, "", COMETBFT_SEND_PACKET_EVENT)
 	if err != nil {
-		ctx.Logger.Printf("[SubscribeCosmos] Failed to subscribe to write_acknowledgement events: %v", err)
+		return fmt.Errorf("failed to subscribe to send_packet events: %w", err)
 	}
-	timeoutPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_TIMEOUT_PACKET_EVENT)
+	ackPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(subCtx, "", COMETBFT_WRITE_ACK_PACKET_EVENT)
 	if err != nil {
-		ctx.Logger.Printf("[SubscribeCosmos] Failed to subscribe to timeout_packet events: %v", err)
+		return fmt.Errorf("failed to subscribe to write_acknowledgement events: %w", err)
+	}
+	timeoutPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(subCtx, "", COMETBFT_TIMEOUT_PACKET_EVENT)
+	if err != nil {
+		return fmt.Errorf("failed to subscribe to timeout_packet events: %w", err)
 	}
 	ctx.Logger.Println("[SubscribeCosmos] Successfully subscribed to CometBFT events")
-	defer ctx.CosmosClient().UnsubscribeAll(context.Background(), "")
+
+	recoveryTicker := time.NewTicker(cosmosRecoveryPollInterval)
+	defer recoveryTicker.Stop()
 
 	for {
 		select {
-		case e := <-sendPacketSub:
-			sendPacketEvent := e.Events[EVENT_SEND_PACKET_FIELD]
-			if sendPacketEvent == nil {
+		case e, ok := <-sendPacketSub:
+			if !ok {
+				return fmt.Errorf("send_packet subscription channel closed")
+			}
+			blockNumber := s.handleCosmosSendPacketEvent(ctx, batchBuilder, e.Data, e.Events, "live")
+			advanceRecoveryStart(nextSendRecoveryStartBlock, blockNumber+1)
+
+		case e, ok := <-ackPacketSub:
+			if !ok {
+				return fmt.Errorf("write_acknowledgement subscription channel closed")
+			}
+			blockNumber := s.handleCosmosWriteAckEvent(ctx, batchBuilder, e.Data, e.Events, "live")
+			advanceRecoveryStart(nextAckRecoveryStartBlock, blockNumber+1)
+
+		case e, ok := <-timeoutPacketSub:
+			if !ok {
+				return fmt.Errorf("timeout_packet subscription channel closed")
+			}
+			blockNumber := s.handleCosmosTimeoutEvent(ctx, batchBuilder, e.Data, e.Events, "live")
+			advanceRecoveryStart(nextTimeoutRecoveryStartBlock, blockNumber+1)
+
+		case <-recoveryTicker.C:
+			latestBlock, err := latestCosmosBlockHeight(ctx)
+			if err != nil {
+				ctx.Logger.Printf("[SubscribeCosmos] gap recovery: failed to get latest Cosmos block: %v", err)
 				continue
 			}
-			blockNumber := txHeightFromEvent(e.Data, e.Events)
-
-			// A single Cosmos tx can emit N send_packet events (e.g. a batch of
-			// MsgSendPacket); CometBFT collapses same-name attributes into a
-			// parallel slice, so we must iterate every entry, not just [0].
-			for _, packetEncodedStr := range sendPacketEvent {
-				packetBytes, err := hex.DecodeString(packetEncodedStr)
-				if err != nil {
-					ctx.Logger.Printf("[SubscribeCosmos] send_packet: failed to decode hex: %v", err)
-					continue
-				}
-
-				var packet channeltypesv2.Packet
-				err = proto.Unmarshal(packetBytes, &packet)
-				if err != nil {
-					ctx.Logger.Printf("[SubscribeCosmos] send_packet: failed to unmarshal: %v", err)
-					continue
-				}
-
-				ctx.Logger.Printf("[SubscribeCosmos] send_packet received: seq=%d src=%s",
-					packet.Sequence, packet.SourceClient)
-				packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
-				batchBuilder.AddCosmos(services.CosmosPacket{
-					Type:        services.CosmosSend,
-					Packet:      &packet,
-					BlockNumber: blockNumber,
-				})
-			}
-		case e := <-ackPacketSub:
-			ackPacketEvent := e.Events[EVENT_WRITE_ACK_PACKET_FIELD]
-			ackEvent := e.Events[EVENT_ACKNOWLEDGEMENT_FIELD]
-			if len(ackPacketEvent) == 0 || len(ackEvent) == 0 {
-				continue
-			}
-			if len(ackPacketEvent) != len(ackEvent) {
-				ctx.Logger.Printf("[SubscribeCosmos] write_ack: packet/ack count mismatch (%d vs %d), skipping",
-					len(ackPacketEvent), len(ackEvent))
-				continue
-			}
-			blockNumber := txHeightFromEvent(e.Data, e.Events)
-
-			// Same multi-event handling as send_packet: iterate every parallel
-			// (packet, ack) pair in the tx, not just [0].
-			for i := range ackPacketEvent {
-				packetBytes, err := hex.DecodeString(ackPacketEvent[i])
-				if err != nil {
-					ctx.Logger.Printf("[SubscribeCosmos] write_ack: failed to decode packet hex: %v", err)
-					continue
-				}
-
-				var packet channeltypesv2.Packet
-				err = proto.Unmarshal(packetBytes, &packet)
-				if err != nil {
-					ctx.Logger.Printf("[SubscribeCosmos] write_ack: failed to unmarshal packet: %v", err)
-					continue
-				}
-
-				ackBytes, err := hex.DecodeString(ackEvent[i])
-				if err != nil {
-					ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to decode ack hex: %v",
-						packet.Sequence, err)
-					continue
-				}
-
-				var acknowledgement channeltypesv2.Acknowledgement
-				err = proto.Unmarshal(ackBytes, &acknowledgement)
-				if err != nil {
-					ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to unmarshal ack: %v",
-						packet.Sequence, err)
-					continue
-				}
-				if len(acknowledgement.AppAcknowledgements) == 0 {
-					ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: missing app acknowledgements", packet.Sequence)
-					continue
-				}
-
-				ctx.Logger.Printf("[SubscribeCosmos] write_ack received: seq=%d src=%s",
-					packet.Sequence, packet.SourceClient)
-				packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
-				batchBuilder.AddCosmos(services.CosmosPacket{
-					Type:        services.CosmosAck,
-					Packet:      &packet,
-					AckBytes:    acknowledgement.AppAcknowledgements,
-					BlockNumber: blockNumber,
-				})
-			}
-		case e := <-timeoutPacketSub:
-			timeoutPacketEvent := e.Events[EVENT_TIMEOUT_PACKET_FIELD]
-			if timeoutPacketEvent == nil {
-				continue
-			}
-			blockNumber := txHeightFromEvent(e.Data, e.Events)
-
-			for _, packetEncodedStr := range timeoutPacketEvent {
-				packetBytes, err := hex.DecodeString(packetEncodedStr)
-				if err != nil {
-					ctx.Logger.Printf("[SubscribeCosmos] timeout: failed to decode hex: %v", err)
-					continue
-				}
-
-				var packet channeltypesv2.Packet
-				err = proto.Unmarshal(packetBytes, &packet)
-				if err != nil {
-					ctx.Logger.Printf("[SubscribeCosmos] timeout: failed to unmarshal: %v", err)
-					continue
-				}
-
-				ctx.Logger.Printf("[SubscribeCosmos] timeout received: seq=%d src=%s",
-					packet.Sequence, packet.SourceClient)
-				packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
-				batchBuilder.AddCosmos(services.CosmosPacket{
-					Type:        services.CosmosTimeout,
-					Packet:      &packet,
-					BlockNumber: blockNumber,
-				})
-			}
-		case <-c.Done():
-			return
+			s.recoverCosmosGaps(ctx, batchBuilder, latestBlock,
+				nextSendRecoveryStartBlock,
+				nextAckRecoveryStartBlock,
+				nextTimeoutRecoveryStartBlock,
+			)
 		}
 	}
+}
+
+func latestCosmosBlockHeight(ctx services.Context) (uint64, error) {
+	status, err := ctx.CosmosClient().Status(context.Background())
+	if err != nil {
+		return 0, err
+	}
+	if status.SyncInfo.LatestBlockHeight < 0 {
+		return 0, fmt.Errorf("negative latest block height %d", status.SyncInfo.LatestBlockHeight)
+	}
+	return uint64(status.SyncInfo.LatestBlockHeight), nil
+}
+
+func (s *Subscriber) recoverCosmosGaps(
+	ctx services.Context,
+	batchBuilder *services.BatchBuilder,
+	latestBlock uint64,
+	nextSendRecoveryStartBlock *uint64,
+	nextAckRecoveryStartBlock *uint64,
+	nextTimeoutRecoveryStartBlock *uint64,
+) {
+	*nextSendRecoveryStartBlock = s.recoverCosmosEventQuery(
+		ctx, batchBuilder, "send_packet", COMETBFT_SEND_PACKET_EVENT,
+		*nextSendRecoveryStartBlock, latestBlock, s.handleCosmosSendPacketEvent,
+	)
+	*nextAckRecoveryStartBlock = s.recoverCosmosEventQuery(
+		ctx, batchBuilder, "write_acknowledgement", COMETBFT_WRITE_ACK_PACKET_EVENT,
+		*nextAckRecoveryStartBlock, latestBlock, s.handleCosmosWriteAckEvent,
+	)
+	*nextTimeoutRecoveryStartBlock = s.recoverCosmosEventQuery(
+		ctx, batchBuilder, "timeout_packet", COMETBFT_TIMEOUT_PACKET_EVENT,
+		*nextTimeoutRecoveryStartBlock, latestBlock, s.handleCosmosTimeoutEvent,
+	)
+}
+
+func (s *Subscriber) recoverCosmosEventQuery(
+	ctx services.Context,
+	batchBuilder *services.BatchBuilder,
+	name string,
+	baseQuery string,
+	startBlock uint64,
+	endBlock uint64,
+	handle func(services.Context, *services.BatchBuilder, commettypes.TMEventData, map[string][]string, string) uint64,
+) uint64 {
+	if endBlock < startBlock {
+		return startBlock
+	}
+
+	ctx.Logger.Printf("[SubscribeCosmos] recovery scanning %s txs in [%d,%d]", name, startBlock, endBlock)
+	query := fmt.Sprintf("%s AND tx.height >= %d AND tx.height <= %d", baseQuery, startBlock, endBlock)
+	perPage := cosmosTxSearchPerPage
+
+	for page := 1; ; page++ {
+		pageNumber := page
+		result, err := ctx.CosmosClient().TxSearch(context.Background(), query, false, &pageNumber, &perPage, "asc")
+		if err != nil {
+			ctx.Logger.Printf("[SubscribeCosmos] recovery: failed to search %s txs in [%d,%d]: %v",
+				name, startBlock, endBlock, err)
+			return startBlock
+		}
+		for _, tx := range result.Txs {
+			events := cosmosEventsFromTx(tx)
+			handle(ctx, batchBuilder, nil, events, "recovery")
+		}
+		if len(result.Txs) == 0 || pageNumber*perPage >= result.TotalCount {
+			break
+		}
+	}
+
+	return endBlock + 1
+}
+
+func cosmosEventsFromTx(tx *coretypes.ResultTx) map[string][]string {
+	events := make(map[string][]string)
+	if tx == nil {
+		return events
+	}
+	for _, event := range tx.TxResult.Events {
+		for _, attr := range event.Attributes {
+			key := fmt.Sprintf("%s.%s", event.Type, attr.Key)
+			events[key] = append(events[key], attr.Value)
+		}
+	}
+	if tx.Height > 0 {
+		events[EVENT_TX_HEIGHT_FIELD] = append(events[EVENT_TX_HEIGHT_FIELD], strconv.FormatInt(tx.Height, 10))
+	}
+	return events
+}
+
+func cosmosPacketMatchesConfiguredClient(ctx services.Context, packet *channeltypesv2.Packet) bool {
+	if packet == nil {
+		return false
+	}
+	ethClientID := ctx.EthClientID()
+	routerClientID := ctx.CosmosRouterClientID()
+	if ethClientID == "" && routerClientID == "" {
+		return true
+	}
+	return packet.SourceClient == ethClientID ||
+		packet.DestinationClient == ethClientID ||
+		packet.SourceClient == routerClientID ||
+		packet.DestinationClient == routerClientID
+}
+
+func (s *Subscriber) markCosmosPacketSeen(packetType services.CosmosPacketType, packet *channeltypesv2.Packet, blockNumber uint64) bool {
+	if packet == nil {
+		return false
+	}
+	key := fmt.Sprintf("%d|%s|%s|%d|%d", int(packetType), packet.SourceClient, packet.DestinationClient, packet.Sequence, blockNumber)
+
+	s.cosmosSeenMtx.Lock()
+	defer s.cosmosSeenMtx.Unlock()
+	if s.cosmosSeen == nil {
+		s.cosmosSeen = make(map[string]uint64)
+	}
+	if _, ok := s.cosmosSeen[key]; ok {
+		return false
+	}
+	s.cosmosSeen[key] = blockNumber
+	if blockNumber > cosmosSeenRetentionBlocks {
+		minHeight := blockNumber - cosmosSeenRetentionBlocks
+		for seenKey, seenHeight := range s.cosmosSeen {
+			if seenHeight != 0 && seenHeight < minHeight {
+				delete(s.cosmosSeen, seenKey)
+			}
+		}
+	}
+	return true
+}
+
+func decodeCosmosPacket(ctx services.Context, label string, encoded string) (*channeltypesv2.Packet, bool) {
+	packetBytes, err := hex.DecodeString(encoded)
+	if err != nil {
+		ctx.Logger.Printf("[SubscribeCosmos] %s: failed to decode packet hex: %v", label, err)
+		return nil, false
+	}
+
+	var packet channeltypesv2.Packet
+	if err := proto.Unmarshal(packetBytes, &packet); err != nil {
+		ctx.Logger.Printf("[SubscribeCosmos] %s: failed to unmarshal packet: %v", label, err)
+		return nil, false
+	}
+	return &packet, true
+}
+
+func (s *Subscriber) handleCosmosSendPacketEvent(
+	ctx services.Context,
+	batchBuilder *services.BatchBuilder,
+	data commettypes.TMEventData,
+	events map[string][]string,
+	source string,
+) uint64 {
+	sendPacketEvent := events[EVENT_SEND_PACKET_FIELD]
+	blockNumber := txHeightFromEvent(data, events)
+	if len(sendPacketEvent) == 0 {
+		return blockNumber
+	}
+
+	for _, packetEncodedStr := range sendPacketEvent {
+		packet, ok := decodeCosmosPacket(ctx, "send_packet", packetEncodedStr)
+		if !ok {
+			continue
+		}
+		if !cosmosPacketMatchesConfiguredClient(ctx, packet) {
+			ctx.Logger.Printf("[SubscribeCosmos] send_packet seq=%d src=%s dst=%s ignored: unrelated client",
+				packet.Sequence, packet.SourceClient, packet.DestinationClient)
+			continue
+		}
+		if !s.markCosmosPacketSeen(services.CosmosSend, packet, blockNumber) {
+			ctx.Logger.Printf("[SubscribeCosmos] send_packet seq=%d at height %d ignored: duplicate %s event",
+				packet.Sequence, blockNumber, source)
+			continue
+		}
+
+		ctx.Logger.Printf("[SubscribeCosmos] send_packet received: seq=%d src=%s dst=%s height=%d source=%s",
+			packet.Sequence, packet.SourceClient, packet.DestinationClient, blockNumber, source)
+		packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
+		batchBuilder.AddCosmos(services.CosmosPacket{
+			Type:        services.CosmosSend,
+			Packet:      packet,
+			BlockNumber: blockNumber,
+		})
+	}
+	return blockNumber
+}
+
+func (s *Subscriber) handleCosmosWriteAckEvent(
+	ctx services.Context,
+	batchBuilder *services.BatchBuilder,
+	data commettypes.TMEventData,
+	events map[string][]string,
+	source string,
+) uint64 {
+	ackPacketEvent := events[EVENT_WRITE_ACK_PACKET_FIELD]
+	ackEvent := events[EVENT_ACKNOWLEDGEMENT_FIELD]
+	blockNumber := txHeightFromEvent(data, events)
+	if len(ackPacketEvent) == 0 || len(ackEvent) == 0 {
+		return blockNumber
+	}
+	if len(ackPacketEvent) != len(ackEvent) {
+		ctx.Logger.Printf("[SubscribeCosmos] write_ack: packet/ack count mismatch (%d vs %d), skipping",
+			len(ackPacketEvent), len(ackEvent))
+		return blockNumber
+	}
+
+	for i := range ackPacketEvent {
+		packet, ok := decodeCosmosPacket(ctx, "write_ack", ackPacketEvent[i])
+		if !ok {
+			continue
+		}
+		if !cosmosPacketMatchesConfiguredClient(ctx, packet) {
+			ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d src=%s dst=%s ignored: unrelated client",
+				packet.Sequence, packet.SourceClient, packet.DestinationClient)
+			continue
+		}
+
+		ackBytes, err := hex.DecodeString(ackEvent[i])
+		if err != nil {
+			ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to decode ack hex: %v",
+				packet.Sequence, err)
+			continue
+		}
+
+		var acknowledgement channeltypesv2.Acknowledgement
+		if err := proto.Unmarshal(ackBytes, &acknowledgement); err != nil {
+			ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: failed to unmarshal ack: %v",
+				packet.Sequence, err)
+			continue
+		}
+		if len(acknowledgement.AppAcknowledgements) == 0 {
+			ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d: missing app acknowledgements", packet.Sequence)
+			continue
+		}
+		if !s.markCosmosPacketSeen(services.CosmosAck, packet, blockNumber) {
+			ctx.Logger.Printf("[SubscribeCosmos] write_ack seq=%d at height %d ignored: duplicate %s event",
+				packet.Sequence, blockNumber, source)
+			continue
+		}
+
+		ctx.Logger.Printf("[SubscribeCosmos] write_ack received: seq=%d src=%s dst=%s height=%d source=%s",
+			packet.Sequence, packet.SourceClient, packet.DestinationClient, blockNumber, source)
+		packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
+		batchBuilder.AddCosmos(services.CosmosPacket{
+			Type:        services.CosmosAck,
+			Packet:      packet,
+			AckBytes:    acknowledgement.AppAcknowledgements,
+			BlockNumber: blockNumber,
+		})
+	}
+	return blockNumber
+}
+
+func (s *Subscriber) handleCosmosTimeoutEvent(
+	ctx services.Context,
+	batchBuilder *services.BatchBuilder,
+	data commettypes.TMEventData,
+	events map[string][]string,
+	source string,
+) uint64 {
+	timeoutPacketEvent := events[EVENT_TIMEOUT_PACKET_FIELD]
+	blockNumber := txHeightFromEvent(data, events)
+	if len(timeoutPacketEvent) == 0 {
+		return blockNumber
+	}
+
+	for _, packetEncodedStr := range timeoutPacketEvent {
+		packet, ok := decodeCosmosPacket(ctx, "timeout", packetEncodedStr)
+		if !ok {
+			continue
+		}
+		if !cosmosPacketMatchesConfiguredClient(ctx, packet) {
+			ctx.Logger.Printf("[SubscribeCosmos] timeout seq=%d src=%s dst=%s ignored: unrelated client",
+				packet.Sequence, packet.SourceClient, packet.DestinationClient)
+			continue
+		}
+		if !s.markCosmosPacketSeen(services.CosmosTimeout, packet, blockNumber) {
+			ctx.Logger.Printf("[SubscribeCosmos] timeout seq=%d at height %d ignored: duplicate %s event",
+				packet.Sequence, blockNumber, source)
+			continue
+		}
+
+		ctx.Logger.Printf("[SubscribeCosmos] timeout received: seq=%d src=%s dst=%s height=%d source=%s",
+			packet.Sequence, packet.SourceClient, packet.DestinationClient, blockNumber, source)
+		packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
+		batchBuilder.AddCosmos(services.CosmosPacket{
+			Type:        services.CosmosTimeout,
+			Packet:      packet,
+			BlockNumber: blockNumber,
+		})
+	}
+	return blockNumber
 }
 
 func txHeightFromEvent(data commettypes.TMEventData, events map[string][]string) uint64 {
@@ -269,12 +525,33 @@ func ethStartupRecoveryLookbackBlocks() uint64 {
 	return ethStartupRecoveryLookbackBlocksFromEnv(os.Getenv(ethStartupRecoveryLookbackEnv))
 }
 
+func cosmosStartupRecoveryLookbackBlocksFromEnv(raw string) uint64 {
+	if raw == "" {
+		return defaultCosmosStartupRecoveryLookbackBlocks
+	}
+
+	lookback, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return defaultCosmosStartupRecoveryLookbackBlocks
+	}
+
+	return lookback
+}
+
+func cosmosStartupRecoveryLookbackBlocks() uint64 {
+	return cosmosStartupRecoveryLookbackBlocksFromEnv(os.Getenv(cosmosStartupRecoveryLookbackEnv))
+}
+
 func ethStartupRecoveryStartBlock(latestBlock, lookback uint64) uint64 {
 	if lookback >= latestBlock {
 		return 0
 	}
 
 	return latestBlock - lookback
+}
+
+func cosmosStartupRecoveryStartBlock(latestBlock, lookback uint64) uint64 {
+	return ethStartupRecoveryStartBlock(latestBlock, lookback)
 }
 
 func enqueueEthWriteAcknowledgement(batchBuilder *services.BatchBuilder, ev *contractICS26Router.ContractICS26RouterWriteAcknowledgement) {

@@ -31,6 +31,10 @@
             "src_chain": "0x1"
         }
     ],
+    "batch": {
+        "batch_period_seconds": 3,
+        "batch_size": 5
+    },
     "server": {
         "address": "127.0.0.1",
         "log_level": "info",
