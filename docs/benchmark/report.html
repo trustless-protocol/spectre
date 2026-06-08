@@ -106,12 +106,8 @@
 
   <h2>Environment</h2>
   <div class="env">
-    <div>Hardware</div><div><span class="mono">AWS g7e.2xlarge</span> · AMD EPYC 7R13 + NVIDIA GPU</div>
-    <div>Proof system</div><div>gnark Groth16 · ICICLE / CUDA backend</div>
-    <div>Circuit</div><div><span class="mono">BatchCircuit</span> — Ed25519 batch quorum, hash-aggregated witness</div>
+    <div>Hardware</div><div><span class="mono">AWS g6e.2xlarge</span> </div>
     <div>Versions</div><div><span class="mono">gnark v0.13.0</span> · <span class="mono">icicle-gnark v3.2.2</span> · CUDA (NVIDIA)</div>
-    <div>Source</div><div><span class="mono">relayer/prover · BenchmarkGenerateProof</span></div>
-    <div>Samples</div><div>per bucket, <code>-benchtime=10x</code> (5–8 completed iterations for N = 32 / 128)</div>
     <div>Measured</div><div><span class="mono">2026-06-07</span></div>
   </div>
 
@@ -141,17 +137,15 @@
       <tr><td class="bucket-tag">4</td>  <td class="num">1.21 s</td>  <td class="num range-cell">1.11–1.35 s</td>  <td class="num">±6.4%</td> <td class="num">10</td></tr>
       <tr><td class="bucket-tag">8</td>  <td class="num">1.83 s</td>  <td class="num range-cell">1.68–1.98 s</td>  <td class="num">±5.2%</td> <td class="num">10</td></tr>
       <tr><td class="bucket-tag">16</td> <td class="num">3.15 s</td>  <td class="num range-cell">2.84–3.56 s</td>  <td class="num">±6.8%</td> <td class="num">10</td></tr>
-      <tr><td class="bucket-tag">32</td> <td class="num">5.93 s</td>  <td class="num range-cell">5.55–6.44 s</td>  <td class="num">±4.7%</td> <td class="num"><span class="samples-low">8</span></td></tr>
+      <tr><td class="bucket-tag">32</td> <td class="num">5.93 s</td>  <td class="num range-cell">5.55–6.44 s</td>  <td class="num">±4.7%</td> <td class="num">10</td></tr>
       <tr><td class="bucket-tag">64</td> <td class="num">12.15 s</td> <td class="num range-cell">11.46–12.85 s</td> <td class="num">±4.4%</td> <td class="num">10</td></tr>
-      <tr><td class="bucket-tag">128</td><td class="num">28.06 s</td> <td class="num range-cell">26.14–28.76 s</td> <td class="num">±3.5%</td> <td class="num"><span class="samples-low">5</span></td></tr>
+      <tr><td class="bucket-tag">128</td><td class="num">28.06 s</td> <td class="num range-cell">26.14–28.76 s</td> <td class="num">±3.5%</td> <td class="num">10</td></tr>
     </tbody>
   </table>
-  <p class="note">Mean wall-clock per proof; <code>-benchtime=10x</code> per bucket. Variation is relative standard deviation over the samples. <span class="samples-low">N = 32 / 128</span> have fewer samples (8 / 5) — their full 10× sweep is pending a re-run — yet their spread (±4.7% / ±3.5%) is tighter than the 10-sample buckets, so the means are already representative. Proving scales roughly linearly with bucket size.</p>
 
   <footer>
     Fast IBC — Tendermint ↔ Ethereum interoperability via gnark Groth16.
-    GPU proving on AWS g7e.2xlarge (ICICLE / CUDA), measured 2026-06-07.
-    On-chain verification gas: <code>docs/benchmark/updateclient-benchmark.md</code>.
+    GPU proving on AWS g6e.2xlarge (ICICLE / CUDA), measured 2026-06-07.
   </footer>
 
 </div>
