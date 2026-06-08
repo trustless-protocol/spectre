@@ -20,12 +20,11 @@ import (
 // for this Cosmos chain ("cosmoshub-1"), so the correct field to compare is
 // `DestinationClient`. The old comparison silently inverted both branches.
 func TestShouldRelayCosmosTimeoutToEth(t *testing.T) {
-	const cosmosRouterClientID = "cosmoshub-1"
-
 	tests := []struct {
-		name   string
-		packet *channeltypesv2.Packet
-		want   bool
+		name                 string
+		packet               *channeltypesv2.Packet
+		cosmosRouterClientID string
+		want                 bool
 	}{
 		{
 			name: "Cosmos-originated packet skips ETH relay",
@@ -33,7 +32,8 @@ func TestShouldRelayCosmosTimeoutToEth(t *testing.T) {
 				SourceClient:      "08-wasm-0",   // Cosmos's client for ETH
 				DestinationClient: "cosmoshub-1", // ETH's client for Cosmos
 			},
-			want: false, // Cosmos's MsgTimeout already refunded the sender
+			cosmosRouterClientID: "cosmoshub-1",
+			want:                 false, // Cosmos's MsgTimeout already refunded the sender
 		},
 		{
 			name: "ETH-originated packet is relayed",
@@ -41,12 +41,14 @@ func TestShouldRelayCosmosTimeoutToEth(t *testing.T) {
 				SourceClient:      "cosmoshub-1", // ETH's client for Cosmos
 				DestinationClient: "08-wasm-0",   // Cosmos's client for ETH
 			},
-			want: true, // ETH still holds the commitment, needs ICS26Router.timeoutPacket
+			cosmosRouterClientID: "cosmoshub-1",
+			want:                 true, // ETH still holds the commitment, needs ICS26Router.timeoutPacket
 		},
 		{
-			name:   "nil packet is not relayed",
-			packet: nil,
-			want:   false,
+			name:                 "nil packet is not relayed",
+			packet:               nil,
+			cosmosRouterClientID: "cosmoshub-1",
+			want:                 false,
 		},
 		{
 			name: "unrelated client IDs are relayed (treated as ETH-originated)",
@@ -54,13 +56,23 @@ func TestShouldRelayCosmosTimeoutToEth(t *testing.T) {
 				SourceClient:      "other-client",
 				DestinationClient: "yet-another",
 			},
-			want: true,
+			cosmosRouterClientID: "cosmoshub-1",
+			want:                 true,
+		},
+		{
+			name: "empty cosmosRouterClientID is not relayed (misconfiguration)",
+			packet: &channeltypesv2.Packet{
+				SourceClient:      "other-client",
+				DestinationClient: "yet-another",
+			},
+			cosmosRouterClientID: "",
+			want:                 false,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := shouldRelayCosmosTimeoutToEth(tc.packet, cosmosRouterClientID)
+			got := shouldRelayCosmosTimeoutToEth(tc.packet, tc.cosmosRouterClientID)
 			if got != tc.want {
 				t.Fatalf("shouldRelayCosmosTimeoutToEth=%v want=%v", got, tc.want)
 			}

@@ -615,7 +615,7 @@ func ethPacketExpired(packet EthPacket) bool {
 // blocked the relay loop entirely whenever the ETH-side updateClient was
 // failing for unrelated reasons.
 func shouldRelayCosmosTimeoutToEth(packet *channeltypesv2.Packet, cosmosRouterClientID string) bool {
-	if packet == nil {
+	if packet == nil || cosmosRouterClientID == "" {
 		return false
 	}
 	return packet.DestinationClient != cosmosRouterClientID
