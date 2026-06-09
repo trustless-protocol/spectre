@@ -1349,7 +1349,7 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 }
 
 // simulateMsgs builds a transaction with the given messages, signs it with an empty signature, and simulates its gas consumption.
-func (h *Handler) simulateMsgs(svcCtx services.Context, sdkMsgs []sdk.Msg, accountNumber, sequence uint64) (uint64, error) {
+func (h *Handler) simulateMsgs(svcCtx services.Context, sdkMsgs []sdk.Msg, sequence uint64) (uint64, error) {
 	// Setup encoding config
 	interfaceRegistry := codectypes.NewInterfaceRegistry()
 	cryptocodec.RegisterInterfaces(interfaceRegistry)
@@ -1453,19 +1453,27 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	shouldSplit := false
 	var finalGasLimit uint64
 
-	// If there's more than one message, we can simulate and check if we need to split.
-	// If simulation fails, we split.
-	if len(sdkMsgs) > 1 {
-		simulatedGas, err := h.simulateMsgs(svcCtx, sdkMsgs, accountNumber, sequence)
+	// Simulate gas consumption for the messages in the batch.
+	if len(sdkMsgs) > 0 {
+		simulatedGas, err := h.simulateMsgs(svcCtx, sdkMsgs, sequence)
 		if err != nil {
-			log.Printf("[SendCosmosTxBatch] Simulation failed for batch of size %d: %v. Splitting...", len(sdkMsgs), err)
-			shouldSplit = true
+			log.Printf("[SendCosmosTxBatch] Simulation failed for batch of size %d: %v", len(sdkMsgs), err)
+			if len(sdkMsgs) > 1 {
+				log.Printf("[SendCosmosTxBatch] Splitting batch...")
+				shouldSplit = true
+			}
 		} else {
 			// Apply a 1.3 gas adjustment factor
 			adjustedGas := uint64(float64(simulatedGas) * 1.3)
 			if maxBlockGas > 0 && adjustedGas >= maxBlockGas {
-				log.Printf("[SendCosmosTxBatch] Adjusted gas %d exceeds max block gas %d for batch of size %d. Splitting...", adjustedGas, maxBlockGas, len(sdkMsgs))
-				shouldSplit = true
+				log.Printf("[SendCosmosTxBatch] Adjusted gas %d exceeds max block gas %d for batch of size %d", adjustedGas, maxBlockGas, len(sdkMsgs))
+				if len(sdkMsgs) > 1 {
+					log.Printf("[SendCosmosTxBatch] Splitting batch...")
+					shouldSplit = true
+				} else {
+					// Single message exceeds block limit; clamp it to max block gas.
+					finalGasLimit = maxBlockGas
+				}
 			} else {
 				finalGasLimit = adjustedGas
 			}
@@ -1481,7 +1489,7 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 		return h.sendCosmosTxBatchWithSplitting(svcCtx, sdkMsgs[mid:], accountNumber, nextSeq)
 	}
 
-	// If simulation wasn't run (single message) or we chose not to split, calculate the fallback gas limit
+	// If simulation wasn't run or failed, calculate the fallback gas limit
 	if finalGasLimit == 0 {
 		baseGas := uint64(200000)
 		if gasStr := os.Getenv("COSMOS_GAS_LIMIT"); gasStr != "" {
@@ -1498,9 +1506,9 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 				break
 			}
 		}
-		
+
 		// Guard against gasLimit overflow: baseGas * len(sdkMsgs)
-		if len(sdkMsgs) > 0 && baseGas > (1<<64 - 1)/uint64(len(sdkMsgs)) {
+		if len(sdkMsgs) > 0 && baseGas > (1<<64-1)/uint64(len(sdkMsgs)) {
 			finalGasLimit = 1<<64 - 1
 		} else {
 			finalGasLimit = baseGas * uint64(len(sdkMsgs))
@@ -1524,9 +1532,9 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 		if _, err := fmt.Sscanf(feeStr, "%d", &baseFee); err != nil {
 			return sequence, fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
 		}
-		
+
 		// Guard against feeAmount overflow: baseFee * len(sdkMsgs)
-		if len(sdkMsgs) > 0 && baseFee > (1<<63 - 1)/int64(len(sdkMsgs)) {
+		if len(sdkMsgs) > 0 && baseFee > (1<<63-1)/int64(len(sdkMsgs)) {
 			feeAmount = 1<<63 - 1
 		} else {
 			feeAmount = baseFee * int64(len(sdkMsgs))
@@ -1629,7 +1637,7 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	if benchEnabled {
 		broadcastStart = time.Now()
 	}
-	
+
 	bctx, bcancel := context.WithTimeout(context.Background(), cosmosRPCTimeout)
 	syncResult, err := svcCtx.CosmosClient().BroadcastTxSync(bctx, txBytes)
 	bcancel()
@@ -1646,7 +1654,7 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	if err != nil {
 		return sequence, fmt.Errorf("failed to confirm transaction inclusion: %w", err)
 	}
-	
+
 	var broadcastDur time.Duration
 	if benchEnabled {
 		broadcastDur = time.Since(broadcastStart)
@@ -1668,10 +1676,29 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	return sequence + 1, nil
 }
 
-// SendCosmosTxBatch sends multiple messages in a single Cosmos transaction
+// SendCosmosTxBatch sends multiple messages in a single Cosmos transaction.
+//
+// NOTE on Non-Atomicity:
+// If a batch is large or simulation indicates it would exceed the block gas limit,
+// the batch is recursively split into smaller sub-batches and sent as MULTIPLE separate transactions.
+// These transactions are executed sequentially, and the account sequence is updated accordingly.
+// If an earlier sub-batch succeeds but a later one fails, an error is returned.
+//
+// Retry Behavior and Idempotency:
+// Callers should be aware that the overall batch operation is not atomic. On failure,
+// the relayer's main loop will retry. However, because the loop is state-based, it queries
+// the current chain state at the start of each iteration. Any messages/packets successfully
+// committed by the earlier succeeded sub-batches will not be included in the retried batch.
+// Downstream Cosmos modules/contracts are idempotent and tolerate already-processed packets safely.
 func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	if len(msgs) == 0 {
 		return nil
+	}
+
+	benchEnabled := utils.BenchEnabled()
+	var benchStart time.Time
+	if benchEnabled {
+		benchStart = time.Now()
 	}
 
 	// Get the private key from environment variable
@@ -1716,6 +1743,9 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	}
 
 	_, err = h.sendCosmosTxBatchWithSplitting(svcCtx, sdkMsgs, accountNumber, sequence)
+	if benchEnabled {
+		log.Printf("[bench][cosmos] batch msgs=%d total=%s", len(msgs), time.Since(benchStart))
+	}
 	return err
 }
 
