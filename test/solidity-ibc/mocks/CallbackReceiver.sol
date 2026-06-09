@@ -28,3 +28,29 @@ contract CallbackReceiver is IBCCallbackReceiver {
         // For example, emit an event or update state
     }
 }
+
+contract RevertingCallbackReceiver is IBCCallbackReceiver {
+    function onAckPacket(bool, IIBCAppCallbacks.OnAcknowledgementPacketCallback calldata) external pure override {
+        revert("ack callback failed");
+    }
+
+    function onTimeoutPacket(IIBCAppCallbacks.OnTimeoutPacketCallback calldata) external pure override {
+        revert("timeout callback failed");
+    }
+}
+
+contract GasConsumingCallbackReceiver is IBCCallbackReceiver {
+    uint256 private _counter;
+
+    function onAckPacket(bool, IIBCAppCallbacks.OnAcknowledgementPacketCallback calldata) external override {
+        while (true) {
+            _counter++;
+        }
+    }
+
+    function onTimeoutPacket(IIBCAppCallbacks.OnTimeoutPacketCallback calldata) external override {
+        while (true) {
+            _counter++;
+        }
+    }
+}

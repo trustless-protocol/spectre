@@ -119,4 +119,12 @@ interface IICS20Transfer is IICS20TransferAccessControlled {
     /// @param contractAddress The address of the IBCERC20 contract
     /// @param fullDenomPath The full IBC denom path for this token
     event IBCERC20ContractCreated(address indexed contractAddress, string fullDenomPath);
+    /// @notice Emitted when a sender acknowledgement callback reverts or runs out of gas
+    /// @param callbackAddress The address of the sender callback contract
+    /// @param reason The revert reason, or empty bytes if unavailable
+    event IBCSenderAckPacketCallbackError(address indexed callbackAddress, bytes reason);
+    /// @notice Emitted when a sender timeout callback reverts or runs out of gas
+    /// @param callbackAddress The address of the sender callback contract
+    /// @param reason The revert reason, or empty bytes if unavailable
+    event IBCSenderTimeoutPacketCallbackError(address indexed callbackAddress, bytes reason);
 }
