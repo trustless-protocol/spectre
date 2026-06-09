@@ -457,14 +457,18 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 	log.Printf("[CreateEthClient] starting: beacon=%s checksum=%s", beaconAPIURL, checksum)
 
 	log.Printf("[CreateEthClient] fetching beacon genesis")
-	genesis, err := relayerclient.GetBeaconGenesis(beaconAPIURL)
+	bctx, bcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	genesis, err := relayerclient.GetBeaconGenesis(bctx, beaconAPIURL)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client genesis: %w", err)
 	}
 	log.Printf("[CreateEthClient] beacon genesis fetched: genesisTime=%s genesisValidatorsRoot=%s", genesis.GenesisTime, genesis.GenesisValidatorsRoot)
 
 	log.Printf("[CreateEthClient] fetching beacon spec")
-	spec, err := relayerclient.GetBeaconSpec(beaconAPIURL)
+	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+	spec, err := relayerclient.GetBeaconSpec(bctx, beaconAPIURL)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client spec: %w", err)
 	}
@@ -473,7 +477,9 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 	// Use the finalized header from the finality update — this is always a checkpoint slot
 	// (epoch boundary), unlike GetBeaconBlock("finalized") which may return a non-checkpoint slot.
 	log.Printf("[CreateEthClient] fetching finality update")
-	finalityUpdate, err := relayerclient.GetFinalityUpdate(beaconAPIURL)
+	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+	finalityUpdate, err := relayerclient.GetFinalityUpdate(bctx, beaconAPIURL)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get finality update: %w", err)
 	}
@@ -482,14 +488,18 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 		finalityUpdate.AttestedHeader.Beacon.Slot, checkpointSlot, finalityUpdate.SignatureSlot)
 
 	log.Printf("[CreateEthClient] fetching beacon block root for slot=%s", checkpointSlot)
-	blockRoot, err := relayerclient.GetBeaconBlockRoot(beaconAPIURL, checkpointSlot)
+	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+	blockRoot, err := relayerclient.GetBeaconBlockRoot(bctx, beaconAPIURL, checkpointSlot)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get beacon block root: %w", err)
 	}
 	log.Printf("[CreateEthClient] beacon block root=%s", blockRoot)
 
 	log.Printf("[CreateEthClient] fetching light client bootstrap")
-	bootstrap, err := relayerclient.GetLightClientBootstrap(beaconAPIURL, blockRoot)
+	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+	bootstrap, err := relayerclient.GetLightClientBootstrap(bctx, beaconAPIURL, blockRoot)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client bootstrap: %w", err)
 	}
@@ -497,7 +507,9 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 		checkpointSlot, bootstrap.Data.CurrentSyncCommittee.AggregatePubkey)
 
 	log.Printf("[CreateEthClient] fetching beacon block for slot=%s", checkpointSlot)
-	beaconBlock, err := relayerclient.GetBeaconBlock(beaconAPIURL, checkpointSlot)
+	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+	beaconBlock, err := relayerclient.GetBeaconBlock(bctx, beaconAPIURL, checkpointSlot)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get beacon block: %w", err)
 	}
@@ -600,7 +612,9 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 
 	latestPeriod := clientState.ComputeSyncCommitteePeriodAtSlot(clientState.LatestSlot)
 	log.Printf("[CreateEthClient] fetching light client updates for latestPeriod=%d", latestPeriod)
-	lightClientUpdates, err := relayerclient.GetLightClientUpdates(ctx.BeaconAPIURL(), latestPeriod, 1)
+	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+	lightClientUpdates, err := relayerclient.GetLightClientUpdates(bctx, ctx.BeaconAPIURL(), latestPeriod, 1)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client updates: %w", err)
 	}
@@ -670,7 +684,9 @@ func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, 
 	}
 	trustedSlot := ethClientState.LatestSlot
 
-	finalityUpdate, err := relayerclient.GetFinalityUpdate(beaconAPIURL)
+	bctx, bcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	finalityUpdate, err := relayerclient.GetFinalityUpdate(bctx, beaconAPIURL)
+	bcancel()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get finality update: %w", err)
 	}
@@ -750,7 +766,9 @@ func cosmosCurrentSlotReady(currentSlot, sigSlot uint64) bool {
 
 func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconAPIURL, ethClientID string, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) ([]any, error) {
 	count := targetPeriod - trustedPeriod + 1
-	lightClientUpdates, err := relayerclient.GetLightClientUpdates(beaconAPIURL, trustedPeriod, count)
+	bctx, bcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	lightClientUpdates, err := relayerclient.GetLightClientUpdates(bctx, beaconAPIURL, trustedPeriod, count)
+	bcancel()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get light client updates: %w", err)
 	}
@@ -778,12 +796,16 @@ func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconA
 			continue
 		}
 
-		blockRoot, err := relayerclient.GetBeaconBlockRoot(beaconAPIURL, fmt.Sprintf("%d", updateFinalizedSlot))
+		bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+		blockRoot, err := relayerclient.GetBeaconBlockRoot(bctx, beaconAPIURL, fmt.Sprintf("%d", updateFinalizedSlot))
+		bcancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get beacon block root: %w", err)
 		}
 
-		bootstrap, err := relayerclient.GetLightClientBootstrap(beaconAPIURL, blockRoot)
+		bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+		bootstrap, err := relayerclient.GetLightClientBootstrap(bctx, beaconAPIURL, blockRoot)
+		bcancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get light client bootstrap: %w", err)
 		}
@@ -815,12 +837,16 @@ func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconA
 			attestedSlot, finalizedSlot, latestTrustedSlot)
 
 		// Get sync committee from attested slot's bootstrap (matches eureka relayer behavior)
-		blockRoot, err := relayerclient.GetBeaconBlockRoot(beaconAPIURL, attestedSlot)
+		bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+		blockRoot, err := relayerclient.GetBeaconBlockRoot(bctx, beaconAPIURL, attestedSlot)
+		bcancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get beacon block root: %w", err)
 		}
 
-		bootstrap, err := relayerclient.GetLightClientBootstrap(beaconAPIURL, blockRoot)
+		bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+		bootstrap, err := relayerclient.GetLightClientBootstrap(bctx, beaconAPIURL, blockRoot)
+		bcancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get light client bootstrap: %w", err)
 		}
