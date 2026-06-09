@@ -153,4 +153,38 @@ contract EscrowTest is Test {
             assertEq(escrow.getDailyUsage(mockToken), 0);
         }
     }
+
+    function test_noMidnightBypass() public {
+        address mockToken = makeAddr("mockToken");
+        uint256 rateLimit = 10_000;
+
+        vm.prank(rateLimiter);
+        escrow.setRateLimit(mockToken, rateLimit);
+
+        vm.mockCall(mockToken, IERC20.transferFrom.selector, abi.encode(true));
+
+        escrow.send(IERC20(mockToken), address(this), rateLimit);
+        assertEq(escrow.getDailyUsage(mockToken), rateLimit);
+
+        // Warp just enough that a calendar-day boundary would be crossed in the old system
+        vm.warp(block.timestamp + 30 minutes);
+
+        // Only ~208 has decayed (10000 * 30min / 1day)
+        uint256 decayed = rateLimit * 30 minutes / 1 days;
+
+        // Sending more than the decayed portion should revert
+        vm.expectRevert(
+            abi.encodeWithSelector(IRateLimitErrors.RateLimitExceeded.selector, rateLimit, rateLimit + 1)
+        );
+        escrow.send(IERC20(mockToken), address(this), decayed + 1);
+
+        // The decayed amount can be sent
+        escrow.send(IERC20(mockToken), address(this), decayed);
+        assertEq(escrow.getDailyUsage(mockToken), rateLimit);
+
+        // After the full period, the full limit is available again
+        vm.warp(block.timestamp + 1 days);
+        escrow.send(IERC20(mockToken), address(this), rateLimit);
+        assertEq(escrow.getDailyUsage(mockToken), rateLimit);
+    }
 }
