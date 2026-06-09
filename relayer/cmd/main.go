@@ -385,7 +385,11 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				cfg.EthToCosmosConfig.BeaconUrl,
 				cosmosWasmClientID,
 			)
-			ctx.SetCosmosRouterClientID(cosmosRouterClientIDOrDefault(cfg))
+			cosmosRouterClientID := cosmosRouterClientIDOrDefault(cfg)
+			if cosmosRouterClientID == "" {
+				return fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
+			}
+			ctx.SetCosmosRouterClientID(cosmosRouterClientID)
 
 			roleManager := roleManagerOrDefault(cfg)
 			ctx.SetAddresses(
@@ -586,7 +590,11 @@ func Start(logger *zap.Logger) *cobra.Command {
 				cfg.EthToCosmosConfig.BeaconUrl,
 				cosmosWasmClientID,
 			)
-			ctx.SetCosmosRouterClientID(cosmosRouterClientIDOrDefault(cfg))
+			cosmosRouterClientID := cosmosRouterClientIDOrDefault(cfg)
+			if cosmosRouterClientID == "" {
+				return fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
+			}
+			ctx.SetCosmosRouterClientID(cosmosRouterClientID)
 
 			// Set contract addresses from config
 			roleManager := roleManagerOrDefault(cfg)
