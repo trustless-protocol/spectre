@@ -22,4 +22,9 @@ interface IICS02ClientErrors {
 
     /// @notice Unreachable code
     error Unreachable();
+
+    /// @notice Caller is not granted the per-clientId light client migrator role for this client
+    /// @param clientId client identifier
+    /// @param caller the address that attempted to migrate the client
+    error IBCUnauthorizedMigrator(string clientId, address caller);
 }
