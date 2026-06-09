@@ -209,7 +209,7 @@ contract EscrowTest is Test {
 
         // Refund should succeed even though the daily limit is saturated
         escrow.sendRefund(IERC20(mockToken), address(this), 5_000);
-        
+
         // Daily usage increases by 5_000 uncapped (restoring what the deposit removed)
         assertEq(escrow.getDailyUsage(mockToken), rateLimit + 5_000);
     }
@@ -241,9 +241,8 @@ contract EscrowTest is Test {
 
         // Refund 2_000 tokens
         escrow.sendRefund(IERC20(mockToken), address(this), 2_000);
-        
+
         // Daily usage should be restored to 5_000 (pre-deposit value)
         assertEq(escrow.getDailyUsage(mockToken), 5_000);
     }
 }
-
