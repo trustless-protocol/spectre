@@ -1,6 +1,9 @@
 package services
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrPermanentRelayFailure marks a relay failure as deterministic / on-chain:
 // the tx was actually included and reverted (ETH receipt.Status==0, or a Cosmos
@@ -24,3 +27,19 @@ var ErrPermanentRelayFailure = errors.New("permanent relay failure (on-chain rev
 // update from fresh on-chain state, or retrying with the full validator set, can
 // make progress, so packet retry budgets should not be consumed.
 var ErrValidatorCacheRace = errors.New("validator cache race")
+
+// BatchPartialError is returned when a split batch is partially successful.
+// It tracks how many messages at the beginning of the batch were successfully
+// committed before a subsequent sub-batch encountered an error.
+type BatchPartialError struct {
+	SucceededCount int
+	Err            error
+}
+
+func (e *BatchPartialError) Error() string {
+	return fmt.Sprintf("partial batch failure: %d messages succeeded: %v", e.SucceededCount, e.Err)
+}
+
+func (e *BatchPartialError) Unwrap() error {
+	return e.Err
+}
