@@ -1437,9 +1437,9 @@ func (h *Handler) simulateMsgs(svcCtx services.Context, sdkMsgs []sdk.Msg, seque
 }
 
 // sendCosmosTxBatchWithSplitting handles gas simulation, clamping, fee scaling, and recursive batch splitting.
-func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsgs []sdk.Msg, accountNumber, sequence uint64) (uint64, error) {
+func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsgs []sdk.Msg, accountNumber, sequence uint64) (uint64, int, error) {
 	if len(sdkMsgs) == 0 {
-		return sequence, nil
+		return sequence, 0, nil
 	}
 
 	// Get block gas limit
@@ -1482,11 +1482,15 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 
 	if shouldSplit {
 		mid := len(sdkMsgs) / 2
-		nextSeq, err := h.sendCosmosTxBatchWithSplitting(svcCtx, sdkMsgs[:mid], accountNumber, sequence)
+		nextSeq, succ1, err := h.sendCosmosTxBatchWithSplitting(svcCtx, sdkMsgs[:mid], accountNumber, sequence)
 		if err != nil {
-			return sequence, err
+			return sequence, succ1, err
 		}
-		return h.sendCosmosTxBatchWithSplitting(svcCtx, sdkMsgs[mid:], accountNumber, nextSeq)
+		nextSeq, succ2, err := h.sendCosmosTxBatchWithSplitting(svcCtx, sdkMsgs[mid:], accountNumber, nextSeq)
+		if err != nil {
+			return nextSeq, succ1 + succ2, err
+		}
+		return nextSeq, succ1 + succ2, nil
 	}
 
 	// If simulation wasn't run or failed, calculate the fallback gas limit
@@ -1494,7 +1498,7 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 		baseGas := uint64(200000)
 		if gasStr := os.Getenv("COSMOS_GAS_LIMIT"); gasStr != "" {
 			if _, err := fmt.Sscanf(gasStr, "%d", &baseGas); err != nil {
-				return sequence, fmt.Errorf("failed to parse COSMOS_GAS_LIMIT: %w", err)
+				return sequence, 0, fmt.Errorf("failed to parse COSMOS_GAS_LIMIT: %w", err)
 			}
 		}
 		// MsgUpdateClient requires significantly more gas due to wasm verification
@@ -1530,7 +1534,7 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	if feeStr := os.Getenv("COSMOS_FEE_AMOUNT"); feeStr != "" {
 		var baseFee int64
 		if _, err := fmt.Sscanf(feeStr, "%d", &baseFee); err != nil {
-			return sequence, fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
+			return sequence, 0, fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
 		}
 
 		// Guard against feeAmount overflow: baseFee * len(sdkMsgs)
@@ -1549,18 +1553,18 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	// Now build, sign, and broadcast the transaction!
 	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
 	if privKeyHex == "" {
-		return sequence, fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required")
+		return sequence, 0, fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required")
 	}
 	privKeyBytes, err := hex.DecodeString(strings.TrimPrefix(privKeyHex, "0x"))
 	if err != nil {
-		return sequence, fmt.Errorf("failed to decode private key: %w", err)
+		return sequence, 0, fmt.Errorf("failed to decode private key: %w", err)
 	}
 	privKey := secp256k1.PrivKey{Key: privKeyBytes}
 	pubKey := privKey.PubKey()
 	signerAddr := sdk.AccAddress(pubKey.Address())
 	chainID := os.Getenv("COSMOS_CHAIN_ID")
 	if chainID == "" {
-		return sequence, fmt.Errorf("COSMOS_CHAIN_ID environment variable is required")
+		return sequence, 0, fmt.Errorf("COSMOS_CHAIN_ID environment variable is required")
 	}
 
 	interfaceRegistry := codectypes.NewInterfaceRegistry()
@@ -1572,7 +1576,7 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 
 	txBuilder := txConfig.NewTxBuilder()
 	if err := txBuilder.SetMsgs(sdkMsgs...); err != nil {
-		return sequence, fmt.Errorf("failed to set messages: %w", err)
+		return sequence, 0, fmt.Errorf("failed to set messages: %w", err)
 	}
 
 	txBuilder.SetGasLimit(finalGasLimit)
@@ -1587,7 +1591,7 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 		Sequence: sequence,
 	}
 	if err := txBuilder.SetSignatures(emptySig); err != nil {
-		return sequence, fmt.Errorf("failed to set empty signature: %w", err)
+		return sequence, 0, fmt.Errorf("failed to set empty signature: %w", err)
 	}
 
 	signerData := authsigning.SignerData{
@@ -1606,12 +1610,12 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 		txBuilder.GetTx(),
 	)
 	if err != nil {
-		return sequence, fmt.Errorf("failed to get sign bytes: %w", err)
+		return sequence, 0, fmt.Errorf("failed to get sign bytes: %w", err)
 	}
 
 	sigRaw, err := privKey.Sign(signBytes)
 	if err != nil {
-		return sequence, fmt.Errorf("failed to sign transaction: %w", err)
+		return sequence, 0, fmt.Errorf("failed to sign transaction: %w", err)
 	}
 
 	sigV2 := sdksigning.SignatureV2{
@@ -1624,12 +1628,12 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	}
 
 	if err := txBuilder.SetSignatures(sigV2); err != nil {
-		return sequence, fmt.Errorf("failed to set signatures: %w", err)
+		return sequence, 0, fmt.Errorf("failed to set signatures: %w", err)
 	}
 
 	txBytes, err := txConfig.TxEncoder()(txBuilder.GetTx())
 	if err != nil {
-		return sequence, fmt.Errorf("failed to encode transaction: %w", err)
+		return sequence, 0, fmt.Errorf("failed to encode transaction: %w", err)
 	}
 
 	benchEnabled := utils.BenchEnabled()
@@ -1642,17 +1646,17 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	syncResult, err := svcCtx.CosmosClient().BroadcastTxSync(bctx, txBytes)
 	bcancel()
 	if err != nil {
-		return sequence, fmt.Errorf("failed to broadcast transaction: %w", err)
+		return sequence, 0, fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 	if syncResult.Code != 0 {
 		log.Printf("[SendCosmosTxBatch] CheckTx FAILED: code=%d codespace=%s log=%s data=%x",
 			syncResult.Code, syncResult.Codespace, syncResult.Log, syncResult.Data)
-		return sequence, fmt.Errorf("transaction failed at CheckTx with code %d: %s", syncResult.Code, syncResult.Log)
+		return sequence, 0, fmt.Errorf("transaction failed at CheckTx with code %d: %s", syncResult.Code, syncResult.Log)
 	}
 
 	txResult, err := h.waitForTxResult(svcCtx, syncResult.Hash, cosmosInclusionTimeout)
 	if err != nil {
-		return sequence, fmt.Errorf("failed to confirm transaction inclusion: %w", err)
+		return sequence, 0, fmt.Errorf("failed to confirm transaction inclusion: %w", err)
 	}
 
 	var broadcastDur time.Duration
@@ -1663,7 +1667,7 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	if txResult.TxResult.Code != 0 {
 		log.Printf("[SendCosmosTxBatch] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
 			txResult.TxResult.Code, txResult.TxResult.Codespace, txResult.TxResult.Log, txResult.TxResult.Data)
-		return sequence, fmt.Errorf("transaction failed at DeliverTx with code %d: %s: %w", txResult.TxResult.Code, txResult.TxResult.Log, services.ErrPermanentRelayFailure)
+		return sequence, 0, fmt.Errorf("transaction failed at DeliverTx with code %d: %s: %w", txResult.TxResult.Code, txResult.TxResult.Log, services.ErrPermanentRelayFailure)
 	}
 
 	log.Printf("[SendCosmosTxBatch] Tx confirmed at height %d hash=%s (msgs=%d)", txResult.Height, txResult.Hash.String(), len(sdkMsgs))
@@ -1673,7 +1677,7 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 			broadcastDur, txResult.Height, txResult.Hash.String())
 	}
 
-	return sequence + 1, nil
+	return sequence + 1, len(sdkMsgs), nil
 }
 
 // SendCosmosTxBatch sends multiple messages in a single Cosmos transaction.
@@ -1742,11 +1746,20 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 		return fmt.Errorf("failed to query account info: %w", err)
 	}
 
-	_, err = h.sendCosmosTxBatchWithSplitting(svcCtx, sdkMsgs, accountNumber, sequence)
+	_, succCount, err := h.sendCosmosTxBatchWithSplitting(svcCtx, sdkMsgs, accountNumber, sequence)
 	if benchEnabled {
 		log.Printf("[bench][cosmos] batch msgs=%d total=%s", len(msgs), time.Since(benchStart))
 	}
-	return err
+	if err != nil {
+		if succCount > 0 {
+			return &services.BatchPartialError{
+				SucceededCount: succCount,
+				Err:            err,
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 // queryAccountInfo queries the account number and sequence for the given address
