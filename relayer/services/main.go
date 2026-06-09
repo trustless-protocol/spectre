@@ -481,8 +481,24 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 
 	log.Printf("[EthBatch] Submitting %d-msg batch to Cosmos", len(rawMsgs))
 	if err := s.worker.TxHandler.SendCosmosTxBatch(ctx, rawMsgs); err != nil {
-		failed := make([]EthPacket, 0, len(cosmosMsgs))
-		for _, m := range cosmosMsgs {
+		var partialErr *BatchPartialError
+		var failedMsgs []ethBatchMsg
+		if errors.As(err, &partialErr) && partialErr.SucceededCount > 0 && partialErr.SucceededCount <= len(cosmosMsgs) {
+			failedMsgs = cosmosMsgs[partialErr.SucceededCount:]
+			for _, m := range cosmosMsgs[:partialErr.SucceededCount] {
+				if m.label == "UpdateClient" {
+					log.Printf("[UpdateClient] relay completed (succeeded sub-batch)")
+				} else {
+					log.Printf("[%s] seq=%d: relay completed (succeeded sub-batch)", m.label, m.sequence)
+				}
+			}
+			err = partialErr.Err
+		} else {
+			failedMsgs = cosmosMsgs
+		}
+
+		failed := make([]EthPacket, 0, len(failedMsgs))
+		for _, m := range failedMsgs {
 			if m.label == "UpdateClient" {
 				log.Printf("[UpdateClient] batch submission failed: %v", err)
 			} else {
@@ -615,7 +631,7 @@ func ethPacketExpired(packet EthPacket) bool {
 // blocked the relay loop entirely whenever the ETH-side updateClient was
 // failing for unrelated reasons.
 func shouldRelayCosmosTimeoutToEth(packet *channeltypesv2.Packet, cosmosRouterClientID string) bool {
-	if packet == nil {
+	if packet == nil || cosmosRouterClientID == "" {
 		return false
 	}
 	return packet.DestinationClient != cosmosRouterClientID
@@ -785,6 +801,15 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 
 	if err := s.worker.TxHandler.SendCosmosTxBatch(ctx, batchMsgs); err != nil {
 		log.Printf("[CosmosTimeoutScan] SendCosmosTxBatch failed: %v", err)
+		var partialErr *BatchPartialError
+		if errors.As(err, &partialErr) && partialErr.SucceededCount >= len(updateResult.Msgs) {
+			succeededTimeoutsCount := partialErr.SucceededCount - len(updateResult.Msgs)
+			for i := 0; i < succeededTimeoutsCount; i++ {
+				info := processed[i]
+				s.BatchBuilder.PendingTracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
+				log.Printf("[CosmosTimeout] seq=%d: timeout relay completed (bundled with %d update msgs) in partial batch", info.Packet.Sequence, len(updateResult.Msgs))
+			}
+		}
 		return
 	}
 
