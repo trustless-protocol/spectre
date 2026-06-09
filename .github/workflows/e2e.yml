@@ -63,11 +63,20 @@ jobs:
 
       - name: Install Kurtosis
         run: |
-          echo "deb [trusted=yes] https://apt.fury.io/kurtosis-tech/ /" \
+          # Kurtosis' new apt repo. The legacy Gemfury repo
+          # (apt.fury.io/kurtosis-tech) is no longer maintained and tops out at
+          # 1.15.x, which can't serve the version the SDK expects.
+          echo "deb [trusted=yes] https://sdk.kurtosis.com/kurtosis-cli-release-artifacts/ /" \
             | sudo tee /etc/apt/sources.list.d/kurtosis.list
           sudo apt update
-          sudo apt install -y kurtosis-cli
+          # Pin the CLI to the engine API version the interchaintest SDK expects
+          # (kurtosis/api/golang in e2e/interchaintestv8/go.mod); a newer/older CLI
+          # starts an engine whose API version mismatches and the suite aborts.
+          sudo apt install -y kurtosis-cli=1.16.6
           kurtosis analytics disable
+          # The interchaintest suite connects to a running local Kurtosis engine
+          # (127.0.0.1:9710); the CLI does not auto-start it.
+          kurtosis engine start
 
       - name: Run E2E test
         # The just test-e2e recipe builds contracts, installs the relayer binary,
