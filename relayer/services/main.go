@@ -219,14 +219,20 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	}
 	latestLightBlock := updateBuild.LightBlock
 
-	ethHeader, err := ctx.EthClient().HeaderByNumber(context.Background(), nil)
+	hctx, hcancel := context.WithTimeout(context.Background(), ctx.Config.FetchTimeout)
+	ethHeader, err := ctx.EthClient().HeaderByNumber(hctx, nil)
+	hcancel()
 	if err != nil {
 		log.Printf("[StartLoop] Failed to get eth block header: %v", err)
+		s.BatchBuilder.RequeueCosmosTransient(batch.Packets)
+		return
 	}
-	ethBlockTime := uint64(0)
-	if ethHeader != nil {
-		ethBlockTime = ethHeader.Time
+	if ethHeader == nil || ethHeader.Time == 0 {
+		log.Printf("[StartLoop] Fetched eth block header is nil or has zero time")
+		s.BatchBuilder.RequeueCosmosTransient(batch.Packets)
+		return
 	}
+	ethBlockTime := ethHeader.Time
 
 	// Build per-packet msgs into a single slice and submit one multicall when
 	// N >= 2 (issue #67 / benchmark V1). The per-packet planning (including the
