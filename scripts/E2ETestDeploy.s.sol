@@ -58,14 +58,14 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         // address verifierN8 = address(new Groth16Verifier_N8());
         // address verifierN16 = address(new Groth16Verifier_N16());
         // address verifierN32 = address(new Groth16Verifier_N32());
-        // address verifierN64 = address(new Groth16Verifier_N64());   
+        // address verifierN64 = address(new Groth16Verifier_N64());
         // address verifierN128 = address(new Groth16Verifier_N128());
 
         // Hash-aggregate exposes the fixed 32-byte SHA-256 digest as two
         // 128-bit field elements, so every bucket uses the same uint256[2]
         // verifier ABI.
-     
-        wrapperVerifier.setBucket(4, verifierN4, Groth16Verifier_N4.verifyProof.selector);  
+
+        wrapperVerifier.setBucket(4, verifierN4, Groth16Verifier_N4.verifyProof.selector);
         // wrapperVerifier.setBucket(8, verifierN8, Groth16Verifier_N8.verifyProof.selector);
         // wrapperVerifier.setBucket(16, verifierN16, Groth16Verifier_N16.verifyProof.selector);
         // wrapperVerifier.setBucket(32, verifierN32, Groth16Verifier_N32.verifyProof.selector);
