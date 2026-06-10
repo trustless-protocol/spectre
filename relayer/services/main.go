@@ -23,6 +23,7 @@ import (
 	ics23 "github.com/cosmos/ics23/go"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 )
 
 // read abi json file once in runtime
@@ -153,6 +154,14 @@ func (s *Services) StartLoop(ctx Context) {
 		for {
 			time.Sleep(time.Second * 30)
 			s.scanForCosmosTimeouts(ctx)
+		}
+	}()
+
+	// scan for ETH-originated packets that have timed out on Cosmos
+	go func() {
+		for {
+			time.Sleep(time.Second * 30)
+			s.scanForEthTimeouts(ctx)
 		}
 	}()
 
@@ -360,7 +369,9 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 		switch p.Type {
 		case EthSend:
 			if ethPacketExpired(p) {
-				s.timeoutEthSend(ctx, p)
+				if s.timeoutEthSend(ctx, p) {
+					s.BatchBuilder.EthPendingTracker.Remove(p.Packet.SourceClient, p.Packet.Sequence)
+				}
 				continue
 			}
 			relayable = append(relayable, relayablePacket{packet: p})
@@ -371,8 +382,10 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 			}
 			relayable = append(relayable, relayablePacket{packet: p})
 		case EthAck:
+			s.BatchBuilder.EthPendingTracker.Remove(p.Packet.SourceClient, p.Packet.Sequence)
 			log.Printf("[EthAck] seq=%d: terminal event handled", p.Packet.Sequence)
 		case EthTimeout:
+			s.BatchBuilder.EthPendingTracker.Remove(p.Packet.SourceClient, p.Packet.Sequence)
 			log.Printf("[EthTimeout] seq=%d: terminal event handled", p.Packet.Sequence)
 		default:
 			log.Printf("[StartLoop] Unknown eth packet type: %d (seq=%d)", p.Type, p.Packet.Sequence)
@@ -459,7 +472,9 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	}
 	planned, expired, failedRelayable := planEthPacketMsgs(relayable, proofSlot, signerAddr, buildProof)
 	for _, p := range expired {
-		s.timeoutEthSend(ctx, p)
+		if s.timeoutEthSend(ctx, p) {
+			s.BatchBuilder.EthPendingTracker.Remove(p.Packet.SourceClient, p.Packet.Sequence)
+		}
 	}
 	cosmosMsgs = append(cosmosMsgs, planned...)
 
@@ -632,11 +647,15 @@ func ethPacketExpired(packet EthPacket) bool {
 // the no-op ETH relay for every Cosmos→ETH timeout — wasted gas at best, and
 // blocked the relay loop entirely whenever the ETH-side updateClient was
 // failing for unrelated reasons.
-func shouldRelayCosmosTimeoutToEth(packet *channeltypesv2.Packet, cosmosRouterClientID string) bool {
+func ShouldRelayCosmosTimeoutToEth(packet *channeltypesv2.Packet, cosmosRouterClientID string) bool {
 	if packet == nil || cosmosRouterClientID == "" {
 		return false
 	}
 	return packet.DestinationClient != cosmosRouterClientID
+}
+
+func shouldRelayCosmosTimeoutToEth(packet *channeltypesv2.Packet, cosmosRouterClientID string) bool {
+	return ShouldRelayCosmosTimeoutToEth(packet, cosmosRouterClientID)
 }
 
 func cosmosPacketExpiredOnEth(packet CosmosPacket, ethBlockTime uint64) bool {
@@ -684,25 +703,25 @@ func (s *Services) updateCosmosClientForEth(ctx Context, tag string) (*client.Li
 	return latestLightBlock, true
 }
 
-func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) {
+func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) bool {
 	log.Printf("[EthTimeout] seq=%d: packet expired, preparing timeout proof", packet.Packet.Sequence)
 
 	latestLightBlock, ok := s.updateCosmosClientForEth(ctx, "EthTimeout")
 	if !ok {
-		return
+		return false
 	}
 
 	counterpartyTime := uint64(latestLightBlock.SignedHeader.Header.Time.Unix())
 	if counterpartyTime < packet.Packet.TimeoutTimestamp {
 		log.Printf("[EthTimeout] seq=%d: counterparty time %d < timeout %d, skipping",
 			packet.Packet.Sequence, counterpartyTime, packet.Packet.TimeoutTimestamp)
-		return
+		return false
 	}
 
 	calldata, err := s.cosmosNonMembership(ctx, *packet.Packet, packet.Packet.DestinationClient, []byte{2}, latestLightBlock)
 	if err != nil {
 		log.Printf("[EthTimeout] seq=%d: %v", packet.Packet.Sequence, err)
-		return
+		return false
 	}
 
 	msgTimeoutPacket := contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket{
@@ -712,12 +731,55 @@ func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) {
 
 	if err := s.worker.TxHandler.SendEthTx(ctx, msgTimeoutPacket); err != nil {
 		log.Printf("[EthTimeout] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
-		return
+		return false
 	}
 	log.Printf("[EthTimeout] seq=%d: relay completed", packet.Packet.Sequence)
+	return true
 }
 
 const pendingTrackerMaxAge = 1 * time.Hour
+
+func (s *Services) scanForEthTimeouts(ctx Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[EthTimeoutScan] Panic recovered: %v", r)
+		}
+	}()
+
+	pending := s.BatchBuilder.EthPendingTracker.GetAll()
+	if len(pending) == 0 {
+		return
+	}
+
+	now := uint64(time.Now().Unix())
+	expired := pendingPacketsTimedOutAtTimestamp(pending, now)
+	if len(expired) == 0 {
+		return
+	}
+
+	log.Printf("[EthTimeoutScan] Found %d locally-expired ETH-origin packet(s) at time %d", len(expired), now)
+	for _, info := range expired {
+		pendingCommitment, err := HasPendingEthPacketCommitment(ctx, info.Packet)
+		if err != nil {
+			log.Printf("[EthTimeoutScan] seq=%d: failed to check ETH packet commitment: %v", info.Packet.Sequence, err)
+			continue
+		}
+		if !pendingCommitment {
+			s.BatchBuilder.EthPendingTracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
+			log.Printf("[EthTimeoutScan] seq=%d: ETH commitment already cleared, removed from pending tracker", info.Packet.Sequence)
+			continue
+		}
+
+		packet := info.Packet
+		if s.timeoutEthSend(ctx, EthPacket{
+			Type:        EthSend,
+			Packet:      &packet,
+			BlockNumber: info.BlockNumber,
+		}) {
+			s.BatchBuilder.EthPendingTracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
+		}
+	}
+}
 
 func (s *Services) scanForCosmosTimeouts(ctx Context) {
 	defer func() {
@@ -1009,8 +1071,46 @@ func toEthPacket(packet channeltypesv2.Packet) contractICS26Router.IICS26RouterM
 }
 
 func ethPath(clientID string, sequence uint64, pathType byte) []byte {
+	return EthPath(clientID, sequence, pathType)
+}
+
+func EthPath(clientID string, sequence uint64, pathType byte) []byte {
 	seqBytes := make([]byte, 8)
 	binary.BigEndian.PutUint64(seqBytes, sequence)
 	path := append([]byte(clientID), pathType)
 	return append(path, seqBytes...)
+}
+
+func EthIBCStorageKey(path []byte) ethcommon.Hash {
+	pathHash := crypto.Keccak256(path)
+	return crypto.Keccak256Hash(pathHash, ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT).Bytes())
+}
+
+func HasEthIBCPathValue(ctx Context, path []byte) (bool, error) {
+	if ctx.EthClient() == nil {
+		return false, fmt.Errorf("eth client is nil")
+	}
+	if ctx.RouterContract() == nil {
+		return false, fmt.Errorf("router contract address is nil")
+	}
+
+	value, err := ctx.EthClient().StorageAt(context.Background(), *ctx.RouterContract(), EthIBCStorageKey(path), nil)
+	if err != nil {
+		return false, fmt.Errorf("eth storage query failed: %w", err)
+	}
+
+	for _, b := range value {
+		if b != 0 {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func HasEthPacketReceipt(ctx Context, packet channeltypesv2.Packet) (bool, error) {
+	return HasEthIBCPathValue(ctx, EthPath(packet.DestinationClient, packet.Sequence, 2))
+}
+
+func HasPendingEthPacketCommitment(ctx Context, packet channeltypesv2.Packet) (bool, error) {
+	return HasEthIBCPathValue(ctx, EthPath(packet.SourceClient, packet.Sequence, 1))
 }

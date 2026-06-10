@@ -1,6 +1,9 @@
 package subscriber
 
 import (
+	"encoding/hex"
+	"io"
+	"log"
 	"math/big"
 	"testing"
 	"time"
@@ -9,8 +12,11 @@ import (
 	"relayer/services"
 
 	abcitypes "github.com/cometbft/cometbft/abci/types"
+	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	commettypes "github.com/cometbft/cometbft/types"
+	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/gogo/protobuf/proto"
 )
 
 func TestEthPacketToCosmosPacket_SinglePayload(t *testing.T) {
@@ -227,6 +233,166 @@ func TestEthStartupRecoveryStartBlock(t *testing.T) {
 	}
 }
 
+func TestCosmosStartupRecoveryLookbackBlocksFromEnv(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+		raw  string
+		want uint64
+	}{
+		{name: "empty uses default full history", raw: "", want: defaultCosmosStartupRecoveryLookbackBlocks},
+		{name: "invalid uses default full history", raw: "not-a-number", want: defaultCosmosStartupRecoveryLookbackBlocks},
+		{name: "zero means full history", raw: "0", want: 0},
+		{name: "custom bounded value", raw: "5000", want: 5000},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := cosmosStartupRecoveryLookbackBlocksFromEnv(tc.raw)
+			if got != tc.want {
+				t.Fatalf("cosmosStartupRecoveryLookbackBlocksFromEnv(%q) = %d, want %d", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCosmosStartupRecoveryStartHeight(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name         string
+		latestHeight uint64
+		lookback     uint64
+		wantStart    uint64
+	}{
+		{name: "no latest height", latestHeight: 0, lookback: 0, wantStart: 0},
+		{name: "zero lookback scans full history", latestHeight: 100, lookback: 0, wantStart: 1},
+		{name: "lookback greater than latest scans from first block", latestHeight: 42, lookback: 100, wantStart: 1},
+		{name: "bounded lookback is inclusive", latestHeight: 100, lookback: 10, wantStart: 91},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := cosmosStartupRecoveryStartHeight(tc.latestHeight, tc.lookback)
+			if got != tc.wantStart {
+				t.Fatalf("cosmosStartupRecoveryStartHeight(%d, %d) = %d, want %d",
+					tc.latestHeight, tc.lookback, got, tc.wantStart)
+			}
+		})
+	}
+}
+
+func TestCosmosTxSearchQuery(t *testing.T) {
+	t.Parallel()
+
+	got := cosmosTxSearchQuery(cometBFTSendPacketTxSearch, 0, 25)
+	want := "send_packet.encoded_packet_hex EXISTS AND tx.height >= 1 AND tx.height <= 25"
+	if got != want {
+		t.Fatalf("cosmosTxSearchQuery = %q, want %q", got, want)
+	}
+}
+
+func TestCosmosEventsFromTxResult(t *testing.T) {
+	t.Parallel()
+
+	tx := &coretypes.ResultTx{
+		Height: 66,
+		Index:  3,
+		Tx:     []byte("tx-bytes"),
+		TxResult: abcitypes.ExecTxResult{
+			Events: []abcitypes.Event{
+				{
+					Type: "send_packet",
+					Attributes: []abcitypes.EventAttribute{
+						{Key: "encoded_packet_hex", Value: "abc"},
+					},
+				},
+			},
+		},
+	}
+
+	data, events := cosmosEventsFromTxResult(tx)
+	if got := events[EVENT_TX_HEIGHT_FIELD]; len(got) != 1 || got[0] != "66" {
+		t.Fatalf("tx.height event = %v, want [66]", got)
+	}
+	if got := events[EVENT_SEND_PACKET_FIELD]; len(got) != 1 || got[0] != "abc" {
+		t.Fatalf("send packet event = %v, want [abc]", got)
+	}
+	if got := txHeightFromEvent(data, events); got != 66 {
+		t.Fatalf("txHeightFromEvent = %d, want 66", got)
+	}
+}
+
+func TestDecodeCosmosPacketsFromEvents(t *testing.T) {
+	t.Parallel()
+
+	logger := log.New(io.Discard, "", 0)
+	sendPacketHex := mustPacketHex(t, channeltypesv2.Packet{
+		Sequence:          11,
+		SourceClient:      "cosmos-client",
+		DestinationClient: "eth-client",
+		TimeoutTimestamp:  1_700_000_000_000_000_000,
+	})
+	ackPacketHex := mustPacketHex(t, channeltypesv2.Packet{
+		Sequence:          12,
+		SourceClient:      "eth-client",
+		DestinationClient: "cosmos-client",
+		TimeoutTimestamp:  1234,
+	})
+	timeoutPacketHex := mustPacketHex(t, channeltypesv2.Packet{
+		Sequence:          13,
+		SourceClient:      "eth-client",
+		DestinationClient: "other-client",
+	})
+	ackHex := mustAckHex(t, channeltypesv2.Acknowledgement{
+		AppAcknowledgements: [][]byte{[]byte("ack")},
+	})
+
+	packets := decodeCosmosPacketsFromEvents(
+		logger,
+		commettypes.EventDataTx{TxResult: abcitypes.TxResult{Height: 55}},
+		map[string][]string{
+			EVENT_SEND_PACKET_FIELD:      {sendPacketHex},
+			EVENT_WRITE_ACK_PACKET_FIELD: {ackPacketHex},
+			EVENT_ACKNOWLEDGEMENT_FIELD:  {ackHex},
+			EVENT_TIMEOUT_PACKET_FIELD:   {timeoutPacketHex},
+			EVENT_TX_HEIGHT_FIELD:        {"44"},
+		},
+		"test",
+	)
+
+	if len(packets) != 3 {
+		t.Fatalf("decoded packet count = %d, want 3", len(packets))
+	}
+	if packets[0].Type != services.CosmosSend || packets[0].Packet.Sequence != 11 {
+		t.Fatalf("packet[0] = type %v seq %d, want CosmosSend seq 11", packets[0].Type, packets[0].Packet.Sequence)
+	}
+	if packets[0].Packet.TimeoutTimestamp != 1_700_000_000 {
+		t.Fatalf("normalized timeout = %d, want 1700000000", packets[0].Packet.TimeoutTimestamp)
+	}
+	if packets[1].Type != services.CosmosAck || packets[1].Packet.Sequence != 12 {
+		t.Fatalf("packet[1] = type %v seq %d, want CosmosAck seq 12", packets[1].Type, packets[1].Packet.Sequence)
+	}
+	if len(packets[1].AckBytes) != 1 || string(packets[1].AckBytes[0]) != "ack" {
+		t.Fatalf("ack bytes = %q, want [ack]", packets[1].AckBytes)
+	}
+	if packets[2].Type != services.CosmosTimeout || packets[2].Packet.Sequence != 13 {
+		t.Fatalf("packet[2] = type %v seq %d, want CosmosTimeout seq 13", packets[2].Type, packets[2].Packet.Sequence)
+	}
+	for i, p := range packets {
+		if p.BlockNumber != 55 {
+			t.Fatalf("packet[%d] block = %d, want 55", i, p.BlockNumber)
+		}
+	}
+}
+
 func TestAdvanceRecoveryStart(t *testing.T) {
 	t.Parallel()
 
@@ -290,6 +456,14 @@ func TestEnqueueEthSendPacket(t *testing.T) {
 	if got.BlockNumber != 88 {
 		t.Fatalf("block number = %d, want 88", got.BlockNumber)
 	}
+	if bb.EthPendingTracker.Len() != 1 {
+		t.Fatalf("eth pending tracker len = %d, want 1", bb.EthPendingTracker.Len())
+	}
+	pending := bb.EthPendingTracker.GetAll()
+	if pending[0].Packet.Sequence != 7 || pending[0].BlockNumber != 88 {
+		t.Fatalf("eth pending entry = seq %d block %d, want seq 7 block 88",
+			pending[0].Packet.Sequence, pending[0].BlockNumber)
+	}
 }
 
 func TestEnqueueEthWriteAcknowledgement(t *testing.T) {
@@ -352,4 +526,22 @@ func flushSingleEthPacket(t *testing.T, bb *services.BatchBuilder) services.EthP
 		t.Fatal("expected one flushed eth batch")
 		return services.EthPacket{}
 	}
+}
+
+func mustPacketHex(t *testing.T, packet channeltypesv2.Packet) string {
+	t.Helper()
+	bz, err := proto.Marshal(&packet)
+	if err != nil {
+		t.Fatalf("failed to marshal packet: %v", err)
+	}
+	return hex.EncodeToString(bz)
+}
+
+func mustAckHex(t *testing.T, ack channeltypesv2.Acknowledgement) string {
+	t.Helper()
+	bz, err := proto.Marshal(&ack)
+	if err != nil {
+		t.Fatalf("failed to marshal acknowledgement: %v", err)
+	}
+	return hex.EncodeToString(bz)
 }
