@@ -63,17 +63,18 @@ Multiple packets can be batched into a single proof submission:
 **JSON config** (`relayer/config.example.json`):
 - Top-level `server` block: log_level, address, port
 - `modules` array with named entries (`cosmos_to_eth`, `eth_to_cosmos`), each with `src_chain`, `dst_chain`, and `config`:
-  - `cosmos_to_eth` config: tm_rpc_url, ics26_address, eth_rpc_url, ics07_client, wrapper_verifier, membership, misbehaviour, update_client
+  - `cosmos_to_eth` config: tm_rpc_url, ics26_address, eth_rpc_url, ics07_client, wrapper_verifier, membership, misbehaviour, update_client, and optional fields: fetch_timeout (timeout in seconds for queries, default 15), trusting_period, trust_level, proof_type
   - `eth_to_cosmos` config: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address
 
 ### Environment Variables
 
-Key variables from `.env`:
+Key variables from `.env` / environment:
 - `ETH_PRIVATE_KEY`: Ethereum signer for relay transactions
 - `COSMOS_PRIVATE_KEY`: Cosmos signer for MsgCreateClient
 - `PROVER_R1CS_PATH`, `PROVER_PK_PATH`, `PROVER_VK_PATH`: Groth16 circuit artifacts
 - `ETH_RPC_URL`: Ethereum RPC for shadowfork tests
 - `TENDERMINT_RPC_URL`: CometBFT node endpoint (used by genesis/fixtures commands)
+- `FETCH_TIMEOUT`: Overrides the cosmos_to_eth `fetch_timeout` configuration (in seconds)
 
 ## Business Rules
 
