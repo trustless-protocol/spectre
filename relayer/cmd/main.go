@@ -193,7 +193,7 @@ func preflightCreateClients(cfg *appConfig) error {
 	}
 
 	if cfg.EthToCosmosConfig.BeaconUrl != "" {
-		if _, err := tendermintClient.GetBeaconGenesis(cfg.EthToCosmosConfig.BeaconUrl); err != nil {
+		if _, err := tendermintClient.GetBeaconGenesis(ctx, cfg.EthToCosmosConfig.BeaconUrl); err != nil {
 			return fmt.Errorf("beacon api unavailable at %s: %w", cfg.EthToCosmosConfig.BeaconUrl, err)
 		}
 	}
@@ -385,7 +385,11 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				cfg.EthToCosmosConfig.BeaconUrl,
 				cosmosWasmClientID,
 			)
-			ctx.SetCosmosRouterClientID(cosmosRouterClientIDOrDefault(cfg))
+			cosmosRouterClientID := cosmosRouterClientIDOrDefault(cfg)
+			if cosmosRouterClientID == "" {
+				return fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
+			}
+			ctx.SetCosmosRouterClientID(cosmosRouterClientID)
 
 			roleManager := roleManagerOrDefault(cfg)
 			ctx.SetAddresses(
@@ -586,7 +590,11 @@ func Start(logger *zap.Logger) *cobra.Command {
 				cfg.EthToCosmosConfig.BeaconUrl,
 				cosmosWasmClientID,
 			)
-			ctx.SetCosmosRouterClientID(cosmosRouterClientIDOrDefault(cfg))
+			cosmosRouterClientID := cosmosRouterClientIDOrDefault(cfg)
+			if cosmosRouterClientID == "" {
+				return fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
+			}
+			ctx.SetCosmosRouterClientID(cosmosRouterClientID)
 
 			// Set contract addresses from config
 			roleManager := roleManagerOrDefault(cfg)
