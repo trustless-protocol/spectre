@@ -362,28 +362,32 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 
 	addClientReceipt, _, _, err := h.executeWithRetryAndResubmission(ctx, privateKey, 16000000, addClientFn)
 	if err != nil {
-		// Fallback to MigrateClient
-		log.Printf("[CreateCosmosClient] AddClient failed (%v) — falling back to MigrateClient to repoint %s to new ICS07 %s",
-			err, cosmosClientID, address.Hex())
+		if errors.Is(err, services.ErrPermanentRelayFailure) {
+			// Fallback to MigrateClient only for confirmed on-chain reverts
+			log.Printf("[CreateCosmosClient] AddClient failed permanently (%v) — falling back to MigrateClient to repoint %s to new ICS07 %s",
+				err, cosmosClientID, address.Hex())
 
-		migrateClientFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
-			return ics26Router.MigrateClient(
-				auth,
-				cosmosClientID,
-				routerContract.IICS02ClientMsgsCounterpartyInfo{
-					ClientId:     wasmClientID,
-					MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
-				},
-				*ctx.ClientContract(),
-			)
-		}
+			migrateClientFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+				return ics26Router.MigrateClient(
+					auth,
+					cosmosClientID,
+					routerContract.IICS02ClientMsgsCounterpartyInfo{
+						ClientId:     wasmClientID,
+						MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
+					},
+					*ctx.ClientContract(),
+				)
+			}
 
-		migrateReceipt, _, _, mErr := h.executeWithRetryAndResubmission(ctx, privateKey, 16000000, migrateClientFn)
-		if mErr != nil {
-			return common.Address{}, fmt.Errorf("MigrateClient call failed: %w", mErr)
+			migrateReceipt, _, _, mErr := h.executeWithRetryAndResubmission(ctx, privateKey, 16000000, migrateClientFn)
+			if mErr != nil {
+				return common.Address{}, fmt.Errorf("MigrateClient call failed: %w", mErr)
+			}
+			log.Printf("[CreateCosmosClient] MigrateClient confirmed (block %d, gasUsed=%d)", migrateReceipt.BlockNumber.Uint64(), migrateReceipt.GasUsed)
+			return address, nil
 		}
-		log.Printf("[CreateCosmosClient] MigrateClient confirmed (block %d, gasUsed=%d)", migrateReceipt.BlockNumber.Uint64(), migrateReceipt.GasUsed)
-		return address, nil
+		// For transient wait/RPC errors, return the error immediately so the caller can retry
+		return common.Address{}, err
 	}
 
 	log.Printf("[CreateCosmosClient] AddClient confirmed (block %d, gasUsed=%d)", addClientReceipt.BlockNumber.Uint64(), addClientReceipt.GasUsed)
@@ -1822,15 +1826,12 @@ func (h *Handler) executeWithRetryAndResubmission(
 			h.nonceValid = true
 		}
 		currentNonce := h.nonce
-		h.nonce++
-		h.mu.Unlock()
 
 		if isEIP1559 {
 			gasTipCap := suggestedTip
 			gasFeeCap := new(big.Int).Add(new(big.Int).Mul(baseFee, big.NewInt(2)), gasTipCap)
 
 			// Enforce minimum floor if this nonce matches the last attempted nonce (e.g. replacing a stuck tx)
-			h.mu.Lock()
 			if currentNonce == h.lastNonce {
 				if h.lastGasTipCap != nil {
 					minTip := new(big.Int).Mul(h.lastGasTipCap, big.NewInt(115))
@@ -1847,7 +1848,6 @@ func (h *Handler) executeWithRetryAndResubmission(
 					}
 				}
 			}
-			h.mu.Unlock()
 
 			auth.GasTipCap = gasTipCap
 			auth.GasFeeCap = gasFeeCap
@@ -1855,11 +1855,11 @@ func (h *Handler) executeWithRetryAndResubmission(
 		} else {
 			gasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
 			if err != nil {
+				h.mu.Unlock()
 				return nil, 0, 0, fmt.Errorf("failed to suggest gas price: %w", err)
 			}
 
 			// Enforce minimum floor if this nonce matches the last attempted nonce (e.g. replacing a stuck tx)
-			h.mu.Lock()
 			if currentNonce == h.lastNonce {
 				if h.lastGasPrice != nil {
 					minPrice := new(big.Int).Mul(h.lastGasPrice, big.NewInt(115))
@@ -1869,7 +1869,6 @@ func (h *Handler) executeWithRetryAndResubmission(
 					}
 				}
 			}
-			h.mu.Unlock()
 
 			auth.GasPrice = gasPrice
 			auth.GasTipCap = nil
@@ -1885,7 +1884,6 @@ func (h *Handler) executeWithRetryAndResubmission(
 		if callErr == nil {
 			if signedTx == nil {
 				// senderFn returned (nil, nil) without calling auth.Signer — treat as a bug
-				h.mu.Lock()
 				h.nonceValid = false
 				h.mu.Unlock()
 				return nil, 0, 0, fmt.Errorf("senderFn returned nil transaction without error")
@@ -1893,7 +1891,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 			tx = signedTx
 			submitDur = time.Since(submitStart)
 
-			h.mu.Lock()
+			h.nonce++
 			h.lastNonce = tx.Nonce()
 			if tx.Type() == types.DynamicFeeTxType {
 				h.lastGasFeeCap = tx.GasFeeCap()
@@ -1911,7 +1909,6 @@ func (h *Handler) executeWithRetryAndResubmission(
 
 		if isNonceTooLowError(callErr) {
 			log.Printf("[EthTxSender] Nonce %d too low (attempt %d/%d). Resetting nonce cache.", currentNonce, nonceAttempt, maxNonceRetries)
-			h.mu.Lock()
 			h.nonceValid = false
 			h.mu.Unlock()
 			continue
@@ -1922,7 +1919,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 			tx = signedTx
 			submitDur = time.Since(submitStart)
 
-			h.mu.Lock()
+			h.nonce++
 			h.lastNonce = tx.Nonce()
 			if tx.Type() == types.DynamicFeeTxType {
 				h.lastGasFeeCap = tx.GasFeeCap()
@@ -1939,7 +1936,6 @@ func (h *Handler) executeWithRetryAndResubmission(
 		}
 
 		// Other error: invalidate nonce just in case and return
-		h.mu.Lock()
 		h.nonceValid = false
 		h.mu.Unlock()
 		return nil, 0, 0, fmt.Errorf("contract call failed: %w", callErr)

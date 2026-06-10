@@ -972,5 +972,226 @@ func TestExecuteWithRetryAndResubmission_SenderFnReturnsNil(t *testing.T) {
 	}
 }
 
+func TestExecuteWithRetryAndResubmission_Concurrency(t *testing.T) {
+	mockRPC := newMockJSONRPC()
+	mockRPC.nonce = 10
+	srv := httptest.NewServer(mockRPC)
+	defer srv.Close()
+
+	client, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatalf("failed to dial: %v", err)
+	}
+
+	ctx := services.NewCtx(nil, client)
+
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+
+	h := &Handler{
+		nonce:      10,
+		nonceValid: true,
+	}
+
+	numRequests := 10
+	var mu sync.Mutex
+	noncesUsed := make([]uint64, 0, numRequests)
+	var wg sync.WaitGroup
+
+	for i := 0; i < numRequests; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+				// Simulate random latency to trigger concurrency races if they exist
+				time.Sleep(time.Duration(10+time.Now().UnixNano()%30) * time.Millisecond)
+
+				tx := types.NewTx(&types.LegacyTx{
+					Nonce:    auth.Nonce.Uint64(),
+					GasPrice: auth.GasPrice,
+					Gas:      auth.GasLimit,
+					To:       &common.Address{0x1},
+					Value:    big.NewInt(0),
+					Data:     []byte{},
+				})
+				signedTx, signErr := auth.Signer(auth.From, tx)
+				if signErr != nil {
+					return nil, signErr
+				}
+				mockRPC.mu.Lock()
+				mockRPC.receiptResps[signedTx.Hash()] = &types.Receipt{
+					Status:      1,
+					GasUsed:     21000,
+					BlockNumber: big.NewInt(100),
+				}
+				mockRPC.mu.Unlock()
+
+				mu.Lock()
+				noncesUsed = append(noncesUsed, auth.Nonce.Uint64())
+				mu.Unlock()
+
+				return signedTx, nil
+			}
+
+			_, _, _, err := h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+			if err != nil {
+				t.Errorf("executeWithRetryAndResubmission failed: %v", err)
+				return
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if len(noncesUsed) != numRequests {
+		t.Fatalf("expected %d nonces, got %d", numRequests, len(noncesUsed))
+	}
+
+	seen := make(map[uint64]bool)
+	for _, nonce := range noncesUsed {
+		if nonce < 10 || nonce >= 20 {
+			t.Errorf("nonce %d out of bounds [10, 19]", nonce)
+		}
+		if seen[nonce] {
+			t.Errorf("duplicate nonce used: %d", nonce)
+		}
+		seen[nonce] = true
+	}
+}
+
+func TestExecuteWithRetryAndResubmission_RevertPermanentFailure(t *testing.T) {
+	mockRPC := newMockJSONRPC()
+	srv := httptest.NewServer(mockRPC)
+	defer srv.Close()
+
+	client, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatalf("failed to dial: %v", err)
+	}
+
+	ctx := services.NewCtx(nil, client)
+
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+
+	h := &Handler{}
+
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		tx := types.NewTx(&types.LegacyTx{
+			Nonce:    auth.Nonce.Uint64(),
+			GasPrice: auth.GasPrice,
+			Gas:      auth.GasLimit,
+			To:       &common.Address{0x1},
+			Value:    big.NewInt(0),
+			Data:     []byte{},
+		})
+		signedTx, signErr := auth.Signer(auth.From, tx)
+		if signErr != nil {
+			return nil, signErr
+		}
+		mockRPC.mu.Lock()
+		mockRPC.receiptResps[signedTx.Hash()] = &types.Receipt{
+			Status:      0, // Reverted!
+			GasUsed:     21000,
+			BlockNumber: big.NewInt(100),
+		}
+		mockRPC.mu.Unlock()
+		return signedTx, nil
+	}
+
+	_, _, _, err = h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if !errors.Is(err, services.ErrPermanentRelayFailure) {
+		t.Errorf("expected ErrPermanentRelayFailure, got %v", err)
+	}
+}
+
+func TestExecuteWithRetryAndResubmission_TransientWaitFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonrpcReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		var result interface{}
+		var rpcErr *jsonrpcError
+
+		switch req.Method {
+		case "eth_chainId":
+			result = "0x1"
+		case "eth_gasPrice":
+			result = "0x3b9aca00" // 1 Gwei
+		case "eth_getTransactionCount":
+			result = "0xa" // 10
+		case "eth_sendRawTransaction":
+			result = "0x0000000000000000000000000000000000000000000000000000000000000000"
+		case "eth_getTransactionReceipt":
+			// Fail the receipt lookup with an RPC error (transient error)
+			rpcErr = &jsonrpcError{
+				Code:    -32000,
+				Message: "node syncing / receipt unavailable due to internal error",
+			}
+		default:
+			rpcErr = &jsonrpcError{
+				Code:    -32601,
+				Message: "method not found",
+			}
+		}
+
+		resp := jsonrpcResp{
+			Jsonrpc: "2.0",
+			Id:      req.Id,
+			Result:  result,
+			Error:   rpcErr,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	client, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatalf("failed to dial: %v", err)
+	}
+
+	ctx := services.NewCtx(nil, client)
+
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+
+	h := &Handler{}
+
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		tx := types.NewTx(&types.LegacyTx{
+			Nonce:    auth.Nonce.Uint64(),
+			GasPrice: auth.GasPrice,
+			Gas:      auth.GasLimit,
+			To:       &common.Address{0x1},
+			Value:    big.NewInt(0),
+			Data:     []byte{},
+		})
+		return auth.Signer(auth.From, tx)
+	}
+
+	_, _, _, err = h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	if errors.Is(err, services.ErrPermanentRelayFailure) {
+		t.Errorf("expected transient error, but errors.Is(err, ErrPermanentRelayFailure) was true: %v", err)
+	}
+}
+
 
 
