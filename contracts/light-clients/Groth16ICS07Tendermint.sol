@@ -336,6 +336,45 @@ contract Groth16ICS07Tendermint is
         require(actualHash == expectedHash, MismatchedValidatorHashes(expectedHash, actualHash));
     }
 
+    /// @notice Recomputes the changed validators' leaf hashes and the new total voting power for a delta update.
+    /// @dev Extracted from `_cacheDeltaValidatorSet` purely to keep that function's stack frame small enough
+    ///      to compile once `Header.simpleValidatorLeafHash` is inlined (internal library).
+    function _buildDeltaLeafHashes(
+        IUpdateClientMsgs.ValidatorSetDelta memory delta,
+        bytes memory baseData,
+        uint16 baseEntryCount,
+        uint256 pubKeyBits,
+        uint256 votingPowerBits
+    )
+        private
+        view
+        returns (bytes32[] memory newLeafHashes, uint256 newTotalVotingPower)
+    {
+        newLeafHashes = new bytes32[](delta.leafCount);
+        newTotalVotingPower = uint256(_cachedValidatorTotalVotingPower);
+        uint32 previousIndex = 0;
+        for (uint256 i = 0; i < delta.leafCount; i++) {
+            uint32 changedIndex = delta.indices[i];
+            require(changedIndex < baseEntryCount, SignerIndexOutOfRange(changedIndex));
+            if (i > 0) {
+                require(changedIndex > previousIndex, CachedValidatorSetCorrupted(delta.baseValidatorsHash));
+            }
+            previousIndex = changedIndex;
+
+            (uint64 oldVotingPower, bytes32 oldPubKey) = _resolveCurrentCachedValidator(
+                delta.baseValidatorsHash, baseData, baseEntryCount, pubKeyBits, votingPowerBits, changedIndex
+            );
+            uint64 changedVotingPower = delta.votingPowers[i];
+            bytes32 changedPubKey = delta.pubKeys[i];
+            require(
+                oldVotingPower != changedVotingPower || oldPubKey != changedPubKey,
+                CachedValidatorSetCorrupted(delta.baseValidatorsHash)
+            );
+            newTotalVotingPower = newTotalVotingPower - uint256(oldVotingPower) + uint256(changedVotingPower);
+            newLeafHashes[i] = Header.simpleValidatorLeafHash(changedPubKey, changedVotingPower);
+        }
+    }
+
     function _cacheDeltaValidatorSet(
         bytes32 validatorsHash,
         IUpdateClientMsgs.ValidatorSetDelta memory delta
@@ -362,29 +401,11 @@ contract Groth16ICS07Tendermint is
 
         uint256 pubKeyBits = _validatorPubKeyOverrideBits;
         uint256 votingPowerBits = _validatorVotingPowerOverrideBits;
-        uint256 newTotalVotingPower = uint256(_cachedValidatorTotalVotingPower);
-        bytes32[] memory newLeafHashes = new bytes32[](changedCount);
-        uint32 previousIndex = 0;
-        for (uint256 i = 0; i < changedCount; i++) {
-            uint32 changedIndex = delta.indices[i];
-            require(changedIndex < baseHeader.entryCount, SignerIndexOutOfRange(changedIndex));
-            if (i > 0) {
-                require(changedIndex > previousIndex, CachedValidatorSetCorrupted(delta.baseValidatorsHash));
-            }
-            previousIndex = changedIndex;
-
-            (uint64 oldVotingPower, bytes32 oldPubKey) = _resolveCurrentCachedValidator(
-                delta.baseValidatorsHash, baseData, baseHeader.entryCount, pubKeyBits, votingPowerBits, changedIndex
-            );
-            uint64 changedVotingPower = delta.votingPowers[i];
-            bytes32 changedPubKey = delta.pubKeys[i];
-            require(
-                oldVotingPower != changedVotingPower || oldPubKey != changedPubKey,
-                CachedValidatorSetCorrupted(delta.baseValidatorsHash)
-            );
-            newTotalVotingPower = newTotalVotingPower - uint256(oldVotingPower) + uint256(changedVotingPower);
-            newLeafHashes[i] = Header.simpleValidatorLeafHash(changedPubKey, changedVotingPower);
-        }
+        // Leaf-hash + total-voting-power recompute is extracted into a helper so its
+        // locals (and the inlined Header.simpleValidatorLeafHash) don't share this
+        // function's stack frame — keeps the via-IR compile under the stack limit.
+        (bytes32[] memory newLeafHashes, uint256 newTotalVotingPower) =
+            _buildDeltaLeafHashes(delta, baseData, baseHeader.entryCount, pubKeyBits, votingPowerBits);
         require(newTotalVotingPower <= type(uint64).max, CachedValidatorSetCorrupted(delta.baseValidatorsHash));
 
         bytes32 computedRoot = _recomputeCurrentDeltaRoot(
