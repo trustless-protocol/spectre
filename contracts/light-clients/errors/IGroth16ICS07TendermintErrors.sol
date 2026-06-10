@@ -130,6 +130,11 @@ interface IGroth16ICS07TendermintErrors {
     /// @param height2 header2 height.
     error InsufficientMisbehaviourHeaderHeight(uint64 height1, uint64 height2);
 
+    /// @notice Returned when standalone misbehaviour headers are not at the same height.
+    /// @param height1 first header height.
+    /// @param height2 second header height.
+    error MismatchedMisbehaviourHeaderHeights(uint64 height1, uint64 height2);
+
     /// @notice mismatched revision heights.
     /// @param expected height.
     /// @param actual height.

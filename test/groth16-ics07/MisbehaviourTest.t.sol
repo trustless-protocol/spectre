@@ -19,6 +19,13 @@ import { IGroth16ICS07TendermintErrors } from "../../contracts/light-clients/err
 import { IAccessControl } from "@openzeppelin-contracts/access/IAccessControl.sol";
 
 contract MockVerifierForMisbehaviour is IVerifier {
+    bool internal result = true;
+    uint256 public calls;
+
+    function setResult(bool result_) external {
+        result = result_;
+    }
+
     function verifyBatchProof(
         uint16,
         uint256[8] calldata,
@@ -31,10 +38,10 @@ contract MockVerifierForMisbehaviour is IVerifier {
         IVerifier.SharedBlock calldata
     )
         external
-        pure
         returns (bool)
     {
-        return true;
+        calls++;
+        return result;
     }
 }
 
@@ -117,7 +124,17 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
     uint128 internal constant TRUSTED_TIME_NANOS = 1_700_000_000_000_000_000;
     uint128 internal constant HEADER_TIME_NANOS = 1_700_000_100_000_000_000;
+    uint64 internal constant HEADER_TIME_SECONDS = 1_700_000_100;
+    uint32 internal constant HEADER_TIME_NANOS_PART = 0;
     string internal constant CHAIN_ID = "test-chain-0";
+
+    struct LegacyMsgSubmitMisbehaviour {
+        IICS07TendermintMsgs.ClientState clientState;
+        IMisbehaviourMsgs.Misbehaviour misbehaviour;
+        IICS07TendermintMsgs.ConsensusState trustedConsensusState1;
+        IICS07TendermintMsgs.ConsensusState trustedConsensusState2;
+        uint128 time;
+    }
 
     function setUp() public {
         misbehaviourVerifier = new Misbehaviour();
@@ -168,83 +185,74 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         vm.warp(1_700_000_500);
     }
 
-    function test_misbehaviour_alwaysRevertsWithFeatureNotSupported() public {
+    function test_misbehaviour_freezesWithProofBackedQuorums() public {
         IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         bytes memory encoded = abi.encode(msg_);
 
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
         lightClient.misbehaviour(encoded);
+
+        assertTrue(_isFrozen(lightClient), "client must freeze after both header proofs verify");
+        assertEq(mockVerifier.calls(), 2, "both header proofs must be verified");
     }
 
     function test_misbehaviour_revertsWithGarbageBytes() public {
         bytes memory garbage = bytes("this is not a valid encoded message");
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
+        vm.expectRevert();
         lightClient.misbehaviour(garbage);
+        assertFalse(_isFrozen(lightClient), "garbage bytes must not freeze");
     }
 
     function test_misbehaviour_revertsWithEmptyBytes() public {
         bytes memory empty = bytes("");
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
+        vm.expectRevert();
         lightClient.misbehaviour(empty);
+        assertFalse(_isFrozen(lightClient), "empty bytes must not freeze");
     }
 
-    function test_misbehaviour_cannotFreezeClientWithValidMessage() public {
+    function test_misbehaviour_cannotFreezeLegacyMessageWithoutProofs() public {
+        bytes memory encoded = _buildLegacyMisbehaviourMsg();
+        vm.expectRevert();
+        lightClient.misbehaviour(encoded);
+
+        assertFalse(_isFrozen(lightClient), "legacy no-proof message must not freeze");
+        assertEq(mockVerifier.calls(), 0, "legacy message must not reach verifier");
+    }
+
+    function test_misbehaviour_cannotFreezeWhenVerifierRejectsProof() public {
+        mockVerifier.setResult(false);
         IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         bytes memory encoded = abi.encode(msg_);
 
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
+        vm.expectRevert(IGroth16ICS07TendermintErrors.ProofVerificationFailed.selector);
         lightClient.misbehaviour(encoded);
 
-        assertFalse(_isFrozen(lightClient), "client must not be frozen when misbehaviour is disabled");
+        assertFalse(_isFrozen(lightClient), "rejected proof must not freeze");
     }
 
-    function test_misbehaviour_cannotFreezeClientWithFakeSignatures() public {
+    function test_misbehaviour_cannotFreezeWithSubQuorumProofMetadata() public {
         IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
-
-        for (uint256 i = 0; i < msg_.misbehaviour.header1.signedHeader.commit.commitSigs.length; i++) {
-            msg_.misbehaviour.header1.signedHeader.commit.commitSigs[i].data.signature = bytes("fake_signature");
-        }
-        for (uint256 i = 0; i < msg_.misbehaviour.header2.signedHeader.commit.commitSigs.length; i++) {
-            msg_.misbehaviour.header2.signedHeader.commit.commitSigs[i].data.signature = bytes("fake_signature");
-        }
+        msg_.proof1 = _proof(2);
 
         bytes memory encoded = abi.encode(msg_);
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
+        vm.expectRevert(abi.encodeWithSelector(IGroth16ICS07TendermintErrors.InsufficientVotingPower.selector, 50, 100));
         lightClient.misbehaviour(encoded);
 
-        assertFalse(_isFrozen(lightClient), "client must not be frozen with fake signatures");
+        assertFalse(_isFrozen(lightClient), "sub-quorum proof metadata must not freeze");
+        assertEq(mockVerifier.calls(), 0, "sub-quorum metadata must not reach verifier");
     }
 
-    function test_misbehaviour_cannotFreezeClientWithEmptySignatures() public {
+    function test_misbehaviour_revertsForMismatchedHeaderHeights() public {
         IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
-
-        for (uint256 i = 0; i < msg_.misbehaviour.header1.signedHeader.commit.commitSigs.length; i++) {
-            msg_.misbehaviour.header1.signedHeader.commit.commitSigs[i].data.signature = bytes("");
-            msg_.misbehaviour.header1.signedHeader.commit.commitSigs[i].data.hasSignature = false;
-        }
-        for (uint256 i = 0; i < msg_.misbehaviour.header2.signedHeader.commit.commitSigs.length; i++) {
-            msg_.misbehaviour.header2.signedHeader.commit.commitSigs[i].data.signature = bytes("");
-            msg_.misbehaviour.header2.signedHeader.commit.commitSigs[i].data.hasSignature = false;
-        }
+        msg_.misbehaviour.header2 = _buildHeader(16, bytes32(uint256(0xAAA2)));
 
         bytes memory encoded = abi.encode(msg_);
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(IGroth16ICS07TendermintErrors.MismatchedMisbehaviourHeaderHeights.selector, 15, 16)
+        );
         lightClient.misbehaviour(encoded);
 
-        assertFalse(_isFrozen(lightClient), "client must not be frozen with empty signatures");
-    }
-
-    function test_misbehaviour_cannotFreezeClientFromAnyAddress() public {
-        address attacker = makeAddr("attacker");
-
-        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
-        bytes memory encoded = abi.encode(msg_);
-
-        vm.prank(attacker);
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
-        lightClient.misbehaviour(encoded);
-
-        assertFalse(_isFrozen(lightClient), "client must not be frozen by arbitrary attacker");
+        assertFalse(_isFrozen(lightClient), "different-height headers must not freeze");
+        assertEq(mockVerifier.calls(), 0, "different-height headers must not reach verifier");
     }
 
     function test_misbehaviour_revertsForUnauthorizedCallerWhenManaged() public {
@@ -326,7 +334,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
     function _buildValidMisbehaviourMsg() internal view returns (IMisbehaviourMsgs.MsgSubmitMisbehaviour memory) {
         IICS07TendermintMsgs.Header memory header1 = _buildHeader(15, bytes32(uint256(0xAAA1)));
-        IICS07TendermintMsgs.Header memory header2 = _buildHeader(12, bytes32(uint256(0xAAA2)));
+        IICS07TendermintMsgs.Header memory header2 = _buildHeader(15, bytes32(uint256(0xAAA2)));
 
         IMisbehaviourMsgs.Misbehaviour memory misbehaviour_ = IMisbehaviourMsgs.Misbehaviour({
             client_id: ChainId({ id: CHAIN_ID, revisionNumber: 0 }), header1: header1, header2: header2
@@ -337,8 +345,40 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
             misbehaviour: misbehaviour_,
             trustedConsensusState1: consensusState_,
             trustedConsensusState2: consensusState_,
-            time: uint128(block.timestamp) * 1_000_000_000
+            time: uint128(block.timestamp) * 1_000_000_000,
+            proof1: _proof(3),
+            proof2: _proof(3)
         });
+    }
+
+    function _buildLegacyMisbehaviourMsg() internal view returns (bytes memory) {
+        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        return abi.encode(
+            LegacyMsgSubmitMisbehaviour({
+                clientState: msg_.clientState,
+                misbehaviour: msg_.misbehaviour,
+                trustedConsensusState1: msg_.trustedConsensusState1,
+                trustedConsensusState2: msg_.trustedConsensusState2,
+                time: msg_.time
+            })
+        );
+    }
+
+    function _proof(uint256 activeCount) internal view returns (IMisbehaviourMsgs.BatchProof memory proof_) {
+        proof_.bucket = 4;
+        proof_.signerIndices = new uint32[](4);
+        proof_.signerPubkeys = new bytes32[](4);
+        proof_.timestampSeconds = new uint64[](4);
+        proof_.timestampNanos = new uint32[](4);
+        proof_.active = new bool[](4);
+
+        for (uint32 i = 0; i < 4; i++) {
+            proof_.signerIndices[i] = i;
+            proof_.signerPubkeys[i] = valset_.validators[i].pubKey;
+            proof_.timestampSeconds[i] = HEADER_TIME_SECONDS;
+            proof_.timestampNanos[i] = HEADER_TIME_NANOS_PART;
+            proof_.active[i] = i < activeCount;
+        }
     }
 
     function _isFrozen(Groth16ICS07Tendermint client) internal view returns (bool) {

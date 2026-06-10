@@ -174,13 +174,13 @@
     "name": "misbehaviour",
     "inputs": [
       {
-        "name": "",
+        "name": "misbehaviourMsg",
         "type": "bytes",
         "internalType": "bytes"
       }
     ],
     "outputs": [],
-    "stateMutability": "view"
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -1368,6 +1368,22 @@
         "name": "actual",
         "type": "bytes",
         "internalType": "bytes"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "MismatchedMisbehaviourHeaderHeights",
+    "inputs": [
+      {
+        "name": "height1",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "height2",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ]
   },
