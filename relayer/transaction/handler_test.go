@@ -486,6 +486,15 @@ func TestWaitForReceipts_ReverseOrder(t *testing.T) {
 }
 
 func TestWaitForReceipts_ErrorPropagation(t *testing.T) {
+	oldTimeout := ethTxReceiptTimeout
+	oldPollInterval := ethTxReceiptPollInterval
+	ethTxReceiptTimeout = 100 * time.Millisecond
+	ethTxReceiptPollInterval = 10 * time.Millisecond
+	defer func() {
+		ethTxReceiptTimeout = oldTimeout
+		ethTxReceiptPollInterval = oldPollInterval
+	}()
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 	}))
@@ -496,12 +505,12 @@ func TestWaitForReceipts_ErrorPropagation(t *testing.T) {
 		t.Fatalf("failed to dial: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
 	_, err = waitForReceipts(ctx, client, []common.Hash{common.HexToHash("0x1")})
-	if err == nil {
-		t.Fatal("expected error, got nil")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded error (since transient errors are ignored), got %v", err)
 	}
 }
 
@@ -726,6 +735,15 @@ func TestBumpGasAndResubmit(t *testing.T) {
 }
 
 func TestExecuteWithRetryAndResubmission_WaitErrorNonceInvalidation(t *testing.T) {
+	oldTimeout := ethTxReceiptTimeout
+	oldPollInterval := ethTxReceiptPollInterval
+	ethTxReceiptTimeout = 100 * time.Millisecond
+	ethTxReceiptPollInterval = 10 * time.Millisecond
+	defer func() {
+		ethTxReceiptTimeout = oldTimeout
+		ethTxReceiptPollInterval = oldPollInterval
+	}()
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req jsonrpcReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1114,6 +1132,15 @@ func TestExecuteWithRetryAndResubmission_RevertPermanentFailure(t *testing.T) {
 }
 
 func TestExecuteWithRetryAndResubmission_TransientWaitFailure(t *testing.T) {
+	oldTimeout := ethTxReceiptTimeout
+	oldPollInterval := ethTxReceiptPollInterval
+	ethTxReceiptTimeout = 100 * time.Millisecond
+	ethTxReceiptPollInterval = 10 * time.Millisecond
+	defer func() {
+		ethTxReceiptTimeout = oldTimeout
+		ethTxReceiptPollInterval = oldPollInterval
+	}()
+
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req jsonrpcReq
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1192,6 +1219,85 @@ func TestExecuteWithRetryAndResubmission_TransientWaitFailure(t *testing.T) {
 		t.Errorf("expected transient error, but errors.Is(err, ErrPermanentRelayFailure) was true: %v", err)
 	}
 }
+func TestExecuteWithRetryAndResubmission_SuggestGasPriceErrorNonceInvalidation(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req jsonrpcReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 
+		var result interface{}
+		var rpcErr *jsonrpcError
 
+		switch req.Method {
+		case "eth_chainId":
+			result = "0x1"
+		case "eth_getTransactionCount":
+			result = "0xa" // 10
+		case "eth_gasPrice":
+			// Fail gas price suggestion
+			rpcErr = &jsonrpcError{
+				Code:    -32000,
+				Message: "cannot suggest gas price",
+			}
+		default:
+			rpcErr = &jsonrpcError{
+				Code:    -32601,
+				Message: "method not found",
+			}
+		}
 
+		resp := jsonrpcResp{
+			Jsonrpc: "2.0",
+			Id:      req.Id,
+			Result:  result,
+			Error:   rpcErr,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	client, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatalf("failed to dial: %v", err)
+	}
+
+	ctx := services.NewCtx(nil, client)
+
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+
+	h := &Handler{
+		nonce:      10,
+		nonceValid: true,
+	}
+
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		tx := types.NewTx(&types.LegacyTx{
+			Nonce:    auth.Nonce.Uint64(),
+			GasPrice: auth.GasPrice,
+			Gas:      auth.GasLimit,
+			To:       &common.Address{0x1},
+			Value:    big.NewInt(0),
+			Data:     []byte{},
+		})
+		return auth.Signer(auth.From, tx)
+	}
+
+	_, _, _, err = h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	h.mu.Lock()
+	valid := h.nonceValid
+	h.mu.Unlock()
+
+	if valid {
+		t.Error("expected h.nonceValid to be false after SuggestGasPrice failure, but it was true")
+	}
+}

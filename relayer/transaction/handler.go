@@ -100,7 +100,9 @@ type Handler struct {
 	lastGasTipCap *big.Int
 }
 
-const ethTxReceiptTimeout = 45 * time.Second
+var ethTxReceiptTimeout = 45 * time.Second
+var ethTxReceiptPollInterval = 2 * time.Second
+
 const ethDeployGasHeadroomPercent uint64 = 20
 
 // Cosmos RPC deadlines (issue #119): bound every Cosmos broadcast/query so a
@@ -1650,7 +1652,7 @@ func isAlreadyKnownError(err error) bool {
 }
 
 func waitForReceipts(ctx context.Context, client *ethclient.Client, hashes []common.Hash) (*types.Receipt, error) {
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(ethTxReceiptPollInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -1668,7 +1670,8 @@ func waitForReceipts(ctx context.Context, client *ethclient.Client, hashes []com
 					continue
 				}
 				if err != nil && !errors.Is(err, ethereum.NotFound) {
-					return nil, err
+					log.Printf("[EthTxSender] Transient error polling receipt for %s: %v. Retrying...", hash.Hex(), err)
+					continue
 				}
 			}
 		}
@@ -1855,6 +1858,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 		} else {
 			gasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
 			if err != nil {
+				h.nonceValid = false
 				h.mu.Unlock()
 				return nil, 0, 0, fmt.Errorf("failed to suggest gas price: %w", err)
 			}
