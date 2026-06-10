@@ -11,15 +11,17 @@ import { IICS02Client, IICS02ClientAccessControlled } from "../interfaces/IICS02
 import { ILightClient } from "../interfaces/ILightClient.sol";
 
 import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
+import { IAccessManager } from "@openzeppelin-contracts/access/manager/IAccessManager.sol";
 import { AccessManagedUpgradeable } from "@openzeppelin-upgradeable/access/manager/AccessManagedUpgradeable.sol";
 import { IBCIdentifiers } from "../utils/IBCIdentifiers.sol";
+import { IBCRolesLib } from "./IBCRolesLib.sol";
 
 /// @title ICS02 Client Router
 /// @notice This is the ICS02 Light Client Router contract, storing the light clients and their identifiers.
-/// @dev Light client migrations/upgrades are supported via `AccessControl` role-based access control
-/// @dev Each client is identified by a unique identifier, hash of which also serves as the role identifier
-/// @dev The light client migrator role is granted to whoever called `addClient` for the client, and can be revoked (not
-/// transferred)
+/// @dev Light client migrations are gated by a per-clientId role on the connected AccessManager
+/// @dev (see `getLightClientMigratorRole`). The role id is derived from the clientId, so a grant
+/// @dev for one client does not authorize migration of any other client. The role must be granted
+/// @dev explicitly by the AccessManager admin; it is not auto-assigned in `addClient`.
 abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, AccessManagedUpgradeable {
     /// @notice Storage of the ICS02Client contract
     /// @dev It's implemented on a custom ERC-7201 namespace to reduce the
@@ -147,15 +149,32 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
         address client
     )
         external
-        restricted
     {
         getClient(clientId); // Ensure subject client exists
+
+        // We manually check the migrator role here rather than using the `restricted` modifier.
+        // This allows client-specific migration roles (scoped by clientId) rather than a single
+        // global migration role. However, manual role checks bypass the AccessManager's delay
+        // enforcement and target kill-switch. Therefore, we explicitly check if the target is
+        // closed, and require that the role is granted with an execution delay of 0, meaning
+        // only immediate, delay-0 migrators are supported on this path.
+        IAccessManager manager = IAccessManager(authority());
+        require(!manager.isTargetClosed(address(this)), IBCUnauthorizedMigrator(clientId, _msgSender()));
+
+        (bool isMember, uint32 executionDelay) =
+            manager.hasRole(IBCRolesLib.getLightClientMigratorRole(clientId), _msgSender());
+        require(isMember && executionDelay == 0, IBCUnauthorizedMigrator(clientId, _msgSender()));
 
         ICS02ClientStorage storage $ = _getICS02ClientStorage();
         $.counterpartyInfos[clientId] = counterpartyInfo;
         $.clients[clientId] = ILightClient(client);
 
         emit ICS02ClientMigrated(clientId, counterpartyInfo, client);
+    }
+
+    /// @inheritdoc IICS02ClientAccessControlled
+    function getLightClientMigratorRole(string calldata clientId) external pure returns (uint64) {
+        return IBCRolesLib.getLightClientMigratorRole(clientId);
     }
 
     /// @inheritdoc IICS02ClientAccessControlled

@@ -585,7 +585,9 @@ func (s *Services) waitBeaconFinality(ctx Context, eventBlock uint64, tag string
 		if attempt > 0 {
 			time.Sleep(10 * time.Second)
 		}
-		finalityUpdate, err := client.GetFinalityUpdate(ctx.BeaconAPIURL())
+		bctx, bcancel := context.WithTimeout(context.Background(), 15*time.Second)
+		finalityUpdate, err := client.GetFinalityUpdate(bctx, ctx.BeaconAPIURL())
+		bcancel()
 		if err != nil {
 			log.Printf("[%s] failed to get finality update: %v", tag, err)
 			continue
@@ -930,7 +932,9 @@ func (s *Services) ethProofHeight(ctx Context, eventBlock uint64, sequence uint6
 		if attempt > 0 {
 			time.Sleep(10 * time.Second)
 		}
-		finalityUpdate, err := client.GetFinalityUpdate(ctx.BeaconAPIURL())
+		bctx, bcancel := context.WithTimeout(context.Background(), 15*time.Second)
+		finalityUpdate, err := client.GetFinalityUpdate(bctx, ctx.BeaconAPIURL())
+		bcancel()
 		if err != nil {
 			log.Printf("[%s] seq=%d: failed to get finality update: %v", tag, sequence, err)
 			continue
