@@ -713,6 +713,8 @@ func recoverEthWriteAcknowledgements(
 }
 
 func advanceRecoveryStart(nextRecoveryStartBlock *uint64, candidate uint64) {
+	// Live handlers pass block+1 here, so periodic recovery trusts the live
+	// subscription to have covered every relevant event in the observed block.
 	if candidate > *nextRecoveryStartBlock {
 		*nextRecoveryStartBlock = candidate
 	}

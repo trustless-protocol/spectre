@@ -88,10 +88,10 @@ type batchConfig struct {
 }
 
 type jsonConfig struct {
-	Server      serverConfig   `json:"server"`
-	Batch       batchConfig    `json:"batch"`
-	BatchConfig batchConfig    `json:"batch_config"`
-	Modules     []configModule `json:"modules"`
+	Server                serverConfig     `json:"server"`
+	Batch                 batchConfig      `json:"batch"`
+	DeprecatedBatchConfig *json.RawMessage `json:"batch_config"`
+	Modules               []configModule   `json:"modules"`
 }
 
 type appConfig struct {
@@ -103,36 +103,11 @@ type appConfig struct {
 
 // writeICS07Address rewrites configPath in place, setting
 // modules[name=="cosmos_to_eth"].config.ics07_client = addr. Other fields and
-// JSON formatting are preserved as much as encoding/json indent allows.
+// existing JSON formatting are preserved outside the replaced/inserted value.
 func writeICS07Address(configPath, addr string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("parse config: %w", err)
-	}
-	modules, ok := raw["modules"].([]any)
-	if !ok {
-		return fmt.Errorf("config has no modules array")
-	}
-	updated := false
-	for _, m := range modules {
-		mod, ok := m.(map[string]any)
-		if !ok || mod["name"] != "cosmos_to_eth" {
-			continue
-		}
-		cfg, ok := mod["config"].(map[string]any)
-		if !ok {
-			return fmt.Errorf("cosmos_to_eth.config is not an object")
-		}
-		cfg["ics07_client"] = addr
-		updated = true
-		break
-	}
-	if !updated {
-		return fmt.Errorf("module cosmos_to_eth not found in config")
 	}
 	out, err := replaceICS07Address(data, addr)
 	if err != nil {
@@ -413,16 +388,13 @@ func loadConfig(configPath string) (*appConfig, error) {
 	if err := json.Unmarshal(data, &jc); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
+	if jc.DeprecatedBatchConfig != nil {
+		return nil, fmt.Errorf("batch_config is deprecated; use batch")
+	}
 
 	var c2e cosmosToEthConfig
 	var e2c ethToCosmosConfig
 	batch := services.DefaultConfig().BatchConfig
-	if jc.BatchConfig.BatchSize != 0 {
-		batch.BatchSize = jc.BatchConfig.BatchSize
-	}
-	if jc.BatchConfig.BatchPeriodSeconds != 0 {
-		batch.BatchPeriods = time.Duration(jc.BatchConfig.BatchPeriodSeconds) * time.Second
-	}
 	if jc.Batch.BatchSize != 0 {
 		batch.BatchSize = jc.Batch.BatchSize
 	}
