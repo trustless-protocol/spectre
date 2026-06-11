@@ -9,7 +9,11 @@ import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipM
 /// @dev Exposes the internal leaf/inner hashing helpers whose assembly was rewritten
 /// to bounded `mcopy` in issue #114.
 contract ApplyOpsHarness is Membership {
-    function exposedApplyLeaf(IMembershipMsgs.LeafOp memory op, bytes memory key, bytes memory value)
+    function exposedApplyLeaf(
+        IMembershipMsgs.LeafOp memory op,
+        bytes memory key,
+        bytes memory value
+    )
         external
         pure
         returns (bytes32)
@@ -21,7 +25,10 @@ contract ApplyOpsHarness is Membership {
         return applyInner(inner, child);
     }
 
-    function exposedPrepareLeafData(IMembershipMsgs.HashOp prehashOp, bytes memory data)
+    function exposedPrepareLeafData(
+        IMembershipMsgs.HashOp prehashOp,
+        bytes memory data
+    )
         external
         pure
         returns (bytes memory)
@@ -49,7 +56,10 @@ contract MembershipApplyOpsTest is Test {
         return abi.encodePacked(bytes1(uint8(n)));
     }
 
-    function _leafOp(IMembershipMsgs.HashOp hashOp, bytes memory prefix)
+    function _leafOp(
+        IMembershipMsgs.HashOp hashOp,
+        bytes memory prefix
+    )
         internal
         pure
         returns (IMembershipMsgs.LeafOp memory)
@@ -98,9 +108,7 @@ contract MembershipApplyOpsTest is Test {
         bytes memory value = hex"a1a2a3a4a5a6a7"; // len 7
         bytes32 got = h.exposedApplyLeaf(_leafOp(IMembershipMsgs.HashOp.SHA256, prefix), key, value);
 
-        bytes memory image = abi.encodePacked(
-            prefix, _varint1(key.length), key, _varint1(value.length), value
-        );
+        bytes memory image = abi.encodePacked(prefix, _varint1(key.length), key, _varint1(value.length), value);
         assertEq(got, sha256(image), "applyLeaf sha256");
     }
 
@@ -110,15 +118,17 @@ contract MembershipApplyOpsTest is Test {
         bytes memory value = hex"ff"; // len 1
         bytes32 got = h.exposedApplyLeaf(_leafOp(IMembershipMsgs.HashOp.KECCAK256, prefix), key, value);
 
-        bytes memory image = abi.encodePacked(
-            prefix, _varint1(key.length), key, _varint1(value.length), value
-        );
+        bytes memory image = abi.encodePacked(prefix, _varint1(key.length), key, _varint1(value.length), value);
         assertEq(got, keccak256(image), "applyLeaf keccak");
     }
 
     // --- applyInner --------------------------------------------------------
 
-    function _innerOp(IMembershipMsgs.HashOp hashOp, bytes memory prefix, bytes memory suffix)
+    function _innerOp(
+        IMembershipMsgs.HashOp hashOp,
+        bytes memory prefix,
+        bytes memory suffix
+    )
         internal
         pure
         returns (IMembershipMsgs.InnerOp memory)

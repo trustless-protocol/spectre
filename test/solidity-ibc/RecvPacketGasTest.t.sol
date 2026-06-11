@@ -19,7 +19,13 @@ import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipM
 import { ICS24Host } from "../../contracts/utils/ICS24Host.sol";
 
 contract DummyMembership {
-    function membership(bytes32, IMembershipMsgs.KVPair[] calldata, IMembershipMsgs.MerkleProof[] calldata) external pure {}
+    function membership(
+        bytes32,
+        IMembershipMsgs.KVPair[] calldata,
+        IMembershipMsgs.MerkleProof[] calldata
+    )
+        external
+        pure { }
 }
 
 contract AlwaysTrueVerifier {
@@ -33,38 +39,38 @@ contract RecvPacketGasTest is IntegrationTest {
     UpdateClient updateClientImpl;
     AlwaysTrueVerifier stubBucket;
 
-    address constant STUB_MEMBERSHIP   = address(0xBABE);
+    address constant STUB_MEMBERSHIP = address(0xBABE);
     address constant STUB_MISBEHAVIOUR = address(0xBEEF);
 
-    string  constant CHAIN_ID         = "cosmoshub-0";
-    uint64  constant TRUSTED_HEIGHT   = 1_000;
-    uint64  constant NEW_HEIGHT       = 1_001;
-    uint128 constant TRUSTED_TS_NS    = 1_700_000_000 * 1e9;
-    uint128 constant NEW_TS_NS        = 1_700_000_010 * 1e9;
-    uint32  constant TRUSTING_PERIOD  = 14 days;
-    uint32  constant UNBONDING_PERIOD = 21 days;
+    string constant CHAIN_ID = "cosmoshub-0";
+    uint64 constant TRUSTED_HEIGHT = 1000;
+    uint64 constant NEW_HEIGHT = 1001;
+    uint128 constant TRUSTED_TS_NS = 1_700_000_000 * 1e9;
+    uint128 constant NEW_TS_NS = 1_700_000_010 * 1e9;
+    uint32 constant TRUSTING_PERIOD = 14 days;
+    uint32 constant UNBONDING_PERIOD = 21 days;
 
     struct BucketConfig {
-        uint16 bucket;       // padded slot count
-        uint16 valCount;     // validators
-        uint16 activeCount;  // real signers
+        uint16 bucket; // padded slot count
+        uint16 valCount; // validators
+        uint16 activeCount; // real signers
     }
 
     function _cfg(uint16 bucket) internal pure returns (BucketConfig memory) {
-        if (bucket == 4)   return BucketConfig(4,   4,  3);
-        if (bucket == 8)   return BucketConfig(8,  10,  7);
-        if (bucket == 16)  return BucketConfig(16, 20, 14);
-        if (bucket == 32)  return BucketConfig(32, 30, 21);
-        if (bucket == 64)  return BucketConfig(64, 60, 42);
-        if (bucket == 128) return BucketConfig(128,120, 84);
+        if (bucket == 4) return BucketConfig(4, 4, 3);
+        if (bucket == 8) return BucketConfig(8, 10, 7);
+        if (bucket == 16) return BucketConfig(16, 20, 14);
+        if (bucket == 32) return BucketConfig(32, 30, 21);
+        if (bucket == 64) return BucketConfig(64, 60, 42);
+        if (bucket == 128) return BucketConfig(128, 120, 84);
         revert("unknown bucket");
     }
 
     function _clientState() internal pure returns (IICS07TendermintMsgs.ClientState memory) {
         return IICS07TendermintMsgs.ClientState({
             chainId: CHAIN_ID,
-            trustLevel: IICS07TendermintMsgs.TrustThreshold({numerator: 1, denominator: 3}),
-            latestHeight: IICS02ClientMsgs.Height({revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT}),
+            trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
+            latestHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
             isFrozen: false,
@@ -85,15 +91,17 @@ contract RecvPacketGasTest is IntegrationTest {
             total += 100;
         }
         vs = IICS07TendermintMsgs.ValidatorSet({
-            validators: vals,
-            hasProposer: false,
-            proposer: vals[0],
-            totalVotingPower: total
+            validators: vals, hasProposer: false, proposer: vals[0], totalVotingPower: total
         });
     }
 
-    function _buildCommitSigs(IICS07TendermintMsgs.ValidatorSet memory vs, uint16 activeCount)
-        internal pure returns (IICS07TendermintMsgs.CommitSig[] memory sigs)
+    function _buildCommitSigs(
+        IICS07TendermintMsgs.ValidatorSet memory vs,
+        uint16 activeCount
+    )
+        internal
+        pure
+        returns (IICS07TendermintMsgs.CommitSig[] memory sigs)
     {
         sigs = new IICS07TendermintMsgs.CommitSig[](vs.validators.length);
         for (uint256 i = 0; i < vs.validators.length; i++) {
@@ -111,10 +119,7 @@ contract RecvPacketGasTest is IntegrationTest {
                 sigs[i] = IICS07TendermintMsgs.CommitSig({
                     flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT,
                     data: IICS07TendermintMsgs.CommitSigData({
-                        validatorAddress: "",
-                        timestamp: 0,
-                        hasSignature: false,
-                        signature: ""
+                        validatorAddress: "", timestamp: 0, hasSignature: false, signature: ""
                     })
                 });
             }
@@ -123,10 +128,7 @@ contract RecvPacketGasTest is IntegrationTest {
 
     function _buildSelfConsistent(BucketConfig memory cfg)
         internal
-        returns (
-            IICS07TendermintMsgs.Header memory header,
-            IICS07TendermintMsgs.ConsensusState memory trustedCS
-        )
+        returns (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS)
     {
         IICS07TendermintMsgs.ValidatorSet memory vs = _buildValSet(cfg.valCount);
         bytes32 valSetHash = Header.hashValSet(vs);
@@ -145,22 +147,20 @@ contract RecvPacketGasTest is IntegrationTest {
             round: 0,
             blockId: IICS07TendermintMsgs.BlockId({
                 hashData: headerHash,
-                partSetHeader: IICS07TendermintMsgs.PartSetHeader({total: 1, hashData: bytes32(uint256(0x9A57))})
+                partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
             }),
             commitSigs: _buildCommitSigs(vs, cfg.activeCount)
         });
 
         header = IICS07TendermintMsgs.Header({
-            signedHeader: IICS07TendermintMsgs.SignedHeader({header: bh, commit: bc}),
+            signedHeader: IICS07TendermintMsgs.SignedHeader({ header: bh, commit: bc }),
             validatorSet: vs,
-            trustedHeight: IICS02ClientMsgs.Height({revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT}),
+            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
             trustedNextValidatorSet: vs
         });
 
         trustedCS = IICS07TendermintMsgs.ConsensusState({
-            timestamp: TRUSTED_TS_NS,
-            root: bytes32(uint256(0xAAA)),
-            nextValidatorsHash: valSetHash
+            timestamp: TRUSTED_TS_NS, root: bytes32(uint256(0xAAA)), nextValidatorsHash: valSetHash
         });
     }
 
@@ -195,8 +195,7 @@ contract RecvPacketGasTest is IntegrationTest {
 
         // Add this light client to the router
         string memory clientID = ics26Router.addClient(
-            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix),
-            address(realClient)
+            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix), address(realClient)
         );
 
         // 1. Build the update message
@@ -260,10 +259,7 @@ contract RecvPacketGasTest is IntegrationTest {
         bytes memory valBytes = abi.encodePacked(commitmentBz);
 
         IMembershipMsgs.KVPair[] memory kvPairs = new IMembershipMsgs.KVPair[](1);
-        kvPairs[0] = IMembershipMsgs.KVPair({
-            path: fullPath,
-            value: valBytes
-        });
+        kvPairs[0] = IMembershipMsgs.KVPair({ path: fullPath, value: valBytes });
 
         IMembershipMsgs.MerkleProof[] memory merkleProofs = new IMembershipMsgs.MerkleProof[](1);
 
@@ -282,10 +278,8 @@ contract RecvPacketGasTest is IntegrationTest {
             value: bytes("")
         });
 
-        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket = IICS26RouterMsgs.MsgRecvPacket({
-            packet: recvPacket,
-            membershipMsg: abi.encode(membershipMsg)
-        });
+        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket =
+            IICS26RouterMsgs.MsgRecvPacket({ packet: recvPacket, membershipMsg: abi.encode(membershipMsg) });
 
         // 3. Measure recvPacket gas
         uint256 g0 = gasleft();
@@ -298,10 +292,27 @@ contract RecvPacketGasTest is IntegrationTest {
         console.log("=========================================");
     }
 
-    function test_gas_recvPacket_n004() public { _measureRecvPacket(4); }
-    function test_gas_recvPacket_n008() public { _measureRecvPacket(8); }
-    function test_gas_recvPacket_n016() public { _measureRecvPacket(16); }
-    function test_gas_recvPacket_n032() public { _measureRecvPacket(32); }
-    function test_gas_recvPacket_n064() public { _measureRecvPacket(64); }
-    function test_gas_recvPacket_n128() public { _measureRecvPacket(128); }
+    function test_gas_recvPacket_n004() public {
+        _measureRecvPacket(4);
+    }
+
+    function test_gas_recvPacket_n008() public {
+        _measureRecvPacket(8);
+    }
+
+    function test_gas_recvPacket_n016() public {
+        _measureRecvPacket(16);
+    }
+
+    function test_gas_recvPacket_n032() public {
+        _measureRecvPacket(32);
+    }
+
+    function test_gas_recvPacket_n064() public {
+        _measureRecvPacket(64);
+    }
+
+    function test_gas_recvPacket_n128() public {
+        _measureRecvPacket(128);
+    }
 }

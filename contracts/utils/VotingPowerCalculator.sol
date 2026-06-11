@@ -6,7 +6,6 @@ import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs
 
 /// @title VotingPowerCalculator
 library VotingPowerCalculator {
-
     error InsufficientSignersOverlap();
     error DuplicateValidator(bytes valAddress);
 
@@ -125,19 +124,20 @@ library VotingPowerCalculator {
     //     return (votes, index, found);
     // }
 
-
     function tallyVote(
         IICS07TendermintMsgs.VotingPowerTally memory power,
         uint64 votingPower
-    ) pure internal returns (IICS07TendermintMsgs.VotingPowerTally memory) {
+    )
+        internal
+        pure
+        returns (IICS07TendermintMsgs.VotingPowerTally memory)
+    {
         power.tallied += votingPower;
         require(power.tallied <= power.total, "tallied should be less than total voting power");
         return power;
     }
 
-    function checkTally(
-        IICS07TendermintMsgs.VotingPowerTally memory power
-    ) pure internal returns (bool) {
+    function checkTally(IICS07TendermintMsgs.VotingPowerTally memory power) internal pure returns (bool) {
         return power.tallied * power.trustThreshold.denominator > power.total * power.trustThreshold.numerator;
     }
 }

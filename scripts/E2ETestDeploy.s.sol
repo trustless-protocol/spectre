@@ -58,11 +58,10 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         // Hash-aggregate exposes the fixed 32-byte SHA-256 digest as two
         // 128-bit field elements, so every bucket uses the same uint256[2]
         // verifier ABI.
-     
+
         wrapperVerifier.setBucket(4, verifierN4, Groth16Verifier_N4.verifyProof.selector);
         wrapperVerifier.setBucket(8, verifierN8, Groth16Verifier_N8.verifyProof.selector);
         wrapperVerifier.setBucket(16, verifierN16, Groth16Verifier_N16.verifyProof.selector);
-      
 
         address membership = address(new Membership());
         address updateClient = address(new UpdateClient());
@@ -121,5 +120,4 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
 
         return finalJson;
     }
-
 }

@@ -4,6 +4,7 @@ pragma solidity ^0.8.0;
 
 import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
 import { IICS02ClientMsgs } from "../msgs/IICS02ClientMsgs.sol";
+
 library Encode {
     function encodeVarint(uint256 value) public pure returns (bytes memory) {
         bytes memory out = new bytes(_varintLen(value));
@@ -48,9 +49,7 @@ library Encode {
         return out;
     }
 
-    function encodeValidator(
-        IICS07TendermintMsgs.SimpleValidator memory validator
-    ) public pure returns (bytes memory) {
+    function encodeValidator(IICS07TendermintMsgs.SimpleValidator memory validator) public pure returns (bytes memory) {
         uint256 totalLen = 36;
         if (validator.votingPower > 0) {
             totalLen += 1 + _varintLen(uint256(validator.votingPower));
@@ -188,7 +187,11 @@ library Encode {
         return result;
     }
 
-    function encodePartSetHeader(IICS07TendermintMsgs.PartSetHeader memory partSetHeader) public pure returns (bytes memory) {
+    function encodePartSetHeader(IICS07TendermintMsgs.PartSetHeader memory partSetHeader)
+        public
+        pure
+        returns (bytes memory)
+    {
         bytes memory out = new bytes(1 + _varintLen(uint256(partSetHeader.total)) + 34);
         uint256 offset = 0;
 
@@ -213,7 +216,11 @@ library Encode {
         IICS07TendermintMsgs.BlockCommit memory commit,
         string memory chainId,
         uint32 valIdx
-    ) public pure returns (bytes memory) {
+    )
+        public
+        pure
+        returns (bytes memory)
+    {
         IICS07TendermintMsgs.CommitSig memory commitSig = commit.commitSigs[valIdx];
 
         bool useCommitBlockId = commitSig.flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT;
@@ -298,7 +305,7 @@ library Encode {
             // Point ptr at out[offset]: skip the 32-byte length prefix (0x20), then advance by offset.
             let ptr := add(add(out, 0x20), offset)
             // Each iteration emits one continuation byte: low 7 bits of value | 0x80 (MSB = "more follows").
-            for {} iszero(lt(value, 0x80)) {} {
+            for { } iszero(lt(value, 0x80)) { } {
                 mstore8(ptr, or(and(value, 0x7f), 0x80))
                 ptr := add(ptr, 1)
                 offset := add(offset, 1)

@@ -81,9 +81,7 @@ contract ICS26RouterTest is Test {
                 merkleProofs: new IMembershipMsgs.MerkleProof[](0),
                 appHash: bytes32(0),
                 trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
-                    timestamp: 0,
-                    root: bytes32(0),
-                    nextValidatorsHash: bytes32(0)
+                    timestamp: 0, root: bytes32(0), nextValidatorsHash: bytes32(0)
                 }),
                 membershipType: IMembershipMsgs.MembershipType.Membership,
                 path: new bytes[](0),
@@ -189,11 +187,7 @@ contract ICS26RouterTest is Test {
                 sourceClient: clientId,
                 timeoutTimestamp: timeoutTimestamp,
                 payload: IICS26RouterMsgs.Payload({
-                    sourcePort: mockPort,
-                    destPort: mockPort,
-                    version: "",
-                    encoding: "",
-                    value: "0x"
+                    sourcePort: mockPort, destPort: mockPort, version: "", encoding: "", value: "0x"
                 })
             })
         );
@@ -225,10 +219,8 @@ contract ICS26RouterTest is Test {
             payloads: payloads
         });
 
-        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket = IICS26RouterMsgs.MsgRecvPacket({
-            packet: packet,
-            membershipMsg: dummyMembershipMsg()
-         });
+        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket =
+            IICS26RouterMsgs.MsgRecvPacket({ packet: packet, membershipMsg: dummyMembershipMsg() });
 
         vm.expectRevert(errorMsg);
         vm.prank(relayer);
@@ -263,10 +255,8 @@ contract ICS26RouterTest is Test {
             payloads: payloads
         });
 
-        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket = IICS26RouterMsgs.MsgRecvPacket({
-            packet: packet,
-            membershipMsg: dummyMembershipMsg()
-         });
+        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket =
+            IICS26RouterMsgs.MsgRecvPacket({ packet: packet, membershipMsg: dummyMembershipMsg() });
 
         bytes[] memory expAcks = new bytes[](1);
         expAcks[0] = ICS24Host.UNIVERSAL_ERROR_ACK;
@@ -307,10 +297,8 @@ contract ICS26RouterTest is Test {
             payloads: payloads
         });
 
-        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket = IICS26RouterMsgs.MsgRecvPacket({
-            packet: packet,
-            membershipMsg: dummyMembershipMsg()
-         });
+        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket =
+            IICS26RouterMsgs.MsgRecvPacket({ packet: packet, membershipMsg: dummyMembershipMsg() });
 
         vm.expectRevert(abi.encodeWithSelector(IICS26RouterErrors.IBCFailedCallback.selector));
         vm.prank(relayer);

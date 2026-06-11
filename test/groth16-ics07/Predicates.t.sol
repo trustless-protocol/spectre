@@ -11,14 +11,20 @@ contract PredicatesWrapper {
         IICS07TendermintMsgs.UntrustedBlockState memory untrustedState,
         IICS07TendermintMsgs.TrustedBlockState memory trustedState,
         IICS07TendermintMsgs.Options memory options
-    ) external pure {
+    )
+        external
+        pure
+    {
         Predicates.verifyCommitAgainstTrusted(untrustedState, trustedState, options);
     }
 
     function validateCommit(
         IICS07TendermintMsgs.SignedHeader memory signedHeader,
         IICS07TendermintMsgs.ValidatorSet memory validators
-    ) external pure {
+    )
+        external
+        pure
+    {
         Predicates.validateCommit(signedHeader, validators);
     }
 
@@ -26,7 +32,10 @@ contract PredicatesWrapper {
         IICS07TendermintMsgs.UntrustedBlockState memory untrustedState,
         IICS07TendermintMsgs.TrustedBlockState memory trustedState,
         IICS07TendermintMsgs.Options memory options
-    ) external pure {
+    )
+        external
+        pure
+    {
         Predicates.verifyTrustedCommitOverlap(untrustedState, trustedState, options);
     }
 }
@@ -41,19 +50,15 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
         bytes memory addr,
         bytes32 pubKey,
         uint64 power
-    ) internal pure returns (ValidatorInfo memory) {
-        return ValidatorInfo({
-            valAddress: addr,
-            pubKey: pubKey,
-            votingPower: power,
-            proposerPriority: 0
-        });
+    )
+        internal
+        pure
+        returns (ValidatorInfo memory)
+    {
+        return ValidatorInfo({ valAddress: addr, pubKey: pubKey, votingPower: power, proposerPriority: 0 });
     }
 
-    function _makeCommitSig(
-        CommitSigFlag flag,
-        bytes memory addr
-    ) internal pure returns (CommitSig memory) {
+    function _makeCommitSig(CommitSigFlag flag, bytes memory addr) internal pure returns (CommitSig memory) {
         return CommitSig({
             flag: flag,
             data: CommitSigData({
@@ -65,24 +70,19 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
         });
     }
 
-    function _makeValidatorSet(
-        ValidatorInfo[] memory vals
-    ) internal pure returns (ValidatorSet memory) {
+    function _makeValidatorSet(ValidatorInfo[] memory vals) internal pure returns (ValidatorSet memory) {
         return ValidatorSet({
-            validators: vals,
-            hasProposer: false,
-            proposer: _makeValidator("", bytes32(0), 0),
-            totalVotingPower: 0
+            validators: vals, hasProposer: false, proposer: _makeValidator("", bytes32(0), 0), totalVotingPower: 0
         });
     }
 
-    function _makeSignedHeader(
-        CommitSig[] memory sigs,
-        bytes32 headerHash
-    ) internal pure returns (SignedHeader memory) {
+    function _makeSignedHeader(CommitSig[] memory sigs, bytes32 headerHash)
+        internal
+        pure
+        returns (SignedHeader memory)
+    {
         BlockId memory blockId = BlockId({
-            hashData: headerHash,
-            partSetHeader: PartSetHeader({ total: 1, hashData: bytes32(0) })
+            hashData: headerHash, partSetHeader: PartSetHeader({ total: 1, hashData: bytes32(0) })
         });
 
         return SignedHeader({
@@ -107,12 +107,7 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
                 evidenceHash: bytes32(0),
                 proposerAddress: ""
             }),
-            commit: BlockCommit({
-                height: 100,
-                round: 0,
-                blockId: blockId,
-                commitSigs: sigs
-            })
+            commit: BlockCommit({ height: 100, round: 0, blockId: blockId, commitSigs: sigs })
         });
     }
 
@@ -134,10 +129,8 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
 
         SignedHeader memory sh = _makeSignedHeader(sigs, bytes32(uint256(0xabc)));
 
-        UntrustedBlockState memory untrusted = UntrustedBlockState({
-            signedHeader: sh,
-            validatorSet: _makeValidatorSet(vals)
-        });
+        UntrustedBlockState memory untrusted =
+            UntrustedBlockState({ signedHeader: sh, validatorSet: _makeValidatorSet(vals) });
 
         TrustedBlockState memory trusted = TrustedBlockState({
             chainId: "test-chain",
@@ -148,9 +141,7 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
         });
 
         Options memory opts = Options({
-            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }),
-            trustingPeriod: 1000,
-            clockDrift: 10
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }), trustingPeriod: 1000, clockDrift: 10
         });
 
         // Should not revert
@@ -171,10 +162,8 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
 
         SignedHeader memory sh = _makeSignedHeader(sigs, bytes32(uint256(0xabc)));
 
-        UntrustedBlockState memory untrusted = UntrustedBlockState({
-            signedHeader: sh,
-            validatorSet: _makeValidatorSet(vals)
-        });
+        UntrustedBlockState memory untrusted =
+            UntrustedBlockState({ signedHeader: sh, validatorSet: _makeValidatorSet(vals) });
 
         // Same height (next block) -> only checks 2/3 of untrusted set
         TrustedBlockState memory trusted = TrustedBlockState({
@@ -186,9 +175,7 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
         });
 
         Options memory opts = Options({
-            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }),
-            trustingPeriod: 1000,
-            clockDrift: 10
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }), trustingPeriod: 1000, clockDrift: 10
         });
 
         vm.expectRevert("insufficient voting power overlap");
@@ -215,10 +202,8 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
 
         SignedHeader memory sh = _makeSignedHeader(sigs, bytes32(uint256(0xabc)));
 
-        UntrustedBlockState memory untrusted = UntrustedBlockState({
-            signedHeader: sh,
-            validatorSet: _makeValidatorSet(vals)
-        });
+        UntrustedBlockState memory untrusted =
+            UntrustedBlockState({ signedHeader: sh, validatorSet: _makeValidatorSet(vals) });
 
         TrustedBlockState memory trusted = TrustedBlockState({
             chainId: "test-chain",
@@ -229,9 +214,7 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
         });
 
         Options memory opts = Options({
-            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }),
-            trustingPeriod: 1000,
-            clockDrift: 10
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }), trustingPeriod: 1000, clockDrift: 10
         });
 
         // 68*3=204 > 100*2=200 -> passes
@@ -250,10 +233,8 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
 
         SignedHeader memory sh = _makeSignedHeader(sigs, bytes32(uint256(0xabc)));
 
-        UntrustedBlockState memory untrusted = UntrustedBlockState({
-            signedHeader: sh,
-            validatorSet: _makeValidatorSet(vals)
-        });
+        UntrustedBlockState memory untrusted =
+            UntrustedBlockState({ signedHeader: sh, validatorSet: _makeValidatorSet(vals) });
 
         TrustedBlockState memory trusted = TrustedBlockState({
             chainId: "test-chain",
@@ -264,9 +245,7 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
         });
 
         Options memory opts = Options({
-            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }),
-            trustingPeriod: 1000,
-            clockDrift: 10
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }), trustingPeriod: 1000, clockDrift: 10
         });
 
         // 60*3=180 > 100*2=200 -> false, should revert
@@ -287,10 +266,8 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
 
         SignedHeader memory sh = _makeSignedHeader(sigs, bytes32(uint256(0xabc)));
 
-        UntrustedBlockState memory untrusted = UntrustedBlockState({
-            signedHeader: sh,
-            validatorSet: _makeValidatorSet(vals)
-        });
+        UntrustedBlockState memory untrusted =
+            UntrustedBlockState({ signedHeader: sh, validatorSet: _makeValidatorSet(vals) });
 
         vm.expectRevert("invalid commit: no present signatures");
         wrapper.validateCommit(untrusted.signedHeader, untrusted.validatorSet);
@@ -307,10 +284,8 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
 
         SignedHeader memory sh = _makeSignedHeader(sigs, bytes32(uint256(0xabc)));
 
-        UntrustedBlockState memory untrusted = UntrustedBlockState({
-            signedHeader: sh,
-            validatorSet: _makeValidatorSet(vals)
-        });
+        UntrustedBlockState memory untrusted =
+            UntrustedBlockState({ signedHeader: sh, validatorSet: _makeValidatorSet(vals) });
 
         vm.expectRevert("invalid commit: number of signatures does not match number of validators");
         wrapper.validateCommit(untrusted.signedHeader, untrusted.validatorSet);
@@ -326,10 +301,8 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
 
         SignedHeader memory sh = _makeSignedHeader(sigs, bytes32(uint256(0xabc)));
 
-        UntrustedBlockState memory untrusted = UntrustedBlockState({
-            signedHeader: sh,
-            validatorSet: _makeValidatorSet(vals)
-        });
+        UntrustedBlockState memory untrusted =
+            UntrustedBlockState({ signedHeader: sh, validatorSet: _makeValidatorSet(vals) });
 
         vm.expectRevert("invalid commit: faulty signer");
         wrapper.validateCommit(untrusted.signedHeader, untrusted.validatorSet);
@@ -345,10 +318,8 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
         sigs[1] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val1");
 
         SignedHeader memory sh = _makeSignedHeader(sigs, bytes32(uint256(0xabc)));
-        UntrustedBlockState memory untrusted = UntrustedBlockState({
-            signedHeader: sh,
-            validatorSet: _makeValidatorSet(vals)
-        });
+        UntrustedBlockState memory untrusted =
+            UntrustedBlockState({ signedHeader: sh, validatorSet: _makeValidatorSet(vals) });
 
         vm.expectRevert("invalid commit: faulty signer");
         wrapper.validateCommit(untrusted.signedHeader, untrusted.validatorSet);
@@ -366,8 +337,7 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
         sigs[2] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_ABSENT, "val3");
 
         UntrustedBlockState memory untrusted = UntrustedBlockState({
-            signedHeader: _makeSignedHeader(sigs, bytes32(uint256(0xabc))),
-            validatorSet: _makeValidatorSet(vals)
+            signedHeader: _makeSignedHeader(sigs, bytes32(uint256(0xabc))), validatorSet: _makeValidatorSet(vals)
         });
         TrustedBlockState memory trusted = TrustedBlockState({
             chainId: "test-chain",
@@ -377,9 +347,7 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
             nextValidatorHash: bytes32(0)
         });
         Options memory opts = Options({
-            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }),
-            trustingPeriod: 1000,
-            clockDrift: 10
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }), trustingPeriod: 1000, clockDrift: 10
         });
 
         wrapper.verifyTrustedCommitOverlap(untrusted, trusted, opts);
@@ -413,9 +381,7 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
             nextValidatorHash: bytes32(0)
         });
         Options memory opts = Options({
-            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }),
-            trustingPeriod: 1000,
-            clockDrift: 10
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }), trustingPeriod: 1000, clockDrift: 10
         });
 
         vm.expectRevert("insufficient voting power overlap");

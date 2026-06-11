@@ -173,9 +173,7 @@ contract EscrowTest is Test {
         uint256 decayed = rateLimit * 30 minutes / 1 days;
 
         // Sending more than the decayed portion should revert
-        vm.expectRevert(
-            abi.encodeWithSelector(IRateLimitErrors.RateLimitExceeded.selector, rateLimit, rateLimit + 1)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IRateLimitErrors.RateLimitExceeded.selector, rateLimit, rateLimit + 1));
         escrow.send(IERC20(mockToken), address(this), decayed + 1);
 
         // The decayed amount can be sent
