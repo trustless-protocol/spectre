@@ -1,30 +1,9 @@
 #!/bin/bash
 set -euo pipefail
 
-ENCODE_LIB_PLACEHOLDER='__$e6bc332d3f714b58adb39753770f09750e$__'
-ENCODE_LIB_ADDR="b4b46bdaa835f8e4b4d8e208b6559cd267851051"
-HEADER_LIB_PLACEHOLDER='__$7440a880b7578767f72184d998805816e4$__'
-HEADER_LIB_ADDR="17435cce3d1b4fa2e5f8a08ed921d57c6762a180"
-
-function link_library {
-    local solc_bin=$1
-    local placeholder=$2
-    local addr=$3
-    local name=$4
-
-    if [[ "${solc_bin}" != *"${placeholder}"* ]]; then
-        echo "${solc_bin}"
-        return
-    fi
-
-    addr="${addr#0x}"
-    if [[ ! "${addr}" =~ ^[0-9a-fA-F]{40}$ ]]; then
-        echo "missing/invalid hardcoded ${name} library address for placeholder ${placeholder}" >&2
-        return 1
-    fi
-
-    echo "${solc_bin//${placeholder}/${addr}}"
-}
+# Header and Encode are internal libraries (inlined), so contract bytecode no
+# longer contains library placeholders — no link step is needed. The guard in
+# create_binding still fails loudly if an unlinked placeholder ever reappears.
 
 function create_binding {
     contract_dir=$1
@@ -36,8 +15,6 @@ function create_binding {
     solc_abi=$(jq -r '.abi' ${contract_json})
     solc_bin=$(jq -r '.bytecode.object' ${contract_json})
 
-    solc_bin=$(link_library "${solc_bin}" "${ENCODE_LIB_PLACEHOLDER}" "${ENCODE_LIB_ADDR}" "ENCODE")
-    solc_bin=$(link_library "${solc_bin}" "${HEADER_LIB_PLACEHOLDER}" "${HEADER_LIB_ADDR}" "HEADER")
     if [[ "${solc_bin}" == *'__$'* ]]; then
         echo "unlinked library placeholder remains in ${contract}: ${solc_bin}" >&2
         return 1

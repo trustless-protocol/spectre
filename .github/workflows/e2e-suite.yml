@@ -1,0 +1,145 @@
+name: E2E suite (reusable)
+
+# Reusable matrix runner for one interchaintest suite. Per-suite caller
+# workflows (e2e-<suite>.yml) invoke this via `workflow_call`, so the heavy
+# setup (submodules, Garaga FFI, Kurtosis pin, prover artifacts) lives in one
+# place instead of being copy-pasted per suite.
+#
+# Every method of the chosen suite (TestWith<Suite>/Test_*) rebuilds its own
+# environment from scratch (fresh Kurtosis enclave + Cosmos chain(s), redeploy,
+# create-clients) and shares no state, so they fan out across a matrix:
+# wall-clock collapses from sum-of-all-tests to slowest-single-test.
+on:
+  workflow_call:
+    inputs:
+      suite:
+        description: Suite entrypoint, e.g. TestWithIbcEurekaTestSuite
+        required: true
+        type: string
+      ref:
+        description: Branch/tag/SHA to run against (defaults to the triggering ref)
+        required: false
+        type: string
+      filter:
+        description: Optional substring matched against the method name (e.g. "Timeout").
+        required: false
+        type: string
+      max_parallel:
+        description: Max concurrent matrix jobs.
+        required: false
+        type: number
+        default: 6
+      timeout_minutes:
+        description: Per-test timeout (minutes).
+        required: false
+        type: number
+        default: 60
+
+jobs:
+  # Enumerate the chosen suite's exported Test_* methods straight from source so
+  # the matrix never drifts when tests are added/removed. The perl match keys off
+  # `func (recv *<Name>TestSuite) Test...()`; the entrypoint is always "TestWith"
+  # + the struct name. We keep only entries whose suite matches `inputs.suite`.
+  # Methods with args (helpers like DeployTest(ctx, ...)) are excluded by `()`.
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      tests: ${{ steps.list.outputs.tests }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Discover ${{ inputs.suite }} test methods
+        id: list
+        env:
+          SUITE: ${{ inputs.suite }}
+          FILTER: ${{ inputs.filter }}
+        run: |
+          cd e2e/interchaintestv8
+          tests=$(perl -ne 'print "TestWith$1/$2\n" if /^func \([a-zA-Z_]+ \*([A-Za-z0-9_]+TestSuite)\) (Test[A-Za-z0-9_]+)\(\)/' *.go \
+            | grep -E "^${SUITE}/" \
+            | { if [ -n "$FILTER" ]; then grep -F "$FILTER"; else cat; fi; } \
+            | sort -u \
+            | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "Matrix ($(echo "$tests" | jq 'length') entries): $tests"
+          if [ "$tests" = "[]" ]; then
+            echo "::error::No tests matched suite '$SUITE' filter '$FILTER'"
+            exit 1
+          fi
+          echo "tests=$tests" >> "$GITHUB_OUTPUT"
+
+  e2e:
+    needs: discover
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ inputs.max_parallel }}
+      matrix:
+        test: ${{ fromJson(needs.discover.outputs.tests) }}
+    name: ${{ matrix.test }}
+    steps:
+      # Private gnark submodules need a token with read access to
+      # decentrio/gnark + decentrio/ecip-gnark (SUBMODULE_TOKEN secret, passed
+      # down via `secrets: inherit` from the caller workflow).
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Checkout private gnark submodules
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.SUBMODULE_TOKEN }}@github.com/decentrio/gnark".insteadOf "https://github.com/decentrio/gnark"
+          git config --global url."https://x-access-token:${{ secrets.SUBMODULE_TOKEN }}@github.com/decentrio/ecip-gnark".insteadOf "https://github.com/decentrio/ecip-gnark"
+          git submodule update --init --recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Garaga FFI (libgaraga_rs)
+        working-directory: third_party/ecip-gnark/ffi/garaga_rs
+        run: |
+          cargo build --release
+          cp target/release/libgaraga_rs.so ../..
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: relayer/go.mod
+          cache: true
+
+      - uses: foundry-rs/foundry-toolchain@v1
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: extractions/setup-just@v2
+
+      - name: Install JS deps (forge remappings / tooling)
+        run: bun install --frozen-lockfile
+
+      - name: Install Kurtosis
+        run: |
+          # Kurtosis' new apt repo. The legacy Gemfury repo
+          # (apt.fury.io/kurtosis-tech) is no longer maintained and tops out at
+          # 1.15.x, which can't serve the version the SDK expects.
+          echo "deb [trusted=yes] https://sdk.kurtosis.com/kurtosis-cli-release-artifacts/ /" \
+            | sudo tee /etc/apt/sources.list.d/kurtosis.list
+          sudo apt update
+          # Pin the CLI to the engine API version the interchaintest SDK expects
+          # (kurtosis/api/golang in e2e/interchaintestv8/go.mod); a newer/older CLI
+          # starts an engine whose API version mismatches and the suite aborts.
+          sudo apt install -y kurtosis-cli=1.16.6
+          kurtosis analytics disable
+          # The interchaintest suite connects to a running local Kurtosis engine
+          # (127.0.0.1:9710); the CLI does not auto-start it.
+          kurtosis engine start
+
+      - name: Run E2E test
+        # The just test-e2e recipe builds contracts, installs the relayer binary,
+        # generates the prover artifacts, and runs interchaintest with
+        # ETH_TESTNET_TYPE=pos. The recipe anchors the selector with ^...$, so a
+        # full TestWith<Suite>/Test_* path runs exactly that one method. The
+        # relayer/prover subprocesses dlopen libgaraga_rs.so, so it must be on
+        # the loader path.
+        env:
+          LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/ecip-gnark
+          ETH_TESTNET_TYPE: pos
+        run: just test-e2e '${{ matrix.test }}'

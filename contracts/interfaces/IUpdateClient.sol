@@ -28,4 +28,13 @@ interface IUpdateClient {
         external
         pure
         returns (IUpdateClientMsgs.UpdateClientOutput memory);
+
+    function updateClientCachedCurrentTrustedNextResolvedWithHeaderCache(
+        IUpdateClientMsgs.MsgUpdateClient calldata msg,
+        bytes32 chainIdLeafHash,
+        bytes32 validatorsHashLeaf
+    )
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory);
 }
