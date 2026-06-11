@@ -168,7 +168,9 @@ contract ICS02ClientTest is Test {
         // Even though they have the role, because it has a non-zero delay, the migration should revert immediately.
         vm.prank(delayedMigrator);
         vm.expectRevert(
-            abi.encodeWithSelector(IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, delayedMigrator)
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, delayedMigrator
+            )
         );
         ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
     }
@@ -191,7 +193,9 @@ contract ICS02ClientTest is Test {
         // A granted migrator calling migrateClient should revert when the target is closed.
         vm.prank(clientMigrator);
         vm.expectRevert(
-            abi.encodeWithSelector(IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, clientMigrator)
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, clientMigrator
+            )
         );
         ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
     }

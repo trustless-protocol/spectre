@@ -235,7 +235,6 @@ contract Groth16ICS07Tendermint is
         return updateResult;
     }
 
-
     function _callUpdateClientProgram(
         IUpdateClientMsgs.MsgUpdateClient memory msg_,
         bool currentCached,
@@ -279,7 +278,6 @@ contract Groth16ICS07Tendermint is
             msg_, CHAIN_ID_LEAF_HASH, currentValidatorsHashLeaf
         );
     }
-
 
     function _prepareUpdateClientMessage(IUpdateClientMsgs.MsgUpdateClient memory msg_)
         private

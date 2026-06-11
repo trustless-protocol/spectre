@@ -129,5 +129,4 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
 
         return finalJson;
     }
-
 }
