@@ -12,6 +12,7 @@ import (
 	updateclientContract "relayer/bindings/UpdateClient"
 	relayerclient "relayer/client"
 	"relayer/prover"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,7 @@ import (
 )
 
 const ICS26_IBC_STORAGE_SLOT = "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600"
+const noTrustedOverlapIndex = ^uint32(0)
 
 type Worker struct {
 	TxHandler TransactionHandler
@@ -258,6 +260,116 @@ func detectValidatorSetDelta(
 	return delta, true, ""
 }
 
+func buildTrustedOverlapIndices(
+	trustedNextValidatorSet updateclientContract.IICS07TendermintMsgsValidatorSet,
+	paddedSigs []prover.ValidatorSignature,
+	bucket int,
+) []uint32 {
+	trustedByPubkey := make(map[[32]byte]uint32, len(trustedNextValidatorSet.Validators))
+	for i, validator := range trustedNextValidatorSet.Validators {
+		trustedByPubkey[validator.PubKey] = uint32(i)
+	}
+
+	indices := make([]uint32, bucket)
+	for i := range indices {
+		indices[i] = noTrustedOverlapIndex
+	}
+	for i, sig := range paddedSigs {
+		if i >= len(indices) || !sig.Active {
+			continue
+		}
+		pubkey := bytesToBytes32(sig.PublicKey)
+		if trustedIndex, ok := trustedByPubkey[pubkey]; ok {
+			indices[i] = trustedIndex
+		}
+	}
+	return indices
+}
+
+func selectSignaturesForTrustedOverlap(
+	candidates []prover.ValidatorSignature,
+	currentTotalPower int64,
+	trustedNextValidatorSet updateclientContract.IICS07TendermintMsgsValidatorSet,
+	trustLevel updateclientContract.IICS07TendermintMsgsTrustThreshold,
+) ([]prover.ValidatorSignature, error) {
+	trustedPowerByPubkey := make(map[[32]byte]int64, len(trustedNextValidatorSet.Validators))
+	var trustedTotalPower int64
+	for _, validator := range trustedNextValidatorSet.Validators {
+		power := int64(validator.VotingPower)
+		trustedTotalPower += power
+		trustedPowerByPubkey[validator.PubKey] = power
+	}
+
+	selected := make([]prover.ValidatorSignature, 0, len(candidates))
+	selectedByIndex := make(map[int]bool, len(candidates))
+	var currentAccum int64
+	var trustedAccum int64
+
+	overlapCandidates := append([]prover.ValidatorSignature(nil), candidates...)
+	sort.SliceStable(overlapCandidates, func(i, j int) bool {
+		leftPower := trustedPowerByPubkey[bytesToBytes32(overlapCandidates[i].PublicKey)]
+		rightPower := trustedPowerByPubkey[bytesToBytes32(overlapCandidates[j].PublicKey)]
+		if leftPower != rightPower {
+			return leftPower > rightPower
+		}
+		if overlapCandidates[i].Power != overlapCandidates[j].Power {
+			return overlapCandidates[i].Power > overlapCandidates[j].Power
+		}
+		return overlapCandidates[i].Index < overlapCandidates[j].Index
+	})
+
+	for _, candidate := range overlapCandidates {
+		trustedPower := trustedPowerByPubkey[bytesToBytes32(candidate.PublicKey)]
+		if trustedPower == 0 {
+			continue
+		}
+		selected = append(selected, candidate)
+		selectedByIndex[candidate.Index] = true
+		currentAccum += candidate.Power
+		trustedAccum += trustedPower
+		if meetsTrustThreshold(trustedAccum, trustedTotalPower, int64(trustLevel.Numerator), int64(trustLevel.Denominator)) {
+			break
+		}
+	}
+	if !meetsTrustThreshold(trustedAccum, trustedTotalPower, int64(trustLevel.Numerator), int64(trustLevel.Denominator)) {
+		return nil, fmt.Errorf("insufficient trusted overlap in proof candidates: have %d of %d", trustedAccum, trustedTotalPower)
+	}
+
+	currentCandidates := append([]prover.ValidatorSignature(nil), candidates...)
+	sort.SliceStable(currentCandidates, func(i, j int) bool {
+		if currentCandidates[i].Power != currentCandidates[j].Power {
+			return currentCandidates[i].Power > currentCandidates[j].Power
+		}
+		return currentCandidates[i].Index < currentCandidates[j].Index
+	})
+	for _, candidate := range currentCandidates {
+		if meetsTrustThreshold(currentAccum, currentTotalPower, 2, 3) {
+			break
+		}
+		if selectedByIndex[candidate.Index] {
+			continue
+		}
+		selected = append(selected, candidate)
+		selectedByIndex[candidate.Index] = true
+		currentAccum += candidate.Power
+	}
+	if !meetsTrustThreshold(currentAccum, currentTotalPower, 2, 3) {
+		return nil, fmt.Errorf("insufficient current quorum in proof candidates: have %d of %d", currentAccum, currentTotalPower)
+	}
+	if len(selected) > prover.MaxBucket() {
+		return nil, fmt.Errorf("trusted-overlap proof requires %d signers but largest bucket is %d", len(selected), prover.MaxBucket())
+	}
+
+	sort.Slice(selected, func(i, j int) bool {
+		return selected[i].Index < selected[j].Index
+	})
+	return selected, nil
+}
+
+func meetsTrustThreshold(accumulated, total, numerator, denominator int64) bool {
+	return accumulated*denominator > total*numerator
+}
+
 func emptyContractValidatorSet() updateclientContract.IICS07TendermintMsgsValidatorSet {
 	return updateclientContract.IICS07TendermintMsgsValidatorSet{
 		Validators:       []updateclientContract.IICS07TendermintMsgsValidatorInfo{},
@@ -438,6 +550,18 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	if err != nil {
 		return nil, fmt.Errorf("extract validator signatures: %w", err)
 	}
+	if !adjacentUpdate {
+		selected, err := selectSignaturesForTrustedOverlap(
+			extracted.Candidates,
+			latestLightBlock.ValSet.TotalVotingPower(),
+			fullProposedHeader.TrustedNextValidatorSet,
+			clientState.TrustLevel,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("select trusted-overlap signatures: %w", err)
+		}
+		extracted.Signatures = selected
+	}
 	log.Printf("[UpdateCosmosClient] Generating Groth16 batch proof for %d validator signatures...", len(extracted.Signatures))
 	bucket, paddedSigs, proof, commitments, commitmentPok, err := w.Prover.GenerateProof(extracted.Signatures)
 	if err != nil {
@@ -454,6 +578,7 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	timestampSeconds := make([]uint64, bucket)
 	timestampNanos := make([]uint32, bucket)
 	active := make([]bool, bucket)
+	trustedOverlapIndices := buildTrustedOverlapIndices(fullProposedHeader.TrustedNextValidatorSet, paddedSigs, bucket)
 	for i, s := range paddedSigs {
 		signerIndices[i] = uint32(s.Index)
 		copy(signerPubkeys[i][:], s.PublicKey)
@@ -476,6 +601,7 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		TimestampSeconds:         timestampSeconds,
 		TimestampNanos:           timestampNanos,
 		Active:                   active,
+		TrustedOverlapIndices:    trustedOverlapIndices,
 		CurrentValidatorSetDelta: currentValidatorSetDelta,
 	}
 
@@ -500,14 +626,18 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 	log.Printf("[CreateEthClient] starting: beacon=%s checksum=%s", beaconAPIURL, checksum)
 
 	log.Printf("[CreateEthClient] fetching beacon genesis")
-	genesis, err := relayerclient.GetBeaconGenesis(beaconAPIURL)
+	bctx, bcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	genesis, err := relayerclient.GetBeaconGenesis(bctx, beaconAPIURL)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client genesis: %w", err)
 	}
 	log.Printf("[CreateEthClient] beacon genesis fetched: genesisTime=%s genesisValidatorsRoot=%s", genesis.GenesisTime, genesis.GenesisValidatorsRoot)
 
 	log.Printf("[CreateEthClient] fetching beacon spec")
-	spec, err := relayerclient.GetBeaconSpec(beaconAPIURL)
+	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+	spec, err := relayerclient.GetBeaconSpec(bctx, beaconAPIURL)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client spec: %w", err)
 	}
@@ -516,7 +646,9 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 	// Use the finalized header from the finality update — this is always a checkpoint slot
 	// (epoch boundary), unlike GetBeaconBlock("finalized") which may return a non-checkpoint slot.
 	log.Printf("[CreateEthClient] fetching finality update")
-	finalityUpdate, err := relayerclient.GetFinalityUpdate(beaconAPIURL)
+	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+	finalityUpdate, err := relayerclient.GetFinalityUpdate(bctx, beaconAPIURL)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get finality update: %w", err)
 	}
@@ -525,14 +657,18 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 		finalityUpdate.AttestedHeader.Beacon.Slot, checkpointSlot, finalityUpdate.SignatureSlot)
 
 	log.Printf("[CreateEthClient] fetching beacon block root for slot=%s", checkpointSlot)
-	blockRoot, err := relayerclient.GetBeaconBlockRoot(beaconAPIURL, checkpointSlot)
+	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+	blockRoot, err := relayerclient.GetBeaconBlockRoot(bctx, beaconAPIURL, checkpointSlot)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get beacon block root: %w", err)
 	}
 	log.Printf("[CreateEthClient] beacon block root=%s", blockRoot)
 
 	log.Printf("[CreateEthClient] fetching light client bootstrap")
-	bootstrap, err := relayerclient.GetLightClientBootstrap(beaconAPIURL, blockRoot)
+	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+	bootstrap, err := relayerclient.GetLightClientBootstrap(bctx, beaconAPIURL, blockRoot)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client bootstrap: %w", err)
 	}
@@ -540,7 +676,9 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 		checkpointSlot, bootstrap.Data.CurrentSyncCommittee.AggregatePubkey)
 
 	log.Printf("[CreateEthClient] fetching beacon block for slot=%s", checkpointSlot)
-	beaconBlock, err := relayerclient.GetBeaconBlock(beaconAPIURL, checkpointSlot)
+	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+	beaconBlock, err := relayerclient.GetBeaconBlock(bctx, beaconAPIURL, checkpointSlot)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get beacon block: %w", err)
 	}
@@ -643,7 +781,9 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 
 	latestPeriod := clientState.ComputeSyncCommitteePeriodAtSlot(clientState.LatestSlot)
 	log.Printf("[CreateEthClient] fetching light client updates for latestPeriod=%d", latestPeriod)
-	lightClientUpdates, err := relayerclient.GetLightClientUpdates(ctx.BeaconAPIURL(), latestPeriod, 1)
+	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+	lightClientUpdates, err := relayerclient.GetLightClientUpdates(bctx, ctx.BeaconAPIURL(), latestPeriod, 1)
+	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client updates: %w", err)
 	}
@@ -713,7 +853,9 @@ func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, 
 	}
 	trustedSlot := ethClientState.LatestSlot
 
-	finalityUpdate, err := relayerclient.GetFinalityUpdate(beaconAPIURL)
+	bctx, bcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	finalityUpdate, err := relayerclient.GetFinalityUpdate(bctx, beaconAPIURL)
+	bcancel()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get finality update: %w", err)
 	}
@@ -793,7 +935,9 @@ func cosmosCurrentSlotReady(currentSlot, sigSlot uint64) bool {
 
 func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconAPIURL, ethClientID string, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) ([]any, error) {
 	count := targetPeriod - trustedPeriod + 1
-	lightClientUpdates, err := relayerclient.GetLightClientUpdates(beaconAPIURL, trustedPeriod, count)
+	bctx, bcancel := context.WithTimeout(context.Background(), 15*time.Second)
+	lightClientUpdates, err := relayerclient.GetLightClientUpdates(bctx, beaconAPIURL, trustedPeriod, count)
+	bcancel()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get light client updates: %w", err)
 	}
@@ -821,12 +965,16 @@ func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconA
 			continue
 		}
 
-		blockRoot, err := relayerclient.GetBeaconBlockRoot(beaconAPIURL, fmt.Sprintf("%d", updateFinalizedSlot))
+		bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+		blockRoot, err := relayerclient.GetBeaconBlockRoot(bctx, beaconAPIURL, fmt.Sprintf("%d", updateFinalizedSlot))
+		bcancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get beacon block root: %w", err)
 		}
 
-		bootstrap, err := relayerclient.GetLightClientBootstrap(beaconAPIURL, blockRoot)
+		bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+		bootstrap, err := relayerclient.GetLightClientBootstrap(bctx, beaconAPIURL, blockRoot)
+		bcancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get light client bootstrap: %w", err)
 		}
@@ -858,12 +1006,16 @@ func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconA
 			attestedSlot, finalizedSlot, latestTrustedSlot)
 
 		// Get sync committee from attested slot's bootstrap (matches eureka relayer behavior)
-		blockRoot, err := relayerclient.GetBeaconBlockRoot(beaconAPIURL, attestedSlot)
+		bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+		blockRoot, err := relayerclient.GetBeaconBlockRoot(bctx, beaconAPIURL, attestedSlot)
+		bcancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get beacon block root: %w", err)
 		}
 
-		bootstrap, err := relayerclient.GetLightClientBootstrap(beaconAPIURL, blockRoot)
+		bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+		bootstrap, err := relayerclient.GetLightClientBootstrap(bctx, beaconAPIURL, blockRoot)
+		bcancel()
 		if err != nil {
 			return nil, fmt.Errorf("failed to get light client bootstrap: %w", err)
 		}

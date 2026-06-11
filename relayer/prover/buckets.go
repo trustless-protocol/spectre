@@ -5,7 +5,9 @@ import "fmt"
 // Buckets lists the supported validator-count buckets. Each bucket has its own
 // compiled circuit and (pk, vk) pair on disk under bin/n{N}/. The prover picks
 // the smallest bucket that fits the required signer count for a block.
-var Buckets = []int{4, 8, 16, 32, 64, 128}
+
+// var Buckets = []int{4, 8, 16, 32, 64, 128}
+var Buckets = []int{4}
 
 // SmallestBucketGEQ returns the smallest bucket size ≥ n. It errors when n
 // exceeds the largest bucket — the operator must add a larger bucket and

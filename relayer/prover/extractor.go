@@ -41,17 +41,19 @@ type SharedBlockData struct {
 	ChainID      string
 }
 
-// ExtractorResult bundles the greedy-by-power signer prefix with the shared
-// block data needed by the on-chain quorum + canonical-vote rebuild path.
+// ExtractorResult bundles the valid signer candidates, the selected signer
+// prefix, and the shared block data needed by the on-chain quorum +
+// canonical-vote rebuild path.
 type ExtractorResult struct {
 	Shared     SharedBlockData
+	Candidates []ValidatorSignature
 	Signatures []ValidatorSignature
 }
 
 // ExtractValidatorSignatures collects non-absent, locally-verified commit
 // signatures until their cumulative voting power exceeds 2/3 of
-// TotalVotingPower, returning them sorted by power descending along with the
-// shared block data.
+// TotalVotingPower. Candidates are sorted by power for selection, while the
+// selected proof slots are returned in validator-index order.
 //
 // Returns an error if no quorum can be reached or the required signer count
 // would exceed the largest configured bucket.
@@ -128,7 +130,8 @@ func ExtractValidatorSignatures(
 		return nil, fmt.Errorf("insufficient voting power: have %d, need %d of %d", accumulated, quorum, totalPower)
 	}
 
-	selected := candidates[:cutoff]
+	allCandidates := append([]ValidatorSignature(nil), candidates...)
+	selected := append([]ValidatorSignature(nil), candidates[:cutoff]...)
 	sortSelectedSignaturesByIndex(selected)
 	if len(selected) > MaxBucket() {
 		return nil, fmt.Errorf("quorum requires %d signers but largest bucket is %d", len(selected), MaxBucket())
@@ -143,6 +146,7 @@ func ExtractValidatorSignatures(
 			PartSetHash:  commit.BlockID.PartSetHeader.Hash,
 			ChainID:      chainID,
 		},
+		Candidates: allCandidates,
 		Signatures: selected,
 	}, nil
 }

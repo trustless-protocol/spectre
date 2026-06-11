@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	updateclientContract "relayer/bindings/UpdateClient"
+	"relayer/prover"
 )
 
 func TestCosmosCurrentSlotReady(t *testing.T) {
@@ -162,5 +163,46 @@ func TestDetectValidatorSetDeltaRejectsTooManyLeaves(t *testing.T) {
 
 	if _, ok, _ := detectValidatorSetDelta(baseHash, baseSet, currentSet); ok {
 		t.Fatal("did not expect delta over max leaf count")
+	}
+}
+
+func TestSelectSignaturesForTrustedOverlapAddsOverlapBeforeCurrentQuorum(t *testing.T) {
+	pubkey0 := [32]byte{0x01}
+	pubkey1 := [32]byte{0x02}
+	pubkey2 := [32]byte{0x03}
+	pubkey3 := [32]byte{0x04}
+
+	candidates := []prover.ValidatorSignature{
+		{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
+		{Index: 1, PublicKey: pubkey1[:], Power: 40, Active: true},
+		{Index: 2, PublicKey: pubkey2[:], Power: 30, Active: true},
+		{Index: 3, PublicKey: pubkey3[:], Power: 30, Active: true},
+	}
+	trustedNext := updateclientContract.IICS07TendermintMsgsValidatorSet{
+		Validators: []updateclientContract.IICS07TendermintMsgsValidatorInfo{
+			{PubKey: pubkey2, VotingPower: 40},
+			{PubKey: pubkey3, VotingPower: 40},
+			{PubKey: pubkey0, VotingPower: 20},
+		},
+	}
+	trustLevel := updateclientContract.IICS07TendermintMsgsTrustThreshold{Numerator: 1, Denominator: 3}
+
+	selected, err := selectSignaturesForTrustedOverlap(candidates, 140, trustedNext, trustLevel)
+	if err != nil {
+		t.Fatalf("select signatures: %v", err)
+	}
+
+	got := make([]int, len(selected))
+	for i, sig := range selected {
+		got[i] = sig.Index
+	}
+	want := []int{0, 1, 2}
+	if len(got) != len(want) {
+		t.Fatalf("selected indices: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("selected indices: got %v want %v", got, want)
+		}
 	}
 }
