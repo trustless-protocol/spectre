@@ -216,8 +216,14 @@ contract Groth16ICS07Tendermint is
         _validateUpdateClientOutput(output);
 
         ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output);
-        uint64 totalVotingPower =
-            currentCached ? _verifyCachedBatchAndQuorum(currentValidatorsHash, msg_) : _verifyFullBatchAndQuorum(msg_);
+        uint64 totalVotingPower;
+        uint64 accumulatedVotingPower;
+        if (currentCached) {
+            (totalVotingPower, accumulatedVotingPower) = _verifyCachedBatchAndQuorum(currentValidatorsHash, msg_);
+        } else {
+            (totalVotingPower, accumulatedVotingPower) = _verifyFullBatchAndQuorum(msg_);
+        }
+        _verifyUpdateTrustedOverlap(msg_, currentValidatorsHash, totalVotingPower, accumulatedVotingPower);
         if (cacheCurrentValidatorSet) {
             _cacheValidatorSet(currentValidatorsHash, msg_, totalVotingPower);
         }
@@ -521,7 +527,7 @@ contract Groth16ICS07Tendermint is
     ///      reconstruction agree on the signed bytes.
     function _verifyFullBatchAndQuorum(IUpdateClientMsgs.MsgUpdateClient memory msg_)
         internal
-        returns (uint64 totalVotingPower)
+        returns (uint64 totalVotingPower, uint64 accumulatedVotingPower)
     {
         IICS07TendermintMsgs.ValidatorInfo[] memory vals = msg_.proposedHeader.validatorSet.validators;
         uint256 numVals = vals.length;
@@ -536,7 +542,6 @@ contract Groth16ICS07Tendermint is
             totalVotingPower += vals[i].votingPower;
         }
 
-        uint64 accumulated = 0;
         bool hasPrevSigner = false;
         uint32 prevIdx = 0;
         for (uint256 i = 0; i < msg_.signerIndices.length; i++) {
@@ -551,13 +556,16 @@ contract Groth16ICS07Tendermint is
             require(vals[idx].pubKey == msg_.signerPubkeys[i], PubkeyMismatch(idx));
             hasPrevSigner = true;
             prevIdx = idx;
-            accumulated += vals[idx].votingPower;
+            accumulatedVotingPower += vals[idx].votingPower;
         }
         require(
-            uint256(accumulated) * 3 > uint256(totalVotingPower) * 2,
-            InsufficientVotingPower(accumulated, totalVotingPower)
+            uint256(accumulatedVotingPower) * 3 > uint256(totalVotingPower) * 2,
+            InsufficientVotingPower(accumulatedVotingPower, totalVotingPower)
         );
 
+        _requireProofSignersCommitSigs(
+            msg_.proposedHeader.signedHeader.commit.commitSigs, msg_.signerIndices, msg_.active
+        );
         _verifyUpdateBatchProof(msg_);
     }
 
@@ -566,7 +574,7 @@ contract Groth16ICS07Tendermint is
         IUpdateClientMsgs.MsgUpdateClient memory msg_
     )
         internal
-        returns (uint64 totalVotingPower)
+        returns (uint64 totalVotingPower, uint64 accumulatedVotingPower)
     {
         require(
             msg_.signerIndices.length == msg_.bucket && msg_.signerPubkeys.length == msg_.bucket
@@ -583,7 +591,6 @@ contract Groth16ICS07Tendermint is
         bytes memory cacheData = SSTORE2.read(pointer, 0, _validatorCacheEntryDataLen(_cachedValidatorEntryCount));
         ValidatorCacheHeader memory cacheHeader = _readValidatorCacheHeader(validatorsHash, cacheData);
         totalVotingPower = _cachedValidatorTotalVotingPower;
-        uint64 accumulated = 0;
         bool hasPrevSigner = false;
         uint32 prevIdx = 0;
         uint256 pubKeyBits = _validatorPubKeyOverrideBits;
@@ -606,14 +613,17 @@ contract Groth16ICS07Tendermint is
                 validatorsHash, cacheData, cacheHeader.entryCount, pubKeyBits, votingPowerBits, idx
             );
             require(pubKey == msg_.signerPubkeys[i], PubkeyMismatch(idx));
-            accumulated += votingPower;
+            accumulatedVotingPower += votingPower;
         }
 
         require(
-            uint256(accumulated) * 3 > uint256(totalVotingPower) * 2,
-            InsufficientVotingPower(accumulated, totalVotingPower)
+            uint256(accumulatedVotingPower) * 3 > uint256(totalVotingPower) * 2,
+            InsufficientVotingPower(accumulatedVotingPower, totalVotingPower)
         );
 
+        _requireProofSignersCommitSigs(
+            msg_.proposedHeader.signedHeader.commit.commitSigs, msg_.signerIndices, msg_.active
+        );
         _verifyUpdateBatchProof(msg_);
     }
 
@@ -622,7 +632,7 @@ contract Groth16ICS07Tendermint is
         IMisbehaviourMsgs.BatchProof memory proof_
     )
         internal
-        returns (uint64 totalVotingPower)
+        returns (uint64 totalVotingPower, uint64 accumulatedVotingPower)
     {
         IICS07TendermintMsgs.ValidatorInfo[] memory vals = header.validatorSet.validators;
         uint256 numVals = vals.length;
@@ -637,7 +647,6 @@ contract Groth16ICS07Tendermint is
             totalVotingPower += vals[i].votingPower;
         }
 
-        uint64 accumulated = 0;
         bool hasPrevSigner = false;
         uint32 prevIdx = 0;
         for (uint256 i = 0; i < proof_.signerIndices.length; i++) {
@@ -653,14 +662,170 @@ contract Groth16ICS07Tendermint is
             require(vals[idx].pubKey == proof_.signerPubkeys[i], PubkeyMismatch(idx));
             hasPrevSigner = true;
             prevIdx = idx;
-            accumulated += vals[idx].votingPower;
+            accumulatedVotingPower += vals[idx].votingPower;
         }
         require(
-            uint256(accumulated) * 3 > uint256(totalVotingPower) * 2,
-            InsufficientVotingPower(accumulated, totalVotingPower)
+            uint256(accumulatedVotingPower) * 3 > uint256(totalVotingPower) * 2,
+            InsufficientVotingPower(accumulatedVotingPower, totalVotingPower)
         );
 
+        _requireProofSignersCommitSigs(header.signedHeader.commit.commitSigs, proof_.signerIndices, proof_.active);
         _verifyMisbehaviourBatchProof(header, proof_);
+    }
+
+    function _requireProofSignersCommitSigs(
+        IICS07TendermintMsgs.CommitSig[] memory commitSigs,
+        uint32[] memory signerIndices,
+        bool[] memory active
+    )
+        private
+        pure
+    {
+        require(signerIndices.length == active.length, BatchLengthMismatch());
+        for (uint256 i = 0; i < signerIndices.length; i++) {
+            if (!active[i]) {
+                continue;
+            }
+            _requireProofSignerCommitSig(commitSigs, signerIndices[i]);
+        }
+    }
+
+    function _requireProofSignerCommitSig(
+        IICS07TendermintMsgs.CommitSig[] memory commitSigs,
+        uint32 signerIndex
+    )
+        private
+        pure
+    {
+        require(signerIndex < commitSigs.length, SignerIndexOutOfRange(signerIndex));
+        require(
+            commitSigs[signerIndex].flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+            ProofSignerCommitSigMismatch(signerIndex)
+        );
+    }
+
+    function _verifyUpdateTrustedOverlap(
+        IUpdateClientMsgs.MsgUpdateClient memory msg_,
+        bytes32 currentValidatorsHash,
+        uint64 totalCurrentVotingPower,
+        uint64 accumulatedCurrentVotingPower
+    )
+        private
+        pure
+    {
+        if (_isAdjacentUpdate(msg_.proposedHeader)) {
+            return;
+        }
+
+        IICS07TendermintMsgs.TrustThreshold memory trustThreshold = msg_.clientState.trustLevel;
+        bytes32 trustedNextValidatorsHash = msg_.trustedConsensusState.nextValidatorsHash;
+        if (
+            trustedNextValidatorsHash == currentValidatorsHash
+                && msg_.proposedHeader.trustedNextValidatorSet.validators.length == 0
+        ) {
+            _requireMeetsTrustThreshold(accumulatedCurrentVotingPower, totalCurrentVotingPower, trustThreshold);
+            return;
+        }
+
+        _validateSuppliedValidatorSetHash(trustedNextValidatorsHash, msg_.proposedHeader.trustedNextValidatorSet);
+        _verifyTrustedOverlapBySignerPubkeys(
+            msg_.proposedHeader.trustedNextValidatorSet, msg_.signerPubkeys, msg_.active, trustThreshold
+        );
+    }
+
+    function _verifyMisbehaviourTrustedOverlap(
+        IICS07TendermintMsgs.Header memory header,
+        bytes32 trustedNextValidatorHash,
+        IMisbehaviourMsgs.BatchProof memory proof_,
+        IICS07TendermintMsgs.TrustThreshold memory trustThreshold
+    )
+        private
+        pure
+    {
+        if (_isAdjacentUpdate(header)) {
+            return;
+        }
+
+        _validateSuppliedValidatorSetHash(trustedNextValidatorHash, header.trustedNextValidatorSet);
+        _verifyTrustedOverlapBySignerPubkeys(
+            header.trustedNextValidatorSet, proof_.signerPubkeys, proof_.active, trustThreshold
+        );
+    }
+
+    function _verifyTrustedOverlapBySignerPubkeys(
+        IICS07TendermintMsgs.ValidatorSet memory trustedValidatorSet,
+        bytes32[] memory signerPubkeys,
+        bool[] memory active,
+        IICS07TendermintMsgs.TrustThreshold memory trustThreshold
+    )
+        private
+        pure
+    {
+        require(signerPubkeys.length == active.length, BatchLengthMismatch());
+        IICS07TendermintMsgs.ValidatorInfo[] memory trustedValidators = trustedValidatorSet.validators;
+        uint256 trustedCount = trustedValidators.length;
+        if (trustedCount > MAX_VALIDATOR_COUNT) {
+            revert ValidatorCountExceedsLimit(trustedCount, MAX_VALIDATOR_COUNT);
+        }
+
+        uint64 totalVotingPower = 0;
+        for (uint256 i = 0; i < trustedCount; i++) {
+            totalVotingPower += trustedValidators[i].votingPower;
+        }
+
+        uint64 accumulatedVotingPower = 0;
+        uint256 countedTrustedValidators = 0;
+        for (uint256 i = 0; i < signerPubkeys.length; i++) {
+            if (!active[i]) {
+                continue;
+            }
+            bytes32 signerPubkey = signerPubkeys[i];
+            for (uint256 j = 0; j < trustedCount; j++) {
+                if (trustedValidators[j].pubKey != signerPubkey) {
+                    continue;
+                }
+
+                uint256 mask = uint256(1) << j;
+                if ((countedTrustedValidators & mask) == 0) {
+                    countedTrustedValidators |= mask;
+                    accumulatedVotingPower += trustedValidators[j].votingPower;
+                }
+                break;
+            }
+
+            if (_meetsTrustThreshold(accumulatedVotingPower, totalVotingPower, trustThreshold)) {
+                return;
+            }
+        }
+
+        _requireMeetsTrustThreshold(accumulatedVotingPower, totalVotingPower, trustThreshold);
+    }
+
+    function _requireMeetsTrustThreshold(
+        uint64 accumulatedVotingPower,
+        uint64 totalVotingPower,
+        IICS07TendermintMsgs.TrustThreshold memory trustThreshold
+    )
+        private
+        pure
+    {
+        require(
+            _meetsTrustThreshold(accumulatedVotingPower, totalVotingPower, trustThreshold),
+            InsufficientTrustedVotingPower(accumulatedVotingPower, totalVotingPower)
+        );
+    }
+
+    function _meetsTrustThreshold(
+        uint64 accumulatedVotingPower,
+        uint64 totalVotingPower,
+        IICS07TendermintMsgs.TrustThreshold memory trustThreshold
+    )
+        private
+        pure
+        returns (bool)
+    {
+        return uint256(accumulatedVotingPower) * uint256(trustThreshold.denominator)
+            > uint256(totalVotingPower) * uint256(trustThreshold.numerator);
     }
 
     function _hasUsableValidatorCache(bytes32 validatorsHash) private view returns (bool) {
@@ -1163,7 +1328,19 @@ contract Groth16ICS07Tendermint is
         );
 
         _verifyMisbehaviourBatchAndQuorum(msg_.misbehaviour.header1, msg_.proof1);
+        _verifyMisbehaviourTrustedOverlap(
+            msg_.misbehaviour.header1,
+            msg_.trustedConsensusState1.nextValidatorsHash,
+            msg_.proof1,
+            msg_.clientState.trustLevel
+        );
         _verifyMisbehaviourBatchAndQuorum(msg_.misbehaviour.header2, msg_.proof2);
+        _verifyMisbehaviourTrustedOverlap(
+            msg_.misbehaviour.header2,
+            msg_.trustedConsensusState2.nextValidatorsHash,
+            msg_.proof2,
+            msg_.clientState.trustLevel
+        );
 
         clientState.isFrozen = true;
     }

@@ -577,12 +577,30 @@ contract UpdateClientCacheTest is Test {
         internal
         pure
     {
+        for (uint256 i = 0; i < msg_.proposedHeader.signedHeader.commit.commitSigs.length; i++) {
+            msg_.proposedHeader.signedHeader.commit.commitSigs[i] = IICS07TendermintMsgs.CommitSig({
+                flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT,
+                data: IICS07TendermintMsgs.CommitSigData({
+                    validatorAddress: "", timestamp: 0, hasSignature: false, signature: ""
+                })
+            });
+        }
+
         for (uint256 i = 0; i < msg_.signerIndices.length; i++) {
             if (i < activeCount) {
                 uint32 idx = start + uint32(i);
                 msg_.signerIndices[i] = idx;
                 msg_.signerPubkeys[i] = validatorSet.validators[idx].pubKey;
                 msg_.active[i] = true;
+                msg_.proposedHeader.signedHeader.commit.commitSigs[idx] = IICS07TendermintMsgs.CommitSig({
+                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+                    data: IICS07TendermintMsgs.CommitSigData({
+                        validatorAddress: validatorSet.validators[idx].valAddress,
+                        timestamp: msg_.proposedHeader.signedHeader.header.time,
+                        hasSignature: false,
+                        signature: ""
+                    })
+                });
             } else {
                 msg_.signerIndices[i] = 0;
                 msg_.signerPubkeys[i] = bytes32(0);

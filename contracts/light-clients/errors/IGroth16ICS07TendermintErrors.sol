@@ -188,11 +188,22 @@ interface IGroth16ICS07TendermintErrors {
     /// @param total total voting power of the proposed validator set.
     error InsufficientVotingPower(uint64 accumulated, uint64 total);
 
+    /// @notice Returned when proof-bound signer pubkeys do not overlap the
+    ///         trusted validator set enough to satisfy the client's trust level.
+    /// @param accumulated summed trusted voting power of proof-bound signers.
+    /// @param total total voting power of the trusted validator set.
+    error InsufficientTrustedVotingPower(uint64 accumulated, uint64 total);
+
     /// @notice Returned when the same active validator index appears more than
     ///         once in signerIndices — defends against malicious calldata that
     ///         tries to inflate quorum past what active gating allows.
     /// @param index the validator index that appears multiple times.
     error DuplicateSigner(uint32 index);
+
+    /// @notice Returned when an active proof signer does not correspond to a
+    ///         COMMIT slot at the same validator index in the header commit.
+    /// @param index the validator index proven as active but not present in commitSigs.
+    error ProofSignerCommitSigMismatch(uint32 index);
 
     /// @notice Returned when the contract is asked to reuse a cached validator
     ///         set but no cache entry exists for the requested hash.
