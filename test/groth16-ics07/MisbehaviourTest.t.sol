@@ -84,6 +84,18 @@ contract DummyUpdateClientForMisbehaviour is IUpdateClient {
     {
         revert("unused");
     }
+
+    function updateClientCachedCurrentTrustedNextResolvedWithHeaderCache(
+        IUpdateClientMsgs.MsgUpdateClient calldata,
+        bytes32,
+        bytes32
+    )
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory)
+    {
+        revert("unused");
+    }
 }
 
 contract Groth16ICS07MisbehaviourHarness is Groth16ICS07Tendermint {

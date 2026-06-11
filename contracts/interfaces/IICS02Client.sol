@@ -36,7 +36,9 @@ interface IICS02ClientAccessControlled {
         returns (ILightClientMsgs.UpdateResult);
 
     /// @notice Migrate a client by replacing the existing counterparty information and contract address.
-    /// @dev This is a privilaged operation, only one with `getLightClientMigratorRole(clientId)` can call this.
+    /// @dev This is a privilaged operation. The caller must hold the per-clientId role returned by
+    /// @dev `getLightClientMigratorRole(clientId)` on the connected AccessManager; a role granted for
+    /// @dev one clientId does not authorize migration of any other clientId.
     /// @param clientId The client identifier of the client to migrate
     /// @param counterpartyInfo The new counterparty client information
     /// @param client The address of the new client contract
@@ -57,6 +59,13 @@ interface IICS02ClientAccessControlled {
     /// @dev Can only be called with the `ADMIN_ROLE` (governance recovery path).
     /// @param clientId The client identifier of the frozen client
     function unfreezeClient(string calldata clientId) external;
+
+    /// @notice Returns the AccessManager role id that authorizes migration of a specific client.
+    /// @dev The id is unique per clientId, so granting this role only authorizes migration
+    /// @dev of the matching client (a single grant cannot repoint arbitrary clients).
+    /// @param clientId The client identifier
+    /// @return The AccessManager role id to grant for per-clientId migration rights
+    function getLightClientMigratorRole(string calldata clientId) external pure returns (uint64);
 }
 
 /// @title ICS02 Light Client Router Interface
@@ -65,10 +74,7 @@ interface IICS02Client is IICS02ClientAccessControlled {
     /// @notice Returns the counterparty client information given the client identifier.
     /// @param clientId The client identifier
     /// @return The counterparty client information
-    function getCounterparty(string calldata clientId)
-        external
-        view
-        returns (IICS02ClientMsgs.CounterpartyInfo memory);
+    function getCounterparty(string calldata clientId) external view returns (IICS02ClientMsgs.CounterpartyInfo memory);
 
     /// @notice Returns the address of the client contract given the client identifier.
     /// @param clientId The client identifier

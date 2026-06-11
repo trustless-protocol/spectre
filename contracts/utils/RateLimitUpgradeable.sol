@@ -25,7 +25,8 @@ abstract contract RateLimitUpgradeable is IRateLimitErrors, IRateLimit, AccessMa
 
     /// @notice ERC-7201 slot for the RateLimit storage
     /// @dev keccak256(abi.encode(uint256(keccak256("ibc.storage.RateLimit")) - 1)) & ~bytes32(uint256(0xff))
-    bytes32 private constant RATELIMIT_STORAGE_SLOT = 0xcb05b6cb8e6c87c443cb04d44193d7d46d51c1198725a0ee3478d5baa736c100;
+    bytes32 private constant RATELIMIT_STORAGE_SLOT =
+        0xcb05b6cb8e6c87c443cb04d44193d7d46d51c1198725a0ee3478d5baa736c100;
 
     /// @notice The period for rate limiting
     uint256 private constant RATE_LIMIT_PERIOD = 1 days;
@@ -88,6 +89,23 @@ abstract contract RateLimitUpgradeable is IRateLimitErrors, IRateLimit, AccessMa
         } else {
             $._usage[token] = 0;
         }
+        $._lastUpdate[token] = block.timestamp;
+    }
+
+    /// @notice Increments the usage for a token without checking the rate limit
+    /// @dev This function is used to restore usage on refunds, ensuring it doesn't revert.
+    /// @param token The token address
+    /// @param amount The amount to add to the usage
+    function _increaseDailyUsageUncapped(address token, uint256 amount) internal {
+        RateLimitStorage storage $ = _getRateLimitStorage();
+
+        uint256 rateLimit = $._rateLimits[token];
+        if (rateLimit == 0) {
+            return;
+        }
+
+        uint256 usage = _getCurrentUsage(token) + amount;
+        $._usage[token] = usage;
         $._lastUpdate[token] = block.timestamp;
     }
 

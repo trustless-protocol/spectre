@@ -4,14 +4,15 @@ pragma solidity ^0.8.0;
 
 import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
 import { IICS02ClientMsgs } from "../msgs/IICS02ClientMsgs.sol";
+
 library Encode {
-    function encodeVarint(uint256 value) public pure returns (bytes memory) {
+    function encodeVarint(uint256 value) internal pure returns (bytes memory) {
         bytes memory out = new bytes(_varintLen(value));
         _writeVarint(out, 0, value);
         return out;
     }
 
-    function encodeString(string memory value) public pure returns (bytes memory) {
+    function encodeString(string memory value) internal pure returns (bytes memory) {
         bytes memory valueBytes = bytes(value);
         uint256 valueLen = valueBytes.length;
         uint256 prefixLen = _varintLen(valueLen);
@@ -23,7 +24,7 @@ library Encode {
 
     /// @notice Encodes a nanosecond timestamp as a protobuf google.protobuf.Timestamp.
     /// @dev Omits fields with zero value per proto3 rules.
-    function encodeTimestamp(uint128 nanos) public pure returns (bytes memory) {
+    function encodeTimestamp(uint128 nanos) internal pure returns (bytes memory) {
         uint128 secs = nanos / 1_000_000_000;
         uint128 ns = nanos % 1_000_000_000;
         uint256 totalLen = 0;
@@ -48,9 +49,11 @@ library Encode {
         return out;
     }
 
-    function encodeValidator(
-        IICS07TendermintMsgs.SimpleValidator memory validator
-    ) public pure returns (bytes memory) {
+    function encodeValidator(IICS07TendermintMsgs.SimpleValidator memory validator)
+        internal
+        pure
+        returns (bytes memory)
+    {
         uint256 totalLen = 36;
         if (validator.votingPower > 0) {
             totalLen += 1 + _varintLen(uint256(validator.votingPower));
@@ -76,7 +79,7 @@ library Encode {
         return out;
     }
 
-    function encodeVersion(IICS07TendermintMsgs.Version memory version) public pure returns (bytes memory) {
+    function encodeVersion(IICS07TendermintMsgs.Version memory version) internal pure returns (bytes memory) {
         uint256 totalLen = 0;
 
         if (version.blockVersion > 0) {
@@ -101,7 +104,7 @@ library Encode {
         return out;
     }
 
-    function encodeBlockId(IICS07TendermintMsgs.BlockId memory blockId) public pure returns (bytes memory) {
+    function encodeBlockId(IICS07TendermintMsgs.BlockId memory blockId) internal pure returns (bytes memory) {
         bytes memory partSetHeaderEncoded = encodePartSetHeader(blockId.partSetHeader);
         uint256 partSetLen = partSetHeaderEncoded.length;
         bytes memory out = new bytes(34 + 1 + _varintLen(partSetLen) + partSetLen);
@@ -122,7 +125,7 @@ library Encode {
 
     /// @notice Wraps a string in gogoproto StringValue{Value: str} for header hashing.
     /// Matches CometBFT's cdcEncode(string) used in Header.Hash().
-    function cdcEncodeString(string memory value) public pure returns (bytes memory) {
+    function cdcEncodeString(string memory value) internal pure returns (bytes memory) {
         bytes memory valueBytes = bytes(value);
         if (valueBytes.length == 0) return new bytes(0);
         bytes memory out = new bytes(1 + _varintLen(valueBytes.length) + valueBytes.length);
@@ -134,7 +137,7 @@ library Encode {
 
     /// @notice Wraps an int64 in gogoproto Int64Value{Value: n} for header hashing.
     /// Matches CometBFT's cdcEncode(int64) used in Header.Hash().
-    function cdcEncodeInt64(uint256 value) public pure returns (bytes memory) {
+    function cdcEncodeInt64(uint256 value) internal pure returns (bytes memory) {
         if (value == 0) return new bytes(0);
         bytes memory out = new bytes(1 + _varintLen(value));
         uint256 offset = _storeByte(out, 0, 0x08);
@@ -144,7 +147,7 @@ library Encode {
 
     /// @notice Wraps variable-length bytes in gogoproto BytesValue{Value: bz} for header hashing.
     /// Matches CometBFT's cdcEncode([]byte) used in Header.Hash().
-    function cdcEncodeBytes(bytes memory value) public pure returns (bytes memory) {
+    function cdcEncodeBytes(bytes memory value) internal pure returns (bytes memory) {
         if (value.length == 0) return new bytes(0);
         bytes memory out = new bytes(1 + _varintLen(value.length) + value.length);
         uint256 offset = _storeByte(out, 0, 0x0A);
@@ -155,7 +158,7 @@ library Encode {
 
     /// @notice Wraps a bytes32 hash in gogoproto BytesValue{Value: hash} for header hashing.
     /// Matches CometBFT's cdcEncode(HexBytes) used in Header.Hash().
-    function cdcEncodeBytes32(bytes32 value) public pure returns (bytes memory) {
+    function cdcEncodeBytes32(bytes32 value) internal pure returns (bytes memory) {
         bytes memory out = new bytes(34);
         uint256 offset = _storeByte(out, 0, 0x0A);
         offset = _storeByte(out, offset, 0x20);
@@ -164,7 +167,7 @@ library Encode {
     }
 
     /// @notice Encodes a signed 64-bit integer as 8-byte little-endian (protobuf sfixed64).
-    function encodeSfixed64(int64 value) public pure returns (bytes memory) {
+    function encodeSfixed64(int64 value) internal pure returns (bytes memory) {
         bytes memory result = new bytes(8);
         uint64 v = uint64(value);
         assembly {
@@ -188,7 +191,11 @@ library Encode {
         return result;
     }
 
-    function encodePartSetHeader(IICS07TendermintMsgs.PartSetHeader memory partSetHeader) public pure returns (bytes memory) {
+    function encodePartSetHeader(IICS07TendermintMsgs.PartSetHeader memory partSetHeader)
+        internal
+        pure
+        returns (bytes memory)
+    {
         bytes memory out = new bytes(1 + _varintLen(uint256(partSetHeader.total)) + 34);
         uint256 offset = 0;
 
@@ -213,7 +220,11 @@ library Encode {
         IICS07TendermintMsgs.BlockCommit memory commit,
         string memory chainId,
         uint32 valIdx
-    ) public pure returns (bytes memory) {
+    )
+        internal
+        pure
+        returns (bytes memory)
+    {
         IICS07TendermintMsgs.CommitSig memory commitSig = commit.commitSigs[valIdx];
 
         bool useCommitBlockId = commitSig.flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT;
@@ -298,7 +309,7 @@ library Encode {
             // Point ptr at out[offset]: skip the 32-byte length prefix (0x20), then advance by offset.
             let ptr := add(add(out, 0x20), offset)
             // Each iteration emits one continuation byte: low 7 bits of value | 0x80 (MSB = "more follows").
-            for {} iszero(lt(value, 0x80)) {} {
+            for { } iszero(lt(value, 0x80)) { } {
                 mstore8(ptr, or(and(value, 0x7f), 0x80))
                 ptr := add(ptr, 1)
                 offset := add(offset, 1)

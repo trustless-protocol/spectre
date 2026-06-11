@@ -20,10 +20,10 @@ library IBCRolesLib {
     /// @notice Only addresses with this role may relay packets.
     uint64 internal constant RELAYER_ROLE = 1;
 
-    /// @notice The pauser role can pause the ICS20Transfer application.
+    /// @notice The pauser role can pause IBC contracts.
     uint64 internal constant PAUSER_ROLE = 2;
 
-    /// @notice The unpauser role can unpause the ICS20Transfer application.
+    /// @notice The unpauser role can unpause IBC contracts.
     uint64 internal constant UNPAUSER_ROLE = 3;
 
     /// @notice Has permission to call `ICS20Transfer.sendTransferWithSender`.
@@ -126,5 +126,15 @@ library IBCRolesLib {
         bytes4[] memory uupsUpgradeFunctions = new bytes4[](1);
         uupsUpgradeFunctions[0] = UUPSUpgradeable.upgradeToAndCall.selector;
         return uupsUpgradeFunctions;
+    }
+
+    /// @notice Returns the AccessManager role id for the per-clientId light client migrator.
+    /// @dev The id is derived from the clientId so that a single role grant only authorizes
+    /// @dev migration of that specific client. The admin (ADMIN_ROLE) of every per-clientId
+    /// @dev role is the global ADMIN_ROLE.
+    /// @param clientId The client identifier
+    /// @return The AccessManager role id that authorizes migration of `clientId`
+    function getLightClientMigratorRole(string calldata clientId) internal pure returns (uint64) {
+        return uint64(uint256(keccak256(abi.encodePacked("LIGHT_CLIENT_MIGRATOR_ROLE_", clientId))));
     }
 }

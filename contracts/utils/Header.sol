@@ -6,7 +6,7 @@ import { Encode } from "./Encode.sol";
 library Header {
     bytes32 internal constant EMPTY_LEAF_HASH = 0x6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d;
 
-    function hashValSet(IICS07TendermintMsgs.ValidatorSet memory valset) public pure returns (bytes32) {
+    function hashValSet(IICS07TendermintMsgs.ValidatorSet memory valset) internal pure returns (bytes32) {
         uint256 validatorCount = valset.validators.length;
         if (validatorCount == 0) {
             return bytes32(0);
@@ -25,7 +25,7 @@ library Header {
         return _merkleHashRange(leafHashes, 0, validatorCount);
     }
 
-    function hashHeader(IICS07TendermintMsgs.BlockHeader memory header) public pure returns (bytes32) {
+    function hashHeader(IICS07TendermintMsgs.BlockHeader memory header) internal pure returns (bytes32) {
         return hashHeaderWithCachedChainId(header, chainIdLeafHash(header.chainId));
     }
 
@@ -33,7 +33,7 @@ library Header {
         IICS07TendermintMsgs.BlockHeader memory header,
         bytes32 cachedChainIdLeafHash
     )
-        public
+        internal
         pure
         returns (bytes32)
     {
@@ -67,7 +67,7 @@ library Header {
         bytes32 cachedChainIdLeafHash,
         bytes32 cachedValidatorsHashLeaf
     )
-        public
+        internal
         pure
         returns (bytes32)
     {
@@ -98,25 +98,25 @@ library Header {
         return _merkleHashRange(leafHashes, 0, leafHashes.length);
     }
 
-    function chainIdLeafHash(string memory chainId) public pure returns (bytes32) {
+    function chainIdLeafHash(string memory chainId) internal pure returns (bytes32) {
         return _leafHash(Encode.cdcEncodeString(chainId));
     }
 
-    function bytes32LeafHash(bytes32 value) public pure returns (bytes32) {
+    function bytes32LeafHash(bytes32 value) internal pure returns (bytes32) {
         return _leafHash(Encode.cdcEncodeBytes32(value));
     }
 
-    function simpleValidatorLeafHash(bytes32 pubKey, uint64 votingPower) public pure returns (bytes32) {
+    function simpleValidatorLeafHash(bytes32 pubKey, uint64 votingPower) internal pure returns (bytes32) {
         return _leafHash(
             Encode.encodeValidator(IICS07TendermintMsgs.SimpleValidator({ pubKey: pubKey, votingPower: votingPower }))
         );
     }
 
-    function innerHash(bytes32 left, bytes32 right) public pure returns (bytes32) {
+    function innerHash(bytes32 left, bytes32 right) internal pure returns (bytes32) {
         return _innerHash(left, right);
     }
 
-    function merkleHash(bytes[] memory bytesArray) public pure returns (bytes32) {
+    function merkleHash(bytes[] memory bytesArray) internal pure returns (bytes32) {
         if (bytesArray.length == 0) {
             return bytes32(0);
         }
@@ -129,7 +129,15 @@ library Header {
         return _merkleHashRange(leafHashes, 0, bytesArray.length);
     }
 
-    function getSlice(bytes[] memory bytesArray, uint256 from, uint256 to) public pure returns (bytes[] memory result) {
+    function getSlice(
+        bytes[] memory bytesArray,
+        uint256 from,
+        uint256 to
+    )
+        internal
+        pure
+        returns (bytes[] memory result)
+    {
         require(from <= to && to <= bytesArray.length, "Invalid range");
 
         uint256 length = to - from;
@@ -140,7 +148,7 @@ library Header {
         }
     }
 
-    function nextPowerOfTwo(uint256 n) public pure returns (uint256) {
+    function nextPowerOfTwo(uint256 n) internal pure returns (uint256) {
         if (n == 0) return 1;
 
         // Handle the case where n is already a power of 2

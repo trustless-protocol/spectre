@@ -13,6 +13,14 @@ interface IEscrow {
     /// @param amount The amount of tokens to send
     function send(IERC20 token, address to, uint256 amount) external;
 
+    /// @notice Send tokens as a refund, bypassing the rate limit
+    /// @dev Refunds return previously-escrowed funds and should not consume outbound capacity.
+    ///      Only callable by the ICS20 contract.
+    /// @param token The token to send
+    /// @param to The address to send the tokens to
+    /// @param amount The amount of tokens to send
+    function sendRefund(IERC20 token, address to, uint256 amount) external;
+
     /// @notice Received tokens from the specified address
     /// @dev This function can only be called by the ICS20 contract
     /// @param token The token received

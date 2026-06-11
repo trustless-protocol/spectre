@@ -6,7 +6,6 @@ pragma solidity ^0.8.28;
 import { IICS07TendermintMsgs } from "./msgs/IICS07TendermintMsgs.sol";
 import { IUpdateClientMsgs } from "./msgs/IUpdateClientMsgs.sol";
 import { IMembershipMsgs } from "./msgs/IMembershipMsgs.sol";
-import { IUpdateClientAndMembershipMsgs } from "./msgs/IUcAndMembershipMsgs.sol";
 import { IMisbehaviourMsgs } from "./msgs/IMisbehaviourMsgs.sol";
 import { IGroth16Msgs } from "./msgs/IGroth16Msgs.sol";
 import { ILightClientMsgs } from "../msgs/ILightClientMsgs.sol";
@@ -205,14 +204,12 @@ contract Groth16ICS07Tendermint is
             bool currentCached,
             bytes32 currentValidatorsHash,
             bytes32 currentValidatorsHashLeaf,
-            bool cacheCurrentValidatorSet
+            bool cacheCurrentValidatorSet,
+            bool trustedNextResolved
         ) = _prepareUpdateClientMessage(msg_);
 
-        IUpdateClientMsgs.UpdateClientOutput memory output = currentCached
-            ? UPDATE_CLIENT.updateClientCachedCurrentWithHeaderCache(
-                msg_, CHAIN_ID_LEAF_HASH, currentValidatorsHashLeaf
-            )
-            : UPDATE_CLIENT.updateClientResolved(msg_);
+        IUpdateClientMsgs.UpdateClientOutput memory output =
+            _callUpdateClientProgram(msg_, currentCached, trustedNextResolved, currentValidatorsHashLeaf);
 
         _validateUpdateClientOutput(output);
 
@@ -236,29 +233,48 @@ contract Groth16ICS07Tendermint is
         return updateResult;
     }
 
-    function _callUpdateClient(bytes calldata updateClientMsg)
+    function _callUpdateClientProgram(
+        IUpdateClientMsgs.MsgUpdateClient memory msg_,
+        bool currentCached,
+        bool trustedNextResolved,
+        bytes32 currentValidatorsHashLeaf
+    )
         private
         view
-        returns (IUpdateClientMsgs.UpdateClientOutput memory output)
+        returns (IUpdateClientMsgs.UpdateClientOutput memory)
     {
-        bytes4 sel = IUpdateClient.updateClient.selector;
-        address updateClient_ = address(UPDATE_CLIENT);
-        bytes memory ret;
-        assembly ("memory-safe") {
-            let fmp := mload(0x40)
-            mstore(fmp, sel)
-            calldatacopy(add(fmp, 4), updateClientMsg.offset, updateClientMsg.length)
-            if iszero(staticcall(gas(), updateClient_, fmp, add(4, updateClientMsg.length), 0, 0)) {
-                returndatacopy(fmp, 0, returndatasize())
-                revert(fmp, returndatasize())
-            }
-            let retLen := returndatasize()
-            mstore(fmp, retLen)
-            returndatacopy(add(fmp, 32), 0, retLen)
-            mstore(0x40, and(add(add(fmp, add(retLen, 32)), 31), not(31)))
-            ret := fmp
+        if (!currentCached) {
+            return UPDATE_CLIENT.updateClientResolved(msg_);
         }
-        output = abi.decode(ret, (IUpdateClientMsgs.UpdateClientOutput));
+        if (trustedNextResolved) {
+            return _callUpdateClientCachedCurrentTrustedNextResolved(msg_, currentValidatorsHashLeaf);
+        }
+        return _callUpdateClientCachedCurrent(msg_, currentValidatorsHashLeaf);
+    }
+
+    function _callUpdateClientCachedCurrent(
+        IUpdateClientMsgs.MsgUpdateClient memory msg_,
+        bytes32 currentValidatorsHashLeaf
+    )
+        private
+        view
+        returns (IUpdateClientMsgs.UpdateClientOutput memory)
+    {
+        return
+            UPDATE_CLIENT.updateClientCachedCurrentWithHeaderCache(msg_, CHAIN_ID_LEAF_HASH, currentValidatorsHashLeaf);
+    }
+
+    function _callUpdateClientCachedCurrentTrustedNextResolved(
+        IUpdateClientMsgs.MsgUpdateClient memory msg_,
+        bytes32 currentValidatorsHashLeaf
+    )
+        private
+        view
+        returns (IUpdateClientMsgs.UpdateClientOutput memory)
+    {
+        return UPDATE_CLIENT.updateClientCachedCurrentTrustedNextResolvedWithHeaderCache(
+            msg_, CHAIN_ID_LEAF_HASH, currentValidatorsHashLeaf
+        );
     }
 
     function _prepareUpdateClientMessage(IUpdateClientMsgs.MsgUpdateClient memory msg_)
@@ -267,7 +283,8 @@ contract Groth16ICS07Tendermint is
             bool currentCached,
             bytes32 currentValidatorsHash,
             bytes32 currentValidatorsHashLeaf,
-            bool cacheCurrentValidatorSet
+            bool cacheCurrentValidatorSet,
+            bool trustedNextResolved
         )
     {
         currentValidatorsHash = msg_.proposedHeader.signedHeader.header.validatorsHash;
@@ -292,26 +309,34 @@ contract Groth16ICS07Tendermint is
 
         if (adjacent) {
             msg_.proposedHeader.trustedNextValidatorSet = _emptyValidatorSet();
-            return (currentCached, currentValidatorsHash, currentValidatorsHashLeaf, cacheCurrentValidatorSet);
+            return (currentCached, currentValidatorsHash, currentValidatorsHashLeaf, cacheCurrentValidatorSet, false);
         }
 
         if (!currentCached && trustedNextValidatorsHash == currentValidatorsHash) {
             msg_.proposedHeader.trustedNextValidatorSet = msg_.proposedHeader.validatorSet;
+            trustedNextResolved = true;
         } else if (!currentCached) {
             _validateSuppliedValidatorSetHash(trustedNextValidatorsHash, msg_.proposedHeader.trustedNextValidatorSet);
+            trustedNextResolved = true;
+        } else if (trustedNextValidatorsHash == currentValidatorsHash) {
+            _validateTrustedNextAgainstCachedCurrent(currentValidatorsHash, msg_.proposedHeader.trustedNextValidatorSet);
+            trustedNextResolved = true;
         }
-        // When `currentCached == true` and the update is non-adjacent, the
-        // caller-supplied `trustedNextValidatorSet` is intentionally left
-        // unvalidated here. Validation is delegated to
-        // `UPDATE_CLIENT.updateClientCachedCurrentWithHeaderCache` →
-        // `verifyHeaderCachedCurrent`, which checks
-        // `Header.hashValSet(trustedNextValidatorSet) ==
-        // trustedConsensusState.nextValidatorsHash` before any header decision.
-        // Do NOT remove that delegated check without restoring an equivalent
-        // guard here, otherwise non-adjacent cached updates would accept an
-        // arbitrary next-validator set.
+        // When `currentCached == true` and the trusted-next hash is not the
+        // cached current hash, validation is delegated to
+        // `UPDATE_CLIENT.updateClientCachedCurrentWithHeaderCache`, which checks
+        // `Header.hashValSet(trustedNextValidatorSet) == trustedConsensusState.nextValidatorsHash`.
+        // If the hashes match, `_validateTrustedNextAgainstCachedCurrent` already
+        // proved the supplied set's pubkeys and voting powers against cache, so
+        // the pure program can skip re-running `Header.hashValSet`.
 
-        return (currentCached, currentValidatorsHash, currentValidatorsHashLeaf, cacheCurrentValidatorSet);
+        return (
+            currentCached,
+            currentValidatorsHash,
+            currentValidatorsHashLeaf,
+            cacheCurrentValidatorSet,
+            trustedNextResolved
+        );
     }
 
     function _isAdjacentUpdate(IICS07TendermintMsgs.Header memory header) private pure returns (bool) {
@@ -334,6 +359,112 @@ contract Groth16ICS07Tendermint is
         }
         bytes32 actualHash = Header.hashValSet(validatorSet);
         require(actualHash == expectedHash, MismatchedValidatorHashes(expectedHash, actualHash));
+    }
+
+    function _validateTrustedNextAgainstCachedCurrent(
+        bytes32 validatorsHash,
+        IICS07TendermintMsgs.ValidatorSet memory trustedNextValidatorSet
+    )
+        private
+        view
+    {
+        address pointer = _validatorCachePointer(validatorsHash);
+        if (pointer == address(0)) {
+            revert ValidatorSetCacheMiss(validatorsHash);
+        }
+
+        bytes memory cacheData = SSTORE2.read(pointer, 0, _validatorCacheEntryDataLen(_cachedValidatorEntryCount));
+        ValidatorCacheHeader memory cacheHeader = _readValidatorCacheHeader(validatorsHash, cacheData);
+        IICS07TendermintMsgs.ValidatorInfo[] memory validators = trustedNextValidatorSet.validators;
+        if (validators.length != cacheHeader.entryCount) {
+            revert MismatchedValidatorHashes(validatorsHash, bytes32(0));
+        }
+
+        uint256 pubKeyBits = _validatorPubKeyOverrideBits;
+        uint256 votingPowerBits = _validatorVotingPowerOverrideBits;
+        for (uint256 i = 0; i < validators.length; i++) {
+            (uint64 cachedVotingPower, bytes32 cachedPubKey) = _resolveCurrentCachedValidator(
+                validatorsHash, cacheData, cacheHeader.entryCount, pubKeyBits, votingPowerBits, uint32(i)
+            );
+            if (validators[i].pubKey != cachedPubKey || validators[i].votingPower != cachedVotingPower) {
+                revert MismatchedValidatorHashes(validatorsHash, bytes32(0));
+            }
+        }
+    }
+
+    /// @notice Recomputes the changed validators' leaf hashes and the new total voting power for a delta update.
+    /// @dev Extracted from `_cacheDeltaValidatorSet` purely to keep that function's stack frame small enough
+    ///      to compile once `Header.simpleValidatorLeafHash` is inlined (internal library).
+    function _buildDeltaLeafHashes(
+        IUpdateClientMsgs.ValidatorSetDelta memory delta,
+        bytes memory baseData,
+        uint16 baseEntryCount,
+        uint256 pubKeyBits,
+        uint256 votingPowerBits
+    )
+        private
+        view
+        returns (bytes32[] memory newLeafHashes, uint256 newTotalVotingPower)
+    {
+        newLeafHashes = new bytes32[](delta.leafCount);
+        newTotalVotingPower = uint256(_cachedValidatorTotalVotingPower);
+        uint32 previousIndex = 0;
+        for (uint256 i = 0; i < delta.leafCount; i++) {
+            uint32 changedIndex = delta.indices[i];
+            require(changedIndex < baseEntryCount, SignerIndexOutOfRange(changedIndex));
+            if (i > 0) {
+                require(changedIndex > previousIndex, CachedValidatorSetCorrupted(delta.baseValidatorsHash));
+            }
+            previousIndex = changedIndex;
+
+            (uint64 oldVotingPower, bytes32 oldPubKey) = _resolveCurrentCachedValidator(
+                delta.baseValidatorsHash, baseData, baseEntryCount, pubKeyBits, votingPowerBits, changedIndex
+            );
+            uint64 changedVotingPower = delta.votingPowers[i];
+            bytes32 changedPubKey = delta.pubKeys[i];
+            require(
+                oldVotingPower != changedVotingPower || oldPubKey != changedPubKey,
+                CachedValidatorSetCorrupted(delta.baseValidatorsHash)
+            );
+            newTotalVotingPower = newTotalVotingPower - uint256(oldVotingPower) + uint256(changedVotingPower);
+            newLeafHashes[i] = Header.simpleValidatorLeafHash(changedPubKey, changedVotingPower);
+        }
+    }
+
+    function _applyDeltaOverrides(
+        IUpdateClientMsgs.ValidatorSetDelta memory delta,
+        bytes memory baseData,
+        ValidatorCacheHeader memory baseHeader,
+        uint256 pubKeyBits,
+        uint256 votingPowerBits
+    )
+        private
+        returns (uint256 newPubKeyBits, uint256 newVotingPowerBits)
+    {
+        newPubKeyBits = pubKeyBits;
+        newVotingPowerBits = votingPowerBits;
+        for (uint256 i = 0; i < delta.leafCount; i++) {
+            uint16 changedIndex = uint16(delta.indices[i]);
+            uint256 mask = uint256(1) << changedIndex;
+            uint64 changedVotingPower = delta.votingPowers[i];
+            bytes32 changedPubKey = delta.pubKeys[i];
+            (uint64 baseVotingPower, bytes32 basePubKey) =
+                _resolveCachedValidator(delta.baseValidatorsHash, baseData, baseHeader, changedIndex);
+
+            if (changedVotingPower == baseVotingPower) {
+                newVotingPowerBits &= ~mask;
+            } else {
+                _validatorVotingPowerOverrides[changedIndex] = changedVotingPower;
+                newVotingPowerBits |= mask;
+            }
+
+            if (changedPubKey == basePubKey) {
+                newPubKeyBits &= ~mask;
+            } else {
+                _validatorPubKeyOverrides[changedIndex] = changedPubKey;
+                newPubKeyBits |= mask;
+            }
+        }
     }
 
     function _cacheDeltaValidatorSet(
@@ -362,29 +493,11 @@ contract Groth16ICS07Tendermint is
 
         uint256 pubKeyBits = _validatorPubKeyOverrideBits;
         uint256 votingPowerBits = _validatorVotingPowerOverrideBits;
-        uint256 newTotalVotingPower = uint256(_cachedValidatorTotalVotingPower);
-        bytes32[] memory newLeafHashes = new bytes32[](changedCount);
-        uint32 previousIndex = 0;
-        for (uint256 i = 0; i < changedCount; i++) {
-            uint32 changedIndex = delta.indices[i];
-            require(changedIndex < baseHeader.entryCount, SignerIndexOutOfRange(changedIndex));
-            if (i > 0) {
-                require(changedIndex > previousIndex, CachedValidatorSetCorrupted(delta.baseValidatorsHash));
-            }
-            previousIndex = changedIndex;
-
-            (uint64 oldVotingPower, bytes32 oldPubKey) = _resolveCurrentCachedValidator(
-                delta.baseValidatorsHash, baseData, baseHeader.entryCount, pubKeyBits, votingPowerBits, changedIndex
-            );
-            uint64 changedVotingPower = delta.votingPowers[i];
-            bytes32 changedPubKey = delta.pubKeys[i];
-            require(
-                oldVotingPower != changedVotingPower || oldPubKey != changedPubKey,
-                CachedValidatorSetCorrupted(delta.baseValidatorsHash)
-            );
-            newTotalVotingPower = newTotalVotingPower - uint256(oldVotingPower) + uint256(changedVotingPower);
-            newLeafHashes[i] = Header.simpleValidatorLeafHash(changedPubKey, changedVotingPower);
-        }
+        // Leaf-hash + total-voting-power recompute is extracted into a helper so its
+        // locals (and the inlined Header.simpleValidatorLeafHash) don't share this
+        // function's stack frame — keeps the via-IR compile under the stack limit.
+        (bytes32[] memory newLeafHashes, uint256 newTotalVotingPower) =
+            _buildDeltaLeafHashes(delta, baseData, baseHeader.entryCount, pubKeyBits, votingPowerBits);
         require(newTotalVotingPower <= type(uint64).max, CachedValidatorSetCorrupted(delta.baseValidatorsHash));
 
         bytes32 computedRoot = _recomputeCurrentDeltaRoot(
@@ -392,28 +505,7 @@ contract Groth16ICS07Tendermint is
         );
         require(computedRoot == validatorsHash, MismatchedValidatorHashes(validatorsHash, computedRoot));
 
-        for (uint256 i = 0; i < changedCount; i++) {
-            uint16 changedIndex = uint16(delta.indices[i]);
-            uint256 mask = uint256(1) << changedIndex;
-            uint64 changedVotingPower = delta.votingPowers[i];
-            bytes32 changedPubKey = delta.pubKeys[i];
-            (uint64 baseVotingPower, bytes32 basePubKey) =
-                _resolveCachedValidator(delta.baseValidatorsHash, baseData, baseHeader, changedIndex);
-
-            if (changedVotingPower == baseVotingPower) {
-                votingPowerBits &= ~mask;
-            } else {
-                _validatorVotingPowerOverrides[changedIndex] = changedVotingPower;
-                votingPowerBits |= mask;
-            }
-
-            if (changedPubKey == basePubKey) {
-                pubKeyBits &= ~mask;
-            } else {
-                _validatorPubKeyOverrides[changedIndex] = changedPubKey;
-                pubKeyBits |= mask;
-            }
-        }
+        (pubKeyBits, votingPowerBits) = _applyDeltaOverrides(delta, baseData, baseHeader, pubKeyBits, votingPowerBits);
 
         validatorsHashLeaf = Header.bytes32LeafHash(validatorsHash);
         _validatorPubKeyOverrideBits = pubKeyBits;
@@ -508,7 +600,7 @@ contract Groth16ICS07Tendermint is
         require(
             msg_.signerIndices.length == msg_.bucket && msg_.signerPubkeys.length == msg_.bucket
                 && msg_.timestampSeconds.length == msg_.bucket && msg_.timestampNanos.length == msg_.bucket
-                && msg_.active.length == msg_.bucket,
+                && msg_.active.length == msg_.bucket && msg_.trustedOverlapIndices.length == msg_.bucket,
             BatchLengthMismatch()
         );
 
@@ -551,7 +643,7 @@ contract Groth16ICS07Tendermint is
         require(
             msg_.signerIndices.length == msg_.bucket && msg_.signerPubkeys.length == msg_.bucket
                 && msg_.timestampSeconds.length == msg_.bucket && msg_.timestampNanos.length == msg_.bucket
-                && msg_.active.length == msg_.bucket,
+                && msg_.active.length == msg_.bucket && msg_.trustedOverlapIndices.length == msg_.bucket,
             BatchLengthMismatch()
         );
 
@@ -1011,19 +1103,10 @@ contract Groth16ICS07Tendermint is
         private
         returns (uint256)
     {
-        // TODO: cached proof
-        // if (merkleProofs.length == 0) {
-        //     // cached proof
-        //     return _nanosToSeconds(_getCachedKvPair(height.revisionHeight, IMembershipMsgs.KVPair(path, value)));
-        // }
-
         if (membershipType == IMembershipMsgs.MembershipType.Membership) {
             return _handleMembership(height, kvPairs, merkleProofs, appHash, trustedConsensusState, kvPath, kvValue);
-        } else if (membershipType == IMembershipMsgs.MembershipType.MembershipAndUpdateClient) {
-            // return _handleGroth16UpdateClientAndMembership(height, membershipProof.proof, path, value);
         }
 
-        // unreachable
         revert UnknownMembershipType(uint8(membershipType));
     }
 
@@ -1106,106 +1189,6 @@ contract Groth16ICS07Tendermint is
             _cacheKvPairs(height.revisionHeight, kvPairs, trustedConsensusState.timestamp);
         }
         return _getTimestampInSeconds(trustedConsensusState);
-    }
-
-    /// @notice The entrypoint for handling the `Groth16MembershipAndUpdateClientProof` proof type.
-    /// @dev This function verifies the public values and forwards the proof to the Groth16 verifier.
-    /// @param proofHeight The height of the proof.
-    /// @param proofBytes The encoded proof.
-    /// @param kvPath The path of the key-value pair.
-    /// @param kvValue The value of the key-value pair.
-    /// @return The timestamp of the new consensus state.
-    // solhint-disable-next-line code-complexity,function-max-lines
-    function _handleGroth16UpdateClientAndMembership(
-        IICS02ClientMsgs.Height calldata proofHeight,
-        bytes memory proofBytes,
-        bytes[] calldata kvPath,
-        bytes memory kvValue
-    )
-        private
-        returns (uint256)
-    {
-        // validate proof and deserialize output
-        IUpdateClientAndMembershipMsgs.UcAndMembershipOutput memory output;
-        {
-            IMembershipMsgs.Groth16MembershipAndUpdateClientProof memory proof =
-                abi.decode(proofBytes, (IMembershipMsgs.Groth16MembershipAndUpdateClientProof));
-            // require(
-            //     proof.groth16Proof.vKey == UPDATE_CLIENT_AND_MEMBERSHIP_PROGRAM_VKEY,
-            //     VerificationKeyMismatch(UPDATE_CLIENT_AND_MEMBERSHIP_PROGRAM_VKEY, proof.groth16Proof.vKey)
-            // );
-
-            output = abi.decode(proof.groth16Proof.publicValues, (IUpdateClientAndMembershipMsgs.UcAndMembershipOutput));
-            require(
-                output.kvPairs.length > 0 && output.kvPairs.length <= type(uint16).max,
-                LengthIsOutOfRange(output.kvPairs.length, 1, type(uint16).max)
-            );
-
-            require(
-                proofHeight.revisionHeight == output.updateClientOutput.newHeight.revisionHeight
-                    && proofHeight.revisionNumber == output.updateClientOutput.newHeight.revisionNumber,
-                ProofHeightMismatch(
-                    proofHeight.revisionNumber,
-                    proofHeight.revisionHeight,
-                    output.updateClientOutput.newHeight.revisionNumber,
-                    output.updateClientOutput.newHeight.revisionHeight
-                )
-            );
-
-            _validateUpdateClientOutput(output.updateClientOutput);
-
-            // TODO: verify proof with input
-            // _verifyProof(proof.groth16Proof);
-        }
-
-        // check update result
-        {
-            ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output.updateClientOutput);
-            if (updateResult == ILightClientMsgs.UpdateResult.Update) {
-                // adding the new consensus state to the mapping
-                if (proofHeight.revisionHeight > clientState.latestHeight.revisionHeight) {
-                    clientState.latestHeight = proofHeight;
-                }
-                _consensusStateHashes[proofHeight.revisionHeight] =
-                    keccak256(abi.encode(output.updateClientOutput.newConsensusState));
-            } else if (updateResult == ILightClientMsgs.UpdateResult.Misbehaviour) {
-                revert CannotHandleMisbehavior();
-            } // else: NoOp
-        }
-
-        // loop through the key-value pairs and validate them
-        {
-            bool found = false;
-            for (uint256 i = 0; i < output.kvPairs.length; i++) {
-                if (!Paths.equal(output.kvPairs[i].path, kvPath)) {
-                    continue;
-                }
-
-                bytes memory value = output.kvPairs[i].value;
-                require(
-                    value.length == kvValue.length && keccak256(value) == keccak256(kvValue),
-                    MembershipProofValueMismatch(kvValue, value)
-                );
-
-                found = true;
-                break;
-            }
-            require(found, MembershipProofKeyNotFound(kvPath));
-        }
-
-        _validateMembershipInput(
-            output.updateClientOutput.newConsensusState.root,
-            output.updateClientOutput.newHeight.revisionHeight,
-            output.updateClientOutput.newConsensusState
-        );
-
-        // We avoid the cost of caching for single kv pairs, as reusing the proof is not necessary
-        if (output.kvPairs.length > 1) {
-            _cacheKvPairs(
-                proofHeight.revisionHeight, output.kvPairs, output.updateClientOutput.newConsensusState.timestamp
-            );
-        }
-        return _getTimestampInSeconds(output.updateClientOutput.newConsensusState);
     }
 
     /// @notice Validates the Membership input known values.
@@ -1375,14 +1358,6 @@ contract Groth16ICS07Tendermint is
         }
     }
 
-    /// @notice Verifies the Groth16 proof
-    /// @param proof The Groth16 proof.
-    /// @dev WARNING: proof.vKey must be verified before calling this function.
-    // TODO: verify proof with given input
-    // function _verifyProof(IGroth16Msgs.Groth16Proof memory proof) private view {
-    //     VERIFIER.verifyProof(proof.vKey, proof.publicValues, proof.proof);
-    // }
-
     /// @notice Caches the key-value pairs to the transient storage with the timestamp.
     /// @param proofHeight The height of the proof.
     /// @param kvPairs The key-value pairs.
@@ -1394,17 +1369,6 @@ contract Groth16ICS07Tendermint is
             bytes32 kvPairHash = keccak256(abi.encode(proofHeight, kvPairs[i]));
             kvPairHash.asUint256().tstore(timestamp);
         }
-    }
-
-    /// @notice Gets the timestamp of the cached key-value pair from the transient storage.
-    /// @param proofHeight The height of the proof.
-    /// @param kvPair The key-value pair.
-    /// @return The timestamp of the cached key-value pair in unix nanoseconds.
-    function _getCachedKvPair(uint64 proofHeight, IMembershipMsgs.KVPair memory kvPair) private view returns (uint256) {
-        bytes32 kvPairHash = keccak256(abi.encode(proofHeight, kvPair));
-        uint256 timestamp = kvPairHash.asUint256().tload();
-        require(timestamp != 0, KeyValuePairNotInCache(kvPair.path, kvPair.value));
-        return timestamp;
     }
 
     /// @notice Returns the timestamp of the trusted consensus state in unix seconds.

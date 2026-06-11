@@ -24,11 +24,7 @@ contract EncodeWrapper {
         return Encode.encodePartSetHeader(IICS07TendermintMsgs.PartSetHeader(total, hashData));
     }
 
-    function encodeBlockId(
-        bytes32 hashData,
-        uint32 pshTotal,
-        bytes32 pshHash
-    ) external pure returns (bytes memory) {
+    function encodeBlockId(bytes32 hashData, uint32 pshTotal, bytes32 pshHash) external pure returns (bytes memory) {
         return Encode.encodeBlockId(
             IICS07TendermintMsgs.BlockId(hashData, IICS07TendermintMsgs.PartSetHeader(pshTotal, pshHash))
         );
@@ -59,15 +55,16 @@ contract EncodeWrapper {
         uint8 flag,
         uint128 timestamp,
         string calldata chainId
-    ) external pure returns (bytes memory) {
+    )
+        external
+        pure
+        returns (bytes memory)
+    {
         IICS07TendermintMsgs.CommitSig[] memory sigs = new IICS07TendermintMsgs.CommitSig[](1);
         sigs[0] = IICS07TendermintMsgs.CommitSig({
             flag: IICS07TendermintMsgs.CommitSigFlag(flag),
             data: IICS07TendermintMsgs.CommitSigData({
-                validatorAddress: hex"",
-                timestamp: timestamp,
-                hasSignature: false,
-                signature: hex""
+                validatorAddress: hex"", timestamp: timestamp, hasSignature: false, signature: hex""
             })
         });
 
@@ -85,20 +82,13 @@ contract EncodeWrapper {
         return Header.merkleHash(items);
     }
 
-    function hashValSet(
-        bytes32[] calldata pubKeys,
-        uint64[] calldata votingPowers
-    ) external pure returns (bytes32) {
+    function hashValSet(bytes32[] calldata pubKeys, uint64[] calldata votingPowers) external pure returns (bytes32) {
         require(pubKeys.length == votingPowers.length, "length mismatch");
 
-        IICS07TendermintMsgs.ValidatorInfo[] memory vals =
-            new IICS07TendermintMsgs.ValidatorInfo[](pubKeys.length);
+        IICS07TendermintMsgs.ValidatorInfo[] memory vals = new IICS07TendermintMsgs.ValidatorInfo[](pubKeys.length);
         for (uint256 i = 0; i < pubKeys.length; i++) {
             vals[i] = IICS07TendermintMsgs.ValidatorInfo({
-                valAddress: hex"",
-                pubKey: pubKeys[i],
-                votingPower: votingPowers[i],
-                proposerPriority: 0
+                valAddress: hex"", pubKey: pubKeys[i], votingPower: votingPowers[i], proposerPriority: 0
             });
         }
 
@@ -106,10 +96,7 @@ contract EncodeWrapper {
             validators: vals,
             hasProposer: false,
             proposer: IICS07TendermintMsgs.ValidatorInfo({
-                valAddress: hex"",
-                pubKey: bytes32(0),
-                votingPower: 0,
-                proposerPriority: 0
+                valAddress: hex"", pubKey: bytes32(0), votingPower: 0, proposerPriority: 0
             }),
             totalVotingPower: 0
         });
