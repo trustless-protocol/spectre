@@ -45,6 +45,45 @@ contract Membership is IMembership {
     /// different subtree roots, i.e. they are not in the same tree (issue #112).
     error NonExistenceRootMismatch(bytes32 leftRoot, bytes32 rightRoot);
 
+    // checkExistenceProof errors
+    error InvalidInnerChildSize();
+    error BadLeafPrefix();
+    error UnexpectedLeafHashOp();
+    error UnexpectedLeafPrehashKeyOp();
+    error UnexpectedLeafPrehashValueOp();
+    error IncorrectLeafPrefix();
+    error TooFewInnerOps();
+    error TooManyInnerOps();
+    error BadInnerOpPrefix();
+    error BadInnerHashOp();
+    error InnerSpecRequired();
+    error UnexpectedInnerHashOp();
+    error InnerNodeWithLeafPrefix();
+    error InnerPrefixTooShort();
+    error InnerPrefixTooLong();
+    error InnerChildSizeZero();
+    error InnerSuffixMalformed();
+
+    // verifyNonExistenceProof errors
+    error LeftKeyNotBeforeKey();
+    error RightKeyNotAfterKey();
+    error InnerSpecMissing();
+    error NeitherNeighborDefined();
+    error NotLeftNeighbor();
+    error InvalidNonExistenceProofState();
+
+    // misc errors
+    error NoPaddingBranchFound();
+    error RightPaddingMismatch();
+    error LeftPaddingMismatch();
+    error MissingChildHash();
+    error UnsupportedHashOp();
+    error InvalidIavlPrefixHeight();
+    error InvalidIavlPrefixSize();
+    error InvalidIavlPrefixVersion();
+    error InvalidSliceRange();
+    error SliceRangeExceedsLength();
+
     /// @notice Hard upper bound on the number of inner ops (tree depth) in any
     /// existence proof, enforced for every spec regardless of its min/max depth.
     /// Both shipped specs set min/max depth = 0, so the spec-defined bounds never
@@ -238,7 +277,6 @@ contract Membership is IMembership {
         bytes32 current = applyLeaf(leafOp, proof.key, proof.value);
         for (uint256 i = 0; i < proof.path.length; i++) {
             current = applyInner(proof.path[i], current);
-            // TODO
         }
 
         return current;
@@ -280,7 +318,7 @@ contract Membership is IMembership {
 
         if (spec.hasInnerSpec) {
             if (spec.innerSpec.childSize < 32) {
-                revert("Invalid inner operation (child_size)");
+                revert InvalidInnerChildSize();
             }
         }
 
@@ -289,27 +327,27 @@ contract Membership is IMembership {
         if (spec.specType == IMembershipMsgs.SpecType.IAVL) {
             uint256 remainingLength = ensureIavlPrefix(leafPrefix, 0);
             if (remainingLength != 0) {
-                revert("bad prefix in leaf");
+                revert BadLeafPrefix();
             }
         }
 
         //  ensure leaf hash matches the spec
         IMembershipMsgs.LeafOp memory leaf = proof.leaf;
         if (spec.leafOp.hashOp != leaf.hashOp) {
-            revert("Unexpected leaf hash operation");
+            revert UnexpectedLeafHashOp();
         }
         if (spec.leafOp.prehashKey != leaf.prehashKey) {
-            revert("Unexpected leaf prehash key operation");
+            revert UnexpectedLeafPrehashKeyOp();
         }
         if (spec.leafOp.prehashValue != leaf.prehashValue) {
-            revert("Unexpected leaf prehash value operation");
+            revert UnexpectedLeafPrehashValueOp();
         }
         bytes memory leafSpecPrefix = spec.leafOp.prefix;
         if (
             leafSpecPrefix.length > leafPrefix.length
                 || !(keccak256(leafSpecPrefix) == keccak256(getSlice(leafPrefix, 0, leafSpecPrefix.length)))
         ) {
-            revert("Incorrect prefix on leaf");
+            revert IncorrectLeafPrefix();
         }
 
         // Hard cap on proof depth for every spec (issue #110). The spec-defined
@@ -323,10 +361,10 @@ contract Membership is IMembership {
         // ensure min/max depths (when the spec sets them)
         if (spec.minDepth != 0) {
             if (proof.path.length < uint256(spec.minDepth)) {
-                revert("Too few InnerOps");
+                revert TooFewInnerOps();
             }
             if (proof.path.length > uint256(spec.maxDepth)) {
-                revert("Too many InnerOps");
+                revert TooManyInnerOps();
             }
         }
 
@@ -340,43 +378,43 @@ contract Membership is IMembership {
                     // 1 byte due to containing length prefix for left hash.
                     // 33 bytes due to IAVL length prefix + left hash + next IAVL legnth prefix
                     if (remainingLength != 1 && remainingLength != 34) {
-                        revert("bad prefix in inner op");
+                        revert BadInnerOpPrefix();
                     }
                     if (innerOp.hashOp != IMembershipMsgs.HashOp.SHA256) {
-                        revert("bad hash operation");
+                        revert BadInnerHashOp();
                     }
                 }
             }
 
             if (!spec.hasInnerSpec) {
-                revert("InnerSpec is required");
+                revert InnerSpecRequired();
             }
             if (spec.innerSpec.hashOp != innerOp.hashOp) {
-                revert("Unexpected inner hash operation");
+                revert UnexpectedInnerHashOp();
             }
 
             if (
                 leafSpecPrefix.length <= innerOp.prefix.length
                     && keccak256(leafSpecPrefix) == keccak256(getSlice(innerOp.prefix, 0, leafSpecPrefix.length))
             ) {
-                revert("Inner node with leaf prefix");
+                revert InnerNodeWithLeafPrefix();
             }
 
             if (innerOp.prefix.length < spec.innerSpec.minPrefixLength) {
-                revert("Inner prefix too short");
+                revert InnerPrefixTooShort();
             }
 
             uint32 maxLeftChild = uint32(spec.innerSpec.childOrder.length - 1) * (spec.innerSpec.childSize);
             if (innerOp.prefix.length > maxLeftChild + spec.innerSpec.maxPrefixLength) {
-                revert("Inner prefix too long");
+                revert InnerPrefixTooLong();
             }
 
             if (spec.innerSpec.childSize == 0) {
-                revert("Inner child size must >=1");
+                revert InnerChildSizeZero();
             }
 
             if (innerOp.suffix.length % spec.innerSpec.childSize != 0) {
-                revert("Inner suffix malformed");
+                revert InnerSuffixMalformed();
             }
         }
     }
@@ -438,31 +476,33 @@ contract Membership is IMembership {
         IMembershipMsgs.HashOp prehashOp = spec.leafOp.prehashKey;
         if (proof.hasLeft) {
             verifyExistenceProof(proof.left, spec, root, proof.left.key, proof.left.value);
-            require(
+            if (
                 compareBytes(
-                    keyForComparison(key, preHash, prehashOp), keyForComparison(proof.left.key, preHash, prehashOp)
-                ) == 1,
-                "left key isn't before key"
-            );
+                        keyForComparison(key, preHash, prehashOp), keyForComparison(proof.left.key, preHash, prehashOp)
+                    ) != 1
+            ) {
+                revert LeftKeyNotBeforeKey();
+            }
         }
 
         if (proof.hasRight) {
             verifyExistenceProof(proof.right, spec, root, proof.right.key, proof.right.value);
-            require(
+            if (
                 compareBytes(
-                    keyForComparison(key, preHash, prehashOp), keyForComparison(proof.right.key, preHash, prehashOp)
-                ) == -1,
-                "right key isn't after key"
-            );
+                        keyForComparison(key, preHash, prehashOp), keyForComparison(proof.right.key, preHash, prehashOp)
+                    ) != -1
+            ) {
+                revert RightKeyNotAfterKey();
+            }
         }
 
         if (!spec.hasInnerSpec) {
-            revert("InnerSpec is missing");
+            revert InnerSpecMissing();
         }
         IMembershipMsgs.InnerSpec memory innerSpec = spec.innerSpec;
 
         if (!proof.hasLeft && !proof.hasRight) {
-            revert("neither left nor right proof defined");
+            revert NeitherNeighborDefined();
         } else if (!proof.hasLeft && proof.hasRight) {
             ensureLeftMost(innerSpec, proof.right.path, proof.right.path.length);
         } else if (proof.hasLeft && !proof.hasRight) {
@@ -487,7 +527,7 @@ contract Membership is IMembership {
             uint256 rightPaddingIdx = orderFromPadding(innerSpec, topRight);
 
             if (!(leftPaddingIdx + 1 == rightPaddingIdx)) {
-                revert("Not left neighbor at first divergent step");
+                revert NotLeftNeighbor();
             }
 
             // left neighbor (max of left subtree) must be rightmost below divergence
@@ -495,38 +535,9 @@ contract Membership is IMembership {
             // right neighbor (min of right subtree) must be leftmost below divergence
             ensureLeftMost(innerSpec, proof.right.path, rightIndex);
         } else {
-            revert("Invalid non-existence proof");
+            revert InvalidNonExistenceProofState();
         }
         return true;
-    }
-
-    /**
-     * @dev Generic Merkle proof verification
-     * @param root The Merkle root
-     * @param leaf The leaf hash to verify
-     * @param proof Array of sibling hashes for the proof path
-     * @param index The index of the leaf in the tree
-     * @return True if the proof is valid
-     */
-    function verifyProof(bytes32 root, bytes32 leaf, bytes[] memory proof, uint256 index) internal pure returns (bool) {
-        bytes32 computedHash = leaf;
-        uint256 currentIndex = index;
-
-        for (uint256 i = 0; i < proof.length; i++) {
-            bytes32 proofElement = bytesToBytes32(proof[i]);
-
-            if (currentIndex % 2 == 0) {
-                // If current index is even, proof element is right sibling
-                computedHash = keccak256(abi.encodePacked(computedHash, proofElement));
-            } else {
-                // If current index is odd, proof element is left sibling
-                computedHash = keccak256(abi.encodePacked(proofElement, computedHash));
-            }
-
-            currentIndex = currentIndex / 2;
-        }
-
-        return computedHash == root;
     }
 
     function applyLeaf(
@@ -566,7 +577,7 @@ contract Membership is IMembership {
 
     function applyInner(IMembershipMsgs.InnerOp memory inner, bytes32 child) internal view returns (bytes32) {
         if (child == bytes32(0)) {
-            revert("missing child hash");
+            revert MissingChildHash();
         }
 
         bytes32 result;
@@ -690,7 +701,7 @@ contract Membership is IMembership {
                 }
             }
             if (!rightHasPadding && !isEmpty) {
-                revert("right padding mismatch");
+                revert RightPaddingMismatch();
             }
         }
     }
@@ -748,7 +759,7 @@ contract Membership is IMembership {
                 }
             }
             if (!leftHasPadding && !isEmpty) {
-                revert("left padding mismatch");
+                revert LeftPaddingMismatch();
             }
         }
     }
@@ -768,7 +779,7 @@ contract Membership is IMembership {
                 return branch;
             }
         }
-        revert("padding doesn't match any branch");
+        revert NoPaddingBranchFound();
     }
 
     function getPadding(
@@ -871,8 +882,8 @@ contract Membership is IMembership {
     }
 
     function getSlice(bytes memory array, uint256 from, uint256 to) internal view returns (bytes memory) {
-        require(from <= to, "Invalid range: from > to");
-        require(to <= array.length, "Range exceeds array length");
+        if (from > to) revert InvalidSliceRange();
+        if (to > array.length) revert SliceRangeExceedsLength();
 
         uint256 length = to - from;
         bytes memory result = new bytes(length);
@@ -899,7 +910,7 @@ contract Membership is IMembership {
         } else if (hashOp == IMembershipMsgs.HashOp.KECCAK256) {
             return keccak256(data);
         } else {
-            revert("Unsupported hash operation");
+            revert UnsupportedHashOp();
         }
     }
 
@@ -1119,15 +1130,15 @@ contract Membership is IMembership {
         uint256 offset = 0;
         (int64 height, uint256 newOffset) = readVarint(leafPrefix, offset);
         if (height < minHeight) {
-            revert("Invalid height in leaf prefix");
+            revert InvalidIavlPrefixHeight();
         }
         (int64 size, uint256 newOffset2) = readVarint(leafPrefix, newOffset);
         if (size < 0) {
-            revert("Invalid size in leaf prefix");
+            revert InvalidIavlPrefixSize();
         }
         (int64 version, uint256 newOffset3) = readVarint(leafPrefix, newOffset2);
         if (version < 0) {
-            revert("Invalid version in leaf prefix");
+            revert InvalidIavlPrefixVersion();
         }
 
         return leafPrefix.length - newOffset3;

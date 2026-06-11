@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/cosmos/gogoproto/proto"
@@ -550,16 +551,20 @@ type BeaconBlockRootResponse struct {
 	} `json:"data"`
 }
 
-func httpGet[T any](url string) (T, error) {
+var beaconHttpClient = &http.Client{
+	Timeout: 30 * time.Second,
+}
+
+func httpGet[T any](ctx context.Context, url string) (T, error) {
 	var result T
 
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return result, err
 	}
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := beaconHttpClient.Do(req)
 	if err != nil {
 		return result, err
 	}
@@ -581,18 +586,18 @@ func httpGet[T any](url string) (T, error) {
 	return result, nil
 }
 
-func GetFinalityUpdate(beaconAPIURL string) (*LightClientFinalityUpdate, error) {
+func GetFinalityUpdate(ctx context.Context, beaconAPIURL string) (*LightClientFinalityUpdate, error) {
 	url := fmt.Sprintf("%s/eth/v1/beacon/light_client/finality_update", beaconAPIURL)
-	response, err := httpGet[FinalityUpdateResponse](url)
+	response, err := httpGet[FinalityUpdateResponse](ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get finality update: %w", err)
 	}
 	return &response.Data, nil
 }
 
-func GetLightClientUpdates(beaconAPIURL string, startPeriod, count uint64) ([]LightClientUpdate, error) {
+func GetLightClientUpdates(ctx context.Context, beaconAPIURL string, startPeriod, count uint64) ([]LightClientUpdate, error) {
 	url := fmt.Sprintf("%s/eth/v1/beacon/light_client/updates?start_period=%d&count=%d", beaconAPIURL, startPeriod, count)
-	responses, err := httpGet[[]LightClientUpdateResponse](url)
+	responses, err := httpGet[[]LightClientUpdateResponse](ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get light client updates: %w", err)
 	}
@@ -604,45 +609,45 @@ func GetLightClientUpdates(beaconAPIURL string, startPeriod, count uint64) ([]Li
 	return updates, nil
 }
 
-func GetBeaconBlockRoot(beaconAPIURL, blockID string) (string, error) {
+func GetBeaconBlockRoot(ctx context.Context, beaconAPIURL, blockID string) (string, error) {
 	url := fmt.Sprintf("%s/eth/v1/beacon/blocks/%s/root", beaconAPIURL, blockID)
-	response, err := httpGet[BeaconBlockRootResponse](url)
+	response, err := httpGet[BeaconBlockRootResponse](ctx, url)
 	if err != nil {
 		return "", fmt.Errorf("failed to get beacon block root: %w", err)
 	}
 	return response.Data.Root, nil
 }
 
-func GetBeaconGenesis(beaconAPIURL string) (*BeaconGenesis, error) {
+func GetBeaconGenesis(ctx context.Context, beaconAPIURL string) (*BeaconGenesis, error) {
 	url := fmt.Sprintf("%s/eth/v1/beacon/genesis", beaconAPIURL)
-	response, err := httpGet[BeaconGenesisResponse](url)
+	response, err := httpGet[BeaconGenesisResponse](ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get beacon block root: %w", err)
 	}
 	return &response.Data, nil
 }
 
-func GetBeaconSpec(beaconAPIURL string) (*BeaconSpec, error) {
+func GetBeaconSpec(ctx context.Context, beaconAPIURL string) (*BeaconSpec, error) {
 	url := fmt.Sprintf("%s/eth/v1/config/spec", beaconAPIURL)
-	response, err := httpGet[BeaconSpecResponse](url)
+	response, err := httpGet[BeaconSpecResponse](ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get beacon block root: %w", err)
 	}
 	return &response.Data, nil
 }
 
-func GetBeaconBlock(beaconAPIURL string, blockId string) (*BeaconBlock, error) {
+func GetBeaconBlock(ctx context.Context, beaconAPIURL string, blockId string) (*BeaconBlock, error) {
 	url := fmt.Sprintf("%s/eth/v2/beacon/blocks/%s", beaconAPIURL, blockId)
-	response, err := httpGet[BeaconBlockResponse](url)
+	response, err := httpGet[BeaconBlockResponse](ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get beacon block root: %w", err)
 	}
 	return &response.Data, nil
 }
 
-func GetLightClientBootstrap(beaconAPIURL, blockRoot string) (*BootstrapResponse, error) {
+func GetLightClientBootstrap(ctx context.Context, beaconAPIURL, blockRoot string) (*BootstrapResponse, error) {
 	url := fmt.Sprintf("%s/eth/v1/beacon/light_client/bootstrap/%s", beaconAPIURL, blockRoot)
-	response, err := httpGet[BootstrapResponse](url)
+	response, err := httpGet[BootstrapResponse](ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get light client bootstrap: %w", err)
 	}

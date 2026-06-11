@@ -92,6 +92,23 @@ abstract contract RateLimitUpgradeable is IRateLimitErrors, IRateLimit, AccessMa
         $._lastUpdate[token] = block.timestamp;
     }
 
+    /// @notice Increments the usage for a token without checking the rate limit
+    /// @dev This function is used to restore usage on refunds, ensuring it doesn't revert.
+    /// @param token The token address
+    /// @param amount The amount to add to the usage
+    function _increaseDailyUsageUncapped(address token, uint256 amount) internal {
+        RateLimitStorage storage $ = _getRateLimitStorage();
+
+        uint256 rateLimit = $._rateLimits[token];
+        if (rateLimit == 0) {
+            return;
+        }
+
+        uint256 usage = _getCurrentUsage(token) + amount;
+        $._usage[token] = usage;
+        $._lastUpdate[token] = block.timestamp;
+    }
+
     /// @notice Returns the current decayed usage for a token in the rolling window
     /// @param token The token address
     /// @return The current usage (decayed from last update)

@@ -123,6 +123,65 @@ library Predicates {
         );
     }
 
+    /// @notice Check only the trust-threshold overlap against the trusted next
+    /// validator set, tallying by relayer-supplied trusted-set indices for the
+    /// active proof signer slots. This keeps the non-adjacent trust-continuity
+    /// check while avoiding the O(commit signatures * trusted validators)
+    /// address scan. `type(uint32).max` marks an active signer that is not in
+    /// the trusted set.
+    function verifyTrustedCommitOverlapBySignerPubkey(
+        IICS07TendermintMsgs.UntrustedBlockState memory untrustedState,
+        IICS07TendermintMsgs.TrustedBlockState memory trustedState,
+        IICS07TendermintMsgs.Options memory options,
+        uint32[] memory trustedOverlapIndices,
+        bytes32[] memory signerPubkeys,
+        bool[] memory active
+    )
+        internal
+        pure
+    {
+        uint64 trustedNextHeight = trustedState.height + 1;
+        if (untrustedState.signedHeader.header.height == trustedNextHeight) {
+            return;
+        }
+
+        require(
+            trustedOverlapIndices.length == signerPubkeys.length && active.length == signerPubkeys.length,
+            "invalid trusted overlap signer data"
+        );
+
+        IICS07TendermintMsgs.ValidatorInfo[] memory validators = trustedState.nextValidatorSet.validators;
+        bool[] memory seen = new bool[](validators.length);
+        uint64 totalVotingPower = _sumVotingPower(validators);
+        uint64 talliedPower = 0;
+
+        for (uint256 i = 0; i < signerPubkeys.length; i++) {
+            if (!active[i]) {
+                continue;
+            }
+
+            uint32 trustedIndex = trustedOverlapIndices[i];
+            if (trustedIndex == type(uint32).max) {
+                continue;
+            }
+            require(trustedIndex < validators.length, "trusted overlap index out of range");
+            require(!seen[trustedIndex], "duplicate trusted overlap signer");
+            seen[trustedIndex] = true;
+
+            require(validators[trustedIndex].pubKey == signerPubkeys[i], "trusted overlap pubkey mismatch");
+            talliedPower += validators[trustedIndex].votingPower;
+
+            if (_meetsTrustThreshold(talliedPower, totalVotingPower, options.trustThreshold)) {
+                return;
+            }
+        }
+
+        require(
+            _meetsTrustThreshold(talliedPower, totalVotingPower, options.trustThreshold),
+            "insufficient voting power overlap"
+        );
+    }
+
     function validateCommit(
         IICS07TendermintMsgs.SignedHeader memory signedHeader,
         IICS07TendermintMsgs.ValidatorSet memory validators

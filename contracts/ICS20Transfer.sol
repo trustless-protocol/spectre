@@ -448,7 +448,7 @@ contract ICS20Transfer is
             }
         }
 
-        escrow.send(IERC20(erc20Address), refundee, packetData.amount);
+        escrow.sendRefund(IERC20(erc20Address), refundee, packetData.amount);
         return (erc20Address, refundee);
     }
 

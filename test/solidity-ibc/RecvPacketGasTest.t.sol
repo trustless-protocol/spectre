@@ -204,11 +204,14 @@ contract RecvPacketGasTest is IntegrationTest {
         uint64[] memory tsS = new uint64[](bucket);
         uint32[] memory tsN = new uint32[](bucket);
         bool[] memory act = new bool[](bucket);
+        uint32[] memory trustedOverlap = new uint32[](bucket);
         for (uint256 i = 0; i < bucket; i++) {
+            trustedOverlap[i] = type(uint32).max;
             if (i < cfg.activeCount) {
                 idx[i] = uint32(i);
                 pks[i] = header.validatorSet.validators[i].pubKey;
                 act[i] = true;
+                trustedOverlap[i] = uint32(i);
             }
             tsS[i] = uint64(1_700_000_000 + i);
             tsN[i] = uint32(i * 1_000_000);
@@ -228,6 +231,7 @@ contract RecvPacketGasTest is IntegrationTest {
         m.timestampSeconds = tsS;
         m.timestampNanos = tsN;
         m.active = act;
+        m.trustedOverlapIndices = trustedOverlap;
         bytes memory encodedUpdate = abi.encode(m);
 
         // First, update the client state to seed the consensus state height 1001

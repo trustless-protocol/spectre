@@ -111,26 +111,93 @@ contract ICS02ClientTest is Test {
 
     function test_MigrateClient() public {
         address unauthorized = makeAddr("unauthorized");
+        address clientMigrator = makeAddr("clientMigrator");
 
-        vm.startPrank(unauthorized);
+        // Grant the per-clientId migrator role for clientIdentifier to clientMigrator.
+        uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
+        accessManager.grantRole(migratorRole, clientMigrator, 0);
+
         string memory counterpartyId = "42-dummy-01";
         address newLightClient = makeAddr("newLightClient");
         IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
             IICS02ClientMsgs.CounterpartyInfo(counterpartyId, randomPrefix);
 
-        vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
+        // An address without the per-clientId migrator role is rejected.
+        vm.prank(unauthorized);
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, unauthorized)
+        );
         ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
-        vm.stopPrank();
 
+        // The granted migrator can migrate that specific clientId.
+        vm.prank(clientMigrator);
         ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
         ILightClient fetchedLightClient = ics02Client.getClient(clientIdentifier);
         assertEq(address(fetchedLightClient), newLightClient, "client not migrated");
-        vm.stopPrank();
 
         IICS02ClientMsgs.CounterpartyInfo memory fetchedCounterparty = ics02Client.getCounterparty(clientIdentifier);
         assertEq(fetchedCounterparty.clientId, counterpartyId, "counterparty not migrated");
         assertEq(fetchedCounterparty.merklePrefix, randomPrefix, "counterparty not migrated");
         assertEq(ics02Client.getNextClientSeq(), 1, "client seq not incremented");
+
+        // A grant for one clientId must not authorize migration of any other clientId.
+        // Use the unrestricted addClient (no custom id) to register a second default client.
+        string memory otherClientId = ics02Client.addClient(counterpartyInfo, lightClient);
+
+        IICS02ClientMsgs.CounterpartyInfo memory otherCounterparty =
+            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, randomPrefix);
+        vm.prank(clientMigrator);
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS02ClientErrors.IBCUnauthorizedMigrator.selector, otherClientId, clientMigrator)
+        );
+        ics02Client.migrateClient(otherClientId, otherCounterparty, newLightClient);
+    }
+
+    function test_failure_MigrateClient_withDelay() public {
+        address delayedMigrator = makeAddr("delayedMigrator");
+
+        // Grant the per-clientId migrator role for clientIdentifier to delayedMigrator with a non-zero execution delay.
+        uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
+        accessManager.grantRole(migratorRole, delayedMigrator, 60); // 60 seconds delay
+
+        string memory counterpartyId = "42-dummy-01";
+        address newLightClient = makeAddr("newLightClient");
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, randomPrefix);
+
+        // Even though they have the role, because it has a non-zero delay, the migration should revert immediately.
+        vm.prank(delayedMigrator);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, delayedMigrator
+            )
+        );
+        ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
+    }
+
+    function test_failure_MigrateClient_whenClosed() public {
+        address clientMigrator = makeAddr("clientMigrator");
+
+        // Grant the per-clientId migrator role for clientIdentifier to clientMigrator.
+        uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
+        accessManager.grantRole(migratorRole, clientMigrator, 0);
+
+        string memory counterpartyId = "42-dummy-01";
+        address newLightClient = makeAddr("newLightClient");
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, randomPrefix);
+
+        // Close the target contract via AccessManager.
+        accessManager.setTargetClosed(address(ics02Client), true);
+
+        // A granted migrator calling migrateClient should revert when the target is closed.
+        vm.prank(clientMigrator);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, clientMigrator
+            )
+        );
+        ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
     }
 
     function test_Misbehaviour() public {

@@ -38,6 +38,22 @@ contract PredicatesWrapper {
     {
         Predicates.verifyTrustedCommitOverlap(untrustedState, trustedState, options);
     }
+
+    function verifyTrustedCommitOverlapBySignerPubkey(
+        IICS07TendermintMsgs.UntrustedBlockState memory untrustedState,
+        IICS07TendermintMsgs.TrustedBlockState memory trustedState,
+        IICS07TendermintMsgs.Options memory options,
+        uint32[] memory trustedOverlapIndices,
+        bytes32[] memory signerPubkeys,
+        bool[] memory active
+    )
+        external
+        pure
+    {
+        Predicates.verifyTrustedCommitOverlapBySignerPubkey(
+            untrustedState, trustedState, options, trustedOverlapIndices, signerPubkeys, active
+        );
+    }
 }
 
 contract PredicatesTest is Test, IICS07TendermintMsgs {
@@ -386,5 +402,83 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
 
         vm.expectRevert("insufficient voting power overlap");
         wrapper.verifyTrustedCommitOverlap(untrusted, trusted, opts);
+    }
+
+    function testVerifyTrustedCommitOverlapBySignerPubkeyNonAdjacentSucceeds() public view {
+        ValidatorInfo[] memory vals = new ValidatorInfo[](3);
+        vals[0] = _makeValidator("val1", bytes32(uint256(1)), 40);
+        vals[1] = _makeValidator("val2", bytes32(uint256(2)), 40);
+        vals[2] = _makeValidator("val3", bytes32(uint256(3)), 20);
+
+        CommitSig[] memory sigs = new CommitSig[](3);
+        sigs[0] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val1");
+        sigs[1] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val2");
+        sigs[2] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_ABSENT, "val3");
+
+        UntrustedBlockState memory untrusted = UntrustedBlockState({
+            signedHeader: _makeSignedHeader(sigs, bytes32(uint256(0xabc))), validatorSet: _makeValidatorSet(vals)
+        });
+        TrustedBlockState memory trusted = TrustedBlockState({
+            chainId: "test-chain",
+            headerTime: 900,
+            height: 98,
+            nextValidatorSet: _makeValidatorSet(vals),
+            nextValidatorHash: bytes32(0)
+        });
+        Options memory opts = Options({
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }), trustingPeriod: 1000, clockDrift: 10
+        });
+
+        uint32[] memory trustedOverlapIndices = new uint32[](3);
+        trustedOverlapIndices[0] = 0;
+        trustedOverlapIndices[1] = 1;
+        trustedOverlapIndices[2] = type(uint32).max;
+        bytes32[] memory signerPubkeys = new bytes32[](3);
+        signerPubkeys[0] = vals[0].pubKey;
+        signerPubkeys[1] = vals[1].pubKey;
+        signerPubkeys[2] = bytes32(0);
+        bool[] memory active = new bool[](3);
+        active[0] = true;
+        active[1] = true;
+
+        wrapper.verifyTrustedCommitOverlapBySignerPubkey(
+            untrusted, trusted, opts, trustedOverlapIndices, signerPubkeys, active
+        );
+    }
+
+    function testVerifyTrustedCommitOverlapBySignerPubkeyRejectsMismatch() public {
+        ValidatorInfo[] memory vals = new ValidatorInfo[](2);
+        vals[0] = _makeValidator("val1", bytes32(uint256(1)), 60);
+        vals[1] = _makeValidator("val2", bytes32(uint256(2)), 40);
+
+        CommitSig[] memory sigs = new CommitSig[](2);
+        sigs[0] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val1");
+        sigs[1] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_ABSENT, "val2");
+
+        UntrustedBlockState memory untrusted = UntrustedBlockState({
+            signedHeader: _makeSignedHeader(sigs, bytes32(uint256(0xabc))), validatorSet: _makeValidatorSet(vals)
+        });
+        TrustedBlockState memory trusted = TrustedBlockState({
+            chainId: "test-chain",
+            headerTime: 900,
+            height: 98,
+            nextValidatorSet: _makeValidatorSet(vals),
+            nextValidatorHash: bytes32(0)
+        });
+        Options memory opts = Options({
+            trustThreshold: TrustThreshold({ numerator: 1, denominator: 3 }), trustingPeriod: 1000, clockDrift: 10
+        });
+
+        uint32[] memory trustedOverlapIndices = new uint32[](1);
+        trustedOverlapIndices[0] = 0;
+        bytes32[] memory signerPubkeys = new bytes32[](1);
+        signerPubkeys[0] = bytes32(uint256(0xDEAD));
+        bool[] memory active = new bool[](1);
+        active[0] = true;
+
+        vm.expectRevert("trusted overlap pubkey mismatch");
+        wrapper.verifyTrustedCommitOverlapBySignerPubkey(
+            untrusted, trusted, opts, trustedOverlapIndices, signerPubkeys, active
+        );
     }
 }
