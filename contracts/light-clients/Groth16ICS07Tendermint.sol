@@ -6,7 +6,6 @@ pragma solidity ^0.8.28;
 import { IICS07TendermintMsgs } from "./msgs/IICS07TendermintMsgs.sol";
 import { IUpdateClientMsgs } from "./msgs/IUpdateClientMsgs.sol";
 import { IMembershipMsgs } from "./msgs/IMembershipMsgs.sol";
-import { IUpdateClientAndMembershipMsgs } from "./msgs/IUcAndMembershipMsgs.sol";
 import { IMisbehaviourMsgs } from "./msgs/IMisbehaviourMsgs.sol";
 import { IGroth16Msgs } from "./msgs/IGroth16Msgs.sol";
 import { ILightClientMsgs } from "../msgs/ILightClientMsgs.sol";
