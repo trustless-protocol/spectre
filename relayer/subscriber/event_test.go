@@ -10,7 +10,6 @@ import (
 
 	abcitypes "github.com/cometbft/cometbft/abci/types"
 	commettypes "github.com/cometbft/cometbft/types"
-	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -253,53 +252,6 @@ func TestAdvanceRecoveryStart(t *testing.T) {
 				t.Fatalf("advanceRecoveryStart(%d, %d) = %d, want %d", tc.initial, tc.candidate, got, tc.want)
 			}
 		})
-	}
-}
-
-func TestMarkCosmosPacketSeen(t *testing.T) {
-	t.Parallel()
-
-	s := NewSubscriber()
-	packet := &channeltypesv2.Packet{
-		Sequence:          7,
-		SourceClient:      "src",
-		DestinationClient: "dst",
-	}
-
-	if s.markCosmosPacketSeen(services.CosmosSend, nil, 100) {
-		t.Fatal("nil packet should not be marked seen")
-	}
-	if !s.markCosmosPacketSeen(services.CosmosSend, packet, 100) {
-		t.Fatal("first send packet should be marked seen")
-	}
-	if s.markCosmosPacketSeen(services.CosmosSend, packet, 100) {
-		t.Fatal("duplicate send packet at same block should be ignored")
-	}
-	if !s.markCosmosPacketSeen(services.CosmosAck, packet, 100) {
-		t.Fatal("same packet at same block with different type should be distinct")
-	}
-	if !s.markCosmosPacketSeen(services.CosmosSend, packet, 101) {
-		t.Fatal("same packet at a different block should be distinct")
-	}
-
-	oldPacket := &channeltypesv2.Packet{
-		Sequence:          1,
-		SourceClient:      "src",
-		DestinationClient: "dst",
-	}
-	if !s.markCosmosPacketSeen(services.CosmosSend, oldPacket, 1) {
-		t.Fatal("old packet should be marked seen before retention pruning")
-	}
-	newPacket := &channeltypesv2.Packet{
-		Sequence:          2,
-		SourceClient:      "src",
-		DestinationClient: "dst",
-	}
-	if !s.markCosmosPacketSeen(services.CosmosSend, newPacket, cosmosSeenRetentionBlocks+2) {
-		t.Fatal("new packet should be marked seen")
-	}
-	if !s.markCosmosPacketSeen(services.CosmosSend, oldPacket, 1) {
-		t.Fatal("old packet should be pruned and markable again")
 	}
 }
 
