@@ -121,6 +121,7 @@ func (s *Services) StartLoop(ctx Context) {
 				latestBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ethUpdateHeight), s.cosmosConfig.TrustLevel)
 				if err != nil {
 					log.Printf("[Routine] Failed to update cosmos light client: %v", err)
+					time.Sleep(time.Second)
 					continue
 				}
 
@@ -592,7 +593,11 @@ func (s *Services) waitBeaconFinality(ctx Context, eventBlock uint64, tag string
 			log.Printf("[%s] failed to get finality update: %v", tag, err)
 			continue
 		}
-		execBlock, _ := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+		execBlock, err := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+		if err != nil {
+			log.Printf("[%s] failed to parse finalized block number '%s': %v", tag, finalityUpdate.FinalizedHeader.Execution.BlockNumber, err)
+			continue
+		}
 		if execBlock > s.lastFinalizedExecBlock {
 			s.lastFinalizedExecBlock = execBlock
 		}
@@ -939,7 +944,11 @@ func (s *Services) ethProofHeight(ctx Context, eventBlock uint64, sequence uint6
 			log.Printf("[%s] seq=%d: failed to get finality update: %v", tag, sequence, err)
 			continue
 		}
-		execBlock, _ := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+		execBlock, err := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+		if err != nil {
+			log.Printf("[%s] seq=%d: failed to parse finalized block number '%s': %v", tag, sequence, finalityUpdate.FinalizedHeader.Execution.BlockNumber, err)
+			continue
+		}
 		if execBlock >= eventBlock {
 			log.Printf("[%s] seq=%d: beacon finalized block %d >= event block %d", tag, sequence, execBlock, eventBlock)
 			finalized = true
