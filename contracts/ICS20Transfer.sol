@@ -332,6 +332,7 @@ contract ICS20Transfer is
         require(packetData.amount > 0, ICS20InvalidAmount(0));
 
         address receiver = ICS20Lib.mustHexStringToAddress(packetData.receiver);
+        require(receiver != address(0), ICS20InvalidAddress(packetData.receiver));
         IEscrow escrow = _getOrCreateEscrow(msg_.destinationClient);
         bytes memory denomBz = bytes(packetData.denom);
         bytes memory prefix = ICS20Lib.getDenomPrefix(msg_.payload.sourcePort, msg_.sourceClient);
