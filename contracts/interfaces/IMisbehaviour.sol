@@ -6,10 +6,13 @@ import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs
 
 interface IMisbehaviour {
     function misbehaviour(
-       IICS07TendermintMsgs.ClientState memory clientState,
+        IICS07TendermintMsgs.ClientState memory clientState,
         IMisbehaviourMsgs.Misbehaviour memory misbehaviour,
         IICS07TendermintMsgs.ConsensusState memory trustedConsensusState1,
         IICS07TendermintMsgs.ConsensusState memory trustedConsensusState2,
         uint128 time
-    ) external pure returns (IMisbehaviourMsgs.MisbehaviourOutput memory);
+    )
+        external
+        pure
+        returns (IMisbehaviourMsgs.MisbehaviourOutput memory);
 }

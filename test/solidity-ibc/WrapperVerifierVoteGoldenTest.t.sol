@@ -62,7 +62,11 @@ contract WrapperVerifierVoteGoldenTest is Test {
         h = new WrapperVerifierVoteHarness();
     }
 
-    function _shared(uint64 height, uint64 round, bytes memory chainId)
+    function _shared(
+        uint64 height,
+        uint64 round,
+        bytes memory chainId
+    )
         internal
         pure
         returns (IVerifier.SharedBlock memory)

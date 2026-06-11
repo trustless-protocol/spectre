@@ -96,7 +96,8 @@ contract MembershipDepthTest is Test {
     function test_calculateExistenceRoot_revertsWhenPathExceedsMaxDepth() public {
         IMembershipMsgs.InnerOp[] memory longPath = new IMembershipMsgs.InnerOp[](MAX_DEPTH + 1);
         for (uint256 i = 0; i <= MAX_DEPTH; i++) {
-            longPath[i] = IMembershipMsgs.InnerOp({ hashOp: IMembershipMsgs.HashOp.SHA256, prefix: hex"01", suffix: "" });
+            longPath[i] =
+                IMembershipMsgs.InnerOp({ hashOp: IMembershipMsgs.HashOp.SHA256, prefix: hex"01", suffix: "" });
         }
         IMembershipMsgs.ExistenceProof memory proof = IMembershipMsgs.ExistenceProof({
             key: bytes("k"),
@@ -119,7 +120,8 @@ contract MembershipDepthTest is Test {
     function test_membership_nonExistence_revertsWhenLeftPathExceedsMaxDepth() public {
         IMembershipMsgs.InnerOp[] memory longPath = new IMembershipMsgs.InnerOp[](MAX_DEPTH + 1);
         for (uint256 i = 0; i <= MAX_DEPTH; i++) {
-            longPath[i] = IMembershipMsgs.InnerOp({ hashOp: IMembershipMsgs.HashOp.SHA256, prefix: hex"01", suffix: "" });
+            longPath[i] =
+                IMembershipMsgs.InnerOp({ hashOp: IMembershipMsgs.HashOp.SHA256, prefix: hex"01", suffix: "" });
         }
 
         IMembershipMsgs.ExistenceProof memory left = IMembershipMsgs.ExistenceProof({
@@ -136,11 +138,7 @@ contract MembershipDepthTest is Test {
 
         IMembershipMsgs.ExistenceProof memory emptyProof; // unused right neighbour
         IMembershipMsgs.NonExistenceProof memory ne = IMembershipMsgs.NonExistenceProof({
-            key: bytes("absent"),
-            hasLeft: true,
-            left: left,
-            hasRight: false,
-            right: emptyProof
+            key: bytes("absent"), hasLeft: true, left: left, hasRight: false, right: emptyProof
         });
 
         // proofs.length must equal proofSpecs.length (2) to reach calculateNonExistenceRoot.

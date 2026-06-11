@@ -6,19 +6,20 @@ import { IMembership } from "../interfaces/IMembership.sol";
 
 import "@openzeppelin-contracts/utils/math/Math.sol";
 import "@openzeppelin-contracts/utils/Bytes.sol";
+
 /**
  * @title MerkleTreeMembership
  * @dev Contract to verify membership of key-value pairs in a Merkle tree
  * Converted from Rust zkVM code for Cosmos SDK proof verification
  */
-contract Membership  is IMembership {
+contract Membership is IMembership {
     using Math for uint256;
     using Bytes for *;
-     
+
     // Events
     event MembershipVerified(bytes32 indexed commitmentRoot, uint256 pairsCount);
     event NonMembershipVerified(bytes32 indexed commitmentRoot, bytes[] key);
-    
+
     // Custom errors
     error InvalidLength();
     error EmptyRequest();
@@ -101,16 +102,18 @@ contract Membership  is IMembership {
         bytes32 appHash,
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs
-    ) public {
+    )
+        public
+    {
         if (kvPairs.length == 0) {
             revert EmptyRequest();
         }
-        
+
         if (kvPairs.length != merkleProofs.length) {
             revert InvalidLength();
         }
-        
-        bytes32 commitmentRoot = appHash;        
+
+        bytes32 commitmentRoot = appHash;
         IMembershipMsgs.ProofSpec[] memory proofSpecs = new IMembershipMsgs.ProofSpec[](2);
         proofSpecs[0] = iavlSpec();
         proofSpecs[1] = tendermintSpec();
@@ -131,10 +134,10 @@ contract Membership  is IMembership {
                 verifyMembership(proofSpecs, commitmentRoot, kvPair.path, kvPair.value, 0, merkleProof);
             }
         }
-        
+
         emit MembershipVerified(commitmentRoot, kvPairs.length);
     }
-    
+
     function verifyMembership(
         IMembershipMsgs.ProofSpec[] memory proofSpecs,
         bytes32 root,
@@ -142,7 +145,10 @@ contract Membership  is IMembership {
         bytes memory value,
         uint256 startIndex,
         IMembershipMsgs.MerkleProof memory proof
-    ) internal view {
+    )
+        internal
+        view
+    {
         if (proof.proofs.length == 0) {
             revert MissingMerkleProof();
         }
@@ -186,12 +192,7 @@ contract Membership  is IMembership {
                 revert InvalidMerkleProof();
             }
 
-            subroot = _verifyExistenceProofBytes32(
-                commitmentProof.existenceProof,
-                proofSpecs[i],
-                keyPath,
-                valueUpdate
-            );
+            subroot = _verifyExistenceProofBytes32(commitmentProof.existenceProof, proofSpecs[i], keyPath, valueUpdate);
             valueUpdate = subroot;
         }
 
@@ -213,7 +214,11 @@ contract Membership  is IMembership {
         bytes32 root,
         bytes[] memory path,
         IMembershipMsgs.MerkleProof memory proof
-    ) internal view returns (bool) {
+    )
+        internal
+        view
+        returns (bool)
+    {
         if (proof.proofs.length == 0) {
             revert MissingMerkleProof();
         }
@@ -235,8 +240,8 @@ contract Membership  is IMembership {
         IMembershipMsgs.CommitmentProof memory firstProof = proof.proofs[0];
         IMembershipMsgs.ProofSpec memory firstSpec = proofSpecs[0];
 
-        // keys are represented from root-to-leaf        
-        bytes memory key = path[proofLength-1];
+        // keys are represented from root-to-leaf
+        bytes memory key = path[proofLength - 1];
 
         if (firstProof.proofType != IMembershipMsgs.ProofType.NON_EXIST) {
             revert InvalidMerkleProof();
@@ -249,23 +254,12 @@ contract Membership  is IMembership {
             revert FailedToVerifyMembership();
         }
         // verify membership proofs starting from index 1 with value = subroot
-        verifyMembership(
-            proofSpecs,
-            root,
-            path,
-            abi.encodePacked(subroot),
-            1,
-            proof
-        );
+        verifyMembership(proofSpecs, root, path, abi.encodePacked(subroot), 1, proof);
 
         return true;
     }
 
-    function calculateExistenceRoot(IMembershipMsgs.ExistenceProof memory proof) 
-        internal 
-        view 
-        returns (bytes32) 
-    {
+    function calculateExistenceRoot(IMembershipMsgs.ExistenceProof memory proof) internal view returns (bytes32) {
         if (proof.key.length == 0 || proof.value.length == 0) {
             revert InvalidExistenceProof();
         }
@@ -284,15 +278,11 @@ contract Membership  is IMembership {
         for (uint256 i = 0; i < proof.path.length; i++) {
             current = applyInner(proof.path[i], current);
         }
-        
+
         return current;
     }
 
-    function calculateNonExistenceRoot(IMembershipMsgs.NonExistenceProof memory proof)
-        internal
-        view
-        returns (bytes32)
-    {
+    function calculateNonExistenceRoot(IMembershipMsgs.NonExistenceProof memory proof) internal view returns (bytes32) {
         if (proof.hasLeft && proof.hasRight) {
             // Both neighbours must live in the SAME subtree. Assert their existence
             // roots match explicitly here (issue #112): the returned root is reused
@@ -318,7 +308,10 @@ contract Membership  is IMembership {
     function checkExistenceProof(
         IMembershipMsgs.ExistenceProof memory proof,
         IMembershipMsgs.ProofSpec memory spec
-    ) internal view {
+    )
+        internal
+        view
+    {
         if (!spec.hasLeafSpec) {
             revert MissingLeafSpec();
         }
@@ -350,8 +343,10 @@ contract Membership  is IMembership {
             revert UnexpectedLeafPrehashValueOp();
         }
         bytes memory leafSpecPrefix = spec.leafOp.prefix;
-        if (leafSpecPrefix.length > leafPrefix.length ||
-            !(keccak256(leafSpecPrefix) == keccak256(getSlice(leafPrefix, 0, leafSpecPrefix.length)))) {
+        if (
+            leafSpecPrefix.length > leafPrefix.length
+                || !(keccak256(leafSpecPrefix) == keccak256(getSlice(leafPrefix, 0, leafSpecPrefix.length)))
+        ) {
             revert IncorrectLeafPrefix();
         }
 
@@ -398,8 +393,10 @@ contract Membership  is IMembership {
                 revert UnexpectedInnerHashOp();
             }
 
-            if (leafSpecPrefix.length <= innerOp.prefix.length &&
-                keccak256(leafSpecPrefix) == keccak256(getSlice(innerOp.prefix, 0, leafSpecPrefix.length))) {
+            if (
+                leafSpecPrefix.length <= innerOp.prefix.length
+                    && keccak256(leafSpecPrefix) == keccak256(getSlice(innerOp.prefix, 0, leafSpecPrefix.length))
+            ) {
                 revert InnerNodeWithLeafPrefix();
             }
 
@@ -428,7 +425,11 @@ contract Membership  is IMembership {
         bytes32 subroot,
         bytes memory key,
         bytes memory value
-    ) internal view returns (bool) {
+    )
+        internal
+        view
+        returns (bool)
+    {
         checkExistenceProof(proof, spec);
         if (keccak256(proof.key) != keccak256(key) || keccak256(proof.value) != keccak256(value)) {
             revert ProvidedKeyValueMismatch();
@@ -446,7 +447,11 @@ contract Membership  is IMembership {
         IMembershipMsgs.ProofSpec memory spec,
         bytes memory key,
         bytes32 value
-    ) internal view returns (bytes32) {
+    )
+        internal
+        view
+        returns (bytes32)
+    {
         checkExistenceProof(proof, spec);
         if (proof.value.length != 32) {
             revert InvalidValueLength();
@@ -456,32 +461,37 @@ contract Membership  is IMembership {
         }
         return calculateExistenceRoot(proof);
     }
-    
+
     function verifyNonExistenceProof(
         IMembershipMsgs.NonExistenceProof memory proof,
         IMembershipMsgs.ProofSpec memory spec,
         bytes32 root,
         bytes memory key
-    ) internal view returns (bool) {
-
+    )
+        internal
+        view
+        returns (bool)
+    {
         bool preHash = spec.prehashKeyBeforeComparison;
         IMembershipMsgs.HashOp prehashOp = spec.leafOp.prehashKey;
         if (proof.hasLeft) {
             verifyExistenceProof(proof.left, spec, root, proof.left.key, proof.left.value);
-            if (compareBytes(
-                keyForComparison(key, preHash, prehashOp),
-                keyForComparison(proof.left.key, preHash, prehashOp)
-            ) != 1) {
+            if (
+                compareBytes(
+                        keyForComparison(key, preHash, prehashOp), keyForComparison(proof.left.key, preHash, prehashOp)
+                    ) != 1
+            ) {
                 revert LeftKeyNotBeforeKey();
             }
         }
 
         if (proof.hasRight) {
             verifyExistenceProof(proof.right, spec, root, proof.right.key, proof.right.value);
-            if (compareBytes(
-                keyForComparison(key, preHash, prehashOp),
-                keyForComparison(proof.right.key, preHash, prehashOp)
-            ) != -1) {
+            if (
+                compareBytes(
+                        keyForComparison(key, preHash, prehashOp), keyForComparison(proof.right.key, preHash, prehashOp)
+                    ) != -1
+            ) {
                 revert RightKeyNotAfterKey();
             }
         }
@@ -498,15 +508,14 @@ contract Membership  is IMembership {
         } else if (proof.hasLeft && !proof.hasRight) {
             ensureRightMost(innerSpec, proof.left.path, proof.left.path.length);
         } else if (proof.hasLeft && proof.hasRight) {
-
             uint256 leftIndex = proof.left.path.length - 1;
             uint256 rightIndex = proof.right.path.length - 1;
 
             IMembershipMsgs.InnerOp memory topLeft = proof.left.path[leftIndex];
             IMembershipMsgs.InnerOp memory topRight = proof.right.path[rightIndex];
-            while (leftIndex > 0 && rightIndex > 0
-                && keccak256(topLeft.prefix) == keccak256(topRight.prefix)
-                && keccak256(topLeft.suffix) == keccak256(topRight.suffix)
+            while (
+                leftIndex > 0 && rightIndex > 0 && keccak256(topLeft.prefix) == keccak256(topRight.prefix)
+                    && keccak256(topLeft.suffix) == keccak256(topRight.suffix)
             ) {
                 leftIndex--;
                 rightIndex--;
@@ -530,11 +539,16 @@ contract Membership  is IMembership {
         }
         return true;
     }
+
     function applyLeaf(
         IMembershipMsgs.LeafOp memory leafOp,
         bytes memory key,
         bytes memory value
-    ) internal pure returns (bytes32) {
+    )
+        internal
+        pure
+        returns (bytes32)
+    {
         bytes memory hashedData = leafOp.prefix;
 
         bytes memory prekey = prepareLeafData(leafOp.prehashKey, key);
@@ -561,10 +575,7 @@ contract Membership  is IMembership {
         return hashData(result, leafOp.hashOp);
     }
 
-    function applyInner(
-        IMembershipMsgs.InnerOp memory inner,
-        bytes32 child
-    ) internal view returns (bytes32) {
+    function applyInner(IMembershipMsgs.InnerOp memory inner, bytes32 child) internal view returns (bytes32) {
         if (child == bytes32(0)) {
             revert MissingChildHash();
         }
@@ -611,10 +622,7 @@ contract Membership  is IMembership {
         }
     }
 
-    function prepareLeafData(
-        IMembershipMsgs.HashOp prehashOp,
-        bytes memory data
-    ) internal pure returns (bytes memory) {
+    function prepareLeafData(IMembershipMsgs.HashOp prehashOp, bytes memory data) internal pure returns (bytes memory) {
         if (data.length == 0) {
             revert InputDataMissing();
         }
@@ -651,7 +659,10 @@ contract Membership  is IMembership {
         IMembershipMsgs.InnerSpec memory innerSpec,
         IMembershipMsgs.InnerOp[] memory path,
         uint256 length
-    ) internal view {
+    )
+        internal
+        view
+    {
         IMembershipMsgs.Padding memory padding = getPadding(innerSpec, innerSpec.childOrder.length - 1);
 
         for (uint256 i = 0; i < length; i++) {
@@ -682,7 +693,8 @@ contract Membership  is IMembership {
                     }
 
                     uint256 from = idx * childSize;
-                    if (keccak256(innerSpec.emptyChild) != keccak256(getSlice(innerOp.suffix, from, from + childSize))) {
+                    if (keccak256(innerSpec.emptyChild) != keccak256(getSlice(innerOp.suffix, from, from + childSize)))
+                    {
                         isEmpty = false;
                         break;
                     }
@@ -698,7 +710,10 @@ contract Membership  is IMembership {
         IMembershipMsgs.InnerSpec memory innerSpec,
         IMembershipMsgs.InnerOp[] memory path,
         uint256 length
-    ) internal view {
+    )
+        internal
+        view
+    {
         // fails unless this is the left-most path in the tree, excluding placeholder (empty child) nodes
         IMembershipMsgs.Padding memory padding = getPadding(innerSpec, 0);
         for (uint256 i = 0; i < length; i++) {
@@ -711,7 +726,7 @@ contract Membership  is IMembership {
                 isEmpty = false;
             } else {
                 // compare prefix with the expected number of empty branches
-                uint256 childSize = uint256(innerSpec.childSize); 
+                uint256 childSize = uint256(innerSpec.childSize);
                 (bool subSuccess, uint256 actualPrefix) = Math.trySub(innerOp.prefix.length, childSize * leftBranches);
                 if (!subSuccess) {
                     isEmpty = false;
@@ -733,7 +748,10 @@ contract Membership  is IMembership {
                         }
 
                         uint256 from = actualPrefix + idx * childSize;
-                        if (keccak256(innerSpec.emptyChild) != keccak256(getSlice(innerOp.prefix, from, from + childSize))) {
+                        if (
+                            keccak256(innerSpec.emptyChild)
+                                != keccak256(getSlice(innerOp.prefix, from, from + childSize))
+                        ) {
                             isEmpty = false;
                             break;
                         }
@@ -749,7 +767,11 @@ contract Membership  is IMembership {
     function orderFromPadding(
         IMembershipMsgs.InnerSpec memory innerSpec,
         IMembershipMsgs.InnerOp memory innerOp
-    ) internal pure returns (uint256) {
+    )
+        internal
+        pure
+        returns (uint256)
+    {
         uint256 childOrderLength = innerSpec.childOrder.length;
         for (uint256 branch = 0; branch < childOrderLength; branch++) {
             IMembershipMsgs.Padding memory padding = getPadding(innerSpec, uint32(branch));
@@ -759,11 +781,15 @@ contract Membership  is IMembership {
         }
         revert NoPaddingBranchFound();
     }
-    
+
     function getPadding(
         IMembershipMsgs.InnerSpec memory innerSpec,
         uint256 branch
-    ) internal pure returns (IMembershipMsgs.Padding memory) {
+    )
+        internal
+        pure
+        returns (IMembershipMsgs.Padding memory)
+    {
         uint256 foundIdx = 0;
         bool found = false;
         for (uint256 i = 0; i < innerSpec.childOrder.length; i++) {
@@ -773,31 +799,30 @@ contract Membership  is IMembership {
                 break;
             }
         }
-        
+
         // If branch not found, revert with error
         if (!found) {
             revert BranchNotFound(branch);
         }
-    
+
         uint32 idx = uint32(foundIdx);
         uint32 prefix = idx * innerSpec.childSize;
         uint256 suffix = uint256(innerSpec.childSize) * (innerSpec.childOrder.length - 1 - idx);
         return IMembershipMsgs.Padding({
-            minPrefix: prefix + innerSpec.minPrefixLength,
-            maxPrefix: prefix + innerSpec.maxPrefixLength,
-            suffix: suffix
+            minPrefix: prefix + innerSpec.minPrefixLength, maxPrefix: prefix + innerSpec.maxPrefixLength, suffix: suffix
         });
     }
 
     function hasPadding(
         IMembershipMsgs.InnerOp memory inner,
         IMembershipMsgs.Padding memory padding
-    ) internal pure returns (bool) {
-        return (
-            inner.prefix.length >= padding.minPrefix &&
-            inner.prefix.length <= padding.maxPrefix &&
-            inner.suffix.length == padding.suffix
-        );
+    )
+        internal
+        pure
+        returns (bool)
+    {
+        return (inner.prefix.length >= padding.minPrefix && inner.prefix.length <= padding.maxPrefix
+                && inner.suffix.length == padding.suffix);
     }
 
     /// @notice Lexicographic byte comparison matching Go's `bytes.Compare` (the ordering
@@ -810,21 +835,21 @@ contract Membership  is IMembership {
             // For different lengths, we still need to compare byte by byte
             // up to the shorter length, then compare lengths
             uint256 minLength = a.length < b.length ? a.length : b.length;
-            
+
             for (uint256 i = 0; i < minLength; i++) {
                 if (a[i] < b[i]) return -1;
                 if (a[i] > b[i]) return 1;
             }
-            
+
             return a.length < b.length ? int8(-1) : int8(1);
         }
-        
+
         // compare byte by byte
         for (uint256 i = 0; i < a.length; i++) {
             if (a[i] < b[i]) return -1;
             if (a[i] > b[i]) return 1;
         }
-        
+
         return 0;
     }
 
@@ -856,28 +881,24 @@ contract Membership  is IMembership {
         return result;
     }
 
-    function getSlice(bytes memory array, uint256 from, uint256 to) 
-        internal 
-        view 
-        returns (bytes memory) 
-    {
+    function getSlice(bytes memory array, uint256 from, uint256 to) internal view returns (bytes memory) {
         if (from > to) revert InvalidSliceRange();
         if (to > array.length) revert SliceRangeExceedsLength();
-        
+
         uint256 length = to - from;
         bytes memory result = new bytes(length);
-        
+
         assembly ("memory-safe") {
             let src := add(add(array, 0x20), from)
             let dest := add(result, 0x20)
-            
+
             // Use identity precompile for efficient copying and check success
             let success := staticcall(gas(), 0x04, src, length, dest, length)
             if iszero(success) {
                 revert(0, 0)
             }
         }
-        
+
         return result;
     }
 
@@ -895,9 +916,13 @@ contract Membership  is IMembership {
 
     function keyForComparison(
         bytes memory key,
-        bool prehash, 
+        bool prehash,
         IMembershipMsgs.HashOp prehashOp
-    ) internal pure returns (bytes memory) {
+    )
+        internal
+        pure
+        returns (bytes memory)
+    {
         if (prehash) {
             return bytes32ToBytes(hashData(key, prehashOp));
         } else {
@@ -913,7 +938,7 @@ contract Membership  is IMembership {
         }
         return (x, newOffset);
     }
-    
+
     function encodeVarint(uint256 value) internal pure returns (bytes memory) {
         if (value < 128) {
             bytes memory b = new bytes(1);
@@ -969,7 +994,7 @@ contract Membership  is IMembership {
             part0 -= 0x80 << 21;
 
             uint64 value = uint64(part0);
-            
+
             b = uint8(data[offset + 4]);
             uint32 part1 = uint32(b);
             if (b < 0x80) {
@@ -1021,7 +1046,7 @@ contract Membership  is IMembership {
             for (uint256 count = 0; count < maxCount; count++) {
                 uint8 b = uint8(data[offset + count]);
                 value |= uint64(b & 0x7F) << uint64(count * 7);
-                
+
                 if (b <= 0x7F) {
                     // Check for overflow on the final byte
                     if (count == 9 && b >= 0x02) {
@@ -1031,9 +1056,9 @@ contract Membership  is IMembership {
                 }
             }
             revert InvalidVarint();
-        } 
+        }
     }
-    
+
     function tendermintSpec() public pure returns (IMembershipMsgs.ProofSpec memory) {
         IMembershipMsgs.LeafOp memory leaf = IMembershipMsgs.LeafOp({
             hashOp: IMembershipMsgs.HashOp.SHA256,
@@ -1101,10 +1126,7 @@ contract Membership  is IMembership {
         });
     }
 
-    function ensureIavlPrefix(
-        bytes memory leafPrefix,
-        int64 minHeight
-    ) internal pure returns (uint256) {
+    function ensureIavlPrefix(bytes memory leafPrefix, int64 minHeight) internal pure returns (uint256) {
         uint256 offset = 0;
         (int64 height, uint256 newOffset) = readVarint(leafPrefix, offset);
         if (height < minHeight) {

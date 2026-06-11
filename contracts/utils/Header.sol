@@ -129,7 +129,15 @@ library Header {
         return _merkleHashRange(leafHashes, 0, bytesArray.length);
     }
 
-    function getSlice(bytes[] memory bytesArray, uint256 from, uint256 to) internal pure returns (bytes[] memory result) {
+    function getSlice(
+        bytes[] memory bytesArray,
+        uint256 from,
+        uint256 to
+    )
+        internal
+        pure
+        returns (bytes[] memory result)
+    {
         require(from <= to && to <= bytesArray.length, "Invalid range");
 
         uint256 length = to - from;
