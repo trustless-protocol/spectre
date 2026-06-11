@@ -53,6 +53,7 @@ func init() {
 		{Name: "unbondingPeriod", Type: "uint32"},
 		{Name: "isFrozen", Type: "bool"},
 		{Name: "zkAlgorithm", Type: "uint8"},
+		{Name: "clockDrift", Type: "uint32"},
 	}
 	clientStateType, _ = abi.NewType("tuple", "", clientStateComponents)
 
@@ -386,6 +387,7 @@ func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32,
 		ZkAlgorithm:     uint8(zkAlgorithm),
 		TrustingPeriod:  trustingPeriod,
 		UnbondingPeriod: uint32(unbondingPeriod),
+		ClockDrift:      15,
 	}
 
 	consensusState := updateClientContract.IICS07TendermintMsgsConsensusState{

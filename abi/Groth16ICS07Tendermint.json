@@ -1145,6 +1145,22 @@
   },
   {
     "type": "error",
+    "name": "ClockDriftMismatch",
+    "inputs": [
+      {
+        "name": "expected",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "actual",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ConsensusStateHashMismatch",
     "inputs": [
       {
@@ -1306,22 +1322,6 @@
     "type": "error",
     "name": "InvalidMembershipProof",
     "inputs": []
-  },
-  {
-    "type": "error",
-    "name": "KeyValuePairNotInCache",
-    "inputs": [
-      {
-        "name": "path",
-        "type": "bytes[]",
-        "internalType": "bytes[]"
-      },
-      {
-        "name": "value",
-        "type": "bytes",
-        "internalType": "bytes"
-      }
-    ]
   },
   {
     "type": "error",

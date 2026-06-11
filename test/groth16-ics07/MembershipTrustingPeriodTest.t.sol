@@ -102,7 +102,8 @@ contract MembershipTrustingPeriodTest is Test {
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
             isFrozen: false,
-            zkAlgorithm: IICS07TendermintMsgs.SupportedZkAlgorithm.Groth16
+            zkAlgorithm: IICS07TendermintMsgs.SupportedZkAlgorithm.Groth16,
+            clockDrift: 1800
         });
         IICS07TendermintMsgs.ConsensusState memory consensusState = _consensusState(consensusTimestamp);
 
