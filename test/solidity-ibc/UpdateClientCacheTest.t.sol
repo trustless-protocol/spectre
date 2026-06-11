@@ -219,6 +219,64 @@ contract UpdateClientCacheTest is Test {
         assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.NoOp), "non-adjacent cache-hit replay should NoOp");
     }
 
+    function test_updateClient_nonAdjacent_sameTrustedNextHashUsesCachedValidation() public {
+        BucketConfig memory cfg = _cfg(16);
+
+        IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
+        bytes32 hashA = Header.hashValSet(valA);
+
+        IICS07TendermintMsgs.ConsensusState memory trustedCS0 =
+            _consensusState(TRUSTED_TS_NS, hashA, bytes32(uint256(0xAAA1)));
+        Groth16ICS07Tendermint ics07 = _deployLightClient(trustedCS0);
+
+        IICS07TendermintMsgs.Header memory header1001 =
+            _buildHeader(TRUSTED_HEIGHT, HEIGHT_1001, valA, valA, hashA, TS_1001_NS, cfg.activeCount);
+        IUpdateClientMsgs.MsgUpdateClient memory msg1001 =
+            _buildMsg(_clientState(), trustedCS0, header1001, cfg.bucket, cfg.activeCount);
+        assertEq(uint8(ics07.updateClient(abi.encode(msg1001))), uint8(ILightClientMsgs.UpdateResult.Update));
+        assertTrue(_hasCachedValidatorSet(ics07, hashA), "validator set A should be cached");
+
+        IICS07TendermintMsgs.Header memory nonAdjacentHeader =
+            _buildHeader(TRUSTED_HEIGHT, HEIGHT_1002, valA, valA, hashA, TS_1002_NS, cfg.activeCount);
+        IUpdateClientMsgs.MsgUpdateClient memory cacheMsg =
+            _buildMsg(_clientState(), trustedCS0, nonAdjacentHeader, cfg.bucket, cfg.activeCount);
+        cacheMsg.proposedHeader.validatorSet = _emptyValidatorSet();
+
+        ILightClientMsgs.UpdateResult result = ics07.updateClient(abi.encode(cacheMsg));
+        assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update), "same-hash cached trusted next");
+    }
+
+    function test_updateClient_nonAdjacent_sameTrustedNextHashRejectsMismatchedTrustedNextSet() public {
+        BucketConfig memory cfg = _cfg(16);
+
+        IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
+        bytes32 hashA = Header.hashValSet(valA);
+        IICS07TendermintMsgs.ValidatorSet memory badTrustedNext = _buildValSet(cfg.valCount, 0);
+        badTrustedNext.validators[0].votingPower = 101;
+        badTrustedNext.totalVotingPower = valA.totalVotingPower + 1;
+
+        IICS07TendermintMsgs.ConsensusState memory trustedCS0 =
+            _consensusState(TRUSTED_TS_NS, hashA, bytes32(uint256(0xAAA1)));
+        Groth16ICS07Tendermint ics07 = _deployLightClient(trustedCS0);
+
+        IICS07TendermintMsgs.Header memory header1001 =
+            _buildHeader(TRUSTED_HEIGHT, HEIGHT_1001, valA, valA, hashA, TS_1001_NS, cfg.activeCount);
+        IUpdateClientMsgs.MsgUpdateClient memory msg1001 =
+            _buildMsg(_clientState(), trustedCS0, header1001, cfg.bucket, cfg.activeCount);
+        assertEq(uint8(ics07.updateClient(abi.encode(msg1001))), uint8(ILightClientMsgs.UpdateResult.Update));
+
+        IICS07TendermintMsgs.Header memory nonAdjacentHeader =
+            _buildHeader(TRUSTED_HEIGHT, HEIGHT_1002, valA, badTrustedNext, hashA, TS_1002_NS, cfg.activeCount);
+        IUpdateClientMsgs.MsgUpdateClient memory cacheMsg =
+            _buildMsg(_clientState(), trustedCS0, nonAdjacentHeader, cfg.bucket, cfg.activeCount);
+        cacheMsg.proposedHeader.validatorSet = _emptyValidatorSet();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IGroth16ICS07TendermintErrors.MismatchedValidatorHashes.selector, hashA, bytes32(0))
+        );
+        ics07.updateClient(abi.encode(cacheMsg));
+    }
+
     function test_updateClient_deltaCache_singleVotingPowerChange() public {
         BucketConfig memory cfg = _cfg(16);
         IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
@@ -543,11 +601,14 @@ contract UpdateClientCacheTest is Test {
         uint64[] memory tsS = new uint64[](bucket);
         uint32[] memory tsN = new uint32[](bucket);
         bool[] memory act = new bool[](bucket);
+        uint32[] memory trustedOverlap = new uint32[](bucket);
         for (uint256 i = 0; i < bucket; i++) {
+            trustedOverlap[i] = type(uint32).max;
             if (i < activeCount) {
                 idx[i] = uint32(i);
                 pks[i] = header.validatorSet.validators[i].pubKey;
                 act[i] = true;
+                trustedOverlap[i] = uint32(i);
             }
             tsS[i] = uint64(1_700_000_000 + i);
             tsN[i] = uint32(i * 1_000_000);
@@ -566,6 +627,7 @@ contract UpdateClientCacheTest is Test {
         msg_.timestampSeconds = tsS;
         msg_.timestampNanos = tsN;
         msg_.active = act;
+        msg_.trustedOverlapIndices = trustedOverlap;
     }
 
     function _setSignerRange(
@@ -601,10 +663,12 @@ contract UpdateClientCacheTest is Test {
                         signature: ""
                     })
                 });
+                msg_.trustedOverlapIndices[i] = idx;
             } else {
                 msg_.signerIndices[i] = 0;
                 msg_.signerPubkeys[i] = bytes32(0);
                 msg_.active[i] = false;
+                msg_.trustedOverlapIndices[i] = type(uint32).max;
             }
         }
     }

@@ -288,6 +288,10 @@ func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
 		TimestampSeconds: []uint64{1700000001, 1700000001},
 		TimestampNanos:   []uint32{0, 1},
 		Active:           []bool{true, true},
+		TrustedOverlapIndices: []uint32{
+			0,
+			1,
+		},
 		CurrentValidatorSetDelta: updateClientContract.IUpdateClientMsgsValidatorSetDelta{
 			BaseValidatorsHash: deltaBaseHash,
 			LeafCount:          1,
@@ -341,6 +345,11 @@ func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
 		decoded.CurrentValidatorSetDelta.PubKeys[0] != deltaPubKeys[0] ||
 		decoded.CurrentValidatorSetDelta.VotingPowers[0] != 110 {
 		t.Fatalf("delta decoded incorrectly: %+v", decoded.CurrentValidatorSetDelta)
+	}
+	if len(decoded.TrustedOverlapIndices) != 2 ||
+		decoded.TrustedOverlapIndices[0] != 0 ||
+		decoded.TrustedOverlapIndices[1] != 1 {
+		t.Fatalf("trusted overlap indices decoded incorrectly: %+v", decoded.TrustedOverlapIndices)
 	}
 }
 
