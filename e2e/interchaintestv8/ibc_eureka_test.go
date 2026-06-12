@@ -22,11 +22,11 @@ import (
 
 	sdkmath "cosmossdk.io/math"
 
-	bip39 "github.com/cosmos/go-bip39"
 	"github.com/cosmos/cosmos-sdk/crypto/hd"
 	cosmossecp256k1 "github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+	bip39 "github.com/cosmos/go-bip39"
 
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	transfertypes "github.com/cosmos/ibc-go/v10/modules/apps/transfer/types"
@@ -40,10 +40,10 @@ import (
 	interchaintest "github.com/cosmos/interchaintest/v10"
 	"github.com/cosmos/interchaintest/v10/ibc"
 
+	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ibcerc20"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ics20transfer"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/cosmos"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/e2esuite"
@@ -69,13 +69,13 @@ type IbcEurekaTestSuite struct {
 	// The private key of the faucet account of interchaintest
 	deployer *ecdsa.PrivateKey
 
-	contractAddresses ethereum.DeployedContracts
-	groth16Ics07Address   ethcommon.Address
+	contractAddresses   ethereum.DeployedContracts
+	groth16Ics07Address ethcommon.Address
 
 	groth16Ics07Contract *groth16ics07tendermint.Contract
-	ics26Contract    *ics26router.Contract
-	ics20Contract    *ics20transfer.Contract
-	erc20Contract    *erc20.Contract
+	ics26Contract        *ics26router.Contract
+	ics20Contract        *ics20transfer.Contract
+	erc20Contract        *erc20.Contract
 
 	RelayerClient relayertypes.RelayerServiceClient
 
@@ -479,6 +479,18 @@ func (s *IbcEurekaTestSuite) Test_50_ICS20TransferERC20TokenfromEthereumToCosmos
 	s.ICS20TransferERC20TokenfromEthereumToCosmosAndBackTest(ctx, proofType, 50, big.NewInt(testvalues.TransferAmount))
 }
 
+func autoRelayTimeout(numOfTransfers int) time.Duration {
+	if numOfTransfers < 1 {
+		numOfTransfers = 1
+	}
+	const relayBatchSize = 5
+	batches := (numOfTransfers + relayBatchSize - 1) / relayBatchSize
+
+	// The relayer default batch size is 5. Give multi-packet e2e runs enough
+	// time for beacon finality plus each packet batch to be built and submitted.
+	return 5*time.Minute + time.Duration(batches)*time.Minute
+}
+
 // Test_ICS20TransferLargeAmountFromEthereumToCosmosAndBack exercises the bigint encoding
 // path with a transfer amount > uint64 max (5e22, half of StartingERC20Balance). The
 // upstream test was named *Uint256* and pushed to ~MaxUint256/2 — we shrank the faucet
@@ -510,6 +522,7 @@ func (s *IbcEurekaTestSuite) ICS20TransferERC20TokenfromEthereumToCosmosAndBackT
 	ethereumUserAddress := crypto.PubkeyToAddress(s.key.PublicKey)
 	cosmosUserWallet := s.CosmosUsers[0]
 	cosmosUserAddress := cosmosUserWallet.FormattedAddress()
+	relayTimeout := autoRelayTimeout(numOfTransfers)
 
 	ics20transferAbi, err := abi.JSON(strings.NewReader(ics20transfer.ContractABI))
 	s.Require().NoError(err)
@@ -605,7 +618,7 @@ func (s *IbcEurekaTestSuite) ICS20TransferERC20TokenfromEthereumToCosmosAndBackT
 					return false
 				}
 				return resp.Balance.Amount.BigInt().Cmp(totalTransferAmount) == 0
-			}, 5*time.Minute, 5*time.Second,
+			}, relayTimeout, 5*time.Second,
 				"auto-relay did not deliver %d packets to Cosmos within timeout", numOfTransfers)
 		}))
 
@@ -698,7 +711,7 @@ func (s *IbcEurekaTestSuite) ICS20TransferERC20TokenfromEthereumToCosmosAndBackT
 					return false
 				}
 				return escrowBalance.Sign() == 0
-			}, 5*time.Minute, 5*time.Second,
+			}, relayTimeout, 5*time.Second,
 				"auto-relay did not deliver %d return packets to ETH within timeout", numOfTransfers)
 		}))
 
@@ -742,7 +755,7 @@ func (s *IbcEurekaTestSuite) ICS20TransferERC20TokenfromEthereumToCosmosAndBackT
 					}
 				}
 				return true
-			}, 5*time.Minute, 5*time.Second,
+			}, relayTimeout, 5*time.Second,
 				"auto-relay did not clear %d packet commitments on Cosmos within timeout", numOfTransfers)
 		}))
 	}))
@@ -1345,10 +1358,10 @@ func (s *IbcEurekaTestSuite) FilteredICS20TimeoutPacketFromEthereumTest(
 	if len(timeoutFilter) > 0 && len(timeoutFilter) != numOfTransfers {
 		s.T().Skipf("partial-timeout filtering (%d of %d) requires the upstream gRPC RelayByTx path", len(timeoutFilter), numOfTransfers)
 	}
-	_ = ethSendTxHashes  // captured above for the (removed) gRPC RelayByTx prefetch
-	_ = sendPacket       // captured above for the (removed) solidity fixture generator
-	_ = refundedAmount   // partial-timeout accounting; unused now that we only handle full timeouts
-	_ = ics26Address     // referenced only by the removed manual ICS26.timeoutPacket broadcast
+	_ = ethSendTxHashes // captured above for the (removed) gRPC RelayByTx prefetch
+	_ = sendPacket      // captured above for the (removed) solidity fixture generator
+	_ = refundedAmount  // partial-timeout accounting; unused now that we only handle full timeouts
+	_ = ics26Address    // referenced only by the removed manual ICS26.timeoutPacket broadcast
 
 	// Wait past the 30s packet-level timeout. The scanner ticks every 30s, so allow a
 	// generous window for it to notice and submit the refund tx.
@@ -1618,9 +1631,9 @@ func (s *IbcEurekaTestSuite) FilteredICS20TimeoutFromCosmosTimeoutTest(
 	if len(timeoutFilter) > 0 && len(timeoutFilter) != numOfTransfers {
 		s.T().Skipf("partial-timeout filtering (%d of %d) requires the upstream gRPC RelayByTx path", len(timeoutFilter), numOfTransfers)
 	}
-	_ = sendTxHashes    // captured above for the (removed) gRPC RelayByTx prefetch
-	_ = refundedAmount  // partial-timeout accounting; unused now
-	_ = eth             // referenced only by the removed gRPC + ETH-side replay-attack assertion
+	_ = sendTxHashes   // captured above for the (removed) gRPC RelayByTx prefetch
+	_ = refundedAmount // partial-timeout accounting; unused now
+	_ = eth            // referenced only by the removed gRPC + ETH-side replay-attack assertion
 
 	time.Sleep(15 * time.Second) // ensure packet timestamp has expired; scanner ticks every 30s and will pick it up
 
