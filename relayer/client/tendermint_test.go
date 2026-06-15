@@ -138,6 +138,7 @@ func TestEncodeClientState(t *testing.T) {
 			UnbondingPeriod: 1814400,
 			IsFrozen:        false,
 			ZkAlgorithm:     uint8(Groth16),
+			ClockDrift:      15,
 		}
 		encoded, err := EncodeClientState(clientState)
 		if err != nil {
@@ -164,6 +165,7 @@ func TestDecodeClientState(t *testing.T) {
 		UnbondingPeriod: 1814400,
 		IsFrozen:        false,
 		ZkAlgorithm:     uint8(Groth16),
+		ClockDrift:      15,
 	}
 
 	encoded, err := EncodeClientState(original)
@@ -202,6 +204,9 @@ func TestDecodeClientState(t *testing.T) {
 	}
 	if decoded.ZkAlgorithm != original.ZkAlgorithm {
 		t.Errorf("ZkAlgorithm: got %d, want %d", decoded.ZkAlgorithm, original.ZkAlgorithm)
+	}
+	if decoded.ClockDrift != original.ClockDrift {
+		t.Errorf("ClockDrift: got %d, want %d", decoded.ClockDrift, original.ClockDrift)
 	}
 }
 
@@ -256,6 +261,7 @@ func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
 			TrustingPeriod:  1209600,
 			UnbondingPeriod: 1814400,
 			ZkAlgorithm:     uint8(Groth16),
+			ClockDrift:      15,
 		},
 		TrustedConsensusState: updateClientContract.IICS07TendermintMsgsConsensusState{
 			Timestamp:          big.NewInt(1700000000000000000),

@@ -125,29 +125,6 @@ func compressEdwardsToLE[Base emulated.FieldParams](
 	return out
 }
 
-// scalarToBytesLE serializes an emulated scalar to 32 little-endian bytes
-// (byte 0 = bits 0..7). Ed25519's S is canonically < 2^253, so the top 3 bits
-// of byte 31 will be zero for valid signatures.
-func scalarToBytesLE[Scalars emulated.FieldParams](
-	api frontend.API,
-	scalarApi *emulated.Field[Scalars],
-	s *emulated.Element[Scalars],
-) []uints.U8 {
-	bits := scalarApi.ToBits(s)
-	out := make([]uints.U8, 32)
-	for j := 0; j < 32; j++ {
-		var b frontend.Variable = 0
-		for k := 0; k < 8; k++ {
-			idx := 8*j + k
-			if idx < len(bits) {
-				b = api.Add(b, api.Mul(bits[idx], 1<<k))
-			}
-		}
-		out[j] = uints.U8{Val: b}
-	}
-	return out
-}
-
 // varToBytesBE converts a Variable to nBytes big-endian bytes. Used in-circuit
 // for integer fields so the hash layout matches Solidity's abi.encodePacked
 // default ordering.

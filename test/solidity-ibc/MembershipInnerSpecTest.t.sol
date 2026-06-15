@@ -129,7 +129,7 @@ contract MembershipInnerSpecTest is Test {
             _singleInnerPath(IMembershipMsgs.HashOp.NO_HASH, abi.encodePacked(appHash), "")
         );
 
-        vm.expectRevert("Unexpected inner hash operation");
+        vm.expectRevert(Membership.UnexpectedInnerHashOp.selector);
         m.exposedCheckExistenceProof(proof, spec);
     }
 
@@ -146,7 +146,7 @@ contract MembershipInnerSpecTest is Test {
             _singleInnerPath(IMembershipMsgs.HashOp.NO_HASH, abi.encodePacked(appHash), "")
         );
 
-        vm.expectRevert("Unexpected inner hash operation");
+        vm.expectRevert(Membership.UnexpectedInnerHashOp.selector);
         m.membership(appHash, _kvPairs(ibcKey, commitmentValue), _merkleProofs(iavlProof, tendermintProof));
     }
 

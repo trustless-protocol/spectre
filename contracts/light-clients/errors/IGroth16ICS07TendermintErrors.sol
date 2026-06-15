@@ -49,6 +49,11 @@ interface IGroth16ICS07TendermintErrors {
     /// @param actual The actual unbonding period in seconds.
     error UnbondingPeriodMismatch(uint256 expected, uint256 actual);
 
+    /// @notice The error that is returned when the clock drift does not match the stored client state.
+    /// @param expected The expected clock drift in seconds.
+    /// @param actual The actual clock drift in seconds.
+    error ClockDriftMismatch(uint256 expected, uint256 actual);
+
     /// @notice The error that is returned when the trusting period is longer than the unbonding period.
     /// @param trustingPeriod The trusting period in seconds.
     /// @param unbondingPeriod The unbonding period in seconds.
@@ -116,11 +121,6 @@ interface IGroth16ICS07TendermintErrors {
 
     /// @notice Returned when the membership proof is invalid.
     error InvalidMembershipProof();
-
-    /// @notice Returned when a key-value pair is not in the cache.
-    /// @param path The path of the key-value pair.
-    /// @param value The value of the key-value pair.InsufficientTrustingPeriod
-    error KeyValuePairNotInCache(bytes[] path, bytes value);
 
     /// @notice Returned when the membership value is empty.
     error EmptyValue();

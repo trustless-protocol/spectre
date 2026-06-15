@@ -48,14 +48,11 @@ contract MembershipNonExistenceRootTest is Test {
         IMembershipMsgs.ExistenceProof memory right = _existence(bytes("R")); // distinct value -> distinct root
 
         IMembershipMsgs.NonExistenceProof memory ne = IMembershipMsgs.NonExistenceProof({
-            key: bytes("absent"),
-            hasLeft: true,
-            left: left,
-            hasRight: true,
-            right: right
+            key: bytes("absent"), hasLeft: true, left: left, hasRight: true, right: right
         });
 
-        bytes32 leftRoot = m.exposedCalculateNonExistenceRoot(_oneSided(left)); // compute expected roots for the error args
+        bytes32 leftRoot = m.exposedCalculateNonExistenceRoot(_oneSided(left)); // compute expected roots for the error
+        // args
         bytes32 rightRoot = m.exposedCalculateNonExistenceRoot(_oneSided(right));
         assertTrue(leftRoot != rightRoot, "test setup: roots must differ");
 
@@ -66,11 +63,7 @@ contract MembershipNonExistenceRootTest is Test {
     function test_acceptsWhenLeftAndRightRootsMatch() public view {
         IMembershipMsgs.ExistenceProof memory same = _existence(bytes("S"));
         IMembershipMsgs.NonExistenceProof memory ne = IMembershipMsgs.NonExistenceProof({
-            key: bytes("absent"),
-            hasLeft: true,
-            left: same,
-            hasRight: true,
-            right: same
+            key: bytes("absent"), hasLeft: true, left: same, hasRight: true, right: same
         });
         // matching roots -> returns the shared root, no revert
         bytes32 root = m.exposedCalculateNonExistenceRoot(ne);
@@ -95,11 +88,7 @@ contract MembershipNonExistenceRootTest is Test {
         returns (IMembershipMsgs.NonExistenceProof memory)
     {
         return IMembershipMsgs.NonExistenceProof({
-            key: bytes("x"),
-            hasLeft: true,
-            left: e,
-            hasRight: false,
-            right: _existence(bytes(""))
+            key: bytes("x"), hasLeft: true, left: e, hasRight: false, right: _existence(bytes(""))
         });
     }
 }

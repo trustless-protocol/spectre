@@ -10,25 +10,17 @@ import { Predicates } from "../utils/Predicates.sol";
 import { Header } from "../utils/Header.sol";
 import { HeightCmp } from "../utils/HeightCmp.sol";
 import { ChainId } from "../utils/ChainId.sol";
-import {Math} from "@openzeppelin-contracts/utils/math/Math.sol";
+import { Math } from "@openzeppelin-contracts/utils/math/Math.sol";
+
 /**
  * @title Misbehavior
  * @dev Contract to verify misbehavior
  * Converted from Rust zkVM code for Cosmos SDK proof verification
  */
 contract Misbehaviour is IMisbehaviour {
-
-    error MismatchedRevisionHeight(
-        uint64 expected,
-        uint64 actual
-    );
-    error InvalidHeaderHeight(
-        uint64 height
-    );
-    error ValSetHashMismatch(
-        bytes32 expected,
-        bytes32 actual
-    );
+    error MismatchedRevisionHeight(uint64 expected, uint64 actual);
+    error InvalidHeaderHeight(uint64 height);
+    error ValSetHashMismatch(bytes32 expected, bytes32 actual);
 
     // Custom errors
     error InvalidClientId();
@@ -38,30 +30,37 @@ contract Misbehaviour is IMisbehaviour {
     error CheckForMisbehaviourFailed();
     error MisbehaviourNotDetected();
 
-    function misbehaviour (
+    function misbehaviour(
         IICS07TendermintMsgs.ClientState memory clientState,
         IMisbehaviourMsgs.Misbehaviour memory misbehaviour_,
         IICS07TendermintMsgs.ConsensusState memory trustedConsensusState1,
         IICS07TendermintMsgs.ConsensusState memory trustedConsensusState2,
         uint128 time
-    ) external pure returns (IMisbehaviourMsgs.MisbehaviourOutput memory) {
+    )
+        external
+        pure
+        returns (IMisbehaviourMsgs.MisbehaviourOutput memory)
+    {
         // check client state id and misbehaviour chain id
-        require(keccak256(bytes(clientState.chainId)) == keccak256(bytes(misbehaviour_.header1.signedHeader.header.chainId)), ChainIdMismatch());
+        require(
+            keccak256(bytes(clientState.chainId))
+                == keccak256(bytes(misbehaviour_.header1.signedHeader.header.chainId)),
+            ChainIdMismatch()
+        );
 
         validateBasic(misbehaviour_);
 
         IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
             trustThreshold: clientState.trustLevel,
             trustingPeriod: clientState.trustingPeriod,
-            clockDrift: uint32(15)
+            clockDrift: clientState.clockDrift
         });
 
         // TODO: convert timestamp nanos to secs
         // Reuse cached revisionNumber from clientState.latestHeight (set at
         // client init from the parsed chain ID).
         IICS07TendermintMsgs.ChainId memory chainId = IICS07TendermintMsgs.ChainId({
-            id: clientState.chainId,
-            revisionNumber: clientState.latestHeight.revisionNumber
+            id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber
         });
 
         verifyMisbehaviourHeader(
@@ -98,8 +97,11 @@ contract Misbehaviour is IMisbehaviour {
         validateHeaderBasic(misbehaviour_.header1);
         validateHeaderBasic(misbehaviour_.header2);
 
-        if (keccak256(bytes(misbehaviour_.header1.signedHeader.header.chainId)) != keccak256(bytes(misbehaviour_.header2.signedHeader.header.chainId))) {
-            revert IGroth16ICS07TendermintErrors.ChainIdMismatch ({
+        if (
+            keccak256(bytes(misbehaviour_.header1.signedHeader.header.chainId))
+                != keccak256(bytes(misbehaviour_.header2.signedHeader.header.chainId))
+        ) {
+            revert IGroth16ICS07TendermintErrors.ChainIdMismatch({
                 expected: misbehaviour_.header1.signedHeader.header.chainId,
                 actual: misbehaviour_.header2.signedHeader.header.chainId
             });
@@ -120,7 +122,7 @@ contract Misbehaviour is IMisbehaviour {
         });
 
         if (HeightCmp.lt(header1Height, header2Height)) {
-            revert IGroth16ICS07TendermintErrors.InsufficientMisbehaviourHeaderHeight ({
+            revert IGroth16ICS07TendermintErrors.InsufficientMisbehaviourHeaderHeight({
                 height1: misbehaviour_.header1.signedHeader.header.height,
                 height2: misbehaviour_.header2.signedHeader.header.height
             });
@@ -131,25 +133,22 @@ contract Misbehaviour is IMisbehaviour {
         // the commit block hash that validators actually signed so conflicts on
         // validatorsHash / nextValidatorsHash / timestamp / lastCommitHash /
         // other header fields are also detected.
-        if (misbehaviour_.header1.signedHeader.commit.blockId.hashData == misbehaviour_.header2.signedHeader.commit.blockId.hashData) {
+        if (
+            misbehaviour_.header1.signedHeader.commit.blockId.hashData
+                == misbehaviour_.header2.signedHeader.commit.blockId.hashData
+        ) {
             revert MisbehaviourNotDetected();
         }
     }
 
-    function validateHeaderBasic(
-        IICS07TendermintMsgs.Header memory header
-    ) internal pure {
+    function validateHeaderBasic(IICS07TendermintMsgs.Header memory header) internal pure {
         IICS07TendermintMsgs.ChainId memory chainId = ChainId.get(header.signedHeader.header.chainId);
         if (chainId.revisionNumber != header.trustedHeight.revisionNumber) {
-            revert MismatchedRevisionHeight(
-                chainId.revisionNumber,
-                header.trustedHeight.revisionNumber
-            );
+            revert MismatchedRevisionHeight(chainId.revisionNumber, header.trustedHeight.revisionNumber);
         }
 
         IICS02ClientMsgs.Height memory height = IICS02ClientMsgs.Height({
-            revisionNumber: chainId.revisionNumber,
-            revisionHeight: header.signedHeader.header.height
+            revisionNumber: chainId.revisionNumber, revisionHeight: header.signedHeader.header.height
         });
 
         // We need to ensure that the trusted height (representing the
@@ -157,28 +156,26 @@ contract Misbehaviour is IMisbehaviour {
         // based on) must be smaller than height of the new header that we're
         // installing.
         if (HeightCmp.ge(header.trustedHeight, height)) {
-            revert InvalidHeaderHeight(
-                height.revisionHeight
-            );
+            revert InvalidHeaderHeight(height.revisionHeight);
         }
 
         bytes32 valSetHash = Header.hashValSet(header.validatorSet);
         if (valSetHash != header.signedHeader.header.validatorsHash) {
-            revert ValSetHashMismatch(
-                header.signedHeader.header.validatorsHash,
-                valSetHash
-            );
+            revert ValSetHashMismatch(header.signedHeader.header.validatorsHash, valSetHash);
         }
     }
 
-    function verifyMisbehaviourHeader (
+    function verifyMisbehaviourHeader(
         IICS07TendermintMsgs.Header memory header,
         IICS07TendermintMsgs.ChainId memory chainId,
         IICS07TendermintMsgs.Options memory options,
         uint128 trustedTime,
         bytes32 trustedNextValidatorHash,
         uint128 currentTimestamp
-    ) pure internal {
+    )
+        internal
+        pure
+    {
         // ensure correctness of the trusted next validator set provided by the relayer
         checkTrustedNextValidatorSet(header, trustedNextValidatorHash);
 
@@ -188,15 +185,12 @@ contract Misbehaviour is IMisbehaviour {
             uint128 trustedTimeInSeconds = nanosToSeconds(trustedTime);
 
             if (currentTimeInSeconds < trustedTimeInSeconds) {
-                revert IGroth16ICS07TendermintErrors.InvalidConsensusStateTimestamp({
-                    timestamp: trustedTime
-                });
+                revert IGroth16ICS07TendermintErrors.InvalidConsensusStateTimestamp({ timestamp: trustedTime });
             }
             uint128 durationSinceConsensusState = currentTimeInSeconds - trustedTimeInSeconds;
             if (durationSinceConsensusState >= options.trustingPeriod) {
-                revert IGroth16ICS07TendermintErrors.InsufficientTrustingPeriod ({
-                    durationSinceConsensusState: durationSinceConsensusState,
-                    trustingPeriod: options.trustingPeriod
+                revert IGroth16ICS07TendermintErrors.InsufficientTrustingPeriod({
+                    durationSinceConsensusState: durationSinceConsensusState, trustingPeriod: options.trustingPeriod
                 });
             }
         }
@@ -204,12 +198,8 @@ contract Misbehaviour is IMisbehaviour {
         parseChainId(chainId.id);
         // main header verification, delegated to the tendermint-light-client crate.
         IICS07TendermintMsgs.UntrustedBlockState memory untrustedState = getUntrustedBlockState(header);
-        IICS07TendermintMsgs.TrustedBlockState memory trustedState = getTrustedBlockState(
-            chainId.id,
-            trustedTime,
-            trustedNextValidatorHash,
-            header
-        );
+        IICS07TendermintMsgs.TrustedBlockState memory trustedState =
+            getTrustedBlockState(chainId.id, trustedTime, trustedNextValidatorHash, header);
 
         Predicates.verifyHeaderMatchesCommit(untrustedState);
         Predicates.verifyAgainstTrusted(untrustedState, trustedState, options.trustingPeriod, currentTimestamp);
@@ -219,7 +209,10 @@ contract Misbehaviour is IMisbehaviour {
     function checkTrustedNextValidatorSet(
         IICS07TendermintMsgs.Header memory header,
         bytes32 trustedNextValidatorHash
-    ) internal pure {
+    )
+        internal
+        pure
+    {
         bytes32 validatorsHash = Header.hashValSet(header.trustedNextValidatorSet);
 
         if (validatorsHash != trustedNextValidatorHash) {
@@ -229,12 +222,13 @@ contract Misbehaviour is IMisbehaviour {
         }
     }
 
-    function getUntrustedBlockState(
-        IICS07TendermintMsgs.Header memory header
-    ) internal pure returns (IICS07TendermintMsgs.UntrustedBlockState memory) {
+    function getUntrustedBlockState(IICS07TendermintMsgs.Header memory header)
+        internal
+        pure
+        returns (IICS07TendermintMsgs.UntrustedBlockState memory)
+    {
         return IICS07TendermintMsgs.UntrustedBlockState({
-            signedHeader: header.signedHeader,
-            validatorSet: header.validatorSet
+            signedHeader: header.signedHeader, validatorSet: header.validatorSet
         });
     }
 
@@ -243,7 +237,11 @@ contract Misbehaviour is IMisbehaviour {
         uint128 trustedTime,
         bytes32 trustedNextValidatorHash,
         IICS07TendermintMsgs.Header memory header
-    ) internal pure returns (IICS07TendermintMsgs.TrustedBlockState memory) {
+    )
+        internal
+        pure
+        returns (IICS07TendermintMsgs.TrustedBlockState memory)
+    {
         return IICS07TendermintMsgs.TrustedBlockState({
             chainId: tmChainId,
             headerTime: trustedTime,
@@ -253,9 +251,7 @@ contract Misbehaviour is IMisbehaviour {
         });
     }
 
-    function parseChainId(
-        string memory chainId
-    ) internal pure {
+    function parseChainId(string memory chainId) internal pure {
         bytes memory chainIdBytes = bytes(chainId);
         if (chainIdBytes.length == 0 || chainIdBytes.length > 50) {
             revert("Invalid chain id length");
@@ -263,19 +259,19 @@ contract Misbehaviour is IMisbehaviour {
 
         for (uint256 i = 0; i < chainIdBytes.length; i++) {
             bytes1 b = chainIdBytes[i];
-            
+
             // Check if byte is valid: a-z, A-Z, 0-9, -, _, .
-            if (!((b >= 0x61 && b <= 0x7A) ||  // a-z
-                  (b >= 0x41 && b <= 0x5A) ||  // A-Z
-                  (b >= 0x30 && b <= 0x39) ||  // 0-9
-                  (b == 0x2D) ||               // -
-                  (b == 0x5F) ||               // _
-                  (b == 0x2E))) {              // .
+            if (!((b >= 0x61 && b <= 0x7A) // a-z
+                        || (b >= 0x41 && b <= 0x5A) // A-Z
+                        || (b >= 0x30 && b <= 0x39) // 0-9
+                        || (b == 0x2D) // -
+                        || (b == 0x5F) // _
+                        || (b == 0x2E))) {
+                // .
                 revert("invalid chain id charset");
             }
         }
     }
-
 
     function nanosToSeconds(uint128 timestamp) internal pure returns (uint128) {
         return timestamp / 1e9;

@@ -17,8 +17,9 @@ import { IIBCERC20 } from "./interfaces/IIBCERC20.sol";
 import { IDeprecatedIBCUUPSUpgradeable } from "./utils/ICS26AdminsDeprecated.sol";
 import { IPausable } from "./interfaces/IPausable.sol";
 
-import { ReentrancyGuardTransientUpgradeable } from
-    "@openzeppelin-upgradeable/utils/ReentrancyGuardTransientUpgradeable.sol";
+import {
+    ReentrancyGuardTransientUpgradeable
+} from "@openzeppelin-upgradeable/utils/ReentrancyGuardTransientUpgradeable.sol";
 import { SafeERC20 } from "@openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import { MulticallUpgradeable } from "@openzeppelin-upgradeable/utils/MulticallUpgradeable.sol";
 import { ICS20Lib } from "./utils/ICS20Lib.sol";
@@ -196,12 +197,13 @@ contract ICS20Transfer is
         );
         // transfer the tokens to us with permit
         IEscrow escrow = _getOrCreateEscrow(msg_.sourceClient);
-        _getPermit2().permitTransferFrom(
-            permit,
-            ISignatureTransfer.SignatureTransferDetails({ to: address(escrow), requestedAmount: msg_.amount }),
-            _msgSender(),
-            signature
-        );
+        _getPermit2()
+            .permitTransferFrom(
+                permit,
+                ISignatureTransfer.SignatureTransferDetails({ to: address(escrow), requestedAmount: msg_.amount }),
+                _msgSender(),
+                signature
+            );
         escrow.recvCallback(msg_.denom, _msgSender(), msg_.amount);
 
         return _sendTransferFromEscrowWithSender(msg_, address(escrow), _msgSender());
@@ -253,7 +255,7 @@ contract ICS20Transfer is
             bytes memory prefix = ICS20Lib.getDenomPrefix(ICS20Lib.DEFAULT_PORT_ID, msg_.sourceClient);
             // if the denom is prefixed by the port and channel on which we are sending
             // the token, then we must be returning the token back to the chain they originated from
-            bool returningToSource = ICS20Lib.hasPrefix(bytes(fullDenomPath), prefix);
+            bool returningToSource = ICS20Lib.hasDenomPrefix(bytes(fullDenomPath), prefix);
             if (returningToSource) {
                 // token is returning to source, it is an IBCERC20 and we must burn the token (not keep it in escrow)
                 IMintableAndBurnable(msg_.denom).burn(escrow, msg_.amount);
@@ -268,19 +270,20 @@ contract ICS20Transfer is
             memo: msg_.memo
         });
 
-        return _getICS26Router().sendPacket(
-            IICS26RouterMsgs.MsgSendPacket({
+        return _getICS26Router()
+            .sendPacket(
+                IICS26RouterMsgs.MsgSendPacket({
                 sourceClient: msg_.sourceClient,
                 timeoutTimestamp: msg_.timeoutTimestamp,
                 payload: IICS26RouterMsgs.Payload({
-                    sourcePort: ICS20Lib.DEFAULT_PORT_ID,
-                    destPort: ICS20Lib.DEFAULT_PORT_ID,
-                    version: ICS20Lib.ICS20_VERSION,
-                    encoding: ICS20Lib.ICS20_ENCODING,
-                    value: abi.encode(packetData)
-                })
+                sourcePort: ICS20Lib.DEFAULT_PORT_ID,
+                destPort: ICS20Lib.DEFAULT_PORT_ID,
+                version: ICS20Lib.ICS20_VERSION,
+                encoding: ICS20Lib.ICS20_ENCODING,
+                value: abi.encode(packetData)
             })
-        );
+            })
+            );
     }
 
     /// @inheritdoc IICS20TransferAccessControlled
@@ -340,7 +343,7 @@ contract ICS20Transfer is
         // NOTE: We use SourcePort and SourceChannel here, because the counterparty
         // chain would have prefixed with DestPort and DestChannel when originally
         // receiving this token.
-        bool returningToOrigin = ICS20Lib.hasPrefix(denomBz, prefix);
+        bool returningToOrigin = ICS20Lib.hasDenomPrefix(denomBz, prefix);
         address erc20Address;
         if (returningToOrigin) {
             // we are the origin source of this token:
@@ -381,7 +384,6 @@ contract ICS20Transfer is
         external
         onlyRouter
         nonReentrant
-        whenNotPaused
     {
         IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
             abi.decode(msg_.payload.value, (IICS20TransferMsgs.FungibleTokenPacketData));
@@ -397,12 +399,7 @@ contract ICS20Transfer is
     }
 
     /// @inheritdoc IIBCApp
-    function onTimeoutPacket(IIBCAppCallbacks.OnTimeoutPacketCallback calldata msg_)
-        external
-        onlyRouter
-        nonReentrant
-        whenNotPaused
-    {
+    function onTimeoutPacket(IIBCAppCallbacks.OnTimeoutPacketCallback calldata msg_) external onlyRouter nonReentrant {
         IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
             abi.decode(msg_.payload.value, (IICS20TransferMsgs.FungibleTokenPacketData));
         (, address sender) = _refundTokens(msg_.payload.sourcePort, msg_.sourceClient, packetData);
@@ -433,7 +430,7 @@ contract ICS20Transfer is
         // if the denom is prefixed by the port and channel on which we are sending
         // the token, then we must be returning the token back to the chain they originated from
         bytes memory prefix = ICS20Lib.getDenomPrefix(sourcePort, sourceClient);
-        bool isDestSource = ICS20Lib.hasPrefix(bytes(packetData.denom), prefix);
+        bool isDestSource = ICS20Lib.hasDenomPrefix(bytes(packetData.denom), prefix);
         if (isDestSource) {
             // receiving chain is source of the token, so we've received and mapped this token before
             erc20Address = address($._ibcERC20Contracts[packetData.denom]);
@@ -539,6 +536,7 @@ contract ICS20Transfer is
 
     /// @inheritdoc UUPSUpgradeable
     function _authorizeUpgrade(address) internal override restricted { }
+
     // solhint-disable-previous-line no-empty-blocks
 
     /// @inheritdoc IICS20TransferAccessControlled

@@ -41,7 +41,8 @@ contract UpdateClient is IUpdateClient {
         return _updateClientCachedCurrent(
             msg_,
             Header.chainIdLeafHash(msg_.clientState.chainId),
-            Header.bytes32LeafHash(msg_.proposedHeader.signedHeader.header.validatorsHash)
+            Header.bytes32LeafHash(msg_.proposedHeader.signedHeader.header.validatorsHash),
+            false
         );
     }
 
@@ -54,13 +55,26 @@ contract UpdateClient is IUpdateClient {
         pure
         returns (IUpdateClientMsgs.UpdateClientOutput memory)
     {
-        return _updateClientCachedCurrent(msg_, chainIdLeafHash, validatorsHashLeaf);
+        return _updateClientCachedCurrent(msg_, chainIdLeafHash, validatorsHashLeaf, false);
+    }
+
+    function updateClientCachedCurrentTrustedNextResolvedWithHeaderCache(
+        IUpdateClientMsgs.MsgUpdateClient calldata msg_,
+        bytes32 chainIdLeafHash,
+        bytes32 validatorsHashLeaf
+    )
+        external
+        pure
+        returns (IUpdateClientMsgs.UpdateClientOutput memory)
+    {
+        return _updateClientCachedCurrent(msg_, chainIdLeafHash, validatorsHashLeaf, true);
     }
 
     function _updateClientCachedCurrent(
         IUpdateClientMsgs.MsgUpdateClient calldata msg_,
         bytes32 chainIdLeafHash,
-        bytes32 validatorsHashLeaf
+        bytes32 validatorsHashLeaf,
+        bool trustedNextResolved
     )
         private
         pure
@@ -70,7 +84,9 @@ contract UpdateClient is IUpdateClient {
             id: msg_.clientState.chainId, revisionNumber: msg_.clientState.latestHeight.revisionNumber
         });
         IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
-            trustThreshold: msg_.clientState.trustLevel, trustingPeriod: msg_.clientState.trustingPeriod, clockDrift: 15
+            trustThreshold: msg_.clientState.trustLevel,
+            trustingPeriod: msg_.clientState.trustingPeriod,
+            clockDrift: msg_.clientState.clockDrift
         });
 
         verifyHeaderCachedCurrent(
@@ -80,7 +96,11 @@ contract UpdateClient is IUpdateClient {
             msg_.time,
             msg_.trustedConsensusState,
             chainIdLeafHash,
-            validatorsHashLeaf
+            validatorsHashLeaf,
+            trustedNextResolved,
+            msg_.trustedOverlapIndices,
+            msg_.signerPubkeys,
+            msg_.active
         );
         return _buildOutput(msg_, chainId.revisionNumber);
     }
@@ -101,13 +121,33 @@ contract UpdateClient is IUpdateClient {
             id: msg_.clientState.chainId, revisionNumber: msg_.clientState.latestHeight.revisionNumber
         });
         IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
-            trustThreshold: msg_.clientState.trustLevel, trustingPeriod: msg_.clientState.trustingPeriod, clockDrift: 15
+            trustThreshold: msg_.clientState.trustLevel,
+            trustingPeriod: msg_.clientState.trustingPeriod,
+            clockDrift: msg_.clientState.clockDrift
         });
 
         if (assumeResolvedValidatorSets) {
-            verifyHeaderResolved(msg_.proposedHeader, chainId, options, msg_.time, msg_.trustedConsensusState);
+            verifyHeaderResolved(
+                msg_.proposedHeader,
+                chainId,
+                options,
+                msg_.time,
+                msg_.trustedConsensusState,
+                msg_.trustedOverlapIndices,
+                msg_.signerPubkeys,
+                msg_.active
+            );
         } else {
-            verifyHeader(msg_.proposedHeader, chainId, options, msg_.time, msg_.trustedConsensusState);
+            verifyHeader(
+                msg_.proposedHeader,
+                chainId,
+                options,
+                msg_.time,
+                msg_.trustedConsensusState,
+                msg_.trustedOverlapIndices,
+                msg_.signerPubkeys,
+                msg_.active
+            );
         }
 
         return _buildOutput(msg_, chainId.revisionNumber);
@@ -118,7 +158,10 @@ contract UpdateClient is IUpdateClient {
         IICS07TendermintMsgs.ChainId memory chainId,
         IICS07TendermintMsgs.Options memory options,
         uint128 time,
-        IICS07TendermintMsgs.ConsensusState memory trustedConsensusState
+        IICS07TendermintMsgs.ConsensusState memory trustedConsensusState,
+        uint32[] memory trustedOverlapIndices,
+        bytes32[] memory signerPubkeys,
+        bool[] memory active
     )
         internal
         pure
@@ -151,7 +194,9 @@ contract UpdateClient is IUpdateClient {
                 signedHeader: proposedHeader.signedHeader, validatorSet: proposedHeader.validatorSet
             });
 
-            verifyUpdateHeader(untrustedState, trustedState, options, time);
+            verifyUpdateHeader(
+                untrustedState, trustedState, options, time, trustedOverlapIndices, signerPubkeys, active
+            );
         }
     }
 
@@ -160,7 +205,10 @@ contract UpdateClient is IUpdateClient {
         IICS07TendermintMsgs.ChainId memory chainId,
         IICS07TendermintMsgs.Options memory options,
         uint128 time,
-        IICS07TendermintMsgs.ConsensusState memory trustedConsensusState
+        IICS07TendermintMsgs.ConsensusState memory trustedConsensusState,
+        uint32[] memory trustedOverlapIndices,
+        bytes32[] memory signerPubkeys,
+        bool[] memory active
     )
         internal
         pure
@@ -193,7 +241,7 @@ contract UpdateClient is IUpdateClient {
             revert FailedToVerifyHeader("trusted next validator set not resolved");
         }
 
-        verifyUpdateHeader(untrustedState, trustedState, options, time);
+        verifyUpdateHeader(untrustedState, trustedState, options, time, trustedOverlapIndices, signerPubkeys, active);
     }
 
     function verifyHeaderCachedCurrent(
@@ -203,7 +251,11 @@ contract UpdateClient is IUpdateClient {
         uint128 time,
         IICS07TendermintMsgs.ConsensusState memory trustedConsensusState,
         bytes32 chainIdLeafHash,
-        bytes32 validatorsHashLeaf
+        bytes32 validatorsHashLeaf,
+        bool trustedNextResolved,
+        uint32[] memory trustedOverlapIndices,
+        bytes32[] memory signerPubkeys,
+        bool[] memory active
     )
         internal
         pure
@@ -220,9 +272,14 @@ contract UpdateClient is IUpdateClient {
 
         uint64 trustedNextHeight = proposedHeader.trustedHeight.revisionHeight + 1;
         if (proposedHeader.signedHeader.header.height != trustedNextHeight) {
-            bytes32 nextValSetHash = Header.hashValSet(proposedHeader.trustedNextValidatorSet);
-            if (nextValSetHash != trustedConsensusState.nextValidatorsHash) {
-                revert FailedToVerifyHeader("trusted next validator set hash does not match hash stored on chain");
+            if (proposedHeader.trustedNextValidatorSet.validators.length == 0) {
+                revert FailedToVerifyHeader("trusted next validator set not resolved");
+            }
+            if (!trustedNextResolved) {
+                bytes32 nextValSetHash = Header.hashValSet(proposedHeader.trustedNextValidatorSet);
+                if (nextValSetHash != trustedConsensusState.nextValidatorsHash) {
+                    revert FailedToVerifyHeader("trusted next validator set hash does not match hash stored on chain");
+                }
             }
         }
 
@@ -241,14 +298,19 @@ contract UpdateClient is IUpdateClient {
         Predicates.verifyAgainstTrusted(untrustedState, trustedState, options.trustingPeriod, time);
         uint128 drifted = time + uint128(options.clockDrift) * 1_000_000_000;
         require(untrustedState.signedHeader.header.time < drifted, "invalid block: header is from the future");
-        Predicates.verifyTrustedCommitOverlap(untrustedState, trustedState, options);
+        Predicates.verifyTrustedCommitOverlapBySignerPubkey(
+            untrustedState, trustedState, options, trustedOverlapIndices, signerPubkeys, active
+        );
     }
 
     function verifyUpdateHeader(
         IICS07TendermintMsgs.UntrustedBlockState memory untrustedState,
         IICS07TendermintMsgs.TrustedBlockState memory trustedState,
         IICS07TendermintMsgs.Options memory options,
-        uint128 time
+        uint128 time,
+        uint32[] memory trustedOverlapIndices,
+        bytes32[] memory signerPubkeys,
+        bool[] memory active
     )
         internal
         pure
@@ -258,7 +320,9 @@ contract UpdateClient is IUpdateClient {
         /// Check that the untrusted header is from past.
         uint128 drifted = time + uint128(options.clockDrift) * 1_000_000_000;
         require(untrustedState.signedHeader.header.time < drifted, "invalid block: header is from the future");
-        Predicates.verifyTrustedCommitOverlap(untrustedState, trustedState, options);
+        Predicates.verifyTrustedCommitOverlapBySignerPubkey(
+            untrustedState, trustedState, options, trustedOverlapIndices, signerPubkeys, active
+        );
     }
 
     function verifyChainIdVersion(

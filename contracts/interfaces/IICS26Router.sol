@@ -3,6 +3,7 @@ pragma solidity ^0.8.28;
 
 import { IICS26RouterMsgs } from "../msgs/IICS26RouterMsgs.sol";
 import { IIBCApp } from "./IIBCApp.sol";
+import { IPausable } from "./IPausable.sol";
 
 /// @title ICS26 Router Restricted Interface
 /// @notice Interface for the access controlled functions of the IBC Eureka Core Router
@@ -27,7 +28,7 @@ interface IICS26RouterAccessControlled {
 
 /// @title ICS26 Router Interface
 /// @notice Interface for the IBC Eureka Core Router
-interface IICS26Router is IICS26RouterAccessControlled {
+interface IICS26Router is IICS26RouterAccessControlled, IPausable {
     /// @notice Returns the address of the IBC application given the port identifier
     /// @param portId The port identifier
     /// @return The address of the IBC application contract

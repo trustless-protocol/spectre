@@ -5,6 +5,7 @@
                 "cosmos_wasm_client_id": "08-wasm-0",
                 "eth_rpc_url": "http://127.0.0.1:59619",
                 "eth_ws_url": "ws://127.0.0.1:59620",
+                "fetch_timeout": 15,
                 "ics07_client": "0xF01ecC1dF1868C3B15f0edC4768812b9c435BBfb",
                 "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3",
                 "ics26_client_id": "cosmoshub-1",
@@ -31,6 +32,10 @@
             "src_chain": "0x1"
         }
     ],
+    "batch": {
+        "batch_period_seconds": 3,
+        "batch_size": 5
+    },
     "server": {
         "address": "127.0.0.1",
         "log_level": "info",

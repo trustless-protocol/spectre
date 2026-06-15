@@ -41,24 +41,36 @@ type SharedBlockData struct {
 	ChainID      string
 }
 
-// ExtractorResult bundles the greedy-by-power signer prefix with the shared
-// block data needed by the on-chain quorum + canonical-vote rebuild path.
+// ExtractorResult bundles the valid signer candidates, the selected signer
+// prefix, and the shared block data needed by the on-chain quorum +
+// canonical-vote rebuild path.
 type ExtractorResult struct {
 	Shared     SharedBlockData
+	Candidates []ValidatorSignature
 	Signatures []ValidatorSignature
 }
 
 // ExtractValidatorSignatures collects non-absent, locally-verified commit
 // signatures until their cumulative voting power exceeds 2/3 of
-// TotalVotingPower, returning them sorted by power descending along with the
-// shared block data.
+// TotalVotingPower. Candidates are sorted by power for selection, while the
+// selected proof slots are returned in validator-index order.
+//
+// allowedIndices restricts which validator slots may be selected. When nil,
+// all signing validators are candidates. Pass the set of cached signer indices
+// to guarantee the proof only references indices already cached on-chain.
 //
 // Returns an error if no quorum can be reached or the required signer count
 // would exceed the largest configured bucket.
 func ExtractValidatorSignatures(
 	lightBlock *relayerclient.LightBlock,
 	chainID string,
+	allowedIndicesOpt ...map[uint32]bool,
 ) (*ExtractorResult, error) {
+	var allowedIndices map[uint32]bool
+	if len(allowedIndicesOpt) > 0 {
+		allowedIndices = allowedIndicesOpt[0]
+	}
+
 	if lightBlock == nil {
 		return nil, fmt.Errorf("light block is nil")
 	}
@@ -74,6 +86,9 @@ func ExtractValidatorSignatures(
 	candidates := make([]ValidatorSignature, 0, len(commit.Signatures))
 	for i, sig := range commit.Signatures {
 		if sig.BlockIDFlag == types.BlockIDFlagAbsent {
+			continue
+		}
+		if allowedIndices != nil && !allowedIndices[uint32(i)] {
 			continue
 		}
 		if i >= len(validators.Validators) {
@@ -128,7 +143,8 @@ func ExtractValidatorSignatures(
 		return nil, fmt.Errorf("insufficient voting power: have %d, need %d of %d", accumulated, quorum, totalPower)
 	}
 
-	selected := candidates[:cutoff]
+	allCandidates := append([]ValidatorSignature(nil), candidates...)
+	selected := append([]ValidatorSignature(nil), candidates[:cutoff]...)
 	sortSelectedSignaturesByIndex(selected)
 	if len(selected) > MaxBucket() {
 		return nil, fmt.Errorf("quorum requires %d signers but largest bucket is %d", len(selected), MaxBucket())
@@ -143,6 +159,7 @@ func ExtractValidatorSignatures(
 			PartSetHash:  commit.BlockID.PartSetHeader.Hash,
 			ChainID:      chainID,
 		},
+		Candidates: allCandidates,
 		Signatures: selected,
 	}, nil
 }
