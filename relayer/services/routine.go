@@ -183,6 +183,14 @@ func (s cachedCosmosValidatorSet) isEmpty() bool {
 	return len(s.indices) == 0
 }
 
+func (s cachedCosmosValidatorSet) allowedIndices() map[uint32]bool {
+	allowed := make(map[uint32]bool, len(s.indices))
+	for _, idx := range s.indices {
+		allowed[idx] = true
+	}
+	return allowed
+}
+
 // getCachedCosmosValidatorSet fetches the on-chain validator cache snapshot for
 // a validatorsHash. Returns an empty snapshot when the hash is not cached
 // (contract reverts ValidatorSetCacheMiss) or the stored data is unusable.
@@ -505,9 +513,11 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	currentValidatorsCacheExists := !currentValidatorCache.isEmpty()
 	usedValidatorCache := false
 	currentValidatorSetDelta := updateclientContract.IUpdateClientMsgsValidatorSetDelta{}
+	var allowedIndices map[uint32]bool
 
 	if currentValidatorsCacheExists {
 		usedValidatorCache = true
+		allowedIndices = currentValidatorCache.allowedIndices()
 		log.Printf("[UpdateCosmosClient] validator quorum cache hit: hash=%x; omitting current validator set", currentValidatorsHash)
 		proposedHeader.ValidatorSet = emptyContractValidatorSet()
 	} else {
@@ -553,7 +563,10 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	// Extract enough non-absent validator signatures to hit 2/3 voting power,
 	// then batch-prove them in a single Groth16 proof that reconstructs each
 	// CanonicalVote in-circuit.
-	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId)
+	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId, allowedIndices)
+	if err != nil && allowedIndices != nil {
+		return nil, fmt.Errorf("cached validator subset cannot form quorum for validatorsHash=%x; cannot fall back to full validator set while this hash is cached on-chain: %w", currentValidatorsHash, err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("extract validator signatures: %w", err)
 	}
