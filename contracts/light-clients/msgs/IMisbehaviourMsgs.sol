@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.28;
 
-import { IGroth16Msgs } from "./IGroth16Msgs.sol";
 import { IICS07TendermintMsgs } from "./IICS07TendermintMsgs.sol";
 import { IICS02ClientMsgs } from "../../msgs/IICS02ClientMsgs.sol";
 
@@ -15,6 +14,24 @@ interface IMisbehaviourMsgs {
         IICS07TendermintMsgs.ConsensusState trustedConsensusState1;
         IICS07TendermintMsgs.ConsensusState trustedConsensusState2;
         uint128 time;
+        BatchProof proof1;
+        BatchProof proof2;
+    }
+
+    /// @notice One batch Ed25519 Groth16 proof for a misbehaviour header.
+    /// @dev This reuses the same gnark BatchCircuit/WrapperVerifier proof model
+    ///      as updateClient. Standalone misbehaviour carries two of these, one
+    ///      for each conflicting signed header.
+    struct BatchProof {
+        uint256[8] proof;
+        uint256[2] commitments;
+        uint256[2] commitmentPok;
+        uint16 bucket;
+        uint32[] signerIndices;
+        bytes32[] signerPubkeys;
+        uint64[] timestampSeconds;
+        uint32[] timestampNanos;
+        bool[] active;
     }
 
     /// @notice The public value output for the gnark misbehaviour program.

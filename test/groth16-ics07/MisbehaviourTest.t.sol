@@ -19,6 +19,13 @@ import { IGroth16ICS07TendermintErrors } from "../../contracts/light-clients/err
 import { IAccessControl } from "@openzeppelin-contracts/access/IAccessControl.sol";
 
 contract MockVerifierForMisbehaviour is IVerifier {
+    bool internal result = true;
+    uint256 public calls;
+
+    function setResult(bool result_) external {
+        result = result_;
+    }
+
     function verifyBatchProof(
         uint16,
         uint256[8] calldata,
@@ -31,10 +38,10 @@ contract MockVerifierForMisbehaviour is IVerifier {
         IVerifier.SharedBlock calldata
     )
         external
-        pure
         returns (bool)
     {
-        return true;
+        calls++;
+        return result;
     }
 }
 
@@ -129,7 +136,17 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
     uint128 internal constant TRUSTED_TIME_NANOS = 1_700_000_000_000_000_000;
     uint128 internal constant HEADER_TIME_NANOS = 1_700_000_100_000_000_000;
+    uint64 internal constant HEADER_TIME_SECONDS = 1_700_000_100;
+    uint32 internal constant HEADER_TIME_NANOS_PART = 0;
     string internal constant CHAIN_ID = "test-chain-0";
+
+    struct LegacyMsgSubmitMisbehaviour {
+        IICS07TendermintMsgs.ClientState clientState;
+        IMisbehaviourMsgs.Misbehaviour misbehaviour;
+        IICS07TendermintMsgs.ConsensusState trustedConsensusState1;
+        IICS07TendermintMsgs.ConsensusState trustedConsensusState2;
+        uint128 time;
+    }
 
     function setUp() public {
         misbehaviourVerifier = new Misbehaviour();
@@ -181,83 +198,108 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         vm.warp(1_700_000_500);
     }
 
-    function test_misbehaviour_alwaysRevertsWithFeatureNotSupported() public {
+    function test_misbehaviour_freezesWithProofBackedQuorums() public {
         IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         bytes memory encoded = abi.encode(msg_);
 
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
         lightClient.misbehaviour(encoded);
+
+        assertTrue(_isFrozen(lightClient), "client must freeze after both header proofs verify");
+        assertEq(mockVerifier.calls(), 2, "both header proofs must be verified");
     }
 
     function test_misbehaviour_revertsWithGarbageBytes() public {
         bytes memory garbage = bytes("this is not a valid encoded message");
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
+        vm.expectRevert();
         lightClient.misbehaviour(garbage);
+        assertFalse(_isFrozen(lightClient), "garbage bytes must not freeze");
     }
 
     function test_misbehaviour_revertsWithEmptyBytes() public {
         bytes memory empty = bytes("");
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
+        vm.expectRevert();
         lightClient.misbehaviour(empty);
+        assertFalse(_isFrozen(lightClient), "empty bytes must not freeze");
     }
 
-    function test_misbehaviour_cannotFreezeClientWithValidMessage() public {
+    function test_misbehaviour_cannotFreezeLegacyMessageWithoutProofs() public {
+        bytes memory encoded = _buildLegacyMisbehaviourMsg();
+        vm.expectRevert();
+        lightClient.misbehaviour(encoded);
+
+        assertFalse(_isFrozen(lightClient), "legacy no-proof message must not freeze");
+        assertEq(mockVerifier.calls(), 0, "legacy message must not reach verifier");
+    }
+
+    function test_misbehaviour_cannotFreezeWhenVerifierRejectsProof() public {
+        mockVerifier.setResult(false);
         IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         bytes memory encoded = abi.encode(msg_);
 
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
+        vm.expectRevert(IGroth16ICS07TendermintErrors.ProofVerificationFailed.selector);
         lightClient.misbehaviour(encoded);
 
-        assertFalse(_isFrozen(lightClient), "client must not be frozen when misbehaviour is disabled");
+        assertFalse(_isFrozen(lightClient), "rejected proof must not freeze");
     }
 
-    function test_misbehaviour_cannotFreezeClientWithFakeSignatures() public {
+    function test_misbehaviour_cannotFreezeWithSubQuorumProofMetadata() public {
         IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
-
-        for (uint256 i = 0; i < msg_.misbehaviour.header1.signedHeader.commit.commitSigs.length; i++) {
-            msg_.misbehaviour.header1.signedHeader.commit.commitSigs[i].data.signature = bytes("fake_signature");
-        }
-        for (uint256 i = 0; i < msg_.misbehaviour.header2.signedHeader.commit.commitSigs.length; i++) {
-            msg_.misbehaviour.header2.signedHeader.commit.commitSigs[i].data.signature = bytes("fake_signature");
-        }
+        msg_.proof1 = _proof(2);
 
         bytes memory encoded = abi.encode(msg_);
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
+        vm.expectRevert(abi.encodeWithSelector(IGroth16ICS07TendermintErrors.InsufficientVotingPower.selector, 50, 100));
         lightClient.misbehaviour(encoded);
 
-        assertFalse(_isFrozen(lightClient), "client must not be frozen with fake signatures");
+        assertFalse(_isFrozen(lightClient), "sub-quorum proof metadata must not freeze");
+        assertEq(mockVerifier.calls(), 0, "sub-quorum metadata must not reach verifier");
     }
 
-    function test_misbehaviour_cannotFreezeClientWithEmptySignatures() public {
+    function test_misbehaviour_rejectsSpoofedTrustedOverlapForNonAdjacentHeaders() public {
+        ValidatorSet memory attackerValSet = _attackerValidatorSet();
+        ValidatorSet memory spoofedTrustedValSet = _trustedValidatorSetWithSpoofedAddresses();
+
         IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        msg_.misbehaviour.header1 =
+            _buildHeaderWithSets(15, bytes32(uint256(0xAAA1)), attackerValSet, spoofedTrustedValSet);
+        msg_.misbehaviour.header2 =
+            _buildHeaderWithSets(15, bytes32(uint256(0xAAA2)), attackerValSet, spoofedTrustedValSet);
+        msg_.proof1 = _proofForValidatorSet(attackerValSet, 3);
+        msg_.proof2 = _proofForValidatorSet(attackerValSet, 3);
 
-        for (uint256 i = 0; i < msg_.misbehaviour.header1.signedHeader.commit.commitSigs.length; i++) {
-            msg_.misbehaviour.header1.signedHeader.commit.commitSigs[i].data.signature = bytes("");
-            msg_.misbehaviour.header1.signedHeader.commit.commitSigs[i].data.hasSignature = false;
-        }
-        for (uint256 i = 0; i < msg_.misbehaviour.header2.signedHeader.commit.commitSigs.length; i++) {
-            msg_.misbehaviour.header2.signedHeader.commit.commitSigs[i].data.signature = bytes("");
-            msg_.misbehaviour.header2.signedHeader.commit.commitSigs[i].data.hasSignature = false;
-        }
+        vm.expectRevert(
+            abi.encodeWithSelector(IGroth16ICS07TendermintErrors.InsufficientTrustedVotingPower.selector, 0, 100)
+        );
+        lightClient.misbehaviour(abi.encode(msg_));
 
-        bytes memory encoded = abi.encode(msg_);
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
-        lightClient.misbehaviour(encoded);
-
-        assertFalse(_isFrozen(lightClient), "client must not be frozen with empty signatures");
+        assertFalse(_isFrozen(lightClient), "spoofed trusted overlap must not freeze");
     }
 
-    function test_misbehaviour_cannotFreezeClientFromAnyAddress() public {
-        address attacker = makeAddr("attacker");
-
+    function test_misbehaviour_rejectsProofSignerAbsentFromCommitSigs() public {
         IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
-        bytes memory encoded = abi.encode(msg_);
+        msg_.misbehaviour.header1.signedHeader.commit.commitSigs[0] =
+            _commitSig(CommitSigFlag.BLOCK_ID_FLAG_ABSENT, "", 0);
 
-        vm.prank(attacker);
-        vm.expectRevert(IGroth16ICS07TendermintErrors.FeatureNotSupported.selector);
+        vm.expectRevert(
+            abi.encodeWithSelector(IGroth16ICS07TendermintErrors.ProofSignerCommitSigMismatch.selector, uint32(0))
+        );
+        lightClient.misbehaviour(abi.encode(msg_));
+
+        assertFalse(_isFrozen(lightClient), "proof signer absent from commit must not freeze");
+        assertEq(mockVerifier.calls(), 0, "mismatched commit metadata must not reach verifier");
+    }
+
+    function test_misbehaviour_revertsForMismatchedHeaderHeights() public {
+        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        msg_.misbehaviour.header2 = _buildHeader(16, bytes32(uint256(0xAAA2)));
+
+        bytes memory encoded = abi.encode(msg_);
+        vm.expectRevert(
+            abi.encodeWithSelector(IGroth16ICS07TendermintErrors.MismatchedMisbehaviourHeaderHeights.selector, 15, 16)
+        );
         lightClient.misbehaviour(encoded);
 
-        assertFalse(_isFrozen(lightClient), "client must not be frozen by arbitrary attacker");
+        assertFalse(_isFrozen(lightClient), "different-height headers must not freeze");
+        assertEq(mockVerifier.calls(), 0, "different-height headers must not reach verifier");
     }
 
     function test_misbehaviour_revertsForUnauthorizedCallerWhenManaged() public {
@@ -339,7 +381,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
     function _buildValidMisbehaviourMsg() internal view returns (IMisbehaviourMsgs.MsgSubmitMisbehaviour memory) {
         IICS07TendermintMsgs.Header memory header1 = _buildHeader(15, bytes32(uint256(0xAAA1)));
-        IICS07TendermintMsgs.Header memory header2 = _buildHeader(12, bytes32(uint256(0xAAA2)));
+        IICS07TendermintMsgs.Header memory header2 = _buildHeader(15, bytes32(uint256(0xAAA2)));
 
         IMisbehaviourMsgs.Misbehaviour memory misbehaviour_ = IMisbehaviourMsgs.Misbehaviour({
             client_id: ChainId({ id: CHAIN_ID, revisionNumber: 0 }), header1: header1, header2: header2
@@ -350,8 +392,51 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
             misbehaviour: misbehaviour_,
             trustedConsensusState1: consensusState_,
             trustedConsensusState2: consensusState_,
-            time: uint128(block.timestamp) * 1_000_000_000
+            time: uint128(block.timestamp) * 1_000_000_000,
+            proof1: _proof(3),
+            proof2: _proof(3)
         });
+    }
+
+    function _buildLegacyMisbehaviourMsg() internal view returns (bytes memory) {
+        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        return abi.encode(
+            LegacyMsgSubmitMisbehaviour({
+                clientState: msg_.clientState,
+                misbehaviour: msg_.misbehaviour,
+                trustedConsensusState1: msg_.trustedConsensusState1,
+                trustedConsensusState2: msg_.trustedConsensusState2,
+                time: msg_.time
+            })
+        );
+    }
+
+    function _proof(uint256 activeCount) internal view returns (IMisbehaviourMsgs.BatchProof memory proof_) {
+        return _proofForValidatorSet(valset_, activeCount);
+    }
+
+    function _proofForValidatorSet(
+        ValidatorSet memory validatorSet,
+        uint256 activeCount
+    )
+        internal
+        pure
+        returns (IMisbehaviourMsgs.BatchProof memory proof_)
+    {
+        proof_.bucket = 4;
+        proof_.signerIndices = new uint32[](4);
+        proof_.signerPubkeys = new bytes32[](4);
+        proof_.timestampSeconds = new uint64[](4);
+        proof_.timestampNanos = new uint32[](4);
+        proof_.active = new bool[](4);
+
+        for (uint32 i = 0; i < 4; i++) {
+            proof_.signerIndices[i] = i;
+            proof_.signerPubkeys[i] = validatorSet.validators[i].pubKey;
+            proof_.timestampSeconds[i] = HEADER_TIME_SECONDS;
+            proof_.timestampNanos[i] = HEADER_TIME_NANOS_PART;
+            proof_.active[i] = i < activeCount;
+        }
     }
 
     function _isFrozen(Groth16ICS07Tendermint client) internal view returns (bool) {
@@ -367,6 +452,20 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         view
         returns (IICS07TendermintMsgs.Header memory)
     {
+        return _buildHeaderWithSets(height, lastBlockIdHash, valset_, valset_);
+    }
+
+    function _buildHeaderWithSets(
+        uint64 height,
+        bytes32 lastBlockIdHash,
+        ValidatorSet memory currentValSet,
+        ValidatorSet memory trustedNextValSet
+    )
+        internal
+        pure
+        returns (IICS07TendermintMsgs.Header memory)
+    {
+        bytes32 currentValSetHash = HeaderLib.hashValSet(currentValSet);
         BlockHeader memory blockHeader = BlockHeader({
             version: Version({ blockVersion: 11, appVersion: 0 }),
             chainId: CHAIN_ID,
@@ -381,8 +480,8 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
             lastCommitHash: bytes32(0),
             hasDataHash: false,
             dataHash: bytes32(0),
-            validatorsHash: valSetHash_,
-            nextValidatorsHash: valSetHash_,
+            validatorsHash: currentValSetHash,
+            nextValidatorsHash: currentValSetHash,
             consensusHash: bytes32(uint256(0xCAFE)),
             appHash: bytes32(uint256(0xBEEF)),
             hasLastResultsHash: false,
@@ -394,19 +493,13 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
         bytes32 headerHash = HeaderLib.hashHeader(blockHeader);
 
-        CommitSig[] memory sigs = new CommitSig[](4);
-        sigs[0] = _commitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val0", HEADER_TIME_NANOS);
-        sigs[1] = _commitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val1", HEADER_TIME_NANOS);
-        sigs[2] = _commitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val2", HEADER_TIME_NANOS);
-        sigs[3] = _commitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val3", HEADER_TIME_NANOS);
-
         BlockCommit memory commit = BlockCommit({
             height: height,
             round: 0,
             blockId: BlockId({
                 hashData: headerHash, partSetHeader: PartSetHeader({ total: 1, hashData: bytes32(uint256(0x5678)) })
             }),
-            commitSigs: sigs
+            commitSigs: _commitSigsForValidatorSet(currentValSet)
         });
 
         SignedHeader memory signedHeader = SignedHeader({ header: blockHeader, commit: commit });
@@ -416,10 +509,53 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
         return IICS07TendermintMsgs.Header({
             signedHeader: signedHeader,
-            validatorSet: valset_,
+            validatorSet: currentValSet,
             trustedHeight: trustedHeight,
-            trustedNextValidatorSet: valset_
+            trustedNextValidatorSet: trustedNextValSet
         });
+    }
+
+    function _attackerValidatorSet() internal pure returns (ValidatorSet memory validatorSet) {
+        ValidatorInfo[] memory vals = new ValidatorInfo[](4);
+        vals[0] = _validator("spoof0", bytes32(uint256(0xA1)), 25);
+        vals[1] = _validator("spoof1", bytes32(uint256(0xA2)), 25);
+        vals[2] = _validator("spoof2", bytes32(uint256(0xA3)), 25);
+        vals[3] = _validator("spoof3", bytes32(uint256(0xA4)), 25);
+
+        validatorSet = ValidatorSet({
+            validators: vals, hasProposer: false, proposer: _validator("", bytes32(0), 0), totalVotingPower: 100
+        });
+    }
+
+    function _trustedValidatorSetWithSpoofedAddresses() internal view returns (ValidatorSet memory validatorSet) {
+        ValidatorInfo[] memory vals = new ValidatorInfo[](4);
+        vals[0] = _validator("spoof0", valset_.validators[0].pubKey, 25);
+        vals[1] = _validator("spoof1", valset_.validators[1].pubKey, 25);
+        vals[2] = _validator("spoof2", valset_.validators[2].pubKey, 25);
+        vals[3] = _validator("spoof3", valset_.validators[3].pubKey, 25);
+
+        validatorSet = ValidatorSet({
+            validators: vals, hasProposer: false, proposer: _validator("", bytes32(0), 0), totalVotingPower: 100
+        });
+    }
+
+    function _commitSigsForValidatorSet(ValidatorSet memory validatorSet)
+        internal
+        pure
+        returns (CommitSig[] memory sigs)
+    {
+        sigs = new CommitSig[](validatorSet.validators.length);
+        for (uint256 i = 0; i < validatorSet.validators.length; i++) {
+            sigs[i] = CommitSig({
+                flag: CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+                data: CommitSigData({
+                    validatorAddress: validatorSet.validators[i].valAddress,
+                    timestamp: HEADER_TIME_NANOS,
+                    hasSignature: true,
+                    signature: bytes("")
+                })
+            });
+        }
     }
 
     function _validator(string memory addr, bytes32 pubkey, uint64 power) internal pure returns (ValidatorInfo memory) {

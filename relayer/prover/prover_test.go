@@ -38,6 +38,20 @@ func TestGenerateProof_InputValidation(t *testing.T) {
 	})
 }
 
+func TestGenerateMisbehaviourProof_InputValidation(t *testing.T) {
+	p := &EcipProver{byBucket: map[int]*bucketArtifacts{}}
+
+	_, err := p.GenerateMisbehaviourProof(nil, []ValidatorSignature{{Active: true}})
+	if err == nil || !strings.Contains(err.Error(), "header1 proof: no signatures") {
+		t.Fatalf("want header1 no-signatures error, got %v", err)
+	}
+
+	_, err = p.GenerateMisbehaviourProof([]ValidatorSignature{{Active: true}}, nil)
+	if err == nil || !strings.Contains(err.Error(), "header2 proof: no signatures") {
+		t.Fatalf("want header2 no-signatures error, got %v", err)
+	}
+}
+
 func TestSmallestBucketGEQ(t *testing.T) {
 	if len(Buckets) == 0 {
 		t.Fatal("Buckets must not be empty")

@@ -10,7 +10,6 @@ import { Predicates } from "../utils/Predicates.sol";
 import { Header } from "../utils/Header.sol";
 import { HeightCmp } from "../utils/HeightCmp.sol";
 import { ChainId } from "../utils/ChainId.sol";
-import { Math } from "@openzeppelin-contracts/utils/math/Math.sol";
 
 /**
  * @title Misbehavior
@@ -121,8 +120,8 @@ contract Misbehaviour is IMisbehaviour {
             revisionHeight: misbehaviour_.header2.signedHeader.header.height
         });
 
-        if (HeightCmp.lt(header1Height, header2Height)) {
-            revert IGroth16ICS07TendermintErrors.InsufficientMisbehaviourHeaderHeight({
+        if (header1Height.revisionHeight != header2Height.revisionHeight) {
+            revert IGroth16ICS07TendermintErrors.MismatchedMisbehaviourHeaderHeights({
                 height1: misbehaviour_.header1.signedHeader.header.height,
                 height2: misbehaviour_.header2.signedHeader.header.height
             });
