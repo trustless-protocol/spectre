@@ -53,6 +53,7 @@ func init() {
 		{Name: "unbondingPeriod", Type: "uint32"},
 		{Name: "isFrozen", Type: "bool"},
 		{Name: "zkAlgorithm", Type: "uint8"},
+		{Name: "clockDrift", Type: "uint32"},
 	}
 	clientStateType, _ = abi.NewType("tuple", "", clientStateComponents)
 
@@ -183,8 +184,23 @@ type LightBlock struct {
 	BlockHeight  int64
 }
 
-func (b *LightBlock) IntoHeader(trustedBlock LightBlock) updateClientContract.IICS07TendermintMsgsHeader {
+func (b *LightBlock) IntoHeader(trustedBlock LightBlock) (updateClientContract.IICS07TendermintMsgsHeader, error) {
+	if b == nil {
+		return updateClientContract.IICS07TendermintMsgsHeader{}, fmt.Errorf("light block is nil")
+	}
 	revisionNumer := clienttypes.ParseChainID(trustedBlock.SignedHeader.ChainID)
+	trustedHeight, err := nonNegativeInt64ToUint64("trusted block height", trustedBlock.BlockHeight)
+	if err != nil {
+		return updateClientContract.IICS07TendermintMsgsHeader{}, err
+	}
+	headerHeight, err := nonNegativeInt64ToUint64("proposed block height", b.BlockHeight)
+	if err != nil {
+		return updateClientContract.IICS07TendermintMsgsHeader{}, err
+	}
+	commitHeight, err := nonNegativeInt64ToUint64("commit height", b.SignedHeader.Commit.Height)
+	if err != nil {
+		return updateClientContract.IICS07TendermintMsgsHeader{}, err
+	}
 
 	commitSigs := []updateClientContract.IICS07TendermintMsgsCommitSig{}
 	for _, sig := range b.SignedHeader.Commit.Signatures {
@@ -208,29 +224,44 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) updateClientContract.II
 	}
 
 	vals := []updateClientContract.IICS07TendermintMsgsValidatorInfo{}
-	for _, val := range b.ValSet.Validators {
-		vals = append(vals, updateClientContract.IICS07TendermintMsgsValidatorInfo{
-			ValAddress:       val.Address,
-			PubKey:           bytesToBytes32(val.PubKey.Bytes()),
-			VotingPower:      uint64(val.VotingPower),
-			ProposerPriority: val.ProposerPriority,
-		})
+	for i, val := range b.ValSet.Validators {
+		info, err := validatorInfoToContract(fmt.Sprintf("validator[%d]", i), val)
+		if err != nil {
+			return updateClientContract.IICS07TendermintMsgsHeader{}, err
+		}
+		vals = append(vals, info)
 	}
 
 	nextVals := []updateClientContract.IICS07TendermintMsgsValidatorInfo{}
-	for _, val := range trustedBlock.NextValSet.Validators {
-		nextVals = append(nextVals, updateClientContract.IICS07TendermintMsgsValidatorInfo{
-			ValAddress:       val.Address,
-			PubKey:           bytesToBytes32(val.PubKey.Bytes()),
-			VotingPower:      uint64(val.VotingPower),
-			ProposerPriority: val.ProposerPriority,
-		})
+	for i, val := range trustedBlock.NextValSet.Validators {
+		info, err := validatorInfoToContract(fmt.Sprintf("trusted next validator[%d]", i), val)
+		if err != nil {
+			return updateClientContract.IICS07TendermintMsgsHeader{}, err
+		}
+		nextVals = append(nextVals, info)
+	}
+
+	proposer, err := validatorInfoToContract("proposer", b.ValSet.Proposer)
+	if err != nil {
+		return updateClientContract.IICS07TendermintMsgsHeader{}, err
+	}
+	trustedProposer, err := validatorInfoToContract("trusted proposer", trustedBlock.ValSet.Proposer)
+	if err != nil {
+		return updateClientContract.IICS07TendermintMsgsHeader{}, err
+	}
+	totalVotingPower, err := votingPowerToUint64("total voting power", b.ValSet.TotalVotingPower())
+	if err != nil {
+		return updateClientContract.IICS07TendermintMsgsHeader{}, err
+	}
+	trustedTotalVotingPower, err := votingPowerToUint64("trusted total voting power", trustedBlock.ValSet.TotalVotingPower())
+	if err != nil {
+		return updateClientContract.IICS07TendermintMsgsHeader{}, err
 	}
 
 	header := updateClientContract.IICS07TendermintMsgsHeader{
 		TrustedHeight: updateClientContract.IICS02ClientMsgsHeight{
 			RevisionNumber: revisionNumer,
-			RevisionHeight: uint64(trustedBlock.BlockHeight),
+			RevisionHeight: trustedHeight,
 		},
 		SignedHeader: updateClientContract.IICS07TendermintMsgsSignedHeader{
 			Header: updateClientContract.IICS07TendermintMsgsBlockHeader{
@@ -239,7 +270,7 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) updateClientContract.II
 					AppVersion:   b.SignedHeader.Version.App,
 				},
 				ChainId:        b.SignedHeader.ChainID,
-				Height:         uint64(b.BlockHeight),
+				Height:         headerHeight,
 				Time:           big.NewInt(b.SignedHeader.Time.UnixNano()),
 				HasLastBlockId: !b.SignedHeader.LastBlockID.IsZero(),
 				LastBlockId: updateClientContract.IICS07TendermintMsgsBlockId{
@@ -264,7 +295,7 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) updateClientContract.II
 				ProposerAddress:    b.SignedHeader.ProposerAddress,
 			},
 			Commit: updateClientContract.IICS07TendermintMsgsBlockCommit{
-				Height: uint64(b.SignedHeader.Commit.Height),
+				Height: commitHeight,
 				Round:  uint32(b.SignedHeader.Commit.Round),
 				BlockId: updateClientContract.IICS07TendermintMsgsBlockId{
 					HashData: bytesToBytes32(b.SignedHeader.Commit.BlockID.Hash),
@@ -277,30 +308,53 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) updateClientContract.II
 			},
 		},
 		ValidatorSet: updateClientContract.IICS07TendermintMsgsValidatorSet{
-			Validators:  vals,
-			HasProposer: b.ValSet.Proposer != nil,
-			Proposer: updateClientContract.IICS07TendermintMsgsValidatorInfo{
-				ValAddress:       b.ValSet.Proposer.Address,
-				PubKey:           bytesToBytes32(b.ValSet.Proposer.PubKey.Bytes()),
-				VotingPower:      uint64(b.ValSet.Proposer.VotingPower),
-				ProposerPriority: b.ValSet.Proposer.ProposerPriority,
-			},
-			TotalVotingPower: uint64(b.ValSet.TotalVotingPower()),
+			Validators:       vals,
+			HasProposer:      b.ValSet.Proposer != nil,
+			Proposer:         proposer,
+			TotalVotingPower: totalVotingPower,
 		},
 		TrustedNextValidatorSet: updateClientContract.IICS07TendermintMsgsValidatorSet{
-			Validators:  nextVals,
-			HasProposer: trustedBlock.ValSet.Proposer != nil,
-			Proposer: updateClientContract.IICS07TendermintMsgsValidatorInfo{
-				ValAddress:       trustedBlock.ValSet.Proposer.Address,
-				PubKey:           bytesToBytes32(trustedBlock.ValSet.Proposer.PubKey.Bytes()),
-				VotingPower:      uint64(trustedBlock.ValSet.Proposer.VotingPower),
-				ProposerPriority: trustedBlock.ValSet.Proposer.ProposerPriority,
-			},
-			TotalVotingPower: uint64(trustedBlock.ValSet.TotalVotingPower()),
+			Validators:       nextVals,
+			HasProposer:      trustedBlock.ValSet.Proposer != nil,
+			Proposer:         trustedProposer,
+			TotalVotingPower: trustedTotalVotingPower,
 		},
 	}
 
-	return header
+	return header, nil
+}
+
+func nonNegativeInt64ToUint64(name string, value int64) (uint64, error) {
+	if value < 0 {
+		return 0, fmt.Errorf("%s cannot be negative: %d", name, value)
+	}
+	return uint64(value), nil
+}
+
+func votingPowerToUint64(name string, value int64) (uint64, error) {
+	if value < 0 {
+		return 0, fmt.Errorf("%s cannot be negative: %d", name, value)
+	}
+	if value > MAX_TOTAL_VOTING_POWER {
+		return 0, fmt.Errorf("%s %d exceeds max total voting power %d", name, value, MAX_TOTAL_VOTING_POWER)
+	}
+	return uint64(value), nil
+}
+
+func validatorInfoToContract(name string, val *commettypes.Validator) (updateClientContract.IICS07TendermintMsgsValidatorInfo, error) {
+	if val == nil {
+		return updateClientContract.IICS07TendermintMsgsValidatorInfo{}, nil
+	}
+	votingPower, err := votingPowerToUint64(name+" voting power", val.VotingPower)
+	if err != nil {
+		return updateClientContract.IICS07TendermintMsgsValidatorInfo{}, err
+	}
+	return updateClientContract.IICS07TendermintMsgsValidatorInfo{
+		ValAddress:       val.Address,
+		PubKey:           bytesToBytes32(val.PubKey.Bytes()),
+		VotingPower:      votingPower,
+		ProposerPriority: val.ProposerPriority,
+	}, nil
 }
 
 type Groth16ICS07TendermintGenesis struct {
@@ -375,17 +429,23 @@ func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32,
 		return nil, fmt.Errorf("unsupported proof type: %s, supported types are: groth16, plonk", proofType)
 	}
 
+	latestRevisionHeight, err := nonNegativeInt64ToUint64("trusted light block header height", trustedLightBlock.SignedHeader.Header.Height)
+	if err != nil {
+		return nil, err
+	}
+
 	clientState := updateClientContract.IICS07TendermintMsgsClientState{
 		ChainId:    chainId,
 		TrustLevel: trustThreshold,
 		LatestHeight: updateClientContract.IICS02ClientMsgsHeight{
 			RevisionNumber: revision,
-			RevisionHeight: uint64(trustedLightBlock.SignedHeader.Header.Height),
+			RevisionHeight: latestRevisionHeight,
 		},
 		IsFrozen:        false,
 		ZkAlgorithm:     uint8(zkAlgorithm),
 		TrustingPeriod:  trustingPeriod,
 		UnbondingPeriod: uint32(unbondingPeriod),
+		ClockDrift:      15,
 	}
 
 	consensusState := updateClientContract.IICS07TendermintMsgsConsensusState{

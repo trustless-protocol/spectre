@@ -55,12 +55,22 @@ type ExtractorResult struct {
 // TotalVotingPower. Candidates are sorted by power for selection, while the
 // selected proof slots are returned in validator-index order.
 //
+// allowedIndices restricts which validator slots may be selected. When nil,
+// all signing validators are candidates. Pass the set of cached signer indices
+// to guarantee the proof only references indices already cached on-chain.
+//
 // Returns an error if no quorum can be reached or the required signer count
 // would exceed the largest configured bucket.
 func ExtractValidatorSignatures(
 	lightBlock *relayerclient.LightBlock,
 	chainID string,
+	allowedIndicesOpt ...map[uint32]bool,
 ) (*ExtractorResult, error) {
+	var allowedIndices map[uint32]bool
+	if len(allowedIndicesOpt) > 0 {
+		allowedIndices = allowedIndicesOpt[0]
+	}
+
 	if lightBlock == nil {
 		return nil, fmt.Errorf("light block is nil")
 	}
@@ -76,6 +86,9 @@ func ExtractValidatorSignatures(
 	candidates := make([]ValidatorSignature, 0, len(commit.Signatures))
 	for i, sig := range commit.Signatures {
 		if sig.BlockIDFlag == types.BlockIDFlagAbsent {
+			continue
+		}
+		if allowedIndices != nil && !allowedIndices[uint32(i)] {
 			continue
 		}
 		if i >= len(validators.Validators) {

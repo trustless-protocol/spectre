@@ -89,8 +89,6 @@ contract Groth16ICS07Tendermint is
         uint256 overrideBits;
     }
 
-    uint16 private constant ALLOWED_CLOCK_DRIFT = 30 minutes;
-
     bytes32 private constant PROOF_SUBMITTER_ROLE = keccak256("PROOF_SUBMITTER_ROLE");
 
     /// @inheritdoc IGroth16ICS07Tendermint
@@ -140,7 +138,7 @@ contract Groth16ICS07Tendermint is
         UPDATE_CLIENT = IUpdateClient(updateClient_);
 
         require(
-            clientState.trustingPeriod + ALLOWED_CLOCK_DRIFT <= clientState.unbondingPeriod,
+            clientState.trustingPeriod + clientState.clockDrift <= clientState.unbondingPeriod,
             TrustingPeriodTooLong(clientState.trustingPeriod, clientState.unbondingPeriod)
         );
 
@@ -173,7 +171,7 @@ contract Groth16ICS07Tendermint is
     {
         address pointer = _validatorCachePointer(validatorsHash);
         if (pointer == address(0)) {
-            return (new uint32[](0), new bytes32[](0), new uint64[](0));
+            revert ValidatorSetCacheMiss(validatorsHash);
         }
         bytes memory cacheData = SSTORE2.read(pointer, 0, _validatorCacheEntryDataLen(_cachedValidatorEntryCount));
         ValidatorCacheHeader memory cacheHeader = _readValidatorCacheHeader(validatorsHash, cacheData);
@@ -216,7 +214,9 @@ contract Groth16ICS07Tendermint is
         ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output);
         uint64 totalVotingPower =
             currentCached ? _verifyCachedBatchAndQuorum(currentValidatorsHash, msg_) : _verifyFullBatchAndQuorum(msg_);
-        if (cacheCurrentValidatorSet) {
+        // Only cache on a real state advance; NoOp already has the set cached and
+        // Misbehaviour freezes the client, making a fresh SSTORE2 write pointless.
+        if (cacheCurrentValidatorSet && updateResult == ILightClientMsgs.UpdateResult.Update) {
             _cacheValidatorSet(currentValidatorsHash, msg_, totalVotingPower);
         }
         if (updateResult == ILightClientMsgs.UpdateResult.Update) {
@@ -1296,7 +1296,7 @@ contract Groth16ICS07Tendermint is
     {
         require(_nanosToSeconds(time) <= block.timestamp, ProofIsInTheFuture(block.timestamp, _nanosToSeconds(time)));
         require(
-            block.timestamp - _nanosToSeconds(time) <= ALLOWED_CLOCK_DRIFT,
+            block.timestamp - _nanosToSeconds(time) <= clientState.clockDrift,
             ProofIsTooOld(block.timestamp, _nanosToSeconds(time))
         );
 
@@ -1327,6 +1327,10 @@ contract Groth16ICS07Tendermint is
         require(
             publicClientState.unbondingPeriod == clientState.unbondingPeriod,
             UnbondingPeriodMismatch(clientState.unbondingPeriod, publicClientState.unbondingPeriod)
+        );
+        require(
+            publicClientState.clockDrift == clientState.clockDrift,
+            ClockDriftMismatch(clientState.clockDrift, publicClientState.clockDrift)
         );
     }
 

@@ -30,12 +30,14 @@ type Config struct {
 	TrustingPeriod uint32
 	TrustLevel     string
 	ProofType      string
+	FetchTimeout   time.Duration
 }
 
 func NewConfig(KeyPath string, params IntervalConfig, intervalType IntervalType) Config {
 	return Config{
 		IntervalParams: params,
 		IntervalType:   intervalType,
+		FetchTimeout:   time.Second * 15,
 	}
 }
 
@@ -50,7 +52,8 @@ func DefaultConfig() Config {
 			BatchPeriods: time.Second * 3, // default each batch waits for 3 seconds
 			BatchSize:    5,               // default 5 packets per batch (multicall gas budget: ~5×2M wasm verify ≈ 10M, fits prod block limit)
 		},
-		TrustLevel: "2/3",
-		ProofType:  "groth16",
+		TrustLevel:   "2/3",
+		ProofType:    "groth16",
+		FetchTimeout: time.Second * 15,
 	}
 }

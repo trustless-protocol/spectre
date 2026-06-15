@@ -162,7 +162,8 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
             trustingPeriod: 3600,
             unbondingPeriod: 7200,
             isFrozen: false,
-            zkAlgorithm: SupportedZkAlgorithm.Groth16
+            zkAlgorithm: SupportedZkAlgorithm.Groth16,
+            clockDrift: 15
         });
 
         bytes memory encodedClientState = abi.encode(clientState_);

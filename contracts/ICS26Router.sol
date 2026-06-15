@@ -183,8 +183,13 @@ contract ICS26Router is
             ICS24Host.packetCommitmentPathCalldata(msg_.packet.sourceClient, msg_.packet.sequence);
         bytes32 commitmentBz = ICS24Host.packetCommitmentBytes32(msg_.packet);
 
-        ILightClientMsgs.MsgVerifyMembership memory membershipMsg =
-            abi.decode(msg_.membershipMsg, (ILightClientMsgs.MsgVerifyMembership));
+        // Security note: membershipMsg is fully relayer-supplied. The router overrides
+        // `path` and `value` below so the light client proves the correct packet
+        // commitment regardless of what the relayer provided for those fields. All
+        // remaining fields (height, proofs, appHash, trustedConsensusState, …) are
+        // relayer-controlled; correctness and integrity for those fields is delegated
+        // entirely to the light client's verifyMembership implementation.
+        ILightClientMsgs.MsgVerifyMembership memory membershipMsg = abi.decode(msg_.membershipMsg, (ILightClientMsgs.MsgVerifyMembership));
         // Override path and value so the light client proves the actual packet commitment
         membershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, commitmentPath);
         membershipMsg.value = abi.encodePacked(commitmentBz);
