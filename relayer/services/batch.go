@@ -83,13 +83,14 @@ type EthBatch struct {
 }
 
 type BatchBuilder struct {
-	cosmosMtx       sync.Mutex
-	ethMtx          sync.Mutex
-	cosmosTimestamp time.Time
-	ethTimestamp    time.Time
-	cosmosPackets   []CosmosPacket
-	ethPackets      []EthPacket
-	PendingTracker  *PendingPacketTracker
+	cosmosMtx         sync.Mutex
+	ethMtx            sync.Mutex
+	cosmosTimestamp   time.Time
+	ethTimestamp      time.Time
+	cosmosPackets     []CosmosPacket
+	ethPackets        []EthPacket
+	PendingTracker    *PendingPacketTracker
+	EthPendingTracker *PendingPacketTracker
 
 	// Dead-lettered packets: those that hit maxPacketRetries on PERMANENT
 	// (deterministic revert) failures. Kept rather than silently dropped so
@@ -114,11 +115,12 @@ func (b *BatchBuilder) DeadLetterCounts() (cosmos, eth int) {
 func NewBatchBuilder() *BatchBuilder {
 	now := time.Now()
 	return &BatchBuilder{
-		cosmosTimestamp: now,
-		ethTimestamp:    now,
-		cosmosPackets:   []CosmosPacket{},
-		ethPackets:      []EthPacket{},
-		PendingTracker:  NewPendingPacketTracker(),
+		cosmosTimestamp:   now,
+		ethTimestamp:      now,
+		cosmosPackets:     []CosmosPacket{},
+		ethPackets:        []EthPacket{},
+		PendingTracker:    NewPendingPacketTracker(),
+		EthPendingTracker: NewPendingPacketTracker(),
 	}
 }
 

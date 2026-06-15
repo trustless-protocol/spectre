@@ -44,6 +44,12 @@ func TestNewBatchBuilder(t *testing.T) {
 	if bb.ethTimestamp.IsZero() {
 		t.Fatal("expected eth timestamp to be set")
 	}
+	if bb.PendingTracker == nil {
+		t.Fatal("expected non-nil cosmos pending tracker")
+	}
+	if bb.EthPendingTracker == nil {
+		t.Fatal("expected non-nil eth pending tracker")
+	}
 }
 
 func TestAddCosmos(t *testing.T) {
