@@ -57,15 +57,15 @@ and `PROVER_BIN_DIR=<repo>/relayer/bin` for you.
 | `Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack` | full ETH→Cosmos→ETH round-trip (5 phases: recv, ack, return-send, return-recv, return-ack) |
 | `Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack` | full Cosmos→ETH→Cosmos round-trip for native coin |
 | `Test_ICS20TransferLargeAmountFromEthereumToCosmosAndBack` | bigint round-trip (`transferAmount = 5×10²²`, half of `StartingERC20Balance`) |
-| `Test_TimeoutPacketFromEth` | `PendingPacketTracker` scanner → `timeoutEthSend` → `ICS26.timeoutPacket` on ETH |
-| `Test_TimeoutPacketFromCosmos` | scanner → `timeoutCosmosSend` → `MsgTimeout` on Cosmos with ETH non-membership proof |
+| `Test_TimeoutPacketFromEth` | short-deadline ETH→Cosmos packets settle by either auto-delivery or timeout refund with balanced cross-chain accounting |
+| `Test_TimeoutPacketFromCosmos` | short-deadline Cosmos→ETH packets settle by either auto-delivery or timeout refund with balanced cross-chain accounting |
 | `Test_ErrorAckToEthereum` | Cosmos transfer module writes error ack → `MsgAck` on ETH → escrow refund |
 
 ## Tests that don't run against fast-ibc's daemon
 
 These cases assume the upstream Rust relayer's gRPC `RelayByTx` model and have
-no auto-relay equivalent. They `s.T().Skipf()` at runtime or are left untouched
-pending a refactor.
+no auto-relay equivalent. They skip at runtime and are excluded from the
+reusable E2E matrix pending a refactor.
 
 - `Test_5_FilteredTimeoutPacketFromEth`, `Test_10_FilteredTimeoutPacketFromCosmos`,
   and other partial-timeout-filter variants — fast-ibc's scanner can't
@@ -74,6 +74,12 @@ pending a refactor.
   variant) — relayer signs and submits each Cosmos→ETH `recvPacket` sequentially,
   so 25 packets × ~6 s each + initial beacon-finality wait blows past the
   5-min `Eventually` timeout in the phase-4 wait. Pending batching improvements.
+- `Test_ICS20TransferERC20TokenFromEthereumToCosmosAndBackFails` and
+  `Test_5_FinalizedTimeoutPacketFromEth` — still use gRPC `RelayByTx` to retrieve
+  raw relay transactions for manual broadcast.
+- `Test_TimeoutPacketEthRemintsVouchers` and
+  `Test_TimeoutPacketCosmosRemintsVouchers` — still mix auto-relay setup with
+  manual `RelayByTx` timeout/ack broadcasts.
 - `groth16_ics07_test.go` (fixture-generation flow) — references the deleted
   `fixtures membership` CLI subcommand.
 - `cosmos_relayer_test.go` (Cosmos↔Cosmos via the Rust gRPC relayer) — out of
