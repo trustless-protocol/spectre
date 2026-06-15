@@ -173,7 +173,7 @@ contract Groth16ICS07Tendermint is
     {
         address pointer = _validatorCachePointer(validatorsHash);
         if (pointer == address(0)) {
-            return (new uint32[](0), new bytes32[](0), new uint64[](0));
+            revert ValidatorSetCacheMiss(validatorsHash);
         }
         bytes memory cacheData = SSTORE2.read(pointer, 0, _validatorCacheEntryDataLen(_cachedValidatorEntryCount));
         ValidatorCacheHeader memory cacheHeader = _readValidatorCacheHeader(validatorsHash, cacheData);
@@ -216,7 +216,9 @@ contract Groth16ICS07Tendermint is
         ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output);
         uint64 totalVotingPower =
             currentCached ? _verifyCachedBatchAndQuorum(currentValidatorsHash, msg_) : _verifyFullBatchAndQuorum(msg_);
-        if (cacheCurrentValidatorSet) {
+        // Only cache on a real state advance; NoOp already has the set cached and
+        // Misbehaviour freezes the client, making a fresh SSTORE2 write pointless.
+        if (cacheCurrentValidatorSet && updateResult == ILightClientMsgs.UpdateResult.Update) {
             _cacheValidatorSet(currentValidatorsHash, msg_, totalVotingPower);
         }
         if (updateResult == ILightClientMsgs.UpdateResult.Update) {

@@ -231,8 +231,11 @@ library Predicates {
 
         uint64 totalVotingPower = _sumVotingPower(validators);
 
-        // Tally voting power of non-absent signers that match validators
+        // Tally voting power of non-absent signers that match validators.
+        // counted[] prevents a duplicate commitSig address from summing a
+        // validator's power more than once (double-count attack on trust overlap).
         uint64 talliedPower = 0;
+        bool[] memory counted = new bool[](validators.length);
         for (uint256 i = 0; i < commitSigs.length; i++) {
             IICS07TendermintMsgs.CommitSig memory sig = commitSigs[i];
             if (sig.flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT) {
@@ -241,8 +244,9 @@ library Predicates {
 
             bytes32 signerAddressHash = keccak256(sig.data.validatorAddress);
             for (uint256 j = 0; j < validators.length; j++) {
-                if (keccak256(validators[j].valAddress) == signerAddressHash) {
+                if (!counted[j] && keccak256(validators[j].valAddress) == signerAddressHash) {
                     talliedPower += validators[j].votingPower;
+                    counted[j] = true;
                     break;
                 }
             }

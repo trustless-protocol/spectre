@@ -35,6 +35,45 @@ type Worker struct {
 const cosmosCatchUpSafetySlots uint64 = 3
 const maxValidatorDeltaLeafCount = 16
 
+// validatorSetCacheMissSelector is the 4-byte ABI selector for
+// ValidatorSetCacheMiss(bytes32). Used to distinguish a normal cache-miss
+// revert from unexpected eth_call failures in getCachedCosmosValidatorSet.
+var validatorSetCacheMissSelector = func() [4]byte {
+	h := crypto.Keccak256([]byte("ValidatorSetCacheMiss(bytes32)"))
+	var s [4]byte
+	copy(s[:], h[:4])
+	return s
+}()
+
+// isValidatorSetCacheMiss returns true when err carries the
+// ValidatorSetCacheMiss(bytes32) ABI revert selector.
+func isValidatorSetCacheMiss(err error) bool {
+	type dataErr interface {
+		ErrorData() interface{}
+	}
+	de, ok := err.(dataErr)
+	if !ok {
+		return false
+	}
+	var data []byte
+	switch raw := de.ErrorData().(type) {
+	case string:
+		data = common.FromHex(raw)
+	case fmt.Stringer:
+		data = common.FromHex(raw.String())
+	case []byte:
+		data = raw
+	default:
+		return false
+	}
+	if len(data) < 4 {
+		return false
+	}
+	var sel [4]byte
+	copy(sel[:], data[:4])
+	return sel == validatorSetCacheMissSelector
+}
+
 func NewWorker(txHandler TransactionHandler, prover Prover) *Worker {
 	return &Worker{
 		txHandler,
@@ -145,8 +184,8 @@ func (s cachedCosmosValidatorSet) isEmpty() bool {
 }
 
 // getCachedCosmosValidatorSet fetches the on-chain validator cache snapshot for
-// a validatorsHash. The contract returns an empty snapshot when the hash is not
-// cached or the stored data is unusable.
+// a validatorsHash. Returns an empty snapshot when the hash is not cached
+// (contract reverts ValidatorSetCacheMiss) or the stored data is unusable.
 func getCachedCosmosValidatorSet(ctx Context, validatorsHash [32]byte) (cachedCosmosValidatorSet, error) {
 	ics07, err := tendermintContract.NewContractGroth16ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
 	if err != nil {
@@ -154,6 +193,10 @@ func getCachedCosmosValidatorSet(ctx Context, validatorsHash [32]byte) (cachedCo
 	}
 	out, err := ics07.GetCachedValidatorSet(nil, validatorsHash)
 	if err != nil {
+		if isValidatorSetCacheMiss(err) {
+			log.Printf("[getCachedCosmosValidatorSet] cache miss for hash=%x (ValidatorSetCacheMiss revert)", validatorsHash)
+			return cachedCosmosValidatorSet{}, nil
+		}
 		return cachedCosmosValidatorSet{}, fmt.Errorf("getCachedValidatorSet(%x): %w", validatorsHash, err)
 	}
 	if len(out.Indices) != len(out.Pubkeys) || len(out.Indices) != len(out.VotingPowers) {

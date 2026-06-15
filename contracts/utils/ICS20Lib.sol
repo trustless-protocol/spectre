@@ -62,6 +62,19 @@ library ICS20Lib {
         return abi.encodePacked(portId, "/", clientId, "/");
     }
 
+    /// @notice hasDenomPrefix checks whether `denomBz` is prefixed by exactly
+    /// portId + "/" + clientId + "/" and has at least one additional byte of base
+    /// denom after the prefix. Using the full portId/clientId/ segment as the
+    /// unit of comparison (rather than a raw byte prefix) ensures the boundary
+    /// always falls on a path separator — latent protection against any future
+    /// clientId format that could otherwise be a byte-prefix of another clientId.
+    /// @param denomBz the denom bytes to check
+    /// @param prefix the exact portId/clientId/ prefix bytes (from getDenomPrefix)
+    /// @return true iff denomBz starts with the prefix AND has content after it
+    function hasDenomPrefix(bytes memory denomBz, bytes memory prefix) internal pure returns (bool) {
+        return denomBz.length > prefix.length && IBCIdentifiers.hasPrefix(denomBz, prefix);
+    }
+
     /// @notice hasHops checks if a denom has any hops in it (i.e it has a "/" in it).
     /// @param denom Denom to check
     /// @return true if the denom has any hops in it
