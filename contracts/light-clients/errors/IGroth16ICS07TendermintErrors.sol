@@ -9,6 +9,11 @@ interface IGroth16ICS07TendermintErrors {
     /// @param actual The actual verification key.
     error VerificationKeyMismatch(bytes32 expected, bytes32 actual);
 
+    /// @notice The error that is returned when attempting to update the client with a non-monotonic height.
+    /// @param latestHeight The latest height in client state.
+    /// @param updateHeight The height being updated to.
+    error NonMonotonicHeightUpdate(uint64 latestHeight, uint64 updateHeight);
+
     /// @notice The error that is returned when the client state is frozen.
     error FrozenClientState();
 

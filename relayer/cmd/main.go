@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -64,11 +65,10 @@ type cosmosToEthConfig struct {
 }
 
 type ethToCosmosConfig struct {
-	TmRpcUrl      string `json:"tm_rpc_url"`
-	ICS26Address  string `json:"ics26_address"`
-	EthRpcUrl     string `json:"eth_rpc_url"`
-	BeaconUrl     string `json:"eth_beacon_api_url"`
-	SignerAddress string `json:"signer_address"`
+	TmRpcUrl     string `json:"tm_rpc_url"`
+	ICS26Address string `json:"ics26_address"`
+	EthRpcUrl    string `json:"eth_rpc_url"`
+	BeaconUrl    string `json:"eth_beacon_api_url"`
 }
 
 type configModule struct {
@@ -97,7 +97,6 @@ type jsonConfig struct {
 }
 
 type appConfig struct {
-	Server            serverConfig
 	CosmosToEthConfig cosmosToEthConfig
 	EthToCosmosConfig ethToCosmosConfig
 	BatchConfig       services.BatchConfig
@@ -419,12 +418,96 @@ func loadConfig(configPath string) (*appConfig, error) {
 		}
 	}
 
+	// Validate cosmos_to_eth config if populated
+	if c2e.TmRpcUrl != "" || c2e.EthRpcUrl != "" || c2e.ICS26Address != "" {
+		if err := validateURL(c2e.TmRpcUrl, "cosmos_to_eth.tm_rpc_url"); err != nil {
+			return nil, err
+		}
+		if err := validateURL(c2e.EthRpcUrl, "cosmos_to_eth.eth_rpc_url"); err != nil {
+			return nil, err
+		}
+		if c2e.EthWsUrl != "" {
+			if err := validateURL(c2e.EthWsUrl, "cosmos_to_eth.eth_ws_url"); err != nil {
+				return nil, err
+			}
+		}
+		if err := validateHexAddress(c2e.ICS26Address, "cosmos_to_eth.ics26_address"); err != nil {
+			return nil, err
+		}
+		if c2e.ICS07Client != "" {
+			if err := validateHexAddress(c2e.ICS07Client, "cosmos_to_eth.ics07_client"); err != nil {
+				return nil, err
+			}
+		}
+		if c2e.WrapperVerifier != "" {
+			if err := validateHexAddress(c2e.WrapperVerifier, "cosmos_to_eth.wrapper_verifier"); err != nil {
+				return nil, err
+			}
+		}
+		if c2e.Membership != "" {
+			if err := validateHexAddress(c2e.Membership, "cosmos_to_eth.membership"); err != nil {
+				return nil, err
+			}
+		}
+		if c2e.Misbehaviour != "" {
+			if err := validateHexAddress(c2e.Misbehaviour, "cosmos_to_eth.misbehaviour"); err != nil {
+				return nil, err
+			}
+		}
+		if c2e.UpdateClient != "" {
+			if err := validateHexAddress(c2e.UpdateClient, "cosmos_to_eth.update_client"); err != nil {
+				return nil, err
+			}
+		}
+	}
+
+	// Validate eth_to_cosmos config if populated
+	if e2c.TmRpcUrl != "" || e2c.EthRpcUrl != "" || e2c.ICS26Address != "" {
+		if err := validateURL(e2c.TmRpcUrl, "eth_to_cosmos.tm_rpc_url"); err != nil {
+			return nil, err
+		}
+		if err := validateURL(e2c.EthRpcUrl, "eth_to_cosmos.eth_rpc_url"); err != nil {
+			return nil, err
+		}
+		if e2c.BeaconUrl != "" {
+			if err := validateURL(e2c.BeaconUrl, "eth_to_cosmos.eth_beacon_api_url"); err != nil {
+				return nil, err
+			}
+		}
+		if err := validateHexAddress(e2c.ICS26Address, "eth_to_cosmos.ics26_address"); err != nil {
+			return nil, err
+		}
+	}
+
 	return &appConfig{
-		Server:            jc.Server,
 		CosmosToEthConfig: c2e,
 		EthToCosmosConfig: e2c,
 		BatchConfig:       batch,
 	}, nil
+}
+
+func validateURL(rawURL, fieldName string) error {
+	if rawURL == "" {
+		return fmt.Errorf("%s is empty", fieldName)
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("invalid URL %q for %s: %w", rawURL, fieldName, err)
+	}
+	if u.Scheme == "" {
+		return fmt.Errorf("URL %q for %s is missing scheme", rawURL, fieldName)
+	}
+	return nil
+}
+
+func validateHexAddress(addr, fieldName string) error {
+	if addr == "" {
+		return fmt.Errorf("%s is empty", fieldName)
+	}
+	if !common.IsHexAddress(addr) {
+		return fmt.Errorf("invalid hex address %q for %s", addr, fieldName)
+	}
+	return nil
 }
 
 func preflightCreateClients(cfg *appConfig) error {
@@ -977,7 +1060,7 @@ func Genesis(logger *zap.Logger) *cobra.Command {
 				if err != nil {
 					return fmt.Errorf("failed to get output path from flag: %w", err)
 				}
-				if err := os.WriteFile(outputDir, data, 0644); err != nil {
+				if err := os.WriteFile(outputDir, data, 0o600); err != nil {
 					return fmt.Errorf("failed to write genesis state to file: %w", err)
 				}
 			default:

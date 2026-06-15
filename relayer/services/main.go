@@ -122,6 +122,7 @@ func (s *Services) StartLoop(ctx Context) {
 				latestBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ethUpdateHeight), s.cosmosConfig.TrustLevel)
 				if err != nil {
 					log.Printf("[Routine] Failed to update cosmos light client: %v", err)
+					time.Sleep(time.Second)
 					continue
 				}
 

@@ -225,10 +225,11 @@ contract Groth16ICS07Tendermint is
             _cacheValidatorSet(currentValidatorsHash, msg_, totalVotingPower);
         }
         if (updateResult == ILightClientMsgs.UpdateResult.Update) {
-            // adding the new consensus state to the mapping
-            if (output.newHeight.revisionHeight > clientState.latestHeight.revisionHeight) {
-                clientState.latestHeight = output.newHeight;
-            }
+            require(
+                output.newHeight.revisionHeight > clientState.latestHeight.revisionHeight,
+                NonMonotonicHeightUpdate(clientState.latestHeight.revisionHeight, output.newHeight.revisionHeight)
+            );
+            clientState.latestHeight = output.newHeight;
             _consensusStateHashes[output.newHeight.revisionHeight] = keccak256(abi.encode(output.newConsensusState));
         } else if (updateResult == ILightClientMsgs.UpdateResult.Misbehaviour) {
             clientState.isFrozen = true;
