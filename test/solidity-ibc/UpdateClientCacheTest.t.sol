@@ -101,19 +101,20 @@ contract UpdateClientCacheTest is Test {
         BucketConfig memory cfg = _cfg(16);
         IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
         bytes32 hashA = Header.hashValSet(valA);
+
         IICS07TendermintMsgs.ConsensusState memory trustedCS =
             _consensusState(TRUSTED_TS_NS, hashA, bytes32(uint256(0xAAA1)));
 
         Groth16ICS07Tendermint ics07 = _deployLightClient(trustedCS);
 
-        // First update: advance latestHeight from 1000 → 1002
+        // First update: advance latestHeight from 1000 to 1002.
         IICS07TendermintMsgs.Header memory header1002 =
             _buildHeader(TRUSTED_HEIGHT, HEIGHT_1002, valA, valA, hashA, TS_1002_NS, cfg.activeCount);
         IUpdateClientMsgs.MsgUpdateClient memory msg1002 =
             _buildMsg(_clientState(), trustedCS, header1002, cfg.bucket, cfg.activeCount);
         ics07.updateClient(abi.encode(msg1002));
 
-        // Second update: try height 1001 < latestHeight 1002 → NonMonotonicHeightUpdate
+        // Second update: try height 1001 < latestHeight 1002.
         IICS07TendermintMsgs.Header memory header1001 =
             _buildHeader(TRUSTED_HEIGHT, HEIGHT_1001, valA, valA, hashA, TS_1001_NS, cfg.activeCount);
         IUpdateClientMsgs.MsgUpdateClient memory msg1001 =
@@ -127,6 +128,56 @@ contract UpdateClientCacheTest is Test {
             )
         );
         ics07.updateClient(abi.encode(msg1001));
+    }
+
+    function test_updateClient_reverts_whenClockDriftDoesNotMatchStoredClientState() public {
+        BucketConfig memory cfg = _cfg(16);
+        IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
+        bytes32 hashA = Header.hashValSet(valA);
+
+        IICS07TendermintMsgs.Header memory header =
+            _buildHeader(TRUSTED_HEIGHT, HEIGHT_1001, valA, valA, hashA, TS_1001_NS, cfg.activeCount);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS =
+            _consensusState(TRUSTED_TS_NS, hashA, bytes32(uint256(0xAAA1)));
+
+        Groth16ICS07Tendermint ics07 = _deployLightClient(trustedCS);
+
+        IUpdateClientMsgs.MsgUpdateClient memory msg_ =
+            _buildMsg(_clientState(), trustedCS, header, cfg.bucket, cfg.activeCount);
+        msg_.clientState.clockDrift = 3600;
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IGroth16ICS07TendermintErrors.ClockDriftMismatch.selector, uint256(1800), uint256(3600)
+            )
+        );
+        ics07.updateClient(abi.encode(msg_));
+    }
+
+    function test_updateClient_reverts_whenProofTimeExceedsStoredClockDrift() public {
+        BucketConfig memory cfg = _cfg(16);
+        IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
+        bytes32 hashA = Header.hashValSet(valA);
+
+        IICS07TendermintMsgs.Header memory header =
+            _buildHeader(TRUSTED_HEIGHT, HEIGHT_1001, valA, valA, hashA, TS_1001_NS, cfg.activeCount);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS =
+            _consensusState(TRUSTED_TS_NS, hashA, bytes32(uint256(0xAAA1)));
+
+        Groth16ICS07Tendermint ics07 = _deployLightClient(trustedCS);
+
+        IUpdateClientMsgs.MsgUpdateClient memory msg_ =
+            _buildMsg(_clientState(), trustedCS, header, cfg.bucket, cfg.activeCount);
+
+        uint256 proofTimestamp = uint256(TS_1002_NS / 1e9);
+        vm.warp(proofTimestamp + 1801);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IGroth16ICS07TendermintErrors.ProofIsTooOld.selector, proofTimestamp + 1801, proofTimestamp
+            )
+        );
+        ics07.updateClient(abi.encode(msg_));
     }
 
     function test_updateClient_populatesCache_andUsesItOnEmptyAdjacentNoOp() public {
@@ -909,7 +960,8 @@ contract UpdateClientCacheTest is Test {
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
             isFrozen: false,
-            zkAlgorithm: IICS07TendermintMsgs.SupportedZkAlgorithm.Groth16
+            zkAlgorithm: IICS07TendermintMsgs.SupportedZkAlgorithm.Groth16,
+            clockDrift: 1800
         });
     }
 

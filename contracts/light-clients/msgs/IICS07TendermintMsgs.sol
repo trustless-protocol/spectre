@@ -32,6 +32,7 @@ interface IICS07TendermintMsgs {
         uint32 unbondingPeriod;
         bool isFrozen;
         SupportedZkAlgorithm zkAlgorithm;
+        uint32 clockDrift;
     }
 
     /// @notice Defines the Tendermint light client's consensus state at some height.

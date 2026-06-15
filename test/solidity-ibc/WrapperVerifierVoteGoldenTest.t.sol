@@ -121,4 +121,14 @@ contract WrapperVerifierVoteGoldenTest is Test {
             hex"5d080211640000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06"
         );
     }
+
+    /// height 0, round 5: height field omitted (proto3 zero), round field present.
+    /// This is the canonical CometBFT zero-omission cross-check: a non-zero round with
+    /// zero height must encode the round but not the height.
+    function test_prod_voteSignBytes_zeroHeightNonZeroRound() public view {
+        assertEq(
+            h.buildCanonicalVote(_shared(0, 5, bytes("test-chain")), TS_SECONDS, 0),
+            hex"69080219050000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
+        );
+    }
 }
