@@ -492,6 +492,7 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		ZkAlgorithm:     uint8(zkAlgorithm),
 		TrustingPeriod:  trustingPeriod,
 		UnbondingPeriod: uint32(unbondingPeriod),
+		ClockDrift:      15,
 	}
 
 	consensusState := updateclientContract.IICS07TendermintMsgsConsensusState{

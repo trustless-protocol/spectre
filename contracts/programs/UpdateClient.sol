@@ -84,7 +84,9 @@ contract UpdateClient is IUpdateClient {
             id: msg_.clientState.chainId, revisionNumber: msg_.clientState.latestHeight.revisionNumber
         });
         IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
-            trustThreshold: msg_.clientState.trustLevel, trustingPeriod: msg_.clientState.trustingPeriod, clockDrift: 15
+            trustThreshold: msg_.clientState.trustLevel,
+            trustingPeriod: msg_.clientState.trustingPeriod,
+            clockDrift: msg_.clientState.clockDrift
         });
 
         verifyHeaderCachedCurrent(
@@ -119,7 +121,9 @@ contract UpdateClient is IUpdateClient {
             id: msg_.clientState.chainId, revisionNumber: msg_.clientState.latestHeight.revisionNumber
         });
         IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
-            trustThreshold: msg_.clientState.trustLevel, trustingPeriod: msg_.clientState.trustingPeriod, clockDrift: 15
+            trustThreshold: msg_.clientState.trustLevel,
+            trustingPeriod: msg_.clientState.trustingPeriod,
+            clockDrift: msg_.clientState.clockDrift
         });
 
         if (assumeResolvedValidatorSets) {
