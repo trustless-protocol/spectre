@@ -72,9 +72,9 @@ func TestShouldRelayCosmosTimeoutToEth(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := shouldRelayCosmosTimeoutToEth(tc.packet, tc.cosmosRouterClientID)
+			got := ShouldRelayCosmosTimeoutToEth(tc.packet, tc.cosmosRouterClientID)
 			if got != tc.want {
-				t.Fatalf("shouldRelayCosmosTimeoutToEth=%v want=%v", got, tc.want)
+				t.Fatalf("ShouldRelayCosmosTimeoutToEth=%v want=%v", got, tc.want)
 			}
 		})
 	}

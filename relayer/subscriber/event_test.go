@@ -241,8 +241,8 @@ func TestCosmosStartupRecoveryLookbackBlocksFromEnv(t *testing.T) {
 		raw  string
 		want uint64
 	}{
-		{name: "empty uses default full history", raw: "", want: defaultCosmosStartupRecoveryLookbackBlocks},
-		{name: "invalid uses default full history", raw: "not-a-number", want: defaultCosmosStartupRecoveryLookbackBlocks},
+		{name: "empty uses bounded default", raw: "", want: 256},
+		{name: "invalid uses bounded default", raw: "not-a-number", want: 256},
 		{name: "zero means full history", raw: "0", want: 0},
 		{name: "custom bounded value", raw: "5000", want: 5000},
 	}
@@ -327,6 +327,92 @@ func TestCosmosEventsFromTxResult(t *testing.T) {
 	}
 	if got := txHeightFromEvent(data, events); got != 66 {
 		t.Fatalf("txHeightFromEvent = %d, want 66", got)
+	}
+}
+
+func TestCosmosPacketMatchesConfiguredClient(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name           string
+		ethClientID    string
+		routerClientID string
+		packet         *channeltypesv2.Packet
+		want           bool
+	}{
+		{
+			name: "nil packet does not match",
+			want: false,
+		},
+		{
+			name: "no configured IDs preserves legacy behavior",
+			packet: &channeltypesv2.Packet{
+				SourceClient:      "unrelated-src",
+				DestinationClient: "unrelated-dst",
+			},
+			want: true,
+		},
+		{
+			name:        "source matches eth client",
+			ethClientID: "08-wasm-0",
+			packet: &channeltypesv2.Packet{
+				SourceClient:      "08-wasm-0",
+				DestinationClient: "cosmoshub-1",
+			},
+			want: true,
+		},
+		{
+			name:        "destination matches eth client",
+			ethClientID: "08-wasm-0",
+			packet: &channeltypesv2.Packet{
+				SourceClient:      "cosmoshub-1",
+				DestinationClient: "08-wasm-0",
+			},
+			want: true,
+		},
+		{
+			name:           "source matches router client",
+			routerClientID: "cosmoshub-1",
+			packet: &channeltypesv2.Packet{
+				SourceClient:      "cosmoshub-1",
+				DestinationClient: "08-wasm-0",
+			},
+			want: true,
+		},
+		{
+			name:           "destination matches router client",
+			routerClientID: "cosmoshub-1",
+			packet: &channeltypesv2.Packet{
+				SourceClient:      "08-wasm-0",
+				DestinationClient: "cosmoshub-1",
+			},
+			want: true,
+		},
+		{
+			name:           "configured IDs skip unrelated packet",
+			ethClientID:    "08-wasm-0",
+			routerClientID: "cosmoshub-1",
+			packet: &channeltypesv2.Packet{
+				SourceClient:      "other-src",
+				DestinationClient: "other-dst",
+			},
+			want: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := services.NewCtx(nil, nil)
+			ctx.SetEthClientID(tc.ethClientID)
+			ctx.SetCosmosRouterClientID(tc.routerClientID)
+
+			if got := cosmosPacketMatchesConfiguredClient(ctx, tc.packet); got != tc.want {
+				t.Fatalf("cosmosPacketMatchesConfiguredClient = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
 

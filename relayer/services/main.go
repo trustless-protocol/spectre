@@ -645,7 +645,7 @@ func ethPacketExpired(packet EthPacket) bool {
 	return packet.Packet.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= packet.Packet.TimeoutTimestamp
 }
 
-// shouldRelayCosmosTimeoutToEth decides whether a CosmosTimeout event needs a
+// ShouldRelayCosmosTimeoutToEth decides whether a CosmosTimeout event needs a
 // follow-up ICS26Router.timeoutPacket on the ETH side.
 //
 // IBC v2 timeout is submitted to the *source* chain: it deletes the source-side
@@ -671,10 +671,6 @@ func ShouldRelayCosmosTimeoutToEth(packet *channeltypesv2.Packet, cosmosRouterCl
 		return false
 	}
 	return packet.DestinationClient != cosmosRouterClientID
-}
-
-func shouldRelayCosmosTimeoutToEth(packet *channeltypesv2.Packet, cosmosRouterClientID string) bool {
-	return ShouldRelayCosmosTimeoutToEth(packet, cosmosRouterClientID)
 }
 
 func cosmosPacketExpiredOnEth(packet CosmosPacket, ethBlockTime uint64) bool {
@@ -764,6 +760,8 @@ func (s *Services) scanForEthTimeouts(ctx Context) {
 			log.Printf("[EthTimeoutScan] Panic recovered: %v", r)
 		}
 	}()
+
+	s.BatchBuilder.EthPendingTracker.PurgeStaleWithoutTimeout(pendingTrackerMaxAge)
 
 	pending := s.BatchBuilder.EthPendingTracker.GetAll()
 	if len(pending) == 0 {
@@ -903,7 +901,7 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 }
 
 func (s *Services) buildCosmosTimeoutMsg(ctx Context, packet channeltypesv2.Packet, ethClientState *client.EthereumClientState) (*channeltypesv2.MsgTimeout, error) {
-	receiptPath := ethPath(packet.DestinationClient, packet.Sequence, 2)
+	receiptPath := EthPath(packet.DestinationClient, packet.Sequence, 2)
 	proofBytes, err := client.GetEthNonMembershipProof(
 		ctx.EthClient(), *ctx.RouterContract(), receiptPath, ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber))
 	if err != nil {
@@ -1092,10 +1090,6 @@ func toEthPacket(packet channeltypesv2.Packet) contractICS26Router.IICS26RouterM
 		TimeoutTimestamp: packet.TimeoutTimestamp,
 		Payloads:         payloads,
 	}
-}
-
-func ethPath(clientID string, sequence uint64, pathType byte) []byte {
-	return EthPath(clientID, sequence, pathType)
 }
 
 func EthPath(clientID string, sequence uint64, pathType byte) []byte {

@@ -46,7 +46,7 @@ const defaultEthStartupRecoveryLookbackBlocks uint64 = 256
 const ethSubscriptionReconnectDelay = 2 * time.Second
 
 const cosmosStartupRecoveryLookbackEnv = "COSMOS_STARTUP_LOOKBACK_BLOCKS"
-const defaultCosmosStartupRecoveryLookbackBlocks uint64 = 0
+const defaultCosmosStartupRecoveryLookbackBlocks uint64 = 256
 const cosmosSubscriptionReconnectDelay = 2 * time.Second
 const cosmosGapRecoveryInterval = 30 * time.Second
 const cosmosTxSearchPerPage = 100
@@ -127,11 +127,20 @@ func (s *Subscriber) subscribeCosmosOnce(
 
 	for {
 		select {
-		case e := <-sendPacketSub:
+		case e, ok := <-sendPacketSub:
+			if !ok {
+				return fmt.Errorf("send_packet subscription channel closed")
+			}
 			s.processLiveCosmosEvent(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, e)
-		case e := <-ackPacketSub:
+		case e, ok := <-ackPacketSub:
+			if !ok {
+				return fmt.Errorf("write_acknowledgement subscription channel closed")
+			}
 			s.processLiveCosmosEvent(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, e)
-		case e := <-timeoutPacketSub:
+		case e, ok := <-timeoutPacketSub:
+			if !ok {
+				return fmt.Errorf("timeout_packet subscription channel closed")
+			}
 			s.processLiveCosmosEvent(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, e)
 		case <-gapRecoveryTicker.C:
 			if err := recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents); err != nil {
@@ -166,7 +175,7 @@ func (s *Subscriber) processLiveCosmosEvent(
 		ctx.Logger.Printf("[SubscribeCosmos] live enqueue failed: %v", err)
 	}
 	if stats.skipped > 0 {
-		ctx.Logger.Printf("[SubscribeCosmos] skipped %d duplicate live Cosmos event(s)", stats.skipped)
+		ctx.Logger.Printf("[SubscribeCosmos] skipped %d live Cosmos event(s)", stats.skipped)
 	}
 	if height > 0 {
 		pruneCosmosSeenEvents(seenEvents, height)
@@ -491,6 +500,17 @@ func enqueueCosmosPackets(
 ) (cosmosRecoveryStats, error) {
 	var stats cosmosRecoveryStats
 	for _, packet := range packets {
+		if packet.Packet == nil {
+			stats.skipped++
+			continue
+		}
+		if !cosmosPacketMatchesConfiguredClient(ctx, packet.Packet) {
+			ctx.Logger.Printf("[SubscribeCosmos] %s seq=%d src=%s dst=%s ignored: unrelated client",
+				packet.Type, packet.Packet.Sequence, packet.Packet.SourceClient, packet.Packet.DestinationClient)
+			stats.skipped++
+			continue
+		}
+
 		key := cosmosEventKeyForPacket(packet)
 		if _, ok := seenEvents[key]; ok {
 			stats.skipped++
@@ -514,6 +534,23 @@ func enqueueCosmosPackets(
 		stats.recovered++
 	}
 	return stats, nil
+}
+
+func cosmosPacketMatchesConfiguredClient(ctx services.Context, packet *channeltypesv2.Packet) bool {
+	if packet == nil {
+		return false
+	}
+
+	ethClientID := ctx.EthClientID()
+	routerClientID := ctx.CosmosRouterClientID()
+	if ethClientID == "" && routerClientID == "" {
+		return true
+	}
+
+	return packet.SourceClient == ethClientID ||
+		packet.DestinationClient == ethClientID ||
+		packet.SourceClient == routerClientID ||
+		packet.DestinationClient == routerClientID
 }
 
 func shouldEnqueueRecoveredCosmosPacket(ctx services.Context, packet services.CosmosPacket) (bool, error) {
