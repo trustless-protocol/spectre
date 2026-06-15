@@ -924,6 +924,53 @@ func (h *Handler) CosmosSignerAddress() (string, error) {
 	return sdk.AccAddress(privKey.PubKey().Address()).String(), nil
 }
 
+func cloneCosmosSDKMsgWithSigner(msg any, signer string, index int) (sdk.Msg, error) {
+	protoMsg, ok := msg.(proto.Message)
+	if !ok {
+		if index >= 0 {
+			return nil, fmt.Errorf("message %d must be a proto.Message", index)
+		}
+		return nil, fmt.Errorf("message must be a proto.Message")
+	}
+	clonedProto := proto.Clone(protoMsg)
+	if clonedProto == nil {
+		if index >= 0 {
+			return nil, fmt.Errorf("message %d cloned to nil", index)
+		}
+		return nil, fmt.Errorf("message cloned to nil")
+	}
+	sdkMsg, ok := clonedProto.(sdk.Msg)
+	if !ok {
+		if index >= 0 {
+			return nil, fmt.Errorf("message %d does not implement sdk.Msg interface", index)
+		}
+		return nil, fmt.Errorf("message does not implement sdk.Msg interface")
+	}
+	fillEmptyCosmosSigner(sdkMsg, signer)
+	return sdkMsg, nil
+}
+
+func fillEmptyCosmosSigner(msg sdk.Msg, signer string) {
+	switch m := msg.(type) {
+	case *clienttypes.MsgUpdateClient:
+		if m.Signer == "" {
+			m.Signer = signer
+		}
+	case *channeltypesv2.MsgRecvPacket:
+		if m.Signer == "" {
+			m.Signer = signer
+		}
+	case *channeltypesv2.MsgAcknowledgement:
+		if m.Signer == "" {
+			m.Signer = signer
+		}
+	case *channeltypesv2.MsgTimeout:
+		if m.Signer == "" {
+			m.Signer = signer
+		}
+	}
+}
+
 func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	benchEnabled := utils.BenchEnabled()
 	var benchStart time.Time
@@ -987,9 +1034,9 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	txBuilder := txConfig.NewTxBuilder()
 
 	// Convert the proto.Message to sdk.Msg
-	sdkMsg, ok := protoMsg.(sdk.Msg)
-	if !ok {
-		return fmt.Errorf("message does not implement sdk.Msg interface")
+	sdkMsg, err := cloneCosmosSDKMsgWithSigner(protoMsg, signerAddr.String(), -1)
+	if err != nil {
+		return err
 	}
 
 	// Fill empty Signer fields and apply per-message gas overrides.
@@ -1529,19 +1576,9 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	// Convert all messages to sdk.Msg, filling empty Signer fields
 	var sdkMsgs []sdk.Msg
 	for i, msg := range msgs {
-		protoMsg, ok := msg.(proto.Message)
-		if !ok {
-			return fmt.Errorf("message %d must be a proto.Message", i)
-		}
-		sdkMsg, ok := protoMsg.(sdk.Msg)
-		if !ok {
-			return fmt.Errorf("message %d does not implement sdk.Msg interface", i)
-		}
-		if m, ok := sdkMsg.(*clienttypes.MsgUpdateClient); ok && m.Signer == "" {
-			m.Signer = signerAddr.String()
-		}
-		if m, ok := sdkMsg.(*channeltypesv2.MsgTimeout); ok && m.Signer == "" {
-			m.Signer = signerAddr.String()
+		sdkMsg, err := cloneCosmosSDKMsgWithSigner(msg, signerAddr.String(), i)
+		if err != nil {
+			return err
 		}
 		sdkMsgs = append(sdkMsgs, sdkMsg)
 	}

@@ -24,8 +24,8 @@ interface IUpdateClientMsgs {
     /// @param timestampNanos Per-validator google.protobuf.Timestamp.nanos. Length == bucket.
     /// @param active Per-slot real-signer flag. true = real validator (counts toward quorum);
     ///      false = deterministic dummy padding (skipped on-chain). Length == bucket.
-    /// @param trustedOverlapIndices Per-slot index into proposedHeader.trustedNextValidatorSet for trusted-overlap tally.
-    ///      Use type(uint32).max when the active signer is not in the trusted set. Length == bucket.
+    /// @param trustedOverlapIndices Per-slot index into proposedHeader.trustedNextValidatorSet for trusted-overlap
+    /// tally. Use type(uint32).max when the active signer is not in the trusted set. Length == bucket.
     /// @dev The shared CanonicalVote fields (height, round, BlockID, chainID) are read directly
     ///      from proposedHeader.signedHeader.commit and proposedHeader.signedHeader.header — no
     ///      need to duplicate them in this message. The in-circuit reconstruction uses the same

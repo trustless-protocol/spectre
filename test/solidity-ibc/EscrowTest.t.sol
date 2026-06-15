@@ -173,9 +173,7 @@ contract EscrowTest is Test {
         uint256 decayed = rateLimit * 30 minutes / 1 days;
 
         // Sending more than the decayed portion should revert
-        vm.expectRevert(
-            abi.encodeWithSelector(IRateLimitErrors.RateLimitExceeded.selector, rateLimit, rateLimit + 1)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IRateLimitErrors.RateLimitExceeded.selector, rateLimit, rateLimit + 1));
         escrow.send(IERC20(mockToken), address(this), decayed + 1);
 
         // The decayed amount can be sent
@@ -202,16 +200,14 @@ contract EscrowTest is Test {
         assertEq(escrow.getDailyUsage(mockToken), rateLimit);
 
         // Attempting to send another token should fail/revert
-        vm.expectRevert(
-            abi.encodeWithSelector(IRateLimitErrors.RateLimitExceeded.selector, rateLimit, rateLimit + 1)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IRateLimitErrors.RateLimitExceeded.selector, rateLimit, rateLimit + 1));
         escrow.send(IERC20(mockToken), address(this), 1);
 
         // Refund should succeed even though the daily limit is saturated
-        escrow.sendRefund(IERC20(mockToken), address(this), 5_000);
+        escrow.sendRefund(IERC20(mockToken), address(this), 5000);
 
         // Daily usage increases by 5_000 uncapped (restoring what the deposit removed)
-        assertEq(escrow.getDailyUsage(mockToken), rateLimit + 5_000);
+        assertEq(escrow.getDailyUsage(mockToken), rateLimit + 5000);
     }
 
     function test_refund_symmetry() public {
@@ -226,23 +222,23 @@ contract EscrowTest is Test {
 
         // 2. Deposit (tokens enter escrow, lowering usage, i.e. usage = usage - amount)
         // Since usage is currently 0, reducing it keeps it at 0 (floored)
-        escrow.recvCallback(mockToken, address(this), 2_000);
+        escrow.recvCallback(mockToken, address(this), 2000);
         assertEq(escrow.getDailyUsage(mockToken), 0);
 
         // Let's first consume some rate limit to avoid floor-at-zero effects
         vm.mockCall(mockToken, IERC20.transfer.selector, abi.encode(true));
         vm.mockCall(mockToken, IERC20.transferFrom.selector, abi.encode(true));
-        escrow.send(IERC20(mockToken), address(this), 5_000);
-        assertEq(escrow.getDailyUsage(mockToken), 5_000);
+        escrow.send(IERC20(mockToken), address(this), 5000);
+        assertEq(escrow.getDailyUsage(mockToken), 5000);
 
         // Deposit 2_000 tokens
-        escrow.recvCallback(mockToken, address(this), 2_000);
-        assertEq(escrow.getDailyUsage(mockToken), 3_000);
+        escrow.recvCallback(mockToken, address(this), 2000);
+        assertEq(escrow.getDailyUsage(mockToken), 3000);
 
         // Refund 2_000 tokens
-        escrow.sendRefund(IERC20(mockToken), address(this), 2_000);
+        escrow.sendRefund(IERC20(mockToken), address(this), 2000);
 
         // Daily usage should be restored to 5_000 (pre-deposit value)
-        assertEq(escrow.getDailyUsage(mockToken), 5_000);
+        assertEq(escrow.getDailyUsage(mockToken), 5000);
     }
 }

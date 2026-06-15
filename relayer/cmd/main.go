@@ -18,13 +18,13 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
-	utils "relayer/utils"
 	tendermintClient "relayer/client"
 	"relayer/keys"
 	"relayer/prover"
 	"relayer/services"
 	"relayer/subscriber"
 	"relayer/transaction"
+	utils "relayer/utils"
 )
 
 const (
@@ -39,6 +39,7 @@ const (
 	flagTrustedBlock   = "trusted-block"
 	flagWasmChecksum   = "wasm-checksum"
 	flagBenchmark      = "benchmark"
+	configFilePerm     = 0o600
 )
 
 // --- Config types for JSON config file ---
@@ -81,55 +82,300 @@ type serverConfig struct {
 	Port     uint64 `json:"port"`
 }
 
+type batchConfig struct {
+	BatchSize          uint8  `json:"batch_size"`
+	BatchPeriodSeconds uint64 `json:"batch_period_seconds"`
+}
+
 type jsonConfig struct {
-	Server  serverConfig   `json:"server"`
-	Modules []configModule `json:"modules"`
+	Server                serverConfig     `json:"server"`
+	Batch                 batchConfig      `json:"batch"`
+	DeprecatedBatchConfig *json.RawMessage `json:"batch_config"`
+	Modules               []configModule   `json:"modules"`
 }
 
 type appConfig struct {
 	Server            serverConfig
 	CosmosToEthConfig cosmosToEthConfig
 	EthToCosmosConfig ethToCosmosConfig
+	BatchConfig       services.BatchConfig
 }
 
 // writeICS07Address rewrites configPath in place, setting
 // modules[name=="cosmos_to_eth"].config.ics07_client = addr. Other fields and
-// JSON formatting are preserved as much as encoding/json indent allows.
+// existing JSON formatting are preserved outside the replaced/inserted value.
 func writeICS07Address(configPath, addr string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
 	}
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("parse config: %w", err)
-	}
-	modules, ok := raw["modules"].([]any)
-	if !ok {
-		return fmt.Errorf("config has no modules array")
-	}
-	updated := false
-	for _, m := range modules {
-		mod, ok := m.(map[string]any)
-		if !ok || mod["name"] != "cosmos_to_eth" {
-			continue
-		}
-		cfg, ok := mod["config"].(map[string]any)
-		if !ok {
-			return fmt.Errorf("cosmos_to_eth.config is not an object")
-		}
-		cfg["ics07_client"] = addr
-		updated = true
-		break
-	}
-	if !updated {
-		return fmt.Errorf("module cosmos_to_eth not found in config")
-	}
-	out, err := json.MarshalIndent(raw, "", "    ")
+	out, err := replaceICS07Address(data, addr)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(configPath, out, 0o644)
+	if err := os.WriteFile(configPath, out, configFilePerm); err != nil {
+		return err
+	}
+	return os.Chmod(configPath, configFilePerm)
+}
+
+func replaceICS07Address(data []byte, addr string) ([]byte, error) {
+	encodedAddr, err := json.Marshal(addr)
+	if err != nil {
+		return nil, err
+	}
+
+	rootStart := skipJSONSpace(data, 0)
+	if rootStart >= len(data) || data[rootStart] != '{' {
+		return nil, fmt.Errorf("config root is not an object")
+	}
+	modulesStart, modulesEnd, ok, err := findJSONObjectMember(data, rootStart, "modules")
+	if err != nil {
+		return nil, err
+	}
+	if !ok || modulesStart >= len(data) || data[modulesStart] != '[' {
+		return nil, fmt.Errorf("config has no modules array")
+	}
+
+	i := skipJSONSpace(data, modulesStart+1)
+	for i < modulesEnd {
+		if data[i] == ']' {
+			break
+		}
+		if data[i] != '{' {
+			return nil, fmt.Errorf("module entry is not an object")
+		}
+
+		moduleStart := i
+		moduleEnd, err := skipJSONValue(data, moduleStart)
+		if err != nil {
+			return nil, err
+		}
+
+		nameStart, nameEnd, ok, err := findJSONObjectMember(data, moduleStart, "name")
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			var name string
+			if err := json.Unmarshal(data[nameStart:nameEnd], &name); err != nil {
+				return nil, fmt.Errorf("parse module name: %w", err)
+			}
+			if name == "cosmos_to_eth" {
+				configStart, configEnd, ok, err := findJSONObjectMember(data, moduleStart, "config")
+				if err != nil {
+					return nil, err
+				}
+				if !ok || configStart >= len(data) || data[configStart] != '{' {
+					return nil, fmt.Errorf("cosmos_to_eth.config is not an object")
+				}
+
+				valueStart, valueEnd, ok, err := findJSONObjectMember(data, configStart, "ics07_client")
+				if err != nil {
+					return nil, err
+				}
+				if ok {
+					out := make([]byte, 0, len(data)-valueEnd+valueStart+len(encodedAddr))
+					out = append(out, data[:valueStart]...)
+					out = append(out, encodedAddr...)
+					out = append(out, data[valueEnd:]...)
+					return out, nil
+				}
+				return insertJSONObjectMember(data, configStart, configEnd, "ics07_client", encodedAddr)
+			}
+		}
+
+		i = skipJSONSpace(data, moduleEnd)
+		if i < len(data) && data[i] == ',' {
+			i = skipJSONSpace(data, i+1)
+			continue
+		}
+		if i < len(data) && data[i] == ']' {
+			break
+		}
+	}
+
+	return nil, fmt.Errorf("module cosmos_to_eth not found in config")
+}
+
+func skipJSONSpace(data []byte, i int) int {
+	for i < len(data) {
+		switch data[i] {
+		case ' ', '\n', '\r', '\t':
+			i++
+		default:
+			return i
+		}
+	}
+	return i
+}
+
+func scanJSONStringEnd(data []byte, i int) (int, error) {
+	if i >= len(data) || data[i] != '"' {
+		return 0, fmt.Errorf("expected JSON string")
+	}
+	escaped := false
+	for j := i + 1; j < len(data); j++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		switch data[j] {
+		case '\\':
+			escaped = true
+		case '"':
+			return j + 1, nil
+		}
+	}
+	return 0, fmt.Errorf("unterminated JSON string")
+}
+
+func skipJSONValue(data []byte, i int) (int, error) {
+	i = skipJSONSpace(data, i)
+	if i >= len(data) {
+		return 0, fmt.Errorf("unexpected end of JSON")
+	}
+
+	switch data[i] {
+	case '"':
+		return scanJSONStringEnd(data, i)
+	case '{':
+		j := skipJSONSpace(data, i+1)
+		if j < len(data) && data[j] == '}' {
+			return j + 1, nil
+		}
+		for {
+			keyEnd, err := scanJSONStringEnd(data, j)
+			if err != nil {
+				return 0, err
+			}
+			j = skipJSONSpace(data, keyEnd)
+			if j >= len(data) || data[j] != ':' {
+				return 0, fmt.Errorf("expected ':' after object key")
+			}
+			j, err = skipJSONValue(data, j+1)
+			if err != nil {
+				return 0, err
+			}
+			j = skipJSONSpace(data, j)
+			if j >= len(data) {
+				return 0, fmt.Errorf("unterminated JSON object")
+			}
+			if data[j] == '}' {
+				return j + 1, nil
+			}
+			if data[j] != ',' {
+				return 0, fmt.Errorf("expected ',' or '}' in object")
+			}
+			j = skipJSONSpace(data, j+1)
+		}
+	case '[':
+		j := skipJSONSpace(data, i+1)
+		if j < len(data) && data[j] == ']' {
+			return j + 1, nil
+		}
+		for {
+			var err error
+			j, err = skipJSONValue(data, j)
+			if err != nil {
+				return 0, err
+			}
+			j = skipJSONSpace(data, j)
+			if j >= len(data) {
+				return 0, fmt.Errorf("unterminated JSON array")
+			}
+			if data[j] == ']' {
+				return j + 1, nil
+			}
+			if data[j] != ',' {
+				return 0, fmt.Errorf("expected ',' or ']' in array")
+			}
+			j = skipJSONSpace(data, j+1)
+		}
+	default:
+		j := i
+		for j < len(data) {
+			switch data[j] {
+			case ' ', '\n', '\r', '\t', ',', '}', ']':
+				return j, nil
+			default:
+				j++
+			}
+		}
+		return j, nil
+	}
+}
+
+func findJSONObjectMember(data []byte, objectStart int, key string) (int, int, bool, error) {
+	if objectStart >= len(data) || data[objectStart] != '{' {
+		return 0, 0, false, fmt.Errorf("expected JSON object")
+	}
+	i := skipJSONSpace(data, objectStart+1)
+	if i < len(data) && data[i] == '}' {
+		return 0, 0, false, nil
+	}
+	for {
+		keyStart := i
+		keyEnd, err := scanJSONStringEnd(data, keyStart)
+		if err != nil {
+			return 0, 0, false, err
+		}
+		var got string
+		if err := json.Unmarshal(data[keyStart:keyEnd], &got); err != nil {
+			return 0, 0, false, fmt.Errorf("parse object key: %w", err)
+		}
+		i = skipJSONSpace(data, keyEnd)
+		if i >= len(data) || data[i] != ':' {
+			return 0, 0, false, fmt.Errorf("expected ':' after object key")
+		}
+		valueStart := skipJSONSpace(data, i+1)
+		valueEnd, err := skipJSONValue(data, valueStart)
+		if err != nil {
+			return 0, 0, false, err
+		}
+		if got == key {
+			return valueStart, valueEnd, true, nil
+		}
+		i = skipJSONSpace(data, valueEnd)
+		if i >= len(data) {
+			return 0, 0, false, fmt.Errorf("unterminated JSON object")
+		}
+		if data[i] == '}' {
+			return 0, 0, false, nil
+		}
+		if data[i] != ',' {
+			return 0, 0, false, fmt.Errorf("expected ',' or '}' in object")
+		}
+		i = skipJSONSpace(data, i+1)
+	}
+}
+
+func insertJSONObjectMember(data []byte, objectStart, objectEnd int, key string, encodedValue []byte) ([]byte, error) {
+	if objectEnd <= objectStart || objectEnd > len(data) || data[objectEnd-1] != '}' {
+		return nil, fmt.Errorf("invalid object range")
+	}
+	encodedKey, err := json.Marshal(key)
+	if err != nil {
+		return nil, err
+	}
+	closeIndex := objectEnd - 1
+	empty := skipJSONSpace(data, objectStart+1) == closeIndex
+
+	separator := []byte(",")
+	if empty {
+		separator = nil
+	}
+	insert := make([]byte, 0, len(separator)+len(encodedKey)+len(encodedValue)+2)
+	insert = append(insert, separator...)
+	insert = append(insert, encodedKey...)
+	insert = append(insert, ':', ' ')
+	insert = append(insert, encodedValue...)
+
+	out := make([]byte, 0, len(data)+len(insert))
+	out = append(out, data[:closeIndex]...)
+	out = append(out, insert...)
+	out = append(out, data[closeIndex:]...)
+	return out, nil
 }
 
 func loadConfig(configPath string) (*appConfig, error) {
@@ -142,9 +388,19 @@ func loadConfig(configPath string) (*appConfig, error) {
 	if err := json.Unmarshal(data, &jc); err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
+	if jc.DeprecatedBatchConfig != nil {
+		return nil, fmt.Errorf("batch_config is deprecated; use batch")
+	}
 
 	var c2e cosmosToEthConfig
 	var e2c ethToCosmosConfig
+	batch := services.DefaultConfig().BatchConfig
+	if jc.Batch.BatchSize != 0 {
+		batch.BatchSize = jc.Batch.BatchSize
+	}
+	if jc.Batch.BatchPeriodSeconds != 0 {
+		batch.BatchPeriods = time.Duration(jc.Batch.BatchPeriodSeconds) * time.Second
+	}
 	for _, m := range jc.Modules {
 		switch m.Name {
 		case "cosmos_to_eth":
@@ -165,6 +421,7 @@ func loadConfig(configPath string) (*appConfig, error) {
 		Server:            jc.Server,
 		CosmosToEthConfig: c2e,
 		EthToCosmosConfig: e2c,
+		BatchConfig:       batch,
 	}, nil
 }
 
@@ -631,12 +888,13 @@ func Start(logger *zap.Logger) *cobra.Command {
 			if cfg.CosmosToEthConfig.ProofType != "" {
 				cosmosConfig.ProofType = cfg.CosmosToEthConfig.ProofType
 			}
+			cosmosConfig.BatchConfig = cfg.BatchConfig
 			ctx.Config = cosmosConfig
 			svc := services.New(
 				subscriber.NewSubscriber(),
 				&transaction.Handler{},
 				p,
-				services.DefaultConfig(),
+				cosmosConfig,
 				cosmosConfig,
 			)
 			svc.StartLoop(ctx)

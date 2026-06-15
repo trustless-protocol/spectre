@@ -35,6 +35,45 @@ type Worker struct {
 const cosmosCatchUpSafetySlots uint64 = 3
 const maxValidatorDeltaLeafCount = 16
 
+// validatorSetCacheMissSelector is the 4-byte ABI selector for
+// ValidatorSetCacheMiss(bytes32). Used to distinguish a normal cache-miss
+// revert from unexpected eth_call failures in getCachedCosmosValidatorSet.
+var validatorSetCacheMissSelector = func() [4]byte {
+	h := crypto.Keccak256([]byte("ValidatorSetCacheMiss(bytes32)"))
+	var s [4]byte
+	copy(s[:], h[:4])
+	return s
+}()
+
+// isValidatorSetCacheMiss returns true when err carries the
+// ValidatorSetCacheMiss(bytes32) ABI revert selector.
+func isValidatorSetCacheMiss(err error) bool {
+	type dataErr interface {
+		ErrorData() interface{}
+	}
+	de, ok := err.(dataErr)
+	if !ok {
+		return false
+	}
+	var data []byte
+	switch raw := de.ErrorData().(type) {
+	case string:
+		data = common.FromHex(raw)
+	case fmt.Stringer:
+		data = common.FromHex(raw.String())
+	case []byte:
+		data = raw
+	default:
+		return false
+	}
+	if len(data) < 4 {
+		return false
+	}
+	var sel [4]byte
+	copy(sel[:], data[:4])
+	return sel == validatorSetCacheMissSelector
+}
+
 func NewWorker(txHandler TransactionHandler, prover Prover) *Worker {
 	return &Worker{
 		txHandler,
@@ -144,9 +183,17 @@ func (s cachedCosmosValidatorSet) isEmpty() bool {
 	return len(s.indices) == 0
 }
 
+func (s cachedCosmosValidatorSet) allowedIndices() map[uint32]bool {
+	allowed := make(map[uint32]bool, len(s.indices))
+	for _, idx := range s.indices {
+		allowed[idx] = true
+	}
+	return allowed
+}
+
 // getCachedCosmosValidatorSet fetches the on-chain validator cache snapshot for
-// a validatorsHash. The contract returns an empty snapshot when the hash is not
-// cached or the stored data is unusable.
+// a validatorsHash. Returns an empty snapshot when the hash is not cached
+// (contract reverts ValidatorSetCacheMiss) or the stored data is unusable.
 func getCachedCosmosValidatorSet(ctx Context, validatorsHash [32]byte) (cachedCosmosValidatorSet, error) {
 	ics07, err := tendermintContract.NewContractGroth16ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
 	if err != nil {
@@ -154,6 +201,10 @@ func getCachedCosmosValidatorSet(ctx Context, validatorsHash [32]byte) (cachedCo
 	}
 	out, err := ics07.GetCachedValidatorSet(nil, validatorsHash)
 	if err != nil {
+		if isValidatorSetCacheMiss(err) {
+			log.Printf("[getCachedCosmosValidatorSet] cache miss for hash=%x (ValidatorSetCacheMiss revert)", validatorsHash)
+			return cachedCosmosValidatorSet{}, nil
+		}
 		return cachedCosmosValidatorSet{}, fmt.Errorf("getCachedValidatorSet(%x): %w", validatorsHash, err)
 	}
 	if len(out.Indices) != len(out.Pubkeys) || len(out.Indices) != len(out.VotingPowers) {
@@ -426,6 +477,10 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		return nil, fmt.Errorf("unsupported proof type: %s, supported types are: groth16, plonk", proofType)
 	}
 
+	if trustedLightBlock.SignedHeader.Header.Height < 0 {
+		return nil, fmt.Errorf("trusted light block header height cannot be negative: %d", trustedLightBlock.SignedHeader.Header.Height)
+	}
+
 	clientState := updateclientContract.IICS07TendermintMsgsClientState{
 		ChainId:    chainId,
 		TrustLevel: trustThreshold,
@@ -445,7 +500,10 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		NextValidatorsHash: bytesToBytes32(trustedLightBlock.SignedHeader.NextValidatorsHash),
 	}
 
-	proposedHeader := latestLightBlock.IntoHeader(*trustedLightBlock)
+	proposedHeader, err := latestLightBlock.IntoHeader(*trustedLightBlock)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert light block into header: %w", err)
+	}
 	fullProposedHeader := proposedHeader
 	currentValidatorsHash := proposedHeader.SignedHeader.Header.ValidatorsHash
 	currentValidatorCache, err := getCachedCosmosValidatorSet(ctx, currentValidatorsHash)
@@ -455,9 +513,11 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	currentValidatorsCacheExists := !currentValidatorCache.isEmpty()
 	usedValidatorCache := false
 	currentValidatorSetDelta := updateclientContract.IUpdateClientMsgsValidatorSetDelta{}
+	var allowedIndices map[uint32]bool
 
 	if currentValidatorsCacheExists {
 		usedValidatorCache = true
+		allowedIndices = currentValidatorCache.allowedIndices()
 		log.Printf("[UpdateCosmosClient] validator quorum cache hit: hash=%x; omitting current validator set", currentValidatorsHash)
 		proposedHeader.ValidatorSet = emptyContractValidatorSet()
 	} else {
@@ -503,7 +563,10 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	// Extract enough non-absent validator signatures to hit 2/3 voting power,
 	// then batch-prove them in a single Groth16 proof that reconstructs each
 	// CanonicalVote in-circuit.
-	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId)
+	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId, allowedIndices)
+	if err != nil && allowedIndices != nil {
+		return nil, fmt.Errorf("cached validator subset cannot form quorum for validatorsHash=%x; cannot fall back to full validator set while this hash is cached on-chain: %w", currentValidatorsHash, err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("extract validator signatures: %w", err)
 	}

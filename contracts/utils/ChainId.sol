@@ -20,11 +20,7 @@ library ChainId {
     ///   - the suffix contains any non-digit, or
     ///   - the suffix overflows `uint64`.
     /// Reverts only when a hard length constraint is violated.
-    function get(string memory id)
-        internal
-        pure
-        returns (IICS07TendermintMsgs.ChainId memory)
-    {
+    function get(string memory id) internal pure returns (IICS07TendermintMsgs.ChainId memory) {
         bytes memory b = bytes(id);
         if (b.length == 0 || b.length >= 64) revert InvalidChainIdLength();
 

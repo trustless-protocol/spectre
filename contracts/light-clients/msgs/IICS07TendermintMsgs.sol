@@ -51,7 +51,7 @@ interface IICS07TendermintMsgs {
         Plonk
     }
 
-     struct Header {
+    struct Header {
         SignedHeader signedHeader;
         ValidatorSet validatorSet;
         IICS02ClientMsgs.Height trustedHeight;
@@ -171,7 +171,7 @@ interface IICS07TendermintMsgs {
         ValidatorSet validatorSet;
     }
 
-    struct TrustedBlockState{
+    struct TrustedBlockState {
         string chainId;
         uint128 headerTime;
         uint64 height;
@@ -203,7 +203,6 @@ interface IICS07TendermintMsgs {
         /// once.
         bytes32 signBytes;
     }
-
 
     struct CanonicalVote {
         /// Type of vote (prevote or precommit)
@@ -248,5 +247,4 @@ interface IICS07TendermintMsgs {
         /// Verification failed, the block is invalid.
         INVALID
     }
-
 }

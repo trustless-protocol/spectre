@@ -23,6 +23,8 @@ import (
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+
+	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 )
 
 type testDataError struct {
@@ -148,6 +150,38 @@ func TestValidatorCacheRaceErrorName(t *testing.T) {
 	unknown := errorSelector("ProofVerificationFailed()")
 	if name, ok := validatorCacheRaceErrorName(testDataError{data: unknown[:]}); ok {
 		t.Fatalf("did not expect unknown selector to be classified, got %q", name)
+	}
+}
+
+func TestCloneCosmosSDKMsgWithSignerDoesNotMutateOriginal(t *testing.T) {
+	original := &clienttypes.MsgUpdateClient{ClientId: "08-wasm-0"}
+
+	cloned, err := cloneCosmosSDKMsgWithSigner(original, "cosmos1signer", -1)
+	if err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	got := cloned.(*clienttypes.MsgUpdateClient)
+	if got.Signer != "cosmos1signer" {
+		t.Fatalf("cloned signer = %q, want cosmos1signer", got.Signer)
+	}
+	if original.Signer != "" {
+		t.Fatalf("original signer mutated to %q", original.Signer)
+	}
+}
+
+func TestCloneCosmosSDKMsgWithSignerPreservesExistingSigner(t *testing.T) {
+	original := &clienttypes.MsgUpdateClient{ClientId: "08-wasm-0", Signer: "cosmos1original"}
+
+	cloned, err := cloneCosmosSDKMsgWithSigner(original, "cosmos1default", -1)
+	if err != nil {
+		t.Fatalf("clone: %v", err)
+	}
+	got := cloned.(*clienttypes.MsgUpdateClient)
+	if got.Signer != "cosmos1original" {
+		t.Fatalf("cloned signer = %q, want existing signer", got.Signer)
+	}
+	if original.Signer != "cosmos1original" {
+		t.Fatalf("original signer mutated to %q", original.Signer)
 	}
 }
 

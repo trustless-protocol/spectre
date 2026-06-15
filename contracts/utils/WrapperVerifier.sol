@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-import {IVerifier} from "../interfaces/IVerifier.sol";
-import {IICS07TendermintMsgs} from "../light-clients/msgs/IICS07TendermintMsgs.sol";
-import {Encode} from "./Encode.sol";
+import { IVerifier } from "../interfaces/IVerifier.sol";
+import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
+import { Encode } from "./Encode.sol";
 
 /// @title WrapperVerifier
 /// @notice Rebuilds each validator's canonical-vote bytes on-chain, hashes the
@@ -57,7 +57,7 @@ contract WrapperVerifier is IVerifier {
     function setBucket(uint16 bucket, address verifier, bytes4 selector) external {
         if (msg.sender != OWNER) revert NotOwner();
         if (verifier.code.length == 0) revert NoVerifierCode(verifier);
-        buckets[bucket] = BucketVerifier({verifier: verifier, selector: selector});
+        buckets[bucket] = BucketVerifier({ verifier: verifier, selector: selector });
     }
 
     /// @inheritdoc IVerifier
@@ -71,11 +71,14 @@ contract WrapperVerifier is IVerifier {
         uint32[] calldata timestampNanos,
         bool[] calldata active,
         IVerifier.SharedBlock calldata shared
-    ) external view override returns (bool) {
+    )
+        external
+        view
+        override
+        returns (bool)
+    {
         if (
-            pubkeys.length != bucket
-                || timestampSeconds.length != bucket
-                || timestampNanos.length != bucket
+            pubkeys.length != bucket || timestampSeconds.length != bucket || timestampNanos.length != bucket
                 || active.length != bucket
         ) revert LengthMismatch();
 
@@ -111,7 +114,11 @@ contract WrapperVerifier is IVerifier {
         uint32[] calldata timestampNanos,
         bool[] calldata active,
         IVerifier.SharedBlock calldata shared
-    ) internal pure returns (bytes32) {
+    )
+        internal
+        pure
+        returns (bytes32)
+    {
         bytes memory encodedBlockId = _sharedBlockIdBytes(shared);
         bytes memory commonVotePrefix = _buildVotePrefix(shared, encodedBlockId);
         bytes memory chainSuffix = _buildChainSuffix(shared.chainID);
@@ -169,14 +176,11 @@ contract WrapperVerifier is IVerifier {
         return dstOffset + len;
     }
 
-    function _sharedBlockIdBytes(
-        IVerifier.SharedBlock calldata shared
-    ) internal pure returns (bytes memory) {
+    function _sharedBlockIdBytes(IVerifier.SharedBlock calldata shared) internal pure returns (bytes memory) {
         IICS07TendermintMsgs.BlockId memory blockId = IICS07TendermintMsgs.BlockId({
             hashData: shared.blockIDHash,
             partSetHeader: IICS07TendermintMsgs.PartSetHeader({
-                total: shared.partSetTotal,
-                hashData: shared.partSetHash
+                total: shared.partSetTotal, hashData: shared.partSetHash
             })
         });
         return Encode.encodeBlockId(blockId);
@@ -189,7 +193,11 @@ contract WrapperVerifier is IVerifier {
     function _buildVotePrefix(
         IVerifier.SharedBlock calldata shared,
         bytes memory encodedBlockId
-    ) internal pure returns (bytes memory out) {
+    )
+        internal
+        pure
+        returns (bytes memory out)
+    {
         uint256 outLen = 2; // field 1: tag + PRECOMMIT value
         if (shared.height > 0) {
             outLen += 9;
@@ -245,7 +253,11 @@ contract WrapperVerifier is IVerifier {
         bytes memory chainSuffix,
         uint64 tsSec,
         uint32 tsNanos
-    ) internal pure returns (uint256 msgLen) {
+    )
+        internal
+        pure
+        returns (uint256 msgLen)
+    {
         // Compose Timestamp{seconds, nanos} — gogoproto omits zero scalars.
         uint256 encodedTsLen = 0;
         if (tsSec > 0) {
@@ -287,7 +299,11 @@ contract WrapperVerifier is IVerifier {
         uint256 dstOffset,
         uint16 bucket,
         uint16 slot
-    ) internal pure returns (uint256 msgLen) {
+    )
+        internal
+        pure
+        returns (uint256 msgLen)
+    {
         msgLen = 18; // len("fast-ibc-dummy") + uint16(bucket) + uint16(slot)
         if (msgLen > MAX_MSG_LEN) revert MsgTooLong(msgLen);
 
@@ -299,7 +315,11 @@ contract WrapperVerifier is IVerifier {
         _storeByte(dst, suffixOffset + 3, slot);
     }
 
-    function _copyCalldataBytes(bytes memory dst, uint256 dstOffset, bytes calldata src) private pure returns (uint256) {
+    function _copyCalldataBytes(bytes memory dst, uint256 dstOffset, bytes calldata src)
+        private
+        pure
+        returns (uint256)
+    {
         assembly {
             calldatacopy(add(add(dst, 0x20), dstOffset), src.offset, src.length)
         }

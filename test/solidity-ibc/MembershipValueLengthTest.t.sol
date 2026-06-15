@@ -57,12 +57,10 @@ contract MembershipValueLengthTest is Test {
         // error). We only assert the length gate is not the rejection reason.
         IMembershipMsgs.KVPair[] memory kvs = _kvWithValue(new bytes(32));
         try m.membership(APP_HASH, kvs, _oneProof()) {
-            // proof would not actually verify with dummy data
-        } catch (bytes memory reason) {
-            require(
-                bytes4(reason) != Membership.InvalidValueLength.selector,
-                "32-byte value must pass the length gate"
-            );
+        // proof would not actually verify with dummy data
+        }
+        catch (bytes memory reason) {
+            require(bytes4(reason) != Membership.InvalidValueLength.selector, "32-byte value must pass the length gate");
         }
     }
 }

@@ -172,6 +172,33 @@ func TestExtractValidatorSignatures_GreedyPicksSmallestPrefix(t *testing.T) {
 	}
 }
 
+func TestExtractValidatorSignatures_AllowedIndices(t *testing.T) {
+	chainID := "test-chain"
+	lb := makeSignedCommit(t, chainID, []int64{30, 25, 25, 20}, []bool{true, true, true, true})
+
+	allowed := map[uint32]bool{1: true, 2: true, 3: true}
+	got, err := ExtractValidatorSignatures(lb, chainID, allowed)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var accumulated int64
+	for _, sig := range got.Signatures {
+		if !allowed[uint32(sig.Index)] {
+			t.Fatalf("selected disallowed validator index %d", sig.Index)
+		}
+		accumulated += sig.Power
+	}
+	quorum := lb.ValSet.TotalVotingPower()*2/3 + 1
+	if accumulated < quorum {
+		t.Fatalf("selected power %d below quorum %d", accumulated, quorum)
+	}
+
+	_, err = ExtractValidatorSignatures(lb, chainID, map[uint32]bool{3: true})
+	if err == nil {
+		t.Fatal("expected insufficient voting power with too-small allowed subset")
+	}
+}
+
 func TestExtractValidatorSignatures_SortsSelectedSignersByIndex(t *testing.T) {
 	sigs := []ValidatorSignature{
 		{Index: 2, Power: 70},
