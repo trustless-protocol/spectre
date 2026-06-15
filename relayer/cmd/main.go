@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -59,6 +60,7 @@ type cosmosToEthConfig struct {
 	TrustingPeriod     uint32 `json:"trusting_period"`
 	TrustLevel         string `json:"trust_level"`
 	ProofType          string `json:"proof_type"`
+	FetchTimeout       uint64 `json:"fetch_timeout"`
 }
 
 type ethToCosmosConfig struct {
@@ -887,6 +889,14 @@ func Start(logger *zap.Logger) *cobra.Command {
 			}
 			if cfg.CosmosToEthConfig.ProofType != "" {
 				cosmosConfig.ProofType = cfg.CosmosToEthConfig.ProofType
+			}
+			if cfg.CosmosToEthConfig.FetchTimeout != 0 {
+				cosmosConfig.FetchTimeout = time.Duration(cfg.CosmosToEthConfig.FetchTimeout) * time.Second
+			}
+			if envVal := os.Getenv("FETCH_TIMEOUT"); envVal != "" {
+				if d, err := strconv.Atoi(envVal); err == nil && d > 0 {
+					cosmosConfig.FetchTimeout = time.Duration(d) * time.Second
+				}
 			}
 			cosmosConfig.BatchConfig = cfg.BatchConfig
 			ctx.Config = cosmosConfig
