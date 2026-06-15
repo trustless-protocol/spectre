@@ -6,7 +6,6 @@ import (
 	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
-	"io"
 	"math/big"
 	"os"
 	"os/exec"
@@ -119,18 +118,13 @@ func (e Ethereum) ForgeScript(deployer *ecdsa.PrivateKey, solidityContract strin
 	cmd.Env = os.Environ()
 	cmd.Env = append(cmd.Env, extraEnv...)
 
-	var stdoutBuf bytes.Buffer
-
-	// Create a MultiWriter to write to both os.Stdout and the buffer
-	multiWriter := io.MultiWriter(os.Stdout, &stdoutBuf)
-
-	// Set the command's stdout to the MultiWriter
-	cmd.Stdout = multiWriter
-	cmd.Stderr = os.Stderr
+	var stdoutBuf, stderrBuf bytes.Buffer
+	cmd.Stdout = &stdoutBuf
+	cmd.Stderr = &stderrBuf
 
 	// Run the command
 	if err := cmd.Run(); err != nil {
-		fmt.Println("Error start command", cmd.Args, err)
+		fmt.Fprintf(os.Stderr, "forge script failed: %v\nstdout tail:\n%s\nstderr tail:\n%s\n", err, tailString(stdoutBuf.String(), 64*1024), tailString(stderrBuf.String(), 64*1024))
 		return nil, err
 	}
 
@@ -138,6 +132,13 @@ func (e Ethereum) ForgeScript(deployer *ecdsa.PrivateKey, solidityContract strin
 	stdoutBytes := stdoutBuf.Bytes()
 
 	return stdoutBytes, nil
+}
+
+func tailString(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	return s[len(s)-maxBytes:]
 }
 
 func (e Ethereum) CreateAndFundUser() (*ecdsa.PrivateKey, error) {

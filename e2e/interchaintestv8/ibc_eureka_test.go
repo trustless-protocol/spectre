@@ -495,6 +495,19 @@ func autoRelayTimeout(numOfTransfers int) time.Duration {
 	return 5*time.Minute + time.Duration(batches)*time.Minute
 }
 
+func autoRelayTimeoutPacketTimeout(numOfTransfers int) time.Duration {
+	if numOfTransfers < 1 {
+		numOfTransfers = 1
+	}
+	const relayBatchSize = 5
+	batches := (numOfTransfers + relayBatchSize - 1) / relayBatchSize
+
+	// Timeout proofs can sit behind beacon finality. The relayer itself allows
+	// up to 10 minutes in waitBeaconFinality, then still needs scanner ticks,
+	// proof construction, and per-batch transaction submission.
+	return 12*time.Minute + time.Duration(batches)*2*time.Minute
+}
+
 // Test_ICS20TransferLargeAmountFromEthereumToCosmosAndBack exercises the bigint encoding
 // path with a transfer amount > uint64 max (5e22, half of StartingERC20Balance). The
 // upstream test was named *Uint256* and pushed to ~MaxUint256/2 — we shrank the faucet
@@ -1260,6 +1273,7 @@ func (s *IbcEurekaTestSuite) FilteredICS20TimeoutPacketFromEthereumTest(
 ) {
 	s.Require().GreaterOrEqual(numOfTransfers, len(timeoutFilter))
 	s.Require().Greater(numOfTransfers, 0)
+	relayTimeout := autoRelayTimeoutPacketTimeout(numOfTransfers)
 
 	s.SetupSuite(ctx, pt)
 
@@ -1377,7 +1391,12 @@ func (s *IbcEurekaTestSuite) FilteredICS20TimeoutPacketFromEthereumTest(
 
 	s.True(s.Run("Wait for auto-relay terminal state on Ethereum", func() {
 		denomOnCosmos := transfertypes.NewDenom(s.contractAddresses.Erc20, transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID))
-		var deliveredAmount *big.Int
+		var (
+			deliveredAmount      *big.Int
+			settledUserBalance   *big.Int
+			settledEscrowBalance *big.Int
+			settledCosmosBalance *big.Int
+		)
 
 		require.Eventuallyf(s.T(), func() bool {
 			userBalance, err := s.erc20Contract.BalanceOf(nil, ethereumUserAddress)
@@ -1405,32 +1424,25 @@ func (s *IbcEurekaTestSuite) FilteredICS20TimeoutPacketFromEthereumTest(
 				return false
 			}
 
-			deliveredAmount = cosmosDelta
+			deliveredAmount = new(big.Int).Set(cosmosDelta)
+			settledUserBalance = new(big.Int).Set(userBalance)
+			settledEscrowBalance = new(big.Int).Set(escrowBalance)
+			settledCosmosBalance = new(big.Int).Set(resp.Balance.Amount.BigInt())
 			return true
-		}, 5*time.Minute, 5*time.Second,
-			"auto-relay did not settle %d ERC20 transfers by delivery or timeout within timeout", numOfTransfers)
+		}, relayTimeout, 5*time.Second,
+			"auto-relay did not settle %d ERC20 transfers by delivery or timeout within %s", numOfTransfers, relayTimeout)
 
 		s.Require().True(s.Run("Verify balances on Ethereum", func() {
-			userBalance, err := s.erc20Contract.BalanceOf(nil, ethereumUserAddress)
-			s.Require().NoError(err)
-			s.Require().Equal(new(big.Int).Sub(testvalues.StartingERC20Balance, deliveredAmount), userBalance)
-
-			escrowAddress, err = s.ics20Contract.GetEscrow(nil, testvalues.CustomClientID)
-			s.Require().NoError(err)
-
-			escrowBalance, err := s.erc20Contract.BalanceOf(nil, escrowAddress)
-			s.Require().NoError(err)
-			s.Require().Equal(deliveredAmount, escrowBalance)
+			s.Require().NotNil(deliveredAmount)
+			s.Require().NotNil(settledUserBalance)
+			s.Require().NotNil(settledEscrowBalance)
+			s.Require().Zero(settledUserBalance.Cmp(new(big.Int).Sub(testvalues.StartingERC20Balance, deliveredAmount)))
+			s.Require().Zero(settledEscrowBalance.Cmp(deliveredAmount))
 		}))
 
 		s.Require().True(s.Run("Verify balances on Cosmos chain", func() {
-			resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simd, &banktypes.QueryBalanceRequest{
-				Address: cosmosUserAddress,
-				Denom:   denomOnCosmos.IBCDenom(),
-			})
-			s.Require().NoError(err)
-			s.Require().NotNil(resp.Balance)
-			s.Require().Equal(new(big.Int).Add(originalBalance.Amount.BigInt(), deliveredAmount), resp.Balance.Amount.BigInt())
+			s.Require().NotNil(settledCosmosBalance)
+			s.Require().Zero(settledCosmosBalance.Cmp(new(big.Int).Add(originalBalance.Amount.BigInt(), deliveredAmount)))
 		}))
 	}))
 }
@@ -1577,6 +1589,7 @@ func (s *IbcEurekaTestSuite) FilteredICS20TimeoutFromCosmosTimeoutTest(
 ) {
 	s.Require().GreaterOrEqual(numOfTransfers, len(timeoutFilter))
 	s.Require().Greater(numOfTransfers, 0)
+	relayTimeout := autoRelayTimeoutPacketTimeout(numOfTransfers)
 
 	s.SetupSuite(ctx, proofType)
 
@@ -1671,7 +1684,10 @@ func (s *IbcEurekaTestSuite) FilteredICS20TimeoutFromCosmosTimeoutTest(
 	s.Require().True(s.Run("Wait for auto-relay terminal state on Cosmos", func() {
 		denomOnEthereum := transfertypes.NewDenom(transferCoin.Denom, transfertypes.NewHop(transfertypes.PortID, testvalues.CustomClientID))
 		initialBalance := big.NewInt(testvalues.InitialBalance)
-		var deliveredAmount *big.Int
+		var (
+			deliveredAmount      *big.Int
+			settledCosmosBalance *big.Int
+		)
 
 		require.Eventuallyf(s.T(), func() bool {
 			resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simd, &banktypes.QueryBalanceRequest{
@@ -1702,19 +1718,16 @@ func (s *IbcEurekaTestSuite) FilteredICS20TimeoutFromCosmosTimeoutTest(
 				return false
 			}
 
-			deliveredAmount = ethVoucherBalance
+			deliveredAmount = new(big.Int).Set(ethVoucherBalance)
+			settledCosmosBalance = new(big.Int).Set(resp.Balance.Amount.BigInt())
 			return true
-		}, 5*time.Minute, 5*time.Second,
-			"auto-relay did not settle %d Cosmos transfers by delivery or timeout within timeout", numOfTransfers)
+		}, relayTimeout, 5*time.Second,
+			"auto-relay did not settle %d Cosmos transfers by delivery or timeout within %s", numOfTransfers, relayTimeout)
 
 		s.Require().True(s.Run("Verify balances on Cosmos chain", func() {
-			resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simd, &banktypes.QueryBalanceRequest{
-				Address: cosmosUserAddress,
-				Denom:   transferCoin.Denom,
-			})
-			s.Require().NoError(err)
-			s.Require().NotNil(resp.Balance)
-			s.Require().Equal(new(big.Int).Sub(initialBalance, deliveredAmount), resp.Balance.Amount.BigInt())
+			s.Require().NotNil(deliveredAmount)
+			s.Require().NotNil(settledCosmosBalance)
+			s.Require().Zero(settledCosmosBalance.Cmp(new(big.Int).Sub(initialBalance, deliveredAmount)))
 		}))
 	}))
 }
