@@ -410,6 +410,14 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		return fmt.Errorf("failed to restore private key: %w", err)
 	}
 
+	gasLimit := uint64(3000000) // in units
+	if gasStr := os.Getenv("ETH_GAS_LIMIT"); gasStr != "" {
+		var val uint64
+		if _, err := fmt.Sscanf(gasStr, "%d", &val); err == nil {
+			gasLimit = val
+		}
+	}
+
 	ics07Tendermint, err := tendermintContract.NewContractGroth16ICS07Tendermint(
 		*ctx.ClientContract(),
 		ctx.EthClient(),
@@ -479,7 +487,6 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		}
 	}
 
-	gasLimit := uint64(3000000)
 	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(ctx, privateKey, gasLimit, senderFn)
 	if err != nil {
 		return err
@@ -589,6 +596,13 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 	if err != nil {
 		return fmt.Errorf("[SendEthTxBatch] failed to restore private key: %w", err)
 	}
+	multicallGasLimit := uint64(16000000)
+	if gasStr := os.Getenv("ETH_MULTICALL_GAS_LIMIT"); gasStr != "" {
+		var val uint64
+		if _, err := fmt.Sscanf(gasStr, "%d", &val); err == nil {
+			multicallGasLimit = val
+		}
+	}
 
 	ics26Router, err := contractICS26Router.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
 	if err != nil {
@@ -606,8 +620,7 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 		return ics26Router.Multicall(auth, calldata)
 	}
 
-	gasLimit := uint64(16000000)
-	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(ctx, privateKey, gasLimit, senderFn)
+	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(ctx, privateKey, multicallGasLimit, senderFn)
 	if err != nil {
 		return fmt.Errorf("multicall labels=%s: %w", labelStr, err)
 	}
@@ -1169,6 +1182,10 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	if syncResult.Code != 0 {
 		log.Printf("[SendCosmosTx] CheckTx FAILED: code=%d codespace=%s log=%s data=%x",
 			syncResult.Code, syncResult.Codespace, syncResult.Log, syncResult.Data)
+		if isCosmosDuplicatePacketError(syncResult.Codespace, syncResult.Code) {
+			log.Printf("[SendCosmosTx] duplicate packet (codespace=%s code=%d), dropping", syncResult.Codespace, syncResult.Code)
+			return nil
+		}
 		return fmt.Errorf("transaction failed at CheckTx with code %d: %s", syncResult.Code, syncResult.Log)
 	}
 
@@ -1187,6 +1204,10 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	if txResult.TxResult.Code != 0 {
 		log.Printf("[SendCosmosTx] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
 			txResult.TxResult.Code, txResult.TxResult.Codespace, txResult.TxResult.Log, txResult.TxResult.Data)
+		if isCosmosDuplicatePacketError(txResult.TxResult.Codespace, txResult.TxResult.Code) {
+			log.Printf("[SendCosmosTx] duplicate packet (codespace=%s code=%d), dropping", txResult.TxResult.Codespace, txResult.TxResult.Code)
+			return nil
+		}
 		// DeliverTx execution failure is deterministic (msg/proof rejected) — mark
 		// permanent so the relay loop counts it toward the retry cap.
 		return fmt.Errorf("transaction failed at DeliverTx with code %d: %s: %w", txResult.TxResult.Code, txResult.TxResult.Log, services.ErrPermanentRelayFailure)
@@ -1199,6 +1220,18 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 			broadcastDur, time.Since(benchStart), txResult.Height, txResult.Hash.String())
 	}
 	return nil
+}
+
+// isCosmosDuplicatePacketError returns true when the ABCI response indicates the
+// packet was already processed. Matches on codespace "channelv2" + code 11 or 12:
+//
+//	11 = ErrAcknowledgementExists (ack already written)
+//	12 = ErrNoOpMsg (canonical duplicate-delivery signal for recv/timeout/ack)
+//
+// Substring matching on log messages is avoided because "commitment not found" can
+// mean a packet was never sent — not just a duplicate — and would silently drop it.
+func isCosmosDuplicatePacketError(codespace string, code uint32) bool {
+	return codespace == "channelv2" && (code == 11 || code == 12)
 }
 
 // simulateMsgs builds a transaction with the given messages, signs it with an empty signature, and simulates its gas consumption.
@@ -1504,6 +1537,10 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	if syncResult.Code != 0 {
 		log.Printf("[SendCosmosTxBatch] CheckTx FAILED: code=%d codespace=%s log=%s data=%x",
 			syncResult.Code, syncResult.Codespace, syncResult.Log, syncResult.Data)
+		if isCosmosDuplicatePacketError(syncResult.Codespace, syncResult.Code) {
+			log.Printf("[SendCosmosTxBatch] duplicate packet (codespace=%s code=%d), dropping", syncResult.Codespace, syncResult.Code)
+			return sequence + 1, len(sdkMsgs), nil
+		}
 		return sequence, 0, fmt.Errorf("transaction failed at CheckTx with code %d: %s", syncResult.Code, syncResult.Log)
 	}
 
@@ -1520,6 +1557,10 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	if txResult.TxResult.Code != 0 {
 		log.Printf("[SendCosmosTxBatch] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
 			txResult.TxResult.Code, txResult.TxResult.Codespace, txResult.TxResult.Log, txResult.TxResult.Data)
+		if isCosmosDuplicatePacketError(txResult.TxResult.Codespace, txResult.TxResult.Code) {
+			log.Printf("[SendCosmosTxBatch] duplicate packet (codespace=%s code=%d), dropping", txResult.TxResult.Codespace, txResult.TxResult.Code)
+			return sequence + 1, len(sdkMsgs), nil
+		}
 		return sequence, 0, fmt.Errorf("transaction failed at DeliverTx with code %d: %s: %w", txResult.TxResult.Code, txResult.TxResult.Log, services.ErrPermanentRelayFailure)
 	}
 

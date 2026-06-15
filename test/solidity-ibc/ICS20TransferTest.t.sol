@@ -1087,6 +1087,46 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
         callbackMsg.payload.encoding = ICS20Lib.ICS20_ENCODING;
     }
 
+    function test_failure_onRecvPacket_zeroAddressReceiver() public {
+        address sender = makeAddr("sender");
+        string memory sourceClient = th.randomString();
+        string memory destClient = th.randomString();
+
+        string memory denom = string(
+            abi.encodePacked(
+                ICS20Lib.DEFAULT_PORT_ID, "/", sourceClient, "/", Strings.toHexString(address(env.erc20()))
+            )
+        );
+
+        string memory zeroAddrStr = Strings.toHexString(address(0));
+
+        IIBCAppCallbacks.OnRecvPacketCallback memory callbackMsg = IIBCAppCallbacks.OnRecvPacketCallback({
+            sourceClient: sourceClient,
+            destinationClient: destClient,
+            sequence: 1,
+            payload: IICS26RouterMsgs.Payload({
+                sourcePort: ICS20Lib.DEFAULT_PORT_ID,
+                destPort: ICS20Lib.DEFAULT_PORT_ID,
+                version: ICS20Lib.ICS20_VERSION,
+                encoding: ICS20Lib.ICS20_ENCODING,
+                value: abi.encode(
+                    IICS20TransferMsgs.FungibleTokenPacketData({
+                        denom: denom,
+                        amount: 1 ether,
+                        sender: Strings.toHexString(sender),
+                        receiver: zeroAddrStr,
+                        memo: ""
+                    })
+                )
+            }),
+            relayer: makeAddr("relayer")
+        });
+
+        vm.expectRevert(abi.encodeWithSelector(IICS20Errors.ICS20InvalidAddress.selector, zeroAddrStr));
+        vm.prank(ics26);
+        ics20Transfer.onRecvPacket(callbackMsg);
+    }
+
     // Tests that the IBCERC20 re-mint refund path (isDestSource = true) works while the contract is paused.
     // The denom carries the transfer/{sourceClient}/ prefix, so _refundTokens mints to escrow then sends to refundee.
     function testFuzz_success_ibcERC20RefundWhenPaused(uint256 amount, uint64 seq) public {

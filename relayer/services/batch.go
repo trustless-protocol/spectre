@@ -83,13 +83,14 @@ type EthBatch struct {
 }
 
 type BatchBuilder struct {
-	cosmosMtx       sync.Mutex
-	ethMtx          sync.Mutex
-	cosmosTimestamp time.Time
-	ethTimestamp    time.Time
-	cosmosPackets   []CosmosPacket
-	ethPackets      []EthPacket
-	PendingTracker  *PendingPacketTracker
+	cosmosMtx         sync.Mutex
+	ethMtx            sync.Mutex
+	cosmosTimestamp   time.Time
+	ethTimestamp      time.Time
+	cosmosPackets     []CosmosPacket
+	ethPackets        []EthPacket
+	PendingTracker    *PendingPacketTracker
+	EthPendingTracker *PendingPacketTracker
 
 	// Dead-lettered packets: those that hit maxPacketRetries on PERMANENT
 	// (deterministic revert) failures. Kept rather than silently dropped so
@@ -114,11 +115,12 @@ func (b *BatchBuilder) DeadLetterCounts() (cosmos, eth int) {
 func NewBatchBuilder() *BatchBuilder {
 	now := time.Now()
 	return &BatchBuilder{
-		cosmosTimestamp: now,
-		ethTimestamp:    now,
-		cosmosPackets:   []CosmosPacket{},
-		ethPackets:      []EthPacket{},
-		PendingTracker:  NewPendingPacketTracker(),
+		cosmosTimestamp:   now,
+		ethTimestamp:      now,
+		cosmosPackets:     []CosmosPacket{},
+		ethPackets:        []EthPacket{},
+		PendingTracker:    NewPendingPacketTracker(),
+		EthPendingTracker: NewPendingPacketTracker(),
 	}
 }
 
@@ -141,11 +143,15 @@ func (b *BatchBuilder) AddEth(packet EthPacket) {
 }
 
 func (b *BatchBuilder) ClearCosmos() {
+	b.cosmosMtx.Lock()
+	defer b.cosmosMtx.Unlock()
 	b.cosmosTimestamp = time.Now()
 	b.cosmosPackets = []CosmosPacket{}
 }
 
 func (b *BatchBuilder) ClearEth() {
+	b.ethMtx.Lock()
+	defer b.ethMtx.Unlock()
 	b.ethTimestamp = time.Now()
 	b.ethPackets = []EthPacket{}
 }
@@ -286,7 +292,8 @@ func (b *BatchBuilder) CheckCosmos(config BatchConfig, ch chan<- CosmosBatch) {
 	if chunkSize <= 0 || chunkSize > len(b.cosmosPackets) {
 		chunkSize = len(b.cosmosPackets)
 	}
-	chunk := b.cosmosPackets[:chunkSize]
+	chunk := make([]CosmosPacket, chunkSize)
+	copy(chunk, b.cosmosPackets[:chunkSize])
 	b.cosmosPackets = b.cosmosPackets[chunkSize:]
 	b.cosmosTimestamp = time.Now()
 	log.Printf("[BatchBuilder] Flushing cosmos batch: %d packets (%s, queue remaining: %d)",
@@ -325,7 +332,8 @@ func (b *BatchBuilder) CheckEth(config BatchConfig, ch chan<- EthBatch) {
 	if chunkSize <= 0 || chunkSize > len(b.ethPackets) {
 		chunkSize = len(b.ethPackets)
 	}
-	chunk := b.ethPackets[:chunkSize]
+	chunk := make([]EthPacket, chunkSize)
+	copy(chunk, b.ethPackets[:chunkSize])
 	b.ethPackets = b.ethPackets[chunkSize:]
 	b.ethTimestamp = time.Now()
 	log.Printf("[BatchBuilder] Flushing eth batch: %d packets (%s, queue remaining: %d)",

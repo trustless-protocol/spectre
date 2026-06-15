@@ -97,6 +97,39 @@ contract UpdateClientCacheTest is Test {
         ics07.updateClient(abi.encode(msg_));
     }
 
+    function test_updateClient_reverts_whenHeightIsNonMonotonic() public {
+        BucketConfig memory cfg = _cfg(16);
+        IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
+        bytes32 hashA = Header.hashValSet(valA);
+
+        IICS07TendermintMsgs.ConsensusState memory trustedCS =
+            _consensusState(TRUSTED_TS_NS, hashA, bytes32(uint256(0xAAA1)));
+
+        Groth16ICS07Tendermint ics07 = _deployLightClient(trustedCS);
+
+        // First update: advance latestHeight from 1000 to 1002.
+        IICS07TendermintMsgs.Header memory header1002 =
+            _buildHeader(TRUSTED_HEIGHT, HEIGHT_1002, valA, valA, hashA, TS_1002_NS, cfg.activeCount);
+        IUpdateClientMsgs.MsgUpdateClient memory msg1002 =
+            _buildMsg(_clientState(), trustedCS, header1002, cfg.bucket, cfg.activeCount);
+        ics07.updateClient(abi.encode(msg1002));
+
+        // Second update: try height 1001 < latestHeight 1002.
+        IICS07TendermintMsgs.Header memory header1001 =
+            _buildHeader(TRUSTED_HEIGHT, HEIGHT_1001, valA, valA, hashA, TS_1001_NS, cfg.activeCount);
+        IUpdateClientMsgs.MsgUpdateClient memory msg1001 =
+            _buildMsg(_clientState(), trustedCS, header1001, cfg.bucket, cfg.activeCount);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IGroth16ICS07TendermintErrors.NonMonotonicHeightUpdate.selector,
+                uint64(HEIGHT_1002),
+                uint64(HEIGHT_1001)
+            )
+        );
+        ics07.updateClient(abi.encode(msg1001));
+    }
+
     function test_updateClient_reverts_whenClockDriftDoesNotMatchStoredClientState() public {
         BucketConfig memory cfg = _cfg(16);
         IICS07TendermintMsgs.ValidatorSet memory valA = _buildValSet(cfg.valCount, 0);
@@ -689,12 +722,30 @@ contract UpdateClientCacheTest is Test {
         internal
         pure
     {
+        for (uint256 i = 0; i < msg_.proposedHeader.signedHeader.commit.commitSigs.length; i++) {
+            msg_.proposedHeader.signedHeader.commit.commitSigs[i] = IICS07TendermintMsgs.CommitSig({
+                flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT,
+                data: IICS07TendermintMsgs.CommitSigData({
+                    validatorAddress: "", timestamp: 0, hasSignature: false, signature: ""
+                })
+            });
+        }
+
         for (uint256 i = 0; i < msg_.signerIndices.length; i++) {
             if (i < activeCount) {
                 uint32 idx = start + uint32(i);
                 msg_.signerIndices[i] = idx;
                 msg_.signerPubkeys[i] = validatorSet.validators[idx].pubKey;
                 msg_.active[i] = true;
+                msg_.proposedHeader.signedHeader.commit.commitSigs[idx] = IICS07TendermintMsgs.CommitSig({
+                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+                    data: IICS07TendermintMsgs.CommitSigData({
+                        validatorAddress: validatorSet.validators[idx].valAddress,
+                        timestamp: msg_.proposedHeader.signedHeader.header.time,
+                        hasSignature: false,
+                        signature: ""
+                    })
+                });
                 msg_.trustedOverlapIndices[i] = idx;
             } else {
                 msg_.signerIndices[i] = 0;

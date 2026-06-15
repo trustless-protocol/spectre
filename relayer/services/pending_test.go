@@ -106,3 +106,29 @@ func TestPendingTracker_PurgeStale(t *testing.T) {
 		t.Fatalf("expected remaining packet seq=2, got seq=%d", all[0].Packet.Sequence)
 	}
 }
+
+func TestPendingTracker_PurgeStaleWithoutTimeout(t *testing.T) {
+	pt := NewPendingPacketTracker()
+	noTimeout := channeltypesv2.Packet{SourceClient: "src-0", Sequence: 1}
+	withTimeout := channeltypesv2.Packet{SourceClient: "src-0", Sequence: 2, TimeoutTimestamp: uint64(time.Now().Add(2 * time.Hour).Unix())}
+
+	pt.Add(noTimeout, 100)
+	pt.Add(withTimeout, 200)
+
+	pt.mtx.Lock()
+	for key, info := range pt.packets {
+		info.ObservedAt = time.Now().Add(-2 * time.Hour)
+		pt.packets[key] = info
+	}
+	pt.mtx.Unlock()
+
+	pt.PurgeStaleWithoutTimeout(1 * time.Hour)
+
+	all := pt.GetAll()
+	if len(all) != 1 {
+		t.Fatalf("expected len 1 after targeted purge, got %d", len(all))
+	}
+	if all[0].Packet.Sequence != 2 {
+		t.Fatalf("expected packet with timeout to remain, got seq=%d", all[0].Packet.Sequence)
+	}
+}

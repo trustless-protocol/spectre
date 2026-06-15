@@ -113,7 +113,7 @@ func planCosmosPacketMsgs(
 				origin:   &packet,
 			})
 		case CosmosTimeout:
-			if !shouldRelayCosmosTimeoutToEth(packet.Packet, routerClientID) {
+			if !ShouldRelayCosmosTimeoutToEth(packet.Packet, routerClientID) {
 				log.Printf("[Timeout] seq=%d: Cosmos-originated packet timeout already handled locally, skipping ETH relay", packet.Packet.Sequence)
 				continue
 			}
@@ -164,7 +164,7 @@ func planEthPacketMsgs(
 				expired = append(expired, packet)
 				continue
 			}
-			proofBytes, err := buildProof(ethPath(packet.Packet.SourceClient, packet.Packet.Sequence, 1))
+			proofBytes, err := buildProof(EthPath(packet.Packet.SourceClient, packet.Packet.Sequence, 1))
 			if err != nil {
 				log.Printf("[EthSend] seq=%d: failed to get ETH membership proof: %v", packet.Packet.Sequence, err)
 				transientFailures = append(transientFailures, packet)
@@ -182,7 +182,7 @@ func planEthPacketMsgs(
 				origin:   &origin,
 			})
 		case EthWriteAck:
-			proofBytes, err := buildProof(ethPath(packet.Packet.DestinationClient, packet.Packet.Sequence, 3))
+			proofBytes, err := buildProof(EthPath(packet.Packet.DestinationClient, packet.Packet.Sequence, 3))
 			if err != nil {
 				log.Printf("[EthWriteAck] seq=%d: failed to get ETH membership proof: %v", packet.Packet.Sequence, err)
 				transientFailures = append(transientFailures, packet)

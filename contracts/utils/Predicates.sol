@@ -189,6 +189,10 @@ library Predicates {
         internal
         pure
     {
+        if (signedHeader.commit.height != signedHeader.header.height) {
+            revert("invalid commit: height mismatch");
+        }
+
         IICS07TendermintMsgs.CommitSig[] memory commitSigs = signedHeader.commit.commitSigs;
 
         if (commitSigs.length != validators.validators.length) {

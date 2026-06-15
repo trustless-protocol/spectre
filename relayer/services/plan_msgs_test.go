@@ -133,8 +133,8 @@ func TestPlanCosmosPacketMsgs_AllSucceed_NoRequeueNoRemove(t *testing.T) {
 
 func TestPlanEthPacketMsgs_RoutesFailuresAndExpired(t *testing.T) {
 	failPaths := map[string]bool{
-		string(ethPath("clientA", 2, 1)): true, // EthSend seq=2
-		string(ethPath("clientA", 5, 3)): true, // EthWriteAck seq=5
+		string(EthPath("clientA", 2, 1)): true, // EthSend seq=2
+		string(EthPath("clientA", 5, 3)): true, // EthWriteAck seq=5
 	}
 	build := func(path []byte) ([]byte, error) {
 		if failPaths[string(path)] {

@@ -289,6 +289,23 @@ contract PredicatesTest is Test, IICS07TendermintMsgs {
         wrapper.validateCommit(untrusted.signedHeader, untrusted.validatorSet);
     }
 
+    function testValidateCommitHeightMismatchReverts() public {
+        ValidatorInfo[] memory vals = new ValidatorInfo[](1);
+        vals[0] = _makeValidator("val1", bytes32(uint256(1)), 100);
+
+        CommitSig[] memory sigs = new CommitSig[](1);
+        sigs[0] = _makeCommitSig(CommitSigFlag.BLOCK_ID_FLAG_COMMIT, "val1");
+
+        SignedHeader memory sh = _makeSignedHeader(sigs, bytes32(uint256(0xabc)));
+        sh.commit.height = sh.header.height + 1;
+
+        UntrustedBlockState memory untrusted =
+            UntrustedBlockState({ signedHeader: sh, validatorSet: _makeValidatorSet(vals) });
+
+        vm.expectRevert("invalid commit: height mismatch");
+        wrapper.validateCommit(untrusted.signedHeader, untrusted.validatorSet);
+    }
+
     function testValidateCommitSigCountMismatchReverts() public {
         ValidatorInfo[] memory vals = new ValidatorInfo[](2);
         vals[0] = _makeValidator("val1", bytes32(uint256(1)), 50);

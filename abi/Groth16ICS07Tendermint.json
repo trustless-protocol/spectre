@@ -174,13 +174,13 @@
     "name": "misbehaviour",
     "inputs": [
       {
-        "name": "",
+        "name": "misbehaviourMsg",
         "type": "bytes",
         "internalType": "bytes"
       }
     ],
     "outputs": [],
-    "stateMutability": "view"
+    "stateMutability": "nonpayable"
   },
   {
     "type": "function",
@@ -1221,6 +1221,22 @@
   },
   {
     "type": "error",
+    "name": "InsufficientTrustedVotingPower",
+    "inputs": [
+      {
+        "name": "accumulated",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "total",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InsufficientTrustingPeriod",
     "inputs": [
       {
@@ -1338,6 +1354,22 @@
   },
   {
     "type": "error",
+    "name": "MismatchedMisbehaviourHeaderHeights",
+    "inputs": [
+      {
+        "name": "height1",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "height2",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "MismatchedRevisionHeights",
     "inputs": [
       {
@@ -1365,6 +1397,22 @@
         "name": "actual",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "NonMonotonicHeightUpdate",
+    "inputs": [
+      {
+        "name": "latestHeight",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "updateHeight",
+        "type": "uint64",
+        "internalType": "uint64"
       }
     ]
   },
@@ -1423,6 +1471,17 @@
         "name": "proofTimestamp",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ProofSignerCommitSigMismatch",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "uint32",
+        "internalType": "uint32"
       }
     ]
   },

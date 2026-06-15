@@ -7,7 +7,6 @@ import { IICS07TendermintMsgs } from "./msgs/IICS07TendermintMsgs.sol";
 import { IUpdateClientMsgs } from "./msgs/IUpdateClientMsgs.sol";
 import { IMembershipMsgs } from "./msgs/IMembershipMsgs.sol";
 import { IMisbehaviourMsgs } from "./msgs/IMisbehaviourMsgs.sol";
-import { IGroth16Msgs } from "./msgs/IGroth16Msgs.sol";
 import { ILightClientMsgs } from "../msgs/ILightClientMsgs.sol";
 import { IICS02ClientMsgs } from "../msgs/IICS02ClientMsgs.sol";
 
@@ -210,18 +209,25 @@ contract Groth16ICS07Tendermint is
         _validateUpdateClientOutput(output);
 
         ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult(output);
-        uint64 totalVotingPower =
-            currentCached ? _verifyCachedBatchAndQuorum(currentValidatorsHash, msg_) : _verifyFullBatchAndQuorum(msg_);
+        uint64 totalVotingPower;
+        uint64 accumulatedVotingPower;
+        if (currentCached) {
+            (totalVotingPower, accumulatedVotingPower) = _verifyCachedBatchAndQuorum(currentValidatorsHash, msg_);
+        } else {
+            (totalVotingPower, accumulatedVotingPower) = _verifyFullBatchAndQuorum(msg_);
+        }
+        _verifyUpdateTrustedOverlap(msg_, currentValidatorsHash, totalVotingPower, accumulatedVotingPower);
         // Only cache on a real state advance; NoOp already has the set cached and
         // Misbehaviour freezes the client, making a fresh SSTORE2 write pointless.
         if (cacheCurrentValidatorSet && updateResult == ILightClientMsgs.UpdateResult.Update) {
             _cacheValidatorSet(currentValidatorsHash, msg_, totalVotingPower);
         }
         if (updateResult == ILightClientMsgs.UpdateResult.Update) {
-            // adding the new consensus state to the mapping
-            if (output.newHeight.revisionHeight > clientState.latestHeight.revisionHeight) {
-                clientState.latestHeight = output.newHeight;
-            }
+            require(
+                output.newHeight.revisionHeight > clientState.latestHeight.revisionHeight,
+                NonMonotonicHeightUpdate(clientState.latestHeight.revisionHeight, output.newHeight.revisionHeight)
+            );
+            clientState.latestHeight = output.newHeight;
             _consensusStateHashes[output.newHeight.revisionHeight] = keccak256(abi.encode(output.newConsensusState));
         } else if (updateResult == ILightClientMsgs.UpdateResult.Misbehaviour) {
             clientState.isFrozen = true;
@@ -591,7 +597,7 @@ contract Groth16ICS07Tendermint is
     ///      reconstruction agree on the signed bytes.
     function _verifyFullBatchAndQuorum(IUpdateClientMsgs.MsgUpdateClient memory msg_)
         internal
-        returns (uint64 totalVotingPower)
+        returns (uint64 totalVotingPower, uint64 accumulatedVotingPower)
     {
         IICS07TendermintMsgs.ValidatorInfo[] memory vals = msg_.proposedHeader.validatorSet.validators;
         uint256 numVals = vals.length;
@@ -606,7 +612,6 @@ contract Groth16ICS07Tendermint is
             totalVotingPower += vals[i].votingPower;
         }
 
-        uint64 accumulated = 0;
         bool hasPrevSigner = false;
         uint32 prevIdx = 0;
         for (uint256 i = 0; i < msg_.signerIndices.length; i++) {
@@ -621,14 +626,17 @@ contract Groth16ICS07Tendermint is
             require(vals[idx].pubKey == msg_.signerPubkeys[i], PubkeyMismatch(idx));
             hasPrevSigner = true;
             prevIdx = idx;
-            accumulated += vals[idx].votingPower;
+            accumulatedVotingPower += vals[idx].votingPower;
         }
         require(
-            uint256(accumulated) * 3 > uint256(totalVotingPower) * 2,
-            InsufficientVotingPower(accumulated, totalVotingPower)
+            uint256(accumulatedVotingPower) * 3 > uint256(totalVotingPower) * 2,
+            InsufficientVotingPower(accumulatedVotingPower, totalVotingPower)
         );
 
-        _verifyBatchProof(msg_);
+        _requireProofSignersCommitSigs(
+            msg_.proposedHeader.signedHeader.commit.commitSigs, msg_.signerIndices, msg_.active
+        );
+        _verifyUpdateBatchProof(msg_);
     }
 
     function _verifyCachedBatchAndQuorum(
@@ -636,7 +644,7 @@ contract Groth16ICS07Tendermint is
         IUpdateClientMsgs.MsgUpdateClient memory msg_
     )
         internal
-        returns (uint64 totalVotingPower)
+        returns (uint64 totalVotingPower, uint64 accumulatedVotingPower)
     {
         require(
             msg_.signerIndices.length == msg_.bucket && msg_.signerPubkeys.length == msg_.bucket
@@ -653,7 +661,6 @@ contract Groth16ICS07Tendermint is
         bytes memory cacheData = SSTORE2.read(pointer, 0, _validatorCacheEntryDataLen(_cachedValidatorEntryCount));
         ValidatorCacheHeader memory cacheHeader = _readValidatorCacheHeader(validatorsHash, cacheData);
         totalVotingPower = _cachedValidatorTotalVotingPower;
-        uint64 accumulated = 0;
         bool hasPrevSigner = false;
         uint32 prevIdx = 0;
         uint256 pubKeyBits = _validatorPubKeyOverrideBits;
@@ -676,15 +683,219 @@ contract Groth16ICS07Tendermint is
                 validatorsHash, cacheData, cacheHeader.entryCount, pubKeyBits, votingPowerBits, idx
             );
             require(pubKey == msg_.signerPubkeys[i], PubkeyMismatch(idx));
-            accumulated += votingPower;
+            accumulatedVotingPower += votingPower;
         }
 
         require(
-            uint256(accumulated) * 3 > uint256(totalVotingPower) * 2,
-            InsufficientVotingPower(accumulated, totalVotingPower)
+            uint256(accumulatedVotingPower) * 3 > uint256(totalVotingPower) * 2,
+            InsufficientVotingPower(accumulatedVotingPower, totalVotingPower)
         );
 
-        _verifyBatchProof(msg_);
+        _requireProofSignersCommitSigs(
+            msg_.proposedHeader.signedHeader.commit.commitSigs, msg_.signerIndices, msg_.active
+        );
+        _verifyUpdateBatchProof(msg_);
+    }
+
+    function _verifyMisbehaviourBatchAndQuorum(
+        IICS07TendermintMsgs.Header memory header,
+        IMisbehaviourMsgs.BatchProof memory proof_
+    )
+        internal
+        returns (uint64 totalVotingPower, uint64 accumulatedVotingPower)
+    {
+        IICS07TendermintMsgs.ValidatorInfo[] memory vals = header.validatorSet.validators;
+        uint256 numVals = vals.length;
+        require(
+            proof_.signerIndices.length == proof_.bucket && proof_.signerPubkeys.length == proof_.bucket
+                && proof_.timestampSeconds.length == proof_.bucket && proof_.timestampNanos.length == proof_.bucket
+                && proof_.active.length == proof_.bucket,
+            BatchLengthMismatch()
+        );
+
+        for (uint256 i = 0; i < numVals; i++) {
+            totalVotingPower += vals[i].votingPower;
+        }
+
+        bool hasPrevSigner = false;
+        uint32 prevIdx = 0;
+        for (uint256 i = 0; i < proof_.signerIndices.length; i++) {
+            if (!proof_.active[i]) {
+                continue;
+            }
+
+            uint32 idx = proof_.signerIndices[i];
+            require(idx < numVals, SignerIndexOutOfRange(idx));
+            if (hasPrevSigner) {
+                require(idx > prevIdx, DuplicateSigner(idx));
+            }
+            require(vals[idx].pubKey == proof_.signerPubkeys[i], PubkeyMismatch(idx));
+            hasPrevSigner = true;
+            prevIdx = idx;
+            accumulatedVotingPower += vals[idx].votingPower;
+        }
+        require(
+            uint256(accumulatedVotingPower) * 3 > uint256(totalVotingPower) * 2,
+            InsufficientVotingPower(accumulatedVotingPower, totalVotingPower)
+        );
+
+        _requireProofSignersCommitSigs(header.signedHeader.commit.commitSigs, proof_.signerIndices, proof_.active);
+        _verifyMisbehaviourBatchProof(header, proof_);
+    }
+
+    function _requireProofSignersCommitSigs(
+        IICS07TendermintMsgs.CommitSig[] memory commitSigs,
+        uint32[] memory signerIndices,
+        bool[] memory active
+    )
+        private
+        pure
+    {
+        require(signerIndices.length == active.length, BatchLengthMismatch());
+        for (uint256 i = 0; i < signerIndices.length; i++) {
+            if (!active[i]) {
+                continue;
+            }
+            _requireProofSignerCommitSig(commitSigs, signerIndices[i]);
+        }
+    }
+
+    function _requireProofSignerCommitSig(
+        IICS07TendermintMsgs.CommitSig[] memory commitSigs,
+        uint32 signerIndex
+    )
+        private
+        pure
+    {
+        require(signerIndex < commitSigs.length, SignerIndexOutOfRange(signerIndex));
+        require(
+            commitSigs[signerIndex].flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+            ProofSignerCommitSigMismatch(signerIndex)
+        );
+    }
+
+    function _verifyUpdateTrustedOverlap(
+        IUpdateClientMsgs.MsgUpdateClient memory msg_,
+        bytes32 currentValidatorsHash,
+        uint64 totalCurrentVotingPower,
+        uint64 accumulatedCurrentVotingPower
+    )
+        private
+        pure
+    {
+        if (_isAdjacentUpdate(msg_.proposedHeader)) {
+            return;
+        }
+
+        IICS07TendermintMsgs.TrustThreshold memory trustThreshold = msg_.clientState.trustLevel;
+        bytes32 trustedNextValidatorsHash = msg_.trustedConsensusState.nextValidatorsHash;
+        if (
+            trustedNextValidatorsHash == currentValidatorsHash
+                && msg_.proposedHeader.trustedNextValidatorSet.validators.length == 0
+        ) {
+            _requireMeetsTrustThreshold(accumulatedCurrentVotingPower, totalCurrentVotingPower, trustThreshold);
+            return;
+        }
+
+        _validateSuppliedValidatorSetHash(trustedNextValidatorsHash, msg_.proposedHeader.trustedNextValidatorSet);
+        _verifyTrustedOverlapBySignerPubkeys(
+            msg_.proposedHeader.trustedNextValidatorSet, msg_.signerPubkeys, msg_.active, trustThreshold
+        );
+    }
+
+    function _verifyMisbehaviourTrustedOverlap(
+        IICS07TendermintMsgs.Header memory header,
+        bytes32 trustedNextValidatorHash,
+        IMisbehaviourMsgs.BatchProof memory proof_,
+        IICS07TendermintMsgs.TrustThreshold memory trustThreshold
+    )
+        private
+        pure
+    {
+        if (_isAdjacentUpdate(header)) {
+            return;
+        }
+
+        _validateSuppliedValidatorSetHash(trustedNextValidatorHash, header.trustedNextValidatorSet);
+        _verifyTrustedOverlapBySignerPubkeys(
+            header.trustedNextValidatorSet, proof_.signerPubkeys, proof_.active, trustThreshold
+        );
+    }
+
+    function _verifyTrustedOverlapBySignerPubkeys(
+        IICS07TendermintMsgs.ValidatorSet memory trustedValidatorSet,
+        bytes32[] memory signerPubkeys,
+        bool[] memory active,
+        IICS07TendermintMsgs.TrustThreshold memory trustThreshold
+    )
+        private
+        pure
+    {
+        require(signerPubkeys.length == active.length, BatchLengthMismatch());
+        IICS07TendermintMsgs.ValidatorInfo[] memory trustedValidators = trustedValidatorSet.validators;
+        uint256 trustedCount = trustedValidators.length;
+        if (trustedCount > MAX_VALIDATOR_COUNT) {
+            revert ValidatorCountExceedsLimit(trustedCount, MAX_VALIDATOR_COUNT);
+        }
+
+        uint64 totalVotingPower = 0;
+        for (uint256 i = 0; i < trustedCount; i++) {
+            totalVotingPower += trustedValidators[i].votingPower;
+        }
+
+        uint64 accumulatedVotingPower = 0;
+        uint256 countedTrustedValidators = 0;
+        for (uint256 i = 0; i < signerPubkeys.length; i++) {
+            if (!active[i]) {
+                continue;
+            }
+            bytes32 signerPubkey = signerPubkeys[i];
+            for (uint256 j = 0; j < trustedCount; j++) {
+                if (trustedValidators[j].pubKey != signerPubkey) {
+                    continue;
+                }
+
+                uint256 mask = uint256(1) << j;
+                if ((countedTrustedValidators & mask) == 0) {
+                    countedTrustedValidators |= mask;
+                    accumulatedVotingPower += trustedValidators[j].votingPower;
+                }
+                break;
+            }
+
+            if (_meetsTrustThreshold(accumulatedVotingPower, totalVotingPower, trustThreshold)) {
+                return;
+            }
+        }
+
+        _requireMeetsTrustThreshold(accumulatedVotingPower, totalVotingPower, trustThreshold);
+    }
+
+    function _requireMeetsTrustThreshold(
+        uint64 accumulatedVotingPower,
+        uint64 totalVotingPower,
+        IICS07TendermintMsgs.TrustThreshold memory trustThreshold
+    )
+        private
+        pure
+    {
+        require(
+            _meetsTrustThreshold(accumulatedVotingPower, totalVotingPower, trustThreshold),
+            InsufficientTrustedVotingPower(accumulatedVotingPower, totalVotingPower)
+        );
+    }
+
+    function _meetsTrustThreshold(
+        uint64 accumulatedVotingPower,
+        uint64 totalVotingPower,
+        IICS07TendermintMsgs.TrustThreshold memory trustThreshold
+    )
+        private
+        pure
+        returns (bool)
+    {
+        return uint256(accumulatedVotingPower) * uint256(trustThreshold.denominator)
+            > uint256(totalVotingPower) * uint256(trustThreshold.numerator);
     }
 
     function _hasUsableValidatorCache(bytes32 validatorsHash) private view returns (bool) {
@@ -717,31 +928,86 @@ contract Groth16ICS07Tendermint is
         _validatorVotingPowerOverrideBits = 0;
     }
 
-    function _verifyBatchProof(IUpdateClientMsgs.MsgUpdateClient memory msg_) private {
-        IICS07TendermintMsgs.BlockCommit memory commit = msg_.proposedHeader.signedHeader.commit;
-        IVerifier.SharedBlock memory shared = IVerifier.SharedBlock({
+    function _verifyUpdateBatchProof(IUpdateClientMsgs.MsgUpdateClient memory msg_) private {
+        _verifyBatchProofForHeader(
+            msg_.proposedHeader,
+            msg_.bucket,
+            msg_.proof,
+            msg_.commitments,
+            msg_.commitmentPok,
+            msg_.signerPubkeys,
+            msg_.timestampSeconds,
+            msg_.timestampNanos,
+            msg_.active
+        );
+    }
+
+    function _verifyMisbehaviourBatchProof(
+        IICS07TendermintMsgs.Header memory header,
+        IMisbehaviourMsgs.BatchProof memory proof_
+    )
+        private
+    {
+        _verifyBatchProofForHeader(
+            header,
+            proof_.bucket,
+            proof_.proof,
+            proof_.commitments,
+            proof_.commitmentPok,
+            proof_.signerPubkeys,
+            proof_.timestampSeconds,
+            proof_.timestampNanos,
+            proof_.active
+        );
+    }
+
+    function _verifyBatchProofForHeader(
+        IICS07TendermintMsgs.Header memory header,
+        uint16 bucket,
+        uint256[8] memory proof,
+        uint256[2] memory commitments,
+        uint256[2] memory commitmentPok,
+        bytes32[] memory signerPubkeys,
+        uint64[] memory timestampSeconds,
+        uint32[] memory timestampNanos,
+        bool[] memory active
+    )
+        private
+    {
+        IVerifier.SharedBlock memory shared = _sharedBlockFromHeader(header);
+
+        require(
+            VERIFIER.verifyBatchProof(
+                bucket,
+                proof,
+                commitments,
+                commitmentPok,
+                signerPubkeys,
+                timestampSeconds,
+                timestampNanos,
+                active,
+                shared
+            ),
+            ProofVerificationFailed()
+        );
+    }
+
+    function _sharedBlockFromHeader(IICS07TendermintMsgs.Header memory header)
+        private
+        pure
+        returns (IVerifier.SharedBlock memory shared)
+    {
+        IICS07TendermintMsgs.BlockCommit memory commit = header.signedHeader.commit;
+        require(commit.height == header.signedHeader.header.height, InvalidHeaderHeight(commit.height));
+
+        shared = IVerifier.SharedBlock({
             height: commit.height,
             round: uint64(commit.round),
             blockIDHash: commit.blockId.hashData,
             partSetTotal: commit.blockId.partSetHeader.total,
             partSetHash: commit.blockId.partSetHeader.hashData,
-            chainID: bytes(msg_.proposedHeader.signedHeader.header.chainId)
+            chainID: bytes(header.signedHeader.header.chainId)
         });
-
-        require(
-            VERIFIER.verifyBatchProof(
-                msg_.bucket,
-                msg_.proof,
-                msg_.commitments,
-                msg_.commitmentPok,
-                msg_.signerPubkeys,
-                msg_.timestampSeconds,
-                msg_.timestampNanos,
-                msg_.active,
-                shared
-            ),
-            ProofVerificationFailed()
-        );
     }
 
     function _readValidatorCacheHeader(
@@ -1108,11 +1374,36 @@ contract Groth16ICS07Tendermint is
         revert UnknownMembershipType(uint8(membershipType));
     }
 
-    /// @dev The misbehavior is verfied in the gnark program. Here we only check the public values which contain the
-    /// trusted headers.
+    /// @dev Standalone misbehaviour is accepted only when both conflicting
+    /// headers carry proof-backed >2/3 Ed25519 quorums over their validator sets.
     /// @inheritdoc ILightClient
-    function misbehaviour(bytes calldata) external view notFrozen onlyMisbehaviourSubmitter {
-        revert FeatureNotSupported();
+    function misbehaviour(bytes calldata misbehaviourMsg) external notFrozen onlyMisbehaviourSubmitter {
+        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ =
+            abi.decode(misbehaviourMsg, (IMisbehaviourMsgs.MsgSubmitMisbehaviour));
+
+        IMisbehaviourMsgs.MisbehaviourOutput memory output = MISBEHAVIOUR.misbehaviour(
+            msg_.clientState, msg_.misbehaviour, msg_.trustedConsensusState1, msg_.trustedConsensusState2, msg_.time
+        );
+        _validateMisbehaviourOutput(
+            output, msg_.clientState, msg_.trustedConsensusState1, msg_.trustedConsensusState2, msg_.time
+        );
+
+        _verifyMisbehaviourBatchAndQuorum(msg_.misbehaviour.header1, msg_.proof1);
+        _verifyMisbehaviourTrustedOverlap(
+            msg_.misbehaviour.header1,
+            msg_.trustedConsensusState1.nextValidatorsHash,
+            msg_.proof1,
+            msg_.clientState.trustLevel
+        );
+        _verifyMisbehaviourBatchAndQuorum(msg_.misbehaviour.header2, msg_.proof2);
+        _verifyMisbehaviourTrustedOverlap(
+            msg_.misbehaviour.header2,
+            msg_.trustedConsensusState2.nextValidatorsHash,
+            msg_.proof2,
+            msg_.clientState.trustLevel
+        );
+
+        clientState.isFrozen = true;
     }
 
     /// @inheritdoc IGroth16ICS07Tendermint
@@ -1123,7 +1414,7 @@ contract Groth16ICS07Tendermint is
 
     /// @inheritdoc ILightClient
     function upgradeClient(bytes calldata) external pure {
-        // NOTE: This feature will not be supported. (#130)
+        // NOTE: This feature will not be supported.
         revert FeatureNotSupported();
     }
 
