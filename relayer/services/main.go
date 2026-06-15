@@ -189,7 +189,11 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 			maxPacketHeight = p.BlockNumber
 		}
 	}
-	s.waitCosmosAppHash(ctx, maxPacketHeight+2)
+	if !s.waitCosmosAppHash(ctx, maxPacketHeight+2) {
+		log.Printf("[StartLoop] cosmos AppHash wait failed; re-queueing %d packet(s)", len(batch.Packets))
+		s.BatchBuilder.RequeueCosmosTransient(batch.Packets)
+		return
+	}
 
 	// V2: build the Cosmos→ETH updateClient msg but do NOT submit it as its
 	// own tx. It will be the first inner call of the multicall so we save
@@ -546,12 +550,11 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 // be reflected in the queried AppHash. It memoizes the highest confirmed height
 // so later chunks of the same source block skip the RPC entirely (issue #76 #1).
 //
-// Timeout: 30 polls × 1s = 30s. On timeout it logs and returns — the caller's
-// subsequent membership-proof query will fail loudly if the AppHash truly isn't
-// ready, which is preferable to blocking the relay loop indefinitely.
-func (s *Services) waitCosmosAppHash(ctx Context, targetHeight uint64) {
+// Timeout: 30 polls x 1s = 30s. On timeout it returns false so the caller can
+// re-queue the chunk instead of generating proofs against stale AppHash state.
+func (s *Services) waitCosmosAppHash(ctx Context, targetHeight uint64) bool {
 	if targetHeight <= s.lastCosmosAppHashHeight {
-		return
+		return true
 	}
 	for attempt := 0; attempt < 30; attempt++ {
 		status, err := ctx.CosmosClient().Status(context.Background())
@@ -560,10 +563,14 @@ func (s *Services) waitCosmosAppHash(ctx Context, targetHeight uint64) {
 			time.Sleep(1 * time.Second)
 			continue
 		}
+		if status.SyncInfo.LatestBlockHeight < 0 {
+			log.Printf("[StartLoop] cosmos status returned negative latest block height: %d", status.SyncInfo.LatestBlockHeight)
+			return false
+		}
 		current := uint64(status.SyncInfo.LatestBlockHeight)
 		if current >= targetHeight {
 			s.lastCosmosAppHashHeight = current
-			return
+			return true
 		}
 		if attempt == 0 {
 			log.Printf("[StartLoop] waiting for cosmos AppHash to cover height %d (current %d)...",
@@ -572,6 +579,7 @@ func (s *Services) waitCosmosAppHash(ctx Context, targetHeight uint64) {
 		time.Sleep(1 * time.Second)
 	}
 	log.Printf("[StartLoop] cosmos AppHash wait for height %d timed out after 30s", targetHeight)
+	return false
 }
 
 // waitBeaconFinality polls beacon finality until execution block ≥ target.
@@ -598,7 +606,12 @@ func (s *Services) waitBeaconFinality(ctx Context, eventBlock uint64, tag string
 			log.Printf("[%s] failed to get finality update: %v", tag, err)
 			continue
 		}
-		execBlock, _ := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+		execBlock, err := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+		if err != nil {
+			log.Printf("[%s] failed to parse finalized execution block %q: %v",
+				tag, finalityUpdate.FinalizedHeader.Execution.BlockNumber, err)
+			continue
+		}
 		if execBlock > s.lastFinalizedExecBlock {
 			s.lastFinalizedExecBlock = execBlock
 		}
@@ -945,7 +958,12 @@ func (s *Services) ethProofHeight(ctx Context, eventBlock uint64, sequence uint6
 			log.Printf("[%s] seq=%d: failed to get finality update: %v", tag, sequence, err)
 			continue
 		}
-		execBlock, _ := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+		execBlock, err := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
+		if err != nil {
+			log.Printf("[%s] seq=%d: failed to parse finalized execution block %q: %v",
+				tag, sequence, finalityUpdate.FinalizedHeader.Execution.BlockNumber, err)
+			continue
+		}
 		if execBlock >= eventBlock {
 			log.Printf("[%s] seq=%d: beacon finalized block %d >= event block %d", tag, sequence, execBlock, eventBlock)
 			finalized = true

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import {Test} from "forge-std/Test.sol";
+import { Test } from "forge-std/Test.sol";
 
-import {WrapperVerifier} from "../../contracts/utils/WrapperVerifier.sol";
-import {Encode} from "../../contracts/utils/Encode.sol";
-import {IVerifier} from "../../contracts/interfaces/IVerifier.sol";
-import {IICS07TendermintMsgs} from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
+import { WrapperVerifier } from "../../contracts/utils/WrapperVerifier.sol";
+import { Encode } from "../../contracts/utils/Encode.sol";
+import { IVerifier } from "../../contracts/interfaces/IVerifier.sol";
+import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
 
 contract WrapperVerifierHashHarness is WrapperVerifier {
-    constructor() WrapperVerifier(address(this)) {}
+    constructor() WrapperVerifier(address(this)) { }
 
     function hashWitness(
         uint16 bucket,
@@ -18,7 +18,11 @@ contract WrapperVerifierHashHarness is WrapperVerifier {
         uint32[] calldata timestampNanos,
         bool[] calldata active,
         IVerifier.SharedBlock calldata shared
-    ) external pure returns (bytes32) {
+    )
+        external
+        pure
+        returns (bytes32)
+    {
         return _hashWitness(bucket, pubkeys, timestampSeconds, timestampNanos, active, shared);
     }
 }
@@ -117,7 +121,11 @@ contract WrapperVerifierHashEquivalenceTest is Test {
         uint32[] memory timestampNanos,
         bool[] memory active,
         IVerifier.SharedBlock memory shared
-    ) internal pure returns (bytes32) {
+    )
+        internal
+        pure
+        returns (bytes32)
+    {
         bytes memory buf = new bytes(pubkeys.length * WITNESS_SLOT_LEN);
         uint256 offset = 0;
         for (uint256 i = 0; i < pubkeys.length; i++) {
@@ -140,12 +148,15 @@ contract WrapperVerifierHashEquivalenceTest is Test {
         IVerifier.SharedBlock memory shared,
         uint64 tsSec,
         uint32 tsNanos
-    ) internal pure returns (bytes memory) {
+    )
+        internal
+        pure
+        returns (bytes memory)
+    {
         IICS07TendermintMsgs.BlockId memory blockId = IICS07TendermintMsgs.BlockId({
             hashData: shared.blockIDHash,
             partSetHeader: IICS07TendermintMsgs.PartSetHeader({
-                total: shared.partSetTotal,
-                hashData: shared.partSetHash
+                total: shared.partSetTotal, hashData: shared.partSetHash
             })
         });
         bytes memory encodedBlockId = Encode.encodeBlockId(blockId);

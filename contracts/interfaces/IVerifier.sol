@@ -49,7 +49,9 @@ interface IVerifier {
         uint32[] calldata timestampNanos,
         bool[] calldata active,
         SharedBlock calldata shared
-    ) external returns (bool);
+    )
+        external
+        returns (bool);
 }
 
 /// @title IGroth16Verifier - Raw single-signature Groth16 proof verifier
@@ -60,5 +62,7 @@ interface IGroth16Verifier {
         uint256[2] calldata commitments,
         uint256[2] calldata commitmentPok,
         uint256[24] calldata input
-    ) external view;
+    )
+        external
+        view;
 }

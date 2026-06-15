@@ -55,7 +55,6 @@ interface IMembershipMsgs {
         MembershipAndUpdateClient
     }
 
-
     struct ProofSpec {
         SpecType specType;
         bool hasLeafSpec;
@@ -110,12 +109,12 @@ interface IMembershipMsgs {
     enum SpecType {
         IAVL,
         TENDERMINT
-    }    
+    }
+
     struct MerkleProof {
         CommitmentProof[] proofs;
     }
-    
-    
+
     struct CommitmentProof {
         ProofType proofType;
         ExistenceProof existenceProof;
@@ -133,7 +132,7 @@ interface IMembershipMsgs {
         LeafOp leaf;
         InnerOp[] path;
     }
-    
+
     struct NonExistenceProof {
         bytes key;
         bool hasLeft;

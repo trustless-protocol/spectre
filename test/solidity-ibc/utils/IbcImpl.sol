@@ -256,9 +256,7 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
                 merkleProofs: new IMembershipMsgs.MerkleProof[](0),
                 appHash: bytes32(0),
                 trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
-                    timestamp: 0,
-                    root: bytes32(0),
-                    nextValidatorsHash: bytes32(0)
+                    timestamp: 0, root: bytes32(0), nextValidatorsHash: bytes32(0)
                 }),
                 membershipType: IMembershipMsgs.MembershipType.Membership,
                 path: new bytes[](0),
@@ -275,9 +273,7 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
                 merkleProofs: new IMembershipMsgs.MerkleProof[](0),
                 appHash: bytes32(0),
                 trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
-                    timestamp: 0,
-                    root: bytes32(0),
-                    nextValidatorsHash: bytes32(0)
+                    timestamp: 0, root: bytes32(0), nextValidatorsHash: bytes32(0)
                 }),
                 membershipType: IMembershipMsgs.MembershipType.Membership,
                 path: new bytes[](0)

@@ -28,8 +28,7 @@ contract SolidityLightClient is ILightClient {
         bytes32 commitment = _COUNTERPARTY_ICS26.getCommitment(solidityPath);
         require(commitment != bytes32(0), "invalid path");
         require(
-            keccak256(abi.encodePacked(commitment)) == keccak256(abi.encodePacked(msg_.value)),
-            "invalid commitment"
+            keccak256(abi.encodePacked(commitment)) == keccak256(abi.encodePacked(msg_.value)), "invalid commitment"
         );
         return block.timestamp;
     }
