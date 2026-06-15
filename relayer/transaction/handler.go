@@ -2,12 +2,15 @@ package transaction
 
 import (
 	"context"
+	"crypto/ecdsa"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
@@ -43,6 +46,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 var validatorCacheRaceErrorSelectors = map[[4]byte]string{
@@ -87,9 +91,18 @@ func validatorCacheRaceErrorName(callErr error) (string, bool) {
 }
 
 type Handler struct {
+	mu            sync.Mutex
+	nonce         uint64
+	nonceValid    bool
+	lastNonce     uint64
+	lastGasPrice  *big.Int
+	lastGasFeeCap *big.Int
+	lastGasTipCap *big.Int
 }
 
-const ethTxReceiptTimeout = 45 * time.Second
+var ethTxReceiptTimeout = 45 * time.Second
+var ethTxReceiptPollInterval = 2 * time.Second
+
 const ethDeployGasHeadroomPercent uint64 = 20
 
 // Cosmos RPC deadlines (issue #119): bound every Cosmos broadcast/query so a
@@ -293,114 +306,52 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to derive public key: %w", err)
 	}
-
 	fromAddress := crypto.PubkeyToAddress(*publicKey)
-	nonce, err := ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
-	if err != nil {
-		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to get nonce: %w", err)
-	}
+
 	gasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to suggest gas price: %w", err)
 	}
 
-	chainIdInt, err := ctx.EthClient().ChainID(context.Background())
-	if err != nil {
-		return common.Address{}, fmt.Errorf("[CreateCosmosClient] invalid chain id: %v", err)
-	}
-
-	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
-	if err != nil {
-		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to create auth transactor: %w", err)
-	}
-	auth.Nonce = big.NewInt(int64(nonce))
-	auth.Value = big.NewInt(0) // in wei
-	auth.GasPrice = gasPrice
 	estimatedDeployGas, deployGasLimit, err := estimateCosmosClientDeployGas(ctx, fromAddress, gasPrice, clientState, consensusHash)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
-	auth.GasLimit = deployGasLimit
-	log.Printf(
-		"[CreateCosmosClient] ICS07 deploy gas estimate=%d limit=%d",
-		estimatedDeployGas,
-		deployGasLimit,
-	)
+	log.Printf("[CreateCosmosClient] ICS07 deploy gas estimate=%d limit=%d", estimatedDeployGas, deployGasLimit)
 
-	address, tx, _, err := tendermintContract.DeployContractGroth16ICS07Tendermint(
-		auth,
-		ctx.EthClient(),
-		*ctx.VerifierContract(),
-		*ctx.MembershipContract(),
-		*ctx.MisbehaviourContract(),
-		*ctx.UpdateClientContract(),
-		clientState,
-		utils.BytesToBytes32(consensusHash),
-		*ctx.RoleManagerAddress(),
-	)
-
-	if err != nil {
-		return common.Address{}, fmt.Errorf("failed to deploy ics07 contract: %w", err)
+	var address common.Address
+	deployFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		addr, tx, _, err := tendermintContract.DeployContractGroth16ICS07Tendermint(
+			auth,
+			ctx.EthClient(),
+			*ctx.VerifierContract(),
+			*ctx.MembershipContract(),
+			*ctx.MisbehaviourContract(),
+			*ctx.UpdateClientContract(),
+			clientState,
+			utils.BytesToBytes32(consensusHash),
+			*ctx.RoleManagerAddress(),
+		)
+		if err == nil {
+			address = addr
+		}
+		return tx, err
 	}
-	log.Printf("[CreateCosmosClient] Deploy tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
-	receiptCtx, cancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
-	defer cancel()
-	receipt, err := bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
+
+	receipt, _, _, err := h.executeWithRetryAndResubmission(ctx, privateKey, deployGasLimit, deployFn)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed waiting for deploy receipt: %w", err)
 	}
-	if receipt.Status == 0 {
-		return common.Address{}, fmt.Errorf("deploy tx %s reverted (gasUsed=%d)", tx.Hash().Hex(), receipt.GasUsed)
-	}
 	log.Printf("[CreateCosmosClient] ICS07 deployed at %s (block %d, gasUsed=%d)", address.String(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
 	ctx.SetClient(address)
-
-	// In Eureka mode, the router is typically both the admin and proof submitter
-	// for the ICS07 client. Direct submission remains available only when the
-	// role manager is not the router.
 
 	ics26Router, err := routerContract.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
 	if err != nil {
 		return common.Address{}, err
 	}
 
-	nonce, err = ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
-	if err != nil {
-		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to get nonce for AddClient: %w", err)
-	}
-	auth.Nonce = big.NewInt(int64(nonce))
-
-	tx, err = ics26Router.AddClient(
-		auth,
-		cosmosClientID,
-		routerContract.IICS02ClientMsgsCounterpartyInfo{
-			ClientId:     wasmClientID,
-			MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
-		},
-		*ctx.ClientContract(),
-	)
-
-	if err != nil {
-		return common.Address{}, fmt.Errorf("failed to add client to ICS26Router: %w", err)
-	}
-	log.Printf("[CreateCosmosClient] AddClient tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
-	receiptCtx, cancel = context.WithTimeout(context.Background(), ethTxReceiptTimeout)
-	defer cancel()
-	receipt, err = bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
-	if err != nil {
-		return common.Address{}, fmt.Errorf("failed waiting for AddClient receipt: %w", err)
-	}
-	if receipt.Status == 0 {
-		log.Printf("[CreateCosmosClient] AddClient reverted (gasUsed=%d) — falling back to MigrateClient to repoint %s to new ICS07 %s",
-			receipt.GasUsed, cosmosClientID, address.Hex())
-
-		nonce, err = ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
-		if err != nil {
-			return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to get nonce for MigrateClient: %w", err)
-		}
-		auth.Nonce = big.NewInt(int64(nonce))
-
-		mtx, err := ics26Router.MigrateClient(
+	addClientFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		return ics26Router.AddClient(
 			auth,
 			cosmosClientID,
 			routerContract.IICS02ClientMsgsCounterpartyInfo{
@@ -409,24 +360,39 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 			},
 			*ctx.ClientContract(),
 		)
-		if err != nil {
-			return common.Address{}, fmt.Errorf("[CreateCosmosClient] MigrateClient call failed: %w", err)
-		}
-		log.Printf("[CreateCosmosClient] MigrateClient tx sent: %s. Waiting for receipt...", mtx.Hash().Hex())
-		mctx, mcancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
-		defer mcancel()
-		mreceipt, err := bind.WaitMined(mctx, ctx.EthClient(), mtx)
-		if err != nil {
-			return common.Address{}, fmt.Errorf("failed waiting for MigrateClient receipt: %w", err)
-		}
-		if mreceipt.Status == 0 {
-			return common.Address{}, fmt.Errorf("MigrateClient tx %s reverted (gasUsed=%d)", mtx.Hash().Hex(), mreceipt.GasUsed)
-		}
-		log.Printf("[CreateCosmosClient] MigrateClient confirmed (block %d, gasUsed=%d)", mreceipt.BlockNumber.Uint64(), mreceipt.GasUsed)
-		return address, nil
 	}
-	log.Printf("[CreateCosmosClient] AddClient confirmed (block %d, gasUsed=%d)", receipt.BlockNumber.Uint64(), receipt.GasUsed)
 
+	addClientReceipt, _, _, err := h.executeWithRetryAndResubmission(ctx, privateKey, 16000000, addClientFn)
+	if err != nil {
+		if errors.Is(err, services.ErrPermanentRelayFailure) {
+			// Fallback to MigrateClient only for confirmed on-chain reverts
+			log.Printf("[CreateCosmosClient] AddClient failed permanently (%v) — falling back to MigrateClient to repoint %s to new ICS07 %s",
+				err, cosmosClientID, address.Hex())
+
+			migrateClientFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+				return ics26Router.MigrateClient(
+					auth,
+					cosmosClientID,
+					routerContract.IICS02ClientMsgsCounterpartyInfo{
+						ClientId:     wasmClientID,
+						MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
+					},
+					*ctx.ClientContract(),
+				)
+			}
+
+			migrateReceipt, _, _, mErr := h.executeWithRetryAndResubmission(ctx, privateKey, 16000000, migrateClientFn)
+			if mErr != nil {
+				return common.Address{}, fmt.Errorf("MigrateClient call failed: %w", mErr)
+			}
+			log.Printf("[CreateCosmosClient] MigrateClient confirmed (block %d, gasUsed=%d)", migrateReceipt.BlockNumber.Uint64(), migrateReceipt.GasUsed)
+			return address, nil
+		}
+		// For transient wait/RPC errors, return the error immediately so the caller can retry
+		return common.Address{}, err
+	}
+
+	log.Printf("[CreateCosmosClient] AddClient confirmed (block %d, gasUsed=%d)", addClientReceipt.BlockNumber.Uint64(), addClientReceipt.GasUsed)
 	return address, nil
 }
 
@@ -444,35 +410,6 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		return fmt.Errorf("failed to restore private key: %w", err)
 	}
 
-	publicKey, err := keys.PublicKey(privateKey)
-	if err != nil {
-		return fmt.Errorf("[SendEthTx] failed to derive public key: %w", err)
-	}
-
-	fromAddress := crypto.PubkeyToAddress(*publicKey)
-	nonce, err := ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
-	if err != nil {
-		return fmt.Errorf("[SendEthTx] failed to get nonce: %w", err)
-	}
-	gasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
-	if err != nil {
-		return fmt.Errorf("[SendEthTx] failed to suggest gas price: %w", err)
-	}
-
-	chainIdInt, err := ctx.EthClient().ChainID(context.Background())
-	if err != nil {
-		return fmt.Errorf("[SendEthTx] invalid chain id: %v", err)
-	}
-
-	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
-	if err != nil {
-		return fmt.Errorf("[SendEthTx] failed to create auth transactor: %w", err)
-	}
-	auth.Nonce = big.NewInt(int64(nonce))
-	auth.Value = big.NewInt(0)      // in wei
-	auth.GasLimit = uint64(3000000) // in units
-	auth.GasPrice = gasPrice
-
 	ics07Tendermint, err := tendermintContract.NewContractGroth16ICS07Tendermint(
 		*ctx.ClientContract(),
 		ctx.EthClient(),
@@ -489,132 +426,69 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		return fmt.Errorf("failed to create ICS07 Tendermint contract: %w", err)
 	}
 
-	var tx *types.Transaction
-	var txLabel string
 	benchEnabled := utils.BenchEnabled()
 	var benchStart time.Time
 	if benchEnabled {
 		benchStart = time.Now()
 	}
-	switch msg := msg.(type) {
-	case updateclient.IUpdateClientMsgsMsgUpdateClient:
-		txLabel = "updateClient"
-		data, err := relayerclient.EncodeUpdateClientMsg(msg)
-		if err != nil {
-			return fmt.Errorf("[SendEthTx] failed to encode updateClient msg: %w", err)
-		}
-		if routerManagesProofSubmission(ctx) {
-			log.Printf("[SendEthTx] Sending ICS26Router.updateClient tx for clientId=%s...", cosmosClientID)
-			tx, err = ics26Router.UpdateClient(auth, cosmosClientID, data)
+
+	var txLabel string
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		switch msg := msg.(type) {
+		case updateclient.IUpdateClientMsgsMsgUpdateClient:
+			txLabel = "updateClient"
+			data, err := relayerclient.EncodeUpdateClientMsg(msg)
 			if err != nil {
-				return fmt.Errorf("[SendEthTx] failed to send router updateClient tx: %w", err)
+				return nil, fmt.Errorf("failed to encode updateClient msg: %w", err)
 			}
-		} else {
-			log.Printf("[SendEthTx] Sending direct ICS07 updateClient tx...")
-			tx, err = ics07Tendermint.UpdateClient(auth, data)
-			if err != nil {
-				return fmt.Errorf("[SendEthTx] failed to send direct updateClient tx: %w", err)
+			if routerManagesProofSubmission(ctx) {
+				log.Printf("[SendEthTx] Sending ICS26Router.updateClient tx for clientId=%s...", cosmosClientID)
+				return ics26Router.UpdateClient(auth, cosmosClientID, data)
+			} else {
+				log.Printf("[SendEthTx] Sending direct ICS07 updateClient tx...")
+				return ics07Tendermint.UpdateClient(auth, data)
 			}
+		case tendermintContract.ILightClientMsgsMsgVerifyMembership:
+			txLabel = "verifyMembership"
+			if routerManagesProofSubmission(ctx) {
+				return nil, fmt.Errorf("direct verifyMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead")
+			}
+			log.Printf("[SendEthTx] Sending verifyMembership tx...")
+			return ics07Tendermint.VerifyMembership(auth, msg)
+		case tendermintContract.ILightClientMsgsMsgVerifyNonMembership:
+			txLabel = "verifyNonMembership"
+			if routerManagesProofSubmission(ctx) {
+				return nil, fmt.Errorf("direct verifyNonMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead")
+			}
+			log.Printf("[SendEthTx] Sending verifyNonMembership tx...")
+			return ics07Tendermint.VerifyNonMembership(auth, msg)
+		case contractICS26Router.IICS26RouterMsgsMsgRecvPacket:
+			txLabel = fmt.Sprintf("recvPacket seq=%d", msg.Packet.Sequence)
+			log.Printf("[SendEthTx] Sending recvPacket seq=%d...", msg.Packet.Sequence)
+			return ics26Router.RecvPacket(auth, msg)
+		case contractICS26Router.IICS26RouterMsgsMsgAckPacket:
+			txLabel = fmt.Sprintf("ackPacket seq=%d", msg.Packet.Sequence)
+			log.Printf("[SendEthTx] Sending ackPacket seq=%d...", msg.Packet.Sequence)
+			return ics26Router.AckPacket(auth, msg)
+		case contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket:
+			txLabel = fmt.Sprintf("timeoutPacket seq=%d", msg.Packet.Sequence)
+			log.Printf("[SendEthTx] Sending timeoutPacket seq=%d...", msg.Packet.Sequence)
+			return ics26Router.TimeoutPacket(auth, msg)
+		default:
+			return nil, fmt.Errorf("unsupported message type: %T", msg)
 		}
-	case tendermintContract.ILightClientMsgsMsgVerifyMembership:
-		txLabel = "verifyMembership"
-		if routerManagesProofSubmission(ctx) {
-			return fmt.Errorf(
-				"[SendEthTx] direct verifyMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead",
-			)
-		}
-		log.Printf("[SendEthTx] Sending verifyMembership tx...")
-		tx, err = ics07Tendermint.VerifyMembership(auth, msg)
-		if err != nil {
-			return fmt.Errorf("[SendEthTx] failed to verify membership: %w", err)
-		}
-	case tendermintContract.ILightClientMsgsMsgVerifyNonMembership:
-		txLabel = "verifyNonMembership"
-		if routerManagesProofSubmission(ctx) {
-			return fmt.Errorf(
-				"[SendEthTx] direct verifyNonMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead",
-			)
-		}
-		log.Printf("[SendEthTx] Sending verifyNonMembership tx...")
-		tx, err = ics07Tendermint.VerifyNonMembership(auth, msg)
-		if err != nil {
-			return fmt.Errorf("[SendEthTx] failed to verify non-membership: %w", err)
-		}
-	case contractICS26Router.IICS26RouterMsgsMsgRecvPacket:
-		txLabel = fmt.Sprintf("recvPacket seq=%d", msg.Packet.Sequence)
-		log.Printf("[SendEthTx] Sending recvPacket seq=%d...", msg.Packet.Sequence)
-		tx, err = ics26Router.RecvPacket(auth, msg)
-		if err != nil {
-			return fmt.Errorf("[SendEthTx] failed to recv packet: %w", err)
-		}
-	case contractICS26Router.IICS26RouterMsgsMsgAckPacket:
-		txLabel = fmt.Sprintf("ackPacket seq=%d", msg.Packet.Sequence)
-		log.Printf("[SendEthTx] Sending ackPacket seq=%d...", msg.Packet.Sequence)
-		tx, err = ics26Router.AckPacket(auth, msg)
-		if err != nil {
-			return fmt.Errorf("[SendEthTx] failed to ack packet: %w", err)
-		}
-	case contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket:
-		txLabel = fmt.Sprintf("timeoutPacket seq=%d", msg.Packet.Sequence)
-		log.Printf("[SendEthTx] Sending timeoutPacket seq=%d...", msg.Packet.Sequence)
-		tx, err = ics26Router.TimeoutPacket(auth, msg)
-		if err != nil {
-			return fmt.Errorf("[SendEthTx] failed to timeout packet: %w", err)
-		}
-	default:
-		return fmt.Errorf("[SendEthTx] unsupported message type: %T", msg)
 	}
 
-	var submitDur time.Duration
-	if benchEnabled {
-		submitDur = time.Since(benchStart)
-	}
-	log.Printf("[SendEthTx] Tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
-	var waitStart time.Time
-	if benchEnabled {
-		waitStart = time.Now()
-	}
-	receiptCtx, cancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
-	defer cancel()
-	receipt, err := bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
+	gasLimit := uint64(3000000)
+	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(ctx, privateKey, gasLimit, senderFn)
 	if err != nil {
-		return fmt.Errorf("failed waiting for tx receipt: %w", err)
+		return err
 	}
-	if receipt.Status == 0 {
-		// Try to get revert reason by replaying the tx via eth_call
-		callMsg := ethereum.CallMsg{
-			From:     fromAddress,
-			To:       tx.To(),
-			Gas:      tx.Gas(),
-			GasPrice: tx.GasPrice(),
-			Value:    tx.Value(),
-			Data:     tx.Data(),
-		}
-		_, callErr := ctx.EthClient().CallContract(context.Background(), callMsg, receipt.BlockNumber)
-		if callErr != nil {
-			log.Printf("[SendEthTx] Revert reason: %v", callErr)
-			// Extract hex-encoded revert data for custom error decoding
-			type dataErr interface {
-				ErrorData() interface{}
-			}
-			if de, ok := callErr.(dataErr); ok {
-				log.Printf("[SendEthTx] Revert data (hex): %v", de.ErrorData())
-			}
-			if name, ok := validatorCacheRaceErrorName(callErr); ok {
-				return fmt.Errorf("tx %s reverted with %s (status=0, gasUsed=%d): %w",
-					tx.Hash().Hex(), name, receipt.GasUsed, services.ErrValidatorCacheRace)
-			}
-		}
-		return fmt.Errorf("tx %s reverted (status=0, gasUsed=%d): %w", tx.Hash().Hex(), receipt.GasUsed, services.ErrPermanentRelayFailure)
-	}
-	var waitDur time.Duration
-	if benchEnabled {
-		waitDur = time.Since(waitStart)
-	}
-	log.Printf("[SendEthTx] Tx %s confirmed in block %d (gasUsed=%d)", tx.Hash().Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
+
+	log.Printf("[SendEthTx] Tx %s confirmed in block %d (gasUsed=%d)", receipt.TxHash.Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
 	if benchEnabled {
 		log.Printf("[bench][eth] %s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
-			txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
+			txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
 	}
 
 	return nil
@@ -715,32 +589,6 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 	if err != nil {
 		return fmt.Errorf("[SendEthTxBatch] failed to restore private key: %w", err)
 	}
-	publicKey, err := keys.PublicKey(privateKey)
-	if err != nil {
-		return fmt.Errorf("[SendEthTxBatch] failed to derive public key: %w", err)
-	}
-	fromAddress := crypto.PubkeyToAddress(*publicKey)
-
-	nonce, err := ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
-	if err != nil {
-		return fmt.Errorf("[SendEthTxBatch] failed to get nonce: %w", err)
-	}
-	gasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
-	if err != nil {
-		return fmt.Errorf("[SendEthTxBatch] failed to suggest gas price: %w", err)
-	}
-	chainIdInt, err := ctx.EthClient().ChainID(context.Background())
-	if err != nil {
-		return fmt.Errorf("[SendEthTxBatch] invalid chain id: %v", err)
-	}
-	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
-	if err != nil {
-		return fmt.Errorf("[SendEthTxBatch] failed to create auth transactor: %w", err)
-	}
-	auth.Nonce = big.NewInt(int64(nonce))
-	auth.Value = big.NewInt(0)
-	auth.GasLimit = uint64(16000000)
-	auth.GasPrice = gasPrice
 
 	ics26Router, err := contractICS26Router.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
 	if err != nil {
@@ -752,66 +600,24 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 	if benchEnabled {
 		benchStart = time.Now()
 	}
-	log.Printf("[SendEthTxBatch] Submitting multicall: %d inner calls (%s)", len(calldata), labelStr)
-	tx, err := ics26Router.Multicall(auth, calldata)
-	if err != nil {
-		return fmt.Errorf("[SendEthTxBatch] failed to submit multicall: %w", err)
-	}
-	var submitDur time.Duration
-	if benchEnabled {
-		submitDur = time.Since(benchStart)
-	}
-	log.Printf("[SendEthTxBatch] Tx sent: %s. Waiting for receipt...", tx.Hash().Hex())
 
-	var waitStart time.Time
-	if benchEnabled {
-		waitStart = time.Now()
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		log.Printf("[SendEthTxBatch] Submitting multicall: %d inner calls (%s)", len(calldata), labelStr)
+		return ics26Router.Multicall(auth, calldata)
 	}
-	receiptCtx, cancel := context.WithTimeout(context.Background(), ethTxReceiptTimeout)
-	defer cancel()
-	receipt, err := bind.WaitMined(receiptCtx, ctx.EthClient(), tx)
+
+	gasLimit := uint64(16000000)
+	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(ctx, privateKey, gasLimit, senderFn)
 	if err != nil {
-		return fmt.Errorf("[SendEthTxBatch] failed waiting for tx receipt: %w", err)
+		return fmt.Errorf("multicall labels=%s: %w", labelStr, err)
 	}
-	if receipt.Status == 0 {
-		// Replay against the same calldata so MulticallUpgradeable re-throws the
-		// first inner revert and we can extract its selector + args.
-		callMsg := ethereum.CallMsg{
-			From:     fromAddress,
-			To:       tx.To(),
-			Gas:      tx.Gas(),
-			GasPrice: tx.GasPrice(),
-			Value:    tx.Value(),
-			Data:     tx.Data(),
-		}
-		_, callErr := ctx.EthClient().CallContract(context.Background(), callMsg, receipt.BlockNumber)
-		if callErr != nil {
-			log.Printf("[SendEthTxBatch] Revert reason: %v", callErr)
-			type dataErr interface {
-				ErrorData() interface{}
-			}
-			if de, ok := callErr.(dataErr); ok {
-				log.Printf("[SendEthTxBatch] Revert data (hex): %v", de.ErrorData())
-			}
-			if name, ok := validatorCacheRaceErrorName(callErr); ok {
-				return fmt.Errorf("multicall tx %s reverted with %s (status=0, gasUsed=%d, labels=%s): %w",
-					tx.Hash().Hex(), name, receipt.GasUsed, labelStr, services.ErrValidatorCacheRace)
-			}
-		}
-		return fmt.Errorf("multicall tx %s reverted (status=0, gasUsed=%d, labels=%s): %w", tx.Hash().Hex(), receipt.GasUsed, labelStr, services.ErrPermanentRelayFailure)
-	}
-	var waitDur time.Duration
-	if benchEnabled {
-		waitDur = time.Since(waitStart)
-	}
+
 	log.Printf("[SendEthTxBatch] Tx %s confirmed in block %d (gasUsed=%d, inner=%d)",
-		tx.Hash().Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed, len(calldata))
+		receipt.TxHash.Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed, len(calldata))
 	if benchEnabled {
 		log.Printf("[bench][eth] multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
-			labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), tx.Hash().Hex())
-	}
-	if benchEnabled {
-		if traceErr := logInnerGasFromTrace(ctx, tx.Hash(), labels); traceErr != nil {
+			labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
+		if traceErr := logInnerGasFromTrace(ctx, receipt.TxHash, labels); traceErr != nil {
 			log.Printf("[bench][eth] inner gas trace unavailable (RPC may lack debug_ namespace): %v", traceErr)
 		}
 	}
@@ -1118,6 +924,53 @@ func (h *Handler) CosmosSignerAddress() (string, error) {
 	return sdk.AccAddress(privKey.PubKey().Address()).String(), nil
 }
 
+func cloneCosmosSDKMsgWithSigner(msg any, signer string, index int) (sdk.Msg, error) {
+	protoMsg, ok := msg.(proto.Message)
+	if !ok {
+		if index >= 0 {
+			return nil, fmt.Errorf("message %d must be a proto.Message", index)
+		}
+		return nil, fmt.Errorf("message must be a proto.Message")
+	}
+	clonedProto := proto.Clone(protoMsg)
+	if clonedProto == nil {
+		if index >= 0 {
+			return nil, fmt.Errorf("message %d cloned to nil", index)
+		}
+		return nil, fmt.Errorf("message cloned to nil")
+	}
+	sdkMsg, ok := clonedProto.(sdk.Msg)
+	if !ok {
+		if index >= 0 {
+			return nil, fmt.Errorf("message %d does not implement sdk.Msg interface", index)
+		}
+		return nil, fmt.Errorf("message does not implement sdk.Msg interface")
+	}
+	fillEmptyCosmosSigner(sdkMsg, signer)
+	return sdkMsg, nil
+}
+
+func fillEmptyCosmosSigner(msg sdk.Msg, signer string) {
+	switch m := msg.(type) {
+	case *clienttypes.MsgUpdateClient:
+		if m.Signer == "" {
+			m.Signer = signer
+		}
+	case *channeltypesv2.MsgRecvPacket:
+		if m.Signer == "" {
+			m.Signer = signer
+		}
+	case *channeltypesv2.MsgAcknowledgement:
+		if m.Signer == "" {
+			m.Signer = signer
+		}
+	case *channeltypesv2.MsgTimeout:
+		if m.Signer == "" {
+			m.Signer = signer
+		}
+	}
+}
+
 func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	benchEnabled := utils.BenchEnabled()
 	var benchStart time.Time
@@ -1181,9 +1034,9 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	txBuilder := txConfig.NewTxBuilder()
 
 	// Convert the proto.Message to sdk.Msg
-	sdkMsg, ok := protoMsg.(sdk.Msg)
-	if !ok {
-		return fmt.Errorf("message does not implement sdk.Msg interface")
+	sdkMsg, err := cloneCosmosSDKMsgWithSigner(protoMsg, signerAddr.String(), -1)
+	if err != nil {
+		return err
 	}
 
 	// Fill empty Signer fields and apply per-message gas overrides.
@@ -1723,19 +1576,9 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	// Convert all messages to sdk.Msg, filling empty Signer fields
 	var sdkMsgs []sdk.Msg
 	for i, msg := range msgs {
-		protoMsg, ok := msg.(proto.Message)
-		if !ok {
-			return fmt.Errorf("message %d must be a proto.Message", i)
-		}
-		sdkMsg, ok := protoMsg.(sdk.Msg)
-		if !ok {
-			return fmt.Errorf("message %d does not implement sdk.Msg interface", i)
-		}
-		if m, ok := sdkMsg.(*clienttypes.MsgUpdateClient); ok && m.Signer == "" {
-			m.Signer = signerAddr.String()
-		}
-		if m, ok := sdkMsg.(*channeltypesv2.MsgTimeout); ok && m.Signer == "" {
-			m.Signer = signerAddr.String()
+		sdkMsg, err := cloneCosmosSDKMsgWithSigner(msg, signerAddr.String(), i)
+		if err != nil {
+			return err
 		}
 		sdkMsgs = append(sdkMsgs, sdkMsg)
 	}
@@ -1823,4 +1666,410 @@ func (h *Handler) waitForTxResult(svcCtx services.Context, txHash []byte, timeou
 		time.Sleep(1 * time.Second)
 	}
 	return nil, fmt.Errorf("timeout waiting for tx %X to be included in a block", txHash)
+}
+
+func isNonceTooLowError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "nonce too low") ||
+		strings.Contains(msg, "old nonce") ||
+		strings.Contains(msg, "nonce has already been used")
+}
+
+func isAlreadyKnownError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "already known") ||
+		strings.Contains(msg, "transaction already imported") ||
+		strings.Contains(msg, "already exists")
+}
+
+func waitForReceipts(ctx context.Context, client *ethclient.Client, hashes []common.Hash) (*types.Receipt, error) {
+	ticker := time.NewTicker(ethTxReceiptPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-ticker.C:
+			for i := len(hashes) - 1; i >= 0; i-- {
+				hash := hashes[i]
+				receipt, err := client.TransactionReceipt(ctx, hash)
+				if err == nil {
+					if receipt != nil {
+						return receipt, nil
+					}
+					// Treat nil receipt as not found
+					continue
+				}
+				if err != nil && !errors.Is(err, ethereum.NotFound) {
+					log.Printf("[EthTxSender] Transient error polling receipt for %s: %v. Retrying...", hash.Hex(), err)
+					continue
+				}
+			}
+		}
+	}
+}
+
+func (h *Handler) bumpGasAndResubmit(ctx services.Context, tx *types.Transaction, auth *bind.TransactOpts, attempt int) (*types.Transaction, error) {
+	currentGasPrice := tx.GasPrice()
+
+	suggestedGasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
+	if err != nil {
+		suggestedGasPrice = currentGasPrice
+	}
+
+	bumpedGasPrice := new(big.Int).Mul(currentGasPrice, big.NewInt(115))
+	bumpedGasPrice.Div(bumpedGasPrice, big.NewInt(100))
+
+	if suggestedGasPrice.Cmp(bumpedGasPrice) > 0 {
+		bumpedGasPrice = suggestedGasPrice
+	}
+
+	var newTx *types.Transaction
+	if tx.Type() == types.DynamicFeeTxType {
+		tipCap := tx.GasTipCap()
+		feeCap := tx.GasFeeCap()
+
+		bumpedTipCap := new(big.Int).Mul(tipCap, big.NewInt(115))
+		bumpedTipCap.Div(bumpedTipCap, big.NewInt(100))
+
+		bumpedFeeCap := new(big.Int).Mul(feeCap, big.NewInt(115))
+		bumpedFeeCap.Div(bumpedFeeCap, big.NewInt(100))
+
+		if suggestedTipCap, err := ctx.EthClient().SuggestGasTipCap(context.Background()); err == nil {
+			if suggestedTipCap.Cmp(bumpedTipCap) > 0 {
+				bumpedTipCap = suggestedTipCap
+			}
+		}
+		if suggestedGasPrice.Cmp(bumpedFeeCap) > 0 {
+			bumpedFeeCap = suggestedGasPrice
+		}
+
+		newTx = types.NewTx(&types.DynamicFeeTx{
+			ChainID:    tx.ChainId(),
+			Nonce:      tx.Nonce(),
+			GasTipCap:  bumpedTipCap,
+			GasFeeCap:  bumpedFeeCap,
+			Gas:        tx.Gas(),
+			To:         tx.To(),
+			Value:      tx.Value(),
+			Data:       tx.Data(),
+			AccessList: tx.AccessList(),
+		})
+	} else if tx.Type() == types.AccessListTxType {
+		newTx = types.NewTx(&types.AccessListTx{
+			ChainID:    tx.ChainId(),
+			Nonce:      tx.Nonce(),
+			GasPrice:   bumpedGasPrice,
+			Gas:        tx.Gas(),
+			To:         tx.To(),
+			Value:      tx.Value(),
+			Data:       tx.Data(),
+			AccessList: tx.AccessList(),
+		})
+	} else {
+		newTx = types.NewTx(&types.LegacyTx{
+			Nonce:    tx.Nonce(),
+			GasPrice: bumpedGasPrice,
+			Gas:      tx.Gas(),
+			To:       tx.To(),
+			Value:    tx.Value(),
+			Data:     tx.Data(),
+		})
+	}
+
+	signedTx, err := auth.Signer(auth.From, newTx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign bumped transaction: %w", err)
+	}
+
+	sendErr := ctx.EthClient().SendTransaction(context.Background(), signedTx)
+	if sendErr != nil {
+		return nil, fmt.Errorf("failed to send bumped transaction: %w", sendErr)
+	}
+
+	return signedTx, nil
+}
+
+func (h *Handler) executeWithRetryAndResubmission(
+	ctx services.Context,
+	privateKey *ecdsa.PrivateKey,
+	gasLimit uint64,
+	senderFn func(auth *bind.TransactOpts) (*types.Transaction, error),
+) (*types.Receipt, time.Duration, time.Duration, error) {
+	publicKey, err := keys.PublicKey(privateKey)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("failed to derive public key: %w", err)
+	}
+	fromAddress := crypto.PubkeyToAddress(*publicKey)
+
+	chainIdInt, err := ctx.EthClient().ChainID(context.Background())
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("invalid chain id: %v", err)
+	}
+
+	auth, err := bind.NewKeyedTransactorWithChainID(privateKey, chainIdInt)
+	if err != nil {
+		return nil, 0, 0, fmt.Errorf("failed to create auth transactor: %w", err)
+	}
+	auth.Value = big.NewInt(0)
+	auth.GasLimit = gasLimit
+
+	maxNonceRetries := 3
+	var tx *types.Transaction
+	var signedTx *types.Transaction
+
+	// Capture the signed transaction
+	originalSigner := auth.Signer
+	auth.Signer = func(address common.Address, txToSign *types.Transaction) (*types.Transaction, error) {
+		sTx, err := originalSigner(address, txToSign)
+		if err == nil {
+			signedTx = sTx
+		}
+		return sTx, err
+	}
+	defer func() {
+		auth.Signer = originalSigner
+	}()
+
+	submitStart := time.Now()
+	var submitDur time.Duration
+
+	// Detect EIP-1559 support and fetch base fee once before the retry loop
+	var isEIP1559 bool
+	var suggestedTip *big.Int
+	var baseFee *big.Int
+	if tip, err := ctx.EthClient().SuggestGasTipCap(context.Background()); err == nil {
+		isEIP1559 = true
+		suggestedTip = tip
+		if header, err := ctx.EthClient().HeaderByNumber(context.Background(), nil); err == nil && header.BaseFee != nil {
+			baseFee = header.BaseFee
+		} else {
+			baseFee = big.NewInt(1000000000) // fallback 1 Gwei
+		}
+	}
+
+	for nonceAttempt := 1; nonceAttempt <= maxNonceRetries; nonceAttempt++ {
+		h.mu.Lock()
+		if !h.nonceValid {
+			n, err := ctx.EthClient().PendingNonceAt(context.Background(), fromAddress)
+			if err != nil {
+				h.mu.Unlock()
+				return nil, 0, 0, fmt.Errorf("failed to get pending nonce: %w", err)
+			}
+			h.nonce = n
+			h.nonceValid = true
+		}
+		currentNonce := h.nonce
+
+		if isEIP1559 {
+			gasTipCap := suggestedTip
+			gasFeeCap := new(big.Int).Add(new(big.Int).Mul(baseFee, big.NewInt(2)), gasTipCap)
+
+			// Enforce minimum floor if this nonce matches the last attempted nonce (e.g. replacing a stuck tx)
+			if currentNonce == h.lastNonce {
+				if h.lastGasTipCap != nil {
+					minTip := new(big.Int).Mul(h.lastGasTipCap, big.NewInt(115))
+					minTip.Div(minTip, big.NewInt(100))
+					if gasTipCap.Cmp(minTip) < 0 {
+						gasTipCap = minTip
+					}
+				}
+				if h.lastGasFeeCap != nil {
+					minFee := new(big.Int).Mul(h.lastGasFeeCap, big.NewInt(115))
+					minFee.Div(minFee, big.NewInt(100))
+					if gasFeeCap.Cmp(minFee) < 0 {
+						gasFeeCap = minFee
+					}
+				}
+			}
+
+			auth.GasTipCap = gasTipCap
+			auth.GasFeeCap = gasFeeCap
+			auth.GasPrice = nil
+		} else {
+			gasPrice, err := ctx.EthClient().SuggestGasPrice(context.Background())
+			if err != nil {
+				h.nonceValid = false
+				h.mu.Unlock()
+				return nil, 0, 0, fmt.Errorf("failed to suggest gas price: %w", err)
+			}
+
+			// Enforce minimum floor if this nonce matches the last attempted nonce (e.g. replacing a stuck tx)
+			if currentNonce == h.lastNonce {
+				if h.lastGasPrice != nil {
+					minPrice := new(big.Int).Mul(h.lastGasPrice, big.NewInt(115))
+					minPrice.Div(minPrice, big.NewInt(100))
+					if gasPrice.Cmp(minPrice) < 0 {
+						gasPrice = minPrice
+					}
+				}
+			}
+
+			auth.GasPrice = gasPrice
+			auth.GasTipCap = nil
+			auth.GasFeeCap = nil
+		}
+
+		auth.Nonce = big.NewInt(int64(currentNonce))
+		signedTx = nil
+
+		var callErr error
+		tx, callErr = senderFn(auth)
+
+		if callErr == nil {
+			if signedTx == nil {
+				// senderFn returned (nil, nil) without calling auth.Signer — treat as a bug
+				h.nonceValid = false
+				h.mu.Unlock()
+				return nil, 0, 0, fmt.Errorf("senderFn returned nil transaction without error")
+			}
+			tx = signedTx
+			submitDur = time.Since(submitStart)
+
+			h.nonce++
+			h.lastNonce = tx.Nonce()
+			if tx.Type() == types.DynamicFeeTxType {
+				h.lastGasFeeCap = tx.GasFeeCap()
+				h.lastGasTipCap = tx.GasTipCap()
+				h.lastGasPrice = nil
+			} else {
+				h.lastGasPrice = tx.GasPrice()
+				h.lastGasFeeCap = nil
+				h.lastGasTipCap = nil
+			}
+			h.mu.Unlock()
+
+			break
+		}
+
+		if isNonceTooLowError(callErr) {
+			log.Printf("[EthTxSender] Nonce %d too low (attempt %d/%d). Resetting nonce cache.", currentNonce, nonceAttempt, maxNonceRetries)
+			h.nonceValid = false
+			h.mu.Unlock()
+			continue
+		}
+
+		if isAlreadyKnownError(callErr) && signedTx != nil {
+			log.Printf("[EthTxSender] Transaction already known in mempool: %s. Proceeding to wait.", signedTx.Hash().Hex())
+			tx = signedTx
+			submitDur = time.Since(submitStart)
+
+			h.nonce++
+			h.lastNonce = tx.Nonce()
+			if tx.Type() == types.DynamicFeeTxType {
+				h.lastGasFeeCap = tx.GasFeeCap()
+				h.lastGasTipCap = tx.GasTipCap()
+				h.lastGasPrice = nil
+			} else {
+				h.lastGasPrice = tx.GasPrice()
+				h.lastGasFeeCap = nil
+				h.lastGasTipCap = nil
+			}
+			h.mu.Unlock()
+
+			break
+		}
+
+		// Other error: invalidate nonce just in case and return
+		h.nonceValid = false
+		h.mu.Unlock()
+		return nil, 0, 0, fmt.Errorf("contract call failed: %w", callErr)
+	}
+
+	if tx == nil {
+		return nil, 0, 0, fmt.Errorf("failed to build or send transaction after nonce retries")
+	}
+
+	sentHashes := []common.Hash{tx.Hash()}
+	maxAttempts := 5
+	baseTimeout := ethTxReceiptTimeout
+
+	waitStart := time.Now()
+	attempt := 1
+	for {
+		attemptTimeout := baseTimeout * (1 << (attempt - 1))
+		if attemptTimeout > 5*time.Minute {
+			attemptTimeout = 5 * time.Minute
+		}
+
+		receiptCtx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
+		receipt, waitErr := waitForReceipts(receiptCtx, ctx.EthClient(), sentHashes)
+		cancel()
+
+		if waitErr == nil {
+			waitDur := time.Since(waitStart)
+			if receipt.Status == 0 {
+				// Try to get revert reason by replaying the tx via eth_call
+				callMsg := ethereum.CallMsg{
+					From:     fromAddress,
+					To:       tx.To(),
+					Gas:      tx.Gas(),
+					GasPrice: tx.GasPrice(),
+					Value:    tx.Value(),
+					Data:     tx.Data(),
+				}
+				_, callErr := ctx.EthClient().CallContract(context.Background(), callMsg, receipt.BlockNumber)
+				if callErr != nil {
+					log.Printf("[EthTxSender] Revert reason: %v", callErr)
+					type dataErr interface {
+						ErrorData() interface{}
+					}
+					if de, ok := callErr.(dataErr); ok {
+						log.Printf("[EthTxSender] Revert data (hex): %v", de.ErrorData())
+					}
+					if name, ok := validatorCacheRaceErrorName(callErr); ok {
+						return receipt, submitDur, waitDur, fmt.Errorf("tx %s reverted with %s (status=0, gasUsed=%d): %w",
+							receipt.TxHash.Hex(), name, receipt.GasUsed, services.ErrValidatorCacheRace)
+					}
+				}
+				return receipt, submitDur, waitDur, fmt.Errorf("tx %s reverted (status=0, gasUsed=%d): %w", receipt.TxHash.Hex(), receipt.GasUsed, services.ErrPermanentRelayFailure)
+			}
+			return receipt, submitDur, waitDur, nil
+		}
+
+		if errors.Is(waitErr, context.DeadlineExceeded) {
+			if attempt >= maxAttempts {
+				h.mu.Lock()
+				h.nonceValid = false
+				h.mu.Unlock()
+				return nil, submitDur, time.Since(waitStart), fmt.Errorf("transaction wait mined timed out after %d attempts (last hash: %s): %w", attempt, tx.Hash().Hex(), waitErr)
+			}
+
+			log.Printf("[EthTxSender] Tx %s not mined in %s, bumping gas price...", tx.Hash().Hex(), attemptTimeout)
+			bumpedTx, bumpErr := h.bumpGasAndResubmit(ctx, tx, auth, attempt)
+			if bumpErr != nil {
+				log.Printf("[EthTxSender] Gas bump attempt %d failed: %v. Will continue waiting.", attempt, bumpErr)
+			} else {
+				tx = bumpedTx
+				sentHashes = append(sentHashes, tx.Hash())
+				log.Printf("[EthTxSender] Gas bumped tx submitted: %s (attempt %d)", tx.Hash().Hex(), attempt+1)
+
+				h.mu.Lock()
+				h.lastNonce = tx.Nonce()
+				if tx.Type() == types.DynamicFeeTxType {
+					h.lastGasFeeCap = tx.GasFeeCap()
+					h.lastGasTipCap = tx.GasTipCap()
+					h.lastGasPrice = nil
+				} else {
+					h.lastGasPrice = tx.GasPrice()
+					h.lastGasFeeCap = nil
+					h.lastGasTipCap = nil
+				}
+				h.mu.Unlock()
+			}
+			attempt++
+			continue
+		}
+
+		h.mu.Lock()
+		h.nonceValid = false
+		h.mu.Unlock()
+		return nil, submitDur, time.Since(waitStart), fmt.Errorf("failed waiting for tx receipt: %w", waitErr)
+	}
 }

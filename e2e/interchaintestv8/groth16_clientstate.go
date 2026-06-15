@@ -31,6 +31,7 @@ type groth16ClientState struct {
 	UnbondingPeriod uint32
 	IsFrozen        bool
 	ZkAlgorithm     uint8
+	ClockDrift      uint32
 }
 
 var groth16ClientStateABIType abi.Type
@@ -51,6 +52,7 @@ func init() {
 		{Name: "unbondingPeriod", Type: "uint32"},
 		{Name: "isFrozen", Type: "bool"},
 		{Name: "zkAlgorithm", Type: "uint8"},
+		{Name: "clockDrift", Type: "uint32"},
 	})
 	if err != nil {
 		panic(fmt.Sprintf("build groth16 client state ABI type: %v", err))

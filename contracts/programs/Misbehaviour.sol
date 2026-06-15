@@ -50,7 +50,9 @@ contract Misbehaviour is IMisbehaviour {
         validateBasic(misbehaviour_);
 
         IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
-            trustThreshold: clientState.trustLevel, trustingPeriod: clientState.trustingPeriod, clockDrift: uint32(15)
+            trustThreshold: clientState.trustLevel,
+            trustingPeriod: clientState.trustingPeriod,
+            clockDrift: clientState.clockDrift
         });
 
         // TODO: convert timestamp nanos to secs

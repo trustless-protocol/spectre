@@ -62,7 +62,7 @@ Shared bindings also live in `packages/go-abigen/`.
 Relayer uses JSON config file (see `relayer/config.example.json`):
 - Top-level `server` block: log_level, address, port
 - `modules` array, each entry has `name`, `src_chain`, `dst_chain`, and `config`:
-  - `cosmos_to_eth` config: tm_rpc_url, ics26_address, eth_rpc_url, ics07_client, wrapper_verifier, membership, misbehaviour, update_client
+  - `cosmos_to_eth` config: tm_rpc_url, ics26_address, eth_rpc_url, ics07_client, wrapper_verifier, membership, misbehaviour, update_client, and optional fields: fetch_timeout, trusting_period, trust_level, proof_type
   - `eth_to_cosmos` config: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address
 
 Secrets (private keys, prover paths) stay in `.env` file.

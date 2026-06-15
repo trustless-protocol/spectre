@@ -255,7 +255,7 @@ contract ICS20Transfer is
             bytes memory prefix = ICS20Lib.getDenomPrefix(ICS20Lib.DEFAULT_PORT_ID, msg_.sourceClient);
             // if the denom is prefixed by the port and channel on which we are sending
             // the token, then we must be returning the token back to the chain they originated from
-            bool returningToSource = ICS20Lib.hasPrefix(bytes(fullDenomPath), prefix);
+            bool returningToSource = ICS20Lib.hasDenomPrefix(bytes(fullDenomPath), prefix);
             if (returningToSource) {
                 // token is returning to source, it is an IBCERC20 and we must burn the token (not keep it in escrow)
                 IMintableAndBurnable(msg_.denom).burn(escrow, msg_.amount);
@@ -343,7 +343,7 @@ contract ICS20Transfer is
         // NOTE: We use SourcePort and SourceChannel here, because the counterparty
         // chain would have prefixed with DestPort and DestChannel when originally
         // receiving this token.
-        bool returningToOrigin = ICS20Lib.hasPrefix(denomBz, prefix);
+        bool returningToOrigin = ICS20Lib.hasDenomPrefix(denomBz, prefix);
         address erc20Address;
         if (returningToOrigin) {
             // we are the origin source of this token:
@@ -430,7 +430,7 @@ contract ICS20Transfer is
         // if the denom is prefixed by the port and channel on which we are sending
         // the token, then we must be returning the token back to the chain they originated from
         bytes memory prefix = ICS20Lib.getDenomPrefix(sourcePort, sourceClient);
-        bool isDestSource = ICS20Lib.hasPrefix(bytes(packetData.denom), prefix);
+        bool isDestSource = ICS20Lib.hasDenomPrefix(bytes(packetData.denom), prefix);
         if (isDestSource) {
             // receiving chain is source of the token, so we've received and mapped this token before
             erc20Address = address($._ibcERC20Contracts[packetData.denom]);
