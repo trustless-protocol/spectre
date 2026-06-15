@@ -426,6 +426,10 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		return nil, fmt.Errorf("unsupported proof type: %s, supported types are: groth16, plonk", proofType)
 	}
 
+	if trustedLightBlock.SignedHeader.Header.Height < 0 {
+		return nil, fmt.Errorf("trusted light block header height cannot be negative: %d", trustedLightBlock.SignedHeader.Header.Height)
+	}
+
 	clientState := updateclientContract.IICS07TendermintMsgsClientState{
 		ChainId:    chainId,
 		TrustLevel: trustThreshold,
@@ -445,7 +449,10 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		NextValidatorsHash: bytesToBytes32(trustedLightBlock.SignedHeader.NextValidatorsHash),
 	}
 
-	proposedHeader := latestLightBlock.IntoHeader(*trustedLightBlock)
+	proposedHeader, err := latestLightBlock.IntoHeader(*trustedLightBlock)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert light block into header: %w", err)
+	}
 	fullProposedHeader := proposedHeader
 	currentValidatorsHash := proposedHeader.SignedHeader.Header.ValidatorsHash
 	currentValidatorCache, err := getCachedCosmosValidatorSet(ctx, currentValidatorsHash)

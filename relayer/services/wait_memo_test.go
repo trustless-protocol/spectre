@@ -26,6 +26,10 @@ func TestWaitBeaconFinalityMemo(t *testing.T) {
 func TestWaitCosmosAppHashMemo(t *testing.T) {
 	s := &Services{lastCosmosAppHashHeight: 200}
 
-	s.waitCosmosAppHash(Context{}, 200) // target == cached
-	s.waitCosmosAppHash(Context{}, 150) // target < cached
+	if !s.waitCosmosAppHash(Context{}, 200) { // target == cached
+		t.Fatal("expected immediate success when target == cached AppHash height")
+	}
+	if !s.waitCosmosAppHash(Context{}, 150) { // target < cached
+		t.Fatal("expected immediate success when target < cached AppHash height")
+	}
 }
