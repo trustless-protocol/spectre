@@ -1,7 +1,11 @@
 package client
 
-import "net/http"
+import (
+	"net/http"
 
-func DefaultHTTPClient(string) (*http.Client, error) {
-	return &http.Client{}, nil
+	cmtclient "github.com/cometbft/cometbft/rpc/jsonrpc/client"
+)
+
+func DefaultHTTPClient(remoteAddr string) (*http.Client, error) {
+	return cmtclient.DefaultHTTPClient(remoteAddr)
 }

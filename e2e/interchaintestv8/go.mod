@@ -298,6 +298,9 @@ replace github.com/decentrio/fast-ibc/packages/go-abigen => ../../packages/go-ab
 
 replace github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alpha.regen.1
 
+// interchaintest/v10.0.0 still imports Tendermint for Namada RPC support.
+// The local module forwards that narrow RPC surface to CometBFT; replacing
+// Tendermint directly with CometBFT conflicts with the existing CometBFT module.
 replace github.com/tendermint/tendermint => ./internal/tendermintshim
 
 replace github.com/syndtr/goleveldb => github.com/syndtr/goleveldb v1.0.1-0.20210819022825-2ae1ddf74ef7

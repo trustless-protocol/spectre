@@ -1,32 +1,29 @@
 package client
 
-import "context"
+import (
+	"context"
+
+	abci "github.com/cometbft/cometbft/abci/types"
+	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
+	coretypes "github.com/cometbft/cometbft/rpc/core/types"
+)
 
 type Client interface {
 	Status(context.Context) (*ResultStatus, error)
 	BlockResults(context.Context, *int64) (*ResultBlockResults, error)
 }
 
-type ResultStatus struct {
-	SyncInfo SyncInfo `json:"sync_info"`
-}
-
-type SyncInfo struct {
-	LatestBlockHeight int64 `json:"latest_block_height"`
-	CatchingUp        bool  `json:"catching_up"`
-}
+type ResultStatus = coretypes.ResultStatus
 
 type ResultBlockResults struct {
-	EndBlockEvents []Event `json:"end_block_events"`
+	Height                int64                     `json:"height"`
+	TxsResults            []*abci.ExecTxResult      `json:"txs_results"`
+	EndBlockEvents        []abci.Event              `json:"end_block_events"`
+	FinalizeBlockEvents   []abci.Event              `json:"finalize_block_events"`
+	ValidatorUpdates      []abci.ValidatorUpdate    `json:"validator_updates"`
+	ConsensusParamUpdates *cmtproto.ConsensusParams `json:"consensus_param_updates"`
+	AppHash               []byte                    `json:"app_hash"`
 }
 
-type Event struct {
-	Type       string           `json:"type"`
-	Attributes []EventAttribute `json:"attributes,omitempty"`
-}
-
-type EventAttribute struct {
-	Key   string `json:"key"`
-	Value string `json:"value"`
-	Index bool   `json:"index,omitempty"`
-}
+type Event = abci.Event
+type EventAttribute = abci.EventAttribute
