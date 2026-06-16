@@ -667,6 +667,8 @@ func (s *RelayerTestSuite) Test_MultiPeriodClientUpdateToCosmos() {
 }
 
 func (s *IbcEurekaTestSuite) Test_5_FinalizedTimeoutPacketFromEth() {
+	s.T().Skip("requires upstream gRPC RelayByTx tx retrieval; fast-ibc's daemon auto-relays instead")
+
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.ICS20FinalizedTimeoutPacketFromEthTest(ctx, proofType, 5)

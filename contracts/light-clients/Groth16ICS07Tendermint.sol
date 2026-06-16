@@ -23,7 +23,6 @@ import { Encode } from "../utils/Encode.sol";
 import { Header } from "../utils/Header.sol";
 import { ChainId } from "../utils/ChainId.sol";
 import { SSTORE2 } from "../utils/SSTORE2.sol";
-import { Multicall } from "@openzeppelin-contracts/utils/Multicall.sol";
 import { TransientSlot } from "@openzeppelin-contracts/utils/TransientSlot.sol";
 import { AccessControl } from "@openzeppelin-contracts/access/AccessControl.sol";
 
@@ -34,7 +33,6 @@ contract Groth16ICS07Tendermint is
     IGroth16ICS07TendermintErrors,
     IGroth16ICS07Tendermint,
     ILightClient,
-    Multicall,
     AccessControl
 {
     using TransientSlot for *;

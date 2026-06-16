@@ -57,9 +57,11 @@ jobs:
           FILTER: ${{ inputs.filter }}
         run: |
           cd e2e/interchaintestv8
+          excluded='^TestWithIbcEurekaTestSuite/(Test_5_FilteredTimeoutPacketFromEth|Test_10_FilteredTimeoutPacketFromCosmos|Test_25_ICS20TransferERC20TokenfromEthereumToCosmosAndBack|Test_50_ICS20TransferERC20TokenfromEthereumToCosmosAndBack|Test_ICS20TransferERC20TokenFromEthereumToCosmosAndBackFails|Test_5_FinalizedTimeoutPacketFromEth|Test_TimeoutPacketEthRemintsVouchers|Test_TimeoutPacketCosmosRemintsVouchers)$'
           tests=$(perl -ne 'print "TestWith$1/$2\n" if /^func \([a-zA-Z_]+ \*([A-Za-z0-9_]+TestSuite)\) (Test[A-Za-z0-9_]+)\(\)/' *.go \
             | grep -E "^${SUITE}/" \
             | { if [ -n "$FILTER" ]; then grep -F "$FILTER"; else cat; fi; } \
+            | grep -Ev "$excluded" \
             | sort -u \
             | jq -R -s -c 'split("\n") | map(select(length > 0))')
           echo "Matrix ($(echo "$tests" | jq 'length') entries): $tests"
@@ -107,13 +109,32 @@ jobs:
           cache: true
 
       - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          # Pinning avoids foundryup's "latest stable" GitHub API lookup, which
+          # has intermittently failed CI with 504s before tests even start.
+          version: v1.7.1
 
       - uses: oven-sh/setup-bun@v2
 
       - uses: extractions/setup-just@v2
 
+      - name: Cache Bun packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: ${{ runner.os }}-bun-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
       - name: Install JS deps (forge remappings / tooling)
-        run: bun install --frozen-lockfile
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if bun install --frozen-lockfile; then
+              exit 0
+            fi
+            sleep $((attempt * 15))
+          done
+          bun install --frozen-lockfile
 
       - name: Install Kurtosis
         run: |

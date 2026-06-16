@@ -184,25 +184,6 @@
   },
   {
     "type": "function",
-    "name": "multicall",
-    "inputs": [
-      {
-        "name": "data",
-        "type": "bytes[]",
-        "internalType": "bytes[]"
-      }
-    ],
-    "outputs": [
-      {
-        "name": "results",
-        "type": "bytes[]",
-        "internalType": "bytes[]"
-      }
-    ],
-    "stateMutability": "nonpayable"
-  },
-  {
-    "type": "function",
     "name": "renounceRole",
     "inputs": [
       {
@@ -1060,17 +1041,6 @@
   },
   {
     "type": "error",
-    "name": "AddressEmptyCode",
-    "inputs": [
-      {
-        "name": "target",
-        "type": "address",
-        "internalType": "address"
-      }
-    ]
-  },
-  {
-    "type": "error",
     "name": "BatchLengthMismatch",
     "inputs": []
   },
@@ -1214,11 +1184,6 @@
   },
   {
     "type": "error",
-    "name": "FailedCall",
-    "inputs": []
-  },
-  {
-    "type": "error",
     "name": "FailedToVerifyHeader",
     "inputs": [
       {
@@ -1249,6 +1214,22 @@
       },
       {
         "name": "height2",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InsufficientTrustedVotingPower",
+    "inputs": [
+      {
+        "name": "accumulated",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "total",
         "type": "uint64",
         "internalType": "uint64"
       }
@@ -1421,6 +1402,22 @@
   },
   {
     "type": "error",
+    "name": "NonMonotonicHeightUpdate",
+    "inputs": [
+      {
+        "name": "latestHeight",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "updateHeight",
+        "type": "uint64",
+        "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ProofHeightMismatch",
     "inputs": [
       {
@@ -1474,6 +1471,17 @@
         "name": "proofTimestamp",
         "type": "uint256",
         "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ProofSignerCommitSigMismatch",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "uint32",
+        "internalType": "uint32"
       }
     ]
   },
