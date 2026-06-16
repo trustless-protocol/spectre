@@ -33,10 +33,10 @@ import (
 
 	"github.com/cosmos/interchaintest/v10/ibc"
 
+	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ibcerc20"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ics20transfer"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/chainconfig"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/cosmos"
@@ -57,15 +57,15 @@ type MultichainTestSuite struct {
 	// The private key of the faucet account of interchaintest
 	deployer *ecdsa.PrivateKey
 
-	contractAddresses     ethereum.DeployedContracts
+	contractAddresses         ethereum.DeployedContracts
 	chainAGroth16Ics07Address ethcommon.Address
 	chainBGroth16Ics07Address ethcommon.Address
 
 	chainAGroth16Ics07Contract *groth16ics07tendermint.Contract
 	chainBGroth16Ics07Contract *groth16ics07tendermint.Contract
-	ics26Contract          *ics26router.Contract
-	ics20Contract          *ics20transfer.Contract
-	erc20Contract          *erc20.Contract
+	ics26Contract              *ics26router.Contract
+	ics20Contract              *ics20transfer.Contract
+	erc20Contract              *erc20.Contract
 
 	RelayerClient relayertypes.RelayerServiceClient
 
@@ -76,6 +76,12 @@ type MultichainTestSuite struct {
 
 // TestWithMultichainTestSuite is the boilerplate code that allows the test suite to be run
 func TestWithMultichainTestSuite(t *testing.T) {
+	t.Skip(
+		"MultichainTestSuite still depends on the upstream gRPC RelayerService " +
+			"(CreateClient/RelayByTx/Info) and multi-module signing; fast-ibc's Go " +
+			"relayer is a single-pair auto-relay daemon without that gRPC API",
+	)
+
 	suite.Run(t, new(MultichainTestSuite))
 }
 
@@ -200,7 +206,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 				DstChain: eth.ChainID.String(),
 				Parameters: map[string]string{
 					testvalues.ParameterKey_Groth16Verifier: verfierAddress,
-					testvalues.ParameterKey_ZkAlgorithm: proofType.String(),
+					testvalues.ParameterKey_ZkAlgorithm:     proofType.String(),
 				},
 			})
 			s.Require().NoError(err)
@@ -226,7 +232,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 				DstChain: eth.ChainID.String(),
 				Parameters: map[string]string{
 					testvalues.ParameterKey_Groth16Verifier: verfierAddress,
-					testvalues.ParameterKey_ZkAlgorithm: proofType.String(),
+					testvalues.ParameterKey_ZkAlgorithm:     proofType.String(),
 				},
 			})
 			s.Require().NoError(err)
