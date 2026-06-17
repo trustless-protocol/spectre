@@ -20,6 +20,8 @@ type MultichainConfigInfo struct {
 	ICS26Address string
 	// Ethereum RPC URL
 	EthRPC string
+	// Ethereum WebSocket URL
+	EthWS string
 	// Ethereum Beacon API URL
 	BeaconAPI string
 	// Whether we use the mock client in the cosmos chains
@@ -37,6 +39,7 @@ func CreateMultichainModules(
 			TmRPC:          configInfo.ChainATmRPC,
 			ICS26Address:   configInfo.ICS26Address,
 			EthRPC:         configInfo.EthRPC,
+			EthWs:          configInfo.EthWS,
 			BeaconAPI:      configInfo.BeaconAPI,
 			SignerAddress:  configInfo.ChainASignerAddress,
 			MockWasmClient: configInfo.MockWasmClient,
@@ -50,6 +53,7 @@ func CreateMultichainModules(
 			TmRPC:          configInfo.ChainBTmRPC,
 			ICS26Address:   configInfo.ICS26Address,
 			EthRPC:         configInfo.EthRPC,
+			EthWs:          configInfo.EthWS,
 			BeaconAPI:      configInfo.BeaconAPI,
 			SignerAddress:  configInfo.ChainBSignerAddress,
 			MockWasmClient: configInfo.MockWasmClient,

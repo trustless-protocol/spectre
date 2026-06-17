@@ -84,10 +84,6 @@ reusable E2E matrix pending a refactor.
   `fixtures membership` CLI subcommand.
 - `cosmos_relayer_test.go` (Cosmos↔Cosmos via the Rust gRPC relayer) — out of
   scope for fast-ibc (ETH↔Cosmos only).
-- `multichain_test.go` `MultichainTestSuite` cases — still rely on the upstream
-  gRPC `CreateClient`, `RelayByTx`, and `Info` service plus per-chain Cosmos
-  signing semantics. fast-ibc's Go daemon currently runs a single configured
-  Cosmos↔ETH path without exposing that gRPC API.
 - `relayer_test.go` `RelayerTestSuite` cases — still use gRPC `RelayByTx` +
   manual broadcast pattern.
 

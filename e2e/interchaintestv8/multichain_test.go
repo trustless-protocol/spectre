@@ -20,8 +20,11 @@ import (
 
 	sdkmath "cosmossdk.io/math"
 
+	"github.com/cosmos/cosmos-sdk/crypto/hd"
+	cosmossecp256k1 "github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
+	bip39 "github.com/cosmos/go-bip39"
 
 	transfertypes "github.com/cosmos/ibc-go/v10/modules/apps/transfer/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
@@ -31,6 +34,7 @@ import (
 	ibctm "github.com/cosmos/ibc-go/v10/modules/light-clients/07-tendermint"
 	ibctesting "github.com/cosmos/ibc-go/v10/testing"
 
+	interchaintest "github.com/cosmos/interchaintest/v10"
 	"github.com/cosmos/interchaintest/v10/ibc"
 
 	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
@@ -76,12 +80,6 @@ type MultichainTestSuite struct {
 
 // TestWithMultichainTestSuite is the boilerplate code that allows the test suite to be run
 func TestWithMultichainTestSuite(t *testing.T) {
-	t.Skip(
-		"MultichainTestSuite still depends on the upstream gRPC RelayerService " +
-			"(CreateClient/RelayByTx/Info) and multi-module signing; fast-ibc's Go " +
-			"relayer is a single-pair auto-relay daemon without that gRPC API",
-	)
-
 	suite.Run(t, new(MultichainTestSuite))
 }
 
@@ -111,12 +109,41 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		s.deployer, err = eth.CreateAndFundUser()
 		s.Require().NoError(err)
 
-		s.SimdARelayerSubmitter = s.CreateAndFundCosmosUser(ctx, simdA)
-		s.SimdBRelayerSubmitter = s.CreateAndFundCosmosUser(ctx, simdB)
+		simdARelayerMnemonic, err := generateRelayerMnemonic()
+		s.Require().NoError(err)
+		s.SimdARelayerSubmitter, err = simdA.BuildWallet(ctx, "fast-ibc-relayer-a", simdARelayerMnemonic)
+		s.Require().NoError(err)
+		err = simdA.SendFunds(ctx, interchaintest.FaucetAccountKeyName, ibc.WalletAmount{
+			Address: s.SimdARelayerSubmitter.FormattedAddress(),
+			Denom:   simdA.Config().Denom,
+			Amount:  sdkmath.NewInt(testvalues.InitialBalance),
+		})
+		s.Require().NoError(err)
+
+		simdBRelayerMnemonic, err := generateRelayerMnemonic()
+		s.Require().NoError(err)
+		s.SimdBRelayerSubmitter, err = simdB.BuildWallet(ctx, "fast-ibc-relayer-b", simdBRelayerMnemonic)
+		s.Require().NoError(err)
+		err = simdB.SendFunds(ctx, interchaintest.FaucetAccountKeyName, ibc.WalletAmount{
+			Address: s.SimdBRelayerSubmitter.FormattedAddress(),
+			Denom:   simdB.Config().Denom,
+			Amount:  sdkmath.NewInt(testvalues.InitialBalance),
+		})
+		s.Require().NoError(err)
+
+		seed := bip39.NewSeed(s.SimdARelayerSubmitter.Mnemonic(), "")
+		masterPriv, chainCode := hd.ComputeMastersFromSeed(seed)
+		derivedPrivKeyBytes, err := hd.DerivePrivateKeyForPath(masterPriv, chainCode, "m/44'/118'/0'/0/0")
+		s.Require().NoError(err)
+		cosmosPrivKey := cosmossecp256k1.PrivKey{Key: derivedPrivKeyBytes}
+		os.Setenv("COSMOS_PRIVATE_KEY", hex.EncodeToString(cosmosPrivKey.Key))
+		os.Setenv("COSMOS_CHAIN_ID", simdA.Config().ChainID)
+		os.Setenv("COSMOS_FEE_DENOM", simdA.Config().Denom)
 
 		// Use mock verifier in E2E tests (gnark Groth16 prover is the real prover)
 		os.Setenv(testvalues.EnvKeyVerifier, testvalues.EnvValueVerifier_Mock)
 		os.Setenv(testvalues.EnvKeyEthRPC, eth.RPC)
+		os.Setenv("ETH_PRIVATE_KEY", hex.EncodeToString(crypto.FromECDSA(s.deployer)))
 		os.Setenv(testvalues.EnvKeyOperatorPrivateKey, hex.EncodeToString(crypto.FromECDSA(operatorKey)))
 	}))
 
@@ -152,6 +179,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 			ChainBSignerAddress: s.SimdBRelayerSubmitter.FormattedAddress(),
 			ICS26Address:        s.contractAddresses.Ics26Router,
 			EthRPC:              eth.RPC,
+			EthWS:               eth.WS,
 			BeaconAPI:           beaconAPI,
 			MockWasmClient:      os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
 		}))
