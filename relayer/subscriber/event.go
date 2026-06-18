@@ -697,6 +697,14 @@ func ethStartupRecoveryStartBlock(latestBlock, lookback uint64) uint64 {
 	return latestBlock - lookback
 }
 
+func ethEventClientIDFilter(ctx services.Context) []string {
+	clientID := ctx.CosmosRouterClientID()
+	if clientID == "" {
+		return nil
+	}
+	return []string{clientID}
+}
+
 func enqueueEthWriteAcknowledgement(batchBuilder *services.BatchBuilder, ev *contractICS26Router.ContractICS26RouterWriteAcknowledgement) {
 	cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 	batchBuilder.AddEth(services.EthPacket{
@@ -756,7 +764,7 @@ func recoverEthSendPackets(
 		End:     &endBlock,
 		Context: context.Background(),
 	}
-	iter, err := filterer.FilterSendPacket(filterOpts, nil, nil)
+	iter, err := filterer.FilterSendPacket(filterOpts, ethEventClientIDFilter(ctx), nil)
 	if err != nil {
 		ctx.Logger.Printf("[SubscribeEth] startup recovery: failed to filter SendPacket logs in [%d,%d]: %v",
 			startBlock, endBlock, err)
@@ -827,7 +835,7 @@ func recoverEthWriteAcknowledgements(
 		End:     &endBlock,
 		Context: context.Background(),
 	}
-	iter, err := filterer.FilterWriteAcknowledgement(filterOpts, nil, nil)
+	iter, err := filterer.FilterWriteAcknowledgement(filterOpts, ethEventClientIDFilter(ctx), nil)
 	if err != nil {
 		ctx.Logger.Printf("[SubscribeEth] startup recovery: failed to filter WriteAcknowledgement logs in [%d,%d]: %v",
 			startBlock, endBlock, err)
@@ -896,32 +904,38 @@ func (s *Subscriber) subscribeEthOnce(
 	timeoutPacketCh := make(chan *contractICS26Router.ContractICS26RouterTimeoutPacket)
 
 	watchOpts := &bind.WatchOpts{Start: &watchStartBlock, Context: context.Background()}
+	clientIDFilter := ethEventClientIDFilter(ctx)
 
-	sendPacketSub, err := watchFilterer.WatchSendPacket(watchOpts, sendPacketCh, nil, nil)
+	sendPacketSub, err := watchFilterer.WatchSendPacket(watchOpts, sendPacketCh, clientIDFilter, nil)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to SendPacket events: %w", err)
 	}
 	defer sendPacketSub.Unsubscribe()
 
-	writeAckSub, err := watchFilterer.WatchWriteAcknowledgement(watchOpts, writeAckCh, nil, nil)
+	writeAckSub, err := watchFilterer.WatchWriteAcknowledgement(watchOpts, writeAckCh, clientIDFilter, nil)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to WriteAcknowledgement events: %w", err)
 	}
 	defer writeAckSub.Unsubscribe()
 
-	ackPacketSub, err := watchFilterer.WatchAckPacket(watchOpts, ackPacketCh, nil, nil)
+	ackPacketSub, err := watchFilterer.WatchAckPacket(watchOpts, ackPacketCh, clientIDFilter, nil)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to AckPacket events: %w", err)
 	}
 	defer ackPacketSub.Unsubscribe()
 
-	timeoutPacketSub, err := watchFilterer.WatchTimeoutPacket(watchOpts, timeoutPacketCh, nil, nil)
+	timeoutPacketSub, err := watchFilterer.WatchTimeoutPacket(watchOpts, timeoutPacketCh, clientIDFilter, nil)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to TimeoutPacket events: %w", err)
 	}
 	defer timeoutPacketSub.Unsubscribe()
 
-	ctx.Logger.Printf("[SubscribeEth] Successfully subscribed to ICS26Router events from block %d", watchStartBlock)
+	if len(clientIDFilter) > 0 {
+		ctx.Logger.Printf("[SubscribeEth] Successfully subscribed to ICS26Router events from block %d for client_id=%s",
+			watchStartBlock, clientIDFilter[0])
+	} else {
+		ctx.Logger.Printf("[SubscribeEth] Successfully subscribed to ICS26Router events from block %d", watchStartBlock)
+	}
 
 	for {
 		select {

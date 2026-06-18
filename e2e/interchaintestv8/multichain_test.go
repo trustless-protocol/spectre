@@ -1,16 +1,22 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
 	"fmt"
 	"math/big"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	abci "github.com/cometbft/cometbft/abci/types"
+	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
+	coretypes "github.com/cometbft/cometbft/rpc/core/types"
+	comettypes "github.com/cometbft/cometbft/types"
 	"github.com/cosmos/gogoproto/proto"
 	"github.com/stretchr/testify/suite"
 
@@ -26,15 +32,19 @@ import (
 	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
 	bip39 "github.com/cosmos/go-bip39"
 
+	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	transfertypes "github.com/cosmos/ibc-go/v10/modules/apps/transfer/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	clienttypesv2 "github.com/cosmos/ibc-go/v10/modules/core/02-client/v2/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	commitmenttypes "github.com/cosmos/ibc-go/v10/modules/core/23-commitment/types"
+	ibchostv2 "github.com/cosmos/ibc-go/v10/modules/core/24-host/v2"
 	ibcexported "github.com/cosmos/ibc-go/v10/modules/core/exported"
 	ibctm "github.com/cosmos/ibc-go/v10/modules/light-clients/07-tendermint"
 	ibctesting "github.com/cosmos/ibc-go/v10/testing"
 
 	interchaintest "github.com/cosmos/interchaintest/v10"
+	ictcosmos "github.com/cosmos/interchaintest/v10/chain/cosmos"
 	"github.com/cosmos/interchaintest/v10/ibc"
 
 	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
@@ -50,7 +60,6 @@ import (
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/testvalues"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/erc20"
-	relayertypes "github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/relayer"
 )
 
 type MultichainTestSuite struct {
@@ -71,16 +80,459 @@ type MultichainTestSuite struct {
 	ics20Contract              *ics20transfer.Contract
 	erc20Contract              *erc20.Contract
 
-	RelayerClient relayertypes.RelayerServiceClient
-
 	SimdARelayerSubmitter ibc.Wallet
 	SimdBRelayerSubmitter ibc.Wallet
 	EthRelayerSubmitter   *ecdsa.PrivateKey
+
+	simdACosmosPrivateKey string
+	simdBCosmosPrivateKey string
 }
+
+const (
+	multichainRelayerConfigAPath = "relayer/config-multichain-a.json"
+	multichainRelayerConfigBPath = "relayer/config-multichain-b.json"
+
+	multichainChainAUniversalClientID = "simd-1-client-0"
+	multichainChainBUniversalClientID = "simd-2-client-0"
+)
 
 // TestWithMultichainTestSuite is the boilerplate code that allows the test suite to be run
 func TestWithMultichainTestSuite(t *testing.T) {
 	suite.Run(t, new(MultichainTestSuite))
+}
+
+func cosmosPrivateKeyHexFromMnemonic(mnemonic string) (string, error) {
+	seed := bip39.NewSeed(mnemonic, "")
+	masterPriv, chainCode := hd.ComputeMastersFromSeed(seed)
+	derivedPrivKeyBytes, err := hd.DerivePrivateKeyForPath(masterPriv, chainCode, "m/44'/118'/0'/0/0")
+	if err != nil {
+		return "", err
+	}
+
+	cosmosPrivKey := cosmossecp256k1.PrivKey{Key: derivedPrivKeyBytes}
+	return hex.EncodeToString(cosmosPrivKey.Key), nil
+}
+
+func (s *MultichainTestSuite) setCosmosRelayerEnv(chain *ictcosmos.CosmosChain, privateKeyHex string) {
+	os.Setenv("COSMOS_PRIVATE_KEY", privateKeyHex)
+	os.Setenv("COSMOS_CHAIN_ID", chain.Config().ChainID)
+	os.Setenv("COSMOS_FEE_DENOM", chain.Config().Denom)
+}
+
+func (s *MultichainTestSuite) generateEthCosmosRelayerConfig(
+	eth ethereum.Ethereum,
+	chain *ictcosmos.CosmosChain,
+	signer ibc.Wallet,
+	ics26ClientID string,
+	ics07Client string,
+	configPath string,
+	proofType types.SupportedProofType,
+) {
+	beaconAPI := ""
+	if eth.BeaconAPIClient != nil {
+		beaconAPI = eth.BeaconAPIClient.GetBeaconAPIURL()
+	}
+
+	config := relayer.NewConfig(relayer.CreateEthCosmosModules(
+		relayer.EthCosmosConfigInfo{
+			EthChainID:         eth.ChainID.String(),
+			CosmosChainID:      chain.Config().ChainID,
+			TmRPC:              chain.GetHostRPCAddress(),
+			ICS26Address:       s.contractAddresses.Ics26Router,
+			EthRPC:             eth.RPC,
+			EthWs:              eth.WS,
+			BeaconAPI:          beaconAPI,
+			SignerAddress:      signer.FormattedAddress(),
+			MockWasmClient:     os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
+			ICS07Client:        ics07Client,
+			WrapperVerifier:    s.contractAddresses.WrapperVerifier,
+			Membership:         s.contractAddresses.Membership,
+			Misbehaviour:       s.contractAddresses.Misbehaviour,
+			UpdateClient:       s.contractAddresses.UpdateClient,
+			CosmosWasmClientID: testvalues.FirstWasmClientID,
+			ICS26ClientID:      ics26ClientID,
+			TrustLevel:         "1/3",
+			ProofType:          proofType.String(),
+		}),
+	)
+
+	err := config.GenerateConfigFile(configPath)
+	s.Require().NoError(err)
+}
+
+func (s *MultichainTestSuite) createEthCosmosClients(
+	ctx context.Context,
+	eth ethereum.Ethereum,
+	chain *ictcosmos.CosmosChain,
+	signer ibc.Wallet,
+	cosmosPrivateKey string,
+	ics26ClientID string,
+	configPath string,
+	proofType types.SupportedProofType,
+) ethcommon.Address {
+	s.setCosmosRelayerEnv(chain, cosmosPrivateKey)
+
+	checksumHex := s.StoreEthereumLightClient(ctx, chain, signer)
+	s.Require().NotEmpty(checksumHex)
+
+	ethRelayerAddr := crypto.PubkeyToAddress(s.deployer.PublicKey)
+	preNonce, err := eth.RPCClient.PendingNonceAt(ctx, ethRelayerAddr)
+	s.Require().NoError(err)
+	ics07Address := crypto.CreateAddress(ethRelayerAddr, preNonce)
+
+	s.generateEthCosmosRelayerConfig(eth, chain, signer, ics26ClientID, "", configPath, proofType)
+
+	args := []string{"--trust-level", "1/3"}
+	if eth.BeaconAPIClient != nil {
+		args = append(args, "--wasm-checksum", checksumHex)
+	}
+	err = relayer.RunCreateClients(configPath, args...)
+	s.Require().NoError(err)
+
+	clientAddress, err := s.ics26Contract.GetClient(nil, ics26ClientID)
+	s.Require().NoError(err)
+	s.Require().Equal(ics07Address, clientAddress)
+
+	if eth.BeaconAPIClient == nil {
+		s.createMockEthereumLightClient(ctx, chain, signer, checksumHex, ics26ClientID)
+	}
+
+	s.generateEthCosmosRelayerConfig(eth, chain, signer, ics26ClientID, ics07Address.Hex(), configPath, proofType)
+
+	return ics07Address
+}
+
+func (s *MultichainTestSuite) createMockEthereumLightClient(
+	ctx context.Context,
+	chain *ictcosmos.CosmosChain,
+	signer ibc.Wallet,
+	checksumHex string,
+	counterpartyClientID string,
+) {
+	checksumBytes, err := hex.DecodeString(strings.TrimPrefix(checksumHex, "0x"))
+	s.Require().NoError(err)
+
+	wasmClientState := ibcwasmtypes.ClientState{
+		Data:     []byte("{}"),
+		Checksum: checksumBytes,
+		LatestHeight: clienttypes.Height{
+			RevisionNumber: 0,
+			RevisionHeight: 1,
+		},
+	}
+	wasmConsensusState := ibcwasmtypes.ConsensusState{
+		Data: []byte("{}"),
+	}
+
+	msg, err := clienttypes.NewMsgCreateClient(&wasmClientState, &wasmConsensusState, signer.FormattedAddress())
+	s.Require().NoError(err)
+
+	resp, err := s.BroadcastMessages(ctx, chain, signer, 200_000, msg)
+	s.Require().NoError(err)
+
+	clientID, err := cosmos.GetEventValue(resp.Events, clienttypes.EventTypeCreateClient, clienttypes.AttributeKeyClientID)
+	s.Require().NoError(err)
+	s.Require().Equal(testvalues.FirstWasmClientID, clientID)
+
+	_, err = s.BroadcastMessages(ctx, chain, signer, 200_000, &clienttypesv2.MsgRegisterCounterparty{
+		ClientId:                 testvalues.FirstWasmClientID,
+		CounterpartyClientId:     counterpartyClientID,
+		CounterpartyMerklePrefix: [][]byte{[]byte("")},
+		Signer:                   signer.FormattedAddress(),
+	})
+	s.Require().NoError(err)
+}
+
+func (s *MultichainTestSuite) createTendermintClient(
+	ctx context.Context,
+	src *ictcosmos.CosmosChain,
+	dst *ictcosmos.CosmosChain,
+	signer ibc.Wallet,
+	expectedClientID string,
+) {
+	header, err := s.FetchCosmosHeader(ctx, src)
+	s.Require().NoError(err)
+	s.Require().Greater(header.Height, int64(0))
+
+	stakingParams, err := src.StakingQueryParams(ctx)
+	s.Require().NoError(err)
+
+	latestHeight := clienttypes.NewHeight(clienttypes.ParseChainID(src.Config().ChainID), uint64(header.Height))
+	clientState := ibctm.NewClientState(
+		src.Config().ChainID,
+		ibctm.NewFractionFromTm(testvalues.DefaultTrustLevel),
+		time.Duration(testvalues.DefaultTrustPeriod)*time.Second,
+		stakingParams.UnbondingTime,
+		ibctesting.MaxClockDrift,
+		latestHeight,
+		commitmenttypes.GetSDKSpecs(),
+		ibctesting.UpgradePath,
+	)
+	consensusState := ibctm.NewConsensusState(
+		header.Time,
+		commitmenttypes.NewMerkleRoot(header.AppHash),
+		header.NextValidatorsHash,
+	)
+
+	msg, err := clienttypes.NewMsgCreateClient(clientState, consensusState, signer.FormattedAddress())
+	s.Require().NoError(err)
+
+	resp, err := s.BroadcastMessages(ctx, dst, signer, 2_000_000, msg)
+	s.Require().NoError(err)
+
+	clientID, err := cosmos.GetEventValue(resp.Events, clienttypes.EventTypeCreateClient, clienttypes.AttributeKeyClientID)
+	s.Require().NoError(err)
+	s.Require().Equal(expectedClientID, clientID)
+}
+
+func (s *MultichainTestSuite) packetFromSendPacketResponse(
+	resp *sdk.TxResponse,
+	sourceClient string,
+	destinationClient string,
+	timeout uint64,
+	payload channeltypesv2.Payload,
+) channeltypesv2.Packet {
+	sequenceStr, err := cosmos.GetEventValue(resp.Events, channeltypesv2.EventTypeSendPacket, channeltypesv2.AttributeKeySequence)
+	s.Require().NoError(err)
+
+	sequence, err := strconv.ParseUint(sequenceStr, 10, 64)
+	s.Require().NoError(err)
+
+	eventSrcClient, err := cosmos.GetEventValue(resp.Events, channeltypesv2.EventTypeSendPacket, channeltypesv2.AttributeKeySrcClient)
+	s.Require().NoError(err)
+	s.Require().Equal(sourceClient, eventSrcClient)
+
+	eventDstClient, err := cosmos.GetEventValue(resp.Events, channeltypesv2.EventTypeSendPacket, channeltypesv2.AttributeKeyDstClient)
+	s.Require().NoError(err)
+	s.Require().Equal(destinationClient, eventDstClient)
+
+	return channeltypesv2.NewPacket(sequence, sourceClient, destinationClient, timeout, payload)
+}
+
+func (s *MultichainTestSuite) queryIBCProof(
+	ctx context.Context,
+	chain *ictcosmos.CosmosChain,
+	key []byte,
+	proofHeight uint64,
+) ([]byte, clienttypes.Height) {
+	s.Require().Greater(proofHeight, uint64(1))
+
+	resp, err := e2esuite.ABCIQuery(ctx, chain, &abci.RequestQuery{
+		Path:   fmt.Sprintf("store/%s/key", ibcexported.StoreKey),
+		Data:   key,
+		Height: int64(proofHeight) - 1,
+		Prove:  true,
+	})
+	s.Require().NoError(err)
+	s.Require().Equal(uint32(0), resp.Code, resp.Log)
+	s.Require().Equal(int64(proofHeight)-1, resp.Height)
+	s.Require().Equal(key, resp.Key)
+	s.Require().NotEmpty(resp.Value)
+	s.Require().NotEmpty(resp.ProofOps.Ops)
+
+	merkleProof, err := commitmenttypes.ConvertProofs(resp.ProofOps)
+	s.Require().NoError(err)
+
+	proof, err := proto.Marshal(&merkleProof)
+	s.Require().NoError(err)
+
+	revision := clienttypes.ParseChainID(chain.Config().ChainID)
+	return proof, clienttypes.NewHeight(revision, uint64(resp.Height)+1)
+}
+
+type multichainValidatorsPager interface {
+	Validators(ctx context.Context, height *int64, page, perPage *int) (*coretypes.ResultValidators, error)
+}
+
+func fetchMultichainValidators(client multichainValidatorsPager, height int64) ([]*comettypes.Validator, error) {
+	const cometBFTMaxPerPage = 100
+
+	var validators []*comettypes.Validator
+	perPage := cometBFTMaxPerPage
+	for page := 1; ; page++ {
+		currentPage := page
+		resp, err := client.Validators(context.Background(), &height, &currentPage, &perPage)
+		if err != nil {
+			return nil, fmt.Errorf("failed to fetch validators at height %d page %d: %w", height, page, err)
+		}
+
+		validators = append(validators, resp.Validators...)
+		if len(validators) >= resp.Total || len(resp.Validators) == 0 {
+			break
+		}
+	}
+
+	return validators, nil
+}
+
+func fetchMultichainValidatorSet(client multichainValidatorsPager, height int64, proposerAddress comettypes.Address) (*comettypes.ValidatorSet, error) {
+	validators, err := fetchMultichainValidators(client, height)
+	if err != nil {
+		return nil, err
+	}
+
+	valSet := comettypes.NewValidatorSet(validators)
+	for _, validator := range validators {
+		if validator != nil && bytes.Equal(validator.Address.Bytes(), proposerAddress.Bytes()) {
+			valSet.Proposer = validator
+			break
+		}
+	}
+	if valSet.Proposer == nil {
+		return nil, fmt.Errorf("proposer %X not found in validator set at height %d", proposerAddress.Bytes(), height)
+	}
+
+	return valSet, nil
+}
+
+func (s *MultichainTestSuite) buildTendermintUpdateHeader(
+	ctx context.Context,
+	src *ictcosmos.CosmosChain,
+	trustedHeight clienttypes.Height,
+	targetHeight uint64,
+) *ibctm.Header {
+	rpcClient, err := rpchttp.New(src.GetHostRPCAddress(), "/websocket")
+	s.Require().NoError(err)
+
+	targetHeightInt := int64(targetHeight)
+	targetCommit, err := rpcClient.Commit(ctx, &targetHeightInt)
+	s.Require().NoError(err)
+
+	targetValidatorSet, err := fetchMultichainValidatorSet(rpcClient, targetHeightInt, targetCommit.SignedHeader.Header.ProposerAddress)
+	s.Require().NoError(err)
+	s.Require().True(bytes.Equal(targetValidatorSet.Hash(), targetCommit.SignedHeader.Header.ValidatorsHash.Bytes()))
+
+	trustedHeightInt := int64(trustedHeight.RevisionHeight)
+	trustedCommit, err := rpcClient.Commit(ctx, &trustedHeightInt)
+	s.Require().NoError(err)
+
+	trustedValidatorSet, err := fetchMultichainValidatorSet(rpcClient, trustedHeightInt, trustedCommit.SignedHeader.Header.ProposerAddress)
+	s.Require().NoError(err)
+	s.Require().True(bytes.Equal(trustedValidatorSet.Hash(), trustedCommit.SignedHeader.Header.ValidatorsHash.Bytes()))
+
+	signedHeaderProto := targetCommit.SignedHeader.ToProto()
+
+	validatorSetProto, err := targetValidatorSet.ToProto()
+	s.Require().NoError(err)
+
+	trustedValidatorSetProto, err := trustedValidatorSet.ToProto()
+	s.Require().NoError(err)
+
+	return &ibctm.Header{
+		SignedHeader:      signedHeaderProto,
+		ValidatorSet:      validatorSetProto,
+		TrustedHeight:     trustedHeight,
+		TrustedValidators: trustedValidatorSetProto,
+	}
+}
+
+func (s *MultichainTestSuite) updateTendermintClient(
+	ctx context.Context,
+	src *ictcosmos.CosmosChain,
+	dst *ictcosmos.CosmosChain,
+	signer ibc.Wallet,
+	clientID string,
+	targetHeight uint64,
+) {
+	clientStateResp, err := e2esuite.GRPCQuery[clienttypes.QueryClientStateResponse](ctx, dst, &clienttypes.QueryClientStateRequest{
+		ClientId: clientID,
+	})
+	s.Require().NoError(err)
+
+	var clientState ibctm.ClientState
+	err = proto.Unmarshal(clientStateResp.ClientState.Value, &clientState)
+	s.Require().NoError(err)
+
+	if clientState.LatestHeight.RevisionHeight >= targetHeight {
+		return
+	}
+
+	header := s.buildTendermintUpdateHeader(ctx, src, clientState.LatestHeight, targetHeight)
+	msg, err := clienttypes.NewMsgUpdateClient(clientID, header, signer.FormattedAddress())
+	s.Require().NoError(err)
+
+	_, err = s.BroadcastMessages(ctx, dst, signer, 2_000_000, msg)
+	s.Require().NoError(err)
+}
+
+func (s *MultichainTestSuite) relayCosmosPacket(
+	ctx context.Context,
+	src *ictcosmos.CosmosChain,
+	dst *ictcosmos.CosmosChain,
+	signer ibc.Wallet,
+	dstClientID string,
+	packet channeltypesv2.Packet,
+) {
+	latestHeight, err := src.Height(ctx)
+	s.Require().NoError(err)
+	s.Require().Greater(latestHeight, int64(2))
+
+	proofHeight := uint64(latestHeight - 1)
+	s.updateTendermintClient(ctx, src, dst, signer, dstClientID, proofHeight)
+
+	proof, proofClientHeight := s.queryIBCProof(ctx, src, ibchostv2.PacketCommitmentKey(packet.SourceClient, packet.Sequence), proofHeight)
+	msg := channeltypesv2.NewMsgRecvPacket(packet, proof, proofClientHeight, signer.FormattedAddress())
+
+	_, err = s.BroadcastMessages(ctx, dst, signer, 3_000_000, msg)
+	s.Require().NoError(err)
+}
+
+func (s *MultichainTestSuite) waitForCosmosBalance(
+	ctx context.Context,
+	chain *ictcosmos.CosmosChain,
+	address string,
+	denom string,
+	expected *big.Int,
+	timeout time.Duration,
+) {
+	s.Require().Eventually(func() bool {
+		resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, chain, &banktypes.QueryBalanceRequest{
+			Address: address,
+			Denom:   denom,
+		})
+		if err != nil || resp.Balance == nil {
+			return false
+		}
+
+		return resp.Balance.Amount.BigInt().Cmp(expected) == 0
+	}, timeout, 5*time.Second, "timed out waiting for Cosmos balance %s/%s to become %s", address, denom, expected.String())
+}
+
+func (s *MultichainTestSuite) waitForIbcERC20Balance(
+	eth ethereum.Ethereum,
+	denomPath string,
+	account ethcommon.Address,
+	expected *big.Int,
+	timeout time.Duration,
+) (ethcommon.Address, *ibcerc20.Contract) {
+	var ibcERC20Address ethcommon.Address
+	var ibcERC20 *ibcerc20.Contract
+
+	s.Require().Eventually(func() bool {
+		addr, err := s.ics20Contract.IbcERC20Contract(nil, denomPath)
+		if err != nil || addr == (ethcommon.Address{}) {
+			return false
+		}
+
+		contract, err := ibcerc20.NewContract(addr, eth.RPCClient)
+		if err != nil {
+			return false
+		}
+
+		balance, err := contract.BalanceOf(nil, account)
+		if err != nil || balance == nil {
+			return false
+		}
+		if balance.Cmp(expected) != 0 {
+			return false
+		}
+
+		ibcERC20Address = addr
+		ibcERC20 = contract
+		return true
+	}, timeout, 5*time.Second, "timed out waiting for IBC ERC20 balance for %s", denomPath)
+
+	return ibcERC20Address, ibcERC20
 }
 
 func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.SupportedProofType) {
@@ -92,7 +544,6 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 
 	s.T().Logf("Setting up test suite with proof type: %s", proofType.String())
 
-	var prover string
 	s.Require().True(s.Run("Set up environment", func() {
 		err := os.Chdir("../..")
 		s.Require().NoError(err)
@@ -131,14 +582,11 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		})
 		s.Require().NoError(err)
 
-		seed := bip39.NewSeed(s.SimdARelayerSubmitter.Mnemonic(), "")
-		masterPriv, chainCode := hd.ComputeMastersFromSeed(seed)
-		derivedPrivKeyBytes, err := hd.DerivePrivateKeyForPath(masterPriv, chainCode, "m/44'/118'/0'/0/0")
+		s.simdACosmosPrivateKey, err = cosmosPrivateKeyHexFromMnemonic(s.SimdARelayerSubmitter.Mnemonic())
 		s.Require().NoError(err)
-		cosmosPrivKey := cosmossecp256k1.PrivKey{Key: derivedPrivKeyBytes}
-		os.Setenv("COSMOS_PRIVATE_KEY", hex.EncodeToString(cosmosPrivKey.Key))
-		os.Setenv("COSMOS_CHAIN_ID", simdA.Config().ChainID)
-		os.Setenv("COSMOS_FEE_DENOM", simdA.Config().Denom)
+		s.simdBCosmosPrivateKey, err = cosmosPrivateKeyHexFromMnemonic(s.SimdBRelayerSubmitter.Mnemonic())
+		s.Require().NoError(err)
+		s.setCosmosRelayerEnv(simdA, s.simdACosmosPrivateKey)
 
 		// Use mock verifier in E2E tests (gnark Groth16 prover is the real prover)
 		os.Setenv(testvalues.EnvKeyVerifier, testvalues.EnvValueVerifier_Mock)
@@ -161,124 +609,43 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		s.Require().NoError(err)
 	}))
 
-	var relayerProcess *os.Process
-	s.Require().True(s.Run("Start Relayer", func() {
-		beaconAPI := ""
-		// The BeaconAPIClient is nil when the testnet is `pow`
-		if eth.BeaconAPIClient != nil {
-			beaconAPI = eth.BeaconAPIClient.GetBeaconAPIURL()
-		}
-
-		config := relayer.NewConfig(relayer.CreateMultichainModules(relayer.MultichainConfigInfo{
-			ChainAID:            simdA.Config().ChainID,
-			ChainBID:            simdB.Config().ChainID,
-			EthChainID:          eth.ChainID.String(),
-			ChainATmRPC:         simdA.GetHostRPCAddress(),
-			ChainBTmRPC:         simdB.GetHostRPCAddress(),
-			ChainASignerAddress: s.SimdARelayerSubmitter.FormattedAddress(),
-			ChainBSignerAddress: s.SimdBRelayerSubmitter.FormattedAddress(),
-			ICS26Address:        s.contractAddresses.Ics26Router,
-			EthRPC:              eth.RPC,
-			EthWS:               eth.WS,
-			BeaconAPI:           beaconAPI,
-			MockWasmClient:      os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
-		}))
-
-		err := config.GenerateConfigFile(testvalues.RelayerConfigFilePath)
-		s.Require().NoError(err)
-
-		relayerProcess, err = relayer.StartRelayer(testvalues.RelayerConfigFilePath)
-		s.Require().NoError(err)
-
-		s.T().Cleanup(func() {
-			os.Remove(testvalues.RelayerConfigFilePath)
-		})
-	}))
-
 	s.T().Cleanup(func() {
-		if relayerProcess != nil {
-			err := relayerProcess.Kill()
-			if err != nil {
-				s.T().Logf("Failed to kill the relayer process: %v", err)
-			}
-		}
+		os.Remove(multichainRelayerConfigAPath)
+		os.Remove(multichainRelayerConfigBPath)
 	})
 
-	s.Require().True(s.Run("Create Relayer Client", func() {
-		time.Sleep(5 * time.Second) // wait for the relayer to start
+	s.Require().True(s.Run("Create Ethereum/Cosmos clients for SimdA", func() {
+		s.chainAGroth16Ics07Address = s.createEthCosmosClients(
+			ctx,
+			eth,
+			simdA,
+			s.SimdARelayerSubmitter,
+			s.simdACosmosPrivateKey,
+			multichainChainAUniversalClientID,
+			multichainRelayerConfigAPath,
+			proofType,
+		)
 
 		var err error
-		s.RelayerClient, err = relayer.GetGRPCClient(relayer.DefaultRelayerGRPCAddress())
+		s.chainAGroth16Ics07Contract, err = groth16ics07tendermint.NewContract(s.chainAGroth16Ics07Address, eth.RPCClient)
 		s.Require().NoError(err)
 	}))
 
-	s.Require().True(s.Run("Deploy Groth16 ICS07 contracts", func() {
-		var verfierAddress string
-		if prover == testvalues.EnvValueGroth16Prover_Mock {
-			verfierAddress = s.contractAddresses.VerifierMock
-		} else {
-			switch proofType {
-			case types.ProofTypeGroth16:
-				verfierAddress = s.contractAddresses.VerifierGroth16
-			case types.ProofTypePlonk:
-				verfierAddress = s.contractAddresses.VerifierPlonk
-			default:
-				s.Require().Fail("invalid proof type: %s", proofType)
-			}
-		}
+	s.Require().True(s.Run("Create Ethereum/Cosmos clients for SimdB", func() {
+		s.chainBGroth16Ics07Address = s.createEthCosmosClients(
+			ctx,
+			eth,
+			simdB,
+			s.SimdBRelayerSubmitter,
+			s.simdBCosmosPrivateKey,
+			multichainChainBUniversalClientID,
+			multichainRelayerConfigBPath,
+			proofType,
+		)
 
-		var createClientTxBz []byte
-		s.Require().True(s.Run("Retrieve create client tx for ChainA's client", func() {
-			resp, err := s.RelayerClient.CreateClient(context.Background(), &relayertypes.CreateClientRequest{
-				SrcChain: simdA.Config().ChainID,
-				DstChain: eth.ChainID.String(),
-				Parameters: map[string]string{
-					testvalues.ParameterKey_Groth16Verifier: verfierAddress,
-					testvalues.ParameterKey_ZkAlgorithm:     proofType.String(),
-				},
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			createClientTxBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx for ChainA's client", func() {
-			receipt, err := eth.BroadcastTx(ctx, s.EthRelayerSubmitter, 15_000_000, nil, createClientTxBz)
-			s.Require().NoError(err)
-			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
-
-			s.chainAGroth16Ics07Address = receipt.ContractAddress
-			s.chainAGroth16Ics07Contract, err = groth16ics07tendermint.NewContract(s.chainAGroth16Ics07Address, eth.RPCClient)
-			s.Require().NoError(err)
-		}))
-
-		s.Require().True(s.Run("Retrieve create client tx for ChainB's client", func() {
-			resp, err := s.RelayerClient.CreateClient(context.Background(), &relayertypes.CreateClientRequest{
-				SrcChain: simdB.Config().ChainID,
-				DstChain: eth.ChainID.String(),
-				Parameters: map[string]string{
-					testvalues.ParameterKey_Groth16Verifier: verfierAddress,
-					testvalues.ParameterKey_ZkAlgorithm:     proofType.String(),
-				},
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			createClientTxBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx for ChainB's client", func() {
-			receipt, err := eth.BroadcastTx(ctx, s.EthRelayerSubmitter, 15_000_000, nil, createClientTxBz)
-			s.Require().NoError(err)
-			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
-
-			s.chainBGroth16Ics07Address = receipt.ContractAddress
-			s.chainBGroth16Ics07Contract, err = groth16ics07tendermint.NewContract(s.chainBGroth16Ics07Address, eth.RPCClient)
-			s.Require().NoError(err)
-		}))
+		var err error
+		s.chainBGroth16Ics07Contract, err = groth16ics07tendermint.NewContract(s.chainBGroth16Ics07Address, eth.RPCClient)
+		s.Require().NoError(err)
 	}))
 
 	s.Require().True(s.Run("Fund address with ERC20", func() {
@@ -289,162 +656,12 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		s.Require().NoError(err)
 	}))
 
-	s.Require().True(s.Run("Add ethereum light client on SimdA", func() {
-		checksumHex := s.StoreEthereumLightClient(ctx, simdA, s.SimdARelayerSubmitter)
-		s.Require().NotEmpty(checksumHex)
-
-		var createClientTxBodyBz []byte
-		s.Require().True(s.Run("Retrieve create client tx", func() {
-			resp, err := s.RelayerClient.CreateClient(context.Background(), &relayertypes.CreateClientRequest{
-				SrcChain: eth.ChainID.String(),
-				DstChain: simdA.Config().ChainID,
-				Parameters: map[string]string{
-					testvalues.ParameterKey_ChecksumHex: checksumHex,
-				},
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			createClientTxBodyBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx", func() {
-			resp := s.MustBroadcastSdkTxBody(ctx, simdA, s.SimdARelayerSubmitter, 20_000_000, createClientTxBodyBz)
-			clientId, err := cosmos.GetEventValue(resp.Events, clienttypes.EventTypeCreateClient, clienttypes.AttributeKeyClientID)
-			s.Require().NoError(err)
-			s.Require().Equal(testvalues.FirstWasmClientID, clientId)
-		}))
-	}))
-
-	s.Require().True(s.Run("Add simdA client and counterparty on EVM", func() {
-		counterpartyInfo := ics26router.IICS02ClientMsgsCounterpartyInfo{
-			ClientId:     testvalues.FirstWasmClientID,
-			MerklePrefix: [][]byte{[]byte(ibcexported.StoreKey), []byte("")},
-		}
-		tx, err := s.ics26Contract.AddClient0(s.GetTransactOpts(s.deployer, eth), counterpartyInfo, s.chainAGroth16Ics07Address)
-		s.Require().NoError(err)
-
-		receipt, err := eth.GetTxReciept(ctx, tx.Hash())
-		s.Require().NoError(err)
-
-		event, err := e2esuite.GetEvmEvent(receipt, s.ics26Contract.ParseICS02ClientAdded)
-		s.Require().NoError(err)
-		s.Require().Equal(testvalues.FirstUniversalClientID, event.ClientId)
-		s.Require().Equal(testvalues.FirstWasmClientID, event.CounterpartyInfo.ClientId)
-	}))
-
-	s.Require().True(s.Run("Add ethereum light client on SimdB", func() {
-		checksumHex := s.StoreEthereumLightClient(ctx, simdB, s.SimdBRelayerSubmitter)
-		s.Require().NotEmpty(checksumHex)
-
-		var createClientTxBodyBz []byte
-		s.Require().True(s.Run("Retrieve create client tx", func() {
-			resp, err := s.RelayerClient.CreateClient(context.Background(), &relayertypes.CreateClientRequest{
-				SrcChain: eth.ChainID.String(),
-				DstChain: simdB.Config().ChainID,
-				Parameters: map[string]string{
-					testvalues.ParameterKey_ChecksumHex: checksumHex,
-				},
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			createClientTxBodyBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx", func() {
-			resp := s.MustBroadcastSdkTxBody(ctx, simdB, s.SimdBRelayerSubmitter, 20_000_000, createClientTxBodyBz)
-			clientId, err := cosmos.GetEventValue(resp.Events, clienttypes.EventTypeCreateClient, clienttypes.AttributeKeyClientID)
-			s.Require().NoError(err)
-			s.Require().Equal(testvalues.FirstWasmClientID, clientId)
-		}))
-	}))
-
-	s.Require().True(s.Run("Add simdB client and counterparty on EVM", func() {
-		counterpartyInfo := ics26router.IICS02ClientMsgsCounterpartyInfo{
-			ClientId:     testvalues.FirstWasmClientID,
-			MerklePrefix: [][]byte{[]byte(ibcexported.StoreKey), []byte("")},
-		}
-		tx, err := s.ics26Contract.AddClient0(s.GetTransactOpts(s.deployer, eth), counterpartyInfo, s.chainBGroth16Ics07Address)
-		s.Require().NoError(err)
-
-		receipt, err := eth.GetTxReciept(ctx, tx.Hash())
-		s.Require().NoError(err)
-
-		event, err := e2esuite.GetEvmEvent(receipt, s.ics26Contract.ParseICS02ClientAdded)
-		s.Require().NoError(err)
-		s.Require().Equal(testvalues.SecondUniversalClientID, event.ClientId)
-		s.Require().Equal(testvalues.FirstWasmClientID, event.CounterpartyInfo.ClientId)
-	}))
-
-	s.Require().True(s.Run("Register counterparty on SimdA", func() {
-		merklePathPrefix := [][]byte{[]byte("")}
-
-		_, err := s.BroadcastMessages(ctx, simdA, s.SimdARelayerSubmitter, 200_000, &clienttypesv2.MsgRegisterCounterparty{
-			ClientId:                 testvalues.FirstWasmClientID,
-			CounterpartyClientId:     testvalues.FirstUniversalClientID,
-			CounterpartyMerklePrefix: merklePathPrefix,
-			Signer:                   s.SimdARelayerSubmitter.FormattedAddress(),
-		})
-		s.Require().NoError(err)
-	}))
-
-	s.Require().True(s.Run("Register counterparty on SimdB", func() {
-		merklePathPrefix := [][]byte{[]byte("")}
-
-		_, err := s.BroadcastMessages(ctx, simdB, s.SimdBRelayerSubmitter, 200_000, &clienttypesv2.MsgRegisterCounterparty{
-			ClientId:                 testvalues.FirstWasmClientID,
-			CounterpartyClientId:     testvalues.SecondUniversalClientID,
-			CounterpartyMerklePrefix: merklePathPrefix,
-			Signer:                   s.SimdBRelayerSubmitter.FormattedAddress(),
-		})
-		s.Require().NoError(err)
-	}))
-
 	s.Require().True(s.Run("Create Light Client of Chain A on Chain B", func() {
-		var createClientTxBodyBz []byte
-		s.Require().True(s.Run("Retrieve create client tx", func() {
-			resp, err := s.RelayerClient.CreateClient(context.Background(), &relayertypes.CreateClientRequest{
-				SrcChain: simdA.Config().ChainID,
-				DstChain: simdB.Config().ChainID,
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			createClientTxBodyBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx", func() {
-			resp := s.MustBroadcastSdkTxBody(ctx, simdB, s.SimdBRelayerSubmitter, 2_000_000, createClientTxBodyBz)
-			clientId, err := cosmos.GetEventValue(resp.Events, clienttypes.EventTypeCreateClient, clienttypes.AttributeKeyClientID)
-			s.Require().NoError(err)
-			s.Require().Equal(ibctesting.SecondClientID, clientId)
-		}))
+		s.createTendermintClient(ctx, simdA, simdB, s.SimdBRelayerSubmitter, ibctesting.SecondClientID)
 	}))
 
 	s.Require().True(s.Run("Create Light Client of Chain B on Chain A", func() {
-		var createClientTxBodyBz []byte
-		s.Require().True(s.Run("Retrieve create client tx", func() {
-			resp, err := s.RelayerClient.CreateClient(context.Background(), &relayertypes.CreateClientRequest{
-				SrcChain: simdB.Config().ChainID,
-				DstChain: simdA.Config().ChainID,
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			createClientTxBodyBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx", func() {
-			resp := s.MustBroadcastSdkTxBody(ctx, simdA, s.SimdARelayerSubmitter, 2_000_000, createClientTxBodyBz)
-			clientId, err := cosmos.GetEventValue(resp.Events, clienttypes.EventTypeCreateClient, clienttypes.AttributeKeyClientID)
-			s.Require().NoError(err)
-			s.Require().Equal(ibctesting.SecondClientID, clientId)
-		}))
+		s.createTendermintClient(ctx, simdB, simdA, s.SimdARelayerSubmitter, ibctesting.SecondClientID)
 	}))
 
 	s.Require().True(s.Run("Create Channel and register counterparty on Chain A", func() {
@@ -471,6 +688,34 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		})
 		s.Require().NoError(err)
 	}))
+
+	var relayerProcesses []*os.Process
+	s.T().Cleanup(func() {
+		for _, relayerProcess := range relayerProcesses {
+			if relayerProcess == nil {
+				continue
+			}
+			if err := relayerProcess.Kill(); err != nil {
+				s.T().Logf("Failed to kill the relayer process: %v", err)
+			}
+		}
+	})
+
+	s.Require().True(s.Run("Start SimdA relay loop", func() {
+		s.setCosmosRelayerEnv(simdA, s.simdACosmosPrivateKey)
+
+		relayerProcess, err := relayer.StartRelayer(multichainRelayerConfigAPath)
+		s.Require().NoError(err)
+		relayerProcesses = append(relayerProcesses, relayerProcess)
+	}))
+
+	s.Require().True(s.Run("Start SimdB relay loop", func() {
+		s.setCosmosRelayerEnv(simdB, s.simdBCosmosPrivateKey)
+
+		relayerProcess, err := relayer.StartRelayer(multichainRelayerConfigBPath)
+		s.Require().NoError(err)
+		relayerProcesses = append(relayerProcesses, relayerProcess)
+	}))
 }
 
 func (s *MultichainTestSuite) Test_Deploy() {
@@ -479,7 +724,7 @@ func (s *MultichainTestSuite) Test_Deploy() {
 
 	s.SetupSuite(ctx, proofType)
 
-	eth, simdA, simdB := s.EthChain, s.CosmosChains[0], s.CosmosChains[1]
+	simdA, simdB := s.CosmosChains[0], s.CosmosChains[1]
 
 	s.Require().True(s.Run("Verify SimdA Groth16 Client", func() {
 		clientState, err := getGroth16ClientState(s.chainAGroth16Ics07Contract)
@@ -516,19 +761,19 @@ func (s *MultichainTestSuite) Test_Deploy() {
 	}))
 
 	s.Require().True(s.Run("Verify ICS02 Client", func() {
-		clientAddress, err := s.ics26Contract.GetClient(nil, testvalues.FirstUniversalClientID)
+		clientAddress, err := s.ics26Contract.GetClient(nil, multichainChainAUniversalClientID)
 		s.Require().NoError(err)
 		s.Require().Equal(s.chainAGroth16Ics07Address, clientAddress)
 
-		counterpartyInfo, err := s.ics26Contract.GetCounterparty(nil, testvalues.FirstUniversalClientID)
+		counterpartyInfo, err := s.ics26Contract.GetCounterparty(nil, multichainChainAUniversalClientID)
 		s.Require().NoError(err)
 		s.Require().Equal(testvalues.FirstWasmClientID, counterpartyInfo.ClientId)
 
-		clientAddress, err = s.ics26Contract.GetClient(nil, testvalues.SecondUniversalClientID)
+		clientAddress, err = s.ics26Contract.GetClient(nil, multichainChainBUniversalClientID)
 		s.Require().NoError(err)
 		s.Require().Equal(s.chainBGroth16Ics07Address, clientAddress)
 
-		counterpartyInfo, err = s.ics26Contract.GetCounterparty(nil, testvalues.SecondUniversalClientID)
+		counterpartyInfo, err = s.ics26Contract.GetCounterparty(nil, multichainChainBUniversalClientID)
 		s.Require().NoError(err)
 		s.Require().Equal(testvalues.FirstWasmClientID, counterpartyInfo.ClientId)
 	}))
@@ -555,7 +800,7 @@ func (s *MultichainTestSuite) Test_Deploy() {
 			ClientId: testvalues.FirstWasmClientID,
 		})
 		s.Require().NoError(err)
-		s.Require().Equal(testvalues.FirstUniversalClientID, counterpartyInfoResp.CounterpartyInfo.ClientId)
+		s.Require().Equal(multichainChainAUniversalClientID, counterpartyInfoResp.CounterpartyInfo.ClientId)
 	}))
 
 	s.Require().True(s.Run("Verify ethereum light client for SimdB", func() {
@@ -568,7 +813,7 @@ func (s *MultichainTestSuite) Test_Deploy() {
 			ClientId: testvalues.FirstWasmClientID,
 		})
 		s.Require().NoError(err)
-		s.Require().Equal(testvalues.SecondUniversalClientID, counterpartyInfoResp.CounterpartyInfo.ClientId)
+		s.Require().Equal(multichainChainBUniversalClientID, counterpartyInfoResp.CounterpartyInfo.ClientId)
 	}))
 
 	s.Require().True(s.Run("Verify Light Client of Chain A on Chain B", func() {
@@ -597,73 +842,6 @@ func (s *MultichainTestSuite) Test_Deploy() {
 		s.Require().Equal(simdB.Config().ChainID, clientState.ChainId)
 	}))
 
-	time.Sleep(5 * time.Second) // wait for the relayer to start
-
-	s.Require().True(s.Run("Verify SimdA to Eth Relayer Info", func() {
-		info, err := s.RelayerClient.Info(context.Background(), &relayertypes.InfoRequest{
-			SrcChain: simdA.Config().ChainID,
-			DstChain: eth.ChainID.String(),
-		})
-		s.Require().NoError(err)
-		s.Require().NotNil(info)
-		s.Require().Equal(simdA.Config().ChainID, info.SourceChain.ChainId)
-		s.Require().Equal(eth.ChainID.String(), info.TargetChain.ChainId)
-	}))
-
-	s.Require().True(s.Run("Verify Eth to SimdA Relayer Info", func() {
-		info, err := s.RelayerClient.Info(context.Background(), &relayertypes.InfoRequest{
-			SrcChain: eth.ChainID.String(),
-			DstChain: simdA.Config().ChainID,
-		})
-		s.Require().NoError(err)
-		s.Require().NotNil(info)
-		s.Require().Equal(eth.ChainID.String(), info.SourceChain.ChainId)
-		s.Require().Equal(simdA.Config().ChainID, info.TargetChain.ChainId)
-	}))
-
-	s.Require().True(s.Run("Verify SimdB to Eth Relayer Info", func() {
-		info, err := s.RelayerClient.Info(context.Background(), &relayertypes.InfoRequest{
-			SrcChain: simdB.Config().ChainID,
-			DstChain: eth.ChainID.String(),
-		})
-		s.Require().NoError(err)
-		s.Require().NotNil(info)
-		s.Require().Equal(simdB.Config().ChainID, info.SourceChain.ChainId)
-		s.Require().Equal(eth.ChainID.String(), info.TargetChain.ChainId)
-	}))
-
-	s.Require().True(s.Run("Verify Eth to SimdB Relayer Info", func() {
-		info, err := s.RelayerClient.Info(context.Background(), &relayertypes.InfoRequest{
-			SrcChain: eth.ChainID.String(),
-			DstChain: simdB.Config().ChainID,
-		})
-		s.Require().NoError(err)
-		s.Require().NotNil(info)
-		s.Require().Equal(eth.ChainID.String(), info.SourceChain.ChainId)
-		s.Require().Equal(simdB.Config().ChainID, info.TargetChain.ChainId)
-	}))
-
-	s.Require().True(s.Run("Verify Chain A to Chain B Relayer Info", func() {
-		info, err := s.RelayerClient.Info(context.Background(), &relayertypes.InfoRequest{
-			SrcChain: simdA.Config().ChainID,
-			DstChain: simdB.Config().ChainID,
-		})
-		s.Require().NoError(err)
-		s.Require().NotNil(info)
-		s.Require().Equal(simdA.Config().ChainID, info.SourceChain.ChainId)
-		s.Require().Equal(simdB.Config().ChainID, info.TargetChain.ChainId)
-	}))
-
-	s.Require().True(s.Run("Verify Chain B to Chain A Relayer Info", func() {
-		info, err := s.RelayerClient.Info(context.Background(), &relayertypes.InfoRequest{
-			SrcChain: simdB.Config().ChainID,
-			DstChain: simdA.Config().ChainID,
-		})
-		s.Require().NoError(err)
-		s.Require().NotNil(info)
-		s.Require().Equal(simdB.Config().ChainID, info.SourceChain.ChainId)
-		s.Require().Equal(simdA.Config().ChainID, info.TargetChain.ChainId)
-	}))
 }
 
 func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
@@ -674,13 +852,12 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 
 	eth, simdA, simdB := s.EthChain, s.CosmosChains[0], s.CosmosChains[1]
 
-	ics26Address := ethcommon.HexToAddress(s.contractAddresses.Ics26Router)
 	ics20Address := ethcommon.HexToAddress(s.contractAddresses.Ics20Transfer)
 	transferAmount := big.NewInt(testvalues.TransferAmount)
 	ethereumUserAddress := crypto.PubkeyToAddress(s.key.PublicKey)
 	simdAUser, simdBUser := s.CosmosUsers[0], s.CosmosUsers[1]
 
-	var simdASendTxHash []byte
+	var denomOnEthereum transfertypes.Denom
 	s.Require().True(s.Run("Send transfer on SimdA chain", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 		transferCoin := sdk.NewCoin(simdA.Config().Denom, sdkmath.NewIntFromBigInt(transferAmount))
@@ -715,8 +892,8 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 		s.Require().NoError(err)
 		s.Require().NotEmpty(resp.TxHash)
 
-		simdASendTxHash, err = hex.DecodeString(resp.TxHash)
-		s.Require().NoError(err)
+		packet := s.packetFromSendPacketResponse(resp, testvalues.FirstWasmClientID, multichainChainAUniversalClientID, timeout, payload)
+		denomOnEthereum = transfertypes.NewDenom(transferCoin.Denom, transfertypes.NewHop(packet.Payloads[0].DestinationPort, packet.DestinationClient))
 
 		s.Require().True(s.Run("Verify balances on Cosmos chain", func() {
 			// Check the balance of UserB
@@ -734,47 +911,14 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 		ibcERC20        *ibcerc20.Contract
 		ibcERC20Address ethcommon.Address
 	)
-	s.Require().True(s.Run("Receive packet on Ethereum", func() {
-		var recvRelayTx []byte
-		s.Require().True(s.Run("Retrieve relay tx", func() {
-			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
-				SrcChain:    simdA.Config().ChainID,
-				DstChain:    eth.ChainID.String(),
-				SourceTxIds: [][]byte{simdASendTxHash},
-				SrcClientId: testvalues.FirstWasmClientID,
-				DstClientId: testvalues.FirstUniversalClientID,
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Equal(resp.Address, ics26Address.String())
-
-			recvRelayTx = resp.Tx
-		}))
-
-		var packet ics26router.IICS26RouterMsgsPacket
-		s.Require().True(s.Run("Submit relay tx", func() {
-			receipt, err := eth.BroadcastTx(ctx, s.EthRelayerSubmitter, 5_000_000, &ics26Address, recvRelayTx)
-			s.Require().NoError(err)
-			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
-
-			ethReceiveAckEvent, err := e2esuite.GetEvmEvent(receipt, s.ics26Contract.ParseWriteAcknowledgement)
-			s.Require().NoError(err)
-
-			packet = ethReceiveAckEvent.Packet
-			// ackTxHash = receipt.TxHash.Bytes()
-			// NOTE: ackTxHash is not used in the test since acking the packet is not necessary
-		}))
-
-		// Recreate the full denom path
-		transferCoin := sdk.NewCoin(simdA.Config().Denom, sdkmath.NewIntFromBigInt(transferAmount))
-		denomOnEthereum := transfertypes.NewDenom(transferCoin.Denom, transfertypes.NewHop(packet.Payloads[0].DestPort, packet.DestClient))
-
-		var err error
-		ibcERC20Address, err = s.ics20Contract.IbcERC20Contract(nil, denomOnEthereum.Path())
-		s.Require().NoError(err)
-
-		ibcERC20, err = ibcerc20.NewContract(ibcERC20Address, eth.RPCClient)
-		s.Require().NoError(err)
+	s.Require().True(s.Run("Receive packet on Ethereum (auto-relayed)", func() {
+		ibcERC20Address, ibcERC20 = s.waitForIbcERC20Balance(
+			eth,
+			denomOnEthereum.Path(),
+			ethereumUserAddress,
+			transferAmount,
+			autoRelayTimeout(1),
+		)
 
 		actualFullDenom, err := ibcERC20.FullDenomPath(nil)
 		s.Require().NoError(err)
@@ -806,14 +950,13 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 		s.Require().Equal(transferAmount, allowance)
 	}))
 
-	var ethSendTxHash []byte
 	s.Require().True(s.Run("Transfer tokens from Ethereum to SimdB", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
 			Denom:            ibcERC20Address,
 			Amount:           transferAmount,
 			Receiver:         simdBUser.FormattedAddress(),
-			SourceClient:     testvalues.SecondUniversalClientID,
+			SourceClient:     multichainChainBUniversalClientID,
 			DestPort:         transfertypes.PortID,
 			TimeoutTimestamp: timeout,
 			Memo:             "",
@@ -825,8 +968,6 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 		receipt, err := eth.GetTxReciept(ctx, tx.Hash())
 		s.Require().NoError(err)
 		s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status)
-
-		ethSendTxHash = tx.Hash().Bytes()
 
 		s.True(s.Run("Verify balances on Ethereum", func() {
 			userBalance, err := ibcERC20.BalanceOf(nil, ethereumUserAddress)
@@ -841,35 +982,16 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 	}))
 
 	var finalDenom transfertypes.Denom
-	s.Require().True(s.Run("Receive packet on SimdB", func() {
-		var relayTxBodyBz []byte
-		s.Require().True(s.Run("Retrieve relay tx", func() {
-			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
-				SrcChain:    eth.ChainID.String(),
-				DstChain:    simdB.Config().ChainID,
-				SourceTxIds: [][]byte{ethSendTxHash},
-				SrcClientId: testvalues.SecondUniversalClientID,
-				DstClientId: testvalues.FirstWasmClientID,
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			relayTxBodyBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx", func() {
-			_ = s.MustBroadcastSdkTxBody(ctx, simdB, s.SimdBRelayerSubmitter, 2_000_000, relayTxBodyBz)
-		}))
-
+	s.Require().True(s.Run("Receive packet on SimdB (auto-relayed)", func() {
 		s.Require().True(s.Run("Verify balances on Cosmos chain", func() {
 			finalDenom = transfertypes.NewDenom(
 				simdA.Config().Denom,
 				transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID),
-				transfertypes.NewHop(transfertypes.PortID, testvalues.FirstUniversalClientID),
+				transfertypes.NewHop(transfertypes.PortID, multichainChainAUniversalClientID),
 			)
 
 			// Check the balance of UserB
+			s.waitForCosmosBalance(ctx, simdB, simdBUser.FormattedAddress(), finalDenom.IBCDenom(), transferAmount, autoRelayTimeout(1))
 			resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simdB, &banktypes.QueryBalanceRequest{
 				Address: simdBUser.FormattedAddress(),
 				Denom:   finalDenom.IBCDenom(),
@@ -914,32 +1036,8 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 		s.Require().NoError(err)
 		s.Require().NotEmpty(resp.TxHash)
 
-		simdBSendTxHash, err := hex.DecodeString(resp.TxHash)
-		s.Require().NoError(err)
-
-		s.Require().True(s.Run("Receive packet on Ethereum", func() {
-			var relayTxBodyBz []byte
-			s.Require().True(s.Run("Retrieve relay tx", func() {
-				resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
-					SrcChain:    simdB.Config().ChainID,
-					DstChain:    eth.ChainID.String(),
-					SourceTxIds: [][]byte{simdBSendTxHash},
-					SrcClientId: testvalues.FirstWasmClientID,
-					DstClientId: testvalues.SecondUniversalClientID,
-				})
-				s.Require().NoError(err)
-				s.Require().NotEmpty(resp.Tx)
-				s.Require().Equal(ics26Address.String(), resp.Address)
-
-				relayTxBodyBz = resp.Tx
-			}))
-
-			s.Require().True(s.Run("Submit relay tx", func() {
-				receipt, err := eth.BroadcastTx(ctx, s.EthRelayerSubmitter, 5_000_000, &ics26Address, relayTxBodyBz)
-				s.Require().NoError(err)
-				s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
-			}))
-
+		s.Require().True(s.Run("Receive packet on Ethereum (auto-relayed)", func() {
+			_, ibcERC20 = s.waitForIbcERC20Balance(eth, denomOnEthereum.Path(), ethereumUserAddress, transferAmount, autoRelayTimeout(1))
 			s.True(s.Run("Verify balances on Ethereum", func() {
 				userBalance, err := ibcERC20.BalanceOf(nil, ethereumUserAddress)
 				s.Require().NoError(err)
@@ -972,7 +1070,7 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 			Denom:            ibcERC20Address,
 			Amount:           transferAmount,
 			Receiver:         simdAUser.FormattedAddress(),
-			SourceClient:     testvalues.FirstUniversalClientID,
+			SourceClient:     multichainChainAUniversalClientID,
 			DestPort:         transfertypes.PortID,
 			TimeoutTimestamp: timeout,
 			Memo:             "",
@@ -984,31 +1082,10 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 		receipt, err := eth.GetTxReciept(ctx, tx.Hash())
 		s.Require().NoError(err)
 		s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status)
-
-		ethSendTxHash = tx.Hash().Bytes()
 	}))
 
-	s.Require().True(s.Run("Receive packet on SimdA", func() {
-		var relayTxBodyBz []byte
-		s.Require().True(s.Run("Retrieve relay tx", func() {
-			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
-				SrcChain:    eth.ChainID.String(),
-				DstChain:    simdA.Config().ChainID,
-				SourceTxIds: [][]byte{ethSendTxHash},
-				SrcClientId: testvalues.FirstUniversalClientID,
-				DstClientId: testvalues.FirstWasmClientID,
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			relayTxBodyBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx", func() {
-			_ = s.MustBroadcastSdkTxBody(ctx, simdA, s.SimdARelayerSubmitter, 2_000_000, relayTxBodyBz)
-		}))
-
+	s.Require().True(s.Run("Receive packet on SimdA (auto-relayed)", func() {
+		s.waitForCosmosBalance(ctx, simdA, simdAUser.FormattedAddress(), simdA.Config().Denom, big.NewInt(testvalues.InitialBalance), autoRelayTimeout(1))
 		s.Require().True(s.Run("Verify balances on Cosmos chain", func() {
 			resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simdA, &banktypes.QueryBalanceRequest{
 				Address: simdAUser.FormattedAddress(),
@@ -1035,6 +1112,7 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 	transferAmount := big.NewInt(testvalues.TransferAmount)
 	ethereumUserAddress := crypto.PubkeyToAddress(s.key.PublicKey)
 	simdAUser, simdBUser := s.CosmosUsers[0], s.CosmosUsers[1]
+	denomOnSimdA := transfertypes.NewDenom(s.contractAddresses.Erc20, transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID))
 
 	s.Require().True(s.Run("Approve the ICS20Transfer.sol contract to spend the erc20 tokens", func() {
 		tx, err := s.erc20Contract.Approve(s.GetTransactOpts(s.key, eth), ics20Address, transferAmount)
@@ -1049,10 +1127,7 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 		s.Require().Equal(transferAmount, allowance)
 	}))
 
-	var (
-		ethSendTxHash []byte
-		escrowAddress ethcommon.Address
-	)
+	var escrowAddress ethcommon.Address
 	s.Require().True(s.Run("Send from Ethereum to SimdA", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 
@@ -1060,7 +1135,7 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 			Denom:            erc20Address,
 			Amount:           transferAmount,
 			Receiver:         simdAUser.FormattedAddress(),
-			SourceClient:     testvalues.FirstUniversalClientID,
+			SourceClient:     multichainChainAUniversalClientID,
 			DestPort:         transfertypes.PortID,
 			TimeoutTimestamp: timeout,
 			Memo:             "",
@@ -1072,8 +1147,6 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 		s.Require().NoError(err)
 		s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status)
 
-		ethSendTxHash = tx.Hash().Bytes()
-
 		s.True(s.Run("Verify balances on Ethereum", func() {
 			// User balance on Ethereum
 			userBalance, err := s.erc20Contract.BalanceOf(nil, ethereumUserAddress)
@@ -1081,7 +1154,7 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 			s.Require().Equal(new(big.Int).Sub(testvalues.StartingERC20Balance, transferAmount), userBalance)
 
 			// Get the escrow contract address
-			escrowAddress, err = s.ics20Contract.GetEscrow(nil, testvalues.FirstUniversalClientID)
+			escrowAddress, err = s.ics20Contract.GetEscrow(nil, multichainChainAUniversalClientID)
 			s.Require().NoError(err)
 
 			// ICS20 contract balance on Ethereum
@@ -1091,31 +1164,9 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 		}))
 	}))
 
-	s.Require().True(s.Run("Receive packets on SimdA", func() {
-		var relayTxBodyBz []byte
-		s.Require().True(s.Run("Retrieve relay tx", func() {
-			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
-				SrcChain:    eth.ChainID.String(),
-				DstChain:    simdA.Config().ChainID,
-				SourceTxIds: [][]byte{ethSendTxHash},
-				SrcClientId: testvalues.FirstUniversalClientID,
-				DstClientId: testvalues.FirstWasmClientID,
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			relayTxBodyBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx", func() {
-			_ = s.MustBroadcastSdkTxBody(ctx, simdA, s.SimdARelayerSubmitter, 2_000_000, relayTxBodyBz)
-			// NOTE: We don't need to check the response since we don't need to acknowledge the packet
-		}))
-
+	s.Require().True(s.Run("Receive packets on SimdA (auto-relayed)", func() {
+		s.waitForCosmosBalance(ctx, simdA, simdAUser.FormattedAddress(), denomOnSimdA.IBCDenom(), transferAmount, autoRelayTimeout(1))
 		s.Require().True(s.Run("Verify balances on Cosmos chain", func() {
-			denomOnSimdA := transfertypes.NewDenom(s.contractAddresses.Erc20, transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID))
-
 			// User balance on Cosmos chain
 			resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simdA, &banktypes.QueryBalanceRequest{
 				Address: simdAUser.FormattedAddress(),
@@ -1128,9 +1179,8 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 		}))
 	}))
 
-	var simdASendTxHash []byte
+	var simdAPacket channeltypesv2.Packet
 	s.Require().True(s.Run("Send from SimdA to SimdB", func() {
-		denomOnSimdA := transfertypes.NewDenom(s.contractAddresses.Erc20, transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID))
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 
 		transferPayload := transfertypes.FungibleTokenPacketData{
@@ -1162,32 +1212,12 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 		s.Require().NoError(err)
 		s.Require().NotEmpty(resp.TxHash)
 
-		simdASendTxHash, err = hex.DecodeString(resp.TxHash)
-		s.Require().NoError(err)
+		simdAPacket = s.packetFromSendPacketResponse(resp, ibctesting.SecondClientID, ibctesting.SecondClientID, timeout, payload)
 	}))
 
 	var finalDenom transfertypes.Denom
 	s.Require().True(s.Run("Receive packet on SimdB", func() {
-		var txBodyBz []byte
-		s.Require().True(s.Run("Retrieve relay tx to SimdB", func() {
-			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
-				SrcChain:    simdA.Config().ChainID,
-				DstChain:    simdB.Config().ChainID,
-				SourceTxIds: [][]byte{simdASendTxHash},
-				SrcClientId: ibctesting.SecondClientID,
-				DstClientId: ibctesting.SecondClientID,
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			txBodyBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx on SimdB", func() {
-			_ = s.MustBroadcastSdkTxBody(ctx, simdB, s.SimdBRelayerSubmitter, 2_000_000, txBodyBz)
-			// NOTE: We don't need to check the response since we don't need to acknowledge the packet
-		}))
+		s.relayCosmosPacket(ctx, simdA, simdB, s.SimdBRelayerSubmitter, ibctesting.SecondClientID, simdAPacket)
 
 		s.Require().True(s.Run("Verify balances on Cosmos chain", func() {
 			finalDenom = transfertypes.NewDenom(
@@ -1209,7 +1239,7 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 	}))
 
 	// Transfer back (unwind)
-	var simdBTransferTxHash []byte
+	var simdBPacket channeltypesv2.Packet
 	s.Require().True(s.Run("Transfer tokens from SimdB to SimdA", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 		transferPayload := transfertypes.FungibleTokenPacketData{
@@ -1239,33 +1269,13 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 		s.Require().NoError(err)
 		s.Require().NotEmpty(resp.TxHash)
 
-		simdBTransferTxHash, err = hex.DecodeString(resp.TxHash)
-		s.Require().NoError(err)
+		simdBPacket = s.packetFromSendPacketResponse(resp, ibctesting.SecondClientID, ibctesting.SecondClientID, timeout, payload)
 	}))
 
 	s.Require().True(s.Run("Receive packet on SimdA", func() {
-		var relayTxBodyBz []byte
-		s.Require().True(s.Run("Retrieve relay tx", func() {
-			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
-				SrcChain:    simdB.Config().ChainID,
-				DstChain:    simdA.Config().ChainID,
-				SourceTxIds: [][]byte{simdBTransferTxHash},
-				SrcClientId: ibctesting.SecondClientID,
-				DstClientId: ibctesting.SecondClientID,
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			relayTxBodyBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx on SimdA", func() {
-			_ = s.MustBroadcastSdkTxBody(ctx, simdA, s.SimdARelayerSubmitter, 2_000_000, relayTxBodyBz)
-		}))
+		s.relayCosmosPacket(ctx, simdB, simdA, s.SimdARelayerSubmitter, ibctesting.SecondClientID, simdBPacket)
 
 		s.Require().True(s.Run("Verify balances on SimdA", func() {
-			denomOnSimdA := transfertypes.NewDenom(s.contractAddresses.Erc20, transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID))
 			resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simdA, &banktypes.QueryBalanceRequest{
 				Address: simdAUser.FormattedAddress(),
 				Denom:   denomOnSimdA.IBCDenom(),
@@ -1279,7 +1289,6 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 
 	s.Require().True(s.Run("Transfer tokens from SimdA to Ethereum", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
-		denomOnSimdA := transfertypes.NewDenom(s.contractAddresses.Erc20, transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID))
 		transferPayload := transfertypes.FungibleTokenPacketData{
 			Denom:    denomOnSimdA.Path(),
 			Amount:   transferAmount.String(),
@@ -1307,34 +1316,14 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 		s.Require().NoError(err)
 		s.Require().NotEmpty(resp.TxHash)
 
-		simdASendTxHash, err = hex.DecodeString(resp.TxHash)
-		s.Require().NoError(err)
-
-		s.Require().True(s.Run("Receive packet on Ethereum", func() {
-			ics26Address := ethcommon.HexToAddress(s.contractAddresses.Ics26Router)
-
-			var relayTxBodyBz []byte
-			s.Require().True(s.Run("Retrieve relay tx", func() {
-				resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
-					SrcChain:    simdA.Config().ChainID,
-					DstChain:    eth.ChainID.String(),
-					SourceTxIds: [][]byte{simdASendTxHash},
-					SrcClientId: testvalues.FirstWasmClientID,
-					DstClientId: testvalues.FirstUniversalClientID,
-				})
-				s.Require().NoError(err)
-				s.Require().NotEmpty(resp.Tx)
-				s.Require().Equal(ics26Address.String(), resp.Address)
-
-				relayTxBodyBz = resp.Tx
-			}))
-
-			s.Require().True(s.Run("Submit relay tx", func() {
-				receipt, err := eth.BroadcastTx(ctx, s.EthRelayerSubmitter, 5_000_000, &ics26Address, relayTxBodyBz)
-				s.Require().NoError(err)
-				s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
-			}))
-
+		s.Require().True(s.Run("Receive packet on Ethereum (auto-relayed)", func() {
+			s.Require().Eventually(func() bool {
+				userBalance, err := s.erc20Contract.BalanceOf(nil, ethereumUserAddress)
+				if err != nil || userBalance == nil {
+					return false
+				}
+				return userBalance.Cmp(testvalues.StartingERC20Balance) == 0
+			}, autoRelayTimeout(1), 5*time.Second, "timed out waiting for ERC20 balance on Ethereum")
 			s.True(s.Run("Verify balances on Ethereum", func() {
 				userBalance, err := s.erc20Contract.BalanceOf(nil, ethereumUserAddress)
 				s.Require().NoError(err)
@@ -1360,7 +1349,7 @@ func (s *MultichainTestSuite) Test_TransferCosmosToCosmosToEth() {
 
 	ics20Address := ethcommon.HexToAddress(s.contractAddresses.Ics20Transfer)
 
-	var simdASendTxHash []byte
+	var simdAPacket channeltypesv2.Packet
 	s.Require().True(s.Run("Send from SimdA to SimdB", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 
@@ -1392,8 +1381,7 @@ func (s *MultichainTestSuite) Test_TransferCosmosToCosmosToEth() {
 		s.Require().NoError(err)
 		s.Require().NotEmpty(resp.TxHash)
 
-		simdASendTxHash, err = hex.DecodeString(resp.TxHash)
-		s.Require().NoError(err)
+		simdAPacket = s.packetFromSendPacketResponse(resp, ibctesting.SecondClientID, ibctesting.SecondClientID, timeout, payload)
 	}))
 
 	denomOnSimdB := transfertypes.NewDenom(
@@ -1401,25 +1389,7 @@ func (s *MultichainTestSuite) Test_TransferCosmosToCosmosToEth() {
 		transfertypes.NewHop(transfertypes.PortID, ibctesting.SecondClientID),
 	)
 	s.Require().True(s.Run("Receive packet on SimdB", func() {
-		var txBodyBz []byte
-		s.Require().True(s.Run("Retrieve relay tx to SimdB", func() {
-			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
-				SrcChain:    simdA.Config().ChainID,
-				DstChain:    simdB.Config().ChainID,
-				SourceTxIds: [][]byte{simdASendTxHash},
-				SrcClientId: ibctesting.SecondClientID,
-				DstClientId: ibctesting.SecondClientID,
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			txBodyBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx on SimdB", func() {
-			_ = s.MustBroadcastSdkTxBody(ctx, simdB, s.SimdBRelayerSubmitter, 2_000_000, txBodyBz)
-		}))
+		s.relayCosmosPacket(ctx, simdA, simdB, s.SimdBRelayerSubmitter, ibctesting.SecondClientID, simdAPacket)
 
 		s.Require().True(s.Run("Verify balances on SimdB", func() {
 			resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simdB, &banktypes.QueryBalanceRequest{
@@ -1433,7 +1403,6 @@ func (s *MultichainTestSuite) Test_TransferCosmosToCosmosToEth() {
 		}))
 	}))
 
-	var simdBTransferTxHash []byte
 	s.Require().True(s.Run("Transfer tokens from SimdB to Eth", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 		transferCoin := sdk.NewCoin(denomOnSimdB.IBCDenom(), sdkmath.NewIntFromBigInt(transferAmount))
@@ -1464,42 +1433,17 @@ func (s *MultichainTestSuite) Test_TransferCosmosToCosmosToEth() {
 		resp, err := s.BroadcastMessages(ctx, simdB, simdBUser, 2_000_000, msgSendPacket)
 		s.Require().NoError(err)
 		s.Require().NotEmpty(resp.TxHash)
-
-		simdBTransferTxHash, err = hex.DecodeString(resp.TxHash)
-		s.Require().NoError(err)
 	}))
 
 	var denomOnEthereum transfertypes.Denom
 	var ibcERC20 *ibcerc20.Contract
-	s.Require().True(s.Run("Receive packet on Ethereum", func() {
-		ics26Address := ethcommon.HexToAddress(s.contractAddresses.Ics26Router)
-
-		var relayTxBodyBz []byte
-		s.Require().True(s.Run("Retrieve relay tx", func() {
-			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
-				SrcChain:    simdB.Config().ChainID,
-				DstChain:    eth.ChainID.String(),
-				SourceTxIds: [][]byte{simdBTransferTxHash},
-				SrcClientId: testvalues.FirstWasmClientID,
-				DstClientId: testvalues.SecondUniversalClientID,
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Equal(ics26Address.String(), resp.Address)
-
-			relayTxBodyBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Submit relay tx", func() {
-			receipt, err := eth.BroadcastTx(ctx, s.EthRelayerSubmitter, 5_000_000, &ics26Address, relayTxBodyBz)
-			s.Require().NoError(err)
-			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
-			denomOnEthereum = transfertypes.NewDenom(
-				simdA.Config().Denom,
-				transfertypes.NewHop(transfertypes.PortID, testvalues.SecondUniversalClientID),
-				transfertypes.NewHop(transfertypes.PortID, ibctesting.SecondClientID),
-			)
-		}))
+	s.Require().True(s.Run("Receive packet on Ethereum (auto-relayed)", func() {
+		denomOnEthereum = transfertypes.NewDenom(
+			simdA.Config().Denom,
+			transfertypes.NewHop(transfertypes.PortID, multichainChainBUniversalClientID),
+			transfertypes.NewHop(transfertypes.PortID, ibctesting.SecondClientID),
+		)
+		_, ibcERC20 = s.waitForIbcERC20Balance(eth, denomOnEthereum.Path(), ethereumUserAddress, transferAmount, autoRelayTimeout(1))
 
 		s.True(s.Run("Verify balances on Ethereum", func() {
 			ibcERC20Address, err := s.ics20Contract.IbcERC20Contract(nil, denomOnEthereum.Path())
@@ -1514,7 +1458,6 @@ func (s *MultichainTestSuite) Test_TransferCosmosToCosmosToEth() {
 		}))
 	}))
 
-	var ethReturnSendTxHash []byte
 	s.Require().True(s.Run("Transfer tokens from Ethereum to SimdB", func() {
 		s.Require().True(s.Run("Approve the ICS20Transfer.sol contract to spend the erc20 tokens", func() {
 			tx, err := ibcERC20.Approve(s.GetTransactOpts(s.key, eth), ics20Address, transferAmount)
@@ -1538,7 +1481,7 @@ func (s *MultichainTestSuite) Test_TransferCosmosToCosmosToEth() {
 				Amount:           transferAmount,
 				Receiver:         simdBUser.FormattedAddress(),
 				TimeoutTimestamp: timeout,
-				SourceClient:     testvalues.SecondUniversalClientID,
+				SourceClient:     multichainChainBUniversalClientID,
 				DestPort:         transfertypes.PortID,
 				Memo:             "testmemo",
 			}
@@ -1549,31 +1492,10 @@ func (s *MultichainTestSuite) Test_TransferCosmosToCosmosToEth() {
 			receipt, err := eth.GetTxReciept(ctx, tx.Hash())
 			s.Require().NoError(err)
 			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status)
-
-			ethReturnSendTxHash = tx.Hash().Bytes()
 		}))
 
-		s.Require().True(s.Run("Receive packet on SimdB", func() {
-			var returnRelayTxBodyBz []byte
-			s.Require().True(s.Run("Retrieve relay tx", func() {
-				resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
-					SrcChain:    eth.ChainID.String(),
-					DstChain:    simdB.Config().ChainID,
-					SourceTxIds: [][]byte{ethReturnSendTxHash},
-					SrcClientId: testvalues.SecondUniversalClientID,
-					DstClientId: testvalues.FirstWasmClientID,
-				})
-				s.Require().NoError(err)
-				s.Require().NotEmpty(resp.Tx)
-				s.Require().Empty(resp.Address)
-
-				returnRelayTxBodyBz = resp.Tx
-			}))
-
-			s.Require().True(s.Run("Broadcast relay tx on SimdB", func() {
-				_ = s.MustBroadcastSdkTxBody(ctx, simdB, s.SimdBRelayerSubmitter, 2_000_000, returnRelayTxBodyBz)
-			}))
-
+		s.Require().True(s.Run("Receive packet on SimdB (auto-relayed)", func() {
+			s.waitForCosmosBalance(ctx, simdB, simdBUser.FormattedAddress(), denomOnSimdB.IBCDenom(), transferAmount, autoRelayTimeout(1))
 			s.Require().True(s.Run("Verify balances on SimdB", func() {
 				resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simdB, &banktypes.QueryBalanceRequest{
 					Address: simdBUser.FormattedAddress(),
@@ -1587,6 +1509,7 @@ func (s *MultichainTestSuite) Test_TransferCosmosToCosmosToEth() {
 		}))
 	}))
 
+	var simdBPacket channeltypesv2.Packet
 	s.Require().True(s.Run("Transfer tokens from SimdB to SimdA", func() {
 		s.Require().True(s.Run("Send packet on SimdB", func() {
 			timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
@@ -1620,30 +1543,11 @@ func (s *MultichainTestSuite) Test_TransferCosmosToCosmosToEth() {
 			s.Require().NoError(err)
 			s.Require().NotEmpty(resp.TxHash)
 
-			simdBTransferTxHash, err = hex.DecodeString(resp.TxHash)
-			s.Require().NoError(err)
+			simdBPacket = s.packetFromSendPacketResponse(resp, ibctesting.SecondClientID, ibctesting.SecondClientID, timeout, payload)
 		}))
 
 		s.Require().True(s.Run("Receive packet on SimdA", func() {
-			var returnRelayTxBodyBz []byte
-			s.Require().True(s.Run("Retrieve relay tx", func() {
-				resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
-					SrcChain:    simdB.Config().ChainID,
-					DstChain:    simdA.Config().ChainID,
-					SourceTxIds: [][]byte{simdBTransferTxHash},
-					SrcClientId: ibctesting.SecondClientID,
-					DstClientId: ibctesting.SecondClientID,
-				})
-				s.Require().NoError(err)
-				s.Require().NotEmpty(resp.Tx)
-				s.Require().Empty(resp.Address)
-
-				returnRelayTxBodyBz = resp.Tx
-			}))
-
-			s.Require().True(s.Run("Broadcast relay tx on SimdA", func() {
-				_ = s.MustBroadcastSdkTxBody(ctx, simdA, s.SimdARelayerSubmitter, 2_000_000, returnRelayTxBodyBz)
-			}))
+			s.relayCosmosPacket(ctx, simdB, simdA, s.SimdARelayerSubmitter, ibctesting.SecondClientID, simdBPacket)
 
 			s.Require().True(s.Run("Verify balances on SimdA", func() {
 				resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simdA, &banktypes.QueryBalanceRequest{
