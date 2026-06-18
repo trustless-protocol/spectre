@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,7 +14,6 @@ import (
 	"time"
 
 	"github.com/cosmos/gogoproto/proto"
-	"github.com/stretchr/testify/require"
 	"github.com/stretchr/testify/suite"
 	"golang.org/x/sync/errgroup"
 
@@ -82,15 +82,12 @@ func (s *RelayerTestSuite) FilteredRecvPacketToEthTest(
 ) {
 	s.Require().GreaterOrEqual(numOfTransfers, len(recvFilter))
 	s.Require().Greater(numOfTransfers, 0)
-	// Partial filtering requires gRPC RelayByTx; the auto-relay daemon delivers all packets.
-	if len(recvFilter) > 0 && len(recvFilter) < numOfTransfers {
-		s.T().Skip("requires gRPC RelayByTx selective filtering; fast-ibc's daemon relays all packets")
-	}
 
 	s.SetupSuite(ctx, proofType)
 
-	_, simd := s.EthChain, s.CosmosChains[0]
+	eth, simd := s.EthChain, s.CosmosChains[0]
 
+	ics26Address := ethcommon.HexToAddress(s.contractAddresses.Ics26Router)
 	transferAmount := big.NewInt(testvalues.TransferAmount)
 	totalTransferAmount := big.NewInt(testvalues.TransferAmount * int64(numOfTransfers))
 	if totalTransferAmount.Int64() > testvalues.InitialBalance {
@@ -164,34 +161,39 @@ func (s *RelayerTestSuite) FilteredRecvPacketToEthTest(
 	}))
 
 	s.Require().True(s.Run("Receive packets on Ethereum", func() {
-		// The auto-relay daemon delivers all packets; wait for the IBC ERC20 balance to match.
-		denomOnEthereum := transfertypes.NewDenom(transferCoin.Denom, transfertypes.NewHop(transfertypes.PortID, testvalues.CustomClientID))
-		relayTimeout := autoRelayTimeout(numOfTransfers)
+		var relayTx []byte
+		s.Require().True(s.Run("Retrieve relay tx", func() {
+			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
+				SrcChain:           simd.Config().ChainID,
+				DstChain:           eth.ChainID.String(),
+				SourceTxIds:        sendTxHashes,
+				SrcClientId:        testvalues.FirstWasmClientID,
+				DstClientId:        testvalues.CustomClientID,
+				SrcPacketSequences: recvFilter,
+			})
+			s.Require().NoError(err)
+			s.Require().NotEmpty(resp.Tx)
+			s.Require().Equal(resp.Address, ics26Address.String())
 
-		s.Require().True(s.Run("Wait for auto-relay to deliver", func() {
-			require.Eventuallyf(s.T(), func() bool {
-				ibcERC20Addr, err := s.ics20Contract.IbcERC20Contract(nil, denomOnEthereum.Path())
-				if err != nil || ibcERC20Addr == (ethcommon.Address{}) {
-					return false
-				}
-				ibcERC20, err := ibcerc20.NewContract(ibcERC20Addr, s.EthChain.RPCClient)
-				if err != nil {
-					return false
-				}
-				userBalance, err := ibcERC20.BalanceOf(nil, ethereumUserAddress)
-				if err != nil {
-					return false
-				}
-				return userBalance.Cmp(totalRecvAmount) == 0
-			}, relayTimeout, 5*time.Second,
-				"auto-relay did not deliver %d packets to Ethereum within timeout", numOfTransfers)
+			relayTx = resp.Tx
+		}))
+
+		s.Require().True(s.Run("Submit relay tx", func() {
+			receipt, err := eth.BroadcastTx(ctx, s.EthRelayerSubmitter, 5_000_000, &ics26Address, relayTx)
+			s.Require().NoError(err)
+			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
 		}))
 
 		s.Require().True(s.Run("Verify balances on Ethereum", func() {
+			denomOnEthereum := transfertypes.NewDenom(transferCoin.Denom, transfertypes.NewHop(transfertypes.PortID, testvalues.CustomClientID))
+
 			ibcERC20Addr, err := s.ics20Contract.IbcERC20Contract(nil, denomOnEthereum.Path())
 			s.Require().NoError(err)
-			ibcERC20, err := ibcerc20.NewContract(ibcERC20Addr, s.EthChain.RPCClient)
+
+			ibcERC20, err := ibcerc20.NewContract(ethcommon.HexToAddress(ibcERC20Addr.Hex()), s.EthChain.RPCClient)
 			s.Require().NoError(err)
+
+			// User balance on Ethereum
 			userBalance, err := ibcERC20.BalanceOf(nil, ethereumUserAddress)
 			s.Require().NoError(err)
 			s.Require().Equal(totalRecvAmount, userBalance)
@@ -211,8 +213,6 @@ func (s *RelayerTestSuite) Test_2_ConcurrentRecvPacketToEth() {
 func (s *RelayerTestSuite) ConcurrentRecvPacketToEthTest(
 	ctx context.Context, proofType types.SupportedProofType, numConcurrentTransfers int,
 ) {
-	s.T().Skip("requires concurrent gRPC RelayByTx calls; not compatible with fast-ibc's auto-relay daemon")
-
 	s.Require().Greater(numConcurrentTransfers, 0)
 
 	s.SetupSuite(ctx, proofType)
@@ -355,15 +355,12 @@ func (s *RelayerTestSuite) ICS20TransferERC20TokenBatchedAckToEthTest(
 ) {
 	s.Require().GreaterOrEqual(numOfTransfers, len(ackFilter))
 	s.Require().Greater(numOfTransfers, 0)
-	// Partial ack filtering requires gRPC RelayByTx; the auto-relay daemon acks all packets.
-	if len(ackFilter) > 0 && len(ackFilter) < numOfTransfers {
-		s.T().Skip("requires gRPC RelayByTx selective ack filtering; fast-ibc's daemon acks all packets")
-	}
 
 	s.SetupSuite(ctx, proofType)
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
 
+	ics26Address := ethcommon.HexToAddress(s.contractAddresses.Ics26Router)
 	ics20Address := ethcommon.HexToAddress(s.contractAddresses.Ics20Transfer)
 	erc20Address := ethcommon.HexToAddress(s.contractAddresses.Erc20)
 
@@ -437,26 +434,36 @@ func (s *RelayerTestSuite) ICS20TransferERC20TokenBatchedAckToEthTest(
 		}))
 	}))
 
+	var ackTxHash []byte
 	s.Require().True(s.Run("Receive packets on Cosmos chain", func() {
-		// Auto-relay daemon delivers the ETH→Cosmos recv; wait for the IBC token to arrive.
-		denomOnCosmos := transfertypes.NewDenom(s.contractAddresses.Erc20, transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID))
-		relayTimeout := autoRelayTimeout(numOfTransfers)
+		var relayTxBodyBz []byte
+		s.Require().True(s.Run("Retrieve relay tx", func() {
+			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
+				SrcChain:    eth.ChainID.String(),
+				DstChain:    simd.Config().ChainID,
+				SourceTxIds: sendTxHashes,
+				SrcClientId: testvalues.CustomClientID,
+				DstClientId: testvalues.FirstWasmClientID,
+			})
+			s.Require().NoError(err)
+			s.Require().NotEmpty(resp.Tx)
+			s.Require().Empty(resp.Address)
 
-		s.Require().True(s.Run("Wait for auto-relay to deliver", func() {
-			require.Eventuallyf(s.T(), func() bool {
-				resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simd, &banktypes.QueryBalanceRequest{
-					Address: cosmosUserAddress,
-					Denom:   denomOnCosmos.IBCDenom(),
-				})
-				if err != nil || resp.Balance == nil {
-					return false
-				}
-				return resp.Balance.Amount.BigInt().Cmp(totalTransferAmount) == 0
-			}, relayTimeout, 5*time.Second,
-				"auto-relay did not deliver %d packets to Cosmos within timeout", numOfTransfers)
+			relayTxBodyBz = resp.Tx
+		}))
+
+		s.Require().True(s.Run("Broadcast relay tx", func() {
+			resp := s.MustBroadcastSdkTxBody(ctx, simd, s.SimdRelayerSubmitter, 5_000_000, relayTxBodyBz)
+
+			ackTxHash, err = hex.DecodeString(resp.TxHash)
+			s.Require().NoError(err)
+			s.Require().NotEmpty(ackTxHash)
 		}))
 
 		s.Require().True(s.Run("Verify balances on Cosmos chain", func() {
+			denomOnCosmos := transfertypes.NewDenom(s.contractAddresses.Erc20, transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID))
+
+			// User balance on Cosmos chain
 			resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simd, &banktypes.QueryBalanceRequest{
 				Address: cosmosUserAddress,
 				Denom:   denomOnCosmos.IBCDenom(),
@@ -469,32 +476,52 @@ func (s *RelayerTestSuite) ICS20TransferERC20TokenBatchedAckToEthTest(
 	}))
 
 	s.Require().True(s.Run("Acknowledge packets on Ethereum", func() {
-		// Auto-relay daemon relays the Cosmos ack back to ETH; wait for all commitments to be removed.
-		relayTimeout := autoRelayTimeout(numOfTransfers)
-
-		s.Require().True(s.Run("Wait for auto-relay to relay acks", func() {
-			require.Eventuallyf(s.T(), func() bool {
-				for i := range numOfTransfers {
-					seq := uint64(i) + 1
-					packetCommitmentPath := ibchostv2.PacketCommitmentKey(testvalues.CustomClientID, seq)
-					var ethPath [32]byte
-					copy(ethPath[:], crypto.Keccak256(packetCommitmentPath))
-					resp, err := s.ics26Contract.GetCommitment(nil, ethPath)
-					if err != nil || resp != ([32]byte{}) {
-						return false
-					}
-				}
-				return true
-			}, relayTimeout, 5*time.Second,
-				"auto-relay did not ack %d packets on Ethereum within timeout", numOfTransfers)
-		}))
-
-		s.Require().True(s.Run("Verify commitment removed", func() {
+		s.Require().True(s.Run("Verify commitment exists", func() {
 			for i := range numOfTransfers {
 				seq := uint64(i) + 1
 				packetCommitmentPath := ibchostv2.PacketCommitmentKey(testvalues.CustomClientID, seq)
 				var ethPath [32]byte
 				copy(ethPath[:], crypto.Keccak256(packetCommitmentPath))
+
+				resp, err := s.ics26Contract.GetCommitment(nil, ethPath)
+				s.Require().NoError(err)
+				s.Require().NotZero(resp)
+			}
+		}))
+
+		var relayTx []byte
+		s.Require().True(s.Run("Retrieve relay tx", func() {
+			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
+				SrcChain:           simd.Config().ChainID,
+				DstChain:           s.EthChain.ChainID.String(),
+				SourceTxIds:        [][]byte{ackTxHash},
+				SrcClientId:        testvalues.FirstWasmClientID,
+				DstClientId:        testvalues.CustomClientID,
+				DstPacketSequences: ackFilter,
+			})
+			s.Require().NoError(err)
+			s.Require().NotEmpty(resp.Tx)
+			s.Require().Equal(resp.Address, ics26Address.String())
+
+			relayTx = resp.Tx
+		}))
+
+		s.Require().True(s.Run("Submit relay tx", func() {
+			receipt, err := eth.BroadcastTx(ctx, s.EthRelayerSubmitter, 5_000_000, &ics26Address, relayTx)
+			s.Require().NoError(err)
+			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status)
+
+			// Verify the ack packet event exists
+			_, err = e2esuite.GetEvmEvent(receipt, s.ics26Contract.ParseAckPacket)
+			s.Require().NoError(err)
+		}))
+
+		s.Require().True(s.Run("Verify commitment removed", func() {
+			for _, seq := range ackFilter {
+				packetCommitmentPath := ibchostv2.PacketCommitmentKey(testvalues.CustomClientID, seq)
+				var ethPath [32]byte
+				copy(ethPath[:], crypto.Keccak256(packetCommitmentPath))
+
 				resp, err := s.ics26Contract.GetCommitment(nil, ethPath)
 				s.Require().NoError(err)
 				s.Require().Zero(resp)
@@ -504,8 +531,6 @@ func (s *RelayerTestSuite) ICS20TransferERC20TokenBatchedAckToEthTest(
 }
 
 func (s *RelayerTestSuite) Test_MultiPeriodClientUpdateToCosmos() {
-	s.T().Skip("requires gRPC RelayByTx for multi-period sync-committee updates; not supported by fast-ibc's auto-relay daemon")
-
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 
@@ -838,10 +863,6 @@ func (s *RelayerTestSuite) Test_10_FilteredRecvPacketToCosmos() {
 func (s *RelayerTestSuite) FilteredRecvPacketToCosmosTest(ctx context.Context, numOfTransfers int, transferAmount *big.Int, recvFilter []uint64) {
 	s.Require().GreaterOrEqual(numOfTransfers, len(recvFilter))
 	s.Require().Greater(numOfTransfers, 0)
-	// Partial filtering requires gRPC RelayByTx; the auto-relay daemon delivers all packets.
-	if len(recvFilter) > 0 && len(recvFilter) < numOfTransfers {
-		s.T().Skip("requires gRPC RelayByTx selective filtering; fast-ibc's daemon relays all packets")
-	}
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
 
@@ -930,24 +951,39 @@ func (s *RelayerTestSuite) FilteredRecvPacketToCosmosTest(ctx context.Context, n
 	}))
 
 	s.Require().True(s.Run("Receive packets on Cosmos chain", func() {
-		// Auto-relay daemon delivers the ETH→Cosmos recv; wait for the IBC token balance to match.
-		relayTimeout := autoRelayTimeout(numOfTransfers)
+		var relayTxBodyBz []byte
+		s.Require().True(s.Run("Retrieve relay tx", func() {
+			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
+				SrcChain:           eth.ChainID.String(),
+				DstChain:           simd.Config().ChainID,
+				SourceTxIds:        sendTxHashes,
+				SrcClientId:        testvalues.CustomClientID,
+				DstClientId:        testvalues.FirstWasmClientID,
+				SrcPacketSequences: recvFilter,
+			})
+			s.Require().NoError(err)
+			s.Require().NotEmpty(resp.Tx)
+			s.Require().Empty(resp.Address)
 
-		s.Require().True(s.Run("Wait for auto-relay to deliver", func() {
-			require.Eventuallyf(s.T(), func() bool {
-				resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simd, &banktypes.QueryBalanceRequest{
-					Address: cosmosUserAddress,
-					Denom:   denomOnCosmos.IBCDenom(),
-				})
-				if err != nil || resp.Balance == nil {
-					return false
-				}
-				return resp.Balance.Amount.BigInt().Cmp(new(big.Int).Add(startBalanceCosmos, relayedAmount)) == 0
-			}, relayTimeout, 5*time.Second,
-				"auto-relay did not deliver %d packets to Cosmos within timeout", numOfTransfers)
+			relayTxBodyBz = resp.Tx
+
+			s.wasmFixtureGenerator.AddFixtureStep("receive_packets", ethereumtypes.RelayerMessages{
+				RelayerTxBody: hex.EncodeToString(relayTxBodyBz),
+			})
+		}))
+
+		var ackTxHash []byte
+		s.Require().True(s.Run("Broadcast relay tx", func() {
+			resp := s.MustBroadcastSdkTxBody(ctx, simd, s.SimdRelayerSubmitter, 5_000_000, relayTxBodyBz)
+
+			var err error
+			ackTxHash, err = hex.DecodeString(resp.TxHash)
+			s.Require().NoError(err)
+			s.Require().NotEmpty(ackTxHash)
 		}))
 
 		s.Require().True(s.Run("Verify balances on Cosmos chain", func() {
+			// User balance on Cosmos chain
 			resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simd, &banktypes.QueryBalanceRequest{
 				Address: cosmosUserAddress,
 				Denom:   denomOnCosmos.IBCDenom(),
@@ -980,15 +1016,12 @@ func (s *RelayerTestSuite) ICS20TransferERC20TokenBatchedFilteredAckToCosmosTest
 ) {
 	s.Require().GreaterOrEqual(numOfTransfers, len(ackFilter))
 	s.Require().Greater(numOfTransfers, 0)
-	// Partial ack filtering requires gRPC RelayByTx; the auto-relay daemon acks all packets.
-	if len(ackFilter) > 0 && len(ackFilter) < numOfTransfers {
-		s.T().Skip("requires gRPC RelayByTx selective ack filtering; fast-ibc's daemon acks all packets")
-	}
 
 	s.SetupSuite(ctx, proofType)
 
-	_, simd := s.EthChain, s.CosmosChains[0]
+	eth, simd := s.EthChain, s.CosmosChains[0]
 
+	ics26Address := ethcommon.HexToAddress(s.contractAddresses.Ics26Router)
 	transferAmount := big.NewInt(testvalues.TransferAmount)
 	totalTransferAmount := big.NewInt(testvalues.TransferAmount * int64(numOfTransfers))
 	if totalTransferAmount.Int64() > testvalues.InitialBalance {
@@ -1056,36 +1089,82 @@ func (s *RelayerTestSuite) ICS20TransferERC20TokenBatchedFilteredAckToCosmosTest
 		}))
 	}))
 
-	// Auto-relay: daemon delivers Cosmos→ETH recv, then ETH→Cosmos ack automatically.
-	// Wait for all Cosmos packet commitments to be cleared (both hops complete).
-	s.Require().True(s.Run("Acknowledge packets on Cosmos", func() {
-		relayTimeout := autoRelayTimeout(numOfTransfers) + 10*time.Minute // recv hop + ack hop
+	var ackTxHash []byte
+	s.Require().True(s.Run("Receive packets on Ethereum", func() {
+		var multicallTx []byte
+		s.Require().True(s.Run("Retrieve relay tx", func() {
+			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
+				SrcChain:    simd.Config().ChainID,
+				DstChain:    s.EthChain.ChainID.String(),
+				SourceTxIds: sendTxHashes,
+				SrcClientId: testvalues.FirstWasmClientID,
+				DstClientId: testvalues.CustomClientID,
+			})
+			s.Require().NoError(err)
+			s.Require().NotEmpty(resp.Tx)
+			s.Require().Equal(resp.Address, ics26Address.String())
 
-		s.Require().True(s.Run("Wait for auto-relay to deliver recv and ack", func() {
-			require.Eventuallyf(s.T(), func() bool {
-				for i := range numOfTransfers {
-					seq := uint64(i) + 1
-					_, err := e2esuite.GRPCQuery[channeltypesv2.QueryPacketCommitmentResponse](ctx, simd, &channeltypesv2.QueryPacketCommitmentRequest{
-						ClientId: testvalues.FirstWasmClientID,
-						Sequence: seq,
-					})
-					if err == nil || !strings.Contains(err.Error(), "packet commitment hash not found") {
-						return false
-					}
-				}
-				return true
-			}, relayTimeout, 5*time.Second,
-				"auto-relay did not ack %d packets on Cosmos within timeout", numOfTransfers)
+			multicallTx = resp.Tx
+		}))
+
+		s.Require().True(s.Run("Submit relay tx", func() {
+			receipt, err := eth.BroadcastTx(ctx, s.EthRelayerSubmitter, 5_000_000, &ics26Address, multicallTx)
+			s.Require().NoError(err)
+			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
+
+			ackTxHash = receipt.TxHash.Bytes()
+		}))
+	}))
+
+	s.Require().True(s.Run("Acknowledge packets on Cosmos", func() {
+		s.Require().True(s.Run("Verify commitments exists", func() {
+			for i := range numOfTransfers {
+				resp, err := e2esuite.GRPCQuery[channeltypesv2.QueryPacketCommitmentResponse](ctx, simd, &channeltypesv2.QueryPacketCommitmentRequest{
+					ClientId: testvalues.FirstWasmClientID,
+					Sequence: uint64(i) + 1,
+				})
+				s.Require().NoError(err)
+				s.Require().NotEmpty(resp.Commitment)
+			}
+		}))
+
+		var relayTxBodyBz []byte
+		s.Require().True(s.Run("Retrieve relay tx", func() {
+			resp, err := s.RelayerClient.RelayByTx(context.Background(), &relayertypes.RelayByTxRequest{
+				SrcChain:           s.EthChain.ChainID.String(),
+				DstChain:           simd.Config().ChainID,
+				SourceTxIds:        [][]byte{ackTxHash},
+				SrcClientId:        testvalues.CustomClientID,
+				DstClientId:        testvalues.FirstWasmClientID,
+				DstPacketSequences: ackFilter,
+			})
+			s.Require().NoError(err)
+			s.Require().NotEmpty(resp.Tx)
+			s.Require().Empty(resp.Address)
+
+			relayTxBodyBz = resp.Tx
+		}))
+
+		s.Require().True(s.Run("Broadcast relay tx", func() {
+			_ = s.MustBroadcastSdkTxBody(ctx, simd, s.SimdRelayerSubmitter, 2_000_000, relayTxBodyBz)
 		}))
 
 		s.Require().True(s.Run("Verify commitments removed", func() {
 			for i := range numOfTransfers {
 				seq := uint64(i) + 1
-				_, err := e2esuite.GRPCQuery[channeltypesv2.QueryPacketCommitmentResponse](ctx, simd, &channeltypesv2.QueryPacketCommitmentRequest{
+				resp, err := e2esuite.GRPCQuery[channeltypesv2.QueryPacketCommitmentResponse](ctx, simd, &channeltypesv2.QueryPacketCommitmentRequest{
 					ClientId: testvalues.FirstWasmClientID,
 					Sequence: seq,
 				})
-				s.Require().ErrorContains(err, "packet commitment hash not found")
+				if len(ackFilter) == 0 || slices.Contains(ackFilter, seq) {
+					// If the sequence is in the filter, we expect the commitment to be removed
+					s.Require().ErrorContains(err, "packet commitment hash not found")
+				} else {
+					// Otherwise, we expect the commitment to still exist
+					s.Require().NoError(err)
+					s.Require().NotEmpty(resp.Commitment)
+				}
+
 			}
 		}))
 	}))
@@ -1095,7 +1174,6 @@ func (s *RelayerTestSuite) Test_UpdateClientToCosmos() {
 	if os.Getenv(testvalues.EnvKeyEthTestnetType) != testvalues.EthTestnetTypePoS {
 		s.T().Skip("Test is only relevant for PoS networks")
 	}
-	s.T().Skip("requires gRPC RelayerClient.UpdateClient; not exposed by fast-ibc's auto-relay daemon")
 
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
@@ -1200,7 +1278,6 @@ func (s *RelayerTestSuite) Test_HistoricalUpdateClientToCosmos() {
 	if os.Getenv(testvalues.EnvKeyEthTestnetType) != testvalues.EthTestnetTypePoS {
 		s.T().Skip("Test is only relevant for PoS networks")
 	}
-	s.T().Skip("requires gRPC RelayByTx with slot inspection; not compatible with fast-ibc's auto-relay daemon")
 
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
@@ -1424,8 +1501,6 @@ func (s *RelayerTestSuite) Test_UpdateClientToEth() {
 }
 
 func (s *RelayerTestSuite) UpdateClientToEthTest(ctx context.Context, proofType types.SupportedProofType) {
-	s.T().Skip("requires gRPC RelayerClient.UpdateClient; not exposed by fast-ibc's auto-relay daemon")
-
 	s.SetupSuite(ctx, proofType) // Doesn't matter, since we won't relay to eth in this test
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
@@ -1483,8 +1558,6 @@ func (s *RelayerTestSuite) Test_50_concurrent_RecvPacketToCosmosTest() {
 func (s *RelayerTestSuite) ConcurrentRecvPacketToCosmos(
 	ctx context.Context, proofType types.SupportedProofType, numConcurrentTransfers int,
 ) {
-	s.T().Skip("requires concurrent gRPC RelayByTx calls; not compatible with fast-ibc's auto-relay daemon")
-
 	s.Require().Greater(numConcurrentTransfers, 0)
 
 	s.SetupSuite(ctx, proofType)
