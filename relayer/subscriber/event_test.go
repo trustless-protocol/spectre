@@ -416,6 +416,21 @@ func TestCosmosPacketMatchesConfiguredClient(t *testing.T) {
 	}
 }
 
+func TestEthEventClientIDFilter(t *testing.T) {
+	t.Parallel()
+
+	ctx := services.NewCtx(nil, nil)
+	if got := ethEventClientIDFilter(ctx); got != nil {
+		t.Fatalf("ethEventClientIDFilter without router client ID = %v, want nil", got)
+	}
+
+	ctx.SetCosmosRouterClientID("simd-2-client-0")
+	got := ethEventClientIDFilter(ctx)
+	if len(got) != 1 || got[0] != "simd-2-client-0" {
+		t.Fatalf("ethEventClientIDFilter = %v, want [simd-2-client-0]", got)
+	}
+}
+
 func TestDecodeCosmosPacketsFromEvents(t *testing.T) {
 	t.Parallel()
 
