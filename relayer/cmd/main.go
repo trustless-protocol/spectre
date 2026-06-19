@@ -657,6 +657,7 @@ func main() {
 	rootCmd.AddCommand(
 		Start(zLogger),
 		CreateClients(zLogger),
+		UpdateClient(zLogger),
 		Genesis(zLogger),
 	)
 
@@ -790,8 +791,13 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				trustingPeriod = 2 * uint32(unbondingPeriod) / 3
 			}
 
-			logger.Sugar().Infof("Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s)...", trustingPeriod, trustLevel)
-			ics07Addr, err := worker.CreateCosmosClient(ctx, "groth16", trustingPeriod, 0, trustLevel)
+			proofType := cfg.CosmosToEthConfig.ProofType
+			if proofType == "" {
+				proofType = "groth16"
+			}
+
+			logger.Sugar().Infof("Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s, proofType=%s)...", trustingPeriod, trustLevel, proofType)
+			ics07Addr, err := worker.CreateCosmosClient(ctx, proofType, trustingPeriod, 0, trustLevel)
 			if err != nil {
 				return fmt.Errorf("failed to create Cosmos client on Ethereum: %w", err)
 			}
@@ -838,6 +844,130 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
 	cmd.Flags().Uint32(flagTrustingPeriod, 0, "trusting period in seconds for Cosmos light client (default: 2/3 of chain unbonding period)")
 	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
+	return cmd
+}
+
+// UpdateClient advances the Cosmos light client on Ethereum once.
+func UpdateClient(logger *zap.Logger) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "update-client",
+		Short: "update the Cosmos light client on Ethereum once",
+		Args:  cobra.ExactArgs(0),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configPath, err := cmd.Flags().GetString(flagConfigPath)
+			if err != nil {
+				return fmt.Errorf("failed to get config path: %w", err)
+			}
+
+			_ = godotenv.Load()
+
+			cfg, err := loadConfig(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			ethClient, err := ethclient.Dial(cfg.CosmosToEthConfig.EthRpcUrl)
+			if err != nil {
+				return fmt.Errorf("failed to connect to Ethereum: %w", err)
+			}
+
+			cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
+			if err != nil {
+				return fmt.Errorf("failed to create Cosmos RPC client: %w", err)
+			}
+
+			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
+			selectedBackend, hasBackendOverride, err := proofBackendFromFlags(cmd)
+			if err != nil {
+				return fmt.Errorf("failed to resolve proof backend: %w", err)
+			}
+
+			var p *prover.EcipProver
+			if hasBackendOverride {
+				logger.Sugar().Infof("update-client: overriding proof backend via flags: %s", selectedBackend.Name())
+				p, err = prover.NewProverWithBackend(binDir, selectedBackend)
+			} else {
+				p, err = prover.NewProver(binDir)
+			}
+			if err != nil {
+				return fmt.Errorf("failed to load prover: %w", err)
+			}
+
+			cosmosWasmClientID := cosmosWasmClientIDOrDefault(cfg)
+			if cosmosWasmClientID == "" {
+				return fmt.Errorf("cosmos_wasm_client_id is required in cosmos_to_eth config")
+			}
+
+			ctx := services.NewCtxWithBeacon(
+				cosmosClient, ethClient, nil,
+				"",
+				cfg.EthToCosmosConfig.BeaconUrl,
+				cosmosWasmClientID,
+			)
+			cosmosRouterClientID := cosmosRouterClientIDOrDefault(cfg)
+			if cosmosRouterClientID == "" {
+				return fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
+			}
+			ctx.SetCosmosRouterClientID(cosmosRouterClientID)
+
+			roleManager := roleManagerOrDefault(cfg)
+			ctx.SetAddresses(
+				cfg.CosmosToEthConfig.ICS26Address,
+				cfg.CosmosToEthConfig.WrapperVerifier,
+				cfg.CosmosToEthConfig.Membership,
+				cfg.CosmosToEthConfig.Misbehaviour,
+				cfg.CosmosToEthConfig.UpdateClient,
+				roleManager,
+			)
+			if cfg.CosmosToEthConfig.ICS07Client == "" {
+				return fmt.Errorf("ics07_client address is required in cosmos_to_eth config")
+			}
+			ctx.SetClient(common.HexToAddress(cfg.CosmosToEthConfig.ICS07Client))
+
+			cosmosConfig := services.DefaultConfig()
+			if cfg.CosmosToEthConfig.TrustingPeriod != 0 {
+				cosmosConfig.TrustingPeriod = cfg.CosmosToEthConfig.TrustingPeriod
+			}
+			if cfg.CosmosToEthConfig.TrustLevel != "" {
+				cosmosConfig.TrustLevel = cfg.CosmosToEthConfig.TrustLevel
+			}
+			if cfg.CosmosToEthConfig.ProofType != "" {
+				cosmosConfig.ProofType = cfg.CosmosToEthConfig.ProofType
+			}
+			if cfg.CosmosToEthConfig.FetchTimeout != 0 {
+				cosmosConfig.FetchTimeout = time.Duration(cfg.CosmosToEthConfig.FetchTimeout) * time.Second
+			}
+			if envVal := os.Getenv("FETCH_TIMEOUT"); envVal != "" {
+				if d, err := strconv.Atoi(envVal); err == nil && d > 0 {
+					cosmosConfig.FetchTimeout = time.Duration(d) * time.Second
+				}
+			}
+			cosmosConfig.BatchConfig = cfg.BatchConfig
+			ctx.Config = cosmosConfig
+
+			if err := cosmosClient.Start(); err != nil {
+				return fmt.Errorf("failed to start Cosmos WS client: %w", err)
+			}
+			defer cosmosClient.Stop()
+
+			trustedBlock, err := cmd.Flags().GetInt64(flagTrustedBlock)
+			if err != nil {
+				return fmt.Errorf("failed to get trusted block: %w", err)
+			}
+
+			worker := services.NewWorker(&transaction.Handler{}, p)
+			latestBlock, err := worker.UpdateCosmosClient(ctx, cosmosConfig.ProofType, trustedBlock, cosmosConfig.TrustLevel)
+			if err != nil {
+				return fmt.Errorf("failed to update Cosmos client on Ethereum: %w", err)
+			}
+			logger.Sugar().Infof("update-client complete: latest_height=%d", latestBlock.BlockHeight)
+
+			return nil
+		},
+	}
+	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
+	cmd.Flags().Int64(flagTrustedBlock, 0, "trusted Cosmos block height hint; 0 reads from the on-chain client")
+	cmd.Flags().Bool(flagGPUProve, false, "use the ICICLE GPU backend for proving (or set GPU_PROVE=1); requires an icicle-enabled build")
 	return cmd
 }
 

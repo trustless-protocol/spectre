@@ -3,6 +3,7 @@ package e2esuite
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/cosmos/gogoproto/proto"
 	"google.golang.org/grpc"
@@ -20,9 +21,29 @@ import (
 var queryReqToPath = make(map[string]string)
 
 func populateQueryReqToPath(ctx context.Context, chain *cosmos.CosmosChain) error {
-	resp, err := queryFileDescriptors(ctx, chain)
-	if err != nil {
-		return err
+	var (
+		resp *reflectionv1.FileDescriptorsResponse
+		err  error
+	)
+	deadline := time.NewTimer(2 * time.Minute)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		resp, err = queryFileDescriptors(ctx, chain)
+		if err == nil {
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-deadline.C:
+			return fmt.Errorf("query file descriptors: %w", err)
+		case <-ticker.C:
+		}
 	}
 
 	for _, fileDescriptor := range resp.Files {

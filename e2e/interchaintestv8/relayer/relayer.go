@@ -115,6 +115,23 @@ func RunCreateClients(configPath string, extraArgs ...string) error {
 	return cmd.Run()
 }
 
+// RunUpdateClient runs the relayer's update-client command synchronously.
+func RunUpdateClient(configPath string, extraArgs ...string) error {
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Running update-client with config:\n%s\n", config)
+
+	args := append([]string{"update-client", "--config", configPath}, extraArgs...)
+	cmd := exec.Command(binaryPath(), args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), proverEnv()...)
+
+	return cmd.Run()
+}
+
 // GetGRPCClient returns a gRPC client for the relayer.
 func GetGRPCClient(addr string) (relayertypes.RelayerServiceClient, error) {
 	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
