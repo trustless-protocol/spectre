@@ -24,5 +24,6 @@ jobs:
       suite: TestWithGroth16ICS07TendermintTestSuite
       ref: ${{ inputs.ref }}
       filter: ${{ inputs.filter }}
+      proof_type: groth16
       max_parallel: 2
       timeout_minutes: 45

@@ -24,6 +24,10 @@ on:
         description: Optional substring matched against the method name (e.g. "Timeout").
         required: false
         type: string
+      proof_type:
+        description: Optional proof type passed to E2E_PROOF_TYPE (e.g. "groth16" or "plonk").
+        required: false
+        type: string
       max_parallel:
         description: Max concurrent matrix jobs.
         required: false
@@ -163,4 +167,5 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/ecip-gnark
           ETH_TESTNET_TYPE: pos
+          E2E_PROOF_TYPE: ${{ inputs.proof_type }}
         run: just test-e2e '${{ matrix.test }}'
