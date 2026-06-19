@@ -4,17 +4,22 @@ import (
 	"context"
 	"crypto/ecdsa"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/suite"
 
-	ethcommon "github.com/ethereum/go-ethereum/common"
-	ethtypes "github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
-	ibcexported "github.com/cosmos/ibc-go/v10/modules/core/exported"
+	sdkmath "cosmossdk.io/math"
+
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
+	interchaintest "github.com/cosmos/interchaintest/v10"
+	"github.com/cosmos/interchaintest/v10/ibc"
+	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 
 	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
@@ -24,7 +29,6 @@ import (
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/relayer"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/testvalues"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types"
-	relayertypes "github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/relayer"
 )
 
 // Groth16ICS07TendermintTestSuite is a suite of tests that wraps TestSuite
@@ -36,6 +40,7 @@ type Groth16ICS07TendermintTestSuite struct {
 	generateFixtures bool
 
 	// Addresses of the deployed contracts
+	contractAddresses   ethereum.DeployedContracts
 	groth16Ics07Address ethcommon.Address
 	ics26Address        ethcommon.Address
 
@@ -45,9 +50,40 @@ type Groth16ICS07TendermintTestSuite struct {
 	contract *groth16ics07tendermint.Contract
 	// The ICS26 router contract, needed for the relayer to pass proofs
 	ics26Contract *ics26router.Contract
+}
 
-	// The relayer API (only used for deployment at the moment)
-	RelayerClient relayertypes.RelayerServiceClient
+func readCosmosToEthConfig(configPath string) (relayer.CosmosToEthModuleConfig, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return relayer.CosmosToEthModuleConfig{}, err
+	}
+
+	var config struct {
+		Modules []struct {
+			Name   string                          `json:"name"`
+			Config relayer.CosmosToEthModuleConfig `json:"config"`
+		} `json:"modules"`
+	}
+	if err := json.Unmarshal(data, &config); err != nil {
+		return relayer.CosmosToEthModuleConfig{}, err
+	}
+
+	for _, module := range config.Modules {
+		if module.Name == relayer.ModuleCosmosToEth {
+			return module.Config, nil
+		}
+	}
+
+	return relayer.CosmosToEthModuleConfig{}, fmt.Errorf("%s module not found in %s", relayer.ModuleCosmosToEth, configPath)
+}
+
+func chdirRepoRoot() error {
+	_, filename, _, ok := runtime.Caller(0)
+	if !ok {
+		return fmt.Errorf("failed to resolve test filename")
+	}
+
+	return os.Chdir(filepath.Clean(filepath.Join(filepath.Dir(filename), "../..")))
 }
 
 // SetupSuite calls the underlying Groth16ICS07TendermintTestSuite's SetupSuite method
@@ -58,20 +94,41 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 	eth, simd := s.EthChain, s.CosmosChains[0]
 
 	s.T().Logf("Setting up the test suite with proof type: %s", proofType.String())
+	s.T().Cleanup(func() {
+		os.Remove(testvalues.RelayerConfigFilePath)
+	})
 
-	var prover string
 	s.Require().True(s.Run("Set up environment", func() {
-		err := os.Chdir("../..")
+		err := chdirRepoRoot()
 		s.Require().NoError(err)
 
 		s.key, err = eth.CreateAndFundUser()
 		s.Require().NoError(err)
 
+		relayerMnemonic, err := generateRelayerMnemonic()
+		s.Require().NoError(err)
+		simdRelayerWallet, err := simd.BuildWallet(ctx, "fast-ibc-groth16-relayer", relayerMnemonic)
+		s.Require().NoError(err)
+		err = simd.SendFunds(ctx, interchaintest.FaucetAccountKeyName, ibc.WalletAmount{
+			Address: simdRelayerWallet.FormattedAddress(),
+			Denom:   simd.Config().Denom,
+			Amount:  sdkmath.NewInt(testvalues.InitialBalance),
+		})
+		s.Require().NoError(err)
+		cosmosPrivKey, err := cosmosPrivateKeyHexFromMnemonic(simdRelayerWallet.Mnemonic())
+		s.Require().NoError(err)
+
+		ethPrivKey := hex.EncodeToString(crypto.FromECDSA(s.key))
+
 		// Use mock verifier in E2E tests (gnark Groth16 prover is the real prover)
 		os.Setenv(testvalues.EnvKeyVerifier, testvalues.EnvValueVerifier_Mock)
 		os.Setenv(testvalues.EnvKeyEthRPC, eth.RPC)
 		os.Setenv(testvalues.EnvKeyTendermintRPC, simd.GetHostRPCAddress())
-		os.Setenv(testvalues.EnvKeyOperatorPrivateKey, hex.EncodeToString(crypto.FromECDSA(s.key)))
+		os.Setenv("ETH_PRIVATE_KEY", ethPrivKey)
+		os.Setenv(testvalues.EnvKeyOperatorPrivateKey, ethPrivKey)
+		os.Setenv("COSMOS_PRIVATE_KEY", cosmosPrivKey)
+		os.Setenv("COSMOS_CHAIN_ID", simd.Config().ChainID)
+		os.Setenv("COSMOS_FEE_DENOM", simd.Config().Denom)
 		s.generateFixtures = os.Getenv(testvalues.EnvKeyGenerateSolidityFixtures) == testvalues.EnvValueGenerateFixtures_True
 	}))
 
@@ -79,15 +136,15 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 		stdout, err := eth.ForgeScript(s.key, testvalues.E2EDeployScriptPath)
 		s.Require().NoError(err)
 
-		contractAddresses, err := ethereum.GetEthContractsFromDeployOutput(string(stdout))
+		s.contractAddresses, err = ethereum.GetEthContractsFromDeployOutput(string(stdout))
 		s.Require().NoError(err)
-		s.ics26Address = ethcommon.HexToAddress(contractAddresses.Ics26Router)
+		s.ics26Address = ethcommon.HexToAddress(s.contractAddresses.Ics26Router)
 		s.ics26Contract, err = ics26router.NewContract(s.ics26Address, eth.RPCClient)
 		s.Require().NoError(err)
 	}))
 
 	var relayerProcess *os.Process
-	s.Require().True(s.Run("Start Relayer", func() {
+	s.Require().True(s.Run("Create clients", func() {
 		beaconAPI := ""
 		// The BeaconAPIClient is nil when the testnet is `pow`
 		if eth.BeaconAPIClient != nil {
@@ -96,26 +153,45 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 
 		config := relayer.NewConfig(relayer.CreateEthCosmosModules(
 			relayer.EthCosmosConfigInfo{
-				EthChainID:     eth.ChainID.String(),
-				CosmosChainID:  simd.Config().ChainID,
-				TmRPC:          simd.GetHostRPCAddress(),
-				ICS26Address:   s.ics26Address.Hex(),
-				EthRPC:         eth.RPC,
-				BeaconAPI:      beaconAPI,
-				SignerAddress:  "",   // unused
-				MockWasmClient: true, // unused
+				EthChainID:         eth.ChainID.String(),
+				CosmosChainID:      simd.Config().ChainID,
+				TmRPC:              simd.GetHostRPCAddress(),
+				ICS26Address:       s.ics26Address.Hex(),
+				EthRPC:             eth.RPC,
+				EthWs:              eth.WS,
+				BeaconAPI:          beaconAPI,
+				SignerAddress:      "",   // unused
+				MockWasmClient:     true, // unused
+				WrapperVerifier:    s.contractAddresses.WrapperVerifier,
+				Membership:         s.contractAddresses.Membership,
+				Misbehaviour:       s.contractAddresses.Misbehaviour,
+				UpdateClient:       s.contractAddresses.UpdateClient,
+				CosmosWasmClientID: testvalues.FirstWasmClientID,
+				ICS26ClientID:      testvalues.CustomClientID,
+				TrustLevel:         "1/3",
+				ProofType:          proofType.String(),
 			}),
 		)
 
 		err := config.GenerateConfigFile(testvalues.RelayerConfigFilePath)
 		s.Require().NoError(err)
 
-		relayerProcess, err = relayer.StartRelayer(testvalues.RelayerConfigFilePath)
+		err = relayer.RunCreateClients(testvalues.RelayerConfigFilePath, "--trust-level", "1/3")
 		s.Require().NoError(err)
 
-		s.T().Cleanup(func() {
-			os.Remove(testvalues.RelayerConfigFilePath)
-		})
+		cosmosToEthConfig, err := readCosmosToEthConfig(testvalues.RelayerConfigFilePath)
+		s.Require().NoError(err)
+		s.Require().NotEmpty(cosmosToEthConfig.ICS07Client)
+		s.groth16Ics07Address = ethcommon.HexToAddress(cosmosToEthConfig.ICS07Client)
+
+		s.contract, err = groth16ics07tendermint.NewContract(s.groth16Ics07Address, eth.RPCClient)
+		s.Require().NoError(err)
+	}))
+
+	s.Require().True(s.Run("Start Relayer", func() {
+		var err error
+		relayerProcess, err = relayer.StartRelayer(testvalues.RelayerConfigFilePath)
+		s.Require().NoError(err)
 	}))
 
 	s.T().Cleanup(func() {
@@ -126,80 +202,6 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 			}
 		}
 	})
-
-	s.Require().True(s.Run("Create Relayer Client", func() {
-		var err error
-		s.RelayerClient, err = relayer.GetGRPCClient(relayer.DefaultRelayerGRPCAddress())
-		s.Require().NoError(err)
-	}))
-
-	s.Require().True(s.Run("Deploy Groth16 ICS07 contract", func() {
-		stdout, err := eth.ForgeScript(s.key, testvalues.E2EDeployScriptPath)
-		s.Require().NoError(err)
-
-		contractAddresses, err := ethereum.GetEthContractsFromDeployOutput(string(stdout))
-		s.Require().NoError(err)
-
-		var verfierAddress string
-		if prover == testvalues.EnvValueGroth16Prover_Mock {
-			verfierAddress = contractAddresses.VerifierMock
-		} else {
-			switch proofType {
-			case types.ProofTypeGroth16:
-				verfierAddress = contractAddresses.VerifierGroth16
-			case types.ProofTypePlonk:
-				verfierAddress = contractAddresses.VerifierPlonk
-			default:
-				s.Require().Fail("invalid proof type: %s", proofType)
-			}
-		}
-
-		var createClientTxBz []byte
-		s.Require().True(s.Run("Retrieve create client tx", func() {
-			resp, err := s.RelayerClient.CreateClient(context.Background(), &relayertypes.CreateClientRequest{
-				SrcChain: simd.Config().ChainID,
-				DstChain: eth.ChainID.String(),
-				Parameters: map[string]string{
-					testvalues.ParameterKey_Groth16Verifier: verfierAddress,
-					testvalues.ParameterKey_ZkAlgorithm:     proofType.String(),
-					testvalues.ParameterKey_RoleManager:     ethcommon.Address{}.Hex(),
-				},
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Empty(resp.Address)
-
-			createClientTxBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx", func() {
-			receipt, err := eth.BroadcastTx(ctx, s.key, 15_000_000, nil, createClientTxBz)
-			s.Require().NoError(err)
-			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status, fmt.Sprintf("Tx failed: %+v", receipt))
-			s.Require().NotEmpty(receipt.ContractAddress.Hex())
-			s.groth16Ics07Address = receipt.ContractAddress
-
-			s.contract, err = groth16ics07tendermint.NewContract(receipt.ContractAddress, eth.RPCClient)
-			s.Require().NoError(err)
-		}))
-
-		s.Require().True(s.Run("Add client and counterparty on EVM", func() {
-			counterpartyInfo := ics26router.IICS02ClientMsgsCounterpartyInfo{
-				ClientId:     testvalues.FirstWasmClientID,
-				MerklePrefix: [][]byte{[]byte(ibcexported.StoreKey), []byte("")},
-			}
-			tx, err := s.ics26Contract.AddClient(s.GetTransactOpts(s.key, eth), testvalues.CustomClientID, counterpartyInfo, s.groth16Ics07Address)
-			s.Require().NoError(err)
-
-			receipt, err := eth.GetTxReciept(ctx, tx.Hash())
-			s.Require().NoError(err)
-
-			event, err := e2esuite.GetEvmEvent(receipt, s.ics26Contract.ParseICS02ClientAdded)
-			s.Require().NoError(err)
-			s.Require().Equal(testvalues.CustomClientID, event.ClientId)
-			s.Require().Equal(testvalues.FirstWasmClientID, event.CounterpartyInfo.ClientId)
-		}))
-	}))
 }
 
 // TestWithGroth16ICS07TendermintTestSuite is the boilerplate code that allows the test suite to be run
@@ -279,8 +281,6 @@ func (s *Groth16ICS07TendermintTestSuite) UpdateClientTest(ctx context.Context, 
 }
 
 func (s *Groth16ICS07TendermintTestSuite) UpdateClient(ctx context.Context) clienttypes.Height {
-	eth, simd := s.EthChain, s.CosmosChains[0]
-
 	var initialHeight uint64
 	s.Require().True(s.Run("Get the initial height", func() {
 		clientState, err := getGroth16ClientState(s.contract)
@@ -292,25 +292,8 @@ func (s *Groth16ICS07TendermintTestSuite) UpdateClient(ctx context.Context) clie
 
 	var finalHeight groth16ics07tendermint.IICS02ClientMsgsHeight
 	s.Require().True(s.Run("Update the client on Ethereum", func() {
-		var updateTxBodyBz []byte
-		s.Require().True(s.Run("Retrieve relay tx", func() {
-			resp, err := s.RelayerClient.UpdateClient(context.Background(), &relayertypes.UpdateClientRequest{
-				SrcChain:    simd.Config().ChainID,
-				DstChain:    eth.ChainID.String(),
-				DstClientId: testvalues.CustomClientID,
-			})
-			s.Require().NoError(err)
-			s.Require().NotEmpty(resp.Tx)
-			s.Require().Equal(s.ics26Address.String(), resp.Address)
-
-			updateTxBodyBz = resp.Tx
-		}))
-
-		s.Require().True(s.Run("Broadcast relay tx", func() {
-			receipt, err := eth.BroadcastTx(ctx, s.key, 5_000_000, &s.ics26Address, updateTxBodyBz)
-			s.Require().NoError(err)
-			s.Require().Equal(ethtypes.ReceiptStatusSuccessful, receipt.Status)
-		}))
+		err := relayer.RunUpdateClient(testvalues.RelayerConfigFilePath)
+		s.Require().NoError(err)
 
 		s.Require().True(s.Run("Verify the client state is updated", func() {
 			clientState, err := getGroth16ClientState(s.contract)

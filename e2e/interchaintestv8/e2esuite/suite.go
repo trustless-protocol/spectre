@@ -48,6 +48,10 @@ type TestSuite struct {
 
 // SetupSuite sets up the chains, relayer, user accounts, clients, and connections
 func (s *TestSuite) SetupSuite(ctx context.Context) {
+	s.CosmosChains = nil
+	s.CosmosUsers = nil
+	s.proposalIDs = nil
+
 	// To let the download version be overridden by a calling test
 	if s.WasmLightClientTag == "" {
 		s.WasmLightClientTag = os.Getenv(testvalues.EnvKeyE2EWasmLightClientTag)
