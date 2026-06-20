@@ -49,37 +49,28 @@ just test-e2e-multichain Test_Deploy
 The recipe sets `ETH_TESTNET_TYPE=pos`, `RELAYER_BINARY=$GOPATH/bin/relayer`,
 and `PROVER_BIN_DIR=<repo>/relayer/bin` for you.
 
-## Currently passing `IbcEurekaTestSuite` cases
+## `IbcEurekaTestSuite` daemon cases
 
 | Test | What it verifies |
 |------|------------------|
 | `Test_Deploy` | contracts deployed, wasm-eth client + ICS07 + AddClient + counterparty register all wired |
 | `Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack` | full ETH→Cosmos→ETH round-trip (5 phases: recv, ack, return-send, return-recv, return-ack) |
+| `Test_25_ICS20TransferERC20TokenfromEthereumToCosmosAndBack` | batched 25-packet ETH→Cosmos→ETH round-trip using auto-relay waits |
+| `Test_50_ICS20TransferERC20TokenfromEthereumToCosmosAndBack` | batched 50-packet ETH→Cosmos→ETH round-trip using auto-relay waits |
+| `Test_ICS20TransferERC20TokenFromEthereumToCosmosAndBackFails` | ETH→Cosmos vouchers are restored on Cosmos after a Cosmos→ETH return transfer writes an error ack |
 | `Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack` | full Cosmos→ETH→Cosmos round-trip for native coin |
 | `Test_ICS20TransferLargeAmountFromEthereumToCosmosAndBack` | bigint round-trip (`transferAmount = 5×10²²`, half of `StartingERC20Balance`) |
 | `Test_TimeoutPacketFromEth` | short-deadline ETH→Cosmos packets settle by either auto-delivery or timeout refund with balanced cross-chain accounting |
 | `Test_TimeoutPacketFromCosmos` | short-deadline Cosmos→ETH packets settle by either auto-delivery or timeout refund with balanced cross-chain accounting |
+| `Test_TimeoutPacketEthRemintsVouchers` | timed-out ETH→Cosmos voucher transfer remints/restores the ETH-side voucher balance |
+| `Test_TimeoutPacketCosmosRemintsVouchers` | timed-out Cosmos→ETH voucher transfer remints/restores the Cosmos-side voucher balance |
 | `Test_ErrorAckToEthereum` | Cosmos transfer module writes error ack → `MsgAck` on ETH → escrow refund |
 
-## Tests that don't run against fast-ibc's daemon
+## Out-of-scope suites
 
-These cases assume the upstream Rust relayer's gRPC `RelayByTx` model and have
-no auto-relay equivalent. They skip at runtime and are excluded from the
-reusable E2E matrix pending a refactor.
+These suites still assume upstream-only flows or tooling and are not part of the
+fast-ibc daemon matrix.
 
-- `Test_5_FilteredTimeoutPacketFromEth`, `Test_10_FilteredTimeoutPacketFromCosmos`,
-  and other partial-timeout-filter variants — fast-ibc's scanner can't
-  selectively skip expired packets; it times all of them out together.
-- `Test_25_ICS20TransferERC20TokenfromEthereumToCosmosAndBack` (and the 50-packet
-  variant) — relayer signs and submits each Cosmos→ETH `recvPacket` sequentially,
-  so 25 packets × ~6 s each + initial beacon-finality wait blows past the
-  5-min `Eventually` timeout in the phase-4 wait. Pending batching improvements.
-- `Test_ICS20TransferERC20TokenFromEthereumToCosmosAndBackFails` and
-  `Test_5_FinalizedTimeoutPacketFromEth` — still use gRPC `RelayByTx` to retrieve
-  raw relay transactions for manual broadcast.
-- `Test_TimeoutPacketEthRemintsVouchers` and
-  `Test_TimeoutPacketCosmosRemintsVouchers` — still mix auto-relay setup with
-  manual `RelayByTx` timeout/ack broadcasts.
 - `groth16_ics07_test.go` (fixture-generation flow) — references the deleted
   `fixtures membership` CLI subcommand.
 - `cosmos_relayer_test.go` (Cosmos↔Cosmos via the Rust gRPC relayer) — out of
@@ -95,5 +86,5 @@ service. Tests therefore *wait* for the daemon to drive each step (via
 relay tx via `s.RelayerClient.RelayByTx(...)` and broadcasting it themselves.
 
 The `s.RelayerClient` / `s.EthRelayerSubmitter` plumbing kept from upstream
-is still wired in `e2esuite/suite.go` for the subset of tests that use raw-tx
-broadcasts, but the IbcEurekaTestSuite cases above avoid them entirely.
+is still wired in `e2esuite/suite.go` for the out-of-scope raw-tx broadcast
+flows, but the IbcEurekaTestSuite cases above avoid it entirely.
