@@ -244,7 +244,6 @@ Cross-validated via `test/solidity-ibc/EncodeTest.t.sol`.
 | `relayer/bindings/` | Go | Auto-generated contract bindings |
 | `packages/go-abigen/` | Go | Shared Go bindings for Solidity contracts |
 | `packages/ethereum/` | Rust | Ethereum light client for CosmWasm |
-| `packages/tendermint-light-client/` | Rust | Tendermint client types and provers |
 | `programs/groth16-programs/` | Rust | RISC-V proving programs (legacy) |
 | `e2e/interchaintestv8/` | Go | End-to-end tests with real chains |
 | `scripts/` | Solidity | Deployment scripts |

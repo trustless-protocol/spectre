@@ -42,7 +42,6 @@ just test-e2e TestWithIbcEurekaTestSuite/Test_ICS20TransferERC20TokenfromEthereu
 # Shortcut by suite (drops the TestWith...Suite/ prefix)
 just test-e2e-eureka Test_Deploy
 just test-e2e-relayer Test_RelayerInfo
-just test-e2e-cosmos-relayer Test_ICS20RecvAndAckPacket
 just test-e2e-multichain Test_Deploy
 ```
 
@@ -73,8 +72,6 @@ fast-ibc daemon matrix.
 
 - `groth16_ics07_test.go` (fixture-generation flow) — references the deleted
   `fixtures membership` CLI subcommand.
-- `cosmos_relayer_test.go` (Cosmos↔Cosmos via the Rust gRPC relayer) — out of
-  scope for fast-ibc (ETH↔Cosmos only).
 - `relayer_test.go` `RelayerTestSuite` cases — still use gRPC `RelayByTx` +
   manual broadcast pattern.
 

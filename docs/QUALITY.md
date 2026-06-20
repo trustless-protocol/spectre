@@ -35,7 +35,6 @@ Test files: `prover/`, `client/`, `subscriber/`, `services/`, `keys/`, `utils/`
 |-------|-----------|---------|
 | IBC Eureka | `ibc_eureka_test.go` | `just test-e2e-eureka` |
 | Relayer | `relayer_test.go` | `just test-e2e-relayer` |
-| Cosmos Relayer | `cosmos_relayer_test.go` | `just test-e2e-cosmos-relayer` |
 | Groth16 ICS07 | `groth16_ics07_test.go` | `just test-e2e-groth16-ics07` |
 | Multi-chain | `multichain_test.go` | `just test-e2e-multichain` |
 
