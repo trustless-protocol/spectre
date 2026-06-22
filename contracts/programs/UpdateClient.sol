@@ -170,12 +170,11 @@ contract UpdateClient is IUpdateClient {
         // Checks that the header fields are valid.
         validateBasic(proposedHeader, headerChainId);
 
-        // The tendermint-light-client crate though works on heights that are assumed
-        // to have the same revision number. We ensure this here.
+        // Header checks assume the trusted and proposed heights share a chain-id revision.
+        // Enforce that before comparing revision heights.
         verifyChainIdVersion(chainId, headerChainId);
 
-        // Delegate to tendermint-light-client, which contains the required checks
-        // of the new header against the trusted consensus state.
+        // Verify the new header against the trusted consensus state.
         {
             bytes32 nextValSetHash = Header.hashValSet(proposedHeader.trustedNextValidatorSet);
             if (nextValSetHash != trustedConsensusState.nextValidatorsHash) {

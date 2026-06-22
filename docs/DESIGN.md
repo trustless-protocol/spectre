@@ -79,9 +79,8 @@ Secrets (private keys, prover paths) stay in `.env` file.
 
 ### Workspace Structure
 
-25 crate members in root `Cargo.toml`. Key packages:
+Key Rust workspace packages:
 - `packages/ethereum/` — Ethereum light client for CosmWasm
-- `packages/tendermint-light-client/` — Tendermint proof verification
 
 ### Linting
 
@@ -99,7 +98,7 @@ Secrets (private keys, prover paths) stay in `.env` file.
 | Go packages | lowercase | `prover`, `subscriber` |
 | Go functions | PascalCase (exported) | `ExtractValidatorSignature` |
 | Go test files | `*_test.go` | `prover_test.go` |
-| Rust crates | kebab-case | `tendermint-light-client` |
+| Rust crates | kebab-case | `ethereum-light-client` |
 
 ## Access Control Roles
 

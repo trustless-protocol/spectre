@@ -121,13 +121,6 @@ generate-fixtures-wasm: clean-foundry install-go-relayer build-prover-artifacts
 	@echo "Generating timeoutPacket groth16 fixtures..."
 	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithIbcEurekaTestSuite/Test_TimeoutPacketFromCosmos$' -timeout 60m
 
-# Generate the fixtures for the Tendermint light client tests using the e2e tests
-[group('generate')]
-generate-fixtures-tendermint-light-client: install-go-relayer
-	@echo "Generating Tendermint light client fixtures... This may take a while."
-	@echo "Generating basic membership and update client fixtures..."
-	cd e2e/interchaintestv8 && GENERATE_TENDERMINT_LIGHT_CLIENT_FIXTURES=true go test -v -run '^TestWithCosmosRelayerTestSuite/Test_UpdateClient$' -timeout 40m
-
 # Generate go types for the e2e tests from the ethereum light client code
 [group('generate')]
 generate-ethereum-types:
@@ -199,12 +192,6 @@ test-e2e-eureka testname:
 test-e2e-relayer testname:
 	@echo "Running {{testname}} test..."
 	just test-e2e TestWithRelayerTestSuite/{{testname}}
-
-# Run any e2e test in the CosmosRelayerTestSuite. For example, `just test-e2e-cosmos-relayer Test_RelayerInfo`
-[group('test')]
-test-e2e-cosmos-relayer testname:
-	@echo "Running {{testname}} test..."
-	just test-e2e TestWithCosmosRelayerTestSuite/{{testname}}
 
 # Run any e2e test in the MultichainTestSuite. For example, `just test-e2e-multichain Test_Deploy`
 [group('test')]

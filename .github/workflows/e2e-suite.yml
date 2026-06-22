@@ -61,11 +61,9 @@ jobs:
           FILTER: ${{ inputs.filter }}
         run: |
           cd e2e/interchaintestv8
-          excluded='^TestWithIbcEurekaTestSuite/(Test_5_FilteredTimeoutPacketFromEth|Test_10_FilteredTimeoutPacketFromCosmos|Test_25_ICS20TransferERC20TokenfromEthereumToCosmosAndBack|Test_50_ICS20TransferERC20TokenfromEthereumToCosmosAndBack|Test_ICS20TransferERC20TokenFromEthereumToCosmosAndBackFails|Test_5_FinalizedTimeoutPacketFromEth|Test_TimeoutPacketEthRemintsVouchers|Test_TimeoutPacketCosmosRemintsVouchers)$'
           tests=$(perl -ne 'print "TestWith$1/$2\n" if /^func \([a-zA-Z_]+ \*([A-Za-z0-9_]+TestSuite)\) (Test[A-Za-z0-9_]+)\(\)/' *.go \
             | grep -E "^${SUITE}/" \
             | { if [ -n "$FILTER" ]; then grep -F "$FILTER"; else cat; fi; } \
-            | grep -Ev "$excluded" \
             | sort -u \
             | jq -R -s -c 'split("\n") | map(select(length > 0))')
           echo "Matrix ($(echo "$tests" | jq 'length') entries): $tests"

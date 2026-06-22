@@ -195,7 +195,7 @@ contract Misbehaviour is IMisbehaviour {
         }
 
         parseChainId(chainId.id);
-        // main header verification, delegated to the tendermint-light-client crate.
+        // Verify the conflicting header against the trusted state.
         IICS07TendermintMsgs.UntrustedBlockState memory untrustedState = getUntrustedBlockState(header);
         IICS07TendermintMsgs.TrustedBlockState memory trustedState =
             getTrustedBlockState(chainId.id, trustedTime, trustedNextValidatorHash, header);
