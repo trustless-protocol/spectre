@@ -284,23 +284,17 @@ func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
 				RevisionHeight: 19,
 			},
 		},
-		Time:             big.NewInt(1700000002000000000),
-		Proof:            zero8,
-		Commitments:      zero2,
-		CommitmentPok:    zero2,
-		Bucket:           16,
-		SignerIndices:    []uint32{0, 1},
-		SignerPubkeys:    [][32]byte{{0x01}, {0x02}},
-		TimestampSeconds: []uint64{1700000001, 1700000001},
-		TimestampNanos:   []uint32{0, 1},
-		Active:           []bool{true, true},
-		CurrentValidatorSetDelta: updateClientContract.IUpdateClientMsgsValidatorSetDelta{
-			BaseValidatorsHash: deltaBaseHash,
-			LeafCount:          1,
-			Indices:            deltaIndices,
-			PubKeys:            deltaPubKeys,
-			VotingPowers:       deltaVotingPowers,
-		},
+		Time:                   big.NewInt(1700000002000000000),
+		Proof:                  zero8,
+		Commitments:            zero2,
+		CommitmentPok:          zero2,
+		Bucket:                 16,
+		SignerIndices:          []uint32{0, 1},
+		PinnedValidatorIndices: []uint32{7, 8},
+		SignerPubkeys:          [][32]byte{{0x01}, {0x02}},
+		TimestampSeconds:       []uint64{1700000001, 1700000001},
+		TimestampNanos:         []uint32{0, 1},
+		Active:                 []bool{true, true},
 	}
 
 	encoded, err := EncodeUpdateClientMsg(msg)
@@ -335,18 +329,8 @@ func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
 			validatorsHash,
 		)
 	}
-	if decoded.CurrentValidatorSetDelta.BaseValidatorsHash != deltaBaseHash {
-		t.Fatalf(
-			"delta base hash decoded incorrectly: got %x want %x",
-			decoded.CurrentValidatorSetDelta.BaseValidatorsHash,
-			deltaBaseHash,
-		)
-	}
-	if decoded.CurrentValidatorSetDelta.LeafCount != 1 ||
-		decoded.CurrentValidatorSetDelta.Indices[0] != 7 ||
-		decoded.CurrentValidatorSetDelta.PubKeys[0] != deltaPubKeys[0] ||
-		decoded.CurrentValidatorSetDelta.VotingPowers[0] != 110 {
-		t.Fatalf("delta decoded incorrectly: %+v", decoded.CurrentValidatorSetDelta)
+	if len(decoded.PinnedValidatorIndices) != 2 || decoded.PinnedValidatorIndices[0] != 7 || decoded.PinnedValidatorIndices[1] != 8 {
+		t.Fatalf("pinned validator indices decoded incorrectly: %+v", decoded.PinnedValidatorIndices)
 	}
 }
 

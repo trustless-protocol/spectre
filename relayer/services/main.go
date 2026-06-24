@@ -38,10 +38,11 @@ func init() {
 }
 
 type TransactionHandler interface {
-	CreateCosmosClientContract(ctx Context, clientState, consensusHash []byte) (ethcommon.Address, error)
+	CreateCosmosClientContract(ctx Context, clientState, consensusHash []byte, initialPinnedValidatorSet client.ContractValidatorSet) (ethcommon.Address, error)
 	CreateEthClient(ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) (string, error)
 	SendEthTx(ctx Context, msg any) error
 	SendEthTxBatch(ctx Context, msgs []any) error
+	SendReAnchorPinnedSet(ctx Context, updateMsg any, newPinnedValidatorSet any) error
 	SendCosmosTx(ctx Context, msg any) error
 	SendCosmosTxBatch(ctx Context, msgs []any) error
 	CosmosSignerAddress() (string, error)
@@ -116,17 +117,28 @@ func (s *Services) StartLoop(ctx Context) {
 		routineInterval := 24 * time.Hour
 		for {
 			now := time.Now()
-			// update client on Eth side routinely
-			ethUpdateTime, ethUpdateHeight := ctx.latestEthTimestamp.Snapshot()
+
+			// periodically advance the cosmos light client and re-anchor the
+			// pinned validator set in one shot. The re-anchor reads the
+			// authoritative on-chain trusted height; if the client is already
+			// caught up it skips the transaction and returns the current block.
+			ethUpdateTime, _ := ctx.latestEthTimestamp.Snapshot()
 			if ethUpdateTime.Add(routineInterval).Before(now) {
-				latestBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ethUpdateHeight), s.cosmosConfig.TrustLevel)
+				latestBlock, err := s.worker.ReAnchorCosmosPinnedSet(
+					ctx,
+					s.cosmosConfig.ProofType,
+					s.cosmosConfig.TrustLevel,
+				)
 				if err != nil {
-					log.Printf("[Routine] Failed to update cosmos light client: %v", err)
+					log.Printf("[Routine] Failed to re-anchor cosmos pinned set: %v", err)
 					time.Sleep(time.Second)
 					continue
 				}
-
-				ctx.latestEthTimestamp.Set(time.Now(), uint64(latestBlock.BlockHeight))
+				if err := recordReAnchorResult(ctx.latestEthTimestamp, latestBlock, time.Now()); err != nil {
+					log.Printf("[Routine] Failed to re-anchor cosmos pinned set: %v", err)
+					time.Sleep(time.Second)
+					continue
+				}
 			}
 
 			// update client on Cosmos side routinely
@@ -184,6 +196,17 @@ func (s *Services) StartLoop(ctx Context) {
 		s.handleEth(ctx, batch)
 	}
 	log.Println("[StartLoop] Eth batch channel closed, exiting loop")
+}
+
+func recordReAnchorResult(timestamp *Timestamp, lightBlock *client.LightBlock, now time.Time) error {
+	if lightBlock == nil {
+		return fmt.Errorf("no light block returned")
+	}
+	if lightBlock.BlockHeight < 0 {
+		return fmt.Errorf("negative light block height: %d", lightBlock.BlockHeight)
+	}
+	timestamp.Set(now, uint64(lightBlock.BlockHeight))
+	return nil
 }
 
 func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
@@ -304,21 +327,6 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 		sendErr = s.worker.TxHandler.SendEthTx(ctx, rawMsgs[0])
 	}
 
-	cacheFallbackAttempted := false
-	if sendErr != nil && errors.Is(sendErr, ErrValidatorCacheRace) && updateBuild.HasMsg && updateBuild.UsedValidatorCache {
-		cacheFallbackAttempted = true
-		log.Printf("[UpdateClient] validator cache changed during batch submission; retrying with full validator set")
-		rawMsgs[0] = updateBuild.FullValidatorSetFallbackMsg
-		if len(msgs) >= 2 {
-			sendErr = s.worker.TxHandler.SendEthTxBatch(ctx, rawMsgs)
-		} else {
-			sendErr = s.worker.TxHandler.SendEthTx(ctx, rawMsgs[0])
-		}
-		if sendErr != nil {
-			log.Printf("[UpdateClient] full validator-set batch retry failed: %v", sendErr)
-		}
-	}
-
 	if sendErr != nil {
 		failed := make([]CosmosPacket, 0, len(msgs))
 		for _, m := range msgs {
@@ -332,9 +340,7 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 		// an on-chain revert is deterministic (consumes retry budget → eventual
 		// dead-letter); anything else (RPC, timeout) is transient and must not
 		// burn the budget for a valid packet (issue #80 review).
-		if errors.Is(sendErr, ErrValidatorCacheRace) || cacheFallbackAttempted {
-			s.BatchBuilder.RequeueCosmosTransient(failed)
-		} else if errors.Is(sendErr, ErrPermanentRelayFailure) {
+		if errors.Is(sendErr, ErrPermanentRelayFailure) {
 			s.BatchBuilder.RequeueCosmosPermanent(failed)
 		} else {
 			s.BatchBuilder.RequeueCosmosTransient(failed)

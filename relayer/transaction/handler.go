@@ -230,12 +230,36 @@ func ethLightClientIDOnCosmos(ctx services.Context) (string, error) {
 	return clientID, nil
 }
 
+func toGroth16ValidatorSet(in relayerclient.ContractValidatorSet) tendermintContract.IICS07TendermintMsgsValidatorSet {
+	validators := make([]tendermintContract.IICS07TendermintMsgsValidatorInfo, len(in.Validators))
+	for i, val := range in.Validators {
+		validators[i] = tendermintContract.IICS07TendermintMsgsValidatorInfo{
+			ValAddress:       val.ValAddress,
+			PubKey:           val.PubKey,
+			VotingPower:      val.VotingPower,
+			ProposerPriority: val.ProposerPriority,
+		}
+	}
+	return tendermintContract.IICS07TendermintMsgsValidatorSet{
+		Validators:  validators,
+		HasProposer: in.HasProposer,
+		Proposer: tendermintContract.IICS07TendermintMsgsValidatorInfo{
+			ValAddress:       in.Proposer.ValAddress,
+			PubKey:           in.Proposer.PubKey,
+			VotingPower:      in.Proposer.VotingPower,
+			ProposerPriority: in.Proposer.ProposerPriority,
+		},
+		TotalVotingPower: in.TotalVotingPower,
+	}
+}
+
 func estimateCosmosClientDeployGas(
 	ctx services.Context,
 	from common.Address,
 	gasPrice *big.Int,
 	clientState []byte,
 	consensusHash []byte,
+	initialPinnedValidatorSet tendermintContract.IICS07TendermintMsgsValidatorSet,
 ) (uint64, uint64, error) {
 	parsed, err := tendermintContract.ContractGroth16ICS07TendermintMetaData.GetAbi()
 	if err != nil {
@@ -249,6 +273,7 @@ func estimateCosmosClientDeployGas(
 		*ctx.UpdateClientContract(),
 		clientState,
 		utils.BytesToBytes32(consensusHash),
+		initialPinnedValidatorSet,
 		*ctx.RoleManagerAddress(),
 	)
 	if err != nil {
@@ -284,7 +309,7 @@ func estimateCosmosClientDeployGas(
 	return estimate, gasLimit, nil
 }
 
-func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte) (common.Address, error) {
+func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, consensusHash []byte, initialPinnedValidatorSet relayerclient.ContractValidatorSet) (common.Address, error) {
 	cosmosClientID, err := cosmosRouterClientID(ctx)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
@@ -313,7 +338,8 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to suggest gas price: %w", err)
 	}
 
-	estimatedDeployGas, deployGasLimit, err := estimateCosmosClientDeployGas(ctx, fromAddress, gasPrice, clientState, consensusHash)
+	pinnedForDeploy := toGroth16ValidatorSet(initialPinnedValidatorSet)
+	estimatedDeployGas, deployGasLimit, err := estimateCosmosClientDeployGas(ctx, fromAddress, gasPrice, clientState, consensusHash, pinnedForDeploy)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
@@ -330,6 +356,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 			*ctx.UpdateClientContract(),
 			clientState,
 			utils.BytesToBytes32(consensusHash),
+			pinnedForDeploy,
 			*ctx.RoleManagerAddress(),
 		)
 		if err == nil {
@@ -496,6 +523,73 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	if benchEnabled {
 		log.Printf("[bench][eth] %s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
+	}
+
+	return nil
+}
+
+// SendReAnchorPinnedSet submits a reAnchorPinnedSet transaction to the ICS07
+// Tendermint contract using a BoundContract with generic interface{} parameters
+// to bridge the updateclient and tendermintContract bindings without type conversion.
+func (h *Handler) SendReAnchorPinnedSet(ctx services.Context, updateMsg any, newPinnedValidatorSet any) error {
+	cosmosClientID, err := cosmosRouterClientID(ctx)
+	if err != nil {
+		return fmt.Errorf("[SendReAnchorPinnedSet] %w", err)
+	}
+	privKey := os.Getenv("ETH_PRIVATE_KEY")
+	if privKey == "" {
+		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
+	}
+	privateKey, err := keys.RestoreKey(privKey)
+	if err != nil {
+		return fmt.Errorf("failed to restore private key: %w", err)
+	}
+
+	gasLimit := uint64(3000000)
+	if gasStr := os.Getenv("ETH_GAS_LIMIT"); gasStr != "" {
+		var val uint64
+		if _, err := fmt.Sscanf(gasStr, "%d", &val); err == nil {
+			gasLimit = val
+		}
+	}
+
+	abi, err := tendermintContract.ContractGroth16ICS07TendermintMetaData.GetAbi()
+	if err != nil {
+		return fmt.Errorf("failed to load ICS07 ABI: %w", err)
+	}
+
+	boundContract := bind.NewBoundContract(
+		*ctx.ClientContract(),
+		*abi,
+		ctx.EthClient(),
+		ctx.EthClient(),
+		ctx.EthClient(),
+	)
+
+	benchEnabled := utils.BenchEnabled()
+	var benchStart time.Time
+	if benchEnabled {
+		benchStart = time.Now()
+	}
+
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		tx, err := boundContract.Transact(auth, "reAnchorPinnedSet", updateMsg, newPinnedValidatorSet)
+		if err != nil {
+			return nil, fmt.Errorf("reAnchorPinnedSet tx error: %w", err)
+		}
+		return tx, nil
+	}
+
+	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(ctx, privateKey, gasLimit, senderFn)
+	if err != nil {
+		return err
+	}
+
+	log.Printf("[SendReAnchorPinnedSet] Tx %s confirmed in block %d (gasUsed=%d) clientId=%s",
+		receipt.TxHash.Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed, cosmosClientID)
+	if benchEnabled {
+		log.Printf("[bench][eth] reAnchorPinnedSet gasUsed=%d submit=%s wait=%s total=%s tx=%s",
+			receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
 	}
 
 	return nil

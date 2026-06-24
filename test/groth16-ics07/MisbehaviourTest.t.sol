@@ -113,10 +113,18 @@ contract Groth16ICS07MisbehaviourHarness is Groth16ICS07Tendermint {
         address updateClient_,
         bytes memory clientState_,
         bytes32 consensusStateHash_,
+        IICS07TendermintMsgs.ValidatorSet memory initialPinnedValidatorSet,
         address roleManager
     )
         Groth16ICS07Tendermint(
-            verifier, membership_, misbehaviour_, updateClient_, clientState_, consensusStateHash_, roleManager
+            verifier,
+            membership_,
+            misbehaviour_,
+            updateClient_,
+            clientState_,
+            consensusStateHash_,
+            initialPinnedValidatorSet,
+            roleManager
         )
     { }
 }
@@ -192,6 +200,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
             address(dummyUpdateClient),
             encodedClientState,
             consensusStateHash_,
+            valset_,
             address(0)
         );
 
@@ -266,9 +275,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         msg_.proof1 = _proofForValidatorSet(attackerValSet, 3);
         msg_.proof2 = _proofForValidatorSet(attackerValSet, 3);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(IGroth16ICS07TendermintErrors.InsufficientTrustedVotingPower.selector, 0, 100)
-        );
+        vm.expectRevert(abi.encodeWithSelector(IGroth16ICS07TendermintErrors.PubkeyMismatch.selector, uint32(0)));
         lightClient.misbehaviour(abi.encode(msg_));
 
         assertFalse(_isFrozen(lightClient), "spoofed trusted overlap must not freeze");
@@ -313,6 +320,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
             address(dummyUpdateClient),
             encodedClientState,
             consensusStateHash_,
+            valset_,
             governance
         );
 
@@ -350,6 +358,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
             address(dummyUpdateClient),
             encodedClientState,
             consensusStateHash_,
+            valset_,
             governance
         );
 
@@ -369,6 +378,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
             address(dummyUpdateClient),
             encodedClientState,
             consensusStateHash_,
+            valset_,
             governance
         );
 
@@ -425,6 +435,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     {
         proof_.bucket = 4;
         proof_.signerIndices = new uint32[](4);
+        proof_.pinnedValidatorIndices = new uint32[](4);
         proof_.signerPubkeys = new bytes32[](4);
         proof_.timestampSeconds = new uint64[](4);
         proof_.timestampNanos = new uint32[](4);
@@ -432,6 +443,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
         for (uint32 i = 0; i < 4; i++) {
             proof_.signerIndices[i] = i;
+            proof_.pinnedValidatorIndices[i] = i;
             proof_.signerPubkeys[i] = validatorSet.validators[i].pubKey;
             proof_.timestampSeconds[i] = HEADER_TIME_SECONDS;
             proof_.timestampNanos[i] = HEADER_TIME_NANOS_PART;
@@ -509,9 +521,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
         return IICS07TendermintMsgs.Header({
             signedHeader: signedHeader,
-            validatorSet: currentValSet,
-            trustedHeight: trustedHeight,
-            trustedNextValidatorSet: trustedNextValSet
+            trustedHeight: trustedHeight
         });
     }
 

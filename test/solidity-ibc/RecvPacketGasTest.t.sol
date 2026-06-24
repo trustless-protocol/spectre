@@ -129,9 +129,13 @@ contract RecvPacketGasTest is IntegrationTest {
 
     function _buildSelfConsistent(BucketConfig memory cfg)
         internal
-        returns (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS)
+        returns (
+            IICS07TendermintMsgs.Header memory header,
+            IICS07TendermintMsgs.ConsensusState memory trustedCS,
+            IICS07TendermintMsgs.ValidatorSet memory vs
+        )
     {
-        IICS07TendermintMsgs.ValidatorSet memory vs = _buildValSet(cfg.valCount);
+        vs = _buildValSet(cfg.valCount);
         bytes32 valSetHash = Header.hashValSet(vs);
 
         IICS07TendermintMsgs.BlockHeader memory bh;
@@ -155,9 +159,7 @@ contract RecvPacketGasTest is IntegrationTest {
 
         header = IICS07TendermintMsgs.Header({
             signedHeader: IICS07TendermintMsgs.SignedHeader({ header: bh, commit: bc }),
-            validatorSet: vs,
-            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
-            trustedNextValidatorSet: vs
+            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT })
         });
 
         trustedCS = IICS07TendermintMsgs.ConsensusState({
@@ -176,7 +178,7 @@ contract RecvPacketGasTest is IntegrationTest {
         wrapper.setBucket(bucket, address(stubBucket), AlwaysTrueVerifier.verifyProof.selector);
 
         BucketConfig memory cfg = _cfg(bucket);
-        (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS) =
+        (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS, IICS07TendermintMsgs.ValidatorSet memory vs) =
             _buildSelfConsistent(cfg);
 
         IICS07TendermintMsgs.ClientState memory cs = _clientState();
@@ -191,6 +193,7 @@ contract RecvPacketGasTest is IntegrationTest {
             address(updateClientImpl),
             abi.encode(cs),
             keccak256(abi.encode(trustedCS)),
+            vs,
             address(0)
         );
 
@@ -205,14 +208,13 @@ contract RecvPacketGasTest is IntegrationTest {
         uint64[] memory tsS = new uint64[](bucket);
         uint32[] memory tsN = new uint32[](bucket);
         bool[] memory act = new bool[](bucket);
-        uint32[] memory trustedOverlap = new uint32[](bucket);
+        uint32[] memory pinnedValidatorIndices = new uint32[](bucket);
         for (uint256 i = 0; i < bucket; i++) {
-            trustedOverlap[i] = type(uint32).max;
+            pinnedValidatorIndices[i] = uint32(i);
             if (i < cfg.activeCount) {
                 idx[i] = uint32(i);
-                pks[i] = header.validatorSet.validators[i].pubKey;
+                pks[i] = vs.validators[i].pubKey;
                 act[i] = true;
-                trustedOverlap[i] = uint32(i);
             }
             tsS[i] = uint64(1_700_000_000 + i);
             tsN[i] = uint32(i * 1_000_000);
@@ -232,7 +234,7 @@ contract RecvPacketGasTest is IntegrationTest {
         m.timestampSeconds = tsS;
         m.timestampNanos = tsN;
         m.active = act;
-        m.trustedOverlapIndices = trustedOverlap;
+        m.pinnedValidatorIndices = pinnedValidatorIndices;
         bytes memory encodedUpdate = abi.encode(m);
 
         // First, update the client state to seed the consensus state height 1001
@@ -276,7 +278,7 @@ contract RecvPacketGasTest is IntegrationTest {
             trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
                 timestamp: NEW_TS_NS,
                 root: bytes32(uint256(0xCCC)),
-                nextValidatorsHash: Header.hashValSet(header.validatorSet)
+                nextValidatorsHash: Header.hashValSet(vs)
             }),
             membershipType: IMembershipMsgs.MembershipType.Membership,
             path: new bytes[](0),

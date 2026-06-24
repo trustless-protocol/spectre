@@ -28,6 +28,7 @@ interface IMisbehaviourMsgs {
         uint256[2] commitmentPok;
         uint16 bucket;
         uint32[] signerIndices;
+        uint32[] pinnedValidatorIndices;
         bytes32[] signerPubkeys;
         uint64[] timestampSeconds;
         uint32[] timestampNanos;

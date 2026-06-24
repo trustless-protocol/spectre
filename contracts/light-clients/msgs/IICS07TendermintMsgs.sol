@@ -54,9 +54,7 @@ interface IICS07TendermintMsgs {
 
     struct Header {
         SignedHeader signedHeader;
-        ValidatorSet validatorSet;
         IICS02ClientMsgs.Height trustedHeight;
-        ValidatorSet trustedNextValidatorSet;
     }
 
     struct SignedHeader {

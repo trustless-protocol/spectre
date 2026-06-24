@@ -114,6 +114,7 @@ contract MembershipTrustingPeriodTest is Test {
             address(0),
             abi.encode(clientState),
             keccak256(abi.encode(consensusState)),
+            _pinnedValidatorSet(),
             address(0)
         );
     }
@@ -149,6 +150,22 @@ contract MembershipTrustingPeriodTest is Test {
             trustedConsensusState: _consensusState(consensusTimestamp),
             membershipType: IMembershipMsgs.MembershipType.Membership,
             path: _path()
+        });
+    }
+
+    function _pinnedValidatorSet() private pure returns (IICS07TendermintMsgs.ValidatorSet memory vs) {
+        IICS07TendermintMsgs.ValidatorInfo[] memory vals = new IICS07TendermintMsgs.ValidatorInfo[](1);
+        vals[0] = IICS07TendermintMsgs.ValidatorInfo({
+            valAddress: bytes("validator"),
+            pubKey: bytes32(uint256(1)),
+            votingPower: 100,
+            proposerPriority: 0
+        });
+        vs = IICS07TendermintMsgs.ValidatorSet({
+            validators: vals,
+            hasProposer: false,
+            proposer: vals[0],
+            totalVotingPower: 100
         });
     }
 

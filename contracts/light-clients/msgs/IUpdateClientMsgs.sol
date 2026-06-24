@@ -18,20 +18,17 @@ interface IUpdateClientMsgs {
     /// @param commitments The proof commitments (2 uint256s).
     /// @param commitmentPok The proof of knowledge for commitments (2 uint256s).
     /// @param bucket The validator-count bucket this proof was generated against; selects the per-bucket verifier.
-    /// @param signerIndices Validator indices in proposedHeader.validatorSet. Length == bucket.
-    /// @param signerPubkeys Compressed Ed25519 public keys per slot, matching signerIndices. Length == bucket.
+    /// @param signerIndices Validator indices in proposedHeader.signedHeader.commit.commitSigs. Length == bucket.
+    /// @param pinnedValidatorIndices Validator indices in the pinned validator set. Length == bucket.
+    /// @param signerPubkeys Compressed Ed25519 public keys per slot, matching pinnedValidatorIndices. Length == bucket.
     /// @param timestampSeconds Per-validator google.protobuf.Timestamp.seconds. Length == bucket.
     /// @param timestampNanos Per-validator google.protobuf.Timestamp.nanos. Length == bucket.
     /// @param active Per-slot real-signer flag. true = real validator (counts toward quorum);
     ///      false = deterministic dummy padding (skipped on-chain). Length == bucket.
-    /// @param trustedOverlapIndices Per-slot index into proposedHeader.trustedNextValidatorSet for trusted-overlap
-    /// tally. Use type(uint32).max when the active signer is not in the trusted set. Length == bucket.
     /// @dev The shared CanonicalVote fields (height, round, BlockID, chainID) are read directly
     ///      from proposedHeader.signedHeader.commit and proposedHeader.signedHeader.header — no
     ///      need to duplicate them in this message. The in-circuit reconstruction uses the same
     ///      values.
-    /// @param currentValidatorSetDelta Optional delta used when `proposedHeader.validatorSet`
-    ///      is omitted and the current validators hash can be derived from a cached base set.
     struct MsgUpdateClient {
         IICS07TendermintMsgs.ClientState clientState;
         IICS07TendermintMsgs.ConsensusState trustedConsensusState;
@@ -42,26 +39,11 @@ interface IUpdateClientMsgs {
         uint256[2] commitmentPok;
         uint16 bucket;
         uint32[] signerIndices;
+        uint32[] pinnedValidatorIndices;
         bytes32[] signerPubkeys;
         uint64[] timestampSeconds;
         uint32[] timestampNanos;
         bool[] active;
-        uint32[] trustedOverlapIndices;
-        ValidatorSetDelta currentValidatorSetDelta;
-    }
-
-    /// @notice Current validator-set delta from a cached base root.
-    /// @param baseValidatorsHash Cached validator-set hash to derive from.
-    /// @param leafCount Number of active entries in the fixed-size arrays.
-    /// @param indices Sorted validator-set indices whose leaves changed.
-    /// @param pubKeys New compressed Ed25519 public keys for `indices`.
-    /// @param votingPowers New voting powers for `indices`.
-    struct ValidatorSetDelta {
-        bytes32 baseValidatorsHash;
-        uint8 leafCount;
-        uint32[16] indices;
-        bytes32[16] pubKeys;
-        uint64[16] votingPowers;
     }
 
     /// @notice The public value output for the gnark update client program.

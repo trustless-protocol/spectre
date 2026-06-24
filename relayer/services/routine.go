@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"math/big"
@@ -25,7 +24,6 @@ import (
 )
 
 const ICS26_IBC_STORAGE_SLOT = "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600"
-const noTrustedOverlapIndex = ^uint32(0)
 
 type Worker struct {
 	TxHandler TransactionHandler
@@ -33,46 +31,6 @@ type Worker struct {
 }
 
 const cosmosCatchUpSafetySlots uint64 = 3
-const maxValidatorDeltaLeafCount = 16
-
-// validatorSetCacheMissSelector is the 4-byte ABI selector for
-// ValidatorSetCacheMiss(bytes32). Used to distinguish a normal cache-miss
-// revert from unexpected eth_call failures in getCachedCosmosValidatorSet.
-var validatorSetCacheMissSelector = func() [4]byte {
-	h := crypto.Keccak256([]byte("ValidatorSetCacheMiss(bytes32)"))
-	var s [4]byte
-	copy(s[:], h[:4])
-	return s
-}()
-
-// isValidatorSetCacheMiss returns true when err carries the
-// ValidatorSetCacheMiss(bytes32) ABI revert selector.
-func isValidatorSetCacheMiss(err error) bool {
-	type dataErr interface {
-		ErrorData() interface{}
-	}
-	de, ok := err.(dataErr)
-	if !ok {
-		return false
-	}
-	var data []byte
-	switch raw := de.ErrorData().(type) {
-	case string:
-		data = common.FromHex(raw)
-	case fmt.Stringer:
-		data = common.FromHex(raw.String())
-	case []byte:
-		data = raw
-	default:
-		return false
-	}
-	if len(data) < 4 {
-		return false
-	}
-	var sel [4]byte
-	copy(sel[:], data[:4])
-	return sel == validatorSetCacheMissSelector
-}
 
 func NewWorker(txHandler TransactionHandler, prover Prover) *Worker {
 	return &Worker{
@@ -107,18 +65,16 @@ func (w *Worker) CreateCosmosClient(ctx Context, proofType string, trustingPerio
 
 	consensusHash := crypto.Keccak256(consensusStateEncoded)
 	log.Printf("[CreateCosmosClient] consensusHash=%x", consensusHash)
-	return w.TxHandler.CreateCosmosClientContract(ctx, clientStateEncoded, consensusHash)
+	return w.TxHandler.CreateCosmosClientContract(ctx, clientStateEncoded, consensusHash, genesis.InitialPinnedValidatorSet)
 }
 
 // CosmosClientUpdateBuildResult is the output of BuildCosmosClientUpdateMsg.
 // When HasMsg is false the on-chain client is already at the latest height
 // and no updateClient tx is needed — only LightBlock is populated.
 type CosmosClientUpdateBuildResult struct {
-	Msg                         updateclientContract.IUpdateClientMsgsMsgUpdateClient
-	HasMsg                      bool
-	LightBlock                  *relayerclient.LightBlock
-	UsedValidatorCache          bool
-	FullValidatorSetFallbackMsg updateclientContract.IUpdateClientMsgsMsgUpdateClient
+	Msg        updateclientContract.IUpdateClientMsgsMsgUpdateClient
+	HasMsg     bool
+	LightBlock *relayerclient.LightBlock
 }
 
 // UpdateCosmosClient builds the next MsgUpdateClient for the Tendermint light
@@ -136,19 +92,77 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 	}
 	if err := w.TxHandler.SendEthTx(ctx, result.Msg); err != nil {
 		log.Printf("[UpdateCosmosClient] SendEthTx failed: %v", err)
-		if errors.Is(err, ErrValidatorCacheRace) && result.UsedValidatorCache {
-			log.Printf("[UpdateCosmosClient] validator cache changed during submission; retrying updateClient with full validator set")
-			if retryErr := w.TxHandler.SendEthTx(ctx, result.FullValidatorSetFallbackMsg); retryErr != nil {
-				log.Printf("[UpdateCosmosClient] full validator-set retry failed: %v", retryErr)
-				return nil, retryErr
-			}
-			log.Printf("[UpdateCosmosClient] full validator-set retry succeeded")
-			return result.LightBlock, nil
-		}
 		return nil, err
 	}
 	log.Printf("[UpdateCosmosClient] SendEthTx succeeded")
 	return result.LightBlock, nil
+}
+
+// ReAnchorCosmosPinnedSet builds a reAnchorPinnedSet transaction for the ICS07
+// light client on Ethereum. It reads the authoritative on-chain trusted height,
+// generates a Groth16 proof from that stored height to the latest CometBFT block,
+// then calls reAnchorPinnedSet to advance both the light client and the pinned
+// validator set to the block's nextValidatorsHash.
+//
+// When the on-chain client is already caught up (no newer block exists) the
+// function returns the current light block without submitting any tx — the
+// caller can then update its cached timestamp/height from the returned block.
+func (w *Worker) ReAnchorCosmosPinnedSet(
+	ctx Context,
+	proofType string,
+	trustLevel string,
+) (*relayerclient.LightBlock, error) {
+	onChainTrusted, err := fetchOnChainTrustedHeight(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] fetch on-chain height: %w", err)
+	}
+	status, err := ctx.CosmosClient().Status(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] get status: %w", err)
+	}
+	needsReAnchor, err := shouldReAnchor(onChainTrusted, status.SyncInfo.LatestBlockHeight)
+	if err != nil {
+		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] compare heights: %w", err)
+	}
+	if !needsReAnchor {
+		log.Printf("[ReAnchorCosmosPinnedSet] client is up to date (trusted=%d, latest=%d), skipping",
+			onChainTrusted, status.SyncInfo.LatestBlockHeight)
+		lightBlock, err := relayerclient.GetLightBlock(ctx.CosmosClient(), onChainTrusted)
+		if err != nil {
+			return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] get current light block: %w", err)
+		}
+		return lightBlock, nil
+	}
+
+	result, err := w.BuildCosmosClientUpdateMsg(ctx, proofType, onChainTrusted, trustLevel)
+	if err != nil {
+		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] build update msg: %w", err)
+	}
+	if !result.HasMsg || result.LightBlock == nil {
+		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] build returned no update light block")
+	}
+
+	newPinnedSet, err := relayerclient.ValidatorSetToContract(result.LightBlock.NextValSet, "re-anchor")
+	if err != nil {
+		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] convert next validator set: %w", err)
+	}
+
+	if err := w.TxHandler.SendReAnchorPinnedSet(ctx, result.Msg, newPinnedSet); err != nil {
+		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] send tx: %w", err)
+	}
+	log.Printf("[ReAnchorCosmosPinnedSet] re-anchor succeeded")
+	return result.LightBlock, nil
+}
+
+func shouldReAnchor(onChainTrusted, latestBlockHeight int64) (bool, error) {
+	if onChainTrusted > latestBlockHeight {
+		return false, fmt.Errorf(
+			"trusted block is ahead of latest chain height (trusted=%d, latest=%d)",
+			onChainTrusted,
+			latestBlockHeight,
+		)
+	}
+	return onChainTrusted < latestBlockHeight, nil
 }
 
 // fetchOnChainTrustedHeight reads the ICS07 client state on ETH and returns its
@@ -173,218 +187,105 @@ func fetchOnChainTrustedHeight(ctx Context) (int64, error) {
 	return int64(onChainClientState.LatestHeight.RevisionHeight), nil
 }
 
-type cachedCosmosValidatorSet struct {
+type pinnedCosmosValidatorSet struct {
 	indices      []uint32
 	pubkeys      [][32]byte
 	votingPowers []uint64
+	totalPower   int64
 }
 
-func (s cachedCosmosValidatorSet) isEmpty() bool {
-	return len(s.indices) == 0
-}
-
-func (s cachedCosmosValidatorSet) allowedIndices() map[uint32]bool {
-	allowed := make(map[uint32]bool, len(s.indices))
-	for _, idx := range s.indices {
-		allowed[idx] = true
+func (s pinnedCosmosValidatorSet) indexByPubkey() map[[32]byte]uint32 {
+	out := make(map[[32]byte]uint32, len(s.pubkeys))
+	for i, pubkey := range s.pubkeys {
+		out[pubkey] = s.indices[i]
 	}
-	return allowed
+	return out
 }
 
-// getCachedCosmosValidatorSet fetches the on-chain validator cache snapshot for
-// a validatorsHash. Returns an empty snapshot when the hash is not cached
-// (contract reverts ValidatorSetCacheMiss) or the stored data is unusable.
-func getCachedCosmosValidatorSet(ctx Context, validatorsHash [32]byte) (cachedCosmosValidatorSet, error) {
+func (s pinnedCosmosValidatorSet) powerByPubkey() map[[32]byte]int64 {
+	out := make(map[[32]byte]int64, len(s.pubkeys))
+	for i, pubkey := range s.pubkeys {
+		out[pubkey] = int64(s.votingPowers[i])
+	}
+	return out
+}
+
+func getPinnedCosmosValidatorSet(ctx Context) (pinnedCosmosValidatorSet, error) {
 	ics07, err := tendermintContract.NewContractGroth16ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
 	if err != nil {
-		return cachedCosmosValidatorSet{}, fmt.Errorf("failed to create ICS07 instance: %w", err)
+		return pinnedCosmosValidatorSet{}, fmt.Errorf("failed to create ICS07 instance: %w", err)
 	}
-	out, err := ics07.GetCachedValidatorSet(nil, validatorsHash)
+	out, err := ics07.GetPinnedValidatorSet(nil)
 	if err != nil {
-		if isValidatorSetCacheMiss(err) {
-			log.Printf("[getCachedCosmosValidatorSet] cache miss for hash=%x (ValidatorSetCacheMiss revert)", validatorsHash)
-			return cachedCosmosValidatorSet{}, nil
-		}
-		return cachedCosmosValidatorSet{}, fmt.Errorf("getCachedValidatorSet(%x): %w", validatorsHash, err)
+		return pinnedCosmosValidatorSet{}, fmt.Errorf("getPinnedValidatorSet: %w", err)
 	}
 	if len(out.Indices) != len(out.Pubkeys) || len(out.Indices) != len(out.VotingPowers) {
-		return cachedCosmosValidatorSet{}, fmt.Errorf(
-			"cached validator set length mismatch for hash=%x: indices=%d pubkeys=%d powers=%d",
-			validatorsHash, len(out.Indices), len(out.Pubkeys), len(out.VotingPowers),
+		return pinnedCosmosValidatorSet{}, fmt.Errorf(
+			"pinned validator set length mismatch: indices=%d pubkeys=%d powers=%d",
+			len(out.Indices), len(out.Pubkeys), len(out.VotingPowers),
 		)
 	}
+	var totalPower int64
 	for i, idx := range out.Indices {
 		if idx != uint32(i) {
-			return cachedCosmosValidatorSet{}, fmt.Errorf(
-				"cached validator set index mismatch for hash=%x at position %d: got %d",
-				validatorsHash, i, idx,
-			)
+			return pinnedCosmosValidatorSet{}, fmt.Errorf("pinned validator set index mismatch at position %d: got %d", i, idx)
 		}
+		if out.VotingPowers[i] > uint64(^uint64(0)>>1) {
+			return pinnedCosmosValidatorSet{}, fmt.Errorf("pinned validator voting power exceeds int64: index=%d", i)
+		}
+		totalPower += int64(out.VotingPowers[i])
 	}
-	return cachedCosmosValidatorSet{
-		indices:      out.Indices,
-		pubkeys:      out.Pubkeys,
-		votingPowers: out.VotingPowers,
-	}, nil
+	return pinnedCosmosValidatorSet{indices: out.Indices, pubkeys: out.Pubkeys, votingPowers: out.VotingPowers, totalPower: totalPower}, nil
 }
 
-func detectValidatorSetDelta(
-	baseHash [32]byte,
-	baseSet cachedCosmosValidatorSet,
-	currentSet updateclientContract.IICS07TendermintMsgsValidatorSet,
-) (updateclientContract.IUpdateClientMsgsValidatorSetDelta, bool, string) {
-	if baseSet.isEmpty() {
-		return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false, "base validator set is not cached"
-	}
-	if len(baseSet.pubkeys) != len(currentSet.Validators) {
-		return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false, fmt.Sprintf(
-			"validator count changed: base=%d current=%d",
-			len(baseSet.pubkeys), len(currentSet.Validators),
-		)
-	}
-
-	delta := updateclientContract.IUpdateClientMsgsValidatorSetDelta{
-		BaseValidatorsHash: baseHash,
-	}
-	changeCount := 0
-	for i, current := range currentSet.Validators {
-		if baseSet.pubkeys[i] == current.PubKey && baseSet.votingPowers[i] == current.VotingPower {
-			continue
-		}
-		if changeCount >= maxValidatorDeltaLeafCount {
-			return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false,
-				fmt.Sprintf("more than %d validator leaves changed", maxValidatorDeltaLeafCount)
-		}
-		delta.Indices[changeCount] = uint32(i)
-		delta.PubKeys[changeCount] = current.PubKey
-		delta.VotingPowers[changeCount] = current.VotingPower
-		changeCount++
-	}
-
-	if changeCount == 0 {
-		return updateclientContract.IUpdateClientMsgsValidatorSetDelta{}, false, "no validator leaf change detected"
-	}
-	delta.LeafCount = uint8(changeCount)
-	return delta, true, ""
-}
-
-func buildTrustedOverlapIndices(
-	trustedNextValidatorSet updateclientContract.IICS07TendermintMsgsValidatorSet,
-	paddedSigs []prover.ValidatorSignature,
-	bucket int,
-) []uint32 {
-	trustedByPubkey := make(map[[32]byte]uint32, len(trustedNextValidatorSet.Validators))
-	for i, validator := range trustedNextValidatorSet.Validators {
-		trustedByPubkey[validator.PubKey] = uint32(i)
-	}
-
-	indices := make([]uint32, bucket)
-	for i := range indices {
-		indices[i] = noTrustedOverlapIndex
-	}
-	for i, sig := range paddedSigs {
-		if i >= len(indices) || !sig.Active {
-			continue
-		}
-		pubkey := bytesToBytes32(sig.PublicKey)
-		if trustedIndex, ok := trustedByPubkey[pubkey]; ok {
-			indices[i] = trustedIndex
-		}
-	}
-	return indices
-}
-
-func selectSignaturesForTrustedOverlap(
+func selectSignaturesForPinnedSet(
 	candidates []prover.ValidatorSignature,
-	currentTotalPower int64,
-	trustedNextValidatorSet updateclientContract.IICS07TendermintMsgsValidatorSet,
-	trustLevel updateclientContract.IICS07TendermintMsgsTrustThreshold,
+	pinnedSet pinnedCosmosValidatorSet,
 ) ([]prover.ValidatorSignature, error) {
-	trustedPowerByPubkey := make(map[[32]byte]int64, len(trustedNextValidatorSet.Validators))
-	var trustedTotalPower int64
-	for _, validator := range trustedNextValidatorSet.Validators {
-		power := int64(validator.VotingPower)
-		trustedTotalPower += power
-		trustedPowerByPubkey[validator.PubKey] = power
-	}
-
+	powerByPubkey := pinnedSet.powerByPubkey()
 	selected := make([]prover.ValidatorSignature, 0, len(candidates))
-	selectedByIndex := make(map[int]bool, len(candidates))
-	var currentAccum int64
-	var trustedAccum int64
+	var pinnedAccum int64
 
-	overlapCandidates := append([]prover.ValidatorSignature(nil), candidates...)
-	sort.SliceStable(overlapCandidates, func(i, j int) bool {
-		leftPower := trustedPowerByPubkey[bytesToBytes32(overlapCandidates[i].PublicKey)]
-		rightPower := trustedPowerByPubkey[bytesToBytes32(overlapCandidates[j].PublicKey)]
+	pinnedCandidates := make([]prover.ValidatorSignature, 0, len(candidates))
+	for _, candidate := range candidates {
+		if powerByPubkey[bytesToBytes32(candidate.PublicKey)] == 0 {
+			continue
+		}
+		pinnedCandidates = append(pinnedCandidates, candidate)
+	}
+	sort.SliceStable(pinnedCandidates, func(i, j int) bool {
+		leftPower := powerByPubkey[bytesToBytes32(pinnedCandidates[i].PublicKey)]
+		rightPower := powerByPubkey[bytesToBytes32(pinnedCandidates[j].PublicKey)]
 		if leftPower != rightPower {
 			return leftPower > rightPower
 		}
-		if overlapCandidates[i].Power != overlapCandidates[j].Power {
-			return overlapCandidates[i].Power > overlapCandidates[j].Power
-		}
-		return overlapCandidates[i].Index < overlapCandidates[j].Index
+		return pinnedCandidates[i].Index < pinnedCandidates[j].Index
 	})
 
-	for _, candidate := range overlapCandidates {
-		trustedPower := trustedPowerByPubkey[bytesToBytes32(candidate.PublicKey)]
-		if trustedPower == 0 {
-			continue
-		}
+	total := new(big.Int).SetInt64(pinnedSet.totalPower)
+	total.Mul(total, big.NewInt(2))
+	for _, candidate := range pinnedCandidates {
 		selected = append(selected, candidate)
-		selectedByIndex[candidate.Index] = true
-		currentAccum += candidate.Power
-		trustedAccum += trustedPower
-		if meetsTrustThreshold(trustedAccum, trustedTotalPower, int64(trustLevel.Numerator), int64(trustLevel.Denominator)) {
+		pinnedAccum += powerByPubkey[bytesToBytes32(candidate.PublicKey)]
+		accum := new(big.Int).SetInt64(pinnedAccum)
+		accum.Mul(accum, big.NewInt(3))
+		if accum.Cmp(total) > 0 {
 			break
 		}
 	}
-	if !meetsTrustThreshold(trustedAccum, trustedTotalPower, int64(trustLevel.Numerator), int64(trustLevel.Denominator)) {
-		return nil, fmt.Errorf("insufficient trusted overlap in proof candidates: have %d of %d", trustedAccum, trustedTotalPower)
-	}
-
-	currentCandidates := append([]prover.ValidatorSignature(nil), candidates...)
-	sort.SliceStable(currentCandidates, func(i, j int) bool {
-		if currentCandidates[i].Power != currentCandidates[j].Power {
-			return currentCandidates[i].Power > currentCandidates[j].Power
-		}
-		return currentCandidates[i].Index < currentCandidates[j].Index
-	})
-	for _, candidate := range currentCandidates {
-		if meetsTrustThreshold(currentAccum, currentTotalPower, 2, 3) {
-			break
-		}
-		if selectedByIndex[candidate.Index] {
-			continue
-		}
-		selected = append(selected, candidate)
-		selectedByIndex[candidate.Index] = true
-		currentAccum += candidate.Power
-	}
-	if !meetsTrustThreshold(currentAccum, currentTotalPower, 2, 3) {
-		return nil, fmt.Errorf("insufficient current quorum in proof candidates: have %d of %d", currentAccum, currentTotalPower)
+	accum := new(big.Int).SetInt64(pinnedAccum)
+	accum.Mul(accum, big.NewInt(3))
+	if accum.Cmp(total) <= 0 {
+		return nil, fmt.Errorf("insufficient pinned-set quorum in proof candidates: have %d of %d", pinnedAccum, pinnedSet.totalPower)
 	}
 	if len(selected) > prover.MaxBucket() {
-		return nil, fmt.Errorf("trusted-overlap proof requires %d signers but largest bucket is %d", len(selected), prover.MaxBucket())
+		return nil, fmt.Errorf("pinned-set proof requires %d signers but largest bucket is %d", len(selected), prover.MaxBucket())
 	}
 
 	sort.Slice(selected, func(i, j int) bool {
 		return selected[i].Index < selected[j].Index
 	})
 	return selected, nil
-}
-
-func meetsTrustThreshold(accumulated, total, numerator, denominator int64) bool {
-	return accumulated*denominator > total*numerator
-}
-
-func emptyContractValidatorSet() updateclientContract.IICS07TendermintMsgsValidatorSet {
-	return updateclientContract.IICS07TendermintMsgsValidatorSet{
-		Validators:       []updateclientContract.IICS07TendermintMsgsValidatorInfo{},
-		HasProposer:      false,
-		Proposer:         updateclientContract.IICS07TendermintMsgsValidatorInfo{},
-		TotalVotingPower: 0,
-	}
 }
 
 // BuildCosmosClientUpdateMsg fetches the latest Tendermint light block,
@@ -409,18 +310,20 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	// cached `trustedBlock` hint, but across chunked flushes — or after another
 	// relayer / a crash-replay advanced the client — that cache can lag the real
 	// chain state, causing redundant proofs for a range already on-chain
-	// (issue #76 #2). The on-chain height wins when it is ahead.
+	// (issue #76 #2). The on-chain height always wins because only it is
+	// guaranteed to identify a stored consensus state.
 	onChainTrusted, err := fetchOnChainTrustedHeight(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if onChainTrusted > trustedBlock {
-		log.Printf("[UpdateCosmosClient] on-chain trusted height %d ahead of cached hint %d; using on-chain",
-			onChainTrusted, trustedBlock)
-		trustedBlock = onChainTrusted
-	} else if trustedBlock == 0 {
-		trustedBlock = onChainTrusted
+	// Only the authoritative on-chain latest height is guaranteed to have a
+	// stored consensus state. A cached hint can point at an unstored sparse
+	// height and make _getConsensusStateHash revert with ConsensusStateNotFound.
+	if trustedBlock != 0 && trustedBlock != onChainTrusted {
+		log.Printf("[UpdateCosmosClient] cached trusted height %d differs from on-chain %d; using on-chain",
+			trustedBlock, onChainTrusted)
 	}
+	trustedBlock = onChainTrusted
 	if trustedBlock >= status.SyncInfo.LatestBlockHeight {
 		if trustedBlock == status.SyncInfo.LatestBlockHeight {
 			log.Printf("[UpdateCosmosClient] client is up to date (trusted=%d, latest=%d), skipping tx",
@@ -505,84 +408,27 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	if err != nil {
 		return nil, fmt.Errorf("failed to convert light block into header: %w", err)
 	}
-	fullProposedHeader := proposedHeader
-	currentValidatorsHash := proposedHeader.SignedHeader.Header.ValidatorsHash
-	currentValidatorCache, err := getCachedCosmosValidatorSet(ctx, currentValidatorsHash)
+
+	pinnedValidatorSet, err := getPinnedCosmosValidatorSet(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query validator-set cache: %w", err)
-	}
-	currentValidatorsCacheExists := !currentValidatorCache.isEmpty()
-	usedValidatorCache := false
-	currentValidatorSetDelta := updateclientContract.IUpdateClientMsgsValidatorSetDelta{}
-	var allowedIndices map[uint32]bool
-
-	if currentValidatorsCacheExists {
-		usedValidatorCache = true
-		allowedIndices = currentValidatorCache.allowedIndices()
-		log.Printf("[UpdateCosmosClient] validator quorum cache hit: hash=%x; omitting current validator set", currentValidatorsHash)
-		proposedHeader.ValidatorSet = emptyContractValidatorSet()
-	} else {
-		baseValidatorsHash := consensusState.NextValidatorsHash
-		baseValidatorCache, err := getCachedCosmosValidatorSet(ctx, baseValidatorsHash)
-		if err != nil {
-			return nil, fmt.Errorf("failed to query validator-set delta base cache: %w", err)
-		}
-		if delta, ok, reason := detectValidatorSetDelta(
-			baseValidatorsHash,
-			baseValidatorCache,
-			proposedHeader.ValidatorSet,
-		); ok {
-			currentValidatorSetDelta = delta
-			currentValidatorsCacheExists = true
-			usedValidatorCache = true
-			log.Printf(
-				"[UpdateCosmosClient] validator quorum delta-cache hit: currentHash=%x baseHash=%x changedLeaves=%d; omitting current validator set",
-				currentValidatorsHash,
-				baseValidatorsHash,
-				delta.LeafCount,
-			)
-			proposedHeader.ValidatorSet = emptyContractValidatorSet()
-		} else {
-			log.Printf(
-				"[UpdateCosmosClient] validator quorum cache miss: hash=%x; delta unavailable from baseHash=%x (%s); sending full validator set",
-				currentValidatorsHash,
-				baseValidatorsHash,
-				reason,
-			)
-		}
-	}
-
-	adjacentUpdate := proposedHeader.SignedHeader.Header.Height == proposedHeader.TrustedHeight.RevisionHeight+1
-	if adjacentUpdate || (!currentValidatorsCacheExists && proposedHeader.SignedHeader.Header.ValidatorsHash == consensusState.NextValidatorsHash) {
-		proposedHeader.TrustedNextValidatorSet = emptyContractValidatorSet()
+		return nil, fmt.Errorf("failed to query pinned validator set: %w", err)
 	}
 
 	log.Printf("[UpdateCosmosClient] clientState.LatestHeight=(%d,%d) proposedHeader.Height=%d trustedBlock=%d latestBlock=%d",
 		clientState.LatestHeight.RevisionNumber, clientState.LatestHeight.RevisionHeight,
 		proposedHeader.SignedHeader.Header.Height, trustedLightBlock.BlockHeight, latestLightBlock.BlockHeight)
 
-	// Extract enough non-absent validator signatures to hit 2/3 voting power,
-	// then batch-prove them in a single Groth16 proof that reconstructs each
-	// CanonicalVote in-circuit.
-	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId, allowedIndices)
-	if err != nil && allowedIndices != nil {
-		return nil, fmt.Errorf("cached validator subset cannot form quorum for validatorsHash=%x; cannot fall back to full validator set while this hash is cached on-chain: %w", currentValidatorsHash, err)
-	}
+	// Extract non-absent validator signatures, then select enough signers that
+	// overlap the pinned validator set to exceed 2/3 of pinned voting power.
+	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId, nil)
 	if err != nil {
 		return nil, fmt.Errorf("extract validator signatures: %w", err)
 	}
-	if !adjacentUpdate {
-		selected, err := selectSignaturesForTrustedOverlap(
-			extracted.Candidates,
-			latestLightBlock.ValSet.TotalVotingPower(),
-			fullProposedHeader.TrustedNextValidatorSet,
-			clientState.TrustLevel,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("select trusted-overlap signatures: %w", err)
-		}
-		extracted.Signatures = selected
+	selected, err := selectSignaturesForPinnedSet(extracted.Candidates, pinnedValidatorSet)
+	if err != nil {
+		return nil, fmt.Errorf("select pinned-set signatures: %w", err)
 	}
+	extracted.Signatures = selected
 	log.Printf("[UpdateCosmosClient] Generating Groth16 batch proof for %d validator signatures...", len(extracted.Signatures))
 	bucket, paddedSigs, proof, commitments, commitmentPok, err := w.Prover.GenerateProof(extracted.Signatures)
 	if err != nil {
@@ -599,9 +445,17 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	timestampSeconds := make([]uint64, bucket)
 	timestampNanos := make([]uint32, bucket)
 	active := make([]bool, bucket)
-	trustedOverlapIndices := buildTrustedOverlapIndices(fullProposedHeader.TrustedNextValidatorSet, paddedSigs, bucket)
+	pinnedValidatorIndices := make([]uint32, bucket)
+	pinnedIndexByPubkey := pinnedValidatorSet.indexByPubkey()
 	for i, s := range paddedSigs {
 		signerIndices[i] = uint32(s.Index)
+		if s.Active {
+			pinnedIdx, ok := pinnedIndexByPubkey[bytesToBytes32(s.PublicKey)]
+			if !ok {
+				return nil, fmt.Errorf("active signer at slot %d is not in pinned validator set", i)
+			}
+			pinnedValidatorIndices[i] = pinnedIdx
+		}
 		copy(signerPubkeys[i][:], s.PublicKey)
 		timestampSeconds[i] = uint64(s.TimestampSeconds)
 		timestampNanos[i] = uint32(s.TimestampNanos)
@@ -609,33 +463,26 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	}
 
 	msg := updateclientContract.IUpdateClientMsgsMsgUpdateClient{
-		ClientState:              clientState,
-		TrustedConsensusState:    consensusState,
-		Time:                     big.NewInt(time.Now().UnixNano()),
-		ProposedHeader:           proposedHeader,
-		Proof:                    proof,
-		Commitments:              commitments,
-		CommitmentPok:            commitmentPok,
-		Bucket:                   uint16(bucket),
-		SignerIndices:            signerIndices,
-		SignerPubkeys:            signerPubkeys,
-		TimestampSeconds:         timestampSeconds,
-		TimestampNanos:           timestampNanos,
-		Active:                   active,
-		TrustedOverlapIndices:    trustedOverlapIndices,
-		CurrentValidatorSetDelta: currentValidatorSetDelta,
+		ClientState:            clientState,
+		TrustedConsensusState:  consensusState,
+		Time:                   big.NewInt(time.Now().UnixNano()),
+		ProposedHeader:         proposedHeader,
+		Proof:                  proof,
+		Commitments:            commitments,
+		CommitmentPok:          commitmentPok,
+		Bucket:                 uint16(bucket),
+		SignerIndices:          signerIndices,
+		PinnedValidatorIndices: pinnedValidatorIndices,
+		SignerPubkeys:          signerPubkeys,
+		TimestampSeconds:       timestampSeconds,
+		TimestampNanos:         timestampNanos,
+		Active:                 active,
 	}
 
-	fullValidatorSetFallbackMsg := msg
-	fullValidatorSetFallbackMsg.ProposedHeader = fullProposedHeader
-	fullValidatorSetFallbackMsg.CurrentValidatorSetDelta = updateclientContract.IUpdateClientMsgsValidatorSetDelta{}
-
 	return &CosmosClientUpdateBuildResult{
-		Msg:                         msg,
-		HasMsg:                      true,
-		LightBlock:                  latestLightBlock,
-		UsedValidatorCache:          usedValidatorCache,
-		FullValidatorSetFallbackMsg: fullValidatorSetFallbackMsg,
+		Msg:        msg,
+		HasMsg:     true,
+		LightBlock: latestLightBlock,
 	}, nil
 }
 

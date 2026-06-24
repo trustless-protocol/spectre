@@ -200,9 +200,7 @@ contract UpdateClientGasTest is Test {
 
         header = IICS07TendermintMsgs.Header({
             signedHeader: IICS07TendermintMsgs.SignedHeader({ header: bh, commit: bc }),
-            validatorSet: currentValSet,
-            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: trustedHeight }),
-            trustedNextValidatorSet: trustedNextValSet
+            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: trustedHeight })
         });
     }
 
@@ -212,9 +210,13 @@ contract UpdateClientGasTest is Test {
     function _buildSelfConsistent(BucketConfig memory cfg)
         internal
         pure
-        returns (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS)
+        returns (
+            IICS07TendermintMsgs.Header memory header,
+            IICS07TendermintMsgs.ConsensusState memory trustedCS,
+            IICS07TendermintMsgs.ValidatorSet memory vs
+        )
     {
-        IICS07TendermintMsgs.ValidatorSet memory vs = _buildValSet(cfg.valCount);
+        vs = _buildValSet(cfg.valCount);
         bytes32 valSetHash = Header.hashValSet(vs);
 
         IICS07TendermintMsgs.BlockHeader memory bh;
@@ -238,9 +240,7 @@ contract UpdateClientGasTest is Test {
 
         header = IICS07TendermintMsgs.Header({
             signedHeader: IICS07TendermintMsgs.SignedHeader({ header: bh, commit: bc }),
-            validatorSet: vs,
-            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
-            trustedNextValidatorSet: vs
+            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT })
         });
 
         // trustedConsensusState.nextValidatorsHash must equal hashValSet(trustedNextValSet)
@@ -252,7 +252,8 @@ contract UpdateClientGasTest is Test {
 
     function _deployLightClient(
         IICS07TendermintMsgs.ClientState memory cs,
-        IICS07TendermintMsgs.ConsensusState memory trustedCS
+        IICS07TendermintMsgs.ConsensusState memory trustedCS,
+        IICS07TendermintMsgs.ValidatorSet memory pinnedValidatorSet
     )
         internal
         returns (Groth16ICS07Tendermint)
@@ -266,6 +267,7 @@ contract UpdateClientGasTest is Test {
             address(updateClientImpl),
             abi.encode(cs),
             keccak256(abi.encode(trustedCS)),
+            pinnedValidatorSet,
             address(0) // permissionless
         );
     }
@@ -274,6 +276,7 @@ contract UpdateClientGasTest is Test {
         IICS07TendermintMsgs.ClientState memory cs,
         IICS07TendermintMsgs.ConsensusState memory trustedCS,
         IICS07TendermintMsgs.Header memory header,
+        IICS07TendermintMsgs.ValidatorSet memory vs,
         uint16 bucket,
         uint16 activeCount
     )
@@ -287,14 +290,13 @@ contract UpdateClientGasTest is Test {
         uint64[] memory tsS = new uint64[](bucket);
         uint32[] memory tsN = new uint32[](bucket);
         bool[] memory act = new bool[](bucket);
-        uint32[] memory trustedOverlap = new uint32[](bucket);
+        uint32[] memory pinnedValidatorIndices = new uint32[](bucket);
         for (uint256 i = 0; i < bucket; i++) {
-            trustedOverlap[i] = type(uint32).max;
+            pinnedValidatorIndices[i] = uint32(i);
             if (i < activeCount) {
                 idx[i] = uint32(i);
-                pks[i] = header.validatorSet.validators[i].pubKey;
+                pks[i] = vs.validators[i].pubKey;
                 act[i] = true;
-                trustedOverlap[i] = uint32(i);
             }
             tsS[i] = uint64(1_700_000_000 + i);
             tsN[i] = uint32(i * 1_000_000);
@@ -313,18 +315,18 @@ contract UpdateClientGasTest is Test {
         msg_.timestampSeconds = tsS;
         msg_.timestampNanos = tsN;
         msg_.active = act;
-        msg_.trustedOverlapIndices = trustedOverlap;
+        msg_.pinnedValidatorIndices = pinnedValidatorIndices;
     }
 
     function _measure(uint16 bucket) internal {
         BucketConfig memory cfg = _cfg(bucket);
 
-        (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS) =
+        (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS, IICS07TendermintMsgs.ValidatorSet memory vs) =
             _buildSelfConsistent(cfg);
 
         IICS07TendermintMsgs.ClientState memory cs = _clientState();
-        Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS);
-        bytes memory encoded = abi.encode(_buildMsg(cs, trustedCS, header, bucket, cfg.activeCount));
+        Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS, vs);
+        bytes memory encoded = abi.encode(_buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount));
 
         uint256 g0 = gasleft();
         ILightClientMsgs.UpdateResult result = ics07.updateClient(encoded);
@@ -336,21 +338,19 @@ contract UpdateClientGasTest is Test {
     function _measureCacheHitReplay(uint16 bucket) internal {
         BucketConfig memory cfg = _cfg(bucket);
 
-        (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS) =
+        (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS, IICS07TendermintMsgs.ValidatorSet memory vs) =
             _buildSelfConsistent(cfg);
 
         IICS07TendermintMsgs.ClientState memory cs = _clientState();
-        Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS);
+        Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS, vs);
 
-        IUpdateClientMsgs.MsgUpdateClient memory fullMsg = _buildMsg(cs, trustedCS, header, bucket, cfg.activeCount);
+        IUpdateClientMsgs.MsgUpdateClient memory fullMsg = _buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount);
         assertEq(
             uint8(ics07.updateClient(abi.encode(fullMsg))), uint8(ILightClientMsgs.UpdateResult.Update), "warmup Update"
         );
 
-        IUpdateClientMsgs.MsgUpdateClient memory cacheMsg = _buildMsg(cs, trustedCS, header, bucket, cfg.activeCount);
-        cacheMsg.proposedHeader.validatorSet = _emptyValSet();
-        cacheMsg.proposedHeader.trustedNextValidatorSet = _emptyValSet();
-
+        IUpdateClientMsgs.MsgUpdateClient memory cacheMsg = _buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount);
+        
         uint256 g0 = gasleft();
         ILightClientMsgs.UpdateResult result = ics07.updateClient(abi.encode(cacheMsg));
         uint256 used = g0 - gasleft();
@@ -368,13 +368,13 @@ contract UpdateClientGasTest is Test {
             timestamp: TRUSTED_TS_NS, root: bytes32(uint256(0xAAA1)), nextValidatorsHash: valSetHash
         });
 
-        Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS0);
+        Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS0, valSet);
 
         IICS07TendermintMsgs.Header memory header1001 = _buildHeader(
             TRUSTED_HEIGHT, NEW_HEIGHT, NEW_TS_NS, bytes32(uint256(0xCCC1)), valSet, valSet, cfg.activeCount
         );
         IUpdateClientMsgs.MsgUpdateClient memory msg1001 =
-            _buildMsg(cs, trustedCS0, header1001, bucket, cfg.activeCount);
+            _buildMsg(cs, trustedCS0, header1001, valSet, bucket, cfg.activeCount);
         assertEq(
             uint8(ics07.updateClient(abi.encode(msg1001))), uint8(ILightClientMsgs.UpdateResult.Update), "warmup Update"
         );
@@ -384,14 +384,12 @@ contract UpdateClientGasTest is Test {
         });
 
         IICS07TendermintMsgs.Header memory header1002 = _buildHeader(
-            NEW_HEIGHT, NEXT_HEIGHT, NEXT_TS_NS, bytes32(uint256(0xCCC2)), valSet, _emptyValSet(), cfg.activeCount
+            NEW_HEIGHT, NEXT_HEIGHT, NEXT_TS_NS, bytes32(uint256(0xCCC2)), valSet, valSet, cfg.activeCount
         );
 
         IUpdateClientMsgs.MsgUpdateClient memory cacheMsg =
-            _buildMsg(cs, trustedCS1001, header1002, bucket, cfg.activeCount);
-        cacheMsg.proposedHeader.validatorSet = _emptyValSet();
-        cacheMsg.proposedHeader.trustedNextValidatorSet = _emptyValSet();
-
+            _buildMsg(cs, trustedCS1001, header1002, valSet, bucket, cfg.activeCount);
+        
         uint256 g0 = gasleft();
         ILightClientMsgs.UpdateResult result = ics07.updateClient(abi.encode(cacheMsg));
         uint256 used = g0 - gasleft();
