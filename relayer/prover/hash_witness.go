@@ -2,7 +2,6 @@ package prover
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"fmt"
 	"math/big"
 
@@ -67,15 +66,73 @@ func DigestPublicInputs(hash [WitnessDigestBytes]byte) [WitnessDigestFieldElemen
 	return out
 }
 
+// roundFieldTag is the proto wire tag for CanonicalVote.round (field 3,
+// wiretype 1 / fixed64). Its presence at body offset prefixHeadLen tells the
+// reader whether the round field is encoded (round > 0) — which shifts the
+// BlockID (and the block hash within it) 9 bytes later.
+const roundFieldTag = 0x19
+
+// commonPrefixFields derives the #199 committed common fields from the first
+// active signer's canonical-vote bytes: PrefixHead (Type|Height), the 32-byte
+// block hash inside BlockID, and whether the round field is present. All active
+// signers of one block share these contents, and the circuit binds each active
+// slot's message against them — deriving from a real signed message guarantees
+// the off-chain hash matches what the circuit commits.
+//
+// The leading length varint is 1 byte when bodyLen < 128 and 2 bytes otherwise.
+// Its width is per-signer (the per-validator timestamp shifts bodyLen across the
+// 128 boundary), so it is detected here from the continuation bit rather than
+// assumed; the body starts right after it. Offsets mirror the circuit constants.
+func commonPrefixFields(sigs []ValidatorSignature) (prefixHead [prefixHeadLen]byte, blockHash [32]byte, roundPresent bool, err error) {
+	for _, s := range sigs {
+		if !s.Active {
+			continue
+		}
+		sb := s.SignedBytes
+		if len(sb) == 0 {
+			return prefixHead, blockHash, false, fmt.Errorf("signed bytes empty")
+		}
+		// 1-byte varint unless the first byte's continuation bit is set.
+		bodyStart := 1
+		if sb[0] >= 0x80 {
+			bodyStart = 2
+		}
+		if len(sb) < bodyStart+prefixHeadLen+1 {
+			return prefixHead, blockHash, false, fmt.Errorf("signed bytes too short (%d) for prefix head at offset %d", len(sb), bodyStart)
+		}
+		roundPresent = sb[bodyStart+prefixHeadLen] == roundFieldTag
+		off := bodyStart + blockHashBodyOffNoRound
+		if roundPresent {
+			off = bodyStart + blockHashBodyOffRound
+		}
+		if len(sb) < off+32 {
+			return prefixHead, blockHash, false, fmt.Errorf("signed bytes too short (%d) for block hash at offset %d", len(sb), off)
+		}
+		copy(prefixHead[:], sb[bodyStart:bodyStart+prefixHeadLen])
+		copy(blockHash[:], sb[off:off+32])
+		return prefixHead, blockHash, roundPresent, nil
+	}
+	return prefixHead, blockHash, false, fmt.Errorf("no active signer to derive common prefix")
+}
+
 func encodeWitnessBytes(sigs []ValidatorSignature) ([]byte, error) {
-	size := len(sigs) * (1 + 32 + 2 + MaxMsgLen)
-	buf := make([]byte, 0, size)
+	prefixHead, blockHash, roundPresent, err := commonPrefixFields(sigs)
+	if err != nil {
+		return nil, err
+	}
+	// Layout must match circuit BatchCircuit.Define and WrapperVerifier._hashWitness:
+	//   PrefixHead(11) || roundPresent(1) || BlockHash(32) || per slot: active(1) || A(32)
+	buf := make([]byte, 0, prefixHeadLen+1+32+len(sigs)*(1+32))
+	buf = append(buf, prefixHead[:]...)
+	var roundByte byte
+	if roundPresent {
+		roundByte = 1
+	}
+	buf = append(buf, roundByte)
+	buf = append(buf, blockHash[:]...)
 	for i, v := range sigs {
 		if len(v.PublicKey) != 32 {
 			return nil, fmt.Errorf("slot %d: public key length %d, want 32", i, len(v.PublicKey))
-		}
-		if len(v.SignedBytes) > MaxMsgLen {
-			return nil, fmt.Errorf("slot %d: signed bytes length %d exceeds MaxMsgLen=%d", i, len(v.SignedBytes), MaxMsgLen)
 		}
 		var activeByte byte
 		if v.Active {
@@ -83,10 +140,6 @@ func encodeWitnessBytes(sigs []ValidatorSignature) ([]byte, error) {
 		}
 		buf = append(buf, activeByte)
 		buf = append(buf, v.PublicKey...)
-		buf = binary.BigEndian.AppendUint16(buf, uint16(len(v.SignedBytes)))
-		padded := make([]byte, MaxMsgLen)
-		copy(padded, v.SignedBytes)
-		buf = append(buf, padded...)
 	}
 	return buf, nil
 }

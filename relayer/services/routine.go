@@ -442,8 +442,6 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	// power; Solidity skips them via the active flag.
 	signerIndices := make([]uint32, bucket)
 	signerPubkeys := make([][32]byte, bucket)
-	timestampSeconds := make([]uint64, bucket)
-	timestampNanos := make([]uint32, bucket)
 	active := make([]bool, bucket)
 	pinnedValidatorIndices := make([]uint32, bucket)
 	pinnedIndexByPubkey := pinnedValidatorSet.indexByPubkey()
@@ -457,8 +455,6 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 			pinnedValidatorIndices[i] = pinnedIdx
 		}
 		copy(signerPubkeys[i][:], s.PublicKey)
-		timestampSeconds[i] = uint64(s.TimestampSeconds)
-		timestampNanos[i] = uint32(s.TimestampNanos)
 		active[i] = s.Active
 	}
 
@@ -474,8 +470,6 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		SignerIndices:          signerIndices,
 		PinnedValidatorIndices: pinnedValidatorIndices,
 		SignerPubkeys:          signerPubkeys,
-		TimestampSeconds:       timestampSeconds,
-		TimestampNanos:         timestampNanos,
 		Active:                 active,
 	}
 

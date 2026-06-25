@@ -205,8 +205,6 @@ contract RecvPacketGasTest is IntegrationTest {
         // 1. Build the update message
         uint32[] memory idx = new uint32[](bucket);
         bytes32[] memory pks = new bytes32[](bucket);
-        uint64[] memory tsS = new uint64[](bucket);
-        uint32[] memory tsN = new uint32[](bucket);
         bool[] memory act = new bool[](bucket);
         uint32[] memory pinnedValidatorIndices = new uint32[](bucket);
         for (uint256 i = 0; i < bucket; i++) {
@@ -216,8 +214,6 @@ contract RecvPacketGasTest is IntegrationTest {
                 pks[i] = vs.validators[i].pubKey;
                 act[i] = true;
             }
-            tsS[i] = uint64(1_700_000_000 + i);
-            tsN[i] = uint32(i * 1_000_000);
         }
 
         IUpdateClientMsgs.MsgUpdateClient memory m;
@@ -231,8 +227,6 @@ contract RecvPacketGasTest is IntegrationTest {
         m.bucket = bucket;
         m.signerIndices = idx;
         m.signerPubkeys = pks;
-        m.timestampSeconds = tsS;
-        m.timestampNanos = tsN;
         m.active = act;
         m.pinnedValidatorIndices = pinnedValidatorIndices;
         bytes memory encodedUpdate = abi.encode(m);

@@ -30,8 +30,6 @@ interface IMisbehaviourMsgs {
         uint32[] signerIndices;
         uint32[] pinnedValidatorIndices;
         bytes32[] signerPubkeys;
-        uint64[] timestampSeconds;
-        uint32[] timestampNanos;
         bool[] active;
     }
 

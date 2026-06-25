@@ -373,8 +373,6 @@ contract UpdateClientCacheTest is Test {
         uint32[] memory idx = new uint32[](BUCKET);
         uint32[] memory pinnedIdx = new uint32[](BUCKET);
         bytes32[] memory pks = new bytes32[](BUCKET);
-        uint64[] memory tsS = new uint64[](BUCKET);
-        uint32[] memory tsN = new uint32[](BUCKET);
         bool[] memory act = new bool[](BUCKET);
         for (uint256 i = 0; i < BUCKET; i++) {
             idx[i] = uint32(i);
@@ -383,8 +381,6 @@ contract UpdateClientCacheTest is Test {
                 pks[i] = pinned.validators[i].pubKey;
                 act[i] = true;
             }
-            tsS[i] = uint64(1_700_000_000 + i);
-            tsN[i] = uint32(i * 1_000_000);
         }
 
         msg_.clientState = _clientState();
@@ -398,8 +394,6 @@ contract UpdateClientCacheTest is Test {
         msg_.signerIndices = idx;
         msg_.pinnedValidatorIndices = pinnedIdx;
         msg_.signerPubkeys = pks;
-        msg_.timestampSeconds = tsS;
-        msg_.timestampNanos = tsN;
         msg_.active = act;
     }
 
@@ -418,8 +412,6 @@ contract UpdateClientCacheTest is Test {
         proof_.signerIndices = new uint32[](BUCKET);
         proof_.pinnedValidatorIndices = new uint32[](BUCKET);
         proof_.signerPubkeys = new bytes32[](BUCKET);
-        proof_.timestampSeconds = new uint64[](BUCKET);
-        proof_.timestampNanos = new uint32[](BUCKET);
         proof_.active = new bool[](BUCKET);
         for (uint256 i = 0; i < BUCKET; i++) {
             proof_.signerIndices[i] = uint32(i);
@@ -428,8 +420,6 @@ contract UpdateClientCacheTest is Test {
                 proof_.signerPubkeys[i] = pinned.validators[i].pubKey;
                 proof_.active[i] = true;
             }
-            proof_.timestampSeconds[i] = uint64(1_700_000_000 + i);
-            proof_.timestampNanos[i] = uint32(i * 1_000_000);
         }
     }
 

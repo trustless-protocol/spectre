@@ -258,6 +258,13 @@ func padWithDummies(sigs []ValidatorSignature, dummies []dummySignature) ([]Vali
 	return out, nil
 }
 
+// BuildBatchAssignment is the exported entry point to buildBatchAssignment, used
+// by the setup-circuits smoke test so it proves against the exact assignment
+// layout the relayer produces (including the #199 prefix/block-hash fields).
+func BuildBatchAssignment(sigs []ValidatorSignature, hash [32]byte) (*BatchCircuit[Fp25519, Fr25519], error) {
+	return buildBatchAssignment(sigs, hash)
+}
+
 // buildBatchAssignment builds the BatchCircuit witness assignment: per-slot
 // (sig, pub, signed canonical-vote bytes, msgLen). Signature R/S and pubkey A
 // are decompressed off-circuit into gnark's emulated Ed25519 coordinates; the
@@ -274,6 +281,25 @@ func buildBatchAssignment(sigs []ValidatorSignature, hash [32]byte) (*BatchCircu
 	publicInputs := DigestPublicInputs(hash)
 	for i := range publicInputs {
 		a.Hash[i] = publicInputs[i]
+	}
+
+	// #199 committed common fields (Type|Height prefix head, block hash, round
+	// presence) — derived from a real active signer's bytes so they match the
+	// witness commit and what the circuit binds each active slot against.
+	prefixHead, blockHash, roundPresent, err := commonPrefixFields(sigs)
+	if err != nil {
+		return nil, err
+	}
+	for j := 0; j < prefixHeadLen; j++ {
+		a.PrefixHead[j] = uints.NewU8(prefixHead[j])
+	}
+	for j := 0; j < 32; j++ {
+		a.BlockHash[j] = uints.NewU8(blockHash[j])
+	}
+	if roundPresent {
+		a.RoundPresent = 1
+	} else {
+		a.RoundPresent = 0
 	}
 
 	for i := 0; i < n; i++ {

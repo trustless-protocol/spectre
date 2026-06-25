@@ -11,16 +11,17 @@ import (
 )
 
 // ValidatorSignature is the extracted Ed25519 signature data for one validator
-// in a block commit, alongside the per-validator timestamp + the canonical
-// vote bytes that validator actually signed (ready to feed into the circuit).
+// in a block commit, alongside the canonical vote bytes that validator actually
+// signed (ready to feed into the circuit). The per-validator timestamp is part
+// of SignedBytes; as of #199 it is no longer carried separately because the
+// on-chain witness commits only the common prefix + block hash, not the full
+// per-slot vote.
 type ValidatorSignature struct {
-	Signature        []byte // 64 bytes: R || S
-	PublicKey        []byte // 32 bytes: compressed Ed25519 public key
-	Index            int    // index in the block's validator set
-	Power            int64  // validator voting power
-	TimestampSeconds int64  // google.protobuf.Timestamp seconds
-	TimestampNanos   int32  // google.protobuf.Timestamp nanos
-	SignedBytes      []byte // cometbft.Commit.VoteSignBytes(chainID, idx)
+	Signature   []byte // 64 bytes: R || S
+	PublicKey   []byte // 32 bytes: compressed Ed25519 public key
+	Index       int    // index in the block's validator set
+	Power       int64  // validator voting power
+	SignedBytes []byte // cometbft.Commit.VoteSignBytes(chainID, idx)
 	// Active distinguishes real signers (true) from deterministic padding
 	// (false). Padding slots carry distinct dummy data so the in-circuit ECIP
 	// divisor stays well-formed; their contribution is gated to zero.
@@ -107,14 +108,12 @@ func ExtractValidatorSignatures(
 			continue
 		}
 		candidates = append(candidates, ValidatorSignature{
-			Signature:        sig.Signature,
-			PublicKey:        pubKeyBytes,
-			Index:            i,
-			Power:            validator.VotingPower,
-			TimestampSeconds: sig.Timestamp.Unix(),
-			TimestampNanos:   int32(sig.Timestamp.Nanosecond()),
-			SignedBytes:      voteData,
-			Active:           true,
+			Signature:   sig.Signature,
+			PublicKey:   pubKeyBytes,
+			Index:       i,
+			Power:       validator.VotingPower,
+			SignedBytes: voteData,
+			Active:      true,
 		})
 	}
 	if len(candidates) == 0 {

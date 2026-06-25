@@ -73,8 +73,6 @@ func (d dummySignature) asValidatorSignature() ValidatorSignature {
 		Signature:   d.signature,
 		PublicKey:   d.publicKey,
 		SignedBytes: d.signedBytes,
-		// TimestampSeconds/Nanos left zero — they are not used on-chain for
-		// padding slots.
-		Active: false,
+		Active:      false,
 	}
 }

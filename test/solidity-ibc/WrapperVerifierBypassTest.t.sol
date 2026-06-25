@@ -80,14 +80,8 @@ contract WrapperVerifierBypassTest is Test {
         // slot, bypassing `setBucket`.
         vm.store(address(wrapper), _bucketSlot(bucket), bytes32(_packBucketVerifier(codeless, selector)));
 
-        IVerifier.SharedBlock memory shared = IVerifier.SharedBlock({
-            height: 1,
-            round: 0,
-            blockIDHash: bytes32(uint256(0x3333)),
-            partSetTotal: 1,
-            partSetHash: bytes32(uint256(0x4444)),
-            chainID: bytes("chain")
-        });
+        IVerifier.SharedBlock memory shared =
+            IVerifier.SharedBlock({ height: 1, round: 0, blockIDHash: bytes32(uint256(0x3333)) });
 
         vm.expectRevert(abi.encodeWithSelector(WrapperVerifier.NoVerifierCode.selector, codeless));
         wrapper.verifyBatchProof(
@@ -96,8 +90,6 @@ contract WrapperVerifierBypassTest is Test {
             _zeroCommitments(),
             _zeroCommitmentPok(),
             _zeroPubkeys(bucket),
-            _zeroTsSeconds(bucket),
-            _zeroTsNanos(bucket),
             _zeroActive(bucket),
             shared
         );
@@ -112,14 +104,8 @@ contract WrapperVerifierBypassTest is Test {
     ///         where the new `NoVerifierCode` check swallows every call.
     function test_verifyBatchProof_revertsWhenBucketUnregistered() public {
         uint16 bucket = 4;
-        IVerifier.SharedBlock memory shared = IVerifier.SharedBlock({
-            height: 1,
-            round: 0,
-            blockIDHash: bytes32(uint256(0x5555)),
-            partSetTotal: 1,
-            partSetHash: bytes32(uint256(0x6666)),
-            chainID: bytes("chain")
-        });
+        IVerifier.SharedBlock memory shared =
+            IVerifier.SharedBlock({ height: 1, round: 0, blockIDHash: bytes32(uint256(0x5555)) });
 
         vm.expectRevert(abi.encodeWithSelector(WrapperVerifier.UnknownBucket.selector, bucket));
         wrapper.verifyBatchProof(
@@ -128,8 +114,6 @@ contract WrapperVerifierBypassTest is Test {
             _zeroCommitments(),
             _zeroCommitmentPok(),
             _zeroPubkeys(bucket),
-            _zeroTsSeconds(bucket),
-            _zeroTsNanos(bucket),
             _zeroActive(bucket),
             shared
         );
@@ -170,14 +154,6 @@ contract WrapperVerifierBypassTest is Test {
 
     function _zeroPubkeys(uint16 n) private pure returns (bytes32[] memory p) {
         p = new bytes32[](n);
-    }
-
-    function _zeroTsSeconds(uint16 n) private pure returns (uint64[] memory t) {
-        t = new uint64[](n);
-    }
-
-    function _zeroTsNanos(uint16 n) private pure returns (uint32[] memory t) {
-        t = new uint32[](n);
     }
 
     function _zeroActive(uint16 n) private pure returns (bool[] memory a) {

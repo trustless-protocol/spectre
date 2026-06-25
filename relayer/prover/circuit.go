@@ -20,6 +20,29 @@ type Fr25519 = emulated.Curve25519Fr
 // SHA-256 block boundary count.
 const MaxMsgLen = 192
 
+// #199 offsets within each signer's canonical-vote message, measured from the
+// start of the BODY — i.e. after the leading length varint that
+// MarshalDelimited prepends. That varint is 1 byte when bodyLen < 128 and 2
+// bytes otherwise; its width is detected PER-SLOT (see Define) rather than
+// assumed, because the per-validator timestamp shifts bodyLen across the 128
+// boundary, so signers in one commit can mix 1- and 2-byte varints.
+//
+//	body = Type(0x08 0x02)            // [0,2)
+//	     | Height(0x11 + 8B sfixed64) // [2,11)
+//	     | Round(0x19 + 8B)           // [11,20) — present only when round > 0
+//	     | BlockID(0x22 len 0x0a 0x20 hash[32] ...)
+//	     | Timestamp | ChainID
+//
+// PrefixHead = Type|Height = first 11 body bytes (always present). The 32-byte
+// block hash sits 4 bytes into BlockID, so at body offset 15 (no round) or 24
+// (round shifts BlockID by 9). The in-message index adds the per-slot varint
+// width (1 or 2) to these body offsets.
+const (
+	prefixHeadLen           = 11 // Type(2) + Height(9)
+	blockHashBodyOffNoRound = 15
+	blockHashBodyOffRound   = 24 // round shifts BlockID by 9
+)
+
 // BatchCircuit verifies N Tendermint precommit Ed25519 signatures and commits
 // to its entire witness via a single SHA-256 digest, exposed publicly as two
 // 128-bit field elements. This keeps the generated Groth16 verifier compact
@@ -35,6 +58,18 @@ const MaxMsgLen = 192
 // per bucket in prover.Buckets.
 type BatchCircuit[Base, Scalars emulated.FieldParams] struct {
 	Hash [WitnessDigestFieldElements]frontend.Variable `gnark:",public"`
+
+	// #199: bind only the security-critical common fields in-circuit, at fixed
+	// offsets in every signer's message, instead of hashing the full per-slot
+	// canonical vote. PrefixHead = Type(precommit)+Height. BlockHash = the
+	// 32-byte block hash inside BlockID (→ binds the header → AppHash, chainId,
+	// height). RoundPresent selects the block-hash offset (round shifts BlockID
+	// by 9 bytes). All three are committed (hashed) so calldata can't alter
+	// them. Round/timestamp/chainID are left unbound here — the Ed25519 verify
+	// binds them via H_RAM, and chainID is enforced on-chain.
+	PrefixHead   [prefixHeadLen]uints.U8 `gnark:",secret"`
+	BlockHash    [32]uints.U8            `gnark:",secret"`
+	RoundPresent frontend.Variable       `gnark:",secret"`
 
 	Sig []eddsa.Signature[Base, Scalars] `gnark:",secret"`
 	Pub []eddsa.PublicKey[Base, Scalars] `gnark:",secret"`
@@ -64,12 +99,17 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	//    binds them via the in-circuit Ed25519 verify, and no on-chain logic
 	//    consumes them. The active byte is placed first so the on-chain
 	//    rebuild can short-circuit cheaply for padding slots if needed.
+	//      #199 layout: PrefixHead(11) || roundPresent(1) || BlockHash(32) || per slot: active(1) || A(32)
+	//      The per-slot canonical-vote bytes are no longer hashed here — they
+	//      are bound instead by the fixed-offset prefix/blockHash asserts below
+	//      + the in-circuit Ed25519 verify. This shrinks the witness commit.
 	var buf []uints.U8
+	buf = append(buf, c.PrefixHead[:]...)
+	buf = append(buf, varToBytesBE(api, c.RoundPresent, 1)...)
+	buf = append(buf, c.BlockHash[:]...)
 	for i := range c.Sig {
 		buf = append(buf, varToBytesBE(api, c.Active[i], 1)...)
 		buf = append(buf, compressEdwardsToLE(api, baseApi, &c.Pub[i].A)...)
-		buf = append(buf, varToBytesBE(api, c.MsgLens[i], 2)...)
-		buf = append(buf, c.Msgs[i][:]...)
 	}
 
 	h, err := sha2.New(api)
@@ -82,6 +122,42 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 		start := i * WitnessDigestFieldBytes
 		end := start + WitnessDigestFieldBytes
 		api.AssertIsEqual(c.Hash[i], packBytesToVariableBE(api, digest[start:end]))
+	}
+
+	// #199 prefix binding (cheap: fixed offsets + a single RoundPresent select,
+	// no per-byte comparator). For each signer's message:
+	//   - PrefixHead (Type=precommit | Height) is always at [prefixBodyOffset, +11).
+	//   - the 32-byte block hash is at blockHashOffNoRound or blockHashOffRound,
+	//     selected by RoundPresent (round, when present, shifts BlockID by 9 B).
+	// Binds Type, Height and the block hash (→ header → AppHash/chainId/height).
+	// A committed-vs-actual mismatch (wrong RoundPresent, wrong bytes) fails the
+	// equality; everything else in the message is covered by the Ed25519 verify.
+	// Only ACTIVE slots carry the real canonical vote — padding/dummy slots sign
+	// deterministic dummy bytes, so their prefix must NOT be checked against the
+	// committed common prefix. Mask each assert by Active[i] (a single bit
+	// already in the witness): for active slots it enforces equality, for padding
+	// it is vacuous (0 == 0).
+	api.AssertIsBoolean(c.RoundPresent)
+	for i := range c.Sig {
+		// Per-slot leading-varint width: the continuation bit (MSB) of the first
+		// length byte is set iff a second varint byte follows (bodyLen >= 128).
+		// So the body starts at index 1 (v2=0, 1-byte varint) or 2 (v2=1, 2-byte
+		// varint), and every body offset O below maps to in-message index
+		// (1+v2)+O. v2 is derived from the message itself; for padding slots it is
+		// meaningless but harmless since the asserts are masked by Active[i].
+		byte0Bits := api.ToBinary(c.Msgs[i][0].Val, 8)
+		v2 := byte0Bits[7]
+
+		for j := 0; j < prefixHeadLen; j++ {
+			b := api.Select(v2, c.Msgs[i][2+j].Val, c.Msgs[i][1+j].Val)
+			api.AssertIsEqual(api.Mul(c.Active[i], b), api.Mul(c.Active[i], c.PrefixHead[j].Val))
+		}
+		for j := 0; j < 32; j++ {
+			noRound := api.Select(v2, c.Msgs[i][2+blockHashBodyOffNoRound+j].Val, c.Msgs[i][1+blockHashBodyOffNoRound+j].Val)
+			round := api.Select(v2, c.Msgs[i][2+blockHashBodyOffRound+j].Val, c.Msgs[i][1+blockHashBodyOffRound+j].Val)
+			b := api.Select(c.RoundPresent, round, noRound)
+			api.AssertIsEqual(api.Mul(c.Active[i], b), api.Mul(c.Active[i], c.BlockHash[j].Val))
+		}
 	}
 
 	// 2. Run Ed25519 batch verify over the per-slot signed bytes. SHA-512

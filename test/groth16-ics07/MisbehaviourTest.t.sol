@@ -32,8 +32,6 @@ contract MockVerifierForMisbehaviour is IVerifier {
         uint256[2] calldata,
         uint256[2] calldata,
         bytes32[] calldata,
-        uint64[] calldata,
-        uint32[] calldata,
         bool[] calldata,
         IVerifier.SharedBlock calldata
     )
@@ -144,8 +142,6 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
     uint128 internal constant TRUSTED_TIME_NANOS = 1_700_000_000_000_000_000;
     uint128 internal constant HEADER_TIME_NANOS = 1_700_000_100_000_000_000;
-    uint64 internal constant HEADER_TIME_SECONDS = 1_700_000_100;
-    uint32 internal constant HEADER_TIME_NANOS_PART = 0;
     string internal constant CHAIN_ID = "test-chain-0";
 
     struct LegacyMsgSubmitMisbehaviour {
@@ -437,16 +433,12 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         proof_.signerIndices = new uint32[](4);
         proof_.pinnedValidatorIndices = new uint32[](4);
         proof_.signerPubkeys = new bytes32[](4);
-        proof_.timestampSeconds = new uint64[](4);
-        proof_.timestampNanos = new uint32[](4);
         proof_.active = new bool[](4);
 
         for (uint32 i = 0; i < 4; i++) {
             proof_.signerIndices[i] = i;
             proof_.pinnedValidatorIndices[i] = i;
             proof_.signerPubkeys[i] = validatorSet.validators[i].pubKey;
-            proof_.timestampSeconds[i] = HEADER_TIME_SECONDS;
-            proof_.timestampNanos[i] = HEADER_TIME_NANOS_PART;
             proof_.active[i] = i < activeCount;
         }
     }

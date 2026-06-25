@@ -21,14 +21,14 @@ interface IUpdateClientMsgs {
     /// @param signerIndices Validator indices in proposedHeader.signedHeader.commit.commitSigs. Length == bucket.
     /// @param pinnedValidatorIndices Validator indices in the pinned validator set. Length == bucket.
     /// @param signerPubkeys Compressed Ed25519 public keys per slot, matching pinnedValidatorIndices. Length == bucket.
-    /// @param timestampSeconds Per-validator google.protobuf.Timestamp.seconds. Length == bucket.
-    /// @param timestampNanos Per-validator google.protobuf.Timestamp.nanos. Length == bucket.
     /// @param active Per-slot real-signer flag. true = real validator (counts toward quorum);
     ///      false = deterministic dummy padding (skipped on-chain). Length == bucket.
     /// @dev The shared CanonicalVote fields (height, round, BlockID, chainID) are read directly
     ///      from proposedHeader.signedHeader.commit and proposedHeader.signedHeader.header — no
-    ///      need to duplicate them in this message. The in-circuit reconstruction uses the same
-    ///      values.
+    ///      need to duplicate them in this message. As of #199 the per-slot timestamps are no
+    ///      longer carried either: the witness commitment binds only the common prefix + block
+    ///      hash, and the in-circuit Ed25519 verify binds each validator's full signed bytes
+    ///      (timestamp included).
     struct MsgUpdateClient {
         IICS07TendermintMsgs.ClientState clientState;
         IICS07TendermintMsgs.ConsensusState trustedConsensusState;
@@ -41,8 +41,6 @@ interface IUpdateClientMsgs {
         uint32[] signerIndices;
         uint32[] pinnedValidatorIndices;
         bytes32[] signerPubkeys;
-        uint64[] timestampSeconds;
-        uint32[] timestampNanos;
         bool[] active;
     }
 

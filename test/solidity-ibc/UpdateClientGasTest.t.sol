@@ -287,8 +287,6 @@ contract UpdateClientGasTest is Test {
         // Build per-slot bucket arrays (active = first cfg.activeCount, rest = padding).
         uint32[] memory idx = new uint32[](bucket);
         bytes32[] memory pks = new bytes32[](bucket);
-        uint64[] memory tsS = new uint64[](bucket);
-        uint32[] memory tsN = new uint32[](bucket);
         bool[] memory act = new bool[](bucket);
         uint32[] memory pinnedValidatorIndices = new uint32[](bucket);
         for (uint256 i = 0; i < bucket; i++) {
@@ -298,8 +296,6 @@ contract UpdateClientGasTest is Test {
                 pks[i] = vs.validators[i].pubKey;
                 act[i] = true;
             }
-            tsS[i] = uint64(1_700_000_000 + i);
-            tsN[i] = uint32(i * 1_000_000);
         }
 
         msg_.clientState = cs;
@@ -312,8 +308,6 @@ contract UpdateClientGasTest is Test {
         msg_.bucket = bucket;
         msg_.signerIndices = idx;
         msg_.signerPubkeys = pks;
-        msg_.timestampSeconds = tsS;
-        msg_.timestampNanos = tsN;
         msg_.active = act;
         msg_.pinnedValidatorIndices = pinnedValidatorIndices;
     }

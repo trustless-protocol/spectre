@@ -3,25 +3,17 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
-	"crypto/rand"
 	"flag"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 
-	"0x5ea000000/ecip-gnark/signature/eddsa"
-	"0x5ea000000/ecip-gnark/utils"
-
-	"filippo.io/edwards25519"
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/backend/groth16"
 	"github.com/consensys/gnark/constraint"
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/frontend/cs/r1cs"
-	"github.com/consensys/gnark/std/algebra/emulated/sw_emulated"
-	"github.com/consensys/gnark/std/math/emulated"
-	"github.com/consensys/gnark/std/math/uints"
 
 	"relayer/prover"
 )
@@ -94,25 +86,21 @@ func main() {
 	fmt.Println("\nAll buckets built.")
 }
 
-// smokeTest proves and verifies a fresh batch of n real Ed25519 signatures
-// over random per-slot message bytes (truncated to a typical canonical-vote
-// size). It exercises the full Sig/Pub decompression + msg-bytes hashing
-// path so a broken circuit fails fast before the operator loads the
+// smokeTest proves and verifies a fresh batch of n real Ed25519 signatures over
+// a synthetic canonical vote that satisfies the #199 layout: a 2-byte leading
+// length varint, the Type|Height prefix head, and a 32-byte block hash at the
+// no-round offset. Every signer signs the SAME vote bytes so they share the
+// committed common prefix the circuit binds each active slot against. This
+// exercises the full Sig/Pub decompression + prefix/block-hash binding + witness
+// hashing path so a broken circuit fails fast before the operator loads the
 // artifacts into the relayer.
 func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16.VerifyingKey, n int, proofBackend prover.ProofBackend) {
-	// Use a per-slot length comparable to a Tendermint canonical vote
-	// (~110-175 bytes). Random bytes are fine for the circuit — semantics
-	// don't matter, only that what's signed matches what's hashed.
-	const smokeMsgLen = 113
+	msg := makeSmokeVote()
 
 	valSigs := make([]prover.ValidatorSignature, n)
 	for i := 0; i < n; i++ {
 		pub, priv, err := ed25519.GenerateKey(nil)
 		if err != nil {
-			panic(err)
-		}
-		msg := make([]byte, smokeMsgLen)
-		if _, err := rand.Read(msg); err != nil {
 			panic(err)
 		}
 		sig := ed25519.Sign(priv, msg)
@@ -129,7 +117,7 @@ func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16
 		panic(fmt.Errorf("hash witness n=%d: %w", n, err))
 	}
 
-	assignment, err := buildSmokeAssignment(valSigs, hash)
+	assignment, err := prover.BuildBatchAssignment(valSigs, hash)
 	if err != nil {
 		panic(fmt.Errorf("build assignment n=%d: %w", n, err))
 	}
@@ -153,65 +141,44 @@ func smokeTest(cs constraint.ConstraintSystem, pk groth16.ProvingKey, vk groth16
 	fmt.Printf("Smoke test passed for n=%d\n", n)
 }
 
-func buildSmokeAssignment(
-	sigs []prover.ValidatorSignature,
-	hash [32]byte,
-) (*prover.BatchCircuit[prover.Fp25519, prover.Fr25519], error) {
-	n := len(sigs)
-	a := &prover.BatchCircuit[prover.Fp25519, prover.Fr25519]{
-		Sig:     make([]eddsa.Signature[prover.Fp25519, prover.Fr25519], n),
-		Pub:     make([]eddsa.PublicKey[prover.Fp25519, prover.Fr25519], n),
-		Msgs:    make([][prover.MaxMsgLen]uints.U8, n),
-		MsgLens: make([]frontend.Variable, n),
-		Active:  make([]frontend.Variable, n),
+// makeSmokeVote builds a synthetic canonical-vote byte slice satisfying the
+// #199 witness layout with a 1-BYTE leading length varint (bodyLen < 128) — the
+// case real devnets hit with short chain ids that the original 2-byte-only
+// assumption rejected. Layout: 1-byte varint (sb[0] < 0x80), the Type|Height
+// prefix head at body offset 0, no round field (so the 32-byte block hash sits
+// at no-round body offset 15 → in-message index 16), and arbitrary trailing
+// bytes. The exact field values do not matter — the circuit binds only the
+// prefix head and block hash against what every active slot signed, and here
+// every slot signs this same slice.
+func makeSmokeVote() []byte {
+	const voteLen = 120 // bodyLen = 119 (< 128) → 1-byte leading varint
+	msg := make([]byte, voteLen)
+	// 1-byte leading length varint (high bit clear). The encoded value is
+	// irrelevant to the circuit; only the varint width drives the body offset.
+	msg[0] = byte(voteLen - 1)
+	// Type = precommit: field 1 (0x08), value 2.
+	msg[1] = 0x08
+	msg[2] = 0x02
+	// Height: field 2 sfixed64 (0x11) + 8 bytes.
+	msg[3] = 0x11
+	for j := 0; j < 8; j++ {
+		msg[4+j] = byte(j + 1)
 	}
-	publicInputs := prover.DigestPublicInputs(hash)
-	for i := range publicInputs {
-		a.Hash[i] = publicInputs[i]
+	// BlockID: field 4 (0x22), length 0x48, inner hash tag 0x0a length 0x20.
+	// msg[12] must not be the round tag 0x19 so roundPresent stays false, which
+	// places the 32-byte block hash at no-round in-message index 16 (msg[16:48]).
+	msg[12] = 0x22
+	msg[13] = 0x48
+	msg[14] = 0x0a
+	msg[15] = 0x20
+	for j := 0; j < 32; j++ {
+		msg[16+j] = byte(0xA0 + j)
 	}
-	for i := 0; i < n; i++ {
-		v := sigs[i]
-		R := v.Signature[:32]
-		S, err := edwards25519.NewScalar().SetCanonicalBytes(v.Signature[32:])
-		if err != nil {
-			return nil, err
-		}
-		aX, aY, err := utils.DecompressPoint(v.PublicKey)
-		if err != nil {
-			return nil, err
-		}
-		rX, rY, err := utils.DecompressPoint(R)
-		if err != nil {
-			return nil, err
-		}
-		a.Sig[i] = eddsa.Signature[prover.Fp25519, prover.Fr25519]{
-			R: sw_emulated.AffinePoint[prover.Fp25519]{
-				X: emulated.ValueOf[prover.Fp25519](rX),
-				Y: emulated.ValueOf[prover.Fp25519](rY),
-			},
-			S: emulated.ValueOf[prover.Fr25519](utils.ScalarToBigInt(S)),
-		}
-		a.Pub[i] = eddsa.PublicKey[prover.Fp25519, prover.Fr25519]{
-			A: sw_emulated.AffinePoint[prover.Fp25519]{
-				X: emulated.ValueOf[prover.Fp25519](aX),
-				Y: emulated.ValueOf[prover.Fp25519](aY),
-			},
-		}
-		for j := 0; j < prover.MaxMsgLen; j++ {
-			if j < len(v.SignedBytes) {
-				a.Msgs[i][j] = uints.NewU8(v.SignedBytes[j])
-			} else {
-				a.Msgs[i][j] = uints.NewU8(0)
-			}
-		}
-		a.MsgLens[i] = len(v.SignedBytes)
-		if v.Active {
-			a.Active[i] = 1
-		} else {
-			a.Active[i] = 0
-		}
+	// Remaining bytes (part-set header, timestamp, chain id) are unconstrained.
+	for j := 48; j < voteLen; j++ {
+		msg[j] = byte(j)
 	}
-	return a, nil
+	return msg
 }
 
 // exportSolidityVerifier writes gnark's generated verifier and renames the

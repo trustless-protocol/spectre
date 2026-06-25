@@ -292,8 +292,6 @@ func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
 		SignerIndices:          []uint32{0, 1},
 		PinnedValidatorIndices: []uint32{7, 8},
 		SignerPubkeys:          [][32]byte{{0x01}, {0x02}},
-		TimestampSeconds:       []uint64{1700000001, 1700000001},
-		TimestampNanos:         []uint32{0, 1},
 		Active:                 []bool{true, true},
 	}
 

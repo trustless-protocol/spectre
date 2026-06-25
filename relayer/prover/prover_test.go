@@ -80,13 +80,11 @@ func TestSmallestBucketGEQ(t *testing.T) {
 
 func TestPadWithDummies_FillsTrailingSlotsWithDistinctDummies(t *testing.T) {
 	real := []ValidatorSignature{{
-		Signature:        append(make([]byte, 63), 0xAB),
-		PublicKey:        append(make([]byte, 31), 0xCD),
-		Index:            7,
-		Power:            100,
-		TimestampSeconds: 42,
-		TimestampNanos:   7,
-		Active:           true,
+		Signature: append(make([]byte, 63), 0xAB),
+		PublicKey: append(make([]byte, 31), 0xCD),
+		Index:     7,
+		Power:     100,
+		Active:    true,
 	}}
 	dummies := generateDummySlots(4)
 	padded, err := padWithDummies(real, dummies)

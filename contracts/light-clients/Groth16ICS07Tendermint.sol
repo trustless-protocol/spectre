@@ -242,8 +242,7 @@ contract Groth16ICS07Tendermint is
     {
         require(
             msg_.signerIndices.length == msg_.bucket && msg_.pinnedValidatorIndices.length == msg_.bucket
-                && msg_.signerPubkeys.length == msg_.bucket && msg_.timestampSeconds.length == msg_.bucket
-                && msg_.timestampNanos.length == msg_.bucket && msg_.active.length == msg_.bucket,
+                && msg_.signerPubkeys.length == msg_.bucket && msg_.active.length == msg_.bucket,
             BatchLengthMismatch()
         );
 
@@ -299,8 +298,7 @@ contract Groth16ICS07Tendermint is
     {
         require(
             proof_.signerIndices.length == proof_.bucket && proof_.pinnedValidatorIndices.length == proof_.bucket
-                && proof_.signerPubkeys.length == proof_.bucket && proof_.timestampSeconds.length == proof_.bucket
-                && proof_.timestampNanos.length == proof_.bucket && proof_.active.length == proof_.bucket,
+                && proof_.signerPubkeys.length == proof_.bucket && proof_.active.length == proof_.bucket,
             BatchLengthMismatch()
         );
 
@@ -386,8 +384,6 @@ contract Groth16ICS07Tendermint is
             msg_.commitments,
             msg_.commitmentPok,
             msg_.signerPubkeys,
-            msg_.timestampSeconds,
-            msg_.timestampNanos,
             msg_.active
         );
     }
@@ -405,8 +401,6 @@ contract Groth16ICS07Tendermint is
             proof_.commitments,
             proof_.commitmentPok,
             proof_.signerPubkeys,
-            proof_.timestampSeconds,
-            proof_.timestampNanos,
             proof_.active
         );
     }
@@ -418,8 +412,6 @@ contract Groth16ICS07Tendermint is
         uint256[2] memory commitments,
         uint256[2] memory commitmentPok,
         bytes32[] memory signerPubkeys,
-        uint64[] memory timestampSeconds,
-        uint32[] memory timestampNanos,
         bool[] memory active
     )
         private
@@ -428,15 +420,7 @@ contract Groth16ICS07Tendermint is
 
         require(
             VERIFIER.verifyBatchProof(
-                bucket,
-                proof,
-                commitments,
-                commitmentPok,
-                signerPubkeys,
-                timestampSeconds,
-                timestampNanos,
-                active,
-                shared
+                bucket, proof, commitments, commitmentPok, signerPubkeys, active, shared
             ),
             ProofVerificationFailed()
         );
@@ -453,10 +437,7 @@ contract Groth16ICS07Tendermint is
         shared = IVerifier.SharedBlock({
             height: commit.height,
             round: uint64(commit.round),
-            blockIDHash: commit.blockId.hashData,
-            partSetTotal: commit.blockId.partSetHeader.total,
-            partSetHash: commit.blockId.partSetHeader.hashData,
-            chainID: bytes(header.signedHeader.header.chainId)
+            blockIDHash: commit.blockId.hashData
         });
     }
 

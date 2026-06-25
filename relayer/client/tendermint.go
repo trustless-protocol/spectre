@@ -145,8 +145,6 @@ func init() {
 		{Name: "signerIndices", Type: "uint32[]"},
 		{Name: "pinnedValidatorIndices", Type: "uint32[]"},
 		{Name: "signerPubkeys", Type: "bytes32[]"},
-		{Name: "timestampSeconds", Type: "uint64[]"},
-		{Name: "timestampNanos", Type: "uint32[]"},
 		{Name: "active", Type: "bool[]"},
 	})
 }
