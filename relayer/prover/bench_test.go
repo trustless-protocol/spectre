@@ -31,14 +31,12 @@ func makeSyntheticSigs(tb testing.TB, count int) []ValidatorSignature {
 			msg[j] = byte(j + i)
 		}
 		sigs[i] = ValidatorSignature{
-			Signature:        ed25519.Sign(priv, msg),
-			PublicKey:        pub,
-			Index:            i,
-			Power:            1,
-			TimestampSeconds: 1_700_000_000,
-			TimestampNanos:   0,
-			SignedBytes:      msg,
-			Active:           true,
+			Signature:   ed25519.Sign(priv, msg),
+			PublicKey:   pub,
+			Index:       i,
+			Power:       1,
+			SignedBytes: msg,
+			Active:      true,
 		}
 	}
 	return sigs
