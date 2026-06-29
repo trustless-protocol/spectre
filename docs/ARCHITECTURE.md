@@ -232,7 +232,7 @@ Cross-validated via `test/solidity-ibc/EncodeTest.t.sol`.
 | `contracts/programs/` | Solidity | UpdateClient, Membership, Misbehaviour verification |
 | `contracts/light-clients/` | Solidity | Groth16ICS07Tendermint + message types |
 | `relayer/` | Go | Relayer CLI + Groth16 prover |
-| `relayer/cmd/` | Go | CLI: start, create-clients, genesis, fixtures |
+| `relayer/cmd/` | Go | CLI: start, create-clients{,-cosmos,-eth}, update-client, genesis, fixtures |
 | `relayer/prover/` | Go | Bucketed Ed25519 batch prover (BatchCircuit, witness hash, dummy padding) |
 | `relayer/prover/cmd/` | Go | One-shot tool: compile + setup every bucket, write artifacts + emit `Groth16Verifier_N{N}.sol` |
 | `relayer/prover/bin/` | binary | Per-bucket circuit artifacts (`bin/n{N}/{r1cs,pk,vk}.bin`) |

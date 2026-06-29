@@ -48,13 +48,18 @@ forge test --match-contract EncodeTest -vvv  # Solidity encoding tests
 ## Relayer CLI
 
 ```bash
-# One-time setup: deploy light clients on both chains
+# One-time setup: create light clients on both chains.
+# Runs Cosmos side first (creates the 08-wasm ETH client → learns its real
+# client id), then the ETH side (deploys ICS07 wired to that id). Writes both
+# cosmos_wasm_client_id and ics07_client back into config.json automatically.
 cd relayer
 go run ./cmd/main.go create-clients \
   --config config.json \
   --trust-level 2/3 \
   --wasm-checksum <hex>
-# Copy ICS07 address from log into config.json cosmos_to_eth.ics07_client
+# Or run the two halves separately (cosmos first — eth needs the wasm id):
+#   go run ./cmd/main.go create-clients-cosmos --config config.json --wasm-checksum <hex>
+#   go run ./cmd/main.go create-clients-eth    --config config.json
 
 # Start relay loop (bi-directional: Cosmos ↔ ETH)
 go run ./cmd/main.go start --config config.json
@@ -140,7 +145,7 @@ relayer/
 ├── transaction/    # Ethereum + Cosmos transaction submission
 ├── utils/          # IBC path helpers, byte utils
 ├── test/           # Manual test script (reference relay flow)
-└── cmd/main.go     # CLI: start, create-clients, genesis, fixtures
+└── cmd/main.go     # CLI: start, create-clients{,-cosmos,-eth}, update-client, genesis, fixtures
 ```
 
 Setup-circuits entrypoint: from `relayer/`, run

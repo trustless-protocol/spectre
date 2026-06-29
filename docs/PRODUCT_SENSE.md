@@ -57,7 +57,7 @@ Multiple packets can be batched into a single proof submission:
 
 **CLI commands:**
 - `relayer start --config config.json` — bi-directional relay loop (Cosmos ↔ ETH)
-- `relayer create-clients --config config.json` — one-time light client setup
+- `relayer create-clients --config config.json` — one-time light client setup on both chains (Cosmos side first, then ETH); also available split as `create-clients-cosmos` / `create-clients-eth`
 - `relayer genesis` — generate genesis state
 
 **JSON config** (`relayer/config.example.json`):

@@ -251,8 +251,11 @@ curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 # `gaiad` --node / --home flags at the val0 home + RPC (defaults
 # $HOME/.gaia-multi/val0 + tcp://127.0.0.1:31000).
 
-# 5. Deploy Tendermint light client on Ethereum.
-#    Copies the ICS07 address back into relayer/config.json automatically.
+# 5. Create the light clients on both chains. Runs the Cosmos side first
+#    (creates the 08-wasm ETH client), then deploys the Tendermint light
+#    client on Ethereum. Writes cosmos_wasm_client_id + ics07_client back
+#    into relayer/config.json automatically.
+#    (Split alternative: create-clients-cosmos then create-clients-eth.)
 ./relayer create-clients \
   --config config.json \
   --wasm-checksum <hex-from-wasm.sh>
