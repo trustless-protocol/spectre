@@ -12,30 +12,55 @@ import (
 	"testing"
 )
 
-// makeSyntheticSigs builds `count` valid Ed25519 signatures over per-slot
-// messages. The circuit verifies each (pubkey, message, signature) tuple
-// independently, so synthetic keypairs are sufficient to benchmark proving —
-// no Cosmos commit, validator set, or relayer is involved. Each slot uses a
-// distinct message so the (R, A) points across the batch are distinct.
+// makeSyntheticVote builds one #199-compliant canonical-vote-shaped message:
+// a 1-byte length varint, the Type|Height prefix head, and a 32-byte block hash
+// at the no-round offset (msg[16:48]). Mirrors makeSmokeVote in prover/cmd. The
+// exact field values are irrelevant — the circuit binds only the prefix head and
+// block hash, which every active signer must share.
+func makeSyntheticVote() []byte {
+	const voteLen = 120 // bodyLen 119 (<128) -> 1-byte leading varint
+	msg := make([]byte, voteLen)
+	msg[0] = byte(voteLen - 1)  // 1-byte length varint (high bit clear)
+	msg[1], msg[2] = 0x08, 0x02 // Type = precommit (field 1)
+	msg[3] = 0x11               // Height tag (field 2, sfixed64)
+	for j := 0; j < 8; j++ {
+		msg[4+j] = byte(j + 1)
+	}
+	// BlockID (field 4): tag 0x22, len 0x48, inner hash tag 0x0a, len 0x20.
+	// msg[12] != round tag 0x19 -> roundPresent false -> hash at msg[16:48].
+	msg[12], msg[13], msg[14], msg[15] = 0x22, 0x48, 0x0a, 0x20
+	for j := 0; j < 32; j++ {
+		msg[16+j] = byte(0xA0 + j) // block hash
+	}
+	for j := 48; j < voteLen; j++ {
+		msg[j] = byte(j) // part-set header / timestamp / chain id (unconstrained)
+	}
+	return msg
+}
+
+// makeSyntheticSigs builds `count` valid Ed25519 signatures over a single
+// #199-compliant canonical vote. The #199 circuit binds every ACTIVE slot's
+// message to a common Type|Height prefix + block hash, so all signers must sign
+// the SAME vote — distinct keypairs still yield distinct (R, A) points, which is
+// what the ECIP aggregate requires. Proving cost is identical whether the
+// per-slot messages are equal or not (the circuit shape is fixed per bucket), so
+// this is a faithful proving benchmark and matches production, where validators
+// sign votes sharing the same prefix + block hash.
 func makeSyntheticSigs(tb testing.TB, count int) []ValidatorSignature {
 	tb.Helper()
+	vote := makeSyntheticVote()
 	sigs := make([]ValidatorSignature, count)
 	for i := range count {
 		pub, priv, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			tb.Fatalf("ed25519 keygen: %v", err)
 		}
-		// Distinct, realistic-width (<= MaxMsgLen) message per slot.
-		msg := make([]byte, 110)
-		for j := range msg {
-			msg[j] = byte(j + i)
-		}
 		sigs[i] = ValidatorSignature{
-			Signature:   ed25519.Sign(priv, msg),
+			Signature:   ed25519.Sign(priv, vote),
 			PublicKey:   pub,
 			Index:       i,
 			Power:       1,
-			SignedBytes: msg,
+			SignedBytes: vote,
 			Active:      true,
 		}
 	}
