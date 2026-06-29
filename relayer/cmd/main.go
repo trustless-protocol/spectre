@@ -65,16 +65,15 @@ type cosmosToEthConfig struct {
 }
 
 type ethToCosmosConfig struct {
-	TmRpcUrl     string `json:"tm_rpc_url"`
-	ICS26Address string `json:"ics26_address"`
-	EthRpcUrl    string `json:"eth_rpc_url"`
-	BeaconUrl    string `json:"eth_beacon_api_url"`
+	// BeaconUrl is the only field consumed for the ETH→Cosmos direction; the
+	// Cosmos RPC, Eth RPC and ICS26 address all come from the cosmos_to_eth
+	// module (used for both directions).
+	BeaconUrl string `json:"eth_beacon_api_url"`
 }
 
 type configModule struct {
 	Name     string          `json:"name"`
 	SrcChain string          `json:"src_chain"`
-	DstChain string          `json:"dst_chain"`
 	Config   json.RawMessage `json:"config"`
 }
 
@@ -102,15 +101,15 @@ type appConfig struct {
 	BatchConfig       services.BatchConfig
 }
 
-// writeICS07Address rewrites configPath in place, setting
-// modules[name=="cosmos_to_eth"].config.ics07_client = addr. Other fields and
+// writeConfigMember rewrites configPath in place, setting
+// modules[name=="cosmos_to_eth"].config.<member> = value. Other fields and
 // existing JSON formatting are preserved outside the replaced/inserted value.
-func writeICS07Address(configPath, addr string) error {
+func writeConfigMember(configPath, member, value string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
 	}
-	out, err := replaceICS07Address(data, addr)
+	out, err := replaceConfigMember(data, member, value)
 	if err != nil {
 		return err
 	}
@@ -120,8 +119,22 @@ func writeICS07Address(configPath, addr string) error {
 	return os.Chmod(configPath, configFilePerm)
 }
 
-func replaceICS07Address(data []byte, addr string) ([]byte, error) {
-	encodedAddr, err := json.Marshal(addr)
+// writeICS07Address persists the deployed ICS07 Tendermint light-client address
+// (ETH side) back into the config.
+func writeICS07Address(configPath, addr string) error {
+	return writeConfigMember(configPath, "ics07_client", addr)
+}
+
+// writeWasmClientID persists the created 08-wasm Ethereum light-client id
+// (Cosmos side) back into the config. The id is assigned by ibc-go's global
+// client sequence, so it cannot be known until MsgCreateClient lands — write it
+// back rather than requiring the operator to predict it.
+func writeWasmClientID(configPath, id string) error {
+	return writeConfigMember(configPath, "cosmos_wasm_client_id", id)
+}
+
+func replaceConfigMember(data []byte, member, value string) ([]byte, error) {
+	encodedValue, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
 	}
@@ -171,18 +184,18 @@ func replaceICS07Address(data []byte, addr string) ([]byte, error) {
 					return nil, fmt.Errorf("cosmos_to_eth.config is not an object")
 				}
 
-				valueStart, valueEnd, ok, err := findJSONObjectMember(data, configStart, "ics07_client")
+				valueStart, valueEnd, ok, err := findJSONObjectMember(data, configStart, member)
 				if err != nil {
 					return nil, err
 				}
 				if ok {
-					out := make([]byte, 0, len(data)-valueEnd+valueStart+len(encodedAddr))
+					out := make([]byte, 0, len(data)-valueEnd+valueStart+len(encodedValue))
 					out = append(out, data[:valueStart]...)
-					out = append(out, encodedAddr...)
+					out = append(out, encodedValue...)
 					out = append(out, data[valueEnd:]...)
 					return out, nil
 				}
-				return insertJSONObjectMember(data, configStart, configEnd, "ics07_client", encodedAddr)
+				return insertJSONObjectMember(data, configStart, configEnd, member, encodedValue)
 			}
 		}
 
@@ -461,20 +474,10 @@ func loadConfig(configPath string) (*appConfig, error) {
 		}
 	}
 
-	// Validate eth_to_cosmos config if populated
-	if e2c.TmRpcUrl != "" || e2c.EthRpcUrl != "" || e2c.ICS26Address != "" {
-		if err := validateURL(e2c.TmRpcUrl, "eth_to_cosmos.tm_rpc_url"); err != nil {
-			return nil, err
-		}
-		if err := validateURL(e2c.EthRpcUrl, "eth_to_cosmos.eth_rpc_url"); err != nil {
-			return nil, err
-		}
-		if e2c.BeaconUrl != "" {
-			if err := validateURL(e2c.BeaconUrl, "eth_to_cosmos.eth_beacon_api_url"); err != nil {
-				return nil, err
-			}
-		}
-		if err := validateHexAddress(e2c.ICS26Address, "eth_to_cosmos.ics26_address"); err != nil {
+	// Validate eth_to_cosmos config if populated. Only eth_beacon_api_url is
+	// consumed for the ETH→Cosmos direction.
+	if e2c.BeaconUrl != "" {
+		if err := validateURL(e2c.BeaconUrl, "eth_to_cosmos.eth_beacon_api_url"); err != nil {
 			return nil, err
 		}
 	}
@@ -657,6 +660,8 @@ func main() {
 	rootCmd.AddCommand(
 		Start(zLogger),
 		CreateClients(zLogger),
+		CreateClientsCosmos(zLogger),
+		CreateClientsEth(zLogger),
 		UpdateClient(zLogger),
 		Genesis(zLogger),
 	)
@@ -666,177 +671,211 @@ func main() {
 	}
 }
 
-// CreateClients deploys ICS07 Tendermint light client on Ethereum and
-// creates a wasm Ethereum light client on Cosmos, then registers counterparties.
-// This is a one-time setup step before running `start`.
+// buildCreateClientsContext dials both chains and returns a services.Context
+// wired for the create-clients flow. wasmClientID is the eth-light-client-on-
+// Cosmos id used as the on-chain counterparty; pass "" for the Cosmos step,
+// which discovers it. The returned cosmosClient has its WebSocket started — the
+// caller must Stop it.
+func buildCreateClientsContext(logger *zap.Logger, cfg *appConfig, wasmClientID string) (services.Context, *rpchttp.HTTP, error) {
+	logger.Sugar().Infof("create-clients: dialing ethereum rpc %s", cfg.CosmosToEthConfig.EthRpcUrl)
+	ethClient, err := ethclient.Dial(cfg.CosmosToEthConfig.EthRpcUrl)
+	if err != nil {
+		return services.Context{}, nil, fmt.Errorf("failed to connect to Ethereum: %w", err)
+	}
+
+	logger.Sugar().Infof("create-clients: creating cosmos rpc client %s", cfg.CosmosToEthConfig.TmRpcUrl)
+	cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
+	if err != nil {
+		return services.Context{}, nil, fmt.Errorf("failed to create Cosmos RPC client: %w", err)
+	}
+
+	cosmosRouterClientID := cosmosRouterClientIDOrDefault(cfg)
+	if cosmosRouterClientID == "" {
+		return services.Context{}, nil, fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
+	}
+
+	ctx := services.NewCtxWithBeacon(
+		cosmosClient, ethClient, nil,
+		"",
+		cfg.EthToCosmosConfig.BeaconUrl,
+		wasmClientID,
+	)
+	ctx.SetCosmosRouterClientID(cosmosRouterClientID)
+	ctx.SetAddresses(
+		cfg.CosmosToEthConfig.ICS26Address,
+		cfg.CosmosToEthConfig.WrapperVerifier,
+		cfg.CosmosToEthConfig.Membership,
+		cfg.CosmosToEthConfig.Misbehaviour,
+		cfg.CosmosToEthConfig.UpdateClient,
+		roleManagerOrDefault(cfg),
+	)
+
+	if err := cosmosClient.Start(); err != nil {
+		return services.Context{}, nil, fmt.Errorf("failed to start Cosmos WS client: %w", err)
+	}
+	return ctx, cosmosClient, nil
+}
+
+// runCreateClientsCosmos creates the Ethereum light client on Cosmos — the side
+// whose client id is auto-assigned by ibc-go's global client sequence —
+// registers the counterparty, and persists the resulting cosmos_wasm_client_id
+// back into config. Returns the created id. Run this BEFORE the ETH step so the
+// real id (not a guessed one) can be wired into the ETH router counterparty.
+func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasmChecksum string) (string, error) {
+	if wasmChecksum == "" {
+		wasmChecksum = os.Getenv("WASM_CHECKSUM")
+	}
+	if wasmChecksum == "" {
+		return "", fmt.Errorf("--wasm-checksum (or WASM_CHECKSUM) is required to create the Ethereum light client on Cosmos")
+	}
+	if cfg.EthToCosmosConfig.BeaconUrl == "" {
+		return "", fmt.Errorf("eth_to_cosmos.eth_beacon_api_url is required to create the Ethereum light client on Cosmos")
+	}
+
+	ctx, cosmosClient, err := buildCreateClientsContext(logger, cfg, "")
+	if err != nil {
+		return "", err
+	}
+	defer cosmosClient.Stop()
+
+	// Validate the checksum is already stored on Cosmos before mutating anything.
+	logger.Sugar().Infof("create-clients-cosmos: validating wasm checksum on Cosmos: %s", wasmChecksum)
+	ok, err := cosmosHasWasmChecksum(cosmosClient, wasmChecksum)
+	if err != nil {
+		return "", fmt.Errorf("failed to validate wasm checksum on Cosmos: %w", err)
+	}
+	if !ok {
+		return "", fmt.Errorf("wasm checksum %s has not been previously stored on Cosmos", wasmChecksum)
+	}
+
+	if existing := cosmosWasmClientIDOrDefault(cfg); existing != "" {
+		logger.Sugar().Warnf("create-clients-cosmos: config already has cosmos_wasm_client_id=%s; a new client will be created and the value overwritten", existing)
+	}
+
+	worker := services.NewWorker(&transaction.Handler{}, nil)
+	logger.Sugar().Infof("Creating Ethereum light client on Cosmos (checksum=%s)...", wasmChecksum)
+	wasmClientID, err := worker.CreateEthClient(ctx, wasmChecksum)
+	if err != nil {
+		return "", fmt.Errorf("failed to create Ethereum client on Cosmos: %w", err)
+	}
+	logger.Sugar().Infof("Ethereum light client created on Cosmos: clientID=%s", wasmClientID)
+
+	if err := writeWasmClientID(configPath, wasmClientID); err != nil {
+		return "", fmt.Errorf("persist cosmos_wasm_client_id to %s: %w", configPath, err)
+	}
+	logger.Sugar().Infof("create-clients-cosmos: wrote cosmos_wasm_client_id=%s into %s", wasmClientID, configPath)
+	return wasmClientID, nil
+}
+
+// runCreateClientsEth deploys the Cosmos (ICS07 Tendermint) light client on
+// Ethereum, registers wasmClientID as its counterparty, and persists the
+// ics07_client address back into config. wasmClientID must already be known
+// (created by the Cosmos step) so the on-chain counterparty is wired to the
+// real id. Idempotent: if ics07_client already has deployed code, it is reused.
+func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmClientID, trustLevel string, trustingPeriod uint32) (common.Address, error) {
+	if wasmClientID == "" {
+		return common.Address{}, fmt.Errorf("cosmos_wasm_client_id is empty; run create-clients-cosmos first")
+	}
+
+	ctx, cosmosClient, err := buildCreateClientsContext(logger, cfg, wasmClientID)
+	if err != nil {
+		return common.Address{}, err
+	}
+	defer cosmosClient.Stop()
+
+	// Idempotency: skip the deploy if a contract already lives at the configured
+	// ics07_client address, so re-running after a partial failure does not
+	// redeploy ICS07.
+	if cfg.CosmosToEthConfig.ICS07Client != "" {
+		addr := common.HexToAddress(cfg.CosmosToEthConfig.ICS07Client)
+		if code, err := ctx.EthClient().CodeAt(context.Background(), addr, nil); err == nil && len(code) > 0 {
+			logger.Sugar().Infof("create-clients-eth: ics07_client already deployed at %s; skipping deploy", addr.Hex())
+			return addr, nil
+		}
+	}
+
+	if trustingPeriod == 0 {
+		unbondingPeriod, err := tendermintClient.GetUnbondingTime(cosmosClient)
+		if err != nil {
+			return common.Address{}, fmt.Errorf("failed to fetch unbonding time: %w", err)
+		}
+		trustingPeriod = 2 * uint32(unbondingPeriod) / 3
+	}
+
+	proofType := cfg.CosmosToEthConfig.ProofType
+	if proofType == "" {
+		proofType = "groth16"
+	}
+
+	worker := services.NewWorker(&transaction.Handler{}, nil)
+	logger.Sugar().Infof(
+		"Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s, proofType=%s, counterparty=%s)...",
+		trustingPeriod, trustLevel, proofType, wasmClientID,
+	)
+	ics07Addr, err := worker.CreateCosmosClient(ctx, proofType, trustingPeriod, 0, trustLevel)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("failed to create Cosmos client on Ethereum: %w", err)
+	}
+	if (ics07Addr == common.Address{}) {
+		return common.Address{}, fmt.Errorf("ics07 address missing after deploy")
+	}
+
+	if err := writeICS07Address(configPath, ics07Addr.Hex()); err != nil {
+		return common.Address{}, fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
+	}
+	logger.Sugar().Infof("create-clients-eth: wrote ics07_client=%s into %s", ics07Addr.Hex(), configPath)
+	return ics07Addr, nil
+}
+
+// CreateClients runs the full two-chain setup as a one-shot (devnet bring-up):
+// create-clients-cosmos first (so the auto-assigned wasm client id is known),
+// then create-clients-eth wired to that id. No id guessing, no assertion.
 func CreateClients(logger *zap.Logger) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create-clients",
-		Short: "deploy light clients and register counterparties on both chains",
+		Short: "deploy light clients on both chains (runs create-clients-cosmos then create-clients-eth)",
 		Args:  cobra.ExactArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configPath, err := cmd.Flags().GetString(flagConfigPath)
 			if err != nil {
 				return fmt.Errorf("failed to get config path: %w", err)
 			}
-
 			_ = godotenv.Load()
-
 			cfg, err := loadConfig(configPath)
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 			logger.Sugar().Infof("create-clients: config loaded from %s", configPath)
-			logger.Sugar().Infof(
-				"create-clients: endpoints cosmos_rpc=%s eth_rpc=%s beacon=%s",
-				cfg.CosmosToEthConfig.TmRpcUrl,
-				cfg.CosmosToEthConfig.EthRpcUrl,
-				cfg.EthToCosmosConfig.BeaconUrl,
-			)
 			if err := preflightCreateClients(cfg); err != nil {
 				return err
 			}
 			logger.Sugar().Info("create-clients: preflight passed")
 
-			// Connect to Ethereum
-			logger.Sugar().Infof("create-clients: dialing ethereum rpc %s", cfg.CosmosToEthConfig.EthRpcUrl)
-			ethClient, err := ethclient.Dial(cfg.CosmosToEthConfig.EthRpcUrl)
-			if err != nil {
-				return fmt.Errorf("failed to connect to Ethereum: %w", err)
-			}
-			logger.Sugar().Info("create-clients: ethereum rpc connected")
-
-			// Connect to Cosmos
-			logger.Sugar().Infof("create-clients: creating cosmos rpc client %s", cfg.CosmosToEthConfig.TmRpcUrl)
-			cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
-			if err != nil {
-				return fmt.Errorf("failed to create Cosmos RPC client: %w", err)
-			}
-			logger.Sugar().Info("create-clients: cosmos rpc client created")
-
-			worker := services.NewWorker(&transaction.Handler{}, nil)
-
-			cosmosWasmClientID := cosmosWasmClientIDOrDefault(cfg)
-			if cosmosWasmClientID == "" {
-				return fmt.Errorf("cosmos_wasm_client_id is required in cosmos_to_eth config")
-			}
-
-			// Create context (no WS client needed for create-clients)
-			ctx := services.NewCtxWithBeacon(
-				cosmosClient, ethClient, nil,
-				"",
-				cfg.EthToCosmosConfig.BeaconUrl,
-				cosmosWasmClientID,
-			)
-			cosmosRouterClientID := cosmosRouterClientIDOrDefault(cfg)
-			if cosmosRouterClientID == "" {
-				return fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
-			}
-			ctx.SetCosmosRouterClientID(cosmosRouterClientID)
-
-			roleManager := roleManagerOrDefault(cfg)
-			ctx.SetAddresses(
-				cfg.CosmosToEthConfig.ICS26Address,
-				cfg.CosmosToEthConfig.WrapperVerifier,
-				cfg.CosmosToEthConfig.Membership,
-				cfg.CosmosToEthConfig.Misbehaviour,
-				cfg.CosmosToEthConfig.UpdateClient,
-				roleManager,
-			)
-
-			// Start Cosmos WS (needed for queries)
-			logger.Sugar().Info("create-clients: starting cosmos websocket client")
-			if err := cosmosClient.Start(); err != nil {
-				return fmt.Errorf("failed to start Cosmos WS client: %w", err)
-			}
-			defer cosmosClient.Stop()
-			logger.Sugar().Info("create-clients: cosmos websocket client started")
-
 			wasmChecksum, err := cmd.Flags().GetString(flagWasmChecksum)
 			if err != nil {
 				return fmt.Errorf("failed to get wasm checksum: %w", err)
 			}
-			if wasmChecksum == "" {
-				wasmChecksum = os.Getenv("WASM_CHECKSUM")
-			}
-			logger.Sugar().Infof("create-clients: wasm checksum present=%t", wasmChecksum != "")
-
-			if wasmChecksum != "" && cfg.EthToCosmosConfig.BeaconUrl != "" {
-				logger.Sugar().Infof("create-clients: validating wasm checksum on Cosmos before mutating ETH/config: %s", wasmChecksum)
-				ok, err := cosmosHasWasmChecksum(cosmosClient, wasmChecksum)
-				if err != nil {
-					return fmt.Errorf("failed to validate wasm checksum on Cosmos: %w", err)
-				}
-				if !ok {
-					return fmt.Errorf("wasm checksum %s has not been previously stored on Cosmos", wasmChecksum)
-				}
-				logger.Sugar().Info("create-clients: wasm checksum preflight passed")
-			}
-
-			// --- 1. Create Cosmos light client on Ethereum (deploy ICS07) ---
 			trustLevel, err := cmd.Flags().GetString(flagTrustLevel)
 			if err != nil {
 				return fmt.Errorf("failed to get trust level: %w", err)
 			}
-
 			trustingPeriod, err := cmd.Flags().GetUint32(flagTrustingPeriod)
 			if err != nil {
 				return fmt.Errorf("failed to get trusting period: %w", err)
 			}
-			if trustingPeriod == 0 {
-				unbondingPeriod, err := tendermintClient.GetUnbondingTime(cosmosClient)
-				if err != nil {
-					return fmt.Errorf("failed to fetch unbonding time: %w", err)
-				}
-				trustingPeriod = 2 * uint32(unbondingPeriod) / 3
-			}
 
-			proofType := cfg.CosmosToEthConfig.ProofType
-			if proofType == "" {
-				proofType = "groth16"
-			}
-
-			logger.Sugar().Infof("Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s, proofType=%s)...", trustingPeriod, trustLevel, proofType)
-			ics07Addr, err := worker.CreateCosmosClient(ctx, proofType, trustingPeriod, 0, trustLevel)
+			// 1. Cosmos side first — discovers the real wasm client id.
+			wasmClientID, err := runCreateClientsCosmos(logger, cfg, configPath, wasmChecksum)
 			if err != nil {
-				return fmt.Errorf("failed to create Cosmos client on Ethereum: %w", err)
+				return err
 			}
-			if (ics07Addr == common.Address{}) {
-				return fmt.Errorf("ics07 address missing after deploy")
-			}
-			ctx.SetClient(ics07Addr)
-
-			// --- 2. Create Ethereum light client on Cosmos (wasm) ---
-			if wasmChecksum != "" && cfg.EthToCosmosConfig.BeaconUrl != "" {
-				logger.Sugar().Infof("Creating Ethereum light client on Cosmos (checksum=%s)...", wasmChecksum)
-				ethClientID, err := worker.CreateEthClient(ctx, wasmChecksum)
-				if err != nil {
-					return fmt.Errorf("failed to create Ethereum client on Cosmos: %w", err)
-				}
-				if ethClientID != cosmosWasmClientID {
-					return fmt.Errorf(
-						"created Ethereum light client ID %s does not match configured cosmos_wasm_client_id %s",
-						ethClientID, cosmosWasmClientID,
-					)
-				}
-				logger.Sugar().Infof("Ethereum light client created on Cosmos: clientID=%s", ethClientID)
-			} else {
-				if wasmChecksum == "" {
-					logger.Sugar().Warn("Skipping ETH client creation: --wasm-checksum not provided")
-				}
-				if cfg.EthToCosmosConfig.BeaconUrl == "" {
-					logger.Sugar().Warn("Skipping ETH client creation: beacon URL not configured")
-				}
+			// 2. ETH side — wired to the discovered wasm client id.
+			if _, err := runCreateClientsEth(logger, cfg, configPath, wasmClientID, trustLevel, trustingPeriod); err != nil {
+				return err
 			}
 
-			if err := writeICS07Address(configPath, ics07Addr.Hex()); err != nil {
-				return fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
-			}
-			logger.Sugar().Infof("create-clients: wrote ics07_client=%s into %s", ics07Addr.Hex(), configPath)
-
-			logger.Sugar().Infof("=== Setup Complete ===")
-			logger.Sugar().Infof("ICS07 address has been persisted to %s; ready for 'start'", configPath)
-
+			logger.Sugar().Info("=== Setup Complete ===")
+			logger.Sugar().Infof("client ids/addresses persisted to %s; ready for 'start'", configPath)
 			return nil
 		},
 	}
@@ -844,6 +883,81 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
 	cmd.Flags().Uint32(flagTrustingPeriod, 0, "trusting period in seconds for Cosmos light client (default: 2/3 of chain unbonding period)")
 	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
+	return cmd
+}
+
+// CreateClientsCosmos creates only the Ethereum light client on Cosmos and
+// persists cosmos_wasm_client_id. Run this before create-clients-eth.
+func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "create-clients-cosmos",
+		Short: "create the Ethereum light client on Cosmos (writes cosmos_wasm_client_id)",
+		Args:  cobra.ExactArgs(0),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configPath, err := cmd.Flags().GetString(flagConfigPath)
+			if err != nil {
+				return fmt.Errorf("failed to get config path: %w", err)
+			}
+			_ = godotenv.Load()
+			cfg, err := loadConfig(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+			if err := preflightCreateClients(cfg); err != nil {
+				return err
+			}
+			wasmChecksum, err := cmd.Flags().GetString(flagWasmChecksum)
+			if err != nil {
+				return fmt.Errorf("failed to get wasm checksum: %w", err)
+			}
+			_, err = runCreateClientsCosmos(logger, cfg, configPath, wasmChecksum)
+			return err
+		},
+	}
+	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
+	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
+	return cmd
+}
+
+// CreateClientsEth deploys only the Cosmos light client on Ethereum (ICS07) and
+// persists ics07_client. Requires cosmos_wasm_client_id (run create-clients-cosmos first).
+func CreateClientsEth(logger *zap.Logger) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "create-clients-eth",
+		Short: "deploy the Cosmos light client on Ethereum (requires cosmos_wasm_client_id)",
+		Args:  cobra.ExactArgs(0),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			configPath, err := cmd.Flags().GetString(flagConfigPath)
+			if err != nil {
+				return fmt.Errorf("failed to get config path: %w", err)
+			}
+			_ = godotenv.Load()
+			cfg, err := loadConfig(configPath)
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+			if err := preflightCreateClients(cfg); err != nil {
+				return err
+			}
+			trustLevel, err := cmd.Flags().GetString(flagTrustLevel)
+			if err != nil {
+				return fmt.Errorf("failed to get trust level: %w", err)
+			}
+			trustingPeriod, err := cmd.Flags().GetUint32(flagTrustingPeriod)
+			if err != nil {
+				return fmt.Errorf("failed to get trusting period: %w", err)
+			}
+			wasmClientID := cosmosWasmClientIDOrDefault(cfg)
+			if wasmClientID == "" {
+				return fmt.Errorf("cosmos_wasm_client_id is empty in config; run create-clients-cosmos first")
+			}
+			_, err = runCreateClientsEth(logger, cfg, configPath, wasmClientID, trustLevel, trustingPeriod)
+			return err
+		},
+	}
+	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
+	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
+	cmd.Flags().Uint32(flagTrustingPeriod, 0, "trusting period in seconds for Cosmos light client (default: 2/3 of chain unbonding period)")
 	return cmd
 }
 

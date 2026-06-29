@@ -106,13 +106,12 @@ func TestReplaceICS07Address(t *testing.T) {
 	}
 
 	for _, tc := range tests {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			out, err := replaceICS07Address([]byte(tc.input), addr)
+			out, err := replaceConfigMember([]byte(tc.input), "ics07_client", addr)
 			if err != nil {
-				t.Fatalf("replaceICS07Address() error = %v", err)
+				t.Fatalf("replaceConfigMember() error = %v", err)
 			}
 
 			cosmosToEth := moduleConfigByName(t, out, "cosmos_to_eth")
@@ -122,6 +121,52 @@ func TestReplaceICS07Address(t *testing.T) {
 			tc.assert(t, out, cosmosToEth)
 		})
 	}
+}
+
+func TestReplaceConfigMember_WasmClientID(t *testing.T) {
+	t.Parallel()
+
+	const id = "08-wasm-445"
+
+	t.Run("inserts cosmos_wasm_client_id when absent", func(t *testing.T) {
+		t.Parallel()
+		in := `{
+			"modules": [
+				{"name": "cosmos_to_eth", "config": {"ics07_client": "0xabc"}}
+			]
+		}`
+		out, err := replaceConfigMember([]byte(in), "cosmos_wasm_client_id", id)
+		if err != nil {
+			t.Fatalf("replaceConfigMember() error = %v", err)
+		}
+		cfg := moduleConfigByName(t, out, "cosmos_to_eth")
+		if got := cfg["cosmos_wasm_client_id"]; got != id {
+			t.Fatalf("cosmos_wasm_client_id = %v, want %s", got, id)
+		}
+		if got := cfg["ics07_client"]; got != "0xabc" {
+			t.Fatalf("ics07_client = %v, want preserved 0xabc", got)
+		}
+	})
+
+	t.Run("replaces existing cosmos_wasm_client_id", func(t *testing.T) {
+		t.Parallel()
+		in := `{
+			"modules": [
+				{"name": "cosmos_to_eth", "config": {"cosmos_wasm_client_id": "08-wasm-0", "keep": "yes"}}
+			]
+		}`
+		out, err := replaceConfigMember([]byte(in), "cosmos_wasm_client_id", id)
+		if err != nil {
+			t.Fatalf("replaceConfigMember() error = %v", err)
+		}
+		cfg := moduleConfigByName(t, out, "cosmos_to_eth")
+		if got := cfg["cosmos_wasm_client_id"]; got != id {
+			t.Fatalf("cosmos_wasm_client_id = %v, want %s", got, id)
+		}
+		if got := cfg["keep"]; got != "yes" {
+			t.Fatalf("keep = %v, want yes", got)
+		}
+	})
 }
 
 func TestLoadConfigRejectsDeprecatedBatchConfig(t *testing.T) {
@@ -138,6 +183,51 @@ func TestLoadConfigRejectsDeprecatedBatchConfig(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "batch_config is deprecated") {
 		t.Fatalf("loadConfig error = %v, want deprecated batch_config error", err)
+	}
+}
+
+func TestLoadConfigExample(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := loadConfig(filepath.Join("..", "config.example.json"))
+	if err != nil {
+		t.Fatalf("loadConfig(config.example.json) error = %v", err)
+	}
+	if cfg.CosmosToEthConfig.TmRpcUrl == "" {
+		t.Fatal("cosmos_to_eth.tm_rpc_url not parsed")
+	}
+	if cfg.CosmosToEthConfig.ICS26ClientID == "" {
+		t.Fatal("ics26_client_id not parsed")
+	}
+	if cfg.EthToCosmosConfig.BeaconUrl == "" {
+		t.Fatal("eth_to_cosmos.eth_beacon_api_url not parsed")
+	}
+}
+
+// TestLoadConfigIgnoresPrunedFields confirms old configs carrying the now-removed
+// eth_to_cosmos fields and dst_chain still load (unknown JSON keys are ignored),
+// preserving backward compatibility.
+func TestLoadConfigIgnoresPrunedFields(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	legacy := `{
+		"modules": [
+			{"name": "cosmos_to_eth", "src_chain": "test", "dst_chain": "0x1",
+			 "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3"}},
+			{"name": "eth_to_cosmos", "dst_chain": "test",
+			 "config": {"eth_beacon_api_url": "http://localhost:5052", "tm_rpc_url": "http://localhost:26657", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "signer_address": "cosmos1abc"}}
+		]
+	}`
+	if err := os.WriteFile(configPath, []byte(legacy), configFilePerm); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadConfig(legacy) error = %v", err)
+	}
+	if cfg.EthToCosmosConfig.BeaconUrl != "http://localhost:5052" {
+		t.Fatalf("beacon url = %q, want parsed", cfg.EthToCosmosConfig.BeaconUrl)
 	}
 }
 

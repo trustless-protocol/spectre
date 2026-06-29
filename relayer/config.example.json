@@ -2,11 +2,11 @@
     "modules": [
         {
             "config": {
-                "cosmos_wasm_client_id": "08-wasm-0",
+                "cosmos_wasm_client_id": "",
                 "eth_rpc_url": "http://127.0.0.1:59619",
                 "eth_ws_url": "ws://127.0.0.1:59620",
                 "fetch_timeout": 15,
-                "ics07_client": "0xF01ecC1dF1868C3B15f0edC4768812b9c435BBfb",
+                "ics07_client": "",
                 "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3",
                 "ics26_client_id": "cosmoshub-1",
                 "membership": "0x1adb9959eb142be128e6dfecc8d571f07cd66dee",
@@ -15,21 +15,14 @@
                 "update_client": "0x086f77c5686dfe3f2f8fe487c5f8d357952c8556",
                 "wrapper_verifier": "0x703848f4c85f18e3acd8196c8ec91eb0b7bd0797"
             },
-            "dst_chain": "0x1",
             "name": "cosmos_to_eth",
             "src_chain": "test-ibc-eth"
         },
         {
             "config": {
-                "eth_beacon_api_url": "http://127.0.0.1:59717",
-                "eth_rpc_url": "http://127.0.0.1:59619",
-                "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3",
-                "signer_address": "cosmos10d07y265gmmuvt4z0w9aw880jnsr700j6zn9kn",
-                "tm_rpc_url": "http://127.0.0.1:26657"
+                "eth_beacon_api_url": "http://127.0.0.1:59717"
             },
-            "dst_chain": "test-ibc-eth",
-            "name": "eth_to_cosmos",
-            "src_chain": "0x1"
+            "name": "eth_to_cosmos"
         }
     ],
     "batch": {
