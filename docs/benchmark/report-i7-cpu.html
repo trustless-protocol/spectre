@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Fast IBC — Prover Benchmarks</title>
+<title>Fast IBC — Prover Benchmarks (i7-13700K, CPU)</title>
 <style>
   :root {
     --bg: #fbfbfa;
@@ -101,19 +101,20 @@
   <header class="hero">
     <p class="eyebrow">⚡ Fast IBC</p>
     <h1>Groth16 Prover Benchmarks</h1>
-    <p class="sub">Proof-generation time for Tendermint Ed25519 quorum verification, by signer-bucket size. GPU backend (ICICLE / CUDA).</p>
+    <p class="sub">Proof-generation time for Tendermint Ed25519 quorum verification, by signer-bucket size. CPU backend (native gnark), no GPU.</p>
   </header>
 
   <h2>Environment</h2>
   <div class="env">
-    <div>Hardware</div><div><span class="mono">AWS g6e.2xlarge</span> </div>
-    <div>Versions</div><div><span class="mono">gnark v0.13.0</span> · <span class="mono">icicle-gnark v3.2.2</span> · CUDA (NVIDIA)</div>
-    <div>Measured</div><div><span class="mono">2026-06-07</span></div>
+    <div>Hardware</div><div><span class="mono">Intel Core i7-13700K</span></div>
+    <div>Backend</div><div>CPU — <span class="mono">native gnark</span> (no GPU / ICICLE)</div>
+    <div>Versions</div><div><span class="mono">gnark v0.13.0</span></div>
+    <div>Measured</div><div><span class="mono">2026-06-29</span></div>
   </div>
 
   <h2>Proof generation</h2>
 
-  <p>Wall-clock time to generate one Groth16 proof for an <code>N</code>-signer quorum batch, on the GPU (ICICLE / CUDA) backend. Witness build and local verification are sub-10&nbsp;ms at every bucket, so the figures below are effectively the prove step.</p>
+  <p>Wall-clock time to generate one Groth16 proof for an <code>N</code>-signer quorum batch, on the CPU (native gnark) backend. Each bucket was measured over <strong>10 samples</strong>; witness build (≤&nbsp;~18&nbsp;ms) and local verification (~1&nbsp;ms) are negligible next to the prove step, so the figures below are effectively the prove time.</p>
 
   <div class="note-box">
     <strong>N = quorum signers, not validator count.</strong> A bucket is sized by the number of highest-voting-power validators needed to cross 2/3 of total power — <em>not</em> the chain's total validator count. Voting power is usually concentrated in the top validators, so even a <strong>180-validator</strong> chain often reaches quorum with <strong>~14–16 signers</strong> (bucket N = 16). Proof-generation time depends only on the bucket, so it is independent of how many validators the chain has.
@@ -121,12 +122,12 @@
 
   <div class="chart">
     <div class="row"><div class="label">bucket</div><div style="font-size:12px"><span style="color:var(--accent)">▬ mean</span> &nbsp;·&nbsp; <span style="color:#d97706">⊢⊣ min–max</span></div><div class="val muted">mean</div></div>
-    <div class="row"><div class="label">N = 4</div><div class="track"><div class="bar" style="width:4.2%"></div><div class="whisker" style="left:3.9%;width:0.8%"></div></div><div class="val">0.65 s</div></div>
-    <div class="row"><div class="label">N = 8</div><div class="track"><div class="bar" style="width:6.4%"></div><div class="whisker" style="left:5.8%;width:1.1%"></div></div><div class="val">0.99 s</div></div>
-    <div class="row"><div class="label">N = 16</div><div class="track"><div class="bar" style="width:11.0%"></div><div class="whisker" style="left:9.9%;width:2.5%"></div></div><div class="val">1.70 s</div></div>
-    <div class="row"><div class="label">N = 32</div><div class="track"><div class="bar" style="width:20.6%"></div><div class="whisker" style="left:19.3%;width:3.1%"></div></div><div class="val">3.20 s</div></div>
-    <div class="row"><div class="label">N = 64</div><div class="track"><div class="bar" style="width:42.2%"></div><div class="whisker" style="left:39.9%;width:4.8%"></div></div><div class="val">6.56 s</div></div>
-    <div class="row"><div class="label">N = 128</div><div class="track"><div class="bar" style="width:97.6%"></div><div class="whisker" style="left:90.9%;width:9.1%"></div></div><div class="val">15.15 s</div></div>
+    <div class="row"><div class="label">N = 4</div><div class="track"><div class="bar" style="width:5.5%"></div><div class="whisker" style="left:5.2%;width:0.6%"></div></div><div class="val">1.50 s</div></div>
+    <div class="row"><div class="label">N = 8</div><div class="track"><div class="bar" style="width:7.1%"></div><div class="whisker" style="left:6.8%;width:0.8%"></div></div><div class="val">1.96 s</div></div>
+    <div class="row"><div class="label">N = 16</div><div class="track"><div class="bar" style="width:11.8%"></div><div class="whisker" style="left:11.3%;width:1.2%"></div></div><div class="val">3.24 s</div></div>
+    <div class="row"><div class="label">N = 32</div><div class="track"><div class="bar" style="width:21.2%"></div><div class="whisker" style="left:20.4%;width:1.9%"></div></div><div class="val">5.83 s</div></div>
+    <div class="row"><div class="label">N = 64</div><div class="track"><div class="bar" style="width:42.5%"></div><div class="whisker" style="left:40.7%;width:6.7%"></div></div><div class="val">11.70 s</div></div>
+    <div class="row"><div class="label">N = 128</div><div class="track"><div class="bar" style="width:81.9%"></div><div class="whisker" style="left:76.7%;width:19.3%"></div></div><div class="val">22.56 s</div></div>
   </div>
 
   <table>
@@ -134,18 +135,20 @@
       <th>Bucket (N signers)</th><th class="num">Mean</th><th class="num">Min–Max</th><th class="num">Variation (σ/mean)</th><th class="num">Samples</th>
     </tr></thead>
     <tbody>
-      <tr><td class="bucket-tag">4</td>  <td class="num">0.65 s s</td>  <td class="num range-cell">0.60–0.73 s</td>  <td class="num">±6.4%</td> <td class="num">10</td></tr>
-      <tr><td class="bucket-tag">8</td>  <td class="num">0.99 s</td>  <td class="num range-cell">0.91–1.07 s</td>  <td class="num">±5.2%</td> <td class="num">10</td></tr>
-      <tr><td class="bucket-tag">16</td> <td class="num">1.70 s</td>  <td class="num range-cell">1.53–1.92 s</td>  <td class="num">±6.8%</td> <td class="num">10</td></tr>
-      <tr><td class="bucket-tag">32</td> <td class="num">3.20 s</td>  <td class="num range-cell">3.00–3.48 s</td>  <td class="num">±4.7%</td> <td class="num">10</td></tr>
-      <tr><td class="bucket-tag">64</td> <td class="num">6.56 s</td> <td class="num range-cell">6.19–6.94 s</td> <td class="num">±4.4%</td> <td class="num">10</td></tr>
-      <tr><td class="bucket-tag">128</td><td class="num">15.15 s</td> <td class="num range-cell">14.12–15.53 s</td> <td class="num">±3.5%</td> <td class="num">10</td></tr>
+      <tr><td class="bucket-tag">4</td>  <td class="num">1.50 s</td>  <td class="num range-cell">1.44–1.60 s</td>  <td class="num">±3.0%</td> <td class="num">10</td></tr>
+      <tr><td class="bucket-tag">8</td>  <td class="num">1.96 s</td>  <td class="num range-cell">1.86–2.07 s</td>  <td class="num">±3.0%</td> <td class="num">10</td></tr>
+      <tr><td class="bucket-tag">16</td> <td class="num">3.24 s</td>  <td class="num range-cell">3.12–3.46 s</td>  <td class="num">±2.5%</td> <td class="num">10</td></tr>
+      <tr><td class="bucket-tag">32</td> <td class="num">5.83 s</td>  <td class="num range-cell">5.61–6.14 s</td>  <td class="num">±3.1%</td> <td class="num">10</td></tr>
+      <tr><td class="bucket-tag">64</td> <td class="num">11.70 s</td> <td class="num range-cell">11.20–13.04 s</td> <td class="num">±4.2%</td> <td class="num">10</td></tr>
+      <tr><td class="bucket-tag">128</td><td class="num">22.56 s</td> <td class="num range-cell">21.14–26.44 s</td> <td class="num">±7.3%</td> <td class="num">10</td></tr>
     </tbody>
   </table>
 
+  <p class="note">Mean is the Go benchmark <code>ns/op</code> over 10 iterations per bucket; min–max and σ are taken from the per-run prove times. Times are the end-to-end <code>GenerateProof</code> (witness build + <code>groth16.Prove</code> + local verify), dominated by <code>Prove</code>. CPU-only run — no GPU/ICICLE backend engaged.</p>
+
   <footer>
     Fast IBC — Tendermint ↔ Ethereum interoperability via gnark Groth16.
-    GPU proving on AWS g6e.2xlarge (ICICLE / CUDA), measured 2026-06-07.
+    CPU proving on Intel Core i7-13700K (native gnark), measured 2026-06-29.
   </footer>
 
 </div>

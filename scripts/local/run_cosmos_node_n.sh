@@ -342,7 +342,6 @@ done
 COSMOS_PRIVATE_KEY="$(gaiad keys export test1 --unarmored-hex --unsafe --keyring-backend "$KEYRING" --home "$PRIMARY_HOME" -y 2>/dev/null)"
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_PRIVATE_KEY" "$COSMOS_PRIVATE_KEY"
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_CHAIN_ID" "$CHAIN_ID"
-upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_RPC" "tcp://127.0.0.1:${RPC_PORTS[0]}"
 echo "Updated $RELAYER_ENV_FILE (primary RPC tcp://127.0.0.1:${RPC_PORTS[0]})"
 
 PIDS=()

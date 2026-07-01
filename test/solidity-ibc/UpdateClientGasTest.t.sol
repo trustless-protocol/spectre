@@ -27,11 +27,11 @@ contract AlwaysTrueVerifier {
 ///         header field, header merkle root matches commit.blockId.hashData,
 ///         commitSigs cover the validator set) so the real `UPDATE_CLIENT.updateClient`
 ///         path executes end-to-end. Only the per-bucket Groth16 verifier is
-///         stubbed — adding ~250K to each measured number recovers prod gas.
+///         stubbed — adding ~372K to each measured number recovers prod gas.
 ///
 ///         Run:    forge test --match-contract UpdateClientGasTest -vv
-///         Diff:   compare measured value to BENCHMARK_2026-05-19_bucket16.md
-///                 (n=16 → 2.79M ≈ measured + ~250K Groth16).
+///         Prod:   real updateClient ≈ measured + ~372K Groth16 verify, which is
+///                 bucket-independent (e.g. n=16 ≈ 245K + ~372K ≈ 617K).
 ///
 ///         === Topology (bench-matched) ===
 ///         For each bucket, validator set + active count just clear the 2/3
