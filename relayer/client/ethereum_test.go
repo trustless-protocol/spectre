@@ -148,7 +148,7 @@ func TestToForkParameters(t *testing.T) {
 			ElectraForkEpoch:     "364544",
 		}
 
-		fp, err := spec.ToForkParameters()
+		fp, err := spec.ToForkParameters(0)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -175,9 +175,43 @@ func TestToForkParameters(t *testing.T) {
 		}
 	})
 
+	t.Run("fulu folded into electra only once active", func(t *testing.T) {
+		// Rust client tops out at the Electra slot, so the active fork version is
+		// folded there. Before the Fulu epoch the real Electra version is kept;
+		// at/after it, the Fulu version is used — so the same binary works on a
+		// pre-Fulu (e.g. local Electra) chain and a post-Fulu (e.g. Sepolia) chain.
+		newSpec := func() *BeaconSpec {
+			return &BeaconSpec{
+				GenesisForkVersion: "0x00000000",
+				AltairForkVersion:  "0x01000000", AltairForkEpoch: "0",
+				BellatrixForkVersion: "0x02000000", BellatrixForkEpoch: "0",
+				CapellaForkVersion: "0x03000000", CapellaForkEpoch: "0",
+				DenebForkVersion: "0x04000000", DenebForkEpoch: "0",
+				ElectraForkVersion: "0x05000000", ElectraForkEpoch: "100",
+				FuluForkVersion: "0x06000000", FuluForkEpoch: "200",
+			}
+		}
+
+		fpPre, err := newSpec().ToForkParameters(150) // between Electra and Fulu
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if fpPre.Electra.Version != "0x05000000" {
+			t.Errorf("pre-Fulu Electra.Version: got %q, want Electra version", fpPre.Electra.Version)
+		}
+
+		fpPost, err := newSpec().ToForkParameters(250) // past Fulu
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if fpPost.Electra.Version != "0x06000000" {
+			t.Errorf("post-Fulu Electra.Version: got %q, want Fulu version", fpPost.Electra.Version)
+		}
+	})
+
 	t.Run("invalid altair epoch", func(t *testing.T) {
 		spec := &BeaconSpec{AltairForkEpoch: "notanumber"}
-		_, err := spec.ToForkParameters()
+		_, err := spec.ToForkParameters(0)
 		if err == nil {
 			t.Fatal("expected error for invalid epoch")
 		}
@@ -188,7 +222,7 @@ func TestToForkParameters(t *testing.T) {
 			AltairForkEpoch:    "0",
 			BellatrixForkEpoch: "bad",
 		}
-		_, err := spec.ToForkParameters()
+		_, err := spec.ToForkParameters(0)
 		if err == nil {
 			t.Fatal("expected error for invalid epoch")
 		}

@@ -564,14 +564,29 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 	}
 	log.Printf("[CreateEthClient] ethereum chain id=%s", chainId.String())
 
-	forkParameters, err := spec.ToForkParameters()
-	if err != nil {
-		return "", fmt.Errorf("failed to get fork parameters: %w", err)
-	}
-
 	epochsPerSyncCommitteePeriod, err := strconv.ParseUint(spec.EpochsPerSyncCommitteePeriod, 10, 64)
 	if err != nil {
 		return "", err
+	}
+
+	// Resolve the fork schedule against the bootstrap head epoch so the active
+	// fork version (e.g. Fulu on a chain past its Fulu fork) is the one baked into
+	// the client state — see ToForkParameters.
+	slotsPerEpochForFork, err := strconv.ParseUint(spec.SlotsPerEpoch, 10, 64)
+	if err != nil {
+		return "", err
+	}
+	checkpointSlotForFork, err := strconv.ParseUint(checkpointSlot, 10, 64)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse checkpoint slot: %w", err)
+	}
+	var currentEpoch uint64
+	if slotsPerEpochForFork > 0 {
+		currentEpoch = checkpointSlotForFork / slotsPerEpochForFork
+	}
+	forkParameters, err := spec.ToForkParameters(currentEpoch)
+	if err != nil {
+		return "", fmt.Errorf("failed to get fork parameters: %w", err)
 	}
 
 	genesisTime, err := strconv.ParseUint(genesis.GenesisTime, 10, 64)

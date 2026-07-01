@@ -691,7 +691,10 @@ func GetEthereumClientState(cosmosClient *rpchttp.HTTP, clientID string) (*Ether
 	return &ethClientState, nil
 }
 
-func (s *BeaconSpec) ToForkParameters() (*ForkParameters, error) {
+// ToForkParameters maps the beacon spec into the client-state fork schedule.
+// currentEpoch is the head/bootstrap epoch used to decide which fork version is
+// actually in force right now.
+func (s *BeaconSpec) ToForkParameters(currentEpoch uint64) (*ForkParameters, error) {
 	altairForkEpoch, err := strconv.ParseUint(s.AltairForkEpoch, 10, 64)
 	if err != nil {
 		return nil, err
@@ -713,11 +716,14 @@ func (s *BeaconSpec) ToForkParameters() (*ForkParameters, error) {
 		return nil, err
 	}
 	electraForkVersion := s.ElectraForkVersion
-	// The current Rust light-client type supports up to Electra.
-	// If Fulu is active from genesis, fold Fulu into Electra so domain computation
-	// uses the actual signing fork version.
+	// The current Rust light-client type only has fork slots up to Electra, so the
+	// "latest" fork version must be folded into the Electra slot. Fold Fulu into
+	// Electra once the chain has reached the Fulu fork epoch (this generalizes the
+	// Fulu-from-genesis case: fuluForkEpoch == 0 <= currentEpoch). Before Fulu
+	// activates (e.g. a local Electra devnet), currentEpoch < fuluForkEpoch and the
+	// real Electra version is kept — so domain computation stays correct on both.
 	if s.FuluForkVersion != "" && s.FuluForkEpoch != "" {
-		if fuluForkEpoch, err := strconv.ParseUint(s.FuluForkEpoch, 10, 64); err == nil && fuluForkEpoch == 0 {
+		if fuluForkEpoch, err := strconv.ParseUint(s.FuluForkEpoch, 10, 64); err == nil && fuluForkEpoch <= currentEpoch {
 			electraForkVersion = s.FuluForkVersion
 		}
 	}
