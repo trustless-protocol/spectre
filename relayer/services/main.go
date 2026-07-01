@@ -616,8 +616,12 @@ func (s *Services) waitBeaconFinality(ctx Context, eventBlock uint64, tag string
 			tag, eventBlock, s.lastFinalizedExecBlock)
 		return true
 	}
+	maxRetries := ctx.Config.BeaconFinalityRetries
+	if maxRetries == 0 {
+		maxRetries = DEFAULT_BEACON_FINALITY_RETRIES
+	}
 	log.Printf("[%s] waiting for beacon finality at block %d", tag, eventBlock)
-	for attempt := 0; attempt < 60; attempt++ {
+	for attempt := uint32(0); attempt < maxRetries; attempt++ {
 		if attempt > 0 {
 			time.Sleep(10 * time.Second)
 		}
@@ -641,10 +645,10 @@ func (s *Services) waitBeaconFinality(ctx Context, eventBlock uint64, tag string
 			log.Printf("[%s] beacon finalized block %d >= event block %d", tag, execBlock, eventBlock)
 			return true
 		}
-		log.Printf("[%s] beacon finalized block %d < event block %d, waiting... (%d/60)",
-			tag, execBlock, eventBlock, attempt+1)
+		log.Printf("[%s] beacon finalized block %d < event block %d, waiting... (%d/%d)",
+			tag, execBlock, eventBlock, attempt+1, maxRetries)
 	}
-	log.Printf("[%s] beacon finality did not reach block %d after 60 retries", tag, eventBlock)
+	log.Printf("[%s] beacon finality did not reach block %d after %d retries", tag, eventBlock, maxRetries)
 	return false
 }
 

@@ -38,6 +38,7 @@ const (
 	flagOutputPath     = "output-path"
 	flagTrustLevel     = "trust-level"
 	flagTrustingPeriod = "trusting-period"
+	flagClockDrift     = "clock-drift"
 	flagTrustedBlock   = "trusted-block"
 	flagWasmChecksum   = "wasm-checksum"
 	flagBenchmark      = "benchmark"
@@ -47,21 +48,23 @@ const (
 // --- Config types for JSON config file ---
 
 type cosmosToEthConfig struct {
-	TmRpcUrl           string `json:"tm_rpc_url"`
-	ICS26Address       string `json:"ics26_address"`
-	ICS26ClientID      string `json:"ics26_client_id"`
-	CosmosWasmClientID string `json:"cosmos_wasm_client_id"`
-	EthRpcUrl          string `json:"eth_rpc_url"`
-	EthWsUrl           string `json:"eth_ws_url"`
-	ICS07Client        string `json:"ics07_client"`
-	WrapperVerifier    string `json:"wrapper_verifier"`
-	Membership         string `json:"membership"`
-	Misbehaviour       string `json:"misbehaviour"`
-	UpdateClient       string `json:"update_client"`
-	TrustingPeriod     uint32 `json:"trusting_period"`
-	TrustLevel         string `json:"trust_level"`
-	ProofType          string `json:"proof_type"`
-	FetchTimeout       uint64 `json:"fetch_timeout"`
+	TmRpcUrl              string `json:"tm_rpc_url"`
+	ICS26Address          string `json:"ics26_address"`
+	ICS26ClientID         string `json:"ics26_client_id"`
+	CosmosWasmClientID    string `json:"cosmos_wasm_client_id"`
+	EthRpcUrl             string `json:"eth_rpc_url"`
+	EthWsUrl              string `json:"eth_ws_url"`
+	ICS07Client           string `json:"ics07_client"`
+	WrapperVerifier       string `json:"wrapper_verifier"`
+	Membership            string `json:"membership"`
+	Misbehaviour          string `json:"misbehaviour"`
+	UpdateClient          string `json:"update_client"`
+	TrustingPeriod        uint32 `json:"trusting_period"`
+	TrustLevel            string `json:"trust_level"`
+	ProofType             string `json:"proof_type"`
+	ClockDrift            uint32 `json:"clock_drift"`
+	BeaconFinalityRetries uint32 `json:"beacon_finality_retries"`
+	FetchTimeout          uint64 `json:"fetch_timeout"`
 }
 
 type ethToCosmosConfig struct {
@@ -807,12 +810,17 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 		proofType = "groth16"
 	}
 
+	clockDrift := cfg.CosmosToEthConfig.ClockDrift
+	if clockDrift == 0 {
+		clockDrift = tendermintClient.DefaultClockDrift
+	}
+
 	worker := services.NewWorker(&transaction.Handler{}, nil)
 	logger.Sugar().Infof(
-		"Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s, proofType=%s, counterparty=%s)...",
-		trustingPeriod, trustLevel, proofType, wasmClientID,
+		"Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s, proofType=%s, clockDrift=%d, counterparty=%s)...",
+		trustingPeriod, trustLevel, proofType, clockDrift, wasmClientID,
 	)
-	ics07Addr, err := worker.CreateCosmosClient(ctx, proofType, trustingPeriod, 0, trustLevel)
+	ics07Addr, err := worker.CreateCosmosClient(ctx, proofType, trustingPeriod, 0, trustLevel, clockDrift)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed to create Cosmos client on Ethereum: %w", err)
 	}
@@ -1048,6 +1056,12 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			if cfg.CosmosToEthConfig.ProofType != "" {
 				cosmosConfig.ProofType = cfg.CosmosToEthConfig.ProofType
 			}
+			if cfg.CosmosToEthConfig.ClockDrift != 0 {
+				cosmosConfig.ClockDrift = cfg.CosmosToEthConfig.ClockDrift
+			}
+			if cfg.CosmosToEthConfig.BeaconFinalityRetries != 0 {
+				cosmosConfig.BeaconFinalityRetries = cfg.CosmosToEthConfig.BeaconFinalityRetries
+			}
 			if cfg.CosmosToEthConfig.FetchTimeout != 0 {
 				cosmosConfig.FetchTimeout = time.Duration(cfg.CosmosToEthConfig.FetchTimeout) * time.Second
 			}
@@ -1217,6 +1231,12 @@ func Start(logger *zap.Logger) *cobra.Command {
 			if cfg.CosmosToEthConfig.ProofType != "" {
 				cosmosConfig.ProofType = cfg.CosmosToEthConfig.ProofType
 			}
+			if cfg.CosmosToEthConfig.ClockDrift != 0 {
+				cosmosConfig.ClockDrift = cfg.CosmosToEthConfig.ClockDrift
+			}
+			if cfg.CosmosToEthConfig.BeaconFinalityRetries != 0 {
+				cosmosConfig.BeaconFinalityRetries = cfg.CosmosToEthConfig.BeaconFinalityRetries
+			}
 			if cfg.CosmosToEthConfig.FetchTimeout != 0 {
 				cosmosConfig.FetchTimeout = time.Duration(cfg.CosmosToEthConfig.FetchTimeout) * time.Second
 			}
@@ -1280,8 +1300,12 @@ func Genesis(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to get proof type from flag: %w", err)
 			}
+			clockDrift, err := cmd.Flags().GetUint32(flagClockDrift)
+			if err != nil {
+				return fmt.Errorf("failed to get clock drift from flag: %w", err)
+			}
 
-			genesis, err := tendermintClient.GetGenesis(tendermintRpcClient, trustedBlock, trustingPeriod, trustLevel, proofType)
+			genesis, err := tendermintClient.GetGenesis(tendermintRpcClient, trustedBlock, trustingPeriod, trustLevel, proofType, clockDrift)
 			if err != nil {
 				return fmt.Errorf("failed to get genesis: %w", err)
 			}
@@ -1320,5 +1344,6 @@ func Genesis(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().String(flagOutputPath, "./data/genesis.json", "the path to the output file for the genesis state")
 	cmd.Flags().String(flagTrustLevel, "2/3", "the trust level for the genesis state (e.g., 2/3)")
 	cmd.Flags().Uint32(flagTrustingPeriod, 0, "the trusting period for the genesis state")
+	cmd.Flags().Uint32(flagClockDrift, tendermintClient.DefaultClockDrift, "allowed clock drift in seconds between proven consensus state and verifying chain time")
 	return cmd
 }

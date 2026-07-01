@@ -12,6 +12,8 @@
                 "membership": "0x1adb9959eb142be128e6dfecc8d571f07cd66dee",
                 "misbehaviour": "0xb965d10739e19a9158e7f713720b0145d996e370",
                 "tm_rpc_url": "http://127.0.0.1:26657",
+                "clock_drift": 30,
+                "beacon_finality_retries": 90,
                 "update_client": "0x086f77c5686dfe3f2f8fe487c5f8d357952c8556",
                 "wrapper_verifier": "0x703848f4c85f18e3acd8196c8ec91eb0b7bd0797"
             },

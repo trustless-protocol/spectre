@@ -335,7 +335,18 @@ func (s SupportedZkAlgorithm) String() string {
 	}
 }
 
-func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32, trustLevel string, proofType string) (*Groth16ICS07TendermintGenesis, error) {
+// DefaultClockDrift is the allowed gap (in seconds) between the proven
+// consensus-state timestamp and the verifying chain's block time. It must be
+// generous enough to cover relay latency (proof gen + destination block time +
+// queueing); too small a value makes the light client reject otherwise-valid
+// updates with ProofIsTooOld. The same value is used at client creation and on
+// every update so the on-chain ClockDriftMismatch check passes.
+const DefaultClockDrift uint32 = 30
+
+func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32, trustLevel string, proofType string, clockDrift uint32) (*Groth16ICS07TendermintGenesis, error) {
+	if clockDrift == 0 {
+		clockDrift = DefaultClockDrift
+	}
 	status, err := client.Status(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
@@ -399,7 +410,7 @@ func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32,
 		ZkAlgorithm:     uint8(zkAlgorithm),
 		TrustingPeriod:  trustingPeriod,
 		UnbondingPeriod: uint32(unbondingPeriod),
-		ClockDrift:      15,
+		ClockDrift:      clockDrift,
 	}
 
 	consensusState := updateClientContract.IICS07TendermintMsgsConsensusState{

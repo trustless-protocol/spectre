@@ -39,8 +39,8 @@ func NewWorker(txHandler TransactionHandler, prover Prover) *Worker {
 	}
 }
 
-func (w *Worker) CreateCosmosClient(ctx Context, proofType string, trustingPeriod uint32, trustedBlock int64, trustLevel string) (common.Address, error) {
-	genesis, err := relayerclient.GetGenesis(ctx.CosmosClient(), trustedBlock, trustingPeriod, trustLevel, proofType)
+func (w *Worker) CreateCosmosClient(ctx Context, proofType string, trustingPeriod uint32, trustedBlock int64, trustLevel string, clockDrift uint32) (common.Address, error) {
+	genesis, err := relayerclient.GetGenesis(ctx.CosmosClient(), trustedBlock, trustingPeriod, trustLevel, proofType, clockDrift)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed to get genesis: %w", err)
 	}
@@ -362,6 +362,13 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		return nil, fmt.Errorf("trusting period %d cannot be greater than unbonding period %d", trustingPeriod, uint32(unbondingPeriod))
 	}
 
+	// Must match the value baked into the client at creation, otherwise the
+	// on-chain ClockDriftMismatch check rejects the update.
+	clockDrift := ctx.Config.ClockDrift
+	if clockDrift == 0 {
+		clockDrift = relayerclient.DefaultClockDrift
+	}
+
 	chainId := trustedLightBlock.SignedHeader.Header.ChainID
 	revision := clienttypes.ParseChainID(chainId)
 
@@ -395,7 +402,7 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		ZkAlgorithm:     uint8(zkAlgorithm),
 		TrustingPeriod:  trustingPeriod,
 		UnbondingPeriod: uint32(unbondingPeriod),
-		ClockDrift:      15,
+		ClockDrift:      clockDrift,
 	}
 
 	consensusState := updateclientContract.IICS07TendermintMsgsConsensusState{
