@@ -92,6 +92,7 @@ func validatorCacheRaceErrorName(callErr error) (string, bool) {
 
 type Handler struct {
 	mu            sync.Mutex
+	cosmosMu      sync.Mutex
 	nonce         uint64
 	nonceValid    bool
 	lastNonce     uint64
@@ -1123,6 +1124,11 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 		feeDenom = "stake" // Default fee denom
 	}
 
+	// Serialize Cosmos sequence use across relay goroutines. The account sequence
+	// is only safe from the point we query it until the tx is accepted or fails.
+	h.cosmosMu.Lock()
+	defer h.cosmosMu.Unlock()
+
 	// Query account info (account number and sequence) from the chain
 	accountNumber, sequence, err := h.queryAccountInfo(svcCtx, signerAddr.String())
 	if err != nil {
@@ -1280,7 +1286,13 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 			log.Printf("[SendCosmosTx] duplicate packet (codespace=%s code=%d), dropping", syncResult.Codespace, syncResult.Code)
 			return nil
 		}
-		return fmt.Errorf("transaction failed at CheckTx with code %d: %s", syncResult.Code, syncResult.Log)
+		return &services.CosmosTxFailure{
+			Stage:     "CheckTx",
+			Code:      syncResult.Code,
+			Codespace: syncResult.Codespace,
+			Log:       syncResult.Log,
+			Data:      syncResult.Data,
+		}
 	}
 
 	txResult, err := h.waitForTxResult(svcCtx, syncResult.Hash, cosmosInclusionTimeout)
@@ -1304,7 +1316,14 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 		}
 		// DeliverTx execution failure is deterministic (msg/proof rejected) — mark
 		// permanent so the relay loop counts it toward the retry cap.
-		return fmt.Errorf("transaction failed at DeliverTx with code %d: %s: %w", txResult.TxResult.Code, txResult.TxResult.Log, services.ErrPermanentRelayFailure)
+		return &services.CosmosTxFailure{
+			Stage:     "DeliverTx",
+			Code:      txResult.TxResult.Code,
+			Codespace: txResult.TxResult.Codespace,
+			Log:       txResult.TxResult.Log,
+			Data:      txResult.TxResult.Data,
+			Err:       services.ErrPermanentRelayFailure,
+		}
 	}
 
 	log.Printf("[SendCosmosTx] Tx confirmed at height %d hash=%s", txResult.Height, txResult.Hash.String())
@@ -1635,7 +1654,13 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 			log.Printf("[SendCosmosTxBatch] duplicate packet (codespace=%s code=%d), dropping", syncResult.Codespace, syncResult.Code)
 			return sequence + 1, len(sdkMsgs), nil
 		}
-		return sequence, 0, fmt.Errorf("transaction failed at CheckTx with code %d: %s", syncResult.Code, syncResult.Log)
+		return sequence, 0, &services.CosmosTxFailure{
+			Stage:     "CheckTx",
+			Code:      syncResult.Code,
+			Codespace: syncResult.Codespace,
+			Log:       syncResult.Log,
+			Data:      syncResult.Data,
+		}
 	}
 
 	txResult, err := h.waitForTxResult(svcCtx, syncResult.Hash, cosmosInclusionTimeout)
@@ -1655,7 +1680,14 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 			log.Printf("[SendCosmosTxBatch] duplicate packet (codespace=%s code=%d), dropping", txResult.TxResult.Codespace, txResult.TxResult.Code)
 			return sequence + 1, len(sdkMsgs), nil
 		}
-		return sequence, 0, fmt.Errorf("transaction failed at DeliverTx with code %d: %s: %w", txResult.TxResult.Code, txResult.TxResult.Log, services.ErrPermanentRelayFailure)
+		return sequence, 0, &services.CosmosTxFailure{
+			Stage:     "DeliverTx",
+			Code:      txResult.TxResult.Code,
+			Codespace: txResult.TxResult.Codespace,
+			Log:       txResult.TxResult.Log,
+			Data:      txResult.TxResult.Data,
+			Err:       services.ErrPermanentRelayFailure,
+		}
 	}
 
 	log.Printf("[SendCosmosTxBatch] Tx confirmed at height %d hash=%s (msgs=%d)", txResult.Height, txResult.Hash.String(), len(sdkMsgs))
@@ -1717,6 +1749,11 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 		}
 		sdkMsgs = append(sdkMsgs, sdkMsg)
 	}
+
+	// Serialize Cosmos sequence use across relay goroutines. A split batch may
+	// submit multiple txs, so the lock covers the whole sequence chain.
+	h.cosmosMu.Lock()
+	defer h.cosmosMu.Unlock()
 
 	// Query account info (account number and sequence) from the chain
 	accountNumber, sequence, err := h.queryAccountInfo(svcCtx, signerAddr.String())

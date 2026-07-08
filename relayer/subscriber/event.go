@@ -19,6 +19,7 @@ import (
 	commettypes "github.com/cometbft/cometbft/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	gethtypes "github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gogo/protobuf/proto"
 )
@@ -44,6 +45,8 @@ const EVENT_TX_HEIGHT_FIELD = "tx.height"
 const ethStartupRecoveryLookbackEnv = "ETH_STARTUP_LOOKBACK_BLOCKS"
 const defaultEthStartupRecoveryLookbackBlocks uint64 = 256
 const ethSubscriptionReconnectDelay = 2 * time.Second
+const ethGapRecoveryInterval = 30 * time.Second
+const ethSeenEventRetentionBlocks uint64 = 2_000
 
 const cosmosStartupRecoveryLookbackEnv = "COSMOS_STARTUP_LOOKBACK_BLOCKS"
 const defaultCosmosStartupRecoveryLookbackBlocks uint64 = 256
@@ -191,6 +194,18 @@ type cosmosEventKey struct {
 }
 
 type cosmosRecoveryStats struct {
+	recovered uint64
+	skipped   uint64
+}
+
+type ethEventKey struct {
+	EventType   string
+	TxHash      string
+	LogIndex    uint
+	BlockNumber uint64
+}
+
+type ethRecoveryStats struct {
 	recovered uint64
 	skipped   uint64
 }
@@ -705,7 +720,52 @@ func ethEventClientIDFilter(ctx services.Context) []string {
 	return []string{clientID}
 }
 
-func enqueueEthWriteAcknowledgement(batchBuilder *services.BatchBuilder, ev *contractICS26Router.ContractICS26RouterWriteAcknowledgement) {
+func ethEventKeyForLog(eventType string, raw gethtypes.Log) ethEventKey {
+	return ethEventKey{
+		EventType:   eventType,
+		TxHash:      raw.TxHash.Hex(),
+		LogIndex:    raw.Index,
+		BlockNumber: raw.BlockNumber,
+	}
+}
+
+func markEthEventSeen(seenEvents map[ethEventKey]struct{}, key ethEventKey) bool {
+	if seenEvents == nil {
+		return true
+	}
+	if _, ok := seenEvents[key]; ok {
+		return false
+	}
+	seenEvents[key] = struct{}{}
+	return true
+}
+
+func pruneEthSeenEvents(seenEvents map[ethEventKey]struct{}, currentBlock uint64) {
+	if currentBlock <= ethSeenEventRetentionBlocks {
+		return
+	}
+	minBlock := currentBlock - ethSeenEventRetentionBlocks
+	for key := range seenEvents {
+		if key.BlockNumber > 0 && key.BlockNumber < minBlock {
+			delete(seenEvents, key)
+		}
+	}
+}
+
+func advanceRecoveryStartFromLive(nextRecoveryStartBlock *uint64, eventBlock uint64) {
+	if *nextRecoveryStartBlock != 0 && eventBlock <= *nextRecoveryStartBlock {
+		advanceRecoveryStart(nextRecoveryStartBlock, eventBlock+1)
+	}
+}
+
+func enqueueEthWriteAcknowledgement(
+	batchBuilder *services.BatchBuilder,
+	ev *contractICS26Router.ContractICS26RouterWriteAcknowledgement,
+	seenEvents map[ethEventKey]struct{},
+) bool {
+	if !markEthEventSeen(seenEvents, ethEventKeyForLog("WriteAcknowledgement", ev.Raw)) {
+		return false
+	}
 	cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 	batchBuilder.AddEth(services.EthPacket{
 		Type:        services.EthWriteAck,
@@ -713,9 +773,17 @@ func enqueueEthWriteAcknowledgement(batchBuilder *services.BatchBuilder, ev *con
 		AckBytes:    ev.Acknowledgements,
 		BlockNumber: ev.Raw.BlockNumber,
 	})
+	return true
 }
 
-func enqueueEthSendPacket(batchBuilder *services.BatchBuilder, ev *contractICS26Router.ContractICS26RouterSendPacket) {
+func enqueueEthSendPacket(
+	batchBuilder *services.BatchBuilder,
+	ev *contractICS26Router.ContractICS26RouterSendPacket,
+	seenEvents map[ethEventKey]struct{},
+) bool {
+	if !markEthEventSeen(seenEvents, ethEventKeyForLog("SendPacket", ev.Raw)) {
+		return false
+	}
 	cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 	batchBuilder.AddEth(services.EthPacket{
 		Type:        services.EthSend,
@@ -723,6 +791,7 @@ func enqueueEthSendPacket(batchBuilder *services.BatchBuilder, ev *contractICS26
 		BlockNumber: ev.Raw.BlockNumber,
 	})
 	batchBuilder.EthPendingTracker.Add(cosmosPacket, ev.Raw.BlockNumber)
+	return true
 }
 
 func hasCosmosIBCPathValue(ctx services.Context, path [][]byte) (bool, error) {
@@ -754,9 +823,11 @@ func recoverEthSendPackets(
 	filterer *contractICS26Router.ContractICS26RouterFilterer,
 	startBlock uint64,
 	endBlock uint64,
-) {
+	seenEvents map[ethEventKey]struct{},
+) (ethRecoveryStats, error) {
+	var stats ethRecoveryStats
 	if endBlock < startBlock {
-		return
+		return stats, nil
 	}
 
 	filterOpts := &bind.FilterOpts{
@@ -766,57 +837,77 @@ func recoverEthSendPackets(
 	}
 	iter, err := filterer.FilterSendPacket(filterOpts, ethEventClientIDFilter(ctx), nil)
 	if err != nil {
-		ctx.Logger.Printf("[SubscribeEth] startup recovery: failed to filter SendPacket logs in [%d,%d]: %v",
-			startBlock, endBlock, err)
-		return
+		return stats, fmt.Errorf("failed to filter SendPacket logs in [%d,%d]: %w", startBlock, endBlock, err)
 	}
 	defer iter.Close()
 
-	var recoveredCount uint64
-	var skippedCount uint64
+	var firstErr error
 	for iter.Next() {
 		ev := iter.Event
+		key := ethEventKeyForLog("SendPacket", ev.Raw)
+		if seenEvents != nil {
+			if _, ok := seenEvents[key]; ok {
+				stats.skipped++
+				continue
+			}
+		}
+
 		cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 
 		received, err := hasCosmosPacketReceipt(ctx, cosmosPacket)
 		if err != nil {
-			ctx.Logger.Printf("[SubscribeEth] startup recovery: seq=%d failed to check Cosmos packet receipt: %v",
+			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d failed to check Cosmos packet receipt: %v",
 				cosmosPacket.Sequence, err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		if received {
-			skippedCount++
-			ctx.Logger.Printf("[SubscribeEth] startup recovery: seq=%d already received on Cosmos, skipping historical SendPacket from ETH block %d",
+			markEthEventSeen(seenEvents, key)
+			stats.skipped++
+			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d already received on Cosmos, skipping historical SendPacket from ETH block %d",
 				cosmosPacket.Sequence, ev.Raw.BlockNumber)
 			continue
 		}
 
 		pending, err := services.HasPendingEthPacketCommitment(ctx, cosmosPacket)
 		if err != nil {
-			ctx.Logger.Printf("[SubscribeEth] startup recovery: seq=%d failed to check ETH packet commitment: %v",
+			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d failed to check ETH packet commitment: %v",
 				cosmosPacket.Sequence, err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		if !pending {
-			skippedCount++
-			ctx.Logger.Printf("[SubscribeEth] startup recovery: seq=%d already cleared on ETH, skipping historical SendPacket from ETH block %d",
+			markEthEventSeen(seenEvents, key)
+			batchBuilder.EthPendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
+			stats.skipped++
+			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d already cleared on ETH, skipping historical SendPacket from ETH block %d",
 				cosmosPacket.Sequence, ev.Raw.BlockNumber)
 			continue
 		}
 
-		ctx.Logger.Printf("[SubscribeEth] startup recovery: recovered SendPacket seq=%d from ETH block %d",
-			cosmosPacket.Sequence, ev.Raw.BlockNumber)
-		enqueueEthSendPacket(batchBuilder, ev)
-		recoveredCount++
+		if enqueueEthSendPacket(batchBuilder, ev, seenEvents) {
+			ctx.Logger.Printf("[SubscribeEth] recovery: recovered SendPacket seq=%d from ETH block %d",
+				cosmosPacket.Sequence, ev.Raw.BlockNumber)
+			stats.recovered++
+		} else {
+			stats.skipped++
+		}
 	}
 
 	if err := iter.Error(); err != nil {
-		ctx.Logger.Printf("[SubscribeEth] startup recovery: SendPacket iterator error in [%d,%d]: %v",
-			startBlock, endBlock, err)
+		ctx.Logger.Printf("[SubscribeEth] recovery: SendPacket iterator error in [%d,%d]: %v", startBlock, endBlock, err)
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
 
-	ctx.Logger.Printf("[SubscribeEth] startup recovery complete for SendPacket: scanned [%d,%d], recovered=%d skipped=%d",
-		startBlock, endBlock, recoveredCount, skippedCount)
+	ctx.Logger.Printf("[SubscribeEth] recovery complete for SendPacket: scanned [%d,%d], recovered=%d skipped=%d",
+		startBlock, endBlock, stats.recovered, stats.skipped)
+	return stats, firstErr
 }
 
 func recoverEthWriteAcknowledgements(
@@ -825,9 +916,11 @@ func recoverEthWriteAcknowledgements(
 	filterer *contractICS26Router.ContractICS26RouterFilterer,
 	startBlock uint64,
 	endBlock uint64,
-) {
+	seenEvents map[ethEventKey]struct{},
+) (ethRecoveryStats, error) {
+	var stats ethRecoveryStats
 	if endBlock < startBlock {
-		return
+		return stats, nil
 	}
 
 	filterOpts := &bind.FilterOpts{
@@ -837,61 +930,142 @@ func recoverEthWriteAcknowledgements(
 	}
 	iter, err := filterer.FilterWriteAcknowledgement(filterOpts, ethEventClientIDFilter(ctx), nil)
 	if err != nil {
-		ctx.Logger.Printf("[SubscribeEth] startup recovery: failed to filter WriteAcknowledgement logs in [%d,%d]: %v",
-			startBlock, endBlock, err)
-		return
+		return stats, fmt.Errorf("failed to filter WriteAcknowledgement logs in [%d,%d]: %w", startBlock, endBlock, err)
 	}
 	defer iter.Close()
 
-	var recoveredCount uint64
-	var skippedCount uint64
+	var firstErr error
 	for iter.Next() {
 		ev := iter.Event
+		key := ethEventKeyForLog("WriteAcknowledgement", ev.Raw)
+		if seenEvents != nil {
+			if _, ok := seenEvents[key]; ok {
+				stats.skipped++
+				continue
+			}
+		}
+
 		cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 
 		pending, err := hasPendingCosmosPacketCommitment(ctx, cosmosPacket)
 		if err != nil {
-			ctx.Logger.Printf("[SubscribeEth] startup recovery: seq=%d failed to check Cosmos packet commitment: %v",
+			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d failed to check Cosmos packet commitment: %v",
 				cosmosPacket.Sequence, err)
+			if firstErr == nil {
+				firstErr = err
+			}
 			continue
 		}
 		if !pending {
-			skippedCount++
-			ctx.Logger.Printf("[SubscribeEth] startup recovery: seq=%d already cleared on Cosmos, skipping historical WriteAcknowledgement from ETH block %d",
+			markEthEventSeen(seenEvents, key)
+			batchBuilder.PendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
+			stats.skipped++
+			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d already cleared on Cosmos, skipping historical WriteAcknowledgement from ETH block %d",
 				cosmosPacket.Sequence, ev.Raw.BlockNumber)
 			continue
 		}
 
-		ctx.Logger.Printf("[SubscribeEth] startup recovery: recovered WriteAcknowledgement seq=%d from ETH block %d",
-			cosmosPacket.Sequence, ev.Raw.BlockNumber)
-		enqueueEthWriteAcknowledgement(batchBuilder, ev)
-		recoveredCount++
+		if enqueueEthWriteAcknowledgement(batchBuilder, ev, seenEvents) {
+			batchBuilder.PendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
+			ctx.Logger.Printf("[SubscribeEth] recovery: recovered WriteAcknowledgement seq=%d from ETH block %d",
+				cosmosPacket.Sequence, ev.Raw.BlockNumber)
+			stats.recovered++
+		} else {
+			stats.skipped++
+		}
 	}
 
 	if err := iter.Error(); err != nil {
-		ctx.Logger.Printf("[SubscribeEth] startup recovery: iterator error in [%d,%d]: %v",
-			startBlock, endBlock, err)
+		ctx.Logger.Printf("[SubscribeEth] recovery: WriteAcknowledgement iterator error in [%d,%d]: %v", startBlock, endBlock, err)
+		if firstErr == nil {
+			firstErr = err
+		}
 	}
 
-	ctx.Logger.Printf("[SubscribeEth] startup recovery complete: scanned [%d,%d], recovered=%d skipped=%d",
-		startBlock, endBlock, recoveredCount, skippedCount)
+	ctx.Logger.Printf("[SubscribeEth] recovery complete for WriteAcknowledgement: scanned [%d,%d], recovered=%d skipped=%d",
+		startBlock, endBlock, stats.recovered, stats.skipped)
+	return stats, firstErr
 }
 
 func advanceRecoveryStart(nextRecoveryStartBlock *uint64, candidate uint64) {
-	// Live handlers pass block+1 here, so periodic recovery trusts the live
-	// subscription to have covered every relevant event in the observed block.
 	if candidate > *nextRecoveryStartBlock {
 		*nextRecoveryStartBlock = candidate
 	}
+}
+
+func recoverEthGapToBlock(
+	ctx services.Context,
+	batchBuilder *services.BatchBuilder,
+	filterer *contractICS26Router.ContractICS26RouterFilterer,
+	nextSendRecoveryStartBlock *uint64,
+	nextWriteAckRecoveryStartBlock *uint64,
+	endBlock uint64,
+	seenEvents map[ethEventKey]struct{},
+) error {
+	var firstErr error
+
+	if endBlock >= *nextSendRecoveryStartBlock {
+		ctx.Logger.Printf("[SubscribeEth] recovery scanning SendPacket logs in [%d,%d]",
+			*nextSendRecoveryStartBlock, endBlock)
+		if _, err := recoverEthSendPackets(ctx, batchBuilder, filterer, *nextSendRecoveryStartBlock, endBlock, seenEvents); err != nil {
+			ctx.Logger.Printf("[SubscribeEth] SendPacket recovery failed: %v", err)
+			firstErr = err
+		} else {
+			*nextSendRecoveryStartBlock = endBlock + 1
+		}
+	}
+
+	if endBlock >= *nextWriteAckRecoveryStartBlock {
+		ctx.Logger.Printf("[SubscribeEth] recovery scanning WriteAcknowledgement logs in [%d,%d]",
+			*nextWriteAckRecoveryStartBlock, endBlock)
+		if _, err := recoverEthWriteAcknowledgements(ctx, batchBuilder, filterer, *nextWriteAckRecoveryStartBlock, endBlock, seenEvents); err != nil {
+			ctx.Logger.Printf("[SubscribeEth] WriteAcknowledgement recovery failed: %v", err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		} else {
+			*nextWriteAckRecoveryStartBlock = endBlock + 1
+		}
+	}
+
+	if firstErr == nil {
+		pruneEthSeenEvents(seenEvents, endBlock)
+	}
+	return firstErr
+}
+
+func recoverEthGapToLatest(
+	ctx services.Context,
+	batchBuilder *services.BatchBuilder,
+	filterer *contractICS26Router.ContractICS26RouterFilterer,
+	nextSendRecoveryStartBlock *uint64,
+	nextWriteAckRecoveryStartBlock *uint64,
+	seenEvents map[ethEventKey]struct{},
+) error {
+	latestBlock, err := ctx.EthClient().BlockNumber(context.Background())
+	if err != nil {
+		return err
+	}
+	return recoverEthGapToBlock(
+		ctx,
+		batchBuilder,
+		filterer,
+		nextSendRecoveryStartBlock,
+		nextWriteAckRecoveryStartBlock,
+		latestBlock,
+		seenEvents,
+	)
 }
 
 func (s *Subscriber) subscribeEthOnce(
 	ctx services.Context,
 	batchBuilder *services.BatchBuilder,
 	watchClient *ethclient.Client,
+	recoveryFilterer *contractICS26Router.ContractICS26RouterFilterer,
 	watchStartBlock uint64,
 	nextSendRecoveryStartBlock *uint64,
 	nextWriteAckRecoveryStartBlock *uint64,
+	seenEvents map[ethEventKey]struct{},
 ) error {
 	watchFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), watchClient)
 	if err != nil {
@@ -937,17 +1111,22 @@ func (s *Subscriber) subscribeEthOnce(
 		ctx.Logger.Printf("[SubscribeEth] Successfully subscribed to ICS26Router events from block %d", watchStartBlock)
 	}
 
+	gapRecoveryTicker := time.NewTicker(ethGapRecoveryInterval)
+	defer gapRecoveryTicker.Stop()
+
 	for {
 		select {
 		case ev := <-sendPacketCh:
 			ctx.Logger.Printf("SendPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
-			advanceRecoveryStart(nextSendRecoveryStartBlock, ev.Raw.BlockNumber+1)
-			enqueueEthSendPacket(batchBuilder, ev)
+			if enqueueEthSendPacket(batchBuilder, ev, seenEvents) {
+				advanceRecoveryStartFromLive(nextSendRecoveryStartBlock, ev.Raw.BlockNumber)
+			}
 
 		case ev := <-writeAckCh:
 			ctx.Logger.Printf("WriteAcknowledgement event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
-			advanceRecoveryStart(nextWriteAckRecoveryStartBlock, ev.Raw.BlockNumber+1)
-			enqueueEthWriteAcknowledgement(batchBuilder, ev)
+			if enqueueEthWriteAcknowledgement(batchBuilder, ev, seenEvents) {
+				advanceRecoveryStartFromLive(nextWriteAckRecoveryStartBlock, ev.Raw.BlockNumber)
+			}
 			batchBuilder.PendingTracker.Remove(ev.Packet.SourceClient, ev.Sequence.Uint64())
 
 		case ev := <-ackPacketCh:
@@ -980,6 +1159,18 @@ func (s *Subscriber) subscribeEthOnce(
 
 		case err := <-timeoutPacketSub.Err():
 			return fmt.Errorf("TimeoutPacket subscription error: %w", err)
+
+		case <-gapRecoveryTicker.C:
+			if err := recoverEthGapToLatest(
+				ctx,
+				batchBuilder,
+				recoveryFilterer,
+				nextSendRecoveryStartBlock,
+				nextWriteAckRecoveryStartBlock,
+				seenEvents,
+			); err != nil {
+				ctx.Logger.Printf("[SubscribeEth] periodic recovery failed: %v", err)
+			}
 		}
 	}
 }
@@ -1000,6 +1191,7 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 	lookback := ethStartupRecoveryLookbackBlocks()
 	var nextSendRecoveryStartBlock uint64
 	var nextWriteAckRecoveryStartBlock uint64
+	seenEvents := make(map[ethEventKey]struct{})
 
 	for {
 		latestBlock, err := ctx.EthClient().BlockNumber(context.Background())
@@ -1016,21 +1208,19 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 			nextWriteAckRecoveryStartBlock = ethStartupRecoveryStartBlock(latestBlock, lookback)
 		}
 
-		if latestBlock >= nextSendRecoveryStartBlock {
-			ctx.Logger.Printf("[SubscribeEth] recovery scanning SendPacket logs in [%d,%d]",
-				nextSendRecoveryStartBlock, latestBlock)
-			recoverEthSendPackets(ctx, batchBuilder, recoveryFilterer, nextSendRecoveryStartBlock, latestBlock)
-		}
-
-		if latestBlock >= nextWriteAckRecoveryStartBlock {
-			ctx.Logger.Printf("[SubscribeEth] recovery scanning WriteAcknowledgement logs in [%d,%d]",
-				nextWriteAckRecoveryStartBlock, latestBlock)
-			recoverEthWriteAcknowledgements(ctx, batchBuilder, recoveryFilterer, nextWriteAckRecoveryStartBlock, latestBlock)
+		if err := recoverEthGapToBlock(
+			ctx,
+			batchBuilder,
+			recoveryFilterer,
+			&nextSendRecoveryStartBlock,
+			&nextWriteAckRecoveryStartBlock,
+			latestBlock,
+			seenEvents,
+		); err != nil {
+			ctx.Logger.Printf("[SubscribeEth] startup recovery failed: %v", err)
 		}
 
 		watchStartBlock := latestBlock + 1
-		nextSendRecoveryStartBlock = watchStartBlock
-		nextWriteAckRecoveryStartBlock = watchStartBlock
 
 		watchClient, err := ethclient.DialContext(context.Background(), ctx.EthWsURL())
 		if err != nil {
@@ -1039,7 +1229,16 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 			continue
 		}
 
-		err = s.subscribeEthOnce(ctx, batchBuilder, watchClient, watchStartBlock, &nextSendRecoveryStartBlock, &nextWriteAckRecoveryStartBlock)
+		err = s.subscribeEthOnce(
+			ctx,
+			batchBuilder,
+			watchClient,
+			recoveryFilterer,
+			watchStartBlock,
+			&nextSendRecoveryStartBlock,
+			&nextWriteAckRecoveryStartBlock,
+			seenEvents,
+		)
 		watchClient.Close()
 		ctx.Logger.Printf("[SubscribeEth] Subscription loop ended: %v", err)
 		time.Sleep(ethSubscriptionReconnectDelay)

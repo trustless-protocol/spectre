@@ -55,6 +55,7 @@ func planCosmosPacketMsgs(
 	buildNonMembership func(packet channeltypesv2.Packet, clientID string, pathType []byte) ([]byte, error),
 ) (msgs []cosmosBatchMsg, trackerAdds, transientFailures, trackerRemoves []CosmosPacket) {
 	for _, packet := range packets {
+		origin := packet
 		switch packet.Type {
 		case CosmosSend:
 			// Track every CosmosSend so the async timeout scanner can refund it on
@@ -87,7 +88,7 @@ func planCosmosPacketMsgs(
 				sequence:     packet.Packet.Sequence,
 				sourceClient: packet.Packet.SourceClient,
 				isRecv:       true,
-				origin:       &packet,
+				origin:       &origin,
 			})
 		case CosmosAck:
 			if len(packet.AckBytes) == 0 {
@@ -110,7 +111,7 @@ func planCosmosPacketMsgs(
 				},
 				label:    "AckPacket",
 				sequence: packet.Packet.Sequence,
-				origin:   &packet,
+				origin:   &origin,
 			})
 		case CosmosTimeout:
 			if !ShouldRelayCosmosTimeoutToEth(packet.Packet, routerClientID) {
@@ -132,7 +133,7 @@ func planCosmosPacketMsgs(
 				},
 				label:    "Timeout",
 				sequence: packet.Packet.Sequence,
-				origin:   &packet,
+				origin:   &origin,
 			})
 		default:
 			log.Printf("[StartLoop] Unknown cosmos packet type: %d (seq=%d)", packet.Type, packet.Packet.Sequence)

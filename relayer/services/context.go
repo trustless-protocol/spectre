@@ -1,7 +1,6 @@
 package services
 
 import (
-	"fmt"
 	"log"
 	"sync"
 	"time"
@@ -189,11 +188,18 @@ func (c *Context) ClientContract() *common.Address {
 }
 
 func (c *Context) StopClient() {
-	err := c.cosmosClient.Stop()
-	if err != nil {
-		panic(fmt.Errorf("failed to terminate cosmos client: %v", err))
+	logger := c.Logger
+	if logger == nil {
+		logger = log.Default()
 	}
-	c.ethClient.Close()
+	if c.cosmosClient != nil {
+		if err := c.cosmosClient.Stop(); err != nil {
+			logger.Printf("failed to terminate cosmos client: %v", err)
+		}
+	}
+	if c.ethClient != nil {
+		c.ethClient.Close()
+	}
 	if c.ethWsClient != nil {
 		c.ethWsClient.Close()
 	}

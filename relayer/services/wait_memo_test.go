@@ -2,6 +2,16 @@ package services
 
 import "testing"
 
+func TestDefaultConfigAppHashWait(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.AppHashWaitRetries != DEFAULT_COSMOS_APP_HASH_WAIT_RETRIES {
+		t.Fatalf("AppHashWaitRetries = %d, want %d", cfg.AppHashWaitRetries, DEFAULT_COSMOS_APP_HASH_WAIT_RETRIES)
+	}
+	if cfg.AppHashWaitInterval != DEFAULT_COSMOS_APP_HASH_WAIT_INTERVAL {
+		t.Fatalf("AppHashWaitInterval = %s, want %s", cfg.AppHashWaitInterval, DEFAULT_COSMOS_APP_HASH_WAIT_INTERVAL)
+	}
+}
+
 // TestWaitBeaconFinalityMemo verifies the cross-chunk memoization fast-path:
 // once a finalized execution block has been observed, a later chunk whose event
 // block is already covered returns immediately without hitting the beacon RPC

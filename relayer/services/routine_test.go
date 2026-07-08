@@ -52,6 +52,41 @@ func TestRecordReAnchorResult(t *testing.T) {
 	}
 }
 
+func TestRoutineBackoff(t *testing.T) {
+	var backoff routineBackoff
+	now := time.Unix(1_700_000_000, 0)
+
+	if !backoff.Ready(now) {
+		t.Fatal("new backoff should be ready")
+	}
+
+	if got := backoff.RecordFailure(now); got != time.Minute {
+		t.Fatalf("first failure delay = %s, want 1m", got)
+	}
+	if backoff.Ready(now.Add(59 * time.Second)) {
+		t.Fatal("backoff should not be ready before next attempt")
+	}
+	if !backoff.Ready(now.Add(time.Minute)) {
+		t.Fatal("backoff should be ready at next attempt")
+	}
+
+	delay := time.Duration(0)
+	for i := 0; i < 10; i++ {
+		delay = backoff.RecordFailure(now)
+	}
+	if delay != routineFailureBackoffMax {
+		t.Fatalf("capped delay = %s, want %s", delay, routineFailureBackoffMax)
+	}
+
+	backoff.RecordSuccess()
+	if !backoff.Ready(now) {
+		t.Fatal("successful attempt should reset backoff")
+	}
+	if got := backoff.RecordFailure(now); got != time.Minute {
+		t.Fatalf("delay after reset = %s, want 1m", got)
+	}
+}
+
 func TestCosmosCurrentSlotReady(t *testing.T) {
 	if cosmosCurrentSlotReady(932, 933) {
 		t.Fatal("did not expect current slot below safety margin to be ready")

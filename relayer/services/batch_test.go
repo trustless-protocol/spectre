@@ -95,6 +95,13 @@ func TestShouldTimeoutEthSend(t *testing.T) {
 	if !shouldTimeoutEthSend(expired, errors.New("receive packet verification failed: timeout elapsed")) {
 		t.Fatal("expected timeout fallback for expired packet with timeout error")
 	}
+	if !shouldTimeoutEthSend(expired, &CosmosTxFailure{Stage: "DeliverTx", Log: "execute wasm contract failed: IBCInvalidTimeoutTimestamp"}) {
+		t.Fatal("expected timeout classification from typed Cosmos tx failure log")
+	}
+	selector := evmErrorSelector("IBCInvalidTimeoutTimestamp(uint256,uint256)")
+	if !shouldTimeoutEthSend(expired, &CosmosTxFailure{Stage: "DeliverTx", Data: selector[:]}) {
+		t.Fatal("expected timeout classification from typed Cosmos tx failure selector data")
+	}
 
 	active := makeEthPacket(2, EthSend)
 	active.Packet.TimeoutTimestamp = uint64(time.Now().Add(time.Hour).Unix())

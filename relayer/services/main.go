@@ -115,6 +115,8 @@ func (s *Services) StartLoop(ctx Context) {
 	go func() {
 		// TODO: Revisit routine scheduling strategy (interval/backoff/event-driven mix) to ensure this is optimal for production.
 		routineInterval := 24 * time.Hour
+		var reAnchorBackoff routineBackoff
+		var ethClientBackoff routineBackoff
 		for {
 			now := time.Now()
 
@@ -123,29 +125,33 @@ func (s *Services) StartLoop(ctx Context) {
 			// authoritative on-chain trusted height; if the client is already
 			// caught up it skips the transaction and returns the current block.
 			ethUpdateTime, _ := ctx.latestEthTimestamp.Snapshot()
-			if ethUpdateTime.Add(routineInterval).Before(now) {
+			if ethUpdateTime.Add(routineInterval).Before(now) && reAnchorBackoff.Ready(now) {
 				latestBlock, err := s.worker.ReAnchorCosmosPinnedSet(
 					ctx,
 					s.cosmosConfig.ProofType,
 					s.cosmosConfig.TrustLevel,
 				)
 				if err != nil {
-					log.Printf("[Routine] Failed to re-anchor cosmos pinned set: %v", err)
-					time.Sleep(time.Second)
-					continue
-				}
-				if err := recordReAnchorResult(ctx.latestEthTimestamp, latestBlock, time.Now()); err != nil {
-					log.Printf("[Routine] Failed to re-anchor cosmos pinned set: %v", err)
-					time.Sleep(time.Second)
-					continue
+					delay := reAnchorBackoff.RecordFailure(time.Now())
+					log.Printf("[Routine] Failed to re-anchor cosmos pinned set: %v; retrying after %s", err, delay)
+				} else if err := recordReAnchorResult(ctx.latestEthTimestamp, latestBlock, time.Now()); err != nil {
+					delay := reAnchorBackoff.RecordFailure(time.Now())
+					log.Printf("[Routine] Failed to record cosmos pinned set re-anchor result: %v; retrying after %s", err, delay)
+				} else {
+					reAnchorBackoff.RecordSuccess()
 				}
 			}
 
 			// update client on Cosmos side routinely
 			cosmosUpdateTime, _ := ctx.latestCosmosTimestamp.Snapshot()
-			if cosmosUpdateTime.Add(routineInterval).Before(now) {
-				s.worker.UpdateEthClient(ctx)
-				ctx.latestCosmosTimestamp.SetTime(now)
+			if cosmosUpdateTime.Add(routineInterval).Before(now) && ethClientBackoff.Ready(now) {
+				if err := s.worker.UpdateEthClient(ctx); err != nil {
+					delay := ethClientBackoff.RecordFailure(time.Now())
+					log.Printf("[Routine] Failed to update ETH client on Cosmos: %v; retrying after %s", err, delay)
+				} else {
+					ctx.latestCosmosTimestamp.SetTime(time.Now())
+					ethClientBackoff.RecordSuccess()
+				}
 			}
 
 			time.Sleep(time.Second)
@@ -382,6 +388,12 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	// async timeout scanner. Anything else is kept for proof generation.
 	var relayable []relayablePacket
 	maxEventBlock := uint64(0)
+	addRelayable := func(p EthPacket) {
+		relayable = append(relayable, relayablePacket{packet: p})
+		if p.BlockNumber > maxEventBlock {
+			maxEventBlock = p.BlockNumber
+		}
+	}
 	for _, p := range batch.Packets {
 		switch p.Type {
 		case EthSend:
@@ -391,13 +403,13 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 				}
 				continue
 			}
-			relayable = append(relayable, relayablePacket{packet: p})
+			addRelayable(p)
 		case EthWriteAck:
 			if len(p.AckBytes) == 0 {
 				log.Printf("[EthWriteAck] seq=%d: acknowledgement bytes missing, skipping", p.Packet.Sequence)
 				continue
 			}
-			relayable = append(relayable, relayablePacket{packet: p})
+			addRelayable(p)
 		case EthAck:
 			s.BatchBuilder.EthPendingTracker.Remove(p.Packet.SourceClient, p.Packet.Sequence)
 			log.Printf("[EthAck] seq=%d: terminal event handled", p.Packet.Sequence)
@@ -406,9 +418,6 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 			log.Printf("[EthTimeout] seq=%d: terminal event handled", p.Packet.Sequence)
 		default:
 			log.Printf("[StartLoop] Unknown eth packet type: %d (seq=%d)", p.Type, p.Packet.Sequence)
-		}
-		if p.BlockNumber > maxEventBlock {
-			maxEventBlock = p.BlockNumber
 		}
 	}
 	if len(relayable) == 0 {
@@ -572,17 +581,25 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 // be reflected in the queried AppHash. It memoizes the highest confirmed height
 // so later chunks of the same source block skip the RPC entirely (issue #76 #1).
 //
-// Timeout: 30 polls x 1s = 30s. On timeout it returns false so the caller can
-// re-queue the chunk instead of generating proofs against stale AppHash state.
+// On timeout it returns false so the caller can re-queue the chunk instead of
+// generating proofs against stale AppHash state.
 func (s *Services) waitCosmosAppHash(ctx Context, targetHeight uint64) bool {
 	if targetHeight <= s.lastCosmosAppHashHeight {
 		return true
 	}
-	for attempt := 0; attempt < 30; attempt++ {
+	maxRetries := ctx.Config.AppHashWaitRetries
+	if maxRetries == 0 {
+		maxRetries = DEFAULT_COSMOS_APP_HASH_WAIT_RETRIES
+	}
+	interval := ctx.Config.AppHashWaitInterval
+	if interval == 0 {
+		interval = DEFAULT_COSMOS_APP_HASH_WAIT_INTERVAL
+	}
+	for attempt := uint32(0); attempt < maxRetries; attempt++ {
 		status, err := ctx.CosmosClient().Status(context.Background())
 		if err != nil {
 			log.Printf("[StartLoop] failed to query cosmos status: %v", err)
-			time.Sleep(1 * time.Second)
+			time.Sleep(interval)
 			continue
 		}
 		if status.SyncInfo.LatestBlockHeight < 0 {
@@ -598,15 +615,15 @@ func (s *Services) waitCosmosAppHash(ctx Context, targetHeight uint64) bool {
 			log.Printf("[StartLoop] waiting for cosmos AppHash to cover height %d (current %d)...",
 				targetHeight, current)
 		}
-		time.Sleep(1 * time.Second)
+		time.Sleep(interval)
 	}
-	log.Printf("[StartLoop] cosmos AppHash wait for height %d timed out after 30s", targetHeight)
+	log.Printf("[StartLoop] cosmos AppHash wait for height %d timed out after %s", targetHeight, time.Duration(maxRetries)*interval)
 	return false
 }
 
 // waitBeaconFinality polls beacon finality until execution block ≥ target.
-// Extracted from the per-packet ethProofHeight so handleEth can amortize the
-// wait over a whole batch. Returns false on timeout (60 polls × 10s = 10min).
+// handleEth uses it once per batch so every relayable packet in the batch can
+// share the same finality wait.
 //
 // It memoizes the highest finalized execution block seen, so later chunks whose
 // event block is already covered return immediately without an RPC (issue #76 #3).
@@ -706,10 +723,87 @@ func shouldTimeoutEthSend(packet EthPacket, err error) bool {
 	if !ethPacketExpired(packet) {
 		return false
 	}
-	msg := err.Error()
+	if err == nil {
+		return false
+	}
+
+	var cosmosErr *CosmosTxFailure
+	if errors.As(err, &cosmosErr) && cosmosTxFailureIndicatesTimeout(cosmosErr) {
+		return true
+	}
+	if _, ok := timeoutEVMErrorName(err); ok {
+		return true
+	}
+	return timeoutErrorMessage(err.Error())
+}
+
+func cosmosTxFailureIndicatesTimeout(err *CosmosTxFailure) bool {
+	if err == nil {
+		return false
+	}
+	return timeoutErrorMessage(err.Log) ||
+		timeoutErrorMessage(string(err.Data)) ||
+		timeoutEVMErrorDataMatches(err.Data)
+}
+
+func timeoutErrorMessage(msg string) bool {
+	msg = strings.ToLower(msg)
 	return strings.Contains(msg, "timeout elapsed") ||
-		strings.Contains(msg, "IBCInvalidTimeoutTimestamp") ||
+		strings.Contains(msg, "ibcinvalidtimeouttimestamp") ||
 		strings.Contains(msg, "timed out")
+}
+
+var timeoutErrorSelectors = map[[4]byte]string{
+	evmErrorSelector("IBCInvalidTimeoutTimestamp(uint256,uint256)"): "IBCInvalidTimeoutTimestamp",
+}
+
+func evmErrorSelector(signature string) [4]byte {
+	hash := crypto.Keccak256([]byte(signature))
+	var selector [4]byte
+	copy(selector[:], hash[:4])
+	return selector
+}
+
+func timeoutEVMErrorName(callErr error) (string, bool) {
+	type dataErr interface {
+		ErrorData() interface{}
+	}
+	var de dataErr
+	if !errors.As(callErr, &de) {
+		return "", false
+	}
+
+	data := evmErrorDataBytes(de.ErrorData())
+	if len(data) < 4 {
+		return "", false
+	}
+	var selector [4]byte
+	copy(selector[:], data[:4])
+	name, ok := timeoutErrorSelectors[selector]
+	return name, ok
+}
+
+func timeoutEVMErrorDataMatches(data []byte) bool {
+	if len(data) < 4 {
+		return false
+	}
+	var selector [4]byte
+	copy(selector[:], data[:4])
+	_, ok := timeoutErrorSelectors[selector]
+	return ok
+}
+
+func evmErrorDataBytes(raw interface{}) []byte {
+	switch v := raw.(type) {
+	case string:
+		return ethcommon.FromHex(v)
+	case fmt.Stringer:
+		return ethcommon.FromHex(v.String())
+	case []byte:
+		return v
+	default:
+		return nil
+	}
 }
 
 func (s *Services) updateCosmosClientForEth(ctx Context, tag string) (*client.LightBlock, bool) {
@@ -816,7 +910,7 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 		}
 	}()
 
-	s.BatchBuilder.PendingTracker.PurgeStale(pendingTrackerMaxAge)
+	s.BatchBuilder.PendingTracker.PurgeStaleWithoutTimeout(pendingTrackerMaxAge)
 
 	pending := s.BatchBuilder.PendingTracker.GetAll()
 	if len(pending) == 0 {
@@ -1013,59 +1107,6 @@ func (s *Services) cosmosNonMembership(ctx Context, packet channeltypesv2.Packet
 		return nil, fmt.Errorf("failed to ABI encode verifyNonMembership: %w", err)
 	}
 	return calldata[4:], nil
-}
-
-func (s *Services) ethProofHeight(ctx Context, eventBlock uint64, sequence uint64, tag string) (uint64, uint64, bool) {
-	log.Printf("[%s] seq=%d: waiting for beacon finality at block %d", tag, sequence, eventBlock)
-	finalized := false
-	for attempt := 0; attempt < 60; attempt++ {
-		if attempt > 0 {
-			time.Sleep(10 * time.Second)
-		}
-		bctx, bcancel := context.WithTimeout(context.Background(), 15*time.Second)
-		finalityUpdate, err := client.GetFinalityUpdate(bctx, ctx.BeaconAPIURL())
-		bcancel()
-		if err != nil {
-			log.Printf("[%s] seq=%d: failed to get finality update: %v", tag, sequence, err)
-			continue
-		}
-		execBlock, err := strconv.ParseUint(finalityUpdate.FinalizedHeader.Execution.BlockNumber, 10, 64)
-		if err != nil {
-			log.Printf("[%s] seq=%d: failed to parse finalized execution block %q: %v",
-				tag, sequence, finalityUpdate.FinalizedHeader.Execution.BlockNumber, err)
-			continue
-		}
-		if execBlock >= eventBlock {
-			log.Printf("[%s] seq=%d: beacon finalized block %d >= event block %d", tag, sequence, execBlock, eventBlock)
-			finalized = true
-			break
-		}
-		log.Printf("[%s] seq=%d: beacon finalized block %d < event block %d, waiting... (%d/60)",
-			tag, sequence, execBlock, eventBlock, attempt+1)
-	}
-	if !finalized {
-		log.Printf("[%s] seq=%d: beacon finality did not reach block %d after 60 retries", tag, sequence, eventBlock)
-		return 0, 0, false
-	}
-
-	if err := s.worker.UpdateEthClient(ctx); err != nil {
-		log.Printf("[%s] seq=%d: failed to update ETH client: %v", tag, sequence, err)
-		return 0, 0, false
-	}
-
-	ethClientState, err := client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
-	if err != nil {
-		log.Printf("[%s] seq=%d: failed to get ETH client state: %v", tag, sequence, err)
-		return 0, 0, false
-	}
-
-	if ethClientState.LatestExecutionBlockNumber < eventBlock {
-		log.Printf("[%s] seq=%d: ETH client at block %d still < event block %d after update, skipping",
-			tag, sequence, ethClientState.LatestExecutionBlockNumber, eventBlock)
-		return 0, 0, false
-	}
-
-	return ethClientState.LatestExecutionBlockNumber, ethClientState.LatestSlot, true
 }
 
 func parseMerkleProof(proofs []*ics23.CommitmentProof, sequence uint64) (tendermintContract.IMembershipMsgsMerkleProof, error) {

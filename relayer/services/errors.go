@@ -28,6 +28,38 @@ var ErrPermanentRelayFailure = errors.New("permanent relay failure (on-chain rev
 // make progress, so packet retry budgets should not be consumed.
 var ErrValidatorCacheRace = errors.New("validator cache race")
 
+// CosmosTxFailure preserves ABCI failure metadata across package boundaries so
+// relay logic can classify specific failures without scraping formatted strings.
+type CosmosTxFailure struct {
+	Stage     string
+	Code      uint32
+	Codespace string
+	Log       string
+	Data      []byte
+	Err       error
+}
+
+func (e *CosmosTxFailure) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	msg := fmt.Sprintf("cosmos tx failed at %s with code %d", e.Stage, e.Code)
+	if e.Codespace != "" {
+		msg += fmt.Sprintf(" codespace=%s", e.Codespace)
+	}
+	if e.Log != "" {
+		msg += fmt.Sprintf(": %s", e.Log)
+	}
+	return msg
+}
+
+func (e *CosmosTxFailure) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
 // BatchPartialError is returned when a split batch is partially successful.
 // It tracks how many messages at the beginning of the batch were successfully
 // committed before a subsequent sub-batch encountered an error.

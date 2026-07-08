@@ -14,6 +14,8 @@
                 "tm_rpc_url": "http://127.0.0.1:26657",
                 "clock_drift": 30,
                 "beacon_finality_retries": 90,
+                "app_hash_wait_retries": 30,
+                "app_hash_wait_interval_seconds": 1,
                 "update_client": "0x086f77c5686dfe3f2f8fe487c5f8d357952c8556",
                 "wrapper_verifier": "0x703848f4c85f18e3acd8196c8ec91eb0b7bd0797"
             },

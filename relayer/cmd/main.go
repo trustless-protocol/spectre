@@ -64,6 +64,8 @@ type cosmosToEthConfig struct {
 	ProofType             string `json:"proof_type"`
 	ClockDrift            uint32 `json:"clock_drift"`
 	BeaconFinalityRetries uint32 `json:"beacon_finality_retries"`
+	AppHashWaitRetries    uint32 `json:"app_hash_wait_retries"`
+	AppHashWaitInterval   uint64 `json:"app_hash_wait_interval_seconds"`
 	FetchTimeout          uint64 `json:"fetch_timeout"`
 }
 
@@ -1062,6 +1064,12 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			if cfg.CosmosToEthConfig.BeaconFinalityRetries != 0 {
 				cosmosConfig.BeaconFinalityRetries = cfg.CosmosToEthConfig.BeaconFinalityRetries
 			}
+			if cfg.CosmosToEthConfig.AppHashWaitRetries != 0 {
+				cosmosConfig.AppHashWaitRetries = cfg.CosmosToEthConfig.AppHashWaitRetries
+			}
+			if cfg.CosmosToEthConfig.AppHashWaitInterval != 0 {
+				cosmosConfig.AppHashWaitInterval = time.Duration(cfg.CosmosToEthConfig.AppHashWaitInterval) * time.Second
+			}
 			if cfg.CosmosToEthConfig.FetchTimeout != 0 {
 				cosmosConfig.FetchTimeout = time.Duration(cfg.CosmosToEthConfig.FetchTimeout) * time.Second
 			}
@@ -1236,6 +1244,12 @@ func Start(logger *zap.Logger) *cobra.Command {
 			}
 			if cfg.CosmosToEthConfig.BeaconFinalityRetries != 0 {
 				cosmosConfig.BeaconFinalityRetries = cfg.CosmosToEthConfig.BeaconFinalityRetries
+			}
+			if cfg.CosmosToEthConfig.AppHashWaitRetries != 0 {
+				cosmosConfig.AppHashWaitRetries = cfg.CosmosToEthConfig.AppHashWaitRetries
+			}
+			if cfg.CosmosToEthConfig.AppHashWaitInterval != 0 {
+				cosmosConfig.AppHashWaitInterval = time.Duration(cfg.CosmosToEthConfig.AppHashWaitInterval) * time.Second
 			}
 			if cfg.CosmosToEthConfig.FetchTimeout != 0 {
 				cosmosConfig.FetchTimeout = time.Duration(cfg.CosmosToEthConfig.FetchTimeout) * time.Second

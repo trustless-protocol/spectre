@@ -19,6 +19,9 @@ const DEFAULT_CLOCK_DRIFT uint32 = relayerclient.DefaultClockDrift
 // leaves headroom so valid packets are not spuriously re-queued.
 const DEFAULT_BEACON_FINALITY_RETRIES uint32 = 90
 
+const DEFAULT_COSMOS_APP_HASH_WAIT_RETRIES uint32 = 30
+const DEFAULT_COSMOS_APP_HASH_WAIT_INTERVAL = time.Second
+
 type IntervalType uint8
 
 const (
@@ -46,6 +49,8 @@ type Config struct {
 	ProofType             string
 	ClockDrift            uint32
 	BeaconFinalityRetries uint32
+	AppHashWaitRetries    uint32
+	AppHashWaitInterval   time.Duration
 	FetchTimeout          time.Duration
 }
 
@@ -72,6 +77,8 @@ func DefaultConfig() Config {
 		ProofType:             "groth16",
 		ClockDrift:            DEFAULT_CLOCK_DRIFT,
 		BeaconFinalityRetries: DEFAULT_BEACON_FINALITY_RETRIES,
+		AppHashWaitRetries:    DEFAULT_COSMOS_APP_HASH_WAIT_RETRIES,
+		AppHashWaitInterval:   DEFAULT_COSMOS_APP_HASH_WAIT_INTERVAL,
 		FetchTimeout:          time.Second * 15,
 	}
 }

@@ -522,6 +522,27 @@ func TestAdvanceRecoveryStart(t *testing.T) {
 	}
 }
 
+func TestAdvanceRecoveryStartFromLiveLeavesGapForRecovery(t *testing.T) {
+	t.Parallel()
+
+	next := uint64(100)
+	advanceRecoveryStartFromLive(&next, 105)
+	if next != 100 {
+		t.Fatalf("live event ahead of cursor advanced to %d, want cursor to remain 100", next)
+	}
+
+	advanceRecoveryStartFromLive(&next, 100)
+	if next != 101 {
+		t.Fatalf("live event at cursor advanced to %d, want 101", next)
+	}
+
+	next = 0
+	advanceRecoveryStartFromLive(&next, 50)
+	if next != 0 {
+		t.Fatalf("zero recovery cursor advanced to %d, want 0", next)
+	}
+}
+
 func TestEnqueueEthSendPacket(t *testing.T) {
 	t.Parallel()
 
@@ -545,7 +566,7 @@ func TestEnqueueEthSendPacket(t *testing.T) {
 		Raw: gethtypes.Log{BlockNumber: 88},
 	}
 
-	enqueueEthSendPacket(bb, ev)
+	enqueueEthSendPacket(bb, ev, nil)
 
 	got := flushSingleEthPacket(t, bb)
 	if got.Type != services.EthSend {
@@ -564,6 +585,36 @@ func TestEnqueueEthSendPacket(t *testing.T) {
 	if pending[0].Packet.Sequence != 7 || pending[0].BlockNumber != 88 {
 		t.Fatalf("eth pending entry = seq %d block %d, want seq 7 block 88",
 			pending[0].Packet.Sequence, pending[0].BlockNumber)
+	}
+}
+
+func TestEnqueueEthSendPacketDedupesSeenEvent(t *testing.T) {
+	t.Parallel()
+
+	bb := services.NewBatchBuilder()
+	ev := &contractICS26Router.ContractICS26RouterSendPacket{
+		Sequence: big.NewInt(7),
+		Packet: contractICS26Router.IICS26RouterMsgsPacket{
+			SourceClient: "eth-client-0",
+			DestClient:   "cosmos-client-0",
+		},
+		Raw: gethtypes.Log{BlockNumber: 88, Index: 3},
+	}
+	seen := make(map[ethEventKey]struct{})
+
+	if !enqueueEthSendPacket(bb, ev, seen) {
+		t.Fatal("first enqueue should be accepted")
+	}
+	if enqueueEthSendPacket(bb, ev, seen) {
+		t.Fatal("duplicate enqueue should be skipped")
+	}
+
+	got := flushSingleEthPacket(t, bb)
+	if got.Packet.Sequence != 7 {
+		t.Fatalf("packet sequence = %d, want 7", got.Packet.Sequence)
+	}
+	if bb.EthPendingTracker.Len() != 1 {
+		t.Fatalf("eth pending tracker len = %d, want 1", bb.EthPendingTracker.Len())
 	}
 }
 
@@ -591,7 +642,7 @@ func TestEnqueueEthWriteAcknowledgement(t *testing.T) {
 		Raw: gethtypes.Log{BlockNumber: 99},
 	}
 
-	enqueueEthWriteAcknowledgement(bb, ev)
+	enqueueEthWriteAcknowledgement(bb, ev, nil)
 
 	got := flushSingleEthPacket(t, bb)
 	if got.Type != services.EthWriteAck {
