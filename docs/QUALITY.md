@@ -35,7 +35,8 @@ Test files: `prover/`, `client/`, `subscriber/`, `services/`, `keys/`, `utils/`
 |-------|-----------|---------|
 | IBC Eureka | `ibc_eureka_test.go` | `just test-e2e-eureka` |
 | Relayer | `relayer_test.go` | `just test-e2e-relayer` |
-| Groth16 ICS07 | `groth16_ics07_test.go` | `just test-e2e-groth16-ics07` |
+| Cosmos Relayer | `cosmos_relayer_test.go` | `just test-e2e-cosmos-relayer` |
+| Groth16 ICS07 | `groth16_ics07_test.go` | `just test-e2e TestWithGroth16ICS07TendermintTestSuite/<name>` |
 | Multi-chain | `multichain_test.go` | `just test-e2e-multichain` |
 
 Requires: Docker Desktop, Kurtosis, compiled relayer binary, Groth16 network key.
@@ -63,9 +64,16 @@ From `foundry.toml`:
 
 ## Test Fixtures
 
-Pre-generated Groth16 proofs in `test/solidity-ibc/fixtures/` and `test/groth16-ics07/fixtures/`. Regenerate with:
+Groth16 proof fixtures live in `test/solidity-ibc/fixtures/` and `test/groth16-ics07/fixtures/`
+(generated on demand, not committed). There is no dedicated `just` recipe — regenerate them by
+running the relevant e2e suite with `GENERATE_SOLIDITY_FIXTURES=true`, e.g.:
 ```bash
-just generate-fixtures-solidity
+GENERATE_SOLIDITY_FIXTURES=true just test-e2e TestWithGroth16ICS07TendermintTestSuite/Test_UpdateClient
+```
+The wasm-client and Tendermint-light-client fixtures have their own recipes:
+```bash
+just generate-fixtures-wasm
+just generate-fixtures-tendermint-light-client
 ```
 
 ## Linting
@@ -88,10 +96,16 @@ Config in `.slither.config.json`: excludes low/informational findings and depend
 
 ## CI/CD
 
-8 GitHub workflows in `.github/workflows/`:
-- `foundry.yml` — Lint + Solidity unit tests on PR/push
-- `rust.yml` — Cargo tests + clippy
-- `e2e-minimal.yml` / `e2e-full.yml` / `e2e-mock.yml` — E2E suites
-- `docker.yml` — Relayer Docker image build
-- `release.yml` — Release automation
-- `abigen.yaml` — Go bindings generation
+7 GitHub workflows in `.github/workflows/`, all **manually triggered** (Actions tab) — there is no
+automatic PR/push CI at the moment (`go.yml`'s `push`/`pull_request` triggers are commented out):
+
+- `go.yml` — builds the Go relayer and runs `go test ./...` (checks out the private gnark submodules
+  and builds the Garaga FFI first). `workflow_dispatch` only.
+- `e2e-suite.yml` — reusable matrix runner invoked via `workflow_call`. Does the heavy setup
+  (submodules, Garaga, Kurtosis, Foundry tooling, prover artifacts), discovers `TestWith<Suite>/Test_*`
+  methods, and runs them as a parallel matrix.
+- Five per-suite caller workflows (`workflow_dispatch` with `ref`/`filter` inputs) that delegate to
+  `e2e-suite.yml`: `e2e-ibc-eureka.yml`, `e2e-relayer.yml`, `e2e-cosmos-relayer.yml`,
+  `e2e-groth16-ics07.yml`, `e2e-multichain.yml`.
+
+Solidity unit tests, linting, and Slither are run locally via `just` (no dedicated CI workflow).
