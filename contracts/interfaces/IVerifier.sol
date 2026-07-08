@@ -53,16 +53,3 @@ interface IVerifier {
         external
         returns (bool);
 }
-
-/// @title IGroth16Verifier - Raw single-signature Groth16 proof verifier
-/// @notice Legacy raw verifier interface for the non-batch verifier.
-interface IGroth16Verifier {
-    function verifyProof(
-        uint256[8] calldata proof,
-        uint256[2] calldata commitments,
-        uint256[2] calldata commitmentPok,
-        uint256[24] calldata input
-    )
-        external
-        view;
-}

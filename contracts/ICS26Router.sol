@@ -189,14 +189,15 @@ contract ICS26Router is
         // remaining fields (height, proofs, appHash, trustedConsensusState, …) are
         // relayer-controlled; correctness and integrity for those fields is delegated
         // entirely to the light client's verifyMembership implementation.
-        ILightClientMsgs.MsgVerifyMembership memory membershipMsg = abi.decode(msg_.membershipMsg, (ILightClientMsgs.MsgVerifyMembership));
+        ILightClientMsgs.MsgVerifyMembership memory membershipMsg =
+            abi.decode(msg_.membershipMsg, (ILightClientMsgs.MsgVerifyMembership));
         // Override path and value so the light client proves the actual packet commitment
         membershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, commitmentPath);
         membershipMsg.value = abi.encodePacked(commitmentBz);
         getClient(msg_.packet.destClient).verifyMembership(membershipMsg);
 
         // recvPacket will no-op if the packet receipt already exists
-        // This no-op check must happen after the membership verification for proofs to be cached
+        // The no-op check runs after membership verification so a replayed packet still requires a valid proof
         bool receiptAlreadySet = !setPacketReceipt(msg_.packet);
         if (receiptAlreadySet) {
             emit Noop();
@@ -207,12 +208,12 @@ contract ICS26Router is
         try getIBCApp(payload.destPort)
             .onRecvPacket(
                 IIBCAppCallbacks.OnRecvPacketCallback({
-                sourceClient: msg_.packet.sourceClient,
-                destinationClient: msg_.packet.destClient,
-                sequence: msg_.packet.sequence,
-                payload: payload,
-                relayer: _msgSender()
-            })
+                    sourceClient: msg_.packet.sourceClient,
+                    destinationClient: msg_.packet.destClient,
+                    sequence: msg_.packet.sequence,
+                    payload: payload,
+                    relayer: _msgSender()
+                })
             ) returns (
             bytes memory ack
         ) {
@@ -258,7 +259,7 @@ contract ICS26Router is
         getClient(msg_.packet.sourceClient).verifyMembership(membershipMsg);
 
         // ackPacket will no-op if the packet commitment does not exist
-        // This no-op check must happen after the membership verification for proofs to be cached
+        // The no-op check runs after membership verification so a replayed ack still requires a valid proof
         bool commitmentFound = checkAndDeletePacketCommitment(msg_.packet);
         if (!commitmentFound) {
             emit Noop();
@@ -268,13 +269,13 @@ contract ICS26Router is
         getIBCApp(payload.sourcePort)
             .onAcknowledgementPacket(
                 IIBCAppCallbacks.OnAcknowledgementPacketCallback({
-                sourceClient: msg_.packet.sourceClient,
-                destinationClient: msg_.packet.destClient,
-                sequence: msg_.packet.sequence,
-                payload: payload,
-                acknowledgement: msg_.acknowledgement,
-                relayer: _msgSender()
-            })
+                    sourceClient: msg_.packet.sourceClient,
+                    destinationClient: msg_.packet.destClient,
+                    sequence: msg_.packet.sequence,
+                    payload: payload,
+                    acknowledgement: msg_.acknowledgement,
+                    relayer: _msgSender()
+                })
             );
 
         emit AckPacket(msg_.packet.sourceClient, msg_.packet.sequence, msg_.packet, msg_.acknowledgement);
@@ -305,7 +306,7 @@ contract ICS26Router is
         );
 
         // timeoutPacket will no-op if the packet commitment does not exist
-        // This no-op check must happen after the membership verification for proofs to be cached
+        // The no-op check runs after non-membership verification so a replayed timeout still requires a valid proof
         bool commitmentFound = checkAndDeletePacketCommitment(msg_.packet);
         if (!commitmentFound) {
             emit Noop();
@@ -315,12 +316,12 @@ contract ICS26Router is
         getIBCApp(payload.sourcePort)
             .onTimeoutPacket(
                 IIBCAppCallbacks.OnTimeoutPacketCallback({
-                sourceClient: msg_.packet.sourceClient,
-                destinationClient: msg_.packet.destClient,
-                sequence: msg_.packet.sequence,
-                payload: payload,
-                relayer: _msgSender()
-            })
+                    sourceClient: msg_.packet.sourceClient,
+                    destinationClient: msg_.packet.destClient,
+                    sequence: msg_.packet.sequence,
+                    payload: payload,
+                    relayer: _msgSender()
+                })
             );
 
         emit TimeoutPacket(msg_.packet.sourceClient, msg_.packet.sequence, msg_.packet);

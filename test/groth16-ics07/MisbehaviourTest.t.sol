@@ -511,10 +511,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         IICS02ClientMsgs.Height memory trustedHeight =
             IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 10 });
 
-        return IICS07TendermintMsgs.Header({
-            signedHeader: signedHeader,
-            trustedHeight: trustedHeight
-        });
+        return IICS07TendermintMsgs.Header({ signedHeader: signedHeader, trustedHeight: trustedHeight });
     }
 
     function _attackerValidatorSet() internal pure returns (ValidatorSet memory validatorSet) {

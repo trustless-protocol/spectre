@@ -144,10 +144,7 @@ contract Misbehaviour is IMisbehaviour {
         }
 
         parseChainId(chainId.id);
-        require(
-            keccak256(bytes(header.signedHeader.header.chainId)) == keccak256(bytes(chainId.id)),
-            ChainIdMismatch()
-        );
+        require(keccak256(bytes(header.signedHeader.header.chainId)) == keccak256(bytes(chainId.id)), ChainIdMismatch());
         require(header.signedHeader.header.time > trustedTime, "invalid block: non monotonic bft time");
         uint128 drifted = currentTimestamp + uint128(options.clockDrift) * 1_000_000_000;
         require(header.signedHeader.header.time < drifted, "invalid block: header is from the future");
@@ -161,8 +158,8 @@ contract Misbehaviour is IMisbehaviour {
 
         for (uint256 i = 0; i < chainIdBytes.length; i++) {
             bytes1 b = chainIdBytes[i];
-            if (!((b >= 0x61 && b <= 0x7A) || (b >= 0x41 && b <= 0x5A) || (b >= 0x30 && b <= 0x39)
-                || (b == 0x2D) || (b == 0x5F) || (b == 0x2E))) {
+            if (!((b >= 0x61 && b <= 0x7A) || (b >= 0x41 && b <= 0x5A) || (b >= 0x30 && b <= 0x39) || (b == 0x2D)
+                        || (b == 0x5F) || (b == 0x2E))) {
                 revert("invalid chain id charset");
             }
         }

@@ -47,7 +47,9 @@ contract UpdateClient is IUpdateClient {
         validateBasic(proposedHeader, headerChainId);
         verifyChainIdVersion(chainId, headerChainId);
 
-        if (Header.hashHeader(proposedHeader.signedHeader.header) != proposedHeader.signedHeader.commit.blockId.hashData) {
+        if (
+            Header.hashHeader(proposedHeader.signedHeader.header) != proposedHeader.signedHeader.commit.blockId.hashData
+        ) {
             revert FailedToVerifyHeader("invalid block: header hash mismatch");
         }
 
@@ -68,7 +70,10 @@ contract UpdateClient is IUpdateClient {
         if (time < trustedConsensusState.timestamp || time - trustedConsensusState.timestamp > trustingPeriodNanos) {
             revert FailedToVerifyHeader("invalid block: untrusted state is outside of trusting period");
         }
-        require(proposedHeader.signedHeader.header.time > trustedConsensusState.timestamp, "invalid block: non monotonic bft time");
+        require(
+            proposedHeader.signedHeader.header.time > trustedConsensusState.timestamp,
+            "invalid block: non monotonic bft time"
+        );
         require(
             keccak256(bytes(proposedHeader.signedHeader.header.chainId)) == keccak256(bytes(chainId)),
             "invalid block: chain-id mismatch"
@@ -78,7 +83,9 @@ contract UpdateClient is IUpdateClient {
 
         uint64 trustedNextHeight = proposedHeader.trustedHeight.revisionHeight + 1;
         if (proposedHeader.signedHeader.header.height <= trustedNextHeight) {
-            require(proposedHeader.signedHeader.header.height == trustedNextHeight, "invalid block: non increasing height");
+            require(
+                proposedHeader.signedHeader.header.height == trustedNextHeight, "invalid block: non increasing height"
+            );
         }
     }
 

@@ -16,7 +16,6 @@ contract Membership is IMembership {
     using Math for uint256;
     using Bytes for *;
 
-
     // Custom errors
     error InvalidLength();
     error EmptyRequest();
@@ -99,7 +98,10 @@ contract Membership is IMembership {
         bytes32 appHash,
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs
-    ) public view {
+    )
+        public
+        view
+    {
         if (kvPairs.length == 0) {
             revert EmptyRequest();
         }

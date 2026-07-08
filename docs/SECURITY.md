@@ -23,9 +23,10 @@ Cosmos validators sign block (Ed25519 over CanonicalVote bytes)
     → Groth16ICS07Tendermint sums voting power over UNIQUE active signers
       (skips padding via active flag, rejects duplicate active indices) and
       requires `power * 3 > totalVotingPower * 2`
-    → WrapperVerifier rebuilds each slot's CanonicalVote bytes from
-      (sharedBlock, timestamp_i), recomputes the per-slot SHA-256 witness
-      commit, and dispatches to Groth16Verifier_N{bucket}
+    → WrapperVerifier recomputes the witness commitment from calldata
+      (PrefixHead ‖ roundPresent ‖ blockHash ‖ per-slot active ‖ pubkey —
+      one SHA-256 over the whole batch, exposed as two 128-bit public
+      inputs) and dispatches to Groth16Verifier_N{bucket}
     → Per-bucket Groth16Verifier checks the proof against that bucket's VK
     → ICS-23 Merkle proofs verify packet commitments against the new app hash
 ```
@@ -39,7 +40,7 @@ Cosmos validators sign block (Ed25519 over CanonicalVote bytes)
 | Padding inflating quorum | `active=false` slots skipped on-chain; active byte hashed so calldata can't toggle it |
 | Duplicate signer in calldata | Sorted-index invariant (`idx > prevIdx`) rejects an active validator index appearing twice |
 | Bucket spoofing | `WrapperVerifier.buckets[bucket]` lookup; only owner can `setBucket`; verifier dispatch matches the circuit each `(pk, vk)` was built for |
-| Cache poisoning (validator-set cache) | `_cacheValidatorSet` runs only after `_verifyBatchAndQuorum` and the full update path succeed; a cache-miss entry that bypasses the resolved path must pass `Header.hashValSet(...) == validatorsHash` before it can be cached |
+| Pinned-set poisoning | The pinned validator set is written only by the constructor and `reAnchorPinnedSet`; re-pinning requires the full header + batch-proof + >2/3 quorum verification AND `Header.hashValSet(newValSet) == header.nextValidatorsHash`, so only the set the verified header commits to can be pinned |
 | Stale-revision cache (chain ID vs latestHeight drift) | Constructor invariant: `ChainId.get(clientState.chainId).revisionNumber == clientState.latestHeight.revisionNumber`. `updateClient`/`misbehaviour` rely on `latestHeight.revisionNumber` instead of re-parsing `chainId` per call |
 | Replay attacks | Packet sequencing in ICS26Router |
 | Double-spend | Commitment storage in ICS24Host |
@@ -76,5 +77,5 @@ Roles defined in `IBCRolesLib.sol`:
 - Each `groth16.Setup` run uses fresh randomness; the VK changes every regeneration, so per-bucket verifiers and the WrapperVerifier bucket registry must be redeployed atomically
 - The relayer's set of buckets (`prover.Buckets`) caps the maximum number of distinct active signers; chains with quorum sets larger than the biggest bucket cannot be served until a larger bucket is added and deployed
 - `relayer/go.mod` replace directives point to local paths — verify before building
-- `contracts/compile.sh` hard-codes the deterministic Foundry-script deploy addresses for the `Encode` and `Header` libraries when stamping the Go-binding bytecode. If `scripts/E2ETestDeploy.s.sol`'s deploy order ever changes (so the libraries land at different CREATE addresses), update `ENCODE_LIB_ADDR` / `HEADER_LIB_ADDR` to match — a mismatch silently produces a contract that delegatecalls an empty address (`FailedCall()` revert).
-- `_cachedValidatorSets` grows monotonically — one entry per unique `validatorsHash` ever observed by `updateClient`. There is no eviction. For chains with frequent validator-set churn this is an unbounded storage cost over the client's lifetime; the relayer / operator owns the SSTORE bill.
+- `Encode` and `Header` are internal libraries (inlined into contract bytecode), so no link step is needed when stamping the Go-binding bytecode. `contracts/compile.sh`'s `create_binding` still fails loudly if an unlinked library placeholder ever reappears in an artifact.
+- Pinned-set history grows monotonically — `reAnchorPinnedSet` appends one snapshot (`_pinnedValidatorSetSnapshots` + `_pinnedSnapshotHeights`) per rotation and each rotation writes a new SSTORE2 blob; nothing is evicted. At the 24 h rotation cadence this is ~365 snapshots/year — modest, but the relayer / operator owns the SSTORE bill, and historical snapshots are load-bearing (misbehaviour proofs resolve against the set pinned at their trusted height).

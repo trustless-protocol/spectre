@@ -7,6 +7,22 @@ import { IICS07TendermintMsgs } from "./msgs/IICS07TendermintMsgs.sol";
 /// @title IGroth16ICS07Tendermint
 /// @notice IGroth16ICS07Tendermint is the interface for the ICS07 Tendermint light client
 interface IGroth16ICS07Tendermint {
+    /// @notice Emitted when the consensus state advances.
+    /// @param height The new latest revision height.
+    event ClientUpdated(uint64 height);
+
+    /// @notice Emitted when the pinned validator set is re-anchored.
+    /// @param height The height whose `nextValidatorsHash` the new set was verified against.
+    /// @param validatorsHash The hash of the newly pinned validator set.
+    event PinnedSetReAnchored(uint64 height, bytes32 validatorsHash);
+
+    /// @notice Emitted when the client freezes, either by detecting conflicting
+    /// state during an update or via a submitted misbehaviour proof.
+    event ClientFrozen();
+
+    /// @notice Emitted when the client is unfrozen by the admin.
+    event ClientUnfrozen();
+
     /// @notice The role identifier for the misbehaviour submitter role
     /// @dev The misbehaviour submitter role is used to whitelist addresses that can submit misbehaviour reports
     /// @dev If `address(0)` has this role, then anyone can submit misbehaviour reports
@@ -17,22 +33,6 @@ interface IGroth16ICS07Tendermint {
     /// @notice Unfreezes a previously frozen client.
     /// @dev Can only be called by an address with the `DEFAULT_ADMIN_ROLE`.
     function unfreeze() external;
-
-    // /// @notice Immutable update client program verification key.
-    // /// @return The verification key for the update client program.
-    // function UPDATE_CLIENT_PROGRAM_VKEY() external view returns (bytes32);
-
-    // /// @notice Immutable membership program verification key.
-    // /// @return The verification key for the membership program.
-    // function MEMBERSHIP_PROGRAM_VKEY() external view returns (bytes32);
-
-    // /// @notice Immutable update client and membership program verification key.
-    // /// @return The verification key for the update client and membership program.
-    // function UPDATE_CLIENT_AND_MEMBERSHIP_PROGRAM_VKEY() external view returns (bytes32);
-
-    // /// @notice Immutable misbehaviour program verification key.
-    // /// @return The verification key for the misbehaviour program.
-    // function MISBEHAVIOUR_PROGRAM_VKEY() external view returns (bytes32);
 
     /// @notice Returns pinned validator metadata.
     /// @return indices      Validator indices in the pinned set, sorted ascending.
@@ -47,5 +47,6 @@ interface IGroth16ICS07Tendermint {
     function reAnchorPinnedSet(
         IUpdateClientMsgs.MsgUpdateClient calldata updateMsg,
         IICS07TendermintMsgs.ValidatorSet calldata newPinnedValidatorSet
-    ) external;
+    )
+        external;
 }

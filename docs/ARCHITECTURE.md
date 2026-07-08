@@ -28,33 +28,35 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
     ├─ ICS20Transfer (UUPS) ─── ICS-20 fungible token transfers
     │   ├─ IBCERC20 (Beacon Proxy) ─── Wrapper ERC20 for bridged tokens
     │   └─ Escrow (Beacon Proxy) ─── Token custody during transfer
-    └─ Groth16ICS07Tendermint (UUPS) ─── ZK light client + 2/3 quorum check
-        ├─ _cachedValidatorSets ─── Storage cache (validatorsHash → ValidatorSet)
-        │                          populated only after a full update succeeds; lets
-        │                          subsequent updates skip the per-call Header.hashValSet
-        │                          for unchanged sets, and lets the relayer omit the
-        │                          val-set bytes from calldata on cache hits.
-        └─ WrapperVerifier ─── Rebuilds CanonicalVote bytes per slot,
-            │                  hashes the full witness (active flag, pubkey,
-            │                  msgLen, msg) into a single SHA-256 digest, and
-            │                  dispatches to the per-bucket verifier
+    └─ Groth16ICS07Tendermint (immutable, no proxy) ─── ZK light client + 2/3 quorum check
+        ├─ programs/ ─── UpdateClient · Membership · Misbehaviour
+        │                (pure, stateless verifier contracts; all client state
+        │                lives in Groth16ICS07Tendermint itself)
+        ├─ pinned validator set ─── current set stored as an SSTORE2 blob
+        │                          (≤ 180 validators) plus per-height snapshots
+        │                          binary-searched by trusted height; rotated only
+        │                          by reAnchorPinnedSet after verifying the new set
+        │                          against the header's nextValidatorsHash
+        └─ WrapperVerifier ─── Recomputes the witness commitment from calldata
+            │                  (PrefixHead ‖ roundPresent ‖ blockHash ‖ per-slot
+            │                  active ‖ pubkey), exposes the SHA-256 digest as two
+            │                  128-bit public inputs, and dispatches to the
+            │                  per-bucket verifier
             └─ Groth16Verifier_N{N} ─── One contract per bucket size
                                         (N ∈ {4, 8, 16, 32, 64, 128}),
                                         auto-generated from each bucket's VK
 ```
 
-`updateClient` dispatches to one of two `UpdateClient` library entry points
-depending on whether the validator-set hashes for this update are already
-cached (or implied by the adjacent fast-path):
+The client splits the ICS-02 `updateClient` duty in two entry points:
 
-- `updateClientResolved(msg)` — used when the validator set hashes are known
-  good (cache hit, adjacent update, or trustedNext matches current). Skips
-  the per-call `Header.hashValSet(...)` re-derivation, since
-  `_prepareUpdateClientMessage` has already either loaded the cached set or
-  validated the supplied one against `validatorsHash`.
-- `updateClient(msg)` (raw calldata pass-through) — used on the cold path
-  when neither side is resolvable, performing the full hashValSet check
-  inside `validateBasic`.
+- `updateClient(msg)` — the per-packet path: verifies the header (UpdateClient
+  program) and the Groth16 batch proof, sums the signers' voting power against
+  the **pinned** validator set (> 2/3 of pinned total), and advances the
+  consensus state without re-storing any validator set.
+- `reAnchorPinnedSet(msg, newValSet)` — the periodic rotation: same header +
+  proof + quorum verification, then requires
+  `Header.hashValSet(newValSet) == header.nextValidatorsHash` before re-pinning
+  the set (new SSTORE2 blob + a per-height snapshot for historical anchoring).
 
 ## Request Flow: IBC Transfer (Cosmos → Ethereum)
 
@@ -67,18 +69,17 @@ cached (or implied by the adjacent fast-path):
 4. Relayer generates a single Groth16 batch proof for the bucket
    (prover/circuit.go BatchCircuit + prover/prover.go bucket registry).
 5. Relayer submits to Ethereum:
-   a. Groth16ICS07Tendermint.updateClient() — checks unique-signer 2/3
-      quorum, then dispatches to WrapperVerifier.verifyBatchProof().
-      `_prepareUpdateClientMessage` first decides whether each validator set
-      can be served from `_cachedValidatorSets` (cache hit) or — for an
-      adjacent update — skipped via the `trustedNext == current` shortcut.
-      A cache hit serves the on-chain pubkeys + voting powers directly and
-      lets the call route through `UPDATE_CLIENT.updateClientResolved`,
-      which skips the `Header.hashValSet` re-derivation entirely.
-   b. WrapperVerifier rebuilds each slot's CanonicalVote bytes from the
-      shared block header + per-slot Timestamp, hashes the witness, and
-      forwards the SHA-256 digest as the proof's only public input to the
-      bucket-specific Groth16Verifier_N{N}.
+   a. Groth16ICS07Tendermint.updateClient() — verifies the header via the
+      UpdateClient program, resolves each proof signer against the pinned
+      validator set (SSTORE2 blob; duplicate-signer bitmask), requires the
+      summed voting power to exceed 2/3 of the pinned total, then dispatches
+      to WrapperVerifier.verifyBatchProof(). The validator set itself is
+      re-stored only by the periodic reAnchorPinnedSet rotation — never on
+      the per-packet path.
+   b. WrapperVerifier recomputes the witness commitment from calldata
+      (PrefixHead ‖ roundPresent ‖ blockHash ‖ per-slot active ‖ pubkey)
+      and forwards the SHA-256 digest, packed into two 128-bit public
+      inputs, to the bucket-specific Groth16Verifier_N{N}.
    c. ICS26Router.recvPacket() — routes to ICS20Transfer
    d. ICS20Transfer mints IBCERC20 tokens (or unlocks Escrow)
 ```
@@ -180,20 +181,24 @@ valid Ed25519 signature with active=false.
 For each slot i: Sig=(R,S), Pub=A, msg=CanonicalVote bytes, msgLen, active
     ↓
 gnark BatchCircuit (circuit.go):
-   - In-circuit witness hash: per slot
-        active(1) || A(32) || msgLen(2 BE) || msg[MaxMsgLen padded]
-     → SHA-256 → 32-byte public input (Hash[32]uints.U8)
+   - In-circuit witness hash (#199 prefix-binding layout):
+        PrefixHead(11) || roundPresent(1) || BlockHash(32)
+        || per slot: active(1) || A(32)
+     → SHA-256 → two 128-bit public field elements. Msgs, MsgLens and Sigs
+     stay private witness — the in-circuit Ed25519 verify binds the full
+     signed bytes, so hashing them too would be redundant.
    - eddsa.VerifyBatchWithMsgBytes (ECIP aggregate over all slots) using
      each slot's full CanonicalVote bytes truncated to msgLen.
     ↓
 groth16.Prove(byBucket[N]) → proof[8], commitments[2], commitmentPok[2]
     ↓
-On-chain WrapperVerifier.verifyBatchProof(bucket, ..., pubkeys, ts*, active, shared):
-   - Rebuild CanonicalVote bytes from (shared, timestampSeconds[i], timestampNanos[i])
-     for active slots, or DummyMsgBytes(bucket, i) for padding slots.
-   - _hashWitness recomputes the SHA-256 witness commit byte-for-byte.
-   - Pack the 32-byte digest as 32 uint256 public inputs and dispatch via
-     selector to Groth16Verifier_N{bucket}.verifyProof().
+On-chain WrapperVerifier.verifyBatchProof(bucket, proof, commitments,
+commitmentPok, pubkeys, active, shared):
+   - _hashWitness recomputes the same PrefixHead ‖ roundPresent ‖ blockHash
+     ‖ per-slot active ‖ pubkey layout from calldata byte-for-byte — no
+     per-slot timestamps or vote bytes travel in calldata.
+   - Split the 32-byte digest into two 128-bit uint256 public inputs and
+     dispatch via the registered selector to Groth16Verifier_N{bucket}.verifyProof().
 ```
 
 R and S are deliberately NOT in calldata or the witness hash — the Groth16
@@ -279,5 +284,9 @@ test/ ──────────► contracts/ ◄────── scripts
 | ICS20Transfer | Admins | UUPS | `upgradeToAndCall` |
 | Escrow | ICS20Transfer | Beacon | `upgradeEscrowTo` |
 | IBCERC20 | ICS20Transfer | Beacon | `upgradeIBCERC20To` |
+| Groth16ICS07Tendermint | per-clientId migrator role | none (immutable) | replaced via `ICS26Router.migrateClient` |
 
 UUPS for core contracts (admin-governed). Beacon for instances (ICS20Transfer upgrades all atomically).
+The light client is deliberately not upgradeable: it is initialized in its constructor and, if it must
+be replaced (bug, frozen client, circuit change), a new instance is deployed and swapped in with
+`migrateClient`, which is gated by a client-scoped role on the AccessManager.

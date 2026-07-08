@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.19;
+pragma solidity ^0.8.28;
 
 import { IVerifier } from "../interfaces/IVerifier.sol";
 import { Encode } from "./Encode.sol";
@@ -51,6 +51,9 @@ contract WrapperVerifier is IVerifier {
     address public immutable OWNER;
     mapping(uint16 => BucketVerifier) public buckets;
 
+    /// @notice Emitted when a per-bucket verifier is registered or replaced.
+    event BucketSet(uint16 indexed bucket, address verifier, bytes4 selector);
+
     error UnknownBucket(uint16 bucket);
     error LengthMismatch();
     error NotOwner();
@@ -64,6 +67,7 @@ contract WrapperVerifier is IVerifier {
         if (msg.sender != OWNER) revert NotOwner();
         if (verifier.code.length == 0) revert NoVerifierCode(verifier);
         buckets[bucket] = BucketVerifier({ verifier: verifier, selector: selector });
+        emit BucketSet(bucket, verifier, selector);
     }
 
     /// @inheritdoc IVerifier

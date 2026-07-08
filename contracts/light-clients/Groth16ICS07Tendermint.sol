@@ -23,20 +23,12 @@ import { Encode } from "../utils/Encode.sol";
 import { Header } from "../utils/Header.sol";
 import { ChainId } from "../utils/ChainId.sol";
 import { SSTORE2 } from "../utils/SSTORE2.sol";
-import { TransientSlot } from "@openzeppelin-contracts/utils/TransientSlot.sol";
 import { AccessControl } from "@openzeppelin-contracts/access/AccessControl.sol";
 
 /// @title Groth16 ICS07 Tendermint Light Client
 /// @author srdtrk
 /// @notice This contract implements an ICS07 IBC tendermint light client using gnark Groth16.
-contract Groth16ICS07Tendermint is
-    IGroth16ICS07TendermintErrors,
-    IGroth16ICS07Tendermint,
-    ILightClient,
-    AccessControl
-{
-    using TransientSlot for *;
-
+contract Groth16ICS07Tendermint is IGroth16ICS07TendermintErrors, IGroth16ICS07Tendermint, ILightClient, AccessControl {
     IVerifier private immutable VERIFIER;
     IMembership private immutable MEMBERSHIP;
     IMisbehaviour private immutable MISBEHAVIOUR;
@@ -84,7 +76,8 @@ contract Groth16ICS07Tendermint is
     /// @notice Header.Hash() leaf for the client's chain ID, cached at construction.
     bytes32 internal immutable CHAIN_ID_LEAF_HASH;
 
-    /// @notice The constructor sets the program verification key and the initial client, consensus, and pinned validator states.
+    /// @notice The constructor sets the program verification key and the initial client, consensus, and pinned
+    /// validator states.
     constructor(
         address verifier,
         address membership_,
@@ -183,8 +176,10 @@ contract Groth16ICS07Tendermint is
             );
             clientState.latestHeight = output.newHeight;
             _consensusStateHashes[output.newHeight.revisionHeight] = keccak256(abi.encode(output.newConsensusState));
+            emit ClientUpdated(output.newHeight.revisionHeight);
         } else if (updateResult == ILightClientMsgs.UpdateResult.Misbehaviour) {
             clientState.isFrozen = true;
+            emit ClientFrozen();
         } else if (updateResult == ILightClientMsgs.UpdateResult.NoOp) {
             return ILightClientMsgs.UpdateResult.NoOp;
         }
@@ -208,6 +203,7 @@ contract Groth16ICS07Tendermint is
 
         if (updateResult == ILightClientMsgs.UpdateResult.Misbehaviour) {
             clientState.isFrozen = true;
+            emit ClientFrozen();
             return;
         }
 
@@ -226,6 +222,8 @@ contract Groth16ICS07Tendermint is
             clientState.latestHeight = output.newHeight;
             _consensusStateHashes[output.newHeight.revisionHeight] = keccak256(abi.encode(output.newConsensusState));
             _storePinnedValidatorSetSnapshot(output.newHeight.revisionHeight);
+            emit ClientUpdated(output.newHeight.revisionHeight);
+            emit PinnedSetReAnchored(output.newHeight.revisionHeight, newValidatorsHash);
         } else if (updateResult == ILightClientMsgs.UpdateResult.NoOp) {
             require(
                 output.newHeight.revisionHeight == clientState.latestHeight.revisionHeight,
@@ -233,6 +231,7 @@ contract Groth16ICS07Tendermint is
             );
             _setPinnedValidatorSet(newPinnedValidatorSet);
             _storePinnedValidatorSetSnapshot(output.newHeight.revisionHeight);
+            emit PinnedSetReAnchored(output.newHeight.revisionHeight, newValidatorsHash);
         }
     }
 
@@ -302,8 +301,7 @@ contract Groth16ICS07Tendermint is
             BatchLengthMismatch()
         );
 
-        PinnedValidatorSetSnapshot memory snapshot =
-            _pinnedValidatorSetSnapshotAt(header.trustedHeight.revisionHeight);
+        PinnedValidatorSetSnapshot memory snapshot = _pinnedValidatorSetSnapshotAt(header.trustedHeight.revisionHeight);
         ValidatorCacheHeader memory cacheHeader;
         bytes memory cacheData;
         (cacheHeader, cacheData) = _readPinnedValidatorCache(snapshot);
@@ -419,9 +417,7 @@ contract Groth16ICS07Tendermint is
         IVerifier.SharedBlock memory shared = _sharedBlockFromHeader(header);
 
         require(
-            VERIFIER.verifyBatchProof(
-                bucket, proof, commitments, commitmentPok, signerPubkeys, active, shared
-            ),
+            VERIFIER.verifyBatchProof(bucket, proof, commitments, commitmentPok, signerPubkeys, active, shared),
             ProofVerificationFailed()
         );
     }
@@ -435,9 +431,7 @@ contract Groth16ICS07Tendermint is
         require(commit.height == header.signedHeader.header.height, InvalidHeaderHeight(commit.height));
 
         shared = IVerifier.SharedBlock({
-            height: commit.height,
-            round: uint64(commit.round),
-            blockIDHash: commit.blockId.hashData
+            height: commit.height, round: uint64(commit.round), blockIDHash: commit.blockId.hashData
         });
     }
 
@@ -578,8 +572,7 @@ contract Groth16ICS07Tendermint is
         });
 
         if (
-            cacheHeader.entryCount == 0 || cacheHeader.entryCount > MAX_VALIDATOR_COUNT
-                || cacheHeader.nodeCount != 0
+            cacheHeader.entryCount == 0 || cacheHeader.entryCount > MAX_VALIDATOR_COUNT || cacheHeader.nodeCount != 0
                 || cacheData.length != _validatorCacheEntryDataLen(cacheHeader.entryCount)
         ) {
             revert CachedValidatorSetCorrupted(validatorsHash);
@@ -715,8 +708,6 @@ contract Groth16ICS07Tendermint is
 
     /// @notice The entrypoint for verifying (non)membership proof.
     /// @dev This is a non-membership proof if the value is empty.
-    /// @dev If the proof is empty, then we assume that the proof was cached earlier in the same tx.
-    /// @dev The proof is cached in the transient storage.
     /// @param height The height of the proof.
     /// @param kvPairs The path and value of the key-value pair.
     /// @param merkleProofs The merkle proofs of membership.
@@ -761,12 +752,14 @@ contract Groth16ICS07Tendermint is
         _verifyMisbehaviourBatchAndQuorum(msg_.misbehaviour.header2, msg_.proof2);
 
         clientState.isFrozen = true;
+        emit ClientFrozen();
     }
 
     /// @inheritdoc IGroth16ICS07Tendermint
     function unfreeze() external override(IGroth16ICS07Tendermint, ILightClient) onlyRole(DEFAULT_ADMIN_ROLE) {
         require(clientState.isFrozen, ClientNotFrozen());
         clientState.isFrozen = false;
+        emit ClientUnfrozen();
     }
 
     /// @inheritdoc ILightClient
@@ -830,10 +823,6 @@ contract Groth16ICS07Tendermint is
         //verify membership of input proofs
         MEMBERSHIP.membership(appHash, kvPairs, merkleProofs);
 
-        // We avoid the cost of caching for single kv pairs, as reusing the proof is not necessary
-        if (kvPairs.length > 1) {
-            _cacheKvPairs(height.revisionHeight, kvPairs, trustedConsensusState.timestamp);
-        }
         return _getTimestampInSeconds(trustedConsensusState);
     }
 
@@ -1005,19 +994,6 @@ contract Groth16ICS07Tendermint is
         } else {
             // The consensus state at the new height is the same as the one in the mapping
             return ILightClientMsgs.UpdateResult.NoOp;
-        }
-    }
-
-    /// @notice Caches the key-value pairs to the transient storage with the timestamp.
-    /// @param proofHeight The height of the proof.
-    /// @param kvPairs The key-value pairs.
-    /// @param timestamp The timestamp of the trusted consensus state in unix nanoseconds.
-    /// @dev WARNING: Transient store is not reverted even if a message within a transaction reverts.
-    /// @dev WARNING: This function must be called after all proof and validation checks.
-    function _cacheKvPairs(uint64 proofHeight, IMembershipMsgs.KVPair[] memory kvPairs, uint256 timestamp) private {
-        for (uint256 i = 0; i < kvPairs.length; i++) {
-            bytes32 kvPairHash = keccak256(abi.encode(proofHeight, kvPairs[i]));
-            kvPairHash.asUint256().tstore(timestamp);
         }
     }
 

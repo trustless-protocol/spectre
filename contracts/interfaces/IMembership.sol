@@ -8,5 +8,7 @@ interface IMembership {
         bytes32 appHash,
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs
-    ) external view;
+    )
+        external
+        view;
 }

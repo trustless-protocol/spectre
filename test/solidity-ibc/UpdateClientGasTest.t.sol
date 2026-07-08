@@ -131,8 +131,8 @@ contract UpdateClientGasTest is Test {
     }
 
     /// Build commit signatures: first `activeCount` are COMMIT (with matching
-    /// validator address), rest are ABSENT. Length == val_count per Tendermint
-    /// invariant (`Predicates.validateCommit` enforces commit.length == vals.length).
+    /// validator address), rest are ABSENT. Length == val_count, matching
+    /// CometBFT's invariant that a commit carries one CommitSig per validator.
     function _buildCommitSigs(
         IICS07TendermintMsgs.ValidatorSet memory vs,
         uint16 activeCount
@@ -315,8 +315,11 @@ contract UpdateClientGasTest is Test {
     function _measure(uint16 bucket) internal {
         BucketConfig memory cfg = _cfg(bucket);
 
-        (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS, IICS07TendermintMsgs.ValidatorSet memory vs) =
-            _buildSelfConsistent(cfg);
+        (
+            IICS07TendermintMsgs.Header memory header,
+            IICS07TendermintMsgs.ConsensusState memory trustedCS,
+            IICS07TendermintMsgs.ValidatorSet memory vs
+        ) = _buildSelfConsistent(cfg);
 
         IICS07TendermintMsgs.ClientState memory cs = _clientState();
         Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS, vs);
@@ -332,8 +335,11 @@ contract UpdateClientGasTest is Test {
     function _measureCacheHitReplay(uint16 bucket) internal {
         BucketConfig memory cfg = _cfg(bucket);
 
-        (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS, IICS07TendermintMsgs.ValidatorSet memory vs) =
-            _buildSelfConsistent(cfg);
+        (
+            IICS07TendermintMsgs.Header memory header,
+            IICS07TendermintMsgs.ConsensusState memory trustedCS,
+            IICS07TendermintMsgs.ValidatorSet memory vs
+        ) = _buildSelfConsistent(cfg);
 
         IICS07TendermintMsgs.ClientState memory cs = _clientState();
         Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS, vs);
@@ -343,8 +349,9 @@ contract UpdateClientGasTest is Test {
             uint8(ics07.updateClient(abi.encode(fullMsg))), uint8(ILightClientMsgs.UpdateResult.Update), "warmup Update"
         );
 
-        IUpdateClientMsgs.MsgUpdateClient memory cacheMsg = _buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount);
-        
+        IUpdateClientMsgs.MsgUpdateClient memory cacheMsg =
+            _buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount);
+
         uint256 g0 = gasleft();
         ILightClientMsgs.UpdateResult result = ics07.updateClient(abi.encode(cacheMsg));
         uint256 used = g0 - gasleft();
@@ -383,7 +390,7 @@ contract UpdateClientGasTest is Test {
 
         IUpdateClientMsgs.MsgUpdateClient memory cacheMsg =
             _buildMsg(cs, trustedCS1001, header1002, valSet, bucket, cfg.activeCount);
-        
+
         uint256 g0 = gasleft();
         ILightClientMsgs.UpdateResult result = ics07.updateClient(abi.encode(cacheMsg));
         uint256 used = g0 - gasleft();

@@ -156,16 +156,10 @@ contract MembershipTrustingPeriodTest is Test {
     function _pinnedValidatorSet() private pure returns (IICS07TendermintMsgs.ValidatorSet memory vs) {
         IICS07TendermintMsgs.ValidatorInfo[] memory vals = new IICS07TendermintMsgs.ValidatorInfo[](1);
         vals[0] = IICS07TendermintMsgs.ValidatorInfo({
-            valAddress: bytes("validator"),
-            pubKey: bytes32(uint256(1)),
-            votingPower: 100,
-            proposerPriority: 0
+            valAddress: bytes("validator"), pubKey: bytes32(uint256(1)), votingPower: 100, proposerPriority: 0
         });
         vs = IICS07TendermintMsgs.ValidatorSet({
-            validators: vals,
-            hasProposer: false,
-            proposer: vals[0],
-            totalVotingPower: 100
+            validators: vals, hasProposer: false, proposer: vals[0], totalVotingPower: 100
         });
     }
 

@@ -1,4 +1,5 @@
-pragma solidity ^0.8.0;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
 
 import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
 import { Encode } from "./Encode.sol";

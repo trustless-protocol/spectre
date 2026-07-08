@@ -178,8 +178,11 @@ contract RecvPacketGasTest is IntegrationTest {
         wrapper.setBucket(bucket, address(stubBucket), AlwaysTrueVerifier.verifyProof.selector);
 
         BucketConfig memory cfg = _cfg(bucket);
-        (IICS07TendermintMsgs.Header memory header, IICS07TendermintMsgs.ConsensusState memory trustedCS, IICS07TendermintMsgs.ValidatorSet memory vs) =
-            _buildSelfConsistent(cfg);
+        (
+            IICS07TendermintMsgs.Header memory header,
+            IICS07TendermintMsgs.ConsensusState memory trustedCS,
+            IICS07TendermintMsgs.ValidatorSet memory vs
+        ) = _buildSelfConsistent(cfg);
 
         IICS07TendermintMsgs.ClientState memory cs = _clientState();
 
@@ -270,9 +273,7 @@ contract RecvPacketGasTest is IntegrationTest {
             merkleProofs: merkleProofs,
             appHash: bytes32(uint256(0xCCC)), // bh.appHash from above
             trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
-                timestamp: NEW_TS_NS,
-                root: bytes32(uint256(0xCCC)),
-                nextValidatorsHash: Header.hashValSet(vs)
+                timestamp: NEW_TS_NS, root: bytes32(uint256(0xCCC)), nextValidatorsHash: Header.hashValSet(vs)
             }),
             membershipType: IMembershipMsgs.MembershipType.Membership,
             path: new bytes[](0),
