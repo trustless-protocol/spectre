@@ -251,23 +251,24 @@ contract ICS02ClientTest is Test {
     function test_success_reAnchorPinnedSet() public {
         IUpdateClientMsgs.MsgUpdateClient memory updateMsg;
         IICS07TendermintMsgs.ValidatorSet memory newPinnedValidatorSet;
-        bytes memory reAnchorCall =
-            abi.encodeCall(IGroth16ICS07Tendermint.reAnchorPinnedSet, (updateMsg, newPinnedValidatorSet));
+        bytes memory reAnchorMsg = abi.encode(updateMsg, newPinnedValidatorSet);
+        bytes memory reAnchorCall = abi.encodeCall(IGroth16ICS07Tendermint.reAnchorPinnedSet, (reAnchorMsg));
         vm.mockCall(lightClient, reAnchorCall, bytes(""));
 
         vm.expectCall(lightClient, reAnchorCall);
         vm.prank(relayer);
-        ics02Client.reAnchorPinnedSet(clientIdentifier, updateMsg, newPinnedValidatorSet);
+        ics02Client.reAnchorPinnedSet(clientIdentifier, reAnchorMsg);
     }
 
     function test_failure_reAnchorPinnedSet() public {
         address unauthorized = makeAddr("unauthorized");
         IUpdateClientMsgs.MsgUpdateClient memory updateMsg;
         IICS07TendermintMsgs.ValidatorSet memory newPinnedValidatorSet;
+        bytes memory reAnchorMsg = abi.encode(updateMsg, newPinnedValidatorSet);
 
         vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
         vm.prank(unauthorized);
-        ics02Client.reAnchorPinnedSet(clientIdentifier, updateMsg, newPinnedValidatorSet);
+        ics02Client.reAnchorPinnedSet(clientIdentifier, reAnchorMsg);
     }
 
     function test_failure_updateClient() public {

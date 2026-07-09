@@ -48,9 +48,9 @@ func (e testDataError) ErrorData() interface{} {
 //   recvPacket(...)              → 0x596e00b9
 //   ackPacket(...)               → 0xfdbd955d
 //   timeoutPacket(...)           → 0x223e357a
-//   updateClient(string,bytes)   → 0x6fbf8079
-//   reAnchorPinnedSet(...)       → 0x08ffd30f
-//   multicall(bytes[])           → 0xac9650d8
+//   updateClient(string,bytes)      → 0x6fbf8079
+//   reAnchorPinnedSet(string,bytes) → 0x12d2af62
+//   multicall(bytes[])              → 0xac9650d8
 
 func mustDecodeHex(t *testing.T, s string) []byte {
 	t.Helper()
@@ -288,8 +288,8 @@ func TestSelectorForReAnchorPinnedSet(t *testing.T) {
 		t.Fatal("reAnchorPinnedSet not found in ICS26Router ABI")
 	}
 	got := hex.EncodeToString(method.ID)
-	if got != "08ffd30f" {
-		t.Fatalf("selector mismatch: got %s, want 08ffd30f", got)
+	if got != "12d2af62" {
+		t.Fatalf("selector mismatch: got %s, want 12d2af62", got)
 	}
 }
 

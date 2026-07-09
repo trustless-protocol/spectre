@@ -186,15 +186,11 @@ contract Groth16ICS07Tendermint is IGroth16ICS07TendermintErrors, IGroth16ICS07T
         return updateResult;
     }
 
-    function reAnchorPinnedSet(
-        IUpdateClientMsgs.MsgUpdateClient calldata updateMsg,
-        IICS07TendermintMsgs.ValidatorSet calldata newPinnedValidatorSet
-    )
-        external
-        notFrozen
-        onlyProofSubmitter
-    {
-        IUpdateClientMsgs.MsgUpdateClient memory msg_ = updateMsg;
+    function reAnchorPinnedSet(bytes calldata reAnchorMsg) external notFrozen onlyProofSubmitter {
+        (
+            IUpdateClientMsgs.MsgUpdateClient memory msg_,
+            IICS07TendermintMsgs.ValidatorSet memory newPinnedValidatorSet
+        ) = abi.decode(reAnchorMsg, (IUpdateClientMsgs.MsgUpdateClient, IICS07TendermintMsgs.ValidatorSet));
         IUpdateClientMsgs.UpdateClientOutput memory output = UPDATE_CLIENT.updateClient(msg_);
         _validateUpdateClientOutput(output);
 

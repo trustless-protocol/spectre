@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IUpdateClientMsgs } from "./msgs/IUpdateClientMsgs.sol";
-import { IICS07TendermintMsgs } from "./msgs/IICS07TendermintMsgs.sol";
-
 /// @title IGroth16ICS07Tendermint
 /// @notice IGroth16ICS07Tendermint is the interface for the ICS07 Tendermint light client
 interface IGroth16ICS07Tendermint {
@@ -44,9 +41,6 @@ interface IGroth16ICS07Tendermint {
         returns (uint32[] memory indices, bytes32[] memory pubkeys, uint64[] memory votingPowers);
 
     /// @notice Replaces the pinned validator set after verifying a checkpoint commit.
-    function reAnchorPinnedSet(
-        IUpdateClientMsgs.MsgUpdateClient calldata updateMsg,
-        IICS07TendermintMsgs.ValidatorSet calldata newPinnedValidatorSet
-    )
-        external;
+    /// @param reAnchorMsg The ABI-encoded (MsgUpdateClient, ValidatorSet) re-anchor message.
+    function reAnchorPinnedSet(bytes calldata reAnchorMsg) external;
 }

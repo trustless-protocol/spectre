@@ -531,12 +531,18 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 
 // SendReAnchorPinnedSet submits a reAnchorPinnedSet transaction through the
 // ICS26 router when it manages proof submission, otherwise directly to ICS07.
-// It uses a BoundContract with generic interface{} parameters to bridge the
-// updateclient, router, and tendermintContract bindings without type conversion.
+// Both the router and ICS07 take the re-anchor payload as a single opaque
+// bytes arg (ABI-encoded (MsgUpdateClient, ValidatorSet)); passing bytes keeps
+// the router's calldata decoder small enough to stay under EIP-170.
 func (h *Handler) SendReAnchorPinnedSet(ctx services.Context, updateMsg any, newPinnedValidatorSet any) error {
 	cosmosClientID, err := cosmosRouterClientID(ctx)
 	if err != nil {
 		return fmt.Errorf("[SendReAnchorPinnedSet] %w", err)
+	}
+
+	reAnchorMsg, err := relayerclient.EncodeReAnchorMsg(updateMsg, newPinnedValidatorSet)
+	if err != nil {
+		return fmt.Errorf("[SendReAnchorPinnedSet] encode re-anchor msg: %w", err)
 	}
 	privKey := os.Getenv("ETH_PRIVATE_KEY")
 	if privKey == "" {
@@ -558,11 +564,11 @@ func (h *Handler) SendReAnchorPinnedSet(ctx services.Context, updateMsg any, new
 	target := ctx.ClientContract()
 	metadata := tendermintContract.ContractGroth16ICS07TendermintMetaData
 	method := "reAnchorPinnedSet"
-	args := []any{updateMsg, newPinnedValidatorSet}
+	args := []any{reAnchorMsg}
 	if routerManagesProofSubmission(ctx) {
 		target = ctx.RouterContract()
 		metadata = contractICS26Router.ContractICS26RouterMetaData
-		args = []any{cosmosClientID, updateMsg, newPinnedValidatorSet}
+		args = []any{cosmosClientID, reAnchorMsg}
 	}
 
 	abi, err := metadata.GetAbi()

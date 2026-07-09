@@ -3,8 +3,6 @@ pragma solidity ^0.8.28;
 
 import { IICS02ClientMsgs } from "../msgs/IICS02ClientMsgs.sol";
 import { ILightClientMsgs } from "../msgs/ILightClientMsgs.sol";
-import { IUpdateClientMsgs } from "../light-clients/msgs/IUpdateClientMsgs.sol";
-import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
 import { IMisbehaviourMsgs } from "../light-clients/msgs/IMisbehaviourMsgs.sol";
 
 import { IICS02ClientErrors } from "../errors/IICS02ClientErrors.sol";
@@ -145,15 +143,8 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
     }
 
     /// @inheritdoc IICS02ClientAccessControlled
-    function reAnchorPinnedSet(
-        string calldata clientId,
-        IUpdateClientMsgs.MsgUpdateClient calldata updateMsg,
-        IICS07TendermintMsgs.ValidatorSet calldata newPinnedValidatorSet
-    )
-        external
-        restricted
-    {
-        IGroth16ICS07Tendermint(address(getClient(clientId))).reAnchorPinnedSet(updateMsg, newPinnedValidatorSet);
+    function reAnchorPinnedSet(string calldata clientId, bytes calldata reAnchorMsg) external restricted {
+        IGroth16ICS07Tendermint(address(getClient(clientId))).reAnchorPinnedSet(reAnchorMsg);
     }
 
     /// @inheritdoc IICS02ClientAccessControlled

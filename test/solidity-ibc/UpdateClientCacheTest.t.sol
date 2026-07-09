@@ -131,7 +131,7 @@ contract UpdateClientCacheTest is Test {
 
         IUpdateClientMsgs.MsgUpdateClient memory msg_ =
             _buildMsgWithNextHash(trustedCS, pinnedA, Header.hashValSet(pinnedB), 3);
-        ics07.reAnchorPinnedSet(msg_, pinnedB);
+        ics07.reAnchorPinnedSet(abi.encode(msg_, pinnedB));
 
         (, bytes32[] memory pubkeys,) = ics07.getPinnedValidatorSet();
         assertEq(pubkeys[0], pinnedB.validators[0].pubKey, "re-anchored pubkey");
@@ -150,7 +150,7 @@ contract UpdateClientCacheTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(IGroth16ICS07TendermintErrors.MismatchedValidatorHashes.selector, expected, actual)
         );
-        ics07.reAnchorPinnedSet(msg_, pinnedB);
+        ics07.reAnchorPinnedSet(abi.encode(msg_, pinnedB));
     }
 
     function test_reAnchorPinnedSet_doesNotUpdatePinnedSetWhenHeaderIsMisbehaviour() public {
@@ -164,7 +164,7 @@ contract UpdateClientCacheTest is Test {
 
         IUpdateClientMsgs.MsgUpdateClient memory conflicting =
             _buildMsgWithNextHash(trustedCS, pinnedA, Header.hashValSet(pinnedB), 3);
-        ics07.reAnchorPinnedSet(conflicting, pinnedB);
+        ics07.reAnchorPinnedSet(abi.encode(conflicting, pinnedB));
 
         (, bytes32[] memory pubkeys,) = ics07.getPinnedValidatorSet();
         assertEq(pubkeys[0], pinnedA.validators[0].pubKey, "misbehaviour re-anchor must not mutate pin");
@@ -183,19 +183,19 @@ contract UpdateClientCacheTest is Test {
 
         IUpdateClientMsgs.MsgUpdateClient memory reanchorB =
             _buildMsgWithNextHash(trustedCS, pinnedA, Header.hashValSet(pinnedB), 3);
-        ics07.reAnchorPinnedSet(reanchorB, pinnedB);
+        ics07.reAnchorPinnedSet(abi.encode(reanchorB, pinnedB));
         IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(reanchorB);
 
         IUpdateClientMsgs.MsgUpdateClient memory reanchorC =
             _buildMsgAt(HEIGHT_1001, HEIGHT_1002, trustedCS1001, pinnedB, Header.hashValSet(pinnedC), TS_1002_NS, 3);
-        ics07.reAnchorPinnedSet(reanchorC, pinnedC);
+        ics07.reAnchorPinnedSet(abi.encode(reanchorC, pinnedC));
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 IGroth16ICS07TendermintErrors.NonMonotonicHeightUpdate.selector, HEIGHT_1002, HEIGHT_1001
             )
         );
-        ics07.reAnchorPinnedSet(reanchorB, pinnedB);
+        ics07.reAnchorPinnedSet(abi.encode(reanchorB, pinnedB));
     }
 
     function test_updateClient_reverts_whenProofVerificationFails() public {
@@ -221,7 +221,7 @@ contract UpdateClientCacheTest is Test {
         IUpdateClientMsgs.MsgUpdateClient memory msg_ =
             _buildMsgWithNextHash(trustedCS, pinnedA, Header.hashValSet(pinnedB), 3);
         vm.expectRevert(IGroth16ICS07TendermintErrors.ProofVerificationFailed.selector);
-        ics07.reAnchorPinnedSet(msg_, pinnedB);
+        ics07.reAnchorPinnedSet(abi.encode(msg_, pinnedB));
     }
 
     function test_updateClient_reverts_whenTrustedHeightNotStored() public {
@@ -246,7 +246,7 @@ contract UpdateClientCacheTest is Test {
         IUpdateClientMsgs.MsgUpdateClient memory msg_ =
             _buildMsgAt(unstoredHeight, HEIGHT_1001, trustedCS, pinnedA, Header.hashValSet(pinnedB), TS_1001_NS, 3);
         vm.expectRevert(IGroth16ICS07TendermintErrors.ConsensusStateNotFound.selector);
-        ics07.reAnchorPinnedSet(msg_, pinnedB);
+        ics07.reAnchorPinnedSet(abi.encode(msg_, pinnedB));
     }
 
     function test_misbehaviourUsesHistoricalPinnedSetAfterReAnchor() public {
@@ -257,7 +257,7 @@ contract UpdateClientCacheTest is Test {
 
         IUpdateClientMsgs.MsgUpdateClient memory reanchorB =
             _buildMsgWithNextHash(trustedCS, pinnedA, Header.hashValSet(pinnedB), 3);
-        ics07.reAnchorPinnedSet(reanchorB, pinnedB);
+        ics07.reAnchorPinnedSet(abi.encode(reanchorB, pinnedB));
         IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(reanchorB);
 
         IUpdateClientMsgs.MsgUpdateClient memory update1002 =

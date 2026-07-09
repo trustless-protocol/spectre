@@ -37,6 +37,7 @@ const (
 var clientStateType abi.Type
 var consensusStateType abi.Type
 var updateClientMsgType abi.Type
+var validatorSetType abi.Type
 
 func init() {
 	clientStateComponents := []abi.ArgumentMarshaling{
@@ -146,6 +147,19 @@ func init() {
 		{Name: "pinnedValidatorIndices", Type: "uint32[]"},
 		{Name: "signerPubkeys", Type: "bytes32[]"},
 		{Name: "active", Type: "bool[]"},
+	})
+
+	validatorInfoComponents := []abi.ArgumentMarshaling{
+		{Name: "valAddress", Type: "bytes"},
+		{Name: "pubKey", Type: "bytes32"},
+		{Name: "votingPower", Type: "uint64"},
+		{Name: "proposerPriority", Type: "int64"},
+	}
+	validatorSetType, _ = abi.NewType("tuple", "", []abi.ArgumentMarshaling{
+		{Name: "validators", Type: "tuple[]", Components: validatorInfoComponents},
+		{Name: "hasProposer", Type: "bool"},
+		{Name: "proposer", Type: "tuple", Components: validatorInfoComponents},
+		{Name: "totalVotingPower", Type: "uint64"},
 	})
 }
 
@@ -849,6 +863,20 @@ func EncodeUpdateClientMsg(updateClientMsg updateClientContract.IUpdateClientMsg
 	}
 	encoded, err := args.Pack(updateClientMsg)
 	return encoded, err
+}
+
+// EncodeReAnchorMsg ABI-encodes the (MsgUpdateClient, ValidatorSet) pair into
+// the single bytes blob that the on-chain reAnchorPinnedSet(bytes) decodes —
+// byte-identical to Solidity abi.encode(updateMsg, newPinnedValidatorSet). The
+// arguments are typed as any (like the tx handler) so the caller can pass the
+// updateclient- or tendermint-package binding structs without conversion; Pack
+// matches them structurally by field name.
+func EncodeReAnchorMsg(updateClientMsg any, newPinnedValidatorSet any) ([]byte, error) {
+	args := abi.Arguments{
+		{Type: updateClientMsgType},
+		{Type: validatorSetType},
+	}
+	return args.Pack(updateClientMsg, newPinnedValidatorSet)
 }
 func bytesToBytes32(data []byte) [32]byte {
 	var result [32]byte
