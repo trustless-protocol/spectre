@@ -49,6 +49,7 @@ func (e testDataError) ErrorData() interface{} {
 //   ackPacket(...)               → 0xfdbd955d
 //   timeoutPacket(...)           → 0x223e357a
 //   updateClient(string,bytes)   → 0x6fbf8079
+//   reAnchorPinnedSet(...)       → 0x08ffd30f
 //   multicall(bytes[])           → 0xac9650d8
 
 func mustDecodeHex(t *testing.T, s string) []byte {
@@ -271,6 +272,24 @@ func TestSelectorForUpdateClient(t *testing.T) {
 	got := hex.EncodeToString(data[:4])
 	if got != "6fbf8079" {
 		t.Fatalf("selector mismatch: got %s, want 6fbf8079", got)
+	}
+}
+
+func TestSelectorForReAnchorPinnedSet(t *testing.T) {
+	parsedABI, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
+	if err != nil {
+		t.Fatalf("GetAbi: %v", err)
+	}
+	// The selector is the first 4 bytes of any Pack(...) of this method, i.e.
+	// Method.ID. Reading it directly avoids packing sample args, which would
+	// panic in the ABI encoder on the empty (nil-slice) nested tuples.
+	method, ok := parsedABI.Methods["reAnchorPinnedSet"]
+	if !ok {
+		t.Fatal("reAnchorPinnedSet not found in ICS26Router ABI")
+	}
+	got := hex.EncodeToString(method.ID)
+	if got != "08ffd30f" {
+		t.Fatalf("selector mismatch: got %s, want 08ffd30f", got)
 	}
 }
 

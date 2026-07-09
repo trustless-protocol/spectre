@@ -7,11 +7,13 @@ import { Test } from "forge-std/Test.sol";
 
 import { ILightClientMsgs } from "../../contracts/msgs/ILightClientMsgs.sol";
 import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
+import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
 import { IMisbehaviourMsgs } from "../../contracts/light-clients/msgs/IMisbehaviourMsgs.sol";
 import { IUpdateClientMsgs } from "../../contracts/light-clients/msgs/IUpdateClientMsgs.sol";
 
 import { IICS02Client } from "../../contracts/interfaces/IICS02Client.sol";
 import { ILightClient } from "../../contracts/interfaces/ILightClient.sol";
+import { IGroth16ICS07Tendermint } from "../../contracts/light-clients/IGroth16ICS07Tendermint.sol";
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
 import { IICS02ClientErrors } from "../../contracts/errors/IICS02ClientErrors.sol";
 
@@ -244,6 +246,28 @@ contract ICS02ClientTest is Test {
         vm.expectCall(lightClient, updateCall);
         vm.prank(relayer);
         ics02Client.updateClient(clientIdentifier, updateMsg);
+    }
+
+    function test_success_reAnchorPinnedSet() public {
+        IUpdateClientMsgs.MsgUpdateClient memory updateMsg;
+        IICS07TendermintMsgs.ValidatorSet memory newPinnedValidatorSet;
+        bytes memory reAnchorCall =
+            abi.encodeCall(IGroth16ICS07Tendermint.reAnchorPinnedSet, (updateMsg, newPinnedValidatorSet));
+        vm.mockCall(lightClient, reAnchorCall, bytes(""));
+
+        vm.expectCall(lightClient, reAnchorCall);
+        vm.prank(relayer);
+        ics02Client.reAnchorPinnedSet(clientIdentifier, updateMsg, newPinnedValidatorSet);
+    }
+
+    function test_failure_reAnchorPinnedSet() public {
+        address unauthorized = makeAddr("unauthorized");
+        IUpdateClientMsgs.MsgUpdateClient memory updateMsg;
+        IICS07TendermintMsgs.ValidatorSet memory newPinnedValidatorSet;
+
+        vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
+        vm.prank(unauthorized);
+        ics02Client.reAnchorPinnedSet(clientIdentifier, updateMsg, newPinnedValidatorSet);
     }
 
     function test_failure_updateClient() public {

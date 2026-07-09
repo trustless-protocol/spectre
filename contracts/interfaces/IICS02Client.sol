@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 import { IICS02ClientMsgs } from "../msgs/IICS02ClientMsgs.sol";
 import { ILightClientMsgs } from "../msgs/ILightClientMsgs.sol";
 import { IUpdateClientMsgs } from "../light-clients/msgs/IUpdateClientMsgs.sol";
+import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
 import { ILightClient } from "./ILightClient.sol";
 
 /// @title ICS02 Client Access Controlled Interface
@@ -34,6 +35,18 @@ interface IICS02ClientAccessControlled {
     )
         external
         returns (ILightClientMsgs.UpdateResult);
+
+    /// @notice Re-anchors the pinned validator set on the client with the given client identifier.
+    /// @dev Can only be called with the `RELAYER_ROLE`.
+    /// @param clientId The client identifier
+    /// @param updateMsg The update message that verifies the new pinned validator set.
+    /// @param newPinnedValidatorSet The new pinned validator set.
+    function reAnchorPinnedSet(
+        string calldata clientId,
+        IUpdateClientMsgs.MsgUpdateClient calldata updateMsg,
+        IICS07TendermintMsgs.ValidatorSet calldata newPinnedValidatorSet
+    )
+        external;
 
     /// @notice Migrate a client by replacing the existing counterparty information and contract address.
     /// @dev This is a privilaged operation. The caller must hold the per-clientId role returned by

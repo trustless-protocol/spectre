@@ -529,9 +529,10 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	return nil
 }
 
-// SendReAnchorPinnedSet submits a reAnchorPinnedSet transaction to the ICS07
-// Tendermint contract using a BoundContract with generic interface{} parameters
-// to bridge the updateclient and tendermintContract bindings without type conversion.
+// SendReAnchorPinnedSet submits a reAnchorPinnedSet transaction through the
+// ICS26 router when it manages proof submission, otherwise directly to ICS07.
+// It uses a BoundContract with generic interface{} parameters to bridge the
+// updateclient, router, and tendermintContract bindings without type conversion.
 func (h *Handler) SendReAnchorPinnedSet(ctx services.Context, updateMsg any, newPinnedValidatorSet any) error {
 	cosmosClientID, err := cosmosRouterClientID(ctx)
 	if err != nil {
@@ -554,13 +555,23 @@ func (h *Handler) SendReAnchorPinnedSet(ctx services.Context, updateMsg any, new
 		}
 	}
 
-	abi, err := tendermintContract.ContractGroth16ICS07TendermintMetaData.GetAbi()
+	target := ctx.ClientContract()
+	metadata := tendermintContract.ContractGroth16ICS07TendermintMetaData
+	method := "reAnchorPinnedSet"
+	args := []any{updateMsg, newPinnedValidatorSet}
+	if routerManagesProofSubmission(ctx) {
+		target = ctx.RouterContract()
+		metadata = contractICS26Router.ContractICS26RouterMetaData
+		args = []any{cosmosClientID, updateMsg, newPinnedValidatorSet}
+	}
+
+	abi, err := metadata.GetAbi()
 	if err != nil {
-		return fmt.Errorf("failed to load ICS07 ABI: %w", err)
+		return fmt.Errorf("failed to load %s ABI: %w", method, err)
 	}
 
 	boundContract := bind.NewBoundContract(
-		*ctx.ClientContract(),
+		*target,
 		*abi,
 		ctx.EthClient(),
 		ctx.EthClient(),
@@ -574,7 +585,7 @@ func (h *Handler) SendReAnchorPinnedSet(ctx services.Context, updateMsg any, new
 	}
 
 	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
-		tx, err := boundContract.Transact(auth, "reAnchorPinnedSet", updateMsg, newPinnedValidatorSet)
+		tx, err := boundContract.Transact(auth, method, args...)
 		if err != nil {
 			return nil, fmt.Errorf("reAnchorPinnedSet tx error: %w", err)
 		}

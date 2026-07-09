@@ -470,6 +470,489 @@
   },
   {
     "type": "function",
+    "name": "reAnchorPinnedSet",
+    "inputs": [
+      {
+        "name": "clientId",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "updateMsg",
+        "type": "tuple",
+        "internalType": "struct IUpdateClientMsgs.MsgUpdateClient",
+        "components": [
+          {
+            "name": "clientState",
+            "type": "tuple",
+            "internalType": "struct IICS07TendermintMsgs.ClientState",
+            "components": [
+              {
+                "name": "chainId",
+                "type": "string",
+                "internalType": "string"
+              },
+              {
+                "name": "trustLevel",
+                "type": "tuple",
+                "internalType": "struct IICS07TendermintMsgs.TrustThreshold",
+                "components": [
+                  {
+                    "name": "numerator",
+                    "type": "uint8",
+                    "internalType": "uint8"
+                  },
+                  {
+                    "name": "denominator",
+                    "type": "uint8",
+                    "internalType": "uint8"
+                  }
+                ]
+              },
+              {
+                "name": "latestHeight",
+                "type": "tuple",
+                "internalType": "struct IICS02ClientMsgs.Height",
+                "components": [
+                  {
+                    "name": "revisionNumber",
+                    "type": "uint64",
+                    "internalType": "uint64"
+                  },
+                  {
+                    "name": "revisionHeight",
+                    "type": "uint64",
+                    "internalType": "uint64"
+                  }
+                ]
+              },
+              {
+                "name": "trustingPeriod",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "unbondingPeriod",
+                "type": "uint32",
+                "internalType": "uint32"
+              },
+              {
+                "name": "isFrozen",
+                "type": "bool",
+                "internalType": "bool"
+              },
+              {
+                "name": "zkAlgorithm",
+                "type": "uint8",
+                "internalType": "enum IICS07TendermintMsgs.SupportedZkAlgorithm"
+              },
+              {
+                "name": "clockDrift",
+                "type": "uint32",
+                "internalType": "uint32"
+              }
+            ]
+          },
+          {
+            "name": "trustedConsensusState",
+            "type": "tuple",
+            "internalType": "struct IICS07TendermintMsgs.ConsensusState",
+            "components": [
+              {
+                "name": "timestamp",
+                "type": "uint128",
+                "internalType": "uint128"
+              },
+              {
+                "name": "root",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "nextValidatorsHash",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              }
+            ]
+          },
+          {
+            "name": "proposedHeader",
+            "type": "tuple",
+            "internalType": "struct IICS07TendermintMsgs.Header",
+            "components": [
+              {
+                "name": "signedHeader",
+                "type": "tuple",
+                "internalType": "struct IICS07TendermintMsgs.SignedHeader",
+                "components": [
+                  {
+                    "name": "header",
+                    "type": "tuple",
+                    "internalType": "struct IICS07TendermintMsgs.BlockHeader",
+                    "components": [
+                      {
+                        "name": "version",
+                        "type": "tuple",
+                        "internalType": "struct IICS07TendermintMsgs.Version",
+                        "components": [
+                          {
+                            "name": "blockVersion",
+                            "type": "uint64",
+                            "internalType": "uint64"
+                          },
+                          {
+                            "name": "appVersion",
+                            "type": "uint64",
+                            "internalType": "uint64"
+                          }
+                        ]
+                      },
+                      {
+                        "name": "chainId",
+                        "type": "string",
+                        "internalType": "string"
+                      },
+                      {
+                        "name": "height",
+                        "type": "uint64",
+                        "internalType": "uint64"
+                      },
+                      {
+                        "name": "time",
+                        "type": "uint128",
+                        "internalType": "uint128"
+                      },
+                      {
+                        "name": "hasLastBlockId",
+                        "type": "bool",
+                        "internalType": "bool"
+                      },
+                      {
+                        "name": "lastBlockId",
+                        "type": "tuple",
+                        "internalType": "struct IICS07TendermintMsgs.BlockId",
+                        "components": [
+                          {
+                            "name": "hashData",
+                            "type": "bytes32",
+                            "internalType": "bytes32"
+                          },
+                          {
+                            "name": "partSetHeader",
+                            "type": "tuple",
+                            "internalType": "struct IICS07TendermintMsgs.PartSetHeader",
+                            "components": [
+                              {
+                                "name": "total",
+                                "type": "uint32",
+                                "internalType": "uint32"
+                              },
+                              {
+                                "name": "hashData",
+                                "type": "bytes32",
+                                "internalType": "bytes32"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "name": "hasLastCommitHash",
+                        "type": "bool",
+                        "internalType": "bool"
+                      },
+                      {
+                        "name": "lastCommitHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "hasDataHash",
+                        "type": "bool",
+                        "internalType": "bool"
+                      },
+                      {
+                        "name": "dataHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "validatorsHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "nextValidatorsHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "consensusHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "appHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "hasLastResultsHash",
+                        "type": "bool",
+                        "internalType": "bool"
+                      },
+                      {
+                        "name": "lastResultsHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "hasEvidenceHash",
+                        "type": "bool",
+                        "internalType": "bool"
+                      },
+                      {
+                        "name": "evidenceHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                      },
+                      {
+                        "name": "proposerAddress",
+                        "type": "bytes",
+                        "internalType": "bytes"
+                      }
+                    ]
+                  },
+                  {
+                    "name": "commit",
+                    "type": "tuple",
+                    "internalType": "struct IICS07TendermintMsgs.BlockCommit",
+                    "components": [
+                      {
+                        "name": "height",
+                        "type": "uint64",
+                        "internalType": "uint64"
+                      },
+                      {
+                        "name": "round",
+                        "type": "uint32",
+                        "internalType": "uint32"
+                      },
+                      {
+                        "name": "blockId",
+                        "type": "tuple",
+                        "internalType": "struct IICS07TendermintMsgs.BlockId",
+                        "components": [
+                          {
+                            "name": "hashData",
+                            "type": "bytes32",
+                            "internalType": "bytes32"
+                          },
+                          {
+                            "name": "partSetHeader",
+                            "type": "tuple",
+                            "internalType": "struct IICS07TendermintMsgs.PartSetHeader",
+                            "components": [
+                              {
+                                "name": "total",
+                                "type": "uint32",
+                                "internalType": "uint32"
+                              },
+                              {
+                                "name": "hashData",
+                                "type": "bytes32",
+                                "internalType": "bytes32"
+                              }
+                            ]
+                          }
+                        ]
+                      },
+                      {
+                        "name": "commitSigs",
+                        "type": "tuple[]",
+                        "internalType": "struct IICS07TendermintMsgs.CommitSig[]",
+                        "components": [
+                          {
+                            "name": "flag",
+                            "type": "uint8",
+                            "internalType": "enum IICS07TendermintMsgs.CommitSigFlag"
+                          },
+                          {
+                            "name": "data",
+                            "type": "tuple",
+                            "internalType": "struct IICS07TendermintMsgs.CommitSigData",
+                            "components": [
+                              {
+                                "name": "validatorAddress",
+                                "type": "bytes",
+                                "internalType": "bytes"
+                              },
+                              {
+                                "name": "timestamp",
+                                "type": "uint128",
+                                "internalType": "uint128"
+                              },
+                              {
+                                "name": "hasSignature",
+                                "type": "bool",
+                                "internalType": "bool"
+                              },
+                              {
+                                "name": "signature",
+                                "type": "bytes",
+                                "internalType": "bytes"
+                              }
+                            ]
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "name": "trustedHeight",
+                "type": "tuple",
+                "internalType": "struct IICS02ClientMsgs.Height",
+                "components": [
+                  {
+                    "name": "revisionNumber",
+                    "type": "uint64",
+                    "internalType": "uint64"
+                  },
+                  {
+                    "name": "revisionHeight",
+                    "type": "uint64",
+                    "internalType": "uint64"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "name": "time",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "proof",
+            "type": "uint256[8]",
+            "internalType": "uint256[8]"
+          },
+          {
+            "name": "commitments",
+            "type": "uint256[2]",
+            "internalType": "uint256[2]"
+          },
+          {
+            "name": "commitmentPok",
+            "type": "uint256[2]",
+            "internalType": "uint256[2]"
+          },
+          {
+            "name": "bucket",
+            "type": "uint16",
+            "internalType": "uint16"
+          },
+          {
+            "name": "signerIndices",
+            "type": "uint32[]",
+            "internalType": "uint32[]"
+          },
+          {
+            "name": "pinnedValidatorIndices",
+            "type": "uint32[]",
+            "internalType": "uint32[]"
+          },
+          {
+            "name": "signerPubkeys",
+            "type": "bytes32[]",
+            "internalType": "bytes32[]"
+          },
+          {
+            "name": "active",
+            "type": "bool[]",
+            "internalType": "bool[]"
+          }
+        ]
+      },
+      {
+        "name": "newPinnedValidatorSet",
+        "type": "tuple",
+        "internalType": "struct IICS07TendermintMsgs.ValidatorSet",
+        "components": [
+          {
+            "name": "validators",
+            "type": "tuple[]",
+            "internalType": "struct IICS07TendermintMsgs.ValidatorInfo[]",
+            "components": [
+              {
+                "name": "valAddress",
+                "type": "bytes",
+                "internalType": "bytes"
+              },
+              {
+                "name": "pubKey",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "votingPower",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "proposerPriority",
+                "type": "int64",
+                "internalType": "int64"
+              }
+            ]
+          },
+          {
+            "name": "hasProposer",
+            "type": "bool",
+            "internalType": "bool"
+          },
+          {
+            "name": "proposer",
+            "type": "tuple",
+            "internalType": "struct IICS07TendermintMsgs.ValidatorInfo",
+            "components": [
+              {
+                "name": "valAddress",
+                "type": "bytes",
+                "internalType": "bytes"
+              },
+              {
+                "name": "pubKey",
+                "type": "bytes32",
+                "internalType": "bytes32"
+              },
+              {
+                "name": "votingPower",
+                "type": "uint64",
+                "internalType": "uint64"
+              },
+              {
+                "name": "proposerPriority",
+                "type": "int64",
+                "internalType": "int64"
+              }
+            ]
+          },
+          {
+            "name": "totalVotingPower",
+            "type": "uint64",
+            "internalType": "uint64"
+          }
+        ]
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "recvPacket",
     "inputs": [
       {

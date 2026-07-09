@@ -44,11 +44,12 @@ library IBCRolesLib {
     /// @notice The functions that can be called by the RELAYER_ROLE in ICS26Router.
     /// @return An array of function selectors that can be called by the RELAYER_ROLE.
     function ics26RelayerSelectors() internal pure returns (bytes4[] memory) {
-        bytes4[] memory relayerFunctions = new bytes4[](4);
+        bytes4[] memory relayerFunctions = new bytes4[](5);
         relayerFunctions[0] = IICS26RouterAccessControlled.recvPacket.selector;
         relayerFunctions[1] = IICS26RouterAccessControlled.timeoutPacket.selector;
         relayerFunctions[2] = IICS26RouterAccessControlled.ackPacket.selector;
         relayerFunctions[3] = IICS02ClientAccessControlled.updateClient.selector;
+        relayerFunctions[4] = IICS02ClientAccessControlled.reAnchorPinnedSet.selector;
         return relayerFunctions;
     }
 
