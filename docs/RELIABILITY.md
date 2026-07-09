@@ -11,8 +11,8 @@
 ### Go Relayer
 
 - `log.Fatal` for unrecoverable startup errors
-- `start` command: uses `services.StartLoop()` with batch processing (size/time thresholds), bi-directional relay (Cosmos ↔ ETH)
-- `create-clients` command: one-time setup, fails fast on deployment errors; runs the Cosmos side before the ETH side and writes both client ids back to config. Split commands `create-clients-cosmos` / `create-clients-eth` allow staged retry; `create-clients-eth` skips the deploy if `ics07_client` already has code (idempotent)
+- `start` command: uses `services.StartLoop()` with batch processing (size/time thresholds), bi-directional relay (Cosmos ↔ ETH); one independent loop (goroutine set) per `cosmos_to_eth` source, so a stall on one source does not block the others
+- `create-clients` command: one-time setup, fails fast on deployment errors; runs the Cosmos side before the ETH side and writes both client ids back to config. Split commands `create-clients-cosmos` / `create-clients-eth` allow staged retry; `create-clients-eth` skips the deploy if `ics07_client` already has code (idempotent). With multiple `cosmos_to_eth` sources, `--source <ics26_client_id>` selects the module and the write-back targets it; an unknown or ambiguous source fails fast rather than writing the wrong module
 - Transaction handler retries with re-queried account sequence on nonce conflicts
 - `BatchBuilder` manages packet batching with separate mutexes for Cosmos / ETH queues; it owns separate pending trackers for Cosmos-originated packets awaiting ETH delivery and ETH-originated packets awaiting Cosmos delivery/ack/timeout
 - `SubscribeCosmos` performs startup and periodic gap recovery with CometBFT `TxSearch` for `send_packet`, `write_acknowledgement`, and `timeout_packet` event payloads. `COSMOS_STARTUP_LOOKBACK_BLOCKS=0` (default) scans the full indexed history; set it to a positive block count to bound startup work.

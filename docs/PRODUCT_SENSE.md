@@ -56,13 +56,13 @@ Multiple packets can be batched into a single proof submission:
 ### Off-chain (Go Relayer)
 
 **CLI commands:**
-- `relayer start --config config.json` — bi-directional relay loop (Cosmos ↔ ETH)
-- `relayer create-clients --config config.json` — one-time light client setup on both chains (Cosmos side first, then ETH); also available split as `create-clients-cosmos` / `create-clients-eth`
+- `relayer start --config config.json` — bi-directional relay loop (Cosmos ↔ ETH); one independent loop per `cosmos_to_eth` source in a single process
+- `relayer create-clients --config config.json` — one-time light client setup on both chains (Cosmos side first, then ETH); also available split as `create-clients-cosmos` / `create-clients-eth`. With multiple sources, pass `--source <ics26_client_id>` to pick which module to set up
 - `relayer genesis` — generate genesis state
 
 **JSON config** (`relayer/config.example.json`):
 - Top-level `server` block: log_level, address, port
-- `modules` array with named entries (`cosmos_to_eth`, `eth_to_cosmos`), each with `src_chain`, `dst_chain`, and `config`:
+- `modules` array with named entries — **one `cosmos_to_eth` per Cosmos source** (each with a distinct `ics26_client_id`) plus one `eth_to_cosmos` — each with `src_chain`, `dst_chain`, and `config`:
   - `cosmos_to_eth` config: tm_rpc_url, ics26_address, eth_rpc_url, ics07_client, wrapper_verifier, membership, misbehaviour, update_client, and optional fields: fetch_timeout (timeout in seconds for queries, default 15), trusting_period, trust_level, proof_type
   - `eth_to_cosmos` config: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address
 

@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
@@ -24,7 +25,6 @@ import (
 	"relayer/keys"
 	"relayer/prover"
 	"relayer/services"
-	"relayer/subscriber"
 	"relayer/transaction"
 	utils "relayer/utils"
 )
@@ -41,6 +41,7 @@ const (
 	flagClockDrift     = "clock-drift"
 	flagTrustedBlock   = "trusted-block"
 	flagWasmChecksum   = "wasm-checksum"
+	flagSource         = "source"
 	flagBenchmark      = "benchmark"
 	configFilePerm     = 0o600
 )
@@ -101,20 +102,30 @@ type jsonConfig struct {
 }
 
 type appConfig struct {
+	// CosmosToEthConfig is the first configured Cosmos→ETH source. Retained for
+	// the single-source commands (create-clients*, update-client) and the env
+	// override helpers, which operate on one source at a time. It equals
+	// CosmosToEthConfigs[0] when at least one source is configured.
 	CosmosToEthConfig cosmosToEthConfig
-	EthToCosmosConfig ethToCosmosConfig
-	BatchConfig       services.BatchConfig
+	// CosmosToEthConfigs holds every configured Cosmos→ETH source in file order.
+	// `start` runs one independent relay loop per entry, so a second Cosmos
+	// source is just another `cosmos_to_eth` module — same circuit, prover and
+	// ETH contracts, a different Tendermint RPC and ICS-07 client.
+	CosmosToEthConfigs []cosmosToEthConfig
+	EthToCosmosConfig  ethToCosmosConfig
+	BatchConfig        services.BatchConfig
 }
 
 // writeConfigMember rewrites configPath in place, setting
-// modules[name=="cosmos_to_eth"].config.<member> = value. Other fields and
-// existing JSON formatting are preserved outside the replaced/inserted value.
-func writeConfigMember(configPath, member, value string) error {
+// modules[name=="cosmos_to_eth" && matches sourceClientID].config.<member> =
+// value. An empty sourceClientID targets the first cosmos_to_eth module. Other
+// fields and existing JSON formatting are preserved outside the value.
+func writeConfigMember(configPath, sourceClientID, member, value string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
 	}
-	out, err := replaceConfigMember(data, member, value)
+	out, err := replaceConfigMemberForSource(data, sourceClientID, member, value)
 	if err != nil {
 		return err
 	}
@@ -125,20 +136,56 @@ func writeConfigMember(configPath, member, value string) error {
 }
 
 // writeICS07Address persists the deployed ICS07 Tendermint light-client address
-// (ETH side) back into the config.
-func writeICS07Address(configPath, addr string) error {
-	return writeConfigMember(configPath, "ics07_client", addr)
+// (ETH side) back into the sourceClientID module.
+func writeICS07Address(configPath, sourceClientID, addr string) error {
+	return writeConfigMember(configPath, sourceClientID, "ics07_client", addr)
 }
 
 // writeWasmClientID persists the created 08-wasm Ethereum light-client id
-// (Cosmos side) back into the config. The id is assigned by ibc-go's global
-// client sequence, so it cannot be known until MsgCreateClient lands — write it
-// back rather than requiring the operator to predict it.
-func writeWasmClientID(configPath, id string) error {
-	return writeConfigMember(configPath, "cosmos_wasm_client_id", id)
+// (Cosmos side) back into the sourceClientID module. The id is assigned by
+// ibc-go's global client sequence, so it cannot be known until MsgCreateClient
+// lands — write it back rather than requiring the operator to predict it.
+func writeWasmClientID(configPath, sourceClientID, id string) error {
+	return writeConfigMember(configPath, sourceClientID, "cosmos_wasm_client_id", id)
 }
 
+// replaceConfigMember targets the first cosmos_to_eth module. Retained for the
+// single-source call sites and tests.
 func replaceConfigMember(data []byte, member, value string) ([]byte, error) {
+	return replaceConfigMemberForSource(data, "", member, value)
+}
+
+// moduleSourceClientID resolves the source id of a cosmos_to_eth module: its
+// config.ics26_client_id, falling back to the module-level src_chain — mirroring
+// how loadConfig defaults ICS26ClientID.
+func moduleSourceClientID(data []byte, moduleStart, configStart int) (string, error) {
+	if s, e, ok, err := findJSONObjectMember(data, configStart, "ics26_client_id"); err != nil {
+		return "", err
+	} else if ok {
+		var id string
+		if err := json.Unmarshal(data[s:e], &id); err != nil {
+			return "", fmt.Errorf("parse ics26_client_id: %w", err)
+		}
+		if id != "" {
+			return id, nil
+		}
+	}
+	if s, e, ok, err := findJSONObjectMember(data, moduleStart, "src_chain"); err != nil {
+		return "", err
+	} else if ok {
+		var id string
+		if err := json.Unmarshal(data[s:e], &id); err != nil {
+			return "", fmt.Errorf("parse src_chain: %w", err)
+		}
+		return id, nil
+	}
+	return "", nil
+}
+
+// replaceConfigMemberForSource sets config.<member> on the cosmos_to_eth module
+// whose source id equals sourceClientID (or the first cosmos_to_eth module when
+// sourceClientID is empty), preserving the surrounding JSON formatting.
+func replaceConfigMemberForSource(data []byte, sourceClientID, member, value string) ([]byte, error) {
 	encodedValue, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
@@ -189,18 +236,28 @@ func replaceConfigMember(data []byte, member, value string) ([]byte, error) {
 					return nil, fmt.Errorf("cosmos_to_eth.config is not an object")
 				}
 
-				valueStart, valueEnd, ok, err := findJSONObjectMember(data, configStart, member)
-				if err != nil {
-					return nil, err
+				matches := sourceClientID == ""
+				if !matches {
+					id, err := moduleSourceClientID(data, moduleStart, configStart)
+					if err != nil {
+						return nil, err
+					}
+					matches = id == sourceClientID
 				}
-				if ok {
-					out := make([]byte, 0, len(data)-valueEnd+valueStart+len(encodedValue))
-					out = append(out, data[:valueStart]...)
-					out = append(out, encodedValue...)
-					out = append(out, data[valueEnd:]...)
-					return out, nil
+				if matches {
+					valueStart, valueEnd, ok, err := findJSONObjectMember(data, configStart, member)
+					if err != nil {
+						return nil, err
+					}
+					if ok {
+						out := make([]byte, 0, len(data)-valueEnd+valueStart+len(encodedValue))
+						out = append(out, data[:valueStart]...)
+						out = append(out, encodedValue...)
+						out = append(out, data[valueEnd:]...)
+						return out, nil
+					}
+					return insertJSONObjectMember(data, configStart, configEnd, member, encodedValue)
 				}
-				return insertJSONObjectMember(data, configStart, configEnd, member, encodedValue)
 			}
 		}
 
@@ -214,6 +271,9 @@ func replaceConfigMember(data []byte, member, value string) ([]byte, error) {
 		}
 	}
 
+	if sourceClientID != "" {
+		return nil, fmt.Errorf("cosmos_to_eth source %q not found in config", sourceClientID)
+	}
 	return nil, fmt.Errorf("module cosmos_to_eth not found in config")
 }
 
@@ -412,6 +472,7 @@ func loadConfig(configPath string) (*appConfig, error) {
 	}
 
 	var c2e cosmosToEthConfig
+	var c2eList []cosmosToEthConfig
 	var e2c ethToCosmosConfig
 	batch := services.DefaultConfig().BatchConfig
 	if jc.Batch.BatchSize != 0 {
@@ -423,59 +484,38 @@ func loadConfig(configPath string) (*appConfig, error) {
 	for _, m := range jc.Modules {
 		switch m.Name {
 		case "cosmos_to_eth":
-			if err := json.Unmarshal(m.Config, &c2e); err != nil {
+			var one cosmosToEthConfig
+			if err := json.Unmarshal(m.Config, &one); err != nil {
 				return nil, fmt.Errorf("failed to parse cosmos_to_eth config: %w", err)
 			}
-			if c2e.ICS26ClientID == "" {
-				c2e.ICS26ClientID = m.SrcChain
+			if one.ICS26ClientID == "" {
+				one.ICS26ClientID = m.SrcChain
 			}
+			c2eList = append(c2eList, one)
 		case "eth_to_cosmos":
 			if err := json.Unmarshal(m.Config, &e2c); err != nil {
 				return nil, fmt.Errorf("failed to parse eth_to_cosmos config: %w", err)
 			}
 		}
 	}
+	if len(c2eList) > 0 {
+		c2e = c2eList[0]
+	}
 
-	// Validate cosmos_to_eth config if populated
-	if c2e.TmRpcUrl != "" || c2e.EthRpcUrl != "" || c2e.ICS26Address != "" {
-		if err := validateURL(c2e.TmRpcUrl, "cosmos_to_eth.tm_rpc_url"); err != nil {
+	// Validate every cosmos_to_eth source. Distinct sources must not collide on
+	// the ICS-26 client id, or their ETH event streams (filtered by that id)
+	// would cross-feed.
+	seenClientIDs := make(map[string]struct{}, len(c2eList))
+	for i := range c2eList {
+		if err := validateCosmosToEthConfig(c2eList[i]); err != nil {
 			return nil, err
 		}
-		if err := validateURL(c2e.EthRpcUrl, "cosmos_to_eth.eth_rpc_url"); err != nil {
-			return nil, err
-		}
-		if c2e.EthWsUrl != "" {
-			if err := validateURL(c2e.EthWsUrl, "cosmos_to_eth.eth_ws_url"); err != nil {
-				return nil, err
+		id := c2eList[i].ICS26ClientID
+		if id != "" {
+			if _, dup := seenClientIDs[id]; dup {
+				return nil, fmt.Errorf("duplicate cosmos_to_eth ics26_client_id %q; each source needs a distinct client id", id)
 			}
-		}
-		if err := validateHexAddress(c2e.ICS26Address, "cosmos_to_eth.ics26_address"); err != nil {
-			return nil, err
-		}
-		if c2e.ICS07Client != "" {
-			if err := validateHexAddress(c2e.ICS07Client, "cosmos_to_eth.ics07_client"); err != nil {
-				return nil, err
-			}
-		}
-		if c2e.WrapperVerifier != "" {
-			if err := validateHexAddress(c2e.WrapperVerifier, "cosmos_to_eth.wrapper_verifier"); err != nil {
-				return nil, err
-			}
-		}
-		if c2e.Membership != "" {
-			if err := validateHexAddress(c2e.Membership, "cosmos_to_eth.membership"); err != nil {
-				return nil, err
-			}
-		}
-		if c2e.Misbehaviour != "" {
-			if err := validateHexAddress(c2e.Misbehaviour, "cosmos_to_eth.misbehaviour"); err != nil {
-				return nil, err
-			}
-		}
-		if c2e.UpdateClient != "" {
-			if err := validateHexAddress(c2e.UpdateClient, "cosmos_to_eth.update_client"); err != nil {
-				return nil, err
-			}
+			seenClientIDs[id] = struct{}{}
 		}
 	}
 
@@ -488,10 +528,50 @@ func loadConfig(configPath string) (*appConfig, error) {
 	}
 
 	return &appConfig{
-		CosmosToEthConfig: c2e,
-		EthToCosmosConfig: e2c,
-		BatchConfig:       batch,
+		CosmosToEthConfig:  c2e,
+		CosmosToEthConfigs: c2eList,
+		EthToCosmosConfig:  e2c,
+		BatchConfig:        batch,
 	}, nil
+}
+
+// validateCosmosToEthConfig checks the URLs and hex addresses of one Cosmos→ETH
+// source. Empty (unpopulated) sources pass so a config with only an
+// eth_to_cosmos module still loads.
+func validateCosmosToEthConfig(c2e cosmosToEthConfig) error {
+	if c2e.TmRpcUrl == "" && c2e.EthRpcUrl == "" && c2e.ICS26Address == "" {
+		return nil
+	}
+	if err := validateURL(c2e.TmRpcUrl, "cosmos_to_eth.tm_rpc_url"); err != nil {
+		return err
+	}
+	if err := validateURL(c2e.EthRpcUrl, "cosmos_to_eth.eth_rpc_url"); err != nil {
+		return err
+	}
+	if c2e.EthWsUrl != "" {
+		if err := validateURL(c2e.EthWsUrl, "cosmos_to_eth.eth_ws_url"); err != nil {
+			return err
+		}
+	}
+	if err := validateHexAddress(c2e.ICS26Address, "cosmos_to_eth.ics26_address"); err != nil {
+		return err
+	}
+	for _, f := range []struct {
+		val, name string
+	}{
+		{c2e.ICS07Client, "cosmos_to_eth.ics07_client"},
+		{c2e.WrapperVerifier, "cosmos_to_eth.wrapper_verifier"},
+		{c2e.Membership, "cosmos_to_eth.membership"},
+		{c2e.Misbehaviour, "cosmos_to_eth.misbehaviour"},
+		{c2e.UpdateClient, "cosmos_to_eth.update_client"},
+	} {
+		if f.val != "" {
+			if err := validateHexAddress(f.val, f.name); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func validateURL(rawURL, fieldName string) error {
@@ -618,6 +698,42 @@ func validateStartupKeys() error {
 
 func cosmosWasmClientIDOrDefault(cfg *appConfig) string {
 	return envOrDefault("COSMOS_WASM_CLIENT_ID", cfg.CosmosToEthConfig.CosmosWasmClientID)
+}
+
+// selectSource returns a shallow copy of cfg whose singular CosmosToEthConfig is
+// the source identified by clientID, so the single-source create-clients flow
+// (preflight, run funcs, config write-back) targets the chosen source. An empty
+// clientID selects the sole source, or errors when several are configured.
+// Legacy configs without a parsed slice fall back to the singular config.
+func selectSource(cfg *appConfig, clientID string) (*appConfig, error) {
+	sources := cfg.CosmosToEthConfigs
+	if len(sources) == 0 {
+		if clientID != "" && clientID != cfg.CosmosToEthConfig.ICS26ClientID {
+			return nil, fmt.Errorf("no cosmos_to_eth source with ics26_client_id %q", clientID)
+		}
+		return cfg, nil
+	}
+	if clientID == "" {
+		if len(sources) == 1 {
+			out := *cfg
+			out.CosmosToEthConfig = sources[0]
+			return &out, nil
+		}
+		ids := make([]string, len(sources))
+		for i := range sources {
+			ids[i] = sources[i].ICS26ClientID
+		}
+		return nil, fmt.Errorf("config has %d cosmos_to_eth sources (%s); pass --source <ics26_client_id> to pick one",
+			len(sources), strings.Join(ids, ", "))
+	}
+	for i := range sources {
+		if sources[i].ICS26ClientID == clientID {
+			out := *cfg
+			out.CosmosToEthConfig = sources[i]
+			return &out, nil
+		}
+	}
+	return nil, fmt.Errorf("no cosmos_to_eth source with ics26_client_id %q", clientID)
 }
 
 // proofBackendFromFlags resolves the GPU/CPU backend from --gpu-prove or the
@@ -765,7 +881,7 @@ func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasm
 	}
 	logger.Sugar().Infof("Ethereum light client created on Cosmos: clientID=%s", wasmClientID)
 
-	if err := writeWasmClientID(configPath, wasmClientID); err != nil {
+	if err := writeWasmClientID(configPath, cfg.CosmosToEthConfig.ICS26ClientID, wasmClientID); err != nil {
 		return "", fmt.Errorf("persist cosmos_wasm_client_id to %s: %w", configPath, err)
 	}
 	logger.Sugar().Infof("create-clients-cosmos: wrote cosmos_wasm_client_id=%s into %s", wasmClientID, configPath)
@@ -830,7 +946,7 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 		return common.Address{}, fmt.Errorf("ics07 address missing after deploy")
 	}
 
-	if err := writeICS07Address(configPath, ics07Addr.Hex()); err != nil {
+	if err := writeICS07Address(configPath, cfg.CosmosToEthConfig.ICS26ClientID, ics07Addr.Hex()); err != nil {
 		return common.Address{}, fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
 	}
 	logger.Sugar().Infof("create-clients-eth: wrote ics07_client=%s into %s", ics07Addr.Hex(), configPath)
@@ -856,6 +972,15 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 			logger.Sugar().Infof("create-clients: config loaded from %s", configPath)
+			source, err := cmd.Flags().GetString(flagSource)
+			if err != nil {
+				return fmt.Errorf("failed to get source flag: %w", err)
+			}
+			cfg, err = selectSource(cfg, source)
+			if err != nil {
+				return err
+			}
+			logger.Sugar().Infof("create-clients: targeting source %q", cfg.CosmosToEthConfig.ICS26ClientID)
 			if err := preflightCreateClients(cfg); err != nil {
 				return err
 			}
@@ -893,6 +1018,7 @@ func CreateClients(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
 	cmd.Flags().Uint32(flagTrustingPeriod, 0, "trusting period in seconds for Cosmos light client (default: 2/3 of chain unbonding period)")
 	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
+	cmd.Flags().String(flagSource, "", "ics26_client_id of the cosmos_to_eth source to target (required when several are configured)")
 	return cmd
 }
 
@@ -913,6 +1039,14 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
+			source, err := cmd.Flags().GetString(flagSource)
+			if err != nil {
+				return fmt.Errorf("failed to get source flag: %w", err)
+			}
+			cfg, err = selectSource(cfg, source)
+			if err != nil {
+				return err
+			}
 			if err := preflightCreateClients(cfg); err != nil {
 				return err
 			}
@@ -926,6 +1060,7 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
+	cmd.Flags().String(flagSource, "", "ics26_client_id of the cosmos_to_eth source to target (required when several are configured)")
 	return cmd
 }
 
@@ -945,6 +1080,14 @@ func CreateClientsEth(logger *zap.Logger) *cobra.Command {
 			cfg, err := loadConfig(configPath)
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
+			}
+			source, err := cmd.Flags().GetString(flagSource)
+			if err != nil {
+				return fmt.Errorf("failed to get source flag: %w", err)
+			}
+			cfg, err = selectSource(cfg, source)
+			if err != nil {
+				return err
 			}
 			if err := preflightCreateClients(cfg); err != nil {
 				return err
@@ -968,6 +1111,7 @@ func CreateClientsEth(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
 	cmd.Flags().Uint32(flagTrustingPeriod, 0, "trusting period in seconds for Cosmos light client (default: 2/3 of chain unbonding period)")
+	cmd.Flags().String(flagSource, "", "ics26_client_id of the cosmos_to_eth source to target (required when several are configured)")
 	return cmd
 }
 
@@ -1143,32 +1287,10 @@ func Start(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 
-			// Connect to Ethereum (HTTP for queries)
-			ethClient, err := ethclient.Dial(cfg.CosmosToEthConfig.EthRpcUrl)
-			if err != nil {
-				return fmt.Errorf("failed to connect to Ethereum: %w", err)
-			}
-
-			// Connect to Ethereum (WS for subscriptions)
-			var ethWsClient *ethclient.Client
-			if cfg.CosmosToEthConfig.EthWsUrl != "" {
-				if !strings.HasPrefix(cfg.CosmosToEthConfig.EthWsUrl, "ws://") &&
-					!strings.HasPrefix(cfg.CosmosToEthConfig.EthWsUrl, "wss://") {
-					return fmt.Errorf("eth_ws_url must use ws:// or wss://, got: %s", cfg.CosmosToEthConfig.EthWsUrl)
-				}
-				ethWsClient, err = ethclient.Dial(cfg.CosmosToEthConfig.EthWsUrl)
-				if err != nil {
-					return fmt.Errorf("failed to connect to Ethereum WS: %w", err)
-				}
-			}
-
-			// Connect to Cosmos
-			cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
-			if err != nil {
-				return fmt.Errorf("failed to create Cosmos RPC client: %w", err)
-			}
-
-			// Load prover (one bucket per supported validator count)
+			// Load the prover once and share it across every source loop — the
+			// bucket registry (r1cs/pk/vk) is read-only after load, so concurrent
+			// GenerateProof calls are safe. On a GPU backend the calls serialize
+			// on the device; correctness is unaffected.
 			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
 			selectedBackend, hasBackendOverride, err := proofBackendFromFlags(cmd)
 			if err != nil {
@@ -1186,89 +1308,44 @@ func Start(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to load prover: %w", err)
 			}
 
-			cosmosWasmClientID := cosmosWasmClientIDOrDefault(cfg)
-			if cosmosWasmClientID == "" {
-				return fmt.Errorf("cosmos_wasm_client_id is required in cosmos_to_eth config")
+			sources := cfg.CosmosToEthConfigs
+			if len(sources) == 0 {
+				return fmt.Errorf("no cosmos_to_eth source configured in %s", configPath)
 			}
+			// Env overrides (ICS26_CLIENT_ID, COSMOS_WASM_CLIENT_ID, ROLE_MANAGER)
+			// name a single source; only honor them when exactly one is
+			// configured, otherwise they would wrongly apply to every source.
+			allowEnvOverride := len(sources) == 1
 
-			// Create context with beacon API
-			ctx := services.NewCtxWithBeacon(
-				cosmosClient, ethClient, ethWsClient,
-				cfg.CosmosToEthConfig.EthWsUrl,
-				cfg.EthToCosmosConfig.BeaconUrl,
-				cosmosWasmClientID,
-			)
-			cosmosRouterClientID := cosmosRouterClientIDOrDefault(cfg)
-			if cosmosRouterClientID == "" {
-				return fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
-			}
-			ctx.SetCosmosRouterClientID(cosmosRouterClientID)
+			// One shared TransactionHandler across all sources: they submit from
+			// the same ETH signer, so its per-account nonce cache + mutex must be
+			// shared to serialize nonce allocation (per-source handlers would
+			// collide on nonce). The Cosmos side re-queries the account sequence
+			// fresh under cosmosMu, so sharing is safe there too.
+			txHandler := &transaction.Handler{}
 
-			// Set contract addresses from config
-			roleManager := roleManagerOrDefault(cfg)
-			ctx.SetAddresses(
-				cfg.CosmosToEthConfig.ICS26Address,
-				cfg.CosmosToEthConfig.WrapperVerifier,
-				cfg.CosmosToEthConfig.Membership,
-				cfg.CosmosToEthConfig.Misbehaviour,
-				cfg.CosmosToEthConfig.UpdateClient,
-				roleManager,
-			)
-
-			// Set ICS07 client address (already deployed)
-			if cfg.CosmosToEthConfig.ICS07Client == "" {
-				return fmt.Errorf("ics07_client address is required in cosmos_to_eth config")
-			}
-			ctx.SetClient(common.HexToAddress(cfg.CosmosToEthConfig.ICS07Client))
-
-			// Start Cosmos WebSocket client
-			if err := cosmosClient.Start(); err != nil {
-				return fmt.Errorf("failed to start Cosmos WS client: %w", err)
-			}
-			defer cosmosClient.Stop()
-
-			logger.Sugar().Info("Relayer started, subscribing to events...")
-
-			cosmosConfig := services.DefaultConfig()
-			if cfg.CosmosToEthConfig.TrustingPeriod != 0 {
-				cosmosConfig.TrustingPeriod = cfg.CosmosToEthConfig.TrustingPeriod
-			}
-			if cfg.CosmosToEthConfig.TrustLevel != "" {
-				cosmosConfig.TrustLevel = cfg.CosmosToEthConfig.TrustLevel
-			}
-			if cfg.CosmosToEthConfig.ProofType != "" {
-				cosmosConfig.ProofType = cfg.CosmosToEthConfig.ProofType
-			}
-			if cfg.CosmosToEthConfig.ClockDrift != 0 {
-				cosmosConfig.ClockDrift = cfg.CosmosToEthConfig.ClockDrift
-			}
-			if cfg.CosmosToEthConfig.BeaconFinalityRetries != 0 {
-				cosmosConfig.BeaconFinalityRetries = cfg.CosmosToEthConfig.BeaconFinalityRetries
-			}
-			if cfg.CosmosToEthConfig.AppHashWaitRetries != 0 {
-				cosmosConfig.AppHashWaitRetries = cfg.CosmosToEthConfig.AppHashWaitRetries
-			}
-			if cfg.CosmosToEthConfig.AppHashWaitInterval != 0 {
-				cosmosConfig.AppHashWaitInterval = time.Duration(cfg.CosmosToEthConfig.AppHashWaitInterval) * time.Second
-			}
-			if cfg.CosmosToEthConfig.FetchTimeout != 0 {
-				cosmosConfig.FetchTimeout = time.Duration(cfg.CosmosToEthConfig.FetchTimeout) * time.Second
-			}
-			if envVal := os.Getenv("FETCH_TIMEOUT"); envVal != "" {
-				if d, err := strconv.Atoi(envVal); err == nil && d > 0 {
-					cosmosConfig.FetchTimeout = time.Duration(d) * time.Second
+			// One independent relay loop per Cosmos→ETH source. Each has its own
+			// Tendermint RPC, ICS-07 client and router client id; they share the
+			// prover, the TransactionHandler, the ETH beacon endpoint, and the
+			// same ICS26Router (ETH events are partitioned by the per-source
+			// router client id filter).
+			var wg sync.WaitGroup
+			for i := range sources {
+				svc, srcCtx, cleanup, err := startCosmosToEthSource(
+					logger, sources[i], cfg.EthToCosmosConfig, cfg.BatchConfig, p, txHandler, allowEnvOverride,
+				)
+				if err != nil {
+					return fmt.Errorf("cosmos_to_eth source %q: %w", sources[i].ICS26ClientID, err)
 				}
+				wg.Add(1)
+				go func(svc *services.Services, srcCtx services.Context, cleanup func()) {
+					defer wg.Done()
+					defer cleanup()
+					svc.StartLoop(srcCtx)
+				}(svc, srcCtx, cleanup)
 			}
-			cosmosConfig.BatchConfig = cfg.BatchConfig
-			ctx.Config = cosmosConfig
-			svc := services.New(
-				subscriber.NewSubscriber(),
-				&transaction.Handler{},
-				p,
-				cosmosConfig,
-				cosmosConfig,
-			)
-			svc.StartLoop(ctx)
+			logger.Sugar().Infof("Relayer started: relaying %d Cosmos→ETH source(s)", len(sources))
+			wg.Wait()
 
 			return nil
 		},

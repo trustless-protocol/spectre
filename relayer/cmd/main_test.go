@@ -254,3 +254,174 @@ func moduleConfigByName(t *testing.T, data []byte, name string) map[string]any {
 	t.Fatalf("module %q not found", name)
 	return nil
 }
+
+// TestLoadConfigMultipleCosmosSources confirms a config with two cosmos_to_eth
+// modules yields both in CosmosToEthConfigs (file order), with the singular
+// CosmosToEthConfig aliasing the first for the single-source commands.
+func TestLoadConfigMultipleCosmosSources(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfgJSON := `{
+		"modules": [
+			{"name": "cosmos_to_eth", "src_chain": "chain-a",
+			 "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-a"}},
+			{"name": "cosmos_to_eth", "src_chain": "chain-b",
+			 "config": {"tm_rpc_url": "http://localhost:36657", "eth_rpc_url": "http://localhost:8545", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-b"}},
+			{"name": "eth_to_cosmos", "config": {"eth_beacon_api_url": "http://localhost:5052"}}
+		]
+	}`
+	if err := os.WriteFile(configPath, []byte(cfgJSON), configFilePerm); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		t.Fatalf("loadConfig(multi) error = %v", err)
+	}
+	if got := len(cfg.CosmosToEthConfigs); got != 2 {
+		t.Fatalf("CosmosToEthConfigs len = %d, want 2", got)
+	}
+	if cfg.CosmosToEthConfigs[0].ICS26ClientID != "chain-a" ||
+		cfg.CosmosToEthConfigs[1].ICS26ClientID != "chain-b" {
+		t.Fatalf("source order/ids wrong: %q, %q",
+			cfg.CosmosToEthConfigs[0].ICS26ClientID, cfg.CosmosToEthConfigs[1].ICS26ClientID)
+	}
+	if cfg.CosmosToEthConfigs[1].TmRpcUrl != "http://localhost:36657" {
+		t.Fatalf("second source tm_rpc_url = %q, want distinct", cfg.CosmosToEthConfigs[1].TmRpcUrl)
+	}
+	if cfg.CosmosToEthConfig.ICS26ClientID != "chain-a" {
+		t.Fatalf("singular CosmosToEthConfig = %q, want alias of first source", cfg.CosmosToEthConfig.ICS26ClientID)
+	}
+}
+
+// TestLoadConfigRejectsDuplicateClientID confirms two sources sharing an
+// ics26_client_id are rejected — their ETH event streams (filtered by that id)
+// would otherwise cross-feed.
+func TestLoadConfigRejectsDuplicateClientID(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	cfgJSON := `{
+		"modules": [
+			{"name": "cosmos_to_eth", "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "dup"}},
+			{"name": "cosmos_to_eth", "config": {"tm_rpc_url": "http://localhost:36657", "eth_rpc_url": "http://localhost:8545", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "dup"}}
+		]
+	}`
+	if err := os.WriteFile(configPath, []byte(cfgJSON), configFilePerm); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err := loadConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("loadConfig error = %v, want duplicate client id error", err)
+	}
+}
+
+// TestLoadConfigExampleSingleSource confirms the shipped example yields exactly
+// one source, so single-source behavior is unchanged.
+func TestLoadConfigExampleSingleSource(t *testing.T) {
+	t.Parallel()
+
+	cfg, err := loadConfig(filepath.Join("..", "config.example.json"))
+	if err != nil {
+		t.Fatalf("loadConfig(config.example.json) error = %v", err)
+	}
+	if got := len(cfg.CosmosToEthConfigs); got != 1 {
+		t.Fatalf("CosmosToEthConfigs len = %d, want 1", got)
+	}
+}
+
+// TestReplaceConfigMemberForSource confirms a write-back targets only the named
+// source's module and leaves the other source untouched.
+func TestReplaceConfigMemberForSource(t *testing.T) {
+	t.Parallel()
+
+	in := `{"modules":[` +
+		`{"name":"cosmos_to_eth","config":{"ics26_client_id":"chain-a","ics07_client":"0xAAA"}},` +
+		`{"name":"cosmos_to_eth","config":{"ics26_client_id":"chain-b","ics07_client":"0xBBB"}}` +
+		`]}`
+	out, err := replaceConfigMemberForSource([]byte(in), "chain-b", "ics07_client", "0xNEW")
+	if err != nil {
+		t.Fatalf("replaceConfigMemberForSource() error = %v", err)
+	}
+	got := string(out)
+	if !strings.Contains(got, `"chain-a","ics07_client":"0xAAA"`) {
+		t.Fatalf("chain-a should be untouched, got: %s", got)
+	}
+	if !strings.Contains(got, `"chain-b","ics07_client":"0xNEW"`) {
+		t.Fatalf("chain-b should be updated, got: %s", got)
+	}
+}
+
+// TestReplaceConfigMemberForSourceUnknown confirms an unknown source errors
+// rather than silently writing the wrong module.
+func TestReplaceConfigMemberForSourceUnknown(t *testing.T) {
+	t.Parallel()
+
+	in := `{"modules":[{"name":"cosmos_to_eth","config":{"ics26_client_id":"chain-a"}}]}`
+	_, err := replaceConfigMemberForSource([]byte(in), "chain-x", "ics07_client", "0x1")
+	if err == nil || !strings.Contains(err.Error(), "chain-x") {
+		t.Fatalf("error = %v, want unknown-source error", err)
+	}
+}
+
+// TestReplaceConfigMemberForSourceViaSrcChain confirms the module-level src_chain
+// is used as the source id when config.ics26_client_id is absent (matching how
+// loadConfig defaults the id).
+func TestReplaceConfigMemberForSourceViaSrcChain(t *testing.T) {
+	t.Parallel()
+
+	in := `{"modules":[{"name":"cosmos_to_eth","src_chain":"chain-a","config":{"ics07_client":"0xAAA"}}]}`
+	out, err := replaceConfigMemberForSource([]byte(in), "chain-a", "ics07_client", "0xNEW")
+	if err != nil {
+		t.Fatalf("replaceConfigMemberForSource() error = %v", err)
+	}
+	if !strings.Contains(string(out), `"ics07_client":"0xNEW"`) {
+		t.Fatalf("src_chain match failed, got: %s", string(out))
+	}
+}
+
+func TestSelectSource(t *testing.T) {
+	t.Parallel()
+
+	cfg := &appConfig{
+		CosmosToEthConfigs: []cosmosToEthConfig{
+			{ICS26ClientID: "chain-a", TmRpcUrl: "a"},
+			{ICS26ClientID: "chain-b", TmRpcUrl: "b"},
+		},
+	}
+	single := &appConfig{
+		CosmosToEthConfig:  cosmosToEthConfig{ICS26ClientID: "solo", TmRpcUrl: "s"},
+		CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "solo", TmRpcUrl: "s"}},
+	}
+
+	t.Run("by id", func(t *testing.T) {
+		got, err := selectSource(cfg, "chain-b")
+		if err != nil {
+			t.Fatalf("selectSource error = %v", err)
+		}
+		if got.CosmosToEthConfig.TmRpcUrl != "b" {
+			t.Fatalf("selected wrong source: %+v", got.CosmosToEthConfig)
+		}
+	})
+	t.Run("empty with multiple errors", func(t *testing.T) {
+		_, err := selectSource(cfg, "")
+		if err == nil || !strings.Contains(err.Error(), "--source") {
+			t.Fatalf("error = %v, want ambiguous-source error", err)
+		}
+	})
+	t.Run("unknown id errors", func(t *testing.T) {
+		_, err := selectSource(cfg, "chain-x")
+		if err == nil || !strings.Contains(err.Error(), "chain-x") {
+			t.Fatalf("error = %v, want unknown-source error", err)
+		}
+	})
+	t.Run("empty with single selects sole", func(t *testing.T) {
+		got, err := selectSource(single, "")
+		if err != nil {
+			t.Fatalf("selectSource error = %v", err)
+		}
+		if got.CosmosToEthConfig.TmRpcUrl != "s" {
+			t.Fatalf("selected wrong source: %+v", got.CosmosToEthConfig)
+		}
+	})
+}

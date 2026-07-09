@@ -65,6 +65,8 @@ cd relayer && go build -o relayer ./cmd
 
 Config: JSON file with `modules` array containing `cosmos_to_eth` and `eth_to_cosmos` entries (see `relayer/config.example.json`). Secrets: `relayer/.env` ships with devnet-only sample keys (`ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, `COSMOS_CHAIN_ID`, `PROVER_BIN_DIR`) — replace before any real deployment.
 
+Multiple Cosmos sources: add one `cosmos_to_eth` module per source (each with a distinct `ics26_client_id`); `start` runs an independent relay loop for each in one process (shared prover + ETH endpoint, ETH events partitioned by the per-source client-id filter). Run `create-clients{,-cosmos,-eth}` once per source with `--source <ics26_client_id>` — it targets and writes the ids back into that source's module. Single-source configs are unchanged and need no `--source`.
+
 Circuit setup (from `relayer/`): `go run ./prover/cmd ./bin ../contracts/verifiers` — compiles every bucket into `bin/n{N}/{r1cs,pk,vk}.bin` and emits `Groth16Verifier_N{N}.sol`. After regeneration the vk changes: **redeploy every generated verifier and re-register via `WrapperVerifier.setBucket(...)`**, or every proof fails on-chain.
 
 ## Architecture — orient here before editing

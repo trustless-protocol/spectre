@@ -264,6 +264,15 @@ curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 ./relayer start --config config.example.json
 #    GPU run:
 #    ./relayer start --config config.example.json --gpu-prove
+#
+#    Multiple Cosmos sources: add one `cosmos_to_eth` module per source to
+#    config.json, each with a distinct `ics26_client_id` — the ETH router's
+#    client id for that Cosmos chain (config.example.json uses "cosmoshub-1";
+#    a second source might be "osmosis-1"). Create its clients with --source,
+#    then start once — `start` runs one independent relay loop per source in
+#    the same process (shared prover + ETH endpoint):
+#      ./relayer create-clients --config config.json --source osmosis-1 --wasm-checksum <hex>
+#      ./relayer start --config config.json
 
 # 7. send packet
 
