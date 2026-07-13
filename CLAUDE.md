@@ -63,7 +63,7 @@ cd relayer && go build -o relayer ./cmd
 ./relayer start --config config.json
 ```
 
-Config: JSON file with `modules` array containing `cosmos_to_eth` and `eth_to_cosmos` entries (see `relayer/config.example.json`). Secrets: `relayer/.env` ships with devnet-only sample keys (`ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, `COSMOS_CHAIN_ID`, `PROVER_BIN_DIR`) — replace before any real deployment.
+Config: JSON file with `modules` array containing `cosmos_to_eth` and `eth_to_cosmos` entries (see `relayer/config.example.json`). Secrets: `relayer/.env` ships with devnet-only sample keys (`ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, `COSMOS_CHAIN_ID`, `COSMOS_ADDRESS_PREFIX` — bech32 account prefix, default `cosmos`, `PROVER_BIN_DIR`) — replace before any real deployment.
 
 Multiple Cosmos sources: add one `cosmos_to_eth` module per source (each with a distinct `ics26_client_id`); `start` runs an independent relay loop for each in one process (shared prover + ETH endpoint, ETH events partitioned by the per-source client-id filter). Run `create-clients{,-cosmos,-eth}` once per source with `--source <ics26_client_id>` — it targets and writes the ids back into that source's module. Single-source configs are unchanged and need no `--source`.
 

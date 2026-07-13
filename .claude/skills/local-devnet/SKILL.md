@@ -58,7 +58,7 @@ Bucket sizing: the prover picks the smallest N ∈ {4,8,16,32,64,128} that cover
 # or split: create-clients-cosmos first (needs --wasm-checksum), then create-clients-eth
 ```
 
-Runs the Cosmos half first (08-wasm client → learns its client id), then the ETH half (ICS07 wired to that id), and writes `cosmos_wasm_client_id` + `ics07_client` back into `config.json` automatically — no manual copying. Config is JSON (`config.example.json` shape: `modules` array with `cosmos_to_eth` + `eth_to_cosmos`); `.env` holds only secrets/prover paths (`ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, `COSMOS_CHAIN_ID`, `PROVER_BIN_DIR` — the shipped values are devnet-only).
+Runs the Cosmos half first (08-wasm client → learns its client id), then the ETH half (ICS07 wired to that id), and writes `cosmos_wasm_client_id` + `ics07_client` back into `config.json` automatically — no manual copying. Config is JSON (`config.example.json` shape: `modules` array with `cosmos_to_eth` + `eth_to_cosmos`); `.env` holds only secrets/prover paths (`ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, `COSMOS_CHAIN_ID`, `COSMOS_ADDRESS_PREFIX` — bech32 account prefix, default `cosmos`; set it for non-`cosmos` chains like Realio, `PROVER_BIN_DIR` — the shipped values are devnet-only).
 
 ## 6. Start the relay loop
 

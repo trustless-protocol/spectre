@@ -32,6 +32,7 @@ import (
 	cryptocodec "github.com/cosmos/cosmos-sdk/crypto/codec"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/secp256k1"
 	sdk "github.com/cosmos/cosmos-sdk/types"
+	sdkbech32 "github.com/cosmos/cosmos-sdk/types/bech32"
 	txservice "github.com/cosmos/cosmos-sdk/types/tx"
 	sdksigning "github.com/cosmos/cosmos-sdk/types/tx/signing"
 	authsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
@@ -770,8 +771,11 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	}
 
 	privKey := secp256k1.PrivKey{Key: privKeyBytes}
-	signerAddr := sdk.AccAddress(privKey.PubKey().Address())
-	log.Printf("[CreateEthClient] signer: %s", signerAddr.String())
+	signerAddr, err := cosmosSignerBech32(privKey)
+	if err != nil {
+		return "", err
+	}
+	log.Printf("[CreateEthClient] signer: %s", signerAddr)
 
 	// Get chain configuration from environment
 	chainID := os.Getenv("COSMOS_CHAIN_ID")
@@ -802,7 +806,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 
 	// Query account info (account number and sequence) from the chain
 	log.Printf("[CreateEthClientTx] querying cosmos account info")
-	accountNumber, sequence, err := h.queryAccountInfo(svcCtx, signerAddr.String())
+	accountNumber, sequence, err := h.queryAccountInfo(svcCtx, signerAddr)
 	if err != nil {
 		return "", fmt.Errorf("failed to query account info: %w", err)
 	}
@@ -818,7 +822,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	cdc := codec.NewProtoCodec(interfaceRegistry)
 	txConfig := authtx.NewTxConfig(cdc, authtx.DefaultSignModes)
 
-	msg, err := clienttypes.NewMsgCreateClient(clientState, consensusState, signerAddr.String())
+	msg, err := clienttypes.NewMsgCreateClient(clientState, consensusState, signerAddr)
 	if err != nil {
 		return "", err
 	}
@@ -849,7 +853,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 
 	// Create signer data
 	signerData := authsigning.SignerData{
-		Address:       signerAddr.String(),
+		Address:       signerAddr,
 		ChainID:       chainID,
 		AccountNumber: accountNumber,
 		Sequence:      sequence,
@@ -931,13 +935,13 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 		newClientID,
 		[][]byte{[]byte("")},
 		cosmosClientID,
-		signerAddr.String(),
+		signerAddr,
 	)
 	log.Printf("[CreateEthClientTx] MsgRegisterCounterparty built for clientID=%s", newClientID)
 
 	// Re-query account info (sequence incremented after first tx)
 	log.Printf("[CreateEthClientTx] querying cosmos account info for register counterparty")
-	accountNumber, sequence, err = h.queryAccountInfo(svcCtx, signerAddr.String())
+	accountNumber, sequence, err = h.queryAccountInfo(svcCtx, signerAddr)
 	if err != nil {
 		return "", fmt.Errorf("failed to query account info for register counterparty: %w", err)
 	}
@@ -963,7 +967,7 @@ func (h *Handler) CreateEthClient(svcCtx services.Context, clientState exported.
 	}
 
 	signerData2 := authsigning.SignerData{
-		Address:       signerAddr.String(),
+		Address:       signerAddr,
 		ChainID:       chainID,
 		AccountNumber: accountNumber,
 		Sequence:      sequence,
@@ -1037,6 +1041,29 @@ func extractClientID(txResult *coretypes.ResultTx) string {
 	return ""
 }
 
+// cosmosBech32Prefix returns the bech32 account prefix of the target Cosmos
+// chain: COSMOS_ADDRESS_PREFIX, defaulting to "cosmos" (issue #220). Addresses
+// are rendered with bech32.ConvertAndEncode instead of sdk.AccAddress.String()
+// so the SDK's process-global bech32 config is never consulted or mutated —
+// a future per-source prefix only needs to thread a string here.
+func cosmosBech32Prefix() string {
+	if prefix := os.Getenv("COSMOS_ADDRESS_PREFIX"); prefix != "" {
+		return prefix
+	}
+	return "cosmos"
+}
+
+// cosmosSignerBech32 encodes the signer account address derived from privKey
+// with the configured bech32 prefix.
+func cosmosSignerBech32(privKey secp256k1.PrivKey) (string, error) {
+	prefix := cosmosBech32Prefix()
+	addr, err := sdkbech32.ConvertAndEncode(prefix, privKey.PubKey().Address())
+	if err != nil {
+		return "", fmt.Errorf("failed to bech32-encode signer address with prefix %q: %w", prefix, err)
+	}
+	return addr, nil
+}
+
 // CosmosSignerAddress returns the bech32 address derived from COSMOS_PRIVATE_KEY.
 // Used to populate the Signer field in Cosmos messages before calling SendCosmosTx.
 func (h *Handler) CosmosSignerAddress() (string, error) {
@@ -1045,8 +1072,7 @@ func (h *Handler) CosmosSignerAddress() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to decode COSMOS_PRIVATE_KEY: %w", err)
 	}
-	privKey := secp256k1.PrivKey{Key: privKeyBytes}
-	return sdk.AccAddress(privKey.PubKey().Address()).String(), nil
+	return cosmosSignerBech32(secp256k1.PrivKey{Key: privKeyBytes})
 }
 
 func cloneCosmosSDKMsgWithSigner(msg any, signer string, index int) (sdk.Msg, error) {
@@ -1120,7 +1146,10 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	}
 
 	privKey := secp256k1.PrivKey{Key: privKeyBytes}
-	signerAddr := sdk.AccAddress(privKey.PubKey().Address())
+	signerAddr, err := cosmosSignerBech32(privKey)
+	if err != nil {
+		return err
+	}
 
 	// Get chain configuration from environment
 	chainID := os.Getenv("COSMOS_CHAIN_ID")
@@ -1147,7 +1176,7 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	defer h.cosmosMu.Unlock()
 
 	// Query account info (account number and sequence) from the chain
-	accountNumber, sequence, err := h.queryAccountInfo(svcCtx, signerAddr.String())
+	accountNumber, sequence, err := h.queryAccountInfo(svcCtx, signerAddr)
 	if err != nil {
 		return fmt.Errorf("failed to query account info: %w", err)
 	}
@@ -1164,7 +1193,7 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	txBuilder := txConfig.NewTxBuilder()
 
 	// Convert the proto.Message to sdk.Msg
-	sdkMsg, err := cloneCosmosSDKMsgWithSigner(protoMsg, signerAddr.String(), -1)
+	sdkMsg, err := cloneCosmosSDKMsgWithSigner(protoMsg, signerAddr, -1)
 	if err != nil {
 		return err
 	}
@@ -1175,7 +1204,7 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	wasmHeavyGas := os.Getenv("COSMOS_GAS_LIMIT") == ""
 	if msg, ok := sdkMsg.(*clienttypes.MsgUpdateClient); ok {
 		if msg.Signer == "" {
-			msg.Signer = signerAddr.String()
+			msg.Signer = signerAddr
 		}
 		if wasmHeavyGas {
 			gasLimit = uint64(2000000)
@@ -1183,7 +1212,7 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	}
 	if msg, ok := sdkMsg.(*channeltypesv2.MsgRecvPacket); ok {
 		if msg.Signer == "" {
-			msg.Signer = signerAddr.String()
+			msg.Signer = signerAddr
 		}
 		if wasmHeavyGas {
 			gasLimit = uint64(2000000)
@@ -1191,7 +1220,7 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	}
 	if msg, ok := sdkMsg.(*channeltypesv2.MsgAcknowledgement); ok {
 		if msg.Signer == "" {
-			msg.Signer = signerAddr.String()
+			msg.Signer = signerAddr
 		}
 		if wasmHeavyGas {
 			gasLimit = uint64(2000000)
@@ -1199,7 +1228,7 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 	}
 	if msg, ok := sdkMsg.(*channeltypesv2.MsgTimeout); ok {
 		if msg.Signer == "" {
-			msg.Signer = signerAddr.String()
+			msg.Signer = signerAddr
 		}
 		if wasmHeavyGas {
 			gasLimit = uint64(2000000)
@@ -1237,7 +1266,7 @@ func (h *Handler) SendCosmosTx(svcCtx services.Context, msg any) error {
 
 	// Create signer data
 	signerData := authsigning.SignerData{
-		Address:       signerAddr.String(),
+		Address:       signerAddr,
 		ChainID:       chainID,
 		AccountNumber: accountNumber,
 		Sequence:      sequence,
@@ -1577,7 +1606,10 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	}
 	privKey := secp256k1.PrivKey{Key: privKeyBytes}
 	pubKey := privKey.PubKey()
-	signerAddr := sdk.AccAddress(pubKey.Address())
+	signerAddr, err := cosmosSignerBech32(privKey)
+	if err != nil {
+		return sequence, 0, err
+	}
 	chainID := os.Getenv("COSMOS_CHAIN_ID")
 	if chainID == "" {
 		return sequence, 0, fmt.Errorf("COSMOS_CHAIN_ID environment variable is required")
@@ -1611,7 +1643,7 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(svcCtx services.Context, sdkMsg
 	}
 
 	signerData := authsigning.SignerData{
-		Address:       signerAddr.String(),
+		Address:       signerAddr,
 		ChainID:       chainID,
 		AccountNumber: accountNumber,
 		Sequence:      sequence,
@@ -1755,12 +1787,15 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	}
 
 	privKey := secp256k1.PrivKey{Key: privKeyBytes}
-	signerAddr := sdk.AccAddress(privKey.PubKey().Address())
+	signerAddr, err := cosmosSignerBech32(privKey)
+	if err != nil {
+		return err
+	}
 
 	// Convert all messages to sdk.Msg, filling empty Signer fields
 	var sdkMsgs []sdk.Msg
 	for i, msg := range msgs {
-		sdkMsg, err := cloneCosmosSDKMsgWithSigner(msg, signerAddr.String(), i)
+		sdkMsg, err := cloneCosmosSDKMsgWithSigner(msg, signerAddr, i)
 		if err != nil {
 			return err
 		}
@@ -1773,7 +1808,7 @@ func (h *Handler) SendCosmosTxBatch(svcCtx services.Context, msgs []any) error {
 	defer h.cosmosMu.Unlock()
 
 	// Query account info (account number and sequence) from the chain
-	accountNumber, sequence, err := h.queryAccountInfo(svcCtx, signerAddr.String())
+	accountNumber, sequence, err := h.queryAccountInfo(svcCtx, signerAddr)
 	if err != nil {
 		return fmt.Errorf("failed to query account info: %w", err)
 	}
