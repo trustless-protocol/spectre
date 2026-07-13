@@ -554,7 +554,14 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 		// revert is deterministic (consumes budget → dead-letter); CheckTx /
 		// broadcast / RPC errors are transient and must not burn the budget.
 		if errors.Is(err, ErrPermanentRelayFailure) {
-			s.BatchBuilder.RequeueEthPermanent(failed)
+			timeoutPackets, permanentPackets := splitEthPermanentFailures(failedMsgs, err)
+			for _, p := range timeoutPackets {
+				log.Printf("[EthSend] seq=%d: Cosmos failure indicates timeout; routing to EthTimeout", p.Packet.Sequence)
+				if s.timeoutEthSend(ctx, p) {
+					s.BatchBuilder.EthPendingTracker.Remove(p.Packet.SourceClient, p.Packet.Sequence)
+				}
+			}
+			s.BatchBuilder.RequeueEthPermanent(permanentPackets)
 		} else {
 			s.BatchBuilder.RequeueEthTransient(failed)
 		}
@@ -574,6 +581,21 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 	if len(buildResult.Msgs) > 0 {
 		ctx.latestCosmosTimestamp.SetTime(time.Now())
 	}
+}
+
+func splitEthPermanentFailures(failedMsgs []ethBatchMsg, err error) (timeoutPackets, permanentPackets []EthPacket) {
+	for _, m := range failedMsgs {
+		if m.origin == nil {
+			continue
+		}
+		packet := *m.origin
+		if packet.Type == EthSend && shouldTimeoutEthSend(packet, err) {
+			timeoutPackets = append(timeoutPackets, packet)
+			continue
+		}
+		permanentPackets = append(permanentPackets, packet)
+	}
+	return timeoutPackets, permanentPackets
 }
 
 // waitCosmosAppHash blocks until the Cosmos chain height reaches targetHeight,

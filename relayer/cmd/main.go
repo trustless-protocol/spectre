@@ -7,9 +7,11 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
@@ -1281,6 +1283,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 				return err
 			}
 
+			runCtx, stopSignals := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stopSignals()
+
 			// Load JSON config
 			cfg, err := loadConfig(configPath)
 			if err != nil {
@@ -1330,13 +1335,27 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// same ICS26Router (ETH events are partitioned by the per-source
 			// router client id filter).
 			var wg sync.WaitGroup
+			cleanups := make([]func(), 0, len(sources))
+			onceCleanup := func(cleanup func()) func() {
+				var once sync.Once
+				return func() {
+					if cleanup != nil {
+						once.Do(cleanup)
+					}
+				}
+			}
 			for i := range sources {
 				svc, srcCtx, cleanup, err := startCosmosToEthSource(
 					logger, sources[i], cfg.EthToCosmosConfig, cfg.BatchConfig, p, txHandler, allowEnvOverride,
 				)
 				if err != nil {
+					for _, cleanup := range cleanups {
+						cleanup()
+					}
 					return fmt.Errorf("cosmos_to_eth source %q: %w", sources[i].ICS26ClientID, err)
 				}
+				cleanup = onceCleanup(cleanup)
+				cleanups = append(cleanups, cleanup)
 				wg.Add(1)
 				go func(svc *services.Services, srcCtx services.Context, cleanup func()) {
 					defer wg.Done()
@@ -1345,7 +1364,22 @@ func Start(logger *zap.Logger) *cobra.Command {
 				}(svc, srcCtx, cleanup)
 			}
 			logger.Sugar().Infof("Relayer started: relaying %d Cosmos→ETH source(s)", len(sources))
-			wg.Wait()
+			done := make(chan struct{})
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
+
+			select {
+			case <-done:
+				return nil
+			case <-runCtx.Done():
+				logger.Sugar().Infof("Relayer shutdown requested: %v", runCtx.Err())
+				for _, cleanup := range cleanups {
+					cleanup()
+				}
+				logger.Sugar().Info("Relayer clients stopped; exiting")
+			}
 
 			return nil
 		},

@@ -20,7 +20,7 @@ import (
 // startCosmosToEthSource wires up one Cosmos→ETH source: its own Tendermint RPC,
 // ICS-07 client and router client id, sharing the passed-in prover and the ETH
 // beacon endpoint from the single eth_to_cosmos module. It returns the built
-// Services, its Context, and a cleanup func that stops the Cosmos WS client.
+// Services, its Context, and a cleanup func that stops the chain clients.
 //
 // The caller runs svc.StartLoop(ctx) — which blocks — on its own goroutine, so
 // N sources relay independently. Their ETH event streams don't cross-feed:
@@ -107,7 +107,7 @@ func startCosmosToEthSource(
 	if err := cosmosClient.Start(); err != nil {
 		return nil, zero, nil, fmt.Errorf("failed to start Cosmos WS client: %w", err)
 	}
-	cleanup := func() { _ = cosmosClient.Stop() }
+	cleanup := func() { ctx.StopClient() }
 
 	cosmosConfig := buildCosmosConfig(c2e, batchCfg)
 	ctx.Config = cosmosConfig
