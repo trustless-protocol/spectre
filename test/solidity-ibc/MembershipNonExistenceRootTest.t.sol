@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { Membership } from "../../contracts/programs/Membership.sol";
+import { Membership } from "../../contracts/light-clients/modules/Membership.sol";
 import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
 
 /// @dev Guards the explicit left/right neighbour root cross-check in

@@ -6,10 +6,10 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/spectreclient"
 )
 
-// The Groth16ICS07Tendermint contract exposes its client state only as
+// The SpectreClient contract exposes its client state only as
 // ABI-encoded bytes via getClientState(); the struct getter was made private in
 // the contract refactor, so there is no generated ClientState() binding method.
 // These helpers decode those bytes into a struct so the e2e suites can assert on
@@ -22,11 +22,11 @@ type groth16TrustLevel struct {
 }
 
 // groth16ClientState mirrors the IICS07TendermintMsgs.ClientState tuple returned
-// (ABI-encoded) by Groth16ICS07Tendermint.getClientState().
+// (ABI-encoded) by SpectreClient.getClientState().
 type groth16ClientState struct {
 	ChainId         string
 	TrustLevel      groth16TrustLevel
-	LatestHeight    groth16ics07tendermint.IICS02ClientMsgsHeight
+	LatestHeight    spectreclient.IICS02ClientMsgsHeight
 	TrustingPeriod  uint32
 	UnbondingPeriod uint32
 	IsFrozen        bool
@@ -60,7 +60,7 @@ func init() {
 }
 
 // decodeGroth16ClientState decodes the ABI-encoded bytes returned by
-// Groth16ICS07Tendermint.getClientState() into a struct.
+// SpectreClient.getClientState() into a struct.
 func decodeGroth16ClientState(data []byte) (groth16ClientState, error) {
 	args := abi.Arguments{{Type: groth16ClientStateABIType}}
 	unpacked, err := args.Unpack(data)
@@ -84,8 +84,8 @@ func decodeGroth16ClientState(data []byte) (groth16ClientState, error) {
 }
 
 // getGroth16ClientState fetches and decodes the on-chain client state from a
-// Groth16ICS07Tendermint contract instance.
-func getGroth16ClientState(c *groth16ics07tendermint.Contract) (groth16ClientState, error) {
+// SpectreClient contract instance.
+func getGroth16ClientState(c *spectreclient.Contract) (groth16ClientState, error) {
 	bz, err := c.GetClientState(nil)
 	if err != nil {
 		return groth16ClientState{}, err

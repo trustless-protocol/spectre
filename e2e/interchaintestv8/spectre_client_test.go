@@ -21,8 +21,8 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/spectreclient"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/e2esuite"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/ethereum"
@@ -31,9 +31,9 @@ import (
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types"
 )
 
-// Groth16ICS07TendermintTestSuite is a suite of tests that wraps TestSuite
+// SpectreClientTestSuite is a suite of tests that wraps TestSuite
 // and can provide additional functionality
-type Groth16ICS07TendermintTestSuite struct {
+type SpectreClientTestSuite struct {
 	e2esuite.TestSuite
 
 	// Whether to generate fixtures for the solidity tests
@@ -46,8 +46,8 @@ type Groth16ICS07TendermintTestSuite struct {
 
 	// The private key of a test account
 	key *ecdsa.PrivateKey
-	// The Groth16ICS07Tendermint contract
-	contract *groth16ics07tendermint.Contract
+	// The SpectreClient contract
+	contract *spectreclient.Contract
 	// The ICS26 router contract, needed for the relayer to pass proofs
 	ics26Contract *ics26router.Contract
 }
@@ -86,9 +86,9 @@ func chdirRepoRoot() error {
 	return os.Chdir(filepath.Clean(filepath.Join(filepath.Dir(filename), "../..")))
 }
 
-// SetupSuite calls the underlying Groth16ICS07TendermintTestSuite's SetupSuite method
-// and deploys the Groth16ICS07Tendermint contract
-func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofType types.SupportedProofType) {
+// SetupSuite calls the underlying SpectreClientTestSuite's SetupSuite method
+// and deploys the SpectreClient contract
+func (s *SpectreClientTestSuite) SetupSuite(ctx context.Context, proofType types.SupportedProofType) {
 	s.TestSuite.SetupSuite(ctx)
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
@@ -162,7 +162,7 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 				BeaconAPI:          beaconAPI,
 				SignerAddress:      "",   // unused
 				MockWasmClient:     true, // unused
-				WrapperVerifier:    s.contractAddresses.WrapperVerifier,
+				SignatureVerifier:  s.contractAddresses.SignatureVerifier,
 				Membership:         s.contractAddresses.Membership,
 				Misbehaviour:       s.contractAddresses.Misbehaviour,
 				UpdateClient:       s.contractAddresses.UpdateClient,
@@ -181,10 +181,10 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 
 		cosmosToEthConfig, err := readCosmosToEthConfig(testvalues.RelayerConfigFilePath)
 		s.Require().NoError(err)
-		s.Require().NotEmpty(cosmosToEthConfig.ICS07Client)
-		s.groth16Ics07Address = ethcommon.HexToAddress(cosmosToEthConfig.ICS07Client)
+		s.Require().NotEmpty(cosmosToEthConfig.SpectreClient)
+		s.groth16Ics07Address = ethcommon.HexToAddress(cosmosToEthConfig.SpectreClient)
 
-		s.contract, err = groth16ics07tendermint.NewContract(s.groth16Ics07Address, eth.RPCClient)
+		s.contract, err = spectreclient.NewContract(s.groth16Ics07Address, eth.RPCClient)
 		s.Require().NoError(err)
 	}))
 
@@ -204,19 +204,19 @@ func (s *Groth16ICS07TendermintTestSuite) SetupSuite(ctx context.Context, proofT
 	})
 }
 
-// TestWithGroth16ICS07TendermintTestSuite is the boilerplate code that allows the test suite to be run
-func TestWithGroth16ICS07TendermintTestSuite(t *testing.T) {
-	suite.Run(t, new(Groth16ICS07TendermintTestSuite))
+// TestWithSpectreClientTestSuite is the boilerplate code that allows the test suite to be run
+func TestWithSpectreClientTestSuite(t *testing.T) {
+	suite.Run(t, new(SpectreClientTestSuite))
 }
 
-func (s *Groth16ICS07TendermintTestSuite) Test_Deploy() {
+func (s *SpectreClientTestSuite) Test_Deploy() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.DeployTest(ctx, proofType)
 }
 
-// DeployTest tests the deployment of the Groth16ICS07Tendermint contract with the given arguments
-func (s *Groth16ICS07TendermintTestSuite) DeployTest(ctx context.Context, proofType types.SupportedProofType) {
+// DeployTest tests the deployment of the SpectreClient contract with the given arguments
+func (s *SpectreClientTestSuite) DeployTest(ctx context.Context, proofType types.SupportedProofType) {
 	s.SetupSuite(ctx, proofType)
 
 	_, simd := s.EthChain, s.CosmosChains[0]
@@ -239,14 +239,14 @@ func (s *Groth16ICS07TendermintTestSuite) DeployTest(ctx context.Context, proofT
 	}))
 }
 
-func (s *Groth16ICS07TendermintTestSuite) Test_UpdateClient() {
+func (s *SpectreClientTestSuite) Test_UpdateClient() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.UpdateClientTest(ctx, proofType)
 }
 
 // UpdateClientTest tests the update client functionality
-func (s *Groth16ICS07TendermintTestSuite) UpdateClientTest(ctx context.Context, proofType types.SupportedProofType) {
+func (s *SpectreClientTestSuite) UpdateClientTest(ctx context.Context, proofType types.SupportedProofType) {
 	s.SetupSuite(ctx, proofType)
 
 	_, simd := s.EthChain, s.CosmosChains[0]
@@ -280,7 +280,7 @@ func (s *Groth16ICS07TendermintTestSuite) UpdateClientTest(ctx context.Context, 
 	}))
 }
 
-func (s *Groth16ICS07TendermintTestSuite) UpdateClient(ctx context.Context) clienttypes.Height {
+func (s *SpectreClientTestSuite) UpdateClient(ctx context.Context) clienttypes.Height {
 	var initialHeight uint64
 	s.Require().True(s.Run("Get the initial height", func() {
 		clientState, err := getGroth16ClientState(s.contract)
@@ -290,7 +290,7 @@ func (s *Groth16ICS07TendermintTestSuite) UpdateClient(ctx context.Context) clie
 		initialHeight = clientState.LatestHeight.RevisionHeight
 	}))
 
-	var finalHeight groth16ics07tendermint.IICS02ClientMsgsHeight
+	var finalHeight spectreclient.IICS02ClientMsgsHeight
 	s.Require().True(s.Run("Update the client on Ethereum", func() {
 		err := relayer.RunUpdateClient(testvalues.RelayerConfigFilePath)
 		s.Require().NoError(err)
@@ -309,4 +309,4 @@ func (s *Groth16ICS07TendermintTestSuite) UpdateClient(ctx context.Context) clie
 }
 
 // TODO: Port Test_Membership, Test_UpdateClientAndMembership, and Test_DoubleSignMisbehaviour
-// to work with new Groth16ICS07Tendermint contract ABI (struct fields changed from SP1 upstream).
+// to work with new SpectreClient contract ABI (struct fields changed from SP1 upstream).

@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
+	spectreContract "relayer/bindings/SpectreClient"
 	updateclientContract "relayer/bindings/UpdateClient"
 	relayerclient "relayer/client"
 	"relayer/prover"
@@ -68,11 +68,31 @@ func (w *Worker) CreateCosmosClient(ctx Context, proofType string, trustingPerio
 	return w.TxHandler.CreateCosmosClientContract(ctx, clientStateEncoded, consensusHash, genesis.InitialPinnedValidatorSet)
 }
 
+// ClientUpdateKind discriminates the two split-API entry points the Spectre
+// client now exposes: advance appHash against the pinned set (application), or
+// rotate + re-pin the validator set (consensus).
+type ClientUpdateKind int
+
+const (
+	// ApplicationUpdate advances the appHash against the already-pinned
+	// validator set (updateApplicationState) — the frequent, cheap path.
+	ApplicationUpdate ClientUpdateKind = iota
+	// ConsensusUpdate rotates and re-pins the validator set
+	// (updateConsensusState) — needed when the target header's
+	// nextValidatorsHash differs from the on-chain pinned set.
+	ConsensusUpdate
+)
+
 // CosmosClientUpdateBuildResult is the output of BuildCosmosClientUpdateMsg.
-// When HasMsg is false the on-chain client is already at the latest height
-// and no updateClient tx is needed — only LightBlock is populated.
+// When HasMsg is false the on-chain client is already at the latest height and
+// its pinned set is current — no update tx is needed; only LightBlock is
+// populated. Otherwise Kind selects which split-API entry point to submit:
+// AppMsg is always the built MsgUpdateApplicationState; NewValSet is populated
+// only for ConsensusUpdate (the set to re-pin).
 type CosmosClientUpdateBuildResult struct {
-	Msg        updateclientContract.IUpdateClientMsgsMsgUpdateClient
+	Kind       ClientUpdateKind
+	AppMsg     updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState
+	NewValSet  spectreContract.IICS07TendermintMsgsValidatorSet
 	HasMsg     bool
 	LightBlock *relayerclient.LightBlock
 }
@@ -82,15 +102,15 @@ type CosmosClientUpdateBuildResult struct {
 // that want to advance the client without packets attached. handleCosmos uses
 // the split BuildCosmosClientUpdateMsg builder so it can fold updateClient
 // into the same multicall as its packet calls (issue #67 V2).
-func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock int64, trustLevel string) (*relayerclient.LightBlock, error) {
-	result, err := w.BuildCosmosClientUpdateMsg(ctx, proofType, trustedBlock, trustLevel)
+func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*relayerclient.LightBlock, error) {
+	result, err := w.BuildCosmosClientUpdateMsg(ctx, proofType, trustedBlock, trustLevel, forceRotation)
 	if err != nil {
 		return nil, err
 	}
 	if !result.HasMsg {
 		return result.LightBlock, nil
 	}
-	if err := w.TxHandler.SendEthTx(ctx, result.Msg); err != nil {
+	if err := w.TxHandler.SendEthTx(ctx, *result); err != nil {
 		log.Printf("[UpdateCosmosClient] SendEthTx failed: %v", err)
 		return nil, err
 	}
@@ -98,78 +118,62 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 	return result.LightBlock, nil
 }
 
-// ReAnchorCosmosPinnedSet builds a reAnchorPinnedSet transaction for the ICS07
-// light client on Ethereum. It reads the authoritative on-chain trusted height,
-// generates a Groth16 proof from that stored height to the latest CometBFT block,
-// then calls reAnchorPinnedSet to advance both the light client and the pinned
-// validator set to the block's nextValidatorsHash.
+// RefreshCosmosClient advances the Spectre light client on Ethereum without any
+// packets attached (background freshness routine). It reads the authoritative
+// on-chain trusted height and pinned-set hash, builds the next update via the
+// split-API builder, and submits whichever kind the builder decided
+// (updateApplicationState vs updateConsensusState — the latter rotates the
+// pinned validator set to the block's nextValidatorsHash).
 //
-// When the on-chain client is already caught up (no newer block exists) the
-// function returns the current light block without submitting any tx — the
-// caller can then update its cached timestamp/height from the returned block.
-func (w *Worker) ReAnchorCosmosPinnedSet(
+// When the on-chain client is already caught up AND its pinned set is current,
+// the builder returns HasMsg=false and this function submits nothing, returning
+// the current light block so the caller can refresh its cached timestamp/height.
+func (w *Worker) RefreshCosmosClient(
 	ctx Context,
 	proofType string,
 	trustLevel string,
 ) (*relayerclient.LightBlock, error) {
 	onChainTrusted, err := fetchOnChainTrustedHeight(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] fetch on-chain height: %w", err)
-	}
-	status, err := ctx.CosmosClient().Status(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] get status: %w", err)
-	}
-	needsReAnchor, err := shouldReAnchor(onChainTrusted, status.SyncInfo.LatestBlockHeight)
-	if err != nil {
-		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] compare heights: %w", err)
-	}
-	if !needsReAnchor {
-		log.Printf("[ReAnchorCosmosPinnedSet] client is up to date (trusted=%d, latest=%d), skipping",
-			onChainTrusted, status.SyncInfo.LatestBlockHeight)
-		lightBlock, err := relayerclient.GetLightBlock(ctx.CosmosClient(), onChainTrusted)
-		if err != nil {
-			return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] get current light block: %w", err)
-		}
-		return lightBlock, nil
+		return nil, fmt.Errorf("[RefreshCosmosClient] fetch on-chain height: %w", err)
 	}
 
-	result, err := w.BuildCosmosClientUpdateMsg(ctx, proofType, onChainTrusted, trustLevel)
+	// forceRotation: the refresh routine only fires after RefreshInterval
+	// without updates, so it is the guaranteed rotation cadence — a stale
+	// pinned set is rotated here regardless of how much overlap remains.
+	result, err := w.BuildCosmosClientUpdateMsg(ctx, proofType, onChainTrusted, trustLevel, true)
 	if err != nil {
-		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] build update msg: %w", err)
+		return nil, fmt.Errorf("[RefreshCosmosClient] build update msg: %w", err)
 	}
-	if !result.HasMsg || result.LightBlock == nil {
-		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] build returned no update light block")
+	if !result.HasMsg {
+		log.Printf("[RefreshCosmosClient] client is up to date and pinned set current, skipping")
+		return result.LightBlock, nil
 	}
 
-	newPinnedSet, err := relayerclient.ValidatorSetToContract(result.LightBlock.NextValSet, "re-anchor")
-	if err != nil {
-		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] convert next validator set: %w", err)
+	if err := w.TxHandler.SendEthTx(ctx, *result); err != nil {
+		return nil, fmt.Errorf("[RefreshCosmosClient] send tx: %w", err)
 	}
-
-	if err := w.TxHandler.SendReAnchorPinnedSet(ctx, result.Msg, newPinnedSet); err != nil {
-		return nil, fmt.Errorf("[ReAnchorCosmosPinnedSet] send tx: %w", err)
-	}
-	log.Printf("[ReAnchorCosmosPinnedSet] re-anchor succeeded")
+	log.Printf("[RefreshCosmosClient] refresh succeeded (kind=%d)", result.Kind)
 	return result.LightBlock, nil
 }
 
-func shouldReAnchor(onChainTrusted, latestBlockHeight int64) (bool, error) {
-	if onChainTrusted > latestBlockHeight {
-		return false, fmt.Errorf(
-			"trusted block is ahead of latest chain height (trusted=%d, latest=%d)",
-			onChainTrusted,
-			latestBlockHeight,
-		)
+// getOnChainPinnedValidatorsHash reads the CometBFT validatorsHash of the
+// currently-pinned validator set from the Spectre client on ETH. Used to decide
+// whether an update must rotate the pinned set (updateConsensusState) or can
+// take the cheap application-state path.
+func getOnChainPinnedValidatorsHash(ctx Context) ([32]byte, error) {
+	spectre, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
+	if err != nil {
+		return [32]byte{}, fmt.Errorf("failed to create Spectre client instance: %w", err)
 	}
-	return onChainTrusted < latestBlockHeight, nil
+	return spectre.GetPinnedValidatorsHash(nil)
 }
 
 // fetchOnChainTrustedHeight reads the ICS07 client state on ETH and returns its
 // latest trusted revision height. This is a cheap eth_call relative to the
 // Groth16 proof, so it's always worth doing before committing to proof gen.
 func fetchOnChainTrustedHeight(ctx Context) (int64, error) {
-	ics07, err := tendermintContract.NewContractGroth16ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
+	ics07, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
 	if err != nil {
 		return 0, fmt.Errorf("failed to create ICS07 instance: %w", err)
 	}
@@ -211,7 +215,7 @@ func (s pinnedCosmosValidatorSet) powerByPubkey() map[[32]byte]int64 {
 }
 
 func getPinnedCosmosValidatorSet(ctx Context) (pinnedCosmosValidatorSet, error) {
-	ics07, err := tendermintContract.NewContractGroth16ICS07Tendermint(*ctx.ClientContract(), ctx.EthClient())
+	ics07, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
 	if err != nil {
 		return pinnedCosmosValidatorSet{}, fmt.Errorf("failed to create ICS07 instance: %w", err)
 	}
@@ -236,6 +240,35 @@ func getPinnedCosmosValidatorSet(ctx Context) (pinnedCosmosValidatorSet, error) 
 		totalPower += int64(out.VotingPowers[i])
 	}
 	return pinnedCosmosValidatorSet{indices: out.Indices, pubkeys: out.Pubkeys, votingPowers: out.VotingPowers, totalPower: totalPower}, nil
+}
+
+// pinnedOverlapPower sums the pinned-set voting power held by the target
+// block's commit signers — the power available to prove against the pinned
+// set. Signers outside the pinned set contribute zero. The measurement is
+// per-commit: a pinned validator that merely missed this one block counts as
+// zero, which makes the rotation trigger conservative (fires early, not late).
+func pinnedOverlapPower(candidates []prover.ValidatorSignature, pinnedSet pinnedCosmosValidatorSet) int64 {
+	powerByPubkey := pinnedSet.powerByPubkey()
+	var overlap int64
+	for _, candidate := range candidates {
+		overlap += powerByPubkey[bytesToBytes32(candidate.PublicKey)]
+	}
+	return overlap
+}
+
+// shouldRotatePinnedSet decides whether an update whose target
+// nextValidatorsHash differs from the on-chain pinned hash rotates the pinned
+// set (updateConsensusState) or defers and stays on updateApplicationState.
+// forceRotation (the refresh-routine cadence path) always rotates; otherwise
+// rotate once overlap/total ≤ threshold. With threshold "1/1" this rotates on
+// any pinned-set change.
+func shouldRotatePinnedSet(forceRotation bool, overlapPower, totalPower int64, threshold relayerclient.TrustThreshold) bool {
+	if forceRotation {
+		return true
+	}
+	overlap := new(big.Int).Mul(big.NewInt(overlapPower), big.NewInt(int64(threshold.Denominator)))
+	total := new(big.Int).Mul(big.NewInt(totalPower), big.NewInt(int64(threshold.Numerator)))
+	return overlap.Cmp(total) <= 0
 }
 
 func selectSignaturesForPinnedSet(
@@ -289,15 +322,24 @@ func selectSignaturesForPinnedSet(
 }
 
 // BuildCosmosClientUpdateMsg fetches the latest Tendermint light block,
-// generates the Groth16 batch proof, and returns the resulting
-// IUpdateClientMsgsMsgUpdateClient WITHOUT submitting it. Callers either
-// pass the msg to SendEthTx directly (UpdateCosmosClient) or fold it into
-// a multicall alongside packet calls (handleCosmos / V2).
+// generates the Groth16 batch proof, and returns a CosmosClientUpdateBuildResult
+// (discriminated by Kind into application-state vs consensus-state update)
+// WITHOUT submitting it. Callers either pass the result to SendEthTx directly
+// (UpdateCosmosClient/RefreshCosmosClient) or fold it into a multicall alongside
+// packet calls (handleCosmos / V2).
 //
-// HasMsg=false signals the on-chain client is already at the latest block
-// — no update needed; LightBlock still returned so callers can use it for
+// When the target header's nextValidatorsHash differs from the on-chain pinned
+// hash, forceRotation=true (the refresh-routine cadence path) always upgrades
+// to ConsensusUpdate; forceRotation=false upgrades only once the pinned set's
+// overlap with the target block's signers has decayed to the configured
+// rotation threshold (Config.RotationThreshold). Frequent callers pass false so
+// routine voting-power churn — which moves nextValidatorsHash almost every
+// block on live chains — doesn't push every update onto the heavy path.
+//
+// HasMsg=false signals the on-chain client is already at the latest block —
+// no update needed; LightBlock still returned so callers can use it for
 // membership proofs.
-func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trustedBlock int64, trustLevel string) (*CosmosClientUpdateBuildResult, error) {
+func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*CosmosClientUpdateBuildResult, error) {
 	status, err := ctx.CosmosClient().Status(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
@@ -348,62 +390,15 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		return nil, fmt.Errorf("failed to get latest light block: %w", err)
 	}
 
-	unbondingPeriod, err := relayerclient.GetUnbondingTime(ctx.CosmosClient())
-	if err != nil {
-		return nil, fmt.Errorf("failed to get unbonding time: %w", err)
-	}
-
-	trustingPeriod := uint32(unbondingPeriod * 2 / 3)
-	if ctx.Config.TrustingPeriod != 0 {
-		trustingPeriod = ctx.Config.TrustingPeriod
-	}
-
-	if trustingPeriod > uint32(unbondingPeriod) {
-		return nil, fmt.Errorf("trusting period %d cannot be greater than unbonding period %d", trustingPeriod, uint32(unbondingPeriod))
-	}
-
-	// Must match the value baked into the client at creation, otherwise the
-	// on-chain ClockDriftMismatch check rejects the update.
-	clockDrift := ctx.Config.ClockDrift
-	if clockDrift == 0 {
-		clockDrift = relayerclient.DefaultClockDrift
-	}
-
-	chainId := trustedLightBlock.SignedHeader.Header.ChainID
-	revision := clienttypes.ParseChainID(chainId)
-
-	trustThreshold, err := relayerclient.ParseTrustThreshold(trustLevel)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse trust level: %w", err)
-	}
-
-	var zkAlgorithm relayerclient.SupportedZkAlgorithm
-	switch proofType {
-	case "groth16":
-		zkAlgorithm = relayerclient.Groth16
-	case "plonk":
-		zkAlgorithm = relayerclient.Plonk
-	default:
-		return nil, fmt.Errorf("unsupported proof type: %s, supported types are: groth16, plonk", proofType)
-	}
-
 	if trustedLightBlock.SignedHeader.Header.Height < 0 {
 		return nil, fmt.Errorf("trusted light block header height cannot be negative: %d", trustedLightBlock.SignedHeader.Header.Height)
 	}
 
-	clientState := updateclientContract.IICS07TendermintMsgsClientState{
-		ChainId:    chainId,
-		TrustLevel: trustThreshold,
-		LatestHeight: updateclientContract.IICS02ClientMsgsHeight{
-			RevisionNumber: revision,
-			RevisionHeight: uint64(trustedLightBlock.SignedHeader.Header.Height),
-		},
-		IsFrozen:        false,
-		ZkAlgorithm:     uint8(zkAlgorithm),
-		TrustingPeriod:  trustingPeriod,
-		UnbondingPeriod: uint32(unbondingPeriod),
-		ClockDrift:      clockDrift,
-	}
+	// The Spectre split-API msgs no longer carry client state — SpectreClient
+	// reads it from its own Store. proofType/trustLevel are validated by the
+	// client on-chain, so the builder only needs chainId (for signature
+	// extraction) and the trusted consensus state to prove against.
+	chainId := trustedLightBlock.SignedHeader.Header.ChainID
 
 	consensusState := updateclientContract.IICS07TendermintMsgsConsensusState{
 		Timestamp:          big.NewInt(trustedLightBlock.SignedHeader.Header.Time.UnixNano()),
@@ -421,12 +416,17 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		return nil, fmt.Errorf("failed to query pinned validator set: %w", err)
 	}
 
-	log.Printf("[UpdateCosmosClient] clientState.LatestHeight=(%d,%d) proposedHeader.Height=%d trustedBlock=%d latestBlock=%d",
-		clientState.LatestHeight.RevisionNumber, clientState.LatestHeight.RevisionHeight,
+	log.Printf("[UpdateCosmosClient] proposedHeader.Height=%d trustedBlock=%d latestBlock=%d",
 		proposedHeader.SignedHeader.Header.Height, trustedLightBlock.BlockHeight, latestLightBlock.BlockHeight)
 
 	// Extract non-absent validator signatures, then select enough signers that
 	// overlap the pinned validator set to exceed 2/3 of pinned voting power.
+	//
+	// TODO(spectre): selectSignaturesForPinnedSet still requires >2/3 of the
+	// *pinned* set among the latest block's signers. After large validator
+	// churn the pinned set may no longer sign the latest block with 2/3 power,
+	// which would need multi-hop updates (advance through intermediate heights
+	// that each retain >2/3 pinned overlap). Not yet handled.
 	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId, nil)
 	if err != nil {
 		return nil, fmt.Errorf("extract validator signatures: %w", err)
@@ -465,26 +465,64 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		active[i] = s.Active
 	}
 
-	msg := updateclientContract.IUpdateClientMsgsMsgUpdateClient{
-		ClientState:            clientState,
-		TrustedConsensusState:  consensusState,
-		Time:                   big.NewInt(time.Now().UnixNano()),
-		ProposedHeader:         proposedHeader,
-		Proof:                  proof,
-		Commitments:            commitments,
-		CommitmentPok:          commitmentPok,
-		Bucket:                 uint16(bucket),
-		SignerIndices:          signerIndices,
-		PinnedValidatorIndices: pinnedValidatorIndices,
-		SignerPubkeys:          signerPubkeys,
-		Active:                 active,
+	appMsg := updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState{
+		TrustedConsensusState: consensusState,
+		ProposedHeader:        proposedHeader,
+		Time:                  big.NewInt(time.Now().UnixNano()),
+		Proof: updateclientContract.ISpectreClientMsgsBatchProof{
+			Proof:                  proof,
+			Commitments:            commitments,
+			CommitmentPok:          commitmentPok,
+			Bucket:                 uint16(bucket),
+			SignerIndices:          signerIndices,
+			PinnedValidatorIndices: pinnedValidatorIndices,
+			SignerPubkeys:          signerPubkeys,
+			Active:                 active,
+		},
 	}
 
-	return &CosmosClientUpdateBuildResult{
-		Msg:        msg,
+	result := &CosmosClientUpdateBuildResult{
+		Kind:       ApplicationUpdate,
+		AppMsg:     appMsg,
 		HasMsg:     true,
 		LightBlock: latestLightBlock,
-	}, nil
+	}
+
+	// Decide application-state vs consensus-state update: if the block we're
+	// advancing to commits to a validator set (nextValidatorsHash) that differs
+	// from the currently-pinned set on-chain, rotating + re-pinning keeps the
+	// pinned set current for future proofs — but the rotation is the heavy path
+	// (full valset calldata + buildCache + SSTORE2 write + snapshot push), so
+	// it is gated by shouldRotatePinnedSet rather than taken on every hash
+	// difference. Otherwise the cheap application-state path suffices.
+	pinnedHash, err := getOnChainPinnedValidatorsHash(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query on-chain pinned validators hash: %w", err)
+	}
+	targetNextValHash := bytesToBytes32(latestLightBlock.SignedHeader.NextValidatorsHash)
+	if targetNextValHash != pinnedHash {
+		rotationThreshold, err := ParseRotationThreshold(ctx.Config.RotationThreshold)
+		if err != nil {
+			return nil, fmt.Errorf("invalid rotation threshold: %w", err)
+		}
+		overlap := pinnedOverlapPower(extracted.Candidates, pinnedValidatorSet)
+		if shouldRotatePinnedSet(forceRotation, overlap, pinnedValidatorSet.totalPower, rotationThreshold) {
+			newValSet, err := relayerclient.ValidatorSetToContract(latestLightBlock.NextValSet, "updateConsensusState")
+			if err != nil {
+				return nil, fmt.Errorf("convert next validator set: %w", err)
+			}
+			result.Kind = ConsensusUpdate
+			result.NewValSet = newValSet
+			log.Printf("[UpdateCosmosClient] pinned set stale (pinned=%x target nextValHash=%x overlap=%d/%d force=%t); rotating via updateConsensusState",
+				pinnedHash[:4], targetNextValHash[:4], overlap, pinnedValidatorSet.totalPower, forceRotation)
+		} else {
+			log.Printf("[UpdateCosmosClient] pinned set differs from target nextValidatorsHash (pinned=%x target=%x) but overlap %d/%d is above rotation threshold %d/%d; staying on updateApplicationState",
+				pinnedHash[:4], targetNextValHash[:4], overlap, pinnedValidatorSet.totalPower,
+				rotationThreshold.Numerator, rotationThreshold.Denominator)
+		}
+	}
+
+	return result, nil
 }
 
 func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {

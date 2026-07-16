@@ -7,13 +7,8 @@ import { Test } from "forge-std/Test.sol";
 
 import { ILightClientMsgs } from "../../contracts/msgs/ILightClientMsgs.sol";
 import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
-import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
-import { IMisbehaviourMsgs } from "../../contracts/light-clients/msgs/IMisbehaviourMsgs.sol";
-import { IUpdateClientMsgs } from "../../contracts/light-clients/msgs/IUpdateClientMsgs.sol";
-
 import { IICS02Client } from "../../contracts/interfaces/IICS02Client.sol";
 import { ILightClient } from "../../contracts/interfaces/ILightClient.sol";
-import { IGroth16ICS07Tendermint } from "../../contracts/light-clients/IGroth16ICS07Tendermint.sol";
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
 import { IICS02ClientErrors } from "../../contracts/errors/IICS02ClientErrors.sol";
 
@@ -238,45 +233,41 @@ contract ICS02ClientTest is Test {
         ics02Client.unfreezeClient(clientIdentifier);
     }
 
-    function test_success_updateClient() public {
+    function test_success_updateApplicationState() public {
         bytes memory updateMsg = "testUpdateMsg";
-        bytes memory updateCall = abi.encodeCall(ILightClient.updateClient, (updateMsg));
+        bytes memory updateCall = abi.encodeCall(ILightClient.updateApplicationState, (updateMsg));
         vm.mockCall(lightClient, updateCall, abi.encode(ILightClientMsgs.UpdateResult(0)));
 
         vm.expectCall(lightClient, updateCall);
         vm.prank(relayer);
-        ics02Client.updateClient(clientIdentifier, updateMsg);
+        ics02Client.updateApplicationState(clientIdentifier, updateMsg);
     }
 
-    function test_success_reAnchorPinnedSet() public {
-        IUpdateClientMsgs.MsgUpdateClient memory updateMsg;
-        IICS07TendermintMsgs.ValidatorSet memory newPinnedValidatorSet;
-        bytes memory reAnchorMsg = abi.encode(updateMsg, newPinnedValidatorSet);
-        bytes memory reAnchorCall = abi.encodeCall(IGroth16ICS07Tendermint.reAnchorPinnedSet, (reAnchorMsg));
-        vm.mockCall(lightClient, reAnchorCall, bytes(""));
+    function test_success_updateConsensusState() public {
+        bytes memory updateMsg = "testUpdateConsensusStateMsg";
+        bytes memory updateCall = abi.encodeCall(ILightClient.updateConsensusState, (updateMsg));
+        vm.mockCall(lightClient, updateCall, abi.encode(ILightClientMsgs.UpdateResult(0)));
 
-        vm.expectCall(lightClient, reAnchorCall);
+        vm.expectCall(lightClient, updateCall);
         vm.prank(relayer);
-        ics02Client.reAnchorPinnedSet(clientIdentifier, reAnchorMsg);
+        ics02Client.updateConsensusState(clientIdentifier, updateMsg);
     }
 
-    function test_failure_reAnchorPinnedSet() public {
+    function test_failure_updateConsensusState() public {
         address unauthorized = makeAddr("unauthorized");
-        IUpdateClientMsgs.MsgUpdateClient memory updateMsg;
-        IICS07TendermintMsgs.ValidatorSet memory newPinnedValidatorSet;
-        bytes memory reAnchorMsg = abi.encode(updateMsg, newPinnedValidatorSet);
+        bytes memory updateMsg = "testUpdateConsensusStateMsg";
 
         vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
         vm.prank(unauthorized);
-        ics02Client.reAnchorPinnedSet(clientIdentifier, reAnchorMsg);
+        ics02Client.updateConsensusState(clientIdentifier, updateMsg);
     }
 
-    function test_failure_updateClient() public {
+    function test_failure_updateApplicationState() public {
         address unauthorized = makeAddr("unauthorized");
         bytes memory updateMsg = "testUpdateMsg";
 
         vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
         vm.prank(unauthorized);
-        ics02Client.updateClient(clientIdentifier, updateMsg);
+        ics02Client.updateApplicationState(clientIdentifier, updateMsg);
     }
 }

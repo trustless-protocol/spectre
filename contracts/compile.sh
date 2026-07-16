@@ -31,10 +31,10 @@ function create_binding {
 forge clean
 forge build
 
-create_binding ./programs/ "Membership" ../relayer/bindings
-create_binding ./programs/ "Misbehaviour" ../relayer/bindings
-create_binding ./programs/ "UpdateClient" ../relayer/bindings
-create_binding ./light-clients/ "Groth16ICS07Tendermint" ../relayer/bindings
+create_binding ./light-clients/modules/ "Membership" ../relayer/bindings
+create_binding ./light-clients/modules/ "Misbehaviour" ../relayer/bindings
+create_binding ./light-clients/modules/ "UpdateClient" ../relayer/bindings
+create_binding ./light-clients/ "SpectreClient" ../relayer/bindings
 create_binding ./ "ICS20Transfer" ../relayer/bindings
 create_binding ./ "ICS26Router" ../relayer/bindings
 

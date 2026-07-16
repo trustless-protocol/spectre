@@ -25,7 +25,7 @@ const (
 
 // Witness byte layout. Same byte sequence is hashed in three places — Go off-
 // chain (ComputeWitnessHash), in-circuit (BatchCircuit.Define), and on-chain
-// (WrapperVerifier._hashWitness). Any drift fails the in-circuit byte assert
+// (SignatureVerifier._hashWitness). Any drift fails the in-circuit byte assert
 // against the public Hash field.
 //
 //	per slot i ∈ [0, bucket):
@@ -43,7 +43,7 @@ const (
 // contribution to the in-circuit ECIP aggregate.
 
 // ComputeWitnessHash serializes the per-slot data into the canonical layout
-// and returns the SHA-256 digest. The on-chain WrapperVerifier recomputes the
+// and returns the SHA-256 digest. The on-chain SignatureVerifier recomputes the
 // same hash from calldata and feeds it as the proof's two packed public inputs.
 func ComputeWitnessHash(sigs []ValidatorSignature) ([32]byte, error) {
 	buf, err := encodeWitnessBytes(sigs)
@@ -120,7 +120,7 @@ func encodeWitnessBytes(sigs []ValidatorSignature) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Layout must match circuit BatchCircuit.Define and WrapperVerifier._hashWitness:
+	// Layout must match circuit BatchCircuit.Define and SignatureVerifier._hashWitness:
 	//   PrefixHead(11) || roundPresent(1) || BlockHash(32) || per slot: active(1) || A(32)
 	buf := make([]byte, 0, prefixHeadLen+1+32+len(sigs)*(1+32))
 	buf = append(buf, prefixHead[:]...)

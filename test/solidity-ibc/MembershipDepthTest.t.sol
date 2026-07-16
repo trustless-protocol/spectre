@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { Membership } from "../../contracts/programs/Membership.sol";
+import { Membership } from "../../contracts/light-clients/modules/Membership.sol";
 import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
 
 /// @dev Exposes the internal checkExistenceProof so the depth bound (issue #110)
@@ -157,6 +157,6 @@ contract MembershipDepthTest is Test {
         kvs[0] = IMembershipMsgs.KVPair({ path: path, value: bytes("") }); // empty value -> non-membership
 
         vm.expectRevert(abi.encodeWithSelector(Membership.ProofPathTooLong.selector, MAX_DEPTH + 1, MAX_DEPTH));
-        m.membership(bytes32(uint256(0xABCD)), kvs, mps);
+        m.verifyMembership(bytes32(uint256(0xABCD)), kvs, mps);
     }
 }

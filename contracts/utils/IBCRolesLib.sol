@@ -48,8 +48,8 @@ library IBCRolesLib {
         relayerFunctions[0] = IICS26RouterAccessControlled.recvPacket.selector;
         relayerFunctions[1] = IICS26RouterAccessControlled.timeoutPacket.selector;
         relayerFunctions[2] = IICS26RouterAccessControlled.ackPacket.selector;
-        relayerFunctions[3] = IICS02ClientAccessControlled.updateClient.selector;
-        relayerFunctions[4] = IICS02ClientAccessControlled.reAnchorPinnedSet.selector;
+        relayerFunctions[3] = IICS02ClientAccessControlled.updateApplicationState.selector;
+        relayerFunctions[4] = IICS02ClientAccessControlled.updateConsensusState.selector;
         return relayerFunctions;
     }
 

@@ -40,10 +40,10 @@ import (
 	interchaintest "github.com/cosmos/interchaintest/v10"
 	"github.com/cosmos/interchaintest/v10/ibc"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ibcerc20"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ics20transfer"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/spectreclient"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/cosmos"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/e2esuite"
@@ -72,7 +72,7 @@ type IbcEurekaTestSuite struct {
 	contractAddresses   ethereum.DeployedContracts
 	groth16Ics07Address ethcommon.Address
 
-	groth16Ics07Contract *groth16ics07tendermint.Contract
+	groth16Ics07Contract *spectreclient.Contract
 	ics26Contract        *ics26router.Contract
 	ics20Contract        *ics20transfer.Contract
 	erc20Contract        *erc20.Contract
@@ -212,7 +212,7 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 				BeaconAPI:          beaconAPI,
 				SignerAddress:      s.SimdRelayerSubmitter.FormattedAddress(),
 				MockWasmClient:     os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
-				WrapperVerifier:    s.contractAddresses.WrapperVerifier,
+				SignatureVerifier:  s.contractAddresses.SignatureVerifier,
 				Membership:         s.contractAddresses.Membership,
 				Misbehaviour:       s.contractAddresses.Misbehaviour,
 				UpdateClient:       s.contractAddresses.UpdateClient,
@@ -246,7 +246,7 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 	// Call AddClient from the deployer who has ID_CUSTOMIZER_ROLE.
 	s.Require().True(s.Run("Add Cosmos light client to ICS26Router", func() {
 		var err error
-		s.groth16Ics07Contract, err = groth16ics07tendermint.NewContract(s.groth16Ics07Address, eth.RPCClient)
+		s.groth16Ics07Contract, err = spectreclient.NewContract(s.groth16Ics07Address, eth.RPCClient)
 		s.Require().NoError(err)
 
 		counterpartyInfo := ics26router.IICS02ClientMsgsCounterpartyInfo{
@@ -343,8 +343,8 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 				BeaconAPI:          beaconAPI,
 				SignerAddress:      s.SimdRelayerSubmitter.FormattedAddress(),
 				MockWasmClient:     os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
-				ICS07Client:        s.groth16Ics07Address.Hex(),
-				WrapperVerifier:    s.contractAddresses.WrapperVerifier,
+				SpectreClient:      s.groth16Ics07Address.Hex(),
+				SignatureVerifier:  s.contractAddresses.SignatureVerifier,
 				Membership:         s.contractAddresses.Membership,
 				Misbehaviour:       s.contractAddresses.Misbehaviour,
 				UpdateClient:       s.contractAddresses.UpdateClient,

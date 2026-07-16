@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { Membership } from "../../contracts/programs/Membership.sol";
+import { Membership } from "../../contracts/light-clients/modules/Membership.sol";
 import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
 
 /// @dev Exposes proof validation/root helpers for focused inner-spec regression tests.
@@ -147,7 +147,7 @@ contract MembershipInnerSpecTest is Test {
         );
 
         vm.expectRevert(Membership.UnexpectedInnerHashOp.selector);
-        m.membership(appHash, _kvPairs(ibcKey, commitmentValue), _merkleProofs(iavlProof, tendermintProof));
+        m.verifyMembership(appHash, _kvPairs(ibcKey, commitmentValue), _merkleProofs(iavlProof, tendermintProof));
     }
 
     function test_membership_acceptsValidTendermintSha256InnerOp() public {
@@ -163,6 +163,6 @@ contract MembershipInnerSpecTest is Test {
         );
         bytes32 appHash = m.exposedCalculateExistenceRoot(tendermintProof);
 
-        m.membership(appHash, _kvPairs(ibcKey, commitmentValue), _merkleProofs(iavlProof, tendermintProof));
+        m.verifyMembership(appHash, _kvPairs(ibcKey, commitmentValue), _merkleProofs(iavlProof, tendermintProof));
     }
 }

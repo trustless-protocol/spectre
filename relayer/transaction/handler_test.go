@@ -48,9 +48,9 @@ func (e testDataError) ErrorData() interface{} {
 //   recvPacket(...)              → 0x596e00b9
 //   ackPacket(...)               → 0xfdbd955d
 //   timeoutPacket(...)           → 0x223e357a
-//   updateClient(string,bytes)      → 0x6fbf8079
-//   reAnchorPinnedSet(string,bytes) → 0x12d2af62
-//   multicall(bytes[])              → 0xac9650d8
+//   updateApplicationState(string,bytes) → 0x9c11bece
+//   updateConsensusState(string,bytes)   → 0xd395af7f
+//   multicall(bytes[])                   → 0xac9650d8
 
 func mustDecodeHex(t *testing.T, s string) []byte {
 	t.Helper()
@@ -254,58 +254,44 @@ func TestMulticallWraps(t *testing.T) {
 	}
 }
 
-// TestSelectorForUpdateClient pins the selector for ICS26Router.updateClient,
-// which V2 batches into the same multicall as recvPacket/ackPacket/
-// timeoutPacket.
-func TestSelectorForUpdateClient(t *testing.T) {
+// TestSelectorForUpdateApplicationState pins the selectors for the split
+// ICS26Router update entry points, which handleCosmos batches into the same
+// multicall as recvPacket/ackPacket/timeoutPacket.
+func TestSelectorForUpdateApplicationState(t *testing.T) {
 	parsedABI, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
 	if err != nil {
 		t.Fatalf("GetAbi: %v", err)
 	}
-	data, err := parsedABI.Pack("updateClient", "cosmoshub-1", []byte{0xde, 0xad, 0xbe, 0xef})
-	if err != nil {
-		t.Fatalf("pack: %v", err)
-	}
-	if len(data) < 4 {
-		t.Fatalf("calldata too short: %d", len(data))
-	}
-	got := hex.EncodeToString(data[:4])
-	if got != "6fbf8079" {
-		t.Fatalf("selector mismatch: got %s, want 6fbf8079", got)
-	}
-}
-
-func TestSelectorForReAnchorPinnedSet(t *testing.T) {
-	parsedABI, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
-	if err != nil {
-		t.Fatalf("GetAbi: %v", err)
-	}
-	// The selector is the first 4 bytes of any Pack(...) of this method, i.e.
-	// Method.ID. Reading it directly avoids packing sample args, which would
-	// panic in the ABI encoder on the empty (nil-slice) nested tuples.
-	method, ok := parsedABI.Methods["reAnchorPinnedSet"]
-	if !ok {
-		t.Fatal("reAnchorPinnedSet not found in ICS26Router ABI")
-	}
-	got := hex.EncodeToString(method.ID)
-	if got != "12d2af62" {
-		t.Fatalf("selector mismatch: got %s, want 12d2af62", got)
+	for _, tc := range []struct{ method, want string }{
+		{"updateApplicationState", "9c11bece"},
+		{"updateConsensusState", "d395af7f"},
+	} {
+		data, err := parsedABI.Pack(tc.method, "cosmoshub-1", []byte{0xde, 0xad, 0xbe, 0xef})
+		if err != nil {
+			t.Fatalf("pack %s: %v", tc.method, err)
+		}
+		if len(data) < 4 {
+			t.Fatalf("%s calldata too short: %d", tc.method, len(data))
+		}
+		if got := hex.EncodeToString(data[:4]); got != tc.want {
+			t.Fatalf("%s selector mismatch: got %s, want %s", tc.method, got, tc.want)
+		}
 	}
 }
 
-// TestMulticallWithUpdateClient verifies that an updateClient + packet combo
-// produces a valid multicall payload — the layout we expect from the V2
-// handleCosmos refactor.
-func TestMulticallWithUpdateClient(t *testing.T) {
+// TestMulticallWithUpdateApplicationState verifies that an updateApplicationState
+// + packet combo produces a valid multicall payload — the layout handleCosmos
+// folds so the packet proof verifies against the just-applied client state.
+func TestMulticallWithUpdateApplicationState(t *testing.T) {
 	parsedABI, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
 	if err != nil {
 		t.Fatalf("GetAbi: %v", err)
 	}
 	pkt := samplePacket()
 
-	updateData, err := parsedABI.Pack("updateClient", "cosmoshub-1", []byte{0x01, 0x02})
+	updateData, err := parsedABI.Pack("updateApplicationState", "cosmoshub-1", []byte{0x01, 0x02})
 	if err != nil {
-		t.Fatalf("pack updateClient: %v", err)
+		t.Fatalf("pack updateApplicationState: %v", err)
 	}
 	recvData, err := parsedABI.Pack("recvPacket", contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
 		Packet:        pkt,
@@ -335,10 +321,10 @@ func TestMulticallWithUpdateClient(t *testing.T) {
 	if len(inner) != 2 {
 		t.Fatalf("expected 2 inner calls, got %d", len(inner))
 	}
-	// First inner must be updateClient — atomicity demands this so packet
-	// proofs verify against the just-applied client state.
-	if !bytes.Equal(inner[0][:4], mustDecodeHex(t, "6fbf8079")) {
-		t.Fatalf("inner[0] is not updateClient: %x", inner[0][:4])
+	// First inner must be updateApplicationState — atomicity demands this so
+	// packet proofs verify against the just-applied client state.
+	if !bytes.Equal(inner[0][:4], mustDecodeHex(t, "9c11bece")) {
+		t.Fatalf("inner[0] is not updateApplicationState: %x", inner[0][:4])
 	}
 	if !bytes.Equal(inner[1][:4], mustDecodeHex(t, "596e00b9")) {
 		t.Fatalf("inner[1] is not recvPacket: %x", inner[1][:4])

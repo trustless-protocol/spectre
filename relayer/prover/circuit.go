@@ -50,7 +50,7 @@ const (
 //
 // Each slot carries the canonical vote bytes the validator actually signed,
 // padded to MaxMsgLen and gated by a per-slot length variable. The on-chain
-// WrapperVerifier rebuilds those bytes from `(blockHeader, timestamp_i)` via
+// SignatureVerifier rebuilds those bytes from `(blockHeader, timestamp_i)` via
 // Solidity proto encoding, hashes the witness exactly the same way, and
 // passes the digest in as two packed public inputs.
 //
@@ -90,7 +90,7 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	}
 
 	// 1. Hash all witness bytes and bind to the public commitment.
-	//    Layout (must match hash_witness.go and WrapperVerifier._hashWitness):
+	//    Layout (must match hash_witness.go and SignatureVerifier._hashWitness):
 	//      per slot: active(1) || A(32) || msgLen(2 BE) || msg(MaxMsgLen padded)
 	//    Binding A protects the on-chain quorum lookup — Solidity matches
 	//    pubkeys[i] against the validator set to attribute voting power, so

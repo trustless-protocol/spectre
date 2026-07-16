@@ -1,17 +1,24 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IUpdateClientMsgs } from "../light-clients/msgs/IUpdateClientMsgs.sol";
-import { IMisbehaviourMsgs } from "../light-clients/msgs/IMisbehaviourMsgs.sol";
 import { ILightClientMsgs } from "../msgs/ILightClientMsgs.sol";
 
 /// @title Light Client Interface
-/// @notice Interface for all IBC Eureka light clients to implement.
+/// @notice Interface for all IBC light clients to implement.
 interface ILightClient {
-    /// @notice Updating the client and consensus state
-    /// @param updateClientMsg The update client message.
+    /// @notice Advances the block state (appHash) against the already-pinned validator set.
+    /// @dev The frequent, cheap update path — verifies the header's signature proof but does not
+    ///      re-store the validator set.
+    /// @param updateMsg The update message.
     /// @return The result of the update operation
-    function updateClient(bytes calldata updateClientMsg) external returns (ILightClientMsgs.UpdateResult);
+    function updateApplicationState(bytes calldata updateMsg) external returns (ILightClientMsgs.UpdateResult);
+
+    /// @notice Rotates the pinned validator set and advances the consensus state.
+    /// @dev The rare, heavy update path — verifies the header's signature proof and re-pins the
+    ///      validator set carried by the message.
+    /// @param updateMsg The update message.
+    /// @return The result of the update operation
+    function updateConsensusState(bytes calldata updateMsg) external returns (ILightClientMsgs.UpdateResult);
 
     /// @notice Querying the membership of a key-value pair
     /// @dev Notice that this message is not view, as it may update the client state for caching purposes.

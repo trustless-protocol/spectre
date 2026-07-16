@@ -18,7 +18,7 @@ import (
 )
 
 // startCosmosToEthSource wires up one Cosmos→ETH source: its own Tendermint RPC,
-// ICS-07 client and router client id, sharing the passed-in prover and the ETH
+// SpectreClient and router client id, sharing the passed-in prover and the ETH
 // beacon endpoint from the single eth_to_cosmos module. It returns the built
 // Services, its Context, and a cleanup func that stops the chain clients.
 //
@@ -93,15 +93,15 @@ func startCosmosToEthSource(
 		roleManager = envOrDefault("ROLE_MANAGER", roleManager)
 	}
 	ctx.SetAddresses(
-		c2e.ICS26Address, c2e.WrapperVerifier, c2e.Membership,
+		c2e.ICS26Address, c2e.SignatureVerifier, c2e.Membership,
 		c2e.Misbehaviour, c2e.UpdateClient, roleManager,
 	)
 
-	// Set ICS07 client address (already deployed)
-	if c2e.ICS07Client == "" {
-		return nil, zero, nil, fmt.Errorf("ics07_client address is required in cosmos_to_eth config")
+	// Set SpectreClient address (already deployed)
+	if c2e.SpectreClient == "" {
+		return nil, zero, nil, fmt.Errorf("spectre_client address is required in cosmos_to_eth config")
 	}
-	ctx.SetClient(common.HexToAddress(c2e.ICS07Client))
+	ctx.SetClient(common.HexToAddress(c2e.SpectreClient))
 
 	// Start Cosmos WebSocket client
 	if err := cosmosClient.Start(); err != nil {
@@ -112,8 +112,8 @@ func startCosmosToEthSource(
 	cosmosConfig := buildCosmosConfig(c2e, batchCfg)
 	ctx.Config = cosmosConfig
 
-	logger.Sugar().Infof("source %q: subscribing to events (ics07=%s tm=%s)",
-		cosmosRouterClientID, c2e.ICS07Client, c2e.TmRpcUrl)
+	logger.Sugar().Infof("source %q: subscribing to events (spectre_client=%s tm=%s)",
+		cosmosRouterClientID, c2e.SpectreClient, c2e.TmRpcUrl)
 
 	svc := services.New(
 		subscriber.NewSubscriber(),
@@ -152,6 +152,12 @@ func buildCosmosConfig(c2e cosmosToEthConfig, batchCfg services.BatchConfig) ser
 	}
 	if c2e.FetchTimeout != 0 {
 		cfg.FetchTimeout = time.Duration(c2e.FetchTimeout) * time.Second
+	}
+	if c2e.RotationThreshold != "" {
+		cfg.RotationThreshold = c2e.RotationThreshold
+	}
+	if c2e.RefreshInterval != 0 {
+		cfg.RefreshInterval = time.Duration(c2e.RefreshInterval) * time.Second
 	}
 	if envVal := os.Getenv("FETCH_TIMEOUT"); envVal != "" {
 		if d, err := strconv.Atoi(envVal); err == nil && d > 0 {

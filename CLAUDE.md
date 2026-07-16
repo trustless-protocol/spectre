@@ -52,7 +52,7 @@ cd relayer && go build -o relayer ./cmd
 
 # One-time setup: create light clients on both chains. Runs the Cosmos half first
 # (creates the 08-wasm ETH client → learns its real client id), then the ETH half
-# (deploys ICS07 wired to that id). Writes cosmos_wasm_client_id and ics07_client
+# (deploys ICS07 wired to that id). Writes cosmos_wasm_client_id and spectre_client
 # back into config.json automatically.
 ./relayer create-clients --config config.json --trust-level 2/3 --wasm-checksum <hex>
 # Or the two halves separately (cosmos first — eth needs the wasm id):
@@ -67,7 +67,7 @@ Config: JSON file with `modules` array containing `cosmos_to_eth` and `eth_to_co
 
 Multiple Cosmos sources: add one `cosmos_to_eth` module per source (each with a distinct `ics26_client_id`); `start` runs an independent relay loop for each in one process (shared prover + ETH endpoint, ETH events partitioned by the per-source client-id filter). Run `create-clients{,-cosmos,-eth}` once per source with `--source <ics26_client_id>` — it targets and writes the ids back into that source's module. Single-source configs are unchanged and need no `--source`.
 
-Circuit setup (from `relayer/`): `go run ./prover/cmd ./bin ../contracts/verifiers` — compiles every bucket into `bin/n{N}/{r1cs,pk,vk}.bin` and emits `Groth16Verifier_N{N}.sol`. After regeneration the vk changes: **redeploy every generated verifier and re-register via `WrapperVerifier.setBucket(...)`**, or every proof fails on-chain.
+Circuit setup (from `relayer/`): `go run ./prover/cmd ./bin ../contracts/verifiers` — compiles every bucket into `bin/n{N}/{r1cs,pk,vk}.bin` and emits `Groth16Verifier_N{N}.sol`. After regeneration the vk changes: **redeploy every generated verifier and re-register via `SignatureVerifier.setBucket(...)`**, or every proof fails on-chain.
 
 ## Architecture — orient here before editing
 
@@ -76,16 +76,16 @@ ICS26Router (UUPS) ← main IBC entry point
   ├─ ICS20Transfer (UUPS) ← token bridge
   │   ├─ IBCERC20 (Beacon) ← bridged token wrapper
   │   └─ Escrow (Beacon) ← token custody
-  └─ Groth16ICS07Tendermint (immutable, NOT proxied — replaced via router migrateClient) ← ZK light client; owns ALL client state
-      │    • updateClient       = advance appHash vs pinned valset (per-packet, no re-store)
-      │    • reAnchorPinnedSet  = rotate pinned valset (24h routine; checks nextValidatorsHash)
-      │    • quorum accounting (Σ voting power > ⅔ vs pinned set) lives HERE, not in the programs
-      ├─ programs/ (UpdateClient, Membership, Misbehaviour) ← pure, stateless verifier libraries
-      └─ WrapperVerifier ← rebuilds witness digest, dispatches by bucket (owner-set registry)
+  └─ SpectreClient (immutable, NOT proxied — replaced via router migrateClient) ← ZK light client; owns ALL client state (ERC-7201 Store)
+      │    • updateApplicationState = advance appHash vs pinned valset (per-packet, no re-store)
+      │    • updateConsensusState   = rotate pinned valset (24h routine; checks nextValidatorsHash)
+      │    • quorum accounting (Σ voting power > ⅔ vs pinned set) + ALL Store writes live HERE, not in the modules
+      ├─ light-clients/modules/ (UpdateClient, Misbehaviour = delegatecall; Membership = staticcall) ← stateless verifiers; read the Store, never write
+      └─ SignatureVerifier ← rebuilds witness digest, dispatches by bucket (owner-set registry)
           └─ Groth16Verifier_N{N}.sol ← GENERATED, one per N ∈ {4,8,16,32,64,128}, vk baked as constants
 ```
 
-ZK flow: top-N validator Ed25519 sigs (≥⅔ voting power) → padded to nearest bucket with deterministic dummy keypairs → circuit hashes the witness into a single SHA-256 public input + ECIP batch verify → per-bucket verifier checks the proof. **Pubkeys (A) are committed into the witness hash** so the on-chain pinned-set lookup is honest; **R/S are deliberately NOT in calldata or the hash** (bound by the Ed25519 verify itself). The witness layout must match byte-for-byte between `relayer/prover/hash_witness.go` and `contracts/utils/WrapperVerifier.sol`.
+ZK flow: top-N validator Ed25519 sigs (≥⅔ voting power) → padded to nearest bucket with deterministic dummy keypairs → circuit hashes the witness into a single SHA-256 public input + ECIP batch verify → per-bucket verifier checks the proof. **Pubkeys (A) are committed into the witness hash** so the on-chain pinned-set lookup is honest; **R/S are deliberately NOT in calldata or the hash** (bound by the Ed25519 verify itself). The witness layout must match byte-for-byte between `relayer/prover/hash_witness.go` and `contracts/light-clients/SignatureVerifier.sol`.
 
 ```
 relayer/
@@ -101,7 +101,7 @@ relayer/
 └── cmd/main.go     # CLI: start, create-clients{,-cosmos,-eth}, update-client, genesis, fixtures
 ```
 
-`packages/go-abigen/` — GENERATED bindings consumed by the relayer (`groth16ics07tendermint`, `ics26router`, `ics20transfer`, `ibcerc20`, `relayerhelper`).
+`packages/go-abigen/` — GENERATED bindings consumed by the relayer (`spectreclient`, `ics26router`, `ics20transfer`, `ibcerc20`, `relayerhelper`).
 
 ## Documentation map
 
@@ -135,7 +135,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 
 - **Commits**: conventional format `<type>: <description>` (feat, fix, refactor, docs, test, chore, perf, ci), English. The history contains drift ("updates", "nits") — that is debt, not license; PRs should squash-merge to a conventional message.
 - **Encoding is a contract**: `contracts/utils/Encode.sol` must produce byte-identical output to Go `proto.Marshal()`. Both sides change in the same PR, cross-validated by `EncodeTest.t.sol`.
-- **Solidity**: 120-col lines, 4-space width, double quotes (`foundry.toml` enforces). UUPS proxies for core contracts, Beacon for per-instance contracts. Programs under `contracts/programs/` stay `pure`/stateless — all client state lives in `Groth16ICS07Tendermint`.
+- **Solidity**: 120-col lines, 4-space width, double quotes (`foundry.toml` enforces). UUPS proxies for core contracts, Beacon for per-instance contracts. Modules under `contracts/light-clients/modules/` stay `pure`/stateless (read the Store, never write) — all client state lives in `SpectreClient`.
 - **Go**: wrap errors with `%w` + context; classify relayer failures transient vs permanent (`ErrPermanentRelayFailure`); every shared mutation under its owning mutex; tests run with `-race`.
 - **Bindings**: after any Solidity ABI change, regenerate with `abigen` into `packages/go-abigen/` (and `relayer/bindings/` where applicable) in the same PR.
 - **Tooling**: `bun` for JS deps; `just` recipes over raw commands when a recipe exists. `go.mod` has replace directives for local `ecip-gnark`/`decentrio-gnark` — adjust per dev setup, never commit machine-local paths.
@@ -145,7 +145,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 - **Path symmetry**: the relayer is a mirror — Cosmos→ETH and ETH→Cosmos have paired handlers, subscribers, trackers, and timeout scanners. When you change one direction, open the mirror and diff behavior. Most reliability bugs found here were asymmetries (gap recovery on one side only; purge semantics differing between the two timeout scanners).
 - **Reliability is a first-class review dimension**: audits catch exploits, not missing functionality. For any relayer change ask: what happens on crash/restart? on RPC failure? does an error path advance a cursor/timestamp it shouldn't? Trace every "no X recovery" to concrete user impact (stuck funds, expired client).
 - **Measured claims only**: statements about gas, contract size, or performance come from a command you ran (`forge build --sizes`, benchmark logs) or `docs/benchmark/`. If the number doesn't exist, measure it — a temporary probe contract is acceptable if deleted before handoff.
-- **Settled design decisions — do not relitigate**: (a) the witness commit hashes the full opaque byte layout; a byte-level 4-segment split circuit was tried and rejected (R1CS concat too expensive) — don't re-propose below N=64 scale. (b) Quorum/pinned-set logic lives in `Groth16ICS07Tendermint`, not in the programs — it's shared with Misbehaviour and needs storage; the programs' purity is a safety property. (c) Per-bucket verifier contracts are intentional (vk as constants → zero-SLOAD verify, constant size regardless of validator count).
+- **Settled design decisions — do not relitigate**: (a) the witness commit hashes the full opaque byte layout; a byte-level 4-segment split circuit was tried and rejected (R1CS concat too expensive) — don't re-propose below N=64 scale. (b) Quorum/pinned-set logic lives in `SpectreClient`, not in the modules — it's shared with Misbehaviour and needs storage; the modules' purity (read-only Store access) is a safety property. (c) Per-bucket verifier contracts are intentional (vk as constants → zero-SLOAD verify, constant size regardless of validator count).
 - **`roleManager == address(0)` means permissionless**: the constructor grants roles to `address(0)` as an escape hatch and the role modifier passes for everyone. It is documented design — don't "fix" it as a bug, don't break it silently.
 
 ## Named mistakes a weaker model makes here — and the rule that prevents each
@@ -175,7 +175,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 - [ ] Targeted tests pass (`forge test --match-test/-contract ... -vvv`); full `just test-foundry` before handoff
 - [ ] If encoding touched: `EncodeTest` passes and the Go counterpart changed in the same diff
 - [ ] If ABI changed: bindings regenerated in the same diff
-- [ ] If light-client/verifier touched: `forge build --sizes` run and the new `Groth16ICS07Tendermint` EIP-170 margin stated (headroom is only ~1.8KB)
+- [ ] If light-client/verifier touched: `forge build --sizes` run and the new `SpectreClient` EIP-170 margin stated (headroom is only ~1.8KB)
 - [ ] `just slither` run for anything touching access control, upgrades, or value transfer
 
 **Go relayer change**
@@ -187,7 +187,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 - [ ] Any new goroutine/channel: state who owns each mutable structure and on which goroutine it is touched
 
 **Prover/circuit change**
-- [ ] Witness layout change mirrored in `WrapperVerifier.sol` byte-for-byte, stated as a table (offset, width, field)
+- [ ] Witness layout change mirrored in `SignatureVerifier.sol` byte-for-byte, stated as a table (offset, width, field)
 - [ ] Explicit note whether R1CS changed — if yes, regeneration + redeploy + `setBucket` steps listed
 - [ ] Bench harness still compiles; synthetic signatures still satisfy prefix-binding
 
@@ -195,7 +195,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 - [ ] Every technical claim verified against code, with `file:line` cited in your report
 - [ ] No dead wikilinks/anchors introduced (grep the targets); external links fetched, confirmed non-404
 - [ ] Performance claims qualitative unless copied from `docs/benchmark/`
-- [ ] Terminology matches the doc↔code map (SpectreClient = Groth16ICS07Tendermint; SignatureVerifier = WrapperVerifier + bucket verifiers; UpdateConsensusState = reAnchorPinnedSet; UpdateApplicationState = updateClient)
+- [ ] Terminology matches the code (SpectreClient, SignatureVerifier + bucket verifiers, updateConsensusState, updateApplicationState). Former (pre-refactor) names for translating git history / old branches: Groth16ICS07Tendermint, WrapperVerifier, reAnchorPinnedSet, updateClient respectively
 - [ ] Obsidian vault: original untouched; edits go in the `<name>-duc.md` copy unless told otherwise per file
 
 **PR / code review**

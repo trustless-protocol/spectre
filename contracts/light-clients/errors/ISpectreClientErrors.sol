@@ -1,14 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-/// @title IGroth16ICS07TendermintErrors
-/// @notice Interface for errors of the Groth16ICS07Tendermint contract.
-interface IGroth16ICS07TendermintErrors {
-    /// @notice The error that is returned when the verification key does not match the expected value.
-    /// @param expected The expected verification key.
-    /// @param actual The actual verification key.
-    error VerificationKeyMismatch(bytes32 expected, bytes32 actual);
-
+/// @title ISpectreClientErrors
+/// @notice Interface for errors of the SpectreClient contract and its modules.
+interface ISpectreClientErrors {
     /// @notice The error that is returned when attempting to update the client with a non-monotonic height.
     /// @param latestHeight The latest height in client state.
     /// @param updateHeight The height being updated to.
@@ -34,30 +29,6 @@ interface IGroth16ICS07TendermintErrors {
     /// @param expected The expected chain ID.
     /// @param actual The actual chain ID.
     error ChainIdMismatch(string expected, string actual);
-
-    /// @notice The error that is returned when the trust threshold does not match the expected value.
-    /// @param expectedNumerator The expected numerator of the trust threshold.
-    /// @param expectedDenominator The expected denominator of the trust threshold.
-    /// @param actualNumerator The actual numerator of the trust threshold.
-    /// @param actualDenominator The actual denominator of the trust threshold.
-    error TrustThresholdMismatch(
-        uint256 expectedNumerator, uint256 expectedDenominator, uint256 actualNumerator, uint256 actualDenominator
-    );
-
-    /// @notice The error that is returned when the trusting period does not match the expected value.
-    /// @param expected The expected trusting period in seconds.
-    /// @param actual The actual trusting period in seconds.
-    error TrustingPeriodMismatch(uint256 expected, uint256 actual);
-
-    /// @notice The error that is returned when the unbonding period does not match the expected value.
-    /// @param expected The expected unbonding period in seconds.
-    /// @param actual The actual unbonding period in seconds.
-    error UnbondingPeriodMismatch(uint256 expected, uint256 actual);
-
-    /// @notice The error that is returned when the clock drift does not match the stored client state.
-    /// @param expected The expected clock drift in seconds.
-    /// @param actual The actual clock drift in seconds.
-    error ClockDriftMismatch(uint256 expected, uint256 actual);
 
     /// @notice The error that is returned when the trusting period is longer than the unbonding period.
     /// @param trustingPeriod The trusting period in seconds.
@@ -92,34 +63,9 @@ interface IGroth16ICS07TendermintErrors {
     /// @param actual The actual consensus state root.
     error ConsensusStateRootMismatch(bytes32 expected, bytes32 actual);
 
-    /// @notice The error that is returned when the client state does not match the expected value.
-    /// @param expected The expected client state.
-    /// @param actual The actual client state.
-    error ClientStateMismatch(bytes expected, bytes actual);
-
-    /// @notice The error that is returned when the update client and membership program contains misbehavior.
-    /// @dev Misbehavior cannot be handled in membership handler, so it is returned as an error.
-    error CannotHandleMisbehavior();
-
-    /// @notice The error that is returned when the proof height does not match the expected value.
-    /// @param expectedRevisionNumber The expected revision number.
-    /// @param expectedRevisionHeight The expected revision height.
-    /// @param actualRevisionNumber The actual revision number.
-    /// @param actualRevisionHeight The actual revision height.
-    error ProofHeightMismatch(
-        uint64 expectedRevisionNumber,
-        uint64 expectedRevisionHeight,
-        uint64 actualRevisionNumber,
-        uint64 actualRevisionHeight
-    );
-
     /// @notice The error that is returned when the membership type is unknown.
     /// @param membershipType The unknown membership type.
     error UnknownMembershipType(uint8 membershipType);
-
-    /// @notice The error that is returned when the zk algorithm is unknown.
-    /// @param algorithm The unknown zk algorithm.
-    error UnknownZkAlgorithm(uint8 algorithm);
 
     /// @notice Returned when the feature is not supported.
     error FeatureNotSupported();
@@ -168,7 +114,7 @@ interface IGroth16ICS07TendermintErrors {
     /// @notice Returned when the Groth16 proof verification fails.
     error ProofVerificationFailed();
 
-    /// @notice Returned when any of the per-slot arrays in MsgUpdateClient has a length
+    /// @notice Returned when any of the per-slot arrays in a BatchProof has a length
     ///         different from the declared bucket size.
     error BatchLengthMismatch();
 
@@ -177,12 +123,11 @@ interface IGroth16ICS07TendermintErrors {
     /// @param maxValidatorCount maximum active validators supported by this client.
     error ValidatorCountExceedsLimit(uint256 validatorCount, uint256 maxValidatorCount);
 
-    /// @notice Returned when a signer index in the update-client message exceeds the
-    ///         proposed validator set size.
+    /// @notice Returned when a signer index in the update message exceeds the proposed validator set size.
     /// @param index the out-of-range signer index.
     error SignerIndexOutOfRange(uint32 index);
 
-    /// @notice Returned when the pubkey bundled in the update-client message does not
+    /// @notice Returned when the pubkey bundled in the update message does not
     ///         match the validator it claims to represent.
     /// @param index the validator index with the mismatched pubkey.
     error PubkeyMismatch(uint32 index);
@@ -223,4 +168,7 @@ interface IGroth16ICS07TendermintErrors {
     /// @param validatorsHash the validator-set hash used for the cache lookup.
     /// @param index the missing validator index.
     error CachedSignerNotFound(bytes32 validatorsHash, uint32 index);
+
+    /// @notice Returned when a delegatecall-only module is invoked directly.
+    error DirectCallNotAllowed();
 }

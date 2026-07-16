@@ -1,3 +1,5 @@
+> **Note:** the contract/function names below are pre-refactor (`Groth16ICS07Tendermint`, `WrapperVerifier`, `updateClient`) and are kept as-is for historical accuracy. See the current docs for the post-refactor `SpectreClient` / `SignatureVerifier` / `updateApplicationState`+`updateConsensusState` naming.
+
 # `test_gas_n16` flamegraph notes
 
 ## Command

@@ -3,22 +3,20 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { Groth16ICS07Tendermint } from "../../contracts/light-clients/Groth16ICS07Tendermint.sol";
-import { Misbehaviour } from "../../contracts/programs/Misbehaviour.sol";
+import { SpectreClient } from "../../contracts/light-clients/SpectreClient.sol";
+import { Misbehaviour } from "../../contracts/light-clients/modules/Misbehaviour.sol";
 import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
-import { IMisbehaviourMsgs } from "../../contracts/light-clients/msgs/IMisbehaviourMsgs.sol";
+import { ISpectreClientMsgs } from "../../contracts/light-clients/msgs/ISpectreClientMsgs.sol";
 import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
-import { IVerifier } from "../../contracts/interfaces/IVerifier.sol";
-import { IMembership } from "../../contracts/interfaces/IMembership.sol";
-import { IMisbehaviour } from "../../contracts/interfaces/IMisbehaviour.sol";
+import { ISignatureVerifier } from "../../contracts/light-clients/interfaces/ISignatureVerifier.sol";
+import { IMembership } from "../../contracts/light-clients/interfaces/IMembership.sol";
+import { IUpdateClient } from "../../contracts/light-clients/interfaces/IUpdateClient.sol";
 import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
-import { IUpdateClient } from "../../contracts/interfaces/IUpdateClient.sol";
-import { IUpdateClientMsgs } from "../../contracts/light-clients/msgs/IUpdateClientMsgs.sol";
 import { Header as HeaderLib } from "../../contracts/utils/Header.sol";
-import { IGroth16ICS07TendermintErrors } from "../../contracts/light-clients/errors/IGroth16ICS07TendermintErrors.sol";
+import { ISpectreClientErrors } from "../../contracts/light-clients/errors/ISpectreClientErrors.sol";
 import { IAccessControl } from "@openzeppelin-contracts/access/IAccessControl.sol";
 
-contract MockVerifierForMisbehaviour is IVerifier {
+contract MockVerifierForMisbehaviour is ISignatureVerifier {
     bool internal result = true;
     uint256 public calls;
 
@@ -33,7 +31,7 @@ contract MockVerifierForMisbehaviour is IVerifier {
         uint256[2] calldata,
         bytes32[] calldata,
         bool[] calldata,
-        IVerifier.SharedBlock calldata
+        ISignatureVerifier.SharedBlock calldata
     )
         external
         returns (bool)
@@ -44,7 +42,7 @@ contract MockVerifierForMisbehaviour is IVerifier {
 }
 
 contract DummyMembershipForMisbehaviour is IMembership {
-    function membership(
+    function verifyMembership(
         bytes32,
         IMembershipMsgs.KVPair[] calldata,
         IMembershipMsgs.MerkleProof[] calldata
@@ -54,81 +52,17 @@ contract DummyMembershipForMisbehaviour is IMembership {
 }
 
 contract DummyUpdateClientForMisbehaviour is IUpdateClient {
-    function updateClient(IUpdateClientMsgs.MsgUpdateClient calldata)
+    function verifyHeader(ISpectreClientMsgs.MsgUpdateApplicationState calldata)
         external
         pure
-        returns (IUpdateClientMsgs.UpdateClientOutput memory)
+        returns (ISpectreClientMsgs.VerifyHeaderOutput memory)
     {
         revert("unused");
     }
-
-    function updateClientResolved(IUpdateClientMsgs.MsgUpdateClient calldata)
-        external
-        pure
-        returns (IUpdateClientMsgs.UpdateClientOutput memory)
-    {
-        revert("unused");
-    }
-
-    function updateClientCachedCurrent(IUpdateClientMsgs.MsgUpdateClient calldata)
-        external
-        pure
-        returns (IUpdateClientMsgs.UpdateClientOutput memory)
-    {
-        revert("unused");
-    }
-
-    function updateClientCachedCurrentWithHeaderCache(
-        IUpdateClientMsgs.MsgUpdateClient calldata,
-        bytes32,
-        bytes32
-    )
-        external
-        pure
-        returns (IUpdateClientMsgs.UpdateClientOutput memory)
-    {
-        revert("unused");
-    }
-
-    function updateClientCachedCurrentTrustedNextResolvedWithHeaderCache(
-        IUpdateClientMsgs.MsgUpdateClient calldata,
-        bytes32,
-        bytes32
-    )
-        external
-        pure
-        returns (IUpdateClientMsgs.UpdateClientOutput memory)
-    {
-        revert("unused");
-    }
-}
-
-contract Groth16ICS07MisbehaviourHarness is Groth16ICS07Tendermint {
-    constructor(
-        address verifier,
-        address membership_,
-        address misbehaviour_,
-        address updateClient_,
-        bytes memory clientState_,
-        bytes32 consensusStateHash_,
-        IICS07TendermintMsgs.ValidatorSet memory initialPinnedValidatorSet,
-        address roleManager
-    )
-        Groth16ICS07Tendermint(
-            verifier,
-            membership_,
-            misbehaviour_,
-            updateClient_,
-            clientState_,
-            consensusStateHash_,
-            initialPinnedValidatorSet,
-            roleManager
-        )
-    { }
 }
 
 contract MisbehaviourTest is Test, IICS07TendermintMsgs {
-    Groth16ICS07MisbehaviourHarness internal lightClient;
+    SpectreClient internal lightClient;
     Misbehaviour internal misbehaviourVerifier;
     MockVerifierForMisbehaviour internal mockVerifier;
     DummyMembershipForMisbehaviour internal dummyMembership;
@@ -146,15 +80,15 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
     struct LegacyMsgSubmitMisbehaviour {
         IICS07TendermintMsgs.ClientState clientState;
-        IMisbehaviourMsgs.Misbehaviour misbehaviour;
+        ISpectreClientMsgs.Misbehaviour misbehaviour;
         IICS07TendermintMsgs.ConsensusState trustedConsensusState1;
         IICS07TendermintMsgs.ConsensusState trustedConsensusState2;
         uint128 time;
     }
 
     function setUp() public {
-        misbehaviourVerifier = new Misbehaviour();
         mockVerifier = new MockVerifierForMisbehaviour();
+        misbehaviourVerifier = new Misbehaviour(address(mockVerifier));
         dummyMembership = new DummyMembershipForMisbehaviour();
         dummyUpdateClient = new DummyUpdateClientForMisbehaviour();
 
@@ -187,24 +121,25 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
             clockDrift: 15
         });
 
-        bytes memory encodedClientState = abi.encode(clientState_);
-
-        lightClient = new Groth16ICS07MisbehaviourHarness(
-            address(mockVerifier),
-            address(dummyMembership),
-            address(misbehaviourVerifier),
-            address(dummyUpdateClient),
-            encodedClientState,
-            consensusStateHash_,
-            valset_,
-            address(0)
-        );
+        lightClient = _deploy(address(0));
 
         vm.warp(1_700_000_500);
     }
 
+    function _deploy(address roleManager) internal returns (SpectreClient) {
+        return new SpectreClient(
+            address(dummyUpdateClient),
+            address(dummyMembership),
+            address(misbehaviourVerifier),
+            abi.encode(clientState_),
+            consensusStateHash_,
+            valset_,
+            roleManager
+        );
+    }
+
     function test_misbehaviour_freezesWithProofBackedQuorums() public {
-        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         bytes memory encoded = abi.encode(msg_);
 
         lightClient.misbehaviour(encoded);
@@ -238,32 +173,60 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
     function test_misbehaviour_cannotFreezeWhenVerifierRejectsProof() public {
         mockVerifier.setResult(false);
-        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         bytes memory encoded = abi.encode(msg_);
 
-        vm.expectRevert(IGroth16ICS07TendermintErrors.ProofVerificationFailed.selector);
+        vm.expectRevert(ISpectreClientErrors.ProofVerificationFailed.selector);
         lightClient.misbehaviour(encoded);
 
         assertFalse(_isFrozen(lightClient), "rejected proof must not freeze");
     }
 
     function test_misbehaviour_cannotFreezeWithSubQuorumProofMetadata() public {
-        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         msg_.proof1 = _proof(2);
 
         bytes memory encoded = abi.encode(msg_);
-        vm.expectRevert(abi.encodeWithSelector(IGroth16ICS07TendermintErrors.InsufficientVotingPower.selector, 50, 100));
+        vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.InsufficientVotingPower.selector, 50, 100));
         lightClient.misbehaviour(encoded);
 
         assertFalse(_isFrozen(lightClient), "sub-quorum proof metadata must not freeze");
         assertEq(mockVerifier.calls(), 0, "sub-quorum metadata must not reach verifier");
     }
 
+    function test_misbehaviour_cannotFreezeWithStaleTime() public {
+        // Long-range freeze attempt: `time` is consistent with the (old) trusted state's trusting
+        // period but lags the wall clock beyond clockDrift. Must revert before any other check.
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        msg_.time = 1_700_000_200 * 1e9; // wall clock is 1_700_000_500, clockDrift is 15s
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ISpectreClientErrors.ProofIsTooOld.selector, 1_700_000_500, 1_700_000_200)
+        );
+        lightClient.misbehaviour(abi.encode(msg_));
+
+        assertFalse(_isFrozen(lightClient), "stale time must not freeze");
+        assertEq(mockVerifier.calls(), 0, "stale time must not reach verifier");
+    }
+
+    function test_misbehaviour_cannotFreezeWithFutureTime() public {
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        msg_.time = 1_700_000_501 * 1e9; // one second ahead of the wall clock
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ISpectreClientErrors.ProofIsInTheFuture.selector, 1_700_000_500, 1_700_000_501)
+        );
+        lightClient.misbehaviour(abi.encode(msg_));
+
+        assertFalse(_isFrozen(lightClient), "future time must not freeze");
+        assertEq(mockVerifier.calls(), 0, "future time must not reach verifier");
+    }
+
     function test_misbehaviour_rejectsSpoofedTrustedOverlapForNonAdjacentHeaders() public {
         ValidatorSet memory attackerValSet = _attackerValidatorSet();
         ValidatorSet memory spoofedTrustedValSet = _trustedValidatorSetWithSpoofedAddresses();
 
-        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         msg_.misbehaviour.header1 =
             _buildHeaderWithSets(15, bytes32(uint256(0xAAA1)), attackerValSet, spoofedTrustedValSet);
         msg_.misbehaviour.header2 =
@@ -271,20 +234,18 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         msg_.proof1 = _proofForValidatorSet(attackerValSet, 3);
         msg_.proof2 = _proofForValidatorSet(attackerValSet, 3);
 
-        vm.expectRevert(abi.encodeWithSelector(IGroth16ICS07TendermintErrors.PubkeyMismatch.selector, uint32(0)));
+        vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.PubkeyMismatch.selector, uint32(0)));
         lightClient.misbehaviour(abi.encode(msg_));
 
         assertFalse(_isFrozen(lightClient), "spoofed trusted overlap must not freeze");
     }
 
     function test_misbehaviour_rejectsProofSignerAbsentFromCommitSigs() public {
-        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         msg_.misbehaviour.header1.signedHeader.commit.commitSigs[0] =
             _commitSig(CommitSigFlag.BLOCK_ID_FLAG_ABSENT, "", 0);
 
-        vm.expectRevert(
-            abi.encodeWithSelector(IGroth16ICS07TendermintErrors.ProofSignerCommitSigMismatch.selector, uint32(0))
-        );
+        vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.ProofSignerCommitSigMismatch.selector, uint32(0)));
         lightClient.misbehaviour(abi.encode(msg_));
 
         assertFalse(_isFrozen(lightClient), "proof signer absent from commit must not freeze");
@@ -292,12 +253,12 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     }
 
     function test_misbehaviour_revertsForMismatchedHeaderHeights() public {
-        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         msg_.misbehaviour.header2 = _buildHeader(16, bytes32(uint256(0xAAA2)));
 
         bytes memory encoded = abi.encode(msg_);
         vm.expectRevert(
-            abi.encodeWithSelector(IGroth16ICS07TendermintErrors.MismatchedMisbehaviourHeaderHeights.selector, 15, 16)
+            abi.encodeWithSelector(ISpectreClientErrors.MismatchedMisbehaviourHeaderHeights.selector, 15, 16)
         );
         lightClient.misbehaviour(encoded);
 
@@ -308,19 +269,9 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     function test_misbehaviour_revertsForUnauthorizedCallerWhenManaged() public {
         address governance = makeAddr("governance");
         address unauthorized = makeAddr("unauthorized");
-        bytes memory encodedClientState = abi.encode(clientState_);
-        Groth16ICS07MisbehaviourHarness managedClient = new Groth16ICS07MisbehaviourHarness(
-            address(mockVerifier),
-            address(dummyMembership),
-            address(misbehaviourVerifier),
-            address(dummyUpdateClient),
-            encodedClientState,
-            consensusStateHash_,
-            valset_,
-            governance
-        );
+        SpectreClient managedClient = _deploy(governance);
 
-        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         bytes memory encoded = abi.encode(msg_);
 
         bytes32 misbehaviourRole = managedClient.MISBEHAVIOUR_SUBMITTER_ROLE();
@@ -346,37 +297,17 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
     function test_unfreeze_revertsWhenNotFrozen() public {
         address governance = makeAddr("governance");
-        bytes memory encodedClientState = abi.encode(clientState_);
-        Groth16ICS07MisbehaviourHarness managedClient = new Groth16ICS07MisbehaviourHarness(
-            address(mockVerifier),
-            address(dummyMembership),
-            address(misbehaviourVerifier),
-            address(dummyUpdateClient),
-            encodedClientState,
-            consensusStateHash_,
-            valset_,
-            governance
-        );
+        SpectreClient managedClient = _deploy(governance);
 
         vm.prank(governance);
-        vm.expectRevert(IGroth16ICS07TendermintErrors.ClientNotFrozen.selector);
+        vm.expectRevert(ISpectreClientErrors.ClientNotFrozen.selector);
         managedClient.unfreeze();
     }
 
     function test_unfreeze_revertsForNonAdmin() public {
         address governance = makeAddr("governance");
         address unauthorized = makeAddr("unauthorized");
-        bytes memory encodedClientState = abi.encode(clientState_);
-        Groth16ICS07MisbehaviourHarness managedClient = new Groth16ICS07MisbehaviourHarness(
-            address(mockVerifier),
-            address(dummyMembership),
-            address(misbehaviourVerifier),
-            address(dummyUpdateClient),
-            encodedClientState,
-            consensusStateHash_,
-            valset_,
-            governance
-        );
+        SpectreClient managedClient = _deploy(governance);
 
         vm.prank(unauthorized);
         vm.expectRevert(
@@ -385,16 +316,15 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         managedClient.unfreeze();
     }
 
-    function _buildValidMisbehaviourMsg() internal view returns (IMisbehaviourMsgs.MsgSubmitMisbehaviour memory) {
+    function _buildValidMisbehaviourMsg() internal view returns (ISpectreClientMsgs.MsgSubmitMisbehaviour memory) {
         IICS07TendermintMsgs.Header memory header1 = _buildHeader(15, bytes32(uint256(0xAAA1)));
         IICS07TendermintMsgs.Header memory header2 = _buildHeader(15, bytes32(uint256(0xAAA2)));
 
-        IMisbehaviourMsgs.Misbehaviour memory misbehaviour_ = IMisbehaviourMsgs.Misbehaviour({
-            client_id: ChainId({ id: CHAIN_ID, revisionNumber: 0 }), header1: header1, header2: header2
+        ISpectreClientMsgs.Misbehaviour memory misbehaviour_ = ISpectreClientMsgs.Misbehaviour({
+            clientId: ChainId({ id: CHAIN_ID, revisionNumber: 0 }), header1: header1, header2: header2
         });
 
-        return IMisbehaviourMsgs.MsgSubmitMisbehaviour({
-            clientState: clientState_,
+        return ISpectreClientMsgs.MsgSubmitMisbehaviour({
             misbehaviour: misbehaviour_,
             trustedConsensusState1: consensusState_,
             trustedConsensusState2: consensusState_,
@@ -405,10 +335,10 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     }
 
     function _buildLegacyMisbehaviourMsg() internal view returns (bytes memory) {
-        IMisbehaviourMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         return abi.encode(
             LegacyMsgSubmitMisbehaviour({
-                clientState: msg_.clientState,
+                clientState: clientState_,
                 misbehaviour: msg_.misbehaviour,
                 trustedConsensusState1: msg_.trustedConsensusState1,
                 trustedConsensusState2: msg_.trustedConsensusState2,
@@ -417,7 +347,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         );
     }
 
-    function _proof(uint256 activeCount) internal view returns (IMisbehaviourMsgs.BatchProof memory proof_) {
+    function _proof(uint256 activeCount) internal view returns (ISpectreClientMsgs.BatchProof memory proof_) {
         return _proofForValidatorSet(valset_, activeCount);
     }
 
@@ -427,7 +357,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     )
         internal
         pure
-        returns (IMisbehaviourMsgs.BatchProof memory proof_)
+        returns (ISpectreClientMsgs.BatchProof memory proof_)
     {
         proof_.bucket = 4;
         proof_.signerIndices = new uint32[](4);
@@ -443,7 +373,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         }
     }
 
-    function _isFrozen(Groth16ICS07Tendermint client) internal view returns (bool) {
+    function _isFrozen(SpectreClient client) internal view returns (bool) {
         ClientState memory state = abi.decode(client.getClientState(), (ClientState));
         return state.isFrozen;
     }

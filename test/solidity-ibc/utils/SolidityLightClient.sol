@@ -5,8 +5,6 @@ pragma solidity ^0.8.28;
 
 import { ILightClientMsgs } from "../../../contracts/msgs/ILightClientMsgs.sol";
 import { ILightClient } from "../../../contracts/interfaces/ILightClient.sol";
-import { IMisbehaviourMsgs } from "../../../contracts/light-clients/msgs/IMisbehaviourMsgs.sol";
-import { IUpdateClientMsgs } from "../../../contracts/light-clients/msgs/IUpdateClientMsgs.sol";
 
 import { ICS26Router } from "../../../contracts/ICS26Router.sol";
 
@@ -17,7 +15,11 @@ contract SolidityLightClient is ILightClient {
         _COUNTERPARTY_ICS26 = counterpartyIcs26;
     }
 
-    function updateClient(bytes calldata) external pure returns (ILightClientMsgs.UpdateResult) {
+    function updateApplicationState(bytes calldata) external pure returns (ILightClientMsgs.UpdateResult) {
+        revert("not implemented");
+    }
+
+    function updateConsensusState(bytes calldata) external pure returns (ILightClientMsgs.UpdateResult) {
         revert("not implemented");
     }
 

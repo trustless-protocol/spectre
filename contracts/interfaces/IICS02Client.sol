@@ -22,23 +22,29 @@ interface IICS02ClientAccessControlled {
         external
         returns (string memory);
 
-    /// @notice Updates the client with the given client identifier.
-    /// @dev Can only be called with the `RELAYER_ROLE`.
+    /// @notice Advances the block state of the client with the given client identifier.
+    /// @dev Can only be called with the `RELAYER_ROLE`. The frequent, cheap update path.
     /// @param clientId The client identifier
-    /// @param updateMsg The encoded update message e.g., an Groth16 proof.
+    /// @param updateMsg The encoded update message e.g., a Groth16 proof.
     /// @return The result of the update operation
-    function updateClient(
+    function updateApplicationState(
         string calldata clientId,
         bytes calldata updateMsg
     )
         external
         returns (ILightClientMsgs.UpdateResult);
 
-    /// @notice Re-anchors the pinned validator set on the client with the given client identifier.
-    /// @dev Can only be called with the `RELAYER_ROLE`.
+    /// @notice Rotates the pinned validator set of the client with the given client identifier.
+    /// @dev Can only be called with the `RELAYER_ROLE`. The rare, heavy update path.
     /// @param clientId The client identifier
-    /// @param reAnchorMsg The ABI-encoded (MsgUpdateClient, ValidatorSet) re-anchor message.
-    function reAnchorPinnedSet(string calldata clientId, bytes calldata reAnchorMsg) external;
+    /// @param updateMsg The encoded update message e.g., a Groth16 proof.
+    /// @return The result of the update operation
+    function updateConsensusState(
+        string calldata clientId,
+        bytes calldata updateMsg
+    )
+        external
+        returns (ILightClientMsgs.UpdateResult);
 
     /// @notice Migrate a client by replacing the existing counterparty information and contract address.
     /// @dev This is a privilaged operation. The caller must hold the per-clientId role returned by

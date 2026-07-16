@@ -19,11 +19,11 @@ func TestReplaceICS07Address(t *testing.T) {
 		assert func(t *testing.T, out []byte, cosmosToEth map[string]any)
 	}{
 		{
-			name: "replaces existing ics07_client",
+			name: "replaces existing spectre_client",
 			input: `{
 				"modules": [
-					{"name": "cosmos_to_eth", "config": {"ics07_client": "0xold", "other": "keep"}},
-					{"name": "eth_to_cosmos", "config": {"ics07_client": "0xother"}}
+					{"name": "cosmos_to_eth", "config": {"spectre_client": "0xold", "other": "keep"}},
+					{"name": "eth_to_cosmos", "config": {"spectre_client": "0xother"}}
 				]
 			}`,
 			assert: func(t *testing.T, out []byte, cosmosToEth map[string]any) {
@@ -31,13 +31,13 @@ func TestReplaceICS07Address(t *testing.T) {
 					t.Fatalf("other field = %v, want keep", got)
 				}
 				ethToCosmos := moduleConfigByName(t, out, "eth_to_cosmos")
-				if got := ethToCosmos["ics07_client"]; got != "0xother" {
-					t.Fatalf("eth_to_cosmos ics07_client = %v, want 0xother", got)
+				if got := ethToCosmos["spectre_client"]; got != "0xother" {
+					t.Fatalf("eth_to_cosmos spectre_client = %v, want 0xother", got)
 				}
 			},
 		},
 		{
-			name: "inserts ics07_client when absent",
+			name: "inserts spectre_client when absent",
 			input: `{
 				"modules": [
 					{"name": "cosmos_to_eth", "config": {"eth_rpc_url": "http://localhost", "nested": {"keep": true}}}
@@ -60,7 +60,7 @@ func TestReplaceICS07Address(t *testing.T) {
 			name: "preserves nested config objects",
 			input: `{
 				"modules": [
-					{"name": "cosmos_to_eth", "config": {"nested": {"config": {"ics07_client": "nested"}, "items": [{"k": "v,}]"}]}, "ics07_client": "0xold"}}
+					{"name": "cosmos_to_eth", "config": {"nested": {"config": {"spectre_client": "nested"}, "items": [{"k": "v,}]"}]}, "spectre_client": "0xold"}}
 				]
 			}`,
 			assert: func(t *testing.T, _ []byte, cosmosToEth map[string]any) {
@@ -72,8 +72,8 @@ func TestReplaceICS07Address(t *testing.T) {
 				if !ok {
 					t.Fatalf("nested.config = %T, want object", nested["config"])
 				}
-				if got := inner["ics07_client"]; got != "nested" {
-					t.Fatalf("nested.config.ics07_client = %v, want nested", got)
+				if got := inner["spectre_client"]; got != "nested" {
+					t.Fatalf("nested.config.spectre_client = %v, want nested", got)
 				}
 			},
 		},
@@ -109,14 +109,14 @@ func TestReplaceICS07Address(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			out, err := replaceConfigMember([]byte(tc.input), "ics07_client", addr)
+			out, err := replaceConfigMember([]byte(tc.input), "spectre_client", addr)
 			if err != nil {
 				t.Fatalf("replaceConfigMember() error = %v", err)
 			}
 
 			cosmosToEth := moduleConfigByName(t, out, "cosmos_to_eth")
-			if got := cosmosToEth["ics07_client"]; got != addr {
-				t.Fatalf("ics07_client = %v, want %s", got, addr)
+			if got := cosmosToEth["spectre_client"]; got != addr {
+				t.Fatalf("spectre_client = %v, want %s", got, addr)
 			}
 			tc.assert(t, out, cosmosToEth)
 		})
@@ -132,7 +132,7 @@ func TestReplaceConfigMember_WasmClientID(t *testing.T) {
 		t.Parallel()
 		in := `{
 			"modules": [
-				{"name": "cosmos_to_eth", "config": {"ics07_client": "0xabc"}}
+				{"name": "cosmos_to_eth", "config": {"spectre_client": "0xabc"}}
 			]
 		}`
 		out, err := replaceConfigMember([]byte(in), "cosmos_wasm_client_id", id)
@@ -143,8 +143,8 @@ func TestReplaceConfigMember_WasmClientID(t *testing.T) {
 		if got := cfg["cosmos_wasm_client_id"]; got != id {
 			t.Fatalf("cosmos_wasm_client_id = %v, want %s", got, id)
 		}
-		if got := cfg["ics07_client"]; got != "0xabc" {
-			t.Fatalf("ics07_client = %v, want preserved 0xabc", got)
+		if got := cfg["spectre_client"]; got != "0xabc" {
+			t.Fatalf("spectre_client = %v, want preserved 0xabc", got)
 		}
 	})
 

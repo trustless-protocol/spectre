@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	contractICS26Router "relayer/bindings/ICS26Router"
+	spectreContract "relayer/bindings/SpectreClient"
 	client "relayer/client"
 	"relayer/prover"
 
@@ -31,7 +31,7 @@ var tendermintAbiJson *abi.ABI
 var initErr error
 
 func init() {
-	tendermintAbiJson, initErr = tendermintContract.ContractGroth16ICS07TendermintMetaData.GetAbi()
+	tendermintAbiJson, initErr = spectreContract.ContractSpectreClientMetaData.GetAbi()
 	if initErr != nil {
 		log.Fatal(initErr)
 	}
@@ -42,7 +42,6 @@ type TransactionHandler interface {
 	CreateEthClient(ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) (string, error)
 	SendEthTx(ctx Context, msg any) error
 	SendEthTxBatch(ctx Context, msgs []any) error
-	SendReAnchorPinnedSet(ctx Context, updateMsg any, newPinnedValidatorSet any) error
 	SendCosmosTx(ctx Context, msg any) error
 	SendCosmosTxBatch(ctx Context, msgs []any) error
 	CosmosSignerAddress() (string, error)
@@ -114,31 +113,36 @@ func (s *Services) StartLoop(ctx Context) {
 	// routinely run update client
 	go func() {
 		// TODO: Revisit routine scheduling strategy (interval/backoff/event-driven mix) to ensure this is optimal for production.
-		routineInterval := 24 * time.Hour
-		var reAnchorBackoff routineBackoff
+		// One configured interval gates both freshness routines (cosmos client
+		// refresh below and the ETH client update further down).
+		routineInterval := s.cosmosConfig.RefreshInterval
+		if routineInterval == 0 {
+			routineInterval = DEFAULT_REFRESH_INTERVAL
+		}
+		var refreshBackoff routineBackoff
 		var ethClientBackoff routineBackoff
 		for {
 			now := time.Now()
 
-			// periodically advance the cosmos light client and re-anchor the
-			// pinned validator set in one shot. The re-anchor reads the
+			// periodically advance the cosmos light client, rotating the
+			// pinned validator set when it is stale. The refresh reads the
 			// authoritative on-chain trusted height; if the client is already
 			// caught up it skips the transaction and returns the current block.
 			ethUpdateTime, _ := ctx.latestEthTimestamp.Snapshot()
-			if ethUpdateTime.Add(routineInterval).Before(now) && reAnchorBackoff.Ready(now) {
-				latestBlock, err := s.worker.ReAnchorCosmosPinnedSet(
+			if ethUpdateTime.Add(routineInterval).Before(now) && refreshBackoff.Ready(now) {
+				latestBlock, err := s.worker.RefreshCosmosClient(
 					ctx,
 					s.cosmosConfig.ProofType,
 					s.cosmosConfig.TrustLevel,
 				)
 				if err != nil {
-					delay := reAnchorBackoff.RecordFailure(time.Now())
-					log.Printf("[Routine] Failed to re-anchor cosmos pinned set: %v; retrying after %s", err, delay)
-				} else if err := recordReAnchorResult(ctx.latestEthTimestamp, latestBlock, time.Now()); err != nil {
-					delay := reAnchorBackoff.RecordFailure(time.Now())
-					log.Printf("[Routine] Failed to record cosmos pinned set re-anchor result: %v; retrying after %s", err, delay)
+					delay := refreshBackoff.RecordFailure(time.Now())
+					log.Printf("[Routine] Failed to refresh cosmos client: %v; retrying after %s", err, delay)
+				} else if err := recordRefreshResult(ctx.latestEthTimestamp, latestBlock, time.Now()); err != nil {
+					delay := refreshBackoff.RecordFailure(time.Now())
+					log.Printf("[Routine] Failed to record cosmos client refresh result: %v; retrying after %s", err, delay)
 				} else {
-					reAnchorBackoff.RecordSuccess()
+					refreshBackoff.RecordSuccess()
 				}
 			}
 
@@ -204,7 +208,7 @@ func (s *Services) StartLoop(ctx Context) {
 	log.Println("[StartLoop] Eth batch channel closed, exiting loop")
 }
 
-func recordReAnchorResult(timestamp *Timestamp, lightBlock *client.LightBlock, now time.Time) error {
+func recordRefreshResult(timestamp *Timestamp, lightBlock *client.LightBlock, now time.Time) error {
 	if lightBlock == nil {
 		return fmt.Errorf("no light block returned")
 	}
@@ -242,10 +246,13 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 	// re-checks the authoritative on-chain trusted height before deciding to
 	// regenerate the (expensive) Groth16 proof (issue #76 #2).
 	_, ethTrustedHeight := ctx.latestEthTimestamp.Snapshot()
+	// forceRotation=false: per-packet flushes rotate the pinned set only when
+	// its overlap has decayed to the configured rotation threshold.
 	updateBuild, err := s.worker.BuildCosmosClientUpdateMsg(
 		ctx, s.cosmosConfig.ProofType,
 		int64(ethTrustedHeight),
 		s.cosmosConfig.TrustLevel,
+		false,
 	)
 	if err != nil {
 		// The whole chunk was already sliced off the queue by CheckCosmos; if we
@@ -294,11 +301,11 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 		s.BatchBuilder.PendingTracker.Add(*p.Packet, p.BlockNumber)
 	}
 
-	// +1 capacity for the optional updateClient prepend.
+	// +1 capacity for the optional client-update prepend.
 	msgs := make([]cosmosBatchMsg, 0, len(planned)+1)
 	if updateBuild.HasMsg {
 		msgs = append(msgs, cosmosBatchMsg{
-			msg:   updateBuild.Msg,
+			msg:   *updateBuild,
 			label: "UpdateClient",
 		})
 	}
@@ -830,7 +837,7 @@ func evmErrorDataBytes(raw interface{}) []byte {
 
 func (s *Services) updateCosmosClientForEth(ctx Context, tag string) (*client.LightBlock, bool) {
 	_, ethTrustedHeight := ctx.latestEthTimestamp.Snapshot()
-	latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ethTrustedHeight), s.cosmosConfig.TrustLevel)
+	latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ethTrustedHeight), s.cosmosConfig.TrustLevel, false)
 	if err != nil {
 		log.Printf("[%s] Failed to update cosmos light client: %v", tag, err)
 		return nil, false
@@ -1059,20 +1066,20 @@ func (s *Services) cosmosMembership(ctx Context, packet channeltypesv2.Packet, c
 		return nil, err
 	}
 
-	membershipMsg := tendermintContract.ILightClientMsgsMsgVerifyMembership{
-		Height: tendermintContract.IICS02ClientMsgsHeight{
+	membershipMsg := spectreContract.ILightClientMsgsMsgVerifyMembership{
+		Height: spectreContract.IICS02ClientMsgsHeight{
 			RevisionHeight: uint64(height),
 			RevisionNumber: 0,
 		},
-		KvPairs: []tendermintContract.IMembershipMsgsKVPair{
+		KvPairs: []spectreContract.IMembershipMsgsKVPair{
 			{
 				Path:  ibcPath,
 				Value: value,
 			},
 		},
-		MerkleProofs: []tendermintContract.IMembershipMsgsMerkleProof{merkleProof},
+		MerkleProofs: []spectreContract.IMembershipMsgsMerkleProof{merkleProof},
 		AppHash:      utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
-		TrustedConsensusState: tendermintContract.IICS07TendermintMsgsConsensusState{
+		TrustedConsensusState: spectreContract.IICS07TendermintMsgsConsensusState{
 			Timestamp:          big.NewInt(latestLightBlock.SignedHeader.Header.Time.UnixNano()),
 			Root:               utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
 			NextValidatorsHash: utils.BytesToBytes32(latestLightBlock.SignedHeader.Header.NextValidatorsHash),
@@ -1103,20 +1110,20 @@ func (s *Services) cosmosNonMembership(ctx Context, packet channeltypesv2.Packet
 		return nil, err
 	}
 
-	nonMembershipMsg := tendermintContract.ILightClientMsgsMsgVerifyNonMembership{
-		Height: tendermintContract.IICS02ClientMsgsHeight{
+	nonMembershipMsg := spectreContract.ILightClientMsgsMsgVerifyNonMembership{
+		Height: spectreContract.IICS02ClientMsgsHeight{
 			RevisionHeight: uint64(height),
 			RevisionNumber: 0,
 		},
-		KvPairs: []tendermintContract.IMembershipMsgsKVPair{
+		KvPairs: []spectreContract.IMembershipMsgsKVPair{
 			{
 				Path:  ibcPath,
 				Value: value,
 			},
 		},
-		MerkleProofs: []tendermintContract.IMembershipMsgsMerkleProof{merkleProof},
+		MerkleProofs: []spectreContract.IMembershipMsgsMerkleProof{merkleProof},
 		AppHash:      utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
-		TrustedConsensusState: tendermintContract.IICS07TendermintMsgsConsensusState{
+		TrustedConsensusState: spectreContract.IICS07TendermintMsgsConsensusState{
 			Timestamp:          big.NewInt(latestLightBlock.SignedHeader.Header.Time.UnixNano()),
 			Root:               utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
 			NextValidatorsHash: utils.BytesToBytes32(latestLightBlock.SignedHeader.Header.NextValidatorsHash),
@@ -1131,9 +1138,9 @@ func (s *Services) cosmosNonMembership(ctx Context, packet channeltypesv2.Packet
 	return calldata[4:], nil
 }
 
-func parseMerkleProof(proofs []*ics23.CommitmentProof, sequence uint64) (tendermintContract.IMembershipMsgsMerkleProof, error) {
-	merkleProof := tendermintContract.IMembershipMsgsMerkleProof{
-		Proofs: []tendermintContract.IMembershipMsgsCommitmentProof{},
+func parseMerkleProof(proofs []*ics23.CommitmentProof, sequence uint64) (spectreContract.IMembershipMsgsMerkleProof, error) {
+	merkleProof := spectreContract.IMembershipMsgsMerkleProof{
+		Proofs: []spectreContract.IMembershipMsgsCommitmentProof{},
 	}
 	for _, p := range proofs {
 		commitmentProof, err := client.ParseCommitmentProof(p)

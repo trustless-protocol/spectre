@@ -47,10 +47,10 @@ import (
 	ictcosmos "github.com/cosmos/interchaintest/v10/chain/cosmos"
 	"github.com/cosmos/interchaintest/v10/ibc"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/groth16ics07tendermint"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ibcerc20"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ics20transfer"
 	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
+	"github.com/decentrio/fast-ibc/packages/go-abigen/spectreclient"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/chainconfig"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/cosmos"
@@ -74,8 +74,8 @@ type MultichainTestSuite struct {
 	chainAGroth16Ics07Address ethcommon.Address
 	chainBGroth16Ics07Address ethcommon.Address
 
-	chainAGroth16Ics07Contract *groth16ics07tendermint.Contract
-	chainBGroth16Ics07Contract *groth16ics07tendermint.Contract
+	chainAGroth16Ics07Contract *spectreclient.Contract
+	chainBGroth16Ics07Contract *spectreclient.Contract
 	ics26Contract              *ics26router.Contract
 	ics20Contract              *ics20transfer.Contract
 	erc20Contract              *erc20.Contract
@@ -144,8 +144,8 @@ func (s *MultichainTestSuite) generateEthCosmosRelayerConfig(
 			BeaconAPI:          beaconAPI,
 			SignerAddress:      signer.FormattedAddress(),
 			MockWasmClient:     os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
-			ICS07Client:        ics07Client,
-			WrapperVerifier:    s.contractAddresses.WrapperVerifier,
+			SpectreClient:      ics07Client,
+			SignatureVerifier:  s.contractAddresses.SignatureVerifier,
 			Membership:         s.contractAddresses.Membership,
 			Misbehaviour:       s.contractAddresses.Misbehaviour,
 			UpdateClient:       s.contractAddresses.UpdateClient,
@@ -627,7 +627,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		)
 
 		var err error
-		s.chainAGroth16Ics07Contract, err = groth16ics07tendermint.NewContract(s.chainAGroth16Ics07Address, eth.RPCClient)
+		s.chainAGroth16Ics07Contract, err = spectreclient.NewContract(s.chainAGroth16Ics07Address, eth.RPCClient)
 		s.Require().NoError(err)
 	}))
 
@@ -644,7 +644,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		)
 
 		var err error
-		s.chainBGroth16Ics07Contract, err = groth16ics07tendermint.NewContract(s.chainBGroth16Ics07Address, eth.RPCClient)
+		s.chainBGroth16Ics07Contract, err = spectreclient.NewContract(s.chainBGroth16Ics07Address, eth.RPCClient)
 		s.Require().NoError(err)
 	}))
 

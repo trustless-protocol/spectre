@@ -1,9 +1,9 @@
-name: E2E — Groth16ICS07Tendermint
+name: E2E — SpectreClient
 
-# Manually-triggered matrix run of TestWithGroth16ICS07TendermintTestSuite
-# (deploy + updateClient against the Groth16 Tendermint light client only).
-# Smallest suite. Delegates to the reusable e2e-suite.yml. Trigger from the
-# Actions tab.
+# Manually-triggered matrix run of TestWithSpectreClientTestSuite
+# (deploy + updateApplicationState/updateConsensusState against the Spectre
+# Tendermint light client only). Smallest suite. Delegates to the reusable
+# e2e-suite.yml. Trigger from the Actions tab.
 on:
   workflow_dispatch:
     inputs:
@@ -21,7 +21,7 @@ jobs:
     uses: ./.github/workflows/e2e-suite.yml
     secrets: inherit
     with:
-      suite: TestWithGroth16ICS07TendermintTestSuite
+      suite: TestWithSpectreClientTestSuite
       ref: ${{ inputs.ref }}
       filter: ${{ inputs.filter }}
       proof_type: groth16

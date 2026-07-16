@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { Membership } from "../../contracts/programs/Membership.sol";
+import { Membership } from "../../contracts/light-clients/modules/Membership.sol";
 
 /// @dev Exposes the internal compareBytes used by non-membership key ordering.
 contract CompareBytesHarness is Membership {

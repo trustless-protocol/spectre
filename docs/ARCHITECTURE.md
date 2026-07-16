@@ -13,8 +13,8 @@ Solidity IBC Eureka is a production IBC v2 implementation for Ethereum-Cosmos in
               │    ├─ IBCERC20       │                     ▲
               │    └─ Escrow         │                     │
               │         │            │              ┌──────┴──────┐
-              │  Groth16ICS07Tendermint  │◄── proofs ──│  Go Relayer │
-              │    └─ WrapperVerifier│              │  (Groth16)  │
+              │     SpectreClient    │◄── proofs ──│  Go Relayer │
+              │    └─ SignatureVerifier│            │  (Groth16)  │
               │       └─ Groth16    │              └─────────────┘
               └──────────────────────┘
 ```
@@ -28,16 +28,21 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
     ├─ ICS20Transfer (UUPS) ─── ICS-20 fungible token transfers
     │   ├─ IBCERC20 (Beacon Proxy) ─── Wrapper ERC20 for bridged tokens
     │   └─ Escrow (Beacon Proxy) ─── Token custody during transfer
-    └─ Groth16ICS07Tendermint (immutable, no proxy) ─── ZK light client + 2/3 quorum check
-        ├─ programs/ ─── UpdateClient · Membership · Misbehaviour
-        │                (pure, stateless verifier contracts; all client state
-        │                lives in Groth16ICS07Tendermint itself)
+    └─ SpectreClient (immutable, no proxy) ─── ZK light client + 2/3 quorum check
+        │                       Owns ALL client state in an ERC-7201 namespaced
+        │                       Store (consensus states, the pinned validator
+        │                       set, client state). The ⅔ quorum accounting and
+        │                       every Store write live here, not in the modules.
+        ├─ modules/ ─── Stateless verification logic, invoked by SpectreClient:
+        │   ├─ UpdateClient (delegatecall) ─── reads the shared Store, never writes
+        │   ├─ Misbehaviour (delegatecall) ─── reads the shared Store, never writes
+        │   └─ Membership (staticcall) ─── pure ICS-23, no Store access
         ├─ pinned validator set ─── current set stored as an SSTORE2 blob
         │                          (≤ 180 validators) plus per-height snapshots
         │                          binary-searched by trusted height; rotated only
-        │                          by reAnchorPinnedSet after verifying the new set
-        │                          against the header's nextValidatorsHash
-        └─ WrapperVerifier ─── Recomputes the witness commitment from calldata
+        │                          by updateConsensusState after verifying the new
+        │                          set against the header's nextValidatorsHash
+        └─ SignatureVerifier ─── Recomputes the witness commitment from calldata
             │                  (PrefixHead ‖ roundPresent ‖ blockHash ‖ per-slot
             │                  active ‖ pubkey), exposes the SHA-256 digest as two
             │                  128-bit public inputs, and dispatches to the
@@ -47,16 +52,23 @@ ICS26Router (UUPS) ─── Main entry point for all IBC messages
                                         auto-generated from each bucket's VK
 ```
 
-The client splits the ICS-02 `updateClient` duty in two entry points:
+SpectreClient exposes two update entry points, both of which verify the
+per-block Groth16 signature proof but differ in how they treat the validator
+set:
 
-- `updateClient(msg)` — the per-packet path: verifies the header (UpdateClient
-  program) and the Groth16 batch proof, sums the signers' voting power against
-  the **pinned** validator set (> 2/3 of pinned total), and advances the
-  consensus state without re-storing any validator set.
-- `reAnchorPinnedSet(msg, newValSet)` — the periodic rotation: same header +
-  proof + quorum verification, then requires
-  `Header.hashValSet(newValSet) == header.nextValidatorsHash` before re-pinning
-  the set (new SSTORE2 blob + a per-height snapshot for historical anchoring).
+- `updateApplicationState(bytes)` — the frequent, per-packet path. Advances
+  the header's appHash against the already-pinned validator set without
+  re-storing any validator data. This is the hot path folded into every
+  packet multicall.
+- `updateConsensusState(bytes)` — the rare, ~24h path. Rotates and re-pins the
+  validator set and advances consensus state, requiring
+  `hashValSet(newValSet) == header.nextValidatorsHash` before the new set is
+  pinned into the Store (new SSTORE2 blob + a per-height snapshot for
+  historical anchoring).
+
+The `UpdateClient` module (invoked via delegatecall) performs the header /
+signature checks against the shared Store; SpectreClient itself does the ⅔
+quorum accounting and all Store writes.
 
 ## Request Flow: IBC Transfer (Cosmos → Ethereum)
 
@@ -69,14 +81,17 @@ The client splits the ICS-02 `updateClient` duty in two entry points:
 4. Relayer generates a single Groth16 batch proof for the bucket
    (prover/circuit.go BatchCircuit + prover/prover.go bucket registry).
 5. Relayer submits to Ethereum:
-   a. Groth16ICS07Tendermint.updateClient() — verifies the header via the
-      UpdateClient program, resolves each proof signer against the pinned
-      validator set (SSTORE2 blob; duplicate-signer bitmask), requires the
-      summed voting power to exceed 2/3 of the pinned total, then dispatches
-      to WrapperVerifier.verifyBatchProof(). The validator set itself is
-      re-stored only by the periodic reAnchorPinnedSet rotation — never on
-      the per-packet path.
-   b. WrapperVerifier recomputes the witness commitment from calldata
+   a. SpectreClient.updateApplicationState() — the frequent per-packet path:
+      advances the header's appHash against the already-pinned validator set.
+      SpectreClient resolves each proof signer against the pinned validator
+      set (SSTORE2 blob; duplicate-signer bitmask), requires the summed voting
+      power to exceed 2/3 of the pinned total, and writes the new consensus
+      state into its Store, invoking the `UpdateClient` module via
+      delegatecall (the module reads the shared Store but never writes) and
+      dispatching to SignatureVerifier.verifyBatchProof(). The rare
+      validator-set rotation goes through `updateConsensusState()` instead
+      (see below).
+   b. SignatureVerifier recomputes the witness commitment from calldata
       (PrefixHead ‖ roundPresent ‖ blockHash ‖ per-slot active ‖ pubkey)
       and forwards the SHA-256 digest, packed into two 128-bit public
       inputs, to the bucket-specific Groth16Verifier_N{N}.
@@ -84,13 +99,16 @@ The client splits the ICS-02 `updateClient` duty in two entry points:
    d. ICS20Transfer mints IBCERC20 tokens (or unlocks Escrow)
 ```
 
-The Cosmos→ETH `updateClient` and the packet's `recvPacket` are submitted
+The Cosmos→ETH client update and the packet's `recvPacket` are submitted
 as a single `ICS26Router.multicall(...)` so the update + packet apply
-atomically. The relayer's `BuildCosmosClientUpdateMsg` queries the
-authoritative on-chain trusted height before regenerating a Groth16 proof,
-so subsequent chunks of the same source block (or any race where another
-relayer or a crashed-replayer has already advanced the client) short-
-circuit to `HasMsg=false` and skip the ~90 s proof gen.
+atomically. Because both `updateApplicationState` and `updateConsensusState`
+are exposed as router passthroughs, the relayer folds whichever one the block
+requires into the packet multicall. The relayer's
+`BuildCosmosClientUpdateMsg` queries the authoritative on-chain trusted height
+before regenerating a Groth16 proof, so subsequent chunks of the same source
+block (or any race where another relayer or a crashed-replayer has already
+advanced the client) short-circuit to `HasMsg=false` and skip the ~90 s proof
+gen.
 
 ## Request Flow: IBC Transfer (Ethereum → Cosmos)
 
@@ -109,7 +127,7 @@ circuit to `HasMsg=false` and skip the ~90 s proof gen.
    on Cosmos; 08-wasm verifies membership, then ICS Core dispatches to the
    destination app (mint / unlock)
 9. If the packet times out before step 8 lands, timeoutEthSend bounces back
-   through Groth16ICS07Tendermint to submit MsgTimeoutPacket on ETH
+   through SpectreClient to submit MsgTimeoutPacket on ETH
 ```
 
 ## Request Flow: Cosmos-originated Timeout (background)
@@ -192,7 +210,7 @@ gnark BatchCircuit (circuit.go):
     ↓
 groth16.Prove(byBucket[N]) → proof[8], commitments[2], commitmentPok[2]
     ↓
-On-chain WrapperVerifier.verifyBatchProof(bucket, proof, commitments,
+On-chain SignatureVerifier.verifyBatchProof(bucket, proof, commitments,
 commitmentPok, pubkeys, active, shared):
    - _hashWitness recomputes the same PrefixHead ‖ roundPresent ‖ blockHash
      ‖ per-slot active ‖ pubkey layout from calldata byte-for-byte — no
@@ -234,8 +252,9 @@ Cross-validated via `test/solidity-ibc/EncodeTest.t.sol`.
 |-----------|----------|---------|
 | `contracts/` | Solidity | Core IBC protocol, ICS20, light client, encoding |
 | `contracts/utils/` | Solidity | Encoding, hashing, verifiers, helpers |
-| `contracts/programs/` | Solidity | UpdateClient, Membership, Misbehaviour verification |
-| `contracts/light-clients/` | Solidity | Groth16ICS07Tendermint + message types |
+| `contracts/light-clients/modules/` | Solidity | UpdateClient, Membership, Misbehaviour verification modules |
+| `contracts/light-clients/` | Solidity | SpectreClient + SignatureVerifier + message types |
+| `contracts/light-clients/` | Solidity | Light client implementations |
 | `relayer/` | Go | Relayer CLI + Groth16 prover |
 | `relayer/cmd/` | Go | CLI: start, create-clients{,-cosmos,-eth}, update-client, genesis, fixtures |
 | `relayer/prover/` | Go | Bucketed Ed25519 batch prover (BatchCircuit, witness hash, dummy padding) |
@@ -284,7 +303,7 @@ test/ ──────────► contracts/ ◄────── scripts
 | ICS20Transfer | Admins | UUPS | `upgradeToAndCall` |
 | Escrow | ICS20Transfer | Beacon | `upgradeEscrowTo` |
 | IBCERC20 | ICS20Transfer | Beacon | `upgradeIBCERC20To` |
-| Groth16ICS07Tendermint | per-clientId migrator role | none (immutable) | replaced via `ICS26Router.migrateClient` |
+| SpectreClient | per-clientId migrator role | none (immutable) | replaced via `ICS26Router.migrateClient` |
 
 UUPS for core contracts (admin-governed). Beacon for instances (ICS20Transfer upgrades all atomically).
 The light client is deliberately not upgradeable: it is initialized in its constructor and, if it must

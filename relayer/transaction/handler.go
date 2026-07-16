@@ -13,10 +13,9 @@ import (
 	"sync"
 	"time"
 
-	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
 	contractICS26Router "relayer/bindings/ICS26Router"
 	routerContract "relayer/bindings/ICS26Router"
-	updateclient "relayer/bindings/UpdateClient"
+	spectreContract "relayer/bindings/SpectreClient"
 	relayerclient "relayer/client"
 	"relayer/keys"
 	services "relayer/services"
@@ -232,20 +231,20 @@ func ethLightClientIDOnCosmos(ctx services.Context) (string, error) {
 	return clientID, nil
 }
 
-func toGroth16ValidatorSet(in relayerclient.ContractValidatorSet) tendermintContract.IICS07TendermintMsgsValidatorSet {
-	validators := make([]tendermintContract.IICS07TendermintMsgsValidatorInfo, len(in.Validators))
+func toGroth16ValidatorSet(in relayerclient.ContractValidatorSet) spectreContract.IICS07TendermintMsgsValidatorSet {
+	validators := make([]spectreContract.IICS07TendermintMsgsValidatorInfo, len(in.Validators))
 	for i, val := range in.Validators {
-		validators[i] = tendermintContract.IICS07TendermintMsgsValidatorInfo{
+		validators[i] = spectreContract.IICS07TendermintMsgsValidatorInfo{
 			ValAddress:       val.ValAddress,
 			PubKey:           val.PubKey,
 			VotingPower:      val.VotingPower,
 			ProposerPriority: val.ProposerPriority,
 		}
 	}
-	return tendermintContract.IICS07TendermintMsgsValidatorSet{
+	return spectreContract.IICS07TendermintMsgsValidatorSet{
 		Validators:  validators,
 		HasProposer: in.HasProposer,
-		Proposer: tendermintContract.IICS07TendermintMsgsValidatorInfo{
+		Proposer: spectreContract.IICS07TendermintMsgsValidatorInfo{
 			ValAddress:       in.Proposer.ValAddress,
 			PubKey:           in.Proposer.PubKey,
 			VotingPower:      in.Proposer.VotingPower,
@@ -261,18 +260,17 @@ func estimateCosmosClientDeployGas(
 	gasPrice *big.Int,
 	clientState []byte,
 	consensusHash []byte,
-	initialPinnedValidatorSet tendermintContract.IICS07TendermintMsgsValidatorSet,
+	initialPinnedValidatorSet spectreContract.IICS07TendermintMsgsValidatorSet,
 ) (uint64, uint64, error) {
-	parsed, err := tendermintContract.ContractGroth16ICS07TendermintMetaData.GetAbi()
+	parsed, err := spectreContract.ContractSpectreClientMetaData.GetAbi()
 	if err != nil {
 		return 0, 0, fmt.Errorf("parse ICS07 ABI: %w", err)
 	}
 	constructorInput, err := parsed.Pack(
 		"",
-		*ctx.VerifierContract(),
+		*ctx.UpdateClientContract(),
 		*ctx.MembershipContract(),
 		*ctx.MisbehaviourContract(),
-		*ctx.UpdateClientContract(),
 		clientState,
 		utils.BytesToBytes32(consensusHash),
 		initialPinnedValidatorSet,
@@ -281,7 +279,7 @@ func estimateCosmosClientDeployGas(
 	if err != nil {
 		return 0, 0, fmt.Errorf("pack ICS07 constructor args: %w", err)
 	}
-	deployData := append(common.FromHex(tendermintContract.ContractGroth16ICS07TendermintBin), constructorInput...)
+	deployData := append(common.FromHex(spectreContract.ContractSpectreClientBin), constructorInput...)
 	estimate, err := ctx.EthClient().EstimateGas(context.Background(), ethereum.CallMsg{
 		From:     from,
 		GasPrice: gasPrice,
@@ -349,13 +347,12 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 
 	var address common.Address
 	deployFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
-		addr, tx, _, err := tendermintContract.DeployContractGroth16ICS07Tendermint(
+		addr, tx, _, err := spectreContract.DeployContractSpectreClient(
 			auth,
 			ctx.EthClient(),
-			*ctx.VerifierContract(),
+			*ctx.UpdateClientContract(),
 			*ctx.MembershipContract(),
 			*ctx.MisbehaviourContract(),
-			*ctx.UpdateClientContract(),
 			clientState,
 			utils.BytesToBytes32(consensusHash),
 			pinnedForDeploy,
@@ -387,7 +384,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 				ClientId:     wasmClientID,
 				MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
 			},
-			*ctx.ClientContract(),
+			*ctx.SpectreClientContract(),
 		)
 	}
 
@@ -406,7 +403,7 @@ func (h *Handler) CreateCosmosClientContract(ctx services.Context, clientState, 
 						ClientId:     wasmClientID,
 						MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
 					},
-					*ctx.ClientContract(),
+					*ctx.SpectreClientContract(),
 				)
 			}
 
@@ -447,8 +444,8 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 		}
 	}
 
-	ics07Tendermint, err := tendermintContract.NewContractGroth16ICS07Tendermint(
-		*ctx.ClientContract(),
+	ics07Tendermint, err := spectreContract.NewContractSpectreClient(
+		*ctx.SpectreClientContract(),
 		ctx.EthClient(),
 	)
 	if err != nil {
@@ -472,27 +469,41 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	var txLabel string
 	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
 		switch msg := msg.(type) {
-		case updateclient.IUpdateClientMsgsMsgUpdateClient:
-			txLabel = "updateClient"
-			data, err := relayerclient.EncodeUpdateClientMsg(msg)
-			if err != nil {
-				return nil, fmt.Errorf("failed to encode updateClient msg: %w", err)
+		case services.CosmosClientUpdateBuildResult:
+			switch msg.Kind {
+			case services.ConsensusUpdate:
+				txLabel = "updateConsensusState"
+				data, err := relayerclient.EncodeUpdateConsensusStateMsg(msg.AppMsg, msg.NewValSet)
+				if err != nil {
+					return nil, fmt.Errorf("failed to encode updateConsensusState msg: %w", err)
+				}
+				if routerManagesProofSubmission(ctx) {
+					log.Printf("[SendEthTx] Sending ICS26Router.updateConsensusState tx for clientId=%s...", cosmosClientID)
+					return ics26Router.UpdateConsensusState(auth, cosmosClientID, data)
+				}
+				log.Printf("[SendEthTx] Sending direct SpectreClient.updateConsensusState tx...")
+				return ics07Tendermint.UpdateConsensusState(auth, data)
+			default:
+				txLabel = "updateApplicationState"
+				data, err := relayerclient.EncodeUpdateApplicationStateMsg(msg.AppMsg)
+				if err != nil {
+					return nil, fmt.Errorf("failed to encode updateApplicationState msg: %w", err)
+				}
+				if routerManagesProofSubmission(ctx) {
+					log.Printf("[SendEthTx] Sending ICS26Router.updateApplicationState tx for clientId=%s...", cosmosClientID)
+					return ics26Router.UpdateApplicationState(auth, cosmosClientID, data)
+				}
+				log.Printf("[SendEthTx] Sending direct SpectreClient.updateApplicationState tx...")
+				return ics07Tendermint.UpdateApplicationState(auth, data)
 			}
-			if routerManagesProofSubmission(ctx) {
-				log.Printf("[SendEthTx] Sending ICS26Router.updateClient tx for clientId=%s...", cosmosClientID)
-				return ics26Router.UpdateClient(auth, cosmosClientID, data)
-			} else {
-				log.Printf("[SendEthTx] Sending direct ICS07 updateClient tx...")
-				return ics07Tendermint.UpdateClient(auth, data)
-			}
-		case tendermintContract.ILightClientMsgsMsgVerifyMembership:
+		case spectreContract.ILightClientMsgsMsgVerifyMembership:
 			txLabel = "verifyMembership"
 			if routerManagesProofSubmission(ctx) {
 				return nil, fmt.Errorf("direct verifyMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead")
 			}
 			log.Printf("[SendEthTx] Sending verifyMembership tx...")
 			return ics07Tendermint.VerifyMembership(auth, msg)
-		case tendermintContract.ILightClientMsgsMsgVerifyNonMembership:
+		case spectreContract.ILightClientMsgsMsgVerifyNonMembership:
 			txLabel = "verifyNonMembership"
 			if routerManagesProofSubmission(ctx) {
 				return nil, fmt.Errorf("direct verifyNonMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead")
@@ -525,90 +536,6 @@ func (h *Handler) SendEthTx(ctx services.Context, msg any) error {
 	if benchEnabled {
 		log.Printf("[bench][eth] %s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
-	}
-
-	return nil
-}
-
-// SendReAnchorPinnedSet submits a reAnchorPinnedSet transaction through the
-// ICS26 router when it manages proof submission, otherwise directly to ICS07.
-// Both the router and ICS07 take the re-anchor payload as a single opaque
-// bytes arg (ABI-encoded (MsgUpdateClient, ValidatorSet)); passing bytes keeps
-// the router's calldata decoder small enough to stay under EIP-170.
-func (h *Handler) SendReAnchorPinnedSet(ctx services.Context, updateMsg any, newPinnedValidatorSet any) error {
-	cosmosClientID, err := cosmosRouterClientID(ctx)
-	if err != nil {
-		return fmt.Errorf("[SendReAnchorPinnedSet] %w", err)
-	}
-
-	reAnchorMsg, err := relayerclient.EncodeReAnchorMsg(updateMsg, newPinnedValidatorSet)
-	if err != nil {
-		return fmt.Errorf("[SendReAnchorPinnedSet] encode re-anchor msg: %w", err)
-	}
-	privKey := os.Getenv("ETH_PRIVATE_KEY")
-	if privKey == "" {
-		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
-	}
-	privateKey, err := keys.RestoreKey(privKey)
-	if err != nil {
-		return fmt.Errorf("failed to restore private key: %w", err)
-	}
-
-	gasLimit := uint64(3000000)
-	if gasStr := os.Getenv("ETH_GAS_LIMIT"); gasStr != "" {
-		var val uint64
-		if _, err := fmt.Sscanf(gasStr, "%d", &val); err == nil {
-			gasLimit = val
-		}
-	}
-
-	target := ctx.ClientContract()
-	metadata := tendermintContract.ContractGroth16ICS07TendermintMetaData
-	method := "reAnchorPinnedSet"
-	args := []any{reAnchorMsg}
-	if routerManagesProofSubmission(ctx) {
-		target = ctx.RouterContract()
-		metadata = contractICS26Router.ContractICS26RouterMetaData
-		args = []any{cosmosClientID, reAnchorMsg}
-	}
-
-	abi, err := metadata.GetAbi()
-	if err != nil {
-		return fmt.Errorf("failed to load %s ABI: %w", method, err)
-	}
-
-	boundContract := bind.NewBoundContract(
-		*target,
-		*abi,
-		ctx.EthClient(),
-		ctx.EthClient(),
-		ctx.EthClient(),
-	)
-
-	benchEnabled := utils.BenchEnabled()
-	var benchStart time.Time
-	if benchEnabled {
-		benchStart = time.Now()
-	}
-
-	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
-		tx, err := boundContract.Transact(auth, method, args...)
-		if err != nil {
-			return nil, fmt.Errorf("reAnchorPinnedSet tx error: %w", err)
-		}
-		return tx, nil
-	}
-
-	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(ctx, privateKey, gasLimit, senderFn)
-	if err != nil {
-		return err
-	}
-
-	log.Printf("[SendReAnchorPinnedSet] Tx %s confirmed in block %d (gasUsed=%d) clientId=%s",
-		receipt.TxHash.Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed, cosmosClientID)
-	if benchEnabled {
-		log.Printf("[bench][eth] reAnchorPinnedSet gasUsed=%d submit=%s wait=%s total=%s tx=%s",
-			receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
 	}
 
 	return nil
@@ -666,15 +593,15 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 		case contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket:
 			data, perr = parsedABI.Pack("timeoutPacket", m)
 			lbl = fmt.Sprintf("timeoutPacket:%d", m.Packet.Sequence)
-		case updateclient.IUpdateClientMsgsMsgUpdateClient:
-			// Folding updateClient into a multicall only works when the
+		case services.CosmosClientUpdateBuildResult:
+			// Folding a client update into a multicall only works when the
 			// ICS26Router is the proof submitter — the multicall is dispatched
 			// on the router, so every inner call must target a router method.
-			// In direct-submission mode SendEthTx calls ICS07 directly; that
-			// path can't be expressed inside multicall, so caller must submit
-			// updateClient as a standalone tx.
+			// In direct-submission mode SendEthTx calls SpectreClient directly;
+			// that path can't be expressed inside multicall, so caller must
+			// submit the update as a standalone tx.
 			if !routerManagesProofSubmission(ctx) {
-				return fmt.Errorf("[SendEthTxBatch] updateClient cannot be batched when ICS26Router is not the proof submitter; submit it via SendEthTx instead")
+				return fmt.Errorf("[SendEthTxBatch] client update cannot be batched when ICS26Router is not the proof submitter; submit it via SendEthTx instead")
 			}
 			if !clientIDResolved {
 				cosmosClientID, perr = cosmosRouterClientID(ctx)
@@ -683,14 +610,23 @@ func (h *Handler) SendEthTxBatch(ctx services.Context, msgs []any) error {
 				}
 				clientIDResolved = true
 			}
-			encoded, encErr := relayerclient.EncodeUpdateClientMsg(m)
-			if encErr != nil {
-				return fmt.Errorf("[SendEthTxBatch] encode updateClient msg %d: %w", i, encErr)
+			if m.Kind == services.ConsensusUpdate {
+				encoded, encErr := relayerclient.EncodeUpdateConsensusStateMsg(m.AppMsg, m.NewValSet)
+				if encErr != nil {
+					return fmt.Errorf("[SendEthTxBatch] encode updateConsensusState msg %d: %w", i, encErr)
+				}
+				data, perr = parsedABI.Pack("updateConsensusState", cosmosClientID, encoded)
+				lbl = "updateConsensusState"
+			} else {
+				encoded, encErr := relayerclient.EncodeUpdateApplicationStateMsg(m.AppMsg)
+				if encErr != nil {
+					return fmt.Errorf("[SendEthTxBatch] encode updateApplicationState msg %d: %w", i, encErr)
+				}
+				data, perr = parsedABI.Pack("updateApplicationState", cosmosClientID, encoded)
+				lbl = "updateApplicationState"
 			}
-			data, perr = parsedABI.Pack("updateClient", cosmosClientID, encoded)
-			lbl = "updateClient"
 		default:
-			return fmt.Errorf("[SendEthTxBatch] unsupported message type at index %d: %T (only updateClient/recvPacket/ackPacket/timeoutPacket allowed in multicall)", i, msg)
+			return fmt.Errorf("[SendEthTxBatch] unsupported message type at index %d: %T (only client update/recvPacket/ackPacket/timeoutPacket allowed in multicall)", i, msg)
 		}
 		if perr != nil {
 			return fmt.Errorf("[SendEthTxBatch] pack msg %d (%s): %w", i, lbl, perr)

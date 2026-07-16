@@ -57,13 +57,13 @@ type Context struct {
 	// Ethereum light client configuration
 	ethClientID          string
 	cosmosRouterClientID string
-	verifier             *common.Address
+	signatureVerifier    *common.Address
 	membership           *common.Address
 	misbehaviour         *common.Address
 	updateClient         *common.Address
 	roleManager          *common.Address
 	ics26Router          *common.Address
-	ics07Client          *common.Address
+	spectreClient        *common.Address
 }
 
 func NewCtx(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client) Context {
@@ -140,16 +140,16 @@ func (c *Context) SetCosmosRouterClientID(id string) {
 	c.cosmosRouterClientID = id
 }
 
-func (c *Context) SetAddresses(ics26Router, verifier, membership, misbehaviour, updateClient, roleManager string) {
+func (c *Context) SetAddresses(ics26Router, signatureVerifier, membership, misbehaviour, updateClient, roleManager string) {
 	ics26RouterAddr := common.HexToAddress(ics26Router)
-	verifierAddr := common.HexToAddress(verifier)
+	signatureVerifierAddr := common.HexToAddress(signatureVerifier)
 	membershipAddr := common.HexToAddress(membership)
 	misbehaviourAddr := common.HexToAddress(misbehaviour)
 	updateClientAddr := common.HexToAddress(updateClient)
 	roleManagerAddr := common.HexToAddress(roleManager)
 
 	c.ics26Router = &ics26RouterAddr
-	c.verifier = &verifierAddr
+	c.signatureVerifier = &signatureVerifierAddr
 	c.membership = &membershipAddr
 	c.misbehaviour = &misbehaviourAddr
 	c.updateClient = &updateClientAddr
@@ -157,10 +157,10 @@ func (c *Context) SetAddresses(ics26Router, verifier, membership, misbehaviour, 
 }
 
 func (c *Context) SetClient(client common.Address) {
-	c.ics07Client = &client
+	c.spectreClient = &client
 }
-func (c *Context) VerifierContract() *common.Address {
-	return c.verifier
+func (c *Context) SignatureVerifierContract() *common.Address {
+	return c.signatureVerifier
 }
 
 func (c *Context) MembershipContract() *common.Address {
@@ -183,8 +183,8 @@ func (c *Context) RouterContract() *common.Address {
 	return c.ics26Router
 }
 
-func (c *Context) ClientContract() *common.Address {
-	return c.ics07Client
+func (c *Context) SpectreClientContract() *common.Address {
+	return c.spectreClient
 }
 
 func (c *Context) StopClient() {

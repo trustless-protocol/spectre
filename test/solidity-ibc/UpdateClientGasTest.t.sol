@@ -3,11 +3,11 @@ pragma solidity ^0.8.28;
 
 import { Test, console } from "forge-std/Test.sol";
 
-import { Groth16ICS07Tendermint } from "../../contracts/light-clients/Groth16ICS07Tendermint.sol";
-import { WrapperVerifier } from "../../contracts/utils/WrapperVerifier.sol";
-import { UpdateClient } from "../../contracts/programs/UpdateClient.sol";
+import { SpectreClient } from "../../contracts/light-clients/SpectreClient.sol";
+import { SignatureVerifier } from "../../contracts/light-clients/SignatureVerifier.sol";
+import { UpdateClient } from "../../contracts/light-clients/modules/UpdateClient.sol";
 import { Header } from "../../contracts/utils/Header.sol";
-import { IUpdateClientMsgs } from "../../contracts/light-clients/msgs/IUpdateClientMsgs.sol";
+import { ISpectreClientMsgs } from "../../contracts/light-clients/msgs/ISpectreClientMsgs.sol";
 import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
 import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
 import { ILightClientMsgs } from "../../contracts/msgs/ILightClientMsgs.sol";
@@ -22,10 +22,10 @@ contract AlwaysTrueVerifier {
     }
 }
 
-/// @notice Production-realistic gas benchmark for `Groth16ICS07Tendermint.updateClient`.
-///         Builds a self-consistent MsgUpdateClient (validator-set hash matches
+/// @notice Production-realistic gas benchmark for `SpectreClient.updateApplicationState`.
+///         Builds a self-consistent MsgUpdateApplicationState (validator-set hash matches
 ///         header field, header merkle root matches commit.blockId.hashData,
-///         commitSigs cover the validator set) so the real `UPDATE_CLIENT.updateClient`
+///         commitSigs cover the validator set) so the real `UpdateClient.verifyHeader`
 ///         path executes end-to-end. Only the per-bucket Groth16 verifier is
 ///         stubbed — adding ~372K to each measured number recovers prod gas.
 ///
@@ -38,7 +38,7 @@ contract AlwaysTrueVerifier {
 ///         quorum threshold, matching how the relayer picks signers in prod:
 ///         n=16 → 20 vals total, 14 active, 2 padding (3·14·100 > 2·20·100 ⇒ pass).
 contract UpdateClientGasTest is Test {
-    WrapperVerifier wrapper;
+    SignatureVerifier wrapper;
     UpdateClient updateClientImpl;
     AlwaysTrueVerifier stubBucket;
 
@@ -79,9 +79,9 @@ contract UpdateClientGasTest is Test {
         // _validateClientStateAndTime accepts NEW_TS_NS.
         vm.warp(1_700_000_020);
 
-        wrapper = new WrapperVerifier(address(this));
+        wrapper = new SignatureVerifier(address(this));
         stubBucket = new AlwaysTrueVerifier();
-        updateClientImpl = new UpdateClient();
+        updateClientImpl = new UpdateClient(address(wrapper));
 
         uint16[6] memory bs = [uint16(4), 8, 16, 32, 64, 128];
         for (uint256 i = 0; i < bs.length; i++) {
@@ -256,15 +256,14 @@ contract UpdateClientGasTest is Test {
         IICS07TendermintMsgs.ValidatorSet memory pinnedValidatorSet
     )
         internal
-        returns (Groth16ICS07Tendermint)
+        returns (SpectreClient)
     {
         // Deploy a fresh light client per bucket, pre-seeded with this run's
         // trustedConsensusState hash at TRUSTED_HEIGHT.
-        return new Groth16ICS07Tendermint(
-            address(wrapper),
+        return new SpectreClient(
+            address(updateClientImpl),
             STUB_MEMBERSHIP,
             STUB_MISBEHAVIOUR,
-            address(updateClientImpl),
             abi.encode(cs),
             keccak256(abi.encode(trustedCS)),
             pinnedValidatorSet,
@@ -282,7 +281,7 @@ contract UpdateClientGasTest is Test {
     )
         internal
         pure
-        returns (IUpdateClientMsgs.MsgUpdateClient memory msg_)
+        returns (ISpectreClientMsgs.MsgUpdateApplicationState memory msg_)
     {
         // Build per-slot bucket arrays (active = first cfg.activeCount, rest = padding).
         uint32[] memory idx = new uint32[](bucket);
@@ -298,18 +297,17 @@ contract UpdateClientGasTest is Test {
             }
         }
 
-        msg_.clientState = cs;
         msg_.trustedConsensusState = trustedCS;
         msg_.proposedHeader = header;
         msg_.time = header.signedHeader.header.time;
-        msg_.proof = [uint256(0), 0, 0, 0, 0, 0, 0, 0];
-        msg_.commitments = [uint256(0), 0];
-        msg_.commitmentPok = [uint256(0), 0];
-        msg_.bucket = bucket;
-        msg_.signerIndices = idx;
-        msg_.signerPubkeys = pks;
-        msg_.active = act;
-        msg_.pinnedValidatorIndices = pinnedValidatorIndices;
+        msg_.proof.proof = [uint256(0), 0, 0, 0, 0, 0, 0, 0];
+        msg_.proof.commitments = [uint256(0), 0];
+        msg_.proof.commitmentPok = [uint256(0), 0];
+        msg_.proof.bucket = bucket;
+        msg_.proof.signerIndices = idx;
+        msg_.proof.signerPubkeys = pks;
+        msg_.proof.active = act;
+        msg_.proof.pinnedValidatorIndices = pinnedValidatorIndices;
     }
 
     function _measure(uint16 bucket) internal {
@@ -322,11 +320,11 @@ contract UpdateClientGasTest is Test {
         ) = _buildSelfConsistent(cfg);
 
         IICS07TendermintMsgs.ClientState memory cs = _clientState();
-        Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS, vs);
+        SpectreClient ics07 = _deployLightClient(cs, trustedCS, vs);
         bytes memory encoded = abi.encode(_buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount));
 
         uint256 g0 = gasleft();
-        ILightClientMsgs.UpdateResult result = ics07.updateClient(encoded);
+        ILightClientMsgs.UpdateResult result = ics07.updateApplicationState(encoded);
         uint256 used = g0 - gasleft();
         assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update), "expected Update");
         console.log("bucket=", bucket, "  gas=", used);
@@ -342,18 +340,21 @@ contract UpdateClientGasTest is Test {
         ) = _buildSelfConsistent(cfg);
 
         IICS07TendermintMsgs.ClientState memory cs = _clientState();
-        Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS, vs);
+        SpectreClient ics07 = _deployLightClient(cs, trustedCS, vs);
 
-        IUpdateClientMsgs.MsgUpdateClient memory fullMsg = _buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount);
+        ISpectreClientMsgs.MsgUpdateApplicationState memory fullMsg =
+            _buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount);
         assertEq(
-            uint8(ics07.updateClient(abi.encode(fullMsg))), uint8(ILightClientMsgs.UpdateResult.Update), "warmup Update"
+            uint8(ics07.updateApplicationState(abi.encode(fullMsg))),
+            uint8(ILightClientMsgs.UpdateResult.Update),
+            "warmup Update"
         );
 
-        IUpdateClientMsgs.MsgUpdateClient memory cacheMsg =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory cacheMsg =
             _buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount);
 
         uint256 g0 = gasleft();
-        ILightClientMsgs.UpdateResult result = ics07.updateClient(abi.encode(cacheMsg));
+        ILightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(cacheMsg));
         uint256 used = g0 - gasleft();
         assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.NoOp), "expected cache-hit replay NoOp");
         console.log("bucket=", bucket, "  cache-hit replay gas=", used);
@@ -369,15 +370,17 @@ contract UpdateClientGasTest is Test {
             timestamp: TRUSTED_TS_NS, root: bytes32(uint256(0xAAA1)), nextValidatorsHash: valSetHash
         });
 
-        Groth16ICS07Tendermint ics07 = _deployLightClient(cs, trustedCS0, valSet);
+        SpectreClient ics07 = _deployLightClient(cs, trustedCS0, valSet);
 
         IICS07TendermintMsgs.Header memory header1001 = _buildHeader(
             TRUSTED_HEIGHT, NEW_HEIGHT, NEW_TS_NS, bytes32(uint256(0xCCC1)), valSet, valSet, cfg.activeCount
         );
-        IUpdateClientMsgs.MsgUpdateClient memory msg1001 =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg1001 =
             _buildMsg(cs, trustedCS0, header1001, valSet, bucket, cfg.activeCount);
         assertEq(
-            uint8(ics07.updateClient(abi.encode(msg1001))), uint8(ILightClientMsgs.UpdateResult.Update), "warmup Update"
+            uint8(ics07.updateApplicationState(abi.encode(msg1001))),
+            uint8(ILightClientMsgs.UpdateResult.Update),
+            "warmup Update"
         );
 
         IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = IICS07TendermintMsgs.ConsensusState({
@@ -388,11 +391,11 @@ contract UpdateClientGasTest is Test {
             NEW_HEIGHT, NEXT_HEIGHT, NEXT_TS_NS, bytes32(uint256(0xCCC2)), valSet, valSet, cfg.activeCount
         );
 
-        IUpdateClientMsgs.MsgUpdateClient memory cacheMsg =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory cacheMsg =
             _buildMsg(cs, trustedCS1001, header1002, valSet, bucket, cfg.activeCount);
 
         uint256 g0 = gasleft();
-        ILightClientMsgs.UpdateResult result = ics07.updateClient(abi.encode(cacheMsg));
+        ILightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(cacheMsg));
         uint256 used = g0 - gasleft();
         assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update), "expected cache-hit adjacent Update");
         console.log("bucket=", bucket, "  cache-hit adjacent update gas=", used);

@@ -57,8 +57,8 @@ type cosmosToEthConfig struct {
 	CosmosWasmClientID    string `json:"cosmos_wasm_client_id"`
 	EthRpcUrl             string `json:"eth_rpc_url"`
 	EthWsUrl              string `json:"eth_ws_url"`
-	ICS07Client           string `json:"ics07_client"`
-	WrapperVerifier       string `json:"wrapper_verifier"`
+	SpectreClient         string `json:"spectre_client"`
+	SignatureVerifier     string `json:"signature_verifier"`
 	Membership            string `json:"membership"`
 	Misbehaviour          string `json:"misbehaviour"`
 	UpdateClient          string `json:"update_client"`
@@ -70,6 +70,8 @@ type cosmosToEthConfig struct {
 	AppHashWaitRetries    uint32 `json:"app_hash_wait_retries"`
 	AppHashWaitInterval   uint64 `json:"app_hash_wait_interval_seconds"`
 	FetchTimeout          uint64 `json:"fetch_timeout"`
+	RotationThreshold     string `json:"rotation_threshold"`
+	RefreshInterval       uint64 `json:"refresh_interval_seconds"`
 }
 
 type ethToCosmosConfig struct {
@@ -137,10 +139,10 @@ func writeConfigMember(configPath, sourceClientID, member, value string) error {
 	return os.Chmod(configPath, configFilePerm)
 }
 
-// writeICS07Address persists the deployed ICS07 Tendermint light-client address
-// (ETH side) back into the sourceClientID module.
-func writeICS07Address(configPath, sourceClientID, addr string) error {
-	return writeConfigMember(configPath, sourceClientID, "ics07_client", addr)
+// writeSpectreClientAddress persists the deployed SpectreClient light-client
+// address (ETH side) back into the sourceClientID module.
+func writeSpectreClientAddress(configPath, sourceClientID, addr string) error {
+	return writeConfigMember(configPath, sourceClientID, "spectre_client", addr)
 }
 
 // writeWasmClientID persists the created 08-wasm Ethereum light-client id
@@ -561,8 +563,8 @@ func validateCosmosToEthConfig(c2e cosmosToEthConfig) error {
 	for _, f := range []struct {
 		val, name string
 	}{
-		{c2e.ICS07Client, "cosmos_to_eth.ics07_client"},
-		{c2e.WrapperVerifier, "cosmos_to_eth.wrapper_verifier"},
+		{c2e.SpectreClient, "cosmos_to_eth.spectre_client"},
+		{c2e.SignatureVerifier, "cosmos_to_eth.signature_verifier"},
 		{c2e.Membership, "cosmos_to_eth.membership"},
 		{c2e.Misbehaviour, "cosmos_to_eth.misbehaviour"},
 		{c2e.UpdateClient, "cosmos_to_eth.update_client"},
@@ -571,6 +573,11 @@ func validateCosmosToEthConfig(c2e cosmosToEthConfig) error {
 			if err := validateHexAddress(f.val, f.name); err != nil {
 				return err
 			}
+		}
+	}
+	if c2e.RotationThreshold != "" {
+		if _, err := services.ParseRotationThreshold(c2e.RotationThreshold); err != nil {
+			return fmt.Errorf("cosmos_to_eth.rotation_threshold: %w", err)
 		}
 	}
 	return nil
@@ -826,7 +833,7 @@ func buildCreateClientsContext(logger *zap.Logger, cfg *appConfig, wasmClientID 
 	ctx.SetCosmosRouterClientID(cosmosRouterClientID)
 	ctx.SetAddresses(
 		cfg.CosmosToEthConfig.ICS26Address,
-		cfg.CosmosToEthConfig.WrapperVerifier,
+		cfg.CosmosToEthConfig.SignatureVerifier,
 		cfg.CosmosToEthConfig.Membership,
 		cfg.CosmosToEthConfig.Misbehaviour,
 		cfg.CosmosToEthConfig.UpdateClient,
@@ -892,9 +899,9 @@ func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasm
 
 // runCreateClientsEth deploys the Cosmos (ICS07 Tendermint) light client on
 // Ethereum, registers wasmClientID as its counterparty, and persists the
-// ics07_client address back into config. wasmClientID must already be known
+// spectre_client address back into config. wasmClientID must already be known
 // (created by the Cosmos step) so the on-chain counterparty is wired to the
-// real id. Idempotent: if ics07_client already has deployed code, it is reused.
+// real id. Idempotent: if spectre_client already has deployed code, it is reused.
 func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmClientID, trustLevel string, trustingPeriod uint32) (common.Address, error) {
 	if wasmClientID == "" {
 		return common.Address{}, fmt.Errorf("cosmos_wasm_client_id is empty; run create-clients-cosmos first")
@@ -907,12 +914,12 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 	defer cosmosClient.Stop()
 
 	// Idempotency: skip the deploy if a contract already lives at the configured
-	// ics07_client address, so re-running after a partial failure does not
+	// spectre_client address, so re-running after a partial failure does not
 	// redeploy ICS07.
-	if cfg.CosmosToEthConfig.ICS07Client != "" {
-		addr := common.HexToAddress(cfg.CosmosToEthConfig.ICS07Client)
+	if cfg.CosmosToEthConfig.SpectreClient != "" {
+		addr := common.HexToAddress(cfg.CosmosToEthConfig.SpectreClient)
 		if code, err := ctx.EthClient().CodeAt(context.Background(), addr, nil); err == nil && len(code) > 0 {
-			logger.Sugar().Infof("create-clients-eth: ics07_client already deployed at %s; skipping deploy", addr.Hex())
+			logger.Sugar().Infof("create-clients-eth: spectre_client already deployed at %s; skipping deploy", addr.Hex())
 			return addr, nil
 		}
 	}
@@ -948,10 +955,10 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 		return common.Address{}, fmt.Errorf("ics07 address missing after deploy")
 	}
 
-	if err := writeICS07Address(configPath, cfg.CosmosToEthConfig.ICS26ClientID, ics07Addr.Hex()); err != nil {
+	if err := writeSpectreClientAddress(configPath, cfg.CosmosToEthConfig.ICS26ClientID, ics07Addr.Hex()); err != nil {
 		return common.Address{}, fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
 	}
-	logger.Sugar().Infof("create-clients-eth: wrote ics07_client=%s into %s", ics07Addr.Hex(), configPath)
+	logger.Sugar().Infof("create-clients-eth: wrote spectre_client=%s into %s", ics07Addr.Hex(), configPath)
 	return ics07Addr, nil
 }
 
@@ -1067,7 +1074,7 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 }
 
 // CreateClientsEth deploys only the Cosmos light client on Ethereum (ICS07) and
-// persists ics07_client. Requires cosmos_wasm_client_id (run create-clients-cosmos first).
+// persists spectre_client. Requires cosmos_wasm_client_id (run create-clients-cosmos first).
 func CreateClientsEth(logger *zap.Logger) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "create-clients-eth",
@@ -1183,16 +1190,16 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			roleManager := roleManagerOrDefault(cfg)
 			ctx.SetAddresses(
 				cfg.CosmosToEthConfig.ICS26Address,
-				cfg.CosmosToEthConfig.WrapperVerifier,
+				cfg.CosmosToEthConfig.SignatureVerifier,
 				cfg.CosmosToEthConfig.Membership,
 				cfg.CosmosToEthConfig.Misbehaviour,
 				cfg.CosmosToEthConfig.UpdateClient,
 				roleManager,
 			)
-			if cfg.CosmosToEthConfig.ICS07Client == "" {
-				return fmt.Errorf("ics07_client address is required in cosmos_to_eth config")
+			if cfg.CosmosToEthConfig.SpectreClient == "" {
+				return fmt.Errorf("spectre_client address is required in cosmos_to_eth config")
 			}
-			ctx.SetClient(common.HexToAddress(cfg.CosmosToEthConfig.ICS07Client))
+			ctx.SetClient(common.HexToAddress(cfg.CosmosToEthConfig.SpectreClient))
 
 			cosmosConfig := services.DefaultConfig()
 			if cfg.CosmosToEthConfig.TrustingPeriod != 0 {
@@ -1219,6 +1226,12 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			if cfg.CosmosToEthConfig.FetchTimeout != 0 {
 				cosmosConfig.FetchTimeout = time.Duration(cfg.CosmosToEthConfig.FetchTimeout) * time.Second
 			}
+			if cfg.CosmosToEthConfig.RotationThreshold != "" {
+				cosmosConfig.RotationThreshold = cfg.CosmosToEthConfig.RotationThreshold
+			}
+			if cfg.CosmosToEthConfig.RefreshInterval != 0 {
+				cosmosConfig.RefreshInterval = time.Duration(cfg.CosmosToEthConfig.RefreshInterval) * time.Second
+			}
 			if envVal := os.Getenv("FETCH_TIMEOUT"); envVal != "" {
 				if d, err := strconv.Atoi(envVal); err == nil && d > 0 {
 					cosmosConfig.FetchTimeout = time.Duration(d) * time.Second
@@ -1238,7 +1251,7 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			}
 
 			worker := services.NewWorker(&transaction.Handler{}, p)
-			latestBlock, err := worker.UpdateCosmosClient(ctx, cosmosConfig.ProofType, trustedBlock, cosmosConfig.TrustLevel)
+			latestBlock, err := worker.UpdateCosmosClient(ctx, cosmosConfig.ProofType, trustedBlock, cosmosConfig.TrustLevel, false)
 			if err != nil {
 				return fmt.Errorf("failed to update Cosmos client on Ethereum: %w", err)
 			}
@@ -1330,7 +1343,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 			txHandler := &transaction.Handler{}
 
 			// One independent relay loop per Cosmos→ETH source. Each has its own
-			// Tendermint RPC, ICS-07 client and router client id; they share the
+			// Tendermint RPC, SpectreClient and router client id; they share the
 			// prover, the TransactionHandler, the ETH beacon endpoint, and the
 			// same ICS26Router (ETH events are partitioned by the per-source
 			// router client id filter).

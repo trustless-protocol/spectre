@@ -1,0 +1,232 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+import { ISpectreClientMsgs } from "../msgs/ISpectreClientMsgs.sol";
+import { IICS07TendermintMsgs } from "../msgs/IICS07TendermintMsgs.sol";
+import { IICS02ClientMsgs } from "../../msgs/IICS02ClientMsgs.sol";
+import { IMisbehaviour } from "../interfaces/IMisbehaviour.sol";
+import { ISignatureVerifier } from "../interfaces/ISignatureVerifier.sol";
+import { ISpectreClientErrors } from "../errors/ISpectreClientErrors.sol";
+import { SpectreStore } from "../store/SpectreStore.sol";
+import { Header } from "../../utils/Header.sol";
+import { HeightCmp } from "../../utils/HeightCmp.sol";
+import { ChainId } from "../../utils/ChainId.sol";
+
+/// @title Misbehaviour module
+/// @notice Validates two conflicting signed headers at the same height and their batched signature
+///         proofs. Executes in SpectreClient's storage context via delegatecall: it reads the
+///         client state and trusted consensus hashes from the shared Store. The two quorum checks
+///         and the freeze are done by SpectreClient.
+contract Misbehaviour is IMisbehaviour {
+    using SpectreStore for SpectreStore.Store;
+
+    error MismatchedRevisionHeight(uint64 expected, uint64 actual);
+    error InvalidHeaderHeight(uint64 height);
+    error ChainIdMismatch();
+    error MisbehaviourNotDetected();
+
+    ISignatureVerifier internal immutable SIGNATURE_VERIFIER;
+    address private immutable SELF;
+
+    constructor(address signatureVerifier) {
+        SIGNATURE_VERIFIER = ISignatureVerifier(signatureVerifier);
+        SELF = address(this);
+    }
+
+    modifier onlyDelegated() {
+        require(address(this) != SELF, ISpectreClientErrors.DirectCallNotAllowed());
+        _;
+    }
+
+    /// @inheritdoc IMisbehaviour
+    function verifyMisbehaviour(ISpectreClientMsgs.MsgSubmitMisbehaviour calldata msg_)
+        external
+        onlyDelegated
+        returns (ISpectreClientMsgs.MisbehaviourOutput memory)
+    {
+        SpectreStore.Store storage $ = SpectreStore.load();
+        IICS07TendermintMsgs.ClientState storage clientState = $.clientState;
+
+        ISpectreClientMsgs.Misbehaviour calldata misbehaviour_ = msg_.misbehaviour;
+        require(
+            keccak256(bytes(clientState.chainId))
+                == keccak256(bytes(misbehaviour_.header1.signedHeader.header.chainId)),
+            ChainIdMismatch()
+        );
+
+        _validateBasic(misbehaviour_);
+
+        IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
+            trustThreshold: clientState.trustLevel,
+            trustingPeriod: clientState.trustingPeriod,
+            clockDrift: clientState.clockDrift
+        });
+        IICS07TendermintMsgs.ChainId memory chainId = IICS07TendermintMsgs.ChainId({
+            id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber
+        });
+
+        _verifyMisbehaviourHeader(
+            misbehaviour_.header1, chainId, options, msg_.trustedConsensusState1.timestamp, msg_.time
+        );
+        _verifyMisbehaviourHeader(
+            misbehaviour_.header2, chainId, options, msg_.trustedConsensusState2.timestamp, msg_.time
+        );
+
+        // Bind both supplied trusted consensus states to the ones this client already trusts.
+        _requireTrustedConsensus($, misbehaviour_.header1, msg_.trustedConsensusState1);
+        _requireTrustedConsensus($, misbehaviour_.header2, msg_.trustedConsensusState2);
+
+        // Signature checks: the batched Ed25519 Groth16 proof over each conflicting header.
+        _verifyBatchProof(misbehaviour_.header1, msg_.proof1);
+        _verifyBatchProof(misbehaviour_.header2, msg_.proof2);
+
+        return ISpectreClientMsgs.MisbehaviourOutput({
+            trustedHeight1: IICS02ClientMsgs.Height({
+                revisionNumber: chainId.revisionNumber,
+                revisionHeight: misbehaviour_.header1.trustedHeight.revisionHeight
+            }),
+            trustedHeight2: IICS02ClientMsgs.Height({
+                revisionNumber: chainId.revisionNumber,
+                revisionHeight: misbehaviour_.header2.trustedHeight.revisionHeight
+            })
+        });
+    }
+
+    function _requireTrustedConsensus(
+        SpectreStore.Store storage $,
+        IICS07TendermintMsgs.Header calldata header,
+        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState
+    )
+        private
+        view
+    {
+        bytes32 trustedHash = keccak256(abi.encode(trustedConsensusState));
+        bytes32 storedHash = $.getConsensusStateHash(header.trustedHeight.revisionHeight);
+        require(trustedHash == storedHash, ISpectreClientErrors.ConsensusStateHashMismatch(storedHash, trustedHash));
+    }
+
+    function _validateBasic(ISpectreClientMsgs.Misbehaviour calldata misbehaviour_) private pure {
+        _validateHeaderBasic(misbehaviour_.header1);
+        _validateHeaderBasic(misbehaviour_.header2);
+
+        if (
+            keccak256(bytes(misbehaviour_.header1.signedHeader.header.chainId))
+                != keccak256(bytes(misbehaviour_.header2.signedHeader.header.chainId))
+        ) {
+            revert ISpectreClientErrors.ChainIdMismatch({
+                expected: misbehaviour_.header1.signedHeader.header.chainId,
+                actual: misbehaviour_.header2.signedHeader.header.chainId
+            });
+        }
+
+        if (misbehaviour_.header1.signedHeader.header.height != misbehaviour_.header2.signedHeader.header.height) {
+            revert ISpectreClientErrors.MismatchedMisbehaviourHeaderHeights({
+                height1: misbehaviour_.header1.signedHeader.header.height,
+                height2: misbehaviour_.header2.signedHeader.header.height
+            });
+        }
+
+        if (
+            misbehaviour_.header1.signedHeader.commit.blockId.hashData
+                == misbehaviour_.header2.signedHeader.commit.blockId.hashData
+        ) {
+            revert MisbehaviourNotDetected();
+        }
+    }
+
+    function _validateHeaderBasic(IICS07TendermintMsgs.Header calldata header) private pure {
+        IICS07TendermintMsgs.ChainId memory chainId = ChainId.get(header.signedHeader.header.chainId);
+        if (chainId.revisionNumber != header.trustedHeight.revisionNumber) {
+            revert MismatchedRevisionHeight(chainId.revisionNumber, header.trustedHeight.revisionNumber);
+        }
+
+        IICS02ClientMsgs.Height memory height = IICS02ClientMsgs.Height({
+            revisionNumber: chainId.revisionNumber, revisionHeight: header.signedHeader.header.height
+        });
+        if (HeightCmp.ge(header.trustedHeight, height)) {
+            revert InvalidHeaderHeight(height.revisionHeight);
+        }
+
+        if (Header.hashHeader(header.signedHeader.header) != header.signedHeader.commit.blockId.hashData) {
+            revert ISpectreClientErrors.FailedToVerifyHeader({ description: "invalid block: header hash mismatch" });
+        }
+    }
+
+    function _verifyMisbehaviourHeader(
+        IICS07TendermintMsgs.Header calldata header,
+        IICS07TendermintMsgs.ChainId memory chainId,
+        IICS07TendermintMsgs.Options memory options,
+        uint128 trustedTime,
+        uint128 currentTimestamp
+    )
+        private
+        pure
+    {
+        uint128 currentTimeInSeconds = _nanosToSeconds(currentTimestamp);
+        uint128 trustedTimeInSeconds = _nanosToSeconds(trustedTime);
+
+        if (currentTimeInSeconds < trustedTimeInSeconds) {
+            revert ISpectreClientErrors.InvalidConsensusStateTimestamp({ timestamp: trustedTime });
+        }
+        uint128 durationSinceConsensusState = currentTimeInSeconds - trustedTimeInSeconds;
+        if (durationSinceConsensusState >= options.trustingPeriod) {
+            revert ISpectreClientErrors.InsufficientTrustingPeriod({
+                durationSinceConsensusState: durationSinceConsensusState, trustingPeriod: options.trustingPeriod
+            });
+        }
+
+        _parseChainId(chainId.id);
+        require(keccak256(bytes(header.signedHeader.header.chainId)) == keccak256(bytes(chainId.id)), ChainIdMismatch());
+        require(header.signedHeader.header.time > trustedTime, "invalid block: non monotonic bft time");
+        uint128 drifted = currentTimestamp + uint128(options.clockDrift) * 1_000_000_000;
+        require(header.signedHeader.header.time < drifted, "invalid block: header is from the future");
+    }
+
+    function _verifyBatchProof(
+        IICS07TendermintMsgs.Header calldata header,
+        ISpectreClientMsgs.BatchProof calldata proof_
+    )
+        private
+    {
+        IICS07TendermintMsgs.BlockCommit calldata commit = header.signedHeader.commit;
+        require(
+            commit.height == header.signedHeader.header.height, ISpectreClientErrors.InvalidHeaderHeight(commit.height)
+        );
+
+        ISignatureVerifier.SharedBlock memory shared = ISignatureVerifier.SharedBlock({
+            height: commit.height, round: uint64(commit.round), blockIDHash: commit.blockId.hashData
+        });
+
+        require(
+            SIGNATURE_VERIFIER.verifyBatchProof(
+                proof_.bucket,
+                proof_.proof,
+                proof_.commitments,
+                proof_.commitmentPok,
+                proof_.signerPubkeys,
+                proof_.active,
+                shared
+            ),
+            ISpectreClientErrors.ProofVerificationFailed()
+        );
+    }
+
+    function _parseChainId(string memory chainId) private pure {
+        bytes memory chainIdBytes = bytes(chainId);
+        if (chainIdBytes.length == 0 || chainIdBytes.length > 50) {
+            revert("Invalid chain id length");
+        }
+
+        for (uint256 i = 0; i < chainIdBytes.length; i++) {
+            bytes1 b = chainIdBytes[i];
+            if (!((b >= 0x61 && b <= 0x7A) || (b >= 0x41 && b <= 0x5A) || (b >= 0x30 && b <= 0x39) || (b == 0x2D)
+                        || (b == 0x5F) || (b == 0x2E))) {
+                revert("invalid chain id charset");
+            }
+        }
+    }
+
+    function _nanosToSeconds(uint128 timestamp) private pure returns (uint128) {
+        return timestamp / 1e9;
+    }
+}

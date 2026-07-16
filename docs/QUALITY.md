@@ -11,7 +11,7 @@
 | Encoding cross-validation | `test/solidity-ibc/EncodeTest.t.sol` | `forge test --match-contract EncodeTest` |
 | Gas benchmarks | `test/solidity-ibc/BenchmarkTest.t.sol` | `just test-benchmark <name>` |
 | Shadowfork tests | `test/shadowfork/` | Requires `ETH_RPC_URL` env var |
-| Groth16 light client | `test/groth16-ics07/` | `forge test --match-path test/groth16-ics07/` |
+| Groth16 light client | `test/spectre/` | `forge test --match-path test/spectre/` |
 
 Run a single test:
 ```bash
@@ -36,7 +36,7 @@ Test files: `prover/`, `client/`, `subscriber/`, `services/`, `keys/`, `utils/`
 | IBC Eureka | `ibc_eureka_test.go` | `just test-e2e-eureka` |
 | Relayer | `relayer_test.go` | `just test-e2e-relayer` |
 | Cosmos Relayer | `cosmos_relayer_test.go` | `just test-e2e-cosmos-relayer` |
-| Groth16 ICS07 | `groth16_ics07_test.go` | `just test-e2e TestWithGroth16ICS07TendermintTestSuite/<name>` |
+| Spectre light client | `spectre_client_test.go` | `just test-e2e TestWithSpectreClientTestSuite/<name>` |
 | Multi-chain | `multichain_test.go` | `just test-e2e-multichain` |
 
 Requires: Docker Desktop, Kurtosis, compiled relayer binary, Groth16 network key.
@@ -64,11 +64,11 @@ From `foundry.toml`:
 
 ## Test Fixtures
 
-Groth16 proof fixtures live in `test/solidity-ibc/fixtures/` and `test/groth16-ics07/fixtures/`
+Groth16 proof fixtures live in `test/solidity-ibc/fixtures/` and `test/spectre/fixtures/`
 (generated on demand, not committed). There is no dedicated `just` recipe — regenerate them by
 running the relevant e2e suite with `GENERATE_SOLIDITY_FIXTURES=true`, e.g.:
 ```bash
-GENERATE_SOLIDITY_FIXTURES=true just test-e2e TestWithGroth16ICS07TendermintTestSuite/Test_UpdateClient
+GENERATE_SOLIDITY_FIXTURES=true just test-e2e TestWithSpectreClientTestSuite/Test_UpdateClient
 ```
 The wasm-client and Tendermint-light-client fixtures have their own recipes:
 ```bash
@@ -106,6 +106,6 @@ automatic PR/push CI at the moment (`go.yml`'s `push`/`pull_request` triggers ar
   methods, and runs them as a parallel matrix.
 - Five per-suite caller workflows (`workflow_dispatch` with `ref`/`filter` inputs) that delegate to
   `e2e-suite.yml`: `e2e-ibc-eureka.yml`, `e2e-relayer.yml`, `e2e-cosmos-relayer.yml`,
-  `e2e-groth16-ics07.yml`, `e2e-multichain.yml`.
+  `e2e-spectre.yml`, `e2e-multichain.yml`.
 
 Solidity unit tests, linting, and Slither are run locally via `just` (no dedicated CI workflow).

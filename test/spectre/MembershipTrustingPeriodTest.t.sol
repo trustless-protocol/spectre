@@ -3,16 +3,16 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { Groth16ICS07Tendermint } from "../../contracts/light-clients/Groth16ICS07Tendermint.sol";
+import { SpectreClient } from "../../contracts/light-clients/SpectreClient.sol";
 import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
 import { ILightClientMsgs } from "../../contracts/msgs/ILightClientMsgs.sol";
 import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
 import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
-import { IGroth16ICS07TendermintErrors } from "../../contracts/light-clients/errors/IGroth16ICS07TendermintErrors.sol";
-import { IMembership } from "../../contracts/interfaces/IMembership.sol";
+import { ISpectreClientErrors } from "../../contracts/light-clients/errors/ISpectreClientErrors.sol";
+import { IMembership } from "../../contracts/light-clients/interfaces/IMembership.sol";
 
 contract DummyMembershipForTrustingPeriod is IMembership {
-    function membership(
+    function verifyMembership(
         bytes32,
         IMembershipMsgs.KVPair[] calldata,
         IMembershipMsgs.MerkleProof[] calldata
@@ -37,18 +37,18 @@ contract MembershipTrustingPeriodTest is Test {
 
     function test_verifyMembershipAcceptsConsensusStateWithinTrustingPeriod() public {
         uint256 consensusTime = block.timestamp - TRUSTING_PERIOD + 1;
-        Groth16ICS07Tendermint lightClient = _deploy(_toNanos(consensusTime));
+        SpectreClient lightClient = _deploy(_toNanos(consensusTime));
 
         assertEq(lightClient.verifyMembership(_membershipMsg(_toNanos(consensusTime))), consensusTime);
     }
 
     function test_verifyMembershipRejectsExpiredConsensusState() public {
         uint256 consensusTime = block.timestamp - TRUSTING_PERIOD;
-        Groth16ICS07Tendermint lightClient = _deploy(_toNanos(consensusTime));
+        SpectreClient lightClient = _deploy(_toNanos(consensusTime));
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                IGroth16ICS07TendermintErrors.InsufficientTrustingPeriod.selector,
+                ISpectreClientErrors.InsufficientTrustingPeriod.selector,
                 uint128(TRUSTING_PERIOD),
                 uint128(TRUSTING_PERIOD)
             )
@@ -58,23 +58,21 @@ contract MembershipTrustingPeriodTest is Test {
 
     function test_verifyMembershipRejectsFutureConsensusState() public {
         uint256 consensusTime = block.timestamp + 1;
-        Groth16ICS07Tendermint lightClient = _deploy(_toNanos(consensusTime));
+        SpectreClient lightClient = _deploy(_toNanos(consensusTime));
 
         vm.expectRevert(
-            abi.encodeWithSelector(
-                IGroth16ICS07TendermintErrors.ProofIsInTheFuture.selector, block.timestamp, consensusTime
-            )
+            abi.encodeWithSelector(ISpectreClientErrors.ProofIsInTheFuture.selector, block.timestamp, consensusTime)
         );
         lightClient.verifyMembership(_membershipMsg(_toNanos(consensusTime)));
     }
 
     function test_verifyNonMembershipRejectsExpiredConsensusState() public {
         uint256 consensusTime = block.timestamp - TRUSTING_PERIOD;
-        Groth16ICS07Tendermint lightClient = _deploy(_toNanos(consensusTime));
+        SpectreClient lightClient = _deploy(_toNanos(consensusTime));
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                IGroth16ICS07TendermintErrors.InsufficientTrustingPeriod.selector,
+                ISpectreClientErrors.InsufficientTrustingPeriod.selector,
                 uint128(TRUSTING_PERIOD),
                 uint128(TRUSTING_PERIOD)
             )
@@ -84,17 +82,15 @@ contract MembershipTrustingPeriodTest is Test {
 
     function test_verifyNonMembershipRejectsFutureConsensusState() public {
         uint256 consensusTime = block.timestamp + 1;
-        Groth16ICS07Tendermint lightClient = _deploy(_toNanos(consensusTime));
+        SpectreClient lightClient = _deploy(_toNanos(consensusTime));
 
         vm.expectRevert(
-            abi.encodeWithSelector(
-                IGroth16ICS07TendermintErrors.ProofIsInTheFuture.selector, block.timestamp, consensusTime
-            )
+            abi.encodeWithSelector(ISpectreClientErrors.ProofIsInTheFuture.selector, block.timestamp, consensusTime)
         );
         lightClient.verifyNonMembership(_nonMembershipMsg(_toNanos(consensusTime)));
     }
 
-    function _deploy(uint128 consensusTimestamp) private returns (Groth16ICS07Tendermint) {
+    function _deploy(uint128 consensusTimestamp) private returns (SpectreClient) {
         IICS07TendermintMsgs.ClientState memory clientState = IICS07TendermintMsgs.ClientState({
             chainId: "test-chain-0",
             trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
@@ -107,10 +103,9 @@ contract MembershipTrustingPeriodTest is Test {
         });
         IICS07TendermintMsgs.ConsensusState memory consensusState = _consensusState(consensusTimestamp);
 
-        return new Groth16ICS07Tendermint(
+        return new SpectreClient(
             address(0),
             address(membership),
-            address(0),
             address(0),
             abi.encode(clientState),
             keccak256(abi.encode(consensusState)),

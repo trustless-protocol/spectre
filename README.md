@@ -1,7 +1,7 @@
 # fast-ibc
 
 A Solidity implementation of IBC Eureka (IBC v2) with a Go relayer using gnark
-Groth16 for Tendermint light client verification. Each `updateClient` proves a
+Groth16 for Tendermint light client verification. Each client update proves a
 2/3+ voting-power quorum of validator Ed25519 signatures in a single Groth16
 proof, with in-circuit CanonicalVote reconstruction so only ~32 bytes of public
 input land on-chain.
@@ -15,10 +15,10 @@ input land on-chain.
 │  IBC v2 Module  │────────▶│  ICS26Router.sol                     │
 │  (send_packet)  │         │      │                               │
 └─────────────────┘         │      ▼                               │
-                            │  Groth16ICS07Tendermint.sol          │
+                            │  SpectreClient.sol                   │
          ┌──────────────────│      │  (light client + 2/3 quorum)  │
          │                  │      ▼                               │
-         │  Go Relayer      │  WrapperVerifier.sol                 │
+         │  Go Relayer      │  SignatureVerifier.sol               │
          │  ┌────────────┐  │      │  (rebuilds CanonicalVote +    │
          │  │ Extractor  │  │      │   SHA-256 witness commit)     │
          │  │ + Prover   │  │      ▼                               │
@@ -36,7 +36,7 @@ voting power sums to ≥ 2/3 of the validator set. To keep Groth16 circuits
 fixed-size, the prover picks the smallest **bucket** (N ∈ {4, 8, 16, 32, 64,
 128}) that fits the required signers and pads the rest with deterministic
 dummy keypairs. Each bucket has its own `(r1cs, pk, vk)` artifacts and a
-matching `Groth16Verifier_N{N}.sol`; `WrapperVerifier` dispatches by bucket.
+matching `Groth16Verifier_N{N}.sol`; `SignatureVerifier` dispatches by bucket.
 
 The circuit reconstructs each validator's `CanonicalVote` bytes from a shared
 block header + per-slot `Timestamp`, hashes the full witness (active flag,
@@ -214,7 +214,7 @@ top of the toolchain in [Requirements](#requirements).
 > `relayer/prover/buckets.go` or expect chains with larger quorum sets,
 > re-run `go run ./prover/cmd ./bin ../contracts/verifiers` from the
 > `relayer/` directory to emit the missing `Groth16Verifier_N{32,64,128}.sol`
-> before redeploying contracts — otherwise `WrapperVerifier.verifyBatchProof`
+> before redeploying contracts — otherwise `SignatureVerifier.verifyBatchProof`
 > will revert with `UnknownBucket(N)` for any signer count > 16.
 
 ```bash
@@ -253,7 +253,7 @@ curl -s http://127.0.0.1:59717/eth/v1/beacon/states/head/finality_checkpoints
 
 # 5. Create the light clients on both chains. Runs the Cosmos side first
 #    (creates the 08-wasm ETH client), then deploys the Tendermint light
-#    client on Ethereum. Writes cosmos_wasm_client_id + ics07_client back
+#    client on Ethereum. Writes cosmos_wasm_client_id + spectre_client back
 #    into relayer/config.json automatically.
 #    (Split alternative: create-clients-cosmos then create-clients-eth.)
 ./relayer create-clients \
@@ -330,7 +330,7 @@ cast receipt 0x4d611d65a802bea81865e7f0e1f0413064518a79883b29481968804d0efa1692-
 
 ```
 
-Send an ICS-20 transfer from Cosmos to trigger an `updateClient` + `recvPacket`
+Send an ICS-20 transfer from Cosmos to trigger a client update + `recvPacket`
 round-trip; the `[UpdateCosmosClient]` log line reports the chosen bucket.
 
 ## Benchmark mode
@@ -367,8 +367,8 @@ proxy → impl wrapper frame, and logs one `inner[i]` line per direct child of
 the multicall body. Sample output:
 
 ```
-[bench][eth] multicall labels=updateClient,recvPacket:1 gasUsed=3322538 ...
-[bench][eth] inner[0] updateClient gas=2491085 (from trace)
+[bench][eth] multicall labels=updateApplicationState,recvPacket:1 gasUsed=3322538 ...
+[bench][eth] inner[0] updateApplicationState gas=2491085 (from trace)
 [bench][eth] inner[1] recvPacket:1 gas=833989 (from trace)
 ```
 
@@ -396,8 +396,8 @@ Core IBC protocol contracts:
 
 - `ICS26Router.sol` — IBC packet routing
 - `ICS20Transfer.sol` — Fungible token transfer (ICS-20)
-- `Groth16ICS07Tendermint.sol` — Tendermint light client (2/3 quorum + batch verify)
-- `WrapperVerifier.sol` — Rebuilds CanonicalVote bytes, hashes witness, dispatches per bucket
+- `SpectreClient.sol` — Tendermint light client (2/3 quorum + batch verify; owns client state in an ERC-7201 Store)
+- `SignatureVerifier.sol` — Rebuilds CanonicalVote bytes, hashes witness, dispatches per bucket
 - `Groth16Verifier_N{N}.sol` — Per-bucket Groth16 verifiers (N ∈ {4,8,16,32,64,128})
 - `Membership.sol` — On-chain ICS23 Merkle proof verification
 

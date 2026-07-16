@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { Membership } from "../../contracts/programs/Membership.sol";
+import { Membership } from "../../contracts/light-clients/modules/Membership.sol";
 import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
 
 /// @dev Documents the intentional 32-byte commitment-value invariant (issue #111).
@@ -42,13 +42,13 @@ contract MembershipValueLengthTest is Test {
     function test_membership_rejectsShortValue() public {
         IMembershipMsgs.KVPair[] memory kvs = _kvWithValue(new bytes(16)); // 16 bytes
         vm.expectRevert(Membership.InvalidValueLength.selector);
-        m.membership(APP_HASH, kvs, _oneProof());
+        m.verifyMembership(APP_HASH, kvs, _oneProof());
     }
 
     function test_membership_rejectsLongValue() public {
         IMembershipMsgs.KVPair[] memory kvs = _kvWithValue(new bytes(64)); // 64 bytes
         vm.expectRevert(Membership.InvalidValueLength.selector);
-        m.membership(APP_HASH, kvs, _oneProof());
+        m.verifyMembership(APP_HASH, kvs, _oneProof());
     }
 
     function test_membership_thirtyTwoByteValuePassesLengthGate() public {
@@ -56,7 +56,7 @@ contract MembershipValueLengthTest is Test {
         // real proof verification (which fails on the dummy proof with a different
         // error). We only assert the length gate is not the rejection reason.
         IMembershipMsgs.KVPair[] memory kvs = _kvWithValue(new bytes(32));
-        try m.membership(APP_HASH, kvs, _oneProof()) {
+        try m.verifyMembership(APP_HASH, kvs, _oneProof()) {
         // proof would not actually verify with dummy data
         }
         catch (bytes memory reason) {

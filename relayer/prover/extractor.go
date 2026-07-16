@@ -29,7 +29,7 @@ type ValidatorSignature struct {
 }
 
 // SharedBlockData is the subset of CanonicalVote fields that are identical
-// across every validator signing the same block. The on-chain WrapperVerifier
+// across every validator signing the same block. The on-chain SignatureVerifier
 // uses these fields to recompute each slot's canonical vote bytes via Encode.sol;
 // the circuit itself doesn't see them — it consumes only the per-slot signed
 // bytes via ValidatorSignature.SignedBytes.

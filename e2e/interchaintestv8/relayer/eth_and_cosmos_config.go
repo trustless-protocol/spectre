@@ -42,9 +42,9 @@ type EthCosmosConfigInfo struct {
 	// Whether we use the mock client in Cosmos
 	MockWasmClient bool
 	// ICS07 Tendermint light client address (set after create-clients)
-	ICS07Client string
-	// WrapperVerifier contract address
-	WrapperVerifier string
+	SpectreClient string
+	// SignatureVerifier contract address
+	SignatureVerifier string
 	// Membership program contract address
 	Membership string
 	// Misbehaviour program contract address
@@ -95,8 +95,8 @@ func CreateEthCosmosModules(
 				CosmosWasmClientID: configInfo.CosmosWasmClientID,
 				EthRpcUrl:          configInfo.EthRPC,
 				EthWsUrl:           configInfo.EthWs,
-				ICS07Client:        configInfo.ICS07Client,
-				WrapperVerifier:    configInfo.WrapperVerifier,
+				SpectreClient:      configInfo.SpectreClient,
+				SignatureVerifier:  configInfo.SignatureVerifier,
 				Membership:         configInfo.Membership,
 				Misbehaviour:       configInfo.Misbehaviour,
 				UpdateClient:       configInfo.UpdateClient,

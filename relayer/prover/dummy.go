@@ -9,7 +9,7 @@ import (
 
 // dummyMagic is the prefix every dummy slot's signed-bytes buffer starts
 // with. The full layout is `dummyMagic || bucket(2 BE) || slot(2 BE)` (= 18
-// bytes), reproducible byte-for-byte on-chain by WrapperVerifier so the
+// bytes), reproducible byte-for-byte on-chain by SignatureVerifier so the
 // in-circuit hash matches without paying calldata for padding messages.
 const dummyMagic = "fast-ibc-dummy"
 
@@ -54,7 +54,7 @@ func generateDummySlots(n int) []dummySignature {
 }
 
 // DummyMsgBytes is the on-chain-reproducible signed-bytes buffer for a padding
-// slot. Layout: dummyMagic || bucket(2 BE) || slot(2 BE). WrapperVerifier
+// slot. Layout: dummyMagic || bucket(2 BE) || slot(2 BE). SignatureVerifier
 // rebuilds the exact same bytes using its own copy of dummyMagic so the
 // witness hash matches without requiring calldata for inactive slots.
 func DummyMsgBytes(bucket, slot uint16) []byte {

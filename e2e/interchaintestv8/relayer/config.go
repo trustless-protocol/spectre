@@ -41,8 +41,8 @@ type CosmosToEthModuleConfig struct {
 	CosmosWasmClientID string `json:"cosmos_wasm_client_id"`
 	EthRpcUrl          string `json:"eth_rpc_url"`
 	EthWsUrl           string `json:"eth_ws_url,omitempty"`
-	ICS07Client        string `json:"ics07_client,omitempty"`
-	WrapperVerifier    string `json:"wrapper_verifier"`
+	SpectreClient      string `json:"spectre_client,omitempty"`
+	SignatureVerifier  string `json:"signature_verifier"`
 	Membership         string `json:"membership"`
 	Misbehaviour       string `json:"misbehaviour"`
 	UpdateClient       string `json:"update_client"`

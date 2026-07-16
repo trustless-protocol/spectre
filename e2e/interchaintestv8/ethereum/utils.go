@@ -28,14 +28,14 @@ type DeployedContracts struct {
 	// Groth16Verifier for groth16
 	VerifierGroth16 string `json:"verifierGroth16"`
 	// Mock Groth16 verifier
-	VerifierMock    string `json:"verifierMock"`
-	WrapperVerifier string `json:"wrapperVerifier"`
-	Membership      string `json:"membership"`
-	UpdateClient    string `json:"updateClient"`
-	Misbehaviour    string `json:"misbehaviour"`
-	Ics26Router     string `json:"ics26Router"`
-	Ics20Transfer   string `json:"ics20Transfer"`
-	Erc20           string `json:"erc20"`
+	VerifierMock      string `json:"verifierMock"`
+	SignatureVerifier string `json:"signatureVerifier"`
+	Membership        string `json:"membership"`
+	UpdateClient      string `json:"updateClient"`
+	Misbehaviour      string `json:"misbehaviour"`
+	Ics26Router       string `json:"ics26Router"`
+	Ics20Transfer     string `json:"ics20Transfer"`
+	Erc20             string `json:"erc20"`
 }
 
 func GetEthContractsFromDeployOutput(stdout string) (DeployedContracts, error) {
@@ -60,7 +60,7 @@ func GetEthContractsFromDeployOutput(stdout string) (DeployedContracts, error) {
 	if embeddedContracts.Erc20 == "" ||
 		embeddedContracts.Ics20Transfer == "" ||
 		embeddedContracts.Ics26Router == "" ||
-		embeddedContracts.WrapperVerifier == "" ||
+		embeddedContracts.SignatureVerifier == "" ||
 		embeddedContracts.Membership == "" ||
 		embeddedContracts.UpdateClient == "" ||
 		embeddedContracts.Misbehaviour == "" {
@@ -68,9 +68,9 @@ func GetEthContractsFromDeployOutput(stdout string) (DeployedContracts, error) {
 	}
 
 	// VerifierPlonk/Groth16/Mock are upstream (SP1) artifacts. fast-ibc's E2ETestDeploy
-	// script doesn't emit them — the equivalent verifiers live behind WrapperVerifier as
+	// script doesn't emit them — the equivalent verifiers live behind SignatureVerifier as
 	// per-bucket Groth16Verifier_N{N} contracts (see scripts/E2ETestDeploy.s.sol setBucket
-	// calls). WrapperVerifier presence is enforced above; that's sufficient.
+	// calls). SignatureVerifier presence is enforced above; that's sufficient.
 
 	return embeddedContracts, nil
 }

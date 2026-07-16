@@ -34,7 +34,7 @@ Traces:
     │   └─ ← [Return]
     ├─ [2404781] → new Groth16Verifier@0x867EBEE8fB04ef90a4161fe21b89420B0aeEF8f2
     │   └─ ← [Return] 12011 bytes of code
-    ├─ [2442427] → new Groth16ICS07Tendermint@0x65cE09e5864dD1f45F4ae50396A307291AaD6631
+    ├─ [2442427] → new SpectreClient@0x65cE09e5864dD1f45F4ae50396A307291AaD6631
     │   └─ ← [Return] 11624 bytes of code
     ├─ [1171142] → new ICS02Client@0xEBC7C68E032d765e392CFf5B2a11E76C2C43BbbF
     │   ├─ emit OwnershipTransferred(previousOwner: 0x0000000000000000000000000000000000000000, newOwner: 0x51A4283eBaeC10B9B764AE8B021BcAA30C0631Ff)
@@ -80,7 +80,7 @@ Simulated On-chain Traces:
   [2404781] → new Groth16Verifier@0x867EBEE8fB04ef90a4161fe21b89420B0aeEF8f2
     └─ ← [Return] 12011 bytes of code
 
-  [2442427] → new Groth16ICS07Tendermint@0x65cE09e5864dD1f45F4ae50396A307291AaD6631
+  [2442427] → new SpectreClient@0x65cE09e5864dD1f45F4ae50396A307291AaD6631
     └─ ← [Return] 11624 bytes of code
 
   [1171142] → new ICS02Client@0xEBC7C68E032d765e392CFf5B2a11E76C2C43BbbF

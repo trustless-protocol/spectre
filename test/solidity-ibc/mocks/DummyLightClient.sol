@@ -3,8 +3,6 @@ pragma solidity ^0.8.28;
 
 // solhint-disable no-empty-blocks
 
-import { IMisbehaviourMsgs } from "../../../contracts/light-clients/msgs/IMisbehaviourMsgs.sol";
-import { IUpdateClientMsgs } from "../../../contracts/light-clients/msgs/IUpdateClientMsgs.sol";
 import { ILightClientMsgs } from "../../../contracts/msgs/ILightClientMsgs.sol";
 import { ILightClient } from "../../../contracts/interfaces/ILightClient.sol";
 
@@ -22,7 +20,12 @@ contract DummyLightClient is ILightClient, ILightClientMsgs {
         membershipShouldFail = membershipShouldFail_;
     }
 
-    function updateClient(bytes calldata updateMsg) external returns (UpdateResult) {
+    function updateApplicationState(bytes calldata updateMsg) external returns (UpdateResult) {
+        latestUpdateMsg = updateMsg;
+        return updateResult;
+    }
+
+    function updateConsensusState(bytes calldata updateMsg) external returns (UpdateResult) {
         latestUpdateMsg = updateMsg;
         return updateResult;
     }

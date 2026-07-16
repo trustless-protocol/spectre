@@ -20,7 +20,7 @@ import { ERC1967Proxy } from "@openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy
 import { DeployAccessManagerWithRoles } from "./deployments/DeployAccessManagerWithRoles.sol";
 import { IBCERC20 } from "../contracts/utils/IBCERC20.sol";
 import { Escrow } from "../contracts/utils/Escrow.sol";
-import { WrapperVerifier } from "../contracts/utils/WrapperVerifier.sol";
+import { SignatureVerifier } from "../contracts/light-clients/SignatureVerifier.sol";
 
 import { Groth16Verifier_N4 } from "../contracts/verifiers/Groth16Verifier_N4.sol";
 // import { Groth16Verifier_N8 } from "../contracts/verifiers/Groth16Verifier_N8.sol";
@@ -29,9 +29,9 @@ import { Groth16Verifier_N4 } from "../contracts/verifiers/Groth16Verifier_N4.so
 // import { Groth16Verifier_N64 } from "../contracts/verifiers/Groth16Verifier_N64.sol";
 // import { Groth16Verifier_N128 } from "../contracts/verifiers/Groth16Verifier_N128.sol";
 
-import { Membership } from "../contracts/programs/Membership.sol";
-import { UpdateClient } from "../contracts/programs/UpdateClient.sol";
-import { Misbehaviour } from "../contracts/programs/Misbehaviour.sol";
+import { Membership } from "../contracts/light-clients/modules/Membership.sol";
+import { UpdateClient } from "../contracts/light-clients/modules/UpdateClient.sol";
+import { Misbehaviour } from "../contracts/light-clients/modules/Misbehaviour.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 
 /// @dev See the Solidity Scripting tutorial: https://book.getfoundry.sh/tutorials/solidity-scripting
@@ -52,7 +52,7 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         // deploy one per-bucket gnark verifier and register it. Per-bucket
         // Groth16Verifier_N{N}.sol files are generated offline by
         // `go run ./relayer/prover/cmd`.
-        WrapperVerifier wrapperVerifier = new WrapperVerifier(msg.sender);
+        SignatureVerifier signatureVerifier = new SignatureVerifier(msg.sender);
 
         address verifierN4 = address(new Groth16Verifier_N4());
         // address verifierN8 = address(new Groth16Verifier_N8());
@@ -65,16 +65,16 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         // 128-bit field elements, so every bucket uses the same uint256[2]
         // verifier ABI.
 
-        wrapperVerifier.setBucket(4, verifierN4, Groth16Verifier_N4.verifyProof.selector);
-        // wrapperVerifier.setBucket(8, verifierN8, Groth16Verifier_N8.verifyProof.selector);
-        // wrapperVerifier.setBucket(16, verifierN16, Groth16Verifier_N16.verifyProof.selector);
-        // wrapperVerifier.setBucket(32, verifierN32, Groth16Verifier_N32.verifyProof.selector);
-        // wrapperVerifier.setBucket(64, verifierN64, Groth16Verifier_N64.verifyProof.selector);
-        // wrapperVerifier.setBucket(128, verifierN128, Groth16Verifier_N128.verifyProof.selector);
+        signatureVerifier.setBucket(4, verifierN4, Groth16Verifier_N4.verifyProof.selector);
+        // signatureVerifier.setBucket(8, verifierN8, Groth16Verifier_N8.verifyProof.selector);
+        // signatureVerifier.setBucket(16, verifierN16, Groth16Verifier_N16.verifyProof.selector);
+        // signatureVerifier.setBucket(32, verifierN32, Groth16Verifier_N32.verifyProof.selector);
+        // signatureVerifier.setBucket(64, verifierN64, Groth16Verifier_N64.verifyProof.selector);
+        // signatureVerifier.setBucket(128, verifierN128, Groth16Verifier_N128.verifyProof.selector);
 
         address membership = address(new Membership());
-        address updateClient = address(new UpdateClient());
-        address misbehaviour = address(new Misbehaviour());
+        address updateClient = address(new UpdateClient(address(signatureVerifier)));
+        address misbehaviour = address(new Misbehaviour(address(signatureVerifier)));
         // address verifierMock = address(new MockGroth16Verifier());
 
         // Deploy IBC Eureka with proxy
@@ -119,7 +119,7 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         vm.stopBroadcast();
 
         string memory json = "json";
-        json.serialize("wrapperVerifier", Strings.toHexString(address(wrapperVerifier)));
+        json.serialize("signatureVerifier", Strings.toHexString(address(signatureVerifier)));
         json.serialize("membership", Strings.toHexString(address(membership)));
         json.serialize("updateClient", Strings.toHexString(address(updateClient)));
         json.serialize("misbehaviour", Strings.toHexString(address(misbehaviour)));

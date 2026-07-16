@@ -206,9 +206,9 @@ func TestHandleCosmosHeaderFetchFailure(t *testing.T) {
 					json.NewEncoder(w).Encode(res)
 
 				case "eth_call":
-					clientState := updateClientContract.IICS07TendermintMsgsClientState{
+					clientState := relayerclient.ClientState{
 						ChainId:    "test-ibc-eth",
-						TrustLevel: updateClientContract.IICS07TendermintMsgsTrustThreshold{Numerator: 2, Denominator: 3},
+						TrustLevel: relayerclient.TrustThreshold{Numerator: 2, Denominator: 3},
 						LatestHeight: updateClientContract.IICS02ClientMsgsHeight{
 							RevisionNumber: 0,
 							RevisionHeight: 100,

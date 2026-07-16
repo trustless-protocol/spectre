@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IMembershipMsgs } from "../light-clients/msgs/IMembershipMsgs.sol";
+import { IMembershipMsgs } from "../msgs/IMembershipMsgs.sol";
 import { IMembership } from "../interfaces/IMembership.sol";
 
 import "@openzeppelin-contracts/utils/math/Math.sol";
@@ -94,7 +94,7 @@ contract Membership is IMembership {
      * @param kvPairs Array of key-value pairs to verify
      * @param merkleProofs Array of corresponding Merkle proofs
      */
-    function membership(
+    function verifyMembership(
         bytes32 appHash,
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs

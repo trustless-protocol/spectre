@@ -3,17 +3,17 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { WrapperVerifier } from "../../contracts/utils/WrapperVerifier.sol";
+import { SignatureVerifier } from "../../contracts/light-clients/SignatureVerifier.sol";
 import { Encode } from "../../contracts/utils/Encode.sol";
-import { IVerifier } from "../../contracts/interfaces/IVerifier.sol";
+import { ISignatureVerifier } from "../../contracts/light-clients/interfaces/ISignatureVerifier.sol";
 
-contract WrapperVerifierHashHarness is WrapperVerifier {
-    constructor() WrapperVerifier(address(this)) { }
+contract SignatureVerifierHashHarness is SignatureVerifier {
+    constructor() SignatureVerifier(address(this)) { }
 
     function hashWitness(
         bytes32[] calldata pubkeys,
         bool[] calldata active,
-        IVerifier.SharedBlock calldata shared
+        ISignatureVerifier.SharedBlock calldata shared
     )
         external
         pure
@@ -31,11 +31,11 @@ contract WrapperVerifierHashHarness is WrapperVerifier {
 /// byte, or per-slot packing is caught Solidity-vs-Solidity. The off-chain Go
 /// path (prover/hash_witness.go) and the in-circuit commit are cross-checked
 /// separately via test.IsSolved.
-contract WrapperVerifierHashEquivalenceTest is Test {
-    WrapperVerifierHashHarness internal harness;
+contract SignatureVerifierHashEquivalenceTest is Test {
+    SignatureVerifierHashHarness internal harness;
 
     function setUp() public {
-        harness = new WrapperVerifierHashHarness();
+        harness = new SignatureVerifierHashHarness();
     }
 
     function test_hashWitness_matchesReference_bucket16_mixedSlots() public view {
@@ -47,8 +47,8 @@ contract WrapperVerifierHashEquivalenceTest is Test {
             active[i] = i < 11;
         }
 
-        IVerifier.SharedBlock memory shared =
-            IVerifier.SharedBlock({ height: 53, round: 0, blockIDHash: bytes32(uint256(0x1234)) });
+        ISignatureVerifier.SharedBlock memory shared =
+            ISignatureVerifier.SharedBlock({ height: 53, round: 0, blockIDHash: bytes32(uint256(0x1234)) });
 
         assertEq(harness.hashWitness(pubkeys, active, shared), _hashWitnessReference(pubkeys, active, shared));
     }
@@ -66,8 +66,8 @@ contract WrapperVerifierHashEquivalenceTest is Test {
         active[2] = true;
         active[3] = false;
 
-        IVerifier.SharedBlock memory shared =
-            IVerifier.SharedBlock({ height: 16_384, round: 127, blockIDHash: bytes32(uint256(0xCAFE)) });
+        ISignatureVerifier.SharedBlock memory shared =
+            ISignatureVerifier.SharedBlock({ height: 16_384, round: 127, blockIDHash: bytes32(uint256(0xCAFE)) });
 
         assertEq(harness.hashWitness(pubkeys, active, shared), _hashWitnessReference(pubkeys, active, shared));
     }
@@ -78,7 +78,7 @@ contract WrapperVerifierHashEquivalenceTest is Test {
     function _hashWitnessReference(
         bytes32[] memory pubkeys,
         bool[] memory active,
-        IVerifier.SharedBlock memory shared
+        ISignatureVerifier.SharedBlock memory shared
     )
         internal
         pure

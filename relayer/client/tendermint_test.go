@@ -25,6 +25,9 @@ func TestParseTrustThreshold(t *testing.T) {
 		{name: "invalid numerator", input: "abc/3", wantErr: true},
 		{name: "invalid denominator", input: "2/abc", wantErr: true},
 		{name: "zero denominator", input: "2/0", wantErr: true},
+		{name: "numerator exceeds uint8", input: "300/6", wantErr: true},
+		{name: "denominator exceeds uint8", input: "2/256", wantErr: true},
+		{name: "uint8 max accepted", input: "255/255", wantNum: 255, wantDen: 255},
 	}
 
 	for _, tc := range tests {
@@ -124,9 +127,9 @@ func TestParseInnerOp(t *testing.T) {
 
 func TestEncodeClientState(t *testing.T) {
 	t.Run("valid client state encodes without error", func(t *testing.T) {
-		clientState := updateClientContract.IICS07TendermintMsgsClientState{
+		clientState := ClientState{
 			ChainId: "cosmoshub-4",
-			TrustLevel: updateClientContract.IICS07TendermintMsgsTrustThreshold{
+			TrustLevel: TrustThreshold{
 				Numerator:   2,
 				Denominator: 3,
 			},
@@ -151,9 +154,9 @@ func TestEncodeClientState(t *testing.T) {
 }
 
 func TestDecodeClientState(t *testing.T) {
-	original := updateClientContract.IICS07TendermintMsgsClientState{
+	original := ClientState{
 		ChainId: "cosmoshub-4",
-		TrustLevel: updateClientContract.IICS07TendermintMsgsTrustThreshold{
+		TrustLevel: TrustThreshold{
 			Numerator:   2,
 			Denominator: 3,
 		},
@@ -227,42 +230,22 @@ func TestEncodeConsensusState(t *testing.T) {
 	})
 }
 
-func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
+// TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI checks that the manual
+// ABI tuple (updateApplicationStateMsgType) produces bytes that the abigen-
+// generated UpdateClient.verifyHeader input tuple can round-trip — i.e. the
+// hand-built encoding matches the generated ABI exactly.
+func TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI(t *testing.T) {
 	var validatorsHash [32]byte
 	validatorsHash[0] = 0x88
 	validatorsHash[1] = 0xbe
-
-	var deltaBaseHash [32]byte
-	deltaBaseHash[0] = 0xaa
 
 	zero8 := [8]*big.Int{}
 	for i := range zero8 {
 		zero8[i] = big.NewInt(0)
 	}
 	zero2 := [2]*big.Int{big.NewInt(0), big.NewInt(0)}
-	var deltaIndices [16]uint32
-	var deltaPubKeys [16][32]byte
-	var deltaVotingPowers [16]uint64
-	deltaIndices[0] = 7
-	deltaPubKeys[0] = [32]byte{0x07}
-	deltaVotingPowers[0] = 110
 
-	msg := updateClientContract.IUpdateClientMsgsMsgUpdateClient{
-		ClientState: updateClientContract.IICS07TendermintMsgsClientState{
-			ChainId: "test-0",
-			TrustLevel: updateClientContract.IICS07TendermintMsgsTrustThreshold{
-				Numerator:   1,
-				Denominator: 3,
-			},
-			LatestHeight: updateClientContract.IICS02ClientMsgsHeight{
-				RevisionNumber: 0,
-				RevisionHeight: 19,
-			},
-			TrustingPeriod:  1209600,
-			UnbondingPeriod: 1814400,
-			ZkAlgorithm:     uint8(Groth16),
-			ClockDrift:      15,
-		},
+	msg := updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState{
 		TrustedConsensusState: updateClientContract.IICS07TendermintMsgsConsensusState{
 			Timestamp:          big.NewInt(1700000000000000000),
 			NextValidatorsHash: validatorsHash,
@@ -284,27 +267,29 @@ func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
 				RevisionHeight: 19,
 			},
 		},
-		Time:                   big.NewInt(1700000002000000000),
-		Proof:                  zero8,
-		Commitments:            zero2,
-		CommitmentPok:          zero2,
-		Bucket:                 16,
-		SignerIndices:          []uint32{0, 1},
-		PinnedValidatorIndices: []uint32{7, 8},
-		SignerPubkeys:          [][32]byte{{0x01}, {0x02}},
-		Active:                 []bool{true, true},
+		Time: big.NewInt(1700000002000000000),
+		Proof: updateClientContract.ISpectreClientMsgsBatchProof{
+			Proof:                  zero8,
+			Commitments:            zero2,
+			CommitmentPok:          zero2,
+			Bucket:                 16,
+			SignerIndices:          []uint32{0, 1},
+			PinnedValidatorIndices: []uint32{7, 8},
+			SignerPubkeys:          [][32]byte{{0x01}, {0x02}},
+			Active:                 []bool{true, true},
+		},
 	}
 
-	encoded, err := EncodeUpdateClientMsg(msg)
+	encoded, err := EncodeUpdateApplicationStateMsg(msg)
 	if err != nil {
-		t.Fatalf("encode update client msg: %v", err)
+		t.Fatalf("encode update application state msg: %v", err)
 	}
 
 	contractABI, err := updateClientContract.ContractUpdateClientMetaData.GetAbi()
 	if err != nil {
 		t.Fatalf("parse generated ABI: %v", err)
 	}
-	unpacked, err := contractABI.Methods["updateClient"].Inputs.Unpack(encoded)
+	unpacked, err := contractABI.Methods["verifyHeader"].Inputs.Unpack(encoded)
 	if err != nil {
 		t.Fatalf("generated ABI failed to unpack encoded msg: %v", err)
 	}
@@ -316,7 +301,7 @@ func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal unpacked tuple: %v", err)
 	}
-	var decoded updateClientContract.IUpdateClientMsgsMsgUpdateClient
+	var decoded updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState
 	if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
 		t.Fatalf("unmarshal decoded update msg: %v", err)
 	}
@@ -327,8 +312,8 @@ func TestEncodeUpdateClientMsgMatchesGeneratedABI(t *testing.T) {
 			validatorsHash,
 		)
 	}
-	if len(decoded.PinnedValidatorIndices) != 2 || decoded.PinnedValidatorIndices[0] != 7 || decoded.PinnedValidatorIndices[1] != 8 {
-		t.Fatalf("pinned validator indices decoded incorrectly: %+v", decoded.PinnedValidatorIndices)
+	if len(decoded.Proof.PinnedValidatorIndices) != 2 || decoded.Proof.PinnedValidatorIndices[0] != 7 || decoded.Proof.PinnedValidatorIndices[1] != 8 {
+		t.Fatalf("pinned validator indices decoded incorrectly: %+v", decoded.Proof.PinnedValidatorIndices)
 	}
 }
 

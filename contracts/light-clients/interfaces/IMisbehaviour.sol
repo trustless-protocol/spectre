@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
+
+import { ISpectreClientMsgs } from "../msgs/ISpectreClientMsgs.sol";
+
+/// @title IMisbehaviour
+/// @notice Interface for the Misbehaviour module. Validates two conflicting signed headers and
+///         their signature proofs; invoked via delegatecall by SpectreClient.
+interface IMisbehaviour {
+    /// @notice Validates misbehaviour (two conflicting signed headers) and their signature proofs.
+    /// @param msg_ The misbehaviour submission message.
+    /// @return The trusted heights of the two headers.
+    function verifyMisbehaviour(ISpectreClientMsgs.MsgSubmitMisbehaviour calldata msg_)
+        external
+        returns (ISpectreClientMsgs.MisbehaviourOutput memory);
+}

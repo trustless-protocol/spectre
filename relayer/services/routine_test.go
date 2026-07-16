@@ -8,43 +8,17 @@ import (
 	"relayer/prover"
 )
 
-func TestShouldReAnchor(t *testing.T) {
-	tests := []struct {
-		name      string
-		trusted   int64
-		latest    int64
-		want      bool
-		wantError bool
-	}{
-		{name: "caught up", trusted: 100, latest: 100, want: false},
-		{name: "newer block", trusted: 100, latest: 101, want: true},
-		{name: "trusted ahead", trusted: 101, latest: 100, wantError: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got, err := shouldReAnchor(tt.trusted, tt.latest)
-			if (err != nil) != tt.wantError {
-				t.Fatalf("shouldReAnchor error = %v, wantError %v", err, tt.wantError)
-			}
-			if got != tt.want {
-				t.Fatalf("shouldReAnchor = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestRecordReAnchorResult(t *testing.T) {
+func TestRecordRefreshResult(t *testing.T) {
 	timestamp := &Timestamp{}
 	now := time.Unix(1_700_000_000, 0)
 
-	if err := recordReAnchorResult(timestamp, nil, now); err == nil {
+	if err := recordRefreshResult(timestamp, nil, now); err == nil {
 		t.Fatal("expected nil light block error")
 	}
 
 	block := &relayerclient.LightBlock{BlockHeight: 123}
-	if err := recordReAnchorResult(timestamp, block, now); err != nil {
-		t.Fatalf("record re-anchor result: %v", err)
+	if err := recordRefreshResult(timestamp, block, now); err != nil {
+		t.Fatalf("record refresh result: %v", err)
 	}
 	gotTime, gotHeight := timestamp.Snapshot()
 	if !gotTime.Equal(now) || gotHeight != 123 {
@@ -136,6 +110,75 @@ func TestSelectSignaturesForPinnedSetChoosesPinnedQuorum(t *testing.T) {
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("selected indices: got %v want %v", got, want)
+		}
+	}
+}
+
+func TestPinnedOverlapPower(t *testing.T) {
+	pubkey0 := [32]byte{0x01}
+	pubkey1 := [32]byte{0x02}
+	pubkey2 := [32]byte{0x03}
+
+	candidates := []prover.ValidatorSignature{
+		{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
+		{Index: 1, PublicKey: pubkey1[:], Power: 40, Active: true}, // not pinned: contributes 0
+	}
+	pinned := pinnedCosmosValidatorSet{
+		indices:      []uint32{0, 1},
+		pubkeys:      [][32]byte{pubkey0, pubkey2},
+		votingPowers: []uint64{30, 70},
+		totalPower:   100,
+	}
+
+	if got := pinnedOverlapPower(candidates, pinned); got != 30 {
+		t.Fatalf("overlap = %d, want 30 (pinned power of pubkey0 only)", got)
+	}
+	if got := pinnedOverlapPower(nil, pinned); got != 0 {
+		t.Fatalf("overlap with no candidates = %d, want 0", got)
+	}
+}
+
+func TestShouldRotatePinnedSet(t *testing.T) {
+	threshold := relayerclient.TrustThreshold{Numerator: 5, Denominator: 6}
+
+	if !shouldRotatePinnedSet(true, 100, 100, threshold) {
+		t.Fatal("forceRotation should always rotate")
+	}
+	if shouldRotatePinnedSet(false, 90, 100, threshold) {
+		t.Fatal("overlap 90/100 above 5/6 should not rotate")
+	}
+	// boundary: overlap/total exactly 5/6 (100*6 == 120*5)
+	if !shouldRotatePinnedSet(false, 100, 120, threshold) {
+		t.Fatal("overlap exactly at 5/6 should rotate")
+	}
+	if !shouldRotatePinnedSet(false, 70, 100, threshold) {
+		t.Fatal("overlap 70/100 below 5/6 should rotate")
+	}
+
+	// threshold 1/1 rotates on any overlap (overlap <= total always holds)
+	full := relayerclient.TrustThreshold{Numerator: 1, Denominator: 1}
+	if !shouldRotatePinnedSet(false, 100, 100, full) {
+		t.Fatal("threshold 1/1 should rotate even at full overlap")
+	}
+}
+
+func TestParseRotationThreshold(t *testing.T) {
+	def, err := ParseRotationThreshold("")
+	if err != nil {
+		t.Fatalf("empty value should fall back to default: %v", err)
+	}
+	if def.Numerator != 5 || def.Denominator != 6 {
+		t.Fatalf("default = %d/%d, want 5/6", def.Numerator, def.Denominator)
+	}
+
+	for _, ok := range []string{"3/4", "1/1", "5/6"} {
+		if _, err := ParseRotationThreshold(ok); err != nil {
+			t.Fatalf("expected %q to be valid: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"2/3", "1/2", "7/6", "0/1", "1/0", "abc", "5"} {
+		if _, err := ParseRotationThreshold(bad); err == nil {
+			t.Fatalf("expected %q to be rejected", bad)
 		}
 	}
 }

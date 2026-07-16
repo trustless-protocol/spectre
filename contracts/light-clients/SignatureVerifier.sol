@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IVerifier } from "../interfaces/IVerifier.sol";
-import { Encode } from "./Encode.sol";
+import { ISignatureVerifier } from "./interfaces/ISignatureVerifier.sol";
+import { Encode } from "../utils/Encode.sol";
 
-/// @title WrapperVerifier
+/// @title SignatureVerifier
 /// @notice Hashes the batch witness with SHA-256 and forwards the 32-byte digest
 ///         packed into two 128-bit public field elements to the per-bucket gnark
 ///         Groth16 verifier. One `BucketVerifier` must be registered per
@@ -23,7 +23,7 @@ import { Encode } from "./Encode.sol";
 ///         The in-circuit hash (see prover/hash_witness.go) reproduces the same
 ///         byte layout; any drift between this file, hash_witness.go, and
 ///         BatchCircuit.Define() fails the proof's public-input assertion.
-contract WrapperVerifier is IVerifier {
+contract SignatureVerifier is ISignatureVerifier {
     /// Witness byte layout (must match prover/hash_witness.go::encodeWitnessBytes
     /// and BatchCircuit.Define exactly):
     ///   PrefixHead(11) || roundPresent(1) || BlockHash(32)
@@ -70,7 +70,7 @@ contract WrapperVerifier is IVerifier {
         emit BucketSet(bucket, verifier, selector);
     }
 
-    /// @inheritdoc IVerifier
+    /// @inheritdoc ISignatureVerifier
     function verifyBatchProof(
         uint16 bucket,
         uint256[8] calldata proof,
@@ -78,7 +78,7 @@ contract WrapperVerifier is IVerifier {
         uint256[2] calldata commitmentPok,
         bytes32[] calldata pubkeys,
         bool[] calldata active,
-        IVerifier.SharedBlock calldata shared
+        ISignatureVerifier.SharedBlock calldata shared
     )
         external
         view
@@ -115,7 +115,7 @@ contract WrapperVerifier is IVerifier {
     function _hashWitness(
         bytes32[] calldata pubkeys,
         bool[] calldata active,
-        IVerifier.SharedBlock calldata shared
+        ISignatureVerifier.SharedBlock calldata shared
     )
         internal
         pure

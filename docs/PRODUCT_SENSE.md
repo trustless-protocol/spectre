@@ -49,8 +49,9 @@ Multiple packets can be batched into a single proof submission:
 - `sendTransferWithSender()` — send on behalf of another address (requires DELEGATE_SENDER_ROLE)
 - `multiRecvPacket()` / `multiAckPacket()` — batched operations
 
-**Groth16ICS07Tendermint** — light client:
-- `updateClient()` — update with new Tendermint header + Groth16 proof
+**SpectreClient** — light client:
+- `updateApplicationState()` — advance the header's appHash against the already-pinned validator set (frequent per-packet path)
+- `updateConsensusState()` — rotate + re-pin the validator set and advance consensus state (rare ~24h path)
 - `membership()` / `nonMembership()` — verify ICS-23 Merkle proofs
 
 ### Off-chain (Go Relayer)
@@ -63,7 +64,7 @@ Multiple packets can be batched into a single proof submission:
 **JSON config** (`relayer/config.example.json`):
 - Top-level `server` block: log_level, address, port
 - `modules` array with named entries — **one `cosmos_to_eth` per Cosmos source** (each with a distinct `ics26_client_id`) plus one `eth_to_cosmos` — each with `src_chain`, `dst_chain`, and `config`:
-  - `cosmos_to_eth` config: tm_rpc_url, ics26_address, eth_rpc_url, ics07_client, wrapper_verifier, membership, misbehaviour, update_client, and optional fields: fetch_timeout (timeout in seconds for queries, default 15), trusting_period, trust_level, proof_type
+  - `cosmos_to_eth` config: tm_rpc_url, ics26_address, eth_rpc_url, spectre_client, signature_verifier, membership, misbehaviour, update_client, and optional fields: fetch_timeout (timeout in seconds for queries, default 15), trusting_period, trust_level, proof_type, rotation_threshold (pinned-set overlap fraction that triggers `updateConsensusState`, default "5/6", must exceed 2/3; "1/1" rotates on any change), refresh_interval_seconds (background client-freshness routine interval, default 86400)
   - `eth_to_cosmos` config: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address
 
 ### Environment Variables

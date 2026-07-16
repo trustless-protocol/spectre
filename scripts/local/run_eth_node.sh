@@ -84,7 +84,7 @@ echo "ICS26_ADDRESS: $ICS26_ADDRESS"
 VERIFIER_ADDRESS=$(echo "$RESULT" \
   | sed -n 's/^0: string "\(.*\)".*/\1/p' \
   | sed 's/\\"/"/g' \
-  | jq -r '.wrapperVerifier')
+  | jq -r '.signatureVerifier')
 
 echo "VERIFIER_ADDRESS: $VERIFIER_ADDRESS"
 
@@ -122,7 +122,7 @@ jq \
     (.. | objects | select(has("eth_rpc_url")) | .eth_rpc_url) = $ETH_RPC
   | (.. | objects | select(has("eth_ws_url")) | .eth_ws_url) = $ETH_WS
   | (.. | objects | select(has("ics26_address")) | .ics26_address) = $ICS26
-  | (.. | objects | select(has("wrapper_verifier")) | .wrapper_verifier) = $WRAP
+  | (.. | objects | select(has("signature_verifier")) | .signature_verifier) = $WRAP
   | (.. | objects | select(has("membership")) | .membership) = $MEMB
   | (.. | objects | select(has("update_client")) | .update_client) = $UPCL
   | (.. | objects | select(has("misbehaviour")) | .misbehaviour) = $MIS

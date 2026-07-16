@@ -76,8 +76,8 @@ const (
 	Groth16GenesisFilePath = "scripts/genesis.json"
 	// SolidityFixturesDir is the directory where the Solidity fixtures are stored.
 	SolidityFixturesDir = "test/solidity-ibc/fixtures/"
-	// Groth16ICS07FixturesDir is the directory where the Groth16ICS07 fixtures are stored.
-	Groth16ICS07FixturesDir = "test/groth16-ics07/fixtures"
+	// SpectreFixturesDir is the directory where the Spectre fixtures are stored.
+	SpectreFixturesDir = "test/spectre/fixtures"
 	// WasmFixturesDir is the directory where the Rust fixtures are stored.
 	WasmFixturesDir = "packages/ethereum/light-client/src/test_utils/fixtures"
 	// RelayerConfigFilePath is the path to generate the relayer config file.
@@ -130,10 +130,10 @@ var (
 	// StartingEthBalance is the amount of ETH to give to each user at the start of the test.
 	StartingEthBalance = math.NewInt(2 * ethereum.ETHER.Int64())
 
-	// DefaultTrustLevel is the trust level used by the Groth16ICS07Tendermint contract.
+	// DefaultTrustLevel is the trust level used by the SpectreClient contract.
 	DefaultTrustLevel = ibctm.Fraction{Numerator: 1, Denominator: 3}.ToTendermint()
 
-	// DefaultTrustPeriod is the trust period used by the Groth16ICS07Tendermint contract.
+	// DefaultTrustPeriod is the trust period used by the SpectreClient contract.
 	// 129600 seconds = 14 days
 	DefaultTrustPeriod = 1209600
 

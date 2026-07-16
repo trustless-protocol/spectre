@@ -2,11 +2,11 @@
 pragma solidity ^0.8.28;
 
 import { IntegrationTest } from "./IntegrationTest.t.sol";
-import { Groth16ICS07Tendermint } from "../../contracts/light-clients/Groth16ICS07Tendermint.sol";
-import { WrapperVerifier } from "../../contracts/utils/WrapperVerifier.sol";
-import { UpdateClient } from "../../contracts/programs/UpdateClient.sol";
+import { SpectreClient } from "../../contracts/light-clients/SpectreClient.sol";
+import { SignatureVerifier } from "../../contracts/light-clients/SignatureVerifier.sol";
+import { UpdateClient } from "../../contracts/light-clients/modules/UpdateClient.sol";
 import { Header } from "../../contracts/utils/Header.sol";
-import { IUpdateClientMsgs } from "../../contracts/light-clients/msgs/IUpdateClientMsgs.sol";
+import { ISpectreClientMsgs } from "../../contracts/light-clients/msgs/ISpectreClientMsgs.sol";
 import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
 import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
 import { ILightClientMsgs } from "../../contracts/msgs/ILightClientMsgs.sol";
@@ -19,7 +19,7 @@ import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipM
 import { ICS24Host } from "../../contracts/utils/ICS24Host.sol";
 
 contract DummyMembership {
-    function membership(
+    function verifyMembership(
         bytes32,
         IMembershipMsgs.KVPair[] calldata,
         IMembershipMsgs.MerkleProof[] calldata
@@ -35,7 +35,7 @@ contract AlwaysTrueVerifier {
 }
 
 contract RecvPacketGasTest is IntegrationTest {
-    WrapperVerifier wrapper;
+    SignatureVerifier wrapper;
     UpdateClient updateClientImpl;
     AlwaysTrueVerifier stubBucket;
 
@@ -171,9 +171,9 @@ contract RecvPacketGasTest is IntegrationTest {
         // Warp to make the clock drift check happy
         vm.warp(1_700_000_020);
 
-        wrapper = new WrapperVerifier(address(this));
+        wrapper = new SignatureVerifier(address(this));
         stubBucket = new AlwaysTrueVerifier();
-        updateClientImpl = new UpdateClient();
+        updateClientImpl = new UpdateClient(address(wrapper));
 
         wrapper.setBucket(bucket, address(stubBucket), AlwaysTrueVerifier.verifyProof.selector);
 
@@ -189,11 +189,10 @@ contract RecvPacketGasTest is IntegrationTest {
         DummyMembership stubMembership = new DummyMembership();
 
         // Deploy the real light client with stubMembership so it succeeds
-        Groth16ICS07Tendermint realClient = new Groth16ICS07Tendermint(
-            address(wrapper),
+        SpectreClient realClient = new SpectreClient(
+            address(updateClientImpl),
             address(stubMembership),
             STUB_MISBEHAVIOUR,
-            address(updateClientImpl),
             abi.encode(cs),
             keccak256(abi.encode(trustedCS)),
             vs,
@@ -219,23 +218,22 @@ contract RecvPacketGasTest is IntegrationTest {
             }
         }
 
-        IUpdateClientMsgs.MsgUpdateClient memory m;
-        m.clientState = cs;
+        ISpectreClientMsgs.MsgUpdateApplicationState memory m;
         m.trustedConsensusState = trustedCS;
         m.proposedHeader = header;
         m.time = NEW_TS_NS;
-        m.proof = [uint256(0), 0, 0, 0, 0, 0, 0, 0];
-        m.commitments = [uint256(0), 0];
-        m.commitmentPok = [uint256(0), 0];
-        m.bucket = bucket;
-        m.signerIndices = idx;
-        m.signerPubkeys = pks;
-        m.active = act;
-        m.pinnedValidatorIndices = pinnedValidatorIndices;
+        m.proof.proof = [uint256(0), 0, 0, 0, 0, 0, 0, 0];
+        m.proof.commitments = [uint256(0), 0];
+        m.proof.commitmentPok = [uint256(0), 0];
+        m.proof.bucket = bucket;
+        m.proof.signerIndices = idx;
+        m.proof.signerPubkeys = pks;
+        m.proof.active = act;
+        m.proof.pinnedValidatorIndices = pinnedValidatorIndices;
         bytes memory encodedUpdate = abi.encode(m);
 
         // First, update the client state to seed the consensus state height 1001
-        realClient.updateClient(encodedUpdate);
+        realClient.updateApplicationState(encodedUpdate);
 
         // 2. Build the packet to receive
         string memory foreignDenom = "uatom";

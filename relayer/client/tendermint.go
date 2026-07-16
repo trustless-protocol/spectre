@@ -11,7 +11,7 @@ import (
 	"strconv"
 	"strings"
 
-	tendermintContract "relayer/bindings/Groth16ICS07Tendermint"
+	spectreContract "relayer/bindings/SpectreClient"
 	updateClientContract "relayer/bindings/UpdateClient"
 
 	"github.com/cometbft/cometbft/p2p"
@@ -36,8 +36,36 @@ const (
 
 var clientStateType abi.Type
 var consensusStateType abi.Type
-var updateClientMsgType abi.Type
-var validatorSetType abi.Type
+
+// updateApplicationStateMsgType is the ABI tuple for ISpectreClientMsgs.MsgUpdateApplicationState.
+// Note: no clientState field (the client reads it from its Store), and the proof
+// fields are nested inside a `proof` (BatchProof) sub-tuple.
+var updateApplicationStateMsgType abi.Type
+
+// updateConsensusStateMsgType is the ABI tuple for ISpectreClientMsgs.MsgUpdateConsensusState:
+// { MsgUpdateApplicationState update; ValidatorSet newValidatorSet }.
+var updateConsensusStateMsgType abi.Type
+
+// ClientState mirrors IICS07TendermintMsgs.ClientState. It is defined locally
+// because the on-chain client no longer exposes this struct in any ABI (client
+// state is passed/returned as opaque `bytes`), so abigen emits no Go type for it.
+// Field order/types must match clientStateComponents below.
+type ClientState struct {
+	ChainId         string
+	TrustLevel      TrustThreshold
+	LatestHeight    updateClientContract.IICS02ClientMsgsHeight
+	TrustingPeriod  uint32
+	UnbondingPeriod uint32
+	IsFrozen        bool
+	ZkAlgorithm     uint8
+	ClockDrift      uint32
+}
+
+// TrustThreshold mirrors IICS07TendermintMsgs.TrustThreshold (a Fraction).
+type TrustThreshold struct {
+	Numerator   uint8
+	Denominator uint8
+}
 
 func init() {
 	clientStateComponents := []abi.ArgumentMarshaling{
@@ -134,11 +162,8 @@ func init() {
 		}},
 	}
 
-	updateClientMsgType, _ = abi.NewType("tuple", "", []abi.ArgumentMarshaling{
-		{Name: "clientState", Type: "tuple", Components: clientStateComponents},
-		{Name: "trustedConsensusState", Type: "tuple", Components: consensusStateComponents},
-		{Name: "proposedHeader", Type: "tuple", Components: headerComponents},
-		{Name: "time", Type: "uint128"},
+	// BatchProof sub-tuple, shared by all flows (matches ISpectreClientMsgs.BatchProof).
+	batchProofComponents := []abi.ArgumentMarshaling{
 		{Name: "proof", Type: "uint256[8]"},
 		{Name: "commitments", Type: "uint256[2]"},
 		{Name: "commitmentPok", Type: "uint256[2]"},
@@ -147,19 +172,35 @@ func init() {
 		{Name: "pinnedValidatorIndices", Type: "uint32[]"},
 		{Name: "signerPubkeys", Type: "bytes32[]"},
 		{Name: "active", Type: "bool[]"},
-	})
+	}
 
+	// MsgUpdateApplicationState: no clientState field; proof nested as BatchProof.
+	applicationStateComponents := []abi.ArgumentMarshaling{
+		{Name: "trustedConsensusState", Type: "tuple", Components: consensusStateComponents},
+		{Name: "proposedHeader", Type: "tuple", Components: headerComponents},
+		{Name: "time", Type: "uint128"},
+		{Name: "proof", Type: "tuple", Components: batchProofComponents},
+	}
+	updateApplicationStateMsgType, _ = abi.NewType("tuple", "", applicationStateComponents)
+
+	// ValidatorSet sub-tuple (matches IICS07TendermintMsgs.ValidatorSet).
 	validatorInfoComponents := []abi.ArgumentMarshaling{
 		{Name: "valAddress", Type: "bytes"},
 		{Name: "pubKey", Type: "bytes32"},
 		{Name: "votingPower", Type: "uint64"},
 		{Name: "proposerPriority", Type: "int64"},
 	}
-	validatorSetType, _ = abi.NewType("tuple", "", []abi.ArgumentMarshaling{
+	validatorSetComponents := []abi.ArgumentMarshaling{
 		{Name: "validators", Type: "tuple[]", Components: validatorInfoComponents},
 		{Name: "hasProposer", Type: "bool"},
 		{Name: "proposer", Type: "tuple", Components: validatorInfoComponents},
 		{Name: "totalVotingPower", Type: "uint64"},
+	}
+
+	// MsgUpdateConsensusState: { update: MsgUpdateApplicationState, newValidatorSet: ValidatorSet }.
+	updateConsensusStateMsgType, _ = abi.NewType("tuple", "", []abi.ArgumentMarshaling{
+		{Name: "update", Type: "tuple", Components: applicationStateComponents},
+		{Name: "newValidatorSet", Type: "tuple", Components: validatorSetComponents},
 	})
 }
 
@@ -281,15 +322,15 @@ func votingPowerToUint64(name string, value int64) (uint64, error) {
 	return uint64(value), nil
 }
 
-func validatorInfoToContract(name string, val *commettypes.Validator) (tendermintContract.IICS07TendermintMsgsValidatorInfo, error) {
+func validatorInfoToContract(name string, val *commettypes.Validator) (spectreContract.IICS07TendermintMsgsValidatorInfo, error) {
 	if val == nil {
-		return tendermintContract.IICS07TendermintMsgsValidatorInfo{}, nil
+		return spectreContract.IICS07TendermintMsgsValidatorInfo{}, nil
 	}
 	votingPower, err := votingPowerToUint64(name+" voting power", val.VotingPower)
 	if err != nil {
-		return tendermintContract.IICS07TendermintMsgsValidatorInfo{}, err
+		return spectreContract.IICS07TendermintMsgsValidatorInfo{}, err
 	}
-	return tendermintContract.IICS07TendermintMsgsValidatorInfo{
+	return spectreContract.IICS07TendermintMsgsValidatorInfo{
 		ValAddress:       val.Address,
 		PubKey:           bytesToBytes32(val.PubKey.Bytes()),
 		VotingPower:      votingPower,
@@ -297,24 +338,24 @@ func validatorInfoToContract(name string, val *commettypes.Validator) (tendermin
 	}, nil
 }
 
-func ValidatorSetToContract(valSet commettypes.ValidatorSet, name string) (tendermintContract.IICS07TendermintMsgsValidatorSet, error) {
-	vals := []tendermintContract.IICS07TendermintMsgsValidatorInfo{}
+func ValidatorSetToContract(valSet commettypes.ValidatorSet, name string) (spectreContract.IICS07TendermintMsgsValidatorSet, error) {
+	vals := []spectreContract.IICS07TendermintMsgsValidatorInfo{}
 	for i, val := range valSet.Validators {
 		info, err := validatorInfoToContract(fmt.Sprintf("%s validator[%d]", name, i), val)
 		if err != nil {
-			return tendermintContract.IICS07TendermintMsgsValidatorSet{}, err
+			return spectreContract.IICS07TendermintMsgsValidatorSet{}, err
 		}
 		vals = append(vals, info)
 	}
 	proposer, err := validatorInfoToContract(name+" proposer", valSet.Proposer)
 	if err != nil {
-		return tendermintContract.IICS07TendermintMsgsValidatorSet{}, err
+		return spectreContract.IICS07TendermintMsgsValidatorSet{}, err
 	}
 	totalVotingPower, err := votingPowerToUint64(name+" total voting power", valSet.TotalVotingPower())
 	if err != nil {
-		return tendermintContract.IICS07TendermintMsgsValidatorSet{}, err
+		return spectreContract.IICS07TendermintMsgsValidatorSet{}, err
 	}
-	return tendermintContract.IICS07TendermintMsgsValidatorSet{
+	return spectreContract.IICS07TendermintMsgsValidatorSet{
 		Validators:       vals,
 		HasProposer:      valSet.Proposer != nil,
 		Proposer:         proposer,
@@ -322,12 +363,12 @@ func ValidatorSetToContract(valSet commettypes.ValidatorSet, name string) (tende
 	}, nil
 }
 
-type ContractValidatorSet = tendermintContract.IICS07TendermintMsgsValidatorSet
+type ContractValidatorSet = spectreContract.IICS07TendermintMsgsValidatorSet
 
-type Groth16ICS07TendermintGenesis struct {
-	TrustedClientState        updateClientContract.IICS07TendermintMsgsClientState
+type SpectreClientGenesis struct {
+	TrustedClientState        ClientState
 	TrustedConsensusState     updateClientContract.IICS07TendermintMsgsConsensusState
-	InitialPinnedValidatorSet tendermintContract.IICS07TendermintMsgsValidatorSet
+	InitialPinnedValidatorSet spectreContract.IICS07TendermintMsgsValidatorSet
 }
 
 type SupportedZkAlgorithm uint8
@@ -357,7 +398,7 @@ func (s SupportedZkAlgorithm) String() string {
 // every update so the on-chain ClockDriftMismatch check passes.
 const DefaultClockDrift uint32 = 30
 
-func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32, trustLevel string, proofType string, clockDrift uint32) (*Groth16ICS07TendermintGenesis, error) {
+func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32, trustLevel string, proofType string, clockDrift uint32) (*SpectreClientGenesis, error) {
 	if clockDrift == 0 {
 		clockDrift = DefaultClockDrift
 	}
@@ -413,7 +454,7 @@ func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32,
 		return nil, err
 	}
 
-	clientState := updateClientContract.IICS07TendermintMsgsClientState{
+	clientState := ClientState{
 		ChainId:    chainId,
 		TrustLevel: trustThreshold,
 		LatestHeight: updateClientContract.IICS02ClientMsgsHeight{
@@ -438,7 +479,7 @@ func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32,
 		return nil, err
 	}
 
-	genesis := Groth16ICS07TendermintGenesis{
+	genesis := SpectreClientGenesis{
 		TrustedClientState:        clientState,
 		TrustedConsensusState:     consensusState,
 		InitialPinnedValidatorSet: initialPinnedValidatorSet,
@@ -629,49 +670,51 @@ func ProvePath(client *rpchttp.HTTP, height int64, path [][]byte) ([]byte, *comm
 }
 
 // parseTrustThreshold parses a trust threshold fraction string like "2/3"
-func ParseTrustThreshold(value string) (updateClientContract.IICS07TendermintMsgsTrustThreshold, error) {
+func ParseTrustThreshold(value string) (TrustThreshold, error) {
 	parts := strings.Split(value, "/")
 	if len(parts) != 2 {
-		return updateClientContract.IICS07TendermintMsgsTrustThreshold{}, fmt.Errorf("invalid trust threshold format: %s (expected format: 'numerator/denominator')", value)
+		return TrustThreshold{}, fmt.Errorf("invalid trust threshold format: %s (expected format: 'numerator/denominator')", value)
 	}
 
-	numerator, err := strconv.ParseUint(parts[0], 10, 64)
+	// bitSize 8 so values that don't fit the uint8 contract fields are a
+	// parse error instead of silently truncating (e.g. "300/6" -> 44/6).
+	numerator, err := strconv.ParseUint(parts[0], 10, 8)
 	if err != nil {
-		return updateClientContract.IICS07TendermintMsgsTrustThreshold{}, fmt.Errorf("invalid numerator: %s", parts[0])
+		return TrustThreshold{}, fmt.Errorf("invalid numerator: %s", parts[0])
 	}
 
-	denominator, err := strconv.ParseUint(parts[1], 10, 64)
+	denominator, err := strconv.ParseUint(parts[1], 10, 8)
 	if err != nil {
-		return updateClientContract.IICS07TendermintMsgsTrustThreshold{}, fmt.Errorf("invalid denominator: %s", parts[1])
+		return TrustThreshold{}, fmt.Errorf("invalid denominator: %s", parts[1])
 	}
 
 	if denominator == 0 {
-		return updateClientContract.IICS07TendermintMsgsTrustThreshold{}, fmt.Errorf("denominator cannot be zero")
+		return TrustThreshold{}, fmt.Errorf("denominator cannot be zero")
 	}
 
-	return updateClientContract.IICS07TendermintMsgsTrustThreshold{
+	return TrustThreshold{
 		Numerator:   uint8(numerator),
 		Denominator: uint8(denominator),
 	}, nil
 }
 
-func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMembershipMsgsCommitmentProof, error) {
+func ParseCommitmentProof(proof *ics23.CommitmentProof) (*spectreContract.IMembershipMsgsCommitmentProof, error) {
 	if proof == nil {
 		return nil, fmt.Errorf("proof is nil")
 	}
 
-	var parsedProof *tendermintContract.IMembershipMsgsCommitmentProof
+	var parsedProof *spectreContract.IMembershipMsgsCommitmentProof
 	switch p := proof.Proof.(type) {
 	case *ics23.CommitmentProof_Exist:
-		parsedProof = &tendermintContract.IMembershipMsgsCommitmentProof{
+		parsedProof = &spectreContract.IMembershipMsgsCommitmentProof{
 			ProofType: ProofType_EXIST,
-			ExistenceProof: tendermintContract.IMembershipMsgsExistenceProof{
+			ExistenceProof: spectreContract.IMembershipMsgsExistenceProof{
 				Key:   p.Exist.Key,
 				Value: p.Exist.Value,
 				Leaf:  ParseLeafOp(p.Exist.Leaf),
-				Path:  []tendermintContract.IMembershipMsgsInnerOp{},
+				Path:  []spectreContract.IMembershipMsgsInnerOp{},
 			},
-			NonExistenceProof: tendermintContract.IMembershipMsgsNonExistenceProof{},
+			NonExistenceProof: spectreContract.IMembershipMsgsNonExistenceProof{},
 		}
 
 		for _, innerOp := range p.Exist.Path {
@@ -681,25 +724,25 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 		if p.Nonexist.Left == nil && p.Nonexist.Right == nil {
 			return nil, fmt.Errorf("non-existence proof must at least left or right existence proofs")
 		}
-		parsedProof = &tendermintContract.IMembershipMsgsCommitmentProof{
+		parsedProof = &spectreContract.IMembershipMsgsCommitmentProof{
 			ProofType:      ProofType_NON_EXIST,
-			ExistenceProof: tendermintContract.IMembershipMsgsExistenceProof{},
-			NonExistenceProof: tendermintContract.IMembershipMsgsNonExistenceProof{
+			ExistenceProof: spectreContract.IMembershipMsgsExistenceProof{},
+			NonExistenceProof: spectreContract.IMembershipMsgsNonExistenceProof{
 				Key:      p.Nonexist.Key,
 				HasLeft:  false,
-				Left:     tendermintContract.IMembershipMsgsExistenceProof{},
+				Left:     spectreContract.IMembershipMsgsExistenceProof{},
 				HasRight: false,
-				Right:    tendermintContract.IMembershipMsgsExistenceProof{},
+				Right:    spectreContract.IMembershipMsgsExistenceProof{},
 			},
 		}
 
 		if p.Nonexist.Left != nil {
 			parsedProof.NonExistenceProof.HasLeft = true
-			parsedProof.NonExistenceProof.Left = tendermintContract.IMembershipMsgsExistenceProof{
+			parsedProof.NonExistenceProof.Left = spectreContract.IMembershipMsgsExistenceProof{
 				Key:   p.Nonexist.Left.Key,
 				Value: p.Nonexist.Left.Value,
 				Leaf:  ParseLeafOp(p.Nonexist.Left.Leaf),
-				Path:  []tendermintContract.IMembershipMsgsInnerOp{},
+				Path:  []spectreContract.IMembershipMsgsInnerOp{},
 			}
 			for _, innerOp := range p.Nonexist.Left.Path {
 				parsedProof.NonExistenceProof.Left.Path = append(parsedProof.NonExistenceProof.Left.Path, ParseInnerOp(innerOp))
@@ -708,11 +751,11 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 
 		if p.Nonexist.Right != nil {
 			parsedProof.NonExistenceProof.HasRight = true
-			parsedProof.NonExistenceProof.Right = tendermintContract.IMembershipMsgsExistenceProof{
+			parsedProof.NonExistenceProof.Right = spectreContract.IMembershipMsgsExistenceProof{
 				Key:   p.Nonexist.Right.Key,
 				Value: p.Nonexist.Right.Value,
 				Leaf:  ParseLeafOp(p.Nonexist.Right.Leaf),
-				Path:  []tendermintContract.IMembershipMsgsInnerOp{},
+				Path:  []spectreContract.IMembershipMsgsInnerOp{},
 			}
 			for _, innerOp := range p.Nonexist.Right.Path {
 				parsedProof.NonExistenceProof.Right.Path = append(parsedProof.NonExistenceProof.Right.Path, ParseInnerOp(innerOp))
@@ -725,15 +768,15 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 		}
 
 		if e := p.Batch.GetEntries()[0].GetExist(); e != nil {
-			parsedProof = &tendermintContract.IMembershipMsgsCommitmentProof{
+			parsedProof = &spectreContract.IMembershipMsgsCommitmentProof{
 				ProofType: ProofType_EXIST,
-				ExistenceProof: tendermintContract.IMembershipMsgsExistenceProof{
+				ExistenceProof: spectreContract.IMembershipMsgsExistenceProof{
 					Key:   e.Key,
 					Value: e.Value,
 					Leaf:  ParseLeafOp(e.Leaf),
-					Path:  []tendermintContract.IMembershipMsgsInnerOp{},
+					Path:  []spectreContract.IMembershipMsgsInnerOp{},
 				},
-				NonExistenceProof: tendermintContract.IMembershipMsgsNonExistenceProof{},
+				NonExistenceProof: spectreContract.IMembershipMsgsNonExistenceProof{},
 			}
 
 			for _, innerOp := range e.Path {
@@ -742,25 +785,25 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 		}
 
 		if n := p.Batch.GetEntries()[0].GetNonexist(); n != nil {
-			parsedProof = &tendermintContract.IMembershipMsgsCommitmentProof{
+			parsedProof = &spectreContract.IMembershipMsgsCommitmentProof{
 				ProofType:      ProofType_NON_EXIST,
-				ExistenceProof: tendermintContract.IMembershipMsgsExistenceProof{},
-				NonExistenceProof: tendermintContract.IMembershipMsgsNonExistenceProof{
+				ExistenceProof: spectreContract.IMembershipMsgsExistenceProof{},
+				NonExistenceProof: spectreContract.IMembershipMsgsNonExistenceProof{
 					Key:      n.Key,
 					HasLeft:  false,
-					Left:     tendermintContract.IMembershipMsgsExistenceProof{},
+					Left:     spectreContract.IMembershipMsgsExistenceProof{},
 					HasRight: false,
-					Right:    tendermintContract.IMembershipMsgsExistenceProof{},
+					Right:    spectreContract.IMembershipMsgsExistenceProof{},
 				},
 			}
 
 			if n.Left != nil {
 				parsedProof.NonExistenceProof.HasLeft = true
-				parsedProof.NonExistenceProof.Left = tendermintContract.IMembershipMsgsExistenceProof{
+				parsedProof.NonExistenceProof.Left = spectreContract.IMembershipMsgsExistenceProof{
 					Key:   n.Left.Key,
 					Value: n.Left.Value,
 					Leaf:  ParseLeafOp(n.Left.Leaf),
-					Path:  []tendermintContract.IMembershipMsgsInnerOp{},
+					Path:  []spectreContract.IMembershipMsgsInnerOp{},
 				}
 				for _, innerOp := range n.Left.Path {
 					parsedProof.NonExistenceProof.Left.Path = append(parsedProof.NonExistenceProof.Left.Path, ParseInnerOp(innerOp))
@@ -769,11 +812,11 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 
 			if n.Right != nil {
 				parsedProof.NonExistenceProof.HasRight = true
-				parsedProof.NonExistenceProof.Right = tendermintContract.IMembershipMsgsExistenceProof{
+				parsedProof.NonExistenceProof.Right = spectreContract.IMembershipMsgsExistenceProof{
 					Key:   n.Right.Key,
 					Value: n.Right.Value,
 					Leaf:  ParseLeafOp(n.Right.Leaf),
-					Path:  []tendermintContract.IMembershipMsgsInnerOp{},
+					Path:  []spectreContract.IMembershipMsgsInnerOp{},
 				}
 				for _, innerOp := range n.Right.Path {
 					parsedProof.NonExistenceProof.Right.Path = append(parsedProof.NonExistenceProof.Right.Path, ParseInnerOp(innerOp))
@@ -790,12 +833,12 @@ func ParseCommitmentProof(proof *ics23.CommitmentProof) (*tendermintContract.IMe
 	return parsedProof, nil
 }
 
-func ParseLeafOp(leafOp *ics23.LeafOp) tendermintContract.IMembershipMsgsLeafOp {
+func ParseLeafOp(leafOp *ics23.LeafOp) spectreContract.IMembershipMsgsLeafOp {
 	if leafOp == nil {
-		return tendermintContract.IMembershipMsgsLeafOp{}
+		return spectreContract.IMembershipMsgsLeafOp{}
 	}
 
-	return tendermintContract.IMembershipMsgsLeafOp{
+	return spectreContract.IMembershipMsgsLeafOp{
 		HashOp:       uint8(leafOp.Hash),
 		PrehashKey:   uint8(leafOp.PrehashKey),
 		PrehashValue: uint8(leafOp.PrehashValue),
@@ -803,19 +846,19 @@ func ParseLeafOp(leafOp *ics23.LeafOp) tendermintContract.IMembershipMsgsLeafOp 
 	}
 }
 
-func ParseInnerOp(innerOp *ics23.InnerOp) tendermintContract.IMembershipMsgsInnerOp {
+func ParseInnerOp(innerOp *ics23.InnerOp) spectreContract.IMembershipMsgsInnerOp {
 	if innerOp == nil {
-		return tendermintContract.IMembershipMsgsInnerOp{}
+		return spectreContract.IMembershipMsgsInnerOp{}
 	}
 
-	return tendermintContract.IMembershipMsgsInnerOp{
+	return spectreContract.IMembershipMsgsInnerOp{
 		HashOp: uint8(innerOp.Hash),
 		Prefix: innerOp.Prefix,
 		Suffix: innerOp.Suffix,
 	}
 }
 
-func EncodeClientState(clientState updateClientContract.IICS07TendermintMsgsClientState) ([]byte, error) {
+func EncodeClientState(clientState ClientState) ([]byte, error) {
 	args := abi.Arguments{
 		{Type: clientStateType},
 	}
@@ -823,27 +866,27 @@ func EncodeClientState(clientState updateClientContract.IICS07TendermintMsgsClie
 	return encoded, err
 }
 
-func DecodeClientState(data []byte) (updateClientContract.IICS07TendermintMsgsClientState, error) {
+func DecodeClientState(data []byte) (ClientState, error) {
 	args := abi.Arguments{
 		{Type: clientStateType},
 	}
 	unpacked, err := args.Unpack(data)
 	if err != nil {
-		return updateClientContract.IICS07TendermintMsgsClientState{}, fmt.Errorf("unpack: %w", err)
+		return ClientState{}, fmt.Errorf("unpack: %w", err)
 	}
 	if len(unpacked) == 0 {
-		return updateClientContract.IICS07TendermintMsgsClientState{}, fmt.Errorf("no data unpacked")
+		return ClientState{}, fmt.Errorf("no data unpacked")
 	}
 	// unpacked[0] is an anonymous struct matching the tuple.
 	// Use JSON roundtrip to convert to the named target type,
 	// since args.Copy maps the tuple to the first field instead of the struct itself.
 	jsonBytes, err := json.Marshal(unpacked[0])
 	if err != nil {
-		return updateClientContract.IICS07TendermintMsgsClientState{}, fmt.Errorf("marshal unpacked tuple: %w", err)
+		return ClientState{}, fmt.Errorf("marshal unpacked tuple: %w", err)
 	}
-	var clientState updateClientContract.IICS07TendermintMsgsClientState
+	var clientState ClientState
 	if err := json.Unmarshal(jsonBytes, &clientState); err != nil {
-		return updateClientContract.IICS07TendermintMsgsClientState{}, fmt.Errorf("unmarshal to client state: %w", err)
+		return ClientState{}, fmt.Errorf("unmarshal to client state: %w", err)
 	}
 	return clientState, nil
 }
@@ -857,27 +900,32 @@ func EncodeConsensusState(consensusState updateClientContract.IICS07TendermintMs
 
 }
 
-func EncodeUpdateClientMsg(updateClientMsg updateClientContract.IUpdateClientMsgsMsgUpdateClient) ([]byte, error) {
+// EncodeUpdateApplicationStateMsg abi-encodes a MsgUpdateApplicationState for
+// SpectreClient.updateApplicationState(bytes) / ICS26Router.updateApplicationState.
+func EncodeUpdateApplicationStateMsg(msg updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState) ([]byte, error) {
 	args := abi.Arguments{
-		{Type: updateClientMsgType},
+		{Type: updateApplicationStateMsgType},
 	}
-	encoded, err := args.Pack(updateClientMsg)
-	return encoded, err
+	return args.Pack(msg)
 }
 
-// EncodeReAnchorMsg ABI-encodes the (MsgUpdateClient, ValidatorSet) pair into
-// the single bytes blob that the on-chain reAnchorPinnedSet(bytes) decodes —
-// byte-identical to Solidity abi.encode(updateMsg, newPinnedValidatorSet). The
-// arguments are typed as any (like the tx handler) so the caller can pass the
-// updateclient- or tendermint-package binding structs without conversion; Pack
-// matches them structurally by field name.
-func EncodeReAnchorMsg(updateClientMsg any, newPinnedValidatorSet any) ([]byte, error) {
-	args := abi.Arguments{
-		{Type: updateClientMsgType},
-		{Type: validatorSetType},
-	}
-	return args.Pack(updateClientMsg, newPinnedValidatorSet)
+// MsgUpdateConsensusState mirrors ISpectreClientMsgs.MsgUpdateConsensusState.
+// There is no generated Go type for it (nothing takes it as a typed on-chain
+// param), so it is hand-defined and packed against updateConsensusStateMsgType.
+type MsgUpdateConsensusState struct {
+	Update          updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState
+	NewValidatorSet spectreContract.IICS07TendermintMsgsValidatorSet
 }
+
+// EncodeUpdateConsensusStateMsg abi-encodes a MsgUpdateConsensusState for
+// SpectreClient.updateConsensusState(bytes) / ICS26Router.updateConsensusState.
+func EncodeUpdateConsensusStateMsg(update updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState, newValidatorSet spectreContract.IICS07TendermintMsgsValidatorSet) ([]byte, error) {
+	args := abi.Arguments{
+		{Type: updateConsensusStateMsgType},
+	}
+	return args.Pack(MsgUpdateConsensusState{Update: update, NewValidatorSet: newValidatorSet})
+}
+
 func bytesToBytes32(data []byte) [32]byte {
 	var result [32]byte
 	copy(result[:], data)
