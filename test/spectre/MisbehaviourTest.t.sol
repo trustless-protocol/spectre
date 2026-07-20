@@ -211,15 +211,25 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
     function test_misbehaviour_cannotFreezeWithFutureTime() public {
         ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
-        msg_.time = 1_700_000_501 * 1e9; // one second ahead of the wall clock
+        msg_.time = 1_700_000_516 * 1e9; // 16s ahead of wall clock, beyond the 15s clockDrift
 
         vm.expectRevert(
-            abi.encodeWithSelector(ISpectreClientErrors.ProofIsInTheFuture.selector, 1_700_000_500, 1_700_000_501)
+            abi.encodeWithSelector(ISpectreClientErrors.ProofIsInTheFuture.selector, 1_700_000_500, 1_700_000_516)
         );
         lightClient.misbehaviour(abi.encode(msg_));
 
         assertFalse(_isFrozen(lightClient), "future time must not freeze");
         assertEq(mockVerifier.calls(), 0, "future time must not reach verifier");
+    }
+
+    function test_misbehaviour_allowsFutureTimeWithinClockDrift() public {
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        msg_.time = 1_700_000_501 * 1e9; // 1s ahead of wall clock, within the 15s clockDrift
+
+        lightClient.misbehaviour(abi.encode(msg_));
+
+        assertTrue(_isFrozen(lightClient), "future time within clockDrift must pass freshness");
+        assertEq(mockVerifier.calls(), 2, "freshness must allow proof verification");
     }
 
     function test_misbehaviour_rejectsSpoofedTrustedOverlapForNonAdjacentHeaders() public {

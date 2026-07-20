@@ -173,22 +173,39 @@ func getOnChainPinnedValidatorsHash(ctx Context) ([32]byte, error) {
 // latest trusted revision height. This is a cheap eth_call relative to the
 // Groth16 proof, so it's always worth doing before committing to proof gen.
 func fetchOnChainTrustedHeight(ctx Context) (int64, error) {
-	ics07, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
+	onChainClientState, err := fetchOnChainClientState(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("failed to create ICS07 instance: %w", err)
-	}
-	clientStateBytes, err := ics07.GetClientState(nil)
-	if err != nil {
-		return 0, fmt.Errorf("failed to get on-chain client state: %w", err)
-	}
-	onChainClientState, err := relayerclient.DecodeClientState(clientStateBytes)
-	if err != nil {
-		return 0, fmt.Errorf("failed to decode on-chain client state: %w", err)
+		return 0, err
 	}
 	log.Printf("[UpdateCosmosClient] On-chain client state: chainId=%s height=(%d,%d) frozen=%v",
 		onChainClientState.ChainId, onChainClientState.LatestHeight.RevisionNumber,
 		onChainClientState.LatestHeight.RevisionHeight, onChainClientState.IsFrozen)
-	return int64(onChainClientState.LatestHeight.RevisionHeight), nil
+
+	return clientStateRevisionHeightInt64(onChainClientState)
+}
+
+func fetchOnChainClientState(ctx Context) (relayerclient.ClientState, error) {
+	ics07, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
+	if err != nil {
+		return relayerclient.ClientState{}, fmt.Errorf("failed to create ICS07 instance: %w", err)
+	}
+	clientStateBytes, err := ics07.GetClientState(nil)
+	if err != nil {
+		return relayerclient.ClientState{}, fmt.Errorf("failed to get on-chain client state: %w", err)
+	}
+	onChainClientState, err := relayerclient.DecodeClientState(clientStateBytes)
+	if err != nil {
+		return relayerclient.ClientState{}, fmt.Errorf("failed to decode on-chain client state: %w", err)
+	}
+	return onChainClientState, nil
+}
+
+func clientStateRevisionHeightInt64(clientState relayerclient.ClientState) (int64, error) {
+	height := clientState.LatestHeight.RevisionHeight
+	if height > uint64(^uint64(0)>>1) {
+		return 0, fmt.Errorf("on-chain trusted height overflows int64: %d", height)
+	}
+	return int64(height), nil
 }
 
 type pinnedCosmosValidatorSet struct {
@@ -269,6 +286,24 @@ func shouldRotatePinnedSet(forceRotation bool, overlapPower, totalPower int64, t
 	overlap := new(big.Int).Mul(big.NewInt(overlapPower), big.NewInt(int64(threshold.Denominator)))
 	total := new(big.Int).Mul(big.NewInt(totalPower), big.NewInt(int64(threshold.Numerator)))
 	return overlap.Cmp(total) <= 0
+}
+
+func ethLatestHeaderTimestampNanos(ctx Context) (*big.Int, error) {
+	timeout := ctx.Config.FetchTimeout
+	if timeout == 0 {
+		timeout = 15 * time.Second
+	}
+	hctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	header, err := ctx.EthClient().HeaderByNumber(hctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	if header == nil || header.Time == 0 {
+		return nil, fmt.Errorf("latest ethereum header is nil or has zero timestamp")
+	}
+	return new(big.Int).Mul(new(big.Int).SetUint64(header.Time), big.NewInt(1_000_000_000)), nil
 }
 
 func selectSignaturesForPinnedSet(
@@ -465,10 +500,15 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		active[i] = s.Active
 	}
 
+	updateTime, err := ethLatestHeaderTimestampNanos(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ethereum timestamp for update freshness: %w", err)
+	}
+
 	appMsg := updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState{
 		TrustedConsensusState: consensusState,
 		ProposedHeader:        proposedHeader,
-		Time:                  big.NewInt(time.Now().UnixNano()),
+		Time:                  updateTime,
 		Proof: updateclientContract.ISpectreClientMsgsBatchProof{
 			Proof:                  proof,
 			Commitments:            commitments,
@@ -751,11 +791,16 @@ func (w *Worker) UpdateEthClient(ctx Context) error {
 	if err != nil {
 		return err
 	}
-	if len(result.Msgs) == 0 {
-		return nil
+	if len(result.Msgs) > 0 {
+		w.waitForCosmosCatchUp(ctx, result.EthClientState, result.SigSlot)
+		if err := w.TxHandler.SendCosmosTxBatch(ctx, result.Msgs); err != nil {
+			return err
+		}
 	}
-	w.waitForCosmosCatchUp(ctx, result.EthClientState, result.SigSlot)
-	return w.TxHandler.SendCosmosTxBatch(ctx, result.Msgs)
+	if err := recordEthClientUpdateResult(ctx.latestCosmosTimestamp, result); err != nil {
+		return fmt.Errorf("record ethereum client freshness: %w", err)
+	}
+	return nil
 }
 
 func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, error) {

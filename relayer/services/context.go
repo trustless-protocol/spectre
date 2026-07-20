@@ -33,8 +33,8 @@ func (t *Timestamp) Set(updateTime time.Time, height uint64) {
 	t.LatestUpdateHeight = height
 }
 
-// SetTime updates only the timestamp under lock (height is not tracked on the
-// Cosmos side).
+// SetTime updates only the timestamp under lock and leaves the existing height
+// hint unchanged.
 func (t *Timestamp) SetTime(updateTime time.Time) {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()

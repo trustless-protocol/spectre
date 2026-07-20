@@ -22,8 +22,8 @@ import (
 // beacon endpoint from the single eth_to_cosmos module. It returns the built
 // Services, its Context, and a cleanup func that stops the chain clients.
 //
-// The caller runs svc.StartLoop(ctx) — which blocks — on its own goroutine, so
-// N sources relay independently. Their ETH event streams don't cross-feed:
+// The caller runs svc.StartLoop(ctx) — which blocks until an error or shutdown —
+// on its own goroutine, so N sources relay independently. Their ETH event streams don't cross-feed:
 // SubscribeEth filters ICS26Router logs by the per-source router client id.
 //
 // allowEnvOverride honors the single-source env overrides (ICS26_CLIENT_ID,
@@ -158,6 +158,7 @@ func buildCosmosConfig(c2e cosmosToEthConfig, batchCfg services.BatchConfig) ser
 	}
 	if c2e.RefreshInterval != 0 {
 		cfg.RefreshInterval = time.Duration(c2e.RefreshInterval) * time.Second
+		cfg.RefreshIntervalConfigured = true
 	}
 	if envVal := os.Getenv("FETCH_TIMEOUT"); envVal != "" {
 		if d, err := strconv.Atoi(envVal); err == nil && d > 0 {

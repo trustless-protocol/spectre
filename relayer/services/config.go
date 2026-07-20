@@ -37,6 +37,9 @@ const DEFAULT_ROTATION_THRESHOLD = "5/6"
 // their own (and, for the Cosmos client, force-rotating a stale pinned set).
 const DEFAULT_REFRESH_INTERVAL = 24 * time.Hour
 
+const DEFAULT_REFRESH_SAFETY_MARGIN = time.Hour
+const MIN_REFRESH_SAFETY_MARGIN = time.Minute
+
 type IntervalType uint8
 
 const (
@@ -74,7 +77,8 @@ type Config struct {
 	RotationThreshold string
 	// RefreshInterval gates the background freshness routines (see
 	// DEFAULT_REFRESH_INTERVAL).
-	RefreshInterval time.Duration
+	RefreshInterval           time.Duration
+	RefreshIntervalConfigured bool
 }
 
 func NewConfig(KeyPath string, params IntervalConfig, intervalType IntervalType) Config {

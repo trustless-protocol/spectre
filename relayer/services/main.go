@@ -91,6 +91,13 @@ type Services struct {
 	lastFinalizedExecBlock  uint64
 }
 
+type cosmosClientFreshness struct {
+	trustedHeight  int64
+	trustedTime    time.Time
+	trustingPeriod time.Duration
+	clockDrift     time.Duration
+}
+
 func New(eventListener EventListener, txHandler TransactionHandler, prover Prover, ethConfig, cosmosConfig Config) *Services {
 	return &Services{
 		listener:     eventListener,
@@ -106,7 +113,22 @@ func New(eventListener EventListener, txHandler TransactionHandler, prover Prove
 	}
 }
 
-func (s *Services) StartLoop(ctx Context) {
+func (s *Services) StartLoop(ctx Context) error {
+	freshness, err := seedCosmosClientFreshness(ctx)
+	if err != nil {
+		return fmt.Errorf("seed cosmos client freshness: %w", err)
+	}
+	// Derived once at startup from the current on-chain client; restart the
+	// relayer after migrating to a client with a different trusting period.
+	routineInterval, err := deriveCosmosRefreshInterval(s.cosmosConfig, freshness.trustingPeriod)
+	if err != nil {
+		return err
+	}
+	log.Printf("[Routine] Cosmos client refresh interval=%s (trustedHeight=%d trustedTime=%s trustingPeriod=%s clockDrift=%s)",
+		routineInterval, freshness.trustedHeight, freshness.trustedTime.UTC().Format(time.RFC3339),
+		freshness.trustingPeriod, freshness.clockDrift)
+	seedEthClientFreshness(ctx)
+
 	go s.listener.SubscribeCosmos(ctx, s.BatchBuilder)
 	go s.listener.SubscribeEth(ctx, s.BatchBuilder)
 
@@ -115,10 +137,6 @@ func (s *Services) StartLoop(ctx Context) {
 		// TODO: Revisit routine scheduling strategy (interval/backoff/event-driven mix) to ensure this is optimal for production.
 		// One configured interval gates both freshness routines (cosmos client
 		// refresh below and the ETH client update further down).
-		routineInterval := s.cosmosConfig.RefreshInterval
-		if routineInterval == 0 {
-			routineInterval = DEFAULT_REFRESH_INTERVAL
-		}
 		var refreshBackoff routineBackoff
 		var ethClientBackoff routineBackoff
 		for {
@@ -138,7 +156,7 @@ func (s *Services) StartLoop(ctx Context) {
 				if err != nil {
 					delay := refreshBackoff.RecordFailure(time.Now())
 					log.Printf("[Routine] Failed to refresh cosmos client: %v; retrying after %s", err, delay)
-				} else if err := recordRefreshResult(ctx.latestEthTimestamp, latestBlock, time.Now()); err != nil {
+				} else if err := recordRefreshResult(ctx.latestEthTimestamp, latestBlock); err != nil {
 					delay := refreshBackoff.RecordFailure(time.Now())
 					log.Printf("[Routine] Failed to record cosmos client refresh result: %v; retrying after %s", err, delay)
 				} else {
@@ -153,7 +171,6 @@ func (s *Services) StartLoop(ctx Context) {
 					delay := ethClientBackoff.RecordFailure(time.Now())
 					log.Printf("[Routine] Failed to update ETH client on Cosmos: %v; retrying after %s", err, delay)
 				} else {
-					ctx.latestCosmosTimestamp.SetTime(time.Now())
 					ethClientBackoff.RecordSuccess()
 				}
 			}
@@ -206,17 +223,160 @@ func (s *Services) StartLoop(ctx Context) {
 		s.handleEth(ctx, batch)
 	}
 	log.Println("[StartLoop] Eth batch channel closed, exiting loop")
+	return nil
 }
 
-func recordRefreshResult(timestamp *Timestamp, lightBlock *client.LightBlock, now time.Time) error {
+func seedCosmosClientFreshness(ctx Context) (cosmosClientFreshness, error) {
+	clientState, err := fetchOnChainClientState(ctx)
+	if err != nil {
+		return cosmosClientFreshness{}, err
+	}
+	trustedHeight, err := clientStateRevisionHeightInt64(clientState)
+	if err != nil {
+		return cosmosClientFreshness{}, err
+	}
+	lightBlock, err := client.GetLightBlock(ctx.CosmosClient(), trustedHeight)
+	if err != nil {
+		staleTime := seedStaleTimestamp(ctx.latestEthTimestamp, uint64(trustedHeight))
+		log.Printf("[Routine] Failed to fetch trusted cosmos light block %d: %v; seeded stale timestamp so refresh routine fires immediately",
+			trustedHeight, err)
+		return cosmosClientFreshness{
+			trustedHeight:  trustedHeight,
+			trustedTime:    staleTime,
+			trustingPeriod: time.Duration(clientState.TrustingPeriod) * time.Second,
+			clockDrift:     time.Duration(clientState.ClockDrift) * time.Second,
+		}, nil
+	}
+	if err := recordRefreshResult(ctx.latestEthTimestamp, lightBlock); err != nil {
+		return cosmosClientFreshness{}, err
+	}
+	log.Printf("[Routine] Seeded cosmos client freshness from trusted height %d at %s",
+		trustedHeight, lightBlock.SignedHeader.Header.Time.UTC().Format(time.RFC3339))
+	return cosmosClientFreshness{
+		trustedHeight:  trustedHeight,
+		trustedTime:    lightBlock.SignedHeader.Header.Time,
+		trustingPeriod: time.Duration(clientState.TrustingPeriod) * time.Second,
+		clockDrift:     time.Duration(clientState.ClockDrift) * time.Second,
+	}, nil
+}
+
+func seedEthClientFreshness(ctx Context) {
+	stale := func(reason string) {
+		staleTime := seedStaleTimestamp(ctx.latestCosmosTimestamp, 0)
+		log.Printf("[Routine] %s; seeded ETH client freshness as stale at %s",
+			reason, staleTime.UTC().Format(time.RFC3339))
+	}
+
+	ethClientID := ctx.EthClientID()
+	if ethClientID == "" {
+		stale("Ethereum client ID is not configured")
+		return
+	}
+	if ctx.CosmosClient() == nil {
+		stale("Cosmos RPC client is not configured")
+		return
+	}
+	ethClientState, err := client.GetEthereumClientState(ctx.CosmosClient(), ethClientID)
+	if err != nil {
+		stale(fmt.Sprintf("Failed to fetch Ethereum client state %q from Cosmos: %v", ethClientID, err))
+		return
+	}
+	proofTimestamp := ethClientState.ComputeTimestampAtSlot(ethClientState.LatestSlot)
+	result := &EthClientUpdateResult{
+		EthClientState: ethClientState,
+		ProofTimestamp: proofTimestamp,
+	}
+	if err := recordEthClientUpdateResult(ctx.latestCosmosTimestamp, result); err != nil {
+		stale(fmt.Sprintf("Failed to record ETH client freshness from state %q: %v", ethClientID, err))
+		return
+	}
+	trustedTime := time.Unix(int64(proofTimestamp), 0)
+	log.Printf("[Routine] Seeded ETH client freshness from trusted slot %d at %s",
+		ethClientState.LatestSlot, trustedTime.UTC().Format(time.RFC3339))
+}
+
+func seedStaleTimestamp(timestamp *Timestamp, height uint64) time.Time {
+	staleTime := time.Unix(0, 0)
+	timestamp.Set(staleTime, height)
+	return staleTime
+}
+
+func recordRefreshResult(timestamp *Timestamp, lightBlock *client.LightBlock) error {
 	if lightBlock == nil {
 		return fmt.Errorf("no light block returned")
 	}
 	if lightBlock.BlockHeight < 0 {
 		return fmt.Errorf("negative light block height: %d", lightBlock.BlockHeight)
 	}
-	timestamp.Set(now, uint64(lightBlock.BlockHeight))
+	if lightBlock.SignedHeader.Header == nil {
+		return fmt.Errorf("missing light block header at height %d", lightBlock.BlockHeight)
+	}
+	trustedTime := lightBlock.SignedHeader.Header.Time
+	if trustedTime.IsZero() {
+		return fmt.Errorf("zero light block timestamp at height %d", lightBlock.BlockHeight)
+	}
+	timestamp.Set(trustedTime, uint64(lightBlock.BlockHeight))
 	return nil
+}
+
+func recordEthClientUpdateResult(timestamp *Timestamp, result *EthClientUpdateResult) error {
+	if result == nil {
+		return fmt.Errorf("no ethereum client update result")
+	}
+	if result.EthClientState == nil {
+		return fmt.Errorf("missing ethereum client state")
+	}
+	if result.ProofTimestamp == 0 {
+		return fmt.Errorf("zero ethereum proof timestamp at slot %d", result.EthClientState.LatestSlot)
+	}
+	if result.ProofTimestamp > uint64(^uint64(0)>>1) {
+		return fmt.Errorf("ethereum proof timestamp overflows int64: %d", result.ProofTimestamp)
+	}
+	proofTime := time.Unix(int64(result.ProofTimestamp), 0)
+	timestamp.Set(proofTime, result.EthClientState.LatestSlot)
+	return nil
+}
+
+func deriveCosmosRefreshInterval(cfg Config, trustingPeriod time.Duration) (time.Duration, error) {
+	if trustingPeriod <= 0 {
+		return 0, fmt.Errorf("on-chain trusting period must be positive: %s", trustingPeriod)
+	}
+	configured := cfg.RefreshInterval
+	if configured == 0 {
+		configured = DEFAULT_REFRESH_INTERVAL
+	}
+	margin := refreshSafetyMargin(trustingPeriod)
+	maxInterval := trustingPeriod - margin
+	if maxInterval <= 0 {
+		return 0, fmt.Errorf("on-chain trusting period %s is too short for refresh safety margin %s", trustingPeriod, margin)
+	}
+	if cfg.RefreshIntervalConfigured && configured >= maxInterval {
+		return 0, fmt.Errorf(
+			"configured refresh interval %s must be less than on-chain trusting period %s minus safety margin %s",
+			configured, trustingPeriod, margin,
+		)
+	}
+	if configured >= maxInterval {
+		log.Printf("[Routine] Default refresh interval %s exceeds safe interval %s; deriving from on-chain trusting period %s",
+			configured, maxInterval, trustingPeriod)
+		return maxInterval, nil
+	}
+	return configured, nil
+}
+
+func refreshSafetyMargin(trustingPeriod time.Duration) time.Duration {
+	margin := DEFAULT_REFRESH_SAFETY_MARGIN
+	maxMargin := trustingPeriod / 4
+	if maxMargin < MIN_REFRESH_SAFETY_MARGIN {
+		return maxMargin
+	}
+	if margin > maxMargin {
+		margin = maxMargin
+	}
+	if margin < MIN_REFRESH_SAFETY_MARGIN {
+		margin = MIN_REFRESH_SAFETY_MARGIN
+	}
+	return margin
 }
 
 func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
@@ -375,10 +535,10 @@ func (s *Services) handleCosmos(ctx Context, batch CosmosBatch) {
 		}
 	}
 
-	// Advance the trusted ETH-side height only after the batch (including the
-	// folded updateClient, if any) confirmed on-chain.
-	if updateBuild.HasMsg {
-		ctx.latestEthTimestamp.Set(time.Now(), uint64(latestLightBlock.BlockHeight))
+	// Refresh scheduling is based on the trusted Cosmos consensus timestamp,
+	// which is what the on-chain trusting-period check uses.
+	if err := recordRefreshResult(ctx.latestEthTimestamp, latestLightBlock); err != nil {
+		log.Printf("[UpdateClient] failed to record trusted cosmos timestamp: %v", err)
 	}
 }
 
@@ -583,10 +743,11 @@ func (s *Services) handleEth(ctx Context, batch EthBatch) {
 		}
 	}
 
-	// Advance latestCosmosTimestamp only after the batch (including the folded
-	// wasm updateClient, if any) confirmed on-chain.
-	if len(buildResult.Msgs) > 0 {
-		ctx.latestCosmosTimestamp.SetTime(time.Now())
+	// Refresh scheduling uses the ETH timestamp trusted by the 08-wasm client,
+	// not the relayer wall clock. If no update msg was needed, this records the
+	// current on-chain client state that BuildEthClientUpdateMsgs already read.
+	if err := recordEthClientUpdateResult(ctx.latestCosmosTimestamp, buildResult); err != nil {
+		log.Printf("[UpdateClient] failed to record trusted ETH timestamp: %v", err)
 	}
 }
 
@@ -847,7 +1008,9 @@ func (s *Services) updateCosmosClientForEth(ctx Context, tag string) (*client.Li
 		return nil, false
 	}
 
-	ctx.latestEthTimestamp.Set(time.Now(), uint64(latestLightBlock.BlockHeight))
+	if err := recordRefreshResult(ctx.latestEthTimestamp, latestLightBlock); err != nil {
+		log.Printf("[%s] failed to record trusted cosmos timestamp: %v", tag, err)
+	}
 
 	return latestLightBlock, true
 }
@@ -1018,6 +1181,11 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 		log.Printf("[CosmosTimeoutScan] SendCosmosTxBatch failed: %v", err)
 		var partialErr *BatchPartialError
 		if errors.As(err, &partialErr) && partialErr.SucceededCount >= len(updateResult.Msgs) {
+			if len(updateResult.Msgs) > 0 {
+				if err := recordEthClientUpdateResult(ctx.latestCosmosTimestamp, updateResult); err != nil {
+					log.Printf("[CosmosTimeoutScan] failed to record trusted ETH timestamp after partial batch: %v", err)
+				}
+			}
 			succeededTimeoutsCount := partialErr.SucceededCount - len(updateResult.Msgs)
 			for i := 0; i < succeededTimeoutsCount; i++ {
 				info := processed[i]
@@ -1031,6 +1199,9 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 	for _, info := range processed {
 		s.BatchBuilder.PendingTracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
 		log.Printf("[CosmosTimeout] seq=%d: timeout relay completed (bundled with %d update msgs)", info.Packet.Sequence, len(updateResult.Msgs))
+	}
+	if err := recordEthClientUpdateResult(ctx.latestCosmosTimestamp, updateResult); err != nil {
+		log.Printf("[CosmosTimeoutScan] failed to record trusted ETH timestamp: %v", err)
 	}
 }
 

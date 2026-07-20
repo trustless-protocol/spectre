@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	commettypes "github.com/cometbft/cometbft/types"
+
 	relayerclient "relayer/client"
 	"relayer/prover"
 )
@@ -11,18 +13,105 @@ import (
 func TestRecordRefreshResult(t *testing.T) {
 	timestamp := &Timestamp{}
 	now := time.Unix(1_700_000_000, 0)
+	trustedTime := now.Add(-10 * time.Minute)
 
-	if err := recordRefreshResult(timestamp, nil, now); err == nil {
+	if err := recordRefreshResult(timestamp, nil); err == nil {
 		t.Fatal("expected nil light block error")
 	}
 
-	block := &relayerclient.LightBlock{BlockHeight: 123}
-	if err := recordRefreshResult(timestamp, block, now); err != nil {
+	if err := recordRefreshResult(timestamp, &relayerclient.LightBlock{BlockHeight: 123}); err == nil {
+		t.Fatal("expected missing header error")
+	}
+
+	block := &relayerclient.LightBlock{
+		BlockHeight: 123,
+		SignedHeader: commettypes.SignedHeader{
+			Header: &commettypes.Header{Time: trustedTime},
+		},
+	}
+	if err := recordRefreshResult(timestamp, block); err != nil {
 		t.Fatalf("record refresh result: %v", err)
 	}
 	gotTime, gotHeight := timestamp.Snapshot()
-	if !gotTime.Equal(now) || gotHeight != 123 {
-		t.Fatalf("timestamp = (%v, %d), want (%v, 123)", gotTime, gotHeight, now)
+	if !gotTime.Equal(trustedTime) || gotHeight != 123 {
+		t.Fatalf("timestamp = (%v, %d), want (%v, 123)", gotTime, gotHeight, trustedTime)
+	}
+}
+
+func TestRecordEthClientUpdateResult(t *testing.T) {
+	timestamp := &Timestamp{}
+	proofTime := uint64(1_700_000_123)
+	result := &EthClientUpdateResult{
+		EthClientState: &relayerclient.EthereumClientState{
+			LatestSlot: 42,
+		},
+		ProofTimestamp: proofTime,
+	}
+
+	if err := recordEthClientUpdateResult(timestamp, nil); err == nil {
+		t.Fatal("expected nil ethereum client update result error")
+	}
+	if err := recordEthClientUpdateResult(timestamp, &EthClientUpdateResult{}); err == nil {
+		t.Fatal("expected missing ethereum client state error")
+	}
+	if err := recordEthClientUpdateResult(timestamp, &EthClientUpdateResult{
+		EthClientState: &relayerclient.EthereumClientState{LatestSlot: 42},
+	}); err == nil {
+		t.Fatal("expected zero proof timestamp error")
+	}
+
+	if err := recordEthClientUpdateResult(timestamp, result); err != nil {
+		t.Fatalf("record eth client update result: %v", err)
+	}
+	gotTime, gotSlot := timestamp.Snapshot()
+	wantTime := time.Unix(int64(proofTime), 0)
+	if !gotTime.Equal(wantTime) || gotSlot != 42 {
+		t.Fatalf("timestamp = (%v, %d), want (%v, 42)", gotTime, gotSlot, wantTime)
+	}
+}
+
+func TestSeedStaleTimestamp(t *testing.T) {
+	timestamp := &Timestamp{}
+
+	got := seedStaleTimestamp(timestamp, 123)
+	gotTime, gotHeight := timestamp.Snapshot()
+	want := time.Unix(0, 0)
+	if !got.Equal(want) || !gotTime.Equal(want) || gotHeight != 123 {
+		t.Fatalf("stale timestamp = return %v snapshot (%v, %d), want %v height 123",
+			got, gotTime, gotHeight, want)
+	}
+}
+
+func TestDeriveCosmosRefreshInterval(t *testing.T) {
+	trustingPeriod := 16 * time.Hour
+
+	got, err := deriveCosmosRefreshInterval(Config{
+		RefreshInterval: DEFAULT_REFRESH_INTERVAL,
+	}, trustingPeriod)
+	if err != nil {
+		t.Fatalf("derive default interval: %v", err)
+	}
+	if got != 15*time.Hour {
+		t.Fatalf("default interval = %s, want 15h", got)
+	}
+
+	_, err = deriveCosmosRefreshInterval(Config{
+		RefreshInterval:           15 * time.Hour,
+		RefreshIntervalConfigured: true,
+	}, trustingPeriod)
+	if err == nil {
+		t.Fatal("expected configured interval at safety boundary to be rejected")
+	}
+
+	got, err = deriveCosmosRefreshInterval(Config{
+		RefreshInterval:           14 * time.Hour,
+		RefreshIntervalConfigured: true,
+	}, trustingPeriod)
+	if err != nil {
+		t.Fatalf("derive configured safe interval: %v", err)
+	}
+	if got != 14*time.Hour {
+		t.Fatalf("configured interval = %s, want 14h", got)
 	}
 }
 

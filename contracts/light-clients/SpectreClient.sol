@@ -559,9 +559,12 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     /// @notice Requires the proof time is not in the future and within clock drift of now.
     function _requireFreshness(SpectreStore.Store storage $, uint128 time) private view {
         uint256 timeSeconds = _nanosToSeconds(time);
+        uint256 drift = $.clientState.clockDrift;
         // forge-lint: disable-next-line(block-timestamp)
-        require(timeSeconds <= block.timestamp, ProofIsInTheFuture(block.timestamp, timeSeconds));
-        require(block.timestamp - timeSeconds <= $.clientState.clockDrift, ProofIsTooOld(block.timestamp, timeSeconds));
+        require(timeSeconds <= block.timestamp + drift, ProofIsInTheFuture(block.timestamp, timeSeconds));
+        if (timeSeconds < block.timestamp) {
+            require(block.timestamp - timeSeconds <= drift, ProofIsTooOld(block.timestamp, timeSeconds));
+        }
     }
 
     function _nanosToSeconds(uint256 nanos) private pure returns (uint256) {

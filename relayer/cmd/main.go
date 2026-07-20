@@ -1231,6 +1231,7 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			}
 			if cfg.CosmosToEthConfig.RefreshInterval != 0 {
 				cosmosConfig.RefreshInterval = time.Duration(cfg.CosmosToEthConfig.RefreshInterval) * time.Second
+				cosmosConfig.RefreshIntervalConfigured = true
 			}
 			if envVal := os.Getenv("FETCH_TIMEOUT"); envVal != "" {
 				if d, err := strconv.Atoi(envVal); err == nil && d > 0 {
@@ -1348,6 +1349,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// same ICS26Router (ETH events are partitioned by the per-source
 			// router client id filter).
 			var wg sync.WaitGroup
+			loopErrCh := make(chan error, len(sources))
 			cleanups := make([]func(), 0, len(sources))
 			onceCleanup := func(cleanup func()) func() {
 				var once sync.Once
@@ -1373,7 +1375,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 				go func(svc *services.Services, srcCtx services.Context, cleanup func()) {
 					defer wg.Done()
 					defer cleanup()
-					svc.StartLoop(srcCtx)
+					if err := svc.StartLoop(srcCtx); err != nil {
+						loopErrCh <- fmt.Errorf("cosmos_to_eth source %q: %w", srcCtx.CosmosRouterClientID(), err)
+					}
 				}(svc, srcCtx, cleanup)
 			}
 			logger.Sugar().Infof("Relayer started: relaying %d Cosmos→ETH source(s)", len(sources))
@@ -1384,6 +1388,11 @@ func Start(logger *zap.Logger) *cobra.Command {
 			}()
 
 			select {
+			case err := <-loopErrCh:
+				for _, cleanup := range cleanups {
+					cleanup()
+				}
+				return err
 			case <-done:
 				return nil
 			case <-runCtx.Done():
