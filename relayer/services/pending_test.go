@@ -77,36 +77,6 @@ func TestPendingTracker_Concurrent(t *testing.T) {
 	}
 }
 
-func TestPendingTracker_PurgeStale(t *testing.T) {
-	pt := NewPendingPacketTracker()
-	p1 := channeltypesv2.Packet{SourceClient: "src-0", Sequence: 1}
-	p2 := channeltypesv2.Packet{SourceClient: "src-0", Sequence: 2}
-
-	pt.Add(p1, 100)
-	pt.mtx.Lock()
-	info := pt.packets[packetKey{sourceClient: "src-0", sequence: 1}]
-	info.ObservedAt = time.Now().Add(-2 * time.Hour)
-	pt.packets[packetKey{sourceClient: "src-0", sequence: 1}] = info
-	pt.mtx.Unlock()
-
-	pt.Add(p2, 200)
-
-	if pt.Len() != 2 {
-		t.Fatalf("expected len 2 before purge, got %d", pt.Len())
-	}
-
-	pt.PurgeStale(1 * time.Hour)
-
-	if pt.Len() != 1 {
-		t.Fatalf("expected len 1 after purge, got %d", pt.Len())
-	}
-
-	all := pt.GetAll()
-	if all[0].Packet.Sequence != 2 {
-		t.Fatalf("expected remaining packet seq=2, got seq=%d", all[0].Packet.Sequence)
-	}
-}
-
 func TestPendingTracker_PurgeStaleWithoutTimeout(t *testing.T) {
 	pt := NewPendingPacketTracker()
 	noTimeout := channeltypesv2.Packet{SourceClient: "src-0", Sequence: 1}

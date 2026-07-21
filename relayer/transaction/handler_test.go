@@ -674,6 +674,76 @@ func TestExecuteWithRetryAndResubmission_AlreadyKnown(t *testing.T) {
 	}
 }
 
+func TestExecuteWithRetryAndResubmission_BroadcastContextDeadline(t *testing.T) {
+	oldBroadcastTimeout := ethTxBroadcastTimeout
+	ethTxBroadcastTimeout = 30 * time.Millisecond
+	defer func() {
+		ethTxBroadcastTimeout = oldBroadcastTimeout
+	}()
+
+	mockRPC := newMockJSONRPC()
+	mockRPC.nonce = 10
+	srv := httptest.NewServer(mockRPC)
+	defer srv.Close()
+
+	client, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatalf("failed to dial: %v", err)
+	}
+
+	ctx := services.NewCtx(nil, client)
+
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+
+	h := &Handler{
+		nonce:      10,
+		nonceValid: true,
+	}
+
+	var sawDeadline bool
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		if auth.Context == nil {
+			return nil, errors.New("auth context is nil")
+		}
+		if _, ok := auth.Context.Deadline(); !ok {
+			return nil, errors.New("auth context has no deadline")
+		}
+		sawDeadline = true
+
+		select {
+		case <-auth.Context.Done():
+			return nil, auth.Context.Err()
+		case <-time.After(500 * time.Millisecond):
+			return nil, errors.New("auth context did not expire")
+		}
+	}
+
+	start := time.Now()
+	_, _, _, err = h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+	if err == nil {
+		t.Fatal("expected broadcast context deadline error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline exceeded, got %v", err)
+	}
+	if !sawDeadline {
+		t.Fatal("sender did not observe a deadline on auth.Context")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("broadcast deadline took too long: %s", elapsed)
+	}
+
+	h.mu.Lock()
+	valid := h.nonceValid
+	h.mu.Unlock()
+	if valid {
+		t.Error("expected nonce cache invalidated after broadcast deadline")
+	}
+}
+
 func TestBumpGasAndResubmit(t *testing.T) {
 	mockRPC := newMockJSONRPC()
 	srv := httptest.NewServer(mockRPC)

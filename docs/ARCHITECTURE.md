@@ -137,12 +137,14 @@ gen.
    intake
 2. scanForCosmosTimeouts (30 s tick) walks the tracker, picks entries whose
    TimeoutTimestamp < current ETH block.time
-3. For each expired packet, build a non-membership proof of the receipt
+3. Drop entries whose ETH receipt already exists; they were delivered but
+   lingered in local pending state
+4. For each remaining expired packet, build a non-membership proof of the receipt
    path on ETH at the finalised height
-4. Bundle one MsgUpdateClient + N MsgTimeout into a single Cosmos tx; on
+5. Bundle one MsgUpdateClient + N MsgTimeout into a single Cosmos tx; on
    success, remove the entries from the tracker
-5. PurgeStale(1h) drops any entry that never settles, preventing tracker
-   growth from leaked packets
+6. PurgeStaleWithoutTimeout(1h) drops only no-timeout entries; timeout-bearing
+   packets remain tracked until a receipt pre-check or timeout tx clears them
 ```
 
 ## Relayer Concurrency Model

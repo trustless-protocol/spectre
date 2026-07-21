@@ -42,7 +42,6 @@ type TransactionHandler interface {
 	CreateEthClient(ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) (string, error)
 	SendEthTx(ctx Context, msg any) error
 	SendEthTxBatch(ctx Context, msgs []any) error
-	SendCosmosTx(ctx Context, msg any) error
 	SendCosmosTxBatch(ctx Context, msgs []any) error
 	CosmosSignerAddress() (string, error)
 }
@@ -1124,7 +1123,27 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 		return
 	}
 
-	log.Printf("[CosmosTimeoutScan] Found %d head-expired packets, building proof state", len(expired))
+	log.Printf("[CosmosTimeoutScan] Found %d head-expired packets, checking ETH receipts", len(expired))
+	unreceived := make([]pendingPacketInfo, 0, len(expired))
+	for _, info := range expired {
+		received, err := HasEthPacketReceipt(ctx, info.Packet)
+		if err != nil {
+			log.Printf("[CosmosTimeoutScan] seq=%d: failed to check ETH packet receipt: %v", info.Packet.Sequence, err)
+			continue
+		}
+		if received {
+			s.BatchBuilder.PendingTracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
+			log.Printf("[CosmosTimeoutScan] seq=%d: ETH receipt already exists, removed from pending tracker", info.Packet.Sequence)
+			continue
+		}
+		unreceived = append(unreceived, info)
+	}
+	expired = unreceived
+	if len(expired) == 0 {
+		return
+	}
+
+	log.Printf("[CosmosTimeoutScan] Building proof state for %d unreceived expired packets", len(expired))
 
 	updateResult, err := s.worker.BuildEthClientUpdateMsgs(ctx)
 	if err != nil {
