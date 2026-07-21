@@ -91,7 +91,7 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 
 	// 1. Hash all witness bytes and bind to the public commitment.
 	//    Layout (must match hash_witness.go and SignatureVerifier._hashWitness):
-	//      per slot: active(1) || A(32) || msgLen(2 BE) || msg(MaxMsgLen padded)
+	//      PrefixHead(11) || roundPresent(1) || BlockHash(32) || per slot: active(1) || A(32)
 	//    Binding A protects the on-chain quorum lookup — Solidity matches
 	//    pubkeys[i] against the validator set to attribute voting power, so
 	//    without this hash binding an attacker could swap calldata pubkeys.
@@ -99,10 +99,9 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	//    binds them via the in-circuit Ed25519 verify, and no on-chain logic
 	//    consumes them. The active byte is placed first so the on-chain
 	//    rebuild can short-circuit cheaply for padding slots if needed.
-	//      #199 layout: PrefixHead(11) || roundPresent(1) || BlockHash(32) || per slot: active(1) || A(32)
-	//      The per-slot canonical-vote bytes are no longer hashed here — they
-	//      are bound instead by the fixed-offset prefix/blockHash asserts below
-	//      + the in-circuit Ed25519 verify. This shrinks the witness commit.
+	//    The per-slot canonical-vote bytes are no longer hashed here (#199) — they
+	//    are bound instead by the fixed-offset prefix/blockHash asserts below
+	//    + the in-circuit Ed25519 verify. This shrinks the witness commit.
 	var buf []uints.U8
 	buf = append(buf, c.PrefixHead[:]...)
 	buf = append(buf, varToBytesBE(api, c.RoundPresent, 1)...)
