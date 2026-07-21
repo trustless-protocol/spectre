@@ -179,6 +179,7 @@ test-e2e testname: clean-foundry install-go-relayer build-prover-artifacts
 		RELAYER_BINARY="$(go env GOPATH)/bin/relayer" \
 		PROVER_BIN_DIR="$(git rev-parse --show-toplevel)/relayer/bin" \
 		ETH_TESTNET_TYPE=pos \
+		E2E_PROOF_TYPE="${E2E_PROOF_TYPE:-groth16}" \
 		go test -v -run '^{{testname}}$' -timeout 120m
 
 # Run any e2e test in the IbcEurekaTestSuite. For example, `just test-e2e-eureka Test_Deploy`

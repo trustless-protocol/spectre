@@ -176,7 +176,10 @@ func (s *SpectreClientTestSuite) SetupSuite(ctx context.Context, proofType types
 		err := config.GenerateConfigFile(testvalues.RelayerConfigFilePath)
 		s.Require().NoError(err)
 
-		err = relayer.RunCreateClients(testvalues.RelayerConfigFilePath, "--trust-level", "1/3")
+		// This suite only exercises the Spectre Cosmos client on Ethereum; the full
+		// create-clients flow also provisions the Ethereum wasm client on Cosmos and
+		// requires a stored wasm checksum in PoS mode.
+		err = relayer.RunCreateClientsEth(testvalues.RelayerConfigFilePath, "--trust-level", "1/3")
 		s.Require().NoError(err)
 
 		cosmosToEthConfig, err := readCosmosToEthConfig(testvalues.RelayerConfigFilePath)

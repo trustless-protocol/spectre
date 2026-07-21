@@ -115,6 +115,23 @@ func RunCreateClients(configPath string, extraArgs ...string) error {
 	return cmd.Run()
 }
 
+// RunCreateClientsEth runs the relayer's create-clients-eth command synchronously.
+func RunCreateClientsEth(configPath string, extraArgs ...string) error {
+	config, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Running create-clients-eth with config:\n%s\n", config)
+
+	args := append([]string{"create-clients-eth", "--config", configPath}, extraArgs...)
+	cmd := exec.Command(binaryPath(), args...)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Env = append(os.Environ(), proverEnv()...)
+
+	return cmd.Run()
+}
+
 // RunUpdateClient runs the relayer's update-client command synchronously.
 func RunUpdateClient(configPath string, extraArgs ...string) error {
 	config, err := os.ReadFile(configPath)
