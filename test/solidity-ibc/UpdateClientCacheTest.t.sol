@@ -84,6 +84,26 @@ contract UpdateClientCacheTest is Test {
         assertEq(updated.latestHeight.revisionHeight, HEIGHT_1001, "latest height");
     }
 
+    function test_updateApplicationState_revertsAtTrustingPeriodBoundary() public {
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
+
+        uint128 boundaryTime = TRUSTED_TS_NS + uint128(TRUSTING_PERIOD) * 1e9;
+        vm.warp(uint256(boundaryTime / 1e9));
+
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 3);
+        msg_.time = boundaryTime;
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ISpectreClientErrors.FailedToVerifyHeader.selector,
+                "invalid block: untrusted state is outside of trusting period"
+            )
+        );
+        ics07.updateApplicationState(abi.encode(msg_));
+    }
+
     function test_updateApplicationState_reverts_whenPinnedQuorumIsInsufficient() public {
         IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
         IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
@@ -270,9 +290,7 @@ contract UpdateClientCacheTest is Test {
             _buildHeader(HEIGHT_1002, height1003, pinnedB, Header.hashValSet(pinnedA), ts1003Ns, 3);
 
         ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_;
-        msg_.misbehaviour = ISpectreClientMsgs.Misbehaviour({
-            clientId: IICS07TendermintMsgs.ChainId({ id: CHAIN_ID, revisionNumber: 0 }), header1: h1, header2: h2
-        });
+        msg_.misbehaviour = ISpectreClientMsgs.Misbehaviour({ header1: h1, header2: h2 });
         msg_.trustedConsensusState1 = trustedCS1002;
         msg_.trustedConsensusState2 = trustedCS1002;
         msg_.time = ts1003Ns;
@@ -447,7 +465,7 @@ contract UpdateClientCacheTest is Test {
                 hashData: headerHash,
                 partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
             }),
-            commitSigs: _buildCommitSigs(currentValSet, activeCount, headerTime)
+            commitSigs: _buildCommitSigs(currentValSet, activeCount)
         });
 
         header = IICS07TendermintMsgs.Header({
@@ -458,8 +476,7 @@ contract UpdateClientCacheTest is Test {
 
     function _buildCommitSigs(
         IICS07TendermintMsgs.ValidatorSet memory vs,
-        uint16 activeCount,
-        uint128 headerTime
+        uint16 activeCount
     )
         internal
         pure
@@ -468,22 +485,11 @@ contract UpdateClientCacheTest is Test {
         sigs = new IICS07TendermintMsgs.CommitSig[](vs.validators.length);
         for (uint256 i = 0; i < vs.validators.length; i++) {
             if (i < activeCount) {
-                sigs[i] = IICS07TendermintMsgs.CommitSig({
-                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
-                    data: IICS07TendermintMsgs.CommitSigData({
-                        validatorAddress: vs.validators[i].valAddress,
-                        timestamp: headerTime,
-                        hasSignature: false,
-                        signature: ""
-                    })
-                });
+                sigs[i] =
+                    IICS07TendermintMsgs.CommitSig({ flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT });
             } else {
-                sigs[i] = IICS07TendermintMsgs.CommitSig({
-                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT,
-                    data: IICS07TendermintMsgs.CommitSigData({
-                        validatorAddress: "", timestamp: 0, hasSignature: false, signature: ""
-                    })
-                });
+                sigs[i] =
+                    IICS07TendermintMsgs.CommitSig({ flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT });
             }
         }
     }
@@ -530,7 +536,6 @@ contract UpdateClientCacheTest is Test {
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
             isFrozen: false,
-            zkAlgorithm: IICS07TendermintMsgs.SupportedZkAlgorithm.Groth16,
             clockDrift: 1800
         });
     }

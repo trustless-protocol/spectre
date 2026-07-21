@@ -20,9 +20,6 @@ import { ChainId } from "../../utils/ChainId.sol";
 contract Misbehaviour is IMisbehaviour {
     using SpectreStore for SpectreStore.Store;
 
-    error MismatchedRevisionHeight(uint64 expected, uint64 actual);
-    error InvalidHeaderHeight(uint64 height);
-    error ChainIdMismatch();
     error MisbehaviourNotDetected();
 
     ISignatureVerifier internal immutable SIGNATURE_VERIFIER;
@@ -39,11 +36,7 @@ contract Misbehaviour is IMisbehaviour {
     }
 
     /// @inheritdoc IMisbehaviour
-    function verifyMisbehaviour(ISpectreClientMsgs.MsgSubmitMisbehaviour calldata msg_)
-        external
-        onlyDelegated
-        returns (ISpectreClientMsgs.MisbehaviourOutput memory)
-    {
+    function verifyMisbehaviour(ISpectreClientMsgs.MsgSubmitMisbehaviour calldata msg_) external onlyDelegated {
         SpectreStore.Store storage $ = SpectreStore.load();
         IICS07TendermintMsgs.ClientState storage clientState = $.clientState;
 
@@ -51,7 +44,7 @@ contract Misbehaviour is IMisbehaviour {
         require(
             keccak256(bytes(clientState.chainId))
                 == keccak256(bytes(misbehaviour_.header1.signedHeader.header.chainId)),
-            ChainIdMismatch()
+            ISpectreClientErrors.ChainIdMismatch(clientState.chainId, misbehaviour_.header1.signedHeader.header.chainId)
         );
 
         _validateBasic(misbehaviour_);
@@ -79,17 +72,6 @@ contract Misbehaviour is IMisbehaviour {
         // Signature checks: the batched Ed25519 Groth16 proof over each conflicting header.
         _verifyBatchProof(misbehaviour_.header1, msg_.proof1);
         _verifyBatchProof(misbehaviour_.header2, msg_.proof2);
-
-        return ISpectreClientMsgs.MisbehaviourOutput({
-            trustedHeight1: IICS02ClientMsgs.Height({
-                revisionNumber: chainId.revisionNumber,
-                revisionHeight: misbehaviour_.header1.trustedHeight.revisionHeight
-            }),
-            trustedHeight2: IICS02ClientMsgs.Height({
-                revisionNumber: chainId.revisionNumber,
-                revisionHeight: misbehaviour_.header2.trustedHeight.revisionHeight
-            })
-        });
     }
 
     function _requireTrustedConsensus(
@@ -137,14 +119,16 @@ contract Misbehaviour is IMisbehaviour {
     function _validateHeaderBasic(IICS07TendermintMsgs.Header calldata header) private pure {
         IICS07TendermintMsgs.ChainId memory chainId = ChainId.get(header.signedHeader.header.chainId);
         if (chainId.revisionNumber != header.trustedHeight.revisionNumber) {
-            revert MismatchedRevisionHeight(chainId.revisionNumber, header.trustedHeight.revisionNumber);
+            revert ISpectreClientErrors.MismatchedRevisionHeights(
+                chainId.revisionNumber, header.trustedHeight.revisionNumber
+            );
         }
 
         IICS02ClientMsgs.Height memory height = IICS02ClientMsgs.Height({
             revisionNumber: chainId.revisionNumber, revisionHeight: header.signedHeader.header.height
         });
         if (HeightCmp.ge(header.trustedHeight, height)) {
-            revert InvalidHeaderHeight(height.revisionHeight);
+            revert ISpectreClientErrors.InvalidHeaderHeight(height.revisionHeight);
         }
 
         if (Header.hashHeader(header.signedHeader.header) != header.signedHeader.commit.blockId.hashData) {
@@ -175,8 +159,10 @@ contract Misbehaviour is IMisbehaviour {
             });
         }
 
-        _parseChainId(chainId.id);
-        require(keccak256(bytes(header.signedHeader.header.chainId)) == keccak256(bytes(chainId.id)), ChainIdMismatch());
+        require(
+            keccak256(bytes(header.signedHeader.header.chainId)) == keccak256(bytes(chainId.id)),
+            ISpectreClientErrors.ChainIdMismatch(chainId.id, header.signedHeader.header.chainId)
+        );
         require(header.signedHeader.header.time > trustedTime, "invalid block: non monotonic bft time");
         uint128 drifted = currentTimestamp + uint128(options.clockDrift) * 1_000_000_000;
         require(header.signedHeader.header.time < drifted, "invalid block: header is from the future");
@@ -209,21 +195,6 @@ contract Misbehaviour is IMisbehaviour {
             ),
             ISpectreClientErrors.ProofVerificationFailed()
         );
-    }
-
-    function _parseChainId(string memory chainId) private pure {
-        bytes memory chainIdBytes = bytes(chainId);
-        if (chainIdBytes.length == 0 || chainIdBytes.length > 50) {
-            revert("Invalid chain id length");
-        }
-
-        for (uint256 i = 0; i < chainIdBytes.length; i++) {
-            bytes1 b = chainIdBytes[i];
-            if (!((b >= 0x61 && b <= 0x7A) || (b >= 0x41 && b <= 0x5A) || (b >= 0x30 && b <= 0x39) || (b == 0x2D)
-                        || (b == 0x5F) || (b == 0x2E))) {
-                revert("invalid chain id charset");
-            }
-        }
     }
 
     function _nanosToSeconds(uint128 timestamp) private pure returns (uint128) {

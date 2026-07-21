@@ -59,6 +59,9 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         IICS07TendermintMsgs.ClientState memory cs = abi.decode(clientState_, (IICS07TendermintMsgs.ClientState));
         $.clientState = cs;
 
+        require(cs.trustingPeriod > 0, LengthIsOutOfRange(cs.trustingPeriod, 1, type(uint32).max));
+        require(cs.clockDrift > 0, LengthIsOutOfRange(cs.clockDrift, 1, type(uint32).max));
+
         uint64 parsedRevision = ChainId.get(cs.chainId).revisionNumber;
         require(
             parsedRevision == cs.latestHeight.revisionNumber,
@@ -459,15 +462,19 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     function _validateConsensusStateTrustingPeriod(uint128 consensusStateTimestamp) private view {
         SpectreStore.Store storage $ = SpectreStore.load();
         uint256 consensusStateTimestampSeconds = _nanosToSeconds(consensusStateTimestamp);
+        uint256 drift = $.clientState.clockDrift;
         require(
             // Membership proof freshness is defined against the destination chain clock.
             // forge-lint: disable-next-line(block-timestamp)
-            consensusStateTimestampSeconds <= block.timestamp,
+            consensusStateTimestampSeconds <= block.timestamp + drift,
             ProofIsInTheFuture(block.timestamp, consensusStateTimestampSeconds)
         );
 
-        // forge-lint: disable-next-line(unsafe-typecast)
-        uint128 durationSinceConsensusState = uint128(block.timestamp - consensusStateTimestampSeconds);
+        uint128 durationSinceConsensusState = 0;
+        if (consensusStateTimestampSeconds < block.timestamp) {
+            // forge-lint: disable-next-line(unsafe-typecast)
+            durationSinceConsensusState = uint128(block.timestamp - consensusStateTimestampSeconds);
+        }
         require(
             durationSinceConsensusState < $.clientState.trustingPeriod,
             InsufficientTrustingPeriod(durationSinceConsensusState, uint128($.clientState.trustingPeriod))
@@ -531,6 +538,11 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
 
     function _storePinnedValidatorSetSnapshot(uint64 height) private {
         SpectreStore.Store storage $ = SpectreStore.load();
+        uint256 snapshotCount = $.snapshotHeights.length;
+        if (snapshotCount != 0) {
+            uint64 lastHeight = $.snapshotHeights[snapshotCount - 1];
+            require(height >= lastHeight, NonMonotonicHeightUpdate(lastHeight, height));
+        }
         bool exists = $.snapshots[height].pointer != address(0);
         $.snapshots[height] = SpectreStore.PinnedValidatorSetSnapshot({
             validatorsHash: $.pinnedValidatorsHash,

@@ -23,7 +23,6 @@ interface IICS07TendermintMsgs {
     /// submitted headers are valid for upgrade in seconds.
     /// @param unbondingPeriod duration of the staking unbonding period in seconds
     /// @param isFrozen whether or not client is frozen (due to misbehavior)
-    /// @param zkAlgorithm The zk algorithm supported by this contract (for the relayers).
     struct ClientState {
         string chainId;
         TrustThreshold trustLevel;
@@ -31,7 +30,6 @@ interface IICS07TendermintMsgs {
         uint32 trustingPeriod;
         uint32 unbondingPeriod;
         bool isFrozen;
-        SupportedZkAlgorithm zkAlgorithm;
         uint32 clockDrift;
     }
 
@@ -44,12 +42,6 @@ interface IICS07TendermintMsgs {
         uint128 timestamp;
         bytes32 root;
         bytes32 nextValidatorsHash;
-    }
-
-    /// @notice Defines the supported zk algorithms
-    enum SupportedZkAlgorithm {
-        Groth16,
-        Plonk
     }
 
     struct Header {
@@ -131,16 +123,8 @@ interface IICS07TendermintMsgs {
         BLOCK_ID_FLAG_NIL
     }
 
-    struct CommitSigData {
-        bytes validatorAddress;
-        uint128 timestamp;
-        bool hasSignature;
-        bytes signature;
-    }
-
     struct CommitSig {
         CommitSigFlag flag;
-        CommitSigData data;
     }
 
     struct ChainId {
@@ -157,93 +141,5 @@ interface IICS07TendermintMsgs {
     struct Version {
         uint64 blockVersion;
         uint64 appVersion;
-    }
-
-    struct ClientConsensusStatePath {
-        string clientId;
-        uint64 revisionNumber;
-        uint64 revisionHeight;
-    }
-
-    struct UntrustedBlockState {
-        SignedHeader signedHeader;
-        ValidatorSet validatorSet;
-    }
-
-    struct TrustedBlockState {
-        string chainId;
-        uint128 headerTime;
-        uint64 height;
-        ValidatorSet nextValidatorSet;
-        bytes32 nextValidatorHash;
-    }
-
-    struct VotingPowerTally {
-        /// Total voting power
-        uint64 total;
-        /// Tallied voting power
-        uint64 tallied;
-        /// Trust threshold for voting power
-        TrustThreshold trustThreshold;
-    }
-
-    struct NonAbsentCommitVote {
-        SignedVote signedVote;
-        /// Flag indicating whether the signature has already been verified.
-        bool verified;
-    }
-
-    struct NonAbsentCommitVotes {
-        /// Votes sorted by validator address.
-        NonAbsentCommitVote[] votes;
-        /// Internal buffer for storing sign_bytes.
-        ///
-        /// The buffer is reused for each canonical vote so that we allocate it
-        /// once.
-        bytes32 signBytes;
-    }
-
-    struct CanonicalVote {
-        /// Type of vote (prevote or precommit)
-        VoteType voteType;
-
-        /// Block height
-        uint64 height;
-
-        /// Round
-        uint64 round;
-
-        /// Block ID
-        BlockId blockId;
-
-        /// Timestamp
-        uint128 timestamp;
-
-        /// Chain ID
-        ChainId chainId;
-    }
-
-    struct SignedVote {
-        CanonicalVote vote;
-        bytes validatorAddress;
-        bytes32 signature;
-    }
-
-    enum VoteType {
-        /// Votes for blocks which validators observe are valid for a given round
-        Prevote,
-
-        /// Votes to commit to a particular block for a given round
-        Precommit
-    }
-
-    enum Verdict {
-        /// Verification succeeded, the block is valid.
-        SUCCESS,
-        /// The minimum voting power threshold is not reached,
-        /// the block cannot be trusted yet.
-        NOT_ENOUGH_TRUST,
-        /// Verification failed, the block is invalid.
-        INVALID
     }
 }

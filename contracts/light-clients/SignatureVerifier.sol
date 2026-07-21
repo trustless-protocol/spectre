@@ -58,11 +58,17 @@ contract SignatureVerifier is ISignatureVerifier {
     error LengthMismatch();
     error NotOwner();
     error NoVerifierCode(address verifier);
+    error ZeroOwner();
 
     constructor(address owner) {
+        if (owner == address(0)) revert ZeroOwner();
         OWNER = owner;
     }
 
+    /// @notice Registers the verifier contract for a bucket size.
+    /// @dev Registered verifiers MUST revert on invalid proofs. `verifyBatchProof`
+    ///      treats a non-reverting staticcall as success, matching gnark-generated
+    ///      Solidity verifiers.
     function setBucket(uint16 bucket, address verifier, bytes4 selector) external {
         if (msg.sender != OWNER) revert NotOwner();
         if (verifier.code.length == 0) revert NoVerifierCode(verifier);
@@ -149,20 +155,20 @@ contract SignatureVerifier is ISignatureVerifier {
     }
 
     function _storeByte(bytes memory dst, uint256 offset, uint256 value) private pure {
-        assembly {
+        assembly ("memory-safe") {
             mstore8(add(add(dst, 0x20), offset), value)
         }
     }
 
     function _storeBytes32(bytes memory dst, uint256 offset, bytes32 value) private pure {
-        assembly {
+        assembly ("memory-safe") {
             mstore(add(add(dst, 0x20), offset), value)
         }
     }
 
     function _copyBytes(bytes memory dst, uint256 dstOffset, bytes memory src) private pure returns (uint256) {
         uint256 len;
-        assembly {
+        assembly ("memory-safe") {
             len := mload(src)
             mcopy(add(add(dst, 0x20), dstOffset), add(src, 0x20), len)
         }

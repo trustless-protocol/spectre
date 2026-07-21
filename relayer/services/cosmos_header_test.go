@@ -216,7 +216,6 @@ func TestHandleCosmosHeaderFetchFailure(t *testing.T) {
 						TrustingPeriod:  600,
 						UnbondingPeriod: 1000,
 						IsFrozen:        false,
-						ZkAlgorithm:     0,
 					}
 					encodedState, _ := relayerclient.EncodeClientState(clientState)
 					solBytesHex := encodeSolidityBytes(encodedState)

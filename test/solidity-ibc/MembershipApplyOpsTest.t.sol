@@ -35,6 +35,10 @@ contract ApplyOpsHarness is Membership {
     {
         return prepareLeafData(prehashOp, data);
     }
+
+    function exposedDecodeVarint(bytes memory data, uint256 offset) external pure returns (uint64, uint256) {
+        return decodeVarint(data, offset);
+    }
 }
 
 /// @notice Correctness coverage for the bounded-copy rewrite in applyLeaf / applyInner /
@@ -98,6 +102,14 @@ contract MembershipApplyOpsTest is Test {
         // prehash -> 32-byte digest, prefixed with varint(32) == 0x20
         bytes memory want = abi.encodePacked(bytes1(0x20), sha256(data));
         assertEq(got, want, "sha256 prehash");
+    }
+
+    function test_decodeVarint_slowPathReturnsAbsoluteOffset() public view {
+        // The trailing continuation byte forces decodeVarint's fallback path; the
+        // decoded varint itself starts at offset 1 and ends at absolute offset 3.
+        (uint64 value, uint256 offset) = h.exposedDecodeVarint(hex"aa810180", 1);
+        assertEq(value, 129, "decoded value");
+        assertEq(offset, 3, "absolute offset");
     }
 
     // --- applyLeaf ---------------------------------------------------------

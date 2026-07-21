@@ -61,12 +61,7 @@ contract EncodeWrapper {
         returns (bytes memory)
     {
         IICS07TendermintMsgs.CommitSig[] memory sigs = new IICS07TendermintMsgs.CommitSig[](1);
-        sigs[0] = IICS07TendermintMsgs.CommitSig({
-            flag: IICS07TendermintMsgs.CommitSigFlag(flag),
-            data: IICS07TendermintMsgs.CommitSigData({
-                validatorAddress: hex"", timestamp: timestamp, hasSignature: false, signature: hex""
-            })
-        });
+        sigs[0] = IICS07TendermintMsgs.CommitSig({ flag: IICS07TendermintMsgs.CommitSigFlag(flag) });
 
         IICS07TendermintMsgs.BlockCommit memory commit = IICS07TendermintMsgs.BlockCommit({
             height: height,
@@ -75,7 +70,7 @@ contract EncodeWrapper {
             commitSigs: sigs
         });
 
-        return Encode.voteSignBytes(commit, chainId, 0);
+        return Encode.voteSignBytes(commit, chainId, 0, timestamp);
     }
 
     function merkleHash(bytes[] calldata items) external pure returns (bytes32) {

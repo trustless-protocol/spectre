@@ -25,6 +25,7 @@ contract MembershipTrustingPeriodTest is Test {
     uint64 private constant HEIGHT = 10;
     uint32 private constant TRUSTING_PERIOD = 100;
     uint32 private constant UNBONDING_PERIOD = 2 hours;
+    uint32 private constant CLOCK_DRIFT = 1800;
     uint256 private constant CURRENT_TIME = 1_700_000_000;
     bytes32 private constant APP_HASH = bytes32(uint256(0xA11CE));
 
@@ -56,8 +57,15 @@ contract MembershipTrustingPeriodTest is Test {
         lightClient.verifyMembership(_membershipMsg(_toNanos(consensusTime)));
     }
 
-    function test_verifyMembershipRejectsFutureConsensusState() public {
-        uint256 consensusTime = block.timestamp + 1;
+    function test_verifyMembershipAcceptsFutureConsensusStateWithinClockDrift() public {
+        uint256 consensusTime = block.timestamp + CLOCK_DRIFT;
+        SpectreClient lightClient = _deploy(_toNanos(consensusTime));
+
+        assertEq(lightClient.verifyMembership(_membershipMsg(_toNanos(consensusTime))), consensusTime);
+    }
+
+    function test_verifyMembershipRejectsFutureConsensusStateBeyondClockDrift() public {
+        uint256 consensusTime = block.timestamp + CLOCK_DRIFT + 1;
         SpectreClient lightClient = _deploy(_toNanos(consensusTime));
 
         vm.expectRevert(
@@ -80,8 +88,15 @@ contract MembershipTrustingPeriodTest is Test {
         lightClient.verifyNonMembership(_nonMembershipMsg(_toNanos(consensusTime)));
     }
 
-    function test_verifyNonMembershipRejectsFutureConsensusState() public {
-        uint256 consensusTime = block.timestamp + 1;
+    function test_verifyNonMembershipAcceptsFutureConsensusStateWithinClockDrift() public {
+        uint256 consensusTime = block.timestamp + CLOCK_DRIFT;
+        SpectreClient lightClient = _deploy(_toNanos(consensusTime));
+
+        assertEq(lightClient.verifyNonMembership(_nonMembershipMsg(_toNanos(consensusTime))), consensusTime);
+    }
+
+    function test_verifyNonMembershipRejectsFutureConsensusStateBeyondClockDrift() public {
+        uint256 consensusTime = block.timestamp + CLOCK_DRIFT + 1;
         SpectreClient lightClient = _deploy(_toNanos(consensusTime));
 
         vm.expectRevert(
@@ -90,17 +105,41 @@ contract MembershipTrustingPeriodTest is Test {
         lightClient.verifyNonMembership(_nonMembershipMsg(_toNanos(consensusTime)));
     }
 
+    function test_constructorRejectsZeroTrustingPeriod() public {
+        IICS07TendermintMsgs.ClientState memory clientState = _clientState();
+        clientState.trustingPeriod = 0;
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ISpectreClientErrors.LengthIsOutOfRange.selector, uint256(0), uint256(1), uint256(type(uint32).max)
+            )
+        );
+        _deployWithClientState(_toNanos(block.timestamp), clientState);
+    }
+
+    function test_constructorRejectsZeroClockDrift() public {
+        IICS07TendermintMsgs.ClientState memory clientState = _clientState();
+        clientState.clockDrift = 0;
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ISpectreClientErrors.LengthIsOutOfRange.selector, uint256(0), uint256(1), uint256(type(uint32).max)
+            )
+        );
+        _deployWithClientState(_toNanos(block.timestamp), clientState);
+    }
+
     function _deploy(uint128 consensusTimestamp) private returns (SpectreClient) {
-        IICS07TendermintMsgs.ClientState memory clientState = IICS07TendermintMsgs.ClientState({
-            chainId: "test-chain-0",
-            trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
-            latestHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: HEIGHT }),
-            trustingPeriod: TRUSTING_PERIOD,
-            unbondingPeriod: UNBONDING_PERIOD,
-            isFrozen: false,
-            zkAlgorithm: IICS07TendermintMsgs.SupportedZkAlgorithm.Groth16,
-            clockDrift: 1800
-        });
+        return _deployWithClientState(consensusTimestamp, _clientState());
+    }
+
+    function _deployWithClientState(
+        uint128 consensusTimestamp,
+        IICS07TendermintMsgs.ClientState memory clientState
+    )
+        private
+        returns (SpectreClient)
+    {
         IICS07TendermintMsgs.ConsensusState memory consensusState = _consensusState(consensusTimestamp);
 
         return new SpectreClient(
@@ -112,6 +151,18 @@ contract MembershipTrustingPeriodTest is Test {
             _pinnedValidatorSet(),
             address(0)
         );
+    }
+
+    function _clientState() private pure returns (IICS07TendermintMsgs.ClientState memory) {
+        return IICS07TendermintMsgs.ClientState({
+            chainId: "test-chain-0",
+            trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
+            latestHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: HEIGHT }),
+            trustingPeriod: TRUSTING_PERIOD,
+            unbondingPeriod: UNBONDING_PERIOD,
+            isFrozen: false,
+            clockDrift: CLOCK_DRIFT
+        });
     }
 
     function _membershipMsg(uint128 consensusTimestamp)

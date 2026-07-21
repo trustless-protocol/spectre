@@ -74,7 +74,6 @@ contract RecvPacketGasTest is IntegrationTest {
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
             isFrozen: false,
-            zkAlgorithm: IICS07TendermintMsgs.SupportedZkAlgorithm.Groth16,
             clockDrift: 1800
         });
     }
@@ -107,22 +106,11 @@ contract RecvPacketGasTest is IntegrationTest {
         sigs = new IICS07TendermintMsgs.CommitSig[](vs.validators.length);
         for (uint256 i = 0; i < vs.validators.length; i++) {
             if (i < activeCount) {
-                sigs[i] = IICS07TendermintMsgs.CommitSig({
-                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
-                    data: IICS07TendermintMsgs.CommitSigData({
-                        validatorAddress: vs.validators[i].valAddress,
-                        timestamp: NEW_TS_NS,
-                        hasSignature: false,
-                        signature: ""
-                    })
-                });
+                sigs[i] =
+                    IICS07TendermintMsgs.CommitSig({ flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT });
             } else {
-                sigs[i] = IICS07TendermintMsgs.CommitSig({
-                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT,
-                    data: IICS07TendermintMsgs.CommitSigData({
-                        validatorAddress: "", timestamp: 0, hasSignature: false, signature: ""
-                    })
-                });
+                sigs[i] =
+                    IICS07TendermintMsgs.CommitSig({ flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT });
             }
         }
     }

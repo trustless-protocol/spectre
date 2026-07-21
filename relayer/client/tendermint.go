@@ -57,7 +57,6 @@ type ClientState struct {
 	TrustingPeriod  uint32
 	UnbondingPeriod uint32
 	IsFrozen        bool
-	ZkAlgorithm     uint8
 	ClockDrift      uint32
 }
 
@@ -81,7 +80,6 @@ func init() {
 		{Name: "trustingPeriod", Type: "uint32"},
 		{Name: "unbondingPeriod", Type: "uint32"},
 		{Name: "isFrozen", Type: "bool"},
-		{Name: "zkAlgorithm", Type: "uint8"},
 		{Name: "clockDrift", Type: "uint32"},
 	}
 	clientStateType, _ = abi.NewType("tuple", "", clientStateComponents)
@@ -143,12 +141,6 @@ func init() {
 				}},
 				{Name: "commitSigs", Type: "tuple[]", Components: []abi.ArgumentMarshaling{
 					{Name: "flag", Type: "uint8"},
-					{Name: "data", Type: "tuple", Components: []abi.ArgumentMarshaling{
-						{Name: "validatorAddress", Type: "bytes"},
-						{Name: "timestamp", Type: "uint128"},
-						{Name: "hasSignature", Type: "bool"},
-						{Name: "signature", Type: "bytes"},
-					}},
 				}},
 			},
 		},
@@ -234,20 +226,8 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) (updateClientContract.I
 	for _, sig := range b.SignedHeader.Commit.Signatures {
 		// CometBFT: 0=UNKNOWN, 1=ABSENT, 2=COMMIT, 3=NIL
 		// Solidity:  0=UNKNOWN, 1=ABSENT, 2=COMMIT, 3=NIL
-		// Absent sigs carry a zero time.Time whose UnixNano is a huge negative
-		// value; clamp to 0 so abi.Pack into uint128 succeeds.
-		var tsNano int64
-		if !sig.Timestamp.IsZero() {
-			tsNano = sig.Timestamp.UnixNano()
-		}
 		commitSigs = append(commitSigs, updateClientContract.IICS07TendermintMsgsCommitSig{
 			Flag: uint8(sig.BlockIDFlag),
-			Data: updateClientContract.IICS07TendermintMsgsCommitSigData{
-				ValidatorAddress: sig.ValidatorAddress,
-				Timestamp:        big.NewInt(tsNano),
-				HasSignature:     sig.Signature != nil,
-				Signature:        sig.Signature,
-			},
 		})
 	}
 
@@ -371,34 +351,16 @@ type SpectreClientGenesis struct {
 	InitialPinnedValidatorSet spectreContract.IICS07TendermintMsgsValidatorSet
 }
 
-type SupportedZkAlgorithm uint8
-
-const (
-	Groth16 SupportedZkAlgorithm = iota
-	Plonk
-)
-
-// String returns the string representation of the algorithm
-func (s SupportedZkAlgorithm) String() string {
-	switch s {
-	case Groth16:
-		return "Groth16"
-	case Plonk:
-		return "Plonk"
-	default:
-		return "Unknown"
-	}
-}
-
 // DefaultClockDrift is the allowed gap (in seconds) between the proven
 // consensus-state timestamp and the verifying chain's block time. It must be
 // generous enough to cover relay latency (proof gen + destination block time +
 // queueing); too small a value makes the light client reject otherwise-valid
-// updates with ProofIsTooOld. The same value is used at client creation and on
-// every update so the on-chain ClockDriftMismatch check passes.
+// updates with ProofIsTooOld. The same value is stored in the client state at
+// creation and drives the on-chain freshness window in `_requireFreshness`
+// (ProofIsInTheFuture / ProofIsTooOld).
 const DefaultClockDrift uint32 = 30
 
-func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32, trustLevel string, proofType string, clockDrift uint32) (*SpectreClientGenesis, error) {
+func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32, trustLevel string, _ string, clockDrift uint32) (*SpectreClientGenesis, error) {
 	if clockDrift == 0 {
 		clockDrift = DefaultClockDrift
 	}
@@ -439,16 +401,6 @@ func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32,
 		return nil, fmt.Errorf("failed to parse trust level: %w", err)
 	}
 
-	var zkAlgorithm SupportedZkAlgorithm
-	switch proofType {
-	case "groth16":
-		zkAlgorithm = Groth16
-	case "plonk":
-		zkAlgorithm = Plonk
-	default:
-		return nil, fmt.Errorf("unsupported proof type: %s, supported types are: groth16, plonk", proofType)
-	}
-
 	latestRevisionHeight, err := nonNegativeInt64ToUint64("trusted light block header height", trustedLightBlock.SignedHeader.Header.Height)
 	if err != nil {
 		return nil, err
@@ -462,7 +414,6 @@ func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32,
 			RevisionHeight: latestRevisionHeight,
 		},
 		IsFrozen:        false,
-		ZkAlgorithm:     uint8(zkAlgorithm),
 		TrustingPeriod:  trustingPeriod,
 		UnbondingPeriod: uint32(unbondingPeriod),
 		ClockDrift:      clockDrift,

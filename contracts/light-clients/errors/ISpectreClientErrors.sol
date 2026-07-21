@@ -70,16 +70,8 @@ interface ISpectreClientErrors {
     /// @notice Returned when the feature is not supported.
     error FeatureNotSupported();
 
-    /// @notice Returned when the membership proof is invalid.
-    error InvalidMembershipProof();
-
     /// @notice Returned when the membership value is empty.
     error EmptyValue();
-
-    /// @notice insufficient misbehaviour header height: header1 height `{height_1}` should be >= header2 height
-    /// `{height_2}`. @param height1 header1 height.
-    /// @param height2 header2 height.
-    error InsufficientMisbehaviourHeaderHeight(uint64 height1, uint64 height2);
 
     /// @notice Returned when standalone misbehaviour headers are not at the same height.
     /// @param height1 first header height.
@@ -137,12 +129,6 @@ interface ISpectreClientErrors {
     /// @param accumulated summed voting power of unique signers.
     /// @param total total voting power of the proposed validator set.
     error InsufficientVotingPower(uint64 accumulated, uint64 total);
-
-    /// @notice Returned when proof-bound signer pubkeys do not overlap the
-    ///         trusted validator set enough to satisfy the client's trust level.
-    /// @param accumulated summed trusted voting power of proof-bound signers.
-    /// @param total total voting power of the trusted validator set.
-    error InsufficientTrustedVotingPower(uint64 accumulated, uint64 total);
 
     /// @notice Returned when the same active validator index appears more than
     ///         once in signerIndices — defends against malicious calldata that

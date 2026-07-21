@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.28;
 
-import { IGroth16Msgs } from "./IGroth16Msgs.sol";
-import { IICS07TendermintMsgs } from "./IICS07TendermintMsgs.sol";
-
 /// @title Membership Program Messages
 /// @author srdtrk
 /// @notice Defines shared types for the verify (non)membership program.
@@ -17,42 +14,10 @@ interface IMembershipMsgs {
         bytes value;
     }
 
-    /// @notice The public value output for the groth16 verify (non)membership program.
-    /// @param commitmentRoot The app hash of the header.
-    /// @param kvPairs The key-value pairs verified by the program.
-    struct MembershipOutput {
-        bytes32 commitmentRoot;
-        KVPair[] kvPairs;
-    }
-
-    /// @notice The membership proof that can be submitted to the Groth16Verifier contract.
-    /// @param proofType The type of the membership proof.
-    /// @param proof The membership proof.
-    struct MembershipProof {
-        MembershipType proofType;
-        bytes proof;
-    }
-
-    /// @notice The membership proof for the groth16 verify (non)membership program.
-    /// @param groth16Proof The groth16 proof for the membership program.
-    /// @param trustedConsensusState The trusted consensus state that the proof is based on.
-    struct Groth16MembershipProof {
-        IGroth16Msgs.Groth16Proof groth16Proof;
-        IICS07TendermintMsgs.ConsensusState trustedConsensusState;
-    }
-
-    /// @notice The membership proof for the groth16 verify (non)membership and update client program.
-    /// @param groth16Proof The groth16 proof for the membership and update client program.
-    struct Groth16MembershipAndUpdateClientProof {
-        IGroth16Msgs.Groth16Proof groth16Proof;
-    }
-
     /// @notice The type of the membership proof.
     enum MembershipType {
         /// The proof is for the verify membership program.
-        Membership,
-        /// The proof is for the verify membership and update client program.
-        MembershipAndUpdateClient
+        Membership
     }
 
     struct ProofSpec {

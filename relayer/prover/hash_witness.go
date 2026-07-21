@@ -28,11 +28,12 @@ const (
 // (SignatureVerifier._hashWitness). Any drift fails the in-circuit byte assert
 // against the public Hash field.
 //
+//	PrefixHead[11]           // Type || Height, first 11 bytes of CanonicalVote body
+//	roundPresent[1]          // 0x01 when round is encoded, else 0x00
+//	BlockHash[32]            // BlockID hash from the canonical vote body
 //	per slot i ∈ [0, bucket):
-//	  active[1]               // 0x00 padding slot, 0x01 real signer
-//	  A[32 LE]                // raw Ed25519 pubkey (compressed)
-//	  msgLen[2 BE]            // length of meaningful prefix in msg
-//	  msg[MaxMsgLen padded]   // canonical vote bytes, zero-padded right
+//	  active[1]              // 0x00 padding slot, 0x01 real signer
+//	  A[32 LE]               // raw Ed25519 pubkey (compressed)
 //
 // A is hashed because Solidity uses pubkeys[i] to look up validator voting
 // power; without binding it, an attacker could swap calldata pubkeys to

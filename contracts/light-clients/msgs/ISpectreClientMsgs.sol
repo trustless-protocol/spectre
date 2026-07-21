@@ -51,7 +51,6 @@ interface ISpectreClientMsgs {
 
     /// @notice Two conflicting signed headers at the same height, each proof-backed.
     struct Misbehaviour {
-        IICS07TendermintMsgs.ChainId clientId;
         IICS07TendermintMsgs.Header header1;
         IICS07TendermintMsgs.Header header2;
     }
@@ -82,13 +81,5 @@ interface ISpectreClientMsgs {
         IICS07TendermintMsgs.ConsensusState newConsensusState;
         IICS02ClientMsgs.Height trustedHeight;
         IICS02ClientMsgs.Height newHeight;
-    }
-
-    /// @notice The result of validating misbehaviour inside the Misbehaviour module.
-    /// @param trustedHeight1 The trusted height of header1.
-    /// @param trustedHeight2 The trusted height of header2.
-    struct MisbehaviourOutput {
-        IICS02ClientMsgs.Height trustedHeight1;
-        IICS02ClientMsgs.Height trustedHeight2;
     }
 }

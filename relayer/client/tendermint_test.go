@@ -140,7 +140,6 @@ func TestEncodeClientState(t *testing.T) {
 			TrustingPeriod:  1209600,
 			UnbondingPeriod: 1814400,
 			IsFrozen:        false,
-			ZkAlgorithm:     uint8(Groth16),
 			ClockDrift:      15,
 		}
 		encoded, err := EncodeClientState(clientState)
@@ -167,7 +166,6 @@ func TestDecodeClientState(t *testing.T) {
 		TrustingPeriod:  1209600,
 		UnbondingPeriod: 1814400,
 		IsFrozen:        false,
-		ZkAlgorithm:     uint8(Groth16),
 		ClockDrift:      15,
 	}
 
@@ -204,9 +202,6 @@ func TestDecodeClientState(t *testing.T) {
 	}
 	if decoded.IsFrozen != original.IsFrozen {
 		t.Errorf("IsFrozen: got %v, want %v", decoded.IsFrozen, original.IsFrozen)
-	}
-	if decoded.ZkAlgorithm != original.ZkAlgorithm {
-		t.Errorf("ZkAlgorithm: got %d, want %d", decoded.ZkAlgorithm, original.ZkAlgorithm)
 	}
 	if decoded.ClockDrift != original.ClockDrift {
 		t.Errorf("ClockDrift: got %d, want %d", decoded.ClockDrift, original.ClockDrift)
@@ -358,27 +353,6 @@ func TestBytesToBytes32(t *testing.T) {
 			got := bytesToBytes32(tc.input)
 			if got != tc.want {
 				t.Errorf("got %v, want %v", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestSupportedZkAlgorithmString(t *testing.T) {
-	tests := []struct {
-		name string
-		alg  SupportedZkAlgorithm
-		want string
-	}{
-		{name: "Groth16", alg: Groth16, want: "Groth16"},
-		{name: "Plonk", alg: Plonk, want: "Plonk"},
-		{name: "unknown value", alg: SupportedZkAlgorithm(99), want: "Unknown"},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := tc.alg.String()
-			if got != tc.want {
-				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
 	}

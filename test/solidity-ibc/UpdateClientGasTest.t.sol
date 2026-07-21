@@ -63,6 +63,42 @@ contract UpdateClientGasTest is Test {
         uint16 activeCount; // real signers; padding = bucket - activeCount
     }
 
+    struct LegacyCommitSigData {
+        bytes validatorAddress;
+        uint128 timestamp;
+        bool hasSignature;
+        bytes signature;
+    }
+
+    struct LegacyCommitSig {
+        IICS07TendermintMsgs.CommitSigFlag flag;
+        LegacyCommitSigData data;
+    }
+
+    struct LegacyBlockCommit {
+        uint64 height;
+        uint32 round;
+        IICS07TendermintMsgs.BlockId blockId;
+        LegacyCommitSig[] commitSigs;
+    }
+
+    struct LegacySignedHeader {
+        IICS07TendermintMsgs.BlockHeader header;
+        LegacyBlockCommit commit;
+    }
+
+    struct LegacyHeader {
+        LegacySignedHeader signedHeader;
+        IICS02ClientMsgs.Height trustedHeight;
+    }
+
+    struct LegacyMsgUpdateApplicationState {
+        IICS07TendermintMsgs.ConsensusState trustedConsensusState;
+        LegacyHeader proposedHeader;
+        uint128 time;
+        ISpectreClientMsgs.BatchProof proof;
+    }
+
     /// Bench-matched: active just clears 2/3 quorum of valCount.
     function _cfg(uint16 bucket) internal pure returns (BucketConfig memory) {
         if (bucket == 4) return BucketConfig(4, 4, 3);
@@ -97,7 +133,6 @@ contract UpdateClientGasTest is Test {
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
             isFrozen: false,
-            zkAlgorithm: IICS07TendermintMsgs.SupportedZkAlgorithm.Groth16,
             clockDrift: 1800
         });
     }
@@ -130,8 +165,7 @@ contract UpdateClientGasTest is Test {
         });
     }
 
-    /// Build commit signatures: first `activeCount` are COMMIT (with matching
-    /// validator address), rest are ABSENT. Length == val_count, matching
+    /// Build commit signatures: first `activeCount` are COMMIT, rest are ABSENT. Length == val_count, matching
     /// CometBFT's invariant that a commit carries one CommitSig per validator.
     function _buildCommitSigs(
         IICS07TendermintMsgs.ValidatorSet memory vs,
@@ -144,9 +178,29 @@ contract UpdateClientGasTest is Test {
         sigs = new IICS07TendermintMsgs.CommitSig[](vs.validators.length);
         for (uint256 i = 0; i < vs.validators.length; i++) {
             if (i < activeCount) {
-                sigs[i] = IICS07TendermintMsgs.CommitSig({
+                sigs[i] =
+                    IICS07TendermintMsgs.CommitSig({ flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT });
+            } else {
+                sigs[i] =
+                    IICS07TendermintMsgs.CommitSig({ flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT });
+            }
+        }
+    }
+
+    function _buildLegacyCommitSigs(
+        IICS07TendermintMsgs.ValidatorSet memory vs,
+        uint16 activeCount
+    )
+        internal
+        pure
+        returns (LegacyCommitSig[] memory sigs)
+    {
+        sigs = new LegacyCommitSig[](vs.validators.length);
+        for (uint256 i = 0; i < vs.validators.length; i++) {
+            if (i < activeCount) {
+                sigs[i] = LegacyCommitSig({
                     flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
-                    data: IICS07TendermintMsgs.CommitSigData({
+                    data: LegacyCommitSigData({
                         validatorAddress: vs.validators[i].valAddress,
                         timestamp: NEW_TS_NS,
                         hasSignature: false,
@@ -154,9 +208,9 @@ contract UpdateClientGasTest is Test {
                     })
                 });
             } else {
-                sigs[i] = IICS07TendermintMsgs.CommitSig({
+                sigs[i] = LegacyCommitSig({
                     flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT,
-                    data: IICS07TendermintMsgs.CommitSigData({
+                    data: LegacyCommitSigData({
                         validatorAddress: "", timestamp: 0, hasSignature: false, signature: ""
                     })
                 });
@@ -310,6 +364,55 @@ contract UpdateClientGasTest is Test {
         msg_.proof.pinnedValidatorIndices = pinnedValidatorIndices;
     }
 
+    function _buildLegacyMsg(
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_,
+        IICS07TendermintMsgs.ValidatorSet memory vs,
+        uint16 activeCount
+    )
+        internal
+        pure
+        returns (LegacyMsgUpdateApplicationState memory legacy)
+    {
+        legacy.trustedConsensusState = msg_.trustedConsensusState;
+        legacy.proposedHeader = LegacyHeader({
+            signedHeader: LegacySignedHeader({
+                header: msg_.proposedHeader.signedHeader.header,
+                commit: LegacyBlockCommit({
+                    height: msg_.proposedHeader.signedHeader.commit.height,
+                    round: msg_.proposedHeader.signedHeader.commit.round,
+                    blockId: msg_.proposedHeader.signedHeader.commit.blockId,
+                    commitSigs: _buildLegacyCommitSigs(vs, activeCount)
+                })
+            }),
+            trustedHeight: msg_.proposedHeader.trustedHeight
+        });
+        legacy.time = msg_.time;
+        legacy.proof = msg_.proof;
+    }
+
+    function _measureCalldataDiet(uint16 bucket) internal pure {
+        BucketConfig memory cfg = _cfg(bucket);
+        (
+            IICS07TendermintMsgs.Header memory header,
+            IICS07TendermintMsgs.ConsensusState memory trustedCS,
+            IICS07TendermintMsgs.ValidatorSet memory vs
+        ) = _buildSelfConsistent(cfg);
+
+        IICS07TendermintMsgs.ClientState memory cs = _clientState();
+        ISpectreClientMsgs.MsgUpdateApplicationState memory current =
+            _buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount);
+        LegacyMsgUpdateApplicationState memory legacy = _buildLegacyMsg(current, vs, cfg.activeCount);
+
+        uint256 beforeLen = abi.encode(legacy).length;
+        uint256 afterLen = abi.encode(current).length;
+        assertLt(afterLen, beforeLen, "calldata diet should shrink updateApplicationState");
+
+        console.log("updateApplicationState calldata bucket", bucket);
+        console.log("before bytes", beforeLen);
+        console.log("after bytes", afterLen);
+        console.log("saved bytes", beforeLen - afterLen);
+    }
+
     function _measure(uint16 bucket) internal {
         BucketConfig memory cfg = _cfg(bucket);
 
@@ -403,6 +506,10 @@ contract UpdateClientGasTest is Test {
 
     function test_gas_n4() public {
         _measure(4);
+    }
+
+    function test_calldataDiet_n4() public pure {
+        _measureCalldataDiet(4);
     }
 
     function test_gas_n8() public {

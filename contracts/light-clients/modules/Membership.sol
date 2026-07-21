@@ -66,6 +66,7 @@ contract Membership is IMembership {
     error InnerSpecMissing();
     error NeitherNeighborDefined();
     error NotLeftNeighbor();
+    error EmptyNeighborPath();
     error InvalidNonExistenceProofState();
 
     // misc errors
@@ -502,6 +503,9 @@ contract Membership is IMembership {
         } else if (proof.hasLeft && !proof.hasRight) {
             ensureRightMost(innerSpec, proof.left.path, proof.left.path.length);
         } else if (proof.hasLeft && proof.hasRight) {
+            if (proof.left.path.length == 0 || proof.right.path.length == 0) {
+                revert EmptyNeighborPath();
+            }
             uint256 leftIndex = proof.left.path.length - 1;
             uint256 rightIndex = proof.right.path.length - 1;
 
@@ -1046,7 +1050,7 @@ contract Membership is IMembership {
                     if (count == 9 && b >= 0x02) {
                         revert InvalidVarint();
                     }
-                    return (value, count + 1);
+                    return (value, offset + count + 1);
                 }
             }
             revert InvalidVarint();

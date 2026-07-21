@@ -28,6 +28,11 @@ contract SignatureVerifierBypassTest is Test {
         wrapper = new SignatureVerifierHarness(address(this));
     }
 
+    function test_constructor_revertsWhenOwnerIsZero() public {
+        vm.expectRevert(SignatureVerifier.ZeroOwner.selector);
+        new SignatureVerifierHarness(address(0));
+    }
+
     // ------------------------------------------------------------------
     // Layer 1: `setBucket` rejects code-less addresses.
     // ------------------------------------------------------------------

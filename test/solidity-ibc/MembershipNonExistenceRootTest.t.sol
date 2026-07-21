@@ -18,6 +18,19 @@ contract MembershipNonExistHarness is Membership {
     {
         return calculateNonExistenceRoot(proof);
     }
+
+    function exposedVerifyNonExistenceProof(
+        IMembershipMsgs.NonExistenceProof memory proof,
+        IMembershipMsgs.ProofSpec memory spec,
+        bytes32 root,
+        bytes memory key
+    )
+        external
+        view
+        returns (bool)
+    {
+        return verifyNonExistenceProof(proof, spec, root, key);
+    }
 }
 
 contract MembershipNonExistenceRootTest is Test {
@@ -82,6 +95,18 @@ contract MembershipNonExistenceRootTest is Test {
         m.exposedCalculateNonExistenceRoot(ne); // no cross-check, no revert
     }
 
+    function test_twoSidedEmptyNeighborPathRevertsCleanly() public {
+        bytes memory prefix = abi.encodePacked(bytes32(uint256(0xABCDEF)));
+        IMembershipMsgs.ExistenceProof memory left = _existenceWithPrefix(bytes("a"), bytes("L"), prefix);
+        IMembershipMsgs.ExistenceProof memory right = _existenceWithPrefix(bytes("z"), bytes("R"), prefix);
+        IMembershipMsgs.NonExistenceProof memory ne = IMembershipMsgs.NonExistenceProof({
+            key: bytes("m"), hasLeft: true, left: left, hasRight: true, right: right
+        });
+
+        vm.expectRevert(Membership.EmptyNeighborPath.selector);
+        m.exposedVerifyNonExistenceProof(ne, _prefixRootSpec(prefix), bytes32(uint256(0xABCDEF)), bytes("m"));
+    }
+
     function _oneSided(IMembershipMsgs.ExistenceProof memory e)
         internal
         pure
@@ -89,6 +114,57 @@ contract MembershipNonExistenceRootTest is Test {
     {
         return IMembershipMsgs.NonExistenceProof({
             key: bytes("x"), hasLeft: true, left: e, hasRight: false, right: _existence(bytes(""))
+        });
+    }
+
+    function _existenceWithPrefix(
+        bytes memory key,
+        bytes memory value,
+        bytes memory prefix
+    )
+        internal
+        pure
+        returns (IMembershipMsgs.ExistenceProof memory)
+    {
+        return IMembershipMsgs.ExistenceProof({
+            key: key,
+            value: value,
+            leaf: IMembershipMsgs.LeafOp({
+                hashOp: IMembershipMsgs.HashOp.NO_HASH,
+                prehashKey: IMembershipMsgs.HashOp.NO_HASH,
+                prehashValue: IMembershipMsgs.HashOp.NO_HASH,
+                prefix: prefix
+            }),
+            path: new IMembershipMsgs.InnerOp[](0)
+        });
+    }
+
+    function _prefixRootSpec(bytes memory prefix) internal pure returns (IMembershipMsgs.ProofSpec memory) {
+        uint32[] memory childOrder = new uint32[](2);
+        childOrder[0] = 0;
+        childOrder[1] = 1;
+
+        return IMembershipMsgs.ProofSpec({
+            specType: IMembershipMsgs.SpecType.TENDERMINT,
+            hasLeafSpec: true,
+            leafOp: IMembershipMsgs.LeafOp({
+                hashOp: IMembershipMsgs.HashOp.NO_HASH,
+                prehashKey: IMembershipMsgs.HashOp.NO_HASH,
+                prehashValue: IMembershipMsgs.HashOp.NO_HASH,
+                prefix: prefix
+            }),
+            hasInnerSpec: true,
+            innerSpec: IMembershipMsgs.InnerSpec({
+                childOrder: childOrder,
+                childSize: 32,
+                minPrefixLength: 0,
+                maxPrefixLength: 32,
+                emptyChild: "",
+                hashOp: IMembershipMsgs.HashOp.NO_HASH
+            }),
+            minDepth: 0,
+            maxDepth: 0,
+            prehashKeyBeforeComparison: false
         });
     }
 }

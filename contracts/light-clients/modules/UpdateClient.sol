@@ -20,11 +20,6 @@ import { ChainId } from "../../utils/ChainId.sol";
 contract UpdateClient is IUpdateClient {
     using SpectreStore for SpectreStore.Store;
 
-    error MismatchedRevisionHeight(uint64 expected, uint64 actual);
-    error InvalidHeaderHeight(uint64 height);
-    error HeaderChainIdMismatch(string expected, string actual);
-    error FailedToVerifyHeader(string reason);
-
     /// @notice The Groth16 signature verifier (lives "inside" UpdateClient per the spec).
     ISignatureVerifier internal immutable SIGNATURE_VERIFIER;
     /// @notice This module's own address, used to reject direct (non-delegatecall) invocation.
@@ -85,13 +80,13 @@ contract UpdateClient is IUpdateClient {
         IICS07TendermintMsgs.ChainId memory headerChainId = ChainId.get(proposedHeader.signedHeader.header.chainId);
         _validateBasic(proposedHeader, headerChainId);
         if (chainId.revisionNumber != headerChainId.revisionNumber) {
-            revert HeaderChainIdMismatch(headerChainId.id, chainId.id);
+            revert ISpectreClientErrors.ChainIdMismatch(chainId.id, headerChainId.id);
         }
 
         if (
             Header.hashHeader(proposedHeader.signedHeader.header) != proposedHeader.signedHeader.commit.blockId.hashData
         ) {
-            revert FailedToVerifyHeader("invalid block: header hash mismatch");
+            revert ISpectreClientErrors.FailedToVerifyHeader("invalid block: header hash mismatch");
         }
 
         _verifyAgainstTrusted(proposedHeader, chainId.id, options, time, trustedConsensusState);
@@ -108,8 +103,8 @@ contract UpdateClient is IUpdateClient {
         pure
     {
         uint128 trustingPeriodNanos = uint128(options.trustingPeriod) * 1_000_000_000;
-        if (time < trustedConsensusState.timestamp || time - trustedConsensusState.timestamp > trustingPeriodNanos) {
-            revert FailedToVerifyHeader("invalid block: untrusted state is outside of trusting period");
+        if (time < trustedConsensusState.timestamp || time - trustedConsensusState.timestamp >= trustingPeriodNanos) {
+            revert ISpectreClientErrors.FailedToVerifyHeader("invalid block: untrusted state is outside of trusting period");
         }
         require(
             proposedHeader.signedHeader.header.time > trustedConsensusState.timestamp,
@@ -138,7 +133,9 @@ contract UpdateClient is IUpdateClient {
         pure
     {
         if (headerChainId.revisionNumber != header.trustedHeight.revisionNumber) {
-            revert MismatchedRevisionHeight(headerChainId.revisionNumber, header.trustedHeight.revisionNumber);
+            revert ISpectreClientErrors.MismatchedRevisionHeights(
+                headerChainId.revisionNumber, header.trustedHeight.revisionNumber
+            );
         }
 
         IICS02ClientMsgs.Height memory height = IICS02ClientMsgs.Height({
@@ -146,7 +143,7 @@ contract UpdateClient is IUpdateClient {
         });
 
         if (HeightCmp.ge(header.trustedHeight, height)) {
-            revert InvalidHeaderHeight(height.revisionHeight);
+            revert ISpectreClientErrors.InvalidHeaderHeight(height.revisionHeight);
         }
     }
 

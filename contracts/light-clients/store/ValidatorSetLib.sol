@@ -100,6 +100,7 @@ library ValidatorSetLib {
         if (
             cacheHeader.entryCount == 0 || cacheHeader.entryCount > MAX_VALIDATOR_COUNT || cacheHeader.nodeCount != 0
                 || cacheData.length != validatorCacheEntryDataLen(cacheHeader.entryCount)
+                || cacheHeader.validatorsHashLeaf != Header.bytes32LeafHash(validatorsHash)
         ) {
             revert ISpectreClientErrors.CachedValidatorSetCorrupted(validatorsHash);
         }

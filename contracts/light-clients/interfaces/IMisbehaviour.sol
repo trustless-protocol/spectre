@@ -9,8 +9,5 @@ import { ISpectreClientMsgs } from "../msgs/ISpectreClientMsgs.sol";
 interface IMisbehaviour {
     /// @notice Validates misbehaviour (two conflicting signed headers) and their signature proofs.
     /// @param msg_ The misbehaviour submission message.
-    /// @return The trusted heights of the two headers.
-    function verifyMisbehaviour(ISpectreClientMsgs.MsgSubmitMisbehaviour calldata msg_)
-        external
-        returns (ISpectreClientMsgs.MisbehaviourOutput memory);
+    function verifyMisbehaviour(ISpectreClientMsgs.MsgSubmitMisbehaviour calldata msg_) external;
 }

@@ -219,7 +219,8 @@ library Encode {
     function voteSignBytes(
         IICS07TendermintMsgs.BlockCommit memory commit,
         string memory chainId,
-        uint32 valIdx
+        uint32 valIdx,
+        uint128 timestamp
     )
         internal
         pure
@@ -229,7 +230,7 @@ library Encode {
 
         bool useCommitBlockId = commitSig.flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT;
         bytes memory encodedBlockId = useCommitBlockId ? encodeBlockId(commit.blockId) : new bytes(0);
-        bytes memory encodedTimestamp = encodeTimestamp(commitSig.data.timestamp);
+        bytes memory encodedTimestamp = encodeTimestamp(timestamp);
         bytes memory chainIdBytes = bytes(chainId);
         uint256 encodedLen = 2; // field 1: tag + PrecommitType(2)
 

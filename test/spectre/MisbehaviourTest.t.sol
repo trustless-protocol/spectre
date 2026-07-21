@@ -117,7 +117,6 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
             trustingPeriod: 3600,
             unbondingPeriod: 7200,
             isFrozen: false,
-            zkAlgorithm: SupportedZkAlgorithm.Groth16,
             clockDrift: 15
         });
 
@@ -252,8 +251,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
     function test_misbehaviour_rejectsProofSignerAbsentFromCommitSigs() public {
         ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
-        msg_.misbehaviour.header1.signedHeader.commit.commitSigs[0] =
-            _commitSig(CommitSigFlag.BLOCK_ID_FLAG_ABSENT, "", 0);
+        msg_.misbehaviour.header1.signedHeader.commit.commitSigs[0] = _commitSig(CommitSigFlag.BLOCK_ID_FLAG_ABSENT);
 
         vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.ProofSignerCommitSigMismatch.selector, uint32(0)));
         lightClient.misbehaviour(abi.encode(msg_));
@@ -330,9 +328,8 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         IICS07TendermintMsgs.Header memory header1 = _buildHeader(15, bytes32(uint256(0xAAA1)));
         IICS07TendermintMsgs.Header memory header2 = _buildHeader(15, bytes32(uint256(0xAAA2)));
 
-        ISpectreClientMsgs.Misbehaviour memory misbehaviour_ = ISpectreClientMsgs.Misbehaviour({
-            clientId: ChainId({ id: CHAIN_ID, revisionNumber: 0 }), header1: header1, header2: header2
-        });
+        ISpectreClientMsgs.Misbehaviour memory misbehaviour_ =
+            ISpectreClientMsgs.Misbehaviour({ header1: header1, header2: header2 });
 
         return ISpectreClientMsgs.MsgSubmitMisbehaviour({
             misbehaviour: misbehaviour_,
@@ -485,15 +482,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     {
         sigs = new CommitSig[](validatorSet.validators.length);
         for (uint256 i = 0; i < validatorSet.validators.length; i++) {
-            sigs[i] = CommitSig({
-                flag: CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
-                data: CommitSigData({
-                    validatorAddress: validatorSet.validators[i].valAddress,
-                    timestamp: HEADER_TIME_NANOS,
-                    hasSignature: true,
-                    signature: bytes("")
-                })
-            });
+            sigs[i] = CommitSig({ flag: CommitSigFlag.BLOCK_ID_FLAG_COMMIT });
         }
     }
 
@@ -501,23 +490,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         return ValidatorInfo({ valAddress: bytes(addr), pubKey: pubkey, votingPower: power, proposerPriority: 0 });
     }
 
-    function _commitSig(
-        CommitSigFlag flag,
-        string memory addr,
-        uint128 timestamp
-    )
-        internal
-        pure
-        returns (CommitSig memory)
-    {
-        return CommitSig({
-            flag: flag,
-            data: CommitSigData({
-                validatorAddress: bytes(addr),
-                timestamp: timestamp,
-                hasSignature: flag != CommitSigFlag.BLOCK_ID_FLAG_ABSENT,
-                signature: bytes("")
-            })
-        });
+    function _commitSig(CommitSigFlag flag) internal pure returns (CommitSig memory) {
+        return CommitSig({ flag: flag });
     }
 }

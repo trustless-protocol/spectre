@@ -48,10 +48,10 @@ func (w *Worker) CreateCosmosClient(ctx Context, proofType string, trustingPerio
 	clientState := genesis.TrustedClientState
 	consensusState := genesis.TrustedConsensusState
 
-	log.Printf("[CreateCosmosClient] clientState: chainId=%s trustLevel=%d/%d height=%d/%d trustingPeriod=%d unbondingPeriod=%d isFrozen=%v zkAlgorithm=%d",
+	log.Printf("[CreateCosmosClient] clientState: chainId=%s trustLevel=%d/%d height=%d/%d trustingPeriod=%d unbondingPeriod=%d isFrozen=%v",
 		clientState.ChainId, clientState.TrustLevel.Numerator, clientState.TrustLevel.Denominator,
 		clientState.LatestHeight.RevisionNumber, clientState.LatestHeight.RevisionHeight,
-		clientState.TrustingPeriod, clientState.UnbondingPeriod, clientState.IsFrozen, clientState.ZkAlgorithm)
+		clientState.TrustingPeriod, clientState.UnbondingPeriod, clientState.IsFrozen)
 
 	clientStateEncoded, err := relayerclient.EncodeClientState(clientState)
 	if err != nil {
