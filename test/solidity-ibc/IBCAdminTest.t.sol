@@ -11,6 +11,7 @@ import { IICS26RouterMsgs } from "../../contracts/msgs/IICS26RouterMsgs.sol";
 import { IICS20TransferMsgs } from "../../contracts/msgs/IICS20TransferMsgs.sol";
 
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
+import { IICS20Errors } from "../../contracts/errors/IICS20Errors.sol";
 
 import { ICS26Router } from "../../contracts/ICS26Router.sol";
 import { ICS20Transfer } from "../../contracts/ICS20Transfer.sol";
@@ -213,5 +214,18 @@ contract IBCAdminTest is Test, DeployAccessManagerWithRoles {
         vm.prank(unauthorized);
         vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
         ics20Transfer.upgradeIBCERC20To(address(newLogic));
+    }
+
+    function test_failure_setIBCERC20Metadata() public {
+        string memory denom = "transfer/client-0/uatom";
+
+        address unauthorized = makeAddr("unauthorized");
+        vm.prank(unauthorized);
+        vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
+        ics20Transfer.setIBCERC20Metadata(denom, "Cosmos Hub Atom", "ATOM", 6);
+
+        vm.prank(erc20Customizer);
+        vm.expectRevert(abi.encodeWithSelector(IICS20Errors.ICS20DenomNotFound.selector, denom));
+        ics20Transfer.setIBCERC20Metadata(denom, "Cosmos Hub Atom", "ATOM", 6);
     }
 }

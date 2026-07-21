@@ -10,6 +10,13 @@ interface IIBCERC20 is IMintableAndBurnable {
     /// @return The full path of the token's denom
     function fullDenomPath() external view returns (string memory);
 
+    /// @notice Set custom display metadata for the token
+    /// @dev This can only be called once by the owning ICS20 contract.
+    /// @param name_ The custom token name
+    /// @param symbol_ The custom token symbol
+    /// @param decimals_ The custom token decimals
+    function setMetadata(string calldata name_, string calldata symbol_, uint8 decimals_) external;
+
     /// @notice Get the escrow contract address
     /// @return The escrow contract address
     function escrow() external view returns (address);
@@ -24,4 +31,10 @@ interface IIBCERC20 is IMintableAndBurnable {
     /// @param escrow_ The escrow contract address, can burn and mint tokens
     /// @param fullDenomPath_ The full IBC denom path for this token
     function initialize(address ics20_, address escrow_, string calldata fullDenomPath_) external;
+
+    /// @notice Emitted when custom token metadata is set
+    /// @param name_ The custom token name
+    /// @param symbol_ The custom token symbol
+    /// @param decimals_ The custom token decimals
+    event IBCERC20MetadataSet(string name_, string symbol_, uint8 decimals_);
 }

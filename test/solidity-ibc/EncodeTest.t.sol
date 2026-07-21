@@ -473,28 +473,6 @@ contract EncodeTest is Test {
         );
     }
 
-    // ─── merkleHash tests ───
-
-    function test_merkleHash_empty() public pure {
-        bytes[] memory items = new bytes[](0);
-        assertEq(Header.merkleHash(items), bytes32(0));
-    }
-
-    function test_merkleHash_singleLeaf() public pure {
-        bytes[] memory items = new bytes[](1);
-        items[0] = hex"deadbeef";
-        // Go: merkle.HashFromByteSlices (1-byte 0x00 leaf prefix)
-        assertEq(Header.merkleHash(items), bytes32(0x48c90c8ae24688d6bef5d48a30c2cc8b6754335a8db21793cc0a8e3bed321729));
-    }
-
-    function test_merkleHash_twoLeaves() public pure {
-        bytes[] memory items = new bytes[](2);
-        items[0] = hex"aa";
-        items[1] = hex"bb";
-        // Go: merkle.HashFromByteSlices (1-byte prefixes)
-        assertEq(Header.merkleHash(items), bytes32(0x3a6c27fde711243b24095e21cfa3ab2fd6c4e186412e526b2684850209247eca));
-    }
-
     // ─── Debug: emit encoded bytes for manual inspection ───
 
     function test_debug_printEncodings() public pure {

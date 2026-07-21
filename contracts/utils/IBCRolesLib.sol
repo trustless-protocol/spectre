@@ -14,7 +14,7 @@ library IBCRolesLib {
     /// @notice The admin role as per defined by AccessManager.
     uint64 internal constant ADMIN_ROLE = type(uint64).min;
 
-    /// @notice The relayer role as per defined by AccessManager.
+    /// @notice The public role as per defined by AccessManager.
     uint64 internal constant PUBLIC_ROLE = type(uint64).max;
 
     /// @notice Only addresses with this role may relay packets.
@@ -73,8 +73,9 @@ library IBCRolesLib {
     /// @notice The functions that can be called by the ERC20_CUSTOMIZER_ROLE in ICS20Transfer.
     /// @return An array of function selectors that can be called by the ERC20_CUSTOMIZER_ROLE.
     function erc20CustomizerSelectors() internal pure returns (bytes4[] memory) {
-        bytes4[] memory erc20CustomizerFunctions = new bytes4[](1);
+        bytes4[] memory erc20CustomizerFunctions = new bytes4[](2);
         erc20CustomizerFunctions[0] = IICS20TransferAccessControlled.setCustomERC20.selector;
+        erc20CustomizerFunctions[1] = IICS20TransferAccessControlled.setIBCERC20Metadata.selector;
         return erc20CustomizerFunctions;
     }
 

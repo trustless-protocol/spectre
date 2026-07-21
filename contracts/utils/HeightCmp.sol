@@ -1,4 +1,5 @@
-pragma solidity ^0.8.0;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.28;
 
 import { IICS02ClientMsgs } from "../msgs/IICS02ClientMsgs.sol";
 

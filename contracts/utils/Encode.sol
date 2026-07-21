@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.0;
+pragma solidity ^0.8.28;
 
 import { IICS07TendermintMsgs } from "../light-clients/msgs/IICS07TendermintMsgs.sol";
 import { IICS02ClientMsgs } from "../msgs/IICS02ClientMsgs.sol";
 
+/// @dev CometBFT valid-commit-domain encoders, not a general-purpose proto3 encoder.
+/// Some helpers intentionally assume valid commit fields are populated and do not implement
+/// every zero-value omission edge case for malformed or unreachable commit data.
 library Encode {
     function encodeVarint(uint256 value) internal pure returns (bytes memory) {
         bytes memory out = new bytes(_varintLen(value));
@@ -105,6 +108,7 @@ library Encode {
     }
 
     function encodeBlockId(IICS07TendermintMsgs.BlockId memory blockId) internal pure returns (bytes memory) {
+        // Valid commits always carry a populated block hash and part set header.
         bytes memory partSetHeaderEncoded = encodePartSetHeader(blockId.partSetHeader);
         uint256 partSetLen = partSetHeaderEncoded.length;
         bytes memory out = new bytes(34 + 1 + _varintLen(partSetLen) + partSetLen);
@@ -169,8 +173,10 @@ library Encode {
     /// @notice Encodes a signed 64-bit integer as 8-byte little-endian (protobuf sfixed64).
     function encodeSfixed64(int64 value) internal pure returns (bytes memory) {
         bytes memory result = new bytes(8);
+        // Preserve the 64-bit two's-complement representation for protobuf sfixed64.
+        // forge-lint: disable-next-line(unsafe-typecast)
         uint64 v = uint64(value);
-        assembly {
+        assembly ("memory-safe") {
             // mstore is big-endian, so each byte of v must be placed in the most-significant
             // 8 bytes of the 256-bit word. Byte i of little-endian output = bits [(i*8)+7:(i*8)]
             // of v, which must land at word bits [255-(i*8):248-(i*8)].
@@ -196,6 +202,7 @@ library Encode {
         pure
         returns (bytes memory)
     {
+        // Valid commits always carry total >= 1 and a populated part set hash.
         bytes memory out = new bytes(1 + _varintLen(uint256(partSetHeader.total)) + 34);
         uint256 offset = 0;
 
@@ -306,7 +313,7 @@ library Encode {
     /// @dev Each byte holds 7 bits of value; the MSB is 1 if more bytes follow, 0 on the last byte.
     /// @return newOffset The offset of the next unwritten byte after the varint.
     function _writeVarint(bytes memory out, uint256 offset, uint256 value) private pure returns (uint256 newOffset) {
-        assembly {
+        assembly ("memory-safe") {
             // Point ptr at out[offset]: skip the 32-byte length prefix (0x20), then advance by offset.
             let ptr := add(add(out, 0x20), offset)
             // Each iteration emits one continuation byte: low 7 bits of value | 0x80 (MSB = "more follows").
@@ -323,14 +330,14 @@ library Encode {
     }
 
     function _storeByte(bytes memory out, uint256 offset, uint8 value) private pure returns (uint256) {
-        assembly {
+        assembly ("memory-safe") {
             mstore8(add(add(out, 0x20), offset), value)
         }
         return offset + 1;
     }
 
     function _storeBytes32(bytes memory out, uint256 offset, bytes32 value) private pure returns (uint256) {
-        assembly {
+        assembly ("memory-safe") {
             mstore(add(add(out, 0x20), offset), value)
         }
         return offset + 32;
@@ -340,7 +347,7 @@ library Encode {
         uint256 len = src.length;
         if (len == 0) return dstOffset;
         // mcopy (EIP-5656, Cancun): 3 + 3*ceil(len/32) gas vs ~18-20 gas/word with a manual loop.
-        assembly {
+        assembly ("memory-safe") {
             mcopy(add(add(out, 0x20), dstOffset), add(src, 0x20), len)
         }
         return dstOffset + len;

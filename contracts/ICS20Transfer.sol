@@ -298,6 +298,21 @@ contract ICS20Transfer is
         $._ibcERC20Denoms[token] = denom;
     }
 
+    /// @inheritdoc IICS20TransferAccessControlled
+    function setIBCERC20Metadata(
+        string calldata denom,
+        string calldata name_,
+        string calldata symbol_,
+        uint8 decimals_
+    )
+        external
+        restricted
+    {
+        address erc20Contract = address(_getICS20TransferStorage()._ibcERC20Contracts[denom]);
+        require(erc20Contract != address(0), IICS20Errors.ICS20DenomNotFound(denom));
+        IIBCERC20(erc20Contract).setMetadata(name_, symbol_, decimals_);
+    }
+
     /// @inheritdoc IIBCApp
     // NOTE: Reentrancy disabled for this function via the `nonReentrant` modifier.
     // slither-disable-next-line reentrancy-no-eth

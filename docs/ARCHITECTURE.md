@@ -241,7 +241,7 @@ encodeTimestamp(secs)             ↔   gogotypes.StdTimeMarshal(time)
 
 Header.hashHeader()               ↔   types.Header.Hash() (14 fields → merkle)
 Header.hashValSet()               ↔   ValidatorSet.Hash() (proto-encoded → merkle)
-Header.merkleHash()                ↔   merkle.HashFromByteSlices() (1-byte prefix)
+Header internal merkle hashing    ↔   merkle.HashFromByteSlices() (1-byte prefix)
 ```
 
 Cross-validated via `test/solidity-ibc/EncodeTest.t.sol`.

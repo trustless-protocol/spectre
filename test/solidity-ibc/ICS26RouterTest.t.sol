@@ -170,17 +170,31 @@ contract ICS26RouterTest is Test {
         ics26Router.sendPacket(msgSendPacket);
     }
 
-    function test_largeTimeout() public {
+    function test_timeoutCeiling() public {
         address mockApp = makeAddr("mockApp");
         string memory mockPort = "mockport";
 
         vm.prank(idCustomizer);
         ics26Router.addIBCApp(mockPort, mockApp);
 
-        uint64 timeoutTimestamp = uint64(block.timestamp + 2 days);
         string memory clientId = testHelper.FIRST_CLIENT_ID();
 
-        vm.expectRevert(abi.encodeWithSelector(IICS26RouterErrors.IBCInvalidTimeoutDuration.selector, 1 days, 2 days));
+        vm.prank(mockApp);
+        uint64 sequence = ics26Router.sendPacket(
+            IICS26RouterMsgs.MsgSendPacket({
+                sourceClient: clientId,
+                timeoutTimestamp: uint64(block.timestamp + 1 days),
+                payload: IICS26RouterMsgs.Payload({
+                    sourcePort: mockPort, destPort: mockPort, version: "", encoding: "", value: "0x"
+                })
+            })
+        );
+        assertEq(sequence, 1);
+
+        uint64 timeoutTimestamp = uint64(block.timestamp + 1 days + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS26RouterErrors.IBCInvalidTimeoutDuration.selector, 1 days, 1 days + 1)
+        );
         vm.prank(mockApp);
         ics26Router.sendPacket(
             IICS26RouterMsgs.MsgSendPacket({

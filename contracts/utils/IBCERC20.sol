@@ -56,6 +56,19 @@ contract IBCERC20 is IIBCERC20Errors, IIBCERC20, ERC20Upgradeable {
         return _getIBCERC20Storage()._fullDenomPath;
     }
 
+    /// @inheritdoc IIBCERC20
+    function setMetadata(string calldata name_, string calldata symbol_, uint8 decimals_) external onlyICS20 {
+        IBCERC20Storage storage $ = _getIBCERC20Storage();
+        require(!$._customMetadataSet, IBCERC20MetadataAlreadySet());
+
+        $._customMetadataSet = true;
+        $._customDecimals = decimals_;
+        $._customName = name_;
+        $._customSymbol = symbol_;
+
+        emit IBCERC20MetadataSet(name_, symbol_, decimals_);
+    }
+
     /// @inheritdoc ERC20Upgradeable
     function name() public view override(ERC20Upgradeable) returns (string memory) {
         IBCERC20Storage storage $ = _getIBCERC20Storage();

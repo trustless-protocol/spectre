@@ -73,10 +73,6 @@ contract EncodeWrapper {
         return Encode.voteSignBytes(commit, chainId, 0, timestamp);
     }
 
-    function merkleHash(bytes[] calldata items) external pure returns (bytes32) {
-        return Header.merkleHash(items);
-    }
-
     function hashValSet(bytes32[] calldata pubKeys, uint64[] calldata votingPowers) external pure returns (bytes32) {
         require(pubKeys.length == votingPowers.length, "length mismatch");
 

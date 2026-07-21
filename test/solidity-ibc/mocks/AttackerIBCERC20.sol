@@ -22,6 +22,9 @@ contract AttackerIBCERC20 is IIBCERC20, ERC20 {
         return "transfer/client-0/uatom";
     }
 
+    /// @inheritdoc IIBCERC20
+    function setMetadata(string calldata, string calldata, uint8) external { }
+
     /// @inheritdoc IMintableAndBurnable
     function mint(address, uint256) external { }
 

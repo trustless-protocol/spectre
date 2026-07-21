@@ -117,52 +117,6 @@ library Header {
         return _innerHash(left, right);
     }
 
-    function merkleHash(bytes[] memory bytesArray) internal pure returns (bytes32) {
-        if (bytesArray.length == 0) {
-            return bytes32(0);
-        }
-
-        bytes32[] memory leafHashes = new bytes32[](bytesArray.length);
-        for (uint256 i = 0; i < bytesArray.length; i++) {
-            leafHashes[i] = _leafHash(bytesArray[i]);
-        }
-
-        return _merkleHashRange(leafHashes, 0, bytesArray.length);
-    }
-
-    function getSlice(
-        bytes[] memory bytesArray,
-        uint256 from,
-        uint256 to
-    )
-        internal
-        pure
-        returns (bytes[] memory result)
-    {
-        require(from <= to && to <= bytesArray.length, "Invalid range");
-
-        uint256 length = to - from;
-        result = new bytes[](length);
-
-        assembly {
-            mcopy(add(result, 0x20), add(add(bytesArray, 0x20), mul(from, 0x20)), mul(length, 0x20))
-        }
-    }
-
-    function nextPowerOfTwo(uint256 n) internal pure returns (uint256) {
-        if (n == 0) return 1;
-
-        // Handle the case where n is already a power of 2
-        if (n & (n - 1) == 0) return n;
-
-        // Find the next power of 2
-        uint256 power = 1;
-        while (power < n) {
-            power <<= 1;
-        }
-        return power;
-    }
-
     function _merkleHashRange(bytes32[] memory leafHashes, uint256 from, uint256 to) private pure returns (bytes32) {
         uint256 length = to - from;
         if (length == 1) {
@@ -196,7 +150,7 @@ library Header {
     function _innerHash(bytes32 left, bytes32 right) private pure returns (bytes32) {
         bytes memory prefixed = new bytes(65);
         prefixed[0] = bytes1(0x01);
-        assembly {
+        assembly ("memory-safe") {
             mstore(add(prefixed, 0x21), left)
             mstore(add(prefixed, 0x41), right)
         }
@@ -209,7 +163,7 @@ library Header {
             return dstOffset;
         }
 
-        assembly {
+        assembly ("memory-safe") {
             mcopy(add(add(out, 0x20), dstOffset), add(src, 0x20), len)
         }
 

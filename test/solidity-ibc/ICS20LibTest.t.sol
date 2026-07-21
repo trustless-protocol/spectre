@@ -7,11 +7,6 @@ import { Test } from "forge-std/Test.sol";
 import { ICS20Lib } from "../../contracts/utils/ICS20Lib.sol";
 
 contract ICS20LibTest is Test {
-    function test_hasHops() public pure {
-        assert(ICS20Lib.hasHops("transfer/client-0/uatom"));
-        assert(!ICS20Lib.hasHops("uatom"));
-    }
-
     // ---------------------------------------------------------------
     // Tests: hasDenomPrefix segment-anchored prefix check
     //

@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 pragma solidity ^0.8.28;
 
-// solhint-disable no-inline-assembly
-
 import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
 import { IICS20Errors } from "../errors/IICS20Errors.sol";
 import { IBCIdentifiers } from "./IBCIdentifiers.sol";
@@ -18,9 +16,6 @@ library ICS20Lib {
 
     /// @notice ICS20_ENCODING is the encoding string for ICS20 packet data.
     string internal constant ICS20_ENCODING = "application/x-solidity-abi";
-
-    /// @notice IBC_DENOM_PREFIX is the prefix for IBC denoms.
-    string internal constant IBC_DENOM_PREFIX = "ibc/";
 
     /// @notice DEFAULT_PORT_ID is the default port id for ICS20.
     string internal constant DEFAULT_PORT_ID = "transfer";
@@ -73,19 +68,5 @@ library ICS20Lib {
     /// @return true iff denomBz starts with the prefix AND has content after it
     function hasDenomPrefix(bytes memory denomBz, bytes memory prefix) internal pure returns (bool) {
         return denomBz.length > prefix.length && IBCIdentifiers.hasPrefix(denomBz, prefix);
-    }
-
-    /// @notice hasHops checks if a denom has any hops in it (i.e it has a "/" in it).
-    /// @param denom Denom to check
-    /// @return true if the denom has any hops in it
-    function hasHops(bytes memory denom) internal pure returns (bool) {
-        // check if the denom has any '/' in it
-        for (uint256 i = 0; i < denom.length; ++i) {
-            if (denom[i] == "/") {
-                return true;
-            }
-        }
-
-        return false;
     }
 }

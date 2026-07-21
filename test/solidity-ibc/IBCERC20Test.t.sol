@@ -57,6 +57,26 @@ contract IBCERC20Test is Test {
         assertEq(0, ibcERC20.totalSupply());
     }
 
+    function test_success_SetMetadata() public {
+        ibcERC20.setMetadata("Cosmos Hub Atom", "ATOM", 6);
+
+        assertEq(ibcERC20.name(), "Cosmos Hub Atom");
+        assertEq(ibcERC20.symbol(), "ATOM");
+        assertEq(ibcERC20.decimals(), 6);
+        assertEq(ibcERC20.fullDenomPath(), "full/denom/path/test");
+    }
+
+    function test_failure_SetMetadata() public {
+        address notICS20Transfer = makeAddr("notICS20Transfer");
+        vm.expectRevert(abi.encodeWithSelector(IIBCERC20Errors.IBCERC20Unauthorized.selector, notICS20Transfer));
+        vm.prank(notICS20Transfer);
+        ibcERC20.setMetadata("Cosmos Hub Atom", "ATOM", 6);
+
+        ibcERC20.setMetadata("Cosmos Hub Atom", "ATOM", 6);
+        vm.expectRevert(abi.encodeWithSelector(IIBCERC20Errors.IBCERC20MetadataAlreadySet.selector));
+        ibcERC20.setMetadata("Atom", "ATOM2", 18);
+    }
+
     function testFuzz_success_Mint(uint256 amount) public {
         ibcERC20.mint(address(escrow), amount);
         assertEq(ibcERC20.balanceOf(address(escrow)), amount);

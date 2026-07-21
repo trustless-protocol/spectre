@@ -49,6 +49,40 @@ Cosmos validators sign block (Ed25519 over CanonicalVote bytes)
 | Unbounded token minting | Rate limiting (RateLimitUpgradeable) |
 | Malicious upgrade | AccessManager RBAC + UUPS auth |
 
+### Permissionless Client Isolation
+
+`ICS02Client.addClient(counterpartyInfo, client)` is intentionally permissionless when the
+caller uses the auto-generated `client-N` identifier path. Anyone can register an arbitrary
+light-client contract, so the safety boundary is fund isolation rather than client admission.
+
+ICS20 escrows are keyed by `destinationClient`, and voucher denoms are namespaced as
+`transfer/<clientId>/<base-denom>`. A rogue client can only affect packets and escrows for
+that client identifier, so it can only touch funds users voluntarily route through that
+client. It cannot collide with custom client IDs because custom identifiers reject the
+reserved `client-` prefix.
+
+### Pause And Replay Semantics
+
+Pausing is asymmetric by design. `sendPacket` and `recvPacket` are paused because they admit
+new outbound commitments or inbound application execution. `ackPacket` and `timeoutPacket`
+remain callable while paused so in-flight packets can still settle, refund, and release
+funds.
+
+Replay handling is also deliberate. Replayed receives, acknowledgements, and timeouts still
+verify the relevant proof first, then emit `Noop` instead of reverting if the local packet
+state has already been consumed. This lets relayers batch duplicate work without one stale
+packet reverting an entire multicall.
+
+### Rate Limit Semantics
+
+Escrow rate limits are net-flow counters over a one-day decay period. Sends out of escrow add
+usage; deposits into escrow subtract usage. This allows legitimate inbound flow to restore
+outbound capacity, while an attacker must first back any extra outbound capacity with their
+own deposited tokens.
+
+Tokens with a rate limit of `0` are untracked. If a limit is enabled later, accounting starts
+from zero at that point; previous untracked transfers are not counted retroactively.
+
 ## Static Analysis
 
 ```bash
@@ -80,6 +114,7 @@ In permissionless mode (`roleManager = address(0)`), no account receives `DEFAUL
 - Each `groth16.Setup` run uses fresh randomness; the VK changes every regeneration, so per-bucket verifiers and the SignatureVerifier bucket registry must be redeployed atomically
 - Every address registered through `SignatureVerifier.setBucket` must be a gnark-compatible verifier that reverts on invalid proofs. `SignatureVerifier` treats a non-reverting `staticcall` as proof success.
 - The relayer's set of buckets (`prover.Buckets`) caps the maximum number of distinct active signers; chains with quorum sets larger than the biggest bucket cannot be served until a larger bucket is added and deployed
+- Outbound packet timeouts are capped at 1 day by `ICS26Router.MAX_TIMEOUT_DURATION`; operators should pick default transfer timeouts with expected relayer and counterparty outage windows in mind
 - `relayer/go.mod` replace directives point to local paths — verify before building
 - `Encode` and `Header` are internal libraries (inlined into contract bytecode), so no link step is needed when stamping the Go-binding bytecode. `contracts/compile.sh`'s `create_binding` still fails loudly if an unlinked library placeholder ever reappears in an artifact.
 - Pinned-set history grows monotonically — `updateConsensusState` appends one snapshot (`snapshots` + `snapshotHeights` in the ERC-7201 Store) per rotation and each rotation writes a new SSTORE2 blob; nothing is evicted. At the 24 h rotation cadence this is ~365 snapshots/year — modest, but the relayer / operator owns the SSTORE bill, and historical snapshots are load-bearing (misbehaviour proofs resolve against the set pinned at their trusted height). `updateApplicationState` (the frequent per-packet path) reads the pinned set without re-storing it; the relayer must submit `updateConsensusState` whenever the set rotates or subsequent `updateApplicationState` calls will fail the pinned-set check.

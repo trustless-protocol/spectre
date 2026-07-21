@@ -20,6 +20,7 @@ import { ICS24Host } from "../../contracts/utils/ICS24Host.sol";
 import { ICS20Lib } from "../../contracts/utils/ICS20Lib.sol";
 import { ERC1967Proxy } from "@openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import { RefImplIBCERC20 } from "./utils/RefImplIBCERC20.sol";
+import { IBCERC20 } from "../../contracts/utils/IBCERC20.sol";
 
 contract Integration2Test is Test {
     IbcImpl public ibcImplA;
@@ -234,6 +235,12 @@ contract Integration2Test is Test {
         IERC20 token = IERC20(ibcImplB.ics20Transfer().ibcERC20Contract(expDenomPath));
         assertTrue(address(token) != address(0), "IBCERC20 token not found");
         assertEq(token.balanceOf(receiver), amount, "receiver balance mismatch");
+
+        ibcImplB.ics20Transfer().setIBCERC20Metadata(expDenomPath, "Cosmos Hub Atom", "ATOM", 6);
+        IBCERC20 ibcERC20 = IBCERC20(address(token));
+        assertEq(ibcERC20.name(), "Cosmos Hub Atom");
+        assertEq(ibcERC20.symbol(), "ATOM");
+        assertEq(ibcERC20.decimals(), 6);
 
         // Check replay protection
         IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;

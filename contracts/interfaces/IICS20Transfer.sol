@@ -28,6 +28,21 @@ interface IICS20TransferAccessControlled {
     /// @param token The address of the custom ERC20 contract
     function setCustomERC20(string calldata denom, address token) external;
 
+    /// @notice Sets custom display metadata for an existing default IBCERC20 voucher
+    /// @dev This function requires the `ERC20_CUSTOMIZER_ROLE`
+    /// @dev The underlying IBCERC20 accepts metadata only once.
+    /// @param denom The IBC denom
+    /// @param name_ The custom token name
+    /// @param symbol_ The custom token symbol
+    /// @param decimals_ The custom token decimals
+    function setIBCERC20Metadata(
+        string calldata denom,
+        string calldata name_,
+        string calldata symbol_,
+        uint8 decimals_
+    )
+        external;
+
     /// @notice Upgrades the implementation of the escrow beacon contract
     /// @dev The caller must be the ICS26Router admin
     /// @param newEscrowLogic The address of the new escrow logic contract
