@@ -16,7 +16,7 @@ import (
 	"relayer/services"
 )
 
-// startCosmosToEthSource wires up one Cosmos→ETH source: its own Tendermint RPC,
+// buildCosmosToEthSource builds one Cosmos→ETH source: its own Tendermint RPC,
 // SpectreClient and router client id, sharing the passed-in prover and the ETH
 // beacon endpoint from the single eth_to_cosmos module. It returns the built
 // Services, its Context, and a cleanup func that stops the chain clients.
@@ -29,7 +29,7 @@ import (
 // allowEnvOverride honors the single-source env overrides (ICS26_CLIENT_ID,
 // COSMOS_WASM_CLIENT_ID, ROLE_MANAGER); it must be false when more than one
 // source is configured, or the overrides would apply to every source.
-func startCosmosToEthSource(
+func buildCosmosToEthSource(
 	logger *zap.Logger,
 	c2e cosmosToEthConfig,
 	e2c ethToCosmosConfig,

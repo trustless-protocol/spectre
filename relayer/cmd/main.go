@@ -1360,7 +1360,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 				}
 			}
 			for i := range sources {
-				svc, srcCtx, cleanup, err := startCosmosToEthSource(
+				svc, srcCtx, cleanup, err := buildCosmosToEthSource(
 					logger, sources[i], cfg.EthToCosmosConfig, cfg.BatchConfig, p, txHandler, allowEnvOverride,
 				)
 				if err != nil {
