@@ -59,10 +59,13 @@ type CosmosPacket struct {
 	Packet      *channeltypesv2.Packet
 	AckBytes    [][]byte
 	BlockNumber uint64
-	// Retries counts how many times this packet's batch failed to submit and
-	// was re-queued. Bounded by maxPacketRetries so a permanently-broken packet
-	// (corrupt proof, etc.) can't starve the queue forever (issue #80).
-	Retries int
+	// NotBefore, when set, holds the packet out of Check* flushes until the time
+	// passes — a re-queue backoff for a packet that is not yet relayable (source
+	// state lag / finality) so the loop polls it less aggressively than the batch
+	// period. Zero (the legacy default) means "ready now". waitAttempts drives the
+	// exponential growth of that backoff.
+	NotBefore    time.Time
+	waitAttempts int
 }
 
 type EthPacket struct {
@@ -70,8 +73,9 @@ type EthPacket struct {
 	Packet      *channeltypesv2.Packet
 	AckBytes    [][]byte
 	BlockNumber uint64
-	// Retries — see CosmosPacket.Retries.
-	Retries int
+	// NotBefore / waitAttempts — see CosmosPacket.
+	NotBefore    time.Time
+	waitAttempts int
 }
 
 type CosmosBatch struct {
@@ -91,25 +95,6 @@ type BatchBuilder struct {
 	ethPackets        []EthPacket
 	PendingTracker    *PendingPacketTracker
 	EthPendingTracker *PendingPacketTracker
-
-	// Dead-lettered packets: those that hit maxPacketRetries on PERMANENT
-	// (deterministic revert) failures. Kept rather than silently dropped so
-	// they can be inspected / surfaced as metrics later (issue #80 review).
-	// Guarded by the matching direction mutex.
-	deadLetterCosmos []CosmosPacket
-	deadLetterEth    []EthPacket
-}
-
-// DeadLetterCounts returns how many packets have been dead-lettered per
-// direction. Used for observability / alerting.
-func (b *BatchBuilder) DeadLetterCounts() (cosmos, eth int) {
-	b.cosmosMtx.Lock()
-	cosmos = len(b.deadLetterCosmos)
-	b.cosmosMtx.Unlock()
-	b.ethMtx.Lock()
-	eth = len(b.deadLetterEth)
-	b.ethMtx.Unlock()
-	return cosmos, eth
 }
 
 func NewBatchBuilder() *BatchBuilder {
@@ -142,123 +127,64 @@ func (b *BatchBuilder) AddEth(packet EthPacket) {
 		packet.Type, packet.Packet.Sequence, count)
 }
 
-func (b *BatchBuilder) ClearCosmos() {
-	b.cosmosMtx.Lock()
-	defer b.cosmosMtx.Unlock()
-	b.cosmosTimestamp = time.Now()
-	b.cosmosPackets = []CosmosPacket{}
+// Waiting-backoff bounds: a packet re-queued because it is not yet relayable
+// (source state / finality lag) is held out of flushes with an exponentially
+// growing delay, so a quick precondition (Cosmos AppHash H+2, ~1 block) clears
+// fast while a long one (ETH beacon finality, minutes) polls sparsely instead of
+// every batch period. Bounded so latency after the precondition clears stays low.
+const (
+	waitingBackoffBase = 3 * time.Second
+	waitingBackoffMax  = 15 * time.Second
+)
+
+// nextWaitingBackoff returns the delay for the given (already-incremented)
+// attempt count: base, 2×base, 4×base, … capped at max.
+func nextWaitingBackoff(attempt int) time.Duration {
+	d := waitingBackoffBase << (attempt - 1)
+	if d > waitingBackoffMax || d <= 0 { // <=0 guards shift overflow
+		d = waitingBackoffMax
+	}
+	return d
 }
 
-func (b *BatchBuilder) ClearEth() {
-	b.ethMtx.Lock()
-	defer b.ethMtx.Unlock()
-	b.ethTimestamp = time.Now()
-	b.ethPackets = []EthPacket{}
-}
-
-// maxPacketRetries caps how many times a packet that failed with a PERMANENT
-// (deterministic on-chain revert) error is re-queued before being dead-lettered.
-// Only permanent failures consume this budget — transient infrastructure
-// failures (RPC, beacon finality, build, broadcast timeout) re-queue without
-// counting, so a valid packet is never lost just because the infra was briefly
-// down (issue #80 review). The cap exists purely to stop a genuine poison packet
-// (corrupt proof, perpetually-reverting inner call) from blocking the queue.
-const maxPacketRetries = 5
-
-// RequeueCosmosTransient re-queues after an infrastructure failure without
-// touching the retry budget: the packet is valid and will succeed once the
-// transient cause clears.
-func (b *BatchBuilder) RequeueCosmosTransient(packets []CosmosPacket) {
-	b.requeueCosmos(packets, false)
-}
-
-// RequeueCosmosPermanent re-queues after a deterministic on-chain revert,
-// consuming the retry budget; once it exceeds maxPacketRetries the packet is
-// dead-lettered (kept for inspection + a loud log) rather than silently dropped.
-func (b *BatchBuilder) RequeueCosmosPermanent(packets []CosmosPacket) {
-	b.requeueCosmos(packets, true)
-}
-
-func (b *BatchBuilder) requeueCosmos(packets []CosmosPacket, permanent bool) {
+// RequeueCosmosWaiting re-queues a packet that is valid but NOT YET relayable
+// (its source state is not yet provable). It sets a growing NotBefore backoff so
+// the loop does not re-attempt (and re-log, and re-hit the RPC) every batch
+// period while waiting, then prepends the packet ahead of newer arrivals so a
+// re-queued packet is retried before newer work. This is the only re-queue path:
+// the adapter module drops permanently-failed packets at the source (the timeout
+// scanner refunds them), so there is no retry-budget / dead-letter classification.
+func (b *BatchBuilder) RequeueCosmosWaiting(packets []CosmosPacket) {
 	if len(packets) == 0 {
 		return
 	}
-	kept := make([]CosmosPacket, 0, len(packets))
-	var dead []CosmosPacket
-	for _, p := range packets {
-		if permanent {
-			p.Retries++
-			if p.Retries > maxPacketRetries {
-				log.Printf("[BatchBuilder][DEAD-LETTER] cosmos packet type=%s seq=%d dead-lettered after %d permanent failures",
-					p.Type, p.Packet.Sequence, maxPacketRetries)
-				dead = append(dead, p)
-				continue
-			}
-		}
-		kept = append(kept, p)
+	now := time.Now()
+	for i := range packets {
+		packets[i].waitAttempts++
+		packets[i].NotBefore = now.Add(nextWaitingBackoff(packets[i].waitAttempts))
 	}
 	b.cosmosMtx.Lock()
-	if len(dead) > 0 {
-		b.deadLetterCosmos = append(b.deadLetterCosmos, dead...)
-	}
-	if len(kept) > 0 {
-		b.cosmosPackets = append(kept, b.cosmosPackets...)
-	}
+	b.cosmosPackets = append(packets, b.cosmosPackets...)
 	remaining := len(b.cosmosPackets)
 	b.cosmosMtx.Unlock()
-	if len(kept) > 0 {
-		kind := "transient"
-		if permanent {
-			kind = "permanent"
-		}
-		log.Printf("[BatchBuilder] re-queued %d cosmos packet(s) (%s) for retry (queue now %d)", len(kept), kind, remaining)
-	}
+	log.Printf("[BatchBuilder] re-queued %d cosmos packet(s) (waiting) for retry (queue now %d)", len(packets), remaining)
 }
 
-// RequeueEthTransient — see RequeueCosmosTransient.
-func (b *BatchBuilder) RequeueEthTransient(packets []EthPacket) {
-	b.requeueEth(packets, false)
-}
-
-// RequeueEthPermanent — see RequeueCosmosPermanent.
-func (b *BatchBuilder) RequeueEthPermanent(packets []EthPacket) {
-	b.requeueEth(packets, true)
-}
-
-func (b *BatchBuilder) requeueEth(packets []EthPacket, permanent bool) {
+// RequeueEthWaiting — see RequeueCosmosWaiting.
+func (b *BatchBuilder) RequeueEthWaiting(packets []EthPacket) {
 	if len(packets) == 0 {
 		return
 	}
-	kept := make([]EthPacket, 0, len(packets))
-	var dead []EthPacket
-	for _, p := range packets {
-		if permanent {
-			p.Retries++
-			if p.Retries > maxPacketRetries {
-				log.Printf("[BatchBuilder][DEAD-LETTER] eth packet type=%s seq=%d dead-lettered after %d permanent failures",
-					p.Type, p.Packet.Sequence, maxPacketRetries)
-				dead = append(dead, p)
-				continue
-			}
-		}
-		kept = append(kept, p)
+	now := time.Now()
+	for i := range packets {
+		packets[i].waitAttempts++
+		packets[i].NotBefore = now.Add(nextWaitingBackoff(packets[i].waitAttempts))
 	}
 	b.ethMtx.Lock()
-	if len(dead) > 0 {
-		b.deadLetterEth = append(b.deadLetterEth, dead...)
-	}
-	if len(kept) > 0 {
-		b.ethPackets = append(kept, b.ethPackets...)
-	}
+	b.ethPackets = append(packets, b.ethPackets...)
 	remaining := len(b.ethPackets)
 	b.ethMtx.Unlock()
-	if len(kept) > 0 {
-		kind := "transient"
-		if permanent {
-			kind = "permanent"
-		}
-		log.Printf("[BatchBuilder] re-queued %d eth packet(s) (%s) for retry (queue now %d)", len(kept), kind, remaining)
-	}
+	log.Printf("[BatchBuilder] re-queued %d eth packet(s) (waiting) for retry (queue now %d)", len(packets), remaining)
 }
 
 func (b *BatchBuilder) CheckCosmos(config BatchConfig, ch chan<- CosmosBatch) {
@@ -269,13 +195,22 @@ func (b *BatchBuilder) CheckCosmos(config BatchConfig, ch chan<- CosmosBatch) {
 		return
 	}
 
+	// Hold back packets still under their waiting backoff (see CheckEth). Zero
+	// NotBefore (legacy default) is always ready, so legacy behavior is unchanged.
+	now := time.Now()
+	ready, waiting := partitionReadyCosmos(b.cosmosPackets, now)
+	if len(ready) == 0 {
+		b.cosmosMtx.Unlock()
+		return
+	}
+
 	flush := false
 	reason := ""
 
-	if len(b.cosmosPackets) >= int(config.BatchSize) {
+	if len(ready) >= int(config.BatchSize) {
 		flush = true
-		reason = fmt.Sprintf("size limit reached (%d >= %d)", len(b.cosmosPackets), config.BatchSize)
-	} else if time.Now().After(b.cosmosTimestamp.Add(config.BatchPeriods)) {
+		reason = fmt.Sprintf("size limit reached (%d >= %d)", len(ready), config.BatchSize)
+	} else if now.After(b.cosmosTimestamp.Add(config.BatchPeriods)) {
 		flush = true
 		reason = fmt.Sprintf("time limit reached (%v elapsed)", time.Since(b.cosmosTimestamp).Round(time.Millisecond))
 	}
@@ -289,19 +224,31 @@ func (b *BatchBuilder) CheckCosmos(config BatchConfig, ch chan<- CosmosBatch) {
 	// fixed-size chunks instead of one oversized multicall that would blow
 	// past the EVM 128KB tx size limit.
 	chunkSize := int(config.BatchSize)
-	if chunkSize <= 0 || chunkSize > len(b.cosmosPackets) {
-		chunkSize = len(b.cosmosPackets)
+	if chunkSize <= 0 || chunkSize > len(ready) {
+		chunkSize = len(ready)
 	}
 	chunk := make([]CosmosPacket, chunkSize)
-	copy(chunk, b.cosmosPackets[:chunkSize])
-	b.cosmosPackets = b.cosmosPackets[chunkSize:]
-	b.cosmosTimestamp = time.Now()
+	copy(chunk, ready[:chunkSize])
+	b.cosmosPackets = append(ready[chunkSize:], waiting...)
+	b.cosmosTimestamp = now
 	log.Printf("[BatchBuilder] Flushing cosmos batch: %d packets (%s, queue remaining: %d)",
 		len(chunk), reason, len(b.cosmosPackets))
 	batch := CosmosBatch{Packets: chunk}
 	b.cosmosMtx.Unlock()
 
 	ch <- batch
+}
+
+// partitionReadyCosmos — see partitionReadyEth.
+func partitionReadyCosmos(packets []CosmosPacket, now time.Time) (ready, waiting []CosmosPacket) {
+	for _, p := range packets {
+		if p.NotBefore.IsZero() || !now.Before(p.NotBefore) {
+			ready = append(ready, p)
+		} else {
+			waiting = append(waiting, p)
+		}
+	}
+	return ready, waiting
 }
 
 func (b *BatchBuilder) CheckEth(config BatchConfig, ch chan<- EthBatch) {
@@ -312,13 +259,24 @@ func (b *BatchBuilder) CheckEth(config BatchConfig, ch chan<- EthBatch) {
 		return
 	}
 
+	// Hold back packets still under their waiting backoff (not yet relayable): only
+	// the ready ones are eligible to flush. If none are ready this is a quiet wait
+	// — no flush, no log, no downstream RPC. Packets with a zero NotBefore (the
+	// legacy default) are always ready, so legacy behavior is unchanged.
+	now := time.Now()
+	ready, waiting := partitionReadyEth(b.ethPackets, now)
+	if len(ready) == 0 {
+		b.ethMtx.Unlock()
+		return
+	}
+
 	flush := false
 	reason := ""
 
-	if len(b.ethPackets) >= int(config.BatchSize) {
+	if len(ready) >= int(config.BatchSize) {
 		flush = true
-		reason = fmt.Sprintf("size limit reached (%d >= %d)", len(b.ethPackets), config.BatchSize)
-	} else if time.Now().After(b.ethTimestamp.Add(config.BatchPeriods)) {
+		reason = fmt.Sprintf("size limit reached (%d >= %d)", len(ready), config.BatchSize)
+	} else if now.After(b.ethTimestamp.Add(config.BatchPeriods)) {
 		flush = true
 		reason = fmt.Sprintf("time limit reached (%v elapsed)", time.Since(b.ethTimestamp).Round(time.Millisecond))
 	}
@@ -329,17 +287,32 @@ func (b *BatchBuilder) CheckEth(config BatchConfig, ch chan<- EthBatch) {
 	}
 
 	chunkSize := int(config.BatchSize)
-	if chunkSize <= 0 || chunkSize > len(b.ethPackets) {
-		chunkSize = len(b.ethPackets)
+	if chunkSize <= 0 || chunkSize > len(ready) {
+		chunkSize = len(ready)
 	}
 	chunk := make([]EthPacket, chunkSize)
-	copy(chunk, b.ethPackets[:chunkSize])
-	b.ethPackets = b.ethPackets[chunkSize:]
-	b.ethTimestamp = time.Now()
+	copy(chunk, ready[:chunkSize])
+	// Un-flushed ready packets plus the still-waiting ones stay queued.
+	b.ethPackets = append(ready[chunkSize:], waiting...)
+	b.ethTimestamp = now
 	log.Printf("[BatchBuilder] Flushing eth batch: %d packets (%s, queue remaining: %d)",
 		len(chunk), reason, len(b.ethPackets))
 	batch := EthBatch{Packets: chunk}
 	b.ethMtx.Unlock()
 
 	ch <- batch
+}
+
+// partitionReadyEth splits packets into those eligible to flush now (zero or
+// elapsed NotBefore) and those still under a waiting backoff, preserving order
+// within each group.
+func partitionReadyEth(packets []EthPacket, now time.Time) (ready, waiting []EthPacket) {
+	for _, p := range packets {
+		if p.NotBefore.IsZero() || !now.Before(p.NotBefore) {
+			ready = append(ready, p)
+		} else {
+			waiting = append(waiting, p)
+		}
+	}
+	return ready, waiting
 }

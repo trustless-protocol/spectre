@@ -133,7 +133,7 @@ func (w *Worker) RefreshCosmosClient(
 	proofType string,
 	trustLevel string,
 ) (*relayerclient.LightBlock, error) {
-	onChainTrusted, err := fetchOnChainTrustedHeight(ctx)
+	onChainTrusted, err := FetchOnChainTrustedHeight(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("[RefreshCosmosClient] fetch on-chain height: %w", err)
 	}
@@ -169,10 +169,10 @@ func getOnChainPinnedValidatorsHash(ctx Context) ([32]byte, error) {
 	return spectre.GetPinnedValidatorsHash(nil)
 }
 
-// fetchOnChainTrustedHeight reads the ICS07 client state on ETH and returns its
+// FetchOnChainTrustedHeight reads the ICS07 client state on ETH and returns its
 // latest trusted revision height. This is a cheap eth_call relative to the
 // Groth16 proof, so it's always worth doing before committing to proof gen.
-func fetchOnChainTrustedHeight(ctx Context) (int64, error) {
+func FetchOnChainTrustedHeight(ctx Context) (int64, error) {
 	onChainClientState, err := fetchOnChainClientState(ctx)
 	if err != nil {
 		return 0, err
@@ -389,7 +389,7 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	// chain state, causing redundant proofs for a range already on-chain
 	// (issue #76 #2). The on-chain height always wins because only it is
 	// guaranteed to identify a stored consensus state.
-	onChainTrusted, err := fetchOnChainTrustedHeight(ctx)
+	onChainTrusted, err := FetchOnChainTrustedHeight(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -792,7 +792,7 @@ func (w *Worker) UpdateEthClient(ctx Context) error {
 		return err
 	}
 	if len(result.Msgs) > 0 {
-		w.waitForCosmosCatchUp(ctx, result.EthClientState, result.SigSlot)
+		w.WaitForCosmosCatchUp(ctx, result.EthClientState, result.SigSlot)
 		if err := w.TxHandler.SendCosmosTxBatch(ctx, result.Msgs); err != nil {
 			return err
 		}
@@ -876,7 +876,7 @@ func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, 
 	}, nil
 }
 
-func (w *Worker) waitForCosmosCatchUp(ctx Context, ethClientState *relayerclient.EthereumClientState, sigSlot uint64) {
+func (w *Worker) WaitForCosmosCatchUp(ctx Context, ethClientState *relayerclient.EthereumClientState, sigSlot uint64) {
 	requiredSlot := sigSlot + cosmosCatchUpSafetySlots
 	for range 60 {
 		status, err := ctx.CosmosClient().Status(context.Background())

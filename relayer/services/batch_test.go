@@ -1,7 +1,6 @@
 package services
 
 import (
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -85,93 +84,6 @@ func TestAddEth(t *testing.T) {
 	}
 	if bb.ethPackets[0].Type != EthSend {
 		t.Fatalf("expected EthSend, got %d", bb.ethPackets[0].Type)
-	}
-}
-
-func TestShouldTimeoutEthSend(t *testing.T) {
-	expired := makeEthPacket(1, EthSend)
-	expired.Packet.TimeoutTimestamp = uint64(time.Now().Add(-time.Second).Unix())
-
-	if !shouldTimeoutEthSend(expired, errors.New("receive packet verification failed: timeout elapsed")) {
-		t.Fatal("expected timeout fallback for expired packet with timeout error")
-	}
-	if !shouldTimeoutEthSend(expired, &CosmosTxFailure{Stage: "DeliverTx", Log: "execute wasm contract failed: IBCInvalidTimeoutTimestamp"}) {
-		t.Fatal("expected timeout classification from typed Cosmos tx failure log")
-	}
-	selector := evmErrorSelector("IBCInvalidTimeoutTimestamp(uint256,uint256)")
-	if !shouldTimeoutEthSend(expired, &CosmosTxFailure{Stage: "DeliverTx", Data: selector[:]}) {
-		t.Fatal("expected timeout classification from typed Cosmos tx failure selector data")
-	}
-
-	active := makeEthPacket(2, EthSend)
-	active.Packet.TimeoutTimestamp = uint64(time.Now().Add(time.Hour).Unix())
-	if shouldTimeoutEthSend(active, errors.New("receive packet verification failed: timeout elapsed")) {
-		t.Fatal("did not expect timeout fallback before timeout timestamp")
-	}
-
-	if shouldTimeoutEthSend(expired, errors.New("unrelated submit failure")) {
-		t.Fatal("did not expect timeout fallback for unrelated errors")
-	}
-}
-
-func TestSplitEthPermanentFailures_RoutesExpiredTimeoutSend(t *testing.T) {
-	expiredSend := makeEthPacket(1, EthSend)
-	expiredSend.Packet.SourceClient = "src-0"
-	expiredSend.Packet.TimeoutTimestamp = uint64(time.Now().Add(-time.Second).Unix())
-
-	activeSend := makeEthPacket(2, EthSend)
-	activeSend.Packet.SourceClient = "src-0"
-	activeSend.Packet.TimeoutTimestamp = uint64(time.Now().Add(time.Hour).Unix())
-
-	writeAck := makeEthPacket(3, EthWriteAck)
-	writeAck.Packet.SourceClient = "src-0"
-	writeAck.Packet.TimeoutTimestamp = expiredSend.Packet.TimeoutTimestamp
-
-	selector := evmErrorSelector("IBCInvalidTimeoutTimestamp(uint256,uint256)")
-	timeoutPackets, permanentPackets := splitEthPermanentFailures([]ethBatchMsg{
-		{label: "UpdateClient"},
-		{label: "EthSend", sequence: 1, origin: &expiredSend},
-		{label: "EthSend", sequence: 2, origin: &activeSend},
-		{label: "EthWriteAck", sequence: 3, origin: &writeAck},
-	}, &CosmosTxFailure{Stage: "DeliverTx", Data: selector[:], Err: ErrPermanentRelayFailure})
-
-	if len(timeoutPackets) != 1 || timeoutPackets[0].Packet.Sequence != 1 {
-		t.Fatalf("expected only expired send routed to timeout, got %#v", timeoutPackets)
-	}
-	if len(permanentPackets) != 2 {
-		t.Fatalf("expected active send and write ack to stay permanent, got %d", len(permanentPackets))
-	}
-	if permanentPackets[0].Packet.Sequence != 2 || permanentPackets[1].Packet.Sequence != 3 {
-		t.Fatalf("unexpected permanent packets: %#v", permanentPackets)
-	}
-}
-
-func TestSplitEthPermanentFailures_UnrelatedErrorStaysPermanent(t *testing.T) {
-	expiredSend := makeEthPacket(1, EthSend)
-	expiredSend.Packet.TimeoutTimestamp = uint64(time.Now().Add(-time.Second).Unix())
-
-	timeoutPackets, permanentPackets := splitEthPermanentFailures([]ethBatchMsg{
-		{label: "EthSend", sequence: 1, origin: &expiredSend},
-	}, &CosmosTxFailure{Stage: "DeliverTx", Log: "unrelated wasm failure", Err: ErrPermanentRelayFailure})
-
-	if len(timeoutPackets) != 0 {
-		t.Fatalf("expected no timeout packets, got %#v", timeoutPackets)
-	}
-	if len(permanentPackets) != 1 || permanentPackets[0].Packet.Sequence != 1 {
-		t.Fatalf("expected expired send to stay permanent, got %#v", permanentPackets)
-	}
-}
-
-func TestCosmosPacketExpiredOnEth(t *testing.T) {
-	packet := makeCosmosPacket(1, CosmosSend)
-	packet.Packet.TimeoutTimestamp = 100
-
-	if !cosmosPacketExpiredOnEth(packet, 100) {
-		t.Fatal("expected packet to be expired when ETH timestamp reaches timeout")
-	}
-
-	if cosmosPacketExpiredOnEth(packet, 99) {
-		t.Fatal("did not expect packet to be expired before timeout")
 	}
 }
 
@@ -284,38 +196,6 @@ func TestAddEthConcurrent(t *testing.T) {
 
 	if len(bb.ethPackets) != total {
 		t.Fatalf("expected %d eth packets, got %d", total, len(bb.ethPackets))
-	}
-}
-
-func TestClearCosmos(t *testing.T) {
-	bb := NewBatchBuilder()
-	for i := 0; i < 5; i++ {
-		bb.AddCosmos(makeCosmosPacket(uint64(i+1), CosmosSend))
-	}
-
-	bb.ClearCosmos()
-
-	bb.cosmosMtx.Lock()
-	defer bb.cosmosMtx.Unlock()
-
-	if len(bb.cosmosPackets) != 0 {
-		t.Fatalf("expected 0 cosmos packets after clear, got %d", len(bb.cosmosPackets))
-	}
-}
-
-func TestClearEth(t *testing.T) {
-	bb := NewBatchBuilder()
-	for i := 0; i < 5; i++ {
-		bb.AddEth(makeEthPacket(uint64(i+1), EthSend))
-	}
-
-	bb.ClearEth()
-
-	bb.ethMtx.Lock()
-	defer bb.ethMtx.Unlock()
-
-	if len(bb.ethPackets) != 0 {
-		t.Fatalf("expected 0 eth packets after clear, got %d", len(bb.ethPackets))
 	}
 }
 

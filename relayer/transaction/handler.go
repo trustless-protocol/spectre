@@ -1060,15 +1060,22 @@ func fillEmptyCosmosSigner(msg sdk.Msg, signer string) {
 }
 
 // isCosmosDuplicatePacketError returns true when the ABCI response indicates the
-// packet was already processed. Matches on codespace "channelv2" + code 11 or 12:
+// packet(s) were already processed, so retrying the identical tx can never
+// succeed and it is safe to drop. Matches two deterministic duplicate signals:
 //
-//	11 = ErrAcknowledgementExists (ack already written)
-//	12 = ErrNoOpMsg (canonical duplicate-delivery signal for recv/timeout/ack)
+//	codespace "channelv2", code 11 = ErrAcknowledgementExists (ack already written)
+//	codespace "channelv2", code 12 = ErrNoOpMsg (duplicate-delivery signal)
+//	codespace "channel",   code 22 = ErrRedundantTx — the RedundantRelayDecorator
+//	  ante handler rejects a tx whose packet messages are ALL already processed
+//	  (raised at CheckTx). Without dropping this the relayer re-queues the tx and
+//	  re-submits it forever, each retry re-running a full client update — draining
+//	  gas — even though it can never stop being redundant.
 //
 // Substring matching on log messages is avoided because "commitment not found" can
 // mean a packet was never sent — not just a duplicate — and would silently drop it.
 func isCosmosDuplicatePacketError(codespace string, code uint32) bool {
-	return codespace == "channelv2" && (code == 11 || code == 12)
+	return (codespace == "channelv2" && (code == 11 || code == 12)) ||
+		(codespace == "channel" && code == 22)
 }
 
 // simulateMsgs builds a transaction with the given messages, signs it with an empty signature, and simulates its gas consumption.

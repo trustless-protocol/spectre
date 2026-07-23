@@ -70,7 +70,7 @@ Secrets (private keys, prover paths) stay in `.env` file.
 ### Error Handling
 
 - Relayer uses `log.Fatal` for unrecoverable errors (process exits)
-- `start` command uses batch processing via `services.StartLoop()` with size/time thresholds
+- `start` command uses batch processing via the chain-adapter engine `runAdapterEngine` (`relayer/cmd/run_adapters.go`, one `relay.Module` per direction) with size/time thresholds
 - Per-packet errors logged without crashing the relay loop
 - Timeout checking: packets past their timeout are skipped before submission
 - Transaction handlers retry with re-queried account sequence on nonce errors

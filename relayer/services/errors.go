@@ -8,14 +8,15 @@ import (
 // ErrPermanentRelayFailure marks a relay failure as deterministic / on-chain:
 // the tx was actually included and reverted (ETH receipt.Status==0, or a Cosmos
 // DeliverTx non-zero code). Such a failure will recur on retry with the same
-// inputs, so the packet's retry budget should be consumed and it should
-// eventually be dead-lettered.
+// inputs, so the adapter module DROPS the packet (via chain.Permanent) instead
+// of re-queueing it forever — a genuinely stuck packet is refunded by the
+// timeout scanner once it expires undelivered.
 //
 // Infrastructure failures (RPC down, beacon finality not yet reached, light-
 // client build failure, broadcast timeout, account-sequence mismatch at CheckTx)
-// are NOT wrapped with this — they are transient and must be re-queued without
-// consuming the budget, so a valid packet is never dropped just because the
-// infra was briefly unavailable (issue #80 review).
+// are NOT wrapped with this — they are transient and must be re-queued (with a
+// waiting backoff), so a valid packet is never dropped just because the infra
+// was briefly unavailable (issue #80 review).
 //
 // Tx handlers (relayer/transaction) wrap their revert errors with this via
 // fmt.Errorf("...: %w", ErrPermanentRelayFailure); callers classify with
@@ -25,7 +26,7 @@ var ErrPermanentRelayFailure = errors.New("permanent relay failure (on-chain rev
 // ErrValidatorCacheRace marks an updateClient revert caused by the validator
 // cache changing after the relayer built a cached/delta update. Rebuilding the
 // update from fresh on-chain state, or retrying with the full validator set, can
-// make progress, so packet retry budgets should not be consumed.
+// make progress, so it is treated as transient (re-queued), not permanent.
 var ErrValidatorCacheRace = errors.New("validator cache race")
 
 // CosmosTxFailure preserves ABCI failure metadata across package boundaries so

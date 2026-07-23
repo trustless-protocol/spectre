@@ -119,15 +119,18 @@ gen.
 4. Go Relayer detects SendPacket via Ethereum log subscription (subscriber/)
 5. ethProofHeight: poll Beacon API GetFinalityUpdate (≤ 60 × 10 s) until the
    event's exec-block is finalised
-6. UpdateEthClient: relay sync-committee updates into 08-wasm on Cosmos so
+6. Advance the 08-wasm client: the `beacon` builder gathers the sync-committee
+   update and the `cosmos` destination submits it (WaitForCosmosCatchUp) so
    LatestExecutionBlockNumber catches up to the event
 7. Fetch ETH storage proof at the finalised block via
    client.GetEthMembershipProof(ICS26_STORAGE_SLOT, clientID||1||seq)
 8. Broadcast MsgRecvPacket{packet, proof, height={0, LatestSlot}, signer}
    on Cosmos; 08-wasm verifies membership, then ICS Core dispatches to the
    destination app (mint / unlock)
-9. If the packet times out before step 8 lands, timeoutEthSend bounces back
-   through SpectreClient to submit MsgTimeoutPacket on ETH
+9. If the packet times out before step 8 lands, the ETH-timeout scanner
+   (`scanForEthTimeouts`, 30 s tick) submits MsgTimeoutPacket on ETH; a send
+   already past its timeout is classified permanent at the source and dropped
+   from the relay path so the scanner owns the refund
 ```
 
 ## Request Flow: Cosmos-originated Timeout (background)
@@ -149,35 +152,35 @@ gen.
 
 ## Relayer Concurrency Model
 
-`StartLoop` (`relayer/services/main.go`) drains the two batch channels on
-**independent goroutines** — one for Cosmos→ETH (`handleCosmos`), one for
-ETH→Cosmos (`handleEth`) — so a slow direction (proof gen, beacon-finality
-wait) never stalls the other.
+`runAdapterEngine` (`relayer/cmd/run_adapters.go`) runs the two directions as two
+`relay.Module` instances (`relayer/relay/module.go`) on **independent goroutines**
+— one for Cosmos→ETH, one for ETH→Cosmos — sharing a child context so the first
+fatal error stops both. A slow direction (proof gen, finality wait) never stalls
+the other. One engine runs per `cosmos_to_eth` source; the shared prover,
+`TransactionHandler`, and ETH endpoint are reused, with ETH events partitioned by
+the per-source router client id. (This replaced the monolithic `StartLoop` +
+`handleCosmos`/`handleEth`, removed after the cutover.)
 
-The two handlers touch disjoint mutable state:
+Each module owns a single append-only cursor:
 
-| State                          | Owner              |
-| ------------------------------ | ------------------ |
-| `ctx.latestEthTimestamp`       | handleCosmos       |
-| `ctx.latestCosmosTimestamp`    | handleEth          |
-| `Services.lastCosmosAppHashHeight` | handleCosmos   |
-| `Services.lastFinalizedExecBlock`  | handleEth      |
+| State | Owner |
+| ----- | ----- |
+| `Module.lastHeight` — highest source height whose `ClientUpdate` was submitted | the module for that direction |
 
-`Timestamp.Snapshot/Set/SetTime` accessors guard the shared
-`latestEth/CosmosTimestamp` fields against the routine + timeout-scanner
-goroutines. The two `Services.last*` memoization fields are single-writer
-per goroutine and need no locking.
+`lastHeight` is guarded by the module's mutex (touched by the event and refresh
+goroutines) and advances only after a successful client update — never on failure.
+The legacy `latestEth/CosmosTimestamp` and `Services.last*` memoization fields are
+gone; refresh scheduling now reads on-chain state directly (`Destination.ClientExpiresAt`
+for expiry, `PinnedSetRotationDueIn` for the guaranteed pinned-set rotation).
 
-Two per-chunk waits are memoized so chunked flushes don't repeat
-identical setup work:
+Instead of blocking per-chunk waits, the module gates on `Source.RelayableHeight`
+— a non-blocking value (Cosmos `latest-2` for the AppHash H+2 lag; ETH the finalized
+execution block). A packet above it is re-queued with a growing waiting backoff
+(3→15 s) rather than blocking a goroutine on an RPC poll (this replaced
+`waitCosmosAppHash` / `waitBeaconFinality`).
 
-- `waitCosmosAppHash(targetHeight)` polls Cosmos height until it covers
-  `maxPacketHeight + 2` (so the packet commitment is in the queried
-  AppHash). Memoizes the highest confirmed height; later chunks of the
-  same source block return without an RPC.
-- `waitBeaconFinality(eventBlock)` memoizes the highest finalized exec
-  block; subsequent chunks whose event block is already covered return
-  immediately without re-pinging the beacon API.
+Serialization of chain writes is unchanged: all ETH sends go through the nonce
+block under `h.mu`; all Cosmos sends through `SendCosmosTxBatch` under `cosmosMu`.
 
 ## Request Flow: ACK Relay (Ethereum → Cosmos)
 

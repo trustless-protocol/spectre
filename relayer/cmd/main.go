@@ -1375,7 +1375,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 				go func(svc *services.Services, srcCtx services.Context, cleanup func()) {
 					defer wg.Done()
 					defer cleanup()
-					if err := svc.StartLoop(srcCtx); err != nil {
+					// Chain-adapter RelayModule engine — the sole relay engine since
+					// the legacy services.StartLoop was removed after the cutover.
+					if err := runAdapterEngine(runCtx, svc, srcCtx); err != nil {
 						loopErrCh <- fmt.Errorf("cosmos_to_eth source %q: %w", srcCtx.CosmosRouterClientID(), err)
 					}
 				}(svc, srcCtx, cleanup)

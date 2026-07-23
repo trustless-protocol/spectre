@@ -1,0 +1,115 @@
+package services
+
+import (
+	"fmt"
+	"time"
+
+	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+
+	client "relayer/client"
+)
+
+// This file exposes the timeout-recovery surface (previously driven internally by
+// the now-removed StartLoop) so the chain-adapter relay path (package relay) can
+// reuse it verbatim instead of reimplementing the (subtle) scanners and
+// pending-tracker bookkeeping. These are thin wrappers over the unexported
+// originals — no logic is duplicated.
+
+// ScanCosmosTimeouts detects Cosmos-origin packets that expired on ETH without a
+// receipt and relays their MsgTimeout back to Cosmos. Safe to call periodically;
+// it purges/prunes the pending tracker and recovers from panics internally.
+func (s *Services) ScanCosmosTimeouts(ctx Context) {
+	s.scanForCosmosTimeouts(ctx)
+}
+
+// ScanEthTimeouts detects ETH-origin packets that expired on Cosmos without a
+// receipt and relays their MsgTimeout back to ETH. Same periodic-call contract as
+// ScanCosmosTimeouts.
+func (s *Services) ScanEthTimeouts(ctx Context) {
+	s.scanForEthTimeouts(ctx)
+}
+
+// TrackCosmosPending records a Cosmos-origin packet just recv-relayed to ETH so
+// ScanCosmosTimeouts can later refund it if it expires undelivered. Mirrors the
+// PendingTracker.Add that handleCosmos performs in the StartLoop path.
+func (s *Services) TrackCosmosPending(packet channeltypesv2.Packet, blockNumber uint64) {
+	s.BatchBuilder.PendingTracker.Add(packet, blockNumber)
+}
+
+// UntrackCosmosPending removes a Cosmos-origin packet from the pending tracker
+// once it has been successfully received on ETH — it can no longer time out, so
+// the timeout scanner need not keep querying its receipt. Mirrors the
+// PendingTracker.Remove-on-recv that handleCosmos performs in the StartLoop path.
+func (s *Services) UntrackCosmosPending(packet channeltypesv2.Packet) {
+	s.BatchBuilder.PendingTracker.Remove(packet.SourceClient, packet.Sequence)
+}
+
+// Worker exposes the shared Worker (TxHandler + Prover) so the chain adapters —
+// which wrap the existing Build/Send pipeline — can be constructed with the same
+// worker the Services instance uses. Read-only handle; the adapters do not mutate
+// it.
+func (s *Services) Worker() *Worker { return s.worker }
+
+// CosmosConfig exposes the resolved Cosmos-source config (ProofType, TrustLevel,
+// BatchConfig, …) so the adapter wiring can build the groth16 client-update
+// builder with the same parameters StartLoop uses.
+func (s *Services) CosmosConfig() Config { return s.cosmosConfig }
+
+// RotatePinnedSet force-rotates the on-chain SpectreClient's pinned
+// validator set (RefreshCosmosClient with forceRotation=true), regardless of how
+// much overlap remains. This is the guaranteed rotation the legacy
+// StartLoop routine ran on a fixed cadence: the per-packet and expiry-driven
+// refresh paths only rotate when overlap has already decayed to the threshold, so
+// during a quiet period (no packet traffic) the pinned set could otherwise decay
+// below the 2/3 quorum needed to update OR rotate the client — bricking it. This
+// call keeps the pinned set fresh independent of packet flow. Side-effect-free on
+// the adapter's cursors (the expiry is driven by ClientExpiresAt, not a seeded
+// timestamp), so it only submits the rotation tx.
+func (s *Services) RotatePinnedSet(ctx Context) error {
+	_, err := s.worker.RefreshCosmosClient(ctx, s.cosmosConfig.ProofType, s.cosmosConfig.TrustLevel)
+	return err
+}
+
+// PinnedSetRotationInterval derives the force-rotation cadence from the on-chain
+// trusting period exactly as the legacy routine did (min of the configured
+// refresh interval and trustingPeriod minus a safety margin), so the pinned set
+// is refreshed well within the window where it stays above quorum.
+func (s *Services) PinnedSetRotationInterval(ctx Context) (time.Duration, error) {
+	clientState, err := fetchOnChainClientState(ctx)
+	if err != nil {
+		return 0, err
+	}
+	trustingPeriod := time.Duration(clientState.TrustingPeriod) * time.Second
+	return deriveCosmosRefreshInterval(s.cosmosConfig, trustingPeriod)
+}
+
+// PinnedSetRotationDueIn reports how long until the next pinned-set rotation is
+// due, based on the ON-CHAIN trusted timestamp (not process uptime): it is the
+// remaining time until trustedTime + interval, clamped to >= 0. A client that is
+// already at or past its rotation interval at startup returns 0 (rotate now),
+// mirroring the legacy seedCosmosClientFreshness behavior — so a relayer restart
+// near the rotation deadline does not wait a full fresh interval before the first
+// rotation, which could let the pinned set decay below quorum.
+func (s *Services) PinnedSetRotationDueIn(ctx Context) (time.Duration, error) {
+	interval, err := s.PinnedSetRotationInterval(ctx)
+	if err != nil {
+		return 0, err
+	}
+	trustedHeight, err := FetchOnChainTrustedHeight(ctx)
+	if err != nil {
+		return 0, err
+	}
+	lightBlock, err := client.GetLightBlock(ctx.CosmosClient(), trustedHeight)
+	if err != nil {
+		return 0, err
+	}
+	trustedTime := lightBlock.SignedHeader.Header.Time
+	if trustedTime.IsZero() {
+		return 0, fmt.Errorf("zero trusted light block timestamp at height %d", trustedHeight)
+	}
+	due := time.Until(trustedTime.Add(interval))
+	if due < 0 {
+		return 0, nil
+	}
+	return due, nil
+}

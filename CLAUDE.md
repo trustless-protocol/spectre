@@ -90,15 +90,17 @@ ZK flow: top-N validator Ed25519 sigs (≥⅔ voting power) → padded to neares
 ```
 relayer/
 ├── bindings/       # GENERATED Go bindings — never hand-edit
+├── chain/          # multi-chain adapter contract (Source/Destination/ClientUpdateBuilder) + cosmos/ evm/ l2rollup/ adapters + codec/ (opaque-payload codecs) — see chain/README.md
+├── relay/          # generic RelayModule that drives one source→dest path via the chain adapters (the cutover engine)
 ├── client/         # Tendermint + Ethereum RPC/Beacon API clients
 ├── prover/         # Bucketed Ed25519 batch prover
 │   ├── circuit.go / hash_witness.go / dummy.go / extractor.go / prover.go / buckets.go
 │   └── cmd/        # One-shot circuit setup tool (see Relayer CLI)
-├── services/       # StartLoop goroutines, batch builder, PendingPacketTracker, 24h routine
+├── services/       # batch builder, PendingPacketTracker, timeout scanners, adapter_api.go surface consumed by the adapters (StartLoop removed at cutover; the adapter engine drives relay)
 ├── subscriber/     # Cosmos WebSocket + ETH event listeners (both sides have gap recovery — keep it that way)
 ├── transaction/    # ETH tx (nonce under h.mu) + Cosmos tx (account sequence under cosmosMu)
 ├── utils/          # IBC path helpers, byte utils
-└── cmd/main.go     # CLI: start, create-clients{,-cosmos,-eth}, update-client, genesis, fixtures
+└── cmd/main.go     # CLI: start (runAdapterEngine per source), create-clients{,-cosmos,-eth}, update-client, genesis, fixtures
 ```
 
 `packages/go-abigen/` — GENERATED bindings consumed by the relayer (`spectreclient`, `ics26router`, `ics20transfer`, `ibcerc20`, `relayerhelper`).

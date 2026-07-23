@@ -14,7 +14,6 @@ import (
 
 	"relayer/prover"
 	"relayer/services"
-	"relayer/subscriber"
 )
 
 // startCosmosToEthSource wires up one Cosmos→ETH source: its own Tendermint RPC,
@@ -22,9 +21,10 @@ import (
 // beacon endpoint from the single eth_to_cosmos module. It returns the built
 // Services, its Context, and a cleanup func that stops the chain clients.
 //
-// The caller runs svc.StartLoop(ctx) — which blocks until an error or shutdown —
-// on its own goroutine, so N sources relay independently. Their ETH event streams don't cross-feed:
-// SubscribeEth filters ICS26Router logs by the per-source router client id.
+// The caller runs runAdapterEngine(ctx, svc, ctx) — which blocks until an error
+// or shutdown — on its own goroutine, so N sources relay independently. Their ETH
+// event streams don't cross-feed: SubscribeEth filters ICS26Router logs by the
+// per-source router client id.
 //
 // allowEnvOverride honors the single-source env overrides (ICS26_CLIENT_ID,
 // COSMOS_WASM_CLIENT_ID, ROLE_MANAGER); it must be false when more than one
@@ -115,13 +115,7 @@ func startCosmosToEthSource(
 	logger.Sugar().Infof("source %q: subscribing to events (spectre_client=%s tm=%s)",
 		cosmosRouterClientID, c2e.SpectreClient, c2e.TmRpcUrl)
 
-	svc := services.New(
-		subscriber.NewSubscriber(),
-		txHandler,
-		p,
-		cosmosConfig,
-		cosmosConfig,
-	)
+	svc := services.New(txHandler, p, cosmosConfig)
 	return svc, ctx, cleanup, nil
 }
 
