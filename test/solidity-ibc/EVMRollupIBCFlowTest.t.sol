@@ -344,7 +344,6 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
             trustingPeriod: 14 days,
             unbondingPeriod: 21 days,
             isFrozen: false,
-            zkAlgorithm: IICS07TendermintMsgs.SupportedZkAlgorithm.Groth16,
             clockDrift: 1800
         });
     }
