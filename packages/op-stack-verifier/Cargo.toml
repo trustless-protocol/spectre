@@ -1,0 +1,12 @@
+[package]
+name = "op-stack-verifier"
+description = "Shared optimistic OP Stack verifier for L2 ICS-08 Wasm clients"
+version = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+l2-client = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde"] }
+schemars = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }

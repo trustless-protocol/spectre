@@ -1,0 +1,14 @@
+[package]
+name = "op-verifier"
+description = "OP verification configuration and proof primitives for the L2 Wasm client"
+version = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+l2-client = { workspace = true }
+op-stack-verifier = { workspace = true }
+alloy-primitives = { workspace = true, features = ["serde"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

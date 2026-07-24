@@ -1,0 +1,17 @@
+{
+  "common": {
+    "l1_chain_id": 11155111,
+    "l2_chain_id": 421614,
+    "ethereum_client": {
+      "client_id": "08-wasm-ethereum",
+      "wasm_checksum": []
+    },
+    "l2_router": "0x645280885749dC97Ea461DE280Eb3273C91D36Df",
+    "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
+    "rollup_version": "arbitrum-bold-v2"
+  },
+  "rollup": "0xd80810638dbdf9081b72c1b33c65375e807281c8",
+  "assertions_mapping_slot": "0x0000000000000000000000000000000000000000000000000000000000000076",
+  "assertion_status_offset": 25,
+  "bold_version": "nitro-contracts-bold-v2"
+}

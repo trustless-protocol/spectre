@@ -13,3 +13,6 @@ pub mod trie_db;
 pub mod types;
 
 pub use error::TrieDBError;
+
+#[cfg(test)]
+mod trie_db_tests;

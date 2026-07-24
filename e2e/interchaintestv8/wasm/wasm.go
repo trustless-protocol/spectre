@@ -11,6 +11,9 @@ const (
 	basePath                   = "e2e/interchaintestv8/wasm/"
 	dummyLightClientFileName   = "cw_dummy_light_client.wasm.gz"
 	wasmEthLightClientFileName = "cw_ics08_wasm_eth.wasm.gz"
+	wasmArbitrumClientFileName = "cw_ics08_wasm_arbitrum.wasm.gz"
+	wasmBaseClientFileName     = "cw_ics08_wasm_base.wasm.gz"
+	wasmOpClientFileName       = "cw_ics08_wasm_op.wasm.gz"
 )
 
 func GetWasmDummyLightClient() (*os.File, error) {
@@ -19,6 +22,21 @@ func GetWasmDummyLightClient() (*os.File, error) {
 
 func GetLocalWasmEthLightClient() (*os.File, error) {
 	return os.Open(basePath + wasmEthLightClientFileName)
+}
+
+// GetLocalWasmArbitrumClient opens the locally optimized Arbitrum client artifact.
+func GetLocalWasmArbitrumClient() (*os.File, error) {
+	return os.Open(basePath + wasmArbitrumClientFileName)
+}
+
+// GetLocalWasmBaseClient opens the locally optimized Base client artifact.
+func GetLocalWasmBaseClient() (*os.File, error) {
+	return os.Open(basePath + wasmBaseClientFileName)
+}
+
+// GetLocalWasmOpClient opens the locally optimized OP client artifact.
+func GetLocalWasmOpClient() (*os.File, error) {
+	return os.Open(basePath + wasmOpClientFileName)
 }
 
 func DownloadWasmEthLightClientRelease(release Release) (*os.File, error) {

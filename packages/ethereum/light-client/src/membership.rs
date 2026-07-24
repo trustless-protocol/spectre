@@ -166,7 +166,57 @@ mod test {
 
     use prost::Message;
 
-    use super::{verify_membership, verify_non_membership};
+    use ethereum_trie_db::trie_db::verify_account;
+
+    use super::{
+        verify_account_storage_root, verify_membership, verify_non_membership, MembershipProof,
+    };
+
+    #[test]
+    fn account_leaf_matches_legacy_storage_root_verification() {
+        let fixture: fixtures::StepsFixture =
+            fixtures::load("Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack");
+        let initial_state: InitialState = fixture.get_data_at_step(0);
+        let relayer_messages: RelayerMessages = fixture.get_data_at_step(1);
+        let (update_client_msgs, recv_msgs, _, _) = relayer_messages.get_sdk_msgs();
+
+        let headers = update_client_msgs
+            .iter()
+            .map(|msg| {
+                let client_msg =
+                    ClientMessage::decode(msg.client_message.clone().unwrap().value.as_slice())
+                        .unwrap();
+                serde_json::from_slice::<Header>(client_msg.data.as_slice()).unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        let mut consensus_state = initial_state.consensus_state;
+        let mut client_state = initial_state.client_state;
+        for header in headers {
+            let (_, next_consensus_state, next_client_state) =
+                update_consensus_state(consensus_state, client_state, header).unwrap();
+            consensus_state = next_consensus_state;
+            client_state = next_client_state.unwrap();
+        }
+
+        let proof: MembershipProof =
+            serde_json::from_slice(&recv_msgs[0].proof_commitment).unwrap();
+        let account = verify_account(
+            consensus_state.state_root,
+            client_state.ibc_contract_address,
+            &proof.account_proof.proof,
+        )
+        .unwrap();
+
+        assert_eq!(account.storage_root.0, proof.account_proof.storage_root);
+        verify_account_storage_root(
+            consensus_state.state_root,
+            client_state.ibc_contract_address,
+            &proof.account_proof.proof,
+            proof.account_proof.storage_root,
+        )
+        .unwrap();
+    }
 
     #[test]
     fn test_verify_membership() {

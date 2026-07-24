@@ -8,7 +8,8 @@ Production Solidity implementation of **IBC v2** ("Spectre") for Ethereum ↔ Co
 
 - **Solidity** (`contracts/`) — IBC core, token transfer, ZK light client. The product.
 - **Go** (`relayer/`) — relayer + gnark Groth16 prover. The operator.
-- **Rust** (`programs/cw-ics08-wasm-eth`, `packages/ethereum/*`) — CosmWasm ETH light client. **Out of scope** (see Hard limits).
+- **Rust** — CosmWasm Ethereum and L2 ICS-08 clients. The L2 clients live in
+  `programs/cw-ics08-wasm-{op,base,arbitrum}` with matching verifier packages.
 
 Key difference from upstream `solidity-ibc-eureka`: a **heavily-optimized purpose-built gnark Groth16 circuit** (Go, batched Ed25519) instead of SP1 (Rust RISC-V zkVM) for Tendermint light-client verification. When describing the project, credit the circuit + gnark optimization work as the moat — not just "Groth16 instead of zkVM".
 
@@ -114,6 +115,7 @@ Read `docs/ARCHITECTURE.md` + `docs/DESIGN.md` before any code change; read the 
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Any code change — system diagram, request flows, encoding pipeline |
 | [docs/DESIGN.md](docs/DESIGN.md) | Any code change — conventions, protobuf encoding rules, access-control roles |
 | [docs/SECURITY.md](docs/SECURITY.md) | Light-client / verifier / access-control work |
+| [docs/L2_CLIENTS.md](docs/L2_CLIENTS.md) | OP, Base, or Arbitrum ICS-08 client work |
 | [docs/RELIABILITY.md](docs/RELIABILITY.md) | Relayer work — error handling, known risks, recovery |
 | [docs/QUALITY.md](docs/QUALITY.md) | Adding or altering tests / CI |
 | [docs/PRODUCT_SENSE.md](docs/PRODUCT_SENSE.md) | User-facing flows, token-transfer semantics |
@@ -125,7 +127,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 ## Hard limits — never cross without explicit instruction
 
 1. **Never `git commit` or `git push` on your own.** Finish the edit, verify it, report, stop. Wait for the user to say so — every time; prior approval does not carry over.
-2. **Never modify Rust/CosmWasm code**: `programs/cw-ics08-wasm-eth`, `packages/ethereum/*`. Don't file issues against them either. Solidity + Go relayer only.
+2. **Never modify the Ethereum Rust client without explicit instruction**: `programs/cw-ics08-wasm-eth`, `packages/ethereum/*`. L2 client packages and programs are maintained separately.
 3. **Never `git add .` / `git add docs/` or any blanket staging.** The working tree intentionally holds untracked private files (`*_VI.md`, scratch dirs like `diagrams-tmp/`, local config edits). Stage explicit paths only. Before staging anything you didn't create this session, check `git status` and ask.
 4. **Never invent, pad, or extrapolate benchmark data.** Benchmark artifacts are customer-facing. Numbers come from `docs/benchmark/` (measured on AWS g6e.2xlarge, GPU/ICICLE) or from a run you actually executed, with honest sample counts. Never mix Forge isolated-gas numbers with E2E gas numbers in one comparison.
 5. **Never hand-edit generated code**: `relayer/bindings/`, `packages/go-abigen/`, `contracts/verifiers/Groth16Verifier_N*.sol`, anything under `abi/`. Fix the source, regenerate.

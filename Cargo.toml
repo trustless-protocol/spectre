@@ -5,8 +5,16 @@ members = [
     "packages/ethereum/types",
     "packages/ethereum/tree_hash",
     "packages/solidity",
+    "packages/l2-client",
+    "packages/op-stack-verifier",
+    "packages/arbitrum-verifier",
+    "packages/base-verifier",
+    "packages/op-verifier",
 
     "programs/cw-ics08-wasm-eth",
+    "programs/cw-ics08-wasm-arbitrum",
+    "programs/cw-ics08-wasm-base",
+    "programs/cw-ics08-wasm-op",
 ]
 # Keep the gnark submodules out of this workspace: their Rust crate
 # (third_party/ecip-gnark/ffi/garaga_rs) must build standalone, not get pulled
@@ -27,16 +35,23 @@ ethereum-trie-db          = { path = "packages/ethereum/trie-db", default-featur
 ethereum-light-client     = { path = "packages/ethereum/light-client", default-features = false }
 ethereum-types            = { path = "packages/ethereum/types", default-features = false }
 tree_hash                 = { path = "packages/ethereum/tree_hash", default-features = false }
+l2-client                 = { path = "packages/l2-client", default-features = false }
+op-stack-verifier         = { path = "packages/op-stack-verifier", default-features = false }
+arbitrum-verifier          = { path = "packages/arbitrum-verifier", default-features = false }
+base-verifier              = { path = "packages/base-verifier", default-features = false }
+op-verifier                = { path = "packages/op-verifier", default-features = false }
 
 serde      = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }
-hex        = { version = "0.4", default-features = false }
+hex        = { version = "0.4", default-features = false, features = ["alloc"] }
 base64     = { version = "0.22", default-features = false }
 prost      = { version = "0.13", default-features = false }
 schemars   = { version = "0.8", default-features = false }
 thiserror  = { version = "2.0", default-features = false }
+serde_with = { version = "=3.11.0", default-features = false }
 
 sha2 = { version = "0.10", default-features = false }
+sha3 = { version = "0.10", default-features = false }
 
 ibc-proto        = { version = "0.51", default-features = false }
 ibc-proto-eureka = { package = "ibc-proto", git = "https://github.com/srdtrk/ibc-proto-rs", rev = "7074fb20c3a654e945e5ca46627c5a971d785e04", default-features = false }
@@ -44,6 +59,7 @@ ibc-proto-eureka = { package = "ibc-proto", git = "https://github.com/srdtrk/ibc
 alloy-primitives = { version = "1.0", default-features = false }
 alloy-sol-types  = { version = "1.0", default-features = false }
 alloy-rlp        = { version = "0.3", default-features = false }
+alloy-contract   = { version = "1.0", default-features = false }
 
 cosmwasm-schema = { version = "2.2", default-features = false }
 cosmwasm-std    = { version = "2.2", default-features = false }
@@ -62,6 +78,15 @@ hash256-std-hasher = { version = "0.15", default-features = false }
 rlp                = { version = "0.6", default-features = false }
 rlp-derive         = { version = "0.2", default-features = false }
 primitive-types    = { version = "0.13", default-features = false }
+
+# IBC and Tendermint types used by the Solidity message bridge.
+tendermint-light-client-verifier = { version = "0.40", default-features = false }
+ibc-client-tendermint-types      = { version = "0.57", default-features = false }
+ibc-core-commitment-types        = { version = "0.57", default-features = false }
+ibc-core-client-types            = { version = "0.57", default-features = false }
+tendermint                       = { version = "0.40", default-features = false }
+time                             = { version = "0.3.36", default-features = false }
+rand                             = { version = "0.9", default-features = false }
 
 # test/dev-dependencies
 milagro_bls              = { git = "https://github.com/Snowfork/milagro_bls", rev = "bc2b5b5e8d48b7e2e1bfaa56dc2d93e13cb32095", default-features = false } # Only used for testing, not to be used in production!

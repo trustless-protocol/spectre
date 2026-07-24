@@ -6,6 +6,13 @@ Groth16 for Tendermint light client verification. Each client update proves a
 proof, with in-circuit CanonicalVote reconstruction so only ~32 bytes of public
 input land on-chain.
 
+## L2 ICS-08 clients
+
+The repository also contains independent CosmWasm clients for OP Sepolia, Base
+Sepolia, and Arbitrum Sepolia. Their deployment evidence requirements,
+host-query wiring, and verification commands are documented in
+[docs/L2_CLIENTS.md](docs/L2_CLIENTS.md).
+
 ## Architecture
 
 ```

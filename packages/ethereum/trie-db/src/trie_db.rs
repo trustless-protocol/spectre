@@ -75,6 +75,30 @@ pub fn verify_storage_exclusion_proof(
     }
 }
 
+/// Returns the account authenticated by an Ethereum state proof.
+///
+/// The caller is responsible for choosing a trusted `address`; this low-level primitive only
+/// authenticates the account leaf beneath `root`.
+///
+/// # Errors
+/// Returns an error if the proof is invalid, missing, or contains malformed account RLP.
+pub fn verify_account(
+    root: B256,
+    address: Address,
+    proof: impl IntoIterator<Item = impl AsRef<[u8]>>,
+) -> Result<Account, TrieDBError> {
+    let address: H160 = H160(address.into());
+
+    get_node(H256(root.into()), address.as_ref(), proof)?.map_or_else(
+        || {
+            Err(TrieDBError::ValueMissing {
+                value: address.as_ref().into(),
+            })
+        },
+        |account| rlp::decode::<Account>(account.as_ref()).map_err(TrieDBError::RlpDecode),
+    )
+}
+
 /// Verifies if the `storage_root` of a contract can be verified against the state `root`.
 ///
 /// * `root`: Light client update's (attested/finalized) execution block's state root.
@@ -92,24 +116,16 @@ pub fn verify_account_storage_root(
     storage_root: B256,
 ) -> Result<(), TrieDBError> {
     let storage_root: H256 = H256(storage_root.into());
-    let address: H160 = H160(address.into());
+    let account = verify_account(root, address, proof)?;
 
-    match get_node(H256(root.into()), address.as_ref(), proof)? {
-        Some(account) => {
-            let account =
-                rlp::decode::<Account>(account.as_ref()).map_err(TrieDBError::RlpDecode)?;
-            if account.storage_root != storage_root {
-                return Err(TrieDBError::ValueMismatch {
-                    expected: storage_root.as_ref().into(),
-                    actual: account.storage_root.as_ref().into(),
-                });
-            }
-            Ok(())
-        }
-        None => Err(TrieDBError::ValueMissing {
-            value: address.as_ref().into(),
-        })?,
+    if account.storage_root != storage_root {
+        return Err(TrieDBError::ValueMismatch {
+            expected: storage_root.as_ref().into(),
+            actual: account.storage_root.as_ref().into(),
+        });
     }
+
+    Ok(())
 }
 
 fn get_node(
@@ -125,4 +141,52 @@ fn get_node(
     let trie = TrieDBBuilder::<EthLayout>::new(&db, &root).build();
     trie.get(&keccak_256(key.as_ref()))
         .map_err(|e| TrieDBError::GetTrieNodeFailed(e.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use alloy_primitives::{keccak256, Address, B256};
+    use primitive_types::{H256, U256};
+    use rlp::RlpStream;
+
+    use super::{verify_account, verify_account_storage_root};
+
+    fn single_account_proof(address: Address, storage_root: B256) -> (B256, Vec<u8>) {
+        let mut account = RlpStream::new_list(4);
+        account.append(&0_u64);
+        account.append(&U256::zero());
+        account.append(&H256(storage_root.into()));
+        account.append(&H256::zero());
+
+        // A secure-trie key is the address hash.  The leaf path has an even
+        // number of nibbles, so the hex-prefix encoding starts with 0x20.
+        let mut path = Vec::with_capacity(33);
+        path.push(0x20);
+        path.extend_from_slice(keccak256(address).as_slice());
+
+        let mut leaf = RlpStream::new_list(2);
+        leaf.append(&path);
+        leaf.append(&account.out().to_vec());
+        let leaf = leaf.out().to_vec();
+        (keccak256(&leaf), leaf)
+    }
+
+    #[test]
+    fn decoded_account_and_legacy_storage_root_check_share_the_same_proof() {
+        let address = Address::with_last_byte(7);
+        let storage_root = B256::with_last_byte(9);
+        let (state_root, proof) = single_account_proof(address, storage_root);
+
+        let account = verify_account(state_root, address, [&proof]).unwrap();
+        assert_eq!(account.storage_root.0, storage_root.0);
+
+        verify_account_storage_root(state_root, address, [&proof], storage_root).unwrap();
+        assert!(verify_account_storage_root(
+            state_root,
+            address,
+            [&proof],
+            B256::with_last_byte(10),
+        )
+        .is_err());
+    }
 }

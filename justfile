@@ -26,6 +26,35 @@ build-cw-ics08-wasm-eth:
 	cp artifacts/cw_ics08_wasm_eth.wasm e2e/interchaintestv8/wasm
 	gzip -n e2e/interchaintestv8/wasm/cw_ics08_wasm_eth.wasm -f
 
+# Build and optimize the L2 Wasm light clients. Each recipe emits a distinct artifact.
+[group('build')]
+build-cw-ics08-wasm-arbitrum:
+	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0 ./programs/cw-ics08-wasm-arbitrum
+	cp artifacts/cw_ics08_wasm_arbitrum.wasm e2e/interchaintestv8/wasm
+	gzip -n e2e/interchaintestv8/wasm/cw_ics08_wasm_arbitrum.wasm -f
+
+[group('build')]
+build-cw-ics08-wasm-base:
+	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0 ./programs/cw-ics08-wasm-base
+	cp artifacts/cw_ics08_wasm_base.wasm e2e/interchaintestv8/wasm
+	gzip -n e2e/interchaintestv8/wasm/cw_ics08_wasm_base.wasm -f
+
+[group('build')]
+build-cw-ics08-wasm-op:
+	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0 ./programs/cw-ics08-wasm-op
+	cp artifacts/cw_ics08_wasm_op.wasm e2e/interchaintestv8/wasm
+	gzip -n e2e/interchaintestv8/wasm/cw_ics08_wasm_op.wasm -f
+
+[group('build')]
+build-cw-ics08-wasm-l2-native:
+	cargo build --target wasm32-unknown-unknown --release --package cw-ics08-wasm-arbitrum --package cw-ics08-wasm-base --package cw-ics08-wasm-op
+
+# Capture fixed-block L1/L2 proof evidence. The configuration is local-only because it contains RPC URLs.
+# The resulting fixture must be reviewed before it is added as a supported network configuration.
+[group('generate')]
+capture-l2-fixture config out:
+	cd relayer && go run ./l2fixtures/cmd -config {{config}} -out ../{{out}}
+
 # Build the relayer docker image
 [group('build')]
 build-relayer-image:

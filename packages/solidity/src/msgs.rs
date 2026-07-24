@@ -118,7 +118,9 @@ impl From<IMembershipMsgs::Groth16MembershipProof> for IMembershipMsgs::Membersh
     }
 }
 
-impl From<IMembershipMsgs::Groth16MembershipAndUpdateClientProof> for IMembershipMsgs::MembershipProof {
+impl From<IMembershipMsgs::Groth16MembershipAndUpdateClientProof>
+    for IMembershipMsgs::MembershipProof
+{
     fn from(proof: IMembershipMsgs::Groth16MembershipAndUpdateClientProof) -> Self {
         Self {
             proofType: IMembershipMsgs::MembershipProofType::Groth16MembershipAndUpdateClientProof,
