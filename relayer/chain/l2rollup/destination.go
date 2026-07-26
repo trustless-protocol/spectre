@@ -65,7 +65,7 @@ func (d *Destination) Chain() chain.ChainType { return chain.Cosmos }
 // L2 client verifies L2 roots against it + L1 rollup proofs). Wire an
 // "update ETH client to cover this L2 update" step before the submit, mirroring
 // the beacon path's WaitForCosmosCatchUp ordering.
-func (d *Destination) UpdateClient(_ context.Context, _ string, update chain.ClientUpdate) error {
+func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.ClientUpdate) error {
 	if len(update.Payload) == 0 {
 		return nil // nothing to submit
 	}
@@ -77,7 +77,7 @@ func (d *Destination) UpdateClient(_ context.Context, _ string, update chain.Cli
 	if err != nil {
 		return fmt.Errorf("l2 dest: build update (height %d): %w", update.Height, err)
 	}
-	if err := d.worker.TxHandler.SendCosmosTxBatch(d.svcCtx, []any{msg}); err != nil {
+	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.svcCtx, []any{msg}); err != nil {
 		return fmt.Errorf("l2 dest: submit update (height %d): %w", update.Height, err)
 	}
 	return nil
@@ -87,7 +87,7 @@ func (d *Destination) UpdateClient(_ context.Context, _ string, update chain.Cli
 // from the L2-origin packets + storage proofs and submits them. Same wrappers as
 // the existing Cosmos beacon destination; only the proof height differs (the L2
 // client's latest tracked height instead of the beacon slot).
-func (d *Destination) RelayPackets(_ context.Context, packets []chain.RelayPacket) error {
+func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) error {
 	if len(packets) == 0 {
 		return nil
 	}
@@ -133,7 +133,7 @@ func (d *Destination) RelayPackets(_ context.Context, packets []chain.RelayPacke
 			return fmt.Errorf("l2 dest: unsupported packet type %d (seq=%d)", rp.Type, pkt.Sequence)
 		}
 	}
-	if err := d.worker.TxHandler.SendCosmosTxBatch(d.svcCtx, msgs); err != nil {
+	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.svcCtx, msgs); err != nil {
 		if isPermanentCosmosFailure(err) {
 			return chain.Permanent(err)
 		}

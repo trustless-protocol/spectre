@@ -987,7 +987,7 @@ func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasm
 
 	worker := services.NewWorker(&transaction.Handler{}, nil)
 	logger.Sugar().Infof("Creating Ethereum light client on Cosmos (checksum=%s)...", wasmChecksum)
-	wasmClientID, err := worker.CreateEthClient(ctx, wasmChecksum)
+	wasmClientID, err := worker.CreateEthClient(context.Background(), ctx, wasmChecksum)
 	if err != nil {
 		return "", fmt.Errorf("failed to create Ethereum client on Cosmos: %w", err)
 	}
@@ -1050,7 +1050,7 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 		"Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s, proofType=%s, clockDrift=%d, counterparty=%s)...",
 		trustingPeriod, trustLevel, proofType, clockDrift, wasmClientID,
 	)
-	ics07Addr, err := worker.CreateCosmosClient(ctx, proofType, trustingPeriod, 0, trustLevel, clockDrift)
+	ics07Addr, err := worker.CreateCosmosClient(context.Background(), ctx, proofType, trustingPeriod, 0, trustLevel, clockDrift)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed to create Cosmos client on Ethereum: %w", err)
 	}
@@ -1355,7 +1355,7 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			}
 
 			worker := services.NewWorker(&transaction.Handler{}, p)
-			latestBlock, err := worker.UpdateCosmosClient(ctx, cosmosConfig.ProofType, trustedBlock, cosmosConfig.TrustLevel, false)
+			latestBlock, err := worker.UpdateCosmosClient(context.Background(), ctx, cosmosConfig.ProofType, trustedBlock, cosmosConfig.TrustLevel, false)
 			if err != nil {
 				return fmt.Errorf("failed to update Cosmos client on Ethereum: %w", err)
 			}

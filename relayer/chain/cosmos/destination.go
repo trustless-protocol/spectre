@@ -47,8 +47,8 @@ func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.C
 	if len(msgs) == 0 {
 		return nil
 	}
-	d.worker.WaitForCosmosCatchUp(d.svcCtx, &ethClientState, sigSlot)
-	if err := d.worker.TxHandler.SendCosmosTxBatch(d.svcCtx, msgs); err != nil {
+	d.worker.WaitForCosmosCatchUp(ctx, d.svcCtx, &ethClientState, sigSlot)
+	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.svcCtx, msgs); err != nil {
 		return fmt.Errorf("cosmos dest: submit beacon update (exec block %d): %w", update.Height, err)
 	}
 	return nil
@@ -107,7 +107,7 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 	// as chain.Permanent so the module DROPS the batch rather than re-queueing it
 	// forever (each retry re-runs the beacon client update and drains gas). CheckTx/
 	// broadcast/RPC errors stay transient and are re-queued.
-	if err := d.worker.TxHandler.SendCosmosTxBatch(d.svcCtx, msgs); err != nil {
+	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.svcCtx, msgs); err != nil {
 		if errors.Is(err, services.ErrPermanentRelayFailure) {
 			return chain.Permanent(err)
 		}

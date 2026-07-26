@@ -45,8 +45,11 @@ type Context struct {
 	Logger *log.Logger
 	Config Config
 
-	latestEthTimestamp    *Timestamp
-	latestCosmosTimestamp *Timestamp
+	// latestEthTimestamp seeds the trusted ETH height the ETH-timeout scanner uses
+	// when it advances the Cosmos client before relaying a timeout
+	// (updateCosmosClientForEth). It is still live; the Cosmos-side counterpart was
+	// write-only after the cutover and has been removed.
+	latestEthTimestamp *Timestamp
 
 	cosmosClient *rpchttp.HTTP
 	ethClient    *ethclient.Client
@@ -77,10 +80,6 @@ func NewCtx(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client) Context {
 			LatestUpdateTime:   time.Now(),
 			LatestUpdateHeight: 0,
 		},
-		latestCosmosTimestamp: &Timestamp{
-			LatestUpdateTime:   time.Now(),
-			LatestUpdateHeight: 0,
-		},
 	}
 }
 
@@ -94,10 +93,6 @@ func NewCtxWithBeacon(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client, e
 		beaconAPIURL: beaconAPIURL,
 		ethClientID:  ethClientID,
 		latestEthTimestamp: &Timestamp{
-			LatestUpdateTime:   time.Now(),
-			LatestUpdateHeight: 0,
-		},
-		latestCosmosTimestamp: &Timestamp{
 			LatestUpdateTime:   time.Now(),
 			LatestUpdateHeight: 0,
 		},
@@ -203,12 +198,4 @@ func (c *Context) StopClient() {
 	if c.ethWsClient != nil {
 		c.ethWsClient.Close()
 	}
-}
-
-func (c *Context) LatestCosmosTimestamp() *Timestamp {
-	return c.latestCosmosTimestamp
-}
-
-func (c *Context) LatestEthTimestamp() *Timestamp {
-	return c.latestEthTimestamp
 }

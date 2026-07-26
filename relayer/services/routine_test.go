@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -9,6 +10,28 @@ import (
 	relayerclient "relayer/client"
 	"relayer/prover"
 )
+
+// TestWaitForCosmosCatchUp_AbortsOnCancelledContext verifies the catch-up wait
+// returns promptly when the context is already cancelled, instead of polling the
+// Cosmos client (which is never reached — a zero Context would panic if it were).
+func TestWaitForCosmosCatchUp_AbortsOnCancelledContext(t *testing.T) {
+	w := &Worker{}
+	stdCtx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled
+
+	done := make(chan struct{})
+	go func() {
+		// A zero services.Context is fine: the cancelled stdCtx short-circuits
+		// before ctx.CosmosClient() is ever called.
+		w.WaitForCosmosCatchUp(stdCtx, Context{}, &relayerclient.EthereumClientState{}, 0)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("WaitForCosmosCatchUp did not abort on a cancelled context")
+	}
+}
 
 func TestRecordRefreshResult(t *testing.T) {
 	timestamp := &Timestamp{}
@@ -35,38 +58,6 @@ func TestRecordRefreshResult(t *testing.T) {
 	gotTime, gotHeight := timestamp.Snapshot()
 	if !gotTime.Equal(trustedTime) || gotHeight != 123 {
 		t.Fatalf("timestamp = (%v, %d), want (%v, 123)", gotTime, gotHeight, trustedTime)
-	}
-}
-
-func TestRecordEthClientUpdateResult(t *testing.T) {
-	timestamp := &Timestamp{}
-	proofTime := uint64(1_700_000_123)
-	result := &EthClientUpdateResult{
-		EthClientState: &relayerclient.EthereumClientState{
-			LatestSlot: 42,
-		},
-		ProofTimestamp: proofTime,
-	}
-
-	if err := recordEthClientUpdateResult(timestamp, nil); err == nil {
-		t.Fatal("expected nil ethereum client update result error")
-	}
-	if err := recordEthClientUpdateResult(timestamp, &EthClientUpdateResult{}); err == nil {
-		t.Fatal("expected missing ethereum client state error")
-	}
-	if err := recordEthClientUpdateResult(timestamp, &EthClientUpdateResult{
-		EthClientState: &relayerclient.EthereumClientState{LatestSlot: 42},
-	}); err == nil {
-		t.Fatal("expected zero proof timestamp error")
-	}
-
-	if err := recordEthClientUpdateResult(timestamp, result); err != nil {
-		t.Fatalf("record eth client update result: %v", err)
-	}
-	gotTime, gotSlot := timestamp.Snapshot()
-	wantTime := time.Unix(int64(proofTime), 0)
-	if !gotTime.Equal(wantTime) || gotSlot != 42 {
-		t.Fatalf("timestamp = (%v, %d), want (%v, 42)", gotTime, gotSlot, wantTime)
 	}
 }
 

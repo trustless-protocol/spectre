@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -17,16 +18,17 @@ import (
 
 // ScanCosmosTimeouts detects Cosmos-origin packets that expired on ETH without a
 // receipt and relays their MsgTimeout back to Cosmos. Safe to call periodically;
-// it purges/prunes the pending tracker and recovers from panics internally.
-func (s *Services) ScanCosmosTimeouts(ctx Context) {
-	s.scanForCosmosTimeouts(ctx)
+// it purges/prunes the pending tracker and recovers from panics internally. stdCtx
+// aborts the in-scan Cosmos catch-up wait promptly on shutdown.
+func (s *Services) ScanCosmosTimeouts(stdCtx context.Context, ctx Context) {
+	s.scanForCosmosTimeouts(stdCtx, ctx)
 }
 
 // ScanEthTimeouts detects ETH-origin packets that expired on Cosmos without a
 // receipt and relays their MsgTimeout back to ETH. Same periodic-call contract as
 // ScanCosmosTimeouts.
-func (s *Services) ScanEthTimeouts(ctx Context) {
-	s.scanForEthTimeouts(ctx)
+func (s *Services) ScanEthTimeouts(stdCtx context.Context, ctx Context) {
+	s.scanForEthTimeouts(stdCtx, ctx)
 }
 
 // TrackCosmosPending records a Cosmos-origin packet just recv-relayed to ETH so
@@ -65,8 +67,8 @@ func (s *Services) CosmosConfig() Config { return s.cosmosConfig }
 // call keeps the pinned set fresh independent of packet flow. Side-effect-free on
 // the adapter's cursors (the expiry is driven by ClientExpiresAt, not a seeded
 // timestamp), so it only submits the rotation tx.
-func (s *Services) RotatePinnedSet(ctx Context) error {
-	_, err := s.worker.RefreshCosmosClient(ctx, s.cosmosConfig.ProofType, s.cosmosConfig.TrustLevel)
+func (s *Services) RotatePinnedSet(stdCtx context.Context, ctx Context) error {
+	_, err := s.worker.RefreshCosmosClient(stdCtx, ctx, s.cosmosConfig.ProofType, s.cosmosConfig.TrustLevel)
 	return err
 }
 

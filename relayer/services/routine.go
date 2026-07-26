@@ -39,7 +39,7 @@ func NewWorker(txHandler TransactionHandler, prover Prover) *Worker {
 	}
 }
 
-func (w *Worker) CreateCosmosClient(ctx Context, proofType string, trustingPeriod uint32, trustedBlock int64, trustLevel string, clockDrift uint32) (common.Address, error) {
+func (w *Worker) CreateCosmosClient(stdCtx context.Context, ctx Context, proofType string, trustingPeriod uint32, trustedBlock int64, trustLevel string, clockDrift uint32) (common.Address, error) {
 	genesis, err := relayerclient.GetGenesis(ctx.CosmosClient(), trustedBlock, trustingPeriod, trustLevel, proofType, clockDrift)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed to get genesis: %w", err)
@@ -65,7 +65,7 @@ func (w *Worker) CreateCosmosClient(ctx Context, proofType string, trustingPerio
 
 	consensusHash := crypto.Keccak256(consensusStateEncoded)
 	log.Printf("[CreateCosmosClient] consensusHash=%x", consensusHash)
-	return w.TxHandler.CreateCosmosClientContract(ctx, clientStateEncoded, consensusHash, genesis.InitialPinnedValidatorSet)
+	return w.TxHandler.CreateCosmosClientContract(stdCtx, ctx, clientStateEncoded, consensusHash, genesis.InitialPinnedValidatorSet)
 }
 
 // ClientUpdateKind discriminates the two split-API entry points the Spectre
@@ -102,7 +102,7 @@ type CosmosClientUpdateBuildResult struct {
 // that want to advance the client without packets attached. handleCosmos uses
 // the split BuildCosmosClientUpdateMsg builder so it can fold updateClient
 // into the same multicall as its packet calls (issue #67 V2).
-func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*relayerclient.LightBlock, error) {
+func (w *Worker) UpdateCosmosClient(stdCtx context.Context, ctx Context, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*relayerclient.LightBlock, error) {
 	result, err := w.BuildCosmosClientUpdateMsg(ctx, proofType, trustedBlock, trustLevel, forceRotation)
 	if err != nil {
 		return nil, err
@@ -110,7 +110,7 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 	if !result.HasMsg {
 		return result.LightBlock, nil
 	}
-	if err := w.TxHandler.SendEthTx(ctx, *result); err != nil {
+	if err := w.TxHandler.SendEthTx(stdCtx, ctx, *result); err != nil {
 		log.Printf("[UpdateCosmosClient] SendEthTx failed: %v", err)
 		return nil, err
 	}
@@ -129,6 +129,7 @@ func (w *Worker) UpdateCosmosClient(ctx Context, proofType string, trustedBlock 
 // the builder returns HasMsg=false and this function submits nothing, returning
 // the current light block so the caller can refresh its cached timestamp/height.
 func (w *Worker) RefreshCosmosClient(
+	stdCtx context.Context,
 	ctx Context,
 	proofType string,
 	trustLevel string,
@@ -150,7 +151,7 @@ func (w *Worker) RefreshCosmosClient(
 		return result.LightBlock, nil
 	}
 
-	if err := w.TxHandler.SendEthTx(ctx, *result); err != nil {
+	if err := w.TxHandler.SendEthTx(stdCtx, ctx, *result); err != nil {
 		return nil, fmt.Errorf("[RefreshCosmosClient] send tx: %w", err)
 	}
 	log.Printf("[RefreshCosmosClient] refresh succeeded (kind=%d)", result.Kind)
@@ -565,7 +566,7 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	return result, nil
 }
 
-func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
+func (w *Worker) CreateEthClient(stdCtx context.Context, ctx Context, checksum string) (string, error) {
 	beaconAPIURL := ctx.BeaconAPIURL()
 	if beaconAPIURL == "" {
 		return "", fmt.Errorf("beacon API URL is not configured")
@@ -776,7 +777,7 @@ func (w *Worker) CreateEthClient(ctx Context, checksum string) (string, error) {
 	}
 	log.Printf("[CreateEthClient] wasm client/consensus state prepared, broadcasting MsgCreateClient")
 
-	return w.TxHandler.CreateEthClient(ctx, &wasmClientState, &wasmConsensusState)
+	return w.TxHandler.CreateEthClient(stdCtx, ctx, &wasmClientState, &wasmConsensusState)
 }
 
 type EthClientUpdateResult struct {
@@ -784,23 +785,6 @@ type EthClientUpdateResult struct {
 	EthClientState *relayerclient.EthereumClientState
 	ProofTimestamp uint64
 	SigSlot        uint64
-}
-
-func (w *Worker) UpdateEthClient(ctx Context) error {
-	result, err := w.BuildEthClientUpdateMsgs(ctx)
-	if err != nil {
-		return err
-	}
-	if len(result.Msgs) > 0 {
-		w.WaitForCosmosCatchUp(ctx, result.EthClientState, result.SigSlot)
-		if err := w.TxHandler.SendCosmosTxBatch(ctx, result.Msgs); err != nil {
-			return err
-		}
-	}
-	if err := recordEthClientUpdateResult(ctx.latestCosmosTimestamp, result); err != nil {
-		return fmt.Errorf("record ethereum client freshness: %w", err)
-	}
-	return nil
 }
 
 func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, error) {
@@ -876,10 +860,17 @@ func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, 
 	}, nil
 }
 
-func (w *Worker) WaitForCosmosCatchUp(ctx Context, ethClientState *relayerclient.EthereumClientState, sigSlot uint64) {
+// WaitForCosmosCatchUp polls until the Cosmos chain time covers the update's
+// signature slot (so the wasm beacon update verifies), or until stdCtx is
+// cancelled. stdCtx makes the up-to-60 × 5s poll abort promptly on shutdown
+// instead of stranding a goroutine for minutes during teardown.
+func (w *Worker) WaitForCosmosCatchUp(stdCtx context.Context, ctx Context, ethClientState *relayerclient.EthereumClientState, sigSlot uint64) {
 	requiredSlot := sigSlot + cosmosCatchUpSafetySlots
 	for range 60 {
-		status, err := ctx.CosmosClient().Status(context.Background())
+		if stdCtx.Err() != nil {
+			return
+		}
+		status, err := ctx.CosmosClient().Status(stdCtx)
 		if err != nil {
 			break
 		}
@@ -892,7 +883,11 @@ func (w *Worker) WaitForCosmosCatchUp(ctx Context, ethClientState *relayerclient
 		}
 		log.Printf("[updateEthClient] waiting for target chain to catch up to required slot %d (signatureSlot=%d current=%d safety=%d)",
 			requiredSlot, sigSlot, currentSlot, cosmosCatchUpSafetySlots)
-		time.Sleep(5 * time.Second)
+		select {
+		case <-stdCtx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
 	}
 }
 

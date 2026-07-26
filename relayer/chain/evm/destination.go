@@ -50,7 +50,7 @@ func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.C
 		NewValSet: newValSet,
 		HasMsg:    true,
 	}
-	if err := d.worker.TxHandler.SendEthTx(d.svcCtx, result); err != nil {
+	if err := d.worker.TxHandler.SendEthTx(ctx, d.svcCtx, result); err != nil {
 		return fmt.Errorf("evm: submit client update (height %d): %w", update.Height, err)
 	}
 	return nil
@@ -103,7 +103,7 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 	// it as chain.Permanent so the module DROPS the batch instead of re-queueing it
 	// forever (each retry re-runs the client update and drains gas). Everything else
 	// (nonce, RPC, broadcast) stays transient and is re-queued.
-	if err := d.worker.TxHandler.SendEthTxBatch(d.svcCtx, msgs); err != nil {
+	if err := d.worker.TxHandler.SendEthTxBatch(ctx, d.svcCtx, msgs); err != nil {
 		if errors.Is(err, services.ErrPermanentRelayFailure) {
 			return chain.Permanent(err)
 		}

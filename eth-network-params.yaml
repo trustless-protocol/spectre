@@ -10,10 +10,17 @@ network_params:
 # Pin host-visible public port ranges so relayer endpoints stay stable across
 # enclave recreation. EL and CL ranges are separated to avoid future overlap if
 # the package exposes additional public ports for either service group.
+#
+# Keep these BELOW the macOS ephemeral range (49152-65535): the OS hands out
+# ephemeral ports in that range as source ports for outbound connections (e.g.
+# the always-on APNS socket at :5223 grabs 59616), which then collides with the
+# pinned Docker port bind and fails enclave startup with "address already in
+# use" no matter how many times the enclave is recreated. 32000/32100 sit well
+# under the ephemeral floor, so the OS never allocates them.
 port_publisher:
   el:
     enabled: true
-    public_port_start: 59616
+    public_port_start: 32000
   cl:
     enabled: true
-    public_port_start: 59716
+    public_port_start: 32100

@@ -606,7 +606,7 @@ func TestExecuteWithRetryAndResubmission_NonceRetry(t *testing.T) {
 		return tx, err
 	}
 
-	receipt, _, _, err := h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFnWrapped)
+	receipt, _, _, err := h.executeWithRetryAndResubmission(context.Background(), ctx, privKey, 100000, senderFnWrapped)
 	if err != nil {
 		t.Fatalf("executeWithRetryAndResubmission failed: %v", err)
 	}
@@ -664,7 +664,7 @@ func TestExecuteWithRetryAndResubmission_AlreadyKnown(t *testing.T) {
 		return signedTx, errors.New("already known")
 	}
 
-	receipt, _, _, err := h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+	receipt, _, _, err := h.executeWithRetryAndResubmission(context.Background(), ctx, privKey, 100000, senderFn)
 	if err != nil {
 		t.Fatalf("executeWithRetryAndResubmission failed: %v", err)
 	}
@@ -722,7 +722,7 @@ func TestExecuteWithRetryAndResubmission_BroadcastContextDeadline(t *testing.T) 
 	}
 
 	start := time.Now()
-	_, _, _, err = h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+	_, _, _, err = h.executeWithRetryAndResubmission(context.Background(), ctx, privKey, 100000, senderFn)
 	if err == nil {
 		t.Fatal("expected broadcast context deadline error, got nil")
 	}
@@ -781,7 +781,7 @@ func TestBumpGasAndResubmit(t *testing.T) {
 		Data:     []byte{},
 	})
 
-	bumpedTx, err := h.bumpGasAndResubmit(ctx, tx, auth, 1)
+	bumpedTx, err := h.bumpGasAndResubmit(context.Background(), ctx, tx, auth, 1)
 	if err != nil {
 		t.Fatalf("bumpGasAndResubmit failed: %v", err)
 	}
@@ -803,7 +803,7 @@ func TestBumpGasAndResubmit(t *testing.T) {
 		Data:      []byte{},
 	})
 
-	bumpedDynamicTx, err := h.bumpGasAndResubmit(ctx, dynamicTx, auth, 1)
+	bumpedDynamicTx, err := h.bumpGasAndResubmit(context.Background(), ctx, dynamicTx, auth, 1)
 	if err != nil {
 		t.Fatalf("bumpGasAndResubmit (dynamic) failed: %v", err)
 	}
@@ -829,7 +829,7 @@ func TestBumpGasAndResubmit(t *testing.T) {
 		AccessList: types.AccessList{},
 	})
 
-	bumpedAccessListTx, err := h.bumpGasAndResubmit(ctx, accessListTx, auth, 1)
+	bumpedAccessListTx, err := h.bumpGasAndResubmit(context.Background(), ctx, accessListTx, auth, 1)
 	if err != nil {
 		t.Fatalf("bumpGasAndResubmit (access list) failed: %v", err)
 	}
@@ -925,7 +925,7 @@ func TestExecuteWithRetryAndResubmission_WaitErrorNonceInvalidation(t *testing.T
 		return auth.Signer(auth.From, tx)
 	}
 
-	_, _, _, err = h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+	_, _, _, err = h.executeWithRetryAndResubmission(context.Background(), ctx, privKey, 100000, senderFn)
 	if err == nil {
 		t.Fatal("expected error from executeWithRetryAndResubmission due to receipt wait failure, got nil")
 	}
@@ -997,7 +997,7 @@ func TestExecuteWithRetryAndResubmission_GasFloorsOnStuckNonce(t *testing.T) {
 		return tx, err
 	}
 
-	_, _, _, err = h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFnWrapped1)
+	_, _, _, err = h.executeWithRetryAndResubmission(context.Background(), ctx, privKey, 100000, senderFnWrapped1)
 	if err != nil {
 		t.Fatalf("first execution failed: %v", err)
 	}
@@ -1028,7 +1028,7 @@ func TestExecuteWithRetryAndResubmission_GasFloorsOnStuckNonce(t *testing.T) {
 		return tx, err
 	}
 
-	_, _, _, err = h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFnWrapped2)
+	_, _, _, err = h.executeWithRetryAndResubmission(context.Background(), ctx, privKey, 100000, senderFnWrapped2)
 	if err != nil {
 		t.Fatalf("second execution failed: %v", err)
 	}
@@ -1080,7 +1080,7 @@ func TestExecuteWithRetryAndResubmission_SenderFnReturnsNil(t *testing.T) {
 		return nil, nil
 	}
 
-	_, _, _, err = h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+	_, _, _, err = h.executeWithRetryAndResubmission(context.Background(), ctx, privKey, 100000, senderFn)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1162,7 +1162,7 @@ func TestExecuteWithRetryAndResubmission_Concurrency(t *testing.T) {
 				return signedTx, nil
 			}
 
-			_, _, _, err := h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+			_, _, _, err := h.executeWithRetryAndResubmission(context.Background(), ctx, privKey, 100000, senderFn)
 			if err != nil {
 				t.Errorf("executeWithRetryAndResubmission failed: %v", err)
 				return
@@ -1230,7 +1230,7 @@ func TestExecuteWithRetryAndResubmission_RevertPermanentFailure(t *testing.T) {
 		return signedTx, nil
 	}
 
-	_, _, _, err = h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+	_, _, _, err = h.executeWithRetryAndResubmission(context.Background(), ctx, privKey, 100000, senderFn)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1319,7 +1319,7 @@ func TestExecuteWithRetryAndResubmission_TransientWaitFailure(t *testing.T) {
 		return auth.Signer(auth.From, tx)
 	}
 
-	_, _, _, err = h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+	_, _, _, err = h.executeWithRetryAndResubmission(context.Background(), ctx, privKey, 100000, senderFn)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1397,7 +1397,7 @@ func TestExecuteWithRetryAndResubmission_SuggestGasPriceErrorNonceInvalidation(t
 		return auth.Signer(auth.From, tx)
 	}
 
-	_, _, _, err = h.executeWithRetryAndResubmission(ctx, privKey, 100000, senderFn)
+	_, _, _, err = h.executeWithRetryAndResubmission(context.Background(), ctx, privKey, 100000, senderFn)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
@@ -1408,5 +1408,31 @@ func TestExecuteWithRetryAndResubmission_SuggestGasPriceErrorNonceInvalidation(t
 
 	if valid {
 		t.Error("expected h.nonceValid to be false after SuggestGasPrice failure, but it was true")
+	}
+}
+
+// TestWaitForTxResult_CancelledCtxAbortsPromptly is the regression for the #252 P2
+// finding: the poll loop must abort on shutdown instead of sleeping past
+// cancellation until the local timeout — which, held under cosmosMu in
+// SendCosmosTxBatch, would stall shutdown for the whole inclusion window. A
+// pre-cancelled ctx returns on the first iteration before any CosmosClient poll, so
+// no live client is needed.
+func TestWaitForTxResult_CancelledCtxAbortsPromptly(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	h := &Handler{}
+	start := time.Now()
+	_, err := h.waitForTxResult(ctx, services.Context{}, []byte{0x01}, cosmosInclusionTimeout)
+	if err == nil {
+		t.Fatal("expected a cancellation error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want wrapped context.Canceled", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("waitForTxResult took %s; must abort promptly on cancel, not run to the inclusion timeout", elapsed)
 	}
 }

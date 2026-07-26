@@ -36,11 +36,11 @@ func init() {
 }
 
 type TransactionHandler interface {
-	CreateCosmosClientContract(ctx Context, clientState, consensusHash []byte, initialPinnedValidatorSet client.ContractValidatorSet) (ethcommon.Address, error)
-	CreateEthClient(ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) (string, error)
-	SendEthTx(ctx Context, msg any) error
-	SendEthTxBatch(ctx Context, msgs []any) error
-	SendCosmosTxBatch(ctx Context, msgs []any) error
+	CreateCosmosClientContract(stdCtx context.Context, ctx Context, clientState, consensusHash []byte, initialPinnedValidatorSet client.ContractValidatorSet) (ethcommon.Address, error)
+	CreateEthClient(stdCtx context.Context, ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) (string, error)
+	SendEthTx(stdCtx context.Context, ctx Context, msg any) error
+	SendEthTxBatch(stdCtx context.Context, ctx Context, msgs []any) error
+	SendCosmosTxBatch(stdCtx context.Context, ctx Context, msgs []any) error
 	CosmosSignerAddress() (string, error)
 }
 
@@ -112,24 +112,6 @@ func recordRefreshResult(timestamp *Timestamp, lightBlock *client.LightBlock) er
 		return fmt.Errorf("zero light block timestamp at height %d", lightBlock.BlockHeight)
 	}
 	timestamp.Set(trustedTime, uint64(lightBlock.BlockHeight))
-	return nil
-}
-
-func recordEthClientUpdateResult(timestamp *Timestamp, result *EthClientUpdateResult) error {
-	if result == nil {
-		return fmt.Errorf("no ethereum client update result")
-	}
-	if result.EthClientState == nil {
-		return fmt.Errorf("missing ethereum client state")
-	}
-	if result.ProofTimestamp == 0 {
-		return fmt.Errorf("zero ethereum proof timestamp at slot %d", result.EthClientState.LatestSlot)
-	}
-	if result.ProofTimestamp > uint64(^uint64(0)>>1) {
-		return fmt.Errorf("ethereum proof timestamp overflows int64: %d", result.ProofTimestamp)
-	}
-	proofTime := time.Unix(int64(result.ProofTimestamp), 0)
-	timestamp.Set(proofTime, result.EthClientState.LatestSlot)
 	return nil
 }
 
@@ -217,9 +199,9 @@ func pendingPacketsTimedOutAtTimestamp(pending []pendingPacketInfo, timestamp ui
 	return expired
 }
 
-func (s *Services) updateCosmosClientForEth(ctx Context, tag string) (*client.LightBlock, bool) {
+func (s *Services) updateCosmosClientForEth(stdCtx context.Context, ctx Context, tag string) (*client.LightBlock, bool) {
 	_, ethTrustedHeight := ctx.latestEthTimestamp.Snapshot()
-	latestLightBlock, err := s.worker.UpdateCosmosClient(ctx, s.cosmosConfig.ProofType, int64(ethTrustedHeight), s.cosmosConfig.TrustLevel, false)
+	latestLightBlock, err := s.worker.UpdateCosmosClient(stdCtx, ctx, s.cosmosConfig.ProofType, int64(ethTrustedHeight), s.cosmosConfig.TrustLevel, false)
 	if err != nil {
 		log.Printf("[%s] Failed to update cosmos light client: %v", tag, err)
 		return nil, false
@@ -236,10 +218,10 @@ func (s *Services) updateCosmosClientForEth(ctx Context, tag string) (*client.Li
 	return latestLightBlock, true
 }
 
-func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) bool {
+func (s *Services) timeoutEthSend(stdCtx context.Context, ctx Context, packet EthPacket) bool {
 	log.Printf("[EthTimeout] seq=%d: packet expired, preparing timeout proof", packet.Packet.Sequence)
 
-	latestLightBlock, ok := s.updateCosmosClientForEth(ctx, "EthTimeout")
+	latestLightBlock, ok := s.updateCosmosClientForEth(stdCtx, ctx, "EthTimeout")
 	if !ok {
 		return false
 	}
@@ -262,7 +244,7 @@ func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) bool {
 		NonMembershipMsg: calldata,
 	}
 
-	if err := s.worker.TxHandler.SendEthTx(ctx, msgTimeoutPacket); err != nil {
+	if err := s.worker.TxHandler.SendEthTx(stdCtx, ctx, msgTimeoutPacket); err != nil {
 		log.Printf("[EthTimeout] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
 		return false
 	}
@@ -272,7 +254,7 @@ func (s *Services) timeoutEthSend(ctx Context, packet EthPacket) bool {
 
 const pendingTrackerMaxAge = 1 * time.Hour
 
-func (s *Services) scanForEthTimeouts(ctx Context) {
+func (s *Services) scanForEthTimeouts(stdCtx context.Context, ctx Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[EthTimeoutScan] Panic recovered: %v", r)
@@ -306,7 +288,7 @@ func (s *Services) scanForEthTimeouts(ctx Context) {
 		}
 
 		packet := info.Packet
-		if s.timeoutEthSend(ctx, EthPacket{
+		if s.timeoutEthSend(stdCtx, ctx, EthPacket{
 			Type:        EthSend,
 			Packet:      &packet,
 			BlockNumber: info.BlockNumber,
@@ -316,7 +298,7 @@ func (s *Services) scanForEthTimeouts(ctx Context) {
 	}
 }
 
-func (s *Services) scanForCosmosTimeouts(ctx Context) {
+func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[CosmosTimeoutScan] Panic recovered: %v", r)
@@ -415,18 +397,13 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 	batchMsgs = append(batchMsgs, timeoutMsgs...)
 
 	if len(updateResult.Msgs) > 0 {
-		s.worker.WaitForCosmosCatchUp(ctx, updateResult.EthClientState, updateResult.SigSlot)
+		s.worker.WaitForCosmosCatchUp(stdCtx, ctx, updateResult.EthClientState, updateResult.SigSlot)
 	}
 
-	if err := s.worker.TxHandler.SendCosmosTxBatch(ctx, batchMsgs); err != nil {
+	if err := s.worker.TxHandler.SendCosmosTxBatch(stdCtx, ctx, batchMsgs); err != nil {
 		log.Printf("[CosmosTimeoutScan] SendCosmosTxBatch failed: %v", err)
 		var partialErr *BatchPartialError
 		if errors.As(err, &partialErr) && partialErr.SucceededCount >= len(updateResult.Msgs) {
-			if len(updateResult.Msgs) > 0 {
-				if err := recordEthClientUpdateResult(ctx.latestCosmosTimestamp, updateResult); err != nil {
-					log.Printf("[CosmosTimeoutScan] failed to record trusted ETH timestamp after partial batch: %v", err)
-				}
-			}
 			succeededTimeoutsCount := partialErr.SucceededCount - len(updateResult.Msgs)
 			for i := 0; i < succeededTimeoutsCount; i++ {
 				info := processed[i]
@@ -440,9 +417,6 @@ func (s *Services) scanForCosmosTimeouts(ctx Context) {
 	for _, info := range processed {
 		s.BatchBuilder.PendingTracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
 		log.Printf("[CosmosTimeout] seq=%d: timeout relay completed (bundled with %d update msgs)", info.Packet.Sequence, len(updateResult.Msgs))
-	}
-	if err := recordEthClientUpdateResult(ctx.latestCosmosTimestamp, updateResult); err != nil {
-		log.Printf("[CosmosTimeoutScan] failed to record trusted ETH timestamp: %v", err)
 	}
 }
 
