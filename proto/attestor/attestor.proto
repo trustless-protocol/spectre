@@ -17,7 +17,11 @@ service AttestorService {
   // commitment at or below the requested block number.
   rpc AttestedRootAtOrBelow(AttestedRootAtOrBelowRequest) returns (AttestedRootAtOrBelowResponse);
 
-  // WatchAttested streams the current frontier and subsequent advances.
+  // WatchAttested streams the current frontier, then a message whenever its
+  // identity (height, root, provisional flag) changes. Without
+  // include_provisional the frontier only grows; with it, a finality recheck
+  // may also correct the streamed root in place, confirm it, or revoke it —
+  // after a revocation the new, possibly lower, frontier is re-emitted.
   rpc WatchAttested(WatchAttestedRequest) returns (stream WatchAttestedResponse);
 
   // VerifyStateRoot compares an expected root, and optionally a block hash,
@@ -144,8 +148,12 @@ message WatchAttestedRequest {
   bool include_provisional = 2;
 }
 
-// WatchAttestedResponse contains one frontier advance.
+// WatchAttestedResponse contains one frontier update.
 message WatchAttestedResponse {
+  // Root is the current frontier entry. Consumers must treat each message as
+  // the authoritative frontier — a provisional watch can see the same height
+  // again with a corrected root or cleared provisional flag, or a lower
+  // height after a provisional revocation.
   AttestedRoot root = 1;
 }
 

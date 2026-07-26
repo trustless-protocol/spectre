@@ -121,10 +121,21 @@ func (s *Server) AttestedRootAtOrBelow(_ context.Context, req *attestorpb.Attest
 	return &attestorpb.AttestedRootAtOrBelowResponse{Found: true, Root: toPB(entry)}, nil
 }
 
-// WatchAttested streams frontier advances: the current frontier on subscribe,
-// then a message whenever the highest qualifying entry grows. It intentionally
-// streams the frontier, not every feed entry — a game-verified root landing
-// below an already-streamed derived root does not re-emit.
+// frontierChanged reports whether the frontier's relay-relevant identity —
+// height, root, provisional status — differs. Source/GameIndex changes at an
+// identical (height, root) are not re-emitted: a game root landing at an
+// already-streamed derived height attests the same bytes.
+func frontierChanged(last, cur opstack.AttestedRoot) bool {
+	return cur.L2BlockNumber != last.L2BlockNumber || cur.Root != last.Root || cur.Provisional != last.Provisional
+}
+
+// WatchAttested streams the frontier: the current entry on subscribe, then a
+// message whenever its identity (height, root, provisional flag) changes.
+// Usually that is growth, but with include_provisional set the finalized
+// recheck can also correct the streamed root in place, confirm it, or revoke
+// it — revocation retreats the frontier and the new lower entry is re-emitted.
+// It intentionally streams the frontier, not every feed entry — a root landing
+// below the streamed frontier does not emit.
 func (s *Server) WatchAttested(req *attestorpb.WatchAttestedRequest, stream grpc.ServerStreamingServer[attestorpb.WatchAttestedResponse]) error {
 	a, err := s.chain(req.SrcChain)
 	if err != nil {
@@ -137,15 +148,21 @@ func (s *Server) WatchAttested(req *attestorpb.WatchAttestedRequest, stream grpc
 	ticker := time.NewTicker(poll)
 	defer ticker.Stop()
 
-	var last uint64
+	var last opstack.AttestedRoot
 	sent := false
 	for {
-		if entry, ok := frontier(a, req.IncludeProvisional); ok && (!sent || entry.L2BlockNumber > last) {
+		entry, ok := frontier(a, req.IncludeProvisional)
+		if ok && (!sent || frontierChanged(last, entry)) {
 			if err := stream.Send(&attestorpb.WatchAttestedResponse{Root: toPB(entry)}); err != nil {
 				return err
 			}
-			last = entry.L2BlockNumber
+			last = entry
 			sent = true
+		}
+		if !ok {
+			// The frontier vanished (every qualifying entry was provisional and
+			// revoked); re-announce whatever appears next, even if lower.
+			sent = false
 		}
 		select {
 		case <-stream.Context().Done():

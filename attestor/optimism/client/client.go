@@ -116,8 +116,11 @@ func (c *Client) AttestedRootAtOrBelow(ctx context.Context, srcChain string, l2B
 	return entry, true, nil
 }
 
-// WatchAttested streams frontier advances to fn until ctx is done or the
-// stream fails. fn returning an error stops the watch and propagates it.
+// WatchAttested streams frontier updates to fn until ctx is done or the
+// stream fails. Each entry is the authoritative frontier at that moment: with
+// includeProvisional it may repeat a height with a corrected root or cleared
+// provisional flag, or retreat after a provisional revocation. fn returning an
+// error stops the watch and propagates it.
 func (c *Client) WatchAttested(ctx context.Context, srcChain string, includeProvisional bool, fn func(AttestedRoot) error) error {
 	stream, err := c.svc.WatchAttested(ctx, &attestorpb.WatchAttestedRequest{
 		SrcChain:           srcChain,

@@ -162,6 +162,60 @@ func TestWatchStreamsFrontierAdvances(t *testing.T) {
 	}
 }
 
+// TestWatchEmitsProvisionalCorrections covers the provisional-watch legs the
+// height-only frontier tracking missed: an in-place root correction at the
+// same L2 height, and a frontier retreat after a provisional revocation.
+func TestWatchEmitsProvisionalCorrections(t *testing.T) {
+	a := newTestAttestor(t, "op-test")
+	now := time.Unix(4000, 0)
+	a.Store().AppendDerived(100, root(0x01), now, true) // provisional derived
+
+	srv := server.New(map[string]*opstack.OpStackAttestor{"op-test": a})
+	srv.WatchPoll = 10 * time.Millisecond
+	conn := dial(t, srv)
+	c := attestorpb.NewAttestorServiceClient(conn)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stream, err := c.WatchAttested(ctx, &attestorpb.WatchAttestedRequest{SrcChain: "op-test", IncludeProvisional: true})
+	if err != nil {
+		t.Fatalf("WatchAttested: %v", err)
+	}
+	recv := func(what string) *attestorpb.AttestedRoot {
+		t.Helper()
+		msg, err := stream.Recv()
+		if err != nil {
+			t.Fatalf("Recv(%s): %v", what, err)
+		}
+		return msg.GetRoot()
+	}
+
+	if first := recv("initial"); first.GetL2BlockNumber() != 100 || first.GetRoot()[0] != 0x01 || !first.GetProvisional() {
+		t.Fatalf("initial frontier = %+v, want provisional block 100 root 0x01…", first)
+	}
+
+	// In-place correction: the finalized recheck rewrites the derived root at
+	// the same height and confirms it. Height does not grow — the update must
+	// still be streamed or the watcher keeps the stale root.
+	a.Store().CorrectDerived(100, root(0x02), now)
+	if got := recv("correction"); got.GetL2BlockNumber() != 100 || got.GetRoot()[0] != 0x02 || got.GetProvisional() {
+		t.Fatalf("corrected frontier = %+v, want confirmed block 100 root 0x02…", got)
+	}
+
+	// Retreat: a provisional game match above the derived entry is revoked by
+	// the finalized recheck; the frontier falls back to the derived entry and
+	// must be re-emitted despite the lower height.
+	game := opstack.ProposedRoot{GameIndex: 7, RootClaim: root(0x03), L2BlockNumber: 200}
+	a.Store().RecordMatch(game, now, true)
+	if got := recv("game advance"); got.GetL2BlockNumber() != 200 {
+		t.Fatalf("advanced frontier = %+v, want block 200", got)
+	}
+	a.Store().CorrectProvisional(opstack.RecheckEntry{Game: game, ProvisionalMatch: true, LocalRoot: game.RootClaim}, root(0x04), now)
+	if got := recv("retreat"); got.GetL2BlockNumber() != 100 || got.GetRoot()[0] != 0x02 {
+		t.Fatalf("retreated frontier = %+v, want block 100 root 0x02…", got)
+	}
+}
+
 func TestClientPackageRoundTrip(t *testing.T) {
 	// The client package dials real addresses; reuse its conversion path by
 	// pointing a raw pb client at bufconn above, and exercise the typed client
