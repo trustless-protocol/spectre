@@ -1166,13 +1166,37 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to get wasm checksum: %w", err)
 			}
-			_, err = runCreateClientsCosmos(logger, cfg, configPath, wasmChecksum)
-			return err
+			// Create the shared L1/ETH wasm client on Cosmos first. Every L2 client is
+			// anchored to it (ClientState.profile.common.ethereum_client.client_id), so
+			// its auto-assigned id must exist before any L2 client is created.
+			l1ClientID, err := runCreateClientsCosmos(logger, cfg, configPath, wasmChecksum)
+			if err != nil {
+				return err
+			}
+			// Then create one L2 wasm client on Cosmos per --l2-config, injecting the
+			// L1 client id we just created into each rollup profile (so the operator
+			// does not hand-copy it). All Cosmos-side, same signer — one command per
+			// chain (see #255).
+			l2Configs, err := cmd.Flags().GetStringArray(flagL2Config)
+			if err != nil {
+				return err
+			}
+			for _, l2Path := range l2Configs {
+				l2cfg, err := loadL2ClientConfig(l2Path)
+				if err != nil {
+					return err
+				}
+				if err := runCreateClientsL2(logger, cfg, l2cfg, l1ClientID); err != nil {
+					return fmt.Errorf("create L2 client from %s: %w", l2Path, err)
+				}
+			}
+			return nil
 		},
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
 	cmd.Flags().String(flagSource, "", "ics26_client_id of the cosmos_to_eth source to target (required when several are configured)")
+	cmd.Flags().StringArray(flagL2Config, nil, "path to an L2 client config JSON; repeatable, one per L2 rollup source — creates its L2 wasm client on Cosmos anchored to the L1 client")
 	return cmd
 }
 

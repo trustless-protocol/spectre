@@ -689,11 +689,21 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, ctx services.Context, m
 	return nil
 }
 
-func (h *Handler) CreateEthClient(stdCtx context.Context, svcCtx services.Context, clientState exported.ClientState, consensusState exported.ConsensusState) (string, error) {
-	log.Printf("[CreateEthClientTx] starting")
-	cosmosClientID, err := cosmosRouterClientID(svcCtx)
-	if err != nil {
-		return "", fmt.Errorf("[CreateEthClientTx] %w", err)
+func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Context, clientState exported.ClientState, consensusState exported.ConsensusState, registerCounterparty bool) (string, error) {
+	log.Printf("[CreateWasmClientTx] starting")
+	// cosmosClientID is the counterparty client id to register (the client on the
+	// counterparty chain that tracks Cosmos). It is only derived+registered when
+	// registerCounterparty is set: the ETH beacon client establishes it here, but an
+	// L2 bootstrap does NOT — the L2-side client tracking Cosmos does not exist yet,
+	// so registering the ETH source's router client id would write a wrong, durable
+	// counterparty mapping onto the new L2 client.
+	var cosmosClientID string
+	if registerCounterparty {
+		id, err := cosmosRouterClientID(svcCtx)
+		if err != nil {
+			return "", fmt.Errorf("[CreateWasmClientTx] %w", err)
+		}
+		cosmosClientID = id
 	}
 
 	// Get the private key from environment variable
@@ -713,7 +723,7 @@ func (h *Handler) CreateEthClient(stdCtx context.Context, svcCtx services.Contex
 	if err != nil {
 		return "", err
 	}
-	log.Printf("[CreateEthClient] signer: %s", signerAddr)
+	log.Printf("[CreateWasmClient] signer: %s", signerAddr)
 
 	// Get chain configuration from environment
 	chainID := os.Getenv("COSMOS_CHAIN_ID")
@@ -740,15 +750,15 @@ func (h *Handler) CreateEthClient(stdCtx context.Context, svcCtx services.Contex
 			return "", fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
 		}
 	}
-	log.Printf("[CreateEthClientTx] gas config: gasLimit=%d fee=%d%s", gasLimit, feeAmount, feeDenom)
+	log.Printf("[CreateWasmClientTx] gas config: gasLimit=%d fee=%d%s", gasLimit, feeAmount, feeDenom)
 
 	// Query account info (account number and sequence) from the chain
-	log.Printf("[CreateEthClientTx] querying cosmos account info")
+	log.Printf("[CreateWasmClientTx] querying cosmos account info")
 	accountNumber, sequence, err := h.queryAccountInfo(stdCtx, svcCtx, signerAddr)
 	if err != nil {
 		return "", fmt.Errorf("failed to query account info: %w", err)
 	}
-	log.Printf("[CreateEthClientTx] account info: accountNumber=%d sequence=%d", accountNumber, sequence)
+	log.Printf("[CreateWasmClientTx] account info: accountNumber=%d sequence=%d", accountNumber, sequence)
 
 	// Setup encoding config
 	interfaceRegistry := codectypes.NewInterfaceRegistry()
@@ -764,7 +774,7 @@ func (h *Handler) CreateEthClient(stdCtx context.Context, svcCtx services.Contex
 	if err != nil {
 		return "", err
 	}
-	log.Printf("[CreateEthClientTx] MsgCreateClient built")
+	log.Printf("[CreateWasmClientTx] MsgCreateClient built")
 
 	// Build the transaction
 	txBuilder := txConfig.NewTxBuilder()
@@ -837,7 +847,7 @@ func (h *Handler) CreateEthClient(stdCtx context.Context, svcCtx services.Contex
 	}
 
 	// Broadcast the transaction
-	log.Printf("[CreateEthClientTx] broadcasting MsgCreateClient")
+	log.Printf("[CreateWasmClientTx] broadcasting MsgCreateClient")
 	bctx, bcancel := context.WithTimeout(stdCtx, cosmosRPCTimeout)
 	result, err := svcCtx.CosmosClient().BroadcastTxSync(bctx, txBytes)
 	bcancel()
@@ -849,10 +859,10 @@ func (h *Handler) CreateEthClient(stdCtx context.Context, svcCtx services.Contex
 		return "", fmt.Errorf("transaction failed with code %d: %s", result.Code, result.Log)
 	}
 
-	log.Printf("[CreateEthClient] MsgCreateClient broadcast successfully. Hash: %s", result.Hash.String())
+	log.Printf("[CreateWasmClient] MsgCreateClient broadcast successfully. Hash: %s", result.Hash.String())
 
 	// Wait for MsgCreateClient tx and extract the new client ID from events
-	log.Printf("[CreateEthClientTx] waiting for MsgCreateClient tx result")
+	log.Printf("[CreateWasmClientTx] waiting for MsgCreateClient tx result")
 	txResult, err := h.waitForTxResult(stdCtx, svcCtx, result.Hash, 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("failed waiting for MsgCreateClient tx: %w", err)
@@ -866,7 +876,14 @@ func (h *Handler) CreateEthClient(stdCtx context.Context, svcCtx services.Contex
 	if newClientID == "" {
 		return "", fmt.Errorf("MsgCreateClient tx confirmed but client_id not found in events")
 	}
-	log.Printf("[CreateEthClient] new ETH client ID: %s", newClientID)
+	log.Printf("[CreateWasmClient] new client ID: %s", newClientID)
+
+	// L2 bootstrap path: skip counterparty registration (see the registerCounterparty
+	// comment above). The client is created; its counterparty is registered later,
+	// once the L2-side client that tracks Cosmos exists.
+	if !registerCounterparty {
+		return newClientID, nil
+	}
 
 	// Build and broadcast MsgRegisterCounterparty as a separate transaction
 	registerMsg := clienttypesv2.NewMsgRegisterCounterparty(
@@ -875,15 +892,15 @@ func (h *Handler) CreateEthClient(stdCtx context.Context, svcCtx services.Contex
 		cosmosClientID,
 		signerAddr,
 	)
-	log.Printf("[CreateEthClientTx] MsgRegisterCounterparty built for clientID=%s", newClientID)
+	log.Printf("[CreateWasmClientTx] MsgRegisterCounterparty built for clientID=%s", newClientID)
 
 	// Re-query account info (sequence incremented after first tx)
-	log.Printf("[CreateEthClientTx] querying cosmos account info for register counterparty")
+	log.Printf("[CreateWasmClientTx] querying cosmos account info for register counterparty")
 	accountNumber, sequence, err = h.queryAccountInfo(stdCtx, svcCtx, signerAddr)
 	if err != nil {
 		return "", fmt.Errorf("failed to query account info for register counterparty: %w", err)
 	}
-	log.Printf("[CreateEthClientTx] register counterparty account info: accountNumber=%d sequence=%d", accountNumber, sequence)
+	log.Printf("[CreateWasmClientTx] register counterparty account info: accountNumber=%d sequence=%d", accountNumber, sequence)
 
 	txBuilder2 := txConfig.NewTxBuilder()
 	if err := txBuilder2.SetMsgs(registerMsg); err != nil {
@@ -945,7 +962,7 @@ func (h *Handler) CreateEthClient(stdCtx context.Context, svcCtx services.Contex
 		return "", fmt.Errorf("failed to encode register counterparty tx: %w", err)
 	}
 
-	log.Printf("[CreateEthClientTx] broadcasting MsgRegisterCounterparty")
+	log.Printf("[CreateWasmClientTx] broadcasting MsgRegisterCounterparty")
 	bctx2, bcancel2 := context.WithTimeout(stdCtx, cosmosRPCTimeout)
 	result2, err := svcCtx.CosmosClient().BroadcastTxSync(bctx2, txBytes2)
 	bcancel2()

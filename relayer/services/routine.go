@@ -777,7 +777,7 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, ctx Context, checksum s
 	}
 	log.Printf("[CreateEthClient] wasm client/consensus state prepared, broadcasting MsgCreateClient")
 
-	return w.TxHandler.CreateEthClient(stdCtx, ctx, &wasmClientState, &wasmConsensusState)
+	return w.TxHandler.CreateWasmClient(stdCtx, ctx, &wasmClientState, &wasmConsensusState, true)
 }
 
 type EthClientUpdateResult struct {

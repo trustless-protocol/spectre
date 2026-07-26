@@ -37,7 +37,12 @@ func init() {
 
 type TransactionHandler interface {
 	CreateCosmosClientContract(stdCtx context.Context, ctx Context, clientState, consensusHash []byte, initialPinnedValidatorSet client.ContractValidatorSet) (ethcommon.Address, error)
-	CreateEthClient(stdCtx context.Context, ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState) (string, error)
+	// CreateWasmClient submits MsgCreateClient for any 08-wasm client (ETH beacon,
+	// L2 rollup, ...) from an already-built wasm ClientState/ConsensusState and
+	// returns the auto-assigned client id. registerCounterparty additionally binds
+	// the counterparty client id (the ETH-side router client): true for the ETH
+	// beacon client, false for an L2 bootstrap whose counterparty does not exist yet.
+	CreateWasmClient(stdCtx context.Context, ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState, registerCounterparty bool) (string, error)
 	SendEthTx(stdCtx context.Context, ctx Context, msg any) error
 	SendEthTxBatch(stdCtx context.Context, ctx Context, msgs []any) error
 	SendCosmosTxBatch(stdCtx context.Context, ctx Context, msgs []any) error

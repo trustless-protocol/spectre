@@ -837,6 +837,45 @@ func toBlockNumArg(number *big.Int) string {
 	return hexutil.EncodeBig(number)
 }
 
+// L2BootstrapState is the trusted bootstrap state read directly from an L2 RPC to
+// seed an L2 wasm light client's initial consensus state: the execution state
+// root, the IBC-handler account's storage root, plus the block height and
+// timestamp. (Development-phase: these are read from the L2 node as trusted input;
+// production bootstrap will additionally verify them against L1 rollup proofs.)
+type L2BootstrapState struct {
+	Height            uint64
+	StateRoot         ethcommon.Hash
+	RouterStorageRoot ethcommon.Hash
+	TimestampSeconds  uint64
+}
+
+// GetL2BootstrapState reads the bootstrap roots for the L2 IBC handler at
+// blockNumber (nil = latest): the block's execution state root + timestamp, and
+// the ICS26Router account's storage root via eth_getProof (an empty storage-key
+// list still returns the account's storageHash).
+func GetL2BootstrapState(client *ethclient.Client, routerAddr ethcommon.Address, blockNumber *big.Int) (L2BootstrapState, error) {
+	header, err := client.HeaderByNumber(context.Background(), blockNumber)
+	if err != nil {
+		return L2BootstrapState{}, fmt.Errorf("l2 genesis: header by number: %w", err)
+	}
+	var proof ethProofResult
+	if err := client.Client().CallContext(
+		context.Background(), &proof, "eth_getProof",
+		routerAddr, []string{}, toBlockNumArg(header.Number),
+	); err != nil {
+		return L2BootstrapState{}, fmt.Errorf("l2 genesis: eth_getProof(%s): %w", routerAddr, err)
+	}
+	if proof.StorageHash == (ethcommon.Hash{}) {
+		return L2BootstrapState{}, fmt.Errorf("l2 genesis: router %s has no storage root at block %d (not a contract?)", routerAddr, header.Number)
+	}
+	return L2BootstrapState{
+		Height:            header.Number.Uint64(),
+		StateRoot:         header.Root,
+		RouterStorageRoot: proof.StorageHash,
+		TimestampSeconds:  header.Time,
+	}, nil
+}
+
 // GetEthNonMembershipProof generates a JSON-encoded MembershipProof for MsgTimeout.ProofUnreceived.
 //
 // It proves that no packet receipt commitment exists at the given IBC path on the ICS26Router contract.
