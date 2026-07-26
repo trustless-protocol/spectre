@@ -13,7 +13,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
-	"attestor/opstack"
+	"attestor/optimism/opstack"
 	attestorpb "attestor/types/attestor"
 )
 
@@ -51,14 +51,20 @@ func (s *Server) chain(srcChain string) (*opstack.OpStackAttestor, error) {
 func toPB(r opstack.AttestedRoot) *attestorpb.AttestedRoot {
 	root := make([]byte, len(r.Root))
 	copy(root, r.Root[:])
-	return &attestorpb.AttestedRoot{
+	response := &attestorpb.AttestedRoot{
 		L2BlockNumber: r.L2BlockNumber,
 		Root:          root,
 		Source:        r.Source,
-		GameIndex:     r.GameIndex,
 		Provisional:   r.Provisional,
 		AttestedAt:    r.AttestedAt.Unix(),
 	}
+	if r.Source == "" || r.Source == opstack.SourceGame {
+		// Game index zero is valid, so set the oneof wrapper explicitly.
+		response.Provenance = &attestorpb.AttestedRoot_GameIndex{
+			GameIndex: r.GameIndex,
+		}
+	}
+	return response
 }
 
 // frontier returns the highest qualifying feed entry.

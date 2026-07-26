@@ -29,8 +29,8 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
 
-	"attestor/opstack"
-	attestorserver "attestor/server"
+	"attestor/optimism/opstack"
+	attestorserver "attestor/optimism/server"
 )
 
 const flagConfigPath = "config"

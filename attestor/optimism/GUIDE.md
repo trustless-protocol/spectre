@@ -15,11 +15,11 @@ Contents: [Quickstart](#quickstart) · [Configuration](#configuration-reference)
 ## Quickstart
 
 ```bash
-just build-attestor                    # binary at attestor/attestor — no cgo, no LD_LIBRARY_PATH
-./attestor/attestor --config attestor/config.json
+just build-attestor                    # binary at attestor/optimism/attestor — no cgo, no LD_LIBRARY_PATH
+./attestor/optimism/attestor --config attestor/optimism/config.json
 ```
 
-The binary reads its own config file (template: `attestor/config.example.json` —
+The binary reads its own config file (template: `attestor/optimism/config.example.json` —
 the attestor no longer shares the relayer's `config.json`), consuming the
 `op_source` modules and the `server` block. Minimal OP Mainnet config:
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# End-to-end bring-up of the OP Stack attestor (attestor/GUIDE.md):
+# End-to-end bring-up of the OP Stack attestor (attestor/optimism/GUIDE.md):
 #   [op-reth + op-node replica] ← RPC ← [attestor] → metrics + gRPC feed
 #
 # Two modes:
@@ -10,7 +10,7 @@
 #      .op-devnet-run/attestor.env exists (written by run_op_stack.sh), it is
 #      sourced automatically — a bare ./scripts/local/run_op_attestor.sh
 #      attaches to the local devnet.
-#   2. Full bring-up:     provide OP_RETH_BIN + OP_NODE_BIN (built per attestor/GUIDE.md, Replica setup)
+#   2. Full bring-up:     provide OP_RETH_BIN + OP_NODE_BIN (built per attestor/optimism/GUIDE.md, Replica setup)
 #      plus L1_RPC_URL + L1_BEACON_URL; the script starts both and waits for
 #      optimism_syncStatus before pointing the attestor at it.
 #
@@ -114,7 +114,7 @@ sync_status() {
 if [ -n "${OP_NODE_RPC_URL:-}" ]; then
     log "using existing replica op-node at $OP_NODE_RPC_URL (bring-up skipped)"
 else
-    : "${OP_RETH_BIN:?OP_RETH_BIN is required when OP_NODE_RPC_URL is not set (attestor/GUIDE.md, Replica setup)}"
+    : "${OP_RETH_BIN:?OP_RETH_BIN is required when OP_NODE_RPC_URL is not set (attestor/optimism/GUIDE.md, Replica setup)}"
     : "${OP_NODE_BIN:?OP_NODE_BIN is required when OP_NODE_RPC_URL is not set}"
     : "${L1_BEACON_URL:?L1_BEACON_URL is required when OP_NODE_RPC_URL is not set (must serve blob sidecars)}"
     DATADIR=${DATADIR:-$RUN_DIR/op-reth-data}
@@ -123,7 +123,7 @@ else
 
     log "starting op-reth (log: $RUN_DIR/op-reth.log)"
     # --rpc.eth-proof-window: optimism_outputAtBlock needs eth_getProof at
-    # ~hours-old blocks; 100000 blocks ≈ 2.3 days at 2s (attestor/GUIDE.md, Replica setup).
+    # ~hours-old blocks; 100000 blocks ≈ 2.3 days at 2s (attestor/optimism/GUIDE.md, Replica setup).
     "$OP_RETH_BIN" node \
         --chain="$NETWORK" \
         --datadir="$DATADIR" \
@@ -167,7 +167,7 @@ else
 fi
 
 # --------------------------------------------- factory + respected game type ---
-# Read both fresh from the chain (governance can change them; attestor/GUIDE.md).
+# Read both fresh from the chain (governance can change them; attestor/optimism/GUIDE.md).
 if [ -z "${DISPUTE_GAME_FACTORY:-}" ] || [ -z "${RESPECTED_GAME_TYPE:-}" ]; then
     if [ -z "${OPTIMISM_PORTAL:-}" ] && [ "$NETWORK" = "op-mainnet" ]; then
         OPTIMISM_PORTAL=0xbEb5Fc579115071764c7423A4f12eDde41f106Ed
@@ -177,7 +177,7 @@ if [ -z "${DISPUTE_GAME_FACTORY:-}" ] || [ -z "${RESPECTED_GAME_TYPE:-}" ]; then
         DISPUTE_GAME_FACTORY=${DISPUTE_GAME_FACTORY:-$(cast call "$OPTIMISM_PORTAL" 'disputeGameFactory()(address)' --rpc-url "$L1_RPC_URL")}
         RESPECTED_GAME_TYPE=${RESPECTED_GAME_TYPE:-$(cast call "$OPTIMISM_PORTAL" 'respectedGameType()(uint32)' --rpc-url "$L1_RPC_URL")}
     elif [ "$NETWORK" = "op-mainnet" ]; then
-        # Documented values (attestor/GUIDE.md, measured 2026-07-22) — chain read preferred.
+        # Documented values (attestor/optimism/GUIDE.md, measured 2026-07-22) — chain read preferred.
         log "WARNING: cast unavailable — falling back to documented OP Mainnet values"
         DISPUTE_GAME_FACTORY=${DISPUTE_GAME_FACTORY:-0xe5965Ab5962eDc7477C8520243A95517CD252fA9}
         RESPECTED_GAME_TYPE=${RESPECTED_GAME_TYPE:-8}
@@ -193,7 +193,7 @@ log "building the attestor binary"
 if command -v just >/dev/null 2>&1; then
     just build-attestor
 else
-    (cd attestor && go build -o attestor ./cmd)
+    (cd attestor/optimism && go build -o attestor ./cmd)
 fi
 
 CONFIG=$RUN_DIR/config.json
@@ -223,7 +223,7 @@ EOF
 log "config written to $CONFIG"
 
 log "starting the attestor (log: $RUN_DIR/attestor.log)"
-./attestor/attestor --config "$CONFIG" > "$RUN_DIR/attestor.log" 2>&1 &
+./attestor/optimism/attestor --config "$CONFIG" > "$RUN_DIR/attestor.log" 2>&1 &
 ATTESTOR_PID=$!
 PIDS+=("$ATTESTOR_PID")
 echo "$ATTESTOR_PID" > "$RUN_DIR/attestor.pid"
@@ -241,7 +241,7 @@ cat <<EOF
   grpcurl -plaintext -d '{}' 127.0.0.1:$GRPC_PORT attestor.AttestorService/Info
   grpcurl -plaintext -d '{"src_chain":"$SRC_CHAIN"}' 127.0.0.1:$GRPC_PORT attestor.AttestorService/AttestedUpTo
 
-Healthy operation (attestor/GUIDE.md): 'ingested proposal: game ...' during the
+Healthy operation (attestor/optimism/GUIDE.md): 'ingested proposal: game ...' during the
 bootstrap window, then replica heads climbing on /metrics, a derived root
 every ~5 min once the gating head is covered, and 'attested game N' ~hourly.
 Ctrl-C stops the attestor$( [ -f "$RUN_DIR/op-node.pid" ] && echo " and the replica" ).

@@ -19,10 +19,16 @@ build-relayer:
 build-go-relayer:
 	cd relayer && go build ./...
 
-# Build the attestor sidecar binary
+# Build the standalone Arbitrum attestor sidecar.
+[group('build')]
+build-arbitrum-attestor:
+	mkdir -p attestor/arbitrum/bin
+	cd attestor/arbitrum && go build -o bin/attestor ./cmd
+
+# Build the Optimism attestor sidecar binary
 [group('build')]
 build-attestor:
-	cd attestor && go build -o attestor ./cmd
+	cd attestor/optimism && go build -o attestor ./cmd
 
 # Build and optimize the eth wasm light client using `cosmwasm/optimizer`. Requires `docker` and `gzip`
 [group('build')]
@@ -106,7 +112,8 @@ lint-solidity:
 lint-go:
 	@echo "Linting the Go code..."
 	cd relayer && golangci-lint run
-	cd attestor && golangci-lint run
+	cd attestor/arbitrum && golangci-lint run
+	cd attestor/optimism && golangci-lint run
 	cd e2e/interchaintestv8 && golangci-lint run
 	cd packages/go-abigen && golangci-lint run
 
@@ -203,11 +210,17 @@ test-go-relayer:
 	@echo "Running Go relayer tests..."
 	cd relayer && go test -v ./...
 
-# Run the attestor sidecar tests (own module, no native deps)
+# Run the standalone Arbitrum attestor tests.
+[group('test')]
+test-arbitrum-attestor:
+	@echo "Running Arbitrum attestor tests..."
+	cd attestor/arbitrum && go test -v ./...
+
+# Run the Optimism attestor sidecar tests (own module, no native deps)
 [group('test')]
 test-attestor:
-	@echo "Running attestor tests..."
-	cd attestor && go test -v ./...
+	@echo "Running Optimism attestor tests..."
+	cd attestor/optimism && go test -v ./...
 
 # Run any e2e test using the test's full name. For example, `just test-e2e TestWithIbcEurekaTestSuite/Test_Deploy`
 #

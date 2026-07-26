@@ -11,8 +11,8 @@ import (
 	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
 
-	contractDisputeGameFactory "attestor/bindings/DisputeGameFactory"
-	contractFaultDisputeGame "attestor/bindings/FaultDisputeGame"
+	contractDisputeGameFactory "attestor/optimism/bindings/DisputeGameFactory"
+	contractFaultDisputeGame "attestor/optimism/bindings/FaultDisputeGame"
 )
 
 // FactoryGameSource ingests output-root proposals by enumerating the L1

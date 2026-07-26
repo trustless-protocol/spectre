@@ -11,9 +11,9 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 
-	"attestor/client"
-	"attestor/opstack"
-	"attestor/server"
+	"attestor/optimism/client"
+	"attestor/optimism/opstack"
+	"attestor/optimism/server"
 	attestorpb "attestor/types/attestor"
 )
 

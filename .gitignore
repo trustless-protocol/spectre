@@ -67,7 +67,7 @@ docs/*_VI.md
 .state
 *.pid
 # Local OP attestor / devnet runtime state (scripts/local/run_op_attestor.sh, run_op_stack.sh)
-attestor/attestor
+attestor/optimism/attestor
 .op-attestor-run/
 .op-devnet-run/
 

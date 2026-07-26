@@ -1,15 +1,17 @@
-module attestor
+module attestor/optimism
 
 go 1.25.7
 
 require (
+	attestor/types v0.0.0
 	github.com/ethereum/go-ethereum v1.17.4
 	github.com/prometheus/client_golang v1.24.0
 	github.com/spf13/cobra v1.10.2
 	go.uber.org/zap v1.28.0
 	google.golang.org/grpc v1.82.1
-	google.golang.org/protobuf v1.36.11
 )
+
+replace attestor/types => ../types
 
 require (
 	github.com/Microsoft/go-winio v0.6.2 // indirect
@@ -52,4 +54,5 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
+	google.golang.org/protobuf v1.36.11 // indirect
 )

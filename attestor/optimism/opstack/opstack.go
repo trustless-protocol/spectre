@@ -8,7 +8,7 @@ import (
 
 	"go.uber.org/zap"
 
-	"attestor"
+	"attestor/optimism"
 )
 
 // gameSource and replica are the two upstream dependencies of the attestation

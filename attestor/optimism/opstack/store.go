@@ -10,7 +10,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 
-	"attestor"
+	"attestor/optimism"
 )
 
 // ProposedRoot is one output-root proposal ingested from the DisputeGameFactory.

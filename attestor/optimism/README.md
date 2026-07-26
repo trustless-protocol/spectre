@@ -25,7 +25,7 @@ replica heads → resolve provisional rechecks the finalized head now covers →
 decide pending games → self-attest a derived root at the gating head.
 
 ```
-attestor/
+attestor/optimism/
 ├── attestor.go       Attestor interface + failure backoff
 ├── opstack/          the OP Stack implementation
 │   ├── opstack.go    attestation loop (ingest → heads → rechecks → verdicts → derived)
@@ -38,13 +38,14 @@ attestor/
 ├── server/           read-only gRPC service over the running attestors
 ├── client/           typed Go client mirroring the store's read interface
 ├── cmd/              the `attestor` binary (own config loader, metrics, gRPC)
-├── bindings/         GENERATED abigen bindings — never hand-edit
-└── types/attestor/   GENERATED buf output of proto/attestor/attestor.proto
+└── bindings/         GENERATED abigen bindings — never hand-edit
 ```
 
 Its own Go module, **no cgo** — builds and tests without `libgaraga_rs.so`.
-The gRPC proto (`../proto/attestor/attestor.proto`, generated via
-`../buf.gen.attestor.yaml`) is the **only contract** with the relayer.
+The gRPC proto (`../../proto/attestor/attestor.proto`, generated via
+`../../buf.gen.attestor.yaml`) is the **only contract** with the relayer.
+Both sidecars import its shared generated Go module from
+`../types/attestor`.
 
 ## gRPC API (`attestor.AttestorService`)
 
@@ -62,14 +63,14 @@ Provisional semantics are defined in the Operator Guide's
 | `AttestedRootAtOrBelow` | The relay-path query: highest attested root covering a packet's height |
 | `WatchAttested` | Server-streamed frontier advances (streams the frontier, not every entry) |
 
-Go consumers use `attestor/client` (`client.Dial(addr)`), which mirrors the
-store's read interface — in-process and sidecar consumption are
+Go consumers use `attestor/optimism/client` (`client.Dial(addr)`), which
+mirrors the store's read interface — in-process and sidecar consumption are
 interchangeable.
 
 ## Development
 
 ```bash
-just build-attestor           # binary at attestor/attestor
+just build-attestor           # binary at attestor/optimism/attestor
 just test-attestor            # go test -race -count=1 ./... — no network needed
 ```
 

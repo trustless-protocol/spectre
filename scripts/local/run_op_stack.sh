@@ -304,7 +304,7 @@ export DISPUTE_GAME_FACTORY=$DISPUTE_GAME_FACTORY
 export OPTIMISM_PORTAL=$OPTIMISM_PORTAL
 export RESPECTED_GAME_TYPE=$RESPECTED_GAME_TYPE
 export SRC_CHAIN=opdev
-# Low-latency profile (attestor/GUIDE.md "fastest safe profile"): attest
+# Low-latency profile (attestor/optimism/GUIDE.md "fastest safe profile"): attest
 # unsafe-head roots ~seconds after block production; roots stay provisional
 # until the finalized recheck confirms them (consumers pass
 # include_provisional=true for the fresh frontier).
