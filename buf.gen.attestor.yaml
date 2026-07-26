@@ -1,0 +1,14 @@
+# Generates the attestor sidecar gRPC bindings into the attestor module
+# (the main buf.gen.yaml generates into the e2e module instead).
+version: v2
+plugins:
+  - local: protoc-gen-go
+    out: attestor/types
+    opt: paths=source_relative
+  - local: protoc-gen-go-grpc
+    out: attestor/types
+    opt: paths=source_relative
+inputs:
+  - directory: proto
+    paths:
+      - proto/attestor

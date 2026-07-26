@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+package attestor;
+
+option go_package = "attestor/types/attestor;attestorpb";
+
+// The attestor sidecar service definition.
+// The attestor runs next to a verify-mode replica of an OP Stack chain and
+// maintains a feed of output roots it has verified by replaying the L2 state
+// transition from L1 data. The relayer connects to this service and relays
+// only against roots the attestor has affirmed.
+service AttestorService {
+    // Report every attested chain with its replica heads and feed frontiers.
+    rpc Info (InfoRequest) returns (InfoResponse);
+    // Return the attested frontier: the highest attested root for a chain.
+    rpc AttestedUpTo (AttestedUpToRequest) returns (AttestedUpToResponse);
+    // Return the highest attested root at or below an L2 block — the query
+    // the relayer uses to pick a root that covers a packet's height.
+    rpc AttestedRootAtOrBelow (AttestedRootAtOrBelowRequest) returns (AttestedRootAtOrBelowResponse);
+    // Stream attested-frontier advances for a chain. The server sends the
+    // current frontier on subscribe, then a message whenever it grows.
+    rpc WatchAttested (WatchAttestedRequest) returns (stream WatchAttestedResponse);
+}
+
+// One attested output root from the feed.
+message AttestedRoot {
+    // The L2 block number the root commits to.
+    uint64 l2_block_number = 1;
+    // The 32-byte output root.
+    bytes root = 2;
+    // Where the root came from: "derived" (self-computed at the configured
+    // head) or "game" (a DisputeGameFactory proposal confirmed by replay).
+    string source = 3;
+    // The dispute game index; meaningful only when source is "game".
+    uint64 game_index = 4;
+    // True while the root awaits the finalized-head recheck.
+    bool provisional = 5;
+    // Unix seconds when the attestor recorded the root.
+    int64 attested_at = 6;
+}
+
+// The info request message.
+message InfoRequest {}
+
+// Per-chain attestor status.
+message ChainInfo {
+    // The source chain identifier (the op_source module's src_chain).
+    string src_chain = 1;
+    // The configured gating head: "finalized", "safe" or "unsafe".
+    string attestation_head = 2;
+    // True once the replica has reported a sync status.
+    bool replica_seen = 3;
+    // The replica's unsafe L2 head (sequencer gossip).
+    uint64 replica_unsafe_l2 = 4;
+    // The replica's safe L2 head (derived from L1).
+    uint64 replica_safe_l2 = 5;
+    // The replica's finalized L2 head (derived from finalized L1).
+    uint64 replica_finalized_l2 = 6;
+    // Ingested respected-type games awaiting a verdict.
+    uint64 pending_games = 7;
+    // The confirmed attested frontier; absent when nothing is attested yet.
+    AttestedRoot attested_up_to = 8;
+    // The frontier including provisional entries; absent when empty.
+    AttestedRoot attested_up_to_provisional = 9;
+}
+
+// The info response message.
+message InfoResponse {
+    // Status for every configured chain.
+    repeated ChainInfo chains = 1;
+}
+
+// The attested-frontier request message.
+message AttestedUpToRequest {
+    // The source chain identifier.
+    string src_chain = 1;
+    // Whether provisional (below-finalized) roots count toward the frontier.
+    bool include_provisional = 2;
+}
+
+// The attested-frontier response message.
+message AttestedUpToResponse {
+    // False when nothing qualifying has been attested yet.
+    bool found = 1;
+    // The frontier entry; set only when found.
+    AttestedRoot root = 2;
+}
+
+// The at-or-below query request message.
+message AttestedRootAtOrBelowRequest {
+    // The source chain identifier.
+    string src_chain = 1;
+    // The inclusive upper bound on the L2 block number.
+    uint64 l2_block_number = 2;
+    // Whether provisional (below-finalized) roots qualify.
+    bool include_provisional = 3;
+}
+
+// The at-or-below query response message.
+message AttestedRootAtOrBelowResponse {
+    // False when no qualifying root exists at or below the bound.
+    bool found = 1;
+    // The best qualifying entry; set only when found.
+    AttestedRoot root = 2;
+}
+
+// The watch response message: one attested-frontier advance.
+message WatchAttestedResponse {
+    // The new frontier entry.
+    AttestedRoot root = 1;
+}
+
+// The watch request message.
+message WatchAttestedRequest {
+    // The source chain identifier.
+    string src_chain = 1;
+    // Whether provisional (below-finalized) roots advance the streamed frontier.
+    bool include_provisional = 2;
+}

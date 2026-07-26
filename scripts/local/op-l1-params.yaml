@@ -1,0 +1,49 @@
+# L1 for the local OP Stack devnet (scripts/local/run_op_stack.sh).
+# Cloned from the eth-network-params.yaml recipe used by run_eth_node.sh so
+# both devnets run the same style of L1 (geth + lighthouse, fast slots), but
+# kept as a separate file/enclave so the OP devnet owns its lifecycle
+# end-to-end and never disturbs the ETH<->Cosmos devnet.
+participants:
+  - el_type: geth
+    cl_type: lighthouse
+    # Both images pinned, never :latest — a stale docker cache of a moving
+    # tag breaks bring-up in confusing ways. Latest geth release; needs the
+    # run_op_stack.sh ethereum-package clone patch that drops
+    # --allow-insecure-unlock (the 2025-09 package still passes it, geth
+    # v1.17 removed it).
+    el_image: ethereum/client-go:v1.17.4 # 2026-06-22
+    # Latest lighthouse release. Must be >= v8 anyway: op-node >= v1.18
+    # fetches blobs via the /eth/v1/beacon/blobs endpoint, which lighthouse
+    # only implements from v8 — on older versions the route 404s and L2
+    # derivation stalls at safe head 0 forever. (Moot while the batcher runs
+    # calldata DA, but keeps the blob path viable.)
+    cl_image: sigp/lighthouse:v8.2.1 # 2026-07-21
+    # PeerDAS: the single node must custody ALL data columns so it can both
+    # produce blob blocks and reconstruct blobs for /eth/v1/beacon/blobs
+    # (which op-node consumes). Also satisfies the package's "Fulu needs a
+    # supernode" validation.
+    supernode: true
+
+network_params:
+  # Fusaka (Fulu/Osaka) from genesis — required for blob batches: lighthouse
+  # v8 is PeerDAS-native and cannot publish pre-Fulu blob blocks (it demands
+  # cell proofs), and geth v1.17 speaks Osaka. This is also what OP Mainnet's
+  # L1 runs today, so the batcher/op-node blob path gets production parity.
+  fulu_fork_epoch: 0
+  # 2s per slot -> epoch = 64s, finality ~2 min. Every L1-bound wait in the
+  # OP bring-up (op-deployer txs, batcher lag, first dispute game) shrinks
+  # ~3x vs the 6s slots the optimism-package bundled L1 used.
+  seconds_per_slot: 2
+  genesis_delay: 10
+  # op-deployer requires the deterministic-deployment (create2) proxy;
+  # ethereum-package does not preload it by default.
+  additional_preloaded_contracts: '
+    {
+      "0x4e59b44847b379578588920cA78FbF26c0B4956C": {
+        "balance": "0ETH",
+        "code": "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3",
+        "storage": {},
+        "nonce": "1"
+      }
+    }
+  '

@@ -52,3 +52,12 @@ jobs:
         env:
           LD_LIBRARY_PATH: ${{ github.workspace }}/third_party/ecip-gnark
         run: go test ./...
+
+      # The attestor sidecar is its own module with no native dependencies.
+      - name: Build attestor
+        working-directory: attestor
+        run: go build ./...
+
+      - name: Test attestor
+        working-directory: attestor
+        run: go test ./...

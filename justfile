@@ -19,6 +19,11 @@ build-relayer:
 build-go-relayer:
 	cd relayer && go build ./...
 
+# Build the attestor sidecar binary
+[group('build')]
+build-attestor:
+	cd attestor && go build -o attestor ./cmd
+
 # Build and optimize the eth wasm light client using `cosmwasm/optimizer`. Requires `docker` and `gzip`
 [group('build')]
 build-cw-ics08-wasm-eth:
@@ -101,6 +106,7 @@ lint-solidity:
 lint-go:
 	@echo "Linting the Go code..."
 	cd relayer && golangci-lint run
+	cd attestor && golangci-lint run
 	cd e2e/interchaintestv8 && golangci-lint run
 	cd packages/go-abigen && golangci-lint run
 
@@ -165,6 +171,7 @@ generate-ethereum-types:
 generate-buf:
     @echo "Generating Protobuf files for relayer"
     buf generate --template buf.gen.yaml
+    buf generate --template buf.gen.attestor.yaml
 
 shadowfork := if env("ETH_RPC_URL", "") == "" { "--no-match-path test/shadowfork/*" } else { "" }
 
@@ -195,6 +202,12 @@ test-abigen:
 test-go-relayer:
 	@echo "Running Go relayer tests..."
 	cd relayer && go test -v ./...
+
+# Run the attestor sidecar tests (own module, no native deps)
+[group('test')]
+test-attestor:
+	@echo "Running attestor tests..."
+	cd attestor && go test -v ./...
 
 # Run any e2e test using the test's full name. For example, `just test-e2e TestWithIbcEurekaTestSuite/Test_Deploy`
 #
