@@ -1,6 +1,9 @@
 {
     "modules": [
         {
+            "name": "cosmos-to-eth",
+            "src_chain": "cosmos",
+            "dst_chain": "ethereum",
             "config": {
                 "cosmos_wasm_client_id": "",
                 "eth_rpc_url": "http://127.0.0.1:59619",
@@ -19,15 +22,15 @@
                 "update_client": "0x086f77c5686dfe3f2f8fe487c5f8d357952c8556",
                 "signature_verifier": "0x703848f4c85f18e3acd8196c8ec91eb0b7bd0797",
                 "rotation_threshold": "5/6"
-            },
-            "name": "cosmos_to_eth",
-            "src_chain": "test-ibc-eth"
+            }
         },
         {
+            "name": "eth-to-cosmos",
+            "src_chain": "ethereum",
+            "dst_chain": "cosmos",
             "config": {
                 "eth_beacon_api_url": "http://127.0.0.1:59717"
-            },
-            "name": "eth_to_cosmos"
+            }
         }
     ],
     "batch": {

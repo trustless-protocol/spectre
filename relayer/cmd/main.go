@@ -23,6 +23,7 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
+	"relayer/chain"
 	tendermintClient "relayer/client"
 	"relayer/keys"
 	"relayer/prover"
@@ -82,9 +83,75 @@ type ethToCosmosConfig struct {
 }
 
 type configModule struct {
-	Name     string          `json:"name"`
+	// Name is a free-form human label (logs / diagnostics). For legacy configs it
+	// doubles as the direction selector when dst_chain is absent (back-compat).
+	Name string `json:"name"`
+	// SrcChain / DstChain are chain kinds (chain.ChainType: "cosmos", "ethereum",
+	// "opstack", "arbitrum") in the canonical schema; the (src, dst) pair selects
+	// the relay direction. In a legacy config (no dst_chain) src_chain instead
+	// carries the ics26_client_id fallback.
 	SrcChain string          `json:"src_chain"`
+	DstChain string          `json:"dst_chain"`
+	Builder  string          `json:"builder"`
 	Config   json.RawMessage `json:"config"`
+}
+
+// moduleDirection is the relay direction a config module resolves to.
+type moduleDirection string
+
+const (
+	dirCosmosToEth moduleDirection = "cosmos_to_eth"
+	dirEthToCosmos moduleDirection = "eth_to_cosmos"
+	dirL2ToCosmos  moduleDirection = "l2_to_cosmos"
+	dirCosmosToL2  moduleDirection = "cosmos_to_l2"
+)
+
+// isChainKind reports whether s names a known chain family (chain.ChainType).
+func isChainKind(s string) bool {
+	switch chain.ChainType(s) {
+	case chain.Cosmos, chain.Ethereum, chain.OPStack, chain.Arbitrum:
+		return true
+	default:
+		return false
+	}
+}
+
+// classifyModule resolves a module's relay direction. A module is CANONICAL when
+// BOTH src_chain and dst_chain are known chain kinds — the (src, dst) pair selects
+// the direction through the table below, so a new direction is added by extending
+// the table + its adapter, not by editing a name switch. Otherwise the module is
+// LEGACY and dispatches on `name`; this is deliberate back-compat, because an old
+// config may carry a junk dst_chain (a since-removed field) or a src_chain that is
+// really the ics26_client_id — neither is a valid chain kind, so such a module
+// correctly stays on the legacy path. isLegacy keeps the src_chain ->
+// ics26_client_id fallback that the canonical schema no longer overloads. An
+// unrecognized module is a hard error — never silently dropped.
+func classifyModule(m configModule) (dir moduleDirection, isLegacy bool, err error) {
+	if isChainKind(m.SrcChain) && isChainKind(m.DstChain) {
+		src := chain.ChainType(m.SrcChain)
+		dst := chain.ChainType(m.DstChain)
+		switch {
+		case src == chain.Cosmos && dst == chain.Ethereum:
+			return dirCosmosToEth, false, nil
+		case src == chain.Ethereum && dst == chain.Cosmos:
+			return dirEthToCosmos, false, nil
+		case (src == chain.OPStack || src == chain.Arbitrum) && dst == chain.Cosmos:
+			return dirL2ToCosmos, false, nil
+		case src == chain.Cosmos && (dst == chain.OPStack || dst == chain.Arbitrum):
+			return dirCosmosToL2, false, nil
+		default:
+			return "", false, fmt.Errorf("module %q: unsupported direction src_chain=%q dst_chain=%q", m.Name, m.SrcChain, m.DstChain)
+		}
+	}
+	switch m.Name {
+	case string(dirCosmosToEth):
+		return dirCosmosToEth, true, nil
+	case string(dirEthToCosmos):
+		return dirEthToCosmos, true, nil
+	default:
+		return "", false, fmt.Errorf(
+			"module %q: unrecognized module; use a legacy name (cosmos_to_eth / eth_to_cosmos) or declare src_chain + dst_chain as chain kinds (cosmos, ethereum, opstack, arbitrum)", m.Name)
+	}
 }
 
 type serverConfig struct {
@@ -222,46 +289,53 @@ func replaceConfigMemberForSource(data []byte, sourceClientID, member, value str
 			return nil, err
 		}
 
-		nameStart, nameEnd, ok, err := findJSONObjectMember(data, moduleStart, "name")
+		// Classify this module by the SAME rule loadConfig/classifyModule uses
+		// (canonical src_chain/dst_chain first, legacy name fallback), NOT by a raw
+		// name == "cosmos_to_eth" check. A canonical config's name is a free-form
+		// label (e.g. "cosmos-to-eth"), so a name check would miss it and write-back
+		// would fail with "not found" after create-clients mutated chain state.
+		name, err := moduleStringMember(data, moduleStart, "name")
 		if err != nil {
 			return nil, err
 		}
-		if ok {
-			var name string
-			if err := json.Unmarshal(data[nameStart:nameEnd], &name); err != nil {
-				return nil, fmt.Errorf("parse module name: %w", err)
+		srcChain, err := moduleStringMember(data, moduleStart, "src_chain")
+		if err != nil {
+			return nil, err
+		}
+		dstChain, err := moduleStringMember(data, moduleStart, "dst_chain")
+		if err != nil {
+			return nil, err
+		}
+		if dir, _, cerr := classifyModule(configModule{Name: name, SrcChain: srcChain, DstChain: dstChain}); cerr == nil && dir == dirCosmosToEth {
+			configStart, configEnd, ok, err := findJSONObjectMember(data, moduleStart, "config")
+			if err != nil {
+				return nil, err
 			}
-			if name == "cosmos_to_eth" {
-				configStart, configEnd, ok, err := findJSONObjectMember(data, moduleStart, "config")
+			if !ok || configStart >= len(data) || data[configStart] != '{' {
+				return nil, fmt.Errorf("cosmos_to_eth.config is not an object")
+			}
+
+			matches := sourceClientID == ""
+			if !matches {
+				id, err := moduleSourceClientID(data, moduleStart, configStart)
 				if err != nil {
 					return nil, err
 				}
-				if !ok || configStart >= len(data) || data[configStart] != '{' {
-					return nil, fmt.Errorf("cosmos_to_eth.config is not an object")
+				matches = id == sourceClientID
+			}
+			if matches {
+				valueStart, valueEnd, ok, err := findJSONObjectMember(data, configStart, member)
+				if err != nil {
+					return nil, err
 				}
-
-				matches := sourceClientID == ""
-				if !matches {
-					id, err := moduleSourceClientID(data, moduleStart, configStart)
-					if err != nil {
-						return nil, err
-					}
-					matches = id == sourceClientID
+				if ok {
+					out := make([]byte, 0, len(data)-valueEnd+valueStart+len(encodedValue))
+					out = append(out, data[:valueStart]...)
+					out = append(out, encodedValue...)
+					out = append(out, data[valueEnd:]...)
+					return out, nil
 				}
-				if matches {
-					valueStart, valueEnd, ok, err := findJSONObjectMember(data, configStart, member)
-					if err != nil {
-						return nil, err
-					}
-					if ok {
-						out := make([]byte, 0, len(data)-valueEnd+valueStart+len(encodedValue))
-						out = append(out, data[:valueStart]...)
-						out = append(out, encodedValue...)
-						out = append(out, data[valueEnd:]...)
-						return out, nil
-					}
-					return insertJSONObjectMember(data, configStart, configEnd, member, encodedValue)
-				}
+				return insertJSONObjectMember(data, configStart, configEnd, member, encodedValue)
 			}
 		}
 
@@ -279,6 +353,24 @@ func replaceConfigMemberForSource(data []byte, sourceClientID, member, value str
 		return nil, fmt.Errorf("cosmos_to_eth source %q not found in config", sourceClientID)
 	}
 	return nil, fmt.Errorf("module cosmos_to_eth not found in config")
+}
+
+// moduleStringMember reads an optional string member of the raw JSON module object
+// at moduleStart, returning "" when the member is absent (so classification can run
+// on whatever subset of name/src_chain/dst_chain the config carries).
+func moduleStringMember(data []byte, moduleStart int, key string) (string, error) {
+	start, end, ok, err := findJSONObjectMember(data, moduleStart, key)
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return "", nil
+	}
+	var s string
+	if err := json.Unmarshal(data[start:end], &s); err != nil {
+		return "", fmt.Errorf("parse module %s: %w", key, err)
+	}
+	return s, nil
 }
 
 func skipJSONSpace(data []byte, i int) int {
@@ -486,20 +578,31 @@ func loadConfig(configPath string) (*appConfig, error) {
 		batch.BatchPeriods = time.Duration(jc.Batch.BatchPeriodSeconds) * time.Second
 	}
 	for _, m := range jc.Modules {
-		switch m.Name {
-		case "cosmos_to_eth":
+		dir, isLegacy, err := classifyModule(m)
+		if err != nil {
+			return nil, err
+		}
+		switch dir {
+		case dirCosmosToEth:
 			var one cosmosToEthConfig
 			if err := json.Unmarshal(m.Config, &one); err != nil {
-				return nil, fmt.Errorf("failed to parse cosmos_to_eth config: %w", err)
+				return nil, fmt.Errorf("module %q: parse cosmos_to_eth config: %w", m.Name, err)
 			}
-			if one.ICS26ClientID == "" {
+			// Legacy configs overloaded src_chain as the ics26_client_id fallback;
+			// the canonical schema keeps src_chain as the chain kind, so only fall
+			// back for a legacy module.
+			if one.ICS26ClientID == "" && isLegacy {
 				one.ICS26ClientID = m.SrcChain
 			}
 			c2eList = append(c2eList, one)
-		case "eth_to_cosmos":
+		case dirEthToCosmos:
 			if err := json.Unmarshal(m.Config, &e2c); err != nil {
-				return nil, fmt.Errorf("failed to parse eth_to_cosmos config: %w", err)
+				return nil, fmt.Errorf("module %q: parse eth_to_cosmos config: %w", m.Name, err)
 			}
+		case dirL2ToCosmos, dirCosmosToL2:
+			// Recognized direction, but the L2 relay adapter is not wired yet — fail
+			// loud rather than silently ignoring a configured module.
+			return nil, fmt.Errorf("module %q: %s relay is recognized but its adapter is not wired yet (l2rollup is a skeleton)", m.Name, dir)
 		}
 	}
 	if len(c2eList) > 0 {

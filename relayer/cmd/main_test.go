@@ -380,6 +380,33 @@ func TestReplaceConfigMemberForSourceViaSrcChain(t *testing.T) {
 	}
 }
 
+// TestReplaceConfigMemberForSourceCanonical is the regression for the canonical
+// schema: the module carries a free-form name label ("cosmos-to-eth") and is
+// classified by src_chain/dst_chain, exactly as loadConfig/classifyModule does.
+// The old write-back matched name == "cosmos_to_eth" and so failed to find a
+// canonical module after create-clients mutated chain state. It must also skip the
+// eth->cosmos module even when it shares the source id.
+func TestReplaceConfigMemberForSourceCanonical(t *testing.T) {
+	t.Parallel()
+
+	in := `{"modules":[` +
+		`{"name":"eth-to-cosmos","src_chain":"ethereum","dst_chain":"cosmos","config":{"ics26_client_id":"chain-a","ics07_client":"0xETH"}},` +
+		`{"name":"cosmos-to-eth","src_chain":"cosmos","dst_chain":"ethereum","config":{"ics26_client_id":"chain-a","ics07_client":"0xAAA"}}` +
+		`]}`
+	out, err := replaceConfigMemberForSource([]byte(in), "chain-a", "ics07_client", "0xNEW")
+	if err != nil {
+		t.Fatalf("replaceConfigMemberForSource() error = %v", err)
+	}
+	got := string(out)
+	if !strings.Contains(got, `"ics26_client_id":"chain-a","ics07_client":"0xNEW"`) {
+		t.Fatalf("canonical cosmos->eth module not updated, got: %s", got)
+	}
+	// The eth->cosmos module (same source id, wrong direction) must be untouched.
+	if !strings.Contains(got, `"ics07_client":"0xETH"`) {
+		t.Fatalf("eth->cosmos module must be skipped, got: %s", got)
+	}
+}
+
 func TestSelectSource(t *testing.T) {
 	t.Parallel()
 
