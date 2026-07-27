@@ -14,13 +14,9 @@ fi
 config_path="${ATTESTOR_CONFIG:-/config/config.json}"
 grpc_listen_address="${ATTESTOR_GRPC_LISTEN_ADDRESS:-0.0.0.0:50051}"
 nitro_binary="${NITRO_BINARY_PATH:-/usr/local/bin/nitro}"
-<<<<<<< HEAD
 nitro_binary_hash_file="${NITRO_BINARY_SHA256_FILE:-/usr/local/share/fast-ibc/nitro.sha256}"
 expected_nitro_binary_hash="${NITRO_BINARY_SHA256:-}"
 nitro_allowed_wasm_module_roots="${NITRO_ALLOWED_WASM_MODULE_ROOTS:-/home/user/nitro-legacy/machines,/home/user/target/machines}"
-=======
-expected_nitro_binary_hash="${NITRO_BINARY_SHA256:-}"
->>>>>>> main
 nitro_data_dir="${NITRO_DATA_DIR:-/var/lib/fast-ibc/nitro}"
 nitro_ipc_path="${NITRO_IPC_PATH:-/run/fast-ibc/nitro.ipc}"
 attestor_state_path="${ATTESTOR_STATE_PATH:-/var/lib/fast-ibc/nitro/attested-roots.json}"
@@ -28,7 +24,6 @@ rendered_config="/run/fast-ibc/attestor.json"
 
 [ -r "$config_path" ] || fail "config file is not readable: $config_path"
 [ -x "$nitro_binary" ] || fail "Nitro binary is not executable: $nitro_binary"
-<<<<<<< HEAD
 if [ -z "$expected_nitro_binary_hash" ]; then
 	[ -r "$nitro_binary_hash_file" ] ||
 		fail "Nitro binary SHA-256 file is not readable: $nitro_binary_hash_file"
@@ -38,9 +33,6 @@ fi
 	fail "expected Nitro binary SHA-256 must contain 64 hexadecimal characters"
 [ -n "$nitro_allowed_wasm_module_roots" ] ||
 	fail "NITRO_ALLOWED_WASM_MODULE_ROOTS must not be empty"
-=======
-[ -n "$expected_nitro_binary_hash" ] || fail "NITRO_BINARY_SHA256 is required"
->>>>>>> main
 
 config_dir="$(dirname "$config_path")"
 mkdir -p "$nitro_data_dir" "$(dirname "$nitro_ipc_path")" "$(dirname "$rendered_config")"
@@ -54,10 +46,7 @@ jq \
 	--arg grpc_listen_address "$grpc_listen_address" \
 	--arg nitro_binary_path "$nitro_binary" \
 	--arg nitro_binary_sha256 "$expected_nitro_binary_hash" \
-<<<<<<< HEAD
 	--arg nitro_allowed_wasm_module_roots "$nitro_allowed_wasm_module_roots" \
-=======
->>>>>>> main
 	--arg nitro_work_dir "$config_dir" \
 	--arg nitro_data_dir "$nitro_data_dir" \
 	--arg nitro_ipc_path "$nitro_ipc_path" \
@@ -70,7 +59,6 @@ jq \
 	| .nitro_data_dir = $nitro_data_dir
 	| .nitro_ipc_path = $nitro_ipc_path
 	| .attestor_state_path = $attestor_state_path
-<<<<<<< HEAD
 	| .nitro_arguments = (
 		(.nitro_arguments // []) as $arguments
 		| if any(
@@ -83,8 +71,6 @@ jq \
 		]
 		end
 	)
-=======
->>>>>>> main
 	' \
 	"$config_path" >"$rendered_config"
 

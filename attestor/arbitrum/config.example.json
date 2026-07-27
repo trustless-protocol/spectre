@@ -6,10 +6,7 @@
     "l1_chain_id": 1,
     "l2_chain_id": 42161,
     "rollup_core_address": "REPLACE_WITH_ARBITRUM_ROLLUP_CORE_ADDRESS",
-<<<<<<< HEAD
     "rollup_protocol": "bold-v2",
-=======
->>>>>>> main
     "assertions_mapping_slot": "REPLACE_WITH_32_BYTE_ASSERTIONS_MAPPING_SLOT",
     "assertion_status_offset": 25,
     "assertion_start_block": 0,

@@ -65,6 +65,64 @@ to `nitro_arguments`; those paths are owned by the attestor.
 For production sizing, snapshot initialization, pruning, and archive retention,
 follow the [official Nitro node documentation](https://docs.arbitrum.io/run-arbitrum-node/run-full-node).
 
+## Local PoS L1 and Nitro devnet
+
+For local bridge testing, the repository uses the same two-script structure as
+the OP Stack:
+
+```sh
+./scripts/local/run_arbitrum_stack.sh
+./scripts/local/run_arbitrum_attestor.sh
+```
+
+Run both commands from the repository root. `run_arbitrum_stack.sh` checks out
+the official tooling under `.arbitrum-devnet-run/`, deploys RollupCore and a
+simple Nitro rollup on a local geth + Prysm proof-of-stake L1, waits for L1
+finality, and validates the configured BoLD storage layout against a finalized
+assertion when one is available. It writes the endpoints, chain IDs,
+RollupCore metadata, Nitro image pin, and sequencer config path to
+`.arbitrum-devnet-run/attestor.env`.
+
+`run_arbitrum_attestor.sh` automatically sources that handoff, builds the
+attestor image from the same official Nitro release, and starts an independent
+non-sequencing Nitro replica plus the gRPC attestor. Its runtime files live in
+`.arbitrum-attestor-run/`; its chain database lives in the persistent
+`fast-ibc-arbitrum-attestor-nitro` Docker volume. The devnet sequencer and
+verifier replica therefore never share an L2 database.
+
+The resulting local flow matches OP:
+
+```text
+run_*_stack.sh    -> .*-devnet-run/attestor.env
+run_*_attestor.sh -> independent verifier replica + attestor gRPC on :3001
+```
+
+The Docker volumes are preserved across normal stops and restarts:
+
+```sh
+./scripts/local/run_arbitrum_stack.sh --stop
+./scripts/local/run_arbitrum_stack.sh
+```
+
+Reinitializing the chain is destructive and must be requested explicitly:
+
+```sh
+./scripts/local/run_arbitrum_stack.sh --reset
+```
+
+The first run clones the official repository and pulls several Docker images.
+Set `NITRO_TESTNODE_REF` to a full commit SHA in CI to prevent the upstream
+`release` branch from moving between environments. Upstream assumes the Docker
+Compose project name `nitro-testnode`; the wrapper refuses to replace
+pre-existing volumes with that label unless `--reset` is explicitly supplied.
+Do not run a second checkout of `nitro-testnode` at the same time.
+
+To stop only the attestor, press Ctrl-C in its terminal. This removes its
+container but preserves the verifier database volume. To discard that
+database, remove the volume explicitly after confirming it is no longer
+needed. Stop the attestor before stopping the devnet because its container is
+attached to the testnode's Docker network.
+
 ## Run
 
 From this directory:

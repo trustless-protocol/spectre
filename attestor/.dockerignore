@@ -17,9 +17,8 @@
 !arbitrum/server/**
 !arbitrum/bold/
 !arbitrum/bold/**
+!arbitrum/legacy/
+!arbitrum/legacy/**
 
 !arbitrum/docker/
 !arbitrum/docker/**
-
-!arbitrum/bin/
-!arbitrum/bin/nitro
