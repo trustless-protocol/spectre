@@ -50,6 +50,9 @@ message AttestedRoot {
     // AssertionHash identifies an Arbitrum BoLD assertion when source is
     // "assertion".
     bytes assertion_hash = 7;
+
+    // LegacyNode identifies a pre-BoLD Arbitrum Nitro node.
+    LegacyNode legacy_node = 8;
   }
 
   // Provisional is true while the commitment still awaits the chain-specific
@@ -58,6 +61,15 @@ message AttestedRoot {
 
   // AttestedAt is the Unix timestamp when the local verifier accepted it.
   int64 attested_at = 6;
+}
+
+// LegacyNode identifies one pre-BoLD Nitro RollupCore node.
+message LegacyNode {
+  // NodeNumber is the uint64 key in RollupCore's _nodes mapping.
+  uint64 node_number = 1;
+
+  // NodeHash is the hash indexed by the corresponding NodeCreated event.
+  bytes node_hash = 2;
 }
 
 // InfoRequest selects all configured chains.

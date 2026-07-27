@@ -6,6 +6,7 @@ import (
 
 	"attestor/arbitrum"
 	attestorpb "attestor/types/attestor"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"google.golang.org/grpc/codes"
@@ -135,6 +136,13 @@ func attestedRootToProto(root arbitrum.AttestedRoot) *attestorpb.AttestedRoot {
 		AttestedAt:    root.AttestedAt.Unix(),
 	}
 	switch {
+	case root.LegacyNodeNumber != 0:
+		response.Provenance = &attestorpb.AttestedRoot_LegacyNode{
+			LegacyNode: &attestorpb.LegacyNode{
+				NodeNumber: root.LegacyNodeNumber,
+				NodeHash:   append([]byte(nil), root.AssertionHash[:]...),
+			},
+		}
 	case root.AssertionHash != (common.Hash{}):
 		response.Provenance = &attestorpb.AttestedRoot_AssertionHash{
 			AssertionHash: append([]byte(nil), root.AssertionHash[:]...),

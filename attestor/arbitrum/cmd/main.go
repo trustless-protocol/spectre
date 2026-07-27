@@ -13,8 +13,10 @@ import (
 
 	"attestor/arbitrum"
 	boldattestor "attestor/arbitrum/bold"
+	legacyattestor "attestor/arbitrum/legacy"
 	attestorserver "attestor/arbitrum/server"
 	attestorpb "attestor/types/attestor"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -72,12 +74,7 @@ func runAttestor(ctx context.Context, configPath string) (runErr error) {
 		return fmt.Errorf("connect to Ethereum L1 RPC: %w", err)
 	}
 	defer l1Client.Close()
-	assertionSource, err := boldattestor.NewRollupCoreSource(
-		l1Client,
-		common.HexToAddress(config.RollupCoreAddress),
-		common.HexToHash(config.AssertionsMappingSlot),
-		config.AssertionStatusOffset,
-	)
+	assertionSource, err := newAssertionSource(config, l1Client)
 	if err != nil {
 		return fmt.Errorf("initialize RollupCore source: %w", err)
 	}
@@ -108,14 +105,7 @@ func runAttestor(ctx context.Context, configPath string) (runErr error) {
 	if err := assertionLoop.ValidateChainIDs(ctx, config.L1ChainID, config.L2ChainID); err != nil {
 		return fmt.Errorf("validate Arbitrum deployment identity: %w", err)
 	}
-	sourceIdentity := fmt.Sprintf(
-		"l1:%d/l2:%d/rollup:%s/assertions:%s/status-offset:%d",
-		config.L1ChainID,
-		config.L2ChainID,
-		common.HexToAddress(config.RollupCoreAddress).Hex(),
-		common.HexToHash(config.AssertionsMappingSlot).Hex(),
-		config.AssertionStatusOffset,
-	)
+	sourceIdentity := assertionSourceIdentity(config)
 	if err := attestedRootStore.BindSourceIdentity(sourceIdentity); err != nil {
 		return fmt.Errorf("bind attested-root source identity: %w", err)
 	}
@@ -154,6 +144,57 @@ func runAttestor(ctx context.Context, configPath string) (runErr error) {
 		return fmt.Errorf("serve attestor gRPC: %w", err)
 	}
 	return nil
+}
+
+type rollupL1Client interface {
+	boldattestor.L1Client
+	legacyattestor.L1Client
+}
+
+func newAssertionSource(
+	config arbitrum.DaemonConfig,
+	client rollupL1Client,
+) (boldattestor.AssertionSource, error) {
+	address := common.HexToAddress(config.RollupCoreAddress)
+	switch config.EffectiveRollupProtocol() {
+	case arbitrum.RollupProtocolBoLDV2:
+		return boldattestor.NewRollupCoreSource(
+			client,
+			address,
+			common.HexToHash(config.AssertionsMappingSlot),
+			config.AssertionStatusOffset,
+		)
+	case arbitrum.RollupProtocolLegacyNitro:
+		return legacyattestor.NewRollupCoreSource(client, address)
+	default:
+		return nil, fmt.Errorf(
+			"unsupported rollup protocol %q",
+			config.EffectiveRollupProtocol(),
+		)
+	}
+}
+
+func assertionSourceIdentity(config arbitrum.DaemonConfig) string {
+	address := common.HexToAddress(config.RollupCoreAddress).Hex()
+	if config.EffectiveRollupProtocol() == arbitrum.RollupProtocolLegacyNitro {
+		return fmt.Sprintf(
+			"l1:%d/l2:%d/rollup:%s/protocol:%s",
+			config.L1ChainID,
+			config.L2ChainID,
+			address,
+			config.EffectiveRollupProtocol(),
+		)
+	}
+	// Preserve the existing BoLD identity format so upgrading the daemon does
+	// not invalidate a correctly pinned production state file.
+	return fmt.Sprintf(
+		"l1:%d/l2:%d/rollup:%s/assertions:%s/status-offset:%d",
+		config.L1ChainID,
+		config.L2ChainID,
+		address,
+		common.HexToHash(config.AssertionsMappingSlot).Hex(),
+		config.AssertionStatusOffset,
+	)
 }
 
 type runtimeStateRefresher interface {

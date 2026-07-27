@@ -10,7 +10,7 @@
 
 /// Immutable Arbitrum verification configuration.
 pub mod config;
-/// BoLD v2 update-header verification.
+/// Protocol-selected update-header verification.
 pub mod header;
 
 #[cfg(test)]
@@ -24,7 +24,7 @@ impl l2_client::L2LightClient for Adapter {
     type Profile = config::Profile;
 
     fn l1_height(header: &Self::Header) -> u64 {
-        header.beacon_slot
+        header.beacon_slot()
     }
 
     fn verify(

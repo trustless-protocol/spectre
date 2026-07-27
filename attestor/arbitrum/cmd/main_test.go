@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"attestor/arbitrum"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/core/types"
 	"google.golang.org/grpc"
@@ -72,6 +73,25 @@ func TestStartCommandRejectsArguments(t *testing.T) {
 
 	if err := command.ExecuteContext(context.Background()); err == nil {
 		t.Fatal("expected positional argument error")
+	}
+}
+
+func TestAssertionSourceIdentitySeparatesLegacyFromBoLD(t *testing.T) {
+	config := arbitrum.DaemonConfig{
+		L1ChainID:             11_155_111,
+		L2ChainID:             421_614,
+		RollupCoreAddress:     "0xd80810638dbdf9081b72c1b33c65375e807281c8",
+		AssertionsMappingSlot: "0x76",
+		AssertionStatusOffset: 25,
+	}
+	boldIdentity := assertionSourceIdentity(config)
+	config.RollupProtocol = arbitrum.RollupProtocolLegacyNitro
+	legacyIdentity := assertionSourceIdentity(config)
+	if boldIdentity == legacyIdentity {
+		t.Fatalf("protocol identities must differ: %q", boldIdentity)
+	}
+	if !strings.Contains(legacyIdentity, "protocol:legacy-nitro") {
+		t.Fatalf("legacy identity: %q", legacyIdentity)
 	}
 }
 

@@ -150,7 +150,7 @@ func (a *AssertionAttestor) SyncOnce(ctx context.Context) error {
 		if remaining := finalizedL1Block - from; remaining >= a.config.MaxL1BlockRange {
 			to = from + a.config.MaxL1BlockRange - 1
 		}
-		proposals, confirmations, err := a.source.Assertions(ctx, from, to)
+		proposals, confirmations, rejections, err := a.source.Assertions(ctx, from, to)
 		if err != nil {
 			return err
 		}
@@ -160,12 +160,27 @@ func (a *AssertionAttestor) SyncOnce(ctx context.Context) error {
 			}
 		}
 		for _, confirmation := range confirmations {
-			if err := a.store.MarkAssertionConfirmed(
-				confirmation.AssertionHash,
-				confirmation.L2BlockHash,
-			); err != nil {
-				return err
+			var markErr error
+			if confirmation.LegacyNodeNumber != 0 {
+				markErr = a.store.MarkLegacyNodeConfirmed(
+					confirmation.LegacyNodeNumber,
+					confirmation.L2BlockHash,
+				)
+			} else {
+				markErr = a.store.MarkAssertionConfirmed(
+					confirmation.AssertionHash,
+					confirmation.L2BlockHash,
+				)
 			}
+			if markErr != nil {
+				return markErr
+			}
+		}
+		for _, rejection := range rejections {
+			if rejection.LegacyNodeNumber == 0 {
+				return errors.New("legacy rejection has a zero node number")
+			}
+			a.store.RemoveLegacyNode(rejection.LegacyNodeNumber)
 		}
 		a.store.SetNextL1Block(to + 1)
 		if err := a.store.Save(); err != nil {
@@ -193,7 +208,7 @@ func (a *AssertionAttestor) reconcileProposals(
 	for _, proposal := range a.store.Proposals() {
 		status, err := a.source.AssertionStatus(
 			ctx,
-			proposal.AssertionHash,
+			proposal,
 			finalizedL1Block,
 		)
 		if err != nil {
@@ -283,7 +298,11 @@ func (a *AssertionAttestor) reconcileProvisional(
 	for _, entry := range a.store.ProvisionalAssertions() {
 		status, err := a.source.AssertionStatus(
 			ctx,
-			entry.AssertionHash,
+			arbitrum.ProposedAssertion{
+				AssertionHash:    entry.AssertionHash,
+				L2BlockHash:      entry.L2BlockHash,
+				LegacyNodeNumber: entry.LegacyNodeNumber,
+			},
 			finalizedL1Block,
 		)
 		if err != nil {

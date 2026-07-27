@@ -10,6 +10,7 @@ import (
 	"math/big"
 
 	arbitrum "attestor/arbitrum"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -18,10 +19,17 @@ import (
 )
 
 const (
-	assertionStatusNone      uint8 = 0
-	assertionStatusPending   uint8 = 1
-	assertionStatusConfirmed uint8 = 2
-	maxMachineStatus         uint8 = 2
+	// AssertionStatusNone means the RollupCore object no longer exists.
+	AssertionStatusNone uint8 = 0
+	// AssertionStatusPending means the RollupCore object remains challengeable.
+	AssertionStatusPending uint8 = 1
+	// AssertionStatusConfirmed means RollupCore has irreversibly confirmed it.
+	AssertionStatusConfirmed uint8 = 2
+
+	assertionStatusNone      = AssertionStatusNone
+	assertionStatusPending   = AssertionStatusPending
+	assertionStatusConfirmed = AssertionStatusConfirmed
+	maxMachineStatus         = uint8(2)
 
 	assertionCreatedDataWords   = 25
 	assertionConfirmedDataWords = 2
@@ -49,9 +57,15 @@ type L1Client interface {
 
 // ConfirmedAssertion is one finalized-L1 AssertionConfirmed event.
 type ConfirmedAssertion struct {
-	AssertionHash common.Hash
-	L2BlockHash   common.Hash
-	L1BlockNumber uint64
+	AssertionHash    common.Hash
+	L2BlockHash      common.Hash
+	L1BlockNumber    uint64
+	LegacyNodeNumber uint64
+}
+
+// RejectedAssertion is one finalized-L1 legacy NodeRejected event.
+type RejectedAssertion struct {
+	LegacyNodeNumber uint64
 }
 
 // AssertionSource is the testable finalized-L1 RollupCore input consumed by
@@ -63,8 +77,8 @@ type AssertionSource interface {
 		context.Context,
 		uint64,
 		uint64,
-	) ([]arbitrum.ProposedAssertion, []ConfirmedAssertion, error)
-	AssertionStatus(context.Context, common.Hash, uint64) (uint8, error)
+	) ([]arbitrum.ProposedAssertion, []ConfirmedAssertion, []RejectedAssertion, error)
+	AssertionStatus(context.Context, arbitrum.ProposedAssertion, uint64) (uint8, error)
 }
 
 // RollupCoreSource reads a single Arbitrum RollupCore contract through an L1
@@ -152,9 +166,9 @@ func (s *RollupCoreSource) Assertions(
 	ctx context.Context,
 	fromL1Block uint64,
 	toL1Block uint64,
-) ([]arbitrum.ProposedAssertion, []ConfirmedAssertion, error) {
+) ([]arbitrum.ProposedAssertion, []ConfirmedAssertion, []RejectedAssertion, error) {
 	if fromL1Block > toL1Block {
-		return nil, nil, fmt.Errorf(
+		return nil, nil, nil, fmt.Errorf(
 			"invalid assertion log range %d..%d",
 			fromL1Block,
 			toL1Block,
@@ -167,7 +181,7 @@ func (s *RollupCoreSource) Assertions(
 		Topics:    [][]common.Hash{{assertionCreatedTopic, assertionConfirmedTopic}},
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf(
+		return nil, nil, nil, fmt.Errorf(
 			"filter RollupCore assertion logs %d..%d: %w",
 			fromL1Block,
 			toL1Block,
@@ -179,13 +193,13 @@ func (s *RollupCoreSource) Assertions(
 	var confirmations []ConfirmedAssertion
 	for _, event := range logs {
 		if event.Removed {
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"finalized RollupCore log at L1 block %d was marked removed",
 				event.BlockNumber,
 			)
 		}
 		if len(event.Topics) == 0 {
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"RollupCore log at L1 block %d has no event topic",
 				event.BlockNumber,
 			)
@@ -194,23 +208,23 @@ func (s *RollupCoreSource) Assertions(
 		case assertionCreatedTopic:
 			proposal, parseErr := parseAssertionCreated(event)
 			if parseErr != nil {
-				return nil, nil, parseErr
+				return nil, nil, nil, parseErr
 			}
 			proposals = append(proposals, proposal)
 		case assertionConfirmedTopic:
 			confirmation, parseErr := parseAssertionConfirmed(event)
 			if parseErr != nil {
-				return nil, nil, parseErr
+				return nil, nil, nil, parseErr
 			}
 			confirmations = append(confirmations, confirmation)
 		default:
-			return nil, nil, fmt.Errorf(
+			return nil, nil, nil, fmt.Errorf(
 				"unexpected RollupCore event topic %s",
 				event.Topics[0],
 			)
 		}
 	}
-	return proposals, confirmations, nil
+	return proposals, confirmations, nil, nil
 }
 
 // AssertionStatus reads the packed AssertionNode.status byte at one finalized
@@ -218,9 +232,10 @@ func (s *RollupCoreSource) Assertions(
 // an assertion is destroyed instead of returning AssertionStatus.NoAssertion.
 func (s *RollupCoreSource) AssertionStatus(
 	ctx context.Context,
-	assertionHash common.Hash,
+	proposal arbitrum.ProposedAssertion,
 	finalizedL1Block uint64,
 ) (uint8, error) {
+	assertionHash := proposal.AssertionHash
 	preimage := make([]byte, common.HashLength*2)
 	copy(preimage[:common.HashLength], assertionHash[:])
 	copy(preimage[common.HashLength:], s.assertionsMappingSlot[:])

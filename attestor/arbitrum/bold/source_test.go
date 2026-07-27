@@ -5,6 +5,8 @@ import (
 	"math/big"
 	"testing"
 
+	arbitrum "attestor/arbitrum"
+
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -74,16 +76,21 @@ func TestRollupCoreSourceReadsStatusAndFinalizedLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
-	_, confirmations, err := source.Assertions(context.Background(), 90, 100)
+	_, confirmations, rejections, err := source.Assertions(context.Background(), 90, 100)
 	if err != nil {
 		t.Fatalf("read assertion logs: %v", err)
+	}
+	if len(rejections) != 0 {
+		t.Fatalf("unexpected rejections: %+v", rejections)
 	}
 	if len(confirmations) != 1 ||
 		confirmations[0].AssertionHash != assertionHash ||
 		confirmations[0].L2BlockHash != l2BlockHash {
 		t.Fatalf("confirmations: %+v", confirmations)
 	}
-	status, err := source.AssertionStatus(context.Background(), assertionHash, 100)
+	status, err := source.AssertionStatus(context.Background(), arbitrum.ProposedAssertion{
+		AssertionHash: assertionHash,
+	}, 100)
 	if err != nil {
 		t.Fatalf("read assertion status: %v", err)
 	}

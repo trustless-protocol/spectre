@@ -8,6 +8,7 @@ import (
 	"time"
 
 	arbitrum "attestor/arbitrum"
+
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -121,10 +122,63 @@ func TestAssertionAttestorExcludesNitroMismatch(t *testing.T) {
 	}
 }
 
+func TestAssertionAttestorRemovesRejectedLegacyNode(t *testing.T) {
+	store, err := arbitrum.NewAttestedRootStore("arbitrum-sepolia", 10)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	proposal := arbitrum.ProposedAssertion{
+		AssertionHash:    common.HexToHash("0x21"),
+		L2BlockHash:      common.HexToHash("0x22"),
+		LegacyNodeNumber: 42,
+	}
+	source := &assertionTestSource{
+		finalizedBlock: 10,
+		proposals:      []arbitrum.ProposedAssertion{proposal},
+		status:         assertionStatusPending,
+	}
+	commitment := arbitrum.BlockCommitment{
+		BlockNumber: 100,
+		BlockHash:   proposal.L2BlockHash,
+		StateRoot:   common.HexToHash("0x23"),
+	}
+	resolver := &assertionTestResolver{
+		results: map[arbitrum.RunMode]arbitrum.BlockCommitment{
+			arbitrum.RunModeSafe: commitment,
+		},
+		errs: map[arbitrum.RunMode]error{},
+	}
+	loop, err := NewAssertionAttestor(
+		source,
+		resolver,
+		store,
+		AssertionAttestorConfig{PollInterval: time.Second},
+	)
+	if err != nil {
+		t.Fatalf("create assertion attestor: %v", err)
+	}
+	if err := loop.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("sync legacy proposal: %v", err)
+	}
+	if _, found := store.HighestAttested(true); !found {
+		t.Fatal("legacy proposal did not enter provisional feed")
+	}
+
+	source.finalizedBlock = 11
+	source.rejections = []RejectedAssertion{{LegacyNodeNumber: 42}}
+	if err := loop.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("sync legacy rejection: %v", err)
+	}
+	if _, found := store.HighestAttested(true); found {
+		t.Fatal("rejected legacy node remained in feed")
+	}
+}
+
 type assertionTestSource struct {
 	finalizedBlock uint64
 	proposals      []arbitrum.ProposedAssertion
 	confirmations  []ConfirmedAssertion
+	rejections     []RejectedAssertion
 	status         uint8
 }
 
@@ -143,17 +197,19 @@ func (s *assertionTestSource) Assertions(
 	context.Context,
 	uint64,
 	uint64,
-) ([]arbitrum.ProposedAssertion, []ConfirmedAssertion, error) {
+) ([]arbitrum.ProposedAssertion, []ConfirmedAssertion, []RejectedAssertion, error) {
 	proposals := append([]arbitrum.ProposedAssertion(nil), s.proposals...)
 	confirmations := append([]ConfirmedAssertion(nil), s.confirmations...)
+	rejections := append([]RejectedAssertion(nil), s.rejections...)
 	s.proposals = nil
 	s.confirmations = nil
-	return proposals, confirmations, nil
+	s.rejections = nil
+	return proposals, confirmations, rejections, nil
 }
 
 func (s *assertionTestSource) AssertionStatus(
 	context.Context,
-	common.Hash,
+	arbitrum.ProposedAssertion,
 	uint64,
 ) (uint8, error) {
 	return s.status, nil
