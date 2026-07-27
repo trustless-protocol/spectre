@@ -183,8 +183,13 @@ type appConfig struct {
 	// source is just another `cosmos_to_eth` module — same circuit, prover and
 	// ETH contracts, a different Tendermint RPC and ICS-07 client.
 	CosmosToEthConfigs []cosmosToEthConfig
-	EthToCosmosConfig  ethToCosmosConfig
-	BatchConfig        services.BatchConfig
+	// CosmosToL2Configs holds every configured Cosmos→L2 destination in file order.
+	// Same schema as cosmos_to_eth (the groth16 path covers Cosmos → any EVM), but
+	// pointed at an L2 rollup's exec RPC + its deployed SpectreClient/ICS26Router;
+	// `start` runs one independent cosmos→l2 relay loop per entry.
+	CosmosToL2Configs []cosmosToEthConfig
+	EthToCosmosConfig ethToCosmosConfig
+	BatchConfig       services.BatchConfig
 }
 
 // writeConfigMember rewrites configPath in place, setting
@@ -569,6 +574,7 @@ func loadConfig(configPath string) (*appConfig, error) {
 
 	var c2e cosmosToEthConfig
 	var c2eList []cosmosToEthConfig
+	var c2l2List []cosmosToEthConfig
 	var e2c ethToCosmosConfig
 	batch := services.DefaultConfig().BatchConfig
 	if jc.Batch.BatchSize != 0 {
@@ -599,10 +605,17 @@ func loadConfig(configPath string) (*appConfig, error) {
 			if err := json.Unmarshal(m.Config, &e2c); err != nil {
 				return nil, fmt.Errorf("module %q: parse eth_to_cosmos config: %w", m.Name, err)
 			}
-		case dirL2ToCosmos, dirCosmosToL2:
-			// Recognized direction, but the L2 relay adapter is not wired yet — fail
-			// loud rather than silently ignoring a configured module.
-			return nil, fmt.Errorf("module %q: %s relay is recognized but its adapter is not wired yet (l2rollup is a skeleton)", m.Name, dir)
+		case dirCosmosToL2:
+			// Same schema as cosmos_to_eth, pointed at the L2 (groth16 → any EVM).
+			var one cosmosToEthConfig
+			if err := json.Unmarshal(m.Config, &one); err != nil {
+				return nil, fmt.Errorf("module %q: parse cosmos_to_l2 config: %w", m.Name, err)
+			}
+			c2l2List = append(c2l2List, one)
+		case dirL2ToCosmos:
+			// Recognized direction, but the optimistic L2→Cosmos adapter is not wired
+			// on this branch — fail loud rather than silently ignoring the module.
+			return nil, fmt.Errorf("module %q: l2_to_cosmos relay is recognized but its adapter is not wired yet", m.Name)
 		}
 	}
 	if len(c2eList) > 0 {
@@ -634,9 +647,26 @@ func loadConfig(configPath string) (*appConfig, error) {
 		}
 	}
 
+	// Validate every cosmos_to_l2 destination (same schema/checks as cosmos_to_eth);
+	// distinct destinations must not collide on the ICS-26 client id.
+	seenL2ClientIDs := make(map[string]struct{}, len(c2l2List))
+	for i := range c2l2List {
+		if err := validateCosmosToEthConfig(c2l2List[i]); err != nil {
+			return nil, err
+		}
+		id := c2l2List[i].ICS26ClientID
+		if id != "" {
+			if _, dup := seenL2ClientIDs[id]; dup {
+				return nil, fmt.Errorf("duplicate cosmos_to_l2 ics26_client_id %q; each destination needs a distinct client id", id)
+			}
+			seenL2ClientIDs[id] = struct{}{}
+		}
+	}
+
 	return &appConfig{
 		CosmosToEthConfig:  c2e,
 		CosmosToEthConfigs: c2eList,
+		CosmosToL2Configs:  c2l2List,
 		EthToCosmosConfig:  e2c,
 		BatchConfig:        batch,
 	}, nil
@@ -1388,8 +1418,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 			}
 
 			sources := cfg.CosmosToEthConfigs
-			if len(sources) == 0 {
-				return fmt.Errorf("no cosmos_to_eth source configured in %s", configPath)
+			l2Dests := cfg.CosmosToL2Configs
+			if len(sources) == 0 && len(l2Dests) == 0 {
+				return fmt.Errorf("no cosmos_to_eth or cosmos_to_l2 source configured in %s", configPath)
 			}
 			// Env overrides (ICS26_CLIENT_ID, COSMOS_WASM_CLIENT_ID, ROLE_MANAGER)
 			// name a single source; only honor them when exactly one is
@@ -1409,8 +1440,8 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// same ICS26Router (ETH events are partitioned by the per-source
 			// router client id filter).
 			var wg sync.WaitGroup
-			loopErrCh := make(chan error, len(sources))
-			cleanups := make([]func(), 0, len(sources))
+			loopErrCh := make(chan error, len(sources)+len(l2Dests))
+			cleanups := make([]func(), 0, len(sources)+len(l2Dests))
 			onceCleanup := func(cleanup func()) func() {
 				var once sync.Once
 				return func() {
@@ -1442,7 +1473,32 @@ func Start(logger *zap.Logger) *cobra.Command {
 					}
 				}(svc, srcCtx, cleanup)
 			}
-			logger.Sugar().Infof("Relayer started: relaying %d Cosmos→ETH source(s)", len(sources))
+
+			// One independent relay loop per Cosmos→L2 destination: the same groth16
+			// pipeline as Cosmos→ETH pointed at the L2's SpectreClient/ICS26Router,
+			// with no reverse beacon direction.
+			for i := range l2Dests {
+				svc, dstCtx, cleanup, err := buildCosmosToL2Dest(
+					logger, l2Dests[i], cfg.BatchConfig, p, txHandler,
+				)
+				if err != nil {
+					for _, cleanup := range cleanups {
+						cleanup()
+					}
+					return fmt.Errorf("cosmos_to_l2 dest %q: %w", l2Dests[i].ICS26ClientID, err)
+				}
+				cleanup = onceCleanup(cleanup)
+				cleanups = append(cleanups, cleanup)
+				wg.Add(1)
+				go func(svc *services.Services, dstCtx services.Context, cleanup func()) {
+					defer wg.Done()
+					defer cleanup()
+					if err := runCosmosToL2Engine(runCtx, svc, dstCtx); err != nil {
+						loopErrCh <- fmt.Errorf("cosmos_to_l2 dest %q: %w", dstCtx.CosmosRouterClientID(), err)
+					}
+				}(svc, dstCtx, cleanup)
+			}
+			logger.Sugar().Infof("Relayer started: relaying %d Cosmos→ETH source(s) + %d Cosmos→L2 destination(s)", len(sources), len(l2Dests))
 			done := make(chan struct{})
 			go func() {
 				wg.Wait()

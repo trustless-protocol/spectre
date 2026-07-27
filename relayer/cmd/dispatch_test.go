@@ -145,11 +145,47 @@ func TestLoadConfig_UnknownModuleFailsLoud(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_L2NotWired: a recognized-but-unwired L2 direction fails loud.
-func TestLoadConfig_L2NotWired(t *testing.T) {
+// TestLoadConfig_L2ToCosmosNotWired: the optimistic L2→Cosmos direction is not on
+// this branch, so it still fails loud.
+func TestLoadConfig_L2ToCosmosNotWired(t *testing.T) {
 	t.Parallel()
 	path := writeTempConfig(t, `{"modules":[{"name":"op","src_chain":"opstack","dst_chain":"cosmos","config":{}}]}`)
 	if _, err := loadConfig(path); err == nil {
-		t.Fatal("expected loadConfig to fail on an unwired L2 direction, got nil")
+		t.Fatal("expected loadConfig to fail on an unwired l2_to_cosmos direction, got nil")
+	}
+}
+
+// TestLoadConfig_CosmosToL2Parses: a cosmos→L2 module parses into CosmosToL2Configs
+// (same schema as cosmos_to_eth), pointed at the L2 endpoint.
+func TestLoadConfig_CosmosToL2Parses(t *testing.T) {
+	t.Parallel()
+	path := writeTempConfig(t, `{"modules":[
+		{"name":"arb-dst","src_chain":"cosmos","dst_chain":"arbitrum","config":{"ics26_client_id":"arb-client-0","tm_rpc_url":"http://localhost:26657","eth_rpc_url":"http://localhost:8547","ics26_address":"0x80741a37e3644612f0465145c9709a90b6d77ee3","spectre_client":"0x80741a37e3644612f0465145c9709a90b6d77ee3"}}
+	]}`)
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if len(cfg.CosmosToL2Configs) != 1 {
+		t.Fatalf("CosmosToL2Configs len = %d, want 1", len(cfg.CosmosToL2Configs))
+	}
+	if got := cfg.CosmosToL2Configs[0].ICS26ClientID; got != "arb-client-0" {
+		t.Fatalf("ics26_client_id = %q, want arb-client-0", got)
+	}
+	if len(cfg.CosmosToEthConfigs) != 0 {
+		t.Fatalf("CosmosToEthConfigs should be empty for a cosmos_to_l2-only config, got %d", len(cfg.CosmosToEthConfigs))
+	}
+}
+
+// TestLoadConfig_CosmosToL2DuplicateClientID: two cosmos→L2 destinations must not
+// share an ics26_client_id.
+func TestLoadConfig_CosmosToL2DuplicateClientID(t *testing.T) {
+	t.Parallel()
+	path := writeTempConfig(t, `{"modules":[
+		{"name":"arb-dst","src_chain":"cosmos","dst_chain":"arbitrum","config":{"ics26_client_id":"dup","tm_rpc_url":"http://localhost:26657","eth_rpc_url":"http://localhost:8547","ics26_address":"0x80741a37e3644612f0465145c9709a90b6d77ee3","spectre_client":"0x80741a37e3644612f0465145c9709a90b6d77ee3"}},
+		{"name":"op-dst","src_chain":"cosmos","dst_chain":"opstack","config":{"ics26_client_id":"dup","tm_rpc_url":"http://localhost:26657","eth_rpc_url":"http://localhost:8548","ics26_address":"0x80741a37e3644612f0465145c9709a90b6d77ee3","spectre_client":"0x80741a37e3644612f0465145c9709a90b6d77ee3"}}
+	]}`)
+	if _, err := loadConfig(path); err == nil {
+		t.Fatal("expected loadConfig to fail on duplicate cosmos_to_l2 ics26_client_id, got nil")
 	}
 }
