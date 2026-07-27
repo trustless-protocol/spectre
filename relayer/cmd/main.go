@@ -27,6 +27,7 @@ import (
 	tendermintClient "relayer/client"
 	"relayer/keys"
 	"relayer/prover"
+	"relayer/relay"
 	"relayer/services"
 	"relayer/transaction"
 	utils "relayer/utils"
@@ -189,6 +190,9 @@ type appConfig struct {
 	// `start` runs one independent cosmos→l2 relay loop per entry.
 	CosmosToL2Configs []cosmosToEthConfig
 	EthToCosmosConfig ethToCosmosConfig
+	// L2ToCosmosConfigs holds every configured L2 (opstack/arbitrum) → Cosmos source
+	// in file order; `start` runs one independent relay module per entry.
+	L2ToCosmosConfigs []l2ToCosmosConfig
 	BatchConfig       services.BatchConfig
 }
 
@@ -575,6 +579,7 @@ func loadConfig(configPath string) (*appConfig, error) {
 	var c2e cosmosToEthConfig
 	var c2eList []cosmosToEthConfig
 	var c2l2List []cosmosToEthConfig
+	var l2List []l2ToCosmosConfig
 	var e2c ethToCosmosConfig
 	batch := services.DefaultConfig().BatchConfig
 	if jc.Batch.BatchSize != 0 {
@@ -613,9 +618,15 @@ func loadConfig(configPath string) (*appConfig, error) {
 			}
 			c2l2List = append(c2l2List, one)
 		case dirL2ToCosmos:
-			// Recognized direction, but the optimistic L2→Cosmos adapter is not wired
-			// on this branch — fail loud rather than silently ignoring the module.
-			return nil, fmt.Errorf("module %q: l2_to_cosmos relay is recognized but its adapter is not wired yet", m.Name)
+			var one l2ToCosmosConfig
+			if err := json.Unmarshal(m.Config, &one); err != nil {
+				return nil, fmt.Errorf("module %q: parse l2_to_cosmos config: %w", m.Name, err)
+			}
+			one.kind = chain.ChainType(m.SrcChain) // opstack | arbitrum
+			if err := one.validate(); err != nil {
+				return nil, fmt.Errorf("module %q: %w", m.Name, err)
+			}
+			l2List = append(l2List, one)
 		}
 	}
 	if len(c2eList) > 0 {
@@ -668,6 +679,7 @@ func loadConfig(configPath string) (*appConfig, error) {
 		CosmosToEthConfigs: c2eList,
 		CosmosToL2Configs:  c2l2List,
 		EthToCosmosConfig:  e2c,
+		L2ToCosmosConfigs:  l2List,
 		BatchConfig:        batch,
 	}, nil
 }
@@ -1419,8 +1431,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 
 			sources := cfg.CosmosToEthConfigs
 			l2Dests := cfg.CosmosToL2Configs
-			if len(sources) == 0 && len(l2Dests) == 0 {
-				return fmt.Errorf("no cosmos_to_eth or cosmos_to_l2 source configured in %s", configPath)
+			l2Sources := cfg.L2ToCosmosConfigs
+			if len(sources) == 0 && len(l2Dests) == 0 && len(l2Sources) == 0 {
+				return fmt.Errorf("no relay source configured in %s (need a cosmos_to_eth, cosmos_to_l2, or l2_to_cosmos module)", configPath)
 			}
 			// Env overrides (ICS26_CLIENT_ID, COSMOS_WASM_CLIENT_ID, ROLE_MANAGER)
 			// name a single source; only honor them when exactly one is
@@ -1440,8 +1453,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// same ICS26Router (ETH events are partitioned by the per-source
 			// router client id filter).
 			var wg sync.WaitGroup
-			loopErrCh := make(chan error, len(sources)+len(l2Dests))
-			cleanups := make([]func(), 0, len(sources)+len(l2Dests))
+			total := len(sources) + len(l2Dests) + len(l2Sources)
+			loopErrCh := make(chan error, total)
+			cleanups := make([]func(), 0, total)
 			onceCleanup := func(cleanup func()) func() {
 				var once sync.Once
 				return func() {
@@ -1498,7 +1512,31 @@ func Start(logger *zap.Logger) *cobra.Command {
 					}
 				}(svc, dstCtx, cleanup)
 			}
-			logger.Sugar().Infof("Relayer started: relaying %d Cosmos→ETH source(s) + %d Cosmos→L2 destination(s)", len(sources), len(l2Dests))
+
+			// One independent relay module per L2->Cosmos source (opstack/arbitrum).
+			// Each dials its own L1/L2/Cosmos clients + attestor sidecar; they share
+			// the TransactionHandler (same Cosmos signer -> shared sequence path).
+			for i := range l2Sources {
+				module, cleanup, err := buildL2ToCosmosModule(logger, l2Sources[i], txHandler)
+				if err != nil {
+					for _, cleanup := range cleanups {
+						cleanup()
+					}
+					return fmt.Errorf("l2_to_cosmos source %q: %w", l2Sources[i].AttestorSrcChain, err)
+				}
+				cleanup = onceCleanup(cleanup)
+				cleanups = append(cleanups, cleanup)
+				wg.Add(1)
+				go func(module *relay.Module, cleanup func(), srcChain string) {
+					defer wg.Done()
+					defer cleanup()
+					if err := runL2Engine(runCtx, module); err != nil {
+						loopErrCh <- fmt.Errorf("l2_to_cosmos source %q: %w", srcChain, err)
+					}
+				}(module, cleanup, l2Sources[i].AttestorSrcChain)
+			}
+
+			logger.Sugar().Infof("Relayer started: relaying %d Cosmos→ETH + %d Cosmos→L2 + %d L2→Cosmos source(s)", len(sources), len(l2Dests), len(l2Sources))
 			done := make(chan struct{})
 			go func() {
 				wg.Wait()

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"relayer/chain"
@@ -13,22 +12,27 @@ import (
 // mockHeaderBuilder is a fake HeaderBuilder so the generic Builder is testable
 // without real L1/L2 RPC.
 type mockHeaderBuilder struct {
-	data *ClientMessageData
-	err  error
-	last uint64 // records the height BuildHeader was called with
+	msg       ClientMessage
+	err       error
+	last      uint64 // records the height BuildHeader was called with
+	committed uint64 // committed height to report (0 → echo the requested height)
 }
 
 func (m *mockHeaderBuilder) Name() string { return "l2-mock" }
-func (m *mockHeaderBuilder) BuildHeader(_ context.Context, height uint64) (*ClientMessageData, error) {
+func (m *mockHeaderBuilder) BuildHeader(_ context.Context, height uint64) (ClientMessage, uint64, error) {
 	m.last = height
 	if m.err != nil {
-		return nil, m.err
+		return nil, 0, m.err
 	}
-	d := m.data
-	if d == nil {
-		d = &ClientMessageData{L1BeaconSlot: 999, L2HeaderRLP: []byte("rlp")}
+	msg := m.msg
+	if msg == nil {
+		msg = &OpStackHeader{BeaconSlot: 999, GameRuntime: byteList{0xde, 0xad}}
 	}
-	return d, nil
+	committed := m.committed
+	if committed == 0 {
+		committed = height
+	}
+	return msg, committed, nil
 }
 
 func height8(h uint64) []byte {
@@ -51,13 +55,38 @@ func TestBuild_EncodesHeaderAsPayload(t *testing.T) {
 	if upd.Height != 4242 {
 		t.Fatalf("update height = %d, want 4242", upd.Height)
 	}
-	// Payload must be the JSON-encoded client message data.
-	var got ClientMessageData
-	if err := json.Unmarshal(upd.Payload, &got); err != nil {
-		t.Fatalf("payload is not client message JSON: %v", err)
+	// Payload must be the tagged ClientMessage envelope carrying the assembled header.
+	var env clientMessageEnvelope
+	if err := json.Unmarshal(upd.Payload, &env); err != nil {
+		t.Fatalf("payload is not a client message envelope: %v", err)
 	}
-	if got.L1BeaconSlot != 999 {
-		t.Fatalf("payload did not carry the assembled data: %+v", got)
+	if env.Type != "header" {
+		t.Fatalf("envelope type = %q, want header", env.Type)
+	}
+	var got OpStackHeader
+	if err := json.Unmarshal(env.Value, &got); err != nil {
+		t.Fatalf("envelope value is not an OP header: %v", err)
+	}
+	if got.BeaconSlot != 999 {
+		t.Fatalf("payload did not carry the assembled header: %+v", got)
+	}
+}
+
+// TestBuild_AdvancesByCommittedHeight guards the fix for the blocker where the
+// ClientUpdate reported the requested height instead of the height the header commits:
+// a BoLD/legacy/OP builder can return an attested block below the request, and the
+// client must advance by THAT, or proofs are built at an unproven height.
+func TestBuild_AdvancesByCommittedHeight(t *testing.T) {
+	m := &mockHeaderBuilder{committed: 4200} // requested 4242, committed 4200
+	upd, err := NewBuilder(m).Build(context.Background(), height8(4242))
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	if m.last != 4242 {
+		t.Fatalf("assembled at height = %d, want the requested 4242", m.last)
+	}
+	if upd.Height != 4200 {
+		t.Fatalf("update height = %d, want the committed 4200 (not the requested 4242)", upd.Height)
 	}
 }
 
@@ -78,28 +107,3 @@ func TestBuild_BuildHeaderErrorRetryable(t *testing.T) {
 }
 
 func b(a HeaderBuilder) *Builder { return NewBuilder(a) }
-
-// TestClientMessageData_JSONShape locks the proposed wire field names (confirm
-// against Dũng's cw-ics08 L2 client deserializer before freezing).
-func TestClientMessageData_JSONShape(t *testing.T) {
-	d := &ClientMessageData{
-		L1BeaconSlot:      7,
-		L1AccountProof:    [][]byte{{0x1}},
-		L2HeaderRLP:       []byte{0x2},
-		L2IBCAccountProof: [][]byte{{0x3}},
-		Optimism:          &OptimismInputs{OutputRootPreimage: []byte{0x4}},
-	}
-	raw, err := d.Encode()
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	for _, field := range []string{"l1_beacon_slot", "l1_account_proof", "l2_header_rlp", "l2_ibc_account_proof", "optimism", "output_root_preimage"} {
-		if !strings.Contains(string(raw), field) {
-			t.Fatalf("client message JSON missing %q: %s", field, raw)
-		}
-	}
-	// The unused chain-specific set must be omitted.
-	if strings.Contains(string(raw), "arbitrum") {
-		t.Fatalf("empty arbitrum set must be omitted: %s", raw)
-	}
-}

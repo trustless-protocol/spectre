@@ -691,6 +691,34 @@ func GetEthereumClientState(cosmosClient *rpchttp.HTTP, clientID string) (*Ether
 	return &ethClientState, nil
 }
 
+// GetWasmClientLatestHeight reads the LatestHeight of any 08-wasm client on Cosmos
+// (ETH beacon, L2 rollup, ...). The wasm ClientState carries LatestHeight directly,
+// so this does not decode the client-specific inner Data — for an L2 client the
+// revision height IS the L2 block number the client trusts, i.e. the proof height.
+func GetWasmClientLatestHeight(cosmosClient *rpchttp.HTTP, clientID string) (clienttypes.Height, error) {
+	queryReq := &clienttypes.QueryClientStateRequest{ClientId: clientID}
+	reqBytes, err := proto.Marshal(queryReq)
+	if err != nil {
+		return clienttypes.Height{}, fmt.Errorf("marshal client-state query: %w", err)
+	}
+	result, err := cosmosClient.ABCIQuery(context.Background(), "/ibc.core.client.v1.Query/ClientState", reqBytes)
+	if err != nil {
+		return clienttypes.Height{}, fmt.Errorf("query client state %s: %w", clientID, err)
+	}
+	if result.Response.Code != 0 {
+		return clienttypes.Height{}, fmt.Errorf("client-state query %s failed with code %d: %s", clientID, result.Response.Code, result.Response.Log)
+	}
+	var queryResp clienttypes.QueryClientStateResponse
+	if err := proto.Unmarshal(result.Response.Value, &queryResp); err != nil {
+		return clienttypes.Height{}, fmt.Errorf("unmarshal client-state response: %w", err)
+	}
+	var wasmClientState ibcwasmtypes.ClientState
+	if err := proto.Unmarshal(queryResp.ClientState.Value, &wasmClientState); err != nil {
+		return clienttypes.Height{}, fmt.Errorf("unmarshal wasm client state: %w", err)
+	}
+	return wasmClientState.LatestHeight, nil
+}
+
 // ToForkParameters maps the beacon spec into the client-state fork schedule.
 // currentEpoch is the head/bootstrap epoch used to decide which fork version is
 // actually in force right now.
@@ -782,6 +810,69 @@ type ethStorageProof struct {
 	Key   ethcommon.Hash `json:"key"`
 	Value *hexutil.Big   `json:"value"`
 	Proof []string       `json:"proof"`
+}
+
+// RawEvmProof is a decoded eth_getProof result: the account proof MPT nodes and,
+// for each requested storage key, its value + storage proof nodes — all as raw
+// bytes. Used by the L2 header builder, which needs the exact MPT witness the L2
+// wasm verifier RLP-decodes (not the hex-string JSON MembershipProof shape).
+type RawEvmProof struct {
+	AccountProof [][]byte
+	StorageHash  ethcommon.Hash
+	Storage      []RawStorageProof
+}
+
+// RawStorageProof is one storage slot's decoded proof.
+type RawStorageProof struct {
+	Key   ethcommon.Hash
+	Value []byte // minimal big-endian bytes (Solidity storage value)
+	Proof [][]byte
+}
+
+// EthGetProof calls eth_getProof for addr + keys at blockNumber (nil = latest) and
+// decodes the hex nodes/values to raw bytes.
+func EthGetProof(client *ethclient.Client, addr ethcommon.Address, keys []ethcommon.Hash, blockNumber *big.Int) (*RawEvmProof, error) {
+	keyStrs := make([]string, len(keys))
+	for i, k := range keys {
+		keyStrs[i] = k.Hex()
+	}
+	var result ethProofResult
+	if err := client.Client().CallContext(
+		context.Background(), &result, "eth_getProof",
+		addr, keyStrs, toBlockNumArg(blockNumber),
+	); err != nil {
+		return nil, fmt.Errorf("eth_getProof(%s): %w", addr, err)
+	}
+	accountNodes, err := decodeHexNodes(result.AccountProof)
+	if err != nil {
+		return nil, fmt.Errorf("eth_getProof(%s) account proof: %w", addr, err)
+	}
+	storage := make([]RawStorageProof, len(result.StorageProof))
+	for i, sp := range result.StorageProof {
+		nodes, err := decodeHexNodes(sp.Proof)
+		if err != nil {
+			return nil, fmt.Errorf("eth_getProof(%s) storage proof %d: %w", addr, i, err)
+		}
+		var val []byte
+		if sp.Value != nil {
+			val = sp.Value.ToInt().Bytes() // minimal big-endian; zero → empty
+		}
+		storage[i] = RawStorageProof{Key: sp.Key, Value: val, Proof: nodes}
+	}
+	return &RawEvmProof{AccountProof: accountNodes, StorageHash: result.StorageHash, Storage: storage}, nil
+}
+
+// decodeHexNodes decodes a list of 0x-hex MPT node strings to raw bytes.
+func decodeHexNodes(nodes []string) ([][]byte, error) {
+	out := make([][]byte, len(nodes))
+	for i, n := range nodes {
+		b, err := hexutil.Decode(n)
+		if err != nil {
+			return nil, fmt.Errorf("decode node %d: %w", i, err)
+		}
+		out[i] = b
+	}
+	return out, nil
 }
 
 // GetEthMembershipProof generates a JSON-encoded MembershipProof for MsgAcknowledgement.ProofAcked.

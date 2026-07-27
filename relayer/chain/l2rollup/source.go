@@ -8,7 +8,11 @@ import (
 	"time"
 
 	"relayer/chain"
+	relayerclient "relayer/client"
+	"relayer/services"
 
+	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 )
@@ -40,29 +44,62 @@ type Source struct {
 	chainType  chain.ChainType // OPStack or Arbitrum (for Chain())
 	eth        *ethclient.Client
 	headKind   HeadKind
-	l2ClientID string // the ICS26Router client id on the L2 (event partition key)
+	l2ClientID string            // the ICS26Router client id on the L2 (event partition key)
+	router     ethcommon.Address // the L2 ICS26Router address (from rollup_profile.common.l2_router)
+
+	// attestor gates RelayableHeight on independent L1 re-derivation (#240). When
+	// nil, RelayableHeight falls back to the raw L2 head — the skip-finality interim
+	// (or an explicitly attestor-less deployment). srcChainID is the attestor's
+	// src_chain key (distinct from the on-L2 client id).
+	attestor   AttestorClient
+	srcChainID string
 }
 
 // Source satisfies chain.Source.
 var _ chain.Source = (*Source)(nil)
 
-// NewSource wires an L2 source. TODO(Đức): take the full L2 config (RPC url, router
-// address, head kind) once the multi-chain config schema is settled.
-func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKind, l2ClientID string) *Source {
-	return &Source{chainType: chainType, eth: eth, headKind: headKind, l2ClientID: l2ClientID}
+// NewSource wires an L2 source. router is the L2 ICS26Router address (the packet
+// membership proofs are taken against its storage_root). attestor may be nil
+// (raw-head interim); when set, srcChainID identifies this L2 to the attestor.
+func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKind, l2ClientID, srcChainID string, router ethcommon.Address, attestor AttestorClient) *Source {
+	return &Source{
+		chainType:  chainType,
+		eth:        eth,
+		headKind:   headKind,
+		l2ClientID: l2ClientID,
+		router:     router,
+		attestor:   attestor,
+		srcChainID: srcChainID,
+	}
 }
 
 func (s *Source) Chain() chain.ChainType { return s.chainType }
 
-// LatestHeight applies the head policy: the unsafe head (skip-finality), the safe
-// head, or the finalized head. THIS is where the trust/latency tradeoff lives.
+// LatestHeight is the latest L2 block visible at the configured head tag — how far
+// the subscriber can see packets. It is NOT the trust gate (that is RelayableHeight).
 func (s *Source) LatestHeight(ctx context.Context) (uint64, error) { return s.head(ctx) }
 
-// RelayableHeight equals LatestHeight for an L2 in the trustless model: a packet at
-// height H is provable once the L2 client is advanced to H. (When the attestor
-// oracle — PR #240 — gates which height is safe, RelayableHeight will read its
-// AttestedRootAtOrBelow instead; wired once that lands.)
-func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) { return s.head(ctx) }
+// RelayableHeight is the highest L2 height a packet may be proven at. With an
+// attestor it is the attestor's independently re-derived frontier (AttestedUpTo);
+// includeProvisional accepts the Safe-but-not-finalized head, so only Finalized
+// demands non-provisional roots. Without an attestor it degrades to the raw L2 head
+// (skip-finality). A not-yet-attested source returns 0 — nothing is relayable yet,
+// so the module waits rather than relaying an unverified height.
+func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
+	if s.attestor == nil {
+		return s.head(ctx)
+	}
+	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	root, found, err := s.attestor.AttestedUpTo(cctx, s.srcChainID, s.headKind != Finalized)
+	if err != nil {
+		return 0, fmt.Errorf("l2 source: attested-up-to (kind=%d): %w", s.headKind, err)
+	}
+	if !found {
+		return 0, nil // nothing attested yet — the module waits
+	}
+	return root.GetL2BlockNumber(), nil
+}
 
 // head reads the L2 head at the configured head-kind tag.
 func (s *Source) head(ctx context.Context) (uint64, error) {
@@ -90,30 +127,54 @@ func (s *Source) QueryHeader(_ context.Context, height uint64) ([]byte, error) {
 	return b, nil
 }
 
-// Subscribe streams L2 ICS26Router packet events to handler in batches.
-//
-// TODO(Đức): wire an L2 event listener — mirror the ETH subscriber (filtered by the
-// per-source router client id, startup lookback + reconnect-gap recovery) against
-// the L2 RPC, feeding the same batch-builder / waiting-backoff machinery. Not
-// blocked on Dũng.
-func (s *Source) Subscribe(_ context.Context, _ func(context.Context, []chain.Event) []int) error {
-	return fmt.Errorf("l2 source: Subscribe not yet wired (needs the L2 event listener)")
+// Subscribe (in subscribe.go) streams L2 ICS26Router packet events to the handler.
+
+// MembershipProof builds the L2 eth_getProof (account proof vs the L2 world
+// state_root, storage proof vs the ICS26Router storage_root) that the packet
+// commitment (send) or acknowledgement exists at height — the exact mechanics of the
+// ETH L1 source, reused against the L2 router. height is the L2 block the module
+// advanced the destination L2 wasm client to (proofHeight = m.lastHeight), so no
+// Cosmos-side read is needed here. Do NOT use a Cosmos app_hash — the two EVM roots
+// are the L2 world state_root and the router account storage_root (Dũng P2).
+func (s *Source) MembershipProof(_ context.Context, packet []byte, height uint64, eventType chain.EventType) ([]byte, error) {
+	var pkt channeltypesv2.Packet
+	if err := pkt.Unmarshal(packet); err != nil {
+		return nil, fmt.Errorf("l2 source: decode packet: %w", err)
+	}
+	var clientID string
+	var pathType byte
+	switch eventType {
+	case chain.SendPacket:
+		// An L2->Cosmos send past its timeout can never be received on Cosmos, so
+		// report it permanent and let the module DROP it (mirroring the ETH source's
+		// dead-send pre-filter). Cosmos has ~wall-clock BFT time, so compare against
+		// time.Now like the ETH path.
+		//
+		// LIMITATION: unlike the Cosmos->ETH path, this L2->Cosmos path wires NO
+		// timeout scanner today (buildL2ToCosmosModule adds no WithTimeoutScanner /
+		// WithPacketTracker), so a dropped send is NOT yet refunded on the L2 — the L2
+		// escrow stays locked. The refund path (a TimeoutPacket back to the L2 rollup)
+		// belongs to the Cosmos->L2 return direction and is tracked as a follow-up.
+		if pkt.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= pkt.TimeoutTimestamp {
+			return nil, chain.Permanent(fmt.Errorf("l2 source: send seq=%d timed out and is dropped (no L2 refund scanner yet)", pkt.Sequence))
+		}
+		clientID, pathType = pkt.SourceClient, 1 // packet commitment
+	case chain.AckPacket:
+		clientID, pathType = pkt.DestinationClient, 3 // ack
+	default:
+		return nil, fmt.Errorf("l2 source: MembershipProof: unsupported event type %d", eventType)
+	}
+	path := services.EthPath(clientID, pkt.Sequence, pathType)
+	return relayerclient.GetEthMembershipProof(
+		s.eth, s.router, path,
+		ethcommon.HexToHash(services.ICS26_IBC_STORAGE_SLOT),
+		new(big.Int).SetUint64(height),
+	)
 }
 
-// MembershipProof builds the L2 eth_getProof (account proof vs world state_root,
-// storage proof vs the IBC-handler storage_root) that the packet commitment (recv)
-// or ack exists at height — the same mechanics as the ETH L1 source
-// (client.GetEthMembershipProof).
-//
-// TODO(Đức): wire client.GetEthMembershipProof once the L2 router address + storage
-// slot are in config. Do NOT use a Cosmos app_hash — the two EVM roots are
-// state_root (world) and the IBC account storage_root (Dũng P2).
-func (s *Source) MembershipProof(_ context.Context, _ []byte, _ uint64, _ chain.EventType) ([]byte, error) {
-	return nil, fmt.Errorf("l2 source: MembershipProof not yet wired (needs L2 router config)")
-}
-
-// NonMembershipProof proves the packet receipt is absent at height (timeout),
-// verified against the same L2 roots. Same shape as MembershipProof.
+// NonMembershipProof is unused on the L2 source relay path: L2-origin packet
+// timeouts are handled by the async timeout scanner (as on the ETH source), not the
+// Subscribe->relay flow, so no TimeoutPacket event reaches here.
 func (s *Source) NonMembershipProof(_ context.Context, _ []byte, _ uint64) ([]byte, error) {
-	return nil, fmt.Errorf("l2 source: NonMembershipProof not yet wired")
+	return nil, fmt.Errorf("l2 source: NonMembershipProof unused (timeouts are scanner-handled)")
 }

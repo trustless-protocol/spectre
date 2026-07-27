@@ -1,20 +1,18 @@
-// Package l2 holds the relayer adapters for the L2->Cosmos path (Arbitrum /
+// Package l2rollup holds the relayer adapters for the L2->Cosmos path (Arbitrum /
 // OP-Stack). Per Dũng's light-client design the Cosmos side is TRUSTLESS — no
 // relayer signature: the L2 wasm light client verifies L2 state against the shared
 // Ethereum light client + L1 rollup proofs. So this Destination mirrors the
 // existing beacon (ETH->Cosmos) Cosmos destination almost exactly:
 //
-//   - UpdateClient submits MsgUpdateClient wrapping a wasm ClientMessage whose
-//     Data is the L2 header (the builder produces it). The SHARED ETH client must
-//     be updated first (ordering dependency, see TODO).
+//   - UpdateClient submits MsgUpdateClient wrapping a wasm ClientMessage whose Data
+//     is the L2 header (the builder produces it). No ETH-first ordering step is
+//     needed: the header builder proves against the ETH client's ALREADY-trusted L1
+//     block (it reads EthClientLatestSlotAndBlock), so the update verifies against
+//     current ETH state. ETH-client freshness only bounds how recent an L2 update
+//     can be, it is not a correctness ordering requirement.
 //   - RelayPackets submits the standard channeltypesv2 recv / ack / timeout
 //     messages, which the client maps to VerifyMembership / VerifyNonMembership.
 //     The L2 client does not decode packets.
-//
-// Skeleton status: the message shapes are real (same wasm/channeltypesv2 wrappers
-// fast-ibc already uses); the proof height needs the L2 client-state read and the
-// ETH-first ordering needs wiring — both marked TODO and pending Dũng's exact
-// client-state / ClientMessage schema.
 package l2rollup
 
 import (
@@ -24,7 +22,9 @@ import (
 	"time"
 
 	"relayer/chain"
+	relayerclient "relayer/client"
 	"relayer/services"
+	"relayer/subscriber"
 
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
@@ -61,10 +61,11 @@ func (d *Destination) Chain() chain.ChainType { return chain.Cosmos }
 // UpdateClient submits MsgUpdateClient for the L2 wasm client, wrapping the L2
 // header (update.Payload, produced by the l2 builder) in a wasm ClientMessage.
 //
-// TODO(Đức, Dũng P1): the SHARED Ethereum light client must be advanced first (the
-// L2 client verifies L2 roots against it + L1 rollup proofs). Wire an
-// "update ETH client to cover this L2 update" step before the submit, mirroring
-// the beacon path's WaitForCosmosCatchUp ordering.
+// No ETH-first ordering step is needed: the header builder assembles its L1 proofs
+// against the ETH client's already-trusted L1 block (EthClientLatestSlotAndBlock), so
+// every L2 update verifies against the ETH state the client already holds. The ETH
+// client's freshness bounds how recent an L2 update can be, but advancing it is not a
+// prerequisite for this submit to verify.
 func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.ClientUpdate) error {
 	if len(update.Payload) == 0 {
 		return nil // nothing to submit
@@ -143,25 +144,34 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 }
 
 // proofHeight is the L2 client's latest tracked height — the height the packet
-// proofs must be verified against.
-//
-// TODO(Đức, Dũng P1): read the L2 wasm client state's latest height (Dũng's
-// client stores state_root + IBC storage_root + timestamp at the L2 block number).
-// Stubbed until the L2 client-state schema is fixed.
+// proofs must be verified against. The wasm ClientState carries LatestHeight
+// directly; for the L2 client its revision height is the L2 block number.
 func (d *Destination) proofHeight() (clienttypes.Height, error) {
-	return clienttypes.Height{}, fmt.Errorf("l2 dest: proofHeight not wired (needs L2 client-state read)")
+	h, err := relayerclient.GetWasmClientLatestHeight(d.svcCtx.CosmosClient(), d.clientID)
+	if err != nil {
+		return clienttypes.Height{}, fmt.Errorf("l2 dest: read L2 client latest height: %w", err)
+	}
+	return h, nil
 }
 
 // HasPacketReceipt reports whether an L2-origin packet was already delivered on
-// Cosmos. TODO: verified Cosmos receipt ABCI query (mirrors the beacon dest stub).
-func (d *Destination) HasPacketReceipt(_ context.Context, _ []byte) (bool, error) {
-	return false, fmt.Errorf("l2 dest: HasPacketReceipt not wired")
+// Cosmos, via the same Cosmos receipt ABCI query the ETH recovery path uses.
+func (d *Destination) HasPacketReceipt(_ context.Context, packet []byte) (bool, error) {
+	var pkt channeltypesv2.Packet
+	if err := pkt.Unmarshal(packet); err != nil {
+		return false, fmt.Errorf("l2 dest: decode packet: %w", err)
+	}
+	return subscriber.HasCosmosPacketReceipt(d.svcCtx, pkt)
 }
 
-// ClientExpiresAt returns when the L2 wasm client expires. TODO: read the L2
-// client state's trusting period / timestamp.
+// ClientExpiresAt reports when the L2 wasm client would expire on its own timer.
+// Unlike a Tendermint client, an optimistic L2 client has NO independent trusting
+// period: it advances per-packet via header updates and its trust roots in the
+// SHARED L1 (Ethereum) client, whose freshness the ETH path refreshes. So the L2
+// client has no self-expiry timer — return a far-future time so the anti-expiry
+// refresh routine never force-updates it (its freshness is the L1 client's).
 func (d *Destination) ClientExpiresAt(_ context.Context, _ string) (time.Time, error) {
-	return time.Time{}, fmt.Errorf("l2 dest: ClientExpiresAt not wired")
+	return time.Now().Add(100 * 365 * 24 * time.Hour), nil
 }
 
 // buildWasmUpdateClient wraps an L2 header (JSON bytes) in a wasm ClientMessage

@@ -813,7 +813,7 @@ func hasPendingCosmosPacketCommitment(ctx services.Context, packet channeltypesv
 	return hasCosmosIBCPathValue(ctx, utils.IbcCommitmentPath(packet, []byte{1}))
 }
 
-func hasCosmosPacketReceipt(ctx services.Context, packet channeltypesv2.Packet) (bool, error) {
+func HasCosmosPacketReceipt(ctx services.Context, packet channeltypesv2.Packet) (bool, error) {
 	return hasCosmosIBCPathValue(ctx, utils.IbcPath(packet.DestinationClient, packet.Sequence, []byte{2}))
 }
 
@@ -854,7 +854,7 @@ func recoverEthSendPackets(
 
 		cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 
-		received, err := hasCosmosPacketReceipt(ctx, cosmosPacket)
+		received, err := HasCosmosPacketReceipt(ctx, cosmosPacket)
 		if err != nil {
 			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d failed to check Cosmos packet receipt: %v",
 				cosmosPacket.Sequence, err)
