@@ -261,7 +261,7 @@ Cross-validated via `test/solidity-ibc/EncodeTest.t.sol`.
 | `contracts/light-clients/` | Solidity | SpectreClient + SignatureVerifier + message types |
 | `contracts/light-clients/` | Solidity | Light client implementations |
 | `relayer/` | Go | Relayer CLI + Groth16 prover |
-| `relayer/cmd/` | Go | CLI: start, create-clients{,-cosmos,-eth}, update-client, genesis, fixtures |
+| `relayer/cmd/` | Go | CLI: start, create-clients-{cosmos,eth}, update-client, genesis, fixtures |
 | `relayer/prover/` | Go | Bucketed Ed25519 batch prover (BatchCircuit, witness hash, dummy padding) |
 | `relayer/prover/cmd/` | Go | One-shot tool: compile + setup every bucket, write artifacts + emit `Groth16Verifier_N{N}.sol` |
 | `relayer/prover/bin/` | binary | Per-bucket circuit artifacts (`bin/n{N}/{r1cs,pk,vk}.bin`) |

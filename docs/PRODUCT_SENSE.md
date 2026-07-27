@@ -58,7 +58,7 @@ Multiple packets can be batched into a single proof submission:
 
 **CLI commands:**
 - `relayer start --config config.json` — bi-directional relay loop (Cosmos ↔ ETH); one independent loop per `cosmos_to_eth` source in a single process
-- `relayer create-clients --config config.json` — one-time light client setup on both chains (Cosmos side first, then ETH); also available split as `create-clients-cosmos` / `create-clients-eth`. With multiple sources, pass `--source <ics26_client_id>` to pick which module to set up
+- `relayer create-clients-cosmos --config config.json` then `relayer create-clients-eth --config config.json` — one-time light client setup; run the Cosmos side first (it creates the 08-wasm ETH client and learns its id), then the ETH side (wired to that id). With multiple sources, pass `--source <ics26_client_id>` to pick which module to set up
 - `relayer genesis` — generate genesis state
 
 **JSON config** (`relayer/config.example.json`):

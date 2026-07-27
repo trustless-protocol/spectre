@@ -689,22 +689,13 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, ctx services.Context, m
 	return nil
 }
 
-func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Context, clientState exported.ClientState, consensusState exported.ConsensusState, registerCounterparty bool) (string, error) {
+func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Context, clientState exported.ClientState, consensusState exported.ConsensusState, counterpartyClientID string) (string, error) {
 	log.Printf("[CreateWasmClientTx] starting")
-	// cosmosClientID is the counterparty client id to register (the client on the
-	// counterparty chain that tracks Cosmos). It is only derived+registered when
-	// registerCounterparty is set: the ETH beacon client establishes it here, but an
-	// L2 bootstrap does NOT — the L2-side client tracking Cosmos does not exist yet,
-	// so registering the ETH source's router client id would write a wrong, durable
-	// counterparty mapping onto the new L2 client.
-	var cosmosClientID string
-	if registerCounterparty {
-		id, err := cosmosRouterClientID(svcCtx)
-		if err != nil {
-			return "", fmt.Errorf("[CreateWasmClientTx] %w", err)
-		}
-		cosmosClientID = id
-	}
+	// counterpartyClientID is the client on the counterparty chain that tracks Cosmos.
+	// It is a config value known upfront (registration is only a naming binding in
+	// ICS26Router — the counterparty light client need not exist yet), so each caller
+	// passes its own: the ETH beacon client passes the ETH-side router client id, an
+	// L2 bootstrap passes the L2-side client id. An empty value skips registration.
 
 	// Get the private key from environment variable
 	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
@@ -878,10 +869,9 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Conte
 	}
 	log.Printf("[CreateWasmClient] new client ID: %s", newClientID)
 
-	// L2 bootstrap path: skip counterparty registration (see the registerCounterparty
-	// comment above). The client is created; its counterparty is registered later,
-	// once the L2-side client that tracks Cosmos exists.
-	if !registerCounterparty {
+	// No counterparty id given (e.g. an L2 bootstrap whose L2-side client id is not yet
+	// configured): the client is created, its counterparty registered later.
+	if counterpartyClientID == "" {
 		return newClientID, nil
 	}
 
@@ -889,7 +879,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Conte
 	registerMsg := clienttypesv2.NewMsgRegisterCounterparty(
 		newClientID,
 		[][]byte{[]byte("")},
-		cosmosClientID,
+		counterpartyClientID,
 		signerAddr,
 	)
 	log.Printf("[CreateWasmClientTx] MsgRegisterCounterparty built for clientID=%s", newClientID)

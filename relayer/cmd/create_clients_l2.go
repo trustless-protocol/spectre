@@ -38,6 +38,10 @@ type l2ClientConfig struct {
 	RollupProfile json.RawMessage `json:"rollup_profile"`
 	// BootstrapBlock is the L2 block to bootstrap from; 0 (or absent) = latest.
 	BootstrapBlock uint64 `json:"bootstrap_block"`
+	// CounterpartyClientID is the L2-side client (on the rollup's ICS26Router) that
+	// tracks Cosmos, registered inline as this L2 client's counterparty. Optional:
+	// leave empty to defer registration until the L2-side client id is known.
+	CounterpartyClientID string `json:"counterparty_client_id"`
 }
 
 // profileCommon is the subset of the verifier Profile the command reads to locate
@@ -199,9 +203,10 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 
 	worker := services.NewWorker(&transaction.Handler{}, nil)
 	clientID, err := worker.CreateL2Client(context.Background(), ctx, services.L2ClientParams{
-		WasmChecksum:  l2cfg.WasmChecksum,
-		RollupProfile: profile,
-		Bootstrap:     bootstrap,
+		WasmChecksum:         l2cfg.WasmChecksum,
+		RollupProfile:        profile,
+		Bootstrap:            bootstrap,
+		CounterpartyClientID: l2cfg.CounterpartyClientID,
 	})
 	if err != nil {
 		return fmt.Errorf("create L2 client on Cosmos: %w", err)

@@ -37,6 +37,10 @@ type L2ClientParams struct {
 	RollupProfile json.RawMessage
 	// Bootstrap is the trusted initial state read from the L2 chain.
 	Bootstrap relayerclient.L2BootstrapState
+	// CounterpartyClientID is the L2-side client (on the rollup's ICS26Router) that
+	// tracks Cosmos, registered inline as this client's counterparty. Empty when the
+	// L2-side client id is not yet known, in which case registration is deferred.
+	CounterpartyClientID string
 }
 
 // The JSON shapes below mirror the ICS-08 CosmWasm L2 client types
@@ -108,15 +112,16 @@ func BuildL2WasmClientState(p L2ClientParams) (ibcexported.ClientState, ibcexpor
 }
 
 // CreateL2Client bootstraps one L2 rollup wasm light client on Cosmos and returns
-// its auto-assigned client id. It goes through the shared generic wasm-create tx
-// path (the same one CreateEthClient uses), but with registerCounterparty=false:
-// the L2-side client that tracks Cosmos does not exist at bootstrap, so registering
-// the ETH source's router client id as this client's counterparty would write a
-// wrong, durable mapping. The counterparty is registered later, once it exists.
+// its auto-assigned client id. It goes through the shared generic wasm-create tx path
+// (the same one CreateEthClient uses), passing p.CounterpartyClientID (the L2-side
+// client that tracks Cosmos) so it is registered inline like the ETH beacon client.
+// When that id is not yet configured it is empty, and counterparty registration is
+// deferred to a later step (registering the ETH source's router id here would write a
+// wrong, durable mapping).
 func (w *Worker) CreateL2Client(stdCtx context.Context, ctx Context, p L2ClientParams) (string, error) {
 	clientState, consensusState, err := BuildL2WasmClientState(p)
 	if err != nil {
 		return "", err
 	}
-	return w.TxHandler.CreateWasmClient(stdCtx, ctx, clientState, consensusState, false)
+	return w.TxHandler.CreateWasmClient(stdCtx, ctx, clientState, consensusState, p.CounterpartyClientID)
 }

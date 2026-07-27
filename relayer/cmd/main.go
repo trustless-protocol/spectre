@@ -892,7 +892,6 @@ func main() {
 
 	rootCmd.AddCommand(
 		Start(zLogger),
-		CreateClients(zLogger),
 		CreateClientsCosmos(zLogger),
 		CreateClientsEth(zLogger),
 		UpdateClient(zLogger),
@@ -1068,72 +1067,6 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 // CreateClients runs the full two-chain setup as a one-shot (devnet bring-up):
 // create-clients-cosmos first (so the auto-assigned wasm client id is known),
 // then create-clients-eth wired to that id. No id guessing, no assertion.
-func CreateClients(logger *zap.Logger) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:   "create-clients",
-		Short: "deploy light clients on both chains (runs create-clients-cosmos then create-clients-eth)",
-		Args:  cobra.ExactArgs(0),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			configPath, err := cmd.Flags().GetString(flagConfigPath)
-			if err != nil {
-				return fmt.Errorf("failed to get config path: %w", err)
-			}
-			_ = godotenv.Load()
-			cfg, err := loadConfig(configPath)
-			if err != nil {
-				return fmt.Errorf("failed to load config: %w", err)
-			}
-			logger.Sugar().Infof("create-clients: config loaded from %s", configPath)
-			source, err := cmd.Flags().GetString(flagSource)
-			if err != nil {
-				return fmt.Errorf("failed to get source flag: %w", err)
-			}
-			cfg, err = selectSource(cfg, source)
-			if err != nil {
-				return err
-			}
-			logger.Sugar().Infof("create-clients: targeting source %q", cfg.CosmosToEthConfig.ICS26ClientID)
-			if err := preflightCreateClients(cfg); err != nil {
-				return err
-			}
-			logger.Sugar().Info("create-clients: preflight passed")
-
-			wasmChecksum, err := cmd.Flags().GetString(flagWasmChecksum)
-			if err != nil {
-				return fmt.Errorf("failed to get wasm checksum: %w", err)
-			}
-			trustLevel, err := cmd.Flags().GetString(flagTrustLevel)
-			if err != nil {
-				return fmt.Errorf("failed to get trust level: %w", err)
-			}
-			trustingPeriod, err := cmd.Flags().GetUint32(flagTrustingPeriod)
-			if err != nil {
-				return fmt.Errorf("failed to get trusting period: %w", err)
-			}
-
-			// 1. Cosmos side first — discovers the real wasm client id.
-			wasmClientID, err := runCreateClientsCosmos(logger, cfg, configPath, wasmChecksum)
-			if err != nil {
-				return err
-			}
-			// 2. ETH side — wired to the discovered wasm client id.
-			if _, err := runCreateClientsEth(logger, cfg, configPath, wasmClientID, trustLevel, trustingPeriod); err != nil {
-				return err
-			}
-
-			logger.Sugar().Info("=== Setup Complete ===")
-			logger.Sugar().Infof("client ids/addresses persisted to %s; ready for 'start'", configPath)
-			return nil
-		},
-	}
-	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
-	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
-	cmd.Flags().Uint32(flagTrustingPeriod, 0, "trusting period in seconds for Cosmos light client (default: 2/3 of chain unbonding period)")
-	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
-	cmd.Flags().String(flagSource, "", "ics26_client_id of the cosmos_to_eth source to target (required when several are configured)")
-	return cmd
-}
-
 // CreateClientsCosmos creates only the Ethereum light client on Cosmos and
 // persists cosmos_wasm_client_id. Run this before create-clients-eth.
 func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {

@@ -41,6 +41,36 @@ client state's runtime profile; the example Sepolia JSON files under each verifi
 directory are tooling/test inputs and are not compiled into Wasm. Operators must set the actual
 Ethereum client ID and checksum before client creation.
 
+### L2 client creation config
+
+`create-clients-cosmos --l2-config <path>` (repeatable, one per rollup source) creates each L2 wasm
+client on Cosmos, anchored to the L1 (08-wasm ETH) client created in the same run. Each
+`--l2-config` JSON is:
+
+```json
+{
+  "wasm_checksum": "<hex checksum of the governance-stored L2 client wasm>",
+  "l2_rpc_url": "https://<l2-execution-rpc>",
+  "rollup_profile": {
+    "common": {
+      "l2_router": "0x…",
+      "ethereum_client": { "client_id": "", "wasm_checksum": [] }
+    }
+  },
+  "bootstrap_block": 0,
+  "counterparty_client_id": "<L2-side client id on the rollup's ICS26Router>"
+}
+```
+
+`rollup_profile` is the full ICS-08 verifier Profile embedded verbatim as the client state (the L2
+router, commitment slot, and chain ids all live in `common`, so they are not repeated elsewhere).
+`rollup_profile.common.ethereum_client.client_id` may be left empty — `create-clients-cosmos`
+injects the freshly-created L1 client id. `bootstrap_block` `0` (or absent) bootstraps from the L2
+latest. **`counterparty_client_id`** registers the L2-side client (the one tracking Cosmos) as this
+client's counterparty inline; leave it empty to defer registration until that id is known, then
+register it manually. Omitting it silently defers registration, so set it once the L2-side client
+id is available.
+
 Updates may advance the latest height or backfill an absent historical height. Replaying identical
 state is idempotent; conflicting state at an existing height is rejected but does not freeze the
 client. A lone conflict may be a relayer error. Freezing requires the watchdog to submit two

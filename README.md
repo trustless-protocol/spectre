@@ -258,14 +258,12 @@ curl -s http://127.0.0.1:32101/eth/v1/beacon/states/head/finality_checkpoints
 # `gaiad` --node / --home flags at the val0 home + RPC (defaults
 # $HOME/.gaia-multi/val0 + tcp://127.0.0.1:31000).
 
-# 5. Create the light clients on both chains. Runs the Cosmos side first
-#    (creates the 08-wasm ETH client), then deploys the Tendermint light
-#    client on Ethereum. Writes cosmos_wasm_client_id + spectre_client back
-#    into relayer/config.json automatically.
-#    (Split alternative: create-clients-cosmos then create-clients-eth.)
-./relayer create-clients \
-  --config config.json \
-  --wasm-checksum <hex-from-wasm.sh>
+# 5. Create the light clients, one command per chain. The Cosmos side comes first
+#    (creates the 08-wasm ETH client, writing cosmos_wasm_client_id), then the ETH
+#    side deploys the Tendermint light client wired to that id (writing
+#    spectre_client). Both write back into relayer/config.json automatically.
+./relayer create-clients-cosmos --config config.json --wasm-checksum <hex-from-wasm.sh>
+./relayer create-clients-eth    --config config.json
 
 # 6. Start the bi-directional relay loop
 ./relayer start --config config.example.json
@@ -278,7 +276,8 @@ curl -s http://127.0.0.1:32101/eth/v1/beacon/states/head/finality_checkpoints
 #    a second source might be "osmosis-1"). Create its clients with --source,
 #    then start once — `start` runs one independent relay loop per source in
 #    the same process (shared prover + ETH endpoint):
-#      ./relayer create-clients --config config.json --source osmosis-1 --wasm-checksum <hex>
+#      ./relayer create-clients-cosmos --config config.json --source osmosis-1 --wasm-checksum <hex>
+#      ./relayer create-clients-eth    --config config.json --source osmosis-1
 #      ./relayer start --config config.json
 
 # 7. send packet

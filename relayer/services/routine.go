@@ -777,7 +777,13 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, ctx Context, checksum s
 	}
 	log.Printf("[CreateEthClient] wasm client/consensus state prepared, broadcasting MsgCreateClient")
 
-	return w.TxHandler.CreateWasmClient(stdCtx, ctx, &wasmClientState, &wasmConsensusState, true)
+	// The ETH beacon client's counterparty is the ETH-side Cosmos router client id
+	// (a config value); it must be present.
+	counterpartyClientID := ctx.CosmosRouterClientID()
+	if counterpartyClientID == "" {
+		return "", fmt.Errorf("[CreateEthClient] cosmos router client id is not configured")
+	}
+	return w.TxHandler.CreateWasmClient(stdCtx, ctx, &wasmClientState, &wasmConsensusState, counterpartyClientID)
 }
 
 type EthClientUpdateResult struct {

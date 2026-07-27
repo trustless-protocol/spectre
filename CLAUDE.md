@@ -51,14 +51,13 @@ Build the binary for operational commands — don't `go run` them:
 ```bash
 cd relayer && go build -o relayer ./cmd
 
-# One-time setup: create light clients on both chains. Runs the Cosmos half first
-# (creates the 08-wasm ETH client → learns its real client id), then the ETH half
-# (deploys ICS07 wired to that id). Writes cosmos_wasm_client_id and spectre_client
-# back into config.json automatically.
-./relayer create-clients --config config.json --trust-level 2/3 --wasm-checksum <hex>
-# Or the two halves separately (cosmos first — eth needs the wasm id):
-#   ./relayer create-clients-cosmos --config config.json --wasm-checksum <hex>
-#   ./relayer create-clients-eth    --config config.json
+# One-time setup: create the light clients, ONE COMMAND PER CHAIN (the umbrella
+# `create-clients` was removed — #255). Cosmos side first (creates the 08-wasm ETH
+# client → learns its real client id), then the ETH side (deploys ICS07 wired to that
+# id). Both write their ids back into config.json. create-clients-cosmos also creates
+# one L2 wasm client per --l2-config (all Cosmos-side, L1 client id auto-injected).
+./relayer create-clients-cosmos --config config.json --wasm-checksum <hex>
+./relayer create-clients-eth    --config config.json --trust-level 2/3
 
 # Start relay loop (bi-directional); add --benchmark for per-inner-call gas + timing logs
 ./relayer start --config config.json
@@ -66,7 +65,7 @@ cd relayer && go build -o relayer ./cmd
 
 Config: JSON file with `modules` array containing `cosmos_to_eth` and `eth_to_cosmos` entries (see `relayer/config.example.json`). Secrets: `relayer/.env` ships with devnet-only sample keys (`ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, `COSMOS_CHAIN_ID`, `COSMOS_ADDRESS_PREFIX` — bech32 account prefix, default `cosmos`, `PROVER_BIN_DIR`) — replace before any real deployment.
 
-Multiple Cosmos sources: add one `cosmos_to_eth` module per source (each with a distinct `ics26_client_id`); `start` runs an independent relay loop for each in one process (shared prover + ETH endpoint, ETH events partitioned by the per-source client-id filter). Run `create-clients{,-cosmos,-eth}` once per source with `--source <ics26_client_id>` — it targets and writes the ids back into that source's module. Single-source configs are unchanged and need no `--source`.
+Multiple Cosmos sources: add one `cosmos_to_eth` module per source (each with a distinct `ics26_client_id`); `start` runs an independent relay loop for each in one process (shared prover + ETH endpoint, ETH events partitioned by the per-source client-id filter). Run `create-clients-cosmos` then `create-clients-eth` once per source with `--source <ics26_client_id>` — each targets and writes the ids back into that source's module. Single-source configs are unchanged and need no `--source`.
 
 Circuit setup (from `relayer/`): `go run ./prover/cmd ./bin ../contracts/verifiers` — compiles every bucket into `bin/n{N}/{r1cs,pk,vk}.bin` and emits `Groth16Verifier_N{N}.sol`. After regeneration the vk changes: **redeploy every generated verifier and re-register via `SignatureVerifier.setBucket(...)`**, or every proof fails on-chain.
 
@@ -101,7 +100,7 @@ relayer/
 ├── subscriber/     # Cosmos WebSocket + ETH event listeners (both sides have gap recovery — keep it that way)
 ├── transaction/    # ETH tx (nonce under h.mu) + Cosmos tx (account sequence under cosmosMu)
 ├── utils/          # IBC path helpers, byte utils
-└── cmd/main.go     # CLI: start (runAdapterEngine per source), create-clients{,-cosmos,-eth}, update-client, genesis, fixtures
+└── cmd/main.go     # CLI: start (runAdapterEngine per source), create-clients-{cosmos,eth}, update-client, genesis, fixtures
 ```
 
 `packages/go-abigen/` — GENERATED bindings consumed by the relayer (`spectreclient`, `ics26router`, `ics20transfer`, `ibcerc20`, `relayerhelper`).
@@ -166,7 +165,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 10. **One-sided relayer fixes** — patches the Cosmos path, leaves the ETH mirror with the old bug. → *Every relayer change ends with a mirror-path diff; name the paired file in your report.*
 11. **Advancing state on failure** — bumps a routine timestamp (`latestEthTimestamp`/`latestCosmosTimestamp`) or a recovery cursor when the operation failed. These guard client expiry and event-loss windows. → *Never advance a timestamp/cursor/tracker on a failed operation.*
 12. **Sequence/nonce races** — adds a submission path that skips the handler mutexes. → *All ETH sends go through the nonce block under `h.mu`; all Cosmos sends through `SendCosmosTxBatch` under `cosmosMu`.*
-13. **npm/yarn, or `go run` for ops** — → *`bun` for JS; built `./relayer` binary for `create-clients`/`start`.*
+13. **npm/yarn, or `go run` for ops** — → *`bun` for JS; built `./relayer` binary for `create-clients-{cosmos,eth}`/`start`.*
 14. **Downgrading pinned deps to match a stale mirror** — a mirror lags, model "fixes" by downgrading. → *Never regress a pinned version to satisfy a mirror; fix the install source.*
 15. **Chat language leaking into GitHub** — non-English chat bleeds into an issue or commit. → *Hard limit 6.*
 16. **Misreading the permissionless escape hatch** — flags `hasRole(ROLE, address(0))` as a vulnerability. → *It's the documented permissionless mode; report it as design context, not a finding.*
