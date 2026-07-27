@@ -159,7 +159,8 @@ The generic module reproduces every reliability property of the monolithic
 ## L2 (rollup) adapters
 
 The L2→Cosmos path is **trustless**: no relayer signature or re-execution. The
-per-L2 `HeaderBuilder` (`l2rollup/headerbuilders.go`) assembles a JSON
+per-L2 `HeaderBuilder` (`l2rollup/header_op.go`, `l2rollup/header_arbitrum_bold.go`,
+`l2rollup/header_arbitrum_legacy.go`) assembles a JSON
 `ClientMessage` — the L1 rollup-contract witnesses (AnchorStateRegistry for
 OP-Stack, RollupCore for Arbitrum) + the RLP L2 header + the L2 IBC-handler
 account proof — and the L2 wasm client on Cosmos verifies those rollup proofs
