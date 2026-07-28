@@ -45,7 +45,7 @@ if [ -z "${L2_RPC:-}" ]; then
         esac
     fi
     [ -f "$L2_ENV_FILE" ] || {
-        echo "ERROR: L2_RPC is unset and no handoff at $L2_ENV_FILE; run the $DST_CHAIN stack first (scripts/local/run_op_stack.sh or run_arbitrum_stack.sh) or set L2_RPC" >&2
+        echo "ERROR: L2_RPC is unset and no handoff at $L2_ENV_FILE; run the $DST_CHAIN stack first (scripts/local/run_optimism_node.sh or run_arbitrum_stack.sh) or set L2_RPC" >&2
         exit 1
     }
     # shellcheck disable=SC1090

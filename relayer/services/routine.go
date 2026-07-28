@@ -648,22 +648,9 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, ctx Context, checksum s
 		return "", err
 	}
 
-	// Resolve the fork schedule against the bootstrap head epoch so the active
-	// fork version (e.g. Fulu on a chain past its Fulu fork) is the one baked into
-	// the client state — see ToForkParameters.
-	slotsPerEpochForFork, err := strconv.ParseUint(spec.SlotsPerEpoch, 10, 64)
-	if err != nil {
-		return "", err
-	}
-	checkpointSlotForFork, err := strconv.ParseUint(checkpointSlot, 10, 64)
-	if err != nil {
-		return "", fmt.Errorf("failed to parse checkpoint slot: %w", err)
-	}
-	var currentEpoch uint64
-	if slotsPerEpochForFork > 0 {
-		currentEpoch = checkpointSlotForFork / slotsPerEpochForFork
-	}
-	forkParameters, err := spec.ToForkParameters(currentEpoch)
+	// The full fork schedule (through Fulu) is baked into the client state; the
+	// light client selects the active version per header — see ToForkParameters.
+	forkParameters, err := spec.ToForkParameters()
 	if err != nil {
 		return "", fmt.Errorf("failed to get fork parameters: %w", err)
 	}

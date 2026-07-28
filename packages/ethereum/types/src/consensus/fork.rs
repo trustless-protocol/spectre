@@ -29,7 +29,7 @@ struct ForkData {
 }
 
 /// The fork parameters
-#[derive(Serialize, Deserialize, JsonSchema, PartialEq, Eq, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, JsonSchema, PartialEq, Eq, Clone, Debug)]
 #[allow(clippy::module_name_repetitions)]
 pub struct ForkParameters {
     /// The genesis fork version
@@ -47,6 +47,40 @@ pub struct ForkParameters {
     pub deneb: Fork,
     /// The electra fork
     pub electra: Fork,
+    /// The fulu (Fusaka) fork. On a chain that has not scheduled Fulu, `epoch`
+    /// must be `u64::MAX` so `compute_fork_version` never selects it. Absent input
+    /// (pre-Fulu client states / fixtures) deserializes to that "not scheduled"
+    /// value, so an Electra-only chain behaves exactly as before.
+    #[serde(default = "fork_not_scheduled")]
+    pub fulu: Fork,
+}
+
+/// The default `fulu` fork for inputs that predate Fulu support: a zero version
+/// pinned to `u64::MAX` so `compute_fork_version` never selects it.
+fn fork_not_scheduled() -> Fork {
+    Fork {
+        version: Version::ZERO,
+        epoch: u64::MAX,
+    }
+}
+
+// Hand-written so `fulu` defaults to the not-scheduled sentinel (`u64::MAX`) rather
+// than `Fork::default()`'s epoch 0. A derived Default would make
+// `ForkParameters::default().compute_fork_version(_)` return the zero Fulu version
+// for every epoch, since the Fulu arm is checked first.
+impl Default for ForkParameters {
+    fn default() -> Self {
+        Self {
+            genesis_fork_version: Version::default(),
+            genesis_slot: 0,
+            altair: Fork::default(),
+            bellatrix: Fork::default(),
+            capella: Fork::default(),
+            deneb: Fork::default(),
+            electra: Fork::default(),
+            fulu: fork_not_scheduled(),
+        }
+    }
 }
 
 impl ForkParameters {
@@ -55,6 +89,7 @@ impl ForkParameters {
     #[must_use]
     pub const fn compute_fork_version(&self, epoch: u64) -> Version {
         match epoch {
+            _ if epoch >= self.fulu.epoch => self.fulu.version,
             _ if epoch >= self.electra.epoch => self.electra.version,
             _ if epoch >= self.deneb.epoch => self.deneb.version,
             _ if epoch >= self.capella.epoch => self.capella.version,
@@ -77,4 +112,81 @@ pub fn compute_fork_data_root(current_version: Version, genesis_validators_root:
     };
 
     fork_data.tree_hash_root()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(n: u8) -> Version {
+        Version::from([n, 0, 0, 0])
+    }
+
+    fn params(electra_epoch: u64, fulu_epoch: u64) -> ForkParameters {
+        ForkParameters {
+            genesis_fork_version: v(0),
+            genesis_slot: 0,
+            altair: Fork {
+                version: v(1),
+                epoch: 0,
+            },
+            bellatrix: Fork {
+                version: v(2),
+                epoch: 0,
+            },
+            capella: Fork {
+                version: v(3),
+                epoch: 0,
+            },
+            deneb: Fork {
+                version: v(4),
+                epoch: 0,
+            },
+            electra: Fork {
+                version: v(5),
+                epoch: electra_epoch,
+            },
+            fulu: Fork {
+                version: v(6),
+                epoch: fulu_epoch,
+            },
+        }
+    }
+
+    #[test]
+    fn compute_fork_version_selects_fulu_at_and_past_its_epoch() {
+        let p = params(100, 200);
+        assert_eq!(
+            p.compute_fork_version(150),
+            v(5),
+            "between electra and fulu -> electra"
+        );
+        assert_eq!(p.compute_fork_version(200), v(6), "at fulu -> fulu");
+        assert_eq!(p.compute_fork_version(999), v(6), "past fulu -> fulu");
+    }
+
+    #[test]
+    fn compute_fork_version_ignores_unscheduled_fulu() {
+        // fulu.epoch = u64::MAX means "not scheduled": electra stays active forever.
+        let p = params(100, u64::MAX);
+        assert_eq!(p.compute_fork_version(1_000_000), v(5));
+    }
+
+    #[test]
+    fn deserializes_without_fulu_to_never() {
+        // A pre-Fulu client state omits "fulu"; it must default to epoch u64::MAX so
+        // compute_fork_version never selects it.
+        let json = r#"{
+            "genesis_fork_version": "0x00000000",
+            "genesis_slot": 0,
+            "altair": {"version":"0x01000000","epoch":0},
+            "bellatrix": {"version":"0x02000000","epoch":0},
+            "capella": {"version":"0x03000000","epoch":0},
+            "deneb": {"version":"0x04000000","epoch":0},
+            "electra": {"version":"0x05000000","epoch":100}
+        }"#;
+        let p: ForkParameters = serde_json::from_str(json).unwrap();
+        assert_eq!(p.fulu.epoch, u64::MAX);
+        assert_eq!(p.compute_fork_version(1_000_000), p.electra.version);
+    }
 }

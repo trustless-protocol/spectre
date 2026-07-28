@@ -55,6 +55,7 @@ type ForkParameters struct {
 	Capella            Fork   `json:"capella"`
 	Deneb              Fork   `json:"deneb"`
 	Electra            Fork   `json:"electra"`
+	Fulu               Fork   `json:"fulu"`
 	GenesisForkVersion string `json:"genesis_fork_version"`
 	GenesisSlot        uint64 `json:"genesis_slot"`
 }
@@ -719,10 +720,11 @@ func GetWasmClientLatestHeight(cosmosClient *rpchttp.HTTP, clientID string) (cli
 	return wasmClientState.LatestHeight, nil
 }
 
-// ToForkParameters maps the beacon spec into the client-state fork schedule.
-// currentEpoch is the head/bootstrap epoch used to decide which fork version is
-// actually in force right now.
-func (s *BeaconSpec) ToForkParameters(currentEpoch uint64) (*ForkParameters, error) {
+// ToForkParameters maps the beacon spec into the client-state fork schedule. Every
+// fork (through Fulu) is passed through with its own version+epoch; the light client
+// picks the active version per header via compute_fork_version, so no head epoch is
+// needed here.
+func (s *BeaconSpec) ToForkParameters() (*ForkParameters, error) {
 	altairForkEpoch, err := strconv.ParseUint(s.AltairForkEpoch, 10, 64)
 	if err != nil {
 		return nil, err
@@ -743,17 +745,23 @@ func (s *BeaconSpec) ToForkParameters(currentEpoch uint64) (*ForkParameters, err
 	if err != nil {
 		return nil, err
 	}
-	electraForkVersion := s.ElectraForkVersion
-	// The current Rust light-client type only has fork slots up to Electra, so the
-	// "latest" fork version must be folded into the Electra slot. Fold Fulu into
-	// Electra once the chain has reached the Fulu fork epoch (this generalizes the
-	// Fulu-from-genesis case: fuluForkEpoch == 0 <= currentEpoch). Before Fulu
-	// activates (e.g. a local Electra devnet), currentEpoch < fuluForkEpoch and the
-	// real Electra version is kept — so domain computation stays correct on both.
-	if s.FuluForkVersion != "" && s.FuluForkEpoch != "" {
-		if fuluForkEpoch, err := strconv.ParseUint(s.FuluForkEpoch, 10, 64); err == nil && fuluForkEpoch <= currentEpoch {
-			electraForkVersion = s.FuluForkVersion
+	// Fulu (Fusaka) fork. A chain that has not scheduled Fulu omits FULU_FORK_* from
+	// its beacon spec; map that to epoch ^uint64(0) so the light client's
+	// compute_fork_version never selects the Fulu slot and Electra stays active.
+	fuluForkEpoch := ^uint64(0)
+	if s.FuluForkEpoch != "" {
+		fuluForkEpoch, err = strconv.ParseUint(s.FuluForkEpoch, 10, 64)
+		if err != nil {
+			return nil, err
 		}
+	}
+	// The Rust client's Version is a fixed 4-byte hex, so an empty version string
+	// fails to deserialize the whole client state. A pre-Fulu beacon spec omits
+	// FULU_FORK_VERSION, so emit the zero version — the slot is never selected anyway
+	// (epoch = ^uint64(0)), mirroring the Rust fork_not_scheduled() sentinel.
+	fuluForkVersion := s.FuluForkVersion
+	if fuluForkVersion == "" {
+		fuluForkVersion = "0x00000000"
 	}
 	return &ForkParameters{
 		GenesisForkVersion: s.GenesisForkVersion,
@@ -775,8 +783,12 @@ func (s *BeaconSpec) ToForkParameters(currentEpoch uint64) (*ForkParameters, err
 			Epoch:   denebForkEpoch,
 		},
 		Electra: Fork{
-			Version: electraForkVersion,
+			Version: s.ElectraForkVersion,
 			Epoch:   electraForkEpoch,
+		},
+		Fulu: Fork{
+			Version: fuluForkVersion,
+			Epoch:   fuluForkEpoch,
 		},
 	}, nil
 }

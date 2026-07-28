@@ -3,6 +3,7 @@ package client
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -148,7 +149,7 @@ func TestToForkParameters(t *testing.T) {
 			ElectraForkEpoch:     "364544",
 		}
 
-		fp, err := spec.ToForkParameters(0)
+		fp, err := spec.ToForkParameters()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -175,43 +176,69 @@ func TestToForkParameters(t *testing.T) {
 		}
 	})
 
-	t.Run("fulu folded into electra only once active", func(t *testing.T) {
-		// Rust client tops out at the Electra slot, so the active fork version is
-		// folded there. Before the Fulu epoch the real Electra version is kept;
-		// at/after it, the Fulu version is used — so the same binary works on a
-		// pre-Fulu (e.g. local Electra) chain and a post-Fulu (e.g. Sepolia) chain.
-		newSpec := func() *BeaconSpec {
-			return &BeaconSpec{
-				GenesisForkVersion: "0x00000000",
-				AltairForkVersion:  "0x01000000", AltairForkEpoch: "0",
-				BellatrixForkVersion: "0x02000000", BellatrixForkEpoch: "0",
-				CapellaForkVersion: "0x03000000", CapellaForkEpoch: "0",
-				DenebForkVersion: "0x04000000", DenebForkEpoch: "0",
-				ElectraForkVersion: "0x05000000", ElectraForkEpoch: "100",
-				FuluForkVersion: "0x06000000", FuluForkEpoch: "200",
-			}
+	t.Run("fulu populated as its own fork slot", func(t *testing.T) {
+		// Electra and Fulu each keep their real version+epoch; the light client
+		// picks the active version per header, so no folding into Electra.
+		spec := &BeaconSpec{
+			GenesisForkVersion: "0x00000000",
+			AltairForkVersion:  "0x01000000", AltairForkEpoch: "0",
+			BellatrixForkVersion: "0x02000000", BellatrixForkEpoch: "0",
+			CapellaForkVersion: "0x03000000", CapellaForkEpoch: "0",
+			DenebForkVersion: "0x04000000", DenebForkEpoch: "0",
+			ElectraForkVersion: "0x05000000", ElectraForkEpoch: "100",
+			FuluForkVersion: "0x06000000", FuluForkEpoch: "200",
 		}
-
-		fpPre, err := newSpec().ToForkParameters(150) // between Electra and Fulu
+		fp, err := spec.ToForkParameters()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if fpPre.Electra.Version != "0x05000000" {
-			t.Errorf("pre-Fulu Electra.Version: got %q, want Electra version", fpPre.Electra.Version)
+		if fp.Electra.Version != "0x05000000" || fp.Electra.Epoch != 100 {
+			t.Errorf("Electra: got %q@%d, want 0x05000000@100", fp.Electra.Version, fp.Electra.Epoch)
 		}
+		if fp.Fulu.Version != "0x06000000" || fp.Fulu.Epoch != 200 {
+			t.Errorf("Fulu: got %q@%d, want 0x06000000@200", fp.Fulu.Version, fp.Fulu.Epoch)
+		}
+	})
 
-		fpPost, err := newSpec().ToForkParameters(250) // past Fulu
+	t.Run("fulu not scheduled defaults to never", func(t *testing.T) {
+		// A pre-Fulu chain omits FULU_FORK_* — the slot must map to epoch ^uint64(0)
+		// so compute_fork_version never selects it and Electra stays active.
+		spec := &BeaconSpec{
+			GenesisForkVersion: "0x00000000",
+			AltairForkEpoch:    "0", BellatrixForkEpoch: "0", CapellaForkEpoch: "0",
+			DenebForkEpoch: "0", ElectraForkVersion: "0x05000000", ElectraForkEpoch: "100",
+		}
+		fp, err := spec.ToForkParameters()
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if fpPost.Electra.Version != "0x06000000" {
-			t.Errorf("post-Fulu Electra.Version: got %q, want Fulu version", fpPost.Electra.Version)
+		if fp.Fulu.Epoch != ^uint64(0) {
+			t.Errorf("Fulu.Epoch: got %d, want ^uint64(0) (not scheduled)", fp.Fulu.Epoch)
+		}
+		// The Rust client's Version is a fixed 4-byte hex; an empty version would
+		// fail to deserialize the client state. A missing FULU_FORK_VERSION must
+		// serialize to a valid zero version, not "".
+		if fp.Fulu.Version != "0x00000000" {
+			t.Errorf("Fulu.Version: got %q, want 0x00000000 (valid 4-byte hex)", fp.Fulu.Version)
+		}
+		// Round-trip: the marshaled fork parameters must carry a non-empty version
+		// for every fork, so the Rust B32 deserialization accepts it.
+		raw, err := json.Marshal(fp)
+		if err != nil {
+			t.Fatalf("marshal fork parameters: %v", err)
+		}
+		var back ForkParameters
+		if err := json.Unmarshal(raw, &back); err != nil {
+			t.Fatalf("unmarshal fork parameters: %v", err)
+		}
+		if back.Fulu.Version == "" {
+			t.Errorf("marshaled fulu version is empty; Rust B32 would reject it: %s", raw)
 		}
 	})
 
 	t.Run("invalid altair epoch", func(t *testing.T) {
 		spec := &BeaconSpec{AltairForkEpoch: "notanumber"}
-		_, err := spec.ToForkParameters(0)
+		_, err := spec.ToForkParameters()
 		if err == nil {
 			t.Fatal("expected error for invalid epoch")
 		}
@@ -222,7 +249,7 @@ func TestToForkParameters(t *testing.T) {
 			AltairForkEpoch:    "0",
 			BellatrixForkEpoch: "bad",
 		}
-		_, err := spec.ToForkParameters(0)
+		_, err := spec.ToForkParameters()
 		if err == nil {
 			t.Fatal("expected error for invalid epoch")
 		}

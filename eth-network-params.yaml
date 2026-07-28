@@ -1,11 +1,37 @@
+# Single L1 recipe for BOTH the ETH<->Cosmos devnet (run_eth_node.sh) and the OP
+# Stack devnet (run_optimism_node.sh attaches its L2 to this L1). Fusaka-from-genesis
+# gives production parity with Ethereum mainnet (Fulu live since 2025-12-03) and is
+# required by the OP Stack blob path; the ETH light client speaks Fulu as of the
+# fork-version support in packages/ethereum. geth/lighthouse are left at the
+# ethereum-package defaults (:latest) — currently geth v1.17.x + lighthouse v8.
 participants:
   - el_type: geth
     cl_type: lighthouse
+    # PeerDAS: the single node must custody ALL data columns to produce and
+    # reconstruct blob blocks, and to satisfy the package's "Fulu needs a
+    # supernode" validation.
+    supernode: true
 
 network_params:
-  # 1s per slot → epoch = 32s, finality ~64s
+  # 2s per slot → epoch = 64s, finality ~2 min.
   seconds_per_slot: 2
   genesis_delay: 10
+  # Fusaka (Fulu/Osaka) from genesis: mainnet parity, and lighthouse v8 is
+  # PeerDAS-native (cannot publish pre-Fulu blob blocks). The ETH light client
+  # verifies the Fulu signing domain via its fulu fork slot.
+  fulu_fork_epoch: 0
+  # op-deployer requires the deterministic-deployment (create2) proxy, which
+  # ethereum-package does not preload by default. Harmless for the ETH-only flow.
+  additional_preloaded_contracts: '
+    {
+      "0x4e59b44847b379578588920cA78FbF26c0B4956C": {
+        "balance": "0ETH",
+        "code": "0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffe03601600081602082378035828234f58015156039578182fd5b8082525050506014600cf3",
+        "storage": {},
+        "nonce": "1"
+      }
+    }
+  '
 
 # Pin host-visible public port ranges so relayer endpoints stay stable across
 # enclave recreation. EL and CL ranges are separated to avoid future overlap if

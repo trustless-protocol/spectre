@@ -7,7 +7,7 @@ use super::fork::{Fork, ForkParameters, Version};
 
 /// The spec type, returned from the beacon api.
 #[serde_as]
-#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub struct Spec {
     /// The number of seconds per slot.
@@ -55,6 +55,47 @@ pub struct Spec {
     /// The electra fork epoch.
     #[serde_as(as = "DisplayFromStr")]
     pub electra_fork_epoch: u64,
+    /// The fulu (Fusaka) fork version.
+    #[serde(default)]
+    pub fulu_fork_version: Version,
+    /// The fulu (Fusaka) fork epoch. `u64::MAX` when Fulu is not scheduled; a beacon
+    /// spec that omits `FULU_FORK_EPOCH` (pre-Fulu chain) defaults to that value.
+    #[serde_as(as = "DisplayFromStr")]
+    #[serde(default = "fulu_epoch_not_scheduled")]
+    pub fulu_fork_epoch: u64,
+}
+
+/// The `FULU_FORK_EPOCH` sentinel used when a chain has not scheduled Fulu.
+const fn fulu_epoch_not_scheduled() -> u64 {
+    u64::MAX
+}
+
+// Hand-written so `fulu_fork_epoch` defaults to the not-scheduled sentinel
+// (`u64::MAX`) rather than 0, keeping `Spec::default().to_fork_parameters()` from
+// selecting the zero Fulu version for every epoch.
+impl Default for Spec {
+    fn default() -> Self {
+        Self {
+            seconds_per_slot: 0,
+            slots_per_epoch: 0,
+            epochs_per_sync_committee_period: 0,
+            sync_committee_size: 0,
+            genesis_fork_version: Version::default(),
+            genesis_slot: 0,
+            altair_fork_version: Version::default(),
+            altair_fork_epoch: 0,
+            bellatrix_fork_version: Version::default(),
+            bellatrix_fork_epoch: 0,
+            capella_fork_version: Version::default(),
+            capella_fork_epoch: 0,
+            deneb_fork_version: Version::default(),
+            deneb_fork_epoch: 0,
+            electra_fork_version: Version::default(),
+            electra_fork_epoch: 0,
+            fulu_fork_version: Version::default(),
+            fulu_fork_epoch: fulu_epoch_not_scheduled(),
+        }
+    }
 }
 
 impl Spec {
@@ -89,6 +130,10 @@ impl Spec {
             electra: Fork {
                 version: self.electra_fork_version,
                 epoch: self.electra_fork_epoch,
+            },
+            fulu: Fork {
+                version: self.fulu_fork_version,
+                epoch: self.fulu_fork_epoch,
             },
         }
     }

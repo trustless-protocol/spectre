@@ -1,4 +1,4 @@
-# Local OP Stack devnet for attestor testing (scripts/local/run_op_stack.sh).
+# Local OP Stack devnet for attestor testing (scripts/local/run_optimism_node.sh).
 # Two op-node participants: "sequencer" drives the chain; "replica" is the
 # independent verifier node the attestor points at (its op-node derives from
 # the local L1, mirroring the production verify-mode replica topology).
@@ -71,7 +71,7 @@ optimism_package:
             extra_params:
               - "--l1.epoch-poll-interval=32s"
       # Blob batches, Fusaka-style — production parity with OP Mainnet. The
-      # L1 runs Fulu from genesis (op-l1-params.yaml), so the batcher must
+      # L1 runs Fulu from genesis (eth-network-params.yaml), so the batcher must
       # wrap blobs with PeerDAS cell proofs: its default is legacy EIP-4844
       # proofs (CellProofTime=MaxUint64), which a Fulu chain cannot include.
       # cell-proof-time=0 switches to cell-proof sidecars from the start.
@@ -88,8 +88,8 @@ optimism_package:
       proposer_params:
         game_type: 1
         proposal_interval: 60s
-# The L1 is NOT launched by this package: run_op_stack.sh brings it up first
-# in the same enclave via ethereum-package (scripts/local/op-l1-params.yaml,
+# The L1 is NOT launched by this package: run_optimism_node.sh brings it up first
+# in the same enclave via ethereum-package (eth-network-params.yaml,
 # same recipe as run_eth_node.sh — geth + lighthouse v8, 2s slots), then this
 # package attaches to it through kurtosis-internal service DNS.
 external_l1_network_params:

@@ -7,7 +7,7 @@
 #   1. Existing replica:  OP_NODE_RPC_URL=http://host:9545 ./scripts/local/run_op_attestor.sh
 #      (replica bring-up skipped; only L1_RPC_URL is needed besides it)
 #      Local devnet shortcut: when OP_NODE_RPC_URL is unset and
-#      .op-devnet-run/attestor.env exists (written by run_op_stack.sh), it is
+#      .op-devnet-run/attestor.env exists (written by run_optimism_node.sh), it is
 #      sourced automatically — a bare ./scripts/local/run_op_attestor.sh
 #      attaches to the local devnet.
 #   2. Full bring-up:     provide OP_RETH_BIN + OP_NODE_BIN (built per attestor/optimism/GUIDE.md, Replica setup)
@@ -40,7 +40,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPO_ROOT=$PWD
 
-# Auto-source the local devnet handoff (written by run_op_stack.sh) when the
+# Auto-source the local devnet handoff (written by run_optimism_node.sh) when the
 # caller hasn't wired the env themselves — forgetting to `source` it was a
 # recurring foot-gun. An explicit OP_NODE_RPC_URL means the caller brought
 # their own environment; leave it untouched.
