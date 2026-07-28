@@ -248,8 +248,25 @@ done
 [ -n "$REPLICA_SVC" ] || REPLICA_SVC=${OP_NODE_SVCS[${#OP_NODE_SVCS[@]}-1]}
 OP_NODE_RPC_URL="http://$(kurtosis port print "$ENCLAVE" "$REPLICA_SVC" rpc | sed 's|^http://||')"
 
+# op-geth (L2 exec) services. IBC contracts deploy here (deploy_l2_contracts.sh),
+# so target the SEQUENCER's exec — the canonical block producer — not the replica.
+mapfile -t OP_EL_SVCS < <(kurtosis enclave inspect "$ENCLAVE" | grep -oE 'op-el-[a-zA-Z0-9-]+' | sort -u)
+if [ "${#OP_EL_SVCS[@]}" -eq 0 ]; then
+    log "ERROR: no op-geth (op-el-*) services found in enclave $ENCLAVE"
+    kurtosis enclave inspect "$ENCLAVE"
+    exit 1
+fi
+SEQ_EL_SVC=""
+for svc in "${OP_EL_SVCS[@]}"; do
+    case $svc in *replica*) ;; *) SEQ_EL_SVC=$svc; break ;; esac
+done
+[ -n "$SEQ_EL_SVC" ] || SEQ_EL_SVC=${OP_EL_SVCS[0]}
+L2_RPC_URL="http://$(kurtosis port print "$ENCLAVE" "$SEQ_EL_SVC" rpc | sed 's|^http://||')"
+L2_WS_URL="ws://$(kurtosis port print "$ENCLAVE" "$SEQ_EL_SVC" ws 2>/dev/null | sed 's|^ws://||')" || L2_WS_URL=""
+
 log "L1 RPC:            $L1_RPC_URL   ($L1_SVC)"
 log "replica op-node:   $OP_NODE_RPC_URL   ($REPLICA_SVC)"
+log "sequencer op-geth: $L2_RPC_URL   ($SEQ_EL_SVC)"
 
 # Contract addresses from op-deployer's state artifact.
 rm -rf "$RUN_DIR/op-deployer"
@@ -300,6 +317,8 @@ ENV_FILE=$RUN_DIR/attestor.env
 cat > "$ENV_FILE" <<EOF
 export L1_RPC_URL=$L1_RPC_URL
 export OP_NODE_RPC_URL=$OP_NODE_RPC_URL
+export L2_RPC_URL=$L2_RPC_URL
+export L2_WS_URL=$L2_WS_URL
 export DISPUTE_GAME_FACTORY=$DISPUTE_GAME_FACTORY
 export OPTIMISM_PORTAL=$OPTIMISM_PORTAL
 export RESPECTED_GAME_TYPE=$RESPECTED_GAME_TYPE

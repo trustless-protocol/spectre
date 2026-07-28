@@ -2,13 +2,24 @@
 
 set -euxo pipefail
 
-# All internal paths (eth-network-params.yaml, scripts/E2ETestDeploy.s.sol, relayer/)
-# are repo-root relative — cd up so this script works regardless of where it's invoked from.
+# Local Ethereum PoS devnet (geth + lighthouse) via Kurtosis. This script owns ONLY
+# the node: it starts the enclave, discovers the RPC/WS/beacon endpoints, and writes
+# them to a handoff file. Contract deployment lives in the companion
+# scripts/local/deploy_eth_contracts.sh (which sources that handoff).
+#
+#   run_eth_node.sh          -> .eth-devnet-run/eth.env  (endpoints)
+#   deploy_eth_contracts.sh  -> deploys E2ETestDeploy, patches relayer config
+#
+# All internal paths (eth-network-params.yaml, relayer/) are repo-root relative — cd up
+# so this script works regardless of where it's invoked from.
 cd "$(dirname "$0")/../.."
+REPO_ROOT=$PWD
+
+RUN_DIR=${RUN_DIR:-$REPO_ROOT/.eth-devnet-run}
 
 kurtosis enclave rm -f my-testnet || true
 killall gaiad || true
-rm -rf $HOME/.gaia
+rm -rf "$HOME/.gaia"
 
 # Run eth chain
 kurtosis run --enclave my-testnet github.com/ethpandaops/ethereum-package@6.1.0 --args-file eth-network-params.yaml
@@ -50,81 +61,15 @@ echo "ETH_RPC: $ETH_RPC"
 echo "ETH_WS: $ETH_WS"
 echo "ETH_BEACON_API: $ETH_BEACON_API"
 
-# Deploy ETH contracts
-export E2E_FAUCET_ADDRESS=0x8943545177806ED17B9F23F0a21ee5948eCaa776
-RESULT=$(forge script scripts/E2ETestDeploy.s.sol:E2ETestDeploy \
-    --rpc-url $ETH_RPC \
-    --broadcast \
-    --ffi \
-    --sender 0x8943545177806ED17B9F23F0a21ee5948eCaa776 --private-key bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31 \
-    2>/dev/null
-)
+# Endpoint handoff for deploy_eth_contracts.sh.
+mkdir -p "$RUN_DIR"
+ENV_FILE=$RUN_DIR/eth.env
+{
+    printf 'export ETH_RPC=%s\n' "$ETH_RPC"
+    printf 'export ETH_WS=%s\n' "$ETH_WS"
+    printf 'export ETH_BEACON_API=%s\n' "$ETH_BEACON_API"
+} >"$ENV_FILE"
 
-ERC20_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
-  | sed 's/\\"/"/g' \
-  | jq -r '.erc20')
-
-echo "ERC20_ADDRESS: $ERC20_ADDRESS"
-
-ICS20_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
-  | sed 's/\\"/"/g' \
-  | jq -r '.ics20Transfer')
-
-echo "ICS20_ADDRESS: $ICS20_ADDRESS"
-
-ICS26_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
-  | sed 's/\\"/"/g' \
-  | jq -r '.ics26Router')
-
-echo "ICS26_ADDRESS: $ICS26_ADDRESS"
-
-VERIFIER_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
-  | sed 's/\\"/"/g' \
-  | jq -r '.signatureVerifier')
-
-echo "VERIFIER_ADDRESS: $VERIFIER_ADDRESS"
-
-MEMBERSHIP_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
-  | sed 's/\\"/"/g' \
-  | jq -r '.membership')
-
-echo "MEMBERSHIP_ADDRESS: $MEMBERSHIP_ADDRESS"
-
-UPDATE_CLIENT_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
-  | sed 's/\\"/"/g' \
-  | jq -r '.updateClient')
-echo "UPDATE_CLIENT_ADDRESS: $UPDATE_CLIENT_ADDRESS"
-
-MISBEHAVIOUR_ADDRESS=$(echo "$RESULT" \
-  | sed -n 's/^0: string "\(.*\)".*/\1/p' \
-  | sed 's/\\"/"/g' \
-  | jq -r '.misbehaviour')
-echo "MISBEHAVIOUR_ADDRESS: $MISBEHAVIOUR_ADDRESS"
-
-
-# Start relayer
-cd relayer
-jq \
-  --arg ETH_RPC "$ETH_RPC" \
-  --arg ETH_WS "$ETH_WS" \
-  --arg ICS26 "$ICS26_ADDRESS" \
-  --arg WRAP "$VERIFIER_ADDRESS" \
-  --arg MEMB "$MEMBERSHIP_ADDRESS" \
-  --arg UPCL "$UPDATE_CLIENT_ADDRESS" \
-  --arg MIS "$MISBEHAVIOUR_ADDRESS" \
-  --arg ETH_BEACON "$ETH_BEACON_API" '
-    (.. | objects | select(has("eth_rpc_url")) | .eth_rpc_url) = $ETH_RPC
-  | (.. | objects | select(has("eth_ws_url")) | .eth_ws_url) = $ETH_WS
-  | (.. | objects | select(has("ics26_address")) | .ics26_address) = $ICS26
-  | (.. | objects | select(has("signature_verifier")) | .signature_verifier) = $WRAP
-  | (.. | objects | select(has("membership")) | .membership) = $MEMB
-  | (.. | objects | select(has("update_client")) | .update_client) = $UPCL
-  | (.. | objects | select(has("misbehaviour")) | .misbehaviour) = $MIS
-  | (.. | objects | select(has("eth_beacon_api_url")) | .eth_beacon_api_url) = $ETH_BEACON
-  ' config.example.json > config.tmp && mv config.tmp config.example.json
+echo "Ethereum node ready. Endpoints written to $ENV_FILE"
+echo "Deploy the IBC contracts + patch the relayer config with:"
+echo "  scripts/local/deploy_eth_contracts.sh"

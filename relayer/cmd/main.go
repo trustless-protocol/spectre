@@ -315,13 +315,17 @@ func replaceConfigMemberForSource(data []byte, sourceClientID, member, value str
 		if err != nil {
 			return nil, err
 		}
-		if dir, _, cerr := classifyModule(configModule{Name: name, SrcChain: srcChain, DstChain: dstChain}); cerr == nil && dir == dirCosmosToEth {
+		dir, _, cerr := classifyModule(configModule{Name: name, SrcChain: srcChain, DstChain: dstChain})
+		// create-clients-eth writes spectre_client back into either a cosmos_to_eth
+		// source or a cosmos_to_l2 destination (both hold a SpectreClient on the EVM
+		// side, created by the same flow), so accept both directions here.
+		if cerr == nil && (dir == dirCosmosToEth || dir == dirCosmosToL2) {
 			configStart, configEnd, ok, err := findJSONObjectMember(data, moduleStart, "config")
 			if err != nil {
 				return nil, err
 			}
 			if !ok || configStart >= len(data) || data[configStart] != '{' {
-				return nil, fmt.Errorf("cosmos_to_eth.config is not an object")
+				return nil, fmt.Errorf("%s.config is not an object", dir)
 			}
 
 			matches := sourceClientID == ""
@@ -859,35 +863,59 @@ func cosmosWasmClientIDOrDefault(cfg *appConfig) string {
 // (preflight, run funcs, config write-back) targets the chosen source. An empty
 // clientID selects the sole source, or errors when several are configured.
 // Legacy configs without a parsed slice fall back to the singular config.
+// selectSource picks the create-clients target by ics26_client_id. It searches both
+// cosmos_to_eth sources and cosmos_to_l2 destinations: the L2 destination's ETH-side
+// (its SpectreClient + ICS26Router on the L2) is created by the same create-clients-eth
+// flow — a cosmos_to_l2 entry is the same config struct pointed at the L2 exec RPC, so
+// the selected entry is placed in CosmosToEthConfig and the downstream deploy/write-back
+// treat it uniformly.
 func selectSource(cfg *appConfig, clientID string) (*appConfig, error) {
-	sources := cfg.CosmosToEthConfigs
-	if len(sources) == 0 {
+	eth := cfg.CosmosToEthConfigs
+	l2 := cfg.CosmosToL2Configs
+	total := len(eth) + len(l2)
+
+	// Legacy single-config path (no modules parsed into the lists).
+	if total == 0 {
 		if clientID != "" && clientID != cfg.CosmosToEthConfig.ICS26ClientID {
-			return nil, fmt.Errorf("no cosmos_to_eth source with ics26_client_id %q", clientID)
+			return nil, fmt.Errorf("no cosmos_to_eth or cosmos_to_l2 source with ics26_client_id %q", clientID)
 		}
 		return cfg, nil
 	}
+
+	pick := func(c cosmosToEthConfig) *appConfig {
+		out := *cfg
+		out.CosmosToEthConfig = c
+		return &out
+	}
+
 	if clientID == "" {
-		if len(sources) == 1 {
-			out := *cfg
-			out.CosmosToEthConfig = sources[0]
-			return &out, nil
+		if total == 1 {
+			if len(eth) == 1 {
+				return pick(eth[0]), nil
+			}
+			return pick(l2[0]), nil
 		}
-		ids := make([]string, len(sources))
-		for i := range sources {
-			ids[i] = sources[i].ICS26ClientID
+		ids := make([]string, 0, total)
+		for i := range eth {
+			ids = append(ids, eth[i].ICS26ClientID)
 		}
-		return nil, fmt.Errorf("config has %d cosmos_to_eth sources (%s); pass --source <ics26_client_id> to pick one",
-			len(sources), strings.Join(ids, ", "))
+		for i := range l2 {
+			ids = append(ids, l2[i].ICS26ClientID)
+		}
+		return nil, fmt.Errorf("config has %d cosmos_to_eth/cosmos_to_l2 sources (%s); pass --source <ics26_client_id> to pick one",
+			total, strings.Join(ids, ", "))
 	}
-	for i := range sources {
-		if sources[i].ICS26ClientID == clientID {
-			out := *cfg
-			out.CosmosToEthConfig = sources[i]
-			return &out, nil
+	for i := range eth {
+		if eth[i].ICS26ClientID == clientID {
+			return pick(eth[i]), nil
 		}
 	}
-	return nil, fmt.Errorf("no cosmos_to_eth source with ics26_client_id %q", clientID)
+	for i := range l2 {
+		if l2[i].ICS26ClientID == clientID {
+			return pick(l2[i]), nil
+		}
+	}
+	return nil, fmt.Errorf("no cosmos_to_eth or cosmos_to_l2 source with ics26_client_id %q", clientID)
 }
 
 // proofBackendFromFlags resolves the GPU/CPU backend from --gpu-prove or the
@@ -1222,7 +1250,7 @@ func CreateClientsEth(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
 	cmd.Flags().Uint32(flagTrustingPeriod, 0, "trusting period in seconds for Cosmos light client (default: 2/3 of chain unbonding period)")
-	cmd.Flags().String(flagSource, "", "ics26_client_id of the cosmos_to_eth source to target (required when several are configured)")
+	cmd.Flags().String(flagSource, "", "ics26_client_id of the cosmos_to_eth source or cosmos_to_l2 destination to target (required when several are configured)")
 	return cmd
 }
 

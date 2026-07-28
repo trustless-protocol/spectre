@@ -74,6 +74,8 @@ attestor/optimism/attestor
 .arbitrum-devnet-run/
 # Local Arbitrum verifier replica + attestor runtime state
 .arbitrum-attestor-run/
+# Local Ethereum devnet endpoint handoff (scripts/local/run_eth_node.sh)
+.eth-devnet-run/
 
 .agents/
 .specify/

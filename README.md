@@ -240,9 +240,12 @@ go build -o relayer ./cmd
 
 # 3. Start Ethereum first and wait until the beacon node finalizes.
 #    Beacon RPC is pinned to 32101 via eth-network-params.yaml (public_port_start).
-./scripts/local/run_eth_node.sh   # Kurtosis Ethereum testnet + deploys core contracts
+#    run_eth_node.sh owns only the node (endpoints -> .eth-devnet-run/eth.env);
+#    deploy_eth_contracts.sh is the deploy half (reads that handoff).
+./scripts/local/run_eth_node.sh         # Kurtosis Ethereum testnet (node only)
 # Poll until finalized.epoch > 0:
 curl -s http://127.0.0.1:32101/eth/v1/beacon/states/head/finality_checkpoints
+./scripts/local/deploy_eth_contracts.sh # deploy core contracts + patch relayer config
 
 # 4. Then start Cosmos and submit the Ethereum LC WASM via governance
 ./scripts/local/run_cosmos_node.sh   # local Cosmos chain with funded test accounts

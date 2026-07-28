@@ -451,4 +451,42 @@ func TestSelectSource(t *testing.T) {
 			t.Fatalf("selected wrong source: %+v", got.CosmosToEthConfig)
 		}
 	})
+
+	// create-clients-eth also targets cosmos_to_l2 destinations (the L2-side
+	// SpectreClient is created by the same flow).
+	t.Run("cosmos_to_l2 selected by id", func(t *testing.T) {
+		mixed := &appConfig{
+			CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "eth-a", TmRpcUrl: "a"}},
+			CosmosToL2Configs:  []cosmosToEthConfig{{ICS26ClientID: "l2-arb", TmRpcUrl: "l2"}},
+		}
+		got, err := selectSource(mixed, "l2-arb")
+		if err != nil {
+			t.Fatalf("selectSource error = %v", err)
+		}
+		if got.CosmosToEthConfig.TmRpcUrl != "l2" {
+			t.Fatalf("selected wrong dest: %+v", got.CosmosToEthConfig)
+		}
+	})
+	t.Run("sole cosmos_to_l2 selected when empty id", func(t *testing.T) {
+		l2Only := &appConfig{
+			CosmosToL2Configs: []cosmosToEthConfig{{ICS26ClientID: "l2-solo", TmRpcUrl: "l2s"}},
+		}
+		got, err := selectSource(l2Only, "")
+		if err != nil {
+			t.Fatalf("selectSource error = %v", err)
+		}
+		if got.CosmosToEthConfig.TmRpcUrl != "l2s" {
+			t.Fatalf("selected wrong dest: %+v", got.CosmosToEthConfig)
+		}
+	})
+	t.Run("ambiguous across eth+l2 errors", func(t *testing.T) {
+		mixed := &appConfig{
+			CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "eth-a", TmRpcUrl: "a"}},
+			CosmosToL2Configs:  []cosmosToEthConfig{{ICS26ClientID: "l2-arb", TmRpcUrl: "l2"}},
+		}
+		_, err := selectSource(mixed, "")
+		if err == nil || !strings.Contains(err.Error(), "--source") {
+			t.Fatalf("error = %v, want ambiguous-source error", err)
+		}
+	})
 }
