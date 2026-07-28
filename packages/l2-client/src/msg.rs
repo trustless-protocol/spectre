@@ -5,6 +5,82 @@ use cosmwasm_std::Binary;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use crate::state::ProposalStatus;
+
+/// Typed evidence requested by an L2 update. The verifier derives the resulting level.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    content = "value",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum FinalityEvidence {
+    /// Sequencer/proposal evidence; never implies canonical L1 inclusion.
+    Unsafe(UnsafeEvidence),
+    /// Canonical but non-finalized L1 inclusion evidence.
+    Safe(SafeEvidence),
+    /// Finalized L1 inclusion plus rollup resolution evidence.
+    Finalized(FinalizedEvidence),
+}
+
+/// Evidence for an Unsafe update.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct UnsafeEvidence {
+    /// Commitment identity authenticated by the rollup verifier.
+    #[schemars(with = "String")]
+    pub commitment: B256,
+}
+
+/// Evidence for Safe canonicality.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct SafeEvidence {
+    /// L2 height bound by the attestation.
+    pub l2_height: u64,
+    /// L2 block hash bound by the attestation.
+    #[schemars(with = "String")]
+    pub l2_block_hash: B256,
+    /// L1 origin hash bound by the attestation.
+    #[schemars(with = "String")]
+    pub l1_origin_hash: B256,
+    /// L1 origin number bound by the attestation.
+    pub l1_origin_number: u64,
+    /// Authenticated safe-head hash.
+    #[schemars(with = "String")]
+    pub safe_l1_hash: B256,
+    /// Expiry of the attestation in Unix seconds.
+    pub valid_until: u64,
+}
+
+/// Evidence for finalized canonicality and optimistic proposal resolution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct FinalizedEvidence {
+    /// L1 origin hash bound by the finalized commitment.
+    #[schemars(with = "String")]
+    pub l1_origin_hash: B256,
+    /// L1 origin number bound by the finalized commitment.
+    pub l1_origin_number: u64,
+    /// Independently proven proposal result.
+    pub proposal_status: ProposalStatus,
+}
+
+/// Common wire shape for a rollup update before a chain-specific verifier normalizes it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct L2Header<ExecutionHeader, RollupProof> {
+    /// Canonical execution header.
+    pub l2_header: ExecutionHeader,
+    /// Ethereum consensus height used to authenticate the L1 state.
+    pub l1_consensus_height: IbcHeight,
+    /// Rollup-specific commitment proof.
+    pub rollup_proof: RollupProof,
+    /// Typed finality evidence request.
+    pub finality_evidence: FinalityEvidence,
+}
+
 /// Direct Union-style client creation message.
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]

@@ -44,6 +44,20 @@ pub struct BoldProfile {
     pub assertion_status_offset: u8,
     /// Reviewed `BoLD` contract-layout identifier.
     pub version: String,
+    /// Authenticated status value meaning the assertion is confirmed.
+    #[serde(default = "default_confirmed_status")]
+    pub confirmed_status: u8,
+    /// Authenticated status value meaning the assertion was rejected.
+    #[serde(default = "default_rejected_status")]
+    pub rejected_status: u8,
+}
+
+fn default_confirmed_status() -> u8 {
+    2
+}
+
+fn default_rejected_status() -> u8 {
+    3
 }
 
 /// Reviewed pre-BoLD Nitro storage layout.

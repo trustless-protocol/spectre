@@ -72,11 +72,32 @@ register it manually. Omitting it silently defers registration, so set it once t
 id is available.
 
 Updates may advance the latest height or backfill an absent historical height. Replaying identical
-state is idempotent; conflicting state at an existing height is rejected but does not freeze the
-client. A lone conflict may be a relayer error. Freezing requires the watchdog to submit two
-independently valid optimistic headers for the same L2 height through
-`UpdateStateOnMisbehaviour`; when they authenticate different consensus states, the client freezes.
-Frozen clients reject updates and packet proofs.
+state is idempotent. A conflicting update at an existing height is handled by the stored
+`FinalityPolicy`, not solely by `UpdateStateOnMisbehaviour`.
+
+> **Unsafe-head reorg warning:** the default `FinalityPolicy` has
+> `minimum_membership_level: unsafe` and `freeze_on_trusted_conflict: true`. Therefore every
+> non-`resolved_invalid` Unsafe consensus state is trusted for conflict handling. With
+> `head_kind: unsafe`, a same-height sequencer reorg after the first block was relayed is a
+> trusted conflict and freezes the client. This is intentional current behavior, not an automatic
+> reorg correction; frozen clients reject updates and packet proofs until governance recovery.
+>
+> The replacement path is available only when the existing state is below the configured
+> membership threshold and the incoming state reaches it. In the current implementation Safe
+> evidence fails closed (`SafeVerificationUnavailable`), so a practical non-freezing correction
+> policy requires `minimum_membership_level: finalized` (and suitable finalized evidence). Do not
+> use `head_kind: unsafe` with the default policy if normal sequencer reorgs must not freeze the
+> client.
+
+To deliberately replace Unsafe conflicts, set
+`freeze_on_trusted_conflict: false`; a Finalized conflict still freezes unconditionally. This
+trades the freeze/liveness failure for the normal safety risk of accepting and using an Unsafe
+state. Alternatively, setting `minimum_membership_level: finalized` keeps the freeze-on-trusted-
+conflict safeguard while making Unsafe updates ineligible for membership proofs and conflict
+freezing.
+
+`UpdateStateOnMisbehaviour` remains the watchdog mechanism for freezing on two independently
+valid conflicting headers. Frozen clients reject updates and packet proofs.
 
 OP and Base profiles also pin `l2_header_fork`, which selects the canonical execution-header field
 set. Operators must migrate to a reviewed profile at an L2 fork boundary instead of relying on a

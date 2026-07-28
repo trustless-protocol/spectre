@@ -12,7 +12,7 @@ pub fn apply<Config>(
     first: &Header,
     second: &Header,
 ) -> Result<bool, Error> {
-    if !check_for_misbehaviour(first, second)? {
+    if !check_for_misbehaviour(&client.finality_policy, first, second)? {
         return Ok(false);
     }
     client.frozen_height = Some(first.height.revision_height);

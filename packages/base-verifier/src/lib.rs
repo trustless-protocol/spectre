@@ -22,6 +22,10 @@ impl l2_client::L2LightClient for Adapter {
     type Header = op_stack_verifier::Header;
     type Profile = op_stack_verifier::Profile;
 
+    fn finality_evidence(header: &Self::Header) -> Option<&l2_client::msg::FinalityEvidence> {
+        header.finality_evidence.as_ref()
+    }
+
     fn l1_height(header: &Self::Header) -> u64 {
         header.beacon_slot
     }

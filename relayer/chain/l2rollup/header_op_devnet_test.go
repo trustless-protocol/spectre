@@ -94,9 +94,9 @@ func TestOPBuildHeader_Devnet(t *testing.T) {
 		Provenance:    &attestorpb.AttestedRoot_GameIndex{GameIndex: count - 1},
 		L2BlockNumber: l2Height,
 	}}
-	builder := NewOPStackHeaderBuilder(l1, l2, opNode, fakeCosmosReader{slot: 1, block: l1Head}, at, "op-devnet", false, profile)
+	builder := NewOPStackHeaderBuilder(l1, l2, opNode, fakeCosmosReader{slot: 1, block: l1Head}, at, "op-devnet", profile)
 
-	msg, committed, err := builder.BuildHeader(ctx, l2Height)
+	msg, committed, err := builder.BuildHeader(ctx, HeaderRequest{Height: l2Height, Finality: Safe})
 	if err != nil {
 		t.Fatalf("BuildHeader(l2Height=%d, l1Block=%d): %v", l2Height, l1Head, err)
 	}

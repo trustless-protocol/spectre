@@ -109,6 +109,9 @@ Two related hooks carry the confirmation policy:
     advances to finalized headers, so latest == relayable here).
   - **EVM L2**: the height at the source's `HeadKind` confirmation policy —
     `Finalized` (L1-finalized L2 height) / `Safe` / `Unsafe` (soft head).
+    The selected kind is encoded with the height and passed to the L2 header
+    builder; it is an update request, not proof. The wasm client derives the
+    accepted level only from authenticated evidence and its stored policy.
 - **`RelayableHeight`** — the highest height whose packets can be *proven right
   now*, ≤ `LatestHeight`, encoding each chain's state-availability lag (Cosmos:
   `latest-2` for the AppHash H+2 lag; ETH: the finalized execution block). The
@@ -120,10 +123,10 @@ Two related hooks carry the confirmation policy:
 exposes the bridge to L2 reorgs / sequencer equivocation (a released packet on
 the destination against a source state that later reverts). The L2 wasm client
 verifies the rollup **validity** proof (the state root is canonical per the L1
-rollup contract) but that is **not** anti-reorg — anti-reorg comes only from the
-`HeadKind` gate on `LatestHeight`. Changing the trust/latency tradeoff later =
-changing only the source's `HeadKind`. See the return-path threat model in the
-coordination issue.
+rollup contract) but that is **not** anti-reorg by itself. The effective guarantee
+comes from both the `HeadKind` request and the matching on-chain `FinalityPolicy`;
+selecting an RPC tag does not let the relayer manufacture Safe or Finalized
+evidence. See the return-path threat model in the coordination issue.
 
 ## Reliability behaviors ported from the legacy `StartLoop`
 
@@ -160,19 +163,20 @@ The generic module reproduces every reliability property of the monolithic
 
 The L2→Cosmos path is **trustless**: no relayer signature or re-execution. The
 per-L2 `HeaderBuilder` (`l2rollup/header_op.go`, `l2rollup/header_arbitrum_bold.go`,
-`l2rollup/header_arbitrum_legacy.go`) assembles a JSON
-`ClientMessage` — the L1 rollup-contract witnesses (AnchorStateRegistry for
-OP-Stack, RollupCore for Arbitrum) + the RLP L2 header + the L2 IBC-handler
-account proof — and the L2 wasm client on Cosmos verifies those rollup proofs
-against the shared cw-ics08-wasm-eth client (see `l2rollup/clientmessage.go`).
-The generic `Builder` (`l2rollup/builder.go`) decodes the target height, delegates
-to the `HeaderBuilder`, and packages the JSON as `ClientUpdate.Payload`.
+`l2rollup/header_arbitrum_legacy.go`) assembles the exact typed JSON schema
+accepted by its wasm client: the L1 rollup-contract witnesses, decoded canonical
+L2 header, and L2 IBC-handler account proof. The generic `Builder`
+(`l2rollup/builder.go`) passes the requested height and finality to the selected
+header builder, then packages its `ClientMessage` as `ClientUpdate.Payload` and
+advances to the height that proof actually commits. The L2 wasm client verifies
+the rollup proofs against the shared cw-ics08-wasm-eth client (see
+`l2rollup/clientmessage.go`).
 
 Source/Destination/Builder are shared across all rollups; only the per-L2
 `HeaderBuilder` differs. Optimism and Base share the OP-Stack `HeaderBuilder`
 (`l2-opstack`), differing only by config; Arbitrum has its own (`l2-arbitrum`).
-This is a skeleton — the eth_getProof / RLP / rollup-contract mechanics are TODO,
-pending the L2 config and the shared-ETH-client handle.
+The builders fail closed when the required rollup evidence is unavailable or
+does not match the requested L2 height and finality policy.
 
 ## Status
 

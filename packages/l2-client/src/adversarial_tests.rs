@@ -15,6 +15,16 @@ fn rejects_timestamp_overflow_and_malformed_header_json() {
         state_root: B256::with_last_byte(1),
         router_storage_root: B256::with_last_byte(2),
         timestamp_seconds: u64::MAX,
+        l2_block_hash: B256::with_last_byte(3),
+        parent_hash: B256::ZERO,
+        l1_origin_number: 0,
+        l1_origin_hash: B256::ZERO,
+        finality_level: crate::state::FinalityLevel::Unsafe,
+        proposal_status: crate::state::ProposalStatus::Pending,
+        first_accepted_at: 0,
+        finality_reached_at: 0,
+        evidence_hash: B256::ZERO,
+        rollup_commitment: B256::ZERO,
     };
     assert!(matches!(
         header.consensus_state(),

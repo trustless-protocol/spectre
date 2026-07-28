@@ -32,12 +32,32 @@ use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{error::Error, state::RuntimeProfile};
 
+/// Shared normalization interface implemented by rollup-specific verifiers.
+pub trait RollupVerifier {
+    /// Immutable rollup profile.
+    type Profile: RuntimeProfile;
+    /// Chain-specific update header.
+    type Header;
+
+    /// Authenticates evidence and returns the normalized L2 state.
+    fn verify_header(
+        client_state: &state::ClientState<Self::Profile>,
+        header: &Self::Header,
+        authenticated_l1_state: &state::ConsensusState,
+    ) -> Result<state::VerifiedL2State, Error>;
+}
+
 /// Chain-specific adapter used by the shared CosmWasm entrypoints.
 pub trait L2LightClient {
     /// Immutable runtime profile stored inside client state.
-    type Profile: RuntimeProfile + DeserializeOwned + Serialize;
+    type Profile: Clone + RuntimeProfile + DeserializeOwned + Serialize;
     /// Chain-specific optimistic update header.
     type Header: DeserializeOwned;
+
+    /// Returns typed finality evidence embedded in the update, if present.
+    fn finality_evidence(_header: &Self::Header) -> Option<&crate::msg::FinalityEvidence> {
+        None
+    }
 
     /// Returns the exact Ethereum beacon height referenced by a header.
     fn l1_height(header: &Self::Header) -> u64;
@@ -49,6 +69,26 @@ pub trait L2LightClient {
         authenticated_l1_timestamp: u64,
         header: &Self::Header,
     ) -> Result<state::Header, Error>;
+
+    /// Authenticates a header and applies its typed finality evidence exactly once.
+    fn verify_with_finality(
+        profile: &Self::Profile,
+        policy: &state::FinalityPolicy,
+        authenticated_l1_root: B256,
+        authenticated_l1_timestamp: u64,
+        header: &Self::Header,
+    ) -> Result<state::Header, Error> {
+        let mut verified = Self::verify(
+            profile,
+            authenticated_l1_root,
+            authenticated_l1_timestamp,
+            header,
+        )?;
+        if let Some(evidence) = Self::finality_evidence(header) {
+            crate::verification::apply_finality_evidence(policy, evidence, &mut verified)?;
+        }
+        Ok(verified)
+    }
 }
 
 /// Generates the common optimistic L2 CosmWasm entrypoints for one thin adapter crate.
@@ -59,7 +99,7 @@ macro_rules! l2_client_entrypoints {
         #[cosmwasm_std::entry_point]
         pub fn instantiate(
             deps: cosmwasm_std::DepsMut,
-            _env: cosmwasm_std::Env,
+            env: cosmwasm_std::Env,
             _info: cosmwasm_std::MessageInfo,
             msg: crate::msg::InstantiateMsg,
         ) -> Result<cosmwasm_std::Response, l2_client::error::Error> {
@@ -73,6 +113,7 @@ macro_rules! l2_client_entrypoints {
                 &client,
                 &consensus,
                 msg.checksum.to_vec(),
+                env.block.time.seconds(),
             )?;
             Ok(cosmwasm_std::Response::default())
         }
@@ -81,10 +122,11 @@ macro_rules! l2_client_entrypoints {
         #[cosmwasm_std::entry_point]
         pub fn sudo(
             deps: cosmwasm_std::DepsMut,
-            _env: cosmwasm_std::Env,
+            env: cosmwasm_std::Env,
             msg: crate::msg::SudoMsg,
         ) -> Result<cosmwasm_std::Response, l2_client::error::Error> {
             use l2_client::state::RuntimeProfile as _;
+            let mut attributes = Vec::new();
             let data = match msg {
                 crate::msg::SudoMsg::UpdateState { client_message } => {
                     let header = match serde_json::from_slice::<
@@ -114,15 +156,58 @@ macro_rules! l2_client_entrypoints {
                         &common.ethereum_client,
                         <$adapter as l2_client::L2LightClient>::l1_height(&header),
                     )?;
-                    let verified = <$adapter as l2_client::L2LightClient>::verify(
+                    let verified = <$adapter as l2_client::L2LightClient>::verify_with_finality(
                         &client.profile,
+                        &client.finality_policy,
                         l1.consensus.state_root,
                         l1.consensus.timestamp,
                         &header,
                     )?;
+                    let was_existing = l2_client::runtime::consensus_state(
+                        deps.storage,
+                        verified.height.revision_height,
+                    )
+                    .is_ok();
                     let updated_height = l2_client::runtime::update::<
                         <$adapter as l2_client::L2LightClient>::Profile,
                     >(deps.storage, &verified)?;
+                    let frozen_at = l2_client::runtime::client_state::<
+                        <$adapter as l2_client::L2LightClient>::Profile,
+                    >(deps.storage)?
+                    .frozen_height;
+                    if let Some(height) = frozen_at {
+                        attributes.push(cosmwasm_std::attr("action", "l2_conflict_detected"));
+                        attributes.push(cosmwasm_std::attr("height", height.to_string()));
+                        attributes.push(cosmwasm_std::attr("trusted", "true"));
+                        attributes.push(cosmwasm_std::attr("action", "l2_client_frozen"));
+                        attributes.push(cosmwasm_std::attr("reason", "trusted_conflict"));
+                    }
+                    if updated_height.is_some() {
+                        attributes.push(cosmwasm_std::attr(
+                            "action",
+                            if was_existing {
+                                "l2_state_promoted"
+                            } else {
+                                "l2_state_accepted"
+                            },
+                        ));
+                        attributes.push(cosmwasm_std::attr(
+                            "height",
+                            verified.height.revision_height.to_string(),
+                        ));
+                        attributes.push(cosmwasm_std::attr(
+                            "block_hash",
+                            verified.l2_block_hash.to_string(),
+                        ));
+                        attributes.push(cosmwasm_std::attr(
+                            "finality",
+                            verified.finality_level.as_str(),
+                        ));
+                        attributes.push(cosmwasm_std::attr(
+                            "proposal_status",
+                            verified.proposal_status.as_str(),
+                        ));
+                    }
                     cosmwasm_std::to_json_binary(&l2_client::msg::UpdateStateResult {
                         heights: updated_height
                             .into_iter()
@@ -162,14 +247,16 @@ macro_rules! l2_client_entrypoints {
                         &common.ethereum_client,
                         <$adapter as l2_client::L2LightClient>::l1_height(&header_2),
                     )?;
-                    let header_1 = <$adapter as l2_client::L2LightClient>::verify(
+                    let header_1 = <$adapter as l2_client::L2LightClient>::verify_with_finality(
                         &client.profile,
+                        &client.finality_policy,
                         first_l1.consensus.state_root,
                         first_l1.consensus.timestamp,
                         &header_1,
                     )?;
-                    let header_2 = <$adapter as l2_client::L2LightClient>::verify(
+                    let header_2 = <$adapter as l2_client::L2LightClient>::verify_with_finality(
                         &client.profile,
+                        &client.finality_policy,
                         second_l1.consensus.state_root,
                         second_l1.consensus.timestamp,
                         &header_2,
@@ -206,9 +293,16 @@ macro_rules! l2_client_entrypoints {
                         .into());
                     };
                     let proof = serde_json::from_slice(&proof)?;
-                    l2_client::runtime::verify_membership::<
+                    l2_client::runtime::verify_membership_at::<
                         <$adapter as l2_client::L2LightClient>::Profile,
-                    >(deps.storage, height.revision_height, path, &value, &proof)?;
+                    >(
+                        deps.storage,
+                        height.revision_height,
+                        path,
+                        &value,
+                        &proof,
+                        env.block.time.seconds(),
+                    )?;
                     cosmwasm_std::Binary::default()
                 }
                 crate::msg::SudoMsg::VerifyNonMembership {
@@ -231,13 +325,21 @@ macro_rules! l2_client_entrypoints {
                         .into());
                     };
                     let proof = serde_json::from_slice(&proof)?;
-                    l2_client::runtime::verify_non_membership::<
+                    l2_client::runtime::verify_non_membership_at::<
                         <$adapter as l2_client::L2LightClient>::Profile,
-                    >(deps.storage, height.revision_height, path, &proof)?;
+                    >(
+                        deps.storage,
+                        height.revision_height,
+                        path,
+                        &proof,
+                        env.block.time.seconds(),
+                    )?;
                     cosmwasm_std::Binary::default()
                 }
             };
-            Ok(cosmwasm_std::Response::default().set_data(data))
+            Ok(cosmwasm_std::Response::default()
+                .add_attributes(attributes)
+                .set_data(data))
         }
 
         /// Routes strict client queries.
@@ -272,12 +374,14 @@ macro_rules! l2_client_entrypoints {
                                 &common.ethereum_client,
                                 <$adapter as l2_client::L2LightClient>::l1_height(&header),
                             )?;
-                            let verified = <$adapter as l2_client::L2LightClient>::verify(
-                                &client.profile,
-                                l1.consensus.state_root,
-                                l1.consensus.timestamp,
-                                &header,
-                            )?;
+                            let verified =
+                                <$adapter as l2_client::L2LightClient>::verify_with_finality(
+                                    &client.profile,
+                                    &client.finality_policy,
+                                    l1.consensus.state_root,
+                                    l1.consensus.timestamp,
+                                    &header,
+                                )?;
                             l2_client::query::verify_client_message(&verified)?;
                         }
                         l2_client::msg::ClientMessage::Misbehaviour { header_1, header_2 } => {
@@ -291,19 +395,27 @@ macro_rules! l2_client_entrypoints {
                                 &common.ethereum_client,
                                 <$adapter as l2_client::L2LightClient>::l1_height(&header_2),
                             )?;
-                            let header_1 = <$adapter as l2_client::L2LightClient>::verify(
-                                &client.profile,
-                                first_l1.consensus.state_root,
-                                first_l1.consensus.timestamp,
+                            let header_1 =
+                                <$adapter as l2_client::L2LightClient>::verify_with_finality(
+                                    &client.profile,
+                                    &client.finality_policy,
+                                    first_l1.consensus.state_root,
+                                    first_l1.consensus.timestamp,
+                                    &header_1,
+                                )?;
+                            let header_2 =
+                                <$adapter as l2_client::L2LightClient>::verify_with_finality(
+                                    &client.profile,
+                                    &client.finality_policy,
+                                    second_l1.consensus.state_root,
+                                    second_l1.consensus.timestamp,
+                                    &header_2,
+                                )?;
+                            if !l2_client::query::check_for_misbehaviour(
+                                &client.finality_policy,
                                 &header_1,
-                            )?;
-                            let header_2 = <$adapter as l2_client::L2LightClient>::verify(
-                                &client.profile,
-                                second_l1.consensus.state_root,
-                                second_l1.consensus.timestamp,
                                 &header_2,
-                            )?;
-                            if !l2_client::query::check_for_misbehaviour(&header_1, &header_2)? {
+                            )? {
                                 return Err(l2_client::error::Error::InvalidHeader(
                                     "headers do not prove misbehaviour",
                                 )
@@ -339,14 +451,16 @@ macro_rules! l2_client_entrypoints {
                         &common.ethereum_client,
                         <$adapter as l2_client::L2LightClient>::l1_height(&header_2),
                     )?;
-                    let header_1 = <$adapter as l2_client::L2LightClient>::verify(
+                    let header_1 = <$adapter as l2_client::L2LightClient>::verify_with_finality(
                         &client.profile,
+                        &client.finality_policy,
                         first_l1.consensus.state_root,
                         first_l1.consensus.timestamp,
                         &header_1,
                     )?;
-                    let header_2 = <$adapter as l2_client::L2LightClient>::verify(
+                    let header_2 = <$adapter as l2_client::L2LightClient>::verify_with_finality(
                         &client.profile,
+                        &client.finality_policy,
                         second_l1.consensus.state_root,
                         second_l1.consensus.timestamp,
                         &header_2,
@@ -354,7 +468,9 @@ macro_rules! l2_client_entrypoints {
                     Ok(cosmwasm_std::to_json_binary(
                         &l2_client::msg::CheckForMisbehaviourResult {
                             found_misbehaviour: l2_client::query::check_for_misbehaviour(
-                                &header_1, &header_2,
+                                &client.finality_policy,
+                                &header_1,
+                                &header_2,
                             )?,
                         },
                     )?)
@@ -410,6 +526,8 @@ mod canonical_header_tests;
 #[cfg(test)]
 #[cfg(test)]
 mod evm_proof_tests;
+#[cfg(test)]
+mod finality_tests;
 #[cfg(test)]
 mod fixtures_tests;
 #[cfg(test)]

@@ -935,6 +935,8 @@ func toBlockNumArg(number *big.Int) string {
 // production bootstrap will additionally verify them against L1 rollup proofs.)
 type L2BootstrapState struct {
 	Height            uint64
+	BlockHash         ethcommon.Hash
+	ParentHash        ethcommon.Hash
 	StateRoot         ethcommon.Hash
 	RouterStorageRoot ethcommon.Hash
 	TimestampSeconds  uint64
@@ -961,6 +963,8 @@ func GetL2BootstrapState(client *ethclient.Client, routerAddr ethcommon.Address,
 	}
 	return L2BootstrapState{
 		Height:            header.Number.Uint64(),
+		BlockHash:         header.Hash(),
+		ParentHash:        header.ParentHash,
 		StateRoot:         header.Root,
 		RouterStorageRoot: proof.StorageHash,
 		TimestampSeconds:  header.Time,

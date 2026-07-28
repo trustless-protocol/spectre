@@ -40,14 +40,13 @@ type opNodeOutput struct {
 // game commitment in the L1 state the shared ETH client trusts, binds it to the
 // canonical L2 header via the output root, and proves the L2 router state.
 type opStackHeaderBuilder struct {
-	l1                 *ethclient.Client // L1 exec (factory/game eth_getProof + eth_getCode)
-	l2                 *ethclient.Client // L2 exec (l2_header + router eth_getProof)
-	opNode             *rpc.Client       // op-node (optimism_outputAtBlock)
-	cosmos             cosmosClientStateReader
-	attestor           AttestorClient
-	srcChain           string
-	includeProvisional bool
-	profile            OPProfile
+	l1       *ethclient.Client // L1 exec (factory/game eth_getProof + eth_getCode)
+	l2       *ethclient.Client // L2 exec (l2_header + router eth_getProof)
+	opNode   *rpc.Client       // op-node (optimism_outputAtBlock)
+	cosmos   cosmosClientStateReader
+	attestor AttestorClient
+	srcChain string
+	profile  OPProfile
 }
 
 // cosmosClientStateReader reads the shared ETH client's trusted L1 slot/block from
@@ -59,23 +58,22 @@ type cosmosClientStateReader interface {
 // NewOPStackHeaderBuilder wires the OP-Stack builder to the L1/L2 exec RPCs, the
 // op-node RPC (for optimism_outputAtBlock), the Cosmos client-state reader, the
 // attestor (whose AttestedRootAtOrBelow selects the game to prove), and the parsed
-// profile. includeProvisional must match the source's head policy (Unsafe/Safe accept
-// provisional; Finalized does not) so the builder proves the same game the source gated
-// on.
-func NewOPStackHeaderBuilder(l1, l2 *ethclient.Client, opNode *rpc.Client, cosmos cosmosClientStateReader, attestor AttestorClient, srcChain string, includeProvisional bool, profile OPProfile) *opStackHeaderBuilder {
+// profile. BuildHeader derives provisional-vs-finalized selection from each request
+// so it proves the same game the source gated on.
+func NewOPStackHeaderBuilder(l1, l2 *ethclient.Client, opNode *rpc.Client, cosmos cosmosClientStateReader, attestor AttestorClient, srcChain string, profile OPProfile) *opStackHeaderBuilder {
 	return &opStackHeaderBuilder{
 		l1: l1, l2: l2, opNode: opNode, cosmos: cosmos,
-		attestor: attestor, srcChain: srcChain, includeProvisional: includeProvisional, profile: profile,
+		attestor: attestor, srcChain: srcChain, profile: profile,
 	}
 }
 
 func (a *opStackHeaderBuilder) Name() string { return "l2-opstack" }
 
-// BuildHeader assembles the OpStackHeader for the attested game at or below l2Height,
+// BuildHeader assembles the OpStackHeader for the attested game at or below request.Height,
 // and returns the L2 block that game commits (which the header binds to, so the client
 // must advance by it, not the request). RPC/availability failures are returned plain
 // (the generic Builder wraps them chain.Retryable).
-func (a *opStackHeaderBuilder) BuildHeader(ctx context.Context, l2Height uint64) (ClientMessage, uint64, error) {
+func (a *opStackHeaderBuilder) BuildHeader(ctx context.Context, request HeaderRequest) (ClientMessage, uint64, error) {
 	// 1. The L1 block the shared ETH client trusts — prove factory/game there.
 	beaconSlot, l1Block, err := a.cosmos.EthClientLatestSlotAndBlock(a.profile.L1ClientID)
 	if err != nil {
@@ -93,15 +91,15 @@ func (a *opStackHeaderBuilder) BuildHeader(ctx context.Context, l2Height uint64)
 	//    would not bind to optimism_outputAtBlock for the same block). It returns both
 	//    the game_index and the L2 block that game commits; everything below is proven
 	//    at that committed block so the output root, L2 header, and root claim agree.
-	root, found, err := a.attestor.AttestedRootAtOrBelow(ctx, a.srcChain, l2Height, a.includeProvisional)
+	root, found, err := a.attestor.AttestedRootAtOrBelow(ctx, a.srcChain, request.Height, request.Finality != Finalized)
 	if err != nil {
 		return nil, 0, err
 	}
 	if !found {
-		return nil, 0, fmt.Errorf("l2-opstack: attestor has no game at or below L2 height %d", l2Height)
+		return nil, 0, fmt.Errorf("l2-opstack: attestor has no %s game at or below L2 height %d", request.Finality, request.Height)
 	}
 	if root.GetSource() != "game" {
-		return nil, 0, fmt.Errorf("l2-opstack: attested root at height %d is source %q, want game", l2Height, root.GetSource())
+		return nil, 0, fmt.Errorf("l2-opstack: attested root at height %d is source %q, want game", request.Height, root.GetSource())
 	}
 	gameIndex := root.GetGameIndex()
 	committedHeight := root.GetL2BlockNumber()

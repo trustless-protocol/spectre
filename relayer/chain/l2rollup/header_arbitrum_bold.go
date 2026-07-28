@@ -67,12 +67,12 @@ func NewArbitrumBoldHeaderBuilder(l1, l2 *ethclient.Client, cosmos cosmosClientS
 func (a *arbitrumBoldHeaderBuilder) Name() string { return "l2-arbitrum" }
 
 // BuildHeader assembles the ArbitrumBoldHeader for the highest attested BoLD assertion
-// at or below l2Height, and returns the L2 block that assertion commits (which can be
-// lower than l2Height — e.g. the attested assertion postdates the ETH client's trusted
+// at or below request.Height, and returns the L2 block that assertion commits (which can be
+// lower than request.Height — e.g. the attested assertion postdates the ETH client's trusted
 // L1 block — so the client advances by the committed block, not the request).
 // RPC/availability failures are returned plain (the generic Builder wraps them
 // chain.Retryable).
-func (a *arbitrumBoldHeaderBuilder) BuildHeader(ctx context.Context, l2Height uint64) (ClientMessage, uint64, error) {
+func (a *arbitrumBoldHeaderBuilder) BuildHeader(ctx context.Context, request HeaderRequest) (ClientMessage, uint64, error) {
 	// 1. The L1 block the shared ETH client trusts — prove the RollupCore there.
 	beaconSlot, l1Block, err := a.cosmos.EthClientLatestSlotAndBlock(a.profile.L1ClientID)
 	if err != nil {
@@ -86,7 +86,7 @@ func (a *arbitrumBoldHeaderBuilder) BuildHeader(ctx context.Context, l2Height ui
 
 	// 2. Pick the assertion committing the largest L2 block <= l2Height, present in the
 	//    trusted L1 state.
-	claim, assertionHash, assertionL2, err := a.assertionForHeight(ctx, l1Block, l2Height)
+	claim, assertionHash, assertionL2, err := a.assertionForHeight(ctx, l1Block, request.Height)
 	if err != nil {
 		return nil, 0, err
 	}

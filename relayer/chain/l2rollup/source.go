@@ -35,6 +35,28 @@ const (
 	Finalized
 )
 
+func (k HeadKind) validate() error {
+	switch k {
+	case Unsafe, Safe, Finalized:
+		return nil
+	default:
+		return fmt.Errorf("l2 source: invalid head kind %d", k)
+	}
+}
+
+func (k HeadKind) String() string {
+	switch k {
+	case Unsafe:
+		return "unsafe"
+	case Safe:
+		return "safe"
+	case Finalized:
+		return "finalized"
+	default:
+		return fmt.Sprintf("unknown(%d)", k)
+	}
+}
+
 // Source is the EVM-L2 chain.Source (L2->Cosmos). An L2 is EVM, so packet
 // membership proofs are the same eth_getProof account+storage proofs the ETH L1
 // source builds — verified by the L2 light client against the L2 world state_root
@@ -103,6 +125,9 @@ func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 
 // head reads the L2 head at the configured head-kind tag.
 func (s *Source) head(ctx context.Context) (uint64, error) {
+	if err := s.headKind.validate(); err != nil {
+		return 0, err
+	}
 	tag := big.NewInt(int64(rpc.LatestBlockNumber)) // Unsafe
 	switch s.headKind {
 	case Safe:
@@ -119,11 +144,15 @@ func (s *Source) head(ctx context.Context) (uint64, error) {
 	return h.Number.Uint64(), nil
 }
 
-// QueryHeader returns the target L2 height for the l2 client-update builder — the
-// 8-byte big-endian encoding it decodes to know which L2 block header to assemble.
+// QueryHeader returns the selected finality byte plus the target L2 height as an
+// 8-byte big-endian integer for the L2 client-update builder.
 func (s *Source) QueryHeader(_ context.Context, height uint64) ([]byte, error) {
-	b := make([]byte, 8)
-	binary.BigEndian.PutUint64(b, height)
+	if err := s.headKind.validate(); err != nil {
+		return nil, err
+	}
+	b := make([]byte, 9)
+	b[0] = byte(s.headKind)
+	binary.BigEndian.PutUint64(b[1:], height)
 	return b, nil
 }
 

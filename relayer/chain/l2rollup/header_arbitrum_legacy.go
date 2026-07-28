@@ -39,44 +39,43 @@ type ArbLegacyProfile struct {
 // from RollupCore storage alone (confirmData only commits keccak(blockHash||sendRoot)),
 // and the attestor already maps node → L2 block by running Nitro.
 type arbitrumLegacyHeaderBuilder struct {
-	l1                 *ethclient.Client // L1 exec (RollupCore eth_getProof)
-	l2                 *ethclient.Client // L2 exec (l2_header + sendRoot + router eth_getProof)
-	cosmos             cosmosClientStateReader
-	attestor           AttestorClient
-	srcChain           string
-	includeProvisional bool
-	profile            ArbLegacyProfile
+	l1       *ethclient.Client // L1 exec (RollupCore eth_getProof)
+	l2       *ethclient.Client // L2 exec (l2_header + sendRoot + router eth_getProof)
+	cosmos   cosmosClientStateReader
+	attestor AttestorClient
+	srcChain string
+	profile  ArbLegacyProfile
 }
 
-// NewArbitrumLegacyHeaderBuilder wires the legacy Arbitrum builder. includeProvisional
-// must match the source's head policy (Unsafe/Safe accept provisional; Finalized does
-// not) so the builder resolves the same node the source gated on.
-func NewArbitrumLegacyHeaderBuilder(l1, l2 *ethclient.Client, cosmos cosmosClientStateReader, attestor AttestorClient, srcChain string, includeProvisional bool, profile ArbLegacyProfile) *arbitrumLegacyHeaderBuilder {
+// NewArbitrumLegacyHeaderBuilder wires the legacy Arbitrum builder. BuildHeader
+// derives provisional-vs-finalized selection from each request so it resolves the
+// same node the source gated on.
+func NewArbitrumLegacyHeaderBuilder(l1, l2 *ethclient.Client, cosmos cosmosClientStateReader, attestor AttestorClient, srcChain string, profile ArbLegacyProfile) *arbitrumLegacyHeaderBuilder {
 	return &arbitrumLegacyHeaderBuilder{
 		l1: l1, l2: l2, cosmos: cosmos, attestor: attestor,
-		srcChain: srcChain, includeProvisional: includeProvisional, profile: profile,
+		srcChain: srcChain, profile: profile,
 	}
 }
 
 func (b *arbitrumLegacyHeaderBuilder) Name() string { return "l2-arbitrum-legacy" }
 
-// BuildHeader resolves the attested legacy node at or below l2Height, assembles its
+// BuildHeader resolves the attested legacy node at or below request.Height, assembles its
 // header, and returns the L2 block that node commits (at or below the request, so the
 // client advances by it). RPC/availability failures are returned plain (the generic
 // Builder wraps them chain.Retryable).
-func (b *arbitrumLegacyHeaderBuilder) BuildHeader(ctx context.Context, l2Height uint64) (ClientMessage, uint64, error) {
-	root, found, err := b.attestor.AttestedRootAtOrBelow(ctx, b.srcChain, l2Height, b.includeProvisional)
+func (b *arbitrumLegacyHeaderBuilder) BuildHeader(ctx context.Context, request HeaderRequest) (ClientMessage, uint64, error) {
+	root, found, err := b.attestor.AttestedRootAtOrBelow(ctx, b.srcChain, request.Height, request.Finality != Finalized)
 	if err != nil {
 		return nil, 0, err
 	}
 	if !found {
-		return nil, 0, fmt.Errorf("l2-arbitrum-legacy: attestor has no node at or below L2 height %d", l2Height)
+		return nil, 0, fmt.Errorf("l2-arbitrum-legacy: attestor has no %s node at or below L2 height %d", request.Finality, request.Height)
 	}
 	// The legacy provenance is the LegacyNode oneof; GetLegacyNode() is nil for a
 	// non-legacy (game/assertion) root, so guard it before reading the node number.
 	node := root.GetLegacyNode()
 	if node == nil || node.GetNodeNumber() == 0 {
-		return nil, 0, fmt.Errorf("l2-arbitrum-legacy: attested root at height %d carries no legacy node provenance", l2Height)
+		return nil, 0, fmt.Errorf("l2-arbitrum-legacy: attested root at height %d carries no legacy node provenance", request.Height)
 	}
 	committedHeight := root.GetL2BlockNumber()
 	header, err := b.buildLegacyHeaderFor(ctx, node.GetNodeNumber(), committedHeight)

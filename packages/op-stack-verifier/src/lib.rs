@@ -13,10 +13,11 @@ use l2_client::{
     canonical_header::{CanonicalEvmHeader, ExecutionHeaderFork},
     error::Error,
     evm_proof::{verify_bounded_account, ProofLimits},
-    msg::{EvmAccountProof, EvmStorageProof},
+    msg::{EvmAccountProof, EvmStorageProof, FinalityEvidence},
     state::{CommonProfile, Header as VerifiedHeader, Height, RuntimeProfile},
     verification::{
-        address_from_storage_value, storage_word, verify_account_runtime, verify_storage,
+        address_from_storage_value, evidence_hash, storage_word, verify_account_runtime,
+        verify_storage,
     },
 };
 use schemars::JsonSchema;
@@ -120,6 +121,16 @@ pub struct Header {
     pub l2_header: CanonicalEvmHeader,
     /// Account proof for the profile's L2 router.
     pub router_proof: EvmAccountProof,
+    /// L1 origin number committed by the L2 derivation, when available.
+    #[serde(default)]
+    pub l1_origin_number: u64,
+    /// L1 origin hash committed by the L2 derivation, when available.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    pub l1_origin_hash: B256,
+    /// Optional typed finality evidence. The shared client independently validates it.
+    #[serde(default)]
+    pub finality_evidence: Option<FinalityEvidence>,
 }
 
 /// Verifies an unresolved or resolved OP Stack game's commitment and L2 router state.
@@ -129,7 +140,7 @@ pub struct Header {
 pub fn verify(
     profile: &Profile,
     authenticated_l1_root: B256,
-    _authenticated_l1_timestamp: u64,
+    authenticated_l1_timestamp: u64,
     header: &Header,
 ) -> Result<VerifiedHeader, Error> {
     if header.l1_state_root != authenticated_l1_root {
@@ -198,6 +209,16 @@ pub fn verify(
         state_root: header.l2_header.state_root(),
         router_storage_root: B256::from(router.storage_root.0),
         timestamp_seconds: header.l2_header.timestamp(),
+        l2_block_hash: block_hash,
+        parent_hash: header.l2_header.parent_hash,
+        l1_origin_number: header.l1_origin_number,
+        l1_origin_hash: header.l1_origin_hash,
+        finality_level: l2_client::state::FinalityLevel::Unsafe,
+        proposal_status: l2_client::state::ProposalStatus::Pending,
+        first_accepted_at: authenticated_l1_timestamp,
+        finality_reached_at: authenticated_l1_timestamp,
+        evidence_hash: evidence_hash(header)?,
+        rollup_commitment: root_claim,
     })
 }
 

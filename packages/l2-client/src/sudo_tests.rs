@@ -4,7 +4,6 @@ use alloy_primitives::B256;
 
 use crate::{
     error::Error,
-    misbehaviour,
     state::{ClientState, Header, Height},
     sudo::update_state,
 };
@@ -15,6 +14,16 @@ fn header(height: u64, root: u8) -> Header {
         state_root: B256::with_last_byte(root),
         router_storage_root: B256::with_last_byte(root + 1),
         timestamp_seconds: 1,
+        l2_block_hash: B256::with_last_byte(root + 2),
+        parent_hash: B256::ZERO,
+        l1_origin_number: 0,
+        l1_origin_hash: B256::ZERO,
+        finality_level: crate::state::FinalityLevel::Unsafe,
+        proposal_status: crate::state::ProposalStatus::Pending,
+        first_accepted_at: 0,
+        finality_reached_at: 0,
+        evidence_hash: B256::with_last_byte(root + 3),
+        rollup_commitment: B256::with_last_byte(root + 4),
     }
 }
 
@@ -23,6 +32,9 @@ fn preserves_history_and_rejects_conflicts_or_updates_after_freeze() {
     let mut client = ClientState {
         latest_height: 1,
         frozen_height: None,
+        finality_policy: crate::state::FinalityPolicy::default(),
+        freshness_policy: crate::state::FreshnessPolicy::default(),
+        last_finalized_update_at: None,
         profile: (),
     };
     let initial = header(1, 1).consensus_state().unwrap();
@@ -31,14 +43,11 @@ fn preserves_history_and_rejects_conflicts_or_updates_after_freeze() {
         .is_none());
     assert!(matches!(
         update_state(&mut client, &header(1, 3), Some(&initial)),
-        Err(Error::Conflict(1))
+        Err(Error::TrustedConflict { height: 1 })
     ));
-    assert!(update_state(&mut client, &header(2, 5), None)
-        .unwrap()
-        .is_some());
-    assert!(misbehaviour::apply(&mut client, &header(2, 5), &header(2, 7)).unwrap());
+    assert_eq!(client.frozen_height, Some(1));
     assert!(matches!(
         update_state(&mut client, &header(3, 9), None),
-        Err(Error::Frozen(2))
+        Err(Error::Frozen(1))
     ));
 }

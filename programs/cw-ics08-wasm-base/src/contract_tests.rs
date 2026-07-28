@@ -16,11 +16,14 @@ use crate::{
 };
 
 #[test]
-fn creation_stores_runtime_profile_and_consensus_without_queries_or_validation() {
+fn creation_stores_runtime_profile_and_normalizes_acceptance_time() {
     let mut deps = mock_dependencies();
     let client = ClientState {
         latest_height: 9,
         frozen_height: Some(8),
+        finality_policy: l2_client::state::FinalityPolicy::default(),
+        freshness_policy: l2_client::state::FreshnessPolicy::default(),
+        last_finalized_update_at: None,
         profile: Config {
             common: CommonProfile {
                 l1_chain_id: 0,
@@ -44,11 +47,24 @@ fn creation_stores_runtime_profile_and_consensus_without_queries_or_validation()
         state_root: B256::ZERO,
         ibc_storage_root: B256::ZERO,
         timestamp_nanos: 12,
+        l2_height: 9,
+        l2_block_hash: B256::ZERO,
+        parent_hash: B256::ZERO,
+        l1_origin_number: 0,
+        l1_origin_hash: B256::ZERO,
+        finality_level: l2_client::state::FinalityLevel::Unsafe,
+        proposal_status: l2_client::state::ProposalStatus::Pending,
+        first_accepted_at: 0,
+        finality_reached_at: 0,
+        evidence_hash: B256::ZERO,
+        rollup_commitment: B256::ZERO,
     };
     let info = message_info(&deps.api.addr_make("creator"), &[]);
+    let env = mock_env();
+    let accepted_at = env.block.time.seconds();
     instantiate(
         deps.as_mut(),
-        mock_env(),
+        env,
         info,
         InstantiateMsg {
             client_state: Binary::from(serde_json::to_vec(&client).unwrap()),
@@ -61,9 +77,12 @@ fn creation_stores_runtime_profile_and_consensus_without_queries_or_validation()
         l2_client::runtime::client_state::<Config>(deps.as_ref().storage).unwrap(),
         client
     );
+    let mut expected_consensus = consensus;
+    expected_consensus.first_accepted_at = accepted_at;
+    expected_consensus.finality_reached_at = accepted_at;
     assert_eq!(
         l2_client::runtime::consensus_state(deps.as_ref().storage, 9).unwrap(),
-        consensus
+        expected_consensus
     );
     assert_eq!(
         query(

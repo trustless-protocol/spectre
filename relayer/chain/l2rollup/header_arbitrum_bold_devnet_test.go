@@ -62,7 +62,7 @@ func TestArbBuildHeader_Devnet(t *testing.T) {
 	}
 	builder := NewArbitrumBoldHeaderBuilder(l1, l2, fakeCosmosReader{slot: 1, block: l1Head}, profile)
 
-	msg, committedHeight, err := builder.BuildHeader(ctx, l2Head)
+	msg, committedHeight, err := builder.BuildHeader(ctx, HeaderRequest{Height: l2Head, Finality: Safe})
 	if err != nil {
 		t.Fatalf("BuildHeader(l2Head=%d, l1Block=%d): %v", l2Head, l1Head, err)
 	}

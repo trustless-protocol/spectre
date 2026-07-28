@@ -17,14 +17,22 @@ import (
 type HeaderBuilder interface {
 	// Name is the registry `builder` name (e.g. "l2-opstack", "l2-arbitrum").
 	Name() string
-	// BuildHeader builds the client message header for L2 block l2Height and returns
+	// BuildHeader builds the client message header for request and returns
 	// the L2 block the header actually COMMITS. That committed height can be lower
-	// than the requested l2Height (e.g. the attested game/assertion at or below the
+	// than request.Height (e.g. the attested game/assertion at or below the
 	// request), so the caller must advance the client state by the committed height,
 	// not the requested one — otherwise proofs are built at an unproven height and
 	// recvs fail. It reads the L1 + L2 chains; a transient RPC / not-yet-available
 	// error is fine (the module re-queues via chain.Retryable in Build).
-	BuildHeader(ctx context.Context, l2Height uint64) (msg ClientMessage, committedHeight uint64, err error)
+	BuildHeader(ctx context.Context, request HeaderRequest) (msg ClientMessage, committedHeight uint64, err error)
+}
+
+// HeaderRequest is the internal Source-to-Builder contract. Carrying Finality
+// with Height prevents a Safe or Finalized source selection from being silently
+// rebuilt using provisional evidence.
+type HeaderRequest struct {
+	Height   uint64
+	Finality HeadKind
 }
 
 // Builder is the chain.ClientUpdateBuilder for the L2->Cosmos path. It decodes the
@@ -45,13 +53,13 @@ func (b *Builder) Name() string { return b.headerBuilder.Name() }
 // transient, so it is wrapped chain.Retryable and the module re-queues; a marshal
 // failure of a fully-assembled header is a programming error, not transient.
 func (b *Builder) Build(ctx context.Context, header []byte) (chain.ClientUpdate, error) {
-	height, err := decodeHeight(header)
+	request, err := decodeHeaderRequest(header)
 	if err != nil {
 		return chain.ClientUpdate{}, chain.Retryable(err)
 	}
-	msg, committedHeight, err := b.headerBuilder.BuildHeader(ctx, height)
+	msg, committedHeight, err := b.headerBuilder.BuildHeader(ctx, request)
 	if err != nil {
-		return chain.ClientUpdate{}, chain.Retryable(fmt.Errorf("l2: assemble proof at height %d: %w", height, err))
+		return chain.ClientUpdate{}, chain.Retryable(fmt.Errorf("l2: assemble %s proof at height %d: %w", request.Finality, request.Height, err))
 	}
 	payload, err := msg.EncodeClientMessage()
 	if err != nil {
@@ -62,10 +70,18 @@ func (b *Builder) Build(ctx context.Context, header []byte) (chain.ClientUpdate,
 	return chain.ClientUpdate{Height: committedHeight, Payload: payload}, nil
 }
 
-// decodeHeight reads the 8-byte big-endian L2 height the Source.QueryHeader emits.
-func decodeHeight(header []byte) (uint64, error) {
-	if len(header) != 8 {
-		return 0, fmt.Errorf("l2: malformed header (want 8 bytes, got %d)", len(header))
+// decodeHeaderRequest reads the finality byte and big-endian L2 height emitted by
+// Source.QueryHeader.
+func decodeHeaderRequest(header []byte) (HeaderRequest, error) {
+	if len(header) != 9 {
+		return HeaderRequest{}, fmt.Errorf("l2: malformed header request (want 9 bytes, got %d)", len(header))
 	}
-	return binary.BigEndian.Uint64(header), nil
+	request := HeaderRequest{
+		Finality: HeadKind(header[0]),
+		Height:   binary.BigEndian.Uint64(header[1:]),
+	}
+	if err := request.Finality.validate(); err != nil {
+		return HeaderRequest{}, err
+	}
+	return request, nil
 }

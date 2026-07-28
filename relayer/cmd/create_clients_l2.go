@@ -36,6 +36,11 @@ type l2ClientConfig struct {
 	// The L2 router address, commitment slot, L1 client id/checksum, and chain ids
 	// all live inside it (profile.common.*), so they are not repeated here.
 	RollupProfile json.RawMessage `json:"rollup_profile"`
+	// FinalityPolicy configures which of Unsafe, Safe, or Finalized updates may be
+	// stored and used for membership. Empty uses the on-chain client defaults.
+	FinalityPolicy json.RawMessage `json:"finality_policy"`
+	// FreshnessPolicy configures optional finalized-update freshness limits.
+	FreshnessPolicy json.RawMessage `json:"freshness_policy"`
 	// BootstrapBlock is the L2 block to bootstrap from; 0 (or absent) = latest.
 	BootstrapBlock uint64 `json:"bootstrap_block"`
 	// CounterpartyClientID is the L2-side client (on the rollup's ICS26Router) that
@@ -82,10 +87,27 @@ func (c *l2ClientConfig) validate() error {
 	if len(c.RollupProfile) == 0 {
 		return fmt.Errorf("l2-config: rollup_profile is required")
 	}
+	if _, err := servicesPolicyJSON("finality_policy", c.FinalityPolicy); err != nil {
+		return err
+	}
+	if _, err := servicesPolicyJSON("freshness_policy", c.FreshnessPolicy); err != nil {
+		return err
+	}
 	if _, err := c.routerAddress(); err != nil {
 		return err
 	}
 	return nil
+}
+
+func servicesPolicyJSON(name string, value json.RawMessage) (json.RawMessage, error) {
+	if len(value) == 0 {
+		return nil, nil
+	}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(value, &object); err != nil || object == nil {
+		return nil, fmt.Errorf("l2-config: %s must be a JSON object", name)
+	}
+	return value, nil
 }
 
 func loadL2ClientConfig(path string) (*l2ClientConfig, error) {
@@ -205,6 +227,8 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 	clientID, err := worker.CreateL2Client(context.Background(), ctx, services.L2ClientParams{
 		WasmChecksum:         l2cfg.WasmChecksum,
 		RollupProfile:        profile,
+		FinalityPolicy:       l2cfg.FinalityPolicy,
+		FreshnessPolicy:      l2cfg.FreshnessPolicy,
 		Bootstrap:            bootstrap,
 		CounterpartyClientID: l2cfg.CounterpartyClientID,
 	})

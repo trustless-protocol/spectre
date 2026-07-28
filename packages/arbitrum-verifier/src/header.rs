@@ -5,7 +5,7 @@ use l2_client::{
     canonical_header::{CanonicalEvmHeader, ExecutionHeaderFork},
     error::Error,
     evm_proof::{verify_bounded_account, ProofLimits},
-    msg::{EvmAccountProof, EvmStorageProof},
+    msg::{EvmAccountProof, EvmStorageProof, FinalityEvidence},
     state::{Header as VerifiedHeader, Height},
     verification::{mapping_slot_bytes32, packed_storage_field, storage_word, verify_storage},
 };
@@ -157,6 +157,16 @@ pub struct BoldHeader {
     pub l2_header: CanonicalEvmHeader,
     /// Account proof for the profile's L2 router.
     pub router_proof: EvmAccountProof,
+    /// L1 origin number committed by the L2 derivation, when available.
+    #[serde(default)]
+    pub l1_origin_number: u64,
+    /// L1 origin hash committed by the L2 derivation, when available.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    pub l1_origin_hash: B256,
+    /// Optional typed finality evidence. The shared client independently validates it.
+    #[serde(default)]
+    pub finality_evidence: Option<FinalityEvidence>,
 }
 
 /// Update proving a pending or confirmed pre-BoLD Nitro node.
@@ -183,6 +193,16 @@ pub struct LegacyHeader {
     pub l2_header: CanonicalEvmHeader,
     /// Account proof for the profile's L2 router.
     pub router_proof: EvmAccountProof,
+    /// L1 origin number committed by the L2 derivation, when available.
+    #[serde(default)]
+    pub l1_origin_number: u64,
+    /// L1 origin hash committed by the L2 derivation, when available.
+    #[serde(default)]
+    #[schemars(with = "String")]
+    pub l1_origin_hash: B256,
+    /// Optional typed finality evidence. The shared client independently validates it.
+    #[serde(default)]
+    pub finality_evidence: Option<FinalityEvidence>,
 }
 
 /// Verifies a protocol-selected Arbitrum assertion and its L2 router state.
@@ -194,16 +214,24 @@ pub struct LegacyHeader {
 pub fn verify(
     profile: &Profile,
     authenticated_l1_root: B256,
-    _authenticated_l1_timestamp: u64,
+    authenticated_l1_timestamp: u64,
     header: &Header,
 ) -> Result<VerifiedHeader, Error> {
     match (&profile.protocol, header) {
-        (RollupProtocol::BoldV2(protocol), Header::BoldV2(header)) => {
-            verify_bold(profile, protocol, authenticated_l1_root, header)
-        }
-        (RollupProtocol::LegacyNitro(protocol), Header::LegacyNitro(header)) => {
-            verify_legacy(profile, protocol, authenticated_l1_root, header)
-        }
+        (RollupProtocol::BoldV2(protocol), Header::BoldV2(header)) => verify_bold(
+            profile,
+            protocol,
+            authenticated_l1_root,
+            authenticated_l1_timestamp,
+            header,
+        ),
+        (RollupProtocol::LegacyNitro(protocol), Header::LegacyNitro(header)) => verify_legacy(
+            profile,
+            protocol,
+            authenticated_l1_root,
+            authenticated_l1_timestamp,
+            header,
+        ),
         _ => Err(Error::InvalidHeader(
             "Arbitrum header protocol differs from client profile",
         )),
@@ -214,6 +242,7 @@ fn verify_bold(
     profile: &Profile,
     protocol: &BoldProfile,
     authenticated_l1_root: B256,
+    authenticated_l1_timestamp: u64,
     header: &BoldHeader,
 ) -> Result<VerifiedHeader, Error> {
     verify_l1_root(authenticated_l1_root, header.l1_state_root)?;
@@ -243,19 +272,48 @@ fn verify_bold(
         return Err(Error::Proof("BoLD assertion does not exist".into()));
     }
 
+    let (finality_level, proposal_status) = if status == protocol.confirmed_status {
+        (
+            l2_client::state::FinalityLevel::Finalized,
+            l2_client::state::ProposalStatus::ResolvedValid,
+        )
+    } else if status == protocol.rejected_status {
+        (
+            l2_client::state::FinalityLevel::Unsafe,
+            l2_client::state::ProposalStatus::ResolvedInvalid,
+        )
+    } else {
+        (
+            l2_client::state::FinalityLevel::Unsafe,
+            l2_client::state::ProposalStatus::Pending,
+        )
+    };
+
     let block_hash = validate_l2_header(&header.l2_header)?;
     if header.assertion.after_state.global_state.bytes32_vals[0] != block_hash {
         return Err(Error::Proof(
             "BoLD assertion commits to a different L2 block hash".into(),
         ));
     }
-    verify_l2_router(profile, &header.l2_header, &header.router_proof)
+    verify_l2_router(
+        profile,
+        &header.l2_header,
+        &header.router_proof,
+        header.l1_origin_number,
+        header.l1_origin_hash,
+        authenticated_l1_timestamp,
+        header.assertion_hash,
+        finality_level,
+        proposal_status,
+        header,
+    )
 }
 
 fn verify_legacy(
     profile: &Profile,
     protocol: &LegacyProfile,
     authenticated_l1_root: B256,
+    authenticated_l1_timestamp: u64,
     header: &LegacyHeader,
 ) -> Result<VerifiedHeader, Error> {
     verify_l1_root(authenticated_l1_root, header.l1_state_root)?;
@@ -308,6 +366,18 @@ fn verify_legacy(
         ));
     }
 
+    let (finality_level, proposal_status) = if header.node_number == latest_confirmed {
+        (
+            l2_client::state::FinalityLevel::Finalized,
+            l2_client::state::ProposalStatus::ResolvedValid,
+        )
+    } else {
+        (
+            l2_client::state::FinalityLevel::Unsafe,
+            l2_client::state::ProposalStatus::Pending,
+        )
+    };
+
     let node_base = mapping_slot_u64(header.node_number, protocol.nodes_mapping_slot);
     let confirm_data_slot = add_storage_offset(node_base, protocol.confirm_data_offset)?;
     if header.confirm_data_proof.key != confirm_data_slot {
@@ -327,7 +397,18 @@ fn verify_legacy(
         ));
     }
 
-    verify_l2_router(profile, &header.l2_header, &header.router_proof)
+    verify_l2_router(
+        profile,
+        &header.l2_header,
+        &header.router_proof,
+        header.l1_origin_number,
+        header.l1_origin_hash,
+        authenticated_l1_timestamp,
+        B256::from(storage_word(&header.confirm_data_proof.value)?),
+        finality_level,
+        proposal_status,
+        header,
+    )
 }
 
 fn verify_l1_root(authenticated: B256, supplied: B256) -> Result<(), Error> {
@@ -348,6 +429,13 @@ fn verify_l2_router(
     profile: &Profile,
     l2_header: &CanonicalEvmHeader,
     router_proof: &EvmAccountProof,
+    l1_origin_number: u64,
+    l1_origin_hash: B256,
+    authenticated_l1_timestamp: u64,
+    rollup_commitment: B256,
+    finality_level: l2_client::state::FinalityLevel,
+    proposal_status: l2_client::state::ProposalStatus,
+    evidence: &impl serde::Serialize,
 ) -> Result<VerifiedHeader, Error> {
     let router = verify_bounded_account(
         PROOF_LIMITS,
@@ -360,6 +448,16 @@ fn verify_l2_router(
         state_root: l2_header.state_root(),
         router_storage_root: B256::from(router.storage_root.0),
         timestamp_seconds: l2_header.timestamp(),
+        l2_block_hash: validate_l2_header(l2_header)?,
+        parent_hash: l2_header.parent_hash,
+        l1_origin_number,
+        l1_origin_hash,
+        finality_level,
+        proposal_status,
+        first_accepted_at: authenticated_l1_timestamp,
+        finality_reached_at: authenticated_l1_timestamp,
+        evidence_hash: l2_client::verification::evidence_hash(evidence)?,
+        rollup_commitment,
     })
 }
 

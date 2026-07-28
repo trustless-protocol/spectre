@@ -196,7 +196,9 @@ type Destination interface {
 //     Arbitrum) + the RLP L2 header + L2 IBC-handler account proof, as a JSON
 //     ClientMessage. L2 -> Cosmos. NO relayer signature or re-execution; the L2
 //     wasm client verifies the rollup proofs against the shared ETH client. The
-//     anti-reorg guarantee comes from the Source confirmation policy (HeadKind).
+//     Source.HeadKind selects the requested latency tier; the request is carried
+//     to the builder and the wasm client independently authenticates the claimed
+//     finality evidence before applying its membership policy.
 type ClientUpdateBuilder interface {
 	Name() string
 	Build(ctx context.Context, header []byte) (ClientUpdate, error)

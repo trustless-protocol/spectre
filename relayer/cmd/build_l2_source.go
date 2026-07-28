@@ -168,10 +168,8 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 			_ = attestor.Close()
 			return nil, nil, fmt.Errorf("dial op-node rpc: %w", derr)
 		}
-		// includeProvisional must match the source's head policy so the builder proves
-		// the same game the source gated on (Finalized = confirmed only).
 		headerBuilder = l2rollup.NewOPStackHeaderBuilder(
-			l1, l2, opNode, cosmosReader, attestor, cfg.AttestorSrcChain, headKind != l2rollup.Finalized, opProfile)
+			l1, l2, opNode, cosmosReader, attestor, cfg.AttestorSrcChain, opProfile)
 	case chain.Arbitrum:
 		closeAll := func() {
 			l1.Close()
@@ -198,10 +196,8 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 				closeAll()
 				return nil, nil, lerr
 			}
-			// includeProvisional must match the source's head policy so the builder
-			// resolves the same node the source gated on (Finalized = confirmed only).
 			headerBuilder = l2rollup.NewArbitrumLegacyHeaderBuilder(
-				l1, l2, cosmosReader, attestor, cfg.AttestorSrcChain, headKind != l2rollup.Finalized, legacyProfile)
+				l1, l2, cosmosReader, attestor, cfg.AttestorSrcChain, legacyProfile)
 		default:
 			closeAll()
 			return nil, nil, fmt.Errorf("l2_to_cosmos config: unsupported arbitrum rollup protocol %q (want bold_v2|legacy_nitro)", protocol)

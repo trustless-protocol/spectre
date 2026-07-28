@@ -104,3 +104,17 @@ func TestInjectL1ClientID(t *testing.T) {
 		})
 	}
 }
+
+func TestL2ClientConfigRejectsNonObjectPolicies(t *testing.T) {
+	cfg := &l2ClientConfig{
+		WasmChecksum: "0xabcd",
+		L2RPCURL:     "http://localhost:8545",
+		RollupProfile: json.RawMessage(
+			`{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}`,
+		),
+		FinalityPolicy: json.RawMessage(`[]`),
+	}
+	if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "finality_policy") {
+		t.Fatalf("validate err = %v", err)
+	}
+}

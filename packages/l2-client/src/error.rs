@@ -33,6 +33,43 @@ pub enum Error {
     InvalidHeader(&'static str),
     #[error("state conflict at height {0}")]
     Conflict(u64),
+    #[error("trusted state conflict at height {height}")]
+    TrustedConflict {
+        /// Height where the conflicting trusted blocks were observed.
+        height: u64,
+    },
+    #[error("invalid finality policy: {0}")]
+    InvalidFinalityPolicy(&'static str),
+    #[error("consensus state finality {actual:?} is below required {required:?}")]
+    InsufficientFinality {
+        /// Minimum level configured for membership.
+        required: crate::state::FinalityLevel,
+        /// Level established by the consensus state.
+        actual: crate::state::FinalityLevel,
+    },
+    #[error("finality maturity is pending until {usable_at}")]
+    FinalityMaturityPending {
+        /// Unix time when the state becomes usable.
+        usable_at: u64,
+    },
+    #[error("authenticated Safe verification is unavailable")]
+    SafeVerificationUnavailable,
+    #[error("proposal has not resolved successfully")]
+    ProposalPending,
+    #[error("proposal resolved invalidly")]
+    ProposalResolvedInvalid,
+    #[error("finality downgrade is not permitted")]
+    FinalityDowngrade,
+    #[error("promotion refers to a different block")]
+    PromotionBlockMismatch,
+    #[error("promotion changes the authenticated state root")]
+    PromotionStateRootMismatch,
+    #[error("L2 parent hash does not extend the trusted chain")]
+    ParentHashMismatch,
+    #[error("client is stale")]
+    ClientStale,
+    #[error("finality evidence is invalid")]
+    InvalidFinalityEvidence,
     #[error("client is frozen at height {0}")]
     Frozen(u64),
     #[error("invalid fixture provenance: {0}")]
