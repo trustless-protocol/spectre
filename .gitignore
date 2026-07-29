@@ -70,7 +70,7 @@ docs/*_VI.md
 attestor/optimism/attestor
 .op-attestor-run/
 .op-devnet-run/
-# Local Arbitrum PoS L1 + Nitro testnode runtime state
+# Local Arbitrum-on-shared-Kurtosis-L1 runtime state
 .arbitrum-devnet-run/
 # Local Arbitrum verifier replica + attestor runtime state
 .arbitrum-attestor-run/

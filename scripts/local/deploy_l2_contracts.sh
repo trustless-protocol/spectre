@@ -26,7 +26,7 @@ set -euxo pipefail
 #   L2_WS                               optional L2 exec WS to patch (eth_ws_url)
 #   L2_DEPLOYER_PRIVATE_KEY / _ADDRESS  deployer funded on the L2 (defaults to the
 #                                       well-known devnet key, prefunded on Kurtosis
-#                                       + nitro-testnode)
+#                                       OP + Arbitrum local stacks)
 #   PERMIT2                             optional Permit2 address (default: unset)
 #
 # All internal paths (scripts/E2ETestDeployL2.s.sol, relayer/) are repo-root relative.
@@ -45,7 +45,7 @@ if [ -z "${L2_RPC:-}" ]; then
         esac
     fi
     [ -f "$L2_ENV_FILE" ] || {
-        echo "ERROR: L2_RPC is unset and no handoff at $L2_ENV_FILE; run the $DST_CHAIN stack first (scripts/local/run_optimism_node.sh or run_arbitrum_stack.sh) or set L2_RPC" >&2
+        echo "ERROR: L2_RPC is unset and no handoff at $L2_ENV_FILE; run the $DST_CHAIN stack first (scripts/local/run_optimism_node.sh or run_arbitrum_node.sh) or set L2_RPC" >&2
         exit 1
     }
     # shellcheck disable=SC1090

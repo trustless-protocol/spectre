@@ -12,7 +12,7 @@
 #
 # Local devnet shortcut: when ROLLUP_CORE_ADDRESS is unset and
 # .arbitrum-devnet-run/attestor.env exists (written by
-# run_arbitrum_stack.sh), that handoff is sourced automatically.
+# run_arbitrum_node.sh), that handoff is sourced automatically.
 #
 # Required env when not using the handoff:
 #   L1_RPC_URL, L1_BEACON_URL, L1_CHAIN_ID, L2_CHAIN_ID

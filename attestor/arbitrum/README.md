@@ -65,22 +65,31 @@ to `nitro_arguments`; those paths are owned by the attestor.
 For production sizing, snapshot initialization, pruning, and archive retention,
 follow the [official Nitro node documentation](https://docs.arbitrum.io/run-arbitrum-node/run-full-node).
 
-## Local PoS L1 and Nitro devnet
+## Shared local L1 and Nitro devnet
 
-For local bridge testing, the repository uses the same two-script structure as
-the OP Stack:
+For local bridge testing, Arbitrum and OP settle to the same Ethereum L1 in one
+Kurtosis enclave. Start the OP stack first because it owns the shared
+ethereum-package deployment, then layer Arbitrum onto that enclave:
 
 ```sh
-./scripts/local/run_arbitrum_stack.sh
+# run_optimism_node.sh is optional: include it to share one L1 between OP and
+# Arbitrum; omit it and run_arbitrum_node.sh brings the L1 up itself.
+./scripts/local/run_optimism_node.sh
+./scripts/local/run_arbitrum_node.sh
 ./scripts/local/run_arbitrum_attestor.sh
 ```
 
-Run both commands from the repository root. `run_arbitrum_stack.sh` checks out
-the official tooling under `.arbitrum-devnet-run/`, deploys RollupCore and a
-simple Nitro rollup on a local geth + Prysm proof-of-stake L1, waits for L1
-finality, and validates the configured BoLD storage layout against a finalized
-assertion when one is available. It writes the endpoints, chain IDs,
-RollupCore metadata, Nitro image pin, and sequencer config path to
+Run all commands from the repository root. `run_optimism_node.sh` starts
+ethereum-package plus OP in the `op-devnet` enclave; when it is skipped,
+`run_arbitrum_node.sh` brings the same L1 up in that enclave itself. The local package under
+`scripts/local/kurtosis/arbitrum/` accepts that L1's internal execution and
+beacon endpoints; it deploys RollupCore and starts a simple Nitro
+sequencer/batch-poster/staker without creating another L1.
+
+`run_arbitrum_node.sh` drives that package, waits for shared-L1 finality,
+validates the configured BoLD storage layout against a finalized assertion
+when one is available, and writes the published endpoints, chain IDs,
+RollupCore metadata, Nitro image pin, and self-contained sequencer config to
 `.arbitrum-devnet-run/attestor.env`.
 
 `run_arbitrum_attestor.sh` automatically sources that handoff, builds the
@@ -97,31 +106,40 @@ run_*_stack.sh    -> .*-devnet-run/attestor.env
 run_*_attestor.sh -> independent verifier replica + attestor gRPC on :3001
 ```
 
-The Docker volumes are preserved across normal stops and restarts:
+Stopping Arbitrum leaves Ethereum and OP running:
 
 ```sh
-./scripts/local/run_arbitrum_stack.sh --stop
-./scripts/local/run_arbitrum_stack.sh
+./scripts/local/run_arbitrum_node.sh --stop
+./scripts/local/run_arbitrum_node.sh
 ```
 
-Reinitializing the chain is destructive and must be requested explicitly:
+Redeploying Arbitrum removes and recreates only the two `arb-*` Kurtosis
+services. The shared L1 and OP services are preserved, although the previous
+RollupCore contracts remain as unreachable history on the development L1:
 
 ```sh
-./scripts/local/run_arbitrum_stack.sh --reset
+./scripts/local/run_arbitrum_node.sh --reset
 ```
 
-The first run clones the official repository and pulls several Docker images.
-Set `NITRO_TESTNODE_REF` to a full commit SHA in CI to prevent the upstream
-`release` branch from moving between environments. Upstream assumes the Docker
-Compose project name `nitro-testnode`; the wrapper refuses to replace
-pre-existing volumes with that label unless `--reset` is explicitly supplied.
-Do not run a second checkout of `nitro-testnode` at the same time.
+Removing the enclave removes Ethereum, OP, Arbitrum, and their local state:
+
+```sh
+kurtosis enclave rm -f op-devnet
+```
+
+The first Arbitrum run builds a RollupCreator image from the pinned
+`NITRO_CONTRACTS_REF` and pulls the pinned `NITRO_IMAGE`. Override both pins
+together only after checking their compatibility. The package uses public
+development keys and funds them from the ethereum-package account already
+used by the OP external-L1 configuration; none of those keys are suitable for
+public networks.
 
 To stop only the attestor, press Ctrl-C in its terminal. This removes its
 container but preserves the verifier database volume. To discard that
 database, remove the volume explicitly after confirming it is no longer
-needed. Stop the attestor before stopping the devnet because its container is
-attached to the testnode's Docker network.
+needed. The attestor reaches Kurtosis' published L1 and sequencer endpoints
+through `host.docker.internal`; it does not need to join Kurtosis' internal
+Docker network.
 
 ## Run
 
