@@ -1,6 +1,6 @@
 ---
 name: local-devnet
-description: Bring up the full local ETH↔Cosmos devnet and relayer in the proven order (eth → beacon finality → cosmos → wasm gov → build relayer → circuits → create-clients → start), with wait conditions, failure modes, and recovery. Use when running E2E manually, testing the relayer against live local chains, or debugging devnet bring-up.
+description: Bring up the local ETH↔Cosmos or Cosmos↔OP devnet and relayer in the proven order (L1 → beacon finality → [OP L2 + attestor] → cosmos → wasm gov → build relayer → circuits → create-clients → start), with wait conditions, failure modes, and recovery. Use when running E2E manually, testing the relayer against live local chains, or debugging devnet bring-up.
 ---
 
 # fast-ibc local devnet runbook
@@ -9,13 +9,16 @@ The order below is load-bearing: the Tendermint light-client on ETH can only be 
 
 Build setup (`bun install`, `just build-contracts`) is assumed done — it is separate from this runbook.
 
-## 1. Ethereum node (Kurtosis) + contracts
+For the **Cosmos↔OP** path, jump to "Cosmos↔OP variant" below after reading steps 2–6 — it reuses the same Cosmos/wasm/create-clients machinery with an OP L2 and an attestor layered on.
+
+## 1. Ethereum node (Kurtosis), then contracts
 
 ```bash
-./scripts/local/run_eth_node.sh
+./scripts/local/run_eth_node.sh          # L1 only; writes .eth-devnet-run/eth.env
+./scripts/local/deploy_eth_contracts.sh  # sources that handoff, deploys, patches config
 ```
 
-Deploys the contract suite. Note the ports Kurtosis mapped this run (they vary): the EL RPC port and the **beacon (CL) REST port** — you need the beacon port for the next step.
+The node and the deploy are separate scripts (`run_eth_node.sh` is parametrized by `ENCLAVE` / `ETH_PIN` / `L1_PARAMS` / `RUN_DIR` / `SKIP_COSMOS_RESET` so the OP flow can reuse it). Endpoints land in `eth.env` — the EL RPC, WS, and the **beacon (CL) REST** URL you need for the next step. `eth-network-params.yaml` runs Fusaka from genesis, so the ETH light client must have Fulu fork support.
 
 ## 2. Wait for beacon finality — poll, never sleep blindly
 
@@ -72,11 +75,86 @@ Sanity signals in the log: both subscribers connected (`Successfully subscribed 
 
 Send a token transfer in one direction, watch it relay, then send the reverse direction. **Always test both directions** — the relayer is a mirror and one-sided success proves half the system. A packet from ETH relays only after its block is beacon-finalized (minutes on devnet) — "not relayed yet" right after send is normal, not a bug.
 
+## Cosmos↔OP variant
+
+Same skeleton, with an OP L2 + attestor layered on the L1. `run_optimism_node.sh` calls `run_eth_node.sh` internally (it must pass the exact ethereum-package ref optimism-package pins, which is only known after cloning it), so do **not** run the L1 separately.
+
+```bash
+./scripts/local/run_optimism_node.sh   # L1 (Fulu) + OP L2 in one enclave -> .op-devnet-run/attestor.env
+./scripts/local/run_op_attestor.sh     # attestor over the replica op-node; gRPC :3001
+./scripts/local/run_cosmos_node.sh
+./scripts/local/wasm.sh                # ETH client — L2 clients authenticate L1 through it
+./scripts/local/wasm_op.sh             # OP client
+DST_CHAIN=opstack L2_DEPLOYER_ADDRESS=<l2-funded> L2_DEPLOYER_PRIVATE_KEY=<key> \
+  ./scripts/local/deploy_l2_contracts.sh
+cd relayer
+./relayer create-clients-cosmos --config config.json --wasm-checksum <eth> --l2-config <op.json>
+./relayer create-clients-eth --config config.json --source <ics26_client_id> --trust-level 2/3
+./relayer start --config config.json
+```
+
+Load-bearing details, each one cost a debugging session:
+
+- **Wasm must come from the optimizer**, never a plain `cargo build` — a raw release build carries `reference-types` and `MsgStoreCode` rejects it. If the optimizer image's Rust is older than a dependency's MSRV, pin the dependency down rather than shipping a raw build.
+- **Host allowlist**: the 08-wasm Stargate allowlist needs `ClientStatus` on top of `ClientState`/`ConsensusState`, or L2 client creation fails with `status Unknown` — see `docs/L2_CLIENTS.md`.
+- **`deploy_l2_contracts.sh` patches `config.example.json`**, while the relayer reads `config.json` — copy the addresses across.
+- **Deploy the L2 contracts with the key the relayer will run with** (`relayer/.env` `ETH_PRIVATE_KEY`). `E2ETestDeployL2` grants the ICS26Router relayer role to `msg.sender`, so a different deployer leaves the relayer unauthorized and every `updateApplicationState` reverts. That account also needs an L2 balance — the L1 devnet faucet address has none there — but **funding alone does not fix the role**, and the revert looks identical either way (see the `canCall` entry below).
+- **Send packets on the Cosmos client that tracks the L2**, register its counterparty to the L2 router's client id, and make sure the module's `cosmos_wasm_client_id` is that same L2 client before `create-clients-eth` (it decides the SpectreClient's counterparty; a mismatch reverts `recvPacket`).
+- Gov proposals: `wasm.sh` resolves the proposal id after a fixed sleep — if indexing lags, the vote step silently no-ops and the proposal is REJECTED. Vote manually within the (short) devnet voting period.
+- **Point `eth_beacon_api_url` at this run's beacon.** The `eth-to-cosmos` module keeps the example's port; `create-clients-cosmos` dies with `beacon api unavailable` before it does anything.
+- **The return direction needs three things beyond the forward one**, and each fails silently or loops: `l2_ics26_client_id` set to the L2 router's real client id (the subscriber filters on it, so a placeholder drops every ack), the attestor started with `disable_derived_roots: true` (the OP builder only proves game-backed roots, but the attestor's frontier is otherwise a derived root — `want game`, retried forever), and a **pinned Ethereum client that keeps advancing** (the builder proves the factory/game at the L1 block that client trusts; `start` refreshes it, and no amount of L1 state retention substitutes — a game covering a recent L2 block does not exist at an old L1 block).
+
+- **The relayer's ETH signer must hold the ICS26Router role on the L2**, and the sample `relayer/.env` key does not. Every `updateApplicationState` then reverts with a bare custom error (`0x068ca9d8` + the caller address) — no revert string, nothing in the relayer log beyond `execution reverted`. `cast run <tx>` shows the cause in one line: `canCall(<signer>, <ICS26Router>, 0x9c11bece) → false`. Funding the address does not help; it is authorization, not gas. Export the key `E2ETestDeployL2` granted the role to, or grant the role to the `.env` address.
+- **Send with `--absolute-timeouts` and an absolute second-precision timestamp.** Without that flag the CLI builds `timeout_timestamp` from `time.Now().UnixNano()`, and the IBC v2 send path — which reads the field as **seconds** — rejects it as `timeout exceeds the maximum expected value: invalid packet timeout`. This happens with the flag's own default too, so a plain `--packet-timeout-timestamp 600` fails just as hard. The README's runbook already has the correct form:
+  ```bash
+  ABS_TIMEOUT=$(($(date +%s) + 2000))
+  gaiad tx ibc-transfer transfer transfer <cosmos-l2-client-id> <evm-receiver> 1000stake \
+    ... --absolute-timeouts --packet-timeout-timestamp "$ABS_TIMEOUT" --generate-only \
+    | jq '.body.messages[0].encoding = "application/x-solidity-abi"' | ...
+  ```
+  `broadcast` returns `code: 0` for a tx that later fails in DeliverTx — always re-query with `gaiad q tx <hash>`.
+- **Re-creating the Cosmos-side L2 client while keeping the L2 router's client id replays sequence numbers.** `create-clients-eth` repoints the existing router client (`migrateClient`) instead of adding a new one, so the source restarts at sequence 1 while the destination's receipt store still holds receipts for 1, 2, … The relayer then drops those packets **permanently** with `IBCPacketReceiptMismatch` — correct behaviour (a receipt exists), but it looks like a proof failure. Either send throwaway packets past the reused range, or redeploy the L2 contracts for a clean router.
+- **`E2ETestDeployL2` never grants `LIGHT_CLIENT_MIGRATOR_ROLE`**, and that role is per-client (`keccak("LIGHT_CLIENT_MIGRATOR_ROLE_" || clientId)`). So the migrate above reverts for *everyone*, deployer included, with a bare `IBCUnauthorizedMigrator`. Grant it from the AccessManager admin (the L2 deployer) first:
+  ```bash
+  AM=$(cast call <ICS26Router> "authority()(address)" --rpc-url $L2)
+  ROLE=$(cast to-uint256 $(cast keccak "LIGHT_CLIENT_MIGRATOR_ROLE_<clientId>") | head -c 20)  # low 64 bits
+  cast send $AM "grantRole(uint64,address,uint32)" <role> <relayer-address> 0 \
+    --private-key <deployer-key> --rpc-url $L2
+  ```
+  Read the role id straight out of the `hasRole(...)` line in `cast run <reverted-tx>` rather than deriving it.
+- **`op-proposer` runs out of L1 funds after a few hours** — every dispute game costs a bond. It then logs `insufficient funds for transfer` on a loop and stops proposing, so the attestor's frontier freezes while the L2 keeps producing blocks. The relayer's return path just says `waiting: … source relayable height=N` forever, pointing at nothing. Check `docker logs <op-proposer-…>` whenever the frontier stalls, and top the proposer up:
+  ```bash
+  P=$(cast wallet address --private-key $(docker inspect <op-proposer-container> \
+        --format '{{range .Config.Cmd}}{{println .}}{{end}}' | grep -o '0x[0-9a-f]\{64\}'))
+  cast send $P --value 200ether --private-key <l1-funded-key> --rpc-url $L1
+  ``` `SubscribeL2` restarts at `head - l2StartupLookback` (`chain/l2rollup/subscribe.go`) with no persisted cursor, so an ack written more than ~8 minutes before the restart is never re-scanned and its packet stays pending forever. Send a fresh packet rather than waiting for the old one.
+
+- **The Ethereum client must be able to cross a sync-committee period.** Periods roll every 8192 slots. The relayer takes the next period's committee from the preceding period's light-client update, so the beacon must serve `/eth/v1/beacon/light_client/updates` — check before a long run:
+  ```bash
+  curl -s "$BEACON/eth/v1/beacon/light_client/updates?start_period=0&count=2" | head -c 120
+  ```
+  If it only serves `finality_update`, the client advances for one period and then stops dead with `404 NOT_FOUND: Sync committee for period N not found`, which cascades into `historical state ... is not available` on every proof.
+
+Verify **both** directions: a forward-only success proves half the system. The forward leg ends with the token minted on the L2; the return leg ends with the ack relayed back and the packet leaving the relayer's pending tracker (`CosmosTimeoutScan] Checking 0 pending packets`).
+
 ## Failure modes → cause
 
 | Symptom | Cause / fix |
 |---|---|
 | `create-clients` fails creating Tendermint LC on ETH | ETH not finalized yet — redo step 2 |
+| `MsgStoreCode`: `reference-types not enabled` | Wasm built with plain `cargo build` — rebuild via `cosmwasm/optimizer` |
+| `MsgCreateClient`: `status Unknown: client state is not active` | 08-wasm allowlist missing `/ibc.core.client.v1.Query/ClientStatus` |
+| `recvPacket` reverts with two client ids in the revert data | SpectreClient counterparty ≠ the source client the packet was sent on |
+| L2 client update fails with `IBC host query failed: codespace: undefined, code: 1` | The config's `rollup_profile.common.ethereum_client.client_id` ≠ the id the L2 wasm client was created with. The contract queries its own copy, so the beacon slot the relayer pins never exists there. `start` now refuses to boot on this mismatch and names both ids |
+| `updateApplicationState` reverts, `gasUsed` ~82k, no revert string | Signer lacks the ICS26Router role on the L2 — `cast run <tx>` shows `canCall(...) → false` |
+| `timeout exceeds the maximum expected value` on send | Sent without `--absolute-timeouts`, so `timeout_timestamp` is nanoseconds; IBC v2 reads it as seconds |
+| `attested game N is not visible at the pinned L1 block M yet` | Normal wait — the game is posted at the L1 head, provable once its creation block finalizes (~2 epochs) |
+| `packet at height N not yet covered by the destination client (trusts M)` | Normal wait — the client landed on a game committing below the packet; the next game covers it |
+| `404 NOT_FOUND: Sync committee for period N not found` | The beacon serves no bootstrap for that period; confirm it serves `light_client/updates` |
+| `unknown field account_proof, expected one of key, value, proof` | An L2 membership proof built in the Ethereum L1 shape — see `docs/L2_CLIENTS.md` |
+| A relay direction goes silent — no error, no retry, other directions fine | An RPC call is hung. `kill -QUIT <relayer-pid>` dumps every goroutine to the log; look for one blocked in `net/http.(*persistConn).roundTrip`. Note the dump kills the process, and a restart loses in-flight L2 events older than 256 blocks. |
+| `IBCPacketReceiptMismatch` and the packet is dropped as permanent | The destination already has a receipt at that sequence — the Cosmos client was re-created while the L2 router client id was reused |
+| `forge script`: `insufficient funds ... have 0` | Deployer unfunded on the L2 — use an L2-funded account |
 | DeliverTx `missing field storage_root` | Stale 6-field 08-wasm build — store a current 5-field build (step 3) |
 | Every `updateClient` proof reverts on-chain | Circuit artifacts regenerated after verifiers were deployed — redeploy verifiers + `setBucket` |
 | `account sequence mismatch` on Cosmos | Something bypassed the serialized send path; check for a second process using the same key |

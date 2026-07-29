@@ -157,10 +157,23 @@ ENCLAVE="$ENCLAVE" ETH_PIN="$ETH_PIN" RUN_DIR="$RUN_DIR" \
 . "$RUN_DIR/eth.env" # ETH_RPC / ETH_WS / ETH_BEACON_API
 L1_RPC_URL=$ETH_RPC
 
+# Preflight: fail fast if the beacon endpoint itself is unreachable (wrong port
+# discovered, or the CL service is down) instead of the finality wait silently
+# looping for 360s. A live beacon answers this endpoint within seconds of the L1
+# coming up — even before finality, it returns 200 with finalized.epoch == 0.
+beacon_reachable() {
+    curl -sf "$ETH_BEACON_API/eth/v1/beacon/states/head/finality_checkpoints" >/dev/null 2>&1
+}
+wait_until 60 "L1 beacon reachable at $ETH_BEACON_API" beacon_reachable || {
+    log "ERROR: L1 beacon not reachable at $ETH_BEACON_API — check the run_eth_node.sh port discovery"
+    exit 1
+}
+
+# The beacon is up; now wait only for finality to advance past genesis (epoch 0).
 l1_finalized() {
     local epoch
     epoch=$(curl -sf "$ETH_BEACON_API/eth/v1/beacon/states/head/finality_checkpoints" \
-        | jq -r '.data.finalized.epoch') || return 1
+        | jq -r '.data.finalized.epoch // 0') || return 1
     [ "${epoch:-0}" -gt 0 ]
 }
 log "waiting for the first finalized L1 epoch (~2min at 2s slots) before layering the L2 on top"

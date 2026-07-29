@@ -114,6 +114,49 @@ func TestRollupCoreSourceReadsStatusAndFinalizedLogs(t *testing.T) {
 	}
 }
 
+func TestRollupCoreSourceSkipsZeroHashAssertionCreated(t *testing.T) {
+	rollupAddress := common.HexToAddress("0x0000000000000000000000000000000000001234")
+	data := make([]byte, assertionCreatedDataWords*abiWordSize)
+	data[17*abiWordSize+abiWordSize-1] = 1
+	client := &sourceTestL1Client{
+		logs: []types.Log{{
+			Address: rollupAddress,
+			Topics: []common.Hash{
+				assertionCreatedTopic,
+				common.HexToHash("0x75"),
+				common.HexToHash("0x50"),
+			},
+			Data:        data,
+			BlockNumber: 100,
+		}},
+	}
+	source, err := NewRollupCoreSource(
+		client,
+		rollupAddress,
+		common.HexToHash("0x76"),
+		25,
+	)
+	if err != nil {
+		t.Fatalf("create source: %v", err)
+	}
+	proposals, confirmations, rejections, err := source.Assertions(
+		context.Background(),
+		90,
+		100,
+	)
+	if err != nil {
+		t.Fatalf("read assertion logs: %v", err)
+	}
+	if len(proposals) != 0 || len(confirmations) != 0 || len(rejections) != 0 {
+		t.Fatalf(
+			"unexpected assertions: proposals=%+v confirmations=%+v rejections=%+v",
+			proposals,
+			confirmations,
+			rejections,
+		)
+	}
+}
+
 type sourceTestL1Client struct {
 	logs          []types.Log
 	callOutput    []byte

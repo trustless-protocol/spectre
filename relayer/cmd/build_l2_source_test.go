@@ -16,6 +16,7 @@ func validL2Config() l2ToCosmosConfig {
 		TmRpcUrl:         "http://127.0.0.1:26657",
 		AttestorAddr:     "127.0.0.1:3001",
 		AttestorSrcChain: "op-sepolia",
+		EthBeaconAPIURL:  "http://127.0.0.1:5052",
 		L2WasmClientID:   "08-wasm-1",
 		L2ICS26ClientID:  "client-0",
 		HeadKind:         "safe",
@@ -90,6 +91,7 @@ func TestLoadConfig_L2Source(t *testing.T) {
 	raw := `{"modules":[{"name":"op","src_chain":"opstack","dst_chain":"cosmos","config":{
 		"l1_rpc_url":"http://l1","l2_rpc_url":"http://l2","tm_rpc_url":"http://tm",
 		"attestor_addr":"127.0.0.1:3001","attestor_src_chain":"op-sepolia",
+		"eth_beacon_api_url":"http://beacon",
 		"l2_wasm_client_id":"08-wasm-1","l2_ics26_client_id":"client-0","head_kind":"safe",
 		"rollup_profile":{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}}}]}`
 	var jc jsonConfig
@@ -112,4 +114,52 @@ func TestLoadConfig_L2Source(t *testing.T) {
 	if one.kind != chain.OPStack || one.AttestorSrcChain != "op-sepolia" {
 		t.Fatalf("parsed config mismatch: %+v", one)
 	}
+}
+
+// TestValidateSharedEthClients: several L2 modules normally pin the SAME Ethereum
+// client (create-clients-cosmos injects one id into every --l2-config), and that
+// client is refreshed from one beacon endpoint. Two modules disagreeing on the
+// endpoint for one client would refresh it from two sources of truth, so it is
+// rejected at load time rather than at runtime.
+func TestValidateSharedEthClients(t *testing.T) {
+	mod := func(clientID, beacon string) l2ToCosmosConfig {
+		return l2ToCosmosConfig{
+			EthBeaconAPIURL: beacon,
+			RollupProfile: json.RawMessage(
+				`{"common":{"ethereum_client":{"client_id":"` + clientID + `"}}}`),
+		}
+	}
+
+	t.Run("same client same beacon", func(t *testing.T) {
+		if err := validateSharedEthClients([]l2ToCosmosConfig{
+			mod("08-wasm-0", "http://beacon"), mod("08-wasm-0", "http://beacon"),
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("different clients may differ", func(t *testing.T) {
+		if err := validateSharedEthClients([]l2ToCosmosConfig{
+			mod("08-wasm-0", "http://a"), mod("08-wasm-9", "http://b"),
+		}); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("same client conflicting beacons rejected", func(t *testing.T) {
+		err := validateSharedEthClients([]l2ToCosmosConfig{
+			mod("08-wasm-0", "http://a"), mod("08-wasm-0", "http://b"),
+		})
+		if err == nil {
+			t.Fatal("expected an error for conflicting beacon endpoints")
+		}
+	})
+
+	t.Run("missing client id rejected", func(t *testing.T) {
+		if err := validateSharedEthClients([]l2ToCosmosConfig{
+			{EthBeaconAPIURL: "http://beacon", RollupProfile: json.RawMessage(`{"common":{}}`)},
+		}); err == nil {
+			t.Fatal("expected an error for a profile without ethereum_client.client_id")
+		}
+	})
 }

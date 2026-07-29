@@ -74,6 +74,12 @@ func (a *arbitrumBoldHeaderBuilder) Name() string { return "l2-arbitrum" }
 // chain.Retryable).
 func (a *arbitrumBoldHeaderBuilder) BuildHeader(ctx context.Context, request HeaderRequest) (ClientMessage, uint64, error) {
 	// 1. The L1 block the shared ETH client trusts — prove the RollupCore there.
+	// Ask for the pinned ETH client to be current first: this builder can only
+	// prove at the block that client trusts, so its freshness is a precondition,
+	// not a background nicety (#276). A failure here is logged by the
+	// implementation and does not abort — the client may still be fresh enough,
+	// or another direction may be advancing it.
+	_ = a.cosmos.UpdateEthClientIfStale(ctx, a.profile.L1ClientID)
 	beaconSlot, l1Block, err := a.cosmos.EthClientLatestSlotAndBlock(a.profile.L1ClientID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("l2-arbitrum: read shared ETH client height: %w", err)
@@ -93,9 +99,9 @@ func (a *arbitrumBoldHeaderBuilder) BuildHeader(ctx context.Context, request Hea
 
 	// 3. Prove the RollupCore account + the packed assertion node at its mapping slot.
 	assertionSlot := assertionStorageSlot(assertionHash, a.profile.AssertionsMappingSlot)
-	rollupProof, err := relayerclient.EthGetProof(a.l1, a.profile.RollupCore, []ethcommon.Hash{assertionSlot}, l1BlockBig)
+	rollupProof, err := relayerclient.EthGetProof(ctx, a.l1, a.profile.RollupCore, []ethcommon.Hash{assertionSlot}, l1BlockBig)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, annotatePinnedL1(ctx, a.l1, "l2-arbitrum: rollup assertion proof", a.profile.L1ClientID, l1Block, err)
 	}
 	if len(rollupProof.Storage) == 0 {
 		return nil, 0, fmt.Errorf("l2-arbitrum: rollup assertion-slot proof missing storage entry")
@@ -107,7 +113,7 @@ func (a *arbitrumBoldHeaderBuilder) BuildHeader(ctx context.Context, request Hea
 	if err != nil {
 		return nil, 0, fmt.Errorf("l2-arbitrum: L2 header at %d: %w", assertionL2, err)
 	}
-	routerProof, err := relayerclient.EthGetProof(a.l2, a.profile.L2Router, nil, l2HeightBig)
+	routerProof, err := relayerclient.EthGetProof(ctx, a.l2, a.profile.L2Router, nil, l2HeightBig)
 	if err != nil {
 		return nil, 0, err
 	}

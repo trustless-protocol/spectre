@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"sort"
 
 	"attestor/arbitrum"
 	attestorpb "attestor/types/attestor"
@@ -66,6 +67,56 @@ func NewAttestorServerWithRuntimeAndFeeds(
 		copiedFeeds[srcChain] = feed
 	}
 	return &AttestorServer{runtime: runtime, feeds: copiedFeeds}, nil
+}
+
+// Info reports every configured source chain and the current replica frontier.
+func (s *AttestorServer) Info(
+	_ context.Context,
+	request *attestorpb.InfoRequest,
+) (*attestorpb.InfoResponse, error) {
+	if request == nil {
+		return nil, status.Error(codes.InvalidArgument, "request must not be nil")
+	}
+	if s == nil || s.runtime == nil {
+		return nil, status.Error(codes.FailedPrecondition, "attestor server is not initialized")
+	}
+	snapshot := s.runtime.Snapshot()
+	srcChains := make([]string, 0, len(s.feeds))
+	for srcChain := range s.feeds {
+		srcChains = append(srcChains, srcChain)
+	}
+	sort.Strings(srcChains)
+
+	response := &attestorpb.InfoResponse{
+		Chains: make([]*attestorpb.ChainInfo, 0, len(srcChains)),
+	}
+	for _, srcChain := range srcChains {
+		feed := s.feeds[srcChain]
+		chain := &attestorpb.ChainInfo{
+			SrcChain: srcChain,
+			// Arbitrum does not have a daemon-wide gating head. State-root
+			// verification selects unsafe/safe/finalized per request, so leave
+			// attestation_head unset instead of reporting a fabricated value.
+			ReplicaSeen: snapshot.UnsafeObserved || snapshot.SafeObserved || snapshot.FinalizedSeen,
+		}
+		if snapshot.UnsafeObserved {
+			chain.ReplicaUnsafeL2 = snapshot.Unsafe.BlockNumber
+		}
+		if snapshot.SafeObserved {
+			chain.ReplicaSafeL2 = snapshot.Safe.BlockNumber
+		}
+		if snapshot.FinalizedSeen {
+			chain.ReplicaFinalizedL2 = snapshot.Finalized.BlockNumber
+		}
+		if root, found := feed.HighestAttested(false); found {
+			chain.AttestedUpTo = attestedRootToProto(root)
+		}
+		if root, found := feed.HighestAttested(true); found {
+			chain.AttestedUpToProvisional = attestedRootToProto(root)
+		}
+		response.Chains = append(response.Chains, chain)
+	}
+	return response, nil
 }
 
 // AttestedUpTo returns the highest independently verified commitment for the

@@ -246,6 +246,11 @@ go build -o relayer ./cmd
 # Poll until finalized.epoch > 0:
 curl -s http://127.0.0.1:32101/eth/v1/beacon/states/head/finality_checkpoints
 ./scripts/local/deploy_eth_contracts.sh # deploy core contracts + patch relayer config
+#    Deploy with the SAME key the relayer runs with: E2ETestDeploy sets
+#    relayers[0] = msg.sender, so the deployer receives the ICS26Router relayer role.
+#    Defaults to the devnet key relayer/.env ships; on any other network set
+#    ETH_DEPLOYER_ADDRESS + ETH_DEPLOYER_PRIVATE_KEY (and E2E_FAUCET_ADDRESS if the
+#    test ERC20 should go elsewhere).
 
 # 4. Then start Cosmos and submit the Ethereum LC WASM via governance
 ./scripts/local/run_cosmos_node.sh   # local Cosmos chain with funded test accounts
@@ -398,6 +403,223 @@ continues — the rest of the benchmark output is unaffected.
 
 `utils.SetBenchEnabled(true|false)` lets tests force the flag without touching
 env. Definitions live in `relayer/utils/bench.go`.
+
+## Local Cosmos ↔ OP E2E
+
+Brings up an L1 + OP Stack L2 + Cosmos and relays both directions. The L1 is shared:
+`run_optimism_node.sh` reuses `run_eth_node.sh` for it (Fusaka-from-genesis, the same
+`eth-network-params.yaml` the ETH↔Cosmos devnet uses), then layers the L2 on top.
+
+```bash
+# 1. L1 (Fulu) + OP Stack L2 in one Kurtosis enclave. Ends with games proposed
+#    and .op-devnet-run/attestor.env written (L1/L2/op-node/beacon endpoints).
+./scripts/local/run_optimism_node.sh
+
+# 2. Attestor — independent verifier over the replica op-node; serves gRPC :3001.
+#    Sources attestor.env automatically.
+./scripts/local/run_op_attestor.sh
+
+# 3. Cosmos node, then gov-store BOTH light-client wasms:
+#    the Ethereum client (L2 clients authenticate L1 through it) and the OP client.
+./scripts/local/run_cosmos_node.sh
+./scripts/local/wasm.sh        # -> ETH client checksum
+./scripts/local/wasm_op.sh     # -> OP client checksum
+
+# 4. IBC contracts on the L2 (E2ETestDeployL2). Deploy with the SAME key the relayer
+#    will run with (relayer/.env ETH_PRIVATE_KEY): E2ETestDeployL2 grants the
+#    ICS26Router relayer role to msg.sender, and without that role every
+#    updateApplicationState reverts. The values below are the devnet-only key that
+#    relayer/.env ships as ETH_PRIVATE_KEY — change BOTH together or they drift apart.
+#    The account also needs an L2 balance (the L1 devnet faucet address has none
+#    there), but funding alone does NOT fix the role.
+DST_CHAIN=opstack \
+L2_DEPLOYER_ADDRESS=0x8943545177806ED17B9F23F0a21ee5948eCaa776 \
+L2_DEPLOYER_PRIVATE_KEY=bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31 \
+  ./scripts/local/deploy_l2_contracts.sh
+# It patches relayer/config.example.json — copy the addresses into config.json.
+
+# 5. Clients. Cosmos side first (ETH client, then the OP client anchored to it via
+#    --l2-config), then the L2 side (SpectreClient deployed + addClient'd).
+cd relayer
+./relayer create-clients-cosmos --config config.json \
+  --wasm-checksum <eth-checksum> --l2-config <op-l2-config.json>
+./relayer create-clients-eth --config config.json --source <ics26_client_id> --trust-level 2/3
+
+# 6. Relay both directions.
+./relayer start --config config.json
+```
+
+## Local Cosmos ↔ Arbitrum E2E
+
+Brings up an L1 + Arbitrum Nitro/BoLD L2 + Cosmos and relays both directions. The L1
+is shared with the OP flow: `run_arbitrum_node.sh` attaches Arbitrum to the existing
+Kurtosis enclave if OP already brought one up, or creates the same local L1 itself
+through `run_eth_node.sh` when the enclave does not exist.
+
+```bash
+# 1. L1 (Fulu) + Arbitrum Nitro/BoLD L2 in one Kurtosis enclave. Ends with a
+#    finalized AssertionCreated check and .arbitrum-devnet-run/attestor.env written
+#    (L1/L2/beacon/Nitro feed/RollupCore endpoints).
+./scripts/local/run_arbitrum_node.sh
+
+# 2. Attestor — independent non-sequencing Nitro replica; serves gRPC :3001.
+#    Sources .arbitrum-devnet-run/attestor.env automatically.
+./scripts/local/run_arbitrum_attestor.sh
+
+# 3. Cosmos node, then gov-store BOTH light-client wasms:
+#    the Ethereum client (L2 clients authenticate L1 through it) and the Arbitrum client.
+./scripts/local/run_cosmos_node.sh
+./scripts/local/wasm.sh        # -> ETH client checksum
+./scripts/local/wasm_arb.sh    # -> Arbitrum client checksum
+
+# 4. IBC contracts on the Arbitrum L2 (E2ETestDeployL2). Use the same relayer key
+#    rules as OP: the deployer receives the ICS26Router relayer role, so it must be
+#    the key in relayer/.env ETH_PRIVATE_KEY unless you change both together.
+DST_CHAIN=arbitrum \
+L2_DEPLOYER_ADDRESS=0x8943545177806ED17B9F23F0a21ee5948eCaa776 \
+L2_DEPLOYER_PRIVATE_KEY=bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31 \
+  ./scripts/local/deploy_l2_contracts.sh
+# It patches the cosmos_to_l2 module whose dst_chain is arbitrum.
+
+# 5. Clients. Cosmos side first (ETH client, then the Arbitrum client anchored to it
+#    via --l2-config), then the L2 side (SpectreClient deployed + addClient'd).
+cd relayer
+./relayer create-clients-cosmos --config config.json \
+  --wasm-checksum <eth-checksum> --l2-config <arb-l2-config.json>
+#
+#    If the OP flow already ran, an Ethereum client exists — anchor to it instead:
+#      ./relayer create-clients-cosmos --config config.json \
+#        --l1-client-id <08-wasm-N> --l2-config <arb-l2-config.json>
+#    Without --l1-client-id this creates a SECOND Ethereum client and rewrites
+#    cosmos_to_eth.cosmos_wasm_client_id, which repoints the Cosmos<->Ethereum path at
+#    a client the Sepolia-side SpectreClient was never registered against; every
+#    recvPacket then reverts on a counterparty mismatch. Since this section shares the
+#    L1 enclave with the OP flow, running both in sequence hits exactly that.
+./relayer create-clients-eth --config config.json --source <ics26_client_id> --trust-level 2/3
+
+# 6. Relay both directions.
+./relayer start --config config.json
+```
+
+The local Arbitrum l2-config is the same shape as OP's `--l2-config`, but its
+`rollup_profile.protocol.type` is `bold_v2`. Fill it from the local handoffs:
+
+- `l2_rpc_url`: `.arbitrum-devnet-run/attestor.env` `L2_RPC_URL`.
+- `wasm_checksum`: checksum printed by `wasm_arb.sh`.
+- `rollup_profile.common.l1_chain_id`, `l2_chain_id`, `rollup`: `L1_CHAIN_ID`,
+  `L2_CHAIN_ID`, and `ROLLUP_CORE_ADDRESS` from `.arbitrum-devnet-run/attestor.env`.
+- `rollup_profile.common.l2_router`: `ics26Router` deployed by `deploy_l2_contracts.sh`.
+- `rollup_profile.protocol.value.assertions_mapping_slot` and
+  `assertion_status_offset`: `ASSERTIONS_MAPPING_SLOT` and `ASSERTION_STATUS_OFFSET`.
+- `counterparty_client_id`: the Arbitrum L2 router client id configured in the
+  `cosmos_to_l2` module, for example `arb-client-0`.
+
+#### Adding an L2 to a deployment that already relays Cosmos↔Ethereum
+
+Every L2 client is anchored to an Ethereum light client on Cosmos, and that anchor is
+baked into the L2 client's state at creation — it cannot be changed afterwards.
+
+`create-clients-cosmos` normally **creates** that Ethereum client, and rewrites the
+`cosmos_to_eth` module's `cosmos_wasm_client_id` with the new id. Re-running it just to
+add a second L2 therefore does real damage to a working L1 path: the Ethereum-side
+SpectreClient is still registered against the *old* client, so every `recvPacket` starts
+reverting on a counterparty mismatch, and the original client is left orphaned with
+nothing advancing it until it expires.
+
+Pass `--l1-client-id` instead. It anchors the new L2 client(s) to an Ethereum client that
+already exists, creates nothing else, and leaves the `cosmos_to_eth` module alone:
+
+```bash
+# Adding Arbitrum to a deployment whose Ethereum client is already 08-wasm-0
+./relayer create-clients-cosmos --config config.json \
+  --l1-client-id 08-wasm-0 --l2-config <arb-l2-config.json>
+```
+
+`--wasm-checksum` is not needed with it (nothing Ethereum-side is being created), and the
+id is read back off-chain before anything is created, so a typo fails immediately rather
+than producing an L2 client permanently anchored to a client that does not exist.
+
+Creating several L2s in one go does not need the flag — a single run injects the same
+newly-created Ethereum client into every `--l2-config`:
+
+```bash
+./relayer create-clients-cosmos --config config.json --wasm-checksum <eth-checksum> \
+  --l2-config op.json --l2-config base.json --l2-config arb.json
+```
+
+The `--l2-config` file carries the full ICS-08 profile (see
+[docs/L2_CLIENTS.md](docs/L2_CLIENTS.md#l2-client-creation-config)); `rollup_profile.common`
+needs `l1_chain_id`, `l2_chain_id`, `ethereum_client` (`client_id` is injected by the command,
+`wasm_checksum` is not — supply the Ethereum client's checksum as a byte array), `l2_router`,
+`commitment_slot`, and `rollup_version`, plus the rollup-specific fields. For OP/Base use the
+dispute-game fields (`dispute_game_factory`, `game_list_slot`, `root_claim_bytecode_offset`,
+`output_root_format`, `l2_header_fork`). For Arbitrum use the tagged `protocol` object from
+`packages/arbitrum-verifier/config/README.md`; the local BoLD devnet uses `bold_v2`.
+`packages/op-verifier/config/op-sepolia.json` and
+`packages/arbitrum-verifier/config/arbitrum-sepolia.json` are working public-network templates.
+
+### Sending a test packet
+
+The source client is the Cosmos client that tracks the **L2** (the OP/Arbitrum client, e.g.
+`08-wasm-1`), not the Ethereum client. It needs a registered counterparty, and that
+counterparty must equal the client id the SpectreClient was added under on the L2 router — the
+relayer only picks up packets whose `destination_client` matches its configured `ics26_client_id`:
+
+```bash
+gaiad tx ibc client add-counterparty <l2-client-on-cosmos> <ics26_client_id> "" \
+  --from test1 --home "$HOME/.gaia" --chain-id test-ibc-eth \
+  --keyring-backend test --gas-prices 1stake --gas 300000 -y
+
+ABS_TIMEOUT=$(($(date +%s) + 2000))
+gaiad tx ibc-transfer transfer transfer <l2-client-on-cosmos> <evm-receiver> 1000stake \
+  --from test1 --home "$HOME/.gaia" --chain-id test-ibc-eth \
+  --node tcp://127.0.0.1:26657 --keyring-backend test --gas-prices 1stake \
+  --absolute-timeouts --packet-timeout-timestamp "$ABS_TIMEOUT" --generate-only \
+| jq '.body.messages[0].encoding = "application/x-solidity-abi"' \
+| gaiad tx sign /dev/stdin --from test1 --home "$HOME/.gaia" \
+    --chain-id test-ibc-eth --keyring-backend test \
+| gaiad tx broadcast /dev/stdin --node tcp://127.0.0.1:26657 -y
+```
+
+`create-clients-cosmos` writes the L2 client id into a `cosmos_to_l2` module's
+`cosmos_wasm_client_id` when the l2-config carries `counterparty_client_id`; that value is what
+`create-clients-eth` registers as the SpectreClient's counterparty. If it holds the *Ethereum*
+client id instead, `recvPacket` reverts with a counterparty mismatch (the revert data carries the
+expected and actual client ids), so set `counterparty_client_id` in the l2-config — or fix
+`cosmos_wasm_client_id` by hand before `create-clients-eth`.
+
+Two more settings decide whether the **return** direction (acks, and packets sent from the L2)
+works at all — both are easy to leave at their placeholder and then see nothing happen:
+
+- `l2_ics26_client_id` on the `l2_to_cosmos` module must be the client id the SpectreClient was
+  added under on the L2 router. The L2 subscriber filters events by it, so a stale placeholder
+  silently drops every `WriteAcknowledgement` the L2 emits.
+- The attestor must run with `disable_derived_roots: true`. The OP header builder can only prove
+  **game-backed** roots, while `RelayableHeight` follows the attestor's newest frontier — under
+  the low-latency profile that frontier is a self-derived root, and the two never agree
+  (`attested root at height N is source "derived", want game`, retried forever).
+
+### Failure modes
+
+| Symptom | Cause |
+|---|---|
+| `beacon api unavailable at ...:59717` | The `eth-to-cosmos` module still has the example's beacon URL. Point `eth_beacon_api_url` at this run's `ETH_BEACON_API` (from `attestor.env`). |
+| `attested root at height N is source "derived", want game` | The OP header builder can only prove game-backed roots, but the attestor's frontier is a self-derived root. Set `disable_derived_roots: true` in the attestor config so its frontier is game-driven. |
+| `eth_getProof(<DisputeGameFactory>): historical state ... is not available` | The pinned Ethereum client on Cosmos has stopped advancing, so the builder keeps proving at one ageing L1 block (the error names the block and how far behind it is). `start` advances it on demand (`[UpdateEthClient]` / `[EthClientUpdate]` in the log) right before each header build; if the message persists, check those lines and confirm the client id there is the one the L2 client was created against. Widening the L1's state retention does not help — a game covering a recent L2 block does not exist at an old L1 block at all. |
+| `MsgStoreCode` fails: `reference-types not enabled` | The wasm was built with a plain `cargo build`. Build through `cosmwasm/optimizer` (`just build-cw-ics08-wasm-*`); a raw release build embeds features the CosmWasm VM rejects. |
+| Optimizer fails: `rustc 1.86.0 is not supported ... requires rustc 1.90` | A dependency raised its MSRV above the optimizer image's Rust. Pin the dependency down (e.g. `cargo update -p ruint --precise 1.17.0`) or bump the optimizer image. |
+| `MsgCreateClient`: `status Unknown: client state is not active` | 08-wasm Stargate allowlist is missing `ClientStatus` — see [docs/L2_CLIENTS.md](docs/L2_CLIENTS.md#host-requirements-and-verification). |
+| Every L2 client update fails: `IBC host query failed: codespace: undefined, code: 1` | The `l2_to_cosmos` module's `rollup_profile.common.ethereum_client.client_id` is not the client the L2 client was created against, so the contract looks for a consensus state at a slot only the *other* client has. `create-clients-cosmos` writes the id back and `start` now refuses to boot on a mismatch — see [docs/L2_CLIENTS.md](docs/L2_CLIENTS.md#host-requirements-and-verification). |
+| L2 client update panics the tx: `returning attributes from a contract is not allowed` | The deployed wasm predates the fix that made the client return data only. Rebuild through `cosmwasm/optimizer` and gov-store it. |
+| `updateApplicationState` reverts, ~82k gas, no revert string | The relayer's signer lacks the ICS26Router relayer role on the L2. `cast run <tx>` shows `canCall(...) → false`; funding the address does not help. |
+| Send fails: `timeout exceeds the maximum expected value` | Sent without `--absolute-timeouts`, so the CLI writes `timeout_timestamp` in nanoseconds while IBC v2 reads seconds. |
+| ETH client stops advancing: `404 NOT_FOUND: Sync committee for period N not found` | The beacon does not serve a `light_client/bootstrap` for that period. The relayer takes the committee from the preceding period's update instead, so this should only appear if that update is also unavailable — check the endpoint serves `/eth/v1/beacon/light_client/updates`. |
+| Ack fails: `unknown field account_proof, expected one of key, value, proof` | The L2 membership proof was built in the Ethereum L1 shape. The L2 client wants a bare `EvmStorageProof` — see [docs/L2_CLIENTS.md](docs/L2_CLIENTS.md). |
+| `attested game N is not visible at the pinned L1 block M yet` | Normal wait, not an error: the game is posted at the L1 head and becomes provable once its creation block finalizes (~2 epochs). |
+| `packet at height N not yet covered by the destination client (trusts M)` | Normal wait: the client landed on a game committing below the packet; the next game covers it. |
+| A direction goes silent — no error, no retry, other directions healthy | A hung RPC. `kill -QUIT <relayer-pid>` dumps every goroutine; look for one blocked in `net/http.(*persistConn).roundTrip`. Note the dump kills the process. |
+| Gov proposal ends `REJECTED` without votes | `wasm.sh` resolves the proposal id after a fixed `sleep`; if indexing is slower the id is empty and the vote step is skipped. Vote manually before the (short devnet) voting period ends. |
+| `forge script` fails `insufficient funds ... have 0` | The deployer has no balance on the L2 — use an L2-funded account (step 4). |
 
 ## Contracts
 

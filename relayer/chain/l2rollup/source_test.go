@@ -41,7 +41,7 @@ func (f *fakeAttestor) AttestedRootAtOrBelow(_ context.Context, srcChain string,
 }
 
 func newAttestedSource(kind HeadKind, at *fakeAttestor) *Source {
-	return NewSource(chain.ChainType("opstack"), nil, kind, "07-tendermint-0", "op-sepolia", ethcommon.Address{}, at)
+	return NewSource(chain.ChainType("opstack"), nil, kind, "07-tendermint-0", "08-wasm-0", "op-sepolia", ethcommon.Address{}, at, kind != Finalized)
 }
 
 func TestRelayableHeight_UsesAttestedFrontier(t *testing.T) {

@@ -22,6 +22,8 @@ set -euxo pipefail
 # Env:
 #   DST_CHAIN (opstack)                 which cosmos_to_l2 module to patch
 #                                       (matched on src_chain=cosmos + dst_chain)
+#   RELAYER_CONFIG                      relayer config to patch
+#                                       (default: relayer/config.example.json)
 #   L2_RPC / L2_ENV_FILE                see endpoint source above
 #   L2_WS                               optional L2 exec WS to patch (eth_ws_url)
 #   L2_DEPLOYER_PRIVATE_KEY / _ADDRESS  deployer funded on the L2 (defaults to the
@@ -34,6 +36,11 @@ cd "$(dirname "$0")/../.."
 REPO_ROOT=$PWD
 
 DST_CHAIN=${DST_CHAIN:-opstack}
+RELAYER_CONFIG=${RELAYER_CONFIG:-$REPO_ROOT/relayer/config.example.json}
+case "$RELAYER_CONFIG" in
+    /*) ;;
+    *) RELAYER_CONFIG=$REPO_ROOT/$RELAYER_CONFIG ;;
+esac
 
 # ---------------------------------------------------------------- endpoint ---
 if [ -z "${L2_RPC:-}" ]; then
@@ -56,7 +63,14 @@ fi
 
 : "${L2_RPC:?L2_RPC is required (no L2 exec RPC discovered)}"
 
-# Well-known devnet deployer, prefunded on both stacks; override for a real L2.
+# Deployer. E2ETestDeployL2 sets relayers[0] = msg.sender, so whoever deploys receives
+# the ICS26Router relayer role — it MUST be the key the relayer runs with
+# (relayer/.env ETH_PRIVATE_KEY). A different deployer leaves the relayer unauthorized
+# and every updateApplicationState reverts with no reason string, which looks exactly
+# like an unfunded signer until you run `cast run` on the tx and see canCall -> false.
+# Funding the wrong address does not fix it.
+#
+# Default is the well-known devnet key, prefunded on both stacks; override for a real L2.
 L2_DEPLOYER_ADDRESS=${L2_DEPLOYER_ADDRESS:-0x8943545177806ED17B9F23F0a21ee5948eCaa776}
 L2_DEPLOYER_PRIVATE_KEY=${L2_DEPLOYER_PRIVATE_KEY:-bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31}
 
@@ -68,9 +82,9 @@ echo "deployer:  $L2_DEPLOYER_ADDRESS"
 # Fail loud if there is no cosmos_to_l2 module to patch, BEFORE spending a deploy.
 MATCHES=$(jq --arg DST "$DST_CHAIN" \
   '[.modules[] | select(.src_chain=="cosmos" and .dst_chain==$DST)] | length' \
-  "$REPO_ROOT/relayer/config.example.json")
+  "$RELAYER_CONFIG")
 if [ "$MATCHES" -eq 0 ]; then
-    echo "ERROR: no cosmos_to_l2 module with src_chain=cosmos dst_chain=$DST_CHAIN in relayer/config.example.json; add one (see the cosmos-to-op example) before deploying" >&2
+    echo "ERROR: no cosmos_to_l2 module with src_chain=cosmos dst_chain=$DST_CHAIN in $RELAYER_CONFIG; add one (see the cosmos-to-op example) before deploying" >&2
     exit 1
 fi
 
@@ -106,7 +120,6 @@ echo "MISBEHAVIOUR:       $MISBEHAVIOUR_ADDRESS"
 # Patch ONLY the matching cosmos_to_l2 module (leave the L1 cosmos_to_eth module and
 # any other L2 family untouched). spectre_client stays empty — create-clients-eth
 # fills it once it deploys the SpectreClient against a fresh Cosmos genesis.
-cd relayer
 jq \
   --arg DST "$DST_CHAIN" \
   --arg RPC "$L2_RPC" \
@@ -127,7 +140,7 @@ jq \
         | .config.misbehaviour = $MIS
       else . end
     )
-  ' config.example.json > config.tmp && mv config.tmp config.example.json
+  ' "$RELAYER_CONFIG" > "$RELAYER_CONFIG.tmp" && mv "$RELAYER_CONFIG.tmp" "$RELAYER_CONFIG"
 
-echo "Patched relayer/config.example.json cosmos_to_l2 (dst_chain=$DST_CHAIN) with the deployed L2 addresses."
+echo "Patched $RELAYER_CONFIG cosmos_to_l2 (dst_chain=$DST_CHAIN) with the deployed L2 addresses."
 echo "Next: relayer create-clients-eth --source <ics26_client_id>  (deploys the SpectreClient on the L2)."

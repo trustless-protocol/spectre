@@ -4,9 +4,17 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"time"
 
 	"relayer/chain"
 )
+
+// headerBuildTimeout bounds one full proof assembly (a few eth_getProof /
+// eth_getBlockByNumber / optimism_outputAtBlock round trips, plus the on-demand
+// Ethereum client update the OP builder performs first). Generous enough that a
+// slow-but-live node still finishes, short enough that a dead one is retried rather
+// than waited on forever.
+const headerBuildTimeout = 90 * time.Second
 
 // HeaderBuilder gathers the chain-specific trustless proof for one L2 block into a
 // per-L2 ClientMessage header (OpStackHeader vs ArbitrumHeader): the beacon_slot +
@@ -57,6 +65,16 @@ func (b *Builder) Build(ctx context.Context, header []byte) (chain.ClientUpdate,
 	if err != nil {
 		return chain.ClientUpdate{}, chain.Retryable(err)
 	}
+	// Bound the whole proof assembly. A header build is a handful of L1/L2 JSON-RPC
+	// calls, and go-ethereum's HTTP client has no timeout of its own — a node that
+	// accepts the connection and then never answers blocks forever. The relay module
+	// drives one direction on a single goroutine, so that hangs the direction with no
+	// error, no retry, and nothing in the log. The relay ctx alone does not save us:
+	// it is only cancelled at shutdown. Timing out turns a wedged direction into a
+	// retryable error, which is what the caller already knows how to handle.
+	ctx, cancel := context.WithTimeout(ctx, headerBuildTimeout)
+	defer cancel()
+
 	msg, committedHeight, err := b.headerBuilder.BuildHeader(ctx, request)
 	if err != nil {
 		return chain.ClientUpdate{}, chain.Retryable(fmt.Errorf("l2: assemble %s proof at height %d: %w", request.Finality, request.Height, err))

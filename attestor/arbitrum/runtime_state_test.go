@@ -178,6 +178,21 @@ func TestResolveCanonicalBlockHashRejectsReorgedHeader(t *testing.T) {
 	}
 }
 
+func TestNitroBlockNotFoundRecognizesRPCText(t *testing.T) {
+	for _, err := range []error{
+		ethereum.NotFound,
+		fmt.Errorf("safe block not found"),
+		fmt.Errorf("finalized block not found"),
+	} {
+		if !isNitroBlockNotFound(err) {
+			t.Fatalf("expected block-not-found match for %v", err)
+		}
+	}
+	if isNitroBlockNotFound(fmt.Errorf("connection reset")) {
+		t.Fatal("unexpected block-not-found match")
+	}
+}
+
 func testHeader(height uint64, root byte) *types.Header {
 	return &types.Header{
 		Number: new(big.Int).SetUint64(height),

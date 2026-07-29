@@ -45,15 +45,19 @@ type arbitrumLegacyHeaderBuilder struct {
 	attestor AttestorClient
 	srcChain string
 	profile  ArbLegacyProfile
+	// includeProvisional must match the Source's: the source decides WHICH heights
+	// are relayable, this decides which node is proven for them. Two different
+	// answers would gate on one rule and prove with another.
+	includeProvisional bool
 }
 
-// NewArbitrumLegacyHeaderBuilder wires the legacy Arbitrum builder. BuildHeader
-// derives provisional-vs-finalized selection from each request so it resolves the
-// same node the source gated on.
-func NewArbitrumLegacyHeaderBuilder(l1, l2 *ethclient.Client, cosmos cosmosClientStateReader, attestor AttestorClient, srcChain string, profile ArbLegacyProfile) *arbitrumLegacyHeaderBuilder {
+// NewArbitrumLegacyHeaderBuilder wires the legacy Arbitrum builder. includeProvisional
+// must be the Source's value so the builder resolves the same node the source gated on.
+func NewArbitrumLegacyHeaderBuilder(l1, l2 *ethclient.Client, cosmos cosmosClientStateReader, attestor AttestorClient, srcChain string, profile ArbLegacyProfile, includeProvisional bool) *arbitrumLegacyHeaderBuilder {
 	return &arbitrumLegacyHeaderBuilder{
 		l1: l1, l2: l2, cosmos: cosmos, attestor: attestor,
 		srcChain: srcChain, profile: profile,
+		includeProvisional: includeProvisional,
 	}
 }
 
@@ -64,7 +68,7 @@ func (b *arbitrumLegacyHeaderBuilder) Name() string { return "l2-arbitrum-legacy
 // client advances by it). RPC/availability failures are returned plain (the generic
 // Builder wraps them chain.Retryable).
 func (b *arbitrumLegacyHeaderBuilder) BuildHeader(ctx context.Context, request HeaderRequest) (ClientMessage, uint64, error) {
-	root, found, err := b.attestor.AttestedRootAtOrBelow(ctx, b.srcChain, request.Height, request.Finality != Finalized)
+	root, found, err := b.attestor.AttestedRootAtOrBelow(ctx, b.srcChain, request.Height, b.includeProvisional)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -94,6 +98,12 @@ func (b *arbitrumLegacyHeaderBuilder) buildLegacyHeaderFor(ctx context.Context, 
 	}
 
 	// 1. The L1 block the shared ETH client trusts — prove the RollupCore there.
+	// Ask for the pinned ETH client to be current first: this builder can only
+	// prove at the block that client trusts, so its freshness is a precondition,
+	// not a background nicety (#276). A failure here is logged by the
+	// implementation and does not abort — the client may still be fresh enough,
+	// or another direction may be advancing it.
+	_ = b.cosmos.UpdateEthClientIfStale(ctx, b.profile.L1ClientID)
 	beaconSlot, l1Block, err := b.cosmos.EthClientLatestSlotAndBlock(b.profile.L1ClientID)
 	if err != nil {
 		return nil, fmt.Errorf("l2-arbitrum-legacy: read shared ETH client height: %w", err)
@@ -111,10 +121,10 @@ func (b *arbitrumLegacyHeaderBuilder) buildLegacyHeaderFor(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	rollupProof, err := relayerclient.EthGetProof(b.l1, b.profile.RollupCore,
+	rollupProof, err := relayerclient.EthGetProof(ctx, b.l1, b.profile.RollupCore,
 		[]ethcommon.Hash{b.profile.NodeLifecycleSlot, confirmDataSlot}, l1BlockBig)
 	if err != nil {
-		return nil, err
+		return nil, annotatePinnedL1(ctx, b.l1, "l2-arbitrum-legacy: rollup node proof", b.profile.L1ClientID, l1Block, err)
 	}
 	lifecycle, err := findStorageProof(rollupProof, b.profile.NodeLifecycleSlot)
 	if err != nil {
@@ -155,7 +165,7 @@ func (b *arbitrumLegacyHeaderBuilder) buildLegacyHeaderFor(ctx context.Context, 
 	}
 
 	// 4. Router proof against the committed L2 header's state root.
-	routerProof, err := relayerclient.EthGetProof(b.l2, b.profile.L2Router, nil, l2HeightBig)
+	routerProof, err := relayerclient.EthGetProof(ctx, b.l2, b.profile.L2Router, nil, l2HeightBig)
 	if err != nil {
 		return nil, err
 	}

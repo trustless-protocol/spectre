@@ -3,6 +3,7 @@ package l2rollup
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"math/big"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 )
@@ -63,11 +65,12 @@ func (k HeadKind) String() string {
 // (account proof) then the IBC-handler storage_root (storage proof), per Dũng P2.
 // The L2 difference is entirely the finality policy here.
 type Source struct {
-	chainType  chain.ChainType // OPStack or Arbitrum (for Chain())
-	eth        *ethclient.Client
-	headKind   HeadKind
-	l2ClientID string            // the ICS26Router client id on the L2 (event partition key)
-	router     ethcommon.Address // the L2 ICS26Router address (from rollup_profile.common.l2_router)
+	chainType          chain.ChainType // OPStack or Arbitrum (for Chain())
+	eth                *ethclient.Client
+	headKind           HeadKind
+	l2ClientID         string            // the ICS26Router client id on the L2 (event partition key)
+	cosmosWasmClientID string            // the Cosmos wasm client id paired with l2ClientID
+	router             ethcommon.Address // the L2 ICS26Router address (from rollup_profile.common.l2_router)
 
 	// attestor gates RelayableHeight on independent L1 re-derivation (#240). When
 	// nil, RelayableHeight falls back to the raw L2 head — the skip-finality interim
@@ -75,6 +78,15 @@ type Source struct {
 	// src_chain key (distinct from the on-L2 client id).
 	attestor   AttestorClient
 	srcChainID string
+
+	// includeProvisional decides whether a verdict the attestor has not yet
+	// re-derived from FINALIZED L1 data may be relayed. It is a separate axis from
+	// headKind and must stay one: headKind selects which L2 head the source reads
+	// (unsafe/safe/finalized), while provisional is about whether the attestor's
+	// own finality re-check has completed for that root. Deriving one from the other
+	// made "safe" silently imply "accept provisional", with no way to ask for safe
+	// without it.
+	includeProvisional bool
 }
 
 // Source satisfies chain.Source.
@@ -83,15 +95,17 @@ var _ chain.Source = (*Source)(nil)
 // NewSource wires an L2 source. router is the L2 ICS26Router address (the packet
 // membership proofs are taken against its storage_root). attestor may be nil
 // (raw-head interim); when set, srcChainID identifies this L2 to the attestor.
-func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKind, l2ClientID, srcChainID string, router ethcommon.Address, attestor AttestorClient) *Source {
+func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKind, l2ClientID, cosmosWasmClientID, srcChainID string, router ethcommon.Address, attestor AttestorClient, includeProvisional bool) *Source {
 	return &Source{
-		chainType:  chainType,
-		eth:        eth,
-		headKind:   headKind,
-		l2ClientID: l2ClientID,
-		router:     router,
-		attestor:   attestor,
-		srcChainID: srcChainID,
+		chainType:          chainType,
+		eth:                eth,
+		headKind:           headKind,
+		l2ClientID:         l2ClientID,
+		cosmosWasmClientID: cosmosWasmClientID,
+		router:             router,
+		attestor:           attestor,
+		srcChainID:         srcChainID,
+		includeProvisional: includeProvisional,
 	}
 }
 
@@ -113,7 +127,7 @@ func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 	}
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	root, found, err := s.attestor.AttestedUpTo(cctx, s.srcChainID, s.headKind != Finalized)
+	root, found, err := s.attestor.AttestedUpTo(cctx, s.srcChainID, s.includeProvisional)
 	if err != nil {
 		return 0, fmt.Errorf("l2 source: attested-up-to (kind=%d): %w", s.headKind, err)
 	}
@@ -165,7 +179,7 @@ func (s *Source) QueryHeader(_ context.Context, height uint64) ([]byte, error) {
 // advanced the destination L2 wasm client to (proofHeight = m.lastHeight), so no
 // Cosmos-side read is needed here. Do NOT use a Cosmos app_hash — the two EVM roots
 // are the L2 world state_root and the router account storage_root (Dũng P2).
-func (s *Source) MembershipProof(_ context.Context, packet []byte, height uint64, eventType chain.EventType) ([]byte, error) {
+func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint64, eventType chain.EventType) ([]byte, error) {
 	var pkt channeltypesv2.Packet
 	if err := pkt.Unmarshal(packet); err != nil {
 		return nil, fmt.Errorf("l2 source: decode packet: %w", err)
@@ -194,11 +208,52 @@ func (s *Source) MembershipProof(_ context.Context, packet []byte, height uint64
 		return nil, fmt.Errorf("l2 source: MembershipProof: unsupported event type %d", eventType)
 	}
 	path := services.EthPath(clientID, pkt.Sequence, pathType)
-	return relayerclient.GetEthMembershipProof(
-		s.eth, s.router, path,
-		ethcommon.HexToHash(services.ICS26_IBC_STORAGE_SLOT),
-		new(big.Int).SetUint64(height),
-	)
+	return l2StorageProof(ctx, s.eth, s.router, path, height)
+}
+
+// l2StorageProof proves one ICS26Router commitment slot at an L2 height, in the shape
+// the L2 wasm client expects.
+//
+// This is NOT the Ethereum L1 membership proof (client.GetEthMembershipProof). That
+// one wraps an account proof and a storage proof together and hex-encodes both,
+// because the ETH light client re-derives the account from the L1 state root. The L2
+// client already knows the router's storage root — it authenticated it through the
+// rollup header's router_proof — so it wants a bare `EvmStorageProof` and rejects
+// anything else outright:
+//
+//	unknown field `account_proof`, expected one of `key`, `value`, `proof`
+//
+// (serde `deny_unknown_fields`). Reusing the L1 shape here made every acknowledgement
+// fail that way.
+//
+// The value is the full 32-byte storage word, not the minimal big-endian form
+// eth_getProof reports: the client compares it byte-for-byte against the commitment
+// the IBC host expects, which is a full 32-byte hash. The trie check is unaffected
+// either way — the verifier strips leading zeros before RLP-encoding.
+func l2StorageProof(ctx context.Context, l2 *ethclient.Client, router ethcommon.Address, path []byte, height uint64) ([]byte, error) {
+	slot := ethcommon.HexToHash(services.ICS26_IBC_STORAGE_SLOT)
+	storageKey := crypto.Keccak256Hash(crypto.Keccak256(path), slot.Bytes())
+
+	raw, err := relayerclient.EthGetProof(ctx, l2, router, []ethcommon.Hash{storageKey}, new(big.Int).SetUint64(height))
+	if err != nil {
+		return nil, fmt.Errorf("l2 source: prove router slot at height %d: %w", height, err)
+	}
+	if len(raw.Storage) == 0 {
+		return nil, fmt.Errorf("l2 source: eth_getProof returned no storage proof for key %s", storageKey.Hex())
+	}
+	sp := raw.Storage[0]
+
+	var value [32]byte
+	if len(sp.Value) > len(value) {
+		return nil, fmt.Errorf("l2 source: storage value at %s is %d bytes, want <= 32", storageKey.Hex(), len(sp.Value))
+	}
+	copy(value[len(value)-len(sp.Value):], sp.Value) // left-pad to the full word
+
+	return json.Marshal(EvmStorageProof{
+		Key:   hexBytes(storageKey.Bytes()),
+		Value: byteList(value[:]),
+		Proof: byteMatrix(sp.Proof),
+	})
 }
 
 // NonMembershipProof is unused on the L2 source relay path: L2-origin packet

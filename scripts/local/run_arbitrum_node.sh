@@ -422,6 +422,9 @@ find_contract_deployment_block() {
 }
 
 ROLLUP_DEPLOYMENT_BLOCK=$(find_contract_deployment_block "$ROLLUP_CORE_ADDRESS")
+if [ "$ROLLUP_DEPLOYMENT_BLOCK" -eq 0 ]; then
+    ROLLUP_DEPLOYMENT_BLOCK=1
+fi
 
 ASSERTION_CREATED_SIGNATURE='AssertionCreated(bytes32,bytes32,((bytes32,bytes32,(bytes32,uint256,address,uint64,uint64)),((bytes32[2],uint64[2]),uint8,bytes32),((bytes32[2],uint64[2]),uint8,bytes32)),bytes32,uint256,bytes32,uint256,address,uint64)'
 ASSERTION_CREATED_TOPIC=$(cast keccak "$ASSERTION_CREATED_SIGNATURE")

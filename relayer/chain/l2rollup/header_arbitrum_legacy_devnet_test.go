@@ -60,7 +60,7 @@ func TestArbLegacyBuildHeader_Devnet(t *testing.T) {
 		LatestCreatedOffset:   16,
 		ConfirmDataOffset:     2,
 	}
-	builder := NewArbitrumLegacyHeaderBuilder(l1, l2, fakeCosmosReader{slot: 1, block: l1Head}, nil, "arbitrum-sepolia", profile)
+	builder := NewArbitrumLegacyHeaderBuilder(l1, l2, fakeCosmosReader{slot: 1, block: l1Head}, nil, "arbitrum-sepolia", profile, false)
 
 	h, err := builder.buildLegacyHeaderFor(ctx, node, l2Block)
 	if err != nil {

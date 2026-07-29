@@ -843,14 +843,21 @@ type RawStorageProof struct {
 
 // EthGetProof calls eth_getProof for addr + keys at blockNumber (nil = latest) and
 // decodes the hex nodes/values to raw bytes.
-func EthGetProof(client *ethclient.Client, addr ethcommon.Address, keys []ethcommon.Hash, blockNumber *big.Int) (*RawEvmProof, error) {
+//
+// ctx is honoured: this used to pass context.Background(), and go-ethereum's HTTP
+// client carries no timeout of its own, so a node that accepted the connection and
+// then stopped responding blocked the caller forever. The L2 header builders call
+// this from the relay loop, which drives one direction on a single goroutine — one
+// unanswered proof request wedged that whole direction silently, with nothing in the
+// log to say so. Callers must pass a cancellable or deadline-bearing context.
+func EthGetProof(ctx context.Context, client *ethclient.Client, addr ethcommon.Address, keys []ethcommon.Hash, blockNumber *big.Int) (*RawEvmProof, error) {
 	keyStrs := make([]string, len(keys))
 	for i, k := range keys {
 		keyStrs[i] = k.Hex()
 	}
 	var result ethProofResult
 	if err := client.Client().CallContext(
-		context.Background(), &result, "eth_getProof",
+		ctx, &result, "eth_getProof",
 		addr, keyStrs, toBlockNumArg(blockNumber),
 	); err != nil {
 		return nil, fmt.Errorf("eth_getProof(%s): %w", addr, err)

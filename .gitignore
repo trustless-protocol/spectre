@@ -76,6 +76,10 @@ attestor/optimism/attestor
 .arbitrum-attestor-run/
 # Local Ethereum devnet endpoint handoff (scripts/local/run_eth_node.sh)
 .eth-devnet-run/
+# Address handoff written by scripts/local/deploy_l2_contracts.sh for create-clients-eth
+.l2-deployment.json
+# Gov proposal scratch file rewritten by every scripts/local/wasm*.sh run
+proposal.json
 
 .agents/
 .specify/

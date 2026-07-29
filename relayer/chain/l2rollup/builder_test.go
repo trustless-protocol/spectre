@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"relayer/chain"
 )
@@ -136,3 +137,69 @@ func TestSourceQueryHeaderCarriesEveryFinalityLevel(t *testing.T) {
 }
 
 func b(a HeaderBuilder) *Builder { return NewBuilder(a) }
+
+// blockingHeaderBuilder blocks until its context is done, standing in for an L1/L2
+// node that accepts the connection and never answers.
+type blockingHeaderBuilder struct{ observed error }
+
+func (b *blockingHeaderBuilder) Name() string { return "l2-blocking" }
+
+func (b *blockingHeaderBuilder) BuildHeader(ctx context.Context, _ HeaderRequest) (ClientMessage, uint64, error) {
+	<-ctx.Done()
+	b.observed = ctx.Err()
+	return nil, 0, ctx.Err()
+}
+
+// A hung RPC must surface as a retryable error rather than wedging the caller. The
+// relay module drives one direction on a single goroutine, so a build that never
+// returns stops that direction silently — no error, no retry, nothing logged.
+func TestBuild_HungHeaderBuilderTimesOutRetryable(t *testing.T) {
+	mock := &blockingHeaderBuilder{}
+	b := NewBuilder(mock)
+
+	// Cancelling the caller's context stands in for the deadline the Builder applies;
+	// asserting on the real 90s timeout would make this test take 90s.
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := b.Build(ctx, headerRequest(Safe, 42))
+		done <- err
+	}()
+
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Build returned nil error for a build that never completed")
+		}
+		if !chain.IsRetryable(err) {
+			t.Fatalf("a timed-out proof assembly must be retryable, got %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Build did not return after its context was cancelled — the direction would wedge")
+	}
+}
+
+// The Builder must impose a deadline of its own: the relay context is only cancelled
+// at shutdown, so it cannot bound a hang during normal operation.
+func TestBuild_AppliesItsOwnDeadline(t *testing.T) {
+	var deadlineSeen bool
+	probe := headerBuilderFunc(func(ctx context.Context, _ HeaderRequest) (ClientMessage, uint64, error) {
+		_, deadlineSeen = ctx.Deadline()
+		return &OpStackHeader{BeaconSlot: 1}, 42, nil
+	})
+	if _, err := NewBuilder(probe).Build(context.Background(), headerRequest(Safe, 42)); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !deadlineSeen {
+		t.Fatal("BuildHeader received a context with no deadline; a hung RPC would never be cut off")
+	}
+}
+
+// headerBuilderFunc adapts a function to HeaderBuilder.
+type headerBuilderFunc func(context.Context, HeaderRequest) (ClientMessage, uint64, error)
+
+func (f headerBuilderFunc) Name() string { return "l2-probe" }
+func (f headerBuilderFunc) BuildHeader(ctx context.Context, r HeaderRequest) (ClientMessage, uint64, error) {
+	return f(ctx, r)
+}

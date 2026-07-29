@@ -966,6 +966,22 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Conte
 
 	log.Printf("[CreateEthClient] MsgRegisterCounterparty broadcast successfully. Hash: %s", result2.Hash.String())
 
+	// Wait for the counterparty registration to be committed before returning. The
+	// caller may immediately build another tx from this same account (e.g.
+	// create-clients-cosmos creating an L2 wasm client right after the L1 one), and
+	// that tx queries the account sequence — a still-uncommitted registration hands
+	// back the pre-registration sequence and the next tx fails with
+	// "account sequence mismatch".
+	log.Printf("[CreateWasmClientTx] waiting for MsgRegisterCounterparty tx result")
+	txResult2, err := h.waitForTxResult(stdCtx, svcCtx, result2.Hash, 30*time.Second)
+	if err != nil {
+		return "", fmt.Errorf("failed waiting for MsgRegisterCounterparty tx: %w", err)
+	}
+	if txResult2.TxResult.Code != 0 {
+		return "", fmt.Errorf("register counterparty tx failed with code %d: %s",
+			txResult2.TxResult.Code, txResult2.TxResult.Log)
+	}
+
 	return newClientID, nil
 }
 

@@ -1,8 +1,12 @@
 package l2rollup
 
 import (
+	"context"
 	"fmt"
 	"math/big"
+
+	"github.com/ethereum/go-ethereum"
+	"github.com/ethereum/go-ethereum/ethclient"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
@@ -104,4 +108,17 @@ func u256FromBig(v *big.Int) u256 {
 		u.Int.Set(v)
 	}
 	return u
+}
+
+// factoryGameCount reads DisputeGameFactory.gameCount() at a specific L1 block. The
+// builder uses it to tell "this game does not exist yet at the block we can prove
+// against" apart from "this game-list slot is empty", which look identical in a raw
+// storage proof but mean very different things.
+func factoryGameCount(ctx context.Context, l1 *ethclient.Client, factory ethcommon.Address, block *big.Int) (uint64, error) {
+	selector := crypto.Keccak256([]byte("gameCount()"))[:4]
+	out, err := l1.CallContract(ctx, ethereum.CallMsg{To: &factory, Data: selector}, block)
+	if err != nil {
+		return 0, fmt.Errorf("eth_call gameCount() at block %s: %w", block, err)
+	}
+	return new(big.Int).SetBytes(out).Uint64(), nil
 }

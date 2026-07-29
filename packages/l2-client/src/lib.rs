@@ -126,7 +126,12 @@ macro_rules! l2_client_entrypoints {
             msg: crate::msg::SudoMsg,
         ) -> Result<cosmwasm_std::Response, l2_client::error::Error> {
             use l2_client::state::RuntimeProfile as _;
-            let mut attributes = Vec::new();
+            // No attributes, events, or messages may be attached to this response:
+            // ibc-go's 08-wasm keeper rejects a light client that returns any of them
+            // ("returning attributes from a contract is not allowed"), and it does so
+            // by panicking inside the VM call, so the whole tx fails rather than the
+            // update. A light client is a pure state transition; observability has to
+            // come from the caller or from querying the client state afterwards.
             let data = match msg {
                 crate::msg::SudoMsg::UpdateState { client_message } => {
                     let header = match serde_json::from_slice::<
@@ -163,51 +168,9 @@ macro_rules! l2_client_entrypoints {
                         l1.consensus.timestamp,
                         &header,
                     )?;
-                    let was_existing = l2_client::runtime::consensus_state(
-                        deps.storage,
-                        verified.height.revision_height,
-                    )
-                    .is_ok();
                     let updated_height = l2_client::runtime::update::<
                         <$adapter as l2_client::L2LightClient>::Profile,
                     >(deps.storage, &verified)?;
-                    let frozen_at = l2_client::runtime::client_state::<
-                        <$adapter as l2_client::L2LightClient>::Profile,
-                    >(deps.storage)?
-                    .frozen_height;
-                    if let Some(height) = frozen_at {
-                        attributes.push(cosmwasm_std::attr("action", "l2_conflict_detected"));
-                        attributes.push(cosmwasm_std::attr("height", height.to_string()));
-                        attributes.push(cosmwasm_std::attr("trusted", "true"));
-                        attributes.push(cosmwasm_std::attr("action", "l2_client_frozen"));
-                        attributes.push(cosmwasm_std::attr("reason", "trusted_conflict"));
-                    }
-                    if updated_height.is_some() {
-                        attributes.push(cosmwasm_std::attr(
-                            "action",
-                            if was_existing {
-                                "l2_state_promoted"
-                            } else {
-                                "l2_state_accepted"
-                            },
-                        ));
-                        attributes.push(cosmwasm_std::attr(
-                            "height",
-                            verified.height.revision_height.to_string(),
-                        ));
-                        attributes.push(cosmwasm_std::attr(
-                            "block_hash",
-                            verified.l2_block_hash.to_string(),
-                        ));
-                        attributes.push(cosmwasm_std::attr(
-                            "finality",
-                            verified.finality_level.as_str(),
-                        ));
-                        attributes.push(cosmwasm_std::attr(
-                            "proposal_status",
-                            verified.proposal_status.as_str(),
-                        ));
-                    }
                     cosmwasm_std::to_json_binary(&l2_client::msg::UpdateStateResult {
                         heights: updated_height
                             .into_iter()
@@ -337,9 +300,9 @@ macro_rules! l2_client_entrypoints {
                     cosmwasm_std::Binary::default()
                 }
             };
-            Ok(cosmwasm_std::Response::default()
-                .add_attributes(attributes)
-                .set_data(data))
+            // ibc-go 08-wasm rejects sudo responses with attributes/events/messages.
+            // Return data only; relayer observability comes from host tx logs.
+            Ok(cosmwasm_std::Response::default().set_data(data))
         }
 
         /// Routes strict client queries.

@@ -1,6 +1,7 @@
 package l2rollup
 
 import (
+	"math/big"
 	"testing"
 
 	"relayer/chain"
@@ -44,7 +45,43 @@ func TestL2AckToEvent_EmptyAckSkipped(t *testing.T) {
 	ev := &contractICS26Router.ContractICS26RouterWriteAcknowledgement{
 		Acknowledgements: nil,
 	}
-	if _, ok := l2AckToEvent(ev); ok {
+	if _, ok := l2AckToEvent(ev, "08-wasm-3"); ok {
 		t.Fatal("empty acknowledgement must be skipped")
+	}
+}
+
+func TestL2AckToEvent_FiltersStaleCosmosClient(t *testing.T) {
+	ev := &contractICS26Router.ContractICS26RouterWriteAcknowledgement{
+		Sequence:         big.NewInt(1),
+		Packet:           contractICS26Router.IICS26RouterMsgsPacket{SourceClient: "08-wasm-1", DestClient: "arb-client-0"},
+		Acknowledgements: [][]byte{[]byte(`{"result":"AQ=="}`)},
+	}
+	if _, ok := l2AckToEvent(ev, "08-wasm-3"); ok {
+		t.Fatal("ack for stale Cosmos wasm client must be skipped")
+	}
+}
+
+func TestL2AckToEvent_AllowsConfiguredCosmosClient(t *testing.T) {
+	ev := &contractICS26Router.ContractICS26RouterWriteAcknowledgement{
+		Sequence: big.NewInt(2),
+		Packet: contractICS26Router.IICS26RouterMsgsPacket{
+			SourceClient: "08-wasm-3",
+			DestClient:   "arb-client-0",
+			Payloads: []contractICS26Router.IICS26RouterMsgsPayload{{
+				SourcePort: "transfer",
+				DestPort:   "transfer",
+				Version:    "ics20-1",
+				Encoding:   "application/x-solidity-abi",
+				Value:      []byte("packet"),
+			}},
+		},
+		Acknowledgements: [][]byte{[]byte(`{"result":"AQ=="}`)},
+	}
+	got, ok := l2AckToEvent(ev, "08-wasm-3")
+	if !ok {
+		t.Fatal("ack for configured Cosmos wasm client must be emitted")
+	}
+	if got.Type != chain.AckPacket || got.Height != 0 || len(got.AckBytes) != 1 {
+		t.Fatalf("unexpected event: %+v", got)
 	}
 }

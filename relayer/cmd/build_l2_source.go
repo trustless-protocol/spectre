@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
+	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/ethereum/go-ethereum/common"
@@ -25,16 +27,30 @@ import (
 // Cosmos and the ICS26Router client on the L2), the head policy, and the rollup
 // profile (whose common.l2_router the membership proofs are taken against).
 type l2ToCosmosConfig struct {
-	L1RpcUrl         string          `json:"l1_rpc_url"`
-	L2RpcUrl         string          `json:"l2_rpc_url"`
-	OpNodeRpcUrl     string          `json:"op_node_rpc_url"` // op-node, for optimism_outputAtBlock (OP-Stack only)
-	TmRpcUrl         string          `json:"tm_rpc_url"`
-	AttestorAddr     string          `json:"attestor_addr"`
-	AttestorSrcChain string          `json:"attestor_src_chain"`
-	L2WasmClientID   string          `json:"l2_wasm_client_id"`
-	L2ICS26ClientID  string          `json:"l2_ics26_client_id"`
-	HeadKind         string          `json:"head_kind"`
-	RollupProfile    json.RawMessage `json:"rollup_profile"`
+	L1RpcUrl     string `json:"l1_rpc_url"`
+	L2RpcUrl     string `json:"l2_rpc_url"`
+	OpNodeRpcUrl string `json:"op_node_rpc_url"` // op-node, for optimism_outputAtBlock (OP-Stack only)
+	TmRpcUrl     string `json:"tm_rpc_url"`
+	// EthBeaconAPIURL is the L1 beacon REST endpoint used to keep the pinned
+	// Ethereum light client on Cosmos advancing. That client is this module's trust
+	// anchor: the header builder proves the rollup contracts at whatever L1 block it
+	// trusts, so a stalled client makes every proof unservable (#276). Modules that
+	// pin the same ethereum_client must agree on this URL.
+	EthBeaconAPIURL  string `json:"eth_beacon_api_url"`
+	AttestorAddr     string `json:"attestor_addr"`
+	AttestorSrcChain string `json:"attestor_src_chain"`
+	L2WasmClientID   string `json:"l2_wasm_client_id"`
+	L2ICS26ClientID  string `json:"l2_ics26_client_id"`
+	HeadKind         string `json:"head_kind"`
+	// IncludeProvisional accepts attestor verdicts that have not yet been re-derived
+	// from finalized L1 data. It is deliberately its own field: it used to be inferred
+	// from head_kind, which conflated two independent axes — head_kind selects which
+	// L2 head is read, provisional is about whether the attestor's finality re-check
+	// has completed. "safe" therefore silently implied "accept provisional", with no
+	// way to ask for one without the other. Defaults to true for anything but
+	// finalized, preserving the previous behaviour.
+	IncludeProvisional *bool           `json:"include_provisional,omitempty"`
+	RollupProfile      json.RawMessage `json:"rollup_profile"`
 
 	// kind is the chain family (opstack/arbitrum) resolved from the module's
 	// src_chain by loadConfig; it selects the per-L2 header builder.
@@ -45,7 +61,8 @@ func (c l2ToCosmosConfig) validate() error {
 	for name, v := range map[string]string{
 		"l1_rpc_url": c.L1RpcUrl, "l2_rpc_url": c.L2RpcUrl, "tm_rpc_url": c.TmRpcUrl,
 		"attestor_addr": c.AttestorAddr, "attestor_src_chain": c.AttestorSrcChain,
-		"l2_wasm_client_id": c.L2WasmClientID, "l2_ics26_client_id": c.L2ICS26ClientID,
+		"eth_beacon_api_url": c.EthBeaconAPIURL,
+		"l2_wasm_client_id":  c.L2WasmClientID, "l2_ics26_client_id": c.L2ICS26ClientID,
 	} {
 		if v == "" {
 			return fmt.Errorf("l2_to_cosmos config: %s is required", name)
@@ -78,6 +95,102 @@ func parseHeadKind(s string) (l2rollup.HeadKind, error) {
 }
 
 // l2RouterFromProfile extracts rollup_profile.common.l2_router (the L2 ICS26Router).
+// l1ClientIDFromProfile reads rollup_profile.common.ethereum_client.client_id — the
+// Ethereum light client on Cosmos this L2 client is anchored to. Several L2 modules
+// normally share one such client (create-clients-cosmos injects the same id into
+// every --l2-config), which is what makes the shared-refresher grouping meaningful.
+func l1ClientIDFromProfile(profile json.RawMessage) (string, error) {
+	var pc struct {
+		Common struct {
+			EthereumClient struct {
+				ClientID string `json:"client_id"`
+			} `json:"ethereum_client"`
+		} `json:"common"`
+	}
+	if err := json.Unmarshal(profile, &pc); err != nil {
+		return "", fmt.Errorf("l2_to_cosmos config: parse rollup_profile.common: %w", err)
+	}
+	if pc.Common.EthereumClient.ClientID == "" {
+		return "", fmt.Errorf("l2_to_cosmos config: rollup_profile.common.ethereum_client.client_id is required")
+	}
+	return pc.Common.EthereumClient.ClientID, nil
+}
+
+// ethClientBeacon names one module's view of a Cosmos-side Ethereum light client:
+// which client it advances, from which beacon, and a label for the error message.
+type ethClientBeacon struct {
+	clientID  string
+	beaconURL string
+	module    string
+}
+
+// validateSharedEthClients rejects a config where two modules that advance the SAME
+// Cosmos-side Ethereum client disagree on the beacon endpoint. One client driven from
+// two sources of truth is divergent and racy.
+//
+// Both families must be considered, not just the L2 ones: an eth_to_cosmos module
+// advances the client named by its paired cosmos_to_eth.cosmos_wasm_client_id, using
+// eth_to_cosmos.eth_beacon_api_url, and an L2 module can pin that very same client
+// through rollup_profile.common.ethereum_client.client_id. Checking only the L2 list
+// let that pair diverge silently — and config.example.json already ships two different
+// beacon URLs.
+func validateSharedEthClients(l2s []l2ToCosmosConfig, others ...ethClientBeacon) error {
+	seen := map[string]ethClientBeacon{}
+	claims := make([]ethClientBeacon, 0, len(l2s)+len(others))
+	for i := range l2s {
+		clientID, err := l1ClientIDFromProfile(l2s[i].RollupProfile)
+		if err != nil {
+			return err
+		}
+		claims = append(claims, ethClientBeacon{clientID, l2s[i].EthBeaconAPIURL, "l2_to_cosmos " + l2s[i].AttestorSrcChain})
+	}
+	for _, o := range others {
+		if o.clientID == "" || o.beaconURL == "" {
+			continue // nothing to compare against
+		}
+		claims = append(claims, o)
+	}
+
+	for _, c := range claims {
+		prev, ok := seen[c.clientID]
+		if !ok {
+			seen[c.clientID] = c
+			continue
+		}
+		if prev.beaconURL != c.beaconURL {
+			return fmt.Errorf(
+				"modules advancing Ethereum client %q disagree on eth_beacon_api_url: %s uses %q, %s uses %q; "+
+					"modules sharing a client must share its beacon endpoint",
+				c.clientID, prev.module, prev.beaconURL, c.module, c.beaconURL)
+		}
+	}
+	return nil
+}
+
+// validateL2SourceEthClient refuses to start when the config names a different
+// Ethereum client than the L2 wasm client was created with.
+//
+// create-clients-cosmos writes the id into both places, but a config assembled by
+// hand or carried over from an earlier devnet run can still drift — and drift here
+// is silent and total: header builds pin proofs to the client the config names while
+// the contract queries the client it was created with, so every update fails with
+// "IBC host query failed: codespace: undefined, code: 1", which names neither. In
+// production the pinned client is also the one nobody advances, so it expires.
+// One query at startup turns all of that into a sentence.
+func validateL2SourceEthClient(cosmosClient *rpchttp.HTTP, l2WasmClientID, configuredL1ClientID string) error {
+	pinned, err := relayerclient.GetL2PinnedEthClientID(cosmosClient, l2WasmClientID)
+	if err != nil {
+		return fmt.Errorf("read the Ethereum client pinned by L2 client %s: %w", l2WasmClientID, err)
+	}
+	if pinned != configuredL1ClientID {
+		return fmt.Errorf(
+			"l2_to_cosmos config: rollup_profile.common.ethereum_client.client_id is %q but L2 wasm client %s was created against %q; "+
+				"the client state is authoritative — set the config to %q, or re-create the clients",
+			configuredL1ClientID, l2WasmClientID, pinned, pinned)
+	}
+	return nil
+}
+
 func l2RouterFromProfile(profile json.RawMessage) (common.Address, error) {
 	var pc struct {
 		Common struct {
@@ -105,6 +218,10 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	router, err := l2RouterFromProfile(cfg.RollupProfile)
 	if err != nil {
 		return nil, nil, err
+	}
+	includeProvisional := headKind != l2rollup.Finalized
+	if cfg.IncludeProvisional != nil {
+		includeProvisional = *cfg.IncludeProvisional
 	}
 
 	l1, err := ethclient.Dial(cfg.L1RpcUrl)
@@ -140,7 +257,33 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	svcCtx := services.NewCtx(cosmosClient, l2)
 	worker := services.NewWorker(txHandler, nil)
 
-	cosmosReader := &cosmosEthClientReader{cosmos: cosmosClient}
+	// Wire the on-demand ETH client updater: the header builders ask it for freshness
+	// right before they prove against that client's L1 block (#276).
+	l1ClientID, err := l1ClientIDFromProfile(cfg.RollupProfile)
+	if err != nil {
+		l1.Close()
+		l2.Close()
+		_ = cosmosClient.Stop()
+		_ = attestor.Close()
+		return nil, nil, err
+	}
+	if err := validateL2SourceEthClient(cosmosClient, cfg.L2WasmClientID, l1ClientID); err != nil {
+		l1.Close()
+		l2.Close()
+		_ = cosmosClient.Stop()
+		_ = attestor.Close()
+		return nil, nil, err
+	}
+	updater, updaterCleanup, err := buildEthClientUpdater(cfg, l1ClientID, txHandler,
+		func(c context.Context) (uint64, error) { return l1.BlockNumber(c) })
+	if err != nil {
+		l1.Close()
+		l2.Close()
+		_ = cosmosClient.Stop()
+		_ = attestor.Close()
+		return nil, nil, err
+	}
+	cosmosReader := &cosmosEthClientReader{cosmos: cosmosClient, updater: updater}
 
 	var headerBuilder l2rollup.HeaderBuilder
 	switch cfg.kind {
@@ -151,6 +294,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 			l2.Close()
 			_ = cosmosClient.Stop()
 			_ = attestor.Close()
+			updaterCleanup()
 			return nil, nil, perr
 		}
 		if cfg.OpNodeRpcUrl == "" {
@@ -158,6 +302,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 			l2.Close()
 			_ = cosmosClient.Stop()
 			_ = attestor.Close()
+			updaterCleanup()
 			return nil, nil, fmt.Errorf("l2_to_cosmos config: op_node_rpc_url is required for opstack (optimism_outputAtBlock)")
 		}
 		opNode, derr := rpc.Dial(cfg.OpNodeRpcUrl)
@@ -166,16 +311,18 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 			l2.Close()
 			_ = cosmosClient.Stop()
 			_ = attestor.Close()
+			updaterCleanup()
 			return nil, nil, fmt.Errorf("dial op-node rpc: %w", derr)
 		}
 		headerBuilder = l2rollup.NewOPStackHeaderBuilder(
-			l1, l2, opNode, cosmosReader, attestor, cfg.AttestorSrcChain, opProfile)
+			l1, l2, opNode, cosmosReader, attestor, cfg.AttestorSrcChain, opProfile, includeProvisional)
 	case chain.Arbitrum:
 		closeAll := func() {
 			l1.Close()
 			l2.Close()
 			_ = cosmosClient.Stop()
 			_ = attestor.Close()
+			updaterCleanup()
 		}
 		protocol, perr := arbRollupProtocol(cfg.RollupProfile)
 		if perr != nil {
@@ -197,7 +344,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 				return nil, nil, lerr
 			}
 			headerBuilder = l2rollup.NewArbitrumLegacyHeaderBuilder(
-				l1, l2, cosmosReader, attestor, cfg.AttestorSrcChain, legacyProfile)
+				l1, l2, cosmosReader, attestor, cfg.AttestorSrcChain, legacyProfile, includeProvisional)
 		default:
 			closeAll()
 			return nil, nil, fmt.Errorf("l2_to_cosmos config: unsupported arbitrum rollup protocol %q (want bold_v2|legacy_nitro)", protocol)
@@ -210,7 +357,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		return nil, nil, fmt.Errorf("l2_to_cosmos config: unsupported chain kind %q", cfg.kind)
 	}
 
-	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.AttestorSrcChain, router, attestor)
+	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, attestor, includeProvisional)
 	dest := l2rollup.NewDestination(worker, svcCtx, cfg.L2WasmClientID)
 	builder := l2rollup.NewBuilder(headerBuilder)
 
@@ -222,11 +369,19 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	logger.Sugar().Infof("l2->cosmos source: %s (attestor=%s src_chain=%s wasm_client=%s head=%s)",
 		cfg.kind, cfg.AttestorAddr, cfg.AttestorSrcChain, cfg.L2WasmClientID, cfg.HeadKind)
 
+	// Keep the pinned Ethereum client advancing even when no packets are flowing —
+	// the on-demand path only runs during a header build, so an idle relayer would
+	// let the client drift out of the L1's state window and eventually expire.
+	freshCtx, stopFreshness := context.WithCancel(context.Background())
+	go runEthClientFreshnessLoop(freshCtx, cosmosReader, l1ClientID)
+
 	cleanup := func() {
+		stopFreshness()
 		l1.Close()
 		l2.Close()
 		_ = cosmosClient.Stop()
 		_ = attestor.Close()
+		updaterCleanup()
 	}
 	return module, cleanup, nil
 }
@@ -398,6 +553,28 @@ func parseArbLegacyProfile(profile json.RawMessage) (l2rollup.ArbLegacyProfile, 
 // slot + execution block from Cosmos.
 type cosmosEthClientReader struct {
 	cosmos *rpchttp.HTTP
+	// updater advances the pinned ETH client when a header build finds it too far
+	// behind the L1 head. Nil when the deployment has no way to advance it (no beacon
+	// endpoint), in which case builds proceed with whatever height the client has.
+	updater *ethClientUpdater
+}
+
+// UpdateEthClientIfStale advances the pinned client if it has fallen behind. It never
+// fails the build: the client may still be recent enough, or another relay direction
+// may be advancing it, so the error is only surfaced for logging.
+func (r *cosmosEthClientReader) UpdateEthClientIfStale(ctx context.Context, l1ClientID string) error {
+	if r.updater == nil {
+		return nil
+	}
+	cs, err := relayerclient.GetEthereumClientState(r.cosmos, l1ClientID)
+	if err != nil {
+		return fmt.Errorf("eth client %s: read client state: %w", l1ClientID, err)
+	}
+	if err := r.updater.updateIfStale(ctx, l1ClientID, cs.LatestExecutionBlockNumber); err != nil {
+		log.Printf("[EthClientUpdate] %v", err)
+		return err
+	}
+	return nil
 }
 
 func (r *cosmosEthClientReader) EthClientLatestSlotAndBlock(l1ClientID string) (uint64, uint64, error) {
@@ -406,4 +583,35 @@ func (r *cosmosEthClientReader) EthClientLatestSlotAndBlock(l1ClientID string) (
 		return 0, 0, err
 	}
 	return cs.LatestSlot, cs.LatestExecutionBlockNumber, nil
+}
+
+// runEthClientFreshnessLoop keeps the pinned Ethereum client advancing while no
+// packets are in flight.
+//
+// UpdateEthClientIfStale is only reached from a header build, so an idle relayer
+// never advances the client at all. That is not just a latency problem: once the
+// pinned block falls out of the execution node's state window, eth_getProof at that
+// block fails, so the first packet to arrive after a quiet stretch cannot be relayed
+// either — and left long enough the client expires. It mirrors the anti-expiry
+// refresh the Cosmos→ETH direction already runs for its own destination client.
+//
+// The tick only CHECKS; updateIfStale no-ops unless the client is more than
+// ethClientUpdateLag behind, and shares this updater's cooldown and mutex, so this
+// never races or duplicates the on-demand path.
+func runEthClientFreshnessLoop(ctx context.Context, reader *cosmosEthClientReader, l1ClientID string) {
+	if reader == nil || reader.updater == nil {
+		return // no beacon endpoint configured — nothing can advance the client here
+	}
+	ticker := time.NewTicker(ethClientPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		// Errors are already logged by UpdateEthClientIfStale; a failed poll must not
+		// stop the loop, since the next tick is exactly the retry.
+		_ = reader.UpdateEthClientIfStale(ctx, l1ClientID)
+	}
 }

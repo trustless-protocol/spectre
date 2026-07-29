@@ -43,7 +43,8 @@ var (
 	assertionConfirmedTopic = crypto.Keccak256Hash([]byte(
 		"AssertionConfirmed(bytes32,bytes32,bytes32)",
 	))
-	chainIDSelector = crypto.Keccak256([]byte("chainId()"))[:4]
+	chainIDSelector             = crypto.Keccak256([]byte("chainId()"))[:4]
+	errZeroAssertionL2BlockHash = errors.New("assertion has zero L2 block hash")
 )
 
 // L1Client is the finalized Ethereum RPC surface required by RollupCoreSource.
@@ -208,6 +209,9 @@ func (s *RollupCoreSource) Assertions(
 		case assertionCreatedTopic:
 			proposal, parseErr := parseAssertionCreated(event)
 			if parseErr != nil {
+				if errors.Is(parseErr, errZeroAssertionL2BlockHash) {
+					continue
+				}
 				return nil, nil, nil, parseErr
 			}
 			proposals = append(proposals, proposal)
@@ -309,8 +313,9 @@ func parseAssertionCreated(event types.Log) (arbitrum.ProposedAssertion, error) 
 	l2BlockHash := common.BytesToHash(afterState[:abiWordSize])
 	if l2BlockHash == (common.Hash{}) {
 		return arbitrum.ProposedAssertion{}, fmt.Errorf(
-			"AssertionCreated %s has a zero L2 block hash",
+			"AssertionCreated %s has a zero L2 block hash: %w",
 			assertionHash,
+			errZeroAssertionL2BlockHash,
 		)
 	}
 	afterInboxBatchAcc := common.BytesToHash(

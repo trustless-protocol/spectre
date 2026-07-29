@@ -39,6 +39,7 @@
 #   ATTESTOR_NITRO_IMAGE (offchainlabs/nitro-node:v3.11.2-3599aca)
 #   ATTESTOR_CONTAINER_NAME (fast-ibc-arbitrum-attestor)
 #   ATTESTOR_NITRO_VOLUME (fast-ibc-arbitrum-attestor-nitro)
+#   DETACH (0)                         exit after readiness and leave container running
 
 set -euo pipefail
 
@@ -67,6 +68,7 @@ ATTESTOR_DOCKER_IMAGE=${ATTESTOR_DOCKER_IMAGE:-fast-ibc-arbitrum-attestor:local}
 ATTESTOR_NITRO_IMAGE=${ATTESTOR_NITRO_IMAGE:-offchainlabs/nitro-node:v3.11.2-3599aca}
 ATTESTOR_CONTAINER_NAME=${ATTESTOR_CONTAINER_NAME:-fast-ibc-arbitrum-attestor}
 ATTESTOR_NITRO_VOLUME=${ATTESTOR_NITRO_VOLUME:-fast-ibc-arbitrum-attestor-nitro}
+DETACH=${DETACH:-0}
 
 fail() {
     printf '[run_arbitrum_attestor] ERROR: %s\n' "$*" >&2
@@ -92,6 +94,11 @@ require_command jq
 : "${ROLLUP_DEPLOYMENT_BLOCK:?ROLLUP_DEPLOYMENT_BLOCK is required}"
 : "${NITRO_SEQUENCER_CONFIG:?NITRO_SEQUENCER_CONFIG is required}"
 
+if [ "$ROLLUP_DEPLOYMENT_BLOCK" = 0 ]; then
+    log "ROLLUP_DEPLOYMENT_BLOCK is 0; using 1 because the attestor scans from a non-genesis L1 block"
+    ROLLUP_DEPLOYMENT_BLOCK=1
+fi
+
 [ -f "$NITRO_SEQUENCER_CONFIG" ] ||
     fail "Nitro sequencer config not found: $NITRO_SEQUENCER_CONFIG"
 [[ "$GRPC_PORT" =~ ^[0-9]+$ ]] && [ "$GRPC_PORT" -gt 0 ] && [ "$GRPC_PORT" -le 65535 ] ||
@@ -115,7 +122,12 @@ mkdir -p "$RUN_DIR"
 RUN_DIR=$(cd "$RUN_DIR" && pwd)
 
 container_url() {
-    printf '%s\n' "$1" |
+    local url=$1
+    case "$url" in
+        http://* | https://* | ws://* | wss://*) ;;
+        *) url="http://$url" ;;
+    esac
+    printf '%s\n' "$url" |
         sed -E 's#(://)(127\.0\.0\.1|localhost)([:/])#\1host.docker.internal\3#'
 }
 
@@ -130,9 +142,17 @@ if [ -n "${ATTESTOR_DOCKER_NETWORK:-}" ]; then
     DOCKER_NETWORK_ARGS=(--network "$ATTESTOR_DOCKER_NETWORK")
 fi
 
+DOCKER_RM_ARGS=(--rm)
+if [ "$DETACH" = 1 ]; then
+    DOCKER_RM_ARGS=()
+fi
+
 NITRO_CONFIG=$RUN_DIR/nitro-replica.json
 jq '
     .node.sequencer = false
+    | .execution.sequencer.enable = false
+    | .execution["forwarding-target"] = "null"
+    | .node["delayed-sequencer"].enable = false
     | .node["batch-poster"].enable = false
     | .node.staker.enable = false
     | .node.feed.output.enable = false
@@ -180,6 +200,9 @@ jq -n \
             "--node.feed.input.url=" + $feed_url,
             "--node.feed.output.enable=false",
             "--node.sequencer=false",
+            "--execution.sequencer.enable=false",
+            "--execution.forwarding-target=null",
+            "--node.delayed-sequencer.enable=false",
             "--node.batch-poster.enable=false",
             "--node.staker.enable=false"
         ],
@@ -222,12 +245,12 @@ trap cleanup EXIT INT TERM
 log "starting $ATTESTOR_CONTAINER_NAME (log: $RUN_DIR/attestor.log)"
 docker run \
     --detach \
-    --rm \
+    ${DOCKER_RM_ARGS[@]+"${DOCKER_RM_ARGS[@]}"} \
     --init \
     --name "$ATTESTOR_CONTAINER_NAME" \
     --stop-timeout 40 \
     --add-host host.docker.internal:host-gateway \
-    "${DOCKER_NETWORK_ARGS[@]}" \
+    ${DOCKER_NETWORK_ARGS[@]+"${DOCKER_NETWORK_ARGS[@]}"} \
     --publish "127.0.0.1:$GRPC_PORT:50051" \
     --volume "$RUN_DIR:/config:ro" \
     --volume "$ATTESTOR_NITRO_VOLUME:/var/lib/fast-ibc/nitro" \
@@ -280,6 +303,12 @@ The verifier Nitro database is persisted in Docker volume:
 Ctrl-C stops the attestor container without deleting that volume.
 
 EOF
+
+if [ "$DETACH" = 1 ]; then
+    trap - EXIT INT TERM
+    log "detached; container $ATTESTOR_CONTAINER_NAME remains running"
+    exit 0
+fi
 
 CONTAINER_EXIT_STATUS=$(docker wait "$ATTESTOR_CONTAINER_NAME")
 [ "$CONTAINER_EXIT_STATUS" -eq 0 ] ||

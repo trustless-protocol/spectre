@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"strings"
 	"sync"
 
 	"github.com/ethereum/go-ethereum"
@@ -164,7 +165,7 @@ func (s *RuntimeState) Head(ctx context.Context, mode RunMode) (BlockCommitment,
 		return BlockCommitment{}, err
 	}
 	header, err := s.reader.HeaderByNumber(ctx, normalized.headSelector())
-	if errors.Is(err, ethereum.NotFound) || (err == nil && header == nil) {
+	if isNitroBlockNotFound(err) || (err == nil && header == nil) {
 		return BlockCommitment{}, fmt.Errorf("Nitro %s head was not found: %w", normalized, ethereum.NotFound)
 	}
 	if err != nil {
@@ -183,7 +184,7 @@ func (s *RuntimeState) CommitmentAt(ctx context.Context, height uint64) (BlockCo
 		return BlockCommitment{}, errors.New("runtime state is not initialized")
 	}
 	header, err := s.reader.HeaderByNumber(ctx, new(big.Int).SetUint64(height))
-	if errors.Is(err, ethereum.NotFound) || (err == nil && header == nil) {
+	if isNitroBlockNotFound(err) || (err == nil && header == nil) {
 		return BlockCommitment{}, fmt.Errorf("Nitro block %d was not found: %w", height, ethereum.NotFound)
 	}
 	if err != nil {
@@ -230,7 +231,7 @@ func (s *RuntimeState) ResolveCanonicalBlockHash(
 	}
 
 	header, err := hashReader.HeaderByHash(ctx, blockHash)
-	if errors.Is(err, ethereum.NotFound) || (err == nil && header == nil) {
+	if isNitroBlockNotFound(err) || (err == nil && header == nil) {
 		return BlockCommitment{}, fmt.Errorf(
 			"%w: Nitro block %s was not found",
 			ErrCommitmentNotReady,
@@ -295,6 +296,16 @@ func (s *RuntimeState) ResolveCanonicalBlockHash(
 		)
 	}
 	return canonical, nil
+}
+
+func isNitroBlockNotFound(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ethereum.NotFound) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "block not found")
 }
 
 // Refresh records all newly crossed unsafe and safe heights and compares every

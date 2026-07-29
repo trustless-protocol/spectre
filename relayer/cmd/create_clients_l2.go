@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 
+	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
@@ -173,11 +174,11 @@ func injectL1ClientID(profile json.RawMessage, l1ClientID string) (json.RawMessa
 // creation; ongoing updates are verified trustlessly by the wasm client against the
 // pinned L1 (Ethereum) client + rollup proofs. l1ClientID (when non-empty) is
 // injected into the rollup profile's ethereum_client.client_id.
-func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfig, l1ClientID string) error {
+func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfig, l1ClientID string) (string, error) {
 	// Cosmos context (MsgCreateClient is submitted to Cosmos).
 	ctx, cosmosClient, err := buildCreateClientsContext(logger, cfg, "")
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer cosmosClient.Stop()
 
@@ -185,23 +186,23 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 	logger.Sugar().Infof("create-clients-cosmos[l2]: validating wasm checksum on Cosmos: %s", l2cfg.WasmChecksum)
 	ok, err := cosmosHasWasmChecksum(cosmosClient, l2cfg.WasmChecksum)
 	if err != nil {
-		return fmt.Errorf("validate wasm checksum on Cosmos: %w", err)
+		return "", fmt.Errorf("validate wasm checksum on Cosmos: %w", err)
 	}
 	if !ok {
-		return fmt.Errorf("wasm checksum %s has not been stored on Cosmos", l2cfg.WasmChecksum)
+		return "", fmt.Errorf("wasm checksum %s has not been stored on Cosmos", l2cfg.WasmChecksum)
 	}
 
 	// Read the trusted bootstrap roots from the L2 chain.
 	logger.Sugar().Infof("create-clients-cosmos[l2]: dialing L2 rpc %s", l2cfg.L2RPCURL)
 	l2Client, err := ethclient.Dial(l2cfg.L2RPCURL)
 	if err != nil {
-		return fmt.Errorf("dial L2 rpc: %w", err)
+		return "", fmt.Errorf("dial L2 rpc: %w", err)
 	}
 	defer l2Client.Close()
 
 	router, err := l2cfg.routerAddress() // profile.common.l2_router — single source of truth
 	if err != nil {
-		return err
+		return "", err
 	}
 	var block *big.Int
 	if l2cfg.BootstrapBlock != 0 {
@@ -209,7 +210,7 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 	}
 	bootstrap, err := relayerclient.GetL2BootstrapState(l2Client, common.HexToAddress(router), block)
 	if err != nil {
-		return err
+		return "", err
 	}
 	logger.Sugar().Infof("create-clients-cosmos[l2]: bootstrap at L2 block %d (state_root=%s router_storage_root=%s ts=%d)",
 		bootstrap.Height, bootstrap.StateRoot.Hex(), bootstrap.RouterStorageRoot.Hex(), bootstrap.TimestampSeconds)
@@ -218,7 +219,7 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 	if l1ClientID != "" {
 		profile, err = injectL1ClientID(profile, l1ClientID)
 		if err != nil {
-			return fmt.Errorf("inject L1 client id: %w", err)
+			return "", fmt.Errorf("inject L1 client id: %w", err)
 		}
 		logger.Sugar().Infof("create-clients-cosmos[l2]: anchored to L1 client id %s (injected into rollup_profile.common.ethereum_client)", l1ClientID)
 	}
@@ -233,9 +234,37 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 		CounterpartyClientID: l2cfg.CounterpartyClientID,
 	})
 	if err != nil {
-		return fmt.Errorf("create L2 client on Cosmos: %w", err)
+		return "", fmt.Errorf("create L2 client on Cosmos: %w", err)
 	}
 	logger.Sugar().Infof("create-clients-cosmos[l2]: created L2 wasm client on Cosmos: clientID=%s", clientID)
 	fmt.Println(clientID)
+	return clientID, nil
+}
+
+// verifyEthClientExists confirms --l1-client-id names a real, usable Ethereum light
+// client on Cosmos before any L2 client is anchored to it.
+//
+// The anchor is baked into the L2 client's state at creation and cannot be changed
+// afterwards, so a typo here is not recoverable by editing config: the contract would
+// query a client that does not exist and every update would fail with the redacted
+// "IBC host query failed: codespace: undefined, code: 1". Reading the client state
+// once here turns that into a clear message before anything is created.
+func verifyEthClientExists(cfg *appConfig, l1ClientID string) error {
+	cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
+	if err != nil {
+		return fmt.Errorf("create Cosmos rpc client: %w", err)
+	}
+	if err := cosmosClient.Start(); err != nil {
+		return fmt.Errorf("start Cosmos rpc client: %w", err)
+	}
+	defer func() { _ = cosmosClient.Stop() }()
+
+	state, err := relayerclient.GetEthereumClientState(cosmosClient, l1ClientID)
+	if err != nil {
+		return fmt.Errorf("--l1-client-id %q is not a readable Ethereum light client on Cosmos: %w", l1ClientID, err)
+	}
+	if state.LatestSlot == 0 {
+		return fmt.Errorf("--l1-client-id %q has no trusted slot; it is not an initialised Ethereum client", l1ClientID)
+	}
 	return nil
 }

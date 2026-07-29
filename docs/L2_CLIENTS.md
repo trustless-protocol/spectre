@@ -120,6 +120,102 @@ consensus-state IBC query paths. The current adapter uses CosmWasm's deprecated
 deployment must provide the allowlist or a custom Wasm host image. The L2 clients pin the Ethereum
 Wasm checksum and inherit its active/inactive status.
 
+The allowlist that matters is the **08-wasm** one (light clients run there), not the `x/wasm` one
+used by ordinary contracts — a host can have the paths in the latter and still reject the former.
+All three paths are required:
+
+```go
+// gaia app/keepers/keepers.go — ibcwasmkeeper.QueryPlugins
+Stargate: ibcwasmkeeper.AcceptListStargateQuerier([]string{
+    "/ibc.core.client.v1.Query/ClientState",
+    "/ibc.core.client.v1.Query/ClientStatus",     // required by L2 clients
+    "/ibc.core.client.v1.Query/ConsensusState",
+}, bApp.GRPCQueryRouter()),
+```
+
+`ClientStatus` is easy to miss because the Ethereum client never queries another client — the L2
+clients are the first to do so, in `validate_l1_client` (they must confirm the pinned Ethereum
+client is still `Active`). Its absence does **not** surface as a permission error:
+
+| Symptom | Cause |
+|---|---|
+| `MsgCreateClient` fails: `cannot create client (08-wasm-N) with status Unknown: client state is not active` | The L2 client's `Status{}` query errored inside the contract; ibc-go maps the error to `Unknown`. Check the 08-wasm Stargate allowlist before suspecting the client state. |
+
+If the pinned Ethereum client is genuinely `Active` and its checksum matches
+`profile.common.ethereum_client.wasm_checksum` (verify both with `gaiad q ibc client status` /
+`state`), the allowlist is the remaining suspect.
+
+A second, more confusing symptom comes from the same query path:
+
+| Symptom | Cause |
+|---|---|
+| Every update fails: `IBC host query failed: codespace: undefined, code: 1: wasm contract call failed` | The contract asked the host for the Ethereum consensus state at the header's `beacon_slot` and got `NotFound`. ibc-go answers with a gRPC status error, which wasmd redacts to a bare codespace/code — so neither the client nor the slot appears anywhere. |
+
+The usual cause is a client-id mismatch: the relayer builds headers pinned to the Ethereum client
+its config names, while the contract queries the one baked into its own client state at creation.
+The client state is authoritative. `create-clients-cosmos` writes the created id into both the
+client state and the `l2_to_cosmos` module's `rollup_profile.common.ethereum_client.client_id`, and
+`start` refuses to boot when they disagree, naming both ids. A config assembled by hand — or carried
+over from an earlier devnet run — is what re-opens this.
+
+The same mismatch has a slower failure mode with no error at all: the client the config names keeps
+being advanced while the client the contract actually reads goes stale, and eventually expires.
+
+### Packet proofs are a bare storage proof, not the L1 shape
+
+The Ethereum L1 membership proof (`client.GetEthMembershipProof`) bundles an account proof
+with the storage proof and hex-encodes both, because the ETH light client re-derives the
+account from the L1 state root. An L2 client must **not** be given that: it already
+authenticated the router's storage root through the header's `router_proof`, so it expects a
+bare `EvmStorageProof` and rejects anything else outright (`deny_unknown_fields`):
+
+```
+unknown field `account_proof`, expected one of `key`, `value`, `proof`
+```
+
+Two encoding details that are easy to get wrong, and only fail on-chain:
+
+| Field | Wire form | Why |
+|---|---|---|
+| `key` | `0x`-hex string | serde `B256` |
+| `value` | JSON **number array**, full **32 bytes** | Go `[]byte` marshals to base64 by default — use the package's `byteList`. The client compares the value byte-for-byte against the commitment the IBC host expects, which is a full 32-byte word, not `eth_getProof`'s minimal big-endian form. The trie check is unaffected: `encode_storage_value` strips leading zeros itself |
+| `proof` | array of number arrays | same `[]uint8` trap — use `byteMatrix` |
+
+### Game selection must follow finality, not the frontier
+
+Dispute games are posted at the L1 **head**, while the pinned Ethereum client only advances to
+**finalized** L1. On a rollup that posts games about as fast as finality advances, the
+attestor's frontier stays permanently ahead of what is provable, so demanding the frontier
+game deadlocks — the target rises exactly as fast as the pinned block does and the client never
+moves. Demanding the packet's own height instead selects a game at or *below* it, which by
+construction cannot cover that packet.
+
+The builder therefore walks **down** from the requested height to the highest attested game
+that is actually present in the factory's list at the pinned block (`gameCount()` read there).
+Every candidate is still a root the attestor approved, so this only ever picks an older
+verdict — never an unverified one — and the client advances monotonically until it crosses any
+given packet height.
+
+`attested game N is not visible at the pinned L1 block M yet` is the normal wait for the newest
+game, not an error; it clears once that game's creation block finalizes.
+
+### Light clients must return nothing but data
+
+ibc-go's 08-wasm keeper rejects a light client whose response carries attributes, events, or
+messages, and it does so by panicking inside the VM call — so the entire transaction fails, not just
+the update:
+
+```
+recovered: checksum (...): returning attributes from a contract is not allowed
+  [08-wasm/keeper/contract_keeper.go:155]
+```
+
+The shared `l2_client_entrypoints!` macro therefore returns `Response::default().set_data(data)` and
+nothing else. Observability that would naturally be an event (state accepted vs promoted, freeze on
+a trusted conflict, finality level) has to come from the caller or from querying the client state
+after the update. Do not re-add `add_attributes`: it compiles, it passes every unit test, and it
+fails only on-chain.
+
 ```bash
 cargo test --locked \
   -p l2-client -p op-stack-verifier -p op-verifier -p base-verifier \

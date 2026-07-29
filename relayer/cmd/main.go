@@ -45,6 +45,7 @@ const (
 	flagClockDrift     = "clock-drift"
 	flagTrustedBlock   = "trusted-block"
 	flagWasmChecksum   = "wasm-checksum"
+	flagL1ClientID     = "l1-client-id"
 	flagSource         = "source"
 	flagBenchmark      = "benchmark"
 	configFilePerm     = 0o600
@@ -201,11 +202,19 @@ type appConfig struct {
 // value. An empty sourceClientID targets the first cosmos_to_eth module. Other
 // fields and existing JSON formatting are preserved outside the value.
 func writeConfigMember(configPath, sourceClientID, member, value string) error {
+	return writeConfigMemberIn(configPath, sourceClientID, member, value, dirCosmosToEth, dirCosmosToL2)
+}
+
+// writeConfigMemberIn is writeConfigMember restricted to the given module directions.
+// Callers that know which side they are writing MUST name it: a cosmos_to_eth and a
+// cosmos_to_l2 module can share an ics26_client_id, so an unrestricted search resolves
+// the ambiguity by file order rather than by intent.
+func writeConfigMemberIn(configPath, sourceClientID, member, value string, dirs ...moduleDirection) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
 	}
-	out, err := replaceConfigMemberForSource(data, sourceClientID, member, value)
+	out, err := replaceConfigMemberForSourceIn(data, sourceClientID, member, value, dirs)
 	if err != nil {
 		return err
 	}
@@ -221,12 +230,25 @@ func writeSpectreClientAddress(configPath, sourceClientID, addr string) error {
 	return writeConfigMember(configPath, sourceClientID, "spectre_client", addr)
 }
 
-// writeWasmClientID persists the created 08-wasm Ethereum light-client id
-// (Cosmos side) back into the sourceClientID module. The id is assigned by
-// ibc-go's global client sequence, so it cannot be known until MsgCreateClient
-// lands — write it back rather than requiring the operator to predict it.
-func writeWasmClientID(configPath, sourceClientID, id string) error {
-	return writeConfigMember(configPath, sourceClientID, "cosmos_wasm_client_id", id)
+// writeEthWasmClientID persists the created 08-wasm Ethereum light-client id into
+// the cosmos_to_eth module for sourceClientID. The id is assigned by ibc-go's global
+// client sequence, so it cannot be known until MsgCreateClient lands — write it back
+// rather than requiring the operator to predict it.
+//
+// The direction is pinned deliberately. A cosmos_to_eth and a cosmos_to_l2 module may
+// legitimately carry the SAME ics26_client_id (config.example.json ships exactly that:
+// both say "cosmoshub-1"), so a direction-agnostic search matches whichever appears
+// first in the file. That silently wrote the L2 client id into the Ethereum module and
+// left the L2 module untouched, breaking the counterparty wiring create-clients-eth
+// reads next.
+func writeEthWasmClientID(configPath, sourceClientID, id string) error {
+	return writeConfigMemberIn(configPath, sourceClientID, "cosmos_wasm_client_id", id, dirCosmosToEth)
+}
+
+// writeL2WasmClientID persists the created L2 wasm client id into the cosmos_to_l2
+// module for sourceClientID. See writeEthWasmClientID for why the direction is pinned.
+func writeL2WasmClientID(configPath, sourceClientID, id string) error {
+	return writeConfigMemberIn(configPath, sourceClientID, "cosmos_wasm_client_id", id, dirCosmosToL2)
 }
 
 // replaceConfigMember targets the first cosmos_to_eth module. Retained for the
@@ -266,6 +288,12 @@ func moduleSourceClientID(data []byte, moduleStart, configStart int) (string, er
 // whose source id equals sourceClientID (or the first cosmos_to_eth module when
 // sourceClientID is empty), preserving the surrounding JSON formatting.
 func replaceConfigMemberForSource(data []byte, sourceClientID, member, value string) ([]byte, error) {
+	return replaceConfigMemberForSourceIn(data, sourceClientID, member, value,
+		[]moduleDirection{dirCosmosToEth, dirCosmosToL2})
+}
+
+// replaceConfigMemberForSourceIn is replaceConfigMemberForSource restricted to dirs.
+func replaceConfigMemberForSourceIn(data []byte, sourceClientID, member, value string, dirs []moduleDirection) ([]byte, error) {
 	encodedValue, err := json.Marshal(value)
 	if err != nil {
 		return nil, err
@@ -319,7 +347,14 @@ func replaceConfigMemberForSource(data []byte, sourceClientID, member, value str
 		// create-clients-eth writes spectre_client back into either a cosmos_to_eth
 		// source or a cosmos_to_l2 destination (both hold a SpectreClient on the EVM
 		// side, created by the same flow), so accept both directions here.
-		if cerr == nil && (dir == dirCosmosToEth || dir == dirCosmosToL2) {
+		accepted := false
+		for _, d := range dirs {
+			if dir == d {
+				accepted = true
+				break
+			}
+		}
+		if cerr == nil && accepted {
 			configStart, configEnd, ok, err := findJSONObjectMember(data, moduleStart, "config")
 			if err != nil {
 				return nil, err
@@ -678,6 +713,21 @@ func loadConfig(configPath string) (*appConfig, error) {
 		}
 	}
 
+	// The eth_to_cosmos direction advances the client named by its paired
+	// cosmos_to_eth module, from its own beacon; include every such pair so an L2
+	// module pinning the same client cannot disagree about the endpoint.
+	ethClaims := make([]ethClientBeacon, 0, len(c2eList))
+	for i := range c2eList {
+		ethClaims = append(ethClaims, ethClientBeacon{
+			clientID:  c2eList[i].CosmosWasmClientID,
+			beaconURL: e2c.BeaconUrl,
+			module:    "eth_to_cosmos/" + c2eList[i].ICS26ClientID,
+		})
+	}
+	if err := validateSharedEthClients(l2List, ethClaims...); err != nil {
+		return nil, err
+	}
+
 	return &appConfig{
 		CosmosToEthConfig:  c2e,
 		CosmosToEthConfigs: c2eList,
@@ -686,6 +736,24 @@ func loadConfig(configPath string) (*appConfig, error) {
 		L2ToCosmosConfigs:  l2List,
 		BatchConfig:        batch,
 	}, nil
+}
+
+// resolveBeaconURL returns the L1 beacon endpoint to create/advance the Ethereum
+// light client with. It prefers the eth_to_cosmos module (the ETH↔Cosmos deployment
+// declares it there) and otherwise falls back to an l2_to_cosmos module, which
+// declares the same endpoint for its own pinned client. Without the fallback an
+// L2-only deployment would have to carry an eth_to_cosmos module it never relays,
+// purely to name one URL.
+func resolveBeaconURL(cfg *appConfig) string {
+	if cfg.EthToCosmosConfig.BeaconUrl != "" {
+		return cfg.EthToCosmosConfig.BeaconUrl
+	}
+	for i := range cfg.L2ToCosmosConfigs {
+		if u := cfg.L2ToCosmosConfigs[i].EthBeaconAPIURL; u != "" {
+			return u
+		}
+	}
+	return ""
 }
 
 // validateCosmosToEthConfig checks the URLs and hex addresses of one Cosmos→ETH
@@ -780,9 +848,9 @@ func preflightCreateClients(cfg *appConfig) error {
 		return fmt.Errorf("cosmos rpc unavailable at %s: %w", cfg.CosmosToEthConfig.TmRpcUrl, err)
 	}
 
-	if cfg.EthToCosmosConfig.BeaconUrl != "" {
-		if _, err := tendermintClient.GetBeaconGenesis(ctx, cfg.EthToCosmosConfig.BeaconUrl); err != nil {
-			return fmt.Errorf("beacon api unavailable at %s: %w", cfg.EthToCosmosConfig.BeaconUrl, err)
+	if beaconURL := resolveBeaconURL(cfg); beaconURL != "" {
+		if _, err := tendermintClient.GetBeaconGenesis(ctx, beaconURL); err != nil {
+			return fmt.Errorf("beacon api unavailable at %s: %w", beaconURL, err)
 		}
 	}
 
@@ -999,7 +1067,7 @@ func buildCreateClientsContext(logger *zap.Logger, cfg *appConfig, wasmClientID 
 	ctx := services.NewCtxWithBeacon(
 		cosmosClient, ethClient, nil,
 		"",
-		cfg.EthToCosmosConfig.BeaconUrl,
+		resolveBeaconURL(cfg),
 		wasmClientID,
 	)
 	ctx.SetCosmosRouterClientID(cosmosRouterClientID)
@@ -1030,8 +1098,9 @@ func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasm
 	if wasmChecksum == "" {
 		return "", fmt.Errorf("--wasm-checksum (or WASM_CHECKSUM) is required to create the Ethereum light client on Cosmos")
 	}
-	if cfg.EthToCosmosConfig.BeaconUrl == "" {
-		return "", fmt.Errorf("eth_to_cosmos.eth_beacon_api_url is required to create the Ethereum light client on Cosmos")
+	if resolveBeaconURL(cfg) == "" {
+		return "", fmt.Errorf("an L1 beacon endpoint is required to create the Ethereum light client on Cosmos: " +
+			"set eth_beacon_api_url on the eth_to_cosmos module, or on an l2_to_cosmos module")
 	}
 
 	ctx, cosmosClient, err := buildCreateClientsContext(logger, cfg, "")
@@ -1062,7 +1131,7 @@ func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasm
 	}
 	logger.Sugar().Infof("Ethereum light client created on Cosmos: clientID=%s", wasmClientID)
 
-	if err := writeWasmClientID(configPath, cfg.CosmosToEthConfig.ICS26ClientID, wasmClientID); err != nil {
+	if err := writeEthWasmClientID(configPath, cfg.CosmosToEthConfig.ICS26ClientID, wasmClientID); err != nil {
 		return "", fmt.Errorf("persist cosmos_wasm_client_id to %s: %w", configPath, err)
 	}
 	logger.Sugar().Infof("create-clients-cosmos: wrote cosmos_wasm_client_id=%s into %s", wasmClientID, configPath)
@@ -1169,29 +1238,90 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to get wasm checksum: %w", err)
 			}
-			// Create the shared L1/ETH wasm client on Cosmos first. Every L2 client is
-			// anchored to it (ClientState.profile.common.ethereum_client.client_id), so
-			// its auto-assigned id must exist before any L2 client is created.
-			l1ClientID, err := runCreateClientsCosmos(logger, cfg, configPath, wasmChecksum)
+			existingL1, err := cmd.Flags().GetString(flagL1ClientID)
 			if err != nil {
-				return err
+				return fmt.Errorf("failed to get l1-client-id flag: %w", err)
 			}
-			// Then create one L2 wasm client on Cosmos per --l2-config, injecting the
-			// L1 client id we just created into each rollup profile (so the operator
-			// does not hand-copy it). All Cosmos-side, same signer — one command per
-			// chain (see #255).
 			l2Configs, err := cmd.Flags().GetStringArray(flagL2Config)
 			if err != nil {
 				return err
 			}
+
+			// Every L2 client is anchored to an Ethereum client on Cosmos
+			// (ClientState.profile.common.ethereum_client.client_id), so that id must
+			// exist before any L2 client is created. It can either be created here, or
+			// named with --l1-client-id when one is already deployed.
+			var l1ClientID string
+			if existingL1 != "" {
+				// Adding an L2 to a deployment that already relays Cosmos<->Ethereum.
+				// Creating a second Ethereum client for it would be worse than
+				// wasteful: runCreateClientsCosmos also rewrites the cosmos_to_eth
+				// module's cosmos_wasm_client_id, which silently repoints the L1 path
+				// at a client the Ethereum-side SpectreClient was never registered
+				// against — every recvPacket then reverts on a counterparty mismatch,
+				// and the original client is left orphaned to expire.
+				if len(l2Configs) == 0 {
+					return fmt.Errorf("--l1-client-id only makes sense with at least one --l2-config: " +
+						"it names an existing Ethereum client to anchor new L2 clients to, and creates nothing on its own")
+				}
+				if err := verifyEthClientExists(cfg, existingL1); err != nil {
+					return err
+				}
+				l1ClientID = existingL1
+				logger.Sugar().Infof(
+					"create-clients-cosmos: anchoring to the existing Ethereum client %s; not creating one, "+
+						"and leaving the cosmos_to_eth module untouched", l1ClientID)
+			} else {
+				l1ClientID, err = runCreateClientsCosmos(logger, cfg, configPath, wasmChecksum)
+				if err != nil {
+					return err
+				}
+			}
+			// Then create one L2 wasm client on Cosmos per --l2-config, injecting that
+			// L1 client id into each rollup profile (so the operator does not hand-copy
+			// it). All Cosmos-side, same signer — one command per chain (see #255).
 			for _, l2Path := range l2Configs {
 				l2cfg, err := loadL2ClientConfig(l2Path)
 				if err != nil {
 					return err
 				}
-				if err := runCreateClientsL2(logger, cfg, l2cfg, l1ClientID); err != nil {
+				l2ClientID, err := runCreateClientsL2(logger, cfg, l2cfg, l1ClientID)
+				if err != nil {
 					return fmt.Errorf("create L2 client from %s: %w", l2Path, err)
 				}
+				// A cosmos_to_l2 module's cosmos_wasm_client_id is the Cosmos client
+				// tracking the L2 — this one, not the Ethereum client written above.
+				// create-clients-eth reads it to register the SpectreClient's
+				// counterparty, so leaving the Ethereum id there makes every
+				// recvPacket revert on a counterparty mismatch. The module is keyed by
+				// the L2-side client id (the rollup router's client that tracks Cosmos).
+				target := l2cfg.CounterpartyClientID
+				if target == "" {
+					logger.Sugar().Warnf(
+						"create-clients-cosmos[l2]: %s has no counterparty_client_id, cannot locate its module; "+
+							"set cosmos_wasm_client_id=%s manually before create-clients-eth",
+						l2Path, l2ClientID)
+					continue
+				}
+				if err := writeL2WasmClientID(configPath, target, l2ClientID); err != nil {
+					return fmt.Errorf("persist cosmos_wasm_client_id for %s: %w", l2Path, err)
+				}
+				logger.Sugar().Infof(
+					"create-clients-cosmos[l2]: wrote cosmos_wasm_client_id=%s into the %q module",
+					l2ClientID, target)
+
+				// The return path (l2_to_cosmos) needs both ids too, and neither is
+				// predictable before MsgCreateClient lands. Leaving them to the
+				// operator is what let a stale ethereum_client.client_id survive a
+				// re-run: header builds pinned to one Ethereum client while the L2
+				// client queried another, so every ConsensusState lookup missed and
+				// wasmd redacted the cause away. Write both back here.
+				if err := writeL2SourceClientIDs(configPath, target, l2ClientID, l1ClientID); err != nil {
+					return fmt.Errorf("persist l2_to_cosmos client ids for %s: %w", l2Path, err)
+				}
+				logger.Sugar().Infof(
+					"create-clients-cosmos[l2]: wrote l2_wasm_client_id=%s and rollup_profile.common.ethereum_client.client_id=%s into the %q l2_to_cosmos module",
+					l2ClientID, l1ClientID, target)
 			}
 			return nil
 		},
@@ -1200,6 +1330,7 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
 	cmd.Flags().String(flagSource, "", "ics26_client_id of the cosmos_to_eth source to target (required when several are configured)")
 	cmd.Flags().StringArray(flagL2Config, nil, "path to an L2 client config JSON; repeatable, one per L2 rollup source — creates its L2 wasm client on Cosmos anchored to the L1 client")
+	cmd.Flags().String(flagL1ClientID, "", "anchor the new L2 client(s) to this EXISTING Ethereum client on Cosmos instead of creating one; leaves the cosmos_to_eth module untouched (use when adding an L2 to a running deployment)")
 	return cmd
 }
 

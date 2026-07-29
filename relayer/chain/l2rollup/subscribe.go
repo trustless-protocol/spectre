@@ -19,9 +19,14 @@ import (
 // services.Context). It polls eth_getLogs on the L2 RPC for the ICS26Router
 // SendPacket / WriteAcknowledgement events of this source's client id, decodes them
 // with the shared ICS26Router bindings, and drives the adapter handler with its own
-// pending buffer for re-queued (not-yet-relayable) events. Polling from a persisted
-// cursor is inherently gap-recovery-safe: the cursor only advances past a range that
-// scanned successfully, so a crash/RPC hiccup re-scans rather than skips (mistake #11).
+// pending buffer for re-queued (not-yet-relayable) events. Within one run the cursor is
+// gap-recovery-safe: it only advances past a range that scanned successfully, so an RPC
+// hiccup re-scans rather than skips (mistake #11).
+//
+// The cursor is NOT persisted across runs — it lives only in Subscribe's stack frame.
+// A restart resumes at `head - l2StartupLookback` (see below), so anything older than
+// that window is never re-scanned, and a packet whose acknowledgement fell outside it
+// stays pending forever with nothing in the log to say why.
 //
 // LIMITATION (unsafe head-kind): the cursor only moves FORWARD — it never rewinds on an
 // L2 reorg. With head_kind=unsafe a scanned block can be reorged out and replaced; an
@@ -111,7 +116,7 @@ func (s *Source) scanPacketLogs(ctx context.Context, filterer *contractICS26Rout
 	}
 	defer sends.Close()
 	for sends.Next() {
-		if e, ok := l2SendToEvent(sends.Event); ok {
+		if e, ok := l2SendToEvent(sends.Event, s.cosmosWasmClientID); ok {
 			events = append(events, e)
 		}
 	}
@@ -125,7 +130,7 @@ func (s *Source) scanPacketLogs(ctx context.Context, filterer *contractICS26Rout
 	}
 	defer acks.Close()
 	for acks.Next() {
-		if e, ok := l2AckToEvent(acks.Event); ok {
+		if e, ok := l2AckToEvent(acks.Event, s.cosmosWasmClientID); ok {
 			events = append(events, e)
 		}
 	}
@@ -137,7 +142,10 @@ func (s *Source) scanPacketLogs(ctx context.Context, filterer *contractICS26Rout
 
 // l2SendToEvent maps a SendPacket log to a recv (SendPacket) chain.Event, reusing the
 // ETH source's packet decoder. Returns false if the packet cannot be marshaled.
-func l2SendToEvent(ev *contractICS26Router.ContractICS26RouterSendPacket) (chain.Event, bool) {
+func l2SendToEvent(ev *contractICS26Router.ContractICS26RouterSendPacket, cosmosWasmClientID string) (chain.Event, bool) {
+	if cosmosWasmClientID != "" && ev.Packet.DestClient != cosmosWasmClientID {
+		return chain.Event{}, false
+	}
 	pkt := subscriber.EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 	raw, err := pkt.Marshal()
 	if err != nil {
@@ -154,8 +162,11 @@ func l2SendToEvent(ev *contractICS26Router.ContractICS26RouterSendPacket) (chain
 // l2AckToEvent maps a WriteAcknowledgement log to an AckPacket chain.Event. An empty
 // acknowledgement is skipped — it cannot be built into a MsgAcknowledgement (mirrors
 // the ETH source's no-ack skip).
-func l2AckToEvent(ev *contractICS26Router.ContractICS26RouterWriteAcknowledgement) (chain.Event, bool) {
+func l2AckToEvent(ev *contractICS26Router.ContractICS26RouterWriteAcknowledgement, cosmosWasmClientID string) (chain.Event, bool) {
 	if len(ev.Acknowledgements) == 0 {
+		return chain.Event{}, false
+	}
+	if cosmosWasmClientID != "" && ev.Packet.SourceClient != cosmosWasmClientID {
 		return chain.Event{}, false
 	}
 	pkt := subscriber.EthPacketToCosmosPacket(ev.Packet, ev.Sequence)

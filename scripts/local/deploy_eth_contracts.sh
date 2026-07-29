@@ -11,6 +11,14 @@ set -euxo pipefail
 # run_eth_node.sh is sourced automatically. Override any of ETH_RPC / ETH_WS /
 # ETH_BEACON_API in the environment to target a different node.
 #
+# Env:
+#   ETH_RPC / ETH_WS / ETH_BEACON_API   endpoints; sourced from the run_eth_node.sh
+#                                       handoff when ETH_RPC is unset
+#   ETH_DEPLOYER_ADDRESS / _PRIVATE_KEY deployer (defaults to the devnet-only key
+#                                       relayer/.env ships). MUST match the relayer's
+#                                       ETH_PRIVATE_KEY — see the note below.
+#   E2E_FAUCET_ADDRESS                  test ERC20 recipient (defaults to the deployer)
+#
 # All internal paths (scripts/E2ETestDeploy.s.sol, relayer/) are repo-root relative.
 cd "$(dirname "$0")/../.."
 REPO_ROOT=$PWD
@@ -29,17 +37,32 @@ fi
 
 : "${ETH_RPC:?ETH_RPC is required}"
 
+# Deployer. E2ETestDeploy sets relayers[0] = msg.sender, so whoever deploys receives
+# the ICS26Router relayer role — it MUST be the key the relayer runs with
+# (relayer/.env ETH_PRIVATE_KEY). A different deployer leaves the relayer
+# unauthorized and every updateApplicationState reverts with no reason string, which
+# is indistinguishable from an unfunded signer until you run `cast run` on the tx.
+#
+# The defaults are the devnet-only key relayer/.env ships; override both on any real
+# network. E2E_FAUCET_ADDRESS receives the test ERC20 and follows the deployer unless
+# set explicitly.
+ETH_DEPLOYER_ADDRESS=${ETH_DEPLOYER_ADDRESS:-0x8943545177806ED17B9F23F0a21ee5948eCaa776}
+ETH_DEPLOYER_PRIVATE_KEY=${ETH_DEPLOYER_PRIVATE_KEY:-bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31}
+E2E_FAUCET_ADDRESS=${E2E_FAUCET_ADDRESS:-$ETH_DEPLOYER_ADDRESS}
+export E2E_FAUCET_ADDRESS
+
 echo "ETH_RPC: $ETH_RPC"
 echo "ETH_WS: ${ETH_WS:-}"
 echo "ETH_BEACON_API: ${ETH_BEACON_API:-}"
+echo "deployer: $ETH_DEPLOYER_ADDRESS"
+echo "faucet:   $E2E_FAUCET_ADDRESS"
 
 # Deploy ETH contracts
-export E2E_FAUCET_ADDRESS=0x8943545177806ED17B9F23F0a21ee5948eCaa776
 RESULT=$(forge script scripts/E2ETestDeploy.s.sol:E2ETestDeploy \
     --rpc-url "$ETH_RPC" \
     --broadcast \
     --ffi \
-    --sender 0x8943545177806ED17B9F23F0a21ee5948eCaa776 --private-key bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31 \
+    --sender "$ETH_DEPLOYER_ADDRESS" --private-key "$ETH_DEPLOYER_PRIVATE_KEY" \
     2>/dev/null
 )
 

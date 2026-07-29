@@ -119,6 +119,23 @@ func TestAttestedFrontierRPCs(t *testing.T) {
 		t.Fatalf("create service: %v", err)
 	}
 
+	info, err := service.Info(context.Background(), &attestorpb.InfoRequest{})
+	if err != nil {
+		t.Fatalf("query info: %v", err)
+	}
+	if len(info.GetChains()) != 1 {
+		t.Fatalf("info response: %+v", info)
+	}
+	chain := info.GetChains()[0]
+	if chain.GetSrcChain() != "arbitrum-one" ||
+		chain.GetAttestedUpTo().GetL2BlockNumber() != 90 ||
+		chain.GetAttestedUpToProvisional().GetL2BlockNumber() != 100 {
+		t.Fatalf("info chain: %+v", chain)
+	}
+	if chain.GetAttestationHead() != "" {
+		t.Fatalf("attestation_head = %q, want unset", chain.GetAttestationHead())
+	}
+
 	confirmed, err := service.AttestedUpTo(
 		context.Background(),
 		&attestorpb.AttestedUpToRequest{SrcChain: "arbitrum-one"},

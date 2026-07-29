@@ -21,6 +21,10 @@ import (
 // head so the recently-proposed game is present.
 type fakeCosmosReader struct{ slot, block uint64 }
 
+// UpdateEthClientIfStale is a no-op here: these tests pin a fixed trusted block,
+// so freshness is not what they exercise.
+func (f fakeCosmosReader) UpdateEthClientIfStale(context.Context, string) error { return nil }
+
 func (f fakeCosmosReader) EthClientLatestSlotAndBlock(string) (uint64, uint64, error) {
 	return f.slot, f.block, nil
 }
@@ -94,7 +98,7 @@ func TestOPBuildHeader_Devnet(t *testing.T) {
 		Provenance:    &attestorpb.AttestedRoot_GameIndex{GameIndex: count - 1},
 		L2BlockNumber: l2Height,
 	}}
-	builder := NewOPStackHeaderBuilder(l1, l2, opNode, fakeCosmosReader{slot: 1, block: l1Head}, at, "op-devnet", profile)
+	builder := NewOPStackHeaderBuilder(l1, l2, opNode, fakeCosmosReader{slot: 1, block: l1Head}, at, "op-devnet", profile, false)
 
 	msg, committed, err := builder.BuildHeader(ctx, HeaderRequest{Height: l2Height, Finality: Safe})
 	if err != nil {

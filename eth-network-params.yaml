@@ -11,6 +11,11 @@ participants:
     # reconstruct blob blocks, and to satisfy the package's "Fulu needs a
     # supernode" validation.
     supernode: true
+    # Archive state: the L2→Cosmos header builder proves the L1 DisputeGameFactory
+    # and game accounts with eth_getProof at the L1 block the Cosmos-side Ethereum
+    # client trusts. That block ages past a full node's ~128-block state window
+    # (nothing else advances that client), and the proof then fails with
+    # "historical state ... is not available".
 
 network_params:
   # 2s per slot → epoch = 64s, finality ~2 min.

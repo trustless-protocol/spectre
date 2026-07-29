@@ -347,10 +347,19 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 	relayedIdx := make([]int, 0, len(provable)) // original event index behind packets[j]
 	for j, e := range provable {
 		i := provableIdx[j]
-		// Defense in depth: the RelayableHeight partition should already guarantee
-		// e.Height <= proofHeight, but guard anyway — proving against a client that
-		// does not cover the packet is never valid.
+		// The RelayableHeight partition says the SOURCE can prove e.Height; it says
+		// nothing about how far the DESTINATION client actually advanced. Those differ
+		// whenever a client update commits a lower height than it was asked for — an
+		// L2 update commits the block its attested game covers, which is usually below
+		// the requested height. Proving against a client that does not cover the packet
+		// is never valid, so re-queue and wait for an update that does.
+		//
+		// This is logged because it used to be silent: a packet parked here re-ran a
+		// full client update every flush, forever, with nothing in the log. Rate-limit
+		// via the same cadence as the waiting log if it ever gets noisy.
 		if e.Height > proofHeight {
+			log.Printf("[relay %s] packet at height %d not yet covered by the destination client (trusts %d); re-queued",
+				m.name, e.Height, proofHeight)
 			requeue = append(requeue, i)
 			continue
 		}

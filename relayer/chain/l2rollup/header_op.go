@@ -7,10 +7,18 @@ import (
 
 	relayerclient "relayer/client"
 
+	attestorpb "attestor/types/attestor"
+
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 )
+
+// maxGameStepDown bounds how far BuildHeader walks back from the attestor's frontier
+// looking for a game that is already visible at the pinned (finalized) L1 block. The
+// gap is normally one or two games; the cap only stops a pathological walk when the
+// pinned client has fallen far behind.
+const maxGameStepDown = 16
 
 // OPProfile is the subset of the rollup profile the OP header builder needs to
 // assemble proofs (parsed from rollup_profile by the caller). The verifier-only fields
@@ -47,12 +55,24 @@ type opStackHeaderBuilder struct {
 	attestor AttestorClient
 	srcChain string
 	profile  OPProfile
+	// includeProvisional must match the Source's: the source decides WHICH heights are
+	// relayable, this decides which root is proven for them. Two different answers
+	// would gate on one rule and prove with another.
+	includeProvisional bool
 }
 
 // cosmosClientStateReader reads the shared ETH client's trusted L1 slot/block from
-// Cosmos. Defined here so the builder is testable without a live Cosmos node.
+// Cosmos, and can ask for it to be advanced. Defined here so the builder is testable
+// without a live Cosmos node.
 type cosmosClientStateReader interface {
 	EthClientLatestSlotAndBlock(l1ClientID string) (slot, execBlock uint64, err error)
+	// UpdateEthClientIfStale advances the pinned ETH client if it is too far behind the
+	// L1 head to prove against. The builder can only prove at the block that client
+	// trusts, so it asks for freshness at the moment it needs it rather than relying
+	// on something else to have kept the client current (#276). Returning an error is
+	// not fatal on its own — the caller still tries with whatever height the client
+	// has — so a deployment where another direction advances the client keeps working.
+	UpdateEthClientIfStale(ctx context.Context, l1ClientID string) error
 }
 
 // NewOPStackHeaderBuilder wires the OP-Stack builder to the L1/L2 exec RPCs, the
@@ -60,10 +80,11 @@ type cosmosClientStateReader interface {
 // attestor (whose AttestedRootAtOrBelow selects the game to prove), and the parsed
 // profile. BuildHeader derives provisional-vs-finalized selection from each request
 // so it proves the same game the source gated on.
-func NewOPStackHeaderBuilder(l1, l2 *ethclient.Client, opNode *rpc.Client, cosmos cosmosClientStateReader, attestor AttestorClient, srcChain string, profile OPProfile) *opStackHeaderBuilder {
+func NewOPStackHeaderBuilder(l1, l2 *ethclient.Client, opNode *rpc.Client, cosmos cosmosClientStateReader, attestor AttestorClient, srcChain string, profile OPProfile, includeProvisional bool) *opStackHeaderBuilder {
 	return &opStackHeaderBuilder{
 		l1: l1, l2: l2, opNode: opNode, cosmos: cosmos,
 		attestor: attestor, srcChain: srcChain, profile: profile,
+		includeProvisional: includeProvisional,
 	}
 }
 
@@ -75,6 +96,12 @@ func (a *opStackHeaderBuilder) Name() string { return "l2-opstack" }
 // (the generic Builder wraps them chain.Retryable).
 func (a *opStackHeaderBuilder) BuildHeader(ctx context.Context, request HeaderRequest) (ClientMessage, uint64, error) {
 	// 1. The L1 block the shared ETH client trusts — prove factory/game there.
+	// Ask for the pinned ETH client to be current first: this builder can only
+	// prove at the block that client trusts, so its freshness is a precondition,
+	// not a background nicety (#276). A failure here is logged by the
+	// implementation and does not abort — the client may still be fresh enough,
+	// or another direction may be advancing it.
+	_ = a.cosmos.UpdateEthClientIfStale(ctx, a.profile.L1ClientID)
 	beaconSlot, l1Block, err := a.cosmos.EthClientLatestSlotAndBlock(a.profile.L1ClientID)
 	if err != nil {
 		return nil, 0, fmt.Errorf("l2-opstack: read shared ETH client height: %w", err)
@@ -91,27 +118,69 @@ func (a *opStackHeaderBuilder) BuildHeader(ctx context.Context, request HeaderRe
 	//    would not bind to optimism_outputAtBlock for the same block). It returns both
 	//    the game_index and the L2 block that game commits; everything below is proven
 	//    at that committed block so the output root, L2 header, and root claim agree.
-	root, found, err := a.attestor.AttestedRootAtOrBelow(ctx, a.srcChain, request.Height, request.Finality != Finalized)
+	// Games are posted at the L1 HEAD, while the pinned Ethereum client only advances
+	// to FINALIZED L1 — so the newest attested game is routinely absent from the
+	// factory's list at the block this proof pins to. On a chain that posts games at
+	// roughly the rate finality advances, the attestor's frontier stays permanently
+	// ahead of what is provable, and demanding the frontier game deadlocks: the target
+	// rises exactly as fast as the pinned block does, so the update never lands and
+	// the client never moves. (Measured on a devnet: target 7202→7239→7276 while the
+	// factory held 151→152→153 games at the pinned block, client frozen throughout.)
+	//
+	// So walk DOWN instead: take the highest attested game that is actually visible at
+	// the pinned block. Every candidate is still an attested root — the attestor's
+	// verdict is what makes a game provable, and stepping down only ever picks an
+	// older one it already approved. The client then advances monotonically and
+	// crosses any given packet height once finality carries a game past it.
+	gameCount, err := factoryGameCount(ctx, a.l1, a.profile.DisputeGameFactory, l1BlockBig)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, annotatePinnedL1(ctx, a.l1, "l2-opstack: factory gameCount", a.profile.L1ClientID, l1Block, err)
 	}
-	if !found {
-		return nil, 0, fmt.Errorf("l2-opstack: attestor has no %s game at or below L2 height %d", request.Finality, request.Height)
+
+	target := request.Height
+	var (
+		root            *attestorpb.AttestedRoot
+		gameIndex       uint64
+		committedHeight uint64
+	)
+	for attempt := 0; ; attempt++ {
+		if attempt == maxGameStepDown {
+			return nil, 0, fmt.Errorf(
+				"l2-opstack: no attested game at or below L2 height %d is visible at the pinned L1 block %d "+
+					"after %d step(s) (factory holds %d game(s) there; Ethereum client %s advances only to "+
+					"finalized L1)",
+				request.Height, l1Block, maxGameStepDown, gameCount, a.profile.L1ClientID)
+		}
+		var found bool
+		root, found, err = a.attestor.AttestedRootAtOrBelow(ctx, a.srcChain, target, a.includeProvisional)
+		if err != nil {
+			return nil, 0, err
+		}
+		if !found {
+			return nil, 0, fmt.Errorf("l2-opstack: attestor has no %s game at or below L2 height %d", request.Finality, target)
+		}
+		if root.GetSource() != "game" {
+			return nil, 0, fmt.Errorf("l2-opstack: attested root at height %d is source %q, want game", target, root.GetSource())
+		}
+		gameIndex = root.GetGameIndex()
+		committedHeight = root.GetL2BlockNumber()
+		if gameIndex < gameCount {
+			break // visible at the pinned block — provable
+		}
+		if committedHeight == 0 {
+			return nil, 0, fmt.Errorf("l2-opstack: attested game %d commits L2 height 0", gameIndex)
+		}
+		target = committedHeight - 1 // drop below this game and ask again
 	}
-	if root.GetSource() != "game" {
-		return nil, 0, fmt.Errorf("l2-opstack: attested root at height %d is source %q, want game", request.Height, root.GetSource())
-	}
-	gameIndex := root.GetGameIndex()
-	committedHeight := root.GetL2BlockNumber()
 
 	gameSlot, err := gameListElementSlot(a.profile.GameListSlot, gameIndex)
 	if err != nil {
 		return nil, 0, err
 	}
 
-	factoryProof, err := relayerclient.EthGetProof(a.l1, a.profile.DisputeGameFactory, []ethcommon.Hash{gameSlot}, l1BlockBig)
+	factoryProof, err := relayerclient.EthGetProof(ctx, a.l1, a.profile.DisputeGameFactory, []ethcommon.Hash{gameSlot}, l1BlockBig)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, annotatePinnedL1(ctx, a.l1, "l2-opstack: dispute game factory proof", a.profile.L1ClientID, l1Block, err)
 	}
 	if len(factoryProof.Storage) == 0 {
 		return nil, 0, fmt.Errorf("l2-opstack: factory game-list proof missing storage entry")
@@ -124,13 +193,14 @@ func (a *opStackHeaderBuilder) BuildHeader(ctx context.Context, request HeaderRe
 		return nil, 0, fmt.Errorf("l2-opstack: factory game-list entry %d is empty", gameIndex)
 	}
 
-	gameAccountProof, err := relayerclient.EthGetProof(a.l1, gameAddr, nil, l1BlockBig)
+	gameAccountProof, err := relayerclient.EthGetProof(ctx, a.l1, gameAddr, nil, l1BlockBig)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, annotatePinnedL1(ctx, a.l1, "l2-opstack: game account proof", a.profile.L1ClientID, l1Block, err)
 	}
 	gameRuntime, err := a.l1.CodeAt(ctx, gameAddr, l1BlockBig)
 	if err != nil {
-		return nil, 0, fmt.Errorf("l2-opstack: game runtime (eth_getCode %s): %w", gameAddr, err)
+		return nil, 0, annotatePinnedL1(ctx, a.l1,
+			fmt.Sprintf("l2-opstack: game runtime (eth_getCode %s)", gameAddr), a.profile.L1ClientID, l1Block, err)
 	}
 
 	// 3. Output-root preimage from op-node at the committed block.
@@ -145,7 +215,7 @@ func (a *opStackHeaderBuilder) BuildHeader(ctx context.Context, request HeaderRe
 	if err != nil {
 		return nil, 0, fmt.Errorf("l2-opstack: L2 header at %d: %w", committedHeight, err)
 	}
-	routerProof, err := relayerclient.EthGetProof(a.l2, a.profile.L2Router, nil, committedBig)
+	routerProof, err := relayerclient.EthGetProof(ctx, a.l2, a.profile.L2Router, nil, committedBig)
 	if err != nil {
 		return nil, 0, err
 	}
