@@ -228,22 +228,6 @@ func TestAttestedRootProtoUsesExclusiveProvenance(t *testing.T) {
 		t.Fatalf("assertion unexpectedly exposed game index %d", assertion.GetGameIndex())
 	}
 
-	legacyNodeHash := common.HexToHash("0x5678")
-	legacy := attestedRootToProto(arbitrum.AttestedRoot{
-		Source:           arbitrum.SourceAssertion,
-		AssertionHash:    legacyNodeHash,
-		LegacyNodeNumber: 10_764,
-	})
-	if _, ok := legacy.GetProvenance().(*attestorpb.AttestedRoot_LegacyNode); !ok {
-		t.Fatalf("legacy node has wrong provenance type: %T", legacy.GetProvenance())
-	}
-	if legacy.GetLegacyNode().GetNodeNumber() != 10_764 ||
-		common.BytesToHash(legacy.GetLegacyNode().GetNodeHash()) != legacyNodeHash {
-		t.Fatalf("legacy node provenance: %+v", legacy.GetLegacyNode())
-	}
-	if len(legacy.GetAssertionHash()) != 0 {
-		t.Fatalf("legacy node unexpectedly exposed assertion hash %x", legacy.GetAssertionHash())
-	}
 }
 
 func TestVerifyStateRootRejectsMalformedCommitments(t *testing.T) {

@@ -76,12 +76,9 @@ func TestRollupCoreSourceReadsStatusAndFinalizedLogs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
-	_, confirmations, rejections, err := source.Assertions(context.Background(), 90, 100)
+	_, confirmations, err := source.Assertions(context.Background(), 90, 100)
 	if err != nil {
 		t.Fatalf("read assertion logs: %v", err)
-	}
-	if len(rejections) != 0 {
-		t.Fatalf("unexpected rejections: %+v", rejections)
 	}
 	if len(confirmations) != 1 ||
 		confirmations[0].AssertionHash != assertionHash ||
@@ -139,7 +136,7 @@ func TestRollupCoreSourceSkipsZeroHashAssertionCreated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create source: %v", err)
 	}
-	proposals, confirmations, rejections, err := source.Assertions(
+	proposals, confirmations, err := source.Assertions(
 		context.Background(),
 		90,
 		100,
@@ -147,12 +144,11 @@ func TestRollupCoreSourceSkipsZeroHashAssertionCreated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read assertion logs: %v", err)
 	}
-	if len(proposals) != 0 || len(confirmations) != 0 || len(rejections) != 0 {
+	if len(proposals) != 0 || len(confirmations) != 0 {
 		t.Fatalf(
-			"unexpected assertions: proposals=%+v confirmations=%+v rejections=%+v",
+			"unexpected assertions: proposals=%+v confirmations=%+v",
 			proposals,
 			confirmations,
-			rejections,
 		)
 	}
 }

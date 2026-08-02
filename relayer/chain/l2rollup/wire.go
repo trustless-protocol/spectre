@@ -139,18 +139,16 @@ func (u *u256) UnmarshalJSON(data []byte) error {
 
 // clientMessageEnvelope is the serde-tagged ClientMessage the wasm client reads:
 // `{"type":"header","value":<header>}` (serde tag="type", content="value",
-// rename_all="snake_case"). The bare-header form is legacy-only; misbehaviour
-// updates are envelope-only too.
+// rename_all="snake_case"). Misbehaviour updates use this envelope too.
 type clientMessageEnvelope struct {
 	Type  string          `json:"type"`
 	Value json.RawMessage `json:"value"`
 }
 
 // arbitrumHeaderEnvelope is the serde-tagged Arbitrum `Header` enum (arbitrum-verifier
-// header.rs: tag="type", content="value", rename_all="snake_case"): its variants are
-// `bold_v2` and `legacy_nitro`. Unlike OP — whose verifier `Header` is a bare struct —
-// Arbitrum's is a tagged enum, so the ClientMessage value is itself tagged, giving the
-// double envelope {"type":"header","value":{"type":"legacy_nitro","value":<header>}}.
+// header.rs: tag="type", content="value", rename_all="snake_case"). Unlike OP —
+// whose verifier `Header` is a bare struct — Arbitrum's is a tagged enum, so the
+// ClientMessage value is itself tagged.
 type arbitrumHeaderEnvelope struct {
 	Type  string `json:"type"`
 	Value any    `json:"value"`

@@ -505,7 +505,6 @@ ENV_FILE=$RUN_DIR/attestor.env
     printf 'export NITRO_FEED_URL=%q\n' "$NITRO_FEED_URL"
     printf 'export ROLLUP_CORE_ADDRESS=%q\n' "$ROLLUP_CORE_ADDRESS"
     printf 'export ROLLUP_DEPLOYMENT_BLOCK=%q\n' "$ROLLUP_DEPLOYMENT_BLOCK"
-    printf 'export ROLLUP_PROTOCOL=%q\n' bold-v2
     printf 'export ASSERTIONS_MAPPING_SLOT=%q\n' "$ASSERTIONS_MAPPING_SLOT"
     printf 'export ASSERTION_STATUS_OFFSET=%q\n' "$ASSERTION_STATUS_OFFSET"
     printf 'export SRC_CHAIN=%q\n' arbdev

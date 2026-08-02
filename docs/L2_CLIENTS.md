@@ -2,8 +2,7 @@
 
 Fast-IBC builds three checksum-distinct 08-wasm artifacts with unchanged filenames:
 
-- `cw-ics08-wasm-arbitrum` for Arbitrum BoLD v2 assertions and legacy Nitro
-  numeric nodes;
+- `cw-ics08-wasm-arbitrum` for Arbitrum BoLD v2 assertions;
 - `cw-ics08-wasm-base` for Base dispute games; and
 - `cw-ics08-wasm-op` for OP dispute games.
 
@@ -18,14 +17,11 @@ not wait for rollup challenge settlement. Consequently, a consensus state accept
 these clients can later be rejected by the rollup challenge system.
 
 Arbitrum accepts any BoLD assertion whose authenticated packed status is nonzero, including a
-pending assertion. For legacy Nitro it accepts the latest confirmed node or a pending node between
-the authenticated `firstUnresolvedNode` and `latestNodeCreated`, then binds the L2 block hash and
-send root to the proven `Node.confirmData`. Resolved losing nodes are excluded. Base and OP accept
-any caller-selected factory game-list entry, including an unresolved game. They authenticate the
-game runtime, extract its root claim at the runtime-profile offset, bind the output-root preimage
-to a canonical L2 block header, and authenticate the L2 `ICS26Router` account. Game type,
-resolution, winner, retirement, blacklist, pause state, implementation identity, and settlement
-delays are deliberately not checked.
+pending assertion. Base and OP accept any caller-selected factory game-list entry, including an
+unresolved game. They authenticate the game runtime, extract its root claim at the runtime-profile
+offset, bind the output-root preimage to a canonical L2 block header, and authenticate the L2
+`ICS26Router` account. Game type, resolution, winner, retirement, blacklist, pause state,
+implementation identity, and settlement delays are deliberately not checked.
 
 ## Creation and runtime profiles
 
@@ -108,9 +104,8 @@ fork hardcoded into the verifier.
 Reproducible fixtures use fixed numeric L1 and L2 block tags and include full block responses,
 `eth_getProof` account/storage responses, the L2 router proof, and `eth_getCode` for OP Stack games.
 BoLD Arbitrum fixtures additionally include the complete `AssertionCreated` data required to
-recompute the assertion hash. Legacy Nitro fixtures include the numeric node, send root, lifecycle
-proof, and `confirmData` proof. The adjacent schema-v2 provenance manifest records both block
-hashes, source revisions, the profile SHA-256, and the fixture SHA-256.
+recompute the assertion hash. The adjacent schema-v2 provenance manifest records both block hashes,
+source revisions, the profile SHA-256, and the fixture SHA-256.
 
 ## Host requirements and verification
 

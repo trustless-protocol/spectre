@@ -21,9 +21,8 @@
 #
 # Optional env:
 #   SRC_CHAIN (arbdev)                 relayer source-chain label
-#   ROLLUP_PROTOCOL (bold-v2)          bold-v2 | legacy-nitro
-#   ASSERTIONS_MAPPING_SLOT (0x76)     required only for bold-v2
-#   ASSERTION_STATUS_OFFSET (25)       required only for bold-v2
+#   ASSERTIONS_MAPPING_SLOT (0x76)     BoLD _assertions mapping slot
+#   ASSERTION_STATUS_OFFSET (25)       BoLD AssertionNode.status byte offset
 #   NITRO_FEED_URL (ws://127.0.0.1:9642)
 #   ATTESTOR_L1_RPC_URL               container-visible L1 RPC override
 #   ATTESTOR_L1_BEACON_URL            container-visible beacon API override
@@ -54,7 +53,6 @@ if [ -z "${ROLLUP_CORE_ADDRESS:-}" ] && [ -f "$DEVNET_ENV" ]; then
 fi
 
 SRC_CHAIN=${SRC_CHAIN:-arbdev}
-ROLLUP_PROTOCOL=${ROLLUP_PROTOCOL:-bold-v2}
 ASSERTIONS_MAPPING_SLOT=${ASSERTIONS_MAPPING_SLOT:-0x0000000000000000000000000000000000000000000000000000000000000076}
 ASSERTION_STATUS_OFFSET=${ASSERTION_STATUS_OFFSET:-25}
 NITRO_FEED_URL=${NITRO_FEED_URL:-ws://127.0.0.1:9642}
@@ -103,20 +101,11 @@ fi
     fail "Nitro sequencer config not found: $NITRO_SEQUENCER_CONFIG"
 [[ "$GRPC_PORT" =~ ^[0-9]+$ ]] && [ "$GRPC_PORT" -gt 0 ] && [ "$GRPC_PORT" -le 65535 ] ||
     fail "GRPC_PORT must be between 1 and 65535"
-case "$ROLLUP_PROTOCOL" in
-    bold-v2)
-        [[ "$ASSERTIONS_MAPPING_SLOT" =~ ^0x[0-9a-fA-F]{64}$ ]] ||
-            fail "ASSERTIONS_MAPPING_SLOT must be a 32-byte hexadecimal value"
-        [[ "$ASSERTION_STATUS_OFFSET" =~ ^[0-9]+$ ]] &&
-            [ "$ASSERTION_STATUS_OFFSET" -lt 32 ] ||
-            fail "ASSERTION_STATUS_OFFSET must be between 0 and 31"
-        ;;
-    legacy-nitro)
-        ;;
-    *)
-        fail "ROLLUP_PROTOCOL must be bold-v2 or legacy-nitro"
-        ;;
-esac
+[[ "$ASSERTIONS_MAPPING_SLOT" =~ ^0x[0-9a-fA-F]{64}$ ]] ||
+    fail "ASSERTIONS_MAPPING_SLOT must be a 32-byte hexadecimal value"
+[[ "$ASSERTION_STATUS_OFFSET" =~ ^[0-9]+$ ]] &&
+    [ "$ASSERTION_STATUS_OFFSET" -lt 32 ] ||
+    fail "ASSERTION_STATUS_OFFSET must be between 0 and 31"
 
 mkdir -p "$RUN_DIR"
 RUN_DIR=$(cd "$RUN_DIR" && pwd)
@@ -167,7 +156,6 @@ jq -n \
     --argjson l1_chain_id "$L1_CHAIN_ID" \
     --argjson l2_chain_id "$L2_CHAIN_ID" \
     --arg rollup_core_address "$ROLLUP_CORE_ADDRESS" \
-    --arg rollup_protocol "$ROLLUP_PROTOCOL" \
     --arg assertions_mapping_slot "$ASSERTIONS_MAPPING_SLOT" \
     --argjson assertion_status_offset "$ASSERTION_STATUS_OFFSET" \
     --argjson assertion_start_block "$ROLLUP_DEPLOYMENT_BLOCK" \
@@ -184,7 +172,6 @@ jq -n \
         l1_chain_id: $l1_chain_id,
         l2_chain_id: $l2_chain_id,
         rollup_core_address: $rollup_core_address,
-        rollup_protocol: $rollup_protocol,
         assertions_mapping_slot: $assertions_mapping_slot,
         assertion_status_offset: $assertion_status_offset,
         assertion_start_block: $assertion_start_block,
@@ -211,11 +198,7 @@ jq -n \
         nitro_ipc_path: "/run/fast-ibc/nitro.ipc",
         nitro_startup_timeout: "5m",
         nitro_shutdown_timeout: "30s"
-    }
-    | if $rollup_protocol == "legacy-nitro" then
-        del(.assertions_mapping_slot, .assertion_status_offset)
-      else .
-      end' >"$CONFIG"
+    }' >"$CONFIG"
 
 log "replica config written to $NITRO_CONFIG"
 log "attestor config written to $CONFIG"

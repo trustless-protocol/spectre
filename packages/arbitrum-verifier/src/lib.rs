@@ -26,7 +26,6 @@ impl l2_client::L2LightClient for Adapter {
     fn finality_evidence(header: &Self::Header) -> Option<&l2_client::msg::FinalityEvidence> {
         match header {
             header::Header::BoldV2(header) => header.finality_evidence.as_ref(),
-            header::Header::LegacyNitro(header) => header.finality_evidence.as_ref(),
         }
     }
 

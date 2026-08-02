@@ -8,7 +8,7 @@ fn tooling_profile_round_trips_without_being_compiled_into_wasm() {
     let bytes = fs::read(path).unwrap();
     let profile: Config = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(profile.common.l2_chain_id, 421_614);
-    assert!(matches!(&profile.protocol, RollupProtocol::LegacyNitro(_)));
+    assert!(matches!(&profile.protocol, RollupProtocol::BoldV2(_)));
     assert_eq!(
         serde_json::from_slice::<Config>(&serde_json::to_vec(&profile).unwrap()).unwrap(),
         profile

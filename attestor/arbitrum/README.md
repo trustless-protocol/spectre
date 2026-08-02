@@ -3,10 +3,7 @@
 The attestor is a standalone gRPC backend for the relayer. It launches a pinned
 Nitro binary, keeps Nitro's chain database on persistent storage, ingests
 Arbitrum assertions from finalized Ethereum L1 blocks, and independently checks
-each assertion's L2 block against Nitro over private IPC. It supports both BoLD
-v2 `AssertionCreated`/`AssertionConfirmed` deployments and the legacy Nitro
-`NodeCreated`/`NodeConfirmed` lifecycle still used by canonical Arbitrum
-Sepolia.
+each BoLD v2 assertion's L2 block against Nitro over private IPC.
 
 Nitro performs execution and owns all chain state. The attestor stores only its
 RollupCore log cursor, unresolved assertions, verified frontier entries, and
@@ -38,13 +35,9 @@ Copy `config.example.json` to `config.json` and configure:
 - `l1_chain_id` and `l2_chain_id`: expected Ethereum and Arbitrum IDs. Startup
   fails if the connected L1 or RollupCore reports a different chain.
 - `rollup_core_address`: deployed Arbitrum RollupCore proxy address.
-- `rollup_protocol`: `bold-v2` for current BoLD deployments or `legacy-nitro`
-  for canonical Arbitrum Sepolia. An omitted value retains the historical
-  `bold-v2` default.
 - `assertions_mapping_slot` and `assertion_status_offset`: reviewed BoLD
-  `_assertions` storage layout values. They are required only for
-  `rollup_protocol="bold-v2"` and must match the Cosmos Arbitrum verifier
-  profile.
+  `_assertions` storage layout values. They must match the Cosmos Arbitrum
+  verifier profile.
 - `assertion_start_block`: first L1 block scanned on a new state database.
   Configure the RollupCore deployment block for full history, or the creation
   block of a known confirmed object when intentionally bootstrapping a frontier.
@@ -158,12 +151,10 @@ For canonical Arbitrum Sepolia, start from the checked testnet profile:
 
 The tracked `config.arbitrum-sepolia.json` profile pins Sepolia L1
 (`11155111`), Arbitrum Sepolia L2 (`421614`), and
-the canonical Rollup proxy (`0xd808...81c8`). It bootstraps at L1 block
-`7258441`, where currently confirmed legacy node `10764` was created; the node
-was confirmed at block `7258462`. Use deployment block `4139226` instead when
-full legacy history is required. The public RPC endpoints are convenient
-defaults but should be replaced by operator-owned endpoints for sustained log
-scanning and Nitro synchronization.
+the BoLD Rollup proxy (`0x042B...0Cf4`). It bootstraps at L1 block
+`11379731`, which includes a complete confirmed assertion lifecycle. The
+public RPC endpoints are convenient defaults but should be replaced by
+operator-owned endpoints for sustained log scanning and Nitro synchronization.
 
 The underlying Cobra command is:
 
@@ -233,17 +224,16 @@ a target height. A response with `found=false` means the attestor has not
 accepted a qualifying assertion yet.
 
 For Arbitrum, an `AttestedRoot` has `source="assertion"` and `root` equal to the
-Nitro L2 state root. BoLD provenance uses `assertion_hash`; legacy Nitro
-provenance uses `legacy_node`, containing both the numeric `_nodes` mapping key
-and the actual `nodeHash` indexed by `NodeCreated`. A pending assertion enters
-the feed as `provisional=true` only after its block is canonical under Nitro's
-safe head. It becomes non-provisional only after RollupCore reports it confirmed
-in finalized L1 state and the same block is canonical under Nitro's finalized
-head. Rejected, challenged, or locally mismatched assertions are never returned.
+Nitro L2 state root, with the BoLD assertion identifier in `assertion_hash`. A
+pending assertion enters the feed as `provisional=true` only after its block is
+canonical under Nitro's safe head. It becomes non-provisional only after
+RollupCore reports it confirmed in finalized L1 state and the same block is
+canonical under Nitro's finalized head. Rejected, challenged, or locally
+mismatched assertions are never returned.
 
 The chain-specific provenance is a protobuf `oneof`: OP entries carry
-`game_index`, Arbitrum BoLD entries carry `assertion_hash`, legacy Arbitrum
-entries carry `legacy_node`, and derived entries may carry neither.
+`game_index`, Arbitrum entries carry `assertion_hash`, and derived entries may
+carry neither.
 
 `VerifyStateRoot` remains available as a lower-level compatibility and
 diagnostic RPC. The caller supplies:
@@ -280,18 +270,14 @@ The standard gRPC health service is also registered for readiness checks.
 
 On every assertion poll, the attestor:
 
-1. Reads either the BoLD assertion lifecycle or the legacy
-   `NodeCreated`/`NodeConfirmed`/`NodeRejected` lifecycle only through
-   Ethereum's finalized L1 head and advances a persisted cursor in bounded
-   ranges.
-2. Recomputes every BoLD assertion hash. In legacy mode it retains both the
-   indexed node hash and numeric node ID, allowing status checks to survive
-   daemon restarts and rejected nodes to be removed exactly.
+1. Reads the BoLD `AssertionCreated`/`AssertionConfirmed` lifecycle only
+   through Ethereum's finalized L1 head and advances a persisted cursor in
+   bounded ranges.
+2. Recomputes every BoLD assertion hash from its event data.
 3. Resolves the asserted L2 block by hash in Nitro, then checks the canonical
    block at the recovered height. Pending assertions are checked against the
    safe head.
-4. Re-reads either `AssertionNode.status` or the legacy `getNode` and
-   `latestConfirmed` state at finalized L1. Confirmed assertions are promoted
-   only after the Nitro finalized head covers and matches the block.
+4. Re-reads `AssertionNode.status` at finalized L1. Confirmed assertions are
+   promoted only after the Nitro finalized head covers and matches the block.
 5. Serves the resulting frontier through the same oracle-shaped RPCs used by
    the OP attestor.

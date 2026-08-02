@@ -76,22 +76,25 @@ func TestStartCommandRejectsArguments(t *testing.T) {
 	}
 }
 
-func TestAssertionSourceIdentitySeparatesLegacyFromBoLD(t *testing.T) {
+func TestAssertionSourceIdentityPinsBoLDStorageLayout(t *testing.T) {
 	config := arbitrum.DaemonConfig{
 		L1ChainID:             11_155_111,
 		L2ChainID:             421_614,
-		RollupCoreAddress:     "0xd80810638dbdf9081b72c1b33c65375e807281c8",
-		AssertionsMappingSlot: "0x76",
+		RollupCoreAddress:     "0x042B2E6C5E99d4c521bd49beeD5E99651D9B0Cf4",
+		AssertionsMappingSlot: "0x75",
 		AssertionStatusOffset: 25,
 	}
-	boldIdentity := assertionSourceIdentity(config)
-	config.RollupProtocol = arbitrum.RollupProtocolLegacyNitro
-	legacyIdentity := assertionSourceIdentity(config)
-	if boldIdentity == legacyIdentity {
-		t.Fatalf("protocol identities must differ: %q", boldIdentity)
-	}
-	if !strings.Contains(legacyIdentity, "protocol:legacy-nitro") {
-		t.Fatalf("legacy identity: %q", legacyIdentity)
+	identity := assertionSourceIdentity(config)
+	for _, expected := range []string{
+		"l1:11155111",
+		"l2:421614",
+		"rollup:0x042B2E6C5E99d4c521bd49beeD5E99651D9B0Cf4",
+		"assertions:0x0000000000000000000000000000000000000000000000000000000000000075",
+		"status-offset:25",
+	} {
+		if !strings.Contains(identity, expected) {
+			t.Fatalf("source identity %q does not contain %q", identity, expected)
+		}
 	}
 }
 

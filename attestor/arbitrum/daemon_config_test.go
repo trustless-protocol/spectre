@@ -21,7 +21,6 @@ func TestLoadDaemonConfigResolvesPersistentNitroPaths(t *testing.T) {
 		"l1_chain_id":1,
 		"l2_chain_id":42161,
 		"rollup_core_address":"0x0000000000000000000000000000000000000001",
-		"rollup_protocol":"bold-v2",
 		"assertions_mapping_slot":"0x0000000000000000000000000000000000000000000000000000000000000076",
 		"assertion_status_offset":25,
 		"assertion_start_block":123,
@@ -137,36 +136,28 @@ func TestDaemonConfigAssertionDefaults(t *testing.T) {
 	}
 }
 
-func TestDaemonConfigLegacyProtocolDoesNotRequireBoLDStorageLayout(t *testing.T) {
+func TestDaemonConfigRequiresBoLDStorageLayout(t *testing.T) {
 	config := validDaemonConfig(t)
-	config.RollupProtocol = RollupProtocolLegacyNitro
 	config.AssertionsMappingSlot = ""
-	config.AssertionStatusOffset = 0
-	if err := config.Validate(); err != nil {
-		t.Fatalf("validate legacy Nitro config: %v", err)
+	if err := config.Validate(); err == nil ||
+		!strings.Contains(err.Error(), "assertions_mapping_slot") {
+		t.Fatalf("validate missing assertions mapping slot: got %v", err)
 	}
 }
 
-func TestDaemonConfigRejectsUnknownRollupProtocol(t *testing.T) {
-	config := validDaemonConfig(t)
-	config.RollupProtocol = "future-rollup"
-	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "rollup_protocol") {
-		t.Fatalf("validate unknown rollup protocol: got %v", err)
-	}
-}
-
-func TestArbitrumSepoliaConfigSelectsLegacyProtocol(t *testing.T) {
+func TestArbitrumSepoliaConfigPinsBoLDDeployment(t *testing.T) {
 	config, err := LoadDaemonConfig("config.arbitrum-sepolia.json")
 	if err != nil {
 		t.Fatalf("load Arbitrum Sepolia config: %v", err)
 	}
-	if config.EffectiveRollupProtocol() != RollupProtocolLegacyNitro ||
-		config.L1ChainID != 11_155_111 ||
+	if config.L1ChainID != 11_155_111 ||
 		config.L2ChainID != 421_614 ||
 		common.HexToAddress(config.RollupCoreAddress) != common.HexToAddress(
-			"0xd80810638dbdf9081b72c1b33c65375e807281c8",
+			"0x042B2E6C5E99d4c521bd49beeD5E99651D9B0Cf4",
 		) ||
-		config.AssertionStartBlock != 7_258_441 {
+		common.HexToHash(config.AssertionsMappingSlot) != common.HexToHash("0x75") ||
+		config.AssertionStatusOffset != 25 ||
+		config.AssertionStartBlock != 11_379_731 {
 		t.Fatalf("unexpected Arbitrum Sepolia config: %+v", config)
 	}
 }
@@ -181,7 +172,6 @@ func validDaemonConfig(t *testing.T) DaemonConfig {
 		L1ChainID:             1,
 		L2ChainID:             42161,
 		RollupCoreAddress:     "0x0000000000000000000000000000000000000001",
-		RollupProtocol:        RollupProtocolBoLDV2,
 		AssertionsMappingSlot: "0x" + strings.Repeat("0", 62) + "76",
 		AssertionStatusOffset: 25,
 		AssertionStartBlock:   1,

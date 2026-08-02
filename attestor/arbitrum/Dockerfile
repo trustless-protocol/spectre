@@ -16,7 +16,6 @@ COPY arbitrum/*.go ./
 COPY arbitrum/cmd ./cmd
 COPY arbitrum/server ./server
 COPY arbitrum/bold ./bold
-COPY arbitrum/legacy ./legacy
 
 RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=1 go build -trimpath -ldflags="-s -w" \

@@ -19,10 +19,10 @@ import (
 // not a relay of the on-chain proposal — which is exactly why RelayableHeight gates
 // on it rather than on the raw L2 RPC head.
 //
-// The relayer reads only the height/provenance fields: L2BlockNumber, Source, and the
-// provenance oneof (GameIndex for OP games, LegacyNode.NodeNumber for legacy Nitro).
-// It does NOT consume the Root bytes — the builders re-derive the header from L1/L2, so
-// the root itself is never packaged, only used as an attestation gate.
+// The relayer reads only the height/provenance fields: L2BlockNumber, Source, and
+// the provenance oneof (GameIndex for OP games or AssertionHash for Arbitrum).
+// It does NOT consume the Root bytes — the builders re-derive the header from
+// L1/L2, so the root itself is never packaged, only used as an attestation gate.
 type AttestorClient interface {
 	// AttestedUpTo returns the highest L2 block the attestor has independently
 	// confirmed for srcChain. includeProvisional accepts Safe-but-not-yet-finalized

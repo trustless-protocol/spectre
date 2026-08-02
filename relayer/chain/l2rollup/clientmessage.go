@@ -7,7 +7,7 @@ package l2rollup
 //   - packages/op-stack-verifier/src/lib.rs    → OutputRootProof, OpStack Header
 //   - packages/arbitrum-verifier/src/header.rs  → GlobalState, AssertionState,
 //                                                  AssertionClaim, tagged Header enum
-//                                                  (BoldHeader | LegacyHeader)
+//                                                  (BoldHeader)
 //
 // These messages are TRUSTLESS — there is NO relayer signature. The L2 contract
 // verifies the L1 rollup-contract proof against the shared cw-ics08-wasm-eth client
@@ -148,33 +148,8 @@ func (h *ArbitrumBoldHeader) EncodeClientMessage() ([]byte, error) {
 	return encodeHeaderMessage(arbitrumHeaderEnvelope{Type: "bold_v2", Value: h})
 }
 
-// ArbitrumLegacyHeader mirrors arbitrum-verifier `LegacyHeader` — the `legacy_nitro`
-// variant: proves a pending or confirmed pre-BoLD Nitro numeric node in finalized L1
-// state (the packed node-lifecycle slot + `_nodes[node_number].confirmData`), binds it
-// to the committed L2 block via confirmData = keccak(blockHash || send_root), then
-// proves the L2 router state. node_lifecycle_proof and confirm_data_proof are two
-// storage proofs against the same RollupCore account.
-type ArbitrumLegacyHeader struct {
-	BeaconSlot         uint64             `json:"beacon_slot"`
-	L1StateRoot        hexBytes           `json:"l1_state_root"`
-	RollupProof        EvmAccountProof    `json:"rollup_proof"`
-	NodeNumber         uint64             `json:"node_number"`
-	NodeLifecycleProof EvmStorageProof    `json:"node_lifecycle_proof"`
-	ConfirmDataProof   EvmStorageProof    `json:"confirm_data_proof"`
-	SendRoot           hexBytes           `json:"send_root"`
-	L2Header           CanonicalEvmHeader `json:"l2_header"`
-	RouterProof        EvmAccountProof    `json:"router_proof"`
-}
-
-// EncodeClientMessage marshals the header as the legacy_nitro variant:
-// {"type":"header","value":{"type":"legacy_nitro","value":<header>}}.
-func (h *ArbitrumLegacyHeader) EncodeClientMessage() ([]byte, error) {
-	return encodeHeaderMessage(arbitrumHeaderEnvelope{Type: "legacy_nitro", Value: h})
-}
-
 // Header types satisfy ClientMessage.
 var (
 	_ ClientMessage = (*OpStackHeader)(nil)
 	_ ClientMessage = (*ArbitrumBoldHeader)(nil)
-	_ ClientMessage = (*ArbitrumLegacyHeader)(nil)
 )

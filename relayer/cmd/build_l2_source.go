@@ -324,31 +324,12 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 			_ = attestor.Close()
 			updaterCleanup()
 		}
-		protocol, perr := arbRollupProtocol(cfg.RollupProfile)
-		if perr != nil {
+		boldProfile, berr := parseArbBoldProfile(cfg.RollupProfile)
+		if berr != nil {
 			closeAll()
-			return nil, nil, perr
+			return nil, nil, berr
 		}
-		switch protocol {
-		case "bold_v2":
-			boldProfile, berr := parseArbBoldProfile(cfg.RollupProfile)
-			if berr != nil {
-				closeAll()
-				return nil, nil, berr
-			}
-			headerBuilder = l2rollup.NewArbitrumBoldHeaderBuilder(l1, l2, cosmosReader, boldProfile)
-		case "legacy_nitro":
-			legacyProfile, lerr := parseArbLegacyProfile(cfg.RollupProfile)
-			if lerr != nil {
-				closeAll()
-				return nil, nil, lerr
-			}
-			headerBuilder = l2rollup.NewArbitrumLegacyHeaderBuilder(
-				l1, l2, cosmosReader, attestor, cfg.AttestorSrcChain, legacyProfile, includeProvisional)
-		default:
-			closeAll()
-			return nil, nil, fmt.Errorf("l2_to_cosmos config: unsupported arbitrum rollup protocol %q (want bold_v2|legacy_nitro)", protocol)
-		}
+		headerBuilder = l2rollup.NewArbitrumBoldHeaderBuilder(l1, l2, cosmosReader, boldProfile)
 	default:
 		l1.Close()
 		l2.Close()
@@ -427,27 +408,6 @@ func parseOPProfile(profile json.RawMessage) (l2rollup.OPProfile, error) {
 	}, nil
 }
 
-// parseArbProfile extracts the Arbitrum header builder's fields from the rollup
-// profile. It mirrors the arbitrum-verifier Profile (packages/arbitrum-verifier): the
-// L1 RollupCore (`rollup`), the BoLD `_assertions` mapping slot, the L2 router, and the
-// shared ETH client id. assertion_scan_range is an optional relayer-only override.
-// arbRollupProtocol reads rollup_profile.protocol.type (bold_v2 | legacy_nitro) — the
-// tagged RollupProtocol discriminant that selects the Arbitrum header builder.
-func arbRollupProtocol(profile json.RawMessage) (string, error) {
-	var p struct {
-		Protocol struct {
-			Type string `json:"type"`
-		} `json:"protocol"`
-	}
-	if err := json.Unmarshal(profile, &p); err != nil {
-		return "", fmt.Errorf("parse Arbitrum rollup_profile.protocol: %w", err)
-	}
-	if p.Protocol.Type == "" {
-		return "", fmt.Errorf("rollup_profile.protocol.type is required (bold_v2|legacy_nitro)")
-	}
-	return p.Protocol.Type, nil
-}
-
 // arbCommonFields validates and returns the RollupCore, L2 router, and shared ETH
 // client id every Arbitrum profile carries (common.* + top-level rollup).
 func arbCommonFields(rollup, l2Router, clientID string) (common.Address, common.Address, string, error) {
@@ -463,8 +423,16 @@ func arbCommonFields(rollup, l2Router, clientID string) (common.Address, common.
 	return common.HexToAddress(rollup), common.HexToAddress(l2Router), clientID, nil
 }
 
-// parseArbBoldProfile extracts the BoLD v2 header builder's fields (protocol.value holds
-// assertions_mapping_slot).
+// parseArbBoldProfile extracts the BoLD v2 header builder's fields from the rollup
+// profile. It mirrors the arbitrum-verifier Profile (packages/arbitrum-verifier): the L1
+// RollupCore (`rollup`), the BoLD `_assertions` mapping slot (protocol.value), the L2
+// router, and the shared ETH client id. assertion_scan_range is an optional relayer-only
+// override.
+//
+// protocol.type is required and must be "bold_v2": it is the tagged RollupProtocol
+// discriminant, and the legacy Nitro variant it used to select no longer exists. A
+// profile still carrying the old value is rejected here rather than parsed into a
+// BoLD profile it does not describe.
 func parseArbBoldProfile(profile json.RawMessage) (l2rollup.ArbBoldProfile, error) {
 	var p struct {
 		Common struct {
@@ -475,6 +443,7 @@ func parseArbBoldProfile(profile json.RawMessage) (l2rollup.ArbBoldProfile, erro
 		} `json:"common"`
 		Rollup   string `json:"rollup"`
 		Protocol struct {
+			Type  string `json:"type"`
 			Value struct {
 				AssertionsMappingSlot string `json:"assertions_mapping_slot"`
 				// AssertionScanRange is an optional relayer-only override of how far
@@ -485,6 +454,19 @@ func parseArbBoldProfile(profile json.RawMessage) (l2rollup.ArbBoldProfile, erro
 	}
 	if err := json.Unmarshal(profile, &p); err != nil {
 		return l2rollup.ArbBoldProfile{}, fmt.Errorf("parse Arbitrum bold_v2 rollup_profile: %w", err)
+	}
+	if p.Protocol.Type != "bold_v2" {
+		// Name the offending value. The common way to reach this is a config carried
+		// over from the legacy Nitro path ("legacy_nitro"), and an error that does not
+		// echo what it read sends the reader looking for a missing field instead.
+		got := p.Protocol.Type
+		if got == "" {
+			got = "<absent>"
+		}
+		return l2rollup.ArbBoldProfile{}, fmt.Errorf(
+			"rollup_profile.protocol.type is %s, must be %q (the legacy Nitro protocol was removed)",
+			got, "bold_v2",
+		)
 	}
 	rollup, l2Router, clientID, err := arbCommonFields(p.Rollup, p.Common.L2Router, p.Common.EthereumClient.ClientID)
 	if err != nil {
@@ -499,52 +481,6 @@ func parseArbBoldProfile(profile json.RawMessage) (l2rollup.ArbBoldProfile, erro
 		L2Router:              l2Router,
 		L1ClientID:            clientID,
 		AssertionScanRange:    p.Protocol.Value.AssertionScanRange,
-	}, nil
-}
-
-// parseArbLegacyProfile extracts the legacy Nitro header builder's fields
-// (protocol.value holds the node-lifecycle slot, nodes mapping slot, and offsets).
-func parseArbLegacyProfile(profile json.RawMessage) (l2rollup.ArbLegacyProfile, error) {
-	var p struct {
-		Common struct {
-			L2Router       string `json:"l2_router"`
-			EthereumClient struct {
-				ClientID string `json:"client_id"`
-			} `json:"ethereum_client"`
-		} `json:"common"`
-		Rollup   string `json:"rollup"`
-		Protocol struct {
-			Value struct {
-				NodeLifecycleSlot     string `json:"node_lifecycle_slot"`
-				NodesMappingSlot      string `json:"nodes_mapping_slot"`
-				LatestConfirmedOffset uint8  `json:"latest_confirmed_offset"`
-				FirstUnresolvedOffset uint8  `json:"first_unresolved_offset"`
-				LatestCreatedOffset   uint8  `json:"latest_created_offset"`
-				ConfirmDataOffset     uint8  `json:"confirm_data_offset"`
-			} `json:"value"`
-		} `json:"protocol"`
-	}
-	if err := json.Unmarshal(profile, &p); err != nil {
-		return l2rollup.ArbLegacyProfile{}, fmt.Errorf("parse Arbitrum legacy_nitro rollup_profile: %w", err)
-	}
-	rollup, l2Router, clientID, err := arbCommonFields(p.Rollup, p.Common.L2Router, p.Common.EthereumClient.ClientID)
-	if err != nil {
-		return l2rollup.ArbLegacyProfile{}, err
-	}
-	v := p.Protocol.Value
-	if v.NodeLifecycleSlot == "" || v.NodesMappingSlot == "" {
-		return l2rollup.ArbLegacyProfile{}, fmt.Errorf("rollup_profile.protocol.value.{node_lifecycle_slot,nodes_mapping_slot} are required")
-	}
-	return l2rollup.ArbLegacyProfile{
-		RollupCore:            rollup,
-		L2Router:              l2Router,
-		L1ClientID:            clientID,
-		NodeLifecycleSlot:     common.HexToHash(v.NodeLifecycleSlot),
-		NodesMappingSlot:      common.HexToHash(v.NodesMappingSlot),
-		LatestConfirmedOffset: v.LatestConfirmedOffset,
-		FirstUnresolvedOffset: v.FirstUnresolvedOffset,
-		LatestCreatedOffset:   v.LatestCreatedOffset,
-		ConfirmDataOffset:     v.ConfirmDataOffset,
 	}, nil
 }
 

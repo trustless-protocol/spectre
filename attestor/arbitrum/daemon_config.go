@@ -17,43 +17,30 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// RollupProtocol selects the L1 assertion lifecycle exposed by RollupCore.
-type RollupProtocol string
-
-const (
-	// RollupProtocolBoLDV2 selects AssertionCreated/AssertionConfirmed and the
-	// packed BoLD AssertionNode status mapping.
-	RollupProtocolBoLDV2 RollupProtocol = "bold-v2"
-	// RollupProtocolLegacyNitro selects the pre-BoLD
-	// NodeCreated/NodeConfirmed/NodeRejected lifecycle.
-	RollupProtocolLegacyNitro RollupProtocol = "legacy-nitro"
-)
-
 // DaemonConfig contains the gRPC listener, finalized-L1 RollupCore source, and
 // managed Nitro process settings.
 type DaemonConfig struct {
-	GRPCListenAddress      string         `json:"grpc_listen_address"`
-	RuntimePollInterval    string         `json:"runtime_poll_interval"`
-	SrcChain               string         `json:"src_chain"`
-	L1RPCURL               string         `json:"l1_rpc_url"`
-	L1ChainID              uint64         `json:"l1_chain_id"`
-	L2ChainID              uint64         `json:"l2_chain_id"`
-	RollupCoreAddress      string         `json:"rollup_core_address"`
-	RollupProtocol         RollupProtocol `json:"rollup_protocol"`
-	AssertionsMappingSlot  string         `json:"assertions_mapping_slot"`
-	AssertionStatusOffset  uint8          `json:"assertion_status_offset"`
-	AssertionStartBlock    uint64         `json:"assertion_start_block"`
-	AssertionPollInterval  string         `json:"assertion_poll_interval"`
-	AssertionMaxBlockRange uint64         `json:"assertion_max_block_range"`
-	AttestorStatePath      string         `json:"attestor_state_path"`
-	NitroBinaryPath        string         `json:"nitro_binary_path"`
-	NitroBinarySHA256      string         `json:"nitro_binary_sha256"`
-	NitroArguments         []string       `json:"nitro_arguments"`
-	NitroWorkDir           string         `json:"nitro_work_dir"`
-	NitroDataDir           string         `json:"nitro_data_dir"`
-	NitroIPCPath           string         `json:"nitro_ipc_path"`
-	NitroStartupTimeout    string         `json:"nitro_startup_timeout"`
-	NitroShutdownTimeout   string         `json:"nitro_shutdown_timeout"`
+	GRPCListenAddress      string   `json:"grpc_listen_address"`
+	RuntimePollInterval    string   `json:"runtime_poll_interval"`
+	SrcChain               string   `json:"src_chain"`
+	L1RPCURL               string   `json:"l1_rpc_url"`
+	L1ChainID              uint64   `json:"l1_chain_id"`
+	L2ChainID              uint64   `json:"l2_chain_id"`
+	RollupCoreAddress      string   `json:"rollup_core_address"`
+	AssertionsMappingSlot  string   `json:"assertions_mapping_slot"`
+	AssertionStatusOffset  uint8    `json:"assertion_status_offset"`
+	AssertionStartBlock    uint64   `json:"assertion_start_block"`
+	AssertionPollInterval  string   `json:"assertion_poll_interval"`
+	AssertionMaxBlockRange uint64   `json:"assertion_max_block_range"`
+	AttestorStatePath      string   `json:"attestor_state_path"`
+	NitroBinaryPath        string   `json:"nitro_binary_path"`
+	NitroBinarySHA256      string   `json:"nitro_binary_sha256"`
+	NitroArguments         []string `json:"nitro_arguments"`
+	NitroWorkDir           string   `json:"nitro_work_dir"`
+	NitroDataDir           string   `json:"nitro_data_dir"`
+	NitroIPCPath           string   `json:"nitro_ipc_path"`
+	NitroStartupTimeout    string   `json:"nitro_startup_timeout"`
+	NitroShutdownTimeout   string   `json:"nitro_shutdown_timeout"`
 }
 
 // LoadDaemonConfig reads, validates, and resolves filesystem paths relative to
@@ -115,23 +102,11 @@ func (c DaemonConfig) Validate() error {
 		common.HexToAddress(c.RollupCoreAddress) == (common.Address{}) {
 		return errors.New("rollup_core_address must be a non-zero EVM address")
 	}
-	switch c.EffectiveRollupProtocol() {
-	case RollupProtocolBoLDV2:
-		if _, err := decodeHash32(c.AssertionsMappingSlot, "assertions_mapping_slot"); err != nil {
-			return err
-		}
-		if c.AssertionStatusOffset >= 32 {
-			return errors.New("assertion_status_offset must be between 0 and 31")
-		}
-	case RollupProtocolLegacyNitro:
-		// Legacy RollupCore exposes node lifecycle events and getNode(uint64);
-		// it does not have the BoLD _assertions mapping.
-	default:
-		return fmt.Errorf(
-			"rollup_protocol must be %q or %q",
-			RollupProtocolBoLDV2,
-			RollupProtocolLegacyNitro,
-		)
+	if _, err := decodeHash32(c.AssertionsMappingSlot, "assertions_mapping_slot"); err != nil {
+		return err
+	}
+	if c.AssertionStatusOffset >= 32 {
+		return errors.New("assertion_status_offset must be between 0 and 31")
 	}
 	if c.AssertionStartBlock == 0 {
 		return errors.New("assertion_start_block must be a non-zero RollupCore log scan start block")
@@ -172,15 +147,6 @@ func (c DaemonConfig) Validate() error {
 		return err
 	}
 	return nil
-}
-
-// EffectiveRollupProtocol preserves compatibility with pre-selector
-// configurations by treating an omitted value as BoLD v2.
-func (c DaemonConfig) EffectiveRollupProtocol() RollupProtocol {
-	if c.RollupProtocol == "" {
-		return RollupProtocolBoLDV2
-	}
-	return c.RollupProtocol
 }
 
 // RuntimePollDuration returns the fallback interval for reconciling Nitro's

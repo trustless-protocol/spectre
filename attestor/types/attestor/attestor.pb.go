@@ -84,14 +84,10 @@ type AttestedRoot struct {
 	// Source identifies the commitment mechanism, such as "game", "derived",
 	// or "assertion".
 	Source string `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
-	// Provenance carries the chain-specific on-chain object that the relayer
-	// must prove. At most one identifier can be present.
-	//
 	// Types that are valid to be assigned to Provenance:
 	//
 	//	*AttestedRoot_GameIndex
 	//	*AttestedRoot_AssertionHash
-	//	*AttestedRoot_LegacyNode
 	Provenance isAttestedRoot_Provenance `protobuf_oneof:"provenance"`
 	// Provisional is true while the commitment still awaits the chain-specific
 	// irreversible-finality check.
@@ -178,15 +174,6 @@ func (x *AttestedRoot) GetAssertionHash() []byte {
 	return nil
 }
 
-func (x *AttestedRoot) GetLegacyNode() *LegacyNode {
-	if x != nil {
-		if x, ok := x.Provenance.(*AttestedRoot_LegacyNode); ok {
-			return x.LegacyNode
-		}
-	}
-	return nil
-}
-
 func (x *AttestedRoot) GetProvisional() bool {
 	if x != nil {
 		return x.Provisional
@@ -216,71 +203,9 @@ type AttestedRoot_AssertionHash struct {
 	AssertionHash []byte `protobuf:"bytes,7,opt,name=assertion_hash,json=assertionHash,proto3,oneof"`
 }
 
-type AttestedRoot_LegacyNode struct {
-	// LegacyNode identifies a pre-BoLD Arbitrum Nitro node.
-	LegacyNode *LegacyNode `protobuf:"bytes,8,opt,name=legacy_node,json=legacyNode,proto3,oneof"`
-}
-
 func (*AttestedRoot_GameIndex) isAttestedRoot_Provenance() {}
 
 func (*AttestedRoot_AssertionHash) isAttestedRoot_Provenance() {}
-
-func (*AttestedRoot_LegacyNode) isAttestedRoot_Provenance() {}
-
-// LegacyNode identifies one pre-BoLD Nitro RollupCore node.
-type LegacyNode struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	// NodeNumber is the uint64 key in RollupCore's _nodes mapping.
-	NodeNumber uint64 `protobuf:"varint,1,opt,name=node_number,json=nodeNumber,proto3" json:"node_number,omitempty"`
-	// NodeHash is the hash indexed by the corresponding NodeCreated event.
-	NodeHash      []byte `protobuf:"bytes,2,opt,name=node_hash,json=nodeHash,proto3" json:"node_hash,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *LegacyNode) Reset() {
-	*x = LegacyNode{}
-	mi := &file_attestor_attestor_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *LegacyNode) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*LegacyNode) ProtoMessage() {}
-
-func (x *LegacyNode) ProtoReflect() protoreflect.Message {
-	mi := &file_attestor_attestor_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use LegacyNode.ProtoReflect.Descriptor instead.
-func (*LegacyNode) Descriptor() ([]byte, []int) {
-	return file_attestor_attestor_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *LegacyNode) GetNodeNumber() uint64 {
-	if x != nil {
-		return x.NodeNumber
-	}
-	return 0
-}
-
-func (x *LegacyNode) GetNodeHash() []byte {
-	if x != nil {
-		return x.NodeHash
-	}
-	return nil
-}
 
 // InfoRequest selects all configured chains.
 type InfoRequest struct {
@@ -291,7 +216,7 @@ type InfoRequest struct {
 
 func (x *InfoRequest) Reset() {
 	*x = InfoRequest{}
-	mi := &file_attestor_attestor_proto_msgTypes[2]
+	mi := &file_attestor_attestor_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -303,7 +228,7 @@ func (x *InfoRequest) String() string {
 func (*InfoRequest) ProtoMessage() {}
 
 func (x *InfoRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_attestor_attestor_proto_msgTypes[2]
+	mi := &file_attestor_attestor_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -316,7 +241,7 @@ func (x *InfoRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InfoRequest.ProtoReflect.Descriptor instead.
 func (*InfoRequest) Descriptor() ([]byte, []int) {
-	return file_attestor_attestor_proto_rawDescGZIP(), []int{2}
+	return file_attestor_attestor_proto_rawDescGZIP(), []int{1}
 }
 
 // ChainInfo reports one configured attestor.
@@ -346,7 +271,7 @@ type ChainInfo struct {
 
 func (x *ChainInfo) Reset() {
 	*x = ChainInfo{}
-	mi := &file_attestor_attestor_proto_msgTypes[3]
+	mi := &file_attestor_attestor_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -358,7 +283,7 @@ func (x *ChainInfo) String() string {
 func (*ChainInfo) ProtoMessage() {}
 
 func (x *ChainInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_attestor_attestor_proto_msgTypes[3]
+	mi := &file_attestor_attestor_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -371,7 +296,7 @@ func (x *ChainInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChainInfo.ProtoReflect.Descriptor instead.
 func (*ChainInfo) Descriptor() ([]byte, []int) {
-	return file_attestor_attestor_proto_rawDescGZIP(), []int{3}
+	return file_attestor_attestor_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *ChainInfo) GetSrcChain() string {
@@ -447,7 +372,7 @@ type InfoResponse struct {
 
 func (x *InfoResponse) Reset() {
 	*x = InfoResponse{}
-	mi := &file_attestor_attestor_proto_msgTypes[4]
+	mi := &file_attestor_attestor_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -459,7 +384,7 @@ func (x *InfoResponse) String() string {
 func (*InfoResponse) ProtoMessage() {}
 
 func (x *InfoResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_attestor_attestor_proto_msgTypes[4]
+	mi := &file_attestor_attestor_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -472,7 +397,7 @@ func (x *InfoResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use InfoResponse.ProtoReflect.Descriptor instead.
 func (*InfoResponse) Descriptor() ([]byte, []int) {
-	return file_attestor_attestor_proto_rawDescGZIP(), []int{4}
+	return file_attestor_attestor_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *InfoResponse) GetChains() []*ChainInfo {
@@ -496,7 +421,7 @@ type AttestedUpToRequest struct {
 
 func (x *AttestedUpToRequest) Reset() {
 	*x = AttestedUpToRequest{}
-	mi := &file_attestor_attestor_proto_msgTypes[5]
+	mi := &file_attestor_attestor_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -508,7 +433,7 @@ func (x *AttestedUpToRequest) String() string {
 func (*AttestedUpToRequest) ProtoMessage() {}
 
 func (x *AttestedUpToRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_attestor_attestor_proto_msgTypes[5]
+	mi := &file_attestor_attestor_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -521,7 +446,7 @@ func (x *AttestedUpToRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttestedUpToRequest.ProtoReflect.Descriptor instead.
 func (*AttestedUpToRequest) Descriptor() ([]byte, []int) {
-	return file_attestor_attestor_proto_rawDescGZIP(), []int{5}
+	return file_attestor_attestor_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *AttestedUpToRequest) GetSrcChain() string {
@@ -551,7 +476,7 @@ type AttestedUpToResponse struct {
 
 func (x *AttestedUpToResponse) Reset() {
 	*x = AttestedUpToResponse{}
-	mi := &file_attestor_attestor_proto_msgTypes[6]
+	mi := &file_attestor_attestor_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -563,7 +488,7 @@ func (x *AttestedUpToResponse) String() string {
 func (*AttestedUpToResponse) ProtoMessage() {}
 
 func (x *AttestedUpToResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_attestor_attestor_proto_msgTypes[6]
+	mi := &file_attestor_attestor_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -576,7 +501,7 @@ func (x *AttestedUpToResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttestedUpToResponse.ProtoReflect.Descriptor instead.
 func (*AttestedUpToResponse) Descriptor() ([]byte, []int) {
-	return file_attestor_attestor_proto_rawDescGZIP(), []int{6}
+	return file_attestor_attestor_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *AttestedUpToResponse) GetFound() bool {
@@ -609,7 +534,7 @@ type AttestedRootAtOrBelowRequest struct {
 
 func (x *AttestedRootAtOrBelowRequest) Reset() {
 	*x = AttestedRootAtOrBelowRequest{}
-	mi := &file_attestor_attestor_proto_msgTypes[7]
+	mi := &file_attestor_attestor_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -621,7 +546,7 @@ func (x *AttestedRootAtOrBelowRequest) String() string {
 func (*AttestedRootAtOrBelowRequest) ProtoMessage() {}
 
 func (x *AttestedRootAtOrBelowRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_attestor_attestor_proto_msgTypes[7]
+	mi := &file_attestor_attestor_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -634,7 +559,7 @@ func (x *AttestedRootAtOrBelowRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttestedRootAtOrBelowRequest.ProtoReflect.Descriptor instead.
 func (*AttestedRootAtOrBelowRequest) Descriptor() ([]byte, []int) {
-	return file_attestor_attestor_proto_rawDescGZIP(), []int{7}
+	return file_attestor_attestor_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *AttestedRootAtOrBelowRequest) GetSrcChain() string {
@@ -671,7 +596,7 @@ type AttestedRootAtOrBelowResponse struct {
 
 func (x *AttestedRootAtOrBelowResponse) Reset() {
 	*x = AttestedRootAtOrBelowResponse{}
-	mi := &file_attestor_attestor_proto_msgTypes[8]
+	mi := &file_attestor_attestor_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -683,7 +608,7 @@ func (x *AttestedRootAtOrBelowResponse) String() string {
 func (*AttestedRootAtOrBelowResponse) ProtoMessage() {}
 
 func (x *AttestedRootAtOrBelowResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_attestor_attestor_proto_msgTypes[8]
+	mi := &file_attestor_attestor_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -696,7 +621,7 @@ func (x *AttestedRootAtOrBelowResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AttestedRootAtOrBelowResponse.ProtoReflect.Descriptor instead.
 func (*AttestedRootAtOrBelowResponse) Descriptor() ([]byte, []int) {
-	return file_attestor_attestor_proto_rawDescGZIP(), []int{8}
+	return file_attestor_attestor_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *AttestedRootAtOrBelowResponse) GetFound() bool {
@@ -726,7 +651,7 @@ type WatchAttestedRequest struct {
 
 func (x *WatchAttestedRequest) Reset() {
 	*x = WatchAttestedRequest{}
-	mi := &file_attestor_attestor_proto_msgTypes[9]
+	mi := &file_attestor_attestor_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -738,7 +663,7 @@ func (x *WatchAttestedRequest) String() string {
 func (*WatchAttestedRequest) ProtoMessage() {}
 
 func (x *WatchAttestedRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_attestor_attestor_proto_msgTypes[9]
+	mi := &file_attestor_attestor_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -751,7 +676,7 @@ func (x *WatchAttestedRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchAttestedRequest.ProtoReflect.Descriptor instead.
 func (*WatchAttestedRequest) Descriptor() ([]byte, []int) {
-	return file_attestor_attestor_proto_rawDescGZIP(), []int{9}
+	return file_attestor_attestor_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *WatchAttestedRequest) GetSrcChain() string {
@@ -782,7 +707,7 @@ type WatchAttestedResponse struct {
 
 func (x *WatchAttestedResponse) Reset() {
 	*x = WatchAttestedResponse{}
-	mi := &file_attestor_attestor_proto_msgTypes[10]
+	mi := &file_attestor_attestor_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -794,7 +719,7 @@ func (x *WatchAttestedResponse) String() string {
 func (*WatchAttestedResponse) ProtoMessage() {}
 
 func (x *WatchAttestedResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_attestor_attestor_proto_msgTypes[10]
+	mi := &file_attestor_attestor_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -807,7 +732,7 @@ func (x *WatchAttestedResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WatchAttestedResponse.ProtoReflect.Descriptor instead.
 func (*WatchAttestedResponse) Descriptor() ([]byte, []int) {
-	return file_attestor_attestor_proto_rawDescGZIP(), []int{10}
+	return file_attestor_attestor_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *WatchAttestedResponse) GetRoot() *AttestedRoot {
@@ -835,7 +760,7 @@ type VerifyStateRootRequest struct {
 
 func (x *VerifyStateRootRequest) Reset() {
 	*x = VerifyStateRootRequest{}
-	mi := &file_attestor_attestor_proto_msgTypes[11]
+	mi := &file_attestor_attestor_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -847,7 +772,7 @@ func (x *VerifyStateRootRequest) String() string {
 func (*VerifyStateRootRequest) ProtoMessage() {}
 
 func (x *VerifyStateRootRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_attestor_attestor_proto_msgTypes[11]
+	mi := &file_attestor_attestor_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -860,7 +785,7 @@ func (x *VerifyStateRootRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyStateRootRequest.ProtoReflect.Descriptor instead.
 func (*VerifyStateRootRequest) Descriptor() ([]byte, []int) {
-	return file_attestor_attestor_proto_rawDescGZIP(), []int{11}
+	return file_attestor_attestor_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *VerifyStateRootRequest) GetBlockNumber() uint64 {
@@ -908,7 +833,7 @@ type VerifyStateRootResponse struct {
 
 func (x *VerifyStateRootResponse) Reset() {
 	*x = VerifyStateRootResponse{}
-	mi := &file_attestor_attestor_proto_msgTypes[12]
+	mi := &file_attestor_attestor_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -920,7 +845,7 @@ func (x *VerifyStateRootResponse) String() string {
 func (*VerifyStateRootResponse) ProtoMessage() {}
 
 func (x *VerifyStateRootResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_attestor_attestor_proto_msgTypes[12]
+	mi := &file_attestor_attestor_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -933,7 +858,7 @@ func (x *VerifyStateRootResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use VerifyStateRootResponse.ProtoReflect.Descriptor instead.
 func (*VerifyStateRootResponse) Descriptor() ([]byte, []int) {
-	return file_attestor_attestor_proto_rawDescGZIP(), []int{12}
+	return file_attestor_attestor_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *VerifyStateRootResponse) GetValid() bool {
@@ -968,26 +893,19 @@ var File_attestor_attestor_proto protoreflect.FileDescriptor
 
 const file_attestor_attestor_proto_rawDesc = "" +
 	"\n" +
-	"\x17attestor/attestor.proto\x12\battestor\"\xb6\x02\n" +
+	"\x17attestor/attestor.proto\x12\battestor\"\x83\x02\n" +
 	"\fAttestedRoot\x12&\n" +
 	"\x0fl2_block_number\x18\x01 \x01(\x04R\rl2BlockNumber\x12\x12\n" +
 	"\x04root\x18\x02 \x01(\fR\x04root\x12\x16\n" +
 	"\x06source\x18\x03 \x01(\tR\x06source\x12\x1f\n" +
 	"\n" +
 	"game_index\x18\x04 \x01(\x04H\x00R\tgameIndex\x12'\n" +
-	"\x0eassertion_hash\x18\a \x01(\fH\x00R\rassertionHash\x127\n" +
-	"\vlegacy_node\x18\b \x01(\v2\x14.attestor.LegacyNodeH\x00R\n" +
-	"legacyNode\x12 \n" +
+	"\x0eassertion_hash\x18\a \x01(\fH\x00R\rassertionHash\x12 \n" +
 	"\vprovisional\x18\x05 \x01(\bR\vprovisional\x12\x1f\n" +
 	"\vattested_at\x18\x06 \x01(\x03R\n" +
 	"attestedAtB\f\n" +
 	"\n" +
-	"provenance\"J\n" +
-	"\n" +
-	"LegacyNode\x12\x1f\n" +
-	"\vnode_number\x18\x01 \x01(\x04R\n" +
-	"nodeNumber\x12\x1b\n" +
-	"\tnode_hash\x18\x02 \x01(\fR\bnodeHash\"\r\n" +
+	"provenanceJ\x04\b\b\x10\t\"\r\n" +
 	"\vInfoRequest\"\xb4\x03\n" +
 	"\tChainInfo\x12\x1b\n" +
 	"\tsrc_chain\x18\x01 \x01(\tR\bsrcChain\x12)\n" +
@@ -1056,47 +974,45 @@ func file_attestor_attestor_proto_rawDescGZIP() []byte {
 }
 
 var file_attestor_attestor_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_attestor_attestor_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_attestor_attestor_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_attestor_attestor_proto_goTypes = []any{
 	(RunMode)(0),                          // 0: attestor.RunMode
 	(*AttestedRoot)(nil),                  // 1: attestor.AttestedRoot
-	(*LegacyNode)(nil),                    // 2: attestor.LegacyNode
-	(*InfoRequest)(nil),                   // 3: attestor.InfoRequest
-	(*ChainInfo)(nil),                     // 4: attestor.ChainInfo
-	(*InfoResponse)(nil),                  // 5: attestor.InfoResponse
-	(*AttestedUpToRequest)(nil),           // 6: attestor.AttestedUpToRequest
-	(*AttestedUpToResponse)(nil),          // 7: attestor.AttestedUpToResponse
-	(*AttestedRootAtOrBelowRequest)(nil),  // 8: attestor.AttestedRootAtOrBelowRequest
-	(*AttestedRootAtOrBelowResponse)(nil), // 9: attestor.AttestedRootAtOrBelowResponse
-	(*WatchAttestedRequest)(nil),          // 10: attestor.WatchAttestedRequest
-	(*WatchAttestedResponse)(nil),         // 11: attestor.WatchAttestedResponse
-	(*VerifyStateRootRequest)(nil),        // 12: attestor.VerifyStateRootRequest
-	(*VerifyStateRootResponse)(nil),       // 13: attestor.VerifyStateRootResponse
+	(*InfoRequest)(nil),                   // 2: attestor.InfoRequest
+	(*ChainInfo)(nil),                     // 3: attestor.ChainInfo
+	(*InfoResponse)(nil),                  // 4: attestor.InfoResponse
+	(*AttestedUpToRequest)(nil),           // 5: attestor.AttestedUpToRequest
+	(*AttestedUpToResponse)(nil),          // 6: attestor.AttestedUpToResponse
+	(*AttestedRootAtOrBelowRequest)(nil),  // 7: attestor.AttestedRootAtOrBelowRequest
+	(*AttestedRootAtOrBelowResponse)(nil), // 8: attestor.AttestedRootAtOrBelowResponse
+	(*WatchAttestedRequest)(nil),          // 9: attestor.WatchAttestedRequest
+	(*WatchAttestedResponse)(nil),         // 10: attestor.WatchAttestedResponse
+	(*VerifyStateRootRequest)(nil),        // 11: attestor.VerifyStateRootRequest
+	(*VerifyStateRootResponse)(nil),       // 12: attestor.VerifyStateRootResponse
 }
 var file_attestor_attestor_proto_depIdxs = []int32{
-	2,  // 0: attestor.AttestedRoot.legacy_node:type_name -> attestor.LegacyNode
-	1,  // 1: attestor.ChainInfo.attested_up_to:type_name -> attestor.AttestedRoot
-	1,  // 2: attestor.ChainInfo.attested_up_to_provisional:type_name -> attestor.AttestedRoot
-	4,  // 3: attestor.InfoResponse.chains:type_name -> attestor.ChainInfo
-	1,  // 4: attestor.AttestedUpToResponse.root:type_name -> attestor.AttestedRoot
-	1,  // 5: attestor.AttestedRootAtOrBelowResponse.root:type_name -> attestor.AttestedRoot
-	1,  // 6: attestor.WatchAttestedResponse.root:type_name -> attestor.AttestedRoot
-	0,  // 7: attestor.VerifyStateRootRequest.run_mode:type_name -> attestor.RunMode
-	3,  // 8: attestor.AttestorService.Info:input_type -> attestor.InfoRequest
-	6,  // 9: attestor.AttestorService.AttestedUpTo:input_type -> attestor.AttestedUpToRequest
-	8,  // 10: attestor.AttestorService.AttestedRootAtOrBelow:input_type -> attestor.AttestedRootAtOrBelowRequest
-	10, // 11: attestor.AttestorService.WatchAttested:input_type -> attestor.WatchAttestedRequest
-	12, // 12: attestor.AttestorService.VerifyStateRoot:input_type -> attestor.VerifyStateRootRequest
-	5,  // 13: attestor.AttestorService.Info:output_type -> attestor.InfoResponse
-	7,  // 14: attestor.AttestorService.AttestedUpTo:output_type -> attestor.AttestedUpToResponse
-	9,  // 15: attestor.AttestorService.AttestedRootAtOrBelow:output_type -> attestor.AttestedRootAtOrBelowResponse
-	11, // 16: attestor.AttestorService.WatchAttested:output_type -> attestor.WatchAttestedResponse
-	13, // 17: attestor.AttestorService.VerifyStateRoot:output_type -> attestor.VerifyStateRootResponse
-	13, // [13:18] is the sub-list for method output_type
-	8,  // [8:13] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	1,  // 0: attestor.ChainInfo.attested_up_to:type_name -> attestor.AttestedRoot
+	1,  // 1: attestor.ChainInfo.attested_up_to_provisional:type_name -> attestor.AttestedRoot
+	3,  // 2: attestor.InfoResponse.chains:type_name -> attestor.ChainInfo
+	1,  // 3: attestor.AttestedUpToResponse.root:type_name -> attestor.AttestedRoot
+	1,  // 4: attestor.AttestedRootAtOrBelowResponse.root:type_name -> attestor.AttestedRoot
+	1,  // 5: attestor.WatchAttestedResponse.root:type_name -> attestor.AttestedRoot
+	0,  // 6: attestor.VerifyStateRootRequest.run_mode:type_name -> attestor.RunMode
+	2,  // 7: attestor.AttestorService.Info:input_type -> attestor.InfoRequest
+	5,  // 8: attestor.AttestorService.AttestedUpTo:input_type -> attestor.AttestedUpToRequest
+	7,  // 9: attestor.AttestorService.AttestedRootAtOrBelow:input_type -> attestor.AttestedRootAtOrBelowRequest
+	9,  // 10: attestor.AttestorService.WatchAttested:input_type -> attestor.WatchAttestedRequest
+	11, // 11: attestor.AttestorService.VerifyStateRoot:input_type -> attestor.VerifyStateRootRequest
+	4,  // 12: attestor.AttestorService.Info:output_type -> attestor.InfoResponse
+	6,  // 13: attestor.AttestorService.AttestedUpTo:output_type -> attestor.AttestedUpToResponse
+	8,  // 14: attestor.AttestorService.AttestedRootAtOrBelow:output_type -> attestor.AttestedRootAtOrBelowResponse
+	10, // 15: attestor.AttestorService.WatchAttested:output_type -> attestor.WatchAttestedResponse
+	12, // 16: attestor.AttestorService.VerifyStateRoot:output_type -> attestor.VerifyStateRootResponse
+	12, // [12:17] is the sub-list for method output_type
+	7,  // [7:12] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_attestor_attestor_proto_init() }
@@ -1107,7 +1023,6 @@ func file_attestor_attestor_proto_init() {
 	file_attestor_attestor_proto_msgTypes[0].OneofWrappers = []any{
 		(*AttestedRoot_GameIndex)(nil),
 		(*AttestedRoot_AssertionHash)(nil),
-		(*AttestedRoot_LegacyNode)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1115,7 +1030,7 @@ func file_attestor_attestor_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_attestor_attestor_proto_rawDesc), len(file_attestor_attestor_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   13,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

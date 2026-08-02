@@ -163,3 +163,67 @@ func TestValidateSharedEthClients(t *testing.T) {
 		}
 	})
 }
+
+// TestParseArbBoldProfile_ProtocolType pins the discriminant check that replaced the
+// bold_v2/legacy_nitro dispatch switch. A profile left over from the legacy Nitro path
+// must be REJECTED, not silently parsed as BoLD: its protocol.value holds node-lifecycle
+// slots, so a permissive parse would build a header builder pointed at storage slots
+// that mean something else entirely, and fail much later as an unexplained proof error.
+func TestParseArbBoldProfile_ProtocolType(t *testing.T) {
+	const common = `"common":{"l2_router":"0x645280885749dC97Ea461DE280Eb3273C91D36Df",` +
+		`"ethereum_client":{"client_id":"08-wasm-0"}},` +
+		`"rollup":"0x042B2E6C5E99d4c521bd49beeD5E99651D9B0Cf4"`
+
+	cases := []struct {
+		name       string
+		profile    string
+		wantErr    bool
+		wantInErr  string
+		wantSlotHi byte // first byte of assertions_mapping_slot, on success
+	}{
+		{
+			name: "bold_v2 parses",
+			profile: `{` + common + `,"protocol":{"type":"bold_v2","value":{` +
+				`"assertions_mapping_slot":"0x7500000000000000000000000000000000000000000000000000000000000000"}}}`,
+			wantSlotHi: 0x75,
+		},
+		{
+			name: "legacy_nitro is rejected and named",
+			profile: `{` + common + `,"protocol":{"type":"legacy_nitro","value":{` +
+				`"node_lifecycle_slot":"0x0000000000000000000000000000000000000000000000000000000000000075"}}}`,
+			wantErr:   true,
+			wantInErr: "legacy_nitro",
+		},
+		{
+			name:      "absent type is rejected without printing an empty string",
+			profile:   `{` + common + `,"protocol":{"value":{"assertions_mapping_slot":"0x75"}}}`,
+			wantErr:   true,
+			wantInErr: "<absent>",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseArbBoldProfile(json.RawMessage(tc.profile))
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("expected a rejection")
+				}
+				if !strings.Contains(err.Error(), tc.wantInErr) {
+					t.Fatalf("error %q does not name %q", err, tc.wantInErr)
+				}
+				if !strings.Contains(err.Error(), "bold_v2") {
+					t.Fatalf("error %q does not say what is expected", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if got.AssertionsMappingSlot[0] != tc.wantSlotHi {
+				t.Fatalf("assertions_mapping_slot[0] = %#x, want %#x",
+					got.AssertionsMappingSlot[0], tc.wantSlotHi)
+			}
+		})
+	}
+}

@@ -18,8 +18,7 @@ const (
 	SourceGame = "game"
 
 	// SourceAssertion marks an Arbitrum commitment selected from a RollupCore
-	// assertion or legacy node and independently checked against the local
-	// Nitro replica.
+	// assertion and independently checked against the local Nitro replica.
 	SourceAssertion = "assertion"
 
 	attestedRootStateVersion = 1
@@ -43,12 +42,10 @@ type AttestedRoot struct {
 	L2BlockHash        common.Hash `json:"l2_block_hash,omitempty"`
 	L1BlockNumber      uint64      `json:"l1_block_number,omitempty"`
 	AssertionConfirmed bool        `json:"assertion_confirmed,omitempty"`
-	LegacyNodeNumber   uint64      `json:"legacy_node_number,omitempty"`
 }
 
-// ProposedAssertion is a finalized-L1 BoLD AssertionCreated or legacy
-// NodeCreated event waiting for the local Nitro replica to reach and verify its
-// committed L2 block.
+// ProposedAssertion is a finalized-L1 BoLD AssertionCreated event waiting for
+// the local Nitro replica to reach and verify its committed L2 block.
 type ProposedAssertion struct {
 	AssertionHash    common.Hash `json:"assertion_hash"`
 	ParentHash       common.Hash `json:"parent_hash"`
@@ -56,7 +53,6 @@ type ProposedAssertion struct {
 	InboxAccumulator common.Hash `json:"inbox_accumulator"`
 	L1BlockNumber    uint64      `json:"l1_block_number"`
 	Confirmed        bool        `json:"confirmed,omitempty"`
-	LegacyNodeNumber uint64      `json:"legacy_node_number,omitempty"`
 }
 
 // AssertionMismatch is a terminal local verdict that an L1 assertion did not
@@ -268,8 +264,7 @@ func (s *AttestedRootStore) RecordProposal(proposal ProposedAssertion) error {
 		}
 		if existing.ParentHash != proposal.ParentHash ||
 			existing.L2BlockHash != proposal.L2BlockHash ||
-			existing.InboxAccumulator != proposal.InboxAccumulator ||
-			existing.LegacyNodeNumber != proposal.LegacyNodeNumber {
+			existing.InboxAccumulator != proposal.InboxAccumulator {
 			return fmt.Errorf("assertion %s was observed with conflicting event data", proposal.AssertionHash)
 		}
 		existing.Confirmed = existing.Confirmed || proposal.Confirmed
@@ -286,54 +281,6 @@ func (s *AttestedRootStore) RecordProposal(proposal ProposedAssertion) error {
 		}
 	}
 	s.state.Proposals = append(s.state.Proposals, proposal)
-	return nil
-}
-
-// MarkLegacyNodeConfirmed records a finalized legacy NodeConfirmed event. The
-// event identifies its proposal by node number rather than node hash.
-func (s *AttestedRootStore) MarkLegacyNodeConfirmed(
-	nodeNumber uint64,
-	l2BlockHash common.Hash,
-) error {
-	if nodeNumber == 0 {
-		return errors.New("confirmed legacy node number must not be zero")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for index := range s.state.Proposals {
-		proposal := &s.state.Proposals[index]
-		if proposal.LegacyNodeNumber != nodeNumber {
-			continue
-		}
-		if proposal.L2BlockHash != l2BlockHash {
-			return fmt.Errorf(
-				"confirmed legacy node %d block hash %s does not match proposal %s",
-				nodeNumber,
-				l2BlockHash,
-				proposal.L2BlockHash,
-			)
-		}
-		proposal.Confirmed = true
-		return nil
-	}
-	for index := range s.state.Attested {
-		entry := &s.state.Attested[index]
-		if entry.LegacyNodeNumber != nodeNumber {
-			continue
-		}
-		if entry.L2BlockHash != l2BlockHash {
-			return fmt.Errorf(
-				"confirmed legacy node %d block hash %s does not match attested %s",
-				nodeNumber,
-				l2BlockHash,
-				entry.L2BlockHash,
-			)
-		}
-		entry.AssertionConfirmed = true
-		return nil
-	}
-	// A confirmation can legitimately refer to a node created before the
-	// configured lookback. It is irrelevant to this feed.
 	return nil
 }
 
@@ -441,7 +388,6 @@ func (s *AttestedRootStore) RecordAssertionAttestation(
 		L2BlockHash:        commitment.BlockHash,
 		L1BlockNumber:      proposal.L1BlockNumber,
 		AssertionConfirmed: proposal.Confirmed,
-		LegacyNodeNumber:   proposal.LegacyNodeNumber,
 	})
 	return nil
 }
@@ -474,28 +420,6 @@ func (s *AttestedRootStore) RemoveAssertion(assertionHash common.Hash) {
 		}
 	}
 	s.state.Attested = kept
-}
-
-// RemoveLegacyNode removes a rejected legacy node from pending and attested
-// state. NodeRejected identifies the node by number and does not carry its
-// node hash.
-func (s *AttestedRootStore) RemoveLegacyNode(nodeNumber uint64) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	proposals := s.state.Proposals[:0]
-	for _, proposal := range s.state.Proposals {
-		if proposal.LegacyNodeNumber != nodeNumber {
-			proposals = append(proposals, proposal)
-		}
-	}
-	s.state.Proposals = proposals
-	attested := s.state.Attested[:0]
-	for _, entry := range s.state.Attested {
-		if entry.LegacyNodeNumber != nodeNumber {
-			attested = append(attested, entry)
-		}
-	}
-	s.state.Attested = attested
 }
 
 // RecordAssertionMismatch removes a rejected assertion and retains an alerting
