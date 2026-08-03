@@ -621,6 +621,72 @@ works at all — both are easy to leave at their placeholder and then see nothin
 | Gov proposal ends `REJECTED` without votes | `wasm.sh` resolves the proposal id after a fixed `sleep`; if indexing is slower the id is empty and the vote step is skipped. Vote manually before the (short devnet) voting period ends. |
 | `forge script` fails `insufficient funds ... have 0` | The deployer has no balance on the L2 — use an L2-funded account (step 4). |
 
+## Local Cosmos ↔ Base E2E
+
+Same shape as the OP flow, with three differences that will bite if you copy the OP
+steps and rename the scripts.
+
+**Base is not vanilla OP Stack.** `base/base` ships one unified Rust node (execution
+and consensus in a single process) plus its own batcher, so `run_base_node.sh` runs
+base's own images from a pinned clone rather than optimism-package. It still speaks
+the op-node RPC namespace, which is why the attestor is shared.
+
+**Base gets its own enclave by default** (`base-devnet`), so a Base run cannot
+disturb an OP or Arbitrum devnet. Pass `ENCLAVE=op-devnet` to settle it on the same
+L1 as those instead.
+
+**Base and Optimism are the same chain type to the relayer.** `src_chain` /
+`dst_chain` stay `opstack` — `cmd/main.go` accepts only `cosmos | ethereum | opstack
+| arbitrum`. The two are told apart by module **name** and client id, which is why
+the deploy step below needs `MODULE_NAME`.
+
+```bash
+# 1. L1 (Fulu) + Base L2. Brings the L1 up via run_eth_node.sh if the enclave does
+#    not exist. Ends with .base-devnet-run/attestor.env written.
+./scripts/local/run_base_node.sh
+
+# 2. Attestor. run_base_attestor.sh is a symlink to run_op_attestor.sh; it picks
+#    .base-devnet-run/attestor.env from its own name, so do NOT call
+#    run_op_attestor.sh here — that one attaches to the OP devnet.
+./scripts/local/run_base_attestor.sh
+
+# 3. Cosmos node, then gov-store BOTH light-client wasms: the Ethereum client
+#    (L2 clients authenticate L1 through it) and the Base client.
+./scripts/local/run_cosmos_node.sh
+./scripts/local/wasm.sh          # -> ETH client checksum
+./scripts/local/wasm_base.sh     # -> Base client checksum
+
+# 4. Deploy the L2 IBC contracts onto Base. MODULE_NAME is required: matching on
+#    dst_chain alone would also match the Optimism module.
+L2_ENV_FILE=.base-devnet-run/attestor.env MODULE_NAME=cosmos-to-base \
+DST_CHAIN=base ./scripts/local/deploy_l2_contracts.sh
+
+# 5. Create the clients. Copy relayer/base-l2-config.example.json first and fill in
+#    the two checksums from step 3 (top-level is the BASE client as hex;
+#    ethereum_client.wasm_checksum is the ETH client as a byte array).
+cd relayer && go build -o relayer ./cmd
+./relayer create-clients-cosmos --config config.json \
+    --wasm-checksum <eth-hex> --l2-config base-l2-config.json
+./relayer create-clients-eth --config config.json \
+    --source base-client-0 --trust-level 2/3
+
+# 6. Relay.
+./relayer start --config config.json
+```
+
+Everything in the "Local Cosmos ↔ OP E2E" section about the attestor's
+`disable_derived_roots`, the ICS26Router relayer role, and `--absolute-timeouts` on
+the test transfer applies unchanged — Base uses the same attestor and the same L2
+contracts.
+
+Useful:
+
+```bash
+./scripts/local/run_base_node.sh --status   # are the Base services up
+./scripts/local/run_base_node.sh --reset    # redeploy Base only; L1 preserved
+./scripts/local/run_base_node.sh --stop     # stop Base, leave the L1 running
+kurtosis enclave rm -f base-devnet          # remove the L1 and everything on it
+```
 ## Contracts
 
 Core IBC protocol contracts:

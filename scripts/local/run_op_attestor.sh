@@ -34,7 +34,9 @@
 #   OPTIMISM_PORTAL / DISPUTE_GAME_FACTORY / RESPECTED_GAME_TYPE
 #       (read fresh from the chain via `cast` when unset; see resolve step)
 #   DATADIR ($RUN_DIR/op-reth-data)  L1_RPC_KIND (standard)
-#   RUN_DIR (.op-attestor-run)      logs, pids, jwt, config.json, state file
+#   ATTESTOR_RUN_DIR (.op-attestor-run)  logs, pids, jwt, config.json, state
+#       file. Legacy RUN_DIR is still honoured, but prefer ATTESTOR_RUN_DIR: the
+#       devnet bring-up scripts use RUN_DIR for their own artifacts.
 #   REPLICA_WAIT_SECS (300)         max wait for optimism_syncStatus
 
 set -euo pipefail
@@ -44,11 +46,21 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPO_ROOT=$PWD
 
-# Auto-source the local devnet handoff (written by run_optimism_node.sh) when the
-# caller hasn't wired the env themselves — forgetting to `source` it was a
-# recurring foot-gun. An explicit OP_NODE_RPC_URL means the caller brought
-# their own environment; leave it untouched.
-DEVNET_ENV=$REPO_ROOT/.op-devnet-run/attestor.env
+# Auto-source the local devnet handoff when the caller hasn't wired the env
+# themselves — forgetting to `source` it was a recurring foot-gun. An explicit
+# OP_NODE_RPC_URL means the caller brought their own environment; leave it
+# untouched.
+#
+# Which handoff depends on how this script was invoked: Base runs the very same
+# OP Stack attestor (base-node keeps the op-node RPC namespace), so
+# run_base_attestor.sh is a symlink to this script — and a script called
+# "base" must not silently attach to the OP devnet. Override DEVNET_ENV to pick
+# a specific stack regardless of the name used.
+case "$(basename "$0")" in
+    *base*) DEFAULT_DEVNET_ENV=$REPO_ROOT/.base-devnet-run/attestor.env ;;
+    *) DEFAULT_DEVNET_ENV=$REPO_ROOT/.op-devnet-run/attestor.env ;;
+esac
+DEVNET_ENV=${DEVNET_ENV:-$DEFAULT_DEVNET_ENV}
 if [ -z "${OP_NODE_RPC_URL:-}" ] && [ -f "$DEVNET_ENV" ]; then
     printf '[run_op_attestor] sourcing %s\n' "$DEVNET_ENV"
     # shellcheck disable=SC1090
@@ -67,7 +79,12 @@ LOOKBACK_BLOCKS=${LOOKBACK_BLOCKS:-600}
 DERIVED_GAP_BLOCKS=${DERIVED_GAP_BLOCKS:-150}
 DISABLE_DERIVED_ROOTS=${DISABLE_DERIVED_ROOTS:-true}
 L1_RPC_KIND=${L1_RPC_KIND:-standard}
-RUN_DIR=${RUN_DIR:-$REPO_ROOT/.op-attestor-run}
+# ATTESTOR_RUN_DIR takes precedence over the legacy RUN_DIR: the devnet bring-up
+# scripts use RUN_DIR for their OWN artifacts, so a handoff that exports it into
+# the caller's shell sends the next bring-up's package clone, downloads and
+# handoff into this attestor's directory. Handoffs export ATTESTOR_RUN_DIR
+# instead; RUN_DIR still works for anything that already sets it.
+RUN_DIR=${ATTESTOR_RUN_DIR:-${RUN_DIR:-$REPO_ROOT/.op-attestor-run}}
 REPLICA_WAIT_SECS=${REPLICA_WAIT_SECS:-300}
 
 : "${L1_RPC_URL:?L1_RPC_URL is required (Ethereum L1 execution RPC)}"

@@ -7,6 +7,18 @@
 participants:
   - el_type: geth
     cl_type: lighthouse
+    # EIP-7825 (Osaka/Fulu) caps every transaction — and every eth_call, which is
+    # validated the same way — at 2^24 = 16,777,216 gas. geth still defaults
+    # --rpc.gascap to 50,000,000 and substitutes it for calls that omit `gas`, so
+    # on a Fulu chain EVERY gas-less eth_call is auto-assigned 50M and rejected
+    # with "transaction gas limit too high (cap: 16777216, tx: 50000000)". That
+    # hits abigen bindings in particular: bind.CallOpts has no Gas field
+    # (go-ethereum accounts/abi/bind/v2/base.go), so the OP/Base attestors cannot
+    # work around it — DisputeGameFactory.gameCount fails at bootstrap. Clamp the
+    # cap to the EIP-7825 limit. Verified on this L1: gas 16777216 returns a
+    # result, 16777217 is rejected.
+    el_extra_params:
+      - --rpc.gascap=16777216
     # PeerDAS: the single node must custody ALL data columns to produce and
     # reconstruct blob blocks, and to satisfy the package's "Fulu needs a
     # supernode" validation.

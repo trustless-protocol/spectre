@@ -142,6 +142,57 @@
           }
         }
       }
+    },
+    {
+      "name": "cosmos-to-base",
+      "src_chain": "cosmos",
+      "dst_chain": "opstack",
+      "config": {
+        "cosmos_wasm_client_id": "",
+        "eth_rpc_url": "http://127.0.0.1:8545",
+        "eth_ws_url": "ws://127.0.0.1:8546",
+        "fetch_timeout": 15,
+        "spectre_client": "",
+        "ics26_address": "0x1111111111111111111111111111111111111111",
+        "ics26_client_id": "base-client-0",
+        "membership": "0x2222222222222222222222222222222222222222",
+        "misbehaviour": "0x3333333333333333333333333333333333333333",
+        "tm_rpc_url": "http://127.0.0.1:26657",
+        "clock_drift": 60,
+        "app_hash_wait_retries": 30,
+        "app_hash_wait_interval_seconds": 1,
+        "update_client": "0x4444444444444444444444444444444444444444",
+        "signature_verifier": "0x5555555555555555555555555555555555555555",
+        "rotation_threshold": "5/6"
+      }
+    },
+    {
+      "name": "base-to-cosmos",
+      "src_chain": "opstack",
+      "dst_chain": "cosmos",
+      "config": {
+        "l1_rpc_url": "http://127.0.0.1:8545",
+        "l2_rpc_url": "http://127.0.0.1:8545",
+        "op_node_rpc_url": "http://127.0.0.1:9547",
+        "eth_beacon_api_url": "http://127.0.0.1:32101",
+        "tm_rpc_url": "http://127.0.0.1:26657",
+        "attestor_addr": "127.0.0.1:3001",
+        "attestor_src_chain": "basedev",
+        "l2_wasm_client_id": "08-wasm-3",
+        "l2_ics26_client_id": "base-client-0",
+        "head_kind": "safe",
+        "rollup_profile": {
+          "common": {
+            "l2_router": "0x1111111111111111111111111111111111111111",
+            "ethereum_client": {
+              "client_id": "08-wasm-0"
+            },
+            "l2_chain_id": 84532
+          },
+          "dispute_game_factory": "0x6666666666666666666666666666666666666666",
+          "game_list_slot": "0x0000000000000000000000000000000000000000000000000000000000000068"
+        }
+      }
     }
   ],
   "batch": {

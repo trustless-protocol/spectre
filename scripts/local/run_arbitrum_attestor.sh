@@ -32,7 +32,9 @@
 #   RUNTIME_POLL_INTERVAL (2s)
 #   ASSERTION_POLL_INTERVAL (2s)
 #   ASSERTION_MAX_BLOCK_RANGE (2000)
-#   RUN_DIR (.arbitrum-attestor-run)
+#   ATTESTOR_RUN_DIR (.arbitrum-attestor-run) — legacy RUN_DIR still honoured,
+#       but prefer ATTESTOR_RUN_DIR: the devnet bring-up scripts use RUN_DIR for
+#       their own artifacts
 #   STARTUP_WAIT_SECS (600)
 #   ATTESTOR_DOCKER_IMAGE (fast-ibc-arbitrum-attestor:local)
 #   ATTESTOR_NITRO_IMAGE (offchainlabs/nitro-node:v3.11.2-3599aca)
@@ -60,7 +62,12 @@ GRPC_PORT=${GRPC_PORT:-3001}
 RUNTIME_POLL_INTERVAL=${RUNTIME_POLL_INTERVAL:-2s}
 ASSERTION_POLL_INTERVAL=${ASSERTION_POLL_INTERVAL:-2s}
 ASSERTION_MAX_BLOCK_RANGE=${ASSERTION_MAX_BLOCK_RANGE:-2000}
-RUN_DIR=${RUN_DIR:-$REPO_ROOT/.arbitrum-attestor-run}
+# ATTESTOR_RUN_DIR takes precedence over the legacy RUN_DIR: the devnet bring-up
+# scripts use RUN_DIR for their OWN artifacts, so a handoff that exports it into
+# the caller's shell sends the next bring-up's package clone, downloads and
+# handoff into this attestor's directory. Handoffs export ATTESTOR_RUN_DIR
+# instead; RUN_DIR still works for anything that already sets it.
+RUN_DIR=${ATTESTOR_RUN_DIR:-${RUN_DIR:-$REPO_ROOT/.arbitrum-attestor-run}}
 STARTUP_WAIT_SECS=${STARTUP_WAIT_SECS:-600}
 ATTESTOR_DOCKER_IMAGE=${ATTESTOR_DOCKER_IMAGE:-fast-ibc-arbitrum-attestor:local}
 ATTESTOR_NITRO_IMAGE=${ATTESTOR_NITRO_IMAGE:-offchainlabs/nitro-node:v3.11.2-3599aca}

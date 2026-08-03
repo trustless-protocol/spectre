@@ -18,10 +18,16 @@ set -euxo pipefail
 #   3. the stack handoff for DST_CHAIN is sourced automatically:
 #        opstack   -> .op-devnet-run/attestor.env       (L2_RPC_URL)
 #        arbitrum  -> .arbitrum-devnet-run/attestor.env  (L2_RPC_URL)
+#        base      -> .base-devnet-run/attestor.env      (L2_RPC_URL)
 #
 # Env:
 #   DST_CHAIN (opstack)                 which cosmos_to_l2 module to patch
 #                                       (matched on src_chain=cosmos + dst_chain)
+#   MODULE_NAME                         patch the module with this `name` instead.
+#                                       Needed for Base: it runs the OP Stack, so
+#                                       its modules carry dst_chain=opstack and are
+#                                       indistinguishable from Optimism's by chain
+#                                       alone. Set MODULE_NAME=cosmos-to-base.
 #   RELAYER_CONFIG                      relayer config to patch
 #                                       (default: relayer/config.example.json)
 #   L2_RPC / L2_ENV_FILE                see endpoint source above
@@ -48,7 +54,8 @@ if [ -z "${L2_RPC:-}" ]; then
         case "$DST_CHAIN" in
             opstack) L2_ENV_FILE=$REPO_ROOT/.op-devnet-run/attestor.env ;;
             arbitrum) L2_ENV_FILE=$REPO_ROOT/.arbitrum-devnet-run/attestor.env ;;
-            *) echo "ERROR: unknown DST_CHAIN=$DST_CHAIN (want opstack|arbitrum)" >&2; exit 1 ;;
+            base) L2_ENV_FILE=$REPO_ROOT/.base-devnet-run/attestor.env ;;
+            *) echo "ERROR: unknown DST_CHAIN=$DST_CHAIN (want opstack|arbitrum|base)" >&2; exit 1 ;;
         esac
     fi
     [ -f "$L2_ENV_FILE" ] || {
@@ -80,12 +87,25 @@ echo "L2_WS:     ${L2_WS:-}"
 echo "deployer:  $L2_DEPLOYER_ADDRESS"
 
 # Fail loud if there is no cosmos_to_l2 module to patch, BEFORE spending a deploy.
-MATCHES=$(jq --arg DST "$DST_CHAIN" \
-  '[.modules[] | select(.src_chain=="cosmos" and .dst_chain==$DST)] | length' \
-  "$RELAYER_CONFIG")
-if [ "$MATCHES" -eq 0 ]; then
-    echo "ERROR: no cosmos_to_l2 module with src_chain=cosmos dst_chain=$DST_CHAIN in $RELAYER_CONFIG; add one (see the cosmos-to-op example) before deploying" >&2
-    exit 1
+if [ -n "${MODULE_NAME:-}" ]; then
+    MATCHES=$(jq --arg N "$MODULE_NAME" '[.modules[] | select(.name==$N)] | length' "$RELAYER_CONFIG")
+    [ "$MATCHES" -eq 0 ] && {
+        echo "ERROR: no module named \"$MODULE_NAME\" in $RELAYER_CONFIG" >&2; exit 1; }
+    [ "$MATCHES" -gt 1 ] && {
+        echo "ERROR: $MATCHES modules named \"$MODULE_NAME\" in $RELAYER_CONFIG; names must be unique" >&2; exit 1; }
+else
+    MATCHES=$(jq --arg DST "$DST_CHAIN" --arg NAME "${MODULE_NAME:-}" \
+      '[.modules[] | select(.src_chain=="cosmos" and .dst_chain==$DST)] | length' \
+      "$RELAYER_CONFIG")
+    if [ "$MATCHES" -eq 0 ]; then
+        echo "ERROR: no cosmos_to_l2 module with src_chain=cosmos dst_chain=$DST_CHAIN in $RELAYER_CONFIG; add one (see the cosmos-to-op example) before deploying" >&2
+        exit 1
+    fi
+    if [ "$MATCHES" -gt 1 ]; then
+        echo "ERROR: $MATCHES modules match src_chain=cosmos dst_chain=$DST_CHAIN — Base and Optimism both use dst_chain=opstack." >&2
+        echo "  Disambiguate with MODULE_NAME=<module name>, e.g. MODULE_NAME=cosmos-to-base" >&2
+        exit 1
+    fi
 fi
 
 # ------------------------------------------------------------------ deploy ---
@@ -121,7 +141,7 @@ echo "MISBEHAVIOUR:       $MISBEHAVIOUR_ADDRESS"
 # any other L2 family untouched). spectre_client stays empty — create-clients-eth
 # fills it once it deploys the SpectreClient against a fresh Cosmos genesis.
 jq \
-  --arg DST "$DST_CHAIN" \
+  --arg DST "$DST_CHAIN" --arg NAME "${MODULE_NAME:-}" \
   --arg RPC "$L2_RPC" \
   --arg WS "${L2_WS:-}" \
   --arg ICS26 "$ICS26_ADDRESS" \
@@ -130,7 +150,7 @@ jq \
   --arg UPCL "$UPDATE_CLIENT_ADDRESS" \
   --arg MIS "$MISBEHAVIOUR_ADDRESS" '
     .modules |= map(
-      if .src_chain == "cosmos" and .dst_chain == $DST then
+      if (if $NAME != "" then .name == $NAME else .src_chain == "cosmos" and .dst_chain == $DST end) then
           .config.eth_rpc_url = $RPC
         | (if $WS != "" then .config.eth_ws_url = $WS else . end)
         | .config.ics26_address = $ICS26

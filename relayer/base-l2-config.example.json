@@ -1,0 +1,33 @@
+{
+  "_comment": [
+    "Template for `create-clients-cosmos --l2-config` on BASE.",
+    "",
+    "Base runs the OP Stack, so src_chain/dst_chain stay \"opstack\" in config.json \u2014",
+    "the relayer accepts only cosmos|ethereum|opstack|arbitrum (cmd/main.go). Base and",
+    "Optimism are told apart by module NAME and client id, not by chain type. That is",
+    "also why deploy_l2_contracts.sh needs MODULE_NAME=cosmos-to-base.",
+    "",
+    "wasm_checksum (top level) is the BASE client's, a hex string, from wasm_base.sh.",
+    "rollup_profile.common.ethereum_client.wasm_checksum is the ETHEREUM client's,",
+    "as a BYTE ARRAY \u2014 two clients, two encodings. Convert with:",
+    "  python3 -c \"print(list(bytes.fromhex('<checksum-hex>')))\"",
+    "",
+    "Do NOT add relayer-only tuning fields to rollup_profile: it is sent verbatim into",
+    "MsgCreateClient and the Rust verifier rejects unknown fields (#316)."
+  ],
+  "wasm_checksum": "<hex checksum of the Base client wasm, from `gaiad q ibc-wasm checksums`>",
+  "l2_rpc_url": "http://127.0.0.1:8545",
+  "rollup_profile": {
+    "common": {
+      "l2_router": "0x1111111111111111111111111111111111111111",
+      "ethereum_client": {
+        "client_id": "08-wasm-0"
+      },
+      "l2_chain_id": 84532
+    },
+    "dispute_game_factory": "0x6666666666666666666666666666666666666666",
+    "game_list_slot": "0x0000000000000000000000000000000000000000000000000000000000000068"
+  },
+  "bootstrap_block": 0,
+  "counterparty_client_id": "base-client-0"
+}

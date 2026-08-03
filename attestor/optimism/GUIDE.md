@@ -312,7 +312,10 @@ replica with `OP_NODE_RPC_URL=...`, or let it start op-reth + op-node itself
 (`OP_RETH_BIN`/`OP_NODE_BIN`). It resolves the factory + game type fresh from
 the chain via `cast`, generates the config, and health-checks metrics + gRPC.
 Knobs: `ATTESTATION_HEAD`, `POLL_INTERVAL_SECONDS`, `DERIVED_GAP_BLOCKS`,
-`METRICS_PORT`, `GRPC_PORT`, `RUN_DIR` — see the script header.
+`METRICS_PORT`, `GRPC_PORT`, `ATTESTOR_RUN_DIR` — see the script header. Prefer
+`ATTESTOR_RUN_DIR` over the legacy `RUN_DIR`: the devnet bring-up scripts use
+`RUN_DIR` for their own artifacts, so exporting it into a shared shell sends
+their package clones and handoffs into the attestor's directory.
 
 Cheaper live-verdict environment than mainnet: an **OP Sepolia** replica
 syncs far faster. Same config shape — but read that chain's factory address
