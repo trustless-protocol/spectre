@@ -224,24 +224,24 @@ func (s *Services) updateCosmosClientForEth(stdCtx context.Context, ctx Context,
 	return latestLightBlock, true
 }
 
-func (s *Services) timeoutEthSend(stdCtx context.Context, ctx Context, packet EthPacket) bool {
-	log.Printf("[EthTimeout] seq=%d: packet expired, preparing timeout proof", packet.Packet.Sequence)
+func (s *Services) timeoutEVMSend(stdCtx context.Context, ctx Context, packet EthPacket, tag string) bool {
+	log.Printf("[%sTimeout] seq=%d: packet expired, preparing timeout proof", tag, packet.Packet.Sequence)
 
-	latestLightBlock, ok := s.updateCosmosClientForEth(stdCtx, ctx, "EthTimeout")
+	latestLightBlock, ok := s.updateCosmosClientForEth(stdCtx, ctx, tag+"Timeout")
 	if !ok {
 		return false
 	}
 
 	counterpartyTime := uint64(latestLightBlock.SignedHeader.Header.Time.Unix())
 	if counterpartyTime < packet.Packet.TimeoutTimestamp {
-		log.Printf("[EthTimeout] seq=%d: counterparty time %d < timeout %d, skipping",
-			packet.Packet.Sequence, counterpartyTime, packet.Packet.TimeoutTimestamp)
+		log.Printf("[%sTimeout] seq=%d: counterparty time %d < timeout %d, skipping",
+			tag, packet.Packet.Sequence, counterpartyTime, packet.Packet.TimeoutTimestamp)
 		return false
 	}
 
 	calldata, err := CosmosNonMembership(ctx, *packet.Packet, packet.Packet.DestinationClient, []byte{2}, latestLightBlock)
 	if err != nil {
-		log.Printf("[EthTimeout] seq=%d: %v", packet.Packet.Sequence, err)
+		log.Printf("[%sTimeout] seq=%d: %v", tag, packet.Packet.Sequence, err)
 		return false
 	}
 
@@ -251,25 +251,58 @@ func (s *Services) timeoutEthSend(stdCtx context.Context, ctx Context, packet Et
 	}
 
 	if err := s.worker.TxHandler.SendEthTx(stdCtx, ctx, msgTimeoutPacket); err != nil {
-		log.Printf("[EthTimeout] seq=%d: SendEthTx failed: %v", packet.Packet.Sequence, err)
+		log.Printf("[%sTimeout] seq=%d: SendEthTx failed: %v", tag, packet.Packet.Sequence, err)
 		return false
 	}
-	log.Printf("[EthTimeout] seq=%d: relay completed", packet.Packet.Sequence)
+	log.Printf("[%sTimeout] seq=%d: relay completed", tag, packet.Packet.Sequence)
 	return true
 }
 
 const pendingTrackerMaxAge = 1 * time.Hour
 
 func (s *Services) scanForEthTimeouts(stdCtx context.Context, ctx Context) {
+	s.scanForEVMTimeouts(stdCtx, ctx, evmTimeoutScanOptions{
+		tag:                  "Eth",
+		tracker:              s.BatchBuilder.EthPendingTracker,
+		hasPendingCommitment: HasPendingEthPacketCommitment,
+		timeoutSend: func(c context.Context, scanCtx Context, packet EthPacket) bool {
+			return s.timeoutEVMSend(c, scanCtx, packet, "Eth")
+		},
+	})
+}
+
+func (s *Services) scanForL2Timeouts(stdCtx context.Context, ctx Context) {
+	s.scanForEVMTimeouts(stdCtx, ctx, evmTimeoutScanOptions{
+		tag:                  "L2",
+		tracker:              s.BatchBuilder.L2PendingTracker,
+		hasPendingCommitment: HasPendingEthPacketCommitment,
+		timeoutSend: func(c context.Context, scanCtx Context, packet EthPacket) bool {
+			return s.timeoutEVMSend(c, scanCtx, packet, "L2")
+		},
+	})
+}
+
+type evmTimeoutScanOptions struct {
+	tag                  string
+	tracker              *PendingPacketTracker
+	hasPendingCommitment func(Context, channeltypesv2.Packet) (bool, error)
+	timeoutSend          func(context.Context, Context, EthPacket) bool
+}
+
+func (s *Services) scanForEVMTimeouts(stdCtx context.Context, ctx Context, opts evmTimeoutScanOptions) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[EthTimeoutScan] Panic recovered: %v", r)
+			log.Printf("[%sTimeoutScan] Panic recovered: %v", opts.tag, r)
 		}
 	}()
 
-	s.BatchBuilder.EthPendingTracker.PurgeStaleWithoutTimeout(pendingTrackerMaxAge)
+	if opts.tracker == nil {
+		log.Printf("[%sTimeoutScan] pending tracker is nil", opts.tag)
+		return
+	}
+	opts.tracker.PurgeStaleWithoutTimeout(pendingTrackerMaxAge)
 
-	pending := s.BatchBuilder.EthPendingTracker.GetAll()
+	pending := opts.tracker.GetAll()
 	if len(pending) == 0 {
 		return
 	}
@@ -280,26 +313,26 @@ func (s *Services) scanForEthTimeouts(stdCtx context.Context, ctx Context) {
 		return
 	}
 
-	log.Printf("[EthTimeoutScan] Found %d locally-expired ETH-origin packet(s) at time %d", len(expired), now)
+	log.Printf("[%sTimeoutScan] Found %d locally-expired EVM-origin packet(s) at time %d", opts.tag, len(expired), now)
 	for _, info := range expired {
-		pendingCommitment, err := HasPendingEthPacketCommitment(ctx, info.Packet)
+		pendingCommitment, err := opts.hasPendingCommitment(ctx, info.Packet)
 		if err != nil {
-			log.Printf("[EthTimeoutScan] seq=%d: failed to check ETH packet commitment: %v", info.Packet.Sequence, err)
+			log.Printf("[%sTimeoutScan] seq=%d: failed to check EVM packet commitment: %v", opts.tag, info.Packet.Sequence, err)
 			continue
 		}
 		if !pendingCommitment {
-			s.BatchBuilder.EthPendingTracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
-			log.Printf("[EthTimeoutScan] seq=%d: ETH commitment already cleared, removed from pending tracker", info.Packet.Sequence)
+			opts.tracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
+			log.Printf("[%sTimeoutScan] seq=%d: EVM commitment already cleared, removed from pending tracker", opts.tag, info.Packet.Sequence)
 			continue
 		}
 
 		packet := info.Packet
-		if s.timeoutEthSend(stdCtx, ctx, EthPacket{
+		if opts.timeoutSend(stdCtx, ctx, EthPacket{
 			Type:        EthSend,
 			Packet:      &packet,
 			BlockNumber: info.BlockNumber,
 		}) {
-			s.BatchBuilder.EthPendingTracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
+			opts.tracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
 		}
 	}
 }

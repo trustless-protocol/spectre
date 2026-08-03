@@ -8,6 +8,7 @@ import (
 	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
+	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
@@ -207,16 +208,20 @@ func l2RouterFromProfile(profile json.RawMessage) (common.Address, error) {
 }
 
 // buildL2ToCosmosModule constructs one L2->Cosmos relay module: an l2rollup Source
-// (gated on the attestor), a Cosmos Destination hosting the L2 wasm client, and the
-// per-L2 header builder. It returns the module and a cleanup that closes the dialed
-// clients. The caller runs module.Run(ctx) on its own goroutine.
-func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler services.TransactionHandler) (*relay.Module, func(), error) {
+// (gated on the attestor), a Cosmos Destination hosting the L2 wasm client, the
+// per-L2 header builder, and timeout recovery through the matching Cosmos->L2
+// SpectreClient/ICS26Router return path. It returns the module and a cleanup that
+// closes the dialed clients. The caller runs module.Run(ctx) on its own goroutine.
+func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler services.TransactionHandler, timeoutReturn l2TimeoutReturnPath) (*relay.Module, func(), error) {
 	headKind, err := parseHeadKind(cfg.HeadKind)
 	if err != nil {
 		return nil, nil, err
 	}
 	router, err := l2RouterFromProfile(cfg.RollupProfile)
 	if err != nil {
+		return nil, nil, err
+	}
+	if err := timeoutReturn.validate(); err != nil {
 		return nil, nil, err
 	}
 	includeProvisional := headKind != l2rollup.Finalized
@@ -341,11 +346,14 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, attestor, includeProvisional)
 	dest := l2rollup.NewDestination(worker, svcCtx, cfg.L2WasmClientID)
 	builder := l2rollup.NewBuilder(headerBuilder)
+	trackL2Pending, untrackL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
 
 	module := relay.NewModule(
 		fmt.Sprintf("%s->cosmos", cfg.kind),
 		cfg.L2ICS26ClientID,
 		source, dest, builder,
+		relay.WithTimeoutScanner(0, func(c context.Context) { timeoutReturn.svc.ScanL2Timeouts(c, timeoutReturn.ctx) }),
+		relay.WithPacketTracker(trackL2Pending, untrackL2Pending),
 	)
 	logger.Sugar().Infof("l2->cosmos source: %s (attestor=%s src_chain=%s wasm_client=%s head=%s)",
 		cfg.kind, cfg.AttestorAddr, cfg.AttestorSrcChain, cfg.L2WasmClientID, cfg.HeadKind)
@@ -365,6 +373,26 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		updaterCleanup()
 	}
 	return module, cleanup, nil
+}
+
+func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.UntrackFunc) {
+	trackL2Pending := func(raw []byte, height uint64) {
+		var pkt channeltypesv2.Packet
+		if err := pkt.Unmarshal(raw); err != nil {
+			log.Printf("[adapter l2->cosmos] track pending: decode packet: %v", err)
+			return
+		}
+		svc.TrackL2Pending(pkt, height)
+	}
+	untrackL2Pending := func(raw []byte) {
+		var pkt channeltypesv2.Packet
+		if err := pkt.Unmarshal(raw); err != nil {
+			log.Printf("[adapter l2->cosmos] untrack pending: decode packet: %v", err)
+			return
+		}
+		svc.UntrackL2Pending(pkt)
+	}
+	return trackL2Pending, untrackL2Pending
 }
 
 // runL2Engine drives one L2->Cosmos module until ctx is cancelled. A cancelled

@@ -189,17 +189,12 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint
 	switch eventType {
 	case chain.SendPacket:
 		// An L2->Cosmos send past its timeout can never be received on Cosmos, so
-		// report it permanent and let the module DROP it (mirroring the ETH source's
-		// dead-send pre-filter). Cosmos has ~wall-clock BFT time, so compare against
+		// report it permanent and let the module DROP it. The async L2 timeout
+		// scanner, fed by the pending tracker before this proof step, refunds it on
+		// the L2 instead. Cosmos has ~wall-clock BFT time, so compare against
 		// time.Now like the ETH path.
-		//
-		// LIMITATION: unlike the Cosmos->ETH path, this L2->Cosmos path wires NO
-		// timeout scanner today (buildL2ToCosmosModule adds no WithTimeoutScanner /
-		// WithPacketTracker), so a dropped send is NOT yet refunded on the L2 — the L2
-		// escrow stays locked. The refund path (a TimeoutPacket back to the L2 rollup)
-		// belongs to the Cosmos->L2 return direction and is tracked as a follow-up.
 		if pkt.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= pkt.TimeoutTimestamp {
-			return nil, chain.Permanent(fmt.Errorf("l2 source: send seq=%d timed out and is dropped (no L2 refund scanner yet)", pkt.Sequence))
+			return nil, chain.Permanent(fmt.Errorf("l2 source: send seq=%d timed out; deferred to timeout scanner", pkt.Sequence))
 		}
 		clientID, pathType = pkt.SourceClient, 1 // packet commitment
 	case chain.AckPacket:

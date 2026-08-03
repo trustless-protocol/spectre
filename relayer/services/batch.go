@@ -95,6 +95,7 @@ type BatchBuilder struct {
 	ethPackets        []EthPacket
 	PendingTracker    *PendingPacketTracker
 	EthPendingTracker *PendingPacketTracker
+	L2PendingTracker  *PendingPacketTracker
 }
 
 func NewBatchBuilder() *BatchBuilder {
@@ -106,6 +107,7 @@ func NewBatchBuilder() *BatchBuilder {
 		ethPackets:        []EthPacket{},
 		PendingTracker:    NewPendingPacketTracker(),
 		EthPendingTracker: NewPendingPacketTracker(),
+		L2PendingTracker:  NewPendingPacketTracker(),
 	}
 }
 

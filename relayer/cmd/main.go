@@ -1594,6 +1594,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 			if len(sources) == 0 && len(l2Dests) == 0 && len(l2Sources) == 0 {
 				return fmt.Errorf("no relay source configured in %s (need a cosmos_to_eth, cosmos_to_l2, or l2_to_cosmos module)", configPath)
 			}
+			if err := validateL2TimeoutReturnPathConfigs(l2Sources, l2Dests); err != nil {
+				return err
+			}
 			// Env overrides (ICS26_CLIENT_ID, COSMOS_WASM_CLIENT_ID, ROLE_MANAGER)
 			// name a single source; only honor them when exactly one is
 			// configured, otherwise they would wrongly apply to every source.
@@ -1615,6 +1618,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 			total := len(sources) + len(l2Dests) + len(l2Sources)
 			loopErrCh := make(chan error, total)
 			cleanups := make([]func(), 0, total)
+			l2ReturnPaths := make([]l2TimeoutReturnPathConfig, 0, len(l2Dests))
 			onceCleanup := func(cleanup func()) func() {
 				var once sync.Once
 				return func() {
@@ -1662,6 +1666,10 @@ func Start(logger *zap.Logger) *cobra.Command {
 				}
 				cleanup = onceCleanup(cleanup)
 				cleanups = append(cleanups, cleanup)
+				l2ReturnPaths = append(l2ReturnPaths, l2TimeoutReturnPathConfig{
+					cfg:  l2Dests[i],
+					path: l2TimeoutReturnPath{svc: svc, ctx: dstCtx},
+				})
 				wg.Add(1)
 				go func(svc *services.Services, dstCtx services.Context, cleanup func()) {
 					defer wg.Done()
@@ -1676,7 +1684,14 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// Each dials its own L1/L2/Cosmos clients + attestor sidecar; they share
 			// the TransactionHandler (same Cosmos signer -> shared sequence path).
 			for i := range l2Sources {
-				module, cleanup, err := buildL2ToCosmosModule(logger, l2Sources[i], txHandler)
+				timeoutReturn, err := findL2TimeoutReturnPath(l2Sources[i], l2ReturnPaths)
+				if err != nil {
+					for _, cleanup := range cleanups {
+						cleanup()
+					}
+					return fmt.Errorf("l2_to_cosmos source %q: %w", l2Sources[i].AttestorSrcChain, err)
+				}
+				module, cleanup, err := buildL2ToCosmosModule(logger, l2Sources[i], txHandler, timeoutReturn)
 				if err != nil {
 					for _, cleanup := range cleanups {
 						cleanup()

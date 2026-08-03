@@ -5,8 +5,11 @@ import (
 	"strings"
 	"testing"
 
+	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+
 	"relayer/chain"
 	"relayer/chain/l2rollup"
+	"relayer/services"
 )
 
 func validL2Config() l2ToCosmosConfig {
@@ -113,6 +116,71 @@ func TestLoadConfig_L2Source(t *testing.T) {
 	}
 	if one.kind != chain.OPStack || one.AttestorSrcChain != "op-sepolia" {
 		t.Fatalf("parsed config mismatch: %+v", one)
+	}
+}
+
+func TestFindL2TimeoutReturnPath(t *testing.T) {
+	src := validL2Config()
+	src.L2RpcUrl = "http://l2-a"
+	src.TmRpcUrl = "http://cosmos-a"
+	src.RollupProfile = json.RawMessage(`{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}`)
+	matchingDest := cosmosToEthConfig{
+		EthRpcUrl:     "http://l2-a",
+		TmRpcUrl:      "http://cosmos-a",
+		ICS26Address:  "0x1111111111111111111111111111111111111111",
+		ICS26ClientID: "cosmos-on-l2",
+	}
+
+	tests := []struct {
+		name    string
+		paths   []l2TimeoutReturnPathConfig
+		wantErr string
+	}{
+		{
+			name:  "matches by l2 rpc cosmos rpc and router",
+			paths: []l2TimeoutReturnPathConfig{{cfg: matchingDest}},
+		},
+		{
+			name: "no match fails",
+			paths: []l2TimeoutReturnPathConfig{{cfg: cosmosToEthConfig{
+				EthRpcUrl:    "http://l2-b",
+				TmRpcUrl:     "http://cosmos-a",
+				ICS26Address: "0x1111111111111111111111111111111111111111",
+			}}},
+			wantErr: "no matching cosmos_to_l2 return path",
+		},
+		{
+			name: "duplicate match fails",
+			paths: []l2TimeoutReturnPathConfig{
+				{cfg: matchingDest},
+				{cfg: matchingDest},
+			},
+			wantErr: "multiple cosmos_to_l2 return paths match",
+		},
+		{
+			name: "bad destination router fails",
+			paths: []l2TimeoutReturnPathConfig{{cfg: cosmosToEthConfig{
+				EthRpcUrl:    "http://l2-a",
+				TmRpcUrl:     "http://cosmos-a",
+				ICS26Address: "0xnothex",
+			}}},
+			wantErr: "not a valid hex address",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := findL2TimeoutReturnPath(src, tc.paths)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("findL2TimeoutReturnPath() error = %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("findL2TimeoutReturnPath() error = %v, want substring %q", err, tc.wantErr)
+			}
+		})
 	}
 }
 
@@ -225,5 +293,30 @@ func TestParseArbBoldProfile_ProtocolType(t *testing.T) {
 					got.AssertionsMappingSlot[0], tc.wantSlotHi)
 			}
 		})
+	}
+}
+
+func TestL2PendingTrackerHooks(t *testing.T) {
+	svc := services.New(nil, nil, services.DefaultConfig())
+	track, untrack := l2PendingTrackerHooks(svc)
+
+	packet := channeltypesv2.Packet{SourceClient: "client-0", Sequence: 11}
+	raw, err := packet.Marshal()
+	if err != nil {
+		t.Fatalf("marshal packet: %v", err)
+	}
+
+	track(raw, 789)
+	pending := svc.BatchBuilder.L2PendingTracker.GetAll()
+	if len(pending) != 1 {
+		t.Fatalf("pending len = %d, want 1", len(pending))
+	}
+	if pending[0].BlockNumber != 789 {
+		t.Fatalf("pending block = %d, want 789", pending[0].BlockNumber)
+	}
+
+	untrack(raw)
+	if got := svc.BatchBuilder.L2PendingTracker.Len(); got != 0 {
+		t.Fatalf("pending len after untrack = %d, want 0", got)
 	}
 }

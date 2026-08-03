@@ -49,6 +49,9 @@ func TestNewBatchBuilder(t *testing.T) {
 	if bb.EthPendingTracker == nil {
 		t.Fatal("expected non-nil eth pending tracker")
 	}
+	if bb.L2PendingTracker == nil {
+		t.Fatal("expected non-nil l2 pending tracker")
+	}
 }
 
 func TestAddCosmos(t *testing.T) {

@@ -31,6 +31,14 @@ func (s *Services) ScanEthTimeouts(stdCtx context.Context, ctx Context) {
 	s.scanForEthTimeouts(stdCtx, ctx)
 }
 
+// ScanL2Timeouts detects L2-origin packets that expired on Cosmos without a
+// receipt and relays their timeoutPacket back to the L2 ICS26Router. It uses the
+// same Cosmos non-membership proof path as ScanEthTimeouts, but drains the L2
+// pending tracker so it never interferes with the legacy ETH source tracker.
+func (s *Services) ScanL2Timeouts(stdCtx context.Context, ctx Context) {
+	s.scanForL2Timeouts(stdCtx, ctx)
+}
+
 // TrackCosmosPending records a Cosmos-origin packet just recv-relayed to ETH so
 // ScanCosmosTimeouts can later refund it if it expires undelivered. Mirrors the
 // PendingTracker.Add that handleCosmos performs in the StartLoop path.
@@ -44,6 +52,18 @@ func (s *Services) TrackCosmosPending(packet channeltypesv2.Packet, blockNumber 
 // PendingTracker.Remove-on-recv that handleCosmos performs in the StartLoop path.
 func (s *Services) UntrackCosmosPending(packet channeltypesv2.Packet) {
 	s.BatchBuilder.PendingTracker.Remove(packet.SourceClient, packet.Sequence)
+}
+
+// TrackL2Pending records an L2-origin packet observed on the L2 source path so
+// ScanL2Timeouts can refund it if Cosmos never receives it before timeout.
+func (s *Services) TrackL2Pending(packet channeltypesv2.Packet, blockNumber uint64) {
+	s.BatchBuilder.L2PendingTracker.Add(packet, blockNumber)
+}
+
+// UntrackL2Pending removes an L2-origin packet once the L2->Cosmos receive relay
+// succeeds; after a Cosmos receipt exists, a timeout refund must not be attempted.
+func (s *Services) UntrackL2Pending(packet channeltypesv2.Packet) {
+	s.BatchBuilder.L2PendingTracker.Remove(packet.SourceClient, packet.Sequence)
 }
 
 // Worker exposes the shared Worker (TxHandler + Prover) so the chain adapters —
