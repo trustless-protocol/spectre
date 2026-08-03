@@ -182,6 +182,19 @@ type Destination interface {
 	ClientExpiresAt(ctx context.Context, clientID string) (time.Time, error)
 }
 
+// FoldingDestination is an optional destination capability for submitting a
+// client update followed by packet messages in one atomic transaction. The
+// relay module uses it only when SupportsUpdatePacketFolding returns true;
+// otherwise it retains Destination's update-then-packets fallback.
+//
+// update.Payloads is non-empty when RelayWithUpdate is called. Implementations
+// must apply the update before the packet messages and revert the whole
+// transaction if any message fails.
+type FoldingDestination interface {
+	SupportsUpdatePacketFolding() bool
+	RelayWithUpdate(ctx context.Context, clientID string, update ClientUpdate, packets []RelayPacket) error
+}
+
 // ClientUpdateBuilder turns a source header into a destination-verifiable
 // ClientUpdate. The strategy is chosen by what the DESTINATION's light client
 // verifies, not one-size-fits-all:

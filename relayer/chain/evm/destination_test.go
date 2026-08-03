@@ -4,10 +4,25 @@ import (
 	"context"
 	"testing"
 
+	contractICS26Router "relayer/bindings/ICS26Router"
+	spectreContract "relayer/bindings/SpectreClient"
+	updateclientContract "relayer/bindings/UpdateClient"
 	"relayer/chain"
+	"relayer/chain/codec"
+	"relayer/services"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
+
+type recordingTxHandler struct {
+	services.TransactionHandler
+	ethBatches [][]any
+}
+
+func (h *recordingTxHandler) SendEthTxBatch(_ context.Context, _ services.Context, msgs []any) error {
+	h.ethBatches = append(h.ethBatches, msgs)
+	return nil
+}
 
 // mustMarshalPacket returns a proto-marshaled minimal packet for RelayPacket.Packet.
 func mustMarshalPacket(t *testing.T) []byte {
@@ -89,5 +104,61 @@ func TestUpdateClient_RequiresExactlyOnePayload(t *testing.T) {
 	}
 	if err := d.UpdateClient(context.Background(), "", chain.ClientUpdate{Payloads: [][]byte{[]byte("one"), []byte("two")}}); err == nil {
 		t.Fatal("multiple payloads must fail")
+	}
+}
+
+func TestSupportsUpdatePacketFolding_RequiresRouterProofSubmitter(t *testing.T) {
+	const (
+		router = "0x0000000000000000000000000000000000000001"
+		other  = "0x0000000000000000000000000000000000000002"
+	)
+	svcCtx := services.NewCtx(nil, nil)
+	svcCtx.SetAddresses(router, "", "", "", "", other)
+	d := &Destination{svcCtx: svcCtx}
+	if d.SupportsUpdatePacketFolding() {
+		t.Fatal("different role manager must disable folding")
+	}
+	svcCtx.SetAddresses(router, "", "", "", "", router)
+	d.svcCtx = svcCtx
+	if !d.SupportsUpdatePacketFolding() {
+		t.Fatal("router proof submitter must enable folding")
+	}
+}
+
+func TestRelayWithUpdate_SubmitsOneOrderedBatch(t *testing.T) {
+	const router = "0x0000000000000000000000000000000000000001"
+	svcCtx := services.NewCtx(nil, nil)
+	svcCtx.SetAddresses(router, "", "", "", "", router)
+	handler := &recordingTxHandler{}
+	d := &Destination{worker: services.NewWorker(handler, nil), svcCtx: svcCtx}
+
+	payload, err := codec.EncodeCosmosUpdate(
+		int(services.ApplicationUpdate),
+		updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState{},
+		spectreContract.IICS07TendermintMsgsValidatorSet{},
+	)
+	if err != nil {
+		t.Fatalf("encode update: %v", err)
+	}
+	err = d.RelayWithUpdate(context.Background(), "client-0", chain.ClientUpdate{
+		Height: 80, Payloads: [][]byte{payload},
+	}, []chain.RelayPacket{{
+		Type: chain.SendPacket, Packet: mustMarshalPacket(t), Proof: []byte("proof"), Height: 80,
+	}})
+	if err != nil {
+		t.Fatalf("folded relay: %v", err)
+	}
+	if len(handler.ethBatches) != 1 {
+		t.Fatalf("batch submissions = %d, want 1", len(handler.ethBatches))
+	}
+	batch := handler.ethBatches[0]
+	if len(batch) != 2 {
+		t.Fatalf("inner message count = %d, want update + packet", len(batch))
+	}
+	if _, ok := batch[0].(services.CosmosClientUpdateBuildResult); !ok {
+		t.Fatalf("first inner message = %T, want CosmosClientUpdateBuildResult", batch[0])
+	}
+	if _, ok := batch[1].(contractICS26Router.IICS26RouterMsgsMsgRecvPacket); !ok {
+		t.Fatalf("second inner message = %T, want MsgRecvPacket", batch[1])
 	}
 }

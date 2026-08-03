@@ -543,11 +543,10 @@ func (h *Handler) SendEthTx(stdCtx context.Context, ctx services.Context, msg an
 	return nil
 }
 
-// SendEthTxBatch packs N packet-level ICS26Router calls into a single
-// `multicall(bytes[])` tx. V1 supports only the per-packet msg types that
-// `ICS26Router` exposes directly (recvPacket / ackPacket / timeoutPacket).
-// `updateClient`, `verifyMembership` and `verifyNonMembership` are NOT
-// permitted in a batch — they have separate submission paths.
+// SendEthTxBatch packs an optional Cosmos-client update followed by N
+// packet-level ICS26Router calls into a single `multicall(bytes[])` tx. Folding
+// the update is supported only when the ICS26Router is the proof submitter;
+// direct SpectreClient deployments use the caller's standalone-update fallback.
 //
 // Empty input is a no-op. A single-msg input is forwarded to SendEthTx to
 // avoid the multicall wrapper's small overhead for N=1 (matches the
@@ -1190,8 +1189,10 @@ func (h *Handler) simulateMsgs(stdCtx context.Context, svcCtx services.Context, 
 	return simResp.GasInfo.GasUsed, nil
 }
 
-// sendCosmosTxBatchWithSplitting handles gas simulation, clamping, fee scaling, and recursive batch splitting.
-func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx services.Context, sdkMsgs []sdk.Msg, accountNumber, sequence uint64) (uint64, int, error) {
+// sendCosmosTxBatchWithSplitting handles gas simulation, clamping, fee scaling,
+// and optional recursive batch splitting. When allowSplit is false it returns
+// before broadcasting if the batch cannot be submitted as one transaction.
+func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx services.Context, sdkMsgs []sdk.Msg, accountNumber, sequence uint64, allowSplit bool) (uint64, int, error) {
 	if len(sdkMsgs) == 0 {
 		return sequence, 0, nil
 	}
@@ -1212,6 +1213,9 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 		simulatedGas, err := h.simulateMsgs(stdCtx, svcCtx, sdkMsgs, sequence)
 		if err != nil {
 			log.Printf("[SendCosmosTxBatch] Simulation failed for batch of size %d: %v", len(sdkMsgs), err)
+			if !allowSplit {
+				return sequence, 0, fmt.Errorf("[SendCosmosTxBatchAtomic] simulation failed; refusing to split atomic batch: %w", err)
+			}
 			if len(sdkMsgs) > 1 {
 				log.Printf("[SendCosmosTxBatch] Splitting batch...")
 				shouldSplit = true
@@ -1222,6 +1226,9 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 			if maxBlockGas > 0 && adjustedGas >= maxBlockGas {
 				log.Printf("[SendCosmosTxBatch] Adjusted gas %d exceeds max block gas %d for batch of size %d", adjustedGas, maxBlockGas, len(sdkMsgs))
 				if len(sdkMsgs) > 1 {
+					if !allowSplit {
+						return sequence, 0, fmt.Errorf("[SendCosmosTxBatchAtomic] adjusted gas %d exceeds max block gas %d; refusing to split atomic batch", adjustedGas, maxBlockGas)
+					}
 					log.Printf("[SendCosmosTxBatch] Splitting batch...")
 					shouldSplit = true
 				} else {
@@ -1236,11 +1243,11 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 
 	if shouldSplit {
 		mid := len(sdkMsgs) / 2
-		nextSeq, succ1, err := h.sendCosmosTxBatchWithSplitting(stdCtx, svcCtx, sdkMsgs[:mid], accountNumber, sequence)
+		nextSeq, succ1, err := h.sendCosmosTxBatchWithSplitting(stdCtx, svcCtx, sdkMsgs[:mid], accountNumber, sequence, true)
 		if err != nil {
 			return sequence, succ1, err
 		}
-		nextSeq, succ2, err := h.sendCosmosTxBatchWithSplitting(stdCtx, svcCtx, sdkMsgs[mid:], accountNumber, nextSeq)
+		nextSeq, succ2, err := h.sendCosmosTxBatchWithSplitting(stdCtx, svcCtx, sdkMsgs[mid:], accountNumber, nextSeq, true)
 		if err != nil {
 			return nextSeq, succ1 + succ2, err
 		}
@@ -1473,6 +1480,17 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 // committed by the earlier succeeded sub-batches will not be included in the retried batch.
 // Downstream Cosmos modules/contracts are idempotent and tolerate already-processed packets safely.
 func (h *Handler) SendCosmosTxBatch(stdCtx context.Context, svcCtx services.Context, msgs []any) error {
+	return h.sendCosmosTxBatch(stdCtx, svcCtx, msgs, true)
+}
+
+// SendCosmosTxBatchAtomic sends every message in exactly one Cosmos
+// transaction. Unlike SendCosmosTxBatch it refuses to recursively split on a
+// failed simulation or block-gas overflow, preserving update+packet atomicity.
+func (h *Handler) SendCosmosTxBatchAtomic(stdCtx context.Context, svcCtx services.Context, msgs []any) error {
+	return h.sendCosmosTxBatch(stdCtx, svcCtx, msgs, false)
+}
+
+func (h *Handler) sendCosmosTxBatch(stdCtx context.Context, svcCtx services.Context, msgs []any, allowSplit bool) error {
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -1522,7 +1540,7 @@ func (h *Handler) SendCosmosTxBatch(stdCtx context.Context, svcCtx services.Cont
 		return fmt.Errorf("failed to query account info: %w", err)
 	}
 
-	_, succCount, err := h.sendCosmosTxBatchWithSplitting(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence)
+	_, succCount, err := h.sendCosmosTxBatchWithSplitting(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence, allowSplit)
 	if benchEnabled {
 		log.Printf("[bench][cosmos] batch msgs=%d total=%s", len(msgs), time.Since(benchStart))
 	}

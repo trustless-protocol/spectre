@@ -15,6 +15,7 @@ import (
 	"relayer/services"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // Destination is the EVM implementation of chain.Destination for a chain that
@@ -33,6 +34,21 @@ func NewDestination(worker *services.Worker, svcCtx services.Context) *Destinati
 
 func (d *Destination) Chain() chain.ChainType { return chain.Ethereum }
 
+// SupportsUpdatePacketFolding reports whether the ICS26Router is also the proof
+// submitter. Only that deployment shape can express the client update as an
+// inner router call in the same multicall as the packets.
+func (d *Destination) SupportsUpdatePacketFolding() bool {
+	roleManager := d.svcCtx.RoleManagerAddress()
+	router := d.svcCtx.RouterContract()
+	if roleManager == nil || router == nil {
+		return false
+	}
+	if *roleManager == (common.Address{}) || *router == (common.Address{}) {
+		return false
+	}
+	return *roleManager == *router
+}
+
 // UpdateClient decodes the Cosmos->ETH update payload back into the typed message
 // and submits it. SendEthTx routes updateApplicationState vs updateConsensusState
 // off the result's Kind, exactly as the legacy RefreshCosmosClient path did.
@@ -40,23 +56,30 @@ func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.C
 	if err := ctx.Err(); err != nil {
 		return err // shutting down — do not start a client-update tx
 	}
-	if len(update.Payloads) != 1 {
-		return fmt.Errorf("evm: expected exactly one client update payload, got %d", len(update.Payloads))
-	}
-	kind, appMsg, newValSet, err := codec.DecodeCosmosUpdate(update.Payloads[0])
+	result, err := decodeClientUpdate(update)
 	if err != nil {
-		return fmt.Errorf("evm: decode client update: %w", err)
-	}
-	result := services.CosmosClientUpdateBuildResult{
-		Kind:      services.ClientUpdateKind(kind),
-		AppMsg:    appMsg,
-		NewValSet: newValSet,
-		HasMsg:    true,
+		return err
 	}
 	if err := d.worker.TxHandler.SendEthTx(ctx, d.svcCtx, result); err != nil {
 		return fmt.Errorf("evm: submit client update (height %d): %w", update.Height, err)
 	}
 	return nil
+}
+
+func decodeClientUpdate(update chain.ClientUpdate) (services.CosmosClientUpdateBuildResult, error) {
+	if len(update.Payloads) != 1 {
+		return services.CosmosClientUpdateBuildResult{}, fmt.Errorf("evm: expected exactly one client update payload, got %d", len(update.Payloads))
+	}
+	kind, appMsg, newValSet, err := codec.DecodeCosmosUpdate(update.Payloads[0])
+	if err != nil {
+		return services.CosmosClientUpdateBuildResult{}, fmt.Errorf("evm: decode client update: %w", err)
+	}
+	return services.CosmosClientUpdateBuildResult{
+		Kind:      services.ClientUpdateKind(kind),
+		AppMsg:    appMsg,
+		NewValSet: newValSet,
+		HasMsg:    true,
+	}, nil
 }
 
 // RelayPackets builds the concrete ICS26 messages (recv/ack/timeout) from the
@@ -67,12 +90,45 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 	if err := ctx.Err(); err != nil {
 		return err // shutting down — do not start a packet tx
 	}
+	msgs, err := buildPacketMessages(packets)
+	if err != nil {
+		return err
+	}
+	return d.sendPacketBatch(ctx, msgs)
+}
+
+// RelayWithUpdate prepends the decoded Cosmos-client update to the packet calls
+// and submits one ICS26Router multicall. SendEthTxBatch preserves message order,
+// so packet proofs are checked only after the update has installed their target
+// consensus state.
+func (d *Destination) RelayWithUpdate(ctx context.Context, _ string, update chain.ClientUpdate, packets []chain.RelayPacket) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !d.SupportsUpdatePacketFolding() {
+		return fmt.Errorf("evm: update/packet folding requires ICS26Router to be the proof submitter")
+	}
+	result, err := decodeClientUpdate(update)
+	if err != nil {
+		return err
+	}
+	packetMsgs, err := buildPacketMessages(packets)
+	if err != nil {
+		return err
+	}
+	msgs := make([]any, 0, 1+len(packetMsgs))
+	msgs = append(msgs, result)
+	msgs = append(msgs, packetMsgs...)
+	return d.sendPacketBatch(ctx, msgs)
+}
+
+func buildPacketMessages(packets []chain.RelayPacket) ([]any, error) {
 	msgs := make([]any, 0, len(packets))
 	for _, rp := range packets {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(rp.Packet); err != nil {
 			// A malformed packet is deterministic — it will never decode on retry.
-			return chain.Permanent(fmt.Errorf("evm: decode packet: %w", err))
+			return nil, chain.Permanent(fmt.Errorf("evm: decode packet: %w", err))
 		}
 		ethPkt := services.ToEthPacket(pkt)
 		switch rp.Type {
@@ -83,7 +139,7 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 			})
 		case chain.AckPacket:
 			if len(rp.AckBytes) == 0 {
-				return chain.Permanent(fmt.Errorf("evm: ack packet seq=%d missing acknowledgement bytes", pkt.Sequence))
+				return nil, chain.Permanent(fmt.Errorf("evm: ack packet seq=%d missing acknowledgement bytes", pkt.Sequence))
 			}
 			msgs = append(msgs, contractICS26Router.IICS26RouterMsgsMsgAckPacket{
 				Packet:          ethPkt,
@@ -96,9 +152,13 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 				NonMembershipMsg: rp.Proof,
 			})
 		default:
-			return chain.Permanent(fmt.Errorf("evm: unknown packet type %d (seq=%d)", rp.Type, pkt.Sequence))
+			return nil, chain.Permanent(fmt.Errorf("evm: unknown packet type %d (seq=%d)", rp.Type, pkt.Sequence))
 		}
 	}
+	return msgs, nil
+}
+
+func (d *Destination) sendPacketBatch(ctx context.Context, msgs []any) error {
 	if len(msgs) == 0 {
 		return nil
 	}

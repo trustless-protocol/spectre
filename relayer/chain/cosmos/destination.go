@@ -27,12 +27,24 @@ type Destination struct {
 	svcCtx services.Context
 }
 
+type atomicCosmosTxHandler interface {
+	SendCosmosTxBatchAtomic(context.Context, services.Context, []any) error
+}
+
 // NewDestination wires the Cosmos destination to the shared worker + context.
 func NewDestination(worker *services.Worker, svcCtx services.Context) *Destination {
 	return &Destination{worker: worker, svcCtx: svcCtx}
 }
 
 func (d *Destination) Chain() chain.ChainType { return chain.Cosmos }
+
+func (d *Destination) SupportsUpdatePacketFolding() bool {
+	if d.worker == nil || d.worker.TxHandler == nil {
+		return false
+	}
+	_, ok := d.worker.TxHandler.(atomicCosmosTxHandler)
+	return ok
+}
 
 // UpdateClient wraps each beacon JSON header in a wasm ClientMessage, waits for
 // the Cosmos node to reach the latest signature slot, then submits the ordered
@@ -56,13 +68,9 @@ func (d *Destination) UpdateClient(ctx context.Context, clientID string, update 
 	if err != nil {
 		return fmt.Errorf("cosmos dest: decode beacon update: %w", err)
 	}
-	msgs := make([]any, 0, len(update.Payloads))
-	for i, payload := range update.Payloads {
-		msg, err := wasmclient.BuildUpdateClient(signer, clientID, payload)
-		if err != nil {
-			return fmt.Errorf("cosmos dest: wrap beacon update %d: %w", i, err)
-		}
-		msgs = append(msgs, msg)
+	msgs, err := buildBeaconUpdateMessages(signer, clientID, update.Payloads)
+	if err != nil {
+		return err
 	}
 	ethClientState, err := relayerclient.GetEthereumClientState(d.svcCtx.CosmosClient(), d.svcCtx.EthClientID())
 	if err != nil {
@@ -73,6 +81,18 @@ func (d *Destination) UpdateClient(ctx context.Context, clientID string, update 
 		return fmt.Errorf("cosmos dest: submit beacon update (exec block %d): %w", update.Height, err)
 	}
 	return nil
+}
+
+func buildBeaconUpdateMessages(signer, clientID string, payloads [][]byte) ([]any, error) {
+	msgs := make([]any, 0, len(payloads))
+	for i, payload := range payloads {
+		msg, err := wasmclient.BuildUpdateClient(signer, clientID, payload)
+		if err != nil {
+			return nil, fmt.Errorf("cosmos dest: wrap beacon update %d: %w", i, err)
+		}
+		msgs = append(msgs, msg)
+	}
+	return msgs, nil
 }
 
 // highestBeaconSignatureSlot reads the timing prerequisite from the same JSON
@@ -88,6 +108,27 @@ func highestBeaconSignatureSlot(payloads [][]byte) (uint64, error) {
 		slot, err := strconv.ParseUint(header.ConsensusUpdate.SignatureSlot, 10, 64)
 		if err != nil {
 			return 0, fmt.Errorf("header %d: parse signature slot: %w", i, err)
+		}
+		if slot > latest {
+			latest = slot
+		}
+	}
+	return latest, nil
+}
+
+// highestBeaconFinalizedSlot returns the destination consensus height installed
+// by the ordered beacon-update payloads. Packet messages folded behind those
+// updates must name this slot even though it is not on-chain yet.
+func highestBeaconFinalizedSlot(payloads [][]byte) (uint64, error) {
+	var latest uint64
+	for i, payload := range payloads {
+		var header relayerclient.EthereumHeader
+		if err := json.Unmarshal(payload, &header); err != nil {
+			return 0, fmt.Errorf("header %d: unmarshal JSON: %w", i, err)
+		}
+		slot, err := strconv.ParseUint(header.ConsensusUpdate.FinalizedHeader.Beacon.Slot, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("header %d: parse finalized slot: %w", i, err)
 		}
 		if slot > latest {
 			latest = slot
@@ -117,13 +158,78 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
 	proofHeight := clienttypes.Height{RevisionNumber: 0, RevisionHeight: ethClientState.LatestSlot}
+	msgs, err := buildPacketMessages(signerAddr, proofHeight, packets)
+	if err != nil {
+		return err
+	}
+	return d.sendPacketBatch(ctx, msgs)
+}
 
+// RelayWithUpdate submits the ordered beacon updates and all packet messages in
+// one Cosmos transaction. Packet proof heights use the finalized slot installed
+// by the update rather than querying the still-stale on-chain client state.
+func (d *Destination) RelayWithUpdate(ctx context.Context, clientID string, update chain.ClientUpdate, packets []chain.RelayPacket) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(update.Payloads) == 0 {
+		return fmt.Errorf("cosmos dest: folded relay requires a client update payload")
+	}
+	if d.worker == nil || d.worker.TxHandler == nil {
+		return fmt.Errorf("cosmos dest: transaction handler is not configured")
+	}
+	atomicSender, ok := d.worker.TxHandler.(atomicCosmosTxHandler)
+	if !ok {
+		return fmt.Errorf("cosmos dest: transaction handler does not support atomic update/packet batches")
+	}
+	if clientID == "" {
+		clientID = d.svcCtx.EthClientID()
+	}
+	signer, err := d.worker.TxHandler.CosmosSignerAddress()
+	if err != nil {
+		return fmt.Errorf("cosmos dest: signer address: %w", err)
+	}
+	updateMsgs, err := buildBeaconUpdateMessages(signer, clientID, update.Payloads)
+	if err != nil {
+		return err
+	}
+	sigSlot, err := highestBeaconSignatureSlot(update.Payloads)
+	if err != nil {
+		return fmt.Errorf("cosmos dest: decode beacon update: %w", err)
+	}
+	finalizedSlot, err := highestBeaconFinalizedSlot(update.Payloads)
+	if err != nil {
+		return fmt.Errorf("cosmos dest: decode beacon update: %w", err)
+	}
+	packetMsgs, err := buildPacketMessages(signer, clienttypes.Height{RevisionNumber: 0, RevisionHeight: finalizedSlot}, packets)
+	if err != nil {
+		return err
+	}
+	ethClientState, err := relayerclient.GetEthereumClientState(d.svcCtx.CosmosClient(), d.svcCtx.EthClientID())
+	if err != nil {
+		return fmt.Errorf("cosmos dest: eth client state: %w", err)
+	}
+	d.worker.WaitForCosmosCatchUp(ctx, d.svcCtx, ethClientState, sigSlot)
+
+	msgs := make([]any, 0, len(updateMsgs)+len(packetMsgs))
+	msgs = append(msgs, updateMsgs...)
+	msgs = append(msgs, packetMsgs...)
+	if err := atomicSender.SendCosmosTxBatchAtomic(ctx, d.svcCtx, msgs); err != nil {
+		if errors.Is(err, services.ErrPermanentRelayFailure) {
+			return chain.Permanent(err)
+		}
+		return err
+	}
+	return nil
+}
+
+func buildPacketMessages(signer string, proofHeight clienttypes.Height, packets []chain.RelayPacket) ([]any, error) {
 	msgs := make([]any, 0, len(packets))
 	for _, rp := range packets {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(rp.Packet); err != nil {
 			// A malformed packet is deterministic — it will never decode on retry.
-			return chain.Permanent(fmt.Errorf("cosmos dest: decode packet: %w", err))
+			return nil, chain.Permanent(fmt.Errorf("cosmos dest: decode packet: %w", err))
 		}
 		switch rp.Type {
 		case chain.SendPacket:
@@ -131,7 +237,7 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 				Packet:          pkt,
 				ProofCommitment: rp.Proof,
 				ProofHeight:     proofHeight,
-				Signer:          signerAddr,
+				Signer:          signer,
 			})
 		case chain.AckPacket:
 			msgs = append(msgs, &channeltypesv2.MsgAcknowledgement{
@@ -139,11 +245,18 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 				Acknowledgement: channeltypesv2.Acknowledgement{AppAcknowledgements: rp.AckBytes},
 				ProofAcked:      rp.Proof,
 				ProofHeight:     proofHeight,
-				Signer:          signerAddr,
+				Signer:          signer,
 			})
 		default:
-			return chain.Permanent(fmt.Errorf("cosmos dest: unsupported packet type %d (seq=%d)", rp.Type, pkt.Sequence))
+			return nil, chain.Permanent(fmt.Errorf("cosmos dest: unsupported packet type %d (seq=%d)", rp.Type, pkt.Sequence))
 		}
+	}
+	return msgs, nil
+}
+
+func (d *Destination) sendPacketBatch(ctx context.Context, msgs []any) error {
+	if len(msgs) == 0 {
+		return nil
 	}
 	// A deterministic Cosmos DeliverTx revert cannot succeed on retry — surface it
 	// as chain.Permanent so the module DROPS the batch rather than re-queueing it

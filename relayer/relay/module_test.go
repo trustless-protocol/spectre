@@ -17,6 +17,7 @@ type mockSource struct {
 	relayable             uint64 // highest provable height; if 0, defaults to latest
 	membershipCalls       int
 	nonMembershipCalls    int
+	proofHeights          []uint64
 	failMembershipOn      map[string]bool // Raw payload -> return a retryable proof error
 	permanentMembershipOn map[string]bool // Raw payload -> return a permanent proof error
 }
@@ -35,8 +36,9 @@ func (m *mockSource) RelayableHeight(context.Context) (uint64, error) {
 func (m *mockSource) QueryHeader(_ context.Context, h uint64) ([]byte, error) {
 	return []byte{byte(h)}, nil
 }
-func (m *mockSource) MembershipProof(_ context.Context, packet []byte, _ uint64, _ chain.EventType) ([]byte, error) {
+func (m *mockSource) MembershipProof(_ context.Context, packet []byte, height uint64, _ chain.EventType) ([]byte, error) {
 	m.membershipCalls++
+	m.proofHeights = append(m.proofHeights, height)
 	if m.permanentMembershipOn[string(packet)] {
 		return nil, chain.Permanent(errors.New("timed out"))
 	}
@@ -45,8 +47,9 @@ func (m *mockSource) MembershipProof(_ context.Context, packet []byte, _ uint64,
 	}
 	return []byte("membership"), nil
 }
-func (m *mockSource) NonMembershipProof(_ context.Context, _ []byte, _ uint64) ([]byte, error) {
+func (m *mockSource) NonMembershipProof(_ context.Context, _ []byte, height uint64) ([]byte, error) {
 	m.nonMembershipCalls++
+	m.proofHeights = append(m.proofHeights, height)
 	return []byte("non-membership"), nil
 }
 
@@ -81,6 +84,27 @@ func (m *mockDest) RelayPackets(_ context.Context, packets []chain.RelayPacket) 
 func (m *mockDest) HasPacketReceipt(context.Context, []byte) (bool, error) { return false, nil }
 func (m *mockDest) ClientExpiresAt(context.Context, string) (time.Time, error) {
 	return time.Time{}, nil
+}
+
+type foldingMockDest struct {
+	mockDest
+	enabled       bool
+	foldCalls     int
+	foldedUpdates []chain.ClientUpdate
+	foldedPackets [][]chain.RelayPacket
+	foldErr       error
+	foldFn        func(chain.ClientUpdate, []chain.RelayPacket) error
+}
+
+func (m *foldingMockDest) SupportsUpdatePacketFolding() bool { return m.enabled }
+func (m *foldingMockDest) RelayWithUpdate(_ context.Context, _ string, update chain.ClientUpdate, packets []chain.RelayPacket) error {
+	m.foldCalls++
+	m.foldedUpdates = append(m.foldedUpdates, update)
+	m.foldedPackets = append(m.foldedPackets, packets)
+	if m.foldFn != nil {
+		return m.foldFn(update, packets)
+	}
+	return m.foldErr
 }
 
 // mockBuilder returns an update whose Height is the height it was asked to prove,
@@ -156,6 +180,115 @@ func TestHandleBatch_Multicall(t *testing.T) {
 	}
 	if len(dst.relayed) != 3 {
 		t.Fatalf("want 3 packets relayed, got %d", len(dst.relayed))
+	}
+}
+
+func TestHandleBatch_FoldsUpdateAndProofsAtTargetHeight(t *testing.T) {
+	src := &mockSource{latest: 100}
+	dst := &foldingMockDest{enabled: true}
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
+	m.lastHeight = 10
+
+	batch := []chain.Event{
+		{Type: chain.SendPacket, Height: 30, Raw: []byte("a")},
+		{Type: chain.AckPacket, Height: 50, Raw: []byte("b")},
+	}
+	if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+		t.Fatalf("clean folded batch must not re-queue, got %v", rq)
+	}
+	if dst.foldCalls != 1 || len(dst.foldedUpdates) != 1 || dst.foldedUpdates[0].Height != 80 {
+		t.Fatalf("want one folded update at target height 80, calls=%d updates=%+v", dst.foldCalls, dst.foldedUpdates)
+	}
+	if len(dst.updates) != 0 || dst.relayCalls != 0 {
+		t.Fatalf("folded path must not submit standalone txs: updates=%d relays=%d", len(dst.updates), dst.relayCalls)
+	}
+	if len(src.proofHeights) != 2 || src.proofHeights[0] != 80 || src.proofHeights[1] != 80 {
+		t.Fatalf("proofs must target not-yet-on-chain update height 80, got %v", src.proofHeights)
+	}
+	for _, packet := range dst.foldedPackets[0] {
+		if packet.Height != 80 {
+			t.Fatalf("folded packet height = %d, want 80", packet.Height)
+		}
+	}
+	if m.lastHeight != 80 {
+		t.Fatalf("successful atomic tx must advance lastHeight to 80, got %d", m.lastHeight)
+	}
+}
+
+func TestHandleBatch_FoldingCapabilityDisabledFallsBack(t *testing.T) {
+	src := &mockSource{latest: 100}
+	dst := &foldingMockDest{enabled: false}
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+	if rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 20, Raw: []byte("p")}}); len(rq) != 0 {
+		t.Fatalf("fallback batch must not re-queue, got %v", rq)
+	}
+	if dst.foldCalls != 0 || len(dst.updates) != 1 || dst.relayCalls != 1 {
+		t.Fatalf("disabled folding must use two-tx fallback: folds=%d updates=%d relays=%d", dst.foldCalls, len(dst.updates), dst.relayCalls)
+	}
+}
+
+func TestHandleBatch_FoldFailureDoesNotAdvanceState(t *testing.T) {
+	src := &mockSource{latest: 100}
+	dst := &foldingMockDest{enabled: true, foldErr: errors.New("rpc unavailable")}
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+	rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 20, Raw: []byte("p")}})
+	if len(rq) != 1 || rq[0] != 0 {
+		t.Fatalf("transient folded failure must re-queue packet, got %v", rq)
+	}
+	if m.lastHeight != 0 {
+		t.Fatalf("failed atomic tx must not advance lastHeight, got %d", m.lastHeight)
+	}
+	if len(dst.updates) != 0 || dst.relayCalls != 0 {
+		t.Fatalf("failed folded path must not fall through to standalone txs")
+	}
+}
+
+func TestHandleBatch_NoUpdateNeededRelaysPacketsOnly(t *testing.T) {
+	src := &mockSource{latest: 200}
+	dst := &foldingMockDest{enabled: true}
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{noPayload: true, forceHeight: 200})
+
+	if rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 180, Raw: []byte("p")}}); len(rq) != 0 {
+		t.Fatalf("current-client batch must relay, got %v", rq)
+	}
+	if dst.foldCalls != 0 || len(dst.updates) != 0 || dst.relayCalls != 1 {
+		t.Fatalf("no-update branch must submit packets only: folds=%d updates=%d relays=%d", dst.foldCalls, len(dst.updates), dst.relayCalls)
+	}
+	if len(src.proofHeights) != 1 || src.proofHeights[0] != 200 {
+		t.Fatalf("no-update proof height = %v, want [200]", src.proofHeights)
+	}
+}
+
+func TestHandleBatch_FoldedIsolationPreservesValidSiblings(t *testing.T) {
+	src := &mockSource{latest: 100}
+	dst := &foldingMockDest{enabled: true}
+	dst.poison = map[string]bool{"bad": true}
+	dst.foldFn = func(_ chain.ClientUpdate, packets []chain.RelayPacket) error {
+		if len(packets) > 1 {
+			return chain.Permanent(errors.New("folded batch reverted"))
+		}
+		return nil
+	}
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+	batch := []chain.Event{
+		{Type: chain.SendPacket, Height: 7, Raw: []byte("good-1")},
+		{Type: chain.SendPacket, Height: 8, Raw: []byte("bad")},
+		{Type: chain.SendPacket, Height: 9, Raw: []byte("good-2")},
+	}
+	if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+		t.Fatalf("folded isolation must drop only poison, got requeue %v", rq)
+	}
+	if dst.foldCalls != 2 { // failed batch, then first successful singleton installs update
+		t.Fatalf("folded update must be retried only until installed, got %d fold calls", dst.foldCalls)
+	}
+	if m.lastHeight != 100 {
+		t.Fatalf("successful singleton fold must advance lastHeight, got %d", m.lastHeight)
+	}
+	if len(dst.relayed) != 1 || string(dst.relayed[0].Packet) != "good-2" {
+		t.Fatalf("packets after update should use packets-only isolation, got %+v", dst.relayed)
 	}
 }
 

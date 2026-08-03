@@ -248,18 +248,12 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 	}
 }
 
-// handleBatch relays one batch of source packets: advance the destination client
-// once to cover the whole batch, prove each packet against that trusted height,
-// then submit them in a single multicall (folding the per-tx intrinsic gas over
-// the batch). It returns the indices of events that failed TRANSIENTLY and must
-// be re-queued; successfully-relayed and permanently-dropped events are omitted.
-//
-// The client update and the packet submit are currently SEPARATE txs (updateClientTo
-// then RelayPackets), not one folded multicall like the legacy path — so the client
-// state can advance even when the subsequent packet submit fails (the packets are
-// re-queued and retried against the now-current client; folding them back into one
-// tx is a tracked follow-up). A packet's tracker entry / cursor is never advanced on
-// failure.
+// handleBatch relays one batch of source packets. When the destination supports
+// update/packet folding, it builds packet proofs against the update's target
+// height and submits the update followed by the packets in one atomic tx. Other
+// destinations retain the update-then-packets fallback. It returns the indices
+// of events that failed TRANSIENTLY and must be re-queued; successfully-relayed
+// and permanently-dropped events are omitted.
 func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 	if len(events) == 0 {
 		return nil
@@ -326,19 +320,18 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 		return append(requeue, provableIdx...)
 	}
 
-	// Advance the destination client to cover the relayable height. updateClientTo
-	// skips the (expensive) build when the client already covers it, so a retry
-	// where nothing new is provable costs no proof. On failure the provable packets
-	// are transient — re-queue them alongside the pending ones.
-	if err := m.updateClientTo(ctx, relayable); err != nil {
+	// Prepare the client state that packet proofs will target. A folding destination
+	// leaves a needed update unsubmitted until the packet tx; the fallback submits
+	// it immediately. The folded plan holds the client-update lock until its atomic
+	// tx completes, preventing a refresh update from racing the planned height.
+	foldPlan, proofHeight, err := m.prepareBatchUpdate(ctx, relayable)
+	if err != nil {
 		log.Printf("[relay %s] update client to height %d: %v", m.name, relayable, err)
 		return append(requeue, provableIdx...)
 	}
-
-	// Prove every provable packet against the height the destination client trusts.
-	m.mu.Lock()
-	proofHeight := m.lastHeight
-	m.mu.Unlock()
+	if foldPlan != nil {
+		defer foldPlan.release()
+	}
 
 	// Build proofs per packet. A proof-build failure is transient and per-packet:
 	// re-queue just that event and keep the rest in the multicall (mirrors the
@@ -403,11 +396,24 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 		return append(requeue, relayedIdx...)
 	}
 
-	// Submit the whole batch as one multicall.
-	err = m.dst.RelayPackets(ctx, packets)
+	// Submit the whole batch. A folded plan prepends the not-yet-on-chain client
+	// update in the same atomic tx; otherwise the client is already current and the
+	// destination submits packets only.
+	if foldPlan != nil {
+		err = foldPlan.destination.RelayWithUpdate(ctx, m.clientID, foldPlan.update, packets)
+		if err == nil {
+			m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
+			foldPlan.release()
+		}
+	} else {
+		err = m.dst.RelayPackets(ctx, packets)
+	}
 	if err == nil {
 		m.untrackDelivered(packets)
 		return requeue
+	}
+	if foldPlan != nil {
+		foldPlan.release()
 	}
 	if !chain.IsPermanent(err) {
 		// Transient (RPC, nonce, broadcast) → re-queue the whole batch for retry.
@@ -426,7 +432,74 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 		return requeue
 	}
 	log.Printf("[relay %s] permanent batch failure at height %d (%v); isolating %d packet(s) individually", m.name, proofHeight, err, len(packets))
+	if foldPlan != nil {
+		return append(requeue, m.relayFoldedIsolated(ctx, foldPlan.destination, foldPlan.update, packets, relayedIdx)...)
+	}
 	return append(requeue, m.relayIsolated(ctx, packets, relayedIdx)...)
+}
+
+type foldedUpdatePlan struct {
+	destination chain.FoldingDestination
+	update      chain.ClientUpdate
+	release     func()
+}
+
+// prepareBatchUpdate returns the proof height and, when supported and needed, a
+// still-unsubmitted update to fold into the packet tx. A returned folded plan
+// owns m.mu until release is called; release is idempotent.
+func (m *Module) prepareBatchUpdate(ctx context.Context, height uint64) (*foldedUpdatePlan, uint64, error) {
+	folding, ok := m.dst.(chain.FoldingDestination)
+	if !ok || !folding.SupportsUpdatePacketFolding() {
+		if err := m.updateClientTo(ctx, height); err != nil {
+			return nil, 0, err
+		}
+		m.mu.Lock()
+		proofHeight := m.lastHeight
+		m.mu.Unlock()
+		return nil, proofHeight, nil
+	}
+
+	m.mu.Lock()
+	locked := true
+	release := func() {
+		if locked {
+			locked = false
+			m.mu.Unlock()
+		}
+	}
+	fail := func(err error) (*foldedUpdatePlan, uint64, error) {
+		release()
+		return nil, 0, err
+	}
+
+	if height <= m.lastHeight {
+		proofHeight := m.lastHeight
+		release()
+		return nil, proofHeight, nil
+	}
+	header, err := m.src.QueryHeader(ctx, height)
+	if err != nil {
+		return fail(fmt.Errorf("query header at %d: %w", height, err))
+	}
+	update, err := m.builder.Build(ctx, header)
+	if err != nil {
+		return fail(fmt.Errorf("build client update: %w", err))
+	}
+	if len(update.Payloads) == 0 {
+		if update.Height > m.lastHeight {
+			m.lastHeight = update.Height
+		}
+		proofHeight := m.lastHeight
+		release()
+		return nil, proofHeight, nil
+	}
+	if update.Height <= m.lastHeight {
+		proofHeight := m.lastHeight
+		release()
+		return nil, proofHeight, nil
+	}
+
+	return &foldedUpdatePlan{destination: folding, update: update, release: release}, update.Height, nil
 }
 
 // relayIsolated re-submits each packet of a permanently-failed batch on its own
@@ -448,6 +521,47 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 				continue
 			}
 			log.Printf("[relay %s] isolated relay (type=%d height=%d): %v", m.name, p.Type, p.Height, err)
+			requeue = append(requeue, relayedIdx[j])
+			continue
+		}
+		m.untrackDelivered(single)
+	}
+	return requeue
+}
+
+// relayFoldedIsolated preserves poison-packet isolation after an atomic folded
+// batch reverts. Until one singleton succeeds, each attempt carries the update;
+// after that success installed the target height, remaining singletons use the
+// packets-only path.
+func (m *Module) relayFoldedIsolated(ctx context.Context, folding chain.FoldingDestination, update chain.ClientUpdate, packets []chain.RelayPacket, relayedIdx []int) []int {
+	var requeue []int
+	for j, p := range packets {
+		if ctx.Err() != nil {
+			requeue = append(requeue, relayedIdx[j:]...)
+			break
+		}
+
+		single := []chain.RelayPacket{p}
+		m.mu.Lock()
+		needsUpdate := update.Height > m.lastHeight
+		var err error
+		if needsUpdate {
+			err = folding.RelayWithUpdate(ctx, m.clientID, update, single)
+			if err == nil {
+				m.lastHeight = update.Height
+			}
+			m.mu.Unlock()
+		} else {
+			m.mu.Unlock()
+			err = m.dst.RelayPackets(ctx, single)
+		}
+
+		if err != nil {
+			if chain.IsPermanent(err) {
+				log.Printf("[relay %s] DROP folded packet (type=%d height=%d, permanent): %v", m.name, p.Type, p.Height, err)
+				continue
+			}
+			log.Printf("[relay %s] isolated folded relay (type=%d height=%d): %v", m.name, p.Type, p.Height, err)
 			requeue = append(requeue, relayedIdx[j])
 			continue
 		}

@@ -33,12 +33,13 @@ source events it:
 2. relayable := Source.RelayableHeight()   — cheap precondition
    • events above relayable  -> re-queue with WAITING backoff, no expensive work
    • none relayable          -> return (no client update, no proof)
-3. Destination.UpdateClient(ClientUpdateBuilder.Build(...))   — advance once,
-   skipped when the client already covers `relayable`
-4. Source.Membership/NonMembershipProof(...) per provable packet
+3. ClientUpdateBuilder.Build(...) — prepare an update when the client is behind
+4. Source.Membership/NonMembershipProof(...) per provable packet, targeting the
+   prepared update height when it is not on-chain yet
    • chain.IsPermanent(err)  -> DROP (timed out; the scanner refunds it)
    • else                    -> re-queue transient
-5. Destination.RelayPackets(...) — one multicall for the batch
+5. FoldingDestination.RelayWithUpdate(...) — update + packets in one atomic tx
+   • unsupported/current client -> UpdateClient then RelayPackets fallback
    • chain.IsPermanent(err)  -> DROP    • else -> re-queue transient
 ```
 
@@ -152,9 +153,10 @@ The generic module reproduces every reliability property of the monolithic
 - **Waiting backoff** — a not-yet-relayable packet re-checks with a growing delay
   (3→15s) instead of every batch period, so a long finality wait is quiet and
   does not churn the finality RPC (`services.BatchBuilder` `NotBefore`).
-- **Multicall + shared serialization** — packets fold into one `RelayPackets`
-  multicall; the shared `TransactionHandler` serializes ETH nonce / Cosmos
-  sequence across all sources.
+- **Atomic folding + shared serialization** — capable destinations prepend the
+  client update to the packet batch in one transaction; non-router EVM and L2
+  destinations retain the two-transaction fallback. The shared
+  `TransactionHandler` serializes ETH nonce / Cosmos sequence across all sources.
 - **Graceful shutdown** — `handleBatch` takes the `Run` ctx and the background
   loops re-check `ctx.Err()` after each timer/tick, so cancellation stops new
   proof/tx work instead of continuing past teardown.
@@ -190,8 +192,7 @@ does not match the requested L2 height and finality policy.
 - **L2 adapters** (`l2rollup/`, `l2-opstack` / `l2-arbitrum`): skeleton in place;
   proof assembly + event listener TODO (see the L2 section above).
 - **Next**: wire the L2 proof assembly; dissolve the `services.Context`
-  god-object into per-module context; fold the client update into the packet
-  multicall (single tx).
+  god-object into per-module context.
 
 Multi-source (many Cosmos chains, one ETH) works unchanged: `cmd` runs one
 independent `runAdapterEngine` per `cosmos_to_eth` source, sharing the prover,
