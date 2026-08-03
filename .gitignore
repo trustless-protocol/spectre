@@ -77,6 +77,8 @@ attestor/optimism/attestor
 attestor/arbitrum/data/
 # Local Ethereum devnet endpoint handoff (scripts/local/run_eth_node.sh)
 .eth-devnet-run/
+# L2 contract address handoff from forge to bash (scripts/local/deploy_l2_contracts.sh)
+.l2-deployment.json
 # Local Base devnet runtime state (scripts/local/run_base_node.sh)
 .base-attestor-run/
 .base-devnet-run/
