@@ -502,12 +502,12 @@ func (m *Module) updateClientTo(ctx context.Context, height uint64) error {
 	if err != nil {
 		return fmt.Errorf("build client update: %w", err)
 	}
-	// An empty payload means "client already current"; the builder still reports
+	// An empty payload list means "client already current"; the builder still reports
 	// its current height, so learn it (seeding lastHeight from on-chain reality)
 	// without submitting a tx. This keeps the provability guard correct across a
 	// restart, where the client may already cover incoming packets and every
 	// Build would otherwise report a no-op the module could not learn from.
-	if len(update.Payload) == 0 {
+	if len(update.Payloads) == 0 {
 		if update.Height > m.lastHeight {
 			m.lastHeight = update.Height
 		}

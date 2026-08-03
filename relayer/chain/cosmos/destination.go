@@ -2,12 +2,14 @@ package cosmos
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"relayer/chain"
-	"relayer/chain/codec"
+	"relayer/chain/wasmclient"
 	relayerclient "relayer/client"
 	"relayer/services"
 
@@ -32,26 +34,66 @@ func NewDestination(worker *services.Worker, svcCtx services.Context) *Destinati
 
 func (d *Destination) Chain() chain.ChainType { return chain.Cosmos }
 
-// UpdateClient decodes the beacon update payload, waits for the Cosmos node to
-// catch up to the signature slot (so the submitted proof height is queryable),
-// then submits the MsgUpdateClient batch — exactly as the legacy UpdateEthClient
-// path did.
-func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.ClientUpdate) error {
+// UpdateClient wraps each beacon JSON header in a wasm ClientMessage, waits for
+// the Cosmos node to reach the latest signature slot, then submits the ordered
+// MsgUpdateClient batch. This preserves the legacy pre-submit timing guard
+// without carrying relayer-only metadata inside the payload.
+func (d *Destination) UpdateClient(ctx context.Context, clientID string, update chain.ClientUpdate) error {
 	if err := ctx.Err(); err != nil {
 		return err // shutting down — do not start a client-update tx
 	}
-	msgs, ethClientState, sigSlot, err := codec.DecodeBeaconUpdate(update.Payload)
+	if len(update.Payloads) == 0 {
+		return nil // client already current
+	}
+	if clientID == "" {
+		clientID = d.svcCtx.EthClientID()
+	}
+	signer, err := d.worker.TxHandler.CosmosSignerAddress()
+	if err != nil {
+		return fmt.Errorf("cosmos dest: signer address: %w", err)
+	}
+	sigSlot, err := highestBeaconSignatureSlot(update.Payloads)
 	if err != nil {
 		return fmt.Errorf("cosmos dest: decode beacon update: %w", err)
 	}
-	if len(msgs) == 0 {
-		return nil
+	msgs := make([]any, 0, len(update.Payloads))
+	for i, payload := range update.Payloads {
+		msg, err := wasmclient.BuildUpdateClient(signer, clientID, payload)
+		if err != nil {
+			return fmt.Errorf("cosmos dest: wrap beacon update %d: %w", i, err)
+		}
+		msgs = append(msgs, msg)
 	}
-	d.worker.WaitForCosmosCatchUp(ctx, d.svcCtx, &ethClientState, sigSlot)
+	ethClientState, err := relayerclient.GetEthereumClientState(d.svcCtx.CosmosClient(), d.svcCtx.EthClientID())
+	if err != nil {
+		return fmt.Errorf("cosmos dest: eth client state: %w", err)
+	}
+	d.worker.WaitForCosmosCatchUp(ctx, d.svcCtx, ethClientState, sigSlot)
 	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.svcCtx, msgs); err != nil {
 		return fmt.Errorf("cosmos dest: submit beacon update (exec block %d): %w", update.Height, err)
 	}
 	return nil
+}
+
+// highestBeaconSignatureSlot reads the timing prerequisite from the same JSON
+// payload that the wasm client verifies. The last header normally has the latest
+// slot, but taking the maximum makes ordered period-crossing batches explicit.
+func highestBeaconSignatureSlot(payloads [][]byte) (uint64, error) {
+	var latest uint64
+	for i, payload := range payloads {
+		var header relayerclient.EthereumHeader
+		if err := json.Unmarshal(payload, &header); err != nil {
+			return 0, fmt.Errorf("header %d: unmarshal JSON: %w", i, err)
+		}
+		slot, err := strconv.ParseUint(header.ConsensusUpdate.SignatureSlot, 10, 64)
+		if err != nil {
+			return 0, fmt.Errorf("header %d: parse signature slot: %w", i, err)
+		}
+		if slot > latest {
+			latest = slot
+		}
+	}
+	return latest, nil
 }
 
 // RelayPackets builds the Cosmos-bound IBC messages (recv/ack) from the given

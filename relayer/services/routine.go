@@ -16,7 +16,6 @@ import (
 	"strings"
 	"time"
 
-	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	"github.com/ethereum/go-ethereum/common"
@@ -774,13 +773,13 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, ctx Context, checksum s
 }
 
 type EthClientUpdateResult struct {
-	Msgs           []any
+	Headers        [][]byte
 	EthClientState *relayerclient.EthereumClientState
 	ProofTimestamp uint64
 	SigSlot        uint64
 }
 
-func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, error) {
+func (w *Worker) BuildEthClientUpdateHeaders(ctx Context) (*EthClientUpdateResult, error) {
 	beaconAPIURL := ctx.BeaconAPIURL()
 	if beaconAPIURL == "" {
 		return nil, fmt.Errorf("beacon API URL is not configured")
@@ -823,7 +822,7 @@ func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, 
 	if finalizedSlot <= trustedSlot {
 		log.Printf("[UpdateEthClient] already up to date, skipping")
 		return &EthClientUpdateResult{
-			Msgs:           nil,
+			Headers:        nil,
 			EthClientState: cloneEthereumClientState(ethClientState),
 			ProofTimestamp: ethClientState.ComputeTimestampAtSlot(trustedSlot),
 		}, nil
@@ -834,7 +833,7 @@ func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, 
 
 	log.Printf("[UpdateEthClient] trustedPeriod=%d targetPeriod=%d", trustedPeriod, targetPeriod)
 
-	msgs, err := w.buildEthClientUpdateMsgsWithPeriodCrossing(ctx, beaconAPIURL, ethClientID, ethClientState, trustedSlot, trustedPeriod, targetPeriod, finalityUpdate, finalizedSlot)
+	headers, err := w.buildEthClientUpdateHeadersWithPeriodCrossing(ctx, beaconAPIURL, ethClientState, trustedSlot, trustedPeriod, targetPeriod, finalityUpdate, finalizedSlot)
 	if err != nil {
 		return nil, err
 	}
@@ -846,7 +845,7 @@ func (w *Worker) BuildEthClientUpdateMsgs(ctx Context) (*EthClientUpdateResult, 
 
 	sigSlot, _ := parseSlot(finalityUpdate.SignatureSlot)
 	return &EthClientUpdateResult{
-		Msgs:           msgs,
+		Headers:        headers,
 		EthClientState: proofState,
 		ProofTimestamp: proofTimestamp,
 		SigSlot:        sigSlot,
@@ -888,7 +887,7 @@ func cosmosCurrentSlotReady(currentSlot, sigSlot uint64) bool {
 	return currentSlot >= sigSlot+cosmosCatchUpSafetySlots
 }
 
-func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconAPIURL, ethClientID string, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) ([]any, error) {
+func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(ctx Context, beaconAPIURL string, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) ([][]byte, error) {
 	count := targetPeriod - trustedPeriod + 1
 	bctx, bcancel := context.WithTimeout(context.Background(), 15*time.Second)
 	lightClientUpdates, err := relayerclient.GetLightClientUpdates(bctx, beaconAPIURL, trustedPeriod, count)
@@ -916,7 +915,7 @@ func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconA
 		updatesByPeriod[ethClientState.ComputeSyncCommitteePeriodAtSlot(slot)] = u
 	}
 
-	var msgs []any
+	headers := make([][]byte, 0, count)
 	latestTrustedSlot := trustedSlot
 	latestPeriod := trustedPeriod
 
@@ -948,12 +947,12 @@ func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconA
 			TrustedSlot:     latestTrustedSlot,
 		}
 
-		msg, err := buildMsgUpdateClient("", ethClientID, header)
+		headerBytes, err := json.Marshal(header)
 		if err != nil {
-			return nil, fmt.Errorf("failed to build update client message: %w", err)
+			return nil, fmt.Errorf("failed to marshal update header: %w", err)
 		}
 
-		msgs = append(msgs, msg)
+		headers = append(headers, headerBytes)
 		latestPeriod = updatePeriod
 		latestTrustedSlot = updateFinalizedSlot
 	}
@@ -998,15 +997,15 @@ func (w *Worker) buildEthClientUpdateMsgsWithPeriodCrossing(ctx Context, beaconA
 			TrustedSlot:     latestTrustedSlot,
 		}
 
-		msg, err := buildMsgUpdateClient("", ethClientID, header)
+		headerBytes, err := json.Marshal(header)
 		if err != nil {
-			return nil, fmt.Errorf("failed to build update client message: %w", err)
+			return nil, fmt.Errorf("failed to marshal update header: %w", err)
 		}
 
-		msgs = append(msgs, msg)
+		headers = append(headers, headerBytes)
 	}
 
-	return msgs, nil
+	return headers, nil
 }
 
 func cloneEthereumClientState(state *relayerclient.EthereumClientState) *relayerclient.EthereumClientState {
@@ -1048,29 +1047,6 @@ func bytesToBytes32(data []byte) [32]byte {
 	var result [32]byte
 	copy(result[:], data)
 	return result
-}
-
-// buildMsgUpdateClient builds a MsgUpdateClient for the Ethereum light client
-func buildMsgUpdateClient(signerAddr string, clientID string, header relayerclient.EthereumHeader) (*clienttypes.MsgUpdateClient, error) {
-	headerBytes, err := json.Marshal(header)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal header: %w", err)
-	}
-
-	clientMessage := &ibcwasmtypes.ClientMessage{
-		Data: headerBytes,
-	}
-
-	clientMessageAny, err := codectypes.NewAnyWithValue(clientMessage)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Any for client message: %w", err)
-	}
-
-	return &clienttypes.MsgUpdateClient{
-		ClientId:      clientID,
-		ClientMessage: clientMessageAny,
-		Signer:        signerAddr,
-	}, nil
 }
 
 // syncCommitteeForPeriod returns the full sync committee that is active in period.

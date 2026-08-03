@@ -20,7 +20,7 @@ method signatures. This README is the map.
 Data crossing the boundary is deliberately opaque (`[]byte` / small structs) so
 each adapter owns its own encoding. **Do not leak chain-specific types across
 the interface** — that is the whole point (`Event.Raw` / `RelayPacket.Packet` are
-proto-marshaled `channeltypesv2.Packet`; `ClientUpdate.Payload` is adapter-owned).
+proto-marshaled `channeltypesv2.Packet`; `ClientUpdate.Payloads` is adapter-owned).
 
 ## The relay loop (`relay.Module`)
 
@@ -85,7 +85,7 @@ The existing Cosmos↔ETH code is battle-tested — **wrap it behind the
 interfaces, don't reimplement it.** The `groth16` builder calls the current
 signature-extract → pinned-set select → `GenerateProof` → assemble pipeline
 **unchanged**; `Build` just returns the assembled message as
-`ClientUpdate{Height, Payload}`. The generic reliability machinery (gap-recovery
+`ClientUpdate{Height, Payloads}`. The generic reliability machinery (gap-recovery
 subscriber, pending tracker, timeout scanner, nonce/sequence serialization, batch
 builder) is reused, not rewritten — adapters only supply the per-chain parts
 (RPC, event decode, tx build, finality notion). The `services` surface the
@@ -167,7 +167,7 @@ per-L2 `HeaderBuilder` (`l2rollup/header_op.go` and
 accepted by its wasm client: the L1 rollup-contract witnesses, decoded canonical
 L2 header, and L2 IBC-handler account proof. The generic `Builder`
 (`l2rollup/builder.go`) passes the requested height and finality to the selected
-header builder, then packages its `ClientMessage` as `ClientUpdate.Payload` and
+header builder, then packages its single `ClientMessage` as `ClientUpdate.Payloads[0]` and
 advances to the height that proof actually commits. The L2 wasm client verifies
 the rollup proofs against the shared cw-ics08-wasm-eth client (see
 `l2rollup/clientmessage.go`).

@@ -6,9 +6,6 @@ import (
 
 	spectreContract "relayer/bindings/SpectreClient"
 	updateclientContract "relayer/bindings/UpdateClient"
-	relayerclient "relayer/client"
-
-	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 )
 
 // TestCosmosUpdate_GobRoundTrip guards the Cosmos->ETH codec: the ETH
@@ -55,43 +52,5 @@ func TestCosmosUpdate_GobRoundTrip(t *testing.T) {
 	}
 	if gotVal.TotalVotingPower != 42 {
 		t.Fatalf("NewValSet.TotalVotingPower: want 42, got %d", gotVal.TotalVotingPower)
-	}
-}
-
-// TestBeaconUpdate_GobRoundTrip guards the ETH->Cosmos codec: the Cosmos
-// destination must recover the MsgUpdateClient messages plus the EthClientState
-// + SigSlot it needs for the pre-submit catch-up.
-func TestBeaconUpdate_GobRoundTrip(t *testing.T) {
-	msgs := []any{
-		&clienttypes.MsgUpdateClient{ClientId: "08-wasm-0", Signer: "cosmos1abc"},
-		&clienttypes.MsgUpdateClient{ClientId: "08-wasm-0", Signer: "cosmos1abc"},
-	}
-	cs := relayerclient.EthereumClientState{
-		ChainID:            1,
-		LatestSlot:         123456,
-		SyncCommitteeSize:  512,
-		IbcContractAddress: "0xabc",
-	}
-
-	payload, err := EncodeBeaconUpdate(msgs, cs, 1_700_000_000, 123500)
-	if err != nil {
-		t.Fatalf("encode: %v", err)
-	}
-	gotMsgs, gotCS, sigSlot, err := DecodeBeaconUpdate(payload)
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(gotMsgs) != 2 {
-		t.Fatalf("want 2 msgs, got %d", len(gotMsgs))
-	}
-	m0, ok := gotMsgs[0].(*clienttypes.MsgUpdateClient)
-	if !ok || m0.ClientId != "08-wasm-0" || m0.Signer != "cosmos1abc" {
-		t.Fatalf("msg[0] mangled: %+v", gotMsgs[0])
-	}
-	if sigSlot != 123500 {
-		t.Fatalf("sigSlot: want 123500, got %d", sigSlot)
-	}
-	if gotCS.LatestSlot != 123456 || gotCS.SyncCommitteeSize != 512 || gotCS.IbcContractAddress != "0xabc" {
-		t.Fatalf("client state mangled: %+v", gotCS)
 	}
 }

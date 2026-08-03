@@ -1,8 +1,6 @@
-// Package codec holds the gob codecs for the opaque chain.ClientUpdate.Payload of
-// each adapter pair. It is a neutral leaf package so the source-side builder and
-// the destination-side adapter can share an encoding without importing each
-// other (which would cycle: evm decodes cosmos updates, cosmos decodes beacon
-// updates).
+// Package codec holds the gob codec for the opaque Cosmos-to-EVM client
+// update payload. The beacon and L2-to-Cosmos adapters carry their wasm JSON
+// client-message bytes directly.
 package codec
 
 import (
@@ -12,9 +10,6 @@ import (
 
 	spectreContract "relayer/bindings/SpectreClient"
 	updateclientContract "relayer/bindings/UpdateClient"
-	relayerclient "relayer/client"
-
-	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 )
 
 // --- Cosmos -> ETH (groth16) update ---
@@ -38,52 +33,6 @@ func DecodeCosmosUpdate(payload []byte) (kind int, appMsg updateclientContract.I
 		return 0, appMsg, newValSet, fmt.Errorf("codec: decode cosmos update: %w", derr)
 	}
 	return u.Kind, u.AppMsg, u.NewValSet, nil
-}
-
-// --- ETH -> Cosmos (beacon) update ---
-
-type beaconUpdate struct {
-	MsgBytes       [][]byte // each = proto.Marshal(*clienttypes.MsgUpdateClient)
-	EthClientState relayerclient.EthereumClientState
-	ProofTimestamp uint64
-	SigSlot        uint64
-}
-
-// EncodeBeaconUpdate encodes an ETH->Cosmos beacon update. msgs must be
-// *clienttypes.MsgUpdateClient (proto-marshaled — the nested Any does not gob
-// cleanly).
-func EncodeBeaconUpdate(msgs []any, clientState relayerclient.EthereumClientState, proofTimestamp, sigSlot uint64) ([]byte, error) {
-	msgBytes := make([][]byte, 0, len(msgs))
-	for i, m := range msgs {
-		msg, ok := m.(*clienttypes.MsgUpdateClient)
-		if !ok {
-			return nil, fmt.Errorf("codec: unexpected msg type %T at %d", m, i)
-		}
-		raw, err := msg.Marshal()
-		if err != nil {
-			return nil, fmt.Errorf("codec: marshal MsgUpdateClient %d: %w", i, err)
-		}
-		msgBytes = append(msgBytes, raw)
-	}
-	return encode(beaconUpdate{MsgBytes: msgBytes, EthClientState: clientState, ProofTimestamp: proofTimestamp, SigSlot: sigSlot})
-}
-
-// DecodeBeaconUpdate reverses EncodeBeaconUpdate, returning the messages as []any
-// ready for SendCosmosTxBatch plus the state the pre-submit catch-up needs.
-func DecodeBeaconUpdate(payload []byte) (msgs []any, clientState relayerclient.EthereumClientState, sigSlot uint64, err error) {
-	var u beaconUpdate
-	if derr := decode(payload, &u); derr != nil {
-		return nil, clientState, 0, fmt.Errorf("codec: decode beacon update: %w", derr)
-	}
-	msgs = make([]any, 0, len(u.MsgBytes))
-	for i, raw := range u.MsgBytes {
-		var msg clienttypes.MsgUpdateClient
-		if uerr := msg.Unmarshal(raw); uerr != nil {
-			return nil, clientState, 0, fmt.Errorf("codec: unmarshal MsgUpdateClient %d: %w", i, uerr)
-		}
-		msgs = append(msgs, &msg)
-	}
-	return msgs, u.EthClientState, u.SigSlot, nil
 }
 
 func encode(v any) ([]byte, error) {

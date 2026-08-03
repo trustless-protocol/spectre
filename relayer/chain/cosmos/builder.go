@@ -66,5 +66,5 @@ func (b *Groth16Builder) Build(_ context.Context, _ []byte) (chain.ClientUpdate,
 	if err != nil {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: encode update: %w", err)
 	}
-	return chain.ClientUpdate{Height: uint64(result.LightBlock.BlockHeight), Payload: payload}, nil
+	return chain.ClientUpdate{Height: uint64(result.LightBlock.BlockHeight), Payloads: [][]byte{payload}}, nil
 }

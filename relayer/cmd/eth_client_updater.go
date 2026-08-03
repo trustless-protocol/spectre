@@ -9,6 +9,7 @@ import (
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 
+	"relayer/chain/wasmclient"
 	"relayer/services"
 )
 
@@ -107,15 +108,23 @@ func (r *ethClientUpdater) updateIfStale(ctx context.Context, l1ClientID string,
 	r.lastAttempt = time.Now()
 	r.mu.Unlock()
 
-	result, err := r.worker.BuildEthClientUpdateMsgs(r.svcCtx)
+	result, err := r.worker.BuildEthClientUpdateHeaders(r.svcCtx)
 	if err != nil {
 		return fmt.Errorf("eth client %s: build update (trusted %d, L1 head %d): %w",
 			l1ClientID, trustedBlock, head, err)
 	}
-	if result == nil || len(result.Msgs) == 0 {
+	if result == nil || len(result.Headers) == 0 {
 		return nil // already covers the latest finalized header
 	}
-	return r.submitWithSkewRetry(ctx, l1ClientID, result.Msgs)
+	msgs := make([]any, 0, len(result.Headers))
+	for i, header := range result.Headers {
+		msg, err := wasmclient.BuildUpdateClient("", l1ClientID, header)
+		if err != nil {
+			return fmt.Errorf("eth client %s: wrap update header %d: %w", l1ClientID, i, err)
+		}
+		msgs = append(msgs, msg)
+	}
+	return r.submitWithSkewRetry(ctx, l1ClientID, msgs)
 }
 
 // submitWithSkewRetry resubmits the same messages through the shared Cosmos batch

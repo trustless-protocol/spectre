@@ -40,7 +40,10 @@ func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.C
 	if err := ctx.Err(); err != nil {
 		return err // shutting down — do not start a client-update tx
 	}
-	kind, appMsg, newValSet, err := codec.DecodeCosmosUpdate(update.Payload)
+	if len(update.Payloads) != 1 {
+		return fmt.Errorf("evm: expected exactly one client update payload, got %d", len(update.Payloads))
+	}
+	kind, appMsg, newValSet, err := codec.DecodeCosmosUpdate(update.Payloads[0])
 	if err != nil {
 		return fmt.Errorf("evm: decode client update: %w", err)
 	}

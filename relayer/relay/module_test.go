@@ -87,7 +87,7 @@ func (m *mockDest) ClientExpiresAt(context.Context, string) (time.Time, error) {
 // unless overridden (to simulate a "no update needed" zero-height result).
 type mockBuilder struct {
 	forceHeight uint64 // if non-zero, always return this height
-	noPayload   bool   // if true, return a nil payload ("client already current")
+	noPayload   bool   // if true, return no payloads ("client already current")
 	built       int    // count of Build calls
 }
 
@@ -101,7 +101,7 @@ func (m *mockBuilder) Build(_ context.Context, header []byte) (chain.ClientUpdat
 	if m.noPayload {
 		return chain.ClientUpdate{Height: h}, nil
 	}
-	return chain.ClientUpdate{Height: h, Payload: header}, nil
+	return chain.ClientUpdate{Height: h, Payloads: [][]byte{header}}, nil
 }
 
 func TestHandleBatch_ProofByType(t *testing.T) {
@@ -415,7 +415,7 @@ func TestHandleBatch_ProvabilityGuard(t *testing.T) {
 	}
 }
 
-// TestUpdateClientTo_SeedOnNoop verifies an empty-payload ("already current")
+// TestUpdateClientTo_SeedOnNoop verifies an empty-payload-list ("already current")
 // build advances lastHeight without submitting a tx, so a restart where the
 // client already covers incoming packets does not stall the provability guard.
 func TestUpdateClientTo_SeedOnNoop(t *testing.T) {

@@ -22,12 +22,11 @@ import (
 	"time"
 
 	"relayer/chain"
+	"relayer/chain/wasmclient"
 	relayerclient "relayer/client"
 	"relayer/services"
 	"relayer/subscriber"
 
-	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
-	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
@@ -59,7 +58,8 @@ func NewDestination(worker *services.Worker, svcCtx services.Context, clientID s
 func (d *Destination) Chain() chain.ChainType { return chain.Cosmos }
 
 // UpdateClient submits MsgUpdateClient for the L2 wasm client, wrapping the L2
-// header (update.Payload, produced by the l2 builder) in a wasm ClientMessage.
+// header (the sole update payload, produced by the L2 builder) in a wasm
+// ClientMessage.
 //
 // No ETH-first ordering step is needed: the header builder assembles its L1 proofs
 // against the ETH client's already-trusted L1 block (EthClientLatestSlotAndBlock), so
@@ -67,14 +67,14 @@ func (d *Destination) Chain() chain.ChainType { return chain.Cosmos }
 // client's freshness bounds how recent an L2 update can be, but advancing it is not a
 // prerequisite for this submit to verify.
 func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.ClientUpdate) error {
-	if len(update.Payload) == 0 {
-		return nil // nothing to submit
+	if len(update.Payloads) != 1 {
+		return fmt.Errorf("l2 dest: expected exactly one client update payload, got %d", len(update.Payloads))
 	}
 	signer, err := d.worker.TxHandler.CosmosSignerAddress()
 	if err != nil {
 		return fmt.Errorf("l2 dest: signer address: %w", err)
 	}
-	msg, err := buildWasmUpdateClient(signer, d.clientID, update.Payload)
+	msg, err := wasmclient.BuildUpdateClient(signer, d.clientID, update.Payloads[0])
 	if err != nil {
 		return fmt.Errorf("l2 dest: build update (height %d): %w", update.Height, err)
 	}
@@ -172,20 +172,4 @@ func (d *Destination) HasPacketReceipt(_ context.Context, packet []byte) (bool, 
 // refresh routine never force-updates it (its freshness is the L1 client's).
 func (d *Destination) ClientExpiresAt(_ context.Context, _ string) (time.Time, error) {
 	return time.Now().Add(100 * 365 * 24 * time.Hour), nil
-}
-
-// buildWasmUpdateClient wraps an L2 header (JSON bytes) in a wasm ClientMessage
-// and a MsgUpdateClient — the exact wrapper fast-ibc uses for the beacon client
-// (services.buildMsgUpdateClient), reused for the L2 client.
-func buildWasmUpdateClient(signer, clientID string, l2Header []byte) (*clienttypes.MsgUpdateClient, error) {
-	clientMessage := &ibcwasmtypes.ClientMessage{Data: l2Header}
-	anyMsg, err := codectypes.NewAnyWithValue(clientMessage)
-	if err != nil {
-		return nil, fmt.Errorf("wrap client message: %w", err)
-	}
-	return &clienttypes.MsgUpdateClient{
-		ClientId:      clientID,
-		ClientMessage: anyMsg,
-		Signer:        signer,
-	}, nil
 }

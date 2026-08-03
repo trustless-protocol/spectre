@@ -57,9 +57,12 @@ func TestBuild_EncodesHeaderAsPayload(t *testing.T) {
 	if upd.Height != 4242 {
 		t.Fatalf("update height = %d, want 4242", upd.Height)
 	}
-	// Payload must be the tagged ClientMessage envelope carrying the assembled header.
+	if len(upd.Payloads) != 1 {
+		t.Fatalf("payload count = %d, want 1", len(upd.Payloads))
+	}
+	// The sole payload must be the tagged ClientMessage envelope carrying the assembled header.
 	var env clientMessageEnvelope
-	if err := json.Unmarshal(upd.Payload, &env); err != nil {
+	if err := json.Unmarshal(upd.Payloads[0], &env); err != nil {
 		t.Fatalf("payload is not a client message envelope: %v", err)
 	}
 	if env.Type != "header" {

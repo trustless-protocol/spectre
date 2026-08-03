@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"relayer/chain/wasmclient"
 	"relayer/utils"
 	"time"
 
@@ -354,9 +355,9 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
 
 	log.Printf("[CosmosTimeoutScan] Building proof state for %d unreceived expired packets", len(expired))
 
-	updateResult, err := s.worker.BuildEthClientUpdateMsgs(ctx)
+	updateResult, err := s.worker.BuildEthClientUpdateHeaders(ctx)
 	if err != nil {
-		log.Printf("[CosmosTimeoutScan] Failed to build ETH client update messages: %v", err)
+		log.Printf("[CosmosTimeoutScan] Failed to build ETH client update headers: %v", err)
 		return
 	}
 
@@ -395,25 +396,33 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
 		return
 	}
 
-	var batchMsgs []any
-	if len(updateResult.Msgs) > 0 {
-		batchMsgs = append(batchMsgs, updateResult.Msgs...)
+	updateMsgs := make([]any, 0, len(updateResult.Headers))
+	for i, header := range updateResult.Headers {
+		msg, err := wasmclient.BuildUpdateClient("", ctx.EthClientID(), header)
+		if err != nil {
+			log.Printf("[CosmosTimeoutScan] Failed to wrap ETH update header %d: %v", i, err)
+			return
+		}
+		updateMsgs = append(updateMsgs, msg)
 	}
+
+	batchMsgs := make([]any, 0, len(updateMsgs)+len(timeoutMsgs))
+	batchMsgs = append(batchMsgs, updateMsgs...)
 	batchMsgs = append(batchMsgs, timeoutMsgs...)
 
-	if len(updateResult.Msgs) > 0 {
+	if len(updateMsgs) > 0 {
 		s.worker.WaitForCosmosCatchUp(stdCtx, ctx, updateResult.EthClientState, updateResult.SigSlot)
 	}
 
 	if err := s.worker.TxHandler.SendCosmosTxBatch(stdCtx, ctx, batchMsgs); err != nil {
 		log.Printf("[CosmosTimeoutScan] SendCosmosTxBatch failed: %v", err)
 		var partialErr *BatchPartialError
-		if errors.As(err, &partialErr) && partialErr.SucceededCount >= len(updateResult.Msgs) {
-			succeededTimeoutsCount := partialErr.SucceededCount - len(updateResult.Msgs)
+		if errors.As(err, &partialErr) && partialErr.SucceededCount >= len(updateMsgs) {
+			succeededTimeoutsCount := partialErr.SucceededCount - len(updateMsgs)
 			for i := 0; i < succeededTimeoutsCount; i++ {
 				info := processed[i]
 				s.BatchBuilder.PendingTracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
-				log.Printf("[CosmosTimeout] seq=%d: timeout relay completed (bundled with %d update msgs) in partial batch", info.Packet.Sequence, len(updateResult.Msgs))
+				log.Printf("[CosmosTimeout] seq=%d: timeout relay completed (bundled with %d update msgs) in partial batch", info.Packet.Sequence, len(updateMsgs))
 			}
 		}
 		return
@@ -421,7 +430,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
 
 	for _, info := range processed {
 		s.BatchBuilder.PendingTracker.Remove(info.Packet.SourceClient, info.Packet.Sequence)
-		log.Printf("[CosmosTimeout] seq=%d: timeout relay completed (bundled with %d update msgs)", info.Packet.Sequence, len(updateResult.Msgs))
+		log.Printf("[CosmosTimeout] seq=%d: timeout relay completed (bundled with %d update msgs)", info.Packet.Sequence, len(updateMsgs))
 	}
 }
 

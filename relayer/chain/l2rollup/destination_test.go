@@ -1,7 +1,11 @@
 package l2rollup
 
 import (
+	"context"
 	"testing"
+
+	"relayer/chain"
+	"relayer/chain/wasmclient"
 
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 )
@@ -11,7 +15,7 @@ import (
 // the existing beacon client) consumes.
 func TestBuildWasmUpdateClient(t *testing.T) {
 	l2Header := []byte(`{"height":123,"state_root":"0xabc"}`)
-	msg, err := buildWasmUpdateClient("cosmos1signer", "l2-op-0", l2Header)
+	msg, err := wasmclient.BuildUpdateClient("cosmos1signer", "l2-op-0", l2Header)
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
@@ -26,5 +30,15 @@ func TestBuildWasmUpdateClient(t *testing.T) {
 	}
 	if string(cm.Data) != string(l2Header) {
 		t.Fatalf("L2 header not preserved: got %q", cm.Data)
+	}
+}
+
+func TestUpdateClient_RequiresExactlyOnePayload(t *testing.T) {
+	d := &Destination{}
+	if err := d.UpdateClient(context.Background(), "", chain.ClientUpdate{}); err == nil {
+		t.Fatal("empty payload list must fail")
+	}
+	if err := d.UpdateClient(context.Background(), "", chain.ClientUpdate{Payloads: [][]byte{[]byte("one"), []byte("two")}}); err == nil {
+		t.Fatal("multiple payloads must fail")
 	}
 }

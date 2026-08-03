@@ -76,8 +76,18 @@ func TestRelayPackets_Empty(t *testing.T) {
 // the eth tx submit, so no worker needed).
 func TestUpdateClient_BadPayload(t *testing.T) {
 	d := &Destination{}
-	err := d.UpdateClient(context.Background(), "", chain.ClientUpdate{Payload: []byte("not-a-gob-cosmos-update")})
+	err := d.UpdateClient(context.Background(), "", chain.ClientUpdate{Payloads: [][]byte{[]byte("not-a-gob-cosmos-update")}})
 	if err == nil {
 		t.Fatal("undecodable client update payload must error")
+	}
+}
+
+func TestUpdateClient_RequiresExactlyOnePayload(t *testing.T) {
+	d := &Destination{}
+	if err := d.UpdateClient(context.Background(), "", chain.ClientUpdate{}); err == nil {
+		t.Fatal("empty payload list must fail")
+	}
+	if err := d.UpdateClient(context.Background(), "", chain.ClientUpdate{Payloads: [][]byte{[]byte("one"), []byte("two")}}); err == nil {
+		t.Fatal("multiple payloads must fail")
 	}
 }

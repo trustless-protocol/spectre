@@ -61,16 +61,18 @@ type Event struct {
 // Height is exposed so the core can enforce the append-only / monotonic
 // invariant generically — reject an update at or below the destination client's
 // current height before submitting, which catches reorg-attestations and
-// replays without decoding Payload. (Destination.UpdateClient must still reject
+// replays without decoding Payloads. (Destination.UpdateClient must still reject
 // non-monotonic updates itself; this is defense in depth at the core layer.)
 //
-// Payload is the adapter-owned, destination-specific update bytes: a Groth16
-// proof bundle for Cosmos->X, a trustless rollup-proof JSON ClientMessage for
-// L2->Cosmos (L1 rollup-contract witnesses + L2 header/account proofs, no relayer
-// signature). Only the destination adapter understands it.
+// Payloads are adapter-owned, destination-specific update bytes. Most adapters
+// emit exactly one payload (a Groth16 proof bundle for Cosmos->X or a trustless
+// rollup-proof JSON ClientMessage for L2->Cosmos); beacon updates may need an
+// ordered sequence when crossing sync-committee periods. Only the destination
+// adapter understands their contents. An empty list means the client is already
+// current and no transaction is needed.
 type ClientUpdate struct {
-	Height  uint64
-	Payload []byte
+	Height   uint64
+	Payloads [][]byte
 }
 
 // RelayPacket is a source packet together with the source proof the destination
