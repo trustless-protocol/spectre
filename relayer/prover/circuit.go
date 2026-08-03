@@ -14,11 +14,33 @@ type Fp25519 = emulated.Curve25519Fp
 type Fr25519 = emulated.Curve25519Fr
 
 // MaxMsgLen is the fixed-width buffer length the circuit allocates per slot
-// for the validator-signed bytes. Tendermint canonical vote bytes (length
-// prefix + inner message) sit at ~110-175 bytes for typical chains; 192
-// gives headroom for chain ids near MaxChainIDLen and rounds to a clean
-// SHA-256 block boundary count.
-const MaxMsgLen = 192
+// for the validator-signed bytes (CometBFT VoteSignBytes: length prefix +
+// CanonicalVote body). It is chosen from two hard bounds, both asserted by
+// TestMaxMsgLenBounds — do not raise it casually.
+//
+// Upper bound (cost). The signed bytes are hashed by SHA-512 for H_RAM, never
+// by the SHA-256 witness commitment, so what matters is the 128-byte SHA-512
+// block — not a 64-byte SHA-256 one. FixedLengthSum hashes 64 bytes of R||A
+// plus this buffer, then pads:
+//
+//	blocks = ceil((64 + MaxMsgLen + padding) / 128), padding >= 17
+//
+// 175 pads 239 -> 256 = 2 blocks; 176 pads 240 -> 384 = 3 blocks. Every slot
+// pays that third permutation, so crossing 175 costs ~17% of the circuit
+// (N=16: 1,569,995 -> 1,899,694 constraints, 6.03s -> 7.63s per proof on CPU).
+//
+// Lower bound (correctness). A vote must always fit, or GenerateProof rejects
+// the batch (see prover.go). The largest VoteSignBytes CometBFT can produce is
+// 167 bytes: a 50-char chain id (types.MaxChainIDLen, enforced at validation),
+// max-width height/round encodings and PartSetHeader.Total, a full BlockID,
+// and a pathological far-future timestamp — measured by TestMaxMsgLenBounds,
+// which rebuilds that vote from the CometBFT types.
+//
+// 175 is the largest value that keeps SHA-512 at two blocks, leaving 8 bytes
+// over the protocol maximum. If a future CometBFT raises MaxChainIDLen past
+// 50, the guard test fails and this constant must be revisited — note that
+// any value above 175 re-adds the third block.
+const MaxMsgLen = 175
 
 // #199 offsets within each signer's canonical-vote message, measured from the
 // start of the BODY — i.e. after the leading length varint that
