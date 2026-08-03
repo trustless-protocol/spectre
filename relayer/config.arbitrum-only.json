@@ -1,0 +1,74 @@
+{
+  "modules": [
+    {
+      "name": "cosmos-to-arbitrum",
+      "src_chain": "cosmos",
+      "dst_chain": "arbitrum",
+      "config": {
+        "cosmos_wasm_client_id": "08-wasm-1",
+        "eth_rpc_url": "http://127.0.0.1:32200",
+        "eth_ws_url": "ws://127.0.0.1:32201",
+        "fetch_timeout": 15,
+        "spectre_client": "0xB29dB8A6b1C596B64f7E1dD5358d59Db73648E17",
+        "ics26_address": "0x9fcf7d13d10dedf17d0f24c62f0cf4ed462f65b7",
+        "ics26_client_id": "arb-client-0",
+        "membership": "0x422a3492e218383753d8006c7bfa97815b44373f",
+        "misbehaviour": "0x9f9f5fd89ad648f2c000c954d8d9c87743243ec5",
+        "tm_rpc_url": "http://127.0.0.1:26657",
+        "clock_drift": 900,
+        "app_hash_wait_retries": 30,
+        "app_hash_wait_interval_seconds": 1,
+        "update_client": "0x0643d39d47cf0ea95dbea69bf11a7f8c4bc34968",
+        "signature_verifier": "0xb4b46bdaa835f8e4b4d8e208b6559cd267851051",
+        "rotation_threshold": "5/6"
+      }
+    },
+    {
+      "name": "arbitrum-to-cosmos",
+      "src_chain": "arbitrum",
+      "dst_chain": "cosmos",
+      "config": {
+        "l1_rpc_url": "http://127.0.0.1:32003",
+        "l2_rpc_url": "http://127.0.0.1:32200",
+        "eth_beacon_api_url": "http://127.0.0.1:32101",
+        "tm_rpc_url": "http://127.0.0.1:26657",
+        "attestor_addr": "127.0.0.1:3001",
+        "attestor_src_chain": "arbdev",
+        "l2_wasm_client_id": "08-wasm-1",
+        "l2_ics26_client_id": "arb-client-0",
+        "head_kind": "safe",
+        "rollup_profile": {
+          "common": {
+            "l1_chain_id": 3151908,
+            "l2_chain_id": 412346,
+            "ethereum_client": {
+              "client_id": "08-wasm-0",
+              "wasm_checksum": []
+            },
+            "l2_router": "0x9fcf7d13d10dedf17d0f24c62f0cf4ed462f65b7",
+            "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
+            "rollup_version": "arbitrum-bold-v2"
+          },
+          "rollup": "0x977B73121B4A9fabbDfffc0bEd920A5945396344",
+          "protocol": {
+            "type": "bold_v2",
+            "value": {
+              "assertions_mapping_slot": "0x0000000000000000000000000000000000000000000000000000000000000075",
+              "assertion_status_offset": 25,
+              "version": "bold-v2"
+            }
+          }
+        }
+      }
+    }
+  ],
+  "batch": {
+    "batch_period_seconds": 3,
+    "batch_size": 5
+  },
+  "server": {
+    "address": "127.0.0.1",
+    "log_level": "info",
+    "port": 3000
+  }
+}

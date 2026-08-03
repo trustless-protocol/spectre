@@ -4,6 +4,9 @@ set -eux pipefail
 
 cd "$(dirname "$0")/../.."
 
+. ./scripts/local/gaiad_binary.sh
+. ./scripts/local/wasm_checksum.sh
+
 CHAIN_ID="test-ibc-eth"
 KEYRING="test"
 
@@ -22,7 +25,7 @@ echo '{
  "expedited": false
 }' > proposal.json
 
-gaiad tx gov submit-proposal proposal.json \
+"$GAIAD" tx gov submit-proposal proposal.json \
   --from val1 \
   --home "$HOME/.gaia" \
   --chain-id "$CHAIN_ID" \
@@ -34,13 +37,13 @@ gaiad tx gov submit-proposal proposal.json \
 sleep 5
 
 PROPOSAL_ID=$(
-  gaiad q gov proposals -o json \
+  "$GAIAD" q gov proposals -o json \
     | jq -r '.proposals | sort_by(.id | tonumber) | last | .id'
 )
 
 sleep 5
 
-gaiad tx gov vote "$PROPOSAL_ID" yes \
+"$GAIAD" tx gov vote "$PROPOSAL_ID" yes \
   --from val1 \
   --home "$HOME/.gaia" \
   --chain-id "$CHAIN_ID" \
@@ -48,7 +51,7 @@ gaiad tx gov vote "$PROPOSAL_ID" yes \
   --gas-prices 1stake \
   -y
 
-gaiad tx gov vote "$PROPOSAL_ID" yes \
+"$GAIAD" tx gov vote "$PROPOSAL_ID" yes \
   --from val2 \
   --home "$HOME/.gaia-val2" \
   --chain-id "$CHAIN_ID" \
@@ -56,7 +59,7 @@ gaiad tx gov vote "$PROPOSAL_ID" yes \
   --gas-prices 1stake \
   -y
 
-gaiad tx gov vote "$PROPOSAL_ID" yes \
+"$GAIAD" tx gov vote "$PROPOSAL_ID" yes \
   --from val3 \
   --home "$HOME/.gaia-val3" \
   --chain-id "$CHAIN_ID" \
@@ -66,6 +69,7 @@ gaiad tx gov vote "$PROPOSAL_ID" yes \
 
 sleep 30
 
-CHECKSUM=$(gaiad q ibc-wasm checksums | yq '.checksums[0]')
+CHECKSUM=$(wasm_checksum_from_proposal proposal.json)
+assert_wasm_checksum_stored "$CHECKSUM"
 
 echo "Checksum: 0x$CHECKSUM"

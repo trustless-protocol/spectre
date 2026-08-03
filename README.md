@@ -205,6 +205,21 @@ directory containing the `libicicle_*` files.
 End-to-end run on local Cosmos + Ethereum nodes. Requires Docker + Kurtosis on
 top of the toolchain in [Requirements](#requirements).
 
+The local Cosmos scripts must run against the custom Gaia branch that carries the
+IBC host changes. By default they use `../gaia/build/gaiad` and require that
+checkout to be on `test/ibc-host-customs`:
+
+```bash
+cd ../gaia
+git checkout test/ibc-host-customs
+GOTOOLCHAIN=go1.25.7 make build
+cd ../fast-ibc
+```
+
+Set `GAIAD=/path/to/gaiad` or `GAIA_DIR=/path/to/gaia` to override this. The
+scripts do not fall back to a `gaiad` binary from PATH unless you explicitly set
+`GAIAD=gaiad`.
+
 > **Tip for local dev**: `relayer/prover/buckets.go` defaults to
 > `Buckets = []int{4, 8, 16, 32, 64, 128}`. Compiling all six takes 30+ minutes
 > (bucket 128 alone is ~30 min) and the local single-validator chain only ever
@@ -290,9 +305,10 @@ curl -s http://127.0.0.1:32101/eth/v1/beacon/states/head/finality_checkpoints
 
 # 7. send packet
 
+. ./scripts/local/gaiad_binary.sh
 ABS_TIMEOUT=$(($(date +%s) + 2000))
 
-gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21ee5948ecaa776 1000stake \
+"$GAIAD" tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21ee5948ecaa776 1000stake \
   --from test1 \
   --home "$HOME/.gaia" \
   --chain-id test-ibc-eth \
@@ -303,12 +319,12 @@ gaiad tx ibc-transfer transfer transfer 08-wasm-0 0x8943545177806ed17b9f23f0a21e
   --packet-timeout-timestamp "$ABS_TIMEOUT" \
   --generate-only \
 | jq '.body.messages[0].encoding = "application/x-solidity-abi"' \
-| gaiad tx sign /dev/stdin \
+| "$GAIAD" tx sign /dev/stdin \
     --from test1 \
     --home "$HOME/.gaia" \
     --chain-id test-ibc-eth \
     --keyring-backend test \
-| gaiad tx broadcast /dev/stdin \
+| "$GAIAD" tx broadcast /dev/stdin \
     --node tcp://127.0.0.1:26657 \
     -y
 
@@ -333,7 +349,7 @@ cast call 0x016f5f33DbCb653e6393698Beba9DC19d828D75e \
   --rpc-url http://127.0.0.1:32003
 
 
-gaiad q txs \
+"$GAIAD" q txs \
   --query "message.action='/ibc.core.channel.v2.MsgAcknowledgement'" \
   --node tcp://127.0.0.1:26657 \
   -o json
@@ -566,19 +582,21 @@ counterparty must equal the client id the SpectreClient was added under on the L
 relayer only picks up packets whose `destination_client` matches its configured `ics26_client_id`:
 
 ```bash
-gaiad tx ibc client add-counterparty <l2-client-on-cosmos> <ics26_client_id> "" \
+. ./scripts/local/gaiad_binary.sh
+
+"$GAIAD" tx ibc client add-counterparty <l2-client-on-cosmos> <ics26_client_id> "" \
   --from test1 --home "$HOME/.gaia" --chain-id test-ibc-eth \
   --keyring-backend test --gas-prices 1stake --gas 300000 -y
 
 ABS_TIMEOUT=$(($(date +%s) + 2000))
-gaiad tx ibc-transfer transfer transfer <l2-client-on-cosmos> <evm-receiver> 1000stake \
+"$GAIAD" tx ibc-transfer transfer transfer <l2-client-on-cosmos> <evm-receiver> 1000stake \
   --from test1 --home "$HOME/.gaia" --chain-id test-ibc-eth \
   --node tcp://127.0.0.1:26657 --keyring-backend test --gas-prices 1stake \
   --absolute-timeouts --packet-timeout-timestamp "$ABS_TIMEOUT" --generate-only \
 | jq '.body.messages[0].encoding = "application/x-solidity-abi"' \
-| gaiad tx sign /dev/stdin --from test1 --home "$HOME/.gaia" \
+| "$GAIAD" tx sign /dev/stdin --from test1 --home "$HOME/.gaia" \
     --chain-id test-ibc-eth --keyring-backend test \
-| gaiad tx broadcast /dev/stdin --node tcp://127.0.0.1:26657 -y
+| "$GAIAD" tx broadcast /dev/stdin --node tcp://127.0.0.1:26657 -y
 ```
 
 `create-clients-cosmos` writes the L2 client id into a `cosmos_to_l2` module's

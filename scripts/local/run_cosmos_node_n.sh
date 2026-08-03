@@ -20,6 +20,8 @@ set -euo pipefail
 # Self-anchor to repo root so RELAYER_ENV_FILE etc. resolve regardless of cwd.
 cd "$(dirname "$0")/../.."
 
+. ./scripts/local/gaiad_binary.sh
+
 NUM_NODES="${NUM_NODES:-180}"
 CHAIN_ID="${CHAIN_ID:-test-ibc-eth}"
 DENOM="${DENOM:-stake}"
@@ -143,11 +145,6 @@ USER_BALANCES=(
     "200000000000${DENOM}"
 )
 
-if ! command -v gaiad >/dev/null 2>&1; then
-    echo "gaiad not found in PATH" >&2
-    exit 1
-fi
-
 echo "Stopping any existing gaiad processes..."
 killall gaiad 2>/dev/null || true
 
@@ -198,13 +195,13 @@ upsert_env_var() {
 
 echo "Initializing $NUM_NODES validator homes..."
 for i in "${!HOMES[@]}"; do
-    gaiad init "${VAL_KEYS[$i]}" --chain-id "$CHAIN_ID" --home "${HOMES[$i]}" >/dev/null 2>&1
-    gaiad keys add "${VAL_KEYS[$i]}" --keyring-backend "$KEYRING" --home "${HOMES[$i]}" >/dev/null 2>&1
+    "$GAIAD" init "${VAL_KEYS[$i]}" --chain-id "$CHAIN_ID" --home "${HOMES[$i]}" >/dev/null 2>&1
+    "$GAIAD" keys add "${VAL_KEYS[$i]}" --keyring-backend "$KEYRING" --home "${HOMES[$i]}" >/dev/null 2>&1
 done
 
 echo "Creating user keys on primary home..."
 for i in "${!USER_KEYS[@]}"; do
-    gaiad keys add "${USER_KEYS[$i]}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME" >/dev/null 2>&1
+    "$GAIAD" keys add "${USER_KEYS[$i]}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME" >/dev/null 2>&1
 done
 
 # Genesis tweaks (governance + feemarket).
@@ -218,12 +215,12 @@ tmp_genesis '.app_state["feemarket"]["params"]["max_block_utilization"]="3000000
 
 echo "Adding genesis accounts..."
 for i in "${!USER_KEYS[@]}"; do
-    gaiad genesis add-genesis-account "${USER_KEYS[$i]}" "${USER_BALANCES[$i]}" \
+    "$GAIAD" genesis add-genesis-account "${USER_KEYS[$i]}" "${USER_BALANCES[$i]}" \
         --keyring-backend "$KEYRING" --home "$PRIMARY_HOME" >/dev/null
 done
 for i in "${!VAL_KEYS[@]}"; do
-    val_addr=$(gaiad keys show "${VAL_KEYS[$i]}" -a --keyring-backend "$KEYRING" --home "${HOMES[$i]}")
-    gaiad genesis add-genesis-account "$val_addr" "$(val_genesis_bal "$i")" --home "$PRIMARY_HOME" >/dev/null
+    val_addr=$("$GAIAD" keys show "${VAL_KEYS[$i]}" -a --keyring-backend "$KEYRING" --home "${HOMES[$i]}")
+    "$GAIAD" genesis add-genesis-account "$val_addr" "$(val_genesis_bal "$i")" --home "$PRIMARY_HOME" >/dev/null
 done
 
 # Sync the in-progress genesis to every node so gentx can sign against it.
@@ -233,7 +230,7 @@ done
 
 echo "Generating gentx for each validator (weighted stakes)..."
 for i in "${!HOMES[@]}"; do
-    gaiad genesis gentx "${VAL_KEYS[$i]}" "$(val_stake "$i")" \
+    "$GAIAD" genesis gentx "${VAL_KEYS[$i]}" "$(val_stake "$i")" \
         --chain-id "$CHAIN_ID" \
         --keyring-backend "$KEYRING" \
         --home "${HOMES[$i]}" >/dev/null 2>&1
@@ -280,8 +277,8 @@ for ((i = 1; i < NUM_NODES; i++)); do
     cp "${HOMES[$i]}"/config/gentx/*.json "$PRIMARY_HOME/config/gentx/"
 done
 
-gaiad genesis collect-gentxs --home "$PRIMARY_HOME" >/dev/null
-gaiad genesis validate-genesis --home "$PRIMARY_HOME"
+"$GAIAD" genesis collect-gentxs --home "$PRIMARY_HOME" >/dev/null
+"$GAIAD" genesis validate-genesis --home "$PRIMARY_HOME"
 
 # Distribute final genesis.
 for ((i = 1; i < NUM_NODES; i++)); do
@@ -291,7 +288,7 @@ done
 echo "Collecting node ids..."
 NODE_IDS=()
 for i in "${!HOMES[@]}"; do
-    NODE_IDS+=("$(gaiad tendermint show-node-id --home "${HOMES[$i]}")")
+    NODE_IDS+=("$("$GAIAD" tendermint show-node-id --home "${HOMES[$i]}")")
 done
 
 # Each node uses up to PEERS_PER_NODE neighbors (rotating window) to avoid an
@@ -339,7 +336,7 @@ for i in "${!HOMES[@]}"; do
     configure_node "$i"
 done
 
-COSMOS_PRIVATE_KEY="$(gaiad keys export test1 --unarmored-hex --unsafe --keyring-backend "$KEYRING" --home "$PRIMARY_HOME" -y 2>/dev/null)"
+COSMOS_PRIVATE_KEY="$("$GAIAD" keys export test1 --unarmored-hex --unsafe --keyring-backend "$KEYRING" --home "$PRIMARY_HOME" -y 2>/dev/null)"
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_PRIVATE_KEY" "$COSMOS_PRIVATE_KEY"
 upsert_env_var "$RELAYER_ENV_FILE" "COSMOS_CHAIN_ID" "$CHAIN_ID"
 echo "Updated $RELAYER_ENV_FILE (primary RPC tcp://127.0.0.1:${RPC_PORTS[0]})"
@@ -347,7 +344,7 @@ echo "Updated $RELAYER_ENV_FILE (primary RPC tcp://127.0.0.1:${RPC_PORTS[0]})"
 PIDS=()
 echo "Starting $NUM_NODES validators..."
 for i in "${!HOMES[@]}"; do
-    gaiad start --home "${HOMES[$i]}" > "${HOMES[$i]}/gaiad.log" 2>&1 &
+    "$GAIAD" start --home "${HOMES[$i]}" > "${HOMES[$i]}/gaiad.log" 2>&1 &
     PIDS+=("$!")
 done
 

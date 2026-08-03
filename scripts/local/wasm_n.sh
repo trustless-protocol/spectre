@@ -4,6 +4,9 @@ set -eux pipefail
 
 cd "$(dirname "$0")/../.."
 
+. ./scripts/local/gaiad_binary.sh
+. ./scripts/local/wasm_checksum.sh
+
 CHAIN_ID="test-ibc-eth"
 KEYRING="test"
 
@@ -31,7 +34,7 @@ GAIA_BASE="${GAIA_BASE:-$HOME/.gaia-multi}"
 RPC_BASE="${RPC_BASE:-31000}"
 PRIMARY_NODE="tcp://127.0.0.1:${RPC_BASE}"
 
-gaiad tx gov submit-proposal proposal.json \
+"$GAIAD" tx gov submit-proposal proposal.json \
   --from val0 \
   --home "$GAIA_BASE/val0" \
   --node "$PRIMARY_NODE" \
@@ -46,7 +49,7 @@ gaiad tx gov submit-proposal proposal.json \
 PROPOSAL_ID=""
 for attempt in $(seq 1 30); do
   PROPOSAL_ID=$(
-    gaiad q gov proposals --node "$PRIMARY_NODE" -o json 2>/dev/null \
+    "$GAIAD" q gov proposals --node "$PRIMARY_NODE" -o json 2>/dev/null \
       | jq -r '.proposals // [] | sort_by(.id | tonumber) | last | .id // empty'
   )
   if [ -n "$PROPOSAL_ID" ]; then
@@ -67,7 +70,7 @@ echo "Proposal ID: $PROPOSAL_ID"
 i=0
 while [ "$i" -lt "$NUM_NODES" ]; do
   NODE_RPC="tcp://127.0.0.1:$((RPC_BASE + i))"
-  gaiad tx gov vote "$PROPOSAL_ID" yes \
+  "$GAIAD" tx gov vote "$PROPOSAL_ID" yes \
     --from "val$i" \
     --home "$GAIA_BASE/val$i" \
     --node "$NODE_RPC" \
@@ -81,22 +84,22 @@ done
 # Poll proposal status + checksum instead of a fixed sleep. The proposal
 # only executes after voting_period expires (set in genesis); 30s is often
 # too short on a fresh chain.
-CHECKSUM=""
+CHECKSUM=$(wasm_checksum_from_proposal proposal.json)
+STORED_CHECKSUM=""
 for attempt in $(seq 1 60); do
-  status=$(gaiad q gov proposal "$PROPOSAL_ID" --node "$PRIMARY_NODE" -o json 2>/dev/null \
+  status=$("$GAIAD" q gov proposal "$PROPOSAL_ID" --node "$PRIMARY_NODE" -o json 2>/dev/null \
     | jq -r '.proposal.status // .status // "UNKNOWN"')
-  CHECKSUM=$(gaiad q ibc-wasm checksums --node "$PRIMARY_NODE" -o json 2>/dev/null \
-    | jq -r '.checksums[0] // empty')
-  if [ -n "$CHECKSUM" ] && [ "$CHECKSUM" != "null" ]; then
+  if wasm_checksum_is_stored "$CHECKSUM" --node "$PRIMARY_NODE" 2>/dev/null; then
+    STORED_CHECKSUM=$CHECKSUM
     break
   fi
-  echo "Proposal status=$status, checksum not yet stored (attempt $attempt/60)..."
+  echo "Proposal status=$status, computed checksum not yet stored (attempt $attempt/60)..."
   sleep 5
 done
 
-if [ -z "$CHECKSUM" ] || [ "$CHECKSUM" = "null" ]; then
-  echo "ERROR: wasm checksum never stored. Last proposal status: $status" >&2
-  echo "       Check 'gaiad q gov proposal $PROPOSAL_ID' for tally + execution details." >&2
+if [ -z "$STORED_CHECKSUM" ]; then
+  echo "ERROR: computed wasm checksum $CHECKSUM was never stored. Last proposal status: $status" >&2
+  echo "       Check '$GAIAD q gov proposal $PROPOSAL_ID' for tally + execution details." >&2
   exit 1
 fi
 

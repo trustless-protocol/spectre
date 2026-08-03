@@ -14,6 +14,8 @@ set -euxo pipefail
 # Env:
 #   ETH_RPC / ETH_WS / ETH_BEACON_API   endpoints; sourced from the run_eth_node.sh
 #                                       handoff when ETH_RPC is unset
+#   RELAYER_CONFIG                      relayer config to patch
+#                                       (default: relayer/config.example.json)
 #   ETH_DEPLOYER_ADDRESS / _PRIVATE_KEY deployer (defaults to the devnet-only key
 #                                       relayer/.env ships). MUST match the relayer's
 #                                       ETH_PRIVATE_KEY — see the note below.
@@ -25,6 +27,11 @@ REPO_ROOT=$PWD
 
 RUN_DIR=${RUN_DIR:-$REPO_ROOT/.eth-devnet-run}
 ENV_FILE=${ENV_FILE:-$RUN_DIR/eth.env}
+RELAYER_CONFIG=${RELAYER_CONFIG:-$REPO_ROOT/relayer/config.example.json}
+case "$RELAYER_CONFIG" in
+    /*) ;;
+    *) RELAYER_CONFIG=$REPO_ROOT/$RELAYER_CONFIG ;;
+esac
 
 if [ -z "${ETH_RPC:-}" ]; then
     [ -f "$ENV_FILE" ] || {
@@ -88,7 +95,6 @@ echo "UPDATE_CLIENT_ADDRESS: $UPDATE_CLIENT_ADDRESS"
 echo "MISBEHAVIOUR_ADDRESS: $MISBEHAVIOUR_ADDRESS"
 
 # Patch the relayer config with the deployed addresses + endpoints.
-cd relayer
 jq \
   --arg ETH_RPC "$ETH_RPC" \
   --arg ETH_WS "${ETH_WS:-}" \
@@ -106,6 +112,6 @@ jq \
   | (.. | objects | select(has("update_client")) | .update_client) = $UPCL
   | (.. | objects | select(has("misbehaviour")) | .misbehaviour) = $MIS
   | (.. | objects | select(has("eth_beacon_api_url")) | .eth_beacon_api_url) = $ETH_BEACON
-  ' config.example.json > config.tmp && mv config.tmp config.example.json
+  ' "$RELAYER_CONFIG" > "$RELAYER_CONFIG.tmp" && mv "$RELAYER_CONFIG.tmp" "$RELAYER_CONFIG"
 
-echo "Patched relayer/config.example.json with the deployed addresses."
+echo "Patched $RELAYER_CONFIG with the deployed addresses."
