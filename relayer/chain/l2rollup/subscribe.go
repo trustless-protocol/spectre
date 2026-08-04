@@ -33,8 +33,11 @@ import (
 // event only present on the losing branch is then missed (the cursor already passed
 // it). This is a non-issue for safe/finalized head-kinds (the relayable frontier is
 // post-reorg), which is the reason unsafe is the lowest-trust setting.
+// l2SubscribeInterval is a var, not a const, purely so tests can shorten the poll
+// period; nothing outside the package reassigns it.
+var l2SubscribeInterval = 4 * time.Second
+
 const (
-	l2SubscribeInterval = 4 * time.Second
 	// l2StartupLookback rescans a window below the head at startup so packets emitted
 	// while the relayer was down are picked up. Re-emitting an already-relayed packet
 	// is safe — Cosmos rejects the duplicate recv and the module drops it permanently.
@@ -81,16 +84,26 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 			log.Printf("[SubscribeL2] head: %v", err)
 			continue // do NOT advance the cursor on failure
 		}
-		if head < from {
-			continue
-		}
 
-		fresh, err := s.scanPacketLogs(ctx, filterer, from, head)
-		if err != nil {
-			log.Printf("[SubscribeL2] scan [%d,%d]: %v", from, head, err)
-			continue // do NOT advance the cursor on failure (re-scan next tick)
+		// Only the SCAN is gated on there being a new block range — the pending
+		// buffer must be re-offered on every tick regardless. A demand-driven
+		// rollup (Arbitrum Nitro seals a block per transaction) stops at its last
+		// block when traffic stops, so `head == from-1` becomes the steady state.
+		// Skipping the whole iteration there strands every re-queued packet until
+		// the next transaction happens to arrive, and the acknowledgement is the
+		// worst case: it is the last event its packet writes on the L2, so nothing
+		// further will be written and no new block will ever come. The ack then
+		// waits forever, its escrow stays locked, and the log says nothing after
+		// the first "waiting" line.
+		var fresh []chain.Event
+		if head >= from {
+			fresh, err = s.scanPacketLogs(ctx, filterer, from, head)
+			if err != nil {
+				log.Printf("[SubscribeL2] scan [%d,%d]: %v", from, head, err)
+				continue // do NOT advance the cursor on failure (re-scan next tick)
+			}
+			from = head + 1 // range consumed; fresh events are now carried in the batch
 		}
-		from = head + 1 // range consumed; fresh events are now carried in the batch
 
 		batch := append(pending[:len(pending):len(pending)], fresh...)
 		if len(batch) == 0 {
