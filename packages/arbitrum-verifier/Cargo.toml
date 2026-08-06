@@ -7,7 +7,6 @@ repository = { workspace = true }
 
 [dependencies]
 l2-client = { workspace = true }
-alloy-primitives = { workspace = true, features = ["serde"] }
 schemars = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 

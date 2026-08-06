@@ -1,14 +1,18 @@
 use alloy_primitives::{keccak256, B256};
 
-use crate::packet::{commitment_path_hash, commitment_storage_slot, IBCSTORE_STORAGE_SLOT};
+use crate::packet::{commitment_path_hash, commitment_storage_slot_at};
 
 #[test]
 fn derives_the_solidity_mapping_slot_from_the_erc7201_namespace() {
     let path_hash = B256::with_last_byte(7);
     let mut preimage = [0_u8; 64];
     preimage[..32].copy_from_slice(path_hash.as_slice());
-    preimage[32..].copy_from_slice(IBCSTORE_STORAGE_SLOT.as_slice());
-    assert_eq!(commitment_storage_slot(path_hash), keccak256(preimage));
+    let commitment_slot = B256::with_last_byte(9);
+    preimage[32..].copy_from_slice(commitment_slot.as_slice());
+    assert_eq!(
+        commitment_storage_slot_at(path_hash, commitment_slot),
+        keccak256(preimage)
+    );
 }
 
 #[test]

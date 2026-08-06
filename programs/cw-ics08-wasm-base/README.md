@@ -1,12 +1,5 @@
-# Base optimistic L2 client
+# Base attestor-trusted L2 client
 
-This artifact accepts unresolved dispute games once the selected game-list commitment exists in a
-finalized state of the pinned Ethereum light client. It does not wait for challenge resolution, so
-an authenticated proposal may later be rejected by the rollup.
-
-Safe operation therefore requires an independent watchdog to submit conflicting authenticated
-headers through the misbehaviour path before affected packet proofs are used.
-
-Factory, game layout, router, commitment-slot, chain, version, and Ethereum-client identities come
-from the immutable runtime profile stored in client state; no Base Sepolia profile is compiled into
-the Wasm.
+This client trusts the relayer to forward an attestor-produced L2 execution header. It verifies
+the header hash, configured fork, and router account proof, but does not verify L1, dispute games,
+or attestor signatures. This is a bring-up trust boundary, not a trustless light client.

@@ -1,8 +1,6 @@
 //! Bounded EVM proof validation before trie traversal.
 
-use std::collections::BTreeSet;
-
-use alloy_primitives::{hex, Address, B256};
+use alloy_primitives::{Address, B256};
 use ethereum_trie_db::trie_db::{
     verify_account, verify_storage_exclusion_proof, verify_storage_inclusion_proof, Account,
 };
@@ -19,8 +17,6 @@ pub struct ProofLimits {
     pub max_account_nodes: usize,
     /// Maximum nodes in a storage proof.
     pub max_storage_nodes: usize,
-    /// Maximum storage proofs accepted for one authenticated account.
-    pub max_storage_proofs: usize,
     /// Maximum encoded size of an individual RLP node.
     pub max_node_bytes: usize,
 }
@@ -34,25 +30,6 @@ impl ProofLimits {
     /// Validates a storage proof before it is passed to the trie database.
     pub fn validate_storage(self, proof: &EvmStorageProof) -> Result<(), Error> {
         validate_nodes(&proof.proof, self.max_storage_nodes, self.max_node_bytes)
-    }
-
-    /// Validates a complete storage-proof bundle and rejects duplicate declared keys.
-    pub fn validate_storage_bundle(self, proofs: &[EvmStorageProof]) -> Result<(), Error> {
-        if proofs.len() > self.max_storage_proofs {
-            return Err(Error::ProofLimit {
-                limit: "storage proof count",
-                maximum: self.max_storage_proofs,
-            });
-        }
-
-        let mut keys = BTreeSet::new();
-        for proof in proofs {
-            if !keys.insert(proof.key) {
-                return Err(Error::DuplicateStorageProof(hex::encode(proof.key)));
-            }
-            self.validate_storage(proof)?;
-        }
-        Ok(())
     }
 }
 
@@ -83,17 +60,6 @@ pub fn verify_bounded_storage_value(
         &proof.proof,
     )
     .map_err(|error| Error::Proof(error.to_string()))
-}
-
-/// Verifies storage absence after enforcing caller-supplied proof limits.
-pub fn verify_bounded_storage_absence(
-    limits: ProofLimits,
-    storage_root: &[u8; 32],
-    proof: &EvmStorageProof,
-) -> Result<(), Error> {
-    limits.validate_storage(proof)?;
-    verify_storage_exclusion_proof(storage_root, proof.key.as_ref(), &proof.proof)
-        .map_err(|error| Error::Proof(error.to_string()))
 }
 
 /// Verifies the EVM zero-value convention: a slot is absent, or is explicitly RLP-encoded zero.

@@ -14,6 +14,3 @@ use l2_client as _;
 
 pub mod contract;
 pub mod msg;
-
-#[cfg(test)]
-mod contract_tests;

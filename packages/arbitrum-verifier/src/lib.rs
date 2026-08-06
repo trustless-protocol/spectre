@@ -1,49 +1,43 @@
-//! Arbitrum configuration and proof primitives for the ICS-08 Wasm client.
-
-#![deny(
-    clippy::nursery,
-    clippy::pedantic,
-    warnings,
-    missing_docs,
-    unused_crate_dependencies
-)]
-
-/// Immutable Arbitrum verification configuration.
-pub mod config;
-/// Protocol-selected update-header verification.
-pub mod header;
+//! Arbitrum adapter for the shared attestor-trusted L2 client.
+#![deny(clippy::nursery, clippy::pedantic, warnings, unused_crate_dependencies)]
+use l2_client::{
+    msg::AttestedL2Header,
+    state::{CommonProfile, Header, RuntimeProfile},
+};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct Profile {
+    pub common: CommonProfile,
+}
+impl RuntimeProfile for Profile {
+    fn common(&self) -> &CommonProfile {
+        &self.common
+    }
+    fn expected_profile_version() -> &'static str {
+        "arbitrum_attestor_v1"
+    }
+}
+pub struct Adapter;
+impl l2_client::L2LightClient for Adapter {
+    type Profile = Profile;
+    fn verify(
+        profile: &Profile,
+        header: &AttestedL2Header,
+    ) -> Result<Header, l2_client::error::Error> {
+        l2_client::verification::verify_attested_header(profile, header)
+    }
+}
 
 #[cfg(test)]
-mod profile_tests;
+mod tests {
+    use super::Profile;
 
-/// Thin Arbitrum adapter for the shared L2 contract entrypoints.
-pub struct Adapter;
-
-impl l2_client::L2LightClient for Adapter {
-    type Header = header::Header;
-    type Profile = config::Profile;
-
-    fn finality_evidence(header: &Self::Header) -> Option<&l2_client::msg::FinalityEvidence> {
-        match header {
-            header::Header::BoldV2(header) => header.finality_evidence.as_ref(),
-        }
-    }
-
-    fn l1_height(header: &Self::Header) -> u64 {
-        header.beacon_slot()
-    }
-
-    fn verify(
-        profile: &Self::Profile,
-        authenticated_l1_root: alloy_primitives::B256,
-        authenticated_l1_timestamp: u64,
-        header: &Self::Header,
-    ) -> Result<l2_client::state::Header, l2_client::error::Error> {
-        header::verify(
-            profile,
-            authenticated_l1_root,
-            authenticated_l1_timestamp,
-            header,
-        )
+    #[test]
+    fn example_profile_matches_artifact_version() {
+        let profile: Profile =
+            serde_json::from_str(include_str!("../config/arbitrum-sepolia.json")).unwrap();
+        assert_eq!(profile.common.profile_version, "arbitrum_attestor_v1");
     }
 }

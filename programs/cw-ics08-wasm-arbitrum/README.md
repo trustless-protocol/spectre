@@ -1,18 +1,5 @@
-# Arbitrum optimistic L2 client
+# Arbitrum attestor-trusted L2 client
 
-This artifact supports two profile-selected RollupCore layouts:
-
-- BoLD v2 assertions authenticated through the `_assertions` mapping; and
-- legacy Nitro numeric nodes authenticated through the packed lifecycle slot and
-  `_nodes[nodeNumber].confirmData`.
-
-It accepts pending or confirmed commitments once their RollupCore state exists in a finalized
-state of the pinned Ethereum light client. It does not wait for rollup challenge settlement, so an
-authenticated pending proposal may later be rejected by the rollup.
-
-Safe operation therefore requires an independent watchdog to submit conflicting authenticated
-headers through the misbehaviour path before affected packet proofs are used.
-
-Protocol, RollupCore storage layout, router, commitment slot, chain, version, and Ethereum-client
-identities come from the immutable runtime profile stored in client state. A header's tagged
-protocol must match that profile; no Sepolia profile is compiled into the Wasm.
+This client trusts the relayer to forward an attestor-produced L2 execution header. It verifies
+the header hash, configured fork, and router account proof, but does not verify L1, BoLD
+assertions, or attestor signatures. This is a bring-up trust boundary, not a trustless light client.

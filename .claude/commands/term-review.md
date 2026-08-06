@@ -11,7 +11,7 @@ Run `git diff $(git merge-base ${1:-main} HEAD)...HEAD --name-only` and read the
 
 ## Step 2 — check against the domain vocabulary
 
-Judge every introduced identifier on these axes. **The wire contract wins over Go house style**: any type/field that crosses the Go↔Rust JSON boundary MUST mirror the counterpart in `packages/l2-client`, `packages/op-stack-verifier`, `packages/arbitrum-verifier` (and its serde tag) byte-for-byte — flag drift, never "improve" it.
+Judge every introduced identifier on these axes. **The wire contract wins over Go house style**: any type/field that crosses the Go↔Rust JSON boundary MUST mirror the counterpart in `packages/l2-client/src/msg.rs` (`AttestedL2Header`, `ClientMessage`, and every nested proof type) byte-for-byte — flag drift, never "improve" it.
 
 - **IBC (ibc-go) terms** — use the canonical ones: `client` / `counterparty` / `ClientMessage` / `ConsensusState` / `ClientState`; packet lifecycle `SendPacket` / `RecvPacket` / `AckPacket` / `TimeoutPacket`; `MembershipProof` / `NonMembershipProof`; `ProofHeight`; `Height{RevisionNumber, RevisionHeight}`; `commitment` / `receipt` / `acknowledgement`. Flag invented synonyms (e.g. "message" for "packet", "proof block" for "proof height").
 - **Cosmos** — `wasm client` (08-wasm), `checksum`, `MsgCreateClient` / `MsgUpdateClient` / `MsgRegisterCounterparty`, bech32 `signer`, `ics26_client_id`. Direction vocabulary matches the repo: `cosmos_to_eth` / `eth_to_cosmos` / `l2_to_cosmos`, dir consts `dirCosmosToEth` etc.

@@ -7,8 +7,8 @@ repository = { workspace = true }
 
 [dependencies]
 l2-client = { workspace = true }
-op-stack-verifier = { workspace = true }
-alloy-primitives = { workspace = true, features = ["serde"] }
+schemars = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
 serde_json = { workspace = true }

@@ -11,4 +11,3 @@ crate-type = ["cdylib", "rlib"]
 l2-client = { workspace = true }
 arbitrum-verifier = { workspace = true }
 cosmwasm-std = { workspace = true, features = ["std", "stargate"] }
-serde_json = { workspace = true }

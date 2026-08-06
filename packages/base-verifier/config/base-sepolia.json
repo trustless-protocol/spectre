@@ -1,18 +1,1 @@
-{
-  "common": {
-    "l1_chain_id": 11155111,
-    "l2_chain_id": 84532,
-    "ethereum_client": {
-      "client_id": "08-wasm-ethereum",
-      "wasm_checksum": []
-    },
-    "l2_router": "0x645280885749dC97Ea461DE280Eb3273C91D36Df",
-    "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
-    "rollup_version": "op-stack-dispute-game-v1"
-  },
-  "dispute_game_factory": "0xd6E6dBf4F7EA0ac412fD8b65ED297e64BB7a06E1",
-  "game_list_slot": "0x0000000000000000000000000000000000000000000000000000000000000068",
-  "root_claim_bytecode_offset": 119,
-  "output_root_format": "legacy_v0",
-  "l2_header_fork": "prague"
-}
+{"common":{"l2_chain_id":84532,"l2_router":"0x645280885749dc97ea461de280eb3273c91d36df","commitment_slot":"0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600","profile_version":"base_attestor_v1","l2_header_fork":"prague"}}

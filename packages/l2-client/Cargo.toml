@@ -10,15 +10,10 @@ alloy-primitives = { workspace = true, features = ["rlp", "serde"] }
 alloy-rlp = { workspace = true }
 cosmwasm-std = { workspace = true, features = ["std", "stargate"] }
 ethereum-trie-db = { workspace = true }
-ethereum-light-client = { workspace = true }
 ibc-proto = { workspace = true }
 prost = { workspace = true, features = ["std"] }
 rlp = { workspace = true, features = ["std"] }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
-sha2 = { workspace = true }
 thiserror = { workspace = true }
-
-[dev-dependencies]
-ethereum-types = { workspace = true }

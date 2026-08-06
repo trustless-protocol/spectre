@@ -681,7 +681,6 @@ dependencies = [
 name = "arbitrum-verifier"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives 1.6.1",
  "l2-client",
  "schemars",
  "serde",
@@ -1000,9 +999,9 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 name = "base-verifier"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives 1.6.1",
  "l2-client",
- "op-stack-verifier",
+ "schemars",
+ "serde",
  "serde_json",
 ]
 
@@ -1553,18 +1552,15 @@ dependencies = [
  "arbitrum-verifier",
  "cosmwasm-std",
  "l2-client",
- "serde_json",
 ]
 
 [[package]]
 name = "cw-ics08-wasm-base"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives 1.6.1",
  "base-verifier",
  "cosmwasm-std",
  "l2-client",
- "serde_json",
 ]
 
 [[package]]
@@ -1613,7 +1609,6 @@ dependencies = [
  "cosmwasm-std",
  "l2-client",
  "op-verifier",
- "serde_json",
 ]
 
 [[package]]
@@ -2985,16 +2980,13 @@ dependencies = [
  "alloy-primitives 1.6.1",
  "alloy-rlp",
  "cosmwasm-std",
- "ethereum-light-client 0.1.0",
  "ethereum-trie-db 0.1.0",
- "ethereum-types 0.1.0",
  "ibc-proto 0.51.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "prost",
  "rlp 0.6.1",
  "schemars",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "thiserror 2.0.19",
 ]
 
@@ -3174,22 +3166,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
-name = "op-stack-verifier"
-version = "0.1.0"
-dependencies = [
- "alloy-primitives 1.6.1",
- "l2-client",
- "schemars",
- "serde",
-]
-
-[[package]]
 name = "op-verifier"
 version = "0.1.0"
 dependencies = [
- "alloy-primitives 1.6.1",
  "l2-client",
- "op-stack-verifier",
+ "schemars",
+ "serde",
  "serde_json",
 ]
 

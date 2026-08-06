@@ -1,221 +1,148 @@
-# Optimistic L2 ICS-08 clients
+# Attestor-trusted L2 ICS-08 clients
 
 Fast-IBC builds three checksum-distinct 08-wasm artifacts with unchanged filenames:
 
-- `cw-ics08-wasm-arbitrum` for Arbitrum BoLD v2 assertions;
-- `cw-ics08-wasm-base` for Base dispute games; and
-- `cw-ics08-wasm-op` for OP dispute games.
+- `cw-ics08-wasm-arbitrum`;
+- `cw-ics08-wasm-base`; and
+- `cw-ics08-wasm-op`.
 
-> **Security assumption:** these clients are not safe against a dishonest rollup proposer on their
-> own. Operators must run an independent watchdog that detects a challenged or invalid accepted
-> proposal and submits two conflicting headers through `UpdateStateOnMisbehaviour` to freeze the
-> client before affected packet proofs are used.
+The artifacts share one client lifecycle and differ only in their deployment-profile version.
 
-These are optimistic clients. Every update still waits until the proposal and all account/storage
-proofs are contained in an Ethereum state finalized by the pinned Ethereum light client. It does
-not wait for rollup challenge settlement. Consequently, a consensus state accepted by one of
-these clients can later be rejected by the rollup challenge system.
+> **Security assumption:** these bring-up clients trust the relayer to forward data produced by the
+> selected attestor. They do not verify an attestor signature, L1 consensus, an OP dispute game, or
+> an Arbitrum assertion. The router account proof establishes only that the supplied router storage
+> root belongs to the supplied L2 execution state.
 
-Arbitrum accepts any BoLD assertion whose authenticated packed status is nonzero, including a
-pending assertion. Base and OP accept any caller-selected factory game-list entry, including an
-unresolved game. They authenticate the game runtime, extract its root claim at the runtime-profile
-offset, bind the output-root preimage to a canonical L2 block header, and authenticate the L2
-`ICS26Router` account. Game type, resolution, winner, retirement, blacklist, pause state,
-implementation identity, and settlement delays are deliberately not checked.
+## Live 08-wasm surface
 
-## Creation and runtime profiles
+Each artifact exports only the entry points used by the current client lifecycle:
 
-Creation uses three JSON byte fields:
+- `instantiate` stores explicitly supplied client and consensus state;
+- `sudo` handles `update_state`, `update_state_on_misbehaviour`, `verify_membership`, and
+  `verify_non_membership`; and
+- `query` handles `verify_client_message`, `check_for_misbehaviour`, `timestamp_at_height`, and
+  `status`.
+
+There is no `execute` entry point because an ICS-08 client is driven by the host, not by ordinary
+contract messages. There is currently no contract `migrate` entry point and no implementation of
+the optional IBC client-upgrade or substitute-client recovery sudo messages. Deployments that need
+those governance paths must implement and review them separately; ordinary update and packet relay
+does not call them.
+
+Light-client responses must contain data only. ibc-go's 08-wasm keeper rejects responses carrying
+attributes, events, or messages, so the shared entry points intentionally return
+`Response::default().set_data(data)`.
+
+## Creation and runtime profile
+
+Creation uses the standard direct byte fields:
 
 ```text
 InstantiateMsg { client_state, consensus_state, checksum }
 ```
 
-The decoded states are stored directly at `client_state.latest_height`. Creation performs no L1
-query or client-defined semantic validation. Deployment identities are immutable data inside the
-client state's runtime profile; the example Sepolia JSON files under each verifier's `config/`
-directory are tooling/test inputs and are not compiled into Wasm. Operators must set the actual
-Ethereum client ID and checksum before client creation.
-
-### L2 client creation config
-
-`create-clients-cosmos --l2-config <path>` (repeatable, one per rollup source) creates each L2 wasm
-client on Cosmos, anchored to the L1 (08-wasm ETH) client created in the same run. Each
-`--l2-config` JSON is:
+The decoded client state contains `latest_height`, an optional `frozen_height`, and one immutable
+artifact profile. A profile contains only:
 
 ```json
 {
-  "wasm_checksum": "<hex checksum of the governance-stored L2 client wasm>",
-  "l2_rpc_url": "https://<l2-execution-rpc>",
-  "rollup_profile": {
-    "common": {
-      "l2_router": "0x…",
-      "ethereum_client": { "client_id": "", "wasm_checksum": [] }
-    }
-  },
-  "bootstrap_block": 0,
-  "counterparty_client_id": "<L2-side client id on the rollup's ICS26Router>"
+  "common": {
+    "l2_chain_id": 11155420,
+    "l2_router": "0x645280885749dc97ea461de280eb3273c91d36df",
+    "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
+    "profile_version": "op_attestor_v1",
+    "l2_header_fork": "prague"
+  }
 }
 ```
 
-`rollup_profile` is the full ICS-08 verifier Profile embedded verbatim as the client state (the L2
-router, commitment slot, and chain ids all live in `common`, so they are not repeated elsewhere).
-`rollup_profile.common.ethereum_client.client_id` may be left empty — `create-clients-cosmos`
-injects the freshly-created L1 client id. `bootstrap_block` `0` (or absent) bootstraps from the L2
-latest. **`counterparty_client_id`** registers the L2-side client (the one tracking Cosmos) as this
-client's counterparty inline; leave it empty to defer registration until that id is known, then
-register it manually. Omitting it silently defers registration, so set it once the L2-side client
-id is available.
+The expected profile versions are `op_attestor_v1`, `base_attestor_v1`, and
+`arbitrum_attestor_v1`. No pinned Ethereum client, beacon slot, game factory, RollupCore contract,
+finality policy, or settlement proof belongs in new client state.
 
-Updates may advance the latest height or backfill an absent historical height. Replaying identical
-state is idempotent. A conflicting update at an existing height is handled by the stored
-`FinalityPolicy`, not solely by `UpdateStateOnMisbehaviour`.
+Creation validates the profile version, revision-zero nonzero height, nonzero roots and block hash,
+and equality between the client latest height and bootstrap consensus height. It performs no host
+or L1 query.
 
-> **Unsafe-head reorg warning:** the default `FinalityPolicy` has
-> `minimum_membership_level: unsafe` and `freeze_on_trusted_conflict: true`. Therefore every
-> non-`resolved_invalid` Unsafe consensus state is trusted for conflict handling. With
-> `head_kind: unsafe`, a same-height sequencer reorg after the first block was relayed is a
-> trusted conflict and freezes the client. This is intentional current behavior, not an automatic
-> reorg correction; frozen clients reject updates and packet proofs until governance recovery.
->
-> The replacement path is available only when the existing state is below the configured
-> membership threshold and the incoming state reaches it. In the current implementation Safe
-> evidence fails closed (`SafeVerificationUnavailable`), so a practical non-freezing correction
-> policy requires `minimum_membership_level: finalized` (and suitable finalized evidence). Do not
-> use `head_kind: unsafe` with the default policy if normal sequencer reorgs must not freeze the
-> client.
+## Client update wire contract
 
-To deliberately replace Unsafe conflicts, set
-`freeze_on_trusted_conflict: false`; a Finalized conflict still freezes unconditionally. This
-trades the freeze/liveness failure for the normal safety risk of accepting and using an Unsafe
-state. Alternatively, setting `minimum_membership_level: finalized` keeps the freeze-on-trusted-
-conflict safeguard while making Unsafe updates ineligible for membership proofs and conflict
-freezing.
+`UpdateState` and `VerifyClientMessage` consume this JSON-compatible shape inside the tagged
+`ClientMessage` envelope:
 
-`UpdateStateOnMisbehaviour` remains the watchdog mechanism for freezing on two independently
-valid conflicting headers. Frozen clients reject updates and packet proofs.
-
-OP and Base profiles also pin `l2_header_fork`, which selects the canonical execution-header field
-set. Operators must migrate to a reviewed profile at an L2 fork boundary instead of relying on a
-fork hardcoded into the verifier.
-
-## Fixture requirements
-
-Reproducible fixtures use fixed numeric L1 and L2 block tags and include full block responses,
-`eth_getProof` account/storage responses, the L2 router proof, and `eth_getCode` for OP Stack games.
-BoLD Arbitrum fixtures additionally include the complete `AssertionCreated` data required to
-recompute the assertion hash. The adjacent schema-v2 provenance manifest records both block hashes,
-source revisions, the profile SHA-256, and the fixture SHA-256.
-
-## Host requirements and verification
-
-The Cosmos application must retain its BLS custom querier and permit the client-state, status, and
-consensus-state IBC query paths. The current adapter uses CosmWasm's deprecated
-`QueryRequest::Stargate`, so a stock host that does not whitelist those paths is incompatible; the
-deployment must provide the allowlist or a custom Wasm host image. The L2 clients pin the Ethereum
-Wasm checksum and inherit its active/inactive status.
-
-The allowlist that matters is the **08-wasm** one (light clients run there), not the `x/wasm` one
-used by ordinary contracts — a host can have the paths in the latter and still reject the former.
-All three paths are required:
-
-```go
-// gaia app/keepers/keepers.go — ibcwasmkeeper.QueryPlugins
-Stargate: ibcwasmkeeper.AcceptListStargateQuerier([]string{
-    "/ibc.core.client.v1.Query/ClientState",
-    "/ibc.core.client.v1.Query/ClientStatus",     // required by L2 clients
-    "/ibc.core.client.v1.Query/ConsensusState",
-}, bApp.GRPCQueryRouter()),
+```text
+ClientMessage::Header(AttestedL2Header {
+    l2_header: CanonicalEvmHeader,
+    router_proof: EvmAccountProof
+})
 ```
 
-`ClientStatus` is easy to miss because the Ethereum client never queries another client — the L2
-clients are the first to do so, in `validate_l1_client` (they must confirm the pinned Ethereum
-client is still `Active`). Its absence does **not** surface as a permission error:
+The client validates the configured canonical-header fork, derives the L2 block hash, verifies the
+configured `ICS26Router` account proof against the header state root, and stores the resulting
+consensus roots and block identity. Attestor provenance and authentication are not carried in this
+wire version.
 
-| Symptom | Cause |
-|---|---|
-| `MsgCreateClient` fails: `cannot create client (08-wasm-N) with status Unknown: client state is not active` | The L2 client's `Status{}` query errored inside the contract; ibc-go maps the error to `Unknown`. Check the 08-wasm Stargate allowlist before suspecting the client state. |
+Updates may advance the latest height or backfill an absent historical height. An identical update
+is idempotent. A different block/state/router identity at the same height is rejected as a
+conflict. Because updates currently carry no authenticated attestation, conflicting headers do not
+constitute actionable misbehaviour; every host validation path refuses them instead of freezing the
+client. The `frozen_height` field remains reserved for the signed-attestation protocol and recovery
+path.
 
-If the pinned Ethereum client is genuinely `Active` and its checksum matches
-`profile.common.ethereum_client.wasm_checksum` (verify both with `gaiad q ibc client status` /
-`state`), the allowlist is the remaining suspect.
+## Relayer and attestor integration status
 
-A second, more confusing symptom comes from the same query path:
+The current Go `relayer/chain/l2rollup` implementation is still the settlement-proof client for
+existing deployments. Its OP builder emits `beacon_slot`, an authenticated L1 state root, factory
+and game proofs, an output-root preimage, and the L2 header/router proof. Its Arbitrum builder emits
+the corresponding RollupCore/BoLD assertion shape. Those Go builders and their command wiring are
+live legacy entry points and have deliberately not been deleted by the L2 Wasm refactor.
 
-| Symptom | Cause |
-|---|---|
-| Every update fails: `IBC host query failed: codespace: undefined, code: 1: wasm contract call failed` | The contract asked the host for the Ethereum consensus state at the header's `beacon_slot` and got `NotFound`. ibc-go answers with a gRPC status error, which wasmd redacts to a bare codespace/code — so neither the client nor the slot appears anywhere. |
+Those messages are **not wire-compatible** with the new clients: the Rust message uses strict
+unknown-field rejection and accepts only the canonical L2 execution header and router account
+proof, while the old Go messages contain settlement fields. A new relayer builder must fetch the
+exact attested L2 execution header and router account proof, package the common envelope above, and
+commit the header's L2 height. Until that builder exists, the new Wasm artifacts cannot be used by
+the current `l2_to_cosmos` module end to end.
 
-The usual cause is a client-id mismatch: the relayer builds headers pinned to the Ethereum client
-its config names, while the contract queries the one baked into its own client state at creation.
-The client state is authoritative. `create-clients-cosmos` writes the created id into both the
-client state and the `l2_to_cosmos` module's `rollup_profile.common.ethereum_client.client_id`, and
-`start` refuses to boot when they disagree, naming both ids. A config assembled by hand — or carried
-over from an earlier devnet run — is what re-opens this.
+The current attestor `AttestedRoot` protobuf supplies `l2_block_number`, `root`, `source`, optional
+game/assertion provenance, `provisional`, and `attested_at`. These fields gate which execution
+header the relayer selects, but they are not copied into `AttestedL2Header`. OP exposes its
+configured `attestation_head` separately through `Info`; Arbitrum currently leaves that field unset
+and remains assertion-gated.
 
-The same mismatch has a slower failure mode with no error at all: the client the config names keeps
-being advanced while the client the contract actually reads goes stale, and eventually expires.
+The required integration work is therefore:
 
-### Packet proofs are a bare storage proof, not the L1 shape
+1. build `AttestedL2Header` in the relayer instead of selecting and proving a settlement object;
+2. retain the old Go builders under an explicit legacy path while existing old-client deployments
+   still use them; and
+3. add a cross-language fixture that the Go encoder and Rust decoder both accept.
 
-The Ethereum L1 membership proof (`client.GetEthMembershipProof`) bundles an account proof
-with the storage proof and hex-encodes both, because the ETH light client re-derives the
-account from the L1 state root. An L2 client must **not** be given that: it already
-authenticated the router's storage root through the header's `router_proof`, so it expects a
-bare `EvmStorageProof` and rejects anything else outright (`deny_unknown_fields`):
+The signed attestation fields and verification specified by the redesign return in the next wire
+version. Until that protocol lands, this unsigned bring-up format cannot supply actionable
+misbehaviour evidence.
 
-```
-unknown field `account_proof`, expected one of `key`, `value`, `proof`
-```
+## Packet proofs
 
-Two encoding details that are easy to get wrong, and only fail on-chain:
+Membership and non-membership load the exact stored L2 consensus height and verify a bare
+`EvmStorageProof` against its authenticated router storage root and configured commitment mapping
+slot. No Ethereum-client query or finality threshold is involved.
 
-| Field | Wire form | Why |
-|---|---|---|
-| `key` | `0x`-hex string | serde `B256` |
-| `value` | JSON **number array**, full **32 bytes** | Go `[]byte` marshals to base64 by default — use the package's `byteList`. The client compares the value byte-for-byte against the commitment the IBC host expects, which is a full 32-byte word, not `eth_getProof`'s minimal big-endian form. The trie check is unaffected: `encode_storage_value` strips leading zeros itself |
-| `proof` | array of number arrays | same `[]uint8` trap — use `byteMatrix` |
+The proof wire shape is:
 
-### Game selection must follow finality, not the frontier
-
-Dispute games are posted at the L1 **head**, while the pinned Ethereum client only advances to
-**finalized** L1. On a rollup that posts games about as fast as finality advances, the
-attestor's frontier stays permanently ahead of what is provable, so demanding the frontier
-game deadlocks — the target rises exactly as fast as the pinned block does and the client never
-moves. Demanding the packet's own height instead selects a game at or *below* it, which by
-construction cannot cover that packet.
-
-The builder therefore walks **down** from the requested height to the highest attested game
-that is actually present in the factory's list at the pinned block (`gameCount()` read there).
-Every candidate is still a root the attestor approved, so this only ever picks an older
-verdict — never an unverified one — and the client advances monotonically until it crosses any
-given packet height.
-
-`attested game N is not visible at the pinned L1 block M yet` is the normal wait for the newest
-game, not an error; it clears once that game's creation block finalizes.
-
-### Light clients must return nothing but data
-
-ibc-go's 08-wasm keeper rejects a light client whose response carries attributes, events, or
-messages, and it does so by panicking inside the VM call — so the entire transaction fails, not just
-the update:
-
-```
-recovered: checksum (...): returning attributes from a contract is not allowed
-  [08-wasm/keeper/contract_keeper.go:155]
+```text
+EvmStorageProof { key: bytes32, value: byte array, proof: array<byte array> }
 ```
 
-The shared `l2_client_entrypoints!` macro therefore returns `Response::default().set_data(data)` and
-nothing else. Observability that would naturally be an event (state accepted vs promoted, freeze on
-a trusted conflict, finality level) has to come from the caller or from querying the client state
-after the update. Do not re-add `add_attributes`: it compiles, it passes every unit test, and it
-fails only on-chain.
+The relayer must not send the L1 client's combined account-and-storage proof shape. The router
+account proof was already checked during the client update.
+
+## Validation
 
 ```bash
 cargo test --locked \
-  -p l2-client -p op-stack-verifier -p op-verifier -p base-verifier \
+  -p l2-client -p op-verifier -p base-verifier \
   -p arbitrum-verifier -p cw-ics08-wasm-op -p cw-ics08-wasm-base \
   -p cw-ics08-wasm-arbitrum
+
 cargo build --target wasm32-unknown-unknown --release --locked \
   -p cw-ics08-wasm-op -p cw-ics08-wasm-base -p cw-ics08-wasm-arbitrum
 ```

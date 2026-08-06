@@ -12,32 +12,19 @@ use crate::{
 pub const PROOF_LIMITS: ProofLimits = ProofLimits {
     max_account_nodes: 64,
     max_storage_nodes: 64,
-    max_storage_proofs: 1,
     max_node_bytes: 32 * 1024,
 };
-
-/// ERC-7201 namespace declared by `IBCStoreUpgradeable`.
-pub const IBCSTORE_STORAGE_SLOT: B256 = B256::new([
-    0x12, 0x60, 0x94, 0x44, 0x89, 0x27, 0x29, 0x88, 0xd9, 0xdf, 0x28, 0x51, 0x49, 0xb5, 0xaa, 0x1b,
-    0x0f, 0x48, 0xf2, 0x13, 0x6d, 0x6f, 0x41, 0x61, 0x59, 0xf8, 0x40, 0xa3, 0xe0, 0x74, 0x76, 0x00,
-]);
 
 /// Derives the Solidity mapping slot for an already-hashed IBC commitment path.
 ///
 /// `IBCStoreStorage.commitments` is its first field, so Solidity computes
-/// `keccak256(abi.encode(path_hash, IBCSTORE_STORAGE_SLOT))`.
+/// `keccak256(abi.encode(path_hash, commitment_slot))`.
 #[must_use]
 pub fn commitment_storage_slot_at(path_hash: B256, commitment_slot: B256) -> B256 {
     let mut preimage = [0_u8; 64];
     preimage[..32].copy_from_slice(path_hash.as_slice());
     preimage[32..].copy_from_slice(commitment_slot.as_slice());
     keccak256(preimage)
-}
-
-/// Derives a commitment slot using the repository's canonical router namespace.
-#[must_use]
-pub fn commitment_storage_slot(path_hash: B256) -> B256 {
-    commitment_storage_slot_at(path_hash, IBCSTORE_STORAGE_SLOT)
 }
 
 /// Validates and hashes an `ICS26Router` binary packet path.

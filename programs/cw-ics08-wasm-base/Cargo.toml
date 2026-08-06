@@ -11,7 +11,3 @@ crate-type = ["cdylib", "rlib"]
 l2-client = { workspace = true }
 base-verifier = { workspace = true }
 cosmwasm-std = { workspace = true, features = ["std", "stargate"] }
-serde_json = { workspace = true }
-
-[dev-dependencies]
-alloy-primitives = { workspace = true }
