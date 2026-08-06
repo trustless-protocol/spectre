@@ -27,10 +27,13 @@
 #   POLL_INTERVAL_SECONDS (30)  LOOKBACK_BLOCKS (600)
 #   DERIVED_GAP_BLOCKS (150)        min L2-block gap between derived attestations;
 #       lower = fresher feed, larger provisional backlog at safe/unsafe heads
-#   DISABLE_DERIVED_ROOTS (true)    attest only DisputeGameFactory games. The OP
-#       header builder can prove game-backed roots only, while the relayer follows
-#       the attestor's newest frontier — leaving derived roots on makes the two
-#       disagree forever ("attested root ... is source \"derived\", want game").
+#   DISABLE_DERIVED_ROOTS (false)   attest only DisputeGameFactory games when
+#       true. The attestor-trusted L2 client verifies no settlement object, so the
+#       relayer's header builder no longer needs a game-backed root and derived
+#       roots are the fresher feed — a game is posted long after the L2 block it
+#       commits, so games-only leaves the frontier hours behind for no gain.
+#       Set it to true only for a deployment still running the old
+#       settlement-proof client, which required "source: game".
 #   OPTIMISM_PORTAL / DISPUTE_GAME_FACTORY / RESPECTED_GAME_TYPE
 #       (read fresh from the chain via `cast` when unset; see resolve step)
 #   DATADIR ($RUN_DIR/op-reth-data)  L1_RPC_KIND (standard)
@@ -77,7 +80,7 @@ AUTHRPC_PORT=${AUTHRPC_PORT:-8551}
 POLL_INTERVAL_SECONDS=${POLL_INTERVAL_SECONDS:-30}
 LOOKBACK_BLOCKS=${LOOKBACK_BLOCKS:-600}
 DERIVED_GAP_BLOCKS=${DERIVED_GAP_BLOCKS:-150}
-DISABLE_DERIVED_ROOTS=${DISABLE_DERIVED_ROOTS:-true}
+DISABLE_DERIVED_ROOTS=${DISABLE_DERIVED_ROOTS:-false}
 L1_RPC_KIND=${L1_RPC_KIND:-standard}
 # ATTESTOR_RUN_DIR takes precedence over the legacy RUN_DIR: the devnet bring-up
 # scripts use RUN_DIR for their OWN artifacts, so a handoff that exports it into

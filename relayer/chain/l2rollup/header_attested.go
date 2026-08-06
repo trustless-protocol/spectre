@@ -108,10 +108,12 @@ func (a *attestedHeaderBuilder) bindToAttestation(ctx context.Context, height ui
 	blockHash := l2Header.Hash()
 	valid, err := a.attestor.VerifyStateRoot(ctx, height, stateRoot.Bytes(), blockHash.Bytes(), a.runMode)
 	if errors.Is(err, ErrVerifyStateRootUnsupported) {
-		// Only the Arbitrum attestor serves this RPC; the OP-Stack one does not, and
-		// failing here would stop OP and Base relaying entirely. Degrade to the
-		// pre-binding behaviour and say so loudly, once per process, so an operator
-		// can see which chains are running unbound instead of assuming otherwise.
+		// Every in-tree attestor now serves this RPC, so reaching here means the
+		// deployed attestor binary predates it. Relayer and attestor ship
+		// separately, so failing the build would take a working deployment down on
+		// a version skew — degrade to the pre-binding behaviour and say so loudly,
+		// once per process, so an operator can see which chains run unbound
+		// instead of assuming otherwise. Remove once no old attestor is deployed.
 		a.warnUnsupported.Do(func() {
 			log.Printf("[%s] WARNING: this attestor does not implement VerifyStateRoot, so built headers are NOT "+
 				"bound to attested state — the relayer trusts its L2 RPC for block identity at approved heights. "+

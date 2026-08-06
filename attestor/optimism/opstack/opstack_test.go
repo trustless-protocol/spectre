@@ -35,10 +35,11 @@ func (f *fakeGames) GameAtIndex(_ context.Context, idx uint64) (ProposedRoot, er
 }
 
 type fakeReplica struct {
-	status    SyncStatus
-	statusErr error
-	outputs   map[uint64][32]byte
-	outputErr map[uint64]error
+	status      SyncStatus
+	statusErr   error
+	outputs     map[uint64][32]byte
+	outputErr   map[uint64]error
+	commitments map[uint64]L2Commitment
 }
 
 func (f *fakeReplica) SyncStatus(_ context.Context) (SyncStatus, error) {
@@ -57,6 +58,19 @@ func (f *fakeReplica) OutputAtBlock(_ context.Context, l2Block uint64) ([32]byte
 		return [32]byte{}, errors.New("no output for block")
 	}
 	return root, nil
+}
+
+// commitments overrides what CommitmentAt returns; when a block is absent it
+// falls back to the output-root map so existing tests need no new fixtures.
+func (f *fakeReplica) CommitmentAt(ctx context.Context, l2Block uint64) (L2Commitment, error) {
+	if c, ok := f.commitments[l2Block]; ok {
+		return c, nil
+	}
+	root, err := f.OutputAtBlock(ctx, l2Block)
+	if err != nil {
+		return L2Commitment{}, err
+	}
+	return L2Commitment{BlockNumber: l2Block, OutputRoot: root}, nil
 }
 
 type fakeHook struct {

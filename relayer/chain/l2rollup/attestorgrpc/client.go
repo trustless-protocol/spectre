@@ -77,11 +77,11 @@ func (c *Client) AttestedRootAtOrBelow(ctx context.Context, srcChain string, l2B
 
 // VerifyStateRoot compares one block identity against the attestor's replica.
 //
-// Only the Arbitrum attestor serves this RPC today; the OP-Stack one (which also
-// backs Base) embeds UnimplementedAttestorServiceServer and answers Unimplemented.
-// That is reported as ErrVerifyStateRootUnsupported so the caller can tell "this
-// attestor cannot answer" apart from "this attestor says no" — the two must not
-// collapse, because the first is a missing feature and the second is a divergence.
+// Every in-tree attestor serves this RPC. An attestor binary older than that
+// answers Unimplemented, which is reported as ErrVerifyStateRootUnsupported so the
+// caller can tell "this attestor cannot answer" apart from "this attestor says no"
+// — the two must not collapse, because the first is a version skew and the second
+// is a divergence.
 func (c *Client) VerifyStateRoot(ctx context.Context, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (bool, error) {
 	resp, err := c.rpc.VerifyStateRoot(ctx, &attestorpb.VerifyStateRootRequest{
 		BlockNumber:       l2BlockNumber,

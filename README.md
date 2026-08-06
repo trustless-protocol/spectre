@@ -432,13 +432,16 @@ Brings up an L1 + OP Stack L2 + Cosmos and relays both directions. The L1 is sha
 ./scripts/local/run_optimism_node.sh
 
 # 2. Attestor — independent verifier over the replica op-node; serves gRPC :3001.
-#    Sources attestor.env automatically.
+#    Sources attestor.env automatically. Every attestor script defaults to
+#    GRPC_PORT=3001, so a host running several needs distinct ports; the
+#    config.example.json modules expect op :3001, arbitrum :3002, base :3003.
 ./scripts/local/run_op_attestor.sh
 
-# 3. Cosmos node, then gov-store BOTH light-client wasms:
-#    the Ethereum client (L2 clients authenticate L1 through it) and the OP client.
+# 3. Cosmos node, then gov-store the OP light-client wasm. The Ethereum client
+#    is NOT needed for a Cosmos<->OP deployment: the attestor-trusted L2 client
+#    authenticates nothing through it. Add ./scripts/local/wasm.sh only if this
+#    config also relays Cosmos<->Ethereum.
 ./scripts/local/run_cosmos_node.sh
-./scripts/local/wasm.sh        # -> ETH client checksum
 ./scripts/local/wasm_op.sh     # -> OP client checksum
 
 # 4. IBC contracts on the L2 (E2ETestDeployL2). Deploy with the SAME key the relayer
@@ -454,12 +457,11 @@ L2_DEPLOYER_PRIVATE_KEY=bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214
   ./scripts/local/deploy_l2_contracts.sh
 # It patches relayer/config.example.json — copy the addresses into config.json.
 
-# 5. Clients. Cosmos side first, one invocation per kind: the Ethereum client (only
-#    if this config relays Cosmos<->Ethereum), then the OP client. Then the L2 side
-#    (SpectreClient deployed + addClient'd).
+# 5. Clients. The OP client on Cosmos, then the L2 side (SpectreClient deployed
+#    + addClient'd). Copy op-l2-config.example.json and fill in the checksum from
+#    step 3, the L2 router address from step 4, and the L2 chain id.
 cd relayer
-./relayer create-clients-cosmos --config config.json --wasm-checksum <eth-checksum>
-./relayer create-clients-cosmos --config config.json --l2-config <op-l2-config.json>
+./relayer create-clients-cosmos --config config.json --l2-config op-l2-config.json
 ./relayer create-clients-eth --config config.json --source <ics26_client_id> --trust-level 2/3
 
 # 6. Relay both directions.
@@ -481,7 +483,7 @@ through `run_eth_node.sh` when the enclave does not exist.
 
 # 2. Attestor — independent non-sequencing Nitro replica; serves gRPC :3001.
 #    Sources .arbitrum-devnet-run/attestor.env automatically.
-./scripts/local/run_arbitrum_attestor.sh
+GRPC_PORT=3002 ./scripts/local/run_arbitrum_attestor.sh
 
 # 3. Cosmos node, then gov-store BOTH light-client wasms:
 #    the Ethereum client (L2 clients authenticate L1 through it) and the Arbitrum client.
@@ -660,7 +662,7 @@ the deploy step below needs `MODULE_NAME`.
 # 2. Attestor. run_base_attestor.sh is a symlink to run_op_attestor.sh; it picks
 #    .base-devnet-run/attestor.env from its own name, so do NOT call
 #    run_op_attestor.sh here — that one attaches to the OP devnet.
-./scripts/local/run_base_attestor.sh
+GRPC_PORT=3003 ./scripts/local/run_base_attestor.sh
 
 # 3. Cosmos node, then gov-store BOTH light-client wasms: the Ethereum client
 #    (L2 clients authenticate L1 through it) and the Base client.

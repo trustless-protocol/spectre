@@ -125,9 +125,9 @@ would accept it.
 
 That binding is best-effort by construction: nothing in the wire format lets the client re-check the
 answer, so it defends against divergence between the relayer's L2 RPC and the attestor, not against
-a relayer that simply skips the call. Only the Arbitrum attestor implements `VerifyStateRoot` today;
-the OP-Stack attestor (which also backs Base) returns `Unimplemented`, and the relayer degrades to
-the unbound path with a one-per-process warning rather than refusing to relay.
+a relayer that simply skips the call. Both in-tree attestors implement `VerifyStateRoot`; an
+attestor binary older than that answers `Unimplemented`, and the relayer degrades to the unbound
+path with a one-per-process warning rather than refusing to relay on a version skew.
 
 The attestor `AttestedRoot` protobuf supplies `l2_block_number`, `root`, `source`, optional
 game/assertion provenance, `provisional`, and `attested_at`. Those fields gate which execution

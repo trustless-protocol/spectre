@@ -1,0 +1,34 @@
+{
+  "_comment": [
+    "Template for `create-clients-cosmos --l2-config` on OPTIMISM.",
+    "",
+    "rollup_profile is sent verbatim into MsgCreateClient and the Rust verifier rejects",
+    "unknown fields, so it carries exactly the five keys the client reads. There is no",
+    "ethereum_client member and no settlement field (dispute_game_factory, game_list_slot):",
+    "the attestor-trusted client verifies nothing against L1.",
+    "",
+    "profile_version must match the artifact — op_attestor_v1 / base_attestor_v1 /",
+    "arbitrum_attestor_v1 — or instantiate fails with InvalidProfileVersion.",
+    "",
+    "l2_header_fork must match the chain's execution-header layout: OP Stack keeps the L1",
+    "header shape, so prague; Arbitrum Nitro produces none of the post-London optional",
+    "fields and needs london. A mismatch is rejected as an invalid EVM header on every",
+    "update, not at creation.",
+    "",
+    "The values below are the local devnet (run_optimism_node.sh). For OP Sepolia use",
+    "l2_chain_id 11155420 and the router address deploy_l2_contracts.sh printed."
+  ],
+  "wasm_checksum": "<hex checksum of the OP client wasm, from `gaiad q ibc-wasm checksums`>",
+  "l2_rpc_url": "http://127.0.0.1:9545",
+  "rollup_profile": {
+    "common": {
+      "l2_chain_id": 2151908,
+      "l2_router": "0x1111111111111111111111111111111111111111",
+      "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
+      "profile_version": "op_attestor_v1",
+      "l2_header_fork": "prague"
+    }
+  },
+  "bootstrap_block": 0,
+  "counterparty_client_id": "client-0"
+}

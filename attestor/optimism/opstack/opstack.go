@@ -2,6 +2,7 @@ package opstack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync/atomic"
 	"time"
@@ -21,6 +22,7 @@ type gameSource interface {
 type replica interface {
 	SyncStatus(ctx context.Context) (SyncStatus, error)
 	OutputAtBlock(ctx context.Context, l2Block uint64) ([32]byte, error)
+	CommitmentAt(ctx context.Context, l2Block uint64) (L2Commitment, error)
 }
 
 // OpStackAttestor replays the L2 state transition (via a verify-mode replica
@@ -96,6 +98,45 @@ func (a *OpStackAttestor) LastSyncStatus() (SyncStatus, bool) {
 		return *s, true
 	}
 	return SyncStatus{}, false
+}
+
+// ErrNoReplica reports that this attestor was built without a replica, so the
+// read-only replica queries below cannot be served. The attestation loop needs
+// one, so it only happens in tests.
+var ErrNoReplica = errors.New("attestor has no replica client")
+
+// HeadAt returns the replica head for one gating level, read fresh rather than
+// from the cached snapshot: a caller verifying a specific block needs to know
+// whether the replica covers it now, not at the last poll.
+//
+// Safe for concurrent use — it only calls the replica, and the Run goroutine
+// remains the sole writer of everything else.
+func (a *OpStackAttestor) HeadAt(ctx context.Context, head Head) (uint64, error) {
+	if a.replica == nil {
+		return 0, ErrNoReplica
+	}
+	status, err := a.replica.SyncStatus(ctx)
+	if err != nil {
+		return 0, err
+	}
+	switch head {
+	case HeadUnsafe:
+		return status.UnsafeL2, nil
+	case HeadSafe:
+		return status.SafeL2, nil
+	case HeadFinalized:
+		return status.FinalizedL2, nil
+	default:
+		return 0, fmt.Errorf("unknown attestation head %q", head)
+	}
+}
+
+// CommitmentAt returns the replica's canonical commitment at one L2 block.
+func (a *OpStackAttestor) CommitmentAt(ctx context.Context, l2Block uint64) (L2Commitment, error) {
+	if a.replica == nil {
+		return L2Commitment{}, ErrNoReplica
+	}
+	return a.replica.CommitmentAt(ctx, l2Block)
 }
 
 // Run executes the attestation loop until ctx is done: poll ticker plus the

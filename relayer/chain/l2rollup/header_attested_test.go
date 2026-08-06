@@ -86,11 +86,11 @@ func TestBindToAttestation_PropagatesTransportFailure(t *testing.T) {
 	}
 }
 
-// Only the Arbitrum attestor serves VerifyStateRoot; the OP-Stack one (which also
-// backs Base) answers Unimplemented. Treating that as a refusal would fail every
-// header build on those two chains, so it must degrade to the pre-binding behaviour
-// instead — this test is what stops a future "tighten the error handling" change from
-// silently taking OP and Base offline.
+// An attestor binary older than VerifyStateRoot answers Unimplemented. Relayer and
+// attestor ship separately, so treating that as a refusal would fail every header
+// build against such a deployment; it must degrade to the pre-binding behaviour
+// instead — this test is what stops a future "tighten the error handling" change
+// from taking a version-skewed deployment offline without warning.
 func TestBindToAttestation_UnsupportedAttestorDegradesInsteadOfFailing(t *testing.T) {
 	at := &fakeAttestor{verifyErr: fmt.Errorf("%w: rpc error", ErrVerifyStateRootUnsupported)}
 	b := &attestedHeaderBuilder{attestor: at, runMode: attestorpb.RunMode_RUN_MODE_SAFE, name: "l2-opstack"}

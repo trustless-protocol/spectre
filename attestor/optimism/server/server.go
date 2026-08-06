@@ -7,8 +7,11 @@ package server
 import (
 	"context"
 	"math"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -170,4 +173,108 @@ func (s *Server) WatchAttested(req *attestorpb.WatchAttestedRequest, stream grpc
 		case <-ticker.C:
 		}
 	}
+}
+
+// runModeHead maps the caller's requested finality to the replica head the
+// answer must be judged against, so a verification is gated at the same level
+// the relayer's height gate used.
+func runModeHead(mode attestorpb.RunMode) (opstack.Head, error) {
+	switch mode {
+	case attestorpb.RunMode_RUN_MODE_UNSAFE:
+		return opstack.HeadUnsafe, nil
+	case attestorpb.RunMode_RUN_MODE_SAFE:
+		return opstack.HeadSafe, nil
+	case attestorpb.RunMode_RUN_MODE_FINALIZED:
+		return opstack.HeadFinalized, nil
+	default:
+		return "", status.Error(codes.InvalidArgument, "run_mode must be unsafe, safe or finalized")
+	}
+}
+
+// soleChain resolves the attestor to answer a VerifyStateRoot request against.
+//
+// Unlike every other request in this service, VerifyStateRootRequest carries no
+// src_chain (the field does not exist in the proto), so a daemon serving more
+// than one chain cannot tell which replica the caller means. Guessing would
+// verify a block against the wrong chain and answer valid=false for a perfectly
+// good header — worse than refusing, because the caller would read it as a
+// divergence. Refuse instead, and name the fix.
+func (s *Server) soleChain() (*opstack.OpStackAttestor, error) {
+	switch len(s.chains) {
+	case 0:
+		return nil, status.Error(codes.FailedPrecondition, "no chains are configured")
+	case 1:
+		for _, a := range s.chains {
+			return a, nil
+		}
+	}
+	names := make([]string, 0, len(s.chains))
+	for name := range s.chains {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return nil, status.Errorf(codes.FailedPrecondition,
+		"VerifyStateRoot carries no src_chain but this attestor serves %d chains (%s); "+
+			"run one attestor per chain until the request carries the field",
+		len(s.chains), strings.Join(names, ", "))
+}
+
+// VerifyStateRoot answers whether the caller's block identity is what this
+// attestor's replica holds at that height.
+//
+// The relayer calls it once per header build: the height gate (AttestedUpTo)
+// bounds how far it may relay, and this bounds what it relays at that height.
+// Without it a relayer whose L2 RPC reorged past the frontier — or points at a
+// different endpoint than the replica — would package a block the attestor
+// never verified, and the wasm client would accept it, since the client checks
+// only the header against itself and the router proof against the header.
+func (s *Server) VerifyStateRoot(ctx context.Context, req *attestorpb.VerifyStateRootRequest) (*attestorpb.VerifyStateRootResponse, error) {
+	if req == nil {
+		return nil, status.Error(codes.InvalidArgument, "request must not be nil")
+	}
+	if len(req.GetExpectedStateRoot()) != common.HashLength {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"expected_state_root must contain exactly %d bytes", common.HashLength)
+	}
+	if n := len(req.GetExpectedBlockHash()); n != 0 && n != common.HashLength {
+		return nil, status.Errorf(codes.InvalidArgument,
+			"expected_block_hash must be empty or contain exactly %d bytes", common.HashLength)
+	}
+	head, err := runModeHead(req.GetRunMode())
+	if err != nil {
+		return nil, err
+	}
+	attestorForChain, err := s.soleChain()
+	if err != nil {
+		return nil, err
+	}
+
+	headBlock, err := attestorForChain.HeadAt(ctx, head)
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable, "read replica %s head: %v", head, err)
+	}
+	// "Not derived yet" is not "wrong block": the caller retries the first and
+	// must treat the second as a divergence, so they cannot share an answer.
+	if req.GetBlockNumber() > headBlock {
+		return nil, status.Errorf(codes.FailedPrecondition,
+			"block %d is above the replica %s head %d", req.GetBlockNumber(), head, headBlock)
+	}
+
+	commitment, err := attestorForChain.CommitmentAt(ctx, req.GetBlockNumber())
+	if err != nil {
+		return nil, status.Errorf(codes.Unavailable,
+			"query replica block %d: %v", req.GetBlockNumber(), err)
+	}
+
+	valid := commitment.StateRoot == common.BytesToHash(req.GetExpectedStateRoot())
+	if expected := req.GetExpectedBlockHash(); len(expected) != 0 {
+		valid = valid && commitment.BlockHash == common.BytesToHash(expected)
+	}
+
+	return &attestorpb.VerifyStateRootResponse{
+		Valid:       valid,
+		BlockNumber: commitment.BlockNumber,
+		BlockHash:   append([]byte(nil), commitment.BlockHash[:]...),
+		StateRoot:   append([]byte(nil), commitment.StateRoot[:]...),
+	}, nil
 }
