@@ -8,10 +8,29 @@ Fast-IBC builds three checksum-distinct 08-wasm artifacts with unchanged filenam
 
 The artifacts share one client lifecycle and differ only in their deployment-profile version.
 
-> **Security assumption:** these bring-up clients trust the relayer to forward data produced by the
-> selected attestor. They do not verify an attestor signature, L1 consensus, an OP dispute game, or
-> an Arbitrum assertion. The router account proof establishes only that the supplied router storage
-> root belongs to the supplied L2 execution state.
+> **DEVNET ONLY — these clients trust ANY SUBMITTER, not just the relayer.**
+>
+> `MsgUpdateClient` is permissionless and the header carries no attestor signature, so the client
+> cannot tell the relayer's headers from anyone else's. Anyone can build a self-consistent
+> `AttestedL2Header` at a height the client has not seen — a fabricated state root with a matching
+> router account proof is cheap, because nothing ties either to the real L2 — get it accepted, and
+> then prove arbitrary membership or non-membership against it. That is enough to mint tokens on the
+> Cosmos side or to time out packets that were in fact delivered.
+>
+> The clients verify no attestor signature, no L1 consensus, no OP dispute game and no Arbitrum
+> assertion. The router account proof establishes only that the supplied router storage root belongs
+> to the supplied L2 execution state — it says nothing about whether that state is the L2's.
+>
+> The relayer does gate its own submissions (`Source.RelayableHeight` bounds the height from the
+> attestor frontier, and the header builder asks the attestor's `VerifyStateRoot` whether the block
+> it packaged is canonical), but that is a relayer-side check against accidental divergence. The
+> client cannot re-check it, so it constrains an honest relayer, not an attacker.
+>
+> The attestor-only redesign (PR #343, not yet merged) states the target invariant — nothing
+> unauthenticated may ever enter the client — and this interim format does not meet it. **Do not
+> deploy these artifacts on a network holding real value.** The gate that closes it is
+> `ATTESTATIONS_ARE_AUTHENTICATED` in `packages/l2-client/src/runtime.rs`, flipped in the same
+> change that adds signature verification and the signed-attestation wire version.
 
 ## Live 08-wasm surface
 
