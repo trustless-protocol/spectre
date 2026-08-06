@@ -105,7 +105,7 @@ func TestU256_HexQuantity(t *testing.T) {
 }
 
 func TestEncodeHeaderMessage_TaggedEnvelope(t *testing.T) {
-	raw, err := encodeHeaderMessage(&OpStackHeader{BeaconSlot: 7})
+	raw, err := encodeHeaderMessage(&AttestedL2Header{L2Header: CanonicalEvmHeader{Number: 7}})
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
@@ -116,11 +116,11 @@ func TestEncodeHeaderMessage_TaggedEnvelope(t *testing.T) {
 	if env.Type != "header" {
 		t.Fatalf("envelope type = %q, want header", env.Type)
 	}
-	var inner OpStackHeader
+	var inner AttestedL2Header
 	if err := json.Unmarshal(env.Value, &inner); err != nil {
 		t.Fatalf("unmarshal value: %v", err)
 	}
-	if inner.BeaconSlot != 7 {
-		t.Fatalf("value.beacon_slot = %d, want 7", inner.BeaconSlot)
+	if inner.L2Header.Number != 7 {
+		t.Fatalf("value.l2_header.number = %d, want 7", inner.L2Header.Number)
 	}
 }

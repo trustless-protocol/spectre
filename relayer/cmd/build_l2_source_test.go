@@ -14,12 +14,10 @@ import (
 
 func validL2Config() l2ToCosmosConfig {
 	return l2ToCosmosConfig{
-		L1RpcUrl:         "http://127.0.0.1:8545",
 		L2RpcUrl:         "http://127.0.0.1:9545",
 		TmRpcUrl:         "http://127.0.0.1:26657",
 		AttestorAddr:     "127.0.0.1:3001",
 		AttestorSrcChain: "op-sepolia",
-		EthBeaconAPIURL:  "http://127.0.0.1:5052",
 		L2WasmClientID:   "08-wasm-1",
 		L2ICS26ClientID:  "client-0",
 		HeadKind:         "safe",
@@ -34,7 +32,7 @@ func TestL2Config_Validate(t *testing.T) {
 	}
 
 	cases := map[string]func(*l2ToCosmosConfig){
-		"missing l1_rpc_url":     func(c *l2ToCosmosConfig) { c.L1RpcUrl = "" },
+		"missing l2_rpc_url":     func(c *l2ToCosmosConfig) { c.L2RpcUrl = "" },
 		"missing attestor_addr":  func(c *l2ToCosmosConfig) { c.AttestorAddr = "" },
 		"missing wasm client id": func(c *l2ToCosmosConfig) { c.L2WasmClientID = "" },
 		"empty profile":          func(c *l2ToCosmosConfig) { c.RollupProfile = nil },
@@ -179,118 +177,6 @@ func TestFindL2TimeoutReturnPath(t *testing.T) {
 			}
 			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 				t.Fatalf("findL2TimeoutReturnPath() error = %v, want substring %q", err, tc.wantErr)
-			}
-		})
-	}
-}
-
-// TestValidateSharedEthClients: several L2 modules normally pin the SAME Ethereum
-// client (create-clients-cosmos injects one id into every --l2-config), and that
-// client is refreshed from one beacon endpoint. Two modules disagreeing on the
-// endpoint for one client would refresh it from two sources of truth, so it is
-// rejected at load time rather than at runtime.
-func TestValidateSharedEthClients(t *testing.T) {
-	mod := func(clientID, beacon string) l2ToCosmosConfig {
-		return l2ToCosmosConfig{
-			EthBeaconAPIURL: beacon,
-			RollupProfile: json.RawMessage(
-				`{"common":{"ethereum_client":{"client_id":"` + clientID + `"}}}`),
-		}
-	}
-
-	t.Run("same client same beacon", func(t *testing.T) {
-		if err := validateSharedEthClients([]l2ToCosmosConfig{
-			mod("08-wasm-0", "http://beacon"), mod("08-wasm-0", "http://beacon"),
-		}); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("different clients may differ", func(t *testing.T) {
-		if err := validateSharedEthClients([]l2ToCosmosConfig{
-			mod("08-wasm-0", "http://a"), mod("08-wasm-9", "http://b"),
-		}); err != nil {
-			t.Fatalf("unexpected error: %v", err)
-		}
-	})
-
-	t.Run("same client conflicting beacons rejected", func(t *testing.T) {
-		err := validateSharedEthClients([]l2ToCosmosConfig{
-			mod("08-wasm-0", "http://a"), mod("08-wasm-0", "http://b"),
-		})
-		if err == nil {
-			t.Fatal("expected an error for conflicting beacon endpoints")
-		}
-	})
-
-	t.Run("missing client id rejected", func(t *testing.T) {
-		if err := validateSharedEthClients([]l2ToCosmosConfig{
-			{EthBeaconAPIURL: "http://beacon", RollupProfile: json.RawMessage(`{"common":{}}`)},
-		}); err == nil {
-			t.Fatal("expected an error for a profile without ethereum_client.client_id")
-		}
-	})
-}
-
-// TestParseArbBoldProfile_ProtocolType pins the discriminant check that replaced the
-// bold_v2/legacy_nitro dispatch switch. A profile left over from the legacy Nitro path
-// must be REJECTED, not silently parsed as BoLD: its protocol.value holds node-lifecycle
-// slots, so a permissive parse would build a header builder pointed at storage slots
-// that mean something else entirely, and fail much later as an unexplained proof error.
-func TestParseArbBoldProfile_ProtocolType(t *testing.T) {
-	const common = `"common":{"l2_router":"0x645280885749dC97Ea461DE280Eb3273C91D36Df",` +
-		`"ethereum_client":{"client_id":"08-wasm-0"}},` +
-		`"rollup":"0x042B2E6C5E99d4c521bd49beeD5E99651D9B0Cf4"`
-
-	cases := []struct {
-		name       string
-		profile    string
-		wantErr    bool
-		wantInErr  string
-		wantSlotHi byte // first byte of assertions_mapping_slot, on success
-	}{
-		{
-			name: "bold_v2 parses",
-			profile: `{` + common + `,"protocol":{"type":"bold_v2","value":{` +
-				`"assertions_mapping_slot":"0x7500000000000000000000000000000000000000000000000000000000000000"}}}`,
-			wantSlotHi: 0x75,
-		},
-		{
-			name: "legacy_nitro is rejected and named",
-			profile: `{` + common + `,"protocol":{"type":"legacy_nitro","value":{` +
-				`"node_lifecycle_slot":"0x0000000000000000000000000000000000000000000000000000000000000075"}}}`,
-			wantErr:   true,
-			wantInErr: "legacy_nitro",
-		},
-		{
-			name:      "absent type is rejected without printing an empty string",
-			profile:   `{` + common + `,"protocol":{"value":{"assertions_mapping_slot":"0x75"}}}`,
-			wantErr:   true,
-			wantInErr: "<absent>",
-		},
-	}
-
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got, err := parseArbBoldProfile(json.RawMessage(tc.profile))
-			if tc.wantErr {
-				if err == nil {
-					t.Fatal("expected a rejection")
-				}
-				if !strings.Contains(err.Error(), tc.wantInErr) {
-					t.Fatalf("error %q does not name %q", err, tc.wantInErr)
-				}
-				if !strings.Contains(err.Error(), "bold_v2") {
-					t.Fatalf("error %q does not say what is expected", err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if got.AssertionsMappingSlot[0] != tc.wantSlotHi {
-				t.Fatalf("assertions_mapping_slot[0] = %#x, want %#x",
-					got.AssertionsMappingSlot[0], tc.wantSlotHi)
 			}
 		})
 	}

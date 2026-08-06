@@ -7,26 +7,24 @@
     "Optimism are told apart by module NAME and client id, not by chain type. That is",
     "also why deploy_l2_contracts.sh needs MODULE_NAME=cosmos-to-base.",
     "",
-    "wasm_checksum (top level) is the BASE client's, a hex string, from wasm_base.sh.",
-    "rollup_profile.common.ethereum_client.wasm_checksum is the ETHEREUM client's,",
-    "as a BYTE ARRAY \u2014 two clients, two encodings. Convert with:",
-    "  python3 -c \"print(list(bytes.fromhex('<checksum-hex>')))\"",
+    "rollup_profile is sent verbatim into MsgCreateClient and the Rust verifier rejects",
+    "unknown fields (#316), so it carries exactly the five keys the client reads. The",
+    "settlement fields (dispute_game_factory, game_list_slot) and the ethereum_client",
+    "reference are gone: the client verifies nothing against L1.",
     "",
-    "Do NOT add relayer-only tuning fields to rollup_profile: it is sent verbatim into",
-    "MsgCreateClient and the Rust verifier rejects unknown fields (#316)."
+    "profile_version must match the artifact \u2014 op_attestor_v1 / base_attestor_v1 /",
+    "arbitrum_attestor_v1 \u2014 or instantiate fails with InvalidProfileVersion."
   ],
   "wasm_checksum": "<hex checksum of the Base client wasm, from `gaiad q ibc-wasm checksums`>",
   "l2_rpc_url": "http://127.0.0.1:8545",
   "rollup_profile": {
     "common": {
+      "l2_chain_id": 84532,
       "l2_router": "0x1111111111111111111111111111111111111111",
-      "ethereum_client": {
-        "client_id": "08-wasm-0"
-      },
-      "l2_chain_id": 84532
-    },
-    "dispute_game_factory": "0x6666666666666666666666666666666666666666",
-    "game_list_slot": "0x0000000000000000000000000000000000000000000000000000000000000068"
+      "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
+      "profile_version": "base_attestor_v1",
+      "l2_header_fork": "prague"
+    }
   },
   "bootstrap_block": 0,
   "counterparty_client_id": "base-client-0"

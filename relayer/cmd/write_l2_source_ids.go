@@ -7,53 +7,34 @@ import (
 	"strconv"
 )
 
-// Write-back for the two client ids an l2_to_cosmos module cannot know up front.
+// Write-back for the client id an l2_to_cosmos module cannot know up front.
 //
-// Both are assigned by ibc-go's global client sequence when MsgCreateClient lands,
-// so config.example.json can only carry placeholders:
+// config.l2_wasm_client_id — the Cosmos-side wasm client tracking the L2 — is assigned
+// by ibc-go's global client sequence when MsgCreateClient lands, so config.example.json
+// can only carry a placeholder. A stale value there does not fail at creation: it fails
+// later and silently, because the relayer queries whatever client the config names
+// while the packets were committed against the one actually created. Writing the real
+// id back at creation time is what closes that gap.
 //
-//   - config.l2_wasm_client_id — the Cosmos-side wasm client tracking the L2
-//   - config.rollup_profile.common.ethereum_client.client_id — the shared Ethereum
-//     client the L2 client authenticates L1 state through
-//
-// The second one is the dangerous one. create-clients-cosmos already injects the
-// real id into the L2 client's *client state* (that copy is what the contract
-// queries), so a stale id left in the config does not fail at creation — it fails
-// later, and silently: the relayer builds headers pinned to whatever client the
-// config names, while the contract queries the client it was actually created
-// with. When those differ, every ConsensusState lookup misses, ibc-go answers
-// NotFound, and wasmd redacts it to "codespace: undefined, code: 1" — an error
-// that names neither client. Worse in production: the pinned client is the one
-// nobody advances, so it expires while the relayer keeps a different one fresh.
-//
-// Writing both ids back is what closes that gap; see validateL2SourceEthClient for
-// the startup check that catches configs edited by hand.
+// An earlier revision also wrote rollup_profile.common.ethereum_client.client_id here.
+// The attestor-trusted profile has no such member — the L2 client authenticates nothing
+// through an Ethereum client any more — so that write is gone with it.
 
-// writeL2SourceClientIDs persists the created client ids into the l2_to_cosmos
-// module whose config.l2_ics26_client_id equals l2ICS26ClientID. Empty ids are
-// skipped, so callers can write whichever they have.
-func writeL2SourceClientIDs(configPath, l2ICS26ClientID, l2WasmClientID, l1ClientID string) error {
+// writeL2SourceClientIDs persists the created client id into the l2_to_cosmos module
+// whose config.l2_ics26_client_id equals l2ICS26ClientID.
+func writeL2SourceClientIDs(configPath, l2ICS26ClientID, l2WasmClientID string) error {
 	if l2ICS26ClientID == "" {
 		return fmt.Errorf("l2_ics26_client_id is required to locate the l2_to_cosmos module")
+	}
+	if l2WasmClientID == "" {
+		return fmt.Errorf("l2_wasm_client_id is required")
 	}
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
 	}
-	writes := []struct {
-		path  []string
-		value string
-	}{
-		{[]string{"l2_wasm_client_id"}, l2WasmClientID},
-		{[]string{"rollup_profile", "common", "ethereum_client", "client_id"}, l1ClientID},
-	}
-	for _, w := range writes {
-		if w.value == "" {
-			continue
-		}
-		if data, err = replaceL2SourceMember(data, l2ICS26ClientID, w.path, w.value); err != nil {
-			return err
-		}
+	if data, err = replaceL2SourceMember(data, l2ICS26ClientID, []string{"l2_wasm_client_id"}, l2WasmClientID); err != nil {
+		return err
 	}
 	if err := os.WriteFile(configPath, data, configFilePerm); err != nil {
 		return err

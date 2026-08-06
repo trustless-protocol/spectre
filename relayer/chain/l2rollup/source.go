@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"time"
 
+	attestorpb "attestor/types/attestor"
 	"relayer/chain"
 	relayerclient "relayer/client"
 	"relayer/services"
@@ -43,6 +44,20 @@ func (k HeadKind) validate() error {
 		return nil
 	default:
 		return fmt.Errorf("l2 source: invalid head kind %d", k)
+	}
+}
+
+// RunMode maps the configured head kind onto the attestor replica head a
+// VerifyStateRoot request must be answered against, so the block the builder binds to
+// is judged at the same finality the source gated the height on.
+func (k HeadKind) RunMode() attestorpb.RunMode {
+	switch k {
+	case Safe:
+		return attestorpb.RunMode_RUN_MODE_SAFE
+	case Finalized:
+		return attestorpb.RunMode_RUN_MODE_FINALIZED
+	default:
+		return attestorpb.RunMode_RUN_MODE_UNSAFE
 	}
 }
 
@@ -158,15 +173,18 @@ func (s *Source) head(ctx context.Context) (uint64, error) {
 	return h.Number.Uint64(), nil
 }
 
-// QueryHeader returns the selected finality byte plus the target L2 height as an
-// 8-byte big-endian integer for the L2 client-update builder.
+// QueryHeader returns the target L2 height as an 8-byte big-endian integer for the
+// L2 client-update builder.
+//
+// It used to prefix the selected head kind, so the builder could refuse to assemble a
+// Safe or Finalized request from provisional evidence. The header carries no head kind
+// now, and the selection has already been applied upstream: headKind picks which
+// attestor frontier RelayableHeight gates on, so by the time a height reaches here it
+// has passed that gate. Re-sending the kind would only let the builder second-guess a
+// decision already made.
 func (s *Source) QueryHeader(_ context.Context, height uint64) ([]byte, error) {
-	if err := s.headKind.validate(); err != nil {
-		return nil, err
-	}
-	b := make([]byte, 9)
-	b[0] = byte(s.headKind)
-	binary.BigEndian.PutUint64(b[1:], height)
+	b := make([]byte, 8)
+	binary.BigEndian.PutUint64(b, height)
 	return b, nil
 }
 

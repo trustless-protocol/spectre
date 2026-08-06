@@ -10,9 +10,9 @@ import (
 
 // This file holds the JSON scalar types that make the Go client message serialize
 // byte-identically to the cw-ics08 L2 client's serde (Rust). The encoding contract
-// is Dũng's spec on PR #245; the ground-truth Rust types live in
-// packages/l2-client (msg.rs, canonical_header.rs), packages/op-stack-verifier and
-// packages/arbitrum-verifier. Two representations must be kept apart:
+// is Dũng's spec on PR #245; the ground-truth Rust types live in packages/l2-client
+// (msg.rs, canonical_header.rs) — the per-chain verifier crates carry no header
+// types of their own. Two representations must be kept apart:
 //
 //   - byte VECTORS (serde `Vec<u8>` / `Vec<Vec<u8>>`) serialize as JSON NUMBER
 //     ARRAYS ([248,81]). Go's built-in `[]byte` marshals to a base64 STRING, which
@@ -51,8 +51,8 @@ func (h *hexBytes) UnmarshalJSON(data []byte) error {
 }
 
 // byteList is the wire form of a serde `Vec<u8>`: a JSON array of numbers
-// ([222,173]), never a base64 string. Used for OP game_runtime and the minimal
-// big-endian EvmStorageProof value (`1`→[1], zero→[]). A nil list encodes as [].
+// ([222,173]), never a base64 string. Used for the minimal big-endian
+// EvmStorageProof value (`1`→[1], zero→[]). A nil list encodes as [].
 type byteList []byte
 
 func (b byteList) MarshalJSON() ([]byte, error) {
@@ -145,17 +145,10 @@ type clientMessageEnvelope struct {
 	Value json.RawMessage `json:"value"`
 }
 
-// arbitrumHeaderEnvelope is the serde-tagged Arbitrum `Header` enum (arbitrum-verifier
-// header.rs: tag="type", content="value", rename_all="snake_case"). Unlike OP —
-// whose verifier `Header` is a bare struct — Arbitrum's is a tagged enum, so the
-// ClientMessage value is itself tagged.
-type arbitrumHeaderEnvelope struct {
-	Type  string `json:"type"`
-	Value any    `json:"value"`
-}
-
-// encodeHeaderMessage wraps a per-L2 header (or the tagged Arbitrum header enum) in the
-// outer ClientMessage envelope {"type":"header","value":<header>}.
+// encodeHeaderMessage wraps a header in the ClientMessage envelope
+// {"type":"header","value":<header>}. Arbitrum used to need a second, inner tagged
+// envelope because its verifier `Header` was an enum with more than one variant; it
+// is a bare struct now, like the others, so there is only the outer one.
 func encodeHeaderMessage(header any) ([]byte, error) {
 	value, err := json.Marshal(header)
 	if err != nil {

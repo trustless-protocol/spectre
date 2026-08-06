@@ -454,11 +454,12 @@ L2_DEPLOYER_PRIVATE_KEY=bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214
   ./scripts/local/deploy_l2_contracts.sh
 # It patches relayer/config.example.json — copy the addresses into config.json.
 
-# 5. Clients. Cosmos side first (ETH client, then the OP client anchored to it via
-#    --l2-config), then the L2 side (SpectreClient deployed + addClient'd).
+# 5. Clients. Cosmos side first, one invocation per kind: the Ethereum client (only
+#    if this config relays Cosmos<->Ethereum), then the OP client. Then the L2 side
+#    (SpectreClient deployed + addClient'd).
 cd relayer
-./relayer create-clients-cosmos --config config.json \
-  --wasm-checksum <eth-checksum> --l2-config <op-l2-config.json>
+./relayer create-clients-cosmos --config config.json --wasm-checksum <eth-checksum>
+./relayer create-clients-cosmos --config config.json --l2-config <op-l2-config.json>
 ./relayer create-clients-eth --config config.json --source <ics26_client_id> --trust-level 2/3
 
 # 6. Relay both directions.
@@ -497,20 +498,17 @@ L2_DEPLOYER_PRIVATE_KEY=bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214
   ./scripts/local/deploy_l2_contracts.sh
 # It patches the cosmos_to_l2 module whose dst_chain is arbitrum.
 
-# 5. Clients. Cosmos side first (ETH client, then the Arbitrum client anchored to it
-#    via --l2-config), then the L2 side (SpectreClient deployed + addClient'd).
+# 5. Clients. Cosmos side first, one invocation per kind, then the L2 side
+#    (SpectreClient deployed + addClient'd). The Arbitrum client no longer anchors to
+#    an Ethereum client, so create it on its own:
 cd relayer
-./relayer create-clients-cosmos --config config.json \
-  --wasm-checksum <eth-checksum> --l2-config <arb-l2-config.json>
+./relayer create-clients-cosmos --config config.json --l2-config <arb-l2-config.json>
 #
-#    If the OP flow already ran, an Ethereum client exists — anchor to it instead:
-#      ./relayer create-clients-cosmos --config config.json \
-#        --l1-client-id <08-wasm-N> --l2-config <arb-l2-config.json>
-#    Without --l1-client-id this creates a SECOND Ethereum client and rewrites
-#    cosmos_to_eth.cosmos_wasm_client_id, which repoints the Cosmos<->Ethereum path at
-#    a client the Sepolia-side SpectreClient was never registered against; every
-#    recvPacket then reverts on a counterparty mismatch. Since this section shares the
-#    L1 enclave with the OP flow, running both in sequence hits exactly that.
+#    Only run the Ethereum half (--wasm-checksum, no --l2-config) if this config also
+#    relays Cosmos<->Ethereum AND that client does not exist yet. Re-running it against
+#    a working deployment rewrites cosmos_to_eth.cosmos_wasm_client_id and repoints the
+#    path at a client the Sepolia-side SpectreClient was never registered against; every
+#    recvPacket then reverts on a counterparty mismatch.
 ./relayer create-clients-eth --config config.json --source <ics26_client_id> --trust-level 2/3
 
 # 6. Relay both directions.
@@ -532,47 +530,43 @@ The local Arbitrum l2-config is the same shape as OP's `--l2-config`, but its
 
 #### Adding an L2 to a deployment that already relays Cosmos↔Ethereum
 
-Every L2 client is anchored to an Ethereum light client on Cosmos, and that anchor is
-baked into the L2 client's state at creation — it cannot be changed afterwards.
-
-`create-clients-cosmos` normally **creates** that Ethereum client, and rewrites the
-`cosmos_to_eth` module's `cosmos_wasm_client_id` with the new id. Re-running it just to
-add a second L2 therefore does real damage to a working L1 path: the Ethereum-side
-SpectreClient is still registered against the *old* client, so every `recvPacket` starts
-reverting on a counterparty mismatch, and the original client is left orphaned with
-nothing advancing it until it expires.
-
-Pass `--l1-client-id` instead. It anchors the new L2 client(s) to an Ethereum client that
-already exists, creates nothing else, and leaves the `cosmos_to_eth` module alone:
+`create-clients-cosmos` creates one kind of client per invocation. Without `--l2-config`
+it creates the Ethereum light client for the Cosmos↔Ethereum path and rewrites the
+`cosmos_to_eth` module's `cosmos_wasm_client_id`. With `--l2-config` it creates only the
+named L2 clients and does not touch the Ethereum one:
 
 ```bash
-# Adding Arbitrum to a deployment whose Ethereum client is already 08-wasm-0
-./relayer create-clients-cosmos --config config.json \
-  --l1-client-id 08-wasm-0 --l2-config <arb-l2-config.json>
+# Adding Arbitrum to a running deployment — the Ethereum client is left alone
+./relayer create-clients-cosmos --config config.json --l2-config <arb-l2-config.json>
 ```
 
-`--wasm-checksum` is not needed with it (nothing Ethereum-side is being created), and the
-id is read back off-chain before anything is created, so a typo fails immediately rather
-than producing an L2 client permanently anchored to a client that does not exist.
+`--wasm-checksum` is not needed there (nothing Ethereum-side is being created); the L2
+client's own wasm checksum comes from the `--l2-config` file.
 
-Creating several L2s in one go does not need the flag — a single run injects the same
-newly-created Ethereum client into every `--l2-config`:
+Keeping the two apart matters: re-running the Ethereum half against a working deployment
+replaces a client the Ethereum-side SpectreClient is already registered against, so every
+`recvPacket` starts reverting on a counterparty mismatch while the original client is
+orphaned with nothing advancing it until it expires.
+
+Several L2s can still be created in one run:
 
 ```bash
-./relayer create-clients-cosmos --config config.json --wasm-checksum <eth-checksum> \
+./relayer create-clients-cosmos --config config.json \
   --l2-config op.json --l2-config base.json --l2-config arb.json
 ```
 
 The `--l2-config` file carries the full ICS-08 profile (see
-[docs/L2_CLIENTS.md](docs/L2_CLIENTS.md#l2-client-creation-config)); `rollup_profile.common`
-needs `l1_chain_id`, `l2_chain_id`, `ethereum_client` (`client_id` is injected by the command,
-`wasm_checksum` is not — supply the Ethereum client's checksum as a byte array), `l2_router`,
-`commitment_slot`, and `rollup_version`, plus the rollup-specific fields. For OP/Base use the
-dispute-game fields (`dispute_game_factory`, `game_list_slot`, `root_claim_bytecode_offset`,
-`output_root_format`, `l2_header_fork`). For Arbitrum use the tagged `protocol` object from
-`packages/arbitrum-verifier/config/README.md`; the local BoLD devnet uses `bold_v2`.
-`packages/op-verifier/config/op-sepolia.json` and
-`packages/arbitrum-verifier/config/arbitrum-sepolia.json` are working public-network templates.
+[docs/L2_CLIENTS.md](docs/L2_CLIENTS.md#l2-client-creation-config)). For the
+attestor-trusted clients `rollup_profile.common` is five keys — `l2_chain_id`,
+`l2_router`, `commitment_slot`, `profile_version`, and `l2_header_fork` — and nothing
+else; an unknown key fails `instantiate` on the Rust side. `profile_version` must match
+the wasm artifact (`op_attestor_v1`, `base_attestor_v1`, `arbitrum_attestor_v1`), and
+`l2_header_fork` must match the chain's execution-header layout: `prague` for OP and
+Base, `london` for Arbitrum Nitro, which produces none of the post-London header fields.
+`packages/op-verifier/config/op-sepolia.json`,
+`packages/base-verifier/config/base-sepolia.json` and
+`packages/arbitrum-verifier/config/arbitrum-sepolia.json` are working public-network
+templates.
 
 ### Sending a test packet
 

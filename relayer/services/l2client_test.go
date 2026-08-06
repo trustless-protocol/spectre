@@ -60,9 +60,6 @@ func TestBuildL2WasmClientState_ClientStateShape(t *testing.T) {
 	if _, found := clientStateFields["state_version"]; found {
 		t.Fatal("state_version must not be emitted for fresh clients")
 	}
-	if string(clientState.FinalityPolicy) != string(defaultL2FinalityPolicy) {
-		t.Fatalf("unexpected default finality policy: %s", clientState.FinalityPolicy)
-	}
 
 	// Consensus from the bootstrap roots: ibc_storage_root = router_storage_root,
 	// timestamp_nanos = timestamp_seconds * 1e9.
@@ -86,9 +83,6 @@ func TestBuildL2WasmClientState_ClientStateShape(t *testing.T) {
 	if cons.L2Height != 123 || cons.L2BlockHash != common.HexToHash("0xcccc").Hex() || cons.ParentHash != common.HexToHash("0xdddd").Hex() {
 		t.Fatalf("bootstrap block identity missing: %+v", cons)
 	}
-	if cons.FinalityLevel != "unsafe" || cons.ProposalStatus != "pending" {
-		t.Fatalf("bootstrap finality = %s/%s", cons.FinalityLevel, cons.ProposalStatus)
-	}
 }
 
 func TestBuildL2WasmClientState_RequiresRollupProfile(t *testing.T) {
@@ -99,24 +93,59 @@ func TestBuildL2WasmClientState_RequiresRollupProfile(t *testing.T) {
 	}
 }
 
-func TestBuildL2WasmClientState_PreservesConfiguredPoliciesAndRejectsMalformedOnes(t *testing.T) {
-	p := testL2Params()
-	p.FinalityPolicy = json.RawMessage(`{"minimum_update_level":"finalized"}`)
-	p.FreshnessPolicy = json.RawMessage(`{"max_time_without_finalized_update":60}`)
-	cs, _, err := BuildL2WasmClientState(p)
+// The consensus state faces the same deny_unknown_fields as the client state, and it
+// lost more fields in the rebuild — the settlement provenance (l1_origin_*,
+// evidence_hash, rollup_commitment) and the finality taxonomy (finality_level,
+// proposal_status, finality_reached_at). Re-adding any of them, or dropping one the
+// contract does read, fails only at MsgCreateClient on a live chain; assert the exact
+// set here instead. Mirrors l2-client `ConsensusState` in state.rs.
+func TestBuildL2WasmConsensusState_EmitsOnlyTheFieldsTheClientReads(t *testing.T) {
+	_, consensus, err := BuildL2WasmClientState(testL2Params())
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	var state l2ClientStateJSON
-	if err := json.Unmarshal(cs.(*ibcwasmtypes.ClientState).Data, &state); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(consensus.(*ibcwasmtypes.ConsensusState).Data, &fields); err != nil {
+		t.Fatalf("decode consensus state: %v", err)
+	}
+	want := map[string]bool{
+		"state_root": true, "ibc_storage_root": true, "timestamp_nanos": true,
+		"l2_height": true, "l2_block_hash": true, "parent_hash": true,
+		"first_accepted_at": true,
+	}
+	for k := range fields {
+		if !want[k] {
+			t.Fatalf("consensus state carries %q, which the contract does not read", k)
+		}
+	}
+	for k := range want {
+		if _, ok := fields[k]; !ok {
+			t.Fatalf("consensus state is missing %q", k)
+		}
+	}
+}
+
+// The client state carries no policy fields any more, so the wire form is exactly
+// the three the contract reads. A stray key would be rejected by the Rust side's
+// deny_unknown_fields, which is only visible on chain — assert it here instead.
+func TestBuildL2WasmClientState_EmitsOnlyTheFieldsTheClientReads(t *testing.T) {
+	cs, _, err := BuildL2WasmClientState(testL2Params())
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(cs.(*ibcwasmtypes.ClientState).Data, &fields); err != nil {
 		t.Fatalf("decode client state: %v", err)
 	}
-	if string(state.FinalityPolicy) != string(p.FinalityPolicy) || string(state.FreshnessPolicy) != string(p.FreshnessPolicy) {
-		t.Fatalf("policies changed: finality=%s freshness=%s", state.FinalityPolicy, state.FreshnessPolicy)
+	want := map[string]bool{"latest_height": true, "frozen_height": true, "profile": true}
+	for k := range fields {
+		if !want[k] {
+			t.Fatalf("client state carries %q, which the contract does not read", k)
+		}
 	}
-
-	p.FinalityPolicy = json.RawMessage(`[]`)
-	if _, _, err := BuildL2WasmClientState(p); err == nil {
-		t.Fatal("array finality policy must be rejected")
+	for k := range want {
+		if _, ok := fields[k]; !ok {
+			t.Fatalf("client state is missing %q", k)
+		}
 	}
 }

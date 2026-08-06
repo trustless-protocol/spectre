@@ -60,10 +60,7 @@
       "src_chain": "opstack",
       "dst_chain": "cosmos",
       "config": {
-        "l1_rpc_url": "http://127.0.0.1:8545",
         "l2_rpc_url": "http://127.0.0.1:9545",
-        "op_node_rpc_url": "http://127.0.0.1:9547",
-        "eth_beacon_api_url": "http://127.0.0.1:32101",
         "tm_rpc_url": "http://127.0.0.1:26657",
         "attestor_addr": "127.0.0.1:50051",
         "attestor_src_chain": "opdev",
@@ -72,13 +69,12 @@
         "head_kind": "safe",
         "rollup_profile": {
           "common": {
+            "l2_chain_id": 2151908,
             "l2_router": "0x1111111111111111111111111111111111111111",
-            "ethereum_client": {
-              "client_id": "08-wasm-0"
-            }
-          },
-          "dispute_game_factory": "0x6666666666666666666666666666666666666666",
-          "game_list_slot": "0x0000000000000000000000000000000000000000000000000000000000000068"
+            "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
+            "profile_version": "op_attestor_v1",
+            "l2_header_fork": "prague"
+          }
         }
       }
     },
@@ -110,9 +106,7 @@
       "src_chain": "arbitrum",
       "dst_chain": "cosmos",
       "config": {
-        "l1_rpc_url": "http://127.0.0.1:8545",
         "l2_rpc_url": "http://127.0.0.1:8547",
-        "eth_beacon_api_url": "http://127.0.0.1:32101",
         "tm_rpc_url": "http://127.0.0.1:26657",
         "attestor_addr": "127.0.0.1:3001",
         "attestor_src_chain": "arbdev",
@@ -121,24 +115,11 @@
         "head_kind": "safe",
         "rollup_profile": {
           "common": {
-            "l1_chain_id": 3151908,
             "l2_chain_id": 412346,
-            "ethereum_client": {
-              "client_id": "08-wasm-0",
-              "wasm_checksum": []
-            },
             "l2_router": "0x7777777777777777777777777777777777777777",
             "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
-            "rollup_version": "arbitrum-bold-v2"
-          },
-          "rollup": "0xcccccccccccccccccccccccccccccccccccccccc",
-          "protocol": {
-            "type": "bold_v2",
-            "value": {
-              "assertions_mapping_slot": "0x0000000000000000000000000000000000000000000000000000000000000075",
-              "assertion_status_offset": 25,
-              "version": "bold-v2"
-            }
+            "profile_version": "arbitrum_attestor_v1",
+            "l2_header_fork": "london"
           }
         }
       }
@@ -171,10 +152,7 @@
       "src_chain": "opstack",
       "dst_chain": "cosmos",
       "config": {
-        "l1_rpc_url": "http://127.0.0.1:8545",
         "l2_rpc_url": "http://127.0.0.1:8545",
-        "op_node_rpc_url": "http://127.0.0.1:9547",
-        "eth_beacon_api_url": "http://127.0.0.1:32101",
         "tm_rpc_url": "http://127.0.0.1:26657",
         "attestor_addr": "127.0.0.1:3001",
         "attestor_src_chain": "basedev",
@@ -183,14 +161,12 @@
         "head_kind": "safe",
         "rollup_profile": {
           "common": {
+            "l2_chain_id": 84538453,
             "l2_router": "0x1111111111111111111111111111111111111111",
-            "ethereum_client": {
-              "client_id": "08-wasm-0"
-            },
-            "l2_chain_id": 84532
-          },
-          "dispute_game_factory": "0x6666666666666666666666666666666666666666",
-          "game_list_slot": "0x0000000000000000000000000000000000000000000000000000000000000068"
+            "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
+            "profile_version": "base_attestor_v1",
+            "l2_header_fork": "prague"
+          }
         }
       }
     }

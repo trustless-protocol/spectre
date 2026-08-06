@@ -28,9 +28,7 @@
       "src_chain": "arbitrum",
       "dst_chain": "cosmos",
       "config": {
-        "l1_rpc_url": "http://127.0.0.1:32003",
         "l2_rpc_url": "http://127.0.0.1:32200",
-        "eth_beacon_api_url": "http://127.0.0.1:32101",
         "tm_rpc_url": "http://127.0.0.1:26657",
         "attestor_addr": "127.0.0.1:3001",
         "attestor_src_chain": "arbdev",
@@ -39,24 +37,11 @@
         "head_kind": "safe",
         "rollup_profile": {
           "common": {
-            "l1_chain_id": 3151908,
             "l2_chain_id": 412346,
-            "ethereum_client": {
-              "client_id": "08-wasm-0",
-              "wasm_checksum": []
-            },
             "l2_router": "0x9fcf7d13d10dedf17d0f24c62f0cf4ed462f65b7",
             "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
-            "rollup_version": "arbitrum-bold-v2"
-          },
-          "rollup": "0x977B73121B4A9fabbDfffc0bEd920A5945396344",
-          "protocol": {
-            "type": "bold_v2",
-            "value": {
-              "assertions_mapping_slot": "0x0000000000000000000000000000000000000000000000000000000000000075",
-              "assertion_status_offset": 25,
-              "version": "bold-v2"
-            }
+            "profile_version": "arbitrum_attestor_v1",
+            "l2_header_fork": "london"
           }
         }
       }

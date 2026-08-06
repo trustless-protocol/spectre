@@ -9,44 +9,44 @@ import (
 	"relayer/chain"
 )
 
-// headerBuildTimeout bounds one full proof assembly (a few eth_getProof /
-// eth_getBlockByNumber / optimism_outputAtBlock round trips, plus the on-demand
-// Ethereum client update the OP builder performs first). Generous enough that a
-// slow-but-live node still finishes, short enough that a dead one is retried rather
-// than waited on forever.
+// headerBuildTimeout bounds one header assembly (an eth_getBlockByNumber and an
+// eth_getProof). Generous enough that a slow-but-live node still finishes, short
+// enough that a dead one is retried rather than waited on forever.
 const headerBuildTimeout = 90 * time.Second
 
-// HeaderBuilder gathers the chain-specific trustless proof for one L2 block into a
-// per-L2 ClientMessage header (OpStackHeader vs ArbitrumHeader): the beacon_slot +
-// l1_state_root to verify against the shared ETH client, the L1 rollup-contract MPT
-// witnesses (RollupCore assertion for Arbitrum, DisputeGameFactory game for
-// OP-Stack), the canonical L2 header, and the L2 router account proof. It is the
-// only per-L2 part of the client-update path.
+// HeaderBuilder assembles one L2 block into a ClientMessage header. There is a single
+// implementation now (attestedHeaderBuilder): the settlement proofs that used to make
+// this per-chain are no longer verified, so nothing distinguishes OP-Stack from
+// Arbitrum on this path. The interface stays because the signature slice will add a
+// second implementation — one that also carries an attestor signature.
 type HeaderBuilder interface {
 	// Name is the registry `builder` name (e.g. "l2-opstack", "l2-arbitrum").
 	Name() string
-	// BuildHeader builds the client message header for request and returns
-	// the L2 block the header actually COMMITS. That committed height can be lower
-	// than request.Height (e.g. the attested game/assertion at or below the
-	// request), so the caller must advance the client state by the committed height,
-	// not the requested one — otherwise proofs are built at an unproven height and
-	// recvs fail. It reads the L1 + L2 chains; a transient RPC / not-yet-available
-	// error is fine (the module re-queues via chain.Retryable in Build).
+	// BuildHeader builds the client message header for request and returns the L2
+	// block the header COMMITS. The caller advances client state by that height, not
+	// the requested one. Today they are always equal — the header is the canonical
+	// block at the requested height — but the contract is kept because a settlement
+	// builder committed whatever block its newest proven game covered, which could be
+	// far lower, and re-introducing one must not silently overstate the client height.
+	// A transient RPC error is fine: the module re-queues via chain.Retryable in Build.
 	BuildHeader(ctx context.Context, request HeaderRequest) (msg ClientMessage, committedHeight uint64, err error)
 }
 
-// HeaderRequest is the internal Source-to-Builder contract. Carrying Finality
-// with Height prevents a Safe or Finalized source selection from being silently
-// rebuilt using provisional evidence.
+// HeaderRequest is the internal Source-to-Builder contract.
+//
+// It used to carry the head kind alongside the height, so a Safe or Finalized source
+// selection could not be silently rebuilt from provisional evidence. The header no
+// longer records a head kind at all, and the Source already applies the selection when
+// it decides which attestor frontier to gate on, so passing it here would only let the
+// builder re-derive a decision that has already been made.
 type HeaderRequest struct {
-	Height   uint64
-	Finality HeadKind
+	Height uint64
 }
 
 // Builder is the chain.ClientUpdateBuilder for the L2->Cosmos path. It decodes the
-// target L2 height (from the L2 Source.QueryHeader), delegates the trustless-proof
-// assembly to a per-L2 HeaderBuilder, and packages the JSON as the wasm
-// ClientMessage data the Cosmos Destination submits — no relayer signature.
+// target L2 height (from the L2 Source.QueryHeader), delegates header assembly to a
+// HeaderBuilder, and packages the JSON as the wasm ClientMessage data the Cosmos
+// Destination submits.
 type Builder struct {
 	headerBuilder HeaderBuilder
 }
@@ -77,7 +77,7 @@ func (b *Builder) Build(ctx context.Context, header []byte) (chain.ClientUpdate,
 
 	msg, committedHeight, err := b.headerBuilder.BuildHeader(ctx, request)
 	if err != nil {
-		return chain.ClientUpdate{}, chain.Retryable(fmt.Errorf("l2: assemble %s proof at height %d: %w", request.Finality, request.Height, err))
+		return chain.ClientUpdate{}, chain.Retryable(fmt.Errorf("l2: assemble header at height %d: %w", request.Height, err))
 	}
 	payload, err := msg.EncodeClientMessage()
 	if err != nil {
@@ -88,18 +88,10 @@ func (b *Builder) Build(ctx context.Context, header []byte) (chain.ClientUpdate,
 	return chain.ClientUpdate{Height: committedHeight, Payloads: [][]byte{payload}}, nil
 }
 
-// decodeHeaderRequest reads the finality byte and big-endian L2 height emitted by
-// Source.QueryHeader.
+// decodeHeaderRequest reads the big-endian L2 height emitted by Source.QueryHeader.
 func decodeHeaderRequest(header []byte) (HeaderRequest, error) {
-	if len(header) != 9 {
-		return HeaderRequest{}, fmt.Errorf("l2: malformed header request (want 9 bytes, got %d)", len(header))
+	if len(header) != 8 {
+		return HeaderRequest{}, fmt.Errorf("l2: malformed header request (want 8 bytes, got %d)", len(header))
 	}
-	request := HeaderRequest{
-		Finality: HeadKind(header[0]),
-		Height:   binary.BigEndian.Uint64(header[1:]),
-	}
-	if err := request.Finality.validate(); err != nil {
-		return HeaderRequest{}, err
-	}
-	return request, nil
+	return HeaderRequest{Height: binary.BigEndian.Uint64(header)}, nil
 }

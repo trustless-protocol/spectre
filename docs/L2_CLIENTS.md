@@ -90,31 +90,41 @@ path.
 
 ## Relayer and attestor integration status
 
-The current Go `relayer/chain/l2rollup` implementation is still the settlement-proof client for
-existing deployments. Its OP builder emits `beacon_slot`, an authenticated L1 state root, factory
-and game proofs, an output-root preimage, and the L2 header/router proof. Its Arbitrum builder emits
-the corresponding RollupCore/BoLD assertion shape. Those Go builders and their command wiring are
-live legacy entry points and have deliberately not been deleted by the L2 Wasm refactor.
+The Go `relayer/chain/l2rollup` builder emits exactly the wire format above: the canonical L2
+execution header at the requested height plus the router account proof, and nothing else. The
+per-chain settlement builders it replaced — the OP one proving a DisputeGameFactory game against an
+authenticated L1 state root, the Arbitrum one proving a RollupCore/BoLD assertion — were deleted
+rather than kept behind a legacy path, because the clients they fed no longer exist either.
 
-Those messages are **not wire-compatible** with the new clients: the Rust message uses strict
-unknown-field rejection and accepts only the canonical L2 execution header and router account
-proof, while the old Go messages contain settlement fields. A new relayer builder must fetch the
-exact attested L2 execution header and router account proof, package the common envelope above, and
-commit the header's L2 height. Until that builder exists, the new Wasm artifacts cannot be used by
-the current `l2_to_cosmos` module end to end.
+Because the client verifies no L1 object, the attestor is the entire trust boundary and it has to
+bound two separate things. `Source.RelayableHeight` bounds how far the relayer may advance, from
+`AttestedUpTo`. The builder then calls the attestor's `VerifyStateRoot` with the state root and
+block hash it is about to package, at the run mode matching the configured head kind, and refuses a
+block the attestor's replica does not hold as canonical at that height — otherwise an L2 RPC that
+reorged past the frontier would supply a replacement block at an approved height and the client
+would accept it.
 
-The current attestor `AttestedRoot` protobuf supplies `l2_block_number`, `root`, `source`, optional
-game/assertion provenance, `provisional`, and `attested_at`. These fields gate which execution
-header the relayer selects, but they are not copied into `AttestedL2Header`. OP exposes its
-configured `attestation_head` separately through `Info`; Arbitrum currently leaves that field unset
-and remains assertion-gated.
+That binding is best-effort by construction: nothing in the wire format lets the client re-check the
+answer, so it defends against divergence between the relayer's L2 RPC and the attestor, not against
+a relayer that simply skips the call. Only the Arbitrum attestor implements `VerifyStateRoot` today;
+the OP-Stack attestor (which also backs Base) returns `Unimplemented`, and the relayer degrades to
+the unbound path with a one-per-process warning rather than refusing to relay.
 
-The required integration work is therefore:
+The attestor `AttestedRoot` protobuf supplies `l2_block_number`, `root`, `source`, optional
+game/assertion provenance, `provisional`, and `attested_at`. Those fields gate which execution
+header the relayer selects; none of them is copied into `AttestedL2Header`. `root` in particular is
+chain-specific — an OP output root but an Arbitrum L2 state root — which is why the binding goes
+through `VerifyStateRoot` rather than comparing it directly. OP exposes its configured
+`attestation_head` separately through `Info`; Arbitrum leaves that field unset and remains
+assertion-gated.
 
-1. build `AttestedL2Header` in the relayer instead of selecting and proving a settlement object;
-2. retain the old Go builders under an explicit legacy path while existing old-client deployments
-   still use them; and
-3. add a cross-language fixture that the Go encoder and Rust decoder both accept.
+Remaining integration work:
+
+1. implement `VerifyStateRoot` in the OP-Stack attestor, after which the degraded path above stops
+   being reachable;
+2. add a cross-language fixture that the Go encoder and Rust decoder both accept; and
+3. rebuild `relayer/l2fixtures`, which still captures settlement evidence for the Rust verifier
+   fixtures.
 
 The signed attestation fields and verification specified by the redesign return in the next wire
 version. Until that protocol lands, this unsigned bring-up format cannot supply actionable

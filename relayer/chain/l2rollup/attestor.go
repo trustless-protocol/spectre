@@ -2,9 +2,22 @@ package l2rollup
 
 import (
 	"context"
+	"errors"
 
 	attestorpb "attestor/types/attestor"
 )
+
+// ErrVerifyStateRootUnsupported reports that this attestor build does not serve
+// VerifyStateRoot at all. Today only the Arbitrum attestor implements it; the
+// OP-Stack one — which also backs Base — embeds UnimplementedAttestorServiceServer,
+// so the call returns gRPC Unimplemented.
+//
+// It is a distinct error because the header builder must not read "cannot answer" as
+// "answered no": treating it as a refusal would fail every header build on OP and
+// Base, which is worse than the gap it was meant to close. See the builder for how it
+// degrades, and note the degradation is only correct while it is this narrow — any
+// other failure stays fatal.
+var ErrVerifyStateRootUnsupported = errors.New("attestor does not implement VerifyStateRoot")
 
 // AttestorClient is the subset of the L2 attestor sidecar's gRPC surface the relayer
 // gates on (AttestorService, #240/#258). The 2-method interface is defined HERE, on the
@@ -19,17 +32,32 @@ import (
 // not a relay of the on-chain proposal — which is exactly why RelayableHeight gates
 // on it rather than on the raw L2 RPC head.
 //
-// The relayer reads only the height/provenance fields: L2BlockNumber, Source, and
-// the provenance oneof (GameIndex for OP games or AssertionHash for Arbitrum).
-// It does NOT consume the Root bytes — the builders re-derive the header from
-// L1/L2, so the root itself is never packaged, only used as an attestation gate.
+// AttestedUpTo/AttestedRootAtOrBelow are height gates: the relayer reads
+// L2BlockNumber from them and nothing else. AttestedRoot.Root is deliberately not
+// consumed there because it is chain-specific — an OP output root, but an Arbitrum
+// L2 state root — and the chain-agnostic builder has no way to recompute the OP
+// form without the settlement machinery the attestor-trusted design removed.
+//
+// VerifyStateRoot is how the built header is bound to the attestor instead. The
+// relayer sends the block identity it is about to package and the attestor compares
+// it against its own independently-synced replica, so the comparison stays on the
+// attestor's side of the chain-specific detail.
 type AttestorClient interface {
 	// AttestedUpTo returns the highest L2 block the attestor has independently
 	// confirmed for srcChain. includeProvisional accepts Safe-but-not-yet-finalized
 	// roots (false = finalized only). found is false before the first attestation.
 	AttestedUpTo(ctx context.Context, srcChain string, includeProvisional bool) (*attestorpb.AttestedRoot, bool, error)
 	// AttestedRootAtOrBelow returns the best attested root at or below l2BlockNumber —
-	// the canonical commitment for a target height (e.g. the OP game_index the header
-	// builder proves). found is false when nothing qualifies at or below the bound.
+	// the canonical commitment for a target height. found is false when nothing
+	// qualifies at or below the bound.
 	AttestedRootAtOrBelow(ctx context.Context, srcChain string, l2BlockNumber uint64, includeProvisional bool) (*attestorpb.AttestedRoot, bool, error)
+	// VerifyStateRoot asks the attestor whether stateRoot and blockHash are what its
+	// replica has at l2BlockNumber under runMode. valid is false when the replica
+	// disagrees; err is reserved for transport and request failures, so a false valid
+	// is a real divergence and not a degraded answer.
+	//
+	// Note the request carries no src_chain (the attestor's own RPC does not take
+	// one), so a multi-chain attestor daemon cannot be disambiguated here. One
+	// attestor process per chain is the deployment this assumes.
+	VerifyStateRoot(ctx context.Context, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (bool, error)
 }

@@ -12,7 +12,9 @@ import (
 	"relayer/chain/l2rollup"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
 // Client adapts the generated AttestorServiceClient to l2rollup.AttestorClient.
@@ -71,4 +73,27 @@ func (c *Client) AttestedRootAtOrBelow(ctx context.Context, srcChain string, l2B
 		return nil, false, fmt.Errorf("attestorgrpc: AttestedRootAtOrBelow(%s, %d) found=true but root is nil", srcChain, l2BlockNumber)
 	}
 	return resp.GetRoot(), true, nil
+}
+
+// VerifyStateRoot compares one block identity against the attestor's replica.
+//
+// Only the Arbitrum attestor serves this RPC today; the OP-Stack one (which also
+// backs Base) embeds UnimplementedAttestorServiceServer and answers Unimplemented.
+// That is reported as ErrVerifyStateRootUnsupported so the caller can tell "this
+// attestor cannot answer" apart from "this attestor says no" — the two must not
+// collapse, because the first is a missing feature and the second is a divergence.
+func (c *Client) VerifyStateRoot(ctx context.Context, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (bool, error) {
+	resp, err := c.rpc.VerifyStateRoot(ctx, &attestorpb.VerifyStateRootRequest{
+		BlockNumber:       l2BlockNumber,
+		ExpectedStateRoot: stateRoot,
+		ExpectedBlockHash: blockHash,
+		RunMode:           runMode,
+	})
+	if err != nil {
+		if status.Code(err) == codes.Unimplemented {
+			return false, fmt.Errorf("%w: %v", l2rollup.ErrVerifyStateRootUnsupported, err)
+		}
+		return false, fmt.Errorf("attestorgrpc: VerifyStateRoot(%d): %w", l2BlockNumber, err)
+	}
+	return resp.GetValid(), nil
 }

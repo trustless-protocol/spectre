@@ -7,7 +7,6 @@ import (
 	"math/big"
 	"os"
 
-	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
@@ -23,9 +22,7 @@ const flagL2Config = "l2-config"
 // `create-clients-cosmos --l2-config <file>` (repeatable, one per L2 source). It is
 // kept separate from the modules[] schema, which the config-schema follow-up will
 // restructure. Cosmos connection details come from the main --config (cosmos_to_eth);
-// this file only carries the L2-specific deployment identity. The L1 client id inside
-// rollup_profile.common.ethereum_client is filled in by create-clients-cosmos (from
-// the L1 client it just created), so it may be left empty here.
+// this file only carries the L2-specific deployment identity.
 type l2ClientConfig struct {
 	// WasmChecksum is the hex checksum of the L2 client's wasm code, already
 	// governance-stored on Cosmos.
@@ -34,14 +31,9 @@ type l2ClientConfig struct {
 	L2RPCURL string `json:"l2_rpc_url"`
 	// RollupProfile is the full ICS-08 verifier Profile JSON (the `common` block +
 	// the rollup-specific finality fields), embedded verbatim as ClientState.profile.
-	// The L2 router address, commitment slot, L1 client id/checksum, and chain ids
-	// all live inside it (profile.common.*), so they are not repeated here.
+	// The L2 router address, commitment slot, and chain ids all live inside it
+	// (profile.common.*), so they are not repeated here.
 	RollupProfile json.RawMessage `json:"rollup_profile"`
-	// FinalityPolicy configures which of Unsafe, Safe, or Finalized updates may be
-	// stored and used for membership. Empty uses the on-chain client defaults.
-	FinalityPolicy json.RawMessage `json:"finality_policy"`
-	// FreshnessPolicy configures optional finalized-update freshness limits.
-	FreshnessPolicy json.RawMessage `json:"freshness_policy"`
 	// BootstrapBlock is the L2 block to bootstrap from; 0 (or absent) = latest.
 	BootstrapBlock uint64 `json:"bootstrap_block"`
 	// CounterpartyClientID is the L2-side client (on the rollup's ICS26Router) that
@@ -88,27 +80,10 @@ func (c *l2ClientConfig) validate() error {
 	if len(c.RollupProfile) == 0 {
 		return fmt.Errorf("l2-config: rollup_profile is required")
 	}
-	if _, err := servicesPolicyJSON("finality_policy", c.FinalityPolicy); err != nil {
-		return err
-	}
-	if _, err := servicesPolicyJSON("freshness_policy", c.FreshnessPolicy); err != nil {
-		return err
-	}
 	if _, err := c.routerAddress(); err != nil {
 		return err
 	}
 	return nil
-}
-
-func servicesPolicyJSON(name string, value json.RawMessage) (json.RawMessage, error) {
-	if len(value) == 0 {
-		return nil, nil
-	}
-	var object map[string]json.RawMessage
-	if err := json.Unmarshal(value, &object); err != nil || object == nil {
-		return nil, fmt.Errorf("l2-config: %s must be a JSON object", name)
-	}
-	return value, nil
 }
 
 func loadL2ClientConfig(path string) (*l2ClientConfig, error) {
@@ -126,55 +101,18 @@ func loadL2ClientConfig(path string) (*l2ClientConfig, error) {
 	return &cfg, nil
 }
 
-// injectL1ClientID sets rollup_profile.common.ethereum_client.client_id to the L1
-// (Ethereum) wasm client id that create-clients-cosmos just created on Cosmos. The
-// L2 client is anchored to that L1 client (validated by the wasm client at update
-// time), and its id is only known after MsgCreateClient lands — so we inject it
-// rather than making the operator hand-copy it. Other profile fields are preserved
-// verbatim (the profile is otherwise opaque, rollup-specific config).
-func injectL1ClientID(profile json.RawMessage, l1ClientID string) (json.RawMessage, error) {
-	var root map[string]json.RawMessage
-	if err := json.Unmarshal(profile, &root); err != nil {
-		return nil, fmt.Errorf("parse rollup_profile: %w", err)
-	}
-	commonRaw, ok := root["common"]
-	if !ok {
-		return nil, fmt.Errorf("rollup_profile.common is missing")
-	}
-	var common map[string]json.RawMessage
-	if err := json.Unmarshal(commonRaw, &common); err != nil {
-		return nil, fmt.Errorf("parse rollup_profile.common: %w", err)
-	}
-	ethRaw, ok := common["ethereum_client"]
-	if !ok {
-		return nil, fmt.Errorf("rollup_profile.common.ethereum_client is missing")
-	}
-	var eth map[string]json.RawMessage
-	if err := json.Unmarshal(ethRaw, &eth); err != nil {
-		return nil, fmt.Errorf("parse rollup_profile.common.ethereum_client: %w", err)
-	}
-	idBz, err := json.Marshal(l1ClientID)
-	if err != nil {
-		return nil, err
-	}
-	eth["client_id"] = idBz
-	if common["ethereum_client"], err = json.Marshal(eth); err != nil {
-		return nil, err
-	}
-	if root["common"], err = json.Marshal(common); err != nil {
-		return nil, err
-	}
-	return json.Marshal(root)
-}
-
 // runCreateClientsL2 bootstraps one L2 rollup wasm light client on Cosmos: it reads
 // the initial state roots from the L2 chain, wraps them in the ICS-08 client state
 // (ClientState<Profile>) + consensus state, and submits MsgCreateClient. The
 // initial consensus state (state roots read here) is the client's trust anchor at
-// creation; ongoing updates are verified trustlessly by the wasm client against the
-// pinned L1 (Ethereum) client + rollup proofs. l1ClientID (when non-empty) is
-// injected into the rollup profile's ethereum_client.client_id.
-func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfig, l1ClientID string) (string, error) {
+// creation; ongoing updates are verified by the wasm client against the header and
+// router proof carried in each ClientMessage.
+//
+// The profile is submitted verbatim. Earlier revisions anchored every L2 client to an
+// Ethereum client on Cosmos and injected that id here; the attestor-trusted profile has
+// no ethereum_client member at all, so there is nothing left to inject and no L1 client
+// this command needs to exist.
+func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfig) (string, error) {
 	// Cosmos context (MsgCreateClient is submitted to Cosmos).
 	ctx, cosmosClient, err := buildCreateClientsContext(logger, cfg, "")
 	if err != nil {
@@ -215,21 +153,10 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 	logger.Sugar().Infof("create-clients-cosmos[l2]: bootstrap at L2 block %d (state_root=%s router_storage_root=%s ts=%d)",
 		bootstrap.Height, bootstrap.StateRoot.Hex(), bootstrap.RouterStorageRoot.Hex(), bootstrap.TimestampSeconds)
 
-	profile := l2cfg.RollupProfile
-	if l1ClientID != "" {
-		profile, err = injectL1ClientID(profile, l1ClientID)
-		if err != nil {
-			return "", fmt.Errorf("inject L1 client id: %w", err)
-		}
-		logger.Sugar().Infof("create-clients-cosmos[l2]: anchored to L1 client id %s (injected into rollup_profile.common.ethereum_client)", l1ClientID)
-	}
-
 	worker := services.NewWorker(&transaction.Handler{}, nil)
 	clientID, err := worker.CreateL2Client(context.Background(), ctx, services.L2ClientParams{
 		WasmChecksum:         l2cfg.WasmChecksum,
-		RollupProfile:        profile,
-		FinalityPolicy:       l2cfg.FinalityPolicy,
-		FreshnessPolicy:      l2cfg.FreshnessPolicy,
+		RollupProfile:        l2cfg.RollupProfile,
 		Bootstrap:            bootstrap,
 		CounterpartyClientID: l2cfg.CounterpartyClientID,
 	})
@@ -239,32 +166,4 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 	logger.Sugar().Infof("create-clients-cosmos[l2]: created L2 wasm client on Cosmos: clientID=%s", clientID)
 	fmt.Println(clientID)
 	return clientID, nil
-}
-
-// verifyEthClientExists confirms --l1-client-id names a real, usable Ethereum light
-// client on Cosmos before any L2 client is anchored to it.
-//
-// The anchor is baked into the L2 client's state at creation and cannot be changed
-// afterwards, so a typo here is not recoverable by editing config: the contract would
-// query a client that does not exist and every update would fail with the redacted
-// "IBC host query failed: codespace: undefined, code: 1". Reading the client state
-// once here turns that into a clear message before anything is created.
-func verifyEthClientExists(cfg *appConfig, l1ClientID string) error {
-	cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
-	if err != nil {
-		return fmt.Errorf("create Cosmos rpc client: %w", err)
-	}
-	if err := cosmosClient.Start(); err != nil {
-		return fmt.Errorf("start Cosmos rpc client: %w", err)
-	}
-	defer func() { _ = cosmosClient.Stop() }()
-
-	state, err := relayerclient.GetEthereumClientState(cosmosClient, l1ClientID)
-	if err != nil {
-		return fmt.Errorf("--l1-client-id %q is not a readable Ethereum light client on Cosmos: %w", l1ClientID, err)
-	}
-	if state.LatestSlot == 0 {
-		return fmt.Errorf("--l1-client-id %q has no trusted slot; it is not an initialised Ethereum client", l1ClientID)
-	}
-	return nil
 }
