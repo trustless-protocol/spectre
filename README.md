@@ -613,6 +613,39 @@ works at all, and both fail silently — nothing errors, the direction just neve
   the frontier waiting on games, which are posted long after the L2 block they commit, and the
   return direction simply idles for hours.
 
+#### Return-direction latency is set by the attestor, not the prover
+
+The forward leg costs a Groth16 proof; the return leg costs a wait. Measured on a
+Cosmos↔OP Sepolia round trip against an external replica:
+
+| step | time |
+|---|---|
+| prover loads `bin/n4/pk.bin` (162 MB, once per process) | 17 s |
+| Groth16 proof, 604 761 constraints, CPU | 4.3 s |
+| forward leg lands on the L2 (`updateApplicationState` + `recvPacket`) | ~3 s |
+| **ack waits for the attestor frontier to reach its block** | **4 min 12 s** |
+
+The wait is `DERIVED_GAP_BLOCKS`: the attestor publishes one derived root per gap, and
+`RelayableHeight` follows that frontier, so a packet written just after an attestation
+waits nearly a full gap. At the default 150 blocks that is ~5 minutes on a 2 s chain.
+
+The local devnet handoffs (`run_optimism_node.sh`, `run_base_node.sh`) export
+`DERIVED_GAP_BLOCKS=5`, so a devnet return leg is seconds. **An attestor attached to an
+external replica does not inherit that** — it takes the script default of 150. Pass the
+knob explicitly for an E2E:
+
+```bash
+DERIVED_GAP_BLOCKS=10 OP_NODE_RPC_URL=... ./scripts/local/run_op_attestor.sh
+```
+
+Lower is not free: each derived root is an attestation, and at `unsafe`/`safe` heads
+they stay provisional until the finalized head catches up, so the provisional backlog
+grows as the gap shrinks.
+
+While a packet waits, the relayer logs one `waiting: N packet(s) not yet relayable` line
+per batch period — ~100 identical lines across a default-gap wait. That is expected, not
+a stall; `source relayable height` climbing is the thing to watch.
+
 #### Sending back (L2 → Cosmos)
 
 The forward transfer above mints a wrapped token on the L2. Sending it back is a

@@ -302,10 +302,16 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 		provable = append(provable, e)
 		provableIdx = append(provableIdx, i)
 	}
-	// Surface the wait so the finality/AppHash lag is visible. This runs at the
-	// waiting-backoff cadence (the source re-queues these with a growing delay), so
-	// it is informative, not spammy — and relayable moving up shows the source's
-	// finalized/committed head advancing toward the packet.
+	// Surface the wait so the finality/AppHash lag is visible: relayable moving up
+	// shows the source's head advancing toward the packet.
+	//
+	// This fires once per flush — i.e. every batch period, not on any backoff. The
+	// re-queue path above attaches no delay, and the exponential backoff nearby is
+	// the periodic-update *failure* backoff, a different mechanism. A normal wait on
+	// an L2 whose attestor gap is 150 blocks is ~5 minutes, which at a 3s batch
+	// period is ~100 identical lines (measured: 67 lines over 4m12s on OP Sepolia).
+	// Worth rate-limiting or logging only on change if this ever drowns out
+	// something that matters.
 	if len(requeue) > 0 {
 		log.Printf("[relay %s] waiting: %d packet(s) not yet relayable (highest pending height=%d, source relayable height=%d)",
 			m.name, len(requeue), pendingMax, relayable)

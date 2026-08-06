@@ -31,8 +31,11 @@ const (
 const (
 	defaultPollInterval      = 30 * time.Second
 	defaultBootstrapLookback = 7200 // L1 blocks (~24h at 12s)
-	defaultDerivedGapBlocks  = 150  // L2 blocks (~5 min at 2s) between derived attestations
-	defaultMaxDerivedRoots   = 1000 // confirmed derived roots kept in the feed
+	// defaultDerivedGapBlocks is the minimum L2-block gap between derived
+	// attestations — ~5 min at 2s blocks. It is also the floor on how long a
+	// packet waits to be relayable, since RelayableHeight follows this frontier.
+	defaultDerivedGapBlocks = 150
+	defaultMaxDerivedRoots  = 1000 // confirmed derived roots kept in the feed
 )
 
 // Config configures one OP Stack source attestor.

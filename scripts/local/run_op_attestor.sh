@@ -25,8 +25,15 @@
 #   ATTESTATION_HEAD (finalized)    finalized | safe | unsafe
 #   METRICS_PORT (3000)  GRPC_PORT (3001)  OP_NODE_RPC_PORT (9545)  AUTHRPC_PORT (8551)
 #   POLL_INTERVAL_SECONDS (30)  LOOKBACK_BLOCKS (600)
-#   DERIVED_GAP_BLOCKS (150)        min L2-block gap between derived attestations;
-#       lower = fresher feed, larger provisional backlog at safe/unsafe heads
+#   DERIVED_GAP_BLOCKS (150)        min L2-block gap between derived attestations.
+#       THIS SETS THE FLOOR ON RETURN-DIRECTION LATENCY. The relayer cannot relay a
+#       packet until the attestor frontier reaches its block, and the frontier only
+#       advances one derived root per gap — so 150 blocks is ~5 min at 2s, and an
+#       ack written just after an attestation waits nearly that long. Lower = fresher
+#       feed and a faster return leg, at the cost of more attestations and a larger
+#       provisional backlog at safe/unsafe heads. The local devnet handoffs set 5;
+#       10 is a reasonable floor for an E2E against an external replica, which does
+#       NOT inherit the devnet value.
 #   DISABLE_DERIVED_ROOTS (false)   attest only DisputeGameFactory games when
 #       true. The attestor-trusted L2 client verifies no settlement object, so the
 #       relayer's header builder no longer needs a game-backed root and derived

@@ -34,6 +34,10 @@
 #       covers — assertions-only leaves the frontier hours behind for no gain.
 #       Matches the OP attestor default.
 #   DERIVED_ATTESTATION_GAP_BLOCKS (150)
+#       Minimum L2-block gap between derived attestations, and therefore the floor
+#       on return-direction latency: a packet waits until the frontier reaches its
+#       block, and the frontier moves one derived root per gap. Lower it for a
+#       devnet or an E2E; see run_op_attestor.sh for the same knob on OP.
 #   MAX_DERIVED_ROOTS (1000)
 #   ASSERTION_POLL_INTERVAL (2s)
 #   ASSERTION_MAX_BLOCK_RANGE (2000)
