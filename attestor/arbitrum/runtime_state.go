@@ -30,7 +30,7 @@ var (
 	ErrCommitmentNotReady = errors.New("Nitro commitment is not ready")
 
 	// ErrCommitmentMismatch means the assertion's block is not canonical in
-	// the independently derived Nitro view.
+	// the configured Nitro view.
 	ErrCommitmentMismatch = errors.New("Nitro commitment does not match")
 )
 
@@ -139,8 +139,8 @@ type RuntimeState struct {
 	hasLastFinalizedCheck bool
 }
 
-// NewRuntimeState constructs an empty tracker backed by the attestor-owned
-// Nitro reader.
+// NewRuntimeState constructs an empty tracker backed by the configured Nitro
+// RPC endpoint.
 func NewRuntimeState(reader NitroHeaderReader) (*RuntimeState, error) {
 	if reader == nil {
 		return nil, errors.New("Nitro header reader must not be nil")
@@ -310,7 +310,9 @@ func isNitroBlockNotFound(err error) bool {
 
 // Refresh records all newly crossed unsafe and safe heights and compares every
 // newly finalized commitment with the first roots observed at those levels.
-// The returned checks are suitable for logging now and alerting later.
+// The initial refresh records only the current heads; it does not perform a
+// historical gap backfill against the public RPC. The returned checks are
+// suitable for logging now and alerting later.
 func (s *RuntimeState) Refresh(ctx context.Context) ([]FinalizedConsistency, error) {
 	if s == nil || s.reader == nil {
 		return nil, errors.New("runtime state is not initialized")
@@ -350,20 +352,26 @@ func (s *RuntimeState) Refresh(ctx context.Context) ([]FinalizedConsistency, err
 	}
 	s.mu.RUnlock()
 
-	unsafeFrom := nextHeight(heads[RunModeFinalized].BlockNumber)
-	safeFrom := unsafeFrom
+	unsafeObservations := []BlockCommitment{heads[RunModeUnsafe]}
+	safeObservations := []BlockCommitment{heads[RunModeSafe]}
+	var err error
 	if initialized {
-		unsafeFrom = nextHeight(previousHeads[RunModeUnsafe].BlockNumber)
-		safeFrom = nextHeight(previousHeads[RunModeSafe].BlockNumber)
-	}
-
-	unsafeObservations, err := s.commitmentRange(ctx, unsafeFrom, heads[RunModeUnsafe])
-	if err != nil {
-		return nil, fmt.Errorf("record unsafe commitments: %w", err)
-	}
-	safeObservations, err := s.commitmentRange(ctx, safeFrom, heads[RunModeSafe])
-	if err != nil {
-		return nil, fmt.Errorf("record safe commitments: %w", err)
+		unsafeObservations, err = s.commitmentRange(
+			ctx,
+			nextHeight(previousHeads[RunModeUnsafe].BlockNumber),
+			heads[RunModeUnsafe],
+		)
+		if err != nil {
+			return nil, fmt.Errorf("record unsafe commitments: %w", err)
+		}
+		safeObservations, err = s.commitmentRange(
+			ctx,
+			nextHeight(previousHeads[RunModeSafe].BlockNumber),
+			heads[RunModeSafe],
+		)
+		if err != nil {
+			return nil, fmt.Errorf("record safe commitments: %w", err)
+		}
 	}
 
 	var newlyFinalized []BlockCommitment

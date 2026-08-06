@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math/big"
 	"net"
 	"os"
 	"os/signal"
@@ -40,24 +41,30 @@ func main() {
 	}
 }
 
-func runAttestor(ctx context.Context, configPath string) (runErr error) {
+func runAttestor(ctx context.Context, configPath string) error {
 	config, err := arbitrum.LoadDaemonConfig(configPath)
 	if err != nil {
 		return err
 	}
-	nitroConfig, err := config.NitroProcessConfig()
-	if err != nil {
-		return fmt.Errorf("load managed Nitro process config: %w", err)
-	}
-	nitroProcess, err := arbitrum.StartManagedNitro(ctx, nitroConfig, os.Stdout, os.Stderr)
-	if err != nil {
-		return fmt.Errorf("start managed Nitro process: %w", err)
-	}
-	defer func() {
-		runErr = errors.Join(runErr, nitroProcess.Close())
-	}()
 
-	nitroClient := ethclient.NewClient(nitroProcess.RPC())
+	nitroClient, err := ethclient.DialContext(ctx, config.NitroRPCURL)
+	if err != nil {
+		return fmt.Errorf("connect to Nitro RPC: %w", err)
+	}
+	defer nitroClient.Close()
+	if err := validateNitroChainID(ctx, nitroClient, config.L2ChainID, "RPC"); err != nil {
+		return err
+	}
+
+	nitroWSClient, err := ethclient.DialContext(ctx, config.NitroWSURL)
+	if err != nil {
+		return fmt.Errorf("connect to Nitro WebSocket: %w", err)
+	}
+	defer nitroWSClient.Close()
+	if err := validateNitroChainID(ctx, nitroWSClient, config.L2ChainID, "WebSocket"); err != nil {
+		return err
+	}
+
 	runtimeState, err := arbitrum.NewRuntimeState(nitroClient)
 	if err != nil {
 		return fmt.Errorf("initialize Nitro runtime state: %w", err)
@@ -66,8 +73,6 @@ func runAttestor(ctx context.Context, configPath string) (runErr error) {
 	if err != nil {
 		return fmt.Errorf("load runtime poll interval: %w", err)
 	}
-	go monitorRuntimeState(ctx, runtimeState, nitroClient, runtimePollInterval)
-
 	l1Client, err := ethclient.DialContext(ctx, config.L1RPCURL)
 	if err != nil {
 		return fmt.Errorf("connect to Ethereum L1 RPC: %w", err)
@@ -111,15 +116,41 @@ func runAttestor(ctx context.Context, configPath string) (runErr error) {
 	if err := attestedRootStore.Save(); err != nil {
 		return fmt.Errorf("persist attested-root source identity: %w", err)
 	}
-	if err := assertionLoop.SyncOnce(ctx); err != nil {
-		return fmt.Errorf("perform initial assertion attestation: %w", err)
+	attestationHead, err := config.NormalizedAttestationHead()
+	if err != nil {
+		return fmt.Errorf("load attestation head: %w", err)
 	}
+	derivedAttestor, err := arbitrum.NewDerivedRootAttestor(
+		runtimeState,
+		attestedRootStore,
+		arbitrum.DerivedAttestorConfig{
+			AttestationHead: attestationHead,
+			Disabled:        config.DisableDerivedRoots,
+			GapBlocks:       config.DerivedAttestationGap(),
+			MaxRoots:        config.DerivedRootLimit(),
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("initialize Arbitrum derived-root attestor: %w", err)
+	}
+	go monitorRuntimeState(
+		ctx,
+		runtimeAndDerivedRefresher{runtime: runtimeState, derived: derivedAttestor},
+		nitroWSClient,
+		runtimePollInterval,
+	)
+	// Assertion backfill can be large when using a rate-limited public L1 RPC.
+	// Start it in the retrying background loop so a transient log-query failure
+	// does not prevent the gRPC service from becoming available.
 	go assertionLoop.Run(ctx)
 
-	grpcService, err := attestorserver.NewAttestorServerWithRuntimeAndFeeds(
+	grpcService, err := attestorserver.NewAttestorServerWithRuntimeFeedsAndHeads(
 		runtimeState,
 		map[string]attestorserver.AttestedRootReader{
 			config.SrcChain: attestedRootStore,
+		},
+		map[string]arbitrum.RunMode{
+			config.SrcChain: attestationHead,
 		},
 	)
 	if err != nil {
@@ -139,8 +170,33 @@ func runAttestor(ctx context.Context, configPath string) (runErr error) {
 	healthv1.RegisterHealthServer(grpcServer, healthServer)
 
 	log.Printf("attestor gRPC listening at %s", listener.Addr())
-	if err := serveWithManagedNitro(ctx, grpcServer, listener, nitroProcess); err != nil {
+	if err := serveAttestor(ctx, grpcServer, listener); err != nil {
 		return fmt.Errorf("serve attestor gRPC: %w", err)
+	}
+	return nil
+}
+
+type chainIDReader interface {
+	ChainID(context.Context) (*big.Int, error)
+}
+
+func validateNitroChainID(
+	ctx context.Context,
+	client chainIDReader,
+	expected uint64,
+	transport string,
+) error {
+	observed, err := client.ChainID(ctx)
+	if err != nil {
+		return fmt.Errorf("query Nitro %s chain ID: %w", transport, err)
+	}
+	if observed == nil || !observed.IsUint64() || observed.Uint64() != expected {
+		return fmt.Errorf(
+			"Nitro %s chain ID is %v, expected %d",
+			transport,
+			observed,
+			expected,
+		)
 	}
 	return nil
 }
@@ -172,6 +228,28 @@ func assertionSourceIdentity(config arbitrum.DaemonConfig) string {
 
 type runtimeStateRefresher interface {
 	Refresh(context.Context) ([]arbitrum.FinalizedConsistency, error)
+}
+
+type derivedRootSyncer interface {
+	SyncOnce(context.Context) error
+}
+
+type runtimeAndDerivedRefresher struct {
+	runtime runtimeStateRefresher
+	derived derivedRootSyncer
+}
+
+func (r runtimeAndDerivedRefresher) Refresh(
+	ctx context.Context,
+) ([]arbitrum.FinalizedConsistency, error) {
+	checks, err := r.runtime.Refresh(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.derived.SyncOnce(ctx); err != nil {
+		return nil, err
+	}
+	return checks, nil
 }
 
 type nitroHeadSubscriber interface {
@@ -341,16 +419,10 @@ func waitForRetry(ctx context.Context, interval time.Duration) bool {
 	}
 }
 
-type nitroProcessMonitor interface {
-	Done() <-chan struct{}
-	Err() error
-}
-
-func serveWithManagedNitro(
+func serveAttestor(
 	ctx context.Context,
 	server *grpc.Server,
 	listener net.Listener,
-	nitro nitroProcessMonitor,
 ) error {
 	serveDone := make(chan error, 1)
 	go func() {
@@ -363,13 +435,6 @@ func serveWithManagedNitro(
 			return nil
 		}
 		return err
-	case <-nitro.Done():
-		server.Stop()
-		<-serveDone
-		if err := nitro.Err(); err != nil {
-			return fmt.Errorf("managed Nitro process exited: %w", err)
-		}
-		return errors.New("managed Nitro process exited unexpectedly")
 	case <-ctx.Done():
 		gracefulStop(server, grpcGracefulStopPeriod)
 		<-serveDone

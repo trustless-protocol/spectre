@@ -82,6 +82,9 @@ func TestAttestedFrontierRPCs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create feed: %v", err)
 	}
+	if _, err := runtime.Refresh(context.Background()); err != nil {
+		t.Fatalf("refresh runtime: %v", err)
+	}
 	for _, item := range []struct {
 		height      uint64
 		id          byte
@@ -111,9 +114,10 @@ func TestAttestedFrontierRPCs(t *testing.T) {
 			t.Fatalf("record attestation: %v", err)
 		}
 	}
-	service, err := NewAttestorServerWithRuntimeAndFeeds(
+	service, err := NewAttestorServerWithRuntimeFeedsAndHeads(
 		runtime,
 		map[string]AttestedRootReader{"arbitrum-one": store},
+		map[string]arbitrum.RunMode{"arbitrum-one": arbitrum.RunModeUnsafe},
 	)
 	if err != nil {
 		t.Fatalf("create service: %v", err)
@@ -123,17 +127,16 @@ func TestAttestedFrontierRPCs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query info: %v", err)
 	}
-	if len(info.GetChains()) != 1 {
-		t.Fatalf("info response: %+v", info)
-	}
-	chain := info.GetChains()[0]
-	if chain.GetSrcChain() != "arbitrum-one" ||
-		chain.GetAttestedUpTo().GetL2BlockNumber() != 90 ||
-		chain.GetAttestedUpToProvisional().GetL2BlockNumber() != 100 {
-		t.Fatalf("info chain: %+v", chain)
-	}
-	if chain.GetAttestationHead() != "" {
-		t.Fatalf("attestation_head = %q, want unset", chain.GetAttestationHead())
+	if len(info.GetChains()) != 1 ||
+		info.GetChains()[0].GetSrcChain() != "arbitrum-one" ||
+		info.GetChains()[0].GetAttestationHead() != "unsafe" ||
+		!info.GetChains()[0].GetReplicaSeen() ||
+		info.GetChains()[0].GetReplicaUnsafeL2() != 1 ||
+		info.GetChains()[0].GetReplicaSafeL2() != 1 ||
+		info.GetChains()[0].GetReplicaFinalizedL2() != 1 ||
+		info.GetChains()[0].GetAttestedUpTo().GetL2BlockNumber() != 90 ||
+		info.GetChains()[0].GetAttestedUpToProvisional().GetL2BlockNumber() != 100 {
+		t.Fatalf("info: %+v", info)
 	}
 
 	confirmed, err := service.AttestedUpTo(
@@ -143,7 +146,8 @@ func TestAttestedFrontierRPCs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query confirmed frontier: %v", err)
 	}
-	if !confirmed.GetFound() || confirmed.GetRoot().GetL2BlockNumber() != 90 {
+	if !confirmed.GetFound() || confirmed.GetRoot().GetL2BlockNumber() != 90 ||
+		confirmed.GetRoot().GetProvisional() {
 		t.Fatalf("confirmed frontier: %+v", confirmed)
 	}
 
@@ -204,6 +208,11 @@ func TestAttestedFrontierRejectsUnknownSourceChain(t *testing.T) {
 }
 
 func TestAttestedRootProtoUsesExclusiveProvenance(t *testing.T) {
+	derived := attestedRootToProto(arbitrum.AttestedRoot{Source: arbitrum.SourceDerived})
+	if derived.GetProvenance() != nil {
+		t.Fatalf("derived root unexpectedly has provenance: %T", derived.GetProvenance())
+	}
+
 	game := attestedRootToProto(arbitrum.AttestedRoot{
 		Source:    arbitrum.SourceGame,
 		GameIndex: 0,

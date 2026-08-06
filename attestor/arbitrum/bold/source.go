@@ -1,5 +1,5 @@
-// Package arbitrum ingests BoLD assertions from RollupCore and verifies their
-// committed L2 blocks against the attestor-owned Nitro replica.
+// Package bold ingests BoLD assertions from RollupCore and checks their
+// committed L2 blocks against the configured Nitro RPC endpoint.
 package bold
 
 import (

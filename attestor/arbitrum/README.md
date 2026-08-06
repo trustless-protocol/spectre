@@ -1,26 +1,49 @@
 # Arbitrum Attestor
 
-The attestor is a standalone gRPC backend for the relayer. It launches a pinned
-Nitro binary, keeps Nitro's chain database on persistent storage, ingests
-Arbitrum assertions from finalized Ethereum L1 blocks, and independently checks
-each BoLD v2 assertion's L2 block against Nitro over private IPC.
+The attestor is a standalone gRPC backend for the relayer. Like the OP
+attestor, it publishes a proposal-independent root from a configured Nitro
+`unsafe`, `safe`, or `finalized` head. It also ingests BoLD v2 Arbitrum
+assertions from finalized Ethereum L1 blocks and checks each assertion's L2
+block against configured Nitro HTTP and WebSocket endpoints. It never starts,
+supervises, or stops a Nitro process.
 
-Nitro performs execution and owns all chain state. The attestor stores only its
-RollupCore log cursor, unresolved assertions, verified frontier entries, and
-mismatch records; it does not maintain a second execution database.
+The configured Nitro endpoint performs execution and owns all chain state. The
+attestor stores only its RollupCore log cursor, unresolved assertions, verified
+frontier entries, and mismatch records; it does not maintain an execution
+database.
+
+## Trust boundary
+
+For `source="assertion"` entries, the attested root comes from the assertion
+read out of `RollupCore` on Ethereum L1. Nitro supplies the runtime head and
+canonical-block view used to decide when that assertion can enter or advance in
+the feed. The attestor re-reads assertion status at finalized L1 during
+reconciliation and removes an entry that is no longer supported there.
+Consequently, an untrusted Nitro endpoint cannot fabricate an assertion-backed
+root; it can delay, suppress, or reject an otherwise valid assertion by
+misreporting its head or canonical view, which is a liveness failure rather
+than a new L1 commitment.
+
+`source="derived"` is deliberately different and mirrors OP's configured-head
+feed: its root is read directly from Nitro. `attestation_head="unsafe"` trusts
+the configured endpoint immediately; `safe` and `finalized` select Nitro's
+corresponding L1-derived heads. Set `disable_derived_roots=true` when the feed
+must contain only RollupCore-backed assertions.
+
+The L2 client does not see this distinction. It accepts one header shape — the
+canonical L2 execution header plus the router account proof — and verifies no
+settlement object, so `source` and `attestation_head` govern only what this
+daemon puts in the feed, not what the client will admit. This daemon does not
+authenticate the eventual `MsgUpdateClient` submitter either; see
+`docs/L2_CLIENTS.md` for what that leaves open.
 
 ## Prerequisites
 
-For a native run, download a trusted Nitro release or build Nitro from source
-before starting the attestor and set `nitro_binary_path` to that executable.
-The Docker launcher instead builds on the pinned official
-`offchainlabs/nitro-node:v3.11.2-3599aca` image, including its Nitro binary and
-validation-machine files.
-
-Nitro also needs its normal chain configuration, including the chain ID, parent
-chain RPC and beacon endpoints, sequencer feed, and first-start snapshot or
-genesis settings. The example passes `--conf.file=./nitro.json`; provide that
-file or replace `nitro_arguments` with the required Nitro flags.
+Provide an Ethereum L1 RPC and Nitro endpoints for the target Arbitrum chain.
+The Nitro HTTP endpoint must support `eth_getBlockByNumber` with `latest`,
+`safe`, and `finalized` tags. The WebSocket endpoint must support
+`eth_subscribe("newHeads")`. Both endpoints are checked against `l2_chain_id`
+at startup.
 
 Copy `config.example.json` to `config.json` and configure:
 
@@ -28,7 +51,18 @@ Copy `config.example.json` to `config.json` and configure:
   because the server does not provide TLS or authentication.
 - `runtime_poll_interval`: fallback reconciliation interval for Nitro's unsafe,
   safe, and finalized L2 commitments. New unsafe heads normally trigger
-  immediate reconciliation through the private IPC subscription.
+  immediate reconciliation through the WebSocket subscription.
+- `attestation_head`: Nitro head used for proposal-independent attestations.
+  `unsafe` trusts the configured Nitro node and does not wait for an L1
+  assertion; `safe` uses Nitro's L1-posted view; `finalized` uses Nitro's
+  L1-finalized view. The default is `finalized` when omitted.
+- `disable_derived_roots`: disables proposal-independent roots while retaining
+  BoLD assertion verification and finalized rechecks of existing derived
+  entries.
+- `derived_attestation_gap_blocks`: minimum L2 block gap between derived feed
+  entries. Omitting it uses the conservative default `150`.
+- `max_derived_roots`: maximum confirmed derived entries retained. Provisional
+  derived entries and assertion-backed entries are never pruned.
 - `src_chain`: source-chain key used by relayer requests.
 - `l1_rpc_url`: Ethereum execution RPC used for finalized RollupCore logs and
   assertion status reads. The endpoint must support the `finalized` block tag.
@@ -45,18 +79,9 @@ Copy `config.example.json` to `config.json` and configure:
   cadence and maximum inclusive block count per log query.
 - `attestor_state_path`: durable JSON state for the assertion cursor and
   verified feed.
-- `nitro_binary_path`: previously downloaded or built Nitro executable.
-- `nitro_data_dir`: durable Nitro chain database directory.
-- `nitro_ipc_path`: temporary private IPC socket used by the attestor.
-- `nitro_arguments`: Nitro network, feed, snapshot, and RPC configuration.
-
-The attestor creates `nitro_data_dir` when needed and always appends
-`--persistent.chain=<nitro_data_dir>` when launching Nitro. It never removes
-that directory during shutdown. Do not add `--persistent.chain` or `--ipc.path`
-to `nitro_arguments`; those paths are owned by the attestor.
-
-For production sizing, snapshot initialization, pruning, and archive retention,
-follow the [official Nitro node documentation](https://docs.arbitrum.io/run-arbitrum-node/run-full-node).
+- `nitro_rpc_url`: Nitro HTTP/HTTPS endpoint used for chain state, block
+  lookups, and unsafe/safe/finalized head reads.
+- `nitro_ws_url`: Nitro WS/WSS endpoint used for `newHeads` notifications.
 
 ## Shared local L1 and Nitro devnet
 
@@ -81,22 +106,21 @@ sequencer/batch-poster/staker without creating another L1.
 
 `run_arbitrum_node.sh` drives that package, waits for shared-L1 finality,
 validates the configured BoLD storage layout against a finalized assertion
-when one is available, and writes the published endpoints, chain IDs,
-RollupCore metadata, Nitro image pin, and self-contained sequencer config to
+when one is available, and writes the published endpoints, chain IDs, and
+RollupCore metadata to
 `.arbitrum-devnet-run/attestor.env`.
 
 `run_arbitrum_attestor.sh` automatically sources that handoff, builds the
-attestor image from the same official Nitro release, and starts an independent
-non-sequencing Nitro replica plus the gRPC attestor. Its runtime files live in
-`.arbitrum-attestor-run/`; its chain database lives in the persistent
-`fast-ibc-arbitrum-attestor-nitro` Docker volume. The devnet sequencer and
-verifier replica therefore never share an L2 database.
+attestor image, and connects it to the Nitro HTTP and WebSocket endpoints
+published by Kurtosis. Its runtime files live in `.arbitrum-attestor-run/`;
+assertion state lives in the persistent
+`fast-ibc-arbitrum-attestor-data` Docker volume.
 
 The resulting local flow matches OP:
 
 ```text
 run_*_stack.sh    -> .*-devnet-run/attestor.env
-run_*_attestor.sh -> independent verifier replica + attestor gRPC on :3001
+run_*_attestor.sh -> external rollup-node endpoint + attestor gRPC on :3001
 ```
 
 Stopping Arbitrum leaves Ethereum and OP running:
@@ -128,9 +152,9 @@ used by the OP external-L1 configuration; none of those keys are suitable for
 public networks.
 
 To stop only the attestor, press Ctrl-C in its terminal. This removes its
-container but preserves the verifier database volume. To discard that
-database, remove the volume explicitly after confirming it is no longer
-needed. The attestor reaches Kurtosis' published L1 and sequencer endpoints
+container but preserves the assertion-state volume. To discard that state,
+remove the volume explicitly after confirming it is no longer needed. The
+attestor reaches Kurtosis' published L1 and Nitro endpoints
 through `host.docker.internal`; it does not need to join Kurtosis' internal
 Docker network.
 
@@ -162,46 +186,28 @@ The underlying Cobra command is:
 ./bin/attestor start --config ./config.json
 ```
 
-The launcher calculates the configured Nitro binary's SHA-256, atomically
-writes it to `nitro_binary_sha256` for native runs, builds the attestor, and
-starts it. The Docker entrypoint injects the hash recorded in its image without
-modifying the host configuration. The
-attestor verifies the binary again before launching Nitro. `jq` and either
-`sha256sum` or `shasum` must be installed.
-
-Nitro is stopped gracefully when the attestor exits. Only the IPC socket is
-removed; the chain database remains in `nitro_data_dir` for the next startup.
+The native launcher builds the attestor and starts it with the selected
+configuration. It does not download, launch, or stop Nitro.
 
 ## Run in Docker
 
-Keep `config.json`, `nitro.json`, and any other files referenced by relative
-Nitro arguments in the same configuration directory, then run:
+Keep `config.json` in a directory mounted into the container, then run:
 
 ```sh
 ./scripts/start-attestor-docker.sh ./config.json
 ```
 
-The script pulls the official multi-platform Nitro base image while building
-the attestor image. The image retains Nitro's validation-machine directories
-and injects the official `--validation.wasm.allowed-wasm-module-roots` setting
-when it is absent from `nitro_arguments`. The build records the bundled Nitro
-binary's SHA-256; the container entrypoint verifies it again and renders an
-internal configuration without modifying the host file.
-
-Nitro data and `attested-roots.json` are persisted in the
-`fast-ibc-nitro-data` Docker volume. The attestor gRPC service is published at
-`127.0.0.1:50051` by default; Nitro RPC remains private inside the container.
-The L1 endpoint and all endpoints in `nitro_arguments`, including parent-chain
-and beacon URLs, must be reachable from inside the container.
+The image contains only the attestor. `attested-roots.json` is persisted in the
+`fast-ibc-attestor-data` Docker volume. The attestor gRPC service is published
+at `127.0.0.1:50051` by default. The configured L1 and Nitro endpoints must be
+reachable from inside the container.
 
 The launcher can be customized with:
 
 - `ATTESTOR_DOCKER_IMAGE`: image name.
-- `ATTESTOR_NITRO_IMAGE`: official Nitro base image; defaults to the pinned
-  `offchainlabs/nitro-node:v3.11.2-3599aca` release.
 - `ATTESTOR_CONTAINER_NAME`: container name.
 - `ATTESTOR_GRPC_PUBLISH`: host gRPC publish address.
-- `ATTESTOR_NITRO_VOLUME`: persistent Nitro volume name.
+- `ATTESTOR_STATE_VOLUME`: persistent attestor-state volume name.
 
 ## gRPC API
 
@@ -223,13 +229,20 @@ bound so the relayer's header builder can resolve the assertion provenance for
 a target height. A response with `found=false` means the attestor has not
 accepted a qualifying assertion yet.
 
-For Arbitrum, an `AttestedRoot` has `source="assertion"` and `root` equal to the
-Nitro L2 state root, with the BoLD assertion identifier in `assertion_hash`. A
-pending assertion enters the feed as `provisional=true` only after its block is
-canonical under Nitro's safe head. It becomes non-provisional only after
-RollupCore reports it confirmed in finalized L1 state and the same block is
-canonical under Nitro's finalized head. Rejected, challenged, or locally
-mismatched assertions are never returned.
+For Arbitrum, `root` is the Nitro L2 state root. A proposal-independent entry
+has `source="derived"` and no provenance object. When `attestation_head` is
+`unsafe` or `safe`, it is provisional until Nitro's finalized head reaches the
+same height. The attestor then recomputes the commitment, confirms it on a
+match, or replaces it with the finalized block hash/state root and emits a
+`HEAD DIVERGENCE` log on a mismatch.
+
+An assertion-backed entry has `source="assertion"` and carries its BoLD
+identifier in `assertion_hash`. A pending assertion enters the feed as
+`provisional=true` only after its block is canonical under Nitro's safe head.
+It becomes non-provisional only after RollupCore reports it confirmed in
+finalized L1 state and the same block is canonical under Nitro's finalized
+head. Rejected, challenged, or locally mismatched assertions are never
+returned.
 
 The chain-specific provenance is a protobuf `oneof`: OP entries carry
 `game_index`, Arbitrum entries carry `assertion_hash`, and derived entries may
@@ -253,10 +266,11 @@ The service supports all three modes concurrently and rejects an unspecified
 mode or a requested block above the selected head.
 
 In the background, the attestor subscribes to Nitro's `newHeads` stream over
-the existing private IPC connection. Each unsafe-head event triggers a refresh
-of the unsafe, safe, and finalized tags. The attestor reconnects and
-reconciles after a subscription failure, and retains `runtime_poll_interval` as
-a fallback because safe or finalized can advance without a new unsafe block.
+the configured WebSocket endpoint. Each unsafe-head event triggers a refresh
+of the unsafe, safe, and finalized tags followed by a derived-root attestation
+pass. The attestor reconnects and reconciles after a subscription failure, and
+retains `runtime_poll_interval` as a fallback because safe or finalized can
+advance without a new unsafe block.
 
 The attestor records the first unsafe and safe root observed at each height
 until it finalizes. When Nitro advances the finalized head, the runtime compares
@@ -265,6 +279,14 @@ result. This in-memory result is intended as the source for future alerting;
 Nitro remains the persistent owner of chain state.
 
 The standard gRPC health service is also registered for readiness checks.
+
+The relayer builds the same header at every head kind: the canonical Nitro L2
+header at the target height plus the router account proof. It never proves a
+RollupCore assertion — the client verifies none — so this feed bounds the relay
+on two axes instead. `AttestedUpTo` bounds how far it may advance, and
+`VerifyStateRoot` answers whether the block it is about to package is the one
+this daemon's Nitro connection holds at that height, at the run mode matching
+the configured head kind.
 
 ## Assertion feed flow
 

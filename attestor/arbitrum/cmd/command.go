@@ -34,7 +34,7 @@ func newStartCommand(run startRunner) *cobra.Command {
 	configPath := defaultConfigPath
 	command := &cobra.Command{
 		Use:   "start",
-		Short: "Start the managed Nitro node and attestor gRPC server",
+		Short: "Start the Arbitrum attestor gRPC server",
 		Args:  cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
 			return run(command.Context(), configPath)

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"net"
+	"math/big"
 	"strings"
 	"sync"
 	"testing"
@@ -197,29 +197,40 @@ func TestMonitorRuntimeStatePeriodicallyReconcilesWithoutHeads(t *testing.T) {
 	}
 }
 
-func TestServeWithManagedNitroStopsWhenNitroExits(t *testing.T) {
+func TestServeAttestorStopsOnContextCancellation(t *testing.T) {
 	listener := bufconn.Listen(1024)
 	server := grpc.NewServer()
-	done := make(chan struct{})
-	close(done)
-	nitro := testNitroMonitor{done: done, err: errors.New("exit status 17")}
-
-	err := serveWithManagedNitro(context.Background(), server, listener, nitro)
-	if err == nil || !strings.Contains(err.Error(), "exit status 17") {
-		t.Fatalf("managed Nitro exit error: got %v", err)
-	}
-}
-
-func TestServeWithManagedNitroStopsOnContextCancellation(t *testing.T) {
-	listener := bufconn.Listen(1024)
-	server := grpc.NewServer()
-	nitroDone := make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := serveWithManagedNitro(ctx, server, listener, testNitroMonitor{done: nitroDone})
+	err := serveAttestor(ctx, server, listener)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("context cancellation: got %v", err)
+	}
+}
+
+func TestValidateNitroChainID(t *testing.T) {
+	if err := validateNitroChainID(
+		context.Background(),
+		chainIDReaderFunc(func(context.Context) (*big.Int, error) {
+			return big.NewInt(421614), nil
+		}),
+		421614,
+		"RPC",
+	); err != nil {
+		t.Fatalf("validate matching chain ID: %v", err)
+	}
+
+	err := validateNitroChainID(
+		context.Background(),
+		chainIDReaderFunc(func(context.Context) (*big.Int, error) {
+			return big.NewInt(42161), nil
+		}),
+		421614,
+		"WebSocket",
+	)
+	if err == nil || !strings.Contains(err.Error(), "expected 421614") {
+		t.Fatalf("validate mismatched chain ID: got %v", err)
 	}
 }
 
@@ -235,13 +246,11 @@ func TestGracefulStopReturns(t *testing.T) {
 	}
 }
 
-type testNitroMonitor struct {
-	done <-chan struct{}
-	err  error
-}
+type chainIDReaderFunc func(context.Context) (*big.Int, error)
 
-func (m testNitroMonitor) Done() <-chan struct{} { return m.done }
-func (m testNitroMonitor) Err() error            { return m.err }
+func (f chainIDReaderFunc) ChainID(ctx context.Context) (*big.Int, error) {
+	return f(ctx)
+}
 
 type testRuntimeRefresher struct {
 	calls chan struct{}
@@ -320,5 +329,3 @@ func waitForRefreshes(t *testing.T, calls <-chan struct{}, count int) {
 		}
 	}
 }
-
-var _ net.Listener = (*bufconn.Listener)(nil)

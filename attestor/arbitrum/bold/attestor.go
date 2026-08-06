@@ -17,8 +17,8 @@ const (
 	defaultMaxL1BlockRange       = uint64(2_000)
 )
 
-// CommitmentResolver proves whether an assertion's L2 block hash is canonical
-// in the independently derived Nitro view.
+// CommitmentResolver checks whether an assertion's L2 block hash is canonical
+// in the configured Nitro view.
 type CommitmentResolver interface {
 	ResolveCanonicalBlockHash(
 		context.Context,
@@ -33,8 +33,8 @@ type AssertionAttestorConfig struct {
 	MaxL1BlockRange uint64
 }
 
-// AssertionAttestor turns finalized-L1 RollupCore events into a locally
-// verified commitment feed.
+// AssertionAttestor turns finalized-L1 RollupCore events into a Nitro-checked
+// commitment feed.
 type AssertionAttestor struct {
 	source  AssertionSource
 	runtime CommitmentResolver

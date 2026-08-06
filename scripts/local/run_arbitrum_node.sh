@@ -502,14 +502,11 @@ ENV_FILE=$RUN_DIR/attestor.env
     printf 'export L2_RPC_URL=%q\n' "$L2_RPC_URL"
     printf 'export L2_WS_URL=%q\n' "$L2_WS_URL"
     printf 'export L2_CHAIN_ID=%q\n' "$OBSERVED_L2_CHAIN_ID"
-    printf 'export NITRO_FEED_URL=%q\n' "$NITRO_FEED_URL"
     printf 'export ROLLUP_CORE_ADDRESS=%q\n' "$ROLLUP_CORE_ADDRESS"
     printf 'export ROLLUP_DEPLOYMENT_BLOCK=%q\n' "$ROLLUP_DEPLOYMENT_BLOCK"
     printf 'export ASSERTIONS_MAPPING_SLOT=%q\n' "$ASSERTIONS_MAPPING_SLOT"
     printf 'export ASSERTION_STATUS_OFFSET=%q\n' "$ASSERTION_STATUS_OFFSET"
     printf 'export SRC_CHAIN=%q\n' arbdev
-    printf 'export ATTESTOR_NITRO_IMAGE=%q\n' "$NITRO_IMAGE"
-    printf 'export NITRO_SEQUENCER_CONFIG=%q\n' "$SEQUENCER_CONFIG"
 } >"$ENV_FILE"
 chmod 600 "$ENV_FILE"
 

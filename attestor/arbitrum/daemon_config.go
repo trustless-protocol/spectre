@@ -1,7 +1,6 @@
 package arbitrum
 
 import (
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -18,29 +17,27 @@ import (
 )
 
 // DaemonConfig contains the gRPC listener, finalized-L1 RollupCore source, and
-// managed Nitro process settings.
+// external Nitro RPC endpoints.
 type DaemonConfig struct {
-	GRPCListenAddress      string   `json:"grpc_listen_address"`
-	RuntimePollInterval    string   `json:"runtime_poll_interval"`
-	SrcChain               string   `json:"src_chain"`
-	L1RPCURL               string   `json:"l1_rpc_url"`
-	L1ChainID              uint64   `json:"l1_chain_id"`
-	L2ChainID              uint64   `json:"l2_chain_id"`
-	RollupCoreAddress      string   `json:"rollup_core_address"`
-	AssertionsMappingSlot  string   `json:"assertions_mapping_slot"`
-	AssertionStatusOffset  uint8    `json:"assertion_status_offset"`
-	AssertionStartBlock    uint64   `json:"assertion_start_block"`
-	AssertionPollInterval  string   `json:"assertion_poll_interval"`
-	AssertionMaxBlockRange uint64   `json:"assertion_max_block_range"`
-	AttestorStatePath      string   `json:"attestor_state_path"`
-	NitroBinaryPath        string   `json:"nitro_binary_path"`
-	NitroBinarySHA256      string   `json:"nitro_binary_sha256"`
-	NitroArguments         []string `json:"nitro_arguments"`
-	NitroWorkDir           string   `json:"nitro_work_dir"`
-	NitroDataDir           string   `json:"nitro_data_dir"`
-	NitroIPCPath           string   `json:"nitro_ipc_path"`
-	NitroStartupTimeout    string   `json:"nitro_startup_timeout"`
-	NitroShutdownTimeout   string   `json:"nitro_shutdown_timeout"`
+	GRPCListenAddress      string  `json:"grpc_listen_address"`
+	RuntimePollInterval    string  `json:"runtime_poll_interval"`
+	AttestationHead        RunMode `json:"attestation_head"`
+	DisableDerivedRoots    bool    `json:"disable_derived_roots"`
+	DerivedGapBlocks       uint64  `json:"derived_attestation_gap_blocks"`
+	MaxDerivedRoots        uint64  `json:"max_derived_roots"`
+	SrcChain               string  `json:"src_chain"`
+	L1RPCURL               string  `json:"l1_rpc_url"`
+	L1ChainID              uint64  `json:"l1_chain_id"`
+	L2ChainID              uint64  `json:"l2_chain_id"`
+	RollupCoreAddress      string  `json:"rollup_core_address"`
+	AssertionsMappingSlot  string  `json:"assertions_mapping_slot"`
+	AssertionStatusOffset  uint8   `json:"assertion_status_offset"`
+	AssertionStartBlock    uint64  `json:"assertion_start_block"`
+	AssertionPollInterval  string  `json:"assertion_poll_interval"`
+	AssertionMaxBlockRange uint64  `json:"assertion_max_block_range"`
+	AttestorStatePath      string  `json:"attestor_state_path"`
+	NitroRPCURL            string  `json:"nitro_rpc_url"`
+	NitroWSURL             string  `json:"nitro_ws_url"`
 }
 
 // LoadDaemonConfig reads, validates, and resolves filesystem paths relative to
@@ -61,24 +58,44 @@ func LoadDaemonConfig(path string) (DaemonConfig, error) {
 	if err := json.Unmarshal(data, &config); err != nil {
 		return DaemonConfig{}, fmt.Errorf("decode attestor config %q: %w", absolutePath, err)
 	}
+	if err := rejectManagedNitroFields(data); err != nil {
+		return DaemonConfig{}, fmt.Errorf("decode attestor config %q: %w", absolutePath, err)
+	}
 
 	base := filepath.Dir(absolutePath)
-	config.NitroBinaryPath = resolveCommandPath(base, config.NitroBinaryPath)
-	config.NitroDataDir = resolveConfigPath(base, config.NitroDataDir)
-	config.NitroIPCPath = resolveConfigPath(base, config.NitroIPCPath)
 	config.AttestorStatePath = resolveConfigPath(base, config.AttestorStatePath)
-	if config.NitroWorkDir == "" {
-		config.NitroWorkDir = base
-	} else {
-		config.NitroWorkDir = resolveConfigPath(base, config.NitroWorkDir)
-	}
 	if err := config.Validate(); err != nil {
 		return DaemonConfig{}, fmt.Errorf("validate attestor config %q: %w", absolutePath, err)
 	}
 	return config, nil
 }
 
-// Validate checks the gRPC listener and managed Nitro process settings.
+func rejectManagedNitroFields(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	for _, field := range []string{
+		"nitro_binary_path",
+		"nitro_binary_sha256",
+		"nitro_arguments",
+		"nitro_work_dir",
+		"nitro_data_dir",
+		"nitro_ipc_path",
+		"nitro_startup_timeout",
+		"nitro_shutdown_timeout",
+	} {
+		if _, found := fields[field]; found {
+			return fmt.Errorf(
+				"%s is no longer supported; run Nitro separately and configure nitro_rpc_url and nitro_ws_url",
+				field,
+			)
+		}
+	}
+	return nil
+}
+
+// Validate checks the gRPC listener and external RPC settings.
 func (c DaemonConfig) Validate() error {
 	if err := validateListenAddress(c.GRPCListenAddress); err != nil {
 		return err
@@ -86,10 +103,13 @@ func (c DaemonConfig) Validate() error {
 	if _, err := c.RuntimePollDuration(); err != nil {
 		return err
 	}
+	if _, err := c.NormalizedAttestationHead(); err != nil {
+		return err
+	}
 	if c.SrcChain == "" {
 		return errors.New("src_chain is required")
 	}
-	if err := validateRPCURL(c.L1RPCURL, "l1_rpc_url"); err != nil {
+	if err := validateRPCURL(c.L1RPCURL, "l1_rpc_url", "http", "https", "ws", "wss"); err != nil {
 		return err
 	}
 	if c.L1ChainID == 0 {
@@ -117,36 +137,47 @@ func (c DaemonConfig) Validate() error {
 	if c.AttestorStatePath == "" || !filepath.IsAbs(c.AttestorStatePath) {
 		return errors.New("attestor_state_path must resolve to an absolute path")
 	}
-	if c.NitroBinaryPath == "" {
-		return errors.New("nitro_binary_path is required")
-	}
-	if _, err := c.binaryDigest(); err != nil {
+	if err := validateRPCURL(c.NitroRPCURL, "nitro_rpc_url", "http", "https"); err != nil {
 		return err
 	}
-	if c.NitroWorkDir == "" {
-		return errors.New("nitro_work_dir is required")
-	}
-	if c.NitroDataDir == "" || !filepath.IsAbs(c.NitroDataDir) {
-		return errors.New("nitro_data_dir must resolve to an absolute path")
-	}
-	if c.NitroIPCPath == "" || !filepath.IsAbs(c.NitroIPCPath) {
-		return errors.New("nitro_ipc_path must resolve to an absolute path")
-	}
-	for _, argument := range c.NitroArguments {
-		switch {
-		case ownsNitroArgument(argument, "--ipc.path"):
-			return errors.New("nitro_arguments must not set --ipc.path; the attestor owns the IPC endpoint")
-		case ownsNitroArgument(argument, "--persistent.chain"):
-			return errors.New("nitro_arguments must not set --persistent.chain; use nitro_data_dir")
-		}
-	}
-	if _, err := parsePositiveDuration(c.NitroStartupTimeout, "nitro_startup_timeout"); err != nil {
-		return err
-	}
-	if _, err := parsePositiveDuration(c.NitroShutdownTimeout, "nitro_shutdown_timeout"); err != nil {
+	if err := validateRPCURL(c.NitroWSURL, "nitro_ws_url", "ws", "wss"); err != nil {
 		return err
 	}
 	return nil
+}
+
+// NormalizedAttestationHead returns the Nitro head used for self-derived
+// attestations. The conservative default mirrors the OP attestor.
+func (c DaemonConfig) NormalizedAttestationHead() (RunMode, error) {
+	if c.AttestationHead == "" {
+		return RunModeFinalized, nil
+	}
+	mode, err := c.AttestationHead.Normalize()
+	if err != nil {
+		return "", fmt.Errorf("attestation_head: %w", err)
+	}
+	return mode, nil
+}
+
+// DerivedAttestationGap returns the minimum L2 block distance between
+// self-derived feed entries.
+func (c DaemonConfig) DerivedAttestationGap() uint64 {
+	const defaultDerivedGapBlocks = uint64(150)
+	if c.DerivedGapBlocks == 0 {
+		return defaultDerivedGapBlocks
+	}
+	return c.DerivedGapBlocks
+}
+
+// DerivedRootLimit returns the maximum number of confirmed derived entries
+// retained in the feed. Assertion-backed entries and provisional derived
+// entries are never pruned.
+func (c DaemonConfig) DerivedRootLimit() uint64 {
+	const defaultMaxDerivedRoots = uint64(1_000)
+	if c.MaxDerivedRoots == 0 {
+		return defaultMaxDerivedRoots
+	}
+	return c.MaxDerivedRoots
 }
 
 // RuntimePollDuration returns the fallback interval for reconciling Nitro's
@@ -180,36 +211,6 @@ func (c DaemonConfig) AssertionBlockRange() uint64 {
 	return c.AssertionMaxBlockRange
 }
 
-// NitroProcessConfig returns the validated child-process settings. The
-// attestor injects both --persistent.chain and --ipc.path.
-func (c DaemonConfig) NitroProcessConfig() (NitroProcessConfig, error) {
-	if err := c.Validate(); err != nil {
-		return NitroProcessConfig{}, err
-	}
-	digest, err := c.binaryDigest()
-	if err != nil {
-		return NitroProcessConfig{}, err
-	}
-	startupTimeout, err := parsePositiveDuration(c.NitroStartupTimeout, "nitro_startup_timeout")
-	if err != nil {
-		return NitroProcessConfig{}, err
-	}
-	shutdownTimeout, err := parsePositiveDuration(c.NitroShutdownTimeout, "nitro_shutdown_timeout")
-	if err != nil {
-		return NitroProcessConfig{}, err
-	}
-	return NitroProcessConfig{
-		BinaryPath:      c.NitroBinaryPath,
-		BinarySHA256:    digest,
-		Arguments:       append([]string(nil), c.NitroArguments...),
-		WorkDir:         c.NitroWorkDir,
-		DataDir:         c.NitroDataDir,
-		IPCPath:         c.NitroIPCPath,
-		StartupTimeout:  startupTimeout,
-		ShutdownTimeout: shutdownTimeout,
-	}, nil
-}
-
 func validateListenAddress(address string) error {
 	if address == "" {
 		return errors.New("grpc_listen_address is required")
@@ -225,7 +226,7 @@ func validateListenAddress(address string) error {
 	return nil
 }
 
-func validateRPCURL(raw, field string) error {
+func validateRPCURL(raw, field string, allowedSchemes ...string) error {
 	if raw == "" {
 		return fmt.Errorf("%s is required", field)
 	}
@@ -233,10 +234,15 @@ func validateRPCURL(raw, field string) error {
 	if err != nil {
 		return fmt.Errorf("parse %s: %w", field, err)
 	}
-	switch parsed.Scheme {
-	case "http", "https", "ws", "wss":
-	default:
-		return fmt.Errorf("%s must use http, https, ws, or wss", field)
+	allowed := false
+	for _, scheme := range allowedSchemes {
+		if parsed.Scheme == scheme {
+			allowed = true
+			break
+		}
+	}
+	if !allowed {
+		return fmt.Errorf("%s must use %s", field, strings.Join(allowedSchemes, " or "))
 	}
 	if parsed.Host == "" {
 		return fmt.Errorf("%s must include a host", field)
@@ -263,28 +269,6 @@ func decodeHash32(raw, field string) (common.Hash, error) {
 	return value, nil
 }
 
-func ownsNitroArgument(argument, name string) bool {
-	return argument == name || strings.HasPrefix(argument, name+"=")
-}
-
-func (c DaemonConfig) binaryDigest() ([sha256.Size]byte, error) {
-	var digest [sha256.Size]byte
-	encoded := strings.TrimPrefix(c.NitroBinarySHA256, "0x")
-	decoded, err := hex.DecodeString(encoded)
-	if err != nil {
-		return digest, fmt.Errorf("decode nitro_binary_sha256: %w", err)
-	}
-	if len(decoded) != len(digest) {
-		return digest, fmt.Errorf(
-			"nitro_binary_sha256 must contain exactly %d bytes, got %d",
-			len(digest),
-			len(decoded),
-		)
-	}
-	copy(digest[:], decoded)
-	return digest, nil
-}
-
 func parsePositiveDuration(raw, field string) (time.Duration, error) {
 	if raw == "" {
 		return 0, fmt.Errorf("%s is required", field)
@@ -301,13 +285,6 @@ func parsePositiveDuration(raw, field string) (time.Duration, error) {
 
 func resolveConfigPath(base, path string) string {
 	if path == "" || filepath.IsAbs(path) {
-		return path
-	}
-	return filepath.Clean(filepath.Join(base, path))
-}
-
-func resolveCommandPath(base, path string) string {
-	if path == "" || filepath.IsAbs(path) || !strings.ContainsRune(path, os.PathSeparator) {
 		return path
 	}
 	return filepath.Clean(filepath.Join(base, path))

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -18,13 +19,17 @@ const (
 	SourceGame = "game"
 
 	// SourceAssertion marks an Arbitrum commitment selected from a RollupCore
-	// assertion and independently checked against the local Nitro replica.
+	// assertion and checked against the configured Nitro RPC endpoint.
 	SourceAssertion = "assertion"
+
+	// SourceDerived marks a proposal-independent root read directly from the
+	// configured Nitro head.
+	SourceDerived = "derived"
 
 	attestedRootStateVersion = 1
 )
 
-// AttestedRoot is one independently verified commitment exposed to relayers.
+// AttestedRoot is one Nitro-checked commitment exposed to relayers.
 // Rollup-specific identifiers are kept beside the generic height/root fields so
 // the header builder can resolve the L1 object it must prove.
 type AttestedRoot struct {
@@ -45,7 +50,7 @@ type AttestedRoot struct {
 }
 
 // ProposedAssertion is a finalized-L1 BoLD AssertionCreated event waiting for
-// the local Nitro replica to reach and verify its committed L2 block.
+// the configured Nitro endpoint to reach and verify its committed L2 block.
 type ProposedAssertion struct {
 	AssertionHash    common.Hash `json:"assertion_hash"`
 	ParentHash       common.Hash `json:"parent_hash"`
@@ -56,7 +61,7 @@ type ProposedAssertion struct {
 }
 
 // AssertionMismatch is a terminal local verdict that an L1 assertion did not
-// match the canonical block independently derived by Nitro.
+// match the canonical block returned by Nitro.
 type AssertionMismatch struct {
 	AssertionHash common.Hash `json:"assertion_hash"`
 	L2BlockHash   common.Hash `json:"l2_block_hash"`
@@ -101,9 +106,10 @@ func (s *AttestedRootStore) BindSourceIdentity(identity string) error {
 // verified feed. Writers mutate it from the Arbitrum attestation loop; gRPC
 // readers use the RWMutex-protected frontier accessors.
 type AttestedRootStore struct {
-	mu    sync.RWMutex
-	path  string
-	state persistedAttestedRootState
+	mu     sync.RWMutex
+	saveMu sync.Mutex
+	path   string
+	state  persistedAttestedRootState
 }
 
 // NewAttestedRootStore constructs an in-memory feed, primarily for tests.
@@ -171,6 +177,8 @@ func (s *AttestedRootStore) Save() error {
 	if s == nil {
 		return errors.New("attested-root store is nil")
 	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
 	s.mu.RLock()
 	path := s.path
 	data, err := json.MarshalIndent(s.state, "", "  ")
@@ -216,6 +224,192 @@ func (s *AttestedRootStore) Save() error {
 		return fmt.Errorf("replace attested-root state: %w", err)
 	}
 	return nil
+}
+
+// AppendDerived records Nitro's own commitment at the configured attestation
+// head. At most one derived entry is retained for an L2 height.
+func (s *AttestedRootStore) AppendDerived(
+	commitment BlockCommitment,
+	now time.Time,
+	provisional bool,
+) error {
+	if commitment.BlockHash == (common.Hash{}) {
+		return errors.New("derived commitment block hash must not be zero")
+	}
+	if commitment.StateRoot == (common.Hash{}) {
+		return errors.New("derived commitment state root must not be zero")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.state.Attested {
+		entry := &s.state.Attested[index]
+		if entry.Source != SourceDerived || entry.L2BlockNumber != commitment.BlockNumber {
+			continue
+		}
+		if !entry.Provisional &&
+			(entry.Root != commitment.StateRoot || entry.L2BlockHash != commitment.BlockHash) {
+			return fmt.Errorf(
+				"finalized derived commitment at height %d changed",
+				commitment.BlockNumber,
+			)
+		}
+		entry.Root = commitment.StateRoot
+		entry.L2BlockHash = commitment.BlockHash
+		entry.AttestedAt = now.UTC()
+		entry.Provisional = provisional
+		return nil
+	}
+	s.state.Attested = append(s.state.Attested, AttestedRoot{
+		L2BlockNumber: commitment.BlockNumber,
+		Root:          commitment.StateRoot,
+		Source:        SourceDerived,
+		Provisional:   provisional,
+		AttestedAt:    now.UTC(),
+		L2BlockHash:   commitment.BlockHash,
+	})
+	return nil
+}
+
+// HighestDerivedBlock returns the highest L2 height with a derived entry,
+// including provisional entries.
+func (s *AttestedRootStore) HighestDerivedBlock() (uint64, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var best uint64
+	found := false
+	for _, entry := range s.state.Attested {
+		if entry.Source == SourceDerived && (!found || entry.L2BlockNumber > best) {
+			best = entry.L2BlockNumber
+			found = true
+		}
+	}
+	return best, found
+}
+
+// DerivedAt returns the derived entry at one exact L2 height.
+func (s *AttestedRootStore) DerivedAt(height uint64) (AttestedRoot, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, entry := range s.state.Attested {
+		if entry.Source == SourceDerived && entry.L2BlockNumber == height {
+			return entry, true
+		}
+	}
+	return AttestedRoot{}, false
+}
+
+// RemoveProvisionalDerivedAbove drops unsafe/safe entries invalidated when the
+// selected Nitro head regresses. Confirmed entries are never removed here.
+func (s *AttestedRootStore) RemoveProvisionalDerivedAbove(height uint64) []AttestedRoot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	kept := s.state.Attested[:0]
+	var removed []AttestedRoot
+	for _, entry := range s.state.Attested {
+		if entry.Source == SourceDerived && entry.Provisional && entry.L2BlockNumber > height {
+			removed = append(removed, entry)
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	s.state.Attested = kept
+	return removed
+}
+
+// RemoveProvisionalDerived drops one derived entry that can no longer be
+// rechecked through the configured Nitro endpoint. Confirmed entries are never
+// removed by this recovery path.
+func (s *AttestedRootStore) RemoveProvisionalDerived(height uint64) (AttestedRoot, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index, entry := range s.state.Attested {
+		if entry.Source != SourceDerived || !entry.Provisional || entry.L2BlockNumber != height {
+			continue
+		}
+		s.state.Attested = append(s.state.Attested[:index], s.state.Attested[index+1:]...)
+		return entry, true
+	}
+	return AttestedRoot{}, false
+}
+
+// DerivedProvisionalAtOrBelow returns the provisional derived entries now
+// covered by Nitro's finalized head, oldest first.
+func (s *AttestedRootStore) DerivedProvisionalAtOrBelow(finalized uint64) []AttestedRoot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	var entries []AttestedRoot
+	for _, entry := range s.state.Attested {
+		if entry.Source == SourceDerived && entry.Provisional && entry.L2BlockNumber <= finalized {
+			entries = append(entries, entry)
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].L2BlockNumber < entries[j].L2BlockNumber
+	})
+	return entries
+}
+
+// ConfirmDerived clears the provisional flag after the finalized Nitro view
+// agrees with the previously observed commitment.
+func (s *AttestedRootStore) ConfirmDerived(height uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.state.Attested {
+		entry := &s.state.Attested[index]
+		if entry.Source == SourceDerived && entry.L2BlockNumber == height && entry.Provisional {
+			entry.Provisional = false
+			return true
+		}
+	}
+	return false
+}
+
+// CorrectDerived replaces a provisional commitment with Nitro's authoritative
+// finalized commitment.
+func (s *AttestedRootStore) CorrectDerived(commitment BlockCommitment, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for index := range s.state.Attested {
+		entry := &s.state.Attested[index]
+		if entry.Source != SourceDerived || entry.L2BlockNumber != commitment.BlockNumber {
+			continue
+		}
+		entry.Root = commitment.StateRoot
+		entry.L2BlockHash = commitment.BlockHash
+		entry.AttestedAt = now.UTC()
+		entry.Provisional = false
+		return true
+	}
+	return false
+}
+
+// PruneDerived drops the oldest confirmed derived roots beyond max. It never
+// removes assertion-backed or provisional entries.
+func (s *AttestedRootStore) PruneDerived(max uint64) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var confirmed uint64
+	for _, entry := range s.state.Attested {
+		if entry.Source == SourceDerived && !entry.Provisional {
+			confirmed++
+		}
+	}
+	if confirmed <= max {
+		return 0
+	}
+	excess := confirmed - max
+	kept := s.state.Attested[:0]
+	var removed uint64
+	for _, entry := range s.state.Attested {
+		if removed < excess && entry.Source == SourceDerived && !entry.Provisional {
+			removed++
+			continue
+		}
+		kept = append(kept, entry)
+	}
+	s.state.Attested = kept
+	return removed
 }
 
 // SrcChain returns the immutable source-chain identifier.

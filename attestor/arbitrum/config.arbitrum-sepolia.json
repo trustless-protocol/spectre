@@ -1,6 +1,10 @@
 {
     "grpc_listen_address": "127.0.0.1:50051",
     "runtime_poll_interval": "15s",
+    "attestation_head": "finalized",
+    "disable_derived_roots": true,
+    "derived_attestation_gap_blocks": 150,
+    "max_derived_roots": 1000,
     "src_chain": "arbitrum-sepolia",
     "l1_rpc_url": "https://sepolia.drpc.org",
     "l1_chain_id": 11155111,
@@ -12,20 +16,6 @@
     "assertion_poll_interval": "12s",
     "assertion_max_block_range": 10000,
     "attestor_state_path": "./data/arbitrum-sepolia-attested-roots.json",
-    "nitro_binary_path": "./bin/nitro",
-    "nitro_binary_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-    "nitro_arguments": [
-        "--parent-chain.connection.url=https://ethereum-sepolia-rpc.publicnode.com",
-        "--parent-chain.blob-client.beacon-url=https://ethereum-sepolia-beacon-api.publicnode.com",
-        "--chain.id=421614",
-        "--init.latest=pruned",
-        "--http.api=net,web3,eth",
-        "--http.addr=127.0.0.1",
-        "--http.vhosts=localhost"
-    ],
-    "nitro_work_dir": ".",
-    "nitro_data_dir": "./data/arbitrum-sepolia-nitro-chain",
-    "nitro_ipc_path": "./data/arbitrum-sepolia-nitro.ipc",
-    "nitro_startup_timeout": "10m",
-    "nitro_shutdown_timeout": "30s"
+    "nitro_rpc_url": "https://arbitrum-sepolia-rpc.publicnode.com",
+    "nitro_ws_url": "wss://arbitrum-sepolia-rpc.publicnode.com"
 }

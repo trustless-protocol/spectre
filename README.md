@@ -603,34 +603,64 @@ expected and actual client ids), so set `counterparty_client_id` in the l2-confi
 `cosmos_wasm_client_id` by hand before `create-clients-eth`.
 
 Two more settings decide whether the **return** direction (acks, and packets sent from the L2)
-works at all — both are easy to leave at their placeholder and then see nothing happen:
+works at all, and both fail silently — nothing errors, the direction just never moves:
 
 - `l2_ics26_client_id` on the `l2_to_cosmos` module must be the client id the SpectreClient was
   added under on the L2 router. The L2 subscriber filters events by it, so a stale placeholder
   silently drops every `WriteAcknowledgement` the L2 emits.
-- The attestor must run with `disable_derived_roots: true`. The OP header builder can only prove
-  **game-backed** roots, while `RelayableHeight` follows the attestor's newest frontier — under
-  the low-latency profile that frontier is a self-derived root, and the two never agree
-  (`attested root at height N is source "derived", want game`, retried forever).
+- Leave the attestor's `disable_derived_roots` at its default (`false`). The header builder proves
+  no settlement object any more, so it accepts any attested root; turning derived roots off leaves
+  the frontier waiting on games, which are posted long after the L2 block they commit, and the
+  return direction simply idles for hours.
+
+#### Sending back (L2 → Cosmos)
+
+The forward transfer above mints a wrapped token on the L2. Sending it back is a
+contract call, not a CLI command — the relayer picks the packet up from the router
+event either way. Resolve the wrapper first: the denom is the full trace, so it
+carries the client the token arrived on, not just `stake`.
+
+```bash
+L2=<l2-rpc>
+WRAPPED=$(cast call <ICS20Transfer> "ibcERC20Contract(string)(address)" \
+  "transfer/<l2-client-id>/stake" --rpc-url $L2)
+
+cast send "$WRAPPED" "approve(address,uint256)" <ICS20Transfer> 1000 \
+  --private-key $ETH_PRIVATE_KEY --rpc-url $L2
+
+ABS_TIMEOUT=$(($(date +%s) + 2000))
+cast send <ICS20Transfer> \
+  "sendTransfer((address,uint256,string,string,string,uint64,string))" \
+  "($WRAPPED,1000,<cosmos1-receiver>,<l2-source-client-id>,transfer,$ABS_TIMEOUT,)" \
+  --private-key $ETH_PRIVATE_KEY --rpc-url $L2
+```
+
+The tuple is `SendTransferMsg` in field order (`contracts/msgs/IICS20TransferMsgs.sol`):
+denom, amount, receiver, sourceClient, destPort, timeoutTimestamp, memo.
+
+Two easy mistakes: `sourceClient` is the client id **on the L2 router** (the one the
+SpectreClient was added under), not the Cosmos-side client; and `timeoutTimestamp` is
+in **seconds**, the same unit trap `--absolute-timeouts` exists for on the Cosmos side.
+
+The leg is done when the ack is relayed back and the packet leaves the pending
+tracker (`[CosmosTimeoutScan] Checking 0 pending packets`) — a forward-only success
+proves half the system.
 
 ### Failure modes
 
 | Symptom | Cause |
 |---|---|
 | `beacon api unavailable at ...:59717` | The `eth-to-cosmos` module still has the example's beacon URL. Point `eth_beacon_api_url` at this run's `ETH_BEACON_API` (from `attestor.env`). |
-| `attested root at height N is source "derived", want game` | The OP header builder can only prove game-backed roots, but the attestor's frontier is a self-derived root. Set `disable_derived_roots: true` in the attestor config so its frontier is game-driven. |
-| `eth_getProof(<DisputeGameFactory>): historical state ... is not available` | The pinned Ethereum client on Cosmos has stopped advancing, so the builder keeps proving at one ageing L1 block (the error names the block and how far behind it is). `start` advances it on demand (`[UpdateEthClient]` / `[EthClientUpdate]` in the log) right before each header build; if the message persists, check those lines and confirm the client id there is the one the L2 client was created against. Widening the L1's state retention does not help — a game covering a recent L2 block does not exist at an old L1 block at all. |
 | `MsgStoreCode` fails: `reference-types not enabled` | The wasm was built with a plain `cargo build`. Build through `cosmwasm/optimizer` (`just build-cw-ics08-wasm-*`); a raw release build embeds features the CosmWasm VM rejects. |
 | Optimizer fails: `rustc 1.86.0 is not supported ... requires rustc 1.90` | A dependency raised its MSRV above the optimizer image's Rust. Pin the dependency down (e.g. `cargo update -p ruint --precise 1.17.0`) or bump the optimizer image. |
 | `MsgCreateClient`: `status Unknown: client state is not active` | 08-wasm Stargate allowlist is missing `ClientStatus` — see [docs/L2_CLIENTS.md](docs/L2_CLIENTS.md#host-requirements-and-verification). |
-| Every L2 client update fails: `IBC host query failed: codespace: undefined, code: 1` | The `l2_to_cosmos` module's `rollup_profile.common.ethereum_client.client_id` is not the client the L2 client was created against, so the contract looks for a consensus state at a slot only the *other* client has. `create-clients-cosmos` writes the id back and `start` now refuses to boot on a mismatch — see [docs/L2_CLIENTS.md](docs/L2_CLIENTS.md#host-requirements-and-verification). |
 | L2 client update panics the tx: `returning attributes from a contract is not allowed` | The deployed wasm predates the fix that made the client return data only. Rebuild through `cosmwasm/optimizer` and gov-store it. |
 | `updateApplicationState` reverts, ~82k gas, no revert string | The relayer's signer lacks the ICS26Router relayer role on the L2. `cast run <tx>` shows `canCall(...) → false`; funding the address does not help. |
 | Send fails: `timeout exceeds the maximum expected value` | Sent without `--absolute-timeouts`, so the CLI writes `timeout_timestamp` in nanoseconds while IBC v2 reads seconds. |
 | ETH client stops advancing: `404 NOT_FOUND: Sync committee for period N not found` | The beacon does not serve a `light_client/bootstrap` for that period. The relayer takes the committee from the preceding period's update instead, so this should only appear if that update is also unavailable — check the endpoint serves `/eth/v1/beacon/light_client/updates`. |
 | Ack fails: `unknown field account_proof, expected one of key, value, proof` | The L2 membership proof was built in the Ethereum L1 shape. The L2 client wants a bare `EvmStorageProof` — see [docs/L2_CLIENTS.md](docs/L2_CLIENTS.md). |
-| `attested game N is not visible at the pinned L1 block M yet` | Normal wait, not an error: the game is posted at the L1 head and becomes provable once its creation block finalizes (~2 epochs). |
-| `packet at height N not yet covered by the destination client (trusts M)` | Normal wait: the client landed on a game committing below the packet; the next game covers it. |
+| `packet at height N not yet covered by the destination client (trusts M)` | Normal wait: the attestor frontier has not reached the packet's block yet, so `RelayableHeight` is still below it. It clears on the next attestation; if it never does, the attestor is stuck — check its log rather than the relayer's. |
+| `the attestor does not recognise L2 block N ... as canonical` | The relayer's L2 RPC and the attestor's replica disagree at that height — a reorg past the frontier, or the two pointed at different chains. Not retried away: confirm both use the same L2. |
 | A direction goes silent — no error, no retry, other directions healthy | A hung RPC. `kill -QUIT <relayer-pid>` dumps every goroutine; look for one blocked in `net/http.(*persistConn).roundTrip`. Note the dump kills the process. |
 | Gov proposal ends `REJECTED` without votes | `wasm.sh` resolves the proposal id after a fixed `sleep`; if indexing is slower the id is empty and the vote step is skipped. Vote manually before the (short devnet) voting period ends. |
 | `forge script` fails `insufficient funds ... have 0` | The deployer has no balance on the L2 — use an L2-funded account (step 4). |
@@ -688,10 +718,9 @@ cd relayer && go build -o relayer ./cmd
 ./relayer start --config config.json
 ```
 
-Everything in the "Local Cosmos ↔ OP E2E" section about the attestor's
-`disable_derived_roots`, the ICS26Router relayer role, and `--absolute-timeouts` on
-the test transfer applies unchanged — Base uses the same attestor and the same L2
-contracts.
+Everything in the "Local Cosmos ↔ OP E2E" section about the ICS26Router relayer
+role and `--absolute-timeouts` on the test transfer applies unchanged — Base uses
+the same attestor and the same L2 contracts.
 
 Useful:
 

@@ -87,16 +87,18 @@ type Source struct {
 	cosmosWasmClientID string            // the Cosmos wasm client id paired with l2ClientID
 	router             ethcommon.Address // the L2 ICS26Router address (from rollup_profile.common.l2_router)
 
-	// attestor gates RelayableHeight on independent L1 re-derivation (#240). When
-	// nil, RelayableHeight falls back to the raw L2 head — the skip-finality interim
-	// (or an explicitly attestor-less deployment). srcChainID is the attestor's
-	// src_chain key (distinct from the on-L2 client id).
+	// attestor gates RelayableHeight on the chain-specific attestation policy.
+	// OP re-derives from L1; Arbitrum unsafe explicitly trusts the configured
+	// Nitro node. When nil, RelayableHeight falls back to the raw L2 head.
+	// srcChainID is the attestor's src_chain key (distinct from the on-L2
+	// client id).
 	attestor   AttestorClient
 	srcChainID string
 
 	// includeProvisional decides whether a verdict the attestor has not yet
-	// re-derived from FINALIZED L1 data may be relayed. It is a separate axis from
-	// headKind and must stay one: headKind selects which L2 head the source reads
+	// confirmed at its chain-specific irreversible frontier may be relayed. It
+	// is a separate axis from headKind and must stay one: headKind selects which
+	// L2 head the source reads
 	// (unsafe/safe/finalized), while provisional is about whether the attestor's
 	// own finality re-check has completed for that root. Deriving one from the other
 	// made "safe" silently imply "accept provisional", with no way to ask for safe
@@ -131,9 +133,10 @@ func (s *Source) Chain() chain.ChainType { return s.chainType }
 func (s *Source) LatestHeight(ctx context.Context) (uint64, error) { return s.head(ctx) }
 
 // RelayableHeight is the highest L2 height a packet may be proven at. With an
-// attestor it is the attestor's independently re-derived frontier (AttestedUpTo);
-// includeProvisional accepts the Safe-but-not-finalized head, so only Finalized
-// demands non-provisional roots. Without an attestor it degrades to the raw L2 head
+// attestor it is the attestor's policy-selected frontier (AttestedUpTo);
+// includeProvisional accepts the chain-specific provisional frontier. On Arbitrum
+// unsafe this explicitly means trusting the configured Nitro node before any L1
+// assertion exists. Without an attestor it degrades to the raw L2 head
 // (skip-finality). A not-yet-attested source returns 0 — nothing is relayable yet,
 // so the module waits rather than relaying an unverified height.
 func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {

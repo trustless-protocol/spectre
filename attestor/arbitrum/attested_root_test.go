@@ -96,6 +96,49 @@ func TestAttestedRootStoreRejectsIdentityMismatch(t *testing.T) {
 	}
 }
 
+func TestAttestedRootStoreDerivedLifecycle(t *testing.T) {
+	store, err := NewAttestedRootStore("arbitrum-one", 1)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	first := testStoreCommitment(100)
+	second := testStoreCommitment(200)
+	third := testStoreCommitment(300)
+	for _, commitment := range []BlockCommitment{first, second, third} {
+		if err := store.AppendDerived(commitment, now, commitment.BlockNumber != 100); err != nil {
+			t.Fatalf("append derived root: %v", err)
+		}
+	}
+
+	if height, found := store.HighestDerivedBlock(); !found || height != 300 {
+		t.Fatalf("highest derived block: found=%t height=%d", found, height)
+	}
+	if roots := store.DerivedProvisionalAtOrBelow(250); len(roots) != 1 || roots[0].L2BlockNumber != 200 {
+		t.Fatalf("derived recheck list: %+v", roots)
+	}
+	if !store.ConfirmDerived(200) {
+		t.Fatal("derived root was not confirmed")
+	}
+	corrected := third
+	corrected.StateRoot = common.HexToHash("0xcafe")
+	corrected.BlockHash = common.HexToHash("0xbeef")
+	if !store.CorrectDerived(corrected, now.Add(time.Second)) {
+		t.Fatal("derived root was not corrected")
+	}
+	root, found := store.HighestAttested(false)
+	if !found || root.L2BlockNumber != 300 || root.Root != corrected.StateRoot || root.L2BlockHash != corrected.BlockHash {
+		t.Fatalf("corrected derived frontier: found=%t root=%+v", found, root)
+	}
+	if removed := store.PruneDerived(2); removed != 1 {
+		t.Fatalf("pruned derived roots: got %d want 1", removed)
+	}
+	root, found = store.HighestAttestedAtOrBelow(100, false)
+	if found {
+		t.Fatalf("oldest derived root survived pruning: %+v", root)
+	}
+}
+
 func testStoreProposal(id byte, height uint64) ProposedAssertion {
 	return ProposedAssertion{
 		AssertionHash:    common.Hash{31: id},

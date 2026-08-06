@@ -1,6 +1,10 @@
 {
     "grpc_listen_address": "127.0.0.1:50051",
     "runtime_poll_interval": "15s",
+    "attestation_head": "finalized",
+    "disable_derived_roots": true,
+    "derived_attestation_gap_blocks": 150,
+    "max_derived_roots": 1000,
     "src_chain": "arbitrum-one",
     "l1_rpc_url": "https://REPLACE_WITH_ETHEREUM_EXECUTION_RPC",
     "l1_chain_id": 1,
@@ -12,14 +16,6 @@
     "assertion_poll_interval": "12s",
     "assertion_max_block_range": 2000,
     "attestor_state_path": "./data/attested-roots.json",
-    "nitro_binary_path": "./bin/nitro",
-    "nitro_binary_sha256": "REPLACE_WITH_THE_64_HEX_CHARACTER_SHA256_OF_BIN_NITRO",
-    "nitro_arguments": [
-        "--conf.file=./nitro.json"
-    ],
-    "nitro_work_dir": ".",
-    "nitro_data_dir": "./data/nitro-chain",
-    "nitro_ipc_path": "./data/nitro.ipc",
-    "nitro_startup_timeout": "2m",
-    "nitro_shutdown_timeout": "30s"
+    "nitro_rpc_url": "https://REPLACE_WITH_ARBITRUM_NITRO_RPC",
+    "nitro_ws_url": "wss://REPLACE_WITH_ARBITRUM_NITRO_WEBSOCKET"
 }

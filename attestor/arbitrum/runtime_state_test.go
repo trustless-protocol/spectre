@@ -56,8 +56,16 @@ func TestRuntimeStateTracksFinalizedConsistency(t *testing.T) {
 	if err != nil {
 		t.Fatalf("finalize height 2: %v", err)
 	}
-	if len(checks) != 1 || !checks[0].Consistent() {
-		t.Fatalf("height 2 consistency: %+v", checks)
+	// Startup records only the current unsafe and safe heads. Height 2 was the
+	// initial safe head but was already below the initial unsafe head, so its
+	// consistency result is intentionally incomplete instead of triggering a
+	// historical public-RPC backfill.
+	if len(checks) != 1 ||
+		checks[0].UnsafeObserved ||
+		!checks[0].SafeObserved ||
+		!checks[0].SafeMatches ||
+		checks[0].Consistent() {
+		t.Fatalf("height 2 bootstrap consistency: %+v", checks)
 	}
 
 	// Height 3 was first observed with root 0x03 while unsafe. Before it

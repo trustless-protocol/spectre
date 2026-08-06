@@ -6,16 +6,15 @@ usage() {
 	cat >&2 <<'EOF'
 Usage: start-attestor-docker.sh [CONFIG_PATH]
 
-Builds the attestor on a pinned official Nitro runtime image, then runs the
-attestor with Nitro as its managed child process.
+Builds and runs the attestor against the Nitro HTTP and WebSocket endpoints in
+CONFIG_PATH.
 
 Environment:
   ATTESTOR_DOCKER_IMAGE       Image name (default: fast-ibc-attestor:local).
-  ATTESTOR_NITRO_IMAGE        Official Nitro base image
-                              (default: offchainlabs/nitro-node:v3.11.2-3599aca).
   ATTESTOR_CONTAINER_NAME     Container name (default: fast-ibc-attestor).
   ATTESTOR_GRPC_PUBLISH       Host publish address (default: 127.0.0.1:50051).
-  ATTESTOR_NITRO_VOLUME       Persistent Nitro volume (default: fast-ibc-nitro-data).
+  ATTESTOR_STATE_VOLUME       Persistent attestor-state volume
+                              (default: fast-ibc-attestor-data).
 EOF
 }
 
@@ -44,14 +43,12 @@ command -v docker >/dev/null 2>&1 || fail "docker is required"
 config_dir="$(cd "$(dirname "$requested_config")" && pwd)"
 config_name="$(basename "$requested_config")"
 image="${ATTESTOR_DOCKER_IMAGE:-fast-ibc-attestor:local}"
-nitro_image="${ATTESTOR_NITRO_IMAGE:-offchainlabs/nitro-node:v3.11.2-3599aca}"
 container_name="${ATTESTOR_CONTAINER_NAME:-fast-ibc-attestor}"
 grpc_publish="${ATTESTOR_GRPC_PUBLISH:-127.0.0.1:50051}"
-nitro_volume="${ATTESTOR_NITRO_VOLUME:-fast-ibc-nitro-data}"
+state_volume="${ATTESTOR_STATE_VOLUME:-fast-ibc-attestor-data}"
 
-printf 'Building attestor image %s on Nitro image %s\n' "$image" "$nitro_image"
+printf 'Building attestor image %s\n' "$image"
 docker build \
-	--build-arg "NITRO_IMAGE=$nitro_image" \
 	--file "$attestor_dir/Dockerfile" \
 	--tag "$image" \
 	"$attestor_root"
@@ -64,6 +61,6 @@ exec docker run \
 	--stop-timeout 40 \
 	--publish "$grpc_publish:50051" \
 	--volume "$config_dir:/config:ro" \
-	--volume "$nitro_volume:/var/lib/fast-ibc/nitro" \
+	--volume "$state_volume:/var/lib/fast-ibc/attestor" \
 	--env "ATTESTOR_CONFIG=/config/$config_name" \
 	"$image"

@@ -15,11 +15,12 @@ import (
 )
 
 // AttestorServer serves the verified commitment frontier and lower-level
-// state-root checks backed by the attestor-owned Nitro node.
+// state-root checks backed by the configured Nitro RPC endpoint.
 type AttestorServer struct {
 	attestorpb.UnimplementedAttestorServiceServer
 	runtime *arbitrum.RuntimeState
 	feeds   map[string]AttestedRootReader
+	heads   map[string]arbitrum.RunMode
 }
 
 // AttestedRootReader is the chain-specific verified feed exposed through the
@@ -47,16 +48,31 @@ func NewAttestorServerWithRuntime(runtime *arbitrum.RuntimeState) (*AttestorServ
 	return NewAttestorServerWithRuntimeAndFeeds(runtime, nil)
 }
 
-// NewAttestorServerWithRuntimeAndFeeds constructs a server and registers
-// its independently verified per-chain commitment feeds.
+// NewAttestorServerWithRuntimeAndFeeds constructs a server and registers its
+// per-chain commitment feeds with a conservative finalized attestation head.
 func NewAttestorServerWithRuntimeAndFeeds(
 	runtime *arbitrum.RuntimeState,
 	feeds map[string]AttestedRootReader,
+) (*AttestorServer, error) {
+	heads := make(map[string]arbitrum.RunMode, len(feeds))
+	for srcChain := range feeds {
+		heads[srcChain] = arbitrum.RunModeFinalized
+	}
+	return NewAttestorServerWithRuntimeFeedsAndHeads(runtime, feeds, heads)
+}
+
+// NewAttestorServerWithRuntimeFeedsAndHeads constructs a server and records
+// each feed's configured Nitro attestation head for Info responses.
+func NewAttestorServerWithRuntimeFeedsAndHeads(
+	runtime *arbitrum.RuntimeState,
+	feeds map[string]AttestedRootReader,
+	heads map[string]arbitrum.RunMode,
 ) (*AttestorServer, error) {
 	if runtime == nil {
 		return nil, errors.New("attestor runtime state must not be nil")
 	}
 	copiedFeeds := make(map[string]AttestedRootReader, len(feeds))
+	copiedHeads := make(map[string]arbitrum.RunMode, len(feeds))
 	for srcChain, feed := range feeds {
 		if srcChain == "" {
 			return nil, errors.New("attested-root feed src_chain must not be empty")
@@ -65,8 +81,17 @@ func NewAttestorServerWithRuntimeAndFeeds(
 			return nil, errors.New("attested-root feed must not be nil")
 		}
 		copiedFeeds[srcChain] = feed
+		head, ok := heads[srcChain]
+		if !ok {
+			return nil, errors.New("attested-root feed attestation head is missing")
+		}
+		normalized, err := head.Normalize()
+		if err != nil {
+			return nil, err
+		}
+		copiedHeads[srcChain] = normalized
 	}
-	return &AttestorServer{runtime: runtime, feeds: copiedFeeds}, nil
+	return &AttestorServer{runtime: runtime, feeds: copiedFeeds, heads: copiedHeads}, nil
 }
 
 // Info reports every configured source chain and the current replica frontier.
@@ -93,11 +118,9 @@ func (s *AttestorServer) Info(
 	for _, srcChain := range srcChains {
 		feed := s.feeds[srcChain]
 		chain := &attestorpb.ChainInfo{
-			SrcChain: srcChain,
-			// Arbitrum does not have a daemon-wide gating head. State-root
-			// verification selects unsafe/safe/finalized per request, so leave
-			// attestation_head unset instead of reporting a fabricated value.
-			ReplicaSeen: snapshot.UnsafeObserved || snapshot.SafeObserved || snapshot.FinalizedSeen,
+			SrcChain:        srcChain,
+			AttestationHead: string(s.heads[srcChain]),
+			ReplicaSeen:     snapshot.UnsafeObserved || snapshot.SafeObserved || snapshot.FinalizedSeen,
 		}
 		if snapshot.UnsafeObserved {
 			chain.ReplicaUnsafeL2 = snapshot.Unsafe.BlockNumber
@@ -119,8 +142,8 @@ func (s *AttestorServer) Info(
 	return response, nil
 }
 
-// AttestedUpTo returns the highest independently verified commitment for the
-// requested source chain.
+// AttestedUpTo returns the highest Nitro-checked commitment for the requested
+// source chain.
 func (s *AttestorServer) AttestedUpTo(
 	_ context.Context,
 	request *attestorpb.AttestedUpToRequest,
@@ -140,8 +163,8 @@ func (s *AttestorServer) AttestedUpTo(
 	return response, nil
 }
 
-// AttestedRootAtOrBelow returns the best independently verified commitment no
-// greater than the caller's inclusive L2 height bound.
+// AttestedRootAtOrBelow returns the best Nitro-checked commitment no greater
+// than the caller's inclusive L2 height bound.
 func (s *AttestorServer) AttestedRootAtOrBelow(
 	_ context.Context,
 	request *attestorpb.AttestedRootAtOrBelowRequest,

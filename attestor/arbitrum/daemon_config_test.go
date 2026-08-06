@@ -10,12 +10,16 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-func TestLoadDaemonConfigResolvesPersistentNitroPaths(t *testing.T) {
+func TestLoadDaemonConfigResolvesStatePathAndLoadsNitroEndpoints(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "attestor.json")
 	data := `{
 		"grpc_listen_address":"127.0.0.1:50051",
 		"runtime_poll_interval":"2s",
+		"attestation_head":"unsafe",
+		"disable_derived_roots":true,
+		"derived_attestation_gap_blocks":12,
+		"max_derived_roots":34,
 		"src_chain":"arbitrum-one",
 		"l1_rpc_url":"https://ethereum.example",
 		"l1_chain_id":1,
@@ -27,14 +31,8 @@ func TestLoadDaemonConfigResolvesPersistentNitroPaths(t *testing.T) {
 		"assertion_poll_interval":"3s",
 		"assertion_max_block_range":1000,
 		"attestor_state_path":"data/attested-roots.json",
-		"nitro_binary_path":"bin/nitro",
-		"nitro_binary_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		"nitro_arguments":["--conf.file=nitro.json"],
-		"nitro_work_dir":"nitro-work",
-		"nitro_data_dir":"data/nitro-chain",
-		"nitro_ipc_path":"run/nitro.ipc",
-		"nitro_startup_timeout":"2m",
-		"nitro_shutdown_timeout":"30s"
+		"nitro_rpc_url":"https://arbitrum.example",
+		"nitro_ws_url":"wss://arbitrum.example"
 	}`
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -44,20 +42,21 @@ func TestLoadDaemonConfigResolvesPersistentNitroPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load daemon config: %v", err)
 	}
-	if config.NitroBinaryPath != filepath.Join(dir, "bin", "nitro") {
-		t.Fatalf("Nitro binary path: got %q", config.NitroBinaryPath)
-	}
-	if config.NitroWorkDir != filepath.Join(dir, "nitro-work") {
-		t.Fatalf("Nitro work directory: got %q", config.NitroWorkDir)
-	}
-	if config.NitroDataDir != filepath.Join(dir, "data", "nitro-chain") {
-		t.Fatalf("Nitro data directory: got %q", config.NitroDataDir)
-	}
-	if config.NitroIPCPath != filepath.Join(dir, "run", "nitro.ipc") {
-		t.Fatalf("Nitro IPC path: got %q", config.NitroIPCPath)
-	}
 	if config.AttestorStatePath != filepath.Join(dir, "data", "attested-roots.json") {
 		t.Fatalf("attestor state path: got %q", config.AttestorStatePath)
+	}
+	if config.NitroRPCURL != "https://arbitrum.example" {
+		t.Fatalf("Nitro RPC URL: got %q", config.NitroRPCURL)
+	}
+	if config.NitroWSURL != "wss://arbitrum.example" {
+		t.Fatalf("Nitro WebSocket URL: got %q", config.NitroWSURL)
+	}
+	attestationHead, err := config.NormalizedAttestationHead()
+	if err != nil {
+		t.Fatalf("attestation head: %v", err)
+	}
+	if attestationHead != RunModeUnsafe || !config.DisableDerivedRoots || config.DerivedAttestationGap() != 12 || config.DerivedRootLimit() != 34 {
+		t.Fatalf("derived attestation config: head=%s gap=%d max=%d", attestationHead, config.DerivedAttestationGap(), config.DerivedRootLimit())
 	}
 	runtimePollInterval, err := config.RuntimePollDuration()
 	if err != nil {
@@ -78,18 +77,34 @@ func TestLoadDaemonConfigResolvesPersistentNitroPaths(t *testing.T) {
 	}
 }
 
-func TestDaemonConfigRejectsOwnedNitroArguments(t *testing.T) {
-	for _, argument := range []string{
-		"--ipc.path=/tmp/unowned.ipc",
-		"--persistent.chain=/tmp/unowned-chain",
-	} {
-		t.Run(argument, func(t *testing.T) {
-			config := validDaemonConfig(t)
-			config.NitroArguments = []string{argument}
-			if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "must not set") {
-				t.Fatalf("validate owned Nitro argument: got %v", err)
-			}
-		})
+func TestDaemonConfigRequiresNitroHTTPAndWebSocketEndpoints(t *testing.T) {
+	config := validDaemonConfig(t)
+	config.NitroRPCURL = "wss://arbitrum.example"
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "nitro_rpc_url") {
+		t.Fatalf("validate Nitro RPC URL: got %v", err)
+	}
+
+	config = validDaemonConfig(t)
+	config.NitroWSURL = "https://arbitrum.example"
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "nitro_ws_url") {
+		t.Fatalf("validate Nitro WebSocket URL: got %v", err)
+	}
+}
+
+func TestLoadDaemonConfigRejectsManagedNitroFields(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "attestor.json")
+	data := `{
+		"nitro_rpc_url":"https://arbitrum.example",
+		"nitro_ws_url":"wss://arbitrum.example",
+		"nitro_binary_path":"./nitro"
+	}`
+	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	_, err := LoadDaemonConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "nitro_binary_path is no longer supported") {
+		t.Fatalf("load mixed endpoint/process config: got %v", err)
 	}
 }
 
@@ -114,6 +129,22 @@ func TestDaemonConfigRuntimePollInterval(t *testing.T) {
 	config.RuntimePollInterval = "0s"
 	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "runtime_poll_interval") {
 		t.Fatalf("validate runtime poll interval: got %v", err)
+	}
+}
+
+func TestDaemonConfigAttestationHeadDefaultsAndValidation(t *testing.T) {
+	config := validDaemonConfig(t)
+	head, err := config.NormalizedAttestationHead()
+	if err != nil {
+		t.Fatalf("default attestation head: %v", err)
+	}
+	if head != RunModeFinalized || config.DerivedAttestationGap() != 150 || config.DerivedRootLimit() != 1_000 {
+		t.Fatalf("derived defaults: head=%s gap=%d max=%d", head, config.DerivedAttestationGap(), config.DerivedRootLimit())
+	}
+
+	config.AttestationHead = RunMode("confirmed")
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "attestation_head") {
+		t.Fatalf("validate attestation head: got %v", err)
 	}
 }
 
@@ -152,6 +183,11 @@ func TestArbitrumSepoliaConfigPinsBoLDDeployment(t *testing.T) {
 	}
 	if config.L1ChainID != 11_155_111 ||
 		config.L2ChainID != 421_614 ||
+		config.AttestationHead != RunModeFinalized ||
+		!config.DisableDerivedRoots ||
+		config.DerivedAttestationGap() != 150 ||
+		config.NitroRPCURL != "https://arbitrum-sepolia-rpc.publicnode.com" ||
+		config.NitroWSURL != "wss://arbitrum-sepolia-rpc.publicnode.com" ||
 		common.HexToAddress(config.RollupCoreAddress) != common.HexToAddress(
 			"0x042B2E6C5E99d4c521bd49beeD5E99651D9B0Cf4",
 		) ||
@@ -176,12 +212,7 @@ func validDaemonConfig(t *testing.T) DaemonConfig {
 		AssertionStatusOffset: 25,
 		AssertionStartBlock:   1,
 		AttestorStatePath:     filepath.Join(dir, "attested-roots.json"),
-		NitroBinaryPath:       "nitro",
-		NitroBinarySHA256:     strings.Repeat("a", 64),
-		NitroWorkDir:          dir,
-		NitroDataDir:          filepath.Join(dir, "chain"),
-		NitroIPCPath:          filepath.Join(dir, "nitro.ipc"),
-		NitroStartupTimeout:   "2m",
-		NitroShutdownTimeout:  "30s",
+		NitroRPCURL:           "https://arbitrum.example",
+		NitroWSURL:            "wss://arbitrum.example",
 	}
 }
