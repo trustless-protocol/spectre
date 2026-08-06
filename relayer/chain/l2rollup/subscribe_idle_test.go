@@ -46,6 +46,9 @@ type idleL2Node struct {
 	head      uint64
 	logCalls  int
 	headCalls int
+	// failHeads makes the first N head reads answer with a JSON-RPC error, standing
+	// in for the rate limit a public endpoint returns during a restart.
+	failHeads int
 	// logRanges records the [fromBlock,toBlock] of every eth_getLogs, so a test can
 	// assert the cursor neither drifted nor rewound across a reorg.
 	logRanges [][2]uint64
@@ -86,8 +89,16 @@ func (n *idleL2Node) start(t *testing.T) *ethclient.Client {
 		case "eth_getBlockByNumber":
 			n.mu.Lock()
 			n.headCalls++
+			calls := n.headCalls
+			failing := n.failHeads
 			head := n.head
 			n.mu.Unlock()
+			if calls <= failing {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32005,`+
+					`"message":"You reached Public endpoint rate limit"}}`, req.ID)
+				return
+			}
 			if head == 0 {
 				head = idleTestHead
 			}
@@ -401,5 +412,71 @@ func TestSubscribeSurvivesUnsafeHeadReorg(t *testing.T) {
 	}
 	if last[1] != afterHead {
 		t.Errorf("recovery scan ended at block %d, want the new head %d", last[1], afterHead)
+	}
+}
+
+// A transient RPC error on the FIRST head read used to be fatal while the identical
+// error one tick later was logged and retried: the read sat before the loop and its
+// error propagated out of Subscribe, up through the relay module, into logger.Fatal.
+// A rate-limit blip during a restart therefore stopped the process from coming up at
+// all, instead of it starting and recovering on the next tick.
+//
+// The stub rejects the first two head reads the way a public endpoint rate-limits,
+// then serves normally. Subscribe must survive that and still deliver the packet.
+func TestSubscribeSurvivesTransientHeadErrorAtStartup(t *testing.T) {
+	restore := l2SubscribeInterval
+	l2SubscribeInterval = 20 * time.Millisecond
+	t.Cleanup(func() { l2SubscribeInterval = restore })
+
+	// A head well above the lookback, so the seeded cursor is a distinctive number
+	// rather than the 0 that "head below the window" and "never seeded" share.
+	const startHead = uint64(1000)
+
+	router := ethcommon.HexToAddress("0x1111111111111111111111111111111111111111")
+	node := &idleL2Node{router: router, failHeads: 2, logBlock: startHead}
+	node.setHead(startHead)
+	src := &Source{
+		eth:                node.start(t),
+		headKind:           Unsafe,
+		l2ClientID:         idleTestClientID,
+		cosmosWasmClientID: idleTestDestID,
+		router:             router,
+	}
+
+	delivered := make(chan int, 1)
+	handler := func(_ context.Context, batch []chain.Event) []int {
+		select {
+		case delivered <- len(batch):
+		default:
+		}
+		return nil // relayed
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() { errCh <- src.Subscribe(ctx, handler) }()
+
+	select {
+	case n := <-delivered:
+		if n == 0 {
+			t.Fatal("handler ran with an empty batch")
+		}
+	case err := <-errCh:
+		t.Fatalf("Subscribe returned before delivering anything: %v", err)
+	case <-ctx.Done():
+		t.Fatal("packet never delivered after the startup head errors cleared")
+	}
+
+	// The cursor must be seeded from the head that finally answered, not from zero:
+	// a scan starting at block 0 would hammer the endpoint that just rate-limited us.
+	cancel()
+	<-errCh
+	ranges := node.scannedRanges()
+	if len(ranges) == 0 {
+		t.Fatal("no eth_getLogs range recorded")
+	}
+	if wantFrom := startHead - l2StartupLookback; ranges[0][0] != wantFrom {
+		t.Fatalf("first scan started at %d, want %d (head - lookback)", ranges[0][0], wantFrom)
 	}
 }

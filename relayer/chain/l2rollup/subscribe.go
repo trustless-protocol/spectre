@@ -58,20 +58,23 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		return fmt.Errorf("l2 source: new ICS26Router filterer: %w", err)
 	}
 
-	head, err := s.head(ctx)
-	if err != nil {
-		return fmt.Errorf("l2 source: initial head: %w", err)
-	}
-	from := uint64(0)
-	if head > l2StartupLookback {
-		from = head - l2StartupLookback
-	}
-	log.Printf("[SubscribeL2] polling ICS26Router %s from block %d (client_id=%s)", s.router.Hex(), from, s.l2ClientID)
-
 	ticker := time.NewTicker(l2SubscribeInterval)
 	defer ticker.Stop()
 
-	var pending []chain.Event // events the handler re-queued (not yet relayable)
+	// The cursor is seeded on the FIRST SUCCESSFUL head read inside the loop, not
+	// before it. Reading it up front made a transient RPC error at startup fatal
+	// while the identical error one tick later was logged and retried — the process
+	// died on a rate-limit blip during boot, which is exactly when an operator can
+	// least tell a transient failure from a misconfiguration. The mirrors already
+	// get this right: SubscribeCosmos and SubscribeEth both read their starting
+	// height inside the retry loop and only return early for PERMANENT conditions
+	// (missing websocket URL, filterer construction) — the same distinction the
+	// filterer check above makes. Errors are classified by kind, never by position.
+	var (
+		from    uint64
+		seeded  bool
+		pending []chain.Event // events the handler re-queued (not yet relayable)
+	)
 	for {
 		select {
 		case <-ctx.Done():
@@ -83,6 +86,14 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		if err != nil {
 			log.Printf("[SubscribeL2] head: %v", err)
 			continue // do NOT advance the cursor on failure
+		}
+		if !seeded {
+			if head > l2StartupLookback {
+				from = head - l2StartupLookback
+			}
+			seeded = true
+			log.Printf("[SubscribeL2] polling ICS26Router %s from block %d (client_id=%s)",
+				s.router.Hex(), from, s.l2ClientID)
 		}
 
 		// Only the SCAN is gated on there being a new block range — the pending
