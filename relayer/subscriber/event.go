@@ -52,6 +52,19 @@ const cosmosStartupRecoveryLookbackEnv = "COSMOS_STARTUP_LOOKBACK_BLOCKS"
 const defaultCosmosStartupRecoveryLookbackBlocks uint64 = 256
 const cosmosSubscriptionReconnectDelay = 2 * time.Second
 const cosmosGapRecoveryInterval = 30 * time.Second
+
+// quietScanHeartbeat is how many consecutive find-nothing recovery scans pass
+// before one is reported, so a healthy subscriber stays visible (~10 min at the
+// 30s interval) without printing every tick.
+const quietScanHeartbeat = 20
+
+// advanceQuietScans counts one find-nothing pass and reports whether this is the
+// one to log. Shared by both directions so the two heartbeats cannot drift.
+func advanceQuietScans(quietScans *uint64) bool {
+	*quietScans++
+	return *quietScans%quietScanHeartbeat == 0
+}
+
 const cosmosTxSearchPerPage = 100
 const cosmosSeenEventRetentionHeights uint64 = 2_000
 
@@ -79,6 +92,10 @@ func NewSubscriber() *Subscriber {
 func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *services.BatchBuilder) {
 	lookback := cosmosStartupRecoveryLookbackBlocks()
 	var nextRecoveryStartHeight uint64
+	// quietScans counts consecutive recovery passes that found nothing. It lives
+	// beside the cursor, outside the resubscribe loop, so a WS reconnect does not
+	// restart the heartbeat — mirroring the Ethereum side.
+	var quietScans uint64
 	seenEvents := make(map[cosmosEventKey]struct{})
 
 	for {
@@ -92,7 +109,7 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 			nextRecoveryStartHeight = cosmosStartupRecoveryStartHeight(latestHeight, lookback)
 		}
 
-		err := s.subscribeCosmosOnce(ctx, batchBuilder, &nextRecoveryStartHeight, seenEvents)
+		err := s.subscribeCosmosOnce(ctx, batchBuilder, &nextRecoveryStartHeight, seenEvents, &quietScans)
 		ctx.Logger.Printf("[SubscribeCosmos] Subscription loop ended: %v", err)
 		time.Sleep(cosmosSubscriptionReconnectDelay)
 	}
@@ -103,6 +120,7 @@ func (s *Subscriber) subscribeCosmosOnce(
 	batchBuilder *services.BatchBuilder,
 	nextRecoveryStartHeight *uint64,
 	seenEvents map[cosmosEventKey]struct{},
+	quietScans *uint64,
 ) error {
 	sendPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_SEND_PACKET_EVENT)
 	if err != nil {
@@ -121,7 +139,7 @@ func (s *Subscriber) subscribeCosmosOnce(
 	ctx.Logger.Println("[SubscribeCosmos] Successfully subscribed to CometBFT events")
 	defer ctx.CosmosClient().UnsubscribeAll(context.Background(), "")
 
-	if err := recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents); err != nil {
+	if err := recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans); err != nil {
 		ctx.Logger.Printf("[SubscribeCosmos] startup recovery failed: %v", err)
 	}
 
@@ -146,7 +164,7 @@ func (s *Subscriber) subscribeCosmosOnce(
 			}
 			s.processLiveCosmosEvent(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, e)
 		case <-gapRecoveryTicker.C:
-			if err := recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents); err != nil {
+			if err := recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans); err != nil {
 				ctx.Logger.Printf("[SubscribeCosmos] periodic recovery failed: %v", err)
 			}
 		}
@@ -210,6 +228,14 @@ type ethRecoveryStats struct {
 	skipped   uint64
 }
 
+// foundSomething reports whether a recovery pass has anything to say. Every
+// branch that runs a scan must fold its result in through this: a pass that
+// recovered events while another found none is NOT a quiet scan, and reporting
+// it as one prints "found nothing" beside the line that found something.
+func (s ethRecoveryStats) foundSomething() bool {
+	return s.recovered > 0 || s.skipped > 0
+}
+
 func cosmosStartupRecoveryLookbackBlocksFromEnv(raw string) uint64 {
 	if raw == "" {
 		return defaultCosmosStartupRecoveryLookbackBlocks
@@ -253,6 +279,7 @@ func recoverCosmosGapToLatest(
 	batchBuilder *services.BatchBuilder,
 	nextRecoveryStartHeight *uint64,
 	seenEvents map[cosmosEventKey]struct{},
+	quietScans *uint64,
 ) error {
 	if *nextRecoveryStartHeight == 0 {
 		return nil
@@ -266,14 +293,23 @@ func recoverCosmosGapToLatest(
 		return nil
 	}
 
-	ctx.Logger.Printf("[SubscribeCosmos] recovery scanning Cosmos txs in [%d,%d]",
-		*nextRecoveryStartHeight, latestHeight)
 	stats, err := recoverCosmosEvents(ctx, batchBuilder, *nextRecoveryStartHeight, latestHeight, seenEvents)
 	if err != nil {
 		return err
 	}
-	ctx.Logger.Printf("[SubscribeCosmos] recovery complete: scanned [%d,%d], recovered=%d skipped=%d",
-		*nextRecoveryStartHeight, latestHeight, stats.recovered, stats.skipped)
+	// Report a scan that FOUND something, and otherwise only a periodic heartbeat.
+	// This ticks every 30s for the life of the process, and the overwhelmingly
+	// common outcome is recovered=0 skipped=0 — two lines a tick, ~5.8k lines a day
+	// per direction, burying the events worth reading. The heartbeat keeps "gap
+	// recovery is alive and current" observable without the repetition.
+	if stats.recovered > 0 || stats.skipped > 0 {
+		ctx.Logger.Printf("[SubscribeCosmos] recovery scanned [%d,%d]: recovered=%d skipped=%d",
+			*nextRecoveryStartHeight, latestHeight, stats.recovered, stats.skipped)
+		*quietScans = 0
+	} else if beat := advanceQuietScans(quietScans); beat {
+		ctx.Logger.Printf("[SubscribeCosmos] gap recovery healthy: %d consecutive scans found nothing, now current at height %d",
+			*quietScans, latestHeight)
+	}
 
 	*nextRecoveryStartHeight = latestHeight + 1
 	pruneCosmosSeenEvents(seenEvents, latestHeight)
@@ -905,8 +941,10 @@ func recoverEthSendPackets(
 		}
 	}
 
-	ctx.Logger.Printf("[SubscribeEth] recovery complete for SendPacket: scanned [%d,%d], recovered=%d skipped=%d",
-		startBlock, endBlock, stats.recovered, stats.skipped)
+	if stats.recovered > 0 || stats.skipped > 0 {
+		ctx.Logger.Printf("[SubscribeEth] recovery scanned [%d,%d] for SendPacket: recovered=%d skipped=%d",
+			startBlock, endBlock, stats.recovered, stats.skipped)
+	}
 	return stats, firstErr
 }
 
@@ -982,8 +1020,10 @@ func recoverEthWriteAcknowledgements(
 		}
 	}
 
-	ctx.Logger.Printf("[SubscribeEth] recovery complete for WriteAcknowledgement: scanned [%d,%d], recovered=%d skipped=%d",
-		startBlock, endBlock, stats.recovered, stats.skipped)
+	if stats.recovered > 0 || stats.skipped > 0 {
+		ctx.Logger.Printf("[SubscribeEth] recovery scanned [%d,%d] for WriteAcknowledgement: recovered=%d skipped=%d",
+			startBlock, endBlock, stats.recovered, stats.skipped)
+	}
 	return stats, firstErr
 }
 
@@ -1001,34 +1041,42 @@ func recoverEthGapToBlock(
 	nextWriteAckRecoveryStartBlock *uint64,
 	endBlock uint64,
 	seenEvents map[ethEventKey]struct{},
+	quietScans *uint64,
 ) error {
 	var firstErr error
+	found := false
 
 	if endBlock >= *nextSendRecoveryStartBlock {
-		ctx.Logger.Printf("[SubscribeEth] recovery scanning SendPacket logs in [%d,%d]",
-			*nextSendRecoveryStartBlock, endBlock)
-		if _, err := recoverEthSendPackets(ctx, batchBuilder, filterer, *nextSendRecoveryStartBlock, endBlock, seenEvents); err != nil {
+		if stats, err := recoverEthSendPackets(ctx, batchBuilder, filterer, *nextSendRecoveryStartBlock, endBlock, seenEvents); err != nil {
 			ctx.Logger.Printf("[SubscribeEth] SendPacket recovery failed: %v", err)
 			firstErr = err
 		} else {
+			found = found || stats.foundSomething()
 			*nextSendRecoveryStartBlock = endBlock + 1
 		}
 	}
 
 	if endBlock >= *nextWriteAckRecoveryStartBlock {
-		ctx.Logger.Printf("[SubscribeEth] recovery scanning WriteAcknowledgement logs in [%d,%d]",
-			*nextWriteAckRecoveryStartBlock, endBlock)
-		if _, err := recoverEthWriteAcknowledgements(ctx, batchBuilder, filterer, *nextWriteAckRecoveryStartBlock, endBlock, seenEvents); err != nil {
+		if stats, err := recoverEthWriteAcknowledgements(ctx, batchBuilder, filterer, *nextWriteAckRecoveryStartBlock, endBlock, seenEvents); err != nil {
 			ctx.Logger.Printf("[SubscribeEth] WriteAcknowledgement recovery failed: %v", err)
 			if firstErr == nil {
 				firstErr = err
 			}
 		} else {
+			found = found || stats.foundSomething()
 			*nextWriteAckRecoveryStartBlock = endBlock + 1
 		}
 	}
 
+	// Mirror of the Cosmos side: a scan that found nothing says nothing, except a
+	// periodic heartbeat so "gap recovery is alive" stays observable.
 	if firstErr == nil {
+		if found {
+			*quietScans = 0
+		} else if beat := advanceQuietScans(quietScans); beat {
+			ctx.Logger.Printf("[SubscribeEth] gap recovery healthy: %d consecutive scans found nothing, now current at block %d",
+				*quietScans, endBlock)
+		}
 		pruneEthSeenEvents(seenEvents, endBlock)
 	}
 	return firstErr
@@ -1041,6 +1089,7 @@ func recoverEthGapToLatest(
 	nextSendRecoveryStartBlock *uint64,
 	nextWriteAckRecoveryStartBlock *uint64,
 	seenEvents map[ethEventKey]struct{},
+	quietScans *uint64,
 ) error {
 	latestBlock, err := ctx.EthClient().BlockNumber(context.Background())
 	if err != nil {
@@ -1054,6 +1103,7 @@ func recoverEthGapToLatest(
 		nextWriteAckRecoveryStartBlock,
 		latestBlock,
 		seenEvents,
+		quietScans,
 	)
 }
 
@@ -1066,6 +1116,7 @@ func (s *Subscriber) subscribeEthOnce(
 	nextSendRecoveryStartBlock *uint64,
 	nextWriteAckRecoveryStartBlock *uint64,
 	seenEvents map[ethEventKey]struct{},
+	quietScans *uint64,
 ) error {
 	watchFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), watchClient)
 	if err != nil {
@@ -1168,6 +1219,7 @@ func (s *Subscriber) subscribeEthOnce(
 				nextSendRecoveryStartBlock,
 				nextWriteAckRecoveryStartBlock,
 				seenEvents,
+				quietScans,
 			); err != nil {
 				ctx.Logger.Printf("[SubscribeEth] periodic recovery failed: %v", err)
 			}
@@ -1191,6 +1243,9 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 	lookback := ethStartupRecoveryLookbackBlocks()
 	var nextSendRecoveryStartBlock uint64
 	var nextWriteAckRecoveryStartBlock uint64
+	// quietScans counts consecutive recovery passes that found nothing. It lives
+	// out here, beside the cursors, so a resubscribe does not reset the heartbeat.
+	var quietScans uint64
 	seenEvents := make(map[ethEventKey]struct{})
 
 	for {
@@ -1216,6 +1271,7 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 			&nextWriteAckRecoveryStartBlock,
 			latestBlock,
 			seenEvents,
+			&quietScans,
 		); err != nil {
 			ctx.Logger.Printf("[SubscribeEth] startup recovery failed: %v", err)
 		}
@@ -1238,6 +1294,7 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 			&nextSendRecoveryStartBlock,
 			&nextWriteAckRecoveryStartBlock,
 			seenEvents,
+			&quietScans,
 		)
 		watchClient.Close()
 		ctx.Logger.Printf("[SubscribeEth] Subscription loop ended: %v", err)

@@ -145,6 +145,20 @@ type Module struct {
 	// returning "no update needed") is skipped rather than replayed.
 	mu         sync.Mutex
 	lastHeight uint64
+
+	// lastWait is the last "not yet relayable" state logged, so a wait that is not
+	// progressing prints once instead of once per flush. Touched only from the
+	// Subscribe callback goroutine (handleBatch), which is the sole caller.
+	lastWait waitLogState
+}
+
+// waitLogState is the identity of a wait: the same triple means nothing changed
+// since the last line, so there is nothing new to tell the operator.
+type waitLogState struct {
+	packets    int
+	pendingMax uint64
+	relayable  uint64
+	logged     bool
 }
 
 // NewModule wires a relay path. name is a human label for logs; clientID is the
@@ -284,6 +298,10 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 	relayable, err := m.src.RelayableHeight(ctx)
 	if err != nil {
 		log.Printf("[relay %s] relayable height: %v", m.name, err)
+		// Forget the last wait: this flush learned nothing about the frontier, so a
+		// wait that resumes identically afterwards is news again rather than a
+		// repeat, and the error lines in between do not leave a silent gap.
+		m.lastWait = waitLogState{}
 		return allIndices(len(events))
 	}
 
@@ -305,16 +323,24 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 	// Surface the wait so the finality/AppHash lag is visible: relayable moving up
 	// shows the source's head advancing toward the packet.
 	//
-	// This fires once per flush — i.e. every batch period, not on any backoff. The
-	// re-queue path above attaches no delay, and the exponential backoff nearby is
-	// the periodic-update *failure* backoff, a different mechanism. A normal wait on
-	// an L2 whose attestor gap is 150 blocks is ~5 minutes, which at a 3s batch
-	// period is ~100 identical lines (measured: 67 lines over 4m12s on OP Sepolia).
-	// Worth rate-limiting or logging only on change if this ever drowns out
-	// something that matters.
+	// Logged only when that picture CHANGES. This runs once per flush — every batch
+	// period, on no backoff — and a wait is normally long.
+	//
+	// What that silences depends on how the frontier moves. Measured on OP Sepolia:
+	// with the attestor's derived-root gap at 150 blocks the frontier sat still for
+	// the whole wait, so 67 byte-identical lines collapse to 1. With the gap at 10 it
+	// advanced during the wait, so 4 lines collapse to 3 — one per real advance. The
+	// worst case is therefore one line per frontier advance, never per flush, and the
+	// numbers that survive all mean something.
 	if len(requeue) > 0 {
-		log.Printf("[relay %s] waiting: %d packet(s) not yet relayable (highest pending height=%d, source relayable height=%d)",
-			m.name, len(requeue), pendingMax, relayable)
+		now := waitLogState{packets: len(requeue), pendingMax: pendingMax, relayable: relayable, logged: true}
+		if now != m.lastWait {
+			log.Printf("[relay %s] waiting: %d packet(s) not yet relayable (highest pending height=%d, source relayable height=%d)",
+				m.name, len(requeue), pendingMax, relayable)
+			m.lastWait = now
+		}
+	} else {
+		m.lastWait = waitLogState{} // next wait reports itself, even if identical to the last one
 	}
 	if len(provable) == 0 {
 		return requeue // nothing relayable this flush — skip the client update entirely

@@ -697,3 +697,56 @@ func mustAckHex(t *testing.T, ack channeltypesv2.Acknowledgement) string {
 	}
 	return hex.EncodeToString(bz)
 }
+
+// The bug this pins, found in review: the ETH driver folded only the SendPacket
+// branch's stats into `found` and discarded the WriteAcknowledgement branch's, so
+// a pass that recovered acks still counted as quiet — and after 20 of them printed
+// "found nothing" directly beside the line reporting what it found. Both branches
+// now go through foundSomething(), and any future branch must too.
+func TestEthRecoveryStatsFoundSomething(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		stats ethRecoveryStats
+		want  bool
+	}{
+		{"nothing", ethRecoveryStats{}, false},
+		{"recovered", ethRecoveryStats{recovered: 1}, true},
+		{"skipped only", ethRecoveryStats{skipped: 1}, true},
+		{"both", ethRecoveryStats{recovered: 2, skipped: 3}, true},
+	} {
+		if got := tc.stats.foundSomething(); got != tc.want {
+			t.Errorf("%s: foundSomething() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+
+	// The aggregation itself: a quiet SendPacket pass must not mask a productive
+	// WriteAcknowledgement one.
+	found := false
+	found = found || ethRecoveryStats{}.foundSomething()
+	found = found || ethRecoveryStats{recovered: 1}.foundSomething()
+	if !found {
+		t.Fatal("a pass that recovered WriteAcknowledgements must not count as quiet")
+	}
+}
+
+// The heartbeat is shared by both directions so they cannot drift: one line every
+// quietScanHeartbeat passes, and the counter keeps climbing so the printed number
+// is the real streak.
+func TestAdvanceQuietScans(t *testing.T) {
+	var quiet uint64
+	beats := 0
+	for i := 1; i <= quietScanHeartbeat*2; i++ {
+		if advanceQuietScans(&quiet) {
+			beats++
+			if quiet%quietScanHeartbeat != 0 {
+				t.Fatalf("beat at %d, which is not a multiple of %d", quiet, quietScanHeartbeat)
+			}
+		}
+	}
+	if beats != 2 {
+		t.Fatalf("beats = %d over %d passes, want 2", beats, quietScanHeartbeat*2)
+	}
+	if quiet != uint64(quietScanHeartbeat*2) {
+		t.Fatalf("counter = %d, want it to keep counting to %d", quiet, quietScanHeartbeat*2)
+	}
+}

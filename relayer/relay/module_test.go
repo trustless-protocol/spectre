@@ -691,3 +691,48 @@ func TestUpdateClientTo_AppendOnly(t *testing.T) {
 		t.Fatalf("want second update at height 20, got %+v", dst.updates)
 	}
 }
+
+// A packet waiting on the source frontier is re-queued every flush — every batch
+// period, on no backoff. A measured OP Sepolia wait produced 67 identical lines in
+// 4m12s, and a default 150-block attestor gap makes ~100 the normal case. The line
+// must therefore report transitions, not repetitions: the same wait says nothing
+// new, a frontier that moved does.
+func TestHandleBatch_WaitingLogsOnlyOnChange(t *testing.T) {
+	src := &mockSource{latest: 100, relayable: 5}
+	m := NewModule("test", "client-0", src, &mockDest{}, &mockBuilder{})
+	waiting := []chain.Event{{Type: chain.SendPacket, Height: 50, Raw: []byte("pkt-far")}}
+
+	if rq := m.handleBatch(context.Background(), waiting); len(rq) != 1 {
+		t.Fatalf("packet above the relayable height must re-queue, got %v", rq)
+	}
+	first := m.lastWait
+	if !first.logged || first.packets != 1 || first.pendingMax != 50 || first.relayable != 5 {
+		t.Fatalf("first wait must be recorded as logged: %+v", first)
+	}
+
+	// Same picture again: nothing to say.
+	m.handleBatch(context.Background(), waiting)
+	if m.lastWait != first {
+		t.Fatalf("an unchanged wait must not update the log state: %+v -> %+v", first, m.lastWait)
+	}
+
+	// Frontier advances — that is the signal worth printing.
+	src.relayable = 20
+	m.handleBatch(context.Background(), waiting)
+	if m.lastWait == first {
+		t.Fatal("a moving frontier must be reported")
+	}
+	if m.lastWait.relayable != 20 {
+		t.Fatalf("log state must track the new frontier, got %+v", m.lastWait)
+	}
+
+	// Once everything is relayable the state resets, so the next wait reports
+	// itself even if it looks identical to the one before.
+	src.relayable = 100
+	if rq := m.handleBatch(context.Background(), waiting); len(rq) != 0 {
+		t.Fatalf("packet below the relayable height must not re-queue, got %v", rq)
+	}
+	if m.lastWait.logged {
+		t.Fatalf("a cleared wait must reset the log state, got %+v", m.lastWait)
+	}
+}
