@@ -67,6 +67,7 @@
         "l2_wasm_client_id": "08-wasm-1",
         "l2_ics26_client_id": "client-0",
         "head_kind": "safe",
+        "log_scan_chunk": 0,
         "rollup_profile": {
           "common": {
             "l2_chain_id": 2151908,
@@ -113,6 +114,7 @@
         "l2_wasm_client_id": "08-wasm-2",
         "l2_ics26_client_id": "arb-client-0",
         "head_kind": "safe",
+        "log_scan_chunk": 0,
         "include_provisional": true,
         "rollup_profile": {
           "common": {

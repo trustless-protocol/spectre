@@ -104,6 +104,14 @@ type Source struct {
 	// made "safe" silently imply "accept provisional", with no way to ask for safe
 	// without it.
 	includeProvisional bool
+
+	// logScanChunk caps the block span of a single eth_getLogs. 0 means "one call
+	// for the whole range", which is what every provider that does not cap the span
+	// wants. Providers that do cap it vary by three orders of magnitude (Alchemy's
+	// free tier allows 10 blocks, drpc 10_000), and the failure is a plain 400 that
+	// names neither the setting nor a workable value — so this is configuration,
+	// not a constant.
+	logScanChunk uint64
 }
 
 // Source satisfies chain.Source.
@@ -124,6 +132,13 @@ func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKi
 		srcChainID:         srcChainID,
 		includeProvisional: includeProvisional,
 	}
+}
+
+// WithLogScanChunk caps the block span of each eth_getLogs this source issues.
+// A zero or unset value keeps the single-call behaviour.
+func (s *Source) WithLogScanChunk(n uint64) *Source {
+	s.logScanChunk = n
+	return s
 }
 
 func (s *Source) Chain() chain.ChainType { return s.chainType }

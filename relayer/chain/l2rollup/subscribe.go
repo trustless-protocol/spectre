@@ -127,8 +127,32 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 }
 
 // scanPacketLogs fetches the SendPacket + WriteAcknowledgement logs of this source's
-// client id in [from,to] and maps them to chain.Events.
+// client id in [from,to] and maps them to chain.Events, splitting the request into
+// log_scan_chunk-sized spans when one is configured.
+//
+// A failure in any span fails the whole scan, so the caller leaves its cursor
+// untouched: a partially scanned range must never be mistaken for a complete one.
 func (s *Source) scanPacketLogs(ctx context.Context, filterer *contractICS26Router.ContractICS26RouterFilterer, from, to uint64) ([]chain.Event, error) {
+	if chunk := s.logScanChunk; chunk > 0 && to >= from && to-from >= chunk {
+		var all []chain.Event
+		for start := from; start <= to; start += chunk {
+			end := start + chunk - 1
+			if end > to {
+				end = to
+			}
+			events, err := s.scanPacketLogRange(ctx, filterer, start, end)
+			if err != nil {
+				return nil, fmt.Errorf("span [%d,%d]: %w", start, end, err)
+			}
+			all = append(all, events...)
+		}
+		return all, nil
+	}
+	return s.scanPacketLogRange(ctx, filterer, from, to)
+}
+
+// scanPacketLogRange is one eth_getLogs pair over a span the provider will serve.
+func (s *Source) scanPacketLogRange(ctx context.Context, filterer *contractICS26Router.ContractICS26RouterFilterer, from, to uint64) ([]chain.Event, error) {
 	opts := &bind.FilterOpts{Start: from, End: &to, Context: ctx}
 	clientFilter := []string{s.l2ClientID}
 

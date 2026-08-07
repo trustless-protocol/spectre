@@ -44,8 +44,20 @@ type l2ToCosmosConfig struct {
 	// has completed. "safe" therefore silently implied "accept provisional", with no
 	// way to ask for one without the other. Defaults to true for anything but
 	// finalized, preserving the previous behaviour.
-	IncludeProvisional *bool           `json:"include_provisional,omitempty"`
-	RollupProfile      json.RawMessage `json:"rollup_profile"`
+	IncludeProvisional *bool `json:"include_provisional,omitempty"`
+	// LogScanChunk caps the block span of a single eth_getLogs on the L2 packet
+	// scan. 0 (the default) issues one call per range, which is right for any
+	// provider that does not cap the span. It covered the L1 assertion scan too
+	// until #347 removed that path; only the L2 scan is left to bound.
+	//
+	// It lives here rather than in rollup_profile because the profile is forwarded
+	// verbatim into MsgCreateClient and the Rust verifier parses it with
+	// deny_unknown_fields — a relayer-only knob added there would break client
+	// creation.
+	//
+	// Known caps: Alchemy free tier 10, drpc 10_000.
+	LogScanChunk  uint64          `json:"log_scan_chunk,omitempty"`
+	RollupProfile json.RawMessage `json:"rollup_profile"`
 
 	// kind is the chain family (opstack/arbitrum) resolved from the module's
 	// src_chain by loadConfig; it selects the per-L2 header builder.
@@ -158,7 +170,8 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	// what that attestor's replica actually has at that height.
 	headerBuilder := l2rollup.NewAttestedHeaderBuilder(l2, router, attestor, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
 
-	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, attestor, includeProvisional)
+	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, attestor, includeProvisional).
+		WithLogScanChunk(cfg.LogScanChunk)
 	dest := l2rollup.NewDestination(worker, svcCtx, cfg.L2WasmClientID)
 	builder := l2rollup.NewBuilder(headerBuilder)
 	trackL2Pending, untrackL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
