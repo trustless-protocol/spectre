@@ -18,9 +18,14 @@
 #   ROLLUP_CORE_ADDRESS, ROLLUP_DEPLOYMENT_BLOCK
 #
 # Optional env:
-#   SRC_CHAIN (arbdev)                 relayer source-chain label
-#   ASSERTIONS_MAPPING_SLOT (0x76)     BoLD _assertions mapping slot
-#   ASSERTION_STATUS_OFFSET (25)       BoLD AssertionNode.status byte offset
+#   CHAIN_PROFILE (devnet)             devnet, or a chain whose reference config
+#       exists at attestor/arbitrum/config.<profile>.json (e.g. arbitrum-sepolia).
+#       Supplies src_chain, the BoLD slot and offset, poll intervals, scan range
+#       and start block. Every one is overridable individually below.
+#   ASSERTION_START_BLOCK              first L1 block of the assertion scan
+#   SRC_CHAIN                          relayer source-chain label
+#   ASSERTIONS_MAPPING_SLOT            BoLD _assertions mapping slot
+#   ASSERTION_STATUS_OFFSET            BoLD AssertionNode.status byte offset
 #   ATTESTOR_L1_RPC_URL                container-visible L1 RPC override
 #   ATTESTOR_NITRO_RPC_URL             container-visible Nitro RPC override
 #   ATTESTOR_NITRO_WS_URL              container-visible Nitro WebSocket override
@@ -62,17 +67,68 @@ if [ -z "${ROLLUP_CORE_ADDRESS:-}" ] && [ -f "$DEVNET_ENV" ]; then
     . "$DEVNET_ENV"
 fi
 
-SRC_CHAIN=${SRC_CHAIN:-arbdev}
-ASSERTIONS_MAPPING_SLOT=${ASSERTIONS_MAPPING_SLOT:-0x0000000000000000000000000000000000000000000000000000000000000076}
-ASSERTION_STATUS_OFFSET=${ASSERTION_STATUS_OFFSET:-25}
+# CHAIN_PROFILE selects the chain-specific defaults. They are genuinely
+# chain-shaped and a wrong one fails silently: the BoLD storage slot differs per
+# deployment, and reading the wrong slot yields an empty mapping, so the attestor
+# attests nothing and logs no error naming the slot.
+#
+# A named profile other than "devnet" reads its values from the committed
+# reference config for that chain, rather than restating them here. The repo
+# already carries those files and they are maintained; duplicating the numbers
+# into this script is exactly how the two drifted apart (the script defaulted the
+# slot to 0x76 while attestor/arbitrum/config.arbitrum-sepolia.json says 0x75).
+#
+# An explicit env var always wins, so existing invocations are unaffected.
+CHAIN_PROFILE=${CHAIN_PROFILE:-devnet}
+if [ "$CHAIN_PROFILE" = devnet ]; then
+    # Devnet RollupCreator deploys the legacy layout, where 0x76 is correct, and
+    # the devnet posts assertions every 10s so a 2s poll is proportionate.
+    PROFILE_SRC_CHAIN=arbdev
+    PROFILE_ASSERTIONS_MAPPING_SLOT=0x0000000000000000000000000000000000000000000000000000000000000076
+    PROFILE_ASSERTION_STATUS_OFFSET=25
+    PROFILE_RUNTIME_POLL_INTERVAL=2s
+    PROFILE_ASSERTION_POLL_INTERVAL=2s
+    PROFILE_ASSERTION_MAX_BLOCK_RANGE=2000
+    PROFILE_ASSERTION_START_BLOCK=   # devnet: fall back to ROLLUP_DEPLOYMENT_BLOCK
+else
+    PROFILE_FILE=$REPO_ROOT/attestor/arbitrum/config.$CHAIN_PROFILE.json
+    if [ ! -f "$PROFILE_FILE" ]; then
+        printf '[run_arbitrum_attestor] ERROR: unknown CHAIN_PROFILE %q (no %s)\n' \
+            "$CHAIN_PROFILE" "$PROFILE_FILE" >&2
+        exit 1
+    fi
+    command -v jq >/dev/null 2>&1 || {
+        printf '[run_arbitrum_attestor] ERROR: jq is required to read %s\n' "$PROFILE_FILE" >&2
+        exit 1
+    }
+    profile_field() {
+        value=$(jq -er --arg k "$1" '.[$k] // empty' "$PROFILE_FILE") || {
+            printf '[run_arbitrum_attestor] ERROR: %s has no %s\n' "$PROFILE_FILE" "$1" >&2
+            exit 1
+        }
+        printf '%s' "$value"
+    }
+    PROFILE_SRC_CHAIN=$(profile_field src_chain)
+    PROFILE_ASSERTIONS_MAPPING_SLOT=$(profile_field assertions_mapping_slot)
+    PROFILE_ASSERTION_STATUS_OFFSET=$(profile_field assertion_status_offset)
+    PROFILE_RUNTIME_POLL_INTERVAL=$(profile_field runtime_poll_interval)
+    PROFILE_ASSERTION_POLL_INTERVAL=$(profile_field assertion_poll_interval)
+    PROFILE_ASSERTION_MAX_BLOCK_RANGE=$(profile_field assertion_max_block_range)
+    PROFILE_ASSERTION_START_BLOCK=$(profile_field assertion_start_block)
+    printf '[run_arbitrum_attestor] chain profile %s from %s\n' "$CHAIN_PROFILE" "$PROFILE_FILE"
+fi
+
+SRC_CHAIN=${SRC_CHAIN:-$PROFILE_SRC_CHAIN}
+ASSERTIONS_MAPPING_SLOT=${ASSERTIONS_MAPPING_SLOT:-$PROFILE_ASSERTIONS_MAPPING_SLOT}
+ASSERTION_STATUS_OFFSET=${ASSERTION_STATUS_OFFSET:-$PROFILE_ASSERTION_STATUS_OFFSET}
 GRPC_PORT=${GRPC_PORT:-3001}
-RUNTIME_POLL_INTERVAL=${RUNTIME_POLL_INTERVAL:-2s}
+RUNTIME_POLL_INTERVAL=${RUNTIME_POLL_INTERVAL:-$PROFILE_RUNTIME_POLL_INTERVAL}
+ASSERTION_POLL_INTERVAL=${ASSERTION_POLL_INTERVAL:-$PROFILE_ASSERTION_POLL_INTERVAL}
+ASSERTION_MAX_BLOCK_RANGE=${ASSERTION_MAX_BLOCK_RANGE:-$PROFILE_ASSERTION_MAX_BLOCK_RANGE}
 ATTESTATION_HEAD=${ATTESTATION_HEAD:-finalized}
 DISABLE_DERIVED_ROOTS=${DISABLE_DERIVED_ROOTS:-false}
 DERIVED_ATTESTATION_GAP_BLOCKS=${DERIVED_ATTESTATION_GAP_BLOCKS:-150}
 MAX_DERIVED_ROOTS=${MAX_DERIVED_ROOTS:-1000}
-ASSERTION_POLL_INTERVAL=${ASSERTION_POLL_INTERVAL:-2s}
-ASSERTION_MAX_BLOCK_RANGE=${ASSERTION_MAX_BLOCK_RANGE:-2000}
 # ATTESTOR_RUN_DIR takes precedence over the legacy RUN_DIR: the devnet bring-up
 # scripts use RUN_DIR for their OWN artifacts, so a handoff that exports it into
 # the caller's shell sends the next bring-up's package clone, downloads and
@@ -114,6 +170,16 @@ if [ "$ROLLUP_DEPLOYMENT_BLOCK" = 0 ]; then
     ROLLUP_DEPLOYMENT_BLOCK=1
 fi
 
+# Where the assertion scan starts. The rollup's deployment block is right for a
+# devnet deployed minutes ago; on a long-lived public rollup it is a back-scan of
+# millions of L1 blocks before the first attestation, so a named profile supplies
+# a block near the head instead.
+ASSERTION_START_BLOCK=${ASSERTION_START_BLOCK:-${PROFILE_ASSERTION_START_BLOCK:-$ROLLUP_DEPLOYMENT_BLOCK}}
+[[ "$ASSERTION_START_BLOCK" =~ ^[0-9]+$ ]] ||
+    fail "ASSERTION_START_BLOCK must be a decimal L1 block number, got: $ASSERTION_START_BLOCK"
+
+[ -f "$NITRO_SEQUENCER_CONFIG" ] ||
+    fail "Nitro sequencer config not found: $NITRO_SEQUENCER_CONFIG"
 [[ "$GRPC_PORT" =~ ^[0-9]+$ ]] && [ "$GRPC_PORT" -gt 0 ] && [ "$GRPC_PORT" -le 65535 ] ||
     fail "GRPC_PORT must be between 1 and 65535"
 [[ "$ASSERTIONS_MAPPING_SLOT" =~ ^0x[0-9a-fA-F]{64}$ ]] ||
@@ -178,7 +244,7 @@ jq -n \
     --arg rollup_core_address "$ROLLUP_CORE_ADDRESS" \
     --arg assertions_mapping_slot "$ASSERTIONS_MAPPING_SLOT" \
     --argjson assertion_status_offset "$ASSERTION_STATUS_OFFSET" \
-    --argjson assertion_start_block "$ROLLUP_DEPLOYMENT_BLOCK" \
+    --argjson assertion_start_block "$ASSERTION_START_BLOCK" \
     --arg assertion_poll_interval "$ASSERTION_POLL_INTERVAL" \
     --argjson assertion_max_block_range "$ASSERTION_MAX_BLOCK_RANGE" \
     --arg nitro_rpc_url "$CONTAINER_NITRO_RPC_URL" \
