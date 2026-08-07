@@ -191,15 +191,17 @@ func runModeHead(mode attestorpb.RunMode) (opstack.Head, error) {
 	}
 }
 
-// soleChain resolves the attestor to answer a VerifyStateRoot request against.
+// chainForVerify resolves which attestor a VerifyStateRoot request means.
 //
-// Unlike every other request in this service, VerifyStateRootRequest carries no
-// src_chain (the field does not exist in the proto), so a daemon serving more
-// than one chain cannot tell which replica the caller means. Guessing would
-// verify a block against the wrong chain and answer valid=false for a perfectly
-// good header — worse than refusing, because the caller would read it as a
-// divergence. Refuse instead, and name the fix.
-func (s *Server) soleChain() (*opstack.OpStackAttestor, error) {
+// src_chain is optional so an older caller keeps working: when this daemon serves
+// exactly one chain there is nothing to disambiguate. With several configured it
+// is required, because guessing would verify against the wrong replica and answer
+// valid=false for a perfectly good header — which the relayer reads as a
+// divergence and stops on, rather than as the misroute it is.
+func (s *Server) chainForVerify(srcChain string) (*opstack.OpStackAttestor, error) {
+	if srcChain != "" {
+		return s.chain(srcChain)
+	}
 	switch len(s.chains) {
 	case 0:
 		return nil, status.Error(codes.FailedPrecondition, "no chains are configured")
@@ -213,9 +215,8 @@ func (s *Server) soleChain() (*opstack.OpStackAttestor, error) {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	return nil, status.Errorf(codes.FailedPrecondition,
-		"VerifyStateRoot carries no src_chain but this attestor serves %d chains (%s); "+
-			"run one attestor per chain until the request carries the field",
+	return nil, status.Errorf(codes.InvalidArgument,
+		"src_chain is required: this attestor serves %d chains (%s)",
 		len(s.chains), strings.Join(names, ", "))
 }
 
@@ -244,7 +245,7 @@ func (s *Server) VerifyStateRoot(ctx context.Context, req *attestorpb.VerifyStat
 	if err != nil {
 		return nil, err
 	}
-	attestorForChain, err := s.soleChain()
+	attestorForChain, err := s.chainForVerify(req.GetSrcChain())
 	if err != nil {
 		return nil, err
 	}

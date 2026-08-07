@@ -56,8 +56,9 @@ type AttestorClient interface {
 	// disagrees; err is reserved for transport and request failures, so a false valid
 	// is a real divergence and not a degraded answer.
 	//
-	// Note the request carries no src_chain (the attestor's own RPC does not take
-	// one), so a multi-chain attestor daemon cannot be disambiguated here. One
-	// attestor process per chain is the deployment this assumes.
-	VerifyStateRoot(ctx context.Context, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (bool, error)
+	// srcChain names the chain, exactly as for the oracle calls above: a daemon
+	// serving several chains would otherwise verify against whichever replica it
+	// guessed, and a wrong guess answers valid=false for a good header — which the
+	// caller cannot tell apart from a real divergence.
+	VerifyStateRoot(ctx context.Context, srcChain string, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (bool, error)
 }

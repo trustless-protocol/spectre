@@ -221,23 +221,63 @@ func TestVerifyStateRootRejectsMalformedRequests(t *testing.T) {
 	}
 }
 
-// VerifyStateRootRequest carries no src_chain, so a multi-chain daemon cannot
-// tell which replica is meant. Guessing would answer valid=false for a good
-// header, which reads as a divergence — refuse instead.
-func TestVerifyStateRootRefusesWhenSeveralChainsAreServed(t *testing.T) {
-	rep := stubReplica{status: opstack.SyncStatus{FinalizedL2: 600}}
+// With several chains served, an omitted src_chain cannot be guessed: the wrong
+// replica answers valid=false for a good header, which the caller reads as a
+// divergence rather than a misroute.
+func TestVerifyStateRootRequiresSrcChainWhenSeveralAreServed(t *testing.T) {
+	commitment := opstack.L2Commitment{
+		BlockNumber: 500,
+		BlockHash:   common.HexToHash("0xaa11"),
+		StateRoot:   common.HexToHash("0xbb22"),
+	}
+	rep := stubReplica{
+		status:      opstack.SyncStatus{UnsafeL2: 900, SafeL2: 700, FinalizedL2: 600},
+		commitments: map[uint64]opstack.L2Commitment{500: commitment},
+	}
 	srv := server.New(map[string]*opstack.OpStackAttestor{
 		"op-test":   newVerifyAttestor(t, "op-test", rep),
 		"base-test": newVerifyAttestor(t, "base-test", rep),
 	})
 	c := attestorpb.NewAttestorServiceClient(dial(t, srv))
+	req := func(srcChain string) *attestorpb.VerifyStateRootRequest {
+		return &attestorpb.VerifyStateRootRequest{
+			SrcChain:          srcChain,
+			BlockNumber:       500,
+			ExpectedStateRoot: commitment.StateRoot.Bytes(),
+			RunMode:           attestorpb.RunMode_RUN_MODE_FINALIZED,
+		}
+	}
 
-	_, err := c.VerifyStateRoot(context.Background(), &attestorpb.VerifyStateRootRequest{
+	if _, err := c.VerifyStateRoot(context.Background(), req("")); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("omitted src_chain: code = %v, want InvalidArgument", status.Code(err))
+	}
+	if _, err := c.VerifyStateRoot(context.Background(), req("nope")); status.Code(err) != codes.NotFound {
+		t.Fatalf("unknown src_chain: code = %v, want NotFound", status.Code(err))
+	}
+	resp, err := c.VerifyStateRoot(context.Background(), req("op-test"))
+	if err != nil {
+		t.Fatalf("named src_chain: %v", err)
+	}
+	if !resp.GetValid() {
+		t.Fatal("valid = false for the replica's own block under a named src_chain")
+	}
+}
+
+// A single-chain daemon has nothing to disambiguate, so an older caller that
+// omits src_chain keeps working.
+func TestVerifyStateRootAcceptsOmittedSrcChainWhenOnlyOneIsServed(t *testing.T) {
+	srv, commitment := verifyFixture(t)
+	c := attestorpb.NewAttestorServiceClient(dial(t, srv))
+
+	resp, err := c.VerifyStateRoot(context.Background(), &attestorpb.VerifyStateRootRequest{
 		BlockNumber:       500,
-		ExpectedStateRoot: common.HexToHash("0xbb22").Bytes(),
+		ExpectedStateRoot: commitment.StateRoot.Bytes(),
 		RunMode:           attestorpb.RunMode_RUN_MODE_FINALIZED,
 	})
-	if got := status.Code(err); got != codes.FailedPrecondition {
-		t.Fatalf("code = %v, want FailedPrecondition", got)
+	if err != nil {
+		t.Fatalf("VerifyStateRoot without src_chain on a single-chain server: %v", err)
+	}
+	if !resp.GetValid() {
+		t.Fatal("valid = false")
 	}
 }

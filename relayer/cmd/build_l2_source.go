@@ -192,7 +192,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	// account proof, and nothing about that is chain-specific any more. It takes the
 	// same attestor the source gates heights on, so the block it packages is bound to
 	// what that attestor's replica actually has at that height.
-	headerBuilder := l2rollup.NewAttestedHeaderBuilder(l2, router, attestor, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
+	headerBuilder := l2rollup.NewAttestedHeaderBuilder(l2, router, attestor, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
 
 	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, attestor, includeProvisional).
 		WithLogScanChunk(cfg.LogScanChunk)

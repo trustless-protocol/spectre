@@ -51,7 +51,7 @@ func TestBindToAttestation_RejectsABlockTheAttestorDoesNotRecognise(t *testing.T
 // would pass headers the source would never have approved.
 func TestBindToAttestation_SendsTheBlockIdentityAndRunMode(t *testing.T) {
 	at := &fakeAttestor{verifyValid: true}
-	b := &attestedHeaderBuilder{attestor: at, runMode: attestorpb.RunMode_RUN_MODE_FINALIZED, name: "l2-arbitrum"}
+	b := &attestedHeaderBuilder{attestor: at, srcChain: "arbdev", runMode: attestorpb.RunMode_RUN_MODE_FINALIZED, name: "l2-arbitrum"}
 	header := testL2Header(t)
 
 	if err := b.bindToAttestation(context.Background(), 4096, header); err != nil {
@@ -68,6 +68,11 @@ func TestBindToAttestation_SendsTheBlockIdentityAndRunMode(t *testing.T) {
 	}
 	if at.gotVerifyMode != attestorpb.RunMode_RUN_MODE_FINALIZED {
 		t.Errorf("run mode = %v, want RUN_MODE_FINALIZED", at.gotVerifyMode)
+	}
+	// A daemon serving several chains verifies against the wrong replica without
+	// this, and a wrong replica answers valid=false for a good header.
+	if at.gotVerifySrcChain != "arbdev" {
+		t.Errorf("src_chain = %q, want the source's own key", at.gotVerifySrcChain)
 	}
 }
 

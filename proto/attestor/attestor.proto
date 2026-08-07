@@ -180,6 +180,16 @@ message VerifyStateRootRequest {
 
   // RunMode selects the replica finality level for this verification request.
   RunMode run_mode = 4;
+
+  // SrcChain names the chain to verify against, matching the src_chain of the
+  // oracle requests. It was missing while this RPC had a single caller, which
+  // left a daemon serving several chains unable to tell which replica was
+  // meant — and guessing answers valid=false for a perfectly good header,
+  // which the caller reads as a divergence rather than a misroute.
+  //
+  // Optional for compatibility: an empty value is accepted when the attestor
+  // serves exactly one chain, and rejected otherwise.
+  string src_chain = 5;
 }
 
 // VerifyStateRootResponse returns the replica's canonical block commitment.

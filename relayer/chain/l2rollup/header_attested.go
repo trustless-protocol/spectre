@@ -48,6 +48,7 @@ type attestedHeaderBuilder struct {
 	l2       *ethclient.Client  // L2 exec: l2_header + router eth_getProof
 	router   ethcommon.Address  // the L2 ICS26Router (rollup_profile.common.l2_router)
 	attestor AttestorClient     // nil in skip-finality mode, where nothing attests
+	srcChain string             // attestor src_chain key, same as the source's
 	runMode  attestorpb.RunMode // replica head the attestor must answer against
 	name     string             // registry builder name, for logs and errors
 
@@ -60,8 +61,8 @@ type attestedHeaderBuilder struct {
 // attestor may be nil, which disables the binding check — that is skip-finality mode,
 // where Source.RelayableHeight also degrades to the raw L2 head and there is no
 // attestation to bind to in the first place.
-func NewAttestedHeaderBuilder(l2 *ethclient.Client, router ethcommon.Address, attestor AttestorClient, runMode attestorpb.RunMode, name string) HeaderBuilder {
-	return &attestedHeaderBuilder{l2: l2, router: router, attestor: attestor, runMode: runMode, name: name}
+func NewAttestedHeaderBuilder(l2 *ethclient.Client, router ethcommon.Address, attestor AttestorClient, srcChain string, runMode attestorpb.RunMode, name string) HeaderBuilder {
+	return &attestedHeaderBuilder{l2: l2, router: router, attestor: attestor, srcChain: srcChain, runMode: runMode, name: name}
 }
 
 func (a *attestedHeaderBuilder) Name() string { return a.name }
@@ -106,7 +107,7 @@ func (a *attestedHeaderBuilder) bindToAttestation(ctx context.Context, height ui
 	}
 	stateRoot := l2Header.Root
 	blockHash := l2Header.Hash()
-	valid, err := a.attestor.VerifyStateRoot(ctx, height, stateRoot.Bytes(), blockHash.Bytes(), a.runMode)
+	valid, err := a.attestor.VerifyStateRoot(ctx, a.srcChain, height, stateRoot.Bytes(), blockHash.Bytes(), a.runMode)
 	if errors.Is(err, ErrVerifyStateRootUnsupported) {
 		// Every in-tree attestor now serves this RPC, so reaching here means the
 		// deployed attestor binary predates it. Relayer and attestor ship

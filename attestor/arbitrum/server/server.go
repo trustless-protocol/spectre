@@ -254,6 +254,15 @@ func (s *AttestorServer) VerifyStateRoot(
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
+	// src_chain is optional here — this server has a single Nitro runtime, so there
+	// is no replica to choose between. It is still checked when supplied, so a
+	// caller aimed at the wrong daemon gets a misroute error instead of a
+	// confident answer about a chain it did not ask about.
+	if srcChain := request.GetSrcChain(); srcChain != "" {
+		if _, ok := s.feeds[srcChain]; !ok {
+			return nil, status.Errorf(codes.NotFound, "source chain %q is not configured", srcChain)
+		}
+	}
 	head, err := s.runtime.Head(ctx, runMode)
 	if errors.Is(err, ethereum.NotFound) {
 		return nil, status.Errorf(codes.Unavailable, "Nitro %s head is not available", runMode)
