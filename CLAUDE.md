@@ -117,6 +117,7 @@ Read `docs/ARCHITECTURE.md` + `docs/DESIGN.md` before any code change; read the 
 | [docs/L2_CLIENTS.md](docs/L2_CLIENTS.md) | OP, Base, or Arbitrum ICS-08 client work |
 | [docs/RELIABILITY.md](docs/RELIABILITY.md) | Relayer work — error handling, known risks, recovery |
 | [docs/QUALITY.md](docs/QUALITY.md) | Adding or altering tests / CI |
+| [docs/E2E.md](docs/E2E.md) | Bringing up a devnet or running an end-to-end relay |
 | [docs/PRODUCT_SENSE.md](docs/PRODUCT_SENSE.md) | User-facing flows, token-transfer semantics |
 | [docs/logging.md](docs/logging.md), [docs/metrics.md](docs/metrics.md) | Observability work |
 | `docs/benchmark/` | THE only source of performance numbers |

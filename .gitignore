@@ -28,6 +28,10 @@ pnpm-lock.yaml
 yarn.lock
 soljson-latest.js
 config.json
+# Filled-in l2-config for a real deployment: real router address, real wasm
+# checksum, real endpoints. The *.example.json templates are the tracked ones.
+relayer/*-l2-config.json
+!relayer/*-l2-config.example.json
 scripts/ethgenesis/client_state.json
 scripts/ethgenesis/consensus_state.json
 .envrc
