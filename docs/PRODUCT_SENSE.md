@@ -62,7 +62,6 @@ Multiple packets can be batched into a single proof submission:
 - `relayer genesis` — generate genesis state
 
 **JSON config** (`relayer/config.example.json`):
-- Top-level `server` block: log_level, address, port
 - `modules` array with named entries — **one `cosmos_to_eth` per Cosmos source** (each with a distinct `ics26_client_id`) plus one `eth_to_cosmos` — each with `src_chain`, `dst_chain`, and `config`:
   - `cosmos_to_eth` config: tm_rpc_url, ics26_address, eth_rpc_url, spectre_client, signature_verifier, membership, misbehaviour, update_client, and optional fields: fetch_timeout (timeout in seconds for queries, default 15), trusting_period, trust_level, proof_type, rotation_threshold (pinned-set overlap fraction that triggers `updateConsensusState`, default "5/6", must exceed 2/3; "1/1" rotates on any change), refresh_interval_seconds (background client-freshness routine interval, default 86400)
   - `eth_to_cosmos` config: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address

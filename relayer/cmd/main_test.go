@@ -186,6 +186,40 @@ func TestLoadConfigRejectsDeprecatedBatchConfig(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_IgnoresLegacyServerBlock pins the compatibility half of dropping
+// the dead `server` block: operators' existing config.json files still carry it,
+// and they must keep loading. encoding/json ignores unknown members and nothing
+// here sets DisallowUnknownFields, so this holds — the test exists to keep it that
+// way, because turning on strict decoding later would break every deployed config.
+func TestLoadConfig_IgnoresLegacyServerBlock(t *testing.T) {
+	t.Parallel()
+
+	raw := `{
+	  "server": {"address": "127.0.0.1", "log_level": "info", "port": 3000},
+	  "batch": {"batch_period_seconds": 3, "batch_size": 5},
+	  "modules": [{"name":"c2e","src_chain":"cosmos","dst_chain":"ethereum","config":{
+	    "tm_rpc_url":"http://tm","eth_rpc_url":"http://eth",
+	    "ics26_address":"0x1111111111111111111111111111111111111111",
+	    "ics26_client_id":"cosmoshub-1"}}]}`
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig rejected a config carrying the legacy server block: %v", err)
+	}
+	if cfg.CosmosToEthConfig.ICS26ClientID != "cosmoshub-1" {
+		t.Errorf("ics26_client_id = %q, want cosmoshub-1", cfg.CosmosToEthConfig.ICS26ClientID)
+	}
+	if cfg.BatchConfig.BatchSize != 5 {
+		t.Errorf("batch_size = %d, want 5 — the rest of the config must still parse",
+			cfg.BatchConfig.BatchSize)
+	}
+}
+
 func TestLoadConfigExample(t *testing.T) {
 	t.Parallel()
 

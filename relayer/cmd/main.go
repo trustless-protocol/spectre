@@ -155,19 +155,18 @@ func classifyModule(m configModule) (dir moduleDirection, isLegacy bool, err err
 	}
 }
 
-type serverConfig struct {
-	LogLevel string `json:"log_level"`
-	Address  string `json:"address"`
-	Port     uint64 `json:"port"`
-}
-
 type batchConfig struct {
 	BatchSize          uint8  `json:"batch_size"`
 	BatchPeriodSeconds uint64 `json:"batch_period_seconds"`
 }
 
+// jsonConfig deliberately has no `server` member. One existed — log_level, address,
+// port — and nothing ever read it: the relayer opens no listener at all, so there
+// was no HTTP endpoint, no configurable bind address, and no way for log_level to
+// affect anything. Configs that still carry the block keep loading, because
+// encoding/json ignores unknown members and nothing here sets
+// DisallowUnknownFields (pinned by TestLoadConfig_IgnoresLegacyServerBlock).
 type jsonConfig struct {
-	Server                serverConfig     `json:"server"`
 	Batch                 batchConfig      `json:"batch"`
 	DeprecatedBatchConfig *json.RawMessage `json:"batch_config"`
 	Modules               []configModule   `json:"modules"`
