@@ -20,7 +20,10 @@
 #   OP_RETH_BIN, OP_NODE_BIN, L1_BEACON_URL (mode 2)
 #
 # Optional env (defaults in parentheses):
-#   NETWORK (op-mainnet)            op-node --network / chain preset
+#   NETWORK                         op-node --network / chain preset. REQUIRED when
+#       this script spawns its own op-node; ignored when OP_NODE_RPC_URL points at
+#       an existing replica (the normal local-devnet path, where
+#       run_optimism_node.sh exports it).
 #   SRC_CHAIN ($NETWORK)            src_chain label in the config
 #   ATTESTATION_HEAD (finalized)    finalized | safe | unsafe
 #   METRICS_PORT (3000)  GRPC_PORT (3001)  OP_NODE_RPC_PORT (9545)  AUTHRPC_PORT (8551)
@@ -77,7 +80,12 @@ if [ -z "${OP_NODE_RPC_URL:-}" ] && [ -f "$DEVNET_ENV" ]; then
     . "$DEVNET_ENV"
 fi
 
-NETWORK=${NETWORK:-op-mainnet}
+# No default: this only matters when the script spawns its own op-node (i.e. when
+# OP_NODE_RPC_URL is unset), and in that case guessing is worse than failing. The
+# op-mainnet preset that used to be the default would start happily against a local
+# devnet and serve output roots for a completely different chain, which surfaces
+# much later as an on-chain proof rejection rather than a startup error.
+NETWORK=${NETWORK:-}
 SRC_CHAIN=${SRC_CHAIN:-$NETWORK}
 ATTESTATION_HEAD=${ATTESTATION_HEAD:-finalized}
 METRICS_PORT=${METRICS_PORT:-3000}
@@ -169,6 +177,8 @@ else
 
     wait_until 60 "op-reth engine API listening on :$AUTHRPC_PORT" \
         bash -c "exec 3<>/dev/tcp/127.0.0.1/$AUTHRPC_PORT"
+
+    : "${NETWORK:?NETWORK is required when this script spawns its own op-node (set it to the rollup this devnet runs, or set OP_NODE_RPC_URL to an existing replica — run_optimism_node.sh exports one)}"
 
     log "starting op-node (log: $RUN_DIR/op-node.log)"
     # Sequencer mode stays off (default): the replica must remain a pure

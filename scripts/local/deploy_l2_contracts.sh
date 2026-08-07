@@ -29,7 +29,8 @@ set -euxo pipefail
 #                                       indistinguishable from Optimism's by chain
 #                                       alone. Set MODULE_NAME=cosmos-to-base.
 #   RELAYER_CONFIG                      relayer config to patch
-#                                       (default: relayer/config.example.json)
+#                                       (default: relayer/config.json — examples are
+#                                       never written to)
 #   L2_RPC / L2_ENV_FILE                see endpoint source above
 #   L2_WS                               optional L2 exec WS to patch (eth_ws_url)
 #   L2_DEPLOYER_PRIVATE_KEY / _ADDRESS  deployer funded on the L2 (defaults to the
@@ -42,11 +43,22 @@ cd "$(dirname "$0")/../.."
 REPO_ROOT=$PWD
 
 DST_CHAIN=${DST_CHAIN:-opstack}
-RELAYER_CONFIG=${RELAYER_CONFIG:-$REPO_ROOT/relayer/config.example.json}
+# An example file is documentation: it must keep working as a thing to copy, which
+# it cannot do if a script rewrites it. Default to the live config instead, and say
+# so when it is missing rather than silently editing a template nobody runs.
+RELAYER_CONFIG=${RELAYER_CONFIG:-$REPO_ROOT/relayer/config.json}
 case "$RELAYER_CONFIG" in
     /*) ;;
     *) RELAYER_CONFIG=$REPO_ROOT/$RELAYER_CONFIG ;;
 esac
+[ -f "$RELAYER_CONFIG" ] || {
+    echo "ERROR: relayer config not found: $RELAYER_CONFIG" >&2
+    echo "  Copy one of the examples and edit it, then re-run:" >&2
+    echo "    cp relayer/config.example.json relayer/config.json                   # local devnet" >&2
+    echo "    cp relayer/config.arbitrum-sepolia.example.json relayer/config.json  # Arbitrum Sepolia" >&2
+    echo "  Or point RELAYER_CONFIG at the file you want patched." >&2
+    exit 1
+}
 
 # ---------------------------------------------------------------- endpoint ---
 if [ -z "${L2_RPC:-}" ]; then
@@ -80,6 +92,27 @@ fi
 # Default is the well-known devnet key, prefunded on both stacks; override for a real L2.
 L2_DEPLOYER_ADDRESS=${L2_DEPLOYER_ADDRESS:-0x8943545177806ED17B9F23F0a21ee5948eCaa776}
 L2_DEPLOYER_PRIVATE_KEY=${L2_DEPLOYER_PRIVATE_KEY:-bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31}
+
+# The two must be the same account. forge resolves msg.sender from --sender, so the
+# script's `new SignatureVerifier(msg.sender)` records that address as owner, while
+# the transaction itself is signed by --private-key. Overriding only one of them
+# deploys a contract owned by somebody else and the very next call fails:
+#
+#   SignatureVerifier::setBucket(...) -> [Revert] NotOwner()
+#
+# which reads like a permissions bug in the contract rather than a mismatched flag.
+# Overriding just the key is the easy mistake, since the address has a default.
+if command -v cast >/dev/null 2>&1; then
+    DERIVED_ADDRESS=$(cast wallet address --private-key "$L2_DEPLOYER_PRIVATE_KEY" 2>/dev/null || true)
+    if [ -n "$DERIVED_ADDRESS" ] &&
+        [ "$(printf '%s' "$DERIVED_ADDRESS" | tr 'A-Z' 'a-z')" != "$(printf '%s' "$L2_DEPLOYER_ADDRESS" | tr 'A-Z' 'a-z')" ]; then
+        echo "ERROR: L2_DEPLOYER_ADDRESS and L2_DEPLOYER_PRIVATE_KEY are different accounts." >&2
+        echo "  L2_DEPLOYER_ADDRESS: $L2_DEPLOYER_ADDRESS" >&2
+        echo "  key derives to:      $DERIVED_ADDRESS" >&2
+        echo "Set both to the same account (and to relayer/.env ETH_PRIVATE_KEY), or neither." >&2
+        exit 1
+    fi
+fi
 
 echo "DST_CHAIN: $DST_CHAIN"
 echo "L2_RPC:    $L2_RPC"

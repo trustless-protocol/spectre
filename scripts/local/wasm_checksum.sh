@@ -1,4 +1,25 @@
 # Helpers for local 08-wasm proposal scripts.
+#
+# Why these derive the checksum instead of reading one out of the chain's list:
+#
+# `gaiad q ibc-wasm checksums` returns a collections.KeySet, which paginates in
+# ASCENDING KEY ORDER — sorted by checksum bytes, not by when each was stored. So
+# neither `.checksums[0]` nor `.checksums[-1]` reliably names the wasm a script
+# just stored; which one happens to be right depends on how the hashes sort
+# against every other wasm already on the chain.
+#
+# That is not a display bug. The printed value is what the operator pastes into
+# `create-clients-cosmos --wasm-checksum` / `--l2-config`, so picking the wrong
+# entry creates the client with ANOTHER client's wasm code. The failure then
+# lands much later and names the wrong thing:
+#
+#   deserializing client state failed: missing field chain_id
+#
+# — the Ethereum client's code rejecting an L2 profile, which sends you debugging
+# the profile instead of the checksum that selected the wrong code.
+#
+# The checksum is just the sha256 of the UNCOMPRESSED wasm, so computing it from
+# the proposal is exact and independent of what else is stored.
 
 wasm_checksum_from_proposal() {
     proposal_file=$1

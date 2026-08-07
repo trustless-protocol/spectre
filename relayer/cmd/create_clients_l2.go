@@ -95,10 +95,38 @@ func loadL2ClientConfig(path string) (*l2ClientConfig, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse l2-config %s: %w", path, err)
 	}
+	if err := rejectRelayerConfigAsL2Config(path, data); err != nil {
+		return nil, err
+	}
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
+}
+
+// rejectRelayerConfigAsL2Config catches the relayer's own config.json being passed
+// to --l2-config.
+//
+// The two files share a name in conversation ("the config") but not a schema, and
+// the mistake is easy: both live in relayer/, and the flag takes a path. Without
+// this the failure is "l2-config: wasm_checksum is required" — a field-level
+// complaint that sends the operator hunting for a missing value in a file that was
+// never the right one.
+func rejectRelayerConfigAsL2Config(path string, data []byte) error {
+	var probe struct {
+		Modules []json.RawMessage `json:"modules"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return nil // not object-shaped; the normal parse/validate errors are clearer
+	}
+	if len(probe.Modules) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s looks like the relayer config (it has a \"modules\" array), not an l2-config. "+
+			"--l2-config takes a separate per-rollup file with wasm_checksum, l2_rpc_url and "+
+			"rollup_profile at the top level; see relayer/op-l2-config.example.json or "+
+			"relayer/base-l2-config.example.json", path)
 }
 
 // runCreateClientsL2 bootstraps one L2 rollup wasm light client on Cosmos: it reads

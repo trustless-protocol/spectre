@@ -255,6 +255,56 @@ func toGroth16ValidatorSet(in relayerclient.ContractValidatorSet) spectreContrac
 	}
 }
 
+// baseFeeHeadroomPercent is how far above the current base fee a price is lifted
+// before it is used. EIP-1559 lets the base fee rise 12.5% per block, so 100%
+// covers roughly six consecutive full blocks — enough for the gap between reading
+// a price and the transaction landing, without overpaying: the base fee is burned
+// at its actual value, and the excess is refunded.
+const baseFeeHeadroomPercent = 100
+
+// gasPriceWithBaseFeeHeadroom lifts a suggested price clear of the current base
+// fee.
+//
+// SuggestGasPrice reflects the chain at the moment it is called. On a chain whose
+// base fee is climbing, the value is already stale by the time it reaches
+// EstimateGas, and the node rejects the call outright:
+//
+//	max fee per gas less than block base fee: maxFeePerGas: 21486000, baseFee: 22414000
+//
+// which surfaces as an estimation failure rather than a pricing one. Local devnets
+// never show this — their base fee sits at the floor — so it only appears against
+// a public network, at the point where a deployment is being set up.
+//
+// A failure to read the header leaves the suggested price untouched: this is a
+// safety margin, not a correctness requirement.
+func gasPriceWithBaseFeeHeadroom(stdCtx context.Context, ctx services.Context, suggested *big.Int) *big.Int {
+	header, err := ctx.EthClient().HeaderByNumber(stdCtx, nil)
+	if err != nil || header == nil || header.BaseFee == nil {
+		return suggested
+	}
+	lifted := liftAboveBaseFee(suggested, header.BaseFee)
+	if lifted != suggested {
+		log.Printf("[gas] lifting suggested price %v to %v to clear base fee %v",
+			suggested, lifted, header.BaseFee)
+	}
+	return lifted
+}
+
+// liftAboveBaseFee raises a price to baseFee + headroom when it sits below that,
+// and otherwise returns it untouched. Split out from the RPC call so the
+// arithmetic is testable on its own.
+func liftAboveBaseFee(suggested, baseFee *big.Int) *big.Int {
+	if baseFee == nil {
+		return suggested
+	}
+	floor := new(big.Int).Mul(baseFee, big.NewInt(100+baseFeeHeadroomPercent))
+	floor.Div(floor, big.NewInt(100))
+	if suggested == nil || suggested.Cmp(floor) < 0 {
+		return floor
+	}
+	return suggested
+}
+
 func estimateCosmosClientDeployGas(
 	stdCtx context.Context,
 	ctx services.Context,
@@ -284,7 +334,7 @@ func estimateCosmosClientDeployGas(
 	deployData := append(common.FromHex(spectreContract.ContractSpectreClientBin), constructorInput...)
 	estimate, err := ctx.EthClient().EstimateGas(stdCtx, ethereum.CallMsg{
 		From:     from,
-		GasPrice: gasPrice,
+		GasPrice: gasPriceWithBaseFeeHeadroom(stdCtx, ctx, gasPrice),
 		Value:    big.NewInt(0),
 		Data:     deployData,
 	})
@@ -1878,6 +1928,11 @@ func (h *Handler) executeWithRetryAndResubmission(
 					}
 				}
 			}
+
+			// Clear the current base fee: the suggestion was read a moment ago and a
+			// rising base fee makes it stale, which the node rejects outright rather
+			// than queueing.
+			gasPrice = gasPriceWithBaseFeeHeadroom(stdCtx, ctx, gasPrice)
 
 			auth.GasPrice = gasPrice
 			auth.GasTipCap = nil
