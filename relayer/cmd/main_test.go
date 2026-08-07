@@ -214,7 +214,7 @@ func TestLoadConfigIgnoresPrunedFields(t *testing.T) {
 	legacy := `{
 		"modules": [
 			{"name": "cosmos_to_eth", "src_chain": "test", "dst_chain": "0x1",
-			 "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3"}},
+			 "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545", "eth_ws_url": "ws://localhost:8546", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3"}},
 			{"name": "eth_to_cosmos", "dst_chain": "test",
 			 "config": {"eth_beacon_api_url": "http://localhost:5052", "tm_rpc_url": "http://localhost:26657", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "signer_address": "cosmos1abc"}}
 		]
@@ -265,9 +265,9 @@ func TestLoadConfigMultipleCosmosSources(t *testing.T) {
 	cfgJSON := `{
 		"modules": [
 			{"name": "cosmos_to_eth", "src_chain": "chain-a",
-			 "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-a"}},
+			 "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545", "eth_ws_url": "ws://localhost:8546", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-a"}},
 			{"name": "cosmos_to_eth", "src_chain": "chain-b",
-			 "config": {"tm_rpc_url": "http://localhost:36657", "eth_rpc_url": "http://localhost:8545", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-b"}},
+			 "config": {"tm_rpc_url": "http://localhost:36657", "eth_rpc_url": "http://localhost:8545", "eth_ws_url": "ws://localhost:8546", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-b"}},
 			{"name": "eth_to_cosmos", "config": {"eth_beacon_api_url": "http://localhost:5052"}}
 		]
 	}`
@@ -303,8 +303,8 @@ func TestLoadConfigRejectsDuplicateClientID(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	cfgJSON := `{
 		"modules": [
-			{"name": "cosmos_to_eth", "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "dup"}},
-			{"name": "cosmos_to_eth", "config": {"tm_rpc_url": "http://localhost:36657", "eth_rpc_url": "http://localhost:8545", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "dup"}}
+			{"name": "cosmos_to_eth", "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545", "eth_ws_url": "ws://localhost:8546", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "dup"}},
+			{"name": "cosmos_to_eth", "config": {"tm_rpc_url": "http://localhost:36657", "eth_rpc_url": "http://localhost:8545", "eth_ws_url": "ws://localhost:8546", "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "dup"}}
 		]
 	}`
 	if err := os.WriteFile(configPath, []byte(cfgJSON), configFilePerm); err != nil {
@@ -489,4 +489,104 @@ func TestSelectSource(t *testing.T) {
 			t.Fatalf("error = %v, want ambiguous-source error", err)
 		}
 	})
+}
+
+// An eth_to_cosmos module without a websocket used to start and then run half-dead:
+// the forward direction relayed, SubscribeEth bailed out after one log line, and no
+// acknowledgement was ever picked up. Refuse to START on that config.
+func TestValidateRelayStartupConfigRequiresEthWs(t *testing.T) {
+	const cfg = `{
+		"modules": [
+			{"name": "cosmos_to_eth", "src_chain": "cosmos", "dst_chain": "ethereum",
+			 "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545",
+			            "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-a"}},
+			{"name": "eth_to_cosmos", "src_chain": "ethereum", "dst_chain": "cosmos",
+			 "config": {"eth_beacon_api_url": "http://localhost:5052"}}
+		]
+	}`
+	appCfg, err := loadConfig(writeTempConfig(t, cfg))
+	if err != nil {
+		t.Fatalf("loadConfig must accept this — create-clients-* never read eth_ws_url: %v", err)
+	}
+	err = validateRelayStartupConfig(appCfg)
+	if err == nil {
+		t.Fatal("start accepted eth_to_cosmos without eth_ws_url; the ETH→Cosmos direction cannot run")
+	}
+	if !strings.Contains(err.Error(), "eth_ws_url") {
+		t.Fatalf("error should name the missing field, got: %v", err)
+	}
+}
+
+// Multi-source is a supported deployment, and runAdapterEngine spawns an eth->cosmos
+// leg per source using that source's own eth_ws_url. Checking only the first source
+// let every later one reach the same half-dead state the guard exists to prevent.
+func TestValidateRelayStartupConfigChecksEverySource(t *testing.T) {
+	const cfg = `{
+		"modules": [
+			{"name": "cosmos_to_eth_a", "src_chain": "cosmos", "dst_chain": "ethereum",
+			 "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545",
+			            "eth_ws_url": "ws://localhost:8546",
+			            "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-a"}},
+			{"name": "cosmos_to_eth_b", "src_chain": "cosmos", "dst_chain": "ethereum",
+			 "config": {"tm_rpc_url": "http://localhost:36657", "eth_rpc_url": "http://localhost:8545",
+			            "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-b"}},
+			{"name": "eth_to_cosmos", "src_chain": "ethereum", "dst_chain": "cosmos",
+			 "config": {"eth_beacon_api_url": "http://localhost:5052"}}
+		]
+	}`
+	appCfg, err := loadConfig(writeTempConfig(t, cfg))
+	if err != nil {
+		t.Fatalf("loadConfig must accept this: %v", err)
+	}
+	err = validateRelayStartupConfig(appCfg)
+	if err == nil {
+		t.Fatal("start accepted a second source with no eth_ws_url; its ETH→Cosmos leg cannot run")
+	}
+	if !strings.Contains(err.Error(), "eth_ws_url") {
+		t.Fatalf("error should name the missing field, got: %v", err)
+	}
+	// The operator has to know WHICH source is short, not just that one is.
+	if !strings.Contains(err.Error(), "chain-b") {
+		t.Fatalf("error should identify the offending source, got: %v", err)
+	}
+}
+
+// The client-creation commands share loadConfig but never read eth_ws_url
+// (build_source.go, reached only from `start`, is its sole consumer). Rejecting a
+// missing websocket at load time blocked create-clients-cosmos on a field it does
+// not use — the config below must load, and only `start` may refuse it.
+func TestLoadConfigAcceptsMissingEthWsForClientCreation(t *testing.T) {
+	const cfg = `{
+		"modules": [
+			{"name": "cosmos_to_eth", "src_chain": "cosmos", "dst_chain": "ethereum",
+			 "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545",
+			            "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-a"}},
+			{"name": "eth_to_cosmos", "src_chain": "ethereum", "dst_chain": "cosmos",
+			 "config": {"eth_beacon_api_url": "http://localhost:5052"}}
+		]
+	}`
+	if _, err := loadConfig(writeTempConfig(t, cfg)); err != nil {
+		t.Fatalf("loadConfig rejected a config create-clients-cosmos can run: %v", err)
+	}
+}
+
+// The same config with a websocket must load AND start.
+func TestLoadConfigAcceptsEthToCosmosWithWs(t *testing.T) {
+	const cfg = `{
+		"modules": [
+			{"name": "cosmos_to_eth", "src_chain": "cosmos", "dst_chain": "ethereum",
+			 "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545",
+			            "eth_ws_url": "ws://localhost:8546",
+			            "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-a"}},
+			{"name": "eth_to_cosmos", "src_chain": "ethereum", "dst_chain": "cosmos",
+			 "config": {"eth_beacon_api_url": "http://localhost:5052"}}
+		]
+	}`
+	appCfg, err := loadConfig(writeTempConfig(t, cfg))
+	if err != nil {
+		t.Fatalf("loadConfig rejected a complete config: %v", err)
+	}
+	if err := validateRelayStartupConfig(appCfg); err != nil {
+		t.Fatalf("start rejected a complete config: %v", err)
+	}
 }

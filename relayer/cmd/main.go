@@ -690,6 +690,13 @@ func loadConfig(configPath string) (*appConfig, error) {
 
 	// Validate eth_to_cosmos config if populated. Only eth_beacon_api_url is
 	// consumed for the ETH→Cosmos direction.
+	//
+	// eth_ws_url is deliberately NOT required here — see validateRelayStartupConfig,
+	// which `start` calls. loadConfig is shared with create-clients-cosmos,
+	// create-clients-eth and update-client, none of which ever read EthWsUrl
+	// (build_source.go is the only consumer, and it runs from `start` alone), so
+	// rejecting a missing websocket at load time blocks client creation on a
+	// field that command will not use.
 	if e2c.BeaconUrl != "" {
 		if err := validateURL(e2c.BeaconUrl, "eth_to_cosmos.eth_beacon_api_url"); err != nil {
 			return nil, err
@@ -720,6 +727,39 @@ func loadConfig(configPath string) (*appConfig, error) {
 		L2ToCosmosConfigs:  l2List,
 		BatchConfig:        batch,
 	}, nil
+}
+
+// validateRelayStartupConfig rejects a config that would start the relay loop
+// half-dead. It is called by `start` only — NOT by loadConfig, which the
+// client-creation commands share.
+//
+// Configuring eth_to_cosmos states the intent to relay that direction, and it
+// cannot run without a websocket: SubscribeEth needs eth_subscribe, which HTTP
+// cannot serve. Without this check the relayer starts, logs a single
+// "eth websocket URL is not configured" line while the prover is still loading,
+// and then runs half-dead — the forward direction works, nothing ever picks up an
+// acknowledgement, and no later line says why. Fail before the prover load instead.
+//
+// Every source is checked, not just the first: runAdapterEngine spawns an
+// eth->cosmos leg per cosmos_to_eth source, and each leg subscribes with that
+// source's own eth_ws_url (build_source.go passes c2e.EthWsUrl into its context).
+// Validating only CosmosToEthConfigs[0] left every later source free to fail
+// exactly this way.
+func validateRelayStartupConfig(cfg *appConfig) error {
+	if cfg == nil || cfg.EthToCosmosConfig.BeaconUrl == "" {
+		return nil
+	}
+	for i := range cfg.CosmosToEthConfigs {
+		if cfg.CosmosToEthConfigs[i].EthWsUrl != "" {
+			continue
+		}
+		return fmt.Errorf(
+			"eth_to_cosmos is configured but cosmos_to_eth[%d] (ics26_client_id %q) has an empty eth_ws_url; "+
+				"the ETH→Cosmos direction subscribes to ICS26Router events over eth_subscribe "+
+				"and cannot run without a ws:// or wss:// endpoint",
+			i, cfg.CosmosToEthConfigs[i].ICS26ClientID)
+	}
+	return nil
 }
 
 // resolveBeaconURL returns the L1 beacon endpoint to create/advance the Ethereum
@@ -1531,6 +1571,12 @@ func Start(logger *zap.Logger) *cobra.Command {
 			cfg, err := loadConfig(configPath)
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
+			}
+			// Checks that only apply to relaying, so they live here rather than in
+			// the shared loadConfig. Run before the prover load: a config error
+			// should surface immediately, not after the bucket registry is read.
+			if err := validateRelayStartupConfig(cfg); err != nil {
+				return err
 			}
 
 			// Load the prover once and share it across every source loop — the

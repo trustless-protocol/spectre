@@ -603,22 +603,15 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, ctx Context, checksum s
 	log.Printf("[CreateEthClient] finality update fetched: attestedSlot=%s finalizedSlot=%s signatureSlot=%s",
 		finalityUpdate.AttestedHeader.Beacon.Slot, checkpointSlot, finalityUpdate.SignatureSlot)
 
-	log.Printf("[CreateEthClient] fetching beacon block root for slot=%s", checkpointSlot)
-	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
-	blockRoot, err := relayerclient.GetBeaconBlockRoot(bctx, beaconAPIURL, checkpointSlot)
-	bcancel()
+	slotsPerEpoch, err := strconv.ParseUint(spec.SlotsPerEpoch, 10, 64)
 	if err != nil {
-		return "", fmt.Errorf("failed to get beacon block root: %w", err)
+		return "", fmt.Errorf("parse slots_per_epoch %q: %w", spec.SlotsPerEpoch, err)
 	}
-	log.Printf("[CreateEthClient] beacon block root=%s", blockRoot)
-
-	log.Printf("[CreateEthClient] fetching light client bootstrap")
-	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
-	bootstrap, err := relayerclient.GetLightClientBootstrap(bctx, beaconAPIURL, blockRoot)
-	bcancel()
+	checkpointSlot, blockRoot, bootstrap, err := resolveBootstrapCheckpoint(beaconAPIURL, checkpointSlot, slotsPerEpoch)
 	if err != nil {
-		return "", fmt.Errorf("failed to get light client bootstrap: %w", err)
+		return "", err
 	}
+	log.Printf("[CreateEthClient] bootstrap checkpoint slot=%s root=%s", checkpointSlot, blockRoot)
 	log.Printf("[CreateEthClient] checkpointSlot=%s syncCommittee.AggregatePubkey=%s",
 		checkpointSlot, bootstrap.Data.CurrentSyncCommittee.AggregatePubkey)
 
@@ -674,10 +667,6 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, ctx Context, checksum s
 	}
 
 	secondsPerSlot, err := strconv.ParseUint(spec.SecondsPerSlot, 10, 64)
-	if err != nil {
-		return "", err
-	}
-	slotsPerEpoch, err := strconv.ParseUint(spec.SlotsPerEpoch, 10, 64)
 	if err != nil {
 		return "", err
 	}
@@ -1110,4 +1099,88 @@ func syncCommitteeForPeriod(
 			period, updateFinalizedSlot, err)
 	}
 	return bootstrap.Data.CurrentSyncCommittee, nil
+}
+
+// maxBootstrapCheckpointStepBack bounds how far back resolveBootstrapCheckpoint walks
+// looking for a servable checkpoint. One step is normally enough; the cap only stops a
+// pathological walk against a node that serves no bootstraps at all.
+const maxBootstrapCheckpointStepBack = 8
+
+// resolveBootstrapCheckpoint finds a finalized checkpoint the beacon will actually serve
+// a light-client bootstrap for, returning its slot, block root and bootstrap together so
+// the caller's later consistency check against the beacon block still holds.
+//
+// The finality update's finalized header is NOT always on an epoch boundary, despite
+// what the surrounding code used to assume. When the boundary slot is skipped — no block
+// proposed — the checkpoint root points back to the last block before it, and beacon
+// nodes index bootstraps by the block AT the boundary, so there is nothing to serve:
+//
+//	404 NOT_FOUND: Sync committee branch for block root 0x… not found. This typically
+//	occurs when the block is not a finalized checkpoint.
+//
+// Observed on Sepolia with a finalized slot at offset 31 within its epoch; every earlier
+// boundary answered 200. Client creation failed outright on that, and would keep failing
+// for as long as the condition held, so walk back a boundary at a time until one is
+// servable. An older checkpoint is a perfectly good trust anchor — it is still finalized,
+// only slightly further back.
+func resolveBootstrapCheckpoint(
+	beaconAPIURL, finalizedSlot string,
+	slotsPerEpoch uint64,
+) (string, string, *relayerclient.BootstrapResponse, error) {
+	slot, err := strconv.ParseUint(finalizedSlot, 10, 64)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("parse finalized slot %q: %w", finalizedSlot, err)
+	}
+	if slotsPerEpoch == 0 {
+		return "", "", nil, fmt.Errorf("slots_per_epoch is zero")
+	}
+
+	// stepBack moves to the previous epoch boundary, reporting false at the genesis
+	// epoch where there is no earlier boundary to try. Subtracting unguarded would wrap
+	// the unsigned slot around and send the next attempt at an absurd slot number.
+	boundary := slot - slot%slotsPerEpoch
+	stepBack := func() bool {
+		if boundary < slotsPerEpoch {
+			return false
+		}
+		boundary -= slotsPerEpoch
+		return true
+	}
+
+	var lastErr error
+	for attempt := 0; attempt < maxBootstrapCheckpointStepBack; attempt++ {
+		candidate := strconv.FormatUint(boundary, 10)
+
+		bctx, bcancel := context.WithTimeout(context.Background(), 15*time.Second)
+		root, rootErr := relayerclient.GetBeaconBlockRoot(bctx, beaconAPIURL, candidate)
+		bcancel()
+		if rootErr != nil {
+			// A skipped boundary slot has no block, so no root and no bootstrap.
+			lastErr = fmt.Errorf("block root at slot %s: %w", candidate, rootErr)
+			if !stepBack() {
+				break
+			}
+			continue
+		}
+
+		bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
+		bootstrap, bootErr := relayerclient.GetLightClientBootstrap(bctx, beaconAPIURL, root)
+		bcancel()
+		if bootErr != nil {
+			lastErr = fmt.Errorf("bootstrap at slot %s (root %s): %w", candidate, root, bootErr)
+			if !stepBack() {
+				break
+			}
+			continue
+		}
+		if attempt > 0 {
+			log.Printf("[CreateEthClient] finalized slot %s is not on a servable checkpoint; using slot %s (%d epoch(s) back)",
+				finalizedSlot, candidate, attempt)
+		}
+		return candidate, root, bootstrap, nil
+	}
+	return "", "", nil, fmt.Errorf(
+		"no servable light-client bootstrap within %d epochs below finalized slot %s; "+
+			"the beacon may not serve light_client/bootstrap at all: %w",
+		maxBootstrapCheckpointStepBack, finalizedSlot, lastErr)
 }
