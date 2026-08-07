@@ -507,6 +507,12 @@ ENV_FILE=$RUN_DIR/attestor.env
     printf 'export ASSERTIONS_MAPPING_SLOT=%q\n' "$ASSERTIONS_MAPPING_SLOT"
     printf 'export ASSERTION_STATUS_OFFSET=%q\n' "$ASSERTION_STATUS_OFFSET"
     printf 'export SRC_CHAIN=%q\n' arbdev
+    # Match what run_optimism_node.sh and run_base_node.sh hand off. Without this
+    # the Arbitrum attestor took the 150-block default and a local devnet paid a
+    # multi-minute return-direction wait for nothing — the frontier advances one
+    # derived root per gap, so the gap IS the latency floor. Named
+    # DERIVED_GAP_BLOCKS to match the other two stacks.
+    printf 'export DERIVED_GAP_BLOCKS=%q\n' 5
 } >"$ENV_FILE"
 chmod 600 "$ENV_FILE"
 

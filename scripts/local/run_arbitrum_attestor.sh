@@ -14,14 +14,22 @@
 # run_arbitrum_node.sh), that handoff is sourced automatically.
 #
 # Required env when not using the handoff:
-#   L1_RPC_URL, L1_CHAIN_ID, L2_RPC_URL, L2_WS_URL, L2_CHAIN_ID
-#   ROLLUP_CORE_ADDRESS, ROLLUP_DEPLOYMENT_BLOCK
+#   L1_RPC_URL, L2_RPC_URL, L2_WS_URL          endpoints — never defaulted
+#   L1_CHAIN_ID, L2_CHAIN_ID, ROLLUP_CORE_ADDRESS
+#       chain identity; a named CHAIN_PROFILE supplies all three, so with
+#       CHAIN_PROFILE=arbitrum-sepolia only the three endpoints are required.
+#   ROLLUP_DEPLOYMENT_BLOCK
+#       only when nothing else supplies the assertion scan start (a named
+#       profile does, via assertion_start_block).
 #
 # Optional env:
 #   CHAIN_PROFILE (devnet)             devnet, or a chain whose reference config
 #       exists at attestor/arbitrum/config.<profile>.json (e.g. arbitrum-sepolia).
-#       Supplies src_chain, the BoLD slot and offset, poll intervals, scan range
-#       and start block. Every one is overridable individually below.
+#       Supplies src_chain, the BoLD slot and offset, poll intervals, scan range,
+#       start block, RollupCore address and both chain ids. Every one is
+#       overridable individually below. Endpoints are deliberately NOT taken from
+#       it: the reference config names public ones, and quietly attesting against
+#       an endpoint the operator did not choose is worse than an error.
 #   ASSERTION_START_BLOCK              first L1 block of the assertion scan
 #   SRC_CHAIN                          relayer source-chain label
 #   ASSERTIONS_MAPPING_SLOT            BoLD _assertions mapping slot
@@ -38,11 +46,11 @@
 #       relayer does not need one, and an assertion lands long after the block it
 #       covers — assertions-only leaves the frontier hours behind for no gain.
 #       Matches the OP attestor default.
-#   DERIVED_ATTESTATION_GAP_BLOCKS (150)
+#   DERIVED_GAP_BLOCKS (150)
 #       Minimum L2-block gap between derived attestations, and therefore the floor
 #       on return-direction latency: a packet waits until the frontier reaches its
 #       block, and the frontier moves one derived root per gap. Lower it for a
-#       devnet or an E2E; see run_op_attestor.sh for the same knob on OP.
+#       devnet or an E2E. Same name and meaning as in run_op_attestor.sh.
 #   MAX_DERIVED_ROOTS (1000)
 #   ASSERTION_POLL_INTERVAL (2s)
 #   ASSERTION_MAX_BLOCK_RANGE (2000)
@@ -60,8 +68,20 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPO_ROOT=$PWD
 
+# The local-devnet handoff and a named public-chain profile are mutually
+# exclusive: the handoff exports ROLLUP_CORE_ADDRESS, L1/L2_CHAIN_ID and the
+# endpoints as real environment variables, and an explicit env var beats the
+# profile — so a leftover .arbitrum-devnet-run/ from an earlier bring-up would
+# silently win over CHAIN_PROFILE=arbitrum-sepolia and attest the devnet's chain
+# ids against a public RPC. Observed: config.json came out with l2_chain_id=412346
+# and src_chain=arbdev on a run whose only argument was arbitrum-sepolia.
 DEVNET_ENV=$REPO_ROOT/.arbitrum-devnet-run/attestor.env
-if [ -z "${ROLLUP_CORE_ADDRESS:-}" ] && [ -f "$DEVNET_ENV" ]; then
+if [ "${CHAIN_PROFILE:-devnet}" != devnet ]; then
+    if [ -f "$DEVNET_ENV" ]; then
+        printf '[run_arbitrum_attestor] CHAIN_PROFILE=%s; ignoring the local devnet handoff at %s\n' \
+            "$CHAIN_PROFILE" "$DEVNET_ENV"
+    fi
+elif [ -z "${ROLLUP_CORE_ADDRESS:-}" ] && [ -f "$DEVNET_ENV" ]; then
     printf '[run_arbitrum_attestor] sourcing %s\n' "$DEVNET_ENV"
     # shellcheck disable=SC1090
     . "$DEVNET_ENV"
@@ -81,15 +101,26 @@ fi
 # An explicit env var always wins, so existing invocations are unaffected.
 CHAIN_PROFILE=${CHAIN_PROFILE:-devnet}
 if [ "$CHAIN_PROFILE" = devnet ]; then
-    # Devnet RollupCreator deploys the legacy layout, where 0x76 is correct, and
-    # the devnet posts assertions every 10s so a 2s poll is proportionate.
+    # 0x75, the same slot run_arbitrum_node.sh deploys against — and proves: it
+    # reads _assertions[assertionHash] at that slot and fails the whole bring-up
+    # unless the status byte is pending or confirmed
+    # (validate_assertion_storage_layout). This said 0x76 with a comment claiming
+    # the devnet used a legacy layout; that was masked because the handoff exports
+    # ASSERTIONS_MAPPING_SLOT and an env var beats the profile, so the wrong value
+    # was only ever reachable by running the attestor without the handoff — where
+    # it fails in the worst way, silently attesting nothing off an empty mapping.
+    # The devnet posts assertions every 10s, so a 2s poll is proportionate.
     PROFILE_SRC_CHAIN=arbdev
-    PROFILE_ASSERTIONS_MAPPING_SLOT=0x0000000000000000000000000000000000000000000000000000000000000076
+    PROFILE_ASSERTIONS_MAPPING_SLOT=0x0000000000000000000000000000000000000000000000000000000000000075
     PROFILE_ASSERTION_STATUS_OFFSET=25
     PROFILE_RUNTIME_POLL_INTERVAL=2s
     PROFILE_ASSERTION_POLL_INTERVAL=2s
     PROFILE_ASSERTION_MAX_BLOCK_RANGE=2000
     PROFILE_ASSERTION_START_BLOCK=   # devnet: fall back to ROLLUP_DEPLOYMENT_BLOCK
+    # The devnet handoff supplies these; there is no committed devnet profile.
+    PROFILE_ROLLUP_CORE_ADDRESS=
+    PROFILE_L1_CHAIN_ID=
+    PROFILE_L2_CHAIN_ID=
 else
     PROFILE_FILE=$REPO_ROOT/attestor/arbitrum/config.$CHAIN_PROFILE.json
     if [ ! -f "$PROFILE_FILE" ]; then
@@ -115,8 +146,21 @@ else
     PROFILE_ASSERTION_POLL_INTERVAL=$(profile_field assertion_poll_interval)
     PROFILE_ASSERTION_MAX_BLOCK_RANGE=$(profile_field assertion_max_block_range)
     PROFILE_ASSERTION_START_BLOCK=$(profile_field assertion_start_block)
+    # Chain identity. These are as chain-shaped as the BoLD slot and are already
+    # in the reference config, so requiring them from the environment made every
+    # external-node run copy three constants out of a file the script had open.
+    PROFILE_ROLLUP_CORE_ADDRESS=$(profile_field rollup_core_address)
+    PROFILE_L1_CHAIN_ID=$(profile_field l1_chain_id)
+    PROFILE_L2_CHAIN_ID=$(profile_field l2_chain_id)
     printf '[run_arbitrum_attestor] chain profile %s from %s\n' "$CHAIN_PROFILE" "$PROFILE_FILE"
 fi
+
+# Chain identity: profile first, environment always wins. Endpoints are NOT
+# defaulted from the profile — the reference config names public endpoints, and
+# silently attesting against one the operator did not choose is worse than an error.
+ROLLUP_CORE_ADDRESS=${ROLLUP_CORE_ADDRESS:-$PROFILE_ROLLUP_CORE_ADDRESS}
+L1_CHAIN_ID=${L1_CHAIN_ID:-$PROFILE_L1_CHAIN_ID}
+L2_CHAIN_ID=${L2_CHAIN_ID:-$PROFILE_L2_CHAIN_ID}
 
 SRC_CHAIN=${SRC_CHAIN:-$PROFILE_SRC_CHAIN}
 ASSERTIONS_MAPPING_SLOT=${ASSERTIONS_MAPPING_SLOT:-$PROFILE_ASSERTIONS_MAPPING_SLOT}
@@ -127,7 +171,11 @@ ASSERTION_POLL_INTERVAL=${ASSERTION_POLL_INTERVAL:-$PROFILE_ASSERTION_POLL_INTER
 ASSERTION_MAX_BLOCK_RANGE=${ASSERTION_MAX_BLOCK_RANGE:-$PROFILE_ASSERTION_MAX_BLOCK_RANGE}
 ATTESTATION_HEAD=${ATTESTATION_HEAD:-finalized}
 DISABLE_DERIVED_ROOTS=${DISABLE_DERIVED_ROOTS:-false}
-DERIVED_ATTESTATION_GAP_BLOCKS=${DERIVED_ATTESTATION_GAP_BLOCKS:-150}
+# Renamed from DERIVED_ATTESTATION_GAP_BLOCKS to match run_op_attestor.sh, which
+# is also the only name the docs ever used — so setting it per the docs used to be
+# silently ignored here and the run took the 150 default, a five-minute
+# return-direction floor with nothing in the log to point at.
+DERIVED_GAP_BLOCKS=${DERIVED_GAP_BLOCKS:-150}
 MAX_DERIVED_ROOTS=${MAX_DERIVED_ROOTS:-1000}
 # ATTESTOR_RUN_DIR takes precedence over the legacy RUN_DIR: the devnet bring-up
 # scripts use RUN_DIR for their OWN artifacts, so a handoff that exports it into
@@ -162,10 +210,18 @@ require_command jq
 : "${L2_RPC_URL:?L2_RPC_URL is required (Nitro HTTP RPC)}"
 : "${L2_WS_URL:?L2_WS_URL is required (Nitro WebSocket RPC)}"
 : "${L2_CHAIN_ID:?L2_CHAIN_ID is required}"
-: "${ROLLUP_CORE_ADDRESS:?ROLLUP_CORE_ADDRESS is required}"
-: "${ROLLUP_DEPLOYMENT_BLOCK:?ROLLUP_DEPLOYMENT_BLOCK is required}"
+: "${ROLLUP_CORE_ADDRESS:?ROLLUP_CORE_ADDRESS is required (or set CHAIN_PROFILE to a chain whose reference config carries it)}"
 
-if [ "$ROLLUP_DEPLOYMENT_BLOCK" = 0 ]; then
+# ROLLUP_DEPLOYMENT_BLOCK only matters as the fallback start of the assertion
+# scan. A named profile supplies assertion_start_block, so requiring it there
+# forced a value that was then never read.
+if [ -z "${ROLLUP_DEPLOYMENT_BLOCK:-}" ] &&
+    [ -z "${ASSERTION_START_BLOCK:-}" ] &&
+    [ -z "${PROFILE_ASSERTION_START_BLOCK:-}" ]; then
+    fail "ROLLUP_DEPLOYMENT_BLOCK is required (nothing else supplies the assertion scan start; set it, ASSERTION_START_BLOCK, or a CHAIN_PROFILE)"
+fi
+
+if [ "${ROLLUP_DEPLOYMENT_BLOCK:-}" = 0 ]; then
     log "ROLLUP_DEPLOYMENT_BLOCK is 0; using 1 because the attestor scans from a non-genesis L1 block"
     ROLLUP_DEPLOYMENT_BLOCK=1
 fi
@@ -174,12 +230,10 @@ fi
 # devnet deployed minutes ago; on a long-lived public rollup it is a back-scan of
 # millions of L1 blocks before the first attestation, so a named profile supplies
 # a block near the head instead.
-ASSERTION_START_BLOCK=${ASSERTION_START_BLOCK:-${PROFILE_ASSERTION_START_BLOCK:-$ROLLUP_DEPLOYMENT_BLOCK}}
+ASSERTION_START_BLOCK=${ASSERTION_START_BLOCK:-${PROFILE_ASSERTION_START_BLOCK:-${ROLLUP_DEPLOYMENT_BLOCK:-}}}
 [[ "$ASSERTION_START_BLOCK" =~ ^[0-9]+$ ]] ||
     fail "ASSERTION_START_BLOCK must be a decimal L1 block number, got: $ASSERTION_START_BLOCK"
 
-[ -f "$NITRO_SEQUENCER_CONFIG" ] ||
-    fail "Nitro sequencer config not found: $NITRO_SEQUENCER_CONFIG"
 [[ "$GRPC_PORT" =~ ^[0-9]+$ ]] && [ "$GRPC_PORT" -gt 0 ] && [ "$GRPC_PORT" -le 65535 ] ||
     fail "GRPC_PORT must be between 1 and 65535"
 [[ "$ASSERTIONS_MAPPING_SLOT" =~ ^0x[0-9a-fA-F]{64}$ ]] ||
@@ -195,8 +249,8 @@ case "$DISABLE_DERIVED_ROOTS" in
     true | false) ;;
     *) fail "DISABLE_DERIVED_ROOTS must be true or false" ;;
 esac
-[[ "$DERIVED_ATTESTATION_GAP_BLOCKS" =~ ^[1-9][0-9]*$ ]] ||
-    fail "DERIVED_ATTESTATION_GAP_BLOCKS must be greater than zero"
+[[ "$DERIVED_GAP_BLOCKS" =~ ^[1-9][0-9]*$ ]] ||
+    fail "DERIVED_GAP_BLOCKS must be greater than zero"
 [[ "$MAX_DERIVED_ROOTS" =~ ^[1-9][0-9]*$ ]] ||
     fail "MAX_DERIVED_ROOTS must be greater than zero"
 
@@ -235,7 +289,7 @@ jq -n \
     --arg runtime_poll_interval "$RUNTIME_POLL_INTERVAL" \
     --arg attestation_head "$ATTESTATION_HEAD" \
     --argjson disable_derived_roots "$DISABLE_DERIVED_ROOTS" \
-    --argjson derived_attestation_gap_blocks "$DERIVED_ATTESTATION_GAP_BLOCKS" \
+    --argjson derived_attestation_gap_blocks "$DERIVED_GAP_BLOCKS" \
     --argjson max_derived_roots "$MAX_DERIVED_ROOTS" \
     --arg src_chain "$SRC_CHAIN" \
     --arg l1_rpc_url "$CONTAINER_L1_RPC_URL" \
@@ -345,8 +399,14 @@ log "attestor is ready"
 cat <<EOF
 
   tail -f $RUN_DIR/attestor.log
-  grpcurl -plaintext -d '{}' 127.0.0.1:$GRPC_PORT attestor.AttestorService/Info
-  grpcurl -plaintext -d '{"src_chain":"$SRC_CHAIN","include_provisional":true}' \
+
+  # This attestor registers no gRPC reflection service (the OP one does, at
+  # attestor/optimism/cmd/main.go:239), so grpcurl cannot discover the schema and
+  # needs the .proto passed in. Run these from the repo root:
+  grpcurl -plaintext -import-path proto -proto attestor/attestor.proto \\
+    -d '{}' 127.0.0.1:$GRPC_PORT attestor.AttestorService/Info
+  grpcurl -plaintext -import-path proto -proto attestor/attestor.proto \\
+    -d '{"src_chain":"$SRC_CHAIN","include_provisional":true}' \\
     127.0.0.1:$GRPC_PORT attestor.AttestorService/AttestedUpTo
 
 The attestor assertion state is persisted in Docker volume:

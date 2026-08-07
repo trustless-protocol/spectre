@@ -29,7 +29,7 @@ Two things that are easy to get wrong before you start:
 ## Local Cosmos ↔ Ethereum E2E
 
 End-to-end run on local Cosmos + Ethereum nodes. Requires Docker + Kurtosis on
-top of the toolchain in [Requirements](#requirements).
+top of the toolchain in [Requirements](../README.md#requirements).
 
 ### Gaia binary
 
@@ -222,7 +222,8 @@ DST_CHAIN=opstack \
 L2_DEPLOYER_ADDRESS=0x8943545177806ED17B9F23F0a21ee5948eCaa776 \
 L2_DEPLOYER_PRIVATE_KEY=bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31 \
   ./scripts/local/deploy_l2_contracts.sh
-# It patches relayer/config.example.json — copy the addresses into config.json.
+# It patches relayer/config.json (override with RELAYER_CONFIG), both the forward
+# module and the matching l2_to_cosmos module's rollup_profile.common.l2_router.
 
 # 5. Clients. The OP client on Cosmos, then the L2 side (SpectreClient deployed
 #    + addClient'd). Copy op-l2-config.example.json and fill in the checksum from
@@ -311,9 +312,9 @@ $GAIAD version                       # → test/ibc-host-customs-<sha>
 strings $GAIAD | grep -c ClientStatus  # the 08-wasm allowlist entry L2 clients need
 ```
 
-**Set `DERIVED_GAP_BLOCKS` explicitly.** The devnet handoffs export `5`; an attestor
-attached to an external replica inherits nothing and takes the default 150, which puts
-a ~5 minute floor under the return direction. See the latency section above.
+**Set `DERIVED_GAP_BLOCKS` explicitly.** The local devnet handoffs export `5`; an
+attestor attached to an external replica inherits nothing and takes the default 150,
+which puts a ~5 minute floor under the return direction. See the latency section above.
 
 ## Local Cosmos ↔ Arbitrum E2E
 
@@ -332,10 +333,11 @@ through `run_eth_node.sh` when the enclave does not exist.
 #    Sources .arbitrum-devnet-run/attestor.env automatically.
 GRPC_PORT=3002 ./scripts/local/run_arbitrum_attestor.sh
 
-# 3. Cosmos node, then gov-store BOTH light-client wasms:
-#    the Ethereum client (L2 clients authenticate L1 through it) and the Arbitrum client.
+# 3. Cosmos node, then gov-store the Arbitrum light-client wasm. The Ethereum
+#    client is NOT needed for a Cosmos<->Arbitrum deployment — same as OP, the
+#    attestor-trusted L2 client authenticates nothing through it. Add
+#    ./scripts/local/wasm.sh only if this config also relays Cosmos<->Ethereum.
 ./scripts/local/run_cosmos_node.sh
-./scripts/local/wasm.sh        # -> ETH client checksum
 ./scripts/local/wasm_arb.sh    # -> Arbitrum client checksum
 
 # 4. IBC contracts on the Arbitrum L2 (E2ETestDeployL2). Use the same relayer key
@@ -364,18 +366,114 @@ cd relayer
 ./relayer start --config config.json
 ```
 
-The local Arbitrum l2-config is the same shape as OP's `--l2-config`, but its
-`rollup_profile.protocol.type` is `bold_v2`. Fill it from the local handoffs:
+Copy `relayer/arb-l2-config.example.json` and fill in three values. It is the same
+shape as OP's and Base's `--l2-config` — five profile keys and nothing else. There is
+no `protocol` block, no `assertions_mapping_slot` and no `rollup` address in it: since
+#345/#347 the client verifies no assertion, so nothing about BoLD reaches it. Those
+values configure the **attestor**, not the client.
 
-- `l2_rpc_url`: `.arbitrum-devnet-run/attestor.env` `L2_RPC_URL`.
 - `wasm_checksum`: checksum printed by `wasm_arb.sh`.
-- `rollup_profile.common.l1_chain_id`, `l2_chain_id`, `rollup`: `L1_CHAIN_ID`,
-  `L2_CHAIN_ID`, and `ROLLUP_CORE_ADDRESS` from `.arbitrum-devnet-run/attestor.env`.
-- `rollup_profile.common.l2_router`: `ics26Router` deployed by `deploy_l2_contracts.sh`.
-- `rollup_profile.protocol.value.assertions_mapping_slot` and
-  `assertion_status_offset`: `ASSERTIONS_MAPPING_SLOT` and `ASSERTION_STATUS_OFFSET`.
-- `counterparty_client_id`: the Arbitrum L2 router client id configured in the
-  `cosmos_to_l2` module, for example `arb-client-0`.
+- `l2_rpc_url`: `.arbitrum-devnet-run/attestor.env` `L2_RPC_URL`.
+- `rollup_profile.common.l2_router`: `ICS26_ADDRESS` from `deploy_l2_contracts.sh`.
+- `rollup_profile.common.l2_chain_id`: `L2_CHAIN_ID` from the handoff (`412346` on the
+  local devnet, `421614` on Arbitrum Sepolia).
+- `counterparty_client_id`: must equal the `cosmos_to_l2` module's `ics26_client_id`
+  (`arb-client-0` in the example config) — both name the same client on the L2 router.
+
+`l2_header_fork` is `london`, not `prague` as on OP and Base: Nitro emits none of the
+post-London optional header fields.
+
+### Running against an existing Arbitrum L2 (no devnet L2)
+
+The Arbitrum counterpart of the OP section above. There is no local L1 and no local
+Nitro: the attestor reads a public Arbitrum RPC and a public Sepolia RPC, and the
+client verifies nothing against L1, so nothing else needs an L1 endpoint.
+
+Verified end to end against **Arbitrum Sepolia**; every value below was needed.
+
+```bash
+# 1. Attestor. CHAIN_PROFILE supplies the RollupCore address, both chain ids, the
+#    BoLD slot/offset and a scan start block near the head, all from
+#    attestor/arbitrum/config.arbitrum-sepolia.json — pass only the endpoints.
+CHAIN_PROFILE=arbitrum-sepolia \
+L1_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
+L2_RPC_URL=<arbitrum-sepolia-rpc> \
+L2_WS_URL=<arbitrum-sepolia-ws> \
+ATTESTATION_HEAD=unsafe DERIVED_GAP_BLOCKS=10 GRPC_PORT=3002 DETACH=1 \
+  ./scripts/local/run_arbitrum_attestor.sh
+
+# 2. Cosmos + the Arbitrum wasm, unchanged from the devnet flow.
+GAIAD=~/go/bin/gaiad ./scripts/local/run_cosmos_node.sh
+GAIAD=~/go/bin/gaiad ./scripts/local/wasm_arb.sh          # -> checksum
+
+# 3. config.json: keep only the Arbitrum module pair, and point it at the L2.
+cp relayer/config.example.json relayer/config.json
+jq '{modules: [.modules[] | select(.name | test("arbitrum"))], batch, server}' \
+  relayer/config.json > /tmp/c && mv /tmp/c relayer/config.json
+# then set, in the two modules:
+#   cosmos-to-arbitrum : eth_rpc_url, eth_ws_url        -> the L2 endpoints
+#   arbitrum-to-cosmos : l2_rpc_url                     -> the L2 HTTP endpoint
+#                        attestor_src_chain             -> arbitrum-sepolia
+#                        head_kind                      -> unsafe
+#                        log_scan_chunk                 -> see the provider note below
+#                        rollup_profile.common.l2_chain_id -> 421614
+
+# 4. Deploy the L2 contracts with a key funded ON Arbitrum Sepolia.
+DST_CHAIN=arbitrum L2_RPC=<arbitrum-sepolia-rpc> RELAYER_CONFIG=relayer/config.json \
+L2_DEPLOYER_ADDRESS=0x... L2_DEPLOYER_PRIVATE_KEY=... \
+  ./scripts/local/deploy_l2_contracts.sh
+# Patches BOTH modules: ics26_address on the forward one, rollup_profile.common.l2_router
+# and l2_rpc_url on the return one.
+
+# 5. l2-config, then clients. The relayer must sign with the SAME key that deployed
+#    (E2ETestDeployL2 grants the router role to msg.sender). Pass it in the
+#    environment rather than editing relayer/.env — godotenv does not override a
+#    variable already set, so the export wins.
+cp relayer/arb-l2-config.example.json relayer/arb-l2-config.json
+# fill in wasm_checksum (step 2), l2_rpc_url, and l2_router (= ICS26_ADDRESS from step 4)
+cd relayer
+./relayer create-clients-cosmos --config config.json --l2-config arb-l2-config.json
+ETH_PRIVATE_KEY=<deployer-key> ./relayer create-clients-eth --config config.json \
+  --source arb-client-0 --trust-level 2/3
+ETH_PRIVATE_KEY=<deployer-key> ./relayer start --config config.json
+```
+
+**`l2_wasm_client_id` is an output, not an input.** `create-clients-cosmos` creates that
+client and writes its id back into the module, overwriting whatever is there — the
+example's `08-wasm-N` placeholder or an empty string alike. It used to *reject* an empty
+one, forcing a made-up id that it then overwrote (#309); it no longer does. Every other
+command still requires it, because by then the client must exist.
+
+**Set `log_scan_chunk` to your provider's `eth_getLogs` span cap.** The relayer scans
+L2 packet logs over ranges, and a provider that caps the span rejects the call rather
+than truncating it. Alchemy's free tier caps at **10 blocks**, drpc at 10 000; `0`
+means one call per range and is right for a provider with no cap. Check yours:
+
+```bash
+H=$(cast block-number --rpc-url $L2)
+cast rpc eth_getLogs '[{"fromBlock":"'$(printf '0x%x' $((H-1000)))'","toBlock":"'$(printf '0x%x' $H)'"}]' --rpc-url $L2
+```
+
+**The L2 RPC must serve `eth_getProof` well below the head.** The relayer proves the
+router account at the attested height, which trails the head. A pruned node fails every
+build. Alchemy serves it at archive depth; check before starting:
+
+```bash
+H=$(cast block-number --rpc-url $L2)
+cast rpc eth_getProof '["<router>",[],"'$(printf '0x%x' $((H-5000)))'"]' --rpc-url $L2
+```
+
+**A leftover `.arbitrum-devnet-run/` no longer hijacks the run.** The devnet handoff
+exports `ROLLUP_CORE_ADDRESS` and both chain ids as real environment variables, which
+beat the profile — a stale one used to silently produce `l2_chain_id=412346` and
+`src_chain=arbdev` against a public RPC. With `CHAIN_PROFILE` set to anything but
+`devnet` the handoff is now ignored, and the script says so.
+
+**The attestor stalls silently on Arbitrum Sepolia after a few minutes** — issue #358.
+It keeps running and logs nothing; `source relayable height` in the relayer freezes at
+the last attested block and the return direction never completes. `docker restart
+fast-ibc-arbitrum-attestor` re-anchors it at the head, for about another minute. There
+is no workaround beyond that yet.
 
 #### Adding an L2 to a deployment that already relays Cosmos↔Ethereum
 
@@ -480,14 +578,35 @@ The wait is `DERIVED_GAP_BLOCKS`: the attestor publishes one derived root per ga
 `RelayableHeight` follows that frontier, so a packet written just after an attestation
 waits nearly a full gap. At the default 150 blocks that is ~5 minutes on a 2 s chain.
 
-The local devnet handoffs (`run_optimism_node.sh`, `run_base_node.sh`) export
-`DERIVED_GAP_BLOCKS=5`, so a devnet return leg is seconds. **An attestor attached to an
-external replica does not inherit that** — it takes the script default of 150. Pass the
-knob explicitly for an E2E:
+All three local devnet handoffs (`run_optimism_node.sh`, `run_base_node.sh`,
+`run_arbitrum_node.sh`) export `DERIVED_GAP_BLOCKS=5`, so a devnet return leg is
+seconds. Arbitrum's did not until the rename made the name uniform, which is why a
+local Arbitrum devnet used to pay the 150-block wait that OP and Base did not.
+**An attestor attached to an external replica inherits none of this** — it takes the
+script default of 150. Pass the knob explicitly for an E2E:
 
 ```bash
 DERIVED_GAP_BLOCKS=10 OP_NODE_RPC_URL=... ./scripts/local/run_op_attestor.sh
 ```
+
+`run_arbitrum_attestor.sh` takes the same variable under the same name. It used to call
+it `DERIVED_ATTESTATION_GAP_BLOCKS`, so an invocation copied from here was silently
+ignored and the run took the 150 default with nothing in the log to explain the wait.
+
+The forward leg costs the same on every stack. Measured on Cosmos↔Arbitrum Sepolia and
+Cosmos↔Base Sepolia round trips, same machine and same day as the OP numbers above:
+
+| step | OP Sepolia | Arbitrum Sepolia | Base Sepolia |
+|---|---|---|---|
+| Groth16 proof (604 761 constraints, CPU, bucket N=4) | 5 s | 6 s | 5 s |
+| forward leg lands on the L2 | 3 s | 3 s | 3 s |
+| `recvPacket` gas (`updateApplicationState` + `recvPacket`) | 1 509 605 | 1 506 525 | 1 509 792 |
+| ack gas (`updateApplicationState` + `ackPacket`) | — | 855 883 | 855 955 |
+| return leg, send → `MsgRecvPacket` on Cosmos | 4 min 25 s (gap 150) | — | ~1 min (gap 10) |
+
+The difference in the return leg is `DERIVED_GAP_BLOCKS`, not the chain: OP ran at the
+default 150, Base at 10. The Arbitrum figure is absent because its attestor stalled
+mid-run (#358), so the one number obtained would measure the stall rather than the gap.
 
 Lower is not free: each derived root is an attestation, and at `unsafe`/`safe` heads
 they stay provisional until the finalized head catches up, so the provisional backlog
@@ -551,7 +670,12 @@ proves half the system.
 | Attestor exits: `set DISPUTE_GAME_FACTORY and RESPECTED_GAME_TYPE for network <x>` | The script resolves those from a known chain preset and cannot for a public network. Read them off the chain — see [Running against an existing L2](#running-against-an-existing-l2-no-devnet-l2). |
 | `[gaiad_binary] ERROR: ... is on branch unknown; expected test/ibc-host-customs` | The Gaia checkout is on a detached HEAD, which fails the branch check even when the code is right. Set `GAIAD=` to an already-built binary — see [Gaia binary](#gaia-binary). |
 | Attestor exits: `failed to listen on attestor grpc address 127.0.0.1:3001: address already in use` | An earlier attestor still holds the port. Find it with `lsof -nP -iTCP:3001 -sTCP:LISTEN` — plain `lsof -ti :3001` also matches the relayer *connected* to that port, and killing that list takes the relayer down with it. |
-| `forge script` fails `insufficient funds ... have 0` | The deployer has no balance on the L2 — use an L2-funded account (step 4). |
+| `forge script` fails `insufficient funds ... have 0` | The deployer has no balance on the L2 — use an L2-funded account (step 4). Balances do not carry between rollups: funded on L1 Sepolia, OP or Arbitrum still means zero on Base. |
+| `eth_getProof` returns nothing at all — no result, no error, the call just hangs | The node prunes state below some depth and does not say so. Measure the boundary (see the external-L2 sections) and keep the attested height inside it; `DERIVED_GAP_BLOCKS=10` trails ~10–20 blocks, `head_kind=finalized` trails ~600. |
+| Arbitrum attestor stops attesting: last log line is a normal attestation, container still up | Its sequential per-block back-fill cannot keep pace with the chain — issue #358. Nothing is logged because the head never changes, so no error path is taken. `docker restart fast-ibc-arbitrum-attestor` re-anchors it at the head for roughly another minute. |
+| Arbitrum attestor attests the wrong chain (`src_chain=arbdev`, `l2_chain_id=412346`) despite `CHAIN_PROFILE=arbitrum-sepolia` | A leftover `.arbitrum-devnet-run/attestor.env` was sourced; its exports are real env vars and beat the profile. Fixed — a non-`devnet` `CHAIN_PROFILE` now ignores the handoff and logs that it did. Delete the directory if you are on an older checkout. |
+| `eth_getLogs` rejected: `you can make eth_getLogs requests with up to a 10 block range` | The provider caps the log span. Set `log_scan_chunk` in the `l2_to_cosmos` module to that cap (Alchemy free tier 10, drpc 10 000). |
+| Return direction sees no events at all, forward direction fine | `l2_ics26_client_id` does not equal the forward module's `ics26_client_id`. The L2 subscriber filters events on it, so a mismatch drops every one silently. |
 
 ## Local Cosmos ↔ Base E2E
 
@@ -582,23 +706,25 @@ the deploy step below needs `MODULE_NAME`.
 #    run_op_attestor.sh here — that one attaches to the OP devnet.
 GRPC_PORT=3003 ./scripts/local/run_base_attestor.sh
 
-# 3. Cosmos node, then gov-store BOTH light-client wasms: the Ethereum client
-#    (L2 clients authenticate L1 through it) and the Base client.
+# 3. Cosmos node, then gov-store the Base light-client wasm. The Ethereum client
+#    is NOT needed for a Cosmos<->Base deployment — like OP and Arbitrum, the
+#    attestor-trusted L2 client authenticates nothing through it. Add
+#    ./scripts/local/wasm.sh only if this config also relays Cosmos<->Ethereum.
 ./scripts/local/run_cosmos_node.sh
-./scripts/local/wasm.sh          # -> ETH client checksum
 ./scripts/local/wasm_base.sh     # -> Base client checksum
 
-# 4. Deploy the L2 IBC contracts onto Base. MODULE_NAME is required: matching on
-#    dst_chain alone would also match the Optimism module.
+# 4. Deploy the L2 IBC contracts onto Base. MODULE_NAME is required: the module's
+#    dst_chain is "opstack" (see above), so matching on it alone would also match
+#    the Optimism module. DST_CHAIN only picks which devnet handoff to read.
 L2_ENV_FILE=.base-devnet-run/attestor.env MODULE_NAME=cosmos-to-base \
 DST_CHAIN=base ./scripts/local/deploy_l2_contracts.sh
 
-# 5. Create the clients. Copy relayer/base-l2-config.example.json first and fill in
-#    the two checksums from step 3 (top-level is the BASE client as hex;
-#    ethereum_client.wasm_checksum is the ETH client as a byte array).
+# 5. Create the clients. Copy relayer/base-l2-config.example.json and fill in the
+#    checksum from step 3, the L2 router from step 4, and the L2 chain id. There is
+#    only ONE checksum: the file carries no ethereum_client since #345/#347, because
+#    the client verifies nothing against L1.
 cd relayer && go build -o relayer ./cmd
-./relayer create-clients-cosmos --config config.json \
-    --wasm-checksum <eth-hex> --l2-config base-l2-config.json
+./relayer create-clients-cosmos --config config.json --l2-config base-l2-config.json
 ./relayer create-clients-eth --config config.json \
     --source base-client-0 --trust-level 2/3
 
@@ -609,6 +735,91 @@ cd relayer && go build -o relayer ./cmd
 Everything in the "Local Cosmos ↔ OP E2E" section about the ICS26Router relayer
 role and `--absolute-timeouts` on the test transfer applies unchanged — Base uses
 the same attestor and the same L2 contracts.
+
+### Running against an existing Base L2 (no devnet L2)
+
+Skip step 1 and point the attestor at the node someone else runs. Verified end to
+end against **Base Sepolia**, relaying both directions.
+
+```bash
+# 1. Attestor against the existing node. NETWORK must name the real chain, and the
+#    dispute-game contracts cannot be auto-resolved for a public network — read
+#    them off the chain once (below) and pass them.
+OP_NODE_RPC_URL=http://<host>:7545 \
+L1_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
+NETWORK=base-sepolia SRC_CHAIN=base-sepolia \
+ATTESTATION_HEAD=unsafe DERIVED_GAP_BLOCKS=10 \
+DISPUTE_GAME_FACTORY=0xd6E6dBf4F7EA0ac412fD8b65ED297e64BB7a06E1 \
+RESPECTED_GAME_TYPE=621 \
+GRPC_PORT=3003 \
+  ./scripts/local/run_base_attestor.sh
+
+# 2. Cosmos + the Base wasm, unchanged from the devnet flow.
+GAIAD=~/go/bin/gaiad ./scripts/local/run_cosmos_node.sh
+GAIAD=~/go/bin/gaiad ./scripts/local/wasm_base.sh
+
+# 3. config.json: keep only the Base module pair and point it at the L2.
+cp relayer/config.example.json relayer/config.json
+jq '{modules: [.modules[] | select(.name | test("base"))], batch, server}' \
+  relayer/config.json > /tmp/c && mv /tmp/c relayer/config.json
+# then set, in the two modules:
+#   cosmos-to-base : eth_rpc_url, eth_ws_url        -> the L2 endpoints
+#   base-to-cosmos : l2_rpc_url                     -> the L2 HTTP endpoint
+#                    attestor_addr                  -> 127.0.0.1:3003
+#                    attestor_src_chain             -> base-sepolia
+#                    head_kind                      -> unsafe
+#                    rollup_profile.common.l2_chain_id -> 84532
+
+# 4. Deploy the L2 contracts with a key funded ON Base Sepolia. MODULE_NAME is
+#    still required — dst_chain is "opstack" and would also match cosmos-to-op.
+DST_CHAIN=opstack MODULE_NAME=cosmos-to-base \
+L2_RPC=http://<host>:8545 RELAYER_CONFIG=relayer/config.json \
+L2_DEPLOYER_ADDRESS=0x... L2_DEPLOYER_PRIVATE_KEY=... \
+  ./scripts/local/deploy_l2_contracts.sh
+
+# 5. l2-config, then clients. The relayer must sign with the SAME key that
+#    deployed (E2ETestDeployL2 grants the router role to msg.sender). Pass it in
+#    the environment rather than editing relayer/.env — godotenv does not override
+#    a variable already set, so the export wins.
+cp relayer/base-l2-config.example.json relayer/base-l2-config.json
+# fill in wasm_checksum (step 2), l2_rpc_url, and l2_router (= ICS26_ADDRESS from step 4)
+cd relayer
+./relayer create-clients-cosmos --config config.json --l2-config base-l2-config.json
+ETH_PRIVATE_KEY=<deployer-key> ./relayer create-clients-eth --config config.json \
+  --source base-client-0 --trust-level 2/3
+ETH_PRIVATE_KEY=<deployer-key> ./relayer start --config config.json
+```
+
+**Fund the deployer on Base itself.** An account funded on L1 Sepolia, OP Sepolia or
+Arbitrum Sepolia has nothing here — balances do not carry across rollups. The deploy
+fails at the first transaction with `insufficient funds for gas * price + value: have
+0`, after the script has already written `broadcast/`. Check first:
+`cast balance <addr> --rpc-url $L2 --ether`.
+
+**Resolving the dispute-game contracts.** The values above are Base Sepolia's, read
+from the chain rather than hardcoded anywhere — the portal address comes from the
+node itself:
+
+```bash
+PORTAL=$(curl -s -X POST -H 'content-type: application/json' \
+  --data '{"jsonrpc":"2.0","id":1,"method":"optimism_rollupConfig","params":[]}' \
+  http://<host>:7545 | jq -r .result.deposit_contract_address)
+cast call $PORTAL "disputeGameFactory()(address)" --rpc-url $L1_RPC_URL
+cast call $PORTAL "respectedGameType()(uint32)"  --rpc-url $L1_RPC_URL
+```
+
+**Check how far below the head the node will serve `eth_getProof`.** The relayer
+proves the router account at the attested height, which trails the head. A node that
+prunes state does not error — it can simply stop responding, which looks like a hung
+relayer rather than a configuration problem. One measured node served head-500 in
+about a second and returned nothing at all at head-800 after 30 s. With
+`DERIVED_GAP_BLOCKS=10` the attested height trails by ~10–20 blocks, comfortably
+inside that; `head_kind=finalized` trails by ~600 and would not be.
+
+```bash
+H=$(cast block-number --rpc-url $L2)
+cast rpc eth_getProof '["<router>",[],"'$(printf '0x%x' $((H-500)))'"]' --rpc-url $L2
+```
 
 Useful:
 

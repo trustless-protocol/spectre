@@ -600,7 +600,21 @@ func insertJSONObjectMember(data []byte, objectStart, objectEnd int, key string,
 	return out, nil
 }
 
+// loadConfig reads a config that is expected to be complete — every client already
+// created and recorded. This is what `start`, `update-client` and `create-clients-eth`
+// want.
 func loadConfig(configPath string) (*appConfig, error) {
+	return loadConfigWith(configPath, true)
+}
+
+// loadConfigForClientCreation reads a config that is about to have its L2 wasm
+// clients created, so their ids are legitimately still empty (#309). Only
+// create-clients-cosmos uses this: it is the command that fills them in.
+func loadConfigForClientCreation(configPath string) (*appConfig, error) {
+	return loadConfigWith(configPath, false)
+}
+
+func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
@@ -661,7 +675,7 @@ func loadConfig(configPath string) (*appConfig, error) {
 				return nil, fmt.Errorf("module %q: parse l2_to_cosmos config: %w", m.Name, err)
 			}
 			one.kind = chain.ChainType(m.SrcChain) // opstack | arbitrum
-			if err := one.validate(); err != nil {
+			if err := one.validateWith(requireL2WasmClientID); err != nil {
 				return nil, fmt.Errorf("module %q: %w", m.Name, err)
 			}
 			l2List = append(l2List, one)
@@ -1235,7 +1249,9 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to get config path: %w", err)
 			}
 			_ = godotenv.Load()
-			cfg, err := loadConfig(configPath)
+			// This command creates the L2 wasm clients, so their ids are allowed
+			// to still be empty here — it is what fills them in (#309).
+			cfg, err := loadConfigForClientCreation(configPath)
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}

@@ -38,5 +38,5 @@
     }
   },
   "bootstrap_block": 0,
-  "counterparty_client_id": "cosmoshub-1"
+  "counterparty_client_id": "op-client-0"
 }

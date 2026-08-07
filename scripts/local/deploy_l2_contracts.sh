@@ -54,8 +54,8 @@ esac
 [ -f "$RELAYER_CONFIG" ] || {
     echo "ERROR: relayer config not found: $RELAYER_CONFIG" >&2
     echo "  Copy one of the examples and edit it, then re-run:" >&2
-    echo "    cp relayer/config.example.json relayer/config.json                   # local devnet" >&2
-    echo "    cp relayer/config.arbitrum-sepolia.example.json relayer/config.json  # Arbitrum Sepolia" >&2
+    echo "    cp relayer/config.example.json relayer/config.json" >&2
+    echo "  then keep only the module pair you are relaying (see docs/E2E.md)." >&2
     echo "  Or point RELAYER_CONFIG at the file you want patched." >&2
     exit 1
 }
@@ -170,9 +170,17 @@ echo "UPDATE_CLIENT:      $UPDATE_CLIENT_ADDRESS"
 echo "MISBEHAVIOUR:       $MISBEHAVIOUR_ADDRESS"
 
 # ------------------------------------------------------------------- patch ---
-# Patch ONLY the matching cosmos_to_l2 module (leave the L1 cosmos_to_eth module and
-# any other L2 family untouched). spectre_client stays empty — create-clients-eth
-# fills it once it deploys the SpectreClient against a fresh Cosmos genesis.
+# Patch the matching cosmos_to_l2 module and its return-direction pair (leave the
+# L1 cosmos_to_eth module and any other L2 family untouched). spectre_client stays
+# empty — create-clients-eth fills it once it deploys the SpectreClient against a
+# fresh Cosmos genesis.
+#
+# The return module needs the SAME router address in a different place:
+# rollup_profile.common.l2_router. Patching only the forward module left the
+# example placeholder (0x7777…) in place — a valid-looking address, so it failed
+# far downstream as a membership-proof error against an account that does not
+# exist, rather than as "you did not set the router". The two modules are joined
+# by client id: cosmos_to_l2.ics26_client_id == l2_to_cosmos.l2_ics26_client_id.
 jq \
   --arg DST "$DST_CHAIN" --arg NAME "${MODULE_NAME:-}" \
   --arg RPC "$L2_RPC" \
@@ -182,8 +190,13 @@ jq \
   --arg MEMB "$MEMBERSHIP_ADDRESS" \
   --arg UPCL "$UPDATE_CLIENT_ADDRESS" \
   --arg MIS "$MISBEHAVIOUR_ADDRESS" '
-    .modules |= map(
-      if (if $NAME != "" then .name == $NAME else .src_chain == "cosmos" and .dst_chain == $DST end) then
+    def is_forward:
+      if $NAME != "" then .name == $NAME
+      else .src_chain == "cosmos" and .dst_chain == $DST end;
+
+    (.modules | map(select(is_forward)) | first | .config.ics26_client_id // "") as $cid
+    | .modules |= map(
+      if is_forward then
           .config.eth_rpc_url = $RPC
         | (if $WS != "" then .config.eth_ws_url = $WS else . end)
         | .config.ics26_address = $ICS26
@@ -191,9 +204,33 @@ jq \
         | .config.membership = $MEMB
         | .config.update_client = $UPCL
         | .config.misbehaviour = $MIS
+      elif ($cid != "" and .config.l2_ics26_client_id == $cid) then
+          .config.l2_rpc_url = $RPC
+        | .config.rollup_profile.common.l2_router = $ICS26
       else . end
     )
   ' "$RELAYER_CONFIG" > "$RELAYER_CONFIG.tmp" && mv "$RELAYER_CONFIG.tmp" "$RELAYER_CONFIG"
 
 echo "Patched $RELAYER_CONFIG cosmos_to_l2 (dst_chain=$DST_CHAIN) with the deployed L2 addresses."
+
+# Report the return module by name, or say plainly that none was found — a config
+# with no matching l2_to_cosmos relays one direction only, which is a legitimate
+# shape but never what someone running the E2E wants.
+RETURN_MODULE=$(jq -r \
+  --arg DST "$DST_CHAIN" --arg NAME "${MODULE_NAME:-}" '
+    def is_forward:
+      if $NAME != "" then .name == $NAME
+      else .src_chain == "cosmos" and .dst_chain == $DST end;
+    (.modules | map(select(is_forward)) | first | .config.ics26_client_id // "") as $cid
+    | [.modules[] | select($cid != "" and .config.l2_ics26_client_id == $cid) | .name]
+    | first // ""
+  ' "$RELAYER_CONFIG")
+
+if [ -n "$RETURN_MODULE" ]; then
+    echo "Patched the return module \"$RETURN_MODULE\" l2_router + l2_rpc_url to match."
+else
+    echo "WARNING: no l2_to_cosmos module pairs with this one (no matching l2_ics26_client_id)." >&2
+    echo "         The return direction will not relay until you add one." >&2
+fi
+
 echo "Next: relayer create-clients-eth --source <ics26_client_id>  (deploys the SpectreClient on the L2)."

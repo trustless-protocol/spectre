@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -45,6 +47,93 @@ func TestL2Config_Validate(t *testing.T) {
 				t.Fatalf("expected validation error for %s", name)
 			}
 		})
+	}
+}
+
+// TestL2Config_ValidateForClientCreation covers #309: create-clients-cosmos is the
+// command that CREATES the L2 wasm client and writes its id back into the config,
+// so requiring that id to already be present made a fresh config unusable — the
+// operator had to invent a plausible one, which the command then overwrote. Only
+// that id is exempt; everything else is still needed to reach the chain at all.
+func TestL2Config_ValidateForClientCreation(t *testing.T) {
+	c := validL2Config()
+	c.L2WasmClientID = ""
+	if err := c.validateForClientCreation(); err != nil {
+		t.Fatalf("empty l2_wasm_client_id rejected during client creation: %v", err)
+	}
+
+	// The exemption is narrow: it must not spill onto the other required fields.
+	for name, mutate := range map[string]func(*l2ToCosmosConfig){
+		"missing l2_rpc_url":      func(c *l2ToCosmosConfig) { c.L2RpcUrl = "" },
+		"missing attestor_addr":   func(c *l2ToCosmosConfig) { c.AttestorAddr = "" },
+		"missing l2_ics26_client": func(c *l2ToCosmosConfig) { c.L2ICS26ClientID = "" },
+		"missing tm_rpc_url":      func(c *l2ToCosmosConfig) { c.TmRpcUrl = "" },
+		"missing attestor_src":    func(c *l2ToCosmosConfig) { c.AttestorSrcChain = "" },
+		"empty profile":           func(c *l2ToCosmosConfig) { c.RollupProfile = nil },
+		"bad head_kind":           func(c *l2ToCosmosConfig) { c.HeadKind = "nonsense" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := validL2Config()
+			c.L2WasmClientID = ""
+			mutate(&c)
+			if err := c.validateForClientCreation(); err == nil {
+				t.Fatalf("expected validation error for %s", name)
+			}
+		})
+	}
+
+	// A config that is already complete stays valid on this path too.
+	if err := validL2Config().validateForClientCreation(); err != nil {
+		t.Fatalf("complete config rejected: %v", err)
+	}
+}
+
+// TestLoadConfigForClientCreation_AcceptsUncreatedWasmClient is the end-to-end of
+// the above: the whole config file loads, rather than failing at the first module.
+func TestLoadConfigForClientCreation_AcceptsUncreatedWasmClient(t *testing.T) {
+	raw := `{"modules":[
+		{"name":"cosmos-to-arb","src_chain":"cosmos","dst_chain":"arbitrum","config":{
+			"cosmos_wasm_client_id":"","eth_rpc_url":"http://l2","tm_rpc_url":"http://tm",
+			"ics26_address":"0x1111111111111111111111111111111111111111",
+			"ics26_client_id":"arb-client-0"}},
+		{"name":"arb-to-cosmos","src_chain":"arbitrum","dst_chain":"cosmos","config":{
+			"l2_rpc_url":"http://l2","tm_rpc_url":"http://tm",
+			"attestor_addr":"127.0.0.1:3002","attestor_src_chain":"arbitrum-sepolia",
+			"l2_wasm_client_id":"","l2_ics26_client_id":"arb-client-0","head_kind":"unsafe",
+			"rollup_profile":{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}}}]}`
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := loadConfig(path); err == nil {
+		t.Fatal("loadConfig accepted an empty l2_wasm_client_id; the relay path needs it")
+	}
+
+	cfg, err := loadConfigForClientCreation(path)
+	if err != nil {
+		t.Fatalf("loadConfigForClientCreation rejected a pre-creation config: %v", err)
+	}
+	if len(cfg.L2ToCosmosConfigs) != 1 {
+		t.Fatalf("L2ToCosmosConfigs = %d, want 1", len(cfg.L2ToCosmosConfigs))
+	}
+	if got := cfg.L2ToCosmosConfigs[0].L2ICS26ClientID; got != "arb-client-0" {
+		t.Errorf("l2_ics26_client_id = %q, want arb-client-0", got)
+	}
+
+	// Closing the loop: the id the command creates lands in the field that was
+	// empty, and the config then loads on the strict path. Without this the
+	// relaxation above would just move the failure one step later.
+	if err := writeL2SourceClientIDs(path, "arb-client-0", "08-wasm-0"); err != nil {
+		t.Fatalf("write back the created client id: %v", err)
+	}
+	reloaded, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig after write-back: %v", err)
+	}
+	if got := reloaded.L2ToCosmosConfigs[0].L2WasmClientID; got != "08-wasm-0" {
+		t.Errorf("l2_wasm_client_id = %q, want 08-wasm-0", got)
 	}
 }
 

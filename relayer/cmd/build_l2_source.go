@@ -64,12 +64,36 @@ type l2ToCosmosConfig struct {
 	kind chain.ChainType
 }
 
+// validate checks everything the relay path needs, including the id of an L2 wasm
+// client that must already exist on Cosmos.
 func (c l2ToCosmosConfig) validate() error {
-	for name, v := range map[string]string{
+	return c.validateWith(true)
+}
+
+// validateForClientCreation is validate minus the one field create-clients-cosmos
+// is about to produce. That command creates the L2 wasm client and writes its id
+// back into this module, so demanding the id up front made a fresh config
+// unusable: the only way forward was to invent a plausible one ("08-wasm-1"),
+// which the command then overwrote — pure ceremony, and a wrong guess was accepted
+// just as silently as a right one (#309).
+//
+// The exemption is deliberately this narrow. Every other field is needed to reach
+// a chain at all, and failing on those before spending an on-chain MsgCreateClient
+// is the point of validating here.
+func (c l2ToCosmosConfig) validateForClientCreation() error {
+	return c.validateWith(false)
+}
+
+func (c l2ToCosmosConfig) validateWith(requireWasmClientID bool) error {
+	required := map[string]string{
 		"l2_rpc_url": c.L2RpcUrl, "tm_rpc_url": c.TmRpcUrl,
 		"attestor_addr": c.AttestorAddr, "attestor_src_chain": c.AttestorSrcChain,
-		"l2_wasm_client_id": c.L2WasmClientID, "l2_ics26_client_id": c.L2ICS26ClientID,
-	} {
+		"l2_ics26_client_id": c.L2ICS26ClientID,
+	}
+	if requireWasmClientID {
+		required["l2_wasm_client_id"] = c.L2WasmClientID
+	}
+	for name, v := range required {
 		if v == "" {
 			return fmt.Errorf("l2_to_cosmos config: %s is required", name)
 		}

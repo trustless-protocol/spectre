@@ -57,11 +57,11 @@ Bucket sizing: the prover picks the smallest N ∈ {4,8,16,32,64,128} that cover
 ## 5. Create clients
 
 ```bash
-./relayer create-clients --config config.json --trust-level 2/3 --wasm-checksum <hex-from-step-3>
-# or split: create-clients-cosmos first (needs --wasm-checksum), then create-clients-eth
+./relayer create-clients-cosmos --config config.json --wasm-checksum <hex-from-step-3>
+./relayer create-clients-eth    --config config.json --trust-level 2/3
 ```
 
-Runs the Cosmos half first (08-wasm client → learns its client id), then the ETH half (ICS07 wired to that id), and writes `cosmos_wasm_client_id` + `ics07_client` back into `config.json` automatically — no manual copying. Config is JSON (`config.example.json` shape: `modules` array with `cosmos_to_eth` + `eth_to_cosmos`); `.env` holds only secrets/prover paths (`ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, `COSMOS_CHAIN_ID`, `COSMOS_ADDRESS_PREFIX` — bech32 account prefix, default `cosmos`; set it for non-`cosmos` chains like Realio, `PROVER_BIN_DIR` — the shipped values are devnet-only).
+One command per chain — the umbrella `create-clients` was removed in #255. Run the Cosmos half first (08-wasm client → learns its client id), then the ETH half (ICS07 wired to that id). They write `cosmos_wasm_client_id` + `ics07_client` back into `config.json` automatically — no manual copying. Config is JSON (`config.example.json` shape: `modules` array with `cosmos_to_eth` + `eth_to_cosmos`); `.env` holds only secrets/prover paths (`ETH_PRIVATE_KEY`, `COSMOS_PRIVATE_KEY`, `COSMOS_CHAIN_ID`, `COSMOS_ADDRESS_PREFIX` — bech32 account prefix, default `cosmos`; set it for non-`cosmos` chains like Realio, `PROVER_BIN_DIR` — the shipped values are devnet-only).
 
 ## 6. Start the relay loop
 
@@ -83,12 +83,11 @@ Same skeleton, with an OP L2 + attestor layered on the L1. `run_optimism_node.sh
 ./scripts/local/run_optimism_node.sh   # L1 (Fulu) + OP L2 in one enclave -> .op-devnet-run/attestor.env
 ./scripts/local/run_op_attestor.sh     # attestor over the replica op-node; gRPC :3001
 ./scripts/local/run_cosmos_node.sh
-./scripts/local/wasm.sh                # ETH client — L2 clients authenticate L1 through it
-./scripts/local/wasm_op.sh             # OP client
+./scripts/local/wasm_op.sh             # OP client — the ETH one is NOT needed here
 DST_CHAIN=opstack L2_DEPLOYER_ADDRESS=<l2-funded> L2_DEPLOYER_PRIVATE_KEY=<key> \
   ./scripts/local/deploy_l2_contracts.sh
 cd relayer
-./relayer create-clients-cosmos --config config.json --wasm-checksum <eth> --l2-config <op.json>
+./relayer create-clients-cosmos --config config.json --l2-config <op.json>
 ./relayer create-clients-eth --config config.json --source <ics26_client_id> --trust-level 2/3
 ./relayer start --config config.json
 ```
@@ -97,12 +96,14 @@ Load-bearing details, each one cost a debugging session:
 
 - **Wasm must come from the optimizer**, never a plain `cargo build` — a raw release build carries `reference-types` and `MsgStoreCode` rejects it. If the optimizer image's Rust is older than a dependency's MSRV, pin the dependency down rather than shipping a raw build.
 - **Host allowlist**: the 08-wasm Stargate allowlist needs `ClientStatus` on top of `ClientState`/`ConsensusState`, or L2 client creation fails with `status Unknown` — see `docs/L2_CLIENTS.md`.
-- **`deploy_l2_contracts.sh` patches `config.example.json`**, while the relayer reads `config.json` — copy the addresses across.
+- **`deploy_l2_contracts.sh` patches `relayer/config.json`** (override with `RELAYER_CONFIG`), so there is nothing to copy across. It also patches the matching `l2_to_cosmos` module's `rollup_profile.common.l2_router` — leaving that at the example placeholder used to fail much later as a membership-proof error against an account that does not exist.
 - **Deploy the L2 contracts with the key the relayer will run with** (`relayer/.env` `ETH_PRIVATE_KEY`). `E2ETestDeployL2` grants the ICS26Router relayer role to `msg.sender`, so a different deployer leaves the relayer unauthorized and every `updateApplicationState` reverts. That account also needs an L2 balance — the L1 devnet faucet address has none there — but **funding alone does not fix the role**, and the revert looks identical either way (see the `canCall` entry below).
 - **Send packets on the Cosmos client that tracks the L2**, register its counterparty to the L2 router's client id, and make sure the module's `cosmos_wasm_client_id` is that same L2 client before `create-clients-eth` (it decides the SpectreClient's counterparty; a mismatch reverts `recvPacket`).
 - Gov proposals: `wasm.sh` resolves the proposal id after a fixed sleep — if indexing lags, the vote step silently no-ops and the proposal is REJECTED. Vote manually within the (short) devnet voting period.
 - **Point `eth_beacon_api_url` at this run's beacon.** The `eth-to-cosmos` module keeps the example's port; `create-clients-cosmos` dies with `beacon api unavailable` before it does anything.
-- **The return direction needs three things beyond the forward one**, and each fails silently or loops: `l2_ics26_client_id` set to the L2 router's real client id (the subscriber filters on it, so a placeholder drops every ack), the attestor started with `disable_derived_roots: true` (the OP builder only proves game-backed roots, but the attestor's frontier is otherwise a derived root — `want game`, retried forever), and a **pinned Ethereum client that keeps advancing** (the builder proves the factory/game at the L1 block that client trusts; `start` refreshes it, and no amount of L1 state retention substitutes — a game covering a recent L2 block does not exist at an old L1 block).
+- **The return direction needs `l2_ics26_client_id` set to the L2 router's real client id** — the subscriber filters events on it, so a placeholder drops every ack silently. It must equal the `cosmos_to_l2` module's `ics26_client_id`; both name the same client.
+- **Two things this list used to demand are now wrong**, and doing them costs you: `disable_derived_roots: true` and a pinned, advancing Ethereum client. Both belonged to the settlement-proof client, which verified a dispute game against L1. Since #345/#347 the attestor-trusted client verifies nothing there, so the builder no longer needs a game-backed root and there is no L1 client in the L2 path at all (`cmd/build_l2_source.go` — the #276 dependency is retired). Both attestor scripts now default `DISABLE_DERIVED_ROOTS=false` on purpose: a game lands long after the L2 block it commits, so games-only leaves the frontier hours behind for no gain.
+- **`DERIVED_GAP_BLOCKS` is the floor on return-direction latency.** All three devnet handoffs export `5`; an attestor pointed at an external node inherits nothing and takes 150, which is ~5 minutes on a 2 s chain.
 
 - **The relayer's ETH signer must hold the ICS26Router role on the L2**, and the sample `relayer/.env` key does not. Every `updateApplicationState` then reverts with a bare custom error (`0x068ca9d8` + the caller address) — no revert string, nothing in the relayer log beyond `execution reverted`. `cast run <tx>` shows the cause in one line: `canCall(<signer>, <ICS26Router>, 0x9c11bece) → false`. Funding the address does not help; it is authorization, not gas. Export the key `E2ETestDeployL2` granted the role to, or grant the role to the `.env` address.
 - **Send with `--absolute-timeouts` and an absolute second-precision timestamp.** Without that flag the CLI builds `timeout_timestamp` from `time.Now().UnixNano()`, and the IBC v2 send path — which reads the field as **seconds** — rejects it as `timeout exceeds the maximum expected value: invalid packet timeout`. This happens with the flag's own default too, so a plain `--packet-timeout-timestamp 600` fails just as hard. The runbook in docs/E2E.md already has the correct form:
@@ -145,10 +146,9 @@ Verify **both** directions: a forward-only success proves half the system. The f
 | `MsgStoreCode`: `reference-types not enabled` | Wasm built with plain `cargo build` — rebuild via `cosmwasm/optimizer` |
 | `MsgCreateClient`: `status Unknown: client state is not active` | 08-wasm allowlist missing `/ibc.core.client.v1.Query/ClientStatus` |
 | `recvPacket` reverts with two client ids in the revert data | SpectreClient counterparty ≠ the source client the packet was sent on |
-| L2 client update fails with `IBC host query failed: codespace: undefined, code: 1` | The config's `rollup_profile.common.ethereum_client.client_id` ≠ the id the L2 wasm client was created with. The contract queries its own copy, so the beacon slot the relayer pins never exists there. `start` now refuses to boot on this mismatch and names both ids |
+| Attestor attests nothing and names no cause | Wrong BoLD `_assertions` slot reads an empty mapping. The devnet slot is `0x75`, which `run_arbitrum_node.sh` verifies at bring-up before writing its handoff |
 | `updateApplicationState` reverts, `gasUsed` ~82k, no revert string | Signer lacks the ICS26Router role on the L2 — `cast run <tx>` shows `canCall(...) → false` |
 | `timeout exceeds the maximum expected value` on send | Sent without `--absolute-timeouts`, so `timeout_timestamp` is nanoseconds; IBC v2 reads it as seconds |
-| `attested game N is not visible at the pinned L1 block M yet` | Normal wait — the game is posted at the L1 head, provable once its creation block finalizes (~2 epochs) |
 | `packet at height N not yet covered by the destination client (trusts M)` | Normal wait — the client landed on a game committing below the packet; the next game covers it |
 | `404 NOT_FOUND: Sync committee for period N not found` | The beacon serves no bootstrap for that period; confirm it serves `light_client/updates` |
 | `unknown field account_proof, expected one of key, value, proof` | An L2 membership proof built in the Ethereum L1 shape — see `docs/L2_CLIENTS.md` |
