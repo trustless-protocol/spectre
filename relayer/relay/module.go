@@ -139,6 +139,11 @@ type Module struct {
 	periodicUpdateInterval     time.Duration
 	periodicUpdateInitialDelay time.Duration
 
+	// waits records how long each parked packet has been waiting, so the waiting
+	// logs report an age and not just a count. Purely observational — it never
+	// gates a relay decision.
+	waits *waitTracker
+
 	// lastHeight is the highest source height whose ClientUpdate we have
 	// submitted. It enforces the append-only / monotonic invariant across the
 	// event and refresh goroutines, so a lower or stale update (e.g. a builder
@@ -152,20 +157,27 @@ type Module struct {
 	lastWait waitLogState
 }
 
-// waitLogState is the identity of a wait: the same triple means nothing changed
+// waitLogState is the identity of a wait: an identical value means nothing changed
 // since the last line, so there is nothing new to tell the operator.
+//
+// description carries the per-packet detail (type, sequence, height, age), so a
+// packet whose reported age advances re-logs even while the frontier is static —
+// which is the case the age was added to expose.
 type waitLogState struct {
-	packets    int
-	pendingMax uint64
-	relayable  uint64
-	logged     bool
+	packets     int
+	relayable   uint64
+	description string
+	logged      bool
 }
 
 // NewModule wires a relay path. name is a human label for logs; clientID is the
 // destination client this path advances. Optional timeout-recovery behavior is
 // added via WithTimeoutScanner / WithPacketTracker.
 func NewModule(name, clientID string, src chain.Source, dst chain.Destination, builder chain.ClientUpdateBuilder, opts ...Option) *Module {
-	m := &Module{name: name, clientID: clientID, src: src, dst: dst, builder: builder}
+	m := &Module{
+		name: name, clientID: clientID, src: src, dst: dst, builder: builder,
+		waits: newWaitTracker(),
+	}
 	for _, opt := range opts {
 		opt(m)
 	}
@@ -306,37 +318,45 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 	}
 
 	var requeue []int
-	var pendingMax uint64 // highest source height still waiting (for the log below)
+	var stalled []waiting // still-waiting packets, with how long each has waited
 	provable := make([]chain.Event, 0, len(events))
 	provableIdx := make([]int, 0, len(events)) // original index behind provable[j]
 	for i, e := range events {
 		if e.Height > relayable {
 			requeue = append(requeue, i) // not yet provable — wait, no expensive work
-			if e.Height > pendingMax {
-				pendingMax = e.Height
-			}
+			stalled = append(stalled, waiting{event: e, age: m.waits.observe(e)})
 			continue
 		}
+		// Deliberately NOT cleared here. Clearing at this gate would reset the age of
+		// a packet that clears the source gate every flush but parks at the
+		// destination-coverage gate below — the exact shape of a stuck L2 ack, and the
+		// case the age exists to expose. An entry is cleared only when the packet
+		// stops waiting for good: relayed, or dropped as permanently dead.
 		provable = append(provable, e)
 		provableIdx = append(provableIdx, i)
 	}
+	m.waits.purgeStale()
 	// Surface the wait so the finality/AppHash lag is visible: relayable moving up
-	// shows the source's head advancing toward the packet.
+	// shows the source's head advancing toward the packet, and each packet is named
+	// (type, sequence, height, age) because the count alone cannot answer the two
+	// questions an operator has when a leg goes quiet — is my packet in this queue,
+	// and has it been here long enough to be stuck rather than merely waiting?
 	//
 	// Logged only when that picture CHANGES. This runs once per flush — every batch
-	// period, on no backoff — and a wait is normally long.
-	//
-	// What that silences depends on how the frontier moves. Measured on OP Sepolia:
+	// period, on no backoff — and a wait is normally long. Measured on OP Sepolia:
 	// with the attestor's derived-root gap at 150 blocks the frontier sat still for
-	// the whole wait, so 67 byte-identical lines collapse to 1. With the gap at 10 it
-	// advanced during the wait, so 4 lines collapse to 3 — one per real advance. The
-	// worst case is therefore one line per frontier advance, never per flush, and the
-	// numbers that survive all mean something.
-	if len(requeue) > 0 {
-		now := waitLogState{packets: len(requeue), pendingMax: pendingMax, relayable: relayable, logged: true}
+	// the whole wait, so 67 byte-identical lines collapse to 1; at a gap of 10 it
+	// advanced, so 4 lines collapse to 3 — one per real advance.
+	//
+	// The description is part of the key, not just the counts: a packet whose age
+	// crosses a reporting threshold is new information even when the frontier has
+	// not moved, and suppressing that would hide the very case the age exists for.
+	if len(stalled) > 0 {
+		description := describeWaiting(stalled)
+		now := waitLogState{packets: len(stalled), relayable: relayable, description: description, logged: true}
 		if now != m.lastWait {
-			log.Printf("[relay %s] waiting: %d packet(s) not yet relayable (highest pending height=%d, source relayable height=%d)",
-				m.name, len(requeue), pendingMax, relayable)
+			log.Printf("[relay %s] waiting: %d packet(s) not yet relayable [%s] (source relayable height=%d)",
+				m.name, len(stalled), description, relayable)
 			m.lastWait = now
 		}
 	} else {
@@ -383,8 +403,8 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 		// full client update every flush, forever, with nothing in the log. Rate-limit
 		// via the same cadence as the waiting log if it ever gets noisy.
 		if e.Height > proofHeight {
-			log.Printf("[relay %s] packet at height %d not yet covered by the destination client (trusts %d); re-queued",
-				m.name, e.Height, proofHeight)
+			log.Printf("[relay %s] waiting: %s seq=%d at height %d not yet covered by the destination client (trusts %d, waiting %s); re-queued",
+				m.name, e.Type, e.Sequence, e.Height, proofHeight, m.waits.observe(e).Round(time.Second))
 			requeue = append(requeue, i)
 			continue
 		}
@@ -405,15 +425,19 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 			// drains gas, and the timeout scanner (fed independently) refunds it.
 			// Any other proof failure is transient (RPC blip, H+2 lag) → re-queue.
 			if chain.IsPermanent(err) {
-				log.Printf("[relay %s] DROP packet (type=%d height=%d): %v", m.name, e.Type, e.Height, err)
+				// Dead for good — forget any recorded wait so the entry does not sit in
+				// the tracker until its TTL.
+				m.waits.clear(e)
+				log.Printf("[relay %s] DROP packet (%s seq=%d height=%d): %v", m.name, e.Type, e.Sequence, e.Height, err)
 				continue
 			}
-			log.Printf("[relay %s] proof for packet (type=%d height=%d): %v", m.name, e.Type, e.Height, err)
+			log.Printf("[relay %s] proof for packet (%s seq=%d height=%d): %v", m.name, e.Type, e.Sequence, e.Height, err)
 			requeue = append(requeue, i)
 			continue
 		}
 		packets = append(packets, chain.RelayPacket{
-			Type: e.Type, Packet: e.Raw, Proof: proof, Height: proofHeight, AckBytes: e.AckBytes,
+			Type: e.Type, Sequence: e.Sequence, Packet: e.Raw,
+			Proof: proof, Height: proofHeight, AckBytes: e.AckBytes,
 		})
 		relayedIdx = append(relayedIdx, i)
 	}
@@ -441,7 +465,7 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 		err = m.dst.RelayPackets(ctx, packets)
 	}
 	if err == nil {
-		m.untrackDelivered(packets)
+		m.settleDelivered(packets)
 		return requeue
 	}
 	if foldPlan != nil {
@@ -460,7 +484,9 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 	// while its siblings still relay. This is the failure path only (rare), so the
 	// extra per-packet txs are acceptable to avoid losing valid packets.
 	if len(packets) == 1 {
-		log.Printf("[relay %s] DROP packet at height %d (permanent): %v", m.name, proofHeight, err)
+		m.waits.clearPacket(packets[0]) // dead for good — stop reporting a wait for it
+		log.Printf("[relay %s] DROP packet (%s seq=%d) at height %d (permanent): %v",
+			m.name, packets[0].Type, packets[0].Sequence, proofHeight, err)
 		return requeue
 	}
 	log.Printf("[relay %s] permanent batch failure at height %d (%v); isolating %d packet(s) individually", m.name, proofHeight, err, len(packets))
@@ -549,14 +575,15 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 		single := []chain.RelayPacket{p}
 		if err := m.dst.RelayPackets(ctx, single); err != nil {
 			if chain.IsPermanent(err) {
-				log.Printf("[relay %s] DROP packet (type=%d height=%d, permanent): %v", m.name, p.Type, p.Height, err)
+				m.waits.clearPacket(p) // dead for good — stop reporting a wait for it
+				log.Printf("[relay %s] DROP packet (%s seq=%d height=%d, permanent): %v", m.name, p.Type, p.Sequence, p.Height, err)
 				continue
 			}
-			log.Printf("[relay %s] isolated relay (type=%d height=%d): %v", m.name, p.Type, p.Height, err)
+			log.Printf("[relay %s] isolated relay (%s seq=%d height=%d): %v", m.name, p.Type, p.Sequence, p.Height, err)
 			requeue = append(requeue, relayedIdx[j])
 			continue
 		}
-		m.untrackDelivered(single)
+		m.settleDelivered(single)
 	}
 	return requeue
 }
@@ -590,31 +617,36 @@ func (m *Module) relayFoldedIsolated(ctx context.Context, folding chain.FoldingD
 
 		if err != nil {
 			if chain.IsPermanent(err) {
-				log.Printf("[relay %s] DROP folded packet (type=%d height=%d, permanent): %v", m.name, p.Type, p.Height, err)
+				m.waits.clearPacket(p) // dead for good — stop reporting a wait for it
+				log.Printf("[relay %s] DROP folded packet (%s seq=%d height=%d, permanent): %v", m.name, p.Type, p.Sequence, p.Height, err)
 				continue
 			}
-			log.Printf("[relay %s] isolated folded relay (type=%d height=%d): %v", m.name, p.Type, p.Height, err)
+			log.Printf("[relay %s] isolated folded relay (%s seq=%d height=%d): %v", m.name, p.Type, p.Sequence, p.Height, err)
 			requeue = append(requeue, relayedIdx[j])
 			continue
 		}
-		m.untrackDelivered(single)
+		m.settleDelivered(single)
 	}
 	return requeue
 }
 
-// untrackDelivered removes each delivered SendPacket from the pending tracker:
-// once received on the destination it can no longer time out, so leaving it in
-// the tracker only bloats it and makes the timeout scanner keep querying a
-// receipt it will always find. Mirrors the legacy handleCosmos
+// settleDelivered closes out packets the destination accepted.
+//
+// It clears each one's wait entry — the packet landed, so any age recorded for
+// it must not be reported again (nor inflate a later packet that reuses the same
+// sequence after a client re-creation).
+//
+// It also removes each delivered SendPacket from the pending tracker: once
+// received on the destination it can no longer time out, so leaving it in the
+// tracker only bloats it and makes the timeout scanner keep querying a receipt
+// it will always find. Mirrors the legacy handleCosmos
 // PendingTracker.Remove-on-recv. Only paths that supply an untracker
 // (cosmos->eth) do this; eth->cosmos removes via its source's terminal
 // EthAck/EthTimeout instead.
-func (m *Module) untrackDelivered(packets []chain.RelayPacket) {
-	if m.untrack == nil {
-		return
-	}
+func (m *Module) settleDelivered(packets []chain.RelayPacket) {
 	for _, p := range packets {
-		if p.Type == chain.SendPacket {
+		m.waits.clearPacket(p)
+		if m.untrack != nil && p.Type == chain.SendPacket {
 			m.untrack(p.Packet)
 		}
 	}

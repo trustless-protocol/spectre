@@ -21,6 +21,7 @@ package chain
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -45,11 +46,33 @@ const (
 	TimeoutPacket
 )
 
+// String names the event by the message it becomes on the destination, so logs
+// distinguish a forward delivery from a returning acknowledgement without the
+// reader decoding an integer.
+func (t EventType) String() string {
+	switch t {
+	case SendPacket:
+		return "recv"
+	case AckPacket:
+		return "ack"
+	case TimeoutPacket:
+		return "timeout"
+	default:
+		return fmt.Sprintf("unknown(%d)", int(t))
+	}
+}
+
 // Event is a relayable packet observed on a source chain. Raw carries the
 // adapter-encoded packet; the core only reads the routing fields.
 type Event struct {
-	Type     EventType
-	Height   uint64   // source height the event was observed at (gated by LatestHeight)
+	Type   EventType
+	Height uint64 // source height the event was observed at (gated by LatestHeight)
+	// Sequence is the packet's IBC sequence, duplicated out of Raw purely so the
+	// core can name a packet in logs. Decoding Raw for that would put a proto
+	// dependency (and adapter-specific knowledge) into the generic relay loop,
+	// which is the thing this package exists to avoid — so the adapters, which
+	// already hold the decoded packet, copy it in.
+	Sequence uint64
 	ClientID string   // destination client id this event routes to (event-stream partition key)
 	Raw      []byte   // proto-marshaled channeltypesv2.Packet
 	AckBytes [][]byte // app acknowledgements, populated only for AckPacket events
@@ -80,6 +103,7 @@ type ClientUpdate struct {
 // message (MsgRecvPacket / MsgAcknowledgement / MsgTimeout) and submits it.
 type RelayPacket struct {
 	Type     EventType // recv (SendPacket), ack, or timeout
+	Sequence uint64    // carried from the source Event, for logging and wait bookkeeping
 	Packet   []byte    // proto-marshaled channeltypesv2.Packet
 	Proof    []byte    // from Source.MembershipProof / NonMembershipProof
 	Height   uint64    // the source height the proof is against

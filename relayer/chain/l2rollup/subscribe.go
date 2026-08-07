@@ -202,6 +202,7 @@ func l2SendToEvent(ev *contractICS26Router.ContractICS26RouterSendPacket, cosmos
 	return chain.Event{
 		Type:     chain.SendPacket,
 		Height:   ev.Raw.BlockNumber,
+		Sequence: pkt.Sequence,
 		ClientID: pkt.DestinationClient,
 		Raw:      raw,
 	}, true
@@ -225,6 +226,7 @@ func l2AckToEvent(ev *contractICS26Router.ContractICS26RouterWriteAcknowledgemen
 	return chain.Event{
 		Type:     chain.AckPacket,
 		Height:   ev.Raw.BlockNumber,
+		Sequence: pkt.Sequence,
 		ClientID: pkt.DestinationClient,
 		Raw:      raw,
 		AckBytes: ev.Acknowledgements,

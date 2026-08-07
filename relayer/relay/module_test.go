@@ -692,6 +692,50 @@ func TestUpdateClientTo_AppendOnly(t *testing.T) {
 	}
 }
 
+// A permanently-failing packet must leave no wait entry behind, on EVERY terminal
+// path. The folded isolated path was the one that did not clear: a batch fold
+// reverts, isolation retries each packet carrying the update, and a packet that
+// fails permanently there stayed in the tracker until its TTL — so `status` and
+// the waiting log would keep reporting an age for a packet that was already dropped.
+//
+// Asserting on the tracker rather than on a log line is deliberate: the tracker is
+// what a future status command reads, and it is what a fifth terminal path would
+// also have to clear.
+func TestFoldedIsolatedPermanentDropClearsTheWait(t *testing.T) {
+	src := &mockSource{relayable: 100}
+	dst := &foldingMockDest{enabled: true}
+	// Every fold reverts permanently: the batch first, then each isolated singleton.
+	dst.foldFn = func(_ chain.ClientUpdate, _ []chain.RelayPacket) error {
+		return chain.Permanent(errors.New("reverted"))
+	}
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+	events := []chain.Event{
+		{Type: chain.SendPacket, Height: 10, Sequence: 1, Raw: []byte("a")},
+		{Type: chain.SendPacket, Height: 10, Sequence: 2, Raw: []byte("b")},
+	}
+	// First pass: nothing is relayable yet, so both packets are observed as waiting.
+	src.relayable = 5
+	if rq := m.handleBatch(context.Background(), events); len(rq) != 2 {
+		t.Fatalf("both packets should be re-queued while unrelayable, got %d", len(rq))
+	}
+	if got := len(m.waits.entries); got != 2 {
+		t.Fatalf("expected 2 tracked waits after the first pass, got %d", got)
+	}
+
+	// Second pass: relayable, folded batch reverts, isolation drops both permanently.
+	src.relayable = 100
+	if rq := m.handleBatch(context.Background(), events); len(rq) != 0 {
+		t.Fatalf("permanently dropped packets must not be re-queued, got %d", len(rq))
+	}
+	if got := len(m.waits.entries); got != 0 {
+		t.Fatalf("folded isolated drop left %d wait entry/entries behind; every terminal path must clear", got)
+	}
+	if dst.foldCalls < 2 {
+		t.Fatalf("expected the batch fold plus per-packet isolation, got %d fold calls", dst.foldCalls)
+	}
+}
+
 // A packet waiting on the source frontier is re-queued every flush — every batch
 // period, on no backoff. A measured OP Sepolia wait produced 67 identical lines in
 // 4m12s, and a default 150-block attestor gap makes ~100 the normal case. The line
@@ -706,7 +750,7 @@ func TestHandleBatch_WaitingLogsOnlyOnChange(t *testing.T) {
 		t.Fatalf("packet above the relayable height must re-queue, got %v", rq)
 	}
 	first := m.lastWait
-	if !first.logged || first.packets != 1 || first.pendingMax != 50 || first.relayable != 5 {
+	if !first.logged || first.packets != 1 || first.relayable != 5 || first.description == "" {
 		t.Fatalf("first wait must be recorded as logged: %+v", first)
 	}
 

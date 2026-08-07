@@ -244,7 +244,12 @@ func cosmosPacketToEvent(p services.CosmosPacket, routerClientID string) (chain.
 	if err != nil {
 		return chain.Event{}, false
 	}
-	e := chain.Event{Height: p.BlockNumber, ClientID: p.Packet.DestinationClient, Raw: raw}
+	e := chain.Event{
+		Height:   p.BlockNumber,
+		Sequence: p.Packet.Sequence,
+		ClientID: p.Packet.DestinationClient,
+		Raw:      raw,
+	}
 	switch p.Type {
 	case services.CosmosSend:
 		e.Type = chain.SendPacket

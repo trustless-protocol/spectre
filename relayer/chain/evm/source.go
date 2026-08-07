@@ -160,7 +160,12 @@ func ethPacketToEvent(p services.EthPacket) (chain.Event, bool) {
 	if err != nil {
 		return chain.Event{}, false
 	}
-	e := chain.Event{Height: p.BlockNumber, ClientID: p.Packet.DestinationClient, Raw: raw}
+	e := chain.Event{
+		Height:   p.BlockNumber,
+		Sequence: p.Packet.Sequence,
+		ClientID: p.Packet.DestinationClient,
+		Raw:      raw,
+	}
 	switch p.Type {
 	case services.EthSend:
 		e.Type = chain.SendPacket
