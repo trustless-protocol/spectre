@@ -261,21 +261,54 @@ RESPECTED_GAME_TYPE=8 \
 GAIAD=~/go/bin/gaiad ./scripts/local/run_cosmos_node.sh
 GAIAD=~/go/bin/gaiad ./scripts/local/wasm_op.sh
 
-# 3. Deploy the L2 contracts with a key funded ON THAT L2.
+# 3. config.json: keep only the OP module pair, and point it at the L2. The
+#    deploy below patches this file, so it has to exist first.
+cp relayer/config.example.json relayer/config.json
+jq '{modules: [.modules[] | select(.name | test("-op$|^op-"))], batch}' \
+  relayer/config.json > /tmp/c && mv /tmp/c relayer/config.json
+# then fill in the fields listed in "Values you fill in by hand" below.
+
+# 4. Deploy the L2 contracts with a key funded ON THAT L2.
+#    DO THIS BEFORE STARTING THE ATTESTOR if both share one rate-limited RPC —
+#    see "One RPC budget, two processes" in the Arbitrum section.
 DST_CHAIN=opstack L2_RPC=http://<host>:8545 RELAYER_CONFIG=relayer/config.json \
 L2_DEPLOYER_ADDRESS=0x... L2_DEPLOYER_PRIVATE_KEY=... \
   ./scripts/local/deploy_l2_contracts.sh
 
-# 4. Clients, then relay. The relayer must sign with the SAME key that deployed
-#    (E2ETestDeployL2 grants the router role to msg.sender). Pass it in the
-#    environment rather than editing relayer/.env — godotenv does not override a
-#    variable already set, so the export wins.
+# 5. l2-config, then clients and relay. The relayer must sign with the SAME key
+#    that deployed (E2ETestDeployL2 grants the router role to msg.sender). Pass it
+#    in the environment rather than editing relayer/.env — godotenv does not
+#    override a variable already set, so the export wins.
+cp relayer/op-l2-config.example.json relayer/op-l2-config.json
+# fill in wasm_checksum (step 2), l2_rpc_url, and l2_router (= ICS26_ADDRESS from step 4)
 cd relayer
 ./relayer create-clients-cosmos --config config.json --l2-config op-l2-config.json
 ETH_PRIVATE_KEY=<deployer-key> ./relayer create-clients-eth --config config.json \
   --source <ics26_client_id> --trust-level 2/3
 ETH_PRIVATE_KEY=<deployer-key> ./relayer start --config config.json
 ```
+
+#### Values you fill in by hand, and where each comes from
+
+Everything not listed here is written for you — see
+[What the tooling fills in for you](#what-the-tooling-fills-in-for-you).
+
+**`relayer/config.json`:**
+
+| Field | Module | Value comes from |
+|---|---|---|
+| `eth_rpc_url` | `cosmos-to-op` | your L2 HTTP endpoint |
+| `eth_ws_url` | `cosmos-to-op` | your L2 WebSocket endpoint; optional, the relayer skips the WS client when empty |
+| `l2_rpc_url` | `op-to-cosmos` | the same L2 HTTP endpoint (step 4 overwrites it with `L2_RPC` anyway) |
+| `attestor_addr` | `op-to-cosmos` | `127.0.0.1:$GRPC_PORT` from step 1; the example ships `127.0.0.1:3001`, which matches the script default |
+| `attestor_src_chain` | `op-to-cosmos` | the `SRC_CHAIN` you passed in step 1 (`op-sepolia`) — must match, or `AttestedUpTo` answers for another chain |
+| `head_kind` | `op-to-cosmos` | the same choice as `ATTESTATION_HEAD` in step 1 |
+| `rollup_profile.common.l2_chain_id` | `op-to-cosmos` | `eth_chainId` on your L2 (`11155420` on OP Sepolia) |
+| `log_scan_chunk` | `op-to-cosmos` | your provider's `eth_getLogs` span cap — measure it, see the Arbitrum section |
+
+**`relayer/op-l2-config.json`:** `wasm_checksum` (from `wasm_op.sh`), `l2_rpc_url`, and
+`rollup_profile.common.l2_router` (= `ICS26_ADDRESS` printed by step 4 — which is why
+this file is filled in after the deploy).
 
 **Resolving the dispute-game contracts.** `run_op_attestor.sh` can derive them with
 `cast` for a chain it knows; for a public network it exits with
@@ -408,17 +441,13 @@ GAIAD=~/go/bin/gaiad ./scripts/local/wasm_arb.sh          # -> checksum
 
 # 3. config.json: keep only the Arbitrum module pair, and point it at the L2.
 cp relayer/config.example.json relayer/config.json
-jq '{modules: [.modules[] | select(.name | test("arbitrum"))], batch, server}' \
+jq '{modules: [.modules[] | select(.name | test("arbitrum"))], batch}' \
   relayer/config.json > /tmp/c && mv /tmp/c relayer/config.json
-# then set, in the two modules:
-#   cosmos-to-arbitrum : eth_rpc_url, eth_ws_url        -> the L2 endpoints
-#   arbitrum-to-cosmos : l2_rpc_url                     -> the L2 HTTP endpoint
-#                        attestor_src_chain             -> arbitrum-sepolia
-#                        head_kind                      -> unsafe
-#                        log_scan_chunk                 -> see the provider note below
-#                        rollup_profile.common.l2_chain_id -> 421614
+# then fill in the seven fields listed in "Values you fill in by hand" below.
 
 # 4. Deploy the L2 contracts with a key funded ON Arbitrum Sepolia.
+#    DO THIS BEFORE STARTING THE ATTESTOR if both share one rate-limited RPC —
+#    see "One RPC budget, two processes" below.
 DST_CHAIN=arbitrum L2_RPC=<arbitrum-sepolia-rpc> RELAYER_CONFIG=relayer/config.json \
 L2_DEPLOYER_ADDRESS=0x... L2_DEPLOYER_PRIVATE_KEY=... \
   ./scripts/local/deploy_l2_contracts.sh
@@ -469,11 +498,84 @@ beat the profile — a stale one used to silently produce `l2_chain_id=412346` a
 `src_chain=arbdev` against a public RPC. With `CHAIN_PROFILE` set to anything but
 `devnet` the handoff is now ignored, and the script says so.
 
-**The attestor stalls silently on Arbitrum Sepolia after a few minutes** — issue #358.
-It keeps running and logs nothing; `source relayable height` in the relayer freezes at
-the last attested block and the return direction never completes. `docker restart
-fast-ibc-arbitrum-attestor` re-anchors it at the head, for about another minute. There
-is no workaround beyond that yet.
+#### Values you fill in by hand, and where each comes from
+
+Ten values. Everything else in both files is written for you — the table after this one
+says by what. Verified by running this section end to end against Arbitrum Sepolia.
+
+**`relayer/config.json`** — seven:
+
+| Field | Module | Value comes from |
+|---|---|---|
+| `eth_rpc_url` | `cosmos-to-arbitrum` | your L2 HTTP endpoint |
+| `eth_ws_url` | `cosmos-to-arbitrum` | your L2 WebSocket endpoint. Optional — the relayer skips the WS client when it is empty, and the L2→Cosmos direction polls regardless |
+| `l2_rpc_url` | `arbitrum-to-cosmos` | the same L2 HTTP endpoint. Step 4 overwrites this with `L2_RPC`, so a mismatch here is corrected rather than fatal |
+| `attestor_addr` | `arbitrum-to-cosmos` | `127.0.0.1:$GRPC_PORT` from step 1. The example ships `127.0.0.1:3002`, which matches the `GRPC_PORT=3002` above — **change it if you used a different port**, or the relayer dials a closed socket |
+| `attestor_src_chain` | `arbitrum-to-cosmos` | `src_chain` in `attestor/arbitrum/config.<profile>.json` (`arbitrum-sepolia`). Must equal what the attestor reports, or `AttestedUpTo` answers for a chain you did not ask about |
+| `head_kind` | `arbitrum-to-cosmos` | `unsafe`, `safe` or `finalized` — the same choice as `ATTESTATION_HEAD` in step 1 |
+| `rollup_profile.common.l2_chain_id` | `arbitrum-to-cosmos` | `eth_chainId` on your L2 (`421614` on Arbitrum Sepolia, `412346` on the local devnet) |
+| `log_scan_chunk` | `arbitrum-to-cosmos` | your provider's `eth_getLogs` span cap — measure it, see below |
+
+**`relayer/arb-l2-config.json`** — three:
+
+| Field | Value comes from |
+|---|---|
+| `wasm_checksum` | the hex printed by `wasm_arb.sh` in step 2 |
+| `l2_rpc_url` | your L2 HTTP endpoint |
+| `rollup_profile.common.l2_router` | `ICS26_ADDRESS` printed by step 4 — so this file is filled in *after* the deploy, which is why step 5 comes after step 4 |
+
+`counterparty_client_id` and `l2_chain_id` in that file already match the example config
+(`arb-client-0`, `421614`); change them only if you changed the module's
+`ics26_client_id` or are on a different chain.
+
+#### What the tooling fills in for you
+
+Identical for OP, Arbitrum and Base. Do not pre-fill these — the commands overwrite
+whatever is there:
+
+| Field | Written by |
+|---|---|
+| `ics26_address`, `membership`, `update_client`, `signature_verifier`, `misbehaviour` | `deploy_l2_contracts.sh` (forward module) |
+| `rollup_profile.common.l2_router`, `l2_rpc_url` | `deploy_l2_contracts.sh` (return module — it prints `Patched the return module "…"`) |
+| `cosmos_wasm_client_id`, `l2_wasm_client_id` | `create-clients-cosmos`, which overwrites the example's `08-wasm-N` placeholder |
+| `spectre_client` | `create-clients-eth` |
+
+#### One RPC budget, two processes
+
+Applies to every L2 in this document; the numbers below were measured on Arbitrum
+Sepolia.
+
+**The attestor and the relayer both hammer the L2 endpoint, and on a free tier they do
+not fit together.** The attestor issues `runtime_backfill_concurrency` (8) parallel
+header fetches every refresh; the relayer adds `eth_getLogs` scans, `eth_getProof`
+builds and transaction sends. Against one Alchemy free-tier key this measurably
+exceeds the concurrent-request budget:
+
+- `deploy_l2_contracts.sh` fails outright with `Max retries exceeded HTTP error 429
+  with empty body` when the attestor is already running. Pausing the attestor
+  (`docker stop fast-ibc-arbitrum-attestor`) makes the same command succeed.
+- With both running, the attestor logs `backing off: failures=3 delay=40.5s
+  rate_limited=true` and its frontier stops. The relayer then reports `source relayable
+  height` frozen for minutes with `DERIVED_GAP_BLOCKS=10` set, which looks like a
+  relayer problem and is not one.
+
+Two ways out, in order of preference:
+
+**Give each process its own endpoint.** The relayer does not need a keyed provider.
+Measured on Arbitrum Sepolia, both of these serve what it requires with no API key:
+
+| Endpoint | `eth_getProof` at head−500 | `eth_getLogs` span | WebSocket |
+|---|---|---|---|
+| `https://sepolia-rollup.arbitrum.io/rpc` | yes | ≥10 000 | — |
+| `https://arbitrum-sepolia.drpc.org` | yes | ≥10 000 | `wss://arbitrum-sepolia.drpc.org` |
+| `https://arbitrum-sepolia-rpc.publicnode.com` | **no** — fails below ~head−128 | ≥10 000 | `wss://…publicnode.com` |
+
+So point `L2_RPC_URL` (attestor) at the keyed endpoint and the relayer's `eth_rpc_url` /
+`l2_rpc_url` at a keyless one, and neither starves the other. Do not use publicnode for
+the relayer: it cannot prove the router account at the attested height.
+
+**Or serialise the load.** Deploy the contracts first, then start the attestor, and
+lower `RUNTIME_BACKFILL_CONCURRENCY` if the attestor still trips the limit.
 
 #### Adding an L2 to a deployment that already relays Cosmos↔Ethereum
 
@@ -760,18 +862,14 @@ GAIAD=~/go/bin/gaiad ./scripts/local/wasm_base.sh
 
 # 3. config.json: keep only the Base module pair and point it at the L2.
 cp relayer/config.example.json relayer/config.json
-jq '{modules: [.modules[] | select(.name | test("base"))], batch, server}' \
+jq '{modules: [.modules[] | select(.name | test("base"))], batch}' \
   relayer/config.json > /tmp/c && mv /tmp/c relayer/config.json
-# then set, in the two modules:
-#   cosmos-to-base : eth_rpc_url, eth_ws_url        -> the L2 endpoints
-#   base-to-cosmos : l2_rpc_url                     -> the L2 HTTP endpoint
-#                    attestor_addr                  -> 127.0.0.1:3003
-#                    attestor_src_chain             -> base-sepolia
-#                    head_kind                      -> unsafe
-#                    rollup_profile.common.l2_chain_id -> 84532
+# then fill in the fields listed in "Values you fill in by hand" below.
 
 # 4. Deploy the L2 contracts with a key funded ON Base Sepolia. MODULE_NAME is
 #    still required — dst_chain is "opstack" and would also match cosmos-to-op.
+#    DO THIS BEFORE STARTING THE ATTESTOR if both share one rate-limited RPC —
+#    see "One RPC budget, two processes" in the Arbitrum section.
 DST_CHAIN=opstack MODULE_NAME=cosmos-to-base \
 L2_RPC=http://<host>:8545 RELAYER_CONFIG=relayer/config.json \
 L2_DEPLOYER_ADDRESS=0x... L2_DEPLOYER_PRIVATE_KEY=... \
@@ -789,6 +887,27 @@ ETH_PRIVATE_KEY=<deployer-key> ./relayer create-clients-eth --config config.json
   --source base-client-0 --trust-level 2/3
 ETH_PRIVATE_KEY=<deployer-key> ./relayer start --config config.json
 ```
+
+#### Values you fill in by hand, and where each comes from
+
+Everything not listed here is written for you — see
+[What the tooling fills in for you](#what-the-tooling-fills-in-for-you).
+
+**`relayer/config.json`:**
+
+| Field | Module | Value comes from |
+|---|---|---|
+| `eth_rpc_url` | `cosmos-to-base` | your L2 HTTP endpoint |
+| `eth_ws_url` | `cosmos-to-base` | your L2 WebSocket endpoint; optional, the relayer skips the WS client when empty |
+| `l2_rpc_url` | `base-to-cosmos` | the same L2 HTTP endpoint (step 4 overwrites it with `L2_RPC` anyway) |
+| `attestor_addr` | `base-to-cosmos` | `127.0.0.1:$GRPC_PORT` from step 1. The example ships `127.0.0.1:3003`, matching the `GRPC_PORT=3003` above — Base needs its own port so it can coexist with an OP attestor on 3001 |
+| `attestor_src_chain` | `base-to-cosmos` | the `SRC_CHAIN` you passed in step 1 (`base-sepolia`) |
+| `head_kind` | `base-to-cosmos` | the same choice as `ATTESTATION_HEAD` in step 1 |
+| `rollup_profile.common.l2_chain_id` | `base-to-cosmos` | `eth_chainId` on your L2 (`84532` on Base Sepolia) |
+| `log_scan_chunk` | `base-to-cosmos` | your provider's `eth_getLogs` span cap — measure it, see the Arbitrum section |
+
+**`relayer/base-l2-config.json`:** `wasm_checksum` (from `wasm_base.sh`), `l2_rpc_url`,
+and `rollup_profile.common.l2_router` (= `ICS26_ADDRESS` printed by step 4).
 
 **Fund the deployer on Base itself.** An account funded on L1 Sepolia, OP Sepolia or
 Arbitrum Sepolia has nothing here — balances do not carry across rollups. The deploy
