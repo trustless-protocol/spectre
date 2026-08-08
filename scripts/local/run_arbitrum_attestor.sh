@@ -40,6 +40,14 @@
 #   ATTESTOR_DOCKER_NETWORK            optional Docker network to join
 #   GRPC_PORT (3001)
 #   RUNTIME_POLL_INTERVAL (2s)
+#   RUNTIME_BACKFILL_MAX_BLOCKS (2048)
+#       Max L2 heights fetched per unsafe/safe/finalized range in one runtime
+#       refresh. When further behind, the oldest heights are skipped (logged,
+#       later reported as unobserved) so the attestor keeps pace with the chain.
+#   RUNTIME_BACKFILL_CONCURRENCY (8)   concurrent Nitro header fetches during the
+#       backfill. 8 outpaces Arbitrum block production at typical public-RPC
+#       latency while staying under free-tier concurrent-request caps; raise it
+#       on a dedicated endpoint, lower it if the endpoint returns 429s.
 #   ATTESTATION_HEAD (finalized)       Nitro head: unsafe|safe|finalized
 #   DISABLE_DERIVED_ROOTS (false)      attest only RollupCore-backed assertions
 #       when true. The attestor-trusted L2 client verifies no assertion, so the
@@ -177,6 +185,8 @@ DISABLE_DERIVED_ROOTS=${DISABLE_DERIVED_ROOTS:-false}
 # return-direction floor with nothing in the log to point at.
 DERIVED_GAP_BLOCKS=${DERIVED_GAP_BLOCKS:-150}
 MAX_DERIVED_ROOTS=${MAX_DERIVED_ROOTS:-1000}
+RUNTIME_BACKFILL_MAX_BLOCKS=${RUNTIME_BACKFILL_MAX_BLOCKS:-2048}
+RUNTIME_BACKFILL_CONCURRENCY=${RUNTIME_BACKFILL_CONCURRENCY:-8}
 # ATTESTOR_RUN_DIR takes precedence over the legacy RUN_DIR: the devnet bring-up
 # scripts use RUN_DIR for their OWN artifacts, so a handoff that exports it into
 # the caller's shell sends the next bring-up's package clone, downloads and
@@ -253,6 +263,10 @@ esac
     fail "DERIVED_GAP_BLOCKS must be greater than zero"
 [[ "$MAX_DERIVED_ROOTS" =~ ^[1-9][0-9]*$ ]] ||
     fail "MAX_DERIVED_ROOTS must be greater than zero"
+[[ "$RUNTIME_BACKFILL_MAX_BLOCKS" =~ ^[1-9][0-9]*$ ]] ||
+    fail "RUNTIME_BACKFILL_MAX_BLOCKS must be greater than zero"
+[[ "$RUNTIME_BACKFILL_CONCURRENCY" =~ ^[1-9][0-9]*$ ]] ||
+    fail "RUNTIME_BACKFILL_CONCURRENCY must be greater than zero"
 
 mkdir -p "$RUN_DIR"
 RUN_DIR=$(cd "$RUN_DIR" && pwd)
@@ -287,6 +301,8 @@ CONFIG=$RUN_DIR/config.json
 jq -n \
     --arg grpc_listen_address "127.0.0.1:50051" \
     --arg runtime_poll_interval "$RUNTIME_POLL_INTERVAL" \
+    --argjson runtime_backfill_max_blocks "$RUNTIME_BACKFILL_MAX_BLOCKS" \
+    --argjson runtime_backfill_concurrency "$RUNTIME_BACKFILL_CONCURRENCY" \
     --arg attestation_head "$ATTESTATION_HEAD" \
     --argjson disable_derived_roots "$DISABLE_DERIVED_ROOTS" \
     --argjson derived_attestation_gap_blocks "$DERIVED_GAP_BLOCKS" \
@@ -306,6 +322,8 @@ jq -n \
     '{
         grpc_listen_address: $grpc_listen_address,
         runtime_poll_interval: $runtime_poll_interval,
+        runtime_backfill_max_blocks: $runtime_backfill_max_blocks,
+        runtime_backfill_concurrency: $runtime_backfill_concurrency,
         attestation_head: $attestation_head,
         disable_derived_roots: $disable_derived_roots,
         derived_attestation_gap_blocks: $derived_attestation_gap_blocks,

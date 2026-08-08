@@ -4,14 +4,19 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math/big"
+	"math/rand/v2"
+	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rpc"
+	"golang.org/x/sync/errgroup"
 )
 
 // NitroHeaderReader is the canonical Nitro RPC surface required by the
@@ -128,6 +133,9 @@ type RuntimeSnapshot struct {
 type RuntimeState struct {
 	reader NitroHeaderReader
 
+	backfillMaxBlocks   uint64
+	backfillConcurrency int
+
 	refreshMu sync.Mutex
 	mu        sync.RWMutex
 
@@ -139,15 +147,54 @@ type RuntimeState struct {
 	hasLastFinalizedCheck bool
 }
 
+const (
+	defaultBackfillMaxBlocks = uint64(2048)
+	// 8 concurrent fetches clear ~6.9 blocks/s at a 385ms round trip across
+	// the three per-refresh walks — above Arbitrum's ~4 blocks/s — while
+	// staying under public-tier concurrent-request limits that 16 tripped
+	// (Alchemy free tier returns 429s; see PR #362 review).
+	defaultBackfillConcurrency = 8
+)
+
+// RuntimeStateConfig bounds the per-refresh commitment backfill. Zero values
+// select the defaults.
+type RuntimeStateConfig struct {
+	// BackfillMaxBlocks caps the L2 heights fetched per unsafe, safe, or
+	// finalized range in one refresh. When the tracker is behind by more,
+	// the oldest heights are skipped and only the newest BackfillMaxBlocks
+	// are recorded; skipped heights surface later as incomplete finalized
+	// consistency results.
+	BackfillMaxBlocks uint64
+	// BackfillConcurrency bounds concurrent HeaderByNumber fetches per range.
+	BackfillConcurrency int
+}
+
 // NewRuntimeState constructs an empty tracker backed by the configured Nitro
-// RPC endpoint.
+// RPC endpoint, with the default backfill bounds.
 func NewRuntimeState(reader NitroHeaderReader) (*RuntimeState, error) {
+	return NewRuntimeStateWithConfig(reader, RuntimeStateConfig{})
+}
+
+// NewRuntimeStateWithConfig constructs an empty tracker with explicit
+// backfill bounds. Zero config values select the defaults.
+func NewRuntimeStateWithConfig(
+	reader NitroHeaderReader,
+	config RuntimeStateConfig,
+) (*RuntimeState, error) {
 	if reader == nil {
 		return nil, errors.New("Nitro header reader must not be nil")
 	}
+	if config.BackfillMaxBlocks == 0 {
+		config.BackfillMaxBlocks = defaultBackfillMaxBlocks
+	}
+	if config.BackfillConcurrency <= 0 {
+		config.BackfillConcurrency = defaultBackfillConcurrency
+	}
 	return &RuntimeState{
-		reader: reader,
-		heads:  make(map[RunMode]BlockCommitment, 3),
+		reader:              reader,
+		backfillMaxBlocks:   config.BackfillMaxBlocks,
+		backfillConcurrency: config.BackfillConcurrency,
+		heads:               make(map[RunMode]BlockCommitment, 3),
 		observed: map[RunMode]map[uint64]BlockCommitment{
 			RunModeUnsafe: make(map[uint64]BlockCommitment),
 			RunModeSafe:   make(map[uint64]BlockCommitment),
@@ -311,8 +358,13 @@ func isNitroBlockNotFound(err error) bool {
 // Refresh records all newly crossed unsafe and safe heights and compares every
 // newly finalized commitment with the first roots observed at those levels.
 // The initial refresh records only the current heads; it does not perform a
-// historical gap backfill against the public RPC. The returned checks are
-// suitable for logging now and alerting later.
+// historical gap backfill against the public RPC. Each per-level walk is
+// bounded by the configured backfill cap: when the tracker is behind by more,
+// only the newest capped window is fetched. Skipped unsafe/safe heights later
+// finalize as incomplete consistency results; heights skipped by a capped
+// finalized walk receive no consistency check at all and are announced only by
+// the "backfill capped" log line. The returned checks are suitable for logging
+// now and alerting later.
 func (s *RuntimeState) Refresh(ctx context.Context) ([]FinalizedConsistency, error) {
 	if s == nil || s.reader == nil {
 		return nil, errors.New("runtime state is not initialized")
@@ -358,6 +410,7 @@ func (s *RuntimeState) Refresh(ctx context.Context) ([]FinalizedConsistency, err
 	if initialized {
 		unsafeObservations, err = s.commitmentRange(
 			ctx,
+			RunModeUnsafe,
 			nextHeight(previousHeads[RunModeUnsafe].BlockNumber),
 			heads[RunModeUnsafe],
 		)
@@ -366,6 +419,7 @@ func (s *RuntimeState) Refresh(ctx context.Context) ([]FinalizedConsistency, err
 		}
 		safeObservations, err = s.commitmentRange(
 			ctx,
+			RunModeSafe,
 			nextHeight(previousHeads[RunModeSafe].BlockNumber),
 			heads[RunModeSafe],
 		)
@@ -381,6 +435,7 @@ func (s *RuntimeState) Refresh(ctx context.Context) ([]FinalizedConsistency, err
 		case heads[RunModeFinalized].BlockNumber > previousFinalized.BlockNumber:
 			newlyFinalized, err = s.commitmentRange(
 				ctx,
+				RunModeFinalized,
 				nextHeight(previousFinalized.BlockNumber),
 				heads[RunModeFinalized],
 			)
@@ -436,25 +491,130 @@ func (s *RuntimeState) Snapshot() RuntimeSnapshot {
 
 func (s *RuntimeState) commitmentRange(
 	ctx context.Context,
+	mode RunMode,
 	from uint64,
 	head BlockCommitment,
 ) ([]BlockCommitment, error) {
 	if from > head.BlockNumber {
 		return nil, nil
 	}
-	commitments := make([]BlockCommitment, 0, head.BlockNumber-from+1)
-	for height := from; ; height++ {
-		if height == head.BlockNumber {
-			commitments = append(commitments, head)
-			break
-		}
-		commitment, err := s.CommitmentAt(ctx, height)
-		if err != nil {
-			return nil, err
-		}
-		commitments = append(commitments, commitment)
+	span := head.BlockNumber - from + 1
+	switch {
+	case span > s.backfillMaxBlocks:
+		cappedFrom := head.BlockNumber - s.backfillMaxBlocks + 1
+		log.Printf(
+			"attestor %s backfill capped: skipped_blocks=%d skipped_from=%d skipped_to=%d fetch_from=%d head=%d cap=%d",
+			mode,
+			cappedFrom-from,
+			from,
+			cappedFrom-1,
+			cappedFrom,
+			head.BlockNumber,
+			s.backfillMaxBlocks,
+		)
+		from = cappedFrom
+	case span >= s.backfillBehindThreshold():
+		// The frontier is falling behind well before the cap engages; say so
+		// while every height is still being observed.
+		log.Printf(
+			"attestor %s backfill behind: span=%d from=%d head=%d cap=%d",
+			mode,
+			span,
+			from,
+			head.BlockNumber,
+			s.backfillMaxBlocks,
+		)
+	}
+	return s.fetchCommitmentRange(ctx, from, head)
+}
+
+// backfillBehindThreshold is the walk span from which a refresh announces it
+// is falling behind, well before the skip cap engages. A sixteenth of the cap
+// (128 blocks at the default, ~30s of Arbitrum production), floored at 16 so
+// small caps do not log on routine single-block refreshes.
+func (s *RuntimeState) backfillBehindThreshold() uint64 {
+	const minimumBehindThreshold = uint64(16)
+	threshold := s.backfillMaxBlocks / 16
+	if threshold < minimumBehindThreshold {
+		threshold = minimumBehindThreshold
+	}
+	return threshold
+}
+
+// fetchCommitmentRange reads every commitment in [from, head] with bounded
+// concurrency. The head commitment is reused, not re-fetched. A failed fetch
+// cancels the remaining lookups and discards the whole range so no partial
+// observations are recorded.
+func (s *RuntimeState) fetchCommitmentRange(
+	ctx context.Context,
+	from uint64,
+	head BlockCommitment,
+) ([]BlockCommitment, error) {
+	commitments := make([]BlockCommitment, head.BlockNumber-from+1)
+	commitments[len(commitments)-1] = head
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(s.backfillConcurrency)
+	for height := from; height < head.BlockNumber; height++ {
+		index := height - from
+		group.Go(func() error {
+			commitment, err := s.commitmentAtRetryingRateLimit(groupCtx, height)
+			if err != nil {
+				return err
+			}
+			commitments[index] = commitment
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return nil, err
 	}
 	return commitments, nil
+}
+
+const (
+	rateLimitRetryBase  = time.Second
+	rateLimitRetryMax   = 8 * time.Second
+	rateLimitRetryCount = 6
+)
+
+// commitmentAtRetryingRateLimit fetches one commitment, sleeping and retrying
+// on HTTP 429 instead of failing the whole range: a long walk otherwise loses
+// every fetched height to one mid-range rate limit, re-fetches from scratch
+// after the backoff, and never completes on a throughput-capped endpoint. A
+// retrying worker occupies its concurrency slot while it sleeps, so the pool
+// self-throttles to the endpoint's budget. Retries are bounded — a persistent
+// storm still fails the refresh and reaches the monitor's backoff.
+func (s *RuntimeState) commitmentAtRetryingRateLimit(
+	ctx context.Context,
+	height uint64,
+) (BlockCommitment, error) {
+	wait := rateLimitRetryBase
+	for attempt := 0; ; attempt++ {
+		commitment, err := s.CommitmentAt(ctx, height)
+		if err == nil || attempt >= rateLimitRetryCount || !IsRateLimited(err) {
+			return commitment, err
+		}
+		select {
+		case <-ctx.Done():
+			return BlockCommitment{}, ctx.Err()
+		case <-time.After(wait + rand.N(wait/2)):
+		}
+		if wait *= 2; wait > rateLimitRetryMax {
+			wait = rateLimitRetryMax
+		}
+	}
+}
+
+// IsRateLimited reports whether the error is an HTTP 429 or a JSON-RPC
+// rate-limit error code from the Nitro endpoint, anywhere in the wrapped
+// chain.
+func IsRateLimited(err error) bool {
+	var httpErr rpc.HTTPError
+	if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusTooManyRequests {
+		return true
+	}
+	var rpcErr rpc.Error
+	return errors.As(err, &rpcErr) && rpcErr.ErrorCode() == http.StatusTooManyRequests
 }
 
 func (s *RuntimeState) compareFinalized(

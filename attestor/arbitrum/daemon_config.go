@@ -19,25 +19,27 @@ import (
 // DaemonConfig contains the gRPC listener, finalized-L1 RollupCore source, and
 // external Nitro RPC endpoints.
 type DaemonConfig struct {
-	GRPCListenAddress      string  `json:"grpc_listen_address"`
-	RuntimePollInterval    string  `json:"runtime_poll_interval"`
-	AttestationHead        RunMode `json:"attestation_head"`
-	DisableDerivedRoots    bool    `json:"disable_derived_roots"`
-	DerivedGapBlocks       uint64  `json:"derived_attestation_gap_blocks"`
-	MaxDerivedRoots        uint64  `json:"max_derived_roots"`
-	SrcChain               string  `json:"src_chain"`
-	L1RPCURL               string  `json:"l1_rpc_url"`
-	L1ChainID              uint64  `json:"l1_chain_id"`
-	L2ChainID              uint64  `json:"l2_chain_id"`
-	RollupCoreAddress      string  `json:"rollup_core_address"`
-	AssertionsMappingSlot  string  `json:"assertions_mapping_slot"`
-	AssertionStatusOffset  uint8   `json:"assertion_status_offset"`
-	AssertionStartBlock    uint64  `json:"assertion_start_block"`
-	AssertionPollInterval  string  `json:"assertion_poll_interval"`
-	AssertionMaxBlockRange uint64  `json:"assertion_max_block_range"`
-	AttestorStatePath      string  `json:"attestor_state_path"`
-	NitroRPCURL            string  `json:"nitro_rpc_url"`
-	NitroWSURL             string  `json:"nitro_ws_url"`
+	GRPCListenAddress          string  `json:"grpc_listen_address"`
+	RuntimePollInterval        string  `json:"runtime_poll_interval"`
+	RuntimeBackfillMaxBlocks   uint64  `json:"runtime_backfill_max_blocks"`
+	RuntimeBackfillConcurrency uint64  `json:"runtime_backfill_concurrency"`
+	AttestationHead            RunMode `json:"attestation_head"`
+	DisableDerivedRoots        bool    `json:"disable_derived_roots"`
+	DerivedGapBlocks           uint64  `json:"derived_attestation_gap_blocks"`
+	MaxDerivedRoots            uint64  `json:"max_derived_roots"`
+	SrcChain                   string  `json:"src_chain"`
+	L1RPCURL                   string  `json:"l1_rpc_url"`
+	L1ChainID                  uint64  `json:"l1_chain_id"`
+	L2ChainID                  uint64  `json:"l2_chain_id"`
+	RollupCoreAddress          string  `json:"rollup_core_address"`
+	AssertionsMappingSlot      string  `json:"assertions_mapping_slot"`
+	AssertionStatusOffset      uint8   `json:"assertion_status_offset"`
+	AssertionStartBlock        uint64  `json:"assertion_start_block"`
+	AssertionPollInterval      string  `json:"assertion_poll_interval"`
+	AssertionMaxBlockRange     uint64  `json:"assertion_max_block_range"`
+	AttestorStatePath          string  `json:"attestor_state_path"`
+	NitroRPCURL                string  `json:"nitro_rpc_url"`
+	NitroWSURL                 string  `json:"nitro_ws_url"`
 }
 
 // LoadDaemonConfig reads, validates, and resolves filesystem paths relative to
@@ -189,6 +191,29 @@ func (c DaemonConfig) RuntimePollDuration() (time.Duration, error) {
 		return defaultRuntimePollInterval, nil
 	}
 	return parsePositiveDuration(c.RuntimePollInterval, "runtime_poll_interval")
+}
+
+// BackfillMaxBlocks returns the maximum L2 heights fetched per unsafe, safe,
+// or finalized range in one runtime refresh. When the tracker is behind by
+// more, the oldest heights are skipped and reported as unobserved. An omitted
+// value defaults to 2048, roughly one L1 finality epoch of Arbitrum blocks.
+func (c DaemonConfig) BackfillMaxBlocks() uint64 {
+	if c.RuntimeBackfillMaxBlocks == 0 {
+		return defaultBackfillMaxBlocks
+	}
+	return c.RuntimeBackfillMaxBlocks
+}
+
+// BackfillConcurrency returns the bound on concurrent Nitro header fetches
+// during a runtime backfill. An omitted value defaults to 8 — enough to
+// outpace Arbitrum block production at typical public-RPC latency while
+// staying under free-tier concurrent-request limits. Raise it on a dedicated
+// endpoint; lower it if the endpoint returns 429s.
+func (c DaemonConfig) BackfillConcurrency() uint64 {
+	if c.RuntimeBackfillConcurrency == 0 {
+		return uint64(defaultBackfillConcurrency)
+	}
+	return c.RuntimeBackfillConcurrency
 }
 
 // AssertionPollDuration returns the finalized-L1 assertion polling interval.

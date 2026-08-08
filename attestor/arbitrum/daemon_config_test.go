@@ -132,6 +132,29 @@ func TestDaemonConfigRuntimePollInterval(t *testing.T) {
 	}
 }
 
+func TestDaemonConfigRuntimeBackfillDefaults(t *testing.T) {
+	config := validDaemonConfig(t)
+	if config.BackfillMaxBlocks() != 2_048 {
+		t.Fatalf("default backfill max blocks: got %d want 2048", config.BackfillMaxBlocks())
+	}
+	if config.BackfillConcurrency() != 8 {
+		t.Fatalf("default backfill concurrency: got %d want 8", config.BackfillConcurrency())
+	}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("validate config without backfill knobs: %v", err)
+	}
+
+	config.RuntimeBackfillMaxBlocks = 512
+	config.RuntimeBackfillConcurrency = 4
+	if config.BackfillMaxBlocks() != 512 || config.BackfillConcurrency() != 4 {
+		t.Fatalf(
+			"explicit backfill knobs: got %d/%d want 512/4",
+			config.BackfillMaxBlocks(),
+			config.BackfillConcurrency(),
+		)
+	}
+}
+
 func TestDaemonConfigAttestationHeadDefaultsAndValidation(t *testing.T) {
 	config := validDaemonConfig(t)
 	head, err := config.NormalizedAttestationHead()

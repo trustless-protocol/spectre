@@ -52,6 +52,22 @@ Copy `config.example.json` to `config.json` and configure:
 - `runtime_poll_interval`: fallback reconciliation interval for Nitro's unsafe,
   safe, and finalized L2 commitments. New unsafe heads normally trigger
   immediate reconciliation through the WebSocket subscription.
+- `runtime_backfill_max_blocks`: maximum L2 heights fetched per unsafe, safe,
+  or finalized range in one reconciliation. When the attestor is behind by
+  more, the oldest heights are skipped and the newest window is kept, so
+  reconciliation stays bounded and attestation keeps pace with the chain.
+  Skips are logged (`backfill capped`) and skipped heights later finalize as
+  incomplete consistency results. Omitting it uses the default `2048`, roughly
+  one L1 finality epoch of Arbitrum blocks.
+- `runtime_backfill_concurrency`: bound on concurrent Nitro header fetches
+  during the backfill. Omitting it uses the default `8`, chosen to outpace
+  Arbitrum block production at typical public-RPC latency while staying under
+  free-tier concurrent-request caps (Alchemy's free tier 429s at 16). Raise it
+  on a dedicated endpoint; lower it if the endpoint returns 429s — a failed
+  fetch retries on the next reconciliation, with backoff, without advancing
+  any state. The value must clear `3 × latency × block rate` fetches per
+  second or the attestor falls behind (at 385 ms and 4 blocks/s that floor
+  is ~5).
 - `attestation_head`: Nitro head used for proposal-independent attestations.
   `unsafe` trusts the configured Nitro node and does not wait for an L1
   assertion; `safe` uses Nitro's L1-posted view; `finalized` uses Nitro's

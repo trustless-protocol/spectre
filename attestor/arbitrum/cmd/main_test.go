@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"log"
 	"math/big"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -197,6 +199,127 @@ func TestMonitorRuntimeStatePeriodicallyReconcilesWithoutHeads(t *testing.T) {
 	}
 }
 
+func TestMonitorRuntimeStateLogsSlowAndStuckRefresh(t *testing.T) {
+	logs := &syncLogBuffer{}
+	log.SetOutput(logs)
+	defer log.SetOutput(os.Stderr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	refresher := &blockingRuntimeRefresher{
+		started: make(chan struct{}, 16),
+		release: make(chan struct{}),
+	}
+	subscriber := headSubscriberFunc(func(
+		_ context.Context,
+		_ chan<- *types.Header,
+	) (ethereum.Subscription, error) {
+		return newTestSubscription(), nil
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		monitorRuntimeStateWithRetry(
+			ctx,
+			refresher,
+			subscriber,
+			20*time.Millisecond,
+			time.Hour,
+		)
+	}()
+
+	select {
+	case <-refresher.started:
+	case <-time.After(time.Second):
+		t.Fatal("startup refresh never began")
+	}
+	// The watchdog must announce the blocked refresh while it is in flight.
+	waitForLogContains(t, logs, "attestor runtime refresh still running")
+
+	close(refresher.release)
+	// Once the refresh returns, its duration exceeds the reconcile interval.
+	waitForLogContains(t, logs, "attestor runtime refresh slow")
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runtime monitor did not stop")
+	}
+}
+
+func TestRefreshBackoffGrowsAndCaps(t *testing.T) {
+	cases := []struct {
+		failures    int
+		rateLimited bool
+		min, max    time.Duration
+	}{
+		{failures: 1, rateLimited: false, min: time.Second, max: 1200 * time.Millisecond},
+		{failures: 3, rateLimited: false, min: 4 * time.Second, max: 4800 * time.Millisecond},
+		{failures: 1, rateLimited: true, min: 10 * time.Second, max: 12 * time.Second},
+		{failures: 30, rateLimited: false, min: time.Minute, max: 72 * time.Second},
+		{failures: 30, rateLimited: true, min: time.Minute, max: 72 * time.Second},
+	}
+	for _, tc := range cases {
+		for range 32 { // jitter is random; check the bounds hold
+			delay := refreshBackoff(tc.failures, tc.rateLimited)
+			if delay < tc.min || delay > tc.max {
+				t.Fatalf(
+					"backoff(failures=%d rate_limited=%t): got %s want [%s, %s]",
+					tc.failures, tc.rateLimited, delay, tc.min, tc.max,
+				)
+			}
+		}
+	}
+}
+
+func TestMonitorRuntimeStateBacksOffAfterFailedRefresh(t *testing.T) {
+	logs := &syncLogBuffer{}
+	log.SetOutput(logs)
+	defer log.SetOutput(os.Stderr)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	refresher := &flakyRuntimeRefresher{failuresLeft: 1, calls: make(chan time.Time, 16)}
+	subscriber := headSubscriberFunc(func(
+		_ context.Context,
+		_ chan<- *types.Header,
+	) (ethereum.Subscription, error) {
+		return newTestSubscription(), nil
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		monitorRuntimeStateWithRetry(ctx, refresher, subscriber, 5*time.Millisecond, time.Hour)
+	}()
+
+	first := waitForRefreshAt(t, refresher.calls)
+	second := waitForRefreshAt(t, refresher.calls)
+	if gap := second.Sub(first); gap < 900*time.Millisecond {
+		t.Fatalf("second refresh fired %s after a failure; want the >=1s backoff", gap)
+	}
+	if !strings.Contains(logs.String(), "attestor runtime refresh backing off: failures=1") {
+		t.Fatalf("backoff log missing in:\n%s", logs.String())
+	}
+
+	// The second attempt succeeded, so the loop is back on the fast cadence.
+	third := waitForRefreshAt(t, refresher.calls)
+	if gap := third.Sub(second); gap > 500*time.Millisecond {
+		t.Fatalf("refresh cadence did not recover after success: %s between calls", gap)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runtime monitor did not stop")
+	}
+}
+
 func TestServeAttestorStopsOnContextCancellation(t *testing.T) {
 	listener := bufconn.Listen(1024)
 	server := grpc.NewServer()
@@ -261,6 +384,90 @@ func (r *testRuntimeRefresher) Refresh(
 ) ([]arbitrum.FinalizedConsistency, error) {
 	r.calls <- struct{}{}
 	return nil, nil
+}
+
+// flakyRuntimeRefresher fails its first failuresLeft calls, then succeeds,
+// reporting each call's start time.
+type flakyRuntimeRefresher struct {
+	mu           sync.Mutex
+	failuresLeft int
+	calls        chan time.Time
+}
+
+func (r *flakyRuntimeRefresher) Refresh(
+	context.Context,
+) ([]arbitrum.FinalizedConsistency, error) {
+	r.calls <- time.Now()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.failuresLeft > 0 {
+		r.failuresLeft--
+		return nil, errors.New("synthetic refresh failure")
+	}
+	return nil, nil
+}
+
+func waitForRefreshAt(t *testing.T, calls <-chan time.Time) time.Time {
+	t.Helper()
+	select {
+	case at := <-calls:
+		return at
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for a runtime refresh")
+		return time.Time{}
+	}
+}
+
+// blockingRuntimeRefresher signals each Refresh start and blocks every call
+// until release is closed.
+type blockingRuntimeRefresher struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (r *blockingRuntimeRefresher) Refresh(
+	context.Context,
+) ([]arbitrum.FinalizedConsistency, error) {
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+	<-r.release
+	return nil, nil
+}
+
+// syncLogBuffer is a log.SetOutput sink safe to read while the watchdog
+// goroutine is still writing.
+type syncLogBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncLogBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func waitForLogContains(t *testing.T, logs *syncLogBuffer, want string) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for {
+		if strings.Contains(logs.String(), want) {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for log %q in:\n%s", want, logs.String())
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
 }
 
 type headSubscriberFunc func(

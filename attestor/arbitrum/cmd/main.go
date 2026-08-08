@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"math/rand/v2"
 	"net"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -65,7 +67,10 @@ func runAttestor(ctx context.Context, configPath string) error {
 		return err
 	}
 
-	runtimeState, err := arbitrum.NewRuntimeState(nitroClient)
+	runtimeState, err := arbitrum.NewRuntimeStateWithConfig(nitroClient, arbitrum.RuntimeStateConfig{
+		BackfillMaxBlocks:   config.BackfillMaxBlocks(),
+		BackfillConcurrency: int(config.BackfillConcurrency()),
+	})
 	if err != nil {
 		return fmt.Errorf("initialize Nitro runtime state: %w", err)
 	}
@@ -281,13 +286,22 @@ func monitorRuntimeStateWithRetry(
 	headUpdates := make(chan struct{}, 1)
 	go streamNitroHeadUpdates(ctx, subscriber, headUpdates, subscriptionRetryInterval)
 
-	refresh := func() {
+	var refreshStartNanos atomic.Int64
+	go watchRuntimeRefresh(ctx, &refreshStartNanos, reconcileInterval)
+
+	refresh := func() error {
+		start := time.Now()
+		refreshStartNanos.Store(start.UnixNano())
+		defer refreshStartNanos.Store(0)
 		checks, err := runtimeState.Refresh(ctx)
+		if elapsed := time.Since(start); elapsed > reconcileInterval {
+			log.Printf("attestor runtime refresh slow: elapsed=%s interval=%s", elapsed, reconcileInterval)
+		}
 		if err != nil {
 			if ctx.Err() == nil {
 				log.Printf("attestor runtime refresh failed: %v", err)
 			}
-			return
+			return err
 		}
 		for _, check := range checks {
 			switch {
@@ -323,9 +337,37 @@ func monitorRuntimeStateWithRetry(
 				)
 			}
 		}
+		return nil
 	}
 
-	refresh()
+	// A failed refresh backs off before the next attempt instead of letting
+	// every new-head event retrigger it immediately: without this, a tripped
+	// RPC rate limit is hammered ~once per L2 block and never recovers.
+	failures := 0
+	runRefresh := func() {
+		if err := refresh(); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			failures++
+			rateLimited := arbitrum.IsRateLimited(err)
+			delay := refreshBackoff(failures, rateLimited)
+			log.Printf(
+				"attestor runtime refresh backing off: failures=%d delay=%s rate_limited=%t",
+				failures,
+				delay,
+				rateLimited,
+			)
+			select {
+			case <-ctx.Done():
+			case <-time.After(delay):
+			}
+			return
+		}
+		failures = 0
+	}
+
+	runRefresh()
 	ticker := time.NewTicker(reconcileInterval)
 	defer ticker.Stop()
 	for {
@@ -333,9 +375,61 @@ func monitorRuntimeStateWithRetry(
 		case <-ctx.Done():
 			return
 		case <-headUpdates:
-			refresh()
+			runRefresh()
 		case <-ticker.C:
-			refresh()
+			runRefresh()
+		}
+	}
+}
+
+const (
+	refreshBackoffBase          = time.Second
+	refreshBackoffRateLimitBase = 10 * time.Second
+	refreshBackoffMax           = time.Minute
+)
+
+// refreshBackoff returns the wait before the next refresh attempt after
+// consecutive failures: exponential from the base, capped, with up to +20%
+// jitter so restarted attestors sharing an endpoint do not retry in lockstep.
+// A rate-limited failure starts high — retrying a 429 quickly only extends it.
+func refreshBackoff(failures int, rateLimited bool) time.Duration {
+	base := refreshBackoffBase
+	if rateLimited {
+		base = refreshBackoffRateLimitBase
+	}
+	backoff := base
+	for i := 1; i < failures; i++ {
+		backoff *= 2
+		if backoff >= refreshBackoffMax {
+			backoff = refreshBackoffMax
+			break
+		}
+	}
+	if backoff > refreshBackoffMax {
+		backoff = refreshBackoffMax
+	}
+	return backoff + rand.N(backoff/5)
+}
+
+// watchRuntimeRefresh logs when a runtime refresh has been in flight longer
+// than twice the reconcile interval, so a hung Nitro RPC call stays visible
+// even though the monitor goroutine is blocked inside Refresh.
+func watchRuntimeRefresh(ctx context.Context, startNanos *atomic.Int64, interval time.Duration) {
+	threshold := 2 * interval
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			started := startNanos.Load()
+			if started == 0 {
+				continue
+			}
+			if elapsed := time.Since(time.Unix(0, started)); elapsed > threshold {
+				log.Printf("attestor runtime refresh still running: elapsed=%s threshold=%s", elapsed, threshold)
+			}
 		}
 	}
 }

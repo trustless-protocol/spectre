@@ -1,6 +1,8 @@
 {
     "grpc_listen_address": "127.0.0.1:50051",
     "runtime_poll_interval": "15s",
+    "runtime_backfill_max_blocks": 2048,
+    "runtime_backfill_concurrency": 8,
     "attestation_head": "finalized",
     "disable_derived_roots": true,
     "derived_attestation_gap_blocks": 150,
