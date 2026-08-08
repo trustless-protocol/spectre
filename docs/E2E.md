@@ -102,6 +102,10 @@ go build -o relayer ./cmd
 ./scripts/local/run_eth_node.sh         # Kurtosis Ethereum testnet (node only)
 # Poll until finalized.epoch > 0:
 curl -s http://127.0.0.1:32101/eth/v1/beacon/states/head/finality_checkpoints
+#    The deploy patches relayer/config.json, so create it first. Each path has a
+#    runnable example carrying just that path's module pair; config.example.json
+#    is the catalogue of all of them and is NOT runnable on its own.
+cp relayer/config.ethereum.example.json relayer/config.json
 ./scripts/local/deploy_eth_contracts.sh # deploy core contracts + patch relayer config
 #    Deploy with the SAME key the relayer runs with: E2ETestDeploy sets
 #    relayers[0] = msg.sender, so the deployer receives the ICS26Router relayer role.
@@ -261,11 +265,9 @@ RESPECTED_GAME_TYPE=8 \
 GAIAD=~/go/bin/gaiad ./scripts/local/run_cosmos_node.sh
 GAIAD=~/go/bin/gaiad ./scripts/local/wasm_op.sh
 
-# 3. config.json: keep only the OP module pair, and point it at the L2. The
-#    deploy below patches this file, so it has to exist first.
-cp relayer/config.example.json relayer/config.json
-jq '{modules: [.modules[] | select(.name | test("-op$|^op-"))], batch}' \
-  relayer/config.json > /tmp/c && mv /tmp/c relayer/config.json
+# 3. config.json: one runnable config per path, already cut to the OP module
+#    pair. The deploy below patches this file, so it has to exist first.
+cp relayer/config.op.example.json relayer/config.json
 # then fill in the fields listed in "Values you fill in by hand" below.
 
 # 4. Deploy the L2 contracts with a key funded ON THAT L2.
@@ -439,10 +441,8 @@ ATTESTATION_HEAD=unsafe DERIVED_GAP_BLOCKS=10 GRPC_PORT=3002 DETACH=1 \
 GAIAD=~/go/bin/gaiad ./scripts/local/run_cosmos_node.sh
 GAIAD=~/go/bin/gaiad ./scripts/local/wasm_arb.sh          # -> checksum
 
-# 3. config.json: keep only the Arbitrum module pair, and point it at the L2.
-cp relayer/config.example.json relayer/config.json
-jq '{modules: [.modules[] | select(.name | test("arbitrum"))], batch}' \
-  relayer/config.json > /tmp/c && mv /tmp/c relayer/config.json
+# 3. config.json: one runnable config per path, already cut to the Arbitrum pair.
+cp relayer/config.arbitrum.example.json relayer/config.json
 # then fill in the seven fields listed in "Values you fill in by hand" below.
 
 # 4. Deploy the L2 contracts with a key funded ON Arbitrum Sepolia.
@@ -860,10 +860,8 @@ GRPC_PORT=3003 \
 GAIAD=~/go/bin/gaiad ./scripts/local/run_cosmos_node.sh
 GAIAD=~/go/bin/gaiad ./scripts/local/wasm_base.sh
 
-# 3. config.json: keep only the Base module pair and point it at the L2.
-cp relayer/config.example.json relayer/config.json
-jq '{modules: [.modules[] | select(.name | test("base"))], batch}' \
-  relayer/config.json > /tmp/c && mv /tmp/c relayer/config.json
+# 3. config.json: one runnable config per path, already cut to the Base pair.
+cp relayer/config.base.example.json relayer/config.json
 # then fill in the fields listed in "Values you fill in by hand" below.
 
 # 4. Deploy the L2 contracts with a key funded ON Base Sepolia. MODULE_NAME is

@@ -15,7 +15,7 @@ set -euxo pipefail
 #   ETH_RPC / ETH_WS / ETH_BEACON_API   endpoints; sourced from the run_eth_node.sh
 #                                       handoff when ETH_RPC is unset
 #   RELAYER_CONFIG                      relayer config to patch
-#                                       (default: relayer/config.example.json)
+#                                       (default: relayer/config.json)
 #   ETH_DEPLOYER_ADDRESS / _PRIVATE_KEY deployer (defaults to the devnet-only key
 #                                       relayer/.env ships). MUST match the relayer's
 #                                       ETH_PRIVATE_KEY — see the note below.
@@ -27,7 +27,11 @@ REPO_ROOT=$PWD
 
 RUN_DIR=${RUN_DIR:-$REPO_ROOT/.eth-devnet-run}
 ENV_FILE=${ENV_FILE:-$RUN_DIR/eth.env}
-RELAYER_CONFIG=${RELAYER_CONFIG:-$REPO_ROOT/relayer/config.example.json}
+# Patch the operator's own config, not the committed example. The default used
+# to be config.example.json, which wrote deployment addresses into a tracked
+# file — and left the runbook's later steps reading a config nothing had
+# patched. deploy_l2_contracts.sh has always defaulted to config.json.
+RELAYER_CONFIG=${RELAYER_CONFIG:-$REPO_ROOT/relayer/config.json}
 case "$RELAYER_CONFIG" in
     /*) ;;
     *) RELAYER_CONFIG=$REPO_ROOT/$RELAYER_CONFIG ;;

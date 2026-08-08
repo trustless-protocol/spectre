@@ -54,8 +54,9 @@ esac
 [ -f "$RELAYER_CONFIG" ] || {
     echo "ERROR: relayer config not found: $RELAYER_CONFIG" >&2
     echo "  Copy one of the examples and edit it, then re-run:" >&2
-    echo "    cp relayer/config.example.json relayer/config.json" >&2
-    echo "  then keep only the module pair you are relaying (see docs/E2E.md)." >&2
+    echo "    cp relayer/config.<path>.example.json relayer/config.json" >&2
+    echo "  where <path> is ethereum|op|arbitrum|base — each carries just that" >&2
+    echo "  path's module pair (config.example.json is the catalogue of all of them)." >&2
     echo "  Or point RELAYER_CONFIG at the file you want patched." >&2
     exit 1
 }
