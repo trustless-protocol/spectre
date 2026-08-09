@@ -26,6 +26,25 @@ Two things that are easy to get wrong before you start:
 - **Gaia must be the custom-host build.** The scripts require the checkout to be on
   `test/ibc-host-customs`; see [Gaia binary](#gaia-binary) below.
 
+### One L1, shared between rollups
+
+Every rollup script calls `run_eth_node.sh` to guarantee an L1 exists in its enclave,
+and **that script reuses a running enclave rather than rebuilding it**. Three
+consequences worth knowing before you start:
+
+- The rollup scripts may be run in **any order**, and re-running one does not disturb
+  the L2 services, contracts or chain state of the others sharing that L1.
+- `run_eth_node.sh` still re-discovers the endpoints and rewrites `eth.env` on every
+  call, so a caller can source it unconditionally.
+- `FORCE_RECREATE=1` destroys the enclave and rebuilds the L1 from scratch — and takes
+  **every rollup in it** with it. That is the flag for a genuinely clean L1, not for
+  routine re-runs.
+
+Sharing is per **enclave**, and the defaults differ: `run_optimism_node.sh` and
+`run_arbitrum_node.sh` both use `op-devnet`, so they share out of the box, while the
+plain ETH↔Cosmos devnet (`run_eth_node.sh` on its own) uses `my-testnet` and is a
+separate L1. Set `ENCLAVE` explicitly to put them together.
+
 ## Local Cosmos ↔ Ethereum E2E
 
 End-to-end run on local Cosmos + Ethereum nodes. Requires Docker + Kurtosis on
@@ -194,8 +213,9 @@ round-trip; the `[UpdateCosmosClient]` log line reports the chosen bucket.
 ## Local Cosmos ↔ OP E2E
 
 Brings up an L1 + OP Stack L2 + Cosmos and relays both directions. The L1 is shared:
-`run_optimism_node.sh` reuses `run_eth_node.sh` for it (Fusaka-from-genesis, the same
-`eth-network-params.yaml` the ETH↔Cosmos devnet uses), then layers the L2 on top.
+`run_optimism_node.sh` calls `run_eth_node.sh` for it (Fusaka-from-genesis, the same
+`eth-network-params.yaml` the ETH↔Cosmos devnet uses), which reuses the enclave's L1
+if one is already up — see [One L1, shared between rollups](#one-l1-shared-between-rollups).
 
 ```bash
 # 1. L1 (Fulu) + OP Stack L2 in one Kurtosis enclave. Ends with games proposed
@@ -356,7 +376,8 @@ which puts a ~5 minute floor under the return direction. See the latency section
 Brings up an L1 + Arbitrum Nitro/BoLD L2 + Cosmos and relays both directions. The L1
 is shared with the OP flow: `run_arbitrum_node.sh` attaches Arbitrum to the existing
 Kurtosis enclave if OP already brought one up, or creates the same local L1 itself
-through `run_eth_node.sh` when the enclave does not exist.
+through `run_eth_node.sh` when the enclave does not exist — see
+[One L1, shared between rollups](#one-l1-shared-between-rollups).
 
 ```bash
 # 1. L1 (Fulu) + Arbitrum Nitro/BoLD L2 in one Kurtosis enclave. Ends with a

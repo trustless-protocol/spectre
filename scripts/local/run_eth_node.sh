@@ -26,6 +26,15 @@ set -eux
 #   L1_PARAMS (eth-network-params.yaml)  --args-file for the L1
 #   RUN_DIR ($REPO_ROOT/.eth-devnet-run) clone + handoff dir
 #   SKIP_COSMOS_RESET (unset)            when set, do NOT kill gaiad / wipe ~/.gaia
+#   FORCE_RECREATE (unset)               when set, destroy and rebuild the L1 even if
+#                                        its enclave is already up
+#
+# The L1 is SHARED: an existing enclave is reused, not rebuilt. Each rollup script
+# (run_optimism_node.sh, run_arbitrum_node.sh, ...) calls this to guarantee an L1
+# exists in its enclave, so bringing up a second rollup must not destroy the first
+# one's L2 services, its contracts, or the L1 they are anchored to. Reuse still
+# re-discovers the endpoints and rewrites the handoff, because callers source it
+# unconditionally.
 cd "$(dirname "$0")/../.."
 REPO_ROOT=$PWD
 
@@ -38,39 +47,70 @@ RUN_DIR=${RUN_DIR:-$REPO_ROOT/.eth-devnet-run}
 
 log() { printf '\n[run_eth_node] %s\n' "$*"; }
 
-kurtosis enclave rm -f "$ENCLAVE" || true
+# The Cosmos reset is deliberately INDEPENDENT of enclave reuse: one wipes a local
+# gaiad home, the other manages a Kurtosis enclave, and coupling them would make
+# "redo the Cosmos side against the L1 that is already running" impossible to ask
+# for. Reusing the enclave therefore still wipes ~/.gaia unless SKIP_COSMOS_RESET
+# is set, exactly as before.
+#
+# It runs BEFORE the enclave decision now (it used to follow `kurtosis enclave rm`).
+# That is deliberate and has no functional effect — neither touches the other's
+# state — but it keeps the unconditional work in one place and everything that
+# depends on whether the enclave already exists in the block below.
 if [ -z "${SKIP_COSMOS_RESET:-}" ]; then
     killall gaiad || true
     rm -rf "$HOME/.gaia"
 fi
 
-# ------------------------------------------------- package clone + patch ---
 mkdir -p "$RUN_DIR"
 ETH_DIR=$RUN_DIR/ethereum-package
-if [ ! -e "$ETH_DIR/.pinned-ref" ] || [ "$(cat "$ETH_DIR/.pinned-ref")" != "$ETH_PIN" ]; then
-    log "cloning ethpandaops/ethereum-package@$ETH_PIN into $ETH_DIR"
-    rm -rf "$ETH_DIR"
-    mkdir -p "$ETH_DIR"
-    git -C "$ETH_DIR" init --quiet
-    git -C "$ETH_DIR" fetch --quiet --depth 1 \
-        https://github.com/ethpandaops/ethereum-package "$ETH_PIN"
-    git -C "$ETH_DIR" checkout --quiet FETCH_HEAD
-    echo "$ETH_PIN" > "$ETH_DIR/.pinned-ref"
-fi
-# Drop --allow-insecure-unlock (removed in geth v1.17). Portable edit (no sed -i,
-# which differs on BSD/macOS vs GNU).
-GETH_STAR=$ETH_DIR/src/el/geth/geth_launcher.star
-if grep -q -- '--allow-insecure-unlock' "$GETH_STAR"; then
-    log "patching geth_launcher.star (drop --allow-insecure-unlock; removed in geth v1.17)"
-    grep -v -- '--allow-insecure-unlock' "$GETH_STAR" > "$GETH_STAR.tmp"
-    mv "$GETH_STAR.tmp" "$GETH_STAR"
+
+REUSE=0
+if [ -z "${FORCE_RECREATE:-}" ] && kurtosis enclave inspect "$ENCLAVE" >/dev/null 2>&1; then
+    REUSE=1
 fi
 
-# ------------------------------------------------------------------- run ---
-log "starting L1 (enclave $ENCLAVE, package $ETH_DIR) — first run pulls images, be patient"
-kurtosis run --enclave "$ENCLAVE" "$ETH_DIR" --args-file "$L1_PARAMS"
+if [ "$REUSE" = 1 ]; then
+    log "enclave '$ENCLAVE' is already up — reusing its L1 (set FORCE_RECREATE=1 to rebuild)"
+    # The running L1 was built from whatever ref was pinned at the time. Reuse cannot
+    # change that, so say so rather than letting the requested pin imply otherwise —
+    # run_optimism_node.sh passes the exact ref optimism-package expects.
+    if [ -e "$ETH_DIR/.pinned-ref" ] && [ "$(cat "$ETH_DIR/.pinned-ref")" != "$ETH_PIN" ]; then
+        log "WARNING: running L1 was built from ethereum-package@$(cat "$ETH_DIR/.pinned-ref"), \
+requested @$ETH_PIN; re-run with FORCE_RECREATE=1 if that difference matters"
+    fi
+else
+    kurtosis enclave rm -f "$ENCLAVE" || true
+fi
 
-sleep 30
+# ----------------------------------- package clone + patch, then run the L1 ---
+# Skipped entirely on reuse: the clone exists only to feed `kurtosis run`, and the
+# L1 it would start is already running.
+if [ "$REUSE" = 0 ]; then
+    if [ ! -e "$ETH_DIR/.pinned-ref" ] || [ "$(cat "$ETH_DIR/.pinned-ref")" != "$ETH_PIN" ]; then
+        log "cloning ethpandaops/ethereum-package@$ETH_PIN into $ETH_DIR"
+        rm -rf "$ETH_DIR"
+        mkdir -p "$ETH_DIR"
+        git -C "$ETH_DIR" init --quiet
+        git -C "$ETH_DIR" fetch --quiet --depth 1 \
+            https://github.com/ethpandaops/ethereum-package "$ETH_PIN"
+        git -C "$ETH_DIR" checkout --quiet FETCH_HEAD
+        echo "$ETH_PIN" > "$ETH_DIR/.pinned-ref"
+    fi
+    # Drop --allow-insecure-unlock (removed in geth v1.17). Portable edit (no sed -i,
+    # which differs on BSD/macOS vs GNU).
+    GETH_STAR=$ETH_DIR/src/el/geth/geth_launcher.star
+    if grep -q -- '--allow-insecure-unlock' "$GETH_STAR"; then
+        log "patching geth_launcher.star (drop --allow-insecure-unlock; removed in geth v1.17)"
+        grep -v -- '--allow-insecure-unlock' "$GETH_STAR" > "$GETH_STAR.tmp"
+        mv "$GETH_STAR.tmp" "$GETH_STAR"
+    fi
+
+    log "starting L1 (enclave $ENCLAVE, package $ETH_DIR) — first run pulls images, be patient"
+    kurtosis run --enclave "$ENCLAVE" "$ETH_DIR" --args-file "$L1_PARAMS"
+
+    sleep 30
+fi
 
 ETH_RPC=$(kurtosis enclave inspect "$ENCLAVE" \
 | perl -ne '
@@ -107,7 +147,41 @@ echo "ETH_RPC: $ETH_RPC"
 echo "ETH_WS: $ETH_WS"
 echo "ETH_BEACON_API: $ETH_BEACON_API"
 
-# Endpoint handoff for deploy_eth_contracts.sh / run_optimism_node.sh.
+# An enclave can exist with its L1 services gone (a partial teardown, a crashed
+# container). Reuse would then write an EMPTY handoff and every caller would fail
+# somewhere far from the cause, so refuse here and name the way out.
+if [ -z "$ETH_RPC" ] || [ -z "$ETH_WS" ] || [ -z "$ETH_BEACON_API" ]; then
+    log "ERROR: enclave '$ENCLAVE' exists but its L1 endpoints could not be discovered."
+    log "Re-run with FORCE_RECREATE=1 to rebuild the L1 in that enclave."
+    exit 1
+fi
+
+# Discovering a port mapping is not the same as the node being alive: kurtosis still
+# reports the mapping for a container that exists but is stopped (a crashed process
+# that did not tear its container down, stale state after a reboot). Reuse would then
+# hand a dead endpoint to every caller. Only the reuse path needs this — the fresh
+# path just ran `kurtosis run` and waited on it.
+if [ "$REUSE" = 1 ]; then
+    probe=0
+    for attempt in 1 2 3; do
+        if curl -sf -m 5 -X POST -H 'Content-Type: application/json' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"eth_blockNumber","params":[]}' \
+            "$ETH_RPC" >/dev/null 2>&1; then
+            probe=1
+            break
+        fi
+        [ "$attempt" = 3 ] || sleep 2
+    done
+    if [ "$probe" = 0 ]; then
+        log "ERROR: enclave '$ENCLAVE' publishes $ETH_RPC but it does not answer eth_blockNumber."
+        log "Its containers are present but not serving. Re-run with FORCE_RECREATE=1 to rebuild."
+        exit 1
+    fi
+fi
+
+# Endpoint handoff for deploy_eth_contracts.sh / run_optimism_node.sh. Rewritten on
+# the reuse path too — callers source it unconditionally, and a stale file from an
+# earlier enclave points at ports that are no longer mapped.
 ENV_FILE=$RUN_DIR/eth.env
 {
     printf 'export ETH_RPC=%s\n' "$ETH_RPC"
@@ -115,6 +189,10 @@ ENV_FILE=$RUN_DIR/eth.env
     printf 'export ETH_BEACON_API=%s\n' "$ETH_BEACON_API"
 } >"$ENV_FILE"
 
-echo "Ethereum L1 (enclave $ENCLAVE) ready. Endpoints written to $ENV_FILE"
+if [ "$REUSE" = 1 ]; then
+    echo "Ethereum L1 (enclave $ENCLAVE) REUSED. Endpoints written to $ENV_FILE"
+else
+    echo "Ethereum L1 (enclave $ENCLAVE) ready. Endpoints written to $ENV_FILE"
+fi
 echo "Deploy the IBC contracts + patch the relayer config with:"
 echo "  scripts/local/deploy_eth_contracts.sh"
