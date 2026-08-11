@@ -55,6 +55,7 @@ func (m *mockSource) NonMembershipProof(_ context.Context, _ []byte, height uint
 
 type mockDest struct {
 	updates    []chain.ClientUpdate // recorded UpdateClient calls
+	updateErr  error                // if set, UpdateClient returns it
 	relayed    []chain.RelayPacket  // recorded RelayPackets calls
 	relayCalls int                  // number of RelayPackets invocations (multicall folding check)
 	relayErr   error                // if set, RelayPackets returns it (transient)
@@ -65,6 +66,9 @@ type mockDest struct {
 
 func (m *mockDest) Chain() chain.ChainType { return chain.Ethereum }
 func (m *mockDest) UpdateClient(_ context.Context, _ string, u chain.ClientUpdate) error {
+	if m.updateErr != nil {
+		return m.updateErr
+	}
 	m.updates = append(m.updates, u)
 	return nil
 }
@@ -778,5 +782,82 @@ func TestHandleBatch_WaitingLogsOnlyOnChange(t *testing.T) {
 	}
 	if m.lastWait.logged {
 		t.Fatalf("a cleared wait must reset the log state, got %+v", m.lastWait)
+	}
+}
+
+// TestFoldedUpdateSubmittedWhenNoPacketIsProvable pins the escape from a loop
+// the relayer could not leave on its own.
+//
+// A folding destination leaves the client update unsubmitted so it can ride in
+// the packet transaction. When every proof fails there are no packets, and the
+// update used to be dropped with them — but the proofs are built at the height
+// the client already trusts, so the client standing still is exactly why they
+// failed:
+//
+//	proofs target the trusted height -> that height falls out of the execution
+//	node's state window -> every proof fails -> no packets -> the update is
+//	dropped -> the client stays put -> the gap only widens
+//
+// Observed on Sepolia: trustedSlot pinned at 10885728 for twenty minutes while
+// finalizedSlot advanced, every pass logging `eth_getProof failed: historical
+// state ... is not available`, and no update ever submitted.
+func TestFoldedUpdateSubmittedWhenNoPacketIsProvable(t *testing.T) {
+	src := &mockSource{latest: 200, failMembershipOn: map[string]bool{"p": true}}
+	dst := &foldingMockDest{enabled: true}
+	b := &mockBuilder{}
+	m := NewModule("test", "client-0", src, dst, b)
+
+	rq := m.handleBatch(context.Background(), []chain.Event{
+		{Type: chain.SendPacket, Height: 180, Raw: []byte("p")},
+	})
+
+	if len(rq) != 1 {
+		t.Fatalf("the unprovable packet must be re-queued, got %v", rq)
+	}
+	if len(dst.updates) != 1 {
+		t.Fatalf("the client update must still be submitted with no packets to fold it into, got %d", len(dst.updates))
+	}
+	if dst.foldCalls != 0 {
+		t.Fatalf("RelayWithUpdate is specified to carry packets; with none it must not be called, got %d calls", dst.foldCalls)
+	}
+	if m.lastHeight != 200 {
+		t.Fatalf("lastHeight must advance to the submitted update height, got %d", m.lastHeight)
+	}
+}
+
+// The lock the folded plan holds must be released on this path too, or the next
+// flush deadlocks — a stall that would look exactly like the bug being fixed.
+func TestFoldedUpdateWithNoPacketsReleasesTheLock(t *testing.T) {
+	src := &mockSource{latest: 200, failMembershipOn: map[string]bool{"p": true}}
+	dst := &foldingMockDest{enabled: true}
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+	evts := []chain.Event{{Type: chain.SendPacket, Height: 180, Raw: []byte("p")}}
+	m.handleBatch(context.Background(), evts)
+
+	done := make(chan struct{})
+	go func() { defer close(done); m.handleBatch(context.Background(), evts) }()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second flush blocked: the folded plan's lock was not released after the packet-less update")
+	}
+}
+
+// A failed update must not advance lastHeight — otherwise the module would
+// believe the client covers heights it does not, and build proofs the
+// destination cannot verify.
+func TestFoldedUpdateFailureDoesNotAdvanceHeight(t *testing.T) {
+	src := &mockSource{latest: 200, failMembershipOn: map[string]bool{"p": true}}
+	dst := &foldingMockDest{enabled: true}
+	dst.updateErr = errors.New("cosmos rpc down")
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+	m.handleBatch(context.Background(), []chain.Event{
+		{Type: chain.SendPacket, Height: 180, Raw: []byte("p")},
+	})
+
+	if m.lastHeight != 0 {
+		t.Fatalf("a failed update must leave lastHeight at 0, got %d", m.lastHeight)
 	}
 }

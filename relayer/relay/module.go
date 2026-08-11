@@ -443,6 +443,38 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 	}
 
 	if len(packets) == 0 {
+		// Nothing was provable this pass. Submit the folded client update on its
+		// own before returning, or the light client never advances again.
+		//
+		// A folding destination leaves the update unsubmitted so it can ride in
+		// the packet tx. When every proof fails, returning here drops it — and the
+		// proofs are built at the height the client already trusts, so the client
+		// staying put is exactly why they failed. That closes a loop the relayer
+		// cannot leave on its own:
+		//
+		//   proofs target the trusted height  ->  that height falls out of the
+		//   execution node's state window  ->  every proof fails  ->  no packets
+		//   ->  the update is dropped  ->  the client stays put  ->  the gap only
+		//   widens
+		//
+		// Observed on Sepolia: trustedSlot pinned at 10885728 for 20 minutes while
+		// finalizedSlot advanced, every pass logging `eth_getProof failed:
+		// historical state ... is not available`, with no update ever submitted.
+		// Advancing the client is independent of whether any packet can be
+		// relayed, so it must not be conditional on one.
+		if foldPlan != nil {
+			// Destination.UpdateClient, not the folding path: RelayWithUpdate is
+			// specified to carry packets, and there are none.
+			if err := m.dst.UpdateClient(ctx, m.clientID, foldPlan.update); err != nil {
+				log.Printf("[relay %s] client update (no relayable packets) to height %d: %v",
+					m.name, foldPlan.update.Height, err)
+				return requeue
+			}
+			m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
+			foldPlan.release()
+			log.Printf("[relay %s] advanced client to height %d with no packets to relay",
+				m.name, foldPlan.update.Height)
+		}
 		return requeue
 	}
 
