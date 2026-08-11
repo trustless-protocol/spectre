@@ -637,12 +637,13 @@ fi
 # run_optimism_node.sh makes between the sequencer's op-geth and the replica's:
 #   L2_RPC_URL          the SEQUENCER (base-builder). Transactions go here: it is
 #                       the canonical block producer, so sends land and receipts
-#                       appear immediately. The follower only forwards writes and
-#                       lags whenever it is catching up, which strands `cast send`
-#                       waiting for a receipt it cannot see yet. This is what
-#                       deploy_l2_contracts.sh and the relayer talk to.
+#                       appear immediately. deploy_l2_contracts.sh sends here.
 #   L2_FOLLOWER_RPC_URL the independent follower (base-client), whose consensus
-#                       RPC (OP_NODE_RPC_URL) is what the attestor reads.
+#                       RPC (OP_NODE_RPC_URL) is what the attestor reads. The
+#                       relayer is patched to this endpoint so its proof reads and
+#                       event reads come from the same node. Writes are forwarded
+#                       to the sequencer; if the follower is catching up, receipt
+#                       visibility can lag accordingly.
 L2_RPC_URL=$(port_url base-builder rpc http)
 L2_WS_URL=$(port_url base-builder ws ws)
 L2_FOLLOWER_RPC_URL=$(port_url base-client rpc http)

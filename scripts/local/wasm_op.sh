@@ -43,29 +43,7 @@ PROPOSAL_ID=$(
 
 sleep 5
 
-"$GAIAD" tx gov vote "$PROPOSAL_ID" yes \
-  --from val1 \
-  --home "$HOME/.gaia" \
-  --chain-id "$CHAIN_ID" \
-  --keyring-backend "$KEYRING" \
-  --gas-prices 1stake \
-  -y
-
-"$GAIAD" tx gov vote "$PROPOSAL_ID" yes \
-  --from val2 \
-  --home "$HOME/.gaia-val2" \
-  --chain-id "$CHAIN_ID" \
-  --keyring-backend "$KEYRING" \
-  --gas-prices 1stake \
-  -y
-
-"$GAIAD" tx gov vote "$PROPOSAL_ID" yes \
-  --from val3 \
-  --home "$HOME/.gaia-val3" \
-  --chain-id "$CHAIN_ID" \
-  --keyring-backend "$KEYRING" \
-  --gas-prices 1stake \
-  -y
+vote_default_validators "$PROPOSAL_ID"
 
 sleep 30
 

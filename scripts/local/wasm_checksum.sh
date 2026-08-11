@@ -63,3 +63,36 @@ assert_wasm_checksum_stored() {
         return 1
     fi
 }
+
+vote_if_key_exists() {
+    proposal_id=$1
+    validator=$2
+    home=$3
+
+    if "$GAIAD" keys show "$validator" --home "$home" --keyring-backend "$KEYRING" >/dev/null 2>&1; then
+        "$GAIAD" tx gov vote "$proposal_id" yes \
+            --from "$validator" \
+            --home "$home" \
+            --chain-id "$CHAIN_ID" \
+            --keyring-backend "$KEYRING" \
+            --gas-prices 1stake \
+            -y
+        WASM_VOTES_CAST=$((WASM_VOTES_CAST + 1))
+    else
+        echo "Skipping $validator vote; key not found in $home"
+    fi
+}
+
+vote_default_validators() {
+    proposal_id=$1
+
+    WASM_VOTES_CAST=0
+    vote_if_key_exists "$proposal_id" val1 "$HOME/.gaia"
+    vote_if_key_exists "$proposal_id" val2 "$HOME/.gaia-val2"
+    vote_if_key_exists "$proposal_id" val3 "$HOME/.gaia-val3"
+
+    if [ "$WASM_VOTES_CAST" -eq 0 ]; then
+        echo "ERROR: no validator keys found for proposal $proposal_id; cannot vote it through" >&2
+        return 1
+    fi
+}

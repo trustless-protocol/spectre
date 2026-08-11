@@ -789,7 +789,7 @@ proves half the system.
 | `the attestor does not recognise L2 block N ... as canonical` | The relayer's L2 RPC and the attestor's replica disagree at that height — a reorg past the frontier, or the two pointed at different chains. Not retried away: confirm both use the same L2. |
 | A direction goes silent — no error, no retry, other directions healthy | A hung RPC. `kill -QUIT <relayer-pid>` dumps every goroutine; look for one blocked in `net/http.(*persistConn).roundTrip`. Note the dump kills the process. |
 | Gov proposal ends `REJECTED` without votes | `wasm.sh` resolves the proposal id after a fixed `sleep`; if indexing is slower the id is empty and the vote step is skipped. Vote manually before the (short devnet) voting period ends. |
-| `eth_getProof`: `distance to target block exceeds maximum proof window` | The L2 execution node will not prove below its head. The relayer proves the router account at the *attested* height, which always trails. On a node you run, widen it (`--rpc.eth-proof-window`); on someone else's, ask — no relayer setting works around it. |
+| `eth_getProof`: `distance to target block exceeds maximum proof window` | The L2 execution node will not prove below its head. The relayer proves the router account at the *attested* height, which always trails. On local Base, this usually means the relayer was pointed at the sequencer RPC instead of the follower RPC. Otherwise widen the node's proof window (`--rpc.eth-proof-window`); on someone else's node, ask — no relayer setting works around it. |
 | Attestor exits: `set DISPUTE_GAME_FACTORY and RESPECTED_GAME_TYPE for network <x>` | The script resolves those from a known chain preset and cannot for a public network. Read them off the chain — see [Running against an existing L2](#running-against-an-existing-l2-no-devnet-l2). |
 | `[gaiad_binary] ERROR: ... is on branch unknown; expected test/ibc-host-customs` | The Gaia checkout is on a detached HEAD, which fails the branch check even when the code is right. Set `GAIAD=` to an already-built binary — see [Gaia binary](#gaia-binary). |
 | Attestor exits: `failed to listen on attestor grpc address 127.0.0.1:3001: address already in use` | An earlier attestor still holds the port. Find it with `lsof -nP -iTCP:3001 -sTCP:LISTEN` — plain `lsof -ti :3001` also matches the relayer *connected* to that port, and killing that list takes the relayer down with it. |
@@ -838,7 +838,10 @@ GRPC_PORT=3003 ./scripts/local/run_base_attestor.sh
 
 # 4. Deploy the L2 IBC contracts onto Base. MODULE_NAME is required: the module's
 #    dst_chain is "opstack" (see above), so matching on it alone would also match
-#    the Optimism module. DST_CHAIN only picks which devnet handoff to read.
+#    the Optimism module. DST_CHAIN only picks which devnet handoff to read. The
+#    deploy txs go to Base's sequencer RPC, while the relayer config is patched to
+#    Base's follower RPC because L2->Cosmos membership proofs need eth_getProof
+#    below the head.
 L2_ENV_FILE=.base-devnet-run/attestor.env MODULE_NAME=cosmos-to-base \
 DST_CHAIN=base ./scripts/local/deploy_l2_contracts.sh
 

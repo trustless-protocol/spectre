@@ -13,12 +13,21 @@ set -euxo pipefail
 # Cosmos genesis and writes spectre_client back into the module.
 #
 # Endpoint source (in priority order):
-#   1. L2_RPC in the environment (explicit override)
+#   1. L2_RPC in the environment (explicit deploy override)
 #   2. L2_ENV_FILE, if set, is sourced and its L2_RPC_URL used
 #   3. the stack handoff for DST_CHAIN is sourced automatically:
 #        opstack   -> .op-devnet-run/attestor.env       (L2_RPC_URL)
 #        arbitrum  -> .arbitrum-devnet-run/attestor.env  (L2_RPC_URL)
 #        base      -> .base-devnet-run/attestor.env      (L2_RPC_URL)
+#
+# If L2_ENV_FILE is set explicitly, it is sourced even when L2_RPC is already set.
+# L2_RPC/L2_WS still win for deployment; the unconditional source lets the relayer
+# consume extra handoff variables such as Base's follower RPC/WS pair.
+#
+# The relayer config can use a different execution endpoint from deployment.
+# Local Base writes L2_FOLLOWER_RPC_URL/L2_FOLLOWER_WS_URL for base-client, which
+# serves historical eth_getProof. The sequencer RPC is still correct for sending
+# the deployment transactions, but not for packet membership proofs.
 #
 # Env:
 #   DST_CHAIN (opstack)                 which cosmos_to_l2 module to patch
@@ -32,7 +41,10 @@ set -euxo pipefail
 #                                       (default: relayer/config.json — examples are
 #                                       never written to)
 #   L2_RPC / L2_ENV_FILE                see endpoint source above
-#   L2_WS                               optional L2 exec WS to patch (eth_ws_url)
+#   L2_WS                               optional deploy L2 exec WS
+#   L2_RELAYER_RPC / L2_RELAYER_WS      optional endpoint patched into relayer
+#                                       config; defaults to Base follower vars
+#                                       when present, otherwise L2_RPC/L2_WS
 #   L2_DEPLOYER_PRIVATE_KEY / _ADDRESS  deployer funded on the L2 (defaults to the
 #                                       well-known devnet key, prefunded on Kurtosis
 #                                       OP + Arbitrum local stacks)
@@ -62,26 +74,52 @@ esac
 }
 
 # ---------------------------------------------------------------- endpoint ---
-if [ -z "${L2_RPC:-}" ]; then
-    if [ -z "${L2_ENV_FILE:-}" ]; then
-        case "$DST_CHAIN" in
-            opstack) L2_ENV_FILE=$REPO_ROOT/.op-devnet-run/attestor.env ;;
-            arbitrum) L2_ENV_FILE=$REPO_ROOT/.arbitrum-devnet-run/attestor.env ;;
-            base) L2_ENV_FILE=$REPO_ROOT/.base-devnet-run/attestor.env ;;
-            *) echo "ERROR: unknown DST_CHAIN=$DST_CHAIN (want opstack|arbitrum|base)" >&2; exit 1 ;;
-        esac
-    fi
+if [ -z "${L2_RPC:-}" ] && [ -z "${L2_ENV_FILE:-}" ]; then
+    case "$DST_CHAIN" in
+        opstack) L2_ENV_FILE=$REPO_ROOT/.op-devnet-run/attestor.env ;;
+        arbitrum) L2_ENV_FILE=$REPO_ROOT/.arbitrum-devnet-run/attestor.env ;;
+        base) L2_ENV_FILE=$REPO_ROOT/.base-devnet-run/attestor.env ;;
+        *) echo "ERROR: unknown DST_CHAIN=$DST_CHAIN (want opstack|arbitrum|base)" >&2; exit 1 ;;
+    esac
+fi
+
+if [ -n "${L2_ENV_FILE:-}" ]; then
     [ -f "$L2_ENV_FILE" ] || {
-        echo "ERROR: L2_RPC is unset and no handoff at $L2_ENV_FILE; run the $DST_CHAIN stack first (scripts/local/run_optimism_node.sh or run_arbitrum_node.sh) or set L2_RPC" >&2
+        echo "ERROR: L2_ENV_FILE handoff not found: $L2_ENV_FILE" >&2
+        echo "  Run the $DST_CHAIN stack first, or unset L2_ENV_FILE and set L2_RPC/L2_RELAYER_RPC manually." >&2
         exit 1
     }
     # shellcheck disable=SC1090
     . "$L2_ENV_FILE"
-    L2_RPC=${L2_RPC:-${L2_RPC_URL:-}}
-    L2_WS=${L2_WS:-${L2_WS_URL:-}}
 fi
+L2_RPC=${L2_RPC:-${L2_RPC_URL:-}}
+L2_WS=${L2_WS:-${L2_WS_URL:-}}
 
 : "${L2_RPC:?L2_RPC is required (no L2 exec RPC discovered)}"
+relayer_rpc_set=0
+relayer_ws_set=0
+[ -n "${L2_RELAYER_RPC:-}" ] && relayer_rpc_set=1
+[ -n "${L2_RELAYER_WS:-}" ] && relayer_ws_set=1
+
+if [ "$relayer_rpc_set" -eq 1 ]; then
+    if [ "$relayer_ws_set" -eq 0 ]; then
+        echo "WARNING: L2_RELAYER_RPC is set without L2_RELAYER_WS; leaving relayer WS empty instead of mixing endpoints." >&2
+        L2_RELAYER_WS=
+    fi
+elif [ "$relayer_ws_set" -eq 1 ]; then
+    echo "ERROR: L2_RELAYER_WS is set without L2_RELAYER_RPC; set both relayer endpoints together." >&2
+    exit 1
+elif [ -n "${L2_FOLLOWER_RPC_URL:-}" ]; then
+    L2_RELAYER_RPC=$L2_FOLLOWER_RPC_URL
+    L2_RELAYER_WS=${L2_FOLLOWER_WS_URL:-}
+    if [ -z "${L2_FOLLOWER_WS_URL:-}" ] && [ -n "${L2_WS:-}" ]; then
+        echo "WARNING: L2_FOLLOWER_RPC_URL is set without L2_FOLLOWER_WS_URL; leaving relayer WS empty instead of using the deploy WS." >&2
+    fi
+else
+    L2_RELAYER_RPC=$L2_RPC
+    L2_RELAYER_WS=${L2_WS:-}
+fi
+: "${L2_RELAYER_RPC:?L2_RELAYER_RPC is required (no relayer L2 exec RPC discovered)}"
 
 # Deployer. E2ETestDeployL2 sets relayers[0] = msg.sender, so whoever deploys receives
 # the ICS26Router relayer role — it MUST be the key the relayer runs with
@@ -116,8 +154,10 @@ if command -v cast >/dev/null 2>&1; then
 fi
 
 echo "DST_CHAIN: $DST_CHAIN"
-echo "L2_RPC:    $L2_RPC"
-echo "L2_WS:     ${L2_WS:-}"
+echo "L2_RPC:         $L2_RPC"
+echo "L2_WS:          ${L2_WS:-}"
+echo "L2_RELAYER_RPC: $L2_RELAYER_RPC"
+echo "L2_RELAYER_WS:  ${L2_RELAYER_WS:-}"
 echo "deployer:  $L2_DEPLOYER_ADDRESS"
 
 # Fail loud if there is no cosmos_to_l2 module to patch, BEFORE spending a deploy.
@@ -184,8 +224,8 @@ echo "MISBEHAVIOUR:       $MISBEHAVIOUR_ADDRESS"
 # by client id: cosmos_to_l2.ics26_client_id == l2_to_cosmos.l2_ics26_client_id.
 jq \
   --arg DST "$DST_CHAIN" --arg NAME "${MODULE_NAME:-}" \
-  --arg RPC "$L2_RPC" \
-  --arg WS "${L2_WS:-}" \
+  --arg RPC "$L2_RELAYER_RPC" \
+  --arg WS "${L2_RELAYER_WS:-}" \
   --arg ICS26 "$ICS26_ADDRESS" \
   --arg VERIF "$VERIFIER_ADDRESS" \
   --arg MEMB "$MEMBERSHIP_ADDRESS" \
@@ -199,7 +239,7 @@ jq \
     | .modules |= map(
       if is_forward then
           .config.eth_rpc_url = $RPC
-        | (if $WS != "" then .config.eth_ws_url = $WS else . end)
+        | .config.eth_ws_url = $WS
         | .config.ics26_address = $ICS26
         | .config.signature_verifier = $VERIF
         | .config.membership = $MEMB
