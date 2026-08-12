@@ -189,7 +189,12 @@ type appConfig struct {
 	CosmosToL2Configs []cosmosToEthConfig
 	// CosmosToL2Names mirrors CosmosToL2Configs and carries the config module labels
 	// used in startup diagnostics.
-	CosmosToL2Names   []string
+	CosmosToL2Names []string
+	// HasEthToCosmos records whether the direction was explicitly configured.
+	// It distinguishes an absent module from a configured module with an empty
+	// beacon endpoint, which must fail validation instead of silently disabling
+	// the ETH→Cosmos relay.
+	HasEthToCosmos    bool
 	EthToCosmosConfig ethToCosmosConfig
 	// L2ToCosmosConfigs holds every configured L2 (opstack/arbitrum) → Cosmos source
 	// in file order; `start` runs one independent relay module per entry.
@@ -636,6 +641,7 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 	var c2l2Names []string
 	var l2List []l2ToCosmosConfig
 	var e2c ethToCosmosConfig
+	var hasEthToCosmos bool
 	batch := services.DefaultConfig().BatchConfig
 	if jc.Batch.BatchSize != 0 {
 		batch.BatchSize = jc.Batch.BatchSize
@@ -663,6 +669,7 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 			c2eList = append(c2eList, one)
 			c2eNames = append(c2eNames, m.Name)
 		case dirEthToCosmos:
+			hasEthToCosmos = true
 			if err := json.Unmarshal(m.Config, &e2c); err != nil {
 				return nil, fmt.Errorf("module %q: parse eth_to_cosmos config: %w", m.Name, err)
 			}
@@ -716,7 +723,10 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 	// (build_source.go is the only consumer, and it runs from `start` alone), so
 	// rejecting a missing websocket at load time blocks client creation on a
 	// field that command will not use.
-	if e2c.BeaconUrl != "" {
+	if hasEthToCosmos {
+		if e2c.BeaconUrl == "" {
+			return nil, fmt.Errorf("eth_to_cosmos is configured but eth_to_cosmos.eth_beacon_api_url is empty; the ETH→Cosmos direction reads finality and light-client updates from the beacon REST API and cannot run without it")
+		}
 		if err := validateURL(e2c.BeaconUrl, "eth_to_cosmos.eth_beacon_api_url"); err != nil {
 			return nil, err
 		}
@@ -743,6 +753,7 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 		CosmosToEthConfigs: c2eList,
 		CosmosToL2Configs:  c2l2List,
 		CosmosToL2Names:    c2l2Names,
+		HasEthToCosmos:     hasEthToCosmos,
 		EthToCosmosConfig:  e2c,
 		L2ToCosmosConfigs:  l2List,
 		BatchConfig:        batch,
@@ -766,7 +777,7 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 // Validating only CosmosToEthConfigs[0] left every later source free to fail
 // exactly this way.
 func validateRelayStartupConfig(cfg *appConfig) error {
-	if cfg == nil || cfg.EthToCosmosConfig.BeaconUrl == "" {
+	if cfg == nil || !cfg.HasEthToCosmos {
 		return nil
 	}
 	for i := range cfg.CosmosToEthConfigs {

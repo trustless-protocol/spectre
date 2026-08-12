@@ -604,6 +604,24 @@ func TestLoadConfigAcceptsMissingEthWsForClientCreation(t *testing.T) {
 	}
 }
 
+// A configured ETH→Cosmos direction needs a beacon REST endpoint for finality
+// data and Ethereum light-client updates. Treating an empty value as if the
+// module did not exist makes the relayer silently omit that direction.
+func TestLoadConfigRejectsEthToCosmosWithoutBeaconURL(t *testing.T) {
+	const cfg = `{
+		"modules": [
+			{"name": "eth_to_cosmos", "src_chain": "ethereum", "dst_chain": "cosmos", "config": {}}
+		]
+	}`
+	_, err := loadConfig(writeTempConfig(t, cfg))
+	if err == nil {
+		t.Fatal("loadConfig accepted eth_to_cosmos without eth_beacon_api_url")
+	}
+	if !strings.Contains(err.Error(), "eth_beacon_api_url") {
+		t.Fatalf("error should name the missing field, got: %v", err)
+	}
+}
+
 // The same config with a websocket must load AND start.
 func TestLoadConfigAcceptsEthToCosmosWithWs(t *testing.T) {
 	const cfg = `{
