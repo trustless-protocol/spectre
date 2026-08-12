@@ -7,7 +7,6 @@ import (
 	"log"
 	"strings"
 
-	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
@@ -16,6 +15,7 @@ import (
 
 	"relayer/chain/cosmos"
 	"relayer/chain/evm"
+	relayerclient "relayer/client"
 	"relayer/prover"
 	"relayer/relay"
 	"relayer/services"
@@ -48,7 +48,7 @@ func buildCosmosToL2Dest(
 ) (*services.Services, services.RelayDeps, func(), error) {
 	var zero services.RelayDeps
 
-	ethClient, err := ethclient.Dial(c2l.EthRpcUrl)
+	ethClient, err := relayerclient.DialEthRPC(context.Background(), c2l.EthRpcUrl, relayerclient.DefaultRPCTimeout)
 	if err != nil {
 		return nil, zero, nil, fmt.Errorf("failed to connect to L2 exec rpc: %w", err)
 	}
@@ -58,13 +58,13 @@ func buildCosmosToL2Dest(
 		if !strings.HasPrefix(c2l.EthWsUrl, "ws://") && !strings.HasPrefix(c2l.EthWsUrl, "wss://") {
 			return nil, zero, nil, fmt.Errorf("eth_ws_url must use ws:// or wss://, got: %s", c2l.EthWsUrl)
 		}
-		ethWsClient, err = ethclient.Dial(c2l.EthWsUrl)
+		ethWsClient, err = relayerclient.DialEthRPC(context.Background(), c2l.EthWsUrl, relayerclient.DefaultRPCTimeout)
 		if err != nil {
 			return nil, zero, nil, fmt.Errorf("failed to connect to L2 exec ws: %w", err)
 		}
 	}
 
-	cosmosClient, err := rpchttp.New(c2l.TmRpcUrl, "/websocket")
+	cosmosClient, err := relayerclient.DialCosmosRPC(c2l.TmRpcUrl, "/websocket", relayerclient.DefaultRPCTimeout)
 	if err != nil {
 		return nil, zero, nil, fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 	}

@@ -18,7 +18,6 @@ import (
 	proto "github.com/cosmos/gogoproto/proto"
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
@@ -872,7 +871,7 @@ func preflightCreateClients(cfg *appConfig) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	ethClient, err := ethclient.DialContext(ctx, cfg.CosmosToEthConfig.EthRpcUrl)
+	ethClient, err := tendermintClient.DialEthRPC(ctx, cfg.CosmosToEthConfig.EthRpcUrl, tendermintClient.DefaultRPCTimeout)
 	if err != nil {
 		return fmt.Errorf("ethereum rpc unavailable at %s: %w", cfg.CosmosToEthConfig.EthRpcUrl, err)
 	}
@@ -883,7 +882,7 @@ func preflightCreateClients(cfg *appConfig) error {
 		return fmt.Errorf("ethereum rpc not responding at %s: %w", cfg.CosmosToEthConfig.EthRpcUrl, err)
 	}
 
-	cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
+	cosmosClient, err := tendermintClient.DialCosmosRPC(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket", tendermintClient.DefaultRPCTimeout)
 	if err != nil {
 		return fmt.Errorf("failed to create cosmos rpc client for %s: %w", cfg.CosmosToEthConfig.TmRpcUrl, err)
 	}
@@ -1092,13 +1091,13 @@ func main() {
 // caller must Stop it.
 func buildCreateClientsDeps(logger *zap.Logger, cfg *appConfig, wasmClientID string) (services.RelayDeps, *rpchttp.HTTP, error) {
 	logger.Sugar().Infof("create-clients: dialing ethereum rpc %s", cfg.CosmosToEthConfig.EthRpcUrl)
-	ethClient, err := ethclient.Dial(cfg.CosmosToEthConfig.EthRpcUrl)
+	ethClient, err := tendermintClient.DialEthRPC(context.Background(), cfg.CosmosToEthConfig.EthRpcUrl, tendermintClient.DefaultRPCTimeout)
 	if err != nil {
 		return services.RelayDeps{}, nil, fmt.Errorf("failed to connect to Ethereum: %w", err)
 	}
 
 	logger.Sugar().Infof("create-clients: creating cosmos rpc client %s", cfg.CosmosToEthConfig.TmRpcUrl)
-	cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
+	cosmosClient, err := tendermintClient.DialCosmosRPC(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket", tendermintClient.DefaultRPCTimeout)
 	if err != nil {
 		return services.RelayDeps{}, nil, fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 	}
@@ -1442,12 +1441,12 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
 
-			ethClient, err := ethclient.Dial(cfg.CosmosToEthConfig.EthRpcUrl)
+			ethClient, err := tendermintClient.DialEthRPC(context.Background(), cfg.CosmosToEthConfig.EthRpcUrl, tendermintClient.DefaultRPCTimeout)
 			if err != nil {
 				return fmt.Errorf("failed to connect to Ethereum: %w", err)
 			}
 
-			cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
+			cosmosClient, err := tendermintClient.DialCosmosRPC(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket", tendermintClient.DefaultRPCTimeout)
 			if err != nil {
 				return fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 			}
@@ -1832,7 +1831,7 @@ func Genesis(logger *zap.Logger) *cobra.Command {
 			if tendermintRpcEndpoint == "" {
 				return fmt.Errorf("TENDERMINT_RPC_URL environment variable is required in .env file")
 			}
-			tendermintRpcClient, err := rpchttp.New(tendermintRpcEndpoint, "/websocket")
+			tendermintRpcClient, err := tendermintClient.DialCosmosRPC(tendermintRpcEndpoint, "/websocket", tendermintClient.DefaultRPCTimeout)
 			if err != nil {
 				return fmt.Errorf("failed to create RPC client: %w", err)
 			}

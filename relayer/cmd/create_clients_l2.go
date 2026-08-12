@@ -8,7 +8,6 @@ import (
 	"os"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
 
 	relayerclient "relayer/client"
@@ -160,7 +159,7 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 
 	// Read the trusted bootstrap roots from the L2 chain.
 	logger.Sugar().Infof("create-clients-cosmos[l2]: dialing L2 rpc %s", l2cfg.L2RPCURL)
-	l2Client, err := ethclient.Dial(l2cfg.L2RPCURL)
+	l2Client, err := relayerclient.DialEthRPC(context.Background(), l2cfg.L2RPCURL, relayerclient.DefaultRPCTimeout)
 	if err != nil {
 		return "", fmt.Errorf("dial L2 rpc: %w", err)
 	}

@@ -899,14 +899,19 @@ func decodeHexNodes(nodes []string) ([][]byte, error) {
 // ackPath is the raw IBC path bytes: destClientID + [0x03] + sequence.to_be_bytes(8)
 // slot is the ICS26Router ibc_commitment_slot (ICS26_IBC_STORAGE_SLOT constant)
 // blockNumber is the ETH block to prove against (use nil for latest)
-func GetEthMembershipProof(client *ethclient.Client, contractAddr ethcommon.Address, ackPath []byte, slot ethcommon.Hash, blockNumber *big.Int) ([]byte, error) {
+//
+// ctx is honoured, for the reason spelled out on EthGetProof: this is called from
+// the ETH->Cosmos relay loop, which drives that direction on a single goroutine,
+// so an unanswered eth_getProof used to wedge the whole direction silently.
+// Callers must pass a cancellable or deadline-bearing context.
+func GetEthMembershipProof(ctx context.Context, client *ethclient.Client, contractAddr ethcommon.Address, ackPath []byte, slot ethcommon.Hash, blockNumber *big.Int) ([]byte, error) {
 	// storage_key = keccak256(keccak256(ackPath) ++ slot)
 	pathHash := crypto.Keccak256(ackPath)
 	storageKey := crypto.Keccak256Hash(pathHash, slot.Bytes())
 
 	var result ethProofResult
 	err := client.Client().CallContext(
-		context.Background(),
+		ctx,
 		&result,
 		"eth_getProof",
 		contractAddr,
@@ -998,14 +1003,20 @@ func GetL2BootstrapState(client *ethclient.Client, routerAddr ethcommon.Address,
 // receiptPath is the raw IBC path bytes: destClientID + [0x02] + sequence.to_be_bytes(8)
 // slot is the ICS26Router ibc_commitment_slot (ICS26_IBC_STORAGE_SLOT constant)
 // blockNumber is the ETH block to prove against (use nil for latest)
-func GetEthNonMembershipProof(client *ethclient.Client, contractAddr ethcommon.Address, receiptPath []byte, slot ethcommon.Hash, blockNumber *big.Int) ([]byte, error) {
+//
+// ctx is honoured, for the reason spelled out on EthGetProof. This one is called
+// from the timeout scanner, which relay.Module runs synchronously on its scan
+// goroutine (module.go scanLoop), so an unanswered eth_getProof used to stop the
+// scanner for good — expired packets never refunded, escrow locked indefinitely.
+// Callers must pass a cancellable or deadline-bearing context.
+func GetEthNonMembershipProof(ctx context.Context, client *ethclient.Client, contractAddr ethcommon.Address, receiptPath []byte, slot ethcommon.Hash, blockNumber *big.Int) ([]byte, error) {
 	// storage_key = keccak256(keccak256(receiptPath) ++ slot)
 	pathHash := crypto.Keccak256(receiptPath)
 	storageKey := crypto.Keccak256Hash(pathHash, slot.Bytes())
 
 	var result ethProofResult
 	err := client.Client().CallContext(
-		context.Background(),
+		ctx,
 		&result,
 		"eth_getProof",
 		contractAddr,

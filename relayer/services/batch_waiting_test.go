@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -30,7 +31,7 @@ func TestCheckEth_WaitingHeldBack(t *testing.T) {
 	// A waiting packet (NotBefore in the future) must be held back: no flush.
 	b.RequeueEthWaiting([]EthPacket{waitingEthPkt(1)})
 	ch := make(chan EthBatch, 1)
-	b.CheckEth(cfg, ch)
+	b.CheckEth(context.Background(), cfg, ch)
 	select {
 	case <-ch:
 		t.Fatal("waiting packet must not flush before its backoff elapses")
@@ -43,7 +44,7 @@ func TestCheckEth_WaitingHeldBack(t *testing.T) {
 		b.ethPackets[i].NotBefore = time.Now().Add(-time.Second)
 	}
 	b.ethMtx.Unlock()
-	b.CheckEth(cfg, ch)
+	b.CheckEth(context.Background(), cfg, ch)
 	select {
 	case batch := <-ch:
 		if len(batch.Packets) != 1 || batch.Packets[0].Packet.Sequence != 1 {

@@ -104,7 +104,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 	// Use the configured batch window so CheckEth returns multi-packet batches the
 	// handler can fold into one multicall (BatchSize=1 would defeat that).
 	cfg := s.batchConfig
-	ch := make(chan services.EthBatch, 16)
+	ch := make(chan services.EthBatch, services.BatchHandoffCapacity)
 
 	go func() {
 		ticker := time.NewTicker(ethDrainInterval)
@@ -114,7 +114,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.bb.CheckEth(cfg, ch)
+				s.bb.CheckEth(ctx, cfg, ch)
 			}
 		}
 	}()
@@ -194,7 +194,7 @@ func ethPacketToEvent(p services.EthPacket) (chain.Event, bool) {
 // Cosmos), so it verifies against the client state the destination trusts. The
 // height argument is not the proof block (the proof block is read from the
 // on-chain client above), so it is ignored.
-func (s *Source) MembershipProof(_ context.Context, packet []byte, _ uint64, eventType chain.EventType) ([]byte, error) {
+func (s *Source) MembershipProof(ctx context.Context, packet []byte, _ uint64, eventType chain.EventType) ([]byte, error) {
 	pkt, ethClientState, err := s.decodePacketAndClientState(packet)
 	if err != nil {
 		return nil, err
@@ -220,7 +220,7 @@ func (s *Source) MembershipProof(_ context.Context, packet []byte, _ uint64, eve
 	}
 	path := services.EthPath(clientID, pkt.Sequence, pathType)
 	return relayerclient.GetEthMembershipProof(
-		s.evm.EthClient(), s.evm.Contracts.Router, path,
+		ctx, s.evm.EthClient(), s.evm.Contracts.Router, path,
 		ethcommon.HexToHash(services.ICS26_IBC_STORAGE_SLOT),
 		new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber),
 	)

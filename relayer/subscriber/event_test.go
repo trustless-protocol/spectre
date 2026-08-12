@@ -1,6 +1,7 @@
 package subscriber
 
 import (
+	"context"
 	"encoding/hex"
 	"io"
 	"log"
@@ -661,7 +662,7 @@ func flushSingleEthPacket(t *testing.T, bb *services.BatchBuilder) services.EthP
 	t.Helper()
 
 	ch := make(chan services.EthBatch, 1)
-	bb.CheckEth(services.BatchConfig{
+	bb.CheckEth(context.Background(), services.BatchConfig{
 		BatchSize:    1,
 		BatchPeriods: time.Hour,
 	}, ch)
@@ -850,5 +851,75 @@ func TestLiveHealthIgnoresEmptyRecoveryScans(t *testing.T) {
 	liveHealth.recordEvent()
 	if liveHealth.recoveryIsCoveringForLive(0, liveHealth.lastSeen.Add(24*time.Hour)) {
 		t.Fatal("an empty scan must not be read as the live path failing")
+	}
+}
+
+// TestEnqueueEthTerminalRecordsBlockNumber pins that a settling event carries
+// the block it was observed at. Both enqueues used to omit it, which is
+// invisible today only because the source bridge drops these types before
+// reading Height — a trap for the next change, not a live bug.
+func TestEnqueueEthTerminalRecordsBlockNumber(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name     string
+		typ      services.EthPacketType
+		ackBytes [][]byte
+	}{
+		{"ack", services.EthAck, [][]byte{[]byte("ack")}},
+		{"timeout", services.EthTimeout, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			bb := services.NewBatchBuilder()
+			pkt := contractICS26Router.IICS26RouterMsgsPacket{
+				SourceClient: "eth-client-0",
+				DestClient:   "cosmos-client-0",
+			}
+			enqueueEthTerminal(bb, tc.typ, pkt, big.NewInt(4), tc.ackBytes, 4242)
+
+			ch := make(chan services.EthBatch, 1)
+			bb.CheckEth(context.Background(), services.BatchConfig{BatchSize: 1}, ch)
+
+			select {
+			case batch := <-ch:
+				if len(batch.Packets) != 1 {
+					t.Fatalf("got %d packets, want 1", len(batch.Packets))
+				}
+				if got := batch.Packets[0].BlockNumber; got != 4242 {
+					t.Fatalf("BlockNumber = %d, want 4242", got)
+				}
+				if got := batch.Packets[0].Type; got != tc.typ {
+					t.Fatalf("Type = %v, want %v", got, tc.typ)
+				}
+			default:
+				t.Fatal("no batch flushed")
+			}
+		})
+	}
+}
+
+// TestEnqueueEthTerminalSettlesThePendingTracker: a settling event must clear
+// the tracker entry, or the timeout scanner keeps querying a packet that can
+// never time out.
+func TestEnqueueEthTerminalSettlesThePendingTracker(t *testing.T) {
+	t.Parallel()
+
+	bb := services.NewBatchBuilder()
+	pkt := contractICS26Router.IICS26RouterMsgsPacket{
+		SourceClient: "eth-client-0",
+		DestClient:   "cosmos-client-0",
+	}
+	cosmosPacket := EthPacketToCosmosPacket(pkt, big.NewInt(4))
+	bb.EthPendingTracker.Add(cosmosPacket, 100)
+	if bb.EthPendingTracker.Len() != 1 {
+		t.Fatalf("tracker not seeded")
+	}
+
+	enqueueEthTerminal(bb, services.EthAck, pkt, big.NewInt(4), [][]byte{[]byte("ack")}, 4242)
+
+	if got := bb.EthPendingTracker.Len(); got != 0 {
+		t.Fatalf("tracker length = %d after settlement, want 0", got)
 	}
 }

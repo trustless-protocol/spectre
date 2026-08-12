@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
@@ -189,7 +190,37 @@ func (b *BatchBuilder) RequeueEthWaiting(packets []EthPacket) {
 	log.Printf("[BatchBuilder] re-queued %d eth packet(s) (waiting) for retry (queue now %d)", len(packets), remaining)
 }
 
-func (b *BatchBuilder) CheckCosmos(config BatchConfig, ch chan<- CosmosBatch) {
+// BatchHandoffCapacity is the capacity the source bridges must give the channel
+// Check* hands batches to. It MUST stay 0.
+//
+// The chunk is sliced OFF the queue before the handoff, so the packets exist in
+// exactly one place: the send. With a buffered channel the send can SUCCEED into
+// the buffer while the consumer, selecting on the same cancellation, returns
+// without ever receiving it — the chunk is then in neither the queue nor a
+// consumer, and nothing restores it. Guarding the send with ctx.Done() does not
+// help, because the send arm wins: it is ready.
+//
+// At capacity 0 the send is a rendezvous. It completes only when a consumer has
+// actually taken the batch, and a consumer that has taken it is committed to
+// running handleBatch — which re-queues everything when the context is already
+// cancelled. So "send completed" and "some goroutine owns these packets" become
+// the same fact, which is what makes shutdown lossless.
+//
+// The cost is only that the producer blocks while the consumer is busy. That is
+// backpressure, and it is the correct behaviour: queue depth then shows up in
+// the builder, where the logs report it, instead of hiding in a channel.
+const BatchHandoffCapacity = 0
+
+// CheckCosmos flushes a ready batch to ch when the size or time trigger fires.
+//
+// ctx guards the handoff. The chunk is sliced OFF the queue before the send, so
+// a send that never completes loses those packets outright — and the send can
+// block: ch is a small buffered channel and the consumer holds each batch for as
+// long as a relay takes (a Groth16 proof, a tx). On shutdown the consumer stops
+// receiving, so an unguarded send would also pin the caller's goroutine past
+// cancellation. When ctx wins the race the chunk goes back at the head of the
+// queue rather than disappearing.
+func (b *BatchBuilder) CheckCosmos(ctx context.Context, config BatchConfig, ch chan<- CosmosBatch) {
 	b.cosmosMtx.Lock()
 
 	if len(b.cosmosPackets) == 0 {
@@ -238,7 +269,26 @@ func (b *BatchBuilder) CheckCosmos(config BatchConfig, ch chan<- CosmosBatch) {
 	batch := CosmosBatch{Packets: chunk}
 	b.cosmosMtx.Unlock()
 
-	ch <- batch
+	select {
+	case ch <- batch:
+	case <-ctx.Done():
+		b.restoreCosmosChunk(chunk)
+	}
+}
+
+// restoreCosmosChunk puts an un-handed-off chunk back at the HEAD of the queue,
+// preserving the order it was flushed in, so a shutdown that interrupts a flush
+// leaves the queue exactly as it found it. Deliberately does not touch
+// NotBefore/waitAttempts: nothing was attempted, so nothing earned a backoff.
+func (b *BatchBuilder) restoreCosmosChunk(chunk []CosmosPacket) {
+	if len(chunk) == 0 {
+		return
+	}
+	b.cosmosMtx.Lock()
+	b.cosmosPackets = append(chunk, b.cosmosPackets...)
+	remaining := len(b.cosmosPackets)
+	b.cosmosMtx.Unlock()
+	log.Printf("[BatchBuilder] flush cancelled: returned %d cosmos packet(s) to the queue (queue now %d)", len(chunk), remaining)
 }
 
 // partitionReadyCosmos — see partitionReadyEth.
@@ -253,7 +303,8 @@ func partitionReadyCosmos(packets []CosmosPacket, now time.Time) (ready, waiting
 	return ready, waiting
 }
 
-func (b *BatchBuilder) CheckEth(config BatchConfig, ch chan<- EthBatch) {
+// CheckEth — see CheckCosmos; ctx guards the handoff for the same reason.
+func (b *BatchBuilder) CheckEth(ctx context.Context, config BatchConfig, ch chan<- EthBatch) {
 	b.ethMtx.Lock()
 
 	if len(b.ethPackets) == 0 {
@@ -302,7 +353,23 @@ func (b *BatchBuilder) CheckEth(config BatchConfig, ch chan<- EthBatch) {
 	batch := EthBatch{Packets: chunk}
 	b.ethMtx.Unlock()
 
-	ch <- batch
+	select {
+	case ch <- batch:
+	case <-ctx.Done():
+		b.restoreEthChunk(chunk)
+	}
+}
+
+// restoreEthChunk — see restoreCosmosChunk.
+func (b *BatchBuilder) restoreEthChunk(chunk []EthPacket) {
+	if len(chunk) == 0 {
+		return
+	}
+	b.ethMtx.Lock()
+	b.ethPackets = append(chunk, b.ethPackets...)
+	remaining := len(b.ethPackets)
+	b.ethMtx.Unlock()
+	log.Printf("[BatchBuilder] flush cancelled: returned %d eth packet(s) to the queue (queue now %d)", len(chunk), remaining)
 }
 
 // partitionReadyEth splits packets into those eligible to flush now (zero or

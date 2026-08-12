@@ -185,7 +185,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 	// Use the configured batch window so CheckCosmos returns multi-packet batches
 	// the handler can fold into one multicall (BatchSize=1 would defeat that).
 	cfg := s.batchConfig
-	ch := make(chan services.CosmosBatch, 16)
+	ch := make(chan services.CosmosBatch, services.BatchHandoffCapacity)
 
 	go func() {
 		ticker := time.NewTicker(drainInterval)
@@ -195,7 +195,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.bb.CheckCosmos(cfg, ch)
+				s.bb.CheckCosmos(ctx, cfg, ch)
 			}
 		}
 	}()

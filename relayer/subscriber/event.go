@@ -970,6 +970,33 @@ func enqueueEthWriteAcknowledgement(
 	return true
 }
 
+// enqueueEthTerminal records an AckPacket or TimeoutPacket — the two events that
+// SETTLE an ETH-origin send rather than starting new work. It removes the packet
+// from the pending tracker (it can no longer time out) and queues it so the
+// source bridge can observe the settlement.
+//
+// Extracted from the subscribe select so BlockNumber is set in one place. The
+// two enqueues used to be written inline and both omitted it, which is harmless
+// only for as long as nothing downstream reads Height for these types — a trap
+// rather than a bug, and one worth closing where it can be tested.
+func enqueueEthTerminal(
+	batchBuilder *services.BatchBuilder,
+	packetType services.EthPacketType,
+	packet contractICS26Router.IICS26RouterMsgsPacket,
+	sequence *big.Int,
+	ackBytes [][]byte,
+	blockNumber uint64,
+) {
+	cosmosPacket := EthPacketToCosmosPacket(packet, sequence)
+	batchBuilder.EthPendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
+	batchBuilder.AddEth(services.EthPacket{
+		Type:        packetType,
+		Packet:      &cosmosPacket,
+		AckBytes:    ackBytes,
+		BlockNumber: blockNumber,
+	})
+}
+
 func enqueueEthSendPacket(
 	batchBuilder *services.BatchBuilder,
 	ev *contractICS26Router.ContractICS26RouterSendPacket,
@@ -1340,22 +1367,13 @@ func (s *Subscriber) subscribeEthOnce(
 
 		case ev := <-ackPacketCh:
 			ctx.Logger.Printf("AckPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
-			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
-			batchBuilder.EthPendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
-			batchBuilder.AddEth(services.EthPacket{
-				Type:     services.EthAck,
-				Packet:   &cosmosPacket,
-				AckBytes: [][]byte{ev.Acknowledgement},
-			})
+			enqueueEthTerminal(batchBuilder, services.EthAck, ev.Packet, ev.Sequence,
+				[][]byte{ev.Acknowledgement}, ev.Raw.BlockNumber)
 
 		case ev := <-timeoutPacketCh:
 			ctx.Logger.Printf("TimeoutPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
-			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
-			batchBuilder.EthPendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
-			batchBuilder.AddEth(services.EthPacket{
-				Type:   services.EthTimeout,
-				Packet: &cosmosPacket,
-			})
+			enqueueEthTerminal(batchBuilder, services.EthTimeout, ev.Packet, ev.Sequence,
+				nil, ev.Raw.BlockNumber)
 
 		case err := <-sendPacketSub.Err():
 			return fmt.Errorf("SendPacket subscription error: %w", err)

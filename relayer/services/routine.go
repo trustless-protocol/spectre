@@ -306,11 +306,7 @@ func shouldRotatePinnedSet(forceRotation bool, overlapPower, totalPower int64, t
 }
 
 func ethLatestHeaderTimestampNanos(ctx EVMEndpoint, fetchTimeout time.Duration) (*big.Int, error) {
-	timeout := fetchTimeout
-	if timeout == 0 {
-		timeout = 15 * time.Second
-	}
-	hctx, cancel := context.WithTimeout(context.Background(), timeout)
+	hctx, cancel := fetchCtx(context.Background(), fetchTimeout)
 	defer cancel()
 
 	header, err := ctx.EthClient().HeaderByNumber(hctx, nil)
@@ -396,7 +392,9 @@ func (w *Worker) BuildCosmosClientUpdateMsg(cosmos CosmosEndpoint, evm EVMEndpoi
 }
 
 func (w *Worker) buildCosmosClientUpdateMsg(ctx cosmosClientDeps, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*CosmosClientUpdateBuildResult, error) {
-	status, err := ctx.cosmos.CosmosClient().Status(context.Background())
+	statusCtx, cancelStatus := fetchCtx(context.Background(), ctx.fetchTimeout)
+	status, err := ctx.cosmos.CosmosClient().Status(statusCtx)
+	cancelStatus()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
 	}
@@ -650,7 +648,7 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, cosmos CosmosEndpoint, 
 	}
 
 	log.Printf("[CreateEthClient] querying ethereum chain id")
-	chainId, err := evm.EthClient().ChainID(context.Background())
+	chainId, err := evm.EthClient().ChainID(stdCtx)
 	if err != nil {
 		return "", fmt.Errorf("failed to get eth chain id: %w", err)
 	}

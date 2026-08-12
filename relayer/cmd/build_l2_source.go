@@ -6,15 +6,14 @@ import (
 	"fmt"
 	"log"
 
-	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
 
 	"relayer/chain"
 	"relayer/chain/l2rollup"
 	"relayer/chain/l2rollup/attestorgrpc"
+	relayerclient "relayer/client"
 	"relayer/relay"
 	"relayer/services"
 )
@@ -163,11 +162,11 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		includeProvisional = *cfg.IncludeProvisional
 	}
 
-	l2, err := ethclient.Dial(cfg.L2RpcUrl)
+	l2, err := relayerclient.DialEthRPC(context.Background(), cfg.L2RpcUrl, relayerclient.DefaultRPCTimeout)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial L2 rpc: %w", err)
 	}
-	cosmosClient, err := rpchttp.New(cfg.TmRpcUrl, "/websocket")
+	cosmosClient, err := relayerclient.DialCosmosRPC(cfg.TmRpcUrl, "/websocket", relayerclient.DefaultRPCTimeout)
 	if err != nil {
 		l2.Close()
 		return nil, nil, fmt.Errorf("create Cosmos rpc client: %w", err)

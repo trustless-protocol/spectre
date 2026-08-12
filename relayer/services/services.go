@@ -403,7 +403,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 	var timeoutMsgs []any
 	var processed []pendingPacketInfo
 	for _, info := range expired {
-		msgTimeout, err := s.buildCosmosTimeoutMsg(evm, info.Packet, ethClientState)
+		msgTimeout, err := s.buildCosmosTimeoutMsg(stdCtx, evm, info.Packet, ethClientState)
 		if err != nil {
 			log.Printf("[CosmosTimeout] seq=%d: %v", info.Packet.Sequence, err)
 			continue
@@ -454,10 +454,14 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 	}
 }
 
-func (s *Services) buildCosmosTimeoutMsg(ctx EVMEndpoint, packet channeltypesv2.Packet, ethClientState *client.EthereumClientState) (*channeltypesv2.MsgTimeout, error) {
+// buildCosmosTimeoutMsg takes stdCtx so the eth_getProof it issues is bound to
+// the scan's lifetime. Without it the scanner could block forever on an
+// unresponsive node, and because relay.Module runs the scan synchronously that
+// stops timeout recovery entirely rather than just delaying one packet.
+func (s *Services) buildCosmosTimeoutMsg(stdCtx context.Context, evm EVMEndpoint, packet channeltypesv2.Packet, ethClientState *client.EthereumClientState) (*channeltypesv2.MsgTimeout, error) {
 	receiptPath := EthPath(packet.DestinationClient, packet.Sequence, 2)
 	proofBytes, err := client.GetEthNonMembershipProof(
-		ctx.EthClient(), *ctx.RouterContract(), receiptPath, ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber))
+		stdCtx, evm.EthClient(), evm.Contracts.Router, receiptPath, ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber))
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ETH non-membership proof: %w", err)
 	}
@@ -613,7 +617,14 @@ func HasEthIBCPathValue(ctx EVMEndpoint, path []byte) (bool, error) {
 		return false, fmt.Errorf("router contract address is nil")
 	}
 
-	value, err := ctx.EthClient().StorageAt(context.Background(), *ctx.RouterContract(), EthIBCStorageKey(path), nil)
+	// Bounded but not cancellable: the recovery scanners in subscriber/event.go
+	// call this and have no context to thread yet (RLY-15 in #286). The bound is
+	// what matters here — an unanswered eth_getStorageAt used to stall the
+	// recovery scan indefinitely.
+	callCtx, cancel := fetchCtx(context.Background(), defaultFetchTimeout)
+	defer cancel()
+
+	value, err := ctx.EthClient().StorageAt(callCtx, *ctx.RouterContract(), EthIBCStorageKey(path), nil)
 	if err != nil {
 		return false, fmt.Errorf("eth storage query failed: %w", err)
 	}

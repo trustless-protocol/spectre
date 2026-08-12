@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -8,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
 
+	relayerclient "relayer/client"
 	"relayer/prover"
 	"relayer/services"
 )
@@ -43,7 +44,7 @@ func buildCosmosToEthSource(
 	var zero services.RelayDeps
 
 	// Connect to Ethereum (HTTP for queries)
-	ethClient, err := ethclient.Dial(c2e.EthRpcUrl)
+	ethClient, err := relayerclient.DialEthRPC(context.Background(), c2e.EthRpcUrl, relayerclient.DefaultRPCTimeout)
 	if err != nil {
 		return nil, zero, nil, fmt.Errorf("failed to connect to Ethereum: %w", err)
 	}
@@ -54,14 +55,14 @@ func buildCosmosToEthSource(
 		if !strings.HasPrefix(c2e.EthWsUrl, "ws://") && !strings.HasPrefix(c2e.EthWsUrl, "wss://") {
 			return nil, zero, nil, fmt.Errorf("eth_ws_url must use ws:// or wss://, got: %s", c2e.EthWsUrl)
 		}
-		ethWsClient, err = ethclient.Dial(c2e.EthWsUrl)
+		ethWsClient, err = relayerclient.DialEthRPC(context.Background(), c2e.EthWsUrl, relayerclient.DefaultRPCTimeout)
 		if err != nil {
 			return nil, zero, nil, fmt.Errorf("failed to connect to Ethereum WS: %w", err)
 		}
 	}
 
 	// Connect to Cosmos
-	cosmosClient, err := rpchttp.New(c2e.TmRpcUrl, "/websocket")
+	cosmosClient, err := relayerclient.DialCosmosRPC(c2e.TmRpcUrl, "/websocket", relayerclient.DefaultRPCTimeout)
 	if err != nil {
 		return nil, zero, nil, fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 	}

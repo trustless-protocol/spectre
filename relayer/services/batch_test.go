@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -214,7 +215,7 @@ func TestCheckCosmos_ExceedsBatchSize(t *testing.T) {
 	}
 
 	ch := make(chan CosmosBatch, 1)
-	bb.CheckCosmos(config, ch)
+	bb.CheckCosmos(context.Background(), config, ch)
 
 	// Flush chunks at most BatchSize (3) packets per call; the remaining 2
 	// stay in the queue for the next tick to chunk-flush again.
@@ -246,7 +247,7 @@ func TestCheckEth_ExceedsBatchSize(t *testing.T) {
 	}
 
 	ch := make(chan EthBatch, 1)
-	bb.CheckEth(config, ch)
+	bb.CheckEth(context.Background(), config, ch)
 
 	select {
 	case batch := <-ch:
@@ -277,7 +278,7 @@ func TestCheckEth_PastBatchPeriods(t *testing.T) {
 	bb.AddEth(makeEthPacket(2, EthWriteAck))
 
 	ch := make(chan EthBatch, 1)
-	bb.CheckEth(config, ch)
+	bb.CheckEth(context.Background(), config, ch)
 
 	select {
 	case batch := <-ch:
@@ -306,7 +307,7 @@ func TestCheckEth_BelowSizeAndBeforePeriod(t *testing.T) {
 	bb.AddEth(makeEthPacket(2, EthWriteAck))
 
 	ch := make(chan EthBatch, 1)
-	bb.CheckEth(config, ch)
+	bb.CheckEth(context.Background(), config, ch)
 
 	select {
 	case <-ch:
@@ -332,7 +333,7 @@ func TestCheckCosmos_BelowSizeAndBeforePeriod(t *testing.T) {
 	bb.AddCosmos(makeCosmosPacket(2, CosmosAck))
 
 	ch := make(chan CosmosBatch, 1)
-	bb.CheckCosmos(config, ch)
+	bb.CheckCosmos(context.Background(), config, ch)
 
 	select {
 	case <-ch:
