@@ -749,7 +749,7 @@ carries the client the token arrived on, not just `stake`.
 ```bash
 L2=<l2-rpc>
 WRAPPED=$(cast call <ICS20Transfer> "ibcERC20Contract(string)(address)" \
-  "transfer/<l2-client-id>/stake" --rpc-url $L2)
+  "transfer/<l2-router-client-id>/stake" --rpc-url $L2)
 
 cast send "$WRAPPED" "approve(address,uint256)" <ICS20Transfer> 1000 \
   --private-key $ETH_PRIVATE_KEY --rpc-url $L2
@@ -757,16 +757,31 @@ cast send "$WRAPPED" "approve(address,uint256)" <ICS20Transfer> 1000 \
 ABS_TIMEOUT=$(($(date +%s) + 2000))
 cast send <ICS20Transfer> \
   "sendTransfer((address,uint256,string,string,string,uint64,string))" \
-  "($WRAPPED,1000,<cosmos1-receiver>,<l2-source-client-id>,transfer,$ABS_TIMEOUT,)" \
+  "($WRAPPED,1000,<cosmos1-receiver>,<l2-router-client-id>,transfer,$ABS_TIMEOUT,\"\")" \
   --private-key $ETH_PRIVATE_KEY --rpc-url $L2
 ```
 
 The tuple is `SendTransferMsg` in field order (`contracts/msgs/IICS20TransferMsgs.sol`):
 denom, amount, receiver, sourceClient, destPort, timeoutTimestamp, memo.
 
-Two easy mistakes: `sourceClient` is the client id **on the L2 router** (the one the
-SpectreClient was added under), not the Cosmos-side client; and `timeoutTimestamp` is
-in **seconds**, the same unit trap `--absolute-timeouts` exists for on the Cosmos side.
+`<l2-router-client-id>` is `sourceClient`: the client id **on the L2 router** — the one
+the SpectreClient was added under, which is the `ics26_client_id` in the `cosmos_to_l2`
+module (`arb-client-0`, `op-client-0`, `base-client-0`). It is **not** the Cosmos-side
+`08-wasm-N`; that id names the L2 client living on Cosmos, and the L2 router has never
+heard of it.
+
+**The empty memo needs explicit quotes.** Writing the tuple's last field as a bare
+trailing comma — `…,$ABS_TIMEOUT,)` — makes `cast` fail with `parser error` pointing at
+the end of the tuple, which reads like the client id is wrong when it is not. Use
+`\"\"`. Check the encoding without sending anything:
+
+```bash
+cast calldata "sendTransfer((address,uint256,string,string,string,uint64,string))" \
+  "(<wrapped>,1000,<cosmos1-receiver>,<l2-router-client-id>,transfer,1786300000,\"\")"
+```
+
+`timeoutTimestamp` is in **seconds** — the same unit trap `--absolute-timeouts` exists
+for on the Cosmos side.
 
 The leg is done when the ack is relayed back and the packet leaves the pending
 tracker (`[CosmosTimeoutScan] Checking 0 pending packets`) — a forward-only success
