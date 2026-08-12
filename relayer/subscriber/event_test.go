@@ -750,3 +750,107 @@ func TestAdvanceQuietScans(t *testing.T) {
 		t.Fatalf("counter = %d, want it to keep counting to %d", quiet, quietScanHeartbeat*2)
 	}
 }
+
+// The scan must never read up to the chain head. Status reports a height as soon
+// as the block commits, but TxSearch reads the tx indexer, which CometBFT writes
+// from a separate goroutine after commit — so the newest block is routinely
+// committed and not yet indexed. Since the scan advances its cursor past
+// whatever it read, a tx there is skipped permanently and silently.
+func TestCosmosIndexedHeightStopsShortOfTheHead(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		latest uint64
+		want   uint64
+	}{
+		{0, 0},
+		{1, 0},
+		{cosmosIndexerLagBlocks, 0},
+		{cosmosIndexerLagBlocks + 1, 1},
+		{202_197, 202_197 - cosmosIndexerLagBlocks},
+	}
+	for _, tc := range cases {
+		got := cosmosIndexedHeight(tc.latest)
+		if got != tc.want {
+			t.Fatalf("cosmosIndexedHeight(%d) = %d, want %d", tc.latest, got, tc.want)
+		}
+	}
+
+	// The property that actually protects packets: the range one pass scans must
+	// never reach the head, at any cursor position. Asserted through
+	// cosmosScanRange -- the function the scanner calls -- so removing the lag
+	// from the scan fails here, which a test of cosmosIndexedHeight alone would
+	// not.
+	const latest = 202_197
+	for cursor := uint64(1); cursor <= latest; cursor += 977 {
+		from, to, ok := cosmosScanRange(cursor, latest)
+		if !ok {
+			continue
+		}
+		if to >= latest {
+			t.Fatalf("cosmosScanRange(%d, %d) scans to %d, which reaches the head; "+
+				"a tx in the newest block may be committed but not yet indexed, and the cursor "+
+				"advances past it permanently", cursor, latest, to)
+		}
+		if from != cursor {
+			t.Fatalf("cosmosScanRange(%d, %d) starts at %d; the cursor must not be skipped forward",
+				cursor, latest, from)
+		}
+	}
+
+	// Nothing scannable yet must be reported, not silently scanned as [x, 0].
+	if _, _, ok := cosmosScanRange(0, latest); ok {
+		t.Fatal("an unseeded cursor must not produce a scan range")
+	}
+	if _, _, ok := cosmosScanRange(latest, latest); ok {
+		t.Fatal("a cursor at the head has nothing safely indexed to scan yet")
+	}
+}
+
+// Recovery quietly doing the live path's job is the exact state that hid a lost
+// packet for 14 minutes. It must be reported — once per outage, not per scan.
+func TestLiveHealthReportsRecoveryDoingLiveWork(t *testing.T) {
+	t.Parallel()
+
+	var liveHealth cosmosLiveHealth
+	start := time.Now()
+
+	// First recovery hit with no live history: take the current time as the
+	// reference rather than crying wolf at startup.
+	if liveHealth.recoveryIsCoveringForLive(1, start) {
+		t.Fatal("warned before any live baseline existed")
+	}
+	// Still inside the window: not yet evidence of a dead subscription.
+	if liveHealth.recoveryIsCoveringForLive(1, start.Add(cosmosLivePathStaleAfter-time.Second)) {
+		t.Fatal("warned while the live path was only briefly quiet")
+	}
+	// Past the window with recovery still finding packets: report.
+	if !liveHealth.recoveryIsCoveringForLive(1, start.Add(cosmosLivePathStaleAfter+time.Second)) {
+		t.Fatal("did not report recovery doing the live path's job")
+	}
+	// ...but only once, or a long outage floods the log.
+	if liveHealth.recoveryIsCoveringForLive(1, start.Add(cosmosLivePathStaleAfter+time.Minute)) {
+		t.Fatal("repeated the warning for the same outage")
+	}
+
+	// A live event clears it, and a later outage reports again.
+	liveHealth.recordEvent()
+	if liveHealth.events != 1 {
+		t.Fatalf("events = %d, want 1", liveHealth.events)
+	}
+	if !liveHealth.recoveryIsCoveringForLive(1, liveHealth.lastSeen.Add(cosmosLivePathStaleAfter+time.Second)) {
+		t.Fatal("a fresh outage after recovery must report again")
+	}
+}
+
+// A scan that finds nothing says nothing about the live path — recovery finding
+// no work is the healthy state, not a symptom.
+func TestLiveHealthIgnoresEmptyRecoveryScans(t *testing.T) {
+	t.Parallel()
+
+	var liveHealth cosmosLiveHealth
+	liveHealth.recordEvent()
+	if liveHealth.recoveryIsCoveringForLive(0, liveHealth.lastSeen.Add(24*time.Hour)) {
+		t.Fatal("an empty scan must not be read as the live path failing")
+	}
+}

@@ -53,6 +53,67 @@ const defaultCosmosStartupRecoveryLookbackBlocks uint64 = 256
 const cosmosSubscriptionReconnectDelay = 2 * time.Second
 const cosmosGapRecoveryInterval = 30 * time.Second
 
+// cosmosLiveEventBuffer is the per-subscription channel depth requested from
+// CometBFT. Passing it is not a tuning nicety -- the default is 1, and a full
+// channel makes CometBFT DROP the event:
+//
+//	// cometbft rpc/client/http/http.go, eventListener
+//	select {
+//	case out <- *result:
+//	default:
+//	    w.Logger.Error("wanted to publish ResultEvent, but out channel is full", ...)
+//	}
+//
+// The send is non-blocking, so there is no backpressure, and w.Logger is a nop
+// logger unless SetLogger is called -- so a dropped packet leaves no trace
+// anywhere. Meanwhile this subscriber's consuming goroutine also runs the 30s
+// gap-recovery scan (several paginated TxSearch calls) in the same select, so it
+// stops reading for seconds at a time, every 30 seconds.
+//
+// The Ethereum side does not need this: go-ethereum's generated watcher sends
+// blocking and its RPC client queues 20,000 events before failing loudly with
+// ErrSubscriptionQueueOverflow, which subscribeEthOnce already surfaces.
+//
+// A buffer is a mitigation, not a fix -- it still drops once full. The fix is to
+// keep slow work off the consuming goroutine; see #376.
+const cosmosLiveEventBuffer = 1024
+
+// cosmosLivePathStaleAfter is how long the live subscription may deliver nothing while
+// gap recovery is finding packets before that combination is reported.
+//
+// Recovery is the backstop; the live subscription is meant to be what delivers.
+// When recovery starts finding packets the live path should have delivered, the
+// live path is failing -- and it fails silently, because a subscription that
+// delivers nothing looks exactly like a quiet chain. That is how a Cosmos->Base
+// packet was lost unnoticed: every packet for 14 minutes arrived via recovery,
+// and nothing said so.
+const cosmosLivePathStaleAfter = 2 * time.Minute
+
+// cosmosIndexerLagBlocks is how far behind the head gap recovery stops scanning.
+//
+// The scan reads two different subsystems and assumes they agree. The range end
+// comes from Status.SyncInfo.LatestBlockHeight, which is set when the block
+// commits; the results come from TxSearch, which reads the tx indexer -- and the
+// indexer is a SEPARATE goroutine consuming the event bus after commit
+// (cometbft state/txindex/indexer_service.go). So a tx in the newest block is
+// routinely committed but not yet indexed.
+//
+// That race loses the packet permanently, because the scan then advances the
+// cursor past the height it just failed to read:
+//
+//	latest := Status()                    // 202195, committed
+//	TxSearch(..., "tx.height <= 202195")  // indexer has not written 202195 yet -> empty
+//	cursor = 202195 + 1                   // 202195 is never scanned again
+//
+// and it is silent: an empty scan increments nothing, so nothing is logged.
+// Observed on a live devnet -- one Cosmos->Base transfer at height 202195 was
+// never relayed and never timed out, leaving its funds escrowed.
+//
+// Two blocks is far more than the indexer needs (its lag is milliseconds) and
+// costs the backstop about ten seconds of extra detection delay. Rescanning is
+// free: seenEvents dedups, and recovery re-checks on-chain state anyway.
+const cosmosIndexerLagBlocks uint64 = 2
+
 // quietScanHeartbeat is how many consecutive find-nothing recovery scans pass
 // before one is reported, so a healthy subscriber stays visible (~10 min at the
 // 30s interval) without printing every tick.
@@ -96,6 +157,9 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 	// beside the cursor, outside the resubscribe loop, so a WS reconnect does not
 	// restart the heartbeat — mirroring the Ethereum side.
 	var quietScans uint64
+	// Outside the resubscribe loop: a reconnect must not reset the picture of
+	// whether the live path has been delivering.
+	var liveHealth cosmosLiveHealth
 	seenEvents := make(map[cosmosEventKey]struct{})
 
 	for {
@@ -109,10 +173,52 @@ func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *service
 			nextRecoveryStartHeight = cosmosStartupRecoveryStartHeight(latestHeight, lookback)
 		}
 
-		err := s.subscribeCosmosOnce(ctx, batchBuilder, &nextRecoveryStartHeight, seenEvents, &quietScans)
+		err := s.subscribeCosmosOnce(ctx, batchBuilder, &nextRecoveryStartHeight, seenEvents, &quietScans, &liveHealth)
 		ctx.Logger.Printf("[SubscribeCosmos] Subscription loop ended: %v", err)
 		time.Sleep(cosmosSubscriptionReconnectDelay)
 	}
+}
+
+// cosmosLiveHealth tracks whether the live subscription is actually delivering.
+//
+// It exists because the failure it detects is invisible by construction: a
+// subscription that stops delivering looks exactly like a chain with no traffic.
+// Gap recovery quietly picks up the slack, the relayer keeps working, and
+// nothing says the primary path is dead -- until recovery misses one too and a
+// packet is lost.
+//
+// Owned by one goroutine (the subscribe loop), so it needs no lock.
+type cosmosLiveHealth struct {
+	events   uint64
+	lastSeen time.Time
+	warned   bool
+}
+
+func (h *cosmosLiveHealth) recordEvent() {
+	h.events++
+	h.lastSeen = time.Now()
+	h.warned = false
+}
+
+// recoveryIsCoveringForLive reports whether gap recovery just relayed packets the
+// live subscription should have delivered. It says so once per outage rather
+// than on every scan, so a long outage does not flood the log.
+func (h *cosmosLiveHealth) recoveryIsCoveringForLive(recovered uint64, now time.Time) bool {
+	if recovered == 0 || h.warned {
+		return false
+	}
+	// Before the first live event there is nothing to compare against; treat
+	// process start as the reference point so a subscription that never
+	// delivers is still reported.
+	if h.lastSeen.IsZero() {
+		h.lastSeen = now
+		return false
+	}
+	if now.Sub(h.lastSeen) < cosmosLivePathStaleAfter {
+		return false
+	}
+	h.warned = true
+	return true
 }
 
 func (s *Subscriber) subscribeCosmosOnce(
@@ -121,17 +227,18 @@ func (s *Subscriber) subscribeCosmosOnce(
 	nextRecoveryStartHeight *uint64,
 	seenEvents map[cosmosEventKey]struct{},
 	quietScans *uint64,
+	liveHealth *cosmosLiveHealth,
 ) error {
-	sendPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_SEND_PACKET_EVENT)
+	sendPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_SEND_PACKET_EVENT, cosmosLiveEventBuffer)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to send_packet events: %w", err)
 	}
-	ackPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_WRITE_ACK_PACKET_EVENT)
+	ackPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_WRITE_ACK_PACKET_EVENT, cosmosLiveEventBuffer)
 	if err != nil {
 		_ = ctx.CosmosClient().UnsubscribeAll(context.Background(), "")
 		return fmt.Errorf("failed to subscribe to write_acknowledgement events: %w", err)
 	}
-	timeoutPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_TIMEOUT_PACKET_EVENT)
+	timeoutPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_TIMEOUT_PACKET_EVENT, cosmosLiveEventBuffer)
 	if err != nil {
 		_ = ctx.CosmosClient().UnsubscribeAll(context.Background(), "")
 		return fmt.Errorf("failed to subscribe to timeout_packet events: %w", err)
@@ -139,7 +246,7 @@ func (s *Subscriber) subscribeCosmosOnce(
 	ctx.Logger.Println("[SubscribeCosmos] Successfully subscribed to CometBFT events")
 	defer ctx.CosmosClient().UnsubscribeAll(context.Background(), "")
 
-	if err := recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans); err != nil {
+	if err := recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth); err != nil {
 		ctx.Logger.Printf("[SubscribeCosmos] startup recovery failed: %v", err)
 	}
 
@@ -152,19 +259,19 @@ func (s *Subscriber) subscribeCosmosOnce(
 			if !ok {
 				return fmt.Errorf("send_packet subscription channel closed")
 			}
-			s.processLiveCosmosEvent(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, e)
+			s.processLiveCosmosEvent(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, liveHealth, e)
 		case e, ok := <-ackPacketSub:
 			if !ok {
 				return fmt.Errorf("write_acknowledgement subscription channel closed")
 			}
-			s.processLiveCosmosEvent(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, e)
+			s.processLiveCosmosEvent(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, liveHealth, e)
 		case e, ok := <-timeoutPacketSub:
 			if !ok {
 				return fmt.Errorf("timeout_packet subscription channel closed")
 			}
-			s.processLiveCosmosEvent(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, e)
+			s.processLiveCosmosEvent(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, liveHealth, e)
 		case <-gapRecoveryTicker.C:
-			if err := recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans); err != nil {
+			if err := recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth); err != nil {
 				ctx.Logger.Printf("[SubscribeCosmos] periodic recovery failed: %v", err)
 			}
 		}
@@ -176,6 +283,7 @@ func (s *Subscriber) processLiveCosmosEvent(
 	batchBuilder *services.BatchBuilder,
 	nextRecoveryStartHeight *uint64,
 	seenEvents map[cosmosEventKey]struct{},
+	liveHealth *cosmosLiveHealth,
 	e coretypes.ResultEvent,
 ) {
 	height := txHeightFromEvent(e.Data, e.Events)
@@ -189,6 +297,8 @@ func (s *Subscriber) processLiveCosmosEvent(
 			*nextRecoveryStartHeight = height
 		}
 	}
+
+	liveHealth.recordEvent()
 
 	packets := decodeCosmosPacketsFromEvents(ctx.Logger, e.Data, e.Events, "SubscribeCosmos")
 	stats, err := enqueueCosmosPackets(ctx, batchBuilder, packets, seenEvents, false)
@@ -280,6 +390,7 @@ func recoverCosmosGapToLatest(
 	nextRecoveryStartHeight *uint64,
 	seenEvents map[cosmosEventKey]struct{},
 	quietScans *uint64,
+	liveHealth *cosmosLiveHealth,
 ) error {
 	if *nextRecoveryStartHeight == 0 {
 		return nil
@@ -289,11 +400,12 @@ func recoverCosmosGapToLatest(
 	if err != nil {
 		return err
 	}
-	if latestHeight < *nextRecoveryStartHeight {
+	scanFrom, scanTo, ok := cosmosScanRange(*nextRecoveryStartHeight, latestHeight)
+	if !ok {
 		return nil
 	}
 
-	stats, err := recoverCosmosEvents(ctx, batchBuilder, *nextRecoveryStartHeight, latestHeight, seenEvents)
+	stats, err := recoverCosmosEvents(ctx, batchBuilder, scanFrom, scanTo, seenEvents)
 	if err != nil {
 		return err
 	}
@@ -302,18 +414,54 @@ func recoverCosmosGapToLatest(
 	// common outcome is recovered=0 skipped=0 — two lines a tick, ~5.8k lines a day
 	// per direction, burying the events worth reading. The heartbeat keeps "gap
 	// recovery is alive and current" observable without the repetition.
+	if liveHealth.recoveryIsCoveringForLive(stats.recovered, time.Now()) {
+		ctx.Logger.Printf("[SubscribeCosmos][ATTENTION] gap recovery relayed %d packet(s) but the live "+
+			"subscription has delivered nothing for %s (%d live event(s) this run). Recovery is the "+
+			"BACKSTOP, not the delivery path -- while it is doing this job a packet in the newest blocks "+
+			"can still be missed. Check the CometBFT websocket.",
+			stats.recovered, cosmosLivePathStaleAfter, liveHealth.events)
+	}
+
 	if stats.recovered > 0 || stats.skipped > 0 {
 		ctx.Logger.Printf("[SubscribeCosmos] recovery scanned [%d,%d]: recovered=%d skipped=%d",
-			*nextRecoveryStartHeight, latestHeight, stats.recovered, stats.skipped)
+			*nextRecoveryStartHeight, scanTo, stats.recovered, stats.skipped)
 		*quietScans = 0
 	} else if beat := advanceQuietScans(quietScans); beat {
 		ctx.Logger.Printf("[SubscribeCosmos] gap recovery healthy: %d consecutive scans found nothing, now current at height %d",
-			*quietScans, latestHeight)
+			*quietScans, scanTo)
 	}
 
-	*nextRecoveryStartHeight = latestHeight + 1
-	pruneCosmosSeenEvents(seenEvents, latestHeight)
+	*nextRecoveryStartHeight = scanTo + 1
+	pruneCosmosSeenEvents(seenEvents, scanTo)
 	return nil
+}
+
+// cosmosScanRange decides the height range one recovery pass covers, given the
+// cursor and the chain head. ok is false when nothing can be scanned safely yet.
+//
+// The whole decision lives here, in one pure function, because the property that
+// matters is not "the arithmetic is right" but "the scan never reads up to the
+// head" -- and a helper the caller could stop calling would let that property be
+// removed without a test noticing.
+func cosmosScanRange(cursor, latestHeight uint64) (from, to uint64, ok bool) {
+	if cursor == 0 {
+		return 0, 0, false
+	}
+	to = cosmosIndexedHeight(latestHeight)
+	if to < cursor {
+		return 0, 0, false
+	}
+	return cursor, to, true
+}
+
+// cosmosIndexedHeight is the newest height gap recovery may scan: far enough
+// behind the head that the tx indexer has certainly caught up. Returns 0 on a
+// chain too short to have one, which makes the caller wait.
+func cosmosIndexedHeight(latestHeight uint64) uint64 {
+	if latestHeight <= cosmosIndexerLagBlocks {
+		return 0
+	}
+	return latestHeight - cosmosIndexerLagBlocks
 }
 
 func recoverCosmosEvents(
