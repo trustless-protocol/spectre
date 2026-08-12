@@ -1,13 +1,18 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 
 	"relayer/services"
 )
+
+const l2TimeoutReturnPathLookupTimeout = 3 * time.Second
 
 type l2TimeoutReturnPath struct {
 	svc  *services.Services
@@ -34,83 +39,150 @@ func (p l2TimeoutReturnPath) validate() error {
 }
 
 type l2TimeoutReturnPathConfig struct {
-	cfg  cosmosToEthConfig
-	path l2TimeoutReturnPath
+	name      string
+	cfg       cosmosToEthConfig
+	l2ChainID string
+	path      l2TimeoutReturnPath
 }
 
 type l2TimeoutReturnPathKey struct {
-	l2RPCURL string
-	tmRPCURL string
-	router   string
+	l2ChainID string
+	tmRPCURL  string
+	router    string
 }
 
-func l2TimeoutReturnPathKeyForSource(cfg l2ToCosmosConfig) (l2TimeoutReturnPathKey, error) {
+func l2TimeoutReturnPathConfigForDest(parent context.Context, name string, cfg cosmosToEthConfig, path l2TimeoutReturnPath) (l2TimeoutReturnPathConfig, error) {
+	if err := path.validate(); err != nil {
+		return l2TimeoutReturnPathConfig{}, err
+	}
+	ctx, cancel := context.WithTimeout(parent, l2TimeoutReturnPathLookupTimeout)
+	defer cancel()
+	chainID, err := path.deps.EVM.EthClient().ChainID(ctx)
+	if err != nil {
+		return l2TimeoutReturnPathConfig{}, fmt.Errorf(
+			"read L2 chain id for cosmos_to_l2 return path %q at %s: %w",
+			moduleFieldPrefix(name, dirCosmosToL2), cfg.EthRpcUrl, err,
+		)
+	}
+	if chainID == nil {
+		return l2TimeoutReturnPathConfig{}, fmt.Errorf(
+			"read L2 chain id for cosmos_to_l2 return path %q at %s: nil chain id",
+			moduleFieldPrefix(name, dirCosmosToL2), cfg.EthRpcUrl,
+		)
+	}
+	return l2TimeoutReturnPathConfig{
+		name:      name,
+		cfg:       cfg,
+		l2ChainID: chainID.String(),
+		path:      path,
+	}, nil
+}
+
+func l2TimeoutReturnPathKeyForSource(parent context.Context, cfg l2ToCosmosConfig) (l2TimeoutReturnPathKey, error) {
 	router, err := l2RouterFromProfile(cfg.RollupProfile)
 	if err != nil {
 		return l2TimeoutReturnPathKey{}, err
 	}
-	return l2TimeoutReturnPathKey{
-		l2RPCURL: cfg.L2RpcUrl,
-		tmRPCURL: cfg.TmRpcUrl,
-		router:   strings.ToLower(router.Hex()),
-	}, nil
-}
+	// Dial and ChainID each get their own full budget rather than sharing one
+	// deadline: a slow-but-successful dial would otherwise starve the
+	// ChainID call (or vice versa) for no reason — they're independent RPC
+	// round trips against the same endpoint.
+	dialCtx, dialCancel := context.WithTimeout(parent, l2TimeoutReturnPathLookupTimeout)
+	defer dialCancel()
+	l2Client, err := ethclient.DialContext(dialCtx, cfg.L2RpcUrl)
+	if err != nil {
+		return l2TimeoutReturnPathKey{}, fmt.Errorf(
+			"dial L2 rpc for l2_to_cosmos return-path match at %s: %w", cfg.L2RpcUrl, err)
+	}
+	defer l2Client.Close()
 
-func l2TimeoutReturnPathKeyForDest(cfg cosmosToEthConfig) (l2TimeoutReturnPathKey, error) {
-	if !common.IsHexAddress(cfg.ICS26Address) {
-		return l2TimeoutReturnPathKey{}, fmt.Errorf("cosmos_to_l2.ics26_address %q is not a valid hex address", cfg.ICS26Address)
+	chainIDCtx, chainIDCancel := context.WithTimeout(parent, l2TimeoutReturnPathLookupTimeout)
+	defer chainIDCancel()
+	chainID, err := l2Client.ChainID(chainIDCtx)
+	if err != nil {
+		return l2TimeoutReturnPathKey{}, fmt.Errorf(
+			"read L2 chain id for l2_to_cosmos return-path match at %s: %w", cfg.L2RpcUrl, err)
+	}
+	if chainID == nil {
+		return l2TimeoutReturnPathKey{}, fmt.Errorf(
+			"read L2 chain id for l2_to_cosmos return-path match at %s: nil chain id", cfg.L2RpcUrl)
 	}
 	return l2TimeoutReturnPathKey{
-		l2RPCURL: cfg.EthRpcUrl,
-		tmRPCURL: cfg.TmRpcUrl,
-		router:   strings.ToLower(common.HexToAddress(cfg.ICS26Address).Hex()),
+		l2ChainID: chainID.String(),
+		tmRPCURL:  cfg.TmRpcUrl,
+		router:    strings.ToLower(router.Hex()),
 	}, nil
 }
 
-func findL2TimeoutReturnPath(src l2ToCosmosConfig, paths []l2TimeoutReturnPathConfig) (l2TimeoutReturnPath, error) {
-	key, err := l2TimeoutReturnPathKeyForSource(src)
+func l2TimeoutReturnPathKeyForDest(path l2TimeoutReturnPathConfig) (l2TimeoutReturnPathKey, error) {
+	cfg := path.cfg
+	prefix := moduleFieldPrefix(path.name, dirCosmosToL2)
+	if !common.IsHexAddress(cfg.ICS26Address) {
+		return l2TimeoutReturnPathKey{}, fmt.Errorf("%s.ics26_address %q is not a valid hex address", prefix, cfg.ICS26Address)
+	}
+	if path.l2ChainID == "" {
+		return l2TimeoutReturnPathKey{}, fmt.Errorf("%s return path is missing L2 chain id", prefix)
+	}
+	return l2TimeoutReturnPathKey{
+		l2ChainID: path.l2ChainID,
+		tmRPCURL:  cfg.TmRpcUrl,
+		router:    strings.ToLower(common.HexToAddress(cfg.ICS26Address).Hex()),
+	}, nil
+}
+
+type l2TimeoutReturnPathCandidate struct {
+	name string
+	key  l2TimeoutReturnPathKey
+}
+
+func findL2TimeoutReturnPath(parent context.Context, src l2ToCosmosConfig, paths []l2TimeoutReturnPathConfig) (l2TimeoutReturnPath, error) {
+	key, err := l2TimeoutReturnPathKeyForSource(parent, src)
 	if err != nil {
 		return l2TimeoutReturnPath{}, err
 	}
 
 	match := -1
+	var matches []string
+	candidates := make([]l2TimeoutReturnPathCandidate, 0, len(paths))
 	for i := range paths {
-		candidate, err := l2TimeoutReturnPathKeyForDest(paths[i].cfg)
+		candidate, err := l2TimeoutReturnPathKeyForDest(paths[i])
 		if err != nil {
 			return l2TimeoutReturnPath{}, err
 		}
+		name := moduleFieldPrefix(paths[i].name, dirCosmosToL2)
+		candidates = append(candidates, l2TimeoutReturnPathCandidate{name: name, key: candidate})
 		if candidate != key {
 			continue
 		}
+		matches = append(matches, name)
 		if match != -1 {
 			return l2TimeoutReturnPath{}, fmt.Errorf(
-				"multiple cosmos_to_l2 return paths match l2_to_cosmos source (l2_rpc_url=%s tm_rpc_url=%s l2_router=%s)",
-				key.l2RPCURL, key.tmRPCURL, key.router,
+				"multiple cosmos_to_l2 return paths match l2_to_cosmos source\n  want: %s\n  matches: %s\n  candidates: %s",
+				formatL2TimeoutReturnPathKey(key), strings.Join(matches, ", "), formatL2TimeoutReturnPathCandidates(candidates),
 			)
 		}
 		match = i
 	}
 	if match == -1 {
 		return l2TimeoutReturnPath{}, fmt.Errorf(
-			"no matching cosmos_to_l2 return path for l2_to_cosmos source (l2_rpc_url=%s tm_rpc_url=%s l2_router=%s)",
-			key.l2RPCURL, key.tmRPCURL, key.router,
+			"no matching cosmos_to_l2 return path for l2_to_cosmos source\n  want: %s\n  candidates: %s",
+			formatL2TimeoutReturnPathKey(key), formatL2TimeoutReturnPathCandidates(candidates),
 		)
 	}
 	return paths[match].path, nil
 }
 
-func validateL2TimeoutReturnPathConfigs(sources []l2ToCosmosConfig, dests []cosmosToEthConfig) error {
-	if len(sources) == 0 {
-		return nil
+func formatL2TimeoutReturnPathKey(key l2TimeoutReturnPathKey) string {
+	return fmt.Sprintf("l2_chain_id=%s tm_rpc_url=%s l2_router=%s", key.l2ChainID, key.tmRPCURL, key.router)
+}
+
+func formatL2TimeoutReturnPathCandidates(candidates []l2TimeoutReturnPathCandidate) string {
+	if len(candidates) == 0 {
+		return "<none>"
 	}
-	paths := make([]l2TimeoutReturnPathConfig, 0, len(dests))
-	for i := range dests {
-		paths = append(paths, l2TimeoutReturnPathConfig{cfg: dests[i]})
+	out := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		out = append(out, fmt.Sprintf("%s: %s", candidate.name, formatL2TimeoutReturnPathKey(candidate.key)))
 	}
-	for i := range sources {
-		if _, err := findL2TimeoutReturnPath(sources[i], paths); err != nil {
-			return err
-		}
-	}
-	return nil
+	return strings.Join(out, "; ")
 }

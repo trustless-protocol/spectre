@@ -188,6 +188,9 @@ type appConfig struct {
 	// pointed at an L2 rollup's exec RPC + its deployed SpectreClient/ICS26Router;
 	// `start` runs one independent cosmos→l2 relay loop per entry.
 	CosmosToL2Configs []cosmosToEthConfig
+	// CosmosToL2Names mirrors CosmosToL2Configs and carries the config module labels
+	// used in startup diagnostics.
+	CosmosToL2Names   []string
 	EthToCosmosConfig ethToCosmosConfig
 	// L2ToCosmosConfigs holds every configured L2 (opstack/arbitrum) → Cosmos source
 	// in file order; `start` runs one independent relay module per entry.
@@ -629,7 +632,9 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 
 	var c2e cosmosToEthConfig
 	var c2eList []cosmosToEthConfig
+	var c2eNames []string
 	var c2l2List []cosmosToEthConfig
+	var c2l2Names []string
 	var l2List []l2ToCosmosConfig
 	var e2c ethToCosmosConfig
 	batch := services.DefaultConfig().BatchConfig
@@ -657,6 +662,7 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 				one.ICS26ClientID = m.SrcChain
 			}
 			c2eList = append(c2eList, one)
+			c2eNames = append(c2eNames, m.Name)
 		case dirEthToCosmos:
 			if err := json.Unmarshal(m.Config, &e2c); err != nil {
 				return nil, fmt.Errorf("module %q: parse eth_to_cosmos config: %w", m.Name, err)
@@ -668,6 +674,7 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 				return nil, fmt.Errorf("module %q: parse cosmos_to_l2 config: %w", m.Name, err)
 			}
 			c2l2List = append(c2l2List, one)
+			c2l2Names = append(c2l2Names, m.Name)
 		case dirL2ToCosmos:
 			var one l2ToCosmosConfig
 			if err := json.Unmarshal(m.Config, &one); err != nil {
@@ -689,7 +696,7 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 	// would cross-feed.
 	seenClientIDs := make(map[string]struct{}, len(c2eList))
 	for i := range c2eList {
-		if err := validateCosmosToEthConfig(c2eList[i]); err != nil {
+		if err := validateCosmosToEthConfig(c2eList[i], moduleFieldPrefix(c2eNames[i], dirCosmosToEth)); err != nil {
 			return nil, err
 		}
 		id := c2eList[i].ICS26ClientID
@@ -720,7 +727,7 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 	// distinct destinations must not collide on the ICS-26 client id.
 	seenL2ClientIDs := make(map[string]struct{}, len(c2l2List))
 	for i := range c2l2List {
-		if err := validateCosmosToEthConfig(c2l2List[i]); err != nil {
+		if err := validateCosmosToEthConfig(c2l2List[i], moduleFieldPrefix(c2l2Names[i], dirCosmosToL2)); err != nil {
 			return nil, err
 		}
 		id := c2l2List[i].ICS26ClientID
@@ -736,6 +743,7 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 		CosmosToEthConfig:  c2e,
 		CosmosToEthConfigs: c2eList,
 		CosmosToL2Configs:  c2l2List,
+		CosmosToL2Names:    c2l2Names,
 		EthToCosmosConfig:  e2c,
 		L2ToCosmosConfigs:  l2List,
 		BatchConfig:        batch,
@@ -785,35 +793,42 @@ func resolveBeaconURL(cfg *appConfig) string {
 	return ""
 }
 
+func moduleFieldPrefix(moduleName string, fallback moduleDirection) string {
+	if name := strings.TrimSpace(moduleName); name != "" {
+		return name
+	}
+	return string(fallback)
+}
+
 // validateCosmosToEthConfig checks the URLs and hex addresses of one Cosmos→ETH
-// source. Empty (unpopulated) sources pass so a config with only an
-// eth_to_cosmos module still loads.
-func validateCosmosToEthConfig(c2e cosmosToEthConfig) error {
+// source or Cosmos→L2 destination. Empty (unpopulated) sources pass so a config
+// with only an eth_to_cosmos module still loads.
+func validateCosmosToEthConfig(c2e cosmosToEthConfig, fieldPrefix string) error {
 	if c2e.TmRpcUrl == "" && c2e.EthRpcUrl == "" && c2e.ICS26Address == "" {
 		return nil
 	}
-	if err := validateURL(c2e.TmRpcUrl, "cosmos_to_eth.tm_rpc_url"); err != nil {
+	if err := validateURL(c2e.TmRpcUrl, fieldPrefix+".tm_rpc_url"); err != nil {
 		return err
 	}
-	if err := validateURL(c2e.EthRpcUrl, "cosmos_to_eth.eth_rpc_url"); err != nil {
+	if err := validateURL(c2e.EthRpcUrl, fieldPrefix+".eth_rpc_url"); err != nil {
 		return err
 	}
 	if c2e.EthWsUrl != "" {
-		if err := validateURL(c2e.EthWsUrl, "cosmos_to_eth.eth_ws_url"); err != nil {
+		if err := validateURL(c2e.EthWsUrl, fieldPrefix+".eth_ws_url"); err != nil {
 			return err
 		}
 	}
-	if err := validateHexAddress(c2e.ICS26Address, "cosmos_to_eth.ics26_address"); err != nil {
+	if err := validateHexAddress(c2e.ICS26Address, fieldPrefix+".ics26_address"); err != nil {
 		return err
 	}
 	for _, f := range []struct {
 		val, name string
 	}{
-		{c2e.SpectreClient, "cosmos_to_eth.spectre_client"},
-		{c2e.SignatureVerifier, "cosmos_to_eth.signature_verifier"},
-		{c2e.Membership, "cosmos_to_eth.membership"},
-		{c2e.Misbehaviour, "cosmos_to_eth.misbehaviour"},
-		{c2e.UpdateClient, "cosmos_to_eth.update_client"},
+		{c2e.SpectreClient, fieldPrefix + ".spectre_client"},
+		{c2e.SignatureVerifier, fieldPrefix + ".signature_verifier"},
+		{c2e.Membership, fieldPrefix + ".membership"},
+		{c2e.Misbehaviour, fieldPrefix + ".misbehaviour"},
+		{c2e.UpdateClient, fieldPrefix + ".update_client"},
 	} {
 		if f.val != "" {
 			if err := validateHexAddress(f.val, f.name); err != nil {
@@ -823,7 +838,7 @@ func validateCosmosToEthConfig(c2e cosmosToEthConfig) error {
 	}
 	if c2e.RotationThreshold != "" {
 		if _, err := services.ParseRotationThreshold(c2e.RotationThreshold); err != nil {
-			return fmt.Errorf("cosmos_to_eth.rotation_threshold: %w", err)
+			return fmt.Errorf("%s.rotation_threshold: %w", fieldPrefix, err)
 		}
 	}
 	return nil
@@ -1607,9 +1622,6 @@ func Start(logger *zap.Logger) *cobra.Command {
 			if len(sources) == 0 && len(l2Dests) == 0 && len(l2Sources) == 0 {
 				return fmt.Errorf("no relay source configured in %s (need a cosmos_to_eth, cosmos_to_l2, or l2_to_cosmos module)", configPath)
 			}
-			if err := validateL2TimeoutReturnPathConfigs(l2Sources, l2Dests); err != nil {
-				return err
-			}
 			// Env overrides (ICS26_CLIENT_ID, COSMOS_WASM_CLIENT_ID, ROLE_MANAGER)
 			// name a single source; only honor them when exactly one is
 			// configured, otherwise they would wrongly apply to every source.
@@ -1667,6 +1679,17 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// One independent relay loop per Cosmos→L2 destination: the same groth16
 			// pipeline as Cosmos→ETH pointed at the L2's SpectreClient/ICS26Router,
 			// with no reverse beacon direction.
+			//
+			// Built in two passes: first resolve every dest's return path and match
+			// every l2_to_cosmos source, then launch the goroutines below. This way
+			// a return-path mismatch aborts before any Cosmos→L2 connection opens,
+			// instead of after the relay loop is already dialing/subscribing.
+			type builtL2Dest struct {
+				svc     *services.Services
+				deps    services.RelayDeps
+				cleanup func()
+			}
+			builtL2Dests := make([]builtL2Dest, 0, len(l2Dests))
 			for i := range l2Dests {
 				svc, deps, cleanup, err := buildCosmosToL2Dest(
 					logger, l2Dests[i], cfg.BatchConfig, p, txHandler,
@@ -1679,25 +1702,40 @@ func Start(logger *zap.Logger) *cobra.Command {
 				}
 				cleanup = onceCleanup(cleanup)
 				cleanups = append(cleanups, cleanup)
-				l2ReturnPaths = append(l2ReturnPaths, l2TimeoutReturnPathConfig{
-					cfg:  l2Dests[i],
-					path: l2TimeoutReturnPath{svc: svc, deps: deps},
-				})
-				wg.Add(1)
-				go func(svc *services.Services, deps services.RelayDeps, cleanup func()) {
-					defer wg.Done()
-					defer cleanup()
-					if err := runCosmosToL2Engine(runCtx, svc, deps); err != nil {
-						loopErrCh <- fmt.Errorf("cosmos_to_l2 dest %q: %w", deps.IDs.CosmosOnEVM, err)
+				name := ""
+				if i < len(cfg.CosmosToL2Names) {
+					name = cfg.CosmosToL2Names[i]
+				}
+				// Only resolve the return-path chain id when there's an
+				// l2_to_cosmos source to match it against; otherwise a
+				// forward-only deployment pays an avoidable L2 RPC round
+				// trip (and startup-abort risk) for a path nothing consults.
+				if len(l2Sources) > 0 {
+					returnPath, err := l2TimeoutReturnPathConfigForDest(runCtx, name, l2Dests[i], l2TimeoutReturnPath{svc: svc, deps: deps})
+					if err != nil {
+						for _, cleanup := range cleanups {
+							cleanup()
+						}
+						return fmt.Errorf("cosmos_to_l2 dest %q: %w", l2Dests[i].ICS26ClientID, err)
 					}
-				}(svc, deps, cleanup)
+					l2ReturnPaths = append(l2ReturnPaths, returnPath)
+				}
+				// Accumulate rather than launching here: nothing dials, subscribes
+				// or submits until every dest and source has built and matched.
+				builtL2Dests = append(builtL2Dests, builtL2Dest{svc: svc, deps: deps, cleanup: cleanup})
 			}
 
 			// One independent relay module per L2->Cosmos source (opstack/arbitrum).
 			// Each dials its own L1/L2/Cosmos clients + attestor sidecar; they share
 			// the TransactionHandler (same Cosmos signer -> shared sequence path).
+			type builtL2Source struct {
+				module   *relay.Module
+				cleanup  func()
+				srcChain string
+			}
+			builtL2Sources := make([]builtL2Source, 0, len(l2Sources))
 			for i := range l2Sources {
-				timeoutReturn, err := findL2TimeoutReturnPath(l2Sources[i], l2ReturnPaths)
+				timeoutReturn, err := findL2TimeoutReturnPath(runCtx, l2Sources[i], l2ReturnPaths)
 				if err != nil {
 					for _, cleanup := range cleanups {
 						cleanup()
@@ -1713,6 +1751,22 @@ func Start(logger *zap.Logger) *cobra.Command {
 				}
 				cleanup = onceCleanup(cleanup)
 				cleanups = append(cleanups, cleanup)
+				builtL2Sources = append(builtL2Sources, builtL2Source{module: module, cleanup: cleanup, srcChain: l2Sources[i].AttestorSrcChain})
+			}
+
+			// Every Cosmos→L2 dest and L2→Cosmos source above built and matched
+			// cleanly — only now do we start dialing/subscribing/submitting.
+			for _, d := range builtL2Dests {
+				wg.Add(1)
+				go func(svc *services.Services, deps services.RelayDeps, cleanup func()) {
+					defer wg.Done()
+					defer cleanup()
+					if err := runCosmosToL2Engine(runCtx, svc, deps); err != nil {
+						loopErrCh <- fmt.Errorf("cosmos_to_l2 dest %q: %w", deps.IDs.CosmosOnEVM, err)
+					}
+				}(d.svc, d.deps, d.cleanup)
+			}
+			for _, s := range builtL2Sources {
 				wg.Add(1)
 				go func(module *relay.Module, cleanup func(), srcChain string) {
 					defer wg.Done()
@@ -1720,7 +1774,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 					if err := runL2Engine(runCtx, module); err != nil {
 						loopErrCh <- fmt.Errorf("l2_to_cosmos source %q: %w", srcChain, err)
 					}
-				}(module, cleanup, l2Sources[i].AttestorSrcChain)
+				}(s.module, s.cleanup, s.srcChain)
 			}
 
 			logger.Sugar().Infof("Relayer started: relaying %d Cosmos→ETH + %d Cosmos→L2 + %d L2→Cosmos source(s)", len(sources), len(l2Dests), len(l2Sources))

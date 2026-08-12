@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -174,6 +175,23 @@ func TestLoadConfig_CosmosToL2Parses(t *testing.T) {
 	}
 	if len(cfg.CosmosToEthConfigs) != 0 {
 		t.Fatalf("CosmosToEthConfigs should be empty for a cosmos_to_l2-only config, got %d", len(cfg.CosmosToEthConfigs))
+	}
+}
+
+func TestLoadConfig_CosmosToL2ValidationUsesModuleName(t *testing.T) {
+	t.Parallel()
+	path := writeTempConfig(t, `{"modules":[
+		{"name":"cosmos-to-op","src_chain":"cosmos","dst_chain":"opstack","config":{"ics26_client_id":"op-client-0","tm_rpc_url":"http://localhost:26657","eth_rpc_url":"not-a-url","ics26_address":"0x80741a37e3644612f0465145c9709a90b6d77ee3"}}
+	]}`)
+	_, err := loadConfig(path)
+	if err == nil {
+		t.Fatal("expected invalid cosmos_to_l2 URL to fail")
+	}
+	if !strings.Contains(err.Error(), "cosmos-to-op.eth_rpc_url") {
+		t.Fatalf("loadConfig error = %v, want cosmos-to-op.eth_rpc_url", err)
+	}
+	if strings.Contains(err.Error(), "cosmos_to_eth.eth_rpc_url") {
+		t.Fatalf("loadConfig error = %v, should not label cosmos_to_l2 as cosmos_to_eth", err)
 	}
 }
 

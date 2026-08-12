@@ -63,6 +63,8 @@ Relayer uses JSON config file (see `relayer/config.example.json`):
 - `modules` array, each entry has `name`, `src_chain`, `dst_chain`, and `config`:
   - `cosmos_to_eth` config: tm_rpc_url, ics26_address, eth_rpc_url, spectre_client, signature_verifier, membership, misbehaviour, update_client, and optional fields: fetch_timeout, trusting_period, trust_level, proof_type. **One entry per Cosmos source** (distinct `ics26_client_id`); `start` runs an independent relay loop for each, and `create-clients-cosmos --source <ics26_client_id>` (then `create-clients-eth --source ...`) targets one.
   - `eth_to_cosmos` config: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address
+  - `cosmos_to_l2` config (dst_chain `opstack`/`arbitrum`): same shape as `cosmos_to_eth`, reusing its struct — **`eth_rpc_url`/`eth_ws_url` here point at the L2's own RPC**, not L1. To pair with an `l2_to_cosmos` module for the timeout return path, its `eth_rpc_url` must resolve to the same chain id as that module's `l2_rpc_url` (they may still be different endpoints).
+  - `l2_to_cosmos` config (src_chain `opstack`/`arbitrum`): l2_rpc_url, tm_rpc_url, attestor_addr, attestor_src_chain, l2_wasm_client_id, l2_ics26_client_id, head_kind, rollup_profile. No `l1_rpc_url` or `eth_beacon_api_url`: the L2 client verifies nothing against L1, so this module never dials one (#347, `relayer/cmd/build_l2_source.go`). The return path back to the paired `cosmos_to_l2` dest is resolved at startup by matching L2 chain id + tm_rpc_url + L2 router address (`relayer/cmd/l2_timeout_return_path.go`) — no explicit link field needed. Resolution is skipped entirely when no `l2_to_cosmos` source is configured.
 
 Secrets (private keys, prover paths) stay in `.env` file.
 

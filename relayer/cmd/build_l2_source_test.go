@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -206,13 +209,48 @@ func TestLoadConfig_L2Source(t *testing.T) {
 	}
 }
 
+func newChainIDRPCServer(t *testing.T, chainIDHex string) *httptest.Server {
+	t.Helper()
+	type rpcReq struct {
+		JSONRPC string `json:"jsonrpc"`
+		ID      any    `json:"id"`
+		Method  string `json:"method"`
+	}
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var req rpcReq
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode rpc request: %v", err)
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Method != "eth_chainId" {
+			t.Errorf("rpc method = %q, want eth_chainId", req.Method)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req.ID,
+				"error":   map[string]any{"code": -32601, "message": "method not found"},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"result":  chainIDHex,
+		})
+	}))
+}
+
 func TestFindL2TimeoutReturnPath(t *testing.T) {
+	sourceRPC := newChainIDRPCServer(t, "0xa")
+	t.Cleanup(sourceRPC.Close)
+
 	src := validL2Config()
-	src.L2RpcUrl = "http://l2-a"
+	src.L2RpcUrl = sourceRPC.URL
 	src.TmRpcUrl = "http://cosmos-a"
 	src.RollupProfile = json.RawMessage(`{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}`)
 	matchingDest := cosmosToEthConfig{
-		EthRpcUrl:     "http://l2-a",
+		EthRpcUrl:     "http://write-l2-a",
 		TmRpcUrl:      "http://cosmos-a",
 		ICS26Address:  "0x1111111111111111111111111111111111111111",
 		ICS26ClientID: "cosmos-on-l2",
@@ -224,40 +262,40 @@ func TestFindL2TimeoutReturnPath(t *testing.T) {
 		wantErr string
 	}{
 		{
-			name:  "matches by l2 rpc cosmos rpc and router",
-			paths: []l2TimeoutReturnPathConfig{{cfg: matchingDest}},
+			name:  "matches by l2 chain id cosmos rpc and router",
+			paths: []l2TimeoutReturnPathConfig{{name: "cosmos-to-op", cfg: matchingDest, l2ChainID: "10"}},
 		},
 		{
 			name: "no match fails",
 			paths: []l2TimeoutReturnPathConfig{{cfg: cosmosToEthConfig{
-				EthRpcUrl:    "http://l2-b",
+				EthRpcUrl:    "http://write-l2-b",
 				TmRpcUrl:     "http://cosmos-a",
 				ICS26Address: "0x1111111111111111111111111111111111111111",
-			}}},
-			wantErr: "no matching cosmos_to_l2 return path",
+			}, name: "cosmos-to-base", l2ChainID: "11"}},
+			wantErr: "candidates: cosmos-to-base: l2_chain_id=11",
 		},
 		{
 			name: "duplicate match fails",
 			paths: []l2TimeoutReturnPathConfig{
-				{cfg: matchingDest},
-				{cfg: matchingDest},
+				{name: "cosmos-to-op-a", cfg: matchingDest, l2ChainID: "10"},
+				{name: "cosmos-to-op-b", cfg: matchingDest, l2ChainID: "10"},
 			},
 			wantErr: "multiple cosmos_to_l2 return paths match",
 		},
 		{
 			name: "bad destination router fails",
 			paths: []l2TimeoutReturnPathConfig{{cfg: cosmosToEthConfig{
-				EthRpcUrl:    "http://l2-a",
+				EthRpcUrl:    "http://write-l2-a",
 				TmRpcUrl:     "http://cosmos-a",
 				ICS26Address: "0xnothex",
-			}}},
-			wantErr: "not a valid hex address",
+			}, name: "cosmos-to-bad", l2ChainID: "10"}},
+			wantErr: "cosmos-to-bad.ics26_address",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := findL2TimeoutReturnPath(src, tc.paths)
+			_, err := findL2TimeoutReturnPath(context.Background(), src, tc.paths)
 			if tc.wantErr == "" {
 				if err != nil {
 					t.Fatalf("findL2TimeoutReturnPath() error = %v", err)

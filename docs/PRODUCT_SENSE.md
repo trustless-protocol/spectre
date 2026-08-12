@@ -65,6 +65,8 @@ Multiple packets can be batched into a single proof submission:
 - `modules` array with named entries — **one `cosmos_to_eth` per Cosmos source** (each with a distinct `ics26_client_id`) plus one `eth_to_cosmos` — each with `src_chain`, `dst_chain`, and `config`:
   - `cosmos_to_eth` config: tm_rpc_url, ics26_address, eth_rpc_url, spectre_client, signature_verifier, membership, misbehaviour, update_client, and optional fields: fetch_timeout (timeout in seconds for queries, default 15), trusting_period, trust_level, proof_type, rotation_threshold (pinned-set overlap fraction that triggers `updateConsensusState`, default "5/6", must exceed 2/3; "1/1" rotates on any change), refresh_interval_seconds (background client-freshness routine interval, default 86400)
   - `eth_to_cosmos` config: tm_rpc_url, ics26_address, eth_rpc_url, eth_beacon_api_url, signer_address
+  - `cosmos_to_l2` config (dst_chain `opstack`/`arbitrum`): same fields as `cosmos_to_eth` — note `eth_rpc_url`/`eth_ws_url` point at the **L2's** RPC here, not L1. It should describe the same chain as the paired `l2_to_cosmos` module's `l2_rpc_url` (endpoints may differ, chain id must match) so the timeout return path can be matched at startup
+  - `l2_to_cosmos` config (src_chain `opstack`/`arbitrum`): l2_rpc_url, tm_rpc_url, attestor_addr, attestor_src_chain, l2_wasm_client_id, l2_ics26_client_id, head_kind, rollup_profile. No `l1_rpc_url` or `eth_beacon_api_url`: the L2 client verifies nothing against L1, so this module never dials one (#347, `relayer/cmd/build_l2_source.go`)
 
 ### Environment Variables
 
