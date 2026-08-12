@@ -16,7 +16,7 @@ import (
 
 // A standalone poll-based L2 event listener (deliberately NOT the ETH
 // subscriber.SubscribeEth, which is bound to the L1 endpoint + BatchBuilder via
-// services.Context). It polls eth_getLogs on the L2 RPC for the ICS26Router
+// shared context). It polls eth_getLogs on the L2 RPC for the ICS26Router
 // SendPacket / WriteAcknowledgement events of this source's client id, decodes them
 // with the shared ICS26Router bindings, and drives the adapter handler with its own
 // pending buffer for re-queued (not-yet-relayable) events. Within one run the cursor is

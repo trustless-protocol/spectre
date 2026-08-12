@@ -46,13 +46,13 @@ func isPermanentCosmosFailure(err error) bool {
 // submitted. Chain() is Cosmos (this is the destination chain).
 type Destination struct {
 	worker   *services.Worker
-	svcCtx   services.Context
+	cosmos   services.CosmosEndpoint
 	clientID string // the L2 wasm light-client id on Cosmos
 }
 
 // NewDestination wires the L2 Cosmos destination. clientID is the L2 wasm client.
-func NewDestination(worker *services.Worker, svcCtx services.Context, clientID string) *Destination {
-	return &Destination{worker: worker, svcCtx: svcCtx, clientID: clientID}
+func NewDestination(worker *services.Worker, cosmos services.CosmosEndpoint, clientID string) *Destination {
+	return &Destination{worker: worker, cosmos: cosmos, clientID: clientID}
 }
 
 func (d *Destination) Chain() chain.ChainType { return chain.Cosmos }
@@ -78,7 +78,7 @@ func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.C
 	if err != nil {
 		return fmt.Errorf("l2 dest: build update (height %d): %w", update.Height, err)
 	}
-	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.svcCtx, []any{msg}); err != nil {
+	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.cosmos, []any{msg}); err != nil {
 		return fmt.Errorf("l2 dest: submit update (height %d): %w", update.Height, err)
 	}
 	return nil
@@ -134,7 +134,7 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 			return fmt.Errorf("l2 dest: unsupported packet type %d (seq=%d)", rp.Type, pkt.Sequence)
 		}
 	}
-	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.svcCtx, msgs); err != nil {
+	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.cosmos, msgs); err != nil {
 		if isPermanentCosmosFailure(err) {
 			return chain.Permanent(err)
 		}
@@ -147,7 +147,7 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 // proofs must be verified against. The wasm ClientState carries LatestHeight
 // directly; for the L2 client its revision height is the L2 block number.
 func (d *Destination) proofHeight() (clienttypes.Height, error) {
-	h, err := relayerclient.GetWasmClientLatestHeight(d.svcCtx.CosmosClient(), d.clientID)
+	h, err := relayerclient.GetWasmClientLatestHeight(d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return clienttypes.Height{}, fmt.Errorf("l2 dest: read L2 client latest height: %w", err)
 	}
@@ -161,7 +161,7 @@ func (d *Destination) HasPacketReceipt(_ context.Context, packet []byte) (bool, 
 	if err := pkt.Unmarshal(packet); err != nil {
 		return false, fmt.Errorf("l2 dest: decode packet: %w", err)
 	}
-	return subscriber.HasCosmosPacketReceipt(d.svcCtx, pkt)
+	return subscriber.HasCosmosPacketReceipt(d.cosmos, pkt)
 }
 
 // ClientExpiresAt reports when the L2 wasm client would expire on its own timer.

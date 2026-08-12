@@ -164,7 +164,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 8. **Editing generated files** — patches `bindings/` or a generated verifier directly. → *Hard limit 5: fix the generator/source, regenerate.*
 9. **Wrong devnet order** — starts Cosmos before Ethereum finalizes; Tendermint LC creation then fails confusingly. → *eth node → poll beacon `finality_checkpoints` until `finalized.epoch > 0` → cosmos node → `wasm.sh`.*
 10. **One-sided relayer fixes** — patches the Cosmos path, leaves the ETH mirror with the old bug. → *Every relayer change ends with a mirror-path diff; name the paired file in your report.*
-11. **Advancing state on failure** — bumps a routine timestamp (`latestEthTimestamp`/`latestCosmosTimestamp`) or a recovery cursor when the operation failed. These guard client expiry and event-loss windows. → *Never advance a timestamp/cursor/tracker on a failed operation.*
+11. **Advancing state on failure** — bumps a routine freshness timestamp or a recovery cursor when the operation failed. These guard client expiry and event-loss windows. → *Never advance a timestamp/cursor/tracker on a failed operation.*
 12. **Sequence/nonce races** — adds a submission path that skips the handler mutexes. → *All ETH sends go through the nonce block under `h.mu`; all Cosmos sends through `SendCosmosTxBatch` under `cosmosMu`.*
 13. **npm/yarn, or `go run` for ops** — → *`bun` for JS; built `./relayer` binary for `create-clients-{cosmos,eth}`/`start`.*
 14. **Downgrading pinned deps to match a stale mirror** — a mirror lags, model "fixes" by downgrading. → *Never regress a pinned version to satisfy a mirror; fix the install source.*

@@ -179,13 +179,15 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	attestor, err := attestorgrpc.Dial(cfg.AttestorAddr)
 	if err != nil {
 		l2.Close()
-		_ = cosmosClient.Stop()
+		if stopErr := cosmosClient.Stop(); stopErr != nil {
+			log.Printf("failed to terminate cosmos client: %v", stopErr)
+		}
 		return nil, nil, fmt.Errorf("dial attestor: %w", err)
 	}
 
 	// Cosmos-side context for the destination (it uses only CosmosClient + the
 	// signer via the tx handler); the L2 exec client fills the eth slot unused here.
-	svcCtx := services.NewCtx(cosmosClient, l2)
+	svcCtx := services.CosmosEndpoint{Client: cosmosClient}
 	worker := services.NewWorker(txHandler, nil)
 
 	// One builder for every chain: the header is the canonical L2 block plus a router
@@ -204,7 +206,9 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		fmt.Sprintf("%s->cosmos", cfg.kind),
 		cfg.L2ICS26ClientID,
 		source, dest, builder,
-		relay.WithTimeoutScanner(0, func(c context.Context) { timeoutReturn.svc.ScanL2Timeouts(c, timeoutReturn.ctx) }),
+		relay.WithTimeoutScanner(0, func(c context.Context) {
+			timeoutReturn.svc.ScanL2Timeouts(c, timeoutReturn.deps.Cosmos, timeoutReturn.deps.EVM, timeoutReturn.deps.IDs.CosmosOnEVM)
+		}),
 		relay.WithPacketTracker(trackL2Pending, untrackL2Pending),
 	)
 	logger.Sugar().Infof("l2->cosmos source: %s (attestor=%s src_chain=%s wasm_client=%s head=%s)",
@@ -212,8 +216,12 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 
 	cleanup := func() {
 		l2.Close()
-		_ = cosmosClient.Stop()
-		_ = attestor.Close()
+		if err := cosmosClient.Stop(); err != nil {
+			log.Printf("failed to terminate cosmos client: %v", err)
+		}
+		if err := attestor.Close(); err != nil {
+			log.Printf("failed to close attestor client: %v", err)
+		}
 	}
 	return module, cleanup, nil
 }

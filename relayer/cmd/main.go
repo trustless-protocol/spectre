@@ -1070,49 +1070,43 @@ func main() {
 	}
 }
 
-// buildCreateClientsContext dials both chains and returns a services.Context
+// buildCreateClientsDeps dials both chains and returns scoped relay dependencies
 // wired for the create-clients flow. wasmClientID is the eth-light-client-on-
 // Cosmos id used as the on-chain counterparty; pass "" for the Cosmos step,
 // which discovers it. The returned cosmosClient has its WebSocket started — the
 // caller must Stop it.
-func buildCreateClientsContext(logger *zap.Logger, cfg *appConfig, wasmClientID string) (services.Context, *rpchttp.HTTP, error) {
+func buildCreateClientsDeps(logger *zap.Logger, cfg *appConfig, wasmClientID string) (services.RelayDeps, *rpchttp.HTTP, error) {
 	logger.Sugar().Infof("create-clients: dialing ethereum rpc %s", cfg.CosmosToEthConfig.EthRpcUrl)
 	ethClient, err := ethclient.Dial(cfg.CosmosToEthConfig.EthRpcUrl)
 	if err != nil {
-		return services.Context{}, nil, fmt.Errorf("failed to connect to Ethereum: %w", err)
+		return services.RelayDeps{}, nil, fmt.Errorf("failed to connect to Ethereum: %w", err)
 	}
 
 	logger.Sugar().Infof("create-clients: creating cosmos rpc client %s", cfg.CosmosToEthConfig.TmRpcUrl)
 	cosmosClient, err := rpchttp.New(cfg.CosmosToEthConfig.TmRpcUrl, "/websocket")
 	if err != nil {
-		return services.Context{}, nil, fmt.Errorf("failed to create Cosmos RPC client: %w", err)
+		return services.RelayDeps{}, nil, fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 	}
 
 	cosmosRouterClientID := cosmosRouterClientIDOrDefault(cfg)
 	if cosmosRouterClientID == "" {
-		return services.Context{}, nil, fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
+		return services.RelayDeps{}, nil, fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
 	}
 
-	ctx := services.NewCtxWithBeacon(
-		cosmosClient, ethClient, nil,
-		"",
-		resolveBeaconURL(cfg),
-		wasmClientID,
-	)
-	ctx.SetCosmosRouterClientID(cosmosRouterClientID)
-	ctx.SetAddresses(
-		cfg.CosmosToEthConfig.ICS26Address,
-		cfg.CosmosToEthConfig.SignatureVerifier,
-		cfg.CosmosToEthConfig.Membership,
-		cfg.CosmosToEthConfig.Misbehaviour,
-		cfg.CosmosToEthConfig.UpdateClient,
-		roleManagerOrDefault(cfg),
-	)
+	deps := services.RelayDeps{
+		Cosmos: services.CosmosEndpoint{Client: cosmosClient},
+		EVM: services.EVMEndpoint{Client: ethClient, BeaconAPIURL: resolveBeaconURL(cfg), Contracts: services.EVMContracts{
+			Router: common.HexToAddress(cfg.CosmosToEthConfig.ICS26Address), SignatureVerifier: common.HexToAddress(cfg.CosmosToEthConfig.SignatureVerifier),
+			Membership: common.HexToAddress(cfg.CosmosToEthConfig.Membership), Misbehaviour: common.HexToAddress(cfg.CosmosToEthConfig.Misbehaviour),
+			UpdateClient: common.HexToAddress(cfg.CosmosToEthConfig.UpdateClient), RoleManager: common.HexToAddress(roleManagerOrDefault(cfg)),
+		}},
+		IDs: services.ClientIDs{CosmosOnEVM: cosmosRouterClientID, EVMOnCosmos: wasmClientID},
+	}
 
 	if err := cosmosClient.Start(); err != nil {
-		return services.Context{}, nil, fmt.Errorf("failed to start Cosmos WS client: %w", err)
+		return services.RelayDeps{}, nil, fmt.Errorf("failed to start Cosmos WS client: %w", err)
 	}
-	return ctx, cosmosClient, nil
+	return deps, cosmosClient, nil
 }
 
 // runCreateClientsCosmos creates the Ethereum light client on Cosmos — the side
@@ -1132,7 +1126,7 @@ func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasm
 			"set eth_beacon_api_url on the eth_to_cosmos module")
 	}
 
-	ctx, cosmosClient, err := buildCreateClientsContext(logger, cfg, "")
+	deps, cosmosClient, err := buildCreateClientsDeps(logger, cfg, "")
 	if err != nil {
 		return "", err
 	}
@@ -1154,7 +1148,7 @@ func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasm
 
 	worker := services.NewWorker(&transaction.Handler{}, nil)
 	logger.Sugar().Infof("Creating Ethereum light client on Cosmos (checksum=%s)...", wasmChecksum)
-	wasmClientID, err := worker.CreateEthClient(context.Background(), ctx, wasmChecksum)
+	wasmClientID, err := worker.CreateEthClient(context.Background(), deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM, wasmChecksum)
 	if err != nil {
 		return "", fmt.Errorf("failed to create Ethereum client on Cosmos: %w", err)
 	}
@@ -1177,7 +1171,7 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 		return common.Address{}, fmt.Errorf("cosmos_wasm_client_id is empty; run create-clients-cosmos first")
 	}
 
-	ctx, cosmosClient, err := buildCreateClientsContext(logger, cfg, wasmClientID)
+	deps, cosmosClient, err := buildCreateClientsDeps(logger, cfg, wasmClientID)
 	if err != nil {
 		return common.Address{}, err
 	}
@@ -1188,7 +1182,7 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 	// redeploy ICS07.
 	if cfg.CosmosToEthConfig.SpectreClient != "" {
 		addr := common.HexToAddress(cfg.CosmosToEthConfig.SpectreClient)
-		if code, err := ctx.EthClient().CodeAt(context.Background(), addr, nil); err == nil && len(code) > 0 {
+		if code, err := deps.EVM.EthClient().CodeAt(context.Background(), addr, nil); err == nil && len(code) > 0 {
 			logger.Sugar().Infof("create-clients-eth: spectre_client already deployed at %s; skipping deploy", addr.Hex())
 			return addr, nil
 		}
@@ -1217,7 +1211,7 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 		"Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s, proofType=%s, clockDrift=%d, counterparty=%s)...",
 		trustingPeriod, trustLevel, proofType, clockDrift, wasmClientID,
 	)
-	ics07Addr, err := worker.CreateCosmosClient(context.Background(), ctx, proofType, trustingPeriod, 0, trustLevel, clockDrift)
+	ics07Addr, err := worker.CreateCosmosClient(context.Background(), deps.Cosmos, deps.EVM, deps.IDs, proofType, trustingPeriod, 0, trustLevel, clockDrift)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed to create Cosmos client on Ethereum: %w", err)
 	}
@@ -1457,31 +1451,23 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("cosmos_wasm_client_id is required in cosmos_to_eth config")
 			}
 
-			ctx := services.NewCtxWithBeacon(
-				cosmosClient, ethClient, nil,
-				"",
-				cfg.EthToCosmosConfig.BeaconUrl,
-				cosmosWasmClientID,
-			)
 			cosmosRouterClientID := cosmosRouterClientIDOrDefault(cfg)
 			if cosmosRouterClientID == "" {
 				return fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
 			}
-			ctx.SetCosmosRouterClientID(cosmosRouterClientID)
-
 			roleManager := roleManagerOrDefault(cfg)
-			ctx.SetAddresses(
-				cfg.CosmosToEthConfig.ICS26Address,
-				cfg.CosmosToEthConfig.SignatureVerifier,
-				cfg.CosmosToEthConfig.Membership,
-				cfg.CosmosToEthConfig.Misbehaviour,
-				cfg.CosmosToEthConfig.UpdateClient,
-				roleManager,
-			)
 			if cfg.CosmosToEthConfig.SpectreClient == "" {
 				return fmt.Errorf("spectre_client address is required in cosmos_to_eth config")
 			}
-			ctx.SetClient(common.HexToAddress(cfg.CosmosToEthConfig.SpectreClient))
+			deps := services.RelayDeps{
+				Cosmos: services.CosmosEndpoint{Client: cosmosClient},
+				EVM: services.EVMEndpoint{Client: ethClient, BeaconAPIURL: cfg.EthToCosmosConfig.BeaconUrl, Contracts: services.EVMContracts{
+					Router: common.HexToAddress(cfg.CosmosToEthConfig.ICS26Address), SignatureVerifier: common.HexToAddress(cfg.CosmosToEthConfig.SignatureVerifier),
+					Membership: common.HexToAddress(cfg.CosmosToEthConfig.Membership), Misbehaviour: common.HexToAddress(cfg.CosmosToEthConfig.Misbehaviour),
+					UpdateClient: common.HexToAddress(cfg.CosmosToEthConfig.UpdateClient), RoleManager: common.HexToAddress(roleManager), SpectreClient: common.HexToAddress(cfg.CosmosToEthConfig.SpectreClient),
+				}},
+				IDs: services.ClientIDs{CosmosOnEVM: cosmosRouterClientID, EVMOnCosmos: cosmosWasmClientID},
+			}
 
 			cosmosConfig := services.DefaultConfig()
 			if cfg.CosmosToEthConfig.TrustingPeriod != 0 {
@@ -1521,7 +1507,7 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 				}
 			}
 			cosmosConfig.BatchConfig = cfg.BatchConfig
-			ctx.Config = cosmosConfig
+			deps.Config = cosmosConfig
 
 			if err := cosmosClient.Start(); err != nil {
 				return fmt.Errorf("failed to start Cosmos WS client: %w", err)
@@ -1534,7 +1520,7 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			}
 
 			worker := services.NewWorker(&transaction.Handler{}, p)
-			latestBlock, err := worker.UpdateCosmosClient(context.Background(), ctx, cosmosConfig.ProofType, trustedBlock, cosmosConfig.TrustLevel, false)
+			latestBlock, err := worker.UpdateCosmosClient(context.Background(), deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM, cosmosConfig.FetchTimeout, cosmosConfig.RotationThreshold, cosmosConfig.ProofType, trustedBlock, cosmosConfig.TrustLevel, false)
 			if err != nil {
 				return fmt.Errorf("failed to update Cosmos client on Ethereum: %w", err)
 			}
@@ -1655,7 +1641,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 				}
 			}
 			for i := range sources {
-				svc, srcCtx, cleanup, err := buildCosmosToEthSource(
+				svc, deps, cleanup, err := buildCosmosToEthSource(
 					logger, sources[i], cfg.EthToCosmosConfig, cfg.BatchConfig, p, txHandler, allowEnvOverride,
 				)
 				if err != nil {
@@ -1667,22 +1653,22 @@ func Start(logger *zap.Logger) *cobra.Command {
 				cleanup = onceCleanup(cleanup)
 				cleanups = append(cleanups, cleanup)
 				wg.Add(1)
-				go func(svc *services.Services, srcCtx services.Context, cleanup func()) {
+				go func(svc *services.Services, deps services.RelayDeps, cleanup func()) {
 					defer wg.Done()
 					defer cleanup()
 					// Chain-adapter RelayModule engine — the sole relay engine since
 					// the legacy services.StartLoop was removed after the cutover.
-					if err := runAdapterEngine(runCtx, svc, srcCtx); err != nil {
-						loopErrCh <- fmt.Errorf("cosmos_to_eth source %q: %w", srcCtx.CosmosRouterClientID(), err)
+					if err := runAdapterEngine(runCtx, svc, deps); err != nil {
+						loopErrCh <- fmt.Errorf("cosmos_to_eth source %q: %w", deps.IDs.CosmosOnEVM, err)
 					}
-				}(svc, srcCtx, cleanup)
+				}(svc, deps, cleanup)
 			}
 
 			// One independent relay loop per Cosmos→L2 destination: the same groth16
 			// pipeline as Cosmos→ETH pointed at the L2's SpectreClient/ICS26Router,
 			// with no reverse beacon direction.
 			for i := range l2Dests {
-				svc, dstCtx, cleanup, err := buildCosmosToL2Dest(
+				svc, deps, cleanup, err := buildCosmosToL2Dest(
 					logger, l2Dests[i], cfg.BatchConfig, p, txHandler,
 				)
 				if err != nil {
@@ -1695,16 +1681,16 @@ func Start(logger *zap.Logger) *cobra.Command {
 				cleanups = append(cleanups, cleanup)
 				l2ReturnPaths = append(l2ReturnPaths, l2TimeoutReturnPathConfig{
 					cfg:  l2Dests[i],
-					path: l2TimeoutReturnPath{svc: svc, ctx: dstCtx},
+					path: l2TimeoutReturnPath{svc: svc, deps: deps},
 				})
 				wg.Add(1)
-				go func(svc *services.Services, dstCtx services.Context, cleanup func()) {
+				go func(svc *services.Services, deps services.RelayDeps, cleanup func()) {
 					defer wg.Done()
 					defer cleanup()
-					if err := runCosmosToL2Engine(runCtx, svc, dstCtx); err != nil {
-						loopErrCh <- fmt.Errorf("cosmos_to_l2 dest %q: %w", dstCtx.CosmosRouterClientID(), err)
+					if err := runCosmosToL2Engine(runCtx, svc, deps); err != nil {
+						loopErrCh <- fmt.Errorf("cosmos_to_l2 dest %q: %w", deps.IDs.CosmosOnEVM, err)
 					}
-				}(svc, dstCtx, cleanup)
+				}(svc, deps, cleanup)
 			}
 
 			// One independent relay module per L2->Cosmos source (opstack/arbitrum).

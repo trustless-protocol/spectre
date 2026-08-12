@@ -5,15 +5,13 @@ import (
 	"testing"
 	"time"
 
-	commettypes "github.com/cometbft/cometbft/types"
-
 	relayerclient "relayer/client"
 	"relayer/prover"
 )
 
 // TestWaitForCosmosCatchUp_AbortsOnCancelledContext verifies the catch-up wait
 // returns promptly when the context is already cancelled, instead of polling the
-// Cosmos client (which is never reached — a zero Context would panic if it were).
+// Cosmos client (which is never reached — a zero endpoint would panic if it were).
 func TestWaitForCosmosCatchUp_AbortsOnCancelledContext(t *testing.T) {
 	w := &Worker{}
 	stdCtx, cancel := context.WithCancel(context.Background())
@@ -21,43 +19,15 @@ func TestWaitForCosmosCatchUp_AbortsOnCancelledContext(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		// A zero services.Context is fine: the cancelled stdCtx short-circuits
+		// A zero endpoint set is fine: the cancelled stdCtx short-circuits
 		// before ctx.CosmosClient() is ever called.
-		w.WaitForCosmosCatchUp(stdCtx, Context{}, &relayerclient.EthereumClientState{}, 0)
+		w.WaitForCosmosCatchUp(stdCtx, CosmosEndpoint{}, &relayerclient.EthereumClientState{}, 0)
 		close(done)
 	}()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("WaitForCosmosCatchUp did not abort on a cancelled context")
-	}
-}
-
-func TestRecordRefreshResult(t *testing.T) {
-	timestamp := &Timestamp{}
-	now := time.Unix(1_700_000_000, 0)
-	trustedTime := now.Add(-10 * time.Minute)
-
-	if err := recordRefreshResult(timestamp, nil); err == nil {
-		t.Fatal("expected nil light block error")
-	}
-
-	if err := recordRefreshResult(timestamp, &relayerclient.LightBlock{BlockHeight: 123}); err == nil {
-		t.Fatal("expected missing header error")
-	}
-
-	block := &relayerclient.LightBlock{
-		BlockHeight: 123,
-		SignedHeader: commettypes.SignedHeader{
-			Header: &commettypes.Header{Time: trustedTime},
-		},
-	}
-	if err := recordRefreshResult(timestamp, block); err != nil {
-		t.Fatalf("record refresh result: %v", err)
-	}
-	gotTime, gotHeight := timestamp.Snapshot()
-	if !gotTime.Equal(trustedTime) || gotHeight != 123 {
-		t.Fatalf("timestamp = (%v, %d), want (%v, 123)", gotTime, gotHeight, trustedTime)
 	}
 }
 

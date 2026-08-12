@@ -33,7 +33,7 @@ import (
 //
 // It returns nil on clean context cancellation, or the first module's fatal error
 // (cancelling the other).
-func runAdapterEngine(ctx context.Context, svc *services.Services, srcCtx services.Context) error {
+func runAdapterEngine(ctx context.Context, svc *services.Services, deps services.RelayDeps) error {
 	worker := svc.Worker()
 	bb := svc.BatchBuilder
 	cfg := svc.CosmosConfig()
@@ -63,7 +63,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, srcCtx servic
 	// rejected an unsafe/underivable interval at startup rather than silently
 	// falling back to a fixed default that could exceed the trusting period and let
 	// the client expire. Fail loud so the operator fixes the config.
-	periodicUpdateInterval, err := svc.PinnedSetRotationInterval(srcCtx)
+	periodicUpdateInterval, err := svc.PinnedSetRotationInterval(deps.EVM)
 	if err != nil {
 		return fmt.Errorf("cosmos->eth: derive pinned-set rotation interval: %w", err)
 	}
@@ -71,7 +71,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, srcCtx servic
 	// a restart near the rotation deadline fires promptly instead of waiting a full
 	// fresh interval. On error, default to 0 (rotate now) — the safe direction:
 	// never let the set decay by delaying the first rotation.
-	initialRotationDelay, err := svc.PinnedSetRotationDueIn(srcCtx)
+	initialRotationDelay, err := svc.PinnedSetRotationDueIn(deps.Cosmos, deps.EVM)
 	if err != nil {
 		log.Printf("[adapter cosmos->eth] derive initial rotation delay: %v; rotating on startup", err)
 		initialRotationDelay = 0
@@ -79,28 +79,30 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, srcCtx servic
 
 	cosmosToEth := relay.NewModule(
 		"cosmos->eth",
-		srcCtx.CosmosRouterClientID(),
-		cosmos.NewSource(srcCtx, bb),
-		evm.NewDestination(worker, srcCtx),
-		cosmos.NewGroth16Builder(worker, srcCtx, cfg.ProofType, cfg.TrustLevel),
-		relay.WithTimeoutScanner(0, func(c context.Context) { svc.ScanCosmosTimeouts(c, srcCtx) }),
+		deps.IDs.CosmosOnEVM,
+		cosmos.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.FetchTimeout, deps.Config.BatchConfig, deps.Logger, bb),
+		evm.NewDestination(worker, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM),
+		cosmos.NewGroth16Builder(worker, deps.Cosmos, deps.EVM, deps.Config.FetchTimeout, deps.Config.RotationThreshold, cfg.ProofType, cfg.TrustLevel),
+		relay.WithTimeoutScanner(0, func(c context.Context) {
+			svc.ScanCosmosTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos)
+		}),
 		relay.WithPacketTracker(trackCosmosPending, untrackCosmosPending),
 		// Force-rotate the pinned validator set on a fixed cadence so it never
 		// decays below quorum during a quiet period (the guaranteed rotation the
 		// legacy StartLoop routine provided). ETH->Cosmos needs no equivalent —
 		// the beacon client has no pinned set.
 		relay.WithPeriodicUpdate(periodicUpdateInterval, initialRotationDelay, func(c context.Context) error {
-			return svc.RotatePinnedSet(c, srcCtx)
+			return svc.RotatePinnedSet(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM)
 		}),
 	)
 
 	ethToCosmos := relay.NewModule(
 		"eth->cosmos",
-		srcCtx.EthClientID(),
-		evm.NewSource(srcCtx, bb),
-		cosmos.NewDestination(worker, srcCtx),
-		evm.NewBeaconBuilder(worker, srcCtx),
-		relay.WithTimeoutScanner(0, func(c context.Context) { svc.ScanEthTimeouts(c, srcCtx) }),
+		deps.IDs.EVMOnCosmos,
+		evm.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.BatchConfig, deps.Logger, bb),
+		cosmos.NewDestination(worker, deps.Cosmos, deps.IDs.EVMOnCosmos),
+		evm.NewBeaconBuilder(worker, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos),
+		relay.WithTimeoutScanner(0, func(c context.Context) { svc.ScanEthTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM) }),
 	)
 
 	// Child context so the first fatal error stops both modules.

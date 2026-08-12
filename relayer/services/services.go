@@ -37,16 +37,16 @@ func init() {
 }
 
 type TransactionHandler interface {
-	CreateCosmosClientContract(stdCtx context.Context, ctx Context, clientState, consensusHash []byte, initialPinnedValidatorSet client.ContractValidatorSet) (ethcommon.Address, error)
+	CreateCosmosClientContract(stdCtx context.Context, endpoint EVMEndpoint, clientIDs ClientIDs, clientState, consensusHash []byte, initialPinnedValidatorSet client.ContractValidatorSet) (ethcommon.Address, error)
 	// CreateWasmClient submits MsgCreateClient for any 08-wasm client (ETH beacon,
 	// L2 rollup, ...) from an already-built wasm ClientState/ConsensusState and returns
 	// the auto-assigned client id. counterpartyClientID is the client on the
 	// counterparty chain that tracks Cosmos, registered inline (a naming binding); an
 	// empty value skips registration (register it later once its id is known).
-	CreateWasmClient(stdCtx context.Context, ctx Context, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState, counterpartyClientID string) (string, error)
-	SendEthTx(stdCtx context.Context, ctx Context, msg any) error
-	SendEthTxBatch(stdCtx context.Context, ctx Context, msgs []any) error
-	SendCosmosTxBatch(stdCtx context.Context, ctx Context, msgs []any) error
+	CreateWasmClient(stdCtx context.Context, endpoint CosmosEndpoint, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState, counterpartyClientID string) (string, error)
+	SendEthTx(stdCtx context.Context, endpoint EVMEndpoint, cosmosRouterClientID string, msg any) error
+	SendEthTxBatch(stdCtx context.Context, endpoint EVMEndpoint, cosmosRouterClientID string, msgs []any) error
+	SendCosmosTxBatch(stdCtx context.Context, endpoint CosmosEndpoint, msgs []any) error
 	CosmosSignerAddress() (string, error)
 }
 
@@ -71,6 +71,12 @@ type Services struct {
 	BatchBuilder *BatchBuilder
 }
 
+type evmTimeoutDeps struct {
+	cosmos         CosmosEndpoint
+	evm            EVMEndpoint
+	routerClientID string
+}
+
 func New(txHandler TransactionHandler, prover Prover, cosmosConfig Config) *Services {
 	return &Services{
 		cosmosConfig: cosmosConfig,
@@ -86,8 +92,8 @@ func New(txHandler TransactionHandler, prover Prover, cosmosConfig Config) *Serv
 // trusted consensus timestamp plus the trusting period. Unlike
 // seedCosmosClientFreshness this is side-effect-free (no timestamp mutation, no
 // logging), so the relay module's refresh routine can poll it periodically.
-func CosmosClientExpiry(ctx Context) (time.Time, error) {
-	clientState, err := fetchOnChainClientState(ctx)
+func CosmosClientExpiry(cosmos CosmosEndpoint, evm EVMEndpoint) (time.Time, error) {
+	clientState, err := fetchOnChainClientState(evm)
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -95,30 +101,12 @@ func CosmosClientExpiry(ctx Context) (time.Time, error) {
 	if err != nil {
 		return time.Time{}, err
 	}
-	lightBlock, err := client.GetLightBlock(ctx.CosmosClient(), trustedHeight)
+	lightBlock, err := client.GetLightBlock(cosmos.CosmosClient(), trustedHeight)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("cosmos client expiry: trusted light block %d: %w", trustedHeight, err)
 	}
 	trustingPeriod := time.Duration(clientState.TrustingPeriod) * time.Second
 	return lightBlock.SignedHeader.Header.Time.Add(trustingPeriod), nil
-}
-
-func recordRefreshResult(timestamp *Timestamp, lightBlock *client.LightBlock) error {
-	if lightBlock == nil {
-		return fmt.Errorf("no light block returned")
-	}
-	if lightBlock.BlockHeight < 0 {
-		return fmt.Errorf("negative light block height: %d", lightBlock.BlockHeight)
-	}
-	if lightBlock.SignedHeader.Header == nil {
-		return fmt.Errorf("missing light block header at height %d", lightBlock.BlockHeight)
-	}
-	trustedTime := lightBlock.SignedHeader.Header.Time
-	if trustedTime.IsZero() {
-		return fmt.Errorf("zero light block timestamp at height %d", lightBlock.BlockHeight)
-	}
-	timestamp.Set(trustedTime, uint64(lightBlock.BlockHeight))
-	return nil
 }
 
 func deriveCosmosRefreshInterval(cfg Config, trustingPeriod time.Duration) (time.Duration, error) {
@@ -205,9 +193,8 @@ func pendingPacketsTimedOutAtTimestamp(pending []pendingPacketInfo, timestamp ui
 	return expired
 }
 
-func (s *Services) updateCosmosClientForEth(stdCtx context.Context, ctx Context, tag string) (*client.LightBlock, bool) {
-	_, ethTrustedHeight := ctx.latestEthTimestamp.Snapshot()
-	latestLightBlock, err := s.worker.UpdateCosmosClient(stdCtx, ctx, s.cosmosConfig.ProofType, int64(ethTrustedHeight), s.cosmosConfig.TrustLevel, false)
+func (s *Services) updateCosmosClientForEth(stdCtx context.Context, deps evmTimeoutDeps, tag string) (*client.LightBlock, bool) {
+	latestLightBlock, err := s.worker.UpdateCosmosClient(stdCtx, deps.cosmos, deps.evm, deps.routerClientID, s.cosmosConfig.FetchTimeout, s.cosmosConfig.RotationThreshold, s.cosmosConfig.ProofType, 0, s.cosmosConfig.TrustLevel, false)
 	if err != nil {
 		log.Printf("[%s] Failed to update cosmos light client: %v", tag, err)
 		return nil, false
@@ -217,17 +204,13 @@ func (s *Services) updateCosmosClientForEth(stdCtx context.Context, ctx Context,
 		return nil, false
 	}
 
-	if err := recordRefreshResult(ctx.latestEthTimestamp, latestLightBlock); err != nil {
-		log.Printf("[%s] failed to record trusted cosmos timestamp: %v", tag, err)
-	}
-
 	return latestLightBlock, true
 }
 
-func (s *Services) timeoutEVMSend(stdCtx context.Context, ctx Context, packet EthPacket, tag string) bool {
+func (s *Services) timeoutEVMSend(stdCtx context.Context, deps evmTimeoutDeps, packet EthPacket, tag string) bool {
 	log.Printf("[%sTimeout] seq=%d: packet expired, preparing timeout proof", tag, packet.Packet.Sequence)
 
-	latestLightBlock, ok := s.updateCosmosClientForEth(stdCtx, ctx, tag+"Timeout")
+	latestLightBlock, ok := s.updateCosmosClientForEth(stdCtx, deps, tag+"Timeout")
 	if !ok {
 		return false
 	}
@@ -239,7 +222,7 @@ func (s *Services) timeoutEVMSend(stdCtx context.Context, ctx Context, packet Et
 		return false
 	}
 
-	calldata, err := CosmosNonMembership(ctx, *packet.Packet, packet.Packet.DestinationClient, []byte{2}, latestLightBlock)
+	calldata, err := CosmosNonMembership(deps.cosmos, *packet.Packet, packet.Packet.DestinationClient, []byte{2}, latestLightBlock)
 	if err != nil {
 		log.Printf("[%sTimeout] seq=%d: %v", tag, packet.Packet.Sequence, err)
 		return false
@@ -250,7 +233,7 @@ func (s *Services) timeoutEVMSend(stdCtx context.Context, ctx Context, packet Et
 		NonMembershipMsg: calldata,
 	}
 
-	if err := s.worker.TxHandler.SendEthTx(stdCtx, ctx, msgTimeoutPacket); err != nil {
+	if err := s.worker.TxHandler.SendEthTx(stdCtx, deps.evm, deps.routerClientID, msgTimeoutPacket); err != nil {
 		log.Printf("[%sTimeout] seq=%d: SendEthTx failed: %v", tag, packet.Packet.Sequence, err)
 		return false
 	}
@@ -260,23 +243,27 @@ func (s *Services) timeoutEVMSend(stdCtx context.Context, ctx Context, packet Et
 
 const pendingTrackerMaxAge = 1 * time.Hour
 
-func (s *Services) scanForEthTimeouts(stdCtx context.Context, ctx Context) {
-	s.scanForEVMTimeouts(stdCtx, ctx, evmTimeoutScanOptions{
-		tag:                  "Eth",
-		tracker:              s.BatchBuilder.EthPendingTracker,
-		hasPendingCommitment: HasPendingEthPacketCommitment,
-		timeoutSend: func(c context.Context, scanCtx Context, packet EthPacket) bool {
+func (s *Services) scanForEthTimeouts(stdCtx context.Context, deps evmTimeoutDeps) {
+	s.scanForEVMTimeouts(stdCtx, deps, evmTimeoutScanOptions{
+		tag:     "Eth",
+		tracker: s.BatchBuilder.EthPendingTracker,
+		hasPendingCommitment: func(scanCtx evmTimeoutDeps, packet channeltypesv2.Packet) (bool, error) {
+			return HasPendingEthPacketCommitment(scanCtx.evm, packet)
+		},
+		timeoutSend: func(c context.Context, scanCtx evmTimeoutDeps, packet EthPacket) bool {
 			return s.timeoutEVMSend(c, scanCtx, packet, "Eth")
 		},
 	})
 }
 
-func (s *Services) scanForL2Timeouts(stdCtx context.Context, ctx Context) {
-	s.scanForEVMTimeouts(stdCtx, ctx, evmTimeoutScanOptions{
-		tag:                  "L2",
-		tracker:              s.BatchBuilder.L2PendingTracker,
-		hasPendingCommitment: HasPendingEthPacketCommitment,
-		timeoutSend: func(c context.Context, scanCtx Context, packet EthPacket) bool {
+func (s *Services) scanForL2Timeouts(stdCtx context.Context, deps evmTimeoutDeps) {
+	s.scanForEVMTimeouts(stdCtx, deps, evmTimeoutScanOptions{
+		tag:     "L2",
+		tracker: s.BatchBuilder.L2PendingTracker,
+		hasPendingCommitment: func(scanCtx evmTimeoutDeps, packet channeltypesv2.Packet) (bool, error) {
+			return HasPendingEthPacketCommitment(scanCtx.evm, packet)
+		},
+		timeoutSend: func(c context.Context, scanCtx evmTimeoutDeps, packet EthPacket) bool {
 			return s.timeoutEVMSend(c, scanCtx, packet, "L2")
 		},
 	})
@@ -285,11 +272,11 @@ func (s *Services) scanForL2Timeouts(stdCtx context.Context, ctx Context) {
 type evmTimeoutScanOptions struct {
 	tag                  string
 	tracker              *PendingPacketTracker
-	hasPendingCommitment func(Context, channeltypesv2.Packet) (bool, error)
-	timeoutSend          func(context.Context, Context, EthPacket) bool
+	hasPendingCommitment func(evmTimeoutDeps, channeltypesv2.Packet) (bool, error)
+	timeoutSend          func(context.Context, evmTimeoutDeps, EthPacket) bool
 }
 
-func (s *Services) scanForEVMTimeouts(stdCtx context.Context, ctx Context, opts evmTimeoutScanOptions) {
+func (s *Services) scanForEVMTimeouts(stdCtx context.Context, deps evmTimeoutDeps, opts evmTimeoutScanOptions) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[%sTimeoutScan] Panic recovered: %v", opts.tag, r)
@@ -315,7 +302,7 @@ func (s *Services) scanForEVMTimeouts(stdCtx context.Context, ctx Context, opts 
 
 	log.Printf("[%sTimeoutScan] Found %d locally-expired EVM-origin packet(s) at time %d", opts.tag, len(expired), now)
 	for _, info := range expired {
-		pendingCommitment, err := opts.hasPendingCommitment(ctx, info.Packet)
+		pendingCommitment, err := opts.hasPendingCommitment(deps, info.Packet)
 		if err != nil {
 			log.Printf("[%sTimeoutScan] seq=%d: failed to check EVM packet commitment: %v", opts.tag, info.Packet.Sequence, err)
 			continue
@@ -327,7 +314,7 @@ func (s *Services) scanForEVMTimeouts(stdCtx context.Context, ctx Context, opts 
 		}
 
 		packet := info.Packet
-		if opts.timeoutSend(stdCtx, ctx, EthPacket{
+		if opts.timeoutSend(stdCtx, deps, EthPacket{
 			Type:        EthSend,
 			Packet:      &packet,
 			BlockNumber: info.BlockNumber,
@@ -337,7 +324,7 @@ func (s *Services) scanForEVMTimeouts(stdCtx context.Context, ctx Context, opts 
 	}
 }
 
-func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
+func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, ethClientID string) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[CosmosTimeoutScan] Panic recovered: %v", r)
@@ -351,7 +338,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
 		return
 	}
 
-	ethHeader, err := ctx.EthClient().HeaderByNumber(context.Background(), nil)
+	ethHeader, err := evm.EthClient().HeaderByNumber(stdCtx, nil)
 	if err != nil {
 		log.Printf("[CosmosTimeoutScan] Failed to get eth block header: %v", err)
 		return
@@ -369,7 +356,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
 	log.Printf("[CosmosTimeoutScan] Found %d head-expired packets, checking ETH receipts", len(expired))
 	unreceived := make([]pendingPacketInfo, 0, len(expired))
 	for _, info := range expired {
-		received, err := HasEthPacketReceipt(ctx, info.Packet)
+		received, err := HasEthPacketReceipt(evm, info.Packet)
 		if err != nil {
 			log.Printf("[CosmosTimeoutScan] seq=%d: failed to check ETH packet receipt: %v", info.Packet.Sequence, err)
 			continue
@@ -388,7 +375,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
 
 	log.Printf("[CosmosTimeoutScan] Building proof state for %d unreceived expired packets", len(expired))
 
-	updateResult, err := s.worker.BuildEthClientUpdateHeaders(ctx)
+	updateResult, err := s.worker.BuildEthClientUpdateHeaders(cosmos, evm, ethClientID)
 	if err != nil {
 		log.Printf("[CosmosTimeoutScan] Failed to build ETH client update headers: %v", err)
 		return
@@ -396,7 +383,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
 
 	ethClientState := updateResult.EthClientState
 	if ethClientState == nil {
-		ethClientState, err = client.GetEthereumClientState(ctx.CosmosClient(), ctx.EthClientID())
+		ethClientState, err = client.GetEthereumClientState(cosmos.CosmosClient(), ethClientID)
 		if err != nil {
 			log.Printf("[CosmosTimeoutScan] Failed to get ETH client state: %v", err)
 			return
@@ -416,7 +403,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
 	var timeoutMsgs []any
 	var processed []pendingPacketInfo
 	for _, info := range expired {
-		msgTimeout, err := s.buildCosmosTimeoutMsg(ctx, info.Packet, ethClientState)
+		msgTimeout, err := s.buildCosmosTimeoutMsg(evm, info.Packet, ethClientState)
 		if err != nil {
 			log.Printf("[CosmosTimeout] seq=%d: %v", info.Packet.Sequence, err)
 			continue
@@ -431,7 +418,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
 
 	updateMsgs := make([]any, 0, len(updateResult.Headers))
 	for i, header := range updateResult.Headers {
-		msg, err := wasmclient.BuildUpdateClient("", ctx.EthClientID(), header)
+		msg, err := wasmclient.BuildUpdateClient("", ethClientID, header)
 		if err != nil {
 			log.Printf("[CosmosTimeoutScan] Failed to wrap ETH update header %d: %v", i, err)
 			return
@@ -444,10 +431,10 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
 	batchMsgs = append(batchMsgs, timeoutMsgs...)
 
 	if len(updateMsgs) > 0 {
-		s.worker.WaitForCosmosCatchUp(stdCtx, ctx, updateResult.EthClientState, updateResult.SigSlot)
+		s.worker.WaitForCosmosCatchUp(stdCtx, cosmos, updateResult.EthClientState, updateResult.SigSlot)
 	}
 
-	if err := s.worker.TxHandler.SendCosmosTxBatch(stdCtx, ctx, batchMsgs); err != nil {
+	if err := s.worker.TxHandler.SendCosmosTxBatch(stdCtx, cosmos, batchMsgs); err != nil {
 		log.Printf("[CosmosTimeoutScan] SendCosmosTxBatch failed: %v", err)
 		var partialErr *BatchPartialError
 		if errors.As(err, &partialErr) && partialErr.SucceededCount >= len(updateMsgs) {
@@ -467,7 +454,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, ctx Context) {
 	}
 }
 
-func (s *Services) buildCosmosTimeoutMsg(ctx Context, packet channeltypesv2.Packet, ethClientState *client.EthereumClientState) (*channeltypesv2.MsgTimeout, error) {
+func (s *Services) buildCosmosTimeoutMsg(ctx EVMEndpoint, packet channeltypesv2.Packet, ethClientState *client.EthereumClientState) (*channeltypesv2.MsgTimeout, error) {
 	receiptPath := EthPath(packet.DestinationClient, packet.Sequence, 2)
 	proofBytes, err := client.GetEthNonMembershipProof(
 		ctx.EthClient(), *ctx.RouterContract(), receiptPath, ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT), new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber))
@@ -483,7 +470,7 @@ func (s *Services) buildCosmosTimeoutMsg(ctx Context, packet channeltypesv2.Pack
 	), nil
 }
 
-func CosmosMembership(ctx Context, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {
+func CosmosMembership(ctx CosmosEndpoint, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {
 	height := latestLightBlock.BlockHeight
 	ibcPath := utils.IbcPath(clientID, packet.Sequence, pathType)
 	value, proof, err := client.ProvePath(ctx.CosmosClient(), height, ibcPath)
@@ -527,7 +514,7 @@ func CosmosMembership(ctx Context, packet channeltypesv2.Packet, clientID string
 	return calldata[4:], nil
 }
 
-func CosmosNonMembership(ctx Context, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {
+func CosmosNonMembership(ctx CosmosEndpoint, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {
 	height := latestLightBlock.BlockHeight
 	ibcPath := utils.IbcPath(clientID, packet.Sequence, pathType)
 	value, proof, err := client.ProvePath(ctx.CosmosClient(), height, ibcPath)
@@ -618,7 +605,7 @@ func EthIBCStorageKey(path []byte) ethcommon.Hash {
 	return crypto.Keccak256Hash(pathHash, ethcommon.HexToHash(ICS26_IBC_STORAGE_SLOT).Bytes())
 }
 
-func HasEthIBCPathValue(ctx Context, path []byte) (bool, error) {
+func HasEthIBCPathValue(ctx EVMEndpoint, path []byte) (bool, error) {
 	if ctx.EthClient() == nil {
 		return false, fmt.Errorf("eth client is nil")
 	}
@@ -639,10 +626,10 @@ func HasEthIBCPathValue(ctx Context, path []byte) (bool, error) {
 	return false, nil
 }
 
-func HasEthPacketReceipt(ctx Context, packet channeltypesv2.Packet) (bool, error) {
+func HasEthPacketReceipt(ctx EVMEndpoint, packet channeltypesv2.Packet) (bool, error) {
 	return HasEthIBCPathValue(ctx, EthPath(packet.DestinationClient, packet.Sequence, 2))
 }
 
-func HasPendingEthPacketCommitment(ctx Context, packet channeltypesv2.Packet) (bool, error) {
+func HasPendingEthPacketCommitment(ctx EVMEndpoint, packet channeltypesv2.Packet) (bool, error) {
 	return HasEthIBCPathValue(ctx, EthPath(packet.SourceClient, packet.Sequence, 1))
 }

@@ -12,6 +12,7 @@ import (
 	"relayer/services"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	ethcommon "github.com/ethereum/go-ethereum/common"
 )
 
 type recordingTxHandler struct {
@@ -19,7 +20,7 @@ type recordingTxHandler struct {
 	ethBatches [][]any
 }
 
-func (h *recordingTxHandler) SendEthTxBatch(_ context.Context, _ services.Context, msgs []any) error {
+func (h *recordingTxHandler) SendEthTxBatch(_ context.Context, _ services.EVMEndpoint, _ string, msgs []any) error {
 	h.ethBatches = append(h.ethBatches, msgs)
 	return nil
 }
@@ -112,14 +113,16 @@ func TestSupportsUpdatePacketFolding_RequiresRouterProofSubmitter(t *testing.T) 
 		router = "0x0000000000000000000000000000000000000001"
 		other  = "0x0000000000000000000000000000000000000002"
 	)
-	svcCtx := services.NewCtx(nil, nil)
-	svcCtx.SetAddresses(router, "", "", "", "", other)
-	d := &Destination{svcCtx: svcCtx}
+	evm := services.EVMEndpoint{Contracts: services.EVMContracts{
+		Router:      ethcommon.HexToAddress(router),
+		RoleManager: ethcommon.HexToAddress(other),
+	}}
+	d := &Destination{evm: evm}
 	if d.SupportsUpdatePacketFolding() {
 		t.Fatal("different role manager must disable folding")
 	}
-	svcCtx.SetAddresses(router, "", "", "", "", router)
-	d.svcCtx = svcCtx
+	evm.Contracts.RoleManager = ethcommon.HexToAddress(router)
+	d.evm = evm
 	if !d.SupportsUpdatePacketFolding() {
 		t.Fatal("router proof submitter must enable folding")
 	}
@@ -127,10 +130,12 @@ func TestSupportsUpdatePacketFolding_RequiresRouterProofSubmitter(t *testing.T) 
 
 func TestRelayWithUpdate_SubmitsOneOrderedBatch(t *testing.T) {
 	const router = "0x0000000000000000000000000000000000000001"
-	svcCtx := services.NewCtx(nil, nil)
-	svcCtx.SetAddresses(router, "", "", "", "", router)
+	evm := services.EVMEndpoint{Contracts: services.EVMContracts{
+		Router:      ethcommon.HexToAddress(router),
+		RoleManager: ethcommon.HexToAddress(router),
+	}}
 	handler := &recordingTxHandler{}
-	d := &Destination{worker: services.NewWorker(handler, nil), svcCtx: svcCtx}
+	d := &Destination{worker: services.NewWorker(handler, nil), evm: evm, clientID: "client-0"}
 
 	payload, err := codec.EncodeCosmosUpdate(
 		int(services.ApplicationUpdate),

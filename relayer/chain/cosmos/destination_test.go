@@ -15,7 +15,7 @@ import (
 
 type atomicTestTxHandler struct{ services.TransactionHandler }
 
-func (*atomicTestTxHandler) SendCosmosTxBatchAtomic(context.Context, services.Context, []any) error {
+func (*atomicTestTxHandler) SendCosmosTxBatchAtomic(context.Context, services.CosmosEndpoint, []any) error {
 	return nil
 }
 

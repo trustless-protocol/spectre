@@ -141,8 +141,8 @@ func rejectRelayerConfigAsL2Config(path string, data []byte) error {
 // no ethereum_client member at all, so there is nothing left to inject and no L1 client
 // this command needs to exist.
 func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfig) (string, error) {
-	// Cosmos context (MsgCreateClient is submitted to Cosmos).
-	ctx, cosmosClient, err := buildCreateClientsContext(logger, cfg, "")
+	// Cosmos dependencies (MsgCreateClient is submitted to Cosmos).
+	deps, cosmosClient, err := buildCreateClientsDeps(logger, cfg, "")
 	if err != nil {
 		return "", err
 	}
@@ -182,7 +182,7 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 		bootstrap.Height, bootstrap.StateRoot.Hex(), bootstrap.RouterStorageRoot.Hex(), bootstrap.TimestampSeconds)
 
 	worker := services.NewWorker(&transaction.Handler{}, nil)
-	clientID, err := worker.CreateL2Client(context.Background(), ctx, services.L2ClientParams{
+	clientID, err := worker.CreateL2Client(context.Background(), deps.Cosmos, services.L2ClientParams{
 		WasmChecksum:         l2cfg.WasmChecksum,
 		RollupProfile:        l2cfg.RollupProfile,
 		Bootstrap:            bootstrap,

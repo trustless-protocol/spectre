@@ -29,6 +29,16 @@ type Worker struct {
 	Prover    Prover
 }
 
+// cosmosClientDeps is the narrow capability set shared by the Cosmos light
+// client update helpers. It is package-private so the command layer cannot
+// accidentally turn it into another process-wide context object.
+type cosmosClientDeps struct {
+	cosmos            CosmosEndpoint
+	evm               EVMEndpoint
+	fetchTimeout      time.Duration
+	rotationThreshold string
+}
+
 const cosmosCatchUpSafetySlots uint64 = 3
 
 func NewWorker(txHandler TransactionHandler, prover Prover) *Worker {
@@ -38,8 +48,8 @@ func NewWorker(txHandler TransactionHandler, prover Prover) *Worker {
 	}
 }
 
-func (w *Worker) CreateCosmosClient(stdCtx context.Context, ctx Context, proofType string, trustingPeriod uint32, trustedBlock int64, trustLevel string, clockDrift uint32) (common.Address, error) {
-	genesis, err := relayerclient.GetGenesis(ctx.CosmosClient(), trustedBlock, trustingPeriod, trustLevel, proofType, clockDrift)
+func (w *Worker) CreateCosmosClient(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, ids ClientIDs, proofType string, trustingPeriod uint32, trustedBlock int64, trustLevel string, clockDrift uint32) (common.Address, error) {
+	genesis, err := relayerclient.GetGenesis(cosmos.CosmosClient(), trustedBlock, trustingPeriod, trustLevel, proofType, clockDrift)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed to get genesis: %w", err)
 	}
@@ -64,7 +74,7 @@ func (w *Worker) CreateCosmosClient(stdCtx context.Context, ctx Context, proofTy
 
 	consensusHash := crypto.Keccak256(consensusStateEncoded)
 	log.Printf("[CreateCosmosClient] consensusHash=%x", consensusHash)
-	return w.TxHandler.CreateCosmosClientContract(stdCtx, ctx, clientStateEncoded, consensusHash, genesis.InitialPinnedValidatorSet)
+	return w.TxHandler.CreateCosmosClientContract(stdCtx, evm, ids, clientStateEncoded, consensusHash, genesis.InitialPinnedValidatorSet)
 }
 
 // ClientUpdateKind discriminates the two split-API entry points the Spectre
@@ -101,15 +111,17 @@ type CosmosClientUpdateBuildResult struct {
 // that want to advance the client without packets attached. handleCosmos uses
 // the split BuildCosmosClientUpdateMsg builder so it can fold updateClient
 // into the same multicall as its packet calls (issue #67 V2).
-func (w *Worker) UpdateCosmosClient(stdCtx context.Context, ctx Context, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*relayerclient.LightBlock, error) {
-	result, err := w.BuildCosmosClientUpdateMsg(ctx, proofType, trustedBlock, trustLevel, forceRotation)
+
+func (w *Worker) UpdateCosmosClient(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, clientID string, fetchTimeout time.Duration, rotationThreshold, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*relayerclient.LightBlock, error) {
+	deps := cosmosClientDeps{cosmos: cosmos, evm: evm, fetchTimeout: fetchTimeout, rotationThreshold: rotationThreshold}
+	result, err := w.buildCosmosClientUpdateMsg(deps, proofType, trustedBlock, trustLevel, forceRotation)
 	if err != nil {
 		return nil, err
 	}
 	if !result.HasMsg {
 		return result.LightBlock, nil
 	}
-	if err := w.TxHandler.SendEthTx(stdCtx, ctx, *result); err != nil {
+	if err := w.TxHandler.SendEthTx(stdCtx, deps.evm, clientID, *result); err != nil {
 		log.Printf("[UpdateCosmosClient] SendEthTx failed: %v", err)
 		return nil, err
 	}
@@ -129,11 +141,16 @@ func (w *Worker) UpdateCosmosClient(stdCtx context.Context, ctx Context, proofTy
 // the current light block so the caller can refresh its cached timestamp/height.
 func (w *Worker) RefreshCosmosClient(
 	stdCtx context.Context,
-	ctx Context,
+	cosmos CosmosEndpoint,
+	evm EVMEndpoint,
+	clientID string,
+	fetchTimeout time.Duration,
+	rotationThreshold string,
 	proofType string,
 	trustLevel string,
 ) (*relayerclient.LightBlock, error) {
-	onChainTrusted, err := FetchOnChainTrustedHeight(ctx)
+	deps := cosmosClientDeps{cosmos: cosmos, evm: evm, fetchTimeout: fetchTimeout, rotationThreshold: rotationThreshold}
+	onChainTrusted, err := FetchOnChainTrustedHeight(deps.evm)
 	if err != nil {
 		return nil, fmt.Errorf("[RefreshCosmosClient] fetch on-chain height: %w", err)
 	}
@@ -141,7 +158,7 @@ func (w *Worker) RefreshCosmosClient(
 	// forceRotation: the refresh routine only fires after RefreshInterval
 	// without updates, so it is the guaranteed rotation cadence — a stale
 	// pinned set is rotated here regardless of how much overlap remains.
-	result, err := w.BuildCosmosClientUpdateMsg(ctx, proofType, onChainTrusted, trustLevel, true)
+	result, err := w.buildCosmosClientUpdateMsg(deps, proofType, onChainTrusted, trustLevel, true)
 	if err != nil {
 		return nil, fmt.Errorf("[RefreshCosmosClient] build update msg: %w", err)
 	}
@@ -150,7 +167,7 @@ func (w *Worker) RefreshCosmosClient(
 		return result.LightBlock, nil
 	}
 
-	if err := w.TxHandler.SendEthTx(stdCtx, ctx, *result); err != nil {
+	if err := w.TxHandler.SendEthTx(stdCtx, deps.evm, clientID, *result); err != nil {
 		return nil, fmt.Errorf("[RefreshCosmosClient] send tx: %w", err)
 	}
 	log.Printf("[RefreshCosmosClient] refresh succeeded (kind=%d)", result.Kind)
@@ -161,7 +178,7 @@ func (w *Worker) RefreshCosmosClient(
 // currently-pinned validator set from the Spectre client on ETH. Used to decide
 // whether an update must rotate the pinned set (updateConsensusState) or can
 // take the cheap application-state path.
-func getOnChainPinnedValidatorsHash(ctx Context) ([32]byte, error) {
+func getOnChainPinnedValidatorsHash(ctx EVMEndpoint) ([32]byte, error) {
 	spectre, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
 	if err != nil {
 		return [32]byte{}, fmt.Errorf("failed to create Spectre client instance: %w", err)
@@ -172,7 +189,7 @@ func getOnChainPinnedValidatorsHash(ctx Context) ([32]byte, error) {
 // FetchOnChainTrustedHeight reads the ICS07 client state on ETH and returns its
 // latest trusted revision height. This is a cheap eth_call relative to the
 // Groth16 proof, so it's always worth doing before committing to proof gen.
-func FetchOnChainTrustedHeight(ctx Context) (int64, error) {
+func FetchOnChainTrustedHeight(ctx EVMEndpoint) (int64, error) {
 	onChainClientState, err := fetchOnChainClientState(ctx)
 	if err != nil {
 		return 0, err
@@ -184,7 +201,7 @@ func FetchOnChainTrustedHeight(ctx Context) (int64, error) {
 	return clientStateRevisionHeightInt64(onChainClientState)
 }
 
-func fetchOnChainClientState(ctx Context) (relayerclient.ClientState, error) {
+func fetchOnChainClientState(ctx EVMEndpoint) (relayerclient.ClientState, error) {
 	ics07, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
 	if err != nil {
 		return relayerclient.ClientState{}, fmt.Errorf("failed to create ICS07 instance: %w", err)
@@ -231,7 +248,7 @@ func (s pinnedCosmosValidatorSet) powerByPubkey() map[[32]byte]int64 {
 	return out
 }
 
-func getPinnedCosmosValidatorSet(ctx Context) (pinnedCosmosValidatorSet, error) {
+func getPinnedCosmosValidatorSet(ctx EVMEndpoint) (pinnedCosmosValidatorSet, error) {
 	ics07, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
 	if err != nil {
 		return pinnedCosmosValidatorSet{}, fmt.Errorf("failed to create ICS07 instance: %w", err)
@@ -288,8 +305,8 @@ func shouldRotatePinnedSet(forceRotation bool, overlapPower, totalPower int64, t
 	return overlap.Cmp(total) <= 0
 }
 
-func ethLatestHeaderTimestampNanos(ctx Context) (*big.Int, error) {
-	timeout := ctx.Config.FetchTimeout
+func ethLatestHeaderTimestampNanos(ctx EVMEndpoint, fetchTimeout time.Duration) (*big.Int, error) {
+	timeout := fetchTimeout
 	if timeout == 0 {
 		timeout = 15 * time.Second
 	}
@@ -374,8 +391,12 @@ func selectSignaturesForPinnedSet(
 // HasMsg=false signals the on-chain client is already at the latest block —
 // no update needed; LightBlock still returned so callers can use it for
 // membership proofs.
-func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*CosmosClientUpdateBuildResult, error) {
-	status, err := ctx.CosmosClient().Status(context.Background())
+func (w *Worker) BuildCosmosClientUpdateMsg(cosmos CosmosEndpoint, evm EVMEndpoint, fetchTimeout time.Duration, rotationThreshold string, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*CosmosClientUpdateBuildResult, error) {
+	return w.buildCosmosClientUpdateMsg(cosmosClientDeps{cosmos: cosmos, evm: evm, fetchTimeout: fetchTimeout, rotationThreshold: rotationThreshold}, proofType, trustedBlock, trustLevel, forceRotation)
+}
+
+func (w *Worker) buildCosmosClientUpdateMsg(ctx cosmosClientDeps, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*CosmosClientUpdateBuildResult, error) {
+	status, err := ctx.cosmos.CosmosClient().Status(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
 	}
@@ -389,7 +410,7 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	// chain state, causing redundant proofs for a range already on-chain
 	// (issue #76 #2). The on-chain height always wins because only it is
 	// guaranteed to identify a stored consensus state.
-	onChainTrusted, err := FetchOnChainTrustedHeight(ctx)
+	onChainTrusted, err := FetchOnChainTrustedHeight(ctx.evm)
 	if err != nil {
 		return nil, err
 	}
@@ -405,7 +426,7 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		if trustedBlock == status.SyncInfo.LatestBlockHeight {
 			log.Printf("[UpdateCosmosClient] client is up to date (trusted=%d, latest=%d), skipping tx",
 				trustedBlock, status.SyncInfo.LatestBlockHeight)
-			lightBlock, err := relayerclient.GetLightBlock(ctx.CosmosClient(), trustedBlock)
+			lightBlock, err := relayerclient.GetLightBlock(ctx.cosmos.CosmosClient(), trustedBlock)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get current light block while up-to-date: %w", err)
 			}
@@ -415,12 +436,12 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	}
 
 	log.Printf("[UpdateCosmosClient] Fetching trustedLightBlock at height %d, latestLightBlock at height %d", trustedBlock, status.SyncInfo.LatestBlockHeight)
-	trustedLightBlock, err := relayerclient.GetLightBlock(ctx.CosmosClient(), trustedBlock)
+	trustedLightBlock, err := relayerclient.GetLightBlock(ctx.cosmos.CosmosClient(), trustedBlock)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get trusted light block: %w", err)
 	}
 
-	latestLightBlock, err := relayerclient.GetLightBlock(ctx.CosmosClient(), status.SyncInfo.LatestBlockHeight)
+	latestLightBlock, err := relayerclient.GetLightBlock(ctx.cosmos.CosmosClient(), status.SyncInfo.LatestBlockHeight)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get latest light block: %w", err)
 	}
@@ -446,7 +467,7 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		return nil, fmt.Errorf("failed to convert light block into header: %w", err)
 	}
 
-	pinnedValidatorSet, err := getPinnedCosmosValidatorSet(ctx)
+	pinnedValidatorSet, err := getPinnedCosmosValidatorSet(ctx.evm)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query pinned validator set: %w", err)
 	}
@@ -500,7 +521,7 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 		active[i] = s.Active
 	}
 
-	updateTime, err := ethLatestHeaderTimestampNanos(ctx)
+	updateTime, err := ethLatestHeaderTimestampNanos(ctx.evm, ctx.fetchTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ethereum timestamp for update freshness: %w", err)
 	}
@@ -535,13 +556,13 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	// (full valset calldata + buildCache + SSTORE2 write + snapshot push), so
 	// it is gated by shouldRotatePinnedSet rather than taken on every hash
 	// difference. Otherwise the cheap application-state path suffices.
-	pinnedHash, err := getOnChainPinnedValidatorsHash(ctx)
+	pinnedHash, err := getOnChainPinnedValidatorsHash(ctx.evm)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query on-chain pinned validators hash: %w", err)
 	}
 	targetNextValHash := bytesToBytes32(latestLightBlock.SignedHeader.NextValidatorsHash)
 	if targetNextValHash != pinnedHash {
-		rotationThreshold, err := ParseRotationThreshold(ctx.Config.RotationThreshold)
+		rotationThreshold, err := ParseRotationThreshold(ctx.rotationThreshold)
 		if err != nil {
 			return nil, fmt.Errorf("invalid rotation threshold: %w", err)
 		}
@@ -565,8 +586,8 @@ func (w *Worker) BuildCosmosClientUpdateMsg(ctx Context, proofType string, trust
 	return result, nil
 }
 
-func (w *Worker) CreateEthClient(stdCtx context.Context, ctx Context, checksum string) (string, error) {
-	beaconAPIURL := ctx.BeaconAPIURL()
+func (w *Worker) CreateEthClient(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, counterpartyClientID string, checksum string) (string, error) {
+	beaconAPIURL := evm.BeaconAPIURL
 	if beaconAPIURL == "" {
 		return "", fmt.Errorf("beacon API URL is not configured")
 	}
@@ -629,7 +650,7 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, ctx Context, checksum s
 	}
 
 	log.Printf("[CreateEthClient] querying ethereum chain id")
-	chainId, err := ctx.EthClient().ChainID(context.Background())
+	chainId, err := evm.EthClient().ChainID(context.Background())
 	if err != nil {
 		return "", fmt.Errorf("failed to get eth chain id: %w", err)
 	}
@@ -678,7 +699,7 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, ctx Context, checksum s
 		GenesisTime:                  genesisTime,
 		GenesisValidatorsRoot:        genesis.GenesisValidatorsRoot,
 		IbcCommitmentSlot:            ICS26_IBC_STORAGE_SLOT,
-		IbcContractAddress:           ctx.RouterContract().String(),
+		IbcContractAddress:           evm.RouterContract().String(),
 		IsFrozen:                     false,
 		LatestExecutionBlockNumber:   blockNumber,
 		LatestSlot:                   slot,
@@ -720,7 +741,7 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, ctx Context, checksum s
 	latestPeriod := clientState.ComputeSyncCommitteePeriodAtSlot(clientState.LatestSlot)
 	log.Printf("[CreateEthClient] fetching light client updates for latestPeriod=%d", latestPeriod)
 	bctx, bcancel = context.WithTimeout(context.Background(), 15*time.Second)
-	lightClientUpdates, err := relayerclient.GetLightClientUpdates(bctx, ctx.BeaconAPIURL(), latestPeriod, 1)
+	lightClientUpdates, err := relayerclient.GetLightClientUpdates(bctx, evm.BeaconAPIURL, latestPeriod, 1)
 	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to get light client updates: %w", err)
@@ -754,11 +775,10 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, ctx Context, checksum s
 
 	// The ETH beacon client's counterparty is the ETH-side Cosmos router client id
 	// (a config value); it must be present.
-	counterpartyClientID := ctx.CosmosRouterClientID()
 	if counterpartyClientID == "" {
 		return "", fmt.Errorf("[CreateEthClient] cosmos router client id is not configured")
 	}
-	return w.TxHandler.CreateWasmClient(stdCtx, ctx, &wasmClientState, &wasmConsensusState, counterpartyClientID)
+	return w.TxHandler.CreateWasmClient(stdCtx, cosmos, &wasmClientState, &wasmConsensusState, counterpartyClientID)
 }
 
 type EthClientUpdateResult struct {
@@ -768,18 +788,17 @@ type EthClientUpdateResult struct {
 	SigSlot        uint64
 }
 
-func (w *Worker) BuildEthClientUpdateHeaders(ctx Context) (*EthClientUpdateResult, error) {
-	beaconAPIURL := ctx.BeaconAPIURL()
+func (w *Worker) BuildEthClientUpdateHeaders(cosmos CosmosEndpoint, evm EVMEndpoint, ethClientID string) (*EthClientUpdateResult, error) {
+	beaconAPIURL := evm.BeaconAPIURL
 	if beaconAPIURL == "" {
 		return nil, fmt.Errorf("beacon API URL is not configured")
 	}
 
-	ethClientID := ctx.EthClientID()
 	if ethClientID == "" {
 		return nil, fmt.Errorf("ethereum client ID is not configured")
 	}
 
-	ethClientState, err := relayerclient.GetEthereumClientState(ctx.CosmosClient(), ethClientID)
+	ethClientState, err := relayerclient.GetEthereumClientState(cosmos.CosmosClient(), ethClientID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ethereum client state: %w", err)
 	}
@@ -822,7 +841,7 @@ func (w *Worker) BuildEthClientUpdateHeaders(ctx Context) (*EthClientUpdateResul
 
 	log.Printf("[UpdateEthClient] trustedPeriod=%d targetPeriod=%d", trustedPeriod, targetPeriod)
 
-	headers, err := w.buildEthClientUpdateHeadersWithPeriodCrossing(ctx, beaconAPIURL, ethClientState, trustedSlot, trustedPeriod, targetPeriod, finalityUpdate, finalizedSlot)
+	headers, err := w.buildEthClientUpdateHeadersWithPeriodCrossing(beaconAPIURL, ethClientState, trustedSlot, trustedPeriod, targetPeriod, finalityUpdate, finalizedSlot)
 	if err != nil {
 		return nil, err
 	}
@@ -845,13 +864,13 @@ func (w *Worker) BuildEthClientUpdateHeaders(ctx Context) (*EthClientUpdateResul
 // signature slot (so the wasm beacon update verifies), or until stdCtx is
 // cancelled. stdCtx makes the up-to-60 × 5s poll abort promptly on shutdown
 // instead of stranding a goroutine for minutes during teardown.
-func (w *Worker) WaitForCosmosCatchUp(stdCtx context.Context, ctx Context, ethClientState *relayerclient.EthereumClientState, sigSlot uint64) {
+func (w *Worker) WaitForCosmosCatchUp(stdCtx context.Context, cosmos CosmosEndpoint, ethClientState *relayerclient.EthereumClientState, sigSlot uint64) {
 	requiredSlot := sigSlot + cosmosCatchUpSafetySlots
 	for range 60 {
 		if stdCtx.Err() != nil {
 			return
 		}
-		status, err := ctx.CosmosClient().Status(stdCtx)
+		status, err := cosmos.CosmosClient().Status(stdCtx)
 		if err != nil {
 			break
 		}
@@ -876,7 +895,7 @@ func cosmosCurrentSlotReady(currentSlot, sigSlot uint64) bool {
 	return currentSlot >= sigSlot+cosmosCatchUpSafetySlots
 }
 
-func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(ctx Context, beaconAPIURL string, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) ([][]byte, error) {
+func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(beaconAPIURL string, ethClientState *relayerclient.EthereumClientState, trustedSlot, trustedPeriod, targetPeriod uint64, finalityUpdate *relayerclient.LightClientFinalityUpdate, finalizedSlot uint64) ([][]byte, error) {
 	count := targetPeriod - trustedPeriod + 1
 	bctx, bcancel := context.WithTimeout(context.Background(), 15*time.Second)
 	lightClientUpdates, err := relayerclient.GetLightClientUpdates(bctx, beaconAPIURL, trustedPeriod, count)

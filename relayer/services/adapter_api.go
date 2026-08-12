@@ -20,23 +20,23 @@ import (
 // receipt and relays their MsgTimeout back to Cosmos. Safe to call periodically;
 // it purges/prunes the pending tracker and recovers from panics internally. stdCtx
 // aborts the in-scan Cosmos catch-up wait promptly on shutdown.
-func (s *Services) ScanCosmosTimeouts(stdCtx context.Context, ctx Context) {
-	s.scanForCosmosTimeouts(stdCtx, ctx)
+func (s *Services) ScanCosmosTimeouts(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, ethClientID string) {
+	s.scanForCosmosTimeouts(stdCtx, cosmos, evm, ethClientID)
 }
 
 // ScanEthTimeouts detects ETH-origin packets that expired on Cosmos without a
 // receipt and relays their MsgTimeout back to ETH. Same periodic-call contract as
 // ScanCosmosTimeouts.
-func (s *Services) ScanEthTimeouts(stdCtx context.Context, ctx Context) {
-	s.scanForEthTimeouts(stdCtx, ctx)
+func (s *Services) ScanEthTimeouts(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, routerClientID string) {
+	s.scanForEthTimeouts(stdCtx, evmTimeoutDeps{cosmos: cosmos, evm: evm, routerClientID: routerClientID})
 }
 
 // ScanL2Timeouts detects L2-origin packets that expired on Cosmos without a
 // receipt and relays their timeoutPacket back to the L2 ICS26Router. It uses the
 // same Cosmos non-membership proof path as ScanEthTimeouts, but drains the L2
 // pending tracker so it never interferes with the legacy ETH source tracker.
-func (s *Services) ScanL2Timeouts(stdCtx context.Context, ctx Context) {
-	s.scanForL2Timeouts(stdCtx, ctx)
+func (s *Services) ScanL2Timeouts(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, routerClientID string) {
+	s.scanForL2Timeouts(stdCtx, evmTimeoutDeps{cosmos: cosmos, evm: evm, routerClientID: routerClientID})
 }
 
 // TrackCosmosPending records a Cosmos-origin packet just recv-relayed to ETH so
@@ -87,8 +87,8 @@ func (s *Services) CosmosConfig() Config { return s.cosmosConfig }
 // call keeps the pinned set fresh independent of packet flow. Side-effect-free on
 // the adapter's cursors (the expiry is driven by ClientExpiresAt, not a seeded
 // timestamp), so it only submits the rotation tx.
-func (s *Services) RotatePinnedSet(stdCtx context.Context, ctx Context) error {
-	_, err := s.worker.RefreshCosmosClient(stdCtx, ctx, s.cosmosConfig.ProofType, s.cosmosConfig.TrustLevel)
+func (s *Services) RotatePinnedSet(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, routerClientID string) error {
+	_, err := s.worker.RefreshCosmosClient(stdCtx, cosmos, evm, routerClientID, s.cosmosConfig.FetchTimeout, s.cosmosConfig.RotationThreshold, s.cosmosConfig.ProofType, s.cosmosConfig.TrustLevel)
 	return err
 }
 
@@ -96,8 +96,8 @@ func (s *Services) RotatePinnedSet(stdCtx context.Context, ctx Context) error {
 // trusting period exactly as the legacy routine did (min of the configured
 // refresh interval and trustingPeriod minus a safety margin), so the pinned set
 // is refreshed well within the window where it stays above quorum.
-func (s *Services) PinnedSetRotationInterval(ctx Context) (time.Duration, error) {
-	clientState, err := fetchOnChainClientState(ctx)
+func (s *Services) PinnedSetRotationInterval(evm EVMEndpoint) (time.Duration, error) {
+	clientState, err := fetchOnChainClientState(evm)
 	if err != nil {
 		return 0, err
 	}
@@ -112,16 +112,16 @@ func (s *Services) PinnedSetRotationInterval(ctx Context) (time.Duration, error)
 // mirroring the legacy seedCosmosClientFreshness behavior — so a relayer restart
 // near the rotation deadline does not wait a full fresh interval before the first
 // rotation, which could let the pinned set decay below quorum.
-func (s *Services) PinnedSetRotationDueIn(ctx Context) (time.Duration, error) {
-	interval, err := s.PinnedSetRotationInterval(ctx)
+func (s *Services) PinnedSetRotationDueIn(cosmos CosmosEndpoint, evm EVMEndpoint) (time.Duration, error) {
+	interval, err := s.PinnedSetRotationInterval(evm)
 	if err != nil {
 		return 0, err
 	}
-	trustedHeight, err := FetchOnChainTrustedHeight(ctx)
+	trustedHeight, err := FetchOnChainTrustedHeight(evm)
 	if err != nil {
 		return 0, err
 	}
-	lightBlock, err := client.GetLightBlock(ctx.CosmosClient(), trustedHeight)
+	lightBlock, err := client.GetLightBlock(cosmos.CosmosClient(), trustedHeight)
 	if err != nil {
 		return 0, err
 	}

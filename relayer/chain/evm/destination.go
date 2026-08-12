@@ -20,16 +20,18 @@ import (
 
 // Destination is the EVM implementation of chain.Destination for a chain that
 // hosts a SpectreClient (ZK Tendermint) light client of Cosmos. It holds the
-// shared worker + context because the tx handler and on-chain reads need them;
-// it is constructed by the wiring, not the cfg-only registry.
+// shared worker plus the EVM/Cosmos endpoints needed by transaction submission
+// and expiry reads; it is constructed by the wiring, not the cfg-only registry.
 type Destination struct {
-	worker *services.Worker
-	svcCtx services.Context
+	worker   *services.Worker
+	cosmos   services.CosmosEndpoint
+	evm      services.EVMEndpoint
+	clientID string
 }
 
-// NewDestination wires the EVM destination to the shared worker + context.
-func NewDestination(worker *services.Worker, svcCtx services.Context) *Destination {
-	return &Destination{worker: worker, svcCtx: svcCtx}
+// NewDestination wires the EVM destination to the worker and its EVM endpoint.
+func NewDestination(worker *services.Worker, cosmos services.CosmosEndpoint, evm services.EVMEndpoint, clientID string) *Destination {
+	return &Destination{worker: worker, cosmos: cosmos, evm: evm, clientID: clientID}
 }
 
 func (d *Destination) Chain() chain.ChainType { return chain.Ethereum }
@@ -38,8 +40,8 @@ func (d *Destination) Chain() chain.ChainType { return chain.Ethereum }
 // submitter. Only that deployment shape can express the client update as an
 // inner router call in the same multicall as the packets.
 func (d *Destination) SupportsUpdatePacketFolding() bool {
-	roleManager := d.svcCtx.RoleManagerAddress()
-	router := d.svcCtx.RouterContract()
+	roleManager := d.evm.RoleManagerAddress()
+	router := d.evm.RouterContract()
 	if roleManager == nil || router == nil {
 		return false
 	}
@@ -60,7 +62,7 @@ func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.C
 	if err != nil {
 		return err
 	}
-	if err := d.worker.TxHandler.SendEthTx(ctx, d.svcCtx, result); err != nil {
+	if err := d.worker.TxHandler.SendEthTx(ctx, d.evm, d.clientID, result); err != nil {
 		return fmt.Errorf("evm: submit client update (height %d): %w", update.Height, err)
 	}
 	return nil
@@ -166,7 +168,7 @@ func (d *Destination) sendPacketBatch(ctx context.Context, msgs []any) error {
 	// it as chain.Permanent so the module DROPS the batch instead of re-queueing it
 	// forever (each retry re-runs the client update and drains gas). Everything else
 	// (nonce, RPC, broadcast) stays transient and is re-queued.
-	if err := d.worker.TxHandler.SendEthTxBatch(ctx, d.svcCtx, msgs); err != nil {
+	if err := d.worker.TxHandler.SendEthTxBatch(ctx, d.evm, d.clientID, msgs); err != nil {
 		if errors.Is(err, services.ErrPermanentRelayFailure) {
 			return chain.Permanent(err)
 		}
@@ -183,12 +185,12 @@ func (d *Destination) HasPacketReceipt(_ context.Context, packet []byte) (bool, 
 	if err := pkt.Unmarshal(packet); err != nil {
 		return false, fmt.Errorf("evm: decode packet: %w", err)
 	}
-	return services.HasEthPacketReceipt(d.svcCtx, pkt)
+	return services.HasEthPacketReceipt(d.evm, pkt)
 }
 
 // ClientExpiresAt returns when the SpectreClient-of-Cosmos on this chain expires
 // (trusted consensus timestamp + trusting period), so the RelayModule refresh
 // routine can advance the client before it lapses.
 func (d *Destination) ClientExpiresAt(_ context.Context, _ string) (time.Time, error) {
-	return services.CosmosClientExpiry(d.svcCtx)
+	return services.CosmosClientExpiry(d.cosmos, d.evm)
 }

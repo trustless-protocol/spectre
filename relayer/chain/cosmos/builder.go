@@ -3,6 +3,7 @@ package cosmos
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"relayer/chain"
 	"relayer/chain/codec"
@@ -15,24 +16,26 @@ import (
 // (extract signatures -> select pinned quorum -> GenerateProof -> assemble) with
 // zero changes to the prover I/O.
 //
-// It holds a *services.Worker and services.Context because the legacy builder
-// reads the pinned validator set + trusted height from the on-chain SpectreClient
-// via the Context. It is therefore constructed by the wiring (which owns those),
+// It holds a *services.Worker and the endpoints/configuration needed by the legacy
+// builder to read the pinned validator set and trusted height from the on-chain
+// SpectreClient. It is therefore constructed by the wiring (which owns those),
 // not by the cfg-only registry — hence NewGroth16Builder, no RegisterClientUpdateBuilder.
 //
 // Note: BuildCosmosClientUpdateMsg fetches its own light block, so Build
-// ignores the header argument for the Cosmos path. Splitting fetch from build to
-// honor the header is deferred to slice 4 (Context dissolution).
+// ignores the header argument for the Cosmos path.
 type Groth16Builder struct {
-	worker     *services.Worker
-	svcCtx     services.Context
-	proofType  string
-	trustLevel string
+	worker            *services.Worker
+	cosmos            services.CosmosEndpoint
+	evm               services.EVMEndpoint
+	fetchTimeout      time.Duration
+	rotationThreshold string
+	proofType         string
+	trustLevel        string
 }
 
-// NewGroth16Builder wires the builder to the shared worker + context.
-func NewGroth16Builder(worker *services.Worker, svcCtx services.Context, proofType, trustLevel string) *Groth16Builder {
-	return &Groth16Builder{worker: worker, svcCtx: svcCtx, proofType: proofType, trustLevel: trustLevel}
+// NewGroth16Builder wires the builder to the worker and the endpoints it reads.
+func NewGroth16Builder(worker *services.Worker, cosmos services.CosmosEndpoint, evm services.EVMEndpoint, fetchTimeout time.Duration, rotationThreshold, proofType, trustLevel string) *Groth16Builder {
+	return &Groth16Builder{worker: worker, cosmos: cosmos, evm: evm, fetchTimeout: fetchTimeout, rotationThreshold: rotationThreshold, proofType: proofType, trustLevel: trustLevel}
 }
 
 func (b *Groth16Builder) Name() string { return "groth16" }
@@ -42,14 +45,14 @@ func (b *Groth16Builder) Name() string { return "groth16" }
 // on-chain trusted Cosmos height with a nil payload, so the module learns the
 // client's real height (seeding the provability guard) without submitting a tx.
 func (b *Groth16Builder) Build(_ context.Context, _ []byte) (chain.ClientUpdate, error) {
-	trustedBlock, err := services.FetchOnChainTrustedHeight(b.svcCtx)
+	trustedBlock, err := services.FetchOnChainTrustedHeight(b.evm)
 	if err != nil {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: on-chain trusted height: %w", err)
 	}
 	if trustedBlock < 0 {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: negative trusted height %d", trustedBlock)
 	}
-	result, err := b.worker.BuildCosmosClientUpdateMsg(b.svcCtx, b.proofType, trustedBlock, b.trustLevel, false)
+	result, err := b.worker.BuildCosmosClientUpdateMsg(b.cosmos, b.evm, b.fetchTimeout, b.rotationThreshold, b.proofType, trustedBlock, b.trustLevel, false)
 	if err != nil {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: build cosmos update: %w", err)
 	}

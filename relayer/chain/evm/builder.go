@@ -14,17 +14,18 @@ import (
 // NO relayer-side proving or re-execution — the wasm client verifies BLS +
 // Merkle itself. It exposes the JSON headers returned by services.BuildEthClientUpdateHeaders.
 //
-// Holds *services.Worker + services.Context (the legacy builder reads the beacon
-// API + the on-chain 08-wasm client state via the context), so it is constructed
-// by the wiring, not the cfg-only registry.
+// Holds *services.Worker plus the beacon endpoint and on-chain client identifiers
+// it reads, so it is constructed by the wiring, not the cfg-only registry.
 type BeaconBuilder struct {
-	worker *services.Worker
-	svcCtx services.Context
+	worker   *services.Worker
+	cosmos   services.CosmosEndpoint
+	evm      services.EVMEndpoint
+	clientID string
 }
 
-// NewBeaconBuilder wires the builder to the shared worker + context.
-func NewBeaconBuilder(worker *services.Worker, svcCtx services.Context) *BeaconBuilder {
-	return &BeaconBuilder{worker: worker, svcCtx: svcCtx}
+// NewBeaconBuilder wires the builder to the worker and the endpoints it reads.
+func NewBeaconBuilder(worker *services.Worker, cosmos services.CosmosEndpoint, evm services.EVMEndpoint, clientID string) *BeaconBuilder {
+	return &BeaconBuilder{worker: worker, cosmos: cosmos, evm: evm, clientID: clientID}
 }
 
 func (b *BeaconBuilder) Name() string { return "beacon" }
@@ -43,7 +44,7 @@ func (b *BeaconBuilder) Name() string { return "beacon" }
 // guard) without submitting a tx. BuildEthClientUpdateHeaders returns the current
 // EthClientState even on the no-op path, so this is always available.
 func (b *BeaconBuilder) Build(_ context.Context, _ []byte) (chain.ClientUpdate, error) {
-	result, err := b.worker.BuildEthClientUpdateHeaders(b.svcCtx)
+	result, err := b.worker.BuildEthClientUpdateHeaders(b.cosmos, b.evm, b.clientID)
 	if err != nil {
 		return chain.ClientUpdate{}, fmt.Errorf("beacon: build eth client update: %w", err)
 	}

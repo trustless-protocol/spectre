@@ -2,200 +2,70 @@ package services
 
 import (
 	"log"
-	"sync"
-	"time"
 
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
-type Timestamp struct {
-	mtx                sync.Mutex
-	LatestUpdateTime   time.Time
-	LatestUpdateHeight uint64
+// CosmosEndpoint is the transport to a Cosmos chain. It deliberately carries
+// no counterparty state or transaction configuration.
+type CosmosEndpoint struct{ Client *rpchttp.HTTP }
+
+// EVMContracts contains the contracts used by the EVM side of a relay path.
+// Zero addresses retain the former "not configured" behaviour; consumers that
+// require an address validate it at their boundary.
+type EVMContracts struct {
+	Router, SignatureVerifier, Membership, Misbehaviour, UpdateClient, RoleManager, SpectreClient common.Address
 }
 
-// Snapshot returns the fields under lock. Use this for every read now that
-// handleCosmos and handleEth run on separate goroutines (issue #76 #4) and the
-// routine / timeout-scanner goroutines also touch these timestamps.
-func (t *Timestamp) Snapshot() (time.Time, uint64) {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
-	return t.LatestUpdateTime, t.LatestUpdateHeight
+// EVMEndpoint is the transport and contract set for one EVM chain.
+type EVMEndpoint struct {
+	Client       *ethclient.Client
+	WSURL        string
+	BeaconAPIURL string
+	Contracts    EVMContracts
 }
 
-// Set updates both fields under lock.
-func (t *Timestamp) Set(updateTime time.Time, height uint64) {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
-	t.LatestUpdateTime = updateTime
-	t.LatestUpdateHeight = height
+// ClientIDs name the two counterparty clients without tying either identifier
+// to a shared process-wide context.
+type ClientIDs struct {
+	CosmosOnEVM string
+	EVMOnCosmos string
 }
 
-// SetTime updates only the timestamp under lock and leaves the existing height
-// hint unchanged.
-func (t *Timestamp) SetTime(updateTime time.Time) {
-	t.mtx.Lock()
-	defer t.mtx.Unlock()
-	t.LatestUpdateTime = updateTime
+func (e CosmosEndpoint) CosmosClient() *rpchttp.HTTP { return e.Client }
+
+func (e EVMEndpoint) EthClient() *ethclient.Client { return e.Client }
+func (e EVMEndpoint) EthWsURL() string             { return e.WSURL }
+func (e EVMEndpoint) SignatureVerifierContract() *common.Address {
+	return &e.Contracts.SignatureVerifier
+}
+func (e EVMEndpoint) MembershipContract() *common.Address {
+	return &e.Contracts.Membership
+}
+func (e EVMEndpoint) MisbehaviourContract() *common.Address {
+	return &e.Contracts.Misbehaviour
+}
+func (e EVMEndpoint) UpdateClientContract() *common.Address {
+	return &e.Contracts.UpdateClient
+}
+func (e EVMEndpoint) RoleManagerAddress() *common.Address {
+	return &e.Contracts.RoleManager
+}
+func (e EVMEndpoint) RouterContract() *common.Address { return &e.Contracts.Router }
+func (e EVMEndpoint) SpectreClientContract() *common.Address {
+	return &e.Contracts.SpectreClient
 }
 
-type Context struct {
-	Logger *log.Logger
+// RelayDeps contains the complete wiring assembled by the command layer for a
+// relay process. It is intentionally a composition-root value: adapters,
+// subscribers, workers, and transaction handlers receive only the endpoint,
+// identifier, and configuration values they actually use.
+type RelayDeps struct {
+	Cosmos CosmosEndpoint
+	EVM    EVMEndpoint
+	IDs    ClientIDs
 	Config Config
-
-	// latestEthTimestamp seeds the trusted ETH height the ETH-timeout scanner uses
-	// when it advances the Cosmos client before relaying a timeout
-	// (updateCosmosClientForEth). It is still live; the Cosmos-side counterpart was
-	// write-only after the cutover and has been removed.
-	latestEthTimestamp *Timestamp
-
-	cosmosClient *rpchttp.HTTP
-	ethClient    *ethclient.Client
-	ethWsClient  *ethclient.Client
-	ethWsURL     string
-	beaconAPIURL string
-
-	// Ethereum light client configuration
-	ethClientID          string
-	cosmosRouterClientID string
-	signatureVerifier    *common.Address
-	membership           *common.Address
-	misbehaviour         *common.Address
-	updateClient         *common.Address
-	roleManager          *common.Address
-	ics26Router          *common.Address
-	spectreClient        *common.Address
-}
-
-func NewCtx(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client) Context {
-	return Context{
-		Logger:       log.Default(),
-		cosmosClient: cosmosClient,
-		ethClient:    ethClient,
-		beaconAPIURL: "",
-		ethClientID:  "",
-		latestEthTimestamp: &Timestamp{
-			LatestUpdateTime:   time.Now(),
-			LatestUpdateHeight: 0,
-		},
-	}
-}
-
-func NewCtxWithBeacon(cosmosClient *rpchttp.HTTP, ethClient *ethclient.Client, ethWsClient *ethclient.Client, ethWsURL string, beaconAPIURL string, ethClientID string) Context {
-	return Context{
-		Logger:       log.Default(),
-		cosmosClient: cosmosClient,
-		ethClient:    ethClient,
-		ethWsClient:  ethWsClient,
-		ethWsURL:     ethWsURL,
-		beaconAPIURL: beaconAPIURL,
-		ethClientID:  ethClientID,
-		latestEthTimestamp: &Timestamp{
-			LatestUpdateTime:   time.Now(),
-			LatestUpdateHeight: 0,
-		},
-	}
-}
-
-func (c *Context) EthClient() *ethclient.Client {
-	return c.ethClient
-}
-
-func (c *Context) EthWsClient() *ethclient.Client {
-	return c.ethWsClient
-}
-
-func (c *Context) EthWsURL() string {
-	return c.ethWsURL
-}
-
-func (c *Context) CosmosClient() *rpchttp.HTTP {
-	return c.cosmosClient
-}
-
-func (c *Context) BeaconAPIURL() string {
-	return c.beaconAPIURL
-}
-
-func (c *Context) EthClientID() string {
-	return c.ethClientID
-}
-
-func (c *Context) SetEthClientID(id string) {
-	c.ethClientID = id
-}
-
-func (c *Context) CosmosRouterClientID() string {
-	return c.cosmosRouterClientID
-}
-
-func (c *Context) SetCosmosRouterClientID(id string) {
-	c.cosmosRouterClientID = id
-}
-
-func (c *Context) SetAddresses(ics26Router, signatureVerifier, membership, misbehaviour, updateClient, roleManager string) {
-	ics26RouterAddr := common.HexToAddress(ics26Router)
-	signatureVerifierAddr := common.HexToAddress(signatureVerifier)
-	membershipAddr := common.HexToAddress(membership)
-	misbehaviourAddr := common.HexToAddress(misbehaviour)
-	updateClientAddr := common.HexToAddress(updateClient)
-	roleManagerAddr := common.HexToAddress(roleManager)
-
-	c.ics26Router = &ics26RouterAddr
-	c.signatureVerifier = &signatureVerifierAddr
-	c.membership = &membershipAddr
-	c.misbehaviour = &misbehaviourAddr
-	c.updateClient = &updateClientAddr
-	c.roleManager = &roleManagerAddr
-}
-
-func (c *Context) SetClient(client common.Address) {
-	c.spectreClient = &client
-}
-func (c *Context) SignatureVerifierContract() *common.Address {
-	return c.signatureVerifier
-}
-
-func (c *Context) MembershipContract() *common.Address {
-	return c.membership
-}
-
-func (c *Context) MisbehaviourContract() *common.Address {
-	return c.misbehaviour
-}
-
-func (c *Context) UpdateClientContract() *common.Address {
-	return c.updateClient
-}
-
-func (c *Context) RoleManagerAddress() *common.Address {
-	return c.roleManager
-}
-
-func (c *Context) RouterContract() *common.Address {
-	return c.ics26Router
-}
-
-func (c *Context) SpectreClientContract() *common.Address {
-	return c.spectreClient
-}
-
-func (c *Context) StopClient() {
-	logger := c.Logger
-	if logger == nil {
-		logger = log.Default()
-	}
-	if c.cosmosClient != nil {
-		if err := c.cosmosClient.Stop(); err != nil {
-			logger.Printf("failed to terminate cosmos client: %v", err)
-		}
-	}
-	if c.ethClient != nil {
-		c.ethClient.Close()
-	}
-	if c.ethWsClient != nil {
-		c.ethWsClient.Close()
-	}
+	Logger *log.Logger
 }

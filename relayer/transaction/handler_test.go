@@ -41,7 +41,7 @@ func (e testDataError) ErrorData() interface{} {
 
 // These tests cover the calldata packing layer that SendEthTxBatch relies on.
 // We do not exercise the RPC submission path here — that requires a full
-// services.Context + ethclient mock and is validated end-to-end via the
+// endpoint dependency + ethclient mock and is validated end-to-end via the
 // benchmark run described in /Users/ducnt/.claude/plans/...
 //
 // Selector reference (from `cast sig` against the ICS26Router ABI):
@@ -563,7 +563,7 @@ func TestExecuteWithRetryAndResubmission_NonceRetry(t *testing.T) {
 		t.Fatalf("failed to dial: %v", err)
 	}
 
-	ctx := services.NewCtx(nil, client)
+	ctx := services.EVMEndpoint{Client: client}
 
 	privKey, err := crypto.GenerateKey()
 	if err != nil {
@@ -630,7 +630,7 @@ func TestExecuteWithRetryAndResubmission_AlreadyKnown(t *testing.T) {
 		t.Fatalf("failed to dial: %v", err)
 	}
 
-	ctx := services.NewCtx(nil, client)
+	ctx := services.EVMEndpoint{Client: client}
 
 	privKey, err := crypto.GenerateKey()
 	if err != nil {
@@ -691,7 +691,7 @@ func TestExecuteWithRetryAndResubmission_BroadcastContextDeadline(t *testing.T) 
 		t.Fatalf("failed to dial: %v", err)
 	}
 
-	ctx := services.NewCtx(nil, client)
+	ctx := services.EVMEndpoint{Client: client}
 
 	privKey, err := crypto.GenerateKey()
 	if err != nil {
@@ -754,7 +754,7 @@ func TestBumpGasAndResubmit(t *testing.T) {
 		t.Fatalf("failed to dial: %v", err)
 	}
 
-	ctx := services.NewCtx(nil, client)
+	ctx := services.EVMEndpoint{Client: client}
 
 	h := &Handler{}
 
@@ -901,7 +901,7 @@ func TestExecuteWithRetryAndResubmission_WaitErrorNonceInvalidation(t *testing.T
 		t.Fatalf("failed to dial: %v", err)
 	}
 
-	ctx := services.NewCtx(nil, client)
+	ctx := services.EVMEndpoint{Client: client}
 
 	privKey, err := crypto.GenerateKey()
 	if err != nil {
@@ -950,7 +950,7 @@ func TestExecuteWithRetryAndResubmission_GasFloorsOnStuckNonce(t *testing.T) {
 		t.Fatalf("failed to dial: %v", err)
 	}
 
-	ctx := services.NewCtx(nil, client)
+	ctx := services.EVMEndpoint{Client: client}
 
 	privKey, err := crypto.GenerateKey()
 	if err != nil {
@@ -1063,7 +1063,7 @@ func TestExecuteWithRetryAndResubmission_SenderFnReturnsNil(t *testing.T) {
 		t.Fatalf("failed to dial: %v", err)
 	}
 
-	ctx := services.NewCtx(nil, client)
+	ctx := services.EVMEndpoint{Client: client}
 
 	privKey, err := crypto.GenerateKey()
 	if err != nil {
@@ -1110,7 +1110,7 @@ func TestExecuteWithRetryAndResubmission_Concurrency(t *testing.T) {
 		t.Fatalf("failed to dial: %v", err)
 	}
 
-	ctx := services.NewCtx(nil, client)
+	ctx := services.EVMEndpoint{Client: client}
 
 	privKey, err := crypto.GenerateKey()
 	if err != nil {
@@ -1198,7 +1198,7 @@ func TestExecuteWithRetryAndResubmission_RevertPermanentFailure(t *testing.T) {
 		t.Fatalf("failed to dial: %v", err)
 	}
 
-	ctx := services.NewCtx(nil, client)
+	ctx := services.EVMEndpoint{Client: client}
 
 	privKey, err := crypto.GenerateKey()
 	if err != nil {
@@ -1298,7 +1298,7 @@ func TestExecuteWithRetryAndResubmission_TransientWaitFailure(t *testing.T) {
 		t.Fatalf("failed to dial: %v", err)
 	}
 
-	ctx := services.NewCtx(nil, client)
+	ctx := services.EVMEndpoint{Client: client}
 
 	privKey, err := crypto.GenerateKey()
 	if err != nil {
@@ -1373,7 +1373,7 @@ func TestExecuteWithRetryAndResubmission_SuggestGasPriceErrorNonceInvalidation(t
 		t.Fatalf("failed to dial: %v", err)
 	}
 
-	ctx := services.NewCtx(nil, client)
+	ctx := services.EVMEndpoint{Client: client}
 
 	privKey, err := crypto.GenerateKey()
 	if err != nil {
@@ -1425,7 +1425,7 @@ func TestWaitForTxResult_CancelledCtxAbortsPromptly(t *testing.T) {
 
 	h := &Handler{}
 	start := time.Now()
-	_, err := h.waitForTxResult(ctx, services.Context{}, []byte{0x01}, cosmosInclusionTimeout)
+	_, err := h.waitForTxResult(ctx, services.CosmosEndpoint{}, []byte{0x01}, cosmosInclusionTimeout)
 	if err == nil {
 		t.Fatal("expected a cancellation error")
 	}

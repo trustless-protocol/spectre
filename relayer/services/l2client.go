@@ -140,10 +140,10 @@ func BuildL2WasmClientState(p L2ClientParams) (ibcexported.ClientState, ibcexpor
 // When that id is not yet configured it is empty, and counterparty registration is
 // deferred to a later step (registering the ETH source's router id here would write a
 // wrong, durable mapping).
-func (w *Worker) CreateL2Client(stdCtx context.Context, ctx Context, p L2ClientParams) (string, error) {
+func (w *Worker) CreateL2Client(stdCtx context.Context, endpoint CosmosEndpoint, p L2ClientParams) (string, error) {
 	clientState, consensusState, err := BuildL2WasmClientState(p)
 	if err != nil {
 		return "", err
 	}
-	return w.TxHandler.CreateWasmClient(stdCtx, ctx, clientState, consensusState, p.CounterpartyClientID)
+	return w.TxHandler.CreateWasmClient(stdCtx, endpoint, clientState, consensusState, p.CounterpartyClientID)
 }

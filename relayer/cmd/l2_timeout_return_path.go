@@ -10,24 +10,24 @@ import (
 )
 
 type l2TimeoutReturnPath struct {
-	svc *services.Services
-	ctx services.Context
+	svc  *services.Services
+	deps services.RelayDeps
 }
 
 func (p l2TimeoutReturnPath) validate() error {
 	if p.svc == nil {
 		return fmt.Errorf("l2_to_cosmos timeout return path is missing services")
 	}
-	if p.ctx.CosmosClient() == nil {
+	if p.deps.Cosmos.CosmosClient() == nil {
 		return fmt.Errorf("l2_to_cosmos timeout return path has nil Cosmos client")
 	}
-	if p.ctx.EthClient() == nil {
+	if p.deps.EVM.EthClient() == nil {
 		return fmt.Errorf("l2_to_cosmos timeout return path has nil L2 client")
 	}
-	if p.ctx.RouterContract() == nil {
+	if p.deps.EVM.RouterContract() == nil {
 		return fmt.Errorf("l2_to_cosmos timeout return path has nil L2 router address")
 	}
-	if p.ctx.SpectreClientContract() == nil {
+	if p.deps.EVM.SpectreClientContract() == nil {
 		return fmt.Errorf("l2_to_cosmos timeout return path has nil SpectreClient address")
 	}
 	return nil

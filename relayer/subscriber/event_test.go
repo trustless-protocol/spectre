@@ -405,9 +405,7 @@ func TestCosmosPacketMatchesConfiguredClient(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			ctx := services.NewCtx(nil, nil)
-			ctx.SetEthClientID(tc.ethClientID)
-			ctx.SetCosmosRouterClientID(tc.routerClientID)
+			ctx := cosmosDeps{IDs: services.ClientIDs{EVMOnCosmos: tc.ethClientID, CosmosOnEVM: tc.routerClientID}}
 
 			if got := cosmosPacketMatchesConfiguredClient(ctx, tc.packet); got != tc.want {
 				t.Fatalf("cosmosPacketMatchesConfiguredClient = %v, want %v", got, tc.want)
@@ -419,12 +417,12 @@ func TestCosmosPacketMatchesConfiguredClient(t *testing.T) {
 func TestEthEventClientIDFilter(t *testing.T) {
 	t.Parallel()
 
-	ctx := services.NewCtx(nil, nil)
+	ctx := ethDeps{}
 	if got := ethEventClientIDFilter(ctx); got != nil {
 		t.Fatalf("ethEventClientIDFilter without router client ID = %v, want nil", got)
 	}
 
-	ctx.SetCosmosRouterClientID("simd-2-client-0")
+	ctx.IDs.CosmosOnEVM = "simd-2-client-0"
 	got := ethEventClientIDFilter(ctx)
 	if len(got) != 1 || got[0] != "simd-2-client-0" {
 		t.Fatalf("ethEventClientIDFilter = %v, want [simd-2-client-0]", got)

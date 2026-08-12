@@ -55,13 +55,13 @@ func TestScanForEVMTimeoutsTrackerRemoval(t *testing.T) {
 
 			timeoutCalled := false
 			svc := New(nil, nil, DefaultConfig())
-			svc.scanForEVMTimeouts(context.Background(), Context{}, evmTimeoutScanOptions{
+			svc.scanForEVMTimeouts(context.Background(), evmTimeoutDeps{}, evmTimeoutScanOptions{
 				tag:     "Test",
 				tracker: tracker,
-				hasPendingCommitment: func(Context, channeltypesv2.Packet) (bool, error) {
+				hasPendingCommitment: func(evmTimeoutDeps, channeltypesv2.Packet) (bool, error) {
 					return tc.commitment, tc.commitmentErr
 				},
-				timeoutSend: func(_ context.Context, _ Context, packet EthPacket) bool {
+				timeoutSend: func(_ context.Context, _ evmTimeoutDeps, packet EthPacket) bool {
 					timeoutCalled = true
 					if packet.BlockNumber != 123 {
 						t.Fatalf("timeout packet block number = %d, want 123", packet.BlockNumber)

@@ -146,11 +146,21 @@ func normalizeTimeoutSeconds(ts uint64) uint64 {
 type Subscriber struct {
 }
 
+type cosmosDeps struct {
+	Cosmos services.CosmosEndpoint
+	EVM    services.EVMEndpoint
+	IDs    services.ClientIDs
+	Logger *log.Logger
+}
+
+type ethDeps = cosmosDeps
+
 func NewSubscriber() *Subscriber {
 	return &Subscriber{}
 }
 
-func (s *Subscriber) SubscribeCosmos(ctx services.Context, batchBuilder *services.BatchBuilder) {
+func (s *Subscriber) SubscribeCosmos(cosmos services.CosmosEndpoint, evm services.EVMEndpoint, ids services.ClientIDs, logger *log.Logger, batchBuilder *services.BatchBuilder) {
+	ctx := cosmosDeps{Cosmos: cosmos, EVM: evm, IDs: ids, Logger: logger}
 	lookback := cosmosStartupRecoveryLookbackBlocks()
 	var nextRecoveryStartHeight uint64
 	// quietScans counts consecutive recovery passes that found nothing. It lives
@@ -222,29 +232,29 @@ func (h *cosmosLiveHealth) recoveryIsCoveringForLive(recovered uint64, now time.
 }
 
 func (s *Subscriber) subscribeCosmosOnce(
-	ctx services.Context,
+	ctx cosmosDeps,
 	batchBuilder *services.BatchBuilder,
 	nextRecoveryStartHeight *uint64,
 	seenEvents map[cosmosEventKey]struct{},
 	quietScans *uint64,
 	liveHealth *cosmosLiveHealth,
 ) error {
-	sendPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_SEND_PACKET_EVENT, cosmosLiveEventBuffer)
+	sendPacketSub, err := ctx.Cosmos.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_SEND_PACKET_EVENT, cosmosLiveEventBuffer)
 	if err != nil {
 		return fmt.Errorf("failed to subscribe to send_packet events: %w", err)
 	}
-	ackPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_WRITE_ACK_PACKET_EVENT, cosmosLiveEventBuffer)
+	ackPacketSub, err := ctx.Cosmos.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_WRITE_ACK_PACKET_EVENT, cosmosLiveEventBuffer)
 	if err != nil {
-		_ = ctx.CosmosClient().UnsubscribeAll(context.Background(), "")
+		_ = ctx.Cosmos.CosmosClient().UnsubscribeAll(context.Background(), "")
 		return fmt.Errorf("failed to subscribe to write_acknowledgement events: %w", err)
 	}
-	timeoutPacketSub, err := ctx.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_TIMEOUT_PACKET_EVENT, cosmosLiveEventBuffer)
+	timeoutPacketSub, err := ctx.Cosmos.CosmosClient().WSEvents.Subscribe(context.Background(), "", COMETBFT_TIMEOUT_PACKET_EVENT, cosmosLiveEventBuffer)
 	if err != nil {
-		_ = ctx.CosmosClient().UnsubscribeAll(context.Background(), "")
+		_ = ctx.Cosmos.CosmosClient().UnsubscribeAll(context.Background(), "")
 		return fmt.Errorf("failed to subscribe to timeout_packet events: %w", err)
 	}
 	ctx.Logger.Println("[SubscribeCosmos] Successfully subscribed to CometBFT events")
-	defer ctx.CosmosClient().UnsubscribeAll(context.Background(), "")
+	defer ctx.Cosmos.CosmosClient().UnsubscribeAll(context.Background(), "")
 
 	if err := recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth); err != nil {
 		ctx.Logger.Printf("[SubscribeCosmos] startup recovery failed: %v", err)
@@ -279,7 +289,7 @@ func (s *Subscriber) subscribeCosmosOnce(
 }
 
 func (s *Subscriber) processLiveCosmosEvent(
-	ctx services.Context,
+	ctx cosmosDeps,
 	batchBuilder *services.BatchBuilder,
 	nextRecoveryStartHeight *uint64,
 	seenEvents map[cosmosEventKey]struct{},
@@ -373,8 +383,8 @@ func cosmosStartupRecoveryStartHeight(latestHeight, lookback uint64) uint64 {
 	return latestHeight - lookback + 1
 }
 
-func latestCosmosHeight(ctx services.Context) (uint64, error) {
-	status, err := ctx.CosmosClient().Status(context.Background())
+func latestCosmosHeight(ctx cosmosDeps) (uint64, error) {
+	status, err := ctx.Cosmos.CosmosClient().Status(context.Background())
 	if err != nil {
 		return 0, err
 	}
@@ -385,7 +395,7 @@ func latestCosmosHeight(ctx services.Context) (uint64, error) {
 }
 
 func recoverCosmosGapToLatest(
-	ctx services.Context,
+	ctx cosmosDeps,
 	batchBuilder *services.BatchBuilder,
 	nextRecoveryStartHeight *uint64,
 	seenEvents map[cosmosEventKey]struct{},
@@ -465,7 +475,7 @@ func cosmosIndexedHeight(latestHeight uint64) uint64 {
 }
 
 func recoverCosmosEvents(
-	ctx services.Context,
+	ctx cosmosDeps,
 	batchBuilder *services.BatchBuilder,
 	startHeight uint64,
 	endHeight uint64,
@@ -498,7 +508,7 @@ func recoverCosmosEvents(
 }
 
 func recoverCosmosEventsForQuery(
-	ctx services.Context,
+	ctx cosmosDeps,
 	batchBuilder *services.BatchBuilder,
 	baseQuery string,
 	startHeight uint64,
@@ -511,7 +521,7 @@ func recoverCosmosEventsForQuery(
 	query := cosmosTxSearchQuery(baseQuery, startHeight, endHeight)
 
 	for {
-		result, err := ctx.CosmosClient().TxSearch(context.Background(), query, false, &page, &perPage, "asc")
+		result, err := ctx.Cosmos.CosmosClient().TxSearch(context.Background(), query, false, &page, &perPage, "asc")
 		if err != nil {
 			return stats, fmt.Errorf("TxSearch query %q page %d failed: %w", query, page, err)
 		}
@@ -691,7 +701,7 @@ func decodeCosmosPacketsFromEvents(
 }
 
 func enqueueCosmosPackets(
-	ctx services.Context,
+	ctx cosmosDeps,
 	batchBuilder *services.BatchBuilder,
 	packets []services.CosmosPacket,
 	seenEvents map[cosmosEventKey]struct{},
@@ -735,13 +745,13 @@ func enqueueCosmosPackets(
 	return stats, nil
 }
 
-func cosmosPacketMatchesConfiguredClient(ctx services.Context, packet *channeltypesv2.Packet) bool {
+func cosmosPacketMatchesConfiguredClient(ctx cosmosDeps, packet *channeltypesv2.Packet) bool {
 	if packet == nil {
 		return false
 	}
 
-	ethClientID := ctx.EthClientID()
-	routerClientID := ctx.CosmosRouterClientID()
+	ethClientID := ctx.IDs.EVMOnCosmos
+	routerClientID := ctx.IDs.CosmosOnEVM
 	if ethClientID == "" && routerClientID == "" {
 		return true
 	}
@@ -752,14 +762,14 @@ func cosmosPacketMatchesConfiguredClient(ctx services.Context, packet *channelty
 		packet.DestinationClient == routerClientID
 }
 
-func shouldEnqueueRecoveredCosmosPacket(ctx services.Context, packet services.CosmosPacket) (bool, error) {
+func shouldEnqueueRecoveredCosmosPacket(ctx cosmosDeps, packet services.CosmosPacket) (bool, error) {
 	if packet.Packet == nil {
 		return false, nil
 	}
 
 	switch packet.Type {
 	case services.CosmosSend:
-		received, err := services.HasEthPacketReceipt(ctx, *packet.Packet)
+		received, err := services.HasEthPacketReceipt(ctx.EVM, *packet.Packet)
 		if err != nil {
 			return false, fmt.Errorf("seq=%d failed to check ETH packet receipt: %w", packet.Packet.Sequence, err)
 		}
@@ -770,7 +780,7 @@ func shouldEnqueueRecoveredCosmosPacket(ctx services.Context, packet services.Co
 		}
 		return true, nil
 	case services.CosmosAck:
-		pending, err := services.HasPendingEthPacketCommitment(ctx, *packet.Packet)
+		pending, err := services.HasPendingEthPacketCommitment(ctx.EVM, *packet.Packet)
 		if err != nil {
 			return false, fmt.Errorf("seq=%d failed to check ETH packet commitment: %w", packet.Packet.Sequence, err)
 		}
@@ -781,12 +791,12 @@ func shouldEnqueueRecoveredCosmosPacket(ctx services.Context, packet services.Co
 		}
 		return true, nil
 	case services.CosmosTimeout:
-		if !services.ShouldRelayCosmosTimeoutToEth(packet.Packet, ctx.CosmosRouterClientID()) {
+		if !services.ShouldRelayCosmosTimeoutToEth(packet.Packet, ctx.IDs.CosmosOnEVM) {
 			ctx.Logger.Printf("[SubscribeCosmos] recovery: seq=%d Cosmos-originated timeout already handled locally, skipping historical TimeoutPacket from Cosmos height %d",
 				packet.Packet.Sequence, packet.BlockNumber)
 			return false, nil
 		}
-		pending, err := services.HasPendingEthPacketCommitment(ctx, *packet.Packet)
+		pending, err := services.HasPendingEthPacketCommitment(ctx.EVM, *packet.Packet)
 		if err != nil {
 			return false, fmt.Errorf("seq=%d failed to check ETH packet commitment before timeout recovery: %w", packet.Packet.Sequence, err)
 		}
@@ -896,8 +906,8 @@ func ethStartupRecoveryStartBlock(latestBlock, lookback uint64) uint64 {
 	return latestBlock - lookback
 }
 
-func ethEventClientIDFilter(ctx services.Context) []string {
-	clientID := ctx.CosmosRouterClientID()
+func ethEventClientIDFilter(ctx ethDeps) []string {
+	clientID := ctx.IDs.CosmosOnEVM
 	if clientID == "" {
 		return nil
 	}
@@ -978,11 +988,11 @@ func enqueueEthSendPacket(
 	return true
 }
 
-func hasCosmosIBCPathValue(ctx services.Context, path [][]byte) (bool, error) {
+func hasCosmosIBCPathValue(endpoint services.CosmosEndpoint, path [][]byte) (bool, error) {
 	queryPath := fmt.Sprintf("store/%s/key", string(path[0]))
 	request := path[1]
 
-	result, err := ctx.CosmosClient().ABCIQuery(context.Background(), queryPath, request)
+	result, err := endpoint.CosmosClient().ABCIQuery(context.Background(), queryPath, request)
 	if err != nil {
 		return false, fmt.Errorf("ABCI query failed: %w", err)
 	}
@@ -993,16 +1003,16 @@ func hasCosmosIBCPathValue(ctx services.Context, path [][]byte) (bool, error) {
 	return len(result.Response.Value) > 0, nil
 }
 
-func hasPendingCosmosPacketCommitment(ctx services.Context, packet channeltypesv2.Packet) (bool, error) {
-	return hasCosmosIBCPathValue(ctx, utils.IbcCommitmentPath(packet, []byte{1}))
+func hasPendingCosmosPacketCommitment(ctx ethDeps, packet channeltypesv2.Packet) (bool, error) {
+	return hasCosmosIBCPathValue(ctx.Cosmos, utils.IbcCommitmentPath(packet, []byte{1}))
 }
 
-func HasCosmosPacketReceipt(ctx services.Context, packet channeltypesv2.Packet) (bool, error) {
-	return hasCosmosIBCPathValue(ctx, utils.IbcPath(packet.DestinationClient, packet.Sequence, []byte{2}))
+func HasCosmosPacketReceipt(endpoint services.CosmosEndpoint, packet channeltypesv2.Packet) (bool, error) {
+	return hasCosmosIBCPathValue(endpoint, utils.IbcPath(packet.DestinationClient, packet.Sequence, []byte{2}))
 }
 
 func recoverEthSendPackets(
-	ctx services.Context,
+	ctx ethDeps,
 	batchBuilder *services.BatchBuilder,
 	filterer *contractICS26Router.ContractICS26RouterFilterer,
 	startBlock uint64,
@@ -1038,7 +1048,7 @@ func recoverEthSendPackets(
 
 		cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 
-		received, err := HasCosmosPacketReceipt(ctx, cosmosPacket)
+		received, err := HasCosmosPacketReceipt(ctx.Cosmos, cosmosPacket)
 		if err != nil {
 			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d failed to check Cosmos packet receipt: %v",
 				cosmosPacket.Sequence, err)
@@ -1055,7 +1065,7 @@ func recoverEthSendPackets(
 			continue
 		}
 
-		pending, err := services.HasPendingEthPacketCommitment(ctx, cosmosPacket)
+		pending, err := services.HasPendingEthPacketCommitment(ctx.EVM, cosmosPacket)
 		if err != nil {
 			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d failed to check ETH packet commitment: %v",
 				cosmosPacket.Sequence, err)
@@ -1097,7 +1107,7 @@ func recoverEthSendPackets(
 }
 
 func recoverEthWriteAcknowledgements(
-	ctx services.Context,
+	ctx ethDeps,
 	batchBuilder *services.BatchBuilder,
 	filterer *contractICS26Router.ContractICS26RouterFilterer,
 	startBlock uint64,
@@ -1182,7 +1192,7 @@ func advanceRecoveryStart(nextRecoveryStartBlock *uint64, candidate uint64) {
 }
 
 func recoverEthGapToBlock(
-	ctx services.Context,
+	ctx ethDeps,
 	batchBuilder *services.BatchBuilder,
 	filterer *contractICS26Router.ContractICS26RouterFilterer,
 	nextSendRecoveryStartBlock *uint64,
@@ -1231,7 +1241,7 @@ func recoverEthGapToBlock(
 }
 
 func recoverEthGapToLatest(
-	ctx services.Context,
+	ctx ethDeps,
 	batchBuilder *services.BatchBuilder,
 	filterer *contractICS26Router.ContractICS26RouterFilterer,
 	nextSendRecoveryStartBlock *uint64,
@@ -1239,7 +1249,7 @@ func recoverEthGapToLatest(
 	seenEvents map[ethEventKey]struct{},
 	quietScans *uint64,
 ) error {
-	latestBlock, err := ctx.EthClient().BlockNumber(context.Background())
+	latestBlock, err := ctx.EVM.EthClient().BlockNumber(context.Background())
 	if err != nil {
 		return err
 	}
@@ -1256,7 +1266,7 @@ func recoverEthGapToLatest(
 }
 
 func (s *Subscriber) subscribeEthOnce(
-	ctx services.Context,
+	ctx ethDeps,
 	batchBuilder *services.BatchBuilder,
 	watchClient *ethclient.Client,
 	recoveryFilterer *contractICS26Router.ContractICS26RouterFilterer,
@@ -1266,7 +1276,7 @@ func (s *Subscriber) subscribeEthOnce(
 	seenEvents map[ethEventKey]struct{},
 	quietScans *uint64,
 ) error {
-	watchFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), watchClient)
+	watchFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.EVM.RouterContract(), watchClient)
 	if err != nil {
 		return fmt.Errorf("failed to create ICS26Router watch filterer instance: %w", err)
 	}
@@ -1376,13 +1386,14 @@ func (s *Subscriber) subscribeEthOnce(
 }
 
 // SubscribeEth subscribes to Ethereum events from the ICS26Router contract
-func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.BatchBuilder) {
-	if ctx.EthWsURL() == "" {
+func (s *Subscriber) SubscribeEth(cosmos services.CosmosEndpoint, evm services.EVMEndpoint, ids services.ClientIDs, logger *log.Logger, batchBuilder *services.BatchBuilder) {
+	ctx := ethDeps{Cosmos: cosmos, EVM: evm, IDs: ids, Logger: logger}
+	if ctx.EVM.EthWsURL() == "" {
 		ctx.Logger.Printf("Failed to subscribe to Ethereum events: eth websocket URL is not configured")
 		return
 	}
 
-	recoveryFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.RouterContract(), ctx.EthClient())
+	recoveryFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.EVM.RouterContract(), ctx.EVM.EthClient())
 	if err != nil {
 		ctx.Logger.Printf("Failed to create ICS26Router recovery filterer instance: %v", err)
 		return
@@ -1397,7 +1408,7 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 	seenEvents := make(map[ethEventKey]struct{})
 
 	for {
-		latestBlock, err := ctx.EthClient().BlockNumber(context.Background())
+		latestBlock, err := ctx.EVM.EthClient().BlockNumber(context.Background())
 		if err != nil {
 			ctx.Logger.Printf("[SubscribeEth] Failed to get latest Ethereum block before subscription: %v", err)
 			time.Sleep(ethSubscriptionReconnectDelay)
@@ -1426,9 +1437,9 @@ func (s *Subscriber) SubscribeEth(ctx services.Context, batchBuilder *services.B
 
 		watchStartBlock := latestBlock + 1
 
-		watchClient, err := ethclient.DialContext(context.Background(), ctx.EthWsURL())
+		watchClient, err := ethclient.DialContext(context.Background(), ctx.EVM.EthWsURL())
 		if err != nil {
-			ctx.Logger.Printf("[SubscribeEth] Failed to connect to Ethereum WS at %s: %v", ctx.EthWsURL(), err)
+			ctx.Logger.Printf("[SubscribeEth] Failed to connect to Ethereum WS at %s: %v", ctx.EVM.EthWsURL(), err)
 			time.Sleep(ethSubscriptionReconnectDelay)
 			continue
 		}

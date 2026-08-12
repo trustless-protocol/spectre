@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -19,9 +20,10 @@ import (
 // buildCosmosToEthSource builds one Cosmos→ETH source: its own Tendermint RPC,
 // SpectreClient and router client id, sharing the passed-in prover and the ETH
 // beacon endpoint from the single eth_to_cosmos module. It returns the built
-// Services, its Context, and a cleanup func that stops the chain clients.
+// Services, the composition-root dependencies, and a cleanup func that stops
+// the chain clients.
 //
-// The caller runs runAdapterEngine(ctx, svc, ctx) — which blocks until an error
+// The caller runs runAdapterEngine(ctx, svc, deps) — which blocks until an error
 // or shutdown — on its own goroutine, so N sources relay independently. Their ETH
 // event streams don't cross-feed: SubscribeEth filters ICS26Router logs by the
 // per-source router client id.
@@ -37,8 +39,8 @@ func buildCosmosToEthSource(
 	p *prover.EcipProver,
 	txHandler services.TransactionHandler,
 	allowEnvOverride bool,
-) (*services.Services, services.Context, func(), error) {
-	var zero services.Context
+) (*services.Services, services.RelayDeps, func(), error) {
+	var zero services.RelayDeps
 
 	// Connect to Ethereum (HTTP for queries)
 	ethClient, err := ethclient.Dial(c2e.EthRpcUrl)
@@ -72,12 +74,7 @@ func buildCosmosToEthSource(
 		return nil, zero, nil, fmt.Errorf("cosmos_wasm_client_id is required in cosmos_to_eth config")
 	}
 
-	// Create context with beacon API
-	ctx := services.NewCtxWithBeacon(
-		cosmosClient, ethClient, ethWsClient,
-		c2e.EthWsUrl, e2c.BeaconUrl, cosmosWasmClientID,
-	)
-
+	// Assemble the scoped chain dependencies, including the beacon API.
 	cosmosRouterClientID := c2e.ICS26ClientID
 	if allowEnvOverride {
 		cosmosRouterClientID = envOrDefault("ICS26_CLIENT_ID", cosmosRouterClientID)
@@ -85,38 +82,49 @@ func buildCosmosToEthSource(
 	if cosmosRouterClientID == "" {
 		return nil, zero, nil, fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
 	}
-	ctx.SetCosmosRouterClientID(cosmosRouterClientID)
-
 	// Set contract addresses from config
 	roleManager := c2e.ICS26Address
 	if allowEnvOverride {
 		roleManager = envOrDefault("ROLE_MANAGER", roleManager)
 	}
-	ctx.SetAddresses(
-		c2e.ICS26Address, c2e.SignatureVerifier, c2e.Membership,
-		c2e.Misbehaviour, c2e.UpdateClient, roleManager,
-	)
-
 	// Set SpectreClient address (already deployed)
 	if c2e.SpectreClient == "" {
 		return nil, zero, nil, fmt.Errorf("spectre_client address is required in cosmos_to_eth config")
 	}
-	ctx.SetClient(common.HexToAddress(c2e.SpectreClient))
-
 	// Start Cosmos WebSocket client
 	if err := cosmosClient.Start(); err != nil {
 		return nil, zero, nil, fmt.Errorf("failed to start Cosmos WS client: %w", err)
 	}
-	cleanup := func() { ctx.StopClient() }
-
 	cosmosConfig := buildCosmosConfig(c2e, batchCfg)
-	ctx.Config = cosmosConfig
+	deps := services.RelayDeps{
+		Cosmos: services.CosmosEndpoint{Client: cosmosClient},
+		EVM: services.EVMEndpoint{
+			Client: ethClient, WSURL: c2e.EthWsUrl, BeaconAPIURL: e2c.BeaconUrl,
+			Contracts: services.EVMContracts{
+				Router: common.HexToAddress(c2e.ICS26Address), SignatureVerifier: common.HexToAddress(c2e.SignatureVerifier),
+				Membership: common.HexToAddress(c2e.Membership), Misbehaviour: common.HexToAddress(c2e.Misbehaviour),
+				UpdateClient: common.HexToAddress(c2e.UpdateClient), RoleManager: common.HexToAddress(roleManager),
+				SpectreClient: common.HexToAddress(c2e.SpectreClient),
+			},
+		},
+		IDs:    services.ClientIDs{CosmosOnEVM: cosmosRouterClientID, EVMOnCosmos: cosmosWasmClientID},
+		Config: cosmosConfig, Logger: log.Default(),
+	}
+	cleanup := func() {
+		if err := cosmosClient.Stop(); err != nil {
+			log.Printf("failed to terminate cosmos client: %v", err)
+		}
+		ethClient.Close()
+		if ethWsClient != nil {
+			ethWsClient.Close()
+		}
+	}
 
 	logger.Sugar().Infof("source %q: subscribing to events (spectre_client=%s tm=%s)",
 		cosmosRouterClientID, c2e.SpectreClient, c2e.TmRpcUrl)
 
 	svc := services.New(txHandler, p, cosmosConfig)
-	return svc, ctx, cleanup, nil
+	return svc, deps, cleanup, nil
 }
 
 // buildCosmosConfig layers the per-source overrides from c2e (and the global

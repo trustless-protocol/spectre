@@ -113,9 +113,9 @@ const ethDeployGasHeadroomPercent uint64 = 20
 const cosmosRPCTimeout = 30 * time.Second       // a single Cosmos RPC call (query / sync broadcast)
 const cosmosInclusionTimeout = 90 * time.Second // total bounded wait for a broadcast tx to land in a block
 
-func routerManagesProofSubmission(ctx services.Context) bool {
-	roleManager := ctx.RoleManagerAddress()
-	router := ctx.RouterContract()
+func routerManagesProofSubmission(endpoint services.EVMEndpoint) bool {
+	roleManager := endpoint.RoleManagerAddress()
+	router := endpoint.RouterContract()
 	if roleManager == nil || router == nil {
 		return false
 	}
@@ -145,8 +145,8 @@ type callTrace struct {
 // delegatecall frame between the tx entry and the multicall body. Descend
 // single-child wrapper frames until we find the frame whose children count
 // matches the expected inner-call count.
-func logInnerGasFromTrace(stdCtx context.Context, ctx services.Context, txHash common.Hash, labels []string) error {
-	rpcClient := ctx.EthClient().Client()
+func logInnerGasFromTrace(stdCtx context.Context, endpoint services.EVMEndpoint, txHash common.Hash, labels []string) error {
+	rpcClient := endpoint.EthClient().Client()
 	if rpcClient == nil {
 		return fmt.Errorf("nil rpc client")
 	}
@@ -216,16 +216,16 @@ func hexToUint64(s string) (uint64, error) {
 	return v, nil
 }
 
-func cosmosRouterClientID(ctx services.Context) (string, error) {
-	clientID := ctx.CosmosRouterClientID()
+func cosmosRouterClientID(ids services.ClientIDs) (string, error) {
+	clientID := ids.CosmosOnEVM
 	if clientID == "" {
 		return "", fmt.Errorf("cosmos router client id is not configured")
 	}
 	return clientID, nil
 }
 
-func ethLightClientIDOnCosmos(ctx services.Context) (string, error) {
-	clientID := ctx.EthClientID()
+func ethLightClientIDOnCosmos(ids services.ClientIDs) (string, error) {
+	clientID := ids.EVMOnCosmos
 	if clientID == "" {
 		return "", fmt.Errorf("cosmos wasm client id is not configured")
 	}
@@ -277,8 +277,8 @@ const baseFeeHeadroomPercent = 100
 //
 // A failure to read the header leaves the suggested price untouched: this is a
 // safety margin, not a correctness requirement.
-func gasPriceWithBaseFeeHeadroom(stdCtx context.Context, ctx services.Context, suggested *big.Int) *big.Int {
-	header, err := ctx.EthClient().HeaderByNumber(stdCtx, nil)
+func gasPriceWithBaseFeeHeadroom(stdCtx context.Context, endpoint services.EVMEndpoint, suggested *big.Int) *big.Int {
+	header, err := endpoint.EthClient().HeaderByNumber(stdCtx, nil)
 	if err != nil || header == nil || header.BaseFee == nil {
 		return suggested
 	}
@@ -307,7 +307,7 @@ func liftAboveBaseFee(suggested, baseFee *big.Int) *big.Int {
 
 func estimateCosmosClientDeployGas(
 	stdCtx context.Context,
-	ctx services.Context,
+	endpoint services.EVMEndpoint,
 	from common.Address,
 	gasPrice *big.Int,
 	clientState []byte,
@@ -320,21 +320,21 @@ func estimateCosmosClientDeployGas(
 	}
 	constructorInput, err := parsed.Pack(
 		"",
-		*ctx.UpdateClientContract(),
-		*ctx.MembershipContract(),
-		*ctx.MisbehaviourContract(),
+		*endpoint.UpdateClientContract(),
+		*endpoint.MembershipContract(),
+		*endpoint.MisbehaviourContract(),
 		clientState,
 		utils.BytesToBytes32(consensusHash),
 		initialPinnedValidatorSet,
-		*ctx.RoleManagerAddress(),
+		*endpoint.RoleManagerAddress(),
 	)
 	if err != nil {
 		return 0, 0, fmt.Errorf("pack ICS07 constructor args: %w", err)
 	}
 	deployData := append(common.FromHex(spectreContract.ContractSpectreClientBin), constructorInput...)
-	estimate, err := ctx.EthClient().EstimateGas(stdCtx, ethereum.CallMsg{
+	estimate, err := endpoint.EthClient().EstimateGas(stdCtx, ethereum.CallMsg{
 		From:     from,
-		GasPrice: gasPriceWithBaseFeeHeadroom(stdCtx, ctx, gasPrice),
+		GasPrice: gasPriceWithBaseFeeHeadroom(stdCtx, endpoint, gasPrice),
 		Value:    big.NewInt(0),
 		Data:     deployData,
 	})
@@ -346,7 +346,7 @@ func estimateCosmosClientDeployGas(
 	if gasLimit < estimate {
 		gasLimit = estimate
 	}
-	if header, err := ctx.EthClient().HeaderByNumber(stdCtx, nil); err == nil && header.GasLimit > 0 {
+	if header, err := endpoint.EthClient().HeaderByNumber(stdCtx, nil); err == nil && header.GasLimit > 0 {
 		if estimate >= header.GasLimit {
 			return estimate, 0, fmt.Errorf(
 				"estimated ICS07 deploy gas %d exceeds latest block gas limit %d",
@@ -361,12 +361,12 @@ func estimateCosmosClientDeployGas(
 	return estimate, gasLimit, nil
 }
 
-func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, ctx services.Context, clientState, consensusHash []byte, initialPinnedValidatorSet relayerclient.ContractValidatorSet) (common.Address, error) {
-	cosmosClientID, err := cosmosRouterClientID(ctx)
+func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint services.EVMEndpoint, clientIDs services.ClientIDs, clientState, consensusHash []byte, initialPinnedValidatorSet relayerclient.ContractValidatorSet) (common.Address, error) {
+	cosmosClientID, err := cosmosRouterClientID(clientIDs)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
-	wasmClientID, err := ethLightClientIDOnCosmos(ctx)
+	wasmClientID, err := ethLightClientIDOnCosmos(clientIDs)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
@@ -385,13 +385,13 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, ctx service
 	}
 	fromAddress := crypto.PubkeyToAddress(*publicKey)
 
-	gasPrice, err := ctx.EthClient().SuggestGasPrice(stdCtx)
+	gasPrice, err := endpoint.EthClient().SuggestGasPrice(stdCtx)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] failed to suggest gas price: %w", err)
 	}
 
 	pinnedForDeploy := toGroth16ValidatorSet(initialPinnedValidatorSet)
-	estimatedDeployGas, deployGasLimit, err := estimateCosmosClientDeployGas(stdCtx, ctx, fromAddress, gasPrice, clientState, consensusHash, pinnedForDeploy)
+	estimatedDeployGas, deployGasLimit, err := estimateCosmosClientDeployGas(stdCtx, endpoint, fromAddress, gasPrice, clientState, consensusHash, pinnedForDeploy)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
@@ -401,14 +401,14 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, ctx service
 	deployFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
 		addr, tx, _, err := spectreContract.DeployContractSpectreClient(
 			auth,
-			ctx.EthClient(),
-			*ctx.UpdateClientContract(),
-			*ctx.MembershipContract(),
-			*ctx.MisbehaviourContract(),
+			endpoint.EthClient(),
+			*endpoint.UpdateClientContract(),
+			*endpoint.MembershipContract(),
+			*endpoint.MisbehaviourContract(),
 			clientState,
 			utils.BytesToBytes32(consensusHash),
 			pinnedForDeploy,
-			*ctx.RoleManagerAddress(),
+			*endpoint.RoleManagerAddress(),
 		)
 		if err == nil {
 			address = addr
@@ -416,14 +416,13 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, ctx service
 		return tx, err
 	}
 
-	receipt, _, _, err := h.executeWithRetryAndResubmission(stdCtx, ctx, privateKey, deployGasLimit, deployFn)
+	receipt, _, _, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, deployGasLimit, deployFn)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed waiting for deploy receipt: %w", err)
 	}
 	log.Printf("[CreateCosmosClient] ICS07 deployed at %s (block %d, gasUsed=%d)", address.String(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
-	ctx.SetClient(address)
 
-	ics26Router, err := routerContract.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
+	ics26Router, err := routerContract.NewContractICS26Router(*endpoint.RouterContract(), endpoint.EthClient())
 	if err != nil {
 		return common.Address{}, err
 	}
@@ -436,11 +435,11 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, ctx service
 				ClientId:     wasmClientID,
 				MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
 			},
-			*ctx.SpectreClientContract(),
+			address,
 		)
 	}
 
-	addClientReceipt, _, _, err := h.executeWithRetryAndResubmission(stdCtx, ctx, privateKey, 16000000, addClientFn)
+	addClientReceipt, _, _, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, 16000000, addClientFn)
 	if err != nil {
 		if errors.Is(err, services.ErrPermanentRelayFailure) {
 			// Fallback to MigrateClient only for confirmed on-chain reverts
@@ -455,11 +454,11 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, ctx service
 						ClientId:     wasmClientID,
 						MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
 					},
-					*ctx.SpectreClientContract(),
+					address,
 				)
 			}
 
-			migrateReceipt, _, _, mErr := h.executeWithRetryAndResubmission(stdCtx, ctx, privateKey, 16000000, migrateClientFn)
+			migrateReceipt, _, _, mErr := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, 16000000, migrateClientFn)
 			if mErr != nil {
 				return common.Address{}, fmt.Errorf("MigrateClient call failed: %w", mErr)
 			}
@@ -474,10 +473,9 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, ctx service
 	return address, nil
 }
 
-func (h *Handler) SendEthTx(stdCtx context.Context, ctx services.Context, msg any) error {
-	cosmosClientID, err := cosmosRouterClientID(ctx)
-	if err != nil {
-		return fmt.Errorf("[SendEthTx] %w", err)
+func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoint, cosmosClientID string, msg any) error {
+	if cosmosClientID == "" {
+		return fmt.Errorf("[SendEthTx] cosmos router client id is not configured")
 	}
 	privKey := os.Getenv("ETH_PRIVATE_KEY")
 	if privKey == "" {
@@ -497,16 +495,16 @@ func (h *Handler) SendEthTx(stdCtx context.Context, ctx services.Context, msg an
 	}
 
 	ics07Tendermint, err := spectreContract.NewContractSpectreClient(
-		*ctx.SpectreClientContract(),
-		ctx.EthClient(),
+		*endpoint.SpectreClientContract(),
+		endpoint.EthClient(),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create ICS07 Tendermint contract: %w", err)
 	}
 
 	ics26Router, err := contractICS26Router.NewContractICS26Router(
-		*ctx.RouterContract(),
-		ctx.EthClient(),
+		*endpoint.RouterContract(),
+		endpoint.EthClient(),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create ICS07 Tendermint contract: %w", err)
@@ -529,7 +527,7 @@ func (h *Handler) SendEthTx(stdCtx context.Context, ctx services.Context, msg an
 				if err != nil {
 					return nil, fmt.Errorf("failed to encode updateConsensusState msg: %w", err)
 				}
-				if routerManagesProofSubmission(ctx) {
+				if routerManagesProofSubmission(endpoint) {
 					log.Printf("[SendEthTx] Sending ICS26Router.updateConsensusState tx for clientId=%s...", cosmosClientID)
 					return ics26Router.UpdateConsensusState(auth, cosmosClientID, data)
 				}
@@ -541,7 +539,7 @@ func (h *Handler) SendEthTx(stdCtx context.Context, ctx services.Context, msg an
 				if err != nil {
 					return nil, fmt.Errorf("failed to encode updateApplicationState msg: %w", err)
 				}
-				if routerManagesProofSubmission(ctx) {
+				if routerManagesProofSubmission(endpoint) {
 					log.Printf("[SendEthTx] Sending ICS26Router.updateApplicationState tx for clientId=%s...", cosmosClientID)
 					return ics26Router.UpdateApplicationState(auth, cosmosClientID, data)
 				}
@@ -550,14 +548,14 @@ func (h *Handler) SendEthTx(stdCtx context.Context, ctx services.Context, msg an
 			}
 		case spectreContract.ILightClientMsgsMsgVerifyMembership:
 			txLabel = "verifyMembership"
-			if routerManagesProofSubmission(ctx) {
+			if routerManagesProofSubmission(endpoint) {
 				return nil, fmt.Errorf("direct verifyMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead")
 			}
 			log.Printf("[SendEthTx] Sending verifyMembership tx...")
 			return ics07Tendermint.VerifyMembership(auth, msg)
 		case spectreContract.ILightClientMsgsMsgVerifyNonMembership:
 			txLabel = "verifyNonMembership"
-			if routerManagesProofSubmission(ctx) {
+			if routerManagesProofSubmission(endpoint) {
 				return nil, fmt.Errorf("direct verifyNonMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead")
 			}
 			log.Printf("[SendEthTx] Sending verifyNonMembership tx...")
@@ -579,7 +577,7 @@ func (h *Handler) SendEthTx(stdCtx context.Context, ctx services.Context, msg an
 		}
 	}
 
-	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(stdCtx, ctx, privateKey, gasLimit, senderFn)
+	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, gasLimit, senderFn)
 	if err != nil {
 		return err
 	}
@@ -605,12 +603,12 @@ func (h *Handler) SendEthTx(stdCtx context.Context, ctx services.Context, msg an
 // Semantics: MulticallUpgradeable runs each inner call via delegatecall and
 // reverts the whole tx if any inner call reverts — so caller can treat
 // success as "every packet in the batch was relayed".
-func (h *Handler) SendEthTxBatch(stdCtx context.Context, ctx services.Context, msgs []any) error {
+func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEndpoint, cosmosRouterID string, msgs []any) error {
 	if len(msgs) == 0 {
 		return nil
 	}
 	if len(msgs) == 1 {
-		return h.SendEthTx(stdCtx, ctx, msgs[0])
+		return h.SendEthTx(stdCtx, endpoint, cosmosRouterID, msgs[0])
 	}
 
 	parsedABI, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
@@ -621,8 +619,8 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, ctx services.Context, m
 	// cosmosClientID is only consulted when the batch contains an updateClient
 	// inner call; resolved lazily to avoid coupling pure-recvPacket batches to
 	// the router-managed config check.
-	var cosmosClientID string
-	var clientIDResolved bool
+	cosmosClientID := cosmosRouterID
+	clientIDResolved := cosmosRouterID != ""
 
 	// Pack each per-packet call into raw calldata bytes that MulticallUpgradeable
 	// will delegatecall back into the same contract.
@@ -651,13 +649,12 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, ctx services.Context, m
 			// In direct-submission mode SendEthTx calls SpectreClient directly;
 			// that path can't be expressed inside multicall, so caller must
 			// submit the update as a standalone tx.
-			if !routerManagesProofSubmission(ctx) {
+			if !routerManagesProofSubmission(endpoint) {
 				return fmt.Errorf("[SendEthTxBatch] client update cannot be batched when ICS26Router is not the proof submitter; submit it via SendEthTx instead")
 			}
 			if !clientIDResolved {
-				cosmosClientID, perr = cosmosRouterClientID(ctx)
-				if perr != nil {
-					return fmt.Errorf("[SendEthTxBatch] resolve cosmos client id: %w", perr)
+				if cosmosClientID == "" {
+					return fmt.Errorf("[SendEthTxBatch] resolve cosmos client id: cosmos router client id is not configured")
 				}
 				clientIDResolved = true
 			}
@@ -704,7 +701,7 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, ctx services.Context, m
 		}
 	}
 
-	ics26Router, err := contractICS26Router.NewContractICS26Router(*ctx.RouterContract(), ctx.EthClient())
+	ics26Router, err := contractICS26Router.NewContractICS26Router(*endpoint.RouterContract(), endpoint.EthClient())
 	if err != nil {
 		return fmt.Errorf("[SendEthTxBatch] failed to bind ICS26Router: %w", err)
 	}
@@ -720,7 +717,7 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, ctx services.Context, m
 		return ics26Router.Multicall(auth, calldata)
 	}
 
-	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(stdCtx, ctx, privateKey, multicallGasLimit, senderFn)
+	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, multicallGasLimit, senderFn)
 	if err != nil {
 		return fmt.Errorf("multicall labels=%s: %w", labelStr, err)
 	}
@@ -730,7 +727,7 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, ctx services.Context, m
 	if benchEnabled {
 		log.Printf("[bench][eth] multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
-		if traceErr := logInnerGasFromTrace(stdCtx, ctx, receipt.TxHash, labels); traceErr != nil {
+		if traceErr := logInnerGasFromTrace(stdCtx, endpoint, receipt.TxHash, labels); traceErr != nil {
 			log.Printf("[bench][eth] inner gas trace unavailable (RPC may lack debug_ namespace): %v", traceErr)
 		}
 	}
@@ -738,7 +735,7 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, ctx services.Context, m
 	return nil
 }
 
-func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Context, clientState exported.ClientState, consensusState exported.ConsensusState, counterpartyClientID string) (string, error) {
+func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.CosmosEndpoint, clientState exported.ClientState, consensusState exported.ConsensusState, counterpartyClientID string) (string, error) {
 	log.Printf("[CreateWasmClientTx] starting")
 	// counterpartyClientID is the client on the counterparty chain that tracks Cosmos.
 	// It is a config value known upfront (registration is only a naming binding in
@@ -794,7 +791,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Conte
 
 	// Query account info (account number and sequence) from the chain
 	log.Printf("[CreateWasmClientTx] querying cosmos account info")
-	accountNumber, sequence, err := h.queryAccountInfo(stdCtx, svcCtx, signerAddr)
+	accountNumber, sequence, err := h.queryAccountInfo(stdCtx, endpoint, signerAddr)
 	if err != nil {
 		return "", fmt.Errorf("failed to query account info: %w", err)
 	}
@@ -889,7 +886,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Conte
 	// Broadcast the transaction
 	log.Printf("[CreateWasmClientTx] broadcasting MsgCreateClient")
 	bctx, bcancel := context.WithTimeout(stdCtx, cosmosRPCTimeout)
-	result, err := svcCtx.CosmosClient().BroadcastTxSync(bctx, txBytes)
+	result, err := endpoint.CosmosClient().BroadcastTxSync(bctx, txBytes)
 	bcancel()
 	if err != nil {
 		return "", fmt.Errorf("failed to broadcast transaction: %w", err)
@@ -903,7 +900,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Conte
 
 	// Wait for MsgCreateClient tx and extract the new client ID from events
 	log.Printf("[CreateWasmClientTx] waiting for MsgCreateClient tx result")
-	txResult, err := h.waitForTxResult(stdCtx, svcCtx, result.Hash, 30*time.Second)
+	txResult, err := h.waitForTxResult(stdCtx, endpoint, result.Hash, 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("failed waiting for MsgCreateClient tx: %w", err)
 	}
@@ -935,7 +932,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Conte
 
 	// Re-query account info (sequence incremented after first tx)
 	log.Printf("[CreateWasmClientTx] querying cosmos account info for register counterparty")
-	accountNumber, sequence, err = h.queryAccountInfo(stdCtx, svcCtx, signerAddr)
+	accountNumber, sequence, err = h.queryAccountInfo(stdCtx, endpoint, signerAddr)
 	if err != nil {
 		return "", fmt.Errorf("failed to query account info for register counterparty: %w", err)
 	}
@@ -1003,7 +1000,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Conte
 
 	log.Printf("[CreateWasmClientTx] broadcasting MsgRegisterCounterparty")
 	bctx2, bcancel2 := context.WithTimeout(stdCtx, cosmosRPCTimeout)
-	result2, err := svcCtx.CosmosClient().BroadcastTxSync(bctx2, txBytes2)
+	result2, err := endpoint.CosmosClient().BroadcastTxSync(bctx2, txBytes2)
 	bcancel2()
 	if err != nil {
 		return "", fmt.Errorf("failed to broadcast register counterparty tx: %w", err)
@@ -1022,7 +1019,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, svcCtx services.Conte
 	// back the pre-registration sequence and the next tx fails with
 	// "account sequence mismatch".
 	log.Printf("[CreateWasmClientTx] waiting for MsgRegisterCounterparty tx result")
-	txResult2, err := h.waitForTxResult(stdCtx, svcCtx, result2.Hash, 30*time.Second)
+	txResult2, err := h.waitForTxResult(stdCtx, endpoint, result2.Hash, 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("failed waiting for MsgRegisterCounterparty tx: %w", err)
 	}
@@ -1152,7 +1149,7 @@ func isCosmosDuplicatePacketError(codespace string, code uint32) bool {
 }
 
 // simulateMsgs builds a transaction with the given messages, signs it with an empty signature, and simulates its gas consumption.
-func (h *Handler) simulateMsgs(stdCtx context.Context, svcCtx services.Context, sdkMsgs []sdk.Msg, sequence uint64) (uint64, error) {
+func (h *Handler) simulateMsgs(stdCtx context.Context, svcCtx services.CosmosEndpoint, sdkMsgs []sdk.Msg, sequence uint64) (uint64, error) {
 	// Setup encoding config
 	interfaceRegistry := codectypes.NewInterfaceRegistry()
 	cryptocodec.RegisterInterfaces(interfaceRegistry)
@@ -1242,7 +1239,7 @@ func (h *Handler) simulateMsgs(stdCtx context.Context, svcCtx services.Context, 
 // sendCosmosTxBatchWithSplitting handles gas simulation, clamping, fee scaling,
 // and optional recursive batch splitting. When allowSplit is false it returns
 // before broadcasting if the batch cannot be submitted as one transaction.
-func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx services.Context, sdkMsgs []sdk.Msg, accountNumber, sequence uint64, allowSplit bool) (uint64, int, error) {
+func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx services.CosmosEndpoint, sdkMsgs []sdk.Msg, accountNumber, sequence uint64, allowSplit bool) (uint64, int, error) {
 	if len(sdkMsgs) == 0 {
 		return sequence, 0, nil
 	}
@@ -1529,18 +1526,18 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 // the current chain state at the start of each iteration. Any messages/packets successfully
 // committed by the earlier succeeded sub-batches will not be included in the retried batch.
 // Downstream Cosmos modules/contracts are idempotent and tolerate already-processed packets safely.
-func (h *Handler) SendCosmosTxBatch(stdCtx context.Context, svcCtx services.Context, msgs []any) error {
+func (h *Handler) SendCosmosTxBatch(stdCtx context.Context, svcCtx services.CosmosEndpoint, msgs []any) error {
 	return h.sendCosmosTxBatch(stdCtx, svcCtx, msgs, true)
 }
 
 // SendCosmosTxBatchAtomic sends every message in exactly one Cosmos
 // transaction. Unlike SendCosmosTxBatch it refuses to recursively split on a
 // failed simulation or block-gas overflow, preserving update+packet atomicity.
-func (h *Handler) SendCosmosTxBatchAtomic(stdCtx context.Context, svcCtx services.Context, msgs []any) error {
+func (h *Handler) SendCosmosTxBatchAtomic(stdCtx context.Context, svcCtx services.CosmosEndpoint, msgs []any) error {
 	return h.sendCosmosTxBatch(stdCtx, svcCtx, msgs, false)
 }
 
-func (h *Handler) sendCosmosTxBatch(stdCtx context.Context, svcCtx services.Context, msgs []any, allowSplit bool) error {
+func (h *Handler) sendCosmosTxBatch(stdCtx context.Context, svcCtx services.CosmosEndpoint, msgs []any, allowSplit bool) error {
 	if len(msgs) == 0 {
 		return nil
 	}
@@ -1607,7 +1604,7 @@ func (h *Handler) sendCosmosTxBatch(stdCtx context.Context, svcCtx services.Cont
 }
 
 // queryAccountInfo queries the account number and sequence for the given address
-func (h *Handler) queryAccountInfo(stdCtx context.Context, svcCtx services.Context, address string) (uint64, uint64, error) {
+func (h *Handler) queryAccountInfo(stdCtx context.Context, svcCtx services.CosmosEndpoint, address string) (uint64, uint64, error) {
 	// Build the query request
 	queryReq := &authtypes.QueryAccountRequest{
 		Address: address,
@@ -1654,7 +1651,7 @@ func (h *Handler) queryAccountInfo(stdCtx context.Context, svcCtx services.Conte
 }
 
 // waitForTxResult polls the chain until the transaction with the given hash is included in a block or the timeout expires.
-func (h *Handler) waitForTxResult(stdCtx context.Context, svcCtx services.Context, txHash []byte, timeout time.Duration) (*coretypes.ResultTx, error) {
+func (h *Handler) waitForTxResult(stdCtx context.Context, svcCtx services.CosmosEndpoint, txHash []byte, timeout time.Duration) (*coretypes.ResultTx, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		// Abort promptly on shutdown. Without this the poll loop runs until the local
@@ -1730,10 +1727,10 @@ func waitForReceipts(ctx context.Context, client *ethclient.Client, hashes []com
 	}
 }
 
-func (h *Handler) bumpGasAndResubmit(stdCtx context.Context, ctx services.Context, tx *types.Transaction, auth *bind.TransactOpts, attempt int) (*types.Transaction, error) {
+func (h *Handler) bumpGasAndResubmit(stdCtx context.Context, endpoint services.EVMEndpoint, tx *types.Transaction, auth *bind.TransactOpts, attempt int) (*types.Transaction, error) {
 	currentGasPrice := tx.GasPrice()
 
-	suggestedGasPrice, err := ctx.EthClient().SuggestGasPrice(stdCtx)
+	suggestedGasPrice, err := endpoint.EthClient().SuggestGasPrice(stdCtx)
 	if err != nil {
 		suggestedGasPrice = currentGasPrice
 	}
@@ -1756,7 +1753,7 @@ func (h *Handler) bumpGasAndResubmit(stdCtx context.Context, ctx services.Contex
 		bumpedFeeCap := new(big.Int).Mul(feeCap, big.NewInt(115))
 		bumpedFeeCap.Div(bumpedFeeCap, big.NewInt(100))
 
-		if suggestedTipCap, err := ctx.EthClient().SuggestGasTipCap(stdCtx); err == nil {
+		if suggestedTipCap, err := endpoint.EthClient().SuggestGasTipCap(stdCtx); err == nil {
 			if suggestedTipCap.Cmp(bumpedTipCap) > 0 {
 				bumpedTipCap = suggestedTipCap
 			}
@@ -1805,7 +1802,7 @@ func (h *Handler) bumpGasAndResubmit(stdCtx context.Context, ctx services.Contex
 
 	sendCtx, cancel := context.WithTimeout(stdCtx, ethTxBroadcastTimeout)
 	defer cancel()
-	sendErr := ctx.EthClient().SendTransaction(sendCtx, signedTx)
+	sendErr := endpoint.EthClient().SendTransaction(sendCtx, signedTx)
 	if sendErr != nil {
 		return nil, fmt.Errorf("failed to send bumped transaction: %w", sendErr)
 	}
@@ -1815,7 +1812,7 @@ func (h *Handler) bumpGasAndResubmit(stdCtx context.Context, ctx services.Contex
 
 func (h *Handler) executeWithRetryAndResubmission(
 	stdCtx context.Context,
-	ctx services.Context,
+	endpoint services.EVMEndpoint,
 	privateKey *ecdsa.PrivateKey,
 	gasLimit uint64,
 	senderFn func(auth *bind.TransactOpts) (*types.Transaction, error),
@@ -1826,7 +1823,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 	}
 	fromAddress := crypto.PubkeyToAddress(*publicKey)
 
-	chainIdInt, err := ctx.EthClient().ChainID(stdCtx)
+	chainIdInt, err := endpoint.EthClient().ChainID(stdCtx)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("invalid chain id: %v", err)
 	}
@@ -1862,10 +1859,10 @@ func (h *Handler) executeWithRetryAndResubmission(
 	var isEIP1559 bool
 	var suggestedTip *big.Int
 	var baseFee *big.Int
-	if tip, err := ctx.EthClient().SuggestGasTipCap(stdCtx); err == nil {
+	if tip, err := endpoint.EthClient().SuggestGasTipCap(stdCtx); err == nil {
 		isEIP1559 = true
 		suggestedTip = tip
-		if header, err := ctx.EthClient().HeaderByNumber(stdCtx, nil); err == nil && header.BaseFee != nil {
+		if header, err := endpoint.EthClient().HeaderByNumber(stdCtx, nil); err == nil && header.BaseFee != nil {
 			baseFee = header.BaseFee
 		} else {
 			baseFee = big.NewInt(1000000000) // fallback 1 Gwei
@@ -1875,7 +1872,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 	for nonceAttempt := 1; nonceAttempt <= maxNonceRetries; nonceAttempt++ {
 		h.mu.Lock()
 		if !h.nonceValid {
-			n, err := ctx.EthClient().PendingNonceAt(stdCtx, fromAddress)
+			n, err := endpoint.EthClient().PendingNonceAt(stdCtx, fromAddress)
 			if err != nil {
 				h.mu.Unlock()
 				return nil, 0, 0, fmt.Errorf("failed to get pending nonce: %w", err)
@@ -1911,7 +1908,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 			auth.GasFeeCap = gasFeeCap
 			auth.GasPrice = nil
 		} else {
-			gasPrice, err := ctx.EthClient().SuggestGasPrice(stdCtx)
+			gasPrice, err := endpoint.EthClient().SuggestGasPrice(stdCtx)
 			if err != nil {
 				h.nonceValid = false
 				h.mu.Unlock()
@@ -1932,7 +1929,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 			// Clear the current base fee: the suggestion was read a moment ago and a
 			// rising base fee makes it stale, which the node rejects outright rather
 			// than queueing.
-			gasPrice = gasPriceWithBaseFeeHeadroom(stdCtx, ctx, gasPrice)
+			gasPrice = gasPriceWithBaseFeeHeadroom(stdCtx, endpoint, gasPrice)
 
 			auth.GasPrice = gasPrice
 			auth.GasTipCap = nil
@@ -2026,7 +2023,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 		}
 
 		receiptCtx, cancel := context.WithTimeout(stdCtx, attemptTimeout)
-		receipt, waitErr := waitForReceipts(receiptCtx, ctx.EthClient(), sentHashes)
+		receipt, waitErr := waitForReceipts(receiptCtx, endpoint.EthClient(), sentHashes)
 		cancel()
 
 		if waitErr == nil {
@@ -2041,7 +2038,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 					Value:    tx.Value(),
 					Data:     tx.Data(),
 				}
-				_, callErr := ctx.EthClient().CallContract(stdCtx, callMsg, receipt.BlockNumber)
+				_, callErr := endpoint.EthClient().CallContract(stdCtx, callMsg, receipt.BlockNumber)
 				if callErr != nil {
 					log.Printf("[EthTxSender] Revert reason: %v", callErr)
 					type dataErr interface {
@@ -2069,7 +2066,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 			}
 
 			log.Printf("[EthTxSender] Tx %s not mined in %s, bumping gas price...", tx.Hash().Hex(), attemptTimeout)
-			bumpedTx, bumpErr := h.bumpGasAndResubmit(stdCtx, ctx, tx, auth, attempt)
+			bumpedTx, bumpErr := h.bumpGasAndResubmit(stdCtx, endpoint, tx, auth, attempt)
 			if bumpErr != nil {
 				log.Printf("[EthTxSender] Gas bump attempt %d failed: %v. Will continue waiting.", attempt, bumpErr)
 			} else {

@@ -35,8 +35,8 @@ import (
 
 // buildCosmosToL2Dest builds one Cosmos→L2 destination: its Tendermint RPC (source
 // side) and the L2's exec RPC + SpectreClient + router client id (destination side),
-// sharing the passed-in prover. It returns the built Services, its Context, and a
-// cleanup that stops the chain clients. Unlike buildCosmosToEthSource it needs no
+// sharing the passed-in prover. It returns the built Services, composition-root
+// dependencies, and a cleanup that stops the chain clients. Unlike buildCosmosToEthSource it needs no
 // beacon URL and no eth-client-on-Cosmos id — those belong to the ETH→Cosmos reverse
 // direction, which this path does not run.
 func buildCosmosToL2Dest(
@@ -45,8 +45,8 @@ func buildCosmosToL2Dest(
 	batchCfg services.BatchConfig,
 	p *prover.EcipProver,
 	txHandler services.TransactionHandler,
-) (*services.Services, services.Context, func(), error) {
-	var zero services.Context
+) (*services.Services, services.RelayDeps, func(), error) {
+	var zero services.RelayDeps
 
 	ethClient, err := ethclient.Dial(c2l.EthRpcUrl)
 	if err != nil {
@@ -71,34 +71,40 @@ func buildCosmosToL2Dest(
 
 	// No beacon URL and no eth-client-on-Cosmos id: the Cosmos→L2 direction consumes
 	// neither (both belong to the ETH→Cosmos beacon path).
-	ctx := services.NewCtxWithBeacon(cosmosClient, ethClient, ethWsClient, c2l.EthWsUrl, "", "")
-
 	if c2l.ICS26ClientID == "" {
 		return nil, zero, nil, fmt.Errorf("ics26_client_id is required in cosmos_to_l2 config")
 	}
-	ctx.SetCosmosRouterClientID(c2l.ICS26ClientID)
-	ctx.SetAddresses(
-		c2l.ICS26Address, c2l.SignatureVerifier, c2l.Membership,
-		c2l.Misbehaviour, c2l.UpdateClient, c2l.ICS26Address,
-	)
 	if c2l.SpectreClient == "" {
 		return nil, zero, nil, fmt.Errorf("spectre_client address is required in cosmos_to_l2 config")
 	}
-	ctx.SetClient(common.HexToAddress(c2l.SpectreClient))
-
 	if err := cosmosClient.Start(); err != nil {
 		return nil, zero, nil, fmt.Errorf("failed to start Cosmos WS client: %w", err)
 	}
-	cleanup := func() { ctx.StopClient() }
-
 	cosmosConfig := buildCosmosConfig(c2l, batchCfg)
-	ctx.Config = cosmosConfig
+	deps := services.RelayDeps{
+		Cosmos: services.CosmosEndpoint{Client: cosmosClient},
+		EVM: services.EVMEndpoint{Client: ethClient, WSURL: c2l.EthWsUrl, Contracts: services.EVMContracts{
+			Router: common.HexToAddress(c2l.ICS26Address), SignatureVerifier: common.HexToAddress(c2l.SignatureVerifier),
+			Membership: common.HexToAddress(c2l.Membership), Misbehaviour: common.HexToAddress(c2l.Misbehaviour),
+			UpdateClient: common.HexToAddress(c2l.UpdateClient), RoleManager: common.HexToAddress(c2l.ICS26Address), SpectreClient: common.HexToAddress(c2l.SpectreClient),
+		}},
+		IDs: services.ClientIDs{CosmosOnEVM: c2l.ICS26ClientID}, Config: cosmosConfig, Logger: log.Default(),
+	}
+	cleanup := func() {
+		if err := cosmosClient.Stop(); err != nil {
+			log.Printf("failed to terminate cosmos client: %v", err)
+		}
+		ethClient.Close()
+		if ethWsClient != nil {
+			ethWsClient.Close()
+		}
+	}
 
 	logger.Sugar().Infof("cosmos->l2 dest %q: spectre_client=%s l2_rpc=%s tm=%s",
 		c2l.ICS26ClientID, c2l.SpectreClient, c2l.EthRpcUrl, c2l.TmRpcUrl)
 
 	svc := services.New(txHandler, p, cosmosConfig)
-	return svc, ctx, cleanup, nil
+	return svc, deps, cleanup, nil
 }
 
 // runCosmosToL2Engine drives the Cosmos→L2 direction of one destination: the same
@@ -106,7 +112,7 @@ func buildCosmosToL2Dest(
 // SpectreClient destination → groth16 builder, with timeout scanning + pinned-set
 // rotation), but WITHOUT the ETH→Cosmos beacon module. It returns nil on clean context
 // cancellation, or the module's first fatal error.
-func runCosmosToL2Engine(ctx context.Context, svc *services.Services, dstCtx services.Context) error {
+func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps services.RelayDeps) error {
 	worker := svc.Worker()
 	bb := svc.BatchBuilder
 	cfg := svc.CosmosConfig()
@@ -132,11 +138,11 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, dstCtx ser
 
 	// Pinned-set rotation cadence from the on-chain trusting period (a derivation
 	// failure is FATAL, as in the Cosmos→ETH path, so the client can't silently expire).
-	periodicUpdateInterval, err := svc.PinnedSetRotationInterval(dstCtx)
+	periodicUpdateInterval, err := svc.PinnedSetRotationInterval(deps.EVM)
 	if err != nil {
 		return fmt.Errorf("cosmos->l2: derive pinned-set rotation interval: %w", err)
 	}
-	initialRotationDelay, err := svc.PinnedSetRotationDueIn(dstCtx)
+	initialRotationDelay, err := svc.PinnedSetRotationDueIn(deps.Cosmos, deps.EVM)
 	if err != nil {
 		log.Printf("[adapter cosmos->l2] derive initial rotation delay: %v; rotating on startup", err)
 		initialRotationDelay = 0
@@ -144,14 +150,16 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, dstCtx ser
 
 	module := relay.NewModule(
 		"cosmos->l2",
-		dstCtx.CosmosRouterClientID(),
-		cosmos.NewSource(dstCtx, bb),
-		evm.NewDestination(worker, dstCtx),
-		cosmos.NewGroth16Builder(worker, dstCtx, cfg.ProofType, cfg.TrustLevel),
-		relay.WithTimeoutScanner(0, func(c context.Context) { svc.ScanCosmosTimeouts(c, dstCtx) }),
+		deps.IDs.CosmosOnEVM,
+		cosmos.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.FetchTimeout, deps.Config.BatchConfig, deps.Logger, bb),
+		evm.NewDestination(worker, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM),
+		cosmos.NewGroth16Builder(worker, deps.Cosmos, deps.EVM, deps.Config.FetchTimeout, deps.Config.RotationThreshold, cfg.ProofType, cfg.TrustLevel),
+		relay.WithTimeoutScanner(0, func(c context.Context) {
+			svc.ScanCosmosTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos)
+		}),
 		relay.WithPacketTracker(trackCosmosPending, untrackCosmosPending),
 		relay.WithPeriodicUpdate(periodicUpdateInterval, initialRotationDelay, func(c context.Context) error {
-			return svc.RotatePinnedSet(c, dstCtx)
+			return svc.RotatePinnedSet(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM)
 		}),
 	)
 

@@ -191,8 +191,10 @@ does not match the requested L2 height and finality policy.
   `runAdapterEngine` is the sole `start` engine.
 - **L2 adapters** (`l2rollup/`, `l2-opstack` / `l2-arbitrum`): skeleton in place;
   proof assembly + event listener TODO (see the L2 section above).
-- **Next**: wire the L2 proof assembly; dissolve the `services.Context`
-  god-object into per-module context.
+- The former shared god-object has been removed. The command layer assembles
+  `services.RelayDeps`, while adapters and transaction handlers receive only the
+  scoped `CosmosEndpoint`, `EVMEndpoint`, `ClientIDs`, and config values they
+  consume.
 
 Multi-source (many Cosmos chains, one ETH) works unchanged: `cmd` runs one
 independent `runAdapterEngine` per `cosmos_to_eth` source, sharing the prover,

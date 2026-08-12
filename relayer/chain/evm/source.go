@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"fmt"
+	"log"
 	"math/big"
 	"strconv"
 	"time"
@@ -17,20 +18,24 @@ import (
 )
 
 // Source is the Ethereum L1 implementation of chain.Source for the ETH->Cosmos
-// direction. It holds a services.Context because the beacon reads go through it,
+// direction. It holds the endpoints and IDs needed by beacon proofs and state reads,
 // and the shared *services.BatchBuilder so Subscribe drains the same queue the
 // Services instance owns (where the ETH subscriber records EthPendingTracker
 // entries) and can re-queue handler failures (with a waiting backoff) — the
 // re-queue behavior of the legacy handleEth, expressed generically.
 // Constructed by the wiring, not the cfg-only registry.
 type Source struct {
-	svcCtx services.Context
-	bb     *services.BatchBuilder
+	cosmos      services.CosmosEndpoint
+	evm         services.EVMEndpoint
+	ids         services.ClientIDs
+	batchConfig services.BatchConfig
+	logger      *log.Logger
+	bb          *services.BatchBuilder
 }
 
-// NewSource wires the Ethereum source to the shared context + batch builder.
-func NewSource(svcCtx services.Context, bb *services.BatchBuilder) *Source {
-	return &Source{svcCtx: svcCtx, bb: bb}
+// NewSource wires the Ethereum source to its endpoints and the shared batch builder.
+func NewSource(cosmos services.CosmosEndpoint, evm services.EVMEndpoint, ids services.ClientIDs, batchConfig services.BatchConfig, logger *log.Logger, bb *services.BatchBuilder) *Source {
+	return &Source{cosmos: cosmos, evm: evm, ids: ids, batchConfig: batchConfig, logger: logger, bb: bb}
 }
 
 func (s *Source) Chain() chain.ChainType { return chain.Ethereum }
@@ -60,7 +65,7 @@ func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 // block number of the finalized header — the single finality-gated height both
 // LatestHeight and RelayableHeight report.
 func (s *Source) finalizedExecBlock(_ context.Context) (uint64, error) {
-	beaconURL := s.svcCtx.BeaconAPIURL()
+	beaconURL := s.evm.BeaconAPIURL
 	if beaconURL == "" {
 		return 0, fmt.Errorf("eth source: beacon API URL is not configured")
 	}
@@ -94,11 +99,11 @@ const ethDrainInterval = 500 * time.Millisecond
 // ETH-origin timeouts are handled by the async scanner, not this path.
 func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []chain.Event) []int) error {
 	sub := subscriber.NewSubscriber()
-	go sub.SubscribeEth(s.svcCtx, s.bb)
+	go sub.SubscribeEth(s.cosmos, s.evm, s.ids, s.logger, s.bb)
 
 	// Use the configured batch window so CheckEth returns multi-packet batches the
 	// handler can fold into one multicall (BatchSize=1 would defeat that).
-	cfg := s.svcCtx.Config.BatchConfig
+	cfg := s.batchConfig
 	ch := make(chan services.EthBatch, 16)
 
 	go func() {
@@ -215,7 +220,7 @@ func (s *Source) MembershipProof(_ context.Context, packet []byte, _ uint64, eve
 	}
 	path := services.EthPath(clientID, pkt.Sequence, pathType)
 	return relayerclient.GetEthMembershipProof(
-		s.svcCtx.EthClient(), *s.svcCtx.RouterContract(), path,
+		s.evm.EthClient(), s.evm.Contracts.Router, path,
 		ethcommon.HexToHash(services.ICS26_IBC_STORAGE_SLOT),
 		new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber),
 	)
@@ -235,7 +240,7 @@ func (s *Source) decodePacketAndClientState(packet []byte) (channeltypesv2.Packe
 	if err := pkt.Unmarshal(packet); err != nil {
 		return channeltypesv2.Packet{}, nil, fmt.Errorf("eth source: decode packet: %w", err)
 	}
-	cs, err := relayerclient.GetEthereumClientState(s.svcCtx.CosmosClient(), s.svcCtx.EthClientID())
+	cs, err := relayerclient.GetEthereumClientState(s.cosmos.CosmosClient(), s.ids.EVMOnCosmos)
 	if err != nil {
 		return channeltypesv2.Packet{}, nil, fmt.Errorf("eth source: eth client state: %w", err)
 	}

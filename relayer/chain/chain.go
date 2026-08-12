@@ -124,7 +124,7 @@ type Source interface {
 	// goroutine keeps running (harmless while the process is exiting). Do NOT
 	// restart Subscribe in-process — a second subscriber would start with a fresh
 	// dedup map and enqueue duplicate events. (Threading ctx into the subscriber
-	// loop is a follow-up; see the Context-dissolution work.)
+	// loop remains a subscriber-cancellation follow-up.)
 	//
 	// Batching (not per-event) is deliberate: it lets the destination fold N
 	// packet messages into one multicall (amortizing the ~21k per-tx intrinsic gas

@@ -19,21 +19,22 @@ import (
 
 // Destination is the Cosmos implementation of chain.Destination for the ETH->Cosmos
 // direction: it hosts the 08-wasm Ethereum beacon light client and is where the
-// beacon update + ETH-origin packets are submitted. It holds the shared worker +
-// context because SendCosmosTxBatch and the pre-submit catch-up need them; it is
-// constructed by the wiring, not the cfg-only registry.
+// beacon update + ETH-origin packets are submitted. It holds the worker, Cosmos
+// endpoint, and Ethereum client ID needed by that path; it is constructed by the
+// wiring, not the cfg-only registry.
 type Destination struct {
-	worker *services.Worker
-	svcCtx services.Context
+	worker   *services.Worker
+	cosmos   services.CosmosEndpoint
+	clientID string
 }
 
 type atomicCosmosTxHandler interface {
-	SendCosmosTxBatchAtomic(context.Context, services.Context, []any) error
+	SendCosmosTxBatchAtomic(context.Context, services.CosmosEndpoint, []any) error
 }
 
-// NewDestination wires the Cosmos destination to the shared worker + context.
-func NewDestination(worker *services.Worker, svcCtx services.Context) *Destination {
-	return &Destination{worker: worker, svcCtx: svcCtx}
+// NewDestination wires the Cosmos destination to the worker and Cosmos endpoint.
+func NewDestination(worker *services.Worker, cosmos services.CosmosEndpoint, clientID string) *Destination {
+	return &Destination{worker: worker, cosmos: cosmos, clientID: clientID}
 }
 
 func (d *Destination) Chain() chain.ChainType { return chain.Cosmos }
@@ -58,7 +59,7 @@ func (d *Destination) UpdateClient(ctx context.Context, clientID string, update 
 		return nil // client already current
 	}
 	if clientID == "" {
-		clientID = d.svcCtx.EthClientID()
+		clientID = d.clientID
 	}
 	signer, err := d.worker.TxHandler.CosmosSignerAddress()
 	if err != nil {
@@ -72,12 +73,12 @@ func (d *Destination) UpdateClient(ctx context.Context, clientID string, update 
 	if err != nil {
 		return err
 	}
-	ethClientState, err := relayerclient.GetEthereumClientState(d.svcCtx.CosmosClient(), d.svcCtx.EthClientID())
+	ethClientState, err := relayerclient.GetEthereumClientState(d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
-	d.worker.WaitForCosmosCatchUp(ctx, d.svcCtx, ethClientState, sigSlot)
-	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.svcCtx, msgs); err != nil {
+	d.worker.WaitForCosmosCatchUp(ctx, d.cosmos, ethClientState, sigSlot)
+	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.cosmos, msgs); err != nil {
 		return fmt.Errorf("cosmos dest: submit beacon update (exec block %d): %w", update.Height, err)
 	}
 	return nil
@@ -153,7 +154,7 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 	if err != nil {
 		return fmt.Errorf("cosmos dest: signer address: %w", err)
 	}
-	ethClientState, err := relayerclient.GetEthereumClientState(d.svcCtx.CosmosClient(), d.svcCtx.EthClientID())
+	ethClientState, err := relayerclient.GetEthereumClientState(d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
@@ -183,7 +184,7 @@ func (d *Destination) RelayWithUpdate(ctx context.Context, clientID string, upda
 		return fmt.Errorf("cosmos dest: transaction handler does not support atomic update/packet batches")
 	}
 	if clientID == "" {
-		clientID = d.svcCtx.EthClientID()
+		clientID = d.clientID
 	}
 	signer, err := d.worker.TxHandler.CosmosSignerAddress()
 	if err != nil {
@@ -205,16 +206,16 @@ func (d *Destination) RelayWithUpdate(ctx context.Context, clientID string, upda
 	if err != nil {
 		return err
 	}
-	ethClientState, err := relayerclient.GetEthereumClientState(d.svcCtx.CosmosClient(), d.svcCtx.EthClientID())
+	ethClientState, err := relayerclient.GetEthereumClientState(d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
-	d.worker.WaitForCosmosCatchUp(ctx, d.svcCtx, ethClientState, sigSlot)
+	d.worker.WaitForCosmosCatchUp(ctx, d.cosmos, ethClientState, sigSlot)
 
 	msgs := make([]any, 0, len(updateMsgs)+len(packetMsgs))
 	msgs = append(msgs, updateMsgs...)
 	msgs = append(msgs, packetMsgs...)
-	if err := atomicSender.SendCosmosTxBatchAtomic(ctx, d.svcCtx, msgs); err != nil {
+	if err := atomicSender.SendCosmosTxBatchAtomic(ctx, d.cosmos, msgs); err != nil {
 		if errors.Is(err, services.ErrPermanentRelayFailure) {
 			return chain.Permanent(err)
 		}
@@ -262,7 +263,7 @@ func (d *Destination) sendPacketBatch(ctx context.Context, msgs []any) error {
 	// as chain.Permanent so the module DROPS the batch rather than re-queueing it
 	// forever (each retry re-runs the beacon client update and drains gas). CheckTx/
 	// broadcast/RPC errors stay transient and are re-queued.
-	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.svcCtx, msgs); err != nil {
+	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.cosmos, msgs); err != nil {
 		if errors.Is(err, services.ErrPermanentRelayFailure) {
 			return chain.Permanent(err)
 		}
@@ -287,7 +288,7 @@ func (d *Destination) HasPacketReceipt(_ context.Context, _ []byte) (bool, error
 // refresh routine never lets it lapse (a wrong-too-late value would expire the
 // client, the failure class we care about most).
 func (d *Destination) ClientExpiresAt(_ context.Context, _ string) (time.Time, error) {
-	cs, err := relayerclient.GetEthereumClientState(d.svcCtx.CosmosClient(), d.svcCtx.EthClientID())
+	cs, err := relayerclient.GetEthereumClientState(d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
