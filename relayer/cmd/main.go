@@ -1192,15 +1192,21 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 	}
 	defer cosmosClient.Stop()
 
-	// Idempotency: skip the deploy if a contract already lives at the configured
-	// spectre_client address, so re-running after a partial failure does not
-	// redeploy ICS07.
+	// Idempotency: skip the deploy when the configured spectre_client is a light
+	// client this run can actually keep, so re-running after a partial failure
+	// does not redeploy ICS07. Reusability is a property of the client's state,
+	// not of the address having code — see reusableSpectreClientAt.
 	if cfg.CosmosToEthConfig.SpectreClient != "" {
 		addr := common.HexToAddress(cfg.CosmosToEthConfig.SpectreClient)
-		if code, err := deps.EVM.EthClient().CodeAt(context.Background(), addr, nil); err == nil && len(code) > 0 {
-			logger.Sugar().Infof("create-clients-eth: spectre_client already deployed at %s; skipping deploy", addr.Hex())
+		ok, reason := reusableSpectreClientAt(deps.EVM, cosmosClient, addr, cfg.CosmosToEthConfig.ICS26ClientID, wasmClientID)
+		if ok {
+			logger.Sugar().Infof(
+				"create-clients-eth: reusing the SpectreClient already deployed at %s; skipping deploy", addr.Hex())
 			return addr, nil
 		}
+		logger.Sugar().Warnf(
+			"create-clients-eth: not reusing spectre_client %s — %s; deploying a new one",
+			addr.Hex(), reason)
 	}
 
 	if trustingPeriod == 0 {
@@ -1271,6 +1277,7 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			logConfigTarget(logger, "create-clients-cosmos", configPath, cfg)
 			if err := preflightCreateClients(cfg); err != nil {
 				return err
 			}
@@ -1389,6 +1396,7 @@ func CreateClientsEth(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			logConfigTarget(logger, "create-clients-eth", configPath, cfg)
 			if err := preflightCreateClients(cfg); err != nil {
 				return err
 			}
