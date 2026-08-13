@@ -9,6 +9,7 @@ import (
 	"log"
 	"math/big"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -91,8 +92,21 @@ func validatorCacheRaceErrorName(callErr error) (string, bool) {
 }
 
 type Handler struct {
-	mu            sync.Mutex
-	cosmosMu      sync.Mutex
+	mu           sync.Mutex
+	cosmosMu     sync.Mutex
+	senderStates map[evmNonceKey]*ethTxSenderState
+}
+
+// evmNonceKey identifies one independent EVM nonce domain. The relayer shares
+// one Handler across chains and the incident command uses a separate signer.
+type evmNonceKey struct {
+	chainID string
+	address common.Address
+}
+
+// ethTxSenderState stores nonce and replacement-fee state for one chain/account
+// pair. Callers must hold Handler.mu while accessing it.
+type ethTxSenderState struct {
 	nonce         uint64
 	nonceValid    bool
 	lastNonce     uint64
@@ -101,9 +115,57 @@ type Handler struct {
 	lastGasTipCap *big.Int
 }
 
+func (h *Handler) senderState(chainID string, sender common.Address) *ethTxSenderState {
+	if h.senderStates == nil {
+		h.senderStates = make(map[evmNonceKey]*ethTxSenderState)
+	}
+	key := evmNonceKey{chainID: chainID, address: sender}
+	state := h.senderStates[key]
+	if state == nil {
+		state = &ethTxSenderState{}
+		h.senderStates[key] = state
+	}
+	return state
+}
+
 var ethTxBroadcastTimeout = 30 * time.Second
 var ethTxReceiptTimeout = 45 * time.Second
 var ethTxReceiptPollInterval = 2 * time.Second
+
+const defaultMisbehaviourGasLimit uint64 = 16_000_000
+
+// MisbehaviourGasLimit returns the configured EVM gas limit for an incident
+// submission. Zero and malformed overrides fail before proof generation.
+func MisbehaviourGasLimit() (uint64, error) {
+	gasText := os.Getenv("ETH_MISBEHAVIOUR_GAS_LIMIT")
+	if gasText == "" {
+		return defaultMisbehaviourGasLimit, nil
+	}
+	gasLimit, err := strconv.ParseUint(gasText, 10, 64)
+	if err != nil || gasLimit == 0 {
+		return 0, fmt.Errorf("invalid ETH_MISBEHAVIOUR_GAS_LIMIT %q", gasText)
+	}
+	return gasLimit, nil
+}
+
+func misbehaviourPrivateKey() (*ecdsa.PrivateKey, error) {
+	privateKeyText := os.Getenv("MISBEHAVIOUR_PRIVATE_KEY")
+	if privateKeyText == "" {
+		return nil, fmt.Errorf("MISBEHAVIOUR_PRIVATE_KEY environment variable is required")
+	}
+	privateKey, err := keys.RestoreKey(privateKeyText)
+	if err != nil {
+		return nil, fmt.Errorf("invalid MISBEHAVIOUR_PRIVATE_KEY: %w", err)
+	}
+	return privateKey, nil
+}
+
+// ValidateMisbehaviourPrivateKey validates the dedicated key before expensive
+// proving begins.
+func ValidateMisbehaviourPrivateKey() error {
+	_, err := misbehaviourPrivateKey()
+	return err
+}
 
 const ethDeployGasHeadroomPercent uint64 = 20
 
@@ -123,6 +185,12 @@ func routerManagesProofSubmission(endpoint services.EVMEndpoint) bool {
 		return false
 	}
 	return *roleManager == *router
+}
+
+// RouterManagesProofSubmission reports whether proof calls must route through
+// ICS26Router rather than directly to SpectreClient.
+func RouterManagesProofSubmission(endpoint services.EVMEndpoint) bool {
+	return routerManagesProofSubmission(endpoint)
 }
 
 // callTrace mirrors the geth callTracer output. We only need the gasUsed of
@@ -571,6 +639,101 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 			txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
 	}
 
+	return nil
+}
+
+// SubmitMisbehaviour submits proof-backed same-height equivocation evidence
+// with the dedicated incident-response signer. It intentionally stays outside
+// SendEthTx's generic message switch so it cannot fall back to ETH_PRIVATE_KEY.
+func (h *Handler) SubmitMisbehaviour(
+	stdCtx context.Context,
+	endpoint services.EVMEndpoint,
+	cosmosRouterClientID string,
+	misbehaviourMsg []byte,
+) error {
+	if len(misbehaviourMsg) == 0 {
+		return fmt.Errorf("empty misbehaviour message")
+	}
+	if endpoint.EthClient() == nil || endpoint.SpectreClientContract() == nil ||
+		*endpoint.SpectreClientContract() == (common.Address{}) {
+		return fmt.Errorf("SpectreClient contract and EVM RPC are required")
+	}
+	privateKey, err := misbehaviourPrivateKey()
+	if err != nil {
+		return err
+	}
+	publicKey, err := keys.PublicKey(privateKey)
+	if err != nil {
+		return fmt.Errorf("failed to derive misbehaviour key address: %w", err)
+	}
+	fromAddress := crypto.PubkeyToAddress(*publicKey)
+
+	spectre, err := spectreContract.NewContractSpectreClient(*endpoint.SpectreClientContract(), endpoint.EthClient())
+	if err != nil {
+		return fmt.Errorf("failed to bind Spectre client: %w", err)
+	}
+	role, err := spectre.MISBEHAVIOURSUBMITTERROLE(&bind.CallOpts{Context: stdCtx})
+	if err != nil {
+		return fmt.Errorf("query MISBEHAVIOUR_SUBMITTER_ROLE: %w", err)
+	}
+	permissionless, err := spectre.HasRole(&bind.CallOpts{Context: stdCtx}, role, common.Address{})
+	if err != nil {
+		return fmt.Errorf("query permissionless misbehaviour role: %w", err)
+	}
+
+	useRouter := routerManagesProofSubmission(endpoint)
+	var router *contractICS26Router.ContractICS26Router
+	if useRouter {
+		if endpoint.RouterContract() == nil || *endpoint.RouterContract() == (common.Address{}) {
+			return fmt.Errorf("router contract address is required")
+		}
+		if cosmosRouterClientID == "" {
+			return fmt.Errorf("cosmos router client id is required")
+		}
+		routerHasRole, roleErr := spectre.HasRole(
+			&bind.CallOpts{Context: stdCtx}, role, *endpoint.RouterContract(),
+		)
+		if roleErr != nil {
+			return fmt.Errorf("query router misbehaviour role: %w", roleErr)
+		}
+		if !permissionless && !routerHasRole {
+			return fmt.Errorf(
+				"ICS26Router %s does not hold SpectreClient.MISBEHAVIOUR_SUBMITTER_ROLE",
+				endpoint.RouterContract().Hex(),
+			)
+		}
+		router, err = contractICS26Router.NewContractICS26Router(*endpoint.RouterContract(), endpoint.EthClient())
+		if err != nil {
+			return fmt.Errorf("failed to bind ICS26 router: %w", err)
+		}
+	} else if !permissionless {
+		signerHasRole, roleErr := spectre.HasRole(&bind.CallOpts{Context: stdCtx}, role, fromAddress)
+		if roleErr != nil {
+			return fmt.Errorf("query signer misbehaviour role: %w", roleErr)
+		}
+		if !signerHasRole {
+			return fmt.Errorf(
+				"misbehaviour signer %s does not hold SpectreClient.MISBEHAVIOUR_SUBMITTER_ROLE",
+				fromAddress.Hex(),
+			)
+		}
+	}
+
+	gasLimit, err := MisbehaviourGasLimit()
+	if err != nil {
+		return err
+	}
+	sender := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		if useRouter {
+			return router.SubmitMisbehaviour(auth, cosmosRouterClientID, misbehaviourMsg)
+		}
+		return spectre.Misbehaviour(auth, misbehaviourMsg)
+	}
+	receipt, _, _, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, gasLimit, sender)
+	if err != nil {
+		return fmt.Errorf("submit misbehaviour: %w", err)
+	}
+	log.Printf("[SubmitMisbehaviour] report signed by %s confirmed in block %d", fromAddress.Hex(), receipt.BlockNumber.Uint64())
 	return nil
 }
 
@@ -1854,32 +2017,33 @@ func (h *Handler) executeWithRetryAndResubmission(
 
 	for nonceAttempt := 1; nonceAttempt <= maxNonceRetries; nonceAttempt++ {
 		h.mu.Lock()
-		if !h.nonceValid {
+		state := h.senderState(chainIdInt.String(), fromAddress)
+		if !state.nonceValid {
 			n, err := endpoint.EthClient().PendingNonceAt(stdCtx, fromAddress)
 			if err != nil {
 				h.mu.Unlock()
 				return nil, 0, 0, fmt.Errorf("failed to get pending nonce: %w", err)
 			}
-			h.nonce = n
-			h.nonceValid = true
+			state.nonce = n
+			state.nonceValid = true
 		}
-		currentNonce := h.nonce
+		currentNonce := state.nonce
 
 		if isEIP1559 {
 			gasTipCap := suggestedTip
 			gasFeeCap := new(big.Int).Add(new(big.Int).Mul(baseFee, big.NewInt(2)), gasTipCap)
 
 			// Enforce minimum floor if this nonce matches the last attempted nonce (e.g. replacing a stuck tx)
-			if currentNonce == h.lastNonce {
-				if h.lastGasTipCap != nil {
-					minTip := new(big.Int).Mul(h.lastGasTipCap, big.NewInt(115))
+			if currentNonce == state.lastNonce {
+				if state.lastGasTipCap != nil {
+					minTip := new(big.Int).Mul(state.lastGasTipCap, big.NewInt(115))
 					minTip.Div(minTip, big.NewInt(100))
 					if gasTipCap.Cmp(minTip) < 0 {
 						gasTipCap = minTip
 					}
 				}
-				if h.lastGasFeeCap != nil {
-					minFee := new(big.Int).Mul(h.lastGasFeeCap, big.NewInt(115))
+				if state.lastGasFeeCap != nil {
+					minFee := new(big.Int).Mul(state.lastGasFeeCap, big.NewInt(115))
 					minFee.Div(minFee, big.NewInt(100))
 					if gasFeeCap.Cmp(minFee) < 0 {
 						gasFeeCap = minFee
@@ -1893,15 +2057,15 @@ func (h *Handler) executeWithRetryAndResubmission(
 		} else {
 			gasPrice, err := endpoint.EthClient().SuggestGasPrice(stdCtx)
 			if err != nil {
-				h.nonceValid = false
+				state.nonceValid = false
 				h.mu.Unlock()
 				return nil, 0, 0, fmt.Errorf("failed to suggest gas price: %w", err)
 			}
 
 			// Enforce minimum floor if this nonce matches the last attempted nonce (e.g. replacing a stuck tx)
-			if currentNonce == h.lastNonce {
-				if h.lastGasPrice != nil {
-					minPrice := new(big.Int).Mul(h.lastGasPrice, big.NewInt(115))
+			if currentNonce == state.lastNonce {
+				if state.lastGasPrice != nil {
+					minPrice := new(big.Int).Mul(state.lastGasPrice, big.NewInt(115))
 					minPrice.Div(minPrice, big.NewInt(100))
 					if gasPrice.Cmp(minPrice) < 0 {
 						gasPrice = minPrice
@@ -1932,23 +2096,23 @@ func (h *Handler) executeWithRetryAndResubmission(
 		if callErr == nil {
 			if signedTx == nil {
 				// senderFn returned (nil, nil) without calling auth.Signer — treat as a bug
-				h.nonceValid = false
+				state.nonceValid = false
 				h.mu.Unlock()
 				return nil, 0, 0, fmt.Errorf("senderFn returned nil transaction without error")
 			}
 			tx = signedTx
 			submitDur = time.Since(submitStart)
 
-			h.nonce++
-			h.lastNonce = tx.Nonce()
+			state.nonce++
+			state.lastNonce = tx.Nonce()
 			if tx.Type() == types.DynamicFeeTxType {
-				h.lastGasFeeCap = tx.GasFeeCap()
-				h.lastGasTipCap = tx.GasTipCap()
-				h.lastGasPrice = nil
+				state.lastGasFeeCap = tx.GasFeeCap()
+				state.lastGasTipCap = tx.GasTipCap()
+				state.lastGasPrice = nil
 			} else {
-				h.lastGasPrice = tx.GasPrice()
-				h.lastGasFeeCap = nil
-				h.lastGasTipCap = nil
+				state.lastGasPrice = tx.GasPrice()
+				state.lastGasFeeCap = nil
+				state.lastGasTipCap = nil
 			}
 			h.mu.Unlock()
 
@@ -1957,7 +2121,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 
 		if isNonceTooLowError(callErr) {
 			log.Printf("[EthTxSender] Nonce %d too low (attempt %d/%d). Resetting nonce cache.", currentNonce, nonceAttempt, maxNonceRetries)
-			h.nonceValid = false
+			state.nonceValid = false
 			h.mu.Unlock()
 			continue
 		}
@@ -1967,16 +2131,16 @@ func (h *Handler) executeWithRetryAndResubmission(
 			tx = signedTx
 			submitDur = time.Since(submitStart)
 
-			h.nonce++
-			h.lastNonce = tx.Nonce()
+			state.nonce++
+			state.lastNonce = tx.Nonce()
 			if tx.Type() == types.DynamicFeeTxType {
-				h.lastGasFeeCap = tx.GasFeeCap()
-				h.lastGasTipCap = tx.GasTipCap()
-				h.lastGasPrice = nil
+				state.lastGasFeeCap = tx.GasFeeCap()
+				state.lastGasTipCap = tx.GasTipCap()
+				state.lastGasPrice = nil
 			} else {
-				h.lastGasPrice = tx.GasPrice()
-				h.lastGasFeeCap = nil
-				h.lastGasTipCap = nil
+				state.lastGasPrice = tx.GasPrice()
+				state.lastGasFeeCap = nil
+				state.lastGasTipCap = nil
 			}
 			h.mu.Unlock()
 
@@ -1984,7 +2148,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 		}
 
 		// Other error: invalidate nonce just in case and return
-		h.nonceValid = false
+		state.nonceValid = false
 		h.mu.Unlock()
 		return nil, 0, 0, fmt.Errorf("contract call failed: %w", callErr)
 	}
@@ -2043,7 +2207,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 		if errors.Is(waitErr, context.DeadlineExceeded) {
 			if attempt >= maxAttempts {
 				h.mu.Lock()
-				h.nonceValid = false
+				h.senderState(chainIdInt.String(), fromAddress).nonceValid = false
 				h.mu.Unlock()
 				return nil, submitDur, time.Since(waitStart), fmt.Errorf("transaction wait mined timed out after %d attempts (last hash: %s): %w", attempt, tx.Hash().Hex(), waitErr)
 			}
@@ -2058,15 +2222,16 @@ func (h *Handler) executeWithRetryAndResubmission(
 				log.Printf("[EthTxSender] Gas bumped tx submitted: %s (attempt %d)", tx.Hash().Hex(), attempt+1)
 
 				h.mu.Lock()
-				h.lastNonce = tx.Nonce()
+				state := h.senderState(chainIdInt.String(), fromAddress)
+				state.lastNonce = tx.Nonce()
 				if tx.Type() == types.DynamicFeeTxType {
-					h.lastGasFeeCap = tx.GasFeeCap()
-					h.lastGasTipCap = tx.GasTipCap()
-					h.lastGasPrice = nil
+					state.lastGasFeeCap = tx.GasFeeCap()
+					state.lastGasTipCap = tx.GasTipCap()
+					state.lastGasPrice = nil
 				} else {
-					h.lastGasPrice = tx.GasPrice()
-					h.lastGasFeeCap = nil
-					h.lastGasTipCap = nil
+					state.lastGasPrice = tx.GasPrice()
+					state.lastGasFeeCap = nil
+					state.lastGasTipCap = nil
 				}
 				h.mu.Unlock()
 			}
@@ -2075,7 +2240,7 @@ func (h *Handler) executeWithRetryAndResubmission(
 		}
 
 		h.mu.Lock()
-		h.nonceValid = false
+		h.senderState(chainIdInt.String(), fromAddress).nonceValid = false
 		h.mu.Unlock()
 		return nil, submitDur, time.Since(waitStart), fmt.Errorf("failed waiting for tx receipt: %w", waitErr)
 	}

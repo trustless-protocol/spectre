@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"testing"
 
+	misbehaviourContract "relayer/bindings/Misbehaviour"
 	updateClientContract "relayer/bindings/UpdateClient"
 
 	ics23 "github.com/cosmos/ics23/go"
@@ -49,6 +50,37 @@ func TestParseTrustThreshold(t *testing.T) {
 				t.Errorf("denominator: got %d, want %d", got.Denominator, tc.wantDen)
 			}
 		})
+	}
+}
+
+func TestEncodeMisbehaviourContractMsg(t *testing.T) {
+	proof := misbehaviourContract.ISpectreClientMsgsBatchProof{}
+	for i := range proof.Proof {
+		proof.Proof[i] = big.NewInt(0)
+	}
+	for i := range proof.Commitments {
+		proof.Commitments[i] = big.NewInt(0)
+		proof.CommitmentPok[i] = big.NewInt(0)
+	}
+	header := misbehaviourContract.IICS07TendermintMsgsHeader{}
+	header.SignedHeader.Header.Time = big.NewInt(0)
+	msg := misbehaviourContract.ISpectreClientMsgsMsgSubmitMisbehaviour{
+		Misbehaviour: misbehaviourContract.ISpectreClientMsgsMisbehaviour{
+			Header1: header,
+			Header2: header,
+		},
+		TrustedConsensusState1: misbehaviourContract.IICS07TendermintMsgsConsensusState{Timestamp: big.NewInt(1)},
+		TrustedConsensusState2: misbehaviourContract.IICS07TendermintMsgsConsensusState{Timestamp: big.NewInt(2)},
+		Time:                   big.NewInt(3),
+		Proof1:                 proof,
+		Proof2:                 proof,
+	}
+	encoded, err := EncodeMisbehaviourContractMsg(msg)
+	if err != nil {
+		t.Fatalf("encode generated misbehaviour contract message: %v", err)
+	}
+	if len(encoded) == 0 {
+		t.Fatal("expected non-empty ABI payload")
 	}
 }
 

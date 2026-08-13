@@ -29,9 +29,14 @@ import (
 // event streams don't cross-feed: SubscribeEth filters ICS26Router logs by the
 // per-source router client id.
 //
-// allowEnvOverride honors the single-source env overrides (ICS26_CLIENT_ID,
-// COSMOS_WASM_CLIENT_ID, ROLE_MANAGER); it must be false when more than one
-// source is configured, or the overrides would apply to every source.
+// buildCosmosToEthSourceOptions separates the long-running subscription setup
+// from one-shot operator commands. Incident commands use only HTTP RPCs and
+// must not depend on websocket infrastructure they never consume.
+type buildCosmosToEthSourceOptions struct {
+	allowEnvOverride   bool
+	startSubscriptions bool
+}
+
 func buildCosmosToEthSource(
 	logger *zap.Logger,
 	c2e cosmosToEthConfig,
@@ -39,7 +44,7 @@ func buildCosmosToEthSource(
 	batchCfg services.BatchConfig,
 	p *prover.EcipProver,
 	txHandler services.TransactionHandler,
-	allowEnvOverride bool,
+	options buildCosmosToEthSourceOptions,
 ) (*services.Services, services.RelayDeps, func(), error) {
 	var zero services.RelayDeps
 
@@ -51,7 +56,7 @@ func buildCosmosToEthSource(
 
 	// Connect to Ethereum (WS for subscriptions)
 	var ethWsClient *ethclient.Client
-	if c2e.EthWsUrl != "" {
+	if options.startSubscriptions && c2e.EthWsUrl != "" {
 		if !strings.HasPrefix(c2e.EthWsUrl, "ws://") && !strings.HasPrefix(c2e.EthWsUrl, "wss://") {
 			return nil, zero, nil, fmt.Errorf("eth_ws_url must use ws:// or wss://, got: %s", c2e.EthWsUrl)
 		}
@@ -68,7 +73,7 @@ func buildCosmosToEthSource(
 	}
 
 	cosmosWasmClientID := c2e.CosmosWasmClientID
-	if allowEnvOverride {
+	if options.allowEnvOverride {
 		cosmosWasmClientID = envOrDefault("COSMOS_WASM_CLIENT_ID", cosmosWasmClientID)
 	}
 	if cosmosWasmClientID == "" {
@@ -77,7 +82,7 @@ func buildCosmosToEthSource(
 
 	// Assemble the scoped chain dependencies, including the beacon API.
 	cosmosRouterClientID := c2e.ICS26ClientID
-	if allowEnvOverride {
+	if options.allowEnvOverride {
 		cosmosRouterClientID = envOrDefault("ICS26_CLIENT_ID", cosmosRouterClientID)
 	}
 	if cosmosRouterClientID == "" {
@@ -85,16 +90,17 @@ func buildCosmosToEthSource(
 	}
 	// Set contract addresses from config
 	roleManager := c2e.ICS26Address
-	if allowEnvOverride {
+	if options.allowEnvOverride {
 		roleManager = envOrDefault("ROLE_MANAGER", roleManager)
 	}
 	// Set SpectreClient address (already deployed)
 	if c2e.SpectreClient == "" {
 		return nil, zero, nil, fmt.Errorf("spectre_client address is required in cosmos_to_eth config")
 	}
-	// Start Cosmos WebSocket client
-	if err := cosmosClient.Start(); err != nil {
-		return nil, zero, nil, fmt.Errorf("failed to start Cosmos WS client: %w", err)
+	if options.startSubscriptions {
+		if err := cosmosClient.Start(); err != nil {
+			return nil, zero, nil, fmt.Errorf("failed to start Cosmos WS client: %w", err)
+		}
 	}
 	cosmosConfig := buildCosmosConfig(c2e, batchCfg)
 	deps := services.RelayDeps{
@@ -112,8 +118,10 @@ func buildCosmosToEthSource(
 		Config: cosmosConfig, Logger: log.Default(),
 	}
 	cleanup := func() {
-		if err := cosmosClient.Stop(); err != nil {
-			log.Printf("failed to terminate cosmos client: %v", err)
+		if options.startSubscriptions {
+			if err := cosmosClient.Stop(); err != nil {
+				log.Printf("failed to terminate cosmos client: %v", err)
+			}
 		}
 		ethClient.Close()
 		if ethWsClient != nil {
@@ -121,8 +129,13 @@ func buildCosmosToEthSource(
 		}
 	}
 
-	logger.Sugar().Infof("source %q: subscribing to events (spectre_client=%s tm=%s)",
-		cosmosRouterClientID, c2e.SpectreClient, c2e.TmRpcUrl)
+	if options.startSubscriptions {
+		logger.Sugar().Infof("source %q: subscribing to events (spectre_client=%s tm=%s)",
+			cosmosRouterClientID, c2e.SpectreClient, c2e.TmRpcUrl)
+	} else {
+		logger.Sugar().Infof("source %q: configured one-shot RPC context (spectre_client=%s tm=%s)",
+			cosmosRouterClientID, c2e.SpectreClient, c2e.TmRpcUrl)
+	}
 
 	svc := services.New(txHandler, p, cosmosConfig)
 	return svc, deps, cleanup, nil

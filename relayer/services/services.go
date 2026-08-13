@@ -46,6 +46,7 @@ type TransactionHandler interface {
 	CreateWasmClient(stdCtx context.Context, endpoint CosmosEndpoint, clientState ibcexported.ClientState, consensusState ibcexported.ConsensusState, counterpartyClientID string) (string, error)
 	SendEthTx(stdCtx context.Context, endpoint EVMEndpoint, cosmosRouterClientID string, msg any) error
 	SendEthTxBatch(stdCtx context.Context, endpoint EVMEndpoint, cosmosRouterClientID string, msgs []any) error
+	SubmitMisbehaviour(stdCtx context.Context, endpoint EVMEndpoint, cosmosRouterClientID string, misbehaviourMsg []byte) error
 	SendCosmosTxBatch(stdCtx context.Context, endpoint CosmosEndpoint, msgs []any) error
 	CosmosSignerAddress() (string, error)
 }
@@ -59,6 +60,7 @@ type Prover interface {
 		commitmentPok [2]*big.Int,
 		err error,
 	)
+	GenerateMisbehaviourProof(header1Sigs, header2Sigs []prover.ValidatorSignature) (prover.MisbehaviourProof, error)
 }
 
 // Services holds the shared pieces the chain adapters reuse: the Worker (tx

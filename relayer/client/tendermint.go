@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	misbehaviourContract "relayer/bindings/Misbehaviour"
 	spectreContract "relayer/bindings/SpectreClient"
 	updateClientContract "relayer/bindings/UpdateClient"
 
@@ -45,6 +46,12 @@ var updateApplicationStateMsgType abi.Type
 // updateConsensusStateMsgType is the ABI tuple for ISpectreClientMsgs.MsgUpdateConsensusState:
 // { MsgUpdateApplicationState update; ValidatorSet newValidatorSet }.
 var updateConsensusStateMsgType abi.Type
+
+// misbehaviourMsgType is the ABI tuple for
+// ISpectreClientMsgs.MsgSubmitMisbehaviour.  It is hand-defined because the
+// router accepts the message as opaque bytes rather than exposing a generated
+// binding for this nested tuple.
+var misbehaviourMsgType abi.Type
 
 // ClientState mirrors IICS07TendermintMsgs.ClientState. It is defined locally
 // because the on-chain client no longer exposes this struct in any ABI (client
@@ -193,6 +200,18 @@ func init() {
 	updateConsensusStateMsgType, _ = abi.NewType("tuple", "", []abi.ArgumentMarshaling{
 		{Name: "update", Type: "tuple", Components: applicationStateComponents},
 		{Name: "newValidatorSet", Type: "tuple", Components: validatorSetComponents},
+	})
+
+	misbehaviourMsgType, _ = abi.NewType("tuple", "", []abi.ArgumentMarshaling{
+		{Name: "misbehaviour", Type: "tuple", Components: []abi.ArgumentMarshaling{
+			{Name: "header1", Type: "tuple", Components: headerComponents},
+			{Name: "header2", Type: "tuple", Components: headerComponents},
+		}},
+		{Name: "trustedConsensusState1", Type: "tuple", Components: consensusStateComponents},
+		{Name: "trustedConsensusState2", Type: "tuple", Components: consensusStateComponents},
+		{Name: "time", Type: "uint128"},
+		{Name: "proof1", Type: "tuple", Components: batchProofComponents},
+		{Name: "proof2", Type: "tuple", Components: batchProofComponents},
 	})
 }
 
@@ -494,11 +513,15 @@ type validatorsPager interface {
 // fails for indices >= 30. We page explicitly and loop until the reported Total
 // is collected (issue #105).
 func fetchAllValidators(client validatorsPager, height int64) ([]*commettypes.Validator, error) {
+	return fetchAllValidatorsWithContext(context.Background(), client, height)
+}
+
+func fetchAllValidatorsWithContext(ctx context.Context, client validatorsPager, height int64) ([]*commettypes.Validator, error) {
 	var collected []*commettypes.Validator
 	perPage := cometBFTMaxPerPage
 	for page := 1; ; page++ {
 		p := page
-		resp, err := client.Validators(context.Background(), &height, &p, &perPage)
+		resp, err := client.Validators(ctx, &height, &p, &perPage)
 		if err != nil {
 			return nil, fmt.Errorf("failed to fetch validators (height %d, page %d): %w", height, page, err)
 		}
@@ -512,13 +535,20 @@ func fetchAllValidators(client validatorsPager, height int64) ([]*commettypes.Va
 }
 
 func GetLightBlock(client *rpchttp.HTTP, height int64) (*LightBlock, error) {
-	status, err := client.Status(context.Background())
+	return GetLightBlockWithContext(context.Background(), client, height)
+}
+
+// GetLightBlockWithContext fetches a complete light block while propagating
+// cancellation through every CometBFT request. GetLightBlock remains as the
+// compatibility wrapper for relay paths that do not yet carry a context.
+func GetLightBlockWithContext(ctx context.Context, client *rpchttp.HTTP, height int64) (*LightBlock, error) {
+	status, err := client.Status(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
 	}
 
 	peerId := status.NodeInfo.ID()
-	commitResp, err := client.Commit(context.Background(), &height)
+	commitResp, err := client.Commit(ctx, &height)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch trusted commit: %w", err)
 	}
@@ -526,7 +556,7 @@ func GetLightBlock(client *rpchttp.HTTP, height int64) (*LightBlock, error) {
 	signedHeader := commitResp.SignedHeader
 	proposerAddr := signedHeader.Header.ProposerAddress
 	var proposer *commettypes.Validator
-	validators, err := fetchAllValidators(client, height)
+	validators, err := fetchAllValidatorsWithContext(ctx, client, height)
 	if err != nil {
 		return nil, err
 	}
@@ -552,7 +582,7 @@ func GetLightBlock(client *rpchttp.HTTP, height int64) (*LightBlock, error) {
 	}
 
 	nextHeight := height + 1
-	nextValidators, err := fetchAllValidators(client, nextHeight)
+	nextValidators, err := fetchAllValidatorsWithContext(ctx, client, nextHeight)
 	if err != nil {
 		return nil, err
 	}
@@ -875,6 +905,15 @@ func EncodeUpdateConsensusStateMsg(update updateClientContract.ISpectreClientMsg
 		{Type: updateConsensusStateMsgType},
 	}
 	return args.Pack(MsgUpdateConsensusState{Update: update, NewValidatorSet: newValidatorSet})
+}
+
+// EncodeMisbehaviourContractMsg encodes the generated Misbehaviour binding
+// type. The generated binding uses package-local struct types, so this helper
+// shares the same ABI tuple while allowing the services package to preserve
+// the exact proof metadata types produced by that binding.
+func EncodeMisbehaviourContractMsg(msg misbehaviourContract.ISpectreClientMsgsMsgSubmitMisbehaviour) ([]byte, error) {
+	args := abi.Arguments{{Type: misbehaviourMsgType}}
+	return args.Pack(msg)
 }
 
 func bytesToBytes32(data []byte) [32]byte {

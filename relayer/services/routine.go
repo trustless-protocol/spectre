@@ -18,6 +18,7 @@ import (
 
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 )
@@ -202,11 +203,15 @@ func FetchOnChainTrustedHeight(ctx EVMEndpoint) (int64, error) {
 }
 
 func fetchOnChainClientState(ctx EVMEndpoint) (relayerclient.ClientState, error) {
+	return fetchOnChainClientStateWithContext(context.Background(), ctx)
+}
+
+func fetchOnChainClientStateWithContext(stdCtx context.Context, ctx EVMEndpoint) (relayerclient.ClientState, error) {
 	ics07, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
 	if err != nil {
 		return relayerclient.ClientState{}, fmt.Errorf("failed to create ICS07 instance: %w", err)
 	}
-	clientStateBytes, err := ics07.GetClientState(nil)
+	clientStateBytes, err := ics07.GetClientState(&bind.CallOpts{Context: stdCtx})
 	if err != nil {
 		return relayerclient.ClientState{}, fmt.Errorf("failed to get on-chain client state: %w", err)
 	}

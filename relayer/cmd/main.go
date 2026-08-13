@@ -1087,6 +1087,7 @@ func main() {
 		CreateClientsCosmos(zLogger),
 		CreateClientsEth(zLogger),
 		UpdateClient(zLogger),
+		SubmitMisbehaviour(zLogger),
 		Genesis(zLogger),
 	)
 
@@ -1672,7 +1673,11 @@ func Start(logger *zap.Logger) *cobra.Command {
 			}
 			for i := range sources {
 				svc, deps, cleanup, err := buildCosmosToEthSource(
-					logger, sources[i], cfg.EthToCosmosConfig, cfg.BatchConfig, p, txHandler, allowEnvOverride,
+					logger, sources[i], cfg.EthToCosmosConfig, cfg.BatchConfig, p, txHandler,
+					buildCosmosToEthSourceOptions{
+						allowEnvOverride:   allowEnvOverride,
+						startSubscriptions: true,
+					},
 				)
 				if err != nil {
 					for _, cleanup := range cleanups {

@@ -3,6 +3,7 @@ package transaction
 import (
 	"bytes"
 	"context"
+	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -381,15 +382,29 @@ type mockJSONRPC struct {
 	receiptCalls []common.Hash
 	receiptResps map[common.Hash]*types.Receipt
 	sendErr      error
+	chainID      uint64
 	nonce        uint64
+	nonces       map[common.Address]uint64
+	nonceCalls   map[common.Address]int
 	gasPrice     *big.Int
 }
 
 func newMockJSONRPC() *mockJSONRPC {
 	return &mockJSONRPC{
 		receiptResps: make(map[common.Hash]*types.Receipt),
+		chainID:      1,
+		nonces:       make(map[common.Address]uint64),
+		nonceCalls:   make(map[common.Address]int),
 		gasPrice:     big.NewInt(1000000000), // 1 Gwei
 	}
+}
+
+func nonceCacheIsValid(h *Handler, chainID string, privateKey *ecdsa.PrivateKey) bool {
+	from := crypto.PubkeyToAddress(privateKey.PublicKey)
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	state := h.senderStates[evmNonceKey{chainID: chainID, address: from}]
+	return state != nil && state.nonceValid
 }
 
 func (m *mockJSONRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -407,13 +422,25 @@ func (m *mockJSONRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	switch req.Method {
 	case "eth_chainId":
-		result = "0x1"
+		result = fmt.Sprintf("0x%x", m.chainID)
 	case "eth_gasPrice":
 		result = fmt.Sprintf("0x%x", m.gasPrice)
 	case "eth_maxPriorityFeePerGas":
 		result = fmt.Sprintf("0x%x", m.gasPrice)
 	case "eth_getTransactionCount":
-		result = fmt.Sprintf("0x%x", m.nonce)
+		var address common.Address
+		if len(req.Params) > 0 {
+			var rawAddress string
+			if err := json.Unmarshal(req.Params[0], &rawAddress); err == nil {
+				address = common.HexToAddress(rawAddress)
+			}
+		}
+		m.nonceCalls[address]++
+		nonce := m.nonce
+		if configured, ok := m.nonces[address]; ok {
+			nonce = configured
+		}
+		result = fmt.Sprintf("0x%x", nonce)
 	case "eth_sendRawTransaction":
 		if m.sendErr != nil {
 			rpcErr = &jsonrpcError{
@@ -620,6 +647,141 @@ func TestExecuteWithRetryAndResubmission_NonceRetry(t *testing.T) {
 	}
 }
 
+func TestMisbehaviourGasLimit(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    uint64
+		wantErr bool
+	}{
+		{name: "default", want: defaultMisbehaviourGasLimit},
+		{name: "override", value: "17000000", want: 17_000_000},
+		{name: "zero", value: "0", wantErr: true},
+		{name: "negative", value: "-1", wantErr: true},
+		{name: "trailing characters", value: "17000000oops", wantErr: true},
+		{name: "overflow", value: "18446744073709551616", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("ETH_MISBEHAVIOUR_GAS_LIMIT", tt.value)
+			got, err := MisbehaviourGasLimit()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("MisbehaviourGasLimit() = %d, want error", got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("MisbehaviourGasLimit(): %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("MisbehaviourGasLimit() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestValidateMisbehaviourPrivateKey(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "missing", wantErr: true},
+		{name: "invalid", value: "invalid", wantErr: true},
+		{name: "valid", value: strings.Repeat("1", 64)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("MISBEHAVIOUR_PRIVATE_KEY", tt.value)
+			err := ValidateMisbehaviourPrivateKey()
+			if tt.wantErr && err == nil {
+				t.Fatal("ValidateMisbehaviourPrivateKey() succeeded, want error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("ValidateMisbehaviourPrivateKey(): %v", err)
+			}
+		})
+	}
+}
+
+func TestExecuteWithRetryAndResubmission_ScopesNonceCachesByChainAndSender(t *testing.T) {
+	relayKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate relay key: %v", err)
+	}
+	incidentKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate incident key: %v", err)
+	}
+	relayAddress := crypto.PubkeyToAddress(relayKey.PublicKey)
+	incidentAddress := crypto.PubkeyToAddress(incidentKey.PublicKey)
+
+	chainOneRPC := newMockJSONRPC()
+	chainOneRPC.chainID = 1
+	chainOneRPC.nonces[relayAddress] = 100
+	chainOneRPC.nonces[incidentAddress] = 0
+	chainOneServer := httptest.NewServer(chainOneRPC)
+	defer chainOneServer.Close()
+	chainOneClient, err := ethclient.Dial(chainOneServer.URL)
+	if err != nil {
+		t.Fatalf("dial chain one: %v", err)
+	}
+
+	chainTwoRPC := newMockJSONRPC()
+	chainTwoRPC.chainID = 2
+	chainTwoRPC.nonces[relayAddress] = 7
+	chainTwoServer := httptest.NewServer(chainTwoRPC)
+	defer chainTwoServer.Close()
+	chainTwoClient, err := ethclient.Dial(chainTwoServer.URL)
+	if err != nil {
+		t.Fatalf("dial chain two: %v", err)
+	}
+
+	h := &Handler{}
+	execute := func(name string, client *ethclient.Client, rpc *mockJSONRPC, privateKey *ecdsa.PrivateKey) uint64 {
+		t.Helper()
+		endpoint := services.EVMEndpoint{Client: client}
+		chainID, err := client.ChainID(context.Background())
+		if err != nil {
+			t.Fatalf("%s chain ID: %v", name, err)
+		}
+		var usedNonce uint64
+		sender := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+			usedNonce = auth.Nonce.Uint64()
+			tx := types.NewTx(&types.DynamicFeeTx{
+				ChainID: chainID, Nonce: usedNonce, GasTipCap: auth.GasTipCap,
+				GasFeeCap: auth.GasFeeCap, Gas: auth.GasLimit, To: &common.Address{0x1},
+			})
+			signed, signErr := auth.Signer(auth.From, tx)
+			if signErr == nil {
+				rpc.mu.Lock()
+				rpc.receiptResps[signed.Hash()] = &types.Receipt{Status: 1, GasUsed: 21_000, BlockNumber: big.NewInt(1)}
+				rpc.mu.Unlock()
+			}
+			return signed, signErr
+		}
+		if _, _, _, err := h.executeWithRetryAndResubmission(context.Background(), endpoint, privateKey, 100_000, sender); err != nil {
+			t.Fatalf("%s execute: %v", name, err)
+		}
+		return usedNonce
+	}
+
+	if got := execute("relay chain one", chainOneClient, chainOneRPC, relayKey); got != 100 {
+		t.Fatalf("relay chain-one nonce = %d, want 100", got)
+	}
+	if got := execute("incident chain one", chainOneClient, chainOneRPC, incidentKey); got != 0 {
+		t.Fatalf("incident chain-one nonce = %d, want 0", got)
+	}
+	if got := execute("relay chain two", chainTwoClient, chainTwoRPC, relayKey); got != 7 {
+		t.Fatalf("relay chain-two nonce = %d, want 7", got)
+	}
+	if chainOneRPC.nonceCalls[relayAddress] != 1 || chainOneRPC.nonceCalls[incidentAddress] != 1 {
+		t.Fatalf("chain-one pending nonce calls relay/incident = %d/%d, want 1/1",
+			chainOneRPC.nonceCalls[relayAddress], chainOneRPC.nonceCalls[incidentAddress])
+	}
+}
+
 func TestExecuteWithRetryAndResubmission_AlreadyKnown(t *testing.T) {
 	mockRPC := newMockJSONRPC()
 	srv := httptest.NewServer(mockRPC)
@@ -698,10 +860,7 @@ func TestExecuteWithRetryAndResubmission_BroadcastContextDeadline(t *testing.T) 
 		t.Fatalf("failed to generate key: %v", err)
 	}
 
-	h := &Handler{
-		nonce:      10,
-		nonceValid: true,
-	}
+	h := &Handler{}
 
 	var sawDeadline bool
 	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
@@ -736,10 +895,7 @@ func TestExecuteWithRetryAndResubmission_BroadcastContextDeadline(t *testing.T) 
 		t.Fatalf("broadcast deadline took too long: %s", elapsed)
 	}
 
-	h.mu.Lock()
-	valid := h.nonceValid
-	h.mu.Unlock()
-	if valid {
+	if nonceCacheIsValid(h, "1", privKey) {
 		t.Error("expected nonce cache invalidated after broadcast deadline")
 	}
 }
@@ -908,10 +1064,7 @@ func TestExecuteWithRetryAndResubmission_WaitErrorNonceInvalidation(t *testing.T
 		t.Fatalf("failed to generate key: %v", err)
 	}
 
-	h := &Handler{
-		nonce:      10,
-		nonceValid: true,
-	}
+	h := &Handler{}
 
 	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
 		tx := types.NewTx(&types.LegacyTx{
@@ -930,12 +1083,8 @@ func TestExecuteWithRetryAndResubmission_WaitErrorNonceInvalidation(t *testing.T
 		t.Fatal("expected error from executeWithRetryAndResubmission due to receipt wait failure, got nil")
 	}
 
-	h.mu.Lock()
-	valid := h.nonceValid
-	h.mu.Unlock()
-
-	if valid {
-		t.Error("expected h.nonceValid to be false after receipt wait error, but it was true")
+	if nonceCacheIsValid(h, "1", privKey) {
+		t.Error("expected nonce cache to be invalid after receipt wait error")
 	}
 }
 
@@ -962,10 +1111,7 @@ func TestExecuteWithRetryAndResubmission_GasFloorsOnStuckNonce(t *testing.T) {
 		t.Fatalf("chain ID: %v", err)
 	}
 
-	h := &Handler{
-		nonce:      10,
-		nonceValid: true,
-	}
+	h := &Handler{}
 
 	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
 		tx := types.NewTx(&types.DynamicFeeTx{
@@ -1008,7 +1154,7 @@ func TestExecuteWithRetryAndResubmission_GasFloorsOnStuckNonce(t *testing.T) {
 
 	// Invalidate nonce cache manually (simulating timeout that occurred)
 	h.mu.Lock()
-	h.nonceValid = false
+	h.senderState("1", crypto.PubkeyToAddress(privKey.PublicKey)).nonceValid = false
 	h.mu.Unlock()
 
 	// 2. Second execution: re-submitting at same nonce
@@ -1070,10 +1216,7 @@ func TestExecuteWithRetryAndResubmission_SenderFnReturnsNil(t *testing.T) {
 		t.Fatalf("failed to generate key: %v", err)
 	}
 
-	h := &Handler{
-		nonce:      10,
-		nonceValid: true,
-	}
+	h := &Handler{}
 
 	// senderFn returns (nil, nil)
 	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
@@ -1090,12 +1233,8 @@ func TestExecuteWithRetryAndResubmission_SenderFnReturnsNil(t *testing.T) {
 		t.Errorf("expected error to contain %q, got %q", expectedErr, err.Error())
 	}
 
-	h.mu.Lock()
-	valid := h.nonceValid
-	h.mu.Unlock()
-
-	if valid {
-		t.Error("expected h.nonceValid to be false after nil transaction error")
+	if nonceCacheIsValid(h, "1", privKey) {
+		t.Error("expected nonce cache to be invalid after nil transaction error")
 	}
 }
 
@@ -1117,10 +1256,7 @@ func TestExecuteWithRetryAndResubmission_Concurrency(t *testing.T) {
 		t.Fatalf("failed to generate key: %v", err)
 	}
 
-	h := &Handler{
-		nonce:      10,
-		nonceValid: true,
-	}
+	h := &Handler{}
 
 	numRequests := 10
 	var mu sync.Mutex
@@ -1380,10 +1516,7 @@ func TestExecuteWithRetryAndResubmission_SuggestGasPriceErrorNonceInvalidation(t
 		t.Fatalf("failed to generate key: %v", err)
 	}
 
-	h := &Handler{
-		nonce:      10,
-		nonceValid: true,
-	}
+	h := &Handler{}
 
 	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
 		tx := types.NewTx(&types.LegacyTx{
@@ -1402,12 +1535,8 @@ func TestExecuteWithRetryAndResubmission_SuggestGasPriceErrorNonceInvalidation(t
 		t.Fatal("expected error, got nil")
 	}
 
-	h.mu.Lock()
-	valid := h.nonceValid
-	h.mu.Unlock()
-
-	if valid {
-		t.Error("expected h.nonceValid to be false after SuggestGasPrice failure, but it was true")
+	if nonceCacheIsValid(h, "1", privKey) {
+		t.Error("expected nonce cache to be invalid after SuggestGasPrice failure")
 	}
 }
 
