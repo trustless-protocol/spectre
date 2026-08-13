@@ -41,6 +41,9 @@ library IBCRolesLib {
     /// @notice Only addresses with this role may submit misbehaviour reports.
     uint64 internal constant MISBEHAVIOUR_SUBMITTER_ROLE = 8;
 
+    /// @notice Can execute delayed implementation and verifier configuration changes.
+    uint64 internal constant UPGRADER_ROLE = 9;
+
     /// @notice The functions that can be called by the RELAYER_ROLE in ICS26Router.
     /// @return An array of function selectors that can be called by the RELAYER_ROLE.
     function ics26RelayerSelectors() internal pure returns (bytes4[] memory) {
@@ -109,6 +112,15 @@ library IBCRolesLib {
         bytes4[] memory rateLimiterFunctions = new bytes4[](1);
         rateLimiterFunctions[0] = IRateLimit.setRateLimit.selector;
         return rateLimiterFunctions;
+    }
+
+    /// @notice Functions that must be executed through the delayed upgrade role.
+    function upgraderSelectors() internal pure returns (bytes4[] memory) {
+        bytes4[] memory functions_ = new bytes4[](3);
+        functions_[0] = UUPSUpgradeable.upgradeToAndCall.selector;
+        functions_[1] = IICS20TransferAccessControlled.upgradeEscrowTo.selector;
+        functions_[2] = IICS20TransferAccessControlled.upgradeIBCERC20To.selector;
+        return functions_;
     }
 
     /// @notice The functions that can be used to upgrade the beacon contracts in ICS20Transfer.

@@ -66,6 +66,13 @@ above that bound need a larger cache layout before they can use this client.
 - Optional for GPU proving: ICICLE runtime/libs installed on the host, plus an
   `icicle` build of the relayer/prover tool
 
+## Production deployment
+
+See [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) before using
+the production AccessManager deployment scripts. It documents the governance
+timelock requirement, the TK-01 escrow launch gate, and the scheduled
+light-client provisioning flow.
+
 ## gnark submodules (required to build the relayer)
 
 The relayer/prover depend on two forks of gnark, vendored as **git submodules**
