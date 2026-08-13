@@ -8,7 +8,7 @@ pragma solidity ^0.8.28;
 ///      deployment made before the check existed would still pass verification.
 library ProductionConfigLib {
     /// @notice Reverts unless every address in the list is distinct.
-    /// @dev O(n^2), but n is 6-8 and this runs once per deployment.
+    /// @dev O(n^2), but n is 6-9 and this runs once per deployment.
     /// @param addrs The addresses that must not collide.
     /// @param message The revert reason, naming which set collided.
     function requireDistinct(address[] memory addrs, string memory message) internal pure {
@@ -56,13 +56,14 @@ library ProductionConfigLib {
         address pauser1,
         address pauser2,
         address unpauser,
-        address watcher
+        address watcher,
+        address rateLimiter
     )
         internal
         pure
         returns (address[] memory principals)
     {
-        principals = new address[](8);
+        principals = new address[](9);
         principals[0] = bootstrap;
         principals[1] = governance;
         principals[2] = upgrader;
@@ -71,5 +72,6 @@ library ProductionConfigLib {
         principals[5] = pauser2;
         principals[6] = unpauser;
         principals[7] = watcher;
+        principals[8] = rateLimiter;
     }
 }

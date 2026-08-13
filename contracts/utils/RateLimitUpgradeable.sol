@@ -3,7 +3,10 @@ pragma solidity ^0.8.28;
 
 import { IRateLimitErrors } from "../errors/IRateLimitErrors.sol";
 import { IRateLimit } from "../interfaces/IRateLimit.sol";
+import { IBCRolesLib } from "./IBCRolesLib.sol";
 
+import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
+import { IAccessManager } from "@openzeppelin-contracts/access/manager/IAccessManager.sol";
 import { AccessManagedUpgradeable } from "@openzeppelin-upgradeable/access/manager/AccessManagedUpgradeable.sol";
 
 /// @title Rate Limit Upgradeable contract
@@ -38,7 +41,34 @@ abstract contract RateLimitUpgradeable is IRateLimitErrors, IRateLimit, AccessMa
     }
 
     /// @inheritdoc IRateLimit
-    function setRateLimit(address token, uint256 rateLimit) external restricted {
+    /// @dev DO NOT replace this with the `restricted` modifier. `restricted` authorizes against a
+    ///      PER-TARGET function role, and escrows are BeaconProxy instances created per client
+    ///      (`ICS20Transfer._createEscrow`). A freshly created escrow therefore has no mapping, so
+    ///      `setRateLimit` on it would fall back to `ADMIN_ROLE` and the rate limiter could not
+    ///      call it — while `_rateLimits[token] == 0` means "no limit" (see the storage NatSpec
+    ///      above), so that escrow would be live and uncapped. Checking the GLOBAL
+    ///      `RATE_LIMITER_ROLE` instead makes every escrow configurable the moment it exists,
+    ///      whether it was pre-created at deploy time or not. This mirrors the manual per-client
+    ///      role check in `ICS02ClientUpgradeable`.
+    ///
+    ///      A manual check has to re-create by hand the two things the modifier gave for free:
+    ///
+    ///      1. `isTargetClosed` — the AccessManager kill switch. `restricted` consults it; a bare
+    ///         `hasRole` does not, so closing this target would otherwise not disable the function.
+    ///      2. `executionDelay == 0` — a delayed role holder is REJECTED rather than allowed
+    ///         through. The delay is enforced by `AccessManager.schedule`/`execute`, and this path
+    ///         never consumes a scheduled operation, so honouring a non-zero delay here would
+    ///         silently ignore it. Only immediate, delay-0 rate limiters are supported.
+    ///
+    ///      Note that routing through `AccessManager.execute` does NOT work either: it would make
+    ///      the manager the `_msgSender()`, and the manager holds no role.
+    function setRateLimit(address token, uint256 rateLimit) external {
+        IAccessManager manager = IAccessManager(authority());
+        require(!manager.isTargetClosed(address(this)), IAccessManaged.AccessManagedUnauthorized(_msgSender()));
+
+        (bool isMember, uint32 executionDelay) = manager.hasRole(IBCRolesLib.RATE_LIMITER_ROLE, _msgSender());
+        require(isMember && executionDelay == 0, IAccessManaged.AccessManagedUnauthorized(_msgSender()));
+
         _getRateLimitStorage()._rateLimits[token] = rateLimit;
     }
 

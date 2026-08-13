@@ -338,8 +338,11 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         Escrow escrow = Escrow(ics20Transfer.getEscrow(clientIdentifier));
         uint256 dailyLimit = escrow.getDailyUsage(address(receivedERC20));
         assertEq(dailyLimit, 0); // 0 before rate limit has been set
-        // TODO: remove this once rate limit perms are resolved (#559)
-        // escrow.grantRateLimiterRole(address(this));
+
+        // Escrows are created per client, so no per-target selector role exists for this one.
+        // The global RATE_LIMITER_ROLE is what authorizes setRateLimit — that is the property
+        // being relied on here, and it is why an escrow created at runtime is still cappable.
+        accessManager.grantRole(IBCRolesLib.RATE_LIMITER_ROLE, address(this), 0);
         escrow.setRateLimit(address(receivedERC20), defaultAmount - 1);
 
         // receive again, should hit rate limit and write error ack

@@ -53,6 +53,23 @@ interface IICS20Errors {
     /// @param clientID Client ID
     error ICS20EscrowNotFound(string clientID);
 
+    /// @notice Packet processing requires a governance-provisioned escrow for this client.
+    /// @param clientID Client ID
+    error ICS20EscrowNotProvisioned(string clientID);
+
+    /// @notice Packet processing requires the client's provisioned escrow to be active.
+    /// @param clientID Client ID
+    error ICS20EscrowNotActive(string clientID);
+
+    /// @notice An escrow cannot be activated without at least one required token.
+    /// @param clientID Client ID
+    error ICS20EscrowTokenListEmpty(string clientID);
+
+    /// @notice An escrow cannot be activated until every required token has a non-zero limit.
+    /// @param clientID Client ID
+    /// @param token Token whose rate limit is missing
+    error ICS20EscrowRateLimitNotSet(string clientID, address token);
+
     /// @notice IBCERC20 already exists
     /// @param denom The IBC denom of the token
     error ICS20DenomAlreadyExists(string denom);

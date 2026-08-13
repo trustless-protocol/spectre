@@ -6,6 +6,8 @@ import { stdJson } from "forge-std/StdJson.sol";
 import { TimelockController } from "@openzeppelin-contracts/governance/TimelockController.sol";
 import { ProductionDeploy } from "../../scripts/ProductionDeploy.s.sol";
 import { ProductionVerify } from "../../scripts/ProductionVerify.s.sol";
+import { ICS20Transfer } from "../../contracts/ICS20Transfer.sol";
+import { TestERC20 } from "./mocks/TestERC20.sol";
 
 contract ProductionVerifierMock {
     function verifyProof(bytes calldata, uint256[2] calldata) external pure { }
@@ -19,8 +21,6 @@ contract ProductionDeploymentTest is Test {
 
     uint256 internal constant SECURITY_DELAY = 2 days;
 
-    /// @notice Populates a configuration the scripts must accept. Negative tests below start
-    ///         from this and break exactly one thing, so a revert can only come from that.
     function _setValidEnv() internal {
         address[] memory proposers = new address[](1);
         address[] memory executors = new address[](1);
@@ -36,10 +36,8 @@ contract ProductionDeploymentTest is Test {
         _setAddressEnv("PAUSER_2", address(0xB004));
         _setAddressEnv("UNPAUSER_ACCOUNT", address(0xB005));
         _setAddressEnv("MISBEHAVIOUR_WATCHER", address(0xB006));
+        _setAddressEnv("RATE_LIMITER_ACCOUNT", address(0xB007));
 
-        // Six SEPARATE verifiers. Each bucket's verifier is generated from its own verifying
-        // key, so sharing one address across buckets is a misconfiguration the scripts must
-        // reject — a fixture that reuses one mock cannot exercise that check.
         _setAddressEnv("VERIFIER_N4", address(new ProductionVerifierMock()));
         _setAddressEnv("VERIFIER_N8", address(new ProductionVerifierMock()));
         _setAddressEnv("VERIFIER_N16", address(new ProductionVerifierMock()));
@@ -48,6 +46,11 @@ contract ProductionDeploymentTest is Test {
         _setAddressEnv("VERIFIER_N128", address(new ProductionVerifierMock()));
 
         vm.setEnv("SECURITY_DELAY", vm.toString(SECURITY_DELAY));
+        address launchToken = address(new TestERC20());
+        vm.setEnv(
+            "PRODUCTION_ESCROW_CONFIG",
+            string.concat('{"clients":["client-0"],"tokens":["', vm.toString(launchToken), '"],"limits":["1000000"]}')
+        );
     }
 
     /// @notice Deploy, verify, and the two preconditions that cannot be checked after the fact.
@@ -58,7 +61,6 @@ contract ProductionDeploymentTest is Test {
     /// them. Forge also runs functions in parallel, which makes the clobbering nondeterministic.
     /// Splitting these apart is what made this file fail intermittently.
     function testProductionDeployVerifyAndRejectBrokenConfigs() public {
-        // 1. A valid configuration deploys, and the result passes verification.
         _setValidEnv();
 
         string memory deployment = new ProductionDeploy().run();
@@ -67,11 +69,14 @@ contract ProductionDeploymentTest is Test {
         _setAddressEnv("ICS26_ROUTER", deployment.readAddress(".ics26Router"));
         _setAddressEnv("ICS20_TRANSFER", deployment.readAddress(".ics20Transfer"));
 
+        assertTrue(ICS20Transfer(deployment.readAddress(".ics20Transfer")).requiresPrecreatedEscrows());
+        assertTrue(ICS20Transfer(deployment.readAddress(".ics20Transfer")).isEscrowActive("client-0"));
         assertTrue(new ProductionVerify().run());
 
         ProductionVerify verifier = new ProductionVerify();
         address configuredUpgrader = vm.envAddress("UPGRADER_ACCOUNT");
         address configuredUnpauser = vm.envAddress("UNPAUSER_ACCOUNT");
+        address configuredRateLimiter = vm.envAddress("RATE_LIMITER_ACCOUNT");
 
         // Verification must reject old deployments that predate deploy-time role separation.
         _setAddressEnv("UNPAUSER_ACCOUNT", vm.envAddress("PAUSER_1"));
@@ -85,21 +90,20 @@ contract ProductionDeploymentTest is Test {
         verifier.run();
         _setAddressEnv("UPGRADER_ACCOUNT", configuredUpgrader);
 
+        // The launch-gate role is part of the same separation invariant as the
+        // original eight privileged principals.
+        _setAddressEnv("RATE_LIMITER_ACCOUNT", vm.envAddress("RELAYER_ACCOUNT"));
+        vm.expectRevert("role separation failure");
+        verifier.run();
+        _setAddressEnv("RATE_LIMITER_ACCOUNT", configuredRateLimiter);
+
         ProductionDeploy deployer = new ProductionDeploy();
 
-        // 2. Two buckets sharing one verifier. Not a harmless duplicate: each bucket's verifier
-        // is generated from its own verifying key, so every proof in the mis-pointed bucket
-        // fails on-chain against a VK built for a different signer count. With six
-        // near-identical env vars this is a plausible copy-paste, and nothing else catches it —
-        // the address is well-formed, the contract has code, and the selector matches.
         _setValidEnv();
         _setAddressEnv("VERIFIER_N8", vm.envAddress("VERIFIER_N4"));
         vm.expectRevert("verifier buckets must be distinct contracts");
         deployer.run();
 
-        // 3. An unpauser that is also a pauser. UNPAUSER_ROLE carries the security delay and
-        // PAUSER_ROLE does not, precisely so stopping the system is immediate while restarting
-        // it is slow and visible. One key holding both collapses that distinction.
         _setValidEnv();
         _setAddressEnv("UNPAUSER_ACCOUNT", vm.envAddress("PAUSER_1"));
         vm.expectRevert("role separation failure");

@@ -14,6 +14,7 @@ import { IERC20Errors } from "@openzeppelin-contracts/interfaces/draft-IERC6093.
 import { IICS26Router } from "../../contracts/interfaces/IICS26Router.sol";
 import { IICS20Transfer } from "../../contracts/interfaces/IICS20Transfer.sol";
 import { IIBCSenderCallbacks } from "../../contracts/interfaces/IIBCSenderCallbacks.sol";
+import { IRateLimit } from "../../contracts/interfaces/IRateLimit.sol";
 
 import { ICS20Transfer } from "../../contracts/ICS20Transfer.sol";
 import { TestERC20, MalfunctioningERC20 } from "./mocks/TestERC20.sol";
@@ -62,6 +63,101 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
         assertEq(ics20Transfer.ics26(), ics26);
 
         assertEq(ics20Transfer.ibcERC20Denom(address(env.erc20())), "");
+    }
+
+    function test_failure_escrowLaunchGateRejectsUnprovisionedClient() public {
+        string memory unprovisionedClient = "client-unprovisioned";
+        address sender = makeAddr("sender");
+        TestERC20 token = env.erc20();
+
+        vm.expectEmit(false, false, false, true, address(ics20Transfer));
+        emit IICS20Transfer.ICS20EscrowLaunchGateEnabled();
+        ics20Transfer.enableEscrowLaunchGate();
+        assertTrue(ics20Transfer.requiresPrecreatedEscrows());
+
+        token.mint(sender, 1);
+        vm.prank(sender);
+        token.approve(address(ics20Transfer), 1);
+
+        IICS20TransferMsgs.SendTransferMsg memory msgSendTransfer = IICS20TransferMsgs.SendTransferMsg({
+            denom: address(token),
+            amount: 1,
+            receiver: "receiver",
+            sourceClient: unprovisionedClient,
+            destPort: "client-counterparty",
+            timeoutTimestamp: uint64(block.timestamp + 1),
+            memo: ""
+        });
+
+        vm.expectRevert(abi.encodeWithSelector(IICS20Errors.ICS20EscrowNotProvisioned.selector, unprovisionedClient));
+        vm.prank(sender);
+        ics20Transfer.sendTransfer(msgSendTransfer);
+    }
+
+    function test_success_escrowLaunchGateAllowsProvisionedClient() public {
+        string memory provisionedClient = "client-provisioned";
+        address sender = makeAddr("sender");
+        TestERC20 token = env.erc20();
+
+        address escrow = ics20Transfer.createEscrow(provisionedClient);
+        ics20Transfer.enableEscrowLaunchGate();
+        accessManager.grantRole(IBCRolesLib.RATE_LIMITER_ROLE, address(this), 0);
+        IRateLimit(escrow).setRateLimit(address(token), 1);
+
+        vm.expectRevert(abi.encodeWithSelector(IICS20Errors.ICS20EscrowNotActive.selector, provisionedClient));
+        ics20Transfer.sendTransfer(
+            IICS20TransferMsgs.SendTransferMsg({
+                denom: address(token),
+                amount: 1,
+                receiver: "receiver",
+                sourceClient: provisionedClient,
+                destPort: "client-counterparty",
+                timeoutTimestamp: uint64(block.timestamp + 1),
+                memo: ""
+            })
+        );
+        ics20Transfer.activateEscrow(provisionedClient, _singleToken(address(token)));
+        assertTrue(ics20Transfer.isEscrowActive(provisionedClient));
+
+        token.mint(sender, 1);
+        vm.prank(sender);
+        token.approve(address(ics20Transfer), 1);
+        vm.mockCall(ics26, IICS26Router.sendPacket.selector, abi.encode(uint64(1)));
+
+        IICS20TransferMsgs.SendTransferMsg memory msgSendTransfer = IICS20TransferMsgs.SendTransferMsg({
+            denom: address(token),
+            amount: 1,
+            receiver: "receiver",
+            sourceClient: provisionedClient,
+            destPort: "client-counterparty",
+            timeoutTimestamp: uint64(block.timestamp + 1),
+            memo: ""
+        });
+
+        vm.prank(sender);
+        assertEq(ics20Transfer.sendTransfer(msgSendTransfer), 1);
+        assertEq(token.balanceOf(escrow), 1);
+    }
+
+    function test_failure_activateEscrowWithoutNonZeroRateLimit() public {
+        string memory clientId = "client-pending";
+        address escrow = ics20Transfer.createEscrow(clientId);
+        address token = address(env.erc20());
+        ics20Transfer.enableEscrowLaunchGate();
+
+        vm.expectRevert(abi.encodeWithSelector(IICS20Errors.ICS20EscrowRateLimitNotSet.selector, clientId, token));
+        ics20Transfer.activateEscrow(clientId, _singleToken(token));
+        assertFalse(ics20Transfer.isEscrowActive(clientId));
+        assertNotEq(escrow, address(0));
+    }
+
+    function test_failure_activateEscrowWithoutTokens() public {
+        string memory clientId = "client-pending";
+        ics20Transfer.createEscrow(clientId);
+
+        vm.expectRevert(abi.encodeWithSelector(IICS20Errors.ICS20EscrowTokenListEmpty.selector, clientId));
+        ics20Transfer.activateEscrow(clientId, new address[](0));
+        assertFalse(ics20Transfer.isEscrowActive(clientId));
     }
 
     function testFuzz_success_sendTransfer(uint256 amount, uint64 seq, uint64 timeoutTimestamp) public {
@@ -1207,6 +1303,11 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
     function _getEscrowMappingSlot(string memory clientId) internal pure returns (bytes32) {
         bytes32 ics20Slot = 0x823f7a8ea9ae6df0eb03ec5e1682d7a2839417ad8a91774118e6acf2e8d2f800;
         return keccak256(abi.encodePacked(clientId, ics20Slot));
+    }
+
+    function _singleToken(address token) internal pure returns (address[] memory tokens) {
+        tokens = new address[](1);
+        tokens[0] = token;
     }
 
     function _getIBCERC20ContractsMappingSlot(string memory denom) internal pure returns (bytes32) {

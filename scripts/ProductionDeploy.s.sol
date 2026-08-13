@@ -25,12 +25,19 @@ import { DeployAccessManagerWithRoles } from "./deployments/DeployAccessManagerW
 import { ProductionConfigLib } from "./deployments/ProductionConfigLib.sol";
 import { IBCRolesLib } from "../contracts/utils/IBCRolesLib.sol";
 import { IGroth16Verifier } from "../contracts/light-clients/interfaces/IGroth16Verifier.sol";
+import { IRateLimit } from "../contracts/interfaces/IRateLimit.sol";
 
 /// @dev GOVERNANCE_ADMIN must be an OpenZeppelin TimelockController (or a
 ///      compatible contract exposing `getMinDelay()`) whose delay is at least
 ///      SECURITY_DELAY. AccessManager ADMIN_ROLE intentionally has no delay;
 ///      governance timelocking protects changes made through that role.
 contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithRoles {
+    struct LaunchConfig {
+        string[] clientIds;
+        address[] tokens;
+        uint256[] limits;
+    }
+
     using stdJson for string;
 
     uint32 internal constant DEFAULT_DELAY = 2 days;
@@ -44,6 +51,7 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
         address pauser2 = vm.envAddress("PAUSER_2");
         address unpauser = vm.envAddress("UNPAUSER_ACCOUNT");
         address watcher = vm.envAddress("MISBEHAVIOUR_WATCHER");
+        address rateLimiter = vm.envAddress("RATE_LIMITER_ACCOUNT");
         address verifierN4 = vm.envAddress("VERIFIER_N4");
         address verifierN8 = vm.envAddress("VERIFIER_N8");
         address verifierN16 = vm.envAddress("VERIFIER_N16");
@@ -51,6 +59,7 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
         address verifierN64 = vm.envAddress("VERIFIER_N64");
         address verifierN128 = vm.envAddress("VERIFIER_N128");
         uint256 configuredDelay = vm.envOr("SECURITY_DELAY", uint256(DEFAULT_DELAY));
+        LaunchConfig memory launch = _loadLaunchConfig();
 
         require(bootstrap != address(0), "invalid bootstrap account");
         require(governance != address(0) && governance != bootstrap, "invalid governance admin");
@@ -59,7 +68,7 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
         require(upgrader.code.length != 0, "upgrader must be a contract");
         require(relayer != address(0) && watcher != address(0), "missing operational account");
         require(pauser1 != address(0) && pauser2 != address(0), "need two pausers");
-        require(unpauser != address(0), "missing safety account");
+        require(unpauser != address(0) && rateLimiter != address(0), "missing safety account");
 
         address[] memory verifiers = ProductionConfigLib.verifierList(
             verifierN4, verifierN8, verifierN16, verifierN32, verifierN64, verifierN128
@@ -82,9 +91,10 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
         // restarting it slow and visible. The same reasoning applies to every other pair, so
         // none is left to be rediscovered at deploy time.
         address[] memory principals = ProductionConfigLib.principalList(
-            bootstrap, governance, upgrader, relayer, pauser1, pauser2, unpauser, watcher
+            bootstrap, governance, upgrader, relayer, pauser1, pauser2, unpauser, watcher, rateLimiter
         );
         ProductionConfigLib.requireDistinct(principals, "role separation failure");
+        _validateLaunchConfig(launch);
 
         uint32 delay = uint32(configuredDelay);
 
@@ -94,6 +104,9 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
         vm.startBroadcast(bootstrap);
 
         AccessManager accessManager = new AccessManager(bootstrap);
+        // The bootstrap account configures the launch limits directly, then
+        // relinquishes this temporary role before governance handoff.
+        accessManager.grantRole(IBCRolesLib.RATE_LIMITER_ROLE, bootstrap, 0);
         // AccessManager is the immutable verifier owner. Initial bucket setup is
         // executed through the manager while bootstrap is still its admin.
         SignatureVerifier signatureVerifier = new SignatureVerifier(address(accessManager));
@@ -129,6 +142,19 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
             )
         );
 
+        // Enable the gate before the transfer app is registered. A client is
+        // usable only after its escrow has been created, rate-limited, and
+        // explicitly activated below.
+        ICS20Transfer(address(transferProxy)).enableEscrowLaunchGate();
+
+        for (uint256 i = 0; i < launch.clientIds.length; ++i) {
+            address escrow = ICS20Transfer(address(transferProxy)).createEscrow(launch.clientIds[i]);
+            for (uint256 j = 0; j < launch.tokens.length; ++j) {
+                IRateLimit(escrow).setRateLimit(launch.tokens[j], launch.limits[j]);
+            }
+            ICS20Transfer(address(transferProxy)).activateEscrow(launch.clientIds[i], launch.tokens);
+        }
+
         // Register the default app while the selector still has its default
         // ADMIN_ROLE. Once target roles are installed, the bootstrap account no
         // longer has permission to call addIBCApp directly.
@@ -145,10 +171,12 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
         accessManager.grantRole(IBCRolesLib.UNPAUSER_ROLE, unpauser, delay);
         accessManager.grantRole(IBCRolesLib.UPGRADER_ROLE, upgrader, delay);
         accessManager.grantRole(IBCRolesLib.MISBEHAVIOUR_SUBMITTER_ROLE, watcher, 0);
+        accessManager.grantRole(IBCRolesLib.RATE_LIMITER_ROLE, rateLimiter, 0);
         accessManager.grantRole(IBCRolesLib.ID_CUSTOMIZER_ROLE, governance, delay);
 
         // The bootstrap key is removed before the deployment receipt is emitted.
         accessManager.grantRole(IBCRolesLib.ADMIN_ROLE, governance, 0);
+        accessManager.renounceRole(IBCRolesLib.RATE_LIMITER_ROLE, bootstrap);
         accessManager.renounceRole(IBCRolesLib.ADMIN_ROLE, bootstrap);
         vm.stopBroadcast();
 
@@ -162,6 +190,36 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
         json.serialize("clientMigrationExecutor", vm.toString(clientMigrationExecutor));
         json.serialize("ics26Router", vm.toString(address(routerProxy)));
         return json.serialize("ics20Transfer", vm.toString(address(transferProxy)));
+    }
+
+    function _loadLaunchConfig() internal view returns (LaunchConfig memory config) {
+        string memory encoded = vm.envString("PRODUCTION_ESCROW_CONFIG");
+        config.clientIds = encoded.readStringArray(".clients");
+        config.tokens = encoded.readAddressArray(".tokens");
+        config.limits = encoded.readUintArray(".limits");
+    }
+
+    function _validateLaunchConfig(LaunchConfig memory launch) internal view {
+        require(launch.clientIds.length != 0, "no production client escrows configured");
+        require(launch.tokens.length != 0 && launch.tokens.length == launch.limits.length, "invalid rate-limit config");
+
+        for (uint256 i = 0; i < launch.clientIds.length; ++i) {
+            require(bytes(launch.clientIds[i]).length != 0, "empty production client id");
+            for (uint256 j = 0; j < i; ++j) {
+                require(
+                    keccak256(bytes(launch.clientIds[i])) != keccak256(bytes(launch.clientIds[j])),
+                    "duplicate production client id"
+                );
+            }
+        }
+
+        for (uint256 i = 0; i < launch.tokens.length; ++i) {
+            require(launch.tokens[i] != address(0) && launch.limits[i] != 0, "invalid rate-limit entry");
+            require(launch.tokens[i].code.length != 0, "rate-limit token has no code");
+            for (uint256 j = 0; j < i; ++j) {
+                require(launch.tokens[i] != launch.tokens[j], "duplicate rate-limit token");
+            }
+        }
     }
 
     function _registerBucket(

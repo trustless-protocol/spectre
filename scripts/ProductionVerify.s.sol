@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
+import { stdJson } from "forge-std/StdJson.sol";
 import { Script } from "forge-std/Script.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 import { TimelockController } from "@openzeppelin-contracts/governance/TimelockController.sol";
@@ -10,11 +11,20 @@ import { SignatureVerifier } from "../contracts/light-clients/SignatureVerifier.
 import { IBCRolesLib } from "../contracts/utils/IBCRolesLib.sol";
 import { ProductionConfigLib } from "./deployments/ProductionConfigLib.sol";
 import { IGroth16Verifier } from "../contracts/light-clients/interfaces/IGroth16Verifier.sol";
+import { IRateLimit } from "../contracts/interfaces/IRateLimit.sol";
 
 /// @notice Read-only post-deployment checks for ProductionDeploy.
 /// @dev Governance must be a timelock whose minimum delay covers the
 ///      AccessManager security delay; ADMIN_ROLE is intentionally immediate.
 contract ProductionVerify is Script {
+    struct LaunchConfig {
+        string[] clientIds;
+        address[] tokens;
+        uint256[] limits;
+    }
+
+    using stdJson for string;
+
     uint32 internal constant DEFAULT_DELAY = 2 days;
 
     function run() external view returns (bool) {
@@ -30,7 +40,9 @@ contract ProductionVerify is Script {
         address pauser2 = vm.envAddress("PAUSER_2");
         address unpauser = vm.envAddress("UNPAUSER_ACCOUNT");
         address watcher = vm.envAddress("MISBEHAVIOUR_WATCHER");
+        address rateLimiter = vm.envAddress("RATE_LIMITER_ACCOUNT");
         uint256 configuredDelay = vm.envOr("SECURITY_DELAY", uint256(DEFAULT_DELAY));
+        LaunchConfig memory launch = _loadLaunchConfig();
 
         require(configuredDelay >= DEFAULT_DELAY && configuredDelay <= type(uint32).max, "invalid security delay");
         uint32 delay = uint32(configuredDelay);
@@ -48,7 +60,7 @@ contract ProductionVerify is Script {
         require(ICS20Transfer(transfer).authority() == address(manager), "transfer authority mismatch");
 
         address[] memory principals = ProductionConfigLib.principalList(
-            bootstrap, governance, upgrader, relayer, pauser1, pauser2, unpauser, watcher
+            bootstrap, governance, upgrader, relayer, pauser1, pauser2, unpauser, watcher, rateLimiter
         );
         ProductionConfigLib.requireDistinct(principals, "role separation failure");
 
@@ -72,6 +84,7 @@ contract ProductionVerify is Script {
 
         _checkRoleAbsent(manager, IBCRolesLib.ADMIN_ROLE, bootstrap, "bootstrap admin role still active");
         _checkRole(manager, IBCRolesLib.ADMIN_ROLE, governance, "governance admin role missing");
+        _checkRoleAbsent(manager, IBCRolesLib.RATE_LIMITER_ROLE, bootstrap, "bootstrap rate limiter role still active");
         _checkRoleDelay(manager, IBCRolesLib.UPGRADER_ROLE, upgrader, delay, "upgrader role delay is too short");
         _checkRoleExactDelay(manager, IBCRolesLib.RELAYER_ROLE, relayer, 0, "relayer role delay mismatch");
         _checkRoleExactDelay(manager, IBCRolesLib.PAUSER_ROLE, pauser1, 0, "pauser 1 role delay mismatch");
@@ -83,6 +96,7 @@ contract ProductionVerify is Script {
         _checkRoleDelay(
             manager, IBCRolesLib.ID_CUSTOMIZER_ROLE, governance, delay, "ID customizer role delay is too short"
         );
+        _checkRoleExactDelay(manager, IBCRolesLib.RATE_LIMITER_ROLE, rateLimiter, 0, "rate limiter role delay mismatch");
 
         _checkSelectors(manager, router, IBCRolesLib.ics26RelayerSelectors(), IBCRolesLib.RELAYER_ROLE);
         _checkSelectors(manager, router, IBCRolesLib.ics26IdCustomizerSelectors(), IBCRolesLib.ID_CUSTOMIZER_ROLE);
@@ -99,7 +113,48 @@ contract ProductionVerify is Script {
         bytes4[] memory setBucketSelector = new bytes4[](1);
         setBucketSelector[0] = SignatureVerifier.setBucket.selector;
         _checkSelectors(manager, address(verifier), setBucketSelector, IBCRolesLib.UPGRADER_ROLE);
+
+        _validateLaunchConfig(launch);
+        require(ICS20Transfer(transfer).requiresPrecreatedEscrows(), "production escrow gate disabled");
+        for (uint256 i = 0; i < launch.clientIds.length; ++i) {
+            address escrow = ICS20Transfer(transfer).getEscrow(launch.clientIds[i]);
+            require(escrow.code.length != 0, "production escrow missing");
+            require(ICS20Transfer(transfer).isEscrowActive(launch.clientIds[i]), "production escrow inactive");
+            for (uint256 j = 0; j < launch.tokens.length; ++j) {
+                require(IRateLimit(escrow).getRateLimit(launch.tokens[j]) == launch.limits[j], "rate limit mismatch");
+            }
+        }
         return true;
+    }
+
+    function _loadLaunchConfig() internal view returns (LaunchConfig memory config) {
+        string memory encoded = vm.envString("PRODUCTION_ESCROW_CONFIG");
+        config.clientIds = encoded.readStringArray(".clients");
+        config.tokens = encoded.readAddressArray(".tokens");
+        config.limits = encoded.readUintArray(".limits");
+    }
+
+    function _validateLaunchConfig(LaunchConfig memory launch) private view {
+        require(launch.clientIds.length != 0, "no production client escrows configured");
+        require(launch.tokens.length != 0 && launch.tokens.length == launch.limits.length, "invalid rate-limit config");
+
+        for (uint256 i = 0; i < launch.clientIds.length; ++i) {
+            require(bytes(launch.clientIds[i]).length != 0, "empty production client id");
+            for (uint256 j = 0; j < i; ++j) {
+                require(
+                    keccak256(bytes(launch.clientIds[i])) != keccak256(bytes(launch.clientIds[j])),
+                    "duplicate production client id"
+                );
+            }
+        }
+
+        for (uint256 i = 0; i < launch.tokens.length; ++i) {
+            require(launch.tokens[i] != address(0) && launch.limits[i] != 0, "invalid rate-limit entry");
+            require(launch.tokens[i].code.length != 0, "rate-limit token has no code");
+            for (uint256 j = 0; j < i; ++j) {
+                require(launch.tokens[i] != launch.tokens[j], "duplicate rate-limit token");
+            }
+        }
     }
 
     function _checkBucket(SignatureVerifier verifier, uint16 bucket, address expected, bytes4 selector) private view {

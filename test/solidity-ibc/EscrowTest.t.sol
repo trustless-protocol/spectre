@@ -7,6 +7,7 @@ import { Test } from "forge-std/Test.sol";
 
 import { IRateLimitErrors } from "../../contracts/errors/IRateLimitErrors.sol";
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
+import { IRateLimit } from "../../contracts/interfaces/IRateLimit.sol";
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
 
 import { Escrow } from "../../contracts/utils/Escrow.sol";
@@ -32,14 +33,15 @@ contract EscrowTest is Test {
         escrow = Escrow(address(escrowProxy));
         assert(escrow.ics20() == address(this));
 
-        // Set rate limiter role
-        accessManager.setTargetFunctionRole(
-            address(escrow), IBCRolesLib.rateLimiterSelectors(), IBCRolesLib.RATE_LIMITER_ROLE
-        );
         accessManager.grantRole(IBCRolesLib.RATE_LIMITER_ROLE, rateLimiter, 0);
         (bool hasRole, uint32 execDelay) = accessManager.hasRole(IBCRolesLib.RATE_LIMITER_ROLE, rateLimiter);
         assertTrue(hasRole, "Rate limiter role not granted");
         assertEq(execDelay, 0, "Rate limiter role needs 0 delay");
+        assertEq(
+            accessManager.getTargetFunctionRole(address(escrow), IRateLimit.setRateLimit.selector),
+            IBCRolesLib.ADMIN_ROLE,
+            "rate limit selector should not need a target mapping"
+        );
     }
 
     function test_success_setRateLimit() public {
@@ -60,6 +62,26 @@ contract EscrowTest is Test {
         vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
         escrow.setRateLimit(mockToken, rateLimit);
         assertEq(escrow.getRateLimit(mockToken), 0);
+    }
+
+    function test_failure_setRateLimitWithExecutionDelay() public {
+        address delayedRateLimiter = makeAddr("delayedRateLimiter");
+        address mockToken = makeAddr("mockToken");
+
+        accessManager.grantRole(IBCRolesLib.RATE_LIMITER_ROLE, delayedRateLimiter, 1 days);
+
+        vm.prank(delayedRateLimiter);
+        vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, delayedRateLimiter));
+        escrow.setRateLimit(mockToken, 10_000);
+    }
+
+    function test_failure_setRateLimitWhenTargetClosed() public {
+        address mockToken = makeAddr("mockToken");
+        accessManager.setTargetClosed(address(escrow), true);
+
+        vm.prank(rateLimiter);
+        vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, rateLimiter));
+        escrow.setRateLimit(mockToken, 10_000);
     }
 
     function test_dailyUsage() public {

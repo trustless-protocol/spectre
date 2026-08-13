@@ -30,8 +30,6 @@ abstract contract DeployAccessManagerWithRoles {
         accessManager.setTargetFunctionRole(
             ics20, IBCRolesLib.delegateSenderSelectors(), IBCRolesLib.DELEGATE_SENDER_ROLE
         );
-        // TODO(TK-01/#293): escrow proxies are created per client at runtime; map
-        // their setRateLimit selectors after creation.
         accessManager.setTargetFunctionRole(
             ics26, IBCRolesLib.ics26MisbehaviourSelectors(), IBCRolesLib.MISBEHAVIOUR_SUBMITTER_ROLE
         );

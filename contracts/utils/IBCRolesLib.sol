@@ -106,13 +106,11 @@ library IBCRolesLib {
         return unpauserFunctions;
     }
 
-    /// @notice The functions that can be called by the RATE_LIMITER_ROLE in Escrow.
-    /// @return An array of function selectors that can be called by the RATE_LIMITER_ROLE.
-    function rateLimiterSelectors() internal pure returns (bytes4[] memory) {
-        bytes4[] memory rateLimiterFunctions = new bytes4[](1);
-        rateLimiterFunctions[0] = IRateLimit.setRateLimit.selector;
-        return rateLimiterFunctions;
-    }
+    // NOTE: there is deliberately no rateLimiterSelectors(). RATE_LIMITER_ROLE is not wired
+    // through setTargetFunctionRole: escrows are created per client at runtime, so a per-target
+    // mapping cannot exist before the escrow does, and one that only covered pre-created escrows
+    // would leave the rest uncapped. Escrow.setRateLimit checks the global role itself — see
+    // RateLimitUpgradeable.setRateLimit.
 
     /// @notice Functions that must be executed through the delayed upgrade role.
     function upgraderSelectors() internal pure returns (bytes4[] memory) {

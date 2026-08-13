@@ -83,6 +83,32 @@ own deposited tokens.
 Tokens with a rate limit of `0` are untracked. If a limit is enabled later, accounting starts
 from zero at that point; previous untracked transfers are not counted retroactively.
 
+### Production Escrow Configuration
+
+`PRODUCTION_ESCROW_CONFIG` supplies `clients`, `tokens`, and `limits` arrays. Each
+`tokens[i]`/`limits[i]` pair is installed on every configured client escrow; the format
+does not support a distinct launch cap for each client. Client IDs must be nonempty and
+unique, and production token limits must be nonzero.
+
+**`RATE_LIMITER_ROLE` is global, not per-escrow.** Escrows are `BeaconProxy` instances
+created per client, so a per-target `setTargetFunctionRole` grant cannot exist before the
+escrow does — and one covering only the pre-created escrows would leave every later client
+uncapped, since an unset limit means *no* limit. `Escrow.setRateLimit` therefore checks the
+role on the AccessManager directly, and one role holder governs every escrow, present and
+future. It must be granted with an execution delay of **zero**: that path never consumes a
+scheduled operation, so a delayed grant is rejected rather than silently ignored.
+
+**Onboarding a client after launch requires escrow activation.** Production deployments call
+`ICS20Transfer.enableEscrowLaunchGate()`, after which packet processing will not create an
+escrow on demand and will reject a provisioned escrow until it is active. A client therefore
+cannot go live uncapped. The required sequence is `createEscrow(clientId)` (ADMIN_ROLE),
+`setRateLimit` with non-zero limits for every required token (RATE_LIMITER_ROLE), then
+`activateEscrow(clientId, tokens)` (ADMIN_ROLE). The activation step verifies the limits and
+the gate cannot be turned off once enabled. Activation is a point-in-time check of only the
+listed tokens: setting a limit back to `0` does not deactivate the escrow, and tokens omitted
+from the activation list remain uncapped. Existing deployments must activate all live escrows
+before enabling the gate because their active state defaults to `false`.
+
 ## Static Analysis
 
 ```bash

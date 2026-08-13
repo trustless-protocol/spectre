@@ -19,12 +19,29 @@ immediate operational roles.
 
 ## Escrow launch gate
 
-This deployment does not claim that `RATE_LIMITER_ROLE` can operate newly
-created escrows. Escrows are BeaconProxy instances created per client, and
-their `setRateLimit` selector must be mapped after each escrow is created.
-Complete the TK-01/#293 escrow launch-gate deployment before using rate limits
-in production; that flow pre-creates configured escrows, installs their limits,
-maps the selector, and verifies the result.
+`RATE_LIMITER_ROLE` is global: it can configure every escrow, including an
+escrow created after deployment. Production deployment enables a permanent
+launch gate and, for each configured client, creates its escrow, installs
+non-zero limits for each configured ERC-20, then activates the escrow. Both
+deployment and verification reject zero-address or non-contract token entries.
+
+For a later client, preserve the same order: `createEscrow(clientId)` through
+governance, install non-zero limits from the rate-limiter account, then call
+`activateEscrow(clientId, tokens)` through governance. Packet processing
+rejects a missing or inactive escrow, so the client cannot operate before its
+listed tokens have the configured limits.
+
+Activation is a point-in-time check of only the supplied token list. Removing a
+limit later by setting it to `0` does not deactivate the escrow, and tokens not
+included in the activation call remain uncapped. Governance and the rate-limiter
+must therefore treat later token additions and limit changes as separate safety
+decisions.
+
+When upgrading an existing live deployment, activate every existing escrow with
+its required token list **before** calling `enableEscrowLaunchGate()`. The active
+mapping defaults to `false`, so enabling the permanent gate first would halt
+packet processing for those clients. `activateEscrow` is available before the
+gate is enabled, which permits this safe migration order.
 
 ## Light-client provisioning
 

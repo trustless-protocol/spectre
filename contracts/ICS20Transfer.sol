@@ -14,6 +14,7 @@ import { IICS26Router } from "./interfaces/IICS26Router.sol";
 import { ISignatureTransfer } from "@uniswap/permit2/src/interfaces/ISignatureTransfer.sol";
 import { IMintableAndBurnable } from "./interfaces/IMintableAndBurnable.sol";
 import { IIBCERC20 } from "./interfaces/IIBCERC20.sol";
+import { IRateLimit } from "./interfaces/IRateLimit.sol";
 import { IDeprecatedIBCUUPSUpgradeable } from "./utils/ICS26AdminsDeprecated.sol";
 import { IPausable } from "./interfaces/IPausable.sol";
 
@@ -58,6 +59,8 @@ contract ICS20Transfer is
     /// @param _ibcERC20Beacon The address of the IBCERC20 beacon contract. Immutable.
     /// @param _escrowBeacon The address of the Escrow beacon contract. Immutable.
     /// @param _permit2 The permit2 contract. Immutable.
+    /// @param _requirePrecreatedEscrows Whether packet processing may create a new escrow.
+    /// @param _activeEscrows Whether a pre-created escrow may process packets after the launch gate is enabled.
     /// @custom:storage-location erc7201:ibc.storage.ICS20Transfer
     struct ICS20TransferStorage {
         mapping(string clientId => IEscrow escrow) _escrows;
@@ -67,6 +70,8 @@ contract ICS20Transfer is
         UpgradeableBeacon _ibcERC20Beacon;
         UpgradeableBeacon _escrowBeacon;
         ISignatureTransfer _permit2;
+        bool _requirePrecreatedEscrows;
+        mapping(string clientId => bool active) _activeEscrows;
     }
 
     /// @notice ERC-7201 slot for the ICS20Transfer storage
@@ -125,6 +130,54 @@ contract ICS20Transfer is
     /// @inheritdoc IICS20Transfer
     function getEscrow(string calldata clientId) external view returns (address) {
         return address(_getICS20TransferStorage()._escrows[clientId]);
+    }
+
+    /// @inheritdoc IICS20TransferAccessControlled
+    function createEscrow(string calldata clientId) external restricted returns (address escrow) {
+        // The governance-controlled escrow implementation initializes through its new proxy,
+        // which is not authorized to re-enter this restricted entrypoint.
+        // slither-disable-next-line reentrancy-no-eth
+        escrow = address(_createEscrow(clientId));
+    }
+
+    /// @inheritdoc IICS20TransferAccessControlled
+    function activateEscrow(string calldata clientId, address[] calldata tokens) external restricted {
+        ICS20TransferStorage storage $ = _getICS20TransferStorage();
+        IEscrow escrow = $._escrows[clientId];
+        require(address(escrow) != address(0), ICS20EscrowNotProvisioned(clientId));
+        require(tokens.length != 0, ICS20EscrowTokenListEmpty(clientId));
+
+        for (uint256 i = 0; i < tokens.length; ++i) {
+            require(
+                tokens[i] != address(0) && tokens[i].code.length != 0, ICS20EscrowRateLimitNotSet(clientId, tokens[i])
+            );
+            require(
+                IRateLimit(address(escrow)).getRateLimit(tokens[i]) != 0,
+                ICS20EscrowRateLimitNotSet(clientId, tokens[i])
+            );
+        }
+
+        $._activeEscrows[clientId] = true;
+        emit ICS20EscrowActivated(clientId, address(escrow));
+    }
+
+    /// @inheritdoc IICS20TransferAccessControlled
+    function enableEscrowLaunchGate() external restricted {
+        ICS20TransferStorage storage $ = _getICS20TransferStorage();
+        if (!$._requirePrecreatedEscrows) {
+            $._requirePrecreatedEscrows = true;
+            emit ICS20EscrowLaunchGateEnabled();
+        }
+    }
+
+    /// @inheritdoc IICS20Transfer
+    function requiresPrecreatedEscrows() external view returns (bool) {
+        return _getICS20TransferStorage()._requirePrecreatedEscrows;
+    }
+
+    /// @inheritdoc IICS20Transfer
+    function isEscrowActive(string calldata clientId) external view returns (bool) {
+        return _getICS20TransferStorage()._activeEscrows[clientId];
     }
 
     /// @inheritdoc IICS20Transfer
@@ -528,6 +581,23 @@ contract ICS20Transfer is
 
         IEscrow escrow = $._escrows[clientId];
         if (address(escrow) == address(0)) {
+            require(!$._requirePrecreatedEscrows, ICS20EscrowNotProvisioned(clientId));
+            escrow = _createEscrow(clientId);
+        } else if ($._requirePrecreatedEscrows) {
+            require($._activeEscrows[clientId], ICS20EscrowNotActive(clientId));
+        }
+
+        return escrow;
+    }
+
+    /// @notice Creates an escrow without bypassing the production launch gate.
+    /// @dev Only the restricted administration entrypoint may call this helper
+    ///      after the gate has been enabled.
+    function _createEscrow(string memory clientId) private returns (IEscrow) {
+        ICS20TransferStorage storage $ = _getICS20TransferStorage();
+
+        IEscrow escrow = $._escrows[clientId];
+        if (address(escrow) == address(0)) {
             escrow = IEscrow(
                 address(
                     new BeaconProxy(
@@ -536,6 +606,7 @@ contract ICS20Transfer is
                 )
             );
             $._escrows[clientId] = escrow;
+            emit ICS20EscrowCreated(clientId, address(escrow));
         }
 
         return escrow;

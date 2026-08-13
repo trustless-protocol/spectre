@@ -7,6 +7,20 @@ import { ISignatureTransfer } from "@uniswap/permit2/src/interfaces/ISignatureTr
 /// @title ICS20 Transfer Access Controlled Interface
 /// @notice Interface for the access controlled functions of the ICS20 Transfer module
 interface IICS20TransferAccessControlled {
+    /// @notice Pre-creates an escrow so production governance can configure rate limits before use.
+    /// @dev Requires AccessManager's `ADMIN_ROLE`.
+    function createEscrow(string calldata clientId) external returns (address escrow);
+
+    /// @notice Enables a pre-created escrow after its non-zero token limits are installed.
+    /// @dev Requires AccessManager's `ADMIN_ROLE`. Packet processing cannot use an escrow after the launch gate
+    ///      is enabled until this function succeeds. Activation checks only the supplied tokens at call time;
+    ///      it does not enforce future rate-limit changes or tokens omitted from the list.
+    function activateEscrow(string calldata clientId, address[] calldata tokens) external;
+
+    /// @notice Prevents packet processing from creating unconfigured escrows.
+    /// @dev Requires AccessManager's `ADMIN_ROLE` and cannot be disabled.
+    function enableEscrowLaunchGate() external;
+
     /// @notice Send a transfer by constructing a message and calling IICS26Router.sendPacket with the provided sender
     /// @dev This is a permissioned function requiring the `DELEGATE_SENDER_ROLE`
     /// @dev Useful for contracts that need to refund the tokens to a sender.
@@ -80,6 +94,12 @@ interface IICS20Transfer is IICS20TransferAccessControlled {
     /// @return The escrow contract address
     function getEscrow(string calldata clientId) external view returns (address);
 
+    /// @notice Returns whether packet processing requires governance to pre-create an escrow.
+    function requiresPrecreatedEscrows() external view returns (bool);
+
+    /// @notice Returns whether a pre-created escrow is active for packet processing once the launch gate is enabled.
+    function isEscrowActive(string calldata clientId) external view returns (bool);
+
     /// @notice Retrieve the ERC20 contract address for the given IBC denom
     /// @param denom The IBC denom
     /// @return The ERC20 contract address
@@ -134,6 +154,12 @@ interface IICS20Transfer is IICS20TransferAccessControlled {
     /// @param contractAddress The address of the IBCERC20 contract
     /// @param fullDenomPath The full IBC denom path for this token
     event IBCERC20ContractCreated(address indexed contractAddress, string fullDenomPath);
+    /// @notice Emitted when a client escrow is provisioned.
+    event ICS20EscrowCreated(string indexed clientId, address indexed escrow);
+    /// @notice Emitted when a provisioned escrow is enabled for packet processing.
+    event ICS20EscrowActivated(string indexed clientId, address indexed escrow);
+    /// @notice Emitted when the permanent escrow launch gate is enabled.
+    event ICS20EscrowLaunchGateEnabled();
     /// @notice Emitted when a sender acknowledgement callback reverts or runs out of gas
     /// @param callbackAddress The address of the sender callback contract
     /// @param reason The revert reason, or empty bytes if unavailable
