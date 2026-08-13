@@ -935,6 +935,12 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 	}
 	log.Printf("[CreateWasmClientTx] gas config: gasLimit=%d fee=%d%s", gasLimit, feeAmount, feeDenom)
 
+	// Creating and registering the client can broadcast two Cosmos transactions.
+	// Keep both sequence reads and broadcasts exclusive with relay batches so a
+	// concurrent relay cannot sign with the same account sequence.
+	h.cosmosMu.Lock()
+	defer h.cosmosMu.Unlock()
+
 	// Query account info (account number and sequence) from the chain
 	log.Printf("[CreateWasmClientTx] querying cosmos account info")
 	accountNumber, sequence, err := h.queryAccountInfo(stdCtx, endpoint, signerAddr)

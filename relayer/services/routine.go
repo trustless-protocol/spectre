@@ -854,7 +854,10 @@ func (w *Worker) BuildEthClientUpdateHeaders(cosmos CosmosEndpoint, evm EVMEndpo
 		return nil, err
 	}
 
-	sigSlot, _ := parseSlot(finalityUpdate.SignatureSlot)
+	sigSlot, err := parseSlot(finalityUpdate.SignatureSlot)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse signature slot: %w", err)
+	}
 	return &EthClientUpdateResult{
 		Headers:        headers,
 		EthClientState: proofState,
@@ -867,31 +870,37 @@ func (w *Worker) BuildEthClientUpdateHeaders(cosmos CosmosEndpoint, evm EVMEndpo
 // signature slot (so the wasm beacon update verifies), or until stdCtx is
 // cancelled. stdCtx makes the up-to-60 × 5s poll abort promptly on shutdown
 // instead of stranding a goroutine for minutes during teardown.
-func (w *Worker) WaitForCosmosCatchUp(stdCtx context.Context, cosmos CosmosEndpoint, ethClientState *relayerclient.EthereumClientState, sigSlot uint64) {
+func (w *Worker) WaitForCosmosCatchUp(stdCtx context.Context, cosmos CosmosEndpoint, ethClientState *relayerclient.EthereumClientState, sigSlot uint64) error {
+	var lastSlot uint64
 	requiredSlot := sigSlot + cosmosCatchUpSafetySlots
 	for range 60 {
 		if stdCtx.Err() != nil {
-			return
+			return stdCtx.Err()
 		}
 		status, err := cosmos.CosmosClient().Status(stdCtx)
 		if err != nil {
-			break
+			return fmt.Errorf("query Cosmos status while waiting for catch-up: %w", err)
 		}
 		cosmosTime := uint64(status.SyncInfo.LatestBlockTime.Unix())
 		currentSlot := ethClientState.ComputeSlotAtTimestamp(cosmosTime)
+		lastSlot = currentSlot
 		if cosmosCurrentSlotReady(currentSlot, sigSlot) {
 			log.Printf("[updateEthClient] timing OK: currentSlot=%d >= requiredSlot=%d (signatureSlot=%d safety=%d)",
 				currentSlot, requiredSlot, sigSlot, cosmosCatchUpSafetySlots)
-			break
+			return nil
 		}
 		log.Printf("[updateEthClient] waiting for target chain to catch up to required slot %d (signatureSlot=%d current=%d safety=%d)",
 			requiredSlot, sigSlot, currentSlot, cosmosCatchUpSafetySlots)
 		select {
 		case <-stdCtx.Done():
-			return
+			return stdCtx.Err()
 		case <-time.After(5 * time.Second):
 		}
 	}
+	return fmt.Errorf(
+		"cosmos catch-up: chain still at slot %d after 60 polls, need %d (signatureSlot=%d safety=%d)",
+		lastSlot, requiredSlot, sigSlot, cosmosCatchUpSafetySlots,
+	)
 }
 
 func cosmosCurrentSlotReady(currentSlot, sigSlot uint64) bool {

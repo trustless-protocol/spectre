@@ -433,7 +433,10 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 	batchMsgs = append(batchMsgs, timeoutMsgs...)
 
 	if len(updateMsgs) > 0 {
-		s.worker.WaitForCosmosCatchUp(stdCtx, cosmos, updateResult.EthClientState, updateResult.SigSlot)
+		if err := s.worker.WaitForCosmosCatchUp(stdCtx, cosmos, updateResult.EthClientState, updateResult.SigSlot); err != nil {
+			log.Printf("[CosmosTimeoutScan] target chain did not catch up; skipping timeout submission: %v", err)
+			return
+		}
 	}
 
 	if err := s.worker.TxHandler.SendCosmosTxBatch(stdCtx, cosmos, batchMsgs); err != nil {

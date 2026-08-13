@@ -946,12 +946,6 @@ func pruneEthSeenEvents(seenEvents map[ethEventKey]struct{}, currentBlock uint64
 	}
 }
 
-func advanceRecoveryStartFromLive(nextRecoveryStartBlock *uint64, eventBlock uint64) {
-	if *nextRecoveryStartBlock != 0 && eventBlock <= *nextRecoveryStartBlock {
-		advanceRecoveryStart(nextRecoveryStartBlock, eventBlock+1)
-	}
-}
-
 func enqueueEthWriteAcknowledgement(
 	batchBuilder *services.BatchBuilder,
 	ev *contractICS26Router.ContractICS26RouterWriteAcknowledgement,
@@ -1213,6 +1207,9 @@ func recoverEthWriteAcknowledgements(
 }
 
 func advanceRecoveryStart(nextRecoveryStartBlock *uint64, candidate uint64) {
+	// Only historical scans move this cursor. Live subscriptions are not a
+	// substitute for gap recovery: advancing past a reconnect gap would make the
+	// missed logs permanently invisible.
 	if candidate > *nextRecoveryStartBlock {
 		*nextRecoveryStartBlock = candidate
 	}
@@ -1352,25 +1349,33 @@ func (s *Subscriber) subscribeEthOnce(
 
 	for {
 		select {
-		case ev := <-sendPacketCh:
+		case ev, ok := <-sendPacketCh:
+			if !ok || ev == nil {
+				return fmt.Errorf("SendPacket event channel closed")
+			}
 			ctx.Logger.Printf("SendPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
-			if enqueueEthSendPacket(batchBuilder, ev, seenEvents) {
-				advanceRecoveryStartFromLive(nextSendRecoveryStartBlock, ev.Raw.BlockNumber)
-			}
+			enqueueEthSendPacket(batchBuilder, ev, seenEvents)
 
-		case ev := <-writeAckCh:
-			ctx.Logger.Printf("WriteAcknowledgement event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
-			if enqueueEthWriteAcknowledgement(batchBuilder, ev, seenEvents) {
-				advanceRecoveryStartFromLive(nextWriteAckRecoveryStartBlock, ev.Raw.BlockNumber)
+		case ev, ok := <-writeAckCh:
+			if !ok || ev == nil {
+				return fmt.Errorf("WriteAcknowledgement event channel closed")
 			}
+			ctx.Logger.Printf("WriteAcknowledgement event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
+			enqueueEthWriteAcknowledgement(batchBuilder, ev, seenEvents)
 			batchBuilder.PendingTracker.Remove(ev.Packet.SourceClient, ev.Sequence.Uint64())
 
-		case ev := <-ackPacketCh:
+		case ev, ok := <-ackPacketCh:
+			if !ok || ev == nil {
+				return fmt.Errorf("AckPacket event channel closed")
+			}
 			ctx.Logger.Printf("AckPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 			enqueueEthTerminal(batchBuilder, services.EthAck, ev.Packet, ev.Sequence,
 				[][]byte{ev.Acknowledgement}, ev.Raw.BlockNumber)
 
-		case ev := <-timeoutPacketCh:
+		case ev, ok := <-timeoutPacketCh:
+			if !ok || ev == nil {
+				return fmt.Errorf("TimeoutPacket event channel closed")
+			}
 			ctx.Logger.Printf("TimeoutPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 			enqueueEthTerminal(batchBuilder, services.EthTimeout, ev.Packet, ev.Sequence,
 				nil, ev.Raw.BlockNumber)

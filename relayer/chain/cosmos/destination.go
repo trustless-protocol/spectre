@@ -77,7 +77,9 @@ func (d *Destination) UpdateClient(ctx context.Context, clientID string, update 
 	if err != nil {
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
-	d.worker.WaitForCosmosCatchUp(ctx, d.cosmos, ethClientState, sigSlot)
+	if err := d.worker.WaitForCosmosCatchUp(ctx, d.cosmos, ethClientState, sigSlot); err != nil {
+		return fmt.Errorf("cosmos dest: wait for chain catch-up: %w", err)
+	}
 	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.cosmos, msgs); err != nil {
 		return fmt.Errorf("cosmos dest: submit beacon update (exec block %d): %w", update.Height, err)
 	}
@@ -210,7 +212,9 @@ func (d *Destination) RelayWithUpdate(ctx context.Context, clientID string, upda
 	if err != nil {
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
-	d.worker.WaitForCosmosCatchUp(ctx, d.cosmos, ethClientState, sigSlot)
+	if err := d.worker.WaitForCosmosCatchUp(ctx, d.cosmos, ethClientState, sigSlot); err != nil {
+		return fmt.Errorf("cosmos dest: wait for chain catch-up: %w", err)
+	}
 
 	msgs := make([]any, 0, len(updateMsgs)+len(packetMsgs))
 	msgs = append(msgs, updateMsgs...)

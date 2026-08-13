@@ -521,27 +521,6 @@ func TestAdvanceRecoveryStart(t *testing.T) {
 	}
 }
 
-func TestAdvanceRecoveryStartFromLiveLeavesGapForRecovery(t *testing.T) {
-	t.Parallel()
-
-	next := uint64(100)
-	advanceRecoveryStartFromLive(&next, 105)
-	if next != 100 {
-		t.Fatalf("live event ahead of cursor advanced to %d, want cursor to remain 100", next)
-	}
-
-	advanceRecoveryStartFromLive(&next, 100)
-	if next != 101 {
-		t.Fatalf("live event at cursor advanced to %d, want 101", next)
-	}
-
-	next = 0
-	advanceRecoveryStartFromLive(&next, 50)
-	if next != 0 {
-		t.Fatalf("zero recovery cursor advanced to %d, want 0", next)
-	}
-}
-
 func TestEnqueueEthSendPacket(t *testing.T) {
 	t.Parallel()
 
