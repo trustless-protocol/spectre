@@ -1294,6 +1294,78 @@ func isCosmosDuplicatePacketError(codespace string, code uint32) bool {
 		(codespace == "channel" && code == 22)
 }
 
+// duplicateDropIsSafe reports whether a duplicate response establishes that
+// the entire submitted batch is already complete. A Cosmos transaction is
+// atomic, so this is only true for a single-message batch.
+func duplicateDropIsSafe(msgCount int) bool { return msgCount == 1 }
+
+// newCosmosPreDeliverFailure preserves ABCI metadata and marks deterministic
+// duplicate/redundant packet failures as permanent even when they are observed
+// before DeliverTx. This matters for atomic update+packet batches: they cannot
+// split inside the transaction handler, so the relay module must receive a
+// permanent error and isolate the packets itself.
+func newCosmosPreDeliverFailure(stage string, code uint32, codespace, failureLog string, data []byte) error {
+	failure := &services.CosmosTxFailure{
+		Stage:     stage,
+		Code:      code,
+		Codespace: codespace,
+		Log:       failureLog,
+		Data:      data,
+	}
+	if isCosmosDuplicatePacketError(codespace, code) {
+		failure.Err = services.ErrPermanentRelayFailure
+	}
+	return failure
+}
+
+// splitCosmosBatchAfterDuplicate isolates a duplicate from its siblings. A
+// Cosmos transaction is atomic, so a duplicate response for a multi-message
+// transaction does not establish that its other messages were delivered. The
+// returned success count must remain a prefix because BatchPartialError users
+// settle only msgs[:SucceededCount].
+func (h *Handler) splitCosmosBatchAfterDuplicate(
+	stdCtx context.Context,
+	svcCtx services.CosmosEndpoint,
+	sdkMsgs []sdk.Msg,
+	accountNumber, sequence uint64,
+) (uint64, int, error) {
+	return splitCosmosBatchAfterDuplicateWith(
+		h.sendCosmosTxBatchWithSplitting, stdCtx, svcCtx, sdkMsgs, accountNumber, sequence,
+	)
+}
+
+// cosmosSubBatchSender is the half-submitting seam used by the duplicate split.
+// Production passes Handler.sendCosmosTxBatchWithSplitting; unit tests pass a
+// fake so the prefix and sequence invariants do not require a Cosmos node.
+type cosmosSubBatchSender func(
+	stdCtx context.Context,
+	svcCtx services.CosmosEndpoint,
+	sdkMsgs []sdk.Msg,
+	accountNumber, sequence uint64,
+	allowSplit bool,
+) (uint64, int, error)
+
+func splitCosmosBatchAfterDuplicateWith(
+	send cosmosSubBatchSender,
+	stdCtx context.Context,
+	svcCtx services.CosmosEndpoint,
+	sdkMsgs []sdk.Msg,
+	accountNumber, sequence uint64,
+) (uint64, int, error) {
+	mid := len(sdkMsgs) / 2
+	nextSequence, succeeded, err := send(
+		stdCtx, svcCtx, sdkMsgs[:mid], accountNumber, sequence, true,
+	)
+	if err != nil {
+		log.Printf("[SendCosmosTxBatch] first half after duplicate split failed: %v", err)
+		return nextSequence, succeeded, err
+	}
+	finalSequence, succeededSecond, err := send(
+		stdCtx, svcCtx, sdkMsgs[mid:], accountNumber, nextSequence, true,
+	)
+	return finalSequence, succeeded + succeededSecond, err
+}
+
 // simulateMsgs builds a transaction with the given messages, signs it with an empty signature, and simulates its gas consumption.
 func (h *Handler) simulateMsgs(stdCtx context.Context, svcCtx services.CosmosEndpoint, sdkMsgs []sdk.Msg, sequence uint64) (uint64, error) {
 	// Setup encoding config
@@ -1367,7 +1439,9 @@ func (h *Handler) simulateMsgs(stdCtx context.Context, svcCtx services.CosmosEnd
 	}
 
 	if result.Response.Code != 0 {
-		return 0, fmt.Errorf("simulation failed with code %d: %s", result.Response.Code, result.Response.Log)
+		return 0, newCosmosPreDeliverFailure(
+			"Simulation", result.Response.Code, result.Response.Codespace, result.Response.Log, nil,
+		)
 	}
 
 	var simResp txservice.SimulateResponse
@@ -1609,16 +1683,18 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 		log.Printf("[SendCosmosTxBatch] CheckTx FAILED: code=%d codespace=%s log=%s data=%x",
 			syncResult.Code, syncResult.Codespace, syncResult.Log, syncResult.Data)
 		if isCosmosDuplicatePacketError(syncResult.Codespace, syncResult.Code) {
-			log.Printf("[SendCosmosTxBatch] duplicate packet (codespace=%s code=%d), dropping", syncResult.Codespace, syncResult.Code)
-			return sequence, len(sdkMsgs), nil
+			if duplicateDropIsSafe(len(sdkMsgs)) {
+				log.Printf("[SendCosmosTxBatch] duplicate packet (codespace=%s code=%d), dropping", syncResult.Codespace, syncResult.Code)
+				return sequence, 1, nil
+			}
+			if allowSplit {
+				log.Printf("[SendCosmosTxBatch] duplicate packet in batch of %d; splitting to isolate it", len(sdkMsgs))
+				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence)
+			}
 		}
-		return sequence, 0, &services.CosmosTxFailure{
-			Stage:     "CheckTx",
-			Code:      syncResult.Code,
-			Codespace: syncResult.Codespace,
-			Log:       syncResult.Log,
-			Data:      syncResult.Data,
-		}
+		return sequence, 0, newCosmosPreDeliverFailure(
+			"CheckTx", syncResult.Code, syncResult.Codespace, syncResult.Log, syncResult.Data,
+		)
 	}
 
 	txResult, err := h.waitForTxResult(stdCtx, svcCtx, syncResult.Hash, cosmosInclusionTimeout)
@@ -1635,8 +1711,16 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 		log.Printf("[SendCosmosTxBatch] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
 			txResult.TxResult.Code, txResult.TxResult.Codespace, txResult.TxResult.Log, txResult.TxResult.Data)
 		if isCosmosDuplicatePacketError(txResult.TxResult.Codespace, txResult.TxResult.Code) {
-			log.Printf("[SendCosmosTxBatch] duplicate packet (codespace=%s code=%d), dropping", txResult.TxResult.Codespace, txResult.TxResult.Code)
-			return sequence + 1, len(sdkMsgs), nil
+			if duplicateDropIsSafe(len(sdkMsgs)) {
+				log.Printf("[SendCosmosTxBatch] duplicate packet (codespace=%s code=%d), dropping", txResult.TxResult.Codespace, txResult.TxResult.Code)
+				return sequence + 1, 1, nil
+			}
+			if allowSplit {
+				// DeliverTx was included, so its account sequence was consumed even
+				// though message execution reverted.
+				log.Printf("[SendCosmosTxBatch] duplicate packet in batch of %d; splitting to isolate it", len(sdkMsgs))
+				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence+1)
+			}
 		}
 		return sequence, 0, &services.CosmosTxFailure{
 			Stage:     "DeliverTx",
