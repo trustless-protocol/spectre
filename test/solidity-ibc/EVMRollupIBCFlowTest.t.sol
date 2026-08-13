@@ -15,6 +15,8 @@ import { SpectreClient } from "../../contracts/light-clients/SpectreClient.sol";
 import { Membership } from "../../contracts/light-clients/modules/Membership.sol";
 import { Misbehaviour } from "../../contracts/light-clients/modules/Misbehaviour.sol";
 import { UpdateClient } from "../../contracts/light-clients/modules/UpdateClient.sol";
+import { ClientMigrationProposer } from "../../contracts/light-clients/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "../../contracts/light-clients/modules/ClientMigrationExecutor.sol";
 import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
 import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
 import { IICS02ClientMsgs } from "../../contracts/msgs/IICS02ClientMsgs.sol";
@@ -52,7 +54,8 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         vm.chainId(REPRESENTATIVE_EVM_ROLLUP_CHAIN_ID);
 
         AccessManager accessManager = new AccessManager(address(this));
-        ICS26Router routerLogic = new ICS26Router();
+        ICS26Router routerLogic =
+            new ICS26Router(address(new ClientMigrationProposer()), address(new ClientMigrationExecutor()));
         ERC1967Proxy routerProxy =
             new ERC1967Proxy(address(routerLogic), abi.encodeCall(ICS26Router.initialize, (address(accessManager))));
 
@@ -285,7 +288,8 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
 
     function _deployCore(bool pubRelay) private returns (CoreDeployment memory core) {
         AccessManager accessManager = new AccessManager(address(this));
-        ICS26Router routerLogic = new ICS26Router();
+        ICS26Router routerLogic =
+            new ICS26Router(address(new ClientMigrationProposer()), address(new ClientMigrationExecutor()));
         ERC1967Proxy routerProxy =
             new ERC1967Proxy(address(routerLogic), abi.encodeCall(ICS26Router.initialize, (address(accessManager))));
 

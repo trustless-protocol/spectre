@@ -55,7 +55,12 @@ contract ICS26Router is
 
     /// @dev This contract is meant to be deployed by a proxy, so the constructor is not used
     // natlint-disable-next-line MissingNotice
-    constructor() {
+    constructor(
+        address clientMigrationProposer,
+        address clientMigrationExecutor
+    )
+        ICS02ClientUpgradeable(clientMigrationProposer, clientMigrationExecutor)
+    {
         _disableInitializers();
     }
 

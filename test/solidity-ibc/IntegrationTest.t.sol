@@ -37,6 +37,8 @@ import { PermitSignature } from "./utils/PermitSignature.sol";
 import { DeployAccessManagerWithRoles } from "../../scripts/deployments/DeployAccessManagerWithRoles.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 import { IBCRolesLib } from "../../contracts/utils/IBCRolesLib.sol";
+import { ClientMigrationProposer } from "../../contracts/light-clients/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "../../contracts/light-clients/modules/ClientMigrationExecutor.sol";
 
 contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessManagerWithRoles {
     using Strings for string;
@@ -76,7 +78,8 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         lightClient = new DummyLightClient(ILightClientMsgs.UpdateResult.Update, 0, false);
         address escrowLogic = address(new Escrow());
         address ibcERC20Logic = address(new IBCERC20());
-        ICS26Router ics26RouterLogic = new ICS26Router();
+        ICS26Router ics26RouterLogic =
+            new ICS26Router(address(new ClientMigrationProposer()), address(new ClientMigrationExecutor()));
         ICS20Transfer ics20TransferLogic = new ICS20Transfer();
 
         // ============== Step 2: Deploy ERC1967 Proxies ==============

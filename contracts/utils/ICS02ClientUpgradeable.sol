@@ -7,12 +7,18 @@ import { ILightClientMsgs } from "../msgs/ILightClientMsgs.sol";
 import { IICS02ClientErrors } from "../errors/IICS02ClientErrors.sol";
 import { IICS02Client, IICS02ClientAccessControlled } from "../interfaces/IICS02Client.sol";
 import { ILightClient } from "../interfaces/ILightClient.sol";
+import { IClientMigrationProposer } from "../light-clients/interfaces/IClientMigrationProposer.sol";
+import { IClientMigrationExecutor } from "../light-clients/interfaces/IClientMigrationExecutor.sol";
+import {
+    IClientMigrationModule,
+    ClientMigrationModuleIds
+} from "../light-clients/interfaces/IClientMigrationModule.sol";
 
 import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
-import { IAccessManager } from "@openzeppelin-contracts/access/manager/IAccessManager.sol";
 import { AccessManagedUpgradeable } from "@openzeppelin-upgradeable/access/manager/AccessManagedUpgradeable.sol";
 import { IBCIdentifiers } from "../utils/IBCIdentifiers.sol";
 import { IBCRolesLib } from "./IBCRolesLib.sol";
+import { ICS02ClientStore } from "./ICS02ClientStore.sol";
 
 /// @title ICS02 Client Router
 /// @notice This is the ICS02 Light Client Router contract, storing the light clients and their identifiers.
@@ -21,23 +27,23 @@ import { IBCRolesLib } from "./IBCRolesLib.sol";
 /// @dev for one client does not authorize migration of any other client. The role must be granted
 /// @dev explicitly by the AccessManager admin; it is not auto-assigned in `addClient`.
 abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, AccessManagedUpgradeable {
-    /// @notice Storage of the ICS02Client contract
-    /// @dev It's implemented on a custom ERC-7201 namespace to reduce the
-    /// @dev risk of storage collisions when using with upgradeable contracts.
-    /// @param clients Mapping of client identifiers to light client contracts
-    /// @param counterpartyInfos Mapping of client identifiers to counterparty info
-    /// @param nextClientSeq The next sequence number for the next client identifier
-    /// @custom:storage-location erc7201:ibc.storage.ICS02Client
-    struct ICS02ClientStorage {
-        mapping(string clientId => ILightClient) clients;
-        mapping(string clientId => IICS02ClientMsgs.CounterpartyInfo info) counterpartyInfos;
-        uint256 nextClientSeq;
+    IClientMigrationProposer internal immutable CLIENT_MIGRATION_PROPOSER;
+    IClientMigrationExecutor internal immutable CLIENT_MIGRATION_EXECUTOR;
+
+    constructor(address clientMigrationProposer, address clientMigrationExecutor) {
+        _requireClientMigrationModule(clientMigrationProposer, ClientMigrationModuleIds.PROPOSER);
+        _requireClientMigrationModule(clientMigrationExecutor, ClientMigrationModuleIds.EXECUTOR);
+        CLIENT_MIGRATION_PROPOSER = IClientMigrationProposer(clientMigrationProposer);
+        CLIENT_MIGRATION_EXECUTOR = IClientMigrationExecutor(clientMigrationExecutor);
     }
 
-    /// @notice ERC-7201 slot for the ICS02Client storage
-    /// @dev keccak256(abi.encode(uint256(keccak256("ibc.storage.ICS02Client")) - 1)) & ~bytes32(uint256(0xff))
-    bytes32 private constant ICS02CLIENT_STORAGE_SLOT =
-        0x515a8336edcaab4ae6524d41223c1782132890f89189ba6632107a7b5a449600;
+    function _requireClientMigrationModule(address module, bytes32 expectedModuleId) private view {
+        if (module.code.length == 0) revert IBCClientMigrationModuleMissing(module);
+        (bool ok, bytes memory result) = module.staticcall(abi.encodeCall(IClientMigrationModule.moduleId, ()));
+        if (!ok || result.length != 32 || abi.decode(result, (bytes32)) != expectedModuleId) {
+            revert IBCClientMigrationModuleMismatch(module, expectedModuleId);
+        }
+    }
 
     /// @notice This function initializes the ICS02Client contract
     /// @dev This function is meant to be called by the initializer of the contract that inherits this.
@@ -48,13 +54,13 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
 
     /// @inheritdoc IICS02Client
     function getNextClientSeq() external view returns (uint256) {
-        return _getICS02ClientStorage().nextClientSeq;
+        return ICS02ClientStore.load().nextClientSeq;
     }
 
     /// @notice Generates the next client identifier
     /// @return The next client identifier
     function nextClientId() private returns (string memory) {
-        ICS02ClientStorage storage $ = _getICS02ClientStorage();
+        ICS02ClientStore.Layout storage $ = ICS02ClientStore.load();
         // initial client sequence should be 0, hence we use x++ instead of ++x
         // solhint-disable-next-line gas-increment-by-one
         return string.concat(IBCIdentifiers.CLIENT_ID_PREFIX, Strings.toString($.nextClientSeq++));
@@ -62,7 +68,7 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
 
     /// @inheritdoc IICS02Client
     function getCounterparty(string calldata clientId) public view returns (IICS02ClientMsgs.CounterpartyInfo memory) {
-        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo = _getICS02ClientStorage().counterpartyInfos[clientId];
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo = ICS02ClientStore.load().counterpartyInfos[clientId];
         require(bytes(counterpartyInfo.clientId).length != 0, IBCCounterpartyClientNotFound(clientId));
 
         return counterpartyInfo;
@@ -70,7 +76,7 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
 
     /// @inheritdoc IICS02Client
     function getClient(string calldata clientId) public view returns (ILightClient) {
-        ILightClient client = _getICS02ClientStorage().clients[clientId];
+        ILightClient client = ICS02ClientStore.load().clients[clientId];
         require(address(client) != address(0), IBCClientNotFound(clientId));
 
         return client;
@@ -117,7 +123,7 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
     )
         private
     {
-        ICS02ClientStorage storage $ = _getICS02ClientStorage();
+        ICS02ClientStore.Layout storage $ = ICS02ClientStore.load();
         require(address($.clients[clientId]) == address(0), IBCClientAlreadyExists(clientId));
 
         $.clients[clientId] = ILightClient(client);
@@ -162,26 +168,50 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
     )
         external
     {
-        getClient(clientId); // Ensure subject client exists
+        // ABI-compatible alias for executeClientMigration. It succeeds only for
+        // a mature, digest-matching proposal created through the delayed API.
+        _delegateClientMigration(
+            address(CLIENT_MIGRATION_EXECUTOR), IClientMigrationExecutor.executeClientMigration.selector
+        );
+    }
 
-        // We manually check the migrator role here rather than using the `restricted` modifier.
-        // This allows client-specific migration roles (scoped by clientId) rather than a single
-        // global migration role. However, manual role checks bypass the AccessManager's delay
-        // enforcement and target kill-switch. Therefore, we explicitly check if the target is
-        // closed, and require that the role is granted with an execution delay of 0, meaning
-        // only immediate, delay-0 migrators are supported on this path.
-        IAccessManager manager = IAccessManager(authority());
-        require(!manager.isTargetClosed(address(this)), IBCUnauthorizedMigrator(clientId, _msgSender()));
+    function proposeClientMigration(
+        string calldata clientId,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        address client
+    )
+        external
+    {
+        _delegateClientMigration(
+            address(CLIENT_MIGRATION_PROPOSER), IClientMigrationProposer.proposeClientMigration.selector
+        );
+    }
 
-        (bool isMember, uint32 executionDelay) =
-            manager.hasRole(IBCRolesLib.getLightClientMigratorRole(clientId), _msgSender());
-        require(isMember && executionDelay == 0, IBCUnauthorizedMigrator(clientId, _msgSender()));
+    function executeClientMigration(
+        string calldata clientId,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        address client
+    )
+        external
+    {
+        _delegateClientMigration(
+            address(CLIENT_MIGRATION_EXECUTOR), IClientMigrationExecutor.executeClientMigration.selector
+        );
+    }
 
-        ICS02ClientStorage storage $ = _getICS02ClientStorage();
-        $.counterpartyInfos[clientId] = counterpartyInfo;
-        $.clients[clientId] = ILightClient(client);
+    function cancelClientMigration(string calldata clientId) external {
+        _delegateClientMigration(
+            address(CLIENT_MIGRATION_EXECUTOR), IClientMigrationExecutor.cancelClientMigration.selector
+        );
+    }
 
-        emit ICS02ClientMigrated(clientId, counterpartyInfo, client);
+    function getClientMigration(string calldata clientId)
+        external
+        view
+        returns (bytes32 digest, uint48 executeAfter, uint48 expireAfter, address proposer)
+    {
+        ICS02ClientStore.ClientMigration memory migration = ICS02ClientStore.load().migrations[clientId];
+        return (migration.digest, migration.executeAfter, migration.expireAfter, migration.proposer);
     }
 
     /// @inheritdoc IICS02ClientAccessControlled
@@ -201,12 +231,20 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
         emit ICS02ClientUnfrozen(clientId);
     }
 
-    /// @notice Returns the storage of the ICS02Client contract
-    /// @return $ The storage of the ICS02Client contract
-    function _getICS02ClientStorage() private pure returns (ICS02ClientStorage storage $) {
+    function _delegateClientMigration(address target, bytes4 selector) private {
+        // This terminal assembly block may overwrite Solidity-managed memory because it
+        // returns or reverts directly and never resumes Solidity execution.
         // solhint-disable-next-line no-inline-assembly
         assembly {
-            $.slot := ICS02CLIENT_STORAGE_SLOT
+            mstore(0, selector)
+            // Copying calldatasize() bytes from offset 4 zero-pads four unused bytes past
+            // calldata, outside the delegatecall's input range, and saves router bytecode.
+            calldatacopy(4, 4, calldatasize())
+            let ok := delegatecall(gas(), target, 0, calldatasize(), 0, 0)
+            returndatacopy(0, 0, returndatasize())
+            switch ok
+            case 0 { revert(0, returndatasize()) }
+            default { return(0, returndatasize()) }
         }
     }
 }

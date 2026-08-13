@@ -27,4 +27,31 @@ interface IICS02ClientErrors {
     /// @param clientId client identifier
     /// @param caller the address that attempted to migrate the client
     error IBCUnauthorizedMigrator(string clientId, address caller);
+
+    /// @notice A migration proposal is not ready to execute.
+    error IBCClientMigrationNotReady(string clientId, uint256 executeAfter);
+
+    /// @notice A migration proposal is already active for this client.
+    error IBCClientMigrationAlreadyProposed(string clientId);
+
+    /// @notice No migration proposal exists for this client.
+    error IBCClientMigrationNotProposed(string clientId);
+
+    /// @notice A migration proposal has passed its execution window.
+    error IBCClientMigrationExpired(string clientId, uint256 expireAfter);
+
+    /// @notice The supplied migration does not match the committed proposal.
+    error IBCClientMigrationMismatch(string clientId);
+
+    /// @notice The migration role must carry a non-zero execution delay.
+    error IBCClientMigrationDelayRequired(string clientId);
+
+    /// @notice A configured migration module address has no deployed code.
+    error IBCClientMigrationModuleMissing(address module);
+
+    /// @notice A configured contract does not identify as the required migration module.
+    error IBCClientMigrationModuleMismatch(address module, bytes32 expectedModuleId);
+
+    /// @notice A migration module was called directly instead of through the router.
+    error IBCClientMigrationDirectCallNotAllowed();
 }

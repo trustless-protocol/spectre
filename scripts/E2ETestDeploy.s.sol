@@ -32,6 +32,8 @@ import { Groth16Verifier_N4 } from "../contracts/verifiers/Groth16Verifier_N4.so
 import { Membership } from "../contracts/light-clients/modules/Membership.sol";
 import { UpdateClient } from "../contracts/light-clients/modules/UpdateClient.sol";
 import { Misbehaviour } from "../contracts/light-clients/modules/Misbehaviour.sol";
+import { ClientMigrationProposer } from "../contracts/light-clients/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "../contracts/light-clients/modules/ClientMigrationExecutor.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 
 /// @dev See the Solidity Scripting tutorial: https://book.getfoundry.sh/tutorials/solidity-scripting
@@ -75,10 +77,12 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         address membership = address(new Membership());
         address updateClient = address(new UpdateClient(address(signatureVerifier)));
         address misbehaviour = address(new Misbehaviour(address(signatureVerifier)));
+        address clientMigrationProposer = address(new ClientMigrationProposer());
+        address clientMigrationExecutor = address(new ClientMigrationExecutor());
         // address verifierMock = address(new MockGroth16Verifier());
 
         // Deploy IBC Eureka with proxy
-        address ics26RouterLogic = address(new ICS26Router());
+        address ics26RouterLogic = address(new ICS26Router(clientMigrationProposer, clientMigrationExecutor));
         address ics20TransferLogic = address(new ICS20Transfer());
 
         AccessManager accessManager = new AccessManager(msg.sender);
@@ -123,6 +127,8 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         json.serialize("membership", Strings.toHexString(address(membership)));
         json.serialize("updateClient", Strings.toHexString(address(updateClient)));
         json.serialize("misbehaviour", Strings.toHexString(address(misbehaviour)));
+        json.serialize("clientMigrationProposer", Strings.toHexString(clientMigrationProposer));
+        json.serialize("clientMigrationExecutor", Strings.toHexString(clientMigrationExecutor));
         json.serialize("ics26Router", Strings.toHexString(address(routerProxy)));
         json.serialize("ics20Transfer", Strings.toHexString(address(transferProxy)));
         string memory finalJson = json.serialize("erc20", Strings.toHexString(address(erc20)));

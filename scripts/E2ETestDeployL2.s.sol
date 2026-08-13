@@ -40,6 +40,8 @@ import { Groth16Verifier_N4 } from "../contracts/verifiers/Groth16Verifier_N4.so
 import { Membership } from "../contracts/light-clients/modules/Membership.sol";
 import { UpdateClient } from "../contracts/light-clients/modules/UpdateClient.sol";
 import { Misbehaviour } from "../contracts/light-clients/modules/Misbehaviour.sol";
+import { ClientMigrationProposer } from "../contracts/light-clients/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "../contracts/light-clients/modules/ClientMigrationExecutor.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 
 /// @dev Cosmos->L2 receive-infrastructure deploy. See E2ETestDeploy for the L1 counterpart.
@@ -84,7 +86,8 @@ contract E2ETestDeployL2 is Script, DeployAccessManagerWithRoles {
         address misbehaviour = address(new Misbehaviour(address(signatureVerifier)));
 
         // Deploy IBC Eureka with proxy
-        address ics26RouterLogic = address(new ICS26Router());
+        address ics26RouterLogic =
+            address(new ICS26Router(address(new ClientMigrationProposer()), address(new ClientMigrationExecutor())));
         address ics20TransferLogic = address(new ICS20Transfer());
 
         AccessManager accessManager = new AccessManager(msg.sender);
@@ -96,13 +99,7 @@ contract E2ETestDeployL2 is Script, DeployAccessManagerWithRoles {
             ics20TransferLogic,
             abi.encodeCall(
                 ICS20Transfer.initialize,
-                (
-                    address(routerProxy),
-                    address(new Escrow()),
-                    address(new IBCERC20()),
-                    permit2,
-                    address(accessManager)
-                )
+                (address(routerProxy), address(new Escrow()), address(new IBCERC20()), permit2, address(accessManager))
             )
         );
 

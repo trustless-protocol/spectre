@@ -15,6 +15,9 @@ import { IICS02ClientErrors } from "../../contracts/errors/IICS02ClientErrors.so
 import { ICS02ClientUpgradeable } from "../../contracts/utils/ICS02ClientUpgradeable.sol";
 import { ERC1967Proxy } from "@openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import { ICS26Router } from "../../contracts/ICS26Router.sol";
+import { ClientMigrationProposer } from "../../contracts/light-clients/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "../../contracts/light-clients/modules/ClientMigrationExecutor.sol";
+import { ClientMigrationModuleIds } from "../../contracts/light-clients/interfaces/IClientMigrationModule.sol";
 import { TestHelper } from "./utils/TestHelper.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 import { IBCRolesLib } from "../../contracts/utils/IBCRolesLib.sol";
@@ -22,6 +25,8 @@ import { IBCRolesLib } from "../../contracts/utils/IBCRolesLib.sol";
 contract ICS02ClientTest is Test {
     ICS02ClientUpgradeable public ics02Client;
     AccessManager public accessManager;
+    ClientMigrationProposer public clientMigrationProposer;
+    ClientMigrationExecutor public clientMigrationExecutor;
 
     address public lightClient = makeAddr("lightClient");
 
@@ -33,11 +38,15 @@ contract ICS02ClientTest is Test {
     address public idCustomizer = makeAddr("idCustomizer");
     address public relayer = makeAddr("relayer");
     address public misbehaviourSubmitter = makeAddr("misbehaviourSubmitter");
+    address public pauser = makeAddr("pauser");
 
     TestHelper public th = new TestHelper();
 
     function setUp() public {
-        ICS26Router ics26RouterLogic = new ICS26Router();
+        clientMigrationProposer = new ClientMigrationProposer();
+        clientMigrationExecutor = new ClientMigrationExecutor();
+        ICS26Router ics26RouterLogic =
+            new ICS26Router(address(clientMigrationProposer), address(clientMigrationExecutor));
 
         accessManager = new AccessManager(address(this));
 
@@ -56,10 +65,10 @@ contract ICS02ClientTest is Test {
         accessManager.setTargetFunctionRole(
             address(ics02Client), IBCRolesLib.ics26MisbehaviourSelectors(), IBCRolesLib.MISBEHAVIOUR_SUBMITTER_ROLE
         );
-
         accessManager.grantRole(IBCRolesLib.ID_CUSTOMIZER_ROLE, idCustomizer, 0);
         accessManager.grantRole(IBCRolesLib.RELAYER_ROLE, relayer, 0);
         accessManager.grantRole(IBCRolesLib.MISBEHAVIOUR_SUBMITTER_ROLE, misbehaviourSubmitter, 0);
+        accessManager.grantRole(IBCRolesLib.PAUSER_ROLE, pauser, 0);
 
         string memory counterpartyId = "42-dummy-01";
         IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
@@ -73,6 +82,22 @@ contract ICS02ClientTest is Test {
 
         IICS02ClientMsgs.CounterpartyInfo memory fetchedCounterparty = ics02Client.getCounterparty(clientIdentifier);
         assertEq(fetchedCounterparty.clientId, counterpartyId, "counterparty not set correctly");
+    }
+
+    function test_constructorRejectsMissingMigrationModule() public {
+        vm.expectRevert(abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationModuleMissing.selector, address(0)));
+        new ICS26Router(address(0), address(clientMigrationExecutor));
+    }
+
+    function test_constructorRejectsWrongMigrationModule() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCClientMigrationModuleMismatch.selector,
+                address(clientMigrationExecutor),
+                ClientMigrationModuleIds.PROPOSER
+            )
+        );
+        new ICS26Router(address(clientMigrationExecutor), address(clientMigrationExecutor));
     }
 
     function test_success_customClientId() public {
@@ -112,7 +137,7 @@ contract ICS02ClientTest is Test {
 
         // Grant the per-clientId migrator role for clientIdentifier to clientMigrator.
         uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
-        accessManager.grantRole(migratorRole, clientMigrator, 0);
+        accessManager.grantRole(migratorRole, clientMigrator, 60);
 
         string memory counterpartyId = "42-dummy-01";
         address newLightClient = makeAddr("newLightClient");
@@ -124,11 +149,24 @@ contract ICS02ClientTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, unauthorized)
         );
-        ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
 
-        // The granted migrator can migrate that specific clientId.
+        // The granted migrator must first create a delayed proposal.
         vm.prank(clientMigrator);
-        ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+        (, uint48 executeAfter, uint48 expireAfter, address proposer) = ics02Client.getClientMigration(clientIdentifier);
+        assertEq(executeAfter, block.timestamp + 48 hours, "migration floor not applied");
+        assertEq(expireAfter, executeAfter + accessManager.expiration(), "migration expiry not snapshotted");
+        assertEq(proposer, clientMigrator, "migration proposer not recorded");
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCClientMigrationNotReady.selector, clientIdentifier, executeAfter
+            )
+        );
+        ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+        vm.warp(executeAfter);
+        vm.prank(makeAddr("randomer"));
+        ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
         ILightClient fetchedLightClient = ics02Client.getClient(clientIdentifier);
         assertEq(address(fetchedLightClient), newLightClient, "client not migrated");
 
@@ -147,29 +185,102 @@ contract ICS02ClientTest is Test {
         vm.expectRevert(
             abi.encodeWithSelector(IICS02ClientErrors.IBCUnauthorizedMigrator.selector, otherClientId, clientMigrator)
         );
-        ics02Client.migrateClient(otherClientId, otherCounterparty, newLightClient);
+        ics02Client.proposeClientMigration(otherClientId, otherCounterparty, newLightClient);
     }
 
-    function test_failure_MigrateClient_withDelay() public {
+    function test_failure_MigrateClient_withoutDelay() public {
         address delayedMigrator = makeAddr("delayedMigrator");
 
-        // Grant the per-clientId migrator role for clientIdentifier to delayedMigrator with a non-zero execution delay.
+        // Grant the per-clientId migrator role for delayedMigrator without a delay.
         uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
-        accessManager.grantRole(migratorRole, delayedMigrator, 60); // 60 seconds delay
+        accessManager.grantRole(migratorRole, delayedMigrator, 0);
 
         string memory counterpartyId = "42-dummy-01";
         address newLightClient = makeAddr("newLightClient");
         IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
             IICS02ClientMsgs.CounterpartyInfo(counterpartyId, randomPrefix);
 
-        // Even though they have the role, because it has a non-zero delay, the migration should revert immediately.
+        // A zero-delay role cannot create a migration proposal.
         vm.prank(delayedMigrator);
         vm.expectRevert(
-            abi.encodeWithSelector(
-                IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, delayedMigrator
-            )
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationDelayRequired.selector, clientIdentifier)
         );
-        ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+    }
+
+    function test_cancelClientMigration() public {
+        address clientMigrator = makeAddr("clientMigrator");
+        uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
+        accessManager.grantRole(migratorRole, clientMigrator, 60);
+
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("42-dummy-02", randomPrefix);
+        address newLightClient = makeAddr("newLightClient");
+
+        vm.prank(clientMigrator);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+
+        address unauthorized = makeAddr("unauthorized");
+        vm.prank(unauthorized);
+        vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
+        ics02Client.cancelClientMigration(clientIdentifier);
+
+        vm.prank(pauser);
+        ics02Client.cancelClientMigration(clientIdentifier);
+        (bytes32 digest, uint48 executeAfter,,) = ics02Client.getClientMigration(clientIdentifier);
+        assertEq(digest, bytes32(0), "migration digest not cleared");
+        assertEq(executeAfter, 0, "migration timestamp not cleared");
+
+        vm.warp(block.timestamp + 48 hours);
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationNotProposed.selector, clientIdentifier)
+        );
+        ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+    }
+
+    function test_delayedPauserCannotCancelClientMigration() public {
+        address clientMigrator = makeAddr("clientMigrator");
+        address delayedPauser = makeAddr("delayedPauser");
+        uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
+        accessManager.grantRole(migratorRole, clientMigrator, 60);
+        accessManager.grantRole(IBCRolesLib.PAUSER_ROLE, delayedPauser, 1 days);
+
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("42-dummy-02", randomPrefix);
+        vm.prank(clientMigrator);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, makeAddr("newLightClient"));
+
+        vm.prank(delayedPauser);
+        vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, delayedPauser));
+        ics02Client.cancelClientMigration(clientIdentifier);
+
+        vm.prank(pauser);
+        ics02Client.cancelClientMigration(clientIdentifier);
+    }
+
+    function test_migrationMismatchDoesNotConsumeProposal() public {
+        address clientMigrator = makeAddr("clientMigrator");
+        uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
+        accessManager.grantRole(migratorRole, clientMigrator, 60);
+
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("42-dummy-02", randomPrefix);
+        address newLightClient = makeAddr("newLightClient");
+
+        vm.prank(clientMigrator);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+        (bytes32 digest, uint48 executeAfter,,) = ics02Client.getClientMigration(clientIdentifier);
+        vm.warp(executeAfter);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationMismatch.selector, clientIdentifier)
+        );
+        ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, makeAddr("wrongLightClient"));
+
+        (bytes32 pendingDigest,,,) = ics02Client.getClientMigration(clientIdentifier);
+        assertEq(pendingDigest, digest, "mismatched execution consumed proposal");
+        ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+        assertEq(address(ics02Client.getClient(clientIdentifier)), newLightClient, "client not migrated");
     }
 
     function test_failure_MigrateClient_whenClosed() public {
@@ -187,14 +298,139 @@ contract ICS02ClientTest is Test {
         // Close the target contract via AccessManager.
         accessManager.setTargetClosed(address(ics02Client), true);
 
-        // A granted migrator calling migrateClient should revert when the target is closed.
+        // A granted migrator cannot propose while the target is closed.
         vm.prank(clientMigrator);
         vm.expectRevert(
             abi.encodeWithSelector(
                 IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, clientMigrator
             )
         );
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+    }
+
+    function test_revokedMigratorCannotExecuteAndPauserCanCancel() public {
+        address clientMigrator = makeAddr("clientMigrator");
+        uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
+        accessManager.grantRole(migratorRole, clientMigrator, 60);
+
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("42-dummy-02", randomPrefix);
+        address newLightClient = makeAddr("newLightClient");
+        vm.prank(clientMigrator);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+        (, uint48 executeAfter,,) = ics02Client.getClientMigration(clientIdentifier);
+
+        accessManager.revokeRole(migratorRole, clientMigrator);
+        vm.warp(executeAfter);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, clientMigrator
+            )
+        );
+        ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+
+        vm.prank(pauser);
+        ics02Client.cancelClientMigration(clientIdentifier);
+    }
+
+    function test_expiredMigrationCannotExecuteAndCanBeReproposed() public {
+        address clientMigrator = makeAddr("clientMigrator");
+        uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
+        accessManager.grantRole(migratorRole, clientMigrator, 60);
+
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("42-dummy-02", randomPrefix);
+        address newLightClient = makeAddr("newLightClient");
+        vm.prank(clientMigrator);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+        (bytes32 oldDigest,, uint48 expireAfter,) = ics02Client.getClientMigration(clientIdentifier);
+
+        vm.warp(uint256(expireAfter) + 1);
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationExpired.selector, clientIdentifier, expireAfter)
+        );
+        ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+
+        address replacementClient = makeAddr("replacementClient");
+        vm.prank(clientMigrator);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, replacementClient);
+        (bytes32 replacementDigest,, uint48 replacementExpiry, address proposer) =
+            ics02Client.getClientMigration(clientIdentifier);
+        assertNotEq(replacementDigest, oldDigest, "expired migration was not replaced");
+        assertGt(replacementExpiry, expireAfter, "replacement expiry not refreshed");
+        assertEq(proposer, clientMigrator, "replacement proposer not recorded");
+    }
+
+    function test_pauserCanCancelWhileTargetClosed() public {
+        address clientMigrator = makeAddr("clientMigrator");
+        uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
+        accessManager.grantRole(migratorRole, clientMigrator, 60);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("42-dummy-02", randomPrefix);
+
+        vm.prank(clientMigrator);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, makeAddr("newLightClient"));
+        accessManager.setTargetClosed(address(ics02Client), true);
+
+        address unauthorized = makeAddr("unauthorized");
+        vm.prank(unauthorized);
+        vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
+        ics02Client.cancelClientMigration(clientIdentifier);
+
+        vm.prank(pauser);
+        ics02Client.cancelClientMigration(clientIdentifier);
+        (bytes32 digest,,,) = ics02Client.getClientMigration(clientIdentifier);
+        assertEq(digest, bytes32(0), "closed-target cancellation did not clear migration");
+    }
+
+    function test_migrateClientShimEnforcesProposalMaturityDigestAndTargetState() public {
+        address clientMigrator = makeAddr("clientMigrator");
+        uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
+        accessManager.grantRole(migratorRole, clientMigrator, 60);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("42-dummy-02", randomPrefix);
+        address newLightClient = makeAddr("newLightClient");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationNotProposed.selector, clientIdentifier)
+        );
         ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
+
+        vm.prank(clientMigrator);
+        ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
+        (, uint48 executeAfter,,) = ics02Client.getClientMigration(clientIdentifier);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCClientMigrationNotReady.selector, clientIdentifier, executeAfter
+            )
+        );
+        ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
+
+        vm.warp(executeAfter);
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationMismatch.selector, clientIdentifier)
+        );
+        ics02Client.migrateClient(clientIdentifier, counterpartyInfo, makeAddr("wrongLightClient"));
+
+        accessManager.setTargetClosed(address(ics02Client), true);
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, address(this))
+        );
+        ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
+
+        accessManager.setTargetClosed(address(ics02Client), false);
+        ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
+        assertEq(address(ics02Client.getClient(clientIdentifier)), newLightClient, "shim did not execute migration");
+    }
+
+    function test_migrationModulesRejectDirectCalls() public {
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("42-dummy-02", randomPrefix);
+        vm.expectRevert(IICS02ClientErrors.IBCClientMigrationDirectCallNotAllowed.selector);
+        clientMigrationProposer.proposeClientMigration(clientIdentifier, counterpartyInfo, makeAddr("newLightClient"));
+
+        vm.expectRevert(IICS02ClientErrors.IBCClientMigrationDirectCallNotAllowed.selector);
+        clientMigrationExecutor.cancelClientMigration(clientIdentifier);
     }
 
     function test_Misbehaviour() public {

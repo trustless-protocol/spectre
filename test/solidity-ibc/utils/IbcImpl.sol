@@ -19,6 +19,8 @@ import { IICS26Router } from "../../../contracts/interfaces/IICS26Router.sol";
 import { ISignatureTransfer } from "@uniswap/permit2/src/interfaces/ISignatureTransfer.sol";
 
 import { ICS26Router } from "../../../contracts/ICS26Router.sol";
+import { ClientMigrationProposer } from "../../../contracts/light-clients/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "../../../contracts/light-clients/modules/ClientMigrationExecutor.sol";
 import { IBCERC20 } from "../../../contracts/utils/IBCERC20.sol";
 import { Escrow } from "../../../contracts/utils/Escrow.sol";
 import { ICS20Transfer } from "../../../contracts/ICS20Transfer.sol";
@@ -46,7 +48,8 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
         // ============ Step 1: Deploy the logic contracts ==============
         address escrowLogic = address(new Escrow());
         address ibcERC20Logic = address(new IBCERC20());
-        ICS26Router ics26RouterLogic = new ICS26Router();
+        ICS26Router ics26RouterLogic =
+            new ICS26Router(address(new ClientMigrationProposer()), address(new ClientMigrationExecutor()));
         ICS20Transfer ics20TransferLogic = new ICS20Transfer();
 
         // ============== Step 2: Deploy ERC1967 Proxies ==============

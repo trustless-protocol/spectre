@@ -27,6 +27,8 @@ import { PausableUpgradeable } from "@openzeppelin-upgradeable/utils/PausableUpg
 import { TestHelper } from "./utils/TestHelper.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 import { IBCRolesLib } from "../../contracts/utils/IBCRolesLib.sol";
+import { ClientMigrationProposer } from "../../contracts/light-clients/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "../../contracts/light-clients/modules/ClientMigrationExecutor.sol";
 
 contract ICS26RouterTest is Test {
     ICS26Router public ics26Router;
@@ -40,7 +42,8 @@ contract ICS26RouterTest is Test {
     address public mockClient = makeAddr("mockClient");
 
     function setUp() public {
-        ICS26Router ics26RouterLogic = new ICS26Router();
+        ICS26Router ics26RouterLogic =
+            new ICS26Router(address(new ClientMigrationProposer()), address(new ClientMigrationExecutor()));
 
         AccessManager accessManager = new AccessManager(address(this));
 

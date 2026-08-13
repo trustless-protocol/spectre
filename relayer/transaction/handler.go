@@ -442,28 +442,11 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 	addClientReceipt, _, _, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, 16000000, addClientFn)
 	if err != nil {
 		if errors.Is(err, services.ErrPermanentRelayFailure) {
-			// Fallback to MigrateClient only for confirmed on-chain reverts
-			log.Printf("[CreateCosmosClient] AddClient failed permanently (%v) — falling back to MigrateClient to repoint %s to new ICS07 %s",
-				err, cosmosClientID, address.Hex())
-
-			migrateClientFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
-				return ics26Router.MigrateClient(
-					auth,
-					cosmosClientID,
-					routerContract.IICS02ClientMsgsCounterpartyInfo{
-						ClientId:     wasmClientID,
-						MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
-					},
-					address,
-				)
-			}
-
-			migrateReceipt, _, _, mErr := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, 16000000, migrateClientFn)
-			if mErr != nil {
-				return common.Address{}, fmt.Errorf("MigrateClient call failed: %w", mErr)
-			}
-			log.Printf("[CreateCosmosClient] MigrateClient confirmed (block %d, gasUsed=%d)", migrateReceipt.BlockNumber.Uint64(), migrateReceipt.GasUsed)
-			return address, nil
+			return common.Address{}, fmt.Errorf(
+				"AddClient permanently failed for %s; governed client migration is required and is not submitted by the relayer hot key: %w",
+				cosmosClientID,
+				err,
+			)
 		}
 		// For transient wait/RPC errors, return the error immediately so the caller can retry
 		return common.Address{}, err

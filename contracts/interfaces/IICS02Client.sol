@@ -46,10 +46,8 @@ interface IICS02ClientAccessControlled {
         external
         returns (ILightClientMsgs.UpdateResult);
 
-    /// @notice Migrate a client by replacing the existing counterparty information and contract address.
-    /// @dev This is a privilaged operation. The caller must hold the per-clientId role returned by
-    /// @dev `getLightClientMigratorRole(clientId)` on the connected AccessManager; a role granted for
-    /// @dev one clientId does not authorize migration of any other clientId.
+    /// @notice Executes a previously proposed and matured client migration.
+    /// @dev Retained for ABI compatibility; equivalent to `executeClientMigration`.
     /// @param clientId The client identifier of the client to migrate
     /// @param counterpartyInfo The new counterparty client information
     /// @param client The address of the new client contract
@@ -59,6 +57,33 @@ interface IICS02ClientAccessControlled {
         address client
     )
         external;
+
+    /// @notice Commits a delayed migration for a specific client.
+    /// @dev The caller must hold the delayed per-client role returned by
+    /// `getLightClientMigratorRole(clientId)`.
+    function proposeClientMigration(
+        string calldata clientId,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        address client
+    )
+        external;
+
+    /// @notice Executes a matured migration proposal. Anyone may submit the execution transaction.
+    function executeClientMigration(
+        string calldata clientId,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        address client
+    )
+        external;
+
+    /// @notice Cancels a pending migration through the configured pause authority.
+    function cancelClientMigration(string calldata clientId) external;
+
+    /// @notice Returns the committed migration details.
+    function getClientMigration(string calldata clientId)
+        external
+        view
+        returns (bytes32 digest, uint48 executeAfter, uint48 expireAfter, address proposer);
 
     /// @notice Submits misbehaviour to the client with the given client identifier.
     /// @dev Can only be called with the `MISBEHAVIOUR_SUBMITTER_ROLE`.
@@ -121,6 +146,11 @@ interface IICS02Client is IICS02ClientAccessControlled {
     /// @param counterpartyInfo The new counterparty client information
     /// @param client The address of the new client contract
     event ICS02ClientMigrated(string clientId, IICS02ClientMsgs.CounterpartyInfo counterpartyInfo, address client);
+
+    event ICS02ClientMigrationProposed(
+        string indexed clientId, bytes32 indexed digest, uint48 executeAfter, uint48 expireAfter, address proposer
+    );
+    event ICS02ClientMigrationCancelled(string indexed clientId, bytes32 indexed digest);
 
     /// @notice Emitted when a client is updated.
     /// @param clientId The client identifier of the updated ILightClientMsgs

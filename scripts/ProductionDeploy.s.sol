@@ -15,6 +15,8 @@ import { SignatureVerifier } from "../contracts/light-clients/SignatureVerifier.
 import { Membership } from "../contracts/light-clients/modules/Membership.sol";
 import { UpdateClient } from "../contracts/light-clients/modules/UpdateClient.sol";
 import { Misbehaviour } from "../contracts/light-clients/modules/Misbehaviour.sol";
+import { ClientMigrationProposer } from "../contracts/light-clients/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "../contracts/light-clients/modules/ClientMigrationExecutor.sol";
 import { Escrow } from "../contracts/utils/Escrow.sol";
 import { IBCERC20 } from "../contracts/utils/IBCERC20.sol";
 import { ICS20Lib } from "../contracts/utils/ICS20Lib.sol";
@@ -106,7 +108,9 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
         address membership = address(new Membership());
         address updateClient = address(new UpdateClient(address(signatureVerifier)));
         address misbehaviour = address(new Misbehaviour(address(signatureVerifier)));
-        address routerLogic = address(new ICS26Router());
+        address clientMigrationProposer = address(new ClientMigrationProposer());
+        address clientMigrationExecutor = address(new ClientMigrationExecutor());
+        address routerLogic = address(new ICS26Router(clientMigrationProposer, clientMigrationExecutor));
         address transferLogic = address(new ICS20Transfer());
 
         ERC1967Proxy routerProxy =
@@ -154,6 +158,8 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
         json.serialize("membership", vm.toString(membership));
         json.serialize("updateClient", vm.toString(updateClient));
         json.serialize("misbehaviour", vm.toString(misbehaviour));
+        json.serialize("clientMigrationProposer", vm.toString(clientMigrationProposer));
+        json.serialize("clientMigrationExecutor", vm.toString(clientMigrationExecutor));
         json.serialize("ics26Router", vm.toString(address(routerProxy)));
         return json.serialize("ics20Transfer", vm.toString(address(transferProxy)));
     }
