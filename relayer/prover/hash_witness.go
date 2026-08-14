@@ -149,11 +149,29 @@ func encodeWitnessBytes(sigs []ValidatorSignature) ([]byte, error) {
 
 // compressEdwardsToLE encodes an Edwards point to Ed25519's 32-byte canonical
 // compressed form: Y in bits 0..254 little-endian, sign of X in bit 255.
+//
+// These bytes are what the on-chain quorum check matches against the pinned
+// validator set, so the encoding has to determine the point (ZK-06). Two
+// properties make it injective, and neither is free:
+//
+//   - on-curve: the encoding drops X except for its parity, so an unconstrained
+//     X could be moved (x+2 keeps the parity) without changing a byte. The
+//     Ed25519 gadget constrains both witness points to the twisted Edwards
+//     curve, which leaves y exactly the two solutions +-x that the parity bit
+//     separates.
+//   - canonical limbs: an emulated element may legally be given as v or v+p,
+//     and ToBits reads the limbs as given. AssertIsInRange below pins the
+//     representation. It is memoized per element and shares its bit
+//     decomposition with the compression, so the Ed25519 gadget's own call on
+//     the same coordinates does not pay for it twice.
 func compressEdwardsToLE[Base emulated.FieldParams](
 	api frontend.API,
 	baseApi *emulated.Field[Base],
 	p *sw_emulated.AffinePoint[Base],
 ) []uints.U8 {
+	baseApi.AssertIsInRange(&p.X)
+	baseApi.AssertIsInRange(&p.Y)
+
 	yBits := baseApi.ToBits(&p.Y)
 	xBits := baseApi.ToBits(&p.X)
 	out := make([]uints.U8, 32)

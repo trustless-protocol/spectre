@@ -134,6 +134,13 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	//    Binding A protects the on-chain quorum lookup — Solidity matches
 	//    pubkeys[i] against the validator set to attribute voting power, so
 	//    without this hash binding an attacker could swap calldata pubkeys.
+	//    Hashing the encoding is only half of that guarantee: the encoding must
+	//    also determine the point that enters the EC-MSM, which needs A to be
+	//    canonically represented and on the curve (ZK-06). compressEdwardsToLE
+	//    asserts the representation here; the curve assert lives in the ecip-gnark
+	//    Ed25519 gadget and lands with the third_party submodule bump. Until that
+	//    bump, this branch pins the pre-fix fork and only the representation half
+	//    is in force — see the PR body and #282.
 	//    R/S are NOT hashed and NOT in calldata: the Groth16 proof itself
 	//    binds them via the in-circuit Ed25519 verify, and no on-chain logic
 	//    consumes them. The active byte is placed first so the on-chain
