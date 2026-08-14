@@ -49,6 +49,11 @@ contract Misbehaviour is IMisbehaviour {
 
         _validateBasic(misbehaviour_);
 
+        // NOTE (LC-05): `trustThreshold` is threaded through `options` into
+        // `_verifyMisbehaviourHeader` below but is never actually read there — the real quorum
+        // threshold is hardcoded `>2/3` in `SpectreClient._verifyQuorum` (used for both
+        // `_verifyMisbehaviourQuorum` calls in `SpectreClient.misbehaviour`). Currently
+        // decoded-but-unused / reserved; see the field comment on `ClientState.trustLevel`.
         IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
             trustThreshold: clientState.trustLevel,
             trustingPeriod: clientState.trustingPeriod,

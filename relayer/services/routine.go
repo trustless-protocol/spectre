@@ -20,7 +20,6 @@ import (
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/crypto"
 )
 
 const ICS26_IBC_STORAGE_SLOT = "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600"
@@ -68,14 +67,18 @@ func (w *Worker) CreateCosmosClient(stdCtx context.Context, cosmos CosmosEndpoin
 		return common.Address{}, fmt.Errorf("failed to encode client state: %w", err)
 	}
 
-	consensusStateEncoded, err := relayerclient.EncodeConsensusState(consensusState)
-	if err != nil {
-		return common.Address{}, fmt.Errorf("failed to encode consensus state: %w", err)
+	// LC-03: the constructor now takes the full consensus state (not a pre-hashed
+	// bytes32) so it can assert the genesis pinned validator set actually matches
+	// consensusState.nextValidatorsHash on-chain, rather than trusting the deployer's
+	// hash and pin to agree. spectreContract.IICS07TendermintMsgsConsensusState is
+	// structurally identical to updateClientContract's (same ABI type, different
+	// generated Go package), so this is a direct field-for-field conversion.
+	spectreConsensusState := spectreContract.IICS07TendermintMsgsConsensusState{
+		Timestamp:          consensusState.Timestamp,
+		Root:               consensusState.Root,
+		NextValidatorsHash: consensusState.NextValidatorsHash,
 	}
-
-	consensusHash := crypto.Keccak256(consensusStateEncoded)
-	log.Printf("[CreateCosmosClient] consensusHash=%x", consensusHash)
-	return w.TxHandler.CreateCosmosClientContract(stdCtx, evm, ids, clientStateEncoded, consensusHash, genesis.InitialPinnedValidatorSet)
+	return w.TxHandler.CreateCosmosClientContract(stdCtx, evm, ids, clientStateEncoded, spectreConsensusState, genesis.InitialPinnedValidatorSet)
 }
 
 // ClientUpdateKind discriminates the two split-API entry points the Spectre
@@ -98,12 +101,17 @@ const (
 // its pinned set is current — no update tx is needed; only LightBlock is
 // populated. Otherwise Kind selects which split-API entry point to submit:
 // AppMsg is always the built MsgUpdateApplicationState; NewValSet is populated
-// only for ConsensusUpdate (the set to re-pin).
+// only for ConsensusUpdate (the set to re-pin). IsHop is true only when RLY-01
+// fallback selected an intermediate height; HopTarget is that intermediate
+// height. A hop result is the only case callers should immediately build
+// another update in the same refresh/invocation.
 type CosmosClientUpdateBuildResult struct {
 	Kind       ClientUpdateKind
 	AppMsg     updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState
 	NewValSet  spectreContract.IICS07TendermintMsgsValidatorSet
 	HasMsg     bool
+	IsHop      bool
+	HopTarget  int64
 	LightBlock *relayerclient.LightBlock
 }
 
@@ -113,9 +121,9 @@ type CosmosClientUpdateBuildResult struct {
 // the split BuildCosmosClientUpdateMsg builder so it can fold updateClient
 // into the same multicall as its packet calls (issue #67 V2).
 
-func (w *Worker) UpdateCosmosClient(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, clientID string, fetchTimeout time.Duration, rotationThreshold, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*relayerclient.LightBlock, error) {
+func (w *Worker) UpdateCosmosClient(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, clientID string, fetchTimeout time.Duration, rotationThreshold, proofType string, trustedBlock int64, trustLevel string, forceRotation bool, targetHeight int64) (*relayerclient.LightBlock, error) {
 	deps := cosmosClientDeps{cosmos: cosmos, evm: evm, fetchTimeout: fetchTimeout, rotationThreshold: rotationThreshold}
-	result, err := w.buildCosmosClientUpdateMsg(deps, proofType, trustedBlock, trustLevel, forceRotation)
+	result, err := w.buildCosmosClientUpdateMsg(deps, proofType, trustedBlock, trustLevel, forceRotation, targetHeight)
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +138,13 @@ func (w *Worker) UpdateCosmosClient(stdCtx context.Context, cosmos CosmosEndpoin
 	return result.LightBlock, nil
 }
 
+// maxHopsPerRefresh bounds how many RLY-01 multi-hop iterations one
+// RefreshCosmosClient call will submit. If churn requires more hops than this
+// to fully catch up, the function returns an error rather than looping
+// unbounded, so the periodic-update backoff (relay/module.go) retries soon.
+const maxHopsPerRefresh = 16
+const hopExhaustionSampleLimit = 4
+
 // RefreshCosmosClient advances the Spectre light client on Ethereum without any
 // packets attached (background freshness routine). It reads the authoritative
 // on-chain trusted height and pinned-set hash, builds the next update via the
@@ -140,6 +155,12 @@ func (w *Worker) UpdateCosmosClient(stdCtx context.Context, cosmos CosmosEndpoin
 // When the on-chain client is already caught up AND its pinned set is current,
 // the builder returns HasMsg=false and this function submits nothing, returning
 // the current light block so the caller can refresh its cached timestamp/height.
+//
+// RLY-01: validator churn can force BuildCosmosClientUpdateMsg onto a
+// multi-hop path that only advances the client to one intermediate height per
+// call. This loops (re-reading the on-chain trusted height each time, so it
+// never advances a cursor speculatively) up to maxHopsPerRefresh times so one
+// refresh tick catches up fully when possible.
 func (w *Worker) RefreshCosmosClient(
 	stdCtx context.Context,
 	cosmos CosmosEndpoint,
@@ -151,28 +172,37 @@ func (w *Worker) RefreshCosmosClient(
 	trustLevel string,
 ) (*relayerclient.LightBlock, error) {
 	deps := cosmosClientDeps{cosmos: cosmos, evm: evm, fetchTimeout: fetchTimeout, rotationThreshold: rotationThreshold}
-	onChainTrusted, err := FetchOnChainTrustedHeight(deps.evm)
-	if err != nil {
-		return nil, fmt.Errorf("[RefreshCosmosClient] fetch on-chain height: %w", err)
-	}
+	var lastBlock *relayerclient.LightBlock
+	for hop := 0; hop < maxHopsPerRefresh; hop++ {
+		onChainTrusted, err := FetchOnChainTrustedHeight(deps.evm)
+		if err != nil {
+			return nil, fmt.Errorf("[RefreshCosmosClient] fetch on-chain height: %w", err)
+		}
 
-	// forceRotation: the refresh routine only fires after RefreshInterval
-	// without updates, so it is the guaranteed rotation cadence — a stale
-	// pinned set is rotated here regardless of how much overlap remains.
-	result, err := w.buildCosmosClientUpdateMsg(deps, proofType, onChainTrusted, trustLevel, true)
-	if err != nil {
-		return nil, fmt.Errorf("[RefreshCosmosClient] build update msg: %w", err)
-	}
-	if !result.HasMsg {
-		log.Printf("[RefreshCosmosClient] client is up to date and pinned set current, skipping")
-		return result.LightBlock, nil
-	}
+		// forceRotation: the refresh routine only fires after RefreshInterval
+		// without updates, so it is the guaranteed rotation cadence — a stale
+		// pinned set is rotated here regardless of how much overlap remains.
+		result, err := w.buildCosmosClientUpdateMsg(deps, proofType, onChainTrusted, trustLevel, true, 0)
+		if err != nil {
+			return nil, fmt.Errorf("[RefreshCosmosClient] build update msg: %w", err)
+		}
+		if !result.HasMsg {
+			log.Printf("[RefreshCosmosClient] client is up to date and pinned set current, skipping")
+			return result.LightBlock, nil
+		}
 
-	if err := w.TxHandler.SendEthTx(stdCtx, deps.evm, clientID, *result); err != nil {
-		return nil, fmt.Errorf("[RefreshCosmosClient] send tx: %w", err)
+		if err := w.TxHandler.SendEthTx(stdCtx, deps.evm, clientID, *result); err != nil {
+			return nil, fmt.Errorf("[RefreshCosmosClient] send tx (hop %d): %w", hop, err)
+		}
+		lastBlock = result.LightBlock
+		log.Printf("[RefreshCosmosClient] refresh succeeded (hop=%d kind=%d height=%d isHop=%t hopTarget=%d)",
+			hop, result.Kind, lastBlock.BlockHeight, result.IsHop, result.HopTarget)
+		if !result.IsHop {
+			return lastBlock, nil
+		}
 	}
-	log.Printf("[RefreshCosmosClient] refresh succeeded (kind=%d)", result.Kind)
-	return result.LightBlock, nil
+	log.Printf("RLY01_HOP_CAP_REACHED refresh did not fully catch up after %d hops; will retry via periodic backoff", maxHopsPerRefresh)
+	return lastBlock, fmt.Errorf("RLY01: pinned-set catch-up incomplete after %d hops", maxHopsPerRefresh)
 }
 
 // getOnChainPinnedValidatorsHash reads the CometBFT validatorsHash of the
@@ -374,6 +404,155 @@ func selectSignaturesForPinnedSet(
 	return selected, nil
 }
 
+// hopCandidate holds the light block and extracted signatures for a height
+// chosen by findHighestFeasibleHop as an RLY-01 multi-hop update target.
+type hopCandidate struct {
+	lightBlock *relayerclient.LightBlock
+	candidates []prover.ValidatorSignature
+	selected   []prover.ValidatorSignature
+}
+
+type hopProbeResult struct {
+	lightBlock *relayerclient.LightBlock
+	candidates []prover.ValidatorSignature
+	selected   []prover.ValidatorSignature
+	quorumErr  error
+}
+
+// binarySearchHighestFeasible finds the highest height in (trusted, latest]
+// for which feasible returns true, assuming feasibility is non-increasing as
+// height moves away from trusted (validator churn accumulates over time; it
+// does not spontaneously reverse). feasible must distinguish "infeasible at
+// this height" (ok=false, err=nil) from a genuine fetch/RPC error (err!=nil);
+// the latter is propagated immediately rather than treated as infeasibility.
+// latest itself is assumed already-probed-and-infeasible by the caller and is
+// never re-probed here. Returns ok=false if no intermediate height is feasible.
+//
+// Pure and side-effect free so it's unit-testable without RPC mocking.
+func binarySearchHighestFeasible(trusted, latest int64, feasible func(height int64) (ok bool, err error)) (int64, bool, error) {
+	if latest <= trusted+1 {
+		return 0, false, nil
+	}
+
+	lo, hi := trusted, latest
+	found := int64(0)
+	haveFound := false
+	for hi-lo > 1 {
+		mid := lo + (hi-lo)/2
+		ok, err := feasible(mid)
+		if err != nil {
+			return 0, false, fmt.Errorf("probe height %d: %w", mid, err)
+		}
+		if ok {
+			lo, found, haveFound = mid, mid, true
+		} else {
+			hi = mid
+		}
+	}
+	return found, haveFound, nil
+}
+
+// findHighestFeasibleHop searches for the highest Cosmos height between
+// trusted and latest whose commit still carries enough pinned-set signing
+// power to clear selectSignaturesForPinnedSet's >2/3 quorum gate. This is the
+// RLY-01 multi-hop fallback: used when the direct trusted->latest update no
+// longer clears quorum due to validator churn (docs/RELIABILITY.md).
+func findHighestFeasibleHop(
+	ctx cosmosClientDeps,
+	trusted, latest int64,
+	chainId string,
+	pinnedSet pinnedCosmosValidatorSet,
+	directQuorumErr error,
+) (hopCandidate, error) {
+	probed := make(map[int64]struct{})
+	var lastQuorumHeight int64
+	var lastQuorumErr error
+
+	probe := func(height int64) (hopProbeResult, error) {
+		probed[height] = struct{}{}
+		lb, err := relayerclient.GetLightBlock(ctx.cosmos.CosmosClient(), height)
+		if err != nil {
+			return hopProbeResult{}, fmt.Errorf("fetch light block at height %d: %w", height, err)
+		}
+		extracted, err := prover.ExtractValidatorSignatures(lb, chainId, nil)
+		if err != nil {
+			return hopProbeResult{}, fmt.Errorf("extract signatures at height %d: %w", height, err)
+		}
+		selected, err := selectSignaturesForPinnedSet(extracted.Candidates, pinnedSet)
+		if err != nil {
+			return hopProbeResult{
+				lightBlock: lb,
+				candidates: extracted.Candidates,
+				quorumErr:  err,
+			}, nil // infeasible at this height, not a fetch error
+		}
+		return hopProbeResult{
+			lightBlock: lb,
+			candidates: extracted.Candidates,
+			selected:   selected,
+		}, nil
+	}
+
+	feasible := func(height int64) (bool, error) {
+		result, err := probe(height)
+		if err != nil {
+			return false, err
+		}
+		if result.selected == nil {
+			lastQuorumHeight = height
+			lastQuorumErr = result.quorumErr
+			return false, nil
+		}
+		return true, nil
+	}
+
+	height, ok, err := binarySearchHighestFeasible(trusted, latest, feasible)
+	if err != nil {
+		return hopCandidate{}, fmt.Errorf("hop search: %w", err)
+	}
+	if !ok {
+		for h, sampled := trusted+1, int64(0); h < latest && sampled < hopExhaustionSampleLimit; h++ {
+			if _, seen := probed[h]; seen {
+				continue
+			}
+			sampled++
+			result, err := probe(h)
+			if err != nil {
+				return hopCandidate{}, fmt.Errorf("hop search sample height %d: %w", h, err)
+			}
+			if result.selected != nil {
+				log.Printf("RLY01_HOP_NON_MONOTONIC_SAMPLE trusted=%d target=%d hop=%d",
+					trusted, latest, h)
+				return hopCandidate{
+					lightBlock: result.lightBlock,
+					candidates: result.candidates,
+					selected:   result.selected,
+				}, nil
+			}
+			lastQuorumHeight = h
+			lastQuorumErr = result.quorumErr
+		}
+		msg := fmt.Sprintf("no provable height in (%d, %d]: pinned quorum lost immediately past trusted height", trusted, latest)
+		if directQuorumErr != nil {
+			msg += fmt.Sprintf("; target quorum shortfall: %v", directQuorumErr)
+		}
+		if lastQuorumErr != nil {
+			msg += fmt.Sprintf("; sampled height %d quorum shortfall: %v", lastQuorumHeight, lastQuorumErr)
+		}
+		return hopCandidate{}, fmt.Errorf("%s", msg)
+	}
+
+	result, err := probe(height)
+	if err != nil {
+		return hopCandidate{}, fmt.Errorf("re-probe chosen hop height %d: %w", height, err)
+	}
+	if result.selected == nil {
+		return hopCandidate{}, fmt.Errorf("hop height %d unexpectedly infeasible on re-check: %w", height, result.quorumErr)
+	}
+	log.Printf("RLY01_HOP_FOUND trusted=%d target=%d hop=%d", trusted, latest, height)
+	return hopCandidate{lightBlock: result.lightBlock, candidates: result.candidates, selected: result.selected}, nil
+}
+
 // BuildCosmosClientUpdateMsg fetches the latest Tendermint light block,
 // generates the Groth16 batch proof, and returns a CosmosClientUpdateBuildResult
 // (discriminated by Kind into application-state vs consensus-state update)
@@ -392,11 +571,15 @@ func selectSignaturesForPinnedSet(
 // HasMsg=false signals the on-chain client is already at the latest block —
 // no update needed; LightBlock still returned so callers can use it for
 // membership proofs.
-func (w *Worker) BuildCosmosClientUpdateMsg(cosmos CosmosEndpoint, evm EVMEndpoint, fetchTimeout time.Duration, rotationThreshold string, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*CosmosClientUpdateBuildResult, error) {
-	return w.buildCosmosClientUpdateMsg(cosmosClientDeps{cosmos: cosmos, evm: evm, fetchTimeout: fetchTimeout, rotationThreshold: rotationThreshold}, proofType, trustedBlock, trustLevel, forceRotation)
+//
+// targetHeight overrides the update destination: 0 uses the chain's current
+// latest height; a nonzero value must not exceed it. This is the RLY-01
+// --target-height operator stopgap (relayer/cmd/main.go's update-client).
+func (w *Worker) BuildCosmosClientUpdateMsg(cosmos CosmosEndpoint, evm EVMEndpoint, fetchTimeout time.Duration, rotationThreshold string, proofType string, trustedBlock int64, trustLevel string, forceRotation bool, targetHeight int64) (*CosmosClientUpdateBuildResult, error) {
+	return w.buildCosmosClientUpdateMsg(cosmosClientDeps{cosmos: cosmos, evm: evm, fetchTimeout: fetchTimeout, rotationThreshold: rotationThreshold}, proofType, trustedBlock, trustLevel, forceRotation, targetHeight)
 }
 
-func (w *Worker) buildCosmosClientUpdateMsg(ctx cosmosClientDeps, proofType string, trustedBlock int64, trustLevel string, forceRotation bool) (*CosmosClientUpdateBuildResult, error) {
+func (w *Worker) buildCosmosClientUpdateMsg(ctx cosmosClientDeps, proofType string, trustedBlock int64, trustLevel string, forceRotation bool, targetHeight int64) (*CosmosClientUpdateBuildResult, error) {
 	statusCtx, cancelStatus := fetchCtx(context.Background(), ctx.fetchTimeout)
 	status, err := ctx.cosmos.CosmosClient().Status(statusCtx)
 	cancelStatus()
@@ -404,7 +587,15 @@ func (w *Worker) buildCosmosClientUpdateMsg(ctx cosmosClientDeps, proofType stri
 		return nil, fmt.Errorf("failed to get status: %w", err)
 	}
 
-	log.Printf("[UpdateCosmosClient] called with trustedBlock=%d, latestBlockHeight=%d", trustedBlock, status.SyncInfo.LatestBlockHeight)
+	target := status.SyncInfo.LatestBlockHeight
+	if targetHeight != 0 {
+		if targetHeight > status.SyncInfo.LatestBlockHeight {
+			return nil, fmt.Errorf("target height %d exceeds chain latest %d", targetHeight, status.SyncInfo.LatestBlockHeight)
+		}
+		target = targetHeight
+	}
+
+	log.Printf("[UpdateCosmosClient] called with trustedBlock=%d, latestBlockHeight=%d, target=%d", trustedBlock, status.SyncInfo.LatestBlockHeight, target)
 
 	// Always read the authoritative on-chain trusted height before deciding
 	// whether to (re)generate the expensive Groth16 proof. The caller passes a
@@ -425,28 +616,28 @@ func (w *Worker) buildCosmosClientUpdateMsg(ctx cosmosClientDeps, proofType stri
 			trustedBlock, onChainTrusted)
 	}
 	trustedBlock = onChainTrusted
-	if trustedBlock >= status.SyncInfo.LatestBlockHeight {
-		if trustedBlock == status.SyncInfo.LatestBlockHeight {
-			log.Printf("[UpdateCosmosClient] client is up to date (trusted=%d, latest=%d), skipping tx",
-				trustedBlock, status.SyncInfo.LatestBlockHeight)
+	if trustedBlock >= target {
+		if trustedBlock == target {
+			log.Printf("[UpdateCosmosClient] client is up to date (trusted=%d, target=%d), skipping tx",
+				trustedBlock, target)
 			lightBlock, err := relayerclient.GetLightBlock(ctx.cosmos.CosmosClient(), trustedBlock)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get current light block while up-to-date: %w", err)
 			}
 			return &CosmosClientUpdateBuildResult{LightBlock: lightBlock}, nil
 		}
-		return nil, fmt.Errorf("trusted block is ahead of latest chain height (trusted=%d, latest=%d)", trustedBlock, status.SyncInfo.LatestBlockHeight)
+		return nil, fmt.Errorf("trusted block is ahead of target height (trusted=%d, target=%d)", trustedBlock, target)
 	}
 
-	log.Printf("[UpdateCosmosClient] Fetching trustedLightBlock at height %d, latestLightBlock at height %d", trustedBlock, status.SyncInfo.LatestBlockHeight)
+	log.Printf("[UpdateCosmosClient] Fetching trustedLightBlock at height %d, targetLightBlock at height %d", trustedBlock, target)
 	trustedLightBlock, err := relayerclient.GetLightBlock(ctx.cosmos.CosmosClient(), trustedBlock)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get trusted light block: %w", err)
 	}
 
-	latestLightBlock, err := relayerclient.GetLightBlock(ctx.cosmos.CosmosClient(), status.SyncInfo.LatestBlockHeight)
+	latestLightBlock, err := relayerclient.GetLightBlock(ctx.cosmos.CosmosClient(), target)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get latest light block: %w", err)
+		return nil, fmt.Errorf("failed to get target light block: %w", err)
 	}
 
 	if trustedLightBlock.SignedHeader.Header.Height < 0 {
@@ -465,36 +656,53 @@ func (w *Worker) buildCosmosClientUpdateMsg(ctx cosmosClientDeps, proofType stri
 		NextValidatorsHash: bytesToBytes32(trustedLightBlock.SignedHeader.NextValidatorsHash),
 	}
 
-	proposedHeader, err := latestLightBlock.IntoHeader(*trustedLightBlock)
-	if err != nil {
-		return nil, fmt.Errorf("failed to convert light block into header: %w", err)
-	}
-
 	pinnedValidatorSet, err := getPinnedCosmosValidatorSet(ctx.evm)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query pinned validator set: %w", err)
 	}
 
-	log.Printf("[UpdateCosmosClient] proposedHeader.Height=%d trustedBlock=%d latestBlock=%d",
-		proposedHeader.SignedHeader.Header.Height, trustedLightBlock.BlockHeight, latestLightBlock.BlockHeight)
-
 	// Extract non-absent validator signatures, then select enough signers that
 	// overlap the pinned validator set to exceed 2/3 of pinned voting power.
 	//
-	// TODO(spectre): selectSignaturesForPinnedSet still requires >2/3 of the
-	// *pinned* set among the latest block's signers. After large validator
-	// churn the pinned set may no longer sign the latest block with 2/3 power,
-	// which would need multi-hop updates (advance through intermediate heights
-	// that each retain >2/3 pinned overlap). Not yet handled.
+	// RLY-01: selectSignaturesForPinnedSet requires >2/3 of the *pinned* set
+	// among the target block's signers. After large validator churn the
+	// pinned set may no longer sign the target block with 2/3 power; when
+	// that happens, fall back to a multi-hop update through the highest
+	// intermediate height that still clears pinned-set quorum, rather than
+	// failing outright (see docs/RELIABILITY.md).
 	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId, nil)
 	if err != nil {
 		return nil, fmt.Errorf("extract validator signatures: %w", err)
 	}
 	selected, err := selectSignaturesForPinnedSet(extracted.Candidates, pinnedValidatorSet)
+	isHop := false
 	if err != nil {
-		return nil, fmt.Errorf("select pinned-set signatures: %w", err)
+		log.Printf("RLY01_HOP_FALLBACK direct update trusted=%d->target=%d failed pinned quorum (%v); searching for intermediate hop",
+			trustedBlock, target, err)
+		hop, hopErr := findHighestFeasibleHop(ctx, trustedBlock, target, chainId, pinnedValidatorSet, err)
+		if hopErr != nil {
+			log.Printf("RLY01_HOP_EXHAUSTED no provable height beyond trusted=%d; manual intervention required (see docs/RELIABILITY.md)", trustedBlock)
+			return nil, fmt.Errorf("RLY01_HOP_EXHAUSTED: no provable hop above trusted height %d: %w", trustedBlock, hopErr)
+		}
+		latestLightBlock = hop.lightBlock
+		extracted.Candidates = hop.candidates
+		selected = hop.selected
+		isHop = true
+	} else if overlap := pinnedOverlapPower(extracted.Candidates, pinnedValidatorSet); overlap*4 <= pinnedValidatorSet.totalPower*3 {
+		// RLY-01 leading indicator: overlap is closing in on the 2/3 floor
+		// (<=3/4 of total) even though this update still succeeds outright.
+		// Greppable warning for ops until a real metrics stack exists (RLY-02).
+		log.Printf("RLY01_QUORUM_WARN pinned-set overlap approaching 2/3 floor: overlap=%d total=%d height=%d chainId=%s",
+			overlap, pinnedValidatorSet.totalPower, latestLightBlock.BlockHeight, chainId)
 	}
 	extracted.Signatures = selected
+
+	proposedHeader, err := latestLightBlock.IntoHeader(*trustedLightBlock)
+	if err != nil {
+		return nil, fmt.Errorf("failed to convert light block into header: %w", err)
+	}
+	log.Printf("[UpdateCosmosClient] proposedHeader.Height=%d trustedBlock=%d updateToBlock=%d isHop=%t",
+		proposedHeader.SignedHeader.Header.Height, trustedLightBlock.BlockHeight, latestLightBlock.BlockHeight, isHop)
 	log.Printf("[UpdateCosmosClient] Generating Groth16 batch proof for %d validator signatures...", len(extracted.Signatures))
 	bucket, paddedSigs, proof, commitments, commitmentPok, err := w.Prover.GenerateProof(extracted.Signatures)
 	if err != nil {
@@ -545,10 +753,16 @@ func (w *Worker) buildCosmosClientUpdateMsg(ctx cosmosClientDeps, proofType stri
 		},
 	}
 
+	var hopTarget int64
+	if isHop {
+		hopTarget = latestLightBlock.BlockHeight
+	}
 	result := &CosmosClientUpdateBuildResult{
 		Kind:       ApplicationUpdate,
 		AppMsg:     appMsg,
 		HasMsg:     true,
+		IsHop:      isHop,
+		HopTarget:  hopTarget,
 		LightBlock: latestLightBlock,
 	}
 
@@ -564,7 +778,21 @@ func (w *Worker) buildCosmosClientUpdateMsg(ctx cosmosClientDeps, proofType stri
 		return nil, fmt.Errorf("failed to query on-chain pinned validators hash: %w", err)
 	}
 	targetNextValHash := bytesToBytes32(latestLightBlock.SignedHeader.NextValidatorsHash)
-	if targetNextValHash != pinnedHash {
+	switch {
+	case isHop:
+		// A hop's entire purpose is to re-pin at an intermediate validator
+		// set so a subsequent call can make further progress toward the
+		// original target — always rotate, bypassing shouldRotatePinnedSet's
+		// threshold gating (RLY-01).
+		newValSet, err := relayerclient.ValidatorSetToContract(latestLightBlock.NextValSet, "updateConsensusState")
+		if err != nil {
+			return nil, fmt.Errorf("convert next validator set: %w", err)
+		}
+		result.Kind = ConsensusUpdate
+		result.NewValSet = newValSet
+		log.Printf("RLY01_HOP_ROTATE hop height=%d pinned=%x target nextValHash=%x; rotating via updateConsensusState",
+			latestLightBlock.BlockHeight, pinnedHash[:4], targetNextValHash[:4])
+	case targetNextValHash != pinnedHash:
 		rotationThreshold, err := ParseRotationThreshold(ctx.rotationThreshold)
 		if err != nil {
 			return nil, fmt.Errorf("invalid rotation threshold: %w", err)

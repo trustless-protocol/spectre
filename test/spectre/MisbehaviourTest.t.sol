@@ -131,7 +131,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
             address(dummyMembership),
             address(misbehaviourVerifier),
             abi.encode(clientState_),
-            consensusStateHash_,
+            consensusState_,
             valset_,
             roleManager
         );

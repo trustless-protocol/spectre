@@ -70,6 +70,71 @@ contract UpdateClientCacheTest is Test {
         }
     }
 
+    function test_constructor_reverts_whenGenesisPinnedSetMismatchesConsensusState() public {
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory other = _buildValSet(4, 100);
+        // Genesis consensus state commits to `pinned`'s hash, but the constructor is asked to pin
+        // `other` instead — LC-03 must reject this mismatch on-chain rather than silently
+        // deploying with an unverifiable genesis pin.
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ISpectreClientErrors.GenesisPinnedValidatorSetMismatch.selector,
+                Header.hashValSet(pinned),
+                Header.hashValSet(other)
+            )
+        );
+        _deployLightClient(trustedCS, other);
+    }
+
+    function test_constructor_reverts_whenGenesisPinnedSetHasDuplicatePubkey() public {
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        pinned.validators[2].pubKey = pinned.validators[0].pubKey;
+        // Built after mutating pinned so the genesis-pin hash still matches (isolates the
+        // dup-pubkey check in ValidatorSetLib.buildCache from LC-03's genesis-pin check).
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ISpectreClientErrors.DuplicateValidatorPubkey.selector, uint256(0), uint256(2))
+        );
+        _deployLightClient(trustedCS, pinned);
+    }
+
+    function test_constructor_reverts_whenGenesisPinnedSetHasZeroVotingPower() public {
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        pinned.validators[1].votingPower = 0;
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+
+        vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.ZeroVotingPower.selector, uint256(1)));
+        _deployLightClient(trustedCS, pinned);
+    }
+
+    function test_updateApplicationState_reverts_whenTrustedConsensusStateHashMismatchesStored() public {
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory other = _buildValSet(4, 100);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
+
+        // Tampering with any field of the supplied trusted consensus state still fails because
+        // UpdateClient binds it to the stored consensus-state hash. The pinned set itself is
+        // allowed to lag trustedConsensusState.nextValidatorsHash on the app-state path, so this is
+        // no longer rejected by _verifyPinnedQuorum.
+        IICS07TendermintMsgs.ConsensusState memory staleCS = IICS07TendermintMsgs.ConsensusState({
+            timestamp: trustedCS.timestamp, root: trustedCS.root, nextValidatorsHash: Header.hashValSet(other)
+        });
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(staleCS, pinned, 3);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ISpectreClientErrors.ConsensusStateHashMismatch.selector,
+                keccak256(abi.encode(trustedCS)),
+                keccak256(abi.encode(staleCS))
+            )
+        );
+        ics07.updateApplicationState(abi.encode(msg_));
+    }
+
     function test_updateApplicationState_acceptsPinnedQuorum() public {
         IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
         IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
@@ -82,6 +147,100 @@ contract UpdateClientCacheTest is Test {
         IICS07TendermintMsgs.ClientState memory updated =
             abi.decode(ics07.getClientState(), (IICS07TendermintMsgs.ClientState));
         assertEq(updated.latestHeight.revisionHeight, HEIGHT_1001, "latest height");
+    }
+
+    function test_updateApplicationState_acceptsLaggingPinnedSetAfterNextValidatorsHashDrift() public {
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory drifted = _buildValSet(4, 0);
+        drifted.validators[0].votingPower = 101;
+        drifted.totalVotingPower = 401;
+
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
+
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1001 =
+            _buildMsgWithNextHash(trustedCS, pinned, Header.hashValSet(drifted), 3);
+        ics07.updateApplicationState(abi.encode(update1001));
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(update1001);
+
+        // The trusted consensus state at 1001 commits to `drifted` as nextValidatorsHash, but the
+        // contract is still pinned to `pinned` because the cheap app-state path does not rotate.
+        // A second app-state update must remain valid as long as the current pinned set still has
+        // >2/3 overlap with the target block's signers.
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1002 =
+            _buildMsgAt(HEIGHT_1001, HEIGHT_1002, trustedCS1001, drifted, Header.hashValSet(drifted), TS_1002_NS, 3);
+        ILightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(update1002));
+
+        assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update));
+        IICS07TendermintMsgs.ClientState memory updated =
+            abi.decode(ics07.getClientState(), (IICS07TendermintMsgs.ClientState));
+        assertEq(updated.latestHeight.revisionHeight, HEIGHT_1002, "latest height");
+
+        (,, uint64[] memory votingPowers) = ics07.getPinnedValidatorSet();
+        assertEq(votingPowers[0], pinned.validators[0].votingPower, "app-state path must not rotate pin");
+    }
+
+    function test_updateConsensusState_acceptsLaggingPinnedSetAfterLatestNextValidatorsHashDrift() public {
+        IICS07TendermintMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
+
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
+        SpectreClient ics07 = _deployLightClient(trustedCS, pinnedA);
+
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1001 =
+            _buildMsgWithNextHash(trustedCS, pinnedA, Header.hashValSet(pinnedB), 3);
+        ics07.updateApplicationState(abi.encode(update1001));
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(update1001);
+
+        // The latest trusted consensus state now commits to pinnedB as nextValidatorsHash, while
+        // the on-chain pinned set is still pinnedA. RLY-01 recovery must be able to rotate through
+        // updateConsensusState in that lagging state instead of requiring identity freshness.
+        ISpectreClientMsgs.MsgUpdateApplicationState memory rotate1002 =
+            _buildMsgAt(HEIGHT_1001, HEIGHT_1002, trustedCS1001, pinnedA, Header.hashValSet(pinnedB), TS_1002_NS, 3);
+        ILightClientMsgs.UpdateResult result = ics07.updateConsensusState(
+            abi.encode(ISpectreClientMsgs.MsgUpdateConsensusState({ update: rotate1002, newValidatorSet: pinnedB }))
+        );
+
+        assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update));
+        IICS07TendermintMsgs.ClientState memory updated =
+            abi.decode(ics07.getClientState(), (IICS07TendermintMsgs.ClientState));
+        assertEq(updated.latestHeight.revisionHeight, HEIGHT_1002, "latest height");
+
+        (, bytes32[] memory pubkeys,) = ics07.getPinnedValidatorSet();
+        assertEq(pubkeys[0], pinnedB.validators[0].pubKey, "consensus path rotates pin after drift");
+    }
+
+    function test_updateApplicationState_reverts_whenPinnedSnapshotOutsideTrustingPeriod() public {
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
+
+        uint128 nearSnapshotExpiry = TRUSTED_TS_NS + (uint128(TRUSTING_PERIOD) - 1) * 1e9;
+        vm.warp(uint256(nearSnapshotExpiry / 1e9));
+
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1001 = _buildMsgAt(
+            TRUSTED_HEIGHT, HEIGHT_1001, trustedCS, pinned, Header.hashValSet(pinned), nearSnapshotExpiry, 3
+        );
+        update1001.time = nearSnapshotExpiry;
+        ics07.updateApplicationState(abi.encode(update1001));
+
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(update1001);
+        uint128 staleSnapshotTime = TRUSTED_TS_NS + (uint128(TRUSTING_PERIOD) + 1) * 1e9;
+        vm.warp(uint256(staleSnapshotTime / 1e9));
+
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1002 = _buildMsgAt(
+            HEIGHT_1001, HEIGHT_1002, trustedCS1001, pinned, Header.hashValSet(pinned), nearSnapshotExpiry + 1e9, 3
+        );
+        update1002.time = staleSnapshotTime;
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ISpectreClientErrors.InsufficientTrustingPeriod.selector,
+                uint128(TRUSTING_PERIOD) + 1,
+                uint128(TRUSTING_PERIOD)
+            )
+        );
+        ics07.updateApplicationState(abi.encode(update1002));
     }
 
     function test_updateApplicationState_revertsAtTrustingPeriodBoundary() public {
@@ -97,8 +256,9 @@ contract UpdateClientCacheTest is Test {
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                ISpectreClientErrors.FailedToVerifyHeader.selector,
-                "invalid block: untrusted state is outside of trusting period"
+                ISpectreClientErrors.InsufficientTrustingPeriod.selector,
+                uint128(TRUSTING_PERIOD),
+                uint128(TRUSTING_PERIOD)
             )
         );
         ics07.updateApplicationState(abi.encode(msg_));
@@ -208,6 +368,9 @@ contract UpdateClientCacheTest is Test {
             _buildMsgAt(HEIGHT_1001, HEIGHT_1002, trustedCS1001, pinnedB, Header.hashValSet(pinnedC), TS_1002_NS, 3);
         _updateConsensusState(ics07, reanchorC, pinnedC);
 
+        // Replaying reanchorB is now rejected by the NoOp branch's latest-height guard: the stored
+        // consensus state for height 1001 matches reanchorB, but 1001 is no longer the latest
+        // height after reanchorC advanced the client to 1002.
         vm.expectRevert(
             abi.encodeWithSelector(ISpectreClientErrors.NonMonotonicHeightUpdate.selector, HEIGHT_1002, HEIGHT_1001)
         );
@@ -327,7 +490,7 @@ contract UpdateClientCacheTest is Test {
             STUB_MEMBERSHIP,
             STUB_MISBEHAVIOUR,
             abi.encode(_clientState()),
-            keccak256(abi.encode(trustedCS)),
+            trustedCS,
             pinned,
             address(0)
         );
@@ -346,7 +509,7 @@ contract UpdateClientCacheTest is Test {
             STUB_MEMBERSHIP,
             address(misbehaviourImpl),
             abi.encode(_clientState()),
-            keccak256(abi.encode(trustedCS)),
+            trustedCS,
             pinned,
             address(0)
         );

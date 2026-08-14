@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -202,5 +203,98 @@ func TestSelectSignaturesForPinnedSetRejectsInsufficientOverlap(t *testing.T) {
 
 	if _, err := selectSignaturesForPinnedSet(candidates, pinned); err == nil {
 		t.Fatal("expected insufficient pinned quorum error")
+	}
+}
+
+// TestBinarySearchHighestFeasibleConverges is the RLY-01 multi-hop core: given
+// a synthetic monotonic feasibility predicate (feasible(h) == h <= threshold),
+// the search must find exactly the highest height in (trusted, latest] that
+// clears it, including the boundary cases (threshold at trusted+1, at
+// latest-1, and "no height clears it at all").
+func TestBinarySearchHighestFeasibleConverges(t *testing.T) {
+	cases := []struct {
+		name            string
+		trusted, latest int64
+		threshold       int64
+		wantHeight      int64
+		wantOk          bool
+	}{
+		{"mid-range threshold", 100, 200, 150, 150, true},
+		{"threshold at trusted+1", 100, 200, 101, 101, true},
+		{"threshold at latest-1", 100, 200, 199, 199, true},
+		{"no height clears it", 100, 200, 100, 0, false},
+		{"single-block gap, target already infeasible", 100, 101, 101, 0, false},
+		{"large gap", 1_000, 1_000_000, 654_321, 654_321, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			feasible := func(h int64) (bool, error) { return h <= tc.threshold, nil }
+			height, ok, err := binarySearchHighestFeasible(tc.trusted, tc.latest, feasible)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if ok != tc.wantOk {
+				t.Fatalf("ok = %v, want %v", ok, tc.wantOk)
+			}
+			if ok && height != tc.wantHeight {
+				t.Fatalf("height = %d, want %d", height, tc.wantHeight)
+			}
+		})
+	}
+}
+
+func TestBinarySearchHighestFeasibleDoesNotReprobeKnownInfeasibleEdges(t *testing.T) {
+	calls := map[int64]int{}
+	feasible := func(h int64) (bool, error) {
+		calls[h]++
+		return false, nil
+	}
+	height, ok, err := binarySearchHighestFeasible(100, 102, feasible)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if ok || height != 0 {
+		t.Fatalf("height=%d ok=%v, want no feasible intermediate", height, ok)
+	}
+	if calls[102] != 0 {
+		t.Fatalf("latest height was re-probed %d times", calls[102])
+	}
+	if calls[101] != 1 {
+		t.Fatalf("trusted+1 was probed %d times, want exactly once", calls[101])
+	}
+
+	calls = map[int64]int{}
+	height, ok, err = binarySearchHighestFeasible(100, 101, feasible)
+	if err != nil {
+		t.Fatalf("unexpected single-block error: %v", err)
+	}
+	if ok || height != 0 {
+		t.Fatalf("single-block height=%d ok=%v, want no feasible intermediate", height, ok)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("single-block gap re-probed known failed target: calls=%v", calls)
+	}
+}
+
+// TestBinarySearchHighestFeasiblePropagatesError verifies a genuine probe
+// error (e.g. an RPC failure fetching a candidate light block) is returned to
+// the caller rather than being misread as "infeasible at this height" — the
+// two must never be conflated, since one means "churn beat quorum here" and
+// the other means "we don't actually know."
+func TestBinarySearchHighestFeasiblePropagatesError(t *testing.T) {
+	wantErr := errors.New("boom: rpc unavailable")
+	feasible := func(h int64) (bool, error) {
+		if h == 150 { // the first midpoint probed for (100, 200]
+			return false, wantErr
+		}
+		return h <= 190, nil
+	}
+	_, _, err := binarySearchHighestFeasible(100, 200, feasible)
+	if err == nil {
+		t.Fatal("expected error to propagate")
+	}
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected wrapped %v, got %v", wantErr, err)
 	}
 }

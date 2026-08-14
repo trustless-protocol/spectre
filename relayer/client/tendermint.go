@@ -380,9 +380,6 @@ type SpectreClientGenesis struct {
 const DefaultClockDrift uint32 = 30
 
 func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32, trustLevel string, _ string, clockDrift uint32) (*SpectreClientGenesis, error) {
-	if clockDrift == 0 {
-		clockDrift = DefaultClockDrift
-	}
 	status, err := client.Status(context.Background())
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
@@ -397,13 +394,22 @@ func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32,
 	if err != nil {
 		return nil, fmt.Errorf("failed to get light block: %w", err)
 	}
-	_ = trustedLightBlock
 
 	unbondingPeriod, err := GetUnbondingTime(client)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get unbonding time: %w", err)
 	}
 
+	return spectreClientGenesisFromLightBlock(trustedLightBlock, unbondingPeriod, trustingPeriod, trustLevel, clockDrift)
+}
+
+func spectreClientGenesisFromLightBlock(trustedLightBlock *LightBlock, unbondingPeriod float64, trustingPeriod uint32, trustLevel string, clockDrift uint32) (*SpectreClientGenesis, error) {
+	if trustedLightBlock == nil {
+		return nil, fmt.Errorf("trusted light block is nil")
+	}
+	if clockDrift == 0 {
+		clockDrift = DefaultClockDrift
+	}
 	if trustingPeriod == 0 {
 		trustingPeriod = uint32(unbondingPeriod * 2 / 3)
 	}
@@ -444,7 +450,7 @@ func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32,
 		NextValidatorsHash: bytesToBytes32(trustedLightBlock.SignedHeader.NextValidatorsHash),
 	}
 
-	initialPinnedValidatorSet, err := ValidatorSetToContract(trustedLightBlock.ValSet, "initial pinned")
+	initialPinnedValidatorSet, err := ValidatorSetToContract(trustedLightBlock.NextValSet, "initial pinned")
 	if err != nil {
 		return nil, err
 	}

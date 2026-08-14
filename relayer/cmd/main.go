@@ -43,6 +43,9 @@ const (
 	flagTrustingPeriod = "trusting-period"
 	flagClockDrift     = "clock-drift"
 	flagTrustedBlock   = "trusted-block"
+	flagForceRotation  = "force-rotation"
+	flagTargetHeight   = "target-height"
+	flagMaxHops        = "max-hops"
 	flagWasmChecksum   = "wasm-checksum"
 	flagSource         = "source"
 	flagBenchmark      = "benchmark"
@@ -1552,11 +1555,64 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to get trusted block: %w", err)
 			}
+			forceRotation, err := cmd.Flags().GetBool(flagForceRotation)
+			if err != nil {
+				return fmt.Errorf("failed to get force-rotation flag: %w", err)
+			}
+			targetHeight, err := cmd.Flags().GetInt64(flagTargetHeight)
+			if err != nil {
+				return fmt.Errorf("failed to get target-height flag: %w", err)
+			}
+			maxHops, err := cmd.Flags().GetInt64(flagMaxHops)
+			if err != nil {
+				return fmt.Errorf("failed to get max-hops flag: %w", err)
+			}
+			if maxHops <= 0 {
+				return fmt.Errorf("update-client: --max-hops must be greater than 0")
+			}
 
 			worker := services.NewWorker(&transaction.Handler{}, p)
-			latestBlock, err := worker.UpdateCosmosClient(context.Background(), deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM, cosmosConfig.FetchTimeout, cosmosConfig.RotationThreshold, cosmosConfig.ProofType, trustedBlock, cosmosConfig.TrustLevel, false)
-			if err != nil {
-				return fmt.Errorf("failed to update Cosmos client on Ethereum: %w", err)
+
+			// RLY-01: validator churn can force the builder onto a multi-hop
+			// path that only advances the client to an intermediate height
+			// per call. Loop only while the builder reports that it actually
+			// selected a hop; an ordinary update to the live latest height is
+			// complete even if the chain produces another block while the ETH
+			// transaction is landing.
+			var latestBlock *tendermintClient.LightBlock
+			for hop := int64(0); ; hop++ {
+				if hop >= maxHops {
+					return fmt.Errorf("update-client: reached --max-hops=%d without catching up", maxHops)
+				}
+				result, err := worker.BuildCosmosClientUpdateMsg(
+					deps.Cosmos,
+					deps.EVM,
+					cosmosConfig.FetchTimeout,
+					cosmosConfig.RotationThreshold,
+					cosmosConfig.ProofType,
+					trustedBlock,
+					cosmosConfig.TrustLevel,
+					forceRotation,
+					targetHeight,
+				)
+				if err != nil {
+					return fmt.Errorf("failed to build Cosmos client update on Ethereum: %w", err)
+				}
+				if result == nil || result.LightBlock == nil {
+					return fmt.Errorf("update-client: builder returned nil light block")
+				}
+				if result.HasMsg {
+					if err := worker.TxHandler.SendEthTx(cmd.Context(), deps.EVM, deps.IDs.CosmosOnEVM, *result); err != nil {
+						return fmt.Errorf("failed to update Cosmos client on Ethereum: %w", err)
+					}
+				}
+				latestBlock = result.LightBlock
+				logger.Sugar().Infof("update-client hop %d complete: height=%d kind=%d isHop=%t hopTarget=%d hasMsg=%t",
+					hop, latestBlock.BlockHeight, result.Kind, result.IsHop, result.HopTarget, result.HasMsg)
+				if !result.IsHop {
+					break
+				}
+				trustedBlock = 0 // re-derive from on-chain state next iteration
 			}
 			logger.Sugar().Infof("update-client complete: latest_height=%d", latestBlock.BlockHeight)
 
@@ -1566,6 +1622,9 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	cmd.Flags().Int64(flagTrustedBlock, 0, "trusted Cosmos block height hint; 0 reads from the on-chain client")
 	cmd.Flags().Bool(flagGPUProve, false, "use the ICICLE GPU backend for proving (or set GPU_PROVE=1); requires an icicle-enabled build")
+	cmd.Flags().Bool(flagForceRotation, false, "force pinned-set rotation regardless of overlap threshold (operator stopgap for RLY-01)")
+	cmd.Flags().Int64(flagTargetHeight, 0, "override the update target height; 0 uses the chain's current latest height (operator stopgap for RLY-01)")
+	cmd.Flags().Int64(flagMaxHops, 16, "maximum multi-hop iterations before giving up in one invocation")
 	return cmd
 }
 

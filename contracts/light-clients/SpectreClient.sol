@@ -46,12 +46,24 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     bytes32 public immutable MISBEHAVIOUR_SUBMITTER_ROLE = keccak256("MISBEHAVIOUR_SUBMITTER_ROLE");
 
     /// @notice Sets the modules and the initial client, consensus, and pinned validator states.
+    /// @dev `consensusState_` is taken as the full struct (not a pre-hashed `bytes32`) so the
+    ///      constructor can assert `initialPinnedValidatorSet` actually matches the genesis
+    ///      consensus state's `nextValidatorsHash` — otherwise a mis-pinned genesis validator set
+    ///      (deployer mistake or malice) would be undetectable on-chain (see LC-03 in
+    ///      `docs/SECURITY.md`).
+    /// @dev roleManager==address(0) is the intentional permissionless escape hatch (devnet/test):
+    ///      no account is granted `DEFAULT_ADMIN_ROLE` in that branch, which means `unfreeze()`
+    ///      becomes permanently uncallable if this client ever freezes while in that mode — the
+    ///      only recovery path is migrating the router to a replacement client. Production
+    ///      deployments must pass a real `roleManager` (the relayer defaults it to the router,
+    ///      see `relayer/transaction/handler.go`). This is documented, not a bug — see
+    ///      `docs/SECURITY.md`'s "Proof Submission (SpectreClient)" section.
     constructor(
         address updateClientModule,
         address membershipModule,
         address misbehaviourModule,
         bytes memory clientState_,
-        bytes32 consensusState,
+        IICS07TendermintMsgs.ConsensusState memory consensusState_,
         IICS07TendermintMsgs.ValidatorSet memory initialPinnedValidatorSet,
         address roleManager
     ) {
@@ -67,7 +79,20 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
             parsedRevision == cs.latestHeight.revisionNumber,
             MismatchedRevisionHeights(parsedRevision, cs.latestHeight.revisionNumber)
         );
-        $.consensusStateHashes[cs.latestHeight.revisionHeight] = consensusState;
+
+        // Verifiable genesis pin (LC-03): the pinned validator set MUST be the one the genesis
+        // consensus state actually committed to, not merely whatever the deployer supplied
+        // alongside it.
+        bytes32 initialPinnedValidatorsHash = Header.hashValSet(initialPinnedValidatorSet);
+        require(
+            initialPinnedValidatorsHash == consensusState_.nextValidatorsHash,
+            GenesisPinnedValidatorSetMismatch(consensusState_.nextValidatorsHash, initialPinnedValidatorsHash)
+        );
+
+        // Same hashing convention used everywhere else a consensus state is bound into the Store
+        // (see `updateApplicationState`/`updateConsensusState` below, and
+        // `UpdateClient._verifyHeader` / `Misbehaviour._requireTrustedConsensus`).
+        $.consensusStateHashes[cs.latestHeight.revisionHeight] = keccak256(abi.encode(consensusState_));
 
         UPDATE_CLIENT_MODULE = updateClientModule;
         MEMBERSHIP_MODULE = membershipModule;
@@ -79,7 +104,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         );
 
         _setPinnedValidatorSet(initialPinnedValidatorSet);
-        _storePinnedValidatorSetSnapshot(cs.latestHeight.revisionHeight);
+        _storePinnedValidatorSetSnapshot(cs.latestHeight.revisionHeight, consensusState_.timestamp);
 
         if (roleManager == address(0)) {
             _grantRole(PROOF_SUBMITTER_ROLE, address(0));
@@ -212,7 +237,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
             _setPinnedValidatorSet(msg_.newValidatorSet);
             $.clientState.latestHeight = output.newHeight;
             $.consensusStateHashes[output.newHeight.revisionHeight] = keccak256(abi.encode(output.newConsensusState));
-            _storePinnedValidatorSetSnapshot(output.newHeight.revisionHeight);
+            _storePinnedValidatorSetSnapshot(output.newHeight.revisionHeight, output.newConsensusState.timestamp);
             emit ClientUpdated(output.newHeight.revisionHeight);
             emit ConsensusStateUpdated(output.newHeight.revisionHeight, newValidatorsHash);
         } else {
@@ -222,7 +247,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
                 NonMonotonicHeightUpdate($.clientState.latestHeight.revisionHeight, output.newHeight.revisionHeight)
             );
             _setPinnedValidatorSet(msg_.newValidatorSet);
-            _storePinnedValidatorSetSnapshot(output.newHeight.revisionHeight);
+            _storePinnedValidatorSetSnapshot(output.newHeight.revisionHeight, output.newConsensusState.timestamp);
             emit ConsensusStateUpdated(output.newHeight.revisionHeight, newValidatorsHash);
         }
         return updateResult;
@@ -253,6 +278,14 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     }
 
     /// @notice Sums the verified signers' voting power against the current pinned set, requiring >2/3.
+    /// @dev The app-state path intentionally accounts quorum against `$.currentSnapshot()` even
+    ///      when that pinned set lags the trusted consensus state's `nextValidatorsHash`; the
+    ///      relayer rotates with `updateConsensusState` only when the pinned-set overlap decays or
+    ///      the refresh cadence forces a rotation. Freshness is time-based: the current pinned
+    ///      snapshot's consensus timestamp must remain inside the trusting period, but it need not
+    ///      equal the trusted height's next validator set. Contrast `_verifyMisbehaviourQuorum`
+    ///      below, which legitimately uses `snapshotAt(trustedHeight)` because misbehaviour evidence
+    ///      can reference any past trusted height, not just the latest.
     function _verifyPinnedQuorum(
         SpectreStore.Store storage $,
         ISpectreClientMsgs.BatchProof memory proof_,
@@ -261,7 +294,9 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         private
         view
     {
-        _verifyQuorum(proof_, header.signedHeader.commit.commitSigs, $.currentSnapshot());
+        SpectreStore.PinnedValidatorSetSnapshot memory snapshot = $.currentSnapshot();
+        _validateConsensusStateTrustingPeriod(snapshot.timestamp);
+        _verifyQuorum(proof_, header.signedHeader.commit.commitSigs, snapshot);
     }
 
     /// @notice Sums the verified signers' voting power against the snapshot trusted at the header's
@@ -313,6 +348,14 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
 
             uint32 pinnedIdx = proof_.pinnedValidatorIndices[i];
             require(pinnedIdx < cacheHeader.entryCount, SignerIndexOutOfRange(pinnedIdx));
+            // Defense-in-depth (LC-07): `seenPinned` packs one bit per pinned index into a
+            // uint256. On the EVM, `x << n` for `n >= 256` evaluates to 0 instead of reverting, so
+            // an unchecked shift here would silently turn off duplicate-signer detection for any
+            // pinnedIdx >= 256. `entryCount <= ValidatorSetLib.MAX_VALIDATOR_COUNT` (180) already
+            // makes this unreachable today (see the INVARIANT note on that constant), but this
+            // check makes a future increase of MAX_VALIDATOR_COUNT past 256 fail loudly here
+            // instead of silently breaking dup-signer accounting.
+            require(pinnedIdx < 256, PinnedIndexOverflowsBitmask(pinnedIdx));
             uint256 mask = uint256(1) << pinnedIdx;
             require((seenPinned & mask) == 0, DuplicateSigner(pinnedIdx));
             seenPinned |= mask;
@@ -509,6 +552,14 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     }
 
     /// @inheritdoc ISpectreClient
+    /// @dev LC-04: gated on `DEFAULT_ADMIN_ROLE`, which is granted to no one when this client was
+    ///      deployed with `roleManager == address(0)` (the intentional permissionless dev/test
+    ///      escape hatch — see the constructor NatSpec). In that mode this function is
+    ///      PERMANENTLY UNCALLABLE once the client freezes; the only recovery path is migrating
+    ///      the router to a replacement client (`ICS26Router.migrateClient`). This is documented,
+    ///      intentional behavior, not a bug — do not "fix" it with a fallback admin, and do not
+    ///      assume `roleManager != address(0)` here. See `docs/SECURITY.md`'s "Proof Submission
+    ///      (SpectreClient)" section for the production-vs-devnet tradeoff.
     function unfreeze() external override(ISpectreClient, ILightClient) onlyRole(DEFAULT_ADMIN_ROLE) {
         SpectreStore.Store storage $ = SpectreStore.load();
         require($.clientState.isFrozen, ClientNotFrozen());
@@ -536,7 +587,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         $.pinnedEntryCount = cacheHeader.entryCount;
     }
 
-    function _storePinnedValidatorSetSnapshot(uint64 height) private {
+    function _storePinnedValidatorSetSnapshot(uint64 height, uint128 timestamp) private {
         SpectreStore.Store storage $ = SpectreStore.load();
         uint256 snapshotCount = $.snapshotHeights.length;
         if (snapshotCount != 0) {
@@ -548,8 +599,10 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
             validatorsHash: $.pinnedValidatorsHash,
             pointer: $.pinnedValidatorSetPointer,
             totalVotingPower: $.pinnedTotalVotingPower,
-            entryCount: $.pinnedEntryCount
+            entryCount: $.pinnedEntryCount,
+            timestamp: timestamp
         });
+        $.pinnedTimestamp = timestamp;
         if (!exists) {
             $.snapshotHeights.push(height);
         }

@@ -48,6 +48,10 @@ contract UpdateClient is IUpdateClient {
         IICS07TendermintMsgs.ChainId memory chainId = IICS07TendermintMsgs.ChainId({
             id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber
         });
+        // NOTE (LC-05): `trustThreshold` is threaded through `options` into `_verifyHeader` /
+        // `_verifyAgainstTrusted` below but is never actually read there — the real quorum
+        // threshold is hardcoded `>2/3` in `SpectreClient._verifyQuorum`. Currently
+        // decoded-but-unused / reserved; see the field comment on `ClientState.trustLevel`.
         IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
             trustThreshold: clientState.trustLevel,
             trustingPeriod: clientState.trustingPeriod,

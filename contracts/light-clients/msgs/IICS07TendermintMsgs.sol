@@ -17,7 +17,14 @@ interface IICS07TendermintMsgs {
 
     /// @notice Defines the ICS07Tendermint ClientState for ibc-lite
     /// @param chainId Chain ID
-    /// @param trustLevel Fraction of validator overlap needed to update header
+    /// @param trustLevel Fraction of validator overlap needed to update header.
+    /// @dev LC-05: `trustLevel` is decoded into `Options.trustThreshold` in both
+    ///      `UpdateClient.verifyHeader` and `Misbehaviour.verifyMisbehaviour`, but that decoded
+    ///      value is never read afterward anywhere in this codebase — the real quorum threshold
+    ///      is hardcoded `>2/3` in `SpectreClient._verifyQuorum`. This field is currently
+    ///      decoded-but-unused / reserved. It is NOT removed here: removal is a wire-encoding /
+    ///      ABI change requiring `EncodeTest` + the Go proto counterpart + bindings regen, out of
+    ///      proportion for this low-severity finding.
     /// @param latestHeight Latest height the client was updated to
     /// @param trustingPeriod duration of the period since the LatestTimestamp during which the
     /// submitted headers are valid for upgrade in seconds.

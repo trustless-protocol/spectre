@@ -182,7 +182,7 @@ contract RecvPacketGasTest is IntegrationTest {
             address(stubMembership),
             STUB_MISBEHAVIOUR,
             abi.encode(cs),
-            keccak256(abi.encode(trustedCS)),
+            trustedCS,
             vs,
             address(0)
         );

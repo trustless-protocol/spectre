@@ -23,9 +23,26 @@
         "internalType": "bytes"
       },
       {
-        "name": "consensusState",
-        "type": "bytes32",
-        "internalType": "bytes32"
+        "name": "consensusState_",
+        "type": "tuple",
+        "internalType": "struct IICS07TendermintMsgs.ConsensusState",
+        "components": [
+          {
+            "name": "timestamp",
+            "type": "uint128",
+            "internalType": "uint128"
+          },
+          {
+            "name": "root",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          },
+          {
+            "name": "nextValidatorsHash",
+            "type": "bytes32",
+            "internalType": "bytes32"
+          }
+        ]
       },
       {
         "name": "initialPinnedValidatorSet",
@@ -1283,6 +1300,22 @@
   },
   {
     "type": "error",
+    "name": "DuplicateValidatorPubkey",
+    "inputs": [
+      {
+        "name": "firstIndex",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
+        "name": "secondIndex",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "EmptyValue",
     "inputs": []
   },
@@ -1309,33 +1342,17 @@
   },
   {
     "type": "error",
-    "name": "InsufficientMisbehaviourHeaderHeight",
+    "name": "GenesisPinnedValidatorSetMismatch",
     "inputs": [
       {
-        "name": "height1",
-        "type": "uint64",
-        "internalType": "uint64"
+        "name": "expected",
+        "type": "bytes32",
+        "internalType": "bytes32"
       },
       {
-        "name": "height2",
-        "type": "uint64",
-        "internalType": "uint64"
-      }
-    ]
-  },
-  {
-    "type": "error",
-    "name": "InsufficientTrustedVotingPower",
-    "inputs": [
-      {
-        "name": "accumulated",
-        "type": "uint64",
-        "internalType": "uint64"
-      },
-      {
-        "name": "total",
-        "type": "uint64",
-        "internalType": "uint64"
+        "name": "actual",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ]
   },
@@ -1402,11 +1419,6 @@
         "internalType": "uint64"
       }
     ]
-  },
-  {
-    "type": "error",
-    "name": "InvalidMembershipProof",
-    "inputs": []
   },
   {
     "type": "error",
@@ -1517,6 +1529,33 @@
         "name": "updateHeight",
         "type": "uint64",
         "internalType": "uint64"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PinnedIndexOverflowsBitmask",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "PinnedValidatorSetStale",
+    "inputs": [
+      {
+        "name": "expectedNextValidatorsHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "actualPinnedValidatorsHash",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ]
   },
@@ -1668,6 +1707,17 @@
         "name": "validatorsHash",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ZeroVotingPower",
+    "inputs": [
+      {
+        "name": "index",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ]
   }

@@ -15,11 +15,13 @@ library SpectreStore {
     /// @param pointer The SSTORE2 pointer holding the packed validator cache.
     /// @param totalVotingPower The total voting power of the pinned set.
     /// @param entryCount The number of validators in the pinned set.
+    /// @param timestamp The consensus-state timestamp at the height where this set was pinned.
     struct PinnedValidatorSetSnapshot {
         bytes32 validatorsHash;
         address pointer;
         uint64 totalVotingPower;
         uint16 entryCount;
+        uint128 timestamp;
     }
 
     /// @notice The SpectreClient on-chain state.
@@ -33,6 +35,7 @@ library SpectreStore {
         uint16 pinnedEntryCount;
         mapping(uint64 height => PinnedValidatorSetSnapshot snapshot) snapshots;
         uint64[] snapshotHeights;
+        uint128 pinnedTimestamp;
     }
 
     /// @notice ERC-7201 slot for the SpectreClient store.
@@ -60,7 +63,8 @@ library SpectreStore {
             validatorsHash: $.pinnedValidatorsHash,
             pointer: $.pinnedValidatorSetPointer,
             totalVotingPower: $.pinnedTotalVotingPower,
-            entryCount: $.pinnedEntryCount
+            entryCount: $.pinnedEntryCount,
+            timestamp: $.pinnedTimestamp
         });
     }
 

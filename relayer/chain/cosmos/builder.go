@@ -52,7 +52,7 @@ func (b *Groth16Builder) Build(_ context.Context, _ []byte) (chain.ClientUpdate,
 	if trustedBlock < 0 {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: negative trusted height %d", trustedBlock)
 	}
-	result, err := b.worker.BuildCosmosClientUpdateMsg(b.cosmos, b.evm, b.fetchTimeout, b.rotationThreshold, b.proofType, trustedBlock, b.trustLevel, false)
+	result, err := b.worker.BuildCosmosClientUpdateMsg(b.cosmos, b.evm, b.fetchTimeout, b.rotationThreshold, b.proofType, trustedBlock, b.trustLevel, false, 0)
 	if err != nil {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: build cosmos update: %w", err)
 	}

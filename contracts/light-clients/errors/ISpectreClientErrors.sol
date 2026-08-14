@@ -157,4 +157,41 @@ interface ISpectreClientErrors {
 
     /// @notice Returned when a delegatecall-only module is invoked directly.
     error DirectCallNotAllowed();
+
+    /// @notice Deprecated: retained until the next ABI cleanup for consumers that already generated
+    ///         bindings from the audit branch. The app-state path allows the pinned validator set to
+    ///         lag `trustedConsensusState.nextValidatorsHash`; freshness is time-based, not an
+    ///         identity check against the trusted height's next validator set.
+    /// @param expectedNextValidatorsHash formerly trustedConsensusState.nextValidatorsHash.
+    /// @param actualPinnedValidatorsHash formerly the hash of the validator set pinned in storage.
+    error PinnedValidatorSetStale(bytes32 expectedNextValidatorsHash, bytes32 actualPinnedValidatorsHash);
+
+    /// @notice Returned when the constructor's `initialPinnedValidatorSet` does not hash to the
+    ///         `nextValidatorsHash` committed by the genesis consensus state — i.e. the deployer
+    ///         tried to pin a validator set unrelated to the genesis state being trusted.
+    /// @param expected consensusState.nextValidatorsHash from the genesis consensus state.
+    /// @param actual Header.hashValSet(initialPinnedValidatorSet).
+    error GenesisPinnedValidatorSetMismatch(bytes32 expected, bytes32 actual);
+
+    /// @notice Returned when a validator entry in a pinned/proposed validator set has zero
+    ///         voting power — such an entry can never contribute to quorum and only bloats the
+    ///         cache, and a zero-power entry is a common signature of a malformed genesis set.
+    /// @param index the index of the zero-power validator entry.
+    error ZeroVotingPower(uint256 index);
+
+    /// @notice Returned when the same pubkey appears at two different indices in a validator
+    ///         set being pinned. Left unrejected, a repeated pubkey could let one signature be
+    ///         counted multiple times toward the >2/3 quorum threshold (each index is a distinct
+    ///         accounting slot in `SpectreClient._verifyQuorum`).
+    /// @param firstIndex the first (lower) index at which the pubkey appears.
+    /// @param secondIndex the second (higher) index at which the same pubkey appears again.
+    error DuplicateValidatorPubkey(uint256 firstIndex, uint256 secondIndex);
+
+    /// @notice Returned when a pinned validator index would overflow the 256-bit `seenPinned`
+    ///         dup-signer bitmask used by `SpectreClient._verifyQuorum`. Defense-in-depth: this
+    ///         should be unreachable while `ValidatorSetLib.MAX_VALIDATOR_COUNT < 256`, but reverts
+    ///         loudly instead of silently disabling duplicate-signer detection if that constant is
+    ///         ever raised past 256 without revisiting the bitmask.
+    /// @param index the out-of-range pinned validator index.
+    error PinnedIndexOverflowsBitmask(uint32 index);
 }

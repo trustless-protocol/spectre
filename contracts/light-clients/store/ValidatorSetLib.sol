@@ -13,6 +13,39 @@ import { SSTORE2 } from "../../utils/SSTORE2.sol";
 /// @dev The byte layout MUST stay identical to the relayer prover — do not "improve" it.
 library ValidatorSetLib {
     uint32 internal constant VALIDATOR_CACHE_MAGIC = 0x56414c34; // "VAL4"
+
+    /// @notice Hard cap on the number of validators this client can pin, and therefore the
+    ///         largest counterparty validator-set size this client can ever attest quorum for.
+    /// @dev 180 == Cosmos Hub's current validator count (as of this writing) — NOT a coincidence.
+    ///      Quorum requires >2/3 of pinned voting power (`SpectreClient._verifyQuorum`); under the
+    ///      simplifying assumption of equal voting power per validator that's
+    ///      `floor(2*180/3)+1 = 121` unique signers in one Groth16 proof. The largest configured
+    ///      bucket is N=128 (`relayer/prover/buckets.go` — a different, off-chain subsystem; the
+    ///      on-chain dispatch registry lives in `SignatureVerifier.sol`), leaving only ~7
+    ///      validators of headroom (128 - 121 = 7) before quorum becomes unprovable by any bucket.
+    ///      That headroom is a BEST case, not a worst case: 121 assumes power is spread evenly, so
+    ///      each honest signer contributes the same marginal power. Under a skewed distribution
+    ///      where the largest stake-holders happen to be offline (the adversarial/liveness-hostile
+    ///      case — not something this client controls), reaching >2/3 power can require signatures
+    ///      from far more than 121 of the long-tail small validators, pushing the needed
+    ///      unique-signer count toward all 180 and eating the headroom faster than the equal-power
+    ///      estimate suggests. So 121/~7-headroom is the design target, not a bound this contract
+    ///      enforces or can rely on.
+    ///      This is a HARD LIVENESS CEILING, not a soft one: there is no on-chain oracle of the
+    ///      counterparty chain's live validator count, so a Cosmos Hub governance proposal that
+    ///      raises validator count past what fits under this client's cap (see `docs/SECURITY.md`
+    ///      for the exact threshold and operational doctrine) can only be caught by off-chain
+    ///      monitoring — nothing here can assert it or revert on it. Bumping this constant to
+    ///      accommodate a larger validator set requires provisioning a larger Groth16 bucket first
+    ///      (circuit regen + redeploy of every `Groth16Verifier_N{N}` + `setBucket`), not just
+    ///      editing this number.
+    /// @dev INVARIANT: this constant must stay < 256. `SpectreClient._verifyQuorum`'s `seenPinned`
+    ///      dup-signer bitmask packs one bit per pinned index into a `uint256`; a `pinnedIdx >= 256`
+    ///      would make `uint256(1) << pinnedIdx` evaluate to 0 on the EVM (shifts >= 256 don't
+    ///      revert, they just zero out) instead of reverting, silently disabling duplicate-signer
+    ///      detection for indices at/above 256. `SpectreClient` also carries a defensive
+    ///      `require(pinnedIdx < 256, ...)` immediately before that shift for this exact reason —
+    ///      keep both in sync if this constant is ever raised.
     uint16 internal constant MAX_VALIDATOR_COUNT = 180;
     uint256 internal constant VALIDATOR_CACHE_HEADER_LEN = 48;
     uint256 internal constant VALIDATOR_CACHE_ENTRY_LEN = 44;
@@ -52,6 +85,17 @@ library ValidatorSetLib {
         uint256 offset = VALIDATOR_CACHE_HEADER_LEN;
         for (uint256 i = 0; i < vals.length; i++) {
             IICS07TendermintMsgs.ValidatorInfo memory val = vals[i];
+            require(val.votingPower > 0, ISpectreClientErrors.ZeroVotingPower(i));
+            // O(n^2) duplicate-pubkey scan: only runs at genesis/rotation time (bounded by
+            // MAX_VALIDATOR_COUNT = 180), never per-packet, so the quadratic cost is cheap here.
+            // A duplicate (or repeated) pubkey pinned at multiple indices would let one signature
+            // count multiple times toward quorum in `SpectreClient._verifyQuorum` (each index is
+            // its own distinct slot there).
+            for (uint256 j = 0; j < i; j++) {
+                if (vals[j].pubKey == val.pubKey) {
+                    revert ISpectreClientErrors.DuplicateValidatorPubkey(j, i);
+                }
+            }
             totalVotingPower += val.votingPower;
             _writeUint32(data, offset, uint32(i));
             _writeUint64(data, offset + 4, val.votingPower);
@@ -133,6 +177,15 @@ library ValidatorSetLib {
     }
 
     /// @notice Requires that every active proof signer corresponds to a COMMIT slot in the header commit.
+    /// @dev This is a relayer-supplied-metadata consistency/liveness check, NOT an independent
+    ///      security control. `commitSigs` is decoded from calldata the relayer assembled and is
+    ///      never itself proven by the Groth16 circuit — the circuit only proves the batched
+    ///      Ed25519 signatures over the signer pubkeys/indices bound into the SHA-256 witness
+    ///      commitment (`SignatureVerifier._hashWitness`). This check exists so a relayer can't
+    ///      submit `active[i]=true` for a slot whose `commitSigs` flag disagrees with COMMIT
+    ///      (e.g. malformed or stale metadata) and have it silently accepted; the actual
+    ///      cryptographic binding that makes a forged proof impossible is the witness hash, not
+    ///      this array.
     function requireProofSignersCommitSigs(
         IICS07TendermintMsgs.CommitSig[] memory commitSigs,
         uint32[] memory signerIndices,

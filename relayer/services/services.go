@@ -37,7 +37,7 @@ func init() {
 }
 
 type TransactionHandler interface {
-	CreateCosmosClientContract(stdCtx context.Context, endpoint EVMEndpoint, clientIDs ClientIDs, clientState, consensusHash []byte, initialPinnedValidatorSet client.ContractValidatorSet) (ethcommon.Address, error)
+	CreateCosmosClientContract(stdCtx context.Context, endpoint EVMEndpoint, clientIDs ClientIDs, clientState []byte, consensusState spectreContract.IICS07TendermintMsgsConsensusState, initialPinnedValidatorSet client.ContractValidatorSet) (ethcommon.Address, error)
 	// CreateWasmClient submits MsgCreateClient for any 08-wasm client (ETH beacon,
 	// L2 rollup, ...) from an already-built wasm ClientState/ConsensusState and returns
 	// the auto-assigned client id. counterpartyClientID is the client on the
@@ -196,7 +196,7 @@ func pendingPacketsTimedOutAtTimestamp(pending []pendingPacketInfo, timestamp ui
 }
 
 func (s *Services) updateCosmosClientForEth(stdCtx context.Context, deps evmTimeoutDeps, tag string) (*client.LightBlock, bool) {
-	latestLightBlock, err := s.worker.UpdateCosmosClient(stdCtx, deps.cosmos, deps.evm, deps.routerClientID, s.cosmosConfig.FetchTimeout, s.cosmosConfig.RotationThreshold, s.cosmosConfig.ProofType, 0, s.cosmosConfig.TrustLevel, false)
+	latestLightBlock, err := s.worker.UpdateCosmosClient(stdCtx, deps.cosmos, deps.evm, deps.routerClientID, s.cosmosConfig.FetchTimeout, s.cosmosConfig.RotationThreshold, s.cosmosConfig.ProofType, 0, s.cosmosConfig.TrustLevel, false, 0)
 	if err != nil {
 		log.Printf("[%s] Failed to update cosmos light client: %v", tag, err)
 		return nil, false

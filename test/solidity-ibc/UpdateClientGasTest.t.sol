@@ -319,7 +319,7 @@ contract UpdateClientGasTest is Test {
             STUB_MEMBERSHIP,
             STUB_MISBEHAVIOUR,
             abi.encode(cs),
-            keccak256(abi.encode(trustedCS)),
+            trustedCS,
             pinnedValidatorSet,
             address(0) // permissionless
         );

@@ -10,6 +10,7 @@ import { IICS07TendermintMsgs } from "../../contracts/light-clients/msgs/IICS07T
 import { IMembershipMsgs } from "../../contracts/light-clients/msgs/IMembershipMsgs.sol";
 import { ISpectreClientErrors } from "../../contracts/light-clients/errors/ISpectreClientErrors.sol";
 import { IMembership } from "../../contracts/light-clients/interfaces/IMembership.sol";
+import { Header } from "../../contracts/utils/Header.sol";
 
 contract DummyMembershipForTrustingPeriod is IMembership {
     function verifyMembership(
@@ -46,6 +47,10 @@ contract MembershipTrustingPeriodTest is Test {
     function test_verifyMembershipRejectsExpiredConsensusState() public {
         uint256 consensusTime = block.timestamp - TRUSTING_PERIOD;
         SpectreClient lightClient = _deploy(_toNanos(consensusTime));
+        // Built before expectRevert: _membershipMsg -> _consensusState -> Header.hashValSet does a
+        // sha256 precompile STATICCALL, which vm.expectRevert would otherwise catch as "the next
+        // call" instead of the verifyMembership call below.
+        ILightClientMsgs.MsgVerifyMembership memory msg_ = _membershipMsg(_toNanos(consensusTime));
 
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -54,7 +59,7 @@ contract MembershipTrustingPeriodTest is Test {
                 uint128(TRUSTING_PERIOD)
             )
         );
-        lightClient.verifyMembership(_membershipMsg(_toNanos(consensusTime)));
+        lightClient.verifyMembership(msg_);
     }
 
     function test_verifyMembershipAcceptsFutureConsensusStateWithinClockDrift() public {
@@ -67,16 +72,20 @@ contract MembershipTrustingPeriodTest is Test {
     function test_verifyMembershipRejectsFutureConsensusStateBeyondClockDrift() public {
         uint256 consensusTime = block.timestamp + CLOCK_DRIFT + 1;
         SpectreClient lightClient = _deploy(_toNanos(consensusTime));
+        // Built before expectRevert — see test_verifyMembershipRejectsExpiredConsensusState.
+        ILightClientMsgs.MsgVerifyMembership memory msg_ = _membershipMsg(_toNanos(consensusTime));
 
         vm.expectRevert(
             abi.encodeWithSelector(ISpectreClientErrors.ProofIsInTheFuture.selector, block.timestamp, consensusTime)
         );
-        lightClient.verifyMembership(_membershipMsg(_toNanos(consensusTime)));
+        lightClient.verifyMembership(msg_);
     }
 
     function test_verifyNonMembershipRejectsExpiredConsensusState() public {
         uint256 consensusTime = block.timestamp - TRUSTING_PERIOD;
         SpectreClient lightClient = _deploy(_toNanos(consensusTime));
+        // Built before expectRevert — see test_verifyMembershipRejectsExpiredConsensusState.
+        ILightClientMsgs.MsgVerifyNonMembership memory msg_ = _nonMembershipMsg(_toNanos(consensusTime));
 
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -85,7 +94,7 @@ contract MembershipTrustingPeriodTest is Test {
                 uint128(TRUSTING_PERIOD)
             )
         );
-        lightClient.verifyNonMembership(_nonMembershipMsg(_toNanos(consensusTime)));
+        lightClient.verifyNonMembership(msg_);
     }
 
     function test_verifyNonMembershipAcceptsFutureConsensusStateWithinClockDrift() public {
@@ -98,35 +107,42 @@ contract MembershipTrustingPeriodTest is Test {
     function test_verifyNonMembershipRejectsFutureConsensusStateBeyondClockDrift() public {
         uint256 consensusTime = block.timestamp + CLOCK_DRIFT + 1;
         SpectreClient lightClient = _deploy(_toNanos(consensusTime));
+        // Built before expectRevert — see test_verifyMembershipRejectsExpiredConsensusState.
+        ILightClientMsgs.MsgVerifyNonMembership memory msg_ = _nonMembershipMsg(_toNanos(consensusTime));
 
         vm.expectRevert(
             abi.encodeWithSelector(ISpectreClientErrors.ProofIsInTheFuture.selector, block.timestamp, consensusTime)
         );
-        lightClient.verifyNonMembership(_nonMembershipMsg(_toNanos(consensusTime)));
+        lightClient.verifyNonMembership(msg_);
     }
 
     function test_constructorRejectsZeroTrustingPeriod() public {
         IICS07TendermintMsgs.ClientState memory clientState = _clientState();
         clientState.trustingPeriod = 0;
+        // Built before expectRevert — see test_verifyMembershipRejectsExpiredConsensusState: the
+        // sha256 precompile call inside _consensusState must not land inside the armed window.
+        IICS07TendermintMsgs.ConsensusState memory consensusState = _consensusState(_toNanos(block.timestamp));
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 ISpectreClientErrors.LengthIsOutOfRange.selector, uint256(0), uint256(1), uint256(type(uint32).max)
             )
         );
-        _deployWithClientState(_toNanos(block.timestamp), clientState);
+        _deployWithConsensusState(consensusState, clientState);
     }
 
     function test_constructorRejectsZeroClockDrift() public {
         IICS07TendermintMsgs.ClientState memory clientState = _clientState();
         clientState.clockDrift = 0;
+        // Built before expectRevert — see test_verifyMembershipRejectsExpiredConsensusState.
+        IICS07TendermintMsgs.ConsensusState memory consensusState = _consensusState(_toNanos(block.timestamp));
 
         vm.expectRevert(
             abi.encodeWithSelector(
                 ISpectreClientErrors.LengthIsOutOfRange.selector, uint256(0), uint256(1), uint256(type(uint32).max)
             )
         );
-        _deployWithClientState(_toNanos(block.timestamp), clientState);
+        _deployWithConsensusState(consensusState, clientState);
     }
 
     function _deploy(uint128 consensusTimestamp) private returns (SpectreClient) {
@@ -140,14 +156,22 @@ contract MembershipTrustingPeriodTest is Test {
         private
         returns (SpectreClient)
     {
-        IICS07TendermintMsgs.ConsensusState memory consensusState = _consensusState(consensusTimestamp);
+        return _deployWithConsensusState(_consensusState(consensusTimestamp), clientState);
+    }
 
+    function _deployWithConsensusState(
+        IICS07TendermintMsgs.ConsensusState memory consensusState,
+        IICS07TendermintMsgs.ClientState memory clientState
+    )
+        private
+        returns (SpectreClient)
+    {
         return new SpectreClient(
             address(0),
             address(membership),
             address(0),
             abi.encode(clientState),
-            keccak256(abi.encode(consensusState)),
+            consensusState,
             _pinnedValidatorSet(),
             address(0)
         );
@@ -210,8 +234,10 @@ contract MembershipTrustingPeriodTest is Test {
     }
 
     function _consensusState(uint128 timestamp) private pure returns (IICS07TendermintMsgs.ConsensusState memory) {
+        // nextValidatorsHash must match _pinnedValidatorSet()'s hash: the constructor now asserts
+        // Header.hashValSet(initialPinnedValidatorSet) == consensusState.nextValidatorsHash (LC-03).
         return IICS07TendermintMsgs.ConsensusState({
-            timestamp: timestamp, root: APP_HASH, nextValidatorsHash: bytes32(uint256(0xB0B))
+            timestamp: timestamp, root: APP_HASH, nextValidatorsHash: Header.hashValSet(_pinnedValidatorSet())
         });
     }
 

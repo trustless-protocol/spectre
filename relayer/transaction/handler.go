@@ -379,7 +379,7 @@ func estimateCosmosClientDeployGas(
 	from common.Address,
 	gasPrice *big.Int,
 	clientState []byte,
-	consensusHash []byte,
+	consensusState spectreContract.IICS07TendermintMsgsConsensusState,
 	initialPinnedValidatorSet spectreContract.IICS07TendermintMsgsValidatorSet,
 ) (uint64, uint64, error) {
 	parsed, err := spectreContract.ContractSpectreClientMetaData.GetAbi()
@@ -392,7 +392,7 @@ func estimateCosmosClientDeployGas(
 		*endpoint.MembershipContract(),
 		*endpoint.MisbehaviourContract(),
 		clientState,
-		utils.BytesToBytes32(consensusHash),
+		consensusState,
 		initialPinnedValidatorSet,
 		*endpoint.RoleManagerAddress(),
 	)
@@ -429,7 +429,7 @@ func estimateCosmosClientDeployGas(
 	return estimate, gasLimit, nil
 }
 
-func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint services.EVMEndpoint, clientIDs services.ClientIDs, clientState, consensusHash []byte, initialPinnedValidatorSet relayerclient.ContractValidatorSet) (common.Address, error) {
+func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint services.EVMEndpoint, clientIDs services.ClientIDs, clientState []byte, consensusState spectreContract.IICS07TendermintMsgsConsensusState, initialPinnedValidatorSet relayerclient.ContractValidatorSet) (common.Address, error) {
 	cosmosClientID, err := cosmosRouterClientID(clientIDs)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
@@ -459,7 +459,7 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 	}
 
 	pinnedForDeploy := toGroth16ValidatorSet(initialPinnedValidatorSet)
-	estimatedDeployGas, deployGasLimit, err := estimateCosmosClientDeployGas(stdCtx, endpoint, fromAddress, gasPrice, clientState, consensusHash, pinnedForDeploy)
+	estimatedDeployGas, deployGasLimit, err := estimateCosmosClientDeployGas(stdCtx, endpoint, fromAddress, gasPrice, clientState, consensusState, pinnedForDeploy)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
@@ -474,7 +474,7 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 			*endpoint.MembershipContract(),
 			*endpoint.MisbehaviourContract(),
 			clientState,
-			utils.BytesToBytes32(consensusHash),
+			consensusState,
 			pinnedForDeploy,
 			*endpoint.RoleManagerAddress(),
 		)
