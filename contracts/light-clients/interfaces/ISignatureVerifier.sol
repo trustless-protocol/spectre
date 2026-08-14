@@ -24,8 +24,12 @@ interface ISignatureVerifier {
     /// @notice Verify a batch of Ed25519 signatures via a single Groth16 proof.
     /// @dev The relayer picks `bucket` as the smallest circuit that fits the number of signers
     ///      needed to reach 2/3 voting power. Slots beyond the true signer count are padded with
-    ///      deterministic dummy signatures whose `active[i] = false`. The on-circuit ECIP gate
-    ///      zeroes their contribution; the on-chain quorum check skips them.
+    ///      deterministic dummy signatures whose `active[i] = false`. Those dummy signatures are
+    ///      real signatures over dummy bytes and are verified and aggregated by the circuit like
+    ///      any other slot — the circuit does NOT gate inactive slots out of the ECIP aggregate.
+    ///      Exclusion happens on-chain only: the quorum check skips slots with `active[i] = false`,
+    ///      so they carry no voting power. `active` is bound into the witness commitment, which is
+    ///      what stops calldata from re-labelling a padding slot as a signer.
     /// @param bucket Validator-count bucket (selects which per-bucket Groth16Verifier to dispatch to)
     /// @param proof The Groth16 proof (8 uint256s: Ar, Bs, Krs)
     /// @param commitments The proof commitments (2 uint256s)

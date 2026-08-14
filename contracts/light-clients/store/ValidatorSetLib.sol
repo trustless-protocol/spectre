@@ -176,36 +176,58 @@ library ValidatorSetLib {
         pubKey = _readBytes32(cacheData, offset + 12);
     }
 
-    /// @notice Requires that every active proof signer corresponds to a COMMIT slot in the header commit.
-    /// @dev This is a relayer-supplied-metadata consistency/liveness check, NOT an independent
-    ///      security control. `commitSigs` is decoded from calldata the relayer assembled and is
-    ///      never itself proven by the Groth16 circuit — the circuit only proves the batched
-    ///      Ed25519 signatures over the signer pubkeys/indices bound into the SHA-256 witness
-    ///      commitment (`SignatureVerifier._hashWitness`). This check exists so a relayer can't
-    ///      submit `active[i]=true` for a slot whose `commitSigs` flag disagrees with COMMIT
-    ///      (e.g. malformed or stale metadata) and have it silently accepted; the actual
-    ///      cryptographic binding that makes a forged proof impossible is the witness hash, not
-    ///      this array.
+    /// @notice Requires that every active proof signer corresponds to a COMMIT slot in the header
+    ///         commit, and that the slot belongs to the same validator the proof claims.
+    /// @dev `signerIndices` indexes the header commit; `signerPubkeys` is the per-slot pubkey the
+    ///      caller has already matched against the pinned validator set. The two are otherwise
+    ///      independent — the commit for the proposed height and the pinned set are different
+    ///      validator sets, so the indices legitimately differ — which left a proof free to cite
+    ///      one validator's commit slot while drawing another's voting power. Deriving the
+    ///      Tendermint address from the pinned pubkey and matching it against the commit slot ties
+    ///      them (ZK-09).
+    ///
+    ///      This is NOT a security boundary. `commitSigs` is relayer calldata, never itself proven
+    ///      by the Groth16 circuit, and the Tendermint block hash covers the Header, not the
+    ///      Commit — so this check compares relayer data against relayer data: it catches an
+    ///      honest relayer's bug, not a malicious relayer. Security comes from the ZK proof over
+    ///      the signer pubkeys bound into the SHA-256 witness commitment
+    ///      (`SignatureVerifier._hashWitness`) plus the pinned-set pubkey match in `_verifyQuorum`.
+    ///      Do not build on this check as if it authenticated the commit.
+    /// @param commitSigs the proposed header's commit signatures.
+    /// @param signerIndices per-slot index into commitSigs.
+    /// @param signerPubkeys per-slot compressed Ed25519 pubkey, already checked against the pinned set.
+    /// @param active per-slot real-signer flag; padding slots are skipped.
     function requireProofSignersCommitSigs(
         IICS07TendermintMsgs.CommitSig[] memory commitSigs,
         uint32[] memory signerIndices,
+        bytes32[] memory signerPubkeys,
         bool[] memory active
     )
         internal
         pure
     {
-        require(signerIndices.length == active.length, ISpectreClientErrors.BatchLengthMismatch());
+        require(
+            signerIndices.length == active.length && signerPubkeys.length == active.length,
+            ISpectreClientErrors.BatchLengthMismatch()
+        );
         for (uint256 i = 0; i < signerIndices.length; i++) {
             if (!active[i]) {
                 continue;
             }
-            _requireProofSignerCommitSig(commitSigs, signerIndices[i]);
+            _requireProofSignerCommitSig(commitSigs, signerIndices[i], signerPubkeys[i]);
         }
+    }
+
+    /// @notice Returns the Tendermint address of an Ed25519 validator: the first 20 bytes of
+    ///         sha256 over the 32-byte compressed pubkey.
+    function tendermintAddress(bytes32 pubKey) internal pure returns (bytes20) {
+        return bytes20(sha256(abi.encodePacked(pubKey)));
     }
 
     function _requireProofSignerCommitSig(
         IICS07TendermintMsgs.CommitSig[] memory commitSigs,
-        uint32 signerIndex
+        uint32 signerIndex,
+        bytes32 signerPubkey
     )
         private
         pure
@@ -214,6 +236,10 @@ library ValidatorSetLib {
         require(
             commitSigs[signerIndex].flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
             ISpectreClientErrors.ProofSignerCommitSigMismatch(signerIndex)
+        );
+        require(
+            commitSigs[signerIndex].validatorAddress == tendermintAddress(signerPubkey),
+            ISpectreClientErrors.ProofSignerValidatorMismatch(signerIndex)
         );
     }
 

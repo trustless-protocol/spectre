@@ -130,8 +130,15 @@ interface IICS07TendermintMsgs {
         BLOCK_ID_FLAG_NIL
     }
 
+    /// @notice One validator's entry in a block commit.
+    /// @param flag whether the validator voted for the commit's BlockID, voted nil, or was absent.
+    /// @param validatorAddress the Tendermint address of the validator this slot belongs to —
+    ///        the first 20 bytes of sha256(ed25519 pubkey). It ties a commit slot to a specific
+    ///        validator, which is what lets the quorum check verify that the commit slot a proof
+    ///        cites is the same validator whose pinned-set voting power it is claiming (ZK-09).
     struct CommitSig {
         CommitSigFlag flag;
+        bytes20 validatorAddress;
     }
 
     struct ChainId {

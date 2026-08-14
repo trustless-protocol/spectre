@@ -72,6 +72,43 @@ contract SignatureVerifierHashEquivalenceTest is Test {
         assertEq(harness.hashWitness(pubkeys, active, shared), _hashWitnessReference(pubkeys, active, shared));
     }
 
+    /// @notice ZK-07: cross-checks `_hashWitness` against digests computed by the Go prover.
+    /// @dev The witness commitment is computed in Go (prover.ComputeWitnessHash), in-circuit
+    ///      (BatchCircuit.Define) and here, and a proof only verifies when all three agree — but
+    ///      the tests above compare Solidity to Solidity, so a Go-vs-Solidity drift would have
+    ///      surfaced only in E2E. The vectors are produced by
+    ///      `go test ./prover -run TestWitnessHashVectors -update` from `relayer/`, which also
+    ///      re-verifies them on every run, so the generator cannot rot away from the fixture.
+    ///
+    ///      A failure here means the two layouts disagree. Read the Go test's output first: if it
+    ///      passes and this fails, Solidity drifted; if both fail, the fixture is stale.
+    function test_hashWitness_matchesGoVectors() public view {
+        string memory raw = vm.readFile("test/fixtures/witness_hash_vectors.json");
+        uint256 count = vm.parseJsonUint(raw, ".count");
+        assertGt(count, 0, "no cross-check vectors");
+
+        for (uint256 v = 0; v < count; v++) {
+            string memory base = string.concat(".vectors[", vm.toString(v), "]");
+            string memory name = vm.parseJsonString(raw, string.concat(base, ".name"));
+
+            bytes32[] memory pubkeys = vm.parseJsonBytes32Array(raw, string.concat(base, ".pubkeys"));
+            bool[] memory active = vm.parseJsonBoolArray(raw, string.concat(base, ".active"));
+            assertEq(pubkeys.length, active.length, name);
+
+            ISignatureVerifier.SharedBlock memory shared = ISignatureVerifier.SharedBlock({
+                height: uint64(vm.parseJsonUint(raw, string.concat(base, ".height"))),
+                round: uint64(vm.parseJsonUint(raw, string.concat(base, ".round"))),
+                blockIDHash: vm.parseJsonBytes32(raw, string.concat(base, ".blockIdHash"))
+            });
+
+            assertEq(
+                harness.hashWitness(pubkeys, active, shared),
+                vm.parseJsonBytes32(raw, string.concat(base, ".witnessHash")),
+                name
+            );
+        }
+    }
+
     /// @dev Independent reference for the #199 layout. PrefixHead = Type(0x08
     ///      0x02) || Height(0x11 || sfixed64); roundPresent = (round > 0);
     ///      BlockHash = 32 bytes; then per slot active(1) || pubkey(32).

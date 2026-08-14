@@ -371,7 +371,9 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
             InsufficientVotingPower(accumulatedVotingPower, totalVotingPower)
         );
 
-        ValidatorSetLib.requireProofSignersCommitSigs(commitSigs, proof_.signerIndices, proof_.active);
+        ValidatorSetLib.requireProofSignersCommitSigs(
+            commitSigs, proof_.signerIndices, proof_.signerPubkeys, proof_.active
+        );
     }
 
     // ============ Membership ============

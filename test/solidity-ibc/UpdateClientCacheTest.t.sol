@@ -647,12 +647,18 @@ contract UpdateClientCacheTest is Test {
     {
         sigs = new IICS07TendermintMsgs.CommitSig[](vs.validators.length);
         for (uint256 i = 0; i < vs.validators.length; i++) {
+            // The commit slot has to name the validator it belongs to, or the quorum check rejects
+            // the proof that cites it (ZK-09). Here the commit and the pinned set are the same
+            // validators in the same order, so slot i is validator i.
+            bytes20 addr = bytes20(sha256(abi.encodePacked(vs.validators[i].pubKey)));
             if (i < activeCount) {
-                sigs[i] =
-                    IICS07TendermintMsgs.CommitSig({ flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT });
+                sigs[i] = IICS07TendermintMsgs.CommitSig({
+                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT, validatorAddress: addr
+                });
             } else {
-                sigs[i] =
-                    IICS07TendermintMsgs.CommitSig({ flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT });
+                sigs[i] = IICS07TendermintMsgs.CommitSig({
+                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT, validatorAddress: addr
+                });
             }
         }
     }

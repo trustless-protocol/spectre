@@ -13,6 +13,12 @@ import (
 // in-circuit hash matches without paying calldata for padding messages.
 const dummyMagic = "fast-ibc-dummy"
 
+// DummyMsgLen is the length of every padding slot's signed-bytes buffer. It is
+// the shortest message any slot in a batch carries, so it is the floor the
+// circuit gives SHA-512 as its minimal input length (ZK-05). Real votes are far
+// longer and are bounded separately, per slot, in BatchCircuit.Define.
+const DummyMsgLen = len(dummyMagic) + 4
+
 // dummySignature is a deterministic per-slot Ed25519 signature used to fill
 // padding slots in a bucketed batch. Padding slots have Active=false so their
 // signature does not need to verify against the canonical-vote bytes — but the

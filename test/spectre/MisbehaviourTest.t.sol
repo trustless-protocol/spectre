@@ -482,7 +482,10 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     {
         sigs = new CommitSig[](validatorSet.validators.length);
         for (uint256 i = 0; i < validatorSet.validators.length; i++) {
-            sigs[i] = CommitSig({ flag: CommitSigFlag.BLOCK_ID_FLAG_COMMIT });
+            sigs[i] = CommitSig({
+                flag: CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+                validatorAddress: bytes20(sha256(abi.encodePacked(validatorSet.validators[i].pubKey)))
+            });
         }
     }
 
@@ -491,6 +494,8 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     }
 
     function _commitSig(CommitSigFlag flag) internal pure returns (CommitSig memory) {
-        return CommitSig({ flag: flag });
+        // validatorAddress is irrelevant for callers that only encode the commit; the quorum
+        // path builds its sigs via _commitSigsForValidatorSet, which fills it in.
+        return CommitSig({ flag: flag, validatorAddress: bytes20(0) });
     }
 }

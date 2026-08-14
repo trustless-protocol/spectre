@@ -1604,6 +1604,17 @@
   },
   {
     "type": "error",
+    "name": "ProofSignerValidatorMismatch",
+    "inputs": [
+      {
+        "name": "signerIndex",
+        "type": "uint32",
+        "internalType": "uint32"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "ProofVerificationFailed",
     "inputs": []
   },

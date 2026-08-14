@@ -61,7 +61,10 @@ contract EncodeWrapper {
         returns (bytes memory)
     {
         IICS07TendermintMsgs.CommitSig[] memory sigs = new IICS07TendermintMsgs.CommitSig[](1);
-        sigs[0] = IICS07TendermintMsgs.CommitSig({ flag: IICS07TendermintMsgs.CommitSigFlag(flag) });
+        // Canonical-vote encoding does not cover validatorAddress.
+        sigs[0] = IICS07TendermintMsgs.CommitSig({
+            flag: IICS07TendermintMsgs.CommitSigFlag(flag), validatorAddress: bytes20(0)
+        });
 
         IICS07TendermintMsgs.BlockCommit memory commit = IICS07TendermintMsgs.BlockCommit({
             height: height,

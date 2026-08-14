@@ -243,10 +243,19 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) (updateClientContract.I
 
 	commitSigs := []updateClientContract.IICS07TendermintMsgsCommitSig{}
 	for _, sig := range b.SignedHeader.Commit.Signatures {
+		// The validator address ties a commit slot to the validator it belongs to, so the
+		// on-chain quorum check can confirm that the slot a proof cites is the same validator
+		// whose pinned-set voting power it claims (ZK-09). CometBFT derives it the same way
+		// Solidity does — the first 20 bytes of sha256 over the Ed25519 pubkey. ABSENT slots
+		// carry no address and copy as zero, which is fine: only active signers are checked.
+		var valAddr [20]byte
+		copy(valAddr[:], sig.ValidatorAddress)
+
 		// CometBFT: 0=UNKNOWN, 1=ABSENT, 2=COMMIT, 3=NIL
 		// Solidity:  0=UNKNOWN, 1=ABSENT, 2=COMMIT, 3=NIL
 		commitSigs = append(commitSigs, updateClientContract.IICS07TendermintMsgsCommitSig{
-			Flag: uint8(sig.BlockIDFlag),
+			Flag:             uint8(sig.BlockIDFlag),
+			ValidatorAddress: valAddr,
 		})
 	}
 

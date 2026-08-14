@@ -141,6 +141,13 @@ interface ISpectreClientErrors {
     /// @param index the validator index proven as active but not present in commitSigs.
     error ProofSignerCommitSigMismatch(uint32 index);
 
+    /// @notice Returned when the commit slot cited by signerIndices[i] belongs to a different
+    ///         validator than the pinned-set entry cited by pinnedValidatorIndices[i]. Without
+    ///         this the two index arrays are independent, and a proof can claim one validator's
+    ///         voting power while pointing at another validator's commit slot (ZK-09).
+    /// @param signerIndex the commitSigs index whose validator address does not match.
+    error ProofSignerValidatorMismatch(uint32 signerIndex);
+
     /// @notice Returned when the contract is asked to reuse a cached validator
     ///         set but no cache entry exists for the requested hash.
     /// @param validatorsHash the missing validator-set hash.

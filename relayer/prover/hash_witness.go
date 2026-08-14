@@ -40,8 +40,10 @@ const (
 // misattribute the quorum. R/S are deliberately NOT in calldata or hash —
 // the Groth16 proof itself binds them via the in-circuit Ed25519 verify, and
 // no on-chain logic consumes them, so omitting them saves calldata + hash
-// work without weakening security. The active byte gates each slot's
-// contribution to the in-circuit ECIP aggregate.
+// work without weakening security. The active byte marks a slot as a real
+// signer; it does not gate the slot's contribution to the in-circuit ECIP
+// aggregate (every slot is verified and aggregated), it is what the on-chain
+// quorum check reads to decide which slots carry voting power.
 
 // ComputeWitnessHash serializes the per-slot data into the canonical layout
 // and returns the SHA-256 digest. The on-chain SignatureVerifier recomputes the

@@ -63,6 +63,19 @@ const (
 	prefixHeadLen           = 11 // Type(2) + Height(9)
 	blockHashBodyOffNoRound = 15
 	blockHashBodyOffRound   = 24 // round shifts BlockID by 9
+
+	// blockIDFieldTag is the proto wire tag for CanonicalVote.block_id (field 4,
+	// wiretype 2 / length-delimited). It occupies body offset prefixHeadLen when
+	// the round field is absent, where roundFieldTag (hash_witness.go) sits when
+	// it is present — so this one byte distinguishes the two body layouts and is
+	// what RoundPresent is checked against (ZK-05).
+	blockIDFieldTag = 0x22
+
+	// blockHashEnd is the body offset one past the last byte the fixed-offset
+	// asserts below read, in the round-present layout — the widest of the two.
+	// A signed prefix shorter than this leaves those bytes outside what H_RAM
+	// covers, so it is the per-slot lower bound on MsgLens for active slots.
+	blockHashEnd = blockHashBodyOffRound + 32
 )
 
 // BatchCircuit verifies N Tendermint precommit Ed25519 signatures and commits
@@ -98,10 +111,14 @@ type BatchCircuit[Base, Scalars emulated.FieldParams] struct {
 
 	Msgs    [][MaxMsgLen]uints.U8 `gnark:",secret"` // per-slot signed bytes (zero-padded)
 	MsgLens []frontend.Variable   `gnark:",secret"` // per-slot meaningful prefix length
-	// Active gates each slot's contribution to the ECIP aggregate. Inactive
-	// (padding) slots carry deterministic dummy data so every point in the
-	// batch is distinct, but their weight is zero. Bound to the witness hash
-	// so calldata cannot toggle a slot's active bit after proving.
+	// Active marks a slot as a real signer rather than padding. It does NOT
+	// gate the slot's contribution to the ECIP aggregate — every slot is
+	// verified and aggregated alike, which is why padding slots carry
+	// deterministic dummy signatures that genuinely verify. What Active does is
+	// (a) mask the in-circuit asserts that only apply to real canonical votes
+	// and (b) tell the on-chain quorum check which slots carry voting power.
+	// It is bound into the witness hash so calldata cannot toggle a slot's
+	// active bit after proving.
 	Active []frontend.Variable `gnark:",secret"`
 }
 
@@ -160,6 +177,16 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	// it is vacuous (0 == 0).
 	api.AssertIsBoolean(c.RoundPresent)
 	for i := range c.Sig {
+		// Active[i] is the mask on every assert below and one byte of the witness
+		// commitment. varToBytesBE range-checks it to 8 bits, which is not the
+		// same thing: any Active[i] in 2..255 scales both sides of every masked
+		// equality by the same factor and still passes, with the commitment
+		// simply consistent with that byte (0x02, ...). Not currently
+		// exploitable — the on-chain side rebuilds active as 0x00/0x01, so the
+		// hashes would not match — but "the mask is a bit" is assumed
+		// everywhere below (ZK-09).
+		api.AssertIsBoolean(c.Active[i])
+
 		// Per-slot leading-varint width: the continuation bit (MSB) of the first
 		// length byte is set iff a second varint byte follows (bodyLen >= 128).
 		// So the body starts at index 1 (v2=0, 1-byte varint) or 2 (v2=1, 2-byte
@@ -179,6 +206,33 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 			b := api.Select(c.RoundPresent, round, noRound)
 			api.AssertIsEqual(api.Mul(c.Active[i], b), api.Mul(c.Active[i], c.BlockHash[j].Val))
 		}
+
+		// ZK-05, part 1: tie RoundPresent to the message it selects an offset in.
+		// RoundPresent is a free witness that chooses which 32-byte window is
+		// compared against the committed block hash, so left untied the prover
+		// picks the window rather than reading it. The body byte at
+		// prefixHeadLen settles it from the message itself: proto emits the round
+		// field (tag 0x19) there when round > 0 and BlockID (tag 0x22) otherwise,
+		// so the tag and the offset must agree.
+		tag := api.Select(v2, c.Msgs[i][2+prefixHeadLen].Val, c.Msgs[i][1+prefixHeadLen].Val)
+		wantTag := api.Select(c.RoundPresent, roundFieldTag, blockIDFieldTag)
+		api.AssertIsEqual(api.Mul(c.Active[i], tag), api.Mul(c.Active[i], wantTag))
+
+		// ZK-05, part 2: keep every byte the asserts above read inside the signed
+		// prefix. H_RAM covers only Msgs[i][:MsgLens[i]], while the offsets are
+		// fixed and reach as far as blockHashEnd — so without a lower bound on
+		// MsgLens the prover supplies attacker-chosen bytes past the prefix and
+		// has them compared against the committed block hash, with the signature
+		// covering none of it.
+		//
+		// required = varint width + block-hash end, masked by Active[i]: padding
+		// slots carry an 18-byte dummy message and must stay exempt. The slack is
+		// range-checked to 8 bits, which forces MsgLens[i] >= required — MsgLens
+		// is already bounded above by MaxMsgLen inside FixedLengthSum, so the
+		// difference cannot wrap.
+		blockHashOff := api.Select(c.RoundPresent, blockHashEnd, blockHashEnd-(blockHashBodyOffRound-blockHashBodyOffNoRound))
+		required := api.Add(api.Add(1, v2), blockHashOff)
+		api.ToBinary(api.Sub(c.MsgLens[i], api.Mul(c.Active[i], required)), 8)
 	}
 
 	// 2. Run Ed25519 batch verify over the per-slot signed bytes. SHA-512
@@ -190,12 +244,18 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	}
 	// All N slots carry valid Ed25519 signatures — real signers sign canonical
 	// vote bytes, padding slots sign deterministic dummy bytes via a generated
-	// dummy keypair. Both verify under the same primitive; the Active byte in
-	// the hash + the on-chain quorum check are what distinguish real from
-	// padding. ECIP doesn't need to gate inactive slots because every (R, A)
-	// is distinct and every sig verifies on its own.
+	// dummy keypair. Both verify under the same primitive, and the batch does
+	// NOT gate inactive slots: every slot contributes to the ECIP aggregate and
+	// every slot's signature must verify. Nothing needs gating, because each
+	// (R, A) is distinct and each signature stands on its own; what distinguishes
+	// a real signer from padding is the committed Active byte plus the on-chain
+	// quorum check, which is where padding is excluded.
+	//
+	// MinMsgLen is the floor over ALL slots, so it is the dummy length. The
+	// stricter per-slot bound that real votes need is asserted above, masked by
+	// Active[i].
 	return eddsa.VerifyBatchWithMsgBytes[Base, Scalars](
-		api, c.Sig, c.Pub, msgs, c.MsgLens, eddsa.Config{FromWei: false},
+		api, c.Sig, c.Pub, msgs, c.MsgLens, eddsa.Config{FromWei: false, MinMsgLen: DummyMsgLen},
 	)
 }
 
