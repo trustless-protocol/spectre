@@ -103,12 +103,7 @@ func buildCosmosToL2Dest(
 	logger.Sugar().Infof("cosmos->l2 dest %q: spectre_client=%s l2_rpc=%s tm=%s",
 		c2l.ICS26ClientID, c2l.SpectreClient, c2l.EthRpcUrl, c2l.TmRpcUrl)
 
-	recoveryState, err := services.LoadRecoveryState(services.RecoveryStatePath())
-	if err != nil {
-		cleanup()
-		return nil, zero, nil, fmt.Errorf("load recovery state: %w", err)
-	}
-	svc := services.New(txHandler, p, cosmosConfig, recoveryState)
+	svc := services.New(txHandler, p, cosmosConfig)
 	return svc, deps, cleanup, nil
 }
 
@@ -156,7 +151,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 	module := relay.NewModule(
 		"cosmos->l2",
 		deps.IDs.CosmosOnEVM,
-		cosmos.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.FetchTimeout, deps.Config.BatchConfig, deps.Logger, bb, svc.RecoveryState()),
+		cosmos.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.FetchTimeout, deps.Config.BatchConfig, deps.Logger, bb),
 		evm.NewDestination(worker, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM),
 		cosmos.NewGroth16Builder(worker, deps.Cosmos, deps.EVM, deps.Config.FetchTimeout, deps.Config.RotationThreshold, cfg.ProofType, cfg.TrustLevel),
 		relay.WithTimeoutScanner(0, func(c context.Context) {
