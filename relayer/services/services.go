@@ -71,6 +71,7 @@ type Services struct {
 	worker       *Worker
 	cosmosConfig Config
 	BatchBuilder *BatchBuilder
+	recovery     *RecoveryStateStore
 }
 
 type evmTimeoutDeps struct {
@@ -79,7 +80,11 @@ type evmTimeoutDeps struct {
 	routerClientID string
 }
 
-func New(txHandler TransactionHandler, prover Prover, cosmosConfig Config) *Services {
+func New(txHandler TransactionHandler, prover Prover, cosmosConfig Config, recovery ...*RecoveryStateStore) *Services {
+	var recoveryStore *RecoveryStateStore
+	if len(recovery) > 0 {
+		recoveryStore = recovery[0]
+	}
 	return &Services{
 		cosmosConfig: cosmosConfig,
 		worker: &Worker{
@@ -87,8 +92,13 @@ func New(txHandler TransactionHandler, prover Prover, cosmosConfig Config) *Serv
 			prover,
 		},
 		BatchBuilder: NewBatchBuilder(),
+		recovery:     recoveryStore,
 	}
 }
+
+// RecoveryState returns the durable recovery store wired for this source. It is
+// nil for one-shot commands and source types that do not use gap recovery.
+func (s *Services) RecoveryState() *RecoveryStateStore { return s.recovery }
 
 // CosmosClientExpiry returns when the on-chain Cosmos SpectreClient expires: the
 // trusted consensus timestamp plus the trusting period. Unlike

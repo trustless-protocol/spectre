@@ -31,11 +31,16 @@ type Source struct {
 	batchConfig services.BatchConfig
 	logger      *log.Logger
 	bb          *services.BatchBuilder
+	recovery    *services.RecoveryStateStore
 }
 
 // NewSource wires the Ethereum source to its endpoints and the shared batch builder.
-func NewSource(cosmos services.CosmosEndpoint, evm services.EVMEndpoint, ids services.ClientIDs, batchConfig services.BatchConfig, logger *log.Logger, bb *services.BatchBuilder) *Source {
-	return &Source{cosmos: cosmos, evm: evm, ids: ids, batchConfig: batchConfig, logger: logger, bb: bb}
+func NewSource(cosmos services.CosmosEndpoint, evm services.EVMEndpoint, ids services.ClientIDs, batchConfig services.BatchConfig, logger *log.Logger, bb *services.BatchBuilder, recovery ...*services.RecoveryStateStore) *Source {
+	var store *services.RecoveryStateStore
+	if len(recovery) > 0 {
+		store = recovery[0]
+	}
+	return &Source{cosmos: cosmos, evm: evm, ids: ids, batchConfig: batchConfig, logger: logger, bb: bb, recovery: store}
 }
 
 func (s *Source) Chain() chain.ChainType { return chain.Ethereum }
@@ -98,7 +103,7 @@ const ethDrainInterval = 500 * time.Millisecond
 // a recv event and each EthWriteAck as an ack event. EthTimeout is skipped —
 // ETH-origin timeouts are handled by the async scanner, not this path.
 func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []chain.Event) []int) error {
-	sub := subscriber.NewSubscriber()
+	sub := subscriber.NewSubscriber(s.recovery)
 	go sub.SubscribeEth(s.cosmos, s.evm, s.ids, s.logger, s.bb)
 
 	// Use the configured batch window so CheckEth returns multi-packet batches the
@@ -151,6 +156,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 			for _, idx := range handler(ctx, events) {
 				s.bb.RequeueEthWaiting([]services.EthPacket{orig[idx]})
 			}
+			s.bb.ReleaseEthInFlight(batch)
 		}
 	}
 }

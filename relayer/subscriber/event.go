@@ -52,6 +52,8 @@ const cosmosStartupRecoveryLookbackEnv = "COSMOS_STARTUP_LOOKBACK_BLOCKS"
 const defaultCosmosStartupRecoveryLookbackBlocks uint64 = 256
 const cosmosSubscriptionReconnectDelay = 2 * time.Second
 const cosmosGapRecoveryInterval = 30 * time.Second
+const cosmosRecoveryChunkEnv = "COSMOS_RECOVERY_CHUNK_HEIGHTS"
+const defaultCosmosRecoveryChunkHeights uint64 = 256
 
 // cosmosLiveEventBuffer is the per-subscription channel depth requested from
 // CometBFT. Passing it is not a tuning nicety -- the default is 1, and a full
@@ -129,6 +131,9 @@ func advanceQuietScans(quietScans *uint64) bool {
 const cosmosTxSearchPerPage = 100
 const cosmosSeenEventRetentionHeights uint64 = 2_000
 
+const ethRecoveryChunkEnv = "ETH_RECOVERY_CHUNK_BLOCKS"
+const defaultEthRecoveryChunkBlocks uint64 = 256
+
 const cometBFTSendPacketTxSearch = "send_packet.encoded_packet_hex EXISTS"
 const cometBFTWriteAckPacketTxSearch = "write_acknowledgement.encoded_packet_hex EXISTS"
 const cometBFTTimeoutPacketTxSearch = "timeout_packet.encoded_packet_hex EXISTS"
@@ -144,6 +149,7 @@ func normalizeTimeoutSeconds(ts uint64) uint64 {
 }
 
 type Subscriber struct {
+	recovery *services.RecoveryStateStore
 }
 
 type cosmosDeps struct {
@@ -155,8 +161,37 @@ type cosmosDeps struct {
 
 type ethDeps = cosmosDeps
 
-func NewSubscriber() *Subscriber {
-	return &Subscriber{}
+func NewSubscriber(recovery ...*services.RecoveryStateStore) *Subscriber {
+	var store *services.RecoveryStateStore
+	if len(recovery) > 0 {
+		store = recovery[0]
+	}
+	return &Subscriber{recovery: store}
+}
+
+func recoverySourceID(ids services.ClientIDs) string {
+	if ids.CosmosOnEVM != "" {
+		return ids.CosmosOnEVM
+	}
+	return "default"
+}
+
+func clampRecoveryCursor(cursor, lowestUnsubmitted uint64) uint64 {
+	if lowestUnsubmitted != 0 && lowestUnsubmitted < cursor {
+		return lowestUnsubmitted
+	}
+	return cursor
+}
+
+func recoveryChunkSize(envName string, fallback uint64) uint64 {
+	if raw := os.Getenv(envName); raw != "" {
+		value, err := strconv.ParseUint(raw, 10, 64)
+		if err == nil && value > 0 {
+			return value
+		}
+		log.Printf("[recovery] ignoring invalid %s=%q; using %d", envName, raw, fallback)
+	}
+	return fallback
 }
 
 func (s *Subscriber) SubscribeCosmos(cosmos services.CosmosEndpoint, evm services.EVMEndpoint, ids services.ClientIDs, logger *log.Logger, batchBuilder *services.BatchBuilder) {
@@ -180,12 +215,46 @@ func (s *Subscriber) SubscribeCosmos(cosmos services.CosmosEndpoint, evm service
 				time.Sleep(cosmosSubscriptionReconnectDelay)
 				continue
 			}
-			nextRecoveryStartHeight = cosmosStartupRecoveryStartHeight(latestHeight, lookback)
+			nextRecoveryStartHeight = s.resumeCosmosCursor(ctx, latestHeight, lookback)
 		}
 
 		err := s.subscribeCosmosOnce(ctx, batchBuilder, &nextRecoveryStartHeight, seenEvents, &quietScans, &liveHealth)
 		ctx.Logger.Printf("[SubscribeCosmos] Subscription loop ended: %v", err)
+		s.persistCosmosCursor(ctx, batchBuilder, nextRecoveryStartHeight)
 		time.Sleep(cosmosSubscriptionReconnectDelay)
+	}
+}
+
+func (s *Subscriber) resumeCosmosCursor(ctx cosmosDeps, latestHeight, lookback uint64) uint64 {
+	lookbackStart := cosmosStartupRecoveryStartHeight(latestHeight, lookback)
+	if s.recovery == nil {
+		return lookbackStart
+	}
+	cursors, ok := s.recovery.Get(recoverySourceID(ctx.IDs))
+	if !ok {
+		return lookbackStart
+	}
+	start, resumed, behind := services.ResumeCursor(cursors.CosmosHeight, lookbackStart, latestHeight)
+	if resumed && behind > 0 {
+		ctx.Logger.Printf("[SubscribeCosmos] resuming from persisted height %d, %d block(s) behind head %d", start, behind, latestHeight)
+	} else if resumed {
+		ctx.Logger.Printf("[SubscribeCosmos] persisted cursor %d is inside the lookback window; rescanning from %d", cursors.CosmosHeight, start)
+	}
+	return start
+}
+
+func (s *Subscriber) persistCosmosCursor(ctx cosmosDeps, batchBuilder *services.BatchBuilder, height uint64) {
+	if s.recovery == nil || height == 0 {
+		return
+	}
+	if batchBuilder != nil {
+		height = clampRecoveryCursor(height, batchBuilder.LowestUnsubmittedCosmosHeight())
+	}
+	if height == 0 {
+		return
+	}
+	if err := s.recovery.Save(recoverySourceID(ctx.IDs), services.RecoveryCursors{CosmosHeight: height}); err != nil {
+		ctx.Logger.Printf("[SubscribeCosmos] failed to persist recovery cursor (height %d): %v", height, err)
 	}
 }
 
@@ -256,7 +325,7 @@ func (s *Subscriber) subscribeCosmosOnce(
 	ctx.Logger.Println("[SubscribeCosmos] Successfully subscribed to CometBFT events")
 	defer ctx.Cosmos.CosmosClient().UnsubscribeAll(context.Background(), "")
 
-	if err := recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth); err != nil {
+	if err := s.recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth); err != nil {
 		ctx.Logger.Printf("[SubscribeCosmos] startup recovery failed: %v", err)
 	}
 
@@ -281,7 +350,7 @@ func (s *Subscriber) subscribeCosmosOnce(
 			}
 			s.processLiveCosmosEvent(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, liveHealth, e)
 		case <-gapRecoveryTicker.C:
-			if err := recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth); err != nil {
+			if err := s.recoverCosmosGapToLatest(ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth); err != nil {
 				ctx.Logger.Printf("[SubscribeCosmos] periodic recovery failed: %v", err)
 			}
 		}
@@ -305,6 +374,7 @@ func (s *Subscriber) processLiveCosmosEvent(
 			ctx.Logger.Printf("[SubscribeCosmos] gap recovery complete before live height %d: recovered=%d skipped=%d",
 				height, stats.recovered, stats.skipped)
 			*nextRecoveryStartHeight = height
+			s.persistCosmosCursor(ctx, batchBuilder, *nextRecoveryStartHeight)
 		}
 	}
 
@@ -394,7 +464,7 @@ func latestCosmosHeight(ctx cosmosDeps) (uint64, error) {
 	return uint64(status.SyncInfo.LatestBlockHeight), nil
 }
 
-func recoverCosmosGapToLatest(
+func (s *Subscriber) recoverCosmosGapToLatest(
 	ctx cosmosDeps,
 	batchBuilder *services.BatchBuilder,
 	nextRecoveryStartHeight *uint64,
@@ -414,10 +484,25 @@ func recoverCosmosGapToLatest(
 	if !ok {
 		return nil
 	}
+	passStart := scanFrom
 
-	stats, err := recoverCosmosEvents(ctx, batchBuilder, scanFrom, scanTo, seenEvents)
-	if err != nil {
-		return err
+	var stats cosmosRecoveryStats
+	chunkSize := recoveryChunkSize(cosmosRecoveryChunkEnv, defaultCosmosRecoveryChunkHeights)
+	for scanFrom <= scanTo {
+		chunkEnd := scanFrom + chunkSize - 1
+		if chunkEnd < scanFrom || chunkEnd > scanTo {
+			chunkEnd = scanTo
+		}
+		chunkStats, err := recoverCosmosEvents(ctx, batchBuilder, scanFrom, chunkEnd, seenEvents)
+		if err != nil {
+			return err
+		}
+		stats.recovered += chunkStats.recovered
+		stats.skipped += chunkStats.skipped
+		*nextRecoveryStartHeight = chunkEnd + 1
+		s.persistCosmosCursor(ctx, batchBuilder, *nextRecoveryStartHeight)
+		pruneCosmosSeenEvents(seenEvents, chunkEnd)
+		scanFrom = *nextRecoveryStartHeight
 	}
 	// Report a scan that FOUND something, and otherwise only a periodic heartbeat.
 	// This ticks every 30s for the life of the process, and the overwhelmingly
@@ -434,15 +519,13 @@ func recoverCosmosGapToLatest(
 
 	if stats.recovered > 0 || stats.skipped > 0 {
 		ctx.Logger.Printf("[SubscribeCosmos] recovery scanned [%d,%d]: recovered=%d skipped=%d",
-			*nextRecoveryStartHeight, scanTo, stats.recovered, stats.skipped)
+			passStart, scanTo, stats.recovered, stats.skipped)
 		*quietScans = 0
 	} else if beat := advanceQuietScans(quietScans); beat {
 		ctx.Logger.Printf("[SubscribeCosmos] gap recovery healthy: %d consecutive scans found nothing, now current at height %d",
 			*quietScans, scanTo)
 	}
 
-	*nextRecoveryStartHeight = scanTo + 1
-	pruneCosmosSeenEvents(seenEvents, scanTo)
 	return nil
 }
 
@@ -1215,7 +1298,35 @@ func advanceRecoveryStart(nextRecoveryStartBlock *uint64, candidate uint64) {
 	}
 }
 
-func recoverEthGapToBlock(
+func (s *Subscriber) scanEthRangeInChunks(
+	ctx ethDeps,
+	label string,
+	cursor *uint64,
+	endBlock uint64,
+	chunkSize uint64,
+	scan func(from, to uint64) (ethRecoveryStats, error),
+	persist func(),
+) (ethRecoveryStats, error) {
+	var combined ethRecoveryStats
+	for *cursor <= endBlock {
+		to := *cursor + chunkSize - 1
+		if to < *cursor || to > endBlock {
+			to = endBlock
+		}
+		stats, err := scan(*cursor, to)
+		combined.recovered += stats.recovered
+		combined.skipped += stats.skipped
+		if err != nil {
+			ctx.Logger.Printf("[SubscribeEth] %s recovery failed at [%d,%d]: %v", label, *cursor, to, err)
+			return combined, err
+		}
+		*cursor = to + 1
+		persist()
+	}
+	return combined, nil
+}
+
+func (s *Subscriber) recoverEthGapToBlock(
 	ctx ethDeps,
 	batchBuilder *services.BatchBuilder,
 	filterer *contractICS26Router.ContractICS26RouterFilterer,
@@ -1227,26 +1338,36 @@ func recoverEthGapToBlock(
 ) error {
 	var firstErr error
 	found := false
+	chunkSize := recoveryChunkSize(ethRecoveryChunkEnv, defaultEthRecoveryChunkBlocks)
+	persist := func() {
+		s.persistEthCursors(ctx, batchBuilder, *nextSendRecoveryStartBlock, *nextWriteAckRecoveryStartBlock)
+	}
 
 	if endBlock >= *nextSendRecoveryStartBlock {
-		if stats, err := recoverEthSendPackets(ctx, batchBuilder, filterer, *nextSendRecoveryStartBlock, endBlock, seenEvents); err != nil {
+		stats, err := s.scanEthRangeInChunks(ctx, "SendPacket", nextSendRecoveryStartBlock, endBlock, chunkSize,
+			func(from, to uint64) (ethRecoveryStats, error) {
+				return recoverEthSendPackets(ctx, batchBuilder, filterer, from, to, seenEvents)
+			}, persist)
+		if err != nil {
 			ctx.Logger.Printf("[SubscribeEth] SendPacket recovery failed: %v", err)
 			firstErr = err
 		} else {
 			found = found || stats.foundSomething()
-			*nextSendRecoveryStartBlock = endBlock + 1
 		}
 	}
 
 	if endBlock >= *nextWriteAckRecoveryStartBlock {
-		if stats, err := recoverEthWriteAcknowledgements(ctx, batchBuilder, filterer, *nextWriteAckRecoveryStartBlock, endBlock, seenEvents); err != nil {
+		stats, err := s.scanEthRangeInChunks(ctx, "WriteAcknowledgement", nextWriteAckRecoveryStartBlock, endBlock, chunkSize,
+			func(from, to uint64) (ethRecoveryStats, error) {
+				return recoverEthWriteAcknowledgements(ctx, batchBuilder, filterer, from, to, seenEvents)
+			}, persist)
+		if err != nil {
 			ctx.Logger.Printf("[SubscribeEth] WriteAcknowledgement recovery failed: %v", err)
 			if firstErr == nil {
 				firstErr = err
 			}
 		} else {
 			found = found || stats.foundSomething()
-			*nextWriteAckRecoveryStartBlock = endBlock + 1
 		}
 	}
 
@@ -1264,7 +1385,7 @@ func recoverEthGapToBlock(
 	return firstErr
 }
 
-func recoverEthGapToLatest(
+func (s *Subscriber) recoverEthGapToLatest(
 	ctx ethDeps,
 	batchBuilder *services.BatchBuilder,
 	filterer *contractICS26Router.ContractICS26RouterFilterer,
@@ -1277,7 +1398,7 @@ func recoverEthGapToLatest(
 	if err != nil {
 		return err
 	}
-	return recoverEthGapToBlock(
+	return s.recoverEthGapToBlock(
 		ctx,
 		batchBuilder,
 		filterer,
@@ -1393,7 +1514,7 @@ func (s *Subscriber) subscribeEthOnce(
 			return fmt.Errorf("TimeoutPacket subscription error: %w", err)
 
 		case <-gapRecoveryTicker.C:
-			if err := recoverEthGapToLatest(
+			if err := s.recoverEthGapToLatest(
 				ctx,
 				batchBuilder,
 				recoveryFilterer,
@@ -1438,14 +1559,17 @@ func (s *Subscriber) SubscribeEth(cosmos services.CosmosEndpoint, evm services.E
 			continue
 		}
 
-		if nextSendRecoveryStartBlock == 0 {
-			nextSendRecoveryStartBlock = ethStartupRecoveryStartBlock(latestBlock, lookback)
-		}
-		if nextWriteAckRecoveryStartBlock == 0 {
-			nextWriteAckRecoveryStartBlock = ethStartupRecoveryStartBlock(latestBlock, lookback)
+		if nextSendRecoveryStartBlock == 0 || nextWriteAckRecoveryStartBlock == 0 {
+			send, writeAck := s.resumeEthCursors(ctx, latestBlock, lookback)
+			if nextSendRecoveryStartBlock == 0 {
+				nextSendRecoveryStartBlock = send
+			}
+			if nextWriteAckRecoveryStartBlock == 0 {
+				nextWriteAckRecoveryStartBlock = writeAck
+			}
 		}
 
-		if err := recoverEthGapToBlock(
+		if err := s.recoverEthGapToBlock(
 			ctx,
 			batchBuilder,
 			recoveryFilterer,
@@ -1480,6 +1604,39 @@ func (s *Subscriber) SubscribeEth(cosmos services.CosmosEndpoint, evm services.E
 		)
 		watchClient.Close()
 		ctx.Logger.Printf("[SubscribeEth] Subscription loop ended: %v", err)
+		s.persistEthCursors(ctx, batchBuilder, nextSendRecoveryStartBlock, nextWriteAckRecoveryStartBlock)
 		time.Sleep(ethSubscriptionReconnectDelay)
+	}
+}
+
+func (s *Subscriber) resumeEthCursors(ctx ethDeps, latestBlock, lookback uint64) (send, writeAck uint64) {
+	lookbackStart := ethStartupRecoveryStartBlock(latestBlock, lookback)
+	if s.recovery == nil {
+		return lookbackStart, lookbackStart
+	}
+	cursors, ok := s.recovery.Get(recoverySourceID(ctx.IDs))
+	if !ok {
+		return lookbackStart, lookbackStart
+	}
+	send, sendResumed, sendBehind := services.ResumeCursor(cursors.EthSendBlock, lookbackStart, latestBlock)
+	writeAck, ackResumed, ackBehind := services.ResumeCursor(cursors.EthWriteAckBlk, lookbackStart, latestBlock)
+	if sendResumed || ackResumed {
+		ctx.Logger.Printf("[SubscribeEth] scanning from send=%d write_ack=%d (persisted send=%d write_ack=%d, head=%d); behind send=%d write_ack=%d",
+			send, writeAck, cursors.EthSendBlock, cursors.EthWriteAckBlk, latestBlock, sendBehind, ackBehind)
+	}
+	return send, writeAck
+}
+
+func (s *Subscriber) persistEthCursors(ctx ethDeps, batchBuilder *services.BatchBuilder, send, writeAck uint64) {
+	if s.recovery == nil || (send == 0 && writeAck == 0) {
+		return
+	}
+	if batchBuilder != nil {
+		floor := batchBuilder.LowestUnsubmittedEthHeight()
+		send = clampRecoveryCursor(send, floor)
+		writeAck = clampRecoveryCursor(writeAck, floor)
+	}
+	if err := s.recovery.Save(recoverySourceID(ctx.IDs), services.RecoveryCursors{EthSendBlock: send, EthWriteAckBlk: writeAck}); err != nil {
+		ctx.Logger.Printf("[SubscribeEth] failed to persist recovery cursors (send=%d write_ack=%d): %v", send, writeAck, err)
 	}
 }
