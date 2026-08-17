@@ -97,6 +97,12 @@ type BatchBuilder struct {
 	PendingTracker    *PendingPacketTracker
 	EthPendingTracker *PendingPacketTracker
 	L2PendingTracker  *PendingPacketTracker
+
+	// A flushed chunk is absent from the queue while its handler is running.
+	// Keep a multiset of its lowest source heights so durable recovery cursors
+	// cannot advance past packets that still only exist in this process.
+	cosmosInFlight map[uint64]int
+	ethInFlight    map[uint64]int
 }
 
 func NewBatchBuilder() *BatchBuilder {
@@ -109,6 +115,8 @@ func NewBatchBuilder() *BatchBuilder {
 		PendingTracker:    NewPendingPacketTracker(),
 		EthPendingTracker: NewPendingPacketTracker(),
 		L2PendingTracker:  NewPendingPacketTracker(),
+		cosmosInFlight:    map[uint64]int{},
+		ethInFlight:       map[uint64]int{},
 	}
 }
 
@@ -264,6 +272,10 @@ func (b *BatchBuilder) CheckCosmos(ctx context.Context, config BatchConfig, ch c
 	copy(chunk, ready[:chunkSize])
 	b.cosmosPackets = append(ready[chunkSize:], waiting...)
 	b.cosmosTimestamp = now
+	low := lowestCosmosHeight(chunk)
+	if low != 0 {
+		b.cosmosInFlight[low]++
+	}
 	log.Printf("[BatchBuilder] Flushing cosmos batch: %d packets (%s, queue remaining: %d)",
 		len(chunk), reason, len(b.cosmosPackets))
 	batch := CosmosBatch{Packets: chunk}
@@ -285,10 +297,33 @@ func (b *BatchBuilder) restoreCosmosChunk(chunk []CosmosPacket) {
 		return
 	}
 	b.cosmosMtx.Lock()
+	b.releaseCosmosInFlightLocked(lowestCosmosHeight(chunk))
 	b.cosmosPackets = append(chunk, b.cosmosPackets...)
 	remaining := len(b.cosmosPackets)
 	b.cosmosMtx.Unlock()
 	log.Printf("[BatchBuilder] flush cancelled: returned %d cosmos packet(s) to the queue (queue now %d)", len(chunk), remaining)
+}
+
+// ReleaseCosmosInFlight marks a handed-off chunk as submitted, dropped, or
+// safely re-queued by its handler.
+func (b *BatchBuilder) ReleaseCosmosInFlight(batch CosmosBatch) {
+	if len(batch.Packets) == 0 {
+		return
+	}
+	b.cosmosMtx.Lock()
+	b.releaseCosmosInFlightLocked(lowestCosmosHeight(batch.Packets))
+	b.cosmosMtx.Unlock()
+}
+
+func (b *BatchBuilder) releaseCosmosInFlightLocked(low uint64) {
+	if low == 0 {
+		return
+	}
+	if b.cosmosInFlight[low] <= 1 {
+		delete(b.cosmosInFlight, low)
+		return
+	}
+	b.cosmosInFlight[low]--
 }
 
 // partitionReadyCosmos — see partitionReadyEth.
@@ -348,6 +383,10 @@ func (b *BatchBuilder) CheckEth(ctx context.Context, config BatchConfig, ch chan
 	// Un-flushed ready packets plus the still-waiting ones stay queued.
 	b.ethPackets = append(ready[chunkSize:], waiting...)
 	b.ethTimestamp = now
+	low := lowestEthHeight(chunk)
+	if low != 0 {
+		b.ethInFlight[low]++
+	}
 	log.Printf("[BatchBuilder] Flushing eth batch: %d packets (%s, queue remaining: %d)",
 		len(chunk), reason, len(b.ethPackets))
 	batch := EthBatch{Packets: chunk}
@@ -366,10 +405,80 @@ func (b *BatchBuilder) restoreEthChunk(chunk []EthPacket) {
 		return
 	}
 	b.ethMtx.Lock()
+	b.releaseEthInFlightLocked(lowestEthHeight(chunk))
 	b.ethPackets = append(chunk, b.ethPackets...)
 	remaining := len(b.ethPackets)
 	b.ethMtx.Unlock()
 	log.Printf("[BatchBuilder] flush cancelled: returned %d eth packet(s) to the queue (queue now %d)", len(chunk), remaining)
+}
+
+// ReleaseEthInFlight mirrors ReleaseCosmosInFlight for the ETH queue.
+func (b *BatchBuilder) ReleaseEthInFlight(batch EthBatch) {
+	if len(batch.Packets) == 0 {
+		return
+	}
+	b.ethMtx.Lock()
+	b.releaseEthInFlightLocked(lowestEthHeight(batch.Packets))
+	b.ethMtx.Unlock()
+}
+
+func (b *BatchBuilder) releaseEthInFlightLocked(low uint64) {
+	if low == 0 {
+		return
+	}
+	if b.ethInFlight[low] <= 1 {
+		delete(b.ethInFlight, low)
+		return
+	}
+	b.ethInFlight[low]--
+}
+
+// LowestUnsubmittedCosmosHeight is the lowest non-zero source height still
+// queued or in flight. A recovery cursor must never be persisted above it.
+func (b *BatchBuilder) LowestUnsubmittedCosmosHeight() uint64 {
+	b.cosmosMtx.Lock()
+	defer b.cosmosMtx.Unlock()
+	lowest := lowestCosmosHeight(b.cosmosPackets)
+	for height := range b.cosmosInFlight {
+		if height != 0 && (lowest == 0 || height < lowest) {
+			lowest = height
+		}
+	}
+	return lowest
+}
+
+// LowestUnsubmittedEthHeight mirrors LowestUnsubmittedCosmosHeight. Both ETH
+// recovery streams share this conservative floor because they share one queue.
+func (b *BatchBuilder) LowestUnsubmittedEthHeight() uint64 {
+	b.ethMtx.Lock()
+	defer b.ethMtx.Unlock()
+	lowest := lowestEthHeight(b.ethPackets)
+	for height := range b.ethInFlight {
+		if height != 0 && (lowest == 0 || height < lowest) {
+			lowest = height
+		}
+	}
+	return lowest
+}
+
+func lowestCosmosHeight(packets []CosmosPacket) uint64 {
+	var lowest uint64
+	for _, packet := range packets {
+		if packet.BlockNumber != 0 && (lowest == 0 || packet.BlockNumber < lowest) {
+			lowest = packet.BlockNumber
+		}
+	}
+	return lowest
+}
+
+func lowestEthHeight(packets []EthPacket) uint64 {
+	var lowest uint64
+	for _, packet := range packets {
+		if packet.BlockNumber != 0 && (lowest == 0 || packet.BlockNumber < lowest) {
+			lowest = packet.BlockNumber
+		}
+	}
+	return lowest
 }
 
 // partitionReadyEth splits packets into those eligible to flush now (zero or

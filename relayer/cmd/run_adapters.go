@@ -80,7 +80,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	cosmosToEth := relay.NewModule(
 		"cosmos->eth",
 		deps.IDs.CosmosOnEVM,
-		cosmos.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.FetchTimeout, deps.Config.BatchConfig, deps.Logger, bb),
+		cosmos.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.FetchTimeout, deps.Config.BatchConfig, deps.Logger, bb, svc.RecoveryState()),
 		evm.NewDestination(worker, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM),
 		cosmos.NewGroth16Builder(worker, deps.Cosmos, deps.EVM, deps.Config.FetchTimeout, deps.Config.RotationThreshold, cfg.ProofType, cfg.TrustLevel),
 		relay.WithTimeoutScanner(0, func(c context.Context) {
@@ -99,7 +99,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	ethToCosmos := relay.NewModule(
 		"eth->cosmos",
 		deps.IDs.EVMOnCosmos,
-		evm.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.BatchConfig, deps.Logger, bb),
+		evm.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.BatchConfig, deps.Logger, bb, svc.RecoveryState()),
 		cosmos.NewDestination(worker, deps.Cosmos, deps.IDs.EVMOnCosmos),
 		evm.NewBeaconBuilder(worker, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos),
 		relay.WithTimeoutScanner(0, func(c context.Context) { svc.ScanEthTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM) }),
