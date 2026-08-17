@@ -263,12 +263,13 @@ contract Integration2Test is Test {
             Strings.toHexString(address(integrationEnv.erc20()))
         );
 
+        address escrowForCustomERC20 = ibcImplB.ics20Transfer().createEscrow(th.FIRST_CLIENT_ID());
         address customERC20 = address(
             new ERC1967Proxy(
                 address(new RefImplIBCERC20()),
                 abi.encodeCall(
                     RefImplIBCERC20.initialize,
-                    (makeAddr("owner"), address(ibcImplB.ics20Transfer()), "Test ERC20", "TERC20")
+                    (makeAddr("owner"), address(ibcImplB.ics20Transfer()), escrowForCustomERC20, "Test ERC20", "TERC20")
                 )
             )
         );
