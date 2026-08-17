@@ -157,6 +157,24 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 		return "", fmt.Errorf("wasm checksum %s has not been stored on Cosmos", l2cfg.WasmChecksum)
 	}
 
+	// Verify the profile names the chain this RPC actually serves, BEFORE reading
+	// bootstrap roots from it and before committing the profile on-chain.
+	//
+	// `start` runs the same check, but only over config.json's l2_to_cosmos
+	// modules — a different copy of the profile, read later. This path is where
+	// the durable damage happens: the profile handed to CreateL2Client is
+	// committed into the created client verbatim, and nothing can repair it
+	// afterwards. Without this, a client bootstrapped from chain M could carry a
+	// profile declaring chain N, and the later `start` check would at best flag
+	// the config copy while the on-chain client stayed wrong.
+	//
+	// Unreachable is fatal here, unlike in `start` — see l2ChainIDCheck.
+	wantChainID, err := preflightL2ClientChainID(context.Background(), l2cfg)
+	if err != nil {
+		return "", err
+	}
+	logger.Sugar().Infof("create-clients-cosmos[l2]: l2_chain_id verified: %d", wantChainID)
+
 	// Read the trusted bootstrap roots from the L2 chain.
 	logger.Sugar().Infof("create-clients-cosmos[l2]: dialing L2 rpc %s", l2cfg.L2RPCURL)
 	l2Client, err := relayerclient.DialEthRPC(context.Background(), l2cfg.L2RPCURL, relayerclient.DefaultRPCTimeout)

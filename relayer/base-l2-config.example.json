@@ -13,7 +13,15 @@
     "reference are gone: the client verifies nothing against L1.",
     "",
     "profile_version must match the artifact \u2014 op_attestor_v1 / base_attestor_v1 /",
-    "arbitrum_attestor_v1 \u2014 or instantiate fails with InvalidProfileVersion."
+    "arbitrum_attestor_v1 \u2014 or instantiate fails with InvalidProfileVersion.",
+    "",
+    "l2_chain_id must be the chain l2_rpc_url actually serves. Both",
+    "`create-clients-cosmos --l2-config` and `start` verify it against eth_chainId and",
+    "refuse to proceed on a mismatch; the create path also refuses when the endpoint",
+    "does not answer, because it is about to commit the profile into a client that",
+    "cannot be corrected afterwards. Nothing else reads the field - transactions take",
+    "their chain id from the RPC - so before these checks a wrong value relayed",
+    "happily against whatever chain the URL served."
   ],
   "wasm_checksum": "<hex checksum of the Base client wasm, from `gaiad q ibc-wasm checksums`>",
   "l2_rpc_url": "http://127.0.0.1:8545",

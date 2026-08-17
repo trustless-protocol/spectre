@@ -1700,6 +1700,19 @@ func Start(logger *zap.Logger) *cobra.Command {
 			if len(sources) == 0 && len(l2Dests) == 0 && len(l2Sources) == 0 {
 				return fmt.Errorf("no relay source configured in %s (need a cosmos_to_eth, cosmos_to_l2, or l2_to_cosmos module)", configPath)
 			}
+			// validateL2TimeoutReturnPathConfigs is gone with #328: the return path
+			// is now resolved per dest by matching the L2 chain id at build time
+			// (l2TimeoutReturnPathConfigForDest), so a separate up-front pass would
+			// only duplicate it. This check stays because it answers a different
+			// question -- whether each l2_to_cosmos source's configured chain id is
+			// the chain its RPC actually serves -- and it must run before anything
+			// dials.
+			// runCtx, not cmd.Context(): the probe wraps whatever it is given in a
+			// 10s timeout, so on cmd.Context() a Ctrl-C during a hung L2 RPC waited
+			// out 10s per source before the process could exit.
+			if err := validateL2ChainIDs(runCtx, l2Sources); err != nil {
+				return err
+			}
 			// Env overrides (ICS26_CLIENT_ID, COSMOS_WASM_CLIENT_ID, ROLE_MANAGER)
 			// name a single source; only honor them when exactly one is
 			// configured, otherwise they would wrongly apply to every source.

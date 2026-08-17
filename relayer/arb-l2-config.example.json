@@ -18,7 +18,15 @@
     "name the same client on the L2 ICS26Router. create-clients-eth registers the",
     "SpectreClient under that id and the return subscriber filters L2 events on it.",
     "",
-    "l2_chain_id below is Arbitrum Sepolia (421614); the local Nitro devnet is 412346."
+    "l2_chain_id below is Arbitrum Sepolia (421614); the local Nitro devnet is 412346.",
+    "",
+    "l2_chain_id must be the chain l2_rpc_url actually serves. Both",
+    "`create-clients-cosmos --l2-config` and `start` verify it against eth_chainId and",
+    "refuse to proceed on a mismatch; the create path also refuses when the endpoint",
+    "does not answer, because it is about to commit the profile into a client that",
+    "cannot be corrected afterwards. Nothing else reads the field - transactions take",
+    "their chain id from the RPC - so before these checks a wrong value relayed",
+    "happily against whatever chain the URL served."
   ],
   "wasm_checksum": "<hex checksum of the Arbitrum client wasm, printed by scripts/local/wasm_arb.sh>",
   "l2_rpc_url": "http://127.0.0.1:8547",
