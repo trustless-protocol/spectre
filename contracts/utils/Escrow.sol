@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
+import { IMintableAndBurnable } from "../interfaces/IMintableAndBurnable.sol";
 import { IEscrow } from "../interfaces/IEscrow.sol";
 import { IEscrowErrors } from "../errors/IEscrowErrors.sol";
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
@@ -58,6 +59,11 @@ contract Escrow is IEscrowErrors, IEscrow, ContextUpgradeable, RateLimitUpgradea
     function sendRefund(IERC20 token, address to, uint256 amount, uint256 usageToRestore) external onlyICS20 {
         _increaseDailyUsageUncapped(address(token), usageToRestore);
         token.safeTransfer(to, amount);
+    }
+
+    /// @inheritdoc IEscrow
+    function burn(IMintableAndBurnable token, uint256 amount) external onlyICS20 {
+        token.burn(amount);
     }
 
     /// @inheritdoc IEscrow

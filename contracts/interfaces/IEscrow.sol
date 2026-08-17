@@ -2,6 +2,7 @@
 pragma solidity ^0.8.28;
 
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
+import { IMintableAndBurnable } from "./IMintableAndBurnable.sol";
 
 /// @title Escrow Contract Interface
 /// @notice The interface for locking tokens in escrow in ICS20
@@ -21,6 +22,12 @@ interface IEscrow {
     /// @param amount The amount of tokens to send
     /// @param usageToRestore The usage removed when the matching deposit was received
     function sendRefund(IERC20 token, address to, uint256 amount, uint256 usageToRestore) external;
+
+    /// @notice Burn the escrow's own balance of the specified token
+    /// @dev This function can only be called by the ICS20 contract.
+    /// @param token The token to burn
+    /// @param amount The amount of tokens to burn
+    function burn(IMintableAndBurnable token, uint256 amount) external;
 
     /// @notice Received tokens from the specified address
     /// @dev This function can only be called by the ICS20 contract
