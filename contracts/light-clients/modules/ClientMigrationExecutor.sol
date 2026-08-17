@@ -45,6 +45,8 @@ contract ClientMigrationExecutor is IClientMigrationExecutor, IICS02ClientErrors
         require(migration.digest != bytes32(0), IBCClientMigrationNotProposed(clientId));
         require(block.timestamp >= migration.executeAfter, IBCClientMigrationNotReady(clientId, migration.executeAfter));
         require(block.timestamp <= migration.expireAfter, IBCClientMigrationExpired(clientId, migration.expireAfter));
+        // The proposer is the only writer of this digest and validates that the counterparty client ID and
+        // Merkle prefix match the existing binding before committing these exact execution parameters.
         require(
             migration.digest == _migrationDigest(clientId, counterpartyInfo, client),
             IBCClientMigrationMismatch(clientId)

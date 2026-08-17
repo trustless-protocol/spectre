@@ -7,6 +7,7 @@ import { IICS02ClientErrors } from "../../errors/IICS02ClientErrors.sol";
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
 import { IAccessManager } from "@openzeppelin-contracts/access/manager/IAccessManager.sol";
 import { IBCRolesLib } from "../../utils/IBCRolesLib.sol";
+import { IBCIdentifiers } from "../../utils/IBCIdentifiers.sol";
 import { ICS02ClientStore } from "../../utils/ICS02ClientStore.sol";
 import { IClientMigrationProposer } from "../interfaces/IClientMigrationProposer.sol";
 import { IClientMigrationModule, ClientMigrationModuleIds } from "../interfaces/IClientMigrationModule.sol";
@@ -52,6 +53,16 @@ contract ClientMigrationProposer is IClientMigrationProposer, IICS02ClientErrors
         require(isMember, IBCUnauthorizedMigrator(clientId, msg.sender));
         require(executionDelay != 0, IBCClientMigrationDelayRequired(clientId));
 
+        require(
+            IBCIdentifiers.validateIBCIdentifier(bytes(counterpartyInfo.clientId)), IBCInvalidCounterpartyClientId()
+        );
+        IICS02ClientMsgs.CounterpartyInfo storage existingCounterparty = $.counterpartyInfos[clientId];
+        require(
+            keccak256(bytes(existingCounterparty.clientId)) == keccak256(bytes(counterpartyInfo.clientId))
+                && _equalMerklePrefix(existingCounterparty.merklePrefix, counterpartyInfo.merklePrefix),
+            IBCCounterpartyMismatch()
+        );
+
         ICS02ClientStore.ClientMigration storage migration = $.migrations[clientId];
         bool active = migration.digest != bytes32(0) && block.timestamp <= migration.expireAfter;
         require(!active, IBCClientMigrationAlreadyProposed(clientId));
@@ -66,6 +77,25 @@ contract ClientMigrationProposer is IClientMigrationProposer, IICS02ClientErrors
         emit IICS02Client.ICS02ClientMigrationProposed(
             clientId, migration.digest, executeAfter, migration.expireAfter, migration.proposer
         );
+    }
+
+    function _equalMerklePrefix(bytes[] storage existing, bytes[] calldata proposed) private view returns (bool) {
+        if (existing.length != proposed.length) {
+            return false;
+        }
+        for (uint256 i = 0; i < existing.length; ++i) {
+            bytes storage existingPart = existing[i];
+            bytes calldata proposedPart = proposed[i];
+            if (existingPart.length != proposedPart.length) {
+                return false;
+            }
+            for (uint256 j = 0; j < existingPart.length; ++j) {
+                if (existingPart[j] != proposedPart[j]) {
+                    return false;
+                }
+            }
+        }
+        return true;
     }
 
     function _migrationDigest(

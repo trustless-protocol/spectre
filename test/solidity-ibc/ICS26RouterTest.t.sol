@@ -11,6 +11,7 @@ import { IIBCAppCallbacks } from "../../contracts/msgs/IIBCAppCallbacks.sol";
 import { ILightClientMsgs } from "../../contracts/msgs/ILightClientMsgs.sol";
 
 import { IICS26RouterErrors } from "../../contracts/errors/IICS26RouterErrors.sol";
+import { IICS24HostErrors } from "../../contracts/errors/IICS24HostErrors.sol";
 import { IICS26Router } from "../../contracts/interfaces/IICS26Router.sol";
 import { ILightClient } from "../../contracts/interfaces/ILightClient.sol";
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
@@ -320,6 +321,31 @@ contract ICS26RouterTest is Test {
         vm.expectRevert(abi.encodeWithSelector(IICS26RouterErrors.IBCFailedCallback.selector));
         vm.prank(relayer);
         ics26Router.recvPacket{ gas: 900_000 }(msgRecvPacket);
+    }
+
+    function test_failure_multiPayloadPackets() public {
+        IICS26RouterMsgs.Payload[] memory payloads = new IICS26RouterMsgs.Payload[](2);
+        IICS26RouterMsgs.Packet memory packet = IICS26RouterMsgs.Packet({
+            sequence: 1,
+            sourceClient: "source-client",
+            destClient: "destination-client",
+            timeoutTimestamp: uint64(block.timestamp + 1000),
+            payloads: payloads
+        });
+
+        vm.expectRevert(IICS24HostErrors.IBCMultiPayloadPacketNotSupported.selector);
+        vm.prank(relayer);
+        ics26Router.recvPacket(IICS26RouterMsgs.MsgRecvPacket({ packet: packet, membershipMsg: bytes("") }));
+
+        vm.expectRevert(IICS24HostErrors.IBCMultiPayloadPacketNotSupported.selector);
+        vm.prank(relayer);
+        ics26Router.ackPacket(
+            IICS26RouterMsgs.MsgAckPacket({ packet: packet, acknowledgement: bytes(""), membershipMsg: bytes("") })
+        );
+
+        vm.expectRevert(IICS24HostErrors.IBCMultiPayloadPacketNotSupported.selector);
+        vm.prank(relayer);
+        ics26Router.timeoutPacket(IICS26RouterMsgs.MsgTimeoutPacket({ packet: packet, nonMembershipMsg: bytes("") }));
     }
 }
 

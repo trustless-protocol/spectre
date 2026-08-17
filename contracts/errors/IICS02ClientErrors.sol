@@ -8,6 +8,15 @@ interface IICS02ClientErrors {
     /// @param clientId the invalid client identifier
     error IBCInvalidClientId(string clientId);
 
+    /// @notice The requested local client identifier is malformed or reserved.
+    error IBCInvalidLocalClientId();
+
+    /// @notice The counterparty client identifier is malformed.
+    error IBCInvalidCounterpartyClientId();
+
+    /// @notice Proposed counterparty information differs from the client's existing binding.
+    error IBCCounterpartyMismatch();
+
     /// @notice Client not found
     /// @param clientId client identifier
     error IBCClientNotFound(string clientId);

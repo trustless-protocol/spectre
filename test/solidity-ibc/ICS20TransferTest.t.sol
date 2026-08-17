@@ -10,6 +10,7 @@ import { IICS20TransferMsgs } from "../../contracts/msgs/IICS20TransferMsgs.sol"
 
 import { IICS20Errors } from "../../contracts/errors/IICS20Errors.sol";
 import { IIBCAppCallbacks } from "../../contracts/msgs/IIBCAppCallbacks.sol";
+import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { IERC20Errors } from "@openzeppelin-contracts/interfaces/draft-IERC6093.sol";
 import { IICS26Router } from "../../contracts/interfaces/IICS26Router.sol";
 import { IICS20Transfer } from "../../contracts/interfaces/IICS20Transfer.sol";
@@ -316,6 +317,126 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
         assertEq(sequence, seq);
     }
 
+    function test_rateLimitRefundCreditIsPerPacket() public {
+        string memory sourceClient = "source-client";
+        string memory destClient = "destination-client";
+        address sender1 = env.createAndFundUser(1000);
+        address sender2 = env.createAndFundUser(2000);
+        address sender3 = env.createAndFundUser(100);
+
+        vm.startPrank(sender1);
+        env.erc20().approve(address(ics20Transfer), 1000);
+        vm.mockCall(ics26, IICS26Router.sendPacket.selector, abi.encode(uint64(1)));
+        ics20Transfer.sendTransfer(
+            IICS20TransferMsgs.SendTransferMsg({
+                denom: address(env.erc20()),
+                amount: 1000,
+                receiver: Strings.toHexString(sender1),
+                sourceClient: sourceClient,
+                destPort: destClient,
+                timeoutTimestamp: uint64(block.timestamp + 1 days),
+                memo: ""
+            })
+        );
+        vm.stopPrank();
+
+        Escrow escrow = Escrow(ics20Transfer.getEscrow(sourceClient));
+        address token = address(env.erc20());
+        address rateLimiter = makeAddr("rateLimiter");
+        accessManager.grantRole(IBCRolesLib.RATE_LIMITER_ROLE, rateLimiter, 0);
+        vm.prank(rateLimiter);
+        escrow.setRateLimit(token, 10_000);
+
+        // Simulate a prior outbound withdrawal so the next deposit only removes part of usage.
+        vm.prank(address(ics20Transfer));
+        escrow.send(IERC20(token), address(this), 500);
+        assertEq(escrow.getDailyUsage(address(env.erc20())), 500);
+
+        vm.startPrank(sender2);
+        env.erc20().approve(address(ics20Transfer), 2000);
+        vm.mockCall(ics26, IICS26Router.sendPacket.selector, abi.encode(uint64(2)));
+        ics20Transfer.sendTransfer(
+            IICS20TransferMsgs.SendTransferMsg({
+                denom: address(env.erc20()),
+                amount: 2000,
+                receiver: Strings.toHexString(sender2),
+                sourceClient: sourceClient,
+                destPort: destClient,
+                timeoutTimestamp: uint64(block.timestamp + 1 days),
+                memo: ""
+            })
+        );
+        vm.stopPrank();
+        assertEq(escrow.getDailyUsage(address(env.erc20())), 0);
+
+        vm.startPrank(sender3);
+        env.erc20().approve(address(ics20Transfer), 100);
+        vm.mockCall(ics26, IICS26Router.sendPacket.selector, abi.encode(uint64(3)));
+        ics20Transfer.sendTransfer(
+            IICS20TransferMsgs.SendTransferMsg({
+                denom: address(env.erc20()),
+                amount: 100,
+                receiver: Strings.toHexString(sender3),
+                sourceClient: sourceClient,
+                destPort: destClient,
+                timeoutTimestamp: uint64(block.timestamp + 1 days),
+                memo: ""
+            })
+        );
+        vm.stopPrank();
+
+        // Resolve packets out of order. Packet 2 restores only its 500-unit reduction; packet 3 restores zero.
+        IICS26RouterMsgs.Payload memory payload2 = IICS26RouterMsgs.Payload({
+            sourcePort: ICS20Lib.DEFAULT_PORT_ID,
+            destPort: ICS20Lib.DEFAULT_PORT_ID,
+            version: ICS20Lib.ICS20_VERSION,
+            encoding: ICS20Lib.ICS20_ENCODING,
+            value: abi.encode(
+                IICS20TransferMsgs.FungibleTokenPacketData({
+                    denom: Strings.toHexString(address(env.erc20())),
+                    amount: 2000,
+                    sender: Strings.toHexString(sender2),
+                    receiver: Strings.toHexString(sender2),
+                    memo: ""
+                })
+            )
+        });
+        IICS26RouterMsgs.Payload memory payload3 = payload2;
+        payload3.value = abi.encode(
+            IICS20TransferMsgs.FungibleTokenPacketData({
+                denom: Strings.toHexString(address(env.erc20())),
+                amount: 100,
+                sender: Strings.toHexString(sender3),
+                receiver: Strings.toHexString(sender3),
+                memo: ""
+            })
+        );
+
+        vm.prank(ics26);
+        ics20Transfer.onTimeoutPacket(
+            IIBCAppCallbacks.OnTimeoutPacketCallback({
+                sourceClient: sourceClient,
+                destinationClient: destClient,
+                sequence: 2,
+                payload: payload2,
+                relayer: address(this)
+            })
+        );
+        assertEq(escrow.getDailyUsage(address(env.erc20())), 500);
+
+        vm.prank(ics26);
+        ics20Transfer.onTimeoutPacket(
+            IIBCAppCallbacks.OnTimeoutPacketCallback({
+                sourceClient: sourceClient,
+                destinationClient: destClient,
+                sequence: 3,
+                payload: payload3,
+                relayer: address(this)
+            })
+        );
+        assertEq(escrow.getDailyUsage(address(env.erc20())), 500);
+    }
+
     function testFuzz_failure_sendTransferWithPermit2(uint256 amount, uint64 seq, uint64 timeoutTimestamp) public {
         vm.assume(amount > 0);
 
@@ -375,6 +496,20 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
                 IICS20Errors.ICS20Permit2TokenMismatch.selector, address(differentERC20), env.erc20()
             )
         );
+        vm.prank(sender);
+        ics20Transfer.sendTransferWithPermit2(msgSendTransfer, permit, signature);
+
+        // ===== Case 4: Malfunctioning ERC20 =====
+        MalfunctioningERC20 malfunctioningERC20 = new MalfunctioningERC20();
+        malfunctioningERC20.mint(sender, amount);
+        malfunctioningERC20.setMalfunction(true);
+        vm.prank(sender);
+        malfunctioningERC20.approve(env.permit2(), amount);
+        (permit, signature) =
+            env.getPermitAndSignature(sender, address(ics20Transfer), amount, address(malfunctioningERC20));
+        msgSendTransfer.denom = address(malfunctioningERC20);
+
+        vm.expectRevert(abi.encodeWithSelector(IICS20Errors.ICS20UnexpectedERC20Balance.selector, amount, 0));
         vm.prank(sender);
         ics20Transfer.sendTransferWithPermit2(msgSendTransfer, permit, signature);
     }
@@ -512,7 +647,13 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
         // Test error ack with callback
         address escrowAddress = address(uint160(uint256(someAddress)));
         callbackMsg.acknowledgement = abi.encodePacked(ICS24Host.UNIVERSAL_ERROR_ACK);
-        vm.mockCall(escrowAddress, Escrow.recvCallback.selector, bytes(""));
+        vm.mockCall(escrowAddress, Escrow.recvCallback.selector, abi.encode(uint256(0)));
+        vm.expectCall(sender, abi.encodeCall(IIBCSenderCallbacks.onAckPacket, (false, callbackMsg)));
+        vm.prank(ics26);
+        ics20Transfer.onAcknowledgementPacket(callbackMsg);
+
+        // Any non-conforming acknowledgement must fail closed and take the refund path.
+        callbackMsg.acknowledgement = bytes("legacy-error");
         vm.expectCall(sender, abi.encodeCall(IIBCSenderCallbacks.onAckPacket, (false, callbackMsg)));
         vm.prank(ics26);
         ics20Transfer.onAcknowledgementPacket(callbackMsg);
@@ -821,7 +962,7 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
 
         // Test success timeout with callback
         address escrowAddress = address(uint160(uint256(someAddress)));
-        vm.mockCall(escrowAddress, Escrow.recvCallback.selector, bytes(""));
+        vm.mockCall(escrowAddress, Escrow.recvCallback.selector, abi.encode(uint256(0)));
         vm.expectCall(sender, abi.encodeCall(IIBCSenderCallbacks.onTimeoutPacket, (callbackMsg)));
         vm.prank(ics26);
         ics20Transfer.onTimeoutPacket(callbackMsg);
@@ -861,7 +1002,7 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
         vm.store(address(ics20Transfer), _getEscrowMappingSlot(sourceClient), someAddress);
 
         address escrowAddress = address(uint160(uint256(someAddress)));
-        vm.mockCall(escrowAddress, Escrow.recvCallback.selector, bytes(""));
+        vm.mockCall(escrowAddress, Escrow.recvCallback.selector, abi.encode(uint256(0)));
 
         bytes memory reason = abi.encodeWithSignature("Error(string)", "timeout callback failed");
         vm.expectEmit(true, false, false, true, address(ics20Transfer));
@@ -905,7 +1046,7 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
         vm.store(address(ics20Transfer), _getEscrowMappingSlot(sourceClient), someAddress);
 
         address escrowAddress = address(uint160(uint256(someAddress)));
-        vm.mockCall(escrowAddress, Escrow.recvCallback.selector, bytes(""));
+        vm.mockCall(escrowAddress, Escrow.recvCallback.selector, abi.encode(uint256(0)));
 
         vm.expectEmit(true, false, false, true, address(ics20Transfer));
         emit IICS20Transfer.IBCSenderTimeoutPacketCallbackError(sender, bytes(""));

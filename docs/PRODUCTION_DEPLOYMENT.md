@@ -72,6 +72,8 @@ granted during bootstrap because the client ID does not yet exist.
 
 The contract enforces a wait of `max(role execution delay, 48 hours)` and
 re-checks at execution that the original proposer still holds the role.
+The proposal must preserve the client's existing counterparty client ID and
+Merkle prefix; changing either binding is rejected before the delay begins.
 
 `migrateClient` remains an ABI-compatible alias for
 `executeClientMigration`; it executes a mature matching proposal rather than
@@ -86,3 +88,14 @@ An authorized migrator can occupy a client ID with an unwanted proposal for the
 full proposal window. Revoking that migrator blocks execution, but does not free
 the proposal slot until it expires. For an unwanted proposal, revoke the role
 and have a zero-delay pauser cancel it before granting a replacement migrator.
+
+## Escrow upgrade compatibility
+
+The token-layer correctness upgrade changes the `Escrow.recvCallback` and
+`Escrow.sendRefund` ABI. Upgrade the Escrow beacon before, or atomically with,
+the ICS20Transfer implementation; activating the new transfer implementation
+against the old escrow implementation makes sends revert.
+
+Refund-credit records exist only for packets sent after this upgrade. Refunds
+of packets already in flight restore zero rate-limit usage, so operators must
+account for that one-time transition when monitoring escrow limits.

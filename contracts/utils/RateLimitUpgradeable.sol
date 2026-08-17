@@ -105,34 +105,38 @@ abstract contract RateLimitUpgradeable is IRateLimitErrors, IRateLimit, AccessMa
     /// @dev This function is used in order to track the net usage a token
     /// @param token The token address
     /// @param amount The amount to reduce from the usage
-    function _reduceDailyUsage(address token, uint256 amount) internal {
+    function _reduceDailyUsage(address token, uint256 amount) internal returns (uint256 usageRemoved) {
         RateLimitStorage storage $ = _getRateLimitStorage();
 
         uint256 rateLimit = $._rateLimits[token];
         if (rateLimit == 0) {
-            return;
+            return 0;
         }
 
         uint256 usage = _getCurrentUsage(token);
         if (usage > amount) {
             $._usage[token] = usage - amount;
+            usageRemoved = amount;
         } else {
             $._usage[token] = 0;
+            usageRemoved = usage;
         }
         $._lastUpdate[token] = block.timestamp;
     }
 
     /// @notice Increments the usage for a token without checking the rate limit
     /// @dev This function is used to restore usage on refunds, ensuring it doesn't revert.
+    ///      `amount` must be the value returned by `_reduceDailyUsage`; in particular, that value is zero
+    ///      when rate limiting is disabled. This coupling prevents a refund from creating latent usage
+    ///      while the configured limit is zero.
     /// @param token The token address
     /// @param amount The amount to add to the usage
     function _increaseDailyUsageUncapped(address token, uint256 amount) internal {
-        RateLimitStorage storage $ = _getRateLimitStorage();
-
-        uint256 rateLimit = $._rateLimits[token];
-        if (rateLimit == 0) {
+        if (amount == 0) {
             return;
         }
+
+        RateLimitStorage storage $ = _getRateLimitStorage();
 
         uint256 usage = _getCurrentUsage(token) + amount;
         $._usage[token] = usage;

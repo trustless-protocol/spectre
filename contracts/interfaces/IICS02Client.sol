@@ -49,7 +49,7 @@ interface IICS02ClientAccessControlled {
     /// @notice Executes a previously proposed and matured client migration.
     /// @dev Retained for ABI compatibility; equivalent to `executeClientMigration`.
     /// @param clientId The client identifier of the client to migrate
-    /// @param counterpartyInfo The new counterparty client information
+    /// @param counterpartyInfo The counterparty information, which must match the existing client binding
     /// @param client The address of the new client contract
     function migrateClient(
         string calldata clientId,
@@ -61,6 +61,7 @@ interface IICS02ClientAccessControlled {
     /// @notice Commits a delayed migration for a specific client.
     /// @dev The caller must hold the delayed per-client role returned by
     /// `getLightClientMigratorRole(clientId)`.
+    /// @param counterpartyInfo The counterparty information, which must match the existing client binding
     function proposeClientMigration(
         string calldata clientId,
         IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
@@ -69,6 +70,7 @@ interface IICS02ClientAccessControlled {
         external;
 
     /// @notice Executes a matured migration proposal. Anyone may submit the execution transaction.
+    /// @param counterpartyInfo The counterparty information committed by the proposal
     function executeClientMigration(
         string calldata clientId,
         IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,

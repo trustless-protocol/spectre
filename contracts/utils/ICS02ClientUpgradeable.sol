@@ -105,8 +105,7 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
         restricted
         returns (string memory)
     {
-        require(bytes(clientId).length != 0, IBCInvalidClientId(clientId));
-        require(IBCIdentifiers.validateCustomIBCIdentifier(bytes(clientId)), IBCInvalidClientId(clientId));
+        require(IBCIdentifiers.validateCustomIBCIdentifier(bytes(clientId)), IBCInvalidLocalClientId());
         _addClient(clientId, counterpartyInfo, client);
         return clientId;
     }
@@ -125,6 +124,9 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
     {
         ICS02ClientStore.Layout storage $ = ICS02ClientStore.load();
         require(address($.clients[clientId]) == address(0), IBCClientAlreadyExists(clientId));
+        require(
+            IBCIdentifiers.validateIBCIdentifier(bytes(counterpartyInfo.clientId)), IBCInvalidCounterpartyClientId()
+        );
 
         $.clients[clientId] = ILightClient(client);
         $.counterpartyInfos[clientId] = counterpartyInfo;

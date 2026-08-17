@@ -54,4 +54,20 @@ contract IBCIdentifiersTest is Test {
             }
         }
     }
+
+    function test_validateIBCIdentifierCharacterSet() public pure {
+        for (uint256 c = 0; c <= type(uint8).max; ++c) {
+            bytes memory identifier = new bytes(4);
+            for (uint256 i = 0; i < identifier.length; ++i) {
+                // `c` is bounded by `type(uint8).max` in the enclosing loop.
+                // forge-lint: disable-next-line(unsafe-typecast)
+                identifier[i] = bytes1(uint8(c));
+            }
+
+            bool expected = (c >= 0x61 && c <= 0x7A) || (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5A)
+                || c == 0x2E || c == 0x5F || c == 0x2B || c == 0x2D || c == 0x23 || c == 0x5B || c == 0x5D || c == 0x3C
+                || c == 0x3E;
+            assertEq(IBCIdentifiers.validateIBCIdentifier(identifier), expected);
+        }
+    }
 }

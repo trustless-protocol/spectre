@@ -55,14 +55,14 @@ contract Escrow is IEscrowErrors, IEscrow, ContextUpgradeable, RateLimitUpgradea
     }
 
     /// @inheritdoc IEscrow
-    function sendRefund(IERC20 token, address to, uint256 amount) external onlyICS20 {
-        _increaseDailyUsageUncapped(address(token), amount);
+    function sendRefund(IERC20 token, address to, uint256 amount, uint256 usageToRestore) external onlyICS20 {
+        _increaseDailyUsageUncapped(address(token), usageToRestore);
         token.safeTransfer(to, amount);
     }
 
     /// @inheritdoc IEscrow
-    function recvCallback(address token, address, uint256 amount) external onlyICS20 {
-        _reduceDailyUsage(token, amount);
+    function recvCallback(address token, address, uint256 amount) external onlyICS20 returns (uint256 usageRemoved) {
+        usageRemoved = _reduceDailyUsage(token, amount);
     }
 
     /// @inheritdoc IEscrow

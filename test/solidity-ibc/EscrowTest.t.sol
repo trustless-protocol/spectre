@@ -226,7 +226,7 @@ contract EscrowTest is Test {
         escrow.send(IERC20(mockToken), address(this), 1);
 
         // Refund should succeed even though the daily limit is saturated
-        escrow.sendRefund(IERC20(mockToken), address(this), 5000);
+        escrow.sendRefund(IERC20(mockToken), address(this), 5000, 5000);
 
         // Daily usage increases by 5_000 uncapped (restoring what the deposit removed)
         assertEq(escrow.getDailyUsage(mockToken), rateLimit + 5000);
@@ -258,9 +258,40 @@ contract EscrowTest is Test {
         assertEq(escrow.getDailyUsage(mockToken), 3000);
 
         // Refund 2_000 tokens
-        escrow.sendRefund(IERC20(mockToken), address(this), 2000);
+        escrow.sendRefund(IERC20(mockToken), address(this), 2000, 2000);
 
         // Daily usage should be restored to 5_000 (pre-deposit value)
         assertEq(escrow.getDailyUsage(mockToken), 5000);
+    }
+
+    function test_refund_restores_only_usage_removed_by_deposit() public {
+        address mockToken = makeAddr("mockToken");
+        uint256 rateLimit = 10_000;
+
+        vm.prank(rateLimiter);
+        escrow.setRateLimit(mockToken, rateLimit);
+
+        vm.mockCall(mockToken, IERC20.transfer.selector, abi.encode(true));
+        escrow.send(IERC20(mockToken), address(this), 1000);
+        assertEq(escrow.getDailyUsage(mockToken), 1000);
+
+        // The deposit is larger than current usage, so only 1,000 units are removed.
+        uint256 usageRemoved = escrow.recvCallback(mockToken, address(this), 2000);
+        assertEq(usageRemoved, 1000);
+        assertEq(escrow.getDailyUsage(mockToken), 0);
+
+        escrow.sendRefund(IERC20(mockToken), address(this), 2000, usageRemoved);
+        assertEq(escrow.getDailyUsage(mockToken), 1000);
+    }
+
+    function test_refund_credit_is_zero_when_limit_is_disabled() public {
+        address mockToken = makeAddr("mockToken");
+
+        // With no configured limit, deposits remove no tracked usage and refunds restore none.
+        uint256 usageRemoved = escrow.recvCallback(mockToken, address(this), 2000);
+        assertEq(usageRemoved, 0);
+        vm.mockCall(mockToken, IERC20.transfer.selector, abi.encode(true));
+        escrow.sendRefund(IERC20(mockToken), address(this), 2000, usageRemoved);
+        assertEq(escrow.getDailyUsage(mockToken), 0);
     }
 }

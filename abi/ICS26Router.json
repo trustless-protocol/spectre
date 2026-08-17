@@ -1784,6 +1784,11 @@
   },
   {
     "type": "error",
+    "name": "IBCCounterpartyMismatch",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "IBCErrorUniversalAcknowledgement",
     "inputs": []
   },
@@ -1818,6 +1823,16 @@
         "internalType": "string"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "IBCInvalidCounterpartyClientId",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "IBCInvalidLocalClientId",
+    "inputs": []
   },
   {
     "type": "error",

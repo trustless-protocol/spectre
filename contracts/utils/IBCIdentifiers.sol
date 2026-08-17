@@ -13,6 +13,9 @@ library IBCIdentifiers {
     /// @dev Only used to prevent channel ids from being used
     string private constant CHANNEL_ID_PREFIX = "channel-";
 
+    /// @dev Bit positions for `.`, `_`, `+`, `-`, `#`, `[`, `]`, `<`, and `>`.
+    uint256 private constant VALID_SPECIAL_CHARACTER_MASK = 0xa80000005000680800000000;
+
     /// @notice hasPrefix checks bytes for a prefix
     /// @param bz the bytes to check
     /// @param prefix the prefix to check with
@@ -38,25 +41,34 @@ library IBCIdentifiers {
     /// @param customId The custom identifier
     /// @return True if the custom identifier is valid
     function validateCustomIBCIdentifier(bytes memory customId) internal pure returns (bool) {
-        if (customId.length < 4 || customId.length > 128) {
+        if (!validateIBCIdentifier(customId)) {
             return false;
         }
         if (hasPrefix(customId, bytes(CHANNEL_ID_PREFIX)) || hasPrefix(customId, bytes(CLIENT_ID_PREFIX))) {
             return false;
         }
+        return true;
+    }
+
+    /// @notice Validates an identifier used in a counterparty field.
+    /// @dev Unlike custom local identifiers, counterparty identifiers may use the canonical `client-` prefix.
+    ///      The validation still rejects path separators and all characters outside the IBC identifier alphabet.
+    /// @param identifier The identifier to validate
+    /// @return True if the identifier is valid
+    function validateIBCIdentifier(bytes memory identifier) internal pure returns (bool) {
+        if (identifier.length < 4 || identifier.length > 128) {
+            return false;
+        }
         /* solhint-disable gas-strict-inequalities */
         unchecked {
-            for (uint256 i = 0; i < customId.length; ++i) {
-                uint256 c = uint256(uint8(customId[i]));
+            for (uint256 i = 0; i < identifier.length; ++i) {
+                uint256 c = uint256(uint8(identifier[i]));
+                // ASCII case folding lets one range cover both A-Z and a-z. The bitmask handles only
+                // the nine punctuation bytes named by `VALID_SPECIAL_CHARACTER_MASK`.
+                uint256 lowercase = c | 0x20;
                 if (
-                    // a-z
-                    // 0-9
-                    // A-Z
-                    // ".", "_", "+", "-"
-                    // "#", "[", "]", "<", ">"
-                    (c >= 0x61 && c <= 0x7A) || (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5A)
-                        || (c == 0x2E || c == 0x5F || c == 0x2B || c == 0x2D)
-                        || (c == 0x23 || c == 0x5B || c == 0x5D || c == 0x3C || c == 0x3E)
+                    (lowercase >= 0x61 && lowercase <= 0x7A) || (c >= 0x30 && c <= 0x39)
+                        || (VALID_SPECIAL_CHARACTER_MASK & (uint256(1) << c)) != 0
                 ) {
                     continue;
                 }

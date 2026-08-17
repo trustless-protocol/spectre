@@ -24,7 +24,6 @@ import {
 import { SafeERC20 } from "@openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import { MulticallUpgradeable } from "@openzeppelin-upgradeable/utils/MulticallUpgradeable.sol";
 import { ICS20Lib } from "./utils/ICS20Lib.sol";
-import { ICS24Host } from "./utils/ICS24Host.sol";
 import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
 import { Bytes } from "@openzeppelin-contracts/utils/Bytes.sol";
 import { UUPSUpgradeable } from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
@@ -61,6 +60,7 @@ contract ICS20Transfer is
     /// @param _permit2 The permit2 contract. Immutable.
     /// @param _requirePrecreatedEscrows Whether packet processing may create a new escrow.
     /// @param _activeEscrows Whether a pre-created escrow may process packets after the launch gate is enabled.
+    /// @param _refundRateLimitCredits The rate-limit usage removed by each pending outgoing packet.
     /// @custom:storage-location erc7201:ibc.storage.ICS20Transfer
     struct ICS20TransferStorage {
         mapping(string clientId => IEscrow escrow) _escrows;
@@ -72,6 +72,7 @@ contract ICS20Transfer is
         ISignatureTransfer _permit2;
         bool _requirePrecreatedEscrows;
         mapping(string clientId => bool active) _activeEscrows;
+        mapping(string clientId => mapping(uint64 sequence => uint256 usageRemoved)) _refundRateLimitCredits;
     }
 
     /// @notice ERC-7201 slot for the ICS20Transfer storage
@@ -225,9 +226,9 @@ contract ICS20Transfer is
         // transfer the tokens to us (requires the allowance to be set)
         IEscrow escrow = _getOrCreateEscrow(msg_.sourceClient);
         _transferFrom(_msgSender(), address(escrow), msg_.denom, msg_.amount);
-        escrow.recvCallback(msg_.denom, _msgSender(), msg_.amount);
+        uint256 usageRemoved = escrow.recvCallback(msg_.denom, _msgSender(), msg_.amount);
 
-        return _sendTransferFromEscrowWithSender(msg_, address(escrow), _msgSender());
+        return _sendTransferFromEscrowWithSender(msg_, address(escrow), _msgSender(), usageRemoved);
     }
 
     /// @inheritdoc IICS20Transfer
@@ -250,6 +251,7 @@ contract ICS20Transfer is
         );
         // transfer the tokens to us with permit
         IEscrow escrow = _getOrCreateEscrow(msg_.sourceClient);
+        uint256 startingBalance = IERC20(msg_.denom).balanceOf(address(escrow));
         _getPermit2()
             .permitTransferFrom(
                 permit,
@@ -257,9 +259,15 @@ contract ICS20Transfer is
                 _msgSender(),
                 signature
             );
-        escrow.recvCallback(msg_.denom, _msgSender(), msg_.amount);
+        uint256 endingBalance = IERC20(msg_.denom).balanceOf(address(escrow));
+        uint256 expectedBalance = startingBalance + msg_.amount;
+        require(
+            endingBalance > startingBalance && endingBalance == expectedBalance,
+            ICS20UnexpectedERC20Balance(expectedBalance, endingBalance)
+        );
+        uint256 usageRemoved = escrow.recvCallback(msg_.denom, _msgSender(), msg_.amount);
 
-        return _sendTransferFromEscrowWithSender(msg_, address(escrow), _msgSender());
+        return _sendTransferFromEscrowWithSender(msg_, address(escrow), _msgSender(), usageRemoved);
     }
 
     /// @inheritdoc IICS20TransferAccessControlled
@@ -279,9 +287,9 @@ contract ICS20Transfer is
         // transfer the tokens to us (requires the allowance to be set)
         IEscrow escrow = _getOrCreateEscrow(msg_.sourceClient);
         _transferFrom(_msgSender(), address(escrow), msg_.denom, msg_.amount);
-        escrow.recvCallback(msg_.denom, _msgSender(), msg_.amount);
+        uint256 usageRemoved = escrow.recvCallback(msg_.denom, _msgSender(), msg_.amount);
 
-        return _sendTransferFromEscrowWithSender(msg_, address(escrow), sender);
+        return _sendTransferFromEscrowWithSender(msg_, address(escrow), sender, usageRemoved);
     }
 
     /// @notice Send a transfer after the funds have been transferred to escrow
@@ -294,7 +302,8 @@ contract ICS20Transfer is
     function _sendTransferFromEscrowWithSender(
         IICS20TransferMsgs.SendTransferMsg calldata msg_,
         address escrow,
-        address sender
+        address sender,
+        uint256 usageRemoved
     )
         private
         returns (uint64)
@@ -323,7 +332,7 @@ contract ICS20Transfer is
             memo: msg_.memo
         });
 
-        return _getICS26Router()
+        uint64 sequence = _getICS26Router()
             .sendPacket(
                 IICS26RouterMsgs.MsgSendPacket({
                 sourceClient: msg_.sourceClient,
@@ -337,6 +346,9 @@ contract ICS20Transfer is
             })
             })
             );
+
+        _getICS20TransferStorage()._refundRateLimitCredits[msg_.sourceClient][sequence] = usageRemoved;
+        return sequence;
     }
 
     /// @inheritdoc IICS20TransferAccessControlled
@@ -457,11 +469,14 @@ contract ICS20Transfer is
         IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
             abi.decode(msg_.payload.value, (IICS20TransferMsgs.FungibleTokenPacketData));
 
-        if (keccak256(msg_.acknowledgement) == ICS24Host.KECCAK256_UNIVERSAL_ERROR_ACK) {
-            // if the acknowledgement is an error, we must refund the tokens to the sender
-            (, address sender) = _refundTokens(msg_.payload.sourcePort, msg_.sourceClient, packetData);
+        // Success is byte-exact by the ICS-20 conformance contract. Every other acknowledgement refunds.
+        // Counterparties must therefore emit the canonical success bytes: if a transfer succeeds remotely
+        // but returns a non-canonical success acknowledgement, the refund can leave unbacked destination supply.
+        if (keccak256(msg_.acknowledgement) != keccak256(ICS20Lib.SUCCESSFUL_ACKNOWLEDGEMENT_JSON)) {
+            (, address sender) = _refundTokens(msg_.payload.sourcePort, msg_.sourceClient, msg_.sequence, packetData);
             IBCSenderCallbacksLib.ackPacketCallback(sender, false, msg_);
         } else {
+            _consumeRefundRateLimitCredit(msg_.sourceClient, msg_.sequence);
             address sender = ICS20Lib.mustHexStringToAddress(packetData.sender);
             IBCSenderCallbacksLib.ackPacketCallback(sender, true, msg_);
         }
@@ -471,7 +486,7 @@ contract ICS20Transfer is
     function onTimeoutPacket(IIBCAppCallbacks.OnTimeoutPacketCallback calldata msg_) external onlyRouter nonReentrant {
         IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
             abi.decode(msg_.payload.value, (IICS20TransferMsgs.FungibleTokenPacketData));
-        (, address sender) = _refundTokens(msg_.payload.sourcePort, msg_.sourceClient, packetData);
+        (, address sender) = _refundTokens(msg_.payload.sourcePort, msg_.sourceClient, msg_.sequence, packetData);
         IBCSenderCallbacksLib.timeoutPacketCallback(sender, msg_);
     }
 
@@ -484,6 +499,7 @@ contract ICS20Transfer is
     function _refundTokens(
         string calldata sourcePort,
         string calldata sourceClient,
+        uint64 sequence,
         IICS20TransferMsgs.FungibleTokenPacketData memory packetData
     )
         private
@@ -517,8 +533,22 @@ contract ICS20Transfer is
             }
         }
 
-        escrow.sendRefund(IERC20(erc20Address), refundee, packetData.amount);
+        uint256 usageRemoved = _consumeRefundRateLimitCredit(sourceClient, sequence);
+        escrow.sendRefund(IERC20(erc20Address), refundee, packetData.amount, usageRemoved);
         return (erc20Address, refundee);
+    }
+
+    /// @notice Consumes the rate-limit credit associated with a packet.
+    function _consumeRefundRateLimitCredit(
+        string calldata sourceClient,
+        uint64 sequence
+    )
+        private
+        returns (uint256 usageRemoved)
+    {
+        ICS20TransferStorage storage $ = _getICS20TransferStorage();
+        usageRemoved = $._refundRateLimitCredits[sourceClient][sequence];
+        delete $._refundRateLimitCredits[sourceClient][sequence];
     }
 
     /// @notice Transfer tokens from sender to receiver

@@ -19,14 +19,16 @@ interface IEscrow {
     /// @param token The token to send
     /// @param to The address to send the tokens to
     /// @param amount The amount of tokens to send
-    function sendRefund(IERC20 token, address to, uint256 amount) external;
+    /// @param usageToRestore The usage removed when the matching deposit was received
+    function sendRefund(IERC20 token, address to, uint256 amount, uint256 usageToRestore) external;
 
     /// @notice Received tokens from the specified address
     /// @dev This function can only be called by the ICS20 contract
     /// @param token The token received
     /// @param from The address that sent the tokens
     /// @param amount The amount of tokens received
-    function recvCallback(address token, address from, uint256 amount) external;
+    /// @return usageRemoved The amount of rate-limit usage removed by this deposit
+    function recvCallback(address token, address from, uint256 amount) external returns (uint256 usageRemoved);
 
     /// @notice Get the ICS20 contract address
     /// @return The ICS20 contract address
