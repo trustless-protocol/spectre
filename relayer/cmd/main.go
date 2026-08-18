@@ -244,6 +244,38 @@ func writeConfigMemberIn(configPath, sourceClientID, member, value string, dirs 
 	return os.Chmod(configPath, configFilePerm)
 }
 
+// assertConfigMemberWritable reports whether writeConfigMemberIn would find a
+// destination for member, without touching the file.
+//
+// It resolves through the same replaceConfigMemberForSourceIn the real write uses
+// rather than re-implementing the lookup, so the check cannot drift from the write
+// it is guarding. A separately-written precheck that disagreed would be worse than
+// none: it would pass, the write would still fail, and the failure would once again
+// land after the irreversible step.
+func assertConfigMemberWritable(configPath, sourceClientID, member string, dirs ...moduleDirection) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return err
+	}
+	_, err = replaceConfigMemberForSourceIn(data, sourceClientID, member, "", dirs)
+	return err
+}
+
+// unrecordedClientError explains a client that exists on chain but is not in the
+// config, and names the one recovery that does not create a second one.
+//
+// Re-running create-clients-cosmos is the natural reaction to a non-zero exit and
+// the wrong one: it creates another client, pays for it again, and orphans this one
+// with nothing advancing it until it expires (#310).
+func unrecordedClientError(configPath, wasmClientID string, cause error) error {
+	return fmt.Errorf(
+		"created Ethereum light client %s on Cosmos but could not record it in %s: %w\n"+
+			"  The client exists and is usable. Set cosmos_wasm_client_id=%s on the cosmos_to_eth "+
+			"module by hand, then run create-clients-eth.\n"+
+			"  Do NOT re-run create-clients-cosmos: it would create a second client and leave %s orphaned",
+		wasmClientID, configPath, cause, wasmClientID, wasmClientID)
+}
+
 // writeSpectreClientAddress persists the deployed SpectreClient light-client
 // address (ETH side) back into the sourceClientID module.
 func writeSpectreClientAddress(configPath, sourceClientID, addr string) error {
@@ -1154,6 +1186,20 @@ func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasm
 			"set eth_beacon_api_url on the eth_to_cosmos module")
 	}
 
+	// Resolve where the id will be recorded BEFORE spending an on-chain
+	// MsgCreateClient. ibc-go assigns the id and the client cannot be un-created, so
+	// discovering the destination is missing afterwards leaves a paid-for client that
+	// nothing points at and nothing advances until it expires (#310).
+	//
+	// selectSource picks a cosmos_to_l2 module into CosmosToEthConfig when the config
+	// has no cosmos_to_eth source, and the write-back is pinned to cosmos_to_eth — so
+	// an eth_to_cosmos + L2 config passes every other guard and fails only here.
+	// Cheap to know, irreversible to learn late.
+	if err := assertConfigMemberWritable(configPath, cfg.CosmosToEthConfig.ICS26ClientID,
+		"cosmos_wasm_client_id", dirCosmosToEth); err != nil {
+		return "", fmt.Errorf("refusing to create an Ethereum light client that could not be recorded: %w", err)
+	}
+
 	deps, cosmosClient, err := buildCreateClientsDeps(logger, cfg, "")
 	if err != nil {
 		return "", err
@@ -1183,7 +1229,7 @@ func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasm
 	logger.Sugar().Infof("Ethereum light client created on Cosmos: clientID=%s", wasmClientID)
 
 	if err := writeEthWasmClientID(configPath, cfg.CosmosToEthConfig.ICS26ClientID, wasmClientID); err != nil {
-		return "", fmt.Errorf("persist cosmos_wasm_client_id to %s: %w", configPath, err)
+		return "", unrecordedClientError(configPath, wasmClientID, err)
 	}
 	logger.Sugar().Infof("create-clients-cosmos: wrote cosmos_wasm_client_id=%s into %s", wasmClientID, configPath)
 	return wasmClientID, nil
