@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -387,6 +388,9 @@ type mockJSONRPC struct {
 	nonces       map[common.Address]uint64
 	nonceCalls   map[common.Address]int
 	gasPrice     *big.Int
+	blockGas     uint64
+	blockGases   map[string]uint64
+	callSucceeds bool
 }
 
 func newMockJSONRPC() *mockJSONRPC {
@@ -396,6 +400,7 @@ func newMockJSONRPC() *mockJSONRPC {
 		nonces:       make(map[common.Address]uint64),
 		nonceCalls:   make(map[common.Address]int),
 		gasPrice:     big.NewInt(1000000000), // 1 Gwei
+		blockGases:   make(map[string]uint64),
 	}
 }
 
@@ -474,6 +479,18 @@ func (m *mockJSONRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	case "eth_getBlockByNumber":
+		blockGas := m.blockGas
+		if len(req.Params) > 0 {
+			var blockTag string
+			if err := json.Unmarshal(req.Params[0], &blockTag); err == nil {
+				if configured, ok := m.blockGases[blockTag]; ok {
+					blockGas = configured
+				}
+			}
+		}
+		if blockGas == 0 {
+			blockGas = 0xffffff
+		}
 		result = map[string]interface{}{
 			"parentHash":       "0x0000000000000000000000000000000000000000000000000000000000000000",
 			"sha3Uncles":       "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
@@ -484,13 +501,19 @@ func (m *mockJSONRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"logsBloom":        "0x" + strings.Repeat("0", 512),
 			"difficulty":       "0x0",
 			"number":           "0x1",
-			"gasLimit":         "0xffffff",
+			"gasLimit":         fmt.Sprintf("0x%x", blockGas),
 			"gasUsed":          "0x0",
 			"timestamp":        "0x0",
 			"extraData":        "0x",
 			"mixHash":          "0x0000000000000000000000000000000000000000000000000000000000000000",
 			"nonce":            "0x0000000000000000",
 			"baseFeePerGas":    fmt.Sprintf("0x%x", m.gasPrice),
+		}
+	case "eth_call":
+		if m.callSucceeds {
+			result = "0x"
+		} else {
+			rpcErr = &jsonrpcError{Code: -32601, Message: "method not found"}
 		}
 	default:
 		rpcErr = &jsonrpcError{
@@ -1373,6 +1396,268 @@ func TestExecuteWithRetryAndResubmission_RevertPermanentFailure(t *testing.T) {
 
 	if !errors.Is(err, services.ErrPermanentRelayFailure) {
 		t.Errorf("expected ErrPermanentRelayFailure, got %v", err)
+	}
+}
+
+func TestExecuteWithRetryAndResubmission_OutOfGasEscalatesInProcess(t *testing.T) {
+	oldPollInterval := ethTxReceiptPollInterval
+	ethTxReceiptPollInterval = time.Millisecond
+	defer func() { ethTxReceiptPollInterval = oldPollInterval }()
+
+	mockRPC := newMockJSONRPC()
+	mockRPC.callSucceeds = true
+	srv := httptest.NewServer(mockRPC)
+	defer srv.Close()
+	client, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatalf("dial mock RPC: %v", err)
+	}
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var gasLimits, nonces []uint64
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		gasLimits = append(gasLimits, auth.GasLimit)
+		nonces = append(nonces, auth.Nonce.Uint64())
+		tx := types.NewTx(&types.DynamicFeeTx{
+			ChainID: big.NewInt(1), Nonce: auth.Nonce.Uint64(), GasTipCap: auth.GasTipCap,
+			GasFeeCap: auth.GasFeeCap, Gas: auth.GasLimit, To: &common.Address{0x1},
+		})
+		signed, signErr := auth.Signer(auth.From, tx)
+		if signErr == nil {
+			status := uint64(1)
+			if len(gasLimits) == 1 {
+				status = 0
+			}
+			mockRPC.mu.Lock()
+			mockRPC.receiptResps[signed.Hash()] = &types.Receipt{Status: status, GasUsed: auth.GasLimit, BlockNumber: big.NewInt(1)}
+			mockRPC.mu.Unlock()
+		}
+		return signed, signErr
+	}
+
+	receipt, _, _, err := (&Handler{}).executeWithRetryAndResubmission(
+		context.Background(), services.EVMEndpoint{Client: client}, privKey, 100_000, senderFn, knobEthGasLimit,
+	)
+	if err != nil {
+		t.Fatalf("execute after OOG: %v", err)
+	}
+	if receipt == nil || receipt.Status != 1 {
+		t.Fatalf("final receipt = %v, want success", receipt)
+	}
+	if len(gasLimits) != 2 || gasLimits[1] <= gasLimits[0] {
+		t.Fatalf("gas limits = %v, want one larger in-process retry", gasLimits)
+	}
+	if len(nonces) != 2 || nonces[1] != nonces[0]+1 {
+		t.Fatalf("nonces = %v, want included OOG to consume one nonce", nonces)
+	}
+}
+
+func TestExecuteWithRetryAndResubmission_OutOfGasLadderExhaustionIsPermanent(t *testing.T) {
+	oldPollInterval := ethTxReceiptPollInterval
+	ethTxReceiptPollInterval = time.Millisecond
+	defer func() { ethTxReceiptPollInterval = oldPollInterval }()
+
+	mockRPC := newMockJSONRPC()
+	mockRPC.callSucceeds = true
+	srv := httptest.NewServer(mockRPC)
+	defer srv.Close()
+	client, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatalf("dial mock RPC: %v", err)
+	}
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var gasLimits []uint64
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		gasLimits = append(gasLimits, auth.GasLimit)
+		tx := types.NewTx(&types.DynamicFeeTx{
+			ChainID: big.NewInt(1), Nonce: auth.Nonce.Uint64(), GasTipCap: auth.GasTipCap,
+			GasFeeCap: auth.GasFeeCap, Gas: auth.GasLimit, To: &common.Address{0x1},
+		})
+		signed, signErr := auth.Signer(auth.From, tx)
+		if signErr == nil {
+			mockRPC.mu.Lock()
+			mockRPC.receiptResps[signed.Hash()] = &types.Receipt{Status: 0, GasUsed: auth.GasLimit, BlockNumber: big.NewInt(1)}
+			mockRPC.mu.Unlock()
+		}
+		return signed, signErr
+	}
+
+	_, _, _, err = (&Handler{}).executeWithRetryAndResubmission(
+		context.Background(), services.EVMEndpoint{Client: client}, privKey, 100_000, senderFn, knobEthGasLimit,
+	)
+	if !errors.Is(err, services.ErrPermanentRelayFailure) {
+		t.Fatalf("exhausted OOG ladder error = %v, want permanent relay failure", err)
+	}
+	if len(gasLimits) != len(evmGasHeadroomBasisPoints) {
+		t.Fatalf("gas attempts = %v, want finite ladder length %d", gasLimits, len(evmGasHeadroomBasisPoints))
+	}
+	for i := 1; i < len(gasLimits); i++ {
+		if gasLimits[i] <= gasLimits[i-1] {
+			t.Fatalf("gas attempts = %v, want strictly increasing limits", gasLimits)
+		}
+	}
+}
+
+func TestExecuteWithRetryAndResubmission_OutOfGasBlockCeilingIsPermanent(t *testing.T) {
+	oldPollInterval := ethTxReceiptPollInterval
+	ethTxReceiptPollInterval = time.Millisecond
+	defer func() { ethTxReceiptPollInterval = oldPollInterval }()
+
+	mockRPC := newMockJSONRPC()
+	mockRPC.callSucceeds = true
+	mockRPC.blockGas = 120_000
+	srv := httptest.NewServer(mockRPC)
+	defer srv.Close()
+	client, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatalf("dial mock RPC: %v", err)
+	}
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var gasLimits []uint64
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		gasLimits = append(gasLimits, auth.GasLimit)
+		tx := types.NewTx(&types.DynamicFeeTx{
+			ChainID: big.NewInt(1), Nonce: auth.Nonce.Uint64(), GasTipCap: auth.GasTipCap,
+			GasFeeCap: auth.GasFeeCap, Gas: auth.GasLimit, To: &common.Address{0x1},
+		})
+		signed, signErr := auth.Signer(auth.From, tx)
+		if signErr == nil {
+			mockRPC.mu.Lock()
+			mockRPC.receiptResps[signed.Hash()] = &types.Receipt{Status: 0, GasUsed: auth.GasLimit, BlockNumber: big.NewInt(1)}
+			mockRPC.mu.Unlock()
+		}
+		return signed, signErr
+	}
+
+	_, _, _, err = (&Handler{}).executeWithRetryAndResubmission(
+		context.Background(), services.EVMEndpoint{Client: client}, privKey, 100_000, senderFn, knobEthGasLimit,
+	)
+	if !errors.Is(err, services.ErrPermanentRelayFailure) {
+		t.Fatalf("block-ceiling OOG error = %v, want permanent relay failure", err)
+	}
+	if !strings.Contains(err.Error(), "block gas ceiling") {
+		t.Fatalf("block-ceiling OOG error = %v, want the block-ceiling termination reason", err)
+	}
+	if want := []uint64{100_000, 120_000}; !slices.Equal(gasLimits, want) {
+		t.Fatalf("gas attempts = %v, want %v without re-broadcasting the clamped limit", gasLimits, want)
+	}
+}
+
+func TestExecuteWithRetryAndResubmission_RefreshesBlockGasCeiling(t *testing.T) {
+	oldPollInterval := ethTxReceiptPollInterval
+	ethTxReceiptPollInterval = time.Millisecond
+	defer func() { ethTxReceiptPollInterval = oldPollInterval }()
+
+	mockRPC := newMockJSONRPC()
+	mockRPC.callSucceeds = true
+	mockRPC.blockGases["0x1"] = 120_000
+	mockRPC.blockGases["0x2"] = 150_000
+	srv := httptest.NewServer(mockRPC)
+	defer srv.Close()
+	client, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatalf("dial mock RPC: %v", err)
+	}
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var gasLimits []uint64
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		gasLimits = append(gasLimits, auth.GasLimit)
+		tx := types.NewTx(&types.DynamicFeeTx{
+			ChainID: big.NewInt(1), Nonce: auth.Nonce.Uint64(), GasTipCap: auth.GasTipCap,
+			GasFeeCap: auth.GasFeeCap, Gas: auth.GasLimit, To: &common.Address{0x1},
+		})
+		signed, signErr := auth.Signer(auth.From, tx)
+		if signErr == nil {
+			status := uint64(0)
+			if len(gasLimits) == 3 {
+				status = 1
+			}
+			mockRPC.mu.Lock()
+			mockRPC.receiptResps[signed.Hash()] = &types.Receipt{
+				Status: status, GasUsed: auth.GasLimit, BlockNumber: big.NewInt(int64(len(gasLimits))),
+			}
+			mockRPC.mu.Unlock()
+		}
+		return signed, signErr
+	}
+
+	receipt, _, _, err := (&Handler{}).executeWithRetryAndResubmission(
+		context.Background(), services.EVMEndpoint{Client: client}, privKey, 100_000, senderFn, knobEthGasLimit,
+	)
+	if err != nil {
+		t.Fatalf("execute after block gas ceiling increased: %v", err)
+	}
+	if receipt == nil || receipt.Status != 1 {
+		t.Fatalf("final receipt = %v, want success", receipt)
+	}
+	if want := []uint64{100_000, 120_000, 150_000}; !slices.Equal(gasLimits, want) {
+		t.Fatalf("gas attempts = %v, want refreshed ceilings %v", gasLimits, want)
+	}
+}
+
+func TestExecuteWithRetryAndResubmission_BlockCeilingWinsAtFinalLadderStep(t *testing.T) {
+	oldPollInterval := ethTxReceiptPollInterval
+	ethTxReceiptPollInterval = time.Millisecond
+	defer func() { ethTxReceiptPollInterval = oldPollInterval }()
+
+	mockRPC := newMockJSONRPC()
+	mockRPC.callSucceeds = true
+	mockRPC.blockGas = 300_000
+	srv := httptest.NewServer(mockRPC)
+	defer srv.Close()
+	client, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatalf("dial mock RPC: %v", err)
+	}
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+
+	var gasLimits []uint64
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		gasLimits = append(gasLimits, auth.GasLimit)
+		tx := types.NewTx(&types.DynamicFeeTx{
+			ChainID: big.NewInt(1), Nonce: auth.Nonce.Uint64(), GasTipCap: auth.GasTipCap,
+			GasFeeCap: auth.GasFeeCap, Gas: auth.GasLimit, To: &common.Address{0x1},
+		})
+		signed, signErr := auth.Signer(auth.From, tx)
+		if signErr == nil {
+			mockRPC.mu.Lock()
+			mockRPC.receiptResps[signed.Hash()] = &types.Receipt{Status: 0, GasUsed: auth.GasLimit, BlockNumber: big.NewInt(1)}
+			mockRPC.mu.Unlock()
+		}
+		return signed, signErr
+	}
+
+	finalStep := len(evmGasHeadroomBasisPoints) - 1
+	_, _, _, err = (&Handler{}).executeWithRetryAndResubmissionAtGasStep(
+		context.Background(), services.EVMEndpoint{Client: client}, privKey,
+		100_000, finalStep, 300_000, senderFn, knobEthGasLimit,
+	)
+	if !errors.Is(err, services.ErrPermanentRelayFailure) {
+		t.Fatalf("final-step block-ceiling OOG error = %v, want permanent relay failure", err)
+	}
+	if !strings.Contains(err.Error(), "block gas ceiling") {
+		t.Fatalf("final-step block-ceiling OOG error = %v, want ceiling to win over ladder exhaustion", err)
+	}
+	if want := []uint64{300_000}; !slices.Equal(gasLimits, want) {
+		t.Fatalf("gas attempts = %v, want %v without another final-step broadcast", gasLimits, want)
 	}
 }
 

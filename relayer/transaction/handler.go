@@ -3,7 +3,6 @@ package transaction
 import (
 	"context"
 	"crypto/ecdsa"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -95,6 +94,40 @@ type Handler struct {
 	mu           sync.Mutex
 	cosmosMu     sync.Mutex
 	senderStates map[evmNonceKey]*ethTxSenderState
+
+	signerOnce sync.Once
+	signer     Signer
+}
+
+// SetSigner installs the ordinary signing-key source. It must be called before
+// the first send; a nil value is ignored so it cannot consume signerOnce and
+// turn the next send into a nil-pointer panic.
+func (h *Handler) SetSigner(s Signer) {
+	if s == nil {
+		log.Printf("[Handler] SetSigner(nil) ignored; keeping the existing key source")
+		return
+	}
+	h.signer = s
+}
+
+func (h *Handler) keySigner() Signer {
+	h.signerOnce.Do(func() {
+		if h.signer == nil {
+			h.signer = NewEnvSigner()
+		}
+	})
+	return h.signer
+}
+
+// ValidateKeys forces both ordinary signing keys through the same seam used by
+// send paths and derives the Cosmos signer address, so startup also validates
+// the configured bech32 prefix.
+func (h *Handler) ValidateKeys() error {
+	if _, err := h.keySigner().EthKey(); err != nil {
+		return err
+	}
+	_, err := h.CosmosSignerAddress()
+	return err
 }
 
 // evmNonceKey identifies one independent EVM nonce domain. The relayer shares
@@ -132,7 +165,24 @@ var ethTxBroadcastTimeout = 30 * time.Second
 var ethTxReceiptTimeout = 45 * time.Second
 var ethTxReceiptPollInterval = 2 * time.Second
 
-const defaultMisbehaviourGasLimit uint64 = 16_000_000
+const (
+	defaultEthGasLimit          uint64 = 3_000_000
+	defaultMisbehaviourGasLimit uint64 = 16_000_000
+)
+
+// EthGasLimit returns the regular EVM transaction gas limit. A zero override
+// would make go-ethereum estimate ordinary sends but leave the OOG retry ladder
+// with a zero base, so retain the safe default instead.
+func EthGasLimit(gasText string) (uint64, error) {
+	if gasText == "" {
+		return defaultEthGasLimit, nil
+	}
+	gasLimit, err := strconv.ParseUint(gasText, 10, 64)
+	if err != nil || gasLimit == 0 {
+		return 0, fmt.Errorf("invalid ETH_GAS_LIMIT %q", gasText)
+	}
+	return gasLimit, nil
+}
 
 // MisbehaviourGasLimit returns the configured EVM gas limit for an incident
 // submission. Zero and malformed overrides fail before proof generation.
@@ -438,11 +488,7 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
-	privKey := os.Getenv("ETH_PRIVATE_KEY")
-	if privKey == "" {
-		return common.Address{}, fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
-	}
-	privateKey, err := keys.RestoreKey(privKey)
+	privateKey, err := h.keySigner().EthKey()
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed to restore private key: %w", err)
 	}
@@ -484,7 +530,7 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 		return tx, err
 	}
 
-	receipt, _, _, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, deployGasLimit, deployFn)
+	receipt, _, _, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, deployGasLimit, deployFn, knobDeployEstimate)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed waiting for deploy receipt: %w", err)
 	}
@@ -507,7 +553,7 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 		)
 	}
 
-	addClientReceipt, _, _, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, 16000000, addClientFn)
+	addClientReceipt, _, _, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, 16000000, addClientFn, knobFixedClientLimit)
 	if err != nil {
 		if errors.Is(err, services.ErrPermanentRelayFailure) {
 			return common.Address{}, fmt.Errorf(
@@ -528,20 +574,18 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 	if cosmosClientID == "" {
 		return fmt.Errorf("[SendEthTx] cosmos router client id is not configured")
 	}
-	privKey := os.Getenv("ETH_PRIVATE_KEY")
-	if privKey == "" {
-		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
-	}
-	privateKey, err := keys.RestoreKey(privKey)
+	privateKey, err := h.keySigner().EthKey()
 	if err != nil {
 		return fmt.Errorf("failed to restore private key: %w", err)
 	}
 
-	gasLimit := uint64(3000000) // in units
+	gasLimit := defaultEthGasLimit
 	if gasStr := os.Getenv("ETH_GAS_LIMIT"); gasStr != "" {
-		var val uint64
-		if _, err := fmt.Sscanf(gasStr, "%d", &val); err == nil {
-			gasLimit = val
+		configuredGasLimit, err := EthGasLimit(gasStr)
+		if err != nil {
+			log.Printf("[SendEthTx] %v; using default %d", err, defaultEthGasLimit)
+		} else {
+			gasLimit = configuredGasLimit
 		}
 	}
 
@@ -628,7 +672,7 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 		}
 	}
 
-	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, gasLimit, senderFn)
+	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, gasLimit, senderFn, knobEthGasLimit)
 	if err != nil {
 		return err
 	}
@@ -729,7 +773,7 @@ func (h *Handler) SubmitMisbehaviour(
 		}
 		return spectre.Misbehaviour(auth, misbehaviourMsg)
 	}
-	receipt, _, _, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, gasLimit, sender)
+	receipt, _, _, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, gasLimit, sender, knobMisbehaviour)
 	if err != nil {
 		return fmt.Errorf("submit misbehaviour: %w", err)
 	}
@@ -831,11 +875,7 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 
 	labelStr := strings.Join(labels, ",")
 
-	privKey := os.Getenv("ETH_PRIVATE_KEY")
-	if privKey == "" {
-		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
-	}
-	privateKey, err := keys.RestoreKey(privKey)
+	privateKey, err := h.keySigner().EthKey()
 	if err != nil {
 		return fmt.Errorf("[SendEthTxBatch] failed to restore private key: %w", err)
 	}
@@ -863,7 +903,7 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 		return ics26Router.Multicall(auth, calldata)
 	}
 
-	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, multicallGasLimit, senderFn)
+	receipt, submitDur, waitDur, err := h.executeWithRetryAndResubmission(stdCtx, endpoint, privateKey, multicallGasLimit, senderFn, knobMulticallGasLimit)
 	if err != nil {
 		return fmt.Errorf("multicall labels=%s: %w", labelStr, err)
 	}
@@ -889,14 +929,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 	// passes its own: the ETH beacon client passes the ETH-side router client id, an
 	// L2 bootstrap passes the L2-side client id. An empty value skips registration.
 
-	// Get the private key from environment variable
-	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
-	if privKeyHex == "" {
-		return "", fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required in .env file")
-	}
-
-	// Decode the private key
-	privKeyBytes, err := hex.DecodeString(strings.TrimPrefix(privKeyHex, "0x"))
+	privKeyBytes, err := h.keySigner().CosmosKeyBytes()
 	if err != nil {
 		return "", fmt.Errorf("failed to decode private key: %w", err)
 	}
@@ -1220,14 +1253,19 @@ func cosmosSignerBech32(privKey secp256k1.PrivKey) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("failed to bech32-encode signer address with prefix %q: %w", prefix, err)
 	}
+	// ConvertAndEncode normalizes the HRP but does not validate its characters.
+	// Decode the result so startup rejects an address that Cosmos clients cannot
+	// subsequently parse.
+	if _, _, err := sdkbech32.DecodeAndConvert(addr); err != nil {
+		return "", fmt.Errorf("invalid Cosmos signer address prefix %q: %w", prefix, err)
+	}
 	return addr, nil
 }
 
 // CosmosSignerAddress returns the bech32 address derived from COSMOS_PRIVATE_KEY.
 // Used to populate the Signer field in Cosmos messages before batching them.
 func (h *Handler) CosmosSignerAddress() (string, error) {
-	privKeyHex := strings.TrimPrefix(os.Getenv("COSMOS_PRIVATE_KEY"), "0x")
-	privKeyBytes, err := hex.DecodeString(privKeyHex)
+	privKeyBytes, err := h.keySigner().CosmosKeyBytes()
 	if err != nil {
 		return "", fmt.Errorf("failed to decode COSMOS_PRIVATE_KEY: %w", err)
 	}
@@ -1382,12 +1420,8 @@ func (h *Handler) simulateMsgs(stdCtx context.Context, svcCtx services.CosmosEnd
 	cdc := codec.NewProtoCodec(interfaceRegistry)
 	txConfig := authtx.NewTxConfig(cdc, authtx.DefaultSignModes)
 
-	// Get key details to construct empty signature
-	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
-	if privKeyHex == "" {
-		return 0, fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required")
-	}
-	privKeyBytes, err := hex.DecodeString(strings.TrimPrefix(privKeyHex, "0x"))
+	// Get key details to construct the empty signature through the signer seam.
+	privKeyBytes, err := h.keySigner().CosmosKeyBytes()
 	if err != nil {
 		return 0, fmt.Errorf("failed to decode private key: %w", err)
 	}
@@ -1466,6 +1500,10 @@ func (h *Handler) simulateMsgs(stdCtx context.Context, svcCtx services.CosmosEnd
 // and optional recursive batch splitting. When allowSplit is false it returns
 // before broadcasting if the batch cannot be submitted as one transaction.
 func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx services.CosmosEndpoint, sdkMsgs []sdk.Msg, accountNumber, sequence uint64, allowSplit bool) (uint64, int, error) {
+	return h.sendCosmosTxBatchAtHeadroom(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence, allowSplit, 0)
+}
+
+func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx services.CosmosEndpoint, sdkMsgs []sdk.Msg, accountNumber, sequence uint64, allowSplit bool, headroomStep int) (uint64, int, error) {
 	if len(sdkMsgs) == 0 {
 		return sequence, 0, nil
 	}
@@ -1494,8 +1532,8 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 				shouldSplit = true
 			}
 		} else {
-			// Apply a 1.3 gas adjustment factor
-			adjustedGas := uint64(float64(simulatedGas) * 1.3)
+			// Apply the current finite gas-headroom factor.
+			adjustedGas := applyCosmosGasHeadroom(simulatedGas, headroomStep)
 			if maxBlockGas > 0 && adjustedGas >= maxBlockGas {
 				log.Printf("[SendCosmosTxBatch] Adjusted gas %d exceeds max block gas %d for batch of size %d", adjustedGas, maxBlockGas, len(sdkMsgs))
 				if len(sdkMsgs) > 1 {
@@ -1551,6 +1589,7 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 		} else {
 			finalGasLimit = baseGas * uint64(len(sdkMsgs))
 		}
+		finalGasLimit = applyCosmosGasHeadroom(finalGasLimit, headroomStep)
 	}
 
 	// Clamp to block gas limit and guard against zero limit
@@ -1577,6 +1616,7 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 		} else {
 			feeAmount = baseFee * int64(len(sdkMsgs))
 		}
+		feeAmount = applyCosmosFeeHeadroom(feeAmount, headroomStep)
 	}
 
 	// Clamp feeAmount if gasLimit was clamped to block limit
@@ -1584,12 +1624,8 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 		feeAmount = int64(maxBlockGas)
 	}
 
-	// Now build, sign, and broadcast the transaction!
-	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
-	if privKeyHex == "" {
-		return sequence, 0, fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required")
-	}
-	privKeyBytes, err := hex.DecodeString(strings.TrimPrefix(privKeyHex, "0x"))
+	// Build, sign, and broadcast through the signer seam.
+	privKeyBytes, err := h.keySigner().CosmosKeyBytes()
 	if err != nil {
 		return sequence, 0, fmt.Errorf("failed to decode private key: %w", err)
 	}
@@ -1688,6 +1724,30 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 	if syncResult.Code != 0 {
 		log.Printf("[SendCosmosTxBatch] CheckTx FAILED: code=%d codespace=%s log=%s data=%x",
 			syncResult.Code, syncResult.Codespace, syncResult.Log, syncResult.Data)
+		if cosmosOutOfGas(syncResult.Codespace, syncResult.Code) {
+			// CheckTx rejects the transaction before inclusion, so its sequence
+			// remains available. The next attempt must still change: split a
+			// splittable batch or advance the finite headroom ladder.
+			switch planCosmosOutOfGas(len(sdkMsgs), headroomStep, finalGasLimit, maxBlockGas, allowSplit) {
+			case oogSplitBatch:
+				log.Printf("[SendCosmosTxBatch] splitting CheckTx out-of-gas batch of %d", len(sdkMsgs))
+				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence)
+			case oogEscalateHeadroom:
+				nextStep := headroomStep + 1
+				log.Printf("[SendCosmosTxBatch] retrying CheckTx out-of-gas batch at headroom x%.1f", cosmosGasHeadroom[nextStep])
+				return h.sendCosmosTxBatchAtHeadroom(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence, allowSplit, nextStep)
+			default:
+				log.Printf("[SendCosmosTxBatch] CheckTx out-of-gas batch cannot receive more gas; reporting permanent")
+				return sequence, 0, &services.CosmosTxFailure{
+					Stage:     "CheckTx",
+					Code:      syncResult.Code,
+					Codespace: syncResult.Codespace,
+					Log:       syncResult.Log,
+					Data:      syncResult.Data,
+					Err:       services.ErrPermanentRelayFailure,
+				}
+			}
+		}
 		if isCosmosDuplicatePacketError(syncResult.Codespace, syncResult.Code) {
 			if duplicateDropIsSafe(len(sdkMsgs)) {
 				log.Printf("[SendCosmosTxBatch] duplicate packet (codespace=%s code=%d), dropping", syncResult.Codespace, syncResult.Code)
@@ -1726,6 +1786,30 @@ func (h *Handler) sendCosmosTxBatchWithSplitting(stdCtx context.Context, svcCtx 
 				// though message execution reverted.
 				log.Printf("[SendCosmosTxBatch] duplicate packet in batch of %d; splitting to isolate it", len(sdkMsgs))
 				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence+1)
+			}
+		}
+		if cosmosOutOfGas(txResult.TxResult.Codespace, txResult.TxResult.Code) {
+			// DeliverTx consumed the account sequence. A transient result must also
+			// change the next attempt, or an underestimated batch repeats forever.
+			nextSequence := sequence + 1
+			switch planCosmosOutOfGas(len(sdkMsgs), headroomStep, finalGasLimit, maxBlockGas, allowSplit) {
+			case oogSplitBatch:
+				log.Printf("[SendCosmosTxBatch] splitting included out-of-gas batch of %d", len(sdkMsgs))
+				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, nextSequence)
+			case oogEscalateHeadroom:
+				nextStep := headroomStep + 1
+				log.Printf("[SendCosmosTxBatch] retrying included out-of-gas batch at headroom x%.1f", cosmosGasHeadroom[nextStep])
+				return h.sendCosmosTxBatchAtHeadroom(stdCtx, svcCtx, sdkMsgs, accountNumber, nextSequence, allowSplit, nextStep)
+			default:
+				log.Printf("[SendCosmosTxBatch] out-of-gas batch cannot receive more gas; reporting permanent")
+				return nextSequence, 0, &services.CosmosTxFailure{
+					Stage:     "DeliverTx",
+					Code:      txResult.TxResult.Code,
+					Codespace: txResult.TxResult.Codespace,
+					Log:       txResult.TxResult.Log,
+					Data:      txResult.TxResult.Data,
+					Err:       services.ErrPermanentRelayFailure,
+				}
 			}
 		}
 		return sequence, 0, &services.CosmosTxFailure{
@@ -1784,14 +1868,7 @@ func (h *Handler) sendCosmosTxBatch(stdCtx context.Context, svcCtx services.Cosm
 		benchStart = time.Now()
 	}
 
-	// Get the private key from environment variable
-	privKeyHex := os.Getenv("COSMOS_PRIVATE_KEY")
-	if privKeyHex == "" {
-		return fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required in .env file")
-	}
-
-	// Decode the private key
-	privKeyBytes, err := hex.DecodeString(strings.TrimPrefix(privKeyHex, "0x"))
+	privKeyBytes, err := h.keySigner().CosmosKeyBytes()
 	if err != nil {
 		return fmt.Errorf("failed to decode private key: %w", err)
 	}
@@ -2052,13 +2129,39 @@ func (h *Handler) executeWithRetryAndResubmission(
 	privateKey *ecdsa.PrivateKey,
 	gasLimit uint64,
 	senderFn func(auth *bind.TransactOpts) (*types.Transaction, error),
+	knobs ...gasLimitKnob,
 ) (*types.Receipt, time.Duration, time.Duration, error) {
+	knob := gasLimitKnob("the gas limit for this operation")
+	if len(knobs) > 0 {
+		knob = knobs[0]
+	}
+	if gasLimit == 0 {
+		return nil, 0, 0, fmt.Errorf("cannot submit %s with a zero gas limit", knob)
+	}
+	return h.executeWithRetryAndResubmissionAtGasStep(
+		stdCtx, endpoint, privateKey, gasLimit, 0, 0, senderFn, knob,
+	)
+}
+
+func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
+	stdCtx context.Context,
+	endpoint services.EVMEndpoint,
+	privateKey *ecdsa.PrivateKey,
+	baseGasLimit uint64,
+	gasStep int,
+	gasCeiling uint64,
+	senderFn func(auth *bind.TransactOpts) (*types.Transaction, error),
+	knob gasLimitKnob,
+) (*types.Receipt, time.Duration, time.Duration, error) {
+	gasLimit := applyEVMGasHeadroom(baseGasLimit, gasStep)
+	if gasCeiling > 0 && gasLimit > gasCeiling {
+		gasLimit = gasCeiling
+	}
 	publicKey, err := keys.PublicKey(privateKey)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("failed to derive public key: %w", err)
 	}
 	fromAddress := crypto.PubkeyToAddress(*publicKey)
-
 	chainIdInt, err := endpoint.EthClient().ChainID(stdCtx)
 	if err != nil {
 		return nil, 0, 0, fmt.Errorf("invalid chain id: %v", err)
@@ -2266,7 +2369,6 @@ func (h *Handler) executeWithRetryAndResubmission(
 		if waitErr == nil {
 			waitDur := time.Since(waitStart)
 			if receipt.Status == 0 {
-				// Try to get revert reason by replaying the tx via eth_call
 				callMsg := ethereum.CallMsg{
 					From:     fromAddress,
 					To:       tx.To(),
@@ -2275,21 +2377,61 @@ func (h *Handler) executeWithRetryAndResubmission(
 					Value:    tx.Value(),
 					Data:     tx.Data(),
 				}
-				_, callErr := endpoint.EthClient().CallContract(stdCtx, callMsg, receipt.BlockNumber)
+				callCtx, callCancel := context.WithTimeout(stdCtx, ethRevertProbeTimeout)
+				_, callErr := endpoint.EthClient().CallContract(callCtx, callMsg, receipt.BlockNumber)
+				callCancel()
 				if callErr != nil {
 					log.Printf("[EthTxSender] Revert reason: %v", callErr)
-					type dataErr interface {
-						ErrorData() interface{}
-					}
-					if de, ok := callErr.(dataErr); ok {
-						log.Printf("[EthTxSender] Revert data (hex): %v", de.ErrorData())
-					}
 					if name, ok := validatorCacheRaceErrorName(callErr); ok {
-						return receipt, submitDur, waitDur, fmt.Errorf("tx %s reverted with %s (status=0, gasUsed=%d): %w",
-							receipt.TxHash.Hex(), name, receipt.GasUsed, services.ErrValidatorCacheRace)
+						return receipt, submitDur, waitDur, fmt.Errorf(
+							"tx %s reverted with %s (status=0, gasUsed=%d): %w",
+							receipt.TxHash.Hex(), name, receipt.GasUsed, services.ErrValidatorCacheRace,
+						)
 					}
 				}
-				return receipt, submitDur, waitDur, fmt.Errorf("tx %s reverted (status=0, gasUsed=%d): %w", receipt.TxHash.Hex(), receipt.GasUsed, services.ErrPermanentRelayFailure)
+				// A successful original-gas replay is still diagnostic input. The
+				// classifier intentionally accepts a nil callErr and uses the bounded
+				// higher-gas probe to decide whether the receipt ran out of gas.
+				if classifyEthRevert(stdCtx, endpoint, callMsg, receipt.BlockNumber, callErr, receipt.GasUsed, tx.Gas()) == revertOutOfGas {
+					nextCeiling := gasCeiling
+					headerCtx, headerCancel := context.WithTimeout(stdCtx, ethRevertProbeTimeout)
+					if header, headerErr := endpoint.EthClient().HeaderByNumber(headerCtx, receipt.BlockNumber); headerErr == nil && header.GasLimit > 0 {
+						nextCeiling = header.GasLimit
+					}
+					headerCancel()
+					// Diagnose the chain ceiling before ladder exhaustion. Both conditions
+					// can become true on the final step; checking the ladder first masked the
+					// actionable block-limit reason behind the generic exhaustion error.
+					if nextCeiling > 0 && tx.Gas() >= nextCeiling {
+						return receipt, submitDur, waitDur, fmt.Errorf(
+							"tx %s ran out of gas at the block gas ceiling %d for %s: %w",
+							receipt.TxHash.Hex(), tx.Gas(), knob, services.ErrPermanentRelayFailure,
+						)
+					}
+
+					nextStep := gasStep + 1
+					if nextStep >= len(evmGasHeadroomBasisPoints) {
+						return receipt, submitDur, waitDur, fmt.Errorf(
+							"tx %s ran out of gas (gasUsed=%d of limit %d); exhausted finite gas ladder for %s: %w",
+							receipt.TxHash.Hex(), receipt.GasUsed, tx.Gas(), knob, services.ErrPermanentRelayFailure,
+						)
+					}
+
+					nextGasLimit := applyEVMGasHeadroom(baseGasLimit, nextStep)
+					if nextCeiling > 0 && nextGasLimit > nextCeiling {
+						nextGasLimit = nextCeiling
+					}
+					log.Printf("[EthTxSender] Tx %s ran out of gas at %d; retrying with fresh nonce and gas limit %d (step %d/%d)",
+						receipt.TxHash.Hex(), tx.Gas(), nextGasLimit, nextStep+1, len(evmGasHeadroomBasisPoints))
+					retryReceipt, retrySubmitDur, retryWaitDur, retryErr := h.executeWithRetryAndResubmissionAtGasStep(
+						stdCtx, endpoint, privateKey, baseGasLimit, nextStep, nextCeiling, senderFn, knob,
+					)
+					return retryReceipt, submitDur + retrySubmitDur, waitDur + retryWaitDur, retryErr
+				}
+				return receipt, submitDur, waitDur, fmt.Errorf(
+					"tx %s reverted (status=0, gasUsed=%d): %w",
+					receipt.TxHash.Hex(), receipt.GasUsed, services.ErrPermanentRelayFailure,
+				)
 			}
 			return receipt, submitDur, waitDur, nil
 		}

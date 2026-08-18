@@ -24,7 +24,6 @@ import (
 
 	"relayer/chain"
 	tendermintClient "relayer/client"
-	"relayer/keys"
 	"relayer/prover"
 	"relayer/relay"
 	"relayer/services"
@@ -960,23 +959,10 @@ func cosmosRouterClientIDOrDefault(cfg *appConfig) string {
 	return envOrDefault("ICS26_CLIENT_ID", cfg.CosmosToEthConfig.ICS26ClientID)
 }
 
+// validateStartupKeys uses the transaction signer seam so startup cannot retain
+// a separate environment-only signing-key path.
 func validateStartupKeys() error {
-	ethPrivKey := os.Getenv("ETH_PRIVATE_KEY")
-	if ethPrivKey == "" {
-		return fmt.Errorf("ETH_PRIVATE_KEY environment variable is required in .env file")
-	}
-	if _, err := keys.RestoreKey(ethPrivKey); err != nil {
-		return fmt.Errorf("failed to restore ETH private key: %w", err)
-	}
-
-	if _, err := (&transaction.Handler{}).CosmosSignerAddress(); err != nil {
-		if os.Getenv("COSMOS_PRIVATE_KEY") == "" {
-			return fmt.Errorf("COSMOS_PRIVATE_KEY environment variable is required in .env file")
-		}
-		return fmt.Errorf("failed to decode COSMOS_PRIVATE_KEY: %w", err)
-	}
-
-	return nil
+	return (&transaction.Handler{}).ValidateKeys()
 }
 
 func cosmosWasmClientIDOrDefault(cfg *appConfig) string {

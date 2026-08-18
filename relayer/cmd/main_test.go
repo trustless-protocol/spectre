@@ -8,6 +8,17 @@ import (
 	"testing"
 )
 
+func TestValidateStartupKeysRejectsInvalidCosmosAddressPrefix(t *testing.T) {
+	const privateKey = "a81f9eb900c02f35d28ec80d1da79dde52cc4cc37d6fbaef5768ab59f32cbfdd"
+	t.Setenv("ETH_PRIVATE_KEY", privateKey)
+	t.Setenv("COSMOS_PRIVATE_KEY", privateKey)
+	t.Setenv("COSMOS_ADDRESS_PREFIX", "invalid prefix")
+
+	if err := validateStartupKeys(); err == nil {
+		t.Fatal("startup accepted a Cosmos signer address with an invalid bech32 prefix")
+	}
+}
+
 func TestReplaceICS07Address(t *testing.T) {
 	t.Parallel()
 
