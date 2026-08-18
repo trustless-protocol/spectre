@@ -138,9 +138,10 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	//    also determine the point that enters the EC-MSM, which needs A to be
 	//    canonically represented and on the curve (ZK-06). compressEdwardsToLE
 	//    asserts the representation here; the curve assert lives in the ecip-gnark
-	//    Ed25519 gadget and lands with the third_party submodule bump. Until that
-	//    bump, this branch pins the pre-fix fork and only the representation half
-	//    is in force — see the PR body and #282.
+	//    Ed25519 gadget (signature/eddsa/verify_msg_bytes.go asserts both R and A
+	//    are on the curve, and the batch is cofactored per GF-09). That fork is
+	//    pinned since the third_party submodule bump in #398, so both halves of
+	//    ZK-06 are in force — see #282.
 	//    R/S are NOT hashed and NOT in calldata: the Groth16 proof itself
 	//    binds them via the in-circuit Ed25519 verify, and no on-chain logic
 	//    consumes them. The active byte is placed first so the on-chain
