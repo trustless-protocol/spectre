@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"relayer/chain"
@@ -55,8 +56,10 @@ func (s *Source) Chain() chain.ChainType { return chain.Cosmos }
 
 // LatestHeight returns the latest committed Tendermint height. Tendermint has
 // BFT instant finality, so the latest committed block is already final.
-func (s *Source) LatestHeight(_ context.Context) (uint64, error) {
-	lb, err := relayerclient.GetLatestLightBlock(s.cosmos.CosmosClient())
+func (s *Source) LatestHeight(ctx context.Context) (uint64, error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
+	defer cancel()
+	lb, err := relayerclient.GetLatestLightBlockWithContext(fetchCtx, s.cosmos.CosmosClient())
 	if err != nil {
 		return 0, fmt.Errorf("cosmos source: latest light block: %w", err)
 	}
@@ -86,8 +89,10 @@ func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 }
 
 // QueryHeader returns the JSON-encoded light block at height.
-func (s *Source) QueryHeader(_ context.Context, height uint64) ([]byte, error) {
-	lb, err := relayerclient.GetLightBlock(s.cosmos.CosmosClient(), int64(height))
+func (s *Source) QueryHeader(ctx context.Context, height uint64) ([]byte, error) {
+	fetchCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
+	defer cancel()
+	lb, err := relayerclient.GetLightBlockWithContext(fetchCtx, s.cosmos.CosmosClient(), int64(height))
 	if err != nil {
 		return nil, fmt.Errorf("cosmos source: light block at %d: %w", height, err)
 	}
@@ -100,8 +105,8 @@ func (s *Source) QueryHeader(_ context.Context, height uint64) ([]byte, error) {
 
 // MembershipProof proves the packet's commitment (recv) or ack (ack) exists at
 // height, wrapping services.CosmosMembership. eventType selects the ICS-24 path.
-func (s *Source) MembershipProof(_ context.Context, packet []byte, height uint64, eventType chain.EventType) ([]byte, error) {
-	pkt, lb, err := s.decodePacketAndBlock(packet, height)
+func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint64, eventType chain.EventType) ([]byte, error) {
+	pkt, lb, err := s.decodePacketAndBlock(ctx, packet, height)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +121,7 @@ func (s *Source) MembershipProof(_ context.Context, packet []byte, height uint64
 		// planCosmosPacketMsgs ethBlockTime>=TimeoutTimestamp skip). Without this the
 		// module retries the dead packet forever, each retry re-running a full
 		// client update and draining gas.
-		if timedOut, err := s.sendTimedOutOnEth(pkt); err != nil {
+		if timedOut, err := s.sendTimedOutOnEth(ctx, pkt); err != nil {
 			return nil, err // transient (RPC) — let the module retry
 		} else if timedOut {
 			return nil, chain.Permanent(fmt.Errorf("cosmos source: send seq=%d timed out; deferred to timeout scanner", pkt.Sequence))
@@ -127,17 +132,19 @@ func (s *Source) MembershipProof(_ context.Context, packet []byte, height uint64
 	default:
 		return nil, fmt.Errorf("cosmos source: MembershipProof: unsupported event type %d", eventType)
 	}
-	return services.CosmosMembership(s.cosmos, pkt, clientID, pathType, lb)
+	proofCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
+	defer cancel()
+	return services.CosmosMembership(proofCtx, s.cosmos, pkt, clientID, pathType, lb)
 }
 
 // sendTimedOutOnEth reports whether the packet's timeout timestamp has passed on
 // the ETH side, comparing against the latest ETH block time (the destination
 // clock the on-chain timeout check uses). A zero timeout never expires.
-func (s *Source) sendTimedOutOnEth(pkt channeltypesv2.Packet) (bool, error) {
+func (s *Source) sendTimedOutOnEth(parent context.Context, pkt channeltypesv2.Packet) (bool, error) {
 	if pkt.TimeoutTimestamp == 0 {
 		return false, nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), s.fetchTimeout)
+	ctx, cancel := context.WithTimeout(parent, s.fetchTimeout)
 	defer cancel()
 	header, err := s.evm.EthClient().HeaderByNumber(ctx, nil)
 	if err != nil {
@@ -148,22 +155,26 @@ func (s *Source) sendTimedOutOnEth(pkt channeltypesv2.Packet) (bool, error) {
 
 // NonMembershipProof proves the packet receipt is absent at height (timeout),
 // wrapping services.CosmosNonMembership.
-func (s *Source) NonMembershipProof(_ context.Context, packet []byte, height uint64) ([]byte, error) {
-	pkt, lb, err := s.decodePacketAndBlock(packet, height)
+func (s *Source) NonMembershipProof(ctx context.Context, packet []byte, height uint64) ([]byte, error) {
+	pkt, lb, err := s.decodePacketAndBlock(ctx, packet, height)
 	if err != nil {
 		return nil, err
 	}
-	return services.CosmosNonMembership(s.cosmos, pkt, pkt.DestinationClient, pathReceipt, lb)
+	proofCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
+	defer cancel()
+	return services.CosmosNonMembership(proofCtx, s.cosmos, pkt, pkt.DestinationClient, pathReceipt, lb)
 }
 
 // decodePacketAndBlock decodes the proto packet and fetches the light block the
 // proof is built against.
-func (s *Source) decodePacketAndBlock(packet []byte, height uint64) (channeltypesv2.Packet, *relayerclient.LightBlock, error) {
+func (s *Source) decodePacketAndBlock(ctx context.Context, packet []byte, height uint64) (channeltypesv2.Packet, *relayerclient.LightBlock, error) {
 	var pkt channeltypesv2.Packet
 	if err := pkt.Unmarshal(packet); err != nil {
 		return channeltypesv2.Packet{}, nil, fmt.Errorf("cosmos source: decode packet: %w", err)
 	}
-	lb, err := relayerclient.GetLightBlock(s.cosmos.CosmosClient(), int64(height))
+	fetchCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
+	defer cancel()
+	lb, err := relayerclient.GetLightBlockWithContext(fetchCtx, s.cosmos.CosmosClient(), int64(height))
 	if err != nil {
 		return channeltypesv2.Packet{}, nil, fmt.Errorf("cosmos source: light block at %d: %w", height, err)
 	}
@@ -181,14 +192,22 @@ const drainInterval = 500 * time.Millisecond
 // returns multi-packet batches the module folds into one RelayPackets multicall.
 func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []chain.Event) []int) error {
 	sub := subscriber.NewSubscriber(s.recovery)
-	go sub.SubscribeCosmos(s.cosmos, s.evm, s.ids, s.logger, s.bb)
+	var workers sync.WaitGroup
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		sub.SubscribeCosmos(ctx, s.cosmos, s.evm, s.ids, s.logger, s.bb)
+	}()
+	defer workers.Wait()
 
 	// Use the configured batch window so CheckCosmos returns multi-packet batches
 	// the handler can fold into one multicall (BatchSize=1 would defeat that).
 	cfg := s.batchConfig
 	ch := make(chan services.CosmosBatch, services.BatchHandoffCapacity)
 
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		ticker := time.NewTicker(drainInterval)
 		defer ticker.Stop()
 		for {

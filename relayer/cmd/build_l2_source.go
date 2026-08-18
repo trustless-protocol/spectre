@@ -248,8 +248,5 @@ func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.Untra
 // runL2Engine drives one L2->Cosmos module until ctx is cancelled. A cancelled
 // context is a clean shutdown, not a relay failure.
 func runL2Engine(ctx context.Context, module *relay.Module) error {
-	if err := module.Run(ctx); err != nil && ctx.Err() == nil {
-		return err
-	}
-	return nil
+	return module.Run(ctx)
 }

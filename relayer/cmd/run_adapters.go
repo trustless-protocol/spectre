@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 
@@ -63,16 +62,22 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	// rejected an unsafe/underivable interval at startup rather than silently
 	// falling back to a fixed default that could exceed the trusting period and let
 	// the client expire. Fail loud so the operator fixes the config.
-	periodicUpdateInterval, err := svc.PinnedSetRotationInterval(deps.EVM)
+	periodicUpdateInterval, err := svc.PinnedSetRotationInterval(ctx, deps.EVM)
 	if err != nil {
+		if isShutdownErr(err) && ctx.Err() != nil {
+			return nil
+		}
 		return fmt.Errorf("cosmos->eth: derive pinned-set rotation interval: %w", err)
 	}
 	// Initial delay from the client's ON-CHAIN freshness (time until next due), so
 	// a restart near the rotation deadline fires promptly instead of waiting a full
 	// fresh interval. On error, default to 0 (rotate now) — the safe direction:
 	// never let the set decay by delaying the first rotation.
-	initialRotationDelay, err := svc.PinnedSetRotationDueIn(deps.Cosmos, deps.EVM)
+	initialRotationDelay, err := svc.PinnedSetRotationDueIn(ctx, deps.Cosmos, deps.EVM)
 	if err != nil {
+		if isShutdownErr(err) && ctx.Err() != nil {
+			return nil
+		}
 		log.Printf("[adapter cosmos->eth] derive initial rotation delay: %v; rotating on startup", err)
 		initialRotationDelay = 0
 	}
@@ -117,9 +122,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	cancel()      // stop the other
 	<-errCh       // wait for it so no goroutine leaks
 
-	// A cancelled context is a clean shutdown, not a relay failure.
-	if errors.Is(err, context.Canceled) {
-		return nil
-	}
+	// Each module normalizes cancellation of the parent run context to nil while
+	// preserving real RPC deadlines and drain failures. Return that result as-is.
 	return err
 }

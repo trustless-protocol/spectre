@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -143,12 +142,18 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 
 	// Pinned-set rotation cadence from the on-chain trusting period (a derivation
 	// failure is FATAL, as in the Cosmos→ETH path, so the client can't silently expire).
-	periodicUpdateInterval, err := svc.PinnedSetRotationInterval(deps.EVM)
+	periodicUpdateInterval, err := svc.PinnedSetRotationInterval(ctx, deps.EVM)
 	if err != nil {
+		if isShutdownErr(err) && ctx.Err() != nil {
+			return nil
+		}
 		return fmt.Errorf("cosmos->l2: derive pinned-set rotation interval: %w", err)
 	}
-	initialRotationDelay, err := svc.PinnedSetRotationDueIn(deps.Cosmos, deps.EVM)
+	initialRotationDelay, err := svc.PinnedSetRotationDueIn(ctx, deps.Cosmos, deps.EVM)
 	if err != nil {
+		if isShutdownErr(err) && ctx.Err() != nil {
+			return nil
+		}
 		log.Printf("[adapter cosmos->l2] derive initial rotation delay: %v; rotating on startup", err)
 		initialRotationDelay = 0
 	}
@@ -168,10 +173,5 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		}),
 	)
 
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	if err := module.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
-		return err
-	}
-	return nil
+	return module.Run(ctx)
 }

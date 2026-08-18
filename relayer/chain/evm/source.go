@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/big"
 	"strconv"
+	"sync"
 	"time"
 
 	"relayer/chain"
@@ -65,12 +66,12 @@ func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 // finalizedExecBlock reads the beacon finality update and returns the execution
 // block number of the finalized header — the single finality-gated height both
 // LatestHeight and RelayableHeight report.
-func (s *Source) finalizedExecBlock(_ context.Context) (uint64, error) {
+func (s *Source) finalizedExecBlock(parent context.Context) (uint64, error) {
 	beaconURL := s.evm.BeaconAPIURL
 	if beaconURL == "" {
 		return 0, fmt.Errorf("eth source: beacon API URL is not configured")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(parent, 15*time.Second)
 	defer cancel()
 	fu, err := relayerclient.GetFinalityUpdate(ctx, beaconURL)
 	if err != nil {
@@ -100,14 +101,22 @@ const ethDrainInterval = 500 * time.Millisecond
 // ETH-origin timeouts are handled by the async scanner, not this path.
 func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []chain.Event) []int) error {
 	sub := subscriber.NewSubscriber(s.recovery)
-	go sub.SubscribeEth(s.cosmos, s.evm, s.ids, s.logger, s.bb)
+	var workers sync.WaitGroup
+	workers.Add(1)
+	go func() {
+		defer workers.Done()
+		sub.SubscribeEth(ctx, s.cosmos, s.evm, s.ids, s.logger, s.bb)
+	}()
+	defer workers.Wait()
 
 	// Use the configured batch window so CheckEth returns multi-packet batches the
 	// handler can fold into one multicall (BatchSize=1 would defeat that).
 	cfg := s.batchConfig
 	ch := make(chan services.EthBatch, services.BatchHandoffCapacity)
 
+	workers.Add(1)
 	go func() {
+		defer workers.Done()
 		ticker := time.NewTicker(ethDrainInterval)
 		defer ticker.Stop()
 		for {
@@ -197,7 +206,7 @@ func ethPacketToEvent(p services.EthPacket) (chain.Event, bool) {
 // height argument is not the proof block (the proof block is read from the
 // on-chain client above), so it is ignored.
 func (s *Source) MembershipProof(ctx context.Context, packet []byte, _ uint64, eventType chain.EventType) ([]byte, error) {
-	pkt, ethClientState, err := s.decodePacketAndClientState(packet)
+	pkt, ethClientState, err := s.decodePacketAndClientState(ctx, packet)
 	if err != nil {
 		return nil, err
 	}
@@ -221,8 +230,10 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, _ uint64, e
 		return nil, fmt.Errorf("eth source: MembershipProof: unsupported event type %d", eventType)
 	}
 	path := services.EthPath(clientID, pkt.Sequence, pathType)
+	proofCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	return relayerclient.GetEthMembershipProof(
-		ctx, s.evm.EthClient(), s.evm.Contracts.Router, path,
+		proofCtx, s.evm.EthClient(), s.evm.Contracts.Router, path,
 		ethcommon.HexToHash(services.ICS26_IBC_STORAGE_SLOT),
 		new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber),
 	)
@@ -237,12 +248,14 @@ func (s *Source) NonMembershipProof(_ context.Context, _ []byte, _ uint64) ([]by
 
 // decodePacketAndClientState decodes the proto packet and reads the on-chain
 // 08-wasm ETH client state (for the proof's execution block).
-func (s *Source) decodePacketAndClientState(packet []byte) (channeltypesv2.Packet, *relayerclient.EthereumClientState, error) {
+func (s *Source) decodePacketAndClientState(ctx context.Context, packet []byte) (channeltypesv2.Packet, *relayerclient.EthereumClientState, error) {
 	var pkt channeltypesv2.Packet
 	if err := pkt.Unmarshal(packet); err != nil {
 		return channeltypesv2.Packet{}, nil, fmt.Errorf("eth source: decode packet: %w", err)
 	}
-	cs, err := relayerclient.GetEthereumClientState(s.cosmos.CosmosClient(), s.ids.EVMOnCosmos)
+	queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cs, err := relayerclient.GetEthereumClientStateWithContext(queryCtx, s.cosmos.CosmosClient(), s.ids.EVMOnCosmos)
 	if err != nil {
 		return channeltypesv2.Packet{}, nil, fmt.Errorf("eth source: eth client state: %w", err)
 	}

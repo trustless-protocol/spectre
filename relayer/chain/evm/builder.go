@@ -43,8 +43,8 @@ func (b *BeaconBuilder) Name() string { return "beacon" }
 // empty payload list, so the module learns the client's real height (seeding the provability
 // guard) without submitting a tx. BuildEthClientUpdateHeaders returns the current
 // EthClientState even on the no-op path, so this is always available.
-func (b *BeaconBuilder) Build(_ context.Context, _ []byte) (chain.ClientUpdate, error) {
-	result, err := b.worker.BuildEthClientUpdateHeaders(b.cosmos, b.evm, b.clientID)
+func (b *BeaconBuilder) Build(ctx context.Context, _ []byte) (chain.ClientUpdate, error) {
+	result, err := b.worker.BuildEthClientUpdateHeaders(ctx, b.cosmos, b.evm, b.clientID)
 	if err != nil {
 		return chain.ClientUpdate{}, fmt.Errorf("beacon: build eth client update: %w", err)
 	}

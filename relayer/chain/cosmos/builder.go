@@ -44,15 +44,17 @@ func (b *Groth16Builder) Name() string { return "groth16" }
 // chain.ClientUpdate. A "no update needed" result still reports the current
 // on-chain trusted Cosmos height with a nil payload, so the module learns the
 // client's real height (seeding the provability guard) without submitting a tx.
-func (b *Groth16Builder) Build(_ context.Context, _ []byte) (chain.ClientUpdate, error) {
-	trustedBlock, err := services.FetchOnChainTrustedHeight(b.evm)
+func (b *Groth16Builder) Build(ctx context.Context, _ []byte) (chain.ClientUpdate, error) {
+	readCtx, cancel := context.WithTimeout(ctx, b.fetchTimeout)
+	defer cancel()
+	trustedBlock, err := services.FetchOnChainTrustedHeightWithContext(readCtx, b.evm)
 	if err != nil {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: on-chain trusted height: %w", err)
 	}
 	if trustedBlock < 0 {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: negative trusted height %d", trustedBlock)
 	}
-	result, err := b.worker.BuildCosmosClientUpdateMsg(b.cosmos, b.evm, b.fetchTimeout, b.rotationThreshold, b.proofType, trustedBlock, b.trustLevel, false, 0)
+	result, err := b.worker.BuildCosmosClientUpdateMsgWithContext(ctx, b.cosmos, b.evm, b.fetchTimeout, b.rotationThreshold, b.proofType, trustedBlock, b.trustLevel, false, 0)
 	if err != nil {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: build cosmos update: %w", err)
 	}

@@ -180,17 +180,17 @@ func (d *Destination) sendPacketBatch(ctx context.Context, msgs []any) error {
 // HasPacketReceipt reports whether a packet was already delivered on ETH. The
 // packet is the proto-marshaled channeltypesv2.Packet (the convention shared
 // with Event.Raw and RelayPackets).
-func (d *Destination) HasPacketReceipt(_ context.Context, packet []byte) (bool, error) {
+func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool, error) {
 	var pkt channeltypesv2.Packet
 	if err := pkt.Unmarshal(packet); err != nil {
 		return false, fmt.Errorf("evm: decode packet: %w", err)
 	}
-	return services.HasEthPacketReceipt(d.evm, pkt)
+	return services.HasEthPacketReceipt(ctx, d.evm, pkt)
 }
 
 // ClientExpiresAt returns when the SpectreClient-of-Cosmos on this chain expires
 // (trusted consensus timestamp + trusting period), so the RelayModule refresh
 // routine can advance the client before it lapses.
-func (d *Destination) ClientExpiresAt(_ context.Context, _ string) (time.Time, error) {
-	return services.CosmosClientExpiry(d.cosmos, d.evm)
+func (d *Destination) ClientExpiresAt(ctx context.Context, _ string) (time.Time, error) {
+	return services.CosmosClientExpiry(ctx, d.cosmos, d.evm)
 }

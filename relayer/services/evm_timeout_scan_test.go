@@ -58,7 +58,7 @@ func TestScanForEVMTimeoutsTrackerRemoval(t *testing.T) {
 			svc.scanForEVMTimeouts(context.Background(), evmTimeoutDeps{}, evmTimeoutScanOptions{
 				tag:     "Test",
 				tracker: tracker,
-				hasPendingCommitment: func(evmTimeoutDeps, channeltypesv2.Packet) (bool, error) {
+				hasPendingCommitment: func(context.Context, evmTimeoutDeps, channeltypesv2.Packet) (bool, error) {
 					return tc.commitment, tc.commitmentErr
 				},
 				timeoutSend: func(_ context.Context, _ evmTimeoutDeps, packet EthPacket) bool {

@@ -1,6 +1,7 @@
 package subscriber
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log"
@@ -79,7 +80,7 @@ func TestScanEthRangePersistsOnlySuccessfulChunks(t *testing.T) {
 		}
 	}
 	wantErr := errors.New("provider limit")
-	_, err := sub.scanEthRangeInChunks(deps, "send", &cursor, 10, 4,
+	_, err := sub.scanEthRangeInChunks(context.Background(), deps, "send", &cursor, 10, 4,
 		func(from, to uint64) (ethRecoveryStats, error) {
 			calls++
 			if calls == 2 {

@@ -119,12 +119,9 @@ type Source interface {
 	// (startup lookback, periodic ticker, reconnect-gap) — reused from the generic
 	// subscriber, not reimplemented per chain.
 	//
-	// CALL ONCE PER PROCESS LIFETIME. The underlying subscriber goroutine has no
-	// cancellation path today: on ctx cancellation Subscribe returns but the
-	// goroutine keeps running (harmless while the process is exiting). Do NOT
-	// restart Subscribe in-process — a second subscriber would start with a fresh
-	// dedup map and enqueue duplicate events. (Threading ctx into the subscriber
-	// loop remains a subscriber-cancellation follow-up.)
+	// CALL ONCE PER PROCESS LIFETIME. Subscribe owns and drains its subscriber and
+	// batch-handoff workers before returning; ctx cancellation must interrupt any
+	// reconnect wait, live watch, recovery scan, or RPC in flight.
 	//
 	// Batching (not per-event) is deliberate: it lets the destination fold N
 	// packet messages into one multicall (amortizing the ~21k per-tx intrinsic gas

@@ -7,6 +7,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -188,18 +189,38 @@ func NewModule(name, clientID string, src chain.Source, dst chain.Destination, b
 // events (the adapter owns gap recovery) and runs a background refresh routine
 // that keeps the destination client from expiring.
 func (m *Module) Run(ctx context.Context) error {
-	go m.refreshLoop(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	workers := newWorkerGroup()
+	subscribeErr := make(chan error, 1)
+
+	workers.Go("subscriber", func() {
+		subscribeErr <- m.src.Subscribe(runCtx, m.handleBatch)
+	})
+	workers.Go("refresh", func() { m.refreshLoop(runCtx) })
 	if m.scan != nil {
-		go m.scanLoop(ctx)
+		workers.Go("timeout-scan", func() { m.scanLoop(runCtx) })
 	}
 	if m.periodicUpdate != nil {
-		go m.periodicUpdateLoop(ctx)
+		workers.Go("periodic-update", func() { m.periodicUpdateLoop(runCtx) })
 	}
 
-	// Subscribe carries the adapter's gap-recovery guarantees; it returns only on
-	// ctx cancellation or a fatal subscription error.
-	if err := m.src.Subscribe(ctx, m.handleBatch); err != nil {
-		return fmt.Errorf("relay %s: subscribe: %w", m.name, err)
+	var runErr error
+	select {
+	case <-ctx.Done():
+		runErr = ctx.Err()
+	case err := <-subscribeErr:
+		runErr = err
+	}
+	cancel()
+
+	if running := workers.drain(shutdownDrainTimeout); len(running) > 0 {
+		return fmt.Errorf("relay %s: shutdown drain timed out after %s; workers still running: %v", m.name, shutdownDrainTimeout, running)
+	}
+	if runErr != nil {
+		if ctx.Err() != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
+			return nil
+		}
+		return fmt.Errorf("relay %s: subscribe: %w", m.name, runErr)
 	}
 	return nil
 }

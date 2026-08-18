@@ -96,8 +96,10 @@ func (s *Services) RotatePinnedSet(stdCtx context.Context, cosmos CosmosEndpoint
 // trusting period exactly as the legacy routine did (min of the configured
 // refresh interval and trustingPeriod minus a safety margin), so the pinned set
 // is refreshed well within the window where it stays above quorum.
-func (s *Services) PinnedSetRotationInterval(evm EVMEndpoint) (time.Duration, error) {
-	clientState, err := fetchOnChainClientState(evm)
+func (s *Services) PinnedSetRotationInterval(stdCtx context.Context, evm EVMEndpoint) (time.Duration, error) {
+	readCtx, cancel := fetchCtx(stdCtx, s.cosmosConfig.FetchTimeout)
+	defer cancel()
+	clientState, err := fetchOnChainClientStateWithContext(readCtx, evm)
 	if err != nil {
 		return 0, err
 	}
@@ -112,16 +114,20 @@ func (s *Services) PinnedSetRotationInterval(evm EVMEndpoint) (time.Duration, er
 // mirroring the legacy seedCosmosClientFreshness behavior — so a relayer restart
 // near the rotation deadline does not wait a full fresh interval before the first
 // rotation, which could let the pinned set decay below quorum.
-func (s *Services) PinnedSetRotationDueIn(cosmos CosmosEndpoint, evm EVMEndpoint) (time.Duration, error) {
-	interval, err := s.PinnedSetRotationInterval(evm)
+func (s *Services) PinnedSetRotationDueIn(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint) (time.Duration, error) {
+	interval, err := s.PinnedSetRotationInterval(stdCtx, evm)
 	if err != nil {
 		return 0, err
 	}
-	trustedHeight, err := FetchOnChainTrustedHeight(evm)
+	readCtx, cancel := fetchCtx(stdCtx, s.cosmosConfig.FetchTimeout)
+	trustedHeight, err := FetchOnChainTrustedHeightWithContext(readCtx, evm)
+	cancel()
 	if err != nil {
 		return 0, err
 	}
-	lightBlock, err := client.GetLightBlock(cosmos.CosmosClient(), trustedHeight)
+	lightCtx, cancelLight := fetchCtx(stdCtx, s.cosmosConfig.FetchTimeout)
+	defer cancelLight()
+	lightBlock, err := client.GetLightBlockWithContext(lightCtx, cosmos.CosmosClient(), trustedHeight)
 	if err != nil {
 		return 0, err
 	}

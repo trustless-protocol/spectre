@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -30,6 +31,18 @@ import (
 	"relayer/transaction"
 	utils "relayer/utils"
 )
+
+func isShutdownErr(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func stopRelaysAndCleanup(cancel func(), wait func(), cleanups []func()) {
+	cancel()
+	wait()
+	for _, cleanup := range cleanups {
+		cleanup()
+	}
+}
 
 const (
 	flagConfigPath     = "config"
@@ -1720,6 +1733,8 @@ func Start(logger *zap.Logger) *cobra.Command {
 			total := len(sources) + len(l2Dests) + len(l2Sources)
 			loopErrCh := make(chan error, total)
 			cleanups := make([]func(), 0, total)
+			relayCtx, cancelRelays := context.WithCancel(runCtx)
+			defer cancelRelays()
 			l2ReturnPaths := make([]l2TimeoutReturnPathConfig, 0, len(l2Dests))
 			onceCleanup := func(cleanup func()) func() {
 				var once sync.Once
@@ -1728,6 +1743,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 						once.Do(cleanup)
 					}
 				}
+			}
+			stopAndCleanup := func() {
+				stopRelaysAndCleanup(cancelRelays, wg.Wait, cleanups)
 			}
 			for i := range sources {
 				svc, deps, cleanup, err := buildCosmosToEthSource(
@@ -1738,9 +1756,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 					},
 				)
 				if err != nil {
-					for _, cleanup := range cleanups {
-						cleanup()
-					}
+					stopAndCleanup()
 					return fmt.Errorf("cosmos_to_eth source %q: %w", sources[i].ICS26ClientID, err)
 				}
 				cleanup = onceCleanup(cleanup)
@@ -1751,7 +1767,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 					defer cleanup()
 					// Chain-adapter RelayModule engine — the sole relay engine since
 					// the legacy services.StartLoop was removed after the cutover.
-					if err := runAdapterEngine(runCtx, svc, deps); err != nil {
+					if err := runAdapterEngine(relayCtx, svc, deps); err != nil {
 						loopErrCh <- fmt.Errorf("cosmos_to_eth source %q: %w", deps.IDs.CosmosOnEVM, err)
 					}
 				}(svc, deps, cleanup)
@@ -1776,9 +1792,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 					logger, l2Dests[i], cfg.BatchConfig, p, txHandler,
 				)
 				if err != nil {
-					for _, cleanup := range cleanups {
-						cleanup()
-					}
+					stopAndCleanup()
 					return fmt.Errorf("cosmos_to_l2 dest %q: %w", l2Dests[i].ICS26ClientID, err)
 				}
 				cleanup = onceCleanup(cleanup)
@@ -1794,9 +1808,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 				if len(l2Sources) > 0 {
 					returnPath, err := l2TimeoutReturnPathConfigForDest(runCtx, name, l2Dests[i], l2TimeoutReturnPath{svc: svc, deps: deps})
 					if err != nil {
-						for _, cleanup := range cleanups {
-							cleanup()
-						}
+						stopAndCleanup()
 						return fmt.Errorf("cosmos_to_l2 dest %q: %w", l2Dests[i].ICS26ClientID, err)
 					}
 					l2ReturnPaths = append(l2ReturnPaths, returnPath)
@@ -1818,16 +1830,12 @@ func Start(logger *zap.Logger) *cobra.Command {
 			for i := range l2Sources {
 				timeoutReturn, err := findL2TimeoutReturnPath(runCtx, l2Sources[i], l2ReturnPaths)
 				if err != nil {
-					for _, cleanup := range cleanups {
-						cleanup()
-					}
+					stopAndCleanup()
 					return fmt.Errorf("l2_to_cosmos source %q: %w", l2Sources[i].AttestorSrcChain, err)
 				}
 				module, cleanup, err := buildL2ToCosmosModule(logger, l2Sources[i], txHandler, timeoutReturn)
 				if err != nil {
-					for _, cleanup := range cleanups {
-						cleanup()
-					}
+					stopAndCleanup()
 					return fmt.Errorf("l2_to_cosmos source %q: %w", l2Sources[i].AttestorSrcChain, err)
 				}
 				cleanup = onceCleanup(cleanup)
@@ -1842,7 +1850,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 				go func(svc *services.Services, deps services.RelayDeps, cleanup func()) {
 					defer wg.Done()
 					defer cleanup()
-					if err := runCosmosToL2Engine(runCtx, svc, deps); err != nil {
+					if err := runCosmosToL2Engine(relayCtx, svc, deps); err != nil {
 						loopErrCh <- fmt.Errorf("cosmos_to_l2 dest %q: %w", deps.IDs.CosmosOnEVM, err)
 					}
 				}(d.svc, d.deps, d.cleanup)
@@ -1852,7 +1860,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 				go func(module *relay.Module, cleanup func(), srcChain string) {
 					defer wg.Done()
 					defer cleanup()
-					if err := runL2Engine(runCtx, module); err != nil {
+					if err := runL2Engine(relayCtx, module); err != nil {
 						loopErrCh <- fmt.Errorf("l2_to_cosmos source %q: %w", srcChain, err)
 					}
 				}(s.module, s.cleanup, s.srcChain)
@@ -1867,17 +1875,21 @@ func Start(logger *zap.Logger) *cobra.Command {
 
 			select {
 			case err := <-loopErrCh:
-				for _, cleanup := range cleanups {
-					cleanup()
-				}
+				stopAndCleanup()
 				return err
 			case <-done:
-				return nil
+				// A worker sends its error before its deferred wg.Done. If all
+				// workers have returned, prefer that buffered error over treating
+				// the coincident done signal as a clean shutdown.
+				select {
+				case err := <-loopErrCh:
+					return err
+				default:
+					return nil
+				}
 			case <-runCtx.Done():
 				logger.Sugar().Infof("Relayer shutdown requested: %v", runCtx.Err())
-				for _, cleanup := range cleanups {
-					cleanup()
-				}
+				stopAndCleanup()
 				logger.Sugar().Info("Relayer clients stopped; exiting")
 			}
 

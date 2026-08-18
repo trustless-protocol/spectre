@@ -656,6 +656,12 @@ func GetLightClientBootstrap(ctx context.Context, beaconAPIURL, blockRoot string
 }
 
 func GetEthereumClientState(cosmosClient *rpchttp.HTTP, clientID string) (*EthereumClientState, error) {
+	return GetEthereumClientStateWithContext(context.Background(), cosmosClient, clientID)
+}
+
+// GetEthereumClientStateWithContext propagates cancellation into the Cosmos
+// ABCI query. The wrapper above is retained for one-shot commands.
+func GetEthereumClientStateWithContext(ctx context.Context, cosmosClient *rpchttp.HTTP, clientID string) (*EthereumClientState, error) {
 	queryReq := &clienttypes.QueryClientStateRequest{
 		ClientId: clientID,
 	}
@@ -665,7 +671,7 @@ func GetEthereumClientState(cosmosClient *rpchttp.HTTP, clientID string) (*Ether
 		return nil, fmt.Errorf("failed to marshal query request: %w", err)
 	}
 
-	result, err := cosmosClient.ABCIQuery(context.Background(), "/ibc.core.client.v1.Query/ClientState", reqBytes)
+	result, err := cosmosClient.ABCIQuery(ctx, "/ibc.core.client.v1.Query/ClientState", reqBytes)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query client state: %w", err)
 	}
@@ -697,12 +703,16 @@ func GetEthereumClientState(cosmosClient *rpchttp.HTTP, clientID string) (*Ether
 // so this does not decode the client-specific inner Data — for an L2 client the
 // revision height IS the L2 block number the client trusts, i.e. the proof height.
 func GetWasmClientLatestHeight(cosmosClient *rpchttp.HTTP, clientID string) (clienttypes.Height, error) {
+	return GetWasmClientLatestHeightWithContext(context.Background(), cosmosClient, clientID)
+}
+
+func GetWasmClientLatestHeightWithContext(ctx context.Context, cosmosClient *rpchttp.HTTP, clientID string) (clienttypes.Height, error) {
 	queryReq := &clienttypes.QueryClientStateRequest{ClientId: clientID}
 	reqBytes, err := proto.Marshal(queryReq)
 	if err != nil {
 		return clienttypes.Height{}, fmt.Errorf("marshal client-state query: %w", err)
 	}
-	result, err := cosmosClient.ABCIQuery(context.Background(), "/ibc.core.client.v1.Query/ClientState", reqBytes)
+	result, err := cosmosClient.ABCIQuery(ctx, "/ibc.core.client.v1.Query/ClientState", reqBytes)
 	if err != nil {
 		return clienttypes.Height{}, fmt.Errorf("query client state %s: %w", clientID, err)
 	}

@@ -500,12 +500,16 @@ func GetUnbondingTime(client *rpchttp.HTTP) (float64, error) {
 }
 
 func GetLatestLightBlock(client *rpchttp.HTTP) (*LightBlock, error) {
-	status, err := client.Status(context.Background())
+	return GetLatestLightBlockWithContext(context.Background(), client)
+}
+
+func GetLatestLightBlockWithContext(ctx context.Context, client *rpchttp.HTTP) (*LightBlock, error) {
+	status, err := client.Status(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
 	}
 
-	return GetLightBlock(client, status.SyncInfo.LatestBlockHeight)
+	return GetLightBlockWithContext(ctx, client, status.SyncInfo.LatestBlockHeight)
 }
 
 // cometBFTMaxPerPage is the largest page size the CometBFT /validators RPC
@@ -630,11 +634,17 @@ func GetLightBlockWithContext(ctx context.Context, client *rpchttp.HTTP, height 
 }
 
 func ProvePath(client *rpchttp.HTTP, height int64, path [][]byte) ([]byte, *commitmenttypes.MerkleProof, error) {
+	return ProvePathWithContext(context.Background(), client, height, path)
+}
+
+// ProvePathWithContext propagates cancellation into the ABCI proof query. The
+// compatibility wrapper above remains for one-shot commands.
+func ProvePathWithContext(ctx context.Context, client *rpchttp.HTTP, height int64, path [][]byte) ([]byte, *commitmenttypes.MerkleProof, error) {
 	queryPath := fmt.Sprintf("store/%s/key", string(path[0]))
 	request := slices.Concat(path[1:]...)
 
 	// Make ABCI query
-	result, err := client.ABCIQueryWithOptions(context.Background(), queryPath, request, rpcclient.ABCIQueryOptions{
+	result, err := client.ABCIQueryWithOptions(ctx, queryPath, request, rpcclient.ABCIQueryOptions{
 		// Proof height should be the block before the target block.
 		Height: height - 1,
 		Prove:  true,

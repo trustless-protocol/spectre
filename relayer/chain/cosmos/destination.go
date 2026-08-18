@@ -73,7 +73,9 @@ func (d *Destination) UpdateClient(ctx context.Context, clientID string, update 
 	if err != nil {
 		return err
 	}
-	ethClientState, err := relayerclient.GetEthereumClientState(d.cosmos.CosmosClient(), d.clientID)
+	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	ethClientState, err := relayerclient.GetEthereumClientStateWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
@@ -156,7 +158,9 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 	if err != nil {
 		return fmt.Errorf("cosmos dest: signer address: %w", err)
 	}
-	ethClientState, err := relayerclient.GetEthereumClientState(d.cosmos.CosmosClient(), d.clientID)
+	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	ethClientState, err := relayerclient.GetEthereumClientStateWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
@@ -208,7 +212,9 @@ func (d *Destination) RelayWithUpdate(ctx context.Context, clientID string, upda
 	if err != nil {
 		return err
 	}
-	ethClientState, err := relayerclient.GetEthereumClientState(d.cosmos.CosmosClient(), d.clientID)
+	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	ethClientState, err := relayerclient.GetEthereumClientStateWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
@@ -291,8 +297,10 @@ func (d *Destination) HasPacketReceipt(_ context.Context, _ []byte) (bool, error
 // slot. We report one period after that slot's time — deliberately early so the
 // refresh routine never lets it lapse (a wrong-too-late value would expire the
 // client, the failure class we care about most).
-func (d *Destination) ClientExpiresAt(_ context.Context, _ string) (time.Time, error) {
-	cs, err := relayerclient.GetEthereumClientState(d.cosmos.CosmosClient(), d.clientID)
+func (d *Destination) ClientExpiresAt(ctx context.Context, _ string) (time.Time, error) {
+	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cs, err := relayerclient.GetEthereumClientStateWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}

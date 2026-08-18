@@ -96,7 +96,7 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 	if err != nil {
 		return fmt.Errorf("l2 dest: signer address: %w", err)
 	}
-	proofHeight, err := d.proofHeight()
+	proofHeight, err := d.proofHeight(ctx)
 	if err != nil {
 		return err
 	}
@@ -146,8 +146,10 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 // proofHeight is the L2 client's latest tracked height — the height the packet
 // proofs must be verified against. The wasm ClientState carries LatestHeight
 // directly; for the L2 client its revision height is the L2 block number.
-func (d *Destination) proofHeight() (clienttypes.Height, error) {
-	h, err := relayerclient.GetWasmClientLatestHeight(d.cosmos.CosmosClient(), d.clientID)
+func (d *Destination) proofHeight(ctx context.Context) (clienttypes.Height, error) {
+	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	h, err := relayerclient.GetWasmClientLatestHeightWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return clienttypes.Height{}, fmt.Errorf("l2 dest: read L2 client latest height: %w", err)
 	}
@@ -156,12 +158,12 @@ func (d *Destination) proofHeight() (clienttypes.Height, error) {
 
 // HasPacketReceipt reports whether an L2-origin packet was already delivered on
 // Cosmos, via the same Cosmos receipt ABCI query the ETH recovery path uses.
-func (d *Destination) HasPacketReceipt(_ context.Context, packet []byte) (bool, error) {
+func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool, error) {
 	var pkt channeltypesv2.Packet
 	if err := pkt.Unmarshal(packet); err != nil {
 		return false, fmt.Errorf("l2 dest: decode packet: %w", err)
 	}
-	return subscriber.HasCosmosPacketReceipt(d.cosmos, pkt)
+	return subscriber.HasCosmosPacketReceiptWithContext(ctx, d.cosmos, pkt)
 }
 
 // ClientExpiresAt reports when the L2 wasm client would expire on its own timer.
