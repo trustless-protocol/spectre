@@ -28,12 +28,12 @@ contract AttackerIBCERC20 is IIBCERC20, ERC20 {
     /// @inheritdoc IMintableAndBurnable
     function mint(address, uint256) external { }
 
+    /// @inheritdoc IMintableAndBurnable
+    function burn(uint256) external { }
+
     function mintTo(address to, uint256 amount) external {
         _mint(to, amount);
     }
-
-    /// @inheritdoc IMintableAndBurnable
-    function burn(address, uint256) external { }
 
     /// @inheritdoc IIBCERC20
     function escrow() external view returns (address) {

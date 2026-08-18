@@ -114,13 +114,15 @@ contract IBCERC20Test is Test {
         ibcERC20.mint(address(escrow), startingAmount);
         assertEq(ibcERC20.balanceOf(address(escrow)), startingAmount);
 
-        ibcERC20.burn(address(escrow), burnAmount);
+        vm.prank(address(escrow));
+        ibcERC20.burn(burnAmount);
         uint256 leftOver = startingAmount - burnAmount;
         assertEq(ibcERC20.balanceOf(address(escrow)), leftOver);
         assertEq(ibcERC20.totalSupply(), leftOver);
 
         if (leftOver != 0) {
-            ibcERC20.burn(address(escrow), leftOver);
+            vm.prank(address(escrow));
+            ibcERC20.burn(leftOver);
             assertEq(ibcERC20.balanceOf(address(escrow)), 0);
             assertEq(ibcERC20.totalSupply(), 0);
         }
@@ -131,32 +133,31 @@ contract IBCERC20Test is Test {
         ibcERC20.mint(address(escrow), startingAmount);
         assertEq(ibcERC20.balanceOf(address(escrow)), startingAmount);
 
-        // unauthorized burn
-        address notICS20Transfer = makeAddr("notICS20Transfer");
-        vm.expectRevert(abi.encodeWithSelector(IIBCERC20Errors.IBCERC20Unauthorized.selector, notICS20Transfer));
-        vm.prank(notICS20Transfer);
-        ibcERC20.burn(address(escrow), burnAmount);
-        assertEq(ibcERC20.balanceOf(notICS20Transfer), 0);
+        // unauthorized burn (not the escrow)
+        address notEscrow = makeAddr("notEscrow");
+        vm.expectRevert(abi.encodeWithSelector(IIBCERC20Errors.IBCERC20Unauthorized.selector, notEscrow));
+        vm.prank(notEscrow);
+        ibcERC20.burn(burnAmount);
         assertEq(ibcERC20.balanceOf(address(escrow)), startingAmount);
         assertEq(ibcERC20.totalSupply(), startingAmount);
 
-        // non-esrow burn
-        address notEscrow = makeAddr("notEscrow");
-        vm.expectRevert(abi.encodeWithSelector(IIBCERC20Errors.IBCERC20NotEscrow.selector, address(escrow), notEscrow));
-        ibcERC20.burn(notEscrow, burnAmount);
-        assertEq(ibcERC20.balanceOf(notICS20Transfer), 0);
+        // ICS20 itself is no longer authorized to burn directly - only the escrow is
+        vm.expectRevert(abi.encodeWithSelector(IIBCERC20Errors.IBCERC20Unauthorized.selector, address(this)));
+        ibcERC20.burn(burnAmount);
         assertEq(ibcERC20.balanceOf(address(escrow)), startingAmount);
         assertEq(ibcERC20.totalSupply(), startingAmount);
     }
 
     // Just to document the behaviour
     function test_BurnZero() public {
-        ibcERC20.burn(address(escrow), 0);
+        vm.prank(address(escrow));
+        ibcERC20.burn(0);
         assertEq(ibcERC20.balanceOf(address(escrow)), 0);
         assertEq(ibcERC20.totalSupply(), 0);
 
         ibcERC20.mint(address(escrow), 1000);
-        ibcERC20.burn(address(escrow), 0);
+        vm.prank(address(escrow));
+        ibcERC20.burn(0);
         assertEq(ibcERC20.balanceOf(address(escrow)), 1000);
         assertEq(ibcERC20.totalSupply(), 1000);
     }
@@ -164,7 +165,8 @@ contract IBCERC20Test is Test {
     function test_failure_Burn() public {
         // test burn with zero balance
         vm.expectRevert(abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, address(escrow), 0, 1));
-        ibcERC20.burn(address(escrow), 1);
+        vm.prank(address(escrow));
+        ibcERC20.burn(1);
 
         // mint some to test other cases
         ibcERC20.mint(address(escrow), 1000);
@@ -173,6 +175,7 @@ contract IBCERC20Test is Test {
         vm.expectRevert(
             abi.encodeWithSelector(IERC20Errors.ERC20InsufficientBalance.selector, address(escrow), 1000, 1001)
         );
-        ibcERC20.burn(address(escrow), 1001);
+        vm.prank(address(escrow));
+        ibcERC20.burn(1001);
     }
 }

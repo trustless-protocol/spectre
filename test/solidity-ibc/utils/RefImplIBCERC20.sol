@@ -15,12 +15,18 @@ contract RefImplIBCERC20 is IMintableAndBurnable, UUPSUpgradeable, ERC20Upgradea
     /// @param caller The address of the caller
     error CallerIsNotICS20(address caller);
 
+    /// @notice Caller is not the Escrow contract
+    /// @param caller The address of the caller
+    error CallerIsNotEscrow(address caller);
+
     /// @notice Storage of the RefIBCERC20 contract
     /// @dev It's implemented on a custom ERC-7201 namespace to reduce the risk of storage collisions when using with
     /// upgradeable contracts.
-    /// @param _ics20 The ICS20 contract address, can burn and mint tokens
+    /// @param _ics20 The ICS20 contract address, can mint tokens
+    /// @param _escrow The escrow contract address, the only account allowed to burn its own balance
     struct RefIBCERC20Storage {
         address _ics20;
+        address _escrow;
     }
 
     /// @notice ERC-7201 slot for the RefIBCERC20 storage
@@ -37,11 +43,13 @@ contract RefImplIBCERC20 is IMintableAndBurnable, UUPSUpgradeable, ERC20Upgradea
     /// @notice Initializes the RefIBCERC20 contract
     /// @param owner_ The owner of the contract, allowing it to be upgraded
     /// @param ics20_ The ICS20 contract address
+    /// @param escrow_ The escrow contract address
     /// @param name_ The name of the token
     /// @param symbol_ The symbol of the token
     function initialize(
         address owner_,
         address ics20_,
+        address escrow_,
         string calldata name_,
         string calldata symbol_
     )
@@ -53,12 +61,19 @@ contract RefImplIBCERC20 is IMintableAndBurnable, UUPSUpgradeable, ERC20Upgradea
 
         RefIBCERC20Storage storage $ = _getRefIBCERC20Storage();
         $._ics20 = ics20_;
+        $._escrow = escrow_;
     }
 
     /// @notice Returns the ICS20 contract address
     /// @return The ICS20 contract address
     function ics20() external view returns (address) {
         return _getRefIBCERC20Storage()._ics20;
+    }
+
+    /// @notice Returns the escrow contract address
+    /// @return The escrow contract address
+    function escrow() external view returns (address) {
+        return _getRefIBCERC20Storage()._escrow;
     }
 
     /**
@@ -85,8 +100,8 @@ contract RefImplIBCERC20 is IMintableAndBurnable, UUPSUpgradeable, ERC20Upgradea
     }
 
     /// @inheritdoc IMintableAndBurnable
-    function burn(address mintAddress, uint256 amount) external onlyICS20 {
-        _burn(mintAddress, amount);
+    function burn(uint256 amount) external onlyEscrow {
+        _burn(_msgSender(), amount);
     }
 
     /// @notice Returns the storage of the RefIBCERC20 contract
@@ -105,6 +120,12 @@ contract RefImplIBCERC20 is IMintableAndBurnable, UUPSUpgradeable, ERC20Upgradea
     /// @notice Modifier to check if the caller is the ICS20 contract
     modifier onlyICS20() {
         require(_msgSender() == _getRefIBCERC20Storage()._ics20, CallerIsNotICS20(_msgSender()));
+        _;
+    }
+
+    /// @notice Modifier to check if the caller is the escrow contract
+    modifier onlyEscrow() {
+        require(_msgSender() == _getRefIBCERC20Storage()._escrow, CallerIsNotEscrow(_msgSender()));
         _;
     }
 }

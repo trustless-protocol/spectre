@@ -99,3 +99,36 @@ against the old escrow implementation makes sends revert.
 Refund-credit records exist only for packets sent after this upgrade. Refunds
 of packets already in flight restore zero rate-limit usage, so operators must
 account for that one-time transition when monitoring escrow limits.
+
+The burn-signature change adds a second constraint of the same shape, in the
+same direction. `Escrow` gains `burn(IMintableAndBurnable,uint256)` and
+ICS20Transfer starts calling it instead of burning through the token directly,
+so the Escrow beacon must again be upgraded before, or atomically with, the
+ICS20Transfer implementation. A new transfer implementation against an old
+escrow reverts on any send that returns a voucher to its source chain — the
+function it calls does not exist there.
+
+The token side changes too: `IMintableAndBurnable.burn` becomes `burn(uint256)`,
+burning the caller's own balance and restricted to the escrow, replacing
+`burn(address,uint256)`.
+
+The two ends of the burn therefore have to flip together. Working through the
+combinations, an old ICS20Transfer burns through the token directly and needs
+the old `burn(address,uint256)`; a new one burns through the escrow and needs
+the new `burn(uint256)`. Upgrading the IBCERC20 beacon first breaks the old
+transfer implementation for the same reason upgrading ICS20Transfer first
+breaks against the old escrow.
+
+The Escrow beacon is the exception: its new `burn` is unreachable until
+ICS20Transfer calls it, so it can be upgraded on its own at any point
+beforehand.
+
+So either upgrade all three atomically — the recommended path — or upgrade the
+Escrow beacon first and then the IBCERC20 beacon **and** ICS20Transfer
+atomically with each other. No send returning a voucher to its source chain may
+be relayed while those two are out of step.
+
+Any custom ERC20 registered through `setCustomERC20` must also implement the
+new `burn(uint256)` and restrict it to its escrow. A token still exposing
+`burn(address,uint256)` will revert once ICS20Transfer routes the burn through
+the escrow. `mint(address,uint256)` is unchanged.

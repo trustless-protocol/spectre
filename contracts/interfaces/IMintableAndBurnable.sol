@@ -11,10 +11,9 @@ interface IMintableAndBurnable {
     /// @param amount Amount of tokens to mint
     function mint(address mintAddress, uint256 amount) external;
 
-    /// @notice Burn tokens from the Escrow contract
-    /// @dev This function can only be called by an authorized contract (e.g., ICS20)
-    /// @dev This function needs to allow burning of tokens from the Escrow contract
-    /// @param mintAddress Address to burn tokens from
+    /// @notice Burn `amount` tokens from the caller's own balance
+    /// @dev Matches OpenZeppelin's `ERC20Burnable.burn` signature. Implementations are expected to restrict the
+    /// caller (e.g. to the Escrow contract) so that only its own balance can ever be burned.
     /// @param amount Amount of tokens to burn
-    function burn(address mintAddress, uint256 amount) external;
+    function burn(uint256 amount) external;
 }

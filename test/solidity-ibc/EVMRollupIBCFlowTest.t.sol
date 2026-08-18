@@ -214,7 +214,7 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
             address(membership),
             address(misbehaviour),
             abi.encode(clientState),
-            keccak256(abi.encode(consensusState)),
+            consensusState,
             validatorSet,
             address(this)
         );

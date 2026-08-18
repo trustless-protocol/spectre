@@ -105,10 +105,8 @@ contract IBCERC20 is IIBCERC20Errors, IIBCERC20, ERC20Upgradeable {
     }
 
     /// @inheritdoc IMintableAndBurnable
-    function burn(address mintAddress, uint256 amount) external onlyICS20 {
-        address escrow_ = _getIBCERC20Storage()._escrow;
-        require(mintAddress == escrow_, IBCERC20NotEscrow(escrow_, mintAddress));
-        _burn(mintAddress, amount);
+    function burn(uint256 amount) external onlyEscrow {
+        _burn(_msgSender(), amount);
     }
 
     /// @notice Returns the storage of the IBCERC20 contract
@@ -123,6 +121,12 @@ contract IBCERC20 is IIBCERC20Errors, IIBCERC20, ERC20Upgradeable {
     /// @notice Modifier to check if the caller is the ICS20 contract
     modifier onlyICS20() {
         require(_msgSender() == _getIBCERC20Storage()._ics20, IBCERC20Unauthorized(_msgSender()));
+        _;
+    }
+
+    /// @notice Modifier to check if the caller is the escrow contract
+    modifier onlyEscrow() {
+        require(_msgSender() == _getIBCERC20Storage()._escrow, IBCERC20Unauthorized(_msgSender()));
         _;
     }
 }
