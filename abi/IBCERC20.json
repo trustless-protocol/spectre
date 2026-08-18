@@ -76,11 +76,6 @@
     "name": "burn",
     "inputs": [
       {
-        "name": "mintAddress",
-        "type": "address",
-        "internalType": "address"
-      },
-      {
         "name": "amount",
         "type": "uint256",
         "internalType": "uint256"
@@ -197,6 +192,29 @@
   },
   {
     "type": "function",
+    "name": "setMetadata",
+    "inputs": [
+      {
+        "name": "name_",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "symbol_",
+        "type": "string",
+        "internalType": "string"
+      },
+      {
+        "name": "decimals_",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
     "name": "symbol",
     "inputs": [],
     "outputs": [
@@ -295,6 +313,31 @@
         "type": "uint256",
         "indexed": false,
         "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "IBCERC20MetadataSet",
+    "inputs": [
+      {
+        "name": "name_",
+        "type": "string",
+        "indexed": false,
+        "internalType": "string"
+      },
+      {
+        "name": "symbol_",
+        "type": "string",
+        "indexed": false,
+        "internalType": "string"
+      },
+      {
+        "name": "decimals_",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "uint8"
       }
     ],
     "anonymous": false
@@ -422,6 +465,11 @@
         "internalType": "address"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "IBCERC20MetadataAlreadySet",
+    "inputs": []
   },
   {
     "type": "error",

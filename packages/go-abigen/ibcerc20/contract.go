@@ -31,7 +31,7 @@ var (
 
 // ContractMetaData contains all meta data concerning the Contract contract.
 var ContractMetaData = &bind.MetaData{
-	ABI: "[{\"type\":\"constructor\",\"inputs\":[],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"allowance\",\"inputs\":[{\"name\":\"owner\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"spender\",\"type\":\"address\",\"internalType\":\"address\"}],\"outputs\":[{\"name\":\"\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"approve\",\"inputs\":[{\"name\":\"spender\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"value\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"outputs\":[{\"name\":\"\",\"type\":\"bool\",\"internalType\":\"bool\"}],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"balanceOf\",\"inputs\":[{\"name\":\"account\",\"type\":\"address\",\"internalType\":\"address\"}],\"outputs\":[{\"name\":\"\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"burn\",\"inputs\":[{\"name\":\"mintAddress\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"amount\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"outputs\":[],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"decimals\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"uint8\",\"internalType\":\"uint8\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"escrow\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"address\",\"internalType\":\"address\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"fullDenomPath\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"string\",\"internalType\":\"string\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"ics20\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"address\",\"internalType\":\"address\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"initialize\",\"inputs\":[{\"name\":\"ics20_\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"escrow_\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"fullDenomPath_\",\"type\":\"string\",\"internalType\":\"string\"}],\"outputs\":[],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"mint\",\"inputs\":[{\"name\":\"mintAddress\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"amount\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"outputs\":[],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"name\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"string\",\"internalType\":\"string\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"symbol\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"string\",\"internalType\":\"string\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"totalSupply\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"transfer\",\"inputs\":[{\"name\":\"to\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"value\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"outputs\":[{\"name\":\"\",\"type\":\"bool\",\"internalType\":\"bool\"}],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"transferFrom\",\"inputs\":[{\"name\":\"from\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"to\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"value\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"outputs\":[{\"name\":\"\",\"type\":\"bool\",\"internalType\":\"bool\"}],\"stateMutability\":\"nonpayable\"},{\"type\":\"event\",\"name\":\"Approval\",\"inputs\":[{\"name\":\"owner\",\"type\":\"address\",\"indexed\":true,\"internalType\":\"address\"},{\"name\":\"spender\",\"type\":\"address\",\"indexed\":true,\"internalType\":\"address\"},{\"name\":\"value\",\"type\":\"uint256\",\"indexed\":false,\"internalType\":\"uint256\"}],\"anonymous\":false},{\"type\":\"event\",\"name\":\"Initialized\",\"inputs\":[{\"name\":\"version\",\"type\":\"uint64\",\"indexed\":false,\"internalType\":\"uint64\"}],\"anonymous\":false},{\"type\":\"event\",\"name\":\"Transfer\",\"inputs\":[{\"name\":\"from\",\"type\":\"address\",\"indexed\":true,\"internalType\":\"address\"},{\"name\":\"to\",\"type\":\"address\",\"indexed\":true,\"internalType\":\"address\"},{\"name\":\"value\",\"type\":\"uint256\",\"indexed\":false,\"internalType\":\"uint256\"}],\"anonymous\":false},{\"type\":\"error\",\"name\":\"ERC20InsufficientAllowance\",\"inputs\":[{\"name\":\"spender\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"allowance\",\"type\":\"uint256\",\"internalType\":\"uint256\"},{\"name\":\"needed\",\"type\":\"uint256\",\"internalType\":\"uint256\"}]},{\"type\":\"error\",\"name\":\"ERC20InsufficientBalance\",\"inputs\":[{\"name\":\"sender\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"balance\",\"type\":\"uint256\",\"internalType\":\"uint256\"},{\"name\":\"needed\",\"type\":\"uint256\",\"internalType\":\"uint256\"}]},{\"type\":\"error\",\"name\":\"ERC20InvalidApprover\",\"inputs\":[{\"name\":\"approver\",\"type\":\"address\",\"internalType\":\"address\"}]},{\"type\":\"error\",\"name\":\"ERC20InvalidReceiver\",\"inputs\":[{\"name\":\"receiver\",\"type\":\"address\",\"internalType\":\"address\"}]},{\"type\":\"error\",\"name\":\"ERC20InvalidSender\",\"inputs\":[{\"name\":\"sender\",\"type\":\"address\",\"internalType\":\"address\"}]},{\"type\":\"error\",\"name\":\"ERC20InvalidSpender\",\"inputs\":[{\"name\":\"spender\",\"type\":\"address\",\"internalType\":\"address\"}]},{\"type\":\"error\",\"name\":\"IBCERC20NotEscrow\",\"inputs\":[{\"name\":\"escrow\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"mintAddress\",\"type\":\"address\",\"internalType\":\"address\"}]},{\"type\":\"error\",\"name\":\"IBCERC20Unauthorized\",\"inputs\":[{\"name\":\"caller\",\"type\":\"address\",\"internalType\":\"address\"}]},{\"type\":\"error\",\"name\":\"InvalidInitialization\",\"inputs\":[]},{\"type\":\"error\",\"name\":\"NotInitializing\",\"inputs\":[]}]",
+	ABI: "[{\"type\":\"constructor\",\"inputs\":[],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"allowance\",\"inputs\":[{\"name\":\"owner\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"spender\",\"type\":\"address\",\"internalType\":\"address\"}],\"outputs\":[{\"name\":\"\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"approve\",\"inputs\":[{\"name\":\"spender\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"value\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"outputs\":[{\"name\":\"\",\"type\":\"bool\",\"internalType\":\"bool\"}],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"balanceOf\",\"inputs\":[{\"name\":\"account\",\"type\":\"address\",\"internalType\":\"address\"}],\"outputs\":[{\"name\":\"\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"burn\",\"inputs\":[{\"name\":\"amount\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"outputs\":[],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"decimals\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"uint8\",\"internalType\":\"uint8\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"escrow\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"address\",\"internalType\":\"address\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"fullDenomPath\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"string\",\"internalType\":\"string\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"ics20\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"address\",\"internalType\":\"address\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"initialize\",\"inputs\":[{\"name\":\"ics20_\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"escrow_\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"fullDenomPath_\",\"type\":\"string\",\"internalType\":\"string\"}],\"outputs\":[],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"mint\",\"inputs\":[{\"name\":\"mintAddress\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"amount\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"outputs\":[],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"name\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"string\",\"internalType\":\"string\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"setMetadata\",\"inputs\":[{\"name\":\"name_\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"symbol_\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"decimals_\",\"type\":\"uint8\",\"internalType\":\"uint8\"}],\"outputs\":[],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"symbol\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"string\",\"internalType\":\"string\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"totalSupply\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"transfer\",\"inputs\":[{\"name\":\"to\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"value\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"outputs\":[{\"name\":\"\",\"type\":\"bool\",\"internalType\":\"bool\"}],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"transferFrom\",\"inputs\":[{\"name\":\"from\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"to\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"value\",\"type\":\"uint256\",\"internalType\":\"uint256\"}],\"outputs\":[{\"name\":\"\",\"type\":\"bool\",\"internalType\":\"bool\"}],\"stateMutability\":\"nonpayable\"},{\"type\":\"event\",\"name\":\"Approval\",\"inputs\":[{\"name\":\"owner\",\"type\":\"address\",\"indexed\":true,\"internalType\":\"address\"},{\"name\":\"spender\",\"type\":\"address\",\"indexed\":true,\"internalType\":\"address\"},{\"name\":\"value\",\"type\":\"uint256\",\"indexed\":false,\"internalType\":\"uint256\"}],\"anonymous\":false},{\"type\":\"event\",\"name\":\"IBCERC20MetadataSet\",\"inputs\":[{\"name\":\"name_\",\"type\":\"string\",\"indexed\":false,\"internalType\":\"string\"},{\"name\":\"symbol_\",\"type\":\"string\",\"indexed\":false,\"internalType\":\"string\"},{\"name\":\"decimals_\",\"type\":\"uint8\",\"indexed\":false,\"internalType\":\"uint8\"}],\"anonymous\":false},{\"type\":\"event\",\"name\":\"Initialized\",\"inputs\":[{\"name\":\"version\",\"type\":\"uint64\",\"indexed\":false,\"internalType\":\"uint64\"}],\"anonymous\":false},{\"type\":\"event\",\"name\":\"Transfer\",\"inputs\":[{\"name\":\"from\",\"type\":\"address\",\"indexed\":true,\"internalType\":\"address\"},{\"name\":\"to\",\"type\":\"address\",\"indexed\":true,\"internalType\":\"address\"},{\"name\":\"value\",\"type\":\"uint256\",\"indexed\":false,\"internalType\":\"uint256\"}],\"anonymous\":false},{\"type\":\"error\",\"name\":\"ERC20InsufficientAllowance\",\"inputs\":[{\"name\":\"spender\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"allowance\",\"type\":\"uint256\",\"internalType\":\"uint256\"},{\"name\":\"needed\",\"type\":\"uint256\",\"internalType\":\"uint256\"}]},{\"type\":\"error\",\"name\":\"ERC20InsufficientBalance\",\"inputs\":[{\"name\":\"sender\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"balance\",\"type\":\"uint256\",\"internalType\":\"uint256\"},{\"name\":\"needed\",\"type\":\"uint256\",\"internalType\":\"uint256\"}]},{\"type\":\"error\",\"name\":\"ERC20InvalidApprover\",\"inputs\":[{\"name\":\"approver\",\"type\":\"address\",\"internalType\":\"address\"}]},{\"type\":\"error\",\"name\":\"ERC20InvalidReceiver\",\"inputs\":[{\"name\":\"receiver\",\"type\":\"address\",\"internalType\":\"address\"}]},{\"type\":\"error\",\"name\":\"ERC20InvalidSender\",\"inputs\":[{\"name\":\"sender\",\"type\":\"address\",\"internalType\":\"address\"}]},{\"type\":\"error\",\"name\":\"ERC20InvalidSpender\",\"inputs\":[{\"name\":\"spender\",\"type\":\"address\",\"internalType\":\"address\"}]},{\"type\":\"error\",\"name\":\"IBCERC20MetadataAlreadySet\",\"inputs\":[]},{\"type\":\"error\",\"name\":\"IBCERC20NotEscrow\",\"inputs\":[{\"name\":\"escrow\",\"type\":\"address\",\"internalType\":\"address\"},{\"name\":\"mintAddress\",\"type\":\"address\",\"internalType\":\"address\"}]},{\"type\":\"error\",\"name\":\"IBCERC20Unauthorized\",\"inputs\":[{\"name\":\"caller\",\"type\":\"address\",\"internalType\":\"address\"}]},{\"type\":\"error\",\"name\":\"InvalidInitialization\",\"inputs\":[]},{\"type\":\"error\",\"name\":\"NotInitializing\",\"inputs\":[]}]",
 }
 
 // ContractABI is the input ABI used to generate the binding from.
@@ -480,25 +480,25 @@ func (_Contract *ContractTransactorSession) Approve(spender common.Address, valu
 	return _Contract.Contract.Approve(&_Contract.TransactOpts, spender, value)
 }
 
-// Burn is a paid mutator transaction binding the contract method 0x9dc29fac.
+// Burn is a paid mutator transaction binding the contract method 0x42966c68.
 //
-// Solidity: function burn(address mintAddress, uint256 amount) returns()
-func (_Contract *ContractTransactor) Burn(opts *bind.TransactOpts, mintAddress common.Address, amount *big.Int) (*types.Transaction, error) {
-	return _Contract.contract.Transact(opts, "burn", mintAddress, amount)
+// Solidity: function burn(uint256 amount) returns()
+func (_Contract *ContractTransactor) Burn(opts *bind.TransactOpts, amount *big.Int) (*types.Transaction, error) {
+	return _Contract.contract.Transact(opts, "burn", amount)
 }
 
-// Burn is a paid mutator transaction binding the contract method 0x9dc29fac.
+// Burn is a paid mutator transaction binding the contract method 0x42966c68.
 //
-// Solidity: function burn(address mintAddress, uint256 amount) returns()
-func (_Contract *ContractSession) Burn(mintAddress common.Address, amount *big.Int) (*types.Transaction, error) {
-	return _Contract.Contract.Burn(&_Contract.TransactOpts, mintAddress, amount)
+// Solidity: function burn(uint256 amount) returns()
+func (_Contract *ContractSession) Burn(amount *big.Int) (*types.Transaction, error) {
+	return _Contract.Contract.Burn(&_Contract.TransactOpts, amount)
 }
 
-// Burn is a paid mutator transaction binding the contract method 0x9dc29fac.
+// Burn is a paid mutator transaction binding the contract method 0x42966c68.
 //
-// Solidity: function burn(address mintAddress, uint256 amount) returns()
-func (_Contract *ContractTransactorSession) Burn(mintAddress common.Address, amount *big.Int) (*types.Transaction, error) {
-	return _Contract.Contract.Burn(&_Contract.TransactOpts, mintAddress, amount)
+// Solidity: function burn(uint256 amount) returns()
+func (_Contract *ContractTransactorSession) Burn(amount *big.Int) (*types.Transaction, error) {
+	return _Contract.Contract.Burn(&_Contract.TransactOpts, amount)
 }
 
 // Initialize is a paid mutator transaction binding the contract method 0x4571e3a6.
@@ -541,6 +541,27 @@ func (_Contract *ContractSession) Mint(mintAddress common.Address, amount *big.I
 // Solidity: function mint(address mintAddress, uint256 amount) returns()
 func (_Contract *ContractTransactorSession) Mint(mintAddress common.Address, amount *big.Int) (*types.Transaction, error) {
 	return _Contract.Contract.Mint(&_Contract.TransactOpts, mintAddress, amount)
+}
+
+// SetMetadata is a paid mutator transaction binding the contract method 0x37d2c2f4.
+//
+// Solidity: function setMetadata(string name_, string symbol_, uint8 decimals_) returns()
+func (_Contract *ContractTransactor) SetMetadata(opts *bind.TransactOpts, name_ string, symbol_ string, decimals_ uint8) (*types.Transaction, error) {
+	return _Contract.contract.Transact(opts, "setMetadata", name_, symbol_, decimals_)
+}
+
+// SetMetadata is a paid mutator transaction binding the contract method 0x37d2c2f4.
+//
+// Solidity: function setMetadata(string name_, string symbol_, uint8 decimals_) returns()
+func (_Contract *ContractSession) SetMetadata(name_ string, symbol_ string, decimals_ uint8) (*types.Transaction, error) {
+	return _Contract.Contract.SetMetadata(&_Contract.TransactOpts, name_, symbol_, decimals_)
+}
+
+// SetMetadata is a paid mutator transaction binding the contract method 0x37d2c2f4.
+//
+// Solidity: function setMetadata(string name_, string symbol_, uint8 decimals_) returns()
+func (_Contract *ContractTransactorSession) SetMetadata(name_ string, symbol_ string, decimals_ uint8) (*types.Transaction, error) {
+	return _Contract.Contract.SetMetadata(&_Contract.TransactOpts, name_, symbol_, decimals_)
 }
 
 // Transfer is a paid mutator transaction binding the contract method 0xa9059cbb.
@@ -733,6 +754,142 @@ func (_Contract *ContractFilterer) WatchApproval(opts *bind.WatchOpts, sink chan
 func (_Contract *ContractFilterer) ParseApproval(log types.Log) (*ContractApproval, error) {
 	event := new(ContractApproval)
 	if err := _Contract.contract.UnpackLog(event, "Approval", log); err != nil {
+		return nil, err
+	}
+	event.Raw = log
+	return event, nil
+}
+
+// ContractIBCERC20MetadataSetIterator is returned from FilterIBCERC20MetadataSet and is used to iterate over the raw logs and unpacked data for IBCERC20MetadataSet events raised by the Contract contract.
+type ContractIBCERC20MetadataSetIterator struct {
+	Event *ContractIBCERC20MetadataSet // Event containing the contract specifics and raw log
+
+	contract *bind.BoundContract // Generic contract to use for unpacking event data
+	event    string              // Event name to use for unpacking event data
+
+	logs chan types.Log        // Log channel receiving the found contract events
+	sub  ethereum.Subscription // Subscription for errors, completion and termination
+	done bool                  // Whether the subscription completed delivering logs
+	fail error                 // Occurred error to stop iteration
+}
+
+// Next advances the iterator to the subsequent event, returning whether there
+// are any more events found. In case of a retrieval or parsing error, false is
+// returned and Error() can be queried for the exact failure.
+func (it *ContractIBCERC20MetadataSetIterator) Next() bool {
+	// If the iterator failed, stop iterating
+	if it.fail != nil {
+		return false
+	}
+	// If the iterator completed, deliver directly whatever's available
+	if it.done {
+		select {
+		case log := <-it.logs:
+			it.Event = new(ContractIBCERC20MetadataSet)
+			if err := it.contract.UnpackLog(it.Event, it.event, log); err != nil {
+				it.fail = err
+				return false
+			}
+			it.Event.Raw = log
+			return true
+
+		default:
+			return false
+		}
+	}
+	// Iterator still in progress, wait for either a data or an error event
+	select {
+	case log := <-it.logs:
+		it.Event = new(ContractIBCERC20MetadataSet)
+		if err := it.contract.UnpackLog(it.Event, it.event, log); err != nil {
+			it.fail = err
+			return false
+		}
+		it.Event.Raw = log
+		return true
+
+	case err := <-it.sub.Err():
+		it.done = true
+		it.fail = err
+		return it.Next()
+	}
+}
+
+// Error returns any retrieval or parsing error occurred during filtering.
+func (it *ContractIBCERC20MetadataSetIterator) Error() error {
+	return it.fail
+}
+
+// Close terminates the iteration process, releasing any pending underlying
+// resources.
+func (it *ContractIBCERC20MetadataSetIterator) Close() error {
+	it.sub.Unsubscribe()
+	return nil
+}
+
+// ContractIBCERC20MetadataSet represents a IBCERC20MetadataSet event raised by the Contract contract.
+type ContractIBCERC20MetadataSet struct {
+	Name     string
+	Symbol   string
+	Decimals uint8
+	Raw      types.Log // Blockchain specific contextual infos
+}
+
+// FilterIBCERC20MetadataSet is a free log retrieval operation binding the contract event 0x77a30403dd826ce918c81ca1ed6af26edf577213d85d3ab3a8b51a8b0113ef0a.
+//
+// Solidity: event IBCERC20MetadataSet(string name_, string symbol_, uint8 decimals_)
+func (_Contract *ContractFilterer) FilterIBCERC20MetadataSet(opts *bind.FilterOpts) (*ContractIBCERC20MetadataSetIterator, error) {
+
+	logs, sub, err := _Contract.contract.FilterLogs(opts, "IBCERC20MetadataSet")
+	if err != nil {
+		return nil, err
+	}
+	return &ContractIBCERC20MetadataSetIterator{contract: _Contract.contract, event: "IBCERC20MetadataSet", logs: logs, sub: sub}, nil
+}
+
+// WatchIBCERC20MetadataSet is a free log subscription operation binding the contract event 0x77a30403dd826ce918c81ca1ed6af26edf577213d85d3ab3a8b51a8b0113ef0a.
+//
+// Solidity: event IBCERC20MetadataSet(string name_, string symbol_, uint8 decimals_)
+func (_Contract *ContractFilterer) WatchIBCERC20MetadataSet(opts *bind.WatchOpts, sink chan<- *ContractIBCERC20MetadataSet) (event.Subscription, error) {
+
+	logs, sub, err := _Contract.contract.WatchLogs(opts, "IBCERC20MetadataSet")
+	if err != nil {
+		return nil, err
+	}
+	return event.NewSubscription(func(quit <-chan struct{}) error {
+		defer sub.Unsubscribe()
+		for {
+			select {
+			case log := <-logs:
+				// New log arrived, parse the event and forward to the user
+				event := new(ContractIBCERC20MetadataSet)
+				if err := _Contract.contract.UnpackLog(event, "IBCERC20MetadataSet", log); err != nil {
+					return err
+				}
+				event.Raw = log
+
+				select {
+				case sink <- event:
+				case err := <-sub.Err():
+					return err
+				case <-quit:
+					return nil
+				}
+			case err := <-sub.Err():
+				return err
+			case <-quit:
+				return nil
+			}
+		}
+	}), nil
+}
+
+// ParseIBCERC20MetadataSet is a log parse operation binding the contract event 0x77a30403dd826ce918c81ca1ed6af26edf577213d85d3ab3a8b51a8b0113ef0a.
+//
+// Solidity: event IBCERC20MetadataSet(string name_, string symbol_, uint8 decimals_)
+func (_Contract *ContractFilterer) ParseIBCERC20MetadataSet(log types.Log) (*ContractIBCERC20MetadataSet, error) {
+	event := new(ContractIBCERC20MetadataSet)
+	if err := _Contract.contract.UnpackLog(event, "IBCERC20MetadataSet", log); err != nil {
 		return nil, err
 	}
 	event.Raw = log
