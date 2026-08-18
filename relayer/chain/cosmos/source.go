@@ -43,11 +43,12 @@ type Source struct {
 	batchConfig  services.BatchConfig
 	logger       *log.Logger
 	bb           *services.BatchBuilder
+	recovery     *services.RecoveryStateStore
 }
 
 // NewSource wires the Cosmos source to its endpoints and the shared batch builder.
-func NewSource(cosmos services.CosmosEndpoint, evm services.EVMEndpoint, ids services.ClientIDs, fetchTimeout time.Duration, batchConfig services.BatchConfig, logger *log.Logger, bb *services.BatchBuilder) *Source {
-	return &Source{cosmos: cosmos, evm: evm, ids: ids, fetchTimeout: fetchTimeout, batchConfig: batchConfig, logger: logger, bb: bb}
+func NewSource(cosmos services.CosmosEndpoint, evm services.EVMEndpoint, ids services.ClientIDs, fetchTimeout time.Duration, batchConfig services.BatchConfig, logger *log.Logger, bb *services.BatchBuilder, recovery *services.RecoveryStateStore) *Source {
+	return &Source{cosmos: cosmos, evm: evm, ids: ids, fetchTimeout: fetchTimeout, batchConfig: batchConfig, logger: logger, bb: bb, recovery: recovery}
 }
 
 func (s *Source) Chain() chain.ChainType { return chain.Cosmos }
@@ -179,7 +180,7 @@ const drainInterval = 500 * time.Millisecond
 // as a chain.Event. It uses the batch config (not BatchSize=1) so CheckCosmos
 // returns multi-packet batches the module folds into one RelayPackets multicall.
 func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []chain.Event) []int) error {
-	sub := subscriber.NewSubscriber()
+	sub := subscriber.NewSubscriber(s.recovery)
 	go sub.SubscribeCosmos(s.cosmos, s.evm, s.ids, s.logger, s.bb)
 
 	// Use the configured batch window so CheckCosmos returns multi-packet batches
@@ -224,6 +225,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 			for _, idx := range handler(ctx, events) {
 				s.bb.RequeueCosmosWaiting([]services.CosmosPacket{orig[idx]})
 			}
+			s.bb.ReleaseCosmosInFlight(batch)
 		}
 	}
 }

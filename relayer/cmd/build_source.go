@@ -137,7 +137,15 @@ func buildCosmosToEthSource(
 			cosmosRouterClientID, c2e.SpectreClient, c2e.TmRpcUrl)
 	}
 
-	svc := services.New(txHandler, p, cosmosConfig)
+	var recoveryState *services.RecoveryStateStore
+	if options.startSubscriptions {
+		recoveryState, err = services.LoadRecoveryState(services.RecoveryStatePath())
+		if err != nil {
+			cleanup()
+			return nil, zero, nil, fmt.Errorf("load recovery state: %w", err)
+		}
+	}
+	svc := services.New(txHandler, p, cosmosConfig, recoveryState)
 	return svc, deps, cleanup, nil
 }
 
