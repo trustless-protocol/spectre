@@ -8,15 +8,16 @@ import (
 )
 
 // ErrVerifyStateRootUnsupported reports that this attestor build does not serve
-// VerifyStateRoot at all. Today only the Arbitrum attestor implements it; the
-// OP-Stack one — which also backs Base — embeds UnimplementedAttestorServiceServer,
-// so the call returns gRPC Unimplemented.
+// VerifyStateRoot at all. Both in-tree attestors — Arbitrum and OP-Stack, which
+// also backs Base — implement it today, so this fires only on version skew: a
+// daemon built before VerifyStateRoot shipped never overrides the embedded
+// UnimplementedAttestorServiceServer, and the call returns gRPC Unimplemented.
 //
 // It is a distinct error because the header builder must not read "cannot answer" as
-// "answered no": treating it as a refusal would fail every header build on OP and
-// Base, which is worse than the gap it was meant to close. See the builder for how it
-// degrades, and note the degradation is only correct while it is this narrow — any
-// other failure stays fatal.
+// "answered no": treating it as a refusal would fail every header build against a
+// version-skewed deployment, which is worse than the gap it was meant to close. See
+// the builder for how it degrades, and note the degradation is only correct while it
+// is this narrow — any other failure stays fatal.
 var ErrVerifyStateRootUnsupported = errors.New("attestor does not implement VerifyStateRoot")
 
 // AttestorClient is the subset of the L2 attestor sidecar's gRPC surface the relayer
