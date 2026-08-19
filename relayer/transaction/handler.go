@@ -2437,6 +2437,28 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 		}
 
 		if errors.Is(waitErr, context.DeadlineExceeded) {
+			// A transaction that cannot mine because nonces below it are missing
+			// will not mine with more gas either, so bumping only pays to resubmit
+			// the same unminable transaction until the budget runs out.
+			//
+			// PendingNonceAt reports the next nonce the account needs. A queued
+			// (non-executable) transaction does not advance it, so a pending nonce
+			// BELOW ours means the gap is real: nonces [pending, ours) are missing.
+			// Equal means our transaction is simply not in the pool — a drop, which
+			// a resubmit can still fix — so only the strict inequality short-circuits.
+			if pending, nonceErr := endpoint.EthClient().PendingNonceAt(stdCtx, fromAddress); nonceErr != nil {
+				log.Printf("[EthTxSender] Tx %s not mined in %s; pending-nonce probe failed: %v",
+					tx.Hash().Hex(), attemptTimeout, nonceErr)
+			} else if pending < tx.Nonce() {
+				h.mu.Lock()
+				h.senderState(chainIdInt.String(), fromAddress).nonceValid = false
+				h.mu.Unlock()
+				return nil, submitDur, time.Since(waitStart), fmt.Errorf(
+					"tx %s cannot mine: sent with nonce %d but account %s still needs nonce %d, so %d-%d are missing; "+
+						"cached nonce invalidated, retry will re-query",
+					tx.Hash().Hex(), tx.Nonce(), fromAddress.Hex(), pending, pending, tx.Nonce()-1)
+			}
+
 			if attempt >= maxAttempts {
 				h.mu.Lock()
 				h.senderState(chainIdInt.String(), fromAddress).nonceValid = false

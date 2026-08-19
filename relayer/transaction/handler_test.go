@@ -1850,3 +1850,77 @@ func TestWaitForTxResult_CancelledCtxAbortsPromptly(t *testing.T) {
 		t.Fatalf("waitForTxResult took %s; must abort promptly on cancel, not run to the inclusion timeout", elapsed)
 	}
 }
+
+// TestExecuteWithRetryAndResubmission_StuckFutureNonceStopsBumping is the #320
+// follow-up: a transaction sent at a nonce the account has not reached cannot mine
+// no matter how much gas it carries, so the wait loop must stop instead of spending
+// its whole bump budget resubmitting it.
+//
+// The setup is the collision the issue describes, minus the cause: the cache is
+// pre-seeded high (as a poisoned cross-chain cache used to leave it), while the
+// chain still needs a much lower nonce. The mock never returns a receipt, so the
+// first wait times out and the pending-nonce probe sees the gap.
+func TestExecuteWithRetryAndResubmission_StuckFutureNonceStopsBumping(t *testing.T) {
+	oldTimeout := ethTxReceiptTimeout
+	oldPoll := ethTxReceiptPollInterval
+	ethTxReceiptTimeout = 60 * time.Millisecond
+	ethTxReceiptPollInterval = 10 * time.Millisecond
+	defer func() {
+		ethTxReceiptTimeout = oldTimeout
+		ethTxReceiptPollInterval = oldPoll
+	}()
+
+	mockRPC := newMockJSONRPC()
+	mockRPC.nonce = 7 // what the chain actually needs
+	srv := httptest.NewServer(mockRPC)
+	defer srv.Close()
+	client, err := ethclient.Dial(srv.URL)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	privKey, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	from := crypto.PubkeyToAddress(privKey.PublicKey)
+
+	h := &Handler{}
+	h.mu.Lock()
+	state := h.senderState("1", from)
+	state.nonce = 50 // as a cross-chain collision used to leave it
+	state.nonceValid = true
+	h.mu.Unlock()
+
+	var sent []uint64
+	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
+		sent = append(sent, auth.Nonce.Uint64())
+		tx := types.NewTx(&types.DynamicFeeTx{
+			ChainID: big.NewInt(1), Nonce: auth.Nonce.Uint64(), GasTipCap: auth.GasTipCap,
+			GasFeeCap: auth.GasFeeCap, Gas: auth.GasLimit, To: &common.Address{0x1},
+		})
+		return auth.Signer(auth.From, tx)
+	}
+
+	_, _, _, err = h.executeWithRetryAndResubmission(
+		context.Background(), services.EVMEndpoint{Client: client}, privKey, 100_000, senderFn,
+	)
+	if err == nil {
+		t.Fatal("execute succeeded; want a failure naming the nonce gap")
+	}
+	if !strings.Contains(err.Error(), "cannot mine") {
+		t.Fatalf("error = %v; want the nonce-gap diagnosis, not a generic wait timeout", err)
+	}
+
+	// One submission, not maxAttempts of them: the bump budget must not be spent.
+	if len(sent) != 1 {
+		t.Fatalf("submissions = %v, want exactly one before giving up", sent)
+	}
+
+	// The poisoned entry must be invalidated so the retry re-queries the chain.
+	h.mu.Lock()
+	stillValid := h.senderState("1", from).nonceValid
+	h.mu.Unlock()
+	if stillValid {
+		t.Fatal("cached nonce still valid; the next attempt would reuse the unminable nonce")
+	}
+}

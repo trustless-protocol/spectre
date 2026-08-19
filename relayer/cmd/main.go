@@ -1763,11 +1763,21 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// configured, otherwise they would wrongly apply to every source.
 			allowEnvOverride := len(sources) == 1
 
-			// One shared TransactionHandler across all sources: they submit from
-			// the same ETH signer, so its per-account nonce cache + mutex must be
-			// shared to serialize nonce allocation (per-source handlers would
-			// collide on nonce). The Cosmos side re-queries the account sequence
-			// fresh under cosmosMu, so sharing is safe there too.
+			// One shared TransactionHandler across all sources. What sharing buys is
+			// the mutex, not the cache: two sources can target the SAME (chain,
+			// signer) pair, and only a single h.mu can serialize their nonce
+			// allocation. Per-source handlers would each take their own lock and
+			// hand the same nonce to both.
+			//
+			// Sharing the cache is safe because it is keyed by (chainID, address)
+			// — see transaction.evmNonceKey — so sources submitting to DIFFERENT
+			// EVM chains keep separate nonces for the same signer. Before that
+			// keying the cache was a single counter, and a nonce allocated against
+			// one L2 was reused against another as a future nonce: accepted into
+			// the queued pool, never minable, and never surfaced as an error (#320).
+			//
+			// The Cosmos side re-queries the account sequence fresh under cosmosMu,
+			// so sharing is safe there too.
 			txHandler := &transaction.Handler{}
 
 			// One independent relay loop per Cosmos→ETH source. Each has its own
