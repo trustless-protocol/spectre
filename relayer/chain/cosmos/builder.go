@@ -61,7 +61,11 @@ func (b *Groth16Builder) Build(ctx context.Context, _ []byte) (chain.ClientUpdat
 	if !result.HasMsg || result.LightBlock == nil {
 		// Client already current — report the trusted height so the module can seed
 		// its provability guard; nil payload means "no tx".
-		return chain.ClientUpdate{Height: uint64(trustedBlock)}, nil
+		update := chain.ClientUpdate{Height: uint64(trustedBlock)}
+		if result.LightBlock != nil {
+			update.TrustedAt = result.LightBlock.SignedHeader.Header.Time
+		}
+		return update, nil
 	}
 	if result.LightBlock.BlockHeight < 0 {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: negative block height %d", result.LightBlock.BlockHeight)
@@ -71,5 +75,8 @@ func (b *Groth16Builder) Build(ctx context.Context, _ []byte) (chain.ClientUpdat
 	if err != nil {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: encode update: %w", err)
 	}
-	return chain.ClientUpdate{Height: uint64(result.LightBlock.BlockHeight), Payloads: [][]byte{payload}}, nil
+	return chain.ClientUpdate{
+		Height: uint64(result.LightBlock.BlockHeight), Payloads: [][]byte{payload},
+		TrustedAt: result.LightBlock.SignedHeader.Header.Time,
+	}, nil
 }

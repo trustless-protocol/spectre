@@ -1809,6 +1809,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 					buildCosmosToEthSourceOptions{
 						allowEnvOverride:   allowEnvOverride,
 						startSubscriptions: true,
+						pendingStateDir:    pendingStateDir(configPath, "cosmos-to-eth", sources[i].ICS26ClientID),
 					},
 				)
 				if err != nil {
@@ -1846,6 +1847,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 			for i := range l2Dests {
 				svc, deps, cleanup, err := buildCosmosToL2Dest(
 					logger, l2Dests[i], cfg.BatchConfig, p, txHandler,
+					pendingStateDir(configPath, "cosmos-to-l2", l2Dests[i].ICS26ClientID),
 				)
 				if err != nil {
 					stopAndCleanup()

@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"errors"
+	client "relayer/client"
 	"testing"
 	"time"
 
@@ -58,15 +59,21 @@ func TestScanForEVMTimeoutsTrackerRemoval(t *testing.T) {
 			svc.scanForEVMTimeouts(context.Background(), evmTimeoutDeps{}, evmTimeoutScanOptions{
 				tag:     "Test",
 				tracker: tracker,
+				prepareTimeouts: func(context.Context, evmTimeoutDeps) (*client.LightBlock, bool) {
+					return &client.LightBlock{}, true
+				},
 				hasPendingCommitment: func(context.Context, evmTimeoutDeps, channeltypesv2.Packet) (bool, error) {
 					return tc.commitment, tc.commitmentErr
 				},
-				timeoutSend: func(_ context.Context, _ evmTimeoutDeps, packet EthPacket) bool {
+				timeoutSend: func(_ context.Context, _ evmTimeoutDeps, packet EthPacket, _ *client.LightBlock) timeoutSendOutcome {
 					timeoutCalled = true
 					if packet.BlockNumber != 123 {
 						t.Fatalf("timeout packet block number = %d, want 123", packet.BlockNumber)
 					}
-					return tc.timeoutSucceeded
+					if tc.timeoutSucceeded {
+						return timeoutSent
+					}
+					return timeoutDeferred
 				},
 			})
 
@@ -79,6 +86,82 @@ func TestScanForEVMTimeoutsTrackerRemoval(t *testing.T) {
 				t.Fatalf("timeoutCalled = %v, want %v", timeoutCalled, wantTimeoutCalled)
 			}
 		})
+	}
+}
+
+func TestScanForEVMTimeoutsSharedUpdateFailureRunsOnceAndDefersAll(t *testing.T) {
+	tracker := NewPendingPacketTracker()
+	for _, sequence := range []uint64{1, 2, 3} {
+		tracker.Add(channeltypesv2.Packet{
+			SourceClient: "l2-client-0", Sequence: sequence,
+			TimeoutTimestamp: uint64(time.Now().Add(-time.Minute).Unix()),
+		}, sequence)
+	}
+
+	prepareCalls := 0
+	timeoutCalls := 0
+	svc := New(nil, nil, DefaultConfig())
+	svc.scanForEVMTimeouts(context.Background(), evmTimeoutDeps{}, evmTimeoutScanOptions{
+		tag:     "Test",
+		tracker: tracker,
+		prepareTimeouts: func(context.Context, evmTimeoutDeps) (*client.LightBlock, bool) {
+			prepareCalls++
+			return nil, false
+		},
+		hasPendingCommitment: func(context.Context, evmTimeoutDeps, channeltypesv2.Packet) (bool, error) {
+			return true, nil
+		},
+		timeoutSend: func(context.Context, evmTimeoutDeps, EthPacket, *client.LightBlock) timeoutSendOutcome {
+			timeoutCalls++
+			return timeoutSent
+		},
+	})
+
+	if prepareCalls != 1 {
+		t.Fatalf("shared client update attempts = %d, want 1", prepareCalls)
+	}
+	if timeoutCalls != 0 {
+		t.Fatalf("timeout submissions after failed shared update = %d, want 0", timeoutCalls)
+	}
+	for _, info := range tracker.GetAll() {
+		if info.Deferrals != 1 || info.TimeoutAttempts != 0 {
+			t.Fatalf("seq=%d retry state = deferrals:%d attempts:%d, want 1:0",
+				info.Packet.Sequence, info.Deferrals, info.TimeoutAttempts)
+		}
+	}
+}
+
+func TestScanForEVMTimeoutsClearsSharedDeferralsAfterRecovery(t *testing.T) {
+	tracker := NewPendingPacketTracker()
+	packet := channeltypesv2.Packet{
+		SourceClient: "l2-client-0", Sequence: 1,
+		TimeoutTimestamp: uint64(time.Now().Add(-time.Minute).Unix()),
+	}
+	tracker.Add(packet, 123)
+	// Make the packet due again with a saturated shared-outage history.
+	past := time.Now().Add(-time.Hour)
+	for i := 0; i < 6; i++ {
+		tracker.deferTimeoutRetryForTest(packet.SourceClient, packet.Sequence, past)
+	}
+
+	svc := New(nil, nil, DefaultConfig())
+	svc.scanForEVMTimeouts(context.Background(), evmTimeoutDeps{}, evmTimeoutScanOptions{
+		tag:     "Test",
+		tracker: tracker,
+		prepareTimeouts: func(context.Context, evmTimeoutDeps) (*client.LightBlock, bool) {
+			return &client.LightBlock{}, true
+		},
+		hasPendingCommitment: func(context.Context, evmTimeoutDeps, channeltypesv2.Packet) (bool, error) {
+			return true, nil
+		},
+		timeoutSend: func(context.Context, evmTimeoutDeps, EthPacket, *client.LightBlock) timeoutSendOutcome {
+			return timeoutDeferred
+		},
+	})
+
+	got := tracker.GetAll()
+	if len(got) != 1 || got[0].Deferrals != 1 {
+		t.Fatalf("deferrals after recovered shared prerequisite = %#v, want a fresh single deferral", got)
 	}
 }
 

@@ -41,9 +41,10 @@ func (s *Services) ScanL2Timeouts(stdCtx context.Context, cosmos CosmosEndpoint,
 
 // TrackCosmosPending records a Cosmos-origin packet just recv-relayed to ETH so
 // ScanCosmosTimeouts can later refund it if it expires undelivered. Mirrors the
-// PendingTracker.Add that handleCosmos performs in the StartLoop path.
-func (s *Services) TrackCosmosPending(packet channeltypesv2.Packet, blockNumber uint64) {
-	s.BatchBuilder.PendingTracker.Add(packet, blockNumber)
+// PendingTracker.Add that handleCosmos performs in the StartLoop path. False
+// means the durable state write failed and the source event must be retried.
+func (s *Services) TrackCosmosPending(packet channeltypesv2.Packet, blockNumber uint64) bool {
+	return s.BatchBuilder.PendingTracker.Add(packet, blockNumber)
 }
 
 // UntrackCosmosPending removes a Cosmos-origin packet from the pending tracker
@@ -51,19 +52,20 @@ func (s *Services) TrackCosmosPending(packet channeltypesv2.Packet, blockNumber 
 // the timeout scanner need not keep querying its receipt. Mirrors the
 // PendingTracker.Remove-on-recv that handleCosmos performs in the StartLoop path.
 func (s *Services) UntrackCosmosPending(packet channeltypesv2.Packet) {
-	s.BatchBuilder.PendingTracker.Remove(packet.SourceClient, packet.Sequence)
+	s.BatchBuilder.PendingTracker.RemovePacketIfCurrent(packet)
 }
 
 // TrackL2Pending records an L2-origin packet observed on the L2 source path so
-// ScanL2Timeouts can refund it if Cosmos never receives it before timeout.
-func (s *Services) TrackL2Pending(packet channeltypesv2.Packet, blockNumber uint64) {
-	s.BatchBuilder.L2PendingTracker.Add(packet, blockNumber)
+// ScanL2Timeouts can refund it if Cosmos never receives it before timeout. False
+// means the durable state write failed and the source event must be retried.
+func (s *Services) TrackL2Pending(packet channeltypesv2.Packet, blockNumber uint64) bool {
+	return s.BatchBuilder.L2PendingTracker.Add(packet, blockNumber)
 }
 
 // UntrackL2Pending removes an L2-origin packet once the L2->Cosmos receive relay
 // succeeds; after a Cosmos receipt exists, a timeout refund must not be attempted.
 func (s *Services) UntrackL2Pending(packet channeltypesv2.Packet) {
-	s.BatchBuilder.L2PendingTracker.Remove(packet.SourceClient, packet.Sequence)
+	s.BatchBuilder.L2PendingTracker.RemovePacketIfCurrent(packet)
 }
 
 // Worker exposes the shared Worker (TxHandler + Prover) so the chain adapters —
@@ -88,7 +90,10 @@ func (s *Services) CosmosConfig() Config { return s.cosmosConfig }
 // the adapter's cursors (the expiry is driven by ClientExpiresAt, not a seeded
 // timestamp), so it only submits the rotation tx.
 func (s *Services) RotatePinnedSet(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, routerClientID string) error {
-	_, err := s.worker.RefreshCosmosClient(stdCtx, cosmos, evm, routerClientID, s.cosmosConfig.FetchTimeout, s.cosmosConfig.RotationThreshold, s.cosmosConfig.ProofType, s.cosmosConfig.TrustLevel)
+	lightBlock, err := s.worker.RefreshCosmosClient(stdCtx, cosmos, evm, routerClientID, s.cosmosConfig.FetchTimeout, s.cosmosConfig.RotationThreshold, s.cosmosConfig.ProofType, s.cosmosConfig.TrustLevel)
+	if err == nil && lightBlock != nil {
+		s.ObserveCosmosOnEVMUpdate(lightBlock.SignedHeader.Header.Time)
+	}
 	return err
 }
 
@@ -135,9 +140,26 @@ func (s *Services) PinnedSetRotationDueIn(stdCtx context.Context, cosmos CosmosE
 	if trustedTime.IsZero() {
 		return 0, fmt.Errorf("zero trusted light block timestamp at height %d", trustedHeight)
 	}
+	s.ObserveCosmosOnEVMUpdate(trustedTime)
 	due := time.Until(trustedTime.Add(interval))
 	if due < 0 {
 		return 0, nil
 	}
 	return due, nil
+}
+
+// SeedEVMOnCosmosUpdate records the timestamp already trusted by the on-chain
+// beacon client so the first queue report is useful even before packet traffic
+// or a refresh advances it in this process.
+func (s *Services) SeedEVMOnCosmosUpdate(cosmos CosmosEndpoint, ethClientID string) error {
+	state, err := client.GetEthereumClientState(cosmos.CosmosClient(), ethClientID)
+	if err != nil {
+		return err
+	}
+	trustedTimestamp := state.ComputeTimestampAtSlot(state.LatestSlot)
+	if trustedTimestamp == 0 {
+		return fmt.Errorf("zero trusted EVM timestamp at slot %d", state.LatestSlot)
+	}
+	s.ObserveEVMOnCosmosUpdate(time.Unix(int64(trustedTimestamp), 0))
+	return nil
 }

@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -35,6 +37,20 @@ import (
 type buildCosmosToEthSourceOptions struct {
 	allowEnvOverride   bool
 	startSubscriptions bool
+	pendingStateDir    string
+}
+
+// pendingStateDir keeps restart state beside the selected config while
+// separating relay kinds and client ids. The digest avoids treating client ids
+// as paths and also scopes state to the config file when several deployments
+// run from the same directory.
+func pendingStateDir(configPath, relayKind, clientID string) string {
+	absConfigPath, err := filepath.Abs(configPath)
+	if err != nil {
+		absConfigPath = configPath
+	}
+	sum := sha256.Sum256([]byte(absConfigPath + "\x00" + relayKind + "\x00" + clientID))
+	return filepath.Join(filepath.Dir(configPath), ".fast-ibc-state", fmt.Sprintf("%s-%x", relayKind, sum[:8]))
 }
 
 func buildCosmosToEthSource(
@@ -145,7 +161,16 @@ func buildCosmosToEthSource(
 			return nil, zero, nil, fmt.Errorf("load recovery state: %w", err)
 		}
 	}
-	svc := services.New(txHandler, p, cosmosConfig, recoveryState)
+	var svc *services.Services
+	if options.pendingStateDir != "" {
+		svc, err = services.NewWithPendingState(txHandler, p, cosmosConfig, options.pendingStateDir, recoveryState)
+		if err != nil {
+			cleanup()
+			return nil, zero, nil, err
+		}
+	} else {
+		svc = services.New(txHandler, p, cosmosConfig, recoveryState)
+	}
 	return svc, deps, cleanup, nil
 }
 

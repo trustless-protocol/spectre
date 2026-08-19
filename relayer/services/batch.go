@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -120,6 +121,36 @@ func NewBatchBuilder() *BatchBuilder {
 	}
 }
 
+// NewPersistentBatchBuilder restores all timeout trackers before returning, so
+// source subscription and startup recovery cannot replay packets into empty
+// retry budgets. Each direction has its own atomically replaced snapshot.
+func NewPersistentBatchBuilder(stateDir string) (*BatchBuilder, error) {
+	cosmosTracker, err := NewPersistentPendingPacketTracker(filepath.Join(stateDir, "cosmos.json"))
+	if err != nil {
+		return nil, err
+	}
+	ethTracker, err := NewPersistentPendingPacketTracker(filepath.Join(stateDir, "eth.json"))
+	if err != nil {
+		return nil, err
+	}
+	l2Tracker, err := NewPersistentPendingPacketTracker(filepath.Join(stateDir, "l2.json"))
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	return &BatchBuilder{
+		cosmosTimestamp:   now,
+		ethTimestamp:      now,
+		cosmosPackets:     []CosmosPacket{},
+		ethPackets:        []EthPacket{},
+		PendingTracker:    cosmosTracker,
+		EthPendingTracker: ethTracker,
+		L2PendingTracker:  l2Tracker,
+		cosmosInFlight:    map[uint64]int{},
+		ethInFlight:       map[uint64]int{},
+	}, nil
+}
+
 func (b *BatchBuilder) AddCosmos(packet CosmosPacket) {
 	b.cosmosMtx.Lock()
 	b.cosmosPackets = append(b.cosmosPackets, packet)
@@ -136,6 +167,18 @@ func (b *BatchBuilder) AddEth(packet EthPacket) {
 	b.ethMtx.Unlock()
 	log.Printf("[BatchBuilder] Inserted eth packet: type=%s seq=%d (batch size: %d)",
 		packet.Type, packet.Packet.Sequence, count)
+}
+
+// QueueDepths returns the packets waiting in each batch-builder direction.
+// A growing value means relay work is arriving faster than the adapters flush it.
+func (b *BatchBuilder) QueueDepths() (cosmos, eth int) {
+	b.cosmosMtx.Lock()
+	cosmos = len(b.cosmosPackets)
+	b.cosmosMtx.Unlock()
+	b.ethMtx.Lock()
+	eth = len(b.ethPackets)
+	b.ethMtx.Unlock()
+	return cosmos, eth
 }
 
 // Waiting-backoff bounds: a packet re-queued because it is not yet relayable

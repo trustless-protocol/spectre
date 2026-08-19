@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"os"
 	"testing"
 	"time"
 
@@ -593,6 +594,46 @@ func TestEnqueueEthSendPacketDedupesSeenEvent(t *testing.T) {
 	}
 	if bb.EthPendingTracker.Len() != 1 {
 		t.Fatalf("eth pending tracker len = %d, want 1", bb.EthPendingTracker.Len())
+	}
+}
+
+func TestEnqueueEthSendPacketRetriesWhenPendingStateCannotPersist(t *testing.T) {
+	dir := t.TempDir()
+	bb, err := services.NewPersistentBatchBuilder(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	ev := &contractICS26Router.ContractICS26RouterSendPacket{
+		Sequence: big.NewInt(7),
+		Packet: contractICS26Router.IICS26RouterMsgsPacket{
+			SourceClient: "eth-client-0",
+			DestClient:   "cosmos-client-0",
+		},
+		Raw: gethtypes.Log{BlockNumber: 88, Index: 3},
+	}
+	seen := make(map[ethEventKey]struct{})
+
+	if enqueueEthSendPacket(bb, ev, seen) {
+		t.Fatal("enqueue succeeded after pending-state persistence failed")
+	}
+	if len(seen) != 0 {
+		t.Fatal("failed pending-state write marked the source event seen")
+	}
+	if bb.EthPendingTracker.Len() != 0 {
+		t.Fatal("failed pending-state write left the packet tracked in memory")
+	}
+
+	ch := make(chan services.EthBatch, 1)
+	bb.CheckEth(context.Background(), services.BatchConfig{BatchSize: 1, BatchPeriods: time.Hour}, ch)
+	select {
+	case batch := <-ch:
+		t.Fatalf("failed pending-state write still enqueued relay batch: %+v", batch)
+	default:
 	}
 }
 

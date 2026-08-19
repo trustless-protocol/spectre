@@ -69,6 +69,7 @@ relayer/relayer
 docs/*_VI.md
 
 .state
+.fast-ibc-state/
 *.pid
 # Local OP attestor / devnet runtime state (scripts/local/run_op_attestor.sh, run_op_stack.sh)
 attestor/optimism/attestor

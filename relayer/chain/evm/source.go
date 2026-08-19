@@ -144,7 +144,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 				// scanner stops considering it (mirrors the legacy handleEth EthAck/
 				// EthTimeout tracker removal), then skip — nothing to relay.
 				if p.Packet != nil && (p.Type == services.EthAck || p.Type == services.EthTimeout) {
-					s.bb.EthPendingTracker.Remove(p.Packet.SourceClient, p.Packet.Sequence)
+					s.bb.EthPendingTracker.RemovePacketIfCurrent(*p.Packet)
 					continue
 				}
 				e, ok := ethPacketToEvent(p)

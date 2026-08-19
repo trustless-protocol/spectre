@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"relayer/chain"
 	"relayer/services"
@@ -52,8 +53,12 @@ func (b *BeaconBuilder) Build(ctx context.Context, _ []byte) (chain.ClientUpdate
 		return chain.ClientUpdate{}, fmt.Errorf("beacon: build returned nil client state")
 	}
 	execBlock := result.EthClientState.LatestExecutionBlockNumber
-	if len(result.Headers) == 0 {
-		return chain.ClientUpdate{Height: execBlock}, nil // client already current — learn height, no tx
+	trustedAt := time.Time{}
+	if result.ProofTimestamp > 0 {
+		trustedAt = time.Unix(int64(result.ProofTimestamp), 0)
 	}
-	return chain.ClientUpdate{Height: execBlock, Payloads: result.Headers}, nil
+	if len(result.Headers) == 0 {
+		return chain.ClientUpdate{Height: execBlock, TrustedAt: trustedAt}, nil // client already current — learn height, no tx
+	}
+	return chain.ClientUpdate{Height: execBlock, Payloads: result.Headers, TrustedAt: trustedAt}, nil
 }

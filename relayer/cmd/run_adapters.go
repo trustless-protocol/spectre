@@ -40,13 +40,13 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	// Cosmos-origin sends aren't tracked by the subscriber; the module records
 	// each one (proto bytes -> Packet) so ScanCosmosTimeouts can refund it, and
 	// removes it once the send is received on ETH (it can no longer time out).
-	trackCosmosPending := func(raw []byte, height uint64) {
+	trackCosmosPending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
 			log.Printf("[adapter cosmos->eth] track pending: decode packet: %v", err)
-			return
+			return false
 		}
-		svc.TrackCosmosPending(pkt, height)
+		return svc.TrackCosmosPending(pkt, height)
 	}
 	untrackCosmosPending := func(raw []byte) {
 		var pkt channeltypesv2.Packet
@@ -81,6 +81,9 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		log.Printf("[adapter cosmos->eth] derive initial rotation delay: %v; rotating on startup", err)
 		initialRotationDelay = 0
 	}
+	if err := svc.SeedEVMOnCosmosUpdate(deps.Cosmos, deps.IDs.EVMOnCosmos); err != nil {
+		log.Printf("[adapter eth->cosmos] seed client-update age: %v", err)
+	}
 
 	cosmosToEth := relay.NewModule(
 		"cosmos->eth",
@@ -88,6 +91,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		cosmos.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.FetchTimeout, deps.Config.BatchConfig, deps.Logger, bb, svc.RecoveryState()),
 		evm.NewDestination(worker, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM),
 		cosmos.NewGroth16Builder(worker, deps.Cosmos, deps.EVM, deps.Config.FetchTimeout, deps.Config.RotationThreshold, cfg.ProofType, cfg.TrustLevel),
+		relay.WithClientUpdateObserver(svc.ObserveCosmosOnEVMUpdate),
 		relay.WithTimeoutScanner(0, func(c context.Context) {
 			svc.ScanCosmosTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos)
 		}),
@@ -107,6 +111,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		evm.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.BatchConfig, deps.Logger, bb, svc.RecoveryState()),
 		cosmos.NewDestination(worker, deps.Cosmos, deps.IDs.EVMOnCosmos),
 		evm.NewBeaconBuilder(worker, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos),
+		relay.WithClientUpdateObserver(svc.ObserveEVMOnCosmosUpdate),
 		relay.WithTimeoutScanner(0, func(c context.Context) { svc.ScanEthTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM) }),
 	)
 
@@ -114,6 +119,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	go svc.RunQueueReporter(runCtx)
 	errCh := make(chan error, 2)
 	go func() { errCh <- cosmosToEth.Run(runCtx) }()
 	go func() { errCh <- ethToCosmos.Run(runCtx) }()

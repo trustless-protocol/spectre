@@ -1048,7 +1048,7 @@ func GetEthNonMembershipProof(ctx context.Context, client *ethclient.Client, con
 
 	// Verify the value is empty (proving non-membership)
 	if sp.Value != nil && sp.Value.ToInt().Cmp(big.NewInt(0)) != 0 {
-		return nil, fmt.Errorf("storage slot not empty at key %s: value=%s (expected 0 for non-membership)", storageKey.Hex(), valueStr)
+		return nil, fmt.Errorf("storage slot not empty at key %s: value=%s (expected 0 for non-membership): %w", storageKey.Hex(), valueStr, ErrPacketAlreadyReceived)
 	}
 
 	proof := MembershipProof{

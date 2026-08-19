@@ -128,3 +128,37 @@ When to use: Rarely. You can use histograms instead unless you have a specific r
 ### Rust
 
 TODO: IBC-143 Write the Rust-specific guide
+
+## Relayer queue-state logs
+
+The Go relayer has no metrics exporter yet. Until RLY-02 provides one, every
+services engine emits a structured `[QueueState]` line at startup and once per
+minute. These values are deliberately bounded gauges so a log pipeline can
+alert on them today and map them directly to an exporter later.
+
+```
+[QueueState] queued(cosmos=0 eth=0) pending(cosmos=2 eth=0 l2=0) timeout-dead-letter(cosmos=0 eth=0 l2=0)
+```
+
+| Field | Future metric type | Meaning |
+|---|---|---|
+| `queued(cosmos,eth)` | Gauge | Packets still waiting for the batch adapters to flush. Sustained growth means work is arriving faster than delivery. |
+| `pending(cosmos,eth,l2)` | Gauge | Sent packets still eligible for timeout recovery. |
+| `timeout-dead-letter(cosmos,eth,l2)` | Gauge | Timeout submissions that exhausted the bounded retry budget. A non-zero value means escrowed funds need operator action. |
+
+Two `[QueueState][ATTENTION]` lines are emitted independently of the normal
+state line. The first reports timeout dead letters and their oldest age. The
+second reports packets repeatedly deferred by a shared prerequisite, including
+the worst deferral count. Deferrals never consume the timeout retry budget, so
+they do not dead-letter; alerting on that line is required to distinguish a
+healthy empty queue from an RPC or light-client prerequisite that has stalled.
+
+The reporter stops with its adapter context. Pending timeout entries and dead
+letters are persisted as atomically replaced JSON snapshots under
+`.fast-ibc-state/` beside the selected relayer config and are restored before
+startup recovery begins. A corrupt or unwritable state location aborts startup
+instead of silently granting packets a fresh retry budget. A timeout dead
+letter remains visible and suppressed for 30 days, then automatically returns
+to timeout recovery with a fresh retry budget; this prevents a stale
+client/sequence-number reuse from being shadowed forever. RLY-02 is still
+responsible for an operator-facing drain/reactivation workflow.

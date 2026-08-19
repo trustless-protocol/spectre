@@ -94,8 +94,9 @@ type Event struct {
 // adapter understands their contents. An empty list means the client is already
 // current and no transaction is needed.
 type ClientUpdate struct {
-	Height   uint64
-	Payloads [][]byte
+	Height    uint64
+	Payloads  [][]byte
+	TrustedAt time.Time
 }
 
 // RelayPacket is a source packet together with the source proof the destination

@@ -4,8 +4,26 @@ import (
 	"math/big"
 	"testing"
 
+	updateclientContract "relayer/bindings/UpdateClient"
 	"relayer/prover"
 )
+
+func TestUpdateCommitToMisbehaviourPreservesValidatorAddress(t *testing.T) {
+	wantAddress := [20]byte{0x01, 0x23, 0x45, 0x67, 0x89}
+	converted := updateCommitToMisbehaviour(updateclientContract.IICS07TendermintMsgsBlockCommit{
+		CommitSigs: []updateclientContract.IICS07TendermintMsgsCommitSig{{
+			Flag:             2,
+			ValidatorAddress: wantAddress,
+		}},
+	})
+
+	if len(converted.CommitSigs) != 1 {
+		t.Fatalf("commit signatures = %d, want 1", len(converted.CommitSigs))
+	}
+	if got := converted.CommitSigs[0]; got.Flag != 2 || got.ValidatorAddress != wantAddress {
+		t.Fatalf("converted signature = %+v, want flag=2 validatorAddress=%x", got, wantAddress)
+	}
+}
 
 func TestMisbehaviourEvidenceDetectsPinnedSetEquivocation(t *testing.T) {
 	pubkey0 := [32]byte{0x01}

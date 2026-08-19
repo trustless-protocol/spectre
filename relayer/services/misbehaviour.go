@@ -534,7 +534,10 @@ func updateBlockHeaderToMisbehaviour(h updateclientContract.IICS07TendermintMsgs
 func updateCommitToMisbehaviour(c updateclientContract.IICS07TendermintMsgsBlockCommit) misbehaviourContract.IICS07TendermintMsgsBlockCommit {
 	sigs := make([]misbehaviourContract.IICS07TendermintMsgsCommitSig, len(c.CommitSigs))
 	for i, sig := range c.CommitSigs {
-		sigs[i] = misbehaviourContract.IICS07TendermintMsgsCommitSig{Flag: sig.Flag}
+		sigs[i] = misbehaviourContract.IICS07TendermintMsgsCommitSig{
+			Flag:             sig.Flag,
+			ValidatorAddress: sig.ValidatorAddress,
+		}
 	}
 	return misbehaviourContract.IICS07TendermintMsgsBlockCommit{
 		Height:     c.Height,

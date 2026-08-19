@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -44,6 +45,7 @@ func buildCosmosToL2Dest(
 	batchCfg services.BatchConfig,
 	p *prover.EcipProver,
 	txHandler services.TransactionHandler,
+	pendingStateDir string,
 ) (*services.Services, services.RelayDeps, func(), error) {
 	var zero services.RelayDeps
 
@@ -107,7 +109,16 @@ func buildCosmosToL2Dest(
 		cleanup()
 		return nil, zero, nil, fmt.Errorf("load recovery state: %w", err)
 	}
-	svc := services.New(txHandler, p, cosmosConfig, recoveryState)
+	var svc *services.Services
+	if pendingStateDir != "" {
+		svc, err = services.NewWithPendingState(txHandler, p, cosmosConfig, pendingStateDir, recoveryState)
+		if err != nil {
+			cleanup()
+			return nil, zero, nil, err
+		}
+	} else {
+		svc = services.New(txHandler, p, cosmosConfig, recoveryState)
+	}
 	return svc, deps, cleanup, nil
 }
 
@@ -123,13 +134,13 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 
 	// Cosmos-origin sends aren't tracked by the subscriber; the module records each
 	// one so ScanCosmosTimeouts can refund it, and removes it once received on the L2.
-	trackCosmosPending := func(raw []byte, height uint64) {
+	trackCosmosPending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
 			log.Printf("[adapter cosmos->l2] track pending: decode packet: %v", err)
-			return
+			return false
 		}
-		svc.TrackCosmosPending(pkt, height)
+		return svc.TrackCosmosPending(pkt, height)
 	}
 	untrackCosmosPending := func(raw []byte) {
 		var pkt channeltypesv2.Packet
@@ -173,5 +184,11 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		}),
 	)
 
-	return module.Run(ctx)
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go svc.RunQueueReporter(runCtx)
+	if err := module.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
+		return err
+	}
+	return nil
 }

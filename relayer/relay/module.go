@@ -48,13 +48,19 @@ type ScanFunc func(ctx context.Context)
 
 // TrackFunc records a recv-relayed packet — proto-marshaled bytes plus the source
 // height it was observed at — so the path's ScanFunc can later refund it if it is
-// never delivered. Add is idempotent by (source client, sequence).
-type TrackFunc func(packet []byte, height uint64)
+// never delivered. It returns false when the tracker could not durably record
+// the packet; the module then re-queues the event without attempting its relay.
+// Add is idempotent by packet identity.
+type TrackFunc func(packet []byte, height uint64) bool
 
 // UntrackFunc removes a packet (by its proto-marshaled bytes) from the pending
 // tracker once the destination confirms delivery. Called after a successful relay
 // so the timeout scanner stops considering a packet that can no longer time out.
 type UntrackFunc func(packet []byte)
+
+// ClientUpdateObserver records the source-chain timestamp trusted by a client
+// after an update is submitted or the builder confirms it is current.
+type ClientUpdateObserver func(trustedAt time.Time)
 
 // PeriodicUpdateFunc runs one periodic destination-client update on a fixed
 // cadence, independent of packet flow and of the expiry-driven refresh. It
@@ -95,6 +101,12 @@ func WithPacketTracker(track TrackFunc, untrack UntrackFunc) Option {
 	}
 }
 
+// WithClientUpdateObserver exposes successful client progress to observability
+// without coupling the generic relay loop to a particular reporter.
+func WithClientUpdateObserver(observer ClientUpdateObserver) Option {
+	return func(m *Module) { m.observeClientUpdate = observer }
+}
+
 // WithPeriodicUpdate runs a forced client update every interval (independent of
 // the expiry-driven refresh) to keep the destination client fresh in ways
 // ClientExpiresAt does not capture — e.g. the SpectreClient pinned-set rotation.
@@ -129,10 +141,11 @@ type Module struct {
 
 	// Optional timeout-recovery wiring (nil when the path has no timeout scanner,
 	// e.g. a mock or a permissioned client that cannot time out).
-	scan         ScanFunc
-	scanInterval time.Duration
-	track        TrackFunc
-	untrack      UntrackFunc
+	scan                ScanFunc
+	scanInterval        time.Duration
+	track               TrackFunc
+	untrack             UntrackFunc
+	observeClientUpdate ClientUpdateObserver
 
 	// Optional fixed-cadence forced update (nil when the destination client's
 	// freshness is fully captured by ClientExpiresAt, e.g. the beacon client).
@@ -316,9 +329,15 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 	// relay: even if the update/proof/submit below fails, the scanner must still be
 	// able to refund a packet that later expires undelivered. Only SendPacket opens
 	// a receive that can time out; Add is idempotent.
-	for _, e := range events {
+	trackFailed := make([]bool, len(events))
+	var requeue []int
+	for i, e := range events {
 		if e.Type == chain.SendPacket && m.track != nil {
-			m.track(e.Raw, e.Height)
+			if !m.track(e.Raw, e.Height) {
+				log.Printf("[relay %s] track pending packet seq=%d height=%d: durable write failed; re-queueing", m.name, e.Sequence, e.Height)
+				trackFailed[i] = true
+				requeue = append(requeue, i)
+			}
 		}
 	}
 
@@ -338,11 +357,13 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 		return allIndices(len(events))
 	}
 
-	var requeue []int
 	var stalled []waiting // still-waiting packets, with how long each has waited
 	provable := make([]chain.Event, 0, len(events))
 	provableIdx := make([]int, 0, len(events)) // original index behind provable[j]
 	for i, e := range events {
+		if trackFailed[i] {
+			continue
+		}
 		if e.Height > relayable {
 			requeue = append(requeue, i) // not yet provable — wait, no expensive work
 			stalled = append(stalled, waiting{event: e, age: m.waits.observe(e)})
@@ -492,6 +513,7 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 				return requeue
 			}
 			m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
+			m.recordClientUpdate(foldPlan.update)
 			foldPlan.release()
 			log.Printf("[relay %s] advanced client to height %d with no packets to relay",
 				m.name, foldPlan.update.Height)
@@ -512,6 +534,7 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 		err = foldPlan.destination.RelayWithUpdate(ctx, m.clientID, foldPlan.update, packets)
 		if err == nil {
 			m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
+			m.recordClientUpdate(foldPlan.update)
 			foldPlan.release()
 		}
 	} else {
@@ -600,6 +623,7 @@ func (m *Module) prepareBatchUpdate(ctx context.Context, height uint64) (*folded
 		if update.Height > m.lastHeight {
 			m.lastHeight = update.Height
 		}
+		m.recordClientUpdate(update)
 		proofHeight := m.lastHeight
 		release()
 		return nil, proofHeight, nil
@@ -661,6 +685,7 @@ func (m *Module) relayFoldedIsolated(ctx context.Context, folding chain.FoldingD
 			err = folding.RelayWithUpdate(ctx, m.clientID, update, single)
 			if err == nil {
 				m.lastHeight = update.Height
+				m.recordClientUpdate(update)
 			}
 			m.mu.Unlock()
 		} else {
@@ -742,6 +767,7 @@ func (m *Module) updateClientTo(ctx context.Context, height uint64) error {
 		if update.Height > m.lastHeight {
 			m.lastHeight = update.Height
 		}
+		m.recordClientUpdate(update)
 		return nil
 	}
 	// A stale update (at or below what we already trust) is skipped without a tx.
@@ -753,7 +779,14 @@ func (m *Module) updateClientTo(ctx context.Context, height uint64) error {
 		return fmt.Errorf("submit client update at %d: %w", update.Height, err)
 	}
 	m.lastHeight = update.Height
+	m.recordClientUpdate(update)
 	return nil
+}
+
+func (m *Module) recordClientUpdate(update chain.ClientUpdate) {
+	if m.observeClientUpdate != nil && !update.TrustedAt.IsZero() {
+		m.observeClientUpdate(update.TrustedAt)
+	}
 }
 
 // refreshLoop proactively advances the destination client before it expires,

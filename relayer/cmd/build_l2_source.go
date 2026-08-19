@@ -226,13 +226,13 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 }
 
 func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.UntrackFunc) {
-	trackL2Pending := func(raw []byte, height uint64) {
+	trackL2Pending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
 			log.Printf("[adapter l2->cosmos] track pending: decode packet: %v", err)
-			return
+			return false
 		}
-		svc.TrackL2Pending(pkt, height)
+		return svc.TrackL2Pending(pkt, height)
 	}
 	untrackL2Pending := func(raw []byte) {
 		var pkt channeltypesv2.Packet

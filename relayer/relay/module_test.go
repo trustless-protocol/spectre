@@ -306,7 +306,7 @@ func TestHandleBatch_UntracksDeliveredSends(t *testing.T) {
 	var untracked [][]byte
 	m := NewModule("test", "client-0", src, dst, &mockBuilder{},
 		WithPacketTracker(
-			func([]byte, uint64) {}, // track: no-op for this test
+			func([]byte, uint64) bool { return true }, // track: no-op for this test
 			func(pkt []byte) { untracked = append(untracked, pkt) },
 		),
 	)
@@ -336,7 +336,7 @@ func TestHandleBatch_NoUntrackOnRelayFailure(t *testing.T) {
 	var untracked [][]byte
 	m := NewModule("test", "client-0", src, dst, &mockBuilder{},
 		WithPacketTracker(
-			func([]byte, uint64) {},
+			func([]byte, uint64) bool { return true },
 			func(pkt []byte) { untracked = append(untracked, pkt) },
 		),
 	)
@@ -347,6 +347,36 @@ func TestHandleBatch_NoUntrackOnRelayFailure(t *testing.T) {
 	}
 	if len(untracked) != 0 {
 		t.Fatalf("a failed relay must not untrack anything, got %q", untracked)
+	}
+}
+
+func TestHandleBatch_RequeuesSendWhenPendingTrackingFails(t *testing.T) {
+	src := &mockSource{latest: 100}
+	dst := &mockDest{}
+	trackCalls := 0
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{},
+		WithPacketTracker(
+			func([]byte, uint64) bool {
+				trackCalls++
+				return trackCalls > 1
+			},
+			nil,
+		),
+	)
+	event := chain.Event{Type: chain.SendPacket, Height: 7, Sequence: 9, Raw: []byte("send-1")}
+
+	if got := m.handleBatch(context.Background(), []chain.Event{event}); len(got) != 1 || got[0] != 0 {
+		t.Fatalf("failed durable tracking requeue = %v, want [0]", got)
+	}
+	if dst.relayCalls != 0 {
+		t.Fatalf("relay calls after failed durable tracking = %d, want 0", dst.relayCalls)
+	}
+
+	if got := m.handleBatch(context.Background(), []chain.Event{event}); len(got) != 0 {
+		t.Fatalf("requeue after tracking recovered = %v, want none", got)
+	}
+	if dst.relayCalls != 1 {
+		t.Fatalf("relay calls after tracking recovered = %d, want 1", dst.relayCalls)
 	}
 }
 

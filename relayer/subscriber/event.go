@@ -1106,7 +1106,7 @@ func enqueueEthTerminal(
 	blockNumber uint64,
 ) {
 	cosmosPacket := EthPacketToCosmosPacket(packet, sequence)
-	batchBuilder.EthPendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
+	batchBuilder.EthPendingTracker.RemovePacketIfCurrent(cosmosPacket)
 	batchBuilder.AddEth(services.EthPacket{
 		Type:        packetType,
 		Packet:      &cosmosPacket,
@@ -1120,16 +1120,18 @@ func enqueueEthSendPacket(
 	ev *contractICS26Router.ContractICS26RouterSendPacket,
 	seenEvents map[ethEventKey]struct{},
 ) bool {
+	cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
+	if !batchBuilder.EthPendingTracker.Add(cosmosPacket, ev.Raw.BlockNumber) {
+		return false
+	}
 	if !markEthEventSeen(seenEvents, ethEventKeyForLog("SendPacket", ev.Raw)) {
 		return false
 	}
-	cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 	batchBuilder.AddEth(services.EthPacket{
 		Type:        services.EthSend,
 		Packet:      &cosmosPacket,
 		BlockNumber: ev.Raw.BlockNumber,
 	})
-	batchBuilder.EthPendingTracker.Add(cosmosPacket, ev.Raw.BlockNumber)
 	return true
 }
 
@@ -1232,7 +1234,7 @@ func recoverEthSendPackets(
 		}
 		if !pending {
 			markEthEventSeen(seenEvents, key)
-			batchBuilder.EthPendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
+			batchBuilder.EthPendingTracker.RemovePacketIfCurrent(cosmosPacket)
 			stats.skipped++
 			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d already cleared on ETH, skipping historical SendPacket from ETH block %d",
 				cosmosPacket.Sequence, ev.Raw.BlockNumber)
@@ -1313,7 +1315,7 @@ func recoverEthWriteAcknowledgements(
 		}
 		if !pending {
 			markEthEventSeen(seenEvents, key)
-			batchBuilder.PendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
+			batchBuilder.PendingTracker.RemovePacketIfCurrent(cosmosPacket)
 			stats.skipped++
 			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d already cleared on Cosmos, skipping historical WriteAcknowledgement from ETH block %d",
 				cosmosPacket.Sequence, ev.Raw.BlockNumber)
@@ -1321,7 +1323,7 @@ func recoverEthWriteAcknowledgements(
 		}
 
 		if enqueueEthWriteAcknowledgement(batchBuilder, ev, seenEvents) {
-			batchBuilder.PendingTracker.Remove(cosmosPacket.SourceClient, cosmosPacket.Sequence)
+			batchBuilder.PendingTracker.RemovePacketIfCurrent(cosmosPacket)
 			ctx.Logger.Printf("[SubscribeEth] recovery: recovered WriteAcknowledgement seq=%d from ETH block %d",
 				cosmosPacket.Sequence, ev.Raw.BlockNumber)
 			stats.recovered++
@@ -1550,7 +1552,8 @@ func (s *Subscriber) subscribeEthOnce(
 			}
 			ctx.Logger.Printf("WriteAcknowledgement event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 			enqueueEthWriteAcknowledgement(batchBuilder, ev, seenEvents)
-			batchBuilder.PendingTracker.Remove(ev.Packet.SourceClient, ev.Sequence.Uint64())
+			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
+			batchBuilder.PendingTracker.RemovePacketIfCurrent(cosmosPacket)
 
 		case ev, ok := <-ackPacketCh:
 			if !ok || ev == nil {
