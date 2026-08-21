@@ -19,6 +19,7 @@
 #   OP_PACKAGE_REF              ethpandaops/optimism-package git ref to clone
 #   RUN_DIR (.op-devnet-run)    package clones + downloaded artifacts + attestor.env
 #   GAME_WAIT_SECS (900)        max wait for the first proposed game
+#   OP_OBSERVABILITY (0)        set to 1 to include Grafana/Loki/Prometheus
 
 set -euo pipefail
 
@@ -31,10 +32,19 @@ ENCLAVE=${ENCLAVE:-op-devnet}
 OP_PACKAGE_REF=${OP_PACKAGE_REF:-7bef190d7c0b9f619438ed08b17bd5e5f51e72ff}
 RUN_DIR=${RUN_DIR:-$REPO_ROOT/.op-devnet-run}
 GAME_WAIT_SECS=${GAME_WAIT_SECS:-900}
+OP_OBSERVABILITY=${OP_OBSERVABILITY:-0}
 
 mkdir -p "$RUN_DIR"
 
 log() { printf '\n[run_optimism_node] %s\n' "$*"; }
+
+case "$OP_OBSERVABILITY" in
+    0|1) ;;
+    *)
+        log "ERROR: OP_OBSERVABILITY must be 0 or 1, got $OP_OBSERVABILITY"
+        exit 1
+        ;;
+esac
 
 # wait_until <timeout-secs> <description> <command...> — poll every 5s.
 wait_until() {
@@ -94,24 +104,31 @@ PYEOF
 fi
 # op-node >= v1.18 must be told the L1 chain config when the L1 chain id is not a
 # known network. The ethereum-package L1 genesis carries the legacy
-# terminalTotalDifficultyPassed key geth dropped in v1.15, so the fund step (which
-# has jq) emits a cleaned l1-chain-config.json the op-node launcher points at.
-if ! grep -q 'l1-chain-config.json' "$DEPLOYER_STAR"; then
-    log "patching contract_deployer.star (emit cleaned l1-chain-config.json)"
+# terminalTotalDifficultyPassed key geth dropped in v1.15. Mount it in the fund
+# step; fund.sh (which already has jq) writes the cleaned chain config. Keeping the
+# shell program in fund.sh avoids a Kurtosis 1.11 Starlark interpreter hang caused
+# by the equivalent inline run-string.
+if ! grep -Fq 'plan.get_files_artifact(name="el_cl_genesis_data")' "$DEPLOYER_STAR"; then
+    log "patching contract_deployer.star (mount L1 genesis for chain config)"
     python3 - "$DEPLOYER_STAR" <<'PYEOF'
 import sys
 path = sys.argv[1]
 src = open(path).read()
+new_mount = '"/l1-genesis": plan.get_files_artifact(name="el_cl_genesis_data"),'
+old_mount = '"/l1-genesis": "el_cl_genesis_data",'
 files_anchor = '''"/network-data": op_deployer_init.files_artifacts[0],
             "/fund-script": fund_script_artifact,
         },'''
-run_anchor = """run='bash /fund-script/fund.sh "{0}"'.format(l2_chain_ids),"""
-if files_anchor not in src or run_anchor not in src:
+if old_mount in src:
+    # Migrate clones patched by the older script version, which used the
+    # artifact name string rather than the artifact object.
+    src = src.replace(old_mount, new_mount, 1)
+elif files_anchor in src:
+    src = src.replace(files_anchor, files_anchor.replace(
+        '"/fund-script": fund_script_artifact,',
+        '\"/fund-script\": fund_script_artifact,\n            \"/l1-genesis\": plan.get_files_artifact(name=\"el_cl_genesis_data\"),'), 1)
+else:
     sys.exit("anchor for l1-chain-config patch not found in contract_deployer.star")
-src = src.replace(files_anchor, files_anchor.replace(
-    '"/fund-script": fund_script_artifact,',
-    '"/fund-script": fund_script_artifact,\n            "/l1-genesis": "el_cl_genesis_data",'), 1)
-src = src.replace(run_anchor, """run='bash /fund-script/fund.sh "{0}" && jq "del(.config.terminalTotalDifficultyPassed)" /l1-genesis/genesis.json > /network-data/l1-chain-config.json'.format(l2_chain_ids),""", 1)
 open(path, "w").write(src)
 PYEOF
 fi
@@ -123,6 +140,25 @@ if [ -n "$FUND_SH" ] && ! grep -q -- '--gas-price 2gwei' "$FUND_SH"; then
     log "patching fund.sh (explicit --gas-price for a near-zero-basefee L1)"
     sed 's/--priority-gas-price 1gwei/--gas-price 2gwei --priority-gas-price 1gwei/' "$FUND_SH" > "$FUND_SH.tmp"
     mv "$FUND_SH.tmp" "$FUND_SH"
+fi
+if [ -n "$FUND_SH" ] && ! grep -q -- 'l1-chain-config.json' "$FUND_SH"; then
+    log "patching fund.sh (write cleaned L1 chain config)"
+    python3 - "$FUND_SH" <<'PYEOF'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+anchor = "\nwait\n"
+if anchor not in src:
+    sys.exit("anchor for l1-chain-config patch not found in fund.sh")
+src = src.replace(anchor, """
+wait
+
+# op-node rejects the legacy terminalTotalDifficultyPassed key in the generated
+# ethereum-package genesis. It needs this cleaned config for an unknown local L1.
+jq 'del(.config.terminalTotalDifficultyPassed)' /l1-genesis/genesis.json > /network-data/l1-chain-config.json
+""", 1)
+open(path, "w").write(src)
+PYEOF
 fi
 
 OPNODE_STAR=$PKG_DIR/src/cl/op-node/launcher.star
@@ -137,6 +173,45 @@ if cmd_anchor not in src:
     sys.exit("anchor for l1-chain-config patch not found in launcher.star")
 src = src.replace(cmd_anchor, cmd_anchor + '''
         "--rollup.l1-chain-config=/network-configs/l1-chain-config.json",''', 1)
+open(path, "w").write(src)
+PYEOF
+fi
+
+# optimism-package's observability bundle (Grafana/Loki/Prometheus) can deadlock the
+# Kurtosis 1.11 interpreter during plan construction on this local setup. It is not
+# needed by the OP attestor or IBC test path, so skip it by default while keeping its
+# helper enabled for the batcher/proposer launchers. Set OP_OBSERVABILITY=1 to restore
+# the package default.
+MAIN_STAR=$PKG_DIR/main.star
+if [ "$OP_OBSERVABILITY" = "0" ] && ! grep -Fq 'fast-ibc: observability intentionally skipped' "$MAIN_STAR"; then
+    log "patching main.star (skip optional observability bundle in local devnet)"
+    python3 - "$MAIN_STAR" <<'PYEOF'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+anchor = '''    observability.launch(
+        plan, observability_helper, global_node_selectors, observability_params
+    )'''
+if anchor not in src:
+    sys.exit("anchor for observability patch not found in main.star")
+src = src.replace(anchor, '''    # fast-ibc: observability intentionally skipped in the local devnet.
+    plan.print("Skipping optional observability bundle")''', 1)
+open(path, "w").write(src)
+PYEOF
+elif [ "$OP_OBSERVABILITY" = "1" ] && grep -Fq 'fast-ibc: observability intentionally skipped' "$MAIN_STAR"; then
+    log "restoring main.star (enable optional observability bundle)"
+    python3 - "$MAIN_STAR" <<'PYEOF'
+import sys
+path = sys.argv[1]
+src = open(path).read()
+skipped = '''    # fast-ibc: observability intentionally skipped in the local devnet.
+    plan.print("Skipping optional observability bundle")'''
+launch = '''    observability.launch(
+        plan, observability_helper, global_node_selectors, observability_params
+    )'''
+if skipped not in src:
+    sys.exit("anchor for observability restore not found in main.star")
+src = src.replace(skipped, launch, 1)
 open(path, "w").write(src)
 PYEOF
 fi

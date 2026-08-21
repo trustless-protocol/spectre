@@ -190,6 +190,7 @@ export E2E_L2_DEPLOYMENT_OUT=$DEPLOY_OUT
 forge script scripts/E2ETestDeployL2.s.sol:E2ETestDeployL2 \
     --rpc-url "$L2_RPC" \
     --broadcast \
+    --slow \
     --ffi \
     --sender "$L2_DEPLOYER_ADDRESS" --private-key "$L2_DEPLOYER_PRIVATE_KEY"
 

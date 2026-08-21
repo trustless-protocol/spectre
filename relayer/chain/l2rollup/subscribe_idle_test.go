@@ -28,6 +28,27 @@ const (
 	idleTestHead     = uint64(100)
 )
 
+func TestL2StartupLookbackBlocksFromEnv(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want uint64
+	}{
+		{name: "empty uses default", raw: "", want: defaultL2StartupLookback},
+		{name: "valid override", raw: "1200", want: 1200},
+		{name: "zero disables startup recovery", raw: "0", want: 0},
+		{name: "invalid uses default", raw: "not-a-number", want: defaultL2StartupLookback},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := l2StartupLookbackBlocksFromEnv(tc.raw); got != tc.want {
+				t.Fatalf("l2StartupLookbackBlocksFromEnv(%q) = %d, want %d", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
 // idleL2Node is a JSON-RPC stub for a demand-driven rollup that has gone quiet:
 // it serves one SendPacket log on the first eth_getLogs call and nothing after,
 // while eth_getBlockByNumber reports the same head forever. Arbitrum Nitro seals a
@@ -318,7 +339,7 @@ func TestSubscribeSurvivesUnsafeHeadReorg(t *testing.T) {
 	l2SubscribeInterval = 20 * time.Millisecond
 	t.Cleanup(func() { l2SubscribeInterval = restore })
 
-	// Above l2StartupLookback so the initial cursor is a real number (head-256),
+	// Above the default startup lookback so the initial cursor is a real number (head-256),
 	// which is what makes "did the cursor move?" observable at all.
 	const (
 		startHead = uint64(1000)
@@ -476,7 +497,7 @@ func TestSubscribeSurvivesTransientHeadErrorAtStartup(t *testing.T) {
 	if len(ranges) == 0 {
 		t.Fatal("no eth_getLogs range recorded")
 	}
-	if wantFrom := startHead - l2StartupLookback; ranges[0][0] != wantFrom {
+	if wantFrom := startHead - defaultL2StartupLookback; ranges[0][0] != wantFrom {
 		t.Fatalf("first scan started at %d, want %d (head - lookback)", ranges[0][0], wantFrom)
 	}
 }

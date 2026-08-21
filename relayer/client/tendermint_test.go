@@ -287,6 +287,10 @@ func TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI(t *testing.T) {
 				},
 				Commit: updateClientContract.IICS07TendermintMsgsBlockCommit{
 					Height: 58,
+					CommitSigs: []updateClientContract.IICS07TendermintMsgsCommitSig{{
+						Flag:             2,
+						ValidatorAddress: [20]byte{0x12, 0x34, 0x56, 0x78},
+					}},
 				},
 			},
 			TrustedHeight: updateClientContract.IICS02ClientMsgsHeight{
@@ -316,6 +320,9 @@ func TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse generated ABI: %v", err)
 	}
+	if got, want := updateApplicationStateMsgType.String(), contractABI.Methods["verifyHeader"].Inputs[0].Type.String(); got != want {
+		t.Fatalf("manual ABI tuple diverged from the generated contract ABI\n got=%s\nwant=%s", got, want)
+	}
 	unpacked, err := contractABI.Methods["verifyHeader"].Inputs.Unpack(encoded)
 	if err != nil {
 		t.Fatalf("generated ABI failed to unpack encoded msg: %v", err)
@@ -341,6 +348,9 @@ func TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI(t *testing.T) {
 	}
 	if len(decoded.Proof.PinnedValidatorIndices) != 2 || decoded.Proof.PinnedValidatorIndices[0] != 7 || decoded.Proof.PinnedValidatorIndices[1] != 8 {
 		t.Fatalf("pinned validator indices decoded incorrectly: %+v", decoded.Proof.PinnedValidatorIndices)
+	}
+	if got := decoded.ProposedHeader.SignedHeader.Commit.CommitSigs; len(got) != 1 || got[0].Flag != 2 || got[0].ValidatorAddress != ([20]byte{0x12, 0x34, 0x56, 0x78}) {
+		t.Fatalf("commit signatures decoded incorrectly: %+v", got)
 	}
 }
 

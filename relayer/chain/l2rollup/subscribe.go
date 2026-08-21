@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"strconv"
 	"time"
 
 	"relayer/chain"
@@ -24,9 +26,10 @@ import (
 // hiccup re-scans rather than skips (mistake #11).
 //
 // The cursor is NOT persisted across runs — it lives only in Subscribe's stack frame.
-// A restart resumes at `head - l2StartupLookback` (see below), so anything older than
+// A restart resumes at `head - L2_STARTUP_LOOKBACK_BLOCKS` (see below), so anything older than
 // that window is never re-scanned, and a packet whose acknowledgement fell outside it
-// stays pending forever with nothing in the log to say why.
+// stays pending forever with nothing in the log to say why. A value of zero starts at
+// the head and disables startup recovery.
 //
 // LIMITATION (unsafe head-kind): the cursor only moves FORWARD — it never rewinds on an
 // L2 reorg. With head_kind=unsafe a scanned block can be reorged out and replaced; an
@@ -38,7 +41,12 @@ import (
 var l2SubscribeInterval = 4 * time.Second
 
 const (
-	// l2StartupLookback rescans a window below the head at startup so packets emitted
+	// l2StartupLookbackEnv optionally extends the recovery window below the head at
+	// startup.  It matters when an operator restarts after the default window: an
+	// unpersisted cursor cannot otherwise discover an older, still-unrelayed packet.
+	l2StartupLookbackEnv = "L2_STARTUP_LOOKBACK_BLOCKS"
+
+	// defaultL2StartupLookback rescans a window below the head at startup so packets emitted
 	// while the relayer was down are picked up. Re-emitting an already-relayed packet
 	// is safe — Cosmos rejects the duplicate recv and the module drops it permanently.
 	//
@@ -47,8 +55,25 @@ const (
 	// only after a longer downtime would fall outside the window; size it against the
 	// worst-case attestor/finality lag for the configured head-kind, or add the
 	// receipt-checked recovery the ETH mirror has, before relying on it in production.
-	l2StartupLookback = uint64(256)
+	defaultL2StartupLookback = uint64(256)
 )
+
+func l2StartupLookbackBlocksFromEnv(raw string) uint64 {
+	if raw == "" {
+		return defaultL2StartupLookback
+	}
+
+	lookback, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		log.Printf("[recovery] ignoring invalid %s=%q; using %d", l2StartupLookbackEnv, raw, defaultL2StartupLookback)
+		return defaultL2StartupLookback
+	}
+	return lookback
+}
+
+func l2StartupLookbackBlocks() uint64 {
+	return l2StartupLookbackBlocksFromEnv(os.Getenv(l2StartupLookbackEnv))
+}
 
 // Subscribe polls the L2 for ICS26Router packet events and drives handler in batches
 // until ctx is cancelled.
@@ -75,6 +100,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		seeded  bool
 		pending []chain.Event // events the handler re-queued (not yet relayable)
 	)
+	lookback := l2StartupLookbackBlocks()
 	for {
 		select {
 		case <-ctx.Done():
@@ -88,8 +114,8 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 			continue // do NOT advance the cursor on failure
 		}
 		if !seeded {
-			if head > l2StartupLookback {
-				from = head - l2StartupLookback
+			if head > lookback {
+				from = head - lookback
 			}
 			seeded = true
 			log.Printf("[SubscribeL2] polling ICS26Router %s from block %d (client_id=%s)",

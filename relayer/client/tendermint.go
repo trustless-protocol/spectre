@@ -148,6 +148,7 @@ func init() {
 				}},
 				{Name: "commitSigs", Type: "tuple[]", Components: []abi.ArgumentMarshaling{
 					{Name: "flag", Type: "uint8"},
+					{Name: "validatorAddress", Type: "bytes20"},
 				}},
 			},
 		},
