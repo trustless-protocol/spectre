@@ -16,7 +16,7 @@ import { IMintableAndBurnable } from "contracts/apps/ics20/interfaces/IMintableA
 import { IIBCERC20 } from "contracts/apps/ics20/interfaces/IIBCERC20.sol";
 import { IRateLimit } from "contracts/apps/ics20/interfaces/IRateLimit.sol";
 import { IDeprecatedIBCUUPSUpgradeable } from "contracts/core/compatibility/ICS26AdminsDeprecated.sol";
-import { IPausable } from "contracts/shared/interfaces/IPausable.sol";
+import { IPausable } from "contracts/core/interfaces/IPausable.sol";
 
 import {
     ReentrancyGuardTransientUpgradeable

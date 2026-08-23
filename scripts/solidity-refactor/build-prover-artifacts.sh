@@ -3,13 +3,14 @@ set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 staging="$repo_root/.artifacts/solidity-refactor/prover"
-generated="$staging/generated"
-archive="$staging/unsupported-archive"
+mkdir -p "$staging"
+run_staging=$(mktemp -d "$staging/run.XXXXXX")
+generated="$run_staging/generated"
 native_lib="$repo_root/third_party/ecip-gnark"
 export LD_LIBRARY_PATH="$native_lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+trap 'rm -rf "$run_staging"' EXIT
 
-rm -rf "$staging"
-mkdir -p "$generated/bin" "$generated/verifiers" "$archive/bin" "$archive/verifiers"
+mkdir -p "$generated/bin" "$generated/verifiers"
 
 (
   cd "$repo_root/relayer"
@@ -25,13 +26,6 @@ fi
 for artifact in r1cs.bin pk.bin vk.bin; do
   [[ -s "$generated/bin/n4/$artifact" ]] || { echo "missing staged n4/$artifact" >&2; exit 1; }
 done
-
-while IFS= read -r path; do
-  mv "$path" "$archive/verifiers/"
-done < <(find "$repo_root/contracts/verifiers" -maxdepth 1 -type f -name "Groth16Verifier_N*.sol" ! -name "Groth16Verifier_N4.sol" -print)
-while IFS= read -r path; do
-  mv "$path" "$archive/bin/"
-done < <(find "$repo_root/relayer/bin" -mindepth 1 -maxdepth 1 -type d -name "n*" ! -name "n4" -print)
 
 mkdir -p "$repo_root/relayer/bin/n4" "$repo_root/contracts/verifiers"
 cp "$generated/bin/n4/r1cs.bin" "$repo_root/relayer/bin/n4/r1cs.bin"
@@ -55,6 +49,7 @@ paths = {
 }
 data = {
     'schema_version': 1,
+    'scope': 'checked-local-generator',
     'supported_buckets': [4],
     'generator': 'cd relayer && go run ./prover/cmd <staging-bin> <staging-verifiers>',
     'artifacts': {

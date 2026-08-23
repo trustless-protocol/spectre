@@ -11,6 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MANIFEST = ROOT / "scripts/solidity-refactor/ownership-manifest.json"
+TEST_MOVE_MANIFEST = ROOT / "scripts/solidity-refactor/test-move-manifest.json"
 IMPORT = re.compile(r"""(?:from\s+|import\s+)["']([^"']+)["']""")
 DECLARATION = re.compile(
     r"^\s*(?:abstract\s+)?(?:contract|interface|library)\s+([A-Za-z_][A-Za-z0-9_]*)",
@@ -77,9 +78,17 @@ def import_allowed(source: str, target: str) -> bool:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, default=MANIFEST)
+    parser.add_argument("--test-move-manifest", type=Path, default=TEST_MOVE_MANIFEST)
     args = parser.parse_args()
     failures: list[str] = []
     manifest = json.loads(args.manifest.read_text())
+    import_path_policy = manifest.get("import_path_policy", {})
+    if import_path_policy.get("unknown_consumer_default") != "public-with-forwarding-shim":
+        failures.append("import-path policy must default unknown consumers to public forwarding shims")
+    if import_path_policy.get("classification") == "first-party":
+        package_manifest = json.loads((ROOT / "package.json").read_text())
+        if package_manifest.get("private") is not True:
+            failures.append("first-party import-path classification requires package.json private=true")
     for item in manifest["entries"]:
         target = ROOT / item["target"]
         if not target.is_file():
@@ -87,6 +96,15 @@ def main() -> int:
         current = item.get("current")
         if current and current != item["target"] and (ROOT / current).exists():
             failures.append(f"stale source path still exists: {current}")
+
+    test_move_manifest = json.loads(args.test_move_manifest.read_text())
+    for item in test_move_manifest["entries"]:
+        target = ROOT / item["target"]
+        if not target.is_file():
+            failures.append(f"missing test ownership target: {item['target']}")
+        current = item.get("current")
+        if current and current != item["target"] and (ROOT / current).exists():
+            failures.append(f"stale test path still exists: {current}")
 
     for stale_dir in (
         "contracts/utils",
@@ -96,11 +114,21 @@ def main() -> int:
         "contracts/core/client",
         "contracts/shared/bytes",
         "contracts/shared/encoding",
+        "contracts/shared/interfaces",
         "contracts/periphery/access",
     ):
         path = ROOT / stale_dir
         if path.exists() and any(path.rglob("*.sol")):
             failures.append(f"stale global Solidity directory is not empty: {stale_dir}")
+
+    for stale_file in (
+        "abi/Groth16ICS07Tendermint.json",
+        "abi/bytecode/Groth16ICS07Tendermint.json",
+        "packages/solidity/src/groth16_ics07.rs",
+        "e2e/interchaintestv8/groth16_clientstate.go",
+    ):
+        if (ROOT / stale_file).exists():
+            failures.append(f"stale refactor artifact still exists: {stale_file}")
 
     for path in sorted((ROOT / "contracts").rglob("*.sol")):
         relative = path.relative_to(ROOT).as_posix()
@@ -152,6 +180,13 @@ def main() -> int:
         "IMembershipMsgs",
         "ISpectreClientMsgs",
     }
+    legacy_fragments = {
+        "groth16Ics07",
+        "Groth16Ics07",
+        "Groth16ClientState",
+        "groth16TrustLevel",
+        "groth16ClientState",
+    }
     source_roots = (
         ROOT / "contracts",
         ROOT / "test",
@@ -177,6 +212,11 @@ def main() -> int:
                 if re.search(rf"\b{re.escape(symbol)}\b", text):
                     failures.append(
                         f"stale canonical symbol in {path.relative_to(ROOT)}: {symbol}"
+                    )
+            for fragment in legacy_fragments:
+                if fragment in text:
+                    failures.append(
+                        f"stale canonical fragment in {path.relative_to(ROOT)}: {fragment}"
                     )
 
     if failures:

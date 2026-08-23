@@ -260,7 +260,7 @@ Cross-validated via `test/light-clients/spectre/EncodeTest.t.sol`.
 | `contracts/apps/ics20/` | Solidity | ICS-20 transfer, escrow, voucher, callbacks, and rate limits |
 | `contracts/light-clients/` | Solidity | Compatibility interface and message leaf |
 | `contracts/light-clients/spectre/` | Solidity | Spectre client, verifier boundary, modules, stores, messages, and libraries |
-| `contracts/shared/` | Solidity | Cross-package access libraries and compatibility interfaces |
+| `contracts/shared/` | Solidity | Cross-package access libraries only |
 | `contracts/periphery/` | Solidity | Read-only relayer helper contracts |
 | `scripts/deployments/` | Solidity | Deployment-only AccessManager selector and configuration helpers |
 | `relayer/` | Go | Relayer CLI + Groth16 prover |

@@ -23,5 +23,6 @@
       "sha256": "7b8aec30e110f8959dc29826ce0cbb97bcfaef523756c2915708888ca984d65f"
     }
   },
-  "provenance_path": ".artifacts/solidity-refactor/prover/provenance.json"
+  "provenance_path": ".artifacts/solidity-refactor/prover/provenance.json",
+  "scope": "checked-local-generator"
 }

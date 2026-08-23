@@ -142,8 +142,10 @@ def compare(args: argparse.Namespace) -> list[str]:
     verifier_evidence = load(provenance_path) if provenance_path.is_file() else verifier_manifest
     test_manifest = load(args.test_manifest)
     tooling_rename_manifest = load(args.tooling_rename_manifest)
+    toolchain_manifest = load(args.toolchain_manifest)
     tooling_renames = tooling_rename_manifest["renames"]
     approved_generated_digests = tooling_rename_manifest["generated_digests"]
+    approved_consumer_digests = tooling_rename_manifest.get("consumer_digests", {})
 
     source_by_contract = {
         item["name"]: item["source"] for item in contract_manifest["contracts"]
@@ -192,6 +194,39 @@ def compare(args: argparse.Namespace) -> list[str]:
     for relative in unknown_approved_paths:
         failures.append(f"tooling rename manifest approves an unlocked artifact: {relative}")
 
+    for relative, expected_hash in approved_consumer_digests.items():
+        path = ROOT / relative
+        if not path.is_file():
+            failures.append(f"missing coordinated tooling consumer: {relative}")
+        elif file_hash(path) != expected_hash:
+            failures.append(f"coordinated tooling consumer changed: {relative}")
+
+    for rename in tooling_rename_manifest.get("source_module_renames", []):
+        current = ROOT / rename["current"]
+        target = ROOT / rename["target"]
+        if current.exists():
+            failures.append(f"stale tooling source module still exists: {rename['current']}")
+        if not target.is_file():
+            failures.append(f"missing renamed tooling source module: {rename['target']}")
+        for consumer in rename.get("consumers", []):
+            if not (ROOT / consumer).is_file():
+                failures.append(f"missing tooling source consumer: {consumer}")
+
+    for artifact_rename in tooling_rename_manifest.get("retired_generated_artifacts", []):
+        current = ROOT / artifact_rename["current"]
+        replacement = ROOT / artifact_rename["replacement"]
+        if current.exists():
+            failures.append(f"stale generated tooling artifact still exists: {artifact_rename['current']}")
+        if not replacement.is_file():
+            failures.append(f"missing generated tooling replacement: {artifact_rename['replacement']}")
+
+    for relative, expected_hash in toolchain_manifest.get("locks", {}).items():
+        path = ROOT / relative
+        if not path.is_file():
+            failures.append(f"missing locked toolchain input: {relative}")
+        elif file_hash(path) != expected_hash:
+            failures.append(f"locked toolchain input changed: {relative}")
+
     for relative, expected in baseline.get("semantic_artifact_digests", {}).items():
         path = ROOT / relative
         if not path.is_file():
@@ -216,8 +251,10 @@ def compare(args: argparse.Namespace) -> list[str]:
     if len(tests) != baseline["test_count"]:
         failures.append(f"expected {baseline['test_count']} test contracts, found {len(tests)}")
 
+    if verifier_evidence.get("scope") != "checked-local-generator":
+        failures.append("verifier evidence must identify the checked-local-generator scope")
     if verifier_evidence.get("supported_buckets") != [4]:
-        failures.append("supported verifier buckets must be exactly [4]")
+        failures.append("checked local generator buckets must be exactly [4]")
     for item in verifier_evidence["artifacts"].values():
         path = ROOT / item["path"]
         if not path.is_file():
@@ -244,15 +281,28 @@ def compare(args: argparse.Namespace) -> list[str]:
                         f"{max_regression_percent}%: expected {expected_gas}, got {actual_gas}"
                     )
 
-    protected = subprocess.run(
+    baseline_commit = baseline.get("baseline_commit")
+    protected_commands = [
         ["git", "diff", "--name-only", "--", "docs/refactor"],
-        cwd=ROOT,
-        check=True,
-        text=True,
-        capture_output=True,
-    ).stdout.strip()
+        ["git", "diff", "--cached", "--name-only", "--", "docs/refactor"],
+    ]
+    if baseline_commit:
+        protected_commands.append(
+            ["git", "diff", "--name-only", f"{baseline_commit}..HEAD", "--", "docs/refactor"]
+        )
+    protected = set()
+    for command in protected_commands:
+        protected.update(
+            subprocess.run(
+                command,
+                cwd=ROOT,
+                check=True,
+                text=True,
+                capture_output=True,
+            ).stdout.splitlines()
+        )
     if protected:
-        failures.append(f"protected docs/refactor files changed: {protected}")
+        failures.append(f"protected docs/refactor files changed: {', '.join(sorted(protected))}")
     return failures
 
 
@@ -287,6 +337,11 @@ def main() -> int:
         "--tooling-rename-manifest",
         type=Path,
         default=ROOT / "scripts/solidity-refactor/tooling-rename-manifest.json",
+    )
+    parser.add_argument(
+        "--toolchain-manifest",
+        type=Path,
+        default=ROOT / "scripts/solidity-refactor/toolchain-manifest.json",
     )
     args = parser.parse_args()
     failures = compare(args)

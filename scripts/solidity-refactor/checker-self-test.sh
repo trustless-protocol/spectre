@@ -67,6 +67,22 @@ if python3 scripts/solidity-refactor/check_compatibility.py --tooling-rename-man
 fi
 echo "negative case rejected: tooling-rename-digest"
 
+jq '.consumer_digests["packages/solidity/src/spectre_client.rs"] = "drift"' \
+  scripts/solidity-refactor/tooling-rename-manifest.json > "$tmp_dir/tooling-renames.json"
+if python3 scripts/solidity-refactor/check_compatibility.py --tooling-rename-manifest "$tmp_dir/tooling-renames.json" >/dev/null 2>&1; then
+  echo "negative case unexpectedly passed: tooling-consumer-digest" >&2
+  exit 1
+fi
+echo "negative case rejected: tooling-consumer-digest"
+
+jq '.locks["foundry.toml"] = "drift"' \
+  scripts/solidity-refactor/toolchain-manifest.json > "$tmp_dir/toolchain.json"
+if python3 scripts/solidity-refactor/check_compatibility.py --toolchain-manifest "$tmp_dir/toolchain.json" >/dev/null 2>&1; then
+  echo "negative case unexpectedly passed: toolchain-lock" >&2
+  exit 1
+fi
+echo "negative case rejected: toolchain-lock"
+
 jq '.entries[0].target = "contracts/missing/Owned.sol"' \
   scripts/solidity-refactor/ownership-manifest.json > "$tmp_dir/ownership.json"
 if python3 scripts/solidity-refactor/check_architecture.py --manifest "$tmp_dir/ownership.json" >/dev/null 2>&1; then

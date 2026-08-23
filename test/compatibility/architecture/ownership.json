@@ -3,8 +3,7 @@
   "leaves": {
     "shared": [
       "contracts/shared/access/IBCRolesLib.sol",
-      "contracts/shared/access/IBCIdentifiers.sol",
-      "contracts/shared/interfaces/IPausable.sol"
+      "contracts/shared/access/IBCIdentifiers.sol"
     ],
     "light-client-compatibility": [
       "contracts/light-clients/interfaces/ILightClient.sol",
@@ -12,6 +11,9 @@
     ],
     "deployment-tooling": [
       "scripts/deployments/IBCSelectorLib.sol"
+    ],
+    "core-interfaces": [
+      "contracts/core/interfaces/IPausable.sol"
     ]
   },
   "rules": [

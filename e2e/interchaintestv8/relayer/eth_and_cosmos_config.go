@@ -41,7 +41,7 @@ type EthCosmosConfigInfo struct {
 	SignerAddress string
 	// Whether we use the mock client in Cosmos
 	MockWasmClient bool
-	// ICS07 Tendermint light client address (set after create-clients)
+	// Spectre light client address (set after create-clients)
 	SpectreClient string
 	// SignatureVerifier contract address
 	SignatureVerifier string

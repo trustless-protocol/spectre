@@ -2,7 +2,7 @@
 
 #![deny(clippy::nursery, clippy::pedantic, warnings, unused_crate_dependencies)]
 
-pub mod groth16_ics07;
+pub mod spectre_client;
 pub mod ics26;
 pub mod msgs;
 

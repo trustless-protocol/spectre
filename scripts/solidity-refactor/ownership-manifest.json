@@ -2,6 +2,16 @@
   "schema_version": 1,
   "baseline_commit": "b75a613a2d020b1e9717df672a066788bf9ccf30",
   "policy": "Runtime ABI, storage, protocol bytes, and behavior remain locked; path changes and reviewed container renames are tooling-only and all first-party consumers migrate atomically.",
+  "import_path_policy": {
+    "classification": "first-party",
+    "evidence": [
+      "package.json marks @decentrio/fast-ibc as private",
+      "repository documentation exposes no supported Solidity package installation or import surface",
+      "every known repository consumer is inventoried on its ownership entry"
+    ],
+    "unknown_consumer_default": "public-with-forwarding-shim",
+    "public_or_unknown_entries": []
+  },
   "entries": [
     {
       "current": "contracts/ICS20Transfer.sol",
@@ -286,8 +296,8 @@
     },
     {
       "current": "contracts/interfaces/IPausable.sol",
-      "target": "contracts/shared/interfaces/IPausable.sol",
-      "owner": "shared",
+      "target": "contracts/core/interfaces/IPausable.sol",
+      "owner": "core",
       "compatibility_class": "abi-locked",
       "consumers": [
         "contracts/apps/ics20/ICS20Transfer.sol",

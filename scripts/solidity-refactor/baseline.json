@@ -339,11 +339,7 @@
     "relayer/bindings/Misbehaviour/binding.go": "8390d99fd6cf6be73c872b90d03685a8cd45455ab8506c744a4b975adbda936f",
     "relayer/bindings/SpectreClient/binding.go": "2ea4d7deab71b3ac73c9c384f9cf58e627c05b131f1b437e83d8d780d6551292",
     "relayer/bindings/UpdateClient/binding.go": "a4dcb7d13c62b76500fa726665ff55c4c691ad1a94c97b3e7ee9f131c422e7ed",
-    "test/fixtures/witness_hash_vectors.json": "379221dfeaa1fc78facbe41fe77b2c2c4120f2fefc71c3f4d2f002eb21f007cb",
-    "docs/refactor/01-Solidity-Contracts.detailed.md": "b81c93b825863a43b93579e12fab44358c1ed857d25cebd23e34bc0ece39aed1",
-    "docs/refactor/01-Solidity-Contracts.detailed.vi.md": "224e35e1dc359c45ce904b4a6bdc68764902c78442fe2bf55d25286a76cb3772",
-    "docs/refactor/05-Wasm-Contracts.detailed.md": "20731951fe9ef672130be3b4e0380df85d03aff8904533ae7f0ff5fd1b42e0dc",
-    "docs/refactor/05-Wasm-Contracts.detailed.vi.md": "acb053faf0693407451716a420e41a2733cf9d3ebf72ddf53ce4b64b76c796f3"
+    "test/fixtures/witness_hash_vectors.json": "379221dfeaa1fc78facbe41fe77b2c2c4120f2fefc71c3f4d2f002eb21f007cb"
   },
   "test_count": 34,
   "semantic_artifact_digests": {

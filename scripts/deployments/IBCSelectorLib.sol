@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import { IICS26RouterAccessControlled } from "contracts/core/interfaces/IICS26Router.sol";
 import { IICS02ClientAccessControlled } from "contracts/core/interfaces/IICS02Client.sol";
 import { IICS20TransferAccessControlled } from "contracts/apps/ics20/interfaces/IICS20Transfer.sol";
-import { IPausable } from "contracts/shared/interfaces/IPausable.sol";
+import { IPausable } from "contracts/core/interfaces/IPausable.sol";
 import { UUPSUpgradeable } from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 
 /// @title IBC Selector Manifest

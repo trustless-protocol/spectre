@@ -9,7 +9,7 @@ import { IIBCAppCallbacks } from "contracts/core/messages/IIBCAppCallbacks.sol";
 import { ICS26RouterErrors } from "contracts/core/errors/ICS26RouterErrors.sol";
 import { IIBCApp } from "contracts/core/interfaces/IIBCApp.sol";
 import { IICS26Router, IICS26RouterAccessControlled } from "contracts/core/interfaces/IICS26Router.sol";
-import { IPausable } from "contracts/shared/interfaces/IPausable.sol";
+import { IPausable } from "contracts/core/interfaces/IPausable.sol";
 
 import {
     ReentrancyGuardTransientUpgradeable

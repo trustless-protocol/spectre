@@ -261,7 +261,7 @@
     },
     {
       "current": "test/spectre/BenchGroth16Verifier_N4.sol",
-      "target": "test/spectre/BenchGroth16Verifier_N4.sol",
+      "target": "test/light-clients/spectre/BenchGroth16Verifier_N4.sol",
       "baseline_test_functions": 0,
       "current_test_functions": 0
     },

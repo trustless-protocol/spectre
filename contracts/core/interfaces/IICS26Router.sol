@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
 import { IIBCApp } from "contracts/core/interfaces/IIBCApp.sol";
-import { IPausable } from "contracts/shared/interfaces/IPausable.sol";
+import { IPausable } from "contracts/core/interfaces/IPausable.sol";
 
 /// @title ICS26 Router Restricted Interface
 /// @notice Interface for the access controlled functions of the IBC Eureka Core Router

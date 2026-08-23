@@ -2,42 +2,48 @@
 
 ## Outcome
 
-The handwritten Solidity source tree now matches `refactor/design-contracts@115397d`: the ICS-02 registry is under `core/client-registry`, light-client implementations remain under `light-clients`, and the only shared access libraries are `IBCRolesLib` and `IBCIdentifiers`. Deployment-only selector grouping lives under `scripts/deployments`; `contracts/shared/bytes`, `contracts/shared/encoding`, and `contracts/periphery/access` are absent. Tests mirror the final production packages.
+The handwritten Solidity source tree now matches `refactor/design-contracts@115397d`: the ICS-02 registry is under `core/client-registry`, light-client implementations remain under `light-clients`, and the only shared access libraries are `IBCRolesLib` and `IBCIdentifiers`. The core-owned `IPausable` compatibility interface is under `core/interfaces`, not a non-target `shared/interfaces` leaf. Deployment-only selector grouping lives under `scripts/deployments`; `contracts/shared/bytes`, `contracts/shared/encoding`, and `contracts/periphery/access` are absent. Tests mirror the final production packages.
 
-Message and error files/containers use the reviewed `<Protocol>Msgs` and `<Protocol>Errors` naming. The final semantic diff review found no protocol behavior change. Runtime bytecode, canonical ABI shape/selectors/topics, storage, protocol fixtures, and locked gas measurements demonstrate equivalence. Generated verifier implementations and historical Groth16 artifacts were not hand-edited, and `docs/refactor` remained read-only.
+Message and error files/containers use the reviewed `<Protocol>Msgs` and `<Protocol>Errors` naming. The final semantic diff review found no protocol behavior change. Runtime bytecode, canonical ABI shape/selectors/topics, storage, protocol fixtures, and locked gas measurements demonstrate equivalence. Generated verifier implementations were not hand-edited. The stale pre-refactor `Groth16ICS07Tendermint` ABI inputs were retired through the coordinated `spectre_client` Rust tooling rename, and the E2E client-state helper/path and internal consumer fields now use canonical Spectre naming.
 
 ## Compatibility
 
-An isolated build of origin/main and the refactored tree matched exactly for canonical runtime ABI, creation bytecode, and deployed bytecode across 28 entrypoints, modules, stores, and libraries; nine first-party ERC-7201 namespace constants and ordered struct layouts also match exactly. Runtime comparison normalizes only the 16 reviewed container names listed in `tooling-rename-manifest.json`; tuple order/types, selectors, event indexing/topics, errors, bytecode, and storage remain locked. The manifest also pins the 14 regenerated ABI/Go-binding outputs by exact digest, and all Rust, Go, E2E compile-only, and relayer consumers pass with the new type names.
+An isolated build of origin/main and the refactored tree matched exactly for canonical runtime ABI, creation bytecode, and deployed bytecode across 28 entrypoints, modules, stores, and libraries; nine first-party ERC-7201 namespace constants and ordered struct layouts also match exactly. Runtime comparison normalizes only the 16 reviewed container names listed in `tooling-rename-manifest.json`; tuple order/types, selectors, event indexing/topics, errors, bytecode, and storage remain locked. The manifest pins 14 regenerated ABI/Go-binding outputs plus three coordinated Rust consumer sources by exact digest, and all Rust, Go, E2E compile-only, and relayer consumers pass with the new type names.
 
 The compatibility negative suite rejects ABI, storage, runtime, gas, fixture/binding, test-inventory, fully qualified artifact, verifier-provenance, tooling-rename digest, and architecture drift. Full metadata changes in `abi/bytecode/SpectreClient.json` are accepted only where the semantic ABI, initcode, and runtime objects remain exact after the reviewed name normalization.
 
 ## Deployment and Prover
 
-Production deploy/verify scripts require and register only `VERIFIER_N4`, matching `prover.Buckets` and the verifier manifest. Unsupported local N8/N16 verifier sources and N8/N16/N32/N64 key sets were moved into ignored, recoverable `.artifacts/solidity-refactor/prover/unsupported-archive/`.
+Production deploy/verify compatibility preserves the six-bucket topology N ∈ {4, 8, 16, 32, 64, 128}: all six verifier addresses must contain code, be distinct, and be registered with the expected selector. The checked local generator/prover manifest remains N4-only, so larger production buckets require coordinated prover enablement and paired artifact publication before launch; the structural refactor does not silently narrow the production configuration.
 
-Groth16 setup is randomized. `build-prover-artifacts.sh` stages, smoke-tests, publishes, and records one paired set. Gnark still emits its existing hash-to-field exporter warning; this release does not claim a live on-chain proof E2E.
+Groth16 setup is randomized. `build-prover-artifacts.sh` stages, smoke-tests, publishes, and records the paired N4 set without moving or deleting any larger local verifier/key artifacts. Gnark still emits its existing hash-to-field exporter warning; this release does not claim a live on-chain proof E2E.
 
 ## Size and Optimization Decision
 
 Fresh sizes are unchanged: ICS26Router 24,465 B (111 B margin), ICS20Transfer 22,224 B (2,352 B), SpectreClient 19,390 B (5,186 B). Reaching 1 KiB router margin requires 913 safe bytes. No reviewed candidate met that threshold, so no optional bytecode optimization was attempted.
 
-## Repeated Release Matrix
+## Validation Matrix
 
-| Gate | Pass 1 | Pass 2 |
-|---|---|---|
-| Binding regeneration | Exit 0; approved ABI/binding digests reproduced | Exit 0; approved ABI/binding digests reproduced |
-| Full non-shadowfork Foundry | Exit 0 after `--force`; 34 suites, 305 passed, 0 failed, 0 skipped | Exit 0 after `--force`; 34 suites, 305 passed, 0 failed, 0 skipped |
-| Rust Solidity types | Exit 0 for locked package | Exit 0 for locked package |
-| Shared Go bindings | Exit 0 | Exit 0 |
-| Relayer Go | Exit 0 | Exit 0 |
-| E2E Go packages | Exit 0, compile-only | Exit 0, compile-only |
-| Compatibility self-test | Exit 0; all intentional drift including tooling rename rejected | Exit 0; all intentional drift rejected and positive compatibility/architecture/protected-doc gates pass |
+The branch recorded two release-matrix passes before this review. After restoring the production bucket boundary and strengthening the gates, the final non-shadowfork Foundry suite was also run twice from clean builds; affected and cross-language checks were rerun as follows:
 
-Both Foundry passes used the configured 100,000 fuzz runs and independently rebuilt 200 files from forced artifacts. Both production-only size builds rebuilt 161 files and reproduced the baseline sizes. Seventeen locked `RecvPacketGasTest` and `UpdateClientGasTest` hot-path measurements matched origin/main exactly, so the maximum recorded regression is 0%.
+| Gate | Post-review result |
+|---|---|
+| Binding regeneration | Exit 0 with abigen 1.17.2-stable; ABI and Go consumers reproduced, and the Spectre full artifact metadata was refreshed after comment corrections while semantic ABI/initcode/runtime remained exact |
+| Production size build | Exit 0; ICS26Router 24,465 B, ICS20Transfer 22,224 B, SpectreClient 19,390 B |
+| Full non-shadowfork Foundry | Two clean passes; each exited 0 with 34 suites, 305 passed, 0 failed, 0 skipped under the configured 100,000 fuzz runs |
+| Production deployment focus | Exit 0; 8 tests, including six-bucket registration/verification, missing-code rejection, and duplicate-verifier rejection |
+| Rust Solidity types | Exit 0 for the locked package |
+| Shared Go bindings | Exit 0 |
+| Relayer Go | Exit 0 |
+| E2E Go packages | Exit 0, compile-only |
+| Compatibility self-test | Exit 0; all intentional drift rejected and positive compatibility/architecture/protected-doc gates pass |
+
+Seventeen locked `RecvPacketGasTest` and `UpdateClientGasTest` hot-path measurements still match origin/main, so the maximum recorded regression is 0%. An independent checkout/build of baseline commit `b75a613` also reproduced the recorded initcode/runtime hashes for the behavior-critical deployables.
 
 ## Validation Boundaries
 
-Format, shell syntax, JSON, stale-path, and whitespace gates pass. Docker/Kurtosis chains and shadowfork RPC tests were not run. Groth16 setup is randomized, so the selected paired N4 artifacts were provenance-checked twice rather than independently regenerated and incorrectly expected to have deterministic hashes.
+Format, shell syntax, JSON, stale-path, toolchain-lock, and whitespace gates pass. Docker/Kurtosis chains and shadowfork RPC tests were not run. Groth16 setup is randomized, so the selected paired N4 artifacts were provenance-checked twice rather than independently regenerated and incorrectly expected to have deterministic hashes.
 
-`git diff --name-only -- docs/refactor` is empty and the frozen compatibility baseline is unchanged: the reviewed source documents were read only.
+The protected-doc gate checks working-tree, index, and committed `baseline..HEAD` changes. The latest `01-Solidity-Contracts.md` was read directly from `origin/refactor/design-contracts@115397d` and was not copied into or edited on this branch. Four local-only stale derivative design files, which were never present on the design branch or in committed history, were removed from the worktree and from the invalid evidence-digest inventory; runtime, storage, fixture, gas, and generated-binding baseline values remain unchanged.
+
+Two requirements are historical/external evidence boundaries rather than source-tree mismatches. This repository records the prover generator command, paired N4 artifact digests, and verifier artifact, but it does not contain the T-2 timing or tracking-issue evidence for the Hải readiness checkpoint. Published commit history also does not preserve the document's production-move-before-test-cleanup sequencing; correcting that record would require rewriting the already-published branch. Neither boundary is claimed as resolved by the current-tree validation.

@@ -1,5 +1,5 @@
 //! This module contains all the message types used in Solidity IBC Eureka.
-//! In case some message types are not found in the `ics26` module nor the `groth16_ics07` module,
+//! In case some message types are not found in the `ics26` module nor the `spectre_client` module,
 //! they are defined here.
 
 use ibc_client_tendermint_types::ConsensusState as ICS07TendermintConsensusState;
