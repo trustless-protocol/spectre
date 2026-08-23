@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
+import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
 import { IIBCApp } from "contracts/core/interfaces/IIBCApp.sol";
 import { IPausable } from "contracts/shared/interfaces/IPausable.sol";
 
@@ -15,15 +15,15 @@ interface IICS26RouterAccessControlled {
 
     /// @notice Receives a packet
     /// @param msg The message for receiving packets
-    function recvPacket(IICS26RouterMsgs.MsgRecvPacket calldata msg) external;
+    function recvPacket(ICS26RouterMsgs.MsgRecvPacket calldata msg) external;
 
     /// @notice Acknowledges a packet
     /// @param msg The message for acknowledging packets
-    function ackPacket(IICS26RouterMsgs.MsgAckPacket calldata msg) external;
+    function ackPacket(ICS26RouterMsgs.MsgAckPacket calldata msg) external;
 
     /// @notice Timeouts a packet
     /// @param msg The message for timing out packets
-    function timeoutPacket(IICS26RouterMsgs.MsgTimeoutPacket calldata msg) external;
+    function timeoutPacket(ICS26RouterMsgs.MsgTimeoutPacket calldata msg) external;
 }
 
 /// @title ICS26 Router Interface
@@ -42,7 +42,7 @@ interface IICS26Router is IICS26RouterAccessControlled, IPausable {
     /// @notice Sends a packet
     /// @param msg The message for sending packets
     /// @return The sequence number of the packet
-    function sendPacket(IICS26RouterMsgs.MsgSendPacket calldata msg) external returns (uint64);
+    function sendPacket(ICS26RouterMsgs.MsgSendPacket calldata msg) external returns (uint64);
 
     /// @notice Initializes the contract instead of a constructor
     /// @dev This initializes the contract to the latest version from an empty state
@@ -70,27 +70,27 @@ interface IICS26Router is IICS26RouterAccessControlled, IPausable {
     /// @param clientId The source client identifier
     /// @param sequence The sequence number of the packet
     /// @param packet The sent packet
-    event SendPacket(string indexed clientId, uint256 indexed sequence, IICS26RouterMsgs.Packet packet);
+    event SendPacket(string indexed clientId, uint256 indexed sequence, ICS26RouterMsgs.Packet packet);
     /// @notice Emitted when a packet acknowledgement is written
     /// @param clientId The destination client identifier
     /// @param sequence The sequence number of the packet
     /// @param packet The packet that was acknowledged
     /// @param acknowledgements The list of acknowledgements data
     event WriteAcknowledgement(
-        string indexed clientId, uint256 indexed sequence, IICS26RouterMsgs.Packet packet, bytes[] acknowledgements
+        string indexed clientId, uint256 indexed sequence, ICS26RouterMsgs.Packet packet, bytes[] acknowledgements
     );
     /// @notice Emitted when a packet is timed out
     /// @param clientId The source client identifier
     /// @param sequence The sequence number of the packet
     /// @param packet The packet that was timed out
-    event TimeoutPacket(string indexed clientId, uint256 indexed sequence, IICS26RouterMsgs.Packet packet);
+    event TimeoutPacket(string indexed clientId, uint256 indexed sequence, ICS26RouterMsgs.Packet packet);
     /// @notice Emitted when a packet is acknowledged
     /// @param clientId The source client identifier
     /// @param sequence The sequence number of the packet
     /// @param packet The packet that was acknowledged
     /// @param acknowledgement The acknowledgement data
     event AckPacket(
-        string indexed clientId, uint256 indexed sequence, IICS26RouterMsgs.Packet packet, bytes acknowledgement
+        string indexed clientId, uint256 indexed sequence, ICS26RouterMsgs.Packet packet, bytes acknowledgement
     );
     /// @notice Emitted when a redundant relay occurs
     event Noop();

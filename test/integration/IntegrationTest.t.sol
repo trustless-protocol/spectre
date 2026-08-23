@@ -6,17 +6,17 @@ pragma solidity ^0.8.28;
 import { Test } from "forge-std/Test.sol";
 import { Vm } from "forge-std/Vm.sol";
 
-import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
-import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
-import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
-import { IICS20TransferMsgs } from "contracts/apps/ics20/messages/IICS20TransferMsgs.sol";
-import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
+import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
+import { ICS20TransferMsgs } from "contracts/apps/ics20/messages/ICS20TransferMsgs.sol";
+import { MembershipMsgs } from "contracts/light-clients/spectre/messages/MembershipMsgs.sol";
+import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
 
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { IICS26Router, IICS26RouterAccessControlled } from "contracts/core/interfaces/IICS26Router.sol";
-import { IICS26RouterErrors } from "contracts/core/errors/IICS26RouterErrors.sol";
-import { IRateLimitErrors } from "contracts/apps/ics20/errors/IRateLimitErrors.sol";
+import { ICS26RouterErrors } from "contracts/core/errors/ICS26RouterErrors.sol";
+import { RateLimitErrors } from "contracts/apps/ics20/errors/RateLimitErrors.sol";
 import { ISignatureTransfer } from "@uniswap/permit2/src/interfaces/ISignatureTransfer.sol";
 
 import { ICS20Transfer } from "contracts/apps/ics20/ICS20Transfer.sol";
@@ -37,8 +37,8 @@ import { PermitSignature } from "test/utils/PermitSignature.sol";
 import { DeployAccessManagerWithRoles } from "scripts/deployments/DeployAccessManagerWithRoles.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
-import { ClientMigrationProposer } from "contracts/core/client/migration/modules/ClientMigrationProposer.sol";
-import { ClientMigrationExecutor } from "contracts/core/client/migration/modules/ClientMigrationExecutor.sol";
+import { ClientMigrationProposer } from "contracts/core/client-registry/migration/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "contracts/core/client-registry/migration/modules/ClientMigrationExecutor.sol";
 
 contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessManagerWithRoles {
     using Strings for string;
@@ -75,7 +75,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
     function setUp() public {
         // ============ Step 1: Deploy the logic contracts ==============
         permit2 = ISignatureTransfer(deployPermit2());
-        lightClient = new DummyLightClient(ILightClientMsgs.UpdateResult.Update, 0, false);
+        lightClient = new DummyLightClient(LightClientMsgs.UpdateResult.Update, 0, false);
         address escrowLogic = address(new Escrow());
         address ibcERC20Logic = address(new IBCERC20());
         ICS26Router ics26RouterLogic =
@@ -106,7 +106,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         defaultNativeDenom = erc20AddressStr;
 
         clientIdentifier = ics26Router.addClient(
-            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix), address(lightClient)
+            ICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix), address(lightClient)
         );
         ics20AddressStr = Strings.toHexString(address(ics20Transfer));
 
@@ -135,10 +135,10 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         string memory receiverStr = Strings.toHexString(receiver);
 
         // First packet
-        IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
+        ICS20TransferMsgs.FungibleTokenPacketData memory packetData =
             _getPacketData(senderStr, receiverStr, foreignDenom);
-        IICS26RouterMsgs.Payload[] memory payloads1 = _getPayloads(abi.encode(packetData));
-        IICS26RouterMsgs.Packet memory recvPacket = IICS26RouterMsgs.Packet({
+        ICS26RouterMsgs.Payload[] memory payloads1 = _getPayloads(abi.encode(packetData));
+        ICS26RouterMsgs.Packet memory recvPacket = ICS26RouterMsgs.Packet({
             sequence: 1,
             sourceClient: counterpartyId,
             destClient: clientIdentifier,
@@ -147,8 +147,8 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         });
 
         // Second packet
-        IICS26RouterMsgs.Payload[] memory payloads2 = _getPayloads(abi.encode(packetData));
-        IICS26RouterMsgs.Packet memory recvPacket2 = IICS26RouterMsgs.Packet({
+        ICS26RouterMsgs.Payload[] memory payloads2 = _getPayloads(abi.encode(packetData));
+        ICS26RouterMsgs.Packet memory recvPacket2 = ICS26RouterMsgs.Packet({
             sequence: 2,
             sourceClient: counterpartyId,
             destClient: clientIdentifier,
@@ -159,11 +159,11 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         bytes[] memory multicallData = new bytes[](2);
         multicallData[0] = abi.encodeCall(
             IICS26RouterAccessControlled.recvPacket,
-            IICS26RouterMsgs.MsgRecvPacket({ packet: recvPacket, membershipMsg: _dummyMembershipMsg() })
+            ICS26RouterMsgs.MsgRecvPacket({ packet: recvPacket, membershipMsg: _dummyMembershipMsg() })
         );
         multicallData[1] = abi.encodeCall(
             IICS26RouterAccessControlled.recvPacket,
-            IICS26RouterMsgs.MsgRecvPacket({ packet: recvPacket2, membershipMsg: _dummyMembershipMsg() })
+            ICS26RouterMsgs.MsgRecvPacket({ packet: recvPacket2, membershipMsg: _dummyMembershipMsg() })
         );
 
         ics26Router.multicall(multicallData);
@@ -189,10 +189,10 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         string memory receiverStr = Strings.toHexString(receiver);
 
         // First packet
-        IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
+        ICS20TransferMsgs.FungibleTokenPacketData memory packetData =
             _getPacketData(senderStr, receiverStr, foreignDenom);
-        IICS26RouterMsgs.Payload[] memory payloads1 = _getPayloads(abi.encode(packetData));
-        IICS26RouterMsgs.Packet memory receivePacket = IICS26RouterMsgs.Packet({
+        ICS26RouterMsgs.Payload[] memory payloads1 = _getPayloads(abi.encode(packetData));
+        ICS26RouterMsgs.Packet memory receivePacket = ICS26RouterMsgs.Packet({
             sequence: 1,
             sourceClient: counterpartyId,
             destClient: clientIdentifier,
@@ -201,9 +201,9 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         });
 
         // Second packet
-        IICS26RouterMsgs.Payload[] memory payloads2 = _getPayloads(abi.encode(packetData));
+        ICS26RouterMsgs.Payload[] memory payloads2 = _getPayloads(abi.encode(packetData));
         payloads2[0].destPort = "invalid-port";
-        IICS26RouterMsgs.Packet memory invalidPacket = IICS26RouterMsgs.Packet({
+        ICS26RouterMsgs.Packet memory invalidPacket = ICS26RouterMsgs.Packet({
             sequence: 2,
             sourceClient: counterpartyId,
             destClient: clientIdentifier,
@@ -214,15 +214,15 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         bytes[] memory multicallData = new bytes[](2);
         multicallData[0] = abi.encodeCall(
             IICS26RouterAccessControlled.recvPacket,
-            IICS26RouterMsgs.MsgRecvPacket({ packet: receivePacket, membershipMsg: _dummyMembershipMsg() })
+            ICS26RouterMsgs.MsgRecvPacket({ packet: receivePacket, membershipMsg: _dummyMembershipMsg() })
         );
         multicallData[1] = abi.encodeCall(
             IICS26RouterAccessControlled.recvPacket,
-            IICS26RouterMsgs.MsgRecvPacket({ packet: invalidPacket, membershipMsg: _dummyMembershipMsg() })
+            ICS26RouterMsgs.MsgRecvPacket({ packet: invalidPacket, membershipMsg: _dummyMembershipMsg() })
         );
 
         vm.expectRevert(
-            abi.encodeWithSelector(IICS26RouterErrors.IBCAppNotFound.selector, invalidPacket.payloads[0].destPort)
+            abi.encodeWithSelector(ICS26RouterErrors.IBCAppNotFound.selector, invalidPacket.payloads[0].destPort)
         );
         ics26Router.multicall(multicallData);
     }
@@ -234,7 +234,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         address receiver = makeAddr("receiver_of_foreign_denom");
 
         // Sending double, so we can also send some funds to the escrow to simluate a re-entrency attack
-        (IERC20 receivedERC20,, IICS26RouterMsgs.Packet memory receivedPacket) = _receiveICS20Transfer(
+        (IERC20 receivedERC20,, ICS26RouterMsgs.Packet memory receivedPacket) = _receiveICS20Transfer(
             "cosmos1mhmwgrfrcrdex5gnr0vcqt90wknunsxej63feh",
             Strings.toHexString(receiver),
             foreignDenom,
@@ -258,7 +258,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         vm.prank(sender);
         attackerContract.approve(address(ics20Transfer), defaultAmount);
 
-        IICS20TransferMsgs.SendTransferMsg memory msgSendTransfer = IICS20TransferMsgs.SendTransferMsg({
+        ICS20TransferMsgs.SendTransferMsg memory msgSendTransfer = ICS20TransferMsgs.SendTransferMsg({
             denom: address(attackerContract),
             amount: defaultAmount,
             receiver: "cosmos1mhmwgrfrcrdex5gnr0vcqt90wknunsxej63feh",
@@ -285,7 +285,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         address receiver = makeAddr("receiver_of_foreign_denom");
         string memory receiverStr = Strings.toHexString(receiver);
 
-        (IERC20 receivedERC20, string memory receivedDenom, IICS26RouterMsgs.Packet memory recvPacket) =
+        (IERC20 receivedERC20, string memory receivedDenom, ICS26RouterMsgs.Packet memory recvPacket) =
             _receiveICS20Transfer(senderStr, receiverStr, foreignDenom);
 
         // acknowledgement should be written
@@ -348,9 +348,9 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         // receive again, should hit rate limit and write error ack
         vm.expectEmit();
         emit IICS26Router.IBCAppRecvPacketCallbackError(abi.encodeWithSelector(
-                IRateLimitErrors.RateLimitExceeded.selector, defaultAmount - 1, defaultAmount
+                RateLimitErrors.RateLimitExceeded.selector, defaultAmount - 1, defaultAmount
             ));
-        (,, IICS26RouterMsgs.Packet memory recvPacket) = _receiveICS20Transfer(
+        (,, ICS26RouterMsgs.Packet memory recvPacket) = _receiveICS20Transfer(
             "cosmos1mhmwgrfrcrdex5gnr0vcqt90wknunsxej63feh", Strings.toHexString(receiver), foreignDenom
         );
 
@@ -374,7 +374,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         address denom
     )
         internal
-        returns (IICS26RouterMsgs.Packet memory)
+        returns (ICS26RouterMsgs.Packet memory)
     {
         return _sendICS20TransferPacket(sender, receiver, denom, defaultAmount, clientIdentifier);
     }
@@ -387,7 +387,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         string memory sourceClient
     )
         internal
-        returns (IICS26RouterMsgs.Packet memory)
+        returns (ICS26RouterMsgs.Packet memory)
     {
         ISignatureTransfer.PermitTransferFrom memory emptyPermit;
         return _sendICS20TransferPacket(sender, receiver, denom, amount, sourceClient, emptyPermit, "");
@@ -403,11 +403,11 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         bytes memory signature
     )
         internal
-        returns (IICS26RouterMsgs.Packet memory)
+        returns (ICS26RouterMsgs.Packet memory)
     {
         uint64 timeoutTimestamp = uint64(block.timestamp + 1000);
 
-        IICS20TransferMsgs.SendTransferMsg memory msgSendTransfer = IICS20TransferMsgs.SendTransferMsg({
+        ICS20TransferMsgs.SendTransferMsg memory msgSendTransfer = ICS20TransferMsgs.SendTransferMsg({
             denom: denom,
             amount: amount,
             receiver: receiver,
@@ -428,7 +428,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
             sequence = ics20Transfer.sendTransfer(msgSendTransfer);
         }
 
-        IICS26RouterMsgs.Packet memory packet = _getPacketFromSendEvent();
+        ICS26RouterMsgs.Packet memory packet = _getPacketFromSendEvent();
 
         bytes32 storedCommitment = relayerHelper.queryPacketCommitment(sourceClient, sequence);
         assertEq(storedCommitment, ICS24Host.packetCommitmentBytes32(packet));
@@ -443,7 +443,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
     )
         internal
         view
-        returns (IICS20TransferMsgs.FungibleTokenPacketData memory)
+        returns (ICS20TransferMsgs.FungibleTokenPacketData memory)
     {
         return _getPacketData(sender, receiver, denom, defaultAmount);
     }
@@ -456,9 +456,9 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
     )
         internal
         pure
-        returns (IICS20TransferMsgs.FungibleTokenPacketData memory)
+        returns (ICS20TransferMsgs.FungibleTokenPacketData memory)
     {
-        return IICS20TransferMsgs.FungibleTokenPacketData({
+        return ICS20TransferMsgs.FungibleTokenPacketData({
             denom: denom, amount: amount, sender: sender, receiver: receiver, memo: "memo"
         });
     }
@@ -469,7 +469,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         string memory denom
     )
         internal
-        returns (IERC20 receivedERC20, string memory receivedDenom, IICS26RouterMsgs.Packet memory receivePacket)
+        returns (IERC20 receivedERC20, string memory receivedDenom, ICS26RouterMsgs.Packet memory receivePacket)
     {
         return _receiveICS20Transfer(sender, receiver, denom, defaultAmount, clientIdentifier);
     }
@@ -481,7 +481,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         uint256 amount
     )
         internal
-        returns (IERC20 receivedERC20, string memory receivedDenom, IICS26RouterMsgs.Packet memory receivePacket)
+        returns (IERC20 receivedERC20, string memory receivedDenom, ICS26RouterMsgs.Packet memory receivePacket)
     {
         return _receiveICS20Transfer(sender, receiver, denom, amount, clientIdentifier);
     }
@@ -494,15 +494,15 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         string memory destClient
     )
         internal
-        returns (IERC20 receivedERC20, string memory receivedDenom, IICS26RouterMsgs.Packet memory receivePacket)
+        returns (IERC20 receivedERC20, string memory receivedDenom, ICS26RouterMsgs.Packet memory receivePacket)
     {
-        IICS20TransferMsgs.FungibleTokenPacketData memory
-            receivePacketData = IICS20TransferMsgs.FungibleTokenPacketData({
+        ICS20TransferMsgs.FungibleTokenPacketData memory
+            receivePacketData = ICS20TransferMsgs.FungibleTokenPacketData({
             denom: denom, amount: amount, sender: sender, receiver: receiver, memo: "memo"
         });
 
-        IICS26RouterMsgs.Payload[] memory payloads = _getPayloads(abi.encode(receivePacketData));
-        receivePacket = IICS26RouterMsgs.Packet({
+        ICS26RouterMsgs.Payload[] memory payloads = _getPayloads(abi.encode(receivePacketData));
+        receivePacket = ICS26RouterMsgs.Packet({
             sequence: recvSeqs[counterpartyId],
             sourceClient: counterpartyId,
             destClient: destClient,
@@ -521,7 +521,7 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         }
 
         ics26Router.recvPacket(
-            IICS26RouterMsgs.MsgRecvPacket({ packet: receivePacket, membershipMsg: _dummyMembershipMsg() })
+            ICS26RouterMsgs.MsgRecvPacket({ packet: receivePacket, membershipMsg: _dummyMembershipMsg() })
         );
 
         try ics20Transfer.ibcERC20Contract(expectedDenom) returns (address ibcERC20Addres) {
@@ -541,9 +541,9 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
         return (receivedERC20, receivedDenom, receivePacket);
     }
 
-    function _getPayloads(bytes memory data) internal pure returns (IICS26RouterMsgs.Payload[] memory) {
-        IICS26RouterMsgs.Payload[] memory payloads = new IICS26RouterMsgs.Payload[](1);
-        payloads[0] = IICS26RouterMsgs.Payload({
+    function _getPayloads(bytes memory data) internal pure returns (ICS26RouterMsgs.Payload[] memory) {
+        ICS26RouterMsgs.Payload[] memory payloads = new ICS26RouterMsgs.Payload[](1);
+        payloads[0] = ICS26RouterMsgs.Payload({
             sourcePort: ICS20Lib.DEFAULT_PORT_ID,
             destPort: ICS20Lib.DEFAULT_PORT_ID,
             version: ICS20Lib.ICS20_VERSION,
@@ -558,28 +558,28 @@ contract IntegrationTest is Test, DeployPermit2, PermitSignature, DeployAccessMa
     /// any well-formed ABI encoding is sufficient.
     function _dummyMembershipMsg() internal pure returns (bytes memory) {
         return abi.encode(
-            ILightClientMsgs.MsgVerifyMembership({
-                height: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 0 }),
-                kvPairs: new IMembershipMsgs.KVPair[](0),
-                merkleProofs: new IMembershipMsgs.MerkleProof[](0),
+            LightClientMsgs.MsgVerifyMembership({
+                height: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 0 }),
+                kvPairs: new MembershipMsgs.KVPair[](0),
+                merkleProofs: new MembershipMsgs.MerkleProof[](0),
                 appHash: bytes32(0),
-                trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+                trustedConsensusState: SpectreMsgs.ConsensusState({
                     timestamp: 0, root: bytes32(0), nextValidatorsHash: bytes32(0)
                 }),
-                membershipType: IMembershipMsgs.MembershipType.Membership,
+                membershipType: MembershipMsgs.MembershipType.Membership,
                 path: new bytes[](0),
                 value: bytes("")
             })
         );
     }
 
-    function _getPacketFromSendEvent() internal returns (IICS26RouterMsgs.Packet memory) {
+    function _getPacketFromSendEvent() internal returns (ICS26RouterMsgs.Packet memory) {
         Vm.Log[] memory sendEvent = vm.getRecordedLogs();
         for (uint256 i = 0; i < sendEvent.length; ++i) {
             Vm.Log memory log = sendEvent[i];
             for (uint256 j = 0; j < log.topics.length; ++j) {
                 if (log.topics[j] == IICS26Router.SendPacket.selector) {
-                    return abi.decode(log.data, (IICS26RouterMsgs.Packet));
+                    return abi.decode(log.data, (ICS26RouterMsgs.Packet));
                 }
             }
         }

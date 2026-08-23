@@ -4,14 +4,14 @@ pragma solidity ^0.8.28;
 import { Test } from "forge-std/Test.sol";
 
 import { Membership } from "contracts/light-clients/spectre/modules/Membership.sol";
-import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
+import { MembershipMsgs } from "contracts/light-clients/spectre/messages/MembershipMsgs.sol";
 
 /// @dev Guards the explicit left/right neighbour root cross-check in
 /// calculateNonExistenceRoot (issue #112): a two-sided non-existence proof whose
 /// neighbours hash to different subtree roots must be rejected, not silently
 /// accepted by reusing the self-derived root.
 contract MembershipNonExistHarness is Membership {
-    function exposedCalculateNonExistenceRoot(IMembershipMsgs.NonExistenceProof memory proof)
+    function exposedCalculateNonExistenceRoot(MembershipMsgs.NonExistenceProof memory proof)
         external
         view
         returns (bytes32)
@@ -20,8 +20,8 @@ contract MembershipNonExistHarness is Membership {
     }
 
     function exposedVerifyNonExistenceProof(
-        IMembershipMsgs.NonExistenceProof memory proof,
-        IMembershipMsgs.ProofSpec memory spec,
+        MembershipMsgs.NonExistenceProof memory proof,
+        MembershipMsgs.ProofSpec memory spec,
         bytes32 root,
         bytes memory key
     )
@@ -42,25 +42,25 @@ contract MembershipNonExistenceRootTest is Test {
 
     // A minimal-but-valid existence proof; `value` distinguishes the leaf hash so
     // two proofs can be made to produce distinct roots.
-    function _existence(bytes memory value) internal pure returns (IMembershipMsgs.ExistenceProof memory) {
-        return IMembershipMsgs.ExistenceProof({
+    function _existence(bytes memory value) internal pure returns (MembershipMsgs.ExistenceProof memory) {
+        return MembershipMsgs.ExistenceProof({
             key: bytes("k"),
             value: value,
-            leaf: IMembershipMsgs.LeafOp({
-                hashOp: IMembershipMsgs.HashOp.SHA256,
-                prehashKey: IMembershipMsgs.HashOp.NO_HASH,
-                prehashValue: IMembershipMsgs.HashOp.NO_HASH,
+            leaf: MembershipMsgs.LeafOp({
+                hashOp: MembershipMsgs.HashOp.SHA256,
+                prehashKey: MembershipMsgs.HashOp.NO_HASH,
+                prehashValue: MembershipMsgs.HashOp.NO_HASH,
                 prefix: ""
             }),
-            path: new IMembershipMsgs.InnerOp[](0)
+            path: new MembershipMsgs.InnerOp[](0)
         });
     }
 
     function test_revertsWhenLeftAndRightRootsDiffer() public {
-        IMembershipMsgs.ExistenceProof memory left = _existence(bytes("L"));
-        IMembershipMsgs.ExistenceProof memory right = _existence(bytes("R")); // distinct value -> distinct root
+        MembershipMsgs.ExistenceProof memory left = _existence(bytes("L"));
+        MembershipMsgs.ExistenceProof memory right = _existence(bytes("R")); // distinct value -> distinct root
 
-        IMembershipMsgs.NonExistenceProof memory ne = IMembershipMsgs.NonExistenceProof({
+        MembershipMsgs.NonExistenceProof memory ne = MembershipMsgs.NonExistenceProof({
             key: bytes("absent"), hasLeft: true, left: left, hasRight: true, right: right
         });
 
@@ -74,8 +74,8 @@ contract MembershipNonExistenceRootTest is Test {
     }
 
     function test_acceptsWhenLeftAndRightRootsMatch() public view {
-        IMembershipMsgs.ExistenceProof memory same = _existence(bytes("S"));
-        IMembershipMsgs.NonExistenceProof memory ne = IMembershipMsgs.NonExistenceProof({
+        MembershipMsgs.ExistenceProof memory same = _existence(bytes("S"));
+        MembershipMsgs.NonExistenceProof memory ne = MembershipMsgs.NonExistenceProof({
             key: bytes("absent"), hasLeft: true, left: same, hasRight: true, right: same
         });
         // matching roots -> returns the shared root, no revert
@@ -84,8 +84,8 @@ contract MembershipNonExistenceRootTest is Test {
     }
 
     function test_singleSidedSkipsCrossCheck() public view {
-        IMembershipMsgs.ExistenceProof memory left = _existence(bytes("L"));
-        IMembershipMsgs.NonExistenceProof memory ne = IMembershipMsgs.NonExistenceProof({
+        MembershipMsgs.ExistenceProof memory left = _existence(bytes("L"));
+        MembershipMsgs.NonExistenceProof memory ne = MembershipMsgs.NonExistenceProof({
             key: bytes("absent"),
             hasLeft: true,
             left: left,
@@ -97,9 +97,9 @@ contract MembershipNonExistenceRootTest is Test {
 
     function test_twoSidedEmptyNeighborPathRevertsCleanly() public {
         bytes memory prefix = abi.encodePacked(bytes32(uint256(0xABCDEF)));
-        IMembershipMsgs.ExistenceProof memory left = _existenceWithPrefix(bytes("a"), bytes("L"), prefix);
-        IMembershipMsgs.ExistenceProof memory right = _existenceWithPrefix(bytes("z"), bytes("R"), prefix);
-        IMembershipMsgs.NonExistenceProof memory ne = IMembershipMsgs.NonExistenceProof({
+        MembershipMsgs.ExistenceProof memory left = _existenceWithPrefix(bytes("a"), bytes("L"), prefix);
+        MembershipMsgs.ExistenceProof memory right = _existenceWithPrefix(bytes("z"), bytes("R"), prefix);
+        MembershipMsgs.NonExistenceProof memory ne = MembershipMsgs.NonExistenceProof({
             key: bytes("m"), hasLeft: true, left: left, hasRight: true, right: right
         });
 
@@ -107,12 +107,12 @@ contract MembershipNonExistenceRootTest is Test {
         m.exposedVerifyNonExistenceProof(ne, _prefixRootSpec(prefix), bytes32(uint256(0xABCDEF)), bytes("m"));
     }
 
-    function _oneSided(IMembershipMsgs.ExistenceProof memory e)
+    function _oneSided(MembershipMsgs.ExistenceProof memory e)
         internal
         pure
-        returns (IMembershipMsgs.NonExistenceProof memory)
+        returns (MembershipMsgs.NonExistenceProof memory)
     {
-        return IMembershipMsgs.NonExistenceProof({
+        return MembershipMsgs.NonExistenceProof({
             key: bytes("x"), hasLeft: true, left: e, hasRight: false, right: _existence(bytes(""))
         });
     }
@@ -124,43 +124,43 @@ contract MembershipNonExistenceRootTest is Test {
     )
         internal
         pure
-        returns (IMembershipMsgs.ExistenceProof memory)
+        returns (MembershipMsgs.ExistenceProof memory)
     {
-        return IMembershipMsgs.ExistenceProof({
+        return MembershipMsgs.ExistenceProof({
             key: key,
             value: value,
-            leaf: IMembershipMsgs.LeafOp({
-                hashOp: IMembershipMsgs.HashOp.NO_HASH,
-                prehashKey: IMembershipMsgs.HashOp.NO_HASH,
-                prehashValue: IMembershipMsgs.HashOp.NO_HASH,
+            leaf: MembershipMsgs.LeafOp({
+                hashOp: MembershipMsgs.HashOp.NO_HASH,
+                prehashKey: MembershipMsgs.HashOp.NO_HASH,
+                prehashValue: MembershipMsgs.HashOp.NO_HASH,
                 prefix: prefix
             }),
-            path: new IMembershipMsgs.InnerOp[](0)
+            path: new MembershipMsgs.InnerOp[](0)
         });
     }
 
-    function _prefixRootSpec(bytes memory prefix) internal pure returns (IMembershipMsgs.ProofSpec memory) {
+    function _prefixRootSpec(bytes memory prefix) internal pure returns (MembershipMsgs.ProofSpec memory) {
         uint32[] memory childOrder = new uint32[](2);
         childOrder[0] = 0;
         childOrder[1] = 1;
 
-        return IMembershipMsgs.ProofSpec({
-            specType: IMembershipMsgs.SpecType.TENDERMINT,
+        return MembershipMsgs.ProofSpec({
+            specType: MembershipMsgs.SpecType.TENDERMINT,
             hasLeafSpec: true,
-            leafOp: IMembershipMsgs.LeafOp({
-                hashOp: IMembershipMsgs.HashOp.NO_HASH,
-                prehashKey: IMembershipMsgs.HashOp.NO_HASH,
-                prehashValue: IMembershipMsgs.HashOp.NO_HASH,
+            leafOp: MembershipMsgs.LeafOp({
+                hashOp: MembershipMsgs.HashOp.NO_HASH,
+                prehashKey: MembershipMsgs.HashOp.NO_HASH,
+                prehashValue: MembershipMsgs.HashOp.NO_HASH,
                 prefix: prefix
             }),
             hasInnerSpec: true,
-            innerSpec: IMembershipMsgs.InnerSpec({
+            innerSpec: MembershipMsgs.InnerSpec({
                 childOrder: childOrder,
                 childSize: 32,
                 minPrefixLength: 0,
                 maxPrefixLength: 32,
                 emptyChild: "",
-                hashOp: IMembershipMsgs.HashOp.NO_HASH
+                hashOp: MembershipMsgs.HashOp.NO_HASH
             }),
             minDepth: 0,
             maxDepth: 0,

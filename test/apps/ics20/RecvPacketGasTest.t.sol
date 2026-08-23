@@ -6,23 +6,23 @@ import { SpectreClient } from "contracts/light-clients/spectre/SpectreClient.sol
 import { SignatureVerifier } from "contracts/light-clients/spectre/SignatureVerifier.sol";
 import { UpdateClient } from "contracts/light-clients/spectre/modules/UpdateClient.sol";
 import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
-import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
-import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
-import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
-import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
-import { IICS20TransferMsgs } from "contracts/apps/ics20/messages/IICS20TransferMsgs.sol";
+import { SpectreClientMsgs } from "contracts/light-clients/spectre/messages/SpectreClientMsgs.sol";
+import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
+import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
+import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
+import { ICS20TransferMsgs } from "contracts/apps/ics20/messages/ICS20TransferMsgs.sol";
 import { ICS20Lib } from "contracts/apps/ics20/libraries/ICS20Lib.sol";
 import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
 import { console } from "forge-std/Test.sol";
-import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
+import { MembershipMsgs } from "contracts/light-clients/spectre/messages/MembershipMsgs.sol";
 import { ICS24Host } from "contracts/core/libraries/ICS24Host.sol";
 
 contract DummyMembership {
     function verifyMembership(
         bytes32,
-        IMembershipMsgs.KVPair[] calldata,
-        IMembershipMsgs.MerkleProof[] calldata
+        MembershipMsgs.KVPair[] calldata,
+        MembershipMsgs.MerkleProof[] calldata
     )
         external
         pure { }
@@ -66,11 +66,11 @@ contract RecvPacketGasTest is IntegrationTest {
         revert("unknown bucket");
     }
 
-    function _clientState() internal pure returns (IICS07TendermintMsgs.ClientState memory) {
-        return IICS07TendermintMsgs.ClientState({
+    function _clientState() internal pure returns (SpectreMsgs.ClientState memory) {
+        return SpectreMsgs.ClientState({
             chainId: CHAIN_ID,
-            trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
-            latestHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
+            trustLevel: SpectreMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
+            latestHeight: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
             isFrozen: false,
@@ -78,11 +78,11 @@ contract RecvPacketGasTest is IntegrationTest {
         });
     }
 
-    function _buildValSet(uint16 valCount) internal pure returns (IICS07TendermintMsgs.ValidatorSet memory vs) {
-        IICS07TendermintMsgs.ValidatorInfo[] memory vals = new IICS07TendermintMsgs.ValidatorInfo[](valCount);
+    function _buildValSet(uint16 valCount) internal pure returns (SpectreMsgs.ValidatorSet memory vs) {
+        SpectreMsgs.ValidatorInfo[] memory vals = new SpectreMsgs.ValidatorInfo[](valCount);
         uint64 total = 0;
         for (uint256 i = 0; i < valCount; i++) {
-            vals[i] = IICS07TendermintMsgs.ValidatorInfo({
+            vals[i] = SpectreMsgs.ValidatorInfo({
                 valAddress: abi.encodePacked(uint160(i + 1)),
                 pubKey: bytes32(uint256(0xA0000000 + i + 1)),
                 votingPower: 100,
@@ -90,32 +90,32 @@ contract RecvPacketGasTest is IntegrationTest {
             });
             total += 100;
         }
-        vs = IICS07TendermintMsgs.ValidatorSet({
+        vs = SpectreMsgs.ValidatorSet({
             validators: vals, hasProposer: false, proposer: vals[0], totalVotingPower: total
         });
     }
 
     function _buildCommitSigs(
-        IICS07TendermintMsgs.ValidatorSet memory vs,
+        SpectreMsgs.ValidatorSet memory vs,
         uint16 activeCount
     )
         internal
         pure
-        returns (IICS07TendermintMsgs.CommitSig[] memory sigs)
+        returns (SpectreMsgs.CommitSig[] memory sigs)
     {
-        sigs = new IICS07TendermintMsgs.CommitSig[](vs.validators.length);
+        sigs = new SpectreMsgs.CommitSig[](vs.validators.length);
         for (uint256 i = 0; i < vs.validators.length; i++) {
             // The commit slot names the validator it belongs to, or the quorum check rejects the
             // proof citing it (ZK-09). Commit and pinned set are the same validators in the same
             // order here, so slot i is validator i.
             bytes20 addr = bytes20(sha256(abi.encodePacked(vs.validators[i].pubKey)));
             if (i < activeCount) {
-                sigs[i] = IICS07TendermintMsgs.CommitSig({
-                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT, validatorAddress: addr
+                sigs[i] = SpectreMsgs.CommitSig({
+                    flag: SpectreMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT, validatorAddress: addr
                 });
             } else {
-                sigs[i] = IICS07TendermintMsgs.CommitSig({
-                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT, validatorAddress: addr
+                sigs[i] = SpectreMsgs.CommitSig({
+                    flag: SpectreMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT, validatorAddress: addr
                 });
             }
         }
@@ -124,15 +124,15 @@ contract RecvPacketGasTest is IntegrationTest {
     function _buildSelfConsistent(BucketConfig memory cfg)
         internal
         returns (
-            IICS07TendermintMsgs.Header memory header,
-            IICS07TendermintMsgs.ConsensusState memory trustedCS,
-            IICS07TendermintMsgs.ValidatorSet memory vs
+            SpectreMsgs.Header memory header,
+            SpectreMsgs.ConsensusState memory trustedCS,
+            SpectreMsgs.ValidatorSet memory vs
         )
     {
         vs = _buildValSet(cfg.valCount);
         bytes32 valSetHash = Header.hashValSet(vs);
 
-        IICS07TendermintMsgs.BlockHeader memory bh;
+        SpectreMsgs.BlockHeader memory bh;
         bh.chainId = CHAIN_ID;
         bh.height = NEW_HEIGHT;
         bh.time = NEW_TS_NS;
@@ -141,22 +141,22 @@ contract RecvPacketGasTest is IntegrationTest {
         bh.nextValidatorsHash = valSetHash;
         bytes32 headerHash = Header.hashHeader(bh);
 
-        IICS07TendermintMsgs.BlockCommit memory bc = IICS07TendermintMsgs.BlockCommit({
+        SpectreMsgs.BlockCommit memory bc = SpectreMsgs.BlockCommit({
             height: NEW_HEIGHT,
             round: 0,
-            blockId: IICS07TendermintMsgs.BlockId({
+            blockId: SpectreMsgs.BlockId({
                 hashData: headerHash,
-                partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
+                partSetHeader: SpectreMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
             }),
             commitSigs: _buildCommitSigs(vs, cfg.activeCount)
         });
 
-        header = IICS07TendermintMsgs.Header({
-            signedHeader: IICS07TendermintMsgs.SignedHeader({ header: bh, commit: bc }),
-            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT })
+        header = SpectreMsgs.Header({
+            signedHeader: SpectreMsgs.SignedHeader({ header: bh, commit: bc }),
+            trustedHeight: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT })
         });
 
-        trustedCS = IICS07TendermintMsgs.ConsensusState({
+        trustedCS = SpectreMsgs.ConsensusState({
             timestamp: TRUSTED_TS_NS, root: bytes32(uint256(0xAAA)), nextValidatorsHash: valSetHash
         });
     }
@@ -173,12 +173,12 @@ contract RecvPacketGasTest is IntegrationTest {
 
         BucketConfig memory cfg = _cfg(bucket);
         (
-            IICS07TendermintMsgs.Header memory header,
-            IICS07TendermintMsgs.ConsensusState memory trustedCS,
-            IICS07TendermintMsgs.ValidatorSet memory vs
+            SpectreMsgs.Header memory header,
+            SpectreMsgs.ConsensusState memory trustedCS,
+            SpectreMsgs.ValidatorSet memory vs
         ) = _buildSelfConsistent(cfg);
 
-        IICS07TendermintMsgs.ClientState memory cs = _clientState();
+        SpectreMsgs.ClientState memory cs = _clientState();
 
         DummyMembership stubMembership = new DummyMembership();
 
@@ -195,7 +195,7 @@ contract RecvPacketGasTest is IntegrationTest {
 
         // Add this light client to the router
         string memory clientID = ics26Router.addClient(
-            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix), address(realClient)
+            ICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix), address(realClient)
         );
 
         // 1. Build the update message
@@ -212,7 +212,7 @@ contract RecvPacketGasTest is IntegrationTest {
             }
         }
 
-        ISpectreClientMsgs.MsgUpdateApplicationState memory m;
+        SpectreClientMsgs.MsgUpdateApplicationState memory m;
         m.trustedConsensusState = trustedCS;
         m.proposedHeader = header;
         m.time = NEW_TS_NS;
@@ -235,10 +235,10 @@ contract RecvPacketGasTest is IntegrationTest {
         address receiver = makeAddr("receiver_of_foreign_denom");
         string memory receiverStr = Strings.toHexString(receiver);
 
-        IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
+        ICS20TransferMsgs.FungibleTokenPacketData memory packetData =
             _getPacketData(senderStr, receiverStr, foreignDenom);
-        IICS26RouterMsgs.Payload[] memory payloads = _getPayloads(abi.encode(packetData));
-        IICS26RouterMsgs.Packet memory recvPacket = IICS26RouterMsgs.Packet({
+        ICS26RouterMsgs.Payload[] memory payloads = _getPayloads(abi.encode(packetData));
+        ICS26RouterMsgs.Packet memory recvPacket = ICS26RouterMsgs.Packet({
             sequence: 1,
             sourceClient: counterpartyId,
             destClient: clientID,
@@ -254,26 +254,26 @@ contract RecvPacketGasTest is IntegrationTest {
         bytes32 commitmentBz = ICS24Host.packetCommitmentBytes32(recvPacket);
         bytes memory valBytes = abi.encodePacked(commitmentBz);
 
-        IMembershipMsgs.KVPair[] memory kvPairs = new IMembershipMsgs.KVPair[](1);
-        kvPairs[0] = IMembershipMsgs.KVPair({ path: fullPath, value: valBytes });
+        MembershipMsgs.KVPair[] memory kvPairs = new MembershipMsgs.KVPair[](1);
+        kvPairs[0] = MembershipMsgs.KVPair({ path: fullPath, value: valBytes });
 
-        IMembershipMsgs.MerkleProof[] memory merkleProofs = new IMembershipMsgs.MerkleProof[](1);
+        MembershipMsgs.MerkleProof[] memory merkleProofs = new MembershipMsgs.MerkleProof[](1);
 
-        ILightClientMsgs.MsgVerifyMembership memory membershipMsg = ILightClientMsgs.MsgVerifyMembership({
-            height: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: NEW_HEIGHT }),
+        LightClientMsgs.MsgVerifyMembership memory membershipMsg = LightClientMsgs.MsgVerifyMembership({
+            height: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: NEW_HEIGHT }),
             kvPairs: kvPairs,
             merkleProofs: merkleProofs,
             appHash: bytes32(uint256(0xCCC)), // bh.appHash from above
-            trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+            trustedConsensusState: SpectreMsgs.ConsensusState({
                 timestamp: NEW_TS_NS, root: bytes32(uint256(0xCCC)), nextValidatorsHash: Header.hashValSet(vs)
             }),
-            membershipType: IMembershipMsgs.MembershipType.Membership,
+            membershipType: MembershipMsgs.MembershipType.Membership,
             path: new bytes[](0),
             value: bytes("")
         });
 
-        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket =
-            IICS26RouterMsgs.MsgRecvPacket({ packet: recvPacket, membershipMsg: abi.encode(membershipMsg) });
+        ICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket =
+            ICS26RouterMsgs.MsgRecvPacket({ packet: recvPacket, membershipMsg: abi.encode(membershipMsg) });
 
         // 3. Measure recvPacket gas
         uint256 g0 = gasleft();

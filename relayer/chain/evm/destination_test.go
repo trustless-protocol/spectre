@@ -139,8 +139,8 @@ func TestRelayWithUpdate_SubmitsOneOrderedBatch(t *testing.T) {
 
 	payload, err := codec.EncodeCosmosUpdate(
 		int(services.ApplicationUpdate),
-		updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState{},
-		spectreContract.IICS07TendermintMsgsValidatorSet{},
+		updateclientContract.SpectreClientMsgsMsgUpdateApplicationState{},
+		spectreContract.SpectreMsgsValidatorSet{},
 	)
 	if err != nil {
 		t.Fatalf("encode update: %v", err)
@@ -163,7 +163,7 @@ func TestRelayWithUpdate_SubmitsOneOrderedBatch(t *testing.T) {
 	if _, ok := batch[0].(services.CosmosClientUpdateBuildResult); !ok {
 		t.Fatalf("first inner message = %T, want CosmosClientUpdateBuildResult", batch[0])
 	}
-	if _, ok := batch[1].(contractICS26Router.IICS26RouterMsgsMsgRecvPacket); !ok {
+	if _, ok := batch[1].(contractICS26Router.ICS26RouterMsgsMsgRecvPacket); !ok {
 		t.Fatalf("second inner message = %T, want MsgRecvPacket", batch[1])
 	}
 }

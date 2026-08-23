@@ -196,7 +196,7 @@ func sendPacketLogJSON(t *testing.T, router ethcommon.Address, block uint64) str
 	if !ok {
 		t.Fatal("ICS26Router ABI has no SendPacket event")
 	}
-	packet := IICS26RouterMsgsPacketFor(idleTestClientID, idleTestDestID)
+	packet := ICS26RouterMsgsPacketFor(idleTestClientID, idleTestDestID)
 	data, err := event.Inputs.NonIndexed().Pack(packet)
 	if err != nil {
 		t.Fatalf("pack SendPacket data: %v", err)
@@ -212,14 +212,14 @@ func sendPacketLogJSON(t *testing.T, router ethcommon.Address, block uint64) str
 		block, ethcommon.Hash{}.Hex(), ethcommon.Hash{}.Hex())
 }
 
-// IICS26RouterMsgsPacketFor builds the minimal packet the SendPacket decoder accepts.
-func IICS26RouterMsgsPacketFor(sourceClient, destClient string) contractICS26Router.IICS26RouterMsgsPacket {
-	return contractICS26Router.IICS26RouterMsgsPacket{
+// ICS26RouterMsgsPacketFor builds the minimal packet the SendPacket decoder accepts.
+func ICS26RouterMsgsPacketFor(sourceClient, destClient string) contractICS26Router.ICS26RouterMsgsPacket {
+	return contractICS26Router.ICS26RouterMsgsPacket{
 		Sequence:         1,
 		SourceClient:     sourceClient,
 		DestClient:       destClient,
 		TimeoutTimestamp: uint64(time.Now().Add(time.Hour).Unix()),
-		Payloads: []contractICS26Router.IICS26RouterMsgsPayload{{
+		Payloads: []contractICS26Router.ICS26RouterMsgsPayload{{
 			SourcePort: "transfer", DestPort: "transfer",
 			Version: "ics20-2", Encoding: "application/x-solidity-abi",
 			Value: []byte{0x01},

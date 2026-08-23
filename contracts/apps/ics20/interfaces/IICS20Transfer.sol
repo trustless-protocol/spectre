@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IICS20TransferMsgs } from "contracts/apps/ics20/messages/IICS20TransferMsgs.sol";
+import { ICS20TransferMsgs } from "contracts/apps/ics20/messages/ICS20TransferMsgs.sol";
 import { ISignatureTransfer } from "@uniswap/permit2/src/interfaces/ISignatureTransfer.sol";
 
 /// @title ICS20 Transfer Access Controlled Interface
@@ -28,7 +28,7 @@ interface IICS20TransferAccessControlled {
     /// @param sender The sender of the transfer
     /// @return sequence The sequence number of the packet created
     function sendTransferWithSender(
-        IICS20TransferMsgs.SendTransferMsg calldata msg_,
+        ICS20TransferMsgs.SendTransferMsg calldata msg_,
         address sender
     )
         external
@@ -74,7 +74,7 @@ interface IICS20Transfer is IICS20TransferAccessControlled {
     /// @notice Send a transfer by constructing a message and calling IICS26Router.sendPacket
     /// @param msg_ The message for sending a transfer
     /// @return sequence The sequence number of the packet created
-    function sendTransfer(IICS20TransferMsgs.SendTransferMsg calldata msg_) external returns (uint64 sequence);
+    function sendTransfer(ICS20TransferMsgs.SendTransferMsg calldata msg_) external returns (uint64 sequence);
 
     /// @notice Send a permit2 transfer by constructing a message and calling IICS26Router.sendPacket
     /// @param msg_ The message for sending a transfer
@@ -82,7 +82,7 @@ interface IICS20Transfer is IICS20TransferAccessControlled {
     /// @param signature The signature of the permit data
     /// @return sequence The sequence number of the packet created
     function sendTransferWithPermit2(
-        IICS20TransferMsgs.SendTransferMsg calldata msg_,
+        ICS20TransferMsgs.SendTransferMsg calldata msg_,
         ISignatureTransfer.PermitTransferFrom calldata permit,
         bytes calldata signature
     )

@@ -7,20 +7,20 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
-import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
-import { IICS20TransferMsgs } from "contracts/apps/ics20/messages/IICS20TransferMsgs.sol";
-import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
-import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
+import { ICS20TransferMsgs } from "contracts/apps/ics20/messages/ICS20TransferMsgs.sol";
+import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
+import { MembershipMsgs } from "contracts/light-clients/spectre/messages/MembershipMsgs.sol";
+import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
 
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { IICS26Router } from "contracts/core/interfaces/IICS26Router.sol";
 import { ISignatureTransfer } from "@uniswap/permit2/src/interfaces/ISignatureTransfer.sol";
 
 import { ICS26Router } from "contracts/core/ICS26Router.sol";
-import { ClientMigrationProposer } from "contracts/core/client/migration/modules/ClientMigrationProposer.sol";
-import { ClientMigrationExecutor } from "contracts/core/client/migration/modules/ClientMigrationExecutor.sol";
+import { ClientMigrationProposer } from "contracts/core/client-registry/migration/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "contracts/core/client-registry/migration/modules/ClientMigrationExecutor.sol";
 import { IBCERC20 } from "contracts/apps/ics20/IBCERC20.sol";
 import { Escrow } from "contracts/apps/ics20/Escrow.sol";
 import { ICS20Transfer } from "contracts/apps/ics20/ICS20Transfer.sol";
@@ -92,7 +92,7 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
         counterpartyImpls[counterpartyId] = counterparty;
 
         return ics26Router.addClient(
-            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, _testHelper.EMPTY_MERKLE_PREFIX()), address(lightClient)
+            ICS02ClientMsgs.CounterpartyInfo(counterpartyId, _testHelper.EMPTY_MERKLE_PREFIX()), address(lightClient)
         );
     }
 
@@ -103,7 +103,7 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
         uint256 amount
     )
         external
-        returns (IICS26RouterMsgs.Packet memory)
+        returns (ICS26RouterMsgs.Packet memory)
     {
         return sendTransferAsUser(token, sender, receiver, amount, _testHelper.FIRST_CLIENT_ID());
     }
@@ -116,7 +116,7 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
         uint64 timeoutTimestamp
     )
         external
-        returns (IICS26RouterMsgs.Packet memory)
+        returns (ICS26RouterMsgs.Packet memory)
     {
         return sendTransferAsUser(token, sender, receiver, amount, timeoutTimestamp, _testHelper.FIRST_CLIENT_ID());
     }
@@ -129,7 +129,7 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
         string memory sourceClient
     )
         public
-        returns (IICS26RouterMsgs.Packet memory)
+        returns (ICS26RouterMsgs.Packet memory)
     {
         return sendTransferAsUser(token, sender, receiver, amount, uint64(block.timestamp + 10 minutes), sourceClient);
     }
@@ -143,13 +143,13 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
         string memory sourceClient
     )
         public
-        returns (IICS26RouterMsgs.Packet memory)
+        returns (ICS26RouterMsgs.Packet memory)
     {
         vm.startPrank(sender);
         token.approve(address(ics20Transfer), amount);
         vm.recordLogs();
         ics20Transfer.sendTransfer(
-            IICS20TransferMsgs.SendTransferMsg({
+            ICS20TransferMsgs.SendTransferMsg({
                 denom: address(token),
                 amount: amount,
                 receiver: receiver,
@@ -162,7 +162,7 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
         vm.stopPrank();
 
         bytes memory packetBz = _testHelper.getValueFromEvent(IICS26Router.SendPacket.selector);
-        return abi.decode(packetBz, (IICS26RouterMsgs.Packet));
+        return abi.decode(packetBz, (ICS26RouterMsgs.Packet));
     }
 
     function sendTransferAsUser(
@@ -173,7 +173,7 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
         bytes memory signature
     )
         public
-        returns (IICS26RouterMsgs.Packet memory)
+        returns (ICS26RouterMsgs.Packet memory)
     {
         return sendTransferAsUser(token, sender, receiver, _testHelper.FIRST_CLIENT_ID(), permit, signature);
     }
@@ -187,12 +187,12 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
         bytes memory signature
     )
         public
-        returns (IICS26RouterMsgs.Packet memory)
+        returns (ICS26RouterMsgs.Packet memory)
     {
         vm.startPrank(sender);
         vm.recordLogs();
         ics20Transfer.sendTransferWithPermit2(
-            IICS20TransferMsgs.SendTransferMsg({
+            ICS20TransferMsgs.SendTransferMsg({
                 denom: address(token),
                 amount: permit.permitted.amount,
                 receiver: receiver,
@@ -207,24 +207,24 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
         vm.stopPrank();
 
         bytes memory packetBz = _testHelper.getValueFromEvent(IICS26Router.SendPacket.selector);
-        return abi.decode(packetBz, (IICS26RouterMsgs.Packet));
+        return abi.decode(packetBz, (ICS26RouterMsgs.Packet));
     }
 
-    function recvPacket(IICS26RouterMsgs.Packet calldata packet) external returns (bytes[] memory acks) {
-        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;
+    function recvPacket(ICS26RouterMsgs.Packet calldata packet) external returns (bytes[] memory acks) {
+        ICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;
         msgRecvPacket.packet = packet;
         msgRecvPacket.membershipMsg = _emptyMembershipMsg();
         vm.recordLogs();
         ics26Router.recvPacket(msgRecvPacket);
 
         bytes memory ackBz = _testHelper.getValueFromEvent(IICS26Router.WriteAcknowledgement.selector);
-        (, acks) = abi.decode(ackBz, (IICS26RouterMsgs.Packet, bytes[]));
+        (, acks) = abi.decode(ackBz, (ICS26RouterMsgs.Packet, bytes[]));
         return acks;
     }
 
-    function ackPacket(IICS26RouterMsgs.Packet calldata packet, bytes[] calldata acks) external {
+    function ackPacket(ICS26RouterMsgs.Packet calldata packet, bytes[] calldata acks) external {
         require(acks.length == 1, "multiple acks not supported");
-        IICS26RouterMsgs.MsgAckPacket memory msgWriteAck;
+        ICS26RouterMsgs.MsgAckPacket memory msgWriteAck;
         msgWriteAck.packet = packet;
         msgWriteAck.acknowledgement = acks[0];
         msgWriteAck.membershipMsg = _emptyMembershipMsg();
@@ -232,8 +232,8 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
         ics26Router.ackPacket(msgWriteAck);
     }
 
-    function timeoutPacket(IICS26RouterMsgs.Packet calldata packet) external {
-        IICS26RouterMsgs.MsgTimeoutPacket memory msgTimeoutPacket;
+    function timeoutPacket(ICS26RouterMsgs.Packet calldata packet) external {
+        ICS26RouterMsgs.MsgTimeoutPacket memory msgTimeoutPacket;
         msgTimeoutPacket.packet = packet;
         msgTimeoutPacket.nonMembershipMsg = _emptyNonMembershipMsg();
         vm.recordLogs();
@@ -253,15 +253,15 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
     /// well-formed ABI for the struct — empty fields are fine.
     function _emptyMembershipMsg() internal pure returns (bytes memory) {
         return abi.encode(
-            ILightClientMsgs.MsgVerifyMembership({
-                height: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 0 }),
-                kvPairs: new IMembershipMsgs.KVPair[](0),
-                merkleProofs: new IMembershipMsgs.MerkleProof[](0),
+            LightClientMsgs.MsgVerifyMembership({
+                height: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 0 }),
+                kvPairs: new MembershipMsgs.KVPair[](0),
+                merkleProofs: new MembershipMsgs.MerkleProof[](0),
                 appHash: bytes32(0),
-                trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+                trustedConsensusState: SpectreMsgs.ConsensusState({
                     timestamp: 0, root: bytes32(0), nextValidatorsHash: bytes32(0)
                 }),
-                membershipType: IMembershipMsgs.MembershipType.Membership,
+                membershipType: MembershipMsgs.MembershipType.Membership,
                 path: new bytes[](0),
                 value: bytes("")
             })
@@ -270,21 +270,21 @@ contract IbcImpl is Test, DeployAccessManagerWithRoles {
 
     function _emptyNonMembershipMsg() internal pure returns (bytes memory) {
         return abi.encode(
-            ILightClientMsgs.MsgVerifyNonMembership({
-                height: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 0 }),
-                kvPairs: new IMembershipMsgs.KVPair[](0),
-                merkleProofs: new IMembershipMsgs.MerkleProof[](0),
+            LightClientMsgs.MsgVerifyNonMembership({
+                height: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 0 }),
+                kvPairs: new MembershipMsgs.KVPair[](0),
+                merkleProofs: new MembershipMsgs.MerkleProof[](0),
                 appHash: bytes32(0),
-                trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+                trustedConsensusState: SpectreMsgs.ConsensusState({
                     timestamp: 0, root: bytes32(0), nextValidatorsHash: bytes32(0)
                 }),
-                membershipType: IMembershipMsgs.MembershipType.Membership,
+                membershipType: MembershipMsgs.MembershipType.Membership,
                 path: new bytes[](0)
             })
         );
     }
 
-    function cheatPacketCommitment(IICS26RouterMsgs.Packet calldata packet) external {
+    function cheatPacketCommitment(ICS26RouterMsgs.Packet calldata packet) external {
         bytes32 path = ICS24Host.packetCommitmentKeyCalldata(packet.sourceClient, packet.sequence);
         bytes32 value = ICS24Host.packetCommitmentBytes32(packet);
         _cheatCommit(path, value);

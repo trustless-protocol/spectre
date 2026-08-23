@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IRateLimitErrors } from "contracts/apps/ics20/errors/IRateLimitErrors.sol";
+import { RateLimitErrors } from "contracts/apps/ics20/errors/RateLimitErrors.sol";
 import { IRateLimit } from "contracts/apps/ics20/interfaces/IRateLimit.sol";
 import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
 
@@ -13,7 +13,7 @@ import { AccessManagedUpgradeable } from "@openzeppelin-upgradeable/access/manag
 /// @notice This contract is an abstract contract for adding rate limiting to escrow contracts.
 /// @dev Rate limits are set per token address by the rate limiter role and are enforced with a rolling window.
 /// @dev Rate limits are applied to tokens leaving the escrow contract.
-abstract contract RateLimitUpgradeable is IRateLimitErrors, IRateLimit, AccessManagedUpgradeable {
+abstract contract RateLimitUpgradeable is RateLimitErrors, IRateLimit, AccessManagedUpgradeable {
     /// @notice Storage of the RateLimit contract
     /// @dev It's implemented on a custom ERC-7201 namespace to reduce the risk of storage collisions when using with
     /// upgradeable contracts.

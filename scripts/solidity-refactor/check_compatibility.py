@@ -42,11 +42,27 @@ def artifact(contract: str) -> dict[str, Any]:
     return load(path)
 
 
-def artifact_record(data: dict[str, Any]) -> dict[str, Any]:
+def normalize_tooling_text(value: str, renames: list[dict[str, str]]) -> str:
+    for rename in sorted(renames, key=lambda item: len(item["target"]), reverse=True):
+        value = value.replace(rename["target"], rename["current"])
+    return value
+
+
+def normalize_tooling_value(value: Any, renames: list[dict[str, str]]) -> Any:
+    if isinstance(value, str):
+        return normalize_tooling_text(value, renames)
+    if isinstance(value, list):
+        return [normalize_tooling_value(item, renames) for item in value]
+    if isinstance(value, dict):
+        return {key: normalize_tooling_value(item, renames) for key, item in value.items()}
+    return value
+
+
+def artifact_record(data: dict[str, Any], renames: list[dict[str, str]]) -> dict[str, Any]:
     runtime = dotted(data, "deployedBytecode.object") or ""
     initcode = dotted(data, "bytecode.object") or ""
     return {
-        "abi_sha256": canonical_hash(data.get("abi")),
+        "abi_sha256": canonical_hash(normalize_tooling_value(data.get("abi"), renames)),
         "runtime_sha256": hashlib.sha256(runtime.encode()).hexdigest(),
         "initcode_sha256": hashlib.sha256(initcode.encode()).hexdigest(),
         "runtime_bytes": max(0, (len(runtime) - 2) // 2),
@@ -54,7 +70,12 @@ def artifact_record(data: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def normalized_storage_record(root: Path, entry: dict[str, Any], source_key: str = "source") -> dict[str, Any]:
+def normalized_storage_record(
+    root: Path,
+    entry: dict[str, Any],
+    renames: list[dict[str, str]],
+    source_key: str = "source",
+) -> dict[str, Any]:
     source_path = root / entry[source_key]
     source = source_path.read_text()
     structs: dict[str, str] = {}
@@ -68,7 +89,8 @@ def normalized_storage_record(root: Path, entry: dict[str, Any], source_key: str
             raise ValueError(f"missing storage struct {struct_name} in {entry[source_key]}")
         body = re.sub(r"/\*.*?\*/", " ", match.group(1), flags=re.DOTALL)
         body = re.sub(r"//[^\n]*", " ", body)
-        structs[struct_name] = re.sub(r"\s+", " ", body).strip()
+        normalized_body = re.sub(r"\s+", " ", body).strip()
+        structs[struct_name] = normalize_tooling_text(normalized_body, renames)
 
     slots: dict[str, str] = {}
     for slot_name in entry["slots"]:
@@ -119,6 +141,9 @@ def compare(args: argparse.Namespace) -> list[str]:
     )
     verifier_evidence = load(provenance_path) if provenance_path.is_file() else verifier_manifest
     test_manifest = load(args.test_manifest)
+    tooling_rename_manifest = load(args.tooling_rename_manifest)
+    tooling_renames = tooling_rename_manifest["renames"]
+    approved_generated_digests = tooling_rename_manifest["generated_digests"]
 
     source_by_contract = {
         item["name"]: item["source"] for item in contract_manifest["contracts"]
@@ -129,7 +154,7 @@ def compare(args: argparse.Namespace) -> list[str]:
         except FileNotFoundError as error:
             failures.append(str(error))
             continue
-        actual = artifact_record(data)
+        actual = artifact_record(data, tooling_renames)
         for key, expected_value in expected.items():
             if actual[key] != expected_value:
                 failures.append(
@@ -143,7 +168,7 @@ def compare(args: argparse.Namespace) -> list[str]:
 
     for entry in storage_manifest["entries"]:
         try:
-            actual_storage = normalized_storage_record(ROOT, entry)
+            actual_storage = normalized_storage_record(ROOT, entry, tooling_renames)
         except (OSError, ValueError) as error:
             failures.append(str(error))
             continue
@@ -155,8 +180,17 @@ def compare(args: argparse.Namespace) -> list[str]:
         path = ROOT / relative
         if not path.is_file():
             failures.append(f"missing locked fixture or binding: {relative}")
-        elif file_hash(path) != expected_hash:
-            failures.append(f"locked fixture or binding changed: {relative}")
+        else:
+            actual_hash = file_hash(path)
+            approved_hash = approved_generated_digests.get(relative)
+            locked_hash = approved_hash if approved_hash is not None else expected_hash
+            if actual_hash != locked_hash:
+                label = "approved tooling artifact" if approved_hash is not None else "locked fixture or binding"
+                failures.append(f"{label} changed: {relative}")
+
+    unknown_approved_paths = sorted(set(approved_generated_digests) - set(baseline["digests"]))
+    for relative in unknown_approved_paths:
+        failures.append(f"tooling rename manifest approves an unlocked artifact: {relative}")
 
     for relative, expected in baseline.get("semantic_artifact_digests", {}).items():
         path = ROOT / relative
@@ -165,7 +199,7 @@ def compare(args: argparse.Namespace) -> list[str]:
             continue
         data = load(path)
         semantic_fields = {
-            "abi": data.get("abi"),
+            "abi": normalize_tooling_value(data.get("abi"), tooling_renames),
             "initcode": data.get("bytecode", {}).get("object"),
             "runtime": data.get("deployedBytecode", {}).get("object"),
         }
@@ -248,6 +282,11 @@ def main() -> int:
         "--test-manifest",
         type=Path,
         default=ROOT / "scripts/solidity-refactor/test-manifest.json",
+    )
+    parser.add_argument(
+        "--tooling-rename-manifest",
+        type=Path,
+        default=ROOT / "scripts/solidity-refactor/tooling-rename-manifest.json",
     )
     args = parser.parse_args()
     failures = compare(args)

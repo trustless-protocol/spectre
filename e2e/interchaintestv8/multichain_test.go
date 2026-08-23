@@ -952,7 +952,7 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 
 	s.Require().True(s.Run("Transfer tokens from Ethereum to SimdB", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
-		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 			Denom:            ibcERC20Address,
 			Amount:           transferAmount,
 			Receiver:         simdBUser.FormattedAddress(),
@@ -1066,7 +1066,7 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 
 	s.Require().True(s.Run("Transfer tokens from Ethereum to SimdA", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
-		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 			Denom:            ibcERC20Address,
 			Amount:           transferAmount,
 			Receiver:         simdAUser.FormattedAddress(),
@@ -1131,7 +1131,7 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 	s.Require().True(s.Run("Send from Ethereum to SimdA", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 
-		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 			Denom:            erc20Address,
 			Amount:           transferAmount,
 			Receiver:         simdAUser.FormattedAddress(),
@@ -1476,7 +1476,7 @@ func (s *MultichainTestSuite) Test_TransferCosmosToCosmosToEth() {
 			ibcERC20Address, err := s.ics20Contract.IbcERC20Contract(nil, denomOnEthereum.Path())
 			s.Require().NoError(err)
 			timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
-			msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+			msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 				Denom:            ibcERC20Address,
 				Amount:           transferAmount,
 				Receiver:         simdBUser.FormattedAddress(),

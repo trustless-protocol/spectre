@@ -6,8 +6,8 @@ pragma solidity ^0.8.28;
 import { Vm } from "forge-std/Vm.sol";
 import { Test } from "forge-std/Test.sol";
 
-import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
-import { IICS20TransferMsgs } from "contracts/apps/ics20/messages/IICS20TransferMsgs.sol";
+import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
+import { ICS20TransferMsgs } from "contracts/apps/ics20/messages/ICS20TransferMsgs.sol";
 
 import { ICS20Lib } from "contracts/apps/ics20/libraries/ICS20Lib.sol";
 import { ICS24Host } from "contracts/core/libraries/ICS24Host.sol";
@@ -53,13 +53,13 @@ contract TestHelper is Test {
     }
 
     /// @notice Get FungibleTokenPacketData from the packet
-    function getFTPD(IICS26RouterMsgs.Packet memory packet)
+    function getFTPD(ICS26RouterMsgs.Packet memory packet)
         public
         pure
-        returns (IICS20TransferMsgs.FungibleTokenPacketData memory)
+        returns (ICS20TransferMsgs.FungibleTokenPacketData memory)
     {
         require(packet.payloads.length == 1, "Packet must have 1 payload");
-        return abi.decode(packet.payloads[0].value, (IICS20TransferMsgs.FungibleTokenPacketData));
+        return abi.decode(packet.payloads[0].value, (ICS20TransferMsgs.FungibleTokenPacketData));
     }
 
     /// @dev Searches all the logs for the given event selector and returns the first value found

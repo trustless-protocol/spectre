@@ -2,8 +2,8 @@
 pragma solidity ^0.8.28;
 
 import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
-import { IICS20Errors } from "contracts/apps/ics20/errors/IICS20Errors.sol";
-import { BytesPrefix } from "contracts/shared/bytes/BytesPrefix.sol";
+import { ICS20Errors } from "contracts/apps/ics20/errors/ICS20Errors.sol";
+import { IBCIdentifiers } from "contracts/shared/access/IBCIdentifiers.sol";
 
 /// @title ICS20 Library
 /// @notice This library provides utility functions for the ICS20Tranfer, including versioning, encoding, and denom
@@ -37,7 +37,7 @@ library ICS20Lib {
     /// @return address the converted address
     function mustHexStringToAddress(string memory addrHexString) internal pure returns (address) {
         (bool success, address addr) = Strings.tryParseAddress(addrHexString);
-        require(success, IICS20Errors.ICS20InvalidAddress(addrHexString));
+        require(success, ICS20Errors.ICS20InvalidAddress(addrHexString));
         return addr;
     }
 
@@ -46,7 +46,7 @@ library ICS20Lib {
     /// @param prefix the prefix to check with
     /// @return true if `denomBz` has the prefix `prefix`
     function hasPrefix(bytes memory denomBz, bytes memory prefix) internal pure returns (bool) {
-        return BytesPrefix.hasPrefix(denomBz, prefix);
+        return IBCIdentifiers.hasPrefix(denomBz, prefix);
     }
 
     /// @notice getDenomPrefix returns an ibc path prefix
@@ -67,6 +67,6 @@ library ICS20Lib {
     /// @param prefix the exact portId/clientId/ prefix bytes (from getDenomPrefix)
     /// @return true iff denomBz starts with the prefix AND has content after it
     function hasDenomPrefix(bytes memory denomBz, bytes memory prefix) internal pure returns (bool) {
-        return denomBz.length > prefix.length && BytesPrefix.hasPrefix(denomBz, prefix);
+        return denomBz.length > prefix.length && IBCIdentifiers.hasPrefix(denomBz, prefix);
     }
 }

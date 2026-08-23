@@ -10,7 +10,7 @@
     4
   ],
   "runtime_compatibility": {
-    "abi": "exact",
+    "abi": "exact-after-reviewed-container-name-normalization",
     "storage": "exact",
     "initcode": "exact",
     "runtime": "exact"
@@ -31,6 +31,8 @@
   },
   "accepted_tooling_deltas": [
     "Solidity fully qualified source paths",
+    "reviewed message and error container names in tooling ABI",
+    "regenerated Go binding type names and first-party consumers",
     "Spectre bytecode artifact source metadata",
     "test and fixture paths"
   ],
@@ -56,5 +58,12 @@
     "first_party_erc7201_owners": 9,
     "namespace_constants": "exact",
     "ordered_struct_layouts": "exact"
+  },
+  "design_reference": "refactor/design-contracts@115397d08e23a421852d08e590d2571bd413f3f5",
+  "tooling_rename_manifest": "scripts/solidity-refactor/tooling-rename-manifest.json",
+  "tooling_compatibility": {
+    "abi_container_names": "exactly tooling-rename-manifest.json",
+    "generated_abi_and_bindings": "exact digests in tooling-rename-manifest.json",
+    "consumer_update": "atomic with Solidity rename slice"
   }
 }

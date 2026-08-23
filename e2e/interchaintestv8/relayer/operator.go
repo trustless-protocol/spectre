@@ -48,7 +48,7 @@ type misbehaviourFixture struct {
 }
 
 // MembershipProof is a function that generates a membership proof and returns the proof height and proof
-func MembershipProof(trusted_height uint64, paths string, writeFixtureName string, args ...string) (*spectreclient.IICS02ClientMsgsHeight, []byte, error) {
+func MembershipProof(trusted_height uint64, paths string, writeFixtureName string, args ...string) (*spectreclient.ICS02ClientMsgsHeight, []byte, error) {
 	args = append([]string{"fixtures", "membership", "--trusted-block", strconv.FormatUint(trusted_height, 10), "--key-paths", paths}, args...)
 	isPrivateCluster := os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueGroth16Prover_PrivateCluster
 	if isPrivateCluster {
@@ -86,7 +86,7 @@ func MembershipProof(trusted_height uint64, paths string, writeFixtureName strin
 		return nil, nil, err
 	}
 
-	heightType, err := abi.NewType("tuple", "IICS02ClientMsgsHeight", []abi.ArgumentMarshaling{
+	heightType, err := abi.NewType("tuple", "ICS02ClientMsgsHeight", []abi.ArgumentMarshaling{
 		{Name: "revisionNumber", Type: "uint64"},
 		{Name: "revisionHeight", Type: "uint64"},
 	})
@@ -104,7 +104,7 @@ func MembershipProof(trusted_height uint64, paths string, writeFixtureName strin
 		return nil, nil, err
 	}
 
-	height := abi.ConvertType(heightI[0], new(spectreclient.IICS02ClientMsgsHeight)).(*spectreclient.IICS02ClientMsgsHeight)
+	height := abi.ConvertType(heightI[0], new(spectreclient.ICS02ClientMsgsHeight)).(*spectreclient.ICS02ClientMsgsHeight)
 
 	if height.RevisionHeight != trusted_height {
 		return nil, nil, errors.New("heights do not match")
@@ -119,7 +119,7 @@ func MembershipProof(trusted_height uint64, paths string, writeFixtureName strin
 }
 
 // UpdateClientAndMembershipProof is a function that generates an update client and membership proof
-func UpdateClientAndMembershipProof(trusted_height, target_height uint64, paths string, args ...string) (*spectreclient.IICS02ClientMsgsHeight, []byte, error) {
+func UpdateClientAndMembershipProof(trusted_height, target_height uint64, paths string, args ...string) (*spectreclient.ICS02ClientMsgsHeight, []byte, error) {
 	args = append([]string{"fixtures", "update-client-and-membership", "--trusted-block", strconv.FormatUint(trusted_height, 10), "--target-block", strconv.FormatUint(target_height, 10), "--key-paths", paths}, args...)
 	isPrivateCluster := os.Getenv(testvalues.EnvKeyNetworkPrivateCluster) == testvalues.EnvValueGroth16Prover_PrivateCluster
 	if isPrivateCluster {
@@ -149,7 +149,7 @@ func UpdateClientAndMembershipProof(trusted_height, target_height uint64, paths 
 		return nil, nil, err
 	}
 
-	heightType, err := abi.NewType("tuple", "IICS02ClientMsgsHeight", []abi.ArgumentMarshaling{
+	heightType, err := abi.NewType("tuple", "ICS02ClientMsgsHeight", []abi.ArgumentMarshaling{
 		{Name: "revisionNumber", Type: "uint64"},
 		{Name: "revisionHeight", Type: "uint64"},
 	})
@@ -167,7 +167,7 @@ func UpdateClientAndMembershipProof(trusted_height, target_height uint64, paths 
 		return nil, nil, err
 	}
 
-	height := abi.ConvertType(heightI[0], new(spectreclient.IICS02ClientMsgsHeight)).(*spectreclient.IICS02ClientMsgsHeight)
+	height := abi.ConvertType(heightI[0], new(spectreclient.ICS02ClientMsgsHeight)).(*spectreclient.ICS02ClientMsgsHeight)
 
 	if height.RevisionHeight != target_height {
 		return nil, nil, errors.New("heights do not match")

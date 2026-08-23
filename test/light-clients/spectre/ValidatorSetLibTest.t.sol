@@ -4,14 +4,14 @@ pragma solidity ^0.8.28;
 import { Test } from "forge-std/Test.sol";
 
 import { ValidatorSetLib } from "contracts/light-clients/spectre/libraries/ValidatorSetLib.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
-import { ISpectreClientErrors } from "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol";
+import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
+import { SpectreClientErrors } from "contracts/light-clients/spectre/errors/SpectreClientErrors.sol";
 import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
 
 contract ValidatorSetLibHarness {
     function buildCache(
         bytes32 validatorsHash,
-        IICS07TendermintMsgs.ValidatorSet memory validatorSet
+        SpectreMsgs.ValidatorSet memory validatorSet
     )
         external
         pure
@@ -40,17 +40,17 @@ contract ValidatorSetLibTest is Test {
     }
 
     function test_readValidatorCacheHeader_rejectsMismatchedValidatorsHash() public {
-        IICS07TendermintMsgs.ValidatorSet memory validatorSet = _validatorSet();
+        SpectreMsgs.ValidatorSet memory validatorSet = _validatorSet();
         bytes32 validatorsHash = Header.hashValSet(validatorSet);
         bytes memory cacheData = h.buildCache(validatorsHash, validatorSet);
         bytes32 wrongHash = bytes32(uint256(validatorsHash) ^ uint256(1));
 
-        vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.CachedValidatorSetCorrupted.selector, wrongHash));
+        vm.expectRevert(abi.encodeWithSelector(SpectreClientErrors.CachedValidatorSetCorrupted.selector, wrongHash));
         h.readValidatorCacheHeader(wrongHash, cacheData);
     }
 
     function test_readValidatorCacheHeader_acceptsMatchingValidatorsHash() public view {
-        IICS07TendermintMsgs.ValidatorSet memory validatorSet = _validatorSet();
+        SpectreMsgs.ValidatorSet memory validatorSet = _validatorSet();
         bytes32 validatorsHash = Header.hashValSet(validatorSet);
         bytes memory cacheData = h.buildCache(validatorsHash, validatorSet);
 
@@ -59,12 +59,12 @@ contract ValidatorSetLibTest is Test {
         assertEq(header.totalVotingPower, 100, "total voting power");
     }
 
-    function _validatorSet() internal pure returns (IICS07TendermintMsgs.ValidatorSet memory vs) {
-        IICS07TendermintMsgs.ValidatorInfo[] memory vals = new IICS07TendermintMsgs.ValidatorInfo[](1);
-        vals[0] = IICS07TendermintMsgs.ValidatorInfo({
+    function _validatorSet() internal pure returns (SpectreMsgs.ValidatorSet memory vs) {
+        SpectreMsgs.ValidatorInfo[] memory vals = new SpectreMsgs.ValidatorInfo[](1);
+        vals[0] = SpectreMsgs.ValidatorInfo({
             valAddress: bytes("validator"), pubKey: bytes32(uint256(1)), votingPower: 100, proposerPriority: 0
         });
-        vs = IICS07TendermintMsgs.ValidatorSet({
+        vs = SpectreMsgs.ValidatorSet({
             validators: vals, hasProposer: false, proposer: vals[0], totalVotingPower: 100
         });
     }

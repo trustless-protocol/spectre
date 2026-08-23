@@ -135,7 +135,7 @@ func buildPacketMessages(packets []chain.RelayPacket) ([]any, error) {
 		ethPkt := services.ToEthPacket(pkt)
 		switch rp.Type {
 		case chain.SendPacket:
-			msgs = append(msgs, contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
+			msgs = append(msgs, contractICS26Router.ICS26RouterMsgsMsgRecvPacket{
 				Packet:        ethPkt,
 				MembershipMsg: rp.Proof,
 			})
@@ -143,13 +143,13 @@ func buildPacketMessages(packets []chain.RelayPacket) ([]any, error) {
 			if len(rp.AckBytes) == 0 {
 				return nil, chain.Permanent(fmt.Errorf("evm: ack packet seq=%d missing acknowledgement bytes", pkt.Sequence))
 			}
-			msgs = append(msgs, contractICS26Router.IICS26RouterMsgsMsgAckPacket{
+			msgs = append(msgs, contractICS26Router.ICS26RouterMsgsMsgAckPacket{
 				Packet:          ethPkt,
 				Acknowledgement: rp.AckBytes[0], // ETH MsgAckPacket takes a single ack
 				MembershipMsg:   rp.Proof,
 			})
 		case chain.TimeoutPacket:
-			msgs = append(msgs, contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket{
+			msgs = append(msgs, contractICS26Router.ICS26RouterMsgsMsgTimeoutPacket{
 				Packet:           ethPkt,
 				NonMembershipMsg: rp.Proof,
 			})

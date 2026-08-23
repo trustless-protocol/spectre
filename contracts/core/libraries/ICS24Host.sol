@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
-import { IICS24HostErrors } from "contracts/core/errors/IICS24HostErrors.sol";
+import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
+import { ICS24HostErrors } from "contracts/core/errors/ICS24HostErrors.sol";
 
 /// @title ICS24 Host Path Generators
 /// @notice ICS24Host is a library that provides commitment path generators for ICS24 host requirements.
@@ -109,7 +109,7 @@ library ICS24Host {
     /// @dev to malleate the packet fields and create a commitment hash that matches the original packet.
     /// @param packet The packet to get the commitment for
     /// @return The commitment bytes
-    function packetCommitmentBytes32(IICS26RouterMsgs.Packet memory packet) internal pure returns (bytes32) {
+    function packetCommitmentBytes32(ICS26RouterMsgs.Packet memory packet) internal pure returns (bytes32) {
         bytes memory appBytes = "";
         for (uint256 i = 0; i < packet.payloads.length; ++i) {
             appBytes = abi.encodePacked(appBytes, hashPayload(packet.payloads[i]));
@@ -128,7 +128,7 @@ library ICS24Host {
     /// @notice Get the commitment hash of a payload
     /// @param data The payload to get the commitment hash for
     /// @return The commitment hash
-    function hashPayload(IICS26RouterMsgs.Payload memory data) private pure returns (bytes32) {
+    function hashPayload(ICS26RouterMsgs.Payload memory data) private pure returns (bytes32) {
         bytes memory buf = abi.encodePacked(
             sha256(bytes(data.sourcePort)),
             sha256(bytes(data.destPort)),
@@ -148,7 +148,7 @@ library ICS24Host {
     /// @param acks The list of acknowledgements to get the commitment for
     /// @return The commitment bytes
     function packetAcknowledgementCommitmentBytes32(bytes[] memory acks) internal pure returns (bytes32) {
-        require(acks.length > 0, IICS24HostErrors.NoAcknowledgements());
+        require(acks.length > 0, ICS24HostErrors.NoAcknowledgements());
         bytes memory ackBytes = "";
         for (uint256 i = 0; i < acks.length; ++i) {
             ackBytes = abi.encodePacked(ackBytes, sha256(acks[i]));
@@ -164,7 +164,7 @@ library ICS24Host {
     /// @dev It is important that this is non-zero to prevent replay attacks.
     /// @param packet The packet to get the receipt commitment for
     /// @return The keccak256 hash of the packet
-    function packetReceiptCommitmentBytes32(IICS26RouterMsgs.Packet memory packet) internal pure returns (bytes32) {
+    function packetReceiptCommitmentBytes32(ICS26RouterMsgs.Packet memory packet) internal pure returns (bytes32) {
         return keccak256(abi.encode(packet));
     }
 
@@ -174,7 +174,7 @@ library ICS24Host {
     /// @param path The path to append
     /// @return The prefixed path
     function prefixedPath(bytes[] memory merklePrefix, bytes memory path) internal pure returns (bytes[] memory) {
-        require(merklePrefix.length > 0, IICS24HostErrors.InvalidMerklePrefix(merklePrefix));
+        require(merklePrefix.length > 0, ICS24HostErrors.InvalidMerklePrefix(merklePrefix));
 
         bytes[] memory result = new bytes[](merklePrefix.length);
         for (uint256 i = 0; i < merklePrefix.length - 1; i++) {

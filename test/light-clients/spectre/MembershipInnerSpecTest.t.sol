@@ -4,13 +4,13 @@ pragma solidity ^0.8.28;
 import { Test } from "forge-std/Test.sol";
 
 import { Membership } from "contracts/light-clients/spectre/modules/Membership.sol";
-import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
+import { MembershipMsgs } from "contracts/light-clients/spectre/messages/MembershipMsgs.sol";
 
 /// @dev Exposes proof validation/root helpers for focused inner-spec regression tests.
 contract MembershipInnerSpecHarness is Membership {
     function exposedCheckExistenceProof(
-        IMembershipMsgs.ExistenceProof memory proof,
-        IMembershipMsgs.ProofSpec memory spec
+        MembershipMsgs.ExistenceProof memory proof,
+        MembershipMsgs.ProofSpec memory spec
     )
         external
         view
@@ -18,11 +18,7 @@ contract MembershipInnerSpecHarness is Membership {
         checkExistenceProof(proof, spec);
     }
 
-    function exposedCalculateExistenceRoot(IMembershipMsgs.ExistenceProof memory proof)
-        external
-        view
-        returns (bytes32)
-    {
+    function exposedCalculateExistenceRoot(MembershipMsgs.ExistenceProof memory proof) external view returns (bytes32) {
         return calculateExistenceRoot(proof);
     }
 }
@@ -35,16 +31,16 @@ contract MembershipInnerSpecTest is Test {
     }
 
     function _singleInnerPath(
-        IMembershipMsgs.HashOp hashOp,
+        MembershipMsgs.HashOp hashOp,
         bytes memory prefix,
         bytes memory suffix
     )
         internal
         pure
-        returns (IMembershipMsgs.InnerOp[] memory)
+        returns (MembershipMsgs.InnerOp[] memory)
     {
-        IMembershipMsgs.InnerOp[] memory path = new IMembershipMsgs.InnerOp[](1);
-        path[0] = IMembershipMsgs.InnerOp({ hashOp: hashOp, prefix: prefix, suffix: suffix });
+        MembershipMsgs.InnerOp[] memory path = new MembershipMsgs.InnerOp[](1);
+        path[0] = MembershipMsgs.InnerOp({ hashOp: hashOp, prefix: prefix, suffix: suffix });
         return path;
     }
 
@@ -54,79 +50,79 @@ contract MembershipInnerSpecTest is Test {
     )
         internal
         pure
-        returns (IMembershipMsgs.ExistenceProof memory)
+        returns (MembershipMsgs.ExistenceProof memory)
     {
-        return IMembershipMsgs.ExistenceProof({
+        return MembershipMsgs.ExistenceProof({
             key: key,
             value: value,
-            leaf: IMembershipMsgs.LeafOp({
-                hashOp: IMembershipMsgs.HashOp.SHA256,
-                prehashKey: IMembershipMsgs.HashOp.NO_HASH,
-                prehashValue: IMembershipMsgs.HashOp.SHA256,
+            leaf: MembershipMsgs.LeafOp({
+                hashOp: MembershipMsgs.HashOp.SHA256,
+                prehashKey: MembershipMsgs.HashOp.NO_HASH,
+                prehashValue: MembershipMsgs.HashOp.SHA256,
                 prefix: hex"000000"
             }),
-            path: new IMembershipMsgs.InnerOp[](0)
+            path: new MembershipMsgs.InnerOp[](0)
         });
     }
 
     function _tendermintProof(
         bytes memory key,
         bytes memory value,
-        IMembershipMsgs.InnerOp[] memory path
+        MembershipMsgs.InnerOp[] memory path
     )
         internal
         pure
-        returns (IMembershipMsgs.ExistenceProof memory)
+        returns (MembershipMsgs.ExistenceProof memory)
     {
-        return IMembershipMsgs.ExistenceProof({
+        return MembershipMsgs.ExistenceProof({
             key: key,
             value: value,
-            leaf: IMembershipMsgs.LeafOp({
-                hashOp: IMembershipMsgs.HashOp.SHA256,
-                prehashKey: IMembershipMsgs.HashOp.NO_HASH,
-                prehashValue: IMembershipMsgs.HashOp.SHA256,
+            leaf: MembershipMsgs.LeafOp({
+                hashOp: MembershipMsgs.HashOp.SHA256,
+                prehashKey: MembershipMsgs.HashOp.NO_HASH,
+                prehashValue: MembershipMsgs.HashOp.SHA256,
                 prefix: hex"00"
             }),
             path: path
         });
     }
 
-    function _kvPairs(bytes memory ibcKey, bytes memory value) internal pure returns (IMembershipMsgs.KVPair[] memory) {
+    function _kvPairs(bytes memory ibcKey, bytes memory value) internal pure returns (MembershipMsgs.KVPair[] memory) {
         bytes[] memory path = new bytes[](2);
         path[0] = bytes("ibc");
         path[1] = ibcKey;
 
-        IMembershipMsgs.KVPair[] memory kvs = new IMembershipMsgs.KVPair[](1);
-        kvs[0] = IMembershipMsgs.KVPair({ path: path, value: value });
+        MembershipMsgs.KVPair[] memory kvs = new MembershipMsgs.KVPair[](1);
+        kvs[0] = MembershipMsgs.KVPair({ path: path, value: value });
         return kvs;
     }
 
     function _merkleProofs(
-        IMembershipMsgs.ExistenceProof memory iavlProof,
-        IMembershipMsgs.ExistenceProof memory tendermintProof
+        MembershipMsgs.ExistenceProof memory iavlProof,
+        MembershipMsgs.ExistenceProof memory tendermintProof
     )
         internal
         pure
-        returns (IMembershipMsgs.MerkleProof[] memory)
+        returns (MembershipMsgs.MerkleProof[] memory)
     {
-        IMembershipMsgs.CommitmentProof[] memory proofs = new IMembershipMsgs.CommitmentProof[](2);
-        proofs[0].proofType = IMembershipMsgs.ProofType.EXIST;
+        MembershipMsgs.CommitmentProof[] memory proofs = new MembershipMsgs.CommitmentProof[](2);
+        proofs[0].proofType = MembershipMsgs.ProofType.EXIST;
         proofs[0].existenceProof = iavlProof;
-        proofs[1].proofType = IMembershipMsgs.ProofType.EXIST;
+        proofs[1].proofType = MembershipMsgs.ProofType.EXIST;
         proofs[1].existenceProof = tendermintProof;
 
-        IMembershipMsgs.MerkleProof[] memory merkleProofs = new IMembershipMsgs.MerkleProof[](1);
-        merkleProofs[0] = IMembershipMsgs.MerkleProof({ proofs: proofs });
+        MembershipMsgs.MerkleProof[] memory merkleProofs = new MembershipMsgs.MerkleProof[](1);
+        merkleProofs[0] = MembershipMsgs.MerkleProof({ proofs: proofs });
         return merkleProofs;
     }
 
     function test_checkExistenceProof_rejectsTendermintNoHashInnerOp() public {
         bytes32 appHash = bytes32(uint256(0xABCD));
-        IMembershipMsgs.ProofSpec memory spec = m.tendermintSpec();
-        IMembershipMsgs.ExistenceProof memory proof = _tendermintProof(
+        MembershipMsgs.ProofSpec memory spec = m.tendermintSpec();
+        MembershipMsgs.ExistenceProof memory proof = _tendermintProof(
             bytes("ibc"),
             abi.encodePacked(bytes32(uint256(0xCAFE))),
-            _singleInnerPath(IMembershipMsgs.HashOp.NO_HASH, abi.encodePacked(appHash), "")
+            _singleInnerPath(MembershipMsgs.HashOp.NO_HASH, abi.encodePacked(appHash), "")
         );
 
         vm.expectRevert(Membership.UnexpectedInnerHashOp.selector);
@@ -138,12 +134,12 @@ contract MembershipInnerSpecTest is Test {
         bytes memory commitmentValue = abi.encodePacked(bytes32(uint256(0xCAFE)));
         bytes32 appHash = bytes32(uint256(0xABCD));
 
-        IMembershipMsgs.ExistenceProof memory iavlProof = _iavlProof(ibcKey, commitmentValue);
+        MembershipMsgs.ExistenceProof memory iavlProof = _iavlProof(ibcKey, commitmentValue);
         bytes32 fakeIbcRoot = m.exposedCalculateExistenceRoot(iavlProof);
-        IMembershipMsgs.ExistenceProof memory tendermintProof = _tendermintProof(
+        MembershipMsgs.ExistenceProof memory tendermintProof = _tendermintProof(
             bytes("ibc"),
             abi.encodePacked(fakeIbcRoot),
-            _singleInnerPath(IMembershipMsgs.HashOp.NO_HASH, abi.encodePacked(appHash), "")
+            _singleInnerPath(MembershipMsgs.HashOp.NO_HASH, abi.encodePacked(appHash), "")
         );
 
         vm.expectRevert(Membership.UnexpectedInnerHashOp.selector);
@@ -154,12 +150,12 @@ contract MembershipInnerSpecTest is Test {
         bytes memory ibcKey = bytes("commitments/real");
         bytes memory commitmentValue = abi.encodePacked(bytes32(uint256(0xBEEF)));
 
-        IMembershipMsgs.ExistenceProof memory iavlProof = _iavlProof(ibcKey, commitmentValue);
+        MembershipMsgs.ExistenceProof memory iavlProof = _iavlProof(ibcKey, commitmentValue);
         bytes32 fakeIbcRoot = m.exposedCalculateExistenceRoot(iavlProof);
-        IMembershipMsgs.ExistenceProof memory tendermintProof = _tendermintProof(
+        MembershipMsgs.ExistenceProof memory tendermintProof = _tendermintProof(
             bytes("ibc"),
             abi.encodePacked(fakeIbcRoot),
-            _singleInnerPath(IMembershipMsgs.HashOp.SHA256, hex"01", abi.encodePacked(bytes32(uint256(0x1234))))
+            _singleInnerPath(MembershipMsgs.HashOp.SHA256, hex"01", abi.encodePacked(bytes32(uint256(0x1234))))
         );
         bytes32 appHash = m.exposedCalculateExistenceRoot(tendermintProof);
 

@@ -13,9 +13,9 @@ import (
 // including the big.Int proof fields, across the opaque []byte boundary.
 func TestCosmosUpdate_GobRoundTrip(t *testing.T) {
 	const kindConsensusUpdate = 1 // services.ConsensusUpdate
-	appMsg := updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState{
+	appMsg := updateclientContract.SpectreClientMsgsMsgUpdateApplicationState{
 		Time: big.NewInt(1_700_000_000),
-		Proof: updateclientContract.ISpectreClientMsgsBatchProof{
+		Proof: updateclientContract.SpectreClientMsgsBatchProof{
 			Proof:                  [8]*big.Int{big.NewInt(1), big.NewInt(2), big.NewInt(3), big.NewInt(4), big.NewInt(5), big.NewInt(6), big.NewInt(7), big.NewInt(8)},
 			Commitments:            [2]*big.Int{big.NewInt(9), big.NewInt(10)},
 			CommitmentPok:          [2]*big.Int{big.NewInt(11), big.NewInt(12)},
@@ -26,7 +26,7 @@ func TestCosmosUpdate_GobRoundTrip(t *testing.T) {
 			Active:                 []bool{true, true, true, false},
 		},
 	}
-	newValSet := spectreContract.IICS07TendermintMsgsValidatorSet{TotalVotingPower: 42}
+	newValSet := spectreContract.SpectreMsgsValidatorSet{TotalVotingPower: 42}
 
 	payload, err := EncodeCosmosUpdate(kindConsensusUpdate, appMsg, newValSet)
 	if err != nil {

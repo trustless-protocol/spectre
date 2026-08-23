@@ -59,6 +59,14 @@ if python3 scripts/solidity-refactor/check_compatibility.py --verifier-manifest 
 fi
 echo "negative case rejected: verifier-provenance"
 
+jq '.generated_digests["abi/ICS26Router.json"] = "drift"' \
+  scripts/solidity-refactor/tooling-rename-manifest.json > "$tmp_dir/tooling-renames.json"
+if python3 scripts/solidity-refactor/check_compatibility.py --tooling-rename-manifest "$tmp_dir/tooling-renames.json" >/dev/null 2>&1; then
+  echo "negative case unexpectedly passed: tooling-rename-digest" >&2
+  exit 1
+fi
+echo "negative case rejected: tooling-rename-digest"
+
 jq '.entries[0].target = "contracts/missing/Owned.sol"' \
   scripts/solidity-refactor/ownership-manifest.json > "$tmp_dir/ownership.json"
 if python3 scripts/solidity-refactor/check_architecture.py --manifest "$tmp_dir/ownership.json" >/dev/null 2>&1; then

@@ -15,15 +15,15 @@ import { SpectreClient } from "contracts/light-clients/spectre/SpectreClient.sol
 import { Membership } from "contracts/light-clients/spectre/modules/Membership.sol";
 import { Misbehaviour } from "contracts/light-clients/spectre/modules/Misbehaviour.sol";
 import { UpdateClient } from "contracts/light-clients/spectre/modules/UpdateClient.sol";
-import { ClientMigrationProposer } from "contracts/core/client/migration/modules/ClientMigrationProposer.sol";
-import { ClientMigrationExecutor } from "contracts/core/client/migration/modules/ClientMigrationExecutor.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
-import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
-import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
-import { IICS20TransferMsgs } from "contracts/apps/ics20/messages/IICS20TransferMsgs.sol";
+import { ClientMigrationProposer } from "contracts/core/client-registry/migration/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "contracts/core/client-registry/migration/modules/ClientMigrationExecutor.sol";
+import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
+import { MembershipMsgs } from "contracts/light-clients/spectre/messages/MembershipMsgs.sol";
+import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { ICS20TransferMsgs } from "contracts/apps/ics20/messages/ICS20TransferMsgs.sol";
 import { IICS26Router } from "contracts/core/interfaces/IICS26Router.sol";
-import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
-import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
+import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
+import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
 import { Groth16Verifier_N4 } from "contracts/verifiers/Groth16Verifier_N4.sol";
 import { IBCERC20 } from "contracts/apps/ics20/IBCERC20.sol";
 import { Escrow } from "contracts/apps/ics20/Escrow.sol";
@@ -89,10 +89,10 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         cosmosMerklePrefix[0] = bytes("ibc");
         cosmosMerklePrefix[1] = bytes("");
 
-        DummyLightClient lightClient = new DummyLightClient(ILightClientMsgs.UpdateResult.Update, 0, false);
+        DummyLightClient lightClient = new DummyLightClient(LightClientMsgs.UpdateResult.Update, 0, false);
         router.addClient(
             SOURCE_CLIENT_ID,
-            IICS02ClientMsgs.CounterpartyInfo({ clientId: COUNTERPARTY_CLIENT_ID, merklePrefix: cosmosMerklePrefix }),
+            ICS02ClientMsgs.CounterpartyInfo({ clientId: COUNTERPARTY_CLIENT_ID, merklePrefix: cosmosMerklePrefix }),
             address(lightClient)
         );
         router.addIBCApp(ICS20Lib.DEFAULT_PORT_ID, address(transfer));
@@ -107,7 +107,7 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         token.approve(address(transfer), SEND_AMOUNT);
         vm.recordLogs();
         uint64 sequence = transfer.sendTransfer(
-            IICS20TransferMsgs.SendTransferMsg({
+            ICS20TransferMsgs.SendTransferMsg({
                 denom: address(token),
                 amount: SEND_AMOUNT,
                 receiver: cosmosReceiver,
@@ -121,7 +121,7 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
 
         assertEq(sequence, 1);
 
-        IICS26RouterMsgs.Packet memory packet = _getPacketFromSendEvent();
+        ICS26RouterMsgs.Packet memory packet = _getPacketFromSendEvent();
         assertEq(packet.sequence, sequence);
         assertEq(packet.sourceClient, SOURCE_CLIENT_ID);
         assertEq(packet.destClient, COUNTERPARTY_CLIENT_ID);
@@ -132,8 +132,8 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         assertEq(packet.payloads[0].version, ICS20Lib.ICS20_VERSION);
         assertEq(packet.payloads[0].encoding, ICS20Lib.ICS20_ENCODING);
 
-        IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
-            abi.decode(packet.payloads[0].value, (IICS20TransferMsgs.FungibleTokenPacketData));
+        ICS20TransferMsgs.FungibleTokenPacketData memory packetData =
+            abi.decode(packet.payloads[0].value, (ICS20TransferMsgs.FungibleTokenPacketData));
         assertEq(packetData.denom, Strings.toHexString(address(token)));
         assertEq(packetData.sender, Strings.toHexString(user));
         assertEq(packetData.receiver, cosmosReceiver);
@@ -149,7 +149,7 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         vm.chainId(REPRESENTATIVE_EVM_ROLLUP_CHAIN_ID);
 
         CoreDeployment memory core = _deployCore(false);
-        DummyLightClient lightClient = new DummyLightClient(ILightClientMsgs.UpdateResult.Update, 0, false);
+        DummyLightClient lightClient = new DummyLightClient(LightClientMsgs.UpdateResult.Update, 0, false);
         _configureSourceClient(core, address(lightClient));
 
         TestERC20 token = new TestERC20();
@@ -162,7 +162,7 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         vm.recordLogs();
         uint64 sequence = core.transfer
             .sendTransfer(
-                IICS20TransferMsgs.SendTransferMsg({
+                ICS20TransferMsgs.SendTransferMsg({
                     denom: address(token),
                     amount: SEND_AMOUNT,
                     receiver: cosmosReceiver,
@@ -174,14 +174,14 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
             );
         vm.stopPrank();
 
-        IICS26RouterMsgs.Packet memory packet = _getPacketFromSendEvent();
+        ICS26RouterMsgs.Packet memory packet = _getPacketFromSendEvent();
         assertEq(
             core.helper.queryPacketCommitment(SOURCE_CLIENT_ID, sequence), ICS24Host.packetCommitmentBytes32(packet)
         );
 
         core.router
             .ackPacket(
-                IICS26RouterMsgs.MsgAckPacket({
+                ICS26RouterMsgs.MsgAckPacket({
                     packet: packet,
                     acknowledgement: ICS20Lib.SUCCESSFUL_ACKNOWLEDGEMENT_JSON,
                     membershipMsg: _dummyMembershipMsg()
@@ -205,9 +205,9 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         Membership membership = new Membership();
         UpdateClient updateClient = new UpdateClient(address(signatureVerifier));
         Misbehaviour misbehaviour = new Misbehaviour(address(signatureVerifier));
-        IICS07TendermintMsgs.ValidatorSet memory validatorSet = _validatorSet();
-        IICS07TendermintMsgs.ConsensusState memory consensusState = _consensusState(validatorSet);
-        IICS07TendermintMsgs.ClientState memory clientState = _clientState();
+        SpectreMsgs.ValidatorSet memory validatorSet = _validatorSet();
+        SpectreMsgs.ConsensusState memory consensusState = _consensusState(validatorSet);
+        SpectreMsgs.ClientState memory clientState = _clientState();
 
         SpectreClient spectreClient = new SpectreClient(
             address(updateClient),
@@ -235,7 +235,7 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         assertEq(address(core.router.getClient(SOURCE_CLIENT_ID)), address(spectreClient));
         assertEq(address(core.router.getIBCApp(ICS20Lib.DEFAULT_PORT_ID)), address(core.transfer));
 
-        IICS02ClientMsgs.CounterpartyInfo memory counterparty = core.router.getCounterparty(SOURCE_CLIENT_ID);
+        ICS02ClientMsgs.CounterpartyInfo memory counterparty = core.router.getCounterparty(SOURCE_CLIENT_ID);
         assertEq(counterparty.clientId, COUNTERPARTY_CLIENT_ID);
         assertEq(counterparty.merklePrefix.length, 2);
         assertEq(counterparty.merklePrefix[0], bytes("ibc"));
@@ -246,14 +246,14 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         vm.chainId(REPRESENTATIVE_EVM_ROLLUP_CHAIN_ID);
 
         CoreDeployment memory core = _deployCore(false);
-        DummyLightClient lightClient = new DummyLightClient(ILightClientMsgs.UpdateResult.Update, 0, false);
+        DummyLightClient lightClient = new DummyLightClient(LightClientMsgs.UpdateResult.Update, 0, false);
         _configureSourceClient(core, address(lightClient));
 
         address receiver = makeAddr("evmRollupReceiver");
         uint256 amount = 2 ether;
-        IICS26RouterMsgs.Packet memory packet = _cosmosToEVMRollupPacket(receiver, amount);
+        ICS26RouterMsgs.Packet memory packet = _cosmosToEVMRollupPacket(receiver, amount);
 
-        core.router.recvPacket(IICS26RouterMsgs.MsgRecvPacket({ packet: packet, membershipMsg: _dummyMembershipMsg() }));
+        core.router.recvPacket(ICS26RouterMsgs.MsgRecvPacket({ packet: packet, membershipMsg: _dummyMembershipMsg() }));
 
         string memory fullDenomPath = string.concat(ICS20Lib.DEFAULT_PORT_ID, "/", SOURCE_CLIENT_ID, "/uatom");
         address ibcToken = core.transfer.ibcERC20Contract(fullDenomPath);
@@ -274,12 +274,12 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         assertTrue(core.helper.isPacketReceiveSuccessful(packet));
     }
 
-    function _getPacketFromSendEvent() private returns (IICS26RouterMsgs.Packet memory) {
+    function _getPacketFromSendEvent() private returns (ICS26RouterMsgs.Packet memory) {
         Vm.Log[] memory logs = vm.getRecordedLogs();
         for (uint256 i = 0; i < logs.length; ++i) {
             for (uint256 j = 0; j < logs[i].topics.length; ++j) {
                 if (logs[i].topics[j] == IICS26Router.SendPacket.selector) {
-                    return abi.decode(logs[i].data, (IICS26RouterMsgs.Packet));
+                    return abi.decode(logs[i].data, (ICS26RouterMsgs.Packet));
                 }
             }
         }
@@ -332,7 +332,7 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         core.router
             .addClient(
                 SOURCE_CLIENT_ID,
-                IICS02ClientMsgs.CounterpartyInfo({
+                ICS02ClientMsgs.CounterpartyInfo({
                     clientId: COUNTERPARTY_CLIENT_ID, merklePrefix: cosmosMerklePrefix
                 }),
                 lightClient
@@ -340,11 +340,11 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         core.router.addIBCApp(ICS20Lib.DEFAULT_PORT_ID, address(core.transfer));
     }
 
-    function _clientState() private pure returns (IICS07TendermintMsgs.ClientState memory) {
-        return IICS07TendermintMsgs.ClientState({
+    function _clientState() private pure returns (SpectreMsgs.ClientState memory) {
+        return SpectreMsgs.ClientState({
             chainId: "cosmoshub-0",
-            trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
-            latestHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 10 }),
+            trustLevel: SpectreMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
+            latestHeight: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 10 }),
             trustingPeriod: 14 days,
             unbondingPeriod: 21 days,
             isFrozen: false,
@@ -352,20 +352,20 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         });
     }
 
-    function _consensusState(IICS07TendermintMsgs.ValidatorSet memory validatorSet)
+    function _consensusState(SpectreMsgs.ValidatorSet memory validatorSet)
         private
         view
-        returns (IICS07TendermintMsgs.ConsensusState memory)
+        returns (SpectreMsgs.ConsensusState memory)
     {
-        return IICS07TendermintMsgs.ConsensusState({
+        return SpectreMsgs.ConsensusState({
             timestamp: uint128(block.timestamp) * 1_000_000_000,
             root: bytes32(uint256(0xAAA)),
             nextValidatorsHash: Header.hashValSet(validatorSet)
         });
     }
 
-    function _validatorSet() private pure returns (IICS07TendermintMsgs.ValidatorSet memory validatorSet) {
-        validatorSet.validators = new IICS07TendermintMsgs.ValidatorInfo[](4);
+    function _validatorSet() private pure returns (SpectreMsgs.ValidatorSet memory validatorSet) {
+        validatorSet.validators = new SpectreMsgs.ValidatorInfo[](4);
         validatorSet.validators[0] = _validator(
             hex"0000000000000000000000000000000000000001",
             0x0000000000000000000000000000000000000000000000000000000000000001
@@ -391,11 +391,10 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
     )
         private
         pure
-        returns (IICS07TendermintMsgs.ValidatorInfo memory)
+        returns (SpectreMsgs.ValidatorInfo memory)
     {
-        return IICS07TendermintMsgs.ValidatorInfo({
-            valAddress: valAddress, pubKey: pubKey, votingPower: 100, proposerPriority: 0
-        });
+        return
+            SpectreMsgs.ValidatorInfo({ valAddress: valAddress, pubKey: pubKey, votingPower: 100, proposerPriority: 0 });
     }
 
     function _cosmosToEVMRollupPacket(
@@ -404,16 +403,16 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
     )
         private
         view
-        returns (IICS26RouterMsgs.Packet memory packet)
+        returns (ICS26RouterMsgs.Packet memory packet)
     {
-        IICS26RouterMsgs.Payload[] memory payloads = new IICS26RouterMsgs.Payload[](1);
-        payloads[0] = IICS26RouterMsgs.Payload({
+        ICS26RouterMsgs.Payload[] memory payloads = new ICS26RouterMsgs.Payload[](1);
+        payloads[0] = ICS26RouterMsgs.Payload({
             sourcePort: ICS20Lib.DEFAULT_PORT_ID,
             destPort: ICS20Lib.DEFAULT_PORT_ID,
             version: ICS20Lib.ICS20_VERSION,
             encoding: ICS20Lib.ICS20_ENCODING,
             value: abi.encode(
-                IICS20TransferMsgs.FungibleTokenPacketData({
+                ICS20TransferMsgs.FungibleTokenPacketData({
                     denom: "uatom",
                     sender: "cosmos1sender0000000000000000000000000000000000",
                     receiver: Strings.toHexString(receiver),
@@ -423,7 +422,7 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
             )
         });
 
-        packet = IICS26RouterMsgs.Packet({
+        packet = ICS26RouterMsgs.Packet({
             sequence: 1,
             sourceClient: COUNTERPARTY_CLIENT_ID,
             destClient: SOURCE_CLIENT_ID,
@@ -433,15 +432,15 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
     }
 
     function _dummyMembershipMsg() private pure returns (bytes memory) {
-        ILightClientMsgs.MsgVerifyMembership memory membershipMsg = ILightClientMsgs.MsgVerifyMembership({
-            height: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 1 }),
-            kvPairs: new IMembershipMsgs.KVPair[](0),
-            merkleProofs: new IMembershipMsgs.MerkleProof[](0),
+        LightClientMsgs.MsgVerifyMembership memory membershipMsg = LightClientMsgs.MsgVerifyMembership({
+            height: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 1 }),
+            kvPairs: new MembershipMsgs.KVPair[](0),
+            merkleProofs: new MembershipMsgs.MerkleProof[](0),
             appHash: bytes32(0),
-            trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+            trustedConsensusState: SpectreMsgs.ConsensusState({
                 timestamp: 0, root: bytes32(0), nextValidatorsHash: bytes32(0)
             }),
-            membershipType: IMembershipMsgs.MembershipType.Membership,
+            membershipType: MembershipMsgs.MembershipType.Membership,
             path: new bytes[](0),
             value: bytes("")
         });

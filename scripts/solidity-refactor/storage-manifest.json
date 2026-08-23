@@ -14,7 +14,7 @@
     },
     {
       "name": "ICS02Client",
-      "source": "contracts/core/client/ICS02ClientStore.sol",
+      "source": "contracts/core/client-registry/ICS02ClientStore.sol",
       "baseline_source": "contracts/utils/ICS02ClientStore.sol",
       "structs": [
         "ClientMigration",

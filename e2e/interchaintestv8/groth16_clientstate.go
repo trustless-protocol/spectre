@@ -15,18 +15,18 @@ import (
 // These helpers decode those bytes into a struct so the e2e suites can assert on
 // individual fields, mirroring relayer/client.DecodeClientState.
 
-// groth16TrustLevel mirrors IICS07TendermintMsgs.TrustThreshold.
+// groth16TrustLevel mirrors SpectreMsgs.TrustThreshold.
 type groth16TrustLevel struct {
 	Numerator   uint8
 	Denominator uint8
 }
 
-// groth16ClientState mirrors the IICS07TendermintMsgs.ClientState tuple returned
+// groth16ClientState mirrors the SpectreMsgs.ClientState tuple returned
 // (ABI-encoded) by SpectreClient.getClientState().
 type groth16ClientState struct {
 	ChainId         string
 	TrustLevel      groth16TrustLevel
-	LatestHeight    spectreclient.IICS02ClientMsgsHeight
+	LatestHeight    spectreclient.ICS02ClientMsgsHeight
 	TrustingPeriod  uint32
 	UnbondingPeriod uint32
 	IsFrozen        bool

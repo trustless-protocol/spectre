@@ -396,8 +396,8 @@ func (w *Worker) BuildCosmosMisbehaviour(
 		return PreparedCosmosMisbehaviour{}, fmt.Errorf("submit misbehaviour: proof2 metadata: %w", err)
 	}
 
-	msg := misbehaviourContract.ISpectreClientMsgsMsgSubmitMisbehaviour{
-		Misbehaviour: misbehaviourContract.ISpectreClientMsgsMisbehaviour{
+	msg := misbehaviourContract.SpectreClientMsgsMsgSubmitMisbehaviour{
+		Misbehaviour: misbehaviourContract.SpectreClientMsgsMisbehaviour{
 			Header1: header1,
 			Header2: header2,
 		},
@@ -422,19 +422,19 @@ func (w *Worker) BuildCosmosMisbehaviour(
 func lightBlockToMisbehaviourHeader(
 	lightBlock *relayerclient.LightBlock,
 	trustedLightBlock *relayerclient.LightBlock,
-) (misbehaviourContract.IICS07TendermintMsgsHeader, error) {
+) (misbehaviourContract.SpectreMsgsHeader, error) {
 	updateHeader, err := lightBlock.IntoHeader(*trustedLightBlock)
 	if err != nil {
-		return misbehaviourContract.IICS07TendermintMsgsHeader{}, err
+		return misbehaviourContract.SpectreMsgsHeader{}, err
 	}
 	return updateHeaderToMisbehaviourHeader(updateHeader), nil
 }
 
-func misbehaviourConsensusState(lightBlock *relayerclient.LightBlock) (misbehaviourContract.IICS07TendermintMsgsConsensusState, error) {
+func misbehaviourConsensusState(lightBlock *relayerclient.LightBlock) (misbehaviourContract.SpectreMsgsConsensusState, error) {
 	if lightBlock == nil || lightBlock.SignedHeader.Header == nil {
-		return misbehaviourContract.IICS07TendermintMsgsConsensusState{}, fmt.Errorf("missing light block header")
+		return misbehaviourContract.SpectreMsgsConsensusState{}, fmt.Errorf("missing light block header")
 	}
-	return misbehaviourContract.IICS07TendermintMsgsConsensusState{
+	return misbehaviourContract.SpectreMsgsConsensusState{
 		Timestamp:          big.NewInt(lightBlock.SignedHeader.Header.Time.UnixNano()),
 		Root:               bytesToBytes32(lightBlock.SignedHeader.Header.AppHash),
 		NextValidatorsHash: bytesToBytes32(lightBlock.SignedHeader.NextValidatorsHash),
@@ -444,12 +444,12 @@ func misbehaviourConsensusState(lightBlock *relayerclient.LightBlock) (misbehavi
 func misbehaviourBatchProof(
 	headerProof prover.HeaderBatchProof,
 	pinnedSet pinnedCosmosValidatorSet,
-) (misbehaviourContract.ISpectreClientMsgsBatchProof, error) {
+) (misbehaviourContract.SpectreClientMsgsBatchProof, error) {
 	if headerProof.Bucket <= 0 {
-		return misbehaviourContract.ISpectreClientMsgsBatchProof{}, fmt.Errorf("invalid bucket %d", headerProof.Bucket)
+		return misbehaviourContract.SpectreClientMsgsBatchProof{}, fmt.Errorf("invalid bucket %d", headerProof.Bucket)
 	}
 	if len(headerProof.PaddedSigs) != headerProof.Bucket {
-		return misbehaviourContract.ISpectreClientMsgsBatchProof{}, fmt.Errorf(
+		return misbehaviourContract.SpectreClientMsgsBatchProof{}, fmt.Errorf(
 			"padded signature count %d does not match bucket %d", len(headerProof.PaddedSigs), headerProof.Bucket)
 	}
 
@@ -464,7 +464,7 @@ func misbehaviourBatchProof(
 		if sig.Active {
 			pinnedIdx, ok := pinnedIndexByPubkey[pubkey]
 			if !ok {
-				return misbehaviourContract.ISpectreClientMsgsBatchProof{}, fmt.Errorf("active signer at slot %d is not in pinned validator set", i)
+				return misbehaviourContract.SpectreClientMsgsBatchProof{}, fmt.Errorf("active signer at slot %d is not in pinned validator set", i)
 			}
 			pinnedValidatorIndices[i] = pinnedIdx
 		}
@@ -472,7 +472,7 @@ func misbehaviourBatchProof(
 		active[i] = sig.Active
 	}
 
-	return misbehaviourContract.ISpectreClientMsgsBatchProof{
+	return misbehaviourContract.SpectreClientMsgsBatchProof{
 		Proof:                  headerProof.Proof,
 		Commitments:            headerProof.Commitments,
 		CommitmentPok:          headerProof.CommitmentPok,
@@ -491,22 +491,22 @@ func maxInt(value, minimum int) int {
 	return value
 }
 
-func updateHeaderToMisbehaviourHeader(h updateclientContract.IICS07TendermintMsgsHeader) misbehaviourContract.IICS07TendermintMsgsHeader {
-	return misbehaviourContract.IICS07TendermintMsgsHeader{
-		SignedHeader: misbehaviourContract.IICS07TendermintMsgsSignedHeader{
+func updateHeaderToMisbehaviourHeader(h updateclientContract.SpectreMsgsHeader) misbehaviourContract.SpectreMsgsHeader {
+	return misbehaviourContract.SpectreMsgsHeader{
+		SignedHeader: misbehaviourContract.SpectreMsgsSignedHeader{
 			Header: updateBlockHeaderToMisbehaviour(h.SignedHeader.Header),
 			Commit: updateCommitToMisbehaviour(h.SignedHeader.Commit),
 		},
-		TrustedHeight: misbehaviourContract.IICS02ClientMsgsHeight{
+		TrustedHeight: misbehaviourContract.ICS02ClientMsgsHeight{
 			RevisionNumber: h.TrustedHeight.RevisionNumber,
 			RevisionHeight: h.TrustedHeight.RevisionHeight,
 		},
 	}
 }
 
-func updateBlockHeaderToMisbehaviour(h updateclientContract.IICS07TendermintMsgsBlockHeader) misbehaviourContract.IICS07TendermintMsgsBlockHeader {
-	return misbehaviourContract.IICS07TendermintMsgsBlockHeader{
-		Version: misbehaviourContract.IICS07TendermintMsgsVersion{
+func updateBlockHeaderToMisbehaviour(h updateclientContract.SpectreMsgsBlockHeader) misbehaviourContract.SpectreMsgsBlockHeader {
+	return misbehaviourContract.SpectreMsgsBlockHeader{
+		Version: misbehaviourContract.SpectreMsgsVersion{
 			BlockVersion: h.Version.BlockVersion,
 			AppVersion:   h.Version.AppVersion,
 		},
@@ -531,15 +531,15 @@ func updateBlockHeaderToMisbehaviour(h updateclientContract.IICS07TendermintMsgs
 	}
 }
 
-func updateCommitToMisbehaviour(c updateclientContract.IICS07TendermintMsgsBlockCommit) misbehaviourContract.IICS07TendermintMsgsBlockCommit {
-	sigs := make([]misbehaviourContract.IICS07TendermintMsgsCommitSig, len(c.CommitSigs))
+func updateCommitToMisbehaviour(c updateclientContract.SpectreMsgsBlockCommit) misbehaviourContract.SpectreMsgsBlockCommit {
+	sigs := make([]misbehaviourContract.SpectreMsgsCommitSig, len(c.CommitSigs))
 	for i, sig := range c.CommitSigs {
-		sigs[i] = misbehaviourContract.IICS07TendermintMsgsCommitSig{
+		sigs[i] = misbehaviourContract.SpectreMsgsCommitSig{
 			Flag:             sig.Flag,
 			ValidatorAddress: sig.ValidatorAddress,
 		}
 	}
-	return misbehaviourContract.IICS07TendermintMsgsBlockCommit{
+	return misbehaviourContract.SpectreMsgsBlockCommit{
 		Height:     c.Height,
 		Round:      c.Round,
 		BlockId:    updateBlockIDToMisbehaviour(c.BlockId),
@@ -547,10 +547,10 @@ func updateCommitToMisbehaviour(c updateclientContract.IICS07TendermintMsgsBlock
 	}
 }
 
-func updateBlockIDToMisbehaviour(id updateclientContract.IICS07TendermintMsgsBlockId) misbehaviourContract.IICS07TendermintMsgsBlockId {
-	return misbehaviourContract.IICS07TendermintMsgsBlockId{
+func updateBlockIDToMisbehaviour(id updateclientContract.SpectreMsgsBlockId) misbehaviourContract.SpectreMsgsBlockId {
+	return misbehaviourContract.SpectreMsgsBlockId{
 		HashData: id.HashData,
-		PartSetHeader: misbehaviourContract.IICS07TendermintMsgsPartSetHeader{
+		PartSetHeader: misbehaviourContract.SpectreMsgsPartSetHeader{
 			Total:    id.PartSetHeader.Total,
 			HashData: id.PartSetHeader.HashData,
 		},

@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import { Test } from "forge-std/Test.sol";
 
 import { ChainId } from "contracts/light-clients/spectre/libraries/ChainId.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
 
 /// @notice Unit tests for the extracted `ChainId.get(...)` parser.
 /// @dev Mirrors the legacy `getChainId` behaviour that lived inline in
@@ -13,52 +13,52 @@ import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/I
 contract ChainIdTest is Test {
     // Helper — exposes `ChainId.get` via the test contract so the call is a
     // single internal-library call that Foundry can measure.
-    function _get(string memory id) internal pure returns (IICS07TendermintMsgs.ChainId memory) {
+    function _get(string memory id) internal pure returns (SpectreMsgs.ChainId memory) {
         return ChainId.get(id);
     }
 
     function test_cosmoshub_4() public pure {
-        IICS07TendermintMsgs.ChainId memory c = _get("cosmoshub-4");
+        SpectreMsgs.ChainId memory c = _get("cosmoshub-4");
         assertEq(c.id, "cosmoshub-4");
         assertEq(uint256(c.revisionNumber), 4);
     }
 
     function test_largeRevision() public pure {
         // u64 max = 18446744073709551615
-        IICS07TendermintMsgs.ChainId memory c = _get("chain-18446744073709551615");
+        SpectreMsgs.ChainId memory c = _get("chain-18446744073709551615");
         assertEq(uint256(c.revisionNumber), type(uint64).max);
     }
 
     function test_overflowRevision_returnsZero() public pure {
         // u64 max + 1
-        IICS07TendermintMsgs.ChainId memory c = _get("chain-18446744073709551616");
+        SpectreMsgs.ChainId memory c = _get("chain-18446744073709551616");
         assertEq(uint256(c.revisionNumber), 0);
     }
 
     function test_singleZeroRevision_allowed() public pure {
-        IICS07TendermintMsgs.ChainId memory c = _get("chain-0");
+        SpectreMsgs.ChainId memory c = _get("chain-0");
         assertEq(uint256(c.revisionNumber), 0);
     }
 
     function test_leadingZeroRevision_returnsZero() public pure {
-        IICS07TendermintMsgs.ChainId memory c = _get("chain-01");
+        SpectreMsgs.ChainId memory c = _get("chain-01");
         assertEq(uint256(c.revisionNumber), 0);
     }
 
     function test_nonDigitSuffix_returnsZero() public pure {
         // "test-ibc-eth" — last segment "eth" is non-digit, treated as no revision.
-        IICS07TendermintMsgs.ChainId memory c = _get("test-ibc-eth");
+        SpectreMsgs.ChainId memory c = _get("test-ibc-eth");
         assertEq(uint256(c.revisionNumber), 0);
     }
 
     function test_multiDashChain_usesLastDash() public pure {
         // last '-' is before "7"; prefix length = 8 ("test-ibc") which is in range.
-        IICS07TendermintMsgs.ChainId memory c = _get("test-ibc-7");
+        SpectreMsgs.ChainId memory c = _get("test-ibc-7");
         assertEq(uint256(c.revisionNumber), 7);
     }
 
     function test_noDash_returnsZero() public pure {
-        IICS07TendermintMsgs.ChainId memory c = _get("nodashatall");
+        SpectreMsgs.ChainId memory c = _get("nodashatall");
         assertEq(uint256(c.revisionNumber), 0);
     }
 
@@ -92,7 +92,7 @@ contract ChainIdTest is Test {
 
     /// @dev External wrapper so `vm.expectRevert` can intercept the revert
     ///      from the internal library call.
-    function externalGet(string memory id) external pure returns (IICS07TendermintMsgs.ChainId memory) {
+    function externalGet(string memory id) external pure returns (SpectreMsgs.ChainId memory) {
         return ChainId.get(id);
     }
 }

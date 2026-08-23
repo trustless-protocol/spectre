@@ -45,7 +45,7 @@
     },
     {
       "current": "test/solidity-ibc/ICS02ClientTest.t.sol",
-      "target": "test/core/ICS02ClientTest.t.sol",
+      "target": "test/core/client-registry/ICS02ClientTest.t.sol",
       "baseline_test_functions": 25,
       "current_test_functions": 25
     },
@@ -81,7 +81,7 @@
     },
     {
       "current": "test/solidity-ibc/IbcIdentifiersTest.t.sol",
-      "target": "test/core/IBCIdentifiersTest.t.sol",
+      "target": "test/shared/access/IBCIdentifiersTest.t.sol",
       "baseline_test_functions": 2,
       "current_test_functions": 2
     },

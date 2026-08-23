@@ -214,7 +214,7 @@ func (s *RelayerTestSuite) ICS20TransferERC20TokenBatchedAckToEthTest(
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 		transferMulticall := make([][]byte, numOfTransfers)
 
-		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 			SourceClient:     testvalues.CustomClientID,
 			Denom:            erc20Address,
 			Amount:           transferAmount,
@@ -384,7 +384,7 @@ func (s *IbcEurekaTestSuite) ICS20FinalizedTimeoutPacketFromEthTest(
 		timeout := uint64(time.Now().Add(30 * time.Second).Unix())
 		transferMulticall := make([][]byte, numOfTransfers)
 
-		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 			Denom:            erc20Address,
 			Amount:           transferAmount,
 			Receiver:         cosmosUserAddress,
@@ -549,7 +549,7 @@ func (s *RelayerTestSuite) RecvPacketToCosmosTest(ctx context.Context, numOfTran
 	s.Require().True(s.Run(fmt.Sprintf("Send %d transfers on Ethereum", numOfTransfers), func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 
-		msgSendTransfer := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+		msgSendTransfer := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 			Denom:            erc20Address,
 			SourceClient:     testvalues.CustomClientID,
 			DestPort:         transfertypes.PortID,

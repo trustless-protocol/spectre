@@ -249,7 +249,7 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 		s.groth16Ics07Contract, err = spectreclient.NewContract(s.groth16Ics07Address, eth.RPCClient)
 		s.Require().NoError(err)
 
-		counterpartyInfo := ics26router.IICS02ClientMsgsCounterpartyInfo{
+		counterpartyInfo := ics26router.ICS02ClientMsgsCounterpartyInfo{
 			ClientId:     testvalues.FirstWasmClientID,
 			MerklePrefix: [][]byte{[]byte(ibcexported.StoreKey), []byte("")},
 		}
@@ -652,14 +652,14 @@ func (s *IbcEurekaTestSuite) ICS20TransferERC20TokenfromEthereumToCosmosAndBackT
 	}))
 
 	var (
-		sendPacket    ics26router.IICS26RouterMsgsPacket
+		sendPacket    ics26router.ICS26RouterMsgsPacket
 		escrowAddress ethcommon.Address
 	)
 	s.Require().True(s.Run(fmt.Sprintf("Send %d transfers on Ethereum", numOfTransfers), func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 		transferMulticall := make([][]byte, numOfTransfers)
 
-		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 			Denom:            erc20Address,
 			Amount:           transferAmount,
 			Receiver:         cosmosUserAddress,
@@ -915,7 +915,7 @@ func (s *IbcEurekaTestSuite) ICS20TransferERC20TokenFromEthereumToCosmosAndBackF
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 		transferMulticall := make([][]byte, numOfTransfers)
 
-		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 			Denom:            erc20Address,
 			Amount:           transferAmount,
 			Receiver:         cosmosUserAddress,
@@ -1153,7 +1153,7 @@ func (s *IbcEurekaTestSuite) ICS20TransferNativeCosmosCoinsToEthereumAndBackTest
 	s.Require().True(s.Run("Transfer tokens back from Ethereum", func() {
 		returnMemo := "testreturnmemo"
 		returnTimeout := uint64(time.Now().Add(30 * time.Minute).Unix())
-		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 			Denom:            ibcERC20Address,
 			Amount:           transferAmount,
 			Receiver:         cosmosUserAddress,
@@ -1323,7 +1323,7 @@ func (s *IbcEurekaTestSuite) ICS20TimeoutPacketFromEthereumTest(
 	s.Require().True(s.Run("Send packets on Ethereum", func() {
 		for range numOfTransfers {
 			timeout := uint64(time.Now().Add(30 * time.Second).Unix())
-			msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+			msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 				Denom:            erc20Address,
 				Amount:           transferAmount,
 				Receiver:         cosmosUserAddress,
@@ -1465,7 +1465,7 @@ func (s *IbcEurekaTestSuite) ICS20ErrorAckToEthereumTest(
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 
 		// Send a transfer to an invalid Cosmos address
-		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 			Denom:            erc20Address,
 			Amount:           transferAmount,
 			Receiver:         ibctesting.InvalidID,
@@ -1761,7 +1761,7 @@ func (s *IbcEurekaTestSuite) TimeoutPacketEthRemintsVouchersTest(ctx context.Con
 
 		// Send transfer with short timeout
 		timeout := uint64(time.Now().Add(30 * time.Second).Unix())
-		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 			Denom:            ibcERC20Address, // Sending the voucher back
 			Amount:           transferAmount,
 			Receiver:         cosmosUserAddress,
@@ -1844,13 +1844,13 @@ func (s *IbcEurekaTestSuite) TimeoutPacketCosmosRemintsVouchersTest(ctx context.
 	}))
 
 	var (
-		sendPacket    ics26router.IICS26RouterMsgsPacket
+		sendPacket    ics26router.ICS26RouterMsgsPacket
 		escrowAddress ethcommon.Address
 	)
 	s.Require().True(s.Run("Send ERC20 tokens on Ethereum", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 
-		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
 			Denom:            erc20Address,
 			Amount:           transferAmount,
 			Receiver:         cosmosUserAddress,

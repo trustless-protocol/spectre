@@ -293,7 +293,7 @@ func (s *SpectreClientTestSuite) UpdateClient(ctx context.Context) clienttypes.H
 		initialHeight = clientState.LatestHeight.RevisionHeight
 	}))
 
-	var finalHeight spectreclient.IICS02ClientMsgsHeight
+	var finalHeight spectreclient.ICS02ClientMsgsHeight
 	s.Require().True(s.Run("Update the client on Ethereum", func() {
 		err := relayer.RunUpdateClient(testvalues.RelayerConfigFilePath)
 		s.Require().NoError(err)

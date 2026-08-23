@@ -9,7 +9,7 @@ import { ICS26Router } from "contracts/core/ICS26Router.sol";
 import { ICS20Transfer } from "contracts/apps/ics20/ICS20Transfer.sol";
 import { SignatureVerifier } from "contracts/light-clients/spectre/SignatureVerifier.sol";
 import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
-import { IBCSelectorLib } from "contracts/periphery/access/IBCSelectorLib.sol";
+import { IBCSelectorLib } from "scripts/deployments/IBCSelectorLib.sol";
 import { ProductionConfigLib } from "scripts/deployments/ProductionConfigLib.sol";
 import { IGroth16Verifier } from "contracts/light-clients/spectre/interfaces/IGroth16Verifier.sol";
 import { IRateLimit } from "contracts/apps/ics20/interfaces/IRateLimit.sol";

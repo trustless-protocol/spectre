@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 // solhint-disable gas-custom-errors,reason-string
 
 import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
-import { IBCSelectorLib } from "contracts/periphery/access/IBCSelectorLib.sol";
+import { IBCSelectorLib } from "scripts/deployments/IBCSelectorLib.sol";
 import { SignatureVerifier } from "contracts/light-clients/spectre/SignatureVerifier.sol";
 import { IAccessManager } from "@openzeppelin-contracts/access/manager/IAccessManager.sol";
 

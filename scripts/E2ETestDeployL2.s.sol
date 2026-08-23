@@ -35,8 +35,8 @@ import { Groth16Verifier_N4 } from "contracts/verifiers/Groth16Verifier_N4.sol";
 import { Membership } from "contracts/light-clients/spectre/modules/Membership.sol";
 import { UpdateClient } from "contracts/light-clients/spectre/modules/UpdateClient.sol";
 import { Misbehaviour } from "contracts/light-clients/spectre/modules/Misbehaviour.sol";
-import { ClientMigrationProposer } from "contracts/core/client/migration/modules/ClientMigrationProposer.sol";
-import { ClientMigrationExecutor } from "contracts/core/client/migration/modules/ClientMigrationExecutor.sol";
+import { ClientMigrationProposer } from "contracts/core/client-registry/migration/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "contracts/core/client-registry/migration/modules/ClientMigrationExecutor.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 
 /// @dev Cosmos->L2 receive-infrastructure deploy. See E2ETestDeploy for the L1 counterpart.

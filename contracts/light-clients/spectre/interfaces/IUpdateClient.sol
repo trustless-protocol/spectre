@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
+import { SpectreClientMsgs } from "contracts/light-clients/spectre/messages/SpectreClientMsgs.sol";
 
 /// @title IUpdateClient
 /// @notice Interface for the UpdateClient module. The module validates a proposed header and its
@@ -10,7 +10,7 @@ interface IUpdateClient {
     /// @notice Validates a proposed header (basic checks + trusted-state binding + signature proof).
     /// @param msg_ The application-state update message.
     /// @return The verified header output (trusted/new consensus states and heights).
-    function verifyHeader(ISpectreClientMsgs.MsgUpdateApplicationState calldata msg_)
+    function verifyHeader(SpectreClientMsgs.MsgUpdateApplicationState calldata msg_)
         external
-        returns (ISpectreClientMsgs.VerifyHeaderOutput memory);
+        returns (SpectreClientMsgs.VerifyHeaderOutput memory);
 }

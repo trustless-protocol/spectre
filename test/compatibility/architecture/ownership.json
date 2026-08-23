@@ -3,18 +3,22 @@
   "leaves": {
     "shared": [
       "contracts/shared/access/IBCRolesLib.sol",
-      "contracts/shared/bytes/BytesPrefix.sol",
+      "contracts/shared/access/IBCIdentifiers.sol",
       "contracts/shared/interfaces/IPausable.sol"
     ],
     "light-client-compatibility": [
       "contracts/light-clients/interfaces/ILightClient.sol",
-      "contracts/light-clients/messages/ILightClientMsgs.sol"
+      "contracts/light-clients/messages/LightClientMsgs.sol"
+    ],
+    "deployment-tooling": [
+      "scripts/deployments/IBCSelectorLib.sol"
     ]
   },
   "rules": [
     "shared has no upward imports",
     "core has no app or Spectre implementation imports",
     "ICS-20 uses core interfaces/messages only",
-    "generated verifiers have no handwritten protocol imports"
+    "generated verifiers have no handwritten protocol imports",
+    "deployment-only selector grouping stays outside contracts/"
   ]
 }

@@ -68,7 +68,7 @@ def import_allowed(source: str, target: str) -> bool:
             or "/compatibility/" in target
         )
     if source_owner == "spectre" and target_owner == "core":
-        return "/messages/" in target or "/client/migration/" in target
+        return "/messages/" in target or "/client-registry/migration/" in target
     if source_owner == "compatibility" and target_owner in {"core", "spectre"}:
         return "/messages/" in target
     return True
@@ -93,6 +93,10 @@ def main() -> int:
         "contracts/interfaces",
         "contracts/msgs",
         "contracts/errors",
+        "contracts/core/client",
+        "contracts/shared/bytes",
+        "contracts/shared/encoding",
+        "contracts/periphery/access",
     ):
         path = ROOT / stale_dir
         if path.exists() and any(path.rglob("*.sol")):
@@ -130,7 +134,33 @@ def main() -> int:
         for item in manifest["entries"]
         if item.get("current") and item["current"] != item["target"]
     }
-    for source_root in (ROOT / "contracts", ROOT / "test", ROOT / "scripts"):
+    legacy_symbols = {
+        "IEscrowErrors",
+        "IIBCERC20Errors",
+        "IICS20Errors",
+        "IRateLimitErrors",
+        "IICS02ClientErrors",
+        "IICS24HostErrors",
+        "IICS26RouterErrors",
+        "ISpectreClientErrors",
+        "IICS20TransferMsgs",
+        "IICS02ClientMsgs",
+        "IICS26RouterMsgs",
+        "ILightClientMsgs",
+        "IGroth16Msgs",
+        "IICS07TendermintMsgs",
+        "IMembershipMsgs",
+        "ISpectreClientMsgs",
+    }
+    source_roots = (
+        ROOT / "contracts",
+        ROOT / "test",
+        ROOT / "scripts",
+        ROOT / "packages",
+        ROOT / "e2e",
+        ROOT / "relayer",
+    )
+    for source_root in source_roots:
         for path in source_root.rglob("*"):
             if not path.is_file() or path.suffix not in {".sol", ".sh", ".go", ".rs"}:
                 continue
@@ -142,6 +172,11 @@ def main() -> int:
                 if stale in text:
                     failures.append(
                         f"stale source path in {path.relative_to(ROOT)}: {stale}"
+                    )
+            for symbol in legacy_symbols:
+                if re.search(rf"\b{re.escape(symbol)}\b", text):
+                    failures.append(
+                        f"stale canonical symbol in {path.relative_to(ROOT)}: {symbol}"
                     )
 
     if failures:

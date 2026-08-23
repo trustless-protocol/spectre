@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
-import { ISpectreClientErrors } from "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol";
+import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
+import { SpectreClientErrors } from "contracts/light-clients/spectre/errors/SpectreClientErrors.sol";
 
 /// @title SpectreStore
 /// @notice ERC-7201 namespaced storage for the SpectreClient light client.
@@ -27,7 +27,7 @@ library SpectreStore {
     /// @notice The SpectreClient on-chain state.
     /// @custom:storage-location erc7201:spectre.storage.SpectreClient
     struct Store {
-        IICS07TendermintMsgs.ClientState clientState;
+        SpectreMsgs.ClientState clientState;
         mapping(uint64 height => bytes32 hash) consensusStateHashes;
         bytes32 pinnedValidatorsHash;
         address pinnedValidatorSetPointer;
@@ -53,7 +53,7 @@ library SpectreStore {
     /// @notice Returns the stored consensus-state hash at the given height, reverting if absent.
     function getConsensusStateHash(Store storage $, uint64 revisionHeight) internal view returns (bytes32) {
         bytes32 hash = $.consensusStateHashes[revisionHeight];
-        require(hash != 0, ISpectreClientErrors.ConsensusStateNotFound());
+        require(hash != 0, SpectreClientErrors.ConsensusStateNotFound());
         return hash;
     }
 
@@ -80,7 +80,7 @@ library SpectreStore {
     {
         uint256 len = $.snapshotHeights.length;
         if (len == 0) {
-            revert ISpectreClientErrors.ValidatorSetCacheMiss(bytes32(0));
+            revert SpectreClientErrors.ValidatorSetCacheMiss(bytes32(0));
         }
         uint256 left = 0;
         uint256 right = len - 1;
@@ -93,10 +93,10 @@ library SpectreStore {
             }
         }
         uint64 checkpoint = $.snapshotHeights[left];
-        require(checkpoint <= height, ISpectreClientErrors.ValidatorSetCacheMiss(bytes32(0)));
+        require(checkpoint <= height, SpectreClientErrors.ValidatorSetCacheMiss(bytes32(0)));
         snapshot = $.snapshots[checkpoint];
         if (snapshot.pointer == address(0)) {
-            revert ISpectreClientErrors.ValidatorSetCacheMiss(snapshot.validatorsHash);
+            revert SpectreClientErrors.ValidatorSetCacheMiss(snapshot.validatorsHash);
         }
     }
 }

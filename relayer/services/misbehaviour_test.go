@@ -10,8 +10,8 @@ import (
 
 func TestUpdateCommitToMisbehaviourPreservesValidatorAddress(t *testing.T) {
 	wantAddress := [20]byte{0x01, 0x23, 0x45, 0x67, 0x89}
-	converted := updateCommitToMisbehaviour(updateclientContract.IICS07TendermintMsgsBlockCommit{
-		CommitSigs: []updateclientContract.IICS07TendermintMsgsCommitSig{{
+	converted := updateCommitToMisbehaviour(updateclientContract.SpectreMsgsBlockCommit{
+		CommitSigs: []updateclientContract.SpectreMsgsCommitSig{{
 			Flag:             2,
 			ValidatorAddress: wantAddress,
 		}},

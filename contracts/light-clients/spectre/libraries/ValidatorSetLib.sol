@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
-import { ISpectreClientErrors } from "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol";
+import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
+import { SpectreClientErrors } from "contracts/light-clients/spectre/errors/SpectreClientErrors.sol";
 import { SpectreStore } from "contracts/light-clients/spectre/store/SpectreStore.sol";
 import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
 import { SSTORE2 } from "contracts/light-clients/spectre/libraries/SSTORE2.sol";
@@ -43,19 +43,19 @@ library ValidatorSetLib {
     /// @notice Packs a validator set into the SSTORE2 cache byte layout.
     function buildCache(
         bytes32 validatorsHash,
-        IICS07TendermintMsgs.ValidatorSet memory validatorSet
+        SpectreMsgs.ValidatorSet memory validatorSet
     )
         internal
         pure
         returns (bytes memory data)
     {
-        IICS07TendermintMsgs.ValidatorInfo[] memory vals = validatorSet.validators;
+        SpectreMsgs.ValidatorInfo[] memory vals = validatorSet.validators;
         uint256 validatorCount = vals.length;
         if (validatorCount == 0) {
-            revert ISpectreClientErrors.BatchLengthMismatch();
+            revert SpectreClientErrors.BatchLengthMismatch();
         }
         if (validatorCount > MAX_VALIDATOR_COUNT) {
-            revert ISpectreClientErrors.ValidatorCountExceedsLimit(validatorCount, MAX_VALIDATOR_COUNT);
+            revert SpectreClientErrors.ValidatorCountExceedsLimit(validatorCount, MAX_VALIDATOR_COUNT);
         }
 
         uint256 totalVotingPower = 0;
@@ -67,8 +67,8 @@ library ValidatorSetLib {
 
         uint256 offset = VALIDATOR_CACHE_HEADER_LEN;
         for (uint256 i = 0; i < vals.length; i++) {
-            IICS07TendermintMsgs.ValidatorInfo memory val = vals[i];
-            require(val.votingPower > 0, ISpectreClientErrors.ZeroVotingPower(i));
+            SpectreMsgs.ValidatorInfo memory val = vals[i];
+            require(val.votingPower > 0, SpectreClientErrors.ZeroVotingPower(i));
             // O(n^2) duplicate-pubkey scan: only runs at genesis/rotation time (bounded by
             // MAX_VALIDATOR_COUNT = 180), never per-packet, so the quadratic cost is cheap here.
             // A duplicate (or repeated) pubkey pinned at multiple indices would let one signature
@@ -76,7 +76,7 @@ library ValidatorSetLib {
             // its own distinct slot there).
             for (uint256 j = 0; j < i; j++) {
                 if (vals[j].pubKey == val.pubKey) {
-                    revert ISpectreClientErrors.DuplicateValidatorPubkey(j, i);
+                    revert SpectreClientErrors.DuplicateValidatorPubkey(j, i);
                 }
             }
             totalVotingPower += val.votingPower;
@@ -85,7 +85,7 @@ library ValidatorSetLib {
             _writeBytes32(data, offset + 12, val.pubKey);
             offset += VALIDATOR_CACHE_ENTRY_LEN;
         }
-        require(totalVotingPower <= type(uint64).max, ISpectreClientErrors.BatchLengthMismatch());
+        require(totalVotingPower <= type(uint64).max, SpectreClientErrors.BatchLengthMismatch());
         _writeUint64(data, 4, uint64(totalVotingPower));
     }
 
@@ -96,7 +96,7 @@ library ValidatorSetLib {
         returns (ValidatorCacheHeader memory cacheHeader, bytes memory cacheData)
     {
         if (snapshot.pointer == address(0)) {
-            revert ISpectreClientErrors.ValidatorSetCacheMiss(snapshot.validatorsHash);
+            revert SpectreClientErrors.ValidatorSetCacheMiss(snapshot.validatorsHash);
         }
         cacheData = SSTORE2.read(snapshot.pointer, 0, validatorCacheEntryDataLen(snapshot.entryCount));
         cacheHeader = readValidatorCacheHeader(snapshot.validatorsHash, cacheData);
@@ -111,10 +111,10 @@ library ValidatorSetLib {
         returns (ValidatorCacheHeader memory cacheHeader)
     {
         if (cacheData.length < VALIDATOR_CACHE_HEADER_LEN) {
-            revert ISpectreClientErrors.CachedValidatorSetCorrupted(validatorsHash);
+            revert SpectreClientErrors.CachedValidatorSetCorrupted(validatorsHash);
         }
         if (_readUint32(cacheData, 0) != VALIDATOR_CACHE_MAGIC) {
-            revert ISpectreClientErrors.CachedValidatorSetCorrupted(validatorsHash);
+            revert SpectreClientErrors.CachedValidatorSetCorrupted(validatorsHash);
         }
 
         cacheHeader = ValidatorCacheHeader({
@@ -129,7 +129,7 @@ library ValidatorSetLib {
                 || cacheData.length != validatorCacheEntryDataLen(cacheHeader.entryCount)
                 || cacheHeader.validatorsHashLeaf != Header.bytes32LeafHash(validatorsHash)
         ) {
-            revert ISpectreClientErrors.CachedValidatorSetCorrupted(validatorsHash);
+            revert SpectreClientErrors.CachedValidatorSetCorrupted(validatorsHash);
         }
     }
 
@@ -148,12 +148,12 @@ library ValidatorSetLib {
         returns (uint64 votingPower, bytes32 pubKey)
     {
         if (index >= entryCount) {
-            revert ISpectreClientErrors.CachedSignerNotFound(validatorsHash, index);
+            revert SpectreClientErrors.CachedSignerNotFound(validatorsHash, index);
         }
 
         uint256 offset = VALIDATOR_CACHE_HEADER_LEN + uint256(index) * VALIDATOR_CACHE_ENTRY_LEN;
         if (_readUint32(cacheData, offset) != index) {
-            revert ISpectreClientErrors.CachedValidatorSetCorrupted(validatorsHash);
+            revert SpectreClientErrors.CachedValidatorSetCorrupted(validatorsHash);
         }
         votingPower = _readUint64(cacheData, offset + 4);
         pubKey = _readBytes32(cacheData, offset + 12);
@@ -181,7 +181,7 @@ library ValidatorSetLib {
     /// @param signerPubkeys per-slot compressed Ed25519 pubkey, already checked against the pinned set.
     /// @param active per-slot real-signer flag; padding slots are skipped.
     function requireProofSignersCommitSigs(
-        IICS07TendermintMsgs.CommitSig[] memory commitSigs,
+        SpectreMsgs.CommitSig[] memory commitSigs,
         uint32[] memory signerIndices,
         bytes32[] memory signerPubkeys,
         bool[] memory active
@@ -191,7 +191,7 @@ library ValidatorSetLib {
     {
         require(
             signerIndices.length == active.length && signerPubkeys.length == active.length,
-            ISpectreClientErrors.BatchLengthMismatch()
+            SpectreClientErrors.BatchLengthMismatch()
         );
         for (uint256 i = 0; i < signerIndices.length; i++) {
             if (!active[i]) {
@@ -208,21 +208,21 @@ library ValidatorSetLib {
     }
 
     function _requireProofSignerCommitSig(
-        IICS07TendermintMsgs.CommitSig[] memory commitSigs,
+        SpectreMsgs.CommitSig[] memory commitSigs,
         uint32 signerIndex,
         bytes32 signerPubkey
     )
         private
         pure
     {
-        require(signerIndex < commitSigs.length, ISpectreClientErrors.SignerIndexOutOfRange(signerIndex));
+        require(signerIndex < commitSigs.length, SpectreClientErrors.SignerIndexOutOfRange(signerIndex));
         require(
-            commitSigs[signerIndex].flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
-            ISpectreClientErrors.ProofSignerCommitSigMismatch(signerIndex)
+            commitSigs[signerIndex].flag == SpectreMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+            SpectreClientErrors.ProofSignerCommitSigMismatch(signerIndex)
         );
         require(
             commitSigs[signerIndex].validatorAddress == tendermintAddress(signerPubkey),
-            ISpectreClientErrors.ProofSignerValidatorMismatch(signerIndex)
+            SpectreClientErrors.ProofSignerValidatorMismatch(signerIndex)
         );
     }
 

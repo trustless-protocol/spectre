@@ -5,15 +5,15 @@ import { Test } from "forge-std/Test.sol";
 
 import { SpectreClient } from "contracts/light-clients/spectre/SpectreClient.sol";
 import { Misbehaviour } from "contracts/light-clients/spectre/modules/Misbehaviour.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
-import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
-import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
+import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
+import { SpectreClientMsgs } from "contracts/light-clients/spectre/messages/SpectreClientMsgs.sol";
+import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
 import { ISignatureVerifier } from "contracts/light-clients/spectre/interfaces/ISignatureVerifier.sol";
 import { IMembership } from "contracts/light-clients/spectre/interfaces/IMembership.sol";
 import { IUpdateClient } from "contracts/light-clients/spectre/interfaces/IUpdateClient.sol";
-import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
+import { MembershipMsgs } from "contracts/light-clients/spectre/messages/MembershipMsgs.sol";
 import { Header as HeaderLib } from "contracts/light-clients/spectre/libraries/Header.sol";
-import { ISpectreClientErrors } from "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol";
+import { SpectreClientErrors } from "contracts/light-clients/spectre/errors/SpectreClientErrors.sol";
 import { IAccessControl } from "@openzeppelin-contracts/access/IAccessControl.sol";
 
 contract MockVerifierForMisbehaviour is ISignatureVerifier {
@@ -44,24 +44,24 @@ contract MockVerifierForMisbehaviour is ISignatureVerifier {
 contract DummyMembershipForMisbehaviour is IMembership {
     function verifyMembership(
         bytes32,
-        IMembershipMsgs.KVPair[] calldata,
-        IMembershipMsgs.MerkleProof[] calldata
+        MembershipMsgs.KVPair[] calldata,
+        MembershipMsgs.MerkleProof[] calldata
     )
         external
         pure { }
 }
 
 contract DummyUpdateClientForMisbehaviour is IUpdateClient {
-    function verifyHeader(ISpectreClientMsgs.MsgUpdateApplicationState calldata)
+    function verifyHeader(SpectreClientMsgs.MsgUpdateApplicationState calldata)
         external
         pure
-        returns (ISpectreClientMsgs.VerifyHeaderOutput memory)
+        returns (SpectreClientMsgs.VerifyHeaderOutput memory)
     {
         revert("unused");
     }
 }
 
-contract MisbehaviourTest is Test, IICS07TendermintMsgs {
+contract MisbehaviourTest is Test, SpectreMsgs {
     SpectreClient internal lightClient;
     Misbehaviour internal misbehaviourVerifier;
     MockVerifierForMisbehaviour internal mockVerifier;
@@ -79,10 +79,10 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     string internal constant CHAIN_ID = "test-chain-0";
 
     struct LegacyMsgSubmitMisbehaviour {
-        IICS07TendermintMsgs.ClientState clientState;
-        ISpectreClientMsgs.Misbehaviour misbehaviour;
-        IICS07TendermintMsgs.ConsensusState trustedConsensusState1;
-        IICS07TendermintMsgs.ConsensusState trustedConsensusState2;
+        SpectreMsgs.ClientState clientState;
+        SpectreClientMsgs.Misbehaviour misbehaviour;
+        SpectreMsgs.ConsensusState trustedConsensusState1;
+        SpectreMsgs.ConsensusState trustedConsensusState2;
         uint128 time;
     }
 
@@ -108,7 +108,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         });
         consensusStateHash_ = keccak256(abi.encode(consensusState_));
 
-        IICS02ClientMsgs.Height memory latestHeight = IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 10 });
+        ICS02ClientMsgs.Height memory latestHeight = ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 10 });
 
         clientState_ = ClientState({
             chainId: CHAIN_ID,
@@ -138,7 +138,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     }
 
     function test_misbehaviour_freezesWithProofBackedQuorums() public {
-        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         bytes memory encoded = abi.encode(msg_);
 
         lightClient.misbehaviour(encoded);
@@ -172,21 +172,21 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
     function test_misbehaviour_cannotFreezeWhenVerifierRejectsProof() public {
         mockVerifier.setResult(false);
-        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         bytes memory encoded = abi.encode(msg_);
 
-        vm.expectRevert(ISpectreClientErrors.ProofVerificationFailed.selector);
+        vm.expectRevert(SpectreClientErrors.ProofVerificationFailed.selector);
         lightClient.misbehaviour(encoded);
 
         assertFalse(_isFrozen(lightClient), "rejected proof must not freeze");
     }
 
     function test_misbehaviour_cannotFreezeWithSubQuorumProofMetadata() public {
-        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         msg_.proof1 = _proof(2);
 
         bytes memory encoded = abi.encode(msg_);
-        vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.InsufficientVotingPower.selector, 50, 100));
+        vm.expectRevert(abi.encodeWithSelector(SpectreClientErrors.InsufficientVotingPower.selector, 50, 100));
         lightClient.misbehaviour(encoded);
 
         assertFalse(_isFrozen(lightClient), "sub-quorum proof metadata must not freeze");
@@ -196,11 +196,11 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     function test_misbehaviour_cannotFreezeWithStaleTime() public {
         // Long-range freeze attempt: `time` is consistent with the (old) trusted state's trusting
         // period but lags the wall clock beyond clockDrift. Must revert before any other check.
-        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         msg_.time = 1_700_000_200 * 1e9; // wall clock is 1_700_000_500, clockDrift is 15s
 
         vm.expectRevert(
-            abi.encodeWithSelector(ISpectreClientErrors.ProofIsTooOld.selector, 1_700_000_500, 1_700_000_200)
+            abi.encodeWithSelector(SpectreClientErrors.ProofIsTooOld.selector, 1_700_000_500, 1_700_000_200)
         );
         lightClient.misbehaviour(abi.encode(msg_));
 
@@ -209,11 +209,11 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     }
 
     function test_misbehaviour_cannotFreezeWithFutureTime() public {
-        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         msg_.time = 1_700_000_516 * 1e9; // 16s ahead of wall clock, beyond the 15s clockDrift
 
         vm.expectRevert(
-            abi.encodeWithSelector(ISpectreClientErrors.ProofIsInTheFuture.selector, 1_700_000_500, 1_700_000_516)
+            abi.encodeWithSelector(SpectreClientErrors.ProofIsInTheFuture.selector, 1_700_000_500, 1_700_000_516)
         );
         lightClient.misbehaviour(abi.encode(msg_));
 
@@ -222,7 +222,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     }
 
     function test_misbehaviour_allowsFutureTimeWithinClockDrift() public {
-        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         msg_.time = 1_700_000_501 * 1e9; // 1s ahead of wall clock, within the 15s clockDrift
 
         lightClient.misbehaviour(abi.encode(msg_));
@@ -235,7 +235,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         ValidatorSet memory attackerValSet = _attackerValidatorSet();
         ValidatorSet memory spoofedTrustedValSet = _trustedValidatorSetWithSpoofedAddresses();
 
-        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         msg_.misbehaviour.header1 =
             _buildHeaderWithSets(15, bytes32(uint256(0xAAA1)), attackerValSet, spoofedTrustedValSet);
         msg_.misbehaviour.header2 =
@@ -243,17 +243,17 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         msg_.proof1 = _proofForValidatorSet(attackerValSet, 3);
         msg_.proof2 = _proofForValidatorSet(attackerValSet, 3);
 
-        vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.PubkeyMismatch.selector, uint32(0)));
+        vm.expectRevert(abi.encodeWithSelector(SpectreClientErrors.PubkeyMismatch.selector, uint32(0)));
         lightClient.misbehaviour(abi.encode(msg_));
 
         assertFalse(_isFrozen(lightClient), "spoofed trusted overlap must not freeze");
     }
 
     function test_misbehaviour_rejectsProofSignerAbsentFromCommitSigs() public {
-        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         msg_.misbehaviour.header1.signedHeader.commit.commitSigs[0] = _commitSig(CommitSigFlag.BLOCK_ID_FLAG_ABSENT);
 
-        vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.ProofSignerCommitSigMismatch.selector, uint32(0)));
+        vm.expectRevert(abi.encodeWithSelector(SpectreClientErrors.ProofSignerCommitSigMismatch.selector, uint32(0)));
         lightClient.misbehaviour(abi.encode(msg_));
 
         assertFalse(_isFrozen(lightClient), "proof signer absent from commit must not freeze");
@@ -261,12 +261,12 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     }
 
     function test_misbehaviour_revertsForMismatchedHeaderHeights() public {
-        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         msg_.misbehaviour.header2 = _buildHeader(16, bytes32(uint256(0xAAA2)));
 
         bytes memory encoded = abi.encode(msg_);
         vm.expectRevert(
-            abi.encodeWithSelector(ISpectreClientErrors.MismatchedMisbehaviourHeaderHeights.selector, 15, 16)
+            abi.encodeWithSelector(SpectreClientErrors.MismatchedMisbehaviourHeaderHeights.selector, 15, 16)
         );
         lightClient.misbehaviour(encoded);
 
@@ -279,7 +279,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         address unauthorized = makeAddr("unauthorized");
         SpectreClient managedClient = _deploy(governance);
 
-        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         bytes memory encoded = abi.encode(msg_);
 
         bytes32 misbehaviourRole = managedClient.MISBEHAVIOUR_SUBMITTER_ROLE();
@@ -308,7 +308,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         SpectreClient managedClient = _deploy(governance);
 
         vm.prank(governance);
-        vm.expectRevert(ISpectreClientErrors.ClientNotFrozen.selector);
+        vm.expectRevert(SpectreClientErrors.ClientNotFrozen.selector);
         managedClient.unfreeze();
     }
 
@@ -324,14 +324,14 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         managedClient.unfreeze();
     }
 
-    function _buildValidMisbehaviourMsg() internal view returns (ISpectreClientMsgs.MsgSubmitMisbehaviour memory) {
-        IICS07TendermintMsgs.Header memory header1 = _buildHeader(15, bytes32(uint256(0xAAA1)));
-        IICS07TendermintMsgs.Header memory header2 = _buildHeader(15, bytes32(uint256(0xAAA2)));
+    function _buildValidMisbehaviourMsg() internal view returns (SpectreClientMsgs.MsgSubmitMisbehaviour memory) {
+        SpectreMsgs.Header memory header1 = _buildHeader(15, bytes32(uint256(0xAAA1)));
+        SpectreMsgs.Header memory header2 = _buildHeader(15, bytes32(uint256(0xAAA2)));
 
-        ISpectreClientMsgs.Misbehaviour memory misbehaviour_ =
-            ISpectreClientMsgs.Misbehaviour({ header1: header1, header2: header2 });
+        SpectreClientMsgs.Misbehaviour memory misbehaviour_ =
+            SpectreClientMsgs.Misbehaviour({ header1: header1, header2: header2 });
 
-        return ISpectreClientMsgs.MsgSubmitMisbehaviour({
+        return SpectreClientMsgs.MsgSubmitMisbehaviour({
             misbehaviour: misbehaviour_,
             trustedConsensusState1: consensusState_,
             trustedConsensusState2: consensusState_,
@@ -342,7 +342,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     }
 
     function _buildLegacyMisbehaviourMsg() internal view returns (bytes memory) {
-        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
         return abi.encode(
             LegacyMsgSubmitMisbehaviour({
                 clientState: clientState_,
@@ -354,7 +354,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         );
     }
 
-    function _proof(uint256 activeCount) internal view returns (ISpectreClientMsgs.BatchProof memory proof_) {
+    function _proof(uint256 activeCount) internal view returns (SpectreClientMsgs.BatchProof memory proof_) {
         return _proofForValidatorSet(valset_, activeCount);
     }
 
@@ -364,7 +364,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     )
         internal
         pure
-        returns (ISpectreClientMsgs.BatchProof memory proof_)
+        returns (SpectreClientMsgs.BatchProof memory proof_)
     {
         proof_.bucket = 4;
         proof_.signerIndices = new uint32[](4);
@@ -385,14 +385,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         return state.isFrozen;
     }
 
-    function _buildHeader(
-        uint64 height,
-        bytes32 lastBlockIdHash
-    )
-        internal
-        view
-        returns (IICS07TendermintMsgs.Header memory)
-    {
+    function _buildHeader(uint64 height, bytes32 lastBlockIdHash) internal view returns (SpectreMsgs.Header memory) {
         return _buildHeaderWithSets(height, lastBlockIdHash, valset_, valset_);
     }
 
@@ -404,7 +397,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     )
         internal
         pure
-        returns (IICS07TendermintMsgs.Header memory)
+        returns (SpectreMsgs.Header memory)
     {
         bytes32 currentValSetHash = HeaderLib.hashValSet(currentValSet);
         BlockHeader memory blockHeader = BlockHeader({
@@ -445,10 +438,9 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
 
         SignedHeader memory signedHeader = SignedHeader({ header: blockHeader, commit: commit });
 
-        IICS02ClientMsgs.Height memory trustedHeight =
-            IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 10 });
+        ICS02ClientMsgs.Height memory trustedHeight = ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 10 });
 
-        return IICS07TendermintMsgs.Header({ signedHeader: signedHeader, trustedHeight: trustedHeight });
+        return SpectreMsgs.Header({ signedHeader: signedHeader, trustedHeight: trustedHeight });
     }
 
     function _attackerValidatorSet() internal pure returns (ValidatorSet memory validatorSet) {

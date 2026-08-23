@@ -31,11 +31,11 @@
       "classification": "non-shadowfork"
     },
     {
-      "path": "test/core/IBCIdentifiersTest.t.sol",
+      "path": "test/shared/access/IBCIdentifiersTest.t.sol",
       "classification": "non-shadowfork"
     },
     {
-      "path": "test/core/ICS02ClientTest.t.sol",
+      "path": "test/core/client-registry/ICS02ClientTest.t.sol",
       "classification": "non-shadowfork"
     },
     {

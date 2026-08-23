@@ -54,7 +54,7 @@ func TestParseTrustThreshold(t *testing.T) {
 }
 
 func TestEncodeMisbehaviourContractMsg(t *testing.T) {
-	proof := misbehaviourContract.ISpectreClientMsgsBatchProof{}
+	proof := misbehaviourContract.SpectreClientMsgsBatchProof{}
 	for i := range proof.Proof {
 		proof.Proof[i] = big.NewInt(0)
 	}
@@ -62,15 +62,15 @@ func TestEncodeMisbehaviourContractMsg(t *testing.T) {
 		proof.Commitments[i] = big.NewInt(0)
 		proof.CommitmentPok[i] = big.NewInt(0)
 	}
-	header := misbehaviourContract.IICS07TendermintMsgsHeader{}
+	header := misbehaviourContract.SpectreMsgsHeader{}
 	header.SignedHeader.Header.Time = big.NewInt(0)
-	msg := misbehaviourContract.ISpectreClientMsgsMsgSubmitMisbehaviour{
-		Misbehaviour: misbehaviourContract.ISpectreClientMsgsMisbehaviour{
+	msg := misbehaviourContract.SpectreClientMsgsMsgSubmitMisbehaviour{
+		Misbehaviour: misbehaviourContract.SpectreClientMsgsMisbehaviour{
 			Header1: header,
 			Header2: header,
 		},
-		TrustedConsensusState1: misbehaviourContract.IICS07TendermintMsgsConsensusState{Timestamp: big.NewInt(1)},
-		TrustedConsensusState2: misbehaviourContract.IICS07TendermintMsgsConsensusState{Timestamp: big.NewInt(2)},
+		TrustedConsensusState1: misbehaviourContract.SpectreMsgsConsensusState{Timestamp: big.NewInt(1)},
+		TrustedConsensusState2: misbehaviourContract.SpectreMsgsConsensusState{Timestamp: big.NewInt(2)},
 		Time:                   big.NewInt(3),
 		Proof1:                 proof,
 		Proof2:                 proof,
@@ -165,7 +165,7 @@ func TestEncodeClientState(t *testing.T) {
 				Numerator:   2,
 				Denominator: 3,
 			},
-			LatestHeight: updateClientContract.IICS02ClientMsgsHeight{
+			LatestHeight: updateClientContract.ICS02ClientMsgsHeight{
 				RevisionNumber: 4,
 				RevisionHeight: 100,
 			},
@@ -191,7 +191,7 @@ func TestDecodeClientState(t *testing.T) {
 			Numerator:   2,
 			Denominator: 3,
 		},
-		LatestHeight: updateClientContract.IICS02ClientMsgsHeight{
+		LatestHeight: updateClientContract.ICS02ClientMsgsHeight{
 			RevisionNumber: 4,
 			RevisionHeight: 100,
 		},
@@ -242,7 +242,7 @@ func TestDecodeClientState(t *testing.T) {
 
 func TestEncodeConsensusState(t *testing.T) {
 	t.Run("valid consensus state encodes without error", func(t *testing.T) {
-		consensusState := updateClientContract.IICS07TendermintMsgsConsensusState{
+		consensusState := updateClientContract.SpectreMsgsConsensusState{
 			Timestamp:          big.NewInt(1700000000000),
 			Root:               [32]byte{0x01, 0x02, 0x03},
 			NextValidatorsHash: [32]byte{0x04, 0x05, 0x06},
@@ -272,34 +272,34 @@ func TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI(t *testing.T) {
 	}
 	zero2 := [2]*big.Int{big.NewInt(0), big.NewInt(0)}
 
-	msg := updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState{
-		TrustedConsensusState: updateClientContract.IICS07TendermintMsgsConsensusState{
+	msg := updateClientContract.SpectreClientMsgsMsgUpdateApplicationState{
+		TrustedConsensusState: updateClientContract.SpectreMsgsConsensusState{
 			Timestamp:          big.NewInt(1700000000000000000),
 			NextValidatorsHash: validatorsHash,
 		},
-		ProposedHeader: updateClientContract.IICS07TendermintMsgsHeader{
-			SignedHeader: updateClientContract.IICS07TendermintMsgsSignedHeader{
-				Header: updateClientContract.IICS07TendermintMsgsBlockHeader{
+		ProposedHeader: updateClientContract.SpectreMsgsHeader{
+			SignedHeader: updateClientContract.SpectreMsgsSignedHeader{
+				Header: updateClientContract.SpectreMsgsBlockHeader{
 					ChainId:            "test-0",
 					Time:               big.NewInt(1700000001000000000),
 					ValidatorsHash:     validatorsHash,
 					NextValidatorsHash: validatorsHash,
 				},
-				Commit: updateClientContract.IICS07TendermintMsgsBlockCommit{
+				Commit: updateClientContract.SpectreMsgsBlockCommit{
 					Height: 58,
-					CommitSigs: []updateClientContract.IICS07TendermintMsgsCommitSig{{
+					CommitSigs: []updateClientContract.SpectreMsgsCommitSig{{
 						Flag:             2,
 						ValidatorAddress: [20]byte{0x12, 0x34, 0x56, 0x78},
 					}},
 				},
 			},
-			TrustedHeight: updateClientContract.IICS02ClientMsgsHeight{
+			TrustedHeight: updateClientContract.ICS02ClientMsgsHeight{
 				RevisionNumber: 0,
 				RevisionHeight: 19,
 			},
 		},
 		Time: big.NewInt(1700000002000000000),
-		Proof: updateClientContract.ISpectreClientMsgsBatchProof{
+		Proof: updateClientContract.SpectreClientMsgsBatchProof{
 			Proof:                  zero8,
 			Commitments:            zero2,
 			CommitmentPok:          zero2,
@@ -335,7 +335,7 @@ func TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal unpacked tuple: %v", err)
 	}
-	var decoded updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState
+	var decoded updateClientContract.SpectreClientMsgsMsgUpdateApplicationState
 	if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
 		t.Fatalf("unmarshal decoded update msg: %v", err)
 	}

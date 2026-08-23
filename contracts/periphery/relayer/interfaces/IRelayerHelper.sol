@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
+import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
 
 /// @title IRelayerHelper
 /// @notice Interface for the RelayerHelper contract
@@ -13,12 +13,12 @@ interface IRelayerHelper {
     /// @notice Returns whether or not a packet was received
     /// @param packet The packet to check
     /// @return True if the packet was received, false otherwise
-    function isPacketReceived(IICS26RouterMsgs.Packet calldata packet) external view returns (bool);
+    function isPacketReceived(ICS26RouterMsgs.Packet calldata packet) external view returns (bool);
 
     /// @notice Returns whether or not a packet was received successfully
     /// @param packet The packet to check
     /// @return True if the packet was received and the application callback was successful, false otherwise
-    function isPacketReceiveSuccessful(IICS26RouterMsgs.Packet calldata packet) external view returns (bool);
+    function isPacketReceiveSuccessful(ICS26RouterMsgs.Packet calldata packet) external view returns (bool);
 
     /// @notice Returns the packet receipt for a given packet.
     /// @param clientId The packet destination client identifier.

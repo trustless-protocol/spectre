@@ -25,7 +25,7 @@
       {
         "name": "consensusState_",
         "type": "tuple",
-        "internalType": "struct IICS07TendermintMsgs.ConsensusState",
+        "internalType": "struct SpectreMsgs.ConsensusState",
         "components": [
           {
             "name": "timestamp",
@@ -47,12 +47,12 @@
       {
         "name": "initialPinnedValidatorSet",
         "type": "tuple",
-        "internalType": "struct IICS07TendermintMsgs.ValidatorSet",
+        "internalType": "struct SpectreMsgs.ValidatorSet",
         "components": [
           {
             "name": "validators",
             "type": "tuple[]",
-            "internalType": "struct IICS07TendermintMsgs.ValidatorInfo[]",
+            "internalType": "struct SpectreMsgs.ValidatorInfo[]",
             "components": [
               {
                 "name": "valAddress",
@@ -84,7 +84,7 @@
           {
             "name": "proposer",
             "type": "tuple",
-            "internalType": "struct IICS07TendermintMsgs.ValidatorInfo",
+            "internalType": "struct SpectreMsgs.ValidatorInfo",
             "components": [
               {
                 "name": "valAddress",
@@ -348,7 +348,7 @@
       {
         "name": "",
         "type": "uint8",
-        "internalType": "enum ILightClientMsgs.UpdateResult"
+        "internalType": "enum LightClientMsgs.UpdateResult"
       }
     ],
     "stateMutability": "nonpayable"
@@ -367,7 +367,7 @@
       {
         "name": "",
         "type": "uint8",
-        "internalType": "enum ILightClientMsgs.UpdateResult"
+        "internalType": "enum LightClientMsgs.UpdateResult"
       }
     ],
     "stateMutability": "nonpayable"
@@ -392,12 +392,12 @@
       {
         "name": "msg_",
         "type": "tuple",
-        "internalType": "struct ILightClientMsgs.MsgVerifyMembership",
+        "internalType": "struct LightClientMsgs.MsgVerifyMembership",
         "components": [
           {
             "name": "height",
             "type": "tuple",
-            "internalType": "struct IICS02ClientMsgs.Height",
+            "internalType": "struct ICS02ClientMsgs.Height",
             "components": [
               {
                 "name": "revisionNumber",
@@ -414,7 +414,7 @@
           {
             "name": "kvPairs",
             "type": "tuple[]",
-            "internalType": "struct IMembershipMsgs.KVPair[]",
+            "internalType": "struct MembershipMsgs.KVPair[]",
             "components": [
               {
                 "name": "path",
@@ -431,22 +431,22 @@
           {
             "name": "merkleProofs",
             "type": "tuple[]",
-            "internalType": "struct IMembershipMsgs.MerkleProof[]",
+            "internalType": "struct MembershipMsgs.MerkleProof[]",
             "components": [
               {
                 "name": "proofs",
                 "type": "tuple[]",
-                "internalType": "struct IMembershipMsgs.CommitmentProof[]",
+                "internalType": "struct MembershipMsgs.CommitmentProof[]",
                 "components": [
                   {
                     "name": "proofType",
                     "type": "uint8",
-                    "internalType": "enum IMembershipMsgs.ProofType"
+                    "internalType": "enum MembershipMsgs.ProofType"
                   },
                   {
                     "name": "existenceProof",
                     "type": "tuple",
-                    "internalType": "struct IMembershipMsgs.ExistenceProof",
+                    "internalType": "struct MembershipMsgs.ExistenceProof",
                     "components": [
                       {
                         "name": "key",
@@ -461,22 +461,22 @@
                       {
                         "name": "leaf",
                         "type": "tuple",
-                        "internalType": "struct IMembershipMsgs.LeafOp",
+                        "internalType": "struct MembershipMsgs.LeafOp",
                         "components": [
                           {
                             "name": "hashOp",
                             "type": "uint8",
-                            "internalType": "enum IMembershipMsgs.HashOp"
+                            "internalType": "enum MembershipMsgs.HashOp"
                           },
                           {
                             "name": "prehashKey",
                             "type": "uint8",
-                            "internalType": "enum IMembershipMsgs.HashOp"
+                            "internalType": "enum MembershipMsgs.HashOp"
                           },
                           {
                             "name": "prehashValue",
                             "type": "uint8",
-                            "internalType": "enum IMembershipMsgs.HashOp"
+                            "internalType": "enum MembershipMsgs.HashOp"
                           },
                           {
                             "name": "prefix",
@@ -488,12 +488,12 @@
                       {
                         "name": "path",
                         "type": "tuple[]",
-                        "internalType": "struct IMembershipMsgs.InnerOp[]",
+                        "internalType": "struct MembershipMsgs.InnerOp[]",
                         "components": [
                           {
                             "name": "hashOp",
                             "type": "uint8",
-                            "internalType": "enum IMembershipMsgs.HashOp"
+                            "internalType": "enum MembershipMsgs.HashOp"
                           },
                           {
                             "name": "prefix",
@@ -512,7 +512,7 @@
                   {
                     "name": "nonExistenceProof",
                     "type": "tuple",
-                    "internalType": "struct IMembershipMsgs.NonExistenceProof",
+                    "internalType": "struct MembershipMsgs.NonExistenceProof",
                     "components": [
                       {
                         "name": "key",
@@ -527,7 +527,7 @@
                       {
                         "name": "left",
                         "type": "tuple",
-                        "internalType": "struct IMembershipMsgs.ExistenceProof",
+                        "internalType": "struct MembershipMsgs.ExistenceProof",
                         "components": [
                           {
                             "name": "key",
@@ -542,22 +542,22 @@
                           {
                             "name": "leaf",
                             "type": "tuple",
-                            "internalType": "struct IMembershipMsgs.LeafOp",
+                            "internalType": "struct MembershipMsgs.LeafOp",
                             "components": [
                               {
                                 "name": "hashOp",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prehashKey",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prehashValue",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prefix",
@@ -569,12 +569,12 @@
                           {
                             "name": "path",
                             "type": "tuple[]",
-                            "internalType": "struct IMembershipMsgs.InnerOp[]",
+                            "internalType": "struct MembershipMsgs.InnerOp[]",
                             "components": [
                               {
                                 "name": "hashOp",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prefix",
@@ -598,7 +598,7 @@
                       {
                         "name": "right",
                         "type": "tuple",
-                        "internalType": "struct IMembershipMsgs.ExistenceProof",
+                        "internalType": "struct MembershipMsgs.ExistenceProof",
                         "components": [
                           {
                             "name": "key",
@@ -613,22 +613,22 @@
                           {
                             "name": "leaf",
                             "type": "tuple",
-                            "internalType": "struct IMembershipMsgs.LeafOp",
+                            "internalType": "struct MembershipMsgs.LeafOp",
                             "components": [
                               {
                                 "name": "hashOp",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prehashKey",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prehashValue",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prefix",
@@ -640,12 +640,12 @@
                           {
                             "name": "path",
                             "type": "tuple[]",
-                            "internalType": "struct IMembershipMsgs.InnerOp[]",
+                            "internalType": "struct MembershipMsgs.InnerOp[]",
                             "components": [
                               {
                                 "name": "hashOp",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prefix",
@@ -675,7 +675,7 @@
           {
             "name": "trustedConsensusState",
             "type": "tuple",
-            "internalType": "struct IICS07TendermintMsgs.ConsensusState",
+            "internalType": "struct SpectreMsgs.ConsensusState",
             "components": [
               {
                 "name": "timestamp",
@@ -697,7 +697,7 @@
           {
             "name": "membershipType",
             "type": "uint8",
-            "internalType": "enum IMembershipMsgs.MembershipType"
+            "internalType": "enum MembershipMsgs.MembershipType"
           },
           {
             "name": "path",
@@ -728,12 +728,12 @@
       {
         "name": "msg_",
         "type": "tuple",
-        "internalType": "struct ILightClientMsgs.MsgVerifyNonMembership",
+        "internalType": "struct LightClientMsgs.MsgVerifyNonMembership",
         "components": [
           {
             "name": "height",
             "type": "tuple",
-            "internalType": "struct IICS02ClientMsgs.Height",
+            "internalType": "struct ICS02ClientMsgs.Height",
             "components": [
               {
                 "name": "revisionNumber",
@@ -750,7 +750,7 @@
           {
             "name": "kvPairs",
             "type": "tuple[]",
-            "internalType": "struct IMembershipMsgs.KVPair[]",
+            "internalType": "struct MembershipMsgs.KVPair[]",
             "components": [
               {
                 "name": "path",
@@ -767,22 +767,22 @@
           {
             "name": "merkleProofs",
             "type": "tuple[]",
-            "internalType": "struct IMembershipMsgs.MerkleProof[]",
+            "internalType": "struct MembershipMsgs.MerkleProof[]",
             "components": [
               {
                 "name": "proofs",
                 "type": "tuple[]",
-                "internalType": "struct IMembershipMsgs.CommitmentProof[]",
+                "internalType": "struct MembershipMsgs.CommitmentProof[]",
                 "components": [
                   {
                     "name": "proofType",
                     "type": "uint8",
-                    "internalType": "enum IMembershipMsgs.ProofType"
+                    "internalType": "enum MembershipMsgs.ProofType"
                   },
                   {
                     "name": "existenceProof",
                     "type": "tuple",
-                    "internalType": "struct IMembershipMsgs.ExistenceProof",
+                    "internalType": "struct MembershipMsgs.ExistenceProof",
                     "components": [
                       {
                         "name": "key",
@@ -797,22 +797,22 @@
                       {
                         "name": "leaf",
                         "type": "tuple",
-                        "internalType": "struct IMembershipMsgs.LeafOp",
+                        "internalType": "struct MembershipMsgs.LeafOp",
                         "components": [
                           {
                             "name": "hashOp",
                             "type": "uint8",
-                            "internalType": "enum IMembershipMsgs.HashOp"
+                            "internalType": "enum MembershipMsgs.HashOp"
                           },
                           {
                             "name": "prehashKey",
                             "type": "uint8",
-                            "internalType": "enum IMembershipMsgs.HashOp"
+                            "internalType": "enum MembershipMsgs.HashOp"
                           },
                           {
                             "name": "prehashValue",
                             "type": "uint8",
-                            "internalType": "enum IMembershipMsgs.HashOp"
+                            "internalType": "enum MembershipMsgs.HashOp"
                           },
                           {
                             "name": "prefix",
@@ -824,12 +824,12 @@
                       {
                         "name": "path",
                         "type": "tuple[]",
-                        "internalType": "struct IMembershipMsgs.InnerOp[]",
+                        "internalType": "struct MembershipMsgs.InnerOp[]",
                         "components": [
                           {
                             "name": "hashOp",
                             "type": "uint8",
-                            "internalType": "enum IMembershipMsgs.HashOp"
+                            "internalType": "enum MembershipMsgs.HashOp"
                           },
                           {
                             "name": "prefix",
@@ -848,7 +848,7 @@
                   {
                     "name": "nonExistenceProof",
                     "type": "tuple",
-                    "internalType": "struct IMembershipMsgs.NonExistenceProof",
+                    "internalType": "struct MembershipMsgs.NonExistenceProof",
                     "components": [
                       {
                         "name": "key",
@@ -863,7 +863,7 @@
                       {
                         "name": "left",
                         "type": "tuple",
-                        "internalType": "struct IMembershipMsgs.ExistenceProof",
+                        "internalType": "struct MembershipMsgs.ExistenceProof",
                         "components": [
                           {
                             "name": "key",
@@ -878,22 +878,22 @@
                           {
                             "name": "leaf",
                             "type": "tuple",
-                            "internalType": "struct IMembershipMsgs.LeafOp",
+                            "internalType": "struct MembershipMsgs.LeafOp",
                             "components": [
                               {
                                 "name": "hashOp",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prehashKey",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prehashValue",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prefix",
@@ -905,12 +905,12 @@
                           {
                             "name": "path",
                             "type": "tuple[]",
-                            "internalType": "struct IMembershipMsgs.InnerOp[]",
+                            "internalType": "struct MembershipMsgs.InnerOp[]",
                             "components": [
                               {
                                 "name": "hashOp",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prefix",
@@ -934,7 +934,7 @@
                       {
                         "name": "right",
                         "type": "tuple",
-                        "internalType": "struct IMembershipMsgs.ExistenceProof",
+                        "internalType": "struct MembershipMsgs.ExistenceProof",
                         "components": [
                           {
                             "name": "key",
@@ -949,22 +949,22 @@
                           {
                             "name": "leaf",
                             "type": "tuple",
-                            "internalType": "struct IMembershipMsgs.LeafOp",
+                            "internalType": "struct MembershipMsgs.LeafOp",
                             "components": [
                               {
                                 "name": "hashOp",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prehashKey",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prehashValue",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prefix",
@@ -976,12 +976,12 @@
                           {
                             "name": "path",
                             "type": "tuple[]",
-                            "internalType": "struct IMembershipMsgs.InnerOp[]",
+                            "internalType": "struct MembershipMsgs.InnerOp[]",
                             "components": [
                               {
                                 "name": "hashOp",
                                 "type": "uint8",
-                                "internalType": "enum IMembershipMsgs.HashOp"
+                                "internalType": "enum MembershipMsgs.HashOp"
                               },
                               {
                                 "name": "prefix",
@@ -1011,7 +1011,7 @@
           {
             "name": "trustedConsensusState",
             "type": "tuple",
-            "internalType": "struct IICS07TendermintMsgs.ConsensusState",
+            "internalType": "struct SpectreMsgs.ConsensusState",
             "components": [
               {
                 "name": "timestamp",
@@ -1033,7 +1033,7 @@
           {
             "name": "membershipType",
             "type": "uint8",
-            "internalType": "enum IMembershipMsgs.MembershipType"
+            "internalType": "enum MembershipMsgs.MembershipType"
           },
           {
             "name": "path",

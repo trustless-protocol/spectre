@@ -10,7 +10,7 @@ pragma solidity ^0.8.28;
 import { stdJson } from "forge-std/StdJson.sol";
 import { Script } from "forge-std/Script.sol";
 
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
 import { ICS26Router } from "contracts/core/ICS26Router.sol";
 import { ICS20Transfer } from "contracts/apps/ics20/ICS20Transfer.sol";
 import { TestERC20 } from "test/mocks/TestERC20.sol";
@@ -27,12 +27,12 @@ import { Groth16Verifier_N4 } from "contracts/verifiers/Groth16Verifier_N4.sol";
 import { Membership } from "contracts/light-clients/spectre/modules/Membership.sol";
 import { UpdateClient } from "contracts/light-clients/spectre/modules/UpdateClient.sol";
 import { Misbehaviour } from "contracts/light-clients/spectre/modules/Misbehaviour.sol";
-import { ClientMigrationProposer } from "contracts/core/client/migration/modules/ClientMigrationProposer.sol";
-import { ClientMigrationExecutor } from "contracts/core/client/migration/modules/ClientMigrationExecutor.sol";
+import { ClientMigrationProposer } from "contracts/core/client-registry/migration/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "contracts/core/client-registry/migration/modules/ClientMigrationExecutor.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 
 /// @dev See the Solidity Scripting tutorial: https://book.getfoundry.sh/tutorials/solidity-scripting
-contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithRoles {
+contract E2ETestDeploy is Script, SpectreMsgs, DeployAccessManagerWithRoles {
     using stdJson for string;
 
     string internal constant GENESIS_DIR = "/scripts/";

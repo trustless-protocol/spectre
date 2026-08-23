@@ -37,7 +37,7 @@ func init() {
 }
 
 type TransactionHandler interface {
-	CreateCosmosClientContract(stdCtx context.Context, endpoint EVMEndpoint, clientIDs ClientIDs, clientState []byte, consensusState spectreContract.IICS07TendermintMsgsConsensusState, initialPinnedValidatorSet client.ContractValidatorSet) (ethcommon.Address, error)
+	CreateCosmosClientContract(stdCtx context.Context, endpoint EVMEndpoint, clientIDs ClientIDs, clientState []byte, consensusState spectreContract.SpectreMsgsConsensusState, initialPinnedValidatorSet client.ContractValidatorSet) (ethcommon.Address, error)
 	// CreateWasmClient submits MsgCreateClient for any 08-wasm client (ETH beacon,
 	// L2 rollup, ...) from an already-built wasm ClientState/ConsensusState and returns
 	// the auto-assigned client id. counterpartyClientID is the client on the
@@ -261,7 +261,7 @@ func (s *Services) timeoutEVMSend(stdCtx context.Context, deps evmTimeoutDeps, p
 		log.Printf("[%sTimeout] seq=%d: %v", tag, packet.Packet.Sequence, err)
 		return timeoutOutcomeForError(err)
 	}
-	msgTimeoutPacket := contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket{
+	msgTimeoutPacket := contractICS26Router.ICS26RouterMsgsMsgTimeoutPacket{
 		Packet:           ToEthPacket(*packet.Packet),
 		NonMembershipMsg: calldata,
 	}
@@ -629,20 +629,20 @@ func CosmosMembership(stdCtx context.Context, ctx CosmosEndpoint, packet channel
 		return nil, err
 	}
 
-	membershipMsg := spectreContract.ILightClientMsgsMsgVerifyMembership{
-		Height: spectreContract.IICS02ClientMsgsHeight{
+	membershipMsg := spectreContract.LightClientMsgsMsgVerifyMembership{
+		Height: spectreContract.ICS02ClientMsgsHeight{
 			RevisionHeight: uint64(height),
 			RevisionNumber: 0,
 		},
-		KvPairs: []spectreContract.IMembershipMsgsKVPair{
+		KvPairs: []spectreContract.MembershipMsgsKVPair{
 			{
 				Path:  ibcPath,
 				Value: value,
 			},
 		},
-		MerkleProofs: []spectreContract.IMembershipMsgsMerkleProof{merkleProof},
+		MerkleProofs: []spectreContract.MembershipMsgsMerkleProof{merkleProof},
 		AppHash:      utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
-		TrustedConsensusState: spectreContract.IICS07TendermintMsgsConsensusState{
+		TrustedConsensusState: spectreContract.SpectreMsgsConsensusState{
 			Timestamp:          big.NewInt(latestLightBlock.SignedHeader.Header.Time.UnixNano()),
 			Root:               utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
 			NextValidatorsHash: utils.BytesToBytes32(latestLightBlock.SignedHeader.Header.NextValidatorsHash),
@@ -673,20 +673,20 @@ func CosmosNonMembership(stdCtx context.Context, ctx CosmosEndpoint, packet chan
 		return nil, err
 	}
 
-	nonMembershipMsg := spectreContract.ILightClientMsgsMsgVerifyNonMembership{
-		Height: spectreContract.IICS02ClientMsgsHeight{
+	nonMembershipMsg := spectreContract.LightClientMsgsMsgVerifyNonMembership{
+		Height: spectreContract.ICS02ClientMsgsHeight{
 			RevisionHeight: uint64(height),
 			RevisionNumber: 0,
 		},
-		KvPairs: []spectreContract.IMembershipMsgsKVPair{
+		KvPairs: []spectreContract.MembershipMsgsKVPair{
 			{
 				Path:  ibcPath,
 				Value: value,
 			},
 		},
-		MerkleProofs: []spectreContract.IMembershipMsgsMerkleProof{merkleProof},
+		MerkleProofs: []spectreContract.MembershipMsgsMerkleProof{merkleProof},
 		AppHash:      utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
-		TrustedConsensusState: spectreContract.IICS07TendermintMsgsConsensusState{
+		TrustedConsensusState: spectreContract.SpectreMsgsConsensusState{
 			Timestamp:          big.NewInt(latestLightBlock.SignedHeader.Header.Time.UnixNano()),
 			Root:               utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
 			NextValidatorsHash: utils.BytesToBytes32(latestLightBlock.SignedHeader.Header.NextValidatorsHash),
@@ -709,9 +709,9 @@ func cosmosReceiptPresentError(height int64, valueLen int) error {
 		height, valueLen, client.ErrPacketAlreadyReceived)
 }
 
-func parseMerkleProof(proofs []*ics23.CommitmentProof, sequence uint64) (spectreContract.IMembershipMsgsMerkleProof, error) {
-	merkleProof := spectreContract.IMembershipMsgsMerkleProof{
-		Proofs: []spectreContract.IMembershipMsgsCommitmentProof{},
+func parseMerkleProof(proofs []*ics23.CommitmentProof, sequence uint64) (spectreContract.MembershipMsgsMerkleProof, error) {
+	merkleProof := spectreContract.MembershipMsgsMerkleProof{
+		Proofs: []spectreContract.MembershipMsgsCommitmentProof{},
 	}
 	for _, p := range proofs {
 		commitmentProof, err := client.ParseCommitmentProof(p)
@@ -723,10 +723,10 @@ func parseMerkleProof(proofs []*ics23.CommitmentProof, sequence uint64) (spectre
 	return merkleProof, nil
 }
 
-func ToEthPacket(packet channeltypesv2.Packet) contractICS26Router.IICS26RouterMsgsPacket {
-	payloads := make([]contractICS26Router.IICS26RouterMsgsPayload, 0, len(packet.Payloads))
+func ToEthPacket(packet channeltypesv2.Packet) contractICS26Router.ICS26RouterMsgsPacket {
+	payloads := make([]contractICS26Router.ICS26RouterMsgsPayload, 0, len(packet.Payloads))
 	for _, p := range packet.Payloads {
-		payloads = append(payloads, contractICS26Router.IICS26RouterMsgsPayload{
+		payloads = append(payloads, contractICS26Router.ICS26RouterMsgsPayload{
 			SourcePort: p.SourcePort,
 			DestPort:   p.DestinationPort,
 			Version:    p.Version,
@@ -735,7 +735,7 @@ func ToEthPacket(packet channeltypesv2.Packet) contractICS26Router.IICS26RouterM
 		})
 	}
 
-	return contractICS26Router.IICS26RouterMsgsPacket{
+	return contractICS26Router.ICS26RouterMsgsPacket{
 		Sequence:         packet.Sequence,
 		SourceClient:     packet.SourceClient,
 		DestClient:       packet.DestinationClient,

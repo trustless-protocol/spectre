@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
 import { Encode } from "contracts/light-clients/spectre/libraries/Encode.sol";
 
 library Header {
     bytes32 internal constant EMPTY_LEAF_HASH = 0x6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d;
 
-    function hashValSet(IICS07TendermintMsgs.ValidatorSet memory valset) internal pure returns (bytes32) {
+    function hashValSet(SpectreMsgs.ValidatorSet memory valset) internal pure returns (bytes32) {
         uint256 validatorCount = valset.validators.length;
         if (validatorCount == 0) {
             return bytes32(0);
@@ -16,7 +16,7 @@ library Header {
         bytes32[] memory leafHashes = new bytes32[](validatorCount);
         for (uint256 i = 0; i < valset.validators.length; i++) {
             bytes memory validatorBytes = Encode.encodeValidator(
-                IICS07TendermintMsgs.SimpleValidator({
+                SpectreMsgs.SimpleValidator({
                     pubKey: valset.validators[i].pubKey, votingPower: valset.validators[i].votingPower
                 })
             );
@@ -26,12 +26,12 @@ library Header {
         return _merkleHashRange(leafHashes, 0, validatorCount);
     }
 
-    function hashHeader(IICS07TendermintMsgs.BlockHeader memory header) internal pure returns (bytes32) {
+    function hashHeader(SpectreMsgs.BlockHeader memory header) internal pure returns (bytes32) {
         return hashHeaderWithCachedChainId(header, chainIdLeafHash(header.chainId));
     }
 
     function hashHeaderWithCachedChainId(
-        IICS07TendermintMsgs.BlockHeader memory header,
+        SpectreMsgs.BlockHeader memory header,
         bytes32 cachedChainIdLeafHash
     )
         internal
@@ -64,7 +64,7 @@ library Header {
     }
 
     function hashHeaderWithCachedLeaves(
-        IICS07TendermintMsgs.BlockHeader memory header,
+        SpectreMsgs.BlockHeader memory header,
         bytes32 cachedChainIdLeafHash,
         bytes32 cachedValidatorsHashLeaf
     )
@@ -108,9 +108,8 @@ library Header {
     }
 
     function simpleValidatorLeafHash(bytes32 pubKey, uint64 votingPower) internal pure returns (bytes32) {
-        return _leafHash(
-            Encode.encodeValidator(IICS07TendermintMsgs.SimpleValidator({ pubKey: pubKey, votingPower: votingPower }))
-        );
+        return
+            _leafHash(Encode.encodeValidator(SpectreMsgs.SimpleValidator({ pubKey: pubKey, votingPower: votingPower })));
     }
 
     function innerHash(bytes32 left, bytes32 right) internal pure returns (bytes32) {

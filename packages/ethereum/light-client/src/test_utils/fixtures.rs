@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use ibc_eureka_solidity_types::ics26::IICS26RouterMsgs;
+use ibc_eureka_solidity_types::ics26::ICS26RouterMsgs;
 use ibc_proto_eureka::{
     cosmos::tx::v1beta1::TxBody,
     ibc::core::{
@@ -102,7 +102,7 @@ impl RelayerMessages {
 /// A tuple with the commitment path and value
 #[must_use]
 pub fn get_packet_paths(packet: Packet) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-    let ics26_packet: IICS26RouterMsgs::Packet = packet.into();
+    let ics26_packet: ICS26RouterMsgs::Packet = packet.into();
     (
         ics26_packet.commitment_path(),
         ics26_packet.commitment(),

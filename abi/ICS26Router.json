@@ -35,12 +35,12 @@
       {
         "name": "msg_",
         "type": "tuple",
-        "internalType": "struct IICS26RouterMsgs.MsgAckPacket",
+        "internalType": "struct ICS26RouterMsgs.MsgAckPacket",
         "components": [
           {
             "name": "packet",
             "type": "tuple",
-            "internalType": "struct IICS26RouterMsgs.Packet",
+            "internalType": "struct ICS26RouterMsgs.Packet",
             "components": [
               {
                 "name": "sequence",
@@ -65,7 +65,7 @@
               {
                 "name": "payloads",
                 "type": "tuple[]",
-                "internalType": "struct IICS26RouterMsgs.Payload[]",
+                "internalType": "struct ICS26RouterMsgs.Payload[]",
                 "components": [
                   {
                     "name": "sourcePort",
@@ -124,7 +124,7 @@
       {
         "name": "counterpartyInfo",
         "type": "tuple",
-        "internalType": "struct IICS02ClientMsgs.CounterpartyInfo",
+        "internalType": "struct ICS02ClientMsgs.CounterpartyInfo",
         "components": [
           {
             "name": "clientId",
@@ -160,7 +160,7 @@
       {
         "name": "counterpartyInfo",
         "type": "tuple",
-        "internalType": "struct IICS02ClientMsgs.CounterpartyInfo",
+        "internalType": "struct ICS02ClientMsgs.CounterpartyInfo",
         "components": [
           {
             "name": "clientId",
@@ -258,7 +258,7 @@
       {
         "name": "counterpartyInfo",
         "type": "tuple",
-        "internalType": "struct IICS02ClientMsgs.CounterpartyInfo",
+        "internalType": "struct ICS02ClientMsgs.CounterpartyInfo",
         "components": [
           {
             "name": "clientId",
@@ -367,7 +367,7 @@
       {
         "name": "",
         "type": "tuple",
-        "internalType": "struct IICS02ClientMsgs.CounterpartyInfo",
+        "internalType": "struct ICS02ClientMsgs.CounterpartyInfo",
         "components": [
           {
             "name": "clientId",
@@ -486,7 +486,7 @@
       {
         "name": "counterpartyInfo",
         "type": "tuple",
-        "internalType": "struct IICS02ClientMsgs.CounterpartyInfo",
+        "internalType": "struct ICS02ClientMsgs.CounterpartyInfo",
         "components": [
           {
             "name": "clientId",
@@ -560,7 +560,7 @@
       {
         "name": "counterpartyInfo",
         "type": "tuple",
-        "internalType": "struct IICS02ClientMsgs.CounterpartyInfo",
+        "internalType": "struct ICS02ClientMsgs.CounterpartyInfo",
         "components": [
           {
             "name": "clientId",
@@ -603,12 +603,12 @@
       {
         "name": "msg_",
         "type": "tuple",
-        "internalType": "struct IICS26RouterMsgs.MsgRecvPacket",
+        "internalType": "struct ICS26RouterMsgs.MsgRecvPacket",
         "components": [
           {
             "name": "packet",
             "type": "tuple",
-            "internalType": "struct IICS26RouterMsgs.Packet",
+            "internalType": "struct ICS26RouterMsgs.Packet",
             "components": [
               {
                 "name": "sequence",
@@ -633,7 +633,7 @@
               {
                 "name": "payloads",
                 "type": "tuple[]",
-                "internalType": "struct IICS26RouterMsgs.Payload[]",
+                "internalType": "struct ICS26RouterMsgs.Payload[]",
                 "components": [
                   {
                     "name": "sourcePort",
@@ -682,7 +682,7 @@
       {
         "name": "msg_",
         "type": "tuple",
-        "internalType": "struct IICS26RouterMsgs.MsgSendPacket",
+        "internalType": "struct ICS26RouterMsgs.MsgSendPacket",
         "components": [
           {
             "name": "sourceClient",
@@ -697,7 +697,7 @@
           {
             "name": "payload",
             "type": "tuple",
-            "internalType": "struct IICS26RouterMsgs.Payload",
+            "internalType": "struct ICS26RouterMsgs.Payload",
             "components": [
               {
                 "name": "sourcePort",
@@ -776,12 +776,12 @@
       {
         "name": "msg_",
         "type": "tuple",
-        "internalType": "struct IICS26RouterMsgs.MsgTimeoutPacket",
+        "internalType": "struct ICS26RouterMsgs.MsgTimeoutPacket",
         "components": [
           {
             "name": "packet",
             "type": "tuple",
-            "internalType": "struct IICS26RouterMsgs.Packet",
+            "internalType": "struct ICS26RouterMsgs.Packet",
             "components": [
               {
                 "name": "sequence",
@@ -806,7 +806,7 @@
               {
                 "name": "payloads",
                 "type": "tuple[]",
-                "internalType": "struct IICS26RouterMsgs.Payload[]",
+                "internalType": "struct ICS26RouterMsgs.Payload[]",
                 "components": [
                   {
                     "name": "sourcePort",
@@ -887,7 +887,7 @@
       {
         "name": "",
         "type": "uint8",
-        "internalType": "enum ILightClientMsgs.UpdateResult"
+        "internalType": "enum LightClientMsgs.UpdateResult"
       }
     ],
     "stateMutability": "nonpayable"
@@ -911,7 +911,7 @@
       {
         "name": "",
         "type": "uint8",
-        "internalType": "enum ILightClientMsgs.UpdateResult"
+        "internalType": "enum LightClientMsgs.UpdateResult"
       }
     ],
     "stateMutability": "nonpayable"
@@ -954,7 +954,7 @@
         "name": "packet",
         "type": "tuple",
         "indexed": false,
-        "internalType": "struct IICS26RouterMsgs.Packet",
+        "internalType": "struct ICS26RouterMsgs.Packet",
         "components": [
           {
             "name": "sequence",
@@ -979,7 +979,7 @@
           {
             "name": "payloads",
             "type": "tuple[]",
-            "internalType": "struct IICS26RouterMsgs.Payload[]",
+            "internalType": "struct ICS26RouterMsgs.Payload[]",
             "components": [
               {
                 "name": "sourcePort",
@@ -1078,7 +1078,7 @@
         "name": "counterpartyInfo",
         "type": "tuple",
         "indexed": false,
-        "internalType": "struct IICS02ClientMsgs.CounterpartyInfo",
+        "internalType": "struct ICS02ClientMsgs.CounterpartyInfo",
         "components": [
           {
             "name": "clientId",
@@ -1115,7 +1115,7 @@
         "name": "counterpartyInfo",
         "type": "tuple",
         "indexed": false,
-        "internalType": "struct IICS02ClientMsgs.CounterpartyInfo",
+        "internalType": "struct ICS02ClientMsgs.CounterpartyInfo",
         "components": [
           {
             "name": "clientId",
@@ -1221,7 +1221,7 @@
         "name": "result",
         "type": "uint8",
         "indexed": false,
-        "internalType": "enum ILightClientMsgs.UpdateResult"
+        "internalType": "enum LightClientMsgs.UpdateResult"
       }
     ],
     "anonymous": false
@@ -1291,7 +1291,7 @@
         "name": "packet",
         "type": "tuple",
         "indexed": false,
-        "internalType": "struct IICS26RouterMsgs.Packet",
+        "internalType": "struct ICS26RouterMsgs.Packet",
         "components": [
           {
             "name": "sequence",
@@ -1316,7 +1316,7 @@
           {
             "name": "payloads",
             "type": "tuple[]",
-            "internalType": "struct IICS26RouterMsgs.Payload[]",
+            "internalType": "struct ICS26RouterMsgs.Payload[]",
             "components": [
               {
                 "name": "sourcePort",
@@ -1370,7 +1370,7 @@
         "name": "packet",
         "type": "tuple",
         "indexed": false,
-        "internalType": "struct IICS26RouterMsgs.Packet",
+        "internalType": "struct ICS26RouterMsgs.Packet",
         "components": [
           {
             "name": "sequence",
@@ -1395,7 +1395,7 @@
           {
             "name": "payloads",
             "type": "tuple[]",
-            "internalType": "struct IICS26RouterMsgs.Payload[]",
+            "internalType": "struct ICS26RouterMsgs.Payload[]",
             "components": [
               {
                 "name": "sourcePort",
@@ -1475,7 +1475,7 @@
         "name": "packet",
         "type": "tuple",
         "indexed": false,
-        "internalType": "struct IICS26RouterMsgs.Packet",
+        "internalType": "struct ICS26RouterMsgs.Packet",
         "components": [
           {
             "name": "sequence",
@@ -1500,7 +1500,7 @@
           {
             "name": "payloads",
             "type": "tuple[]",
-            "internalType": "struct IICS26RouterMsgs.Payload[]",
+            "internalType": "struct ICS26RouterMsgs.Payload[]",
             "components": [
               {
                 "name": "sourcePort",

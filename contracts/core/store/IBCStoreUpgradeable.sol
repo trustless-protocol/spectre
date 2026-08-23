@@ -2,14 +2,14 @@
 pragma solidity ^0.8.28;
 
 import { IIBCStore } from "contracts/core/interfaces/IIBCStore.sol";
-import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
+import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
 import { ICS24Host } from "contracts/core/libraries/ICS24Host.sol";
-import { IICS24HostErrors } from "contracts/core/errors/IICS24HostErrors.sol";
+import { ICS24HostErrors } from "contracts/core/errors/ICS24HostErrors.sol";
 import { Initializable } from "@openzeppelin-upgradeable/proxy/utils/Initializable.sol";
 
 /// @title IBC Store Upgradeable
 /// @notice This is the contract that stores the provable IBC commitments.
-abstract contract IBCStoreUpgradeable is IIBCStore, IICS24HostErrors, Initializable {
+abstract contract IBCStoreUpgradeable is IIBCStore, ICS24HostErrors, Initializable {
     /// @notice Storage of the IBCStore contract
     /// @dev It's implemented on a custom ERC-7201 namespace to reduce the risk of storage collisions when using with
     /// upgradeable contracts.
@@ -46,7 +46,7 @@ abstract contract IBCStoreUpgradeable is IIBCStore, IICS24HostErrors, Initializa
 
     /// @notice Commits the packet commitment for a packet if it doesn't already exist
     /// @param packet Packet to commit the commitment for
-    function commitPacket(IICS26RouterMsgs.Packet memory packet) internal {
+    function commitPacket(ICS26RouterMsgs.Packet memory packet) internal {
         IBCStoreStorage storage $ = _getIBCStoreStorage();
 
         bytes32 path = ICS24Host.packetCommitmentKeyCalldata(packet.sourceClient, packet.sequence);
@@ -64,7 +64,7 @@ abstract contract IBCStoreUpgradeable is IIBCStore, IICS24HostErrors, Initializa
     /// @notice Deletes the packet commitment for the given packet if it exists
     /// @param packet Packet to delete the commitment for
     /// @return True if the packet commitment was found and then deleted, false otherwise
-    function checkAndDeletePacketCommitment(IICS26RouterMsgs.Packet calldata packet) internal returns (bool) {
+    function checkAndDeletePacketCommitment(ICS26RouterMsgs.Packet calldata packet) internal returns (bool) {
         IBCStoreStorage storage $ = _getIBCStoreStorage();
 
         bytes32 path = ICS24Host.packetCommitmentKeyCalldata(packet.sourceClient, packet.sequence);
@@ -85,7 +85,7 @@ abstract contract IBCStoreUpgradeable is IIBCStore, IICS24HostErrors, Initializa
     /// @dev This function reverts if the stored receipt is different from the one being set
     /// @param packet Packet to set the receipt for
     /// @return False if the receipt was already set, true otherwise
-    function setPacketReceipt(IICS26RouterMsgs.Packet calldata packet) internal returns (bool) {
+    function setPacketReceipt(ICS26RouterMsgs.Packet calldata packet) internal returns (bool) {
         IBCStoreStorage storage $ = _getIBCStoreStorage();
 
         bytes32 path = ICS24Host.packetReceiptCommitmentKeyCalldata(packet.destClient, packet.sequence);
@@ -103,7 +103,7 @@ abstract contract IBCStoreUpgradeable is IIBCStore, IICS24HostErrors, Initializa
     /// @notice Commits the successful packet acknowledgements for the given packet
     /// @param packet Packet to commit the acknowledgements for
     /// @param acks Acknowledgements to commit
-    function commitPacketAcknowledgement(IICS26RouterMsgs.Packet calldata packet, bytes[] memory acks) internal {
+    function commitPacketAcknowledgement(ICS26RouterMsgs.Packet calldata packet, bytes[] memory acks) internal {
         IBCStoreStorage storage $ = _getIBCStoreStorage();
 
         bytes32 path = ICS24Host.packetAcknowledgementCommitmentKeyCalldata(packet.destClient, packet.sequence);

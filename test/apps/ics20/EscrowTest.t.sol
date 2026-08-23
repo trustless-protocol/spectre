@@ -5,7 +5,7 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { IRateLimitErrors } from "contracts/apps/ics20/errors/IRateLimitErrors.sol";
+import { RateLimitErrors } from "contracts/apps/ics20/errors/RateLimitErrors.sol";
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
 import { IRateLimit } from "contracts/apps/ics20/interfaces/IRateLimit.sol";
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
@@ -151,7 +151,7 @@ contract EscrowTest is Test {
         }
 
         vm.mockCall(mockToken, IERC20.transferFrom.selector, abi.encode(true));
-        vm.expectRevert(abi.encodeWithSelector(IRateLimitErrors.RateLimitExceeded.selector, rateLimit, sendAmount * n));
+        vm.expectRevert(abi.encodeWithSelector(RateLimitErrors.RateLimitExceeded.selector, rateLimit, sendAmount * n));
         escrow.send(IERC20(mockToken), address(this), sendAmount);
     }
 
@@ -195,7 +195,7 @@ contract EscrowTest is Test {
         uint256 decayed = rateLimit * 30 minutes / 1 days;
 
         // Sending more than the decayed portion should revert
-        vm.expectRevert(abi.encodeWithSelector(IRateLimitErrors.RateLimitExceeded.selector, rateLimit, rateLimit + 1));
+        vm.expectRevert(abi.encodeWithSelector(RateLimitErrors.RateLimitExceeded.selector, rateLimit, rateLimit + 1));
         escrow.send(IERC20(mockToken), address(this), decayed + 1);
 
         // The decayed amount can be sent
@@ -222,7 +222,7 @@ contract EscrowTest is Test {
         assertEq(escrow.getDailyUsage(mockToken), rateLimit);
 
         // Attempting to send another token should fail/revert
-        vm.expectRevert(abi.encodeWithSelector(IRateLimitErrors.RateLimitExceeded.selector, rateLimit, rateLimit + 1));
+        vm.expectRevert(abi.encodeWithSelector(RateLimitErrors.RateLimitExceeded.selector, rateLimit, rateLimit + 1));
         escrow.send(IERC20(mockToken), address(this), 1);
 
         // Refund should succeed even though the daily limit is saturated

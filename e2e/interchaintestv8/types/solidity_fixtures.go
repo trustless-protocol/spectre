@@ -14,7 +14,7 @@ import (
 )
 
 type SolidityFixtureGenerator struct {
-	Enabled           bool
+	Enabled               bool
 	groth16GenesisFixture *Groth16GenesisFixture
 }
 
@@ -47,7 +47,7 @@ type GenericSolidityFixture struct {
 	Groth16GenesisFixture string `json:"groth16GenesisFixture"`
 	// Hex encoded bytes to be fed into the router contract
 	Msg string `json:"msg"`
-	// Hex encoded bytes for the IICS26RouterMsgsPacket in the context of this fixture
+	// Hex encoded bytes for the ICS26RouterMsgsPacket in the context of this fixture
 	Packet string `json:"packet"`
 	// The contract address of the ERC20 token
 	Erc20Address string `json:"erc20Address"`
@@ -56,7 +56,7 @@ type GenericSolidityFixture struct {
 }
 
 // GenerateAndSaveSolidityFixture generates a fixture and saves it to a file
-func (g *SolidityFixtureGenerator) GenerateAndSaveSolidityFixture(fileName, erc20Address string, msgBz []byte, packet ics26router.IICS26RouterMsgsPacket) error {
+func (g *SolidityFixtureGenerator) GenerateAndSaveSolidityFixture(fileName, erc20Address string, msgBz []byte, packet ics26router.ICS26RouterMsgsPacket) error {
 	if !g.Enabled {
 		return nil
 	}
@@ -76,7 +76,7 @@ func (g *SolidityFixtureGenerator) GenerateAndSaveSolidityFixture(fileName, erc2
 	return os.WriteFile(filePath, fixtureBz, 0o644)
 }
 
-func (g *SolidityFixtureGenerator) generateFixture(erc20Address string, msgBz []byte, packet ics26router.IICS26RouterMsgsPacket) (GenericSolidityFixture, error) {
+func (g *SolidityFixtureGenerator) generateFixture(erc20Address string, msgBz []byte, packet ics26router.ICS26RouterMsgsPacket) (GenericSolidityFixture, error) {
 	genesisBz, err := g.GetGenesisFixture()
 	if err != nil {
 		return GenericSolidityFixture{}, err
@@ -90,10 +90,10 @@ func (g *SolidityFixtureGenerator) generateFixture(erc20Address string, msgBz []
 	// Generate the fixture
 	fixture := GenericSolidityFixture{
 		Groth16GenesisFixture: hex.EncodeToString(genesisBz),
-		Msg:               hex.EncodeToString(msgBz),
-		Erc20Address:      erc20Address,
-		Timestamp:         time.Now().Unix(),
-		Packet:            hex.EncodeToString(packetBz),
+		Msg:                   hex.EncodeToString(msgBz),
+		Erc20Address:          erc20Address,
+		Timestamp:             time.Now().Unix(),
+		Packet:                hex.EncodeToString(packetBz),
 	}
 	return fixture, nil
 }
@@ -125,7 +125,7 @@ func (g *SolidityFixtureGenerator) SetGenesisFixture(
 	}
 }
 
-func abiEncodePacket(packet ics26router.IICS26RouterMsgsPacket) ([]byte, error) {
+func abiEncodePacket(packet ics26router.ICS26RouterMsgsPacket) ([]byte, error) {
 	structType, err := abi.NewType("tuple", "", []abi.ArgumentMarshaling{
 		{Name: "sequence", Type: "uint64"},
 		{Name: "sourceClient", Type: "string"},
