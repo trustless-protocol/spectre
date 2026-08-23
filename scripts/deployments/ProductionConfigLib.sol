@@ -19,12 +19,29 @@ library ProductionConfigLib {
         }
     }
 
-    /// @notice Collects the supported N4 verifier address.
-    /// @dev The executable prover manifest is intentionally N4-only. Adding a bucket requires
-    ///      coordinated prover, verifier, deployment, verification, and manifest changes.
-    function verifierList(address n4) internal pure returns (address[] memory verifiers) {
-        verifiers = new address[](1);
+    /// @notice Collects the six production bucket verifier addresses in bucket order.
+    /// @dev They must be six different contracts: each is generated from its own bucket's
+    ///      verifying key, so pointing two buckets at one address makes proofs for the
+    ///      misconfigured bucket unverifiable.
+    function verifierList(
+        address n4,
+        address n8,
+        address n16,
+        address n32,
+        address n64,
+        address n128
+    )
+        internal
+        pure
+        returns (address[] memory verifiers)
+    {
+        verifiers = new address[](6);
         verifiers[0] = n4;
+        verifiers[1] = n8;
+        verifiers[2] = n16;
+        verifiers[3] = n32;
+        verifiers[4] = n64;
+        verifiers[5] = n128;
     }
 
     /// @notice Collects every privileged production principal in one canonical order.

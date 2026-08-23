@@ -39,6 +39,11 @@ contract ProductionDeploymentTest is Test {
         _setAddressEnv("RATE_LIMITER_ACCOUNT", address(0xB007));
 
         _setAddressEnv("VERIFIER_N4", address(new ProductionVerifierMock()));
+        _setAddressEnv("VERIFIER_N8", address(new ProductionVerifierMock()));
+        _setAddressEnv("VERIFIER_N16", address(new ProductionVerifierMock()));
+        _setAddressEnv("VERIFIER_N32", address(new ProductionVerifierMock()));
+        _setAddressEnv("VERIFIER_N64", address(new ProductionVerifierMock()));
+        _setAddressEnv("VERIFIER_N128", address(new ProductionVerifierMock()));
 
         vm.setEnv("SECURITY_DELAY", vm.toString(SECURITY_DELAY));
         address launchToken = address(new TestERC20());
@@ -97,6 +102,11 @@ contract ProductionDeploymentTest is Test {
         _setValidEnv();
         _setAddressEnv("VERIFIER_N4", address(0xBEEF));
         vm.expectRevert("all verifier buckets require deployed code");
+        deployer.run();
+
+        _setValidEnv();
+        _setAddressEnv("VERIFIER_N8", vm.envAddress("VERIFIER_N4"));
+        vm.expectRevert("verifier buckets must be distinct contracts");
         deployer.run();
 
         _setValidEnv();

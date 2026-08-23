@@ -53,6 +53,11 @@ contract ProductionDeploy is Script, SpectreMsgs, DeployAccessManagerWithRoles {
         address watcher = vm.envAddress("MISBEHAVIOUR_WATCHER");
         address rateLimiter = vm.envAddress("RATE_LIMITER_ACCOUNT");
         address verifierN4 = vm.envAddress("VERIFIER_N4");
+        address verifierN8 = vm.envAddress("VERIFIER_N8");
+        address verifierN16 = vm.envAddress("VERIFIER_N16");
+        address verifierN32 = vm.envAddress("VERIFIER_N32");
+        address verifierN64 = vm.envAddress("VERIFIER_N64");
+        address verifierN128 = vm.envAddress("VERIFIER_N128");
         uint256 configuredDelay = vm.envOr("SECURITY_DELAY", uint256(DEFAULT_DELAY));
         LaunchConfig memory launch = _loadLaunchConfig();
 
@@ -65,7 +70,9 @@ contract ProductionDeploy is Script, SpectreMsgs, DeployAccessManagerWithRoles {
         require(pauser1 != address(0) && pauser2 != address(0), "need two pausers");
         require(unpauser != address(0) && rateLimiter != address(0), "missing safety account");
 
-        address[] memory verifiers = ProductionConfigLib.verifierList(verifierN4);
+        address[] memory verifiers = ProductionConfigLib.verifierList(
+            verifierN4, verifierN8, verifierN16, verifierN32, verifierN64, verifierN128
+        );
         for (uint256 i = 0; i < verifiers.length; ++i) {
             require(verifiers[i].code.length != 0, "all verifier buckets require deployed code");
         }
@@ -105,6 +112,11 @@ contract ProductionDeploy is Script, SpectreMsgs, DeployAccessManagerWithRoles {
         SignatureVerifier signatureVerifier = new SignatureVerifier(address(accessManager));
         bytes4 verifierSelector = IGroth16Verifier.verifyProof.selector;
         _registerBucket(accessManager, signatureVerifier, 4, verifierN4, verifierSelector);
+        _registerBucket(accessManager, signatureVerifier, 8, verifierN8, verifierSelector);
+        _registerBucket(accessManager, signatureVerifier, 16, verifierN16, verifierSelector);
+        _registerBucket(accessManager, signatureVerifier, 32, verifierN32, verifierSelector);
+        _registerBucket(accessManager, signatureVerifier, 64, verifierN64, verifierSelector);
+        _registerBucket(accessManager, signatureVerifier, 128, verifierN128, verifierSelector);
 
         address membership = address(new Membership());
         address updateClient = address(new UpdateClient(address(signatureVerifier)));

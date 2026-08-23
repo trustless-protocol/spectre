@@ -66,12 +66,22 @@ contract ProductionVerify is Script {
         ProductionConfigLib.requireDistinct(principals, "role separation failure");
 
         bytes4 verifierSelector = IGroth16Verifier.verifyProof.selector;
-        address[] memory verifiers = ProductionConfigLib.verifierList(vm.envAddress("VERIFIER_N4"));
+        address[] memory verifiers = ProductionConfigLib.verifierList(
+            vm.envAddress("VERIFIER_N4"),
+            vm.envAddress("VERIFIER_N8"),
+            vm.envAddress("VERIFIER_N16"),
+            vm.envAddress("VERIFIER_N32"),
+            vm.envAddress("VERIFIER_N64"),
+            vm.envAddress("VERIFIER_N128")
+        );
         // Re-checked here, not only at deploy time: a deployment made before this precondition
         // existed must not pass verification. See ProductionConfigLib.verifierList.
         ProductionConfigLib.requireDistinct(verifiers, "verifier buckets must be distinct contracts");
 
-        _checkBucket(verifier, 4, verifiers[0], verifierSelector);
+        uint16[6] memory buckets = [uint16(4), 8, 16, 32, 64, 128];
+        for (uint256 i = 0; i < buckets.length; ++i) {
+            _checkBucket(verifier, buckets[i], verifiers[i], verifierSelector);
+        }
 
         _checkRoleAbsent(manager, IBCRolesLib.ADMIN_ROLE, bootstrap, "bootstrap admin role still active");
         _checkRole(manager, IBCRolesLib.ADMIN_ROLE, governance, "governance admin role missing");
