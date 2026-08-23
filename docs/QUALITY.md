@@ -1,111 +1,39 @@
-# Quality & Testing
+# Quality and Testing
 
-## Test Strategy
+## Solidity (Foundry)
 
-### Solidity (Foundry)
+| Scope | Location | Command |
+|---|---|---|
+| Core | `test/core/` | `forge test --match-path 'test/core/*'` |
+| ICS-20 | `test/apps/ics20/` | `forge test --match-path 'test/apps/ics20/*'` |
+| Spectre | `test/light-clients/spectre/` | `forge test --match-path 'test/light-clients/spectre/*'` |
+| Integration | `test/integration/` | `forge test --match-path 'test/integration/*'` |
+| Deployment | `test/deployment/` | `forge test --match-path 'test/deployment/*'` |
+| Full non-shadowfork | `test/` | `forge test --no-match-path 'test/shadowfork/*'` |
+| Compatibility | `test/compatibility/` | `scripts/solidity-refactor/checker-self-test.sh` |
 
-| Type | Location | Command |
-|------|----------|---------|
-| Unit tests | `test/solidity-ibc/` | `just test-foundry` |
-| Fixture tests | `test/solidity-ibc/FixtureTest.t.sol` | `forge test --match-contract FixtureTest` |
-| Encoding cross-validation | `test/solidity-ibc/EncodeTest.t.sol` | `forge test --match-contract EncodeTest` |
-| Gas benchmarks | `test/solidity-ibc/BenchmarkTest.t.sol` | `just test-benchmark <name>` |
-| Shadowfork tests | `test/shadowfork/` | Requires `ETH_RPC_URL` env var |
-| Groth16 light client | `test/spectre/` | `forge test --match-path test/spectre/` |
-
-Run a single test:
-```bash
-forge test --match-test testSendTransfer -vvv
-```
-
-### Go (Relayer)
-
-| Type | Location | Command |
-|------|----------|---------|
-| Unit tests | `relayer/*/` | `cd relayer && go test ./...` |
-| Race detection | — | `cd relayer && go test -race ./...` |
-| Single package | — | `cd relayer && go test -v ./prover/...` |
-| Single test | — | `cd relayer && go test -run TestName ./pkg/...` |
-
-Test files: `prover/`, `client/`, `subscriber/`, `services/`, `keys/`, `utils/`
-
-### Go (E2E)
-
-| Suite | Test File | Command |
-|-------|-----------|---------|
-| IBC Eureka | `ibc_eureka_test.go` | `just test-e2e-eureka` |
-| Relayer | `relayer_test.go` | `just test-e2e-relayer` |
-| Cosmos Relayer | `cosmos_relayer_test.go` | `just test-e2e-cosmos-relayer` |
-| Spectre light client | `spectre_client_test.go` | `just test-e2e TestWithSpectreClientTestSuite/<name>` |
-| Multi-chain | `multichain_test.go` | `just test-e2e-multichain` |
-
-Requires: Docker Desktop, Kurtosis, compiled relayer binary, Groth16 network key.
-
-### Rust
-
-```bash
-just test-cargo              # All Rust tests
-just test-cargo <name>       # Single test
-```
-
-## Encoding Cross-Validation
-
-`Encode.sol` and `Header.sol` are cross-validated against Go `proto.Marshal()`
-via `forge test --match-contract EncodeTest -vvv`. Test fixtures contain the
-expected Go-reference hex; any encoding change MUST keep these tests green.
+The handwritten format gate is `scripts/check-solidity-format.sh`; generated verifier implementations are excluded. The complete structural gate is `scripts/check-solidity-compatibility.sh`, which enforces ABI, storage, bytecode, hot-path gas, fixture, binding, verifier, test-inventory, architecture, and protected-source boundaries.
 
 ## Foundry Configuration
 
-From `foundry.toml`:
-- Solidity `0.8.28`, EVM `cancun`
-- Optimizer: 10,000 runs with `--via-ir`
-- Fuzz: 100,000 runs locally, 5,000 in CI
-- Fixed block timestamp for reproducibility
+`foundry.toml` pins Solidity 0.8.28, Cancun, optimizer runs 1,000, `via_ir = true`, no bytecode metadata hash, and 100,000 local fuzz runs. CI pins Foundry v1.7.1.
 
-## Test Fixtures
+## Generated Prover Boundary
 
-Groth16 proof fixtures live in `test/solidity-ibc/fixtures/` and `test/spectre/fixtures/`
-(generated on demand, not committed). There is no dedicated `just` recipe — regenerate them by
-running the relevant e2e suite with `GENERATE_SOLIDITY_FIXTURES=true`, e.g.:
-```bash
-GENERATE_SOLIDITY_FIXTURES=true just test-e2e TestWithSpectreClientTestSuite/Test_UpdateClient
-```
-The wasm-client and Tendermint-light-client fixtures have their own recipes:
-```bash
-just generate-fixtures-wasm
-just generate-fixtures-tendermint-light-client
-```
+The supported verifier set is N4 only. Run `scripts/solidity-refactor/build-prover-artifacts.sh` to generate R1CS, proving key, verifying key, and Solidity verifier into ignored staging, smoke-test the pair, publish only N4, and record runtime provenance. Groth16 setup is randomized, so artifacts from different setup runs must never be mixed.
 
-## Linting
+## Cross-Language Consumers
 
 ```bash
-just lint                 # All linters
-just lint-solidity        # forge fmt + solhint + natlint
-just lint-go              # golangci-lint
-just lint-rust            # cargo fmt + cargo clippy
-just lint-buf             # Protobuf linting
+cargo test --locked -p ibc-eureka-solidity-types --all-features
+cd packages/go-abigen && go test ./...
+cd relayer && LD_LIBRARY_PATH=../third_party/ecip-gnark go test ./...
 ```
 
-## Security
+ABI and binding generation is controlled by `scripts/solidity-refactor/contracts.json` and requires `abigen` 1.17.2-stable. Solidity fixture staging uses `test/fixtures/solidity/` and Spectre fixture staging uses `test/fixtures/spectre/`.
 
-```bash
-just slither              # Slither static analysis
-```
+## Automated CI
 
-Config in `.slither.config.json`: excludes low/informational findings and dependencies.
+`.github/workflows/solidity.yml` runs on pushes to `main`, pull requests, and manual dispatch. It checks out the private prover submodules with `SUBMODULE_TOKEN`, builds the Garaga FFI, generates a paired N4 set, checks formatting, force-builds sizes, runs Foundry and Rust, and executes the compatibility self-tests.
 
-## CI/CD
-
-7 GitHub workflows in `.github/workflows/`, all **manually triggered** (Actions tab) — there is no
-automatic PR/push CI at the moment (`go.yml`'s `push`/`pull_request` triggers are commented out):
-
-- `go.yml` — builds the Go relayer and runs `go test ./...` (checks out the private gnark submodules
-  and builds the Garaga FFI first). `workflow_dispatch` only.
-- `e2e-suite.yml` — reusable matrix runner invoked via `workflow_call`. Does the heavy setup
-  (submodules, Garaga, Kurtosis, Foundry tooling, prover artifacts), discovers `TestWith<Suite>/Test_*`
-  methods, and runs them as a parallel matrix.
-- Five per-suite caller workflows (`workflow_dispatch` with `ref`/`filter` inputs) that delegate to
-  `e2e-suite.yml`: `e2e-ibc-eureka.yml`, `e2e-relayer.yml`, `e2e-cosmos-relayer.yml`,
-  `e2e-spectre.yml`, `e2e-multichain.yml`.
-
-Solidity unit tests, linting, and Slither are run locally via `just` (no dedicated CI workflow).
+The existing Go and E2E workflows retain their documented trigger policies.

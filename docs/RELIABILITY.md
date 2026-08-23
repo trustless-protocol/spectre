@@ -4,7 +4,7 @@
 
 ### Solidity
 
-- Custom errors defined in `contracts/errors/` (gas-efficient vs string reverts)
+- Custom errors live with their owning package (gas-efficient vs string reverts)
 - `require()` with descriptive messages for input validation
 - Proof verification failures revert the entire transaction (atomic)
 
@@ -66,8 +66,8 @@ See `docs/metrics.md` for full guide. Focus on:
 | CometBFT WebSocket disconnect | Missed packets | `SubscribeCosmos` retries failed subscriptions and periodically backfills missed Cosmos events with `TxSearch` |
 | Ethereum RPC rate limiting | Delayed relaying | Configurable retry backoff |
 | Groth16 proof generation timeout | Stalled client update | Relayer restart |
-| Circuit artifact mismatch | Proof verification failure | Per-bucket `bin/n{N}/{r1cs,pk,vk}.bin`; redeploy `Groth16Verifier_N{N}.sol` + SignatureVerifier bucket registry whenever artifacts are regenerated |
-| Quorum exceeds largest bucket | Cosmos→ETH updates stall | Add a larger entry to `prover.Buckets`, recompile via `prover/cmd`, redeploy verifiers |
+| Circuit artifact mismatch | Proof verification failure | Paired N4 `bin/n4/{r1cs,pk,vk}.bin`; redeploy `Groth16Verifier_N4.sol` and update the SignatureVerifier N4 registry whenever artifacts are regenerated |
+| Quorum exceeds largest bucket | Cosmos→ETH updates stall | Treat as an unsupported-chain launch blocker; add a bucket only through a coordinated prover, verifier, deployment, and manifest change |
 | `go.mod` replace directive | Build failure on new dev machine | Document local path setup |
 | ETH→Cosmos relay | Relies on Ethereum event subscription + beacon finality availability | Fully implemented via the `evm` source + `cosmos` destination adapters: `RelayableHeight` gates on the finalized exec block, the `beacon` builder + `cosmos` destination advance the 08-wasm client (`WaitForCosmosCatchUp`), the ETH storage proof is fetched by `evm.Source.MembershipProof`, and `MsgRecvPacket` / `MsgAcknowledgement` are broadcast to Cosmos; terminal `EthAck` / `EthTimeout` clear ETH pending state and are otherwise log-only |
 | Ethereum sync committee period crossing | Stale Ethereum light client on Cosmos | Multi-period update logic in routine.go handles period boundary transitions |
@@ -87,4 +87,4 @@ See `docs/metrics.md` for full guide. Focus on:
 - **Frozen client**: Requires governance action (admin upgrade or new client deployment)
 - **Nonce error**: Relayer re-queries account sequence and retries
 - **Counterparty upgrade / hard-fork**: If a counterparty chain undergoes a hard-fork or client upgrade that changes light client rules, the existing Tendermint light client contract will be bricked. Because the `upgradeClient` interface is not supported, recovery requires deploying a new light client contract instance, registering it in the router, and re-configuring the relayer to use the new client ID.
-- **Circuit update**: From `relayer/`, run `go run ./prover/cmd ./bin ../contracts/verifiers` to regenerate every bucket's artifacts and emit fresh `Groth16Verifier_N{N}.sol`; for GPU proving use `go run -tags=icicle ./prover/cmd -gpu-prove ./bin ../contracts/verifiers`; redeploy each per-bucket verifier and re-register them via `SignatureVerifier.setBucket(...)` before the next E2E run
+- **Circuit update**: Run `scripts/solidity-refactor/build-prover-artifacts.sh` to regenerate the paired N4 artifacts and provenance; redeploy `Groth16Verifier_N4.sol` and re-register bucket 4 via `SignatureVerifier.setBucket(...)` before the next E2E run

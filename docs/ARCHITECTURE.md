@@ -249,21 +249,23 @@ Header.hashValSet()               ↔   ValidatorSet.Hash() (proto-encoded → m
 Header internal merkle hashing    ↔   merkle.HashFromByteSlices() (1-byte prefix)
 ```
 
-Cross-validated via `test/solidity-ibc/EncodeTest.t.sol`.
+Cross-validated via `test/light-clients/spectre/EncodeTest.t.sol`.
 
 ## Directory Map
 
 | Directory | Language | Purpose |
 |-----------|----------|---------|
 | `contracts/` | Solidity | Core IBC protocol, ICS20, light client, encoding |
-| `contracts/utils/` | Solidity | Encoding, hashing, verifiers, helpers |
-| `contracts/light-clients/modules/` | Solidity | UpdateClient, Membership, Misbehaviour verification modules |
-| `contracts/light-clients/` | Solidity | SpectreClient + SignatureVerifier + message types |
-| `contracts/light-clients/` | Solidity | Light client implementations |
+| `contracts/core/` | Solidity | ICS-02 registry, ICS-24 commitments, ICS-26 routing, migration |
+| `contracts/apps/ics20/` | Solidity | ICS-20 transfer, escrow, voucher, callbacks, and rate limits |
+| `contracts/light-clients/` | Solidity | Compatibility interface and message leaf |
+| `contracts/light-clients/spectre/` | Solidity | Spectre client, verifier boundary, modules, stores, messages, and libraries |
+| `contracts/shared/` | Solidity | Dependency-free access, byte, and interface primitives |
+| `contracts/periphery/` | Solidity | Relayer and AccessManager selector helpers |
 | `relayer/` | Go | Relayer CLI + Groth16 prover |
 | `relayer/cmd/` | Go | CLI: start, create-clients-{cosmos,eth}, update-client, genesis, fixtures |
 | `relayer/prover/` | Go | Bucketed Ed25519 batch prover (BatchCircuit, witness hash, dummy padding) |
-| `relayer/prover/cmd/` | Go | One-shot tool: compile + setup every bucket, write artifacts + emit `Groth16Verifier_N{N}.sol` |
+| `relayer/prover/cmd/` | Go | One-shot tool: compile + setup the supported N4 bucket, write paired artifacts, and emit `Groth16Verifier_N4.sol` |
 | `relayer/prover/bin/` | binary | Per-bucket circuit artifacts (`bin/n{N}/{r1cs,pk,vk}.bin`) |
 | `relayer/client/` | Go | Tendermint RPC + Ethereum Beacon API + Ethereum light client state |
 | `relayer/runner/` | Go | Service runner utilities |

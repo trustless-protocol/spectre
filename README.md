@@ -40,10 +40,11 @@ host-query wiring, and verification commands are documented in
 
 The Tendermint commit is verified by batch-proving N Ed25519 signatures whose
 voting power sums to ≥ 2/3 of the validator set. To keep Groth16 circuits
-fixed-size, the prover picks the smallest **bucket** (N ∈ {4, 8, 16, 32, 64,
-128}) that fits the required signers and pads the rest with deterministic
-dummy keypairs. Each bucket has its own `(r1cs, pk, vk)` artifacts and a
-matching `Groth16Verifier_N{N}.sol`; `SignatureVerifier` dispatches by bucket.
+fixed-size, the current supported manifest provides only bucket N=4 and pads
+unused slots with deterministic dummy keypairs. Its `(r1cs, pk, vk)` artifacts
+and `Groth16Verifier_N4.sol` are one inseparable generated set. A quorum that
+needs more than four signers is unsupported until a larger bucket is added through
+a coordinated prover, verifier, deployment, and manifest change.
 
 The circuit reconstructs each validator's `CanonicalVote` bytes from a shared
 block header + per-slot `Timestamp`, hashes the full witness (active flag,
@@ -277,7 +278,7 @@ Core IBC protocol contracts:
 - `ICS20Transfer.sol` — Fungible token transfer (ICS-20)
 - `SpectreClient.sol` — Tendermint light client (2/3 quorum + batch verify; owns client state in an ERC-7201 Store)
 - `SignatureVerifier.sol` — Rebuilds CanonicalVote bytes, hashes witness, dispatches per bucket
-- `Groth16Verifier_N{N}.sol` — Per-bucket Groth16 verifiers (N ∈ {4,8,16,32,64,128})
+- `Groth16Verifier_N4.sol` — Generated verifier for the currently supported N4 bucket
 - `Membership.sol` — On-chain ICS23 Merkle proof verification
 
 ## License

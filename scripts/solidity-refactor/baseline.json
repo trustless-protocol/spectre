@@ -1,0 +1,364 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "b75a613a2d020b1e9717df672a066788bf9ccf30",
+  "gas_baseline": {
+    "max_regression_percent": 5,
+    "contracts": {
+      "RecvPacketGasTest": {
+        "test_gas_recvPacket_n004()": 7871465,
+        "test_gas_recvPacket_n008()": 8066965,
+        "test_gas_recvPacket_n016()": 8412737,
+        "test_gas_recvPacket_n032()": 8797413,
+        "test_gas_recvPacket_n064()": 10050098,
+        "test_gas_recvPacket_n128()": 13134620
+      },
+      "UpdateClientGasTest": {
+        "test_calldataDiet_n4()": 89224,
+        "test_gas_n4()": 4583350,
+        "test_gas_n8()": 4755980,
+        "test_gas_n16()": 5063917,
+        "test_gas_n16_cacheHitAdjacentUpdate()": 5441456,
+        "test_gas_n16_cacheHitReplay()": 5223570,
+        "test_gas_n32()": 5410795,
+        "test_gas_n64()": 6541344,
+        "test_gas_n128()": 9381116,
+        "test_gas_n128_cacheHitAdjacentUpdate()": 11234818,
+        "test_gas_n128_cacheHitReplay()": 10069027
+      }
+    }
+  },
+  "storage_namespaces": {
+    "ICS26Router": {
+      "structs": {
+        "ICS26RouterStorage": "mapping(string => IIBCApp) _apps;"
+      },
+      "slots": {
+        "ICS26ROUTER_STORAGE_SLOT": "0xc5779f3c2c21083eefa6d04f6a698bc0d8c10db124ad5e0df6ef394b6d7bf600"
+      },
+      "namespaces": [
+        "erc7201:ibc.storage.ICS26Router"
+      ]
+    },
+    "ICS02Client": {
+      "structs": {
+        "ClientMigration": "bytes32 digest; uint48 executeAfter; uint48 expireAfter; address proposer;",
+        "Layout": "mapping(string clientId => ILightClient) clients; mapping(string clientId => IICS02ClientMsgs.CounterpartyInfo info) counterpartyInfos; uint256 nextClientSeq; mapping(string clientId => ClientMigration migration) migrations;"
+      },
+      "slots": {
+        "STORAGE_SLOT": "0x515a8336edcaab4ae6524d41223c1782132890f89189ba6632107a7b5a449600"
+      },
+      "namespaces": [
+        "erc7201:ibc.storage.ICS02Client"
+      ]
+    },
+    "IBCStore": {
+      "structs": {
+        "IBCStoreStorage": "mapping(bytes32 hashedPath => bytes32 commitment) commitments; mapping(string clientId => uint64 prevSeqSend) prevSequenceSends;"
+      },
+      "slots": {
+        "IBCSTORE_STORAGE_SLOT": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600"
+      },
+      "namespaces": []
+    },
+    "DeprecatedAdmin": {
+      "structs": {
+        "IBCUUPSUpgradeableStorage": "address timelockedAdmin; address govAdmin;"
+      },
+      "slots": {
+        "IBCUUPSUPGRADEABLE_STORAGE_SLOT": "0xba83ed17c16070da0debaa680185af188d82c999a75962a12a40699ca48a2b00"
+      },
+      "namespaces": []
+    },
+    "ICS20Transfer": {
+      "structs": {
+        "ICS20TransferStorage": "mapping(string clientId => IEscrow escrow) _escrows; mapping(string => IMintableAndBurnable) _ibcERC20Contracts; mapping(address => string) _ibcERC20Denoms; IICS26Router _ics26; UpgradeableBeacon _ibcERC20Beacon; UpgradeableBeacon _escrowBeacon; ISignatureTransfer _permit2; bool _requirePrecreatedEscrows; mapping(string clientId => bool active) _activeEscrows; mapping(string clientId => mapping(uint64 sequence => uint256 usageRemoved)) _refundRateLimitCredits;"
+      },
+      "slots": {
+        "ICS20TRANSFER_STORAGE_SLOT": "0x823f7a8ea9ae6df0eb03ec5e1682d7a2839417ad8a91774118e6acf2e8d2f800"
+      },
+      "namespaces": [
+        "erc7201:ibc.storage.ICS20Transfer"
+      ]
+    },
+    "Escrow": {
+      "structs": {
+        "EscrowStorage": "address _ics20;"
+      },
+      "slots": {
+        "ESCROW_STORAGE_SLOT": "0x537eb9d931756581e7ea6f7811162c646321946650ac0ac6bf83b24932e41600"
+      },
+      "namespaces": []
+    },
+    "IBCERC20": {
+      "structs": {
+        "IBCERC20Storage": "string _fullDenomPath; address _escrow; address _ics20; bool _customMetadataSet; uint8 _customDecimals; string _customName; string _customSymbol;"
+      },
+      "slots": {
+        "IBCERC20_STORAGE_SLOT": "0x1dd677b5a02f77610493322b5fdbbfdb607b541c6e6045daab3464e895dea800"
+      },
+      "namespaces": []
+    },
+    "RateLimit": {
+      "structs": {
+        "RateLimitStorage": "mapping(address token => uint256 limit) _rateLimits; mapping(address token => uint256 usage) _usage; mapping(address token => uint256 lastUpdate) _lastUpdate;"
+      },
+      "slots": {
+        "RATELIMIT_STORAGE_SLOT": "0xcb05b6cb8e6c87c443cb04d44193d7d46d51c1198725a0ee3478d5baa736c100"
+      },
+      "namespaces": []
+    },
+    "SpectreClient": {
+      "structs": {
+        "PinnedValidatorSetSnapshot": "bytes32 validatorsHash; address pointer; uint64 totalVotingPower; uint16 entryCount; uint128 timestamp;",
+        "Store": "IICS07TendermintMsgs.ClientState clientState; mapping(uint64 height => bytes32 hash) consensusStateHashes; bytes32 pinnedValidatorsHash; address pinnedValidatorSetPointer; uint64 pinnedTotalVotingPower; uint16 pinnedEntryCount; mapping(uint64 height => PinnedValidatorSetSnapshot snapshot) snapshots; uint64[] snapshotHeights; uint128 pinnedTimestamp;"
+      },
+      "slots": {
+        "STORE_SLOT": "0x5e9f695da54d5993169597b18a19a3159f4a62cbfd7f6669a996ca09c6df1700"
+      },
+      "namespaces": [
+        "erc7201:spectre.storage.SpectreClient"
+      ]
+    }
+  },
+  "artifact_contracts": {
+    "ICS26Router": {
+      "abi_sha256": "25fd4076494cb09dd7d21b27ef81ec45a6753ad151686a693fd5e89840150ad3",
+      "runtime_sha256": "4b697b868a77fb88c8c018e5e746bb0bfb4a58c6e6b9d06540efd3a90bdacc47",
+      "initcode_sha256": "5747dcc9276258a95ae2144f29d782d18aa1f3e60a5249c36a2f88c849fefb3e",
+      "runtime_bytes": 24465,
+      "initcode_bytes": 25471
+    },
+    "ICS20Transfer": {
+      "abi_sha256": "9f6935380806fd4a96d93d6f1179749617ecf1b0b442b715490a4ef6d0085475",
+      "runtime_sha256": "7ae15a9cca268862a531d65a00cde5f00ccb14a58ef0240263f82a060593b3e5",
+      "initcode_sha256": "957d61f653434c33c06de1657a93f7154b4c723184c48cded4ac10d0624c57c8",
+      "runtime_bytes": 22224,
+      "initcode_bytes": 22455
+    },
+    "SpectreClient": {
+      "abi_sha256": "28275e2450b4b0c2c5a8e03366372efacd896b74e780ed4c4a01dafbd6b3e6a5",
+      "runtime_sha256": "f41cdbdf593b67440cc2039e06e0f342755bb68c2fba2fabcb6c92249f814505",
+      "initcode_sha256": "ac8d9f5983f403907748e46c0d5dab00c750b5c99a4281fac88f439dc801412a",
+      "runtime_bytes": 19390,
+      "initcode_bytes": 26409
+    },
+    "SignatureVerifier": {
+      "abi_sha256": "6310cf5150e006ae38e7bf99d1498b152b1f9e48e2be370df71280056e583795",
+      "runtime_sha256": "e91565ed920d19924c9306cd3a87ae5936c6a03be42551246b6ea160ee3c7d43",
+      "initcode_sha256": "e9ad6bfa3fadecd6cb2f22e432584c7f548f6df8cc4d3ccd6603a3c4557e1739",
+      "runtime_bytes": 2186,
+      "initcode_bytes": 2339
+    },
+    "Membership": {
+      "abi_sha256": "bcf2015bdfa67587a15d96aed78b14166c2a570e8fa8264d983cfa2eb9121e1f",
+      "runtime_sha256": "b1cb3682406676cb2ae95c36f63eef8112d35f6672c4ddf92884a581d8271280",
+      "initcode_sha256": "09d9fcd01768ef0e17b8eff9f343704faf3e334e8f831687b8d045ad6b58891e",
+      "runtime_bytes": 12317,
+      "initcode_bytes": 12343
+    },
+    "Misbehaviour": {
+      "abi_sha256": "e6c7a750b9c2362ea49d0df46cc6f67d31f68009e62b13f09c4e420a1dcc599d",
+      "runtime_sha256": "35df5626a7559a75372d2e9f4643f55497f94798f805100a58abf8ab0a164d78",
+      "initcode_sha256": "5df597ceaf782c091013db2e435e070c8d3bcc9ed21dd62fac69afcf2021bd94",
+      "runtime_bytes": 7937,
+      "initcode_bytes": 8078
+    },
+    "UpdateClient": {
+      "abi_sha256": "c4ecb294a1bee959cbef1ad1a2dd81ed1df3b44267902c8cc032d02f11e9860d",
+      "runtime_sha256": "cfa8eac790afa840c74dc6adc2b5085037e4ddf3a3becfe01471cf4800f8c904",
+      "initcode_sha256": "d5756e8ebb50d4b3e7371f5fa64f91cf1220ac8e535d5ac5d000e0499d977c13",
+      "runtime_bytes": 8024,
+      "initcode_bytes": 8165
+    },
+    "ClientMigrationExecutor": {
+      "abi_sha256": "fb7b0a1b5fabea1ed72d1685501ed977813e263dc0751e3e8e4e94e5f9a1f0b2",
+      "runtime_sha256": "b7e25fb86e4e9140f6f49f9a7cc8aedff74d827e8489758d25b728cc6692df02",
+      "initcode_sha256": "7011f6d8963b9b22b45281a8778deb948a5ad7b67b55c1d8ecd65f81d9545624",
+      "runtime_bytes": 3419,
+      "initcode_bytes": 3464
+    },
+    "ClientMigrationProposer": {
+      "abi_sha256": "c7cc69a4a4fb788ebaa7d44345ab8194d55accf99de88541f25ec7eba2f73652",
+      "runtime_sha256": "18a4b3b38426e6fb57699c701748929a1a4066e0b3a8b34c01ff2f5805908e97",
+      "initcode_sha256": "2037a5e5d5f4f139cda91ed3b752aa9af89aa1c613ebca9e36f6c59a74768bd8",
+      "runtime_bytes": 3302,
+      "initcode_bytes": 3341
+    },
+    "Escrow": {
+      "abi_sha256": "0d7a03032988f96862e8a854ee83ceedfd97a8f9f6f9ccad1dbb5ac689584113",
+      "runtime_sha256": "bf3b4a4030247cfc2b70be09adb1aebc5bfad79cffe32e4b207e9e42f4faf72e",
+      "initcode_sha256": "f1bd6544374a15f70b2f0dcd61055861e471664c56e3306ac8f79559af601402",
+      "runtime_bytes": 4287,
+      "initcode_bytes": 4494
+    },
+    "IBCERC20": {
+      "abi_sha256": "2ca725a72fe9439ff9643da6e0232eee8b4509906e1564fa006f92dc7bd74210",
+      "runtime_sha256": "6089c9ee38673f727a8d8b76be881effbd9e42d356a6035ba91e9d613958ab76",
+      "initcode_sha256": "2c6700ba4b7abcf8ebc127ddcbdc22cadd4f41d8355e8eebce26a79a5f646424",
+      "runtime_bytes": 7680,
+      "initcode_bytes": 7887
+    },
+    "RelayerHelper": {
+      "abi_sha256": "b38a26b659b21a553c5e210ade376f06821a730ee7c58ac508fc6c28ed597232",
+      "runtime_sha256": "b3018bb04a7d32a105eb1045aee0f75eb3ca63e1b055722ed3a4fff9607ec3bf",
+      "initcode_sha256": "0d2e41104c10bf7e6472ef16996b7593fc80abec5769c50605030543f5000efa",
+      "runtime_bytes": 2828,
+      "initcode_bytes": 2969
+    },
+    "IBCStoreUpgradeable": {
+      "abi_sha256": "d09467f653eed6f886c482813804c0627efdc7d0de3202bc9ba2921e64372929",
+      "runtime_sha256": "a54942c8e365f3784f38b8d437f9d708290db60738b00cdcfb934c32d1be97f3",
+      "initcode_sha256": "a54942c8e365f3784f38b8d437f9d708290db60738b00cdcfb934c32d1be97f3",
+      "runtime_bytes": 0,
+      "initcode_bytes": 0
+    },
+    "ICS02ClientUpgradeable": {
+      "abi_sha256": "dad2bf07769ce7b5dd5029a2de7199994f5a332a103bf5e8dea11e8bb315cfe0",
+      "runtime_sha256": "a54942c8e365f3784f38b8d437f9d708290db60738b00cdcfb934c32d1be97f3",
+      "initcode_sha256": "a54942c8e365f3784f38b8d437f9d708290db60738b00cdcfb934c32d1be97f3",
+      "runtime_bytes": 0,
+      "initcode_bytes": 0
+    },
+    "RateLimitUpgradeable": {
+      "abi_sha256": "68a5862821657c0ddfbc6881672a323ba2abb31e6c20a143710419b8f6f1da72",
+      "runtime_sha256": "a54942c8e365f3784f38b8d437f9d708290db60738b00cdcfb934c32d1be97f3",
+      "initcode_sha256": "a54942c8e365f3784f38b8d437f9d708290db60738b00cdcfb934c32d1be97f3",
+      "runtime_bytes": 0,
+      "initcode_bytes": 0
+    },
+    "ICS02ClientStore": {
+      "abi_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    },
+    "ICS20Lib": {
+      "abi_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    },
+    "ICS24Host": {
+      "abi_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    },
+    "IBCIdentifiers": {
+      "abi_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    },
+    "IBCRolesLib": {
+      "abi_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    },
+    "IBCSenderCallbacksLib": {
+      "abi_sha256": "c8e428210a1d4c5a0041e183d7ddf296a759f3e999523ba7cb4fe4db72eb2d7a",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    },
+    "ValidatorSetLib": {
+      "abi_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    },
+    "ChainId": {
+      "abi_sha256": "ddca4b8ed77a031a86aa489cea81b7eb71e085b6e753e1a22af372396d004c9a",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    },
+    "Encode": {
+      "abi_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    },
+    "Header": {
+      "abi_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    },
+    "HeightCmp": {
+      "abi_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    },
+    "Paths": {
+      "abi_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    },
+    "SSTORE2": {
+      "abi_sha256": "b45f2b8331ec7a4c2bd627032435b9afc33dd6554ef5b93c4f4e197bc781e4b6",
+      "runtime_sha256": "8509f84d77b86ae6d78405ed894bb89f032a563102ae21cb2ac92234d42a465d",
+      "initcode_sha256": "77a5528be9ce1ddefe610588e1e034874d91e220d4610ffeed884463a07c5224",
+      "runtime_bytes": 16,
+      "initcode_bytes": 44
+    }
+  },
+  "digests": {
+    "abi/ERC20.json": "c94a1fcfb4439e44dbff50fe871bf69d50517bef526f851519eaf14bfc749493",
+    "abi/IBCERC20.json": "88c174aa0652097a281f879f990d4de5b5b30dd947ea91ddedf8ccad4aacf597",
+    "abi/ICS20Transfer.json": "dd424f9687fc12cb03315d43bc1ab7ac5e93cacaf6daa687d97a541f5c28baff",
+    "abi/ICS26Router.json": "d27bee067de9cbd33ab3f0baecc62f0585eb4ff005b09ac4646c6e547c3f1630",
+    "abi/RelayerHelper.json": "ba955f45976dc81174468654cabb63528a3bb61ba20b7567773f98652b323302",
+    "abi/SpectreClient.json": "45ec8ede80e194cb0888731ef6bfaf50e8f9592470997975f05965bbb0dafcd4",
+    "packages/go-abigen/go.mod": "69938d48d439a8837a2486b4cf71ebdcc2c7ed9fe7187989884ad7cdea53b584",
+    "packages/go-abigen/go.sum": "7c0ae35dedc6fb6b691c557645c435f69b534b217fedb4bc55725b001ad27d94",
+    "packages/go-abigen/ibcerc20/contract.go": "d6cdf7b828b7d99fdbb8424eabb7563175b84c9d8cdbb3fcb96a2e74bb896721",
+    "packages/go-abigen/ics20transfer/contract.go": "2845c1c1a06d411227c4ca2bbf0adaaffb73151cff9577b204bdd6ae9e0b6713",
+    "packages/go-abigen/ics26router/contract.go": "6e712b86ce9ee68be34591db580fb84de1eb381514e49bf817d3b1d517204470",
+    "packages/go-abigen/ics26router/store.go": "48dc8371c02ed747d8d9ce4566a86f1f9bc7d0fa5ee44ebf72a1b4a88479ee45",
+    "packages/go-abigen/relayerhelper/contract.go": "6f59aad705d44f48d334a60f7f14d2315e3b49e15c2cf25a1a4b76828f662235",
+    "packages/go-abigen/spectreclient/contract.go": "219bcf8d975b8a6c3df154053d8de4ec736b55b058e210e53f3d8a7eacdaa2a5",
+    "relayer/bindings/ICS20Transfer/binding.go": "92ae7186a665d44d6a968de5ecda59f77594e2217b797a9d84eeac1a099884e9",
+    "relayer/bindings/ICS26Router/binding.go": "9eda14ba8c812c91f64fb9b356586687092203d6e312afaf9196a471424c1f51",
+    "relayer/bindings/Membership/binding.go": "f071803c00b24b7df8e2113f13814dd3b8305b3e29a0df93f0e03d561f69941e",
+    "relayer/bindings/Misbehaviour/binding.go": "8390d99fd6cf6be73c872b90d03685a8cd45455ab8506c744a4b975adbda936f",
+    "relayer/bindings/SpectreClient/binding.go": "2ea4d7deab71b3ac73c9c384f9cf58e627c05b131f1b437e83d8d780d6551292",
+    "relayer/bindings/UpdateClient/binding.go": "a4dcb7d13c62b76500fa726665ff55c4c691ad1a94c97b3e7ee9f131c422e7ed",
+    "test/fixtures/witness_hash_vectors.json": "379221dfeaa1fc78facbe41fe77b2c2c4120f2fefc71c3f4d2f002eb21f007cb",
+    "docs/refactor/01-Solidity-Contracts.detailed.md": "b81c93b825863a43b93579e12fab44358c1ed857d25cebd23e34bc0ece39aed1",
+    "docs/refactor/01-Solidity-Contracts.detailed.vi.md": "224e35e1dc359c45ce904b4a6bdc68764902c78442fe2bf55d25286a76cb3772",
+    "docs/refactor/05-Wasm-Contracts.detailed.md": "20731951fe9ef672130be3b4e0380df85d03aff8904533ae7f0ff5fd1b42e0dc",
+    "docs/refactor/05-Wasm-Contracts.detailed.vi.md": "acb053faf0693407451716a420e41a2733cf9d3ebf72ddf53ce4b64b76c796f3"
+  },
+  "test_count": 34,
+  "semantic_artifact_digests": {
+    "abi/bytecode/SpectreClient.json": {
+      "abi_sha256": "28275e2450b4b0c2c5a8e03366372efacd896b74e780ed4c4a01dafbd6b3e6a5",
+      "initcode_sha256": "cc7eb1232c0f13b1c2af9e3268512f7e7a983c4942a833f5bcb2ce0f2a874737",
+      "runtime_sha256": "2fc85f2039221488c56dd999e53bd40e16c1b8a8c619bfb950ae49e1872419a6"
+    }
+  },
+  "accepted_tooling_deltas": [
+    {
+      "path": "abi/bytecode/SpectreClient.json",
+      "classification": "fully-qualified-source-metadata-only",
+      "runtime_effect": "none"
+    }
+  ],
+  "original_test_count": 33
+}

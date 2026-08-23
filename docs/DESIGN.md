@@ -20,7 +20,7 @@ forge test --match-contract EncodeTest -vvv  # Solidity output must match the Go
 - **UUPS proxy**: Core contracts (ICS26Router, ICS20Transfer, SpectreClient)
 - **Beacon proxy**: Instance contracts (IBCERC20, Escrow) — ICS20Transfer upgrades all atomically
 - **Access control**: OpenZeppelin `AccessManager` with roles in `IBCRolesLib.sol`
-- **Error handling**: Custom errors defined in `contracts/errors/` interfaces
+- **Error handling**: Custom errors owned by `contracts/core/errors/`, `contracts/apps/ics20/errors/`, and `contracts/light-clients/spectre/errors/`
 - **Storage layout**: `IBCStoreUpgradeable` + `ICS24Host` for deterministic storage slots
 
 ### Formatting
@@ -103,7 +103,7 @@ Key Rust workspace packages:
 
 ## Access Control Roles
 
-Defined in `contracts/utils/IBCRolesLib.sol`:
+Defined in `contracts/shared/access/IBCRolesLib.sol`:
 
 | Role | Value | Purpose |
 |------|-------|---------|

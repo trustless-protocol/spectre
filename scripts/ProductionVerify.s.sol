@@ -5,13 +5,14 @@ import { stdJson } from "forge-std/StdJson.sol";
 import { Script } from "forge-std/Script.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 import { TimelockController } from "@openzeppelin-contracts/governance/TimelockController.sol";
-import { ICS26Router } from "../contracts/ICS26Router.sol";
-import { ICS20Transfer } from "../contracts/ICS20Transfer.sol";
-import { SignatureVerifier } from "../contracts/light-clients/SignatureVerifier.sol";
-import { IBCRolesLib } from "../contracts/utils/IBCRolesLib.sol";
-import { ProductionConfigLib } from "./deployments/ProductionConfigLib.sol";
-import { IGroth16Verifier } from "../contracts/light-clients/interfaces/IGroth16Verifier.sol";
-import { IRateLimit } from "../contracts/interfaces/IRateLimit.sol";
+import { ICS26Router } from "contracts/core/ICS26Router.sol";
+import { ICS20Transfer } from "contracts/apps/ics20/ICS20Transfer.sol";
+import { SignatureVerifier } from "contracts/light-clients/spectre/SignatureVerifier.sol";
+import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
+import { IBCSelectorLib } from "contracts/periphery/access/IBCSelectorLib.sol";
+import { ProductionConfigLib } from "scripts/deployments/ProductionConfigLib.sol";
+import { IGroth16Verifier } from "contracts/light-clients/spectre/interfaces/IGroth16Verifier.sol";
+import { IRateLimit } from "contracts/apps/ics20/interfaces/IRateLimit.sol";
 
 /// @notice Read-only post-deployment checks for ProductionDeploy.
 /// @dev Governance must be a timelock whose minimum delay covers the
@@ -65,22 +66,12 @@ contract ProductionVerify is Script {
         ProductionConfigLib.requireDistinct(principals, "role separation failure");
 
         bytes4 verifierSelector = IGroth16Verifier.verifyProof.selector;
-        address[] memory verifiers = ProductionConfigLib.verifierList(
-            vm.envAddress("VERIFIER_N4"),
-            vm.envAddress("VERIFIER_N8"),
-            vm.envAddress("VERIFIER_N16"),
-            vm.envAddress("VERIFIER_N32"),
-            vm.envAddress("VERIFIER_N64"),
-            vm.envAddress("VERIFIER_N128")
-        );
+        address[] memory verifiers = ProductionConfigLib.verifierList(vm.envAddress("VERIFIER_N4"));
         // Re-checked here, not only at deploy time: a deployment made before this precondition
         // existed must not pass verification. See ProductionConfigLib.verifierList.
         ProductionConfigLib.requireDistinct(verifiers, "verifier buckets must be distinct contracts");
 
-        uint16[6] memory buckets = [uint16(4), 8, 16, 32, 64, 128];
-        for (uint256 i = 0; i < buckets.length; ++i) {
-            _checkBucket(verifier, buckets[i], verifiers[i], verifierSelector);
-        }
+        _checkBucket(verifier, 4, verifiers[0], verifierSelector);
 
         _checkRoleAbsent(manager, IBCRolesLib.ADMIN_ROLE, bootstrap, "bootstrap admin role still active");
         _checkRole(manager, IBCRolesLib.ADMIN_ROLE, governance, "governance admin role missing");
@@ -98,17 +89,17 @@ contract ProductionVerify is Script {
         );
         _checkRoleExactDelay(manager, IBCRolesLib.RATE_LIMITER_ROLE, rateLimiter, 0, "rate limiter role delay mismatch");
 
-        _checkSelectors(manager, router, IBCRolesLib.ics26RelayerSelectors(), IBCRolesLib.RELAYER_ROLE);
-        _checkSelectors(manager, router, IBCRolesLib.ics26IdCustomizerSelectors(), IBCRolesLib.ID_CUSTOMIZER_ROLE);
-        _checkSelectors(manager, router, IBCRolesLib.pauserSelectors(), IBCRolesLib.PAUSER_ROLE);
-        _checkSelectors(manager, router, IBCRolesLib.unpauserSelectors(), IBCRolesLib.UNPAUSER_ROLE);
+        _checkSelectors(manager, router, IBCSelectorLib.ics26RelayerSelectors(), IBCRolesLib.RELAYER_ROLE);
+        _checkSelectors(manager, router, IBCSelectorLib.ics26IdCustomizerSelectors(), IBCRolesLib.ID_CUSTOMIZER_ROLE);
+        _checkSelectors(manager, router, IBCSelectorLib.pauserSelectors(), IBCRolesLib.PAUSER_ROLE);
+        _checkSelectors(manager, router, IBCSelectorLib.unpauserSelectors(), IBCRolesLib.UNPAUSER_ROLE);
         _checkSelectors(
-            manager, router, IBCRolesLib.ics26MisbehaviourSelectors(), IBCRolesLib.MISBEHAVIOUR_SUBMITTER_ROLE
+            manager, router, IBCSelectorLib.ics26MisbehaviourSelectors(), IBCRolesLib.MISBEHAVIOUR_SUBMITTER_ROLE
         );
-        _checkSelectors(manager, router, IBCRolesLib.uupsUpgradeSelectors(), IBCRolesLib.UPGRADER_ROLE);
-        _checkSelectors(manager, transfer, IBCRolesLib.pauserSelectors(), IBCRolesLib.PAUSER_ROLE);
-        _checkSelectors(manager, transfer, IBCRolesLib.unpauserSelectors(), IBCRolesLib.UNPAUSER_ROLE);
-        _checkSelectors(manager, transfer, IBCRolesLib.upgraderSelectors(), IBCRolesLib.UPGRADER_ROLE);
+        _checkSelectors(manager, router, IBCSelectorLib.uupsUpgradeSelectors(), IBCRolesLib.UPGRADER_ROLE);
+        _checkSelectors(manager, transfer, IBCSelectorLib.pauserSelectors(), IBCRolesLib.PAUSER_ROLE);
+        _checkSelectors(manager, transfer, IBCSelectorLib.unpauserSelectors(), IBCRolesLib.UNPAUSER_ROLE);
+        _checkSelectors(manager, transfer, IBCSelectorLib.upgraderSelectors(), IBCRolesLib.UPGRADER_ROLE);
 
         bytes4[] memory setBucketSelector = new bytes4[](1);
         setBucketSelector[0] = SignatureVerifier.setBucket.selector;

@@ -1,0 +1,143 @@
+{
+  "schema_version": 1,
+  "baseline_count": 33,
+  "tests": [
+    {
+      "path": "test/apps/ics20/EscrowTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/apps/ics20/IBCERC20Test.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/apps/ics20/ICS20LibTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/apps/ics20/ICS20TransferStorageLayoutTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/apps/ics20/ICS20TransferTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/apps/ics20/RecvPacketGasTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/core/IBCAdminTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/core/IBCIdentifiersTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/core/ICS02ClientTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/core/ICS24HostTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/core/ICS26RouterTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/deployment/CompatibilityDeploymentTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/deployment/ProductionDeploymentTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/deployment/ProductionEscrowConfigTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/integration/EVMRollupIBCFlowTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/integration/Integration2Test.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/integration/Integration3Test.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/integration/IntegrationTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/integration/ReplayProofTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/ChainIdTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/EncodeTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/MembershipApplyOpsTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/MembershipCompareBytesTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/MembershipDepthTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/MembershipInnerSpecTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/MembershipNonExistenceRootTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/MembershipTrustingPeriodTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/MembershipValueLengthTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/MisbehaviourTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/SignatureVerifierBypassTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/SignatureVerifierHashEquivalenceTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/UpdateClientCacheTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/UpdateClientGasTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/ValidatorSetLibTest.t.sol",
+      "classification": "non-shadowfork"
+    }
+  ],
+  "current_count": 34
+}

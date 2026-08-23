@@ -83,12 +83,7 @@ install-go-relayer:
 # "present?" signal because bucket 4 is the smallest and is always built first.
 [group('build')]
 build-prover-artifacts:
-	@if [ ! -f relayer/bin/n4/vk.bin ] || [ ! -f contracts/verifiers/Groth16Verifier_N4.sol ]; then \
-		echo "Building prover artifacts..."; \
-		cd relayer && go run ./prover/cmd ./bin ../contracts/verifiers ; \
-	else \
-		echo "Prover artifacts already present, skipping setup"; \
-	fi
+	scripts/solidity-refactor/build-prover-artifacts.sh
 
 # Run all linters
 [group('lint')]
@@ -103,7 +98,7 @@ lint:
 [group('lint')]
 lint-solidity:
 	@echo "Linting the Solidity code..."
-	forge fmt --check
+	scripts/check-solidity-format.sh
 	bun solhint -w 0 '{scripts,contracts,test}/**/*.sol'
 	natlint run --include 'contracts/**/*.sol'
 
@@ -134,23 +129,12 @@ lint-rust:
 # Generate the (non-bytecode) ABI files for the contracts
 [group('generate')]
 generate-abi: build-contracts
-	jq '.abi' out/ICS26Router.sol/ICS26Router.json > abi/ICS26Router.json
-	jq '.abi' out/ICS20Transfer.sol/ICS20Transfer.json > abi/ICS20Transfer.json
-	jq '.abi' out/SpectreClient.sol/SpectreClient.json > abi/SpectreClient.json
-	jq '.abi' out/ERC20.sol/ERC20.json > abi/ERC20.json
-	jq '.abi' out/IBCERC20.sol/IBCERC20.json > abi/IBCERC20.json
-	jq '.abi' out/RelayerHelper.sol/RelayerHelper.json > abi/RelayerHelper.json
-	abigen --abi abi/ERC20.json --pkg erc20 --type Contract --out e2e/interchaintestv8/types/erc20/contract.go
-	abigen --abi abi/SpectreClient.json --pkg spectreclient --type Contract --out packages/go-abigen/spectreclient/contract.go
-	abigen --abi abi/ICS20Transfer.json --pkg ics20transfer --type Contract --out packages/go-abigen/ics20transfer/contract.go
-	abigen --abi abi/ICS26Router.json --pkg ics26router --type Contract --out packages/go-abigen/ics26router/contract.go
-	abigen --abi abi/IBCERC20.json --pkg ibcerc20 --type Contract --out packages/go-abigen/ibcerc20/contract.go
-	abigen --abi abi/RelayerHelper.json --pkg relayerhelper --type Contract --out packages/go-abigen/relayerhelper/contract.go
+	scripts/solidity-refactor/generate-bindings.sh shared
 
 # Generate the ABI files with bytecode for the required contracts (only SpectreClient)
 [group('generate')]
 generate-abi-bytecode: build-contracts
-	cp out/SpectreClient.sol/SpectreClient.json abi/bytecode
+	scripts/solidity-refactor/generate-bindings.sh bytecode
 
 # Generate the fixtures for the wasm tests using the e2e tests
 [group('generate')]
@@ -191,7 +175,7 @@ test-foundry testname=".\\*":
 # Run the benchmark tests
 [group('test')]
 test-benchmark testname=".\\*":
-	forge test -vvv --show-progress --gas-report --match-path test/solidity-ibc/BenchmarkTest.t.sol --match-test {{testname}}
+	forge test -vvv --show-progress --gas-report --match-path test/light-clients/spectre/UpdateClientGasTest.t.sol --match-test {{testname}}
 
 # Run the cargo tests
 [group('test')]

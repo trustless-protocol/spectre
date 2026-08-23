@@ -1,6 +1,6 @@
 # Attestor-trusted L2 ICS-08 clients
 
-Fast-IBC builds three checksum-distinct 08-wasm artifacts with unchanged filenames:
+Spectre builds three checksum-distinct 08-wasm artifacts with unchanged filenames:
 
 - `cw-ics08-wasm-arbitrum`;
 - `cw-ics08-wasm-base`; and

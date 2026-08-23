@@ -1,0 +1,63 @@
+name: Solidity compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Checkout private gnark submodules
+        run: |
+          git config --global url."https://x-access-token:${{ secrets.SUBMODULE_TOKEN }}@github.com/decentrio/gnark".insteadOf "https://github.com/decentrio/gnark"
+          git config --global url."https://x-access-token:${{ secrets.SUBMODULE_TOKEN }}@github.com/decentrio/ecip-gnark".insteadOf "https://github.com/decentrio/ecip-gnark"
+          git submodule update --init --recursive
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Garaga FFI
+        working-directory: third_party/ecip-gnark/ffi/garaga_rs
+        run: |
+          cargo build --release
+          cp target/release/libgaraga_rs.so ../..
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: relayer/go.mod
+          cache: true
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Install Solidity dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Generate paired N4 prover artifacts
+        run: scripts/solidity-refactor/build-prover-artifacts.sh
+
+      - name: Check handwritten Solidity formatting
+        run: scripts/check-solidity-format.sh
+
+      - name: Force-build production contracts and sizes
+        run: forge build --force --skip test --skip script --sizes
+
+      - name: Test Solidity
+        run: forge test --no-match-path 'test/shadowfork/*'
+
+      - name: Test Rust Solidity types
+        run: cargo test --locked -p ibc-eureka-solidity-types --all-features
+
+      - name: Check architecture and compatibility
+        run: scripts/solidity-refactor/checker-self-test.sh

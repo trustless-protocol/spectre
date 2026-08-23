@@ -8,7 +8,7 @@ pragma solidity ^0.8.28;
 ///      deployment made before the check existed would still pass verification.
 library ProductionConfigLib {
     /// @notice Reverts unless every address in the list is distinct.
-    /// @dev O(n^2), but n is 6-9 and this runs once per deployment.
+    /// @dev O(n^2), but the lists are small and this runs once per deployment.
     /// @param addrs The addresses that must not collide.
     /// @param message The revert reason, naming which set collided.
     function requireDistinct(address[] memory addrs, string memory message) internal pure {
@@ -19,32 +19,12 @@ library ProductionConfigLib {
         }
     }
 
-    /// @notice Collects the six bucket verifier addresses in bucket order.
-    /// @dev They must be six DIFFERENT contracts: each is generated from its own bucket's
-    ///      verifying key, so pointing two buckets at one address is not a duplicate
-    ///      configuration but a wrong one — every proof in the mis-pointed bucket fails
-    ///      on-chain against a VK built for a different signer count. With six near-identical
-    ///      env vars that is a plausible copy-paste, and nothing else catches it: the addresses
-    ///      are well-formed, the contracts have code, and the selectors match.
-    function verifierList(
-        address n4,
-        address n8,
-        address n16,
-        address n32,
-        address n64,
-        address n128
-    )
-        internal
-        pure
-        returns (address[] memory verifiers)
-    {
-        verifiers = new address[](6);
+    /// @notice Collects the supported N4 verifier address.
+    /// @dev The executable prover manifest is intentionally N4-only. Adding a bucket requires
+    ///      coordinated prover, verifier, deployment, verification, and manifest changes.
+    function verifierList(address n4) internal pure returns (address[] memory verifiers) {
+        verifiers = new address[](1);
         verifiers[0] = n4;
-        verifiers[1] = n8;
-        verifiers[2] = n16;
-        verifiers[3] = n32;
-        verifiers[4] = n64;
-        verifiers[5] = n128;
     }
 
     /// @notice Collects every privileged production principal in one canonical order.

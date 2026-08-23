@@ -1,7 +1,7 @@
 # UpdateClient benchmark
 
 Current values are the `bucket= ... gas= ...` logs emitted by
-`test/solidity-ibc/UpdateClientGasTest.t.sol`.
+`test/light-clients/spectre/UpdateClientGasTest.t.sol`.
 
 ## Command
 

@@ -6,7 +6,7 @@ import "fmt"
 // compiled circuit and (pk, vk) pair on disk under bin/n{N}/. The prover picks
 // the smallest bucket that fits the required signer count for a block.
 
-// var Buckets = []int{4, 8, 16, 32, 64, 128}
+// Buckets is intentionally N4-only. Additions require a coordinated verifier manifest change.
 var Buckets = []int{4}
 
 // SmallestBucketGEQ returns the smallest bucket size ≥ n. It errors when n

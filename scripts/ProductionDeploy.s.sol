@@ -9,23 +9,23 @@ import { Script } from "forge-std/Script.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 import { TimelockController } from "@openzeppelin-contracts/governance/TimelockController.sol";
 import { ERC1967Proxy } from "@openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import { ICS26Router } from "../contracts/ICS26Router.sol";
-import { ICS20Transfer } from "../contracts/ICS20Transfer.sol";
-import { SignatureVerifier } from "../contracts/light-clients/SignatureVerifier.sol";
-import { Membership } from "../contracts/light-clients/modules/Membership.sol";
-import { UpdateClient } from "../contracts/light-clients/modules/UpdateClient.sol";
-import { Misbehaviour } from "../contracts/light-clients/modules/Misbehaviour.sol";
-import { ClientMigrationProposer } from "../contracts/light-clients/modules/ClientMigrationProposer.sol";
-import { ClientMigrationExecutor } from "../contracts/light-clients/modules/ClientMigrationExecutor.sol";
-import { Escrow } from "../contracts/utils/Escrow.sol";
-import { IBCERC20 } from "../contracts/utils/IBCERC20.sol";
-import { ICS20Lib } from "../contracts/utils/ICS20Lib.sol";
-import { IICS07TendermintMsgs } from "../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
-import { DeployAccessManagerWithRoles } from "./deployments/DeployAccessManagerWithRoles.sol";
-import { ProductionConfigLib } from "./deployments/ProductionConfigLib.sol";
-import { IBCRolesLib } from "../contracts/utils/IBCRolesLib.sol";
-import { IGroth16Verifier } from "../contracts/light-clients/interfaces/IGroth16Verifier.sol";
-import { IRateLimit } from "../contracts/interfaces/IRateLimit.sol";
+import { ICS26Router } from "contracts/core/ICS26Router.sol";
+import { ICS20Transfer } from "contracts/apps/ics20/ICS20Transfer.sol";
+import { SignatureVerifier } from "contracts/light-clients/spectre/SignatureVerifier.sol";
+import { Membership } from "contracts/light-clients/spectre/modules/Membership.sol";
+import { UpdateClient } from "contracts/light-clients/spectre/modules/UpdateClient.sol";
+import { Misbehaviour } from "contracts/light-clients/spectre/modules/Misbehaviour.sol";
+import { ClientMigrationProposer } from "contracts/core/client/migration/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "contracts/core/client/migration/modules/ClientMigrationExecutor.sol";
+import { Escrow } from "contracts/apps/ics20/Escrow.sol";
+import { IBCERC20 } from "contracts/apps/ics20/IBCERC20.sol";
+import { ICS20Lib } from "contracts/apps/ics20/libraries/ICS20Lib.sol";
+import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { DeployAccessManagerWithRoles } from "scripts/deployments/DeployAccessManagerWithRoles.sol";
+import { ProductionConfigLib } from "scripts/deployments/ProductionConfigLib.sol";
+import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
+import { IGroth16Verifier } from "contracts/light-clients/spectre/interfaces/IGroth16Verifier.sol";
+import { IRateLimit } from "contracts/apps/ics20/interfaces/IRateLimit.sol";
 
 /// @dev GOVERNANCE_ADMIN must be an OpenZeppelin TimelockController (or a
 ///      compatible contract exposing `getMinDelay()`) whose delay is at least
@@ -53,11 +53,6 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
         address watcher = vm.envAddress("MISBEHAVIOUR_WATCHER");
         address rateLimiter = vm.envAddress("RATE_LIMITER_ACCOUNT");
         address verifierN4 = vm.envAddress("VERIFIER_N4");
-        address verifierN8 = vm.envAddress("VERIFIER_N8");
-        address verifierN16 = vm.envAddress("VERIFIER_N16");
-        address verifierN32 = vm.envAddress("VERIFIER_N32");
-        address verifierN64 = vm.envAddress("VERIFIER_N64");
-        address verifierN128 = vm.envAddress("VERIFIER_N128");
         uint256 configuredDelay = vm.envOr("SECURITY_DELAY", uint256(DEFAULT_DELAY));
         LaunchConfig memory launch = _loadLaunchConfig();
 
@@ -70,9 +65,7 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
         require(pauser1 != address(0) && pauser2 != address(0), "need two pausers");
         require(unpauser != address(0) && rateLimiter != address(0), "missing safety account");
 
-        address[] memory verifiers = ProductionConfigLib.verifierList(
-            verifierN4, verifierN8, verifierN16, verifierN32, verifierN64, verifierN128
-        );
+        address[] memory verifiers = ProductionConfigLib.verifierList(verifierN4);
         for (uint256 i = 0; i < verifiers.length; ++i) {
             require(verifiers[i].code.length != 0, "all verifier buckets require deployed code");
         }
@@ -112,11 +105,6 @@ contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWi
         SignatureVerifier signatureVerifier = new SignatureVerifier(address(accessManager));
         bytes4 verifierSelector = IGroth16Verifier.verifyProof.selector;
         _registerBucket(accessManager, signatureVerifier, 4, verifierN4, verifierSelector);
-        _registerBucket(accessManager, signatureVerifier, 8, verifierN8, verifierSelector);
-        _registerBucket(accessManager, signatureVerifier, 16, verifierN16, verifierSelector);
-        _registerBucket(accessManager, signatureVerifier, 32, verifierN32, verifierSelector);
-        _registerBucket(accessManager, signatureVerifier, 64, verifierN64, verifierSelector);
-        _registerBucket(accessManager, signatureVerifier, 128, verifierN128, verifierSelector);
 
         address membership = address(new Membership());
         address updateClient = address(new UpdateClient(address(signatureVerifier)));

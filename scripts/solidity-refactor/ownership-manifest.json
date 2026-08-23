@@ -1,0 +1,1183 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "b75a613a2d020b1e9717df672a066788bf9ccf30",
+  "policy": "Symbols in ABI-locked and runtime-locked files are unchanged; path changes are tooling-only and all first-party consumers migrate atomically.",
+  "entries": [
+    {
+      "current": "contracts/ICS20Transfer.sol",
+      "target": "contracts/apps/ics20/ICS20Transfer.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "runtime-and-storage-locked",
+      "consumers": [
+        "scripts/E2ETestDeploy.s.sol",
+        "scripts/E2ETestDeployL2.s.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "scripts/ProductionVerify.s.sol",
+        "test/apps/ics20/ICS20TransferStorageLayoutTest.t.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol",
+        "test/core/IBCAdminTest.t.sol",
+        "test/deployment/ProductionDeploymentTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/ICS26Router.sol",
+      "target": "contracts/core/ICS26Router.sol",
+      "owner": "core",
+      "compatibility_class": "runtime-and-storage-locked",
+      "consumers": [
+        "scripts/E2ETestDeploy.s.sol",
+        "scripts/E2ETestDeployL2.s.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "scripts/ProductionVerify.s.sol",
+        "test/core/IBCAdminTest.t.sol",
+        "test/core/ICS02ClientTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol",
+        "test/utils/SolidityLightClient.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/errors/IEscrowErrors.sol",
+      "target": "contracts/apps/ics20/errors/IEscrowErrors.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/Escrow.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/errors/IIBCERC20Errors.sol",
+      "target": "contracts/apps/ics20/errors/IIBCERC20Errors.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/IBCERC20.sol",
+        "test/apps/ics20/IBCERC20Test.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/errors/IICS02ClientErrors.sol",
+      "target": "contracts/core/errors/IICS02ClientErrors.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/core/client/ICS02ClientUpgradeable.sol",
+        "contracts/core/client/migration/modules/ClientMigrationExecutor.sol",
+        "contracts/core/client/migration/modules/ClientMigrationProposer.sol",
+        "test/core/ICS02ClientTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/errors/IICS20Errors.sol",
+      "target": "contracts/apps/ics20/errors/IICS20Errors.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "contracts/apps/ics20/libraries/ICS20Lib.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol",
+        "test/core/IBCAdminTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/errors/IICS24HostErrors.sol",
+      "target": "contracts/core/errors/IICS24HostErrors.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/core/libraries/ICS24Host.sol",
+        "contracts/core/store/IBCStoreUpgradeable.sol",
+        "test/core/ICS26RouterTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/errors/IICS26RouterErrors.sol",
+      "target": "contracts/core/errors/IICS26RouterErrors.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/core/ICS26Router.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/Integration2Test.t.sol",
+        "test/integration/IntegrationTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/errors/IRateLimitErrors.sol",
+      "target": "contracts/apps/ics20/errors/IRateLimitErrors.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/rate-limit/RateLimitUpgradeable.sol",
+        "test/apps/ics20/EscrowTest.t.sol",
+        "test/integration/IntegrationTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/IEscrow.sol",
+      "target": "contracts/apps/ics20/interfaces/IEscrow.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/Escrow.sol",
+        "contracts/apps/ics20/ICS20Transfer.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/IIBCApp.sol",
+      "target": "contracts/core/interfaces/IIBCApp.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "contracts/core/ICS26Router.sol",
+        "contracts/core/interfaces/IICS26Router.sol",
+        "test/core/ICS26RouterTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/IIBCERC20.sol",
+      "target": "contracts/apps/ics20/interfaces/IIBCERC20.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/IBCERC20.sol",
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "test/mocks/AttackerIBCERC20.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/IIBCSenderCallbacks.sol",
+      "target": "contracts/apps/ics20/interfaces/IIBCSenderCallbacks.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/callbacks/IBCCallbackReceiver.sol",
+        "contracts/apps/ics20/libraries/IBCSenderCallbacksLib.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol",
+        "test/mocks/CallbackReceiver.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/IIBCStore.sol",
+      "target": "contracts/core/interfaces/IIBCStore.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/core/store/IBCStoreUpgradeable.sol",
+        "contracts/periphery/relayer/RelayerHelper.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/IICS02Client.sol",
+      "target": "contracts/core/interfaces/IICS02Client.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/core/client/ICS02ClientUpgradeable.sol",
+        "contracts/core/client/migration/modules/ClientMigrationExecutor.sol",
+        "contracts/core/client/migration/modules/ClientMigrationProposer.sol",
+        "contracts/periphery/access/IBCSelectorLib.sol",
+        "test/core/ICS02ClientTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/IICS20Transfer.sol",
+      "target": "contracts/apps/ics20/interfaces/IICS20Transfer.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "contracts/periphery/access/IBCSelectorLib.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/IICS26Router.sol",
+      "target": "contracts/core/interfaces/IICS26Router.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "contracts/core/ICS26Router.sol",
+        "contracts/periphery/access/IBCSelectorLib.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/Integration2Test.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/ILightClient.sol",
+      "target": "contracts/light-clients/interfaces/ILightClient.sol",
+      "owner": "light-clients/compatibility",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/core/client/ICS02ClientStore.sol",
+        "contracts/core/client/ICS02ClientUpgradeable.sol",
+        "contracts/core/client/migration/modules/ClientMigrationExecutor.sol",
+        "contracts/core/interfaces/IICS02Client.sol",
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "test/core/ICS02ClientTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/mocks/DummyLightClient.sol",
+        "test/utils/SolidityLightClient.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/IMintableAndBurnable.sol",
+      "target": "contracts/apps/ics20/interfaces/IMintableAndBurnable.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/Escrow.sol",
+        "contracts/apps/ics20/IBCERC20.sol",
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "contracts/apps/ics20/interfaces/IEscrow.sol",
+        "contracts/apps/ics20/interfaces/IIBCERC20.sol",
+        "test/mocks/AttackerIBCERC20.sol",
+        "test/utils/RefImplIBCERC20.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/IPausable.sol",
+      "target": "contracts/shared/interfaces/IPausable.sol",
+      "owner": "shared",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "contracts/core/ICS26Router.sol",
+        "contracts/core/interfaces/IICS26Router.sol",
+        "contracts/periphery/access/IBCSelectorLib.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/IRateLimit.sol",
+      "target": "contracts/apps/ics20/interfaces/IRateLimit.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "contracts/apps/ics20/rate-limit/RateLimitUpgradeable.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "scripts/ProductionVerify.s.sol",
+        "test/apps/ics20/EscrowTest.t.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/interfaces/IRelayerHelper.sol",
+      "target": "contracts/periphery/relayer/interfaces/IRelayerHelper.sol",
+      "owner": "periphery",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/periphery/relayer/RelayerHelper.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/ISpectreClient.sol",
+      "target": "contracts/light-clients/spectre/interfaces/ISpectreClient.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/light-clients/spectre/SpectreClient.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/SignatureVerifier.sol",
+      "target": "contracts/light-clients/spectre/SignatureVerifier.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "runtime-and-storage-locked",
+      "consumers": [
+        "scripts/E2ETestDeploy.s.sol",
+        "scripts/E2ETestDeployL2.s.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "scripts/ProductionVerify.s.sol",
+        "scripts/deployments/DeployAccessManagerWithRoles.sol",
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/light-clients/spectre/SignatureVerifierBypassTest.t.sol",
+        "test/light-clients/spectre/SignatureVerifierHashEquivalenceTest.t.sol",
+        "test/light-clients/spectre/UpdateClientCacheTest.t.sol",
+        "test/light-clients/spectre/UpdateClientGasTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/SpectreClient.sol",
+      "target": "contracts/light-clients/spectre/SpectreClient.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "runtime-and-storage-locked",
+      "consumers": [
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/light-clients/spectre/MembershipTrustingPeriodTest.t.sol",
+        "test/light-clients/spectre/MisbehaviourTest.t.sol",
+        "test/light-clients/spectre/UpdateClientCacheTest.t.sol",
+        "test/light-clients/spectre/UpdateClientGasTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/errors/ISpectreClientErrors.sol",
+      "target": "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "contracts/light-clients/spectre/libraries/ValidatorSetLib.sol",
+        "contracts/light-clients/spectre/modules/Misbehaviour.sol",
+        "contracts/light-clients/spectre/modules/UpdateClient.sol",
+        "contracts/light-clients/spectre/store/SpectreStore.sol",
+        "test/light-clients/spectre/MembershipTrustingPeriodTest.t.sol",
+        "test/light-clients/spectre/MisbehaviourTest.t.sol",
+        "test/light-clients/spectre/UpdateClientCacheTest.t.sol",
+        "test/light-clients/spectre/ValidatorSetLibTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/interfaces/IClientMigrationExecutor.sol",
+      "target": "contracts/core/client/migration/interfaces/IClientMigrationExecutor.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/core/client/ICS02ClientUpgradeable.sol",
+        "contracts/core/client/migration/modules/ClientMigrationExecutor.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/interfaces/IClientMigrationModule.sol",
+      "target": "contracts/core/client/migration/interfaces/IClientMigrationModule.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/core/client/ICS02ClientUpgradeable.sol",
+        "contracts/core/client/migration/interfaces/IClientMigrationExecutor.sol",
+        "contracts/core/client/migration/interfaces/IClientMigrationProposer.sol",
+        "contracts/core/client/migration/modules/ClientMigrationExecutor.sol",
+        "contracts/core/client/migration/modules/ClientMigrationProposer.sol",
+        "test/core/ICS02ClientTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/interfaces/IClientMigrationProposer.sol",
+      "target": "contracts/core/client/migration/interfaces/IClientMigrationProposer.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/core/client/ICS02ClientUpgradeable.sol",
+        "contracts/core/client/migration/modules/ClientMigrationProposer.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/interfaces/IGroth16Verifier.sol",
+      "target": "contracts/light-clients/spectre/interfaces/IGroth16Verifier.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "scripts/ProductionDeploy.s.sol",
+        "scripts/ProductionVerify.s.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/interfaces/IMembership.sol",
+      "target": "contracts/light-clients/spectre/interfaces/IMembership.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "contracts/light-clients/spectre/modules/Membership.sol",
+        "test/light-clients/spectre/MembershipTrustingPeriodTest.t.sol",
+        "test/light-clients/spectre/MisbehaviourTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/interfaces/IMisbehaviour.sol",
+      "target": "contracts/light-clients/spectre/interfaces/IMisbehaviour.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "contracts/light-clients/spectre/modules/Misbehaviour.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/interfaces/ISignatureVerifier.sol",
+      "target": "contracts/light-clients/spectre/interfaces/ISignatureVerifier.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/light-clients/spectre/SignatureVerifier.sol",
+        "contracts/light-clients/spectre/modules/Misbehaviour.sol",
+        "contracts/light-clients/spectre/modules/UpdateClient.sol",
+        "test/light-clients/spectre/MisbehaviourTest.t.sol",
+        "test/light-clients/spectre/SignatureVerifierBypassTest.t.sol",
+        "test/light-clients/spectre/SignatureVerifierHashEquivalenceTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/interfaces/IUpdateClient.sol",
+      "target": "contracts/light-clients/spectre/interfaces/IUpdateClient.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "contracts/light-clients/spectre/modules/UpdateClient.sol",
+        "test/light-clients/spectre/MisbehaviourTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/modules/ClientMigrationExecutor.sol",
+      "target": "contracts/core/client/migration/modules/ClientMigrationExecutor.sol",
+      "owner": "core",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "scripts/E2ETestDeploy.s.sol",
+        "scripts/E2ETestDeployL2.s.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "test/core/IBCAdminTest.t.sol",
+        "test/core/ICS02ClientTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/modules/ClientMigrationProposer.sol",
+      "target": "contracts/core/client/migration/modules/ClientMigrationProposer.sol",
+      "owner": "core",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "scripts/E2ETestDeploy.s.sol",
+        "scripts/E2ETestDeployL2.s.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "test/core/IBCAdminTest.t.sol",
+        "test/core/ICS02ClientTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/modules/Membership.sol",
+      "target": "contracts/light-clients/spectre/modules/Membership.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "scripts/E2ETestDeploy.s.sol",
+        "scripts/E2ETestDeployL2.s.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/light-clients/spectre/MembershipApplyOpsTest.t.sol",
+        "test/light-clients/spectre/MembershipCompareBytesTest.t.sol",
+        "test/light-clients/spectre/MembershipDepthTest.t.sol",
+        "test/light-clients/spectre/MembershipInnerSpecTest.t.sol",
+        "test/light-clients/spectre/MembershipNonExistenceRootTest.t.sol",
+        "test/light-clients/spectre/MembershipValueLengthTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/modules/Misbehaviour.sol",
+      "target": "contracts/light-clients/spectre/modules/Misbehaviour.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "scripts/E2ETestDeploy.s.sol",
+        "scripts/E2ETestDeployL2.s.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/light-clients/spectre/MisbehaviourTest.t.sol",
+        "test/light-clients/spectre/UpdateClientCacheTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/modules/UpdateClient.sol",
+      "target": "contracts/light-clients/spectre/modules/UpdateClient.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "scripts/E2ETestDeploy.s.sol",
+        "scripts/E2ETestDeployL2.s.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/light-clients/spectre/UpdateClientCacheTest.t.sol",
+        "test/light-clients/spectre/UpdateClientGasTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/msgs/IGroth16Msgs.sol",
+      "target": "contracts/light-clients/spectre/messages/IGroth16Msgs.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "abi-locked",
+      "consumers": [],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/msgs/IICS07TendermintMsgs.sol",
+      "target": "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/light-clients/messages/ILightClientMsgs.sol",
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "contracts/light-clients/spectre/libraries/ValidatorSetLib.sol",
+        "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol",
+        "contracts/light-clients/spectre/modules/Misbehaviour.sol",
+        "contracts/light-clients/spectre/modules/UpdateClient.sol",
+        "contracts/light-clients/spectre/store/SpectreStore.sol",
+        "contracts/light-clients/spectre/libraries/ChainId.sol",
+        "contracts/light-clients/spectre/libraries/Encode.sol",
+        "contracts/light-clients/spectre/libraries/Header.sol",
+        "scripts/E2ETestDeploy.s.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/light-clients/spectre/MembershipTrustingPeriodTest.t.sol",
+        "test/light-clients/spectre/MisbehaviourTest.t.sol",
+        "test/light-clients/spectre/UpdateClientCacheTest.t.sol",
+        "test/light-clients/spectre/UpdateClientGasTest.t.sol",
+        "test/light-clients/spectre/ValidatorSetLibTest.t.sol",
+        "test/light-clients/spectre/ChainIdTest.t.sol",
+        "test/light-clients/spectre/EncodeTest.t.sol",
+        "test/light-clients/spectre/EncodeWrapper.sol",
+        "test/utils/IbcImpl.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/msgs/IMembershipMsgs.sol",
+      "target": "contracts/light-clients/spectre/messages/IMembershipMsgs.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/light-clients/messages/ILightClientMsgs.sol",
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "contracts/light-clients/spectre/interfaces/IMembership.sol",
+        "contracts/light-clients/spectre/modules/Membership.sol",
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/light-clients/spectre/MembershipApplyOpsTest.t.sol",
+        "test/light-clients/spectre/MembershipDepthTest.t.sol",
+        "test/light-clients/spectre/MembershipInnerSpecTest.t.sol",
+        "test/light-clients/spectre/MembershipNonExistenceRootTest.t.sol",
+        "test/light-clients/spectre/MembershipTrustingPeriodTest.t.sol",
+        "test/light-clients/spectre/MembershipValueLengthTest.t.sol",
+        "test/light-clients/spectre/MisbehaviourTest.t.sol",
+        "test/utils/IbcImpl.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/msgs/ISpectreClientMsgs.sol",
+      "target": "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "contracts/light-clients/spectre/interfaces/IMisbehaviour.sol",
+        "contracts/light-clients/spectre/interfaces/IUpdateClient.sol",
+        "contracts/light-clients/spectre/modules/Misbehaviour.sol",
+        "contracts/light-clients/spectre/modules/UpdateClient.sol",
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/light-clients/spectre/MisbehaviourTest.t.sol",
+        "test/light-clients/spectre/UpdateClientCacheTest.t.sol",
+        "test/light-clients/spectre/UpdateClientGasTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/store/SpectreStore.sol",
+      "target": "contracts/light-clients/spectre/store/SpectreStore.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "contracts/light-clients/spectre/libraries/ValidatorSetLib.sol",
+        "contracts/light-clients/spectre/modules/Misbehaviour.sol",
+        "contracts/light-clients/spectre/modules/UpdateClient.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/store/ValidatorSetLib.sol",
+      "target": "contracts/light-clients/spectre/libraries/ValidatorSetLib.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "test/light-clients/spectre/ValidatorSetLibTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/light-clients/utils/Paths.sol",
+      "target": "contracts/light-clients/spectre/libraries/Paths.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/light-clients/spectre/SpectreClient.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/msgs/IIBCAppCallbacks.sol",
+      "target": "contracts/core/messages/IIBCAppCallbacks.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "contracts/apps/ics20/interfaces/IIBCSenderCallbacks.sol",
+        "contracts/apps/ics20/libraries/IBCSenderCallbacksLib.sol",
+        "contracts/core/ICS26Router.sol",
+        "contracts/core/interfaces/IIBCApp.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/mocks/CallbackReceiver.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/msgs/IICS02ClientMsgs.sol",
+      "target": "contracts/core/messages/IICS02ClientMsgs.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/core/ICS26Router.sol",
+        "contracts/core/client/ICS02ClientStore.sol",
+        "contracts/core/client/ICS02ClientUpgradeable.sol",
+        "contracts/core/client/migration/interfaces/IClientMigrationExecutor.sol",
+        "contracts/core/client/migration/interfaces/IClientMigrationProposer.sol",
+        "contracts/core/client/migration/modules/ClientMigrationExecutor.sol",
+        "contracts/core/client/migration/modules/ClientMigrationProposer.sol",
+        "contracts/core/interfaces/IICS02Client.sol",
+        "contracts/core/messages/IICS26RouterMsgs.sol",
+        "contracts/light-clients/messages/ILightClientMsgs.sol",
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol",
+        "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol",
+        "contracts/light-clients/spectre/modules/Misbehaviour.sol",
+        "contracts/light-clients/spectre/modules/UpdateClient.sol",
+        "contracts/light-clients/spectre/libraries/Encode.sol",
+        "contracts/light-clients/spectre/libraries/HeightCmp.sol",
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/core/IBCAdminTest.t.sol",
+        "test/core/ICS02ClientTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/light-clients/spectre/MembershipTrustingPeriodTest.t.sol",
+        "test/light-clients/spectre/MisbehaviourTest.t.sol",
+        "test/light-clients/spectre/UpdateClientCacheTest.t.sol",
+        "test/light-clients/spectre/UpdateClientGasTest.t.sol",
+        "test/utils/IbcImpl.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/msgs/IICS20TransferMsgs.sol",
+      "target": "contracts/apps/ics20/messages/IICS20TransferMsgs.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "contracts/apps/ics20/interfaces/IICS20Transfer.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol",
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/core/IBCAdminTest.t.sol",
+        "test/core/ICS24HostTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol",
+        "test/utils/TestHelper.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/msgs/IICS26RouterMsgs.sol",
+      "target": "contracts/core/messages/IICS26RouterMsgs.sol",
+      "owner": "core",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "contracts/core/ICS26Router.sol",
+        "contracts/core/interfaces/IICS26Router.sol",
+        "contracts/core/libraries/ICS24Host.sol",
+        "contracts/core/messages/IIBCAppCallbacks.sol",
+        "contracts/core/store/IBCStoreUpgradeable.sol",
+        "contracts/periphery/relayer/RelayerHelper.sol",
+        "contracts/periphery/relayer/interfaces/IRelayerHelper.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol",
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/core/IBCAdminTest.t.sol",
+        "test/core/ICS24HostTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/Integration2Test.t.sol",
+        "test/integration/Integration3Test.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol",
+        "test/utils/TestHelper.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/msgs/ILightClientMsgs.sol",
+      "target": "contracts/light-clients/messages/ILightClientMsgs.sol",
+      "owner": "light-clients/compatibility",
+      "compatibility_class": "abi-locked",
+      "consumers": [
+        "contracts/core/ICS26Router.sol",
+        "contracts/core/client/ICS02ClientUpgradeable.sol",
+        "contracts/core/interfaces/IICS02Client.sol",
+        "contracts/light-clients/interfaces/ILightClient.sol",
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/core/IBCAdminTest.t.sol",
+        "test/core/ICS02ClientTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/light-clients/spectre/MembershipTrustingPeriodTest.t.sol",
+        "test/light-clients/spectre/UpdateClientCacheTest.t.sol",
+        "test/light-clients/spectre/UpdateClientGasTest.t.sol",
+        "test/mocks/DummyLightClient.sol",
+        "test/utils/IbcImpl.sol",
+        "test/utils/SolidityLightClient.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/ChainId.sol",
+      "target": "contracts/light-clients/spectre/libraries/ChainId.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "contracts/light-clients/spectre/modules/Misbehaviour.sol",
+        "contracts/light-clients/spectre/modules/UpdateClient.sol",
+        "test/light-clients/spectre/ChainIdTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/Encode.sol",
+      "target": "contracts/light-clients/spectre/libraries/Encode.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/light-clients/spectre/SignatureVerifier.sol",
+        "contracts/light-clients/spectre/libraries/Header.sol",
+        "test/light-clients/spectre/SignatureVerifierHashEquivalenceTest.t.sol",
+        "test/light-clients/spectre/EncodeTest.t.sol",
+        "test/light-clients/spectre/EncodeWrapper.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/Escrow.sol",
+      "target": "contracts/apps/ics20/Escrow.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "runtime-and-storage-locked",
+      "consumers": [
+        "scripts/E2ETestDeploy.s.sol",
+        "scripts/E2ETestDeployL2.s.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "test/apps/ics20/EscrowTest.t.sol",
+        "test/apps/ics20/IBCERC20Test.t.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol",
+        "test/core/IBCAdminTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/Header.sol",
+      "target": "contracts/light-clients/spectre/libraries/Header.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "contracts/light-clients/spectre/libraries/ValidatorSetLib.sol",
+        "contracts/light-clients/spectre/modules/Misbehaviour.sol",
+        "contracts/light-clients/spectre/modules/UpdateClient.sol",
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/light-clients/spectre/MembershipTrustingPeriodTest.t.sol",
+        "test/light-clients/spectre/MisbehaviourTest.t.sol",
+        "test/light-clients/spectre/UpdateClientCacheTest.t.sol",
+        "test/light-clients/spectre/UpdateClientGasTest.t.sol",
+        "test/light-clients/spectre/ValidatorSetLibTest.t.sol",
+        "test/light-clients/spectre/EncodeTest.t.sol",
+        "test/light-clients/spectre/EncodeWrapper.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/HeightCmp.sol",
+      "target": "contracts/light-clients/spectre/libraries/HeightCmp.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/light-clients/spectre/modules/Misbehaviour.sol",
+        "contracts/light-clients/spectre/modules/UpdateClient.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/IBCCallbackReceiver.sol",
+      "target": "contracts/apps/ics20/callbacks/IBCCallbackReceiver.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "test/mocks/CallbackReceiver.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/IBCERC20.sol",
+      "target": "contracts/apps/ics20/IBCERC20.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "runtime-and-storage-locked",
+      "consumers": [
+        "scripts/E2ETestDeploy.s.sol",
+        "scripts/E2ETestDeployL2.s.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "test/apps/ics20/IBCERC20Test.t.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol",
+        "test/core/IBCAdminTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/Integration2Test.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/IBCIdentifiers.sol",
+      "target": "contracts/core/libraries/IBCIdentifiers.sol",
+      "owner": "core",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/core/ICS26Router.sol",
+        "contracts/core/client/ICS02ClientUpgradeable.sol",
+        "contracts/core/client/migration/modules/ClientMigrationProposer.sol",
+        "test/core/IBCIdentifiersTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/IBCRolesLib.sol",
+      "target": "contracts/shared/access/IBCRolesLib.sol",
+      "owner": "shared",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/apps/ics20/rate-limit/RateLimitUpgradeable.sol",
+        "contracts/core/client/ICS02ClientUpgradeable.sol",
+        "contracts/core/client/migration/modules/ClientMigrationExecutor.sol",
+        "contracts/core/client/migration/modules/ClientMigrationProposer.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "scripts/ProductionVerify.s.sol",
+        "scripts/deployments/DeployAccessManagerWithRoles.sol",
+        "test/apps/ics20/EscrowTest.t.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol",
+        "test/core/IBCAdminTest.t.sol",
+        "test/core/ICS02ClientTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/IBCSenderCallbacksLib.sol",
+      "target": "contracts/apps/ics20/libraries/IBCSenderCallbacksLib.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/apps/ics20/ICS20Transfer.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/IBCStoreUpgradeable.sol",
+      "target": "contracts/core/store/IBCStoreUpgradeable.sol",
+      "owner": "core",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/core/ICS26Router.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/ICS02ClientStore.sol",
+      "target": "contracts/core/client/ICS02ClientStore.sol",
+      "owner": "core",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/core/client/ICS02ClientUpgradeable.sol",
+        "contracts/core/client/migration/modules/ClientMigrationExecutor.sol",
+        "contracts/core/client/migration/modules/ClientMigrationProposer.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/ICS02ClientUpgradeable.sol",
+      "target": "contracts/core/client/ICS02ClientUpgradeable.sol",
+      "owner": "core",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/core/ICS26Router.sol",
+        "test/core/ICS02ClientTest.t.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/ICS20Lib.sol",
+      "target": "contracts/apps/ics20/libraries/ICS20Lib.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "scripts/E2ETestDeploy.s.sol",
+        "scripts/E2ETestDeployL2.s.sol",
+        "scripts/ProductionDeploy.s.sol",
+        "test/apps/ics20/ICS20LibTest.t.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol",
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/core/IBCAdminTest.t.sol",
+        "test/core/ICS24HostTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/Integration2Test.t.sol",
+        "test/integration/Integration3Test.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol",
+        "test/utils/TestHelper.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/ICS24Host.sol",
+      "target": "contracts/core/libraries/ICS24Host.sol",
+      "owner": "core",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/core/ICS26Router.sol",
+        "contracts/core/store/IBCStoreUpgradeable.sol",
+        "contracts/periphery/relayer/RelayerHelper.sol",
+        "test/apps/ics20/ICS20TransferTest.t.sol",
+        "test/apps/ics20/RecvPacketGasTest.t.sol",
+        "test/core/ICS24HostTest.t.sol",
+        "test/core/ICS26RouterTest.t.sol",
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/Integration2Test.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol",
+        "test/utils/TestHelper.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/ICS26AdminsDeprecated.sol",
+      "target": "contracts/core/compatibility/ICS26AdminsDeprecated.sol",
+      "owner": "core",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/apps/ics20/ICS20Transfer.sol",
+        "contracts/core/ICS26Router.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/RateLimitUpgradeable.sol",
+      "target": "contracts/apps/ics20/rate-limit/RateLimitUpgradeable.sol",
+      "owner": "apps/ics20",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/apps/ics20/Escrow.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/RelayerHelper.sol",
+      "target": "contracts/periphery/relayer/RelayerHelper.sol",
+      "owner": "periphery",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "test/integration/EVMRollupIBCFlowTest.t.sol",
+        "test/integration/IntegrationTest.t.sol",
+        "test/utils/IbcImpl.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": "contracts/utils/SSTORE2.sol",
+      "target": "contracts/light-clients/spectre/libraries/SSTORE2.sol",
+      "owner": "light-clients/spectre",
+      "compatibility_class": "internal-structural",
+      "consumers": [
+        "contracts/light-clients/spectre/SpectreClient.sol",
+        "contracts/light-clients/spectre/libraries/ValidatorSetLib.sol"
+      ],
+      "shim": null,
+      "removal_condition": "All first-party consumers use the target path and the compatibility checker passes."
+    },
+    {
+      "current": null,
+      "target": "contracts/shared/bytes/BytesPrefix.sol",
+      "owner": "shared",
+      "compatibility_class": "internal-structural",
+      "consumers": [],
+      "shim": null,
+      "removal_condition": "Extracted domain-neutral prefix comparison from IBCIdentifiers."
+    },
+    {
+      "current": null,
+      "target": "contracts/periphery/access/IBCSelectorLib.sol",
+      "owner": "periphery",
+      "compatibility_class": "internal-structural",
+      "consumers": [],
+      "shim": null,
+      "removal_condition": "Extracted package-dependent AccessManager selector groups from IBCRolesLib."
+    }
+  ],
+  "terminology_allowlist": [
+    {
+      "term": "fast-ibc",
+      "owner": "repository identity and Go module paths",
+      "removal_condition": "separate repository/module rename with downstream migration"
+    },
+    {
+      "term": "fast-ibc-dummy",
+      "owner": "Groth16 witness protocol bytes",
+      "removal_condition": "versioned circuit and proof protocol migration"
+    },
+    {
+      "term": "IBC Eureka",
+      "owner": "compatibility-facing protocol naming",
+      "removal_condition": "separate product naming decision"
+    }
+  ]
+}

@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "b75a613a2d020b1e9717df672a066788bf9ccf30",
+  "branch": "refactor/solidity-contracts",
+  "implementation_status": "complete",
+  "ownership_manifest": "scripts/solidity-refactor/ownership-manifest.json",
+  "compatibility_baseline": "scripts/solidity-refactor/baseline.json",
+  "contracts_manifest": "scripts/solidity-refactor/contracts.json",
+  "supported_verifier_buckets": [
+    4
+  ],
+  "runtime_compatibility": {
+    "abi": "exact",
+    "storage": "exact",
+    "initcode": "exact",
+    "runtime": "exact"
+  },
+  "sizes": {
+    "ICS26Router": {
+      "runtime_bytes": 24465,
+      "margin_bytes": 111
+    },
+    "ICS20Transfer": {
+      "runtime_bytes": 22224,
+      "margin_bytes": 2352
+    },
+    "SpectreClient": {
+      "runtime_bytes": 19390,
+      "margin_bytes": 5186
+    }
+  },
+  "accepted_tooling_deltas": [
+    "Solidity fully qualified source paths",
+    "Spectre bytecode artifact source metadata",
+    "test and fixture paths"
+  ],
+  "rollback": {
+    "commit": "b75a613a2d020b1e9717df672a066788bf9ccf30",
+    "note": "Revert structural slices; generated verifier pairs must be rolled back atomically with relayer keys and deployment registry."
+  },
+  "boundaries": [
+    "No live Docker/Kurtosis E2E run; E2E packages compile only.",
+    "No shadowfork tests were discovered in the 34-contract current test inventory.",
+    "N4 is the only supported bucket; quorums needing more than four signers are a launch blocker.",
+    "Gnark emitted a hash-to-field exporter warning during N4 generation; the Go smoke proof passed, but live on-chain proof generation/verification was not exercised.",
+    "CI workflow is added, but repository branch-protection configuration was not inspected."
+  ],
+  "gas_compatibility": {
+    "locked_tests": 17,
+    "max_regression_percent": 5,
+    "observed_max_regression_percent": 0
+  },
+  "release_matrix_passes": 2,
+  "storage_manifest": "scripts/solidity-refactor/storage-manifest.json",
+  "storage_compatibility": {
+    "first_party_erc7201_owners": 9,
+    "namespace_constants": "exact",
+    "ordered_struct_layouts": "exact"
+  }
+}

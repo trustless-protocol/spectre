@@ -77,37 +77,17 @@ $GAIAD version                         # -> test/ibc-host-customs-<sha>
 strings $GAIAD | grep -c ClientStatus  # -> non-zero
 ```
 
-> **Tip for local dev**: `relayer/prover/buckets.go` defaults to
-> `Buckets = []int{4, 8, 16, 32, 64, 128}`. Compiling all six takes 30+ minutes
-> (bucket 128 alone is ~30 min) and the local single-validator chain only ever
-> uses bucket 4. For local iteration, temporarily edit it to:
+> **Supported prover manifest**: this repository currently supports bucket N4 only.
+> `scripts/solidity-refactor/build-prover-artifacts.sh` generates the R1CS/PK/VK/verifier
+> as one randomized pair in ignored staging, smoke-tests it, publishes only N4, and records
+> provenance. A quorum requiring more than four signers is an unsupported-chain launch blocker.
 >
-> ```go
-> var Buckets = []int{4}
-> ```
+> The repo ships no generated verifier implementation; a fresh clone must run the staged
+> generator before Foundry compilation.
 >
-> before step 1 below. Revert before pushing — production needs the full set.
->
-> The repo ships **no** generated verifiers — `.gitignore` excludes
-> `contracts/verifiers/Groth16Verifier_N*.sol`, so `git ls-tree` lists none and a
-> fresh clone has none. Step 1 below writes them, and `forge build` fails without
-> it (`scripts/E2ETestDeployL2.s.sol` imports `Groth16Verifier_N4`).
->
-> Whatever buckets you compile must cover the chain's quorum: a signer count with
-> no bucket makes `SignatureVerifier.verifyBatchProof` revert `UnknownBucket(N)`.
-> Chains larger than the local devnet need the bigger buckets built and deployed.
-
 ```bash
-# 1. REQUIRED on a fresh clone: compile per-bucket circuits + emit
-#    Groth16Verifier_N{N}.sol. Neither the circuit artifacts nor the verifiers are
-#    committed. Re-run when circuit code changes — and redeploy the verifiers with
-#    it, because a new Setup() means a new verifying key and stale verifiers reject
-#    every proof.
-#    CPU default:
-cd relayer
-go run ./prover/cmd ./bin ../contracts/verifiers
-#    GPU variant:
-#    go run -tags=icicle ./prover/cmd -gpu-prove ./bin ../contracts/verifiers
+# 1. REQUIRED on a fresh clone: generate and publish the paired N4 set.
+scripts/solidity-refactor/build-prover-artifacts.sh
 
 # 2. Build the relayer binary
 go build -o relayer ./cmd
@@ -761,7 +741,7 @@ cast send <ICS20Transfer> \
   --private-key $ETH_PRIVATE_KEY --rpc-url $L2
 ```
 
-The tuple is `SendTransferMsg` in field order (`contracts/msgs/IICS20TransferMsgs.sol`):
+The tuple is `SendTransferMsg` in field order (`contracts/apps/ics20/messages/IICS20TransferMsgs.sol`):
 denom, amount, receiver, sourceClient, destPort, timeoutTimestamp, memo.
 
 `<l2-router-client-id>` is `sourceClient`: the client id **on the L2 router** — the one
