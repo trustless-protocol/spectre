@@ -260,12 +260,13 @@ Cross-validated via `test/light-clients/spectre/EncodeTest.t.sol`.
 | `contracts/apps/ics20/` | Solidity | ICS-20 transfer, escrow, voucher, callbacks, and rate limits |
 | `contracts/light-clients/` | Solidity | Compatibility interface and message leaf |
 | `contracts/light-clients/spectre/` | Solidity | Spectre client, verifier boundary, modules, stores, messages, and libraries |
-| `contracts/shared/` | Solidity | Dependency-free access, byte, and interface primitives |
-| `contracts/periphery/` | Solidity | Relayer and AccessManager selector helpers |
+| `contracts/shared/` | Solidity | Cross-package access libraries and compatibility interfaces |
+| `contracts/periphery/` | Solidity | Read-only relayer helper contracts |
+| `scripts/deployments/` | Solidity | Deployment-only AccessManager selector and configuration helpers |
 | `relayer/` | Go | Relayer CLI + Groth16 prover |
 | `relayer/cmd/` | Go | CLI: start, create-clients-{cosmos,eth}, update-client, genesis, fixtures |
 | `relayer/prover/` | Go | Bucketed Ed25519 batch prover (BatchCircuit, witness hash, dummy padding) |
-| `relayer/prover/cmd/` | Go | One-shot tool: compile + setup the supported N4 bucket, write paired artifacts, and emit `Groth16Verifier_N4.sol` |
+| `relayer/prover/cmd/` | Go | One-shot tool: compile + setup each bucket enabled in `prover.Buckets` (currently N4 locally), write paired artifacts, and emit `Groth16Verifier_N{N}.sol` |
 | `relayer/prover/bin/` | binary | Per-bucket circuit artifacts (`bin/n{N}/{r1cs,pk,vk}.bin`) |
 | `relayer/client/` | Go | Tendermint RPC + Ethereum Beacon API + Ethereum light client state |
 | `relayer/runner/` | Go | Service runner utilities |

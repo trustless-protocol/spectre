@@ -16,11 +16,11 @@ The handwritten format gate is `scripts/check-solidity-format.sh`; generated ver
 
 ## Foundry Configuration
 
-`foundry.toml` pins Solidity 0.8.28, Cancun, optimizer runs 1,000, `via_ir = true`, no bytecode metadata hash, and 100,000 local fuzz runs. CI pins Foundry v1.7.1.
+`foundry.toml` pins Solidity 0.8.28, Cancun, optimizer runs 1,000, `via_ir = true`, no bytecode metadata hash, and 100,000 local fuzz runs. The observed local tool versions are recorded in `scripts/solidity-refactor/toolchain-manifest.json`.
 
 ## Generated Prover Boundary
 
-The supported verifier set is N4 only. Run `scripts/solidity-refactor/build-prover-artifacts.sh` to generate R1CS, proving key, verifying key, and Solidity verifier into ignored staging, smoke-test the pair, publish only N4, and record runtime provenance. Groth16 setup is randomized, so artifacts from different setup runs must never be mixed.
+The checked local generator/prover manifest enables N4 only. Run `scripts/solidity-refactor/build-prover-artifacts.sh` to generate R1CS, proving key, verifying key, and Solidity verifier into ignored staging, smoke-test the pair, publish N4, and record runtime provenance. Production deployment preserves the six-bucket N ∈ {4, 8, 16, 32, 64, 128} compatibility surface; every enabled bucket needs its own coordinated artifact set. Groth16 setup is randomized, so artifacts from different setup runs must never be mixed.
 
 ## Cross-Language Consumers
 
@@ -32,8 +32,6 @@ cd relayer && LD_LIBRARY_PATH=../third_party/ecip-gnark go test ./...
 
 ABI and binding generation is controlled by `scripts/solidity-refactor/contracts.json` and requires `abigen` 1.17.2-stable. Solidity fixture staging uses `test/fixtures/solidity/` and Spectre fixture staging uses `test/fixtures/spectre/`.
 
-## Automated CI
+## Manual Release Gates
 
-`.github/workflows/solidity.yml` runs on pushes to `main`, pull requests, and manual dispatch. It checks out the private prover submodules with `SUBMODULE_TOKEN`, builds the Garaga FFI, generates a paired N4 set, checks formatting, force-builds sizes, runs Foundry and Rust, and executes the compatibility self-tests.
-
-The existing Go and E2E workflows retain their documented trigger policies.
+This Solidity refactor does not add required CI. Run the commands above and `scripts/check-solidity-format.sh`, `forge build --force --skip test --skip script --sizes`, and `scripts/solidity-refactor/checker-self-test.sh` locally. Record exact commands, exit codes, sizes, and compatibility digests in the PR body and release report.

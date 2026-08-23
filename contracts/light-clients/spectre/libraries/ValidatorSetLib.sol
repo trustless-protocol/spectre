@@ -18,8 +18,8 @@ library ValidatorSetLib {
     ///         largest counterparty validator-set size this client can ever attest quorum for.
     /// @dev Proof capacity is a separate liveness limit: a proof can include at most as many active
     ///      signers as its registered bucket. A pinned set is therefore usable only when a signer
-    ///      subset that fits a registered bucket carries >2/3 of its total voting power. The current
-    ///      production configuration registers N=4 only. Supporting a larger signer set requires
+    ///      subset that fits a registered bucket carries >2/3 of its total voting power. The checked
+    ///      in-repo prover manifest currently enables N=4 only. Supporting a larger signer set requires
     ///      coordinated circuit generation, verifier deployment, and `SignatureVerifier.setBucket`
     ///      registration; raising this constant alone does not increase proof capacity.
     /// @dev INVARIANT: this constant must stay < 256. `SpectreClient._verifyQuorum`'s `seenPinned`

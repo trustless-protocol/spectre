@@ -77,13 +77,15 @@ $GAIAD version                         # -> test/ibc-host-customs-<sha>
 strings $GAIAD | grep -c ClientStatus  # -> non-zero
 ```
 
-> **Supported prover manifest**: this repository currently supports bucket N4 only.
+> **Checked local prover manifest**: the in-repo generator currently enables bucket N4 only.
 > `scripts/solidity-refactor/build-prover-artifacts.sh` generates the R1CS/PK/VK/verifier
-> as one randomized pair in ignored staging, smoke-tests it, publishes only N4, and records
-> provenance. A quorum requiring more than four signers is an unsupported-chain launch blocker.
+> as one randomized pair in ignored staging, smoke-tests it, publishes N4, and records provenance.
 >
-> The repo ships no generated verifier implementation; a fresh clone must run the staged
-> generator before Foundry compilation.
+> Production deployment compatibility still requires six distinct verifier contracts for
+> N ∈ {4, 8, 16, 32, 64, 128}. Before a production launch, enable the same buckets in the
+> prover, publish each paired artifact set, deploy them, and keep the six environment entries
+> aligned with `SignatureVerifier`. The repo ships no generated verifier implementation; a
+> fresh clone must run the staged generator before Foundry compilation.
 >
 ```bash
 # 1. REQUIRED on a fresh clone: generate and publish the paired N4 set.

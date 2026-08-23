@@ -9,8 +9,8 @@ import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
 interface SpectreClientMsgs {
     /// @notice One batched Ed25519 Groth16 proof over a single signed header.
     /// @dev The relayer picks the smallest registered `bucket` that fits the signers needed to reach
-    ///      2/3 voting power; padding slots carry `active[i] = false`. The current production
-    ///      configuration registers N=4 only. Larger buckets require matching prover artifacts,
+    ///      2/3 voting power; padding slots carry `active[i] = false`. The checked in-repo prover
+    ///      manifest currently enables N=4 only. Larger buckets require matching prover artifacts,
     ///      verifier deployment, and `SignatureVerifier.setBucket` registration.
     /// @param proof The Groth16 proof (8 uint256s).
     /// @param commitments The proof commitments (2 uint256s).
