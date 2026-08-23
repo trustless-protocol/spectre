@@ -25,8 +25,8 @@ library IBCIdentifiers {
      *     - `.`, `_`, `+`, `-`, `#`
      *     - `[`, `]`, `<`, `>`
      */
-    /// @custom:url https://github.com/hyperledger-labs/yui-ibc-solidity/blob/49d88ae8151a92e086e6ca7d27a2d3651889edff/
-    /// contracts/core/26-router/IBCModuleManager.sol#L123
+    /// @custom:url
+    /// https://github.com/hyperledger-labs/yui-ibc-solidity/blob/49d88ae8151a92e086e6ca7d27a2d3651889edff/contracts/core/26-router/IBCModuleManager.sol#L123
     /// @param customId The custom identifier
     /// @return True if the custom identifier is valid
     function validateCustomIBCIdentifier(bytes memory customId) internal pure returns (bool) {

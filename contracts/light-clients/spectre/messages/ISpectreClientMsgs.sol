@@ -8,8 +8,10 @@ import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 /// @notice Message and output types for the SpectreClient light client and its modules.
 interface ISpectreClientMsgs {
     /// @notice One batched Ed25519 Groth16 proof over a single signed header.
-    /// @dev The relayer picks `bucket` (∈ {4,8,16,...}) as the smallest circuit that fits the
-    ///      signers needed to reach 2/3 voting power; padding slots carry `active[i] = false`.
+    /// @dev The relayer picks the smallest registered `bucket` that fits the signers needed to reach
+    ///      2/3 voting power; padding slots carry `active[i] = false`. The current production
+    ///      configuration registers N=4 only. Larger buckets require matching prover artifacts,
+    ///      verifier deployment, and `SignatureVerifier.setBucket` registration.
     /// @param proof The Groth16 proof (8 uint256s).
     /// @param commitments The proof commitments (2 uint256s).
     /// @param commitmentPok The proof of knowledge for commitments (2 uint256s).

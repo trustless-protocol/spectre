@@ -16,29 +16,12 @@ library ValidatorSetLib {
 
     /// @notice Hard cap on the number of validators this client can pin, and therefore the
     ///         largest counterparty validator-set size this client can ever attest quorum for.
-    /// @dev 180 == Cosmos Hub's current validator count (as of this writing) — NOT a coincidence.
-    ///      Quorum requires >2/3 of pinned voting power (`SpectreClient._verifyQuorum`); under the
-    ///      simplifying assumption of equal voting power per validator that's
-    ///      `floor(2*180/3)+1 = 121` unique signers in one Groth16 proof. The largest configured
-    ///      bucket is N=128 (`relayer/prover/buckets.go` — a different, off-chain subsystem; the
-    ///      on-chain dispatch registry lives in `SignatureVerifier.sol`), leaving only ~7
-    ///      validators of headroom (128 - 121 = 7) before quorum becomes unprovable by any bucket.
-    ///      That headroom is a BEST case, not a worst case: 121 assumes power is spread evenly, so
-    ///      each honest signer contributes the same marginal power. Under a skewed distribution
-    ///      where the largest stake-holders happen to be offline (the adversarial/liveness-hostile
-    ///      case — not something this client controls), reaching >2/3 power can require signatures
-    ///      from far more than 121 of the long-tail small validators, pushing the needed
-    ///      unique-signer count toward all 180 and eating the headroom faster than the equal-power
-    ///      estimate suggests. So 121/~7-headroom is the design target, not a bound this contract
-    ///      enforces or can rely on.
-    ///      This is a HARD LIVENESS CEILING, not a soft one: there is no on-chain oracle of the
-    ///      counterparty chain's live validator count, so a Cosmos Hub governance proposal that
-    ///      raises validator count past what fits under this client's cap (see `docs/SECURITY.md`
-    ///      for the exact threshold and operational doctrine) can only be caught by off-chain
-    ///      monitoring — nothing here can assert it or revert on it. Bumping this constant to
-    ///      accommodate a larger validator set requires provisioning a larger Groth16 bucket first
-    ///      (circuit regen + redeploy of every `Groth16Verifier_N{N}` + `setBucket`), not just
-    ///      editing this number.
+    /// @dev Proof capacity is a separate liveness limit: a proof can include at most as many active
+    ///      signers as its registered bucket. A pinned set is therefore usable only when a signer
+    ///      subset that fits a registered bucket carries >2/3 of its total voting power. The current
+    ///      production configuration registers N=4 only. Supporting a larger signer set requires
+    ///      coordinated circuit generation, verifier deployment, and `SignatureVerifier.setBucket`
+    ///      registration; raising this constant alone does not increase proof capacity.
     /// @dev INVARIANT: this constant must stay < 256. `SpectreClient._verifyQuorum`'s `seenPinned`
     ///      dup-signer bitmask packs one bit per pinned index into a `uint256`; a `pinnedIdx >= 256`
     ///      would make `uint256(1) << pinnedIdx` evaluate to 0 on the EVM (shifts >= 256 don't
