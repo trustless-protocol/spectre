@@ -87,4 +87,4 @@ See `docs/metrics.md` for full guide. Focus on:
 - **Frozen client**: Requires governance action (admin upgrade or new client deployment)
 - **Nonce error**: Relayer re-queries account sequence and retries
 - **Counterparty upgrade / hard-fork**: If a counterparty chain undergoes a hard-fork or client upgrade that changes light client rules, the existing Tendermint light client contract will be bricked. Because the `upgradeClient` interface is not supported, recovery requires deploying a new light client contract instance, registering it in the router, and re-configuring the relayer to use the new client ID.
-- **Circuit update**: Run `scripts/solidity-refactor/build-prover-artifacts.sh` to regenerate the paired N4 artifacts and provenance; redeploy `Groth16Verifier_N4.sol` and re-register bucket 4 via `SignatureVerifier.setBucket(...)` before the next E2E run
+- **Circuit update**: Run `scripts/solidity/build-prover-artifacts.sh` to regenerate the paired N4 artifacts and provenance; redeploy `Groth16Verifier_N4.sol` and re-register bucket 4 via `SignatureVerifier.setBucket(...)` before the next E2E run

@@ -3,9 +3,9 @@
   "baseline_commit": "b75a613a2d020b1e9717df672a066788bf9ccf30",
   "branch": "refactor/solidity-contracts",
   "implementation_status": "code-complete-with-historical-process-evidence-gaps",
-  "ownership_manifest": "scripts/solidity-refactor/ownership-manifest.json",
-  "compatibility_baseline": "scripts/solidity-refactor/baseline.json",
-  "contracts_manifest": "scripts/solidity-refactor/contracts.json",
+  "ownership_manifest": "scripts/solidity/ownership-manifest.json",
+  "compatibility_baseline": "scripts/solidity/baseline.json",
+  "contracts_manifest": "scripts/solidity/contracts.json",
   "supported_verifier_buckets": [
     4,
     8,
@@ -58,14 +58,14 @@
     "observed_max_regression_percent": 0
   },
   "release_matrix_passes": 2,
-  "storage_manifest": "scripts/solidity-refactor/storage-manifest.json",
+  "storage_manifest": "scripts/solidity/storage-manifest.json",
   "storage_compatibility": {
     "first_party_erc7201_owners": 9,
     "namespace_constants": "exact",
     "ordered_struct_layouts": "exact"
   },
   "design_reference": "refactor/design-contracts@115397d08e23a421852d08e590d2571bd413f3f5",
-  "tooling_rename_manifest": "scripts/solidity-refactor/tooling-rename-manifest.json",
+  "tooling_rename_manifest": "scripts/solidity/tooling-rename-manifest.json",
   "tooling_compatibility": {
     "abi_container_names": "exactly preserved from baseline",
     "generated_abi_and_bindings": "byte-for-byte baseline compatible",

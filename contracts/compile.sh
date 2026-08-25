@@ -2,4 +2,4 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-exec "$repo_root/scripts/solidity-refactor/generate-bindings.sh" relayer
+exec "$repo_root/scripts/solidity/generate-bindings.sh" relayer

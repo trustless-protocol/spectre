@@ -27,8 +27,8 @@ contract CompatibilityDeploymentTest is Test {
     }
 
     function testCompatibilityAndReleaseManifestsAreReadable() public view {
-        assertGt(bytes(vm.readFile("scripts/solidity-refactor/baseline.json")).length, 0);
-        assertGt(bytes(vm.readFile("scripts/solidity-refactor/ownership-manifest.json")).length, 0);
-        assertGt(bytes(vm.readFile("scripts/solidity-refactor/verifier-manifest.json")).length, 0);
+        assertGt(bytes(vm.readFile("scripts/solidity/baseline.json")).length, 0);
+        assertGt(bytes(vm.readFile("scripts/solidity/ownership-manifest.json")).length, 0);
+        assertGt(bytes(vm.readFile("scripts/solidity/verifier-manifest.json")).length, 0);
     }
 }

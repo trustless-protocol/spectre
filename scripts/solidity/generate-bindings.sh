@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-manifest="$repo_root/scripts/solidity-refactor/contracts.json"
+manifest="$repo_root/scripts/solidity/contracts.json"
 mode=${1:-all}
 cd "$repo_root"
 

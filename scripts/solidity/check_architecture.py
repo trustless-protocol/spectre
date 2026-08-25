@@ -10,8 +10,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = ROOT / "scripts/solidity-refactor/ownership-manifest.json"
-TEST_MOVE_MANIFEST = ROOT / "scripts/solidity-refactor/test-move-manifest.json"
+MANIFEST = ROOT / "scripts/solidity/ownership-manifest.json"
+TEST_MOVE_MANIFEST = ROOT / "scripts/solidity/test-move-manifest.json"
 IMPORT = re.compile(r"""(?:from\s+|import\s+)["']([^"']+)["']""")
 DECLARATION = re.compile(
     r"^\s*(?:abstract\s+)?(?:contract|interface|library)\s+([A-Za-z_][A-Za-z0-9_]*)",

@@ -95,4 +95,4 @@ proposal.json
 .agents/
 .specify/
 specs/
-.artifacts/solidity-refactor/
+.artifacts/solidity/

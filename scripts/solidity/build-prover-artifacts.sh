@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-staging="$repo_root/.artifacts/solidity-refactor/prover"
+staging="$repo_root/.artifacts/solidity/prover"
 mkdir -p "$staging"
 run_staging=$(mktemp -d "$staging/run.XXXXXX")
 generated="$run_staging/generated"

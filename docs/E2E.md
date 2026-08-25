@@ -78,7 +78,7 @@ strings $GAIAD | grep -c ClientStatus  # -> non-zero
 ```
 
 > **Checked local prover manifest**: the in-repo generator currently enables bucket N4 only.
-> `scripts/solidity-refactor/build-prover-artifacts.sh` generates the R1CS/PK/VK/verifier
+> `scripts/solidity/build-prover-artifacts.sh` generates the R1CS/PK/VK/verifier
 > as one randomized pair in ignored staging, smoke-tests it, publishes N4, and records provenance.
 >
 > Production deployment compatibility still requires six distinct verifier contracts for
@@ -89,7 +89,7 @@ strings $GAIAD | grep -c ClientStatus  # -> non-zero
 >
 ```bash
 # 1. REQUIRED on a fresh clone: generate and publish the paired N4 set.
-scripts/solidity-refactor/build-prover-artifacts.sh
+scripts/solidity/build-prover-artifacts.sh
 
 # 2. Build the relayer binary
 go build -o relayer ./cmd

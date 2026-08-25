@@ -137,7 +137,7 @@ def compare(args: argparse.Namespace) -> list[str]:
     verifier_manifest = load(args.verifier_manifest)
     storage_manifest = load(args.storage_manifest)
     provenance_path = ROOT / verifier_manifest.get(
-        "provenance_path", ".artifacts/solidity-refactor/prover/provenance.json"
+        "provenance_path", ".artifacts/solidity/prover/provenance.json"
     )
     verifier_evidence = load(provenance_path) if provenance_path.is_file() else verifier_manifest
     test_manifest = load(args.test_manifest)
@@ -311,37 +311,37 @@ def main() -> int:
     parser.add_argument(
         "--baseline",
         type=Path,
-        default=ROOT / "scripts/solidity-refactor/baseline.json",
+        default=ROOT / "scripts/solidity/baseline.json",
     )
     parser.add_argument(
         "--contract-manifest",
         type=Path,
-        default=ROOT / "scripts/solidity-refactor/contracts.json",
+        default=ROOT / "scripts/solidity/contracts.json",
     )
     parser.add_argument(
         "--verifier-manifest",
         type=Path,
-        default=ROOT / "scripts/solidity-refactor/verifier-manifest.json",
+        default=ROOT / "scripts/solidity/verifier-manifest.json",
     )
     parser.add_argument(
         "--storage-manifest",
         type=Path,
-        default=ROOT / "scripts/solidity-refactor/storage-manifest.json",
+        default=ROOT / "scripts/solidity/storage-manifest.json",
     )
     parser.add_argument(
         "--test-manifest",
         type=Path,
-        default=ROOT / "scripts/solidity-refactor/test-manifest.json",
+        default=ROOT / "scripts/solidity/test-manifest.json",
     )
     parser.add_argument(
         "--tooling-rename-manifest",
         type=Path,
-        default=ROOT / "scripts/solidity-refactor/tooling-rename-manifest.json",
+        default=ROOT / "scripts/solidity/tooling-rename-manifest.json",
     )
     parser.add_argument(
         "--toolchain-manifest",
         type=Path,
-        default=ROOT / "scripts/solidity-refactor/toolchain-manifest.json",
+        default=ROOT / "scripts/solidity/toolchain-manifest.json",
     )
     args = parser.parse_args()
     failures = compare(args)

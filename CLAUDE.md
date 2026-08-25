@@ -67,7 +67,7 @@ Config: JSON file with `modules` array containing `cosmos_to_eth` and `eth_to_co
 
 Multiple Cosmos sources: add one `cosmos_to_eth` module per source (each with a distinct `ics26_client_id`); `start` runs an independent relay loop for each in one process (shared prover + ETH endpoint, ETH events partitioned by the per-source client-id filter). Run `create-clients-cosmos` then `create-clients-eth` once per source with `--source <ics26_client_id>` — each targets and writes the ids back into that source's module. Single-source configs are unchanged and need no `--source`.
 
-Circuit setup: `scripts/solidity-refactor/build-prover-artifacts.sh` generates the supported N4 pair in ignored staging, smoke-tests it, publishes it, and records provenance. After regeneration the verifying key changes: **redeploy the generated N4 verifier and re-register it via `SignatureVerifier.setBucket(...)`**, or every proof fails on-chain.
+Circuit setup: `scripts/solidity/build-prover-artifacts.sh` generates the supported N4 pair in ignored staging, smoke-tests it, publishes it, and records provenance. After regeneration the verifying key changes: **redeploy the generated N4 verifier and re-register it via `SignatureVerifier.setBucket(...)`**, or every proof fails on-chain.
 
 ## Architecture — orient here before editing
 

@@ -83,7 +83,7 @@ install-go-relayer:
 # "present?" signal because bucket 4 is the smallest and is always built first.
 [group('build')]
 build-prover-artifacts:
-	scripts/solidity-refactor/build-prover-artifacts.sh
+	scripts/solidity/build-prover-artifacts.sh
 
 # Run all linters
 [group('lint')]
@@ -129,12 +129,12 @@ lint-rust:
 # Generate the (non-bytecode) ABI files for the contracts
 [group('generate')]
 generate-abi: build-contracts
-	scripts/solidity-refactor/generate-bindings.sh shared
+	scripts/solidity/generate-bindings.sh shared
 
 # Generate the ABI files with bytecode for the required contracts (only SpectreClient)
 [group('generate')]
 generate-abi-bytecode: build-contracts
-	scripts/solidity-refactor/generate-bindings.sh bytecode
+	scripts/solidity/generate-bindings.sh bytecode
 
 # Generate the fixtures for the wasm tests using the e2e tests
 [group('generate')]
