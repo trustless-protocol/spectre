@@ -57,7 +57,7 @@
     },
     {
       "current": "contracts/errors/IEscrowErrors.sol",
-      "target": "contracts/apps/ics20/errors/EscrowErrors.sol",
+      "target": "contracts/apps/ics20/errors/IEscrowErrors.sol",
       "owner": "apps/ics20",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -68,7 +68,7 @@
     },
     {
       "current": "contracts/errors/IIBCERC20Errors.sol",
-      "target": "contracts/apps/ics20/errors/IBCERC20Errors.sol",
+      "target": "contracts/apps/ics20/errors/IIBCERC20Errors.sol",
       "owner": "apps/ics20",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -80,7 +80,7 @@
     },
     {
       "current": "contracts/errors/IICS02ClientErrors.sol",
-      "target": "contracts/core/errors/ICS02ClientErrors.sol",
+      "target": "contracts/core/errors/IICS02ClientErrors.sol",
       "owner": "core",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -94,7 +94,7 @@
     },
     {
       "current": "contracts/errors/IICS20Errors.sol",
-      "target": "contracts/apps/ics20/errors/ICS20Errors.sol",
+      "target": "contracts/apps/ics20/errors/IICS20Errors.sol",
       "owner": "apps/ics20",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -108,7 +108,7 @@
     },
     {
       "current": "contracts/errors/IICS24HostErrors.sol",
-      "target": "contracts/core/errors/ICS24HostErrors.sol",
+      "target": "contracts/core/errors/IICS24HostErrors.sol",
       "owner": "core",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -121,7 +121,7 @@
     },
     {
       "current": "contracts/errors/IICS26RouterErrors.sol",
-      "target": "contracts/core/errors/ICS26RouterErrors.sol",
+      "target": "contracts/core/errors/IICS26RouterErrors.sol",
       "owner": "core",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -135,7 +135,7 @@
     },
     {
       "current": "contracts/errors/IRateLimitErrors.sol",
-      "target": "contracts/apps/ics20/errors/RateLimitErrors.sol",
+      "target": "contracts/apps/ics20/errors/IRateLimitErrors.sol",
       "owner": "apps/ics20",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -385,7 +385,7 @@
     },
     {
       "current": "contracts/light-clients/errors/ISpectreClientErrors.sol",
-      "target": "contracts/light-clients/spectre/errors/SpectreClientErrors.sol",
+      "target": "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol",
       "owner": "light-clients/spectre",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -602,7 +602,7 @@
     },
     {
       "current": "contracts/light-clients/msgs/IGroth16Msgs.sol",
-      "target": "contracts/light-clients/spectre/messages/Groth16Msgs.sol",
+      "target": "contracts/light-clients/spectre/messages/IGroth16Msgs.sol",
       "owner": "light-clients/spectre",
       "compatibility_class": "abi-locked",
       "consumers": [],
@@ -611,14 +611,14 @@
     },
     {
       "current": "contracts/light-clients/msgs/IICS07TendermintMsgs.sol",
-      "target": "contracts/light-clients/spectre/messages/SpectreMsgs.sol",
+      "target": "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol",
       "owner": "light-clients/spectre",
       "compatibility_class": "abi-locked",
       "consumers": [
-        "contracts/light-clients/messages/LightClientMsgs.sol",
+        "contracts/light-clients/messages/ILightClientMsgs.sol",
         "contracts/light-clients/spectre/SpectreClient.sol",
         "contracts/light-clients/spectre/libraries/ValidatorSetLib.sol",
-        "contracts/light-clients/spectre/messages/SpectreClientMsgs.sol",
+        "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol",
         "contracts/light-clients/spectre/modules/Misbehaviour.sol",
         "contracts/light-clients/spectre/modules/UpdateClient.sol",
         "contracts/light-clients/spectre/store/SpectreStore.sol",
@@ -646,11 +646,11 @@
     },
     {
       "current": "contracts/light-clients/msgs/IMembershipMsgs.sol",
-      "target": "contracts/light-clients/spectre/messages/MembershipMsgs.sol",
+      "target": "contracts/light-clients/spectre/messages/IMembershipMsgs.sol",
       "owner": "light-clients/spectre",
       "compatibility_class": "abi-locked",
       "consumers": [
-        "contracts/light-clients/messages/LightClientMsgs.sol",
+        "contracts/light-clients/messages/ILightClientMsgs.sol",
         "contracts/light-clients/spectre/SpectreClient.sol",
         "contracts/light-clients/spectre/interfaces/IMembership.sol",
         "contracts/light-clients/spectre/modules/Membership.sol",
@@ -672,7 +672,7 @@
     },
     {
       "current": "contracts/light-clients/msgs/ISpectreClientMsgs.sol",
-      "target": "contracts/light-clients/spectre/messages/SpectreClientMsgs.sol",
+      "target": "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol",
       "owner": "light-clients/spectre",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -746,7 +746,7 @@
     },
     {
       "current": "contracts/msgs/IICS02ClientMsgs.sol",
-      "target": "contracts/core/messages/ICS02ClientMsgs.sol",
+      "target": "contracts/core/messages/IICS02ClientMsgs.sol",
       "owner": "core",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -758,11 +758,11 @@
         "contracts/core/client-registry/migration/modules/ClientMigrationExecutor.sol",
         "contracts/core/client-registry/migration/modules/ClientMigrationProposer.sol",
         "contracts/core/interfaces/IICS02Client.sol",
-        "contracts/core/messages/ICS26RouterMsgs.sol",
-        "contracts/light-clients/messages/LightClientMsgs.sol",
+        "contracts/core/messages/IICS26RouterMsgs.sol",
+        "contracts/light-clients/messages/ILightClientMsgs.sol",
         "contracts/light-clients/spectre/SpectreClient.sol",
-        "contracts/light-clients/spectre/messages/SpectreMsgs.sol",
-        "contracts/light-clients/spectre/messages/SpectreClientMsgs.sol",
+        "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol",
+        "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol",
         "contracts/light-clients/spectre/modules/Misbehaviour.sol",
         "contracts/light-clients/spectre/modules/UpdateClient.sol",
         "contracts/light-clients/spectre/libraries/Encode.sol",
@@ -784,7 +784,7 @@
     },
     {
       "current": "contracts/msgs/IICS20TransferMsgs.sol",
-      "target": "contracts/apps/ics20/messages/ICS20TransferMsgs.sol",
+      "target": "contracts/apps/ics20/messages/IICS20TransferMsgs.sol",
       "owner": "apps/ics20",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -804,7 +804,7 @@
     },
     {
       "current": "contracts/msgs/IICS26RouterMsgs.sol",
-      "target": "contracts/core/messages/ICS26RouterMsgs.sol",
+      "target": "contracts/core/messages/IICS26RouterMsgs.sol",
       "owner": "core",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -833,7 +833,7 @@
     },
     {
       "current": "contracts/msgs/ILightClientMsgs.sol",
-      "target": "contracts/light-clients/messages/LightClientMsgs.sol",
+      "target": "contracts/light-clients/messages/ILightClientMsgs.sol",
       "owner": "light-clients/compatibility",
       "compatibility_class": "abi-locked",
       "consumers": [

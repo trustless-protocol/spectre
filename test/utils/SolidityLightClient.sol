@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 // solhint-disable no-empty-blocks,gas-custom-errors
 
-import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
+import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
 import { ILightClient } from "contracts/light-clients/interfaces/ILightClient.sol";
 
 import { ICS26Router } from "contracts/core/ICS26Router.sol";
@@ -15,15 +15,15 @@ contract SolidityLightClient is ILightClient {
         _COUNTERPARTY_ICS26 = counterpartyIcs26;
     }
 
-    function updateApplicationState(bytes calldata) external pure returns (LightClientMsgs.UpdateResult) {
+    function updateApplicationState(bytes calldata) external pure returns (ILightClientMsgs.UpdateResult) {
         revert("not implemented");
     }
 
-    function updateConsensusState(bytes calldata) external pure returns (LightClientMsgs.UpdateResult) {
+    function updateConsensusState(bytes calldata) external pure returns (ILightClientMsgs.UpdateResult) {
         revert("not implemented");
     }
 
-    function verifyMembership(LightClientMsgs.MsgVerifyMembership calldata msg_) external view returns (uint256) {
+    function verifyMembership(ILightClientMsgs.MsgVerifyMembership calldata msg_) external view returns (uint256) {
         // The router overrides `path` and `value` on the message before forwarding.
         require(msg_.path.length == 1, "only support single path");
         bytes32 solidityPath = keccak256(msg_.path[0]);
@@ -35,7 +35,11 @@ contract SolidityLightClient is ILightClient {
         return block.timestamp;
     }
 
-    function verifyNonMembership(LightClientMsgs.MsgVerifyNonMembership calldata msg_) external view returns (uint256) {
+    function verifyNonMembership(ILightClientMsgs.MsgVerifyNonMembership calldata msg_)
+        external
+        view
+        returns (uint256)
+    {
         require(msg_.path.length == 1, "only support single path");
         bytes32 solidityPath = keccak256(msg_.path[0]);
         bytes32 commitment = _COUNTERPARTY_ICS26.getCommitment(solidityPath);

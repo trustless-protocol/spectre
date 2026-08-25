@@ -40,9 +40,9 @@ type SpectreClientTestSuite struct {
 	generateFixtures bool
 
 	// Addresses of the deployed contracts
-	contractAddresses    ethereum.DeployedContracts
-	spectreClientAddress ethcommon.Address
-	ics26Address         ethcommon.Address
+	contractAddresses   ethereum.DeployedContracts
+	groth16Ics07Address ethcommon.Address
+	ics26Address        ethcommon.Address
 
 	// The private key of a test account
 	key *ecdsa.PrivateKey
@@ -185,9 +185,9 @@ func (s *SpectreClientTestSuite) SetupSuite(ctx context.Context, proofType types
 		cosmosToEthConfig, err := readCosmosToEthConfig(testvalues.RelayerConfigFilePath)
 		s.Require().NoError(err)
 		s.Require().NotEmpty(cosmosToEthConfig.SpectreClient)
-		s.spectreClientAddress = ethcommon.HexToAddress(cosmosToEthConfig.SpectreClient)
+		s.groth16Ics07Address = ethcommon.HexToAddress(cosmosToEthConfig.SpectreClient)
 
-		s.contract, err = spectreclient.NewContract(s.spectreClientAddress, eth.RPCClient)
+		s.contract, err = spectreclient.NewContract(s.groth16Ics07Address, eth.RPCClient)
 		s.Require().NoError(err)
 	}))
 
@@ -225,7 +225,7 @@ func (s *SpectreClientTestSuite) DeployTest(ctx context.Context, proofType types
 	_, simd := s.EthChain, s.CosmosChains[0]
 
 	s.Require().True(s.Run("Verify deployment", func() {
-		clientState, err := getSpectreClientState(s.contract)
+		clientState, err := getGroth16ClientState(s.contract)
 		s.Require().NoError(err)
 
 		stakingParams, err := simd.StakingQueryParams(ctx)
@@ -259,14 +259,14 @@ func (s *SpectreClientTestSuite) UpdateClientTest(ctx context.Context, proofType
 	}
 
 	s.Require().True(s.Run("Update client", func() {
-		clientState, err := getSpectreClientState(s.contract)
+		clientState, err := getGroth16ClientState(s.contract)
 		s.Require().NoError(err)
 
 		initialHeight := clientState.LatestHeight.RevisionHeight
 
 		s.UpdateClient(ctx)
 
-		clientState, err = getSpectreClientState(s.contract)
+		clientState, err = getGroth16ClientState(s.contract)
 		s.Require().NoError(err)
 
 		stakingParams, err := simd.StakingQueryParams(ctx)
@@ -286,20 +286,20 @@ func (s *SpectreClientTestSuite) UpdateClientTest(ctx context.Context, proofType
 func (s *SpectreClientTestSuite) UpdateClient(ctx context.Context) clienttypes.Height {
 	var initialHeight uint64
 	s.Require().True(s.Run("Get the initial height", func() {
-		clientState, err := getSpectreClientState(s.contract)
+		clientState, err := getGroth16ClientState(s.contract)
 		s.Require().NoError(err)
 		s.Require().NotZero(clientState.LatestHeight.RevisionHeight)
 
 		initialHeight = clientState.LatestHeight.RevisionHeight
 	}))
 
-	var finalHeight spectreclient.ICS02ClientMsgsHeight
+	var finalHeight spectreclient.IICS02ClientMsgsHeight
 	s.Require().True(s.Run("Update the client on Ethereum", func() {
 		err := relayer.RunUpdateClient(testvalues.RelayerConfigFilePath)
 		s.Require().NoError(err)
 
 		s.Require().True(s.Run("Verify the client state is updated", func() {
-			clientState, err := getSpectreClientState(s.contract)
+			clientState, err := getGroth16ClientState(s.contract)
 			s.Require().NoError(err)
 			s.Require().NotZero(clientState.LatestHeight.RevisionHeight)
 

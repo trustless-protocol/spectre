@@ -13,7 +13,7 @@ import (
 func reusableState(chainID string, height uint64) relayerclient.ClientState {
 	return relayerclient.ClientState{
 		ChainId:      chainID,
-		LatestHeight: updateClientContract.ICS02ClientMsgsHeight{RevisionHeight: height},
+		LatestHeight: updateClientContract.IICS02ClientMsgsHeight{RevisionHeight: height},
 	}
 }
 

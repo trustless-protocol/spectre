@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-/// @title ICS26RouterErrors
+/// @title IICS26RouterErrors
 /// @notice Interface for ICS26Router errors
-interface ICS26RouterErrors {
+interface IICS26RouterErrors {
     /// @notice IBC port identifier already exists
     /// @param portId port identifier
     error IBCPortAlreadyExists(string portId);

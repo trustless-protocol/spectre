@@ -1,146 +1,15 @@
 {
   "schema_version": 1,
   "design_reference": "refactor/design-contracts@115397d08e23a421852d08e590d2571bd413f3f5",
-  "compatibility_class": "tooling-abi-only",
-  "policy": "Normalize only reviewed Solidity container names for runtime ABI and storage comparison; lock regenerated ABI, binding files, and coordinated Rust consumer sources by digest.",
-  "renames": [
-    {
-      "current": "IEscrowErrors",
-      "target": "EscrowErrors",
-      "owner": "apps/ics20"
-    },
-    {
-      "current": "IIBCERC20Errors",
-      "target": "IBCERC20Errors",
-      "owner": "apps/ics20"
-    },
-    {
-      "current": "IICS20Errors",
-      "target": "ICS20Errors",
-      "owner": "apps/ics20"
-    },
-    {
-      "current": "IRateLimitErrors",
-      "target": "RateLimitErrors",
-      "owner": "apps/ics20"
-    },
-    {
-      "current": "IICS02ClientErrors",
-      "target": "ICS02ClientErrors",
-      "owner": "core"
-    },
-    {
-      "current": "IICS24HostErrors",
-      "target": "ICS24HostErrors",
-      "owner": "core"
-    },
-    {
-      "current": "IICS26RouterErrors",
-      "target": "ICS26RouterErrors",
-      "owner": "core"
-    },
-    {
-      "current": "ISpectreClientErrors",
-      "target": "SpectreClientErrors",
-      "owner": "light-clients/spectre"
-    },
-    {
-      "current": "IICS20TransferMsgs",
-      "target": "ICS20TransferMsgs",
-      "owner": "apps/ics20"
-    },
-    {
-      "current": "IICS02ClientMsgs",
-      "target": "ICS02ClientMsgs",
-      "owner": "core"
-    },
-    {
-      "current": "IICS26RouterMsgs",
-      "target": "ICS26RouterMsgs",
-      "owner": "core"
-    },
-    {
-      "current": "ILightClientMsgs",
-      "target": "LightClientMsgs",
-      "owner": "light-clients/compatibility"
-    },
-    {
-      "current": "IGroth16Msgs",
-      "target": "Groth16Msgs",
-      "owner": "light-clients/spectre"
-    },
-    {
-      "current": "IICS07TendermintMsgs",
-      "target": "SpectreMsgs",
-      "owner": "light-clients/spectre"
-    },
-    {
-      "current": "IMembershipMsgs",
-      "target": "MembershipMsgs",
-      "owner": "light-clients/spectre"
-    },
-    {
-      "current": "ISpectreClientMsgs",
-      "target": "SpectreClientMsgs",
-      "owner": "light-clients/spectre"
-    }
-  ],
-  "generated_digests": {
-    "abi/ICS20Transfer.json": "778335d43f48867db5be5d12c2749430b0fd93287dc1011ee8f756c9794fd125",
-    "abi/ICS26Router.json": "a18c4e3e63cd4130c12876cd89e35dde3b45998a1c8167fb24359965afb10774",
-    "abi/RelayerHelper.json": "33106f98d23d09ef1fd9d3949cc476dac1b8619d1e7fc866080caa9e9e85290c",
-    "abi/SpectreClient.json": "25299bc1f673166f8fe0cfc61805a5205de371ae80be7a10fca13a33bf5ccb2a",
-    "packages/go-abigen/ics20transfer/contract.go": "f30b8da9b3f078820be1b1a8e49f1eb0c7f8e3b0423bdd82bb74e345c5e5d1cf",
-    "packages/go-abigen/ics26router/contract.go": "b410828b0068ef2d696f2bac2d3887567aa086d29b2dd2d4ae851831fa0dcdd7",
-    "packages/go-abigen/relayerhelper/contract.go": "1b3e1758662a30dcfebc4a64438b313a848c38c12bb4f0d9fe9fd531bb4f4bde",
-    "packages/go-abigen/spectreclient/contract.go": "7883c1bb534709b55176a04a853b57ca865d9456d6eab66d3a794d643b025301",
-    "relayer/bindings/ICS20Transfer/binding.go": "c4fc06d8607974a06da2b7f876616425118da6e3684a5e78446a5ef5cc30641e",
-    "relayer/bindings/ICS26Router/binding.go": "8437eacc1822ebd9a614d4aa76e435b2b1607b1a092bb48e51cfd4062471c12e",
-    "relayer/bindings/Membership/binding.go": "0c9f136699c8f78cf61a07fdb9753d4a5528f91469259579ecea51a6da728f2b",
-    "relayer/bindings/Misbehaviour/binding.go": "9b61775e8493a27fad52947dce0aef5635a14ad6f09c0dc12cd05a81d359d5c0",
-    "relayer/bindings/SpectreClient/binding.go": "0241d3b4d46908e04fad5c23f075e712f04cde9b6ce8dde2724990c7a4633680",
-    "relayer/bindings/UpdateClient/binding.go": "e4130329e2751517079f26831963cb6625a2d2df25278770e09b047b73be69f2"
-  },
-  "source_module_renames": [
-    {
-      "current": "packages/solidity/src/groth16_ics07.rs",
-      "target": "packages/solidity/src/spectre_client.rs",
-      "owner": "light-clients/spectre tooling",
-      "compatibility_class": "coordinated-tooling-abi-rename",
-      "consumers": [
-        "packages/solidity/src/lib.rs",
-        "packages/solidity/src/msgs.rs"
-      ]
-    },
-    {
-      "current": "e2e/interchaintestv8/groth16_clientstate.go",
-      "target": "e2e/interchaintestv8/spectre_client_state.go",
-      "owner": "light-clients/spectre e2e tooling",
-      "compatibility_class": "internal-consumer-rename",
-      "consumers": [
-        "e2e/interchaintestv8/ibc_eureka_test.go",
-        "e2e/interchaintestv8/multichain_test.go",
-        "e2e/interchaintestv8/spectre_client_test.go"
-      ]
-    }
-  ],
-  "retired_generated_artifacts": [
-    {
-      "current": "abi/Groth16ICS07Tendermint.json",
-      "replacement": "abi/SpectreClient.json",
-      "owner": "light-clients/spectre tooling",
-      "compatibility_class": "coordinated-tooling-abi-rename"
-    },
-    {
-      "current": "abi/bytecode/Groth16ICS07Tendermint.json",
-      "replacement": "abi/bytecode/SpectreClient.json",
-      "owner": "light-clients/spectre tooling",
-      "compatibility_class": "coordinated-tooling-abi-rename"
-    }
-  ],
+  "compatibility_class": "tooling-abi-locked",
+  "policy": "Preserve existing Solidity interface container names and generated binding type names; allow only required source and fixture path updates.",
+  "renames": [],
+  "generated_digests": {},
+  "source_module_renames": [],
+  "retired_generated_artifacts": [],
   "consumer_digests": {
-    "packages/solidity/src/spectre_client.rs": "1edf3436143ea198de7609ebcbcd79a7338ec19e6992e00a051c8c99c62a3698",
-    "packages/solidity/src/lib.rs": "6bcbbc6afb5f8495dd473a09e74bf784b45cd8e670f26a2bfc75871071488e6f",
-    "packages/solidity/src/msgs.rs": "e02e625ce1a96e7b0dc77aec0e2b2774d41c220dbe8b4aee4910da8692c18bb0"
+    "packages/solidity/src/msgs.rs": "20b22659f4f75dcb34e2582e4621f2a1a7b617031a0421cabb27073172143e57",
+    "packages/solidity/src/groth16_ics07.rs": "ff1af85efc48f87e51af4884d04d2405c1dd418dad084271b0f4ae652ef7ec40",
+    "e2e/interchaintestv8/testvalues/values.go": "cbd06991cc5d1c666013b9a4868d70e0283d7ee14de546586ed53bebf985f7a7"
   }
 }

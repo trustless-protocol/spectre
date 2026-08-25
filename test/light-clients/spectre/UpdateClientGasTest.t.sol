@@ -7,10 +7,10 @@ import { SpectreClient } from "contracts/light-clients/spectre/SpectreClient.sol
 import { SignatureVerifier } from "contracts/light-clients/spectre/SignatureVerifier.sol";
 import { UpdateClient } from "contracts/light-clients/spectre/modules/UpdateClient.sol";
 import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
-import { SpectreClientMsgs } from "contracts/light-clients/spectre/messages/SpectreClientMsgs.sol";
-import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
-import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
+import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
+import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
+import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
 
 /// @dev Stub bucket verifier — always returns true so gas measurement excludes
 ///      only the ~250K-gas BN254 pairing cost. Everything else (real
@@ -71,32 +71,32 @@ contract UpdateClientGasTest is Test {
     }
 
     struct LegacyCommitSig {
-        SpectreMsgs.CommitSigFlag flag;
+        IICS07TendermintMsgs.CommitSigFlag flag;
         LegacyCommitSigData data;
     }
 
     struct LegacyBlockCommit {
         uint64 height;
         uint32 round;
-        SpectreMsgs.BlockId blockId;
+        IICS07TendermintMsgs.BlockId blockId;
         LegacyCommitSig[] commitSigs;
     }
 
     struct LegacySignedHeader {
-        SpectreMsgs.BlockHeader header;
+        IICS07TendermintMsgs.BlockHeader header;
         LegacyBlockCommit commit;
     }
 
     struct LegacyHeader {
         LegacySignedHeader signedHeader;
-        ICS02ClientMsgs.Height trustedHeight;
+        IICS02ClientMsgs.Height trustedHeight;
     }
 
     struct LegacyMsgUpdateApplicationState {
-        SpectreMsgs.ConsensusState trustedConsensusState;
+        IICS07TendermintMsgs.ConsensusState trustedConsensusState;
         LegacyHeader proposedHeader;
         uint128 time;
-        SpectreClientMsgs.BatchProof proof;
+        ISpectreClientMsgs.BatchProof proof;
     }
 
     /// Bench-matched: active just clears 2/3 quorum of valCount.
@@ -125,11 +125,11 @@ contract UpdateClientGasTest is Test {
         }
     }
 
-    function _clientState() internal pure returns (SpectreMsgs.ClientState memory) {
-        return SpectreMsgs.ClientState({
+    function _clientState() internal pure returns (IICS07TendermintMsgs.ClientState memory) {
+        return IICS07TendermintMsgs.ClientState({
             chainId: CHAIN_ID,
-            trustLevel: SpectreMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
-            latestHeight: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
+            trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
+            latestHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
             isFrozen: false,
@@ -137,11 +137,11 @@ contract UpdateClientGasTest is Test {
         });
     }
 
-    function _buildValSet(uint16 valCount) internal pure returns (SpectreMsgs.ValidatorSet memory vs) {
-        SpectreMsgs.ValidatorInfo[] memory vals = new SpectreMsgs.ValidatorInfo[](valCount);
+    function _buildValSet(uint16 valCount) internal pure returns (IICS07TendermintMsgs.ValidatorSet memory vs) {
+        IICS07TendermintMsgs.ValidatorInfo[] memory vals = new IICS07TendermintMsgs.ValidatorInfo[](valCount);
         uint64 total = 0;
         for (uint256 i = 0; i < valCount; i++) {
-            vals[i] = SpectreMsgs.ValidatorInfo({
+            vals[i] = IICS07TendermintMsgs.ValidatorInfo({
                 valAddress: abi.encodePacked(uint160(i + 1)),
                 pubKey: bytes32(uint256(0xA0000000 + i + 1)),
                 votingPower: 100,
@@ -149,16 +149,16 @@ contract UpdateClientGasTest is Test {
             });
             total += 100;
         }
-        vs = SpectreMsgs.ValidatorSet({
+        vs = IICS07TendermintMsgs.ValidatorSet({
             validators: vals, hasProposer: false, proposer: vals[0], totalVotingPower: total
         });
     }
 
-    function _emptyValSet() internal pure returns (SpectreMsgs.ValidatorSet memory vs) {
-        vs = SpectreMsgs.ValidatorSet({
-            validators: new SpectreMsgs.ValidatorInfo[](0),
+    function _emptyValSet() internal pure returns (IICS07TendermintMsgs.ValidatorSet memory vs) {
+        vs = IICS07TendermintMsgs.ValidatorSet({
+            validators: new IICS07TendermintMsgs.ValidatorInfo[](0),
             hasProposer: false,
-            proposer: SpectreMsgs.ValidatorInfo({
+            proposer: IICS07TendermintMsgs.ValidatorInfo({
                 valAddress: "", pubKey: bytes32(0), votingPower: 0, proposerPriority: 0
             }),
             totalVotingPower: 0
@@ -168,33 +168,33 @@ contract UpdateClientGasTest is Test {
     /// Build commit signatures: first `activeCount` are COMMIT, rest are ABSENT. Length == val_count, matching
     /// CometBFT's invariant that a commit carries one CommitSig per validator.
     function _buildCommitSigs(
-        SpectreMsgs.ValidatorSet memory vs,
+        IICS07TendermintMsgs.ValidatorSet memory vs,
         uint16 activeCount
     )
         internal
         pure
-        returns (SpectreMsgs.CommitSig[] memory sigs)
+        returns (IICS07TendermintMsgs.CommitSig[] memory sigs)
     {
-        sigs = new SpectreMsgs.CommitSig[](vs.validators.length);
+        sigs = new IICS07TendermintMsgs.CommitSig[](vs.validators.length);
         for (uint256 i = 0; i < vs.validators.length; i++) {
             // The commit slot names the validator it belongs to, or the quorum check rejects the
             // proof citing it (ZK-09). Commit and pinned set are the same validators in the same
             // order here, so slot i is validator i.
             bytes20 addr = bytes20(sha256(abi.encodePacked(vs.validators[i].pubKey)));
             if (i < activeCount) {
-                sigs[i] = SpectreMsgs.CommitSig({
-                    flag: SpectreMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT, validatorAddress: addr
+                sigs[i] = IICS07TendermintMsgs.CommitSig({
+                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT, validatorAddress: addr
                 });
             } else {
-                sigs[i] = SpectreMsgs.CommitSig({
-                    flag: SpectreMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT, validatorAddress: addr
+                sigs[i] = IICS07TendermintMsgs.CommitSig({
+                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT, validatorAddress: addr
                 });
             }
         }
     }
 
     function _buildLegacyCommitSigs(
-        SpectreMsgs.ValidatorSet memory vs,
+        IICS07TendermintMsgs.ValidatorSet memory vs,
         uint16 activeCount
     )
         internal
@@ -205,7 +205,7 @@ contract UpdateClientGasTest is Test {
         for (uint256 i = 0; i < vs.validators.length; i++) {
             if (i < activeCount) {
                 sigs[i] = LegacyCommitSig({
-                    flag: SpectreMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
                     data: LegacyCommitSigData({
                         validatorAddress: vs.validators[i].valAddress,
                         timestamp: NEW_TS_NS,
@@ -215,7 +215,7 @@ contract UpdateClientGasTest is Test {
                 });
             } else {
                 sigs[i] = LegacyCommitSig({
-                    flag: SpectreMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT,
+                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT,
                     data: LegacyCommitSigData({
                         validatorAddress: "", timestamp: 0, hasSignature: false, signature: ""
                     })
@@ -229,17 +229,17 @@ contract UpdateClientGasTest is Test {
         uint64 newHeight,
         uint128 newTimestamp,
         bytes32 appHash,
-        SpectreMsgs.ValidatorSet memory currentValSet,
-        SpectreMsgs.ValidatorSet memory trustedNextValSet,
+        IICS07TendermintMsgs.ValidatorSet memory currentValSet,
+        IICS07TendermintMsgs.ValidatorSet memory trustedNextValSet,
         uint16 activeCount
     )
         internal
         pure
-        returns (SpectreMsgs.Header memory header)
+        returns (IICS07TendermintMsgs.Header memory header)
     {
         bytes32 currentValSetHash = Header.hashValSet(currentValSet);
 
-        SpectreMsgs.BlockHeader memory bh;
+        IICS07TendermintMsgs.BlockHeader memory bh;
         bh.chainId = CHAIN_ID;
         bh.height = newHeight;
         bh.time = newTimestamp;
@@ -248,19 +248,19 @@ contract UpdateClientGasTest is Test {
         bh.nextValidatorsHash = currentValSetHash;
         bytes32 headerHash = Header.hashHeader(bh);
 
-        SpectreMsgs.BlockCommit memory bc = SpectreMsgs.BlockCommit({
+        IICS07TendermintMsgs.BlockCommit memory bc = IICS07TendermintMsgs.BlockCommit({
             height: newHeight,
             round: 0,
-            blockId: SpectreMsgs.BlockId({
+            blockId: IICS07TendermintMsgs.BlockId({
                 hashData: headerHash,
-                partSetHeader: SpectreMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
+                partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
             }),
             commitSigs: _buildCommitSigs(currentValSet, activeCount)
         });
 
-        header = SpectreMsgs.Header({
-            signedHeader: SpectreMsgs.SignedHeader({ header: bh, commit: bc }),
-            trustedHeight: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: trustedHeight })
+        header = IICS07TendermintMsgs.Header({
+            signedHeader: IICS07TendermintMsgs.SignedHeader({ header: bh, commit: bc }),
+            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: trustedHeight })
         });
     }
 
@@ -271,15 +271,15 @@ contract UpdateClientGasTest is Test {
         internal
         pure
         returns (
-            SpectreMsgs.Header memory header,
-            SpectreMsgs.ConsensusState memory trustedCS,
-            SpectreMsgs.ValidatorSet memory vs
+            IICS07TendermintMsgs.Header memory header,
+            IICS07TendermintMsgs.ConsensusState memory trustedCS,
+            IICS07TendermintMsgs.ValidatorSet memory vs
         )
     {
         vs = _buildValSet(cfg.valCount);
         bytes32 valSetHash = Header.hashValSet(vs);
 
-        SpectreMsgs.BlockHeader memory bh;
+        IICS07TendermintMsgs.BlockHeader memory bh;
         bh.chainId = CHAIN_ID;
         bh.height = NEW_HEIGHT;
         bh.time = NEW_TS_NS;
@@ -288,32 +288,32 @@ contract UpdateClientGasTest is Test {
         bh.nextValidatorsHash = valSetHash;
         bytes32 headerHash = Header.hashHeader(bh);
 
-        SpectreMsgs.BlockCommit memory bc = SpectreMsgs.BlockCommit({
+        IICS07TendermintMsgs.BlockCommit memory bc = IICS07TendermintMsgs.BlockCommit({
             height: NEW_HEIGHT,
             round: 0,
-            blockId: SpectreMsgs.BlockId({
+            blockId: IICS07TendermintMsgs.BlockId({
                 hashData: headerHash,
-                partSetHeader: SpectreMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
+                partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
             }),
             commitSigs: _buildCommitSigs(vs, cfg.activeCount)
         });
 
-        header = SpectreMsgs.Header({
-            signedHeader: SpectreMsgs.SignedHeader({ header: bh, commit: bc }),
-            trustedHeight: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT })
+        header = IICS07TendermintMsgs.Header({
+            signedHeader: IICS07TendermintMsgs.SignedHeader({ header: bh, commit: bc }),
+            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT })
         });
 
         // trustedConsensusState.nextValidatorsHash must equal hashValSet(trustedNextValSet)
         // (we reuse the same set, so the hash is identical).
-        trustedCS = SpectreMsgs.ConsensusState({
+        trustedCS = IICS07TendermintMsgs.ConsensusState({
             timestamp: TRUSTED_TS_NS, root: bytes32(uint256(0xAAA)), nextValidatorsHash: valSetHash
         });
     }
 
     function _deployLightClient(
-        SpectreMsgs.ClientState memory cs,
-        SpectreMsgs.ConsensusState memory trustedCS,
-        SpectreMsgs.ValidatorSet memory pinnedValidatorSet
+        IICS07TendermintMsgs.ClientState memory cs,
+        IICS07TendermintMsgs.ConsensusState memory trustedCS,
+        IICS07TendermintMsgs.ValidatorSet memory pinnedValidatorSet
     )
         internal
         returns (SpectreClient)
@@ -332,16 +332,16 @@ contract UpdateClientGasTest is Test {
     }
 
     function _buildMsg(
-        SpectreMsgs.ClientState memory cs,
-        SpectreMsgs.ConsensusState memory trustedCS,
-        SpectreMsgs.Header memory header,
-        SpectreMsgs.ValidatorSet memory vs,
+        IICS07TendermintMsgs.ClientState memory cs,
+        IICS07TendermintMsgs.ConsensusState memory trustedCS,
+        IICS07TendermintMsgs.Header memory header,
+        IICS07TendermintMsgs.ValidatorSet memory vs,
         uint16 bucket,
         uint16 activeCount
     )
         internal
         pure
-        returns (SpectreClientMsgs.MsgUpdateApplicationState memory msg_)
+        returns (ISpectreClientMsgs.MsgUpdateApplicationState memory msg_)
     {
         // Build per-slot bucket arrays (active = first cfg.activeCount, rest = padding).
         uint32[] memory idx = new uint32[](bucket);
@@ -371,8 +371,8 @@ contract UpdateClientGasTest is Test {
     }
 
     function _buildLegacyMsg(
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_,
-        SpectreMsgs.ValidatorSet memory vs,
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_,
+        IICS07TendermintMsgs.ValidatorSet memory vs,
         uint16 activeCount
     )
         internal
@@ -399,13 +399,13 @@ contract UpdateClientGasTest is Test {
     function _measureCalldataDiet(uint16 bucket) internal pure {
         BucketConfig memory cfg = _cfg(bucket);
         (
-            SpectreMsgs.Header memory header,
-            SpectreMsgs.ConsensusState memory trustedCS,
-            SpectreMsgs.ValidatorSet memory vs
+            IICS07TendermintMsgs.Header memory header,
+            IICS07TendermintMsgs.ConsensusState memory trustedCS,
+            IICS07TendermintMsgs.ValidatorSet memory vs
         ) = _buildSelfConsistent(cfg);
 
-        SpectreMsgs.ClientState memory cs = _clientState();
-        SpectreClientMsgs.MsgUpdateApplicationState memory current =
+        IICS07TendermintMsgs.ClientState memory cs = _clientState();
+        ISpectreClientMsgs.MsgUpdateApplicationState memory current =
             _buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount);
         LegacyMsgUpdateApplicationState memory legacy = _buildLegacyMsg(current, vs, cfg.activeCount);
 
@@ -423,19 +423,19 @@ contract UpdateClientGasTest is Test {
         BucketConfig memory cfg = _cfg(bucket);
 
         (
-            SpectreMsgs.Header memory header,
-            SpectreMsgs.ConsensusState memory trustedCS,
-            SpectreMsgs.ValidatorSet memory vs
+            IICS07TendermintMsgs.Header memory header,
+            IICS07TendermintMsgs.ConsensusState memory trustedCS,
+            IICS07TendermintMsgs.ValidatorSet memory vs
         ) = _buildSelfConsistent(cfg);
 
-        SpectreMsgs.ClientState memory cs = _clientState();
+        IICS07TendermintMsgs.ClientState memory cs = _clientState();
         SpectreClient ics07 = _deployLightClient(cs, trustedCS, vs);
         bytes memory encoded = abi.encode(_buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount));
 
         uint256 g0 = gasleft();
-        LightClientMsgs.UpdateResult result = ics07.updateApplicationState(encoded);
+        ILightClientMsgs.UpdateResult result = ics07.updateApplicationState(encoded);
         uint256 used = g0 - gasleft();
-        assertEq(uint8(result), uint8(LightClientMsgs.UpdateResult.Update), "expected Update");
+        assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update), "expected Update");
         console.log("bucket=", bucket, "  gas=", used);
     }
 
@@ -443,70 +443,70 @@ contract UpdateClientGasTest is Test {
         BucketConfig memory cfg = _cfg(bucket);
 
         (
-            SpectreMsgs.Header memory header,
-            SpectreMsgs.ConsensusState memory trustedCS,
-            SpectreMsgs.ValidatorSet memory vs
+            IICS07TendermintMsgs.Header memory header,
+            IICS07TendermintMsgs.ConsensusState memory trustedCS,
+            IICS07TendermintMsgs.ValidatorSet memory vs
         ) = _buildSelfConsistent(cfg);
 
-        SpectreMsgs.ClientState memory cs = _clientState();
+        IICS07TendermintMsgs.ClientState memory cs = _clientState();
         SpectreClient ics07 = _deployLightClient(cs, trustedCS, vs);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory fullMsg =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory fullMsg =
             _buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount);
         assertEq(
             uint8(ics07.updateApplicationState(abi.encode(fullMsg))),
-            uint8(LightClientMsgs.UpdateResult.Update),
+            uint8(ILightClientMsgs.UpdateResult.Update),
             "warmup Update"
         );
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory cacheMsg =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory cacheMsg =
             _buildMsg(cs, trustedCS, header, vs, bucket, cfg.activeCount);
 
         uint256 g0 = gasleft();
-        LightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(cacheMsg));
+        ILightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(cacheMsg));
         uint256 used = g0 - gasleft();
-        assertEq(uint8(result), uint8(LightClientMsgs.UpdateResult.NoOp), "expected cache-hit replay NoOp");
+        assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.NoOp), "expected cache-hit replay NoOp");
         console.log("bucket=", bucket, "  cache-hit replay gas=", used);
     }
 
     function _measureCacheHitAdjacentUpdate(uint16 bucket) internal {
         BucketConfig memory cfg = _cfg(bucket);
-        SpectreMsgs.ClientState memory cs = _clientState();
-        SpectreMsgs.ValidatorSet memory valSet = _buildValSet(cfg.valCount);
+        IICS07TendermintMsgs.ClientState memory cs = _clientState();
+        IICS07TendermintMsgs.ValidatorSet memory valSet = _buildValSet(cfg.valCount);
         bytes32 valSetHash = Header.hashValSet(valSet);
 
-        SpectreMsgs.ConsensusState memory trustedCS0 = SpectreMsgs.ConsensusState({
+        IICS07TendermintMsgs.ConsensusState memory trustedCS0 = IICS07TendermintMsgs.ConsensusState({
             timestamp: TRUSTED_TS_NS, root: bytes32(uint256(0xAAA1)), nextValidatorsHash: valSetHash
         });
 
         SpectreClient ics07 = _deployLightClient(cs, trustedCS0, valSet);
 
-        SpectreMsgs.Header memory header1001 = _buildHeader(
+        IICS07TendermintMsgs.Header memory header1001 = _buildHeader(
             TRUSTED_HEIGHT, NEW_HEIGHT, NEW_TS_NS, bytes32(uint256(0xCCC1)), valSet, valSet, cfg.activeCount
         );
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg1001 =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg1001 =
             _buildMsg(cs, trustedCS0, header1001, valSet, bucket, cfg.activeCount);
         assertEq(
             uint8(ics07.updateApplicationState(abi.encode(msg1001))),
-            uint8(LightClientMsgs.UpdateResult.Update),
+            uint8(ILightClientMsgs.UpdateResult.Update),
             "warmup Update"
         );
 
-        SpectreMsgs.ConsensusState memory trustedCS1001 = SpectreMsgs.ConsensusState({
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = IICS07TendermintMsgs.ConsensusState({
             timestamp: NEW_TS_NS, root: header1001.signedHeader.header.appHash, nextValidatorsHash: valSetHash
         });
 
-        SpectreMsgs.Header memory header1002 = _buildHeader(
+        IICS07TendermintMsgs.Header memory header1002 = _buildHeader(
             NEW_HEIGHT, NEXT_HEIGHT, NEXT_TS_NS, bytes32(uint256(0xCCC2)), valSet, valSet, cfg.activeCount
         );
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory cacheMsg =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory cacheMsg =
             _buildMsg(cs, trustedCS1001, header1002, valSet, bucket, cfg.activeCount);
 
         uint256 g0 = gasleft();
-        LightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(cacheMsg));
+        ILightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(cacheMsg));
         uint256 used = g0 - gasleft();
-        assertEq(uint8(result), uint8(LightClientMsgs.UpdateResult.Update), "expected cache-hit adjacent Update");
+        assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update), "expected cache-hit adjacent Update");
         console.log("bucket=", bucket, "  cache-hit adjacent update gas=", used);
     }
 

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
-import { ICS20TransferMsgs } from "contracts/apps/ics20/messages/ICS20TransferMsgs.sol";
+import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
+import { IICS20TransferMsgs } from "contracts/apps/ics20/messages/IICS20TransferMsgs.sol";
 import { IIBCAppCallbacks } from "contracts/core/messages/IIBCAppCallbacks.sol";
 
-import { ICS20Errors } from "contracts/apps/ics20/errors/ICS20Errors.sol";
+import { IICS20Errors } from "contracts/apps/ics20/errors/IICS20Errors.sol";
 import { IEscrow } from "contracts/apps/ics20/interfaces/IEscrow.sol";
 import { IIBCApp } from "contracts/core/interfaces/IIBCApp.sol";
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
@@ -38,7 +38,7 @@ using SafeERC20 for IERC20;
 /// @title ICS20Transfer
 /// @notice An implementation of the ics20-1 IBC specification for fungible token transfers.
 contract ICS20Transfer is
-    ICS20Errors,
+    IICS20Errors,
     IICS20Transfer,
     IIBCApp,
     IPausable,
@@ -216,13 +216,13 @@ contract ICS20Transfer is
     /// @inheritdoc IICS20Transfer
     // NOTE: Reentrancy disabled for this function via the `nonReentrant` modifier.
     // slither-disable-next-line reentrancy-no-eth
-    function sendTransfer(ICS20TransferMsgs.SendTransferMsg calldata msg_)
+    function sendTransfer(IICS20TransferMsgs.SendTransferMsg calldata msg_)
         external
         whenNotPaused
         nonReentrant
         returns (uint64)
     {
-        require(msg_.amount > 0, ICS20Errors.ICS20InvalidAmount(0));
+        require(msg_.amount > 0, IICS20Errors.ICS20InvalidAmount(0));
         // transfer the tokens to us (requires the allowance to be set)
         IEscrow escrow = _getOrCreateEscrow(msg_.sourceClient);
         _transferFrom(_msgSender(), address(escrow), msg_.denom, msg_.amount);
@@ -235,7 +235,7 @@ contract ICS20Transfer is
     // NOTE: Reentrancy disabled for this function via the `nonReentrant` modifier.
     // slither-disable-next-line reentrancy-no-eth
     function sendTransferWithPermit2(
-        ICS20TransferMsgs.SendTransferMsg calldata msg_,
+        IICS20TransferMsgs.SendTransferMsg calldata msg_,
         ISignatureTransfer.PermitTransferFrom calldata permit,
         bytes calldata signature
     )
@@ -244,10 +244,10 @@ contract ICS20Transfer is
         nonReentrant
         returns (uint64)
     {
-        require(msg_.amount > 0, ICS20Errors.ICS20InvalidAmount(0));
+        require(msg_.amount > 0, IICS20Errors.ICS20InvalidAmount(0));
         require(
             permit.permitted.token == msg_.denom,
-            ICS20Errors.ICS20Permit2TokenMismatch(permit.permitted.token, msg_.denom)
+            IICS20Errors.ICS20Permit2TokenMismatch(permit.permitted.token, msg_.denom)
         );
         // transfer the tokens to us with permit
         IEscrow escrow = _getOrCreateEscrow(msg_.sourceClient);
@@ -274,7 +274,7 @@ contract ICS20Transfer is
     // NOTE: Reentrancy disabled for this function via the `nonReentrant` modifier.
     // slither-disable-next-line reentrancy-no-eth
     function sendTransferWithSender(
-        ICS20TransferMsgs.SendTransferMsg calldata msg_,
+        IICS20TransferMsgs.SendTransferMsg calldata msg_,
         address sender
     )
         external
@@ -283,7 +283,7 @@ contract ICS20Transfer is
         restricted
         returns (uint64)
     {
-        require(msg_.amount > 0, ICS20Errors.ICS20InvalidAmount(0));
+        require(msg_.amount > 0, IICS20Errors.ICS20InvalidAmount(0));
         // transfer the tokens to us (requires the allowance to be set)
         IEscrow escrow = _getOrCreateEscrow(msg_.sourceClient);
         _transferFrom(_msgSender(), address(escrow), msg_.denom, msg_.amount);
@@ -300,7 +300,7 @@ contract ICS20Transfer is
     // NOTE: We disable reentrancy for public functions.
     // slither-disable-next-line reentrancy-no-eth
     function _sendTransferFromEscrowWithSender(
-        ICS20TransferMsgs.SendTransferMsg calldata msg_,
+        IICS20TransferMsgs.SendTransferMsg calldata msg_,
         address escrow,
         address sender,
         uint256 usageRemoved
@@ -324,7 +324,7 @@ contract ICS20Transfer is
             }
         }
 
-        ICS20TransferMsgs.FungibleTokenPacketData memory packetData = ICS20TransferMsgs.FungibleTokenPacketData({
+        IICS20TransferMsgs.FungibleTokenPacketData memory packetData = IICS20TransferMsgs.FungibleTokenPacketData({
             denom: fullDenomPath,
             sender: Strings.toHexString(sender),
             receiver: msg_.receiver,
@@ -334,10 +334,10 @@ contract ICS20Transfer is
 
         uint64 sequence = _getICS26Router()
             .sendPacket(
-                ICS26RouterMsgs.MsgSendPacket({
+                IICS26RouterMsgs.MsgSendPacket({
                 sourceClient: msg_.sourceClient,
                 timeoutTimestamp: msg_.timeoutTimestamp,
-                payload: ICS26RouterMsgs.Payload({
+                payload: IICS26RouterMsgs.Payload({
                 sourcePort: ICS20Lib.DEFAULT_PORT_ID,
                 destPort: ICS20Lib.DEFAULT_PORT_ID,
                 version: ICS20Lib.ICS20_VERSION,
@@ -354,9 +354,9 @@ contract ICS20Transfer is
     /// @inheritdoc IICS20TransferAccessControlled
     function setCustomERC20(string calldata denom, address token) external restricted {
         ICS20TransferStorage storage $ = _getICS20TransferStorage();
-        require(address($._ibcERC20Contracts[denom]) == address(0), ICS20Errors.ICS20DenomAlreadyExists(denom));
+        require(address($._ibcERC20Contracts[denom]) == address(0), IICS20Errors.ICS20DenomAlreadyExists(denom));
         require(
-            bytes($._ibcERC20Denoms[token]).length == 0, ICS20Errors.ICS20TokenAlreadyExists($._ibcERC20Denoms[token])
+            bytes($._ibcERC20Denoms[token]).length == 0, IICS20Errors.ICS20TokenAlreadyExists($._ibcERC20Denoms[token])
         );
 
         $._ibcERC20Contracts[denom] = IMintableAndBurnable(token);
@@ -374,7 +374,7 @@ contract ICS20Transfer is
         restricted
     {
         address erc20Contract = address(_getICS20TransferStorage()._ibcERC20Contracts[denom]);
-        require(erc20Contract != address(0), ICS20Errors.ICS20DenomNotFound(denom));
+        require(erc20Contract != address(0), IICS20Errors.ICS20DenomNotFound(denom));
         IIBCERC20(erc20Contract).setMetadata(name_, symbol_, decimals_);
     }
 
@@ -407,8 +407,8 @@ contract ICS20Transfer is
             ICS20InvalidPort(ICS20Lib.DEFAULT_PORT_ID, msg_.payload.destPort)
         );
 
-        ICS20TransferMsgs.FungibleTokenPacketData memory packetData =
-            abi.decode(msg_.payload.value, (ICS20TransferMsgs.FungibleTokenPacketData));
+        IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
+            abi.decode(msg_.payload.value, (IICS20TransferMsgs.FungibleTokenPacketData));
         require(packetData.amount > 0, ICS20InvalidAmount(0));
 
         address receiver = ICS20Lib.mustHexStringToAddress(packetData.receiver);
@@ -466,8 +466,8 @@ contract ICS20Transfer is
         onlyRouter
         nonReentrant
     {
-        ICS20TransferMsgs.FungibleTokenPacketData memory packetData =
-            abi.decode(msg_.payload.value, (ICS20TransferMsgs.FungibleTokenPacketData));
+        IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
+            abi.decode(msg_.payload.value, (IICS20TransferMsgs.FungibleTokenPacketData));
 
         // Success is byte-exact by the ICS-20 conformance contract. Every other acknowledgement refunds.
         // Counterparties must therefore emit the canonical success bytes: if a transfer succeeds remotely
@@ -484,8 +484,8 @@ contract ICS20Transfer is
 
     /// @inheritdoc IIBCApp
     function onTimeoutPacket(IIBCAppCallbacks.OnTimeoutPacketCallback calldata msg_) external onlyRouter nonReentrant {
-        ICS20TransferMsgs.FungibleTokenPacketData memory packetData =
-            abi.decode(msg_.payload.value, (ICS20TransferMsgs.FungibleTokenPacketData));
+        IICS20TransferMsgs.FungibleTokenPacketData memory packetData =
+            abi.decode(msg_.payload.value, (IICS20TransferMsgs.FungibleTokenPacketData));
         (, address sender) = _refundTokens(msg_.payload.sourcePort, msg_.sourceClient, msg_.sequence, packetData);
         IBCSenderCallbacksLib.timeoutPacketCallback(sender, msg_);
     }
@@ -500,14 +500,14 @@ contract ICS20Transfer is
         string calldata sourcePort,
         string calldata sourceClient,
         uint64 sequence,
-        ICS20TransferMsgs.FungibleTokenPacketData memory packetData
+        IICS20TransferMsgs.FungibleTokenPacketData memory packetData
     )
         private
         returns (address, address)
     {
         ICS20TransferStorage storage $ = _getICS20TransferStorage();
         IEscrow escrow = $._escrows[sourceClient];
-        require(address(escrow) != address(0), ICS20Errors.ICS20EscrowNotFound(sourceClient));
+        require(address(escrow) != address(0), IICS20Errors.ICS20EscrowNotFound(sourceClient));
 
         address refundee = ICS20Lib.mustHexStringToAddress(packetData.sender);
         address erc20Address;

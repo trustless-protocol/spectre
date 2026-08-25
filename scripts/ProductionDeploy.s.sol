@@ -20,7 +20,7 @@ import { ClientMigrationExecutor } from "contracts/core/client-registry/migratio
 import { Escrow } from "contracts/apps/ics20/Escrow.sol";
 import { IBCERC20 } from "contracts/apps/ics20/IBCERC20.sol";
 import { ICS20Lib } from "contracts/apps/ics20/libraries/ICS20Lib.sol";
-import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
+import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
 import { DeployAccessManagerWithRoles } from "scripts/deployments/DeployAccessManagerWithRoles.sol";
 import { ProductionConfigLib } from "scripts/deployments/ProductionConfigLib.sol";
 import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
@@ -31,7 +31,7 @@ import { IRateLimit } from "contracts/apps/ics20/interfaces/IRateLimit.sol";
 ///      compatible contract exposing `getMinDelay()`) whose delay is at least
 ///      SECURITY_DELAY. AccessManager ADMIN_ROLE intentionally has no delay;
 ///      governance timelocking protects changes made through that role.
-contract ProductionDeploy is Script, SpectreMsgs, DeployAccessManagerWithRoles {
+contract ProductionDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithRoles {
     struct LaunchConfig {
         string[] clientIds;
         address[] tokens;

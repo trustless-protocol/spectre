@@ -24,7 +24,7 @@ alloy_sol_types::sol!(
     "../../abi/ICS26Router.json"
 );
 
-impl ICS26RouterMsgs::Packet {
+impl IICS26RouterMsgs::Packet {
     /// Returns the commitment path for the packet.
     #[must_use]
     pub fn commitment_path(&self) -> Vec<u8> {
@@ -87,7 +87,7 @@ impl ICS26RouterMsgs::Packet {
     }
 }
 
-impl From<Packet> for ICS26RouterMsgs::Packet {
+impl From<Packet> for IICS26RouterMsgs::Packet {
     fn from(packet: Packet) -> Self {
         Self {
             sequence: packet.sequence,
@@ -99,8 +99,8 @@ impl From<Packet> for ICS26RouterMsgs::Packet {
     }
 }
 
-impl From<ICS26RouterMsgs::Packet> for Packet {
-    fn from(packet: ICS26RouterMsgs::Packet) -> Self {
+impl From<IICS26RouterMsgs::Packet> for Packet {
+    fn from(packet: IICS26RouterMsgs::Packet) -> Self {
         Self {
             sequence: packet.sequence,
             source_client: packet.sourceClient,
@@ -111,7 +111,7 @@ impl From<ICS26RouterMsgs::Packet> for Packet {
     }
 }
 
-impl From<Payload> for ICS26RouterMsgs::Payload {
+impl From<Payload> for IICS26RouterMsgs::Payload {
     fn from(payload: Payload) -> Self {
         Self {
             sourcePort: payload.source_port,
@@ -123,8 +123,8 @@ impl From<Payload> for ICS26RouterMsgs::Payload {
     }
 }
 
-impl From<ICS26RouterMsgs::Payload> for Payload {
-    fn from(payload: ICS26RouterMsgs::Payload) -> Self {
+impl From<IICS26RouterMsgs::Payload> for Payload {
+    fn from(payload: IICS26RouterMsgs::Payload) -> Self {
         Self {
             source_port: payload.sourcePort,
             destination_port: payload.destPort,
@@ -135,7 +135,7 @@ impl From<ICS26RouterMsgs::Payload> for Payload {
     }
 }
 
-impl ICS26RouterMsgs::Payload {
+impl IICS26RouterMsgs::Payload {
     /// Returns the commitment path for the payload.
     #[must_use]
     pub fn commitment_hash(&self) -> Vec<u8> {

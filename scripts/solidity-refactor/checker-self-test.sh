@@ -67,7 +67,7 @@ if python3 scripts/solidity-refactor/check_compatibility.py --tooling-rename-man
 fi
 echo "negative case rejected: tooling-rename-digest"
 
-jq '.consumer_digests["packages/solidity/src/spectre_client.rs"] = "drift"' \
+jq '.consumer_digests["packages/solidity/src/msgs.rs"] = "drift"' \
   scripts/solidity-refactor/tooling-rename-manifest.json > "$tmp_dir/tooling-renames.json"
 if python3 scripts/solidity-refactor/check_compatibility.py --tooling-rename-manifest "$tmp_dir/tooling-renames.json" >/dev/null 2>&1; then
   echo "negative case unexpectedly passed: tooling-consumer-digest" >&2

@@ -5,12 +5,12 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { IICS02Client } from "contracts/core/interfaces/IICS02Client.sol";
 import { ILightClient } from "contracts/light-clients/interfaces/ILightClient.sol";
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
-import { ICS02ClientErrors } from "contracts/core/errors/ICS02ClientErrors.sol";
+import { IICS02ClientErrors } from "contracts/core/errors/IICS02ClientErrors.sol";
 
 import { ICS02ClientUpgradeable } from "contracts/core/client-registry/ICS02ClientUpgradeable.sol";
 import { ERC1967Proxy } from "@openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -74,8 +74,8 @@ contract ICS02ClientTest is Test {
         accessManager.grantRole(IBCRolesLib.PAUSER_ROLE, pauser, 0);
 
         string memory counterpartyId = "dummy-counterparty-01";
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix);
         vm.expectEmit();
         emit IICS02Client.ICS02ClientAdded(th.FIRST_CLIENT_ID(), counterpartyInfo, lightClient);
         clientIdentifier = ics02Client.addClient(counterpartyInfo, lightClient);
@@ -83,19 +83,19 @@ contract ICS02ClientTest is Test {
         ILightClient fetchedLightClient = ics02Client.getClient(clientIdentifier);
         assertNotEq(address(fetchedLightClient), address(0), "client not found");
 
-        ICS02ClientMsgs.CounterpartyInfo memory fetchedCounterparty = ics02Client.getCounterparty(clientIdentifier);
+        IICS02ClientMsgs.CounterpartyInfo memory fetchedCounterparty = ics02Client.getCounterparty(clientIdentifier);
         assertEq(fetchedCounterparty.clientId, counterpartyId, "counterparty not set correctly");
     }
 
     function test_constructorRejectsMissingMigrationModule() public {
-        vm.expectRevert(abi.encodeWithSelector(ICS02ClientErrors.IBCClientMigrationModuleMissing.selector, address(0)));
+        vm.expectRevert(abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationModuleMissing.selector, address(0)));
         new ICS26Router(address(0), address(clientMigrationExecutor));
     }
 
     function test_constructorRejectsWrongMigrationModule() public {
         vm.expectRevert(
             abi.encodeWithSelector(
-                ICS02ClientErrors.IBCClientMigrationModuleMismatch.selector,
+                IICS02ClientErrors.IBCClientMigrationModuleMismatch.selector,
                 address(clientMigrationExecutor),
                 ClientMigrationModuleIds.PROPOSER
             )
@@ -105,46 +105,46 @@ contract ICS02ClientTest is Test {
 
     function test_success_customClientId() public {
         string memory customClientId = "custom-client-id";
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo(customClientId, merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo(customClientId, merklePrefix);
         vm.prank(idCustomizer);
         string memory newId = ics02Client.addClient(customClientId, counterpartyInfo, lightClient);
         assertEq(customClientId, newId, "custom client id not set correctly");
     }
 
     function test_success_counterpartyGeneratedClientId() public {
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo("client-0", merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("client-0", merklePrefix);
         vm.prank(idCustomizer);
         ics02Client.addClient("counterparty-client", counterpartyInfo, lightClient);
     }
 
     function test_failure_counterpartyClientIdWithPath() public {
-        ICS02ClientMsgs.CounterpartyInfo memory invalidCounterparty =
-            ICS02ClientMsgs.CounterpartyInfo("bad/client", merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory invalidCounterparty =
+            IICS02ClientMsgs.CounterpartyInfo("bad/client", merklePrefix);
 
-        vm.expectRevert(ICS02ClientErrors.IBCInvalidCounterpartyClientId.selector);
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidCounterpartyClientId.selector);
         ics02Client.addClient(invalidCounterparty, lightClient);
 
         vm.prank(idCustomizer);
-        vm.expectRevert(ICS02ClientErrors.IBCInvalidCounterpartyClientId.selector);
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidCounterpartyClientId.selector);
         ics02Client.addClient("custom-counterparty", invalidCounterparty, lightClient);
     }
 
     function test_failure_customClientId() public {
         vm.startPrank(idCustomizer);
         // client id is not custom (starts with "client-")
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo(clientIdentifier, merklePrefix);
-        vm.expectRevert(ICS02ClientErrors.IBCInvalidLocalClientId.selector);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo(clientIdentifier, merklePrefix);
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidLocalClientId.selector);
         ics02Client.addClient(clientIdentifier, counterpartyInfo, lightClient);
 
         // reuse of client id
         string memory customClientId = "custom-client-id";
-        ICS02ClientMsgs.CounterpartyInfo memory validCounterparty =
-            ICS02ClientMsgs.CounterpartyInfo(customClientId, merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory validCounterparty =
+            IICS02ClientMsgs.CounterpartyInfo(customClientId, merklePrefix);
         ics02Client.addClient(customClientId, validCounterparty, lightClient);
-        vm.expectRevert(abi.encodeWithSelector(ICS02ClientErrors.IBCClientAlreadyExists.selector, customClientId));
+        vm.expectRevert(abi.encodeWithSelector(IICS02ClientErrors.IBCClientAlreadyExists.selector, customClientId));
         ics02Client.addClient(customClientId, validCounterparty, lightClient);
 
         // unauthorized id customizer
@@ -165,13 +165,13 @@ contract ICS02ClientTest is Test {
 
         string memory counterpartyId = "dummy-counterparty-01";
         address newLightClient = makeAddr("newLightClient");
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix);
 
         // An address without the per-clientId migrator role is rejected.
         vm.prank(unauthorized);
         vm.expectRevert(
-            abi.encodeWithSelector(ICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, unauthorized)
+            abi.encodeWithSelector(IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, unauthorized)
         );
         ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
 
@@ -184,7 +184,7 @@ contract ICS02ClientTest is Test {
         assertEq(proposer, clientMigrator, "migration proposer not recorded");
         vm.expectRevert(
             abi.encodeWithSelector(
-                ICS02ClientErrors.IBCClientMigrationNotReady.selector, clientIdentifier, executeAfter
+                IICS02ClientErrors.IBCClientMigrationNotReady.selector, clientIdentifier, executeAfter
             )
         );
         ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
@@ -194,43 +194,43 @@ contract ICS02ClientTest is Test {
         ILightClient fetchedLightClient = ics02Client.getClient(clientIdentifier);
         assertEq(address(fetchedLightClient), newLightClient, "client not migrated");
 
-        ICS02ClientMsgs.CounterpartyInfo memory fetchedCounterparty = ics02Client.getCounterparty(clientIdentifier);
+        IICS02ClientMsgs.CounterpartyInfo memory fetchedCounterparty = ics02Client.getCounterparty(clientIdentifier);
         assertEq(fetchedCounterparty.clientId, counterpartyId, "counterparty not migrated");
         assertEq(fetchedCounterparty.merklePrefix, merklePrefix, "counterparty not migrated");
         assertEq(ics02Client.getNextClientSeq(), 1, "client seq not incremented");
 
-        ICS02ClientMsgs.CounterpartyInfo memory changedCounterparty =
-            ICS02ClientMsgs.CounterpartyInfo(counterpartyId, randomPrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory changedCounterparty =
+            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, randomPrefix);
         vm.prank(clientMigrator);
-        vm.expectRevert(ICS02ClientErrors.IBCCounterpartyMismatch.selector);
+        vm.expectRevert(IICS02ClientErrors.IBCCounterpartyMismatch.selector);
         ics02Client.proposeClientMigration(clientIdentifier, changedCounterparty, newLightClient);
 
         bytes[] memory shortenedPrefix = new bytes[](1);
         shortenedPrefix[0] = bytes("ibc");
-        changedCounterparty = ICS02ClientMsgs.CounterpartyInfo(counterpartyId, shortenedPrefix);
+        changedCounterparty = IICS02ClientMsgs.CounterpartyInfo(counterpartyId, shortenedPrefix);
         vm.prank(clientMigrator);
-        vm.expectRevert(ICS02ClientErrors.IBCCounterpartyMismatch.selector);
+        vm.expectRevert(IICS02ClientErrors.IBCCounterpartyMismatch.selector);
         ics02Client.proposeClientMigration(clientIdentifier, changedCounterparty, newLightClient);
 
-        changedCounterparty = ICS02ClientMsgs.CounterpartyInfo("other-counterparty", merklePrefix);
+        changedCounterparty = IICS02ClientMsgs.CounterpartyInfo("other-counterparty", merklePrefix);
         vm.prank(clientMigrator);
-        vm.expectRevert(ICS02ClientErrors.IBCCounterpartyMismatch.selector);
+        vm.expectRevert(IICS02ClientErrors.IBCCounterpartyMismatch.selector);
         ics02Client.proposeClientMigration(clientIdentifier, changedCounterparty, newLightClient);
 
-        changedCounterparty = ICS02ClientMsgs.CounterpartyInfo("bad/client", merklePrefix);
+        changedCounterparty = IICS02ClientMsgs.CounterpartyInfo("bad/client", merklePrefix);
         vm.prank(clientMigrator);
-        vm.expectRevert(ICS02ClientErrors.IBCInvalidCounterpartyClientId.selector);
+        vm.expectRevert(IICS02ClientErrors.IBCInvalidCounterpartyClientId.selector);
         ics02Client.proposeClientMigration(clientIdentifier, changedCounterparty, newLightClient);
 
         // A grant for one clientId must not authorize migration of any other clientId.
         // Use the unrestricted addClient (no custom id) to register a second default client.
         string memory otherClientId = ics02Client.addClient(counterpartyInfo, lightClient);
 
-        ICS02ClientMsgs.CounterpartyInfo memory otherCounterparty =
-            ICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory otherCounterparty =
+            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix);
         vm.prank(clientMigrator);
         vm.expectRevert(
-            abi.encodeWithSelector(ICS02ClientErrors.IBCUnauthorizedMigrator.selector, otherClientId, clientMigrator)
+            abi.encodeWithSelector(IICS02ClientErrors.IBCUnauthorizedMigrator.selector, otherClientId, clientMigrator)
         );
         ics02Client.proposeClientMigration(otherClientId, otherCounterparty, newLightClient);
     }
@@ -244,13 +244,13 @@ contract ICS02ClientTest is Test {
 
         string memory counterpartyId = "dummy-counterparty-01";
         address newLightClient = makeAddr("newLightClient");
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix);
 
         // A zero-delay role cannot create a migration proposal.
         vm.prank(delayedMigrator);
         vm.expectRevert(
-            abi.encodeWithSelector(ICS02ClientErrors.IBCClientMigrationDelayRequired.selector, clientIdentifier)
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationDelayRequired.selector, clientIdentifier)
         );
         ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
     }
@@ -260,8 +260,8 @@ contract ICS02ClientTest is Test {
         uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
         accessManager.grantRole(migratorRole, clientMigrator, 60);
 
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
         address newLightClient = makeAddr("newLightClient");
 
         vm.prank(clientMigrator);
@@ -280,7 +280,7 @@ contract ICS02ClientTest is Test {
 
         vm.warp(block.timestamp + 48 hours);
         vm.expectRevert(
-            abi.encodeWithSelector(ICS02ClientErrors.IBCClientMigrationNotProposed.selector, clientIdentifier)
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationNotProposed.selector, clientIdentifier)
         );
         ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
     }
@@ -292,8 +292,8 @@ contract ICS02ClientTest is Test {
         accessManager.grantRole(migratorRole, clientMigrator, 60);
         accessManager.grantRole(IBCRolesLib.PAUSER_ROLE, delayedPauser, 1 days);
 
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
         vm.prank(clientMigrator);
         ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, makeAddr("newLightClient"));
 
@@ -310,8 +310,8 @@ contract ICS02ClientTest is Test {
         uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
         accessManager.grantRole(migratorRole, clientMigrator, 60);
 
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
         address newLightClient = makeAddr("newLightClient");
 
         vm.prank(clientMigrator);
@@ -319,7 +319,9 @@ contract ICS02ClientTest is Test {
         (bytes32 digest, uint48 executeAfter,,) = ics02Client.getClientMigration(clientIdentifier);
         vm.warp(executeAfter);
 
-        vm.expectRevert(abi.encodeWithSelector(ICS02ClientErrors.IBCClientMigrationMismatch.selector, clientIdentifier));
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationMismatch.selector, clientIdentifier)
+        );
         ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, makeAddr("wrongLightClient"));
 
         (bytes32 pendingDigest,,,) = ics02Client.getClientMigration(clientIdentifier);
@@ -337,8 +339,8 @@ contract ICS02ClientTest is Test {
 
         string memory counterpartyId = "dummy-counterparty-01";
         address newLightClient = makeAddr("newLightClient");
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix);
 
         // Close the target contract via AccessManager.
         accessManager.setTargetClosed(address(ics02Client), true);
@@ -346,7 +348,9 @@ contract ICS02ClientTest is Test {
         // A granted migrator cannot propose while the target is closed.
         vm.prank(clientMigrator);
         vm.expectRevert(
-            abi.encodeWithSelector(ICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, clientMigrator)
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, clientMigrator
+            )
         );
         ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
     }
@@ -356,8 +360,8 @@ contract ICS02ClientTest is Test {
         uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
         accessManager.grantRole(migratorRole, clientMigrator, 60);
 
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
         address newLightClient = makeAddr("newLightClient");
         vm.prank(clientMigrator);
         ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
@@ -366,7 +370,9 @@ contract ICS02ClientTest is Test {
         accessManager.revokeRole(migratorRole, clientMigrator);
         vm.warp(executeAfter);
         vm.expectRevert(
-            abi.encodeWithSelector(ICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, clientMigrator)
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, clientMigrator
+            )
         );
         ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
 
@@ -379,8 +385,8 @@ contract ICS02ClientTest is Test {
         uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
         accessManager.grantRole(migratorRole, clientMigrator, 60);
 
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
         address newLightClient = makeAddr("newLightClient");
         vm.prank(clientMigrator);
         ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
@@ -388,7 +394,7 @@ contract ICS02ClientTest is Test {
 
         vm.warp(uint256(expireAfter) + 1);
         vm.expectRevert(
-            abi.encodeWithSelector(ICS02ClientErrors.IBCClientMigrationExpired.selector, clientIdentifier, expireAfter)
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationExpired.selector, clientIdentifier, expireAfter)
         );
         ics02Client.executeClientMigration(clientIdentifier, counterpartyInfo, newLightClient);
 
@@ -406,8 +412,8 @@ contract ICS02ClientTest is Test {
         address clientMigrator = makeAddr("clientMigrator");
         uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
         accessManager.grantRole(migratorRole, clientMigrator, 60);
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
 
         vm.prank(clientMigrator);
         ics02Client.proposeClientMigration(clientIdentifier, counterpartyInfo, makeAddr("newLightClient"));
@@ -428,12 +434,12 @@ contract ICS02ClientTest is Test {
         address clientMigrator = makeAddr("clientMigrator");
         uint64 migratorRole = ics02Client.getLightClientMigratorRole(clientIdentifier);
         accessManager.grantRole(migratorRole, clientMigrator, 60);
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
         address newLightClient = makeAddr("newLightClient");
 
         vm.expectRevert(
-            abi.encodeWithSelector(ICS02ClientErrors.IBCClientMigrationNotProposed.selector, clientIdentifier)
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationNotProposed.selector, clientIdentifier)
         );
         ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
 
@@ -442,18 +448,20 @@ contract ICS02ClientTest is Test {
         (, uint48 executeAfter,,) = ics02Client.getClientMigration(clientIdentifier);
         vm.expectRevert(
             abi.encodeWithSelector(
-                ICS02ClientErrors.IBCClientMigrationNotReady.selector, clientIdentifier, executeAfter
+                IICS02ClientErrors.IBCClientMigrationNotReady.selector, clientIdentifier, executeAfter
             )
         );
         ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
 
         vm.warp(executeAfter);
-        vm.expectRevert(abi.encodeWithSelector(ICS02ClientErrors.IBCClientMigrationMismatch.selector, clientIdentifier));
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS02ClientErrors.IBCClientMigrationMismatch.selector, clientIdentifier)
+        );
         ics02Client.migrateClient(clientIdentifier, counterpartyInfo, makeAddr("wrongLightClient"));
 
         accessManager.setTargetClosed(address(ics02Client), true);
         vm.expectRevert(
-            abi.encodeWithSelector(ICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, address(this))
+            abi.encodeWithSelector(IICS02ClientErrors.IBCUnauthorizedMigrator.selector, clientIdentifier, address(this))
         );
         ics02Client.migrateClient(clientIdentifier, counterpartyInfo, newLightClient);
 
@@ -463,12 +471,12 @@ contract ICS02ClientTest is Test {
     }
 
     function test_migrationModulesRejectDirectCalls() public {
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
-            ICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
-        vm.expectRevert(ICS02ClientErrors.IBCClientMigrationDirectCallNotAllowed.selector);
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo =
+            IICS02ClientMsgs.CounterpartyInfo("dummy-counterparty-01", merklePrefix);
+        vm.expectRevert(IICS02ClientErrors.IBCClientMigrationDirectCallNotAllowed.selector);
         clientMigrationProposer.proposeClientMigration(clientIdentifier, counterpartyInfo, makeAddr("newLightClient"));
 
-        vm.expectRevert(ICS02ClientErrors.IBCClientMigrationDirectCallNotAllowed.selector);
+        vm.expectRevert(IICS02ClientErrors.IBCClientMigrationDirectCallNotAllowed.selector);
         clientMigrationExecutor.cancelClientMigration(clientIdentifier);
     }
 
@@ -511,7 +519,7 @@ contract ICS02ClientTest is Test {
     function test_success_updateApplicationState() public {
         bytes memory updateMsg = "testUpdateMsg";
         bytes memory updateCall = abi.encodeCall(ILightClient.updateApplicationState, (updateMsg));
-        vm.mockCall(lightClient, updateCall, abi.encode(LightClientMsgs.UpdateResult(0)));
+        vm.mockCall(lightClient, updateCall, abi.encode(ILightClientMsgs.UpdateResult(0)));
 
         vm.expectCall(lightClient, updateCall);
         vm.prank(relayer);
@@ -521,7 +529,7 @@ contract ICS02ClientTest is Test {
     function test_success_updateConsensusState() public {
         bytes memory updateMsg = "testUpdateConsensusStateMsg";
         bytes memory updateCall = abi.encodeCall(ILightClient.updateConsensusState, (updateMsg));
-        vm.mockCall(lightClient, updateCall, abi.encode(LightClientMsgs.UpdateResult(0)));
+        vm.mockCall(lightClient, updateCall, abi.encode(ILightClientMsgs.UpdateResult(0)));
 
         vm.expectCall(lightClient, updateCall);
         vm.prank(relayer);

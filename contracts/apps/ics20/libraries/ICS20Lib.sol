@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
-import { ICS20Errors } from "contracts/apps/ics20/errors/ICS20Errors.sol";
+import { IICS20Errors } from "contracts/apps/ics20/errors/IICS20Errors.sol";
 import { IBCIdentifiers } from "contracts/shared/access/IBCIdentifiers.sol";
 
 /// @title ICS20 Library
@@ -37,7 +37,7 @@ library ICS20Lib {
     /// @return address the converted address
     function mustHexStringToAddress(string memory addrHexString) internal pure returns (address) {
         (bool success, address addr) = Strings.tryParseAddress(addrHexString);
-        require(success, ICS20Errors.ICS20InvalidAddress(addrHexString));
+        require(success, IICS20Errors.ICS20InvalidAddress(addrHexString));
         return addr;
     }
 

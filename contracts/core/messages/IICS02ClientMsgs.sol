@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 /// @title Client Messages
 /// @notice Interface defining ICS02 Client Messages
-interface ICS02ClientMsgs {
+interface IICS02ClientMsgs {
     /// @notice Counterparty client information.
     /// @dev merklePrefix is structured as a list of bytes representing the keys in nested merkle trees.
     /// @custom:spec

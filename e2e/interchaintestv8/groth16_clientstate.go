@@ -15,18 +15,18 @@ import (
 // These helpers decode those bytes into a struct so the e2e suites can assert on
 // individual fields, mirroring relayer/client.DecodeClientState.
 
-// spectreTrustLevel mirrors SpectreMsgs.TrustThreshold.
-type spectreTrustLevel struct {
+// groth16TrustLevel mirrors IICS07TendermintMsgs.TrustThreshold.
+type groth16TrustLevel struct {
 	Numerator   uint8
 	Denominator uint8
 }
 
-// spectreClientState mirrors the SpectreMsgs.ClientState tuple returned
+// groth16ClientState mirrors the IICS07TendermintMsgs.ClientState tuple returned
 // (ABI-encoded) by SpectreClient.getClientState().
-type spectreClientState struct {
+type groth16ClientState struct {
 	ChainId         string
-	TrustLevel      spectreTrustLevel
-	LatestHeight    spectreclient.ICS02ClientMsgsHeight
+	TrustLevel      groth16TrustLevel
+	LatestHeight    spectreclient.IICS02ClientMsgsHeight
 	TrustingPeriod  uint32
 	UnbondingPeriod uint32
 	IsFrozen        bool
@@ -34,11 +34,11 @@ type spectreClientState struct {
 	ClockDrift      uint32
 }
 
-var spectreClientStateABIType abi.Type
+var groth16ClientStateABIType abi.Type
 
 func init() {
 	var err error
-	spectreClientStateABIType, err = abi.NewType("tuple", "", []abi.ArgumentMarshaling{
+	groth16ClientStateABIType, err = abi.NewType("tuple", "", []abi.ArgumentMarshaling{
 		{Name: "chainId", Type: "string"},
 		{Name: "trustLevel", Type: "tuple", Components: []abi.ArgumentMarshaling{
 			{Name: "numerator", Type: "uint8"},
@@ -55,40 +55,40 @@ func init() {
 		{Name: "clockDrift", Type: "uint32"},
 	})
 	if err != nil {
-		panic(fmt.Sprintf("build Spectre client state ABI type: %v", err))
+		panic(fmt.Sprintf("build groth16 client state ABI type: %v", err))
 	}
 }
 
-// decodeSpectreClientState decodes the ABI-encoded bytes returned by
+// decodeGroth16ClientState decodes the ABI-encoded bytes returned by
 // SpectreClient.getClientState() into a struct.
-func decodeSpectreClientState(data []byte) (spectreClientState, error) {
-	args := abi.Arguments{{Type: spectreClientStateABIType}}
+func decodeGroth16ClientState(data []byte) (groth16ClientState, error) {
+	args := abi.Arguments{{Type: groth16ClientStateABIType}}
 	unpacked, err := args.Unpack(data)
 	if err != nil {
-		return spectreClientState{}, fmt.Errorf("unpack client state: %w", err)
+		return groth16ClientState{}, fmt.Errorf("unpack client state: %w", err)
 	}
 	if len(unpacked) == 0 {
-		return spectreClientState{}, fmt.Errorf("no client state data unpacked")
+		return groth16ClientState{}, fmt.Errorf("no client state data unpacked")
 	}
 	// unpacked[0] is an anonymous struct matching the tuple; round-trip through
 	// JSON to populate the named target type by matching field names.
 	jsonBytes, err := json.Marshal(unpacked[0])
 	if err != nil {
-		return spectreClientState{}, fmt.Errorf("marshal unpacked tuple: %w", err)
+		return groth16ClientState{}, fmt.Errorf("marshal unpacked tuple: %w", err)
 	}
-	var cs spectreClientState
+	var cs groth16ClientState
 	if err := json.Unmarshal(jsonBytes, &cs); err != nil {
-		return spectreClientState{}, fmt.Errorf("unmarshal client state: %w", err)
+		return groth16ClientState{}, fmt.Errorf("unmarshal client state: %w", err)
 	}
 	return cs, nil
 }
 
-// getSpectreClientState fetches and decodes the on-chain client state from a
+// getGroth16ClientState fetches and decodes the on-chain client state from a
 // SpectreClient contract instance.
-func getSpectreClientState(c *spectreclient.Contract) (spectreClientState, error) {
+func getGroth16ClientState(c *spectreclient.Contract) (groth16ClientState, error) {
 	bz, err := c.GetClientState(nil)
 	if err != nil {
-		return spectreClientState{}, err
+		return groth16ClientState{}, err
 	}
-	return decodeSpectreClientState(bz)
+	return decodeGroth16ClientState(bz)
 }

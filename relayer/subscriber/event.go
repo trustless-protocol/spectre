@@ -984,7 +984,7 @@ func txHeightFromEvent(data commettypes.TMEventData, events map[string][]string)
 }
 
 // EthPacketToCosmosPacket converts an Ethereum ICS26Router packet to a Cosmos IBC v2 packet
-func EthPacketToCosmosPacket(ethPacket contractICS26Router.ICS26RouterMsgsPacket, sequence *big.Int) channeltypesv2.Packet {
+func EthPacketToCosmosPacket(ethPacket contractICS26Router.IICS26RouterMsgsPacket, sequence *big.Int) channeltypesv2.Packet {
 	var payloads []channeltypesv2.Payload
 	for _, p := range ethPacket.Payloads {
 		payloads = append(payloads, channeltypesv2.Payload{
@@ -1100,7 +1100,7 @@ func enqueueEthWriteAcknowledgement(
 func enqueueEthTerminal(
 	batchBuilder *services.BatchBuilder,
 	packetType services.EthPacketType,
-	packet contractICS26Router.ICS26RouterMsgsPacket,
+	packet contractICS26Router.IICS26RouterMsgsPacket,
 	sequence *big.Int,
 	ackBytes [][]byte,
 	blockNumber uint64,

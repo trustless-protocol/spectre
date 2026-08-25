@@ -63,13 +63,13 @@ func mustDecodeHex(t *testing.T, s string) []byte {
 	return b
 }
 
-func samplePacket() contractICS26Router.ICS26RouterMsgsPacket {
-	return contractICS26Router.ICS26RouterMsgsPacket{
+func samplePacket() contractICS26Router.IICS26RouterMsgsPacket {
+	return contractICS26Router.IICS26RouterMsgsPacket{
 		Sequence:         42,
 		SourceClient:     "cosmoshub-1",
 		DestClient:       "08-wasm-0",
 		TimeoutTimestamp: 1_700_000_000,
-		Payloads: []contractICS26Router.ICS26RouterMsgsPayload{{
+		Payloads: []contractICS26Router.IICS26RouterMsgsPayload{{
 			SourcePort: "transfer",
 			DestPort:   "transfer",
 			Version:    "ics20-2",
@@ -94,7 +94,7 @@ func TestSelectorsForBatchedMsgs(t *testing.T) {
 	}{
 		{
 			name: "recvPacket",
-			msg: contractICS26Router.ICS26RouterMsgsMsgRecvPacket{
+			msg: contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
 				Packet:        pkt,
 				MembershipMsg: []byte{0xaa, 0xbb},
 			},
@@ -103,7 +103,7 @@ func TestSelectorsForBatchedMsgs(t *testing.T) {
 		},
 		{
 			name: "ackPacket",
-			msg: contractICS26Router.ICS26RouterMsgsMsgAckPacket{
+			msg: contractICS26Router.IICS26RouterMsgsMsgAckPacket{
 				Packet:          pkt,
 				Acknowledgement: []byte{0xde, 0xad},
 				MembershipMsg:   []byte{0xbe, 0xef},
@@ -113,7 +113,7 @@ func TestSelectorsForBatchedMsgs(t *testing.T) {
 		},
 		{
 			name: "timeoutPacket",
-			msg: contractICS26Router.ICS26RouterMsgsMsgTimeoutPacket{
+			msg: contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket{
 				Packet:           pkt,
 				NonMembershipMsg: []byte{0xca, 0xfe},
 			},
@@ -199,14 +199,14 @@ func TestMulticallWraps(t *testing.T) {
 	}
 	pkt := samplePacket()
 
-	recv, err := parsedABI.Pack("recvPacket", contractICS26Router.ICS26RouterMsgsMsgRecvPacket{
+	recv, err := parsedABI.Pack("recvPacket", contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
 		Packet:        pkt,
 		MembershipMsg: []byte{0x01},
 	})
 	if err != nil {
 		t.Fatalf("pack recv: %v", err)
 	}
-	ack, err := parsedABI.Pack("ackPacket", contractICS26Router.ICS26RouterMsgsMsgAckPacket{
+	ack, err := parsedABI.Pack("ackPacket", contractICS26Router.IICS26RouterMsgsMsgAckPacket{
 		Packet:          pkt,
 		Acknowledgement: []byte{0x02},
 		MembershipMsg:   []byte{0x03},
@@ -295,7 +295,7 @@ func TestMulticallWithUpdateApplicationState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pack updateApplicationState: %v", err)
 	}
-	recvData, err := parsedABI.Pack("recvPacket", contractICS26Router.ICS26RouterMsgsMsgRecvPacket{
+	recvData, err := parsedABI.Pack("recvPacket", contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
 		Packet:        pkt,
 		MembershipMsg: []byte{0x03},
 	})

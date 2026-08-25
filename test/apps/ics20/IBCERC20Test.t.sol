@@ -6,7 +6,7 @@ pragma solidity ^0.8.28;
 import { Test } from "forge-std/Test.sol";
 
 import { IERC20Errors } from "@openzeppelin-contracts/interfaces/draft-IERC6093.sol";
-import { IBCERC20Errors } from "contracts/apps/ics20/errors/IBCERC20Errors.sol";
+import { IIBCERC20Errors } from "contracts/apps/ics20/errors/IIBCERC20Errors.sol";
 
 import { IBCERC20 } from "contracts/apps/ics20/IBCERC20.sol";
 import { Escrow } from "contracts/apps/ics20/Escrow.sol";
@@ -68,12 +68,12 @@ contract IBCERC20Test is Test {
 
     function test_failure_SetMetadata() public {
         address notICS20Transfer = makeAddr("notICS20Transfer");
-        vm.expectRevert(abi.encodeWithSelector(IBCERC20Errors.IBCERC20Unauthorized.selector, notICS20Transfer));
+        vm.expectRevert(abi.encodeWithSelector(IIBCERC20Errors.IBCERC20Unauthorized.selector, notICS20Transfer));
         vm.prank(notICS20Transfer);
         ibcERC20.setMetadata("Cosmos Hub Atom", "ATOM", 6);
 
         ibcERC20.setMetadata("Cosmos Hub Atom", "ATOM", 6);
-        vm.expectRevert(abi.encodeWithSelector(IBCERC20Errors.IBCERC20MetadataAlreadySet.selector));
+        vm.expectRevert(abi.encodeWithSelector(IIBCERC20Errors.IBCERC20MetadataAlreadySet.selector));
         ibcERC20.setMetadata("Atom", "ATOM2", 18);
     }
 
@@ -93,7 +93,7 @@ contract IBCERC20Test is Test {
     function testFuzz_failure_Mint(uint256 amount) public {
         // unauthorized mint
         address notICS20Transfer = makeAddr("notICS20Transfer");
-        vm.expectRevert(abi.encodeWithSelector(IBCERC20Errors.IBCERC20Unauthorized.selector, notICS20Transfer));
+        vm.expectRevert(abi.encodeWithSelector(IIBCERC20Errors.IBCERC20Unauthorized.selector, notICS20Transfer));
         vm.prank(notICS20Transfer);
         ibcERC20.mint(address(escrow), amount);
         assertEq(ibcERC20.balanceOf(notICS20Transfer), 0);
@@ -102,7 +102,7 @@ contract IBCERC20Test is Test {
 
         // non-esrow mint
         address notEscrow = makeAddr("notEscrow");
-        vm.expectRevert(abi.encodeWithSelector(IBCERC20Errors.IBCERC20NotEscrow.selector, address(escrow), notEscrow));
+        vm.expectRevert(abi.encodeWithSelector(IIBCERC20Errors.IBCERC20NotEscrow.selector, address(escrow), notEscrow));
         ibcERC20.mint(notEscrow, amount);
         assertEq(ibcERC20.balanceOf(notICS20Transfer), 0);
         assertEq(ibcERC20.balanceOf(address(escrow)), 0);
@@ -135,14 +135,14 @@ contract IBCERC20Test is Test {
 
         // unauthorized burn (not the escrow)
         address notEscrow = makeAddr("notEscrow");
-        vm.expectRevert(abi.encodeWithSelector(IBCERC20Errors.IBCERC20Unauthorized.selector, notEscrow));
+        vm.expectRevert(abi.encodeWithSelector(IIBCERC20Errors.IBCERC20Unauthorized.selector, notEscrow));
         vm.prank(notEscrow);
         ibcERC20.burn(burnAmount);
         assertEq(ibcERC20.balanceOf(address(escrow)), startingAmount);
         assertEq(ibcERC20.totalSupply(), startingAmount);
 
         // ICS20 itself is no longer authorized to burn directly - only the escrow is
-        vm.expectRevert(abi.encodeWithSelector(IBCERC20Errors.IBCERC20Unauthorized.selector, address(this)));
+        vm.expectRevert(abi.encodeWithSelector(IIBCERC20Errors.IBCERC20Unauthorized.selector, address(this)));
         ibcERC20.burn(burnAmount);
         assertEq(ibcERC20.balanceOf(address(escrow)), startingAmount);
         assertEq(ibcERC20.totalSupply(), startingAmount);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { MembershipMsgs } from "contracts/light-clients/spectre/messages/MembershipMsgs.sol";
+import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
 import { IMembership } from "contracts/light-clients/spectre/interfaces/IMembership.sol";
 
 import "@openzeppelin-contracts/utils/math/Math.sol";
@@ -97,8 +97,8 @@ contract Membership is IMembership {
      */
     function verifyMembership(
         bytes32 appHash,
-        MembershipMsgs.KVPair[] calldata kvPairs,
-        MembershipMsgs.MerkleProof[] calldata merkleProofs
+        IMembershipMsgs.KVPair[] calldata kvPairs,
+        IMembershipMsgs.MerkleProof[] calldata merkleProofs
     )
         public
         view
@@ -112,13 +112,13 @@ contract Membership is IMembership {
         }
 
         bytes32 commitmentRoot = appHash;
-        MembershipMsgs.ProofSpec[] memory proofSpecs = new MembershipMsgs.ProofSpec[](2);
+        IMembershipMsgs.ProofSpec[] memory proofSpecs = new IMembershipMsgs.ProofSpec[](2);
         proofSpecs[0] = iavlSpec();
         proofSpecs[1] = tendermintSpec();
 
         for (uint256 i = 0; i < kvPairs.length; i++) {
-            MembershipMsgs.KVPair memory kvPair = kvPairs[i];
-            MembershipMsgs.MerkleProof memory merkleProof = merkleProofs[i];
+            IMembershipMsgs.KVPair memory kvPair = kvPairs[i];
+            IMembershipMsgs.MerkleProof memory merkleProof = merkleProofs[i];
 
             // Check if this is a non-membership proof (empty value)
             if (kvPair.value.length == 0) {
@@ -134,12 +134,12 @@ contract Membership is IMembership {
     }
 
     function verifyMembership(
-        MembershipMsgs.ProofSpec[] memory proofSpecs,
+        IMembershipMsgs.ProofSpec[] memory proofSpecs,
         bytes32 root,
         bytes[] memory path,
         bytes memory value,
         uint256 startIndex,
-        MembershipMsgs.MerkleProof memory proof
+        IMembershipMsgs.MerkleProof memory proof
     )
         internal
         view
@@ -182,8 +182,8 @@ contract Membership is IMembership {
         for (uint256 i = startIndex; i < proofLength; i++) {
             bytes memory keyPath = path[pathLength - i - 1];
 
-            MembershipMsgs.CommitmentProof memory commitmentProof = proof.proofs[i];
-            if (commitmentProof.proofType != MembershipMsgs.ProofType.EXIST) {
+            IMembershipMsgs.CommitmentProof memory commitmentProof = proof.proofs[i];
+            if (commitmentProof.proofType != IMembershipMsgs.ProofType.EXIST) {
                 revert InvalidMerkleProof();
             }
 
@@ -205,10 +205,10 @@ contract Membership is IMembership {
      * @return True if the non-membership proof is valid
      */
     function verifyNonMembership(
-        MembershipMsgs.ProofSpec[] memory proofSpecs,
+        IMembershipMsgs.ProofSpec[] memory proofSpecs,
         bytes32 root,
         bytes[] memory path,
-        MembershipMsgs.MerkleProof memory proof
+        IMembershipMsgs.MerkleProof memory proof
     )
         internal
         view
@@ -232,17 +232,17 @@ contract Membership is IMembership {
         }
 
         // verify the absence of key in lowest subtree
-        MembershipMsgs.CommitmentProof memory firstProof = proof.proofs[0];
-        MembershipMsgs.ProofSpec memory firstSpec = proofSpecs[0];
+        IMembershipMsgs.CommitmentProof memory firstProof = proof.proofs[0];
+        IMembershipMsgs.ProofSpec memory firstSpec = proofSpecs[0];
 
         // keys are represented from root-to-leaf
         bytes memory key = path[proofLength - 1];
 
-        if (firstProof.proofType != MembershipMsgs.ProofType.NON_EXIST) {
+        if (firstProof.proofType != IMembershipMsgs.ProofType.NON_EXIST) {
             revert InvalidMerkleProof();
         }
 
-        MembershipMsgs.NonExistenceProof memory nonExistenceProof = firstProof.nonExistenceProof;
+        IMembershipMsgs.NonExistenceProof memory nonExistenceProof = firstProof.nonExistenceProof;
         bytes32 subroot = calculateNonExistenceRoot(nonExistenceProof);
 
         if (!verifyNonExistenceProof(nonExistenceProof, firstSpec, subroot, key)) {
@@ -254,7 +254,7 @@ contract Membership is IMembership {
         return true;
     }
 
-    function calculateExistenceRoot(MembershipMsgs.ExistenceProof memory proof) internal view returns (bytes32) {
+    function calculateExistenceRoot(IMembershipMsgs.ExistenceProof memory proof) internal view returns (bytes32) {
         if (proof.key.length == 0 || proof.value.length == 0) {
             revert InvalidExistenceProof();
         }
@@ -268,7 +268,7 @@ contract Membership is IMembership {
             revert ProofPathTooLong(proof.path.length, MAX_PROOF_DEPTH);
         }
 
-        MembershipMsgs.LeafOp memory leafOp = proof.leaf;
+        IMembershipMsgs.LeafOp memory leafOp = proof.leaf;
         bytes32 current = applyLeaf(leafOp, proof.key, proof.value);
         for (uint256 i = 0; i < proof.path.length; i++) {
             current = applyInner(proof.path[i], current);
@@ -277,7 +277,7 @@ contract Membership is IMembership {
         return current;
     }
 
-    function calculateNonExistenceRoot(MembershipMsgs.NonExistenceProof memory proof) internal view returns (bytes32) {
+    function calculateNonExistenceRoot(IMembershipMsgs.NonExistenceProof memory proof) internal view returns (bytes32) {
         if (proof.hasLeft && proof.hasRight) {
             // Both neighbours must live in the SAME subtree. Assert their existence
             // roots match explicitly here (issue #112): the returned root is reused
@@ -301,8 +301,8 @@ contract Membership is IMembership {
     }
 
     function checkExistenceProof(
-        MembershipMsgs.ExistenceProof memory proof,
-        MembershipMsgs.ProofSpec memory spec
+        IMembershipMsgs.ExistenceProof memory proof,
+        IMembershipMsgs.ProofSpec memory spec
     )
         internal
         view
@@ -319,7 +319,7 @@ contract Membership is IMembership {
 
         bytes memory leafPrefix = proof.leaf.prefix;
         // ensure leaf prefix matches the spec
-        if (spec.specType == MembershipMsgs.SpecType.IAVL) {
+        if (spec.specType == IMembershipMsgs.SpecType.IAVL) {
             uint256 remainingLength = ensureIavlPrefix(leafPrefix, 0);
             if (remainingLength != 0) {
                 revert BadLeafPrefix();
@@ -327,7 +327,7 @@ contract Membership is IMembership {
         }
 
         //  ensure leaf hash matches the spec
-        MembershipMsgs.LeafOp memory leaf = proof.leaf;
+        IMembershipMsgs.LeafOp memory leaf = proof.leaf;
         if (spec.leafOp.hashOp != leaf.hashOp) {
             revert UnexpectedLeafHashOp();
         }
@@ -365,9 +365,9 @@ contract Membership is IMembership {
 
         uint256 stepLength = proof.path.length;
         for (uint256 i = 0; i < stepLength; i++) {
-            MembershipMsgs.InnerOp memory innerOp = proof.path[i];
+            IMembershipMsgs.InnerOp memory innerOp = proof.path[i];
 
-            if (spec.specType == MembershipMsgs.SpecType.IAVL) {
+            if (spec.specType == IMembershipMsgs.SpecType.IAVL) {
                 uint256 remainingLength = ensureIavlPrefix(innerOp.prefix, 0);
                 if (remainingLength != 0) {
                     // 1 byte due to containing length prefix for left hash.
@@ -375,7 +375,7 @@ contract Membership is IMembership {
                     if (remainingLength != 1 && remainingLength != 34) {
                         revert BadInnerOpPrefix();
                     }
-                    if (innerOp.hashOp != MembershipMsgs.HashOp.SHA256) {
+                    if (innerOp.hashOp != IMembershipMsgs.HashOp.SHA256) {
                         revert BadInnerHashOp();
                     }
                 }
@@ -415,8 +415,8 @@ contract Membership is IMembership {
     }
 
     function verifyExistenceProof(
-        MembershipMsgs.ExistenceProof memory proof,
-        MembershipMsgs.ProofSpec memory spec,
+        IMembershipMsgs.ExistenceProof memory proof,
+        IMembershipMsgs.ProofSpec memory spec,
         bytes32 subroot,
         bytes memory key,
         bytes memory value
@@ -438,8 +438,8 @@ contract Membership is IMembership {
     }
 
     function _verifyExistenceProofBytes32(
-        MembershipMsgs.ExistenceProof memory proof,
-        MembershipMsgs.ProofSpec memory spec,
+        IMembershipMsgs.ExistenceProof memory proof,
+        IMembershipMsgs.ProofSpec memory spec,
         bytes memory key,
         bytes32 value
     )
@@ -458,8 +458,8 @@ contract Membership is IMembership {
     }
 
     function verifyNonExistenceProof(
-        MembershipMsgs.NonExistenceProof memory proof,
-        MembershipMsgs.ProofSpec memory spec,
+        IMembershipMsgs.NonExistenceProof memory proof,
+        IMembershipMsgs.ProofSpec memory spec,
         bytes32 root,
         bytes memory key
     )
@@ -468,7 +468,7 @@ contract Membership is IMembership {
         returns (bool)
     {
         bool preHash = spec.prehashKeyBeforeComparison;
-        MembershipMsgs.HashOp prehashOp = spec.leafOp.prehashKey;
+        IMembershipMsgs.HashOp prehashOp = spec.leafOp.prehashKey;
         if (proof.hasLeft) {
             verifyExistenceProof(proof.left, spec, root, proof.left.key, proof.left.value);
             if (
@@ -494,7 +494,7 @@ contract Membership is IMembership {
         if (!spec.hasInnerSpec) {
             revert InnerSpecMissing();
         }
-        MembershipMsgs.InnerSpec memory innerSpec = spec.innerSpec;
+        IMembershipMsgs.InnerSpec memory innerSpec = spec.innerSpec;
 
         if (!proof.hasLeft && !proof.hasRight) {
             revert NeitherNeighborDefined();
@@ -509,8 +509,8 @@ contract Membership is IMembership {
             uint256 leftIndex = proof.left.path.length - 1;
             uint256 rightIndex = proof.right.path.length - 1;
 
-            MembershipMsgs.InnerOp memory topLeft = proof.left.path[leftIndex];
-            MembershipMsgs.InnerOp memory topRight = proof.right.path[rightIndex];
+            IMembershipMsgs.InnerOp memory topLeft = proof.left.path[leftIndex];
+            IMembershipMsgs.InnerOp memory topRight = proof.right.path[rightIndex];
             while (
                 leftIndex > 0 && rightIndex > 0 && keccak256(topLeft.prefix) == keccak256(topRight.prefix)
                     && keccak256(topLeft.suffix) == keccak256(topRight.suffix)
@@ -539,7 +539,7 @@ contract Membership is IMembership {
     }
 
     function applyLeaf(
-        MembershipMsgs.LeafOp memory leafOp,
+        IMembershipMsgs.LeafOp memory leafOp,
         bytes memory key,
         bytes memory value
     )
@@ -573,7 +573,7 @@ contract Membership is IMembership {
         return hashData(result, leafOp.hashOp);
     }
 
-    function applyInner(MembershipMsgs.InnerOp memory inner, bytes32 child) internal view returns (bytes32) {
+    function applyInner(IMembershipMsgs.InnerOp memory inner, bytes32 child) internal view returns (bytes32) {
         if (child == bytes32(0)) {
             revert MissingChildHash();
         }
@@ -585,7 +585,7 @@ contract Membership is IMembership {
         uint256 suffixLen = suffix.length;
         uint256 totalLen = prefixLen + 32 + suffixLen;
 
-        if (inner.hashOp == MembershipMsgs.HashOp.SHA256) {
+        if (inner.hashOp == IMembershipMsgs.HashOp.SHA256) {
             assembly ("memory-safe") {
                 // Scratch starts at the free-memory pointer (not advanced — consumed in place).
                 // Bounded mcopy avoids the word-copy overshoot of issue #114.
@@ -602,7 +602,7 @@ contract Membership is IMembership {
                 result := mload(freeMem)
             }
             return result;
-        } else if (inner.hashOp == MembershipMsgs.HashOp.KECCAK256) {
+        } else if (inner.hashOp == IMembershipMsgs.HashOp.KECCAK256) {
             assembly ("memory-safe") {
                 // Scratch starts at the free-memory pointer (not advanced — consumed in place).
                 // Bounded mcopy avoids the word-copy overshoot of issue #114.
@@ -620,12 +620,12 @@ contract Membership is IMembership {
         }
     }
 
-    function prepareLeafData(MembershipMsgs.HashOp prehashOp, bytes memory data) internal pure returns (bytes memory) {
+    function prepareLeafData(IMembershipMsgs.HashOp prehashOp, bytes memory data) internal pure returns (bytes memory) {
         if (data.length == 0) {
             revert InputDataMissing();
         }
 
-        if (prehashOp == MembershipMsgs.HashOp.NO_HASH) {
+        if (prehashOp == IMembershipMsgs.HashOp.NO_HASH) {
             bytes memory encodedLen = encodeVarint(data.length);
             uint256 len1 = encodedLen.length;
             uint256 len2 = data.length;
@@ -654,17 +654,17 @@ contract Membership is IMembership {
 
     // true if this is the right-most path in the tree, excluding placeholder (empty child) nodes
     function ensureRightMost(
-        MembershipMsgs.InnerSpec memory innerSpec,
-        MembershipMsgs.InnerOp[] memory path,
+        IMembershipMsgs.InnerSpec memory innerSpec,
+        IMembershipMsgs.InnerOp[] memory path,
         uint256 length
     )
         internal
         view
     {
-        MembershipMsgs.Padding memory padding = getPadding(innerSpec, innerSpec.childOrder.length - 1);
+        IMembershipMsgs.Padding memory padding = getPadding(innerSpec, innerSpec.childOrder.length - 1);
 
         for (uint256 i = 0; i < length; i++) {
-            MembershipMsgs.InnerOp memory innerOp = path[i];
+            IMembershipMsgs.InnerOp memory innerOp = path[i];
             bool rightHasPadding = hasPadding(innerOp, padding);
             uint256 rightBranches = innerSpec.childOrder.length - 1 - orderFromPadding(innerSpec, innerOp);
 
@@ -705,17 +705,17 @@ contract Membership is IMembership {
     }
 
     function ensureLeftMost(
-        MembershipMsgs.InnerSpec memory innerSpec,
-        MembershipMsgs.InnerOp[] memory path,
+        IMembershipMsgs.InnerSpec memory innerSpec,
+        IMembershipMsgs.InnerOp[] memory path,
         uint256 length
     )
         internal
         view
     {
         // fails unless this is the left-most path in the tree, excluding placeholder (empty child) nodes
-        MembershipMsgs.Padding memory padding = getPadding(innerSpec, 0);
+        IMembershipMsgs.Padding memory padding = getPadding(innerSpec, 0);
         for (uint256 i = 0; i < length; i++) {
-            MembershipMsgs.InnerOp memory innerOp = path[i];
+            IMembershipMsgs.InnerOp memory innerOp = path[i];
             bool leftHasPadding = hasPadding(innerOp, padding);
             uint256 leftBranches = orderFromPadding(innerSpec, innerOp);
 
@@ -763,8 +763,8 @@ contract Membership is IMembership {
     }
 
     function orderFromPadding(
-        MembershipMsgs.InnerSpec memory innerSpec,
-        MembershipMsgs.InnerOp memory innerOp
+        IMembershipMsgs.InnerSpec memory innerSpec,
+        IMembershipMsgs.InnerOp memory innerOp
     )
         internal
         pure
@@ -772,7 +772,7 @@ contract Membership is IMembership {
     {
         uint256 childOrderLength = innerSpec.childOrder.length;
         for (uint256 branch = 0; branch < childOrderLength; branch++) {
-            MembershipMsgs.Padding memory padding = getPadding(innerSpec, uint32(branch));
+            IMembershipMsgs.Padding memory padding = getPadding(innerSpec, uint32(branch));
             if (hasPadding(innerOp, padding)) {
                 return branch;
             }
@@ -781,12 +781,12 @@ contract Membership is IMembership {
     }
 
     function getPadding(
-        MembershipMsgs.InnerSpec memory innerSpec,
+        IMembershipMsgs.InnerSpec memory innerSpec,
         uint256 branch
     )
         internal
         pure
-        returns (MembershipMsgs.Padding memory)
+        returns (IMembershipMsgs.Padding memory)
     {
         uint256 foundIdx = 0;
         bool found = false;
@@ -806,14 +806,14 @@ contract Membership is IMembership {
         uint32 idx = uint32(foundIdx);
         uint32 prefix = idx * innerSpec.childSize;
         uint256 suffix = uint256(innerSpec.childSize) * (innerSpec.childOrder.length - 1 - idx);
-        return MembershipMsgs.Padding({
+        return IMembershipMsgs.Padding({
             minPrefix: prefix + innerSpec.minPrefixLength, maxPrefix: prefix + innerSpec.maxPrefixLength, suffix: suffix
         });
     }
 
     function hasPadding(
-        MembershipMsgs.InnerOp memory inner,
-        MembershipMsgs.Padding memory padding
+        IMembershipMsgs.InnerOp memory inner,
+        IMembershipMsgs.Padding memory padding
     )
         internal
         pure
@@ -900,12 +900,12 @@ contract Membership is IMembership {
         return result;
     }
 
-    function hashData(bytes memory data, MembershipMsgs.HashOp hashOp) internal pure returns (bytes32) {
-        if (hashOp == MembershipMsgs.HashOp.NO_HASH) {
+    function hashData(bytes memory data, IMembershipMsgs.HashOp hashOp) internal pure returns (bytes32) {
+        if (hashOp == IMembershipMsgs.HashOp.NO_HASH) {
             return bytesToBytes32(data);
-        } else if (hashOp == MembershipMsgs.HashOp.SHA256) {
+        } else if (hashOp == IMembershipMsgs.HashOp.SHA256) {
             return sha256(data);
-        } else if (hashOp == MembershipMsgs.HashOp.KECCAK256) {
+        } else if (hashOp == IMembershipMsgs.HashOp.KECCAK256) {
             return keccak256(data);
         } else {
             revert UnsupportedHashOp();
@@ -915,7 +915,7 @@ contract Membership is IMembership {
     function keyForComparison(
         bytes memory key,
         bool prehash,
-        MembershipMsgs.HashOp prehashOp
+        IMembershipMsgs.HashOp prehashOp
     )
         internal
         pure
@@ -1057,11 +1057,11 @@ contract Membership is IMembership {
         }
     }
 
-    function tendermintSpec() public pure returns (MembershipMsgs.ProofSpec memory) {
-        MembershipMsgs.LeafOp memory leaf = MembershipMsgs.LeafOp({
-            hashOp: MembershipMsgs.HashOp.SHA256,
-            prehashKey: MembershipMsgs.HashOp.NO_HASH,
-            prehashValue: MembershipMsgs.HashOp.SHA256,
+    function tendermintSpec() public pure returns (IMembershipMsgs.ProofSpec memory) {
+        IMembershipMsgs.LeafOp memory leaf = IMembershipMsgs.LeafOp({
+            hashOp: IMembershipMsgs.HashOp.SHA256,
+            prehashKey: IMembershipMsgs.HashOp.NO_HASH,
+            prehashValue: IMembershipMsgs.HashOp.SHA256,
             prefix: hex"00"
         });
 
@@ -1069,17 +1069,17 @@ contract Membership is IMembership {
         childOrder[0] = 0;
         childOrder[1] = 1;
 
-        MembershipMsgs.InnerSpec memory inner = MembershipMsgs.InnerSpec({
+        IMembershipMsgs.InnerSpec memory inner = IMembershipMsgs.InnerSpec({
             childOrder: childOrder,
             minPrefixLength: 1,
             maxPrefixLength: 1,
             childSize: 32,
             emptyChild: "",
-            hashOp: MembershipMsgs.HashOp.SHA256
+            hashOp: IMembershipMsgs.HashOp.SHA256
         });
 
-        return MembershipMsgs.ProofSpec({
-            specType: MembershipMsgs.SpecType.TENDERMINT,
+        return IMembershipMsgs.ProofSpec({
+            specType: IMembershipMsgs.SpecType.TENDERMINT,
             hasLeafSpec: true,
             leafOp: leaf,
             hasInnerSpec: true,
@@ -1090,11 +1090,11 @@ contract Membership is IMembership {
         });
     }
 
-    function iavlSpec() public pure returns (MembershipMsgs.ProofSpec memory) {
-        MembershipMsgs.LeafOp memory leaf = MembershipMsgs.LeafOp({
-            hashOp: MembershipMsgs.HashOp.SHA256,
-            prehashKey: MembershipMsgs.HashOp.NO_HASH,
-            prehashValue: MembershipMsgs.HashOp.SHA256,
+    function iavlSpec() public pure returns (IMembershipMsgs.ProofSpec memory) {
+        IMembershipMsgs.LeafOp memory leaf = IMembershipMsgs.LeafOp({
+            hashOp: IMembershipMsgs.HashOp.SHA256,
+            prehashKey: IMembershipMsgs.HashOp.NO_HASH,
+            prehashValue: IMembershipMsgs.HashOp.SHA256,
             prefix: hex"00"
         });
 
@@ -1102,18 +1102,18 @@ contract Membership is IMembership {
         childOrder[0] = 0;
         childOrder[1] = 1;
 
-        MembershipMsgs.InnerSpec memory inner = MembershipMsgs.InnerSpec({
+        IMembershipMsgs.InnerSpec memory inner = IMembershipMsgs.InnerSpec({
             childOrder: childOrder,
             minPrefixLength: 4,
             maxPrefixLength: 12,
             childSize: 33,
             emptyChild: "",
-            hashOp: MembershipMsgs.HashOp.SHA256
+            hashOp: IMembershipMsgs.HashOp.SHA256
         });
 
         // Return proof spec
-        return MembershipMsgs.ProofSpec({
-            specType: MembershipMsgs.SpecType.IAVL,
+        return IMembershipMsgs.ProofSpec({
+            specType: IMembershipMsgs.SpecType.IAVL,
             hasLeafSpec: true,
             leafOp: leaf,
             hasInnerSpec: true,

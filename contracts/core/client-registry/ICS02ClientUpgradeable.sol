@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
-import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
+import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
 
-import { ICS02ClientErrors } from "contracts/core/errors/ICS02ClientErrors.sol";
+import { IICS02ClientErrors } from "contracts/core/errors/IICS02ClientErrors.sol";
 import { IICS02Client, IICS02ClientAccessControlled } from "contracts/core/interfaces/IICS02Client.sol";
 import { ILightClient } from "contracts/light-clients/interfaces/ILightClient.sol";
 import {
@@ -30,7 +30,7 @@ import { ICS02ClientStore } from "contracts/core/client-registry/ICS02ClientStor
 /// @dev (see `getLightClientMigratorRole`). The role id is derived from the clientId, so a grant
 /// @dev for one client does not authorize migration of any other client. The role must be granted
 /// @dev explicitly by the AccessManager admin; it is not auto-assigned in `addClient`.
-abstract contract ICS02ClientUpgradeable is IICS02Client, ICS02ClientErrors, AccessManagedUpgradeable {
+abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, AccessManagedUpgradeable {
     IClientMigrationProposer internal immutable CLIENT_MIGRATION_PROPOSER;
     IClientMigrationExecutor internal immutable CLIENT_MIGRATION_EXECUTOR;
 
@@ -71,8 +71,8 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, ICS02ClientErrors, Acc
     }
 
     /// @inheritdoc IICS02Client
-    function getCounterparty(string calldata clientId) public view returns (ICS02ClientMsgs.CounterpartyInfo memory) {
-        ICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo = ICS02ClientStore.load().counterpartyInfos[clientId];
+    function getCounterparty(string calldata clientId) public view returns (IICS02ClientMsgs.CounterpartyInfo memory) {
+        IICS02ClientMsgs.CounterpartyInfo memory counterpartyInfo = ICS02ClientStore.load().counterpartyInfos[clientId];
         require(bytes(counterpartyInfo.clientId).length != 0, IBCCounterpartyClientNotFound(clientId));
 
         return counterpartyInfo;
@@ -88,7 +88,7 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, ICS02ClientErrors, Acc
 
     /// @inheritdoc IICS02Client
     function addClient(
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         external
@@ -102,7 +102,7 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, ICS02ClientErrors, Acc
     /// @inheritdoc IICS02ClientAccessControlled
     function addClient(
         string calldata clientId,
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         external
@@ -121,7 +121,7 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, ICS02ClientErrors, Acc
     /// @param client The address of the client contract
     function _addClient(
         string memory clientId,
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         private
@@ -145,9 +145,9 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, ICS02ClientErrors, Acc
     )
         external
         restricted
-        returns (LightClientMsgs.UpdateResult)
+        returns (ILightClientMsgs.UpdateResult)
     {
-        LightClientMsgs.UpdateResult result = getClient(clientId).updateApplicationState(updateMsg);
+        ILightClientMsgs.UpdateResult result = getClient(clientId).updateApplicationState(updateMsg);
         emit ICS02ClientUpdated(clientId, result);
         return result;
     }
@@ -159,9 +159,9 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, ICS02ClientErrors, Acc
     )
         external
         restricted
-        returns (LightClientMsgs.UpdateResult)
+        returns (ILightClientMsgs.UpdateResult)
     {
-        LightClientMsgs.UpdateResult result = getClient(clientId).updateConsensusState(updateMsg);
+        ILightClientMsgs.UpdateResult result = getClient(clientId).updateConsensusState(updateMsg);
         emit ICS02ClientUpdated(clientId, result);
         return result;
     }
@@ -169,7 +169,7 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, ICS02ClientErrors, Acc
     /// @inheritdoc IICS02ClientAccessControlled
     function migrateClient(
         string calldata clientId,
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         external
@@ -183,7 +183,7 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, ICS02ClientErrors, Acc
 
     function proposeClientMigration(
         string calldata clientId,
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         external
@@ -195,7 +195,7 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, ICS02ClientErrors, Acc
 
     function executeClientMigration(
         string calldata clientId,
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         external

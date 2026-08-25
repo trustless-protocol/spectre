@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 // solhint-disable gas-struct-packing
 
-import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
+import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
 
 /// @title IBC Application Callbacks
 /// @notice Interface defining IBC application callbacks
@@ -18,7 +18,7 @@ interface IIBCAppCallbacks {
         string sourceClient;
         string destinationClient;
         uint64 sequence;
-        ICS26RouterMsgs.Payload payload;
+        IICS26RouterMsgs.Payload payload;
         address relayer;
     }
 
@@ -33,7 +33,7 @@ interface IIBCAppCallbacks {
         string sourceClient;
         string destinationClient;
         uint64 sequence;
-        ICS26RouterMsgs.Payload payload;
+        IICS26RouterMsgs.Payload payload;
         bytes acknowledgement;
         address relayer;
     }
@@ -48,7 +48,7 @@ interface IIBCAppCallbacks {
         string sourceClient;
         string destinationClient;
         uint64 sequence;
-        ICS26RouterMsgs.Payload payload;
+        IICS26RouterMsgs.Payload payload;
         address relayer;
     }
 }

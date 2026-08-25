@@ -16,18 +16,18 @@ import (
 
 type cosmosUpdate struct {
 	Kind      int // services.ClientUpdateKind, kept as int so codec stays leaf
-	AppMsg    updateclientContract.SpectreClientMsgsMsgUpdateApplicationState
-	NewValSet spectreContract.SpectreMsgsValidatorSet
+	AppMsg    updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState
+	NewValSet spectreContract.IICS07TendermintMsgsValidatorSet
 }
 
 // EncodeCosmosUpdate encodes a Cosmos->ETH SpectreClient update. kind carries the
 // services.ClientUpdateKind value.
-func EncodeCosmosUpdate(kind int, appMsg updateclientContract.SpectreClientMsgsMsgUpdateApplicationState, newValSet spectreContract.SpectreMsgsValidatorSet) ([]byte, error) {
+func EncodeCosmosUpdate(kind int, appMsg updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState, newValSet spectreContract.IICS07TendermintMsgsValidatorSet) ([]byte, error) {
 	return encode(cosmosUpdate{Kind: kind, AppMsg: appMsg, NewValSet: newValSet})
 }
 
 // DecodeCosmosUpdate reverses EncodeCosmosUpdate.
-func DecodeCosmosUpdate(payload []byte) (kind int, appMsg updateclientContract.SpectreClientMsgsMsgUpdateApplicationState, newValSet spectreContract.SpectreMsgsValidatorSet, err error) {
+func DecodeCosmosUpdate(payload []byte) (kind int, appMsg updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState, newValSet spectreContract.IICS07TendermintMsgsValidatorSet, err error) {
 	var u cosmosUpdate
 	if derr := decode(payload, &u); derr != nil {
 		return 0, appMsg, newValSet, fmt.Errorf("codec: decode cosmos update: %w", derr)

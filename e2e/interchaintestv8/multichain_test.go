@@ -70,15 +70,15 @@ type MultichainTestSuite struct {
 	// The private key of the faucet account of interchaintest
 	deployer *ecdsa.PrivateKey
 
-	contractAddresses          ethereum.DeployedContracts
-	chainASpectreClientAddress ethcommon.Address
-	chainBSpectreClientAddress ethcommon.Address
+	contractAddresses         ethereum.DeployedContracts
+	chainAGroth16Ics07Address ethcommon.Address
+	chainBGroth16Ics07Address ethcommon.Address
 
-	chainASpectreClientContract *spectreclient.Contract
-	chainBSpectreClientContract *spectreclient.Contract
-	ics26Contract               *ics26router.Contract
-	ics20Contract               *ics20transfer.Contract
-	erc20Contract               *erc20.Contract
+	chainAGroth16Ics07Contract *spectreclient.Contract
+	chainBGroth16Ics07Contract *spectreclient.Contract
+	ics26Contract              *ics26router.Contract
+	ics20Contract              *ics20transfer.Contract
+	erc20Contract              *erc20.Contract
 
 	SimdARelayerSubmitter ibc.Wallet
 	SimdBRelayerSubmitter ibc.Wallet
@@ -124,7 +124,7 @@ func (s *MultichainTestSuite) generateEthCosmosRelayerConfig(
 	chain *ictcosmos.CosmosChain,
 	signer ibc.Wallet,
 	ics26ClientID string,
-	spectreClient string,
+	ics07Client string,
 	configPath string,
 	proofType types.SupportedProofType,
 ) {
@@ -144,7 +144,7 @@ func (s *MultichainTestSuite) generateEthCosmosRelayerConfig(
 			BeaconAPI:          beaconAPI,
 			SignerAddress:      signer.FormattedAddress(),
 			MockWasmClient:     os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
-			SpectreClient:      spectreClient,
+			SpectreClient:      ics07Client,
 			SignatureVerifier:  s.contractAddresses.SignatureVerifier,
 			Membership:         s.contractAddresses.Membership,
 			Misbehaviour:       s.contractAddresses.Misbehaviour,
@@ -178,7 +178,7 @@ func (s *MultichainTestSuite) createEthCosmosClients(
 	ethRelayerAddr := crypto.PubkeyToAddress(s.deployer.PublicKey)
 	preNonce, err := eth.RPCClient.PendingNonceAt(ctx, ethRelayerAddr)
 	s.Require().NoError(err)
-	spectreClientAddress := crypto.CreateAddress(ethRelayerAddr, preNonce)
+	ics07Address := crypto.CreateAddress(ethRelayerAddr, preNonce)
 
 	s.generateEthCosmosRelayerConfig(eth, chain, signer, ics26ClientID, "", configPath, proofType)
 
@@ -191,15 +191,15 @@ func (s *MultichainTestSuite) createEthCosmosClients(
 
 	clientAddress, err := s.ics26Contract.GetClient(nil, ics26ClientID)
 	s.Require().NoError(err)
-	s.Require().Equal(spectreClientAddress, clientAddress)
+	s.Require().Equal(ics07Address, clientAddress)
 
 	if eth.BeaconAPIClient == nil {
 		s.createMockEthereumLightClient(ctx, chain, signer, checksumHex, ics26ClientID)
 	}
 
-	s.generateEthCosmosRelayerConfig(eth, chain, signer, ics26ClientID, spectreClientAddress.Hex(), configPath, proofType)
+	s.generateEthCosmosRelayerConfig(eth, chain, signer, ics26ClientID, ics07Address.Hex(), configPath, proofType)
 
-	return spectreClientAddress
+	return ics07Address
 }
 
 func (s *MultichainTestSuite) createMockEthereumLightClient(
@@ -615,7 +615,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 	})
 
 	s.Require().True(s.Run("Create Ethereum/Cosmos clients for SimdA", func() {
-		s.chainASpectreClientAddress = s.createEthCosmosClients(
+		s.chainAGroth16Ics07Address = s.createEthCosmosClients(
 			ctx,
 			eth,
 			simdA,
@@ -627,12 +627,12 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		)
 
 		var err error
-		s.chainASpectreClientContract, err = spectreclient.NewContract(s.chainASpectreClientAddress, eth.RPCClient)
+		s.chainAGroth16Ics07Contract, err = spectreclient.NewContract(s.chainAGroth16Ics07Address, eth.RPCClient)
 		s.Require().NoError(err)
 	}))
 
 	s.Require().True(s.Run("Create Ethereum/Cosmos clients for SimdB", func() {
-		s.chainBSpectreClientAddress = s.createEthCosmosClients(
+		s.chainBGroth16Ics07Address = s.createEthCosmosClients(
 			ctx,
 			eth,
 			simdB,
@@ -644,7 +644,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 		)
 
 		var err error
-		s.chainBSpectreClientContract, err = spectreclient.NewContract(s.chainBSpectreClientAddress, eth.RPCClient)
+		s.chainBGroth16Ics07Contract, err = spectreclient.NewContract(s.chainBGroth16Ics07Address, eth.RPCClient)
 		s.Require().NoError(err)
 	}))
 
@@ -726,8 +726,8 @@ func (s *MultichainTestSuite) Test_Deploy() {
 
 	simdA, simdB := s.CosmosChains[0], s.CosmosChains[1]
 
-	s.Require().True(s.Run("Verify SimdA Spectre Client", func() {
-		clientState, err := getSpectreClientState(s.chainASpectreClientContract)
+	s.Require().True(s.Run("Verify SimdA Groth16 Client", func() {
+		clientState, err := getGroth16ClientState(s.chainAGroth16Ics07Contract)
 		s.Require().NoError(err)
 
 		stakingParams, err := simdA.StakingQueryParams(ctx)
@@ -743,8 +743,8 @@ func (s *MultichainTestSuite) Test_Deploy() {
 		s.Require().Greater(clientState.LatestHeight.RevisionHeight, uint64(0))
 	}))
 
-	s.Require().True(s.Run("Verify SimdB Spectre Client", func() {
-		clientState, err := getSpectreClientState(s.chainBSpectreClientContract)
+	s.Require().True(s.Run("Verify SimdB Groth16 Client", func() {
+		clientState, err := getGroth16ClientState(s.chainBGroth16Ics07Contract)
 		s.Require().NoError(err)
 
 		stakingParams, err := simdB.StakingQueryParams(ctx)
@@ -763,7 +763,7 @@ func (s *MultichainTestSuite) Test_Deploy() {
 	s.Require().True(s.Run("Verify ICS02 Client", func() {
 		clientAddress, err := s.ics26Contract.GetClient(nil, multichainChainAUniversalClientID)
 		s.Require().NoError(err)
-		s.Require().Equal(s.chainASpectreClientAddress, clientAddress)
+		s.Require().Equal(s.chainAGroth16Ics07Address, clientAddress)
 
 		counterpartyInfo, err := s.ics26Contract.GetCounterparty(nil, multichainChainAUniversalClientID)
 		s.Require().NoError(err)
@@ -771,7 +771,7 @@ func (s *MultichainTestSuite) Test_Deploy() {
 
 		clientAddress, err = s.ics26Contract.GetClient(nil, multichainChainBUniversalClientID)
 		s.Require().NoError(err)
-		s.Require().Equal(s.chainBSpectreClientAddress, clientAddress)
+		s.Require().Equal(s.chainBGroth16Ics07Address, clientAddress)
 
 		counterpartyInfo, err = s.ics26Contract.GetCounterparty(nil, multichainChainBUniversalClientID)
 		s.Require().NoError(err)
@@ -952,7 +952,7 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 
 	s.Require().True(s.Run("Transfer tokens from Ethereum to SimdB", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
-		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
 			Denom:            ibcERC20Address,
 			Amount:           transferAmount,
 			Receiver:         simdBUser.FormattedAddress(),
@@ -1066,7 +1066,7 @@ func (s *MultichainTestSuite) Test_TransferCosmosToEthToCosmosAndBack() {
 
 	s.Require().True(s.Run("Transfer tokens from Ethereum to SimdA", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
-		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
 			Denom:            ibcERC20Address,
 			Amount:           transferAmount,
 			Receiver:         simdAUser.FormattedAddress(),
@@ -1131,7 +1131,7 @@ func (s *MultichainTestSuite) Test_TransferEthToCosmosToCosmosAndBack() {
 	s.Require().True(s.Run("Send from Ethereum to SimdA", func() {
 		timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
 
-		msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
+		msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
 			Denom:            erc20Address,
 			Amount:           transferAmount,
 			Receiver:         simdAUser.FormattedAddress(),
@@ -1476,7 +1476,7 @@ func (s *MultichainTestSuite) Test_TransferCosmosToCosmosToEth() {
 			ibcERC20Address, err := s.ics20Contract.IbcERC20Contract(nil, denomOnEthereum.Path())
 			s.Require().NoError(err)
 			timeout := uint64(time.Now().Add(30 * time.Minute).Unix())
-			msgSendPacket := ics20transfer.ICS20TransferMsgsSendTransferMsg{
+			msgSendPacket := ics20transfer.IICS20TransferMsgsSendTransferMsg{
 				Denom:            ibcERC20Address,
 				Amount:           transferAmount,
 				Receiver:         simdBUser.FormattedAddress(),

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { ILightClient } from "contracts/light-clients/interfaces/ILightClient.sol";
 
 /// @title ICS02 Client Store
@@ -20,7 +20,7 @@ library ICS02ClientStore {
     /// @custom:storage-location erc7201:ibc.storage.ICS02Client
     struct Layout {
         mapping(string clientId => ILightClient) clients;
-        mapping(string clientId => ICS02ClientMsgs.CounterpartyInfo info) counterpartyInfos;
+        mapping(string clientId => IICS02ClientMsgs.CounterpartyInfo info) counterpartyInfos;
         uint256 nextClientSeq;
         mapping(string clientId => ClientMigration migration) migrations;
     }

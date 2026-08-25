@@ -70,10 +70,10 @@ func (w *Worker) CreateCosmosClient(stdCtx context.Context, cosmos CosmosEndpoin
 	// LC-03: the constructor now takes the full consensus state (not a pre-hashed
 	// bytes32) so it can assert the genesis pinned validator set actually matches
 	// consensusState.nextValidatorsHash on-chain, rather than trusting the deployer's
-	// hash and pin to agree. spectreContract.SpectreMsgsConsensusState is
+	// hash and pin to agree. spectreContract.IICS07TendermintMsgsConsensusState is
 	// structurally identical to updateClientContract's (same ABI type, different
 	// generated Go package), so this is a direct field-for-field conversion.
-	spectreConsensusState := spectreContract.SpectreMsgsConsensusState{
+	spectreConsensusState := spectreContract.IICS07TendermintMsgsConsensusState{
 		Timestamp:          consensusState.Timestamp,
 		Root:               consensusState.Root,
 		NextValidatorsHash: consensusState.NextValidatorsHash,
@@ -107,8 +107,8 @@ const (
 // another update in the same refresh/invocation.
 type CosmosClientUpdateBuildResult struct {
 	Kind       ClientUpdateKind
-	AppMsg     updateclientContract.SpectreClientMsgsMsgUpdateApplicationState
-	NewValSet  spectreContract.SpectreMsgsValidatorSet
+	AppMsg     updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState
+	NewValSet  spectreContract.IICS07TendermintMsgsValidatorSet
 	HasMsg     bool
 	IsHop      bool
 	HopTarget  int64
@@ -680,7 +680,7 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 	// extraction) and the trusted consensus state to prove against.
 	chainId := trustedLightBlock.SignedHeader.Header.ChainID
 
-	consensusState := updateclientContract.SpectreMsgsConsensusState{
+	consensusState := updateclientContract.IICS07TendermintMsgsConsensusState{
 		Timestamp:          big.NewInt(trustedLightBlock.SignedHeader.Header.Time.UnixNano()),
 		Root:               bytesToBytes32(trustedLightBlock.SignedHeader.Header.AppHash),
 		NextValidatorsHash: bytesToBytes32(trustedLightBlock.SignedHeader.NextValidatorsHash),
@@ -772,11 +772,11 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 		return nil, fmt.Errorf("failed to get ethereum timestamp for update freshness: %w", err)
 	}
 
-	appMsg := updateclientContract.SpectreClientMsgsMsgUpdateApplicationState{
+	appMsg := updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState{
 		TrustedConsensusState: consensusState,
 		ProposedHeader:        proposedHeader,
 		Time:                  updateTime,
-		Proof: updateclientContract.SpectreClientMsgsBatchProof{
+		Proof: updateclientContract.ISpectreClientMsgsBatchProof{
 			Proof:                  proof,
 			Commitments:            commitments,
 			CommitmentPok:          commitmentPok,

@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-/// @title IBCERC20Errors
+/// @title IIBCERC20Errors
 /// @notice Interface for IBCERC20 errors
-interface IBCERC20Errors {
+interface IIBCERC20Errors {
     /// @notice Unauthorized function call
     /// @param caller The caller of the function
     error IBCERC20Unauthorized(address caller);

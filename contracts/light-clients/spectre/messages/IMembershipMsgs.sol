@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 /// @title Membership Program Messages
 /// @author srdtrk
 /// @notice Defines shared types for the verify (non)membership program.
-interface MembershipMsgs {
+interface IMembershipMsgs {
     /// @notice The key-value pair used in the verify (non)membership program.
     /// @dev The path is structured as a list of bytes representing the keys in nested merkle trees.
     /// @param path The path of the value in the key-value store.

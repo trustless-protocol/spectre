@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { IICS02Client } from "contracts/core/interfaces/IICS02Client.sol";
-import { ICS02ClientErrors } from "contracts/core/errors/ICS02ClientErrors.sol";
+import { IICS02ClientErrors } from "contracts/core/errors/IICS02ClientErrors.sol";
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
 import { IAccessManager } from "@openzeppelin-contracts/access/manager/IAccessManager.sol";
 import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
@@ -19,7 +19,7 @@ import {
 
 /// @title Client Migration Proposer
 /// @notice Commits a delayed client migration in the router's storage context via delegatecall.
-contract ClientMigrationProposer is IClientMigrationProposer, ICS02ClientErrors {
+contract ClientMigrationProposer is IClientMigrationProposer, IICS02ClientErrors {
     uint48 internal constant MIN_CLIENT_MIGRATION_DELAY = 48 hours;
 
     address private immutable SELF;
@@ -41,7 +41,7 @@ contract ClientMigrationProposer is IClientMigrationProposer, ICS02ClientErrors 
     /// @inheritdoc IClientMigrationProposer
     function proposeClientMigration(
         string calldata clientId,
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         external
@@ -61,7 +61,7 @@ contract ClientMigrationProposer is IClientMigrationProposer, ICS02ClientErrors 
         require(
             IBCIdentifiers.validateIBCIdentifier(bytes(counterpartyInfo.clientId)), IBCInvalidCounterpartyClientId()
         );
-        ICS02ClientMsgs.CounterpartyInfo storage existingCounterparty = $.counterpartyInfos[clientId];
+        IICS02ClientMsgs.CounterpartyInfo storage existingCounterparty = $.counterpartyInfos[clientId];
         require(
             keccak256(bytes(existingCounterparty.clientId)) == keccak256(bytes(counterpartyInfo.clientId))
                 && _equalMerklePrefix(existingCounterparty.merklePrefix, counterpartyInfo.merklePrefix),
@@ -105,7 +105,7 @@ contract ClientMigrationProposer is IClientMigrationProposer, ICS02ClientErrors 
 
     function _migrationDigest(
         string calldata clientId,
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         private

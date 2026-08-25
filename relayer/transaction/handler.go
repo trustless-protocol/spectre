@@ -350,20 +350,20 @@ func ethLightClientIDOnCosmos(ids services.ClientIDs) (string, error) {
 	return clientID, nil
 }
 
-func toGroth16ValidatorSet(in relayerclient.ContractValidatorSet) spectreContract.SpectreMsgsValidatorSet {
-	validators := make([]spectreContract.SpectreMsgsValidatorInfo, len(in.Validators))
+func toGroth16ValidatorSet(in relayerclient.ContractValidatorSet) spectreContract.IICS07TendermintMsgsValidatorSet {
+	validators := make([]spectreContract.IICS07TendermintMsgsValidatorInfo, len(in.Validators))
 	for i, val := range in.Validators {
-		validators[i] = spectreContract.SpectreMsgsValidatorInfo{
+		validators[i] = spectreContract.IICS07TendermintMsgsValidatorInfo{
 			ValAddress:       val.ValAddress,
 			PubKey:           val.PubKey,
 			VotingPower:      val.VotingPower,
 			ProposerPriority: val.ProposerPriority,
 		}
 	}
-	return spectreContract.SpectreMsgsValidatorSet{
+	return spectreContract.IICS07TendermintMsgsValidatorSet{
 		Validators:  validators,
 		HasProposer: in.HasProposer,
-		Proposer: spectreContract.SpectreMsgsValidatorInfo{
+		Proposer: spectreContract.IICS07TendermintMsgsValidatorInfo{
 			ValAddress:       in.Proposer.ValAddress,
 			PubKey:           in.Proposer.PubKey,
 			VotingPower:      in.Proposer.VotingPower,
@@ -429,8 +429,8 @@ func estimateCosmosClientDeployGas(
 	from common.Address,
 	gasPrice *big.Int,
 	clientState []byte,
-	consensusState spectreContract.SpectreMsgsConsensusState,
-	initialPinnedValidatorSet spectreContract.SpectreMsgsValidatorSet,
+	consensusState spectreContract.IICS07TendermintMsgsConsensusState,
+	initialPinnedValidatorSet spectreContract.IICS07TendermintMsgsValidatorSet,
 ) (uint64, uint64, error) {
 	parsed, err := spectreContract.ContractSpectreClientMetaData.GetAbi()
 	if err != nil {
@@ -479,7 +479,7 @@ func estimateCosmosClientDeployGas(
 	return estimate, gasLimit, nil
 }
 
-func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint services.EVMEndpoint, clientIDs services.ClientIDs, clientState []byte, consensusState spectreContract.SpectreMsgsConsensusState, initialPinnedValidatorSet relayerclient.ContractValidatorSet) (common.Address, error) {
+func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint services.EVMEndpoint, clientIDs services.ClientIDs, clientState []byte, consensusState spectreContract.IICS07TendermintMsgsConsensusState, initialPinnedValidatorSet relayerclient.ContractValidatorSet) (common.Address, error) {
 	cosmosClientID, err := cosmosRouterClientID(clientIDs)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
@@ -545,7 +545,7 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 		return ics26Router.AddClient(
 			auth,
 			cosmosClientID,
-			routerContract.ICS02ClientMsgsCounterpartyInfo{
+			routerContract.IICS02ClientMsgsCounterpartyInfo{
 				ClientId:     wasmClientID,
 				MerklePrefix: [][]byte{[]byte("ibc"), []byte("")},
 			},
@@ -641,29 +641,29 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 				log.Printf("[SendEthTx] Sending direct SpectreClient.updateApplicationState tx...")
 				return ics07Tendermint.UpdateApplicationState(auth, data)
 			}
-		case spectreContract.LightClientMsgsMsgVerifyMembership:
+		case spectreContract.ILightClientMsgsMsgVerifyMembership:
 			txLabel = "verifyMembership"
 			if routerManagesProofSubmission(endpoint) {
 				return nil, fmt.Errorf("direct verifyMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead")
 			}
 			log.Printf("[SendEthTx] Sending verifyMembership tx...")
 			return ics07Tendermint.VerifyMembership(auth, msg)
-		case spectreContract.LightClientMsgsMsgVerifyNonMembership:
+		case spectreContract.ILightClientMsgsMsgVerifyNonMembership:
 			txLabel = "verifyNonMembership"
 			if routerManagesProofSubmission(endpoint) {
 				return nil, fmt.Errorf("direct verifyNonMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead")
 			}
 			log.Printf("[SendEthTx] Sending verifyNonMembership tx...")
 			return ics07Tendermint.VerifyNonMembership(auth, msg)
-		case contractICS26Router.ICS26RouterMsgsMsgRecvPacket:
+		case contractICS26Router.IICS26RouterMsgsMsgRecvPacket:
 			txLabel = fmt.Sprintf("recvPacket seq=%d", msg.Packet.Sequence)
 			log.Printf("[SendEthTx] Sending recvPacket seq=%d...", msg.Packet.Sequence)
 			return ics26Router.RecvPacket(auth, msg)
-		case contractICS26Router.ICS26RouterMsgsMsgAckPacket:
+		case contractICS26Router.IICS26RouterMsgsMsgAckPacket:
 			txLabel = fmt.Sprintf("ackPacket seq=%d", msg.Packet.Sequence)
 			log.Printf("[SendEthTx] Sending ackPacket seq=%d...", msg.Packet.Sequence)
 			return ics26Router.AckPacket(auth, msg)
-		case contractICS26Router.ICS26RouterMsgsMsgTimeoutPacket:
+		case contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket:
 			txLabel = fmt.Sprintf("timeoutPacket seq=%d", msg.Packet.Sequence)
 			log.Printf("[SendEthTx] Sending timeoutPacket seq=%d...", msg.Packet.Sequence)
 			return ics26Router.TimeoutPacket(auth, msg)
@@ -823,13 +823,13 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 			perr error
 		)
 		switch m := msg.(type) {
-		case contractICS26Router.ICS26RouterMsgsMsgRecvPacket:
+		case contractICS26Router.IICS26RouterMsgsMsgRecvPacket:
 			data, perr = parsedABI.Pack("recvPacket", m)
 			lbl = fmt.Sprintf("recvPacket:%d", m.Packet.Sequence)
-		case contractICS26Router.ICS26RouterMsgsMsgAckPacket:
+		case contractICS26Router.IICS26RouterMsgsMsgAckPacket:
 			data, perr = parsedABI.Pack("ackPacket", m)
 			lbl = fmt.Sprintf("ackPacket:%d", m.Packet.Sequence)
-		case contractICS26Router.ICS26RouterMsgsMsgTimeoutPacket:
+		case contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket:
 			data, perr = parsedABI.Pack("timeoutPacket", m)
 			lbl = fmt.Sprintf("timeoutPacket:%d", m.Packet.Sequence)
 		case services.CosmosClientUpdateBuildResult:

@@ -8,11 +8,11 @@ import { UpdateClient } from "contracts/light-clients/spectre/modules/UpdateClie
 import { Misbehaviour } from "contracts/light-clients/spectre/modules/Misbehaviour.sol";
 import { SignatureVerifier } from "contracts/light-clients/spectre/SignatureVerifier.sol";
 import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
-import { SpectreClientMsgs } from "contracts/light-clients/spectre/messages/SpectreClientMsgs.sol";
-import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
-import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
-import { SpectreClientErrors } from "contracts/light-clients/spectre/errors/SpectreClientErrors.sol";
+import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
+import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
+import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
+import { ISpectreClientErrors } from "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol";
 
 contract CacheAlwaysTrueVerifier {
     function verifyProof(bytes calldata, uint256[2] calldata) external pure returns (bool) {
@@ -57,7 +57,7 @@ contract UpdateClientCacheTest is Test {
     }
 
     function test_constructor_pinsInitialValidatorSet() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
         SpectreClient ics07 = _deployLightClient(_trustedConsensus(pinned), pinned);
 
         (uint32[] memory indices, bytes32[] memory pubkeys, uint64[] memory votingPowers) =
@@ -71,16 +71,16 @@ contract UpdateClientCacheTest is Test {
     }
 
     function test_constructor_reverts_whenGenesisPinnedSetMismatchesConsensusState() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
-        SpectreMsgs.ValidatorSet memory other = _buildValSet(4, 100);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory other = _buildValSet(4, 100);
         // Genesis consensus state commits to `pinned`'s hash, but the constructor is asked to pin
         // `other` instead — LC-03 must reject this mismatch on-chain rather than silently
         // deploying with an unverifiable genesis pin.
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                SpectreClientErrors.GenesisPinnedValidatorSetMismatch.selector,
+                ISpectreClientErrors.GenesisPinnedValidatorSetMismatch.selector,
                 Header.hashValSet(pinned),
                 Header.hashValSet(other)
             )
@@ -89,45 +89,45 @@ contract UpdateClientCacheTest is Test {
     }
 
     function test_constructor_reverts_whenGenesisPinnedSetHasDuplicatePubkey() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
         pinned.validators[2].pubKey = pinned.validators[0].pubKey;
         // Built after mutating pinned so the genesis-pin hash still matches (isolates the
         // dup-pubkey check in ValidatorSetLib.buildCache from LC-03's genesis-pin check).
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
 
         vm.expectRevert(
-            abi.encodeWithSelector(SpectreClientErrors.DuplicateValidatorPubkey.selector, uint256(0), uint256(2))
+            abi.encodeWithSelector(ISpectreClientErrors.DuplicateValidatorPubkey.selector, uint256(0), uint256(2))
         );
         _deployLightClient(trustedCS, pinned);
     }
 
     function test_constructor_reverts_whenGenesisPinnedSetHasZeroVotingPower() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
         pinned.validators[1].votingPower = 0;
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
 
-        vm.expectRevert(abi.encodeWithSelector(SpectreClientErrors.ZeroVotingPower.selector, uint256(1)));
+        vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.ZeroVotingPower.selector, uint256(1)));
         _deployLightClient(trustedCS, pinned);
     }
 
     function test_updateApplicationState_reverts_whenTrustedConsensusStateHashMismatchesStored() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
-        SpectreMsgs.ValidatorSet memory other = _buildValSet(4, 100);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory other = _buildValSet(4, 100);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
 
         // Tampering with any field of the supplied trusted consensus state still fails because
         // UpdateClient binds it to the stored consensus-state hash. The pinned set itself is
         // allowed to lag trustedConsensusState.nextValidatorsHash on the app-state path, so this is
         // no longer rejected by _verifyPinnedQuorum.
-        SpectreMsgs.ConsensusState memory staleCS = SpectreMsgs.ConsensusState({
+        IICS07TendermintMsgs.ConsensusState memory staleCS = IICS07TendermintMsgs.ConsensusState({
             timestamp: trustedCS.timestamp, root: trustedCS.root, nextValidatorsHash: Header.hashValSet(other)
         });
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(staleCS, pinned, 3);
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(staleCS, pinned, 3);
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                SpectreClientErrors.ConsensusStateHashMismatch.selector,
+                ISpectreClientErrors.ConsensusStateHashMismatch.selector,
                 keccak256(abi.encode(trustedCS)),
                 keccak256(abi.encode(staleCS))
             )
@@ -136,42 +136,44 @@ contract UpdateClientCacheTest is Test {
     }
 
     function test_updateApplicationState_acceptsPinnedQuorum() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 3);
-        LightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(msg_));
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 3);
+        ILightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(msg_));
 
-        assertEq(uint8(result), uint8(LightClientMsgs.UpdateResult.Update));
-        SpectreMsgs.ClientState memory updated = abi.decode(ics07.getClientState(), (SpectreMsgs.ClientState));
+        assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update));
+        IICS07TendermintMsgs.ClientState memory updated =
+            abi.decode(ics07.getClientState(), (IICS07TendermintMsgs.ClientState));
         assertEq(updated.latestHeight.revisionHeight, HEIGHT_1001, "latest height");
     }
 
     function test_updateApplicationState_acceptsLaggingPinnedSetAfterNextValidatorsHashDrift() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
-        SpectreMsgs.ValidatorSet memory drifted = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory drifted = _buildValSet(4, 0);
         drifted.validators[0].votingPower = 101;
         drifted.totalVotingPower = 401;
 
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory update1001 =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1001 =
             _buildMsgWithNextHash(trustedCS, pinned, Header.hashValSet(drifted), 3);
         ics07.updateApplicationState(abi.encode(update1001));
-        SpectreMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(update1001);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(update1001);
 
         // The trusted consensus state at 1001 commits to `drifted` as nextValidatorsHash, but the
         // contract is still pinned to `pinned` because the cheap app-state path does not rotate.
         // A second app-state update must remain valid as long as the current pinned set still has
         // >2/3 overlap with the target block's signers.
-        SpectreClientMsgs.MsgUpdateApplicationState memory update1002 =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1002 =
             _buildMsgAt(HEIGHT_1001, HEIGHT_1002, trustedCS1001, drifted, Header.hashValSet(drifted), TS_1002_NS, 3);
-        LightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(update1002));
+        ILightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(update1002));
 
-        assertEq(uint8(result), uint8(LightClientMsgs.UpdateResult.Update));
-        SpectreMsgs.ClientState memory updated = abi.decode(ics07.getClientState(), (SpectreMsgs.ClientState));
+        assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update));
+        IICS07TendermintMsgs.ClientState memory updated =
+            abi.decode(ics07.getClientState(), (IICS07TendermintMsgs.ClientState));
         assertEq(updated.latestHeight.revisionHeight, HEIGHT_1002, "latest height");
 
         (,, uint64[] memory votingPowers) = ics07.getPinnedValidatorSet();
@@ -179,28 +181,29 @@ contract UpdateClientCacheTest is Test {
     }
 
     function test_updateConsensusState_acceptsLaggingPinnedSetAfterLatestNextValidatorsHashDrift() public {
-        SpectreMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
-        SpectreMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
 
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinnedA);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory update1001 =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1001 =
             _buildMsgWithNextHash(trustedCS, pinnedA, Header.hashValSet(pinnedB), 3);
         ics07.updateApplicationState(abi.encode(update1001));
-        SpectreMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(update1001);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(update1001);
 
         // The latest trusted consensus state now commits to pinnedB as nextValidatorsHash, while
         // the on-chain pinned set is still pinnedA. RLY-01 recovery must be able to rotate through
         // updateConsensusState in that lagging state instead of requiring identity freshness.
-        SpectreClientMsgs.MsgUpdateApplicationState memory rotate1002 =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory rotate1002 =
             _buildMsgAt(HEIGHT_1001, HEIGHT_1002, trustedCS1001, pinnedA, Header.hashValSet(pinnedB), TS_1002_NS, 3);
-        LightClientMsgs.UpdateResult result = ics07.updateConsensusState(
-            abi.encode(SpectreClientMsgs.MsgUpdateConsensusState({ update: rotate1002, newValidatorSet: pinnedB }))
+        ILightClientMsgs.UpdateResult result = ics07.updateConsensusState(
+            abi.encode(ISpectreClientMsgs.MsgUpdateConsensusState({ update: rotate1002, newValidatorSet: pinnedB }))
         );
 
-        assertEq(uint8(result), uint8(LightClientMsgs.UpdateResult.Update));
-        SpectreMsgs.ClientState memory updated = abi.decode(ics07.getClientState(), (SpectreMsgs.ClientState));
+        assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update));
+        IICS07TendermintMsgs.ClientState memory updated =
+            abi.decode(ics07.getClientState(), (IICS07TendermintMsgs.ClientState));
         assertEq(updated.latestHeight.revisionHeight, HEIGHT_1002, "latest height");
 
         (, bytes32[] memory pubkeys,) = ics07.getPinnedValidatorSet();
@@ -208,31 +211,31 @@ contract UpdateClientCacheTest is Test {
     }
 
     function test_updateApplicationState_reverts_whenPinnedSnapshotOutsideTrustingPeriod() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
 
         uint128 nearSnapshotExpiry = TRUSTED_TS_NS + (uint128(TRUSTING_PERIOD) - 1) * 1e9;
         vm.warp(uint256(nearSnapshotExpiry / 1e9));
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory update1001 = _buildMsgAt(
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1001 = _buildMsgAt(
             TRUSTED_HEIGHT, HEIGHT_1001, trustedCS, pinned, Header.hashValSet(pinned), nearSnapshotExpiry, 3
         );
         update1001.time = nearSnapshotExpiry;
         ics07.updateApplicationState(abi.encode(update1001));
 
-        SpectreMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(update1001);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(update1001);
         uint128 staleSnapshotTime = TRUSTED_TS_NS + (uint128(TRUSTING_PERIOD) + 1) * 1e9;
         vm.warp(uint256(staleSnapshotTime / 1e9));
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory update1002 = _buildMsgAt(
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1002 = _buildMsgAt(
             HEIGHT_1001, HEIGHT_1002, trustedCS1001, pinned, Header.hashValSet(pinned), nearSnapshotExpiry + 1e9, 3
         );
         update1002.time = staleSnapshotTime;
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                SpectreClientErrors.InsufficientTrustingPeriod.selector,
+                ISpectreClientErrors.InsufficientTrustingPeriod.selector,
                 uint128(TRUSTING_PERIOD) + 1,
                 uint128(TRUSTING_PERIOD)
             )
@@ -241,19 +244,19 @@ contract UpdateClientCacheTest is Test {
     }
 
     function test_updateApplicationState_revertsAtTrustingPeriodBoundary() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
 
         uint128 boundaryTime = TRUSTED_TS_NS + uint128(TRUSTING_PERIOD) * 1e9;
         vm.warp(uint256(boundaryTime / 1e9));
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 3);
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 3);
         msg_.time = boundaryTime;
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                SpectreClientErrors.InsufficientTrustingPeriod.selector,
+                ISpectreClientErrors.InsufficientTrustingPeriod.selector,
                 uint128(TRUSTING_PERIOD),
                 uint128(TRUSTING_PERIOD)
             )
@@ -262,48 +265,48 @@ contract UpdateClientCacheTest is Test {
     }
 
     function test_updateApplicationState_reverts_whenPinnedQuorumIsInsufficient() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 2);
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 2);
 
-        vm.expectRevert(abi.encodeWithSelector(SpectreClientErrors.InsufficientVotingPower.selector, 200, 400));
+        vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.InsufficientVotingPower.selector, 200, 400));
         ics07.updateApplicationState(abi.encode(msg_));
     }
 
     function test_updateApplicationState_reverts_whenPinnedIndexIsDuplicated() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 3);
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 3);
         msg_.proof.pinnedValidatorIndices[1] = 0;
         msg_.proof.signerPubkeys[1] = pinned.validators[0].pubKey;
 
-        vm.expectRevert(abi.encodeWithSelector(SpectreClientErrors.DuplicateSigner.selector, 0));
+        vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.DuplicateSigner.selector, 0));
         ics07.updateApplicationState(abi.encode(msg_));
     }
 
     function test_updateApplicationState_reverts_whenPinnedIndexIsOutOfRange() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 3);
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 3);
         msg_.proof.pinnedValidatorIndices[0] = 4;
 
-        vm.expectRevert(abi.encodeWithSelector(SpectreClientErrors.SignerIndexOutOfRange.selector, 4));
+        vm.expectRevert(abi.encodeWithSelector(ISpectreClientErrors.SignerIndexOutOfRange.selector, 4));
         ics07.updateApplicationState(abi.encode(msg_));
     }
 
     function test_updateConsensusState_updatesPinnedSet() public {
-        SpectreMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
-        SpectreMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinnedA);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ =
             _buildMsgWithNextHash(trustedCS, pinnedA, Header.hashValSet(pinnedB), 3);
         _updateConsensusState(ics07, msg_, pinnedB);
 
@@ -312,54 +315,56 @@ contract UpdateClientCacheTest is Test {
     }
 
     function test_updateConsensusState_reverts_whenNewSetHashDoesNotMatchHeader() public {
-        SpectreMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
-        SpectreMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinnedA);
 
         bytes32 expected = Header.hashValSet(pinnedA);
         bytes32 actual = Header.hashValSet(pinnedB);
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsgWithNextHash(trustedCS, pinnedA, expected, 3);
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ =
+            _buildMsgWithNextHash(trustedCS, pinnedA, expected, 3);
 
         vm.expectRevert(
-            abi.encodeWithSelector(SpectreClientErrors.MismatchedValidatorHashes.selector, expected, actual)
+            abi.encodeWithSelector(ISpectreClientErrors.MismatchedValidatorHashes.selector, expected, actual)
         );
         _updateConsensusState(ics07, msg_, pinnedB);
     }
 
     function test_updateConsensusState_doesNotUpdatePinnedSetWhenHeaderIsMisbehaviour() public {
-        SpectreMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
-        SpectreMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinnedA);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory good = _buildMsg(trustedCS, pinnedA, 3);
+        ISpectreClientMsgs.MsgUpdateApplicationState memory good = _buildMsg(trustedCS, pinnedA, 3);
         ics07.updateApplicationState(abi.encode(good));
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory conflicting =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory conflicting =
             _buildMsgWithNextHash(trustedCS, pinnedA, Header.hashValSet(pinnedB), 3);
         _updateConsensusState(ics07, conflicting, pinnedB);
 
         (, bytes32[] memory pubkeys,) = ics07.getPinnedValidatorSet();
         assertEq(pubkeys[0], pinnedA.validators[0].pubKey, "misbehaviour re-anchor must not mutate pin");
-        SpectreMsgs.ClientState memory updated = abi.decode(ics07.getClientState(), (SpectreMsgs.ClientState));
+        IICS07TendermintMsgs.ClientState memory updated =
+            abi.decode(ics07.getClientState(), (IICS07TendermintMsgs.ClientState));
         assertTrue(updated.isFrozen, "misbehaviour still freezes");
     }
 
     function test_updateConsensusState_reverts_whenNoOpHeaderIsNotLatestHeight() public {
-        SpectreMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
-        SpectreMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
-        SpectreMsgs.ValidatorSet memory pinnedC = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedC = _buildValSet(4, 0);
         pinnedC.validators[3].pubKey = bytes32(uint256(0xC0FFEE));
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinnedA);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory reanchorB =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory reanchorB =
             _buildMsgWithNextHash(trustedCS, pinnedA, Header.hashValSet(pinnedB), 3);
         _updateConsensusState(ics07, reanchorB, pinnedB);
-        SpectreMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(reanchorB);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(reanchorB);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory reanchorC =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory reanchorC =
             _buildMsgAt(HEIGHT_1001, HEIGHT_1002, trustedCS1001, pinnedB, Header.hashValSet(pinnedC), TS_1002_NS, 3);
         _updateConsensusState(ics07, reanchorC, pinnedC);
 
@@ -367,88 +372,88 @@ contract UpdateClientCacheTest is Test {
         // consensus state for height 1001 matches reanchorB, but 1001 is no longer the latest
         // height after reanchorC advanced the client to 1002.
         vm.expectRevert(
-            abi.encodeWithSelector(SpectreClientErrors.NonMonotonicHeightUpdate.selector, HEIGHT_1002, HEIGHT_1001)
+            abi.encodeWithSelector(ISpectreClientErrors.NonMonotonicHeightUpdate.selector, HEIGHT_1002, HEIGHT_1001)
         );
         _updateConsensusState(ics07, reanchorB, pinnedB);
     }
 
     function test_updateApplicationState_reverts_whenProofVerificationFails() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
 
         wrapper.setBucket(BUCKET, address(failingStub), CacheAlwaysFailingVerifier.verifyProof.selector);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 3);
-        vm.expectRevert(SpectreClientErrors.ProofVerificationFailed.selector);
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 3);
+        vm.expectRevert(ISpectreClientErrors.ProofVerificationFailed.selector);
         ics07.updateApplicationState(abi.encode(msg_));
     }
 
     function test_updateConsensusState_reverts_whenProofVerificationFails() public {
-        SpectreMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
-        SpectreMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinnedA);
 
         wrapper.setBucket(BUCKET, address(failingStub), CacheAlwaysFailingVerifier.verifyProof.selector);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ =
             _buildMsgWithNextHash(trustedCS, pinnedA, Header.hashValSet(pinnedB), 3);
-        vm.expectRevert(SpectreClientErrors.ProofVerificationFailed.selector);
+        vm.expectRevert(ISpectreClientErrors.ProofVerificationFailed.selector);
         _updateConsensusState(ics07, msg_, pinnedB);
     }
 
     function test_updateApplicationState_reverts_whenTrustedHeightNotStored() public {
-        SpectreMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        IICS07TendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
 
         uint64 unstoredHeight = TRUSTED_HEIGHT - 1;
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ =
             _buildMsgAt(unstoredHeight, HEIGHT_1001, trustedCS, pinned, Header.hashValSet(pinned), TS_1001_NS, 3);
-        vm.expectRevert(SpectreClientErrors.ConsensusStateNotFound.selector);
+        vm.expectRevert(ISpectreClientErrors.ConsensusStateNotFound.selector);
         ics07.updateApplicationState(abi.encode(msg_));
     }
 
     function test_updateConsensusState_reverts_whenTrustedHeightNotStored() public {
-        SpectreMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
-        SpectreMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
         SpectreClient ics07 = _deployLightClient(trustedCS, pinnedA);
 
         uint64 unstoredHeight = TRUSTED_HEIGHT - 1;
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ =
             _buildMsgAt(unstoredHeight, HEIGHT_1001, trustedCS, pinnedA, Header.hashValSet(pinnedB), TS_1001_NS, 3);
-        vm.expectRevert(SpectreClientErrors.ConsensusStateNotFound.selector);
+        vm.expectRevert(ISpectreClientErrors.ConsensusStateNotFound.selector);
         _updateConsensusState(ics07, msg_, pinnedB);
     }
 
     function test_misbehaviourUsesHistoricalPinnedSetAfterReAnchor() public {
-        SpectreMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
-        SpectreMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
-        SpectreMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
+        IICS07TendermintMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinnedA);
         SpectreClient ics07 = _deployLightClientWithMisbehaviour(trustedCS, pinnedA);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory reanchorB =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory reanchorB =
             _buildMsgWithNextHash(trustedCS, pinnedA, Header.hashValSet(pinnedB), 3);
         _updateConsensusState(ics07, reanchorB, pinnedB);
-        SpectreMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(reanchorB);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(reanchorB);
 
-        SpectreClientMsgs.MsgUpdateApplicationState memory update1002 =
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1002 =
             _buildMsgAt(HEIGHT_1001, HEIGHT_1002, trustedCS1001, pinnedB, Header.hashValSet(pinnedB), TS_1002_NS, 3);
         ics07.updateApplicationState(abi.encode(update1002));
-        SpectreMsgs.ConsensusState memory trustedCS1002 = _consensusFromMsg(update1002);
+        IICS07TendermintMsgs.ConsensusState memory trustedCS1002 = _consensusFromMsg(update1002);
 
         uint64 height1003 = HEIGHT_1002 + 1;
         uint128 ts1003Ns = TS_1002_NS + 10 * 1e9;
 
-        SpectreMsgs.Header memory h1 =
+        IICS07TendermintMsgs.Header memory h1 =
             _buildHeader(HEIGHT_1002, height1003, pinnedB, Header.hashValSet(pinnedB), ts1003Ns, 3);
-        SpectreMsgs.Header memory h2 =
+        IICS07TendermintMsgs.Header memory h2 =
             _buildHeader(HEIGHT_1002, height1003, pinnedB, Header.hashValSet(pinnedA), ts1003Ns, 3);
 
-        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_;
-        msg_.misbehaviour = SpectreClientMsgs.Misbehaviour({ header1: h1, header2: h2 });
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_;
+        msg_.misbehaviour = ISpectreClientMsgs.Misbehaviour({ header1: h1, header2: h2 });
         msg_.trustedConsensusState1 = trustedCS1002;
         msg_.trustedConsensusState2 = trustedCS1002;
         msg_.time = ts1003Ns;
@@ -456,25 +461,26 @@ contract UpdateClientCacheTest is Test {
         msg_.proof2 = _buildMisbehaviourProof(pinnedB, 3);
 
         ics07.misbehaviour(abi.encode(msg_));
-        SpectreMsgs.ClientState memory updated = abi.decode(ics07.getClientState(), (SpectreMsgs.ClientState));
+        IICS07TendermintMsgs.ClientState memory updated =
+            abi.decode(ics07.getClientState(), (IICS07TendermintMsgs.ClientState));
         assertTrue(updated.isFrozen, "historical pinned evidence freezes");
     }
 
     function _updateConsensusState(
         SpectreClient ics07,
-        SpectreClientMsgs.MsgUpdateApplicationState memory update,
-        SpectreMsgs.ValidatorSet memory newValidatorSet
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update,
+        IICS07TendermintMsgs.ValidatorSet memory newValidatorSet
     )
         internal
     {
         ics07.updateConsensusState(
-            abi.encode(SpectreClientMsgs.MsgUpdateConsensusState({ update: update, newValidatorSet: newValidatorSet }))
+            abi.encode(ISpectreClientMsgs.MsgUpdateConsensusState({ update: update, newValidatorSet: newValidatorSet }))
         );
     }
 
     function _deployLightClient(
-        SpectreMsgs.ConsensusState memory trustedCS,
-        SpectreMsgs.ValidatorSet memory pinned
+        IICS07TendermintMsgs.ConsensusState memory trustedCS,
+        IICS07TendermintMsgs.ValidatorSet memory pinned
     )
         internal
         returns (SpectreClient)
@@ -491,8 +497,8 @@ contract UpdateClientCacheTest is Test {
     }
 
     function _deployLightClientWithMisbehaviour(
-        SpectreMsgs.ConsensusState memory trustedCS,
-        SpectreMsgs.ValidatorSet memory pinned
+        IICS07TendermintMsgs.ConsensusState memory trustedCS,
+        IICS07TendermintMsgs.ValidatorSet memory pinned
     )
         internal
         returns (SpectreClient)
@@ -510,26 +516,26 @@ contract UpdateClientCacheTest is Test {
     }
 
     function _buildMsg(
-        SpectreMsgs.ConsensusState memory trustedCS,
-        SpectreMsgs.ValidatorSet memory pinned,
+        IICS07TendermintMsgs.ConsensusState memory trustedCS,
+        IICS07TendermintMsgs.ValidatorSet memory pinned,
         uint16 activeCount
     )
         internal
         pure
-        returns (SpectreClientMsgs.MsgUpdateApplicationState memory)
+        returns (ISpectreClientMsgs.MsgUpdateApplicationState memory)
     {
         return _buildMsgWithNextHash(trustedCS, pinned, Header.hashValSet(pinned), activeCount);
     }
 
     function _buildMsgWithNextHash(
-        SpectreMsgs.ConsensusState memory trustedCS,
-        SpectreMsgs.ValidatorSet memory pinned,
+        IICS07TendermintMsgs.ConsensusState memory trustedCS,
+        IICS07TendermintMsgs.ValidatorSet memory pinned,
         bytes32 nextValidatorsHash,
         uint16 activeCount
     )
         internal
         pure
-        returns (SpectreClientMsgs.MsgUpdateApplicationState memory msg_)
+        returns (ISpectreClientMsgs.MsgUpdateApplicationState memory msg_)
     {
         return _buildMsgAt(TRUSTED_HEIGHT, HEIGHT_1001, trustedCS, pinned, nextValidatorsHash, TS_1001_NS, activeCount);
     }
@@ -537,17 +543,17 @@ contract UpdateClientCacheTest is Test {
     function _buildMsgAt(
         uint64 trustedHeight,
         uint64 newHeight,
-        SpectreMsgs.ConsensusState memory trustedCS,
-        SpectreMsgs.ValidatorSet memory pinned,
+        IICS07TendermintMsgs.ConsensusState memory trustedCS,
+        IICS07TendermintMsgs.ValidatorSet memory pinned,
         bytes32 nextValidatorsHash,
         uint128 headerTime,
         uint16 activeCount
     )
         internal
         pure
-        returns (SpectreClientMsgs.MsgUpdateApplicationState memory msg_)
+        returns (ISpectreClientMsgs.MsgUpdateApplicationState memory msg_)
     {
-        SpectreMsgs.Header memory header =
+        IICS07TendermintMsgs.Header memory header =
             _buildHeader(trustedHeight, newHeight, pinned, nextValidatorsHash, headerTime, activeCount);
 
         msg_.trustedConsensusState = trustedCS;
@@ -557,12 +563,12 @@ contract UpdateClientCacheTest is Test {
     }
 
     function _buildMisbehaviourProof(
-        SpectreMsgs.ValidatorSet memory pinned,
+        IICS07TendermintMsgs.ValidatorSet memory pinned,
         uint16 activeCount
     )
         internal
         pure
-        returns (SpectreClientMsgs.BatchProof memory proof_)
+        returns (ISpectreClientMsgs.BatchProof memory proof_)
     {
         proof_.proof = [uint256(0), 0, 0, 0, 0, 0, 0, 0];
         proof_.commitments = [uint256(0), 0];
@@ -582,12 +588,12 @@ contract UpdateClientCacheTest is Test {
         }
     }
 
-    function _consensusFromMsg(SpectreClientMsgs.MsgUpdateApplicationState memory msg_)
+    function _consensusFromMsg(ISpectreClientMsgs.MsgUpdateApplicationState memory msg_)
         internal
         pure
-        returns (SpectreMsgs.ConsensusState memory)
+        returns (IICS07TendermintMsgs.ConsensusState memory)
     {
-        return SpectreMsgs.ConsensusState({
+        return IICS07TendermintMsgs.ConsensusState({
             timestamp: msg_.proposedHeader.signedHeader.header.time,
             root: msg_.proposedHeader.signedHeader.header.appHash,
             nextValidatorsHash: msg_.proposedHeader.signedHeader.header.nextValidatorsHash
@@ -597,16 +603,16 @@ contract UpdateClientCacheTest is Test {
     function _buildHeader(
         uint64 trustedHeight,
         uint64 newHeight,
-        SpectreMsgs.ValidatorSet memory currentValSet,
+        IICS07TendermintMsgs.ValidatorSet memory currentValSet,
         bytes32 nextValidatorsHash,
         uint128 headerTime,
         uint16 activeCount
     )
         internal
         pure
-        returns (SpectreMsgs.Header memory header)
+        returns (IICS07TendermintMsgs.Header memory header)
     {
-        SpectreMsgs.BlockHeader memory bh;
+        IICS07TendermintMsgs.BlockHeader memory bh;
         bh.chainId = CHAIN_ID;
         bh.height = newHeight;
         bh.time = headerTime;
@@ -615,53 +621,60 @@ contract UpdateClientCacheTest is Test {
         bh.nextValidatorsHash = nextValidatorsHash;
         bytes32 headerHash = Header.hashHeader(bh);
 
-        SpectreMsgs.BlockCommit memory bc = SpectreMsgs.BlockCommit({
+        IICS07TendermintMsgs.BlockCommit memory bc = IICS07TendermintMsgs.BlockCommit({
             height: newHeight,
             round: 0,
-            blockId: SpectreMsgs.BlockId({
+            blockId: IICS07TendermintMsgs.BlockId({
                 hashData: headerHash,
-                partSetHeader: SpectreMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
+                partSetHeader: IICS07TendermintMsgs.PartSetHeader({ total: 1, hashData: bytes32(uint256(0x9A57)) })
             }),
             commitSigs: _buildCommitSigs(currentValSet, activeCount)
         });
 
-        header = SpectreMsgs.Header({
-            signedHeader: SpectreMsgs.SignedHeader({ header: bh, commit: bc }),
-            trustedHeight: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: trustedHeight })
+        header = IICS07TendermintMsgs.Header({
+            signedHeader: IICS07TendermintMsgs.SignedHeader({ header: bh, commit: bc }),
+            trustedHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: trustedHeight })
         });
     }
 
     function _buildCommitSigs(
-        SpectreMsgs.ValidatorSet memory vs,
+        IICS07TendermintMsgs.ValidatorSet memory vs,
         uint16 activeCount
     )
         internal
         pure
-        returns (SpectreMsgs.CommitSig[] memory sigs)
+        returns (IICS07TendermintMsgs.CommitSig[] memory sigs)
     {
-        sigs = new SpectreMsgs.CommitSig[](vs.validators.length);
+        sigs = new IICS07TendermintMsgs.CommitSig[](vs.validators.length);
         for (uint256 i = 0; i < vs.validators.length; i++) {
             // The commit slot has to name the validator it belongs to, or the quorum check rejects
             // the proof that cites it (ZK-09). Here the commit and the pinned set are the same
             // validators in the same order, so slot i is validator i.
             bytes20 addr = bytes20(sha256(abi.encodePacked(vs.validators[i].pubKey)));
             if (i < activeCount) {
-                sigs[i] = SpectreMsgs.CommitSig({
-                    flag: SpectreMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT, validatorAddress: addr
+                sigs[i] = IICS07TendermintMsgs.CommitSig({
+                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT, validatorAddress: addr
                 });
             } else {
-                sigs[i] = SpectreMsgs.CommitSig({
-                    flag: SpectreMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT, validatorAddress: addr
+                sigs[i] = IICS07TendermintMsgs.CommitSig({
+                    flag: IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT, validatorAddress: addr
                 });
             }
         }
     }
 
-    function _buildValSet(uint16 valCount, uint256 seed) internal pure returns (SpectreMsgs.ValidatorSet memory vs) {
-        SpectreMsgs.ValidatorInfo[] memory vals = new SpectreMsgs.ValidatorInfo[](valCount);
+    function _buildValSet(
+        uint16 valCount,
+        uint256 seed
+    )
+        internal
+        pure
+        returns (IICS07TendermintMsgs.ValidatorSet memory vs)
+    {
+        IICS07TendermintMsgs.ValidatorInfo[] memory vals = new IICS07TendermintMsgs.ValidatorInfo[](valCount);
         uint64 total = 0;
         for (uint256 i = 0; i < valCount; i++) {
-            vals[i] = SpectreMsgs.ValidatorInfo({
+            vals[i] = IICS07TendermintMsgs.ValidatorInfo({
                 valAddress: abi.encodePacked(uint160(seed + i + 1)),
                 pubKey: bytes32(uint256(0xA0000000 + seed + i + 1)),
                 votingPower: 100,
@@ -669,26 +682,26 @@ contract UpdateClientCacheTest is Test {
             });
             total += 100;
         }
-        vs = SpectreMsgs.ValidatorSet({
+        vs = IICS07TendermintMsgs.ValidatorSet({
             validators: vals, hasProposer: false, proposer: vals[0], totalVotingPower: total
         });
     }
 
-    function _trustedConsensus(SpectreMsgs.ValidatorSet memory pinned)
+    function _trustedConsensus(IICS07TendermintMsgs.ValidatorSet memory pinned)
         internal
         pure
-        returns (SpectreMsgs.ConsensusState memory)
+        returns (IICS07TendermintMsgs.ConsensusState memory)
     {
-        return SpectreMsgs.ConsensusState({
+        return IICS07TendermintMsgs.ConsensusState({
             timestamp: TRUSTED_TS_NS, root: bytes32(uint256(0xAAA1)), nextValidatorsHash: Header.hashValSet(pinned)
         });
     }
 
-    function _clientState() internal pure returns (SpectreMsgs.ClientState memory) {
-        return SpectreMsgs.ClientState({
+    function _clientState() internal pure returns (IICS07TendermintMsgs.ClientState memory) {
+        return IICS07TendermintMsgs.ClientState({
             chainId: CHAIN_ID,
-            trustLevel: SpectreMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
-            latestHeight: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
+            trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
+            latestHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: TRUSTED_HEIGHT }),
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
             isFrozen: false,

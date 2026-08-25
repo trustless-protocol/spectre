@@ -307,7 +307,7 @@
           {
             "name": "payload",
             "type": "tuple",
-            "internalType": "struct ICS26RouterMsgs.Payload",
+            "internalType": "struct IICS26RouterMsgs.Payload",
             "components": [
               {
                 "name": "sourcePort",
@@ -379,7 +379,7 @@
           {
             "name": "payload",
             "type": "tuple",
-            "internalType": "struct ICS26RouterMsgs.Payload",
+            "internalType": "struct IICS26RouterMsgs.Payload",
             "components": [
               {
                 "name": "sourcePort",
@@ -452,7 +452,7 @@
           {
             "name": "payload",
             "type": "tuple",
-            "internalType": "struct ICS26RouterMsgs.Payload",
+            "internalType": "struct IICS26RouterMsgs.Payload",
             "components": [
               {
                 "name": "sourcePort",
@@ -545,7 +545,7 @@
       {
         "name": "msg_",
         "type": "tuple",
-        "internalType": "struct ICS20TransferMsgs.SendTransferMsg",
+        "internalType": "struct IICS20TransferMsgs.SendTransferMsg",
         "components": [
           {
             "name": "denom",
@@ -601,7 +601,7 @@
       {
         "name": "msg_",
         "type": "tuple",
-        "internalType": "struct ICS20TransferMsgs.SendTransferMsg",
+        "internalType": "struct IICS20TransferMsgs.SendTransferMsg",
         "components": [
           {
             "name": "denom",
@@ -696,7 +696,7 @@
       {
         "name": "msg_",
         "type": "tuple",
-        "internalType": "struct ICS20TransferMsgs.SendTransferMsg",
+        "internalType": "struct IICS20TransferMsgs.SendTransferMsg",
         "components": [
           {
             "name": "denom",

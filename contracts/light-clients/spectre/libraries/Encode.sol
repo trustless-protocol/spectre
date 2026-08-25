@@ -2,8 +2,8 @@
 
 pragma solidity ^0.8.28;
 
-import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 
 /// @dev CometBFT valid-commit-domain encoders, not a general-purpose proto3 encoder.
 /// Some helpers intentionally assume valid commit fields are populated and do not implement
@@ -52,7 +52,11 @@ library Encode {
         return out;
     }
 
-    function encodeValidator(SpectreMsgs.SimpleValidator memory validator) internal pure returns (bytes memory) {
+    function encodeValidator(IICS07TendermintMsgs.SimpleValidator memory validator)
+        internal
+        pure
+        returns (bytes memory)
+    {
         uint256 totalLen = 36;
         if (validator.votingPower > 0) {
             totalLen += 1 + _varintLen(uint256(validator.votingPower));
@@ -78,7 +82,7 @@ library Encode {
         return out;
     }
 
-    function encodeVersion(SpectreMsgs.Version memory version) internal pure returns (bytes memory) {
+    function encodeVersion(IICS07TendermintMsgs.Version memory version) internal pure returns (bytes memory) {
         uint256 totalLen = 0;
 
         if (version.blockVersion > 0) {
@@ -103,7 +107,7 @@ library Encode {
         return out;
     }
 
-    function encodeBlockId(SpectreMsgs.BlockId memory blockId) internal pure returns (bytes memory) {
+    function encodeBlockId(IICS07TendermintMsgs.BlockId memory blockId) internal pure returns (bytes memory) {
         // Valid commits always carry a populated block hash and part set header.
         bytes memory partSetHeaderEncoded = encodePartSetHeader(blockId.partSetHeader);
         uint256 partSetLen = partSetHeaderEncoded.length;
@@ -193,7 +197,11 @@ library Encode {
         return result;
     }
 
-    function encodePartSetHeader(SpectreMsgs.PartSetHeader memory partSetHeader) internal pure returns (bytes memory) {
+    function encodePartSetHeader(IICS07TendermintMsgs.PartSetHeader memory partSetHeader)
+        internal
+        pure
+        returns (bytes memory)
+    {
         // Valid commits always carry total >= 1 and a populated part set hash.
         bytes memory out = new bytes(1 + _varintLen(uint256(partSetHeader.total)) + 34);
         uint256 offset = 0;
@@ -216,7 +224,7 @@ library Encode {
     /// @param valIdx The validator index into commitSigs.
     /// @return The protobuf-encoded canonical vote bytes.
     function voteSignBytes(
-        SpectreMsgs.BlockCommit memory commit,
+        IICS07TendermintMsgs.BlockCommit memory commit,
         string memory chainId,
         uint32 valIdx,
         uint128 timestamp
@@ -225,9 +233,9 @@ library Encode {
         pure
         returns (bytes memory)
     {
-        SpectreMsgs.CommitSig memory commitSig = commit.commitSigs[valIdx];
+        IICS07TendermintMsgs.CommitSig memory commitSig = commit.commitSigs[valIdx];
 
-        bool useCommitBlockId = commitSig.flag == SpectreMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT;
+        bool useCommitBlockId = commitSig.flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT;
         bytes memory encodedBlockId = useCommitBlockId ? encodeBlockId(commit.blockId) : new bytes(0);
         bytes memory encodedTimestamp = encodeTimestamp(timestamp);
         bytes memory chainIdBytes = bytes(chainId);

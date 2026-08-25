@@ -4,11 +4,11 @@
 
 The handwritten Solidity source tree now matches `refactor/design-contracts@115397d`: the ICS-02 registry is under `core/client-registry`, light-client implementations remain under `light-clients`, and the only shared access libraries are `IBCRolesLib` and `IBCIdentifiers`. The core-owned `IPausable` compatibility interface is under `core/interfaces`, not a non-target `shared/interfaces` leaf. Deployment-only selector grouping lives under `scripts/deployments`; `contracts/shared/bytes`, `contracts/shared/encoding`, and `contracts/periphery/access` are absent. Tests mirror the final production packages.
 
-Message and error files/containers use the reviewed `<Protocol>Msgs` and `<Protocol>Errors` naming. The final semantic diff review found no protocol behavior change. Runtime bytecode, canonical ABI shape/selectors/topics, storage, protocol fixtures, and locked gas measurements demonstrate equivalence. Generated verifier implementations were not hand-edited. The stale pre-refactor `Groth16ICS07Tendermint` ABI inputs were retired through the coordinated `spectre_client` Rust tooling rename, and the E2E client-state helper/path and internal consumer fields now use canonical Spectre naming.
+Message and error interfaces move to their protocol owners without changing their existing `I...Msgs` and `I...Errors` public names. This keeps tooling ABI names and generated Go/Rust binding types stable and avoids consumer-only rename churn. The final semantic diff review found no protocol behavior change. Runtime bytecode, ABI shape/selectors/topics, storage, protocol fixtures, and locked gas measurements demonstrate equivalence. Generated verifier implementations were not hand-edited.
 
 ## Compatibility
 
-An isolated build of origin/main and the refactored tree matched exactly for canonical runtime ABI, creation bytecode, and deployed bytecode across 28 entrypoints, modules, stores, and libraries; nine first-party ERC-7201 namespace constants and ordered struct layouts also match exactly. Runtime comparison normalizes only the 16 reviewed container names listed in `tooling-rename-manifest.json`; tuple order/types, selectors, event indexing/topics, errors, bytecode, and storage remain locked. The manifest pins 14 regenerated ABI/Go-binding outputs plus three coordinated Rust consumer sources by exact digest, and all Rust, Go, E2E compile-only, and relayer consumers pass with the new type names.
+An isolated build of origin/main and the refactored tree matched exactly for ABI, creation bytecode, and deployed bytecode across 28 entrypoints, modules, stores, and libraries; nine first-party ERC-7201 namespace constants and ordered struct layouts also match exactly. No container-name normalization is required. Existing ABI and Go-binding files remain byte-for-byte compatible, while the manifest locks only the required Rust source-path and E2E fixture-path updates by exact digest.
 
 The compatibility negative suite rejects ABI, storage, runtime, gas, fixture/binding, test-inventory, fully qualified artifact, verifier-provenance, tooling-rename digest, and architecture drift. Full metadata changes in `abi/bytecode/SpectreClient.json` are accepted only where the semantic ABI, initcode, and runtime objects remain exact after the reviewed name normalization.
 
@@ -28,7 +28,7 @@ The branch recorded two release-matrix passes before this review. After restorin
 
 | Gate | Post-review result |
 |---|---|
-| Binding regeneration | Exit 0 with abigen 1.17.2-stable; ABI and Go consumers reproduced, and the Spectre full artifact metadata was refreshed after comment corrections while semantic ABI/initcode/runtime remained exact |
+| Binding regeneration | Exit 0 with abigen 1.17.2-stable; ABI and Go consumers reproduced without generated type-name changes, and Spectre source metadata was refreshed while ABI/initcode/runtime remained exact |
 | Production size build | Exit 0; ICS26Router 24,465 B, ICS20Transfer 22,224 B, SpectreClient 19,390 B |
 | Full non-shadowfork Foundry | Two clean passes; each exited 0 with 34 suites, 305 passed, 0 failed, 0 skipped under the configured 100,000 fuzz runs |
 | Production deployment focus | Exit 0; 8 tests, including six-bucket registration/verification, missing-code rejection, and duplicate-verifier rejection |

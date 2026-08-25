@@ -22,11 +22,11 @@ import (
 )
 
 func TestEthPacketToCosmosPacket_SinglePayload(t *testing.T) {
-	ethPacket := contractICS26Router.ICS26RouterMsgsPacket{
+	ethPacket := contractICS26Router.IICS26RouterMsgsPacket{
 		SourceClient:     "eth-client-0",
 		DestClient:       "cosmos-client-0",
 		TimeoutTimestamp: 1700000000,
-		Payloads: []contractICS26Router.ICS26RouterMsgsPayload{
+		Payloads: []contractICS26Router.IICS26RouterMsgsPayload{
 			{
 				SourcePort: "transfer",
 				DestPort:   "transfer",
@@ -75,11 +75,11 @@ func TestEthPacketToCosmosPacket_SinglePayload(t *testing.T) {
 }
 
 func TestEthPacketToCosmosPacket_MultiplePayloads(t *testing.T) {
-	ethPacket := contractICS26Router.ICS26RouterMsgsPacket{
+	ethPacket := contractICS26Router.IICS26RouterMsgsPacket{
 		SourceClient:     "src",
 		DestClient:       "dst",
 		TimeoutTimestamp: 999,
-		Payloads: []contractICS26Router.ICS26RouterMsgsPayload{
+		Payloads: []contractICS26Router.IICS26RouterMsgsPayload{
 			{SourcePort: "port1", DestPort: "port1d", Version: "v1", Encoding: "e1", Value: []byte("val1")},
 			{SourcePort: "port2", DestPort: "port2d", Version: "v2", Encoding: "e2", Value: []byte("val2")},
 			{SourcePort: "port3", DestPort: "port3d", Version: "v3", Encoding: "e3", Value: []byte("val3")},
@@ -102,11 +102,11 @@ func TestEthPacketToCosmosPacket_MultiplePayloads(t *testing.T) {
 }
 
 func TestEthPacketToCosmosPacket_EmptyPayloads(t *testing.T) {
-	ethPacket := contractICS26Router.ICS26RouterMsgsPacket{
+	ethPacket := contractICS26Router.IICS26RouterMsgsPacket{
 		SourceClient:     "src",
 		DestClient:       "dst",
 		TimeoutTimestamp: 0,
-		Payloads:         []contractICS26Router.ICS26RouterMsgsPayload{},
+		Payloads:         []contractICS26Router.IICS26RouterMsgsPayload{},
 	}
 
 	result := EthPacketToCosmosPacket(ethPacket, big.NewInt(0))
@@ -528,11 +528,11 @@ func TestEnqueueEthSendPacket(t *testing.T) {
 	bb := services.NewBatchBuilder()
 	ev := &contractICS26Router.ContractICS26RouterSendPacket{
 		Sequence: big.NewInt(7),
-		Packet: contractICS26Router.ICS26RouterMsgsPacket{
+		Packet: contractICS26Router.IICS26RouterMsgsPacket{
 			SourceClient:     "eth-client-0",
 			DestClient:       "cosmos-client-0",
 			TimeoutTimestamp: 1234,
-			Payloads: []contractICS26Router.ICS26RouterMsgsPayload{
+			Payloads: []contractICS26Router.IICS26RouterMsgsPayload{
 				{
 					SourcePort: "transfer",
 					DestPort:   "transfer",
@@ -573,7 +573,7 @@ func TestEnqueueEthSendPacketDedupesSeenEvent(t *testing.T) {
 	bb := services.NewBatchBuilder()
 	ev := &contractICS26Router.ContractICS26RouterSendPacket{
 		Sequence: big.NewInt(7),
-		Packet: contractICS26Router.ICS26RouterMsgsPacket{
+		Packet: contractICS26Router.IICS26RouterMsgsPacket{
 			SourceClient: "eth-client-0",
 			DestClient:   "cosmos-client-0",
 		},
@@ -610,7 +610,7 @@ func TestEnqueueEthSendPacketRetriesWhenPendingStateCannotPersist(t *testing.T) 
 
 	ev := &contractICS26Router.ContractICS26RouterSendPacket{
 		Sequence: big.NewInt(7),
-		Packet: contractICS26Router.ICS26RouterMsgsPacket{
+		Packet: contractICS26Router.IICS26RouterMsgsPacket{
 			SourceClient: "eth-client-0",
 			DestClient:   "cosmos-client-0",
 		},
@@ -644,11 +644,11 @@ func TestEnqueueEthWriteAcknowledgement(t *testing.T) {
 	ev := &contractICS26Router.ContractICS26RouterWriteAcknowledgement{
 		Sequence:         big.NewInt(9),
 		Acknowledgements: [][]byte{[]byte("ack")},
-		Packet: contractICS26Router.ICS26RouterMsgsPacket{
+		Packet: contractICS26Router.IICS26RouterMsgsPacket{
 			SourceClient:     "eth-client-0",
 			DestClient:       "cosmos-client-0",
 			TimeoutTimestamp: 5678,
-			Payloads: []contractICS26Router.ICS26RouterMsgsPayload{
+			Payloads: []contractICS26Router.IICS26RouterMsgsPayload{
 				{
 					SourcePort: "transfer",
 					DestPort:   "transfer",
@@ -893,7 +893,7 @@ func TestEnqueueEthTerminalRecordsBlockNumber(t *testing.T) {
 			t.Parallel()
 
 			bb := services.NewBatchBuilder()
-			pkt := contractICS26Router.ICS26RouterMsgsPacket{
+			pkt := contractICS26Router.IICS26RouterMsgsPacket{
 				SourceClient: "eth-client-0",
 				DestClient:   "cosmos-client-0",
 			}
@@ -927,7 +927,7 @@ func TestEnqueueEthTerminalSettlesThePendingTracker(t *testing.T) {
 	t.Parallel()
 
 	bb := services.NewBatchBuilder()
-	pkt := contractICS26Router.ICS26RouterMsgsPacket{
+	pkt := contractICS26Router.IICS26RouterMsgsPacket{
 		SourceClient: "eth-client-0",
 		DestClient:   "cosmos-client-0",
 	}

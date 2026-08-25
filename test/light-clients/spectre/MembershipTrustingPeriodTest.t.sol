@@ -4,19 +4,19 @@ pragma solidity ^0.8.28;
 import { Test } from "forge-std/Test.sol";
 
 import { SpectreClient } from "contracts/light-clients/spectre/SpectreClient.sol";
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
-import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
-import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
-import { MembershipMsgs } from "contracts/light-clients/spectre/messages/MembershipMsgs.sol";
-import { SpectreClientErrors } from "contracts/light-clients/spectre/errors/SpectreClientErrors.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
+import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
+import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
+import { ISpectreClientErrors } from "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol";
 import { IMembership } from "contracts/light-clients/spectre/interfaces/IMembership.sol";
 import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
 
 contract DummyMembershipForTrustingPeriod is IMembership {
     function verifyMembership(
         bytes32,
-        MembershipMsgs.KVPair[] calldata,
-        MembershipMsgs.MerkleProof[] calldata
+        IMembershipMsgs.KVPair[] calldata,
+        IMembershipMsgs.MerkleProof[] calldata
     )
         external
         pure { }
@@ -50,11 +50,11 @@ contract MembershipTrustingPeriodTest is Test {
         // Built before expectRevert: _membershipMsg -> _consensusState -> Header.hashValSet does a
         // sha256 precompile STATICCALL, which vm.expectRevert would otherwise catch as "the next
         // call" instead of the verifyMembership call below.
-        LightClientMsgs.MsgVerifyMembership memory msg_ = _membershipMsg(_toNanos(consensusTime));
+        ILightClientMsgs.MsgVerifyMembership memory msg_ = _membershipMsg(_toNanos(consensusTime));
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                SpectreClientErrors.InsufficientTrustingPeriod.selector,
+                ISpectreClientErrors.InsufficientTrustingPeriod.selector,
                 uint128(TRUSTING_PERIOD),
                 uint128(TRUSTING_PERIOD)
             )
@@ -73,10 +73,10 @@ contract MembershipTrustingPeriodTest is Test {
         uint256 consensusTime = block.timestamp + CLOCK_DRIFT + 1;
         SpectreClient lightClient = _deploy(_toNanos(consensusTime));
         // Built before expectRevert — see test_verifyMembershipRejectsExpiredConsensusState.
-        LightClientMsgs.MsgVerifyMembership memory msg_ = _membershipMsg(_toNanos(consensusTime));
+        ILightClientMsgs.MsgVerifyMembership memory msg_ = _membershipMsg(_toNanos(consensusTime));
 
         vm.expectRevert(
-            abi.encodeWithSelector(SpectreClientErrors.ProofIsInTheFuture.selector, block.timestamp, consensusTime)
+            abi.encodeWithSelector(ISpectreClientErrors.ProofIsInTheFuture.selector, block.timestamp, consensusTime)
         );
         lightClient.verifyMembership(msg_);
     }
@@ -85,11 +85,11 @@ contract MembershipTrustingPeriodTest is Test {
         uint256 consensusTime = block.timestamp - TRUSTING_PERIOD;
         SpectreClient lightClient = _deploy(_toNanos(consensusTime));
         // Built before expectRevert — see test_verifyMembershipRejectsExpiredConsensusState.
-        LightClientMsgs.MsgVerifyNonMembership memory msg_ = _nonMembershipMsg(_toNanos(consensusTime));
+        ILightClientMsgs.MsgVerifyNonMembership memory msg_ = _nonMembershipMsg(_toNanos(consensusTime));
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                SpectreClientErrors.InsufficientTrustingPeriod.selector,
+                ISpectreClientErrors.InsufficientTrustingPeriod.selector,
                 uint128(TRUSTING_PERIOD),
                 uint128(TRUSTING_PERIOD)
             )
@@ -108,38 +108,38 @@ contract MembershipTrustingPeriodTest is Test {
         uint256 consensusTime = block.timestamp + CLOCK_DRIFT + 1;
         SpectreClient lightClient = _deploy(_toNanos(consensusTime));
         // Built before expectRevert — see test_verifyMembershipRejectsExpiredConsensusState.
-        LightClientMsgs.MsgVerifyNonMembership memory msg_ = _nonMembershipMsg(_toNanos(consensusTime));
+        ILightClientMsgs.MsgVerifyNonMembership memory msg_ = _nonMembershipMsg(_toNanos(consensusTime));
 
         vm.expectRevert(
-            abi.encodeWithSelector(SpectreClientErrors.ProofIsInTheFuture.selector, block.timestamp, consensusTime)
+            abi.encodeWithSelector(ISpectreClientErrors.ProofIsInTheFuture.selector, block.timestamp, consensusTime)
         );
         lightClient.verifyNonMembership(msg_);
     }
 
     function test_constructorRejectsZeroTrustingPeriod() public {
-        SpectreMsgs.ClientState memory clientState = _clientState();
+        IICS07TendermintMsgs.ClientState memory clientState = _clientState();
         clientState.trustingPeriod = 0;
         // Built before expectRevert — see test_verifyMembershipRejectsExpiredConsensusState: the
         // sha256 precompile call inside _consensusState must not land inside the armed window.
-        SpectreMsgs.ConsensusState memory consensusState = _consensusState(_toNanos(block.timestamp));
+        IICS07TendermintMsgs.ConsensusState memory consensusState = _consensusState(_toNanos(block.timestamp));
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                SpectreClientErrors.LengthIsOutOfRange.selector, uint256(0), uint256(1), uint256(type(uint32).max)
+                ISpectreClientErrors.LengthIsOutOfRange.selector, uint256(0), uint256(1), uint256(type(uint32).max)
             )
         );
         _deployWithConsensusState(consensusState, clientState);
     }
 
     function test_constructorRejectsZeroClockDrift() public {
-        SpectreMsgs.ClientState memory clientState = _clientState();
+        IICS07TendermintMsgs.ClientState memory clientState = _clientState();
         clientState.clockDrift = 0;
         // Built before expectRevert — see test_verifyMembershipRejectsExpiredConsensusState.
-        SpectreMsgs.ConsensusState memory consensusState = _consensusState(_toNanos(block.timestamp));
+        IICS07TendermintMsgs.ConsensusState memory consensusState = _consensusState(_toNanos(block.timestamp));
 
         vm.expectRevert(
             abi.encodeWithSelector(
-                SpectreClientErrors.LengthIsOutOfRange.selector, uint256(0), uint256(1), uint256(type(uint32).max)
+                ISpectreClientErrors.LengthIsOutOfRange.selector, uint256(0), uint256(1), uint256(type(uint32).max)
             )
         );
         _deployWithConsensusState(consensusState, clientState);
@@ -151,7 +151,7 @@ contract MembershipTrustingPeriodTest is Test {
 
     function _deployWithClientState(
         uint128 consensusTimestamp,
-        SpectreMsgs.ClientState memory clientState
+        IICS07TendermintMsgs.ClientState memory clientState
     )
         private
         returns (SpectreClient)
@@ -160,8 +160,8 @@ contract MembershipTrustingPeriodTest is Test {
     }
 
     function _deployWithConsensusState(
-        SpectreMsgs.ConsensusState memory consensusState,
-        SpectreMsgs.ClientState memory clientState
+        IICS07TendermintMsgs.ConsensusState memory consensusState,
+        IICS07TendermintMsgs.ClientState memory clientState
     )
         private
         returns (SpectreClient)
@@ -177,11 +177,11 @@ contract MembershipTrustingPeriodTest is Test {
         );
     }
 
-    function _clientState() private pure returns (SpectreMsgs.ClientState memory) {
-        return SpectreMsgs.ClientState({
+    function _clientState() private pure returns (IICS07TendermintMsgs.ClientState memory) {
+        return IICS07TendermintMsgs.ClientState({
             chainId: "test-chain-0",
-            trustLevel: SpectreMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
-            latestHeight: ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: HEIGHT }),
+            trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
+            latestHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: HEIGHT }),
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
             isFrozen: false,
@@ -192,16 +192,16 @@ contract MembershipTrustingPeriodTest is Test {
     function _membershipMsg(uint128 consensusTimestamp)
         private
         pure
-        returns (LightClientMsgs.MsgVerifyMembership memory msg_)
+        returns (ILightClientMsgs.MsgVerifyMembership memory msg_)
     {
         bytes memory value = hex"01";
-        msg_ = LightClientMsgs.MsgVerifyMembership({
+        msg_ = ILightClientMsgs.MsgVerifyMembership({
             height: _height(),
             kvPairs: _kvPairs(value),
-            merkleProofs: new MembershipMsgs.MerkleProof[](0),
+            merkleProofs: new IMembershipMsgs.MerkleProof[](0),
             appHash: APP_HASH,
             trustedConsensusState: _consensusState(consensusTimestamp),
-            membershipType: MembershipMsgs.MembershipType.Membership,
+            membershipType: IMembershipMsgs.MembershipType.Membership,
             path: _path(),
             value: value
         });
@@ -210,40 +210,40 @@ contract MembershipTrustingPeriodTest is Test {
     function _nonMembershipMsg(uint128 consensusTimestamp)
         private
         pure
-        returns (LightClientMsgs.MsgVerifyNonMembership memory msg_)
+        returns (ILightClientMsgs.MsgVerifyNonMembership memory msg_)
     {
-        msg_ = LightClientMsgs.MsgVerifyNonMembership({
+        msg_ = ILightClientMsgs.MsgVerifyNonMembership({
             height: _height(),
             kvPairs: _kvPairs(bytes("")),
-            merkleProofs: new MembershipMsgs.MerkleProof[](0),
+            merkleProofs: new IMembershipMsgs.MerkleProof[](0),
             appHash: APP_HASH,
             trustedConsensusState: _consensusState(consensusTimestamp),
-            membershipType: MembershipMsgs.MembershipType.Membership,
+            membershipType: IMembershipMsgs.MembershipType.Membership,
             path: _path()
         });
     }
 
-    function _pinnedValidatorSet() private pure returns (SpectreMsgs.ValidatorSet memory vs) {
-        SpectreMsgs.ValidatorInfo[] memory vals = new SpectreMsgs.ValidatorInfo[](1);
-        vals[0] = SpectreMsgs.ValidatorInfo({
+    function _pinnedValidatorSet() private pure returns (IICS07TendermintMsgs.ValidatorSet memory vs) {
+        IICS07TendermintMsgs.ValidatorInfo[] memory vals = new IICS07TendermintMsgs.ValidatorInfo[](1);
+        vals[0] = IICS07TendermintMsgs.ValidatorInfo({
             valAddress: bytes("validator"), pubKey: bytes32(uint256(1)), votingPower: 100, proposerPriority: 0
         });
-        vs = SpectreMsgs.ValidatorSet({
+        vs = IICS07TendermintMsgs.ValidatorSet({
             validators: vals, hasProposer: false, proposer: vals[0], totalVotingPower: 100
         });
     }
 
-    function _consensusState(uint128 timestamp) private pure returns (SpectreMsgs.ConsensusState memory) {
+    function _consensusState(uint128 timestamp) private pure returns (IICS07TendermintMsgs.ConsensusState memory) {
         // nextValidatorsHash must match _pinnedValidatorSet()'s hash: the constructor now asserts
         // Header.hashValSet(initialPinnedValidatorSet) == consensusState.nextValidatorsHash (LC-03).
-        return SpectreMsgs.ConsensusState({
+        return IICS07TendermintMsgs.ConsensusState({
             timestamp: timestamp, root: APP_HASH, nextValidatorsHash: Header.hashValSet(_pinnedValidatorSet())
         });
     }
 
-    function _kvPairs(bytes memory value) private pure returns (MembershipMsgs.KVPair[] memory kvPairs) {
-        kvPairs = new MembershipMsgs.KVPair[](1);
-        kvPairs[0] = MembershipMsgs.KVPair({ path: _path(), value: value });
+    function _kvPairs(bytes memory value) private pure returns (IMembershipMsgs.KVPair[] memory kvPairs) {
+        kvPairs = new IMembershipMsgs.KVPair[](1);
+        kvPairs[0] = IMembershipMsgs.KVPair({ path: _path(), value: value });
     }
 
     function _path() private pure returns (bytes[] memory path) {
@@ -251,8 +251,8 @@ contract MembershipTrustingPeriodTest is Test {
         path[0] = bytes("key");
     }
 
-    function _height() private pure returns (ICS02ClientMsgs.Height memory) {
-        return ICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: HEIGHT });
+    function _height() private pure returns (IICS02ClientMsgs.Height memory) {
+        return IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: HEIGHT });
     }
 
     function _toNanos(uint256 seconds_) private pure returns (uint128) {

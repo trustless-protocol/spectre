@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { SpectreClientMsgs } from "contracts/light-clients/spectre/messages/SpectreClientMsgs.sol";
-import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
+import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { IMisbehaviour } from "contracts/light-clients/spectre/interfaces/IMisbehaviour.sol";
 import { ISignatureVerifier } from "contracts/light-clients/spectre/interfaces/ISignatureVerifier.sol";
-import { SpectreClientErrors } from "contracts/light-clients/spectre/errors/SpectreClientErrors.sol";
+import { ISpectreClientErrors } from "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol";
 import { SpectreStore } from "contracts/light-clients/spectre/store/SpectreStore.sol";
 import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
 import { HeightCmp } from "contracts/light-clients/spectre/libraries/HeightCmp.sol";
@@ -31,20 +31,20 @@ contract Misbehaviour is IMisbehaviour {
     }
 
     modifier onlyDelegated() {
-        require(address(this) != SELF, SpectreClientErrors.DirectCallNotAllowed());
+        require(address(this) != SELF, ISpectreClientErrors.DirectCallNotAllowed());
         _;
     }
 
     /// @inheritdoc IMisbehaviour
-    function verifyMisbehaviour(SpectreClientMsgs.MsgSubmitMisbehaviour calldata msg_) external onlyDelegated {
+    function verifyMisbehaviour(ISpectreClientMsgs.MsgSubmitMisbehaviour calldata msg_) external onlyDelegated {
         SpectreStore.Store storage $ = SpectreStore.load();
-        SpectreMsgs.ClientState storage clientState = $.clientState;
+        IICS07TendermintMsgs.ClientState storage clientState = $.clientState;
 
-        SpectreClientMsgs.Misbehaviour calldata misbehaviour_ = msg_.misbehaviour;
+        ISpectreClientMsgs.Misbehaviour calldata misbehaviour_ = msg_.misbehaviour;
         require(
             keccak256(bytes(clientState.chainId))
                 == keccak256(bytes(misbehaviour_.header1.signedHeader.header.chainId)),
-            SpectreClientErrors.ChainIdMismatch(clientState.chainId, misbehaviour_.header1.signedHeader.header.chainId)
+            ISpectreClientErrors.ChainIdMismatch(clientState.chainId, misbehaviour_.header1.signedHeader.header.chainId)
         );
 
         _validateBasic(misbehaviour_);
@@ -54,13 +54,14 @@ contract Misbehaviour is IMisbehaviour {
         // threshold is hardcoded `>2/3` in `SpectreClient._verifyQuorum` (used for both
         // `_verifyMisbehaviourQuorum` calls in `SpectreClient.misbehaviour`). Currently
         // decoded-but-unused / reserved; see the field comment on `ClientState.trustLevel`.
-        SpectreMsgs.Options memory options = SpectreMsgs.Options({
+        IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
             trustThreshold: clientState.trustLevel,
             trustingPeriod: clientState.trustingPeriod,
             clockDrift: clientState.clockDrift
         });
-        SpectreMsgs.ChainId memory chainId =
-            SpectreMsgs.ChainId({ id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber });
+        IICS07TendermintMsgs.ChainId memory chainId = IICS07TendermintMsgs.ChainId({
+            id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber
+        });
 
         _verifyMisbehaviourHeader(
             misbehaviour_.header1, chainId, options, msg_.trustedConsensusState1.timestamp, msg_.time
@@ -80,18 +81,18 @@ contract Misbehaviour is IMisbehaviour {
 
     function _requireTrustedConsensus(
         SpectreStore.Store storage $,
-        SpectreMsgs.Header calldata header,
-        SpectreMsgs.ConsensusState calldata trustedConsensusState
+        IICS07TendermintMsgs.Header calldata header,
+        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState
     )
         private
         view
     {
         bytes32 trustedHash = keccak256(abi.encode(trustedConsensusState));
         bytes32 storedHash = $.getConsensusStateHash(header.trustedHeight.revisionHeight);
-        require(trustedHash == storedHash, SpectreClientErrors.ConsensusStateHashMismatch(storedHash, trustedHash));
+        require(trustedHash == storedHash, ISpectreClientErrors.ConsensusStateHashMismatch(storedHash, trustedHash));
     }
 
-    function _validateBasic(SpectreClientMsgs.Misbehaviour calldata misbehaviour_) private pure {
+    function _validateBasic(ISpectreClientMsgs.Misbehaviour calldata misbehaviour_) private pure {
         _validateHeaderBasic(misbehaviour_.header1);
         _validateHeaderBasic(misbehaviour_.header2);
 
@@ -99,14 +100,14 @@ contract Misbehaviour is IMisbehaviour {
             keccak256(bytes(misbehaviour_.header1.signedHeader.header.chainId))
                 != keccak256(bytes(misbehaviour_.header2.signedHeader.header.chainId))
         ) {
-            revert SpectreClientErrors.ChainIdMismatch({
+            revert ISpectreClientErrors.ChainIdMismatch({
                 expected: misbehaviour_.header1.signedHeader.header.chainId,
                 actual: misbehaviour_.header2.signedHeader.header.chainId
             });
         }
 
         if (misbehaviour_.header1.signedHeader.header.height != misbehaviour_.header2.signedHeader.header.height) {
-            revert SpectreClientErrors.MismatchedMisbehaviourHeaderHeights({
+            revert ISpectreClientErrors.MismatchedMisbehaviourHeaderHeights({
                 height1: misbehaviour_.header1.signedHeader.header.height,
                 height2: misbehaviour_.header2.signedHeader.header.height
             });
@@ -120,30 +121,30 @@ contract Misbehaviour is IMisbehaviour {
         }
     }
 
-    function _validateHeaderBasic(SpectreMsgs.Header calldata header) private pure {
-        SpectreMsgs.ChainId memory chainId = ChainId.get(header.signedHeader.header.chainId);
+    function _validateHeaderBasic(IICS07TendermintMsgs.Header calldata header) private pure {
+        IICS07TendermintMsgs.ChainId memory chainId = ChainId.get(header.signedHeader.header.chainId);
         if (chainId.revisionNumber != header.trustedHeight.revisionNumber) {
-            revert SpectreClientErrors.MismatchedRevisionHeights(
+            revert ISpectreClientErrors.MismatchedRevisionHeights(
                 chainId.revisionNumber, header.trustedHeight.revisionNumber
             );
         }
 
-        ICS02ClientMsgs.Height memory height = ICS02ClientMsgs.Height({
+        IICS02ClientMsgs.Height memory height = IICS02ClientMsgs.Height({
             revisionNumber: chainId.revisionNumber, revisionHeight: header.signedHeader.header.height
         });
         if (HeightCmp.ge(header.trustedHeight, height)) {
-            revert SpectreClientErrors.InvalidHeaderHeight(height.revisionHeight);
+            revert ISpectreClientErrors.InvalidHeaderHeight(height.revisionHeight);
         }
 
         if (Header.hashHeader(header.signedHeader.header) != header.signedHeader.commit.blockId.hashData) {
-            revert SpectreClientErrors.FailedToVerifyHeader({ description: "invalid block: header hash mismatch" });
+            revert ISpectreClientErrors.FailedToVerifyHeader({ description: "invalid block: header hash mismatch" });
         }
     }
 
     function _verifyMisbehaviourHeader(
-        SpectreMsgs.Header calldata header,
-        SpectreMsgs.ChainId memory chainId,
-        SpectreMsgs.Options memory options,
+        IICS07TendermintMsgs.Header calldata header,
+        IICS07TendermintMsgs.ChainId memory chainId,
+        IICS07TendermintMsgs.Options memory options,
         uint128 trustedTime,
         uint128 currentTimestamp
     )
@@ -154,18 +155,18 @@ contract Misbehaviour is IMisbehaviour {
         uint128 trustedTimeInSeconds = _nanosToSeconds(trustedTime);
 
         if (currentTimeInSeconds < trustedTimeInSeconds) {
-            revert SpectreClientErrors.InvalidConsensusStateTimestamp({ timestamp: trustedTime });
+            revert ISpectreClientErrors.InvalidConsensusStateTimestamp({ timestamp: trustedTime });
         }
         uint128 durationSinceConsensusState = currentTimeInSeconds - trustedTimeInSeconds;
         if (durationSinceConsensusState >= options.trustingPeriod) {
-            revert SpectreClientErrors.InsufficientTrustingPeriod({
+            revert ISpectreClientErrors.InsufficientTrustingPeriod({
                 durationSinceConsensusState: durationSinceConsensusState, trustingPeriod: options.trustingPeriod
             });
         }
 
         require(
             keccak256(bytes(header.signedHeader.header.chainId)) == keccak256(bytes(chainId.id)),
-            SpectreClientErrors.ChainIdMismatch(chainId.id, header.signedHeader.header.chainId)
+            ISpectreClientErrors.ChainIdMismatch(chainId.id, header.signedHeader.header.chainId)
         );
         require(header.signedHeader.header.time > trustedTime, "invalid block: non monotonic bft time");
         uint128 drifted = currentTimestamp + uint128(options.clockDrift) * 1_000_000_000;
@@ -173,14 +174,14 @@ contract Misbehaviour is IMisbehaviour {
     }
 
     function _verifyBatchProof(
-        SpectreMsgs.Header calldata header,
-        SpectreClientMsgs.BatchProof calldata proof_
+        IICS07TendermintMsgs.Header calldata header,
+        ISpectreClientMsgs.BatchProof calldata proof_
     )
         private
     {
-        SpectreMsgs.BlockCommit calldata commit = header.signedHeader.commit;
+        IICS07TendermintMsgs.BlockCommit calldata commit = header.signedHeader.commit;
         require(
-            commit.height == header.signedHeader.header.height, SpectreClientErrors.InvalidHeaderHeight(commit.height)
+            commit.height == header.signedHeader.header.height, ISpectreClientErrors.InvalidHeaderHeight(commit.height)
         );
 
         ISignatureVerifier.SharedBlock memory shared = ISignatureVerifier.SharedBlock({
@@ -197,7 +198,7 @@ contract Misbehaviour is IMisbehaviour {
                 proof_.active,
                 shared
             ),
-            SpectreClientErrors.ProofVerificationFailed()
+            ISpectreClientErrors.ProofVerificationFailed()
         );
     }
 

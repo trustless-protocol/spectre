@@ -7,7 +7,7 @@
     ],
     "light-client-compatibility": [
       "contracts/light-clients/interfaces/ILightClient.sol",
-      "contracts/light-clients/messages/LightClientMsgs.sol"
+      "contracts/light-clients/messages/ILightClientMsgs.sol"
     ],
     "deployment-tooling": [
       "scripts/deployments/IBCSelectorLib.sol"

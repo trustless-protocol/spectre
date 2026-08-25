@@ -2,7 +2,7 @@
 
 | Consumer | Validation | Result |
 |---|---|---|
-| Rust Solidity types | `cargo test --locked -p ibc-eureka-solidity-types --all-features` | Pass; `spectre_client` consumes the canonical Spectre ABI/bytecode inputs |
+| Rust Solidity types | `cargo test --locked -p ibc-eureka-solidity-types --all-features` | Pass; the existing `groth16_ics07` public module is retained and consumes the current Spectre ABI/bytecode inputs |
 | Shared Go bindings | `cd packages/go-abigen && go test ./...` | Pass |
 | Relayer Go | `cd relayer && LD_LIBRARY_PATH=../third_party/ecip-gnark go test ./...` | Pass |
 | E2E Go packages | `cd e2e/interchaintestv8 && go test -run '^$' ./...` | Compile pass; no chains started |
@@ -12,4 +12,4 @@
 
 The generator resolves `source:contract` pairs from `contracts.json`, verifies each Foundry artifact's metadata source, stages temporary ABI/bin files outside `contracts/data`, and rejects unlinked placeholders.
 
-The binding regeneration, Rust, shared Go binding, relayer Go, and E2E compile-only checks were repeated after the final forced build. Both passes exited 0 and produced the same tracked binding digests. The compatibility gate also locks the renamed Rust module and its two direct source consumers by exact digest.
+The binding regeneration, Rust, shared Go binding, relayer Go, and E2E compile-only checks were repeated after the final forced build. Both passes exited 0 and produced the same tracked binding digests. The compatibility gate locks the small set of required Rust and E2E path updates by exact digest; public module and generated binding type names remain unchanged.

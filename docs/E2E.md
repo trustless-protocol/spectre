@@ -743,7 +743,7 @@ cast send <ICS20Transfer> \
   --private-key $ETH_PRIVATE_KEY --rpc-url $L2
 ```
 
-The tuple is `SendTransferMsg` in field order (`contracts/apps/ics20/messages/ICS20TransferMsgs.sol`):
+The tuple is `SendTransferMsg` in field order (`contracts/apps/ics20/messages/IICS20TransferMsgs.sol`):
 denom, amount, receiver, sourceClient, destPort, timeoutTimestamp, memo.
 
 `<l2-router-client-id>` is `sourceClient`: the client id **on the L2 router** — the one

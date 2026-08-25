@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { SpectreClientMsgs } from "contracts/light-clients/spectre/messages/SpectreClientMsgs.sol";
-import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
+import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { IUpdateClient } from "contracts/light-clients/spectre/interfaces/IUpdateClient.sol";
 import { ISignatureVerifier } from "contracts/light-clients/spectre/interfaces/ISignatureVerifier.sol";
-import { SpectreClientErrors } from "contracts/light-clients/spectre/errors/SpectreClientErrors.sol";
+import { ISpectreClientErrors } from "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol";
 import { SpectreStore } from "contracts/light-clients/spectre/store/SpectreStore.sol";
 import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
 import { HeightCmp } from "contracts/light-clients/spectre/libraries/HeightCmp.sol";
@@ -32,26 +32,27 @@ contract UpdateClient is IUpdateClient {
 
     /// @notice Rejects direct calls: this module is only meant to run via delegatecall from SpectreClient.
     modifier onlyDelegated() {
-        require(address(this) != SELF, SpectreClientErrors.DirectCallNotAllowed());
+        require(address(this) != SELF, ISpectreClientErrors.DirectCallNotAllowed());
         _;
     }
 
     /// @inheritdoc IUpdateClient
-    function verifyHeader(SpectreClientMsgs.MsgUpdateApplicationState calldata msg_)
+    function verifyHeader(ISpectreClientMsgs.MsgUpdateApplicationState calldata msg_)
         external
         onlyDelegated
-        returns (SpectreClientMsgs.VerifyHeaderOutput memory)
+        returns (ISpectreClientMsgs.VerifyHeaderOutput memory)
     {
         SpectreStore.Store storage $ = SpectreStore.load();
-        SpectreMsgs.ClientState storage clientState = $.clientState;
+        IICS07TendermintMsgs.ClientState storage clientState = $.clientState;
 
-        SpectreMsgs.ChainId memory chainId =
-            SpectreMsgs.ChainId({ id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber });
+        IICS07TendermintMsgs.ChainId memory chainId = IICS07TendermintMsgs.ChainId({
+            id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber
+        });
         // NOTE (LC-05): `trustThreshold` is threaded through `options` into `_verifyHeader` /
         // `_verifyAgainstTrusted` below but is never actually read there — the real quorum
         // threshold is hardcoded `>2/3` in `SpectreClient._verifyQuorum`. Currently
         // decoded-but-unused / reserved; see the field comment on `ClientState.trustLevel`.
-        SpectreMsgs.Options memory options = SpectreMsgs.Options({
+        IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
             trustThreshold: clientState.trustLevel,
             trustingPeriod: clientState.trustingPeriod,
             clockDrift: clientState.clockDrift
@@ -62,7 +63,7 @@ contract UpdateClient is IUpdateClient {
         // Bind the supplied trusted consensus state to the one this client already trusts.
         bytes32 trustedHash = keccak256(abi.encode(msg_.trustedConsensusState));
         bytes32 storedHash = $.getConsensusStateHash(msg_.proposedHeader.trustedHeight.revisionHeight);
-        require(trustedHash == storedHash, SpectreClientErrors.ConsensusStateHashMismatch(storedHash, trustedHash));
+        require(trustedHash == storedHash, ISpectreClientErrors.ConsensusStateHashMismatch(storedHash, trustedHash));
 
         // Signature check: the batched Ed25519 Groth16 proof over the proposed header.
         _verifyBatchProof(msg_.proposedHeader, msg_.proof);
@@ -71,43 +72,43 @@ contract UpdateClient is IUpdateClient {
     }
 
     function _verifyHeader(
-        SpectreMsgs.Header calldata proposedHeader,
-        SpectreMsgs.ChainId memory chainId,
-        SpectreMsgs.Options memory options,
+        IICS07TendermintMsgs.Header calldata proposedHeader,
+        IICS07TendermintMsgs.ChainId memory chainId,
+        IICS07TendermintMsgs.Options memory options,
         uint128 time,
-        SpectreMsgs.ConsensusState calldata trustedConsensusState
+        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState
     )
         private
         pure
     {
-        SpectreMsgs.ChainId memory headerChainId = ChainId.get(proposedHeader.signedHeader.header.chainId);
+        IICS07TendermintMsgs.ChainId memory headerChainId = ChainId.get(proposedHeader.signedHeader.header.chainId);
         _validateBasic(proposedHeader, headerChainId);
         if (chainId.revisionNumber != headerChainId.revisionNumber) {
-            revert SpectreClientErrors.ChainIdMismatch(chainId.id, headerChainId.id);
+            revert ISpectreClientErrors.ChainIdMismatch(chainId.id, headerChainId.id);
         }
 
         if (
             Header.hashHeader(proposedHeader.signedHeader.header) != proposedHeader.signedHeader.commit.blockId.hashData
         ) {
-            revert SpectreClientErrors.FailedToVerifyHeader("invalid block: header hash mismatch");
+            revert ISpectreClientErrors.FailedToVerifyHeader("invalid block: header hash mismatch");
         }
 
         _verifyAgainstTrusted(proposedHeader, chainId.id, options, time, trustedConsensusState);
     }
 
     function _verifyAgainstTrusted(
-        SpectreMsgs.Header calldata proposedHeader,
+        IICS07TendermintMsgs.Header calldata proposedHeader,
         string memory chainId,
-        SpectreMsgs.Options memory options,
+        IICS07TendermintMsgs.Options memory options,
         uint128 time,
-        SpectreMsgs.ConsensusState calldata trustedConsensusState
+        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState
     )
         private
         pure
     {
         uint128 trustingPeriodNanos = uint128(options.trustingPeriod) * 1_000_000_000;
         if (time < trustedConsensusState.timestamp || time - trustedConsensusState.timestamp >= trustingPeriodNanos) {
-            revert SpectreClientErrors.FailedToVerifyHeader("invalid block: untrusted state is outside of trusting period");
+            revert ISpectreClientErrors.FailedToVerifyHeader("invalid block: untrusted state is outside of trusting period");
         }
         require(
             proposedHeader.signedHeader.header.time > trustedConsensusState.timestamp,
@@ -128,31 +129,37 @@ contract UpdateClient is IUpdateClient {
         }
     }
 
-    function _validateBasic(SpectreMsgs.Header calldata header, SpectreMsgs.ChainId memory headerChainId) private pure {
+    function _validateBasic(
+        IICS07TendermintMsgs.Header calldata header,
+        IICS07TendermintMsgs.ChainId memory headerChainId
+    )
+        private
+        pure
+    {
         if (headerChainId.revisionNumber != header.trustedHeight.revisionNumber) {
-            revert SpectreClientErrors.MismatchedRevisionHeights(
+            revert ISpectreClientErrors.MismatchedRevisionHeights(
                 headerChainId.revisionNumber, header.trustedHeight.revisionNumber
             );
         }
 
-        ICS02ClientMsgs.Height memory height = ICS02ClientMsgs.Height({
+        IICS02ClientMsgs.Height memory height = IICS02ClientMsgs.Height({
             revisionNumber: headerChainId.revisionNumber, revisionHeight: header.signedHeader.header.height
         });
 
         if (HeightCmp.ge(header.trustedHeight, height)) {
-            revert SpectreClientErrors.InvalidHeaderHeight(height.revisionHeight);
+            revert ISpectreClientErrors.InvalidHeaderHeight(height.revisionHeight);
         }
     }
 
     function _verifyBatchProof(
-        SpectreMsgs.Header calldata header,
-        SpectreClientMsgs.BatchProof calldata proof_
+        IICS07TendermintMsgs.Header calldata header,
+        ISpectreClientMsgs.BatchProof calldata proof_
     )
         private
     {
-        SpectreMsgs.BlockCommit calldata commit = header.signedHeader.commit;
+        IICS07TendermintMsgs.BlockCommit calldata commit = header.signedHeader.commit;
         require(
-            commit.height == header.signedHeader.header.height, SpectreClientErrors.InvalidHeaderHeight(commit.height)
+            commit.height == header.signedHeader.header.height, ISpectreClientErrors.InvalidHeaderHeight(commit.height)
         );
 
         ISignatureVerifier.SharedBlock memory shared = ISignatureVerifier.SharedBlock({
@@ -169,30 +176,30 @@ contract UpdateClient is IUpdateClient {
                 proof_.active,
                 shared
             ),
-            SpectreClientErrors.ProofVerificationFailed()
+            ISpectreClientErrors.ProofVerificationFailed()
         );
     }
 
     function _buildOutput(
-        SpectreClientMsgs.MsgUpdateApplicationState calldata msg_,
+        ISpectreClientMsgs.MsgUpdateApplicationState calldata msg_,
         uint64 revisionNumber
     )
         private
         pure
-        returns (SpectreClientMsgs.VerifyHeaderOutput memory)
+        returns (ISpectreClientMsgs.VerifyHeaderOutput memory)
     {
-        ICS02ClientMsgs.Height memory trustedHeight = ICS02ClientMsgs.Height({
+        IICS02ClientMsgs.Height memory trustedHeight = IICS02ClientMsgs.Height({
             revisionNumber: revisionNumber, revisionHeight: msg_.proposedHeader.trustedHeight.revisionHeight
         });
-        ICS02ClientMsgs.Height memory newHeight = ICS02ClientMsgs.Height({
+        IICS02ClientMsgs.Height memory newHeight = IICS02ClientMsgs.Height({
             revisionNumber: revisionNumber, revisionHeight: msg_.proposedHeader.signedHeader.header.height
         });
-        SpectreMsgs.ConsensusState memory newConsensusState = SpectreMsgs.ConsensusState({
+        IICS07TendermintMsgs.ConsensusState memory newConsensusState = IICS07TendermintMsgs.ConsensusState({
             timestamp: msg_.proposedHeader.signedHeader.header.time,
             root: msg_.proposedHeader.signedHeader.header.appHash,
             nextValidatorsHash: msg_.proposedHeader.signedHeader.header.nextValidatorsHash
         });
-        return SpectreClientMsgs.VerifyHeaderOutput({
+        return ISpectreClientMsgs.VerifyHeaderOutput({
             trustedConsensusState: msg_.trustedConsensusState,
             newConsensusState: newConsensusState,
             trustedHeight: trustedHeight,

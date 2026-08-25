@@ -29,17 +29,17 @@ var (
 	_ = abi.ConvertType
 )
 
-// ICS26RouterMsgsPacket is an auto generated low-level Go binding around an user-defined struct.
-type ICS26RouterMsgsPacket struct {
+// IICS26RouterMsgsPacket is an auto generated low-level Go binding around an user-defined struct.
+type IICS26RouterMsgsPacket struct {
 	Sequence         uint64
 	SourceClient     string
 	DestClient       string
 	TimeoutTimestamp uint64
-	Payloads         []ICS26RouterMsgsPayload
+	Payloads         []IICS26RouterMsgsPayload
 }
 
-// ICS26RouterMsgsPayload is an auto generated low-level Go binding around an user-defined struct.
-type ICS26RouterMsgsPayload struct {
+// IICS26RouterMsgsPayload is an auto generated low-level Go binding around an user-defined struct.
+type IICS26RouterMsgsPayload struct {
 	SourcePort string
 	DestPort   string
 	Version    string
@@ -49,7 +49,7 @@ type ICS26RouterMsgsPayload struct {
 
 // ContractMetaData contains all meta data concerning the Contract contract.
 var ContractMetaData = &bind.MetaData{
-	ABI: "[{\"type\":\"constructor\",\"inputs\":[{\"name\":\"_ics26Router\",\"type\":\"address\",\"internalType\":\"address\"}],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"ICS26_ROUTER\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"address\",\"internalType\":\"address\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"isPacketReceiveSuccessful\",\"inputs\":[{\"name\":\"packet\",\"type\":\"tuple\",\"internalType\":\"structICS26RouterMsgs.Packet\",\"components\":[{\"name\":\"sequence\",\"type\":\"uint64\",\"internalType\":\"uint64\"},{\"name\":\"sourceClient\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"destClient\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"timeoutTimestamp\",\"type\":\"uint64\",\"internalType\":\"uint64\"},{\"name\":\"payloads\",\"type\":\"tuple[]\",\"internalType\":\"structICS26RouterMsgs.Payload[]\",\"components\":[{\"name\":\"sourcePort\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"destPort\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"version\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"encoding\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"value\",\"type\":\"bytes\",\"internalType\":\"bytes\"}]}]}],\"outputs\":[{\"name\":\"\",\"type\":\"bool\",\"internalType\":\"bool\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"isPacketReceived\",\"inputs\":[{\"name\":\"packet\",\"type\":\"tuple\",\"internalType\":\"structICS26RouterMsgs.Packet\",\"components\":[{\"name\":\"sequence\",\"type\":\"uint64\",\"internalType\":\"uint64\"},{\"name\":\"sourceClient\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"destClient\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"timeoutTimestamp\",\"type\":\"uint64\",\"internalType\":\"uint64\"},{\"name\":\"payloads\",\"type\":\"tuple[]\",\"internalType\":\"structICS26RouterMsgs.Payload[]\",\"components\":[{\"name\":\"sourcePort\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"destPort\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"version\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"encoding\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"value\",\"type\":\"bytes\",\"internalType\":\"bytes\"}]}]}],\"outputs\":[{\"name\":\"\",\"type\":\"bool\",\"internalType\":\"bool\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"queryAckCommitment\",\"inputs\":[{\"name\":\"clientId\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"sequence\",\"type\":\"uint64\",\"internalType\":\"uint64\"}],\"outputs\":[{\"name\":\"\",\"type\":\"bytes32\",\"internalType\":\"bytes32\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"queryPacketCommitment\",\"inputs\":[{\"name\":\"clientId\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"sequence\",\"type\":\"uint64\",\"internalType\":\"uint64\"}],\"outputs\":[{\"name\":\"\",\"type\":\"bytes32\",\"internalType\":\"bytes32\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"queryPacketReceipt\",\"inputs\":[{\"name\":\"clientId\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"sequence\",\"type\":\"uint64\",\"internalType\":\"uint64\"}],\"outputs\":[{\"name\":\"\",\"type\":\"bytes32\",\"internalType\":\"bytes32\"}],\"stateMutability\":\"view\"},{\"type\":\"error\",\"name\":\"NoAcknowledgements\",\"inputs\":[]}]",
+	ABI: "[{\"type\":\"constructor\",\"inputs\":[{\"name\":\"_ics26Router\",\"type\":\"address\",\"internalType\":\"address\"}],\"stateMutability\":\"nonpayable\"},{\"type\":\"function\",\"name\":\"ICS26_ROUTER\",\"inputs\":[],\"outputs\":[{\"name\":\"\",\"type\":\"address\",\"internalType\":\"address\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"isPacketReceiveSuccessful\",\"inputs\":[{\"name\":\"packet\",\"type\":\"tuple\",\"internalType\":\"structIICS26RouterMsgs.Packet\",\"components\":[{\"name\":\"sequence\",\"type\":\"uint64\",\"internalType\":\"uint64\"},{\"name\":\"sourceClient\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"destClient\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"timeoutTimestamp\",\"type\":\"uint64\",\"internalType\":\"uint64\"},{\"name\":\"payloads\",\"type\":\"tuple[]\",\"internalType\":\"structIICS26RouterMsgs.Payload[]\",\"components\":[{\"name\":\"sourcePort\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"destPort\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"version\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"encoding\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"value\",\"type\":\"bytes\",\"internalType\":\"bytes\"}]}]}],\"outputs\":[{\"name\":\"\",\"type\":\"bool\",\"internalType\":\"bool\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"isPacketReceived\",\"inputs\":[{\"name\":\"packet\",\"type\":\"tuple\",\"internalType\":\"structIICS26RouterMsgs.Packet\",\"components\":[{\"name\":\"sequence\",\"type\":\"uint64\",\"internalType\":\"uint64\"},{\"name\":\"sourceClient\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"destClient\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"timeoutTimestamp\",\"type\":\"uint64\",\"internalType\":\"uint64\"},{\"name\":\"payloads\",\"type\":\"tuple[]\",\"internalType\":\"structIICS26RouterMsgs.Payload[]\",\"components\":[{\"name\":\"sourcePort\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"destPort\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"version\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"encoding\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"value\",\"type\":\"bytes\",\"internalType\":\"bytes\"}]}]}],\"outputs\":[{\"name\":\"\",\"type\":\"bool\",\"internalType\":\"bool\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"queryAckCommitment\",\"inputs\":[{\"name\":\"clientId\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"sequence\",\"type\":\"uint64\",\"internalType\":\"uint64\"}],\"outputs\":[{\"name\":\"\",\"type\":\"bytes32\",\"internalType\":\"bytes32\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"queryPacketCommitment\",\"inputs\":[{\"name\":\"clientId\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"sequence\",\"type\":\"uint64\",\"internalType\":\"uint64\"}],\"outputs\":[{\"name\":\"\",\"type\":\"bytes32\",\"internalType\":\"bytes32\"}],\"stateMutability\":\"view\"},{\"type\":\"function\",\"name\":\"queryPacketReceipt\",\"inputs\":[{\"name\":\"clientId\",\"type\":\"string\",\"internalType\":\"string\"},{\"name\":\"sequence\",\"type\":\"uint64\",\"internalType\":\"uint64\"}],\"outputs\":[{\"name\":\"\",\"type\":\"bytes32\",\"internalType\":\"bytes32\"}],\"stateMutability\":\"view\"},{\"type\":\"error\",\"name\":\"NoAcknowledgements\",\"inputs\":[]}]",
 }
 
 // ContractABI is the input ABI used to generate the binding from.
@@ -232,7 +232,7 @@ func (_Contract *ContractCallerSession) ICS26ROUTER() (common.Address, error) {
 // IsPacketReceiveSuccessful is a free data retrieval call binding the contract method 0xede05f16.
 //
 // Solidity: function isPacketReceiveSuccessful((uint64,string,string,uint64,(string,string,string,string,bytes)[]) packet) view returns(bool)
-func (_Contract *ContractCaller) IsPacketReceiveSuccessful(opts *bind.CallOpts, packet ICS26RouterMsgsPacket) (bool, error) {
+func (_Contract *ContractCaller) IsPacketReceiveSuccessful(opts *bind.CallOpts, packet IICS26RouterMsgsPacket) (bool, error) {
 	var out []interface{}
 	err := _Contract.contract.Call(opts, &out, "isPacketReceiveSuccessful", packet)
 
@@ -249,21 +249,21 @@ func (_Contract *ContractCaller) IsPacketReceiveSuccessful(opts *bind.CallOpts, 
 // IsPacketReceiveSuccessful is a free data retrieval call binding the contract method 0xede05f16.
 //
 // Solidity: function isPacketReceiveSuccessful((uint64,string,string,uint64,(string,string,string,string,bytes)[]) packet) view returns(bool)
-func (_Contract *ContractSession) IsPacketReceiveSuccessful(packet ICS26RouterMsgsPacket) (bool, error) {
+func (_Contract *ContractSession) IsPacketReceiveSuccessful(packet IICS26RouterMsgsPacket) (bool, error) {
 	return _Contract.Contract.IsPacketReceiveSuccessful(&_Contract.CallOpts, packet)
 }
 
 // IsPacketReceiveSuccessful is a free data retrieval call binding the contract method 0xede05f16.
 //
 // Solidity: function isPacketReceiveSuccessful((uint64,string,string,uint64,(string,string,string,string,bytes)[]) packet) view returns(bool)
-func (_Contract *ContractCallerSession) IsPacketReceiveSuccessful(packet ICS26RouterMsgsPacket) (bool, error) {
+func (_Contract *ContractCallerSession) IsPacketReceiveSuccessful(packet IICS26RouterMsgsPacket) (bool, error) {
 	return _Contract.Contract.IsPacketReceiveSuccessful(&_Contract.CallOpts, packet)
 }
 
 // IsPacketReceived is a free data retrieval call binding the contract method 0x7ecfb0c2.
 //
 // Solidity: function isPacketReceived((uint64,string,string,uint64,(string,string,string,string,bytes)[]) packet) view returns(bool)
-func (_Contract *ContractCaller) IsPacketReceived(opts *bind.CallOpts, packet ICS26RouterMsgsPacket) (bool, error) {
+func (_Contract *ContractCaller) IsPacketReceived(opts *bind.CallOpts, packet IICS26RouterMsgsPacket) (bool, error) {
 	var out []interface{}
 	err := _Contract.contract.Call(opts, &out, "isPacketReceived", packet)
 
@@ -280,14 +280,14 @@ func (_Contract *ContractCaller) IsPacketReceived(opts *bind.CallOpts, packet IC
 // IsPacketReceived is a free data retrieval call binding the contract method 0x7ecfb0c2.
 //
 // Solidity: function isPacketReceived((uint64,string,string,uint64,(string,string,string,string,bytes)[]) packet) view returns(bool)
-func (_Contract *ContractSession) IsPacketReceived(packet ICS26RouterMsgsPacket) (bool, error) {
+func (_Contract *ContractSession) IsPacketReceived(packet IICS26RouterMsgsPacket) (bool, error) {
 	return _Contract.Contract.IsPacketReceived(&_Contract.CallOpts, packet)
 }
 
 // IsPacketReceived is a free data retrieval call binding the contract method 0x7ecfb0c2.
 //
 // Solidity: function isPacketReceived((uint64,string,string,uint64,(string,string,string,string,bytes)[]) packet) view returns(bool)
-func (_Contract *ContractCallerSession) IsPacketReceived(packet ICS26RouterMsgsPacket) (bool, error) {
+func (_Contract *ContractCallerSession) IsPacketReceived(packet IICS26RouterMsgsPacket) (bool, error) {
 	return _Contract.Contract.IsPacketReceived(&_Contract.CallOpts, packet)
 }
 

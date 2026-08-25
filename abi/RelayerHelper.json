@@ -30,7 +30,7 @@
       {
         "name": "packet",
         "type": "tuple",
-        "internalType": "struct ICS26RouterMsgs.Packet",
+        "internalType": "struct IICS26RouterMsgs.Packet",
         "components": [
           {
             "name": "sequence",
@@ -55,7 +55,7 @@
           {
             "name": "payloads",
             "type": "tuple[]",
-            "internalType": "struct ICS26RouterMsgs.Payload[]",
+            "internalType": "struct IICS26RouterMsgs.Payload[]",
             "components": [
               {
                 "name": "sourcePort",
@@ -103,7 +103,7 @@
       {
         "name": "packet",
         "type": "tuple",
-        "internalType": "struct ICS26RouterMsgs.Packet",
+        "internalType": "struct IICS26RouterMsgs.Packet",
         "components": [
           {
             "name": "sequence",
@@ -128,7 +128,7 @@
           {
             "name": "payloads",
             "type": "tuple[]",
-            "internalType": "struct ICS26RouterMsgs.Payload[]",
+            "internalType": "struct IICS26RouterMsgs.Payload[]",
             "components": [
               {
                 "name": "sourcePort",

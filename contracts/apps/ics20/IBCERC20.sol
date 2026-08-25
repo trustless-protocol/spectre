@@ -3,14 +3,14 @@ pragma solidity ^0.8.28;
 
 import { IIBCERC20 } from "contracts/apps/ics20/interfaces/IIBCERC20.sol";
 import { IMintableAndBurnable } from "contracts/apps/ics20/interfaces/IMintableAndBurnable.sol";
-import { IBCERC20Errors } from "contracts/apps/ics20/errors/IBCERC20Errors.sol";
+import { IIBCERC20Errors } from "contracts/apps/ics20/errors/IIBCERC20Errors.sol";
 
 import { ERC20Upgradeable } from "@openzeppelin-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 
 /// @title IBCERC20 Contract
 /// @notice This contract is the default ERC20 implementation for new IBC tokens.
 /// @dev This is the default implementation to be deployed when new IBC tokens are received.
-contract IBCERC20 is IBCERC20Errors, IIBCERC20, ERC20Upgradeable {
+contract IBCERC20 is IIBCERC20Errors, IIBCERC20, ERC20Upgradeable {
     /// @notice Storage of the IBCERC20 contract
     /// @dev It's implemented on a custom ERC-7201 namespace to reduce the risk of storage collisions when using with
     /// upgradeable contracts.

@@ -53,7 +53,7 @@ func TestL2AckToEvent_EmptyAckSkipped(t *testing.T) {
 func TestL2AckToEvent_FiltersStaleCosmosClient(t *testing.T) {
 	ev := &contractICS26Router.ContractICS26RouterWriteAcknowledgement{
 		Sequence:         big.NewInt(1),
-		Packet:           contractICS26Router.ICS26RouterMsgsPacket{SourceClient: "08-wasm-1", DestClient: "arb-client-0"},
+		Packet:           contractICS26Router.IICS26RouterMsgsPacket{SourceClient: "08-wasm-1", DestClient: "arb-client-0"},
 		Acknowledgements: [][]byte{[]byte(`{"result":"AQ=="}`)},
 	}
 	if _, ok := l2AckToEvent(ev, "08-wasm-3"); ok {
@@ -64,10 +64,10 @@ func TestL2AckToEvent_FiltersStaleCosmosClient(t *testing.T) {
 func TestL2AckToEvent_AllowsConfiguredCosmosClient(t *testing.T) {
 	ev := &contractICS26Router.ContractICS26RouterWriteAcknowledgement{
 		Sequence: big.NewInt(2),
-		Packet: contractICS26Router.ICS26RouterMsgsPacket{
+		Packet: contractICS26Router.IICS26RouterMsgsPacket{
 			SourceClient: "08-wasm-3",
 			DestClient:   "arb-client-0",
-			Payloads: []contractICS26Router.ICS26RouterMsgsPayload{{
+			Payloads: []contractICS26Router.IICS26RouterMsgsPayload{{
 				SourcePort: "transfer",
 				DestPort:   "transfer",
 				Version:    "ics20-1",

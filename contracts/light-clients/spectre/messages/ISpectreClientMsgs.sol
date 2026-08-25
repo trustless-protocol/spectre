@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 
 /// @title Spectre Client Messages
 /// @notice Message and output types for the SpectreClient light client and its modules.
-interface SpectreClientMsgs {
+interface ISpectreClientMsgs {
     /// @notice One batched Ed25519 Groth16 proof over a single signed header.
     /// @dev The relayer picks the smallest registered `bucket` that fits the signers needed to reach
     ///      2/3 voting power; padding slots carry `active[i] = false`. The checked in-repo prover
@@ -37,8 +37,8 @@ interface SpectreClientMsgs {
     /// @param time The current time in unix nanoseconds.
     /// @param proof The batched Ed25519 signature proof over the proposed header.
     struct MsgUpdateApplicationState {
-        SpectreMsgs.ConsensusState trustedConsensusState;
-        SpectreMsgs.Header proposedHeader;
+        IICS07TendermintMsgs.ConsensusState trustedConsensusState;
+        IICS07TendermintMsgs.Header proposedHeader;
         uint128 time;
         BatchProof proof;
     }
@@ -48,13 +48,13 @@ interface SpectreClientMsgs {
     /// @param newValidatorSet The new validator set to pin; its hash must equal the header's nextValidatorsHash.
     struct MsgUpdateConsensusState {
         MsgUpdateApplicationState update;
-        SpectreMsgs.ValidatorSet newValidatorSet;
+        IICS07TendermintMsgs.ValidatorSet newValidatorSet;
     }
 
     /// @notice Two conflicting signed headers at the same height, each proof-backed.
     struct Misbehaviour {
-        SpectreMsgs.Header header1;
-        SpectreMsgs.Header header2;
+        IICS07TendermintMsgs.Header header1;
+        IICS07TendermintMsgs.Header header2;
     }
 
     /// @notice Submits misbehaviour (two conflicting signed headers) to freeze the client.
@@ -66,8 +66,8 @@ interface SpectreClientMsgs {
     /// @param proof2 The batched signature proof over header2.
     struct MsgSubmitMisbehaviour {
         Misbehaviour misbehaviour;
-        SpectreMsgs.ConsensusState trustedConsensusState1;
-        SpectreMsgs.ConsensusState trustedConsensusState2;
+        IICS07TendermintMsgs.ConsensusState trustedConsensusState1;
+        IICS07TendermintMsgs.ConsensusState trustedConsensusState2;
         uint128 time;
         BatchProof proof1;
         BatchProof proof2;
@@ -79,9 +79,9 @@ interface SpectreClientMsgs {
     /// @param trustedHeight The trusted height.
     /// @param newHeight The new height.
     struct VerifyHeaderOutput {
-        SpectreMsgs.ConsensusState trustedConsensusState;
-        SpectreMsgs.ConsensusState newConsensusState;
-        ICS02ClientMsgs.Height trustedHeight;
-        ICS02ClientMsgs.Height newHeight;
+        IICS07TendermintMsgs.ConsensusState trustedConsensusState;
+        IICS07TendermintMsgs.ConsensusState newConsensusState;
+        IICS02ClientMsgs.Height trustedHeight;
+        IICS02ClientMsgs.Height newHeight;
     }
 }

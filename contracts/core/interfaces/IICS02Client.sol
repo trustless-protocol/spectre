@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
-import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
+import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
 import { ILightClient } from "contracts/light-clients/interfaces/ILightClient.sol";
 
 /// @title ICS02 Client Access Controlled Interface
@@ -16,7 +16,7 @@ interface IICS02ClientAccessControlled {
     /// @return The client identifier
     function addClient(
         string calldata clientId,
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         external
@@ -32,7 +32,7 @@ interface IICS02ClientAccessControlled {
         bytes calldata updateMsg
     )
         external
-        returns (LightClientMsgs.UpdateResult);
+        returns (ILightClientMsgs.UpdateResult);
 
     /// @notice Rotates the pinned validator set of the client with the given client identifier.
     /// @dev Can only be called with the `RELAYER_ROLE`. The rare, heavy update path.
@@ -44,7 +44,7 @@ interface IICS02ClientAccessControlled {
         bytes calldata updateMsg
     )
         external
-        returns (LightClientMsgs.UpdateResult);
+        returns (ILightClientMsgs.UpdateResult);
 
     /// @notice Executes a previously proposed and matured client migration.
     /// @dev Retained for ABI compatibility; equivalent to `executeClientMigration`.
@@ -53,7 +53,7 @@ interface IICS02ClientAccessControlled {
     /// @param client The address of the new client contract
     function migrateClient(
         string calldata clientId,
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         external;
@@ -64,7 +64,7 @@ interface IICS02ClientAccessControlled {
     /// @param counterpartyInfo The counterparty information, which must match the existing client binding
     function proposeClientMigration(
         string calldata clientId,
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         external;
@@ -73,7 +73,7 @@ interface IICS02ClientAccessControlled {
     /// @param counterpartyInfo The counterparty information committed by the proposal
     function executeClientMigration(
         string calldata clientId,
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         external;
@@ -112,7 +112,7 @@ interface IICS02Client is IICS02ClientAccessControlled {
     /// @notice Returns the counterparty client information given the client identifier.
     /// @param clientId The client identifier
     /// @return The counterparty client information
-    function getCounterparty(string calldata clientId) external view returns (ICS02ClientMsgs.CounterpartyInfo memory);
+    function getCounterparty(string calldata clientId) external view returns (IICS02ClientMsgs.CounterpartyInfo memory);
 
     /// @notice Returns the address of the client contract given the client identifier.
     /// @param clientId The client identifier
@@ -129,7 +129,7 @@ interface IICS02Client is IICS02ClientAccessControlled {
     /// @param client The address of the client contract
     /// @return The client identifier
     function addClient(
-        ICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
+        IICS02ClientMsgs.CounterpartyInfo calldata counterpartyInfo,
         address client
     )
         external
@@ -141,13 +141,13 @@ interface IICS02Client is IICS02ClientAccessControlled {
     /// @param clientId The newly created client identifier
     /// @param counterpartyInfo The counterparty client information
     /// @param client The address of the client contract
-    event ICS02ClientAdded(string clientId, ICS02ClientMsgs.CounterpartyInfo counterpartyInfo, address client);
+    event ICS02ClientAdded(string clientId, IICS02ClientMsgs.CounterpartyInfo counterpartyInfo, address client);
 
     /// @notice Emitted when a client is migrated to a new client.
     /// @param clientId The client identifier of the migrated client
     /// @param counterpartyInfo The new counterparty client information
     /// @param client The address of the new client contract
-    event ICS02ClientMigrated(string clientId, ICS02ClientMsgs.CounterpartyInfo counterpartyInfo, address client);
+    event ICS02ClientMigrated(string clientId, IICS02ClientMsgs.CounterpartyInfo counterpartyInfo, address client);
 
     event ICS02ClientMigrationProposed(
         string indexed clientId, bytes32 indexed digest, uint48 executeAfter, uint48 expireAfter, address proposer
@@ -155,9 +155,9 @@ interface IICS02Client is IICS02ClientAccessControlled {
     event ICS02ClientMigrationCancelled(string indexed clientId, bytes32 indexed digest);
 
     /// @notice Emitted when a client is updated.
-    /// @param clientId The client identifier of the updated LightClientMsgs
+    /// @param clientId The client identifier of the updated ILightClientMsgs
     /// @param result The result of the update operation
-    event ICS02ClientUpdated(string clientId, LightClientMsgs.UpdateResult result);
+    event ICS02ClientUpdated(string clientId, ILightClientMsgs.UpdateResult result);
 
     /// @notice Emitted when a misbehaviour is submitted to a client and the client is frozen.
     /// @param clientId The client identifier of the frozen client

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
-import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
+import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { IIBCAppCallbacks } from "contracts/core/messages/IIBCAppCallbacks.sol";
 
-import { ICS26RouterErrors } from "contracts/core/errors/ICS26RouterErrors.sol";
+import { IICS26RouterErrors } from "contracts/core/errors/IICS26RouterErrors.sol";
 import { IIBCApp } from "contracts/core/interfaces/IIBCApp.sol";
 import { IICS26Router, IICS26RouterAccessControlled } from "contracts/core/interfaces/IICS26Router.sol";
 import { IPausable } from "contracts/core/interfaces/IPausable.sol";
@@ -27,7 +27,7 @@ import { ICS26AdminsDeprecated } from "contracts/core/compatibility/ICS26AdminsD
 /// @title IBC Eureka Router
 /// @notice The core router for the IBC Eureka protocol
 contract ICS26Router is
-    ICS26RouterErrors,
+    IICS26RouterErrors,
     IICS26Router,
     ICS02ClientUpgradeable,
     IBCStoreUpgradeable,
@@ -127,7 +127,7 @@ contract ICS26Router is
     }
 
     /// @inheritdoc IICS26Router
-    function sendPacket(ICS26RouterMsgs.MsgSendPacket calldata msg_)
+    function sendPacket(IICS26RouterMsgs.MsgSendPacket calldata msg_)
         external
         whenNotPaused
         nonReentrant
@@ -150,12 +150,12 @@ contract ICS26Router is
         uint64 sequence = nextSequenceSend(msg_.sourceClient);
 
         // TODO: Support multi-payload packets #93
-        ICS26RouterMsgs.Packet memory packet = ICS26RouterMsgs.Packet({
+        IICS26RouterMsgs.Packet memory packet = IICS26RouterMsgs.Packet({
             sequence: sequence,
             sourceClient: msg_.sourceClient,
             destClient: counterpartyId,
             timeoutTimestamp: msg_.timeoutTimestamp,
-            payloads: new ICS26RouterMsgs.Payload[](1)
+            payloads: new IICS26RouterMsgs.Payload[](1)
         });
         packet.payloads[0] = msg_.payload;
 
@@ -168,12 +168,12 @@ contract ICS26Router is
     /// @inheritdoc IICS26RouterAccessControlled
     // NOTE: Reentrancy disabled for this function via the `nonReentrant` modifier.
     // slither-disable-next-line reentrancy-no-eth
-    function recvPacket(ICS26RouterMsgs.MsgRecvPacket calldata msg_) external whenNotPaused nonReentrant restricted {
+    function recvPacket(IICS26RouterMsgs.MsgRecvPacket calldata msg_) external whenNotPaused nonReentrant restricted {
         // TODO: Support multi-payload packets (#93)
         require(msg_.packet.payloads.length == 1, IBCMultiPayloadPacketNotSupported());
-        ICS26RouterMsgs.Payload calldata payload = msg_.packet.payloads[0];
+        IICS26RouterMsgs.Payload calldata payload = msg_.packet.payloads[0];
 
-        ICS02ClientMsgs.CounterpartyInfo memory cInfo = getCounterparty(msg_.packet.destClient);
+        IICS02ClientMsgs.CounterpartyInfo memory cInfo = getCounterparty(msg_.packet.destClient);
         require(
             keccak256(bytes(cInfo.clientId)) == keccak256(bytes(msg_.packet.sourceClient)),
             IBCInvalidCounterparty(cInfo.clientId, msg_.packet.sourceClient)
@@ -194,8 +194,8 @@ contract ICS26Router is
         // remaining fields (height, proofs, appHash, trustedConsensusState, …) are
         // relayer-controlled; correctness and integrity for those fields is delegated
         // entirely to the light client's verifyMembership implementation.
-        LightClientMsgs.MsgVerifyMembership memory membershipMsg =
-            abi.decode(msg_.membershipMsg, (LightClientMsgs.MsgVerifyMembership));
+        ILightClientMsgs.MsgVerifyMembership memory membershipMsg =
+            abi.decode(msg_.membershipMsg, (ILightClientMsgs.MsgVerifyMembership));
         // Override path and value so the light client proves the actual packet commitment
         membershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, commitmentPath);
         membershipMsg.value = abi.encodePacked(commitmentBz);
@@ -238,12 +238,12 @@ contract ICS26Router is
     /// @inheritdoc IICS26RouterAccessControlled
     // NOTE: Reentrancy disabled for this function via the `nonReentrant` modifier.
     // slither-disable-next-line reentrancy-no-eth
-    function ackPacket(ICS26RouterMsgs.MsgAckPacket calldata msg_) external nonReentrant restricted {
+    function ackPacket(IICS26RouterMsgs.MsgAckPacket calldata msg_) external nonReentrant restricted {
         // TODO: Support multi-payload packets #93
         require(msg_.packet.payloads.length == 1, IBCMultiPayloadPacketNotSupported());
-        ICS26RouterMsgs.Payload calldata payload = msg_.packet.payloads[0];
+        IICS26RouterMsgs.Payload calldata payload = msg_.packet.payloads[0];
 
-        ICS02ClientMsgs.CounterpartyInfo memory cInfo = getCounterparty(msg_.packet.sourceClient);
+        IICS02ClientMsgs.CounterpartyInfo memory cInfo = getCounterparty(msg_.packet.sourceClient);
         require(
             keccak256(bytes(cInfo.clientId)) == keccak256(bytes(msg_.packet.destClient)),
             IBCInvalidCounterparty(cInfo.clientId, msg_.packet.destClient)
@@ -256,8 +256,8 @@ contract ICS26Router is
         bytes32 commitmentBz = ICS24Host.packetAcknowledgementCommitmentBytes32(acks);
 
         // verify the packet acknowledgement
-        LightClientMsgs.MsgVerifyMembership memory membershipMsg =
-            abi.decode(msg_.membershipMsg, (LightClientMsgs.MsgVerifyMembership));
+        ILightClientMsgs.MsgVerifyMembership memory membershipMsg =
+            abi.decode(msg_.membershipMsg, (ILightClientMsgs.MsgVerifyMembership));
         // Override path and value so the light client proves the actual packet commitment
         membershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, commitmentPath);
         membershipMsg.value = abi.encodePacked(commitmentBz);
@@ -287,12 +287,12 @@ contract ICS26Router is
     }
 
     /// @inheritdoc IICS26RouterAccessControlled
-    function timeoutPacket(ICS26RouterMsgs.MsgTimeoutPacket calldata msg_) external nonReentrant restricted {
+    function timeoutPacket(IICS26RouterMsgs.MsgTimeoutPacket calldata msg_) external nonReentrant restricted {
         // TODO: Support multi-payload packets #93
         require(msg_.packet.payloads.length == 1, IBCMultiPayloadPacketNotSupported());
-        ICS26RouterMsgs.Payload calldata payload = msg_.packet.payloads[0];
+        IICS26RouterMsgs.Payload calldata payload = msg_.packet.payloads[0];
 
-        ICS02ClientMsgs.CounterpartyInfo memory cInfo = getCounterparty(msg_.packet.sourceClient);
+        IICS02ClientMsgs.CounterpartyInfo memory cInfo = getCounterparty(msg_.packet.sourceClient);
         require(
             keccak256(bytes(cInfo.clientId)) == keccak256(bytes(msg_.packet.destClient)),
             IBCInvalidCounterparty(cInfo.clientId, msg_.packet.destClient)
@@ -300,8 +300,8 @@ contract ICS26Router is
 
         bytes memory receiptPath =
             ICS24Host.packetReceiptCommitmentPathCalldata(msg_.packet.destClient, msg_.packet.sequence);
-        LightClientMsgs.MsgVerifyNonMembership memory nonMembershipMsg =
-            abi.decode(msg_.nonMembershipMsg, (LightClientMsgs.MsgVerifyNonMembership));
+        ILightClientMsgs.MsgVerifyNonMembership memory nonMembershipMsg =
+            abi.decode(msg_.nonMembershipMsg, (ILightClientMsgs.MsgVerifyNonMembership));
         // Override path and value so the light client proves the actual packet commitment
         nonMembershipMsg.path = ICS24Host.prefixedPath(cInfo.merklePrefix, receiptPath);
         uint256 counterpartyTimestamp = getClient(msg_.packet.sourceClient).verifyNonMembership(nonMembershipMsg);

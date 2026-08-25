@@ -3,13 +3,13 @@ pragma solidity ^0.8.28;
 
 // solhint-disable gas-strict-inequalities
 
-import { SpectreClientMsgs } from "contracts/light-clients/spectre/messages/SpectreClientMsgs.sol";
-import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
-import { MembershipMsgs } from "contracts/light-clients/spectre/messages/MembershipMsgs.sol";
-import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
+import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
+import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 
-import { SpectreClientErrors } from "contracts/light-clients/spectre/errors/SpectreClientErrors.sol";
+import { ISpectreClientErrors } from "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol";
 import { ISpectreClient } from "contracts/light-clients/spectre/interfaces/ISpectreClient.sol";
 import { IMembership } from "contracts/light-clients/spectre/interfaces/IMembership.sol";
 import { IUpdateClient } from "contracts/light-clients/spectre/interfaces/IUpdateClient.sol";
@@ -30,7 +30,7 @@ import { AccessControl } from "@openzeppelin-contracts/access/AccessControl.sol"
 ///         write. Header validation and signature verification are delegatecalled into the
 ///         UpdateClient / Misbehaviour modules; ICS-23 membership is staticcalled into the
 ///         Membership module.
-contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, AccessControl {
+contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, AccessControl {
     using SpectreStore for SpectreStore.Store;
 
     /// @notice UpdateClient module — delegatecall target that validates headers + signature proofs.
@@ -63,12 +63,12 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
         address membershipModule,
         address misbehaviourModule,
         bytes memory clientState_,
-        SpectreMsgs.ConsensusState memory consensusState_,
-        SpectreMsgs.ValidatorSet memory initialPinnedValidatorSet,
+        IICS07TendermintMsgs.ConsensusState memory consensusState_,
+        IICS07TendermintMsgs.ValidatorSet memory initialPinnedValidatorSet,
         address roleManager
     ) {
         SpectreStore.Store storage $ = SpectreStore.load();
-        SpectreMsgs.ClientState memory cs = abi.decode(clientState_, (SpectreMsgs.ClientState));
+        IICS07TendermintMsgs.ClientState memory cs = abi.decode(clientState_, (IICS07TendermintMsgs.ClientState));
         $.clientState = cs;
 
         require(cs.trustingPeriod > 0, LengthIsOutOfRange(cs.trustingPeriod, 1, type(uint32).max));
@@ -156,10 +156,10 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
         external
         notFrozen
         onlyProofSubmitter
-        returns (LightClientMsgs.UpdateResult)
+        returns (ILightClientMsgs.UpdateResult)
     {
-        SpectreClientMsgs.MsgUpdateApplicationState memory msg_ =
-            abi.decode(updateMsg, (SpectreClientMsgs.MsgUpdateApplicationState));
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ =
+            abi.decode(updateMsg, (ISpectreClientMsgs.MsgUpdateApplicationState));
 
         SpectreStore.Store storage $ = SpectreStore.load();
         _requireFreshness($, msg_.time);
@@ -169,14 +169,14 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
         _verifyPinnedQuorum($, msg_.proof, msg_.proposedHeader);
 
         // Header validation + the batched signature proof run in the delegatecalled module.
-        SpectreClientMsgs.VerifyHeaderOutput memory output = abi.decode(
+        ISpectreClientMsgs.VerifyHeaderOutput memory output = abi.decode(
             _delegate(UPDATE_CLIENT_MODULE, abi.encodeCall(IUpdateClient.verifyHeader, (msg_))),
-            (SpectreClientMsgs.VerifyHeaderOutput)
+            (ISpectreClientMsgs.VerifyHeaderOutput)
         );
 
-        LightClientMsgs.UpdateResult updateResult = _checkUpdateResult($, output);
+        ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult($, output);
 
-        if (updateResult == LightClientMsgs.UpdateResult.Update) {
+        if (updateResult == ILightClientMsgs.UpdateResult.Update) {
             require(
                 output.newHeight.revisionHeight > $.clientState.latestHeight.revisionHeight,
                 NonMonotonicHeightUpdate($.clientState.latestHeight.revisionHeight, output.newHeight.revisionHeight)
@@ -184,7 +184,7 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
             $.clientState.latestHeight = output.newHeight;
             $.consensusStateHashes[output.newHeight.revisionHeight] = keccak256(abi.encode(output.newConsensusState));
             emit ClientUpdated(output.newHeight.revisionHeight);
-        } else if (updateResult == LightClientMsgs.UpdateResult.Misbehaviour) {
+        } else if (updateResult == ILightClientMsgs.UpdateResult.Misbehaviour) {
             $.clientState.isFrozen = true;
             emit ClientFrozen();
         }
@@ -196,11 +196,11 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
         external
         notFrozen
         onlyProofSubmitter
-        returns (LightClientMsgs.UpdateResult)
+        returns (ILightClientMsgs.UpdateResult)
     {
-        SpectreClientMsgs.MsgUpdateConsensusState memory msg_ =
-            abi.decode(updateMsg, (SpectreClientMsgs.MsgUpdateConsensusState));
-        SpectreClientMsgs.MsgUpdateApplicationState memory app = msg_.update;
+        ISpectreClientMsgs.MsgUpdateConsensusState memory msg_ =
+            abi.decode(updateMsg, (ISpectreClientMsgs.MsgUpdateConsensusState));
+        ISpectreClientMsgs.MsgUpdateApplicationState memory app = msg_.update;
 
         SpectreStore.Store storage $ = SpectreStore.load();
         _requireFreshness($, app.time);
@@ -210,14 +210,14 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
         _verifyPinnedQuorum($, app.proof, app.proposedHeader);
 
         // Header validation + the batched signature proof run in the delegatecalled module.
-        SpectreClientMsgs.VerifyHeaderOutput memory output = abi.decode(
+        ISpectreClientMsgs.VerifyHeaderOutput memory output = abi.decode(
             _delegate(UPDATE_CLIENT_MODULE, abi.encodeCall(IUpdateClient.verifyHeader, (app))),
-            (SpectreClientMsgs.VerifyHeaderOutput)
+            (ISpectreClientMsgs.VerifyHeaderOutput)
         );
 
-        LightClientMsgs.UpdateResult updateResult = _checkUpdateResult($, output);
+        ILightClientMsgs.UpdateResult updateResult = _checkUpdateResult($, output);
 
-        if (updateResult == LightClientMsgs.UpdateResult.Misbehaviour) {
+        if (updateResult == ILightClientMsgs.UpdateResult.Misbehaviour) {
             $.clientState.isFrozen = true;
             emit ClientFrozen();
             return updateResult;
@@ -229,7 +229,7 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
             MismatchedValidatorHashes(app.proposedHeader.signedHeader.header.nextValidatorsHash, newValidatorsHash)
         );
 
-        if (updateResult == LightClientMsgs.UpdateResult.Update) {
+        if (updateResult == ILightClientMsgs.UpdateResult.Update) {
             require(
                 output.newHeight.revisionHeight > $.clientState.latestHeight.revisionHeight,
                 NonMonotonicHeightUpdate($.clientState.latestHeight.revisionHeight, output.newHeight.revisionHeight)
@@ -258,22 +258,22 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
     ///      or the timestamp is not increasing.
     function _checkUpdateResult(
         SpectreStore.Store storage $,
-        SpectreClientMsgs.VerifyHeaderOutput memory output
+        ISpectreClientMsgs.VerifyHeaderOutput memory output
     )
         private
         view
-        returns (LightClientMsgs.UpdateResult)
+        returns (ILightClientMsgs.UpdateResult)
     {
         bytes32 consensusStateHash = $.consensusStateHashes[output.newHeight.revisionHeight];
         if (consensusStateHash == bytes32(0)) {
-            return LightClientMsgs.UpdateResult.Update;
+            return ILightClientMsgs.UpdateResult.Update;
         } else if (
             consensusStateHash != keccak256(abi.encode(output.newConsensusState))
                 || output.trustedConsensusState.timestamp >= output.newConsensusState.timestamp
         ) {
-            return LightClientMsgs.UpdateResult.Misbehaviour;
+            return ILightClientMsgs.UpdateResult.Misbehaviour;
         } else {
-            return LightClientMsgs.UpdateResult.NoOp;
+            return ILightClientMsgs.UpdateResult.NoOp;
         }
     }
 
@@ -288,8 +288,8 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
     ///      can reference any past trusted height, not just the latest.
     function _verifyPinnedQuorum(
         SpectreStore.Store storage $,
-        SpectreClientMsgs.BatchProof memory proof_,
-        SpectreMsgs.Header memory header
+        ISpectreClientMsgs.BatchProof memory proof_,
+        IICS07TendermintMsgs.Header memory header
     )
         private
         view
@@ -303,8 +303,8 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
     ///         trusted height, requiring >2/3.
     function _verifyMisbehaviourQuorum(
         SpectreStore.Store storage $,
-        SpectreClientMsgs.BatchProof memory proof_,
-        SpectreMsgs.Header memory header
+        ISpectreClientMsgs.BatchProof memory proof_,
+        IICS07TendermintMsgs.Header memory header
     )
         private
         view
@@ -313,8 +313,8 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
     }
 
     function _verifyQuorum(
-        SpectreClientMsgs.BatchProof memory proof_,
-        SpectreMsgs.CommitSig[] memory commitSigs,
+        ISpectreClientMsgs.BatchProof memory proof_,
+        IICS07TendermintMsgs.CommitSig[] memory commitSigs,
         SpectreStore.PinnedValidatorSetSnapshot memory snapshot
     )
         private
@@ -379,7 +379,7 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
     // ============ Membership ============
 
     /// @inheritdoc ILightClient
-    function verifyMembership(LightClientMsgs.MsgVerifyMembership calldata msg_)
+    function verifyMembership(ILightClientMsgs.MsgVerifyMembership calldata msg_)
         external
         notFrozen
         onlyProofSubmitter
@@ -399,7 +399,7 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
     }
 
     /// @inheritdoc ILightClient
-    function verifyNonMembership(LightClientMsgs.MsgVerifyNonMembership calldata msg_)
+    function verifyNonMembership(ILightClientMsgs.MsgVerifyNonMembership calldata msg_)
         external
         notFrozen
         onlyProofSubmitter
@@ -418,19 +418,19 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
     }
 
     function _membership(
-        ICS02ClientMsgs.Height calldata height,
-        MembershipMsgs.KVPair[] calldata kvPairs,
-        MembershipMsgs.MerkleProof[] calldata merkleProofs,
+        IICS02ClientMsgs.Height calldata height,
+        IMembershipMsgs.KVPair[] calldata kvPairs,
+        IMembershipMsgs.MerkleProof[] calldata merkleProofs,
         bytes32 appHash,
-        SpectreMsgs.ConsensusState calldata trustedConsensusState,
-        MembershipMsgs.MembershipType membershipType,
+        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState,
+        IMembershipMsgs.MembershipType membershipType,
         bytes[] calldata kvPath,
         bytes memory kvValue
     )
         private
         returns (uint256)
     {
-        if (membershipType == MembershipMsgs.MembershipType.Membership) {
+        if (membershipType == IMembershipMsgs.MembershipType.Membership) {
             return _handleMembership(height, kvPairs, merkleProofs, appHash, trustedConsensusState, kvPath, kvValue);
         }
 
@@ -438,11 +438,11 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
     }
 
     function _handleMembership(
-        ICS02ClientMsgs.Height calldata height,
-        MembershipMsgs.KVPair[] calldata kvPairs,
-        MembershipMsgs.MerkleProof[] calldata merkleProofs,
+        IICS02ClientMsgs.Height calldata height,
+        IMembershipMsgs.KVPair[] calldata kvPairs,
+        IMembershipMsgs.MerkleProof[] calldata merkleProofs,
         bytes32 appHash,
-        SpectreMsgs.ConsensusState calldata trustedConsensusState,
+        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState,
         bytes[] calldata kvPath,
         bytes memory kvValue
     )
@@ -483,7 +483,7 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
     function _validateMembershipInput(
         bytes32 commitmentRoot,
         uint64 proofHeight,
-        SpectreMsgs.ConsensusState memory trustedConsensusState
+        IICS07TendermintMsgs.ConsensusState memory trustedConsensusState
     )
         private
         view
@@ -532,8 +532,8 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
     ///      proof-backed >2/3 Ed25519 quorums over the pinned validator set.
     /// @inheritdoc ILightClient
     function misbehaviour(bytes calldata misbehaviourMsg) external notFrozen onlyMisbehaviourSubmitter {
-        SpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ =
-            abi.decode(misbehaviourMsg, (SpectreClientMsgs.MsgSubmitMisbehaviour));
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ =
+            abi.decode(misbehaviourMsg, (ISpectreClientMsgs.MsgSubmitMisbehaviour));
 
         SpectreStore.Store storage $ = SpectreStore.load();
         // Bind the submitter-chosen time to the wall clock. Without this, `time` could be picked
@@ -577,7 +577,7 @@ contract SpectreClient is SpectreClientErrors, ISpectreClient, ILightClient, Acc
 
     // ============ Internal state writes ============
 
-    function _setPinnedValidatorSet(SpectreMsgs.ValidatorSet memory validatorSet) private {
+    function _setPinnedValidatorSet(IICS07TendermintMsgs.ValidatorSet memory validatorSet) private {
         SpectreStore.Store storage $ = SpectreStore.load();
         bytes32 validatorsHash = Header.hashValSet(validatorSet);
         bytes memory cacheData = ValidatorSetLib.buildCache(validatorsHash, validatorSet);

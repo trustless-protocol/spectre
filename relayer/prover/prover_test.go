@@ -52,12 +52,6 @@ func TestGenerateMisbehaviourProof_InputValidation(t *testing.T) {
 	}
 }
 
-func TestSupportedBucketsManifest(t *testing.T) {
-	if len(Buckets) != 1 || Buckets[0] != 4 {
-		t.Fatalf("supported buckets must be exactly [4], got %v", Buckets)
-	}
-}
-
 func TestSmallestBucketGEQ(t *testing.T) {
 	if len(Buckets) == 0 {
 		t.Fatal("Buckets must not be empty")

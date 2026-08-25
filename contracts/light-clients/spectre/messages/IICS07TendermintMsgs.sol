@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.28;
 
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 
 /// @title ICS07 Tendermint Messages
 /// @author srdtrk
 /// @notice Defines shared types for ICS07Tendermint implementations.
-interface SpectreMsgs {
+interface IICS07TendermintMsgs {
     /// @notice Fraction of validator overlap needed to update header
     /// @param numerator Numerator of the fraction
     /// @param denominator Denominator of the fraction
@@ -33,7 +33,7 @@ interface SpectreMsgs {
     struct ClientState {
         string chainId;
         TrustThreshold trustLevel;
-        ICS02ClientMsgs.Height latestHeight;
+        IICS02ClientMsgs.Height latestHeight;
         uint32 trustingPeriod;
         uint32 unbondingPeriod;
         bool isFrozen;
@@ -53,7 +53,7 @@ interface SpectreMsgs {
 
     struct Header {
         SignedHeader signedHeader;
-        ICS02ClientMsgs.Height trustedHeight;
+        IICS02ClientMsgs.Height trustedHeight;
     }
 
     struct SignedHeader {

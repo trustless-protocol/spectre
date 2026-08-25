@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { SpectreMsgs } from "contracts/light-clients/spectre/messages/SpectreMsgs.sol";
+import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
 
 /// @title ChainId
 /// @notice Parses a Cosmos-style chain identifier `<prefix>-<revision>` into its
@@ -20,7 +20,7 @@ library ChainId {
     ///   - the suffix contains any non-digit, or
     ///   - the suffix overflows `uint64`.
     /// Reverts only when a hard length constraint is violated.
-    function get(string memory id) internal pure returns (SpectreMsgs.ChainId memory) {
+    function get(string memory id) internal pure returns (IICS07TendermintMsgs.ChainId memory) {
         bytes memory b = bytes(id);
         if (b.length == 0 || b.length >= 64) revert InvalidChainIdLength();
 
@@ -33,12 +33,12 @@ library ChainId {
             }
         }
         if (dashPos == type(uint256).max) {
-            return SpectreMsgs.ChainId({ id: id, revisionNumber: 0 });
+            return IICS07TendermintMsgs.ChainId({ id: id, revisionNumber: 0 });
         }
 
         // Reject leading zero in revision (except the single character "0").
         if (b[dashPos + 1] == 0x30 && b.length - dashPos > 2) {
-            return SpectreMsgs.ChainId({ id: id, revisionNumber: 0 });
+            return IICS07TendermintMsgs.ChainId({ id: id, revisionNumber: 0 });
         }
 
         // Parse revision in place. Non-digit or uint64 overflow ⇒ revision 0.
@@ -46,7 +46,7 @@ library ChainId {
         for (uint256 i = dashPos + 1; i < b.length; i++) {
             uint8 c = uint8(b[i]);
             if (c < 0x30 || c > 0x39) {
-                return SpectreMsgs.ChainId({ id: id, revisionNumber: 0 });
+                return IICS07TendermintMsgs.ChainId({ id: id, revisionNumber: 0 });
             }
             // Detect uint64 overflow manually since Solidity 0.8 checked
             // arithmetic would otherwise panic on the legitimate "revision
@@ -54,7 +54,7 @@ library ChainId {
             unchecked {
                 uint64 next = rev * 10 + uint64(c - 0x30);
                 if (next < rev) {
-                    return SpectreMsgs.ChainId({ id: id, revisionNumber: 0 });
+                    return IICS07TendermintMsgs.ChainId({ id: id, revisionNumber: 0 });
                 }
                 rev = next;
             }
@@ -63,6 +63,6 @@ library ChainId {
         // Prefix length constraint: longest valid identifier is
         // `{prefix}-{u64::MAX}` (suffix up to 20 chars + '-'), so prefix < 43.
         if (dashPos <= 1 || dashPos >= 43) revert InvalidChainPrefixLength();
-        return SpectreMsgs.ChainId({ id: id, revisionNumber: rev });
+        return IICS07TendermintMsgs.ChainId({ id: id, revisionNumber: rev });
     }
 }

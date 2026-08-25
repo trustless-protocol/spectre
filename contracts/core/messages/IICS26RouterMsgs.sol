@@ -3,11 +3,11 @@ pragma solidity ^0.8.28;
 
 // solhint-disable gas-struct-packing
 
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 
 /// @title Router Messages
 /// @notice This interface defines the structure of messages used in the ICS26Router contract.
-interface ICS26RouterMsgs {
+interface IICS26RouterMsgs {
     /// @notice Packet struct
     /// @param sequence The sequence number of the packet
     /// @param sourceClient The source client identifier (client id)

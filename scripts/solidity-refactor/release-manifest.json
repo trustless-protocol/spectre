@@ -15,7 +15,7 @@
     128
   ],
   "runtime_compatibility": {
-    "abi": "exact-after-reviewed-container-name-normalization",
+    "abi": "exact",
     "storage": "exact",
     "initcode": "exact",
     "runtime": "exact"
@@ -36,12 +36,9 @@
   },
   "accepted_tooling_deltas": [
     "Solidity fully qualified source paths",
-    "reviewed message and error container names in tooling ABI",
-    "regenerated Go binding type names and first-party consumers",
     "Spectre bytecode artifact source metadata",
     "test and fixture paths",
-    "Rust Solidity binding module and generated ABI input names",
-    "E2E Spectre client-state helper path and internal consumer names",
+    "Rust Solidity source and generated ABI input paths",
     "IPausable ownership path from non-target shared/interfaces to core/interfaces"
   ],
   "rollback": {
@@ -70,10 +67,10 @@
   "design_reference": "refactor/design-contracts@115397d08e23a421852d08e590d2571bd413f3f5",
   "tooling_rename_manifest": "scripts/solidity-refactor/tooling-rename-manifest.json",
   "tooling_compatibility": {
-    "abi_container_names": "exactly tooling-rename-manifest.json",
-    "generated_abi_and_bindings": "exact digests in tooling-rename-manifest.json",
-    "consumer_update": "atomic with Solidity rename slice",
-    "rust_source_module": "groth16_ics07 to spectre_client in coordinated tooling rename",
+    "abi_container_names": "exactly preserved from baseline",
+    "generated_abi_and_bindings": "byte-for-byte baseline compatible",
+    "consumer_update": "limited to required source and fixture path updates",
+    "rust_source_module": "existing groth16_ics07 public module retained",
     "rust_consumer_sources": "exact digests in tooling-rename-manifest.json"
   },
   "checked_local_generator_buckets": [

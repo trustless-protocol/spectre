@@ -5,12 +5,12 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
+import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
 
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { ISignatureTransfer } from "@uniswap/permit2/src/interfaces/ISignatureTransfer.sol";
 import { IICS26Router } from "contracts/core/interfaces/IICS26Router.sol";
-import { ICS26RouterErrors } from "contracts/core/errors/ICS26RouterErrors.sol";
+import { IICS26RouterErrors } from "contracts/core/errors/IICS26RouterErrors.sol";
 
 import { IbcImpl } from "test/utils/IbcImpl.sol";
 import { TestHelper } from "test/utils/TestHelper.sol";
@@ -71,7 +71,7 @@ contract Integration2Test is Test {
     {
         address user = integrationEnv.createAndFundUser(amount);
 
-        ICS26RouterMsgs.Packet memory sentPacket =
+        IICS26RouterMsgs.Packet memory sentPacket =
             ibcImplB.sendTransferAsUser(integrationEnv.erc20(), user, Strings.toHexString(receiver), amount, clientId);
 
         bytes[] memory acks = ibcImplA.recvPacket(sentPacket);
@@ -98,7 +98,7 @@ contract Integration2Test is Test {
         address user = integrationEnv.createAndFundUser(amount);
         string memory receiver = th.randomString();
 
-        ICS26RouterMsgs.Packet memory sentPacket =
+        IICS26RouterMsgs.Packet memory sentPacket =
             ibcImplA.sendTransferAsUser(integrationEnv.erc20(), user, receiver, amount);
         assertEq(integrationEnv.erc20().balanceOf(user), 0, "user balance mismatch");
 
@@ -120,7 +120,7 @@ contract Integration2Test is Test {
         IERC20 ibcERC20 = setup_createForeignDenomOnImplA(user, amount);
         string memory receiver = th.randomString();
 
-        ICS26RouterMsgs.Packet memory sentPacket = ibcImplA.sendTransferAsUser(ibcERC20, user, receiver, amount);
+        IICS26RouterMsgs.Packet memory sentPacket = ibcImplA.sendTransferAsUser(ibcERC20, user, receiver, amount);
         assertEq(ibcERC20.balanceOf(user), 0, "user balance mismatch");
 
         // check that the packet was committed correctly
@@ -145,7 +145,7 @@ contract Integration2Test is Test {
         bytes memory signature;
         (permit, signature) = integrationEnv.getPermitAndSignature(user, address(ibcImplA.ics20Transfer()), amount);
 
-        ICS26RouterMsgs.Packet memory sentPacket =
+        IICS26RouterMsgs.Packet memory sentPacket =
             ibcImplA.sendTransferAsUser(integrationEnv.erc20(), user, receiver, permit, signature);
         assertEq(integrationEnv.erc20().balanceOf(user), 0, "user balance mismatch");
 
@@ -172,7 +172,7 @@ contract Integration2Test is Test {
         (permit, signature) =
             integrationEnv.getPermitAndSignature(user, address(ibcImplA.ics20Transfer()), amount, address(ibcERC20));
 
-        ICS26RouterMsgs.Packet memory sentPacket =
+        IICS26RouterMsgs.Packet memory sentPacket =
             ibcImplA.sendTransferAsUser(ibcERC20, user, receiver, permit, signature);
         assertEq(ibcERC20.balanceOf(user), 0, "user balance mismatch");
 
@@ -195,7 +195,7 @@ contract Integration2Test is Test {
         address user = integrationEnv.createAndFundUser(amount);
         address receiver = integrationEnv.createUser();
 
-        ICS26RouterMsgs.Packet memory sentPacket =
+        IICS26RouterMsgs.Packet memory sentPacket =
             ibcImplA.sendTransferAsUser(integrationEnv.erc20(), user, Strings.toHexString(receiver), amount);
 
         // run the receive packet queries
@@ -243,7 +243,7 @@ contract Integration2Test is Test {
         assertEq(ibcERC20.decimals(), 6);
 
         // Check replay protection
-        ICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;
+        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;
         msgRecvPacket.packet = sentPacket;
         msgRecvPacket.membershipMsg = ibcImplB.emptyMembershipMsg();
         vm.recordLogs();
@@ -278,7 +278,7 @@ contract Integration2Test is Test {
         address user = integrationEnv.createAndFundUser(amount);
         address receiver = integrationEnv.createUser();
 
-        ICS26RouterMsgs.Packet memory sentPacket =
+        IICS26RouterMsgs.Packet memory sentPacket =
             ibcImplA.sendTransferAsUser(integrationEnv.erc20(), user, Strings.toHexString(receiver), amount);
 
         // run the receive packet queries
@@ -312,7 +312,7 @@ contract Integration2Test is Test {
         assertEq(token.balanceOf(receiver), amount, "receiver balance mismatch");
 
         // Check replay protection
-        ICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;
+        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;
         msgRecvPacket.packet = sentPacket;
         msgRecvPacket.membershipMsg = ibcImplB.emptyMembershipMsg();
         vm.recordLogs();
@@ -328,7 +328,7 @@ contract Integration2Test is Test {
         IERC20 ibcERC20 = setup_createForeignDenomOnImplA(user, amount);
         address receiver = integrationEnv.createUser();
 
-        ICS26RouterMsgs.Packet memory sentPacket =
+        IICS26RouterMsgs.Packet memory sentPacket =
             ibcImplA.sendTransferAsUser(ibcERC20, user, Strings.toHexString(receiver), amount);
 
         // run the receive packet queries
@@ -363,7 +363,7 @@ contract Integration2Test is Test {
         assertEq(supplyAfterSend, 0); // Burned
 
         // Check replay protection
-        ICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;
+        IICS26RouterMsgs.MsgRecvPacket memory msgRecvPacket;
         msgRecvPacket.packet = sentPacket;
         msgRecvPacket.membershipMsg = ibcImplB.emptyMembershipMsg();
         vm.recordLogs();
@@ -378,7 +378,7 @@ contract Integration2Test is Test {
         address user = integrationEnv.createAndFundUser(amount);
         address receiver = integrationEnv.createUser();
 
-        ICS26RouterMsgs.Packet memory sentPacket =
+        IICS26RouterMsgs.Packet memory sentPacket =
             ibcImplA.sendTransferAsUser(integrationEnv.erc20(), user, Strings.toHexString(receiver), amount);
         bytes[] memory acks = ibcImplB.recvPacket(sentPacket);
 
@@ -407,7 +407,7 @@ contract Integration2Test is Test {
         IERC20 ibcERC20 = setup_createForeignDenomOnImplA(user, amount);
         address receiver = integrationEnv.createUser();
 
-        ICS26RouterMsgs.Packet memory sentPacket =
+        IICS26RouterMsgs.Packet memory sentPacket =
             ibcImplA.sendTransferAsUser(ibcERC20, user, Strings.toHexString(receiver), amount);
         bytes[] memory acks = ibcImplB.recvPacket(sentPacket);
 
@@ -435,7 +435,7 @@ contract Integration2Test is Test {
         address user = integrationEnv.createAndFundUser(amount);
         string memory invalidReceiver = th.INVALID_ID();
 
-        ICS26RouterMsgs.Packet memory sentPacket =
+        IICS26RouterMsgs.Packet memory sentPacket =
             ibcImplA.sendTransferAsUser(integrationEnv.erc20(), user, invalidReceiver, amount);
         bytes[] memory acks = ibcImplB.recvPacket(sentPacket);
 
@@ -464,7 +464,7 @@ contract Integration2Test is Test {
         IERC20 ibcERC20 = setup_createForeignDenomOnImplA(user, amount);
         string memory invalidReceiver = th.INVALID_ID();
 
-        ICS26RouterMsgs.Packet memory sentPacket = ibcImplA.sendTransferAsUser(ibcERC20, user, invalidReceiver, amount);
+        IICS26RouterMsgs.Packet memory sentPacket = ibcImplA.sendTransferAsUser(ibcERC20, user, invalidReceiver, amount);
         bytes[] memory acks = ibcImplB.recvPacket(sentPacket);
 
         // Acknowledge the packet on A
@@ -491,7 +491,7 @@ contract Integration2Test is Test {
         address user = integrationEnv.createAndFundUser(amount);
         address receiver = integrationEnv.createUser();
 
-        ICS26RouterMsgs.Packet memory sentPacket = ibcImplA.sendTransferAsUser(
+        IICS26RouterMsgs.Packet memory sentPacket = ibcImplA.sendTransferAsUser(
             integrationEnv.erc20(), user, Strings.toHexString(receiver), amount, uint64(block.timestamp + 10 seconds)
         );
 
@@ -501,7 +501,7 @@ contract Integration2Test is Test {
         // Fail to receive the packet on Chain B
         vm.expectRevert(
             abi.encodeWithSelector(
-                ICS26RouterErrors.IBCInvalidTimeoutTimestamp.selector, sentPacket.timeoutTimestamp, block.timestamp
+                IICS26RouterErrors.IBCInvalidTimeoutTimestamp.selector, sentPacket.timeoutTimestamp, block.timestamp
             )
         );
         ibcImplB.recvPacket(sentPacket);
@@ -535,7 +535,7 @@ contract Integration2Test is Test {
         IERC20 ibcERC20 = setup_createForeignDenomOnImplA(user, amount);
         address receiver = integrationEnv.createUser();
 
-        ICS26RouterMsgs.Packet memory sentPacket = ibcImplA.sendTransferAsUser(
+        IICS26RouterMsgs.Packet memory sentPacket = ibcImplA.sendTransferAsUser(
             ibcERC20, user, Strings.toHexString(receiver), amount, uint64(block.timestamp + 10 seconds)
         );
 
@@ -545,7 +545,7 @@ contract Integration2Test is Test {
         // Fail to receive the packet on Chain B
         vm.expectRevert(
             abi.encodeWithSelector(
-                ICS26RouterErrors.IBCInvalidTimeoutTimestamp.selector, sentPacket.timeoutTimestamp, block.timestamp
+                IICS26RouterErrors.IBCInvalidTimeoutTimestamp.selector, sentPacket.timeoutTimestamp, block.timestamp
             )
         );
         ibcImplB.recvPacket(sentPacket);

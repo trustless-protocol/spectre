@@ -1,24 +1,24 @@
 //! This module contains all the message types used in Solidity IBC Eureka.
-//! In case some message types are not found in the `ics26` module nor the `spectre_client` module,
+//! In case some message types are not found in the `ics26` module nor the `groth16_ics07` module,
 //! they are defined here.
 
 use ibc_client_tendermint_types::ConsensusState as ICS07TendermintConsensusState;
 use ibc_core_commitment_types::{commitment::CommitmentRoot, merkle::MerklePath};
 use tendermint::{hash::Algorithm, Time};
-use tendermint_light_client_verifier::types::{Hash, TrustThreshold as TendermintTrustThreshold};
+use tendermint_light_client_verifier::types::Hash;
 use time::OffsetDateTime;
 
-alloy_sol_types::sol!("../../contracts/core/messages/ICS26RouterMsgs.sol");
-alloy_sol_types::sol!("../../contracts/core/messages/ICS02ClientMsgs.sol");
-alloy_sol_types::sol!("../../contracts/apps/ics20/messages/ICS20TransferMsgs.sol");
+alloy_sol_types::sol!("../../contracts/core/messages/IICS26RouterMsgs.sol");
+alloy_sol_types::sol!("../../contracts/core/messages/IICS02ClientMsgs.sol");
+alloy_sol_types::sol!("../../contracts/apps/ics20/messages/IICS20TransferMsgs.sol");
 alloy_sol_types::sol!("../../contracts/core/messages/IIBCAppCallbacks.sol");
 
-alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/SpectreMsgs.sol");
-alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/Groth16Msgs.sol");
-alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/MembershipMsgs.sol");
+alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol");
+alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/IGroth16Msgs.sol");
+alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/IMembershipMsgs.sol");
 
 #[cfg(feature = "rpc")]
-impl Groth16Msgs::Groth16Proof {
+impl IGroth16Msgs::Groth16Proof {
     /// Create a new [`Groth16Proof`] instance.
     ///
     /// # Panics
@@ -39,7 +39,7 @@ impl Groth16Msgs::Groth16Proof {
 }
 
 #[allow(clippy::fallible_impl_from)]
-impl From<ICS07TendermintConsensusState> for SpectreMsgs::ConsensusState {
+impl From<ICS07TendermintConsensusState> for IICS07TendermintMsgs::ConsensusState {
     fn from(ics07_tendermint_consensus_state: ICS07TendermintConsensusState) -> Self {
         let root: [u8; 32] = ics07_tendermint_consensus_state
             .root
@@ -63,8 +63,8 @@ impl From<ICS07TendermintConsensusState> for SpectreMsgs::ConsensusState {
 }
 
 #[allow(clippy::fallible_impl_from)]
-impl From<SpectreMsgs::ConsensusState> for ICS07TendermintConsensusState {
-    fn from(consensus_state: SpectreMsgs::ConsensusState) -> Self {
+impl From<IICS07TendermintMsgs::ConsensusState> for ICS07TendermintConsensusState {
+    fn from(consensus_state: IICS07TendermintMsgs::ConsensusState) -> Self {
         let time = OffsetDateTime::from_unix_timestamp_nanos(
             consensus_state.timestamp.try_into().unwrap(),
         )
@@ -83,8 +83,8 @@ impl From<SpectreMsgs::ConsensusState> for ICS07TendermintConsensusState {
     }
 }
 
-impl From<MembershipMsgs::KVPair> for (MerklePath, Vec<u8>) {
-    fn from(kv_pair: MembershipMsgs::KVPair) -> Self {
+impl From<IMembershipMsgs::KVPair> for (MerklePath, Vec<u8>) {
+    fn from(kv_pair: IMembershipMsgs::KVPair) -> Self {
         (
             MerklePath {
                 key_path: kv_pair
@@ -99,18 +99,7 @@ impl From<MembershipMsgs::KVPair> for (MerklePath, Vec<u8>) {
     }
 }
 
-#[allow(clippy::fallible_impl_from)]
-impl From<SpectreMsgs::TrustThreshold> for TendermintTrustThreshold {
-    fn from(trust_threshold: SpectreMsgs::TrustThreshold) -> Self {
-        Self::new(
-            trust_threshold.numerator.into(),
-            trust_threshold.denominator.into(),
-        )
-        .unwrap()
-    }
-}
-
-impl From<ibc_core_client_types::Height> for ICS02ClientMsgs::Height {
+impl From<ibc_core_client_types::Height> for IICS02ClientMsgs::Height {
     fn from(height: ibc_core_client_types::Height) -> Self {
         Self {
             revisionNumber: height.revision_number(),

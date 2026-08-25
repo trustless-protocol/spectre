@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
 import { IMintableAndBurnable } from "contracts/apps/ics20/interfaces/IMintableAndBurnable.sol";
 import { IEscrow } from "contracts/apps/ics20/interfaces/IEscrow.sol";
-import { EscrowErrors } from "contracts/apps/ics20/errors/EscrowErrors.sol";
+import { IEscrowErrors } from "contracts/apps/ics20/errors/IEscrowErrors.sol";
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
 
 import { ContextUpgradeable } from "@openzeppelin-upgradeable/utils/ContextUpgradeable.sol";
@@ -15,7 +15,7 @@ using SafeERC20 for IERC20;
 
 /// @title Escrow Contract
 /// @notice This contract is used to escrow the funds for the ICS20 contract
-contract Escrow is EscrowErrors, IEscrow, ContextUpgradeable, RateLimitUpgradeable {
+contract Escrow is IEscrowErrors, IEscrow, ContextUpgradeable, RateLimitUpgradeable {
     /// @notice Storage of the Escrow contract
     /// @dev It's implemented on a custom ERC-7201 namespace to reduce the risk of storage collisions when using with
     /// upgradeable contracts.

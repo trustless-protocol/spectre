@@ -5,8 +5,8 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
-import { ICS20TransferMsgs } from "contracts/apps/ics20/messages/ICS20TransferMsgs.sol";
+import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
+import { IICS20TransferMsgs } from "contracts/apps/ics20/messages/IICS20TransferMsgs.sol";
 
 import { ICS24Host } from "contracts/core/libraries/ICS24Host.sol";
 import { ICS20Lib } from "contracts/apps/ics20/libraries/ICS20Lib.sol";
@@ -48,12 +48,12 @@ contract ICS24HostTest is Test {
 
     function test_packetCommitment() public pure {
         // Test against the ibc-go implementations output
-        ICS20TransferMsgs.FungibleTokenPacketData memory packetData = ICS20TransferMsgs.FungibleTokenPacketData({
+        IICS20TransferMsgs.FungibleTokenPacketData memory packetData = IICS20TransferMsgs.FungibleTokenPacketData({
             denom: "uatom", amount: 1_000_000, sender: "sender", receiver: "receiver", memo: "memo"
         });
 
-        ICS26RouterMsgs.Payload[] memory payloads = new ICS26RouterMsgs.Payload[](1);
-        payloads[0] = ICS26RouterMsgs.Payload({
+        IICS26RouterMsgs.Payload[] memory payloads = new IICS26RouterMsgs.Payload[](1);
+        payloads[0] = IICS26RouterMsgs.Payload({
             sourcePort: ICS20Lib.DEFAULT_PORT_ID,
             destPort: ICS20Lib.DEFAULT_PORT_ID,
             version: ICS20Lib.ICS20_VERSION,
@@ -61,7 +61,7 @@ contract ICS24HostTest is Test {
             value: abi.encode(packetData)
         });
 
-        ICS26RouterMsgs.Packet memory packet = ICS26RouterMsgs.Packet({
+        IICS26RouterMsgs.Packet memory packet = IICS26RouterMsgs.Packet({
             sequence: 1, sourceClient: "channel-0", destClient: "channel-1", timeoutTimestamp: 100, payloads: payloads
         });
 

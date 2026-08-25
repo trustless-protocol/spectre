@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
+import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
 
 import { IIBCStore } from "contracts/core/interfaces/IIBCStore.sol";
 import { IRelayerHelper } from "contracts/periphery/relayer/interfaces/IRelayerHelper.sol";
@@ -22,13 +22,13 @@ contract RelayerHelper is IRelayerHelper {
     }
 
     /// @inheritdoc IRelayerHelper
-    function isPacketReceived(ICS26RouterMsgs.Packet calldata packet) public view returns (bool) {
+    function isPacketReceived(IICS26RouterMsgs.Packet calldata packet) public view returns (bool) {
         bytes32 expReceipt = ICS24Host.packetReceiptCommitmentBytes32(packet);
         return expReceipt == queryPacketReceipt(packet.destClient, packet.sequence);
     }
 
     /// @inheritdoc IRelayerHelper
-    function isPacketReceiveSuccessful(ICS26RouterMsgs.Packet calldata packet) external view returns (bool) {
+    function isPacketReceiveSuccessful(IICS26RouterMsgs.Packet calldata packet) external view returns (bool) {
         if (!isPacketReceived(packet)) {
             return false;
         }

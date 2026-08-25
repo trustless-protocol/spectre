@@ -5,7 +5,7 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
+import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
 
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
 
@@ -77,7 +77,7 @@ contract Integration3Test is Test {
         address user = integrationEnv.createAndFundUser(amount);
         address receiverB = integrationEnv.createUser();
 
-        ICS26RouterMsgs.Packet memory sentPacket =
+        IICS26RouterMsgs.Packet memory sentPacket =
             ibcImplA.sendTransferAsUser(integrationEnv.erc20(), user, Strings.toHexString(receiverB), amount);
         assertEq(integrationEnv.erc20().balanceOf(user), 0, "sender balance mismatch");
 

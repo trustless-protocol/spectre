@@ -5,13 +5,13 @@ pragma solidity ^0.8.28;
 
 import { Test } from "forge-std/Test.sol";
 
-import { LightClientMsgs } from "contracts/light-clients/messages/LightClientMsgs.sol";
-import { ICS02ClientMsgs } from "contracts/core/messages/ICS02ClientMsgs.sol";
-import { ICS26RouterMsgs } from "contracts/core/messages/ICS26RouterMsgs.sol";
-import { ICS20TransferMsgs } from "contracts/apps/ics20/messages/ICS20TransferMsgs.sol";
+import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
+import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
+import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
+import { IICS20TransferMsgs } from "contracts/apps/ics20/messages/IICS20TransferMsgs.sol";
 
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
-import { ICS20Errors } from "contracts/apps/ics20/errors/ICS20Errors.sol";
+import { IICS20Errors } from "contracts/apps/ics20/errors/IICS20Errors.sol";
 
 import { ICS26Router } from "contracts/core/ICS26Router.sol";
 import { ICS20Transfer } from "contracts/apps/ics20/ICS20Transfer.sol";
@@ -47,7 +47,7 @@ contract IBCAdminTest is Test, DeployAccessManagerWithRoles {
 
     function setUp() public {
         // ============ Step 1: Deploy the logic contracts ==============
-        DummyLightClient lightClient = new DummyLightClient(LightClientMsgs.UpdateResult.Update, 0, false);
+        DummyLightClient lightClient = new DummyLightClient(ILightClientMsgs.UpdateResult.Update, 0, false);
         address escrowLogic = address(new Escrow());
         address ibcERC20Logic = address(new IBCERC20());
         ICS26Router ics26RouterLogic =
@@ -82,7 +82,7 @@ contract IBCAdminTest is Test, DeployAccessManagerWithRoles {
         accessManager.grantRole(IBCRolesLib.ERC20_CUSTOMIZER_ROLE, erc20Customizer, 0);
 
         clientId = ics26Router.addClient(
-            ICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix), address(lightClient)
+            IICS02ClientMsgs.CounterpartyInfo(counterpartyId, merklePrefix), address(lightClient)
         );
 
         vm.prank(customizer);
@@ -145,11 +145,11 @@ contract IBCAdminTest is Test, DeployAccessManagerWithRoles {
         assert(ics26Router.paused());
 
         // Try to call a paused function
-        ICS20TransferMsgs.SendTransferMsg memory sendMsg;
+        IICS20TransferMsgs.SendTransferMsg memory sendMsg;
         vm.expectRevert(abi.encodeWithSelector(PausableUpgradeable.EnforcedPause.selector));
         ics20Transfer.sendTransfer(sendMsg);
 
-        ICS26RouterMsgs.MsgSendPacket memory sendPacketMsg;
+        IICS26RouterMsgs.MsgSendPacket memory sendPacketMsg;
         vm.expectRevert(abi.encodeWithSelector(PausableUpgradeable.EnforcedPause.selector));
         ics26Router.sendPacket(sendPacketMsg);
 
@@ -228,7 +228,7 @@ contract IBCAdminTest is Test, DeployAccessManagerWithRoles {
         ics20Transfer.setIBCERC20Metadata(denom, "Cosmos Hub Atom", "ATOM", 6);
 
         vm.prank(erc20Customizer);
-        vm.expectRevert(abi.encodeWithSelector(ICS20Errors.ICS20DenomNotFound.selector, denom));
+        vm.expectRevert(abi.encodeWithSelector(IICS20Errors.ICS20DenomNotFound.selector, denom));
         ics20Transfer.setIBCERC20Metadata(denom, "Cosmos Hub Atom", "ATOM", 6);
     }
 }

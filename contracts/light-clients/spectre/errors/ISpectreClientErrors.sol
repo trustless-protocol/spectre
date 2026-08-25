@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-/// @title SpectreClientErrors
+/// @title ISpectreClientErrors
 /// @notice Interface for errors of the SpectreClient contract and its modules.
-interface SpectreClientErrors {
+interface ISpectreClientErrors {
     /// @notice The error that is returned when attempting to update the client with a non-monotonic height.
     /// @param latestHeight The latest height in client state.
     /// @param updateHeight The height being updated to.
