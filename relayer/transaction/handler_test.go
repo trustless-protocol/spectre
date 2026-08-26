@@ -18,6 +18,7 @@ import (
 	"time"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
+	"relayer/rpcmock"
 	"relayer/services"
 
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
@@ -1923,4 +1924,218 @@ func TestExecuteWithRetryAndResubmission_StuckFutureNonceStopsBumping(t *testing
 	if stillValid {
 		t.Fatal("cached nonce still valid; the next attempt would reuse the unminable nonce")
 	}
+}
+
+// These drive the top-level ETH send functions end to end against a stub node.
+// The layer below them was already covered -- handler_test.go says so at its
+// calldata-packing tests -- but SendEthTx and SendEthTxBatch themselves were
+// never called by any test, so their guards, their single-vs-batch split and
+// their nonce behaviour were unverified.
+
+// fixedSigner supplies a deterministic key so a test does not depend on the
+// process environment. The Handler's signer field is the seam; keySigner only
+// falls back to the env reader when it is nil.
+type fixedSigner struct{ eth *ecdsa.PrivateKey }
+
+func (s fixedSigner) EthKey() (*ecdsa.PrivateKey, error) { return s.eth, nil }
+func (s fixedSigner) CosmosKeyBytes() ([]byte, error) {
+	return nil, errors.New("cosmos key not configured in this test")
+}
+
+// testCtx bounds every call. A test must not be able to HANG: the send path polls
+// for a receipt until its context ends, so on an unbounded context any change that
+// stops a transaction from being mined turns a failing test into a stuck one. That
+// is worse than a red test — it wedges the whole run with no message.
+func testCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// fastReceipts shortens the receipt poll so a send completes immediately instead
+// of waiting out the production 2s tick. ethTxReceiptPollInterval is a var for
+// exactly this; without it these tests add ~11s to every run of this package.
+func fastReceipts(t *testing.T) {
+	t.Helper()
+	prev := ethTxReceiptPollInterval
+	ethTxReceiptPollInterval = time.Millisecond
+	t.Cleanup(func() { ethTxReceiptPollInterval = prev })
+}
+
+func testHandler(t *testing.T) (*Handler, common.Address) {
+	t.Helper()
+	fastReceipts(t)
+	key, err := crypto.GenerateKey()
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	return &Handler{signer: fixedSigner{eth: key}}, crypto.PubkeyToAddress(key.PublicKey)
+}
+
+// testEndpoint points the router and light-client contracts at distinct non-zero
+// addresses; the binding constructors reject the zero address.
+func testEndpoint(t *testing.T, node *rpcmock.EVMNode) services.EVMEndpoint {
+	t.Helper()
+	return services.EVMEndpoint{
+		Client: node.Client(t),
+		Contracts: services.EVMContracts{
+			Router:        common.HexToAddress("0x1111111111111111111111111111111111111111"),
+			SpectreClient: common.HexToAddress("0x2222222222222222222222222222222222222222"),
+		},
+	}
+}
+
+func recvPacketMsg() contractICS26Router.IICS26RouterMsgsMsgRecvPacket {
+	return contractICS26Router.IICS26RouterMsgsMsgRecvPacket{
+		Packet:        samplePacket(),
+		MembershipMsg: []byte{0xaa},
+	}
+}
+
+// --- SendEthTx / SendEthTxBatch, driven against a stub node ---
+//
+// The layer below these was already covered (see the calldata-packing tests
+// above); the functions themselves were not, so their guards, the single-vs-batch
+// split and the nonce behaviour went unverified. They own the ETH nonce.
+
+func TestSendEthTx(t *testing.T) {
+	t.Run("requires a router client id", func(t *testing.T) {
+		// The id names which light client the call applies to. Without it the
+		// transaction would target whatever the contract defaults to, so this must
+		// fail before anything is signed or broadcast.
+		node := rpcmock.NewEVMNode(t)
+		h, _ := testHandler(t)
+
+		if err := h.SendEthTx(testCtx(t), testEndpoint(t, node), "", recvPacketMsg()); err == nil {
+			t.Fatal("sent a transaction with no router client id")
+		}
+		if n := len(node.SentRawTxs()); n != 0 {
+			t.Fatalf("broadcast %d transactions despite the guard", n)
+		}
+	})
+
+	t.Run("reports an unsupported message type", func(t *testing.T) {
+		// Skipping it silently would leave the caller believing the packet was
+		// relayed, and nothing else will retry it.
+		node := rpcmock.NewEVMNode(t)
+		h, _ := testHandler(t)
+
+		err := h.SendEthTx(testCtx(t), testEndpoint(t, node), "client-0", "not a message")
+		if err == nil {
+			t.Fatal("accepted a message type it cannot build a transaction from")
+		}
+		if !strings.Contains(err.Error(), "unsupported message type") {
+			t.Fatalf("error should name the problem, got: %v", err)
+		}
+		if n := len(node.SentRawTxs()); n != 0 {
+			t.Fatalf("broadcast %d transactions for an unsupported message", n)
+		}
+	})
+
+	t.Run("surfaces a rejected broadcast", func(t *testing.T) {
+		// Swallowing it would mark the packet relayed while nothing was submitted.
+		node := rpcmock.NewEVMNode(t)
+		node.MineEverything(rpcmock.RawReceipt{Status: 1, GasUsed: 21_000, BlockNumber: 100})
+		node.FailSend(errors.New("insufficient funds for gas * price + value"))
+		h, _ := testHandler(t)
+
+		if err := h.SendEthTx(testCtx(t), testEndpoint(t, node), "client-0", recvPacketMsg()); err == nil {
+			t.Fatal("a rejected broadcast was reported as success")
+		}
+	})
+}
+
+func TestSendEthTxBatch(t *testing.T) {
+	t.Run("empty batch opens no transaction", func(t *testing.T) {
+		// A relay cycle that filtered down to nothing must not cost gas.
+		node := rpcmock.NewEVMNode(t)
+		h, _ := testHandler(t)
+
+		if err := h.SendEthTxBatch(testCtx(t), testEndpoint(t, node), "client-0", nil); err != nil {
+			t.Fatalf("empty batch must be a no-op, got %v", err)
+		}
+		if n := node.MethodCalls("eth_chainId"); n != 0 {
+			t.Fatalf("an empty batch reached the node (%d chainId calls)", n)
+		}
+	})
+
+	t.Run("single message skips the multicall", func(t *testing.T) {
+		// The wrapper costs gas and changes how a revert surfaces: a multicall
+		// reverts as the aggregate, hiding which packet was the poison.
+		node := rpcmock.NewEVMNode(t)
+		node.MineEverything(rpcmock.RawReceipt{Status: 1, GasUsed: 21_000, BlockNumber: 100})
+		h, _ := testHandler(t)
+
+		err := h.SendEthTxBatch(testCtx(t), testEndpoint(t, node), "client-0", []any{recvPacketMsg()})
+		if err != nil {
+			t.Fatalf("single-message batch: %v", err)
+		}
+		sent := node.SentRawTxs()
+		if len(sent) != 1 {
+			t.Fatalf("broadcast %d transactions for one message, want 1", len(sent))
+		}
+		// Assert on the ABSENCE of multicall, not the presence of recvPacket: a
+		// multicall payload embeds the inner call verbatim, so recvPacket's
+		// selector appears either way. The first version of this test checked for
+		// it and passed while the shortcut was deleted.
+		if strings.Contains(sent[0], routerSelector(t, "multicall")) {
+			t.Fatalf("single message was wrapped in a multicall: %s", sent[0])
+		}
+		if !strings.Contains(sent[0], routerSelector(t, "recvPacket")) {
+			t.Fatalf("transaction does not carry a recvPacket call: %s", sent[0])
+		}
+	})
+
+	t.Run("folds several messages into one transaction", func(t *testing.T) {
+		// Sending them separately would be correct but is what batching exists to
+		// avoid, and it would break the ordering the relay path depends on.
+		node := rpcmock.NewEVMNode(t)
+		node.MineEverything(rpcmock.RawReceipt{Status: 1, GasUsed: 50_000, BlockNumber: 100})
+		h, _ := testHandler(t)
+
+		msgs := []any{recvPacketMsg(), recvPacketMsg(), recvPacketMsg()}
+		if err := h.SendEthTxBatch(testCtx(t), testEndpoint(t, node), "client-0", msgs); err != nil {
+			t.Fatalf("multi-message batch: %v", err)
+		}
+		if sent := node.SentRawTxs(); len(sent) != 1 {
+			t.Fatalf("broadcast %d transactions for %d messages, want 1 multicall", len(sent), len(msgs))
+		}
+	})
+
+	t.Run("does not re-read the nonce per transaction", func(t *testing.T) {
+		// Re-reading returns the same value for two transactions submitted before
+		// the first is mined, and the second replaces the first instead of
+		// following it.
+		node := rpcmock.NewEVMNode(t)
+		node.MineEverything(rpcmock.RawReceipt{Status: 1, GasUsed: 21_000, BlockNumber: 100})
+		h, from := testHandler(t)
+		endpoint := testEndpoint(t, node)
+
+		for i := 0; i < 3; i++ {
+			if err := h.SendEthTxBatch(testCtx(t), endpoint, "client-0", []any{recvPacketMsg()}); err != nil {
+				t.Fatalf("send %d: %v", i, err)
+			}
+		}
+		if queries := node.NonceQueries(from); queries != 1 {
+			t.Fatalf("queried the account nonce %d times across 3 sends, want 1 (it is cached)", queries)
+		}
+		if sent := len(node.SentRawTxs()); sent != 3 {
+			t.Fatalf("broadcast %d transactions, want 3", sent)
+		}
+	})
+}
+
+// routerSelector returns an ICS26Router method's 4-byte selector as lowercase hex.
+func routerSelector(t *testing.T, method string) string {
+	t.Helper()
+	parsedABI, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
+	if err != nil {
+		t.Fatalf("load router ABI: %v", err)
+	}
+	m, ok := parsedABI.Methods[method]
+	if !ok {
+		t.Fatalf("router ABI has no method %q", method)
+	}
+	return hex.EncodeToString(m.ID)
 }

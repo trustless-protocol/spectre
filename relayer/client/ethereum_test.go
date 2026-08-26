@@ -1,11 +1,16 @@
 package client
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
+	"time"
+
+	"relayer/rpcmock"
 )
 
 func TestComputeSyncCommitteePeriodAtSlot(t *testing.T) {
@@ -338,4 +343,237 @@ func TestSyncCommitteeTreeHash(t *testing.T) {
 		t.Errorf("pubkeys_root: %s", hex.EncodeToString(pubkeysRoot[:]))
 		t.Errorf("aggRoot:      %s", hex.EncodeToString(aggRoot[:]))
 	}
+}
+
+// --- beacon REST client ---
+//
+// Every one of these was untested. The relayer's whole view of Ethereum finality
+// arrives through them, and nothing pinned which endpoint each calls, what it does
+// with a non-200, or which fields survive decoding.
+//
+// The shared helpers below keep each unit's test to its own behaviour.
+
+func beaconTestCtx(t *testing.T) context.Context {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	t.Cleanup(cancel)
+	return ctx
+}
+
+// assertCallsEndpoint runs call against a stub serving body at path, and checks
+// that path is the one requested. A copy-pasted URL is the mistake this class of
+// code invites; the node answers 404 and the relayer stalls with no clue why.
+func assertCallsEndpoint(t *testing.T, path, body string, call func(ctx context.Context, url string) error) {
+	t.Helper()
+	node := rpcmock.NewBeaconNode(t)
+	node.Respond(path, body)
+
+	if err := call(beaconTestCtx(t), node.URL()); err != nil {
+		t.Fatalf("call failed against a stub serving %s: %v", path, err)
+	}
+	requests := node.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("made %d requests, want 1: %v", len(requests), requests)
+	}
+	if reqPath, _, _ := strings.Cut(requests[0], "?"); reqPath != path {
+		t.Fatalf("called %q, want %q", reqPath, path)
+	}
+}
+
+// assertReportsNodeError checks that a non-200 becomes an error carrying both the
+// status and the node's message — never a zero value, which the caller would read
+// as "finality is at slot 0" or "there are no updates".
+//
+// The stub body deliberately does NOT mention the status code. An earlier version
+// used `{"code":404,...}`, so the assertion passed whether or not the code printed
+// the status: the number came from the echoed body either way.
+func assertReportsNodeError(t *testing.T, path string, call func(ctx context.Context, url string) error) {
+	t.Helper()
+	node := rpcmock.NewBeaconNode(t)
+	node.Fail(path, http.StatusNotFound, `{"message":"period not retained by this node"}`)
+
+	err := call(beaconTestCtx(t), node.URL())
+	if err == nil {
+		t.Fatal("a 404 was reported as success; the caller reads the zero value as real data")
+	}
+	// 404 on a light-client period means "this node no longer retains it", which
+	// calls for a different endpoint — not the retry a network failure calls for.
+	if !strings.Contains(err.Error(), "404") {
+		t.Fatalf("error should carry the HTTP status, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "period not retained") {
+		t.Fatalf("error should carry the node's message, got: %v", err)
+	}
+}
+
+func TestGetFinalityUpdate(t *testing.T) {
+	const path = "/eth/v1/beacon/light_client/finality_update"
+	call := func(ctx context.Context, url string) error {
+		_, err := GetFinalityUpdate(ctx, url)
+		return err
+	}
+
+	t.Run("reaches its endpoint", func(t *testing.T) {
+		assertCallsEndpoint(t, path, `{"version":"deneb","data":{"signature_slot":"1234"}}`, call)
+	})
+	t.Run("reports a node error", func(t *testing.T) {
+		assertReportsNodeError(t, path, call)
+	})
+	t.Run("honours context cancellation", func(t *testing.T) {
+		// This call sits on the ETH→Cosmos direction, driven by a single
+		// goroutine: an unanswered request there wedges the whole direction.
+		node := rpcmock.NewBeaconNode(t)
+		node.Respond(path, `{"data":{}}`)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		if _, err := GetFinalityUpdate(ctx, node.URL()); err == nil {
+			t.Fatal("a cancelled context did not stop the request")
+		}
+	})
+}
+
+func TestGetLightClientUpdates(t *testing.T) {
+	const path = "/eth/v1/beacon/light_client/updates"
+	call := func(ctx context.Context, url string) error {
+		_, err := GetLightClientUpdates(ctx, url, 5, 2)
+		return err
+	}
+
+	t.Run("reaches its endpoint", func(t *testing.T) {
+		assertCallsEndpoint(t, path, `[{"data":{"signature_slot":"10"}}]`, call)
+	})
+	t.Run("reports a node error", func(t *testing.T) {
+		assertReportsNodeError(t, path, call)
+	})
+
+	t.Run("sends the requested period range", func(t *testing.T) {
+		// A wrong range silently fetches the wrong sync committee, which fails
+		// much later as a verification error with nothing pointing back here.
+		node := rpcmock.NewBeaconNode(t)
+		node.Respond(path, `[]`)
+
+		if _, err := GetLightClientUpdates(beaconTestCtx(t), node.URL(), 42, 3); err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		query := node.LastQuery(path)
+		if got := query.Get("start_period"); got != "42" {
+			t.Errorf("start_period = %q, want 42", got)
+		}
+		if got := query.Get("count"); got != "3" {
+			t.Errorf("count = %q, want 3", got)
+		}
+	})
+
+	t.Run("unwraps each element in order", func(t *testing.T) {
+		// The caller applies these sequentially to cross sync-committee periods;
+		// an out-of-order batch fails verification on the second one.
+		node := rpcmock.NewBeaconNode(t)
+		node.Respond(path,
+			`[{"data":{"signature_slot":"100"}},{"data":{"signature_slot":"200"}},{"data":{"signature_slot":"300"}}]`)
+
+		updates, err := GetLightClientUpdates(beaconTestCtx(t), node.URL(), 0, 3)
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		want := []string{"100", "200", "300"}
+		if len(updates) != len(want) {
+			t.Fatalf("got %d updates, want %d", len(updates), len(want))
+		}
+		for i, w := range want {
+			if updates[i].SignatureSlot != w {
+				t.Fatalf("updates[%d].SignatureSlot = %q, want %q (order must be preserved)",
+					i, updates[i].SignatureSlot, w)
+			}
+		}
+	})
+
+	t.Run("empty range is not an error", func(t *testing.T) {
+		// It means the node has no update for that period, which the caller
+		// handles by waiting rather than by failing.
+		node := rpcmock.NewBeaconNode(t)
+		node.Respond(path, `[]`)
+
+		updates, err := GetLightClientUpdates(beaconTestCtx(t), node.URL(), 0, 1)
+		if err != nil {
+			t.Fatalf("an empty period range must not be an error, got %v", err)
+		}
+		if len(updates) != 0 {
+			t.Fatalf("got %d updates from an empty response", len(updates))
+		}
+	})
+}
+
+func TestGetBeaconGenesis(t *testing.T) {
+	const path = "/eth/v1/beacon/genesis"
+	call := func(ctx context.Context, url string) error {
+		_, err := GetBeaconGenesis(ctx, url)
+		return err
+	}
+
+	t.Run("reaches its endpoint", func(t *testing.T) {
+		assertCallsEndpoint(t, path, `{"data":{"genesis_time":"1606824023"}}`, call)
+	})
+	t.Run("reports a node error", func(t *testing.T) {
+		assertReportsNodeError(t, path, call)
+	})
+
+	t.Run("unwraps the data envelope", func(t *testing.T) {
+		// Without the unwrap, decoding still succeeds and every field comes back
+		// zero — which is why this asserts on a value, not on err == nil.
+		node := rpcmock.NewBeaconNode(t)
+		node.Respond(path, `{"data":{"genesis_time":"1606824023","genesis_validators_root":"0x4b363db9"}}`)
+
+		genesis, err := GetBeaconGenesis(beaconTestCtx(t), node.URL())
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		if genesis.GenesisTime != "1606824023" || genesis.GenesisValidatorsRoot != "0x4b363db9" {
+			t.Fatalf("decoded as %+v; the data envelope was not unwrapped", genesis)
+		}
+	})
+}
+
+func TestGetBeaconSpec(t *testing.T) {
+	const path = "/eth/v1/config/spec"
+	call := func(ctx context.Context, url string) error {
+		_, err := GetBeaconSpec(ctx, url)
+		return err
+	}
+
+	t.Run("reaches its endpoint", func(t *testing.T) {
+		assertCallsEndpoint(t, path, `{"data":{"CONFIG_NAME":"mainnet"}}`, call)
+	})
+	t.Run("reports a node error", func(t *testing.T) {
+		assertReportsNodeError(t, path, call)
+	})
+
+	t.Run("unwraps the data envelope", func(t *testing.T) {
+		node := rpcmock.NewBeaconNode(t)
+		node.Respond(path, `{"data":{"CONFIG_NAME":"mainnet","SECONDS_PER_SLOT":"12"}}`)
+
+		spec, err := GetBeaconSpec(beaconTestCtx(t), node.URL())
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		if spec.ConfigName != "mainnet" || spec.SecondsPerSlot != "12" {
+			t.Fatalf("decoded as CONFIG_NAME=%q SECONDS_PER_SLOT=%q; the envelope was not unwrapped",
+				spec.ConfigName, spec.SecondsPerSlot)
+		}
+	})
+}
+
+func TestGetBeaconBlockRoot(t *testing.T) {
+	const path = "/eth/v1/beacon/blocks/head/root"
+	call := func(ctx context.Context, url string) error {
+		_, err := GetBeaconBlockRoot(ctx, url, "head")
+		return err
+	}
+
+	t.Run("reaches its endpoint", func(t *testing.T) {
+		assertCallsEndpoint(t, path, `{"data":{"root":"0xdeadbeef"}}`, call)
+	})
+	t.Run("reports a node error", func(t *testing.T) {
+		assertReportsNodeError(t, path, call)
+	})
 }

@@ -1,14 +1,17 @@
 package client
 
 import (
+	"bytes"
 	"encoding/json"
 	"math/big"
 	"testing"
 
 	misbehaviourContract "relayer/bindings/Misbehaviour"
+	spectreContract "relayer/bindings/SpectreClient"
 	updateClientContract "relayer/bindings/UpdateClient"
 
 	ics23 "github.com/cosmos/ics23/go"
+	"github.com/ethereum/go-ethereum/accounts/abi"
 )
 
 func TestParseTrustThreshold(t *testing.T) {
@@ -261,7 +264,11 @@ func TestEncodeConsensusState(t *testing.T) {
 // ABI tuple (updateApplicationStateMsgType) produces bytes that the abigen-
 // generated UpdateClient.verifyHeader input tuple can round-trip — i.e. the
 // hand-built encoding matches the generated ABI exactly.
-func TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI(t *testing.T) {
+// fullyPopulatedApplicationStateMsg is the fixture both update encoders share.
+// Shared on purpose: two copies drift, and the field a copy forgets to set is
+// exactly the field that then goes unchecked -- CommitSigs was left empty here
+// once, and the validatorAddress bug rode through green tests to chain.
+func fullyPopulatedApplicationStateMsg() updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState {
 	var validatorsHash [32]byte
 	validatorsHash[0] = 0x88
 	validatorsHash[1] = 0xbe
@@ -310,6 +317,14 @@ func TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI(t *testing.T) {
 			Active:                 []bool{true, true},
 		},
 	}
+	return msg
+}
+
+func TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI(t *testing.T) {
+	var validatorsHash [32]byte
+	validatorsHash[0] = 0x88
+	validatorsHash[1] = 0xbe
+	msg := fullyPopulatedApplicationStateMsg()
 
 	encoded, err := EncodeUpdateApplicationStateMsg(msg)
 	if err != nil {
@@ -398,4 +413,138 @@ func TestBytesToBytes32(t *testing.T) {
 			}
 		})
 	}
+}
+
+// EncodeUpdateConsensusStateMsg is the third of three sibling encoders in this
+// file, and the only one that had no test. It carries the pinned-set rotation --
+// the operation that keeps the light client alive -- and encoding is a
+// byte-for-byte contract with Solidity, so a drifted tuple fails on chain, not
+// here.
+//
+// It is also the hardest of the three to check, which is presumably why it was
+// skipped. updateConsensusState takes opaque `bytes`, so unlike verifyHeader
+// there is no generated tuple to round-trip against. The hand-written tuple is
+// still checkable in two halves, because both of its components DO appear as
+// typed parameters elsewhere in the generated ABI:
+//
+//	update           -> UpdateClient.verifyHeader input 0
+//	newValidatorSet  -> SpectreClient constructor, initialPinnedValidatorSet
+//
+// Checking those two and then round-tripping a fully populated value covers what
+// can be covered without a chain.
+func TestEncodeUpdateConsensusStateMsg(t *testing.T) {
+	t.Run("both halves match the generated ABI", func(t *testing.T) {
+		components := updateConsensusStateMsgType.TupleElems
+		if len(components) != 2 {
+			t.Fatalf("tuple has %d components, want 2 (update, newValidatorSet)", len(components))
+		}
+
+		updateABI, err := updateClientContract.ContractUpdateClientMetaData.GetAbi()
+		if err != nil {
+			t.Fatalf("parse generated UpdateClient ABI: %v", err)
+		}
+		if got, want := components[0].String(), updateABI.Methods["verifyHeader"].Inputs[0].Type.String(); got != want {
+			t.Fatalf("the update half diverged from the generated ABI\n got=%s\nwant=%s", got, want)
+		}
+
+		spectreABI, err := spectreContract.ContractSpectreClientMetaData.GetAbi()
+		if err != nil {
+			t.Fatalf("parse generated SpectreClient ABI: %v", err)
+		}
+		var valSetParam *abi.Type
+		for i := range spectreABI.Constructor.Inputs {
+			if spectreABI.Constructor.Inputs[i].Name == "initialPinnedValidatorSet" {
+				valSetParam = &spectreABI.Constructor.Inputs[i].Type
+			}
+		}
+		if valSetParam == nil {
+			t.Fatal("SpectreClient constructor no longer takes initialPinnedValidatorSet; find the new source of truth for the validator-set tuple")
+		}
+		if got, want := components[1].String(), valSetParam.String(); got != want {
+			t.Fatalf("the newValidatorSet half diverged from the generated ABI\n got=%s\nwant=%s", got, want)
+		}
+	})
+
+	t.Run("every field survives a round trip", func(t *testing.T) {
+		// Populated deliberately: no zero values in nested structs, and both
+		// validator entries distinct. A fixture that left CommitSigs empty is
+		// exactly how the validatorAddress bug stayed green in the sibling test
+		// while the relayer reverted every packet on chain.
+		msg := fullyPopulatedApplicationStateMsg()
+		valSet := spectreContract.IICS07TendermintMsgsValidatorSet{
+			Validators: []spectreContract.IICS07TendermintMsgsValidatorInfo{
+				{ValAddress: []byte{0xa1, 0xa2}, PubKey: [32]byte{0x11}, VotingPower: 300, ProposerPriority: -7},
+				{ValAddress: []byte{0xb1, 0xb2}, PubKey: [32]byte{0x22}, VotingPower: 200, ProposerPriority: 5},
+			},
+			HasProposer:      true,
+			Proposer:         spectreContract.IICS07TendermintMsgsValidatorInfo{ValAddress: []byte{0xc1}, PubKey: [32]byte{0x33}, VotingPower: 300, ProposerPriority: -7},
+			TotalVotingPower: 500,
+		}
+
+		encoded, err := EncodeUpdateConsensusStateMsg(msg, valSet)
+		if err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+
+		args := abi.Arguments{{Type: updateConsensusStateMsgType}}
+		unpacked, err := args.Unpack(encoded)
+		if err != nil {
+			t.Fatalf("unpack: %v", err)
+		}
+		if len(unpacked) != 1 {
+			t.Fatalf("unpacked %d values, want 1", len(unpacked))
+		}
+		jsonBytes, err := json.Marshal(unpacked[0])
+		if err != nil {
+			t.Fatalf("marshal unpacked tuple: %v", err)
+		}
+		var decoded MsgUpdateConsensusState
+		if err := json.Unmarshal(jsonBytes, &decoded); err != nil {
+			t.Fatalf("unmarshal decoded msg: %v", err)
+		}
+
+		// The validator set is the half nothing else in this package checks.
+		if got := decoded.NewValidatorSet.TotalVotingPower; got != valSet.TotalVotingPower {
+			t.Errorf("totalVotingPower = %d, want %d", got, valSet.TotalVotingPower)
+		}
+		if !decoded.NewValidatorSet.HasProposer {
+			t.Error("hasProposer was lost; the pinned set would be installed with no proposer")
+		}
+		if got := len(decoded.NewValidatorSet.Validators); got != len(valSet.Validators) {
+			t.Fatalf("decoded %d validators, want %d", got, len(valSet.Validators))
+		}
+		for i, want := range valSet.Validators {
+			got := decoded.NewValidatorSet.Validators[i]
+			if !bytes.Equal(got.ValAddress, want.ValAddress) {
+				t.Errorf("validator %d address = %x, want %x", i, got.ValAddress, want.ValAddress)
+			}
+			if got.PubKey != want.PubKey {
+				t.Errorf("validator %d pubkey = %x, want %x", i, got.PubKey, want.PubKey)
+			}
+			if got.VotingPower != want.VotingPower {
+				t.Errorf("validator %d voting power = %d, want %d", i, got.VotingPower, want.VotingPower)
+			}
+			// Signed, and negative in this fixture: an unsigned tuple component
+			// would decode this as an enormous positive number.
+			if got.ProposerPriority != want.ProposerPriority {
+				t.Errorf("validator %d proposer priority = %d, want %d", i, got.ProposerPriority, want.ProposerPriority)
+			}
+		}
+		if got := decoded.NewValidatorSet.Proposer.PubKey; got != valSet.Proposer.PubKey {
+			t.Errorf("proposer pubkey = %x, want %x", got, valSet.Proposer.PubKey)
+		}
+
+		// And the update half must not be disturbed by sitting inside the larger
+		// tuple: a component-order mistake shows up here.
+		if got, want := decoded.Update.ProposedHeader.SignedHeader.Header.ChainId,
+			msg.ProposedHeader.SignedHeader.Header.ChainId; got != want {
+			t.Errorf("update chain id = %q, want %q", got, want)
+		}
+		if len(decoded.Update.ProposedHeader.SignedHeader.Commit.CommitSigs) == 0 {
+			t.Error("commit sigs were lost inside the outer tuple")
+		} else if got, want := decoded.Update.ProposedHeader.SignedHeader.Commit.CommitSigs[0].ValidatorAddress,
+			msg.ProposedHeader.SignedHeader.Commit.CommitSigs[0].ValidatorAddress; got != want {
+			t.Errorf("commit sig validator address = %x, want %x", got, want)
+		}
+	})
 }
