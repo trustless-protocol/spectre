@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"relayer/chain"
 	relayerclient "relayer/client"
@@ -279,6 +280,88 @@ func TestDestination(t *testing.T) {
 		}
 		if ok {
 			t.Fatal("an unimplemented receipt check must never report a receipt")
+		}
+	})
+}
+
+// ethClientExpiry is what the module's anti-expiry refresh acts on. Reporting it
+// too late lets the 08-wasm client lapse, which stops the ETH→Cosmos direction
+// entirely; too early only costs an extra update.
+func TestEthClientExpiry(t *testing.T) {
+	// Mainnet-shaped geometry: 32 slots per epoch, 256 epochs per sync-committee
+	// period, 12s slots -> one period is 98,304 seconds.
+	const (
+		genesisTime    = uint64(1_606_824_023)
+		secondsPerSlot = uint64(12)
+		onePeriod      = uint64(256 * 32 * 12)
+	)
+	base := func() *relayerclient.EthereumClientState {
+		return &relayerclient.EthereumClientState{
+			EpochsPerSyncCommitteePeriod: 256,
+			SlotsPerEpoch:                32,
+			SecondsPerSlot:               secondsPerSlot,
+			GenesisTime:                  genesisTime,
+			GenesisSlot:                  0,
+			LatestSlot:                   1000,
+		}
+	}
+
+	t.Run("one sync-committee period after the latest tracked slot", func(t *testing.T) {
+		cs := base()
+		got := ethClientExpiry(cs)
+		want := time.Unix(int64(genesisTime+1000*secondsPerSlot+onePeriod), 0)
+		if !got.Equal(want) {
+			t.Fatalf("expiry = %s, want %s", got, want)
+		}
+	})
+
+	t.Run("measured from the tracked slot, not from now", func(t *testing.T) {
+		// The clock that matters belongs to the slot the client last tracked. A
+		// value derived from wall-clock time would report every client as healthy
+		// forever, because it moves with the check.
+		older, newer := base(), base()
+		older.LatestSlot = 1000
+		newer.LatestSlot = 2000
+
+		gap := ethClientExpiry(newer).Sub(ethClientExpiry(older))
+		want := time.Duration(1000*secondsPerSlot) * time.Second
+		if gap != want {
+			t.Fatalf("1000 slots of progress moved the expiry by %s, want %s", gap, want)
+		}
+	})
+
+	t.Run("a misconfigured client state reports no expiry", func(t *testing.T) {
+		// Zero means "never expires" to the module, which then falls back to the
+		// periodic refresh. Returning a real-looking time computed from zeros
+		// would instead put the client permanently in the refresh window and make
+		// every tick submit an update.
+		for name, mutate := range map[string]func(*relayerclient.EthereumClientState){
+			"no epochs per period": func(c *relayerclient.EthereumClientState) { c.EpochsPerSyncCommitteePeriod = 0 },
+			"no slots per epoch":   func(c *relayerclient.EthereumClientState) { c.SlotsPerEpoch = 0 },
+			"no seconds per slot":  func(c *relayerclient.EthereumClientState) { c.SecondsPerSlot = 0 },
+		} {
+			t.Run(name, func(t *testing.T) {
+				cs := base()
+				mutate(cs)
+				if got := ethClientExpiry(cs); !got.IsZero() {
+					t.Fatalf("expiry = %s, want the zero time", got)
+				}
+			})
+		}
+	})
+
+	t.Run("a slot at or below genesis falls back to genesis time", func(t *testing.T) {
+		// ComputeTimestampAtSlot's own guard, exercised through this path: a client
+		// that has not advanced past its genesis slot must not compute a timestamp
+		// from an underflowed slot difference.
+		cs := base()
+		cs.GenesisSlot = 500
+		cs.LatestSlot = 100 // below genesis
+
+		got := ethClientExpiry(cs)
+		want := time.Unix(int64(genesisTime+onePeriod), 0)
+		if !got.Equal(want) {
+			t.Fatalf("expiry = %s, want %s (genesis time plus one period)", got, want)
 		}
 	})
 }

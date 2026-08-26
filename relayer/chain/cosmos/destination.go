@@ -304,10 +304,27 @@ func (d *Destination) ClientExpiresAt(ctx context.Context, _ string) (time.Time,
 	if err != nil {
 		return time.Time{}, fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
+	return ethClientExpiry(cs), nil
+}
+
+// ethClientExpiry derives the conservative expiry of the 08-wasm Ethereum light
+// client from its on-chain state.
+//
+// A beacon client has no single trusting period the way a Tendermint client does:
+// it must be advanced within about two sync-committee periods of its latest
+// tracked slot. This reports ONE period after that slot's time, which is
+// deliberately early -- the refresh routine then acts sooner than strictly
+// necessary, and being wrong in the other direction lets the client lapse, which
+// is the failure that costs the most.
+//
+// A zero period means the client state is misconfigured (any of the three factors
+// unset). Reporting the zero time rather than an error is what the module reads as
+// "no expiry", so it falls back to the periodic refresh instead of treating a
+// malformed client state as an expiry emergency.
+func ethClientExpiry(cs *relayerclient.EthereumClientState) time.Time {
 	periodSecs := cs.EpochsPerSyncCommitteePeriod * cs.SlotsPerEpoch * cs.SecondsPerSlot
 	if periodSecs == 0 {
-		return time.Time{}, nil // misconfigured — report no expiry, fall back to periodic refresh
+		return time.Time{}
 	}
-	latestSlotTime := cs.ComputeTimestampAtSlot(cs.LatestSlot)
-	return time.Unix(int64(latestSlotTime+periodSecs), 0), nil
+	return time.Unix(int64(cs.ComputeTimestampAtSlot(cs.LatestSlot)+periodSecs), 0)
 }

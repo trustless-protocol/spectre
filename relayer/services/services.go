@@ -145,8 +145,23 @@ func CosmosClientExpiry(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEn
 	if err != nil {
 		return time.Time{}, fmt.Errorf("cosmos client expiry: trusted light block %d: %w", trustedHeight, err)
 	}
-	trustingPeriod := time.Duration(clientState.TrustingPeriod) * time.Second
-	return lightBlock.SignedHeader.Header.Time.Add(trustingPeriod), nil
+	return tendermintClientExpiry(lightBlock.SignedHeader.Header.Time, clientState.TrustingPeriod), nil
+}
+
+// tendermintClientExpiry derives when the Tendermint light client on the EVM side
+// stops accepting updates: the trusting period measured from the TRUSTED HEADER's
+// time, not from now.
+//
+// Measuring from now would report a client as healthy forever, since "now" always
+// moves with the check. The clock that matters belongs to the block the client
+// currently trusts.
+//
+// This is the mirror of ethClientExpiry in chain/cosmos, and the two are shaped
+// differently on purpose: a Tendermint client has one explicit trusting period,
+// while a beacon client has none and its expiry has to be inferred from sync
+// committee geometry.
+func tendermintClientExpiry(trustedHeaderTime time.Time, trustingPeriodSeconds uint32) time.Time {
+	return trustedHeaderTime.Add(time.Duration(trustingPeriodSeconds) * time.Second)
 }
 
 func deriveCosmosRefreshInterval(cfg Config, trustingPeriod time.Duration) (time.Duration, error) {
