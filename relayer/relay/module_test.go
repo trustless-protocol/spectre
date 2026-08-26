@@ -121,6 +121,10 @@ type mockBuilder struct {
 	forceHeight uint64 // if non-zero, always return this height
 	noPayload   bool   // if true, return no payloads ("client already current")
 	built       int    // count of Build calls
+	// trustedAt is the timestamp the built update claims the client now trusts.
+	// It is what the client-update observer reports, so a test that checks the
+	// observer must be able to set it to something distinguishable.
+	trustedAt time.Time
 }
 
 func (m *mockBuilder) Name() string { return "mock" }
@@ -131,9 +135,9 @@ func (m *mockBuilder) Build(_ context.Context, header []byte) (chain.ClientUpdat
 		h = m.forceHeight
 	}
 	if m.noPayload {
-		return chain.ClientUpdate{Height: h}, nil
+		return chain.ClientUpdate{Height: h, TrustedAt: m.trustedAt}, nil
 	}
-	return chain.ClientUpdate{Height: h, Payloads: [][]byte{header}}, nil
+	return chain.ClientUpdate{Height: h, Payloads: [][]byte{header}, TrustedAt: m.trustedAt}, nil
 }
 
 func TestHandleBatch_ProofByType(t *testing.T) {
@@ -1109,5 +1113,222 @@ func TestRefreshLoop(t *testing.T) {
 		}
 		cancel()
 		wg.Wait()
+	})
+}
+
+// --- the optional capabilities ---
+//
+// The With* options are how a path declares what it needs beyond the base relay
+// loop. They were all at 0%: nothing pinned that an option actually installs what
+// it names, and an option that silently does nothing is invisible -- the module
+// runs, relays packets, and quietly never scans for timeouts.
+
+func TestWithTimeoutScanner(t *testing.T) {
+	t.Run("installs the scan function and its interval", func(t *testing.T) {
+		called := 0
+		m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithTimeoutScanner(5*time.Second, func(context.Context) { called++ }))
+
+		if m.scan == nil {
+			t.Fatal("no scan function installed; Run would skip the timeout loop entirely")
+		}
+		if m.scanInterval != 5*time.Second {
+			t.Fatalf("scanInterval = %s, want 5s", m.scanInterval)
+		}
+		m.scan(context.Background())
+		if called != 1 {
+			t.Fatalf("the installed function ran %d times, want 1", called)
+		}
+	})
+
+	t.Run("a non-positive interval falls back to the default", func(t *testing.T) {
+		// Zero is what a caller passes to mean "use the standard cadence" --
+		// run_adapters.go does exactly that. Left as zero it becomes
+		// time.NewTicker(0), which panics and takes the module down at startup.
+		for _, interval := range []time.Duration{0, -time.Second} {
+			m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+				WithTimeoutScanner(interval, func(context.Context) {}))
+			if m.scanInterval != defaultScanInterval {
+				t.Errorf("interval %s produced scanInterval %s, want the default %s",
+					interval, m.scanInterval, defaultScanInterval)
+			}
+		}
+	})
+}
+
+func TestWithClientUpdateObserver(t *testing.T) {
+	var seen []time.Time
+	trustedAt := time.Unix(1_700_000_000, 0)
+	src := &mockSource{}
+	dst := &mockDest{}
+	b := &mockBuilder{trustedAt: trustedAt}
+	m := NewModule("test", "client-0", src, dst, b,
+		WithClientUpdateObserver(func(at time.Time) { seen = append(seen, at) }))
+
+	if err := m.updateClientTo(context.Background(), 10); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("observer called %d times for one client update, want 1", len(seen))
+	}
+	// The observed value is the height the client now trusts, not the moment the
+	// relayer happened to submit it: the freshness metric is about the CLIENT.
+	if !seen[0].Equal(trustedAt) {
+		t.Fatalf("observer got %s, want the update's TrustedAt %s", seen[0], trustedAt)
+	}
+}
+
+// A module with no observer must still update. The option is optional, and the
+// nil check is what stops every path that does not set one from panicking on its
+// first client update.
+//
+// The builder MUST report a non-zero TrustedAt here. recordClientUpdate is
+// guarded by `observer != nil && !TrustedAt.IsZero()`, so a zero timestamp short-
+// circuits before the nil check is reached -- an earlier version of this test
+// used the default builder and passed with the nil guard deleted.
+func TestUpdateClientTo_WorksWithoutAnObserver(t *testing.T) {
+	b := &mockBuilder{trustedAt: time.Unix(1_700_000_000, 0)}
+	m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, b)
+	if err := m.updateClientTo(context.Background(), 10); err != nil {
+		t.Fatalf("update without an observer: %v", err)
+	}
+}
+
+// withFastScanTick shortens the scan cadence so a loop test finishes in
+// milliseconds rather than waiting out the 30s production interval.
+func withFastScanTick(m *Module) { m.scanInterval = time.Millisecond }
+
+func TestScanLoop(t *testing.T) {
+	t.Run("keeps scanning until the context is cancelled", func(t *testing.T) {
+		// The timeout sweep is what refunds a packet that was relayed but never
+		// delivered. A loop that runs once and stops leaves the pending set
+		// growing and the escrow locked, with nothing in the log to say so.
+		var mu sync.Mutex
+		scans := 0
+		m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithTimeoutScanner(time.Second, func(context.Context) {
+				mu.Lock()
+				scans++
+				mu.Unlock()
+			}))
+		withFastScanTick(m)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); m.scanLoop(ctx) }()
+
+		waitFor(t, ctx, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return scans >= 3
+		}, "the scan loop did not keep running")
+		cancel()
+		wg.Wait()
+	})
+
+	t.Run("returns immediately on cancellation, not at the next tick", func(t *testing.T) {
+		// The interval here is deliberately LONG and the deadline short. Waiting
+		// for the next tick would be correct-looking and still wrong: in
+		// production the cadence is 30s, and a shutdown that waits it out spends
+		// most of the 45s process budget on one worker.
+		//
+		// A short interval hides this -- an earlier version used a 1ms tick and a
+		// 2s deadline, which passed with the ctx.Done() arm deleted entirely.
+		const scanInterval = 30 * time.Second
+		m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithTimeoutScanner(scanInterval, func(context.Context) {}))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { m.scanLoop(ctx); close(done) }()
+
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("scan loop did not return within 2s of cancellation on a %s cadence; "+
+				"shutdown waits for the next tick", scanInterval)
+		}
+	})
+
+	t.Run("never scans on an already-cancelled context", func(t *testing.T) {
+		var mu sync.Mutex
+		scans := 0
+		m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithTimeoutScanner(time.Second, func(context.Context) {
+				mu.Lock()
+				scans++
+				mu.Unlock()
+			}))
+		withFastScanTick(m)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		m.scanLoop(ctx)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if scans != 0 {
+			t.Fatalf("ran %d scans on an already-cancelled context", scans)
+		}
+	})
+
+	t.Run("does not start a sweep once cancellation and a tick are both ready", func(t *testing.T) {
+		// The case the re-check inside the tick branch exists for. `select` picks
+		// at random among ready cases, so when the ticker has already fired and
+		// the context is done, half the time it takes the tick -- and without the
+		// re-check a sweep begins during shutdown, issuing RPCs nobody is left to
+		// read.
+		//
+		// Forcing that state deterministically is not possible; forcing it REPEATEDLY
+		// is. Each round blocks inside the scan long enough for the ticker to fire,
+		// cancels while blocked, and then releases. With the re-check the loop
+		// returns every time; without it, each round is an independent coin flip,
+		// so 20 rounds leave a 1-in-a-million chance of not catching it. The test
+		// never fails spuriously -- correct code scans exactly once per round.
+		for round := 0; round < 20; round++ {
+			var mu sync.Mutex
+			scans := 0
+			blocked := make(chan struct{})
+			release := make(chan struct{})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+				WithTimeoutScanner(time.Second, func(context.Context) {
+					mu.Lock()
+					first := scans == 0
+					scans++
+					mu.Unlock()
+					if first {
+						close(blocked)
+						<-release
+					}
+				}))
+			withFastScanTick(m)
+
+			done := make(chan struct{})
+			go func() { m.scanLoop(ctx); close(done) }()
+
+			<-blocked                        // inside the first scan
+			time.Sleep(5 * time.Millisecond) // let the 1ms ticker fire while blocked
+			cancel()                         // now both cases are ready
+			close(release)
+
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				cancel()
+				t.Fatalf("round %d: scan loop did not return", round)
+			}
+
+			mu.Lock()
+			got := scans
+			mu.Unlock()
+			if got != 1 {
+				t.Fatalf("round %d: ran %d sweeps, want 1; a sweep started after cancellation", round, got)
+			}
+		}
 	})
 }
