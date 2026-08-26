@@ -225,18 +225,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		case <-ctx.Done():
 			return ctx.Err()
 		case batch := <-ch:
-			// Build the event slice aligned 1:1 with orig[] so a re-queue index
-			// from the handler maps back to the exact source packet.
-			events := make([]chain.Event, 0, len(batch.Packets))
-			orig := make([]services.CosmosPacket, 0, len(batch.Packets))
-			for _, p := range batch.Packets {
-				e, ok := cosmosPacketToEvent(p, s.ids.CosmosOnEVM)
-				if !ok {
-					continue
-				}
-				events = append(events, e)
-				orig = append(orig, p)
-			}
+			events, orig := eventsWithOrigins(batch.Packets, s.ids.CosmosOnEVM)
 			// Re-queue un-relayed packets with a waiting backoff so a packet not yet
 			// relayable (AppHash H+2 lag) or hit by a brief RPC hiccup is retried with
 			// a growing delay instead of every batch period — quiet, and no per-flush
@@ -247,6 +236,28 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 			s.bb.ReleaseCosmosInFlight(batch)
 		}
 	}
+}
+
+// eventsWithOrigins maps a drained batch to relay events, keeping a parallel slice
+// of the packets they came from.
+//
+// The two slices MUST stay index-aligned: the handler reports failures as indices
+// into the events slice, and Subscribe re-queues orig[idx]. A packet that cannot be
+// converted is dropped from BOTH, never from one — appending to orig outside the
+// conversion guard would shift every later index and re-queue the wrong packet,
+// silently relaying one packet twice and losing another.
+func eventsWithOrigins(packets []services.CosmosPacket, clientID string) ([]chain.Event, []services.CosmosPacket) {
+	events := make([]chain.Event, 0, len(packets))
+	orig := make([]services.CosmosPacket, 0, len(packets))
+	for _, p := range packets {
+		e, ok := cosmosPacketToEvent(p, clientID)
+		if !ok {
+			continue
+		}
+		events = append(events, e)
+		orig = append(orig, p)
+	}
+	return events, orig
 }
 
 // cosmosPacketToEvent maps a queued CosmosPacket to a chain.Event. It returns

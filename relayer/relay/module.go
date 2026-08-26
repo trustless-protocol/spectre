@@ -21,7 +21,10 @@ import (
 const refreshMargin = 30 * time.Minute
 
 // refreshTick is how often the refresh routine re-checks client expiry.
-const refreshTick = time.Minute
+// It is a var, not a const, only so tests can drive the loop without waiting a
+// minute; nothing outside the package reassigns it (same arrangement as
+// l2rollup's l2SubscribeInterval).
+var refreshTick = time.Minute
 
 // defaultScanInterval matches the legacy StartLoop timeout scan cadence (30s).
 const defaultScanInterval = 30 * time.Second
@@ -789,6 +792,22 @@ func (m *Module) recordClientUpdate(update chain.ClientUpdate) {
 	}
 }
 
+// needsRefresh reports whether the destination client is close enough to expiry
+// that the anti-expiry routine must advance it now.
+//
+// A zero expiry means "never expires" (e.g. a permissioned client) and needs no
+// refresh. Otherwise the client is refreshed once it is within refreshMargin of
+// expiring — note the direction: MORE than a margin of headroom means there is
+// nothing to do yet, and that is the comparison worth pinning, because inverting
+// it produces a routine that refreshes only while there is plenty of time and
+// goes quiet exactly when the client is about to expire.
+func needsRefresh(expiresAt, now time.Time) bool {
+	if expiresAt.IsZero() {
+		return false
+	}
+	return expiresAt.Sub(now) <= refreshMargin
+}
+
 // refreshLoop proactively advances the destination client before it expires,
 // covering quiet periods with no packet traffic (the anti-expiry routine).
 func (m *Module) refreshLoop(ctx context.Context) {
@@ -807,8 +826,7 @@ func (m *Module) refreshLoop(ctx context.Context) {
 				log.Printf("[relay %s] query client expiry: %v", m.name, err)
 				continue
 			}
-			// Zero means "no expiry" (e.g. a permissioned client); skip.
-			if expiresAt.IsZero() || time.Until(expiresAt) > refreshMargin {
+			if !needsRefresh(expiresAt, time.Now()) {
 				continue
 			}
 			latest, err := m.src.LatestHeight(ctx)

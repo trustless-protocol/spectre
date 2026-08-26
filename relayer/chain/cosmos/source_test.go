@@ -91,3 +91,74 @@ func TestCosmosPacketToEvent_EmptyAckSkipped(t *testing.T) {
 		t.Fatal("ack with no acknowledgement bytes must be skipped")
 	}
 }
+
+// eventsWithOrigins returns two slices that Subscribe treats as index-aligned: the
+// handler reports failures as indices into the events slice, and Subscribe
+// re-queues orig[idx]. If a skipped packet lands in one slice but not the other,
+// every later index shifts by one — and the consequence is not a lost retry but a
+// wrong one: the relayer re-queues a packet that already succeeded and forgets the
+// one that failed.
+//
+// The batch below deliberately puts skipped packets FIRST, BETWEEN and LAST, so a
+// misalignment cannot hide behind the shape of the input.
+func TestEventsWithOrigins_StaysIndexAligned(t *testing.T) {
+	seq := func(p services.CosmosPacket, n uint64) services.CosmosPacket {
+		p.Packet.Sequence = n
+		return p
+	}
+	ackNoBytes := func(n uint64) services.CosmosPacket {
+		p := cosmosPacket(services.CosmosAck, "cosmos-client", routerClientID)
+		p.AckBytes = nil // an ack with no bytes cannot be built into a message: skipped
+		p.Packet.Sequence = n
+		return p
+	}
+
+	packets := []services.CosmosPacket{
+		ackNoBytes(1), // skipped, first
+		seq(cosmosPacket(services.CosmosSend, "cosmos-client", routerClientID), 2),
+		{Type: services.CosmosSend, Packet: nil, BlockNumber: 7}, // skipped, nil packet
+		seq(cosmosPacket(services.CosmosSend, "cosmos-client", routerClientID), 4),
+		seq(cosmosPacket(services.CosmosAck, "cosmos-client", routerClientID), 5),
+		ackNoBytes(6), // skipped, last
+	}
+
+	events, orig := eventsWithOrigins(packets, routerClientID)
+
+	if len(events) != len(orig) {
+		t.Fatalf("slices out of step: %d events vs %d origins", len(events), len(orig))
+	}
+	if len(events) != 3 {
+		t.Fatalf("want the 3 relayable packets, got %d", len(events))
+	}
+	// The real invariant: for every index the handler could report, the origin at
+	// that index is the packet the event was built from.
+	for i := range events {
+		if orig[i].Packet == nil {
+			t.Fatalf("origin %d has no packet", i)
+		}
+		if events[i].Sequence != orig[i].Packet.Sequence {
+			t.Fatalf("index %d maps event seq=%d to origin seq=%d",
+				i, events[i].Sequence, orig[i].Packet.Sequence)
+		}
+	}
+	// Spelled out, so a shift by one is named rather than inferred.
+	want := []uint64{2, 4, 5}
+	for i, w := range want {
+		if events[i].Sequence != w {
+			t.Fatalf("events[%d].Sequence = %d, want %d (skipped packets must leave BOTH slices)",
+				i, events[i].Sequence, w)
+		}
+	}
+}
+
+// A batch where nothing converts must yield two empty slices, not one.
+func TestEventsWithOrigins_AllSkipped(t *testing.T) {
+	packets := []services.CosmosPacket{
+		{Type: services.CosmosSend, Packet: nil},
+		{Type: services.CosmosPacketType(99), Packet: &channeltypesv2.Packet{Sequence: 1}},
+	}
+	events, orig := eventsWithOrigins(packets, routerClientID)
+	if len(events) != 0 || len(orig) != 0 {
+		t.Fatalf("want both slices empty, got %d events / %d origins", len(events), len(orig))
+	}
+}
