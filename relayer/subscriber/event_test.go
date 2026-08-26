@@ -943,3 +943,265 @@ func TestEnqueueEthTerminalSettlesThePendingTracker(t *testing.T) {
 		t.Fatalf("tracker length = %d after settlement, want 0", got)
 	}
 }
+
+// --- dedupe keys and their retention window ---
+//
+// These three functions are the whole of the subscriber's "have I already handled
+// this event" memory. They had no test. What makes them worth pinning is not the
+// bookkeeping but the two opposite failures they sit between: a key that is too
+// coarse suppresses an event that genuinely needs relaying, and a window that
+// prunes too eagerly lets an already-relayed event come back around.
+
+// Pruning bounds the memory of a process that runs for weeks. The boundary is what
+// matters: prune one height too far and an event still inside the reorg window is
+// forgotten, so a re-delivery is relayed a second time.
+func TestPruneCosmosSeenEvents_PrunesAtTheWindowBoundary(t *testing.T) {
+	const current = cosmosSeenEventRetentionHeights + 1_000
+	minKept := current - cosmosSeenEventRetentionHeights
+
+	seen := map[cosmosEventKey]struct{}{
+		{Sequence: 1, Height: minKept - 1}: {}, // just outside the window
+		{Sequence: 2, Height: minKept}:     {}, // exactly on the boundary
+		{Sequence: 3, Height: minKept + 1}: {}, // inside
+		{Sequence: 4, Height: current}:     {}, // current height
+		{Sequence: 5, Height: 0}:           {}, // unknown height
+	}
+	pruneCosmosSeenEvents(seen, current)
+
+	for _, want := range []struct {
+		seq  uint64
+		h    uint64
+		kept bool
+		why  string
+	}{
+		{1, minKept - 1, false, "outside the retention window"},
+		{2, minKept, true, "exactly on the boundary — the window is inclusive"},
+		{3, minKept + 1, true, "inside the window"},
+		{4, current, true, "the current height"},
+		{5, 0, true, "unknown height: no way to tell if it aged out, so it is kept"},
+	} {
+		_, ok := seen[cosmosEventKey{Sequence: want.seq, Height: want.h}]
+		if ok != want.kept {
+			t.Errorf("height %d kept=%v, want %v (%s)", want.h, ok, want.kept, want.why)
+		}
+	}
+}
+
+// Below the retention window there is nothing old enough to prune, and the
+// subtraction must not be attempted: this is unsigned arithmetic, so an unguarded
+// currentHeight - retention on a young chain wraps to an enormous minimum and
+// deletes every entry — on a chain that has produced nothing old enough to forget.
+//
+// The height chosen here is well below the window, not on its boundary. At exactly
+// currentHeight == retention the subtraction yields 0 and prunes nothing anyway,
+// so a test there passes with or without the guard and proves nothing.
+func TestPruneCosmosSeenEvents_YoungChainKeepsEverything(t *testing.T) {
+	const young = 10 // vs a retention window of thousands of heights
+	if young >= cosmosSeenEventRetentionHeights {
+		t.Fatalf("this test needs a height below the %d-height window", cosmosSeenEventRetentionHeights)
+	}
+	seen := map[cosmosEventKey]struct{}{
+		{Sequence: 1, Height: 1}:     {},
+		{Sequence: 2, Height: young}: {},
+	}
+	pruneCosmosSeenEvents(seen, young)
+	if len(seen) != 2 {
+		t.Fatalf("pruned %d of 2 entries on a chain younger than the retention window", 2-len(seen))
+	}
+}
+
+// Mirror of the Cosmos side. The two windows are different sizes (blocks vs
+// heights, different chains) but the boundary rule must be the same, or one
+// direction re-relays where the other does not.
+func TestPruneEthSeenEvents_PrunesAtTheWindowBoundary(t *testing.T) {
+	const current = ethSeenEventRetentionBlocks + 1_000
+	minKept := current - ethSeenEventRetentionBlocks
+
+	seen := map[ethEventKey]struct{}{
+		{TxHash: "0x1", BlockNumber: minKept - 1}: {},
+		{TxHash: "0x2", BlockNumber: minKept}:     {},
+		{TxHash: "0x3", BlockNumber: current}:     {},
+		{TxHash: "0x4", BlockNumber: 0}:           {},
+	}
+	pruneEthSeenEvents(seen, current)
+
+	for _, want := range []struct {
+		hash string
+		b    uint64
+		kept bool
+	}{
+		{"0x1", minKept - 1, false},
+		{"0x2", minKept, true},
+		{"0x3", current, true},
+		{"0x4", 0, true},
+	} {
+		_, ok := seen[ethEventKey{TxHash: want.hash, BlockNumber: want.b}]
+		if ok != want.kept {
+			t.Errorf("block %d kept=%v, want %v", want.b, ok, want.kept)
+		}
+	}
+}
+
+// Mirror of the Cosmos young-chain case, and for the same reason: below the window
+// the subtraction wraps and takes every entry with it.
+func TestPruneEthSeenEvents_YoungChainKeepsEverything(t *testing.T) {
+	const young = 10
+	if young >= ethSeenEventRetentionBlocks {
+		t.Fatalf("this test needs a block below the %d-block window", ethSeenEventRetentionBlocks)
+	}
+	seen := map[ethEventKey]struct{}{
+		{TxHash: "0x1", BlockNumber: 1}:     {},
+		{TxHash: "0x2", BlockNumber: young}: {},
+	}
+	pruneEthSeenEvents(seen, young)
+	if len(seen) != 2 {
+		t.Fatalf("pruned %d of 2 entries on a chain younger than the retention window", 2-len(seen))
+	}
+}
+
+// --- gap-recovery range guards ---
+//
+// Both recovery scans refuse an empty or backwards range before dialing. The
+// guard is what keeps a cursor that has run ahead of the head from turning into a
+// backwards scan; without it the range is passed to the RPC as-is, and what comes
+// back is either nothing (silent event loss, the failure this whole path exists to
+// prevent) or an error on every recovery tick.
+
+func TestRecoverCosmosEvents_RefusesEmptyRangeBeforeDialing(t *testing.T) {
+	// Zero-value deps have no Cosmos client: reaching the RPC would panic rather
+	// than return the empty stats asserted here.
+	for _, tt := range []struct {
+		name       string
+		start, end uint64
+	}{
+		{"end below start", 200, 100},
+		{"end is zero", 0, 0},
+		{"end is zero with a real start", 100, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			stats, err := recoverCosmosEvents(context.Background(), cosmosDeps{}, nil, tt.start, tt.end, nil)
+			if err != nil {
+				t.Fatalf("an empty range is not an error, got %v", err)
+			}
+			if stats.recovered != 0 || stats.skipped != 0 {
+				t.Fatalf("reported work on an empty range: %+v", stats)
+			}
+		})
+	}
+}
+
+// The ETH side scans SendPacket and WriteAcknowledgement in two independent
+// functions, and each carries its own copy of the range guard. They get one test
+// each, because "recoverEth" is not a unit -- there is no such function, and E9
+// wants the prefix to name something real.
+//
+// The pair is what matters, though: a guard present on one scan and missing on
+// the other is the one-sided asymmetry this repo keeps finding. Keeping them
+// adjacent, over the same table, is what makes that visible. Change one, look at
+// the other.
+var ethBackwardsRangeScans = map[string]func(context.Context) (ethRecoveryStats, error){
+	"send packets": func(ctx context.Context) (ethRecoveryStats, error) {
+		return recoverEthSendPackets(ctx, ethDeps{}, nil, nil, 200, 100, nil)
+	},
+	"write acknowledgements": func(ctx context.Context) (ethRecoveryStats, error) {
+		return recoverEthWriteAcknowledgements(ctx, ethDeps{}, nil, nil, 200, 100, nil)
+	},
+}
+
+// assertRefusesBackwardsRange checks that the scan returns without dialing. A nil
+// filterer means any attempt to scan would panic rather than return.
+func assertRefusesBackwardsRange(t *testing.T, scan func(context.Context) (ethRecoveryStats, error)) {
+	t.Helper()
+	stats, err := scan(context.Background())
+	if err != nil {
+		t.Fatalf("a backwards range is not an error, got %v", err)
+	}
+	if stats.recovered != 0 {
+		t.Fatalf("reported work on a backwards range: %+v", stats)
+	}
+}
+
+func TestRecoverEthSendPackets_RefusesBackwardsRangeBeforeDialing(t *testing.T) {
+	assertRefusesBackwardsRange(t, ethBackwardsRangeScans["send packets"])
+}
+
+func TestRecoverEthWriteAcknowledgements_RefusesBackwardsRangeBeforeDialing(t *testing.T) {
+	assertRefusesBackwardsRange(t, ethBackwardsRangeScans["write acknowledgements"])
+}
+
+// The dedupe key decides whether an event is treated as one already handled.
+// Too coarse and a real event is suppressed; the reorg case below is where
+// that costs a packet.
+func TestCosmosEventKeyForPacket(t *testing.T) {
+	// A reorg re-emits the same logical packet at a different height. The key must
+	// treat that as a NEW event, or the second emission is silently dropped as a
+	// duplicate and the packet is never relayed from the height that actually stuck.
+	//
+	// Everything else about the packet being equal, height alone must change the key.
+	t.Run("height separates reorged events", func(t *testing.T) {
+		packet := func(height uint64) services.CosmosPacket {
+			return services.CosmosPacket{
+				Type:        services.CosmosSend,
+				BlockNumber: height,
+				Packet: &channeltypesv2.Packet{
+					Sequence:          9,
+					SourceClient:      "cosmos-client-0",
+					DestinationClient: "eth-router-0",
+				},
+			}
+		}
+
+		if cosmosEventKeyForPacket(packet(100)) != cosmosEventKeyForPacket(packet(100)) {
+			t.Fatal("the same event at the same height must produce the same key")
+		}
+		if cosmosEventKeyForPacket(packet(100)) == cosmosEventKeyForPacket(packet(101)) {
+			t.Fatal("a reorged event re-emitted at a new height was treated as a duplicate")
+		}
+	})
+
+	// Each identifying field must participate in the key on its own. A key that
+	// ignores, say, the packet type would let a WriteAcknowledgement be swallowed by
+	// the SendPacket already seen for the same sequence.
+	t.Run("every identifying field counts", func(t *testing.T) {
+		base := services.CosmosPacket{
+			Type:        services.CosmosSend,
+			BlockNumber: 100,
+			Packet: &channeltypesv2.Packet{
+				Sequence:          9,
+				SourceClient:      "cosmos-client-0",
+				DestinationClient: "eth-router-0",
+			},
+		}
+
+		tests := []struct {
+			field  string
+			mutate func(p *services.CosmosPacket)
+		}{
+			{"packet type", func(p *services.CosmosPacket) { p.Type = services.CosmosAck }},
+			{"sequence", func(p *services.CosmosPacket) { p.Packet.Sequence = 10 }},
+			{"source client", func(p *services.CosmosPacket) { p.Packet.SourceClient = "cosmos-client-1" }},
+			{"destination client", func(p *services.CosmosPacket) { p.Packet.DestinationClient = "eth-router-1" }},
+			{"height", func(p *services.CosmosPacket) { p.BlockNumber = 101 }},
+		}
+		for _, tt := range tests {
+			t.Run(tt.field, func(t *testing.T) {
+				other := base
+				inner := *base.Packet
+				other.Packet = &inner
+				tt.mutate(&other)
+				if cosmosEventKeyForPacket(base) == cosmosEventKeyForPacket(other) {
+					t.Fatalf("%s does not affect the dedupe key; two distinct events collide", tt.field)
+				}
+			})
+		}
+	})
+
+	// A packet that failed to decode carries no identity. The key must still be
+	// well-formed rather than panicking — the caller records it like any other.
+	t.Run("handles a packet that did not decode", func(t *testing.T) {
+		key := cosmosEventKeyForPacket(services.CosmosPacket{Type: services.CosmosSend, BlockNumber: 5})
+		if key.Height != 5 || key.Sequence != 0 || key.SourceClient != "" {
+			t.Fatalf("nil packet produced %+v, want only the height filled in", key)
+		}
+	})
+}

@@ -1,6 +1,8 @@
 package evm
 
 import (
+	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -203,4 +205,80 @@ func TestSendPacketExpired(t *testing.T) {
 			}
 		})
 	}
+}
+
+// --- chain.Source contract ---
+//
+// Mirror of the set in chain/cosmos/source_test.go: the guards that must hold
+// before this source touches the network.
+
+// The chain.Source contract on the ETH side -- the guards that must hold before
+// this source touches the network. Mirror of the set in chain/cosmos.
+//
+// TestSource, not TestEthSource: E9 wants a production identifier, and the type
+// is Source. chain/cosmos has one too, and the plan calls that collision correct.
+func TestSource(t *testing.T) {
+	// Both height methods read the finalized beacon header, so a missing beacon
+	// endpoint must be reported as the configuration error it is. Returning zero
+	// instead would read as "the chain is at genesis" and silently hold every packet
+	// as not-yet-relayable, with nothing in the log pointing at the config.
+	t.Run("reports a missing beacon endpoint on both height methods", func(t *testing.T) {
+		s := &Source{} // no beacon URL configured
+
+		for _, tt := range []struct {
+			name string
+			call func() (uint64, error)
+		}{
+			{"LatestHeight", func() (uint64, error) { return s.LatestHeight(context.Background()) }},
+			{"RelayableHeight", func() (uint64, error) { return s.RelayableHeight(context.Background()) }},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				h, err := tt.call()
+				if err == nil {
+					t.Fatal("missing beacon endpoint reported as a valid height")
+				}
+				if h != 0 {
+					t.Fatalf("returned height %d alongside an error", h)
+				}
+				if !strings.Contains(err.Error(), "beacon") {
+					t.Fatalf("error must name the missing endpoint, got: %v", err)
+				}
+			})
+		}
+	})
+
+	// QueryHeader is a deliberate no-op here: the beacon builder self-fetches its
+	// finality and sync-committee data, so the module's header argument is unused.
+	// Pinned because "returns nothing, successfully" is easy to mistake for a stub
+	// somebody forgot to finish — and turning it into an error would break the module,
+	// which calls it on every update.
+	t.Run("treats QueryHeader as a no-op", func(t *testing.T) {
+		s := &Source{}
+		header, err := s.QueryHeader(context.Background(), 12345)
+		if err != nil {
+			t.Fatalf("QueryHeader must succeed as a no-op, got %v", err)
+		}
+		if header != nil {
+			t.Fatalf("QueryHeader must return no header, got %q", header)
+		}
+	})
+
+	// ETH-origin timeouts belong to the async scanner, never to the relay path. If
+	// this ever starts succeeding, two components are refunding the same packet.
+	t.Run("refuses NonMembershipProof, which the scanner owns", func(t *testing.T) {
+		s := &Source{}
+		if _, err := s.NonMembershipProof(context.Background(), nil, 10); err == nil {
+			t.Fatal("the relay path built a timeout proof the scanner owns")
+		}
+	})
+
+	// Packet bytes that do not decode must fail before the source dials anything: a
+	// zero-value Source has no clients, so reaching the network would panic rather
+	// than return the error asserted here.
+	t.Run("rejects undecodable packet bytes before dialing", func(t *testing.T) {
+		s := &Source{}
+		if _, err := s.MembershipProof(context.Background(), []byte{0xff, 0xff, 0xff, 0xff}, 10, chain.SendPacket); err == nil {
+			t.Fatal("MembershipProof accepted undecodable packet bytes")
+		}
+	})
 }

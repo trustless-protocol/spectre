@@ -82,10 +82,24 @@ func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return relayableFromLatest(latest), nil
+}
+
+// relayableFromLatest applies the AppHash lag to a committed height.
+//
+// The subtraction is the whole precondition: a commitment written at H is not in
+// the AppHash until H+2, so proving at anything above latest-2 asks the node for a
+// proof of state it has not committed to yet, and the proof fails. Subtracting too
+// much is merely slow; subtracting too little breaks every relay at the tip.
+//
+// Heights below the lag clamp to 0 rather than wrapping — this is unsigned
+// arithmetic, and on a chain that has just started, latest-2 would otherwise
+// become an enormous height.
+func relayableFromLatest(latest uint64) uint64 {
 	if latest < cosmosAppHashLag {
-		return 0, nil
+		return 0
 	}
-	return latest - cosmosAppHashLag, nil
+	return latest - cosmosAppHashLag
 }
 
 // QueryHeader returns the JSON-encoded light block at height.
