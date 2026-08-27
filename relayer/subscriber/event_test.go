@@ -3,10 +3,17 @@ package subscriber
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"io"
 	"log"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1204,4 +1211,410 @@ func TestCosmosEventKeyForPacket(t *testing.T) {
 			t.Fatalf("nil packet produced %+v, want only the height filled in", key)
 		}
 	})
+}
+
+// --- the live enqueue decision ---
+//
+// enqueueCosmosPackets decides which of the packets decoded out of a Cosmos event
+// actually reach the relay queue. Everything it drops is dropped SILENTLY as far
+// as the packet is concerned -- there is no retry behind it, so a packet wrongly
+// filtered here is simply never relayed.
+
+// cosmosTestDeps returns deps with the two client ids set and a quiet logger, so
+// a test asserts on the queue rather than on log output.
+func cosmosTestDeps(ethOnCosmos, cosmosOnEVM string) cosmosDeps {
+	return cosmosDeps{
+		IDs:    services.ClientIDs{EVMOnCosmos: ethOnCosmos, CosmosOnEVM: cosmosOnEVM},
+		Logger: log.New(io.Discard, "", 0),
+	}
+}
+
+func cosmosTestPacket(seq uint64, src, dst string) services.CosmosPacket {
+	return services.CosmosPacket{
+		Type:        services.CosmosSend,
+		BlockNumber: 100,
+		Packet:      &channeltypesv2.Packet{Sequence: seq, SourceClient: src, DestinationClient: dst},
+	}
+}
+
+func TestEnqueueCosmosPackets(t *testing.T) {
+	const (
+		ethOnCosmos = "08-wasm-0"
+		cosmosOnEVM = "eth-router-0"
+	)
+
+	t.Run("enqueues a packet on a configured client", func(t *testing.T) {
+		bb := services.NewBatchBuilder()
+		seen := map[cosmosEventKey]struct{}{}
+
+		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+			[]services.CosmosPacket{cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)}, seen, false)
+		if err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		if stats.recovered != 1 || stats.skipped != 0 {
+			t.Fatalf("stats = %+v, want recovered=1 skipped=0", stats)
+		}
+		if cosmos, _ := bb.QueueDepths(); cosmos != 1 {
+			t.Fatalf("queued %d packets, want 1", cosmos)
+		}
+	})
+
+	t.Run("drops a packet belonging to another client pair", func(t *testing.T) {
+		// A Cosmos chain relays for more than one counterparty. Enqueuing another
+		// pair's packet does not merely waste a proof: it is submitted to a router
+		// that has no commitment for it, and fails permanently.
+		bb := services.NewBatchBuilder()
+		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+			[]services.CosmosPacket{cosmosTestPacket(1, "other-src", "other-dst")},
+			map[cosmosEventKey]struct{}{}, false)
+		if err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		if stats.skipped != 1 || stats.recovered != 0 {
+			t.Fatalf("stats = %+v, want skipped=1 recovered=0", stats)
+		}
+		if cosmos, _ := bb.QueueDepths(); cosmos != 0 {
+			t.Fatalf("queued %d packets from an unrelated client pair", cosmos)
+		}
+	})
+
+	t.Run("matches on either side of either configured client", func(t *testing.T) {
+		// The four ways a packet can belong to this relayer's path. Missing one
+		// silently drops a whole direction -- an ack travels with the clients
+		// swapped relative to the send it answers.
+		for name, packet := range map[string]services.CosmosPacket{
+			"source is the eth client":         cosmosTestPacket(1, ethOnCosmos, "x"),
+			"destination is the eth client":    cosmosTestPacket(2, "x", ethOnCosmos),
+			"source is the router client":      cosmosTestPacket(3, cosmosOnEVM, "x"),
+			"destination is the router client": cosmosTestPacket(4, "x", cosmosOnEVM),
+		} {
+			t.Run(name, func(t *testing.T) {
+				bb := services.NewBatchBuilder()
+				stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+					[]services.CosmosPacket{packet}, map[cosmosEventKey]struct{}{}, false)
+				if err != nil || stats.recovered != 1 {
+					t.Fatalf("stats = %+v, err = %v; want recovered=1", stats, err)
+				}
+			})
+		}
+	})
+
+	t.Run("drops a packet that did not decode", func(t *testing.T) {
+		bb := services.NewBatchBuilder()
+		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+			[]services.CosmosPacket{{Type: services.CosmosSend}}, map[cosmosEventKey]struct{}{}, false)
+		if err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		if stats.skipped != 1 {
+			t.Fatalf("stats = %+v, want skipped=1", stats)
+		}
+	})
+
+	t.Run("enqueues a packet once across repeated deliveries", func(t *testing.T) {
+		// The live subscription and the gap recovery overlap by design, so the
+		// same packet arrives twice. Relaying it twice costs a proof and a tx for
+		// a submission the destination rejects.
+		bb := services.NewBatchBuilder()
+		seen := map[cosmosEventKey]struct{}{}
+		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+
+		for i := 0; i < 3; i++ {
+			if _, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+				[]services.CosmosPacket{packet}, seen, false); err != nil {
+				t.Fatalf("delivery %d: %v", i, err)
+			}
+		}
+		if cosmos, _ := bb.QueueDepths(); cosmos != 1 {
+			t.Fatalf("queued %d copies of one packet", cosmos)
+		}
+	})
+
+	t.Run("an enqueued packet is recorded, which is what the dedupe above rests on", func(t *testing.T) {
+		seen := map[cosmosEventKey]struct{}{}
+		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+		bb := services.NewBatchBuilder()
+
+		if _, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+			[]services.CosmosPacket{packet}, seen, false); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		if _, ok := seen[cosmosEventKeyForPacket(packet)]; !ok {
+			t.Fatal("an enqueued packet was not recorded in the seen set")
+		}
+	})
+
+	// Which drops are remembered is not uniform, and the difference is the cost of
+	// the decision that produced them. Both branches below were untested; the
+	// subtest above used to carry the name of the first one while exercising
+	// neither, which review caught.
+
+	t.Run("a packet declined during recovery is marked seen", func(t *testing.T) {
+		// This is the drop worth remembering: deciding it cost a round trip to the
+		// counterparty (HasEthPacketReceipt / HasPendingEthPacketCommitment), and a
+		// recovery pass re-reads the same range every time. A Cosmos-originated
+		// timeout reaches the same branch without an RPC -- it is declined by
+		// ShouldRelayCosmosTimeoutToEth, which is pure -- so the branch is driven
+		// here with no server standing in for the chain.
+		seen := map[cosmosEventKey]struct{}{}
+		bb := services.NewBatchBuilder()
+		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+		packet.Type = services.CosmosTimeout
+
+		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+			[]services.CosmosPacket{packet}, seen, true)
+		if err != nil {
+			t.Fatalf("recovery enqueue: %v", err)
+		}
+		if stats.recovered != 0 || stats.skipped != 1 {
+			t.Fatalf("stats = %+v; want the packet declined, not enqueued", stats)
+		}
+		if cosmos, _ := bb.QueueDepths(); cosmos != 0 {
+			t.Fatalf("a declined packet was queued anyway (depth %d)", cosmos)
+		}
+		if _, ok := seen[cosmosEventKeyForPacket(packet)]; !ok {
+			t.Fatal("a packet declined during recovery was not marked seen, so every later " +
+				"recovery pass pays for the same decision again")
+		}
+	})
+
+	t.Run("an unrelated packet is NOT marked seen", func(t *testing.T) {
+		// The opposite of the branch above, and deliberately so. Rejecting an
+		// unrelated client is a field comparison: stateless, free, and identical
+		// on every pass. Caching it would buy nothing and would grow the map with
+		// packets this relayer will never relay -- unbounded in the number of
+		// other clients on the chain, not in its own traffic.
+		seen := map[cosmosEventKey]struct{}{}
+		bb := services.NewBatchBuilder()
+		packet := cosmosTestPacket(1, "somebody-else", "not-our-router")
+
+		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+			[]services.CosmosPacket{packet}, seen, false)
+		if err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		if stats.recovered != 0 || stats.skipped != 1 {
+			t.Fatalf("stats = %+v; want the packet skipped as unrelated", stats)
+		}
+		if _, ok := seen[cosmosEventKeyForPacket(packet)]; ok {
+			t.Fatal("an unrelated packet was cached in the seen set; that map then grows with " +
+				"other clients' traffic rather than this relayer's")
+		}
+	})
+
+	t.Run("with no client ids configured every packet matches", func(t *testing.T) {
+		// The permissive default: an unconfigured relayer relays whatever it sees
+		// rather than silently nothing, which is the failure that looks like a
+		// dead relayer with a clean log.
+		bb := services.NewBatchBuilder()
+		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps("", ""), bb,
+			[]services.CosmosPacket{cosmosTestPacket(1, "anything", "at-all")},
+			map[cosmosEventKey]struct{}{}, false)
+		if err != nil || stats.recovered != 1 {
+			t.Fatalf("stats = %+v, err = %v; want recovered=1", stats, err)
+		}
+	})
+}
+
+// --- the live event handler ---
+
+// failingCosmosDeps returns deps whose Cosmos RPC answers every method with an
+// error, so a gap recovery triggered from the live path fails rather than
+// panicking on a nil client.
+func failingCosmosDeps(t *testing.T, ethOnCosmos, cosmosOnEVM string) cosmosDeps {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) +
+			`,"error":{"code":-32603,"message":"node is catching up"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := rpchttp.New(server.URL, "/websocket")
+	if err != nil {
+		t.Fatalf("create CometBFT client: %v", err)
+	}
+	deps := cosmosTestDeps(ethOnCosmos, cosmosOnEVM)
+	deps.Cosmos = services.CosmosEndpoint{Client: client}
+	return deps
+}
+
+// liveEventAtHeight builds the ResultEvent shape the CometBFT subscription
+// delivers, carrying only the tx height -- which is all the cursor logic reads.
+func liveEventAtHeight(height int64) coretypes.ResultEvent {
+	return coretypes.ResultEvent{
+		Data:   commettypes.EventDataTx{TxResult: abcitypes.TxResult{Height: height}},
+		Events: map[string][]string{},
+	}
+}
+
+// The recovery cursor is what bounds the window a restart re-scans. Advancing it
+// past a gap the relayer did NOT successfully re-scan means those heights are
+// never looked at again: the events in them are lost silently, which is the exact
+// failure the gap recovery exists to prevent.
+//
+// This is a named failure mode for this repo -- never advance a cursor on a failed
+// operation -- and the live path is where it is easiest to get wrong, because the
+// success and failure branches sit either side of one `else`.
+func TestProcessLiveCosmosEvent_CursorSurvivesAFailedGapRecovery(t *testing.T) {
+	const (
+		cursorBefore = uint64(100)
+		liveHeight   = int64(150)
+	)
+	deps := failingCosmosDeps(t, "08-wasm-0", "eth-router-0")
+	s := NewSubscriber()
+	cursor := cursorBefore
+	bb := services.NewBatchBuilder()
+
+	s.processLiveCosmosEvent(context.Background(), deps, bb, &cursor,
+		map[cosmosEventKey]struct{}{}, &cosmosLiveHealth{}, liveEventAtHeight(liveHeight))
+
+	if cursor != cursorBefore {
+		t.Fatalf("cursor advanced to %d after a failed gap recovery; heights %d-%d would never be re-scanned",
+			cursor, cursorBefore, liveHeight-1)
+	}
+}
+
+// recordedQueries collects the tx_search queries a stub node was asked, so a test
+// can assert on the height range the relayer computed rather than only on what
+// the stub chose to answer.
+type recordedQueries struct {
+	mu      sync.Mutex
+	queries []string
+}
+
+func (r *recordedQueries) add(q string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.queries = append(r.queries, q)
+}
+
+func (r *recordedQueries) all() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.queries...)
+}
+
+// emptyTxSearchCosmosDeps answers tx_search with a valid, empty result -- what a
+// node returns for a range containing no IBC transactions, which is the ordinary
+// case for most heights. It records every query it was asked.
+func emptyTxSearchCosmosDeps(t *testing.T, ethOnCosmos, cosmosOnEVM string) (cosmosDeps, *recordedQueries) {
+	t.Helper()
+	seen := &recordedQueries{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				Query string `json:"query"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		if req.Method != "tx_search" {
+			_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) +
+				`,"error":{"code":-32601,"message":"unexpected method ` + req.Method + `"}}`))
+			return
+		}
+		seen.add(req.Params.Query)
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(req.ID) +
+			`,"result":{"txs":[],"total_count":"0"}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := rpchttp.New(server.URL, "/websocket")
+	if err != nil {
+		t.Fatalf("create CometBFT client: %v", err)
+	}
+	deps := cosmosTestDeps(ethOnCosmos, cosmosOnEVM)
+	deps.Cosmos = services.CosmosEndpoint{Client: client}
+	return deps, seen
+}
+
+// The mirror of the above: when the gap scan succeeds the cursor MUST move, or
+// every later event re-scans the same range and the relayer spends its time
+// re-reading history instead of relaying.
+//
+// The gap here is real -- heights 100 to 149 are scanned against a node that
+// answers -- so this exercises the success branch rather than the guard that
+// skips an empty range.
+func TestProcessLiveCosmosEvent_CursorAdvancesOnASuccessfulGapRecovery(t *testing.T) {
+	const (
+		cursorBefore = uint64(100)
+		liveHeight   = int64(150)
+	)
+	deps, queries := emptyTxSearchCosmosDeps(t, "08-wasm-0", "eth-router-0")
+	s := NewSubscriber()
+	cursor := cursorBefore
+
+	s.processLiveCosmosEvent(context.Background(), deps, services.NewBatchBuilder(), &cursor,
+		map[cosmosEventKey]struct{}{}, &cosmosLiveHealth{}, liveEventAtHeight(liveHeight))
+
+	if cursor != uint64(liveHeight) {
+		t.Fatalf("cursor = %d after a successful scan of %d-%d, want %d; a cursor that "+
+			"does not move makes every later event re-scan the same range",
+			cursor, cursorBefore, liveHeight-1, liveHeight)
+	}
+
+	// The gap ENDS one below the live height. Including the live height would
+	// re-scan the very event being processed here, enqueuing it twice -- once from
+	// the live path and once from the recovery beside it.
+	asked := queries.all()
+	if len(asked) == 0 {
+		t.Fatal("no tx_search was issued, so no gap was scanned")
+	}
+	wantRange := fmt.Sprintf("tx.height >= %d AND tx.height <= %d", cursorBefore, liveHeight-1)
+	for _, q := range asked {
+		if !strings.Contains(q, wantRange) {
+			t.Fatalf("scanned %q, want the range %q", q, wantRange)
+		}
+	}
+}
+
+// A live event must count towards liveness even when the gap recovery beside it
+// fails. The health signal answers "is the subscription still delivering", and
+// conflating it with "is recovery healthy" makes a working subscription look dead
+// and triggers a reconnect that loses in-flight events.
+func TestProcessLiveCosmosEvent_RecordsLivenessDespiteRecoveryFailure(t *testing.T) {
+	deps := failingCosmosDeps(t, "08-wasm-0", "eth-router-0")
+	s := NewSubscriber()
+	cursor := uint64(100)
+	health := &cosmosLiveHealth{}
+
+	s.processLiveCosmosEvent(context.Background(), deps, services.NewBatchBuilder(), &cursor,
+		map[cosmosEventKey]struct{}{}, health, liveEventAtHeight(150))
+
+	if health.events != 1 {
+		t.Fatalf("live health recorded %d events, want 1", health.events)
+	}
+	if health.lastSeen.IsZero() {
+		t.Fatal("live health did not record when the event arrived")
+	}
+}
+
+// An event with no height still has to be processed: the packets in it are real.
+// What must not happen is a prune keyed on height zero, which would compute a
+// retention floor from nothing.
+func TestProcessLiveCosmosEvent_HeightlessEventDoesNotPrune(t *testing.T) {
+	deps := cosmosTestDeps("08-wasm-0", "eth-router-0")
+	s := NewSubscriber()
+	cursor := uint64(100)
+	seen := map[cosmosEventKey]struct{}{
+		{Sequence: 1, Height: 1}: {}, // far below any plausible retention floor
+	}
+
+	s.processLiveCosmosEvent(context.Background(), deps, services.NewBatchBuilder(), &cursor,
+		seen, &cosmosLiveHealth{}, coretypes.ResultEvent{Events: map[string][]string{}})
+
+	if len(seen) != 1 {
+		t.Fatalf("an event with no height pruned the seen set (%d entries left)", len(seen))
+	}
+	if cursor != 100 {
+		t.Fatalf("cursor moved to %d on an event with no height", cursor)
+	}
 }
