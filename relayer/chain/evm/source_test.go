@@ -2,7 +2,11 @@ package evm
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +14,7 @@ import (
 	"relayer/services"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 func ethPacket(t services.EthPacketType) services.EthPacket {
@@ -279,6 +284,126 @@ func TestSource(t *testing.T) {
 		s := &Source{}
 		if _, err := s.MembershipProof(context.Background(), []byte{0xff, 0xff, 0xff, 0xff}, 10, chain.SendPacket); err == nil {
 			t.Fatal("MembershipProof accepted undecodable packet bytes")
+		}
+	})
+}
+
+// proofRecorder is an EVM JSON-RPC stub that records the block eth_getProof was
+// asked for. The proof body is irrelevant to these tests -- the question is only
+// WHICH block the source proves at, so the stub answers with an error and the
+// assertion reads the recorded parameter.
+type proofRecorder struct {
+	server *httptest.Server
+
+	mu     sync.Mutex
+	blocks []string
+}
+
+func newProofRecorder(t *testing.T) (*proofRecorder, *ethclient.Client) {
+	t.Helper()
+	r := &proofRecorder{}
+	r.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		var call struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params []any           `json:"params"`
+		}
+		if err := json.NewDecoder(req.Body).Decode(&call); err != nil {
+			t.Errorf("stub: decode request: %v", err)
+			return
+		}
+		if call.Method == "eth_getProof" && len(call.Params) == 3 {
+			if block, ok := call.Params[2].(string); ok {
+				r.mu.Lock()
+				r.blocks = append(r.blocks, block)
+				r.mu.Unlock()
+			}
+		}
+		w.Header().Set("content-type", "application/json")
+		_, _ = w.Write([]byte(`{"jsonrpc":"2.0","id":` + string(call.ID) +
+			`,"error":{"code":-32000,"message":"stub: proof body not modelled"}}`))
+	}))
+	t.Cleanup(r.server.Close)
+
+	client, err := ethclient.Dial(r.server.URL)
+	if err != nil {
+		t.Fatalf("dial stub: %v", err)
+	}
+	t.Cleanup(client.Close)
+	return r, client
+}
+
+func (r *proofRecorder) requestedBlocks() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.blocks...)
+}
+
+func livePacket(t *testing.T) []byte {
+	t.Helper()
+	packet := channeltypesv2.Packet{
+		Sequence:          7,
+		SourceClient:      "client-eth",
+		DestinationClient: "08-wasm-8",
+		TimeoutTimestamp:  uint64(time.Now().Add(time.Hour).Unix()),
+	}
+	raw, err := packet.Marshal()
+	if err != nil {
+		t.Fatalf("marshal packet: %v", err)
+	}
+	return raw
+}
+
+// The proof MUST be taken at the height the module hands down, not at whatever
+// the on-chain client currently reports.
+//
+// Folding is why: the client update and the packet go out in ONE tx, so at
+// proof-build time the update is not on chain and the client still reports the
+// PREVIOUS execution block -- while the MsgRecvPacket names the consensus height
+// the folded update installs. Proving at the client's current height there builds
+// a proof against one state root and declares another, and the light client
+// rejects it with "get trie node failed: Invalid state root".
+func TestMembershipProof(t *testing.T) {
+	cases := []struct {
+		name      string
+		eventType chain.EventType
+	}{
+		{"a recv proves the commitment at the height it is given", chain.SendPacket},
+		{"an ack proves the acknowledgement at the height it is given", chain.AckPacket},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			recorder, client := newProofRecorder(t)
+			s := &Source{evm: services.EVMEndpoint{Client: client}}
+
+			// The stub cannot produce a real proof, so an error here is expected;
+			// the recorded request is the subject.
+			_, _ = s.MembershipProof(context.Background(), livePacket(t), 0xabcdef, tc.eventType)
+
+			blocks := recorder.requestedBlocks()
+			if len(blocks) != 1 {
+				t.Fatalf("eth_getProof was called %d times, want exactly 1", len(blocks))
+			}
+			if !strings.EqualFold(blocks[0], "0xabcdef") {
+				t.Fatalf("proof was requested at block %s, want 0xabcdef -- the height the module "+
+					"asked for. Proving at any other block builds a proof against a state root the "+
+					"destination will not be verifying against", blocks[0])
+			}
+		})
+	}
+
+	// Zero is not "latest": go-ethereum sends it as block 0, so a caller that
+	// forgot to supply a height would silently prove against genesis and fail on
+	// chain, far from where the mistake was made.
+	t.Run("rejects a zero height", func(t *testing.T) {
+		recorder, client := newProofRecorder(t)
+		s := &Source{evm: services.EVMEndpoint{Client: client}}
+
+		if _, err := s.MembershipProof(context.Background(), livePacket(t), 0, chain.SendPacket); err == nil {
+			t.Fatal("MembershipProof accepted height 0; it would have proven against genesis")
+		}
+		if got := len(recorder.requestedBlocks()); got != 0 {
+			t.Fatalf("eth_getProof was called %d times for a zero height; it must fail before dialing", got)
 		}
 	})
 }

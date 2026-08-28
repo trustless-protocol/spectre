@@ -144,9 +144,15 @@ func highestBeaconFinalizedSlot(payloads [][]byte) (uint64, error) {
 
 // RelayPackets builds the Cosmos-bound IBC messages (recv/ack) from the given
 // ETH-origin packets + storage proofs and submits them via SendCosmosTxBatch.
-// The proof height is the on-chain 08-wasm client's latest slot (read here so it
-// matches the execution block the ETH source built the proof against). ETH-origin
-// timeouts are handled by the async scanner, not this path.
+//
+// The declared proof height is the on-chain 08-wasm client's latest slot, whose
+// execution block the ETH source is expected to have built the proof against.
+// That used to be an assumption resting on both sides reading the same client
+// state; requireProofsBuiltAt now checks it, because the module's view of the
+// destination client can lag the chain (another relayer, a manual update-client)
+// and the resulting failure surfaces as an opaque trie error from inside CosmWasm.
+//
+// ETH-origin timeouts are handled by the async scanner, not this path.
 func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) error {
 	if len(packets) == 0 {
 		return nil
@@ -163,6 +169,9 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 	ethClientState, err := relayerclient.GetEthereumClientStateWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
+	}
+	if err := requireProofsBuiltAt(packets, ethClientState.LatestExecutionBlockNumber); err != nil {
+		return err
 	}
 	proofHeight := clienttypes.Height{RevisionNumber: 0, RevisionHeight: ethClientState.LatestSlot}
 	msgs, err := buildPacketMessages(signerAddr, proofHeight, packets)
@@ -208,6 +217,12 @@ func (d *Destination) RelayWithUpdate(ctx context.Context, clientID string, upda
 	if err != nil {
 		return fmt.Errorf("cosmos dest: decode beacon update: %w", err)
 	}
+	// update.Height and finalizedSlot are the execution block and the beacon slot of
+	// the SAME finalized header (chain/evm.BeaconBuilder), so a packet proven at
+	// update.Height verifies against the consensus state this update installs.
+	if err := requireProofsBuiltAt(packets, update.Height); err != nil {
+		return err
+	}
 	packetMsgs, err := buildPacketMessages(signer, clienttypes.Height{RevisionNumber: 0, RevisionHeight: finalizedSlot}, packets)
 	if err != nil {
 		return err
@@ -230,6 +245,29 @@ func (d *Destination) RelayWithUpdate(ctx context.Context, clientID string, upda
 			return chain.Permanent(err)
 		}
 		return err
+	}
+	return nil
+}
+
+// requireProofsBuiltAt fails when the proofs were built against a different
+// execution block than the consensus height the messages are about to declare.
+//
+// The two are chosen in different places -- the source builds the proof at the
+// height the module hands it, the destination names the consensus height it is
+// installing or already trusts -- so nothing but this check ties them together.
+// When they drift apart the packet still submits, and the light client rejects it
+// with "get trie node failed: Invalid state root": a message about the trie, from
+// inside CosmWasm, that names neither height. Failing here instead names both.
+//
+// Transient on purpose: the module re-queues, and the next flush rebuilds the
+// proof against a client state it has re-read.
+func requireProofsBuiltAt(packets []chain.RelayPacket, execBlock uint64) error {
+	for _, rp := range packets {
+		if rp.Height != execBlock {
+			return fmt.Errorf(
+				"cosmos dest: proof for seq=%d was built at execution block %d but this batch declares the consensus height at block %d; not submitting a proof that cannot verify",
+				rp.Sequence, rp.Height, execBlock)
+		}
 	}
 	return nil
 }

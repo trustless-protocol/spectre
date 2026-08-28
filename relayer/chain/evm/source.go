@@ -226,15 +226,30 @@ func sendPacketExpired(pkt channeltypesv2.Packet, now time.Time) bool {
 }
 
 // MembershipProof builds an Ethereum storage proof that the packet's commitment
-// (recv) or ack exists, wrapping client.GetEthMembershipProof. The proof is taken
-// at the execution block of the on-chain 08-wasm client's latest slot (read from
-// Cosmos), so it verifies against the client state the destination trusts. The
-// height argument is not the proof block (the proof block is read from the
-// on-chain client above), so it is ignored.
-func (s *Source) MembershipProof(ctx context.Context, packet []byte, _ uint64, eventType chain.EventType) ([]byte, error) {
-	pkt, ethClientState, err := s.decodePacketAndClientState(ctx, packet)
-	if err != nil {
-		return nil, err
+// (recv) or ack exists, wrapping client.GetEthMembershipProof.
+//
+// height is the EXECUTION BLOCK the proof is taken at, as chain.Source specifies
+// and as chain/README.md step 4 spells out: "targeting the prepared update height
+// when it is not on-chain yet". The Cosmos and L2 sources already honour it; this
+// one used to ignore it and read the block from the on-chain client instead.
+//
+// That was wrong for every folded batch. Folding submits the client update and the
+// packet in ONE tx, so at proof-build time the update is not on chain yet: the
+// client still reports the PREVIOUS execution block, while the MsgRecvPacket the
+// destination builds names the consensus height the folded update installs
+// (chain/cosmos.RelayWithUpdate). The proof was therefore built against one state
+// root and verified against another, and the client rejected it with
+// "get trie node failed: Invalid state root" -- a message that points at the trie,
+// not at the height mismatch that caused it.
+func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint64, eventType chain.EventType) ([]byte, error) {
+	// Zero is not "latest" here -- it would prove at genesis and fail every time,
+	// far from where the mistake was made.
+	if height == 0 {
+		return nil, fmt.Errorf("eth source: MembershipProof needs the execution block to prove at, got 0")
+	}
+	var pkt channeltypesv2.Packet
+	if err := pkt.Unmarshal(packet); err != nil {
+		return nil, fmt.Errorf("eth source: decode packet: %w", err)
 	}
 	var clientID string
 	var pathType byte
@@ -261,7 +276,7 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, _ uint64, e
 	return relayerclient.GetEthMembershipProof(
 		proofCtx, s.evm.EthClient(), s.evm.Contracts.Router, path,
 		ethcommon.HexToHash(services.ICS26_IBC_STORAGE_SLOT),
-		new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber),
+		new(big.Int).SetUint64(height),
 	)
 }
 
@@ -270,20 +285,4 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, _ uint64, e
 // Subscribe->relay flow, so no TimeoutPacket event reaches here.
 func (s *Source) NonMembershipProof(_ context.Context, _ []byte, _ uint64) ([]byte, error) {
 	return nil, fmt.Errorf("eth source: NonMembershipProof unused (timeouts are scanner-handled)")
-}
-
-// decodePacketAndClientState decodes the proto packet and reads the on-chain
-// 08-wasm ETH client state (for the proof's execution block).
-func (s *Source) decodePacketAndClientState(ctx context.Context, packet []byte) (channeltypesv2.Packet, *relayerclient.EthereumClientState, error) {
-	var pkt channeltypesv2.Packet
-	if err := pkt.Unmarshal(packet); err != nil {
-		return channeltypesv2.Packet{}, nil, fmt.Errorf("eth source: decode packet: %w", err)
-	}
-	queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	cs, err := relayerclient.GetEthereumClientStateWithContext(queryCtx, s.cosmos.CosmosClient(), s.ids.EVMOnCosmos)
-	if err != nil {
-		return channeltypesv2.Packet{}, nil, fmt.Errorf("eth source: eth client state: %w", err)
-	}
-	return pkt, cs, nil
 }

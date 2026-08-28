@@ -3,6 +3,7 @@ package cosmos
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -261,6 +262,8 @@ func TestDestination(t *testing.T) {
 	// batch: the whole point of the call is to install the update the packets prove
 	// against. Falling through would submit packets at a proof height the destination
 	// client has not reached.
+	relayWithUpdateProofHeightSubtests(t)
+
 	t.Run("refuses folding with no client update", func(t *testing.T) {
 		d := &Destination{worker: services.NewWorker(&atomicTestTxHandler{}, nil)}
 		err := d.RelayWithUpdate(context.Background(), "client-0", chain.ClientUpdate{}, nil)
@@ -362,6 +365,148 @@ func TestEthClientExpiry(t *testing.T) {
 		want := time.Unix(int64(genesisTime+onePeriod), 0)
 		if !got.Equal(want) {
 			t.Fatalf("expiry = %s, want %s (genesis time plus one period)", got, want)
+		}
+	})
+}
+
+// unreachableCosmos is an endpoint whose queries fail rather than panic, so a test
+// can run PAST a check and observe that the check was not what stopped it.
+func unreachableCosmos(t *testing.T) services.CosmosEndpoint {
+	t.Helper()
+	client, err := relayerclient.DialCosmosRPC("http://127.0.0.1:1", "/websocket", 200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("dial unreachable cosmos: %v", err)
+	}
+	return services.CosmosEndpoint{Client: client}
+}
+
+// The proof block and the consensus height a batch declares are chosen in two
+// different places, and nothing but this check ties them together. Getting it
+// wrong does not fail locally: the packet submits, and the light client rejects it
+// with "get trie node failed: Invalid state root" -- a message from inside CosmWasm
+// that names neither height.
+func TestRequireProofsBuiltAt(t *testing.T) {
+	cases := []struct {
+		name      string
+		packets   []chain.RelayPacket
+		execBlock uint64
+		wantErr   bool
+		why       string
+	}{
+		{
+			name:      "matching heights pass",
+			packets:   []chain.RelayPacket{{Sequence: 1, Height: 100}},
+			execBlock: 100,
+			wantErr:   false,
+			why:       "the proof was built at the block this batch declares",
+		},
+		{
+			name:      "a proof built below the declared height is refused",
+			packets:   []chain.RelayPacket{{Sequence: 1, Height: 99}},
+			execBlock: 100,
+			wantErr:   true,
+			why:       "this is the folded case: the update installs block 100 while the client still reported 99 when the proof was built",
+		},
+		{
+			name:      "a proof built above the declared height is refused",
+			packets:   []chain.RelayPacket{{Sequence: 1, Height: 101}},
+			execBlock: 100,
+			wantErr:   true,
+			why:       "a proof ahead of the declared height verifies against a root the client does not have either",
+		},
+		{
+			name:      "one bad packet in a batch fails the batch",
+			packets:   []chain.RelayPacket{{Sequence: 1, Height: 100}, {Sequence: 2, Height: 97}},
+			execBlock: 100,
+			wantErr:   true,
+			why:       "every message in the tx names the same consensus height, so one mismatch dooms the whole atomic batch",
+		},
+		{
+			name:      "no packets is not a violation",
+			packets:   nil,
+			execBlock: 100,
+			wantErr:   false,
+			why:       "an empty batch has nothing to prove and must not become an error",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireProofsBuiltAt(tc.packets, tc.execBlock)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("requireProofsBuiltAt(...) error = %v, want error %v: %s", err, tc.wantErr, tc.why)
+			}
+		})
+	}
+
+	// The failing message must name BOTH heights. The whole cost of this bug was
+	// that the on-chain error named neither, so the mismatch had to be
+	// reconstructed from the block explorer.
+	t.Run("the message names both heights", func(t *testing.T) {
+		err := requireProofsBuiltAt([]chain.RelayPacket{{Sequence: 42, Height: 11581600}}, 11581694)
+		if err == nil {
+			t.Fatal("a mismatch must be an error")
+		}
+		for _, want := range []string{"42", "11581600", "11581694"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error must name %q so an operator can see the mismatch without a block explorer; got: %v", want, err)
+			}
+		}
+	})
+}
+
+// signingTestTxHandler is atomicTestTxHandler plus the signer lookup
+// RelayWithUpdate does before it reaches the guard.
+type signingTestTxHandler struct{ services.TransactionHandler }
+
+func (*signingTestTxHandler) SendCosmosTxBatchAtomic(context.Context, services.CosmosEndpoint, []any) error {
+	return nil
+}
+
+func (*signingTestTxHandler) CosmosSignerAddress() (string, error) {
+	return "cosmos1test", nil
+}
+
+func relayWithUpdateProofHeightSubtests(t *testing.T) {
+	// The guard has to be WIRED into the folded path, not merely defined. This is
+	// the exact shape of the production failure: an update installing one
+	// execution block, carrying a packet proven at an earlier one.
+	t.Run("refuses a proof from another block", func(t *testing.T) {
+		d := &Destination{worker: services.NewWorker(&signingTestTxHandler{}, nil)}
+		update := chain.ClientUpdate{Height: 11581694, Payloads: [][]byte{mustBeaconHeader(t, "11009952")}}
+		packets := []chain.RelayPacket{{
+			Type:     chain.SendPacket,
+			Sequence: 7,
+			Height:   11581600, // the block the client reported BEFORE this update
+			Packet:   mustMarshalCosmosPacket(t),
+		}}
+
+		err := d.RelayWithUpdate(context.Background(), "08-wasm-8", update, packets)
+		if err == nil {
+			t.Fatal("the folded relay submitted a packet proven against a different block")
+		}
+		if !strings.Contains(err.Error(), "11581600") || !strings.Contains(err.Error(), "11581694") {
+			t.Fatalf("expected the proof-height mismatch, got a different failure: %v", err)
+		}
+	})
+
+	// The control. Without it a guard that rejected every folded batch would pass
+	// the case above -- so this pins that a matching height gets PAST the check. It
+	// then fails further on for want of a Cosmos endpoint, which is the point: the
+	// guard is no longer what stops it.
+	t.Run("accepts a proof from the update's own block", func(t *testing.T) {
+		d := &Destination{worker: services.NewWorker(&signingTestTxHandler{}, nil), cosmos: unreachableCosmos(t)}
+		update := chain.ClientUpdate{Height: 11581694, Payloads: [][]byte{mustBeaconHeader(t, "11009952")}}
+		packets := []chain.RelayPacket{{
+			Type:     chain.SendPacket,
+			Sequence: 7,
+			Height:   11581694,
+			Packet:   mustMarshalCosmosPacket(t),
+		}}
+
+		err := d.RelayWithUpdate(context.Background(), "08-wasm-8", update, packets)
+		if err != nil && strings.Contains(err.Error(), "was built at execution block") {
+			t.Fatalf("the guard rejected a proof built at the update's own block: %v", err)
 		}
 	})
 }
