@@ -3,10 +3,13 @@ package client
 import (
 	"context"
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
+	cmtlog "github.com/cometbft/cometbft/libs/log"
 	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	jsonrpcclient "github.com/cometbft/cometbft/rpc/jsonrpc/client"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -52,7 +55,66 @@ func DialCosmosRPC(remote, wsEndpoint string, timeout time.Duration) (*rpchttp.H
 	if err != nil {
 		return nil, fmt.Errorf("cosmos rpc %s: %w", remote, err)
 	}
+	c.SetLogger(cometLogger{})
 	return c, nil
+}
+
+// cometLogger routes CometBFT's structured logger into the standard logger the
+// rest of the relayer writes to.
+//
+// It is not cosmetic. The two failures that decide whether the live
+// subscription is alive are reported ONLY through this interface, and the
+// client's logger is a nop until SetLogger is called — which nothing in this
+// repository did:
+//
+//	rpc/client/http/http.go, WSEvents.redoSubscriptionsAfter
+//	    "Failed to resubscribe"                                     <- resubscribe gave up
+//	rpc/client/http/http.go, WSEvents.eventListener
+//	    "wanted to publish ResultEvent, but out channel is full"    <- an event was DROPPED
+//
+// Both are silent losses: neither closes the Go channel the subscriber selects
+// on, so without this adapter a subscription can stop delivering and leave no
+// trace in any log. See cosmosLiveEventBuffer in subscriber/event.go for the
+// drop, and the resubscribe path for the other.
+//
+// Scope note: rpchttp builds its inner WSClient before SetLogger can reach it
+// (newWSEvents calls w.ws.SetLogger(w.Logger) with the nop), so this covers the
+// WSEvents layer — where both lines above live — and not the transport layer
+// below it.
+type cometLogger struct{ fields []interface{} }
+
+var _ cmtlog.Logger = cometLogger{}
+
+// Debug is dropped: CometBFT emits per-message debug output on this path, which
+// would bury the relayer's own log without adding a decision an operator makes.
+func (cometLogger) Debug(string, ...interface{}) {}
+
+func (l cometLogger) Info(msg string, keyvals ...interface{}) { l.print("INFO", msg, keyvals) }
+
+func (l cometLogger) Error(msg string, keyvals ...interface{}) { l.print("ERROR", msg, keyvals) }
+
+func (l cometLogger) With(keyvals ...interface{}) cmtlog.Logger {
+	// Copy rather than append in place: the receiver's backing array may be
+	// shared with another logger derived from the same parent.
+	fields := make([]interface{}, 0, len(l.fields)+len(keyvals))
+	fields = append(fields, l.fields...)
+	fields = append(fields, keyvals...)
+	return cometLogger{fields: fields}
+}
+
+func (l cometLogger) print(level, msg string, keyvals []interface{}) {
+	var b strings.Builder
+	fmt.Fprintf(&b, "[cometbft] %s %s", level, msg)
+	all := make([]interface{}, 0, len(l.fields)+len(keyvals))
+	all = append(all, l.fields...)
+	all = append(all, keyvals...)
+	for i := 0; i+1 < len(all); i += 2 {
+		fmt.Fprintf(&b, " %v=%v", all[i], all[i+1])
+	}
+	if len(all)%2 == 1 {
+		fmt.Fprintf(&b, " %v=(MISSING)", all[len(all)-1])
+	}
+	log.Print(b.String())
 }
 
 // DialEthRPC connects to an Ethereum-family JSON-RPC endpoint, applying the

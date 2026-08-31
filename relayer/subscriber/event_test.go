@@ -833,51 +833,143 @@ func TestCosmosIndexedHeightStopsShortOfTheHead(t *testing.T) {
 	}
 }
 
-// Recovery quietly doing the live path's job is the exact state that hid a lost
-// packet for 14 minutes. It must be reported — once per outage, not per scan.
-func TestLiveHealthReportsRecoveryDoingLiveWork(t *testing.T) {
+// A live subscription that stops delivering is invisible by construction: it
+// looks exactly like a quiet chain. These pin the two signals that tell them
+// apart -- the chain still producing blocks, and how long the silence has run.
+func TestLivePathStale(t *testing.T) {
 	t.Parallel()
 
-	var liveHealth cosmosLiveHealth
-	start := time.Now()
+	// fresh returns a health tracker whose delivery clock starts at now, as
+	// subscribeCosmosOnce sets it immediately after subscribing.
+	fresh := func(now time.Time) *cosmosLiveHealth {
+		h := &cosmosLiveHealth{}
+		h.recordSubscribed(now)
+		return h
+	}
+	start := time.Unix(1_700_000_000, 0)
 
-	// First recovery hit with no live history: take the current time as the
-	// reference rather than crying wolf at startup.
-	if liveHealth.recoveryIsCoveringForLive(1, start) {
-		t.Fatal("warned before any live baseline existed")
-	}
-	// Still inside the window: not yet evidence of a dead subscription.
-	if liveHealth.recoveryIsCoveringForLive(1, start.Add(cosmosLivePathStaleAfter-time.Second)) {
-		t.Fatal("warned while the live path was only briefly quiet")
-	}
-	// Past the window with recovery still finding packets: report.
-	if !liveHealth.recoveryIsCoveringForLive(1, start.Add(cosmosLivePathStaleAfter+time.Second)) {
-		t.Fatal("did not report recovery doing the live path's job")
-	}
-	// ...but only once, or a long outage floods the log.
-	if liveHealth.recoveryIsCoveringForLive(1, start.Add(cosmosLivePathStaleAfter+time.Minute)) {
-		t.Fatal("repeated the warning for the same outage")
-	}
+	// An idle chain delivers nothing because there is nothing to deliver.
+	// Reconnecting here would tear down a healthy subscription every few minutes.
+	t.Run("a chain that is not advancing is never stale", func(t *testing.T) {
+		h := fresh(start)
+		stale, _, report := h.livePathStale(false, start.Add(24*time.Hour))
+		if stale || report {
+			t.Fatalf("stale=%v report=%v on an idle chain; silence proves nothing without block production", stale, report)
+		}
+	})
 
-	// A live event clears it, and a later outage reports again.
-	liveHealth.recordEvent()
-	if liveHealth.events != 1 {
-		t.Fatalf("events = %d, want 1", liveHealth.events)
+	t.Run("silence inside the window is not yet evidence", func(t *testing.T) {
+		h := fresh(start)
+		if stale, _, _ := h.livePathStale(true, start.Add(cosmosLivePathStaleAfter-time.Second)); stale {
+			t.Fatal("reported a dead subscription while it was only briefly quiet")
+		}
+	})
+
+	// The case the watchdog exists for. Note the clock runs from the SUBSCRIBE,
+	// so a subscription that never delivered a single event is caught -- the old
+	// version measured from the first live event and so had nothing to measure.
+	t.Run("a subscription that never delivers is caught", func(t *testing.T) {
+		h := fresh(start)
+		stale, silence, report := h.livePathStale(true, start.Add(cosmosLivePathStaleAfter+time.Second))
+		if !stale || !report {
+			t.Fatalf("stale=%v report=%v; a subscription silent past the window while the chain advances must reconnect and say so", stale, report)
+		}
+		if silence < cosmosLivePathStaleAfter {
+			t.Fatalf("silence = %s, want at least %s: the line has to carry the real number", silence, cosmosLivePathStaleAfter)
+		}
+	})
+
+	// The half that was missing. A latched bool cleared only by a live event
+	// means an outage that never ends produces exactly one line for the whole
+	// life of the process -- and the log then reads as though it recovered.
+	t.Run("a permanent outage keeps reporting on the ladder", func(t *testing.T) {
+		h := fresh(start)
+		now := start.Add(cosmosLivePathStaleAfter)
+		if _, _, report := h.livePathStale(true, now); !report {
+			t.Fatal("the first stale pass must report")
+		}
+
+		// Every 30s tick up to (not including) the five-minute step: same
+		// threshold, so every one of them must be silent.
+		staleSince := now
+		for tick := 30 * time.Second; tick < 5*time.Minute; tick += 30 * time.Second {
+			if _, _, report := h.livePathStale(true, staleSince.Add(tick)); report {
+				t.Fatalf("repeated the warning %s into one threshold; that is 120 lines an hour", tick)
+			}
+		}
+
+		// Crossing 5m, then 15m, then an hour each release exactly one more line.
+		for _, step := range []time.Duration{5 * time.Minute, 15 * time.Minute, time.Hour, 2 * time.Hour} {
+			if _, _, report := h.livePathStale(true, start.Add(cosmosLivePathStaleAfter+step)); !report {
+				t.Fatalf("an outage still dead at %s said nothing; silence reads as recovery", step)
+			}
+		}
+	})
+
+	t.Run("a live event ends the outage and resets the ladder", func(t *testing.T) {
+		h := fresh(start)
+		h.livePathStale(true, start.Add(time.Hour)) // outage under way, thresholds burnt
+		h.recordEvent()
+		if !h.staleSince.IsZero() || h.reported != 0 {
+			t.Fatalf("a delivered event must end the outage: staleSince=%v reported=%d", h.staleSince, h.reported)
+		}
+		if stale, _, _ := h.livePathStale(true, h.lastSeen.Add(time.Second)); stale {
+			t.Fatal("a subscription that just delivered must not be torn down")
+		}
+		// And a NEW outage after it reports from the first step again.
+		if _, _, report := h.livePathStale(true, h.lastSeen.Add(cosmosLivePathStaleAfter+time.Second)); !report {
+			t.Fatal("a fresh outage must report again rather than inherit the old one's ladder")
+		}
+	})
+
+	// Reconnecting is an attempt to fix the outage, not evidence it is over.
+	// Resetting the ladder here would make a reconnect loop silent after one line.
+	t.Run("resubscribing does not end the outage", func(t *testing.T) {
+		h := fresh(start)
+		h.livePathStale(true, start.Add(cosmosLivePathStaleAfter))
+		h.recordSubscribed(start.Add(cosmosLivePathStaleAfter))
+		if h.staleSince.IsZero() {
+			t.Fatal("resubscribing cleared the outage; only a delivered event may do that")
+		}
+	})
+}
+
+// Block production is what makes silence meaningful, so the baseline pass must
+// not claim an advance it cannot know about.
+func TestObserveChainHeight(t *testing.T) {
+	t.Parallel()
+
+	var h cosmosLiveHealth
+	if h.observeChainHeight(100) {
+		t.Fatal("the first observation has nothing to compare against and must not report an advance")
 	}
-	if !liveHealth.recoveryIsCoveringForLive(1, liveHealth.lastSeen.Add(cosmosLivePathStaleAfter+time.Second)) {
-		t.Fatal("a fresh outage after recovery must report again")
+	if h.observeChainHeight(100) {
+		t.Fatal("an unchanged head is not an advance")
+	}
+	if !h.observeChainHeight(101) {
+		t.Fatal("a rising head is the signal that the chain is producing")
 	}
 }
 
-// A scan that finds nothing says nothing about the live path — recovery finding
-// no work is the healthy state, not a symptom.
-func TestLiveHealthIgnoresEmptyRecoveryScans(t *testing.T) {
+func TestAgeReportThreshold(t *testing.T) {
 	t.Parallel()
 
-	var liveHealth cosmosLiveHealth
-	liveHealth.recordEvent()
-	if liveHealth.recoveryIsCoveringForLive(0, liveHealth.lastSeen.Add(24*time.Hour)) {
-		t.Fatal("an empty scan must not be read as the live path failing")
+	cases := []struct {
+		age  time.Duration
+		want int
+		why  string
+	}{
+		{0, 1, "the first stale pass always reports"},
+		{4 * time.Minute, 1, "no new information yet"},
+		{5 * time.Minute, 2, ""},
+		{15 * time.Minute, 3, ""},
+		{time.Hour, 4, ""},
+		{3 * time.Hour, 6, "past the ladder it keeps counting hourly, so an overnight outage leaves a trail"},
+	}
+	for _, tc := range cases {
+		if got := ageReportThreshold(tc.age); got != tc.want {
+			t.Fatalf("ageReportThreshold(%s) = %d, want %d: %s", tc.age, got, tc.want, tc.why)
+		}
 	}
 }
 
