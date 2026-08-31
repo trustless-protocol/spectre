@@ -51,13 +51,13 @@ if python3 scripts/solidity/check_compatibility.py --contract-manifest "$tmp_dir
 fi
 echo "negative case rejected: fully-qualified-artifact"
 
-jq '.provenance_path = ".artifacts/does-not-exist.json" | .artifacts.solidity_verifier.sha256 = "drift"' \
+jq '.artifacts.r1cs.sha256 = "drift"' \
   scripts/solidity/verifier-manifest.json > "$tmp_dir/verifier.json"
 if python3 scripts/solidity/check_compatibility.py --verifier-manifest "$tmp_dir/verifier.json" >/dev/null 2>&1; then
-  echo "negative case unexpectedly passed: verifier-provenance" >&2
+  echo "negative case unexpectedly passed: deterministic-r1cs" >&2
   exit 1
 fi
-echo "negative case rejected: verifier-provenance"
+echo "negative case rejected: deterministic-r1cs"
 
 jq '.generated_digests["abi/ICS26Router.json"] = "drift"' \
   scripts/solidity/tooling-rename-manifest.json > "$tmp_dir/tooling-renames.json"

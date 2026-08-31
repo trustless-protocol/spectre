@@ -4,25 +4,21 @@
     4
   ],
   "generator": "cd relayer && go run ./prover/cmd ./bin ../contracts/verifiers",
-  "setup": "Groth16 setup is randomized; these hashes identify one paired local set and are not deterministic release hashes.",
+  "setup": "Groth16 setup is randomized. Only deterministic R1CS output is hash-locked; the generator smoke-tests each staged PK/VK pair before publishing it with its Solidity verifier.",
   "artifacts": {
     "r1cs": {
       "path": "relayer/bin/n4/r1cs.bin",
       "sha256": "15956ca7a75554f5f787b4a73d010cad31a88ae552bd8e1e8330e84b8fee1406"
     },
     "proving_key": {
-      "path": "relayer/bin/n4/pk.bin",
-      "sha256": "1e4ce7eee637b8ecc67eaa7ee8b4a74491668f92138fed9b5b83e5f54d437b93"
+      "path": "relayer/bin/n4/pk.bin"
     },
     "verifying_key": {
-      "path": "relayer/bin/n4/vk.bin",
-      "sha256": "dc4d97fbd4ce3de63451b189a9f11249fad2fa9320cf52671e769fa155bfe47e"
+      "path": "relayer/bin/n4/vk.bin"
     },
     "solidity_verifier": {
-      "path": "contracts/verifiers/Groth16Verifier_N4.sol",
-      "sha256": "7b8aec30e110f8959dc29826ce0cbb97bcfaef523756c2915708888ca984d65f"
+      "path": "contracts/verifiers/Groth16Verifier_N4.sol"
     }
   },
-  "provenance_path": ".artifacts/solidity/prover/provenance.json",
   "scope": "checked-local-generator"
 }

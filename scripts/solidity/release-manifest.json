@@ -38,7 +38,7 @@
     "Solidity fully qualified source paths",
     "Spectre bytecode artifact source metadata",
     "test and fixture paths",
-    "Rust Solidity source and generated ABI input paths",
+    "Rust Solidity source paths plus removal of four stale ABI inputs and seven dead conversions deleted upstream in #223",
     "IPausable ownership path from non-target shared/interfaces to core/interfaces"
   ],
   "rollback": {
@@ -69,7 +69,7 @@
   "tooling_compatibility": {
     "abi_container_names": "exactly preserved from baseline",
     "generated_abi_and_bindings": "byte-for-byte baseline compatible",
-    "consumer_update": "limited to required source and fixture path updates",
+    "consumer_update": "required source and fixture path updates plus removal of dead Rust ABI inputs/conversions deleted upstream in #223",
     "rust_source_module": "existing groth16_ics07 public module retained",
     "rust_consumer_sources": "exact digests in tooling-rename-manifest.json"
   },
@@ -84,7 +84,7 @@
   },
   "design_conformance_boundaries": {
     "latest_design_authority": "origin/refactor/design-contracts:docs/refactor/01-Solidity-Contracts.md",
-    "prover_readiness_repository_evidence": "generator command, pinned artifact digests, and N4 verifier are recorded in verifier-manifest.json",
+    "prover_readiness_repository_evidence": "deterministic R1CS digest plus staged generator smoke-test and randomized artifact paths are recorded in verifier-manifest.json",
     "prover_readiness_external_tracking": "T-2 timing and tracking-issue evidence are not recorded in this repository",
     "historical_phase_order": "published commits cannot be changed to production-before-test sequencing without rewriting branch history"
   }

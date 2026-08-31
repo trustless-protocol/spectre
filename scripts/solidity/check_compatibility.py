@@ -136,10 +136,6 @@ def compare(args: argparse.Namespace) -> list[str]:
     contract_manifest = load(args.contract_manifest)
     verifier_manifest = load(args.verifier_manifest)
     storage_manifest = load(args.storage_manifest)
-    provenance_path = ROOT / verifier_manifest.get(
-        "provenance_path", ".artifacts/solidity/prover/provenance.json"
-    )
-    verifier_evidence = load(provenance_path) if provenance_path.is_file() else verifier_manifest
     test_manifest = load(args.test_manifest)
     tooling_rename_manifest = load(args.tooling_rename_manifest)
     toolchain_manifest = load(args.toolchain_manifest)
@@ -251,16 +247,18 @@ def compare(args: argparse.Namespace) -> list[str]:
     if len(tests) != baseline["test_count"]:
         failures.append(f"expected {baseline['test_count']} test contracts, found {len(tests)}")
 
-    if verifier_evidence.get("scope") != "checked-local-generator":
-        failures.append("verifier evidence must identify the checked-local-generator scope")
-    if verifier_evidence.get("supported_buckets") != [4]:
+    if verifier_manifest.get("scope") != "checked-local-generator":
+        failures.append("verifier manifest must identify the checked-local-generator scope")
+    if verifier_manifest.get("supported_buckets") != [4]:
         failures.append("checked local generator buckets must be exactly [4]")
-    for item in verifier_evidence["artifacts"].values():
+    for item in verifier_manifest.get("artifacts", {}).values():
         path = ROOT / item["path"]
         if not path.is_file():
             failures.append(f"missing paired verifier artifact: {item['path']}")
-        elif file_hash(path) != item["sha256"]:
-            failures.append(f"paired verifier artifact changed: {item['path']}")
+            continue
+        expected_hash = item.get("sha256")
+        if expected_hash is not None and file_hash(path) != expected_hash:
+            failures.append(f"deterministic verifier artifact changed: {item['path']}")
 
     if not failures:
         gas_baseline = baseline.get("gas_baseline", {})
@@ -352,7 +350,7 @@ def main() -> int:
         return 1
     print(
         "Solidity compatibility check passed: ABI, storage, bytecode, gas, "
-        "fixtures, bindings, tests, verifier pair, and protected docs match."
+        "fixtures, bindings, tests, verifier artifacts, and protected docs match."
     )
     return 0
 

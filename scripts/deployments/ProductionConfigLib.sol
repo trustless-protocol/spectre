@@ -21,8 +21,10 @@ library ProductionConfigLib {
 
     /// @notice Collects the six production bucket verifier addresses in bucket order.
     /// @dev They must be six different contracts: each is generated from its own bucket's
-    ///      verifying key, so pointing two buckets at one address makes proofs for the
-    ///      misconfigured bucket unverifiable.
+    ///      verifying key, so pointing two buckets at one address is a wrong configuration,
+    ///      not a harmless duplicate: every proof for the misconfigured bucket becomes
+    ///      unverifiable. Nothing else catches this plausible copy-paste error because each
+    ///      address can still be well-formed, contain code, and expose the expected selector.
     function verifierList(
         address n4,
         address n8,

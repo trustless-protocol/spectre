@@ -78,9 +78,8 @@ build-relayer-image:
 install-go-relayer:
 	cd relayer && go build -o $(go env GOPATH)/bin/relayer ./cmd
 
-# Generate per-bucket prover artifacts (r1cs/pk/vk + Solidity verifiers) if missing.
-# Probes for the bucket-4 vk.bin AND the bucket-4 Solidity verifier — the cheapest
-# "present?" signal because bucket 4 is the smallest and is always built first.
+# Generate the complete configured prover artifact set only when any artifact is missing.
+# Run `scripts/solidity/build-prover-artifacts.sh --force` for an intentional randomized rebuild.
 [group('build')]
 build-prover-artifacts:
 	scripts/solidity/build-prover-artifacts.sh
@@ -175,7 +174,7 @@ test-foundry testname=".\\*":
 # Run the benchmark tests
 [group('test')]
 test-benchmark testname=".\\*":
-	forge test -vvv --show-progress --gas-report --match-path test/light-clients/spectre/UpdateClientGasTest.t.sol --match-test {{testname}}
+	forge test -vvv --show-progress --gas-report --match-path 'test/**/*GasTest.t.sol' --match-test {{testname}}
 
 # Run the cargo tests
 [group('test')]
