@@ -476,7 +476,42 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 				log.Printf("[relay %s] DROP packet (%s seq=%d height=%d): %v", m.name, e.Type, e.Sequence, e.Height, err)
 				continue
 			}
-			log.Printf("[relay %s] proof for packet (%s seq=%d height=%d): %v", m.name, e.Type, e.Sequence, e.Height, err)
+			// Every proof failure here re-queues, so logging one line per flush
+			// says the same thing forever. What an operator actually needs is the
+			// AGE: a proof failing for ten seconds is an RPC blip, one failing for
+			// an hour is a packet nobody will ever deliver -- and the two used to
+			// produce byte-identical lines.
+			//
+			// Whether the packet has another way out depends on its type, and the
+			// STUCK line says which -- an operator's next action is different for
+			// each, so a single wording would be wrong for one of them.
+			//
+			// A SendPacket does have one: once it is past its timeout every source
+			// reports it permanent (evm/source.go, cosmos/source.go,
+			// l2rollup/source.go all return chain.Permanent for an expired send),
+			// the branch above drops it, and the timeout scanner refunds it. So
+			// "no other exit" would be false for a send -- naming the real exit is
+			// more useful than a warning to act.
+			//
+			// An AckPacket has none: its counterparty packet already has a receipt
+			// on the destination, so it can never be timed out either, and its
+			// escrow stays locked. A TimeoutPacket that cannot be proven is the
+			// same -- nothing else refunds it. Both are worth saying out loud
+			// rather than dropping, because dropping would lose the only record
+			// that the funds are stranded.
+			if age, report := m.waits.observeProofFailure(e); report {
+				switch {
+				case age < proofFailureStuckAfter:
+					log.Printf("[relay %s] proof for packet (%s seq=%d height=%d, failing for %s): %v",
+						m.name, e.Type, e.Sequence, e.Height, age.Round(time.Second), err)
+				case e.Type == chain.SendPacket:
+					log.Printf("[relay %s] STUCK: %s seq=%d height=%d has failed to prove for %s; it is refunded by the timeout scanner once past its timeout; last error: %v",
+						m.name, e.Type, e.Sequence, e.Height, age.Round(time.Second), err)
+				default:
+					log.Printf("[relay %s] STUCK: %s seq=%d height=%d has failed to prove for %s and has no other exit, so its escrow stays locked; last error: %v",
+						m.name, e.Type, e.Sequence, e.Height, age.Round(time.Second), err)
+				}
+			}
 			requeue = append(requeue, i)
 			continue
 		}

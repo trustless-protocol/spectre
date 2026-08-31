@@ -50,6 +50,27 @@ type waitEntry struct {
 	// from proofHeight, shared across the batch) — not the emission height. Keying
 	// on it would make every clear miss.
 	height uint64
+	// proofSince is when this packet's FIRST proof attempt failed, and it is
+	// deliberately not `since`.
+	//
+	// The two clocks answer different questions. `since` is the total wait, which
+	// is what the waiting log wants: a packet parked at the finality gate has been
+	// waiting, whatever the reason. But a packet can sit there for half an hour
+	// before a proof is ever attempted, and reusing that age for the proof ladder
+	// makes the very first failure claim it "has failed to prove for 30m" and jump
+	// straight to STUCK -- burning four of the five thresholds before a single
+	// proof ran, so the next line is an hour away. That silences exactly the early
+	// window the ladder exists to create.
+	//
+	// Zero until the first proof failure. Reset with the entry, so a relayed or
+	// dropped packet -- or a reused sequence -- starts a fresh proof clock.
+	proofSince time.Time
+	// reported is the highest proof-failure threshold already logged for this
+	// packet (see proofFailureThreshold). It lives here so it shares the entry's
+	// lifecycle: cleared when the packet relays or is dropped, purged with the
+	// entry on TTL. A separate map would leak entries the clear paths do not know
+	// to visit.
+	reported int
 }
 
 // waitTracker records how long each packet has been parked waiting, so the
@@ -159,4 +180,76 @@ func describeWaiting(items []waiting) string {
 		out += fmt.Sprintf(", +%d more", len(sorted)-len(shown))
 	}
 	return out
+}
+
+// proofFailureThresholds is the escalation ladder for a packet whose proof keeps
+// failing. Every failure re-queues, so without a ladder the loop logs the same
+// line every flush -- 296 byte-identical lines in the run that prompted this,
+// with nothing to separate "waiting for finality" from "this will never work".
+//
+// The steps widen because the two questions change with age. In the first minute
+// an operator wants to see the error at all; after a quarter of an hour they want
+// to know it is still the same one.
+var proofFailureThresholds = []time.Duration{
+	0,
+	time.Minute,
+	5 * time.Minute,
+	15 * time.Minute,
+	time.Hour,
+}
+
+// proofFailureStuckAfter is where the wording changes. Past it the line stops
+// describing a retry and says the packet is stuck, because by then it is: every
+// transient cause this path has (an RPC blip, an unfinalized source height, a
+// client that has not caught up) resolves in far less.
+const proofFailureStuckAfter = 15 * time.Minute
+
+// proofFailureThreshold returns how many reporting thresholds age has crossed.
+// Past the last one it keeps counting hourly, so a packet stuck overnight leaves
+// a trail rather than one line and then silence.
+func proofFailureThreshold(age time.Duration) int {
+	crossed := 0
+	for _, t := range proofFailureThresholds {
+		if age >= t {
+			crossed++
+		}
+	}
+	if last := proofFailureThresholds[len(proofFailureThresholds)-1]; age >= last {
+		crossed += int((age - last) / time.Hour)
+	}
+	return crossed
+}
+
+// observeProofFailure records that e's proof failed again and reports whether
+// this failure is worth a log line -- the first one always is, and afterwards
+// only when the age crosses a new threshold.
+//
+// The age returned is measured from the first PROOF failure (waitEntry.proofSince),
+// not from the first time the packet was seen waiting, so the caller logs how long
+// proving has been failing rather than how long the packet has existed.
+func (w *waitTracker) observeProofFailure(e chain.Event) (time.Duration, bool) {
+	// Keep the entry alive for the TTL sweep, and let it handle a reused sequence
+	// (which resets proofSince along with the rest of the entry). Its return value
+	// is the total wait, which is not the clock this ladder runs on.
+	w.observe(e)
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := waitKey{typ: e.Type, seq: e.Sequence}
+	entry, ok := w.entries[key]
+	if !ok {
+		return 0, true // observe() just wrote it; a missing entry means a racing clear
+	}
+	now := w.now()
+	if entry.proofSince.IsZero() {
+		entry.proofSince = now
+	}
+	age := now.Sub(entry.proofSince)
+	report := false
+	if threshold := proofFailureThreshold(age); threshold > entry.reported {
+		entry.reported = threshold
+		report = true
+	}
+	w.entries[key] = entry
+	return age, report
 }

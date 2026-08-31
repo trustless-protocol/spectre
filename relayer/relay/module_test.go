@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1331,4 +1332,89 @@ func TestScanLoop(t *testing.T) {
 			}
 		}
 	})
+}
+
+// The ladder is dead code unless handleBatch actually goes through it. This is
+// the production shape: an ack whose proof keeps failing, flushed repeatedly.
+func TestHandleBatch_EscalatesARepeatedProofFailure(t *testing.T) {
+	src := &mockSource{
+		latest:           100,
+		relayable:        50, // packet at 80 is not provable yet: it waits first
+		failMembershipOn: map[string]bool{"ack": true},
+	}
+	m := NewModule("eth->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	m.waits.now = clk.now
+
+	batch := []chain.Event{{Type: chain.AckPacket, Sequence: 21, Height: 80, Raw: []byte("ack"), AckBytes: [][]byte{{1}}}}
+
+	// Sixteen minutes parked at the source gate before a proof is ever attempted.
+	// This is the normal case on an L2 return leg, and none of it is a proof
+	// failure -- so it must not be charged to the ladder below.
+	m.handleBatch(context.Background(), batch)
+	clk.t = clk.t.Add(16 * time.Minute)
+	src.relayable = 100
+
+	first := captureLog(func() { m.handleBatch(context.Background(), batch) })
+	if !strings.Contains(first, "ack seq=21") {
+		t.Fatalf("the first proof failure must reach the log:\n%s", first)
+	}
+	if strings.Contains(first, "STUCK") {
+		t.Fatalf("the FIRST proof failure was reported as STUCK because it inherited the pre-proof wait:\n%s", first)
+	}
+
+	// Ten more flushes within the same threshold: silent. This is the case that
+	// produced 296 byte-identical lines.
+	repeats := captureLog(func() {
+		for i := 0; i < 10; i++ {
+			clk.t = clk.t.Add(2 * time.Second)
+			m.handleBatch(context.Background(), batch)
+		}
+	})
+	if strings.Contains(repeats, "ack seq=21") {
+		t.Fatalf("repeats inside one threshold must be suppressed:\n%s", repeats)
+	}
+
+	// Past the stuck threshold the wording has to change: an operator reading
+	// "proof for packet" cannot tell a retry from a packet with no way out.
+	clk.t = clk.t.Add(proofFailureStuckAfter + time.Minute)
+	stuck := captureLog(func() { m.handleBatch(context.Background(), batch) })
+	for _, want := range []string{"STUCK", "ack seq=21", "no other exit"} {
+		if !strings.Contains(stuck, want) {
+			t.Fatalf("the escalated line must contain %q:\n%s", want, stuck)
+		}
+	}
+}
+
+// TestHandleBatch_StuckSendNamesTheTimeoutExit: "no other exit" is true of an ack
+// and false of a send. Every source reports an expired send as permanent, the
+// module drops it, and the timeout scanner refunds it -- so telling an operator a
+// send is unrecoverable sends them looking for a problem that resolves itself.
+// The two packet types need different next actions, so they need different lines.
+func TestHandleBatch_StuckSendNamesTheTimeoutExit(t *testing.T) {
+	src := &mockSource{
+		latest:           100,
+		relayable:        100,
+		failMembershipOn: map[string]bool{"snd": true},
+	}
+	m := NewModule("eth->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	m.waits.now = clk.now
+
+	batch := []chain.Event{{Type: chain.SendPacket, Sequence: 21, Height: 80, Raw: []byte("snd")}}
+
+	m.handleBatch(context.Background(), batch)
+	clk.t = clk.t.Add(proofFailureStuckAfter + time.Minute)
+	stuck := captureLog(func() { m.handleBatch(context.Background(), batch) })
+
+	// A SendPacket prints as "recv": the line names the message the destination
+	// will be asked for, not the event's origin (see TestEventTypeNames).
+	for _, want := range []string{"STUCK", "recv seq=21", "timeout scanner"} {
+		if !strings.Contains(stuck, want) {
+			t.Fatalf("a stuck send must name the exit it actually has (%q):\n%s", want, stuck)
+		}
+	}
+	if strings.Contains(stuck, "no other exit") {
+		t.Fatalf("a send is refunded once past its timeout, so it does have another exit:\n%s", stuck)
+	}
 }
