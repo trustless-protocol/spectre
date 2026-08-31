@@ -290,40 +290,108 @@ func (s *Subscriber) persistCosmosCursor(ctx cosmosDeps, batchBuilder *services.
 // subscription that stops delivering looks exactly like a chain with no traffic.
 // Gap recovery quietly picks up the slack, the relayer keeps working, and
 // nothing says the primary path is dead -- until recovery misses one too and a
-// packet is lost.
+// packet is lost. Recovery deliberately stops short of the head
+// (cosmosIndexerLagBlocks), so that miss is not hypothetical.
 //
 // Owned by one goroutine (the subscribe loop), so it needs no lock.
 type cosmosLiveHealth struct {
 	events   uint64
-	lastSeen time.Time
-	warned   bool
+	lastSeen time.Time // last live event, or the last successful subscribe
+	// chainHeight is the head observed at the previous recovery pass. Silence is
+	// only evidence of a problem when the chain is producing blocks -- an idle
+	// chain delivers nothing because there is nothing to deliver, and treating
+	// that as a dead subscription would reconnect a healthy one every few minutes.
+	chainHeight uint64
+	// staleSince is when the CURRENT outage was first judged stale; zero when the
+	// live path is healthy. It survives a reconnect on purpose: the question the
+	// ladder answers is "how long has this been broken", not "how long since the
+	// last attempt to fix it".
+	staleSince time.Time
+	// reported is the highest staleness threshold already logged for this outage.
+	reported int
+}
+
+// recordSubscribed starts the delivery clock at subscribe time.
+//
+// Without it the clock starts at the first live event, so a subscription that
+// NEVER delivers -- the exact case worth catching -- has nothing to measure and
+// is never reported. It does not clear staleSince: subscribing is an attempt to
+// fix the outage, not evidence that it is over. Only a delivered event is that.
+func (h *cosmosLiveHealth) recordSubscribed(now time.Time) {
+	h.lastSeen = now
 }
 
 func (h *cosmosLiveHealth) recordEvent() {
 	h.events++
 	h.lastSeen = time.Now()
-	h.warned = false
+	h.staleSince = time.Time{}
+	h.reported = 0
 }
 
-// recoveryIsCoveringForLive reports whether gap recovery just relayed packets the
-// live subscription should have delivered. It says so once per outage rather
-// than on every scan, so a long outage does not flood the log.
-func (h *cosmosLiveHealth) recoveryIsCoveringForLive(recovered uint64, now time.Time) bool {
-	if recovered == 0 || h.warned {
-		return false
+// observeChainHeight records the head seen this pass and reports whether the
+// chain advanced since the previous one. The first call establishes the baseline
+// and reports false -- with nothing to compare against, silence means nothing.
+func (h *cosmosLiveHealth) observeChainHeight(height uint64) bool {
+	advanced := h.chainHeight != 0 && height > h.chainHeight
+	h.chainHeight = height
+	return advanced
+}
+
+// livePathStale reports whether the live subscription should be treated as dead,
+// how long it has been silent, and whether this pass crosses a new reporting
+// threshold.
+//
+// stale drives a reconnect and silence is only for the message; report is
+// separate because a permanent outage must keep saying so on a widening ladder
+// rather than once. The previous version latched a single bool that was only
+// cleared by a live event -- so a subscription that died for good produced
+// exactly one warning line for the process's lifetime, and the log then read as
+// though it had recovered.
+func (h *cosmosLiveHealth) livePathStale(chainAdvanced bool, now time.Time) (stale bool, silence time.Duration, report bool) {
+	if !chainAdvanced {
+		return false, 0, false
 	}
-	// Before the first live event there is nothing to compare against; treat
-	// process start as the reference point so a subscription that never
-	// delivers is still reported.
-	if h.lastSeen.IsZero() {
-		h.lastSeen = now
-		return false
+	silence = now.Sub(h.lastSeen)
+	if silence < cosmosLivePathStaleAfter {
+		return false, silence, false
 	}
-	if now.Sub(h.lastSeen) < cosmosLivePathStaleAfter {
-		return false
+	if h.staleSince.IsZero() {
+		h.staleSince = now
 	}
-	h.warned = true
-	return true
+	if threshold := ageReportThreshold(now.Sub(h.staleSince)); threshold > h.reported {
+		h.reported = threshold
+		report = true
+	}
+	return true, silence, report
+}
+
+// liveStaleThresholds is the escalation ladder for an outage that a reconnect
+// does not fix. Reporting every pass would be 120 lines an hour; reporting once
+// is what the old latched flag did, and it read as a recovery.
+//
+// D6 in the refactor plan unifies this ladder with the relay package's
+// proof-failure one under this name; until that runs they are deliberately the
+// same steps in two places rather than a new shared package invented here.
+var liveStaleThresholds = []time.Duration{
+	0,
+	5 * time.Minute,
+	15 * time.Minute,
+	time.Hour,
+}
+
+// ageReportThreshold returns how many reporting thresholds age has crossed, and
+// keeps counting hourly past the last one so an overnight outage leaves a trail.
+func ageReportThreshold(age time.Duration) int {
+	crossed := 0
+	for _, t := range liveStaleThresholds {
+		if age >= t {
+			crossed++
+		}
+	}
+	if last := liveStaleThresholds[len(liveStaleThresholds)-1]; age >= last {
+		crossed += int((age - last) / time.Hour)
+	}
+	return crossed
 }
 
 func (s *Subscriber) subscribeCosmosOnce(
@@ -354,8 +422,11 @@ func (s *Subscriber) subscribeCosmosOnce(
 	}
 	ctx.Logger.Println("[SubscribeCosmos] Successfully subscribed to CometBFT events")
 	defer unsubscribeCosmos(stdCtx, ctx.Cosmos)
+	// The delivery clock starts here, not at the first event: a subscription that
+	// never delivers anything is the case this watchdog exists for.
+	liveHealth.recordSubscribed(time.Now())
 
-	if err := s.recoverCosmosGapToLatest(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth); err != nil {
+	if _, err := s.recoverCosmosGapToLatest(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth); err != nil {
 		ctx.Logger.Printf("[SubscribeCosmos] startup recovery failed: %v", err)
 	}
 
@@ -382,8 +453,18 @@ func (s *Subscriber) subscribeCosmosOnce(
 			}
 			s.processLiveCosmosEvent(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, liveHealth, e)
 		case <-gapRecoveryTicker.C:
-			if err := s.recoverCosmosGapToLatest(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth); err != nil {
+			stale, err := s.recoverCosmosGapToLatest(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth)
+			if err != nil {
 				ctx.Logger.Printf("[SubscribeCosmos] periodic recovery failed: %v", err)
+			}
+			// CometBFT never closes the Go channel when a subscription dies -- not
+			// when the node cancels it for exceeding its buffer, and not when a
+			// resubscribe fails -- so the three cases above cannot detect this.
+			// Returning is what lets the outer loop build a new subscription; the
+			// alternative is waiting for a close that never comes.
+			if stale {
+				return fmt.Errorf("live subscription delivered nothing for %s while the chain advanced; reconnecting",
+					cosmosLivePathStaleAfter)
 			}
 		}
 	}
@@ -507,18 +588,33 @@ func (s *Subscriber) recoverCosmosGapToLatest(
 	seenEvents map[cosmosEventKey]struct{},
 	quietScans *uint64,
 	liveHealth *cosmosLiveHealth,
-) error {
+) (stale bool, err error) {
 	if *nextRecoveryStartHeight == 0 {
-		return nil
+		return false, nil
 	}
 
 	latestHeight, err := latestCosmosHeight(stdCtx, ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
+
+	// Judge the live path before the scan, not after it. The previous version
+	// only asked when recovery had already relayed something -- i.e. after the
+	// live path had missed a packet. Recovery stops cosmosIndexerLagBlocks short
+	// of the head, so waiting for that evidence means waiting for a window in
+	// which a packet can be lost outright.
+	stale, silence, report := liveHealth.livePathStale(liveHealth.observeChainHeight(latestHeight), time.Now())
+	if report {
+		ctx.Logger.Printf("[SubscribeCosmos][ATTENTION] live subscription has delivered nothing for %s "+
+			"while the chain advanced to height %d (%d live event(s) this run). Gap recovery is the "+
+			"BACKSTOP, not the delivery path -- it stops short of the head, so a packet in the newest "+
+			"blocks can still be missed. Reconnecting.",
+			silence.Round(time.Second), latestHeight, liveHealth.events)
+	}
+
 	scanFrom, scanTo, ok := cosmosScanRange(*nextRecoveryStartHeight, latestHeight)
 	if !ok {
-		return nil
+		return stale, nil
 	}
 	passStart := scanFrom
 
@@ -531,7 +627,7 @@ func (s *Subscriber) recoverCosmosGapToLatest(
 		}
 		chunkStats, err := recoverCosmosEvents(stdCtx, ctx, batchBuilder, scanFrom, chunkEnd, seenEvents)
 		if err != nil {
-			return err
+			return stale, err
 		}
 		stats.recovered += chunkStats.recovered
 		stats.skipped += chunkStats.skipped
@@ -545,14 +641,6 @@ func (s *Subscriber) recoverCosmosGapToLatest(
 	// common outcome is recovered=0 skipped=0 — two lines a tick, ~5.8k lines a day
 	// per direction, burying the events worth reading. The heartbeat keeps "gap
 	// recovery is alive and current" observable without the repetition.
-	if liveHealth.recoveryIsCoveringForLive(stats.recovered, time.Now()) {
-		ctx.Logger.Printf("[SubscribeCosmos][ATTENTION] gap recovery relayed %d packet(s) but the live "+
-			"subscription has delivered nothing for %s (%d live event(s) this run). Recovery is the "+
-			"BACKSTOP, not the delivery path -- while it is doing this job a packet in the newest blocks "+
-			"can still be missed. Check the CometBFT websocket.",
-			stats.recovered, cosmosLivePathStaleAfter, liveHealth.events)
-	}
-
 	if stats.recovered > 0 || stats.skipped > 0 {
 		ctx.Logger.Printf("[SubscribeCosmos] recovery scanned [%d,%d]: recovered=%d skipped=%d",
 			passStart, scanTo, stats.recovered, stats.skipped)
@@ -562,7 +650,7 @@ func (s *Subscriber) recoverCosmosGapToLatest(
 			*quietScans, scanTo)
 	}
 
-	return nil
+	return stale, nil
 }
 
 // cosmosScanRange decides the height range one recovery pass covers, given the

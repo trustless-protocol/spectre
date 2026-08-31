@@ -134,26 +134,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		case <-ctx.Done():
 			return ctx.Err()
 		case batch := <-ch:
-			// Build the event slice aligned 1:1 with orig[] so a re-queue index
-			// from the handler maps back to the exact source packet.
-			events := make([]chain.Event, 0, len(batch.Packets))
-			orig := make([]services.EthPacket, 0, len(batch.Packets))
-			for _, p := range batch.Packets {
-				// Terminal events (the packet was acked or timed out on ETH) settle a
-				// pending ETH-origin send: remove it from the tracker so the timeout
-				// scanner stops considering it (mirrors the legacy handleEth EthAck/
-				// EthTimeout tracker removal), then skip — nothing to relay.
-				if p.Packet != nil && (p.Type == services.EthAck || p.Type == services.EthTimeout) {
-					s.bb.EthPendingTracker.RemovePacketIfCurrent(*p.Packet)
-					continue
-				}
-				e, ok := ethPacketToEvent(p)
-				if !ok {
-					continue
-				}
-				events = append(events, e)
-				orig = append(orig, p)
-			}
+			events, orig := eventsWithOrigins(batch.Packets, s.bb.EthPendingTracker.RemovePacketIfCurrent)
 			// Re-queue un-relayed packets with a waiting backoff so a packet not yet
 			// relayable (beacon finality lag) or hit by a brief RPC hiccup is retried
 			// with a growing delay instead of every batch period — quiet, and no
@@ -164,6 +145,37 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 			s.bb.ReleaseEthInFlight(batch)
 		}
 	}
+}
+
+// eventsWithOrigins maps a drained batch to relay events, keeping a parallel slice
+// of the packets they came from, and settles terminal events along the way.
+//
+// The two slices MUST stay index-aligned: the handler reports failures as indices
+// into the events slice, and Subscribe re-queues orig[idx]. A packet dropped here
+// — terminal or unconvertible — leaves BOTH slices, never one, since appending to
+// orig outside the conversion guard would shift every later index and re-queue the
+// wrong packet: one packet relayed twice, another lost. This is the mirror of the
+// same invariant in chain/cosmos.
+//
+// settle removes an acked or timed-out ETH-origin send from the pending tracker so
+// the timeout scanner stops considering it (the legacy handleEth EthAck/EthTimeout
+// tracker removal); such a packet is then skipped, as there is nothing to relay.
+func eventsWithOrigins(packets []services.EthPacket, settle func(channeltypesv2.Packet)) ([]chain.Event, []services.EthPacket) {
+	events := make([]chain.Event, 0, len(packets))
+	orig := make([]services.EthPacket, 0, len(packets))
+	for _, p := range packets {
+		if p.Packet != nil && (p.Type == services.EthAck || p.Type == services.EthTimeout) {
+			settle(*p.Packet)
+			continue
+		}
+		e, ok := ethPacketToEvent(p)
+		if !ok {
+			continue
+		}
+		events = append(events, e)
+		orig = append(orig, p)
+	}
+	return events, orig
 }
 
 // ethPacketToEvent maps a queued EthPacket to a chain.Event, or false to skip
@@ -199,16 +211,45 @@ func ethPacketToEvent(p services.EthPacket) (chain.Event, bool) {
 	return e, true
 }
 
+// sendPacketExpired reports whether an ETH→Cosmos send is already past its
+// timeout, in which case it can never be received on Cosmos.
+//
+// Timeouts are absolute SECONDS, and Cosmos has ~wall-clock BFT time, so `now` is
+// the right clock to compare against. The boundary is inclusive: a packet whose
+// timeout equals the current second is expired, matching the chain's own check.
+// A zero timeout means "no timeout" and never expires.
+func sendPacketExpired(pkt channeltypesv2.Packet, now time.Time) bool {
+	if pkt.TimeoutTimestamp == 0 {
+		return false
+	}
+	return uint64(now.Unix()) >= pkt.TimeoutTimestamp
+}
+
 // MembershipProof builds an Ethereum storage proof that the packet's commitment
-// (recv) or ack exists, wrapping client.GetEthMembershipProof. The proof is taken
-// at the execution block of the on-chain 08-wasm client's latest slot (read from
-// Cosmos), so it verifies against the client state the destination trusts. The
-// height argument is not the proof block (the proof block is read from the
-// on-chain client above), so it is ignored.
-func (s *Source) MembershipProof(ctx context.Context, packet []byte, _ uint64, eventType chain.EventType) ([]byte, error) {
-	pkt, ethClientState, err := s.decodePacketAndClientState(ctx, packet)
-	if err != nil {
-		return nil, err
+// (recv) or ack exists, wrapping client.GetEthMembershipProof.
+//
+// height is the EXECUTION BLOCK the proof is taken at, as chain.Source specifies
+// and as chain/README.md step 4 spells out: "targeting the prepared update height
+// when it is not on-chain yet". The Cosmos and L2 sources already honour it; this
+// one used to ignore it and read the block from the on-chain client instead.
+//
+// That was wrong for every folded batch. Folding submits the client update and the
+// packet in ONE tx, so at proof-build time the update is not on chain yet: the
+// client still reports the PREVIOUS execution block, while the MsgRecvPacket the
+// destination builds names the consensus height the folded update installs
+// (chain/cosmos.RelayWithUpdate). The proof was therefore built against one state
+// root and verified against another, and the client rejected it with
+// "get trie node failed: Invalid state root" -- a message that points at the trie,
+// not at the height mismatch that caused it.
+func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint64, eventType chain.EventType) ([]byte, error) {
+	// Zero is not "latest" here -- it would prove at genesis and fail every time,
+	// far from where the mistake was made.
+	if height == 0 {
+		return nil, fmt.Errorf("eth source: MembershipProof needs the execution block to prove at, got 0")
+	}
+	var pkt channeltypesv2.Packet
+	if err := pkt.Unmarshal(packet); err != nil {
+		return nil, fmt.Errorf("eth source: decode packet: %w", err)
 	}
 	var clientID string
 	var pathType byte
@@ -220,7 +261,7 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, _ uint64, e
 		// the legacy ethPacketExpired pre-filter). Cosmos has ~wall-clock BFT time,
 		// so compare against time.Now like the legacy path does. Without this a dead
 		// send is retried forever, draining gas on repeated client updates.
-		if pkt.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= pkt.TimeoutTimestamp {
+		if sendPacketExpired(pkt, time.Now()) {
 			return nil, chain.Permanent(fmt.Errorf("eth source: send seq=%d timed out; deferred to timeout scanner", pkt.Sequence))
 		}
 		clientID, pathType = pkt.SourceClient, 1 // packet commitment
@@ -235,7 +276,7 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, _ uint64, e
 	return relayerclient.GetEthMembershipProof(
 		proofCtx, s.evm.EthClient(), s.evm.Contracts.Router, path,
 		ethcommon.HexToHash(services.ICS26_IBC_STORAGE_SLOT),
-		new(big.Int).SetUint64(ethClientState.LatestExecutionBlockNumber),
+		new(big.Int).SetUint64(height),
 	)
 }
 
@@ -244,20 +285,4 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, _ uint64, e
 // Subscribe->relay flow, so no TimeoutPacket event reaches here.
 func (s *Source) NonMembershipProof(_ context.Context, _ []byte, _ uint64) ([]byte, error) {
 	return nil, fmt.Errorf("eth source: NonMembershipProof unused (timeouts are scanner-handled)")
-}
-
-// decodePacketAndClientState decodes the proto packet and reads the on-chain
-// 08-wasm ETH client state (for the proof's execution block).
-func (s *Source) decodePacketAndClientState(ctx context.Context, packet []byte) (channeltypesv2.Packet, *relayerclient.EthereumClientState, error) {
-	var pkt channeltypesv2.Packet
-	if err := pkt.Unmarshal(packet); err != nil {
-		return channeltypesv2.Packet{}, nil, fmt.Errorf("eth source: decode packet: %w", err)
-	}
-	queryCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	defer cancel()
-	cs, err := relayerclient.GetEthereumClientStateWithContext(queryCtx, s.cosmos.CosmosClient(), s.ids.EVMOnCosmos)
-	if err != nil {
-		return channeltypesv2.Packet{}, nil, fmt.Errorf("eth source: eth client state: %w", err)
-	}
-	return pkt, cs, nil
 }

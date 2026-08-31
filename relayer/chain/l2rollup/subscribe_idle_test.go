@@ -28,6 +28,10 @@ const (
 	idleTestHead     = uint64(100)
 )
 
+// This covers the FALLBACK behaviour, not the size of the window: comparing
+// against defaultL2StartupLookback is right here, because the property under test
+// is "an absent or unparseable env var falls back to the default", whatever the
+// default is. TestDefaultL2StartupLookbackIsPinned owns the value itself.
 func TestL2StartupLookbackBlocksFromEnv(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -499,5 +503,30 @@ func TestSubscribeSurvivesTransientHeadErrorAtStartup(t *testing.T) {
 	}
 	if wantFrom := startHead - defaultL2StartupLookback; ranges[0][0] != wantFrom {
 		t.Fatalf("first scan started at %d, want %d (head - lookback)", ranges[0][0], wantFrom)
+	}
+}
+
+// The startup lookback is the ENTIRE crash-recovery window for the L2 path: the
+// cursor is not persisted, so a packet emitted more than this many blocks before a
+// restart is never rescanned and its escrow stays locked. That makes the number
+// itself a safety property, not a tuning knob.
+//
+// It needs its own test because the behavioural tests around it compare against
+// the constant rather than against a value — correctly so, since they are checking
+// the fallback and the head-minus-lookback arithmetic, not the size of the window.
+// Nothing there fails if the window shrinks to a single block, which is how a
+// change to this value would otherwise reach main unnoticed.
+//
+// If this test fails, the value was changed. That is allowed, but not silently:
+// re-derive it against the worst-case attestor/finality lag for the configured
+// head_kind (a finalized OP frontier can sit 20-40 minutes behind the head) and
+// update the reasoning in the constant's comment along with the number here.
+func TestDefaultL2StartupLookback_IsPinned(t *testing.T) {
+	t.Parallel()
+
+	const want = 256 // ~8 minutes of OP blocks at 2s
+	if defaultL2StartupLookback != want {
+		t.Fatalf("defaultL2StartupLookback = %d, want %d; see the comment above before changing this",
+			defaultL2StartupLookback, want)
 	}
 }

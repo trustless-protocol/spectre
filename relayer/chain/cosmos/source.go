@@ -82,10 +82,24 @@ func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return relayableFromLatest(latest), nil
+}
+
+// relayableFromLatest applies the AppHash lag to a committed height.
+//
+// The subtraction is the whole precondition: a commitment written at H is not in
+// the AppHash until H+2, so proving at anything above latest-2 asks the node for a
+// proof of state it has not committed to yet, and the proof fails. Subtracting too
+// much is merely slow; subtracting too little breaks every relay at the tip.
+//
+// Heights below the lag clamp to 0 rather than wrapping — this is unsigned
+// arithmetic, and on a chain that has just started, latest-2 would otherwise
+// become an enormous height.
+func relayableFromLatest(latest uint64) uint64 {
 	if latest < cosmosAppHashLag {
-		return 0, nil
+		return 0
 	}
-	return latest - cosmosAppHashLag, nil
+	return latest - cosmosAppHashLag
 }
 
 // QueryHeader returns the JSON-encoded light block at height.
@@ -225,18 +239,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		case <-ctx.Done():
 			return ctx.Err()
 		case batch := <-ch:
-			// Build the event slice aligned 1:1 with orig[] so a re-queue index
-			// from the handler maps back to the exact source packet.
-			events := make([]chain.Event, 0, len(batch.Packets))
-			orig := make([]services.CosmosPacket, 0, len(batch.Packets))
-			for _, p := range batch.Packets {
-				e, ok := cosmosPacketToEvent(p, s.ids.CosmosOnEVM)
-				if !ok {
-					continue
-				}
-				events = append(events, e)
-				orig = append(orig, p)
-			}
+			events, orig := eventsWithOrigins(batch.Packets, s.ids.CosmosOnEVM)
 			// Re-queue un-relayed packets with a waiting backoff so a packet not yet
 			// relayable (AppHash H+2 lag) or hit by a brief RPC hiccup is retried with
 			// a growing delay instead of every batch period — quiet, and no per-flush
@@ -247,6 +250,28 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 			s.bb.ReleaseCosmosInFlight(batch)
 		}
 	}
+}
+
+// eventsWithOrigins maps a drained batch to relay events, keeping a parallel slice
+// of the packets they came from.
+//
+// The two slices MUST stay index-aligned: the handler reports failures as indices
+// into the events slice, and Subscribe re-queues orig[idx]. A packet that cannot be
+// converted is dropped from BOTH, never from one — appending to orig outside the
+// conversion guard would shift every later index and re-queue the wrong packet,
+// silently relaying one packet twice and losing another.
+func eventsWithOrigins(packets []services.CosmosPacket, clientID string) ([]chain.Event, []services.CosmosPacket) {
+	events := make([]chain.Event, 0, len(packets))
+	orig := make([]services.CosmosPacket, 0, len(packets))
+	for _, p := range packets {
+		e, ok := cosmosPacketToEvent(p, clientID)
+		if !ok {
+			continue
+		}
+		events = append(events, e)
+		orig = append(orig, p)
+	}
+	return events, orig
 }
 
 // cosmosPacketToEvent maps a queued CosmosPacket to a chain.Event. It returns

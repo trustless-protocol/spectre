@@ -1261,10 +1261,22 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse attested slot: %w", err)
 		}
+		// The client selects the committee by the SIGNATURE slot's period, not the
+		// attested slot's (ethereum/light-client verify.rs: signature_period =
+		// compute_sync_committee_period_at_slot(update.signature_slot)). They differ
+		// for exactly one slot -- signature_slot is attested_slot + 1 -- and that one
+		// slot is a period boundary once every 8192.
+		signatureSlotNum, err := parseSlot(finalityUpdate.SignatureSlot)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse signature slot: %w", err)
+		}
+		signaturePeriod := ethClientState.ComputeSyncCommitteePeriodAtSlot(signatureSlotNum)
 		syncCommittee, err := syncCommitteeForPeriod(
-			stdCtx,
-			beaconAPIURL, updatesByPeriod,
-			ethClientState.ComputeSyncCommitteePeriodAtSlot(attestedSlotNum), attestedSlotNum)
+			stdCtx, beaconAPIURL, updatesByPeriod, signaturePeriod, attestedSlotNum)
+		if err != nil {
+			return nil, err
+		}
+		activeSyncCommittee, err := activeCommitteeFor(signaturePeriod, latestPeriod, &syncCommittee)
 		if err != nil {
 			return nil, err
 		}
@@ -1280,11 +1292,9 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 		}
 
 		header := relayerclient.EthereumHeader{
-			ActiveSyncCommittee: relayerclient.ActiveSyncCommittee{
-				Current: &syncCommittee,
-			},
-			ConsensusUpdate: consensusUpdate,
-			TrustedSlot:     latestTrustedSlot,
+			ActiveSyncCommittee: activeSyncCommittee,
+			ConsensusUpdate:     consensusUpdate,
+			TrustedSlot:         latestTrustedSlot,
 		}
 
 		headerBytes, err := json.Marshal(header)
@@ -1296,6 +1306,42 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 	}
 
 	return headers, nil
+}
+
+// activeCommitteeFor labels the committee the way the light client will look it
+// up, given the period its stored consensus state is in.
+//
+// The client does this (ethereum/light-client verify.rs):
+//
+//	sync_committee = if signature_period == stored_period { current } else { next }
+//
+// so the label is not cosmetic -- it selects which stored summary the supplied
+// committee is checked against, and a wrong label fails with
+// "current sync committee (X) does not match with the one in the current state (Y)".
+//
+// The two are not always equal. signature_slot runs roughly 65 slots ahead of the
+// finalized slot the client stores, so for the last ~65 slots of every
+// sync-committee period the signature is already in the NEXT period while the
+// client is still finalized in this one. Labelling that Current is what stalled
+// the ETH->Cosmos client for ~13 minutes once per period.
+//
+// Next is safe there and does not rotate anything: the client keeps
+// next_sync_committee across same-period updates (update.rs only rotates when the
+// update's FINALIZED period advances), so the committee this names is the one it
+// already stores, and the rotation still happens later on the finalized crossing.
+func activeCommitteeFor(signaturePeriod, storedPeriod uint64, committee *relayerclient.SyncCommittee) (relayerclient.ActiveSyncCommittee, error) {
+	switch signaturePeriod {
+	case storedPeriod:
+		return relayerclient.ActiveSyncCommittee{Current: committee}, nil
+	case storedPeriod + 1:
+		return relayerclient.ActiveSyncCommittee{Next: committee}, nil
+	default:
+		// The client rejects this outright (InvalidSignaturePeriodWhenNextSyncCommitteeExists),
+		// so building the header would only spend gas to be told so.
+		return relayerclient.ActiveSyncCommittee{}, fmt.Errorf(
+			"sync committee period %d is neither the client's period %d nor the one after it; the client cannot verify this update",
+			signaturePeriod, storedPeriod)
+	}
 }
 
 func cloneEthereumClientState(state *relayerclient.EthereumClientState) *relayerclient.EthereumClientState {

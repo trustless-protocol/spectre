@@ -3,6 +3,8 @@ package relay
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -62,6 +64,9 @@ type mockDest struct {
 	// poison: Raw payload -> this packet deterministically reverts any batch it is
 	// in (chain.Permanent), like a timed-out/duplicate packet in a real multicall.
 	poison map[string]bool
+	// expiresAt / expiresErr drive ClientExpiresAt for the anti-expiry refresh tests.
+	expiresAt  time.Time
+	expiresErr error
 }
 
 func (m *mockDest) Chain() chain.ChainType { return chain.Ethereum }
@@ -87,7 +92,7 @@ func (m *mockDest) RelayPackets(_ context.Context, packets []chain.RelayPacket) 
 }
 func (m *mockDest) HasPacketReceipt(context.Context, []byte) (bool, error) { return false, nil }
 func (m *mockDest) ClientExpiresAt(context.Context, string) (time.Time, error) {
-	return time.Time{}, nil
+	return m.expiresAt, m.expiresErr
 }
 
 type foldingMockDest struct {
@@ -117,6 +122,10 @@ type mockBuilder struct {
 	forceHeight uint64 // if non-zero, always return this height
 	noPayload   bool   // if true, return no payloads ("client already current")
 	built       int    // count of Build calls
+	// trustedAt is the timestamp the built update claims the client now trusts.
+	// It is what the client-update observer reports, so a test that checks the
+	// observer must be able to set it to something distinguishable.
+	trustedAt time.Time
 }
 
 func (m *mockBuilder) Name() string { return "mock" }
@@ -127,9 +136,9 @@ func (m *mockBuilder) Build(_ context.Context, header []byte) (chain.ClientUpdat
 		h = m.forceHeight
 	}
 	if m.noPayload {
-		return chain.ClientUpdate{Height: h}, nil
+		return chain.ClientUpdate{Height: h, TrustedAt: m.trustedAt}, nil
 	}
-	return chain.ClientUpdate{Height: h, Payloads: [][]byte{header}}, nil
+	return chain.ClientUpdate{Height: h, Payloads: [][]byte{header}, TrustedAt: m.trustedAt}, nil
 }
 
 func TestHandleBatch_ProofByType(t *testing.T) {
@@ -582,30 +591,6 @@ func TestHandleBatch_ProvabilityGuard(t *testing.T) {
 	}
 }
 
-// TestUpdateClientTo_SeedOnNoop verifies an empty-payload-list ("already current")
-// build advances lastHeight without submitting a tx, so a restart where the
-// client already covers incoming packets does not stall the provability guard.
-func TestUpdateClientTo_SeedOnNoop(t *testing.T) {
-	src := &mockSource{latest: 200}
-	dst := &mockDest{}
-	b := &mockBuilder{noPayload: true, forceHeight: 200} // "client current at 200"
-	m := NewModule("test", "client-0", src, dst, b)
-
-	if err := m.updateClientTo(context.Background(), 150); err != nil {
-		t.Fatalf("seed update: %v", err)
-	}
-	if len(dst.updates) != 0 {
-		t.Fatalf("no-op build must not submit a tx, got %d", len(dst.updates))
-	}
-	if m.lastHeight != 200 {
-		t.Fatalf("lastHeight must be seeded to reported current height 200, got %d", m.lastHeight)
-	}
-	// A packet at 180 is now provable (<= seeded 200) even though no tx was sent.
-	if rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 180, Raw: []byte("p")}}); len(rq) != 0 {
-		t.Fatalf("packet under seeded height must relay, got re-queue %v", rq)
-	}
-}
-
 // TestPeriodicUpdateLoop_Runs verifies the fixed-cadence forced update fires
 // (the pinned-set rotation guarantee) and keeps firing until the context ends.
 func TestPeriodicUpdateLoop_Runs(t *testing.T) {
@@ -676,53 +661,6 @@ func TestNextPeriodicUpdateBackoff(t *testing.T) {
 	// A success (reset to 0) restarts the sequence at the minimum.
 	if got := nextPeriodicUpdateBackoff(0); got != periodicUpdateBackoffMin {
 		t.Fatalf("reset backoff: got %s, want %s", got, periodicUpdateBackoffMin)
-	}
-}
-
-func TestUpdateClientTo_AppendOnly(t *testing.T) {
-	src := &mockSource{}
-	dst := &mockDest{}
-	b := &mockBuilder{}
-	m := NewModule("test", "client-0", src, dst, b)
-	ctx := context.Background()
-
-	// 1. first update at height 10 -> submitted, lastHeight=10
-	if err := m.updateClientTo(ctx, 10); err != nil {
-		t.Fatalf("update to 10: %v", err)
-	}
-	if len(dst.updates) != 1 || dst.updates[0].Height != 10 {
-		t.Fatalf("want one update at height 10, got %+v", dst.updates)
-	}
-
-	// 2. re-request height 10 (<= lastHeight) -> skipped before Build
-	builtBefore := b.built
-	if err := m.updateClientTo(ctx, 10); err != nil {
-		t.Fatalf("re-update to 10: %v", err)
-	}
-	if len(dst.updates) != 1 {
-		t.Fatalf("append-only violated: expected no new submit, got %d", len(dst.updates))
-	}
-	if b.built != builtBefore {
-		t.Fatalf("expected Build skipped for covered height, but it ran")
-	}
-
-	// 3. height 20 but builder reports the client already current (Height 0)
-	b.forceHeight = 0 // header[0]=20 -> but simulate no-op: override to 0? no: use a builder that returns stale
-	b.forceHeight = 5 // stale (<= lastHeight 10): must be skipped without submit
-	if err := m.updateClientTo(ctx, 20); err != nil {
-		t.Fatalf("update to 20 (stale build): %v", err)
-	}
-	if len(dst.updates) != 1 {
-		t.Fatalf("stale/no-op update must not submit, got %d submits", len(dst.updates))
-	}
-
-	// 4. height 20, builder returns a real advance -> submitted, lastHeight=20
-	b.forceHeight = 0 // back to echoing the requested height (20)
-	if err := m.updateClientTo(ctx, 20); err != nil {
-		t.Fatalf("update to 20: %v", err)
-	}
-	if len(dst.updates) != 2 || dst.updates[1].Height != 20 {
-		t.Fatalf("want second update at height 20, got %+v", dst.updates)
 	}
 }
 
@@ -889,5 +827,594 @@ func TestFoldedUpdateFailureDoesNotAdvanceHeight(t *testing.T) {
 
 	if m.lastHeight != 0 {
 		t.Fatalf("a failed update must leave lastHeight at 0, got %d", m.lastHeight)
+	}
+}
+
+// needsRefresh decides whether the anti-expiry routine acts. The direction of the
+// comparison is the whole point: plenty of headroom means do nothing, little
+// headroom means refresh now. Inverted, the routine refreshes constantly while the
+// client is healthy and falls silent exactly as it approaches expiry — and an
+// expired light client stops every relay in that direction.
+//
+// The boundary cases are listed explicitly because a > / >= slip is invisible in
+// the middle of the range.
+func TestNeedsRefresh(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+
+	tests := []struct {
+		name      string
+		expiresAt time.Time
+		want      bool
+	}{
+		{"no expiry at all", time.Time{}, false},
+		{"expiry far beyond the margin", now.Add(refreshMargin + time.Hour), false},
+		{"one second more headroom than the margin", now.Add(refreshMargin + time.Second), false},
+		{"exactly the margin", now.Add(refreshMargin), true},
+		{"one second inside the margin", now.Add(refreshMargin - time.Second), true},
+		{"about to expire", now.Add(time.Minute), true},
+		{"already expired", now.Add(-time.Hour), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := needsRefresh(tt.expiresAt, now); got != tt.want {
+				t.Fatalf("needsRefresh = %v, want %v (headroom %s, margin %s)",
+					got, tt.want, tt.expiresAt.Sub(now), refreshMargin)
+			}
+		})
+	}
+}
+
+// withFastRefreshTick shortens the refresh cadence so a loop test finishes in
+// milliseconds instead of a minute, and restores it afterwards.
+func withFastRefreshTick(t *testing.T) {
+	t.Helper()
+	prev := refreshTick
+	refreshTick = time.Millisecond
+	t.Cleanup(func() { refreshTick = prev })
+}
+
+// waitFor polls cond until it holds or ctx expires.
+func waitFor(t *testing.T, ctx context.Context, cond func() bool, msg string) {
+	t.Helper()
+	for {
+		if cond() {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(msg)
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+// updateClientTo is the single place the module advances its view of the
+// destination client. Every scenario it must get right lives here.
+func TestUpdateClientTo(t *testing.T) {
+	// an empty-payload-list ("already current")
+	// build advances lastHeight without submitting a tx, so a restart where the
+	// client already covers incoming packets does not stall the provability guard.
+	t.Run("seeds lastHeight from a no-op build", func(t *testing.T) {
+		src := &mockSource{latest: 200}
+		dst := &mockDest{}
+		b := &mockBuilder{noPayload: true, forceHeight: 200} // "client current at 200"
+		m := NewModule("test", "client-0", src, dst, b)
+
+		if err := m.updateClientTo(context.Background(), 150); err != nil {
+			t.Fatalf("seed update: %v", err)
+		}
+		if len(dst.updates) != 0 {
+			t.Fatalf("no-op build must not submit a tx, got %d", len(dst.updates))
+		}
+		if m.lastHeight != 200 {
+			t.Fatalf("lastHeight must be seeded to reported current height 200, got %d", m.lastHeight)
+		}
+		// A packet at 180 is now provable (<= seeded 200) even though no tx was sent.
+		if rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 180, Raw: []byte("p")}}); len(rq) != 0 {
+			t.Fatalf("packet under seeded height must relay, got re-queue %v", rq)
+		}
+	})
+
+	t.Run("is append-only", func(t *testing.T) {
+		src := &mockSource{}
+		dst := &mockDest{}
+		b := &mockBuilder{}
+		m := NewModule("test", "client-0", src, dst, b)
+		ctx := context.Background()
+
+		// 1. first update at height 10 -> submitted, lastHeight=10
+		if err := m.updateClientTo(ctx, 10); err != nil {
+			t.Fatalf("update to 10: %v", err)
+		}
+		if len(dst.updates) != 1 || dst.updates[0].Height != 10 {
+			t.Fatalf("want one update at height 10, got %+v", dst.updates)
+		}
+
+		// 2. re-request height 10 (<= lastHeight) -> skipped before Build
+		builtBefore := b.built
+		if err := m.updateClientTo(ctx, 10); err != nil {
+			t.Fatalf("re-update to 10: %v", err)
+		}
+		if len(dst.updates) != 1 {
+			t.Fatalf("append-only violated: expected no new submit, got %d", len(dst.updates))
+		}
+		if b.built != builtBefore {
+			t.Fatalf("expected Build skipped for covered height, but it ran")
+		}
+
+		// 3. height 20 but builder reports the client already current (Height 0)
+		b.forceHeight = 0 // header[0]=20 -> but simulate no-op: override to 0? no: use a builder that returns stale
+		b.forceHeight = 5 // stale (<= lastHeight 10): must be skipped without submit
+		if err := m.updateClientTo(ctx, 20); err != nil {
+			t.Fatalf("update to 20 (stale build): %v", err)
+		}
+		if len(dst.updates) != 1 {
+			t.Fatalf("stale/no-op update must not submit, got %d submits", len(dst.updates))
+		}
+
+		// 4. height 20, builder returns a real advance -> submitted, lastHeight=20
+		b.forceHeight = 0 // back to echoing the requested height (20)
+		if err := m.updateClientTo(ctx, 20); err != nil {
+			t.Fatalf("update to 20: %v", err)
+		}
+		if len(dst.updates) != 2 || dst.updates[1].Height != 20 {
+			t.Fatalf("want second update at height 20, got %+v", dst.updates)
+		}
+	})
+
+	// A failed submission must leave lastHeight where it was. lastHeight is what the
+	// module believes the destination client covers; advancing it on a failure makes
+	// the module skip the very update that did not land, and the client then sits at
+	// an older height than every later decision assumes.
+	//
+	// This is a named failure mode for this repo — "never advance a
+	// timestamp/cursor/tracker on a failed operation" — and the check that catches it
+	// is the retry: if lastHeight moved, the second attempt returns early instead of
+	// submitting.
+	t.Run("does not advance lastHeight on a failed submit", func(t *testing.T) {
+		src := &mockSource{}
+		dst := &mockDest{updateErr: errors.New("submit reverted")}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+		ctx := context.Background()
+
+		if err := m.updateClientTo(ctx, 10); err == nil {
+			t.Fatal("a failing UpdateClient must surface as an error")
+		}
+		if m.lastHeight != 0 {
+			t.Fatalf("lastHeight advanced to %d on a failed submit; the client is still at 0", m.lastHeight)
+		}
+
+		// The destination recovers: the same height must now actually be submitted.
+		dst.updateErr = nil
+		if err := m.updateClientTo(ctx, 10); err != nil {
+			t.Fatalf("retry after recovery: %v", err)
+		}
+		if len(dst.updates) != 1 || dst.updates[0].Height != 10 {
+			t.Fatalf("retry did not submit the update that previously failed, got %+v", dst.updates)
+		}
+	})
+
+	// The stale-update guard is inclusive: an update AT the height already trusted is
+	// as pointless as one below it, and submitting it spends a proof and a tx to move
+	// the client nowhere. The equal case is the one worth pinning — a strictly-less
+	// comparison still passes every test that only exercises heights below lastHeight.
+	t.Run("skips an update at a height already trusted", func(t *testing.T) {
+		src := &mockSource{}
+		dst := &mockDest{}
+		b := &mockBuilder{}
+		m := NewModule("test", "client-0", src, dst, b)
+		ctx := context.Background()
+
+		if err := m.updateClientTo(ctx, 10); err != nil {
+			t.Fatalf("first update: %v", err)
+		}
+		if len(dst.updates) != 1 {
+			t.Fatalf("want the first update submitted, got %+v", dst.updates)
+		}
+
+		// Ask for a higher height (so the pre-Build guard lets it through) but have the
+		// builder report exactly the height already trusted.
+		b.forceHeight = 10
+		if err := m.updateClientTo(ctx, 20); err != nil {
+			t.Fatalf("update at trusted height: %v", err)
+		}
+		if len(dst.updates) != 1 {
+			t.Fatalf("submitted an update at the height already trusted: %+v", dst.updates)
+		}
+		if m.lastHeight != 10 {
+			t.Fatalf("lastHeight = %d, want it unchanged at 10", m.lastHeight)
+		}
+	})
+}
+
+// refreshLoop is the anti-expiry routine: it acts only on the decision
+// needsRefresh makes, and must keep running through a failed query.
+//
+// No t.Parallel here, deliberately. withFastRefreshTick reassigns a
+// package-level var and restores it with t.Cleanup; running these subtests in
+// parallel would turn that sequence into a race that -race catches only
+// sometimes.
+func TestRefreshLoop(t *testing.T) {
+	// The decision above is only useful if the loop acts on it. This covers the wiring:
+	// a client inside the margin gets an update submitted without any packet traffic.
+	t.Run("advances a client near expiry", func(t *testing.T) {
+		withFastRefreshTick(t)
+
+		src := &mockSource{latest: 42}
+		dst := &mockDest{expiresAt: time.Now().Add(time.Minute)} // well inside refreshMargin
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); m.refreshLoop(ctx) }()
+
+		waitFor(t, ctx, func() bool {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			return m.lastHeight == 42
+		}, "refresh loop never advanced the client to the source's latest height")
+		cancel()
+		wg.Wait()
+	})
+
+	// A client with plenty of headroom must be left alone: refreshing it early spends a
+	// proof and a transaction for nothing, on a cadence of once a minute.
+	t.Run("leaves a healthy client alone", func(t *testing.T) {
+		withFastRefreshTick(t)
+
+		src := &mockSource{latest: 42}
+		dst := &mockDest{expiresAt: time.Now().Add(refreshMargin + time.Hour)}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); m.refreshLoop(ctx) }()
+		time.Sleep(50 * time.Millisecond) // many ticks at 1ms
+		cancel()
+		wg.Wait()
+
+		if len(dst.updates) != 0 {
+			t.Fatalf("refreshed a client that was nowhere near expiry: %+v", dst.updates)
+		}
+	})
+
+	// A failed expiry query must not be read as "no expiry". The loop logs and retries
+	// on the next tick; it must not advance any state, and it must not exit — a refresh
+	// loop that dies on one bad RPC leaves the client to expire in silence.
+	t.Run("survives a failed expiry query", func(t *testing.T) {
+		withFastRefreshTick(t)
+
+		src := &mockSource{latest: 42}
+		dst := &mockDest{expiresErr: errors.New("rpc down")}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		var wg sync.WaitGroup
+		wg.Add(1)
+		done := make(chan struct{})
+		go func() { defer wg.Done(); m.refreshLoop(ctx); close(done) }()
+
+		time.Sleep(50 * time.Millisecond)
+		select {
+		case <-done:
+			t.Fatal("refresh loop exited on a failed expiry query; the client is now unattended")
+		default:
+		}
+		if len(dst.updates) != 0 {
+			t.Fatalf("submitted an update off a failed expiry query: %+v", dst.updates)
+		}
+		m.mu.Lock()
+		last := m.lastHeight
+		m.mu.Unlock()
+		if last != 0 {
+			t.Fatalf("lastHeight advanced to %d off a failed expiry query", last)
+		}
+		cancel()
+		wg.Wait()
+	})
+}
+
+// --- the optional capabilities ---
+//
+// The With* options are how a path declares what it needs beyond the base relay
+// loop. They were all at 0%: nothing pinned that an option actually installs what
+// it names, and an option that silently does nothing is invisible -- the module
+// runs, relays packets, and quietly never scans for timeouts.
+
+func TestWithTimeoutScanner(t *testing.T) {
+	t.Run("installs the scan function and its interval", func(t *testing.T) {
+		called := 0
+		m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithTimeoutScanner(5*time.Second, func(context.Context) { called++ }))
+
+		if m.scan == nil {
+			t.Fatal("no scan function installed; Run would skip the timeout loop entirely")
+		}
+		if m.scanInterval != 5*time.Second {
+			t.Fatalf("scanInterval = %s, want 5s", m.scanInterval)
+		}
+		m.scan(context.Background())
+		if called != 1 {
+			t.Fatalf("the installed function ran %d times, want 1", called)
+		}
+	})
+
+	t.Run("a non-positive interval falls back to the default", func(t *testing.T) {
+		// Zero is what a caller passes to mean "use the standard cadence" --
+		// run_adapters.go does exactly that. Left as zero it becomes
+		// time.NewTicker(0), which panics and takes the module down at startup.
+		for _, interval := range []time.Duration{0, -time.Second} {
+			m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+				WithTimeoutScanner(interval, func(context.Context) {}))
+			if m.scanInterval != defaultScanInterval {
+				t.Errorf("interval %s produced scanInterval %s, want the default %s",
+					interval, m.scanInterval, defaultScanInterval)
+			}
+		}
+	})
+}
+
+func TestWithClientUpdateObserver(t *testing.T) {
+	var seen []time.Time
+	trustedAt := time.Unix(1_700_000_000, 0)
+	src := &mockSource{}
+	dst := &mockDest{}
+	b := &mockBuilder{trustedAt: trustedAt}
+	m := NewModule("test", "client-0", src, dst, b,
+		WithClientUpdateObserver(func(at time.Time) { seen = append(seen, at) }))
+
+	if err := m.updateClientTo(context.Background(), 10); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	if len(seen) != 1 {
+		t.Fatalf("observer called %d times for one client update, want 1", len(seen))
+	}
+	// The observed value is the height the client now trusts, not the moment the
+	// relayer happened to submit it: the freshness metric is about the CLIENT.
+	if !seen[0].Equal(trustedAt) {
+		t.Fatalf("observer got %s, want the update's TrustedAt %s", seen[0], trustedAt)
+	}
+}
+
+// A module with no observer must still update. The option is optional, and the
+// nil check is what stops every path that does not set one from panicking on its
+// first client update.
+//
+// The builder MUST report a non-zero TrustedAt here. recordClientUpdate is
+// guarded by `observer != nil && !TrustedAt.IsZero()`, so a zero timestamp short-
+// circuits before the nil check is reached -- an earlier version of this test
+// used the default builder and passed with the nil guard deleted.
+func TestUpdateClientTo_WorksWithoutAnObserver(t *testing.T) {
+	b := &mockBuilder{trustedAt: time.Unix(1_700_000_000, 0)}
+	m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, b)
+	if err := m.updateClientTo(context.Background(), 10); err != nil {
+		t.Fatalf("update without an observer: %v", err)
+	}
+}
+
+// withFastScanTick shortens the scan cadence so a loop test finishes in
+// milliseconds rather than waiting out the 30s production interval.
+func withFastScanTick(m *Module) { m.scanInterval = time.Millisecond }
+
+func TestScanLoop(t *testing.T) {
+	t.Run("keeps scanning until the context is cancelled", func(t *testing.T) {
+		// The timeout sweep is what refunds a packet that was relayed but never
+		// delivered. A loop that runs once and stops leaves the pending set
+		// growing and the escrow locked, with nothing in the log to say so.
+		var mu sync.Mutex
+		scans := 0
+		m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithTimeoutScanner(time.Second, func(context.Context) {
+				mu.Lock()
+				scans++
+				mu.Unlock()
+			}))
+		withFastScanTick(m)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); m.scanLoop(ctx) }()
+
+		waitFor(t, ctx, func() bool {
+			mu.Lock()
+			defer mu.Unlock()
+			return scans >= 3
+		}, "the scan loop did not keep running")
+		cancel()
+		wg.Wait()
+	})
+
+	t.Run("returns immediately on cancellation, not at the next tick", func(t *testing.T) {
+		// The interval here is deliberately LONG and the deadline short. Waiting
+		// for the next tick would be correct-looking and still wrong: in
+		// production the cadence is 30s, and a shutdown that waits it out spends
+		// most of the 45s process budget on one worker.
+		//
+		// A short interval hides this -- an earlier version used a 1ms tick and a
+		// 2s deadline, which passed with the ctx.Done() arm deleted entirely.
+		const scanInterval = 30 * time.Second
+		m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithTimeoutScanner(scanInterval, func(context.Context) {}))
+
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { m.scanLoop(ctx); close(done) }()
+
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("scan loop did not return within 2s of cancellation on a %s cadence; "+
+				"shutdown waits for the next tick", scanInterval)
+		}
+	})
+
+	t.Run("never scans on an already-cancelled context", func(t *testing.T) {
+		var mu sync.Mutex
+		scans := 0
+		m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithTimeoutScanner(time.Second, func(context.Context) {
+				mu.Lock()
+				scans++
+				mu.Unlock()
+			}))
+		withFastScanTick(m)
+
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		m.scanLoop(ctx)
+
+		mu.Lock()
+		defer mu.Unlock()
+		if scans != 0 {
+			t.Fatalf("ran %d scans on an already-cancelled context", scans)
+		}
+	})
+
+	t.Run("does not start a sweep once cancellation and a tick are both ready", func(t *testing.T) {
+		// The case the re-check inside the tick branch exists for. `select` picks
+		// at random among ready cases, so when the ticker has already fired and
+		// the context is done, half the time it takes the tick -- and without the
+		// re-check a sweep begins during shutdown, issuing RPCs nobody is left to
+		// read.
+		//
+		// Forcing that state deterministically is not possible; forcing it REPEATEDLY
+		// is. Each round blocks inside the scan long enough for the ticker to fire,
+		// cancels while blocked, and then releases. With the re-check the loop
+		// returns every time; without it, each round is an independent coin flip,
+		// so 20 rounds leave a 1-in-a-million chance of not catching it. The test
+		// never fails spuriously -- correct code scans exactly once per round.
+		for round := 0; round < 20; round++ {
+			var mu sync.Mutex
+			scans := 0
+			blocked := make(chan struct{})
+			release := make(chan struct{})
+
+			ctx, cancel := context.WithCancel(context.Background())
+			m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+				WithTimeoutScanner(time.Second, func(context.Context) {
+					mu.Lock()
+					first := scans == 0
+					scans++
+					mu.Unlock()
+					if first {
+						close(blocked)
+						<-release
+					}
+				}))
+			withFastScanTick(m)
+
+			done := make(chan struct{})
+			go func() { m.scanLoop(ctx); close(done) }()
+
+			<-blocked                        // inside the first scan
+			time.Sleep(5 * time.Millisecond) // let the 1ms ticker fire while blocked
+			cancel()                         // now both cases are ready
+			close(release)
+
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				cancel()
+				t.Fatalf("round %d: scan loop did not return", round)
+			}
+
+			mu.Lock()
+			got := scans
+			mu.Unlock()
+			if got != 1 {
+				t.Fatalf("round %d: ran %d sweeps, want 1; a sweep started after cancellation", round, got)
+			}
+		}
+	})
+}
+
+// The ladder is dead code unless handleBatch actually goes through it. This is
+// the production shape: an ack whose proof keeps failing, flushed repeatedly.
+func TestHandleBatch_EscalatesARepeatedProofFailure(t *testing.T) {
+	src := &mockSource{
+		latest:           100,
+		relayable:        50, // packet at 80 is not provable yet: it waits first
+		failMembershipOn: map[string]bool{"ack": true},
+	}
+	m := NewModule("eth->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	m.waits.now = clk.now
+
+	batch := []chain.Event{{Type: chain.AckPacket, Sequence: 21, Height: 80, Raw: []byte("ack"), AckBytes: [][]byte{{1}}}}
+
+	// Sixteen minutes parked at the source gate before a proof is ever attempted.
+	// This is the normal case on an L2 return leg, and none of it is a proof
+	// failure -- so it must not be charged to the ladder below.
+	m.handleBatch(context.Background(), batch)
+	clk.t = clk.t.Add(16 * time.Minute)
+	src.relayable = 100
+
+	first := captureLog(func() { m.handleBatch(context.Background(), batch) })
+	if !strings.Contains(first, "ack seq=21") {
+		t.Fatalf("the first proof failure must reach the log:\n%s", first)
+	}
+	if strings.Contains(first, "STUCK") {
+		t.Fatalf("the FIRST proof failure was reported as STUCK because it inherited the pre-proof wait:\n%s", first)
+	}
+
+	// Ten more flushes within the same threshold: silent. This is the case that
+	// produced 296 byte-identical lines.
+	repeats := captureLog(func() {
+		for i := 0; i < 10; i++ {
+			clk.t = clk.t.Add(2 * time.Second)
+			m.handleBatch(context.Background(), batch)
+		}
+	})
+	if strings.Contains(repeats, "ack seq=21") {
+		t.Fatalf("repeats inside one threshold must be suppressed:\n%s", repeats)
+	}
+
+	// Past the stuck threshold the wording has to change: an operator reading
+	// "proof for packet" cannot tell a retry from a packet with no way out.
+	clk.t = clk.t.Add(proofFailureStuckAfter + time.Minute)
+	stuck := captureLog(func() { m.handleBatch(context.Background(), batch) })
+	for _, want := range []string{"STUCK", "ack seq=21", "no other exit"} {
+		if !strings.Contains(stuck, want) {
+			t.Fatalf("the escalated line must contain %q:\n%s", want, stuck)
+		}
+	}
+}
+
+// TestHandleBatch_StuckSendNamesTheTimeoutExit: "no other exit" is true of an ack
+// and false of a send. Every source reports an expired send as permanent, the
+// module drops it, and the timeout scanner refunds it -- so telling an operator a
+// send is unrecoverable sends them looking for a problem that resolves itself.
+// The two packet types need different next actions, so they need different lines.
+func TestHandleBatch_StuckSendNamesTheTimeoutExit(t *testing.T) {
+	src := &mockSource{
+		latest:           100,
+		relayable:        100,
+		failMembershipOn: map[string]bool{"snd": true},
+	}
+	m := NewModule("eth->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+	m.waits.now = clk.now
+
+	batch := []chain.Event{{Type: chain.SendPacket, Sequence: 21, Height: 80, Raw: []byte("snd")}}
+
+	m.handleBatch(context.Background(), batch)
+	clk.t = clk.t.Add(proofFailureStuckAfter + time.Minute)
+	stuck := captureLog(func() { m.handleBatch(context.Background(), batch) })
+
+	// A SendPacket prints as "recv": the line names the message the destination
+	// will be asked for, not the event's origin (see TestEventTypeNames).
+	for _, want := range []string{"STUCK", "recv seq=21", "timeout scanner"} {
+		if !strings.Contains(stuck, want) {
+			t.Fatalf("a stuck send must name the exit it actually has (%q):\n%s", want, stuck)
+		}
+	}
+	if strings.Contains(stuck, "no other exit") {
+		t.Fatalf("a send is refunded once past its timeout, so it does have another exit:\n%s", stuck)
 	}
 }

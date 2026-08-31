@@ -298,3 +298,112 @@ func TestBinarySearchHighestFeasiblePropagatesError(t *testing.T) {
 		t.Fatalf("expected wrapped %v, got %v", wantErr, err)
 	}
 }
+
+// Which of the two stored committees the client checks against is decided by the
+// label on the header, and the client picks it by the SIGNATURE slot's period:
+//
+//	sync_committee = if signature_period == stored_period { current } else { next }
+//
+// (ethereum/light-client verify.rs). Getting the label wrong fails on chain with
+// "current sync committee (X) does not match with the one in the current state (Y)"
+// -- a message that names two aggregate pubkeys and neither period.
+func TestActiveCommitteeFor(t *testing.T) {
+	committee := &relayerclient.SyncCommittee{AggregatePubkey: "0xaggregate"}
+
+	cases := []struct {
+		name            string
+		signaturePeriod uint64
+		storedPeriod    uint64
+		wantCurrent     bool
+		wantNext        bool
+		wantErr         bool
+		why             string
+	}{
+		{
+			name:            "same period is the current committee",
+			signaturePeriod: 1343,
+			storedPeriod:    1343,
+			wantCurrent:     true,
+			why:             "the steady state: the signature is in the period the client is finalized in",
+		},
+		{
+			name:            "one period ahead is the next committee",
+			signaturePeriod: 1344,
+			storedPeriod:    1343,
+			wantNext:        true,
+			why: "the last ~65 slots of every period: signature_slot has crossed while the client's " +
+				"finalized slot has not. Labelling this Current is the stall",
+		},
+		{
+			name:            "two periods ahead is refused",
+			signaturePeriod: 1345,
+			storedPeriod:    1343,
+			wantErr:         true,
+			why:             "the client rejects it outright, so building the header only spends gas to be told so",
+		},
+		{
+			name:            "a period behind is refused",
+			signaturePeriod: 1342,
+			storedPeriod:    1343,
+			wantErr:         true,
+			why:             "the client has no committee older than its current one to check against",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			active, err := activeCommitteeFor(tc.signaturePeriod, tc.storedPeriod, committee)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("activeCommitteeFor(%d, %d) error = %v, want error %v: %s",
+					tc.signaturePeriod, tc.storedPeriod, err, tc.wantErr, tc.why)
+			}
+			if tc.wantErr {
+				return
+			}
+			if (active.Current != nil) != tc.wantCurrent {
+				t.Fatalf("Current set = %v, want %v: %s", active.Current != nil, tc.wantCurrent, tc.why)
+			}
+			if (active.Next != nil) != tc.wantNext {
+				t.Fatalf("Next set = %v, want %v: %s", active.Next != nil, tc.wantNext, tc.why)
+			}
+			// Exactly one, never both: the client reads one field and the other
+			// would be silently ignored.
+			if (active.Current != nil) == (active.Next != nil) {
+				t.Fatal("exactly one of Current/Next must be set")
+			}
+		})
+	}
+
+	// The boundary is a real slot pair, not a rounded one: signature_slot is
+	// attested_slot + 1, so a single slot decides the label once every 8192.
+	t.Run("the boundary falls on one real slot", func(t *testing.T) {
+		const slotsPerPeriod = 8192 // EpochsPerSyncCommitteePeriod(256) * SlotsPerEpoch(32)
+		cs := &relayerclient.EthereumClientState{
+			EpochsPerSyncCommitteePeriod: 256,
+			SlotsPerEpoch:                32,
+		}
+
+		// Period 1344 starts at 8192 * 1344 = 11010048. The attested slot one below it
+		// is still 1343 while its signature slot is already 1344 -- the one slot where
+		// choosing by attested rather than signature gives the wrong answer.
+		const lastSlotOf1343 = slotsPerPeriod*1344 - 1
+
+		if got := cs.ComputeSyncCommitteePeriodAtSlot(lastSlotOf1343); got != 1343 {
+			t.Fatalf("attested slot %d is in period %d, want 1343", lastSlotOf1343, got)
+		}
+		if got := cs.ComputeSyncCommitteePeriodAtSlot(lastSlotOf1343 + 1); got != 1344 {
+			t.Fatalf("signature slot %d is in period %d, want 1344", lastSlotOf1343+1, got)
+		}
+
+		// Reading the period from the attested slot would label this Current against a
+		// client stored in 1343 -- which is what the on-chain rejection looked like.
+		byAttested, err := activeCommitteeFor(cs.ComputeSyncCommitteePeriodAtSlot(lastSlotOf1343), 1343, &relayerclient.SyncCommittee{})
+		if err != nil || byAttested.Current == nil {
+			t.Fatalf("attested-slot period must resolve to Current, got %+v err=%v", byAttested, err)
+		}
+		bySignature, err := activeCommitteeFor(cs.ComputeSyncCommitteePeriodAtSlot(lastSlotOf1343+1), 1343, &relayerclient.SyncCommittee{})
+		if err != nil || bySignature.Next == nil {
+			t.Fatalf("signature-slot period must resolve to Next, got %+v err=%v", bySignature, err)
+		}
+	})
+}

@@ -3,9 +3,11 @@ package client
 import (
 	"context"
 	"errors"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -126,4 +128,42 @@ func TestDialCosmosRPCDoesNotTimeOutTheSubscription(t *testing.T) {
 	// WSEvents holds its own connection, built by newWSEvents without reference
 	// to the http.Client we bounded — so an absurdly small HTTP timeout must not
 	// have prevented it from being set up.
+}
+
+// The two failures that decide whether a live Cosmos subscription is alive are
+// reported only through CometBFT's logger, which is a nop until SetLogger is
+// called. Nothing in this repository called it, so a resubscribe that gave up
+// and every event dropped on a full channel left no trace in any log. This pins
+// the wiring, because losing it again would be invisible.
+func TestDialCosmosRPCWiresTheCometLogger(t *testing.T) {
+	c, err := DialCosmosRPC("http://127.0.0.1:26657", "/websocket", DefaultRPCTimeout)
+	if err != nil {
+		t.Fatalf("DialCosmosRPC: %v", err)
+	}
+	if _, ok := c.WSEvents.Logger.(cometLogger); !ok {
+		t.Fatalf("WSEvents logger is %T, want cometLogger: CometBFT's subscription errors go to a nop logger without it", c.WSEvents.Logger)
+	}
+}
+
+// TestCometLoggerFormat: the adapter has to carry the key/values, since the
+// query and the error are the whole content of the lines it exists to surface.
+func TestCometLoggerFormat(t *testing.T) {
+	var buf strings.Builder
+	prevOut, prevFlags := log.Writer(), log.Flags()
+	log.SetOutput(&buf)
+	log.SetFlags(0)
+	defer func() { log.SetOutput(prevOut); log.SetFlags(prevFlags) }()
+
+	cometLogger{}.With("query", "tm.event='Tx'").Error("Failed to resubscribe", "err", "boom")
+	cometLogger{}.Debug("noisy per-message chatter")
+
+	got := buf.String()
+	for _, want := range []string{"ERROR", "Failed to resubscribe", "query=tm.event='Tx'", "err=boom"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("log line missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "noisy") {
+		t.Fatalf("Debug must be dropped, it would bury the relayer's own log:\n%s", got)
+	}
 }
