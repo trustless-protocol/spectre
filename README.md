@@ -1,10 +1,10 @@
 # fast-ibc
 
-A Solidity implementation of IBC Eureka (IBC v2) with a Go relayer using gnark
-Groth16 for Tendermint light client verification. Each client update proves a
-2/3+ voting-power quorum of validator Ed25519 signatures in a single Groth16
-proof, with in-circuit CanonicalVote reconstruction so only ~32 bytes of public
-input land on-chain.
+A Solidity implementation of [IBC v2](https://github.com/cosmos/ibc/tree/main/spec/IBC_V2)
+with a Go relayer using gnark Groth16 for Tendermint light client verification.
+Each client update proves a 2/3+ voting-power quorum of validator Ed25519
+signatures in a single Groth16 proof, with in-circuit CanonicalVote
+reconstruction so only ~32 bytes of public input land on-chain.
 
 ## L2 ICS-08 clients
 
@@ -52,10 +52,11 @@ public input. This keeps the on-chain verifier well under EIP-170. Padding
 slots carry `active=false`; both the in-circuit hash and the on-chain quorum
 check skip them.
 
-The current Tendermint light-client cache supports at most **180 active
-validators**. Any update whose current validator set has more than 180 active
-validators reverts with `ValidatorCountExceedsLimit(count, 180)`, so chains
-above that bound need a larger cache layout before they can use this client.
+The pinned validator set holds at most **180 active validators**
+(`ValidatorSetLib.MAX_VALIDATOR_COUNT`). Any update whose current validator set
+has more than 180 active validators reverts with
+`ValidatorCountExceedsLimit(count, 180)`, so chains above that bound need a
+larger cache layout before they can use this client.
 
 ## Requirements
 

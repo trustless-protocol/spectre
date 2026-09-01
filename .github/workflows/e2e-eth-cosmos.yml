@@ -1,6 +1,6 @@
-name: E2E — IbcEureka
+name: E2E — ETH ↔ Cosmos
 
-# Manually-triggered matrix run of TestWithIbcEurekaTestSuite (ETH <-> Cosmos
+# Manually-triggered matrix run of TestWithEthCosmosTestSuite (ETH <-> Cosmos
 # ICS20 transfers, timeouts, error acks). Delegates to the reusable
 # e2e-suite.yml. Heavy (Docker + Kurtosis + Groth16) — trigger from Actions tab.
 on:
@@ -20,7 +20,7 @@ jobs:
     uses: ./.github/workflows/e2e-suite.yml
     secrets: inherit
     with:
-      suite: TestWithIbcEurekaTestSuite
+      suite: TestWithEthCosmosTestSuite
       ref: ${{ inputs.ref }}
       filter: ${{ inputs.filter }}
       max_parallel: 6

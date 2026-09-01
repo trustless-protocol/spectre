@@ -69,7 +69,7 @@ capture-l2-fixture config out:
 # Build the relayer docker image
 [group('build')]
 build-relayer-image:
-    docker build -t eureka-relayer:latest -f programs/relayer/Dockerfile .
+    docker build -t fast-ibc-relayer:latest -f programs/relayer/Dockerfile .
 
 # Install the Go relayer for use in the e2e tests.
 # Builds with an explicit -o name because the package dir is `cmd/`, so a plain
@@ -157,11 +157,11 @@ generate-abi-bytecode: build-contracts
 generate-fixtures-wasm: clean-foundry install-go-relayer build-prover-artifacts
 	@echo "Generating fixtures... This may take a while."
 	@echo "Generating recvPacket and acknowledgePacket groth16 fixtures..."
-	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithIbcEurekaTestSuite/Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack$' -timeout 60m
+	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithEthCosmosTestSuite/Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack$' -timeout 60m
 	@echo "Generating native SdkCoin recvPacket groth16 fixtures..."
-	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithIbcEurekaTestSuite/Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack$' -timeout 60m
+	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithEthCosmosTestSuite/Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack$' -timeout 60m
 	@echo "Generating timeoutPacket groth16 fixtures..."
-	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithIbcEurekaTestSuite/Test_TimeoutPacketFromCosmos$' -timeout 60m
+	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithEthCosmosTestSuite/Test_TimeoutPacketFromCosmos$' -timeout 60m
 
 # Generate go types for the e2e tests from the ethereum light client code
 [group('generate')]
@@ -222,7 +222,7 @@ test-attestor:
 	@echo "Running Optimism attestor tests..."
 	cd attestor/optimism && go test -v ./...
 
-# Run any e2e test using the test's full name. For example, `just test-e2e TestWithIbcEurekaTestSuite/Test_Deploy`
+# Run any e2e test using the test's full name. For example, `just test-e2e TestWithEthCosmosTestSuite/Test_Deploy`
 #
 # ETH_TESTNET_TYPE=pos picks the Kurtosis PoS network (with beacon API), which is what
 # the wasm light client + the cosmos→eth direction need. Override to "pow" only if the
@@ -237,11 +237,11 @@ test-e2e testname: clean-foundry install-go-relayer build-prover-artifacts
 		E2E_PROOF_TYPE="${E2E_PROOF_TYPE:-groth16}" \
 		go test -v -run '^{{testname}}$' -timeout 120m
 
-# Run any e2e test in the IbcEurekaTestSuite. For example, `just test-e2e-eureka Test_Deploy`
+# Run any e2e test in the EthCosmosTestSuite. For example, `just test-e2e-eth-cosmos Test_Deploy`
 [group('test')]
-test-e2e-eureka testname:
+test-e2e-eth-cosmos testname:
 	@echo "Running {{testname}} test..."
-	just test-e2e TestWithIbcEurekaTestSuite/{{testname}}
+	just test-e2e TestWithEthCosmosTestSuite/{{testname}}
 
 # Run any e2e test in the RelayerTestSuite. For example, `just test-e2e-relayer Test_RelayerInfo`
 [group('test')]

@@ -1,6 +1,6 @@
 {
   "name": "@decentrio/fast-ibc",
-  "description": "IBC Eureka (IBC v2) Solidity implementation with gnark Groth16 light client verification.",
+  "description": "IBC v2 Solidity implementation with gnark Groth16 light client verification.",
   "version": "1.0.0",
   "dependencies": {
     "@openzeppelin/contracts": "5.4.0",

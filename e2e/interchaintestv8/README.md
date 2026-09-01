@@ -37,10 +37,10 @@ From the repo root:
 
 ```bash
 # Single test by full name (SUITE/CASE)
-just test-e2e TestWithIbcEurekaTestSuite/Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack
+just test-e2e TestWithEthCosmosTestSuite/Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack
 
 # Shortcut by suite (drops the TestWith...Suite/ prefix)
-just test-e2e-eureka Test_Deploy
+just test-e2e-eth-cosmos Test_Deploy
 just test-e2e-relayer Test_RelayerInfo
 just test-e2e-multichain Test_Deploy
 ```
@@ -48,7 +48,7 @@ just test-e2e-multichain Test_Deploy
 The recipe sets `ETH_TESTNET_TYPE=pos`, `RELAYER_BINARY=$GOPATH/bin/relayer`,
 and `PROVER_BIN_DIR=<repo>/relayer/bin` for you.
 
-## `IbcEurekaTestSuite` daemon cases
+## `EthCosmosTestSuite` daemon cases
 
 | Test | What it verifies |
 |------|------------------|
@@ -84,4 +84,4 @@ relay tx via `s.RelayerClient.RelayByTx(...)` and broadcasting it themselves.
 
 The `s.RelayerClient` / `s.EthRelayerSubmitter` plumbing kept from upstream
 is still wired in `e2esuite/suite.go` for the out-of-scope raw-tx broadcast
-flows, but the IbcEurekaTestSuite cases above avoid it entirely.
+flows, but the EthCosmosTestSuite cases above avoid it entirely.

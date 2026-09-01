@@ -121,11 +121,10 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 ## Hard limits — never cross without explicit instruction
 
 1. **Never `git commit` or `git push` on your own.** Finish the edit, verify it, report, stop. Wait for the user to say so — every time; prior approval does not carry over.
-2. **Never modify the Ethereum Rust client without explicit instruction**: `programs/cw-ics08-wasm-eth`, `packages/ethereum/*`. L2 client packages and programs are maintained separately.
-3. **Never `git add .` / `git add docs/` or any blanket staging.** The working tree intentionally holds untracked private files (`*_VI.md`, scratch dirs like `diagrams-tmp/`, local config edits). Stage explicit paths only. Before staging anything you didn't create this session, check `git status` and ask.
-4. **Never invent, pad, or extrapolate benchmark data.** Benchmark artifacts are customer-facing. The repo stores no measured numbers, so every figure must come from a run you actually executed this session, quoted with its honest sample count and the hardware it ran on. Never mix Forge isolated-gas numbers with E2E gas numbers in one comparison.
-5. **Never hand-edit generated code**: `relayer/bindings/`, `packages/go-abigen/`, `contracts/verifiers/Groth16Verifier_N*.sol`, anything under `abi/`. Fix the source, regenerate.
-6. **All GitHub artifacts in English** — issues, PR titles/bodies, commit messages, code comments — regardless of the conversation language.
+2. **Never `git add .` / `git add docs/` or any blanket staging.** The working tree intentionally holds untracked private files (`*_VI.md`, scratch dirs like `diagrams-tmp/`, local config edits). Stage explicit paths only. Before staging anything you didn't create this session, check `git status` and ask.
+3. **Never invent, pad, or extrapolate benchmark data.** Benchmark artifacts are customer-facing. The repo stores no measured numbers, so every figure must come from a run you actually executed this session, quoted with its honest sample count and the hardware it ran on. Never mix Forge isolated-gas numbers with E2E gas numbers in one comparison.
+4. **Never hand-edit generated code**: `relayer/bindings/`, `packages/go-abigen/`, `contracts/verifiers/Groth16Verifier_N*.sol`, anything under `abi/`. Fix the source, regenerate.
+5. **All GitHub artifacts in English** — issues, PR titles/bodies, commit messages, code comments — regardless of the conversation language.
 
 ## Conventions
 
@@ -152,17 +151,17 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 2. **Trusting stale docs** — repeats "planned"/"cache" wording for shipped features. → *Before repeating any capability claim, find the code and cite `file:line`; if you can't find it, write "unverified".*
 3. **Guessing at regressions** — sees a missing symbol, declares "broken all along", or recreates the file. → *Run `git log -S '<symbol>'` first; identify the culprit commit before proposing any fix.*
 4. **Auto-committing** — "helpfully" commits after an edit. → *Hard limit 1: edit, verify, report, stop.*
-5. **Blanket staging** — `git add .` sweeps in private untracked files. → *Hard limit 3: explicit paths only.*
-6. **Fabricated numbers** — pads benchmark samples, or quotes gas from memory or from a deleted benchmark file. → *Hard limit 4: every number has a command you ran this session behind it.*
+5. **Blanket staging** — `git add .` sweeps in private untracked files. → *Hard limit 2: explicit paths only.*
+6. **Fabricated numbers** — pads benchmark samples, or quotes gas from memory or from a deleted benchmark file. → *Hard limit 3: every number has a command you ran this session behind it.*
 7. **Regenerating circuits without redeploying** — runs `prover/cmd`, forgets the vk changed. → *Circuit regen ⇒ redeploy `Groth16Verifier_N{N}` + `setBucket`, stated in the same breath.*
-8. **Editing generated files** — patches `bindings/` or a generated verifier directly. → *Hard limit 5: fix the generator/source, regenerate.*
+8. **Editing generated files** — patches `bindings/` or a generated verifier directly. → *Hard limit 4: fix the generator/source, regenerate.*
 9. **Wrong devnet order** — starts Cosmos before Ethereum finalizes; Tendermint LC creation then fails confusingly. → *eth node → poll beacon `finality_checkpoints` until `finalized.epoch > 0` → cosmos node → `wasm.sh`.*
 10. **One-sided relayer fixes** — patches the Cosmos path, leaves the ETH mirror with the old bug. → *Every relayer change ends with a mirror-path diff; name the paired file in your report.*
 11. **Advancing state on failure** — bumps a routine freshness timestamp or a recovery cursor when the operation failed. These guard client expiry and event-loss windows. → *Never advance a timestamp/cursor/tracker on a failed operation.*
 12. **Sequence/nonce races** — adds a submission path that skips the handler mutexes. → *All ETH sends go through the nonce block under `h.mu`; all Cosmos sends through `SendCosmosTxBatch` under `cosmosMu`.*
 13. **npm/yarn, or `go run` for ops** — → *`bun` for JS; built `./relayer` binary for `create-clients-{cosmos,eth}`/`start`.*
 14. **Downgrading pinned deps to match a stale mirror** — a mirror lags, model "fixes" by downgrading. → *Never regress a pinned version to satisfy a mirror; fix the install source.*
-15. **Chat language leaking into GitHub** — non-English chat bleeds into an issue or commit. → *Hard limit 6.*
+15. **Chat language leaking into GitHub** — non-English chat bleeds into an issue or commit. → *Hard limit 5.*
 16. **Misreading the permissionless escape hatch** — flags `hasRole(ROLE, address(0))` as a vulnerability. → *It's the documented permissionless mode; report it as design context, not a finding.*
 17. **Weakening witness binding** — moves a field out of the witness hash "to save gas", or adds R/S to calldata "for clarity". → *The hashed-field set in `hash_witness.go` is a security boundary; any change needs an explicit binding argument for both the before and after states.*
 
@@ -214,13 +213,12 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 
 **Proceed without asking** (reversible, in scope):
 - Reading anything; running builds, tests, linters, static analysis
-- Editing Solidity/Go/docs within the task's stated scope
+- Editing Solidity/Go/Rust/docs within the task's stated scope
 - Scratch files in the session scratchpad; a temporary probe contract you delete before handoff
 
 **Stop and ask first**:
 - `git commit`, `git push`, and opening/closing/commenting on GitHub issues or PRs — unless this task explicitly asked for that artifact
 - Deleting or overwriting any file you didn't create this session
-- Anything under `programs/cw-ics08-wasm-eth` or `packages/ethereum/*`
 - Regenerating trusted-setup/circuit artifacts (expensive; invalidates deployed verifiers)
 - Any action that spends funds, touches a live network, or publishes externally
 - Expanding scope beyond the request — report the finding, propose, wait
