@@ -49,15 +49,13 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     /// @dev `consensusState_` is taken as the full struct (not a pre-hashed `bytes32`) so the
     ///      constructor can assert `initialPinnedValidatorSet` actually matches the genesis
     ///      consensus state's `nextValidatorsHash` — otherwise a mis-pinned genesis validator set
-    ///      (deployer mistake or malice) would be undetectable on-chain (see LC-03 in
-    ///      `docs/SECURITY.md`).
+    ///      (deployer mistake or malice) would be undetectable on-chain.
     /// @dev roleManager==address(0) is the intentional permissionless escape hatch (devnet/test):
     ///      no account is granted `DEFAULT_ADMIN_ROLE` in that branch, which means `unfreeze()`
     ///      becomes permanently uncallable if this client ever freezes while in that mode — the
     ///      only recovery path is migrating the router to a replacement client. Production
     ///      deployments must pass a real `roleManager` (the relayer defaults it to the router,
-    ///      see `relayer/transaction/handler.go`). This is documented, not a bug — see
-    ///      `docs/SECURITY.md`'s "Proof Submission (SpectreClient)" section.
+    ///      see `relayer/transaction/handler.go`). This is documented, not a bug.
     constructor(
         address updateClientModule,
         address membershipModule,
@@ -560,8 +558,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     ///      PERMANENTLY UNCALLABLE once the client freezes; the only recovery path is migrating
     ///      the router to a replacement client (`ICS26Router.migrateClient`). This is documented,
     ///      intentional behavior, not a bug — do not "fix" it with a fallback admin, and do not
-    ///      assume `roleManager != address(0)` here. See `docs/SECURITY.md`'s "Proof Submission
-    ///      (SpectreClient)" section for the production-vs-devnet tradeoff.
+    ///      assume `roleManager != address(0)` here.
     function unfreeze() external override(ISpectreClient, ILightClient) onlyRole(DEFAULT_ADMIN_ROLE) {
         SpectreStore.Store storage $ = SpectreStore.load();
         require($.clientState.isFrozen, ClientNotFrozen());

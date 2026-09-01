@@ -465,7 +465,7 @@ func binarySearchHighestFeasible(trusted, latest int64, feasible func(height int
 // trusted and latest whose commit still carries enough pinned-set signing
 // power to clear selectSignaturesForPinnedSet's >2/3 quorum gate. This is the
 // RLY-01 multi-hop fallback: used when the direct trusted->latest update no
-// longer clears quorum due to validator churn (docs/RELIABILITY.md).
+// longer clears quorum due to validator churn.
 func findHighestFeasibleHop(
 	stdCtx context.Context,
 	ctx cosmosClientDeps,
@@ -701,7 +701,7 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 	// pinned set may no longer sign the target block with 2/3 power; when
 	// that happens, fall back to a multi-hop update through the highest
 	// intermediate height that still clears pinned-set quorum, rather than
-	// failing outright (see docs/RELIABILITY.md).
+	// failing outright.
 	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId, nil)
 	if err != nil {
 		return nil, fmt.Errorf("extract validator signatures: %w", err)
@@ -713,7 +713,7 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 			trustedBlock, target, err)
 		hop, hopErr := findHighestFeasibleHop(stdCtx, ctx, trustedBlock, target, chainId, pinnedValidatorSet, err)
 		if hopErr != nil {
-			log.Printf("RLY01_HOP_EXHAUSTED no provable height beyond trusted=%d; manual intervention required (see docs/RELIABILITY.md)", trustedBlock)
+			log.Printf("RLY01_HOP_EXHAUSTED no provable height beyond trusted=%d; manual intervention required", trustedBlock)
 			return nil, fmt.Errorf("RLY01_HOP_EXHAUSTED: no provable hop above trusted height %d: %w", trustedBlock, hopErr)
 		}
 		latestLightBlock = hop.lightBlock

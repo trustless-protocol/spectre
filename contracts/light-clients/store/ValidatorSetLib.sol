@@ -33,8 +33,8 @@ library ValidatorSetLib {
     ///      enforces or can rely on.
     ///      This is a HARD LIVENESS CEILING, not a soft one: there is no on-chain oracle of the
     ///      counterparty chain's live validator count, so a Cosmos Hub governance proposal that
-    ///      raises validator count past what fits under this client's cap (see `docs/SECURITY.md`
-    ///      for the exact threshold and operational doctrine) can only be caught by off-chain
+    ///      raises validator count past what fits under this client's cap can only be caught by
+    ///      off-chain
     ///      monitoring — nothing here can assert it or revert on it. Bumping this constant to
     ///      accommodate a larger validator set requires provisioning a larger Groth16 bucket first
     ///      (circuit regen + redeploy of every `Groth16Verifier_N{N}` + `setBucket`), not just

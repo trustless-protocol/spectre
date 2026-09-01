@@ -113,8 +113,7 @@ cast calldata 'grantRole(uint64,address,uint32)' 8 "${WATCHER_ADDRESS}" 0
 ```
 
 For direct SpectreClient mode, its role manager grants the bytes32 value
-returned by `MISBEHAVIOUR_SUBMITTER_ROLE()` to the watcher address. See the
-[security guide](SECURITY.md#access-control) for the deployment role wiring.
+returned by `MISBEHAVIOUR_SUBMITTER_ROLE()` to the watcher address.
 
 ## 4. Generate and inspect calldata
 

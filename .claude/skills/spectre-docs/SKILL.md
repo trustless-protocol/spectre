@@ -42,7 +42,7 @@ Every technical statement gets checked against the repo (`/Users/ducnt/Decentrio
 - Misbehaviour rules ↔ `contracts/programs/Misbehaviour.sol`.
 - Report each verified claim with `file:line` in your findings. Claims you cannot ground: flag as unverified, don't rewrite them into confident prose.
 
-**Benchmark policy**: performance statements stay qualitative ("proves an update in seconds on commodity hardware where SP1 takes minutes"); exact numbers only if copied from `docs/benchmark/` in the repo. Credit the optimized circuit + gnark stack, not merely "Groth16 instead of zkVM".
+**Benchmark policy**: performance statements stay qualitative ("proves an update in seconds on commodity hardware where SP1 takes minutes"); exact numbers only if produced by a run made this session, quoted with its hardware and sample count. Credit the optimized circuit + gnark stack, not merely "Groth16 instead of zkVM".
 
 ## Link integrity
 
