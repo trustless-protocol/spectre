@@ -31,6 +31,7 @@ type DaemonConfig struct {
 	L1RPCURL                   string  `json:"l1_rpc_url"`
 	L1ChainID                  uint64  `json:"l1_chain_id"`
 	L2ChainID                  uint64  `json:"l2_chain_id"`
+	AttestationSigningKey      string  `json:"attestation_signing_key"`
 	RollupCoreAddress          string  `json:"rollup_core_address"`
 	AssertionsMappingSlot      string  `json:"assertions_mapping_slot"`
 	AssertionStatusOffset      uint8   `json:"assertion_status_offset"`

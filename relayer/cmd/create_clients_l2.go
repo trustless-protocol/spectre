@@ -82,6 +82,9 @@ func (c *l2ClientConfig) validate() error {
 	if _, err := c.routerAddress(); err != nil {
 		return err
 	}
+	if _, err := l2AttestationVerifierFromProfile(c.RollupProfile); err != nil {
+		return err
+	}
 	return nil
 }
 

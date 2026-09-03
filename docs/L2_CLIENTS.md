@@ -8,29 +8,16 @@ Spectre builds three checksum-distinct 08-wasm artifacts with unchanged filename
 
 The artifacts share one client lifecycle and differ only in their deployment-profile version.
 
-> **DEVNET ONLY — these clients trust ANY SUBMITTER, not just the relayer.**
+> **Permissionless submission, authenticated state.** `MsgUpdateClient` remains permissionless:
+> anyone may pay to relay an update. The client accepts it only when the `AttestedL2Header` carries
+> a valid Ed25519 signature from the immutable `attestor_public_key` in its profile. A fabricated
+> L2 header or a header signed for another L2 chain fails before it can create a consensus state.
 >
-> `MsgUpdateClient` is permissionless and the header carries no attestor signature, so the client
-> cannot tell the relayer's headers from anyone else's. Anyone can build a self-consistent
-> `AttestedL2Header` at a height the client has not seen — a fabricated state root with a matching
-> router account proof is cheap, because nothing ties either to the real L2 — get it accepted, and
-> then prove arbitrary membership or non-membership against it. That is enough to mint tokens on the
-> Cosmos side or to time out packets that were in fact delivered.
->
-> The clients verify no attestor signature, no L1 consensus, no OP dispute game and no Arbitrum
-> assertion. The router account proof establishes only that the supplied router storage root belongs
-> to the supplied L2 execution state — it says nothing about whether that state is the L2's.
->
-> The relayer does gate its own submissions (`Source.RelayableHeight` bounds the height from the
-> attestor frontier, and the header builder asks the attestor's `VerifyStateRoot` whether the block
-> it packaged is canonical), but that is a relayer-side check against accidental divergence. The
-> client cannot re-check it, so it constrains an honest relayer, not an attacker.
->
-> The attestor-only redesign (PR #343, not yet merged) states the target invariant — nothing
-> unauthenticated may ever enter the client — and this interim format does not meet it. **Do not
-> deploy these artifacts on a network holding real value.** The gate that closes it is
-> `ATTESTATIONS_ARE_AUTHENTICATED` in `packages/l2-client/src/runtime.rs`, flipped in the same
-> change that adds signature verification and the signed-attestation wire version.
+> The attestor signs the domain-separated tuple `l2_chain_id`, immutable `attestation_head`, L2 block
+> height, state root and canonical block hash. The client derives that hash from the complete execution header and verifies
+> the router account proof against its signed state root, so timestamp, parent hash and every other
+> header field are bound too. The relayer is transport only; it has no authority to manufacture a
+> valid update.
 
 ## Live 08-wasm surface
 
@@ -69,15 +56,18 @@ artifact profile. A profile contains only:
     "l2_chain_id": 11155420,
     "l2_router": "0x645280885749dc97ea461de280eb3273c91d36df",
     "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
-    "profile_version": "op_attestor_v1",
-    "l2_header_fork": "prague"
+    "profile_version": "op_attestor_v2",
+    "l2_header_fork": "prague",
+    "attestor_public_key": "0x<32-byte-ed25519-public-key>",
+    "attestation_head": "safe"
   }
 }
 ```
 
-The expected profile versions are `op_attestor_v1`, `base_attestor_v1`, and
-`arbitrum_attestor_v1`. No pinned Ethereum client, beacon slot, game factory, RollupCore contract,
-finality policy, or settlement proof belongs in new client state.
+The expected profile versions are `op_attestor_v2`, `base_attestor_v2`, and
+`arbitrum_attestor_v2`. The public key and `attestation_head` are immutable for the client lifetime; key rotation therefore
+uses a new client or a reviewed client-recovery path. No pinned Ethereum client, beacon slot, game
+factory, RollupCore contract, or settlement proof belongs in new client state.
 
 Creation validates the profile version, revision-zero nonzero height, nonzero roots and block hash,
 and equality between the client latest height and bootstrap consensus height. It performs no host
@@ -91,43 +81,33 @@ or L1 query.
 ```text
 ClientMessage::Header(AttestedL2Header {
     l2_header: CanonicalEvmHeader,
-    router_proof: EvmAccountProof
+    router_proof: EvmAccountProof,
+    attestor_signature: [u8; 64]
 })
 ```
 
 The client validates the configured canonical-header fork, derives the L2 block hash, verifies the
-configured `ICS26Router` account proof against the header state root, and stores the resulting
-consensus roots and block identity. Attestor provenance and authentication are not carried in this
-wire version.
+signature over that hash, the configured L2 chain ID, and immutable `attestation_head`, then verifies
+the configured `ICS26Router` account proof against the header state root before storing the resulting
+consensus state. This prevents an unsafe signature made by the same key from satisfying a client
+pinned to `safe` or `finalized`.
 
 Updates may advance the latest height or backfill an absent historical height. An identical update
-is idempotent. A different block/state/router identity at the same height is rejected as a
-conflict. Because updates currently carry no authenticated attestation, conflicting headers do not
-constitute actionable misbehaviour; every host validation path refuses them instead of freezing the
-client. The `frozen_height` field remains reserved for the signed-attestation protocol and recovery
-path.
+is idempotent. A different block/state/router identity at the same height is authenticated
+misbehaviour and freezes the client. Recovery/unfreeze policy remains a separate governance task.
 
 ## Relayer and attestor integration status
 
-The Go `relayer/chain/l2rollup` builder emits exactly the wire format above: the canonical L2
-execution header at the requested height plus the router account proof, and nothing else. The
-per-chain settlement builders it replaced — the OP one proving a DisputeGameFactory game against an
-authenticated L1 state root, the Arbitrum one proving a RollupCore/BoLD assertion — were deleted
-rather than kept behind a legacy path, because the clients they fed no longer exist either.
+The Go `relayer/chain/l2rollup` builder emits exactly the wire format above. It asks the attestor to
+compare the candidate block identity with its own replica at the profile's `attestation_head`, verifies
+the returned signature against the same public key and head pinned in `rollup_profile`, then packages
+the canonical L2 execution header, router account proof and signature. CosmWasm independently repeats
+that verification.
 
-Because the client verifies no L1 object, the attestor is the entire trust boundary and it has to
-bound two separate things. `Source.RelayableHeight` bounds how far the relayer may advance, from
-`AttestedUpTo`. The builder then calls the attestor's `VerifyStateRoot` with the state root and
-block hash it is about to package, at the run mode matching the configured head kind, and refuses a
-block the attestor's replica does not hold as canonical at that height — otherwise an L2 RPC that
-reorged past the frontier would supply a replacement block at an approved height and the client
-would accept it.
-
-That binding is best-effort by construction: nothing in the wire format lets the client re-check the
-answer, so it defends against divergence between the relayer's L2 RPC and the attestor, not against
-a relayer that simply skips the call. Both in-tree attestors implement `VerifyStateRoot`; an
-attestor binary older than that answers `Unimplemented`, and the relayer degrades to the unbound
-path with a one-per-process warning rather than refusing to relay on a version skew.
+`Source.RelayableHeight` bounds how far the relayer may advance from `AttestedUpTo`. The builder
+then calls `VerifyStateRoot` at the configured head kind and fails closed if the attestor refuses,
+is unavailable, is too old to sign, or returns a malformed signature. Thus a hostile relayer cannot
+bypass the attestor by skipping its local check: the client verifies the returned signature itself.
 
 The attestor `AttestedRoot` protobuf supplies `l2_block_number`, `root`, `source`, optional
 game/assertion provenance, `provisional`, and `attested_at`. Those fields gate which execution
@@ -137,17 +117,9 @@ through `VerifyStateRoot` rather than comparing it directly. OP exposes its conf
 `attestation_head` separately through `Info`; Arbitrum leaves that field unset and remains
 assertion-gated.
 
-Remaining integration work:
-
-1. implement `VerifyStateRoot` in the OP-Stack attestor, after which the degraded path above stops
-   being reachable;
-2. add a cross-language fixture that the Go encoder and Rust decoder both accept; and
-3. rebuild `relayer/l2fixtures`, which still captures settlement evidence for the Rust verifier
-   fixtures.
-
-The signed attestation fields and verification specified by the redesign return in the next wire
-version. Until that protocol lands, this unsigned bring-up format cannot supply actionable
-misbehaviour evidence.
+An attestor key is configured per L2 source. OP and Base use the OP Stack signer configuration;
+Arbitrum uses its Nitro/BoLD signer configuration. The key's public half must be copied exactly into
+the profile used to create the Cosmos client.
 
 ## Packet proofs
 

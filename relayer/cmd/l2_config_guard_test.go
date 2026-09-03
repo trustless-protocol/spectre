@@ -44,7 +44,12 @@ func TestLoadL2ClientConfigAcceptsRealL2Config(t *testing.T) {
 	l2 := `{
 		"wasm_checksum": "dab7322721ae62e6b582c373ead06168f1281b696d67651f390922892215ce51",
 		"l2_rpc_url": "http://localhost:8547",
-		"rollup_profile": {"common": {"l2_router": "0x9fcf7d13d10dedf17d0f24c62f0cf4ed462f65b7"}}
+		"rollup_profile": {"common": {
+			"l2_chain_id": 421614,
+			"l2_router": "0x9fcf7d13d10dedf17d0f24c62f0cf4ed462f65b7",
+			"attestor_public_key": "0x1111111111111111111111111111111111111111111111111111111111111111",
+			"attestation_head": "safe"
+		}}
 	}`
 	if err := os.WriteFile(path, []byte(l2), configFilePerm); err != nil {
 		t.Fatalf("write: %v", err)

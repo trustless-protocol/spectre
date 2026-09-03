@@ -3,6 +3,9 @@ module attestor/arbitrum
 go 1.25.7
 
 require (
+	attestor/core v0.0.0
+	attestor/grpc v0.0.0
+	attestor/host v0.0.0
 	attestor/types v0.0.0
 	github.com/ethereum/go-ethereum v1.15.5
 	github.com/spf13/cobra v1.10.2
@@ -41,6 +44,12 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260414002931-afd174a4e478 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
+
+replace attestor/core => ../core
+
+replace attestor/grpc => ../grpc
+
+replace attestor/host => ../host
 
 // Nitro's geth fork retains github.com/ethereum/go-ethereum as its declared
 // module path, so the fork is selected with a module replacement.

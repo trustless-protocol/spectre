@@ -7,13 +7,11 @@ package l2rollup
 //                                                  EvmAccountProof, EvmStorageProof
 //   - packages/l2-client/src/canonical_header.rs → CanonicalEvmHeader
 //
-// The client verifies the header against itself (the canonical fork layout pinned in
-// the profile, and the block hash derived from it) and the L2 router account proof
-// against the state root that header declares. It does NOT verify any L1 settlement
-// object: there is no dispute game, no BoLD assertion, and no shared
-// cw-ics08-wasm-eth client in the picture any more. What makes a header trustworthy
-// is the attestor gate on the relayer side, which the client cannot re-check —
-// see attestedHeaderBuilder for what that does and does not cover.
+// The client derives the block hash from the canonical header, verifies the
+// attestor's Ed25519 signature over that identity, L2 chain ID and immutable
+// attestation head, then verifies
+// the L2 router account proof against the signed state root. It does not verify a
+// chain-specific L1 settlement object.
 //
 // Field NAMES and value REPRESENTATIONS are the frozen encoding contract (Dũng, PR
 // #245); the Rust structs carry `#[serde(deny_unknown_fields)]`, so emit exactly
@@ -24,7 +22,7 @@ package l2rollup
 // ClientMessage is a header that encodes to the wasm ClientMessage envelope
 // {"type":"header","value":<header>}. *AttestedL2Header is the only implementation;
 // the interface stays because the envelope is the stable part and the header shape
-// is what the signed-attestation wire version will change.
+// carries the attestation signature required by the current wire version.
 type ClientMessage interface {
 	// EncodeClientMessage marshals the header into the tagged ClientMessage JSON.
 	EncodeClientMessage() ([]byte, error)
@@ -78,12 +76,12 @@ type CanonicalEvmHeader struct {
 //
 // The settlement fields the per-chain headers used to carry (beacon_slot,
 // l1_state_root, factory/game/assertion proofs, output-root preimages) are gone
-// because nothing verifies them any more. So is the attestation metadata that
-// briefly replaced them: the client reads no level, no attestor id and no L1
-// origin, and a field carried but unchecked reads as load-bearing when it is not.
+// because nothing verifies them in the wasm client. The attestor signature is
+// load-bearing: the client verifies it before admitting the header.
 type AttestedL2Header struct {
-	L2Header    CanonicalEvmHeader `json:"l2_header"`
-	RouterProof EvmAccountProof    `json:"router_proof"`
+	L2Header          CanonicalEvmHeader `json:"l2_header"`
+	RouterProof       EvmAccountProof    `json:"router_proof"`
+	AttestorSignature byteList           `json:"attestor_signature"`
 }
 
 // EncodeClientMessage marshals the header into the ClientMessage envelope. There is

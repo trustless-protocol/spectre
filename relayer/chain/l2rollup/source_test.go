@@ -26,6 +26,7 @@ type fakeAttestor struct {
 
 	// verifyValid is what VerifyStateRoot answers; verifyErr overrides it.
 	verifyValid       bool
+	verifySignature   []byte
 	verifyErr         error
 	gotVerifyHeight   uint64
 	gotVerifyRoot     []byte
@@ -35,14 +36,14 @@ type fakeAttestor struct {
 	verifyCalled      bool
 }
 
-func (f *fakeAttestor) VerifyStateRoot(_ context.Context, srcChain string, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (bool, error) {
+func (f *fakeAttestor) VerifyStateRoot(_ context.Context, srcChain string, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (VerifiedStateRoot, error) {
 	f.verifyCalled = true
 	f.gotVerifySrcChain = srcChain
 	f.gotVerifyHeight = l2BlockNumber
 	f.gotVerifyRoot = stateRoot
 	f.gotVerifyHash = blockHash
 	f.gotVerifyMode = runMode
-	return f.verifyValid, f.verifyErr
+	return VerifiedStateRoot{Valid: f.verifyValid, Signature: append([]byte(nil), f.verifySignature...)}, f.verifyErr
 }
 
 func (f *fakeAttestor) AttestedUpTo(_ context.Context, srcChain string, includeProvisional bool) (*attestorpb.AttestedRoot, bool, error) {

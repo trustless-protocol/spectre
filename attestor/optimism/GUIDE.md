@@ -35,6 +35,8 @@ the attestor no longer shares the relayer's `config.json`), consuming the
         "dispute_game_factory": "0xe5965Ab5962eDc7477C8520243A95517CD252fA9",
         "respected_game_type": 8,
         "attestation_head": "finalized",
+        "l2_chain_id": 10,
+        "attestation_signing_key": "env:ATTESTOR_SIGNING_KEY",
         "state_path": "./op-mainnet.attested-roots.json"
       }
     }
@@ -61,6 +63,7 @@ Or skip all of the above with the scripted bring-up:
 
 ```bash
 L1_RPC_URL=https://... OP_NODE_RPC_URL=http://127.0.0.1:9545 \
+L2_CHAIN_ID=10 ATTESTOR_SIGNING_KEY=<32-byte-ed25519-seed-hex> \
   ./scripts/local/run_op_attestor.sh
 ```
 
@@ -84,6 +87,13 @@ as must `state_path` (both enforced at config load).
 | `disable_derived_roots` | false | Turn off self-derived attestations (feed then depends on proposer cadence) |
 | `derived_attestation_gap_blocks` | 150 | Min L2-block gap between derived attestations (150 ≈ 5 min) |
 | `max_derived_roots` | 1000 | Confirmed derived entries kept (oldest pruned; game + provisional entries never pruned) |
+| `l2_chain_id` | required | L2 chain ID included in every signature's domain; it must equal the Cosmos client profile. |
+| `attestation_signing_key` | required | 32-byte Ed25519 seed as hex, or `env:NAME` to read it from the daemon environment. Its matching public key is pinned in the Cosmos client profile. |
+
+The client profile also pins `attestation_head` (`unsafe`, `safe`, or
+`finalized`). The relayer's `head_kind` must match it. The daemon signs the
+requested head into each attestation, so a signature issued for a lower head
+cannot be replayed to a stricter client that uses the same public key.
 
 `server` block: `port` serves Prometheus on `/metrics`; `grpc_port` serves the
 sidecar API (0/omitted disables either).

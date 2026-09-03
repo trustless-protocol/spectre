@@ -6,6 +6,7 @@ use cosmwasm_std::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    attestation::AttestationHead,
     canonical_header::{CanonicalEvmHeader, ExecutionHeaderFork},
     entrypoints,
     error::Error,
@@ -33,18 +34,28 @@ struct Adapter;
 impl L2LightClient for Adapter {
     type Profile = Profile;
 
-    fn verify(_profile: &Profile, header: &AttestedL2Header) -> Result<Header, Error> {
+    fn verify(
+        _api: &dyn cosmwasm_std::Api,
+        _profile: &Profile,
+        header: &AttestedL2Header,
+    ) -> Result<Header, Error> {
         Ok(normalize(header))
     }
 }
 
 fn profile() -> Profile {
+    profile_with_attestation_head(AttestationHead::Safe)
+}
+
+fn profile_with_attestation_head(attestation_head: AttestationHead) -> Profile {
     Profile(CommonProfile {
         l2_chain_id: 2,
         l2_router: Address::with_last_byte(1),
         commitment_slot: B256::with_last_byte(2),
         profile_version: "entrypoint_test_v1".into(),
         l2_header_fork: ExecutionHeaderFork::London,
+        attestor_public_key: B256::with_last_byte(3),
+        attestation_head,
     })
 }
 
@@ -74,6 +85,7 @@ fn attested(block: u8) -> AttestedL2Header {
             requests_hash: None,
         },
         router_proof: EvmAccountProof { proof: vec![] },
+        attestor_signature: vec![7; 64],
     }
 }
 
@@ -126,9 +138,67 @@ fn verify_client_message_rejects_non_conflicting_misbehaviour_envelopes() {
     }
 }
 
-/// Every host path must refuse a conflict without authenticated attestations.
+/// Conflicting finalized headers reaching the client have both passed attestor
+/// signature verification, so every host path treats them as actionable
+/// misbehaviour.
 #[test]
-fn host_paths_reject_conflicts_without_authenticated_attestations() {
+fn host_paths_freeze_on_conflicting_finalized_attestations() {
+    let mut deps = mock_dependencies();
+    let trusted = normalize(&attested(5));
+    let client = ClientState {
+        latest_height: 5,
+        frozen_height: None,
+        profile: profile_with_attestation_head(AttestationHead::Finalized),
+    };
+    let consensus: ConsensusState = trusted.consensus_state(0).unwrap();
+    runtime::instantiate(deps.as_mut().storage, &client, &consensus, vec![9], 10).unwrap();
+
+    let client_message = Binary::from(
+        serde_json::to_vec(&ClientMessage::Misbehaviour {
+            header_1: attested(5),
+            header_2: attested(9),
+        })
+        .unwrap(),
+    );
+
+    entrypoints::query::<Adapter>(
+        deps.as_ref(),
+        QueryMsg::VerifyClientMessage {
+            client_message: client_message.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::from_slice::<crate::msg::CheckForMisbehaviourResult>(
+            &entrypoints::query::<Adapter>(
+                deps.as_ref(),
+                QueryMsg::CheckForMisbehaviour {
+                    client_message: client_message.clone(),
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .found_misbehaviour,
+        true,
+    );
+    entrypoints::sudo::<Adapter>(
+        deps.as_mut(),
+        &mock_env(),
+        SudoMsg::UpdateStateOnMisbehaviour { client_message },
+    )
+    .unwrap();
+    assert_eq!(
+        runtime::client_state::<Profile>(deps.as_ref().storage)
+            .unwrap()
+            .frozen_height,
+        Some(5),
+        "conflicting signed attestations must freeze the client"
+    );
+}
+
+#[test]
+fn host_paths_reject_reorgable_conflicts_without_freezing() {
     let mut deps = mock_dependencies();
     let trusted = normalize(&attested(5));
     let client = ClientState {
@@ -147,41 +217,40 @@ fn host_paths_reject_conflicts_without_authenticated_attestations() {
         .unwrap(),
     );
 
-    for error in [
+    assert!(matches!(
         entrypoints::query::<Adapter>(
             deps.as_ref(),
             QueryMsg::VerifyClientMessage {
                 client_message: client_message.clone(),
-            },
+            }
+        ),
+        Err(Error::InvalidHeader("headers do not prove misbehaviour"))
+    ));
+    assert!(
+        !serde_json::from_slice::<crate::msg::CheckForMisbehaviourResult>(
+            &entrypoints::query::<Adapter>(
+                deps.as_ref(),
+                QueryMsg::CheckForMisbehaviour {
+                    client_message: client_message.clone(),
+                }
+            )
+            .unwrap(),
         )
-        .unwrap_err(),
-        entrypoints::query::<Adapter>(
-            deps.as_ref(),
-            QueryMsg::CheckForMisbehaviour {
-                client_message: client_message.clone(),
-            },
-        )
-        .unwrap_err(),
+        .unwrap()
+        .found_misbehaviour
+    );
+    assert!(matches!(
         entrypoints::sudo::<Adapter>(
             deps.as_mut(),
             &mock_env(),
             SudoMsg::UpdateStateOnMisbehaviour { client_message },
-        )
-        .unwrap_err(),
-    ] {
-        assert!(
-            matches!(
-                error,
-                Error::InvalidHeader("conflicting headers do not carry authenticated attestations")
-            ),
-            "expected a conflict without authenticated attestations to be refused, got {error:?}"
-        );
-    }
+        ),
+        Err(Error::InvalidHeader("headers do not prove misbehaviour"))
+    ));
     assert_eq!(
         runtime::client_state::<Profile>(deps.as_ref().storage)
             .unwrap()
             .frozen_height,
-        None,
-        "a conflict without authenticated attestations must not freeze the client"
+        None
     );
 }

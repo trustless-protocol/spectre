@@ -58,7 +58,8 @@ func attestedExampleJSON() string {
       "excess_blob_gas": 12,
       "parent_beacon_block_root": "0x9999999999999999999999999999999999999999999999999999999999999999"
     },
-    "router_proof": { "proof": [[1, 2], [3]] }
+    "router_proof": { "proof": [[1, 2], [3]] },
+    "attestor_signature": []
   }
 }`
 }

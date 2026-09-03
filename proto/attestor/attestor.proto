@@ -205,4 +205,10 @@ message VerifyStateRootResponse {
 
   // StateRoot is the root committed by the canonical block header.
   bytes state_root = 4;
+
+  // AttestationSignature is an Ed25519 signature over the canonical block
+  // identity returned here. It is set only when Valid is true. The relayer
+  // carries it to the L2 wasm client, which verifies it against its immutable
+  // attestor public key before accepting the header.
+  bytes attestation_signature = 5;
 }

@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -26,11 +25,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection"
 
+	"attestor/core"
+	"attestor/host"
+	"attestor/optimism/adapter"
 	"attestor/optimism/opstack"
-	attestorserver "attestor/optimism/server"
+	"attestor/types/attestation"
 )
 
 const flagConfigPath = "config"
@@ -52,6 +52,8 @@ type opSourceConfig struct {
 	DisableDerivedRoots     bool   `json:"disable_derived_roots"`
 	DerivedGapBlocks        uint64 `json:"derived_attestation_gap_blocks"`
 	MaxDerivedRoots         uint64 `json:"max_derived_roots"`
+	L2ChainID               uint64 `json:"l2_chain_id"`
+	AttestationSigningKey   string `json:"attestation_signing_key"`
 }
 
 type serverConfig struct {
@@ -135,9 +137,13 @@ func loadConfig(configPath string) (*attestorConfig, error) {
 
 // buildOpAttestor converts one op_source config entry into a running-ready
 // attestor: validate, dial L1 + op-node, load the state file.
-func buildOpAttestor(ctx context.Context, logger *zap.Logger, op opSourceConfig, metrics *opstack.Metrics) (*opstack.OpStackAttestor, func(), error) {
+func buildOpAttestor(ctx context.Context, logger *zap.Logger, op opSourceConfig, metrics *opstack.Metrics) (*opstack.OpStackAttestor, attestation.Signer, func(), error) {
 	if err := validateHexAddress(op.DisputeGameFactory, "op_source.dispute_game_factory"); err != nil {
-		return nil, nil, err
+		return nil, attestation.Signer{}, nil, err
+	}
+	signer, err := attestation.NewSigner(op.L2ChainID, op.AttestationSigningKey)
+	if err != nil {
+		return nil, attestation.Signer{}, nil, fmt.Errorf("op_source attestation signer: %w", err)
 	}
 	cfg := opstack.Config{
 		SrcChain:                op.SrcChain,
@@ -155,35 +161,35 @@ func buildOpAttestor(ctx context.Context, logger *zap.Logger, op opSourceConfig,
 		MaxDerivedRoots:         op.MaxDerivedRoots,
 	}
 	if err := cfg.Validate(); err != nil {
-		return nil, nil, err
+		return nil, attestation.Signer{}, nil, err
 	}
 
 	l1Client, err := ethclient.DialContext(ctx, cfg.L1RpcUrl)
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to dial L1 rpc %s: %w", cfg.L1RpcUrl, err)
+		return nil, attestation.Signer{}, nil, fmt.Errorf("failed to dial L1 rpc %s: %w", cfg.L1RpcUrl, err)
 	}
 	games, err := opstack.NewFactoryGameSource(ctx, l1Client, cfg.DisputeGameFactory)
 	if err != nil {
 		l1Client.Close()
-		return nil, nil, err
+		return nil, attestation.Signer{}, nil, err
 	}
 	replica, err := opstack.DialReplica(ctx, cfg.OpNodeRpcUrl)
 	if err != nil {
 		l1Client.Close()
-		return nil, nil, err
+		return nil, attestation.Signer{}, nil, err
 	}
 	store, err := opstack.LoadStore(cfg.StatePath)
 	if err != nil {
 		l1Client.Close()
 		replica.Close()
-		return nil, nil, err
+		return nil, attestation.Signer{}, nil, err
 	}
 	cleanup := func() {
 		l1Client.Close()
 		replica.Close()
 	}
 	hook := &opstack.LogChallengeHook{Logger: logger.Sugar()}
-	return opstack.New(cfg, games, replica, store, hook, metrics, logger.Sugar()), cleanup, nil
+	return opstack.New(cfg, games, replica, store, hook, metrics, logger.Sugar()), signer, cleanup, nil
 }
 
 func run(logger *zap.Logger, cmd *cobra.Command) error {
@@ -206,8 +212,8 @@ func run(logger *zap.Logger, cmd *cobra.Command) error {
 	registry.MustRegister(collectors.NewGoCollector())
 	metrics := opstack.NewMetrics(registry)
 
-	attestors := make([]*opstack.OpStackAttestor, 0, len(cfg.Sources))
-	byChain := make(map[string]*opstack.OpStackAttestor, len(cfg.Sources))
+	routes := make(map[string]core.Ports, len(cfg.Sources))
+	runners := make([]host.RunnerSpec, 0, len(cfg.Sources))
 	cleanups := make([]func(), 0, len(cfg.Sources))
 	defer func() {
 		for _, cleanup := range cleanups {
@@ -215,35 +221,28 @@ func run(logger *zap.Logger, cmd *cobra.Command) error {
 		}
 	}()
 	for _, op := range cfg.Sources {
-		a, cleanup, err := buildOpAttestor(runCtx, logger, op, metrics)
+		a, signer, cleanup, err := buildOpAttestor(runCtx, logger, op, metrics)
 		if err != nil {
 			return fmt.Errorf("op_source %q: %w", op.SrcChain, err)
 		}
+		bridge, err := adapter.New(a, signer, adapter.Options{})
+		if err != nil {
+			cleanup()
+			return fmt.Errorf("compose op_source %q bridge: %w", op.SrcChain, err)
+		}
 		cleanups = append(cleanups, cleanup)
-		attestors = append(attestors, a)
-		byChain[op.SrcChain] = a
+		routes[op.SrcChain] = core.Ports{Feed: bridge, Verifier: bridge, Status: bridge, Watcher: bridge}
+		runners = append(runners, host.RunnerSpec{Name: a.Name(), Runner: a})
+		logger.Sugar().Infof("op_source %s attestation public key: 0x%x", op.SrcChain, signer.PublicKey())
 	}
 
-	// Sidecar gRPC API: the relayer consumes the attested-root feed over this
-	// endpoint instead of in-process.
+	var grpcListener net.Listener
 	if cfg.Server.GrpcPort != 0 {
 		addr := fmt.Sprintf("%s:%d", cfg.Server.Address, cfg.Server.GrpcPort)
-		lis, err := net.Listen("tcp", addr)
+		grpcListener, err = net.Listen("tcp", addr)
 		if err != nil {
 			return fmt.Errorf("failed to listen on attestor grpc address %s: %w", addr, err)
 		}
-		grpcSrv := grpc.NewServer()
-		attestorserver.New(byChain).Register(grpcSrv)
-		// Reflection lets grpcurl & co discover the service without the proto
-		// files — read-only metadata, safe on a local sidecar endpoint.
-		reflection.Register(grpcSrv)
-		go func() {
-			logger.Sugar().Infof("attestor: sidecar gRPC API listening on %s", addr)
-			if err := grpcSrv.Serve(lis); err != nil {
-				logger.Sugar().Errorf("attestor: grpc server stopped: %v", err)
-			}
-		}()
-		defer grpcSrv.GracefulStop()
 	}
 
 	// Prometheus endpoint from the server config block.
@@ -265,35 +264,24 @@ func run(logger *zap.Logger, cmd *cobra.Command) error {
 		}()
 	}
 
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(attestors))
-	for _, a := range attestors {
-		wg.Add(1)
-		go func(a *opstack.OpStackAttestor) {
-			defer wg.Done()
-			if err := a.Run(runCtx); err != nil {
-				errCh <- fmt.Errorf("%s: %w", a.Name(), err)
-			}
-		}(a)
+	attestorHost, err := host.New(host.Config{
+		Routes:                   routes,
+		Runners:                  runners,
+		Listener:                 grpcListener,
+		AllowLegacyEmptySrcChain: true,
+		EnableReflection:         true,
+	})
+	if err != nil {
+		return fmt.Errorf("initialize attestor host: %w", err)
 	}
-	logger.Sugar().Infof("attestor: running %d OP Stack attestor(s)", len(attestors))
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case err := <-errCh:
-		stopSignals()
-		wg.Wait()
-		return err
-	case <-done:
-		return nil
-	case <-runCtx.Done():
-		logger.Sugar().Infof("attestor: shutdown requested: %v", runCtx.Err())
-		wg.Wait()
-		return nil
+	if grpcListener != nil {
+		logger.Sugar().Infof("attestor: sidecar gRPC API listening on %s", grpcListener.Addr())
 	}
+	logger.Sugar().Infof("attestor: running %d OP Stack attestor(s)", len(runners))
+	if err := attestorHost.Run(runCtx); err != nil {
+		return fmt.Errorf("run attestor host: %w", err)
+	}
+	return nil
 }
 
 func main() {

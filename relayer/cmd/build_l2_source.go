@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -100,11 +101,19 @@ func (c l2ToCosmosConfig) validateWith(requireWasmClientID bool) error {
 	if len(c.RollupProfile) == 0 {
 		return fmt.Errorf("l2_to_cosmos config: rollup_profile is required")
 	}
-	if _, err := parseHeadKind(c.HeadKind); err != nil {
+	headKind, err := parseHeadKind(c.HeadKind)
+	if err != nil {
 		return err
 	}
 	if _, err := l2RouterFromProfile(c.RollupProfile); err != nil {
 		return err
+	}
+	verifier, err := l2AttestationVerifierFromProfile(c.RollupProfile)
+	if err != nil {
+		return err
+	}
+	if !verifier.MatchesRunMode(headKind.RunMode()) {
+		return fmt.Errorf("l2_to_cosmos config: head_kind %q must match rollup_profile.common.attestation_head", c.HeadKind)
 	}
 	return nil
 }
@@ -140,6 +149,36 @@ func l2RouterFromProfile(profile json.RawMessage) (common.Address, error) {
 	return common.HexToAddress(pc.Common.L2Router), nil
 }
 
+// l2AttestationVerifierFromProfile parses the immutable key the wasm client
+// will use. Verifying the attestor response here makes an operator key mismatch
+// visible before submitting a transaction; it is not a substitute for the
+// independent on-chain check.
+func l2AttestationVerifierFromProfile(profile json.RawMessage) (l2rollup.AttestationVerifier, error) {
+	var pc struct {
+		Common struct {
+			L2ChainID         uint64 `json:"l2_chain_id"`
+			AttestorPublicKey string `json:"attestor_public_key"`
+			AttestationHead   string `json:"attestation_head"`
+		} `json:"common"`
+	}
+	if err := json.Unmarshal(profile, &pc); err != nil {
+		return l2rollup.AttestationVerifier{}, fmt.Errorf("l2_to_cosmos config: parse rollup_profile.common: %w", err)
+	}
+	keyHex := pc.Common.AttestorPublicKey
+	if len(keyHex) >= 2 && keyHex[:2] == "0x" {
+		keyHex = keyHex[2:]
+	}
+	publicKey, err := hex.DecodeString(keyHex)
+	if err != nil {
+		return l2rollup.AttestationVerifier{}, fmt.Errorf("l2_to_cosmos config: decode rollup_profile.common.attestor_public_key: %w", err)
+	}
+	verifier, err := l2rollup.NewAttestationVerifier(pc.Common.L2ChainID, pc.Common.AttestationHead, publicKey)
+	if err != nil {
+		return l2rollup.AttestationVerifier{}, fmt.Errorf("l2_to_cosmos config: invalid attestor profile: %w", err)
+	}
+	return verifier, nil
+}
+
 // buildL2ToCosmosModule constructs one L2->Cosmos relay module: an l2rollup Source
 // (gated on the attestor), a Cosmos Destination hosting the L2 wasm client, the
 // per-L2 header builder, and timeout recovery through the matching Cosmos->L2
@@ -151,6 +190,10 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		return nil, nil, err
 	}
 	router, err := l2RouterFromProfile(cfg.RollupProfile)
+	if err != nil {
+		return nil, nil, err
+	}
+	verifier, err := l2AttestationVerifierFromProfile(cfg.RollupProfile)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -193,7 +236,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	// account proof, and nothing about that is chain-specific any more. It takes the
 	// same attestor the source gates heights on, so the block it packages is bound to
 	// what that attestor's replica actually has at that height.
-	headerBuilder := l2rollup.NewAttestedHeaderBuilder(l2, router, attestor, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
+	headerBuilder := l2rollup.NewAttestedHeaderBuilder(l2, router, attestor, verifier, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
 
 	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, attestor, includeProvisional).
 		WithLogScanChunk(cfg.LogScanChunk)

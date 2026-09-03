@@ -29,6 +29,8 @@ pub enum Error {
     InvalidEvmHeader(&'static str),
     #[error("invalid L2 header: {0}")]
     InvalidHeader(&'static str),
+    #[error("attestor signature verification failed")]
+    InvalidAttestorSignature,
     #[error("state conflict at height {height}")]
     StateConflict {
         /// Height where the conflicting trusted blocks were observed.

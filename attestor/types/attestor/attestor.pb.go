@@ -842,9 +842,14 @@ type VerifyStateRootResponse struct {
 	// BlockHash is the replica's canonical block hash.
 	BlockHash []byte `protobuf:"bytes,3,opt,name=block_hash,json=blockHash,proto3" json:"block_hash,omitempty"`
 	// StateRoot is the root committed by the canonical block header.
-	StateRoot     []byte `protobuf:"bytes,4,opt,name=state_root,json=stateRoot,proto3" json:"state_root,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	StateRoot []byte `protobuf:"bytes,4,opt,name=state_root,json=stateRoot,proto3" json:"state_root,omitempty"`
+	// AttestationSignature is an Ed25519 signature over the canonical block
+	// identity returned here. It is set only when Valid is true. The relayer
+	// carries it to the L2 wasm client, which verifies it against its immutable
+	// attestor public key before accepting the header.
+	AttestationSignature []byte `protobuf:"bytes,5,opt,name=attestation_signature,json=attestationSignature,proto3" json:"attestation_signature,omitempty"`
+	unknownFields        protoimpl.UnknownFields
+	sizeCache            protoimpl.SizeCache
 }
 
 func (x *VerifyStateRootResponse) Reset() {
@@ -905,6 +910,13 @@ func (x *VerifyStateRootResponse) GetStateRoot() []byte {
 	return nil
 }
 
+func (x *VerifyStateRootResponse) GetAttestationSignature() []byte {
+	if x != nil {
+		return x.AttestationSignature
+	}
+	return nil
+}
+
 var File_attestor_attestor_proto protoreflect.FileDescriptor
 
 const file_attestor_attestor_proto_rawDesc = "" +
@@ -958,14 +970,15 @@ const file_attestor_attestor_proto_rawDesc = "" +
 	"\x13expected_state_root\x18\x02 \x01(\fR\x11expectedStateRoot\x12.\n" +
 	"\x13expected_block_hash\x18\x03 \x01(\fR\x11expectedBlockHash\x12,\n" +
 	"\brun_mode\x18\x04 \x01(\x0e2\x11.attestor.RunModeR\arunMode\x12\x1b\n" +
-	"\tsrc_chain\x18\x05 \x01(\tR\bsrcChain\"\x90\x01\n" +
+	"\tsrc_chain\x18\x05 \x01(\tR\bsrcChain\"\xc5\x01\n" +
 	"\x17VerifyStateRootResponse\x12\x14\n" +
 	"\x05valid\x18\x01 \x01(\bR\x05valid\x12!\n" +
 	"\fblock_number\x18\x02 \x01(\x04R\vblockNumber\x12\x1d\n" +
 	"\n" +
 	"block_hash\x18\x03 \x01(\fR\tblockHash\x12\x1d\n" +
 	"\n" +
-	"state_root\x18\x04 \x01(\fR\tstateRoot*c\n" +
+	"state_root\x18\x04 \x01(\fR\tstateRoot\x123\n" +
+	"\x15attestation_signature\x18\x05 \x01(\fR\x14attestationSignature*c\n" +
 	"\aRunMode\x12\x18\n" +
 	"\x14RUN_MODE_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fRUN_MODE_UNSAFE\x10\x01\x12\x11\n" +

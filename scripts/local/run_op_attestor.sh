@@ -16,6 +16,10 @@
 #
 # Required env:
 #   L1_RPC_URL        Ethereum L1 execution RPC (both modes)
+#   L2_CHAIN_ID       L2 attestation signing domain
+#   ATTESTOR_SIGNING_KEY
+#                     32-byte Ed25519 seed in hex; its public half must be
+#                     pinned in the Cosmos client profile
 #   OP_NODE_RPC_URL   existing replica op-node RPC (mode 1), OR
 #   OP_RETH_BIN, OP_NODE_BIN, L1_BEACON_URL (mode 2)
 #
@@ -51,6 +55,9 @@
 #       file. Legacy RUN_DIR is still honoured, but prefer ATTESTOR_RUN_DIR: the
 #       devnet bring-up scripts use RUN_DIR for their own artifacts.
 #   REPLICA_WAIT_SECS (300)         max wait for optimism_syncStatus
+#   ATTESTOR_SIGNING_KEY             see required env above. It stays in the
+#       environment; the generated config refers to it as
+#       `env:ATTESTOR_SIGNING_KEY`.
 
 set -euo pipefail
 
@@ -106,6 +113,9 @@ RUN_DIR=${ATTESTOR_RUN_DIR:-${RUN_DIR:-$REPO_ROOT/.op-attestor-run}}
 REPLICA_WAIT_SECS=${REPLICA_WAIT_SECS:-300}
 
 : "${L1_RPC_URL:?L1_RPC_URL is required (Ethereum L1 execution RPC)}"
+: "${L2_CHAIN_ID:?L2_CHAIN_ID is required (the L2 attestation signing domain)}"
+: "${ATTESTOR_SIGNING_KEY:?ATTESTOR_SIGNING_KEY is required (32-byte Ed25519 seed in hex)}"
+export ATTESTOR_SIGNING_KEY
 
 mkdir -p "$RUN_DIR"
 PIDS=()
@@ -256,7 +266,9 @@ cat > "$CONFIG" <<EOF
         "derived_attestation_gap_blocks": $DERIVED_GAP_BLOCKS,
         "disable_derived_roots": $DISABLE_DERIVED_ROOTS,
         "state_path": "$STATE_PATH",
-        "l1_bootstrap_lookback_blocks": $LOOKBACK_BLOCKS
+        "l1_bootstrap_lookback_blocks": $LOOKBACK_BLOCKS,
+        "l2_chain_id": $L2_CHAIN_ID,
+        "attestation_signing_key": "env:ATTESTOR_SIGNING_KEY"
       }
     }
   ],

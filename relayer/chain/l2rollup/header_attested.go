@@ -2,11 +2,8 @@ package l2rollup
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"log"
 	"math/big"
-	"sync"
 
 	attestorpb "attestor/types/attestor"
 	relayerclient "relayer/client"
@@ -28,41 +25,28 @@ import (
 // identical adapters differing only in `profile_version`, so there is nothing left
 // to branch on.
 //
-// Everything the client checks is derivable from these two fields, and everything
-// it does NOT check — who attested this, at which head, from which L1 origin — is
-// deliberately absent from the wire format rather than carried unverified.
-//
-// That makes the attestor the whole trust boundary, so it has to bound both axes.
-// Source.RelayableHeight bounds HOW FAR we may relay; the VerifyStateRoot call below
-// bounds WHAT is relayed at that height. Without the second, an L2 RPC that reorged
-// past the attestor's frontier — or simply points at a different chain — hands back a
-// replacement block at an approved height and the client accepts it, because the
-// client only checks the header against itself and the router proof against the
-// header. The attestor never certified that block.
-//
-// This binds against accidental divergence, not against a hostile relayer: nothing
-// in the wire format lets the client re-check the answer, so a relayer that skips the
-// call still gets its header accepted. Closing that needs the signed attestations the
-// redesign defers to the next wire version.
+// The attestor is the L2 trust boundary. Source.RelayableHeight bounds HOW FAR
+// the relayer may go, and VerifyStateRoot binds WHAT it packages. On a match,
+// the attestor returns an Ed25519 signature; this builder carries it in the
+// header and the wasm client verifies it against its immutable profile key.
+// A relayer cannot bypass that verification by skipping this RPC.
 type attestedHeaderBuilder struct {
-	l2       *ethclient.Client  // L2 exec: l2_header + router eth_getProof
-	router   ethcommon.Address  // the L2 ICS26Router (rollup_profile.common.l2_router)
-	attestor AttestorClient     // nil in skip-finality mode, where nothing attests
-	srcChain string             // attestor src_chain key, same as the source's
-	runMode  attestorpb.RunMode // replica head the attestor must answer against
-	name     string             // registry builder name, for logs and errors
+	l2       *ethclient.Client   // L2 exec: l2_header + router eth_getProof
+	router   ethcommon.Address   // the L2 ICS26Router (rollup_profile.common.l2_router)
+	attestor AttestorClient      // nil in skip-finality mode, where nothing attests
+	verifier AttestationVerifier // configured attestor key, pinned again by the wasm client
+	srcChain string              // attestor src_chain key, same as the source's
+	runMode  attestorpb.RunMode  // replica head the attestor must answer against
+	name     string              // registry builder name, for logs and errors
 
-	// warnUnsupported keeps the "attestor cannot answer" warning to once per process
-	// rather than once per header build.
-	warnUnsupported sync.Once
 }
 
 // NewAttestedHeaderBuilder wires the builder to one L2 exec endpoint and router.
 // attestor may be nil, which disables the binding check — that is skip-finality mode,
 // where Source.RelayableHeight also degrades to the raw L2 head and there is no
 // attestation to bind to in the first place.
-func NewAttestedHeaderBuilder(l2 *ethclient.Client, router ethcommon.Address, attestor AttestorClient, srcChain string, runMode attestorpb.RunMode, name string) HeaderBuilder {
-	return &attestedHeaderBuilder{l2: l2, router: router, attestor: attestor, srcChain: srcChain, runMode: runMode, name: name}
+func NewAttestedHeaderBuilder(l2 *ethclient.Client, router ethcommon.Address, attestor AttestorClient, verifier AttestationVerifier, srcChain string, runMode attestorpb.RunMode, name string) HeaderBuilder {
+	return &attestedHeaderBuilder{l2: l2, router: router, attestor: attestor, verifier: verifier, srcChain: srcChain, runMode: runMode, name: name}
 }
 
 func (a *attestedHeaderBuilder) Name() string { return a.name }
@@ -79,7 +63,8 @@ func (a *attestedHeaderBuilder) BuildHeader(ctx context.Context, request HeaderR
 	if err != nil {
 		return nil, 0, fmt.Errorf("%s: L2 header at %d: %w", a.name, request.Height, err)
 	}
-	if err := a.bindToAttestation(ctx, request.Height, l2Header); err != nil {
+	signature, err := a.bindToAttestation(ctx, request.Height, l2Header)
+	if err != nil {
 		return nil, 0, err
 	}
 	routerProof, err := relayerclient.EthGetProof(ctx, a.l2, a.router, nil, height)
@@ -88,48 +73,38 @@ func (a *attestedHeaderBuilder) BuildHeader(ctx context.Context, request HeaderR
 	}
 
 	return &AttestedL2Header{
-		L2Header:    toCanonicalHeader(l2Header),
-		RouterProof: EvmAccountProof{Proof: routerProof.AccountProof},
+		L2Header:          toCanonicalHeader(l2Header),
+		RouterProof:       EvmAccountProof{Proof: routerProof.AccountProof},
+		AttestorSignature: byteList(signature),
 	}, request.Height, nil
 }
 
 // bindToAttestation refuses a header the attestor's replica does not recognise as the
-// canonical block at that height. state root AND block hash are both sent: the state
-// root is what the client will trust, the block hash is what makes the answer specific
-// to one block rather than to any block sharing a state root.
+// canonical block at that height and returns its signature. State root AND block hash
+// are both signed: the root is what the client will trust, the block hash binds the
+// complete execution header.
 //
 // A mismatch is transient by nature — the usual cause is the attestor replica lagging
 // the L2 RPC by a block, or a reorg the attestor has not yet re-derived — so it is
 // returned as a plain error and the relay loop retries. It never advances anything.
-func (a *attestedHeaderBuilder) bindToAttestation(ctx context.Context, height uint64, l2Header *types.Header) error {
+func (a *attestedHeaderBuilder) bindToAttestation(ctx context.Context, height uint64, l2Header *types.Header) ([]byte, error) {
 	if a.attestor == nil {
-		return nil
+		return nil, fmt.Errorf("%s: attestor is required to build an authenticated L2 header", a.name)
 	}
 	stateRoot := l2Header.Root
 	blockHash := l2Header.Hash()
-	valid, err := a.attestor.VerifyStateRoot(ctx, a.srcChain, height, stateRoot.Bytes(), blockHash.Bytes(), a.runMode)
-	if errors.Is(err, ErrVerifyStateRootUnsupported) {
-		// Every in-tree attestor now serves this RPC, so reaching here means the
-		// deployed attestor binary predates it. Relayer and attestor ship
-		// separately, so failing the build would take a working deployment down on
-		// a version skew — degrade to the pre-binding behaviour and say so loudly,
-		// once per process, so an operator can see which chains run unbound
-		// instead of assuming otherwise. Remove once no old attestor is deployed.
-		a.warnUnsupported.Do(func() {
-			log.Printf("[%s] WARNING: this attestor does not implement VerifyStateRoot, so built headers are NOT "+
-				"bound to attested state — the relayer trusts its L2 RPC for block identity at approved heights. "+
-				"Relaying continues; implement VerifyStateRoot in the attestor to close this.", a.name)
-		})
-		return nil
-	}
+	attestation, err := a.attestor.VerifyStateRoot(ctx, a.srcChain, height, stateRoot.Bytes(), blockHash.Bytes(), a.runMode)
 	if err != nil {
-		return fmt.Errorf("%s: verify L2 block %d against the attestor: %w", a.name, height, err)
+		return nil, fmt.Errorf("%s: verify L2 block %d against the attestor: %w", a.name, height, err)
 	}
-	if !valid {
-		return fmt.Errorf(
+	if !attestation.Valid {
+		return nil, fmt.Errorf(
 			"%s: the attestor does not recognise L2 block %d (state_root=%s block_hash=%s) as canonical at run_mode=%s; "+
 				"the L2 RPC and the attestor replica disagree, so this header is not attested state",
 			a.name, height, stateRoot.Hex(), blockHash.Hex(), a.runMode)
 	}
-	return nil
+	if err := a.verifier.Verify(height, stateRoot.Bytes(), blockHash.Bytes(), attestation.Signature); err != nil {
+		return nil, fmt.Errorf("%s: verify attestor signature for L2 block %d: %w", a.name, height, err)
+	}
+	return attestation.Signature, nil
 }

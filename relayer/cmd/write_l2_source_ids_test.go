@@ -33,7 +33,9 @@ const l2SourceConfigJSON = `{
         "rollup_profile": {
           "common": {
             "l2_router": "0xrouter",
-            "profile_version": "op_attestor_v1"
+            "profile_version": "op_attestor_v2",
+            "attestor_public_key": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "attestation_head": "safe"
           }
         }
       }
@@ -112,7 +114,7 @@ func TestWriteL2SourceClientIDsPreservesSiblings(t *testing.T) {
 	if l2.RollupProfile.Common.L2Router != "0xrouter" {
 		t.Errorf("l2_router = %q, want it untouched", l2.RollupProfile.Common.L2Router)
 	}
-	if l2.RollupProfile.Common.ProfileVersion != "op_attestor_v1" {
+	if l2.RollupProfile.Common.ProfileVersion != "op_attestor_v2" {
 		t.Errorf("profile_version = %q, want it untouched", l2.RollupProfile.Common.ProfileVersion)
 	}
 }

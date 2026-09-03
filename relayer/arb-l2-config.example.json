@@ -7,12 +7,12 @@
     "to decode the header the relayer sends.",
     "",
     "rollup_profile is sent verbatim into MsgCreateClient and the Rust verifier rejects",
-    "unknown fields (#316), so it carries exactly the five keys the client reads. The",
+    "unknown fields (#316), so it carries exactly the seven keys the client reads. The",
     "attestor-trusted client verifies nothing against L1, so there are no settlement",
     "fields and no ethereum_client reference — not even for Arbitrum's RollupCore.",
     "",
-    "profile_version must match the artifact — op_attestor_v1 / base_attestor_v1 /",
-    "arbitrum_attestor_v1 — or instantiate fails with InvalidProfileVersion.",
+    "profile_version must match the artifact — op_attestor_v2 / base_attestor_v2 /",
+    "arbitrum_attestor_v2 — or instantiate fails with InvalidProfileVersion.",
     "",
     "counterparty_client_id must equal the cosmos_to_l2 module's ics26_client_id: both",
     "name the same client on the L2 ICS26Router. create-clients-eth registers the",
@@ -26,7 +26,9 @@
     "does not answer, because it is about to commit the profile into a client that",
     "cannot be corrected afterwards. Nothing else reads the field - transactions take",
     "their chain id from the RPC - so before these checks a wrong value relayed",
-    "happily against whatever chain the URL served."
+    "happily against whatever chain the URL served.",
+    "attestation_head must match the l2_to_cosmos module's head_kind. It is signed",
+    "so a lower-finality signature from the same key cannot update this client."
   ],
   "wasm_checksum": "<hex checksum of the Arbitrum client wasm, printed by scripts/local/wasm_arb.sh>",
   "l2_rpc_url": "http://127.0.0.1:8547",
@@ -35,8 +37,10 @@
       "l2_chain_id": 421614,
       "l2_router": "0x7777777777777777777777777777777777777777",
       "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
-      "profile_version": "arbitrum_attestor_v1",
-      "l2_header_fork": "london"
+      "profile_version": "arbitrum_attestor_v2",
+      "l2_header_fork": "london",
+      "attestor_public_key": "0x5d9fbbeaa3960a8febd75dd7e7aa405edd218b7019a58f4b538e27178bc23268",
+      "attestation_head": "safe"
     }
   },
   "bootstrap_block": 0,

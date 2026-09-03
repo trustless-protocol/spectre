@@ -82,7 +82,7 @@ func (c *Client) AttestedRootAtOrBelow(ctx context.Context, srcChain string, l2B
 // caller can tell "this attestor cannot answer" apart from "this attestor says no"
 // — the two must not collapse, because the first is a version skew and the second
 // is a divergence.
-func (c *Client) VerifyStateRoot(ctx context.Context, srcChain string, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (bool, error) {
+func (c *Client) VerifyStateRoot(ctx context.Context, srcChain string, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (l2rollup.VerifiedStateRoot, error) {
 	resp, err := c.rpc.VerifyStateRoot(ctx, &attestorpb.VerifyStateRootRequest{
 		SrcChain:          srcChain,
 		BlockNumber:       l2BlockNumber,
@@ -92,9 +92,12 @@ func (c *Client) VerifyStateRoot(ctx context.Context, srcChain string, l2BlockNu
 	})
 	if err != nil {
 		if status.Code(err) == codes.Unimplemented {
-			return false, fmt.Errorf("%w: %v", l2rollup.ErrVerifyStateRootUnsupported, err)
+			return l2rollup.VerifiedStateRoot{}, fmt.Errorf("%w: %v", l2rollup.ErrVerifyStateRootUnsupported, err)
 		}
-		return false, fmt.Errorf("attestorgrpc: VerifyStateRoot(%d): %w", l2BlockNumber, err)
+		return l2rollup.VerifiedStateRoot{}, fmt.Errorf("attestorgrpc: VerifyStateRoot(%d): %w", l2BlockNumber, err)
 	}
-	return resp.GetValid(), nil
+	return l2rollup.VerifiedStateRoot{
+		Valid:     resp.GetValid(),
+		Signature: append([]byte(nil), resp.GetAttestationSignature()...),
+	}, nil
 }

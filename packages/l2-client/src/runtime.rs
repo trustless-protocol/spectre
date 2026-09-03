@@ -10,6 +10,7 @@ use ibc_proto::ibc::{
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
+    attestation::AttestationHead,
     error::Error,
     msg::EvmStorageProof,
     packet,
@@ -107,10 +108,10 @@ where
 
     let consensus = match transition {
         Ok(consensus) => consensus,
-        // Once signed attestations are implemented, a conflict freezes the client and the freeze
-        // must be persisted, so it cannot be reported as an Err — the transaction would revert
-        // and discard it. Until then, propagate the conflict error and write nothing.
-        Err(Error::StateConflict { .. }) if ATTESTATIONS_ARE_AUTHENTICATED => {
+        // A finalized conflict freezes the client and that freeze must be persisted, so it cannot
+        // be reported as an Err — the transaction would revert and discard it. Reorgable heads
+        // propagate the conflict and write nothing.
+        Err(Error::StateConflict { .. }) if conflict_freezes_client(&client) => {
             store_client_state(storage, &client)?;
             return Ok(None);
         }
@@ -125,26 +126,15 @@ where
     Ok(Some(height))
 }
 
-/// Whether every accepted header carries an attestor signature verified by this client.
-///
-/// False until the signed-attestation wire format and signature verification are implemented.
-/// The current envelope carries no attestation, so anyone can manufacture two contradictory
-/// headers and submit them through permissionless `MsgUpdateClient` calls. Freezing on those bare
-/// headers would let any party permanently brick a client, and there is no unfreeze path.
-///
-/// The redesign defines misbehaviour as conflicting signed attestations. Set this to true only in
-/// the same change that verifies those signatures and makes conflicts attributable.
-const ATTESTATIONS_ARE_AUTHENTICATED: bool = false;
-
-/// Returns whether two headers constitute actionable, authenticated misbehaviour.
-pub fn is_actionable_misbehaviour(first: &Header, second: &Header) -> Result<bool, Error> {
-    let found = first.conflicts_with(second)?;
-    if found && !ATTESTATIONS_ARE_AUTHENTICATED {
-        return Err(Error::InvalidHeader(
-            "conflicting headers do not carry authenticated attestations",
-        ));
-    }
-    Ok(found)
+/// Returns whether two signed headers constitute actionable misbehaviour for
+/// the profile's finality policy. Safe and unsafe heads may legitimately reorg,
+/// so only conflicting finalized headers are evidence of equivocation.
+pub fn is_actionable_misbehaviour(
+    attestation_head: AttestationHead,
+    first: &Header,
+    second: &Header,
+) -> Result<bool, Error> {
+    Ok(attestation_head == AttestationHead::Finalized && first.conflicts_with(second)?)
 }
 
 /// Applies actionable misbehaviour evidence.
@@ -154,13 +144,14 @@ pub fn apply_misbehaviour<Profile>(
     second: &Header,
 ) -> Result<bool, Error>
 where
-    Profile: DeserializeOwned + Serialize,
+    Profile: DeserializeOwned + Serialize + RuntimeProfile,
 {
     let mut client = client_state::<Profile>(storage)?;
     if let Some(height) = client.frozen_height {
         return Err(Error::Frozen(height));
     }
-    let found = is_actionable_misbehaviour(first, second)?;
+    let found =
+        is_actionable_misbehaviour(client.profile.common().attestation_head, first, second)?;
     if !found {
         return Ok(false);
     }
@@ -222,7 +213,10 @@ fn apply_update<Profile>(
     previous: Option<&ConsensusState>,
     next: Option<&ConsensusState>,
     accepted_at: u64,
-) -> Result<Option<ConsensusState>, Error> {
+) -> Result<Option<ConsensusState>, Error>
+where
+    Profile: RuntimeProfile,
+{
     if let Some(height) = client.frozen_height {
         return Err(Error::Frozen(height));
     }
@@ -231,7 +225,7 @@ fn apply_update<Profile>(
     let height = header.height.revision_height;
 
     if existing.is_some_and(|stored| stored.conflicts_with(&incoming)) {
-        if ATTESTATIONS_ARE_AUTHENTICATED {
+        if conflict_freezes_client(client) {
             client.frozen_height = Some(height);
         }
         return Err(Error::StateConflict { height });
@@ -249,8 +243,6 @@ fn apply_update<Profile>(
         // the stored state does not depend on arrival order. An honest relayer re-sends the same
         // block routinely (a retry or a cached header), and neither should rewrite anything.
         //
-        // The signed-attestation wire format grows this branch into the redesign's promotion and
-        // provisional-replacement state machine.
         return Ok(None);
     }
 
@@ -258,9 +250,18 @@ fn apply_update<Profile>(
     Ok(Some(incoming))
 }
 
+fn conflict_freezes_client<Profile: RuntimeProfile>(client: &ClientState<Profile>) -> bool {
+    client.profile.common().attestation_head == AttestationHead::Finalized
+}
+
 fn validate_profile<Profile: RuntimeProfile>(profile: &Profile) -> Result<(), Error> {
     if profile.common().profile_version != Profile::expected_profile_version() {
         return Err(Error::InvalidProfileVersion);
+    }
+    if profile.common().l2_chain_id == 0 || profile.common().attestor_public_key.is_zero() {
+        return Err(Error::InvalidHeader(
+            "L2 chain ID and attestor public key must be non-zero",
+        ));
     }
     Ok(())
 }

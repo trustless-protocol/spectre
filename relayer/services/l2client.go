@@ -26,8 +26,8 @@ func decodeHexPrefixed(s string) ([]byte, error) {
 // L2ClientParams is the immutable configuration needed to bootstrap one L2 rollup
 // wasm light client on Cosmos (Arbitrum / Base / Optimism). The bootstrap roots are
 // read from the L2 chain (see relayerclient.GetL2BootstrapState); the rollup profile
-// (which carries the L1 client id + checksum, l2 chain id, router address, commitment
-// slot, and the rollup-specific verifier fields) is operator-supplied verbatim.
+// (which carries the L2 chain id, router address, commitment slot, header fork, and
+// attestor public key) is operator-supplied verbatim.
 type L2ClientParams struct {
 	// WasmChecksum is the hex checksum of the L2 client's own stored wasm code.
 	WasmChecksum string
@@ -57,7 +57,7 @@ type L2ClientParams struct {
 
 // l2ClientStateJSON mirrors l2-client `ClientState`. The policy fields are gone with
 // the finality taxonomy: the client stores no levels, so there is nothing to gate on.
-// They return with the attestor signature, which is what makes a level mean anything.
+// The profile pins the attestor public key; each update carries its own signature.
 type l2ClientStateJSON struct {
 	LatestHeight uint64          `json:"latest_height"`
 	FrozenHeight *uint64         `json:"frozen_height"`

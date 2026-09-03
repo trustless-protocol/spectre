@@ -15,6 +15,8 @@
 #
 # Required env when not using the handoff:
 #   L1_RPC_URL, L2_RPC_URL, L2_WS_URL          endpoints — never defaulted
+#   ATTESTOR_SIGNING_KEY                        32-byte Ed25519 seed in hex;
+#       pin its matching public key in the Cosmos client profile
 #   L1_CHAIN_ID, L2_CHAIN_ID, ROLLUP_CORE_ADDRESS
 #       chain identity; a named CHAIN_PROFILE supplies all three, so with
 #       CHAIN_PROFILE=arbitrum-sepolia only the three endpoints are required.
@@ -221,6 +223,8 @@ require_command jq
 : "${L2_WS_URL:?L2_WS_URL is required (Nitro WebSocket RPC)}"
 : "${L2_CHAIN_ID:?L2_CHAIN_ID is required}"
 : "${ROLLUP_CORE_ADDRESS:?ROLLUP_CORE_ADDRESS is required (or set CHAIN_PROFILE to a chain whose reference config carries it)}"
+: "${ATTESTOR_SIGNING_KEY:?ATTESTOR_SIGNING_KEY is required (32-byte Ed25519 seed in hex)}"
+export ATTESTOR_SIGNING_KEY
 
 # ROLLUP_DEPLOYMENT_BLOCK only matters as the fallback start of the assertion
 # scan. A named profile supplies assertion_start_block, so requiring it there
@@ -311,6 +315,7 @@ jq -n \
     --arg l1_rpc_url "$CONTAINER_L1_RPC_URL" \
     --argjson l1_chain_id "$L1_CHAIN_ID" \
     --argjson l2_chain_id "$L2_CHAIN_ID" \
+    --arg attestation_signing_key "env:ATTESTOR_SIGNING_KEY" \
     --arg rollup_core_address "$ROLLUP_CORE_ADDRESS" \
     --arg assertions_mapping_slot "$ASSERTIONS_MAPPING_SLOT" \
     --argjson assertion_status_offset "$ASSERTION_STATUS_OFFSET" \
@@ -332,6 +337,7 @@ jq -n \
         l1_rpc_url: $l1_rpc_url,
         l1_chain_id: $l1_chain_id,
         l2_chain_id: $l2_chain_id,
+        attestation_signing_key: $attestation_signing_key,
         rollup_core_address: $rollup_core_address,
         assertions_mapping_slot: $assertions_mapping_slot,
         assertion_status_offset: $assertion_status_offset,
@@ -379,6 +385,7 @@ docker run \
     --volume "$RUN_DIR:/config:ro" \
     --volume "$ATTESTOR_STATE_VOLUME:/var/lib/fast-ibc/attestor" \
     --env ATTESTOR_CONFIG=/config/config.json \
+    --env ATTESTOR_SIGNING_KEY \
     "$ATTESTOR_DOCKER_IMAGE" >/dev/null
 
 printf '%s\n' "$ATTESTOR_CONTAINER_NAME" >"$RUN_DIR/attestor.container"

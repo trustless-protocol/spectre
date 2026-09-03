@@ -12,7 +12,9 @@
                 "attestation_head": "finalized",
                 "poll_interval_seconds": 30,
                 "state_path": "./op-mainnet.attested-roots.json",
-                "l1_bootstrap_lookback_blocks": 7200
+                "l1_bootstrap_lookback_blocks": 7200,
+                "l2_chain_id": 10,
+                "attestation_signing_key": "env:ATTESTOR_SIGNING_KEY"
             }
         }
     ],

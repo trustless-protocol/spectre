@@ -8,12 +8,12 @@
     "also why deploy_l2_contracts.sh needs MODULE_NAME=cosmos-to-base.",
     "",
     "rollup_profile is sent verbatim into MsgCreateClient and the Rust verifier rejects",
-    "unknown fields (#316), so it carries exactly the five keys the client reads. The",
+    "unknown fields (#316), so it carries exactly the seven keys the client reads. The",
     "settlement fields (dispute_game_factory, game_list_slot) and the ethereum_client",
     "reference are gone: the client verifies nothing against L1.",
     "",
-    "profile_version must match the artifact \u2014 op_attestor_v1 / base_attestor_v1 /",
-    "arbitrum_attestor_v1 \u2014 or instantiate fails with InvalidProfileVersion.",
+    "profile_version must match the artifact \u2014 op_attestor_v2 / base_attestor_v2 /",
+    "arbitrum_attestor_v2 \u2014 or instantiate fails with InvalidProfileVersion.",
     "",
     "l2_chain_id must be the chain l2_rpc_url actually serves. Both",
     "`create-clients-cosmos --l2-config` and `start` verify it against eth_chainId and",
@@ -21,7 +21,9 @@
     "does not answer, because it is about to commit the profile into a client that",
     "cannot be corrected afterwards. Nothing else reads the field - transactions take",
     "their chain id from the RPC - so before these checks a wrong value relayed",
-    "happily against whatever chain the URL served."
+    "happily against whatever chain the URL served.",
+    "attestation_head must match the l2_to_cosmos module's head_kind. It is signed",
+    "so a lower-finality signature from the same key cannot update this client."
   ],
   "wasm_checksum": "<hex checksum of the Base client wasm, from `gaiad q ibc-wasm checksums`>",
   "l2_rpc_url": "http://127.0.0.1:8545",
@@ -30,8 +32,10 @@
       "l2_chain_id": 84532,
       "l2_router": "0x1111111111111111111111111111111111111111",
       "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
-      "profile_version": "base_attestor_v1",
-      "l2_header_fork": "prague"
+      "profile_version": "base_attestor_v2",
+      "l2_header_fork": "prague",
+      "attestor_public_key": "0x5d9fbbeaa3960a8febd75dd7e7aa405edd218b7019a58f4b538e27178bc23268",
+      "attestation_head": "safe"
     }
   },
   "bootstrap_block": 0,

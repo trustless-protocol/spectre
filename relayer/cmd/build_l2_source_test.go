@@ -26,7 +26,7 @@ func validL2Config() l2ToCosmosConfig {
 		L2WasmClientID:   "08-wasm-1",
 		L2ICS26ClientID:  "client-0",
 		HeadKind:         "safe",
-		RollupProfile:    json.RawMessage(`{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}`),
+		RollupProfile:    json.RawMessage(`{"common":{"l2_chain_id":10,"l2_router":"0x1111111111111111111111111111111111111111","attestor_public_key":"0x1111111111111111111111111111111111111111111111111111111111111111","attestation_head":"safe"}}`),
 		kind:             chain.OPStack,
 	}
 }
@@ -41,6 +41,9 @@ func TestL2Config_Validate(t *testing.T) {
 		"missing attestor_addr":  func(c *l2ToCosmosConfig) { c.AttestorAddr = "" },
 		"missing wasm client id": func(c *l2ToCosmosConfig) { c.L2WasmClientID = "" },
 		"empty profile":          func(c *l2ToCosmosConfig) { c.RollupProfile = nil },
+		"profile head mismatch": func(c *l2ToCosmosConfig) {
+			c.RollupProfile = json.RawMessage(`{"common":{"l2_chain_id":10,"l2_router":"0x1111111111111111111111111111111111111111","attestor_public_key":"0x1111111111111111111111111111111111111111111111111111111111111111","attestation_head":"finalized"}}`)
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -103,7 +106,7 @@ func TestLoadConfigForClientCreation_AcceptsUncreatedWasmClient(t *testing.T) {
 			"l2_rpc_url":"http://l2","tm_rpc_url":"http://tm",
 			"attestor_addr":"127.0.0.1:3002","attestor_src_chain":"arbitrum-sepolia",
 			"l2_wasm_client_id":"","l2_ics26_client_id":"arb-client-0","head_kind":"unsafe",
-			"rollup_profile":{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}}}]}`
+			"rollup_profile":{"common":{"l2_chain_id":421614,"l2_router":"0x1111111111111111111111111111111111111111","attestor_public_key":"0x1111111111111111111111111111111111111111111111111111111111111111","attestation_head":"unsafe"}}}}]}`
 
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
@@ -186,7 +189,7 @@ func TestLoadConfig_L2Source(t *testing.T) {
 		"attestor_addr":"127.0.0.1:3001","attestor_src_chain":"op-sepolia",
 		"eth_beacon_api_url":"http://beacon",
 		"l2_wasm_client_id":"08-wasm-1","l2_ics26_client_id":"client-0","head_kind":"safe",
-		"rollup_profile":{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}}}]}`
+		"rollup_profile":{"common":{"l2_chain_id":10,"l2_router":"0x1111111111111111111111111111111111111111","attestor_public_key":"0x1111111111111111111111111111111111111111111111111111111111111111","attestation_head":"safe"}}}}]}`
 	var jc jsonConfig
 	if err := json.Unmarshal([]byte(raw), &jc); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -248,7 +251,7 @@ func TestFindL2TimeoutReturnPath(t *testing.T) {
 	src := validL2Config()
 	src.L2RpcUrl = sourceRPC.URL
 	src.TmRpcUrl = "http://cosmos-a"
-	src.RollupProfile = json.RawMessage(`{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}`)
+	src.RollupProfile = json.RawMessage(`{"common":{"l2_chain_id":10,"l2_router":"0x1111111111111111111111111111111111111111","attestor_public_key":"0x1111111111111111111111111111111111111111111111111111111111111111","attestation_head":"safe"}}`)
 	matchingDest := cosmosToEthConfig{
 		EthRpcUrl:     "http://write-l2-a",
 		TmRpcUrl:      "http://cosmos-a",

@@ -25,6 +25,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 REPO_ROOT=$PWD
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/local/devnet_attestor_identity.sh"
 
 ENCLAVE=${ENCLAVE:-op-devnet}
 RUN_DIR=${RUN_DIR:-$REPO_ROOT/.arbitrum-devnet-run}
@@ -74,6 +76,9 @@ Environment:
   RUN_DIR                  Runtime artifacts (default: .arbitrum-devnet-run).
   PACKAGE_DIR              Local external-L1 Arbitrum Kurtosis package.
   L2_CHAIN_ID              Arbitrum devnet chain ID (default: 412346).
+  ATTESTOR_SIGNING_KEY / ATTESTOR_PUBLIC_KEY
+                           Matching Ed25519 identity for the local attestor. Set
+                           both to override the disposable test identity.
   NITRO_IMAGE              Nitro image shared with the attestor replica.
   NITRO_CONTRACTS_REF      BoLD nitro-contracts ref (default: v3.1.0).
   STARTUP_WAIT_SECS        L2 startup timeout (default: 900).
@@ -502,6 +507,8 @@ ENV_FILE=$RUN_DIR/attestor.env
     printf 'export L2_RPC_URL=%q\n' "$L2_RPC_URL"
     printf 'export L2_WS_URL=%q\n' "$L2_WS_URL"
     printf 'export L2_CHAIN_ID=%q\n' "$OBSERVED_L2_CHAIN_ID"
+    printf 'export ATTESTOR_SIGNING_KEY=%q\n' "$ATTESTOR_SIGNING_KEY"
+    printf 'export ATTESTOR_PUBLIC_KEY=%q\n' "$ATTESTOR_PUBLIC_KEY"
     printf 'export ROLLUP_CORE_ADDRESS=%q\n' "$ROLLUP_CORE_ADDRESS"
     printf 'export ROLLUP_DEPLOYMENT_BLOCK=%q\n' "$ROLLUP_DEPLOYMENT_BLOCK"
     printf 'export ASSERTIONS_MAPPING_SLOT=%q\n' "$ASSERTIONS_MAPPING_SLOT"

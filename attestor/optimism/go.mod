@@ -3,6 +3,9 @@ module attestor/optimism
 go 1.25.7
 
 require (
+	attestor/core v0.0.0
+	attestor/grpc v0.0.0
+	attestor/host v0.0.0
 	attestor/types v0.0.0
 	github.com/ethereum/go-ethereum v1.17.4
 	github.com/prometheus/client_golang v1.24.0
@@ -10,6 +13,12 @@ require (
 	go.uber.org/zap v1.28.0
 	google.golang.org/grpc v1.82.1
 )
+
+replace attestor/core => ../core
+
+replace attestor/grpc => ../grpc
+
+replace attestor/host => ../host
 
 replace attestor/types => ../types
 

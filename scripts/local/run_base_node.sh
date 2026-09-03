@@ -48,6 +48,8 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 REPO_ROOT=$PWD
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/local/devnet_attestor_identity.sh"
 
 # Base gets its own enclave (and therefore its own L1) by default, so a Base run
 # can never disturb an OP or Arbitrum devnet. To settle Base to a shared L1
@@ -140,6 +142,9 @@ Environment:
   BATCHER_IMAGE          Base batcher image (default: base-batcher:local).
   SETUP_IMAGE            op-deployer/setup image (default: devnet-setup:local).
   L2_CHAIN_ID            Base devnet chain ID (default: 84538453).
+  ATTESTOR_SIGNING_KEY / ATTESTOR_PUBLIC_KEY
+                         Matching Ed25519 identity for the local attestor. Set
+                         both to override the disposable test identity.
   STARTUP_WAIT_SECS      Service startup timeout (default: 900).
   FINALITY_WAIT_SECS     Shared-L1 finality timeout (default: 900).
   FINALIZED_WAIT_SECS    First finalized L2 block timeout (default: 600).
@@ -746,6 +751,8 @@ ENV_FILE=$RUN_DIR/attestor.env
     printf 'export L2_RPC_URL=%q\n' "$L2_RPC_URL"
     printf 'export L2_WS_URL=%q\n' "$L2_WS_URL"
     printf 'export L2_CHAIN_ID=%q\n' "$OBSERVED_L2_CHAIN_ID"
+    printf 'export ATTESTOR_SIGNING_KEY=%q\n' "$ATTESTOR_SIGNING_KEY"
+    printf 'export ATTESTOR_PUBLIC_KEY=%q\n' "$ATTESTOR_PUBLIC_KEY"
     printf 'export L2_SEQUENCER_RPC_URL=%q\n' "$L2_RPC_URL"
     printf 'export L2_FOLLOWER_RPC_URL=%q\n' "$L2_FOLLOWER_RPC_URL"
     printf 'export L2_FOLLOWER_WS_URL=%q\n' "$L2_FOLLOWER_WS_URL"

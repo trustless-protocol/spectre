@@ -41,8 +41,10 @@
             "l2_chain_id": 2151908,
             "l2_router": "0xd519b00154653763d10354698c7c6c3e4ebf3acd",
             "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
-            "profile_version": "op_attestor_v1",
-            "l2_header_fork": "prague"
+            "profile_version": "op_attestor_v2",
+            "l2_header_fork": "prague",
+            "attestor_public_key": "0x5d9fbbeaa3960a8febd75dd7e7aa405edd218b7019a58f4b538e27178bc23268",
+            "attestation_head": "safe"
           }
         }
       }

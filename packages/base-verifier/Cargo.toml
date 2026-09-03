@@ -6,6 +6,7 @@ edition = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
+cosmwasm-std = { workspace = true }
 l2-client = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true, features = ["derive"] }

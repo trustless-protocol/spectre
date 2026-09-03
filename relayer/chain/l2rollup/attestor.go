@@ -20,6 +20,15 @@ import (
 // is this narrow — any other failure stays fatal.
 var ErrVerifyStateRootUnsupported = errors.New("attestor does not implement VerifyStateRoot")
 
+// VerifiedStateRoot is the attestor's binding for the canonical block the
+// relayer is about to package. Signature is Ed25519 over the chain ID, immutable
+// attestation head, height, state root and block hash; the wasm client verifies it
+// before storing state.
+type VerifiedStateRoot struct {
+	Valid     bool
+	Signature []byte
+}
+
 // AttestorClient is the subset of the L2 attestor sidecar's gRPC surface the relayer
 // gates on (AttestorService, #240/#258). The 2-method interface is defined HERE, on the
 // consumer side, so the source/builders stay unit-testable with a small fake instead of
@@ -61,5 +70,5 @@ type AttestorClient interface {
 	// serving several chains would otherwise verify against whichever replica it
 	// guessed, and a wrong guess answers valid=false for a good header — which the
 	// caller cannot tell apart from a real divergence.
-	VerifyStateRoot(ctx context.Context, srcChain string, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (bool, error)
+	VerifyStateRoot(ctx context.Context, srcChain string, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (VerifiedStateRoot, error)
 }

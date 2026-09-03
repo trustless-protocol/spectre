@@ -16,17 +16,18 @@ impl RuntimeProfile for Profile {
         &self.common
     }
     fn expected_profile_version() -> &'static str {
-        "base_attestor_v1"
+        "base_attestor_v2"
     }
 }
 pub struct Adapter;
 impl l2_client::L2LightClient for Adapter {
     type Profile = Profile;
     fn verify(
+        api: &dyn cosmwasm_std::Api,
         profile: &Profile,
         header: &AttestedL2Header,
     ) -> Result<Header, l2_client::error::Error> {
-        l2_client::verification::verify_attested_header(profile, header)
+        l2_client::verification::verify_attested_header(api, profile, header)
     }
 }
 
@@ -38,6 +39,6 @@ mod tests {
     fn example_profile_matches_artifact_version() {
         let profile: Profile =
             serde_json::from_str(include_str!("../config/base-sepolia.json")).unwrap();
-        assert_eq!(profile.common.profile_version, "base_attestor_v1");
+        assert_eq!(profile.common.profile_version, "base_attestor_v2");
     }
 }
