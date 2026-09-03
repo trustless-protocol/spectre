@@ -802,3 +802,10 @@ func HasEthPacketReceipt(stdCtx context.Context, ctx EVMEndpoint, packet channel
 func HasPendingEthPacketCommitment(stdCtx context.Context, ctx EVMEndpoint, packet channeltypesv2.Packet) (bool, error) {
 	return HasEthIBCPathValue(stdCtx, ctx, EthPath(packet.SourceClient, packet.Sequence, 1))
 }
+
+func NewWorker(txHandler TransactionHandler, prover Prover) *Worker {
+	return &Worker{
+		txHandler,
+		prover,
+	}
+}
