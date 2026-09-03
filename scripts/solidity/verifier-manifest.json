@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "supported_buckets": [
+    4
+  ],
+  "generator": "cd relayer && go run ./prover/cmd ./bin ../contracts/verifiers",
+  "setup": "Groth16 setup is randomized. Only deterministic R1CS output is hash-locked; the generator smoke-tests each staged PK/VK pair before publishing it with its Solidity verifier.",
+  "artifacts": {
+    "r1cs": {
+      "path": "relayer/bin/n4/r1cs.bin",
+      "sha256": "15956ca7a75554f5f787b4a73d010cad31a88ae552bd8e1e8330e84b8fee1406"
+    },
+    "proving_key": {
+      "path": "relayer/bin/n4/pk.bin"
+    },
+    "verifying_key": {
+      "path": "relayer/bin/n4/vk.bin"
+    },
+    "solidity_verifier": {
+      "path": "contracts/verifiers/Groth16Verifier_N4.sol"
+    }
+  },
+  "scope": "checked-local-generator"
+}

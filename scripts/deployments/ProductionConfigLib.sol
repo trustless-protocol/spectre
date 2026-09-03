@@ -8,7 +8,7 @@ pragma solidity ^0.8.28;
 ///      deployment made before the check existed would still pass verification.
 library ProductionConfigLib {
     /// @notice Reverts unless every address in the list is distinct.
-    /// @dev O(n^2), but n is 6-9 and this runs once per deployment.
+    /// @dev O(n^2), but the lists are small and this runs once per deployment.
     /// @param addrs The addresses that must not collide.
     /// @param message The revert reason, naming which set collided.
     function requireDistinct(address[] memory addrs, string memory message) internal pure {
@@ -19,13 +19,12 @@ library ProductionConfigLib {
         }
     }
 
-    /// @notice Collects the six bucket verifier addresses in bucket order.
-    /// @dev They must be six DIFFERENT contracts: each is generated from its own bucket's
-    ///      verifying key, so pointing two buckets at one address is not a duplicate
-    ///      configuration but a wrong one — every proof in the mis-pointed bucket fails
-    ///      on-chain against a VK built for a different signer count. With six near-identical
-    ///      env vars that is a plausible copy-paste, and nothing else catches it: the addresses
-    ///      are well-formed, the contracts have code, and the selectors match.
+    /// @notice Collects the six production bucket verifier addresses in bucket order.
+    /// @dev They must be six different contracts: each is generated from its own bucket's
+    ///      verifying key, so pointing two buckets at one address is a wrong configuration,
+    ///      not a harmless duplicate: every proof for the misconfigured bucket becomes
+    ///      unverifiable. Nothing else catches this plausible copy-paste error because each
+    ///      address can still be well-formed, contain code, and expose the expected selector.
     function verifierList(
         address n4,
         address n8,

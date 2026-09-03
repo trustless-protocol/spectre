@@ -1,0 +1,91 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "b75a613a2d020b1e9717df672a066788bf9ccf30",
+  "branch": "refactor/solidity-contracts",
+  "implementation_status": "code-complete-with-historical-process-evidence-gaps",
+  "ownership_manifest": "scripts/solidity/ownership-manifest.json",
+  "compatibility_baseline": "scripts/solidity/baseline.json",
+  "contracts_manifest": "scripts/solidity/contracts.json",
+  "supported_verifier_buckets": [
+    4,
+    8,
+    16,
+    32,
+    64,
+    128
+  ],
+  "runtime_compatibility": {
+    "abi": "exact",
+    "storage": "exact",
+    "initcode": "exact",
+    "runtime": "exact"
+  },
+  "sizes": {
+    "ICS26Router": {
+      "runtime_bytes": 24465,
+      "margin_bytes": 111
+    },
+    "ICS20Transfer": {
+      "runtime_bytes": 22224,
+      "margin_bytes": 2352
+    },
+    "SpectreClient": {
+      "runtime_bytes": 19390,
+      "margin_bytes": 5186
+    }
+  },
+  "accepted_tooling_deltas": [
+    "Solidity fully qualified source paths",
+    "Spectre bytecode artifact source metadata",
+    "test and fixture paths",
+    "Rust Solidity source paths plus removal of four stale ABI inputs and seven dead conversions deleted upstream in #223",
+    "IPausable ownership path from non-target shared/interfaces to core/interfaces"
+  ],
+  "rollback": {
+    "commit": "b75a613a2d020b1e9717df672a066788bf9ccf30",
+    "note": "Revert structural slices; generated verifier pairs must be rolled back atomically with relayer keys and deployment registry."
+  },
+  "boundaries": [
+    "No live Docker/Kurtosis E2E run; E2E packages compile only.",
+    "No shadowfork tests were discovered in the 34-contract current test inventory.",
+    "The checked local prover manifest enables N4 only; production deployment compatibility preserves N4 through N128 and requires paired artifacts for every configured bucket.",
+    "Gnark emitted a hash-to-field exporter warning during N4 generation; the Go smoke proof passed, but live on-chain proof generation/verification was not exercised.",
+    "Solidity compatibility gates are local/manual; exact commands and results are recorded in the release report."
+  ],
+  "gas_compatibility": {
+    "locked_tests": 17,
+    "max_regression_percent": 5,
+    "observed_max_regression_percent": 0
+  },
+  "release_matrix_passes": 2,
+  "storage_manifest": "scripts/solidity/storage-manifest.json",
+  "storage_compatibility": {
+    "first_party_erc7201_owners": 9,
+    "namespace_constants": "exact",
+    "ordered_struct_layouts": "exact"
+  },
+  "design_reference": "refactor/design-contracts@115397d08e23a421852d08e590d2571bd413f3f5",
+  "tooling_rename_manifest": "scripts/solidity/tooling-rename-manifest.json",
+  "tooling_compatibility": {
+    "abi_container_names": "exactly preserved from baseline",
+    "generated_abi_and_bindings": "byte-for-byte baseline compatible",
+    "consumer_update": "required source and fixture path updates plus removal of dead Rust ABI inputs/conversions deleted upstream in #223",
+    "rust_source_module": "existing groth16_ics07 public module retained",
+    "rust_consumer_sources": "exact digests in tooling-rename-manifest.json"
+  },
+  "checked_local_generator_buckets": [
+    4
+  ],
+  "post_review_clean_foundry_passes": 2,
+  "import_path_compatibility": {
+    "classification": "first-party",
+    "evidence": "private package plus repository-wide consumer inventory",
+    "unknown_consumer_default": "public-with-forwarding-shim"
+  },
+  "design_conformance_boundaries": {
+    "latest_design_authority": "origin/refactor/design-contracts:docs/refactor/01-Solidity-Contracts.md",
+    "prover_readiness_repository_evidence": "deterministic R1CS digest plus staged generator smoke-test and randomized artifact paths are recorded in verifier-manifest.json",
+    "prover_readiness_external_tracking": "T-2 timing and tracking-issue evidence are not recorded in this repository",
+    "historical_phase_order": "published commits cannot be changed to production-before-test sequencing without rewriting branch history"
+  }
+}

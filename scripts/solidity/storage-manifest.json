@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "name": "ICS26Router",
+      "source": "contracts/core/ICS26Router.sol",
+      "baseline_source": "contracts/ICS26Router.sol",
+      "structs": [
+        "ICS26RouterStorage"
+      ],
+      "slots": [
+        "ICS26ROUTER_STORAGE_SLOT"
+      ]
+    },
+    {
+      "name": "ICS02Client",
+      "source": "contracts/core/client-registry/ICS02ClientStore.sol",
+      "baseline_source": "contracts/utils/ICS02ClientStore.sol",
+      "structs": [
+        "ClientMigration",
+        "Layout"
+      ],
+      "slots": [
+        "STORAGE_SLOT"
+      ]
+    },
+    {
+      "name": "IBCStore",
+      "source": "contracts/core/store/IBCStoreUpgradeable.sol",
+      "baseline_source": "contracts/utils/IBCStoreUpgradeable.sol",
+      "structs": [
+        "IBCStoreStorage"
+      ],
+      "slots": [
+        "IBCSTORE_STORAGE_SLOT"
+      ]
+    },
+    {
+      "name": "DeprecatedAdmin",
+      "source": "contracts/core/compatibility/ICS26AdminsDeprecated.sol",
+      "baseline_source": "contracts/utils/ICS26AdminsDeprecated.sol",
+      "structs": [
+        "IBCUUPSUpgradeableStorage"
+      ],
+      "slots": [
+        "IBCUUPSUPGRADEABLE_STORAGE_SLOT"
+      ]
+    },
+    {
+      "name": "ICS20Transfer",
+      "source": "contracts/apps/ics20/ICS20Transfer.sol",
+      "baseline_source": "contracts/ICS20Transfer.sol",
+      "structs": [
+        "ICS20TransferStorage"
+      ],
+      "slots": [
+        "ICS20TRANSFER_STORAGE_SLOT"
+      ]
+    },
+    {
+      "name": "Escrow",
+      "source": "contracts/apps/ics20/Escrow.sol",
+      "baseline_source": "contracts/utils/Escrow.sol",
+      "structs": [
+        "EscrowStorage"
+      ],
+      "slots": [
+        "ESCROW_STORAGE_SLOT"
+      ]
+    },
+    {
+      "name": "IBCERC20",
+      "source": "contracts/apps/ics20/IBCERC20.sol",
+      "baseline_source": "contracts/utils/IBCERC20.sol",
+      "structs": [
+        "IBCERC20Storage"
+      ],
+      "slots": [
+        "IBCERC20_STORAGE_SLOT"
+      ]
+    },
+    {
+      "name": "RateLimit",
+      "source": "contracts/apps/ics20/rate-limit/RateLimitUpgradeable.sol",
+      "baseline_source": "contracts/utils/RateLimitUpgradeable.sol",
+      "structs": [
+        "RateLimitStorage"
+      ],
+      "slots": [
+        "RATELIMIT_STORAGE_SLOT"
+      ]
+    },
+    {
+      "name": "SpectreClient",
+      "source": "contracts/light-clients/spectre/store/SpectreStore.sol",
+      "baseline_source": "contracts/light-clients/store/SpectreStore.sol",
+      "structs": [
+        "PinnedValidatorSetSnapshot",
+        "Store"
+      ],
+      "slots": [
+        "STORE_SLOT"
+      ]
+    }
+  ]
+}

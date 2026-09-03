@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "design_reference": "refactor/design-contracts@115397d08e23a421852d08e590d2571bd413f3f5",
+  "compatibility_class": "tooling-abi-locked",
+  "policy": "Preserve existing Solidity interface container names and generated binding type names; allow only required source and fixture path updates.",
+  "renames": [],
+  "generated_digests": {},
+  "source_module_renames": [],
+  "retired_generated_artifacts": [],
+  "consumer_digests": {
+    "packages/solidity/src/msgs.rs": "20b22659f4f75dcb34e2582e4621f2a1a7b617031a0421cabb27073172143e57",
+    "packages/solidity/src/groth16_ics07.rs": "ff1af85efc48f87e51af4884d04d2405c1dd418dad084271b0f4ae652ef7ec40",
+    "e2e/interchaintestv8/testvalues/values.go": "cbd06991cc5d1c666013b9a4868d70e0283d7ee14de546586ed53bebf985f7a7"
+  }
+}

@@ -67,7 +67,7 @@ Config: JSON file with `modules` array containing `cosmos_to_eth` and `eth_to_co
 
 Multiple Cosmos sources: add one `cosmos_to_eth` module per source (each with a distinct `ics26_client_id`); `start` runs an independent relay loop for each in one process (shared prover + ETH endpoint, ETH events partitioned by the per-source client-id filter). Run `create-clients-cosmos` then `create-clients-eth` once per source with `--source <ics26_client_id>` — each targets and writes the ids back into that source's module. Single-source configs are unchanged and need no `--source`.
 
-Circuit setup (from `relayer/`): `go run ./prover/cmd ./bin ../contracts/verifiers` — compiles every bucket into `bin/n{N}/{r1cs,pk,vk}.bin` and emits `Groth16Verifier_N{N}.sol`. After regeneration the vk changes: **redeploy every generated verifier and re-register via `SignatureVerifier.setBucket(...)`**, or every proof fails on-chain.
+Circuit setup: `scripts/solidity/build-prover-artifacts.sh` generates the supported N4 pair in ignored staging, smoke-tests it, publishes it, and records provenance. After regeneration the verifying key changes: **redeploy the generated N4 verifier and re-register it via `SignatureVerifier.setBucket(...)`**, or every proof fails on-chain.
 
 ## Architecture — orient here before editing
 
@@ -85,7 +85,7 @@ ICS26Router (UUPS) ← main IBC entry point
           └─ Groth16Verifier_N{N}.sol ← GENERATED, one per N ∈ {4,8,16,32,64,128}, vk baked as constants
 ```
 
-ZK flow: top-N validator Ed25519 sigs (≥⅔ voting power) → padded to nearest bucket with deterministic dummy keypairs → circuit hashes the witness into a single SHA-256 public input + ECIP batch verify → per-bucket verifier checks the proof. **Pubkeys (A) are committed into the witness hash** so the on-chain pinned-set lookup is honest; **R/S are deliberately NOT in calldata or the hash** (bound by the Ed25519 verify itself). The witness layout must match byte-for-byte between `relayer/prover/hash_witness.go` and `contracts/light-clients/SignatureVerifier.sol`.
+ZK flow: top-N validator Ed25519 sigs (≥⅔ voting power) → padded to nearest bucket with deterministic dummy keypairs → circuit hashes the witness into a single SHA-256 public input + ECIP batch verify → per-bucket verifier checks the proof. **Pubkeys (A) are committed into the witness hash** so the on-chain pinned-set lookup is honest; **R/S are deliberately NOT in calldata or the hash** (bound by the Ed25519 verify itself). The witness layout must match byte-for-byte between `relayer/prover/hash_witness.go` and `contracts/light-clients/spectre/SignatureVerifier.sol`.
 
 ```
 relayer/
@@ -131,8 +131,8 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 ### In force in this repo
 
 - **Commits**: conventional format `<type>: <description>` (feat, fix, refactor, docs, test, chore, perf, ci), English. The history contains drift ("updates", "nits") — that is debt, not license; PRs should squash-merge to a conventional message.
-- **Encoding is a contract**: `contracts/utils/Encode.sol` must produce byte-identical output to Go `proto.Marshal()`. Both sides change in the same PR, cross-validated by `EncodeTest.t.sol`.
-- **Solidity**: 120-col lines, 4-space width, double quotes (`foundry.toml` enforces). UUPS proxies for core contracts, Beacon for per-instance contracts. Modules under `contracts/light-clients/modules/` stay `pure`/stateless (read the Store, never write) — all client state lives in `SpectreClient`.
+- **Encoding is a contract**: `contracts/light-clients/spectre/libraries/Encode.sol` must produce byte-identical output to Go `proto.Marshal()`. Both sides change in the same PR, cross-validated by `EncodeTest.t.sol`.
+- **Solidity**: 120-col lines, 4-space width, double quotes (`foundry.toml` enforces). UUPS proxies for core contracts, Beacon for per-instance contracts. Modules under `contracts/light-clients/spectre/modules/` stay `pure`/stateless (read the Store, never write) — all client state lives in `SpectreClient`.
 - **Go**: wrap errors with `%w` + context; classify relayer failures transient vs permanent (`ErrPermanentRelayFailure`); every shared mutation under its owning mutex; tests run with `-race`.
 - **Bindings**: after any Solidity ABI change, regenerate with `abigen` into `packages/go-abigen/` (and `relayer/bindings/` where applicable) in the same PR.
 - **Tooling**: `bun` for JS deps; `just` recipes over raw commands when a recipe exists. `go.mod` has replace directives for local `ecip-gnark`/`decentrio-gnark` — adjust per dev setup, never commit machine-local paths.

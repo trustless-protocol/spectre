@@ -41,6 +41,15 @@ proof is paid once per client update, and every packet relayed against that
 update costs only an ICS23 membership check. Nothing on the packet path touches
 the verifier contracts.
 
+The Tendermint commit is verified by batch-proving N Ed25519 signatures whose
+voting power sums to ≥ 2/3 of the validator set. To keep Groth16 circuits
+fixed-size, production retains the bucket topology N ∈ {4, 8, 16, 32, 64,
+128}. Each bucket has one inseparable `(r1cs, pk, vk)` set and matching
+`Groth16Verifier_N{N}.sol`. The checked-in repository generator/prover manifest
+currently enables N=4 only; serving a larger quorum requires enabling that
+bucket in the prover and publishing, deploying, and registering its matching
+artifact set.
+
 The store keeps one 32-byte `keccak256(abi.encode(consensusState))` per height,
 not the root itself. A packet carries the consensus state and its commitment
 root, and `SpectreClient._validateMembershipInput` rehashes what it was given,
