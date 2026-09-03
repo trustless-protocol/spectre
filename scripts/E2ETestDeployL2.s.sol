@@ -70,7 +70,7 @@ contract E2ETestDeployL2 is Script, DeployAccessManagerWithRoles {
         address updateClient = address(new UpdateClient(address(signatureVerifier)));
         address misbehaviour = address(new Misbehaviour(address(signatureVerifier)));
 
-        // Deploy IBC Eureka with proxy
+        // Deploy IBC v2 with proxy
         address ics26RouterLogic =
             address(new ICS26Router(address(new ClientMigrationProposer()), address(new ClientMigrationExecutor())));
         address ics20TransferLogic = address(new ICS20Transfer());
@@ -88,7 +88,7 @@ contract E2ETestDeployL2 is Script, DeployAccessManagerWithRoles {
             )
         );
 
-        // Wire up the IBCAdmin and access control using Eureka's relayer roles.
+        // Wire up the IBCAdmin and access control using the relayer roles.
         accessManagerSetTargetRoles(accessManager, address(routerProxy), address(transferProxy), false);
 
         address[] memory relayers = new address[](1);

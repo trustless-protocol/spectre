@@ -1,80 +1,79 @@
 # fast-ibc
 
-A Solidity implementation of IBC Eureka (IBC v2) with a Go relayer using gnark
-Groth16 for Tendermint light client verification. Each client update proves a
-2/3+ voting-power quorum of validator Ed25519 signatures in a single Groth16
-proof, with in-circuit CanonicalVote reconstruction so only ~32 bytes of public
-input land on-chain.
+A ZK light client that lets Ethereum follow Tendermint consensus, and the Go
+relayer and prover that feed it. A purpose-built gnark Groth16 circuit
+batch-verifies the validator Ed25519 signatures behind one CometBFT commit — a
+2/3+ voting-power quorum, with each `CanonicalVote` reconstructed in-circuit —
+so a client update settles on-chain as a single proof carrying ~32 bytes of
+public input. Signers are padded up to the nearest fixed circuit size, one
+`Groth16Verifier_N{N}` per bucket, for validator sets up to 180 active members.
 
-## L2 ICS-08 clients
-
-The repository also contains independent CosmWasm clients for OP Sepolia, Base
-Sepolia, and Arbitrum Sepolia. Their deployment evidence requirements,
-host-query wiring, and verification commands are documented in
-[docs/L2_CLIENTS.md](docs/L2_CLIENTS.md).
+The client plugs into an [IBC v2](https://github.com/cosmos/ibc/tree/main/spec/IBC_V2)
+Solidity stack for packet routing and ICS-20 transfers, and the same relayer
+carries the reverse direction against a CosmWasm Ethereum light client on the
+Cosmos side (`programs/cw-ics08-wasm-eth`), which follows the beacon sync
+committee rather than a Groth16 proof. CosmWasm ICS-08 clients extend the path
+to OP, Base and Arbitrum, backed by attestor sidecars.
 
 ## Architecture
 
 ```
-┌─────────────────┐         ┌──────────────────────────────────────┐
-│   Cosmos Chain  │         │           Ethereum Chain             │
-│                 │         │                                      │
-│  IBC v2 Module  │────────▶│  ICS26Router.sol                     │
-│  (send_packet)  │         │      │                               │
-└─────────────────┘         │      ▼                               │
-                            │  SpectreClient.sol                   │
-         ┌──────────────────│      │  (light client + 2/3 quorum)  │
-         │                  │      ▼                               │
-         │  Go Relayer      │  SignatureVerifier.sol               │
-         │  ┌────────────┐  │      │  (rebuilds CanonicalVote +    │
-         │  │ Extractor  │  │      │   SHA-256 witness commit)     │
-         │  │ + Prover   │  │      ▼                               │
-         │  │ (gnark ZK) │  │  Groth16Verifier_N{N}.sol            │
-         │  │            │  │      │  (one per bucket size)        │
-         │  │ RecvPacket │  │      ▼                               │
-         │  └────────────┘  │  Membership.sol → ICS20Transfer.sol  │
-         └──────────────────└──────────────────────────────────────┘
+Cosmos                  Go relayer                  Ethereum
+──────                  ──────────                  ────────
+
+commit @ H         ──▶  extract top-N Ed25519  ──▶  ICS26Router.updateApplicationState
+(validator sigs)        sigs holding ≥ 2/3          └──▶ SpectreClient.updateApplicationState
+                        voting power                     └──▶ UpdateClient.sol   (delegatecall)
+                        gnark: one Groth16                    └──▶ SignatureVerifier
+                        proof, ~32 bytes                           └──▶ Groth16Verifier_N{N}
+                        of public input             ⇒ keccak(consensusState) stored per height
+
+send_packet        ──▶  packet + ICS23 proof   ──▶  ICS26Router.recvPacket
+                                                    ├──▶ SpectreClient.verifyMembership
+                                                    │    └──▶ Membership.sol      (staticcall)
+                                                    │         ICS23 against the commitment root
+                                                    └──▶ ICS20Transfer.onRecvPacket
+                                                         └──▶ Escrow / IBCERC20
 ```
 
-### Multi-validator batching
+The two flows are independent, and that is the point of the design: a Groth16
+proof is paid once per client update, and every packet relayed against that
+update costs only an ICS23 membership check. Nothing on the packet path touches
+the verifier contracts.
 
 The Tendermint commit is verified by batch-proving N Ed25519 signatures whose
 voting power sums to ≥ 2/3 of the validator set. To keep Groth16 circuits
 fixed-size, production retains the bucket topology N ∈ {4, 8, 16, 32, 64,
 128}. Each bucket has one inseparable `(r1cs, pk, vk)` set and matching
-`Groth16Verifier_N{N}.sol`. The checked in-repo generator/prover manifest currently
-enables N=4 only; serving a larger quorum requires enabling that bucket in the
-prover and publishing, deploying, and registering its matching artifact set.
+`Groth16Verifier_N{N}.sol`. The checked-in repository generator/prover manifest
+currently enables N=4 only; serving a larger quorum requires enabling that
+bucket in the prover and publishing, deploying, and registering its matching
+artifact set.
 
-The circuit reconstructs each validator's `CanonicalVote` bytes from a shared
-block header + per-slot `Timestamp`, hashes the full witness (active flag,
-pubkey, msg) into a single SHA-256 digest, and exposes that digest as the only
-public input. This keeps the on-chain verifier well under EIP-170. Padding
-slots carry `active=false`; both the in-circuit hash and the on-chain quorum
-check skip them.
+The store keeps one 32-byte `keccak256(abi.encode(consensusState))` per height,
+not the root itself. A packet carries the consensus state and its commitment
+root, and `SpectreClient._validateMembershipInput` rehashes what it was given,
+compares that against the stored hash, checks the root matches the state, and
+checks the trusting period — all before the ICS23 proof is looked at.
 
-The current Tendermint light-client cache supports at most **180 active
-validators**. Any update whose current validator set has more than 180 active
-validators reverts with `ValidatorCountExceedsLimit(count, 180)`, so chains
-above that bound need a larger cache layout before they can use this client.
+The update above is drawn router-managed, which is the access-controlled path
+(`ICS02ClientUpgradeable.updateApplicationState` is `restricted` and forwards to
+the client). A deployment that is not router-managed has the relayer call
+`SpectreClient` directly instead — `relayer/transaction/handler.go:638-642`
+picks between the two. The packet path always goes through the router.
 
-## Requirements
+## Building
 
-- [Go](https://golang.org/) >= 1.21
+### Requirements
+
+- [Go](https://golang.org/) >= 1.25 (`relayer/go.mod` pins 1.25.7)
 - [Foundry](https://getfoundry.sh/)
 - [Bun](https://bun.sh/)
 - [Just](https://github.com/casey/just)
 - Optional for GPU proving: ICICLE runtime/libs installed on the host, plus an
   `icicle` build of the relayer/prover tool
 
-## Production deployment
-
-See [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) before using
-the production AccessManager deployment scripts. It documents the governance
-timelock requirement, the TK-01 escrow launch gate, and the scheduled
-light-client provisioning flow.
-
-## gnark submodules (required to build the relayer)
+### gnark submodules
 
 The relayer/prover depend on two forks of gnark, vendored as **git submodules**
 under `third_party/` and wired through `relayer/go.mod`:
@@ -82,6 +81,7 @@ under `third_party/` and wired through `relayer/go.mod`:
 ```
 replace (
     0x5ea000000/ecip-gnark      => ../third_party/ecip-gnark
+    attestor/types              => ../attestor/types
     github.com/consensys/gnark  => ../third_party/decentrio-gnark
 )
 ```
@@ -92,7 +92,7 @@ replace (
 fast-ibc stores only a **pinned commit** of each fork (a submodule pointer), not
 their files.
 
-### First checkout
+#### First checkout
 
 Clone with submodules, or initialise them in an existing clone:
 
@@ -120,7 +120,44 @@ built FFI it fails at link with `library 'garaga_rs' not found`.
 > fine-grained PAT with read access to `decentrio/gnark` + `decentrio/ecip-gnark`)
 > and build `libgaraga_rs` before `go build`. See `.github/workflows/go.yml`.
 
-### Updating the forks (bump workflow)
+### Build and test
+
+```bash
+bun install                  # Solidity dependencies (never npm/yarn)
+just build-contracts         # forge build
+just build-go-relayer        # go build ./... in relayer/
+just build-prover-artifacts  # compile circuits into relayer/bin/n{N}/ and emit the verifiers
+
+just test-foundry            # all Solidity tests
+just test-go-relayer         # all Go relayer tests
+just lint                    # solidity + go + buf (`just lint-rust` is separate)
+```
+
+`just --list` shows every recipe, including the per-L2 wasm builds, the
+attestor sidecars, and Slither.
+
+## Running it end to end
+
+Bring-up runbooks live in **[docs/E2E.md](docs/E2E.md)** — Cosmos↔Ethereum,
+Cosmos↔OP, Cosmos↔Arbitrum, Cosmos↔Base, running against an L2 you did not
+deploy, sending test packets in both directions, and the failure modes each
+step produces.
+
+## L2 ICS-08 clients
+
+The repository also contains independent CosmWasm clients for OP Sepolia, Base
+Sepolia, and Arbitrum Sepolia. Their deployment evidence requirements,
+host-query wiring, and verification commands are documented in
+[docs/L2_CLIENTS.md](docs/L2_CLIENTS.md).
+
+## Production deployment
+
+See [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) before using
+the production AccessManager deployment scripts. It documents the governance
+timelock requirement, the escrow launch gate, and the scheduled light-client
+provisioning flow.
+
+## Updating the gnark forks
 
 Develop in the fork repos themselves and push there as usual — fast-ibc only
 pins a commit, so do **not** edit inside `third_party/` and forget to push the
@@ -141,7 +178,7 @@ git push                            # the PR diff is just a one-line submodule p
 - fast-ibc builds against the **pinned** commit, not your in-progress fork work, until you push + bump. For a tight fork↔fast-ibc co-development loop, temporarily point the `go.mod` replace at a local clone (e.g. `=> ../../ecip-gnark`) and do **not** commit that change; revert + bump when stable.
 - After someone else bumps, run `git submodule update --init --recursive` to sync your local tree.
 
-## Optional GPU Proving
+## Optional GPU proving
 
 CPU proving remains the default. GPU proving is opt-in and follows the
 `test/gnark-gpu` approach: build with `-tags=icicle`, then enable the ICICLE
@@ -207,12 +244,6 @@ If the ICICLE runtime is missing, the `icicle` build typically fails at link or
 startup with errors such as `library 'icicle_device' not found`. In that case,
 ensure ICICLE shared libraries are installed and `LD_LIBRARY_PATH` covers the
 directory containing the `libicicle_*` files.
-## Running it end to end
-
-Bring-up runbooks live in **[docs/E2E.md](docs/E2E.md)** — Cosmos↔Ethereum,
-Cosmos↔OP, Cosmos↔Arbitrum, Cosmos↔Base, running against an L2 you did not
-deploy, sending test packets in both directions, and the failure modes each
-step produces.
 
 ## Benchmark mode
 
@@ -270,16 +301,6 @@ continues — the rest of the benchmark output is unaffected.
 
 `utils.SetBenchEnabled(true|false)` lets tests force the flag without touching
 env. Definitions live in `relayer/utils/bench.go`.
-## Contracts
-
-Core IBC protocol contracts:
-
-- `ICS26Router.sol` — IBC packet routing
-- `ICS20Transfer.sol` — Fungible token transfer (ICS-20)
-- `SpectreClient.sol` — Tendermint light client (2/3 quorum + batch verify; owns client state in an ERC-7201 Store)
-- `SignatureVerifier.sol` — Rebuilds CanonicalVote bytes, hashes witness, dispatches per bucket
-- `Groth16Verifier_N{N}.sol` — Generated per-bucket verifier; production preserves N ∈ {4,8,16,32,64,128}
-- `Membership.sol` — On-chain ICS23 Merkle proof verification
 
 ## License
 

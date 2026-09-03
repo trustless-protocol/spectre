@@ -6,7 +6,7 @@ import { IIBCApp } from "contracts/core/interfaces/IIBCApp.sol";
 import { IPausable } from "contracts/core/interfaces/IPausable.sol";
 
 /// @title ICS26 Router Restricted Interface
-/// @notice Interface for the access controlled functions of the IBC Eureka Core Router
+/// @notice Interface for the access controlled functions of the IBC v2 core router
 interface IICS26RouterAccessControlled {
     /// @notice Adds an IBC application to the router
     /// @param portId The custom port identifier.
@@ -27,7 +27,7 @@ interface IICS26RouterAccessControlled {
 }
 
 /// @title ICS26 Router Interface
-/// @notice Interface for the IBC Eureka Core Router
+/// @notice Interface for the IBC v2 core router
 interface IICS26Router is IICS26RouterAccessControlled, IPausable {
     /// @notice Returns the address of the IBC application given the port identifier
     /// @param portId The port identifier

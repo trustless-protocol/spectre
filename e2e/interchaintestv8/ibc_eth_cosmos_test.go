@@ -55,9 +55,9 @@ import (
 	relayertypes "github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/relayer"
 )
 
-// IbcEurekaTestSuite is a suite of tests that wraps TestSuite
+// EthCosmosTestSuite is a suite of tests that wraps TestSuite
 // and can provide additional functionality
-type IbcEurekaTestSuite struct {
+type EthCosmosTestSuite struct {
 	e2esuite.TestSuite
 
 	// Whether to generate fixtures for tests or not
@@ -83,15 +83,15 @@ type IbcEurekaTestSuite struct {
 	EthRelayerSubmitter  *ecdsa.PrivateKey
 }
 
-// TestWithIbcEurekaTestSuite is the boilerplate code that allows the test suite to be run
-func TestWithIbcEurekaTestSuite(t *testing.T) {
-	suite.Run(t, new(IbcEurekaTestSuite))
+// TestWithEthCosmosTestSuite is the boilerplate code that allows the test suite to be run
+func TestWithEthCosmosTestSuite(t *testing.T) {
+	suite.Run(t, new(EthCosmosTestSuite))
 }
 
-// SetupSuite calls the underlying IbcEurekaTestSuite's SetupSuite method
-// and deploys the IbcEureka contract. It uses the relayer binary directly
+// SetupSuite calls the underlying EthCosmosTestSuite's SetupSuite method
+// and deploys the IBC v2 contracts. It uses the relayer binary directly
 // (via create-clients + start) rather than gRPC.
-func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.SupportedProofType) {
+func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.SupportedProofType) {
 	s.TestSuite.SetupSuite(ctx)
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
@@ -390,14 +390,14 @@ func (s *IbcEurekaTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 	}))
 }
 
-func (s *IbcEurekaTestSuite) Test_Deploy() {
+func (s *EthCosmosTestSuite) Test_Deploy() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.DeployTest(ctx, proofType)
 }
 
-// DeployTest tests the deployment of the IbcEureka contracts
-func (s *IbcEurekaTestSuite) DeployTest(ctx context.Context, proofType types.SupportedProofType) {
+// DeployTest tests the deployment of the IBC v2 contracts
+func (s *EthCosmosTestSuite) DeployTest(ctx context.Context, proofType types.SupportedProofType) {
 	s.SetupSuite(ctx, proofType)
 
 	_, simd := s.EthChain, s.CosmosChains[0] // eth used only by the removed gRPC Info blocks
@@ -461,19 +461,19 @@ func (s *IbcEurekaTestSuite) DeployTest(ctx context.Context, proofType types.Sup
 	// register above; nothing extra to assert here.
 }
 
-func (s *IbcEurekaTestSuite) Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack() {
+func (s *EthCosmosTestSuite) Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.ICS20TransferERC20TokenfromEthereumToCosmosAndBackTest(ctx, proofType, 1, big.NewInt(testvalues.TransferAmount))
 }
 
-func (s *IbcEurekaTestSuite) Test_25_ICS20TransferERC20TokenfromEthereumToCosmosAndBack() {
+func (s *EthCosmosTestSuite) Test_25_ICS20TransferERC20TokenfromEthereumToCosmosAndBack() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.ICS20TransferERC20TokenfromEthereumToCosmosAndBackTest(ctx, proofType, 25, big.NewInt(testvalues.TransferAmount))
 }
 
-func (s *IbcEurekaTestSuite) Test_50_ICS20TransferERC20TokenfromEthereumToCosmosAndBack() {
+func (s *EthCosmosTestSuite) Test_50_ICS20TransferERC20TokenfromEthereumToCosmosAndBack() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.ICS20TransferERC20TokenfromEthereumToCosmosAndBackTest(ctx, proofType, 50, big.NewInt(testvalues.TransferAmount))
@@ -504,7 +504,7 @@ func autoRelayTimeoutPacketTimeout(numOfTransfers int) time.Duration {
 	return 12*time.Minute + time.Duration(batches)*2*time.Minute
 }
 
-func (s *IbcEurekaTestSuite) waitForCosmosBalance(
+func (s *EthCosmosTestSuite) waitForCosmosBalance(
 	ctx context.Context,
 	address string,
 	denom string,
@@ -529,7 +529,7 @@ func (s *IbcEurekaTestSuite) waitForCosmosBalance(
 		denom, address, expected.String(), timeout)
 }
 
-func (s *IbcEurekaTestSuite) waitForCosmosPacketCommitmentRemoved(
+func (s *EthCosmosTestSuite) waitForCosmosPacketCommitmentRemoved(
 	ctx context.Context,
 	sequence uint64,
 	timeout time.Duration,
@@ -545,7 +545,7 @@ func (s *IbcEurekaTestSuite) waitForCosmosPacketCommitmentRemoved(
 		"auto-relay did not clear Cosmos packet commitment for sequence %d within %s", sequence, timeout)
 }
 
-func (s *IbcEurekaTestSuite) waitForEthPacketCommitmentRemoved(
+func (s *EthCosmosTestSuite) waitForEthPacketCommitmentRemoved(
 	clientID string,
 	sequence uint64,
 	timeout time.Duration,
@@ -564,7 +564,7 @@ func (s *IbcEurekaTestSuite) waitForEthPacketCommitmentRemoved(
 		"auto-relay did not clear ETH packet commitment for %s/%d within %s", clientID, sequence, timeout)
 }
 
-func (s *IbcEurekaTestSuite) waitForIbcERC20Balance(
+func (s *EthCosmosTestSuite) waitForIbcERC20Balance(
 	denomPath string,
 	holder ethcommon.Address,
 	expected *big.Int,
@@ -607,7 +607,7 @@ func (s *IbcEurekaTestSuite) waitForIbcERC20Balance(
 // upstream test was named *Uint256* and pushed to ~MaxUint256/2 — we shrank the faucet
 // mint to 1_000_000 ether in E2ETestDeploy.s.sol, so this variant now stresses
 // bigint round-tripping but no longer the MaxUint256 edge.
-func (s *IbcEurekaTestSuite) Test_ICS20TransferLargeAmountFromEthereumToCosmosAndBack() {
+func (s *EthCosmosTestSuite) Test_ICS20TransferLargeAmountFromEthereumToCosmosAndBack() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	transferAmount := new(big.Int).Div(testvalues.StartingERC20Balance, big.NewInt(2))
@@ -616,7 +616,7 @@ func (s *IbcEurekaTestSuite) Test_ICS20TransferLargeAmountFromEthereumToCosmosAn
 
 // ICS20TransferERC20TokenfromEthereumToCosmosAndBackTest tests the ICS20 transfer functionality by transferring
 // ERC20 tokens with n packets from Ethereum to Cosmos chain and then back from Cosmos chain to Ethereum
-func (s *IbcEurekaTestSuite) ICS20TransferERC20TokenfromEthereumToCosmosAndBackTest(
+func (s *EthCosmosTestSuite) ICS20TransferERC20TokenfromEthereumToCosmosAndBackTest(
 	ctx context.Context, proofType types.SupportedProofType, numOfTransfers int, transferAmount *big.Int,
 ) {
 	s.SetupSuite(ctx, proofType)
@@ -872,13 +872,13 @@ func (s *IbcEurekaTestSuite) ICS20TransferERC20TokenfromEthereumToCosmosAndBackT
 	}))
 }
 
-func (s *IbcEurekaTestSuite) Test_ICS20TransferERC20TokenFromEthereumToCosmosAndBackFails() {
+func (s *EthCosmosTestSuite) Test_ICS20TransferERC20TokenFromEthereumToCosmosAndBackFails() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.ICS20TransferERC20TokenFromEthereumToCosmosAndBackFailsTest(ctx, proofType, 1, big.NewInt(testvalues.TransferAmount))
 }
 
-func (s *IbcEurekaTestSuite) ICS20TransferERC20TokenFromEthereumToCosmosAndBackFailsTest(
+func (s *EthCosmosTestSuite) ICS20TransferERC20TokenFromEthereumToCosmosAndBackFailsTest(
 	ctx context.Context, proofType types.SupportedProofType, numOfTransfers int, transferAmount *big.Int,
 ) {
 	s.SetupSuite(ctx, proofType)
@@ -993,7 +993,7 @@ func (s *IbcEurekaTestSuite) ICS20TransferERC20TokenFromEthereumToCosmosAndBackF
 	}))
 }
 
-func (s *IbcEurekaTestSuite) Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack() {
+func (s *EthCosmosTestSuite) Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.ICS20TransferNativeCosmosCoinsToEthereumAndBackTest(ctx, proofType, big.NewInt(testvalues.TransferAmount))
@@ -1003,7 +1003,7 @@ func (s *IbcEurekaTestSuite) Test_ICS20TransferNativeCosmosCoinsToEthereumAndBac
 // by transferring native coins from a Cosmos chain to Ethereum and back.
 // Cosmos→ETH relay is handled automatically by the running relayer process.
 // ETH→Cosmos relay is done manually in the test (mock proof accepted by dummy wasm client).
-func (s *IbcEurekaTestSuite) ICS20TransferNativeCosmosCoinsToEthereumAndBackTest(ctx context.Context, pt types.SupportedProofType, transferAmount *big.Int) {
+func (s *EthCosmosTestSuite) ICS20TransferNativeCosmosCoinsToEthereumAndBackTest(ctx context.Context, pt types.SupportedProofType, transferAmount *big.Int) {
 	s.SetupSuite(ctx, pt)
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
@@ -1256,25 +1256,25 @@ func (s *IbcEurekaTestSuite) ICS20TransferNativeCosmosCoinsToEthereumAndBackTest
 	}))
 }
 
-func (s *IbcEurekaTestSuite) Test_TimeoutPacketFromEth() {
+func (s *EthCosmosTestSuite) Test_TimeoutPacketFromEth() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.ICS20TimeoutPacketFromEthereumTest(ctx, proofType, 1)
 }
 
-func (s *IbcEurekaTestSuite) Test_10_TimeoutPacketFromEth() {
+func (s *EthCosmosTestSuite) Test_10_TimeoutPacketFromEth() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.ICS20TimeoutPacketFromEthereumTest(ctx, proofType, 10)
 }
 
-func (s *IbcEurekaTestSuite) Test_5_TimeoutPacketFromEth() {
+func (s *EthCosmosTestSuite) Test_5_TimeoutPacketFromEth() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.ICS20TimeoutPacketFromEthereumTest(ctx, proofType, 5)
 }
 
-func (s *IbcEurekaTestSuite) ICS20TimeoutPacketFromEthereumTest(
+func (s *EthCosmosTestSuite) ICS20TimeoutPacketFromEthereumTest(
 	ctx context.Context, pt types.SupportedProofType, numOfTransfers int,
 ) {
 	s.Require().Greater(numOfTransfers, 0)
@@ -1427,13 +1427,13 @@ func (s *IbcEurekaTestSuite) ICS20TimeoutPacketFromEthereumTest(
 	}))
 }
 
-func (s *IbcEurekaTestSuite) Test_ErrorAckToEthereum() {
+func (s *EthCosmosTestSuite) Test_ErrorAckToEthereum() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.ICS20ErrorAckToEthereumTest(ctx, proofType)
 }
 
-func (s *IbcEurekaTestSuite) ICS20ErrorAckToEthereumTest(
+func (s *EthCosmosTestSuite) ICS20ErrorAckToEthereumTest(
 	ctx context.Context, pt types.SupportedProofType,
 ) {
 	s.SetupSuite(ctx, pt)
@@ -1537,19 +1537,19 @@ func (s *IbcEurekaTestSuite) ICS20ErrorAckToEthereumTest(
 	}))
 }
 
-func (s *IbcEurekaTestSuite) Test_TimeoutPacketFromCosmos() {
+func (s *EthCosmosTestSuite) Test_TimeoutPacketFromCosmos() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.ICS20TimeoutFromCosmosTest(ctx, proofType, 1)
 }
 
-func (s *IbcEurekaTestSuite) Test_10_TimeoutPacketFromCosmos() {
+func (s *EthCosmosTestSuite) Test_10_TimeoutPacketFromCosmos() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.ICS20TimeoutFromCosmosTest(ctx, proofType, 10)
 }
 
-func (s *IbcEurekaTestSuite) ICS20TimeoutFromCosmosTest(
+func (s *EthCosmosTestSuite) ICS20TimeoutFromCosmosTest(
 	ctx context.Context, proofType types.SupportedProofType, numOfTransfers int,
 ) {
 	s.Require().Greater(numOfTransfers, 0)
@@ -1682,7 +1682,7 @@ func (s *IbcEurekaTestSuite) ICS20TimeoutFromCosmosTest(
 	}))
 }
 
-func (s *IbcEurekaTestSuite) Test_TimeoutPacketEthRemintsVouchers() {
+func (s *EthCosmosTestSuite) Test_TimeoutPacketEthRemintsVouchers() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.TimeoutPacketEthRemintsVouchersTest(ctx, proofType)
@@ -1690,7 +1690,7 @@ func (s *IbcEurekaTestSuite) Test_TimeoutPacketEthRemintsVouchers() {
 
 // TimeoutPacketEthRemintsVouchersTest tests that when a transfer of a voucher (Cosmos native -> Eth)
 // from Ethereum back to Cosmos times out, the vouchers are reminted on Ethereum.
-func (s *IbcEurekaTestSuite) TimeoutPacketEthRemintsVouchersTest(ctx context.Context, pt types.SupportedProofType) {
+func (s *EthCosmosTestSuite) TimeoutPacketEthRemintsVouchersTest(ctx context.Context, pt types.SupportedProofType) {
 	s.SetupSuite(ctx, pt)
 
 	eth, simd := s.EthChain, s.CosmosChains[0]
@@ -1807,7 +1807,7 @@ func (s *IbcEurekaTestSuite) TimeoutPacketEthRemintsVouchersTest(ctx context.Con
 	}))
 }
 
-func (s *IbcEurekaTestSuite) Test_TimeoutPacketCosmosRemintsVouchers() {
+func (s *EthCosmosTestSuite) Test_TimeoutPacketCosmosRemintsVouchers() {
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()
 	s.TimeoutPacketCosmosRemintsVouchersTest(ctx, proofType)
@@ -1815,7 +1815,7 @@ func (s *IbcEurekaTestSuite) Test_TimeoutPacketCosmosRemintsVouchers() {
 
 // TimeoutPacketCosmosRemintsVouchersTest tests that when a transfer of a voucher (Eth native -> Cosmos)
 // from Cosmos back to Ethereum times out, the vouchers are reminted on Cosmos.
-func (s *IbcEurekaTestSuite) TimeoutPacketCosmosRemintsVouchersTest(ctx context.Context, pt types.SupportedProofType) {
+func (s *EthCosmosTestSuite) TimeoutPacketCosmosRemintsVouchersTest(ctx context.Context, pt types.SupportedProofType) {
 	s.SetupSuite(ctx, pt)
 
 	eth, simd := s.EthChain, s.CosmosChains[0]

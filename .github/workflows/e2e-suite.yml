@@ -13,7 +13,7 @@ on:
   workflow_call:
     inputs:
       suite:
-        description: Suite entrypoint, e.g. TestWithIbcEurekaTestSuite
+        description: Suite entrypoint, e.g. TestWithEthCosmosTestSuite
         required: true
         type: string
       ref:

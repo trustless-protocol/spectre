@@ -6,7 +6,7 @@ import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientM
 import { ILightClient } from "contracts/light-clients/interfaces/ILightClient.sol";
 
 /// @title ICS02 Client Access Controlled Interface
-/// @notice Interface for the access controlled functions of the IBC Eureka light client router
+/// @notice Interface for the access controlled functions of the IBC v2 light client router
 interface IICS02ClientAccessControlled {
     /// @notice Adds a client to the client router.
     /// @dev Only a caller with `CLIENT_ID_CUSTOMIZER_ROLE` can call this function.
@@ -107,7 +107,7 @@ interface IICS02ClientAccessControlled {
 }
 
 /// @title ICS02 Light Client Router Interface
-/// @notice Interface for the IBC Eureka light client router
+/// @notice Interface for the IBC v2 light client router
 interface IICS02Client is IICS02ClientAccessControlled {
     /// @notice Returns the counterparty client information given the client identifier.
     /// @param clientId The client identifier

@@ -24,8 +24,8 @@ import { MulticallUpgradeable } from "@openzeppelin-upgradeable/utils/MulticallU
 import { UUPSUpgradeable } from "@openzeppelin-contracts/proxy/utils/UUPSUpgradeable.sol";
 import { ICS26AdminsDeprecated } from "contracts/core/compatibility/ICS26AdminsDeprecated.sol";
 
-/// @title IBC Eureka Router
-/// @notice The core router for the IBC Eureka protocol
+/// @title IBC v2 Router
+/// @notice The core router for the IBC v2 protocol
 contract ICS26Router is
     IICS26RouterErrors,
     IICS26Router,

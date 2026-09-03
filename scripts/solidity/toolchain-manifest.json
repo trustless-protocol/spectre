@@ -15,7 +15,7 @@
   },
   "locks": {
     "foundry.toml": "411fb3d90c15da4cedb98e26daa7340eb9f586ba546823fbde75ceef943231ab",
-    "package.json": "ec3226fb3d7fe308f618a9c4087cdfb212676274663d4fd21f9c85cf4f496ae5",
+    "package.json": "05214ff4d880692a7eee48a34cff0ae4600cc959b43094b967ff974ddb08e825",
     "bun.lock": "769283d4d81806b3da69c39a1cf810137e9954519bbdc51316630d697f890bf0",
     "Cargo.toml": "dc4ba9602f58eab5add822bd51efd667d3296c4b8b48d7a37f0c1f16b7124fe2",
     "Cargo.lock": "775130ce4b58f837d6a6301d95161dd9110d67128f9b5ce7c3c4afcd865faeb3",
