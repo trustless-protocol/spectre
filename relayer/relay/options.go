@@ -1,0 +1,103 @@
+// This file holds the optional-capability surface: the callback types a caller
+// supplies and the With* functions that install them. They are separated from
+// module.go because they are the package's API to its callers, while module.go
+// is how the path runs -- two different readers, and the option list is what a
+// new relay path is configured from.
+package relay
+
+import (
+	"context"
+	"time"
+)
+
+// ScanFunc runs one timeout-recovery sweep for this path: it detects packets that
+// were recv-relayed but expired undelivered and submits their MsgTimeout back to
+// the source chain. It is called periodically and must handle its own errors (the
+// wrapped scanners log and recover internally), so a transient RPC failure never
+// stops the loop.
+type ScanFunc func(ctx context.Context)
+
+// TrackFunc records a recv-relayed packet — proto-marshaled bytes plus the source
+// height it was observed at — so the path's ScanFunc can later refund it if it is
+// never delivered. It returns false when the tracker could not durably record
+// the packet; the module then re-queues the event without attempting its relay.
+// Add is idempotent by packet identity.
+type TrackFunc func(packet []byte, height uint64) bool
+
+// UntrackFunc removes a packet (by its proto-marshaled bytes) from the pending
+// tracker once the destination confirms delivery. Called after a successful relay
+// so the timeout scanner stops considering a packet that can no longer time out.
+type UntrackFunc func(packet []byte)
+
+// ClientUpdateObserver records the source-chain timestamp trusted by a client
+// after an update is submitted or the builder confirms it is current.
+type ClientUpdateObserver func(trustedAt time.Time)
+
+// PeriodicUpdateFunc runs one periodic destination-client update on a fixed
+// cadence, independent of packet flow and of the expiry-driven refresh. It
+// exists for clients whose freshness need is not captured by ClientExpiresAt
+// alone — notably the SpectreClient pinned validator set, which must be rotated
+// before its overlap decays below quorum even during quiet periods. It returns an
+// error so the loop can retry sooner on failure.
+type PeriodicUpdateFunc func(ctx context.Context) error
+
+// Option configures optional Module capabilities (timeout scanning, pending-packet
+// tracking) without breaking the base NewModule contract.
+type Option func(*Module)
+
+// WithTimeoutScanner runs scan every interval until Run's context is cancelled.
+// interval <= 0 falls back to defaultScanInterval.
+func WithTimeoutScanner(interval time.Duration, scan ScanFunc) Option {
+	return func(m *Module) {
+		if interval <= 0 {
+			interval = defaultScanInterval
+		}
+		m.scan = scan
+		m.scanInterval = interval
+	}
+}
+
+// WithPacketTracker records every recv-relayed (SendPacket) packet via track, so
+// the path's timeout scanner can refund it if delivery never completes. Tracking
+// happens regardless of relay outcome (mirrors the legacy "track every send"
+// invariant), so a packet that fails to relay and then times out is still
+// refunded. untrack removes a packet once the relay succeeds — after delivery it
+// can no longer time out, so keeping it in the tracker only bloats it and makes
+// the scanner query a receipt it will always find (mirrors the legacy handleCosmos
+// PendingTracker.Remove-on-recv). untrack may be nil (no removal hook).
+func WithPacketTracker(track TrackFunc, untrack UntrackFunc) Option {
+	return func(m *Module) {
+		m.track = track
+		m.untrack = untrack
+	}
+}
+
+// WithClientUpdateObserver exposes successful client progress to observability
+// without coupling the generic relay loop to a particular reporter.
+func WithClientUpdateObserver(observer ClientUpdateObserver) Option {
+	return func(m *Module) { m.observeClientUpdate = observer }
+}
+
+// WithPeriodicUpdate runs a forced client update every interval (independent of
+// the expiry-driven refresh) to keep the destination client fresh in ways
+// ClientExpiresAt does not capture — e.g. the SpectreClient pinned-set rotation.
+// interval <= 0 falls back to defaultPeriodicUpdateInterval.
+//
+// initialDelay is how long to wait before the FIRST update, derived from the
+// client's on-chain freshness (time until it is next due), not process uptime.
+// A restart near the rotation deadline therefore fires promptly instead of
+// waiting a whole fresh interval — the guarantee that keeps the pinned set above
+// quorum. A negative initialDelay is treated as 0 (due now).
+func WithPeriodicUpdate(interval, initialDelay time.Duration, periodicUpdate PeriodicUpdateFunc) Option {
+	return func(m *Module) {
+		if interval <= 0 {
+			interval = defaultPeriodicUpdateInterval
+		}
+		if initialDelay < 0 {
+			initialDelay = 0
+		}
+		m.periodicUpdate = periodicUpdate
+		m.periodicUpdateInterval = interval
+		m.periodicUpdateInitialDelay = initialDelay
+	}
+}
