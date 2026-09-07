@@ -140,6 +140,7 @@ func enqueueEthWriteAcknowledgement(
 // rather than a bug, and one worth closing where it can be tested.
 func enqueueEthTerminal(
 	batchBuilder *services.BatchBuilder,
+	logger *log.Logger,
 	packetType services.EthPacketType,
 	packet contractICS26Router.IICS26RouterMsgsPacket,
 	sequence *big.Int,
@@ -147,7 +148,10 @@ func enqueueEthTerminal(
 	blockNumber uint64,
 ) {
 	cosmosPacket := EthPacketToCosmosPacket(packet, sequence)
-	batchBuilder.EthPendingTracker.RemovePacketIfCurrent(cosmosPacket)
+	if err := batchBuilder.EthPendingTracker.RemovePacketIfCurrent(cosmosPacket); err != nil {
+		logger.Printf("[SubscribeEth][ATTENTION] failed to persist removal of settled ETH packet seq=%d: %v",
+			cosmosPacket.Sequence, err)
+	}
 	batchBuilder.AddEth(services.EthPacket{
 		Type:        packetType,
 		Packet:      &cosmosPacket,
@@ -160,20 +164,23 @@ func enqueueEthSendPacket(
 	batchBuilder *services.BatchBuilder,
 	ev *contractICS26Router.ContractICS26RouterSendPacket,
 	seenEvents map[ethEventKey]struct{},
-) bool {
+) (bool, error) {
 	cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 	if !batchBuilder.EthPendingTracker.Add(cosmosPacket, ev.Raw.BlockNumber) {
-		return false
+		if err := batchBuilder.EthPendingTracker.PersistenceError(); err != nil {
+			return false, fmt.Errorf("durably track ETH SendPacket seq=%d from block %d: %w", cosmosPacket.Sequence, ev.Raw.BlockNumber, err)
+		}
+		return false, fmt.Errorf("durably track ETH SendPacket seq=%d from block %d", cosmosPacket.Sequence, ev.Raw.BlockNumber)
 	}
 	if !markEthEventSeen(seenEvents, ethEventKeyForLog("SendPacket", ev.Raw)) {
-		return false
+		return false, nil
 	}
 	batchBuilder.AddEth(services.EthPacket{
 		Type:        services.EthSend,
 		Packet:      &cosmosPacket,
 		BlockNumber: ev.Raw.BlockNumber,
 	})
-	return true
+	return true, nil
 }
 
 func hasCosmosIBCPathValue(stdCtx context.Context, endpoint services.CosmosEndpoint, path [][]byte) (bool, error) {
@@ -275,14 +282,25 @@ func recoverEthSendPackets(
 		}
 		if !pending {
 			markEthEventSeen(seenEvents, key)
-			batchBuilder.EthPendingTracker.RemovePacketIfCurrent(cosmosPacket)
+			if err := batchBuilder.EthPendingTracker.RemovePacketIfCurrent(cosmosPacket); err != nil {
+				ctx.Logger.Printf("[SubscribeEth][ATTENTION] recovery: failed to persist removal of cleared ETH packet seq=%d: %v",
+					cosmosPacket.Sequence, err)
+			}
 			stats.skipped++
 			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d already cleared on ETH, skipping historical SendPacket from ETH block %d",
 				cosmosPacket.Sequence, ev.Raw.BlockNumber)
 			continue
 		}
 
-		if enqueueEthSendPacket(batchBuilder, ev, seenEvents) {
+		enqueued, err := enqueueEthSendPacket(batchBuilder, ev, seenEvents)
+		if err != nil {
+			ctx.Logger.Printf("[SubscribeEth][ATTENTION] recovery: %v; leaving SendPacket range [%d,%d] retryable", err, startBlock, endBlock)
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if enqueued {
 			ctx.Logger.Printf("[SubscribeEth] recovery: recovered SendPacket seq=%d from ETH block %d",
 				cosmosPacket.Sequence, ev.Raw.BlockNumber)
 			stats.recovered++
@@ -356,7 +374,10 @@ func recoverEthWriteAcknowledgements(
 		}
 		if !pending {
 			markEthEventSeen(seenEvents, key)
-			batchBuilder.PendingTracker.RemovePacketIfCurrent(cosmosPacket)
+			if err := batchBuilder.PendingTracker.RemovePacketIfCurrent(cosmosPacket); err != nil {
+				ctx.Logger.Printf("[SubscribeEth][ATTENTION] recovery: failed to persist removal of cleared Cosmos packet seq=%d: %v",
+					cosmosPacket.Sequence, err)
+			}
 			stats.skipped++
 			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d already cleared on Cosmos, skipping historical WriteAcknowledgement from ETH block %d",
 				cosmosPacket.Sequence, ev.Raw.BlockNumber)
@@ -364,7 +385,10 @@ func recoverEthWriteAcknowledgements(
 		}
 
 		if enqueueEthWriteAcknowledgement(batchBuilder, ev, seenEvents) {
-			batchBuilder.PendingTracker.RemovePacketIfCurrent(cosmosPacket)
+			if err := batchBuilder.PendingTracker.RemovePacketIfCurrent(cosmosPacket); err != nil {
+				ctx.Logger.Printf("[SubscribeEth][ATTENTION] recovery: failed to persist removal after recovered WriteAcknowledgement seq=%d: %v",
+					cosmosPacket.Sequence, err)
+			}
 			ctx.Logger.Printf("[SubscribeEth] recovery: recovered WriteAcknowledgement seq=%d from ETH block %d",
 				cosmosPacket.Sequence, ev.Raw.BlockNumber)
 			stats.recovered++
@@ -585,7 +609,13 @@ func (s *Subscriber) subscribeEthOnce(
 				return fmt.Errorf("SendPacket event channel closed")
 			}
 			ctx.Logger.Printf("SendPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
-			enqueueEthSendPacket(batchBuilder, ev, seenEvents)
+			if _, err := enqueueEthSendPacket(batchBuilder, ev, seenEvents); err != nil {
+				if ev.Raw.BlockNumber < *nextSendRecoveryStartBlock {
+					*nextSendRecoveryStartBlock = ev.Raw.BlockNumber
+				}
+				return fmt.Errorf("ETH SendPacket seq=%s was not durably tracked; recovery rewound to block %d: %w",
+					ev.Sequence.String(), *nextSendRecoveryStartBlock, err)
+			}
 
 		case ev, ok := <-writeAckCh:
 			if !ok || ev == nil {
@@ -594,14 +624,17 @@ func (s *Subscriber) subscribeEthOnce(
 			ctx.Logger.Printf("WriteAcknowledgement event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
 			enqueueEthWriteAcknowledgement(batchBuilder, ev, seenEvents)
 			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
-			batchBuilder.PendingTracker.RemovePacketIfCurrent(cosmosPacket)
+			if err := batchBuilder.PendingTracker.RemovePacketIfCurrent(cosmosPacket); err != nil {
+				ctx.Logger.Printf("[SubscribeEth][ATTENTION] failed to persist removal after WriteAcknowledgement seq=%d: %v",
+					cosmosPacket.Sequence, err)
+			}
 
 		case ev, ok := <-ackPacketCh:
 			if !ok || ev == nil {
 				return fmt.Errorf("AckPacket event channel closed")
 			}
 			ctx.Logger.Printf("AckPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
-			enqueueEthTerminal(batchBuilder, services.EthAck, ev.Packet, ev.Sequence,
+			enqueueEthTerminal(batchBuilder, ctx.Logger, services.EthAck, ev.Packet, ev.Sequence,
 				[][]byte{ev.Acknowledgement}, ev.Raw.BlockNumber)
 
 		case ev, ok := <-timeoutPacketCh:
@@ -609,7 +642,7 @@ func (s *Subscriber) subscribeEthOnce(
 				return fmt.Errorf("TimeoutPacket event channel closed")
 			}
 			ctx.Logger.Printf("TimeoutPacket event received: clientId=%x, sequence=%s", ev.ClientId, ev.Sequence.String())
-			enqueueEthTerminal(batchBuilder, services.EthTimeout, ev.Packet, ev.Sequence,
+			enqueueEthTerminal(batchBuilder, ctx.Logger, services.EthTimeout, ev.Packet, ev.Sequence,
 				nil, ev.Raw.BlockNumber)
 
 		case err := <-sendPacketSub.Err():

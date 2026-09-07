@@ -4,15 +4,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 )
 
 const (
 	recoveryStateFileEnv     = "RELAYER_RECOVERY_STATE_FILE"
 	defaultRecoveryStateFile = ".relayer-state/recovery-cursors.json"
-	recoveryStateFilePerm    = 0o600
-	recoveryStateDirPerm     = 0o700
 	recoveryStateVersion     = 1
 )
 
@@ -154,36 +151,8 @@ func writeRecoveryState(path string, file recoveryStateFile) error {
 	if err != nil {
 		return fmt.Errorf("encode recovery state: %w", err)
 	}
-	dir := filepath.Dir(path)
-	if dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, recoveryStateDirPerm); err != nil {
-			return fmt.Errorf("create recovery state dir %q: %w", dir, err)
-		}
-	}
-	tmp, err := os.CreateTemp(dir, ".recovery-cursors-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp recovery state: %w", err)
-	}
-	tmpName := tmp.Name()
-	defer os.Remove(tmpName)
-
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temp recovery state: %w", err)
-	}
-	if err := tmp.Chmod(recoveryStateFilePerm); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod temp recovery state: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync temp recovery state: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temp recovery state: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("replace recovery state %q: %w", path, err)
+	if err := writeStateFile(path, data); err != nil {
+		return fmt.Errorf("write recovery state %q: %w", path, err)
 	}
 	return nil
 }

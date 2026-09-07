@@ -160,12 +160,14 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 // settle removes an acked or timed-out ETH-origin send from the pending tracker so
 // the timeout scanner stops considering it (the legacy handleEth EthAck/EthTimeout
 // tracker removal); such a packet is then skipped, as there is nothing to relay.
-func eventsWithOrigins(packets []services.EthPacket, settle func(channeltypesv2.Packet)) ([]chain.Event, []services.EthPacket) {
+func eventsWithOrigins(packets []services.EthPacket, settle func(channeltypesv2.Packet) error) ([]chain.Event, []services.EthPacket) {
 	events := make([]chain.Event, 0, len(packets))
 	orig := make([]services.EthPacket, 0, len(packets))
 	for _, p := range packets {
 		if p.Packet != nil && (p.Type == services.EthAck || p.Type == services.EthTimeout) {
-			settle(*p.Packet)
+			if err := settle(*p.Packet); err != nil {
+				log.Printf("[EVMSource][ATTENTION] failed to persist removal of settled ETH packet seq=%d: %v", p.Packet.Sequence, err)
+			}
 			continue
 		}
 		e, ok := ethPacketToEvent(p)

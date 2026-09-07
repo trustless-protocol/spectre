@@ -1,8 +1,11 @@
 package evm
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -142,8 +145,9 @@ func TestEventsWithOrigins_StaysIndexAligned(t *testing.T) {
 	}
 
 	var settled []uint64
-	events, orig := eventsWithOrigins(packets, func(p channeltypesv2.Packet) {
+	events, orig := eventsWithOrigins(packets, func(p channeltypesv2.Packet) error {
 		settled = append(settled, p.Sequence)
+		return nil
 	})
 
 	if len(events) != len(orig) {
@@ -178,6 +182,27 @@ func TestEventsWithOrigins_StaysIndexAligned(t *testing.T) {
 		if settled[i] != w {
 			t.Fatalf("settled %v, want %v", settled, wantSettled)
 		}
+	}
+}
+
+func TestEventsWithOrigins_LogsTerminalSettlementFailure(t *testing.T) {
+	p := ethPacket(services.EthAck)
+	p.Packet.Sequence = 44
+
+	var logs bytes.Buffer
+	oldOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(oldOutput) })
+
+	events, orig := eventsWithOrigins([]services.EthPacket{p}, func(channeltypesv2.Packet) error {
+		return errors.New("disk unavailable")
+	})
+	if len(events) != 0 || len(orig) != 0 {
+		t.Fatalf("terminal packet must not be relayed, got %d events / %d origins", len(events), len(orig))
+	}
+	if got := logs.String(); !strings.Contains(got, "[EVMSource][ATTENTION]") ||
+		!strings.Contains(got, "seq=44") || !strings.Contains(got, "disk unavailable") {
+		t.Fatalf("settlement persistence failure was not logged with context: %q", got)
 	}
 }
 

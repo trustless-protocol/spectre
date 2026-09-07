@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"log"
 	"time"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
@@ -51,8 +52,12 @@ func (s *Services) TrackCosmosPending(packet channeltypesv2.Packet, blockNumber 
 // once it has been successfully received on ETH — it can no longer time out, so
 // the timeout scanner need not keep querying its receipt. Mirrors the
 // PendingTracker.Remove-on-recv that handleCosmos performs in the StartLoop path.
+// If persistence fails, the packet remains tracked and the failure is logged for
+// operator attention.
 func (s *Services) UntrackCosmosPending(packet channeltypesv2.Packet) {
-	s.BatchBuilder.PendingTracker.RemovePacketIfCurrent(packet)
+	if err := s.BatchBuilder.PendingTracker.RemovePacketIfCurrent(packet); err != nil {
+		log.Printf("[Services][ATTENTION] failed to persist removal of settled Cosmos packet seq=%d: %v", packet.Sequence, err)
+	}
 }
 
 // TrackL2Pending records an L2-origin packet observed on the L2 source path so
@@ -64,8 +69,12 @@ func (s *Services) TrackL2Pending(packet channeltypesv2.Packet, blockNumber uint
 
 // UntrackL2Pending removes an L2-origin packet once the L2->Cosmos receive relay
 // succeeds; after a Cosmos receipt exists, a timeout refund must not be attempted.
+// If persistence fails, the packet remains tracked and the failure is logged for
+// operator attention.
 func (s *Services) UntrackL2Pending(packet channeltypesv2.Packet) {
-	s.BatchBuilder.L2PendingTracker.RemovePacketIfCurrent(packet)
+	if err := s.BatchBuilder.L2PendingTracker.RemovePacketIfCurrent(packet); err != nil {
+		log.Printf("[Services][ATTENTION] failed to persist removal of settled L2 packet seq=%d: %v", packet.Sequence, err)
+	}
 }
 
 // Worker exposes the shared Worker (TxHandler + Prover) so the chain adapters —

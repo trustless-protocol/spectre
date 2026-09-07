@@ -57,6 +57,7 @@ type queueState struct {
 	cosmosStuck, ethStuck, l2Stuck                            int
 	cosmosWorstDeferrals, ethWorstDeferrals, l2WorstDeferrals int
 	cosmosTimeoutDeadAge, ethTimeoutDeadAge, l2TimeoutDeadAge time.Duration
+	cosmosRetryPaused, ethRetryPaused, l2RetryPaused          bool
 }
 
 func (s *Services) queueStateAt(now time.Time) queueState {
@@ -82,6 +83,9 @@ func (s *Services) queueStateAt(now time.Time) queueState {
 		cosmosTimeoutDeadAge: s.BatchBuilder.PendingTracker.OldestDeadLetteredTimeout(now),
 		ethTimeoutDeadAge:    s.BatchBuilder.EthPendingTracker.OldestDeadLetteredTimeout(now),
 		l2TimeoutDeadAge:     s.BatchBuilder.L2PendingTracker.OldestDeadLetteredTimeout(now),
+		cosmosRetryPaused:    s.BatchBuilder.PendingTracker.PersistenceError() != nil,
+		ethRetryPaused:       s.BatchBuilder.EthPendingTracker.PersistenceError() != nil,
+		l2RetryPaused:        s.BatchBuilder.L2PendingTracker.PersistenceError() != nil,
 	}
 }
 
@@ -100,6 +104,10 @@ func (s *Services) reportQueueState(now time.Time) {
 		log.Printf("[QueueState][ATTENTION] timeout deferrals are stuck for cosmos=%d eth=%d l2=%d packet(s) (most deferrals: cosmos=%d eth=%d l2=%d); check counterparty RPC and light-client health.",
 			state.cosmosStuck, state.ethStuck, state.l2Stuck,
 			state.cosmosWorstDeferrals, state.ethWorstDeferrals, state.l2WorstDeferrals)
+	}
+	if state.cosmosRetryPaused || state.ethRetryPaused || state.l2RetryPaused {
+		log.Printf("[QueueState][ATTENTION] timeout retries are paused because pending-state persistence is unavailable (cosmos=%t eth=%t l2=%t); restore the state directory before retries resume.",
+			state.cosmosRetryPaused, state.ethRetryPaused, state.l2RetryPaused)
 	}
 	if cosmosOnEVM, evmOnCosmos, ok := s.clientUpdateAges(now); ok {
 		log.Printf("[QueueState] last client update: cosmos-on-eth=%s ago, eth-on-cosmos=%s ago",

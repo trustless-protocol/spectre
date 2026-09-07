@@ -5,13 +5,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"io"
 	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -21,10 +21,14 @@ import (
 	"relayer/services"
 
 	abcitypes "github.com/cometbft/cometbft/abci/types"
+	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	commettypes "github.com/cometbft/cometbft/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	"github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gogo/protobuf/proto"
 )
 
@@ -552,7 +556,9 @@ func TestEnqueueEthSendPacket(t *testing.T) {
 		Raw: gethtypes.Log{BlockNumber: 88},
 	}
 
-	enqueueEthSendPacket(bb, ev, nil)
+	if _, err := enqueueEthSendPacket(bb, ev, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	got := flushSingleEthPacket(t, bb)
 	if got.Type != services.EthSend {
@@ -588,10 +594,10 @@ func TestEnqueueEthSendPacketDedupesSeenEvent(t *testing.T) {
 	}
 	seen := make(map[ethEventKey]struct{})
 
-	if !enqueueEthSendPacket(bb, ev, seen) {
+	if enqueued, err := enqueueEthSendPacket(bb, ev, seen); err != nil || !enqueued {
 		t.Fatal("first enqueue should be accepted")
 	}
-	if enqueueEthSendPacket(bb, ev, seen) {
+	if enqueued, err := enqueueEthSendPacket(bb, ev, seen); err != nil || enqueued {
 		t.Fatal("duplicate enqueue should be skipped")
 	}
 
@@ -610,10 +616,13 @@ func TestEnqueueEthSendPacketRetriesWhenPendingStateCannotPersist(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o500); err != nil {
+	statePath := filepath.Join(dir, "eth.json")
+	if err := os.Remove(statePath); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := os.Mkdir(statePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	ev := &contractICS26Router.ContractICS26RouterSendPacket{
 		Sequence: big.NewInt(7),
@@ -625,7 +634,7 @@ func TestEnqueueEthSendPacketRetriesWhenPendingStateCannotPersist(t *testing.T) 
 	}
 	seen := make(map[ethEventKey]struct{})
 
-	if enqueueEthSendPacket(bb, ev, seen) {
+	if enqueued, err := enqueueEthSendPacket(bb, ev, seen); err == nil || enqueued {
 		t.Fatal("enqueue succeeded after pending-state persistence failed")
 	}
 	if len(seen) != 0 {
@@ -641,6 +650,129 @@ func TestEnqueueEthSendPacketRetriesWhenPendingStateCannotPersist(t *testing.T) 
 	case batch := <-ch:
 		t.Fatalf("failed pending-state write still enqueued relay batch: %+v", batch)
 	default:
+	}
+}
+
+func TestFailedEthPendingAddKeepsRecoveryCursorRetryable(t *testing.T) {
+	dir := t.TempDir()
+	bb, err := services.NewPersistentBatchBuilder(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "eth.json")
+	if err := os.Remove(statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(statePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	router := common.HexToAddress("0x00000000000000000000000000000000000000AA")
+	server := ethRecoveryRPCServer(t, ethRecoverySendPacketLog(t, router))
+	ethClient, err := ethclient.Dial(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(ethClient.Close)
+	cosmosClient, err := rpchttp.New(server.URL, "/websocket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filterer, err := contractICS26Router.NewContractICS26RouterFilterer(router, ethClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cursor := uint64(88)
+	sub := NewSubscriber(nil)
+	deps := ethDeps{
+		Cosmos: services.CosmosEndpoint{Client: cosmosClient},
+		EVM: services.EVMEndpoint{
+			Client:    ethClient,
+			Contracts: services.EVMContracts{Router: router},
+		},
+		Logger: log.New(io.Discard, "", 0),
+	}
+	_, err = sub.scanEthRangeInChunks(context.Background(), deps, "SendPacket", &cursor, 90, 3,
+		func(from, to uint64) (ethRecoveryStats, error) {
+			return recoverEthSendPackets(context.Background(), deps, bb, filterer, from, to, nil)
+		}, func() {})
+	if err == nil {
+		t.Fatal("failed durable pending add did not fail the recovery chunk")
+	}
+	if cursor != 88 {
+		t.Fatalf("recovery cursor advanced to %d after failed durable add, want 88", cursor)
+	}
+	if bb.EthPendingTracker.Len() != 0 {
+		t.Fatal("failed durable pending add left packet tracked")
+	}
+}
+
+func ethRecoveryRPCServer(t *testing.T, sendPacketLog gethtypes.Log) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		var result any
+		switch request.Method {
+		case "eth_getLogs":
+			result = []gethtypes.Log{sendPacketLog}
+		case "eth_getStorageAt":
+			// The pending commitment exists, so recovery reaches the durable Add.
+			result = "0x01"
+		case "abci_query":
+			// No Cosmos receipt exists for the SendPacket yet.
+			result = map[string]any{"response": map[string]any{"code": 0, "value": ""}}
+		default:
+			http.Error(w, "unexpected RPC method: "+request.Method, http.StatusNotImplemented)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request.ID,
+			"result":  result,
+		}); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func ethRecoverySendPacketLog(t *testing.T, router common.Address) gethtypes.Log {
+	t.Helper()
+	parsed, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := parsed.Events["SendPacket"]
+	packet := contractICS26Router.IICS26RouterMsgsPacket{
+		SourceClient: "eth-client-0",
+		DestClient:   "cosmos-client-0",
+	}
+	data, err := event.Inputs.NonIndexed().Pack(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gethtypes.Log{
+		Address: router,
+		Topics: []common.Hash{
+			event.ID,
+			crypto.Keccak256Hash([]byte(packet.SourceClient)),
+			common.BigToHash(big.NewInt(8)),
+		},
+		Data:        data,
+		BlockNumber: 88,
+		Index:       4,
 	}
 }
 
@@ -996,7 +1128,7 @@ func TestEnqueueEthTerminalRecordsBlockNumber(t *testing.T) {
 				SourceClient: "eth-client-0",
 				DestClient:   "cosmos-client-0",
 			}
-			enqueueEthTerminal(bb, tc.typ, pkt, big.NewInt(4), tc.ackBytes, 4242)
+			enqueueEthTerminal(bb, log.New(io.Discard, "", 0), tc.typ, pkt, big.NewInt(4), tc.ackBytes, 4242)
 
 			ch := make(chan services.EthBatch, 1)
 			bb.CheckEth(context.Background(), services.BatchConfig{BatchSize: 1}, ch)
@@ -1036,7 +1168,7 @@ func TestEnqueueEthTerminalSettlesThePendingTracker(t *testing.T) {
 		t.Fatalf("tracker not seeded")
 	}
 
-	enqueueEthTerminal(bb, services.EthAck, pkt, big.NewInt(4), [][]byte{[]byte("ack")}, 4242)
+	enqueueEthTerminal(bb, log.New(io.Discard, "", 0), services.EthAck, pkt, big.NewInt(4), [][]byte{[]byte("ack")}, 4242)
 
 	if got := bb.EthPendingTracker.Len(); got != 0 {
 		t.Fatalf("tracker length = %d after settlement, want 0", got)

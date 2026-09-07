@@ -57,8 +57,8 @@ func TestRecoveryStateMissingFileAndPartialCheckpoints(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != recoveryStateFilePerm {
-		t.Fatalf("state mode = %o, want %o", info.Mode().Perm(), recoveryStateFilePerm)
+	if info.Mode().Perm() != stateFilePerm {
+		t.Fatalf("state mode = %o, want %o", info.Mode().Perm(), stateFilePerm)
 	}
 
 	resetLoadedRecoveryStoresForTest()

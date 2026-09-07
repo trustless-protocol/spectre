@@ -9,7 +9,6 @@ import (
 	"hash"
 	"log"
 	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -155,6 +154,13 @@ type PendingPacketTracker struct {
 	// tombstones.
 	statePath  string
 	writeState func(string, []byte) error
+
+	// persistenceErr trips a fail-closed timeout circuit breaker after a
+	// state mutation could not be made durable. Leaving the packet due after a
+	// rolled-back backoff would repeat expensive timeout work every scan. The
+	// scanner probes the snapshot writer before resuming so this remains set
+	// until the configured state location is writable again.
+	persistenceErr error
 
 	// deadLettered holds packets whose timeout submission exceeded
 	// maxTimeoutAttempts. They are kept, not dropped: a packet here has funds
@@ -302,10 +308,10 @@ func (t *PendingPacketTracker) snapshotLocked() pendingTrackerSnapshot {
 // If the atomic snapshot replacement fails, every tracker view is rolled back
 // together. This prevents a later restart from loading an older retry count or
 // missing tombstone after the running process already acted as if it persisted.
-func (t *PendingPacketTracker) commitLocked(mutate func()) bool {
+func (t *PendingPacketTracker) commitLocked(mutate func()) error {
 	if t.statePath == "" {
 		mutate()
-		return true
+		return nil
 	}
 	before := t.snapshotLocked()
 	mutate()
@@ -313,39 +319,19 @@ func (t *PendingPacketTracker) commitLocked(mutate func()) bool {
 		t.packets = before.packets
 		t.deadLettered = before.deadLettered
 		t.deadLetteredByKey = before.deadLetteredByKey
-		log.Printf("[PendingPacketTracker][ATTENTION] failed to persist retry state %s: %v; mutation rolled back", t.statePath, err)
-		return false
+		t.persistenceErr = fmt.Errorf("persist pending packet state %s: %w", t.statePath, err)
+		log.Printf("[PendingPacketTracker][ATTENTION] %v; mutation rolled back and timeout retries are paused", t.persistenceErr)
+		return t.persistenceErr
 	}
-	return true
+	if t.persistenceErr != nil {
+		log.Printf("[PendingPacketTracker] pending packet state recovered at %s; timeout retries may resume", t.statePath)
+		t.persistenceErr = nil
+	}
+	return nil
 }
 
 func replaceStateFile(path string, data []byte) error {
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
-	tmp, err := os.CreateTemp(dir, ".pending-state-*.tmp")
-	if err != nil {
-		return err
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmpPath, path)
+	return writeStateFile(path, data)
 }
 
 // Add records a packet only after its retry state is durable. It returns false
@@ -382,7 +368,7 @@ func (t *PendingPacketTracker) Add(packet channeltypesv2.Packet, blockNumber uin
 			BlockNumber: blockNumber,
 			identity:    identity,
 		}
-	})
+	}) == nil
 }
 
 // removeDeadLettered clears a tombstone that belongs to a different packet
@@ -409,14 +395,14 @@ func (t *PendingPacketTracker) removeDeadLettered(key packetKey) {
 // gauge — a stale alarm, and a slower retry than the packet deserves.
 // It ignores a recovered prerequisite result from a scan whose packet was
 // replaced while the scan was in flight.
-func (t *PendingPacketTracker) ClearDeferralsIfCurrent(scanned pendingPacketInfo) {
-	t.ClearDeferralsIfCurrentBatch([]pendingPacketInfo{scanned})
+func (t *PendingPacketTracker) ClearDeferralsIfCurrent(scanned pendingPacketInfo) error {
+	return t.ClearDeferralsIfCurrentBatch([]pendingPacketInfo{scanned})
 }
 
 // ClearDeferralsIfCurrentBatch resets matching scan snapshots in one durable
 // mutation, avoiding one complete snapshot/fsync per packet after a shared
 // prerequisite recovers.
-func (t *PendingPacketTracker) ClearDeferralsIfCurrentBatch(scanned []pendingPacketInfo) {
+func (t *PendingPacketTracker) ClearDeferralsIfCurrentBatch(scanned []pendingPacketInfo) error {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	updates := make(map[packetKey]pendingPacketInfo)
@@ -430,9 +416,9 @@ func (t *PendingPacketTracker) ClearDeferralsIfCurrentBatch(scanned []pendingPac
 		updates[key] = info
 	}
 	if len(updates) == 0 {
-		return
+		return nil
 	}
-	t.commitLocked(func() {
+	return t.commitLocked(func() {
 		for key, info := range updates {
 			t.packets[key] = info
 		}
@@ -442,28 +428,57 @@ func (t *PendingPacketTracker) ClearDeferralsIfCurrentBatch(scanned []pendingPac
 // RemovePacketIfCurrent is the packet-carrying counterpart used by terminal
 // source events. A delayed acknowledgement/timeout from an old client epoch
 // must not delete a replacement packet that reused the same lookup key.
-func (t *PendingPacketTracker) RemovePacketIfCurrent(packet channeltypesv2.Packet) {
+func (t *PendingPacketTracker) RemovePacketIfCurrent(packet channeltypesv2.Packet) error {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	key := packetKey{sourceClient: packet.SourceClient, sequence: packet.Sequence}
 	info, ok := t.packets[key]
 	if !ok || info.identity != identifyPacket(packet) {
-		return
+		return nil
 	}
-	t.commitLocked(func() { delete(t.packets, key) })
+	return t.commitLocked(func() { delete(t.packets, key) })
 }
 
 // RemoveIfCurrent applies a scanner outcome only when the active packet is the
 // exact packet represented by the scan snapshot.
-func (t *PendingPacketTracker) RemoveIfCurrent(scanned pendingPacketInfo) {
+func (t *PendingPacketTracker) RemoveIfCurrent(scanned pendingPacketInfo) error {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	key := packetKey{sourceClient: scanned.Packet.SourceClient, sequence: scanned.Packet.Sequence}
 	info, ok := t.packets[key]
 	if !ok || info.identity != identityOf(scanned) {
-		return
+		return nil
 	}
-	t.commitLocked(func() { delete(t.packets, key) })
+	return t.commitLocked(func() { delete(t.packets, key) })
+}
+
+// TimeoutRetriesAllowed is the timeout scanner's circuit-breaker probe. Once a
+// retry-state mutation failed, no packet is allowed to start more proof or
+// transaction work until the current snapshot can be durably written again.
+// A successful probe deliberately still skips this scan; the following scan can
+// make a fresh, durable retry-state transition before doing timeout work.
+func (t *PendingPacketTracker) TimeoutRetriesAllowed() (bool, error) {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	if t.persistenceErr == nil {
+		return true, nil
+	}
+	if err := t.persistLocked(); err != nil {
+		t.persistenceErr = fmt.Errorf("persist pending packet state %s: %w", t.statePath, err)
+		return false, t.persistenceErr
+	}
+	log.Printf("[PendingPacketTracker] pending packet state recovered at %s; holding one timeout scan before retrying", t.statePath)
+	t.persistenceErr = nil
+	return false, nil
+}
+
+// PersistenceError exposes the current fail-closed state to queue reporting
+// and operational status surfaces. It is nil while tracker mutations are
+// durably acknowledged.
+func (t *PendingPacketTracker) PersistenceError() error {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	return t.persistenceErr
 }
 
 func (t *PendingPacketTracker) GetAll() []pendingPacketInfo {
@@ -481,6 +496,11 @@ func (t *PendingPacketTracker) GetAll() []pendingPacketInfo {
 func (t *PendingPacketTracker) GetDue(now time.Time) []pendingPacketInfo {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
+	if t.persistenceErr != nil {
+		// A rolled-back retry transition must never look immediately eligible to
+		// another caller while the timeout circuit breaker is open.
+		return nil
+	}
 	result := make([]pendingPacketInfo, 0, len(t.packets))
 	for _, info := range t.packets {
 		if info.NotBefore.After(now) {
@@ -501,22 +521,23 @@ func (t *PendingPacketTracker) GetDue(now time.Time) []pendingPacketInfo {
 // alarm, not a cleanup. The alternative (retrying forever) spends a Groth16 proof
 // every 30s on a submission that has already failed the same way many times.
 // It prevents a permanent failure from an old scan charging the retry budget of
-// a replacement packet at the same lookup key.
-func (t *PendingPacketTracker) RecordTimeoutFailureIfCurrent(scanned pendingPacketInfo, now time.Time) bool {
+// a replacement packet at the same lookup key. A non-nil error means the
+// mutation was rolled back and timeout retries are paused.
+func (t *PendingPacketTracker) RecordTimeoutFailureIfCurrent(scanned pendingPacketInfo, now time.Time) (bool, error) {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	key := packetKey{sourceClient: scanned.Packet.SourceClient, sequence: scanned.Packet.Sequence}
 	info, ok := t.packets[key]
 	if !ok || info.identity != identityOf(scanned) {
-		return false
+		return false, nil
 	}
 	return t.recordTimeoutFailureLocked(key, info, now)
 }
 
-func (t *PendingPacketTracker) recordTimeoutFailureLocked(key packetKey, info pendingPacketInfo, now time.Time) bool {
+func (t *PendingPacketTracker) recordTimeoutFailureLocked(key packetKey, info pendingPacketInfo, now time.Time) (bool, error) {
 	info.TimeoutAttempts++
 	deadLettered := info.TimeoutAttempts > maxTimeoutAttempts
-	committed := t.commitLocked(func() {
+	err := t.commitLocked(func() {
 		if deadLettered {
 			info.DeadLetteredAt = now
 			delete(t.packets, key)
@@ -527,7 +548,7 @@ func (t *PendingPacketTracker) recordTimeoutFailureLocked(key packetKey, info pe
 		info.NotBefore = now.Add(nextTimeoutBackoff(info.TimeoutAttempts))
 		t.packets[key] = info
 	})
-	return committed && deadLettered
+	return err == nil && deadLettered, err
 }
 
 // DeferTimeoutRetryIfCurrent backs a packet off WITHOUT charging an attempt.
@@ -547,21 +568,24 @@ func (t *PendingPacketTracker) recordTimeoutFailureLocked(key packetKey, info pe
 // it.
 // Returns the packet's deferral count so the caller can alert on a packet that
 // has been deferring long enough to be stuck rather than merely delayed, and 0
-// when the packet is no longer tracked.
+// when the packet is no longer tracked. A non-nil error means the mutation was
+// rolled back and timeout retries are paused.
 // It prevents a transient result from an old scan imposing its backoff and
 // stuck count on a replacement packet.
-func (t *PendingPacketTracker) DeferTimeoutRetryIfCurrent(scanned pendingPacketInfo, now time.Time) int {
-	counts := t.DeferTimeoutRetriesIfCurrent([]pendingPacketInfo{scanned}, now)
+func (t *PendingPacketTracker) DeferTimeoutRetryIfCurrent(scanned pendingPacketInfo, now time.Time) (int, error) {
+	counts, err := t.DeferTimeoutRetriesIfCurrent([]pendingPacketInfo{scanned}, now)
 	if len(counts) == 0 {
-		return 0
+		return 0, err
 	}
-	return counts[0]
+	return counts[0], err
 }
 
 // DeferTimeoutRetriesIfCurrent backs off all still-current scan snapshots with
 // one lock and one persisted snapshot. The returned counts align with scanned;
-// zero means the packet was replaced, removed, or the durable commit failed.
-func (t *PendingPacketTracker) DeferTimeoutRetriesIfCurrent(scanned []pendingPacketInfo, now time.Time) []int {
+// zero with a nil error means the packet was replaced or removed. A non-nil
+// error means the whole mutation was rolled back and timeout retries are
+// circuit-broken until persistence recovers.
+func (t *PendingPacketTracker) DeferTimeoutRetriesIfCurrent(scanned []pendingPacketInfo, now time.Time) ([]int, error) {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	counts := make([]int, len(scanned))
@@ -578,16 +602,17 @@ func (t *PendingPacketTracker) DeferTimeoutRetriesIfCurrent(scanned []pendingPac
 		counts[i] = info.Deferrals
 	}
 	if len(updates) == 0 {
-		return counts
+		return counts, nil
 	}
-	if !t.commitLocked(func() {
+	if err := t.commitLocked(func() {
 		for key, info := range updates {
 			t.packets[key] = info
 		}
-	}) {
+	}); err != nil {
 		clear(counts)
+		return counts, err
 	}
-	return counts
+	return counts, nil
 }
 
 // deferralIsStuck reports whether a deferral count has reached the point worth
@@ -666,7 +691,7 @@ func (t *PendingPacketTracker) Len() int {
 // and renews dead letters that have remained visible for deadLetterRetention.
 // Renewing, rather than merely deleting their tombstones, keeps a timeout
 // recoverable even when the subscriber no longer replays its source event.
-func (t *PendingPacketTracker) PurgeStaleWithoutTimeout(maxAge time.Duration) {
+func (t *PendingPacketTracker) PurgeStaleWithoutTimeout(maxAge time.Duration) error {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	now := time.Now()
@@ -686,9 +711,9 @@ func (t *PendingPacketTracker) PurgeStaleWithoutTimeout(maxAge time.Duration) {
 		}
 	}
 	if !changed {
-		return
+		return nil
 	}
-	t.commitLocked(func() {
+	return t.commitLocked(func() {
 		t.purgeStaleWithoutTimeoutLocked(now, maxAge)
 	})
 }
