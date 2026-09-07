@@ -132,3 +132,23 @@ Any custom ERC20 registered through `setCustomERC20` must also implement the
 new `burn(uint256)` and restrict it to its escrow. A token still exposing
 `burn(address,uint256)` will revert once ICS20Transfer routes the burn through
 the escrow. `mint(address,uint256)` is unchanged.
+
+### Migrating existing `RefImplIBCERC20` proxies
+
+The updated `RefImplIBCERC20` appends its escrow address to the existing
+ERC-7201 storage namespace. Proxies initialized by the older reference
+implementation have only the preserved `_ics20` field, so their owner must
+migrate the new escrow field atomically with the implementation upgrade:
+
+```solidity
+proxy.upgradeToAndCall(
+    address(newRefImplIBCERC20),
+    abi.encodeCall(RefImplIBCERC20.initializeEscrow, (escrowAddress))
+);
+```
+
+`escrowAddress` must be non-zero. `initializeEscrow` is an owner-only
+`reinitializer(2)` and additionally rejects a proxy whose escrow is already
+configured, so it cannot replace an escrow or run twice. Perform this call
+before allowing return-to-source voucher sends; those sends route the burn
+through the configured escrow.

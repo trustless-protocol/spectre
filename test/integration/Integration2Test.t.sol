@@ -19,7 +19,10 @@ import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
 import { ICS24Host } from "contracts/core/libraries/ICS24Host.sol";
 import { ICS20Lib } from "contracts/apps/ics20/libraries/ICS20Lib.sol";
 import { ERC1967Proxy } from "@openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import { OwnableUpgradeable } from "@openzeppelin-upgradeable/access/OwnableUpgradeable.sol";
+import { Initializable } from "@openzeppelin-upgradeable/proxy/utils/Initializable.sol";
 import { RefImplIBCERC20 } from "test/utils/RefImplIBCERC20.sol";
+import { RefImplIBCERC20V1 } from "test/mocks/RefImplIBCERC20V1.sol";
 import { IBCERC20 } from "contracts/apps/ics20/IBCERC20.sol";
 
 contract Integration2Test is Test {
@@ -318,6 +321,121 @@ contract Integration2Test is Test {
         vm.recordLogs();
         ibcImplB.ics26Router().recvPacket(msgRecvPacket);
         th.getValueFromEvent(IICS26Router.Noop.selector);
+    }
+
+    function testFuzz_success_migrateLegacyCustomERC20AndReturnToSource(uint256 amount) public {
+        vm.assume(amount > 0);
+
+        string memory denom = string.concat(
+            ICS20Lib.DEFAULT_PORT_ID,
+            "/",
+            th.FIRST_CLIENT_ID(),
+            "/",
+            Strings.toHexString(address(integrationEnv.erc20()))
+        );
+        address owner = makeAddr("legacy-custom-token-owner");
+        address escrow = ibcImplB.ics20Transfer().createEscrow(th.FIRST_CLIENT_ID());
+        address proxy = address(
+            new ERC1967Proxy(
+                address(new RefImplIBCERC20V1()),
+                abi.encodeCall(
+                    RefImplIBCERC20V1.initialize, (owner, address(ibcImplB.ics20Transfer()), "Legacy Token", "LEGACY")
+                )
+            )
+        );
+        RefImplIBCERC20V1 legacyToken = RefImplIBCERC20V1(proxy);
+        assertEq(legacyToken.ics20(), address(ibcImplB.ics20Transfer()), "legacy ICS20 state mismatch");
+
+        RefImplIBCERC20 upgradedToken = RefImplIBCERC20(proxy);
+        RefImplIBCERC20 newImplementation = new RefImplIBCERC20();
+        vm.prank(owner);
+        vm.expectRevert(RefImplIBCERC20.InvalidEscrow.selector);
+        upgradedToken.upgradeToAndCall(
+            address(newImplementation), abi.encodeCall(RefImplIBCERC20.initializeEscrow, (address(0)))
+        );
+
+        vm.prank(owner);
+        upgradedToken.upgradeToAndCall(
+            address(newImplementation), abi.encodeCall(RefImplIBCERC20.initializeEscrow, (escrow))
+        );
+        assertEq(upgradedToken.ics20(), address(ibcImplB.ics20Transfer()), "ICS20 state changed during upgrade");
+        assertEq(upgradedToken.escrow(), escrow, "migration did not set escrow");
+
+        vm.prank(owner);
+        vm.expectRevert(Initializable.InvalidInitialization.selector);
+        upgradedToken.initializeEscrow(escrow);
+
+        address attacker = makeAddr("legacy-custom-token-attacker");
+        vm.prank(escrow);
+        upgradedToken.burn(0);
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(RefImplIBCERC20.CallerIsNotEscrow.selector, attacker));
+        upgradedToken.burn(0);
+
+        ibcImplB.ics20Transfer().setCustomERC20(denom, proxy);
+        address sourceSender = integrationEnv.createAndFundUser(amount);
+        address voucherHolder = integrationEnv.createUser();
+        IICS26RouterMsgs.Packet memory outbound = ibcImplA.sendTransferAsUser(
+            integrationEnv.erc20(), sourceSender, Strings.toHexString(voucherHolder), amount
+        );
+        bytes[] memory acks = ibcImplB.recvPacket(outbound);
+        assertEq(acks, th.SINGLE_SUCCESS_ACK(), "voucher receive acknowledgement mismatch");
+        assertEq(upgradedToken.balanceOf(voucherHolder), amount, "voucher mint failed after upgrade");
+
+        address returnRecipient = integrationEnv.createUser();
+        IICS26RouterMsgs.Packet memory returning = ibcImplB.sendTransferAsUser(
+            IERC20(address(upgradedToken)), voucherHolder, Strings.toHexString(returnRecipient), amount
+        );
+        assertEq(upgradedToken.balanceOf(voucherHolder), 0, "escrow did not burn returned voucher");
+
+        acks = ibcImplA.recvPacket(returning);
+        assertEq(acks, th.SINGLE_SUCCESS_ACK(), "return-to-source acknowledgement mismatch");
+        assertEq(
+            integrationEnv.erc20().balanceOf(returnRecipient), amount, "return-to-source transfer did not release token"
+        );
+    }
+
+    function test_failure_migrateLegacyCustomERC20_nonOwnerCannotInitializeEscrow() public {
+        address owner = makeAddr("legacy-custom-token-owner");
+        address escrow = ibcImplB.ics20Transfer().createEscrow(th.FIRST_CLIENT_ID());
+        address proxy = address(
+            new ERC1967Proxy(
+                address(new RefImplIBCERC20V1()),
+                abi.encodeCall(
+                    RefImplIBCERC20V1.initialize, (owner, address(ibcImplB.ics20Transfer()), "Legacy Token", "LEGACY")
+                )
+            )
+        );
+        RefImplIBCERC20 upgradedToken = RefImplIBCERC20(proxy);
+        RefImplIBCERC20 newImplementation = new RefImplIBCERC20();
+
+        vm.prank(owner);
+        upgradedToken.upgradeToAndCall(address(newImplementation), "");
+
+        address attacker = makeAddr("legacy-custom-token-attacker");
+        vm.prank(attacker);
+        vm.expectRevert(abi.encodeWithSelector(OwnableUpgradeable.OwnableUnauthorizedAccount.selector, attacker));
+        upgradedToken.initializeEscrow(escrow);
+    }
+
+    function test_failure_initializeEscrow_cannotReplaceExistingEscrow() public {
+        address owner = makeAddr("custom-token-owner");
+        address escrow = ibcImplB.ics20Transfer().createEscrow(th.FIRST_CLIENT_ID());
+        RefImplIBCERC20 token = RefImplIBCERC20(
+            address(
+                new ERC1967Proxy(
+                    address(new RefImplIBCERC20()),
+                    abi.encodeCall(
+                        RefImplIBCERC20.initialize,
+                        (owner, address(ibcImplB.ics20Transfer()), escrow, "Test ERC20", "TERC20")
+                    )
+                )
+            )
+        );
+
+        vm.prank(owner);
+        vm.expectRevert(abi.encodeWithSelector(RefImplIBCERC20.EscrowAlreadySet.selector, escrow));
+        token.initializeEscrow(makeAddr("replacement-escrow"));
     }
 
     function testFuzz_success_foreign_recvICS20Packet(uint256 amount) public {

@@ -19,6 +19,13 @@ contract RefImplIBCERC20 is IMintableAndBurnable, UUPSUpgradeable, ERC20Upgradea
     /// @param caller The address of the caller
     error CallerIsNotEscrow(address caller);
 
+    /// @notice The escrow address is invalid
+    error InvalidEscrow();
+
+    /// @notice The escrow address was already configured
+    /// @param escrow The configured escrow address
+    error EscrowAlreadySet(address escrow);
+
     /// @notice Storage of the RefIBCERC20 contract
     /// @dev It's implemented on a custom ERC-7201 namespace to reduce the risk of storage collisions when using with
     /// upgradeable contracts.
@@ -61,6 +68,20 @@ contract RefImplIBCERC20 is IMintableAndBurnable, UUPSUpgradeable, ERC20Upgradea
 
         RefIBCERC20Storage storage $ = _getRefIBCERC20Storage();
         $._ics20 = ics20_;
+        $._escrow = escrow_;
+    }
+
+    /// @notice Migrates a proxy initialized by the pre-escrow reference implementation
+    /// @dev Call through `upgradeToAndCall` as the proxy owner. The old layout
+    /// stored `_ics20` in the first field of the same ERC-7201 namespace, so
+    /// this appends `_escrow` without changing existing state. Proxies created
+    /// by this implementation already have an escrow and cannot use this path.
+    /// @param escrow_ The non-zero escrow contract permitted to burn vouchers
+    function initializeEscrow(address escrow_) external onlyOwner reinitializer(2) {
+        require(escrow_ != address(0), InvalidEscrow());
+
+        RefIBCERC20Storage storage $ = _getRefIBCERC20Storage();
+        require($._escrow == address(0), EscrowAlreadySet($._escrow));
         $._escrow = escrow_;
     }
 
