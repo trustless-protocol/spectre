@@ -64,11 +64,10 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 	}
 
 	// Get gas and fee configuration
-	gasLimit := uint64(1500000) // Default gas limit for MsgCreateClient with wasm payload
-	if gasStr := os.Getenv("COSMOS_GAS_LIMIT"); gasStr != "" {
-		if _, err := fmt.Sscanf(gasStr, "%d", &gasLimit); err != nil {
-			return "", fmt.Errorf("failed to parse COSMOS_GAS_LIMIT: %w", err)
-		}
+	// Default gas limit for MsgCreateClient with wasm payload.
+	gasLimit, err := envUint64("COSMOS_GAS_LIMIT", 1500000)
+	if err != nil {
+		return "", err
 	}
 
 	feeDenom := os.Getenv("COSMOS_FEE_DENOM")
@@ -76,11 +75,9 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 		feeDenom = "stake" // Default fee denom
 	}
 
-	feeAmount := int64(10000000) // Default fee amount
-	if feeStr := os.Getenv("COSMOS_FEE_AMOUNT"); feeStr != "" {
-		if _, err := fmt.Sscanf(feeStr, "%d", &feeAmount); err != nil {
-			return "", fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
-		}
+	feeAmount, _, err := envInt64("COSMOS_FEE_AMOUNT", 10000000)
+	if err != nil {
+		return "", err
 	}
 	log.Printf("[CreateWasmClientTx] gas config: gasLimit=%d fee=%d%s", gasLimit, feeAmount, feeDenom)
 
@@ -683,11 +680,9 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 
 	// If simulation wasn't run or failed, calculate the fallback gas limit
 	if finalGasLimit == 0 {
-		baseGas := uint64(200000)
-		if gasStr := os.Getenv("COSMOS_GAS_LIMIT"); gasStr != "" {
-			if _, err := fmt.Sscanf(gasStr, "%d", &baseGas); err != nil {
-				return sequence, 0, fmt.Errorf("failed to parse COSMOS_GAS_LIMIT: %w", err)
-			}
+		baseGas, err := envUint64("COSMOS_GAS_LIMIT", 200000)
+		if err != nil {
+			return sequence, 0, err
 		}
 		// MsgUpdateClient requires significantly more gas due to wasm verification
 		for _, msg := range sdkMsgs {
@@ -720,12 +715,19 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 
 	// Set fee amount: default to matching gas limit
 	feeAmount := int64(finalGasLimit)
-	if feeStr := os.Getenv("COSMOS_FEE_AMOUNT"); feeStr != "" {
-		var baseFee int64
-		if _, err := fmt.Sscanf(feeStr, "%d", &baseFee); err != nil {
-			return sequence, 0, fmt.Errorf("failed to parse COSMOS_FEE_AMOUNT: %w", err)
-		}
-
+	// Same parse and the same negative guard as the create-client path: this one
+	// builds its own coin, so a guard on only one of the two leaves the panic
+	// reachable.
+	//
+	// Branch on WHETHER THE VARIABLE WAS SET, not on the value. Branching on
+	// baseFee > 0 made COSMOS_FEE_AMOUNT=0 -- a valid setting on a chain with no
+	// minimum gas price -- indistinguishable from leaving it unset, so the
+	// override was dropped and the default gas-matching fee was paid instead.
+	baseFee, feeOverridden, err := envInt64("COSMOS_FEE_AMOUNT", 0)
+	if err != nil {
+		return sequence, 0, err
+	}
+	if feeOverridden {
 		// Guard against feeAmount overflow: baseFee * len(sdkMsgs)
 		if len(sdkMsgs) > 0 && baseFee > (1<<63-1)/int64(len(sdkMsgs)) {
 			feeAmount = 1<<63 - 1

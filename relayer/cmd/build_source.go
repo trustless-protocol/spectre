@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -38,6 +39,22 @@ type buildCosmosToEthSourceOptions struct {
 	allowEnvOverride   bool
 	startSubscriptions bool
 	pendingStateDir    string
+
+	// relaysEVMToCosmos says this caller will drive the eth->cosmos direction,
+	// which is the only consumer of cosmos_wasm_client_id -- the id of the
+	// Ethereum light client ON Cosmos.
+	//
+	// It is a property of the CALLER, not of the config, and treating it as the
+	// latter broke submit-misbehaviour for a cosmos_to_l2 source: selectSource
+	// offers L2 sources, cosmos_to_l2 deliberately carries no
+	// cosmos_wasm_client_id, and the builder rejected it for a field the command
+	// never reads. The evidence was refused before it was looked at.
+	//
+	// Default false, so a caller opts IN to the requirement. That is the safe
+	// direction here: a caller that forgets it fails at the point of use with the
+	// id it wanted, whereas defaulting to true would reject valid L2
+	// configurations again -- the failure this field exists to remove.
+	relaysEVMToCosmos bool
 }
 
 // pendingStateDir keeps restart state beside the selected config while
@@ -64,6 +81,45 @@ func buildCosmosToEthSource(
 ) (*services.Services, services.RelayDeps, func(), error) {
 	var zero services.RelayDeps
 
+	// Everything that can be decided from config alone is decided BEFORE any
+	// client is dialled or started. A validation failure below this block has no
+	// resource to release; one above it would have to unwind a dialled ETH client
+	// and a started Cosmos WS subscription, and the cleanup closure that knows how
+	// to do that is not built until the end of this function.
+	cosmosWasmClientID := c2e.CosmosWasmClientID
+	if options.allowEnvOverride {
+		cosmosWasmClientID = envOrDefault("COSMOS_WASM_CLIENT_ID", cosmosWasmClientID)
+	}
+	if options.relaysEVMToCosmos && cosmosWasmClientID == "" {
+		return nil, zero, nil, fmt.Errorf(
+			"cosmos_wasm_client_id is required in cosmos_to_eth config to relay eth->cosmos")
+	}
+	cosmosRouterClientID := c2e.ICS26ClientID
+	if options.allowEnvOverride {
+		cosmosRouterClientID = envOrDefault("ICS26_CLIENT_ID", cosmosRouterClientID)
+	}
+	if cosmosRouterClientID == "" {
+		return nil, zero, nil, fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
+	}
+	roleManager := c2e.ICS26Address
+	if options.allowEnvOverride {
+		roleManager = envOrDefault("ROLE_MANAGER", roleManager)
+	}
+	// SpectreClient is already deployed; this is its address, not a request to deploy.
+	if c2e.SpectreClient == "" {
+		return nil, zero, nil, fmt.Errorf("spectre_client address is required in cosmos_to_eth config")
+	}
+	if options.startSubscriptions && c2e.EthWsUrl != "" {
+		if !strings.HasPrefix(c2e.EthWsUrl, "ws://") && !strings.HasPrefix(c2e.EthWsUrl, "wss://") {
+			return nil, zero, nil, fmt.Errorf("eth_ws_url must use ws:// or wss://, got: %s", c2e.EthWsUrl)
+		}
+	}
+	// Parses FETCH_TIMEOUT, so it can fail on a malformed override.
+	cosmosConfig, err := buildCosmosConfig(c2e, batchCfg)
+	if err != nil {
+		return nil, zero, nil, err
+	}
+
 	// Connect to Ethereum (HTTP for queries)
 	ethClient, err := relayerclient.DialEthRPC(context.Background(), c2e.EthRpcUrl, relayerclient.DefaultRPCTimeout)
 	if err != nil {
@@ -73,11 +129,9 @@ func buildCosmosToEthSource(
 	// Connect to Ethereum (WS for subscriptions)
 	var ethWsClient *ethclient.Client
 	if options.startSubscriptions && c2e.EthWsUrl != "" {
-		if !strings.HasPrefix(c2e.EthWsUrl, "ws://") && !strings.HasPrefix(c2e.EthWsUrl, "wss://") {
-			return nil, zero, nil, fmt.Errorf("eth_ws_url must use ws:// or wss://, got: %s", c2e.EthWsUrl)
-		}
 		ethWsClient, err = relayerclient.DialEthRPC(context.Background(), c2e.EthWsUrl, relayerclient.DefaultRPCTimeout)
 		if err != nil {
+			ethClient.Close()
 			return nil, zero, nil, fmt.Errorf("failed to connect to Ethereum WS: %w", err)
 		}
 	}
@@ -85,40 +139,23 @@ func buildCosmosToEthSource(
 	// Connect to Cosmos
 	cosmosClient, err := relayerclient.DialCosmosRPC(c2e.TmRpcUrl, "/websocket", relayerclient.DefaultRPCTimeout)
 	if err != nil {
+		ethClient.Close()
+		if ethWsClient != nil {
+			ethWsClient.Close()
+		}
 		return nil, zero, nil, fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 	}
 
-	cosmosWasmClientID := c2e.CosmosWasmClientID
-	if options.allowEnvOverride {
-		cosmosWasmClientID = envOrDefault("COSMOS_WASM_CLIENT_ID", cosmosWasmClientID)
-	}
-	if cosmosWasmClientID == "" {
-		return nil, zero, nil, fmt.Errorf("cosmos_wasm_client_id is required in cosmos_to_eth config")
-	}
-
-	// Assemble the scoped chain dependencies, including the beacon API.
-	cosmosRouterClientID := c2e.ICS26ClientID
-	if options.allowEnvOverride {
-		cosmosRouterClientID = envOrDefault("ICS26_CLIENT_ID", cosmosRouterClientID)
-	}
-	if cosmosRouterClientID == "" {
-		return nil, zero, nil, fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
-	}
-	// Set contract addresses from config
-	roleManager := c2e.ICS26Address
-	if options.allowEnvOverride {
-		roleManager = envOrDefault("ROLE_MANAGER", roleManager)
-	}
-	// Set SpectreClient address (already deployed)
-	if c2e.SpectreClient == "" {
-		return nil, zero, nil, fmt.Errorf("spectre_client address is required in cosmos_to_eth config")
-	}
 	if options.startSubscriptions {
 		if err := cosmosClient.Start(); err != nil {
+			ethClient.Close()
+			if ethWsClient != nil {
+				ethWsClient.Close()
+			}
 			return nil, zero, nil, fmt.Errorf("failed to start Cosmos WS client: %w", err)
 		}
 	}
-	cosmosConfig := buildCosmosConfig(c2e, batchCfg)
+
 	deps := services.RelayDeps{
 		Cosmos: services.CosmosEndpoint{Client: cosmosClient},
 		EVM: services.EVMEndpoint{
@@ -176,7 +213,61 @@ func buildCosmosToEthSource(
 
 // buildCosmosConfig layers the per-source overrides from c2e (and the global
 // FETCH_TIMEOUT env) onto the service defaults.
-func buildCosmosConfig(c2e cosmosToEthConfig, batchCfg services.BatchConfig) services.Config {
+// envSecondsDuration reads an optional whole-second duration override.
+//
+// It returns an error rather than falling back, because falling back is what the
+// old code did: `if d, err := strconv.Atoi(envVal); err == nil && d > 0` treated
+// BOTH a parse failure and a non-positive value as "not set". FETCH_TIMEOUT=30s
+// -- the way a Go duration is normally written, and the natural guess for a
+// field that is a time.Duration -- was silently discarded, and the operator got
+// the default while believing they had set a deadline.
+//
+// That matters more here than for a gas knob: FetchTimeout is what bounds the
+// Cosmos RPC calls, and an RPC without the deadline the operator asked for is
+// the failure mode that wedged a whole relay direction before.
+func envSecondsDuration(name string) (time.Duration, bool, error) {
+	raw := strings.TrimSpace(os.Getenv(name))
+	if raw == "" {
+		return 0, false, nil
+	}
+	seconds, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, false, fmt.Errorf("invalid %s: %w (whole seconds, e.g. 30)", name, err)
+	}
+	if seconds <= 0 {
+		return 0, false, fmt.Errorf("invalid %s: %d seconds is not a usable timeout", name, seconds)
+	}
+	d, err := secondsToDuration(name, uint64(seconds))
+	if err != nil {
+		return 0, false, err
+	}
+	return d, true, nil
+}
+
+// maxDurationSeconds is the largest whole-second value a time.Duration can hold.
+// time.Duration is an int64 of NANOseconds, so the usable range is roughly 292
+// years and anything past it wraps.
+const maxDurationSeconds = uint64(math.MaxInt64 / int64(time.Second))
+
+// secondsToDuration converts operator-supplied whole seconds, refusing the ones
+// that do not fit.
+//
+// The multiplication is the trap: strconv accepts 9223372036854775807 happily
+// and `time.Duration(seconds) * time.Second` then wraps to -1s. A negative
+// timeout is not merely wrong, it is wrong in two different ways depending on
+// who reads it -- context.WithTimeout cancels immediately, while
+// services.fetchCtx substitutes its 15s default. One accepted setting, two
+// behaviours, neither the one the operator asked for.
+func secondsToDuration(name string, seconds uint64) (time.Duration, error) {
+	if seconds > maxDurationSeconds {
+		return 0, fmt.Errorf("invalid %s: %d seconds exceeds the maximum representable duration (%d seconds)",
+			name, seconds, maxDurationSeconds)
+	}
+	// #nosec G115 -- bounded by maxDurationSeconds immediately above
+	return time.Duration(seconds) * time.Second, nil
+}
+
+func buildCosmosConfig(c2e cosmosToEthConfig, batchCfg services.BatchConfig) (services.Config, error) {
 	cfg := services.DefaultConfig()
 	if c2e.TrustingPeriod != 0 {
 		cfg.TrustingPeriod = c2e.TrustingPeriod
@@ -196,24 +287,40 @@ func buildCosmosConfig(c2e cosmosToEthConfig, batchCfg services.BatchConfig) ser
 	if c2e.AppHashWaitRetries != 0 {
 		cfg.AppHashWaitRetries = c2e.AppHashWaitRetries
 	}
+	// Same overflow trap as the environment override below, same origin: an
+	// operator typing a number. Config JSON is no safer than an env var.
 	if c2e.AppHashWaitInterval != 0 {
-		cfg.AppHashWaitInterval = time.Duration(c2e.AppHashWaitInterval) * time.Second
+		d, err := secondsToDuration("app_hash_wait_interval_seconds", c2e.AppHashWaitInterval)
+		if err != nil {
+			return services.Config{}, err
+		}
+		cfg.AppHashWaitInterval = d
 	}
 	if c2e.FetchTimeout != 0 {
-		cfg.FetchTimeout = time.Duration(c2e.FetchTimeout) * time.Second
+		d, err := secondsToDuration("fetch_timeout", c2e.FetchTimeout)
+		if err != nil {
+			return services.Config{}, err
+		}
+		cfg.FetchTimeout = d
 	}
 	if c2e.RotationThreshold != "" {
 		cfg.RotationThreshold = c2e.RotationThreshold
 	}
 	if c2e.RefreshInterval != 0 {
-		cfg.RefreshInterval = time.Duration(c2e.RefreshInterval) * time.Second
+		d, err := secondsToDuration("refresh_interval_seconds", c2e.RefreshInterval)
+		if err != nil {
+			return services.Config{}, err
+		}
+		cfg.RefreshInterval = d
 		cfg.RefreshIntervalConfigured = true
 	}
-	if envVal := os.Getenv("FETCH_TIMEOUT"); envVal != "" {
-		if d, err := strconv.Atoi(envVal); err == nil && d > 0 {
-			cfg.FetchTimeout = time.Duration(d) * time.Second
-		}
+	timeout, set, err := envSecondsDuration("FETCH_TIMEOUT")
+	if err != nil {
+		return services.Config{}, err
+	}
+	if set {
+		cfg.FetchTimeout = timeout
 	}
 	cfg.BatchConfig = batchCfg
-	return cfg
+	return cfg, nil
 }

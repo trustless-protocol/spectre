@@ -3,14 +3,17 @@ package transaction
 import (
 	"bytes"
 	"context"
+	sdkmath "cosmossdk.io/math"
 	"crypto/ecdsa"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -2138,4 +2141,248 @@ func routerSelector(t *testing.T, method string) string {
 		t.Fatalf("router ABI has no method %q", method)
 	}
 	return hex.EncodeToString(m.ID)
+}
+
+// --- environment overrides ---
+//
+// These five knobs were parsed with fmt.Sscanf("%d"), which stops at the first
+// non-digit and reports success on the prefix. An operator who set
+// COSMOS_GAS_LIMIT=150000x got a limit of 150000, and one who wrote it in hex got
+// 0 -- silently, with the symptom arriving later as an out-of-gas revert that
+// points nowhere near the config.
+//
+// ETH_MULTICALL_GAS_LIMIT was worse: its parse error was discarded entirely, so a
+// malformed value fell back to the default and nothing said so.
+
+func TestEnvUint64(t *testing.T) {
+	const name = "TEST_RELAYER_UINT_KNOB"
+
+	t.Run("unset uses the default", func(t *testing.T) {
+		t.Setenv(name, "")
+		got, err := envUint64(name, 42)
+		if err != nil || got != 42 {
+			t.Fatalf("envUint64 = %d, %v; want 42, nil", got, err)
+		}
+	})
+
+	t.Run("parses a plain decimal", func(t *testing.T) {
+		t.Setenv(name, "1500000")
+		got, err := envUint64(name, 42)
+		if err != nil || got != 1500000 {
+			t.Fatalf("envUint64 = %d, %v; want 1500000, nil", got, err)
+		}
+	})
+
+	t.Run("rejects anything else", func(t *testing.T) {
+		for label, raw := range map[string]string{
+			"digits then letters": "150000x",
+			"hex":                 "0x1e8480",
+			"negative":            "-1",
+			"decimal point":       "1500.0",
+			"whitespace":          " 1500000 ",
+			"overflow":            "99999999999999999999999",
+			"words":               "lots",
+		} {
+			t.Run(label, func(t *testing.T) {
+				t.Setenv(name, raw)
+				got, err := envUint64(name, 42)
+				if err == nil {
+					t.Fatalf("envUint64(%q) = %d with no error", raw, got)
+				}
+				// Not the default, and not a truncated value: the caller must be
+				// unable to proceed on a number nobody asked for.
+				if got != 0 {
+					t.Fatalf("envUint64(%q) = %d alongside an error", raw, got)
+				}
+				if !strings.Contains(err.Error(), name) {
+					t.Errorf("error %q does not name the variable the operator set", err)
+				}
+			})
+		}
+	})
+}
+
+func TestEnvInt64(t *testing.T) {
+	const name = "TEST_RELAYER_INT_KNOB"
+
+	t.Run("unset uses the default and reports it was not set", func(t *testing.T) {
+		t.Setenv(name, "")
+		got, set, err := envInt64(name, 7)
+		if err != nil || got != 7 || set {
+			t.Fatalf("envInt64 = %d, %v, %v; want 7, false, nil", got, set, err)
+		}
+	})
+
+	t.Run("parses a plain decimal", func(t *testing.T) {
+		t.Setenv(name, "10000000")
+		got, set, err := envInt64(name, 7)
+		if err != nil || got != 10000000 || !set {
+			t.Fatalf("envInt64 = %d, %v, %v; want 10000000, true, nil", got, set, err)
+		}
+	})
+
+	// An explicit zero is a real setting -- a chain with no minimum gas price
+	// takes a zero fee -- and it must be distinguishable from an unset variable.
+	// It was not: the batch fee path branched on `baseFee > 0`, so setting the
+	// variable to 0 was read as "unset", the override was dropped, and the
+	// default gas-matching fee was paid instead. Only the second return can tell
+	// the two apart, since the value is identical.
+	t.Run("an explicit zero is reported as set", func(t *testing.T) {
+		t.Setenv(name, "0")
+		got, set, err := envInt64(name, 7)
+		if err != nil {
+			t.Fatalf("envInt64 rejected an explicit zero: %v", err)
+		}
+		if got != 0 {
+			t.Fatalf("envInt64 = %d, want 0", got)
+		}
+		if !set {
+			t.Fatal("an explicit 0 reported as unset; callers cannot honour a zero fee")
+		}
+
+		unsetValue, unsetSet, err := envInt64(name+"_ABSENT", 0)
+		if err != nil {
+			t.Fatalf("unset lookup: %v", err)
+		}
+		if unsetValue != got {
+			t.Fatalf("fixture is not comparable: unset gave %d, explicit zero gave %d", unsetValue, got)
+		}
+		if unsetSet == set {
+			t.Fatal("explicit zero and unset are indistinguishable; the value alone cannot decide")
+		}
+	})
+
+	// A negative fee must be refused HERE, not passed on.
+	//
+	// This test asserted the opposite in the first version of this PR, on the
+	// reasoning that the chain would reject it with a better message. Review
+	// showed that reasoning was wrong: every path feeds the amount into
+	// sdk.NewCoin, which PANICS on a negative amount. Nothing reaches the chain --
+	// the relayer process dies while building the transaction, on an operator
+	// typo. The subtest below pins the panic that makes this non-negotiable.
+	t.Run("refuses a negative value", func(t *testing.T) {
+		t.Setenv(name, "-1")
+		got, _, err := envInt64(name, 7)
+		if err == nil {
+			t.Fatalf("envInt64 accepted %d; sdk.NewCoin panics on a negative amount", got)
+		}
+		if got != 0 {
+			t.Fatalf("envInt64 = %d alongside an error", got)
+		}
+		if !strings.Contains(err.Error(), name) {
+			t.Errorf("error %q does not name the variable the operator set", err)
+		}
+	})
+
+	// The reason the guard above cannot be relaxed, pinned so nobody re-derives
+	// it: this is what happens downstream to a negative fee that slips through.
+	t.Run("a negative amount panics in sdk.NewCoin", func(t *testing.T) {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("sdk.NewCoin no longer panics on a negative amount; " +
+					"re-check whether envInt64 still needs to reject one")
+			}
+		}()
+		_ = sdk.NewCoin("stake", sdkmath.NewInt(-1))
+	})
+
+	t.Run("rejects anything that is not an integer", func(t *testing.T) {
+		for label, raw := range map[string]string{
+			"digits then letters": "10000x",
+			"hex":                 "0x10",
+			"decimal point":       "1.5",
+		} {
+			t.Run(label, func(t *testing.T) {
+				t.Setenv(name, raw)
+				if _, _, err := envInt64(name, 7); err == nil {
+					t.Fatalf("envInt64(%q) returned no error", raw)
+				}
+			})
+		}
+	})
+}
+
+// hexToUint64 reads gas values out of an RPC trace, so its input is whatever the
+// node sent. Sscanf("%x") accepted "1fzz" as 0x1f, turning a corrupted field into
+// a plausible gas number rather than an error.
+func TestHexToUint64(t *testing.T) {
+	t.Run("parses hex with and without the prefix", func(t *testing.T) {
+		for raw, want := range map[string]uint64{
+			"0x1f":             31,
+			"0X1F":             31,
+			"1f":               31,
+			"0":                0,
+			"ffffffffffffffff": ^uint64(0),
+			"0x":               0, // prefix only: the trace's way of writing zero
+		} {
+			got, err := hexToUint64(raw)
+			if err != nil {
+				t.Errorf("hexToUint64(%q): %v", raw, err)
+				continue
+			}
+			if got != want {
+				t.Errorf("hexToUint64(%q) = %d, want %d", raw, got, want)
+			}
+		}
+	})
+
+	t.Run("rejects malformed hex", func(t *testing.T) {
+		for label, raw := range map[string]string{
+			"empty":            "",
+			"hex then junk":    "1fzz",
+			"decimal marker":   "1f.0",
+			"not hex at all":   "zz",
+			"overflows uint64": "10000000000000000",
+			"prefix then junk": "0xzz",
+		} {
+			t.Run(label, func(t *testing.T) {
+				got, err := hexToUint64(raw)
+				if err == nil {
+					t.Fatalf("hexToUint64(%q) = %d with no error", raw, got)
+				}
+				if got != 0 {
+					t.Fatalf("hexToUint64(%q) = %d alongside an error", raw, got)
+				}
+			})
+		}
+	})
+}
+
+// Every read of the numeric overrides must go through envUint64/envInt64, which
+// is where the strict parse and the negative-fee guard live. A second reader that
+// parses the variable itself puts the panic back within reach -- and that is not
+// hypothetical: the batch fee path did exactly that until review caught it.
+//
+// A structural check rather than a behavioural one, for the same reason the clone
+// test in services/ is structural: exercising the batch path needs a Cosmos
+// client and a signer, and a mutation that reintroduces a raw parse there is
+// invisible to every test that does not. This fails on the change that breaks it
+// rather than on the bug it later causes.
+func TestNumericOverridesAreReadOnlyThroughTheHelpers(t *testing.T) {
+	// handler.go became ethereum.go + cosmos.go in #456. The rule is about every
+	// place these variables are read, so the test reads both halves rather than
+	// following the name that used to hold them.
+	var source []byte
+	for _, name := range []string{"ethereum.go", "cosmos.go"} {
+		part, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		source = append(source, part...)
+	}
+
+	for _, name := range []string{"COSMOS_FEE_AMOUNT", "COSMOS_GAS_LIMIT", "ETH_MULTICALL_GAS_LIMIT"} {
+		t.Run(name, func(t *testing.T) {
+			for i, line := range strings.Split(string(source), "\n") {
+				if !strings.Contains(line, `"`+name+`"`) {
+					continue
+				}
+				if strings.Contains(line, "envUint64(") || strings.Contains(line, "envInt64(") {
+					continue
+				}
+				t.Errorf("handler.go:%d reads %s outside envUint64/envInt64, so it does not get the "+
+					"strict parse or the negative guard:\n  %s", i+1, name, strings.TrimSpace(line))
+			}
+		})
+	}
 }

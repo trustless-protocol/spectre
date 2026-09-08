@@ -215,9 +215,13 @@ func ethProofStateFromFinalityUpdate(base *relayerclient.EthereumClientState, fi
 
 // parseSlot parses a slot string to uint64
 func parseSlot(slotStr string) (uint64, error) {
-	var slot uint64
-	_, err := fmt.Sscanf(slotStr, "%d", &slot)
-	return slot, err
+	slot, err := strconv.ParseUint(slotStr, 10, 64)
+	if err != nil {
+		// No %q on slotStr: strconv already quotes the offending input, and
+		// repeating it prints the same string twice in one line.
+		return 0, fmt.Errorf("parse beacon slot: %w", err)
+	}
+	return slot, nil
 }
 
 // syncCommitteeForPeriod returns the full sync committee that is active in period.

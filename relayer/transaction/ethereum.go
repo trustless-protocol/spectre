@@ -183,6 +183,57 @@ func EthGasLimit(gasText string) (uint64, error) {
 	return gasLimit, nil
 }
 
+// envUint64 reads an optional unsigned environment override, returning def when
+// the variable is unset.
+//
+// strconv, not fmt.Sscanf("%d"): Sscanf stops at the first non-digit and reports
+// success on the prefix, so "150000x" configured a gas limit of 150000 and
+// "0x1e8480" configured one of 0. An operator who sets a limit and gets a
+// different one silently is worse off than one who gets an error, because the
+// symptom appears later as an out-of-gas revert with no obvious cause.
+func envUint64(name string, def uint64) (uint64, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def, nil
+	}
+	value, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", name, err)
+	}
+	return value, nil
+}
+
+// envInt64 is envUint64 for the fee amounts, and it rejects a negative value
+// here rather than letting it travel.
+//
+// An earlier version accepted one on the reasoning that the chain would reject it
+// with a better message. That was wrong: every path feeds the amount into
+// sdk.NewCoin, which PANICS on a negative amount ("negative coin amount: -1").
+// Nothing reaches the chain -- the relayer process dies while building the
+// transaction, on an operator typo.
+//
+// The second return reports whether the variable was SET, which is not the same
+// question as whether the value is non-zero. COSMOS_FEE_AMOUNT=0 is a legitimate
+// setting on a chain with no minimum gas price, and a caller that decides on the
+// value alone silently ignores it -- see the batch path below.
+//
+// The value type stays int64 because sdkmath.NewInt takes one and the fee is
+// compared against int64 overflow bounds downstream.
+func envInt64(name string, def int64) (int64, bool, error) {
+	raw := os.Getenv(name)
+	if raw == "" {
+		return def, false, nil
+	}
+	value, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, false, fmt.Errorf("invalid %s: %w", name, err)
+	}
+	if value < 0 {
+		return 0, false, fmt.Errorf("invalid %s: %d is negative; a fee amount cannot be", name, value)
+	}
+	return value, true, nil
+}
+
 // MisbehaviourGasLimit returns the configured EVM gas limit for an incident
 // submission. Zero and malformed overrides fail before proof generation.
 func MisbehaviourGasLimit() (uint64, error) {
@@ -326,8 +377,10 @@ func hexToUint64(s string) (uint64, error) {
 	if s == "" {
 		return 0, nil
 	}
-	var v uint64
-	if _, err := fmt.Sscanf(s, "%x", &v); err != nil {
+	// Base 16 explicitly, and the whole string: Sscanf("%x") accepted "1fzz" as
+	// 0x1f, which turned a corrupted trace field into a plausible gas number.
+	v, err := strconv.ParseUint(s, 16, 64)
+	if err != nil {
 		return 0, fmt.Errorf("parse %q: %w", s, err)
 	}
 	return v, nil
@@ -878,12 +931,12 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 	if err != nil {
 		return fmt.Errorf("[SendEthTxBatch] failed to restore private key: %w", err)
 	}
-	multicallGasLimit := uint64(16000000)
-	if gasStr := os.Getenv("ETH_MULTICALL_GAS_LIMIT"); gasStr != "" {
-		var val uint64
-		if _, err := fmt.Sscanf(gasStr, "%d", &val); err == nil {
-			multicallGasLimit = val
-		}
+	// A malformed override used to be discarded in silence -- the operator set a
+	// limit, the default was used, and nothing said so. Fail instead, matching
+	// EthGasLimit above.
+	multicallGasLimit, err := envUint64("ETH_MULTICALL_GAS_LIMIT", 16000000)
+	if err != nil {
+		return fmt.Errorf("[SendEthTxBatch] %w", err)
 	}
 
 	ics26Router, err := contractICS26Router.NewContractICS26Router(*endpoint.RouterContract(), endpoint.EthClient())

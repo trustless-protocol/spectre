@@ -49,27 +49,9 @@ func buildCosmosToL2Dest(
 ) (*services.Services, services.RelayDeps, func(), error) {
 	var zero services.RelayDeps
 
-	ethClient, err := relayerclient.DialEthRPC(context.Background(), c2l.EthRpcUrl, relayerclient.DefaultRPCTimeout)
-	if err != nil {
-		return nil, zero, nil, fmt.Errorf("failed to connect to L2 exec rpc: %w", err)
-	}
-
-	var ethWsClient *ethclient.Client
-	if c2l.EthWsUrl != "" {
-		if !strings.HasPrefix(c2l.EthWsUrl, "ws://") && !strings.HasPrefix(c2l.EthWsUrl, "wss://") {
-			return nil, zero, nil, fmt.Errorf("eth_ws_url must use ws:// or wss://, got: %s", c2l.EthWsUrl)
-		}
-		ethWsClient, err = relayerclient.DialEthRPC(context.Background(), c2l.EthWsUrl, relayerclient.DefaultRPCTimeout)
-		if err != nil {
-			return nil, zero, nil, fmt.Errorf("failed to connect to L2 exec ws: %w", err)
-		}
-	}
-
-	cosmosClient, err := relayerclient.DialCosmosRPC(c2l.TmRpcUrl, "/websocket", relayerclient.DefaultRPCTimeout)
-	if err != nil {
-		return nil, zero, nil, fmt.Errorf("failed to create Cosmos RPC client: %w", err)
-	}
-
+	// Config-only validation runs first, for the reason spelled out in
+	// buildCosmosToEthSource: nothing below here has a resource to release.
+	//
 	// No beacon URL and no eth-client-on-Cosmos id: the Cosmos→L2 direction consumes
 	// neither (both belong to the ETH→Cosmos beacon path).
 	if c2l.ICS26ClientID == "" {
@@ -78,10 +60,48 @@ func buildCosmosToL2Dest(
 	if c2l.SpectreClient == "" {
 		return nil, zero, nil, fmt.Errorf("spectre_client address is required in cosmos_to_l2 config")
 	}
+	if c2l.EthWsUrl != "" {
+		if !strings.HasPrefix(c2l.EthWsUrl, "ws://") && !strings.HasPrefix(c2l.EthWsUrl, "wss://") {
+			return nil, zero, nil, fmt.Errorf("eth_ws_url must use ws:// or wss://, got: %s", c2l.EthWsUrl)
+		}
+	}
+	// Parses FETCH_TIMEOUT, so it can fail on a malformed override.
+	cosmosConfig, err := buildCosmosConfig(c2l, batchCfg)
+	if err != nil {
+		return nil, zero, nil, err
+	}
+
+	ethClient, err := relayerclient.DialEthRPC(context.Background(), c2l.EthRpcUrl, relayerclient.DefaultRPCTimeout)
+	if err != nil {
+		return nil, zero, nil, fmt.Errorf("failed to connect to L2 exec rpc: %w", err)
+	}
+
+	var ethWsClient *ethclient.Client
+	if c2l.EthWsUrl != "" {
+		ethWsClient, err = relayerclient.DialEthRPC(context.Background(), c2l.EthWsUrl, relayerclient.DefaultRPCTimeout)
+		if err != nil {
+			ethClient.Close()
+			return nil, zero, nil, fmt.Errorf("failed to connect to L2 exec ws: %w", err)
+		}
+	}
+
+	cosmosClient, err := relayerclient.DialCosmosRPC(c2l.TmRpcUrl, "/websocket", relayerclient.DefaultRPCTimeout)
+	if err != nil {
+		ethClient.Close()
+		if ethWsClient != nil {
+			ethWsClient.Close()
+		}
+		return nil, zero, nil, fmt.Errorf("failed to create Cosmos RPC client: %w", err)
+	}
+
 	if err := cosmosClient.Start(); err != nil {
+		ethClient.Close()
+		if ethWsClient != nil {
+			ethWsClient.Close()
+		}
 		return nil, zero, nil, fmt.Errorf("failed to start Cosmos WS client: %w", err)
 	}
-	cosmosConfig := buildCosmosConfig(c2l, batchCfg)
+
 	deps := services.RelayDeps{
 		Cosmos: services.CosmosEndpoint{Client: cosmosClient},
 		EVM: services.EVMEndpoint{Client: ethClient, WSURL: c2l.EthWsUrl, Contracts: services.EVMContracts{

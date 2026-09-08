@@ -157,7 +157,11 @@ func Start(logger *zap.Logger) *cobra.Command {
 					buildCosmosToEthSourceOptions{
 						allowEnvOverride:   allowEnvOverride,
 						startSubscriptions: true,
-						pendingStateDir:    pendingStateDir(configPath, "cosmos-to-eth", sources[i].ICS26ClientID),
+						// start drives the eth->cosmos direction, so a missing
+						// cosmos_wasm_client_id must fail here rather than at the
+						// first packet that needs it.
+						relaysEVMToCosmos: true,
+						pendingStateDir:   pendingStateDir(configPath, "cosmos-to-eth", sources[i].ICS26ClientID),
 					},
 				)
 				if err != nil {
