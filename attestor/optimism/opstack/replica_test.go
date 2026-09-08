@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -84,5 +85,42 @@ func TestReplicaClientRejectsShortOutputRoot(t *testing.T) {
 
 	if _, err := rc.OutputAtBlock(ctx, 100); err == nil {
 		t.Fatal("a non-32-byte output root must be rejected")
+	}
+}
+
+func TestReplicaClientPropagatesRPCFailureForEveryRead(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		response := map[string]any{
+			"jsonrpc": "2.0",
+			"id":      req.ID,
+			"error":   map[string]any{"code": -32000, "message": "op-node unavailable"},
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Errorf("encode response: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	client, err := DialReplica(context.Background(), srv.URL)
+	if err != nil {
+		t.Fatalf("DialReplica: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.SyncStatus(context.Background()); err == nil || !strings.Contains(err.Error(), "op-node unavailable") {
+		t.Fatalf("SyncStatus error = %v", err)
+	}
+	if _, err := client.OutputAtBlock(context.Background(), 100); err == nil || !strings.Contains(err.Error(), "op-node unavailable") {
+		t.Fatalf("OutputAtBlock error = %v", err)
+	}
+	if _, err := client.CommitmentAt(context.Background(), 100); err == nil || !strings.Contains(err.Error(), "op-node unavailable") {
+		t.Fatalf("CommitmentAt error = %v", err)
 	}
 }

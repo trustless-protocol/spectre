@@ -138,6 +138,9 @@ func (s *RollupCoreSource) ChainIDs(
 	if err != nil {
 		return nil, nil, fmt.Errorf("query L1 chain ID: %w", err)
 	}
+	if l1ChainID == nil {
+		return nil, nil, errors.New("L1 chain ID is nil")
+	}
 	output, err := s.client.CallContract(ctx, ethereum.CallMsg{
 		To:   &s.address,
 		Data: append([]byte(nil), chainIDSelector...),

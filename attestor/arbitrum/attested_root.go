@@ -79,6 +79,52 @@ type persistedAttestedRootState struct {
 	Mismatches     []AssertionMismatch `json:"mismatches,omitempty"`
 }
 
+// attestedRootFile is the narrow filesystem surface used by the atomic writer.
+// Keeping it injectable lets the failure matrix exercise every durability step
+// without relying on a full or failing local filesystem.
+type attestedRootFile interface {
+	Name() string
+	Chmod(os.FileMode) error
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+type attestedRootFileSystem interface {
+	MkdirAll(string, os.FileMode) error
+	CreateTemp(string, string) (attestedRootFile, error)
+	Rename(string, string) error
+	Remove(string) error
+	SyncDir(string) error
+}
+
+type osAttestedRootFileSystem struct{}
+
+func (osAttestedRootFileSystem) MkdirAll(path string, mode os.FileMode) error {
+	return os.MkdirAll(path, mode)
+}
+
+func (osAttestedRootFileSystem) CreateTemp(dir, pattern string) (attestedRootFile, error) {
+	return os.CreateTemp(dir, pattern)
+}
+
+func (osAttestedRootFileSystem) Rename(oldPath, newPath string) error {
+	return os.Rename(oldPath, newPath)
+}
+
+func (osAttestedRootFileSystem) Remove(path string) error {
+	return os.Remove(path)
+}
+
+func (osAttestedRootFileSystem) SyncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
 // BindSourceIdentity pins the durable feed to one concrete rollup deployment.
 // Existing pre-identity state is upgraded in place; a conflicting identity
 // fails closed so stale roots cannot be served after a config change.
@@ -110,6 +156,7 @@ type AttestedRootStore struct {
 	saveMu sync.Mutex
 	path   string
 	state  persistedAttestedRootState
+	fs     attestedRootFileSystem
 }
 
 // NewAttestedRootStore constructs an in-memory feed, primarily for tests.
@@ -191,17 +238,18 @@ func (s *AttestedRootStore) Save() error {
 	}
 
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+	fs := s.fileSystem()
+	if err := fs.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create attested-root state directory: %w", err)
 	}
-	file, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	file, err := fs.CreateTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("create temporary attested-root state: %w", err)
 	}
 	temporaryPath := file.Name()
 	cleanup := func() {
 		_ = file.Close()
-		_ = os.Remove(temporaryPath)
+		_ = fs.Remove(temporaryPath)
 	}
 	if err := file.Chmod(0o600); err != nil {
 		cleanup()
@@ -216,14 +264,24 @@ func (s *AttestedRootStore) Save() error {
 		return fmt.Errorf("sync temporary attested-root state: %w", err)
 	}
 	if err := file.Close(); err != nil {
-		_ = os.Remove(temporaryPath)
+		_ = fs.Remove(temporaryPath)
 		return fmt.Errorf("close temporary attested-root state: %w", err)
 	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		_ = os.Remove(temporaryPath)
+	if err := fs.Rename(temporaryPath, path); err != nil {
+		_ = fs.Remove(temporaryPath)
 		return fmt.Errorf("replace attested-root state: %w", err)
 	}
+	if err := fs.SyncDir(dir); err != nil {
+		return fmt.Errorf("sync attested-root state directory: %w", err)
+	}
 	return nil
+}
+
+func (s *AttestedRootStore) fileSystem() attestedRootFileSystem {
+	if s.fs != nil {
+		return s.fs
+	}
+	return osAttestedRootFileSystem{}
 }
 
 // AppendDerived records Nitro's own commitment at the configured attestation

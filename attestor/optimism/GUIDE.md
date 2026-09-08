@@ -75,8 +75,8 @@ as must `state_path` (both enforced at config load).
 
 | Key | Default | Meaning |
 |---|---|---|
-| `l1_rpc_url` | required | Ethereum L1 execution RPC (factory reads) |
-| `op_node_rpc_url` | required | The verify-mode replica's op-node RPC |
+| `l1_rpc_url` | required | Ethereum L1 execution RPC (factory reads): HTTP(S), WS(S), or an absolute IPC socket path |
+| `op_node_rpc_url` | required | The verify-mode replica's op-node RPC: HTTP(S), WS(S), or an absolute IPC socket path |
 | `dispute_game_factory` | required | L1 `DisputeGameFactory` address |
 | `respected_game_type` | 0 | Only games of this type are verified; others counted + skipped |
 | `attestation_head` | `finalized` | Gating head: `finalized` \| `safe` \| `unsafe` (see below) |
@@ -89,6 +89,10 @@ as must `state_path` (both enforced at config load).
 | `max_derived_roots` | 1000 | Confirmed derived entries kept (oldest pruned; game + provisional entries never pruned) |
 | `l2_chain_id` | required | L2 chain ID included in every signature's domain; it must equal the Cosmos client profile. |
 | `attestation_signing_key` | required | 32-byte Ed25519 seed as hex, or `env:NAME` to read it from the daemon environment. Its matching public key is pinned in the Cosmos client profile. |
+
+`l1_ws_url` is intentionally WebSocket-only. Absolute IPC socket paths are
+supported for `l1_rpc_url` and `op_node_rpc_url`; use a URL transport when a
+WebSocket subscription is required.
 
 The client profile also pins `attestation_head` (`unsafe`, `safe`, or
 `finalized`). The relayer's `head_kind` must match it. The daemon signs the

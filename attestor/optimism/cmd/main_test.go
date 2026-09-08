@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.uber.org/zap"
 )
 
 func TestLoadConfigExample(t *testing.T) {
@@ -79,4 +82,106 @@ func TestLoadConfigRejectsDuplicateSources(t *testing.T) {
 			t.Fatalf("(%+v, %v), want zero sources and no error", cfg, err)
 		}
 	})
+}
+
+func TestLoadConfigFailureMatrix(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	if _, err := loadConfig(filepath.Join(t.TempDir(), "missing.json")); err == nil || !strings.Contains(err.Error(), "read config") {
+		t.Fatalf("missing config error = %v", err)
+	}
+	if _, err := loadConfig(write(t, "{")); err == nil || !strings.Contains(err.Error(), "parse config") {
+		t.Fatalf("malformed JSON error = %v", err)
+	}
+	if _, err := loadConfig(write(t, `{"modules":[{"name":"op_source","src_chain":"op","config":true}]}`)); err == nil || !strings.Contains(err.Error(), "parse op_source") {
+		t.Fatalf("malformed op_source config error = %v", err)
+	}
+	if _, err := loadConfig(write(t, `{"modules":[{"name":"op_source","src_chain":"op","config":{"l1_ws_url":":"}}]}`)); err == nil || !strings.Contains(err.Error(), "l1_ws_url") {
+		t.Fatalf("malformed L1 websocket URL error = %v", err)
+	}
+}
+
+func TestValidateHexAddressFailureMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "empty", want: "empty"},
+		{name: "malformed", value: "not-an-address", want: "invalid hex address"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateHexAddress(tc.value, "factory"); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("validateHexAddress error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+	if err := validateHexAddress("0x0000000000000000000000000000000000000001", "factory"); err != nil {
+		t.Fatalf("validateHexAddress valid address: %v", err)
+	}
+}
+
+func TestBuildOpAttestorRejectsMissingSigningKeyBeforeNetworkDial(t *testing.T) {
+	_, _, _, err := buildOpAttestor(context.Background(), zap.NewNop(), opSourceConfig{
+		SrcChain:              "op-mainnet",
+		DisputeGameFactory:    "0x0000000000000000000000000000000000000001",
+		L2ChainID:             10,
+		AttestationSigningKey: "",
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "attestation signer") {
+		t.Fatalf("buildOpAttestor missing signing key error = %v", err)
+	}
+}
+
+func TestBuildOpAttestorRejectsInvalidInputBeforeNetworkDial(t *testing.T) {
+	validSigningKey := strings.Repeat("11", 32)
+	for _, tc := range []struct {
+		name   string
+		mutate func(*opSourceConfig)
+		want   string
+	}{
+		{
+			name:   "invalid factory address",
+			mutate: func(c *opSourceConfig) { c.DisputeGameFactory = "not-an-address" },
+			want:   "invalid hex address",
+		},
+		{
+			name:   "missing L1 RPC",
+			mutate: func(c *opSourceConfig) { c.L1RpcUrl = "" },
+			want:   "l1_rpc_url",
+		},
+		{
+			name:   "missing op-node RPC",
+			mutate: func(c *opSourceConfig) { c.OpNodeRpcUrl = "" },
+			want:   "op_node_rpc_url",
+		},
+		{
+			name:   "missing state path",
+			mutate: func(c *opSourceConfig) { c.StatePath = "" },
+			want:   "state_path",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := opSourceConfig{
+				SrcChain:              "op-mainnet",
+				L1RpcUrl:              "https://ethereum.example",
+				OpNodeRpcUrl:          "https://op-node.example",
+				DisputeGameFactory:    "0x0000000000000000000000000000000000000001",
+				L2ChainID:             10,
+				AttestationSigningKey: validSigningKey,
+				StatePath:             "attestor-state.json",
+			}
+			tc.mutate(&config)
+			_, _, _, err := buildOpAttestor(context.Background(), zap.NewNop(), config, nil)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("buildOpAttestor error = %v, want %q", err, tc.want)
+			}
+		})
+	}
 }

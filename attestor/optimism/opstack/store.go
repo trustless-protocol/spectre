@@ -82,6 +82,45 @@ type persistedState struct {
 	Mismatches    []MismatchRecord `json:"mismatches,omitempty"`
 }
 
+// stateFile is the minimum file surface used by the atomic store writer. It is
+// deliberately small so tests can inject failures at every durability step.
+type stateFile interface {
+	Name() string
+	Write([]byte) (int, error)
+	Sync() error
+	Close() error
+}
+
+type stateFileSystem interface {
+	CreateTemp(string, string) (stateFile, error)
+	Rename(string, string) error
+	Remove(string) error
+	SyncDir(string) error
+}
+
+type osStateFileSystem struct{}
+
+func (osStateFileSystem) CreateTemp(dir, pattern string) (stateFile, error) {
+	return os.CreateTemp(dir, pattern)
+}
+
+func (osStateFileSystem) Rename(oldPath, newPath string) error {
+	return os.Rename(oldPath, newPath)
+}
+
+func (osStateFileSystem) Remove(path string) error {
+	return os.Remove(path)
+}
+
+func (osStateFileSystem) SyncDir(path string) error {
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer dir.Close()
+	return dir.Sync()
+}
+
 // AttestedRootStore is the persistent record of the attestor: ingest cursor,
 // undecided games, provisional rechecks, and the append-only attested feed.
 // The Run goroutine is the only writer; readers (a future op_to_cosmos module)
@@ -91,6 +130,7 @@ type AttestedRootStore struct {
 	path  string
 	state persistedState
 	fresh bool // true when no state file existed at load (bootstrap needed)
+	fs    stateFileSystem
 }
 
 // LoadStore reads the state file at path. A missing file yields a fresh store
@@ -123,30 +163,41 @@ func (s *AttestedRootStore) Save() error {
 		return fmt.Errorf("failed to marshal attestor state: %w", err)
 	}
 	dir := filepath.Dir(s.path)
-	tmp, err := os.CreateTemp(dir, filepath.Base(s.path)+".tmp-*")
+	fs := s.fileSystem()
+	tmp, err := fs.CreateTemp(dir, filepath.Base(s.path)+".tmp-*")
 	if err != nil {
 		return fmt.Errorf("failed to create temp state file: %w", err)
 	}
 	tmpName := tmp.Name()
 	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
-		os.Remove(tmpName)
+		fs.Remove(tmpName)
 		return fmt.Errorf("failed to write temp state file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		os.Remove(tmpName)
+		fs.Remove(tmpName)
 		return fmt.Errorf("failed to sync temp state file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
+		fs.Remove(tmpName)
 		return fmt.Errorf("failed to close temp state file: %w", err)
 	}
-	if err := os.Rename(tmpName, s.path); err != nil {
-		os.Remove(tmpName)
+	if err := fs.Rename(tmpName, s.path); err != nil {
+		fs.Remove(tmpName)
 		return fmt.Errorf("failed to replace state file: %w", err)
 	}
+	if err := fs.SyncDir(dir); err != nil {
+		return fmt.Errorf("failed to sync state directory: %w", err)
+	}
 	return nil
+}
+
+func (s *AttestedRootStore) fileSystem() stateFileSystem {
+	if s.fs != nil {
+		return s.fs
+	}
+	return osStateFileSystem{}
 }
 
 // Fresh reports whether the store was created without a state file and still

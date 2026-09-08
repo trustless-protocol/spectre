@@ -3,6 +3,7 @@ package attestation
 import (
 	"crypto/ed25519"
 	"encoding/hex"
+	"strings"
 	"testing"
 
 	attestorpb "attestor/types/attestor"
@@ -81,4 +82,82 @@ func mustSigningBytes(t *testing.T, chainID uint64, runMode RunMode, blockNumber
 		t.Fatal(err)
 	}
 	return message
+}
+
+func TestParseRunMode(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		want  RunMode
+		valid bool
+	}{
+		{value: "unsafe", want: RunModeUnsafe, valid: true},
+		{value: "safe", want: RunModeSafe, valid: true},
+		{value: "finalized", want: RunModeFinalized, valid: true},
+		{value: "", valid: false},
+		{value: "confirmed", valid: false},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			got, err := ParseRunMode(tc.value)
+			if tc.valid {
+				if err != nil || got != tc.want {
+					t.Fatalf("ParseRunMode(%q) = (%d, %v), want (%d, nil)", tc.value, got, err, tc.want)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("ParseRunMode(%q) succeeded", tc.value)
+			}
+		})
+	}
+}
+
+func TestNewSignerValidatesKeyMaterialAndEnvironment(t *testing.T) {
+	const seed = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
+	t.Setenv("ATTESTATION_TEST_SEED", seed)
+	t.Setenv("ATTESTATION_TEST_MISSING", "")
+	if _, err := NewSigner(10, "env:ATTESTATION_TEST_SEED"); err != nil {
+		t.Fatalf("NewSigner from environment: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		chainID uint64
+		key     string
+		want    string
+	}{
+		{name: "zero chain ID", chainID: 0, key: seed, want: "chain ID"},
+		{name: "invalid hex", chainID: 10, key: "not-hex", want: "decode"},
+		{name: "wrong seed length", chainID: 10, key: "01", want: "32-byte"},
+		{name: "missing environment key", chainID: 10, key: "env:ATTESTATION_TEST_MISSING", want: "unset"},
+		{name: "empty environment variable name", chainID: 10, key: "env:", want: "empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewSigner(tc.chainID, tc.key)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("NewSigner(%d, %q) error = %v, want %q", tc.chainID, tc.key, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestSigningBytesRejectsInvalidIdentity(t *testing.T) {
+	validHash := make([]byte, HashLength)
+	for _, tc := range []struct {
+		name      string
+		chainID   uint64
+		runMode   RunMode
+		stateRoot []byte
+		blockHash []byte
+	}{
+		{name: "zero chain ID", runMode: RunModeUnsafe, stateRoot: validHash, blockHash: validHash},
+		{name: "invalid run mode", chainID: 10, runMode: 0, stateRoot: validHash, blockHash: validHash},
+		{name: "short state root", chainID: 10, runMode: RunModeSafe, stateRoot: validHash[:HashLength-1], blockHash: validHash},
+		{name: "short block hash", chainID: 10, runMode: RunModeFinalized, stateRoot: validHash, blockHash: validHash[:HashLength-1]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := SigningBytes(tc.chainID, tc.runMode, 1, tc.stateRoot, tc.blockHash); err == nil {
+				t.Fatal("SigningBytes succeeded for invalid identity")
+			}
+		})
+	}
 }

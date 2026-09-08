@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,11 +76,12 @@ func (f *fakeReplica) CommitmentAt(ctx context.Context, l2Block uint64) (L2Commi
 
 type fakeHook struct {
 	calls []uint64 // game indices
+	err   error
 }
 
 func (f *fakeHook) OnMismatch(_ context.Context, game ProposedRoot, _ [32]byte) error {
 	f.calls = append(f.calls, game.GameIndex)
-	return nil
+	return f.err
 }
 
 func root(b byte) [32]byte {
@@ -175,6 +177,28 @@ func TestRunOnceMismatchRecordsAndHooks(t *testing.T) {
 	}
 }
 
+func TestMismatchIsRetainedWhenChallengeHookFails(t *testing.T) {
+	claim := root(0xaa)
+	local := root(0xab)
+	games := &fakeGames{games: []ProposedRoot{game(0, 0, 100, claim)}}
+	replica := &fakeReplica{
+		status:  SyncStatus{SafeL2: 100, FinalizedL2: 100},
+		outputs: map[uint64][32]byte{100: local},
+	}
+	hook := &fakeHook{err: errors.New("challenge transaction rejected")}
+	a := newTestAttestor(t, HeadSafe, games, replica, hook)
+
+	if err := a.runOnce(context.Background()); err != nil {
+		t.Fatalf("runOnce: mismatch hook errors must not erase verdict: %v", err)
+	}
+	if got := a.store.state.Mismatches; len(got) != 1 || got[0].LocalRoot != local {
+		t.Fatalf("mismatches after hook failure = %+v", got)
+	}
+	if pending := a.store.Pending(); len(pending) != 0 {
+		t.Fatalf("pending after hook failure = %+v", pending)
+	}
+}
+
 func TestIngestErrorStopsCursor(t *testing.T) {
 	claim := root(0x01)
 	games := &fakeGames{
@@ -206,6 +230,51 @@ func TestIngestErrorStopsCursor(t *testing.T) {
 	}
 	if cur, ok := a.AttestedUpTo(); !ok || cur.Height != 300 {
 		t.Fatalf("AttestedUpTo = (%+v, %t), want height 300", cur, ok)
+	}
+}
+
+func TestGameCountErrorStopsBeforeAnyStateChange(t *testing.T) {
+	games := &fakeGames{countErr: errors.New("factory unavailable")}
+	replica := &fakeReplica{}
+	a := newTestAttestor(t, HeadFinalized, games, replica, nil)
+
+	if err := a.runOnce(context.Background()); err == nil || !strings.Contains(err.Error(), "factory unavailable") {
+		t.Fatalf("runOnce error = %v, want GameCount failure", err)
+	}
+	if got := a.store.NextGameIndex(); got != 0 {
+		t.Fatalf("ingest cursor = %d, want 0", got)
+	}
+	if pending := a.store.Pending(); len(pending) != 0 {
+		t.Fatalf("pending after GameCount failure = %+v", pending)
+	}
+}
+
+func TestReadOnlyReplicaFailureMatrix(t *testing.T) {
+	store, err := LoadStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	withoutReplica := New(Config{SrcChain: "op-test"}, nil, nil, store, nil, nil, zap.NewNop().Sugar())
+	if _, err := withoutReplica.HeadAt(context.Background(), HeadSafe); !errors.Is(err, ErrNoReplica) {
+		t.Fatalf("HeadAt without replica error = %v, want ErrNoReplica", err)
+	}
+	if _, err := withoutReplica.CommitmentAt(context.Background(), 100); !errors.Is(err, ErrNoReplica) {
+		t.Fatalf("CommitmentAt without replica error = %v, want ErrNoReplica", err)
+	}
+
+	replica := &fakeReplica{statusErr: errors.New("sync status unavailable")}
+	withReplica := New(Config{SrcChain: "op-test"}, nil, replica, store, nil, nil, zap.NewNop().Sugar())
+	if _, err := withReplica.HeadAt(context.Background(), HeadSafe); err == nil || !strings.Contains(err.Error(), "sync status unavailable") {
+		t.Fatalf("HeadAt sync error = %v", err)
+	}
+	replica.statusErr = nil
+	replica.status = SyncStatus{SafeL2: 100}
+	if _, err := withReplica.HeadAt(context.Background(), Head("unknown")); err == nil || !strings.Contains(err.Error(), "unknown attestation head") {
+		t.Fatalf("HeadAt invalid head error = %v", err)
+	}
+	replica.outputErr = map[uint64]error{100: errors.New("commitment unavailable")}
+	if _, err := withReplica.CommitmentAt(context.Background(), 100); err == nil || !strings.Contains(err.Error(), "commitment unavailable") {
+		t.Fatalf("CommitmentAt error = %v", err)
 	}
 }
 

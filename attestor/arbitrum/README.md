@@ -45,6 +45,13 @@ The Nitro HTTP endpoint must support `eth_getBlockByNumber` with `latest`,
 `eth_subscribe("newHeads")`. Both endpoints are checked against `l2_chain_id`
 at startup.
 
+### Upgrade note
+
+Existing configurations must set `attestation_signing_key` before upgrading.
+Configuration validation now rejects a blank key at load time. Prefer an
+environment reference such as `"attestation_signing_key": "env:ATTESTOR_SIGNING_KEY"`
+so the 32-byte Ed25519 seed is not stored in the configuration file.
+
 Copy `config.example.json` to `config.json` and configure:
 
 - `grpc_listen_address`: attestor gRPC bind address. The example uses loopback

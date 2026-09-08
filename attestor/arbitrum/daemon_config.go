@@ -121,6 +121,9 @@ func (c DaemonConfig) Validate() error {
 	if c.L2ChainID == 0 {
 		return errors.New("l2_chain_id must be greater than zero")
 	}
+	if strings.TrimSpace(c.AttestationSigningKey) == "" {
+		return errors.New("attestation_signing_key is required")
+	}
 	if !common.IsHexAddress(c.RollupCoreAddress) ||
 		common.HexToAddress(c.RollupCoreAddress) == (common.Address{}) {
 		return errors.New("rollup_core_address must be a non-zero EVM address")

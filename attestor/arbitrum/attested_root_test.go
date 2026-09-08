@@ -1,13 +1,91 @@
 package arbitrum
 
 import (
+	"errors"
 	"math/big"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
+
+type testAttestedRootFileSystem struct {
+	mkdirAll   func(string, os.FileMode) error
+	createTemp func(string, string) (attestedRootFile, error)
+	rename     func(string, string) error
+	remove     func(string) error
+	syncDir    func(string) error
+}
+
+func (fs testAttestedRootFileSystem) MkdirAll(path string, mode os.FileMode) error {
+	return fs.mkdirAll(path, mode)
+}
+
+func (fs testAttestedRootFileSystem) CreateTemp(dir, pattern string) (attestedRootFile, error) {
+	return fs.createTemp(dir, pattern)
+}
+
+func (fs testAttestedRootFileSystem) Rename(oldPath, newPath string) error {
+	return fs.rename(oldPath, newPath)
+}
+
+func (fs testAttestedRootFileSystem) Remove(path string) error {
+	return fs.remove(path)
+}
+
+func (fs testAttestedRootFileSystem) SyncDir(path string) error {
+	return fs.syncDir(path)
+}
+
+type failingAttestedRootFile struct {
+	attestedRootFile
+	chmodErr error
+	writeErr error
+	syncErr  error
+	closeErr error
+}
+
+func (f failingAttestedRootFile) Chmod(mode os.FileMode) error {
+	if f.chmodErr != nil {
+		return f.chmodErr
+	}
+	return f.attestedRootFile.Chmod(mode)
+}
+
+func (f failingAttestedRootFile) Write(data []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	return f.attestedRootFile.Write(data)
+}
+
+func (f failingAttestedRootFile) Sync() error {
+	if f.syncErr != nil {
+		return f.syncErr
+	}
+	return f.attestedRootFile.Sync()
+}
+
+func (f failingAttestedRootFile) Close() error {
+	if f.closeErr != nil {
+		_ = f.attestedRootFile.Close()
+		return f.closeErr
+	}
+	return f.attestedRootFile.Close()
+}
+
+func realAttestedRootFileSystem() testAttestedRootFileSystem {
+	base := osAttestedRootFileSystem{}
+	return testAttestedRootFileSystem{
+		mkdirAll:   base.MkdirAll,
+		createTemp: base.CreateTemp,
+		rename:     base.Rename,
+		remove:     base.Remove,
+		syncDir:    base.SyncDir,
+	}
+}
 
 func TestAttestedRootStoreFrontiersAndPersistence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state", "attested-roots.json")
@@ -136,6 +214,185 @@ func TestAttestedRootStoreDerivedLifecycle(t *testing.T) {
 	root, found = store.HighestAttestedAtOrBelow(100, false)
 	if found {
 		t.Fatalf("oldest derived root survived pruning: %+v", root)
+	}
+}
+
+func TestAttestedRootStoreRejectsInvalidAndConflictingAssertions(t *testing.T) {
+	if _, err := NewAttestedRootStore("", 1); err == nil {
+		t.Fatal("NewAttestedRootStore accepted an empty source chain")
+	}
+	if _, err := LoadAttestedRootStore("", "arbitrum-one", 1); err == nil {
+		t.Fatal("LoadAttestedRootStore accepted an empty state path")
+	}
+
+	store, err := NewAttestedRootStore("arbitrum-one", 1)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	if err := store.BindSourceIdentity(""); err == nil {
+		t.Fatal("BindSourceIdentity accepted an empty identity")
+	}
+	if err := store.BindSourceIdentity("deployment-a"); err != nil {
+		t.Fatalf("bind identity: %v", err)
+	}
+	if err := store.BindSourceIdentity("deployment-b"); err == nil {
+		t.Fatal("BindSourceIdentity accepted a conflicting identity")
+	}
+	if err := store.RecordProposal(ProposedAssertion{}); err == nil {
+		t.Fatal("RecordProposal accepted zero assertion hash")
+	}
+	if err := store.RecordProposal(ProposedAssertion{AssertionHash: common.HexToHash("0x01")}); err == nil {
+		t.Fatal("RecordProposal accepted zero L2 block hash")
+	}
+
+	proposal := testStoreProposal(1, 100)
+	if err := store.RecordProposal(proposal); err != nil {
+		t.Fatalf("record proposal: %v", err)
+	}
+	conflict := proposal
+	conflict.ParentHash = common.HexToHash("0x99")
+	if err := store.RecordProposal(conflict); err == nil {
+		t.Fatal("RecordProposal accepted conflicting event data")
+	}
+	if err := store.MarkAssertionConfirmed(proposal.AssertionHash, common.HexToHash("0x99")); err == nil {
+		t.Fatal("MarkAssertionConfirmed accepted a mismatched block hash")
+	}
+	commitment := BlockCommitment{
+		BlockNumber: 100,
+		BlockHash:   common.HexToHash("0x99"),
+		StateRoot:   common.HexToHash("0x98"),
+	}
+	if err := store.RecordAssertionAttestation(proposal, commitment, time.Now(), true); err == nil {
+		t.Fatal("RecordAssertionAttestation accepted a mismatched local commitment")
+	}
+	if err := store.AppendDerived(BlockCommitment{}, time.Now(), true); err == nil {
+		t.Fatal("AppendDerived accepted an empty commitment")
+	}
+}
+
+// The durable feed must fail closed at every filesystem step. Before rename,
+// reload must still observe the prior snapshot; once rename succeeds, a later
+// directory-sync error is uncertain but the new snapshot is already visible.
+func TestAttestedRootStoreSaveFailureMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configure  func(testAttestedRootFileSystem) testAttestedRootFileSystem
+		wantCursor uint64
+	}{
+		{
+			name: "create directory",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				fs.mkdirAll = func(string, os.FileMode) error { return errors.New("mkdir failed") }
+				return fs
+			},
+			wantCursor: 1,
+		},
+		{
+			name: "create temp",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				fs.createTemp = func(string, string) (attestedRootFile, error) {
+					return nil, errors.New("create failed")
+				}
+				return fs
+			},
+			wantCursor: 1,
+		},
+		{
+			name: "chmod temp",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				create := fs.createTemp
+				fs.createTemp = func(dir, pattern string) (attestedRootFile, error) {
+					file, err := create(dir, pattern)
+					return failingAttestedRootFile{attestedRootFile: file, chmodErr: errors.New("chmod failed")}, err
+				}
+				return fs
+			},
+			wantCursor: 1,
+		},
+		{
+			name: "write temp",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				create := fs.createTemp
+				fs.createTemp = func(dir, pattern string) (attestedRootFile, error) {
+					file, err := create(dir, pattern)
+					return failingAttestedRootFile{attestedRootFile: file, writeErr: errors.New("write failed")}, err
+				}
+				return fs
+			},
+			wantCursor: 1,
+		},
+		{
+			name: "sync temp",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				create := fs.createTemp
+				fs.createTemp = func(dir, pattern string) (attestedRootFile, error) {
+					file, err := create(dir, pattern)
+					return failingAttestedRootFile{attestedRootFile: file, syncErr: errors.New("sync failed")}, err
+				}
+				return fs
+			},
+			wantCursor: 1,
+		},
+		{
+			name: "close temp",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				create := fs.createTemp
+				fs.createTemp = func(dir, pattern string) (attestedRootFile, error) {
+					file, err := create(dir, pattern)
+					return failingAttestedRootFile{attestedRootFile: file, closeErr: errors.New("close failed")}, err
+				}
+				return fs
+			},
+			wantCursor: 1,
+		},
+		{
+			name: "rename temp",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				fs.rename = func(string, string) error { return errors.New("rename failed") }
+				return fs
+			},
+			wantCursor: 1,
+		},
+		{
+			name: "sync directory after rename",
+			configure: func(fs testAttestedRootFileSystem) testAttestedRootFileSystem {
+				fs.syncDir = func(string) error { return errors.New("directory sync failed") }
+				return fs
+			},
+			wantCursor: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state", "attested-roots.json")
+			store, err := LoadAttestedRootStore(path, "arbitrum-one", 1)
+			if err != nil {
+				t.Fatalf("LoadAttestedRootStore: %v", err)
+			}
+			store.SetNextL1Block(1)
+			if err := store.Save(); err != nil {
+				t.Fatalf("initial Save: %v", err)
+			}
+			store.SetNextL1Block(2)
+			store.fs = tc.configure(realAttestedRootFileSystem())
+			if err := store.Save(); err == nil {
+				t.Fatal("Save succeeded despite injected failure")
+			}
+
+			reloaded, err := LoadAttestedRootStore(path, "arbitrum-one", 0)
+			if err != nil {
+				t.Fatalf("LoadAttestedRootStore after failed save: %v", err)
+			}
+			if got := reloaded.NextL1Block(); got != tc.wantCursor {
+				t.Fatalf("durable cursor = %d, want %d", got, tc.wantCursor)
+			}
+			entries, err := os.ReadDir(filepath.Dir(path))
+			if err != nil {
+				t.Fatalf("read state directory: %v", err)
+			}
+			if len(entries) != 1 || entries[0].Name() != filepath.Base(path) {
+				t.Fatalf("state directory contains %v, want only %s", entries, filepath.Base(path))
+			}
+		})
 	}
 }
 

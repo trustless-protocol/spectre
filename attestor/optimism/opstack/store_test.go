@@ -1,6 +1,7 @@
 package opstack
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -8,6 +9,68 @@ import (
 
 	"github.com/ethereum/go-ethereum/common"
 )
+
+type testStateFileSystem struct {
+	createTemp func(string, string) (stateFile, error)
+	rename     func(string, string) error
+	remove     func(string) error
+	syncDir    func(string) error
+}
+
+func (fs testStateFileSystem) CreateTemp(dir, pattern string) (stateFile, error) {
+	return fs.createTemp(dir, pattern)
+}
+
+func (fs testStateFileSystem) Rename(oldPath, newPath string) error {
+	return fs.rename(oldPath, newPath)
+}
+
+func (fs testStateFileSystem) Remove(path string) error {
+	return fs.remove(path)
+}
+
+func (fs testStateFileSystem) SyncDir(path string) error {
+	return fs.syncDir(path)
+}
+
+type failingStateFile struct {
+	stateFile
+	writeErr error
+	syncErr  error
+	closeErr error
+}
+
+func (f failingStateFile) Write(data []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	return f.stateFile.Write(data)
+}
+
+func (f failingStateFile) Sync() error {
+	if f.syncErr != nil {
+		return f.syncErr
+	}
+	return f.stateFile.Sync()
+}
+
+func (f failingStateFile) Close() error {
+	if f.closeErr != nil {
+		_ = f.stateFile.Close()
+		return f.closeErr
+	}
+	return f.stateFile.Close()
+}
+
+func realStateFileSystem() testStateFileSystem {
+	base := osStateFileSystem{}
+	return testStateFileSystem{
+		createTemp: base.CreateTemp,
+		rename:     base.Rename,
+		remove:     base.Remove,
+		syncDir:    base.SyncDir,
+	}
+}
 
 func testGame(idx uint64, l2Block uint64, claim [32]byte) ProposedRoot {
 	return ProposedRoot{
@@ -135,6 +198,113 @@ func TestSaveIsAtomicReplacement(t *testing.T) {
 			names = append(names, e.Name())
 		}
 		t.Fatalf("state dir contains %v, want only the state file", names)
+	}
+}
+
+// Every failure before rename must leave the last durable state intact and
+// remove the temporary file. A directory-sync failure occurs after rename, so
+// the new state is already visible and the caller must treat the save error as
+// an uncertain-but-committed outcome rather than overwrite it blindly.
+func TestSaveFailureMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		configure  func(testStateFileSystem) testStateFileSystem
+		wantCursor uint64
+	}{
+		{
+			name: "create temp",
+			configure: func(fs testStateFileSystem) testStateFileSystem {
+				fs.createTemp = func(string, string) (stateFile, error) {
+					return nil, errors.New("create failed")
+				}
+				return fs
+			},
+			wantCursor: 1,
+		},
+		{
+			name: "write temp",
+			configure: func(fs testStateFileSystem) testStateFileSystem {
+				create := fs.createTemp
+				fs.createTemp = func(dir, pattern string) (stateFile, error) {
+					file, err := create(dir, pattern)
+					return failingStateFile{stateFile: file, writeErr: errors.New("write failed")}, err
+				}
+				return fs
+			},
+			wantCursor: 1,
+		},
+		{
+			name: "sync temp",
+			configure: func(fs testStateFileSystem) testStateFileSystem {
+				create := fs.createTemp
+				fs.createTemp = func(dir, pattern string) (stateFile, error) {
+					file, err := create(dir, pattern)
+					return failingStateFile{stateFile: file, syncErr: errors.New("sync failed")}, err
+				}
+				return fs
+			},
+			wantCursor: 1,
+		},
+		{
+			name: "close temp",
+			configure: func(fs testStateFileSystem) testStateFileSystem {
+				create := fs.createTemp
+				fs.createTemp = func(dir, pattern string) (stateFile, error) {
+					file, err := create(dir, pattern)
+					return failingStateFile{stateFile: file, closeErr: errors.New("close failed")}, err
+				}
+				return fs
+			},
+			wantCursor: 1,
+		},
+		{
+			name: "rename temp",
+			configure: func(fs testStateFileSystem) testStateFileSystem {
+				fs.rename = func(string, string) error { return errors.New("rename failed") }
+				return fs
+			},
+			wantCursor: 1,
+		},
+		{
+			name: "sync directory after rename",
+			configure: func(fs testStateFileSystem) testStateFileSystem {
+				fs.syncDir = func(string) error { return errors.New("directory sync failed") }
+				return fs
+			},
+			wantCursor: 2,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "state.json")
+			store, err := LoadStore(path)
+			if err != nil {
+				t.Fatalf("LoadStore: %v", err)
+			}
+			store.Bootstrap(1)
+			if err := store.Save(); err != nil {
+				t.Fatalf("initial Save: %v", err)
+			}
+			store.Bootstrap(2)
+			store.fs = tc.configure(realStateFileSystem())
+			if err := store.Save(); err == nil {
+				t.Fatal("Save succeeded despite injected failure")
+			}
+
+			reloaded, err := LoadStore(path)
+			if err != nil {
+				t.Fatalf("LoadStore after failed save: %v", err)
+			}
+			if got := reloaded.NextGameIndex(); got != tc.wantCursor {
+				t.Fatalf("durable cursor = %d, want %d", got, tc.wantCursor)
+			}
+			entries, err := os.ReadDir(filepath.Dir(path))
+			if err != nil {
+				t.Fatalf("read state directory: %v", err)
+			}
+			if len(entries) != 1 || entries[0].Name() != filepath.Base(path) {
+				t.Fatalf("state directory contains %v, want only %s", entries, filepath.Base(path))
+			}
+		})
 	}
 }
 

@@ -92,20 +92,34 @@ func TestCorePortContract(t *testing.T) {
 		ExpectedBlockHash: &blockHash,
 		RunMode:           core.RunModeFinalized,
 	}
-	verdict, err := bridge.VerifyStateRoot(context.Background(), request)
-	if err != nil || !verdict.Valid || len(verdict.Signature) != ed25519.SignatureSize {
-		t.Fatalf("matching verdict = (%+v, %v), want signed valid", verdict, err)
-	}
-	message, err := attestation.SigningBytes(10, attestation.RunModeFinalized, commitment.BlockNumber, commitment.StateRoot[:], commitment.BlockHash[:])
-	if err != nil {
-		t.Fatalf("SigningBytes: %v", err)
-	}
-	if !ed25519.Verify(signer.PublicKey(), message, verdict.Signature) {
-		t.Fatal("positive verdict signature does not bind canonical identity")
+	for _, tc := range []struct {
+		name      string
+		request   core.RunMode
+		signedFor attestation.RunMode
+	}{
+		{name: "unsafe", request: core.RunModeUnsafe, signedFor: attestation.RunModeUnsafe},
+		{name: "safe", request: core.RunModeSafe, signedFor: attestation.RunModeSafe},
+		{name: "finalized", request: core.RunModeFinalized, signedFor: attestation.RunModeFinalized},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			request.RunMode = tc.request
+			verdict, err := bridge.VerifyStateRoot(context.Background(), request)
+			if err != nil || !verdict.Valid || len(verdict.Signature) != ed25519.SignatureSize {
+				t.Fatalf("matching verdict = (%+v, %v), want signed valid", verdict, err)
+			}
+			message, err := attestation.SigningBytes(10, tc.signedFor, commitment.BlockNumber, commitment.StateRoot[:], commitment.BlockHash[:])
+			if err != nil {
+				t.Fatalf("SigningBytes: %v", err)
+			}
+			if !ed25519.Verify(signer.PublicKey(), message, verdict.Signature) {
+				t.Fatal("positive verdict signature does not bind the requested run mode")
+			}
+		})
 	}
 
+	request.RunMode = core.RunModeFinalized
 	request.ExpectedStateRoot = [32]byte{1}
-	verdict, err = bridge.VerifyStateRoot(context.Background(), request)
+	verdict, err := bridge.VerifyStateRoot(context.Background(), request)
 	if err != nil || verdict.Valid || len(verdict.Signature) != 0 {
 		t.Fatalf("mismatch verdict = (%+v, %v), want unsigned valid=false", verdict, err)
 	}
