@@ -11,6 +11,16 @@ import (
 // waiting a minute. Production keeps the intentionally low-noise cadence.
 var queueReportInterval = time.Minute
 
+// queueReportQuietHeartbeat is how many consecutive UNCHANGED ticks pass before
+// one is reported, so a healthy relayer stays visible (~10 min at the 1m
+// interval) without printing every tick.
+//
+// It matches subscriber.quietScanHeartbeat in wall-clock terms rather than in
+// count: that loop ticks every 30s and heartbeats every 20 passes, this one
+// ticks every minute. The shared property is the cadence an operator reads, not
+// the number.
+const queueReportQuietHeartbeat = 10
+
 type clientUpdateTimes struct {
 	mu          sync.RWMutex
 	cosmosOnEVM time.Time
@@ -89,12 +99,85 @@ func (s *Services) queueStateAt(now time.Time) queueState {
 	}
 }
 
-func (s *Services) reportQueueState(now time.Time) {
+// counts is the part of a queue state that is a SIGNAL, separated from the part
+// that changes on its own.
+//
+// The *Age fields are deliberately excluded. They advance every tick by
+// construction, so comparing whole queueStates would find a difference every
+// time and a de-duplicating reporter would de-duplicate nothing -- the same
+// mistake D6 documents in the relay package's waiting-line dedupe. The ages
+// still print; they just do not decide whether to print.
+func (q queueState) counts() queueCounts {
+	return queueCounts{
+		cosmosQueued: q.cosmosQueued, ethQueued: q.ethQueued,
+		cosmosPending: q.cosmosPending, ethPending: q.ethPending, l2Pending: q.l2Pending,
+		cosmosTimeoutDead: q.cosmosTimeoutDead, ethTimeoutDead: q.ethTimeoutDead, l2TimeoutDead: q.l2TimeoutDead,
+		cosmosStuck: q.cosmosStuck, ethStuck: q.ethStuck, l2Stuck: q.l2Stuck,
+		cosmosWorstDeferrals: q.cosmosWorstDeferrals, ethWorstDeferrals: q.ethWorstDeferrals, l2WorstDeferrals: q.l2WorstDeferrals,
+		cosmosRetryPaused: q.cosmosRetryPaused, ethRetryPaused: q.ethRetryPaused, l2RetryPaused: q.l2RetryPaused,
+	}
+}
+
+type queueCounts struct {
+	cosmosQueued, ethQueued                                   int
+	cosmosPending, ethPending, l2Pending                      int
+	cosmosTimeoutDead, ethTimeoutDead, l2TimeoutDead          int
+	cosmosStuck, ethStuck, l2Stuck                            int
+	cosmosWorstDeferrals, ethWorstDeferrals, l2WorstDeferrals int
+	// The paused flags are counts() material by the rule above: they are signal,
+	// not something that advances on its own. Including them is what makes a
+	// persistence outage ENDING visible -- the ATTENTION line simply stops, and
+	// without this the routine lines would stay suppressed and the log would go
+	// quiet with nothing saying the state directory came back.
+	cosmosRetryPaused, ethRetryPaused, l2RetryPaused bool
+}
+
+// reportQueueState prints the routine lines only when something changed, or
+// every queueReportQuietHeartbeat ticks so an idle relayer still proves it is
+// running. It returns the counts it saw, for the caller to compare next tick.
+//
+// Measured before this: a six-hour run with an empty queue throughout produced
+// 748 [QueueState] lines, two a minute, none of which carried news. That volume
+// is what buries the lines worth reading.
+//
+// The two ATTENTION branches are NOT rate-limited. They fire only when funds are
+// stranded or timeouts are stuck, they are already rare, and an operator who
+// greps for them must find every occurrence.
+func (s *Services) reportQueueState(now time.Time, last *queueCounts, quietTicks *uint64) queueCounts {
 	state := s.queueStateAt(now)
+	current := state.counts()
+	changed := last == nil || current != *last
+	if changed {
+		*quietTicks = 0
+	}
+	routine := changed || advanceQuietTicks(quietTicks)
+
+	if routine {
+		s.logRoutineQueueLines(now, state)
+	}
+	s.logQueueAttention(state)
+	return current
+}
+
+// advanceQuietTicks counts one unchanged tick and reports whether this is the
+// one to log.
+func advanceQuietTicks(quietTicks *uint64) bool {
+	*quietTicks++
+	return *quietTicks%queueReportQuietHeartbeat == 0
+}
+
+func (s *Services) logRoutineQueueLines(now time.Time, state queueState) {
 	log.Printf("[QueueState] queued(cosmos=%d eth=%d) pending(cosmos=%d eth=%d l2=%d) timeout-dead-letter(cosmos=%d eth=%d l2=%d)",
 		state.cosmosQueued, state.ethQueued,
 		state.cosmosPending, state.ethPending, state.l2Pending,
 		state.cosmosTimeoutDead, state.ethTimeoutDead, state.l2TimeoutDead)
+	if cosmosOnEVM, evmOnCosmos, ok := s.clientUpdateAges(now); ok {
+		log.Printf("[QueueState] last client update: cosmos-on-eth=%s ago, eth-on-cosmos=%s ago",
+			cosmosOnEVM.Truncate(time.Second), evmOnCosmos.Truncate(time.Second))
+	}
+}
+
+func (s *Services) logQueueAttention(state queueState) {
 	if state.cosmosTimeoutDead > 0 || state.ethTimeoutDead > 0 || state.l2TimeoutDead > 0 {
 		log.Printf("[QueueState][ATTENTION] timeout submission gave up for cosmos=%d eth=%d l2=%d packet(s) (oldest: cosmos=%s eth=%s l2=%s); their escrowed funds require operator action.",
 			state.cosmosTimeoutDead, state.ethTimeoutDead, state.l2TimeoutDead,
@@ -109,17 +192,15 @@ func (s *Services) reportQueueState(now time.Time) {
 		log.Printf("[QueueState][ATTENTION] timeout retries are paused because pending-state persistence is unavailable (cosmos=%t eth=%t l2=%t); restore the state directory before retries resume.",
 			state.cosmosRetryPaused, state.ethRetryPaused, state.l2RetryPaused)
 	}
-	if cosmosOnEVM, evmOnCosmos, ok := s.clientUpdateAges(now); ok {
-		log.Printf("[QueueState] last client update: cosmos-on-eth=%s ago, eth-on-cosmos=%s ago",
-			cosmosOnEVM.Truncate(time.Second), evmOnCosmos.Truncate(time.Second))
-	}
 }
 
 // RunQueueReporter emits an immediate structured queue-state line and then
 // reports periodically until the engine context is cancelled. The adapter owns
 // the goroutine, so each Services instance has exactly one reporter.
 func (s *Services) RunQueueReporter(ctx context.Context) {
-	s.reportQueueState(time.Now())
+	// Both live on this goroutine and nowhere else, so neither needs a lock.
+	var quietTicks uint64
+	last := s.reportQueueState(time.Now(), nil, &quietTicks)
 	ticker := time.NewTicker(queueReportInterval)
 	defer ticker.Stop()
 	for {
@@ -127,7 +208,7 @@ func (s *Services) RunQueueReporter(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			s.reportQueueState(now)
+			last = s.reportQueueState(now, &last, &quietTicks)
 		}
 	}
 }
