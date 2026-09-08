@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/big"
 	"os"
 	"strconv"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	contractICS26Router "relayer/bindings/ICS26Router"
 
+	"github.com/cosmos/gogoproto/proto"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 )
 
@@ -133,8 +135,9 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		// waits forever, its escrow stays locked, and the log says nothing after
 		// the first "waiting" line.
 		var fresh []chain.Event
+		var settled map[settledKey]struct{}
 		if head >= from {
-			fresh, err = s.scanPacketLogs(ctx, filterer, from, head)
+			fresh, settled, err = s.scanPacketLogs(ctx, filterer, from, head)
 			if err != nil {
 				log.Printf("[SubscribeL2] scan [%d,%d]: %v", from, head, err)
 				continue // do NOT advance the cursor on failure (re-scan next tick)
@@ -142,7 +145,12 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 			from = head + 1 // range consumed; fresh events are now carried in the batch
 		}
 
-		batch := append(pending[:len(pending):len(pending)], fresh...)
+		// Filter BEFORE the handler, and filter the whole batch. A packet settled
+		// by this very scan must not reach handleBatch: it would be relayed for
+		// nothing and, worse, tracked again -- after settle removed it and after
+		// the cursor moved past the terminal log that would clear it. See
+		// dropSettled.
+		batch := dropSettled(append(pending[:len(pending):len(pending)], fresh...), settled)
 		if len(batch) == 0 {
 			pending = nil
 			continue
@@ -158,27 +166,33 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 //
 // A failure in any span fails the whole scan, so the caller leaves its cursor
 // untouched: a partially scanned range must never be mistaken for a complete one.
-func (s *Source) scanPacketLogs(ctx context.Context, filterer *contractICS26Router.ContractICS26RouterFilterer, from, to uint64) ([]chain.Event, error) {
+func (s *Source) scanPacketLogs(ctx context.Context, filterer *contractICS26Router.ContractICS26RouterFilterer, from, to uint64) ([]chain.Event, map[settledKey]struct{}, error) {
 	if chunk := s.logScanChunk; chunk > 0 && to >= from && to-from >= chunk {
 		var all []chain.Event
+		// One set across every span: a send in span 1 can be settled by a terminal
+		// log in span 3, and chunking must not hide that from the filter.
+		settled := map[settledKey]struct{}{}
 		for start := from; start <= to; start += chunk {
 			end := start + chunk - 1
 			if end > to {
 				end = to
 			}
-			events, err := s.scanPacketLogRange(ctx, filterer, start, end)
+			events, spanSettled, err := s.scanPacketLogRange(ctx, filterer, start, end)
 			if err != nil {
-				return nil, fmt.Errorf("span [%d,%d]: %w", start, end, err)
+				return nil, nil, fmt.Errorf("span [%d,%d]: %w", start, end, err)
 			}
 			all = append(all, events...)
+			for key := range spanSettled {
+				settled[key] = struct{}{}
+			}
 		}
-		return all, nil
+		return all, settled, nil
 	}
 	return s.scanPacketLogRange(ctx, filterer, from, to)
 }
 
 // scanPacketLogRange is one eth_getLogs pair over a span the provider will serve.
-func (s *Source) scanPacketLogRange(ctx context.Context, filterer *contractICS26Router.ContractICS26RouterFilterer, from, to uint64) ([]chain.Event, error) {
+func (s *Source) scanPacketLogRange(ctx context.Context, filterer *contractICS26Router.ContractICS26RouterFilterer, from, to uint64) ([]chain.Event, map[settledKey]struct{}, error) {
 	opts := &bind.FilterOpts{Start: from, End: &to, Context: ctx}
 	clientFilter := []string{s.l2ClientID}
 
@@ -186,7 +200,7 @@ func (s *Source) scanPacketLogRange(ctx context.Context, filterer *contractICS26
 
 	sends, err := filterer.FilterSendPacket(opts, clientFilter, nil)
 	if err != nil {
-		return nil, fmt.Errorf("filter SendPacket: %w", err)
+		return nil, nil, fmt.Errorf("filter SendPacket: %w", err)
 	}
 	defer sends.Close()
 	for sends.Next() {
@@ -195,12 +209,12 @@ func (s *Source) scanPacketLogRange(ctx context.Context, filterer *contractICS26
 		}
 	}
 	if err := sends.Error(); err != nil {
-		return nil, fmt.Errorf("iterate SendPacket: %w", err)
+		return nil, nil, fmt.Errorf("iterate SendPacket: %w", err)
 	}
 
 	acks, err := filterer.FilterWriteAcknowledgement(opts, clientFilter, nil)
 	if err != nil {
-		return nil, fmt.Errorf("filter WriteAcknowledgement: %w", err)
+		return nil, nil, fmt.Errorf("filter WriteAcknowledgement: %w", err)
 	}
 	defer acks.Close()
 	for acks.Next() {
@@ -209,9 +223,118 @@ func (s *Source) scanPacketLogRange(ctx context.Context, filterer *contractICS26
 		}
 	}
 	if err := acks.Error(); err != nil {
-		return nil, fmt.Errorf("iterate WriteAcknowledgement: %w", err)
+		return nil, nil, fmt.Errorf("iterate WriteAcknowledgement: %w", err)
 	}
-	return events, nil
+
+	settled, err := s.scanTerminalLogs(opts, filterer, clientFilter)
+	if err != nil {
+		return nil, nil, err
+	}
+	return events, settled, nil
+}
+
+// scanTerminalLogs reads the two events that CLOSE a packet's lifecycle on the
+// L2 -- AckPacket and TimeoutPacket -- and settles them.
+//
+// They return no chain.Event on purpose. A terminal event creates no relay work,
+// and feeding one to the relay loop would produce an empty "relay" of a packet
+// with nothing left to do. Their entire value is that they are free: without
+// them a packet another relayer acknowledged stays in our pending tracker until
+// a timeout scan happens to query for it.
+//
+// A nil settle hook makes this a no-op rather than an error: reading the logs
+// still costs two eth_getLogs calls, but a source that does not own a tracker
+// has nothing to do with them.
+func (s *Source) scanTerminalLogs(opts *bind.FilterOpts, filterer *contractICS26Router.ContractICS26RouterFilterer, clientFilter []string) (map[settledKey]struct{}, error) {
+	if s.settle == nil {
+		return nil, nil
+	}
+	settled := map[settledKey]struct{}{}
+
+	acked, err := filterer.FilterAckPacket(opts, clientFilter, nil)
+	if err != nil {
+		return nil, fmt.Errorf("filter AckPacket: %w", err)
+	}
+	defer acked.Close()
+	for acked.Next() {
+		s.settleTerminal("AckPacket", acked.Event.Packet, acked.Event.Sequence, settled)
+	}
+	if err := acked.Error(); err != nil {
+		return nil, fmt.Errorf("iterate AckPacket: %w", err)
+	}
+
+	timedOut, err := filterer.FilterTimeoutPacket(opts, clientFilter, nil)
+	if err != nil {
+		return nil, fmt.Errorf("filter TimeoutPacket: %w", err)
+	}
+	defer timedOut.Close()
+	for timedOut.Next() {
+		s.settleTerminal("TimeoutPacket", timedOut.Event.Packet, timedOut.Event.Sequence, settled)
+	}
+	if err := timedOut.Error(); err != nil {
+		return nil, fmt.Errorf("iterate TimeoutPacket: %w", err)
+	}
+	return settled, nil
+}
+
+// settledKey identifies a packet across the two shapes this file handles: the
+// chain.Event a send produced, and the router log a terminal event carries.
+//
+// It is the MARSHALED PACKET, not the client and sequence. Both shapes reach it
+// through the same EthPacketToCosmosPacket + proto.Marshal, so the bytes agree
+// whenever the packets do -- and disagree when they do not. That matters because
+// a client migration keeps the client id and restarts sequences from 1, so
+// seq=N names two different packets over the life of one client; a key of
+// client+sequence would let a stale terminal event drop the NEW seq=N from the
+// batch, and nothing downstream would notice it was never relayed.
+type settledKey string
+
+// dropSettled removes packets whose lifecycle closed inside the very range this
+// scan just read.
+//
+// Settling only the tracker is not enough, and the gap is not a small one. A
+// scan window that contains BOTH a send and its later AckPacket -- ordinary
+// after a restart, since the window is sized to cover the downtime -- settles
+// the packet and then hands the send to the relay loop anyway. handleBatch
+// relays it and TRACKS IT AGAIN, so the tracker entry comes back after settle
+// removed it, and the cursor has already moved past the terminal log that would
+// have cleared it. Nothing settles it a second time: the entry stays pending for
+// the life of the process and the timeout scanner keeps querying it.
+//
+// The same applies to a send already sitting in the retry queue that another
+// relayer acknowledged, which is why both halves of the batch are filtered and
+// not just the fresh ones.
+func dropSettled(batch []chain.Event, settled map[settledKey]struct{}) []chain.Event {
+	if len(settled) == 0 || len(batch) == 0 {
+		return batch
+	}
+	kept := batch[:0:0]
+	for _, e := range batch {
+		if _, done := settled[settledKey(e.Raw)]; done {
+			log.Printf("[SubscribeL2] dropping %s seq=%d from this batch: it settled inside the same scan range",
+				e.Type, e.Sequence)
+			continue
+		}
+		kept = append(kept, e)
+	}
+	return kept
+}
+
+// settleTerminal converts one terminal log to the packet identity the tracker
+// keys on and hands it to the hook.
+func (s *Source) settleTerminal(kind string, packet contractICS26Router.IICS26RouterMsgsPacket, sequence *big.Int, settled map[settledKey]struct{}) {
+	cosmosPacket := subscriber.EthPacketToCosmosPacket(packet, sequence)
+	raw, err := proto.Marshal(&cosmosPacket)
+	if err != nil {
+		// The packet came from the chain's own log, so this cannot happen without
+		// the binding and the proto type having diverged. Say so rather than
+		// settling a packet identity nobody can reproduce.
+		log.Printf("[SubscribeL2] %s seq=%d: marshal for settlement: %v", kind, cosmosPacket.Sequence, err)
+		return
+	}
+	log.Printf("[SubscribeL2] %s seq=%d settled; dropped from the pending tracker", kind, cosmosPacket.Sequence)
+	settled[settledKey(raw)] = struct{}{}
+	s.settle(raw)
 }
 
 // l2SendToEvent maps a SendPacket log to a recv (SendPacket) chain.Event, reusing the

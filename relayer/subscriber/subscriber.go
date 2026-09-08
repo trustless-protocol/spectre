@@ -31,10 +31,18 @@ const COMETBFT_SEND_PACKET_EVENT = "tm.event = 'Tx' AND send_packet.encoded_pack
 const COMETBFT_WRITE_ACK_PACKET_EVENT = "tm.event = 'Tx' AND write_acknowledgement.encoded_packet_hex EXISTS"
 const COMETBFT_TIMEOUT_PACKET_EVENT = "tm.event = 'Tx' AND timeout_packet.encoded_packet_hex EXISTS"
 
+// acknowledge_packet is the fourth event and the only TERMINAL one on this side:
+// Cosmos emits it when it consumes the acknowledgement for a packet it sent, so
+// the packet is settled. Without it the pending tracker only learns of a
+// settlement by querying, and a packet another relayer acknowledged sits in the
+// tracker until a scan happens to look.
+const COMETBFT_ACK_PACKET_EVENT = "tm.event = 'Tx' AND acknowledge_packet.encoded_packet_hex EXISTS"
+
 const EVENT_SEND_PACKET_FIELD = "send_packet.encoded_packet_hex"
 const EVENT_WRITE_ACK_PACKET_FIELD = "write_acknowledgement.encoded_packet_hex"
 const EVENT_ACKNOWLEDGEMENT_FIELD = "write_acknowledgement.encoded_acknowledgement_hex"
 const EVENT_TIMEOUT_PACKET_FIELD = "timeout_packet.encoded_packet_hex"
+const EVENT_ACK_PACKET_FIELD = "acknowledge_packet.encoded_packet_hex"
 const EVENT_TX_HEIGHT_FIELD = "tx.height"
 
 const ethStartupRecoveryLookbackEnv = "ETH_STARTUP_LOOKBACK_BLOCKS"
@@ -134,6 +142,7 @@ const defaultEthRecoveryChunkBlocks uint64 = 256
 const cometBFTSendPacketTxSearch = "send_packet.encoded_packet_hex EXISTS"
 const cometBFTWriteAckPacketTxSearch = "write_acknowledgement.encoded_packet_hex EXISTS"
 const cometBFTTimeoutPacketTxSearch = "timeout_packet.encoded_packet_hex EXISTS"
+const cometBFTAckPacketTxSearch = "acknowledge_packet.encoded_packet_hex EXISTS"
 
 // normalizeTimeoutSeconds converts IBC v2 timeout timestamps from nanoseconds to seconds.
 // ibc-go stores TimeoutTimestamp in nanoseconds, but the ETH side uses seconds.

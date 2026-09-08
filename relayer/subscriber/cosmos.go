@@ -239,6 +239,11 @@ func (s *Subscriber) subscribeCosmosOnce(
 		unsubscribeCosmos(stdCtx, ctx.Cosmos)
 		return fmt.Errorf("failed to subscribe to timeout_packet events: %w", err)
 	}
+	settledPacketSub, err := ctx.Cosmos.CosmosClient().WSEvents.Subscribe(stdCtx, "", COMETBFT_ACK_PACKET_EVENT, cosmosLiveEventBuffer)
+	if err != nil {
+		unsubscribeCosmos(stdCtx, ctx.Cosmos)
+		return fmt.Errorf("failed to subscribe to acknowledge_packet events: %w", err)
+	}
 	ctx.Logger.Println("[SubscribeCosmos] Successfully subscribed to CometBFT events")
 	defer unsubscribeCosmos(stdCtx, ctx.Cosmos)
 	// The delivery clock starts here, not at the first event: a subscription that
@@ -269,6 +274,11 @@ func (s *Subscriber) subscribeCosmosOnce(
 		case e, ok := <-timeoutPacketSub:
 			if !ok {
 				return fmt.Errorf("timeout_packet subscription channel closed")
+			}
+			s.processLiveCosmosEvent(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, liveHealth, e)
+		case e, ok := <-settledPacketSub:
+			if !ok {
+				return fmt.Errorf("acknowledge_packet subscription channel closed")
 			}
 			s.processLiveCosmosEvent(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, liveHealth, e)
 		case <-gapRecoveryTicker.C:
@@ -520,6 +530,7 @@ func recoverCosmosEvents(
 		cometBFTSendPacketTxSearch,
 		cometBFTWriteAckPacketTxSearch,
 		cometBFTTimeoutPacketTxSearch,
+		cometBFTAckPacketTxSearch,
 	}
 
 	var firstErr error
@@ -727,6 +738,30 @@ func decodeCosmosPacketsFromEvents(
 		})
 	}
 
+	settledEvent := events[EVENT_ACK_PACKET_FIELD]
+	for _, packetEncodedStr := range settledEvent {
+		packetBytes, err := hex.DecodeString(packetEncodedStr)
+		if err != nil {
+			logger.Printf("[%s] acknowledge_packet: failed to decode hex: %v", logPrefix, err)
+			continue
+		}
+
+		var packet channeltypesv2.Packet
+		if err := proto.Unmarshal(packetBytes, &packet); err != nil {
+			logger.Printf("[%s] acknowledge_packet: failed to unmarshal: %v", logPrefix, err)
+			continue
+		}
+
+		logger.Printf("[%s] acknowledge_packet received: seq=%d src=%s (settled)",
+			logPrefix, packet.Sequence, packet.SourceClient)
+		packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
+		packets = append(packets, services.CosmosPacket{
+			Type:        services.CosmosAcknowledged,
+			Packet:      &packet,
+			BlockNumber: blockNumber,
+		})
+	}
+
 	return packets
 }
 
@@ -754,6 +789,22 @@ func enqueueCosmosPackets(
 		key := cosmosEventKeyForPacket(packet)
 		if _, ok := seenEvents[key]; ok {
 			stats.skipped++
+			continue
+		}
+
+		// A terminal event settles the tracker and stops here. It must not reach
+		// AddCosmos: the batch is relay work, and this packet's lifecycle is over.
+		// The recovery pre-check below is skipped for the same reason -- it asks
+		// whether a packet still NEEDS relaying, which is not the question.
+		if packet.Type == services.CosmosAcknowledged {
+			seenEvents[key] = struct{}{}
+			batchBuilder.PendingTracker.RemovePacketIfCurrent(*packet.Packet)
+			// The queue too, not only the tracker: one pass can read a send and,
+			// further down the same list, the acknowledge_packet that closes it.
+			dequeued := batchBuilder.DropCosmosQueued(*packet.Packet)
+			ctx.Logger.Printf("[SubscribeCosmos] send seq=%d settled by acknowledge_packet; dropped from the pending tracker%s",
+				packet.Packet.Sequence, queuedSuffix(dequeued))
+			stats.recovered++
 			continue
 		}
 
@@ -891,3 +942,13 @@ func txHeightFromEvent(data commettypes.TMEventData, events map[string][]string)
 }
 
 // EthPacketToCosmosPacket converts an Ethereum ICS26Router packet to a Cosmos IBC v2 packet
+
+// queuedSuffix keeps the settlement line honest: it says the queue was touched
+// only when it was. A line that always claims both would be unfalsifiable, and
+// the queue case is the rarer one worth noticing.
+func queuedSuffix(dequeued bool) string {
+	if dequeued {
+		return " and from the relay queue"
+	}
+	return ""
+}

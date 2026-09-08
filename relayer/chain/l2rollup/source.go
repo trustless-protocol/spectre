@@ -105,6 +105,10 @@ type Source struct {
 	// without it.
 	includeProvisional bool
 
+	// settle is called for terminal L2 events; see WithSettleHook. nil means the
+	// source drops them, which is what it did before terminal events were read.
+	settle func(packet []byte)
+
 	// logScanChunk caps the block span of a single eth_getLogs. 0 means "one call
 	// for the whole range", which is what every provider that does not cap the span
 	// wants. Providers that do cap it vary by three orders of magnitude (Alchemy's
@@ -136,6 +140,28 @@ func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKi
 
 // WithLogScanChunk caps the block span of each eth_getLogs this source issues.
 // A zero or unset value keeps the single-call behaviour.
+// WithSettleHook registers what to do when the L2 emits a TERMINAL packet event
+// -- AckPacket or TimeoutPacket. Those close a packet's lifecycle rather than
+// creating relay work, so they never become a chain.Event: handing one to the
+// relay loop would produce an empty "relay" of a packet with nothing left to do.
+//
+// It takes the proto-marshaled packet, the same form chain.Event.Raw carries and
+// the same the module's untrack hook already takes, so one settlement path
+// serves both ways of learning that a packet is done.
+//
+// The hook is how the source settles the pending tracker without owning it. It
+// matters because the alternative is finding out by QUERY: today an ack another
+// relayer submitted leaves our packet in the tracker until a timeout scan looks,
+// and the doc's acceptance for this is explicit -- another relayer settles the
+// packet and our tracker drops it with no query at all.
+//
+// Optional; a source built without it simply ignores terminal events, which is
+// the behaviour every L2 source had before this existed.
+func (s *Source) WithSettleHook(settle func(packet []byte)) *Source {
+	s.settle = settle
+	return s
+}
+
 func (s *Source) WithLogScanChunk(n uint64) *Source {
 	s.logScanChunk = n
 	return s

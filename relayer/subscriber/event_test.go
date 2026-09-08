@@ -463,6 +463,11 @@ func TestDecodeCosmosPacketsFromEvents(t *testing.T) {
 		SourceClient:      "eth-client",
 		DestinationClient: "other-client",
 	})
+	settledPacketHex := mustPacketHex(t, channeltypesv2.Packet{
+		Sequence:          14,
+		SourceClient:      "cosmos-client",
+		DestinationClient: "eth-client",
+	})
 	ackHex := mustAckHex(t, channeltypesv2.Acknowledgement{
 		AppAcknowledgements: [][]byte{[]byte("ack")},
 	})
@@ -475,13 +480,14 @@ func TestDecodeCosmosPacketsFromEvents(t *testing.T) {
 			EVENT_WRITE_ACK_PACKET_FIELD: {ackPacketHex},
 			EVENT_ACKNOWLEDGEMENT_FIELD:  {ackHex},
 			EVENT_TIMEOUT_PACKET_FIELD:   {timeoutPacketHex},
+			EVENT_ACK_PACKET_FIELD:       {settledPacketHex},
 			EVENT_TX_HEIGHT_FIELD:        {"44"},
 		},
 		"test",
 	)
 
-	if len(packets) != 3 {
-		t.Fatalf("decoded packet count = %d, want 3", len(packets))
+	if len(packets) != 4 {
+		t.Fatalf("decoded packet count = %d, want 4", len(packets))
 	}
 	if packets[0].Type != services.CosmosSend || packets[0].Packet.Sequence != 11 {
 		t.Fatalf("packet[0] = type %v seq %d, want CosmosSend seq 11", packets[0].Type, packets[0].Packet.Sequence)
@@ -497,6 +503,13 @@ func TestDecodeCosmosPacketsFromEvents(t *testing.T) {
 	}
 	if packets[2].Type != services.CosmosTimeout || packets[2].Packet.Sequence != 13 {
 		t.Fatalf("packet[2] = type %v seq %d, want CosmosTimeout seq 13", packets[2].Type, packets[2].Packet.Sequence)
+	}
+	// acknowledge_packet is the fourth event and the only terminal one on this
+	// side: Cosmos consumed the ack for a packet it sent, so that packet is done.
+	// Without it a packet another relayer acknowledged stays in the pending
+	// tracker until a timeout scan happens to query for it.
+	if packets[3].Type != services.CosmosAcknowledged || packets[3].Packet.Sequence != 14 {
+		t.Fatalf("packet[3] = type %v seq %d, want CosmosAcknowledged seq 14", packets[3].Type, packets[3].Packet.Sequence)
 	}
 	for i, p := range packets {
 		if p.BlockNumber != 55 {
@@ -1481,6 +1494,60 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 		}
 		if cosmos, _ := bb.QueueDepths(); cosmos != 1 {
 			t.Fatalf("queued %d packets, want 1", cosmos)
+		}
+	})
+
+	// One pass can carry BOTH a send and the acknowledge_packet that closes it --
+	// ordinary during recovery, where the window is sized to cover the downtime.
+	// Settling only the tracker leaves the send QUEUED, so it is relayed for
+	// nothing and, worse, tracked again by that relay: after settling removed it,
+	// and after the cursor moved past the terminal event that would clear it a
+	// second time. The entry then stays pending for the life of the process.
+	t.Run("a send settled later in the same pass is removed from the queue too", func(t *testing.T) {
+		bb := services.NewBatchBuilder()
+		send := cosmosTestPacket(7, "cosmos-client", cosmosOnEVM)
+		settled := cosmosTestPacket(7, "cosmos-client", cosmosOnEVM)
+		settled.Type = services.CosmosAcknowledged
+
+		if _, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+			[]services.CosmosPacket{send, settled}, map[cosmosEventKey]struct{}{}, false); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+
+		if cosmos, _ := bb.QueueDepths(); cosmos != 0 {
+			t.Fatalf("queued %d packet(s); the send settled in this very pass and must not be relayed", cosmos)
+		}
+		if got := bb.PendingTracker.Len(); got != 0 {
+			t.Fatalf("pending tracker holds %d packet(s) after the settlement", got)
+		}
+	})
+
+	// The rule that makes terminal events safe to read at all: they close a
+	// packet's lifecycle, so they settle the tracker and must NEVER reach the
+	// batch. A terminal event in the relay queue is an empty "relay" of a packet
+	// with nothing left to do -- it would be proven, submitted, and rejected.
+	t.Run("a terminal acknowledge_packet settles the tracker and never reaches the batch", func(t *testing.T) {
+		bb := services.NewBatchBuilder()
+		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+		packet.Type = services.CosmosAcknowledged
+		bb.PendingTracker.Add(*packet.Packet, 40)
+		if bb.PendingTracker.Len() != 1 {
+			t.Fatal("the packet must be tracked before the terminal event arrives")
+		}
+
+		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+			[]services.CosmosPacket{packet}, map[cosmosEventKey]struct{}{}, false)
+		if err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		if cosmos, _ := bb.QueueDepths(); cosmos != 0 {
+			t.Fatalf("queued %d terminal event(s); a settled packet has no relay work left", cosmos)
+		}
+		if got := bb.PendingTracker.Len(); got != 0 {
+			t.Fatalf("pending tracker holds %d packet(s) after the settlement; the whole point is dropping it without a query", got)
+		}
+		if stats.recovered != 1 {
+			t.Fatalf("stats = %+v: a settlement is progress, not a skip", stats)
 		}
 	})
 

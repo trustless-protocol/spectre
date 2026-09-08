@@ -19,6 +19,8 @@ func (p CosmosPacketType) String() string {
 		return "Ack"
 	case CosmosTimeout:
 		return "Timeout"
+	case CosmosAcknowledged:
+		return "Acknowledged"
 	default:
 		return fmt.Sprintf("Unknown(%d)", int(p))
 	}
@@ -45,6 +47,11 @@ const (
 	CosmosSend CosmosPacketType = iota
 	CosmosAck
 	CosmosTimeout
+	// CosmosAcknowledged is a TERMINAL event: Cosmos consumed the acknowledgement
+	// for a packet it sent, so that packet's lifecycle is closed. It creates no
+	// relay work -- it only settles the pending tracker -- and must never reach
+	// the batch, or it becomes an empty "relay" of a packet with nothing to do.
+	CosmosAcknowledged
 )
 
 type EthPacketType int
@@ -158,6 +165,41 @@ func (b *BatchBuilder) AddCosmos(packet CosmosPacket) {
 	b.cosmosMtx.Unlock()
 	log.Printf("[BatchBuilder] Inserted cosmos packet: type=%s seq=%d (batch size: %d)",
 		packet.Type, packet.Packet.Sequence, count)
+}
+
+// DropCosmosQueued removes a packet from the Cosmos relay queue by identity.
+//
+// Settling the pending tracker is not enough on its own. A recovery scan can
+// read a send and, later in the SAME pass, the acknowledge_packet that closes
+// it; the send is already queued by then, and removing only the tracker entry
+// leaves the queue to relay a packet whose lifecycle is over -- and the relay
+// re-adds the tracker entry that settling just removed, after the scan cursor
+// has moved past the terminal event that would clear it again.
+//
+// It reports whether anything was removed so the caller can say so once rather
+// than logging a removal that did not happen.
+func (b *BatchBuilder) DropCosmosQueued(packet channeltypesv2.Packet) bool {
+	b.cosmosMtx.Lock()
+	defer b.cosmosMtx.Unlock()
+	// Full identity, not just the client pair and the sequence. A client
+	// migration keeps the client id and restarts sequences from 1
+	// (create-clients-eth repoints the existing client rather than adding one),
+	// so seq=N can name two different packets over the life of one client. A
+	// stale terminal event for the OLD seq=N would otherwise silently drop the
+	// NEW one from the queue -- never relayed, and nothing left to notice.
+	// packetIdentity is the tracker's own answer to exactly this replay, which is
+	// why the queue uses it too rather than a weaker key of its own.
+	target := identifyPacket(packet)
+	kept := b.cosmosPackets[:0:0]
+	for _, queued := range b.cosmosPackets {
+		if queued.Packet != nil && identifyPacket(*queued.Packet) == target {
+			continue
+		}
+		kept = append(kept, queued)
+	}
+	removed := len(kept) != len(b.cosmosPackets)
+	b.cosmosPackets = kept
+	return removed
 }
 
 func (b *BatchBuilder) AddEth(packet EthPacket) {

@@ -238,11 +238,17 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	// what that attestor's replica actually has at that height.
 	headerBuilder := l2rollup.NewAttestedHeaderBuilder(l2, router, attestor, verifier, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
 
+	trackL2Pending, untrackL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
 	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, attestor, includeProvisional).
-		WithLogScanChunk(cfg.LogScanChunk)
+		WithLogScanChunk(cfg.LogScanChunk).
+		// AckPacket / TimeoutPacket on the L2 close a packet's lifecycle. Reading
+		// them lets the tracker drop a packet another relayer settled without
+		// waiting for a timeout scan to query for it. Same hook the module uses to
+		// untrack after its own successful relay -- one settlement path, two ways
+		// of learning about it.
+		WithSettleHook(untrackL2Pending)
 	dest := l2rollup.NewDestination(worker, svcCtx, cfg.L2WasmClientID)
 	builder := l2rollup.NewBuilder(headerBuilder)
-	trackL2Pending, untrackL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
 
 	module := relay.NewModule(
 		fmt.Sprintf("%s->cosmos", cfg.kind),
