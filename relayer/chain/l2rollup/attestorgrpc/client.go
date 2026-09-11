@@ -17,6 +17,44 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// mapStatus turns a gRPC status into the transport-independent sentinel the
+// l2rollup error table classifies.
+//
+// The mapping lives HERE because this is the only place a gRPC code is visible:
+// l2rollup defines the port consumer-side so its tests use a small fake, and
+// pulling google.golang.org/grpc into it to read a code would undo that. What
+// crosses the boundary is meaning, not transport.
+//
+// An unmapped code is returned untouched, and the table then treats it as
+// transient — the safe default for a failure nobody has classified.
+func mapStatus(err error) error {
+	var sentinel error
+	switch status.Code(err) {
+	case codes.InvalidArgument:
+		sentinel = l2rollup.ErrAttestorBadRequest
+	case codes.NotFound:
+		// Since 04-Attestor B2 this code carries one meaning only: the src_chain or
+		// resource is not one this daemon serves. The Nitro-has-not-seen-the-block
+		// case that used to share it now answers Unavailable, which is why this can
+		// be classified permanent without inspecting the request.
+		sentinel = l2rollup.ErrAttestorUnknownRoute
+	case codes.FailedPrecondition:
+		sentinel = l2rollup.ErrAttestorReplicaBehind
+	case codes.Unavailable, codes.DeadlineExceeded:
+		// A deadline is grouped with Unavailable on purpose: both mean the attestor
+		// said nothing about the block, and silence must never be read as a "no".
+		sentinel = l2rollup.ErrAttestorUnavailable
+	case codes.Unimplemented:
+		sentinel = l2rollup.ErrAttestorUnimplemented
+	default:
+		return err
+	}
+	// Both %w: the sentinel is what the table matches on, and the original status
+	// is what an operator needs to read. Stringifying the cause here would keep the
+	// log line and lose every errors.Is below it.
+	return fmt.Errorf("%w: %w", sentinel, err)
+}
+
 // Client adapts the generated AttestorServiceClient to l2rollup.AttestorClient.
 type Client struct {
 	conn *grpc.ClientConn
@@ -45,7 +83,7 @@ func (c *Client) AttestedUpTo(ctx context.Context, srcChain string, includeProvi
 		IncludeProvisional: includeProvisional,
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("attestorgrpc: AttestedUpTo(%s): %w", srcChain, err)
+		return nil, false, fmt.Errorf("attestorgrpc: AttestedUpTo(%s): %w", srcChain, mapStatus(err))
 	}
 	if !resp.GetFound() {
 		return nil, false, nil
@@ -64,7 +102,7 @@ func (c *Client) AttestedRootAtOrBelow(ctx context.Context, srcChain string, l2B
 		IncludeProvisional: includeProvisional,
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("attestorgrpc: AttestedRootAtOrBelow(%s, %d): %w", srcChain, l2BlockNumber, err)
+		return nil, false, fmt.Errorf("attestorgrpc: AttestedRootAtOrBelow(%s, %d): %w", srcChain, l2BlockNumber, mapStatus(err))
 	}
 	if !resp.GetFound() {
 		return nil, false, nil
@@ -91,10 +129,12 @@ func (c *Client) VerifyStateRoot(ctx context.Context, srcChain string, l2BlockNu
 		RunMode:           runMode,
 	})
 	if err != nil {
+		// Unimplemented keeps its VerifyStateRoot-specific sentinel, which wraps the
+		// general one, so callers testing for either still match.
 		if status.Code(err) == codes.Unimplemented {
-			return l2rollup.VerifiedStateRoot{}, fmt.Errorf("%w: %v", l2rollup.ErrVerifyStateRootUnsupported, err)
+			return l2rollup.VerifiedStateRoot{}, fmt.Errorf("%w: %w", l2rollup.ErrVerifyStateRootUnsupported, err)
 		}
-		return l2rollup.VerifiedStateRoot{}, fmt.Errorf("attestorgrpc: VerifyStateRoot(%d): %w", l2BlockNumber, err)
+		return l2rollup.VerifiedStateRoot{}, fmt.Errorf("attestorgrpc: VerifyStateRoot(%d): %w", l2BlockNumber, mapStatus(err))
 	}
 	return l2rollup.VerifiedStateRoot{
 		Valid:     resp.GetValid(),

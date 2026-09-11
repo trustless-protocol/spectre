@@ -188,10 +188,15 @@ func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 	defer cancel()
 	root, found, err := s.attestor.AttestedUpTo(cctx, s.srcChainID, s.includeProvisional)
 	if err != nil {
-		return 0, fmt.Errorf("l2 source: attested-up-to (kind=%d): %w", s.headKind, err)
+		return 0, classifyAttestorFailure("L2Source:"+s.srcChainID,
+			fmt.Errorf("l2 source: attested-up-to (kind=%d): %w", s.headKind, err))
 	}
 	if !found {
-		return 0, nil // nothing attested yet — the module waits
+		// found=false is NOT a failure: the attestor has simply not attested
+		// anything yet. It is the same "not yet" as a RelayableHeight that has not
+		// caught up, so it must not be classified, logged as an error, or charged to
+		// any retry budget — the module waits.
+		return 0, nil
 	}
 	return root.GetL2BlockNumber(), nil
 }

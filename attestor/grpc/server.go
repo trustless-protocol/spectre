@@ -107,7 +107,7 @@ func (s *Server) AttestedUpTo(ctx context.Context, request *attestorpb.AttestedU
 		return nil, err
 	}
 	if ports.Feed == nil {
-		return nil, status.Error(codes.FailedPrecondition, "attestor route does not expose a commitment feed")
+		return nil, status.Error(codes.Unimplemented, "attestor route does not expose a commitment feed")
 	}
 	root, found, err := ports.Feed.AttestedUpTo(ctx, core.AttestationPolicy{IncludeProvisional: request.GetIncludeProvisional()})
 	if err != nil {
@@ -129,7 +129,7 @@ func (s *Server) AttestedRootAtOrBelow(ctx context.Context, request *attestorpb.
 		return nil, err
 	}
 	if ports.Feed == nil {
-		return nil, status.Error(codes.FailedPrecondition, "attestor route does not expose a commitment feed")
+		return nil, status.Error(codes.Unimplemented, "attestor route does not expose a commitment feed")
 	}
 	root, found, err := ports.Feed.AttestedRootAtOrBelow(
 		ctx,
@@ -193,7 +193,7 @@ func (s *Server) VerifyStateRoot(ctx context.Context, request *attestorpb.Verify
 		return nil, err
 	}
 	if ports.Verifier == nil {
-		return nil, status.Error(codes.FailedPrecondition, "attestor route does not expose a block verifier")
+		return nil, status.Error(codes.Unimplemented, "attestor route does not expose a block verifier")
 	}
 	decoded, err := requestFromProto(request)
 	if err != nil {
@@ -204,7 +204,7 @@ func (s *Server) VerifyStateRoot(ctx context.Context, request *attestorpb.Verify
 		return nil, mapError(err)
 	}
 	if verdict.Valid && len(verdict.Signature) != signatureLength {
-		return nil, status.Errorf(codes.FailedPrecondition, "positive attestation verdict has %d-byte signature, want %d", len(verdict.Signature), signatureLength)
+		return nil, status.Errorf(codes.Internal, "positive attestation verdict has %d-byte signature, want %d", len(verdict.Signature), signatureLength)
 	}
 	response := &attestorpb.VerifyStateRootResponse{
 		Valid:       verdict.Valid,
@@ -231,7 +231,7 @@ func (s *Server) route(requested string) (string, core.Ports, error) {
 	}
 	switch len(s.sourceChains) {
 	case 0:
-		return "", core.Ports{}, status.Error(codes.FailedPrecondition, "no chains are configured")
+		return "", core.Ports{}, status.Error(codes.NotFound, "no chains are configured")
 	case 1:
 		name := s.sourceChains[0]
 		return name, s.routes[name], nil
@@ -301,6 +301,8 @@ func mapError(err error) error {
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case core.ErrorUnavailable:
 		return status.Error(codes.Unavailable, err.Error())
+	case core.ErrorUnimplemented:
+		return status.Error(codes.Unimplemented, err.Error())
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}

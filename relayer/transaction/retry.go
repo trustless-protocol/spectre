@@ -19,6 +19,7 @@ import (
 	"math"
 	"math/big"
 	"math/bits"
+	"relayer/chain"
 	"strings"
 	"time"
 
@@ -211,27 +212,124 @@ func applyCosmosFeeHeadroom(fee int64, headroomStep int) int64 {
 	return int64(math.Ceil(float64(fee) * ratio))
 }
 
-type cosmosOutOfGasAction int
-
+// The knobs the ladders below turn. They are named in the units an operator
+// reads in a log line, and they are constants because the call site switches on
+// which knob a plan chose -- a typo in a literal there would silently pick the
+// wrong branch.
 const (
-	oogSplitBatch cosmosOutOfGasAction = iota
-	oogEscalateHeadroom
-	oogPermanent
+	knobBatchSize = "messages per batch"
+	knobCosmosGas = "cosmos gas limit"
+	knobEVMGas    = "eth gas limit"
 )
 
 func cosmosOutOfGas(codespace string, code uint32) bool {
 	return codespace == errortypes.ErrOutOfGas.Codespace() && code == errortypes.ErrOutOfGas.ABCICode()
 }
 
-// planCosmosOutOfGas always changes the next attempt. Non-atomic batches are
-// halved before retrying; atomic batches retain their all-or-nothing shape and
-// instead move up the finite headroom ladder.
-func planCosmosOutOfGas(msgCount, headroomStep int, finalGasLimit, maxBlockGas uint64, allowSplit bool) cosmosOutOfGasAction {
+// The change ladders this package owns, expressed as chain.ChangeFunc so the
+// engine can walk them without knowing what a basis point is.
+//
+// They are C1's third error class in transaction/: an out-of-gas failure is
+// neither transient (retrying the same gas fails the same way) nor permanent
+// (more gas would work). Handing back a ladder is what lets chain.Climb say
+// "retry, changed" and, at the bottom rung, "now it is permanent" in ONE place
+// instead of at each of the three call sites that used to write that branch out.
+//
+// Each is a pure function of the attempt number, which is what lets a test walk
+// one without a chain: change(0), change(1), change(2), and the last false.
+
+// planCosmosOutOfGas describes what an out-of-gas Cosmos transaction must change
+// next: a splittable batch halves, an atomic one climbs the finite gas ladder.
+// Which was chosen is readable off the returned Attempt's What, so the call site
+// acts on the change itself rather than on an enum only it knows how to read.
+//
+// There is deliberately no "give up" arm. Exhaustion is what chain.Climb reports
+// when the chosen ladder runs out, which is why the two call sites below no
+// longer each carry a copy of that decision.
+//
+// base is the gas limit the failed attempt used, so the ladder is anchored to
+// what actually ran rather than to a simulation that already proved too low.
+//
+// It returns the position to climb from as well as the ladder, because the two
+// ladders count different things. headroomStep counts gas escalations; splitting
+// does not advance it, and must not be read as though it did -- a batch that
+// reached step 2 by another route would otherwise be asked for the third rung of
+// the batch ladder and be told the ladder was exhausted while it still had eight
+// messages to halve. Each split re-derives the ladder from the new message
+// count, so its position is always the first rung.
+func planCosmosOutOfGas(cause error, msgCount, headroomStep int, base, maxBlockGas uint64, allowSplit bool) (chain.Retry, int) {
 	if allowSplit && msgCount > 1 {
-		return oogSplitBatch
+		return chain.NeedsChange(cause, CosmosBatchLadder(msgCount)), 0
 	}
-	if headroomStep+1 < len(cosmosGasHeadroom) && (maxBlockGas == 0 || finalGasLimit < maxBlockGas) {
-		return oogEscalateHeadroom
+	return chain.NeedsChange(cause, CosmosGasLadder(base, maxBlockGas)), headroomStep
+}
+
+// CosmosGasLadder returns the gas limit for the attempt after `attempt`
+// failures, anchored at base.
+//
+// maxBlockGas is a clamp, not a cut-off: an attempt that would exceed the block
+// limit is worth making at exactly the limit, because that is still more gas
+// than the failed one used. What ends the ladder is the rung being no larger
+// than the one before it -- either the finite headroom list ran out, or the
+// clamp has flattened two rungs onto the same number, and "retry with the
+// identical gas" is precisely the infinite loop this class exists to prevent.
+func CosmosGasLadder(base, maxBlockGas uint64) chain.ChangeFunc {
+	clamp := func(step int) uint64 {
+		gas := applyCosmosGasHeadroom(base, step)
+		if maxBlockGas > 0 && gas > maxBlockGas {
+			return maxBlockGas
+		}
+		return gas
 	}
-	return oogPermanent
+	return func(attempt int) (chain.Attempt, bool) {
+		step := attempt + 1
+		if attempt < 0 || step >= len(cosmosGasHeadroom) {
+			return chain.Attempt{}, false
+		}
+		gas := clamp(step)
+		if gas <= clamp(step-1) {
+			return chain.Attempt{}, false
+		}
+		return chain.Attempt{What: knobCosmosGas, To: gas}, true
+	}
+}
+
+// CosmosBatchLadder halves a non-atomic batch, down to one message.
+//
+// It stops at one rather than zero: a single message that still runs out of gas
+// is not a batching problem, and planCosmosOutOfGas hands it to CosmosGasLadder
+// instead. That hand-off is the decision the old planCosmosOutOfGas made inside
+// one enum; stating it as two ladders is what lets each be walked on its own.
+func CosmosBatchLadder(msgCount int) chain.ChangeFunc {
+	return func(attempt int) (chain.Attempt, bool) {
+		if attempt < 0 || msgCount <= 1 {
+			return chain.Attempt{}, false
+		}
+		size := msgCount
+		for i := 0; i <= attempt; i++ {
+			size /= 2
+			if size < 1 {
+				return chain.Attempt{}, false
+			}
+		}
+		return chain.Attempt{What: knobBatchSize, To: uint64(size)}, true
+	}
+}
+
+// EVMGasLadder returns the gas limit for the attempt after `attempt` failures,
+// anchored at base.
+//
+// The block ceiling is NOT folded in here, unlike the Cosmos ladder. Hitting the
+// chain's own limit is a different diagnosis from exhausting our headroom list --
+// one is fixed by a smaller batch, the other by a larger constant -- and the call
+// site checks it first so the actionable reason is not masked by generic
+// exhaustion. The call site clamps the rung this returns.
+func EVMGasLadder(base uint64) chain.ChangeFunc {
+	return func(attempt int) (chain.Attempt, bool) {
+		step := attempt + 1
+		if attempt < 0 || step >= len(evmGasHeadroomBasisPoints) {
+			return chain.Attempt{}, false
+		}
+		return chain.Attempt{What: knobEVMGas, To: applyEVMGasHeadroom(base, step)}, true
+	}
 }

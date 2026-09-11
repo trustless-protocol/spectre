@@ -76,6 +76,24 @@ type Module struct {
 	mu         sync.Mutex
 	lastHeight uint64
 
+	// sourceProbeAt is when the source may be asked again after it returned a
+	// PERMANENT failure, and sourceBackoff is the interval that produced it. Both
+	// zero while the source is healthy. Guarded by batchMu, like lastWait.
+	//
+	// A permanent source failure -- a misconfigured attestor route, a malformed
+	// request, an RPC the daemon does not implement -- cannot be fixed by asking
+	// again, but it CAN be fixed by an operator editing config, and nothing tells
+	// us when. So it is still probed, just not at the relay loop's own cadence:
+	// l2SubscribeInterval is 4s, and re-offering a queued packet at that rate turns
+	// one bad config line into ~21,600 attestor calls and log lines a day, each one
+	// looking like an ordinary transient RPC failure.
+	//
+	// This changes only HOW OFTEN the source is asked. It does not drop a packet
+	// and does not stop the module, both of which would be decisions about what
+	// chain.Permanent means for every adapter rather than about this cost.
+	sourceProbeAt time.Time
+	sourceBackoff time.Duration
+
 	// lastWait is the last "not yet relayable" state logged, so a wait that is not
 	// progressing prints once instead of once per flush. Touched only from the
 	// Subscribe callback goroutine (handleBatch), which is the sole caller.

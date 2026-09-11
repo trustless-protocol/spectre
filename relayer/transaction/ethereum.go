@@ -34,6 +34,7 @@ import (
 	contractICS26Router "relayer/bindings/ICS26Router"
 	routerContract "relayer/bindings/ICS26Router"
 	spectreContract "relayer/bindings/SpectreClient"
+	"relayer/chain"
 	relayerclient "relayer/client"
 	"relayer/keys"
 	services "relayer/services"
@@ -1389,15 +1390,21 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 						)
 					}
 
-					nextStep := gasStep + 1
-					if nextStep >= len(evmGasHeadroomBasisPoints) {
-						return receipt, submitDur, waitDur, fmt.Errorf(
-							"tx %s ran out of gas (gasUsed=%d of limit %d); exhausted finite gas ladder for %s: %w",
-							receipt.TxHash.Hex(), receipt.GasUsed, tx.Gas(), knob, services.ErrPermanentRelayFailure,
-						)
+					// Exhaustion is not decided here. The ladder is described, and
+					// chain.Climb is the single place that turns its bottom into a
+					// permanent failure -- the same place the two Cosmos out-of-gas
+					// sites use, so the three cannot drift apart.
+					cause := fmt.Errorf(
+						"tx %s ran out of gas (gasUsed=%d of limit %d); exhausted finite gas ladder for %s: %w",
+						receipt.TxHash.Hex(), receipt.GasUsed, tx.Gas(), knob, services.ErrPermanentRelayFailure,
+					)
+					next, bottom, ok := chain.Climb(chain.NeedsChange(cause, EVMGasLadder(baseGasLimit)), gasStep)
+					if !ok {
+						return receipt, submitDur, waitDur, bottom
 					}
 
-					nextGasLimit := applyEVMGasHeadroom(baseGasLimit, nextStep)
+					nextStep := gasStep + 1
+					nextGasLimit := next.To
 					if nextCeiling > 0 && nextGasLimit > nextCeiling {
 						nextGasLimit = nextCeiling
 					}

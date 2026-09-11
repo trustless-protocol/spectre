@@ -84,9 +84,12 @@ func (a *attestedHeaderBuilder) BuildHeader(ctx context.Context, request HeaderR
 // are both signed: the root is what the client will trust, the block hash binds the
 // complete execution header.
 //
-// A mismatch is transient by nature — the usual cause is the attestor replica lagging
-// the L2 RPC by a block, or a reorg the attestor has not yet re-derived — so it is
-// returned as a plain error and the relay loop retries. It never advances anything.
+// Every failure here goes through classifyAttestorFailure, which is the single
+// place that decides the class AND raises the alarm. A mismatch is transient by
+// nature — the usual cause is the attestor replica lagging the L2 RPC by a block,
+// or a reorg it has not yet re-derived — but it is alarmed, because a real
+// divergence looks identical and retrying one in silence hides the one condition
+// the attestor exists to detect. Nothing is ever advanced on any of these paths.
 func (a *attestedHeaderBuilder) bindToAttestation(ctx context.Context, height uint64, l2Header *types.Header) ([]byte, error) {
 	if a.attestor == nil {
 		return nil, fmt.Errorf("%s: attestor is required to build an authenticated L2 header", a.name)
@@ -95,16 +98,21 @@ func (a *attestedHeaderBuilder) bindToAttestation(ctx context.Context, height ui
 	blockHash := l2Header.Hash()
 	attestation, err := a.attestor.VerifyStateRoot(ctx, a.srcChain, height, stateRoot.Bytes(), blockHash.Bytes(), a.runMode)
 	if err != nil {
-		return nil, fmt.Errorf("%s: verify L2 block %d against the attestor: %w", a.name, height, err)
+		return nil, classifyAttestorFailure(a.name,
+			fmt.Errorf("%s: verify L2 block %d against the attestor: %w", a.name, height, err))
 	}
 	if !attestation.Valid {
-		return nil, fmt.Errorf(
-			"%s: the attestor does not recognise L2 block %d (state_root=%s block_hash=%s) as canonical at run_mode=%s; "+
+		return nil, classifyAttestorFailure(a.name, fmt.Errorf(
+			"%w: %s: the attestor does not recognise L2 block %d (state_root=%s block_hash=%s) as canonical at run_mode=%s; "+
 				"the L2 RPC and the attestor replica disagree, so this header is not attested state",
-			a.name, height, stateRoot.Hex(), blockHash.Hex(), a.runMode)
+			ErrAttestorDivergence, a.name, height, stateRoot.Hex(), blockHash.Hex(), a.runMode))
 	}
 	if err := a.verifier.Verify(height, stateRoot.Bytes(), blockHash.Bytes(), attestation.Signature); err != nil {
-		return nil, fmt.Errorf("%s: verify attestor signature for L2 block %d: %w", a.name, height, err)
+		// Through the table, not raw: an unclassified error defaults to transient,
+		// and a signature that does not verify is the one attestor failure where
+		// retrying unchanged is certainly useless.
+		return nil, classifyAttestorFailure(a.name, fmt.Errorf("%w: L2 block %d: %v",
+			ErrAttestorSignature, height, err))
 	}
 	return attestation.Signature, nil
 }

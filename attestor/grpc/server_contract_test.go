@@ -183,9 +183,13 @@ func TestAdapterContractVerifyErrorMatrix(t *testing.T) {
 	if err != nil || response.GetValid() || len(response.GetAttestationSignature()) != 0 {
 		t.Fatalf("mismatch response = (%+v, %v)", response, err)
 	}
+	// A positive verdict with no signature is a PLUGIN BUG, not a precondition
+	// that clears on its own, so it must not share a code with "the replica has
+	// not reached this block". The consumer classifies FailedPrecondition as
+	// retryable; a bug retried at the L2 poll cadence is retried forever.
 	ports.verdict = core.SignedBlockIdentityVerdict{Valid: true, BlockNumber: 100}
-	if _, err := client.VerifyStateRoot(context.Background(), request); status.Code(err) != codes.FailedPrecondition {
-		t.Fatalf("unsigned positive code = %v, want FailedPrecondition", status.Code(err))
+	if _, err := client.VerifyStateRoot(context.Background(), request); status.Code(err) != codes.Internal {
+		t.Fatalf("unsigned positive code = %v, want Internal", status.Code(err))
 	}
 	ports.verdict = validVerdict
 	response, err = client.VerifyStateRoot(context.Background(), request)
@@ -217,5 +221,96 @@ func TestAdapterContractWatchCapability(t *testing.T) {
 	update, err := stream.Recv()
 	if err != nil || update.GetRoot().GetL2BlockNumber() != 3 {
 		t.Fatalf("watch update = (%+v, %v)", update, err)
+	}
+}
+
+// Reported by @neitdung on #473. FailedPrecondition used to answer for a missing
+// verifier, a missing feed, an absent chain table and an unsigned positive
+// verdict as well as for a replica that has not reached the target block. The
+// consumer classifies FailedPrecondition as retryable, so every one of those
+// permanent conditions was retried at the L2 poll cadence forever and the
+// permanent-failure hold could never fire.
+//
+// These are CONFIGURATION failures: a route wired without the port it is being
+// asked for, or a daemon with no routes at all. They never clear on their own.
+// The matching relayer half is TestServerCodesClassifyIntoTheRightOutcome in
+// relayer/chain/l2rollup/attestorgrpc.
+func TestCapabilityAndRouteFailuresDoNotLookLikeReplicaLag(t *testing.T) {
+	ports := &fakePorts{status: core.FeedStatus{AttestationHead: core.RunModeFinalized}}
+
+	// A route wired with a Status reader but no Feed or Verifier: reachable, and
+	// unable to answer, permanently.
+	partial := core.Ports{Status: ports}
+	service, err := New(map[string]core.Ports{"chain-a": partial}, Options{})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	client := newContractClient(t, service)
+
+	cases := []struct {
+		name string
+		call func() error
+		want codes.Code
+	}{
+		{
+			name: "AttestedUpTo on a route with no commitment feed",
+			call: func() error {
+				_, err := client.AttestedUpTo(context.Background(), &attestorpb.AttestedUpToRequest{SrcChain: "chain-a"})
+				return err
+			},
+			want: codes.Unimplemented,
+		},
+		{
+			name: "AttestedRootAtOrBelow on a route with no commitment feed",
+			call: func() error {
+				_, err := client.AttestedRootAtOrBelow(context.Background(),
+					&attestorpb.AttestedRootAtOrBelowRequest{SrcChain: "chain-a", L2BlockNumber: 10})
+				return err
+			},
+			want: codes.Unimplemented,
+		},
+		{
+			name: "VerifyStateRoot on a route with no block verifier",
+			call: func() error {
+				_, err := client.VerifyStateRoot(context.Background(), &attestorpb.VerifyStateRootRequest{
+					SrcChain:          "chain-a",
+					BlockNumber:       10,
+					ExpectedStateRoot: make([]byte, 32),
+					RunMode:           attestorpb.RunMode_RUN_MODE_FINALIZED,
+				})
+				return err
+			},
+			want: codes.Unimplemented,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.call()
+			if err == nil {
+				t.Fatal("a route without the port answered successfully")
+			}
+			if got := status.Code(err); got != tc.want {
+				t.Fatalf("code = %v, want %v; %v is what a replica that has not caught up returns, "+
+					"so the relayer would retry this configuration mistake forever", got, tc.want, codes.FailedPrecondition)
+			}
+		})
+	}
+}
+
+// The legacy empty src_chain path resolves the sole configured route. With no
+// routes at all there is nothing to resolve, and that is a configuration the
+// caller must fix -- NotFound, per 04-Attestor: "NotFound chỉ dành cho
+// resource/configuration mà caller phải sửa".
+func TestEmptySrcChainWithNoRoutesIsNotFound(t *testing.T) {
+	service := &Server{routes: map[string]core.Ports{}, options: Options{AllowLegacyEmptySrcChain: true}}
+	client := newContractClient(t, service)
+
+	_, err := client.AttestedUpTo(context.Background(), &attestorpb.AttestedUpToRequest{})
+	if err == nil {
+		t.Fatal("a server with no routes answered successfully")
+	}
+	if got := status.Code(err); got != codes.NotFound {
+		t.Fatalf("code = %v, want NotFound; a daemon serving no chains is a configuration error, not replica lag", got)
 	}
 }

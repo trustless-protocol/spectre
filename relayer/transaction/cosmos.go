@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"relayer/chain"
 	services "relayer/services"
 	utils "relayer/utils"
 
@@ -631,6 +632,14 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 
 	shouldSplit := false
 	var finalGasLimit uint64
+	// unscaledGasLimit is finalGasLimit BEFORE applyCosmosGasHeadroom and before
+	// the block clamp. The out-of-gas ladder is anchored on it, not on
+	// finalGasLimit: anchoring on the scaled value applies the headroom factor a
+	// second time, and once finalGasLimit has been clamped to maxBlockGas every
+	// rung flattens onto the clamp, so the ladder reports itself exhausted while
+	// real headroom steps remain. It is also what makes the rung the ladder names
+	// equal the gas the retry actually computes at headroomStep+1.
+	var unscaledGasLimit uint64
 
 	// Simulate gas consumption for the messages in the batch.
 	if len(sdkMsgs) > 0 {
@@ -646,6 +655,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			}
 		} else {
 			// Apply the current finite gas-headroom factor.
+			unscaledGasLimit = simulatedGas
 			adjustedGas := applyCosmosGasHeadroom(simulatedGas, headroomStep)
 			if maxBlockGas > 0 && adjustedGas >= maxBlockGas {
 				log.Printf("[SendCosmosTxBatch] Adjusted gas %d exceeds max block gas %d for batch of size %d", adjustedGas, maxBlockGas, len(sdkMsgs))
@@ -700,6 +710,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 		} else {
 			finalGasLimit = baseGas * uint64(len(sdkMsgs))
 		}
+		unscaledGasLimit = finalGasLimit
 		finalGasLimit = applyCosmosGasHeadroom(finalGasLimit, headroomStep)
 	}
 
@@ -846,24 +857,27 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			// CheckTx rejects the transaction before inclusion, so its sequence
 			// remains available. The next attempt must still change: split a
 			// splittable batch or advance the finite headroom ladder.
-			switch planCosmosOutOfGas(len(sdkMsgs), headroomStep, finalGasLimit, maxBlockGas, allowSplit) {
-			case oogSplitBatch:
-				log.Printf("[SendCosmosTxBatch] splitting CheckTx out-of-gas batch of %d", len(sdkMsgs))
-				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence)
-			case oogEscalateHeadroom:
-				nextStep := headroomStep + 1
-				log.Printf("[SendCosmosTxBatch] retrying CheckTx out-of-gas batch at headroom x%.1f", cosmosGasHeadroom[nextStep])
-				return h.sendCosmosTxBatchAtHeadroom(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence, allowSplit, nextStep)
-			default:
+			cause := &services.CosmosTxFailure{
+				Stage:     "CheckTx",
+				Code:      syncResult.Code,
+				Codespace: syncResult.Codespace,
+				Log:       syncResult.Log,
+				Data:      syncResult.Data,
+				Err:       services.ErrPermanentRelayFailure,
+			}
+			plan, at := planCosmosOutOfGas(cause, len(sdkMsgs), headroomStep, unscaledGasLimit, maxBlockGas, allowSplit)
+			next, bottom, ok := chain.Climb(plan, at)
+			if !ok {
 				log.Printf("[SendCosmosTxBatch] CheckTx out-of-gas batch cannot receive more gas; reporting permanent")
-				return sequence, 0, &services.CosmosTxFailure{
-					Stage:     "CheckTx",
-					Code:      syncResult.Code,
-					Codespace: syncResult.Codespace,
-					Log:       syncResult.Log,
-					Data:      syncResult.Data,
-					Err:       services.ErrPermanentRelayFailure,
-				}
+				return sequence, 0, bottom
+			}
+			switch next.What {
+			case knobBatchSize:
+				log.Printf("[SendCosmosTxBatch] splitting CheckTx out-of-gas batch of %d to %d", len(sdkMsgs), next.To)
+				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence)
+			default:
+				log.Printf("[SendCosmosTxBatch] retrying CheckTx out-of-gas batch at %s", next)
+				return h.sendCosmosTxBatchAtHeadroom(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence, allowSplit, headroomStep+1)
 			}
 		}
 		if isCosmosDuplicatePacketError(syncResult.Codespace, syncResult.Code) {
@@ -910,24 +924,27 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			// DeliverTx consumed the account sequence. A transient result must also
 			// change the next attempt, or an underestimated batch repeats forever.
 			nextSequence := sequence + 1
-			switch planCosmosOutOfGas(len(sdkMsgs), headroomStep, finalGasLimit, maxBlockGas, allowSplit) {
-			case oogSplitBatch:
-				log.Printf("[SendCosmosTxBatch] splitting included out-of-gas batch of %d", len(sdkMsgs))
-				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, nextSequence)
-			case oogEscalateHeadroom:
-				nextStep := headroomStep + 1
-				log.Printf("[SendCosmosTxBatch] retrying included out-of-gas batch at headroom x%.1f", cosmosGasHeadroom[nextStep])
-				return h.sendCosmosTxBatchAtHeadroom(stdCtx, svcCtx, sdkMsgs, accountNumber, nextSequence, allowSplit, nextStep)
-			default:
+			cause := &services.CosmosTxFailure{
+				Stage:     "DeliverTx",
+				Code:      txResult.TxResult.Code,
+				Codespace: txResult.TxResult.Codespace,
+				Log:       txResult.TxResult.Log,
+				Data:      txResult.TxResult.Data,
+				Err:       services.ErrPermanentRelayFailure,
+			}
+			plan, at := planCosmosOutOfGas(cause, len(sdkMsgs), headroomStep, unscaledGasLimit, maxBlockGas, allowSplit)
+			next, bottom, ok := chain.Climb(plan, at)
+			if !ok {
 				log.Printf("[SendCosmosTxBatch] out-of-gas batch cannot receive more gas; reporting permanent")
-				return nextSequence, 0, &services.CosmosTxFailure{
-					Stage:     "DeliverTx",
-					Code:      txResult.TxResult.Code,
-					Codespace: txResult.TxResult.Codespace,
-					Log:       txResult.TxResult.Log,
-					Data:      txResult.TxResult.Data,
-					Err:       services.ErrPermanentRelayFailure,
-				}
+				return nextSequence, 0, bottom
+			}
+			switch next.What {
+			case knobBatchSize:
+				log.Printf("[SendCosmosTxBatch] splitting included out-of-gas batch of %d to %d", len(sdkMsgs), next.To)
+				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, nextSequence)
+			default:
+				log.Printf("[SendCosmosTxBatch] retrying included out-of-gas batch at %s", next)
+				return h.sendCosmosTxBatchAtHeadroom(stdCtx, svcCtx, sdkMsgs, accountNumber, nextSequence, allowSplit, headroomStep+1)
 			}
 		}
 		return sequence, 0, &services.CosmosTxFailure{

@@ -22,6 +22,11 @@ type mockSource struct {
 	proofHeights          []uint64
 	failMembershipOn      map[string]bool // Raw payload -> return a retryable proof error
 	permanentMembershipOn map[string]bool // Raw payload -> return a permanent proof error
+	// relayableErr, when set, is returned by RelayableHeight instead of a height.
+	// relayableCalls counts how often the source was actually asked, which is the
+	// thing the permanent-failure hold is about.
+	relayableErr   error
+	relayableCalls int
 }
 
 func (m *mockSource) Chain() chain.ChainType { return chain.Cosmos }
@@ -30,6 +35,10 @@ func (m *mockSource) Subscribe(context.Context, func(context.Context, []chain.Ev
 }
 func (m *mockSource) LatestHeight(context.Context) (uint64, error) { return m.latest, nil }
 func (m *mockSource) RelayableHeight(context.Context) (uint64, error) {
+	m.relayableCalls++
+	if m.relayableErr != nil {
+		return 0, m.relayableErr
+	}
 	if m.relayable != 0 {
 		return m.relayable, nil
 	}
@@ -45,7 +54,7 @@ func (m *mockSource) MembershipProof(_ context.Context, packet []byte, height ui
 		return nil, chain.Permanent(errors.New("timed out"))
 	}
 	if m.failMembershipOn[string(packet)] {
-		return nil, chain.Retryable(errors.New("proof unavailable"))
+		return nil, chain.Transient(errors.New("proof unavailable"))
 	}
 	return []byte("membership"), nil
 }
@@ -1417,4 +1426,92 @@ func TestHandleBatch_StuckSendNamesTheTimeoutExit(t *testing.T) {
 	if strings.Contains(stuck, "no other exit") {
 		t.Fatalf("a send is refunded once past its timeout, so it does have another exit:\n%s", stuck)
 	}
+}
+
+// A permanently-failing source -- a misconfigured attestor route, a malformed
+// request, an RPC the daemon does not implement -- used to be asked again on
+// every pass. The L2 loop re-offers its queued packets every 4s and deliberately
+// does so even when the chain produced no block, so one bad config line became
+// roughly 21,600 attestor calls and log lines a day, each looking like an
+// ordinary transient RPC failure.
+//
+// The hold changes only how often the source is asked. It must not drop a packet
+// and must not skip the durable tracking that pays for the timeout refund.
+func TestPermanentSourceFailureIsHeldOff(t *testing.T) {
+	events := []chain.Event{{Type: chain.SendPacket, Sequence: 7, Height: 40, Raw: []byte("pkt-7")}}
+
+	t.Run("the source is not asked again during the hold", func(t *testing.T) {
+		src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}
+		m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+
+		out := captureLog(func() { m.handleBatch(context.Background(), events) })
+		if src.relayableCalls != 1 {
+			t.Fatalf("first pass asked the source %d times, want 1", src.relayableCalls)
+		}
+		if !strings.Contains(out, "PERMANENT") {
+			t.Fatalf("a permanent source failure must say so, not read as a transient RPC error:\n%s", out)
+		}
+
+		for i := 0; i < 5; i++ {
+			m.handleBatch(context.Background(), events)
+		}
+		if src.relayableCalls != 1 {
+			t.Fatalf("source asked %d times across 6 passes; the hold is not holding", src.relayableCalls)
+		}
+	})
+
+	// The hold skips the RPC and the proof, never the durable record: a packet
+	// queued while the source is held off must still be tracked, or it can never
+	// be refunded when it expires.
+	t.Run("packets are still tracked while held off", func(t *testing.T) {
+		src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}
+		var tracked [][]byte
+		m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{},
+			WithPacketTracker(func(raw []byte, _ uint64) bool {
+				tracked = append(tracked, raw)
+				return true
+			}, nil))
+
+		m.handleBatch(context.Background(), events) // arms the hold
+		m.handleBatch(context.Background(), events) // held off
+
+		if len(tracked) != 2 {
+			t.Fatalf("tracked %d packets across two passes, want 2: a packet queued during the hold "+
+				"that is never tracked can never be refunded", len(tracked))
+		}
+	})
+
+	t.Run("the hold clears once the source answers", func(t *testing.T) {
+		src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}
+		m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+
+		m.handleBatch(context.Background(), events)
+		m.sourceProbeAt = time.Now().Add(-time.Second) // the operator fixed the config
+		src.relayableErr = nil
+
+		out := captureLog(func() { m.handleBatch(context.Background(), events) })
+		if src.relayableCalls != 2 {
+			t.Fatalf("source asked %d times; the probe after the hold expired did not happen", src.relayableCalls)
+		}
+		if !strings.Contains(out, "permanent-failure hold cleared") {
+			t.Fatalf("a recovered source must say so:\n%s", out)
+		}
+		if !m.sourceProbeAt.IsZero() || m.sourceBackoff != 0 {
+			t.Fatalf("hold state survived recovery: probeAt=%v backoff=%v", m.sourceProbeAt, m.sourceBackoff)
+		}
+	})
+
+	// A transient failure must not arm the hold, or a source that is merely
+	// unreachable for a moment goes quiet for up to fifteen minutes.
+	t.Run("a transient failure does not arm the hold", func(t *testing.T) {
+		src := &mockSource{latest: 100, relayableErr: chain.Transient(errors.New("attestor unavailable"))}
+		m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+
+		m.handleBatch(context.Background(), events)
+		m.handleBatch(context.Background(), events)
+
+		if src.relayableCalls != 2 {
+			t.Fatalf("source asked %d times across two passes, want 2: a transient failure was treated as permanent", src.relayableCalls)
+		}
+	})
 }

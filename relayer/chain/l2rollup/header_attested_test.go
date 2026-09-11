@@ -11,6 +11,8 @@ import (
 	"attestor/types/attestation"
 	attestorpb "attestor/types/attestor"
 
+	"relayer/chain"
+
 	"github.com/ethereum/go-ethereum/core/types"
 )
 
@@ -148,8 +150,14 @@ func TestBindToAttestation_RejectsASignatureFromTheWrongAttestor(t *testing.T) {
 	at := &fakeAttestor{verifyValid: true, verifySignature: make([]byte, 64)}
 	b := &attestedHeaderBuilder{attestor: at, verifier: verifier, runMode: attestorpb.RunMode_RUN_MODE_SAFE, name: "l2-opstack"}
 
-	if _, err := b.bindToAttestation(context.Background(), 4096, header); err == nil {
+	_, err := b.bindToAttestation(context.Background(), 4096, header)
+	if err == nil {
 		t.Fatal("signature made by the wrong key must fail")
+	}
+	// Failing is not enough: an unclassified error defaults to TRANSIENT, so the
+	// path would retry a key that can never verify, on every flush, forever.
+	if !errors.Is(err, ErrAttestorSignature) || !chain.IsPermanent(err) {
+		t.Fatalf("err = %v; want ErrAttestorSignature classified permanent", err)
 	}
 }
 
@@ -172,8 +180,12 @@ func TestBindToAttestation_RejectsASignatureFromAnotherFinalityLevel(t *testing.
 	at := &fakeAttestor{verifyValid: true, verifySignature: signature}
 	b := &attestedHeaderBuilder{attestor: at, verifier: verifier, runMode: attestorpb.RunMode_RUN_MODE_FINALIZED, name: "l2-opstack"}
 
-	if _, err := b.bindToAttestation(context.Background(), 4096, header); err == nil {
+	_, bindErr := b.bindToAttestation(context.Background(), 4096, header)
+	if bindErr == nil {
 		t.Fatal("signature issued at unsafe finality was accepted by a finalized verifier")
+	}
+	if !errors.Is(bindErr, ErrAttestorSignature) || !chain.IsPermanent(bindErr) {
+		t.Fatalf("err = %v; want ErrAttestorSignature classified permanent", bindErr)
 	}
 }
 

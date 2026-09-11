@@ -125,7 +125,7 @@ func (a *Adapter) VerifyStateRoot(ctx context.Context, request core.BlockIdentit
 		return verdict, nil
 	}
 	if !a.signer.Configured() {
-		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorFailedPrecondition, "attestation signer is not configured", nil)
+		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorUnimplemented, "attestation signer is not configured", nil)
 	}
 	runMode, err := attestation.ParseRunMode(string(request.RunMode))
 	if err != nil {

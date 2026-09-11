@@ -140,11 +140,14 @@ func TestCorePortContract(t *testing.T) {
 		t.Fatalf("above-head error kind = %v, want FailedPrecondition (err %v)", core.ErrorKindOf(err), err)
 	}
 
+	// A missing signer is a CONFIGURATION error and never clears on its own; the
+	// above-head case a few lines up is the one that does. They shared a kind
+	// until now, which made the consumer retry a misconfigured daemon forever.
 	unsigned := newContractAdapter(t, reader, attestation.Signer{})
 	request.BlockNumber = 7
 	request.ExpectedStateRoot = stateRoot
-	if _, err := unsigned.VerifyStateRoot(context.Background(), request); core.ErrorKindOf(err) != core.ErrorFailedPrecondition {
-		t.Fatalf("unsigned positive error kind = %v, want FailedPrecondition (err %v)", core.ErrorKindOf(err), err)
+	if _, err := unsigned.VerifyStateRoot(context.Background(), request); core.ErrorKindOf(err) != core.ErrorUnimplemented {
+		t.Fatalf("unsigned positive error kind = %v, want Unimplemented (err %v)", core.ErrorKindOf(err), err)
 	}
 
 	unavailable := newContractAdapter(t, contractHeaderReader{err: errors.New("Nitro unavailable")}, signer)

@@ -55,15 +55,24 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 	// module does not burn an expensive Groth16 proof / beacon build every flush
 	// while waiting. This replaces the legacy blocking waitCosmosAppHash /
 	// waitBeaconFinality with a non-blocking value check.
+	//
+	// Held off while the source is in permanent failure. The events are already
+	// TRACKED above, so a packet queued during the hold still gets its timeout
+	// refund -- the hold skips the RPC and the proof, never the durable record.
+	if m.sourceHeldOff(time.Now()) {
+		m.lastWait = waitLogState{}
+		return allIndices(len(events))
+	}
 	relayable, err := m.src.RelayableHeight(ctx)
 	if err != nil {
-		log.Printf("[relay %s] relayable height: %v", m.name, err)
+		m.noteSourceFailure(err, "relayable height")
 		// Forget the last wait: this flush learned nothing about the frontier, so a
 		// wait that resumes identically afterwards is news again rather than a
 		// repeat, and the error lines in between do not leave a silent gap.
 		m.lastWait = waitLogState{}
 		return allIndices(len(events))
 	}
+	m.noteSourceHealthy()
 
 	var stalled []waiting // still-waiting packets, with how long each has waited
 	provable := make([]chain.Event, 0, len(events))
@@ -128,7 +137,7 @@ func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 	// tx completes, preventing a refresh update from racing the planned height.
 	foldPlan, proofHeight, err := m.prepareBatchUpdate(ctx, relayable)
 	if err != nil {
-		log.Printf("[relay %s] update client to height %d: %v", m.name, relayable, err)
+		m.noteSourceFailure(err, fmt.Sprintf("update client to height %d", relayable))
 		return append(requeue, provableIdx...)
 	}
 	if foldPlan != nil {
@@ -449,4 +458,56 @@ func (m *Module) relayFoldedIsolated(ctx context.Context, folding chain.FoldingD
 		m.settleDelivered(single)
 	}
 	return requeue
+}
+
+// sourceHeldOff reports whether the source is inside a permanent-failure hold,
+// and logs the first tick that ends one so the recovery is visible.
+//
+// Callers must hold batchMu.
+func (m *Module) sourceHeldOff(now time.Time) bool {
+	if m.sourceProbeAt.IsZero() {
+		return false
+	}
+	if now.Before(m.sourceProbeAt) {
+		return true
+	}
+	m.sourceProbeAt = time.Time{} // probe this pass; noteSourceFailure re-arms it
+	return false
+}
+
+// noteSourceFailure logs a source failure and, when it is PERMANENT, holds the
+// source off for a widening interval.
+//
+// The log line says which it was. Without that an operator sees the same
+// "relayable height: ..." line for a route the attestor does not serve and for a
+// replica that is a second behind, and the first looks like the second for as
+// long as it takes someone to read the classifier.
+//
+// Callers must hold batchMu.
+func (m *Module) noteSourceFailure(err error, what string) {
+	if !chain.IsPermanent(err) {
+		m.noteSourceHealthy() // a transient answer means the source is reachable
+		log.Printf("[relay %s] %s: %v", m.name, what, err)
+		return
+	}
+	// Same 1m->15m ladder the periodic client update uses; one cadence for
+	// "this keeps failing, stop asking so often" rather than two.
+	m.sourceBackoff = nextPeriodicUpdateBackoff(m.sourceBackoff)
+	m.sourceProbeAt = time.Now().Add(m.sourceBackoff)
+	log.Printf("[relay %s][ATTENTION] %s: %v; this is PERMANENT — no retry resolves it, "+
+		"so the source is held off for %s rather than asked every pass. Queued packets are kept and "+
+		"still time out normally; fix the configuration to clear it.",
+		m.name, what, err, m.sourceBackoff)
+}
+
+// noteSourceHealthy clears the hold after the source answers.
+//
+// Callers must hold batchMu.
+func (m *Module) noteSourceHealthy() {
+	if m.sourceBackoff == 0 && m.sourceProbeAt.IsZero() {
+		return
+	}
+	log.Printf("[relay %s] source answered again; permanent-failure hold cleared", m.name)
+	m.sourceBackoff = 0
+	m.sourceProbeAt = time.Time{}
 }

@@ -16,6 +16,13 @@ const (
 	ErrorFailedPrecondition
 	ErrorUnavailable
 	ErrorInternal
+	// ErrorUnimplemented: this daemon does not serve that capability for this
+	// route -- no signer, no block verifier, no commitment feed. Distinct from
+	// ErrorFailedPrecondition on purpose: a precondition clears on its own when
+	// the replica catches up, and this one never does until an operator edits
+	// the config. Collapsing the two makes the consumer retry a configuration
+	// mistake forever. See 04-Attestor §"grpc sở hữu mapping thống nhất".
+	ErrorUnimplemented
 )
 
 // Error carries a stable class without erasing the underlying error.
