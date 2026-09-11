@@ -1,9 +1,8 @@
 use alloy_primitives::{Address, B256};
-use cosmwasm_std::testing::MockStorage;
-use serde::{Deserialize, Serialize};
+use cosmwasm_std::{testing::MockStorage, Storage};
+use serde::{Deserialize, Serialize, Serializer};
 
 use crate::{
-    attestation::AttestationHead,
     error::Error,
     runtime,
     state::{ClientState, CommonProfile, ConsensusState, Header, Height, RuntimeProfile},
@@ -11,6 +10,23 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 struct Profile(CommonProfile);
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct FailingSerializeProfile(CommonProfile);
+
+impl Serialize for FailingSerializeProfile {
+    fn serialize<SerializerType>(
+        &self,
+        _serializer: SerializerType,
+    ) -> Result<SerializerType::Ok, SerializerType::Error>
+    where
+        SerializerType: Serializer,
+    {
+        Err(serde::ser::Error::custom(
+            "intentional serialization failure",
+        ))
+    }
+}
 
 impl RuntimeProfile for Profile {
     fn common(&self) -> &CommonProfile {
@@ -21,15 +37,31 @@ impl RuntimeProfile for Profile {
     }
 }
 
-fn profile_with_attestation_head(attestation_head: AttestationHead) -> Profile {
+impl RuntimeProfile for FailingSerializeProfile {
+    fn common(&self) -> &CommonProfile {
+        &self.0
+    }
+
+    fn expected_profile_version() -> &'static str {
+        "test_attestor_v1"
+    }
+}
+
+fn storage_snapshot(storage: &dyn Storage) -> [Option<Vec<u8>>; 3] {
+    [
+        storage.get(crate::store::HOST_CLIENT_STATE_KEY.as_bytes()),
+        storage.get(crate::store::consensus_db_key(5).as_bytes()),
+        storage.get(crate::store::consensus_db_key(7).as_bytes()),
+    ]
+}
+
+fn profile() -> Profile {
     Profile(CommonProfile {
         l2_chain_id: 2,
         l2_router: Address::with_last_byte(1),
         commitment_slot: B256::with_last_byte(2),
         profile_version: "test_attestor_v1".into(),
         l2_header_fork: crate::canonical_header::ExecutionHeaderFork::London,
-        attestor_public_key: B256::with_last_byte(3),
-        attestation_head,
     })
 }
 
@@ -45,18 +77,12 @@ fn header(height: u64, block: u8, parent: B256) -> Header {
 }
 
 fn bootstrap() -> (ClientState<Profile>, ConsensusState) {
-    bootstrap_with_attestation_head(AttestationHead::Safe)
-}
-
-fn bootstrap_with_attestation_head(
-    attestation_head: AttestationHead,
-) -> (ClientState<Profile>, ConsensusState) {
     let header = header(5, 5, B256::with_last_byte(4));
     (
         ClientState {
             latest_height: 5,
             frozen_height: None,
-            profile: profile_with_attestation_head(attestation_head),
+            profile: profile(),
         },
         header.consensus_state(0).unwrap(),
     )
@@ -82,6 +108,33 @@ fn stores_higher_updates_and_historical_backfills_without_rewinding() {
             .latest_height,
         7
     );
+}
+
+#[test]
+fn constructs_explicit_update_effects_before_commit() {
+    let (client, _) = bootstrap();
+    let transition =
+        runtime::build_update_transition(client, &header(7, 7, B256::ZERO), None, None, None, 11)
+            .unwrap();
+
+    assert_eq!(transition.client().unwrap().latest_height, 7);
+    let (height, consensus) = transition.consensus().unwrap();
+    assert_eq!(height, 7);
+    assert_eq!(consensus.first_accepted_at, 11);
+}
+
+#[test]
+fn validates_every_update_effect_before_writing_any_of_them() {
+    let mut storage = MockStorage::new();
+    let (client, consensus) = bootstrap();
+    runtime::instantiate(&mut storage, &client, &consensus, vec![9], 10).unwrap();
+    let before = storage_snapshot(&storage);
+
+    assert!(matches!(
+        runtime::update::<FailingSerializeProfile>(&mut storage, &header(7, 7, B256::ZERO), 11),
+        Err(Error::JsonDecode(_))
+    ));
+    assert_eq!(storage_snapshot(&storage), before);
 }
 
 /// A re-submission of a block already stored is ignored.
@@ -112,111 +165,57 @@ fn re_submitting_a_stored_block_is_ignored() {
 }
 
 #[test]
-fn same_height_finalized_conflict_freezes_without_overwriting() {
+fn same_height_conflict_is_rejected_without_freezing_or_overwriting() {
     let mut storage = MockStorage::new();
-    let (client, consensus) = bootstrap_with_attestation_head(AttestationHead::Finalized);
+    let (client, consensus) = bootstrap();
     runtime::instantiate(&mut storage, &client, &consensus, vec![9], 10).unwrap();
     let original = runtime::consensus_state(&storage, 5).unwrap();
 
-    // The entrypoint authenticated both headers before they reached this state
-    // machine. At a finalized head, a same-height conflict freezes the client
-    // durably because it cannot be a normal L2 reorg.
-    assert_eq!(
-        runtime::update::<Profile>(&mut storage, &header(5, 8, B256::with_last_byte(4)), 11)
-            .unwrap(),
-        None
-    );
+    // Anyone can author contradictory bare headers, so a conflict without authenticated
+    // attestations is rejected rather than acted upon: the update fails and the client stays open.
+    assert!(matches!(
+        runtime::update::<Profile>(&mut storage, &header(5, 8, B256::with_last_byte(4)), 11),
+        Err(Error::StateConflict { height: 5 })
+    ));
     assert_eq!(
         runtime::client_state::<Profile>(&storage)
             .unwrap()
             .frozen_height,
-        Some(5),
-        "a conflict between authenticated headers must freeze the client"
+        None,
+        "a conflict without authenticated attestations must not freeze the client"
     );
     assert_eq!(runtime::consensus_state(&storage, 5).unwrap(), original);
 
-    assert!(matches!(
-        runtime::update::<Profile>(&mut storage, &header(6, 6, original.l2_block_hash), 12),
-        Err(Error::Frozen(5))
-    ));
+    // And the client keeps working: a later honest update still lands.
+    assert_eq!(
+        runtime::update::<Profile>(&mut storage, &header(6, 6, original.l2_block_hash), 12)
+            .unwrap(),
+        Some(6)
+    );
 }
 
 #[test]
-fn reorgable_same_height_conflicts_are_rejected_without_freezing() {
-    for attestation_head in [AttestationHead::Unsafe, AttestationHead::Safe] {
-        let mut storage = MockStorage::new();
-        let (client, consensus) = bootstrap_with_attestation_head(attestation_head);
-        runtime::instantiate(&mut storage, &client, &consensus, vec![9], 10).unwrap();
-        let original = runtime::consensus_state(&storage, 5).unwrap();
-
-        assert!(matches!(
-            runtime::update::<Profile>(&mut storage, &header(5, 8, B256::with_last_byte(4)), 11),
-            Err(Error::StateConflict { height: 5 })
-        ));
-        assert_eq!(
-            runtime::client_state::<Profile>(&storage)
-                .unwrap()
-                .frozen_height,
-            None,
-            "{attestation_head:?} conflict froze the client"
-        );
-        assert_eq!(runtime::consensus_state(&storage, 5).unwrap(), original);
-    }
-}
-
-#[test]
-fn finalized_conflict_with_a_bad_parent_is_rejected_before_the_parent_check() {
+fn same_height_conflict_with_a_bad_parent_is_rejected_before_the_parent_check() {
     let mut storage = MockStorage::new();
-    let (client, consensus) = bootstrap_with_attestation_head(AttestationHead::Finalized);
+    let (client, consensus) = bootstrap();
     runtime::instantiate(&mut storage, &client, &consensus, vec![9], 10).unwrap();
     runtime::update::<Profile>(&mut storage, &header(4, 2, B256::with_last_byte(1)), 11).unwrap();
     let original = runtime::consensus_state(&storage, 5).unwrap();
     let conflicting = header(5, 8, B256::with_last_byte(99));
 
-    // The conflict is detected before the parent-hash check and freezes the
-    // client, so a malformed parent cannot hide attributable equivocation.
-    assert_eq!(
-        runtime::update::<Profile>(&mut storage, &conflicting, 12).unwrap(),
-        None
-    );
+    // The conflict is detected before the parent-hash check, so the reported error names the
+    // conflict rather than the bad parent — the ordering is what makes the message useful.
+    assert!(matches!(
+        runtime::update::<Profile>(&mut storage, &conflicting, 12),
+        Err(Error::StateConflict { height: 5 })
+    ));
     assert_eq!(
         runtime::client_state::<Profile>(&storage)
             .unwrap()
             .frozen_height,
-        Some(5)
+        None
     );
     assert_eq!(runtime::consensus_state(&storage, 5).unwrap(), original);
-}
-
-#[test]
-fn only_finalized_conflicts_prove_misbehaviour() {
-    let first = header(5, 5, B256::with_last_byte(4));
-    let second = header(5, 8, B256::with_last_byte(4));
-    for (attestation_head, want) in [
-        (AttestationHead::Unsafe, false),
-        (AttestationHead::Safe, false),
-        (AttestationHead::Finalized, true),
-    ] {
-        assert_eq!(
-            runtime::is_actionable_misbehaviour(attestation_head, &first, &second).unwrap(),
-            want,
-            "{attestation_head:?} conflict misbehaviour classification"
-        );
-
-        let mut storage = MockStorage::new();
-        let (client, consensus) = bootstrap_with_attestation_head(attestation_head);
-        runtime::instantiate(&mut storage, &client, &consensus, vec![9], 10).unwrap();
-        assert_eq!(
-            runtime::apply_misbehaviour::<Profile>(&mut storage, &first, &second).unwrap(),
-            want
-        );
-        assert_eq!(
-            runtime::client_state::<Profile>(&storage)
-                .unwrap()
-                .frozen_height,
-            want.then_some(5)
-        );
-    }
 }
 
 #[test]

@@ -10,7 +10,7 @@
 
 use cosmwasm_std as _;
 use l2_client as _;
-use op_verifier as _;
+use l2_op_stack as _;
 
 pub mod contract;
 pub mod msg;

@@ -1,10 +1,8 @@
 //! Local validation shared by every L2 adapter.
 
 use alloy_primitives::B256;
-use cosmwasm_std::Api;
 
 use crate::{
-    attestation,
     error::Error,
     evm_proof::{verify_bounded_account, ProofLimits},
     msg::AttestedL2Header,
@@ -20,7 +18,6 @@ pub const ROUTER_PROOF_LIMITS: ProofLimits = ProofLimits {
 
 /// Validates a common attested header and derives every stored root.
 pub fn verify_attested_header<P: RuntimeProfile>(
-    api: &dyn Api,
     profile: &P,
     header: &AttestedL2Header,
 ) -> Result<Header, Error> {
@@ -31,24 +28,6 @@ pub fn verify_attested_header<P: RuntimeProfile>(
 
     header.l2_header.validate_for_fork(common.l2_header_fork)?;
     let block_hash = header.l2_header.hash(common.l2_header_fork)?;
-    let message = attestation::signing_bytes(
-        common.l2_chain_id,
-        common.attestation_head,
-        header.l2_header.number(),
-        header.l2_header.state_root(),
-        block_hash,
-    );
-    if header.attestor_signature.len() != 64
-        || !api
-            .ed25519_verify(
-                &message,
-                &header.attestor_signature,
-                common.attestor_public_key.as_slice(),
-            )
-            .map_err(|_| Error::InvalidAttestorSignature)?
-    {
-        return Err(Error::InvalidAttestorSignature);
-    }
     let router = verify_bounded_account(
         ROUTER_PROOF_LIMITS,
         header.l2_header.state_root(),

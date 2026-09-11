@@ -15,9 +15,6 @@ pub struct AttestedL2Header {
     pub l2_header: CanonicalEvmHeader,
     /// Proof of the configured router account against the execution state root.
     pub router_proof: EvmAccountProof,
-    /// Ed25519 signature by the configured attestor over this exact L2 block
-    /// identity. The full execution header is bound through its block hash.
-    pub attestor_signature: Vec<u8>,
 }
 
 /// Direct client-creation message.
@@ -69,6 +66,13 @@ pub enum SudoMsg {
         proof: Binary,
         merkle_path: MerklePath,
     },
+    VerifyUpgradeAndUpdateState {
+        upgrade_client_state: Binary,
+        upgrade_consensus_state: Binary,
+        proof_upgrade_client: Binary,
+        proof_upgrade_consensus_state: Binary,
+    },
+    MigrateClientStore {},
 }
 
 /// Update result returned to the host.

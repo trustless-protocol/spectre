@@ -98,34 +98,42 @@ pub const fn get_subtree_index(idx: u64) -> u64 {
 
 // See spec: <https://github.com/ethereum/consensus-specs/blob/ff99bc03d6da29d9ef6e055bdb8500e1b2942f1e/specs/electra/light-client/fork.md#L26>
 /// Normalize a merkle branch to a depth for given gindex.
-/// # Panics
-/// Panics if the merkle branch is larger than the calculated depth for the given gindex.
-#[must_use]
-pub fn normalize_merkle_branch(branch: &[B256], gindex: u64) -> Vec<B256> {
+/// # Errors
+/// Returns an error if the merkle branch is larger than the calculated depth for the given gindex.
+pub fn normalize_merkle_branch(
+    branch: &[B256],
+    gindex: u64,
+) -> Result<Vec<B256>, EthereumIBCError> {
     let depth = floorlog2(gindex);
-    let num_extra = depth - branch.len();
+    let num_extra =
+        depth
+            .checked_sub(branch.len())
+            .ok_or(EthereumIBCError::MerkleBranchTooLong {
+                maximum: depth,
+                found: branch.len(),
+            })?;
 
     // TODO: Switch to std::iter::repeat_n when cosmwasm supports rust 1.85 (https://github.com/CosmWasm/cosmwasm/issues/2292)
-    vec![B256::default(); num_extra]
+    Ok(vec![B256::default(); num_extra]
         .into_iter()
         .chain(branch.to_vec())
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
 mod test {
-    use alloy_primitives::{const_hex::FromHex, B256};
+    use alloy_primitives::B256;
 
-    use crate::sync_protocol_helpers::normalize_merkle_branch;
+    use crate::{error::EthereumIBCError, sync_protocol_helpers::normalize_merkle_branch};
 
     #[test]
     fn test_nomralize_merkle_branch() {
-        let branch = vec![B256::from_hex(
-            "0x75d7411cb01daad167713b5a9b7219670f0e500653cbbcd45cfe1bfe04222459",
-        )
-        .unwrap()];
+        let branch = vec![B256::from_slice(
+            &hex::decode("75d7411cb01daad167713b5a9b7219670f0e500653cbbcd45cfe1bfe04222459")
+                .unwrap(),
+        )];
         let gindex = 4;
-        let normalized = normalize_merkle_branch(&branch, gindex);
+        let normalized = normalize_merkle_branch(&branch, gindex).unwrap();
 
         let expected_branch = vec![B256::default(), branch[0]];
         assert_eq!(normalized, expected_branch);
@@ -135,15 +143,19 @@ mod test {
     fn test_normalize_merkle_branch_with_no_extra() {
         let branch = vec![B256::default(); 3];
         let gindex = 8;
-        let normalized = normalize_merkle_branch(&branch, gindex);
+        let normalized = normalize_merkle_branch(&branch, gindex).unwrap();
 
         assert_eq!(normalized, branch);
     }
 
     #[test]
-    #[should_panic(expected = "attempt to subtract with overflow")]
-    fn test_normalize_merkle_branch_panics_on_invalid_branch() {
-        // should panic if num_extra becomes negative (depth < branch.len())
-        let _ = normalize_merkle_branch(&[B256::default(); 3], 2);
+    fn test_normalize_merkle_branch_rejects_invalid_branch() {
+        assert!(matches!(
+            normalize_merkle_branch(&[B256::default(); 3], 2),
+            Err(EthereumIBCError::MerkleBranchTooLong {
+                maximum: 1,
+                found: 3,
+            })
+        ));
     }
 }

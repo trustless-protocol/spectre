@@ -55,6 +55,7 @@ pub fn verify_header<V: BlsVerify>(
     header: &Header,
     bls_verifier: V,
 ) -> Result<(), EthereumIBCError> {
+    validate_light_client_update_bounds(&header.consensus_update)?;
     let trusted_consensus_state = TrustedConsensusState::new(
         client_state,
         consensus_state.clone(),
@@ -251,7 +252,7 @@ pub fn validate_light_client_update<V: BlsVerify>(
         finalized_root_gindex_at_slot(client_state, update.attested_header.beacon.slot)?;
     is_valid_normalized_merkle_branch(
         finalized_root,
-        &normalize_merkle_branch(&update.finality_branch, finalized_root_gindex),
+        &normalize_merkle_branch(&update.finality_branch, finalized_root_gindex)?,
         finalized_root_gindex,
         update.attested_header.beacon.state_root,
     )
@@ -290,7 +291,7 @@ pub fn validate_light_client_update<V: BlsVerify>(
             &normalize_merkle_branch(
                 update.next_sync_committee_branch.as_ref().unwrap(),
                 next_sync_committee_gindex,
-            ),
+            )?,
             next_sync_committee_gindex,
             update.attested_header.beacon.state_root,
         )
@@ -355,6 +356,29 @@ pub fn validate_light_client_update<V: BlsVerify>(
     Ok(())
 }
 
+/// Enforces variable-size update limits before Merkle hashing or BLS host queries.
+///
+/// # Errors
+/// Returns an error when an execution payload exceeds its consensus bound.
+pub fn validate_light_client_update_bounds(
+    update: &LightClientUpdate,
+) -> Result<(), EthereumIBCError> {
+    const MAX_EXTRA_DATA_BYTES: usize = 32;
+    for extra_data in [
+        &update.attested_header.execution.extra_data,
+        &update.finalized_header.execution.extra_data,
+    ] {
+        if extra_data.len() > MAX_EXTRA_DATA_BYTES {
+            return Err(EthereumIBCError::ResourceLimit {
+                resource: "execution payload extra_data",
+                maximum: MAX_EXTRA_DATA_BYTES,
+                found: extra_data.len(),
+            });
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod test {
     use ibc_proto_eureka::ibc::lightclients::wasm::v1::ClientMessage;
@@ -368,6 +392,25 @@ mod test {
     use super::*;
 
     struct TestBlsVerifier;
+
+    struct UnreachableBlsVerifier;
+
+    impl BlsVerify for UnreachableBlsVerifier {
+        type Error = BlsError;
+
+        fn fast_aggregate_verify(
+            &self,
+            _public_keys: &[BlsPublicKey],
+            _msg: B256,
+            _signature: BlsSignature,
+        ) -> Result<(), BlsError> {
+            panic!("resource bounds must run before BLS verification")
+        }
+
+        fn aggregate(&self, _public_keys: &[BlsPublicKey]) -> Result<BlsPublicKey, BlsError> {
+            panic!("resource bounds must run before BLS aggregation")
+        }
+    }
 
     impl BlsVerify for TestBlsVerifier {
         type Error = BlsError;
@@ -421,5 +464,40 @@ mod test {
             bls_verifier,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn oversized_update_fields_fail_before_bls_host_queries() {
+        let fixture: fixtures::StepsFixture =
+            fixtures::load("Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack");
+        let initial_state: InitialState = fixture.get_data_at_step(0);
+        let relayer_messages: RelayerMessages = fixture.get_data_at_step(1);
+        let (update_client_msgs, _, _, _) = relayer_messages.get_sdk_msgs();
+        let client_message = ClientMessage::decode(
+            update_client_msgs[0]
+                .client_message
+                .clone()
+                .unwrap()
+                .value
+                .as_slice(),
+        )
+        .unwrap();
+        let mut header: Header = serde_json::from_slice(&client_message.data).unwrap();
+        header.consensus_update.attested_header.execution.extra_data = vec![0; 33].into();
+
+        assert!(matches!(
+            verify_header(
+                &initial_state.consensus_state,
+                &initial_state.client_state,
+                header.consensus_update.attested_header.execution.timestamp + 1_000,
+                &header,
+                UnreachableBlsVerifier,
+            ),
+            Err(EthereumIBCError::ResourceLimit {
+                resource: "execution payload extra_data",
+                maximum: 32,
+                found: 33,
+            })
+        ));
     }
 }

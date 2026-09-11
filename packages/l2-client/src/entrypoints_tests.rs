@@ -1,12 +1,11 @@
 use alloy_primitives::{Address, Bloom, Bytes, FixedBytes, B256, U256};
 use cosmwasm_std::{
     testing::{mock_dependencies, mock_env},
-    Binary,
+    Binary, Storage,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    attestation::AttestationHead,
     canonical_header::{CanonicalEvmHeader, ExecutionHeaderFork},
     entrypoints,
     error::Error,
@@ -29,33 +28,33 @@ impl RuntimeProfile for Profile {
     }
 }
 
+fn storage_snapshot(storage: &dyn Storage, heights: &[u64]) -> Vec<Option<Vec<u8>>> {
+    std::iter::once(storage.get(crate::store::HOST_CLIENT_STATE_KEY.as_bytes()))
+        .chain(
+            heights
+                .iter()
+                .map(|height| storage.get(crate::store::consensus_db_key(*height).as_bytes())),
+        )
+        .collect()
+}
+
 struct Adapter;
 
 impl L2LightClient for Adapter {
     type Profile = Profile;
 
-    fn verify(
-        _api: &dyn cosmwasm_std::Api,
-        _profile: &Profile,
-        header: &AttestedL2Header,
-    ) -> Result<Header, Error> {
+    fn verify(_profile: &Profile, header: &AttestedL2Header) -> Result<Header, Error> {
         Ok(normalize(header))
     }
 }
 
 fn profile() -> Profile {
-    profile_with_attestation_head(AttestationHead::Safe)
-}
-
-fn profile_with_attestation_head(attestation_head: AttestationHead) -> Profile {
     Profile(CommonProfile {
         l2_chain_id: 2,
         l2_router: Address::with_last_byte(1),
         commitment_slot: B256::with_last_byte(2),
         profile_version: "entrypoint_test_v1".into(),
         l2_header_fork: ExecutionHeaderFork::London,
-        attestor_public_key: B256::with_last_byte(3),
-        attestation_head,
     })
 }
 
@@ -85,7 +84,6 @@ fn attested(block: u8) -> AttestedL2Header {
             requests_hash: None,
         },
         router_proof: EvmAccountProof { proof: vec![] },
-        attestor_signature: vec![7; 64],
     }
 }
 
@@ -138,67 +136,9 @@ fn verify_client_message_rejects_non_conflicting_misbehaviour_envelopes() {
     }
 }
 
-/// Conflicting finalized headers reaching the client have both passed attestor
-/// signature verification, so every host path treats them as actionable
-/// misbehaviour.
+/// Every host path must refuse a conflict without authenticated attestations.
 #[test]
-fn host_paths_freeze_on_conflicting_finalized_attestations() {
-    let mut deps = mock_dependencies();
-    let trusted = normalize(&attested(5));
-    let client = ClientState {
-        latest_height: 5,
-        frozen_height: None,
-        profile: profile_with_attestation_head(AttestationHead::Finalized),
-    };
-    let consensus: ConsensusState = trusted.consensus_state(0).unwrap();
-    runtime::instantiate(deps.as_mut().storage, &client, &consensus, vec![9], 10).unwrap();
-
-    let client_message = Binary::from(
-        serde_json::to_vec(&ClientMessage::Misbehaviour {
-            header_1: attested(5),
-            header_2: attested(9),
-        })
-        .unwrap(),
-    );
-
-    entrypoints::query::<Adapter>(
-        deps.as_ref(),
-        QueryMsg::VerifyClientMessage {
-            client_message: client_message.clone(),
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        serde_json::from_slice::<crate::msg::CheckForMisbehaviourResult>(
-            &entrypoints::query::<Adapter>(
-                deps.as_ref(),
-                QueryMsg::CheckForMisbehaviour {
-                    client_message: client_message.clone(),
-                },
-            )
-            .unwrap(),
-        )
-        .unwrap()
-        .found_misbehaviour,
-        true,
-    );
-    entrypoints::sudo::<Adapter>(
-        deps.as_mut(),
-        &mock_env(),
-        SudoMsg::UpdateStateOnMisbehaviour { client_message },
-    )
-    .unwrap();
-    assert_eq!(
-        runtime::client_state::<Profile>(deps.as_ref().storage)
-            .unwrap()
-            .frozen_height,
-        Some(5),
-        "conflicting signed attestations must freeze the client"
-    );
-}
-
-#[test]
-fn host_paths_reject_reorgable_conflicts_without_freezing() {
+fn host_paths_reject_conflicts_without_authenticated_attestations() {
     let mut deps = mock_dependencies();
     let trusted = normalize(&attested(5));
     let client = ClientState {
@@ -217,40 +157,124 @@ fn host_paths_reject_reorgable_conflicts_without_freezing() {
         .unwrap(),
     );
 
-    assert!(matches!(
+    for error in [
         entrypoints::query::<Adapter>(
             deps.as_ref(),
             QueryMsg::VerifyClientMessage {
                 client_message: client_message.clone(),
-            }
-        ),
-        Err(Error::InvalidHeader("headers do not prove misbehaviour"))
-    ));
-    assert!(
-        !serde_json::from_slice::<crate::msg::CheckForMisbehaviourResult>(
-            &entrypoints::query::<Adapter>(
-                deps.as_ref(),
-                QueryMsg::CheckForMisbehaviour {
-                    client_message: client_message.clone(),
-                }
-            )
-            .unwrap(),
+            },
         )
-        .unwrap()
-        .found_misbehaviour
-    );
-    assert!(matches!(
+        .unwrap_err(),
+        entrypoints::query::<Adapter>(
+            deps.as_ref(),
+            QueryMsg::CheckForMisbehaviour {
+                client_message: client_message.clone(),
+            },
+        )
+        .unwrap_err(),
         entrypoints::sudo::<Adapter>(
             deps.as_mut(),
             &mock_env(),
             SudoMsg::UpdateStateOnMisbehaviour { client_message },
-        ),
-        Err(Error::InvalidHeader("headers do not prove misbehaviour"))
-    ));
+        )
+        .unwrap_err(),
+    ] {
+        assert!(
+            matches!(
+                error,
+                Error::InvalidHeader("conflicting headers do not carry authenticated attestations")
+            ),
+            "expected a conflict without authenticated attestations to be refused, got {error:?}"
+        );
+    }
     assert_eq!(
         runtime::client_state::<Profile>(deps.as_ref().storage)
             .unwrap()
             .frozen_height,
-        None
+        None,
+        "a conflict without authenticated attestations must not freeze the client"
     );
+}
+
+#[test]
+fn non_zero_delay_precedes_path_height_state_and_proof_validation() {
+    let mut deps = mock_dependencies();
+    let before = storage_snapshot(deps.as_ref().storage, &[0, 5]);
+
+    for (message, expected_time, expected_blocks) in [
+        (
+            SudoMsg::VerifyMembership {
+                height: crate::msg::IbcHeight {
+                    revision_number: 9,
+                    revision_height: 0,
+                },
+                delay_time_period: 7,
+                delay_block_period: 0,
+                proof: Binary::from(b"not-json"),
+                merkle_path: crate::msg::MerklePath { key_path: vec![] },
+                value: Binary::default(),
+            },
+            7,
+            0,
+        ),
+        (
+            SudoMsg::VerifyNonMembership {
+                height: crate::msg::IbcHeight {
+                    revision_number: 9,
+                    revision_height: 0,
+                },
+                delay_time_period: 0,
+                delay_block_period: 3,
+                proof: Binary::from(b"not-json"),
+                merkle_path: crate::msg::MerklePath { key_path: vec![] },
+            },
+            0,
+            3,
+        ),
+    ] {
+        assert!(matches!(
+            entrypoints::sudo::<Adapter>(deps.as_mut(), &mock_env(), message),
+            Err(Error::UnsupportedNonZeroDelay {
+                delay_time_period,
+                delay_block_period,
+            }) if delay_time_period == expected_time && delay_block_period == expected_blocks
+        ));
+        assert_eq!(storage_snapshot(deps.as_ref().storage, &[0, 5]), before);
+    }
+}
+
+#[test]
+fn status_bytes_and_frozen_update_outcome_are_stable() {
+    for (frozen_height, expected) in [
+        (None, br#"{"status":"Active"}"#.as_slice()),
+        (Some(5), br#"{"status":"Frozen"}"#.as_slice()),
+    ] {
+        let mut deps = mock_dependencies();
+        let trusted = normalize(&attested(5));
+        let client = ClientState {
+            latest_height: 5,
+            frozen_height,
+            profile: profile(),
+        };
+        let consensus = trusted.consensus_state(0).unwrap();
+        runtime::instantiate(deps.as_mut().storage, &client, &consensus, vec![9], 10).unwrap();
+
+        let status = entrypoints::query::<Adapter>(deps.as_ref(), QueryMsg::Status {}).unwrap();
+        assert_eq!(status.as_slice(), expected);
+
+        if let Some(height) = frozen_height {
+            let before = storage_snapshot(deps.as_ref().storage, &[5, 6]);
+            let client_message =
+                Binary::from(serde_json::to_vec(&ClientMessage::Header(attested(6))).unwrap());
+            assert!(matches!(
+                entrypoints::sudo::<Adapter>(
+                    deps.as_mut(),
+                    &mock_env(),
+                    SudoMsg::UpdateState { client_message },
+                ),
+                Err(Error::Frozen(actual)) if actual == height
+            ));
+            assert_eq!(storage_snapshot(deps.as_ref().storage, &[5, 6]), before);
+        }
+    }
 }

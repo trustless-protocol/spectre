@@ -11,7 +11,7 @@ use crate::{
         QueryMsg, StatusResult, SudoMsg, TimestampAtHeightResult, UpdateStateResult,
     },
     runtime,
-    state::{ClientState, ConsensusState, RuntimeProfile},
+    state::{ClientState, ConsensusState},
     L2LightClient,
 };
 
@@ -72,11 +72,13 @@ pub fn sudo<Adapter: L2LightClient>(
         }
         SudoMsg::VerifyMembership {
             height,
+            delay_time_period,
+            delay_block_period,
             proof,
             merkle_path,
             value,
-            ..
         } => {
+            ensure_zero_delay(delay_time_period, delay_block_period)?;
             let path = single_path(&merkle_path.key_path)?;
             validate_height(&height)?;
             runtime::verify_membership::<Adapter::Profile>(
@@ -90,10 +92,12 @@ pub fn sudo<Adapter: L2LightClient>(
         }
         SudoMsg::VerifyNonMembership {
             height,
+            delay_time_period,
+            delay_block_period,
             proof,
             merkle_path,
-            ..
         } => {
+            ensure_zero_delay(delay_time_period, delay_block_period)?;
             let path = single_path(&merkle_path.key_path)?;
             validate_height(&height)?;
             runtime::verify_non_membership::<Adapter::Profile>(
@@ -104,8 +108,28 @@ pub fn sudo<Adapter: L2LightClient>(
             )?;
             Binary::default()
         }
+        SudoMsg::VerifyUpgradeAndUpdateState { .. } => {
+            return Err(Error::UnsupportedLifecycleOperation {
+                operation: "verify_upgrade_and_update_state",
+            });
+        }
+        SudoMsg::MigrateClientStore {} => {
+            return Err(Error::UnsupportedLifecycleOperation {
+                operation: "migrate_client_store",
+            });
+        }
     };
     Ok(Response::default().set_data(data))
+}
+
+const fn ensure_zero_delay(delay_time_period: u64, delay_block_period: u64) -> Result<(), Error> {
+    if delay_time_period != 0 || delay_block_period != 0 {
+        return Err(Error::UnsupportedNonZeroDelay {
+            delay_time_period,
+            delay_block_period,
+        });
+    }
+    Ok(())
 }
 
 /// Executes a read-only host query.
@@ -117,12 +141,7 @@ pub fn query<Adapter: L2LightClient>(deps: Deps, msg: QueryMsg) -> Result<Binary
                     header.consensus_state(0)?;
                 }
                 ClientMessage::Misbehaviour { header_1, header_2 } => {
-                    let client = runtime::client_state::<Adapter::Profile>(deps.storage)?;
-                    if !runtime::is_actionable_misbehaviour(
-                        client.profile.common().attestation_head,
-                        &header_1,
-                        &header_2,
-                    )? {
+                    if !runtime::is_actionable_misbehaviour(&header_1, &header_2)? {
                         return Err(Error::InvalidHeader("headers do not prove misbehaviour"));
                     }
                 }
@@ -131,13 +150,8 @@ pub fn query<Adapter: L2LightClient>(deps: Deps, msg: QueryMsg) -> Result<Binary
         }
         QueryMsg::CheckForMisbehaviour { client_message } => {
             let (first, second) = decode_misbehaviour::<Adapter>(&client_message, deps)?;
-            let client = runtime::client_state::<Adapter::Profile>(deps.storage)?;
             to_json_binary(&CheckForMisbehaviourResult {
-                found_misbehaviour: runtime::is_actionable_misbehaviour(
-                    client.profile.common().attestation_head,
-                    &first,
-                    &second,
-                )?,
+                found_misbehaviour: runtime::is_actionable_misbehaviour(&first, &second)?,
             })
             .map_err(Into::into)
         }
@@ -194,13 +208,12 @@ fn decode_client_message<Adapter: L2LightClient>(
     let client = runtime::client_state::<Adapter::Profile>(deps.storage)?;
     match message {
         ClientMessage::Header(header) => Ok(ClientMessage::Header(Adapter::verify(
-            deps.api,
             &client.profile,
             &header,
         )?)),
         ClientMessage::Misbehaviour { header_1, header_2 } => Ok(ClientMessage::Misbehaviour {
-            header_1: Adapter::verify(deps.api, &client.profile, &header_1)?,
-            header_2: Adapter::verify(deps.api, &client.profile, &header_2)?,
+            header_1: Adapter::verify(&client.profile, &header_1)?,
+            header_2: Adapter::verify(&client.profile, &header_2)?,
         }),
     }
 }

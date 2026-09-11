@@ -3,7 +3,6 @@
 #![deny(clippy::nursery, clippy::pedantic, warnings, unused_crate_dependencies)]
 #![allow(clippy::doc_markdown, clippy::missing_errors_doc)]
 
-pub mod attestation;
 pub mod canonical_header;
 pub mod entrypoints;
 pub mod error;
@@ -15,7 +14,8 @@ pub mod state;
 pub mod store;
 pub mod verification;
 
-use cosmwasm_std::Api;
+use core::marker::PhantomData;
+
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
@@ -30,11 +30,21 @@ pub trait L2LightClient {
     type Profile: Clone + RuntimeProfile + DeserializeOwned + Serialize;
 
     /// Locally validates and normalizes one attested update.
-    fn verify(
-        api: &dyn Api,
-        profile: &Self::Profile,
-        header: &AttestedL2Header,
-    ) -> Result<Header, Error>;
+    fn verify(profile: &Self::Profile, header: &AttestedL2Header) -> Result<Header, Error>;
+}
+
+/// Common verifier adapter for a data-only static L2 profile.
+pub struct StaticL2Client<Profile>(PhantomData<Profile>);
+
+impl<Profile> L2LightClient for StaticL2Client<Profile>
+where
+    Profile: Clone + RuntimeProfile + DeserializeOwned + Serialize,
+{
+    type Profile = Profile;
+
+    fn verify(profile: &Profile, header: &AttestedL2Header) -> Result<Header, Error> {
+        verification::verify_attested_header(profile, header)
+    }
 }
 
 /// Generates the three standard ICS-08 `CosmWasm` entrypoints.
@@ -75,8 +85,6 @@ macro_rules! l2_client_entrypoints {
 }
 
 #[cfg(test)]
-mod attestation_tests;
-#[cfg(test)]
 mod canonical_header_tests;
 #[cfg(test)]
 mod entrypoints_tests;
@@ -90,5 +98,3 @@ mod packet_tests;
 mod runtime_tests;
 #[cfg(test)]
 mod store_tests;
-#[cfg(test)]
-mod verification_tests;

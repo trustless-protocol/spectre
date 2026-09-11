@@ -1,14 +1,13 @@
 [package]
-name = "base-verifier"
-description = "Base verification configuration and proof primitives for the L2 Wasm client"
+name = "l2-arbitrum"
+description = "Static Arbitrum profile for the shared L2 Wasm client"
 version = { workspace = true }
 edition = { workspace = true }
 repository = { workspace = true }
 
 [dependencies]
-cosmwasm-std = { workspace = true }
 l2-client = { workspace = true }
-schemars = { workspace = true }
+schemars = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]

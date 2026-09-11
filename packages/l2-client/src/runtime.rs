@@ -1,25 +1,65 @@
 //! Storage-backed L2 client lifecycle.
 
 use cosmwasm_std::Storage;
-use ibc_proto::ibc::{
-    core::client::v1::Height,
-    lightclients::wasm::v1::{
-        ClientState as WasmClientState, ConsensusState as WasmConsensusState,
+use ibc_proto::{
+    google::protobuf::Any,
+    ibc::{
+        core::client::v1::Height,
+        lightclients::wasm::v1::{
+            ClientState as WasmClientState, ConsensusState as WasmConsensusState,
+        },
     },
 };
+use prost::Message;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
-    attestation::AttestationHead,
     error::Error,
     msg::EvmStorageProof,
     packet,
     state::{ClientState, ConsensusState, Header, RuntimeProfile},
     store::{
         get_wasm_client_state, get_wasm_consensus_state, may_get_wasm_consensus_state,
-        store_wasm_client_state, store_wasm_consensus_state,
+        store_wasm_client_state, store_wasm_consensus_state, HOST_CLIENT_STATE_KEY,
     },
 };
+
+/// Fully validated logical effects of one L2 update.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct StateTransition<Profile> {
+    client: Option<ClientState<Profile>>,
+    consensus: Option<(u64, ConsensusState)>,
+}
+
+impl<Profile> StateTransition<Profile> {
+    const fn empty() -> Self {
+        Self {
+            client: None,
+            consensus: None,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn client(&self) -> Option<&ClientState<Profile>> {
+        self.client.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consensus(&self) -> Option<(u64, &ConsensusState)> {
+        self.consensus
+            .as_ref()
+            .map(|(height, consensus)| (*height, consensus))
+    }
+
+    fn reported_height(&self) -> Option<u64> {
+        self.consensus.as_ref().map(|(height, _)| *height)
+    }
+}
+
+struct PreparedTransition {
+    client: Option<Vec<u8>>,
+    consensus: Option<(Vec<u8>, Vec<u8>)>,
+}
 
 /// Stores explicitly trusted bootstrap state.
 pub fn instantiate<Profile>(
@@ -82,7 +122,7 @@ pub fn update<Profile>(
 where
     Profile: DeserializeOwned + Serialize + RuntimeProfile,
 {
-    let mut client = client_state::<Profile>(storage)?;
+    let client = client_state::<Profile>(storage)?;
     validate_profile::<Profile>(&client.profile)?;
     let height = header.height.revision_height;
     let existing = may_load_consensus_state(storage, height)?;
@@ -97,44 +137,39 @@ where
         .transpose()?
         .flatten();
 
-    let transition = apply_update(
-        &mut client,
+    let transition = build_update_transition(
+        client,
         header,
         existing.as_ref(),
         previous.as_ref(),
         next.as_ref(),
         accepted_at,
-    );
-
-    let consensus = match transition {
-        Ok(consensus) => consensus,
-        // A finalized conflict freezes the client and that freeze must be persisted, so it cannot
-        // be reported as an Err — the transaction would revert and discard it. Reorgable heads
-        // propagate the conflict and write nothing.
-        Err(Error::StateConflict { .. }) if conflict_freezes_client(&client) => {
-            store_client_state(storage, &client)?;
-            return Ok(None);
-        }
-        Err(error) => return Err(error),
-    };
-
-    let Some(consensus) = consensus else {
-        return Ok(None);
-    };
-    store_consensus_state(storage, height, &consensus)?;
-    store_client_state(storage, &client)?;
-    Ok(Some(height))
+    )?;
+    let reported_height = transition.reported_height();
+    commit_transition(storage, &transition)?;
+    Ok(reported_height)
 }
 
-/// Returns whether two signed headers constitute actionable misbehaviour for
-/// the profile's finality policy. Safe and unsafe heads may legitimately reorg,
-/// so only conflicting finalized headers are evidence of equivocation.
-pub fn is_actionable_misbehaviour(
-    attestation_head: AttestationHead,
-    first: &Header,
-    second: &Header,
-) -> Result<bool, Error> {
-    Ok(attestation_head == AttestationHead::Finalized && first.conflicts_with(second)?)
+/// Whether every accepted header carries an attestor signature verified by this client.
+///
+/// False until the signed-attestation wire format and signature verification are implemented.
+/// The current envelope carries no attestation, so anyone can manufacture two contradictory
+/// headers and submit them through permissionless `MsgUpdateClient` calls. Freezing on those bare
+/// headers would let any party permanently brick a client, and there is no unfreeze path.
+///
+/// The redesign defines misbehaviour as conflicting signed attestations. Set this to true only in
+/// the same change that verifies those signatures and makes conflicts attributable.
+const ATTESTATIONS_ARE_AUTHENTICATED: bool = false;
+
+/// Returns whether two headers constitute actionable, authenticated misbehaviour.
+pub fn is_actionable_misbehaviour(first: &Header, second: &Header) -> Result<bool, Error> {
+    let found = first.conflicts_with(second)?;
+    if found && !ATTESTATIONS_ARE_AUTHENTICATED {
+        return Err(Error::InvalidHeader(
+            "conflicting headers do not carry authenticated attestations",
+        ));
+    }
+    Ok(found)
 }
 
 /// Applies actionable misbehaviour evidence.
@@ -144,14 +179,13 @@ pub fn apply_misbehaviour<Profile>(
     second: &Header,
 ) -> Result<bool, Error>
 where
-    Profile: DeserializeOwned + Serialize + RuntimeProfile,
+    Profile: DeserializeOwned + Serialize,
 {
     let mut client = client_state::<Profile>(storage)?;
     if let Some(height) = client.frozen_height {
         return Err(Error::Frozen(height));
     }
-    let found =
-        is_actionable_misbehaviour(client.profile.common().attestation_head, first, second)?;
+    let found = is_actionable_misbehaviour(first, second)?;
     if !found {
         return Ok(false);
     }
@@ -206,17 +240,14 @@ fn active_client<Profile: DeserializeOwned>(
     Ok(client)
 }
 
-fn apply_update<Profile>(
-    client: &mut ClientState<Profile>,
+pub(crate) fn build_update_transition<Profile>(
+    mut client: ClientState<Profile>,
     header: &Header,
     existing: Option<&ConsensusState>,
     previous: Option<&ConsensusState>,
     next: Option<&ConsensusState>,
     accepted_at: u64,
-) -> Result<Option<ConsensusState>, Error>
-where
-    Profile: RuntimeProfile,
-{
+) -> Result<StateTransition<Profile>, Error> {
     if let Some(height) = client.frozen_height {
         return Err(Error::Frozen(height));
     }
@@ -225,8 +256,12 @@ where
     let height = header.height.revision_height;
 
     if existing.is_some_and(|stored| stored.conflicts_with(&incoming)) {
-        if conflict_freezes_client(client) {
+        if ATTESTATIONS_ARE_AUTHENTICATED {
             client.frozen_height = Some(height);
+            return Ok(StateTransition {
+                client: Some(client),
+                consensus: None,
+            });
         }
         return Err(Error::StateConflict { height });
     }
@@ -243,25 +278,70 @@ where
         // the stored state does not depend on arrival order. An honest relayer re-sends the same
         // block routinely (a retry or a cached header), and neither should rewrite anything.
         //
-        return Ok(None);
+        // The signed-attestation wire format grows this branch into the redesign's promotion and
+        // provisional-replacement state machine.
+        return Ok(StateTransition::empty());
     }
 
     client.latest_height = client.latest_height.max(height);
-    Ok(Some(incoming))
+    Ok(StateTransition {
+        client: Some(client),
+        consensus: Some((height, incoming)),
+    })
 }
 
-fn conflict_freezes_client<Profile: RuntimeProfile>(client: &ClientState<Profile>) -> bool {
-    client.profile.common().attestation_head == AttestationHead::Finalized
+fn commit_transition<Profile: Serialize>(
+    storage: &mut dyn Storage,
+    transition: &StateTransition<Profile>,
+) -> Result<(), Error> {
+    let prepared = prepare_transition(storage, transition)?;
+    if let Some((key, value)) = prepared.consensus {
+        storage.set(&key, &value);
+    }
+    if let Some(value) = prepared.client {
+        storage.set(HOST_CLIENT_STATE_KEY.as_bytes(), &value);
+    }
+    Ok(())
+}
+
+fn prepare_transition<Profile: Serialize>(
+    storage: &dyn Storage,
+    transition: &StateTransition<Profile>,
+) -> Result<PreparedTransition, Error> {
+    let client = transition
+        .client
+        .as_ref()
+        .map(|client| -> Result<Vec<u8>, Error> {
+            let mut envelope = get_wasm_client_state(storage)?;
+            envelope.data = serde_json::to_vec(client)?;
+            envelope.latest_height = Some(Height {
+                revision_number: 0,
+                revision_height: client.latest_height,
+            });
+            Ok(Any::from_msg(&envelope)?.encode_to_vec())
+        })
+        .transpose()?;
+
+    let consensus = transition
+        .consensus
+        .as_ref()
+        .map(|(height, consensus)| -> Result<(Vec<u8>, Vec<u8>), Error> {
+            let envelope = Any::from_msg(&WasmConsensusState {
+                data: serde_json::to_vec(consensus)?,
+            })?;
+            Ok((
+                crate::store::consensus_db_key(*height).into_bytes(),
+                envelope.encode_to_vec(),
+            ))
+        })
+        .transpose()?;
+
+    Ok(PreparedTransition { client, consensus })
 }
 
 fn validate_profile<Profile: RuntimeProfile>(profile: &Profile) -> Result<(), Error> {
     if profile.common().profile_version != Profile::expected_profile_version() {
         return Err(Error::InvalidProfileVersion);
-    }
-    if profile.common().l2_chain_id == 0 || profile.common().attestor_public_key.is_zero() {
-        return Err(Error::InvalidHeader(
-            "L2 chain ID and attestor public key must be non-zero",
-        ));
     }
     Ok(())
 }

@@ -1,5 +1,6 @@
 use cosmwasm_std::Binary;
 
+use crate::error::Error;
 use crate::msg::{
     CheckForMisbehaviourResult, ClientMessage, IbcHeight, StatusResult, SudoMsg,
     TimestampAtHeightResult, UpdateStateResult,
@@ -75,5 +76,47 @@ fn decodes_misbehaviour_client_message_envelopes() {
             header_1: 7,
             header_2: 7,
         }
+    );
+}
+
+#[test]
+fn decodes_unsupported_lifecycle_messages_without_losing_payloads() {
+    let upgrade: SudoMsg = serde_json::from_slice(
+        br#"{"verify_upgrade_and_update_state":{"upgrade_client_state":"AQ==","upgrade_consensus_state":"Ag==","proof_upgrade_client":"Aw==","proof_upgrade_consensus_state":"BA=="}}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        upgrade,
+        SudoMsg::VerifyUpgradeAndUpdateState {
+            upgrade_client_state,
+            upgrade_consensus_state,
+            proof_upgrade_client,
+            proof_upgrade_consensus_state,
+        } if upgrade_client_state.as_slice() == [1]
+            && upgrade_consensus_state.as_slice() == [2]
+            && proof_upgrade_client.as_slice() == [3]
+            && proof_upgrade_consensus_state.as_slice() == [4]
+    ));
+
+    let recovery: SudoMsg = serde_json::from_slice(br#"{"migrate_client_store":{}}"#).unwrap();
+    assert!(matches!(recovery, SudoMsg::MigrateClientStore {}));
+}
+
+#[test]
+fn unsupported_operation_error_text_is_stable() {
+    assert_eq!(
+        Error::UnsupportedNonZeroDelay {
+            delay_time_period: 7,
+            delay_block_period: 3,
+        }
+        .to_string(),
+        "non-zero delay is unsupported: delay_time_period=7, delay_block_period=3"
+    );
+    assert_eq!(
+        Error::UnsupportedLifecycleOperation {
+            operation: "verify_upgrade_and_update_state",
+        }
+        .to_string(),
+        "lifecycle operation is unsupported: verify_upgrade_and_update_state"
     );
 }

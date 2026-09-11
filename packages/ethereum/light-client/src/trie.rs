@@ -18,7 +18,12 @@ pub fn is_valid_normalized_merkle_branch(
 ) -> Result<(), EthereumIBCError> {
     let depth = floorlog2(gindex);
     let index = get_subtree_index(gindex);
-    let num_extra = normalized_branch.len() - depth;
+    let num_extra = normalized_branch.len().checked_sub(depth).ok_or(
+        EthereumIBCError::NormalizedMerkleBranchTooShort {
+            expected: depth,
+            found: normalized_branch.len(),
+        },
+    )?;
 
     (0..num_extra).try_for_each(|i| {
         if normalized_branch[i] != B256::default() {
@@ -43,8 +48,7 @@ pub fn is_valid_normalized_merkle_branch(
 /// Validates a merkle branch.
 /// # Errors
 /// Returns an error if the merkle branch is invalid.
-/// # Panics
-/// Panics if the depth of the merkle branch is too large.
+#[allow(clippy::manual_is_multiple_of)] // u64::is_multiple_of exceeds the optimizer Rust MSRV.
 pub fn validate_merkle_branch(
     leaf: B256,
     branch: Vec<B256>,
@@ -55,7 +59,11 @@ pub fn validate_merkle_branch(
     let mut value = leaf;
     for (i, branch_node) in branch.iter().take(depth).enumerate() {
         let mut hasher = Sha256::new();
-        if (index / 2u64.checked_pow(u32::try_from(i).unwrap()).unwrap()) % 2 != 0 {
+        let is_right = u32::try_from(i)
+            .ok()
+            .and_then(|shift| index.checked_shr(shift))
+            .is_some_and(|position| position % 2 != 0);
+        if is_right {
             hasher.update(branch_node);
             hasher.update(value);
         } else {
@@ -86,9 +94,30 @@ mod test {
 
     use crate::{
         client_state::ClientState,
+        error::EthereumIBCError,
         sync_protocol_helpers::{get_lc_execution_root, get_subtree_index},
-        trie::validate_merkle_branch,
+        trie::{is_valid_normalized_merkle_branch, validate_merkle_branch},
     };
+
+    #[test]
+    fn rejects_untrusted_branch_lengths_without_panicking() {
+        assert!(matches!(
+            is_valid_normalized_merkle_branch(B256::ZERO, &[], 8, B256::ZERO),
+            Err(EthereumIBCError::NormalizedMerkleBranchTooShort {
+                expected: 3,
+                found: 0,
+            })
+        ));
+
+        assert!(validate_merkle_branch(
+            B256::ZERO,
+            vec![B256::ZERO; 65],
+            65,
+            u64::MAX,
+            B256::with_last_byte(1),
+        )
+        .is_err());
+    }
 
     #[test]
     fn test_validate_merkle_branch_with_execution_payload() {

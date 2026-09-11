@@ -29,8 +29,6 @@ pub enum Error {
     InvalidEvmHeader(&'static str),
     #[error("invalid L2 header: {0}")]
     InvalidHeader(&'static str),
-    #[error("attestor signature verification failed")]
-    InvalidAttestorSignature,
     #[error("state conflict at height {height}")]
     StateConflict {
         /// Height where the conflicting trusted blocks were observed.
@@ -42,6 +40,20 @@ pub enum Error {
     ParentHashMismatch,
     #[error("client is frozen at height {0}")]
     Frozen(u64),
+    #[error(
+        "non-zero delay is unsupported: delay_time_period={delay_time_period}, delay_block_period={delay_block_period}"
+    )]
+    UnsupportedNonZeroDelay {
+        /// Requested time delay.
+        delay_time_period: u64,
+        /// Requested block delay.
+        delay_block_period: u64,
+    },
+    #[error("lifecycle operation is unsupported: {operation}")]
+    UnsupportedLifecycleOperation {
+        /// Stable host operation name.
+        operation: &'static str,
+    },
     #[error("invalid fixture provenance: {0}")]
     InvalidFixtureProvenance(&'static str),
     #[error("fixture checksum does not match its provenance manifest")]

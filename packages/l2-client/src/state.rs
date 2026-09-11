@@ -4,7 +4,7 @@ use alloy_primitives::{Address, B256};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use crate::{attestation::AttestationHead, canonical_header::ExecutionHeaderFork, error::Error};
+use crate::{canonical_header::ExecutionHeaderFork, error::Error};
 
 /// Immutable deployment data needed for local L2 proof verification.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -22,11 +22,6 @@ pub struct CommonProfile {
     pub profile_version: String,
     /// Canonical execution-header fork.
     pub l2_header_fork: ExecutionHeaderFork,
-    /// Ed25519 public key authorized to attest canonical L2 block identities.
-    #[schemars(with = "String")]
-    pub attestor_public_key: B256,
-    /// Finality level this key may authorize for this client.
-    pub attestation_head: AttestationHead,
 }
 
 /// Access to an artifact-specific runtime profile.

@@ -77,19 +77,37 @@ $GAIAD version                         # -> test/ibc-host-customs-<sha>
 strings $GAIAD | grep -c ClientStatus  # -> non-zero
 ```
 
-> **Checked local prover manifest**: the in-repo generator currently enables bucket N4 only.
-> `scripts/solidity/build-prover-artifacts.sh` generates the R1CS/PK/VK/verifier
-> as one randomized pair in ignored staging, smoke-tests it, publishes N4, and records provenance.
+> **Tip for local dev**: `relayer/prover/buckets.go` defaults to
+> `Buckets = []int{4, 8, 16, 32, 64, 128}`. Compiling all six takes 30+ minutes
+> (bucket 128 alone is ~30 min) and the local single-validator chain only ever
+> uses bucket 4. For local iteration, temporarily edit it to:
 >
-> Production deployment compatibility still requires six distinct verifier contracts for
-> N ∈ {4, 8, 16, 32, 64, 128}. Before a production launch, enable the same buckets in the
-> prover, publish each paired artifact set, deploy them, and keep the six environment entries
-> aligned with `SignatureVerifier`. The repo ships no generated verifier implementation; a
-> fresh clone must run the staged generator before Foundry compilation.
+> ```go
+> var Buckets = []int{4}
+> ```
 >
+> before step 1 below. Revert before pushing — production needs the full set.
+>
+> The repo ships **no** generated verifiers — `.gitignore` excludes
+> `contracts/verifiers/Groth16Verifier_N*.sol`, so `git ls-tree` lists none and a
+> fresh clone has none. Step 1 below writes them, and `forge build` fails without
+> it (`scripts/E2ETestDeployL2.s.sol` imports `Groth16Verifier_N4`).
+>
+> Whatever buckets you compile must cover the chain's quorum: a signer count with
+> no bucket makes `SignatureVerifier.verifyBatchProof` revert `UnknownBucket(N)`.
+> Chains larger than the local devnet need the bigger buckets built and deployed.
+
 ```bash
-# 1. REQUIRED on a fresh clone: generate and publish the paired N4 set.
-scripts/solidity/build-prover-artifacts.sh
+# 1. REQUIRED on a fresh clone: compile per-bucket circuits + emit
+#    Groth16Verifier_N{N}.sol. Neither the circuit artifacts nor the verifiers are
+#    committed. Re-run when circuit code changes — and redeploy the verifiers with
+#    it, because a new Setup() means a new verifying key and stale verifiers reject
+#    every proof.
+#    CPU default:
+cd relayer
+go run ./prover/cmd ./bin ../contracts/verifiers
+#    GPU variant:
+#    go run -tags=icicle ./prover/cmd -gpu-prove ./bin ../contracts/verifiers
 
 # 2. Build the relayer binary
 go build -o relayer ./cmd
@@ -242,15 +260,6 @@ cd relayer
 ./relayer start --config config.json
 ```
 
-The local handoff includes a disposable Ed25519 signing seed and its matching
-`ATTESTOR_PUBLIC_KEY`; the generated file is mode `0600`. The checked-in local
-relayer examples pin that public key, so the bare attestor launch has its
-required signing inputs. If you override either attestor identity variable when
-bringing up the devnet, source its `attestor.env` and replace `attestor_public_key` in both
-the relayer config and the `--l2-config` file with `ATTESTOR_PUBLIC_KEY` before
-creating the Cosmos client. The built-in devnet identity is public test data;
-never use it outside a local devnet.
-
 ### Running against an existing L2 (no devnet L2)
 
 The flow above brings up its own L2. To relay against a node someone else operates —
@@ -267,8 +276,6 @@ Verified end to end against OP Sepolia; every value below was needed to get ther
 OP_NODE_RPC_URL=http://<host>:9545 \
 L1_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
 NETWORK=op-sepolia SRC_CHAIN=op-sepolia \
-L2_CHAIN_ID=11155420 \
-ATTESTOR_SIGNING_KEY=<32-byte-ed25519-seed-hex> \
 ATTESTATION_HEAD=unsafe DERIVED_GAP_BLOCKS=10 \
 DISPUTE_GAME_FACTORY=0x05F9613aDB30026FFd634f38e5C4dFd30a197Fa1 \
 RESPECTED_GAME_TYPE=8 \
@@ -319,7 +326,6 @@ Everything not listed here is written for you — see
 | `attestor_src_chain` | `op-to-cosmos` | the `SRC_CHAIN` you passed in step 1 (`op-sepolia`) — must match, or `AttestedUpTo` answers for another chain |
 | `head_kind` | `op-to-cosmos` | the same choice as `ATTESTATION_HEAD` in step 1 |
 | `rollup_profile.common.l2_chain_id` | `op-to-cosmos` | `eth_chainId` on your L2 (`11155420` on OP Sepolia). `start` verifies this against the RPC and refuses to boot on a mismatch |
-| `rollup_profile.common.attestor_public_key` | `op-to-cosmos` | the public half of `ATTESTOR_SIGNING_KEY`; set the identical value in `op-l2-config.json` before creating the client |
 | `log_scan_chunk` | `op-to-cosmos` | your provider's `eth_getLogs` span cap — measure it, see the Arbitrum section |
 
 **`relayer/op-l2-config.json`:** `wasm_checksum` (from `wasm_op.sh`), `l2_rpc_url`, and
@@ -449,7 +455,6 @@ CHAIN_PROFILE=arbitrum-sepolia \
 L1_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
 L2_RPC_URL=<arbitrum-sepolia-rpc> \
 L2_WS_URL=<arbitrum-sepolia-ws> \
-ATTESTOR_SIGNING_KEY=<32-byte-ed25519-seed-hex> \
 ATTESTATION_HEAD=unsafe DERIVED_GAP_BLOCKS=10 GRPC_PORT=3002 DETACH=1 \
   ./scripts/local/run_arbitrum_attestor.sh
 
@@ -530,7 +535,6 @@ says by what. Verified by running this section end to end against Arbitrum Sepol
 | `attestor_src_chain` | `arbitrum-to-cosmos` | `src_chain` in `attestor/arbitrum/config.<profile>.json` (`arbitrum-sepolia`). Must equal what the attestor reports, or `AttestedUpTo` answers for a chain you did not ask about |
 | `head_kind` | `arbitrum-to-cosmos` | `unsafe`, `safe` or `finalized` — the same choice as `ATTESTATION_HEAD` in step 1 |
 | `rollup_profile.common.l2_chain_id` | `arbitrum-to-cosmos` | `eth_chainId` on your L2 (`421614` on Arbitrum Sepolia, `412346` on the local devnet). `start` verifies this against the RPC and refuses to boot on a mismatch |
-| `rollup_profile.common.attestor_public_key` | `arbitrum-to-cosmos` | the public half of `ATTESTOR_SIGNING_KEY`; set the identical value in `arb-l2-config.json` before creating the client |
 | `log_scan_chunk` | `arbitrum-to-cosmos` | your provider's `eth_getLogs` span cap — measure it, see below |
 
 **`relayer/arb-l2-config.json`** — three:
@@ -623,20 +627,16 @@ Several L2s can still be created in one run:
 
 The `--l2-config` file carries the full ICS-08 profile (see
 [docs/L2_CLIENTS.md](L2_CLIENTS.md#l2-client-creation-config)). For the
-attestor-trusted clients `rollup_profile.common` is seven keys — `l2_chain_id`,
-`l2_router`, `commitment_slot`, `profile_version`, `l2_header_fork`, and
-`attestor_public_key`, and `attestation_head` — and nothing
+attestor-trusted clients `rollup_profile.common` is five keys — `l2_chain_id`,
+`l2_router`, `commitment_slot`, `profile_version`, and `l2_header_fork` — and nothing
 else; an unknown key fails `instantiate` on the Rust side. `profile_version` must match
-the wasm artifact (`op_attestor_v2`, `base_attestor_v2`, `arbitrum_attestor_v2`), and
+the wasm artifact (`op_attestor_v1`, `base_attestor_v1`, `arbitrum_attestor_v1`), and
 `l2_header_fork` must match the chain's execution-header layout: `prague` for OP and
 Base, `london` for Arbitrum Nitro, which produces none of the post-London header fields.
-`packages/op-verifier/config/op-sepolia.json`,
-`packages/base-verifier/config/base-sepolia.json` and
-`packages/arbitrum-verifier/config/arbitrum-sepolia.json` are network-specific
-templates. Replace their placeholder `attestor_public_key` before creating a client.
-For an externally run attestor, derive the 32-byte public key from the exact
-`ATTESTOR_SIGNING_KEY` supplied to its launch command, then pin that same key in
-both the relayer module and the `--l2-config` profile.
+`packages/l2-op-stack/config/op-sepolia.json`,
+`packages/l2-op-stack/config/base-sepolia.json` and
+`packages/l2-arbitrum/config/arbitrum-sepolia.json` are working public-network
+templates.
 
 ### Sending a test packet
 
@@ -761,7 +761,7 @@ cast send <ICS20Transfer> \
   --private-key $ETH_PRIVATE_KEY --rpc-url $L2
 ```
 
-The tuple is `SendTransferMsg` in field order (`contracts/apps/ics20/messages/IICS20TransferMsgs.sol`):
+The tuple is `SendTransferMsg` in field order (`contracts/msgs/IICS20TransferMsgs.sol`):
 denom, amount, receiver, sourceClient, destPort, timeoutTimestamp, memo.
 
 `<l2-router-client-id>` is `sourceClient`: the client id **on the L2 router** — the one
@@ -890,8 +890,6 @@ end against **Base Sepolia**, relaying both directions.
 OP_NODE_RPC_URL=http://<host>:7545 \
 L1_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
 NETWORK=base-sepolia SRC_CHAIN=base-sepolia \
-L2_CHAIN_ID=84532 \
-ATTESTOR_SIGNING_KEY=<32-byte-ed25519-seed-hex> \
 ATTESTATION_HEAD=unsafe DERIVED_GAP_BLOCKS=10 \
 DISPUTE_GAME_FACTORY=0xd6E6dBf4F7EA0ac412fD8b65ED297e64BB7a06E1 \
 RESPECTED_GAME_TYPE=621 \
@@ -944,7 +942,6 @@ Everything not listed here is written for you — see
 | `attestor_src_chain` | `base-to-cosmos` | the `SRC_CHAIN` you passed in step 1 (`base-sepolia`) |
 | `head_kind` | `base-to-cosmos` | the same choice as `ATTESTATION_HEAD` in step 1 |
 | `rollup_profile.common.l2_chain_id` | `base-to-cosmos` | `eth_chainId` on your L2 (`84532` on Base Sepolia). `start` verifies this against the RPC and refuses to boot on a mismatch |
-| `rollup_profile.common.attestor_public_key` | `base-to-cosmos` | the public half of `ATTESTOR_SIGNING_KEY`; set the identical value in `base-l2-config.json` before creating the client |
 | `log_scan_chunk` | `base-to-cosmos` | your provider's `eth_getLogs` span cap — measure it, see the Arbitrum section |
 
 **`relayer/base-l2-config.json`:** `wasm_checksum` (from `wasm_base.sh`), `l2_rpc_url`,

@@ -6,9 +6,8 @@ members = [
     "packages/ethereum/tree_hash",
     "packages/solidity",
     "packages/l2-client",
-    "packages/arbitrum-verifier",
-    "packages/base-verifier",
-    "packages/op-verifier",
+    "packages/l2-arbitrum",
+    "packages/l2-op-stack",
 
     "programs/cw-ics08-wasm-eth",
     "programs/cw-ics08-wasm-arbitrum",
@@ -35,9 +34,8 @@ ethereum-light-client     = { path = "packages/ethereum/light-client", default-f
 ethereum-types            = { path = "packages/ethereum/types", default-features = false }
 tree_hash                 = { path = "packages/ethereum/tree_hash", default-features = false }
 l2-client                 = { path = "packages/l2-client", default-features = false }
-arbitrum-verifier         = { path = "packages/arbitrum-verifier", default-features = false }
-base-verifier             = { path = "packages/base-verifier", default-features = false }
-op-verifier               = { path = "packages/op-verifier", default-features = false }
+l2-arbitrum               = { path = "packages/l2-arbitrum", default-features = false }
+l2-op-stack               = { path = "packages/l2-op-stack", default-features = false }
 
 serde      = { version = "1.0", default-features = false }
 serde_json = { version = "1.0", default-features = false }

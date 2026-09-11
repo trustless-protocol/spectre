@@ -678,17 +678,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arbitrum-verifier"
-version = "0.1.0"
-dependencies = [
- "cosmwasm-std",
- "l2-client",
- "schemars",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "ark-bls12-381"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -995,17 +984,6 @@ name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
-
-[[package]]
-name = "base-verifier"
-version = "0.1.0"
-dependencies = [
- "cosmwasm-std",
- "l2-client",
- "schemars",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "base16ct"
@@ -1551,18 +1529,20 @@ dependencies = [
 name = "cw-ics08-wasm-arbitrum"
 version = "0.1.0"
 dependencies = [
- "arbitrum-verifier",
  "cosmwasm-std",
+ "l2-arbitrum",
  "l2-client",
+ "serde_json",
 ]
 
 [[package]]
 name = "cw-ics08-wasm-base"
 version = "0.1.0"
 dependencies = [
- "base-verifier",
  "cosmwasm-std",
  "l2-client",
+ "l2-op-stack",
+ "serde_json",
 ]
 
 [[package]]
@@ -1610,7 +1590,8 @@ version = "0.1.0"
 dependencies = [
  "cosmwasm-std",
  "l2-client",
- "op-verifier",
+ "l2-op-stack",
+ "serde_json",
 ]
 
 [[package]]
@@ -2976,6 +2957,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a4933f3f57a8e9d9da04db23fb153356ecaf00cbd14aee46279c33dc80925c37"
 
 [[package]]
+name = "l2-arbitrum"
+version = "0.1.0"
+dependencies = [
+ "l2-client",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "l2-client"
 version = "0.1.0"
 dependencies = [
@@ -2983,6 +2974,7 @@ dependencies = [
  "alloy-rlp",
  "cosmwasm-std",
  "ethereum-trie-db 0.1.0",
+ "hex",
  "ibc-proto 0.51.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "prost",
  "rlp 0.6.1",
@@ -2990,6 +2982,16 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.19",
+]
+
+[[package]]
+name = "l2-op-stack"
+version = "0.1.0"
+dependencies = [
+ "l2-client",
+ "schemars",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -3166,17 +3168,6 @@ name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
-
-[[package]]
-name = "op-verifier"
-version = "0.1.0"
-dependencies = [
- "cosmwasm-std",
- "l2-client",
- "schemars",
- "serde",
- "serde_json",
-]
 
 [[package]]
 name = "opaque-debug"
