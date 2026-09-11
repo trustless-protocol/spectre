@@ -13,9 +13,12 @@ import (
 )
 
 type fakeGames struct {
-	games    []ProposedRoot
-	errAt    map[uint64]error
-	countErr error
+	games          []ProposedRoot
+	finalizedGames []ProposedRoot
+	errAt          map[uint64]error
+	countErr       error
+	finalizedBlock uint64
+	finalizedErr   error
 }
 
 func (f *fakeGames) GameCount(_ context.Context) (uint64, error) {
@@ -33,6 +36,19 @@ func (f *fakeGames) GameAtIndex(_ context.Context, idx uint64) (ProposedRoot, er
 		return ProposedRoot{}, errors.New("index out of range")
 	}
 	return f.games[idx], nil
+}
+
+func (f *fakeGames) FinalizedView(context.Context) (gameSource, uint64, error) {
+	if f.finalizedErr != nil {
+		return nil, 0, f.finalizedErr
+	}
+	if f.finalizedGames != nil {
+		view := *f
+		view.games = f.finalizedGames
+		view.finalizedGames = nil
+		return &view, f.finalizedBlock, nil
+	}
+	return f, f.finalizedBlock, nil
 }
 
 type fakeReplica struct {
@@ -148,6 +164,75 @@ func TestRunOnceMatchAttests(t *testing.T) {
 	}
 	if len(hook.calls) != 0 {
 		t.Fatalf("hook called %d times on a match, want 0", len(hook.calls))
+	}
+}
+
+func TestIngestUsesOnlyTheFinalizedFactoryView(t *testing.T) {
+	claim := root(0xaa)
+	games := &fakeGames{
+		// This is visible at latest L1 but absent from the finalized snapshot.
+		games:          []ProposedRoot{game(0, 0, 100, claim)},
+		finalizedGames: []ProposedRoot{},
+		finalizedBlock: 500,
+	}
+	rep := &fakeReplica{status: SyncStatus{FinalizedL2: 100}, outputs: map[uint64][32]byte{100: claim}}
+	a := newTestAttestor(t, HeadFinalized, games, rep, nil)
+	if err := a.runOnce(context.Background()); err != nil {
+		t.Fatalf("runOnce at finalized view 500: %v", err)
+	}
+	if got := a.store.NextGameIndex(); got != 0 {
+		t.Fatalf("cursor after latest-only game = %d, want 0", got)
+	}
+	if got := a.store.LastFinalizedL1Block(); got != 500 {
+		t.Fatalf("persisted finalized L1 marker = %d, want 500", got)
+	}
+	if _, found := a.store.HighestAttestedAtOrBelow(100, true); found {
+		t.Fatal("latest-only game was published before its L1 evidence finalized")
+	}
+
+	// Advancing the finalized view makes the exact game available once.
+	games.finalizedGames = []ProposedRoot{game(0, 0, 100, claim)}
+	games.finalizedBlock = 501
+	if err := a.runOnce(context.Background()); err != nil {
+		t.Fatalf("runOnce at finalized view 501: %v", err)
+	}
+	if got := a.store.NextGameIndex(); got != 1 {
+		t.Fatalf("cursor after finalized game = %d, want 1", got)
+	}
+	if got := a.store.LastFinalizedL1Block(); got != 501 {
+		t.Fatalf("persisted finalized L1 marker = %d, want 501", got)
+	}
+	root, found := a.store.HighestAttestedAtOrBelow(100, false)
+	if !found || root.GameIndex != 0 || root.Root != claim {
+		t.Fatalf("finalized game root = (%+v, %t)", root, found)
+	}
+}
+
+func TestIngestPersistsBatchOnce(t *testing.T) {
+	claim := root(0xaa)
+	games := &fakeGames{games: []ProposedRoot{
+		game(0, 0, 100, claim),
+		game(1, 0, 101, claim),
+		game(2, 0, 102, claim),
+	}}
+	a := newTestAttestor(t, HeadFinalized, games, nil, nil)
+	fs := realStateFileSystem()
+	createTemp := fs.createTemp
+	persisted := 0
+	fs.createTemp = func(dir, pattern string) (stateFile, error) {
+		persisted++
+		return createTemp(dir, pattern)
+	}
+	a.store.fs = fs
+
+	if err := a.ingest(context.Background()); err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if got := a.store.NextGameIndex(); got != 3 {
+		t.Fatalf("ingest cursor = %d, want 3", got)
+	}
+	if persisted != 1 {
+		t.Fatalf("ingest persisted %d times, want one batch commit", persisted)
 	}
 }
 

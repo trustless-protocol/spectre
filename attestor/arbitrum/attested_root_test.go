@@ -5,6 +5,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -150,6 +151,78 @@ func TestAttestedRootStoreFrontiersAndPersistence(t *testing.T) {
 	}
 }
 
+func TestAttestedRootStoreCommitPublishesOnlyAfterDurableSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "attested-roots.json")
+	store, err := LoadAttestedRootStore(path, "arbitrum-one", 1)
+	if err != nil {
+		t.Fatalf("LoadAttestedRootStore: %v", err)
+	}
+	if err := store.Commit(func(staged *AttestedRootStore) (bool, error) {
+		staged.SetNextL1Block(2)
+		return true, nil
+	}); err != nil {
+		t.Fatalf("initial Commit: %v", err)
+	}
+
+	fs := realAttestedRootFileSystem()
+	fs.rename = func(string, string) error { return errors.New("rename failed") }
+	store.fs = fs
+	if err := store.Commit(func(staged *AttestedRootStore) (bool, error) {
+		staged.SetNextL1Block(3)
+		return true, nil
+	}); err == nil {
+		t.Fatal("Commit succeeded despite injected durable-save failure")
+	}
+	if got := store.NextL1Block(); got != 2 {
+		t.Fatalf("published cursor = %d, want 2", got)
+	}
+	reloaded, err := LoadAttestedRootStore(path, "arbitrum-one", 0)
+	if err != nil {
+		t.Fatalf("reload durable state: %v", err)
+	}
+	if got := reloaded.NextL1Block(); got != 2 {
+		t.Fatalf("durable cursor = %d, want 2", got)
+	}
+}
+
+func TestAttestedRootStoreCommitSerializesConcurrentWriters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "attested-roots.json")
+	store, err := LoadAttestedRootStore(path, "arbitrum-one", 1)
+	if err != nil {
+		t.Fatalf("LoadAttestedRootStore: %v", err)
+	}
+	const writers = 32
+	var writersDone sync.WaitGroup
+	errs := make(chan error, writers)
+	for range writers {
+		writersDone.Add(1)
+		go func() {
+			defer writersDone.Done()
+			errs <- store.Commit(func(staged *AttestedRootStore) (bool, error) {
+				staged.SetNextL1Block(staged.NextL1Block() + 1)
+				return true, nil
+			})
+		}()
+	}
+	writersDone.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("concurrent Commit: %v", err)
+		}
+	}
+	if got := store.NextL1Block(); got != writers+1 {
+		t.Fatalf("published cursor = %d, want %d", got, writers+1)
+	}
+	reloaded, err := LoadAttestedRootStore(path, "arbitrum-one", 0)
+	if err != nil {
+		t.Fatalf("reload durable state: %v", err)
+	}
+	if got := reloaded.NextL1Block(); got != writers+1 {
+		t.Fatalf("durable cursor = %d, want %d", got, writers+1)
+	}
+}
+
 func TestAttestedRootStoreRejectsIdentityMismatch(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "attested-roots.json")
 	store, err := LoadAttestedRootStore(path, "arbitrum-one", 1)
@@ -201,7 +274,7 @@ func TestAttestedRootStoreDerivedLifecycle(t *testing.T) {
 	corrected := third
 	corrected.StateRoot = common.HexToHash("0xcafe")
 	corrected.BlockHash = common.HexToHash("0xbeef")
-	if !store.CorrectDerived(corrected, now.Add(time.Second)) {
+	if !store.CorrectDerived(corrected.BlockNumber, corrected, now.Add(time.Second)) {
 		t.Fatal("derived root was not corrected")
 	}
 	root, found := store.HighestAttested(false)
@@ -214,6 +287,75 @@ func TestAttestedRootStoreDerivedLifecycle(t *testing.T) {
 	root, found = store.HighestAttestedAtOrBelow(100, false)
 	if found {
 		t.Fatalf("oldest derived root survived pruning: %+v", root)
+	}
+}
+
+func TestAttestedRootStoreCorrectDerivedRejectsInvalidTargets(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+
+	t.Run("mismatched commitment height leaves every root untouched", func(t *testing.T) {
+		store, err := NewAttestedRootStore("arbitrum-one", 1)
+		if err != nil {
+			t.Fatalf("create store: %v", err)
+		}
+		first := testStoreCommitment(100)
+		second := testStoreCommitment(200)
+		if err := store.AppendDerived(first, now, true); err != nil {
+			t.Fatalf("append first root: %v", err)
+		}
+		if err := store.AppendDerived(second, now, true); err != nil {
+			t.Fatalf("append second root: %v", err)
+		}
+		wrongHeight := second
+		wrongHeight.StateRoot = common.HexToHash("0xcafe")
+		wrongHeight.BlockHash = common.HexToHash("0xbeef")
+
+		if store.CorrectDerived(first.BlockNumber, wrongHeight, now.Add(time.Second)) {
+			t.Fatal("CorrectDerived accepted a commitment for another height")
+		}
+		for _, want := range []BlockCommitment{first, second} {
+			got, ok := store.DerivedAt(want.BlockNumber)
+			if !ok || !got.Provisional || got.Root != want.StateRoot || got.L2BlockHash != want.BlockHash {
+				t.Fatalf("root at height %d changed: %+v ok=%t", want.BlockNumber, got, ok)
+			}
+		}
+	})
+
+	t.Run("confirmed root cannot be corrected", func(t *testing.T) {
+		store, err := NewAttestedRootStore("arbitrum-one", 1)
+		if err != nil {
+			t.Fatalf("create store: %v", err)
+		}
+		original := testStoreCommitment(100)
+		if err := store.AppendDerived(original, now, false); err != nil {
+			t.Fatalf("append confirmed root: %v", err)
+		}
+		corrected := original
+		corrected.StateRoot = common.HexToHash("0xcafe")
+		corrected.BlockHash = common.HexToHash("0xbeef")
+
+		if store.CorrectDerived(original.BlockNumber, corrected, now.Add(time.Second)) {
+			t.Fatal("CorrectDerived overwrote an already-confirmed root")
+		}
+		got, ok := store.DerivedAt(original.BlockNumber)
+		if !ok || got.Provisional || got.Root != original.StateRoot || got.L2BlockHash != original.BlockHash {
+			t.Fatalf("confirmed root changed: %+v ok=%t", got, ok)
+		}
+	})
+}
+
+func TestAttestedRootStoreConfirmDerivedDoesNotReportChangeForConfirmedEntry(t *testing.T) {
+	store, err := NewAttestedRootStore("arbitrum-one", 1)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	commitment := testStoreCommitment(100)
+	if err := store.AppendDerived(commitment, time.Unix(1_700_000_000, 0), false); err != nil {
+		t.Fatalf("append confirmed root: %v", err)
+	}
+
+	if store.ConfirmDerived(commitment.BlockNumber) {
+		t.Fatal("ConfirmDerived reported a change for an already-confirmed root")
 	}
 }
 

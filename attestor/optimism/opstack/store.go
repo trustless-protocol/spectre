@@ -2,6 +2,7 @@ package opstack
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,6 +13,43 @@ import (
 
 	"attestor/optimism"
 )
+
+const opstackStateVersion uint32 = 1
+
+// DeploymentIdentity binds an OP state file to the deployment whose factory
+// evidence it contains. It is intentionally independent from runtime-only
+// endpoints so an operator cannot accidentally reuse a cursor for a different
+// chain, factory, or respected-game policy.
+type DeploymentIdentity struct {
+	SrcChain           string
+	L1ChainID          uint64
+	L2ChainID          uint64
+	DisputeGameFactory common.Address
+	RespectedGameType  uint32
+}
+
+func (d DeploymentIdentity) validate() error {
+	if d.SrcChain == "" {
+		return errors.New("OP deployment identity src_chain must not be empty")
+	}
+	if d.L1ChainID == 0 || d.L2ChainID == 0 {
+		return errors.New("OP deployment identity L1 and L2 chain IDs must not be zero")
+	}
+	if d.DisputeGameFactory == (common.Address{}) {
+		return errors.New("OP deployment identity DisputeGameFactory must not be zero")
+	}
+	return nil
+}
+
+func (d DeploymentIdentity) String() string {
+	return fmt.Sprintf(
+		"l1:%d/l2:%d/factory:%s/game-type:%d",
+		d.L1ChainID,
+		d.L2ChainID,
+		d.DisputeGameFactory.Hex(),
+		d.RespectedGameType,
+	)
+}
 
 // ProposedRoot is one output-root proposal ingested from the DisputeGameFactory.
 type ProposedRoot struct {
@@ -74,6 +112,10 @@ type RecheckEntry struct {
 }
 
 type persistedState struct {
+	Version              uint32 `json:"version"`
+	SrcChain             string `json:"src_chain"`
+	SourceIdentity       string `json:"source_identity"`
+	LastFinalizedL1Block uint64 `json:"last_finalized_l1_block,omitempty"`
 	// NextGameIndex is the ingest cursor: the next factory index to fetch.
 	NextGameIndex uint64           `json:"next_game_index"`
 	Pending       []ProposedRoot   `json:"pending"`
@@ -126,11 +168,12 @@ func (osStateFileSystem) SyncDir(path string) error {
 // The Run goroutine is the only writer; readers (a future op_to_cosmos module)
 // go through the RWMutex-guarded accessors.
 type AttestedRootStore struct {
-	mu    sync.RWMutex
-	path  string
-	state persistedState
-	fresh bool // true when no state file existed at load (bootstrap needed)
-	fs    stateFileSystem
+	mu       sync.RWMutex
+	commitMu sync.Mutex
+	path     string
+	state    persistedState
+	fresh    bool // true when no state file existed at load (bootstrap needed)
+	fs       stateFileSystem
 }
 
 // LoadStore reads the state file at path. A missing file yields a fresh store
@@ -140,7 +183,7 @@ type AttestedRootStore struct {
 func LoadStore(path string) (*AttestedRootStore, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return &AttestedRootStore{path: path, fresh: true}, nil
+		return &AttestedRootStore{path: path, fresh: true, state: persistedState{Version: opstackStateVersion}}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to read attestor state file %s: %w", path, err)
@@ -149,19 +192,130 @@ func LoadStore(path string) (*AttestedRootStore, error) {
 	if err := json.Unmarshal(data, &st); err != nil {
 		return nil, fmt.Errorf("attestor state file %s is corrupt (delete it to re-bootstrap): %w", path, err)
 	}
+	if st.Version != opstackStateVersion {
+		return nil, fmt.Errorf(
+			"unsupported OP attestor state version %d, want %d (delete it to re-bootstrap)",
+			st.Version,
+			opstackStateVersion,
+		)
+	}
 	return &AttestedRootStore{path: path, state: st}, nil
+}
+
+// BindDeploymentIdentity pins a newly created state file, or verifies an
+// existing file, before the command opens gRPC or starts the attestation loop.
+// Callers must Save after a first successful bind so a crash cannot leave an
+// unbound state file that later gets reused under another deployment.
+func (s *AttestedRootStore) BindDeploymentIdentity(identity DeploymentIdentity) error {
+	if err := identity.validate(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.state.Version != opstackStateVersion {
+		return fmt.Errorf("unsupported OP attestor state version %d", s.state.Version)
+	}
+	configured := identity.String()
+	if s.state.SrcChain == "" && s.state.SourceIdentity == "" {
+		s.state.SrcChain = identity.SrcChain
+		s.state.SourceIdentity = configured
+		return nil
+	}
+	if s.state.SrcChain != identity.SrcChain {
+		return fmt.Errorf("OP attestor state src_chain %q does not match configured %q", s.state.SrcChain, identity.SrcChain)
+	}
+	if s.state.SourceIdentity != configured {
+		return fmt.Errorf("OP attestor state source identity %q does not match configured %q", s.state.SourceIdentity, configured)
+	}
+	return nil
+}
+
+// RecordFinalizedL1Block records the finalized factory view from which the
+// current durable cursor was derived. It is diagnostics and restart evidence,
+// not a substitute for per-pass pinned calls.
+func (s *AttestedRootStore) RecordFinalizedL1Block(block uint64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if block <= s.state.LastFinalizedL1Block {
+		return false
+	}
+	s.state.LastFinalizedL1Block = block
+	return true
+}
+
+func (s *AttestedRootStore) LastFinalizedL1Block() uint64 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.state.LastFinalizedL1Block
 }
 
 // Save atomically persists the current state: write to a temp file in the same
 // directory, fsync, rename. A crash mid-save leaves the previous state intact;
 // stale state only causes re-attestation, which is the safe direction.
 func (s *AttestedRootStore) Save() error {
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
 	s.mu.RLock()
 	data, err := json.MarshalIndent(s.state, "", "  ")
 	s.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("failed to marshal attestor state: %w", err)
 	}
+	return s.persist(data)
+}
+
+// Commit applies a mutation to an isolated copy, persists that copy, then
+// atomically publishes it to in-memory readers. The OP runner is the sole
+// writer, but this ordering prevents gRPC from observing a cursor/root that
+// failed to reach disk.
+func (s *AttestedRootStore) Commit(mutate func(*AttestedRootStore) (bool, error)) error {
+	if s == nil {
+		return errors.New("attestor state store is nil")
+	}
+	if mutate == nil {
+		return errors.New("attestor state mutation must not be nil")
+	}
+	s.commitMu.Lock()
+	defer s.commitMu.Unlock()
+	s.mu.RLock()
+	staged := &AttestedRootStore{
+		path:  s.path,
+		state: clonePersistedState(s.state),
+		fresh: s.fresh,
+		fs:    s.fs,
+	}
+	s.mu.RUnlock()
+	changed, err := mutate(staged)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	data, err := json.MarshalIndent(staged.state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal staged attestor state: %w", err)
+	}
+	if err := s.persist(data); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.state = staged.state
+	s.fresh = staged.fresh
+	s.mu.Unlock()
+	return nil
+}
+
+func clonePersistedState(state persistedState) persistedState {
+	cloned := state
+	cloned.Pending = append([]ProposedRoot(nil), state.Pending...)
+	cloned.Recheck = append([]RecheckEntry(nil), state.Recheck...)
+	cloned.Attested = append([]AttestedRoot(nil), state.Attested...)
+	cloned.Mismatches = append([]MismatchRecord(nil), state.Mismatches...)
+	return cloned
+}
+
+func (s *AttestedRootStore) persist(data []byte) error {
 	dir := filepath.Dir(s.path)
 	fs := s.fileSystem()
 	tmp, err := fs.CreateTemp(dir, filepath.Base(s.path)+".tmp-*")
@@ -208,12 +362,17 @@ func (s *AttestedRootStore) Fresh() bool {
 	return s.fresh
 }
 
-// Bootstrap sets the initial ingest cursor on a fresh store.
-func (s *AttestedRootStore) Bootstrap(nextGameIndex uint64) {
+// Bootstrap sets the initial ingest cursor on a fresh store and reports
+// whether it changed the durable state.
+func (s *AttestedRootStore) Bootstrap(nextGameIndex uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if !s.fresh && s.state.NextGameIndex == nextGameIndex {
+		return false
+	}
 	s.state.NextGameIndex = nextGameIndex
 	s.fresh = false
+	return true
 }
 
 func (s *AttestedRootStore) NextGameIndex() uint64 {
@@ -320,31 +479,35 @@ func (s *AttestedRootStore) DerivedProvisionalAtOrBelow(finalized uint64) []Atte
 }
 
 // ConfirmDerived clears the provisional flag on the derived entry at l2Block.
-func (s *AttestedRootStore) ConfirmDerived(l2Block uint64) {
+func (s *AttestedRootStore) ConfirmDerived(l2Block uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.state.Attested {
 		a := &s.state.Attested[i]
-		if a.source() == SourceDerived && a.L2BlockNumber == l2Block {
+		if a.source() == SourceDerived && a.L2BlockNumber == l2Block && a.Provisional {
 			a.Provisional = false
+			return true
 		}
 	}
+	return false
 }
 
 // CorrectDerived replaces the derived entry's root at l2Block with the
 // authoritative finalized-head value and confirms it (divergence handling —
 // the alarm is the caller's job).
-func (s *AttestedRootStore) CorrectDerived(l2Block uint64, root [32]byte, now time.Time) {
+func (s *AttestedRootStore) CorrectDerived(l2Block uint64, root [32]byte, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.state.Attested {
 		a := &s.state.Attested[i]
-		if a.source() == SourceDerived && a.L2BlockNumber == l2Block {
+		if a.source() == SourceDerived && a.L2BlockNumber == l2Block && a.Provisional {
 			a.Root = root
 			a.AttestedAt = now
 			a.Provisional = false
+			return true
 		}
 	}
+	return false
 }
 
 // PruneDerived drops the oldest confirmed derived entries beyond max,

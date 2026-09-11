@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -138,6 +139,48 @@ func TestStoreCorruptFileFailsLoud(t *testing.T) {
 	}
 }
 
+func TestStoreRejectsUnknownStateVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	if err := os.WriteFile(path, []byte(`{"version":99}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadStore(path); err == nil || !strings.Contains(err.Error(), "delete it to re-bootstrap") {
+		t.Fatalf("unknown state version error = %v, want re-bootstrap guidance", err)
+	}
+}
+
+func TestStoreBindsDeploymentIdentityBeforeServing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	identity := DeploymentIdentity{
+		SrcChain:           "op-mainnet",
+		L1ChainID:          1,
+		L2ChainID:          10,
+		DisputeGameFactory: common.HexToAddress("0x0000000000000000000000000000000000000001"),
+		RespectedGameType:  8,
+	}
+	if err := store.BindDeploymentIdentity(identity); err != nil {
+		t.Fatalf("BindDeploymentIdentity: %v", err)
+	}
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save identity: %v", err)
+	}
+	reloaded, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if err := reloaded.BindDeploymentIdentity(identity); err != nil {
+		t.Fatalf("rebind same deployment: %v", err)
+	}
+	identity.L2ChainID = 8453
+	if err := reloaded.BindDeploymentIdentity(identity); err == nil {
+		t.Fatal("state from a different L2 deployment was accepted")
+	}
+}
+
 func TestHighestAttestedAtOrBelow(t *testing.T) {
 	s, err := LoadStore(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {
@@ -198,6 +241,86 @@ func TestSaveIsAtomicReplacement(t *testing.T) {
 			names = append(names, e.Name())
 		}
 		t.Fatalf("state dir contains %v, want only the state file", names)
+	}
+}
+
+func TestCommitPublishesOnlyAfterDurableSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	store.Bootstrap(1)
+	if err := store.Save(); err != nil {
+		t.Fatalf("initial Save: %v", err)
+	}
+	fs := realStateFileSystem()
+	fs.rename = func(string, string) error { return errors.New("rename failed") }
+	store.fs = fs
+	if err := store.Commit(func(staged *AttestedRootStore) (bool, error) {
+		return staged.Bootstrap(2), nil
+	}); err == nil {
+		t.Fatal("Commit succeeded despite failed durable replacement")
+	}
+	if got := store.NextGameIndex(); got != 1 {
+		t.Fatalf("in-memory cursor after failed commit = %d, want durable cursor 1", got)
+	}
+	reloaded, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got := reloaded.NextGameIndex(); got != 1 {
+		t.Fatalf("durable cursor after failed commit = %d, want 1", got)
+	}
+}
+
+func TestCommitSkipsPersistenceWhenUnchanged(t *testing.T) {
+	store, err := LoadStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	fs := realStateFileSystem()
+	fs.createTemp = func(string, string) (stateFile, error) {
+		t.Fatal("Commit attempted to persist an unchanged state")
+		return nil, nil
+	}
+	store.fs = fs
+
+	if err := store.Commit(func(*AttestedRootStore) (bool, error) { return false, nil }); err != nil {
+		t.Fatalf("Commit unchanged state: %v", err)
+	}
+	if !store.Fresh() {
+		t.Fatal("unchanged Commit published state")
+	}
+}
+
+func TestCorrectDerivedDoesNotOverwriteConfirmedEntry(t *testing.T) {
+	store, err := LoadStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	now := time.Unix(4_000, 0).UTC()
+	original := root(0xaa)
+	store.AppendDerived(100, original, now, false)
+
+	if store.CorrectDerived(100, root(0xbb), now.Add(time.Second)) {
+		t.Fatal("CorrectDerived overwrote an already-confirmed root")
+	}
+	entry, ok := store.HighestAttestedAtOrBelow(100, false)
+	if !ok || entry.Root != original || entry.Provisional {
+		t.Fatalf("confirmed derived root changed: %+v ok=%t", entry, ok)
+	}
+}
+
+func TestConfirmDerivedDoesNotReportChangeForConfirmedEntry(t *testing.T) {
+	store, err := LoadStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	store.AppendDerived(100, root(0xaa), time.Unix(4_000, 0).UTC(), false)
+
+	if store.ConfirmDerived(100) {
+		t.Fatal("ConfirmDerived reported a change for an already-confirmed root")
 	}
 }
 

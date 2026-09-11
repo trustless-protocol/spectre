@@ -218,8 +218,52 @@ func LoadAttestedRootStore(path, srcChain string, startL1Block uint64) (*Atteste
 	return store, nil
 }
 
-// Save atomically replaces the persistent state file. In-memory stores have no
-// path and therefore require no persistence.
+// Commit applies a mutation to an isolated snapshot, persists that snapshot,
+// then publishes it to readers. It serializes production writers so a delayed
+// save cannot overwrite a newer assertion or derived-root transition.
+func (s *AttestedRootStore) Commit(mutate func(*AttestedRootStore) (bool, error)) error {
+	if s == nil {
+		return errors.New("attested-root store is nil")
+	}
+	if mutate == nil {
+		return errors.New("attested-root store mutation must not be nil")
+	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.RLock()
+	path := s.path
+	fs := s.fileSystem()
+	staged := &AttestedRootStore{
+		path:  path,
+		state: clonePersistedAttestedRootState(s.state),
+		fs:    fs,
+	}
+	s.mu.RUnlock()
+	changed, err := mutate(staged)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+	staged.mu.RLock()
+	data, err := json.MarshalIndent(staged.state, "", "  ")
+	staged.mu.RUnlock()
+	if err != nil {
+		return fmt.Errorf("marshal attested-root state: %w", err)
+	}
+	if err := persistAttestedRootState(path, fs, data); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.state = staged.state
+	s.mu.Unlock()
+	return nil
+}
+
+// Save atomically replaces the persistent state file from the current
+// snapshot. New production mutations must use Commit so readers cannot see a
+// successful in-memory mutation whose durable save failed.
 func (s *AttestedRootStore) Save() error {
 	if s == nil {
 		return errors.New("attested-root store is nil")
@@ -228,17 +272,29 @@ func (s *AttestedRootStore) Save() error {
 	defer s.saveMu.Unlock()
 	s.mu.RLock()
 	path := s.path
+	fs := s.fileSystem()
 	data, err := json.MarshalIndent(s.state, "", "  ")
 	s.mu.RUnlock()
 	if err != nil {
 		return fmt.Errorf("marshal attested-root state: %w", err)
 	}
+	return persistAttestedRootState(path, fs, data)
+}
+
+func clonePersistedAttestedRootState(state persistedAttestedRootState) persistedAttestedRootState {
+	clone := state
+	clone.Proposals = append([]ProposedAssertion(nil), state.Proposals...)
+	clone.Attested = append([]AttestedRoot(nil), state.Attested...)
+	clone.Mismatches = append([]AssertionMismatch(nil), state.Mismatches...)
+	return clone
+}
+
+func persistAttestedRootState(path string, fs attestedRootFileSystem, data []byte) error {
 	if path == "" {
 		return nil
 	}
 
 	dir := filepath.Dir(path)
-	fs := s.fileSystem()
 	if err := fs.MkdirAll(dir, 0o750); err != nil {
 		return fmt.Errorf("create attested-root state directory: %w", err)
 	}
@@ -425,12 +481,15 @@ func (s *AttestedRootStore) ConfirmDerived(height uint64) bool {
 
 // CorrectDerived replaces a provisional commitment with Nitro's authoritative
 // finalized commitment.
-func (s *AttestedRootStore) CorrectDerived(commitment BlockCommitment, now time.Time) bool {
+func (s *AttestedRootStore) CorrectDerived(height uint64, commitment BlockCommitment, now time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if commitment.BlockNumber != height {
+		return false
+	}
 	for index := range s.state.Attested {
 		entry := &s.state.Attested[index]
-		if entry.Source != SourceDerived || entry.L2BlockNumber != commitment.BlockNumber {
+		if entry.Source != SourceDerived || entry.L2BlockNumber != height || !entry.Provisional {
 			continue
 		}
 		entry.Root = commitment.StateRoot

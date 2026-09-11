@@ -73,14 +73,21 @@ func (a *DerivedRootAttestor) SyncOnce(ctx context.Context) error {
 		return nil
 	}
 
-	changed := false
 	var syncErrors []error
 	for _, entry := range a.store.DerivedProvisionalAtOrBelow(snapshot.Finalized.BlockNumber) {
 		commitment, err := a.runtime.CommitmentAt(ctx, entry.L2BlockNumber)
 		if err != nil {
 			if isNitroBlockNotFound(err) {
-				removed, found := a.store.RemoveProvisionalDerived(entry.L2BlockNumber)
-				changed = found || changed
+				var removed AttestedRoot
+				var found bool
+				commitErr := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+					removed, found = store.RemoveProvisionalDerived(entry.L2BlockNumber)
+					return found, nil
+				})
+				if commitErr != nil {
+					syncErrors = append(syncErrors, commitErr)
+					continue
+				}
 				if found {
 					log.Printf(
 						"Arbitrum dropped unavailable provisional derived root: l2_block=%d block_hash=%s state_root=%s",
@@ -104,10 +111,17 @@ func (a *DerivedRootAttestor) SyncOnce(ctx context.Context) error {
 			continue
 		}
 		if commitment.StateRoot == entry.Root && commitment.BlockHash == entry.L2BlockHash {
-			changed = a.store.ConfirmDerived(entry.L2BlockNumber) || changed
-			log.Printf("Arbitrum finalized head confirmed derived root: l2_block=%d state_root=%s", entry.L2BlockNumber, entry.Root)
+			var confirmed bool
+			commitErr := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+				confirmed = store.ConfirmDerived(entry.L2BlockNumber)
+				return confirmed, nil
+			})
+			if commitErr != nil {
+				syncErrors = append(syncErrors, commitErr)
+			} else if confirmed {
+				log.Printf("Arbitrum finalized head confirmed derived root: l2_block=%d state_root=%s", entry.L2BlockNumber, entry.Root)
+			}
 		} else {
-			changed = a.store.CorrectDerived(commitment, a.now()) || changed
 			log.Printf(
 				"Arbitrum HEAD DIVERGENCE: l2_block=%d provisional_block_hash=%s provisional_state_root=%s finalized_block_hash=%s finalized_state_root=%s",
 				entry.L2BlockNumber,
@@ -116,13 +130,41 @@ func (a *DerivedRootAttestor) SyncOnce(ctx context.Context) error {
 				commitment.BlockHash,
 				commitment.StateRoot,
 			)
+			if commitment.BlockNumber != entry.L2BlockNumber {
+				syncErrors = append(syncErrors, fmt.Errorf(
+					"reverify derived root at L2 block %d: Nitro returned commitment for L2 block %d",
+					entry.L2BlockNumber,
+					commitment.BlockNumber,
+				))
+				continue
+			}
+			var corrected bool
+			commitErr := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+				corrected = store.CorrectDerived(entry.L2BlockNumber, commitment, a.now())
+				return corrected, nil
+			})
+			if commitErr != nil {
+				syncErrors = append(syncErrors, commitErr)
+			} else if !corrected {
+				syncErrors = append(syncErrors, fmt.Errorf(
+					"reverify derived root at L2 block %d: provisional entry disappeared before correction",
+					entry.L2BlockNumber,
+				))
+			}
 		}
 	}
 
 	gate, observed := snapshotHead(snapshot, a.config.AttestationHead)
 	if observed {
-		for _, removed := range a.store.RemoveProvisionalDerivedAbove(gate.BlockNumber) {
-			changed = true
+		var removedRoots []AttestedRoot
+		commitErr := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+			removedRoots = store.RemoveProvisionalDerivedAbove(gate.BlockNumber)
+			return len(removedRoots) != 0, nil
+		})
+		if commitErr != nil {
+			syncErrors = append(syncErrors, commitErr)
+		}
+		for _, removed := range removedRoots {
 			log.Printf(
 				"Arbitrum removed derived root above regressed %s head: l2_block=%d block_hash=%s state_root=%s",
 				a.config.AttestationHead,
@@ -136,10 +178,11 @@ func (a *DerivedRootAttestor) SyncOnce(ctx context.Context) error {
 	if !a.config.Disabled {
 		if observed && gate.BlockNumber != 0 && a.shouldAttest(gate) {
 			provisional := gate.BlockNumber > snapshot.Finalized.BlockNumber
-			if err := a.store.AppendDerived(gate, a.now(), provisional); err != nil {
+			if err := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+				return true, store.AppendDerived(gate, a.now(), provisional)
+			}); err != nil {
 				syncErrors = append(syncErrors, err)
 			} else {
-				changed = true
 				log.Printf(
 					"Arbitrum derived root attested: l2_block=%d block_hash=%s state_root=%s head=%s provisional=%t",
 					gate.BlockNumber,
@@ -152,14 +195,14 @@ func (a *DerivedRootAttestor) SyncOnce(ctx context.Context) error {
 		}
 	}
 
-	if removed := a.store.PruneDerived(a.config.MaxRoots); removed != 0 {
-		changed = true
-		log.Printf("Arbitrum pruned %d confirmed derived roots beyond cap %d", removed, a.config.MaxRoots)
-	}
-	if changed {
-		if err := a.store.Save(); err != nil {
-			syncErrors = append(syncErrors, err)
-		}
+	var pruned uint64
+	if err := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+		pruned = store.PruneDerived(a.config.MaxRoots)
+		return pruned != 0, nil
+	}); err != nil {
+		syncErrors = append(syncErrors, err)
+	} else if pruned != 0 {
+		log.Printf("Arbitrum pruned %d confirmed derived roots beyond cap %d", pruned, a.config.MaxRoots)
 	}
 	return errors.Join(syncErrors...)
 }

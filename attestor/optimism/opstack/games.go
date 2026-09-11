@@ -9,6 +9,7 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
 	"go.uber.org/zap"
 
 	contractDisputeGameFactory "attestor/optimism/bindings/DisputeGameFactory"
@@ -41,7 +42,11 @@ func NewFactoryGameSource(ctx context.Context, l1 *ethclient.Client, factoryAddr
 }
 
 func (g *FactoryGameSource) GameCount(ctx context.Context) (uint64, error) {
-	count, err := g.factory.GameCount(&bind.CallOpts{Context: ctx})
+	return g.gameCount(ctx, nil)
+}
+
+func (g *FactoryGameSource) gameCount(ctx context.Context, blockNumber *big.Int) (uint64, error) {
+	count, err := g.factory.GameCount(&bind.CallOpts{Context: ctx, BlockNumber: blockNumber})
 	if err != nil {
 		return 0, fmt.Errorf("DisputeGameFactory.gameCount failed: %w", err)
 	}
@@ -51,7 +56,11 @@ func (g *FactoryGameSource) GameCount(ctx context.Context) (uint64, error) {
 // GameAtIndex fetches one proposal: the factory entry plus the game proxy's
 // root claim and L2 block number.
 func (g *FactoryGameSource) GameAtIndex(ctx context.Context, index uint64) (ProposedRoot, error) {
-	opts := &bind.CallOpts{Context: ctx}
+	return g.gameAtIndex(ctx, index, nil)
+}
+
+func (g *FactoryGameSource) gameAtIndex(ctx context.Context, index uint64, blockNumber *big.Int) (ProposedRoot, error) {
+	opts := &bind.CallOpts{Context: ctx, BlockNumber: blockNumber}
 	entry, err := g.factory.GameAtIndex(opts, new(big.Int).SetUint64(index))
 	if err != nil {
 		return ProposedRoot{}, fmt.Errorf("DisputeGameFactory.gameAtIndex(%d) failed: %w", index, err)
@@ -76,6 +85,41 @@ func (g *FactoryGameSource) GameAtIndex(ctx context.Context, index uint64) (Prop
 		L2BlockNumber: l2Block.Uint64(),
 		L1Timestamp:   entry.Timestamp,
 	}, nil
+}
+
+// FinalizedView returns a reader pinned to one L1 block. Every factory and
+// dispute-game call made through the view carries the same BlockNumber, so a
+// durable cursor cannot skip a game which only existed in a latest-L1 reorg.
+func (g *FactoryGameSource) FinalizedView(ctx context.Context) (gameSource, uint64, error) {
+	header, err := g.l1.HeaderByNumber(ctx, big.NewInt(int64(rpc.FinalizedBlockNumber)))
+	if err != nil {
+		return nil, 0, fmt.Errorf("read finalized L1 header: %w", err)
+	}
+	if header == nil || header.Number == nil || !header.Number.IsUint64() {
+		return nil, 0, fmt.Errorf("finalized L1 header has invalid block number")
+	}
+	blockNumber := new(big.Int).Set(header.Number)
+	return factoryGameView{source: g, blockNumber: blockNumber}, blockNumber.Uint64(), nil
+}
+
+type factoryGameView struct {
+	source      *FactoryGameSource
+	blockNumber *big.Int
+}
+
+func (v factoryGameView) GameCount(ctx context.Context) (uint64, error) {
+	return v.source.gameCount(ctx, v.blockNumber)
+}
+
+func (v factoryGameView) GameAtIndex(ctx context.Context, index uint64) (ProposedRoot, error) {
+	return v.source.gameAtIndex(ctx, index, v.blockNumber)
+}
+
+// FinalizedView returns this already-pinned view. It lets callers use a view
+// wherever a gameSource is required without weakening the finalized-read
+// contract at the type boundary.
+func (v factoryGameView) FinalizedView(context.Context) (gameSource, uint64, error) {
+	return v, v.blockNumber.Uint64(), nil
 }
 
 // gameL2Height resolves the L2 height a dispute game covers, across the

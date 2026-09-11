@@ -2,13 +2,77 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"go.uber.org/zap"
 )
+
+type testChainIDReader struct {
+	chainID *big.Int
+	err     error
+}
+
+func (r testChainIDReader) ChainID(context.Context) (*big.Int, error) {
+	return r.chainID, r.err
+}
+
+type testL2ChainIDReader struct {
+	chainID *big.Int
+	err     error
+}
+
+func (r testL2ChainIDReader) L2ChainID(context.Context) (*big.Int, error) {
+	return r.chainID, r.err
+}
+
+func TestValidateChainID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read testChainIDReader
+		want bool
+	}{
+		{name: "matching", read: testChainIDReader{chainID: big.NewInt(10)}},
+		{name: "wrong", read: testChainIDReader{chainID: big.NewInt(11)}, want: true},
+		{name: "query error", read: testChainIDReader{err: errors.New("rpc down")}, want: true},
+		{name: "nil", read: testChainIDReader{}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateChainID(context.Background(), tc.read, 10, "test endpoint")
+			if (err != nil) != tc.want {
+				t.Fatalf("validateChainID error = %v, want error=%t", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateL2ChainID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		read testL2ChainIDReader
+		want bool
+	}{
+		{name: "matching", read: testL2ChainIDReader{chainID: big.NewInt(10)}},
+		{name: "wrong", read: testL2ChainIDReader{chainID: big.NewInt(11)}, want: true},
+		{name: "query error", read: testL2ChainIDReader{err: errors.New("rpc down")}, want: true},
+		{name: "nil", read: testL2ChainIDReader{}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateL2ChainID(context.Background(), tc.read, 10)
+			if (err != nil) != tc.want {
+				t.Fatalf("validateL2ChainID error = %v, want error=%t", err, tc.want)
+			}
+		})
+	}
+}
 
 func TestLoadConfigExample(t *testing.T) {
 	t.Parallel()
@@ -171,6 +235,7 @@ func TestBuildOpAttestorRejectsInvalidInputBeforeNetworkDial(t *testing.T) {
 			config := opSourceConfig{
 				SrcChain:              "op-mainnet",
 				L1RpcUrl:              "https://ethereum.example",
+				L1ChainID:             1,
 				OpNodeRpcUrl:          "https://op-node.example",
 				DisputeGameFactory:    "0x0000000000000000000000000000000000000001",
 				L2ChainID:             10,
@@ -181,6 +246,108 @@ func TestBuildOpAttestorRejectsInvalidInputBeforeNetworkDial(t *testing.T) {
 			_, _, _, err := buildOpAttestor(context.Background(), zap.NewNop(), config, nil)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("buildOpAttestor error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// The configured op_node_rpc_url is a standard op-node endpoint. It exposes
+// optimism_* methods, not the execution client's eth_* namespace. Exercise
+// the complete startup wiring against such an endpoint so an eth_chainId
+// regression fails before reaching deployment.
+func TestBuildOpAttestorValidatesL2IdentityThroughOpNode(t *testing.T) {
+	l1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("decode L1 RPC request: %v", err)
+			return
+		}
+		var result any
+		switch req.Method {
+		case "eth_chainId":
+			result = "0x1"
+		case "eth_getCode":
+			result = "0x6000"
+		default:
+			t.Errorf("unexpected L1 RPC method %q", req.Method)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]any{"code": -32601, "message": "method not found"},
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result})
+	}))
+	defer l1.Close()
+
+	for _, tc := range []struct {
+		name        string
+		rollupL2ID  uint64
+		wantErrText string
+	}{
+		{name: "matching L2 identity", rollupL2ID: 10},
+		{name: "mismatched L2 identity", rollupL2ID: 11, wantErrText: "op-node L2 chain ID is 11, expected 10"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			calls := make(map[string]int)
+			opNode := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var req struct {
+					ID     json.RawMessage `json:"id"`
+					Method string          `json:"method"`
+				}
+				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+					t.Errorf("decode op-node RPC request: %v", err)
+					return
+				}
+				mu.Lock()
+				calls[req.Method]++
+				mu.Unlock()
+
+				if req.Method != "optimism_rollupConfig" {
+					_ = json.NewEncoder(w).Encode(map[string]any{
+						"jsonrpc": "2.0", "id": req.ID,
+						"error": map[string]any{"code": -32601, "message": "method not found"},
+					})
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{
+					"jsonrpc": "2.0", "id": req.ID,
+					"result": map[string]any{"l2_chain_id": tc.rollupL2ID},
+				})
+			}))
+			defer opNode.Close()
+
+			_, _, cleanup, err := buildOpAttestor(context.Background(), zap.NewNop(), opSourceConfig{
+				SrcChain:              "op-mainnet",
+				L1RpcUrl:              l1.URL,
+				L1ChainID:             1,
+				OpNodeRpcUrl:          opNode.URL,
+				L2ChainID:             10,
+				DisputeGameFactory:    "0x0000000000000000000000000000000000000001",
+				AttestationSigningKey: strings.Repeat("11", 32),
+				StatePath:             filepath.Join(t.TempDir(), "state.json"),
+			}, nil)
+			if tc.wantErrText != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErrText) {
+					t.Fatalf("buildOpAttestor error = %v, want %q", err, tc.wantErrText)
+				}
+			} else if err != nil {
+				t.Fatalf("buildOpAttestor: %v", err)
+			} else {
+				defer cleanup()
+			}
+
+			mu.Lock()
+			defer mu.Unlock()
+			if calls["optimism_rollupConfig"] != 1 {
+				t.Fatalf("optimism_rollupConfig calls = %d, want 1 (all calls: %+v)", calls["optimism_rollupConfig"], calls)
+			}
+			if calls["eth_chainId"] != 0 {
+				t.Fatalf("op-node received eth_chainId; calls: %+v", calls)
 			}
 		})
 	}

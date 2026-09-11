@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -52,6 +53,7 @@ type opSourceConfig struct {
 	DisableDerivedRoots     bool   `json:"disable_derived_roots"`
 	DerivedGapBlocks        uint64 `json:"derived_attestation_gap_blocks"`
 	MaxDerivedRoots         uint64 `json:"max_derived_roots"`
+	L1ChainID               uint64 `json:"l1_chain_id"`
 	L2ChainID               uint64 `json:"l2_chain_id"`
 	AttestationSigningKey   string `json:"attestation_signing_key"`
 }
@@ -148,8 +150,10 @@ func buildOpAttestor(ctx context.Context, logger *zap.Logger, op opSourceConfig,
 	cfg := opstack.Config{
 		SrcChain:                op.SrcChain,
 		L1RpcUrl:                op.L1RpcUrl,
+		L1ChainID:               op.L1ChainID,
 		L1WsUrl:                 op.L1WsUrl,
 		OpNodeRpcUrl:            op.OpNodeRpcUrl,
+		L2ChainID:               op.L2ChainID,
 		DisputeGameFactory:      common.HexToAddress(op.DisputeGameFactory),
 		RespectedGameType:       op.RespectedGameType,
 		AttestationHead:         opstack.Head(op.AttestationHead),
@@ -168,6 +172,10 @@ func buildOpAttestor(ctx context.Context, logger *zap.Logger, op opSourceConfig,
 	if err != nil {
 		return nil, attestation.Signer{}, nil, fmt.Errorf("failed to dial L1 rpc %s: %w", cfg.L1RpcUrl, err)
 	}
+	if err := validateChainID(ctx, l1Client, cfg.L1ChainID, "L1 RPC"); err != nil {
+		l1Client.Close()
+		return nil, attestation.Signer{}, nil, err
+	}
 	games, err := opstack.NewFactoryGameSource(ctx, l1Client, cfg.DisputeGameFactory)
 	if err != nil {
 		l1Client.Close()
@@ -178,11 +186,32 @@ func buildOpAttestor(ctx context.Context, logger *zap.Logger, op opSourceConfig,
 		l1Client.Close()
 		return nil, attestation.Signer{}, nil, err
 	}
+	if err := validateL2ChainID(ctx, replica, cfg.L2ChainID); err != nil {
+		l1Client.Close()
+		replica.Close()
+		return nil, attestation.Signer{}, nil, err
+	}
 	store, err := opstack.LoadStore(cfg.StatePath)
 	if err != nil {
 		l1Client.Close()
 		replica.Close()
 		return nil, attestation.Signer{}, nil, err
+	}
+	if err := store.BindDeploymentIdentity(opstack.DeploymentIdentity{
+		SrcChain:           cfg.SrcChain,
+		L1ChainID:          cfg.L1ChainID,
+		L2ChainID:          cfg.L2ChainID,
+		DisputeGameFactory: cfg.DisputeGameFactory,
+		RespectedGameType:  cfg.RespectedGameType,
+	}); err != nil {
+		l1Client.Close()
+		replica.Close()
+		return nil, attestation.Signer{}, nil, fmt.Errorf("bind OP attestor state identity: %w", err)
+	}
+	if err := store.Save(); err != nil {
+		l1Client.Close()
+		replica.Close()
+		return nil, attestation.Signer{}, nil, fmt.Errorf("persist OP attestor state identity: %w", err)
 	}
 	cleanup := func() {
 		l1Client.Close()
@@ -190,6 +219,39 @@ func buildOpAttestor(ctx context.Context, logger *zap.Logger, op opSourceConfig,
 	}
 	hook := &opstack.LogChallengeHook{Logger: logger.Sugar()}
 	return opstack.New(cfg, games, replica, store, hook, metrics, logger.Sugar()), signer, cleanup, nil
+}
+
+type chainIDReader interface {
+	ChainID(context.Context) (*big.Int, error)
+}
+
+func validateChainID(ctx context.Context, client chainIDReader, expected uint64, endpoint string) error {
+	observed, err := client.ChainID(ctx)
+	if err != nil {
+		return fmt.Errorf("query %s chain ID: %w", endpoint, err)
+	}
+	if observed == nil || !observed.IsUint64() || observed.Uint64() != expected {
+		return fmt.Errorf("%s chain ID is %v, expected %d", endpoint, observed, expected)
+	}
+	return nil
+}
+
+type l2ChainIDReader interface {
+	L2ChainID(context.Context) (*big.Int, error)
+}
+
+// validateL2ChainID reads the L2 identity from the op-node's rollup
+// configuration. op_node_rpc_url is deliberately not treated as an execution
+// RPC endpoint: a normal op-node exposes optimism_* methods but not eth_*.
+func validateL2ChainID(ctx context.Context, client l2ChainIDReader, expected uint64) error {
+	observed, err := client.L2ChainID(ctx)
+	if err != nil {
+		return fmt.Errorf("query op-node rollup configuration: %w", err)
+	}
+	if observed == nil || !observed.IsUint64() || observed.Uint64() != expected {
+		return fmt.Errorf("op-node L2 chain ID is %v, expected %d", observed, expected)
+	}
+	return nil
 }
 
 func run(logger *zap.Logger, cmd *cobra.Command) error {

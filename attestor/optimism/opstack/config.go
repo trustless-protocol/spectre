@@ -72,12 +72,18 @@ type Config struct {
 	SrcChain string
 	// L1RpcUrl is the Ethereum L1 HTTP RPC endpoint.
 	L1RpcUrl string
+	// L1ChainID is the expected settlement-chain identity used to bind the
+	// persistent factory cursor to one concrete deployment.
+	L1ChainID uint64
 	// L1WsUrl optionally enables the DisputeGameCreated wake hint. Empty means
 	// poll-only.
 	L1WsUrl string
 	// OpNodeRpcUrl is the RPC endpoint of the op-node driving the verify-mode
 	// replica (optimism_syncStatus / optimism_outputAtBlock).
 	OpNodeRpcUrl string
+	// L2ChainID is the expected execution-chain identity recorded in
+	// OpNodeRpcUrl's optimism_rollupConfig response.
+	L2ChainID uint64
 	// DisputeGameFactory is the L1 DisputeGameFactory address.
 	DisputeGameFactory common.Address
 	// RespectedGameType filters ingested games; games of any other type are
@@ -151,6 +157,12 @@ func (c *Config) Validate() error {
 	}
 	if c.DisputeGameFactory == (common.Address{}) {
 		return fmt.Errorf("op_source.dispute_game_factory is required")
+	}
+	if c.L1ChainID == 0 {
+		return fmt.Errorf("op_source.l1_chain_id is required")
+	}
+	if c.L2ChainID == 0 {
+		return fmt.Errorf("op_source.l2_chain_id is required")
 	}
 	switch c.AttestationHead {
 	case HeadFinalized:

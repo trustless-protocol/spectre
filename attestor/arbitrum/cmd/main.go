@@ -108,11 +108,10 @@ func runAttestor(ctx context.Context, configPath string) error {
 		return fmt.Errorf("validate Arbitrum deployment identity: %w", err)
 	}
 	sourceIdentity := assertionSourceIdentity(config)
-	if err := attestedRootStore.BindSourceIdentity(sourceIdentity); err != nil {
-		return fmt.Errorf("bind attested-root source identity: %w", err)
-	}
-	if err := attestedRootStore.Save(); err != nil {
-		return fmt.Errorf("persist attested-root source identity: %w", err)
+	if err := attestedRootStore.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
+		return true, store.BindSourceIdentity(sourceIdentity)
+	}); err != nil {
+		return fmt.Errorf("bind and persist attested-root source identity: %w", err)
 	}
 	attestationHead, err := config.NormalizedAttestationHead()
 	if err != nil {

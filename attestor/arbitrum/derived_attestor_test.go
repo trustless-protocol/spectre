@@ -1,8 +1,10 @@
 package arbitrum
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -90,6 +92,55 @@ func TestDerivedRootAttestorFinalizedRecheckCorrectsDivergence(t *testing.T) {
 	root, found := store.HighestAttested(false)
 	if !found || root.Provisional || root.Root != finalized.StateRoot || root.L2BlockHash != finalized.BlockHash {
 		t.Fatalf("finalized corrected root: found=%t root=%+v", found, root)
+	}
+}
+
+func TestDerivedRootAttestorReportsWrongHeightDivergence(t *testing.T) {
+	store, err := NewAttestedRootStore("arbitrum-one", 1)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	provisional := testStoreCommitment(100)
+	if err := store.AppendDerived(provisional, time.Unix(1, 0), true); err != nil {
+		t.Fatalf("append provisional root: %v", err)
+	}
+	wrongHeight := testStoreCommitment(101)
+	wrongHeight.BlockHash = common.HexToHash("0xf1")
+	wrongHeight.StateRoot = common.HexToHash("0xf2")
+	runtime := &derivedTestRuntime{
+		snapshot: RuntimeSnapshot{
+			Finalized:      wrongHeight,
+			FinalizedSeen:  true,
+			Unsafe:         wrongHeight,
+			UnsafeObserved: true,
+		},
+		commitments: map[uint64]BlockCommitment{100: wrongHeight},
+	}
+	attestor, err := NewDerivedRootAttestor(runtime, store, DerivedAttestorConfig{
+		AttestationHead: RunModeUnsafe,
+		Disabled:        true,
+		GapBlocks:       1,
+		MaxRoots:        10,
+	})
+	if err != nil {
+		t.Fatalf("create derived attestor: %v", err)
+	}
+
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousOutput) })
+
+	err = attestor.SyncOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "returned commitment for L2 block 101") {
+		t.Fatalf("SyncOnce error = %v, want wrong-height recheck failure", err)
+	}
+	if !strings.Contains(logs.String(), "Arbitrum HEAD DIVERGENCE") {
+		t.Fatalf("wrong-height divergence was not logged: %q", logs.String())
+	}
+	root, found := store.DerivedAt(100)
+	if !found || !root.Provisional || root.Root != provisional.StateRoot {
+		t.Fatalf("wrong-height response mutated provisional root: found=%t root=%+v", found, root)
 	}
 }
 

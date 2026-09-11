@@ -13,7 +13,9 @@ func validConfig() Config {
 	return Config{
 		SrcChain:           "op-mainnet",
 		L1RpcUrl:           "https://ethereum.example",
+		L1ChainID:          1,
 		OpNodeRpcUrl:       "https://op-node.example",
+		L2ChainID:          10,
 		DisputeGameFactory: common.HexToAddress("0x0000000000000000000000000000000000000001"),
 		StatePath:          "attestor-state.json",
 	}
@@ -72,6 +74,8 @@ func TestConfigValidateFailureMatrix(t *testing.T) {
 		{name: "invalid L1 websocket scheme", mutate: func(c *Config) { c.L1WsUrl = "https://ethereum.example" }, want: "one of"},
 		{name: "relative L1 websocket", mutate: func(c *Config) { c.L1WsUrl = "events" }, want: "valid URL"},
 		{name: "zero factory", mutate: func(c *Config) { c.DisputeGameFactory = common.Address{} }, want: "dispute_game_factory"},
+		{name: "missing L1 chain ID", mutate: func(c *Config) { c.L1ChainID = 0 }, want: "l1_chain_id"},
+		{name: "missing L2 chain ID", mutate: func(c *Config) { c.L2ChainID = 0 }, want: "l2_chain_id"},
 		{name: "invalid head", mutate: func(c *Config) { c.AttestationHead = Head("confirmed") }, want: "attestation_head"},
 		{name: "missing state path", mutate: func(c *Config) { c.StatePath = "" }, want: "state_path"},
 		{name: "negative poll interval", mutate: func(c *Config) { c.PollInterval = -time.Second }, want: "poll_interval"},
