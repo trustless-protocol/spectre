@@ -18,6 +18,7 @@ import (
 	"time"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
+	relayerclient "relayer/client"
 	"relayer/services"
 
 	abcitypes "github.com/cometbft/cometbft/abci/types"
@@ -706,7 +707,8 @@ func TestFailedEthPendingAddKeepsRecoveryCursorRetryable(t *testing.T) {
 		},
 		Logger: log.New(io.Discard, "", 0),
 	}
-	_, err = sub.scanEthRangeInChunks(context.Background(), deps, "SendPacket", &cursor, 90, 3,
+	span := &relayerclient.LogSpan{Chunk: 3}
+	_, err = sub.scanEthRangeInChunks(context.Background(), deps, "SendPacket", &cursor, 90, span,
 		func(from, to uint64) (ethRecoveryStats, error) {
 			return recoverEthSendPackets(context.Background(), deps, bb, filterer, from, to, nil)
 		}, func() {})

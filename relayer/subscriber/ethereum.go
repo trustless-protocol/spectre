@@ -16,6 +16,8 @@ import (
 	"time"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
+	"relayer/chain"
+	relayerclient "relayer/client"
 	"relayer/services"
 	"relayer/utils"
 
@@ -420,13 +422,27 @@ func advanceRecoveryStart(nextRecoveryStartBlock *uint64, candidate uint64) {
 	}
 }
 
+// scanEthRangeInChunks walks [*cursor, endBlock] in span-sized pieces, advancing
+// and persisting the cursor after each piece that succeeded.
+//
+// A provider refusing the span is the one failure it does not simply return.
+// Waiting cannot fix it — the identical request is refused again, forever, and
+// the ETH recovery scan is the only thing that closes an event-loss window — so
+// the span is halved and the SAME piece is retried. Unlike the L2 mirror this
+// does not restart the range: the cursor has already been persisted up to the
+// last piece that worked, and re-scanning what is durably done would re-offer
+// events the batch builder has seen.
+//
+// chain.Climb is what ends the halving. At a one-block span a provider still
+// refusing is no longer a sizing problem, and the failure is reported permanent
+// rather than halved into an infinite loop.
 func (s *Subscriber) scanEthRangeInChunks(
 	stdCtx context.Context,
 	ctx ethDeps,
 	label string,
 	cursor *uint64,
 	endBlock uint64,
-	chunkSize uint64,
+	span *relayerclient.LogSpan,
 	scan func(from, to uint64) (ethRecoveryStats, error),
 	persist func(),
 ) (ethRecoveryStats, error) {
@@ -435,7 +451,8 @@ func (s *Subscriber) scanEthRangeInChunks(
 		if err := stdCtx.Err(); err != nil {
 			return combined, err
 		}
-		to := *cursor + chunkSize - 1
+		width := span.Width(*cursor, endBlock)
+		to := *cursor + width - 1
 		if to < *cursor || to > endBlock {
 			to = endBlock
 		}
@@ -443,6 +460,21 @@ func (s *Subscriber) scanEthRangeInChunks(
 		combined.recovered += stats.recovered
 		combined.skipped += stats.skipped
 		if err != nil {
+			if relayerclient.IsLogRangeRejection(err) {
+				next, bottom, ok := chain.Climb(
+					chain.NeedsChange(err, chain.HalvingLadder(relayerclient.KnobBlocksPerLogRange, width)),
+					0, // each rejection re-anchors on the span that was just refused
+				)
+				if ok {
+					span.Chunk = next.To
+					ctx.Logger.Printf("[SubscribeEth] %s: provider refused a %d-block log range at [%d,%d]; narrowing to %d: %v",
+						label, width, *cursor, to, next.To, err)
+					continue // same cursor, smaller span — the cursor never advances on a failure
+				}
+				ctx.Logger.Printf("[SubscribeEth] %s recovery failed at [%d,%d] and the range cannot be narrowed further: %v",
+					label, *cursor, to, err)
+				return combined, bottom
+			}
 			ctx.Logger.Printf("[SubscribeEth] %s recovery failed at [%d,%d]: %v", label, *cursor, to, err)
 			return combined, err
 		}
@@ -462,16 +494,16 @@ func (s *Subscriber) recoverEthGapToBlock(
 	endBlock uint64,
 	seenEvents map[ethEventKey]struct{},
 	quietScans *uint64,
+	span *relayerclient.LogSpan,
 ) error {
 	var firstErr error
 	found := false
-	chunkSize := recoveryChunkSize(ethRecoveryChunkEnv, defaultEthRecoveryChunkBlocks)
 	persist := func() {
 		s.persistEthCursors(ctx, batchBuilder, *nextSendRecoveryStartBlock, *nextWriteAckRecoveryStartBlock)
 	}
 
 	if endBlock >= *nextSendRecoveryStartBlock {
-		stats, err := s.scanEthRangeInChunks(stdCtx, ctx, "SendPacket", nextSendRecoveryStartBlock, endBlock, chunkSize,
+		stats, err := s.scanEthRangeInChunks(stdCtx, ctx, "SendPacket", nextSendRecoveryStartBlock, endBlock, span,
 			func(from, to uint64) (ethRecoveryStats, error) {
 				return recoverEthSendPackets(stdCtx, ctx, batchBuilder, filterer, from, to, seenEvents)
 			}, persist)
@@ -484,7 +516,7 @@ func (s *Subscriber) recoverEthGapToBlock(
 	}
 
 	if endBlock >= *nextWriteAckRecoveryStartBlock {
-		stats, err := s.scanEthRangeInChunks(stdCtx, ctx, "WriteAcknowledgement", nextWriteAckRecoveryStartBlock, endBlock, chunkSize,
+		stats, err := s.scanEthRangeInChunks(stdCtx, ctx, "WriteAcknowledgement", nextWriteAckRecoveryStartBlock, endBlock, span,
 			func(from, to uint64) (ethRecoveryStats, error) {
 				return recoverEthWriteAcknowledgements(stdCtx, ctx, batchBuilder, filterer, from, to, seenEvents)
 			}, persist)
@@ -521,6 +553,7 @@ func (s *Subscriber) recoverEthGapToLatest(
 	nextWriteAckRecoveryStartBlock *uint64,
 	seenEvents map[ethEventKey]struct{},
 	quietScans *uint64,
+	span *relayerclient.LogSpan,
 ) error {
 	rpcCtx, cancel := context.WithTimeout(stdCtx, subscriberRPCTimeout)
 	defer cancel()
@@ -538,6 +571,7 @@ func (s *Subscriber) recoverEthGapToLatest(
 		latestBlock,
 		seenEvents,
 		quietScans,
+		span,
 	)
 }
 
@@ -552,6 +586,7 @@ func (s *Subscriber) subscribeEthOnce(
 	nextWriteAckRecoveryStartBlock *uint64,
 	seenEvents map[ethEventKey]struct{},
 	quietScans *uint64,
+	span *relayerclient.LogSpan,
 ) error {
 	watchFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.EVM.RouterContract(), watchClient)
 	if err != nil {
@@ -667,6 +702,7 @@ func (s *Subscriber) subscribeEthOnce(
 				nextWriteAckRecoveryStartBlock,
 				seenEvents,
 				quietScans,
+				span,
 			); err != nil {
 				ctx.Logger.Printf("[SubscribeEth] periodic recovery failed: %v", err)
 			}
@@ -697,6 +733,10 @@ func (s *Subscriber) SubscribeEth(stdCtx context.Context, cosmos services.Cosmos
 	// quietScans counts consecutive recovery passes that found nothing. It lives
 	// out here, beside the cursors, so a resubscribe does not reset the heartbeat.
 	var quietScans uint64
+	// Owned by SubscribeEth's goroutine for the life of the process, so a span the
+	// provider refuses is narrowed once instead of being rediscovered — at the cost
+	// of one rejected request — on every recovery pass.
+	span := relayerclient.LogSpan{Chunk: recoveryChunkSize(ethRecoveryChunkEnv, defaultEthRecoveryChunkBlocks)}
 	seenEvents := make(map[ethEventKey]struct{})
 
 	for {
@@ -734,6 +774,7 @@ func (s *Subscriber) SubscribeEth(stdCtx context.Context, cosmos services.Cosmos
 			latestBlock,
 			seenEvents,
 			&quietScans,
+			&span,
 		); err != nil {
 			ctx.Logger.Printf("[SubscribeEth] startup recovery failed: %v", err)
 		}
@@ -765,6 +806,7 @@ func (s *Subscriber) SubscribeEth(stdCtx context.Context, cosmos services.Cosmos
 			&nextWriteAckRecoveryStartBlock,
 			seenEvents,
 			&quietScans,
+			&span,
 		)
 		watchClient.Close()
 		ctx.Logger.Printf("[SubscribeEth] Subscription loop ended: %v", err)

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"relayer/chain"
+	relayerclient "relayer/client"
 	"relayer/subscriber"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
@@ -102,6 +103,9 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		seeded  bool
 		pending []chain.Event // events the handler re-queued (not yet relayable)
 	)
+	// Owned by this goroutine for the life of the loop, so a span the provider
+	// refuses is narrowed once rather than on every tick.
+	span := relayerclient.LogSpan{Chunk: s.logScanChunk}
 	lookback := l2StartupLookbackBlocks()
 	for {
 		select {
@@ -137,7 +141,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		var fresh []chain.Event
 		var settled map[settledKey]struct{}
 		if head >= from {
-			fresh, settled, err = s.scanPacketLogs(ctx, filterer, from, head)
+			fresh, settled, err = s.scanPacketLogs(ctx, filterer, from, head, &span)
 			if err != nil {
 				log.Printf("[SubscribeL2] scan [%d,%d]: %v", from, head, err)
 				continue // do NOT advance the cursor on failure (re-scan next tick)
@@ -160,35 +164,104 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 	}
 }
 
-// scanPacketLogs fetches the SendPacket + WriteAcknowledgement logs of this source's
-// client id in [from,to] and maps them to chain.Events, splitting the request into
-// log_scan_chunk-sized spans when one is configured.
+// chunkSpans splits [from,to] into chunk-sized pieces. A chunk of 0, or one at
+// least as wide as the range, means one piece.
 //
-// A failure in any span fails the whole scan, so the caller leaves its cursor
-// untouched: a partially scanned range must never be mistaken for a complete one.
-func (s *Source) scanPacketLogs(ctx context.Context, filterer *contractICS26Router.ContractICS26RouterFilterer, from, to uint64) ([]chain.Event, map[settledKey]struct{}, error) {
-	if chunk := s.logScanChunk; chunk > 0 && to >= from && to-from >= chunk {
+// It is a function rather than an inline loop because the boundary arithmetic has
+// to be exactly right in two ways at once — cover [from,to] with no gap (a gap
+// loses an event silently) and never exceed the chunk (the provider rejects it) —
+// and because a test of an inline loop can only re-implement it, which proves
+// nothing about the loop that runs.
+func chunkSpans(from, to, chunk uint64) [][2]uint64 {
+	if to < from {
+		return nil
+	}
+	if chunk == 0 || to-from < chunk {
+		return [][2]uint64{{from, to}}
+	}
+	var out [][2]uint64
+	for start := from; start <= to; start += chunk {
+		end := start + chunk - 1
+		if end > to {
+			end = to
+		}
+		out = append(out, [2]uint64{start, end})
+	}
+	return out
+}
+
+// scanNarrowing runs scan over [from,to] in span-sized pieces, halving the span
+// and starting over whenever the provider refuses one.
+//
+// A provider refusing the span is neither transient nor permanent. Waiting cannot
+// fix it — the identical request is refused again, forever — but a smaller span
+// works, so it is the third class: the change is carried with the failure and
+// chain.Climb decides when there is nothing left to halve.
+//
+// It restarts the whole range rather than resuming after the pieces that
+// succeeded, because this scanner has no cursor and no dedupe: its caller
+// discards everything on error and re-scans from the same block next tick. That
+// is the opposite choice from the ETH mirror in subscriber/ethereum.go, which
+// persists a cursor per piece and therefore must NOT re-scan — the difference is
+// in what each side can remember, not in the policy.
+//
+// The settled set is unioned across the pieces and rebuilt from scratch on each
+// attempt. Both halves matter: a send in piece 1 can be settled by a terminal log
+// in piece 3, and splitting the range must not hide that from dropSettled; while
+// a narrowing restart re-reads every piece, so carrying the previous attempt's
+// keys over would let a piece that is about to be read again be counted twice.
+func scanNarrowing(
+	from, to uint64,
+	span *relayerclient.LogSpan,
+	scan func(from, to uint64) ([]chain.Event, map[settledKey]struct{}, error),
+) ([]chain.Event, map[settledKey]struct{}, error) {
+	if to < from {
+		return nil, nil, nil
+	}
+	for {
 		var all []chain.Event
-		// One set across every span: a send in span 1 can be settled by a terminal
-		// log in span 3, and chunking must not hide that from the filter.
 		settled := map[settledKey]struct{}{}
-		for start := from; start <= to; start += chunk {
-			end := start + chunk - 1
-			if end > to {
-				end = to
-			}
-			events, spanSettled, err := s.scanPacketLogRange(ctx, filterer, start, end)
+		var failed error
+		for _, piece := range chunkSpans(from, to, span.Chunk) {
+			events, pieceSettled, err := scan(piece[0], piece[1])
 			if err != nil {
-				return nil, nil, fmt.Errorf("span [%d,%d]: %w", start, end, err)
+				failed = fmt.Errorf("span [%d,%d]: %w", piece[0], piece[1], err)
+				break
 			}
 			all = append(all, events...)
-			for key := range spanSettled {
+			for key := range pieceSettled {
 				settled[key] = struct{}{}
 			}
 		}
-		return all, settled, nil
+		if failed == nil {
+			return all, settled, nil
+		}
+		if !relayerclient.IsLogRangeRejection(failed) {
+			return nil, nil, failed
+		}
+		width := span.Width(from, to)
+		next, bottom, ok := chain.Climb(
+			chain.NeedsChange(failed, chain.HalvingLadder(relayerclient.KnobBlocksPerLogRange, width)),
+			0, // each rejection re-anchors on the span that was just refused
+		)
+		if !ok {
+			return nil, nil, bottom
+		}
+		span.Chunk = next.To
+		log.Printf("[SubscribeL2] provider refused a %d-block log range; narrowing to %d and rescanning [%d,%d]: %v",
+			width, next.To, from, to, failed)
 	}
-	return s.scanPacketLogRange(ctx, filterer, from, to)
+}
+
+// scanPacketLogs fetches the SendPacket + WriteAcknowledgement logs of this
+// source's client id in [from,to] and maps them to chain.Events.
+//
+// A failure in any piece fails the whole scan, so the caller leaves its cursor
+// untouched: a partially scanned range must never be mistaken for a complete one.
+func (s *Source) scanPacketLogs(ctx context.Context, filterer *contractICS26Router.ContractICS26RouterFilterer, from, to uint64, span *relayerclient.LogSpan) ([]chain.Event, map[settledKey]struct{}, error) {
+	return scanNarrowing(from, to, span, func(start, end uint64) ([]chain.Event, map[settledKey]struct{}, error) {
+		return s.scanPacketLogRange(ctx, filterer, start, end)
+	})
 }
 
 // scanPacketLogRange is one eth_getLogs pair over a span the provider will serve.

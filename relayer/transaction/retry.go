@@ -301,19 +301,10 @@ func CosmosGasLadder(base, maxBlockGas uint64) chain.ChangeFunc {
 // instead. That hand-off is the decision the old planCosmosOutOfGas made inside
 // one enum; stating it as two ladders is what lets each be walked on its own.
 func CosmosBatchLadder(msgCount int) chain.ChangeFunc {
-	return func(attempt int) (chain.Attempt, bool) {
-		if attempt < 0 || msgCount <= 1 {
-			return chain.Attempt{}, false
-		}
-		size := msgCount
-		for i := 0; i <= attempt; i++ {
-			size /= 2
-			if size < 1 {
-				return chain.Attempt{}, false
-			}
-		}
-		return chain.Attempt{What: knobBatchSize, To: uint64(size)}, true
+	if msgCount < 0 {
+		msgCount = 0
 	}
+	return chain.HalvingLadder(knobBatchSize, uint64(msgCount))
 }
 
 // EVMGasLadder returns the gas limit for the attempt after `attempt` failures,
