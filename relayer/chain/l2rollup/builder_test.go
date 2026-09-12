@@ -27,7 +27,10 @@ func (m *mockHeaderBuilder) BuildHeader(_ context.Context, request HeaderRequest
 	}
 	msg := m.msg
 	if msg == nil {
-		msg = &AttestedL2Header{L2Header: CanonicalEvmHeader{Number: 999}}
+		msg = &AttestedL2Header{
+			L2Header:          CanonicalEvmHeader{Number: 999},
+			AttestorSignature: []IndexedAttestorSignature{{AttestorIndex: 0, Signature: make([]byte, 64)}},
+		}
 	}
 	committed := m.committed
 	if committed == 0 {
@@ -182,7 +185,7 @@ func TestBuild_AppliesItsOwnDeadline(t *testing.T) {
 	var deadlineSeen bool
 	probe := headerBuilderFunc(func(ctx context.Context, _ HeaderRequest) (ClientMessage, uint64, error) {
 		_, deadlineSeen = ctx.Deadline()
-		return &AttestedL2Header{}, 42, nil
+		return &AttestedL2Header{AttestorSignature: []IndexedAttestorSignature{{AttestorIndex: 0, Signature: make([]byte, 64)}}}, 42, nil
 	})
 	if _, err := NewBuilder(probe).Build(context.Background(), headerRequest(42)); err != nil {
 		t.Fatalf("Build: %v", err)

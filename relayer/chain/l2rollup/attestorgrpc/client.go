@@ -17,41 +17,24 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// mapStatus turns a gRPC status into the transport-independent sentinel the
-// l2rollup error table classifies.
-//
-// The mapping lives HERE because this is the only place a gRPC code is visible:
-// l2rollup defines the port consumer-side so its tests use a small fake, and
-// pulling google.golang.org/grpc into it to read a code would undo that. What
-// crosses the boundary is meaning, not transport.
-//
-// An unmapped code is returned untouched, and the table then treats it as
-// transient — the safe default for a failure nobody has classified.
+// mapStatus translates transport codes into the consumer-side error taxonomy.
+// Unknown codes remain unclassified and therefore default to transient.
 func mapStatus(err error) error {
 	var sentinel error
 	switch status.Code(err) {
 	case codes.InvalidArgument:
 		sentinel = l2rollup.ErrAttestorBadRequest
 	case codes.NotFound:
-		// Since 04-Attestor B2 this code carries one meaning only: the src_chain or
-		// resource is not one this daemon serves. The Nitro-has-not-seen-the-block
-		// case that used to share it now answers Unavailable, which is why this can
-		// be classified permanent without inspecting the request.
 		sentinel = l2rollup.ErrAttestorUnknownRoute
 	case codes.FailedPrecondition:
 		sentinel = l2rollup.ErrAttestorReplicaBehind
 	case codes.Unavailable, codes.DeadlineExceeded:
-		// A deadline is grouped with Unavailable on purpose: both mean the attestor
-		// said nothing about the block, and silence must never be read as a "no".
 		sentinel = l2rollup.ErrAttestorUnavailable
 	case codes.Unimplemented:
 		sentinel = l2rollup.ErrAttestorUnimplemented
 	default:
 		return err
 	}
-	// Both %w: the sentinel is what the table matches on, and the original status
-	// is what an operator needs to read. Stringifying the cause here would keep the
-	// log line and lose every errors.Is below it.
 	return fmt.Errorf("%w: %w", sentinel, err)
 }
 
@@ -114,30 +97,27 @@ func (c *Client) AttestedRootAtOrBelow(ctx context.Context, srcChain string, l2B
 }
 
 // VerifyStateRoot compares one block identity against the attestor's replica.
-//
-// Every in-tree attestor serves this RPC. An attestor binary older than that
-// answers Unimplemented, which is reported as ErrVerifyStateRootUnsupported so the
-// caller can tell "this attestor cannot answer" apart from "this attestor says no"
-// — the two must not collapse, because the first is a version skew and the second
-// is a divergence.
-func (c *Client) VerifyStateRoot(ctx context.Context, srcChain string, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (l2rollup.VerifiedStateRoot, error) {
+func (c *Client) VerifyStateRoot(ctx context.Context, request l2rollup.VerificationRequest) (l2rollup.SignedVerdict, error) {
 	resp, err := c.rpc.VerifyStateRoot(ctx, &attestorpb.VerifyStateRootRequest{
-		SrcChain:          srcChain,
-		BlockNumber:       l2BlockNumber,
-		ExpectedStateRoot: stateRoot,
-		ExpectedBlockHash: blockHash,
-		RunMode:           runMode,
+		SrcChain:          request.SrcChain,
+		BlockNumber:       request.BlockNumber,
+		ExpectedStateRoot: request.StateRoot,
+		ExpectedBlockHash: request.BlockHash,
+		RunMode:           request.RunMode,
+		L2Router:          request.L2Router[:],
+		AttestorSetHash:   request.AttestorSetHash[:],
 	})
 	if err != nil {
-		// Unimplemented keeps its VerifyStateRoot-specific sentinel, which wraps the
-		// general one, so callers testing for either still match.
 		if status.Code(err) == codes.Unimplemented {
-			return l2rollup.VerifiedStateRoot{}, fmt.Errorf("%w: %w", l2rollup.ErrVerifyStateRootUnsupported, err)
+			return l2rollup.SignedVerdict{}, fmt.Errorf("%w: %w", l2rollup.ErrVerifyStateRootUnsupported, err)
 		}
-		return l2rollup.VerifiedStateRoot{}, fmt.Errorf("attestorgrpc: VerifyStateRoot(%d): %w", l2BlockNumber, mapStatus(err))
+		return l2rollup.SignedVerdict{}, fmt.Errorf("attestorgrpc: VerifyStateRoot(%d): %w", request.BlockNumber, mapStatus(err))
 	}
-	return l2rollup.VerifiedStateRoot{
-		Valid:     resp.GetValid(),
-		Signature: append([]byte(nil), resp.GetAttestationSignature()...),
+	return l2rollup.SignedVerdict{
+		Valid:       resp.GetValid(),
+		BlockNumber: resp.GetBlockNumber(),
+		BlockHash:   append([]byte(nil), resp.GetBlockHash()...),
+		StateRoot:   append([]byte(nil), resp.GetStateRoot()...),
+		Signature:   append([]byte(nil), resp.GetAttestationSignature()...),
 	}, nil
 }

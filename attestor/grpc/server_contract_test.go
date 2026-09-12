@@ -18,14 +18,15 @@ import (
 )
 
 type fakePorts struct {
-	status    core.FeedStatus
-	statusErr error
-	frontier  core.AttestedRoot
-	found     bool
-	feedErr   error
-	verdict   core.SignedBlockIdentityVerdict
-	verifyErr error
-	updates   chan core.FrontierUpdate
+	status      core.FeedStatus
+	statusErr   error
+	frontier    core.AttestedRoot
+	found       bool
+	feedErr     error
+	verdict     core.SignedBlockIdentityVerdict
+	verifyErr   error
+	lastRequest core.BlockIdentityRequest
+	updates     chan core.FrontierUpdate
 }
 
 func (f *fakePorts) AttestedUpTo(context.Context, core.AttestationPolicy) (core.AttestedRoot, bool, error) {
@@ -40,6 +41,7 @@ func (f *fakePorts) AttestedRootAtOrBelow(_ context.Context, height uint64, _ co
 }
 
 func (f *fakePorts) VerifyStateRoot(_ context.Context, request core.BlockIdentityRequest) (core.SignedBlockIdentityVerdict, error) {
+	f.lastRequest = request
 	if !request.RunMode.Valid() {
 		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorInvalidArgument, "invalid mode", nil)
 	}
@@ -160,6 +162,8 @@ func TestAdapterContractVerifyErrorMatrix(t *testing.T) {
 		BlockNumber:       100,
 		ExpectedStateRoot: make([]byte, 32),
 		RunMode:           attestorpb.RunMode_RUN_MODE_FINALIZED,
+		L2Router:          make([]byte, 20),
+		AttestorSetHash:   make([]byte, 32),
 	}
 
 	if _, err := client.VerifyStateRoot(context.Background(), &attestorpb.VerifyStateRootRequest{SrcChain: "chain-a", ExpectedStateRoot: []byte{1}}); status.Code(err) != codes.InvalidArgument {
@@ -195,6 +199,33 @@ func TestAdapterContractVerifyErrorMatrix(t *testing.T) {
 	response, err = client.VerifyStateRoot(context.Background(), request)
 	if err != nil || !response.GetValid() || len(response.GetAttestationSignature()) != signatureLength {
 		t.Fatalf("signed response = (%+v, %v)", response, err)
+	}
+	if got := ports.lastRequest; got.L2Router != [20]byte{} || got.AttestorSetHash != [32]byte{} {
+		t.Fatalf("zero signing context was not forwarded: %+v", got)
+	}
+}
+
+func TestAdapterContractVerifyRequiresAndForwardsSigningContext(t *testing.T) {
+	ports := &fakePorts{
+		status:  core.FeedStatus{SrcChain: "chain-a"},
+		verdict: core.SignedBlockIdentityVerdict{Valid: true, Signature: make([]byte, signatureLength)},
+	}
+	client := newContractClient(t, newContractServer(t, core.Ports{Verifier: ports, Status: ports}))
+	request := &attestorpb.VerifyStateRootRequest{
+		SrcChain: "chain-a", ExpectedStateRoot: make([]byte, 32), RunMode: attestorpb.RunMode_RUN_MODE_SAFE,
+		L2Router: []byte{1, 2, 3}, AttestorSetHash: make([]byte, 32),
+	}
+	if _, err := client.VerifyStateRoot(context.Background(), request); status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("short router code = %v, want InvalidArgument", status.Code(err))
+	}
+	request.L2Router = make([]byte, 20)
+	request.L2Router[19] = 1
+	request.AttestorSetHash[31] = 2
+	if _, err := client.VerifyStateRoot(context.Background(), request); err != nil {
+		t.Fatalf("verify with signing context: %v", err)
+	}
+	if got := ports.lastRequest; got.L2Router[19] != 1 || got.AttestorSetHash[31] != 2 {
+		t.Fatalf("signing context = router=%x set_hash=%x, want request values", got.L2Router, got.AttestorSetHash)
 	}
 }
 

@@ -118,6 +118,8 @@ func TestHostExtensionContractWithThirdChainPlugin(t *testing.T) {
 		BlockNumber:       42,
 		ExpectedStateRoot: make([]byte, 32),
 		RunMode:           attestorpb.RunMode_RUN_MODE_SAFE,
+		L2Router:          make([]byte, 20),
+		AttestorSetHash:   make([]byte, 32),
 	})
 	if err != nil || !verdict.GetValid() || len(verdict.GetAttestationSignature()) != 64 {
 		t.Fatalf("VerifyStateRoot = (%+v, %v)", verdict, err)

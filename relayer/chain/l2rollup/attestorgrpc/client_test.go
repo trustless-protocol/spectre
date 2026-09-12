@@ -126,8 +126,10 @@ func TestServerCodesClassifyIntoTheRightOutcome(t *testing.T) {
 			// and this test stayed green until AttestedUpTo was added here.
 			calls := map[string]func() error{
 				"VerifyStateRoot": func() error {
-					_, err := client.VerifyStateRoot(context.Background(), "op-sepolia", 100,
-						make([]byte, 32), make([]byte, 32), attestorpb.RunMode_RUN_MODE_FINALIZED)
+					_, err := client.VerifyStateRoot(context.Background(), l2rollup.VerificationRequest{
+						SrcChain: "op-sepolia", BlockNumber: 100, StateRoot: make([]byte, 32),
+						BlockHash: make([]byte, 32), RunMode: attestorpb.RunMode_RUN_MODE_FINALIZED,
+					})
 					return err
 				},
 				"AttestedUpTo": func() error {
@@ -157,7 +159,10 @@ func TestServerCodesClassifyIntoTheRightOutcome(t *testing.T) {
 // server's catch-all for anything unclassified.
 func TestAnUnmappedCodeStaysTransient(t *testing.T) {
 	client := dialCodeServer(t, codes.Internal)
-	_, err := client.VerifyStateRoot(context.Background(), "op-sepolia", 100, make([]byte, 32), make([]byte, 32), attestorpb.RunMode_RUN_MODE_FINALIZED)
+	_, err := client.VerifyStateRoot(context.Background(), l2rollup.VerificationRequest{
+		SrcChain: "op-sepolia", BlockNumber: 100, StateRoot: make([]byte, 32),
+		BlockHash: make([]byte, 32), RunMode: attestorpb.RunMode_RUN_MODE_FINALIZED,
+	})
 	if err == nil {
 		t.Fatal("Internal produced no error")
 	}

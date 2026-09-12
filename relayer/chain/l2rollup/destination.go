@@ -1,15 +1,12 @@
 // Package l2rollup holds the relayer adapters for the L2->Cosmos path (Arbitrum /
-// OP-Stack). Per Dũng's light-client design the Cosmos side is TRUSTLESS — no
-// relayer signature: the L2 wasm light client verifies L2 state against the shared
-// Ethereum light client + L1 rollup proofs. So this Destination mirrors the
-// existing beacon (ETH->Cosmos) Cosmos destination almost exactly:
+// OP-Stack). The Cosmos-side wasm client authenticates a canonical L2 block identity
+// with its pinned Ed25519 threshold set, then verifies the router account proof
+// against that authenticated state root. This Destination mirrors the existing
+// beacon (ETH->Cosmos) Cosmos destination almost exactly:
 //
 //   - UpdateClient submits MsgUpdateClient wrapping a wasm ClientMessage whose Data
-//     is the L2 header (the builder produces it). No ETH-first ordering step is
-//     needed: the header builder proves against the ETH client's ALREADY-trusted L1
-//     block (it reads EthClientLatestSlotAndBlock), so the update verifies against
-//     current ETH state. ETH-client freshness only bounds how recent an L2 update
-//     can be, it is not a correctness ordering requirement.
+//     is the signed L2 header (the builder produces it). No ETH-first ordering step
+//     is needed: the attestor-trusted L2 client has no Ethereum-client dependency.
 //   - RelayPackets submits the standard channeltypesv2 recv / ack / timeout
 //     messages, which the client maps to VerifyMembership / VerifyNonMembership.
 //     The L2 client does not decode packets.

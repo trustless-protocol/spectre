@@ -1,10 +1,18 @@
 package main
 
 import (
+	"attestor/types/attestation"
 	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func validL2Attestors() attestation.AttestorConfig {
+	return attestation.AttestorConfig{
+		PublicKeys: [][]byte{{0x82, 0x88, 0xe3, 0xdd, 0x74, 0x09, 0xf1, 0x95, 0xfd, 0x52, 0xdb, 0x2d, 0x3c, 0xba, 0x5d, 0x72, 0xca, 0x67, 0x09, 0xbf, 0x1d, 0x94, 0x12, 0x1b, 0xf3, 0x74, 0x88, 0x01, 0xb4, 0x0f, 0x6f, 0x5c}},
+		Threshold:  1,
+	}
+}
 
 func TestRouterAddress(t *testing.T) {
 	profile := func(router string) json.RawMessage {
@@ -30,7 +38,7 @@ func TestRouterAddress(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			c := &l2ClientConfig{RollupProfile: tc.profile}
+			c := &l2ClientConfig{RollupProfile: tc.profile, Attestors: validL2Attestors()}
 			got, err := c.routerAddress()
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {

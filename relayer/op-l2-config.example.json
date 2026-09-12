@@ -9,7 +9,7 @@
     "attestor handoff; replace it with your own attestor public key on every other network.",
     "",
     "rollup_profile is submitted verbatim in MsgCreateClient and the Rust verifier",
-    "rejects unknown fields, so common carries exactly these seven keys — no",
+    "rejects unknown fields, so common carries exactly these five keys — no",
     "ethereum_client, no dispute_game_factory, no game_list_slot, no finality_policy.",
     "The attestor-trusted client verifies nothing against L1.",
     "",
@@ -29,9 +29,6 @@
     "                   Nothing else reads the field: transactions take their chain id",
     "                   from the RPC, so before these checks a wrong value relayed",
     "                   happily against whatever chain the URL served.",
-    "  attestation_head must match the l2_to_cosmos module's head_kind. It is signed",
-    "                   so a lower-finality signature from the same key cannot update",
-    "                   this client.",
     "",
     "wasm_checksum is printed by scripts/local/wasm_op.sh, and is the sha256 of the",
     "UNCOMPRESSED wasm. counterparty_client_id is the client id on the L2 router",
@@ -39,15 +36,14 @@
   ],
   "wasm_checksum": "<hex checksum from `gaiad q ibc-wasm checksums`, e.g. a49e97b0...>",
   "l2_rpc_url": "http://127.0.0.1:9545",
+  "attestors": {"public_keys": ["XZ+76qOWCo/r113X56pAXt0hi3AZpY9LU44nF4vCMmg="], "threshold": 1},
   "rollup_profile": {
     "common": {
       "l2_chain_id": 11155420,
       "l2_router": "0x0000000000000000000000000000000000000000",
       "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
       "profile_version": "op_attestor_v1",
-      "l2_header_fork": "prague",
-      "attestor_public_key": "0x5d9fbbeaa3960a8febd75dd7e7aa405edd218b7019a58f4b538e27178bc23268",
-      "attestation_head": "safe"
+      "l2_header_fork": "prague"
     }
   },
   "bootstrap_block": 0,

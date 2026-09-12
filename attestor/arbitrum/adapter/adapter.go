@@ -113,15 +113,22 @@ func (a *Adapter) VerifyStateRoot(ctx context.Context, request core.BlockIdentit
 	if !request.RunMode.Valid() {
 		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorInvalidArgument, "run_mode must be unsafe, safe or finalized", nil)
 	}
-	runMode := arbitrum.RunMode(request.RunMode)
+	if request.RunMode != a.head {
+		return core.SignedBlockIdentityVerdict{}, core.NewError(
+			core.ErrorFailedPrecondition,
+			fmt.Sprintf("requested run_mode %s does not match configured attestation head %s", request.RunMode, a.head),
+			nil,
+		)
+	}
+	runMode := arbitrum.RunMode(a.head)
 	head, err := a.runtime.Head(ctx, runMode)
 	if err != nil {
-		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorUnavailable, fmt.Sprintf("query Nitro %s head", request.RunMode), err)
+		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorUnavailable, fmt.Sprintf("query Nitro %s head", a.head), err)
 	}
 	if request.BlockNumber > head.BlockNumber {
 		return core.SignedBlockIdentityVerdict{}, core.NewError(
 			core.ErrorFailedPrecondition,
-			fmt.Sprintf("block %d is above Nitro %s head %d", request.BlockNumber, request.RunMode, head.BlockNumber),
+			fmt.Sprintf("block %d is above Nitro %s head %d", request.BlockNumber, a.head, head.BlockNumber),
 			nil,
 		)
 	}
@@ -144,11 +151,7 @@ func (a *Adapter) VerifyStateRoot(ctx context.Context, request core.BlockIdentit
 	if !a.signer.Configured() {
 		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorUnimplemented, "attestation signer is not configured", nil)
 	}
-	signingMode, err := attestation.ParseRunMode(string(request.RunMode))
-	if err != nil {
-		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorInternal, "map signing run mode", err)
-	}
-	signature, err := a.signer.Sign(signingMode, commitment.BlockNumber, commitment.StateRoot[:], commitment.BlockHash[:])
+	signature, err := a.signer.Sign(request.L2Router[:], request.AttestorSetHash[:], commitment.BlockNumber, commitment.BlockHash[:], commitment.StateRoot[:])
 	if err != nil {
 		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorInternal, fmt.Sprintf("sign canonical Nitro block %d", commitment.BlockNumber), err)
 	}

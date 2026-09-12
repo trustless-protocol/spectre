@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
@@ -58,7 +59,12 @@ func runAttestor(ctx context.Context, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("load attestation signing key: %w", err)
 	}
-	log.Printf("Arbitrum attestation public key: 0x%x", signer.PublicKey())
+	publicKey := signer.PublicKey()
+	log.Printf("Arbitrum attestation public key: 0x%x", publicKey)
+	log.Printf(
+		"Arbitrum attestation public key (base64 for relayer attestors.public_keys): %s",
+		base64.StdEncoding.EncodeToString(publicKey),
+	)
 
 	runtimeState, err := arbitrum.NewRuntimeStateWithConfig(nitroClient, arbitrum.RuntimeStateConfig{
 		BackfillMaxBlocks:   config.BackfillMaxBlocks(),

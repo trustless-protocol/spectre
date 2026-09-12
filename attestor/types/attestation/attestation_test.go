@@ -1,62 +1,43 @@
 package attestation
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-
-	attestorpb "attestor/types/attestor"
 )
 
-// This pins the protobuf numbers as well as the explicit conversion. A change
-// to either representation is a signing-wire-format change and must be made
-// deliberately across the Go and CosmWasm implementations.
-func TestProtoRunModesMatchSigningBytes(t *testing.T) {
-	tests := []struct {
-		proto attestorpb.RunMode
-		want  RunMode
-	}{
-		{proto: attestorpb.RunMode_RUN_MODE_UNSAFE, want: RunModeUnsafe},
-		{proto: attestorpb.RunMode_RUN_MODE_SAFE, want: RunModeSafe},
-		{proto: attestorpb.RunMode_RUN_MODE_FINALIZED, want: RunModeFinalized},
-	}
-	for _, test := range tests {
-		got, err := RunModeFromProto(test.proto)
-		if err != nil {
-			t.Fatalf("RunModeFromProto(%v): %v", test.proto, err)
-		}
-		if got != test.want {
-			t.Errorf("RunModeFromProto(%v) = %d, want %d", test.proto, got, test.want)
-		}
-		if RunMode(test.proto) != test.want {
-			t.Errorf("protobuf %v number = %d, want signing byte %d", test.proto, test.proto, test.want)
-		}
-	}
-}
-
-func TestSignerBindsEveryBlockIdentityField(t *testing.T) {
+func TestSignerBindsEveryWasmHeaderIdentityField(t *testing.T) {
 	signer, err := NewSigner(8453, "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20")
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
-	stateRoot := make([]byte, HashLength)
+	router := make([]byte, RouterLength)
+	setHash := make([]byte, HashLength)
 	blockHash := make([]byte, HashLength)
+	stateRoot := make([]byte, HashLength)
+	router[19] = 1
+	setHash[31] = 2
+	blockHash[31] = 3
 	stateRoot[31] = 1
-	blockHash[31] = 2
-	signature, err := signer.Sign(RunModeSafe, 123, stateRoot, blockHash)
+	signature, err := signer.Sign(router, setHash, 123, blockHash, stateRoot)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
 	const expectedPublicKey = "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"
-	const expectedSignature = "22cc6cdee3b8e865946ade58d2ed25efdc5cff7a918970c0bc03aee03b32ebbd6a2d253606f37eecd0b6aea651f898c44abeb8b49349e2c4c8b47bc43e1fe609"
+	const expectedSignature = "bbf5d84390b7316391593425428d3e89c44f930795482bb5afaf4aa4b187c13436c0accbbe1ad323b99c39ed67b57894700a44553f62b46afcd3f4c8c882c105"
 	if got := hex.EncodeToString(signer.PublicKey()); got != expectedPublicKey {
 		t.Fatalf("public key = %s, want %s", got, expectedPublicKey)
 	}
 	if got := hex.EncodeToString(signature); got != expectedSignature {
 		t.Fatalf("signature = %s, want %s", got, expectedSignature)
 	}
-	message, err := SigningBytes(8453, RunModeSafe, 123, stateRoot, blockHash)
+	message, err := SigningBytes(8453, router, setHash, 123, blockHash, stateRoot)
 	if err != nil {
 		t.Fatalf("SigningBytes: %v", err)
 	}
@@ -64,10 +45,11 @@ func TestSignerBindsEveryBlockIdentityField(t *testing.T) {
 		t.Fatal("valid block identity signature did not verify")
 	}
 	for _, bad := range [][]byte{
-		mustSigningBytes(t, 8454, RunModeSafe, 123, stateRoot, blockHash),
-		mustSigningBytes(t, 8453, RunModeUnsafe, 123, stateRoot, blockHash),
-		mustSigningBytes(t, 8453, RunModeSafe, 124, stateRoot, blockHash),
-		mustSigningBytes(t, 8453, RunModeSafe, 123, append([]byte(nil), blockHash...), blockHash),
+		mustSigningBytes(t, 8454, router, setHash, 123, blockHash, stateRoot),
+		mustSigningBytes(t, 8453, append([]byte(nil), router[:19]...), setHash, 123, blockHash, stateRoot),
+		mustSigningBytes(t, 8453, router, append([]byte(nil), stateRoot...), 123, blockHash, stateRoot),
+		mustSigningBytes(t, 8453, router, setHash, 124, blockHash, stateRoot),
+		mustSigningBytes(t, 8453, router, setHash, 123, stateRoot, stateRoot),
 	} {
 		if ed25519.Verify(signer.PublicKey(), bad, signature) {
 			t.Fatal("signature verified for a different L2 block identity")
@@ -75,37 +57,82 @@ func TestSignerBindsEveryBlockIdentityField(t *testing.T) {
 	}
 }
 
-func mustSigningBytes(t *testing.T, chainID uint64, runMode RunMode, blockNumber uint64, stateRoot, blockHash []byte) []byte {
+func mustSigningBytes(t *testing.T, chainID uint64, router, setHash []byte, blockNumber uint64, blockHash, stateRoot []byte) []byte {
 	t.Helper()
-	message, err := SigningBytes(chainID, runMode, blockNumber, stateRoot, blockHash)
+	message, err := SigningBytes(chainID, router, setHash, blockNumber, blockHash, stateRoot)
 	if err != nil {
-		t.Fatal(err)
+		return []byte("different-invalid-statement")
 	}
 	return message
 }
 
-func TestParseRunMode(t *testing.T) {
-	for _, tc := range []struct {
-		value string
-		want  RunMode
-		valid bool
-	}{
-		{value: "unsafe", want: RunModeUnsafe, valid: true},
-		{value: "safe", want: RunModeSafe, valid: true},
-		{value: "finalized", want: RunModeFinalized, valid: true},
-		{value: "", valid: false},
-		{value: "confirmed", valid: false},
-	} {
-		t.Run(tc.value, func(t *testing.T) {
-			got, err := ParseRunMode(tc.value)
-			if tc.valid {
-				if err != nil || got != tc.want {
-					t.Fatalf("ParseRunMode(%q) = (%d, %v), want (%d, nil)", tc.value, got, err, tc.want)
+func TestWasmAttestationVectors(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "..", "test", "fixtures", "wasm-contracts", "l2-attestation-vectors.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vectors struct {
+		ProtocolDomain string `json:"protocol_domain"`
+		Cases          []struct {
+			Name            string   `json:"name"`
+			Threshold       uint16   `json:"threshold"`
+			PublicKeys      []string `json:"public_keys"`
+			AttestorSetHash string   `json:"attestor_set_hash"`
+			Statement       string   `json:"statement"`
+			Context         struct {
+				L2ChainID     uint64 `json:"l2_chain_id"`
+				RouterAddress string `json:"router_address"`
+				BlockNumber   uint64 `json:"block_number"`
+				BlockHash     string `json:"block_hash"`
+				StateRoot     string `json:"state_root"`
+			} `json:"context"`
+			Signatures []struct {
+				AttestorIndex uint16 `json:"attestor_index"`
+				PublicKey     string `json:"public_key"`
+				Signature     string `json:"signature"`
+			} `json:"signatures"`
+		} `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil {
+		t.Fatal(err)
+	}
+	if got := hex.EncodeToString(ProtocolDomain[:]); got != vectors.ProtocolDomain {
+		t.Fatalf("protocol domain = %s, want %s", got, vectors.ProtocolDomain)
+	}
+	for _, vector := range vectors.Cases {
+		t.Run(vector.Name, func(t *testing.T) {
+			keys := make([][]byte, len(vector.PublicKeys))
+			for i, encoded := range vector.PublicKeys {
+				keys[i], err = base64.StdEncoding.DecodeString(encoded)
+				if err != nil {
+					t.Fatal(err)
 				}
-				return
 			}
-			if err == nil {
-				t.Fatalf("ParseRunMode(%q) succeeded", tc.value)
+			config := AttestorConfig{PublicKeys: keys, Threshold: vector.Threshold}
+			setHash, err := config.SetHash()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hex.EncodeToString(setHash[:]); got != vector.AttestorSetHash {
+				t.Fatalf("set hash = %s, want %s", got, vector.AttestorSetHash)
+			}
+			router, _ := hex.DecodeString(vector.Context.RouterAddress)
+			blockHash, _ := hex.DecodeString(vector.Context.BlockHash)
+			stateRoot, _ := hex.DecodeString(vector.Context.StateRoot)
+			statement, err := SigningBytes(vector.Context.L2ChainID, router, setHash[:], vector.Context.BlockNumber, blockHash, stateRoot)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, _ := hex.DecodeString(vector.Statement)
+			if !bytes.Equal(statement, want) {
+				t.Fatalf("statement = %x, want %x", statement, want)
+			}
+			for _, signed := range vector.Signatures {
+				key, _ := base64.StdEncoding.DecodeString(signed.PublicKey)
+				signature, _ := base64.StdEncoding.DecodeString(signed.Signature)
+				if !ed25519.Verify(key, statement, signature) {
+					t.Fatalf("signature for index %d did not verify", signed.AttestorIndex)
+				}
 			}
 		})
 	}
@@ -141,21 +168,24 @@ func TestNewSignerValidatesKeyMaterialAndEnvironment(t *testing.T) {
 }
 
 func TestSigningBytesRejectsInvalidIdentity(t *testing.T) {
+	validRouter := make([]byte, RouterLength)
 	validHash := make([]byte, HashLength)
 	for _, tc := range []struct {
 		name      string
 		chainID   uint64
-		runMode   RunMode
-		stateRoot []byte
+		router    []byte
+		setHash   []byte
 		blockHash []byte
+		stateRoot []byte
 	}{
-		{name: "zero chain ID", runMode: RunModeUnsafe, stateRoot: validHash, blockHash: validHash},
-		{name: "invalid run mode", chainID: 10, runMode: 0, stateRoot: validHash, blockHash: validHash},
-		{name: "short state root", chainID: 10, runMode: RunModeSafe, stateRoot: validHash[:HashLength-1], blockHash: validHash},
-		{name: "short block hash", chainID: 10, runMode: RunModeFinalized, stateRoot: validHash, blockHash: validHash[:HashLength-1]},
+		{name: "zero chain ID", router: validRouter, setHash: validHash, blockHash: validHash, stateRoot: validHash},
+		{name: "short router", chainID: 10, router: validRouter[:RouterLength-1], setHash: validHash, blockHash: validHash, stateRoot: validHash},
+		{name: "short set hash", chainID: 10, router: validRouter, setHash: validHash[:HashLength-1], blockHash: validHash, stateRoot: validHash},
+		{name: "short block hash", chainID: 10, router: validRouter, setHash: validHash, blockHash: validHash[:HashLength-1], stateRoot: validHash},
+		{name: "short state root", chainID: 10, router: validRouter, setHash: validHash, blockHash: validHash, stateRoot: validHash[:HashLength-1]},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := SigningBytes(tc.chainID, tc.runMode, 1, tc.stateRoot, tc.blockHash); err == nil {
+			if _, err := SigningBytes(tc.chainID, tc.router, tc.setHash, 1, tc.blockHash, tc.stateRoot); err == nil {
 				t.Fatal("SigningBytes succeeded for invalid identity")
 			}
 		})

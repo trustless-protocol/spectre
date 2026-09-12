@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
 
+	"attestor/types/attestation"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
@@ -32,11 +32,14 @@ type l2ToCosmosConfig struct {
 	L2RpcUrl string `json:"l2_rpc_url"`
 	TmRpcUrl string `json:"tm_rpc_url"`
 
-	AttestorAddr     string `json:"attestor_addr"`
-	AttestorSrcChain string `json:"attestor_src_chain"`
-	L2WasmClientID   string `json:"l2_wasm_client_id"`
-	L2ICS26ClientID  string `json:"l2_ics26_client_id"`
-	HeadKind         string `json:"head_kind"`
+	AttestorEndpoints []l2AttestorEndpointConfig `json:"attestor_endpoints"`
+	AttestorSrcChain  string                     `json:"attestor_src_chain"`
+	// Attestors is the exact immutable key set stored in the paired wasm client.
+	// Every endpoint below names one key by its canonical set index.
+	Attestors       attestation.AttestorConfig `json:"attestors"`
+	L2WasmClientID  string                     `json:"l2_wasm_client_id"`
+	L2ICS26ClientID string                     `json:"l2_ics26_client_id"`
+	HeadKind        string                     `json:"head_kind"`
 	// IncludeProvisional accepts attestor verdicts that have not yet been re-derived
 	// from finalized L1 data. It is deliberately its own field: it used to be inferred
 	// from head_kind, which conflated two independent axes — head_kind selects which
@@ -64,6 +67,14 @@ type l2ToCosmosConfig struct {
 	kind chain.ChainType
 }
 
+// l2AttestorEndpointConfig maps a reachable attestor daemon to its immutable
+// ClientState public-key index. Keeping the key in one canonical set prevents a
+// typo from making the relayer sign for a different client than it bootstrapped.
+type l2AttestorEndpointConfig struct {
+	Address       string `json:"address"`
+	AttestorIndex uint16 `json:"attestor_index"`
+}
+
 // validate checks everything the relay path needs, including the id of an L2 wasm
 // client that must already exist on Cosmos.
 func (c l2ToCosmosConfig) validate() error {
@@ -87,7 +98,7 @@ func (c l2ToCosmosConfig) validateForClientCreation() error {
 func (c l2ToCosmosConfig) validateWith(requireWasmClientID bool) error {
 	required := map[string]string{
 		"l2_rpc_url": c.L2RpcUrl, "tm_rpc_url": c.TmRpcUrl,
-		"attestor_addr": c.AttestorAddr, "attestor_src_chain": c.AttestorSrcChain,
+		"attestor_src_chain": c.AttestorSrcChain,
 		"l2_ics26_client_id": c.L2ICS26ClientID,
 	}
 	if requireWasmClientID {
@@ -101,19 +112,33 @@ func (c l2ToCosmosConfig) validateWith(requireWasmClientID bool) error {
 	if len(c.RollupProfile) == 0 {
 		return fmt.Errorf("l2_to_cosmos config: rollup_profile is required")
 	}
-	headKind, err := parseHeadKind(c.HeadKind)
-	if err != nil {
+	if _, err := parseHeadKind(c.HeadKind); err != nil {
 		return err
 	}
 	if _, err := l2RouterFromProfile(c.RollupProfile); err != nil {
 		return err
 	}
-	verifier, err := l2AttestationVerifierFromProfile(c.RollupProfile)
-	if err != nil {
-		return err
+	if _, err := l2ChainIDFromProfile(c.RollupProfile); err != nil {
+		return fmt.Errorf("l2_to_cosmos config: %w", err)
 	}
-	if !verifier.MatchesRunMode(headKind.RunMode()) {
-		return fmt.Errorf("l2_to_cosmos config: head_kind %q must match rollup_profile.common.attestation_head", c.HeadKind)
+	if err := c.Attestors.Validate(); err != nil {
+		return fmt.Errorf("l2_to_cosmos config: invalid attestors: %w", err)
+	}
+	if len(c.AttestorEndpoints) < int(c.Attestors.Threshold) {
+		return fmt.Errorf("l2_to_cosmos config: %d attestor_endpoints cannot satisfy threshold %d", len(c.AttestorEndpoints), c.Attestors.Threshold)
+	}
+	seen := make(map[uint16]struct{}, len(c.AttestorEndpoints))
+	for _, endpoint := range c.AttestorEndpoints {
+		if endpoint.Address == "" {
+			return fmt.Errorf("l2_to_cosmos config: attestor endpoint address is required")
+		}
+		if int(endpoint.AttestorIndex) >= len(c.Attestors.PublicKeys) {
+			return fmt.Errorf("l2_to_cosmos config: attestor endpoint index %d is outside attestors.public_keys", endpoint.AttestorIndex)
+		}
+		if _, duplicate := seen[endpoint.AttestorIndex]; duplicate {
+			return fmt.Errorf("l2_to_cosmos config: duplicate attestor endpoint index %d", endpoint.AttestorIndex)
+		}
+		seen[endpoint.AttestorIndex] = struct{}{}
 	}
 	return nil
 }
@@ -149,36 +174,6 @@ func l2RouterFromProfile(profile json.RawMessage) (common.Address, error) {
 	return common.HexToAddress(pc.Common.L2Router), nil
 }
 
-// l2AttestationVerifierFromProfile parses the immutable key the wasm client
-// will use. Verifying the attestor response here makes an operator key mismatch
-// visible before submitting a transaction; it is not a substitute for the
-// independent on-chain check.
-func l2AttestationVerifierFromProfile(profile json.RawMessage) (l2rollup.AttestationVerifier, error) {
-	var pc struct {
-		Common struct {
-			L2ChainID         uint64 `json:"l2_chain_id"`
-			AttestorPublicKey string `json:"attestor_public_key"`
-			AttestationHead   string `json:"attestation_head"`
-		} `json:"common"`
-	}
-	if err := json.Unmarshal(profile, &pc); err != nil {
-		return l2rollup.AttestationVerifier{}, fmt.Errorf("l2_to_cosmos config: parse rollup_profile.common: %w", err)
-	}
-	keyHex := pc.Common.AttestorPublicKey
-	if len(keyHex) >= 2 && keyHex[:2] == "0x" {
-		keyHex = keyHex[2:]
-	}
-	publicKey, err := hex.DecodeString(keyHex)
-	if err != nil {
-		return l2rollup.AttestationVerifier{}, fmt.Errorf("l2_to_cosmos config: decode rollup_profile.common.attestor_public_key: %w", err)
-	}
-	verifier, err := l2rollup.NewAttestationVerifier(pc.Common.L2ChainID, pc.Common.AttestationHead, publicKey)
-	if err != nil {
-		return l2rollup.AttestationVerifier{}, fmt.Errorf("l2_to_cosmos config: invalid attestor profile: %w", err)
-	}
-	return verifier, nil
-}
-
 // buildL2ToCosmosModule constructs one L2->Cosmos relay module: an l2rollup Source
 // (gated on the attestor), a Cosmos Destination hosting the L2 wasm client, the
 // per-L2 header builder, and timeout recovery through the matching Cosmos->L2
@@ -193,12 +188,12 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	if err != nil {
 		return nil, nil, err
 	}
-	verifier, err := l2AttestationVerifierFromProfile(cfg.RollupProfile)
-	if err != nil {
-		return nil, nil, err
-	}
 	if err := timeoutReturn.validate(); err != nil {
 		return nil, nil, err
+	}
+	chainID, err := l2ChainIDFromProfile(cfg.RollupProfile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("l2_to_cosmos config: %w", err)
 	}
 	includeProvisional := headKind != l2rollup.Finalized
 	if cfg.IncludeProvisional != nil {
@@ -218,13 +213,22 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		l2.Close()
 		return nil, nil, fmt.Errorf("start Cosmos rpc client: %w", err)
 	}
-	attestor, err := attestorgrpc.Dial(cfg.AttestorAddr)
-	if err != nil {
-		l2.Close()
-		if stopErr := cosmosClient.Stop(); stopErr != nil {
-			log.Printf("failed to terminate cosmos client: %v", stopErr)
+	attestors := make([]*attestorgrpc.Client, 0, len(cfg.AttestorEndpoints))
+	signingAttestors := make([]l2rollup.SigningAttestor, 0, len(cfg.AttestorEndpoints))
+	for _, endpoint := range cfg.AttestorEndpoints {
+		attestor, err := attestorgrpc.Dial(endpoint.Address)
+		if err != nil {
+			l2.Close()
+			if stopErr := cosmosClient.Stop(); stopErr != nil {
+				log.Printf("failed to terminate cosmos client: %v", stopErr)
+			}
+			for _, opened := range attestors {
+				_ = opened.Close()
+			}
+			return nil, nil, fmt.Errorf("dial attestor index %d (%s): %w", endpoint.AttestorIndex, endpoint.Address, err)
 		}
-		return nil, nil, fmt.Errorf("dial attestor: %w", err)
+		attestors = append(attestors, attestor)
+		signingAttestors = append(signingAttestors, l2rollup.SigningAttestor{Index: endpoint.AttestorIndex, Client: attestor})
 	}
 
 	// Cosmos-side context for the destination (it uses only CosmosClient + the
@@ -234,12 +238,32 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 
 	// One builder for every chain: the header is the canonical L2 block plus a router
 	// account proof, and nothing about that is chain-specific any more. It takes the
-	// same attestor the source gates heights on, so the block it packages is bound to
-	// what that attestor's replica actually has at that height.
-	headerBuilder := l2rollup.NewAttestedHeaderBuilder(l2, router, attestor, verifier, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
-
+	// same endpoint set the source gates heights on, so the block it packages is
+	// bound to a threshold of replicas that independently recognise that height.
+	headerBuilder, err := l2rollup.NewAttestedHeaderBuilder(l2, router, chainID, cfg.Attestors, signingAttestors, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
+	if err != nil {
+		l2.Close()
+		if stopErr := cosmosClient.Stop(); stopErr != nil {
+			log.Printf("failed to terminate cosmos client: %v", stopErr)
+		}
+		for _, opened := range attestors {
+			_ = opened.Close()
+		}
+		return nil, nil, err
+	}
+	frontier, err := l2rollup.NewQuorumAttestationFrontier(signingAttestors, cfg.Attestors.Threshold)
+	if err != nil {
+		l2.Close()
+		if stopErr := cosmosClient.Stop(); stopErr != nil {
+			log.Printf("failed to terminate cosmos client: %v", stopErr)
+		}
+		for _, opened := range attestors {
+			_ = opened.Close()
+		}
+		return nil, nil, err
+	}
 	trackL2Pending, untrackL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
-	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, attestor, includeProvisional).
+	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, frontier, includeProvisional).
 		WithLogScanChunk(cfg.LogScanChunk).
 		// AckPacket / TimeoutPacket on the L2 close a packet's lifecycle. Reading
 		// them lets the tracker drop a packet another relayer settled without
@@ -259,16 +283,18 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		}),
 		relay.WithPacketTracker(trackL2Pending, untrackL2Pending),
 	)
-	logger.Sugar().Infof("l2->cosmos source: %s (attestor=%s src_chain=%s wasm_client=%s head=%s)",
-		cfg.kind, cfg.AttestorAddr, cfg.AttestorSrcChain, cfg.L2WasmClientID, cfg.HeadKind)
+	logger.Sugar().Infof("l2->cosmos source: %s (attestors=%d threshold=%d src_chain=%s wasm_client=%s head=%s)",
+		cfg.kind, len(cfg.AttestorEndpoints), cfg.Attestors.Threshold, cfg.AttestorSrcChain, cfg.L2WasmClientID, cfg.HeadKind)
 
 	cleanup := func() {
 		l2.Close()
 		if err := cosmosClient.Stop(); err != nil {
 			log.Printf("failed to terminate cosmos client: %v", err)
 		}
-		if err := attestor.Close(); err != nil {
-			log.Printf("failed to close attestor client: %v", err)
+		for _, attestor := range attestors {
+			if err := attestor.Close(); err != nil {
+				log.Printf("failed to close attestor client: %v", err)
+			}
 		}
 	}
 	return module, cleanup, nil

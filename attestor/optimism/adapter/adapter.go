@@ -97,14 +97,22 @@ func (a *Adapter) VerifyStateRoot(ctx context.Context, request core.BlockIdentit
 	if !request.RunMode.Valid() {
 		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorInvalidArgument, "run_mode must be unsafe, safe or finalized", nil)
 	}
-	head, err := a.attestor.HeadAt(ctx, opstack.Head(request.RunMode))
+	configuredHead := core.RunMode(a.attestor.Head())
+	if request.RunMode != configuredHead {
+		return core.SignedBlockIdentityVerdict{}, core.NewError(
+			core.ErrorFailedPrecondition,
+			fmt.Sprintf("requested run_mode %s does not match configured attestation head %s", request.RunMode, configuredHead),
+			nil,
+		)
+	}
+	head, err := a.attestor.HeadAt(ctx, opstack.Head(configuredHead))
 	if err != nil {
-		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorUnavailable, fmt.Sprintf("read replica %s head", request.RunMode), err)
+		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorUnavailable, fmt.Sprintf("read replica %s head", configuredHead), err)
 	}
 	if request.BlockNumber > head {
 		return core.SignedBlockIdentityVerdict{}, core.NewError(
 			core.ErrorFailedPrecondition,
-			fmt.Sprintf("block %d is above the replica %s head %d", request.BlockNumber, request.RunMode, head),
+			fmt.Sprintf("block %d is above the replica %s head %d", request.BlockNumber, configuredHead, head),
 			nil,
 		)
 	}
@@ -127,11 +135,7 @@ func (a *Adapter) VerifyStateRoot(ctx context.Context, request core.BlockIdentit
 	if !a.signer.Configured() {
 		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorUnimplemented, "attestation signer is not configured", nil)
 	}
-	runMode, err := attestation.ParseRunMode(string(request.RunMode))
-	if err != nil {
-		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorInternal, "map signing run mode", err)
-	}
-	signature, err := a.signer.Sign(runMode, commitment.BlockNumber, commitment.StateRoot[:], commitment.BlockHash[:])
+	signature, err := a.signer.Sign(request.L2Router[:], request.AttestorSetHash[:], commitment.BlockNumber, commitment.BlockHash[:], commitment.StateRoot[:])
 	if err != nil {
 		return core.SignedBlockIdentityVerdict{}, core.NewError(core.ErrorInternal, fmt.Sprintf("sign canonical L2 block %d", commitment.BlockNumber), err)
 	}

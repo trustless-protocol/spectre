@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -295,7 +296,13 @@ func run(logger *zap.Logger, cmd *cobra.Command) error {
 		cleanups = append(cleanups, cleanup)
 		routes[op.SrcChain] = core.Ports{Feed: bridge, Verifier: bridge, Status: bridge, Watcher: bridge}
 		runners = append(runners, host.RunnerSpec{Name: a.Name(), Runner: a})
-		logger.Sugar().Infof("op_source %s attestation public key: 0x%x", op.SrcChain, signer.PublicKey())
+		publicKey := signer.PublicKey()
+		logger.Sugar().Infof("op_source %s attestation public key: 0x%x", op.SrcChain, publicKey)
+		logger.Sugar().Infof(
+			"op_source %s attestation public key (base64 for relayer attestors.public_keys): %s",
+			op.SrcChain,
+			base64.StdEncoding.EncodeToString(publicKey),
+		)
 	}
 
 	var grpcListener net.Listener

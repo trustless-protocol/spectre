@@ -100,9 +100,19 @@ for json_file in \
 done
 validate_repository_ownership
 generated_vectors="$(mktemp)"
-go run scripts/generate-l2-attestation-fixtures.go -out "$generated_vectors"
+generated_message="$(mktemp)"
+generated_unsigned_message="$(mktemp)"
+(
+  cd relayer
+  go run ../scripts/generate-l2-attestation-fixtures.go \
+    -out "$generated_vectors" \
+    -client-message-out "$generated_message" \
+    -unsigned-client-message-out "$generated_unsigned_message"
+)
 diff -u test/fixtures/wasm-contracts/l2-attestation-vectors.json "$generated_vectors"
-rm -f "$generated_vectors"
+diff -u test/fixtures/wasm-contracts/l2-client-message.json "$generated_message"
+diff -u test/fixtures/wasm-contracts/l2-client-message-unsigned.json "$generated_unsigned_message"
+rm -f "$generated_vectors" "$generated_message" "$generated_unsigned_message"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo test --locked --workspace --no-fail-fast

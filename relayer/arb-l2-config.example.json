@@ -7,7 +7,7 @@
     "to decode the header the relayer sends.",
     "",
     "rollup_profile is sent verbatim into MsgCreateClient and the Rust verifier rejects",
-    "unknown fields (#316), so it carries exactly the seven keys the client reads. The",
+    "unknown fields (#316), so it carries exactly the five keys the client reads. The",
     "attestor-trusted client verifies nothing against L1, so there are no settlement",
     "fields and no ethereum_client reference — not even for Arbitrum's RollupCore.",
     "",
@@ -26,21 +26,18 @@
     "does not answer, because it is about to commit the profile into a client that",
     "cannot be corrected afterwards. Nothing else reads the field - transactions take",
     "their chain id from the RPC - so before these checks a wrong value relayed",
-    "happily against whatever chain the URL served.",
-    "attestation_head must match the l2_to_cosmos module's head_kind. It is signed",
-    "so a lower-finality signature from the same key cannot update this client."
+    "happily against whatever chain the URL served."
   ],
   "wasm_checksum": "<hex checksum of the Arbitrum client wasm, printed by scripts/local/wasm_arb.sh>",
   "l2_rpc_url": "http://127.0.0.1:8547",
+  "attestors": {"public_keys": ["XZ+76qOWCo/r113X56pAXt0hi3AZpY9LU44nF4vCMmg="], "threshold": 1},
   "rollup_profile": {
     "common": {
       "l2_chain_id": 421614,
       "l2_router": "0x7777777777777777777777777777777777777777",
       "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
       "profile_version": "arbitrum_attestor_v1",
-      "l2_header_fork": "london",
-      "attestor_public_key": "0x5d9fbbeaa3960a8febd75dd7e7aa405edd218b7019a58f4b538e27178bc23268",
-      "attestation_head": "safe"
+      "l2_header_fork": "london"
     }
   },
   "bootstrap_block": 0,

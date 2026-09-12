@@ -2,70 +2,75 @@
 package attestation
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"strings"
-
-	attestorpb "attestor/types/attestor"
 )
 
 const (
-	// Domain separates these signatures from every other Ed25519 use. It is
-	// terminated because the fields that follow are fixed-width binary values.
-	// This is a deployed wire-format identifier: do not rename it with a
-	// Fast-IBC/Spectre branding change, because doing so invalidates existing
-	// client profiles and their signatures.
-	domain = "fast-ibc/l2-attestation/v2\x00"
-
-	HashLength      = 32
-	SignatureLength = ed25519.SignatureSize
+	HashLength         = 32
+	RouterLength       = 20
+	SignatureLength    = ed25519.SignatureSize
+	PublicKeyLength    = ed25519.PublicKeySize
+	MaxAttestors       = 32
+	StatementLength    = 164
+	protocolDomainText = "SPECTRE_L2_ATTESTATION_V1"
 )
 
-// RunMode binds an attestation to the finality level at which the signer
-// checked the block. Its byte values are a stable part of the signed format.
-type RunMode uint8
+// ProtocolDomain is SHA-256(UTF8("SPECTRE_L2_ATTESTATION_V1")). It is shared
+// verbatim with packages/l2-client/src/verification.rs; do not change it without
+// a coordinated wire-protocol migration.
+var ProtocolDomain = sha256.Sum256([]byte(protocolDomainText))
 
-const (
-	RunModeUnsafe    RunMode = 1
-	RunModeSafe      RunMode = 2
-	RunModeFinalized RunMode = 3
-)
-
-// ParseRunMode parses the JSON/profile spelling of a signing finality level.
-func ParseRunMode(value string) (RunMode, error) {
-	switch value {
-	case "unsafe":
-		return RunModeUnsafe, nil
-	case "safe":
-		return RunModeSafe, nil
-	case "finalized":
-		return RunModeFinalized, nil
-	default:
-		return 0, fmt.Errorf("attestation run mode must be unsafe, safe, or finalized, got %q", value)
-	}
+// AttestorConfig is the immutable, canonically ordered Ed25519 attestor set
+// stored in an L2 wasm ClientState. []byte uses base64 in JSON, the same form
+// CosmWasm Binary uses.
+type AttestorConfig struct {
+	PublicKeys [][]byte `json:"public_keys"`
+	Threshold  uint16   `json:"threshold"`
 }
 
-func (m RunMode) valid() bool {
-	return m == RunModeUnsafe || m == RunModeSafe || m == RunModeFinalized
+// Validate applies exactly the bounds and ordering rules of the wasm client.
+func (c AttestorConfig) Validate() error {
+	if len(c.PublicKeys) == 0 {
+		return fmt.Errorf("attestor set must contain at least one public key")
+	}
+	if len(c.PublicKeys) > MaxAttestors {
+		return fmt.Errorf("attestor set has %d public keys, maximum is %d", len(c.PublicKeys), MaxAttestors)
+	}
+	if c.Threshold == 0 || int(c.Threshold) > len(c.PublicKeys) {
+		return fmt.Errorf("attestor threshold %d must be between 1 and %d", c.Threshold, len(c.PublicKeys))
+	}
+	for i, key := range c.PublicKeys {
+		if len(key) != PublicKeyLength {
+			return fmt.Errorf("attestor public key %d must be %d bytes, got %d", i, PublicKeyLength, len(key))
+		}
+		if i != 0 && bytes.Compare(c.PublicKeys[i-1], key) >= 0 {
+			return fmt.Errorf("attestor public keys must be strictly increasing lexicographically")
+		}
+	}
+	return nil
 }
 
-// RunModeFromProto explicitly maps the transport enum to the byte included in
-// the signature. Keep this mapping rather than casting: protobuf enum numbers
-// are not part of the attestation signing format.
-func RunModeFromProto(mode attestorpb.RunMode) (RunMode, error) {
-	switch mode {
-	case attestorpb.RunMode_RUN_MODE_UNSAFE:
-		return RunModeUnsafe, nil
-	case attestorpb.RunMode_RUN_MODE_SAFE:
-		return RunModeSafe, nil
-	case attestorpb.RunMode_RUN_MODE_FINALIZED:
-		return RunModeFinalized, nil
-	default:
-		return 0, fmt.Errorf("unsupported protobuf attestation run mode %d", mode)
+// SetHash returns SHA-256(u16be(threshold) || u16be(count) || sorted keys),
+// the value that every signature and the wasm client state bind to.
+func (c AttestorConfig) SetHash() ([HashLength]byte, error) {
+	if err := c.Validate(); err != nil {
+		return [HashLength]byte{}, err
 	}
+	encoded := make([]byte, 4+len(c.PublicKeys)*PublicKeyLength)
+	binary.BigEndian.PutUint16(encoded[0:2], c.Threshold)
+	binary.BigEndian.PutUint16(encoded[2:4], uint16(len(c.PublicKeys)))
+	offset := 4
+	for _, key := range c.PublicKeys {
+		offset += copy(encoded[offset:], key)
+	}
+	return sha256.Sum256(encoded), nil
 }
 
 // Signer owns the key used to attest canonical L2 block identities for one L2.
@@ -120,38 +125,41 @@ func (s Signer) PublicKey() []byte {
 	return append([]byte(nil), s.key.Public().(ed25519.PublicKey)...)
 }
 
-// Sign signs one canonical L2 block identity at a specific finality level.
-func (s Signer) Sign(runMode RunMode, blockNumber uint64, stateRoot, blockHash []byte) ([]byte, error) {
-	message, err := SigningBytes(s.chainID, runMode, blockNumber, stateRoot, blockHash)
+// Sign signs one exact L2 wasm-header attestation statement. The finality mode is
+// intentionally absent: it is an attestor-local policy, while every byte here is
+// rechecked by the client contract.
+func (s Signer) Sign(l2Router []byte, attestorSetHash []byte, blockNumber uint64, blockHash, stateRoot []byte) ([]byte, error) {
+	message, err := SigningBytes(s.chainID, l2Router, attestorSetHash, blockNumber, blockHash, stateRoot)
 	if err != nil {
 		return nil, err
 	}
 	return ed25519.Sign(s.key, message), nil
 }
 
-// SigningBytes is the exact, cross-language byte encoding signed by the attestor:
-// domain || l2_chain_id (uint64 big endian) || run_mode (uint8) ||
-// l2_block_number (uint64 big endian) || state_root (32 bytes) || block_hash
-// (32 bytes).
-func SigningBytes(chainID uint64, runMode RunMode, blockNumber uint64, stateRoot, blockHash []byte) ([]byte, error) {
+// SigningBytes is the exact, fixed-width cross-language byte encoding verified by
+// the L2 wasm client:
+// SHA256("SPECTRE_L2_ATTESTATION_V1") || l2_chain_id (u64be) || l2_router
+// (20 bytes) || attestor_set_hash (32 bytes) || l2_block_number (u64be) ||
+// l2_block_hash (32 bytes) || state_root (32 bytes).
+func SigningBytes(chainID uint64, l2Router, attestorSetHash []byte, blockNumber uint64, blockHash, stateRoot []byte) ([]byte, error) {
 	if chainID == 0 {
 		return nil, fmt.Errorf("L2 chain ID must be non-zero")
 	}
-	if !runMode.valid() {
-		return nil, fmt.Errorf("invalid attestation run mode %d", runMode)
+	if len(l2Router) != RouterLength {
+		return nil, fmt.Errorf("L2 router must be %d bytes, got %d", RouterLength, len(l2Router))
 	}
-	if len(stateRoot) != HashLength || len(blockHash) != HashLength {
-		return nil, fmt.Errorf("state root and block hash must both be %d bytes", HashLength)
+	if len(attestorSetHash) != HashLength || len(blockHash) != HashLength || len(stateRoot) != HashLength {
+		return nil, fmt.Errorf("attestor set hash, block hash, and state root must all be %d bytes", HashLength)
 	}
-	message := make([]byte, len(domain)+8+1+8+HashLength+HashLength)
-	offset := copy(message, domain)
+	message := make([]byte, StatementLength)
+	offset := copy(message, ProtocolDomain[:])
 	binary.BigEndian.PutUint64(message[offset:], chainID)
 	offset += 8
-	message[offset] = byte(runMode)
-	offset++
+	offset += copy(message[offset:], l2Router)
+	offset += copy(message[offset:], attestorSetHash)
 	binary.BigEndian.PutUint64(message[offset:], blockNumber)
 	offset += 8
-	offset += copy(message[offset:], stateRoot)
-	copy(message[offset:], blockHash)
+	offset += copy(message[offset:], blockHash)
+	copy(message[offset:], stateRoot)
 	return message, nil
 }

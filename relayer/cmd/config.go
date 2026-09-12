@@ -675,6 +675,11 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 	var c2l2List []cosmosToEthConfig
 	var c2l2Names []string
 	var l2List []l2ToCosmosConfig
+	type finalityOwner struct {
+		module string
+		head   string
+	}
+	seenAttestorKeyFinality := make(map[[32]byte]finalityOwner)
 	var e2c ethToCosmosConfig
 	var hasEthToCosmos bool
 	batch := services.DefaultConfig().BatchConfig
@@ -724,6 +729,21 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 			one.kind = chain.ChainType(m.SrcChain) // opstack | arbitrum
 			if err := one.validateWith(requireL2WasmClientID); err != nil {
 				return nil, fmt.Errorf("module %q: %w", m.Name, err)
+			}
+			head, err := parseHeadKind(one.HeadKind)
+			if err != nil {
+				return nil, fmt.Errorf("module %q: %w", m.Name, err)
+			}
+			for _, publicKey := range one.Attestors.PublicKeys {
+				var key [32]byte
+				copy(key[:], publicKey)
+				if owner, exists := seenAttestorKeyFinality[key]; exists && owner.head != head.String() {
+					return nil, fmt.Errorf(
+						"modules %q (%s) and %q (%s) reuse attestor public key %x across different head_kind values; provision disjoint keys per finality tier",
+						owner.module, owner.head, m.Name, head.String(), key,
+					)
+				}
+				seenAttestorKeyFinality[key] = finalityOwner{module: m.Name, head: head.String()}
 			}
 			l2List = append(l2List, one)
 		}

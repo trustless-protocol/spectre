@@ -125,6 +125,13 @@ ClientMessage::Header(SignedAttestedL2Header {
 ```
 
 Every update carries exactly `threshold` signatures in strictly increasing attestor-index order.
+The relayer queries every configured endpoint concurrently and stops when a valid quorum is
+available; one slow or unavailable endpoint therefore cannot prevent a healthy threshold from
+building a header. `RelayableHeight` uses the same endpoint set rather than endpoint zero: it
+returns the minimum frontier reported by the first complete quorum, so every member of that quorum
+attests through the selected height. If fewer than `threshold` endpoints remain available, the
+relay fails closed instead of falling back to an unsigned or single-attestor update.
+
 The contract signs the fixed-width statement:
 
 ```text
@@ -139,8 +146,10 @@ SHA256("SPECTRE_L2_ATTESTATION_V1")
 
 The statement remains exactly 164 bytes. Finality (`unsafe`, `safe`, or `finalized`) is an
 off-chain selection policy and is intentionally not another signed field. Therefore every
-finality tier must use a separate attestor/KMS key set. Config loading rejects the same attestor-set
-hash when it appears under different `head_kind` values in one relayer config.
+finality tier must use disjoint attestor/KMS keys. Config loading rejects any public-key overlap
+between different `head_kind` values in one relayer config, even when their thresholds and
+attestor-set hashes differ. Each attestor daemon also rejects `VerifyStateRoot` requests whose
+`run_mode` does not exactly match its configured attestation head.
 
 Signature structure and Ed25519 verification complete before router-proof traversal. The contract
 then validates the configured header fork, derives the L2 block hash and verifies the router
@@ -162,7 +171,10 @@ slot. Delay values other than zero fail closed.
 The deterministic Go generator owns the cross-language Ed25519 vectors:
 
 ```bash
-go run scripts/generate-l2-attestation-fixtures.go
+cd relayer
+go run ../scripts/generate-l2-attestation-fixtures.go \
+  -client-message-out ../test/fixtures/wasm-contracts/l2-client-message.json \
+  -unsigned-client-message-out ../test/fixtures/wasm-contracts/l2-client-message-unsigned.json
 ```
 
 The combined validator regenerates those vectors to a temporary file, checks the committed digest,

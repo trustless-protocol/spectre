@@ -34,12 +34,6 @@
           3
         ]
       ]
-    },
-    "attestor_signature": [
-      {
-        "attestor_index": 0,
-        "signature": "Wp5lafcaa5nB+wrJjauAdskZN8YCfDJvAI0zXXMsiA1Rh+Y9umtH5EyWwloFS6XAWixrihaZh9w6V0RDiEGLCQ=="
-      }
-    ]
+    }
   }
 }

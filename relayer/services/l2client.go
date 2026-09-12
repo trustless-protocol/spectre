@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"attestor/types/attestation"
 	relayerclient "relayer/client"
 
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
@@ -26,8 +27,8 @@ func decodeHexPrefixed(s string) ([]byte, error) {
 // L2ClientParams is the immutable configuration needed to bootstrap one L2 rollup
 // wasm light client on Cosmos (Arbitrum / Base / Optimism). The bootstrap roots are
 // read from the L2 chain (see relayerclient.GetL2BootstrapState); the rollup profile
-// (which carries the L2 chain id, router address, commitment slot, header fork, and
-// attestor public key) is operator-supplied verbatim.
+// (which carries the L1 client id + checksum, l2 chain id, router address, commitment
+// slot, and the rollup-specific verifier fields) is operator-supplied verbatim.
 type L2ClientParams struct {
 	// WasmChecksum is the hex checksum of the L2 client's own stored wasm code.
 	WasmChecksum string
@@ -41,6 +42,9 @@ type L2ClientParams struct {
 	// tracks Cosmos, registered inline as this client's counterparty. Empty when the
 	// L2-side client id is not yet known, in which case registration is deferred.
 	CounterpartyClientID string
+	// Attestors is the immutable, canonically ordered Ed25519 set that signs every
+	// header update. It is part of ClientState, not relayer-only configuration.
+	Attestors attestation.AttestorConfig
 }
 
 // The JSON shapes below mirror the ICS-08 CosmWasm L2 client types
@@ -56,12 +60,13 @@ type L2ClientParams struct {
 // timestamp_nanos = timestamp_seconds * 1e9 (matches Header::consensus_state).
 
 // l2ClientStateJSON mirrors l2-client `ClientState`. The policy fields are gone with
-// the finality taxonomy: the client stores no levels, so there is nothing to gate on.
-// The profile pins the attestor public key; each update carries its own signature.
+// the finality taxonomy: the client stores no levels. Each update instead carries
+// signatures that bind the exact L2 block identity to this immutable attestor set.
 type l2ClientStateJSON struct {
-	LatestHeight uint64          `json:"latest_height"`
-	FrozenHeight *uint64         `json:"frozen_height"`
-	Profile      json.RawMessage `json:"profile"`
+	LatestHeight uint64                     `json:"latest_height"`
+	FrozenHeight *uint64                    `json:"frozen_height"`
+	Profile      json.RawMessage            `json:"profile"`
+	Attestors    attestation.AttestorConfig `json:"attestors"`
 }
 
 // l2ConsensusStateJSON mirrors l2-client `ConsensusState`. The settlement provenance
@@ -94,6 +99,9 @@ func BuildL2WasmClientState(p L2ClientParams) (ibcexported.ClientState, ibcexpor
 	if len(p.RollupProfile) == 0 {
 		return nil, nil, fmt.Errorf("l2 client: rollup profile is required")
 	}
+	if err := p.Attestors.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("l2 client: invalid attestor set: %w", err)
+	}
 	if p.Bootstrap.TimestampSeconds > ^uint64(0)/1_000_000_000 {
 		return nil, nil, fmt.Errorf("l2 client: bootstrap timestamp overflows nanoseconds")
 	}
@@ -101,6 +109,7 @@ func BuildL2WasmClientState(p L2ClientParams) (ibcexported.ClientState, ibcexpor
 		LatestHeight: p.Bootstrap.Height,
 		FrozenHeight: nil,
 		Profile:      p.RollupProfile,
+		Attestors:    p.Attestors,
 	}
 	clientStateBz, err := json.Marshal(clientState)
 	if err != nil {

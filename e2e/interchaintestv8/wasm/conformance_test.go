@@ -1039,7 +1039,7 @@ func l2AttestationStatement(
 		setEncoding = append(setEncoding, publicKey...)
 	}
 	setHash := sha256.Sum256(setEncoding)
-	domain := sha256.Sum256([]byte("SPECTRE_L2_ATTESTATION_V2"))
+	domain := sha256.Sum256([]byte("SPECTRE_L2_ATTESTATION_V1"))
 	statement := make([]byte, 164)
 	copy(statement[0:32], domain[:])
 	binary.BigEndian.PutUint64(statement[32:40], chainID)

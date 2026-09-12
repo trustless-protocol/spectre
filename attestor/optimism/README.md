@@ -62,7 +62,7 @@ Provisional semantics are defined in the Operator Guide's
 | `AttestedUpTo` | The attested frontier (`include_provisional` opt-in) |
 | `AttestedRootAtOrBelow` | The relay-path query: highest attested root covering a packet's height |
 | `WatchAttested` | Server-streamed frontier advances (streams the frontier, not every entry) |
-| `VerifyStateRoot` | Compares a candidate block with the replica and, on a match, returns its Ed25519 attestation signature |
+| `VerifyStateRoot` | Requires `run_mode` to match the configured attestation head, compares a candidate block with that replica head and, on a match, returns its Ed25519 attestation signature |
 
 Go consumers use `attestor/optimism/client` (`client.Dial(addr)`), which
 mirrors the store's read interface — in-process and sidecar consumption are

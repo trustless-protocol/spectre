@@ -284,13 +284,12 @@ diagnostic RPC. The caller supplies:
 - `run_mode` as `RUN_MODE_UNSAFE`, `RUN_MODE_SAFE`, or `RUN_MODE_FINALIZED`
 
 The response returns `valid` plus Nitro's canonical block hash and state root.
-A mismatch is a successful gRPC response with `valid=false`; malformed requests,
+A block-identity mismatch is a successful gRPC response with `valid=false`; malformed requests,
 missing blocks, and Nitro availability failures use gRPC status errors.
 
-Every verification request is bounded by its requested run-mode head: unsafe uses Nitro's
-latest head, safe uses its safe head, and finalized uses its finalized head.
-The service supports all three modes concurrently and rejects an unspecified
-mode or a requested block above the selected head.
+Every verification request must name the daemon's configured attestation head exactly.
+The service rejects an unspecified or different `run_mode`, and rejects a requested block above
+that configured head. Deploy separate daemon/key configurations for different finality tiers.
 
 In the background, the attestor subscribes to Nitro's `newHeads` stream over
 the configured WebSocket endpoint. Each unsafe-head event triggers a refresh

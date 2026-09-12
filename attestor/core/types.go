@@ -57,13 +57,17 @@ func (r AttestedRoot) Clone() AttestedRoot {
 }
 
 // BlockIdentityRequest is the canonical L2 block a relayer candidate must
-// match. ExpectedBlockHash is optional; ExpectedStateRoot is always present
-// once decoded by the transport adapter.
+// match and attest. The router and active-set hash are part of the signature
+// statement, binding an otherwise valid L2 block to precisely one wasm client
+// configuration. ExpectedBlockHash is optional; ExpectedStateRoot is always
+// present once decoded by the transport adapter.
 type BlockIdentityRequest struct {
 	BlockNumber       uint64
 	ExpectedStateRoot [32]byte
 	ExpectedBlockHash *[32]byte
 	RunMode           RunMode
+	L2Router          [20]byte
+	AttestorSetHash   [32]byte
 }
 
 // SignedBlockIdentityVerdict is a canonical block identity returned by a

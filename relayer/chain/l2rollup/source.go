@@ -22,9 +22,10 @@ import (
 
 // HeadKind is the L2 confirmation policy — the single anti-reorg knob — using the
 // OP Stack / attestor head vocabulary (unsafe / safe / finalized). The on-chain L2
-// light client verifies VALIDITY (L2 state derived from L1 rollup proofs); this
-// decides how much reorg risk we accept for latency by choosing which L2 head we
-// relay.
+// light client authenticates the exact L2 block identity with its pinned attestor
+// set; this chooses the replica head those attestors must answer against. Finality
+// is not in the 164-byte statement, so config validation requires a distinct key
+// set for every finality tier.
 type HeadKind int
 
 const (
@@ -87,12 +88,12 @@ type Source struct {
 	cosmosWasmClientID string            // the Cosmos wasm client id paired with l2ClientID
 	router             ethcommon.Address // the L2 ICS26Router address (from rollup_profile.common.l2_router)
 
-	// attestor gates RelayableHeight on the chain-specific attestation policy.
+	// attestor gates RelayableHeight on a quorum of the configured attestors.
 	// OP re-derives from L1; Arbitrum unsafe explicitly trusts the configured
 	// Nitro node. When nil, RelayableHeight falls back to the raw L2 head.
 	// srcChainID is the attestor's src_chain key (distinct from the on-L2
 	// client id).
-	attestor   AttestorClient
+	attestor   AttestationFrontier
 	srcChainID string
 
 	// includeProvisional decides whether a verdict the attestor has not yet
@@ -123,8 +124,8 @@ var _ chain.Source = (*Source)(nil)
 
 // NewSource wires an L2 source. router is the L2 ICS26Router address (the packet
 // membership proofs are taken against its storage_root). attestor may be nil
-// (raw-head interim); when set, srcChainID identifies this L2 to the attestor.
-func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKind, l2ClientID, cosmosWasmClientID, srcChainID string, router ethcommon.Address, attestor AttestorClient, includeProvisional bool) *Source {
+// (raw-head interim); when set, srcChainID identifies this L2 to the frontier.
+func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKind, l2ClientID, cosmosWasmClientID, srcChainID string, router ethcommon.Address, attestor AttestationFrontier, includeProvisional bool) *Source {
 	return &Source{
 		chainType:          chainType,
 		eth:                eth,

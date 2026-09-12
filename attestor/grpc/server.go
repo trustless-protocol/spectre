@@ -244,9 +244,17 @@ func requestFromProto(request *attestorpb.VerifyStateRootRequest) (core.BlockIde
 	if len(request.GetExpectedStateRoot()) != 32 {
 		return core.BlockIdentityRequest{}, status.Error(codes.InvalidArgument, "expected_state_root must contain exactly 32 bytes")
 	}
+	if len(request.GetL2Router()) != 20 {
+		return core.BlockIdentityRequest{}, status.Error(codes.InvalidArgument, "l2_router must contain exactly 20 bytes")
+	}
+	if len(request.GetAttestorSetHash()) != 32 {
+		return core.BlockIdentityRequest{}, status.Error(codes.InvalidArgument, "attestor_set_hash must contain exactly 32 bytes")
+	}
 	var decoded core.BlockIdentityRequest
 	decoded.BlockNumber = request.GetBlockNumber()
 	copy(decoded.ExpectedStateRoot[:], request.GetExpectedStateRoot())
+	copy(decoded.L2Router[:], request.GetL2Router())
+	copy(decoded.AttestorSetHash[:], request.GetAttestorSetHash())
 	if blockHash := request.GetExpectedBlockHash(); len(blockHash) != 0 {
 		if len(blockHash) != 32 {
 			return core.BlockIdentityRequest{}, status.Error(codes.InvalidArgument, "expected_block_hash must be empty or contain exactly 32 bytes")

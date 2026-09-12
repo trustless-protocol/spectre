@@ -82,6 +82,7 @@ list_go_tests() {
     test/fixtures/wasm-contracts/l2-attestation-vectors.json \
     test/fixtures/wasm-contracts/l2-attestation-negative.json \
     test/fixtures/wasm-contracts/l2-client-message.json \
+    test/fixtures/wasm-contracts/l2-client-message-unsigned.json \
     test/fixtures/wasm-contracts/solidity-storage-layout.json \
     test/fixtures/wasm-contracts/wasm-interface.json \
     test/fixtures/wasm-contracts/wasmvm-gas-baseline.json \

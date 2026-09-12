@@ -3,8 +3,11 @@ package l2rollup
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
+	"attestor/types/attestation"
 	attestorpb "attestor/types/attestor"
 	"relayer/chain"
 
@@ -18,6 +21,9 @@ type fakeAttestor struct {
 	found bool
 	err   error
 
+	verifyBlock   <-chan struct{}
+	frontierBlock <-chan struct{}
+
 	gotSrcChain      string
 	gotProvisional   bool
 	gotAtOrBelowArg  uint64
@@ -26,27 +32,61 @@ type fakeAttestor struct {
 
 	// verifyValid is what VerifyStateRoot answers; verifyErr overrides it.
 	verifyValid       bool
-	verifySignature   []byte
 	verifyErr         error
+	verifySigner      attestation.Signer
 	gotVerifyHeight   uint64
 	gotVerifyRoot     []byte
 	gotVerifyHash     []byte
 	gotVerifyMode     attestorpb.RunMode
 	gotVerifySrcChain string
+	gotVerifyRouter   [20]byte
+	gotVerifySetHash  [32]byte
 	verifyCalled      bool
 }
 
-func (f *fakeAttestor) VerifyStateRoot(_ context.Context, srcChain string, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (VerifiedStateRoot, error) {
+func (f *fakeAttestor) VerifyStateRoot(ctx context.Context, request VerificationRequest) (SignedVerdict, error) {
+	if f.verifyBlock != nil {
+		select {
+		case <-ctx.Done():
+			return SignedVerdict{}, ctx.Err()
+		case <-f.verifyBlock:
+		}
+	}
 	f.verifyCalled = true
-	f.gotVerifySrcChain = srcChain
-	f.gotVerifyHeight = l2BlockNumber
-	f.gotVerifyRoot = stateRoot
-	f.gotVerifyHash = blockHash
-	f.gotVerifyMode = runMode
-	return VerifiedStateRoot{Valid: f.verifyValid, Signature: append([]byte(nil), f.verifySignature...)}, f.verifyErr
+	f.gotVerifySrcChain = request.SrcChain
+	f.gotVerifyHeight = request.BlockNumber
+	f.gotVerifyRoot = append([]byte(nil), request.StateRoot...)
+	f.gotVerifyHash = append([]byte(nil), request.BlockHash...)
+	f.gotVerifyMode = request.RunMode
+	f.gotVerifyRouter = request.L2Router
+	f.gotVerifySetHash = request.AttestorSetHash
+	if f.verifyErr != nil {
+		return SignedVerdict{}, f.verifyErr
+	}
+	verdict := SignedVerdict{
+		Valid:       f.verifyValid,
+		BlockNumber: request.BlockNumber,
+		BlockHash:   append([]byte(nil), request.BlockHash...),
+		StateRoot:   append([]byte(nil), request.StateRoot...),
+	}
+	if f.verifyValid && f.verifySigner.Configured() {
+		signature, err := f.verifySigner.Sign(request.L2Router[:], request.AttestorSetHash[:], request.BlockNumber, request.BlockHash, request.StateRoot)
+		if err != nil {
+			return SignedVerdict{}, err
+		}
+		verdict.Signature = signature
+	}
+	return verdict, nil
 }
 
-func (f *fakeAttestor) AttestedUpTo(_ context.Context, srcChain string, includeProvisional bool) (*attestorpb.AttestedRoot, bool, error) {
+func (f *fakeAttestor) AttestedUpTo(ctx context.Context, srcChain string, includeProvisional bool) (*attestorpb.AttestedRoot, bool, error) {
+	if f.frontierBlock != nil {
+		select {
+		case <-ctx.Done():
+			return nil, false, ctx.Err()
+		case <-f.frontierBlock:
+		}
+	}
 	f.attestedUpCalled = true
 	f.gotSrcChain = srcChain
 	f.gotProvisional = includeProvisional
@@ -76,6 +116,58 @@ func TestRelayableHeight_UsesAttestedFrontier(t *testing.T) {
 	}
 	if !at.attestedUpCalled || at.gotSrcChain != "op-sepolia" {
 		t.Fatalf("attestor not queried with src chain: %+v", at)
+	}
+}
+
+func TestRelayableHeight_UsesQuorumWhenFirstAttestorHangs(t *testing.T) {
+	blocked := make(chan struct{})
+	attestors := []SigningAttestor{
+		{Index: 0, Client: &fakeAttestor{frontierBlock: blocked}},
+		{Index: 1, Client: &fakeAttestor{root: &attestorpb.AttestedRoot{L2BlockNumber: 100}, found: true}},
+		{Index: 2, Client: &fakeAttestor{root: &attestorpb.AttestedRoot{L2BlockNumber: 90}, found: true}},
+	}
+	frontier, err := NewQuorumAttestationFrontier(attestors, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := NewSource(chain.ChainType("opstack"), nil, Safe, "07-tendermint-0", "08-wasm-0", "op-sepolia", ethcommon.Address{}, frontier, true)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	got, err := source.RelayableHeight(ctx)
+	if err != nil {
+		t.Fatalf("healthy frontier quorum blocked by first endpoint: %v", err)
+	}
+	if got != 90 {
+		t.Fatalf("relayable height = %d, want quorum minimum 90", got)
+	}
+}
+
+func TestQuorumFrontier_WaitsWhenReachableMembersHaveNotAttested(t *testing.T) {
+	frontier, err := NewQuorumAttestationFrontier([]SigningAttestor{
+		{Index: 0, Client: &fakeAttestor{found: false}},
+		{Index: 1, Client: &fakeAttestor{found: false}},
+		{Index: 2, Client: &fakeAttestor{err: fmt.Errorf("%w: unavailable", ErrAttestorUnavailable)}},
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, found, err := frontier.AttestedUpTo(context.Background(), "op", true)
+	if err != nil || found || root != nil {
+		t.Fatalf("frontier = (%v, %v, %v), want normal waiting state", root, found, err)
+	}
+}
+
+func TestQuorumFrontier_ClassifiesImpossiblePermanentQuorum(t *testing.T) {
+	frontier, err := NewQuorumAttestationFrontier([]SigningAttestor{
+		{Index: 0, Client: &fakeAttestor{err: fmt.Errorf("%w: bad route", ErrAttestorUnknownRoute)}},
+		{Index: 1, Client: &fakeAttestor{found: false}},
+	}, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, queryErr := frontier.AttestedUpTo(context.Background(), "op", true)
+	if queryErr == nil || !errors.Is(queryErr, ErrAttestorUnknownRoute) || !chain.IsPermanent(queryErr) {
+		t.Fatalf("error = %v, want permanent impossible quorum", queryErr)
 	}
 }
 
