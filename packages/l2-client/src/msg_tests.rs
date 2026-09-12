@@ -1,10 +1,82 @@
 use cosmwasm_std::Binary;
 
-use crate::error::Error;
+use serde::{Deserialize, Serialize};
+
 use crate::msg::{
-    CheckForMisbehaviourResult, ClientMessage, IbcHeight, StatusResult, SudoMsg,
+    CheckForMisbehaviourResult, ClientMessage, EvmAccountProof, IbcHeight,
+    IndexedAttestorSignature, MigrateMsg, SignedAttestedL2Header, StatusResult, SudoMsg,
     TimestampAtHeightResult, UpdateStateResult,
 };
+use crate::{canonical_header::CanonicalEvmHeader, error::Error};
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct UnsignedHeader {
+    l2_header: CanonicalEvmHeader,
+    router_proof: EvmAccountProof,
+}
+
+#[test]
+fn decodes_the_shared_go_to_rust_client_message_fixture() {
+    let fixture = include_bytes!("../../../test/fixtures/wasm-contracts/l2-client-message.json");
+    let message: ClientMessage<UnsignedHeader> = serde_json::from_slice(fixture).unwrap();
+    let ClientMessage::Header(header) = message else {
+        panic!("shared fixture must contain a header");
+    };
+    assert_eq!(header.l2_header.number, 42);
+    assert_eq!(header.router_proof.proof, vec![vec![1, 2], vec![3]]);
+}
+
+#[test]
+fn signed_header_uses_base64_signatures_and_numeric_proof_nodes() {
+    let fixture = include_bytes!("../../../test/fixtures/wasm-contracts/l2-client-message.json");
+    let unsigned: ClientMessage<UnsignedHeader> = serde_json::from_slice(fixture).unwrap();
+    let ClientMessage::Header(unsigned) = unsigned else {
+        panic!("shared fixture must contain a header");
+    };
+    let signed = ClientMessage::Header(SignedAttestedL2Header {
+        l2_header: unsigned.l2_header,
+        router_proof: unsigned.router_proof,
+        attestor_signature: vec![IndexedAttestorSignature {
+            attestor_index: 0,
+            signature: Binary::from(vec![7; 64]),
+        }],
+    });
+
+    let json = serde_json::to_string(&signed).unwrap();
+    assert!(json.contains(r#""attestor_signature":["#));
+    assert!(!json.contains(r#""signatures""#));
+    assert!(json.contains(r#""signature":"BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBw==""#));
+    assert!(json.contains(r#""proof":[[1,2],[3]]"#));
+    let decoded: ClientMessage<SignedAttestedL2Header> = serde_json::from_str(&json).unwrap();
+    assert_eq!(decoded, signed);
+}
+
+#[test]
+fn unsigned_header_does_not_decode_as_signed_header() {
+    let fixture = include_bytes!("../../../test/fixtures/wasm-contracts/l2-client-message.json");
+    assert!(serde_json::from_slice::<ClientMessage<SignedAttestedL2Header>>(fixture).is_err());
+}
+
+#[test]
+fn migrate_wire_is_strict_snake_case() {
+    assert_eq!(
+        serde_json::to_string(&MigrateMsg::KeepAttestors {}).unwrap(),
+        r#"{"keep_attestors":{}}"#
+    );
+    assert_eq!(
+        serde_json::to_string(&MigrateMsg::ReplaceAttestors {
+            public_keys: vec![Binary::from(vec![1; 32])],
+            threshold: 1,
+        })
+        .unwrap(),
+        r#"{"replace_attestors":{"public_keys":["AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="],"threshold":1}}"#
+    );
+    assert!(serde_json::from_slice::<MigrateMsg>(
+        br#"{"replace_attestors":{"public_keys":["AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="],"threshold":1,"unexpected":true}}"#,
+    )
+    .is_err());
+}
 
 #[test]
 fn decodes_the_flat_host_membership_payload() {

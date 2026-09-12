@@ -1,4 +1,4 @@
-//! Arbitrum attestor-trusted ICS-08 Wasm client entrypoints.
+//! Arbitrum authenticated ICS-08 Wasm client entrypoints.
 
 #![allow(missing_docs)]
 
@@ -8,10 +8,12 @@ l2_client::l2_client_entrypoints!(l2_client::StaticL2Client<l2_arbitrum::Arbitru
 mod tests {
     use cosmwasm_std::{
         testing::{message_info, mock_dependencies, mock_env},
-        Binary,
+        Binary, DepsMut, Env, Response,
     };
     use l2_arbitrum::ArbitrumProfile;
-    use l2_client::{state::RuntimeProfile, L2LightClient, StaticL2Client};
+    use l2_client::{
+        error::Error, msg::MigrateMsg, state::RuntimeProfile, L2LightClient, StaticL2Client,
+    };
 
     #[test]
     fn composes_the_shared_kernel_with_the_arbitrum_profile() {
@@ -21,6 +23,7 @@ mod tests {
             ArbitrumProfile::expected_profile_version(),
             "arbitrum_attestor_v1"
         );
+        let _: fn(DepsMut, Env, MigrateMsg) -> Result<Response, Error> = super::migrate;
     }
 
     #[test]
@@ -36,6 +39,7 @@ mod tests {
                     "latest_height": 1,
                     "frozen_height": null,
                     "profile": profile,
+                    "attestors": {"public_keys": [Binary::from(vec![1; 32])], "threshold": 1},
                 }))
                 .unwrap(),
             ),

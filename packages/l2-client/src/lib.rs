@@ -1,4 +1,4 @@
-//! Shared state and proof utilities for attestor-trusted L2 clients.
+//! Shared state, authentication, transition, and proof utilities for L2 clients.
 
 #![deny(clippy::nursery, clippy::pedantic, warnings, unused_crate_dependencies)]
 #![allow(clippy::doc_markdown, clippy::missing_errors_doc)]
@@ -16,12 +16,14 @@ pub mod verification;
 
 use core::marker::PhantomData;
 
+use cosmwasm_std::Api;
 use serde::{de::DeserializeOwned, Serialize};
 
 use crate::{
     error::Error,
-    msg::AttestedL2Header,
-    state::{Header, RuntimeProfile},
+    msg::SignedAttestedL2Header,
+    state::{ClientState, RuntimeProfile},
+    verification::AuthenticatedHeader,
 };
 
 /// Chain-specific adapter around the common attested-header verifier.
@@ -30,7 +32,19 @@ pub trait L2LightClient {
     type Profile: Clone + RuntimeProfile + DeserializeOwned + Serialize;
 
     /// Locally validates and normalizes one attested update.
-    fn verify(profile: &Self::Profile, header: &AttestedL2Header) -> Result<Header, Error>;
+    fn verify(
+        api: &dyn Api,
+        client: &ClientState<Self::Profile>,
+        header: &SignedAttestedL2Header,
+    ) -> Result<AuthenticatedHeader, Error>;
+
+    /// Authenticates both misbehaviour certificates before either proof traversal.
+    fn verify_misbehaviour(
+        api: &dyn Api,
+        client: &ClientState<Self::Profile>,
+        first: &SignedAttestedL2Header,
+        second: &SignedAttestedL2Header,
+    ) -> Result<(AuthenticatedHeader, AuthenticatedHeader), Error>;
 }
 
 /// Common verifier adapter for a data-only static L2 profile.
@@ -42,12 +56,25 @@ where
 {
     type Profile = Profile;
 
-    fn verify(profile: &Profile, header: &AttestedL2Header) -> Result<Header, Error> {
-        verification::verify_attested_header(profile, header)
+    fn verify(
+        api: &dyn Api,
+        client: &ClientState<Profile>,
+        header: &SignedAttestedL2Header,
+    ) -> Result<AuthenticatedHeader, Error> {
+        verification::verify_authenticated_header(api, client, header)
+    }
+
+    fn verify_misbehaviour(
+        api: &dyn Api,
+        client: &ClientState<Profile>,
+        first: &SignedAttestedL2Header,
+        second: &SignedAttestedL2Header,
+    ) -> Result<(AuthenticatedHeader, AuthenticatedHeader), Error> {
+        verification::verify_authenticated_misbehaviour(api, client, first, second)
     }
 }
 
-/// Generates the three standard ICS-08 `CosmWasm` entrypoints.
+/// Generates the standard ICS-08 `CosmWasm` entrypoints, including migration.
 #[macro_export]
 macro_rules! l2_client_entrypoints {
     ($adapter:ty) => {
@@ -81,6 +108,16 @@ macro_rules! l2_client_entrypoints {
         ) -> Result<cosmwasm_std::Binary, l2_client::error::Error> {
             l2_client::entrypoints::query::<$adapter>(deps, msg)
         }
+
+        /// Keeps or atomically rotates the active attestor set.
+        #[cosmwasm_std::entry_point]
+        pub fn migrate(
+            deps: cosmwasm_std::DepsMut,
+            _env: cosmwasm_std::Env,
+            msg: $crate::msg::MigrateMsg,
+        ) -> Result<cosmwasm_std::Response, l2_client::error::Error> {
+            l2_client::entrypoints::migrate::<$adapter>(deps, msg)
+        }
     };
 }
 
@@ -97,4 +134,8 @@ mod packet_tests;
 #[cfg(test)]
 mod runtime_tests;
 #[cfg(test)]
+mod state_tests;
+#[cfg(test)]
 mod store_tests;
+#[cfg(test)]
+mod verification_tests;

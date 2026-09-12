@@ -1877,6 +1877,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "115531babc129696a58c64a4fef0a8bf9e9698629fb97e9e40767d235cfbcd53"
 dependencies = [
  "pkcs8",
+ "serde",
  "signature",
 ]
 
@@ -1904,6 +1905,7 @@ dependencies = [
  "hashbrown 0.14.5",
  "hex",
  "rand_core 0.6.4",
+ "serde",
  "sha2 0.10.9",
  "zeroize",
 ]
@@ -2973,6 +2975,7 @@ dependencies = [
  "alloy-primitives 1.6.1",
  "alloy-rlp",
  "cosmwasm-std",
+ "ed25519-zebra",
  "ethereum-trie-db 0.1.0",
  "hex",
  "ibc-proto 0.51.1 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -2981,6 +2984,7 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.19",
 ]
 

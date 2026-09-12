@@ -7,14 +7,41 @@ use serde::{Deserialize, Serialize};
 
 use crate::canonical_header::CanonicalEvmHeader;
 
-/// Common attestor-trusted L2 update.
+/// Mandatory signed L2 update.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct AttestedL2Header {
+pub struct SignedAttestedL2Header {
     /// Canonical L2 execution header.
     pub l2_header: CanonicalEvmHeader,
     /// Proof of the configured router account against the execution state root.
     pub router_proof: EvmAccountProof,
+    /// Exactly-threshold signatures, strictly increasing by attestor index.
+    ///
+    /// The singular field name is retained from the original development wire
+    /// contract even though quorum authentication makes its value a list.
+    pub attestor_signature: Vec<IndexedAttestorSignature>,
+}
+
+/// One Ed25519 signature bound to its active-set index.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct IndexedAttestorSignature {
+    pub attestor_index: u16,
+    /// Raw 64-byte Ed25519 signature, encoded as base64 in JSON.
+    pub signature: Binary,
+}
+
+/// Governance-hosted attestor migration operation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum MigrateMsg {
+    /// Validate the current client without rewriting it.
+    KeepAttestors {},
+    /// Atomically replace only the active attestor set.
+    ReplaceAttestors {
+        public_keys: Vec<Binary>,
+        threshold: u16,
+    },
 }
 
 /// Direct client-creation message.

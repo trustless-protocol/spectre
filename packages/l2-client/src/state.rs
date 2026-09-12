@@ -1,10 +1,70 @@
-//! State models for attestor-trusted L2 clients.
+//! State models for authenticated L2 clients.
 
 use alloy_primitives::{Address, B256};
+use cosmwasm_std::Binary;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::{canonical_header::ExecutionHeaderFork, error::Error};
+
+/// Maximum active Ed25519 attestors for one client instance.
+pub const MAX_ATTESTORS: usize = 32;
+/// Raw Ed25519 public-key length.
+pub const ED25519_PUBLIC_KEY_LENGTH: usize = 32;
+
+/// Active, canonically ordered Ed25519 attestor set.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct AttestorConfig {
+    /// Raw 32-byte keys, strictly increasing in lexicographic byte order.
+    pub public_keys: Vec<Binary>,
+    /// Exact number of indexed signatures required on every update.
+    pub threshold: u16,
+}
+
+impl AttestorConfig {
+    /// Validates size, threshold, key length, ordering, and uniqueness.
+    pub fn validate(&self) -> Result<(), Error> {
+        if self.public_keys.is_empty() {
+            return Err(Error::InvalidAttestorSet);
+        }
+        if self.public_keys.len() > MAX_ATTESTORS {
+            return Err(Error::TooManyAttestors);
+        }
+        if self.threshold == 0 || usize::from(self.threshold) > self.public_keys.len() {
+            return Err(Error::InvalidAttestorThreshold);
+        }
+        if self
+            .public_keys
+            .iter()
+            .any(|key| key.len() != ED25519_PUBLIC_KEY_LENGTH)
+        {
+            return Err(Error::InvalidAttestorPublicKeyLength);
+        }
+        if self
+            .public_keys
+            .windows(2)
+            .any(|pair| pair[0].as_slice() >= pair[1].as_slice())
+        {
+            return Err(Error::InvalidAttestorSet);
+        }
+        Ok(())
+    }
+
+    /// Derives SHA-256(u16be(threshold) || u16be(count) || sorted keys).
+    pub fn set_hash(&self) -> Result<[u8; 32], Error> {
+        self.validate()?;
+        let count = u16::try_from(self.public_keys.len()).map_err(|_| Error::TooManyAttestors)?;
+        let mut hasher = Sha256::new();
+        hasher.update(self.threshold.to_be_bytes());
+        hasher.update(count.to_be_bytes());
+        for key in &self.public_keys {
+            hasher.update(key.as_slice());
+        }
+        Ok(hasher.finalize().into())
+    }
+}
 
 /// Immutable deployment data needed for local L2 proof verification.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -164,4 +224,27 @@ pub struct ClientState<Profile> {
     pub latest_height: u64,
     pub frozen_height: Option<u64>,
     pub profile: Profile,
+    pub attestors: AttestorConfig,
+}
+
+impl<Profile: RuntimeProfile> ClientState<Profile> {
+    /// Validates bootstrap and loaded client/profile invariants.
+    pub fn validate(&self) -> Result<(), Error> {
+        Height::new(self.latest_height)?;
+        self.attestors.validate()?;
+        if self.frozen_height == Some(0) {
+            return Err(Error::ZeroHeight);
+        }
+        let common = self.profile.common();
+        if common.profile_version != Profile::expected_profile_version() {
+            return Err(Error::InvalidProfileVersion);
+        }
+        if common.l2_chain_id == 0 {
+            return Err(Error::InvalidHeader("L2 chain ID must be non-zero"));
+        }
+        if common.l2_router.is_zero() {
+            return Err(Error::InvalidHeader("L2 router address must be non-zero"));
+        }
+        Ok(())
+    }
 }

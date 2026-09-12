@@ -31,7 +31,7 @@ func profileWithChainID(id uint64) json.RawMessage {
 			"l2_chain_id": %d,
 			"l2_router": "0x6c4729db04a00b4a76d854df35980e1646dff4ba",
 			"commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
-			"profile_version": "arbitrum_attestor_v2",
+			"profile_version": "arbitrum_attestor_v1",
 			"l2_header_fork": "london",
 			"attestor_public_key": "0x1111111111111111111111111111111111111111111111111111111111111111",
 			"attestation_head": "safe"

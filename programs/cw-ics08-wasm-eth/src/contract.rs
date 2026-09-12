@@ -2,7 +2,7 @@
 
 use cosmwasm_std::{entry_point, Binary, Deps, DepsMut, Env, MessageInfo, Response};
 
-use crate::msg::{ExecuteMsg, InstantiateMsg, MigrateMsg, Migration, QueryMsg, SudoMsg};
+use crate::msg::{ExecuteMsg, Height, InstantiateMsg, MigrateMsg, Migration, QueryMsg, SudoMsg};
 use crate::{custom_query::EthereumCustomQuery, instantiate, query, state};
 use crate::{sudo, ContractError};
 
@@ -14,8 +14,6 @@ const CONTRACT_NAME: &str = env!("CARGO_PKG_NAME");
 /// The instantiate entry point for the `CosmWasm` contract.
 /// # Errors
 /// Will return an error if the client state or consensus state cannot be deserialized.
-/// # Panics
-/// Will panic if the client state latest height cannot be unwrapped
 #[entry_point]
 #[allow(clippy::needless_pass_by_value)]
 pub fn instantiate(
@@ -24,9 +22,9 @@ pub fn instantiate(
     _info: MessageInfo,
     msg: InstantiateMsg,
 ) -> Result<Response, ContractError> {
+    let prepared = instantiate::prepare_client(msg)?;
     cw2::set_contract_version(deps.storage, CONTRACT_NAME, STATE_VERSION)?;
-
-    instantiate::client(deps.storage, msg)?;
+    prepared.commit(deps.storage);
 
     Ok(Response::default())
 }
@@ -44,17 +42,33 @@ pub fn sudo(
 ) -> Result<Response, ContractError> {
     let result = match msg {
         SudoMsg::VerifyMembership(verify_membership_msg) => {
+            ensure_zero_delay(
+                verify_membership_msg.delay_time_period,
+                verify_membership_msg.delay_block_period,
+            )?;
             sudo::verify_membership(deps.as_ref(), verify_membership_msg)?
         }
         SudoMsg::VerifyNonMembership(verify_non_membership_msg) => {
+            ensure_zero_delay(
+                verify_non_membership_msg.delay_time_period,
+                verify_non_membership_msg.delay_block_period,
+            )?;
             sudo::verify_non_membership(deps.as_ref(), verify_non_membership_msg)?
         }
         SudoMsg::UpdateState(update_state_msg) => sudo::update_state(deps, update_state_msg)?,
         SudoMsg::UpdateStateOnMisbehaviour(misbehaviour_msg) => {
             sudo::misbehaviour(deps, misbehaviour_msg)?
         }
-        SudoMsg::VerifyUpgradeAndUpdateState(_) => todo!(),
-        SudoMsg::MigrateClientStore(_) => todo!(),
+        SudoMsg::VerifyUpgradeAndUpdateState(_) => {
+            return Err(ContractError::UnsupportedLifecycleOperation {
+                operation: "verify_upgrade_and_update_state",
+            });
+        }
+        SudoMsg::MigrateClientStore(_) => {
+            return Err(ContractError::UnsupportedLifecycleOperation {
+                operation: "migrate_client_store",
+            });
+        }
     };
 
     Ok(Response::default().set_data(result))
@@ -69,7 +83,32 @@ pub fn execute(
     _info: MessageInfo,
     _msg: ExecuteMsg,
 ) -> Result<Response, ContractError> {
-    unimplemented!()
+    Err(ContractError::UnsupportedLifecycleOperation {
+        operation: "execute",
+    })
+}
+
+const fn ensure_zero_delay(
+    delay_time_period: u64,
+    delay_block_period: u64,
+) -> Result<(), ContractError> {
+    if delay_time_period != 0 || delay_block_period != 0 {
+        return Err(ContractError::UnsupportedNonZeroDelay {
+            delay_time_period,
+            delay_block_period,
+        });
+    }
+    Ok(())
+}
+
+pub(crate) const fn validate_height(height: &Height) -> Result<(), ContractError> {
+    if height.revision_number != 0 {
+        return Err(ContractError::InvalidRevision(height.revision_number));
+    }
+    if height.revision_height == 0 {
+        return Err(ContractError::ZeroHeight);
+    }
+    Ok(())
 }
 
 /// The query entry point for the `CosmWasm` contract.
@@ -106,25 +145,38 @@ pub fn migrate(
     _env: Env,
     msg: MigrateMsg,
 ) -> Result<Response, ContractError> {
-    // Check if the state version is older than the current one and update it
-    cw2::ensure_from_older_version(deps.storage, CONTRACT_NAME, STATE_VERSION)?;
+    enum PreparedMigration {
+        CodeOnly,
+        Reinstantiate(instantiate::PreparedClient),
+        ClientState(Vec<u8>),
+    }
 
-    // Perform the migration
-    match msg.migration {
-        Migration::CodeOnly => {} // do nothing here
+    let prepared = match msg.migration {
+        Migration::CodeOnly => PreparedMigration::CodeOnly,
         Migration::Reinstantiate(instantiate_msg) => {
-            // Re-instantiate the client
-            instantiate::client(deps.storage, instantiate_msg)?;
+            PreparedMigration::Reinstantiate(instantiate::prepare_client(instantiate_msg)?)
         }
         Migration::UpdateForkParameters(fork_parameters) => {
-            // Change the fork parameters
             let mut client_state = state::get_eth_client_state(deps.storage)?;
             client_state.fork_parameters = fork_parameters;
             let client_state_bz: Vec<u8> = serde_json::to_vec(&client_state)
                 .map_err(ContractError::SerializeClientStateFailed)?;
             let mut wasm_client_state = state::get_wasm_client_state(deps.storage)?;
             wasm_client_state.data = client_state_bz;
-            state::store_client_state(deps.storage, &wasm_client_state)?;
+            PreparedMigration::ClientState(state::encode_client_state(&wasm_client_state)?)
+        }
+    };
+
+    // This writes the cw2 version, so all migration-specific validation and serialization must
+    // finish before it runs.
+    cw2::ensure_from_older_version(deps.storage, CONTRACT_NAME, STATE_VERSION)?;
+
+    match prepared {
+        PreparedMigration::CodeOnly => {}
+        PreparedMigration::Reinstantiate(client) => client.commit(deps.storage),
+        PreparedMigration::ClientState(client) => {
+            deps.storage
+                .set(state::HOST_CLIENT_STATE_KEY.as_bytes(), &client);
         }
     }
 
@@ -206,7 +258,7 @@ mod tests {
                 },
                 seconds_per_slot: 10,
                 slots_per_epoch: 8,
-                epochs_per_sync_committee_period: 0,
+                epochs_per_sync_committee_period: 8,
                 latest_slot: 42,
                 latest_execution_block_number: 38,
                 ibc_commitment_slot: U256::from(0),
@@ -712,7 +764,7 @@ mod tests {
                 sync_committee_size: 512,
                 seconds_per_slot: 10,
                 slots_per_epoch: 8,
-                epochs_per_sync_committee_period: 0,
+                epochs_per_sync_committee_period: 8,
                 latest_slot: 42,
                 latest_execution_block_number: 38,
                 ibc_commitment_slot: U256::from(0),
@@ -824,7 +876,7 @@ mod tests {
                 sync_committee_size: 512,
                 seconds_per_slot: 10,
                 slots_per_epoch: 8,
-                epochs_per_sync_committee_period: 0,
+                epochs_per_sync_committee_period: 8,
                 latest_slot: 42,
                 latest_execution_block_number: 38,
                 ibc_commitment_slot: U256::from(0),
@@ -909,5 +961,270 @@ mod tests {
             );
             assert_eq!(eth_client_state.fork_parameters.electra.epoch, 5000);
         }
+    }
+}
+
+#[cfg(test)]
+mod host_boundary_tests {
+    use cosmwasm_std::{
+        testing::{message_info, mock_dependencies, mock_env},
+        Binary, Storage,
+    };
+    use ethereum_light_client::test_utils::fixtures::{self, InitialState};
+
+    use crate::{
+        contract::{execute, instantiate, migrate, query, sudo},
+        error::ContractError,
+        msg::{
+            ExecuteMsg, Height, InstantiateMsg, MerklePath, MigrateClientStoreMsg, MigrateMsg,
+            Migration, QueryMsg, SudoMsg, TimestampAtHeightMsg, VerifyMembershipMsg,
+            VerifyNonMembershipMsg, VerifyUpgradeAndUpdateStateMsg,
+        },
+        test::helpers::mk_deps,
+    };
+
+    #[test]
+    fn invalid_instantiate_is_validated_before_any_write() {
+        let mut deps = mk_deps();
+        let sender = deps.api.addr_make("host");
+        let error = instantiate(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&sender, &[]),
+            InstantiateMsg {
+                client_state: Binary::from(b"not-json"),
+                consensus_state: Binary::from(b"also-not-json"),
+                checksum: Binary::from([1]),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ContractError::DeserializeClientStateFailed(_)
+        ));
+        assert!(deps.storage.get(b"contract_info").is_none());
+        assert!(deps.storage.get(b"clientState").is_none());
+    }
+
+    #[test]
+    fn malformed_numeric_bootstrap_is_rejected_without_panicking_or_writing() {
+        let fixture: fixtures::StepsFixture =
+            fixtures::load("Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack");
+        let initial: InitialState = fixture.get_data_at_step(0);
+
+        for field in ["slots_per_epoch", "epochs_per_sync_committee_period"] {
+            let mut deps = mk_deps();
+            let sender = deps.api.addr_make("host");
+            let mut client = initial.client_state.clone();
+            match field {
+                "slots_per_epoch" => client.slots_per_epoch = 0,
+                "epochs_per_sync_committee_period" => {
+                    client.epochs_per_sync_committee_period = 0;
+                }
+                _ => unreachable!(),
+            }
+
+            let error = instantiate(
+                deps.as_mut(),
+                mock_env(),
+                message_info(&sender, &[]),
+                InstantiateMsg {
+                    client_state: serde_json::to_vec(&client).unwrap().into(),
+                    consensus_state: serde_json::to_vec(&initial.consensus_state).unwrap().into(),
+                    checksum: Binary::from([1]),
+                },
+            )
+            .unwrap_err();
+
+            assert!(matches!(error, ContractError::InvalidClientState(_)));
+            assert!(deps.storage.get(b"contract_info").is_none());
+            assert!(deps.storage.get(b"clientState").is_none());
+        }
+    }
+
+    #[test]
+    fn invalid_migration_is_validated_before_version_write() {
+        let mut deps = mk_deps();
+        cw2::set_contract_version(deps.as_mut().storage, super::CONTRACT_NAME, "0.0.1").unwrap();
+
+        let error = migrate(
+            deps.as_mut(),
+            mock_env(),
+            MigrateMsg {
+                migration: Migration::Reinstantiate(InstantiateMsg {
+                    client_state: Binary::from(b"not-json"),
+                    consensus_state: Binary::from(b"also-not-json"),
+                    checksum: Binary::default(),
+                }),
+            },
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            ContractError::DeserializeClientStateFailed(_)
+        ));
+        assert_eq!(
+            cw2::get_contract_version(deps.as_ref().storage)
+                .unwrap()
+                .version,
+            "0.0.1"
+        );
+        assert!(deps.storage.get(b"clientState").is_none());
+    }
+
+    #[test]
+    fn ethereum_height_validation_precedes_state_and_proof_work() {
+        let mut deps = mk_deps();
+        let membership = sudo(
+            deps.as_mut(),
+            mock_env(),
+            SudoMsg::VerifyMembership(VerifyMembershipMsg {
+                height: Height {
+                    revision_number: 2,
+                    revision_height: 0,
+                },
+                delay_time_period: 0,
+                delay_block_period: 0,
+                proof: Binary::from(b"not-json"),
+                merkle_path: MerklePath { key_path: vec![] },
+                value: Binary::default(),
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(membership, ContractError::InvalidRevision(2)));
+
+        let timestamp = query(
+            deps.as_ref(),
+            mock_env(),
+            QueryMsg::TimestampAtHeight(TimestampAtHeightMsg {
+                height: Height {
+                    revision_number: 0,
+                    revision_height: 0,
+                },
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(timestamp, ContractError::ZeroHeight));
+    }
+
+    #[test]
+    fn non_zero_delay_precedes_height_state_and_proof_validation() {
+        let mut deps = mk_deps();
+        let error = sudo(
+            deps.as_mut(),
+            mock_env(),
+            SudoMsg::VerifyMembership(VerifyMembershipMsg {
+                height: Height {
+                    revision_number: 9,
+                    revision_height: 0,
+                },
+                delay_time_period: 7,
+                delay_block_period: 3,
+                proof: Binary::from(b"not-json"),
+                merkle_path: MerklePath { key_path: vec![] },
+                value: Binary::default(),
+            }),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            &error,
+            ContractError::UnsupportedNonZeroDelay {
+                delay_time_period: 7,
+                delay_block_period: 3,
+            }
+        ));
+        assert_eq!(
+            error.to_string(),
+            "non-zero delay is unsupported: delay_time_period=7, delay_block_period=3"
+        );
+
+        let error = sudo(
+            deps.as_mut(),
+            mock_env(),
+            SudoMsg::VerifyNonMembership(VerifyNonMembershipMsg {
+                height: Height {
+                    revision_number: 9,
+                    revision_height: 0,
+                },
+                delay_time_period: 0,
+                delay_block_period: 4,
+                proof: Binary::from(b"not-json"),
+                merkle_path: MerklePath { key_path: vec![] },
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ContractError::UnsupportedNonZeroDelay {
+                delay_time_period: 0,
+                delay_block_period: 4,
+            }
+        ));
+        assert!(deps.storage.get(b"clientState").is_none());
+    }
+
+    #[test]
+    fn unsupported_lifecycle_paths_return_typed_errors() {
+        let mut deps = mk_deps();
+        let upgrade = sudo(
+            deps.as_mut(),
+            mock_env(),
+            SudoMsg::VerifyUpgradeAndUpdateState(VerifyUpgradeAndUpdateStateMsg {
+                upgrade_client_state: Binary::from([1]),
+                upgrade_consensus_state: Binary::from([2]),
+                proof_upgrade_client: Binary::from([3]),
+                proof_upgrade_consensus_state: Binary::from([4]),
+            }),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            &upgrade,
+            ContractError::UnsupportedLifecycleOperation {
+                operation: "verify_upgrade_and_update_state"
+            }
+        ));
+        assert_eq!(
+            upgrade.to_string(),
+            "lifecycle operation is unsupported: verify_upgrade_and_update_state"
+        );
+
+        let recovery = sudo(
+            deps.as_mut(),
+            mock_env(),
+            SudoMsg::MigrateClientStore(MigrateClientStoreMsg {}),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            &recovery,
+            ContractError::UnsupportedLifecycleOperation {
+                operation: "migrate_client_store"
+            }
+        ));
+        assert_eq!(
+            recovery.to_string(),
+            "lifecycle operation is unsupported: migrate_client_store"
+        );
+    }
+
+    #[test]
+    fn retained_execute_export_returns_a_typed_error() {
+        let mut deps = mock_dependencies();
+        let sender = deps.api.addr_make("sender");
+        let error = execute(
+            deps.as_mut(),
+            mock_env(),
+            message_info(&sender, &[]),
+            ExecuteMsg {},
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            ContractError::UnsupportedLifecycleOperation {
+                operation: "execute"
+            }
+        ));
     }
 }

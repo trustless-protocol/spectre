@@ -1,13 +1,13 @@
-# Base attestor-trusted L2 client
+# Base authenticated L2 client
 
-**DEVNET ONLY.** This client accepts an L2 execution header from *any* submitter, not just the
-relayer: `MsgUpdateClient` is permissionless and the header carries no attestor signature, so
-nothing distinguishes one sender from another. Anyone can fabricate a self-consistent header at an
-unseen height and then prove arbitrary membership or non-membership against it.
+This ICS-08 Wasm client accepts only `base_attestor_v1` headers carrying an exact-threshold,
+strictly indexed Ed25519 certificate over the canonical L2 chain/router/set/block statement.
+It authenticates every certificate before traversing the router account proof; query and sudo use
+the same verifier. Unsigned messages fail with `UnsupportedUnsignedHeader`.
 
-It verifies the header hash, the configured fork layout, and the router account proof — which
-establishes only that the supplied storage root belongs to the supplied state, not that the state
-is the L2's. It verifies no L1 consensus, no dispute game, and no attestor signature.
+The active, sorted public-key set and threshold live in `ClientState.attestors`. Its governance-only
+migration entry point can keep or rotate that set on an existing authenticated client. It rejects
+missing-attestor state without writes; create a fresh authenticated client for legacy state.
 
-See [docs/L2_CLIENTS.md](../../docs/L2_CLIENTS.md) for the full statement and the
-`ATTESTATIONS_ARE_AUTHENTICATED` gate that closes it.
+This validates the Wasm artifact only. Deployment also requires a compatible signed message
+producer plus custody, compromise-response, availability, and governance review.

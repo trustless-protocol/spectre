@@ -52,11 +52,26 @@ pub enum ContractError {
     #[error("unsupported fork version")]
     UnsupportedForkVersion(#[source] EthereumIBCError),
 
+    #[error("invalid Ethereum client state: {0}")]
+    InvalidClientState(&'static str),
+
     #[error("client state not found")]
     ClientStateNotFound,
 
     #[error("consensus state not found")]
     ConsensusStateNotFound,
+
+    #[error("invalid revision number {0}; only revision zero is supported")]
+    InvalidRevision(u64),
+
+    #[error("invalid zero Ethereum height")]
+    ZeroHeight,
+
+    #[error("Ethereum timestamp overflow")]
+    TimestampOverflow,
+
+    #[error("client is frozen")]
+    Frozen,
 
     // Generic translation errors
     #[error("prost encoding error: {0}")]
@@ -70,4 +85,20 @@ pub enum ContractError {
 
     #[error("invalid client message")]
     InvalidClientMessage,
+
+    #[error(
+        "non-zero delay is unsupported: delay_time_period={delay_time_period}, delay_block_period={delay_block_period}"
+    )]
+    UnsupportedNonZeroDelay {
+        /// Requested time delay.
+        delay_time_period: u64,
+        /// Requested block delay.
+        delay_block_period: u64,
+    },
+
+    #[error("lifecycle operation is unsupported: {operation}")]
+    UnsupportedLifecycleOperation {
+        /// Stable host operation name.
+        operation: &'static str,
+    },
 }

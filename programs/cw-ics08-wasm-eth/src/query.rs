@@ -4,6 +4,7 @@ use cosmwasm_std::{to_json_binary, Binary, Deps, Env};
 use ethereum_light_client::header::Header;
 
 use crate::{
+    contract::validate_height,
     custom_query::{BlsVerifier, EthereumCustomQuery},
     msg::{
         CheckForMisbehaviourMsg, CheckForMisbehaviourResult, EthereumMisbehaviourMsg, Status,
@@ -26,6 +27,9 @@ pub fn verify_client_message(
     verify_client_message_msg: VerifyClientMessageMsg,
 ) -> Result<Binary, ContractError> {
     let eth_client_state = get_eth_client_state(deps.storage)?;
+    if eth_client_state.is_frozen {
+        return Err(ContractError::Frozen);
+    }
 
     let bls_verifier = BlsVerifier {
         querier: deps.querier,
@@ -87,6 +91,9 @@ pub fn check_for_misbehaviour(
     .map_err(ContractError::DeserializeEthMisbehaviourFailed)?;
 
     let eth_client_state = get_eth_client_state(deps.storage)?;
+    if eth_client_state.is_frozen {
+        return Err(ContractError::Frozen);
+    }
     let eth_consensus_state = get_eth_consensus_state(deps.storage, misbehaviour.trusted_slot)?;
 
     let bls_verifier = BlsVerifier {
@@ -119,10 +126,14 @@ pub fn timestamp_at_height(
     deps: Deps<EthereumCustomQuery>,
     timestamp_at_height_msg: TimestampAtHeightMsg,
 ) -> Result<Binary, ContractError> {
+    validate_height(&timestamp_at_height_msg.height)?;
     let eth_consensus_state =
         get_eth_consensus_state(deps.storage, timestamp_at_height_msg.height.revision_height)?;
 
-    let nano_timestamp = eth_consensus_state.timestamp * 1_000_000_000; // ibc-go expects nanoseconds
+    let nano_timestamp = eth_consensus_state
+        .timestamp
+        .checked_mul(1_000_000_000)
+        .ok_or(ContractError::TimestampOverflow)?;
 
     Ok(to_json_binary(&TimestampAtHeightResult {
         timestamp: nano_timestamp,
@@ -181,7 +192,7 @@ mod tests {
         let info = message_info(&creator, &coins(1, "uatom"));
 
         let fixture: StepsFixture =
-            fixtures::load("Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack");
+            fixtures::load("Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack");
 
         let initial_state: InitialState = fixture.get_data_at_step(0);
 
@@ -239,7 +250,7 @@ mod tests {
         let info = message_info(&creator, &coins(1, "uatom"));
 
         let fixture: StepsFixture =
-            fixtures::load("Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack");
+            fixtures::load("Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack");
 
         let initial_state: InitialState = fixture.get_data_at_step(0);
 
@@ -275,13 +286,52 @@ mod tests {
     }
 
     #[test]
+    fn timestamp_at_height_rejects_nanosecond_overflow() {
+        let mut deps = mk_deps();
+        let creator = deps.api.addr_make("creator");
+        let info = message_info(&creator, &coins(1, "uatom"));
+        let fixture: StepsFixture =
+            fixtures::load("Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack");
+        let initial_state: InitialState = fixture.get_data_at_step(0);
+        let client_state = initial_state.client_state;
+        let mut consensus_state = initial_state.consensus_state;
+        consensus_state.timestamp = u64::MAX;
+        let slot = consensus_state.slot;
+
+        instantiate(
+            deps.as_mut(),
+            mock_env(),
+            info,
+            crate::msg::InstantiateMsg {
+                client_state: serde_json::to_vec(&client_state).unwrap().into(),
+                consensus_state: serde_json::to_vec(&consensus_state).unwrap().into(),
+                checksum: b"checksum".into(),
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            timestamp_at_height(
+                deps.as_ref(),
+                TimestampAtHeightMsg {
+                    height: Height {
+                        revision_number: 0,
+                        revision_height: slot,
+                    },
+                },
+            ),
+            Err(crate::ContractError::TimestampOverflow)
+        ));
+    }
+
+    #[test]
     fn test_status() {
         let mut deps = mk_deps();
         let creator = deps.api.addr_make("creator");
         let info = message_info(&creator, &coins(1, "uatom"));
 
         let fixture: StepsFixture =
-            fixtures::load("Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack");
+            fixtures::load("Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack");
 
         let initial_state: InitialState = fixture.get_data_at_step(0);
 

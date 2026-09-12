@@ -633,6 +633,9 @@ else; an unknown key fails `instantiate` on the Rust side. `profile_version` mus
 the wasm artifact (`op_attestor_v1`, `base_attestor_v1`, `arbitrum_attestor_v1`), and
 `l2_header_fork` must match the chain's execution-header layout: `prague` for OP and
 Base, `london` for Arbitrum Nitro, which produces none of the post-London header fields.
+`head_kind` remains outside the 164-byte signed statement, so modules using different finality
+tiers must use different `attestors.public_keys`/KMS keys. The relayer refuses to load one config
+that reuses the same attestor-set hash across two `head_kind` values.
 `packages/l2-op-stack/config/op-sepolia.json`,
 `packages/l2-op-stack/config/base-sepolia.json` and
 `packages/l2-arbitrum/config/arbitrum-sepolia.json` are working public-network
@@ -796,6 +799,8 @@ proves half the system.
 | Optimizer fails: `rustc 1.86.0 is not supported ... requires rustc 1.90` | A dependency raised its MSRV above the optimizer image's Rust. Pin the dependency down (e.g. `cargo update -p ruint --precise 1.17.0`) or bump the optimizer image. |
 | `MsgCreateClient`: `status Unknown: client state is not active` | 08-wasm Stargate allowlist is missing `ClientStatus` — see [docs/L2_CLIENTS.md](L2_CLIENTS.md#host-requirements-and-verification). |
 | L2 client update panics the tx: `returning attributes from a contract is not allowed` | The deployed wasm predates the fix that made the client return data only. Rebuild through `cosmwasm/optimizer` and gov-store it. |
+| L2 client update fails: `unsigned L2 headers are unsupported` | The producer is stale or misconfigured: the authenticated client requires the relayer to collect the configured threshold of indexed attestor signatures before submitting any router proof. Confirm the relayer and wasm are from the same stack and that `attestor_endpoints`, indices and key set match the fresh authenticated client; see [docs/L2_CLIENTS.md](L2_CLIENTS.md#signed-update-contract). |
+| Relayer startup fails with `reuse attestor set ... across different head_kind values` | Two finality tiers share one key set. Provision separate attestor/KMS keys for each tier and update `attestors` plus endpoint indices; finality is deliberately outside the signed 164-byte statement. |
 | `updateApplicationState` reverts, ~82k gas, no revert string | The relayer's signer lacks the ICS26Router relayer role on the L2. `cast run <tx>` shows `canCall(...) → false`; funding the address does not help. |
 | Send fails: `timeout exceeds the maximum expected value` | Sent without `--absolute-timeouts`, so the CLI writes `timeout_timestamp` in nanoseconds while IBC v2 reads seconds. |
 | ETH client stops advancing: `404 NOT_FOUND: Sync committee for period N not found` | The beacon does not serve a `light_client/bootstrap` for that period. The relayer takes the committee from the preceding period's update instead, so this should only appear if that update is also unavailable — check the endpoint serves `/eth/v1/beacon/light_client/updates`. |

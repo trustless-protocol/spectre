@@ -10,6 +10,12 @@ pub enum Error {
     ClientStateMissing,
     #[error("consensus state is missing at height {0}")]
     ConsensusStateMissing(u64),
+    #[error("client envelope height does not match inner client state")]
+    ClientStateHeightMismatch,
+    #[error("consensus state at host height {expected} contains L2 height {found}")]
+    ConsensusStateHeightMismatch { expected: u64, found: u64 },
+    #[error("host protobuf envelope has an unexpected type URL")]
+    InvalidHostEnvelopeType,
     #[error("invalid revision number {0}; only revision zero is supported")]
     InvalidRevision(u64),
     #[error("invalid zero L2 height")]
@@ -36,6 +42,28 @@ pub enum Error {
     },
     #[error("profile version is not supported by this artifact")]
     InvalidProfileVersion,
+    #[error("legacy L2 client state is unsupported; create a fresh authenticated client")]
+    UnsupportedLegacyClientState,
+    #[error("invalid attestor set")]
+    InvalidAttestorSet,
+    #[error("attestor set exceeds maximum of 32")]
+    TooManyAttestors,
+    #[error("invalid attestor threshold")]
+    InvalidAttestorThreshold,
+    #[error("invalid attestor public key length")]
+    InvalidAttestorPublicKeyLength,
+    #[error("invalid attestor signature count")]
+    InvalidAttestorSignatureCount,
+    #[error("invalid attestor index")]
+    InvalidAttestorIndex,
+    #[error("duplicate or unsorted attestor signature index")]
+    DuplicateOrUnsortedSignatureIndex,
+    #[error("invalid attestor signature length")]
+    InvalidAttestorSignatureLength,
+    #[error("attestor signature verification failed")]
+    AttestorSignatureVerificationFailed,
+    #[error("unsigned L2 headers are unsupported")]
+    UnsupportedUnsignedHeader,
     #[error("L2 parent hash does not extend the trusted chain")]
     ParentHashMismatch,
     #[error("client is frozen at height {0}")]

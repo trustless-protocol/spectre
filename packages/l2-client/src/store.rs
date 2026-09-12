@@ -7,7 +7,7 @@ use ibc_proto::{
         ClientState as WasmClientState, ConsensusState as WasmConsensusState,
     },
 };
-use prost::Message;
+use prost::{Message, Name};
 
 use crate::error::Error;
 
@@ -28,6 +28,9 @@ pub fn get_wasm_client_state(storage: &dyn Storage) -> Result<WasmClientState, E
         .get(HOST_CLIENT_STATE_KEY.as_bytes())
         .ok_or(Error::ClientStateMissing)?;
     let envelope = Any::decode(bytes.as_slice())?;
+    if envelope.type_url != WasmClientState::type_url() {
+        return Err(Error::InvalidHostEnvelopeType);
+    }
     WasmClientState::decode(envelope.value.as_slice()).map_err(Into::into)
 }
 
@@ -53,6 +56,9 @@ pub fn get_wasm_consensus_state(
         .get(consensus_db_key(height).as_bytes())
         .ok_or(Error::ConsensusStateMissing(height))?;
     let envelope = Any::decode(bytes.as_slice())?;
+    if envelope.type_url != WasmConsensusState::type_url() {
+        return Err(Error::InvalidHostEnvelopeType);
+    }
     WasmConsensusState::decode(envelope.value.as_slice()).map_err(Into::into)
 }
 
@@ -65,6 +71,9 @@ pub fn may_get_wasm_consensus_state(
         return Ok(None);
     };
     let envelope = Any::decode(bytes.as_slice())?;
+    if envelope.type_url != WasmConsensusState::type_url() {
+        return Err(Error::InvalidHostEnvelopeType);
+    }
     Ok(Some(WasmConsensusState::decode(envelope.value.as_slice())?))
 }
 

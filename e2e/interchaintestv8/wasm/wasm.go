@@ -26,17 +26,38 @@ func GetLocalWasmEthLightClient() (*os.File, error) {
 
 // GetLocalWasmArbitrumClient opens the locally optimized Arbitrum client artifact.
 func GetLocalWasmArbitrumClient() (*os.File, error) {
-	return os.Open(basePath + wasmArbitrumClientFileName)
+	return openLocalL2Artifact(wasmArbitrumClientFileName, "cw_ics08_wasm_arbitrum.wasm")
 }
 
 // GetLocalWasmBaseClient opens the locally optimized Base client artifact.
 func GetLocalWasmBaseClient() (*os.File, error) {
-	return os.Open(basePath + wasmBaseClientFileName)
+	return openLocalL2Artifact(wasmBaseClientFileName, "cw_ics08_wasm_base.wasm")
 }
 
 // GetLocalWasmOpClient opens the locally optimized OP client artifact.
 func GetLocalWasmOpClient() (*os.File, error) {
-	return os.Open(basePath + wasmOpClientFileName)
+	return openLocalL2Artifact(wasmOpClientFileName, "cw_ics08_wasm_op.wasm")
+}
+
+// openLocalL2Artifact keeps compatibility with an explicitly generated gzip but
+// otherwise uses the exact optimized artifact produced by the release validator.
+// This removes stale byte blobs from deployment helpers while retaining stable
+// artifact filenames.
+func openLocalL2Artifact(gzipName, artifactName string) (*os.File, error) {
+	candidates := []string{
+		basePath + gzipName,
+		"artifacts/" + artifactName,
+		"../../../artifacts/" + artifactName,
+	}
+	var lastErr error
+	for _, candidate := range candidates {
+		file, err := os.Open(candidate)
+		if err == nil {
+			return file, nil
+		}
+		lastErr = err
+	}
+	return nil, fmt.Errorf("open optimized %s from %v: %w", artifactName, candidates, lastErr)
 }
 
 func DownloadWasmEthLightClientRelease(release Release) (*os.File, error) {

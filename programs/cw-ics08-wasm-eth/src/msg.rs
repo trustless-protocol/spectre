@@ -18,9 +18,9 @@ pub struct InstantiateMsg {
     pub checksum: Binary,
 }
 
-/// The unused message to execute the contract
+/// The unsupported message accepted by the retained execute export.
 #[cw_serde]
-pub enum ExecuteMsg {}
+pub struct ExecuteMsg {}
 
 /// The sudo messages called by `ibc-go`
 #[cw_serde]
@@ -84,9 +84,9 @@ pub enum Migration {
 pub struct VerifyMembershipMsg {
     /// The proof height
     pub height: Height,
-    /// The delay time period (unused)
+    /// The delay time period; non-zero values fail closed.
     pub delay_time_period: u64,
-    /// The delay block period (unused)
+    /// The delay block period; non-zero values fail closed.
     pub delay_block_period: u64,
     /// The proof bytes
     pub proof: Binary,
@@ -101,9 +101,9 @@ pub struct VerifyMembershipMsg {
 pub struct VerifyNonMembershipMsg {
     /// The proof height
     pub height: Height,
-    /// The delay time period (unused)
+    /// The delay time period; non-zero values fail closed.
     pub delay_time_period: u64,
-    /// The delay block period (unused)
+    /// The delay block period; non-zero values fail closed.
     pub delay_block_period: u64,
     /// The proof bytes
     pub proof: Binary,

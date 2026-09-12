@@ -1,4 +1,4 @@
-//! Data-only OP Stack profiles for the shared attestor-trusted L2 client.
+//! Data-only OP Stack profiles for the shared authenticated L2 client.
 
 #![deny(clippy::nursery, clippy::pedantic, warnings, unused_crate_dependencies)]
 
@@ -50,7 +50,7 @@ mod tests {
     const BASE_PROFILE_BYTES: &[u8] = b"{\"common\":{\"l2_chain_id\":84532,\"l2_router\":\"0x645280885749dc97ea461de280eb3273c91d36df\",\"commitment_slot\":\"0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600\",\"profile_version\":\"base_attestor_v1\",\"l2_header_fork\":\"prague\"}}\n";
 
     #[test]
-    fn op_profile_preserves_legacy_payload_bytes() {
+    fn op_profile_preserves_current_payload_bytes() {
         let bytes = include_bytes!("../config/op-sepolia.json");
         assert_eq!(bytes, OP_PROFILE_BYTES);
         let profile: OpProfile = serde_json::from_slice(bytes).unwrap();
@@ -58,7 +58,7 @@ mod tests {
     }
 
     #[test]
-    fn base_profile_preserves_legacy_payload_bytes() {
+    fn base_profile_preserves_current_payload_bytes() {
         let bytes = include_bytes!("../config/base-sepolia.json");
         assert_eq!(bytes, BASE_PROFILE_BYTES);
         let profile: BaseProfile = serde_json::from_slice(bytes).unwrap();

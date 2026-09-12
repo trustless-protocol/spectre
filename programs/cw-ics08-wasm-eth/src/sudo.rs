@@ -8,14 +8,15 @@ use ibc_proto::ibc::{
 };
 
 use crate::{
+    contract::validate_height,
     custom_query::EthereumCustomQuery,
     msg::{
         Height, UpdateStateMsg, UpdateStateOnMisbehaviourMsg, UpdateStateResult,
         VerifyMembershipMsg, VerifyNonMembershipMsg,
     },
     state::{
-        get_eth_client_state, get_eth_consensus_state, get_wasm_client_state, store_client_state,
-        store_consensus_state,
+        consensus_db_key, encode_client_state, encode_consensus_state, get_eth_client_state,
+        get_eth_consensus_state, get_wasm_client_state, store_client_state, HOST_CLIENT_STATE_KEY,
     },
     ContractError,
 };
@@ -29,7 +30,11 @@ pub fn verify_membership(
     deps: Deps<EthereumCustomQuery>,
     verify_membership_msg: VerifyMembershipMsg,
 ) -> Result<Binary, ContractError> {
+    validate_height(&verify_membership_msg.height)?;
     let eth_client_state = get_eth_client_state(deps.storage)?;
+    if eth_client_state.is_frozen {
+        return Err(ContractError::Frozen);
+    }
     let eth_consensus_state =
         get_eth_consensus_state(deps.storage, verify_membership_msg.height.revision_height)?;
 
@@ -59,7 +64,11 @@ pub fn verify_non_membership(
     deps: Deps<EthereumCustomQuery>,
     verify_non_membership_msg: VerifyNonMembershipMsg,
 ) -> Result<Binary, ContractError> {
+    validate_height(&verify_non_membership_msg.height)?;
     let eth_client_state = get_eth_client_state(deps.storage)?;
+    if eth_client_state.is_frozen {
+        return Err(ContractError::Frozen);
+    }
     let eth_consensus_state = get_eth_consensus_state(
         deps.storage,
         verify_non_membership_msg.height.revision_height,
@@ -93,11 +102,13 @@ pub fn update_state(
     deps: DepsMut<EthereumCustomQuery>,
     update_state_msg: UpdateStateMsg,
 ) -> Result<Binary, ContractError> {
+    let eth_client_state = get_eth_client_state(deps.storage)?;
+    if eth_client_state.is_frozen {
+        return Err(ContractError::Frozen);
+    }
     let header_bz: Vec<u8> = update_state_msg.client_message.into();
     let header = serde_json::from_slice(&header_bz)
         .map_err(ContractError::DeserializeClientMessageFailed)?;
-
-    let eth_client_state = get_eth_client_state(deps.storage)?;
     let eth_consensus_state = get_eth_consensus_state(deps.storage, eth_client_state.latest_slot)?;
 
     let (updated_slot, updated_consensus_state, updated_client_state) =
@@ -109,9 +120,9 @@ pub fn update_state(
     let wasm_consensus_state = WasmConsensusState {
         data: consensus_state_bz,
     };
-    store_consensus_state(deps.storage, &wasm_consensus_state, updated_slot)?;
+    let encoded_consensus_state = encode_consensus_state(&wasm_consensus_state)?;
 
-    if let Some(client_state) = updated_client_state {
+    let encoded_client_state = if let Some(client_state) = updated_client_state {
         let client_state_bz: Vec<u8> =
             serde_json::to_vec(&client_state).map_err(ContractError::SerializeClientStateFailed)?;
 
@@ -121,15 +132,28 @@ pub fn update_state(
             revision_number: 0,
             revision_height: updated_slot,
         });
-        store_client_state(deps.storage, &wasm_client_state)?;
-    }
+        Some(encode_client_state(&wasm_client_state)?)
+    } else {
+        None
+    };
 
-    Ok(to_json_binary(&UpdateStateResult {
+    let response = to_json_binary(&UpdateStateResult {
         heights: vec![Height {
             revision_number: 0,
             revision_height: updated_slot,
         }],
-    })?)
+    })?;
+
+    deps.storage.set(
+        consensus_db_key(updated_slot).as_bytes(),
+        &encoded_consensus_state,
+    );
+    if let Some(client_state) = encoded_client_state {
+        deps.storage
+            .set(HOST_CLIENT_STATE_KEY.as_bytes(), &client_state);
+    }
+
+    Ok(response)
 }
 
 /// Update the state of the light client on misbehaviour
@@ -141,6 +165,9 @@ pub fn misbehaviour(
     _msg: UpdateStateOnMisbehaviourMsg,
 ) -> Result<Binary, ContractError> {
     let mut eth_client_state = get_eth_client_state(deps.storage)?;
+    if eth_client_state.is_frozen {
+        return Err(ContractError::Frozen);
+    }
     eth_client_state.is_frozen = true;
 
     let client_state_bz: Vec<u8> =
@@ -156,7 +183,14 @@ pub fn misbehaviour(
 
 #[cfg(test)]
 mod tests {
-    use crate::{contract::instantiate, test::helpers::mk_deps};
+    use crate::{
+        contract::instantiate,
+        msg::{
+            Height, MerklePath, UpdateStateMsg, UpdateStateOnMisbehaviourMsg, VerifyMembershipMsg,
+        },
+        test::helpers::mk_deps,
+        ContractError,
+    };
     use cosmwasm_std::{
         coins, from_json,
         testing::{message_info, mock_env},
@@ -171,7 +205,7 @@ mod tests {
         let info = message_info(&creator, &coins(1, "uatom"));
 
         let fixture: StepsFixture =
-            fixtures::load("Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack");
+            fixtures::load("Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack");
 
         let initial_state: InitialState = fixture.get_data_at_step(0);
 
@@ -201,5 +235,41 @@ mod tests {
         let res = crate::query::status(deps.as_ref()).unwrap();
         let status_result: crate::msg::StatusResult = from_json(res).unwrap();
         assert_eq!("Frozen", status_result.status);
+
+        assert!(matches!(
+            crate::sudo::misbehaviour(
+                deps.as_mut(),
+                UpdateStateOnMisbehaviourMsg {
+                    client_message: Binary::default(),
+                },
+            ),
+            Err(ContractError::Frozen)
+        ));
+        assert!(matches!(
+            crate::sudo::update_state(
+                deps.as_mut(),
+                UpdateStateMsg {
+                    client_message: Binary::from(b"not-json"),
+                },
+            ),
+            Err(ContractError::Frozen)
+        ));
+        assert!(matches!(
+            crate::sudo::verify_membership(
+                deps.as_ref(),
+                VerifyMembershipMsg {
+                    height: Height {
+                        revision_number: 0,
+                        revision_height: consensus_state.slot,
+                    },
+                    delay_time_period: 0,
+                    delay_block_period: 0,
+                    proof: Binary::from(b"not-json"),
+                    merkle_path: MerklePath { key_path: vec![] },
+                    value: Binary::default(),
+                },
+            ),
+            Err(ContractError::Frozen)
+        ));
     }
 }

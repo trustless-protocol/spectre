@@ -40,7 +40,7 @@
             "l2_chain_id": 84538453,
             "l2_router": "0xc4c2c590b1892c896d2655ae680bc1c79dd544f0",
             "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
-            "profile_version": "base_attestor_v2",
+            "profile_version": "base_attestor_v1",
             "l2_header_fork": "prague",
             "attestor_public_key": "0x5d9fbbeaa3960a8febd75dd7e7aa405edd218b7019a58f4b538e27178bc23268",
             "attestation_head": "safe"

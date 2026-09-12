@@ -10,6 +10,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{client_state::ClientState, consensus_state::ConsensusState, error::EthereumIBCError};
 
+const MAX_PROOF_NODES: usize = 64;
+const MAX_PROOF_NODE_BYTES: usize = 32 * 1024;
+
 /// The membership proof for the (non-)membership of a key in the execution state root.
 #[derive(Serialize, Deserialize, PartialEq, Eq, Clone, Debug, Default)]
 pub struct MembershipProof {
@@ -32,6 +35,7 @@ pub fn verify_membership(
 ) -> Result<(), EthereumIBCError> {
     let membership_proof: MembershipProof = serde_json::from_slice(proof.as_slice())
         .map_err(|_| EthereumIBCError::StorageProofDecode)?;
+    validate_proof_bounds(&membership_proof)?;
 
     // Verify the account proof first
     verify_account_storage_root(
@@ -81,6 +85,7 @@ pub fn verify_non_membership(
 ) -> Result<(), EthereumIBCError> {
     let membership_proof: MembershipProof = serde_json::from_slice(proof.as_slice())
         .map_err(|_| EthereumIBCError::StorageProofDecode)?;
+    validate_proof_bounds(&membership_proof)?;
 
     // Verify the account proof first
     verify_account_storage_root(
@@ -114,6 +119,28 @@ pub fn verify_non_membership(
         membership_proof.storage_proof.proof.iter(),
     )
     .map_err(|err| EthereumIBCError::VerifyStorageProof(err.to_string()))
+}
+
+fn validate_proof_bounds(proof: &MembershipProof) -> Result<(), EthereumIBCError> {
+    for nodes in [&proof.account_proof.proof, &proof.storage_proof.proof] {
+        if nodes.len() > MAX_PROOF_NODES {
+            return Err(EthereumIBCError::ProofNodeCount {
+                maximum: MAX_PROOF_NODES,
+                found: nodes.len(),
+            });
+        }
+        if let Some(found) = nodes
+            .iter()
+            .map(|node| node.len())
+            .find(|length| *length > MAX_PROOF_NODE_BYTES)
+        {
+            return Err(EthereumIBCError::ProofNodeSize {
+                maximum: MAX_PROOF_NODE_BYTES,
+                found,
+            });
+        }
+    }
+    Ok(())
 }
 
 fn check_commitment_path(
@@ -161,6 +188,8 @@ mod test {
         test_utils::fixtures::{self, get_packet_paths, InitialState, RelayerMessages},
         update::update_consensus_state,
     };
+    use alloy_primitives::{Bytes, B256};
+    use ethereum_types::consensus::sync_committee::SummarizedSyncCommittee;
 
     use ibc_proto_eureka::ibc::lightclients::wasm::v1::ClientMessage;
 
@@ -171,6 +200,50 @@ mod test {
     use super::{
         verify_account_storage_root, verify_membership, verify_non_membership, MembershipProof,
     };
+
+    fn empty_consensus_state() -> crate::consensus_state::ConsensusState {
+        crate::consensus_state::ConsensusState {
+            slot: 1,
+            state_root: B256::ZERO,
+            timestamp: 0,
+            current_sync_committee: SummarizedSyncCommittee::default(),
+            next_sync_committee: None,
+        }
+    }
+
+    #[test]
+    fn rejects_oversized_evm_proofs_before_trie_verification() {
+        let mut too_many = MembershipProof::default();
+        too_many.account_proof.proof = vec![Bytes::new(); super::MAX_PROOF_NODES + 1];
+        assert!(matches!(
+            verify_membership(
+                empty_consensus_state(),
+                crate::client_state::ClientState::default(),
+                serde_json::to_vec(&too_many).unwrap(),
+                vec![],
+                vec![],
+            ),
+            Err(crate::error::EthereumIBCError::ProofNodeCount {
+                maximum: super::MAX_PROOF_NODES,
+                found,
+            }) if found == super::MAX_PROOF_NODES + 1
+        ));
+
+        let mut too_large = MembershipProof::default();
+        too_large.storage_proof.proof = vec![Bytes::from(vec![0; super::MAX_PROOF_NODE_BYTES + 1])];
+        assert!(matches!(
+            verify_non_membership(
+                empty_consensus_state(),
+                crate::client_state::ClientState::default(),
+                serde_json::to_vec(&too_large).unwrap(),
+                vec![],
+            ),
+            Err(crate::error::EthereumIBCError::ProofNodeSize {
+                maximum: super::MAX_PROOF_NODE_BYTES,
+                found,
+            }) if found == super::MAX_PROOF_NODE_BYTES + 1
+        ));
+    }
 
     #[test]
     fn account_leaf_matches_legacy_storage_root_verification() {

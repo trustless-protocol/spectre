@@ -19,6 +19,12 @@ pub enum EthereumIBCError {
     #[error("unable to decode storage proof")]
     StorageProofDecode,
 
+    #[error("proof exceeds maximum node count of {maximum}: found {found}")]
+    ProofNodeCount { maximum: usize, found: usize },
+
+    #[error("proof node exceeds maximum byte length of {maximum}: found {found}")]
+    ProofNodeSize { maximum: usize, found: usize },
+
     #[error("invalid commitment key, expected ({0}) but found ({1})")]
     InvalidCommitmentKey(String, String),
 
