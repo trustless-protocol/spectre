@@ -129,7 +129,7 @@ Load-bearing details, each one cost a debugging session:
         --format '{{range .Config.Cmd}}{{println .}}{{end}}' | grep -o '0x[0-9a-f]\{64\}'))
   cast send $P --value 200ether --private-key <l1-funded-key> --rpc-url $L1
   ```
-- **L2 startup recovery is bounded unless configured otherwise.** `SubscribeL2` has no persisted cursor and restarts at `head - L2_STARTUP_LOOKBACK_BLOCKS` (`chain/l2rollup/subscribe.go`). It defaults to 256 blocks (~8 minutes on OP); set `L2_STARTUP_LOOKBACK_BLOCKS` high enough to cover the expected attestation wait and downtime before restarting. `0` disables startup recovery.
+- **L2 startup recovery is bounded unless configured otherwise.** `SubscribeL2` has no persisted cursor and restarts one startup window below the head (`chain/l2rollup/subscribe.go`). The window is a duration (default 8m32s) converted to blocks at the chain's measured block time; set `L2_STARTUP_LOOKBACK` (a Go duration, e.g. `90m`) high enough to cover the expected attestation wait and downtime before restarting.
 
 - **The Ethereum client must be able to cross a sync-committee period.** Periods roll every 8192 slots. The relayer takes the next period's committee from the preceding period's light-client update, so the beacon must serve `/eth/v1/beacon/light_client/updates` — check before a long run:
   ```bash
@@ -153,7 +153,7 @@ Verify **both** directions: a forward-only success proves half the system. The f
 | `packet at height N not yet covered by the destination client (trusts M)` | Normal wait — the client landed on a game committing below the packet; the next game covers it |
 | `404 NOT_FOUND: Sync committee for period N not found` | The beacon serves no bootstrap for that period; confirm it serves `light_client/updates` |
 | `unknown field account_proof, expected one of key, value, proof` | An L2 membership proof built in the Ethereum L1 shape — see `docs/L2_CLIENTS.md` |
-| A relay direction goes silent — no error, no retry, other directions fine | An RPC call is hung. `kill -QUIT <relayer-pid>` dumps every goroutine to the log; look for one blocked in `net/http.(*persistConn).roundTrip`. Note the dump kills the process; configure `L2_STARTUP_LOOKBACK_BLOCKS` large enough before restarting so in-flight L2 events remain in the recovery window (default: 256 blocks). |
+| A relay direction goes silent — no error, no retry, other directions fine | An RPC call is hung. `kill -QUIT <relayer-pid>` dumps every goroutine to the log; look for one blocked in `net/http.(*persistConn).roundTrip`. Note the dump kills the process; set `L2_STARTUP_LOOKBACK` (a duration) large enough before restarting so in-flight L2 events remain in the recovery window (default: 8m32s of blocks). |
 | `IBCPacketReceiptMismatch` and the packet is dropped as permanent | The destination already has a receipt at that sequence — the Cosmos client was re-created while the L2 router client id was reused |
 | `forge script`: `insufficient funds ... have 0` | Deployer unfunded on the L2 — use an L2-funded account |
 | DeliverTx `missing field storage_root` | Stale 6-field 08-wasm build — store a current 5-field build (step 3) |

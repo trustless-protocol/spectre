@@ -48,13 +48,11 @@ const EVENT_TX_HEIGHT_FIELD = "tx.height"
 const ethStartupRecoveryLookbackEnv = "ETH_STARTUP_LOOKBACK_BLOCKS"
 const defaultEthStartupRecoveryLookbackBlocks uint64 = 256
 const ethSubscriptionReconnectDelay = 2 * time.Second
-const ethGapRecoveryInterval = 30 * time.Second
 const ethSeenEventRetentionBlocks uint64 = 2_000
 
 const cosmosStartupRecoveryLookbackEnv = "COSMOS_STARTUP_LOOKBACK_BLOCKS"
 const defaultCosmosStartupRecoveryLookbackBlocks uint64 = 256
 const cosmosSubscriptionReconnectDelay = 2 * time.Second
-const cosmosGapRecoveryInterval = 30 * time.Second
 const subscriptionCleanupTimeout = 5 * time.Second
 const subscriberRPCTimeout = 15 * time.Second
 const cosmosRecoveryChunkEnv = "COSMOS_RECOVERY_CHUNK_HEIGHTS"

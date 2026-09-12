@@ -201,7 +201,14 @@ type Destination interface {
 	// expire, so the generic refresh routine can schedule updates ahead of it. A
 	// zero time means "no expiry" (e.g. a permissioned client with no trusting
 	// period).
-	ClientExpiresAt(ctx context.Context, clientID string) (time.Time, error)
+	//
+	// It also returns the trusting period that expiry was derived from. The
+	// caller needs it to size its safety margin: a margin fixed in absolute time
+	// is either wasteful against a period measured in days or unreachable against
+	// one measured in minutes, and every implementation already has the number --
+	// it computes the expiry from it. A zero period means "unknown", and the
+	// caller falls back to its own default.
+	ClientExpiresAt(ctx context.Context, clientID string) (expiresAt time.Time, trustingPeriod time.Duration, err error)
 }
 
 // FoldingDestination is an optional destination capability for submitting a

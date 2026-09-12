@@ -6,7 +6,6 @@ import (
 	"log"
 	"math/big"
 	"os"
-	"strconv"
 	"time"
 
 	"relayer/chain"
@@ -29,10 +28,12 @@ import (
 // hiccup re-scans rather than skips (mistake #11).
 //
 // The cursor is NOT persisted across runs — it lives only in Subscribe's stack frame.
-// A restart resumes at `head - L2_STARTUP_LOOKBACK_BLOCKS` (see below), so anything older than
-// that window is never re-scanned, and a packet whose acknowledgement fell outside it
-// stays pending forever with nothing in the log to say why. A value of zero starts at
-// the head and disables startup recovery.
+// A restart resumes one startup window below the head (see below), so anything older
+// than that window is never re-scanned, and a packet whose acknowledgement fell outside
+// it stays pending forever with nothing in the log to say why. The window is a
+// DURATION converted to blocks at the chain's measured block time, so a fast chain gets
+// more blocks for the same amount of recovery time rather than less time for the same
+// number of blocks.
 //
 // LIMITATION (unsafe head-kind): the cursor only moves FORWARD — it never rewinds on an
 // L2 reorg. With head_kind=unsafe a scanned block can be reorged out and replaced; an
@@ -44,38 +45,173 @@ import (
 var l2SubscribeInterval = 4 * time.Second
 
 const (
-	// l2StartupLookbackEnv optionally extends the recovery window below the head at
-	// startup.  It matters when an operator restarts after the default window: an
-	// unpersisted cursor cannot otherwise discover an older, still-unrelayed packet.
-	l2StartupLookbackEnv = "L2_STARTUP_LOOKBACK_BLOCKS"
+	// l2StartupLookbackEnv optionally widens the recovery window below the head at
+	// startup. It takes a DURATION ("15m", "2h"), not a block count: the window's
+	// job is measured in time on every chain, and the number of blocks that spans
+	// is a property of the chain, not of the operator's intent.
+	l2StartupLookbackEnv = "L2_STARTUP_LOOKBACK"
 
-	// defaultL2StartupLookback rescans a window below the head at startup so packets emitted
-	// while the relayer was down are picked up. Re-emitting an already-relayed packet
-	// is safe — Cosmos rejects the duplicate recv and the module drops it permanently.
+	// l2StartupLookbackBlocksEnv is the key this one replaced. It is still read --
+	// only to refuse it. See RejectRetiredLookbackEnv.
+	l2StartupLookbackBlocksEnv = "L2_STARTUP_LOOKBACK_BLOCKS"
+
+	// blockTimeSampleTimeout bounds ONE historical-header read while sampling the
+	// chain's block time, matching the deadline Source.head applies to its own.
+	blockTimeSampleTimeout = 15 * time.Second
+
+	// defaultStartupWindow is the baseline rescan window, and it is deliberately
+	// the window this code already had -- 256 blocks at OP's ~2s block time. What
+	// changes is that every chain now gets the same amount of TIME instead of the
+	// same number of blocks.
 	//
-	// NOTE: this fixed 256-block (~8 min on OP) window bounds crash-recovery. For a
-	// finalized frontier that can lag hours behind the L2 head, a send that finalizes
-	// only after a longer downtime would fall outside the window; size it against the
-	// worst-case attestor/finality lag for the configured head-kind, or add the
-	// receipt-checked recovery the ETH mirror has, before relying on it in production.
-	defaultL2StartupLookback = uint64(256)
+	// That distinction is the whole point of the constant. 256 blocks is ~8.5
+	// minutes on OP and ~64 SECONDS on Arbitrum Nitro, so the chain that produces
+	// blocks fastest -- and therefore emits packets fastest -- had the shortest
+	// crash-recovery window. Nothing about a restart is faster on Arbitrum.
+	defaultStartupWindow = 512 * time.Second
+
+	// blockTimeSamples is how many recent blocks the block-time measurement spans.
+	// The doc's pseudocode says 20; it is wide enough to average out one slow block
+	// and narrow enough to stay on any archive-free RPC.
+	blockTimeSamples = uint64(20)
+
+	// fallbackBlockTime is used only when the measurement itself fails. It is
+	// deliberately the FASTEST block time in the fleet (Arbitrum Nitro), because
+	// under-estimating the block time over-estimates the block count, and a window
+	// that is too wide only re-offers packets the destination already rejects as
+	// duplicates. Too narrow loses them.
+	fallbackBlockTime = 250 * time.Millisecond
+
+	// maxMeasuredBlockTime caps what the two-sample average is allowed to claim.
+	//
+	// Two timestamps cannot tell a slow chain from a fast chain that was idle:
+	// if Nitro sits idle for an hour and then bursts, the newest 20 blocks span
+	// that hour and the average reads ~180s per block. The 512s window then
+	// sizes at TWO blocks, and a packet emitted ten blocks -- and seconds --
+	// before the restart falls outside the startup scan. Nothing persists this
+	// cursor (see line 29), so that packet is never rediscovered. Found in
+	// review.
+	//
+	// The cap is not a guess at any chain's block time; it is the point past
+	// which a measurement stops being usable. Erring low is the safe direction
+	// and the same one fallbackBlockTime already takes: under-estimating the
+	// block time over-estimates the block count, and a window that is too large
+	// is merely slower to scan. 15s is slower than every L2 in the fleet and
+	// slower than Ethereum L1, so a real chain is never capped.
+	maxMeasuredBlockTime = 15 * time.Second
 )
 
-func l2StartupLookbackBlocksFromEnv(raw string) uint64 {
-	if raw == "" {
-		return defaultL2StartupLookback
+// startupWindow is the time span a restart rescans below the head. It is a
+// DOWNTIME allowance and nothing else -- head_kind deliberately does not enter it.
+//
+// That is worth stating because the opposite is the intuitive answer, and it is
+// wrong. The scan is anchored at head(head_kind): Source.head reads
+// SafeBlockNumber or FinalizedBlockNumber, not the chain tip. Both ends of
+// "head minus window" therefore live in the same delayed view, so the finality
+// lag is already absorbed. Across an outage of D the finalized head advances by
+// D/blockTime blocks, which is exactly what a window of D covers. A packet still
+// above the finalized head at restart has not entered that view at all, and the
+// running loop scans it when the head reaches it.
+//
+// Adding a per-head-kind lag on top would make every finalized run pay for one
+// case that is not a crash: an operator CHANGING head_kind between runs. Going
+// from finalized to unsafe moves the anchor forward by the finality lag, leaving
+// [old finalized head, new unsafe head - window] unscanned. That is a real gap
+// and it is not fixed here -- widening every window forever is the wrong price
+// for it, and closing it properly needs the head_kind of the previous run, which
+// nothing persists yet (see the durable cursor work in #308).
+func startupWindow(override time.Duration) time.Duration {
+	if override > 0 {
+		return override
 	}
-
-	lookback, err := strconv.ParseUint(raw, 10, 64)
-	if err != nil {
-		log.Printf("[recovery] ignoring invalid %s=%q; using %d", l2StartupLookbackEnv, raw, defaultL2StartupLookback)
-		return defaultL2StartupLookback
-	}
-	return lookback
+	return defaultStartupWindow
 }
 
-func l2StartupLookbackBlocks() uint64 {
-	return l2StartupLookbackBlocksFromEnv(os.Getenv(l2StartupLookbackEnv))
+// lookbackBlocks converts a time window into a block count at the given block
+// time, rounding UP so the window is never short. A non-positive block time
+// cannot be inverted, so it yields no lookback rather than a division by zero.
+func lookbackBlocks(window, blockTime time.Duration) uint64 {
+	if window <= 0 || blockTime <= 0 {
+		return 0
+	}
+	blocks := (window + blockTime - 1) / blockTime
+	return uint64(blocks)
+}
+
+// startupWindowFromEnv reads the operator override. An unparseable value is
+// ignored with a line rather than failing startup: the window is a recovery
+// nicety, and dying here would turn a typo into an outage.
+func startupWindowFromEnv(raw string) time.Duration {
+	if raw == "" {
+		return 0
+	}
+	window, err := time.ParseDuration(raw)
+	if err != nil || window < 0 {
+		log.Printf("[recovery] ignoring invalid %s=%q; using the default window", l2StartupLookbackEnv, raw)
+		return 0
+	}
+	return window
+}
+
+// measureBlockTime derives the chain's block time from the timestamps of two
+// headers blockTimeSamples apart.
+//
+// It is measured rather than configured because the alternative is asking an
+// operator to know it, and the number they would have to supply is exactly the
+// one the chain already reports. Sampling a span rather than adjacent blocks
+// averages out a single slow or empty block.
+func (s *Source) measureBlockTime(ctx context.Context, head uint64) (time.Duration, error) {
+	if head < blockTimeSamples {
+		return 0, fmt.Errorf("l2 source: head %d is below the %d-block sample span", head, blockTimeSamples)
+	}
+	// The same deadline Source.head puts on its own read, and for the same
+	// reason. These two calls run on the subscribe goroutine before the cursor is
+	// seeded, so an endpoint that accepts the connection and then stops answering
+	// blocks the L2 direction before it has scanned anything -- silently, because
+	// nothing has been logged yet. DialEthRPC's transport timeout bounds an http
+	// endpoint at DefaultRPCTimeout, but a ws:// one has no such bound, and two
+	// minutes of nothing at startup is already the wrong answer.
+	//
+	// A timeout is not fatal: it returns an error, and startupLookback's existing
+	// fallback sizes the window at fallbackBlockTime instead.
+	cctx, cancel := context.WithTimeout(ctx, blockTimeSampleTimeout)
+	defer cancel()
+	newer, err := s.eth.HeaderByNumber(cctx, new(big.Int).SetUint64(head))
+	if err != nil {
+		return 0, fmt.Errorf("l2 source: header at %d: %w", head, err)
+	}
+	older, err := s.eth.HeaderByNumber(cctx, new(big.Int).SetUint64(head-blockTimeSamples))
+	if err != nil {
+		return 0, fmt.Errorf("l2 source: header at %d: %w", head-blockTimeSamples, err)
+	}
+	if newer.Time <= older.Time {
+		return 0, fmt.Errorf("l2 source: block timestamps did not advance across %d blocks", blockTimeSamples)
+	}
+	span := time.Duration(newer.Time-older.Time) * time.Second
+	return span / time.Duration(blockTimeSamples), nil
+}
+
+// startupLookback resolves the block count to rescan below head for this source.
+// A measurement failure falls back to the fastest block time in the fleet rather
+// than to a block count, so the window stays a time window either way.
+func (s *Source) startupLookback(ctx context.Context, head uint64) uint64 {
+	window := startupWindow(startupWindowFromEnv(os.Getenv(l2StartupLookbackEnv)))
+	blockTime, err := s.measureBlockTime(ctx, head)
+	if err != nil {
+		log.Printf("[SubscribeL2] block time unmeasurable (%v); sizing the %s startup window at %s per block",
+			err, window, fallbackBlockTime)
+		blockTime = fallbackBlockTime
+	}
+	// An idle-inflated average is ACCEPTED by measureBlockTime -- it only
+	// rejects timestamps that did not advance -- so the cap, not the error path,
+	// is what keeps the window from collapsing.
+	if blockTime > maxMeasuredBlockTime {
+		log.Printf("[SubscribeL2] measured block time %s exceeds the %s cap (an idle span inflates a "+
+			"two-sample average); sizing the %s startup window at the cap instead",
+			blockTime, maxMeasuredBlockTime, window)
+		blockTime = maxMeasuredBlockTime
+	}
+	return lookbackBlocks(window, blockTime)
 }
 
 // Subscribe polls the L2 for ICS26Router packet events and drives handler in batches
@@ -106,7 +242,6 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 	// Owned by this goroutine for the life of the loop, so a span the provider
 	// refuses is narrowed once rather than on every tick.
 	span := relayerclient.LogSpan{Chunk: s.logScanChunk}
-	lookback := l2StartupLookbackBlocks()
 	for {
 		select {
 		case <-ctx.Done():
@@ -120,12 +255,16 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 			continue // do NOT advance the cursor on failure
 		}
 		if !seeded {
+			// Sized here, not before the loop: it needs a head and two headers, and
+			// a transient RPC error at startup must not be fatal (see the comment on
+			// the cursor above). Every path below leaves a usable window.
+			lookback := s.startupLookback(ctx, head)
 			if head > lookback {
 				from = head - lookback
 			}
 			seeded = true
-			log.Printf("[SubscribeL2] polling ICS26Router %s from block %d (client_id=%s)",
-				s.router.Hex(), from, s.l2ClientID)
+			log.Printf("[SubscribeL2] polling ICS26Router %s from block %d (%d block lookback, client_id=%s)",
+				s.router.Hex(), from, lookback, s.l2ClientID)
 		}
 
 		// Only the SCAN is gated on there being a new block range — the pending
@@ -468,4 +607,33 @@ func keepIndexed(events []chain.Event, indices []int) []chain.Event {
 		}
 	}
 	return kept
+}
+
+// RejectRetiredLookbackEnv fails startup when the retired L2_STARTUP_LOOKBACK_BLOCKS
+// is still set.
+//
+// The key was not just renamed, it changed UNITS: it used to name a block count
+// and now names a duration. So an old value cannot be honoured even in
+// principle -- "256" read as a duration is not 256 blocks, it is a parse error,
+// and "256s" would be a window the operator never asked for. Carrying it forward
+// would be guessing at intent.
+//
+// Refusing is the other half of the same argument. An environment variable that
+// used to size the crash-recovery window and now does nothing is exactly the
+// failure NFR 10 forbids: the relayer would start, run on the default 8m32s, and
+// the operator would learn about it only when a packet older than that window
+// was never re-scanned. There is nothing to deploy against yet, so this is a
+// removal that says so, not a deprecation window.
+func RejectRetiredLookbackEnv() error {
+	raw, set := os.LookupEnv(l2StartupLookbackBlocksEnv)
+	if !set {
+		return nil
+	}
+	return fmt.Errorf(
+		"%s=%q is no longer read: the startup recovery window is now a DURATION under %s "+
+			"(for example %s=%s), because the same block count is a different amount of time on "+
+			"every chain. Unset %s and set %s to the window you want",
+		l2StartupLookbackBlocksEnv, raw, l2StartupLookbackEnv,
+		l2StartupLookbackEnv, defaultStartupWindow,
+		l2StartupLookbackBlocksEnv, l2StartupLookbackEnv)
 }

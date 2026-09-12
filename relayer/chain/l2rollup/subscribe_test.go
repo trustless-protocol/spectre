@@ -1,12 +1,20 @@
 package l2rollup
 
 import (
+	"context"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
+	"time"
 
 	"relayer/chain"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
+
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 func TestKeepIndexed(t *testing.T) {
@@ -247,5 +255,190 @@ func TestSettledIdentitySurvivesASequenceReplay(t *testing.T) {
 	}
 	if got := dropSettled([]chain.Event{sameEvent}, settled); len(got) != 0 {
 		t.Fatalf("kept %+v; the settled packet's own identity must still match", got)
+	}
+}
+
+func TestLookbackBlocks(t *testing.T) {
+	t.Parallel()
+
+	window := 512 * time.Second
+	for _, tc := range []struct {
+		chain     string
+		blockTime time.Duration
+		want      uint64
+	}{
+		{chain: "OP Stack", blockTime: 2 * time.Second, want: 256},
+		{chain: "Base", blockTime: 2 * time.Second, want: 256},
+		{chain: "Arbitrum Nitro", blockTime: 250 * time.Millisecond, want: 2048},
+		{chain: "Ethereum L1", blockTime: 12 * time.Second, want: 43},
+	} {
+		t.Run(tc.chain, func(t *testing.T) {
+			t.Parallel()
+			if got := lookbackBlocks(window, tc.blockTime); got != tc.want {
+				t.Fatalf("lookbackBlocks(%s, %s) = %d, want %d", window, tc.blockTime, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("Arbitrum and OP differ for the same window", func(t *testing.T) {
+		t.Parallel()
+		op := lookbackBlocks(window, 2*time.Second)
+		arb := lookbackBlocks(window, 250*time.Millisecond)
+		if op == arb {
+			t.Fatalf("both chains got %d blocks; a block count that ignores block time is the bug B2 removes", op)
+		}
+		if arb <= op {
+			t.Fatalf("Arbitrum lookback %d <= OP lookback %d; the faster chain needs MORE blocks for the same time", arb, op)
+		}
+	})
+
+	t.Run("rounds up so the window is never short", func(t *testing.T) {
+		t.Parallel()
+		// 10s at 3s per block is 3.33 blocks; 3 would cover only 9 seconds.
+		if got := lookbackBlocks(10*time.Second, 3*time.Second); got != 4 {
+			t.Fatalf("lookbackBlocks(10s, 3s) = %d, want 4 (rounded up)", got)
+		}
+	})
+
+	t.Run("an unusable block time yields no lookback rather than dividing by zero", func(t *testing.T) {
+		t.Parallel()
+		for _, blockTime := range []time.Duration{0, -time.Second} {
+			if got := lookbackBlocks(window, blockTime); got != 0 {
+				t.Fatalf("lookbackBlocks(%s, %s) = %d, want 0", window, blockTime, got)
+			}
+		}
+	})
+}
+
+// TestStartupWindow pins the window as a SAFETY property. It is the entire
+// crash-recovery window for the L2 path -- the cursor is not persisted, so a
+// packet emitted before the window is never rescanned and its escrow stays
+// locked. Shrinking it must not reach main silently.
+
+func TestStartupWindow(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the default reproduces the window this code already had", func(t *testing.T) {
+		t.Parallel()
+		// 256 blocks at OP's 2s block time, now stated in time so every chain gets
+		// the same amount of it. If this changes, re-derive it and say why.
+		if got := startupWindow(0); got != 512*time.Second {
+			t.Fatalf("startupWindow(0) = %s, want 8m32s", got)
+		}
+	})
+
+	// The window is a downtime allowance, and head_kind must not widen it. The
+	// scan is anchored at head(head_kind) -- Source.head reads SafeBlockNumber or
+	// FinalizedBlockNumber -- so both ends of "head minus window" sit in the same
+	// delayed view and the finality lag is already absorbed. Adding it again would
+	// make every finalized run pay for a case that is not a crash.
+	t.Run("head kind does not widen the window", func(t *testing.T) {
+		t.Parallel()
+		if got := startupWindow(0); got != defaultStartupWindow {
+			t.Fatalf("startupWindow(0) = %s, want %s", got, defaultStartupWindow)
+		}
+	})
+
+	t.Run("an operator override replaces the baseline", func(t *testing.T) {
+		t.Parallel()
+		if got := startupWindow(2 * time.Hour); got != 2*time.Hour {
+			t.Fatalf("startupWindow(2h) = %s, want 2h", got)
+		}
+	})
+}
+
+// TestStartupWindowFromEnv covers the fallback, not the size of the window:
+// an absent or unparseable override must leave the default in place rather than
+// turning a typo into a chain that starts at the head with no recovery.
+
+func TestStartupWindowFromEnv(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want time.Duration
+	}{
+		{name: "empty uses the default", raw: "", want: 0},
+		{name: "valid duration overrides", raw: "90m", want: 90 * time.Minute},
+		{name: "seconds are a duration too", raw: "45s", want: 45 * time.Second},
+		{name: "a bare block count is no longer valid", raw: "1200", want: 0},
+		{name: "unparseable uses the default", raw: "not-a-duration", want: 0},
+		{name: "negative uses the default", raw: "-5m", want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := startupWindowFromEnv(tc.raw); got != tc.want {
+				t.Fatalf("startupWindowFromEnv(%q) = %s, want %s", tc.raw, got, tc.want)
+			}
+		})
+	}
+}
+
+// The retired key changed units as well as name -- block count to duration --
+// so an old value cannot be carried forward even in principle. Silently ignoring
+// it leaves the operator on the default window and nothing says so, which is the
+// event-loss shape the window exists to prevent.
+
+func TestRejectRetiredLookbackEnv(t *testing.T) {
+	t.Run("unset is fine", func(t *testing.T) {
+		t.Setenv(l2StartupLookbackBlocksEnv, "")
+		os.Unsetenv(l2StartupLookbackBlocksEnv)
+		if err := RejectRetiredLookbackEnv(); err != nil {
+			t.Fatalf("an unset key must not fail startup: %v", err)
+		}
+	})
+
+	// Even an empty value is a deliberate export, and it still means the operator
+	// believes that key does something.
+	for _, raw := range []string{"256", "1024", ""} {
+		t.Run("set to "+raw+" is refused", func(t *testing.T) {
+			t.Setenv(l2StartupLookbackBlocksEnv, raw)
+			err := RejectRetiredLookbackEnv()
+			if err == nil {
+				t.Fatal("a retired key that sizes nothing must fail startup, not be ignored")
+			}
+			// The message has to carry the operator from what they set to what
+			// they should set; naming only the dead key leaves them guessing.
+			for _, want := range []string{l2StartupLookbackBlocksEnv, l2StartupLookbackEnv, "DURATION"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Fatalf("error %q does not mention %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+// measureBlockTime runs on the subscribe goroutine before the cursor is seeded,
+// so an endpoint that accepts the connection and never answers must not hold the
+// L2 direction open indefinitely. A ws:// endpoint has no transport timeout at
+// all, so this deadline is the only bound.
+
+func TestMeasureBlockTimeIsBounded(t *testing.T) {
+	// Order matters: defers run LIFO, and httptest.Server.Close waits for its
+	// handlers. Registering Close first means the handler is released before
+	// Close runs -- the other order deadlocks the test rather than failing it.
+	blocked := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-blocked // accept, then never answer
+	}))
+	defer server.Close()
+	defer close(blocked)
+
+	client, err := ethclient.Dial(server.URL)
+	if err != nil {
+		t.Fatalf("dial stub: %v", err)
+	}
+	defer client.Close()
+
+	source := &Source{eth: client}
+	start := time.Now()
+	// The subscribe lifetime context: nothing here cancels it, so only the
+	// per-call deadline can end this.
+	if _, err := source.measureBlockTime(context.Background(), 1_000); err == nil {
+		t.Fatal("a hung endpoint must surface as an error, not a completed measurement")
+	}
+	if elapsed := time.Since(start); elapsed > blockTimeSampleTimeout+5*time.Second {
+		t.Fatalf("measureBlockTime took %s; it must be bounded by %s", elapsed, blockTimeSampleTimeout)
 	}
 }

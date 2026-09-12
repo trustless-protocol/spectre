@@ -61,7 +61,15 @@ func (s *Subscriber) SubscribeCosmos(stdCtx context.Context, cosmos services.Cos
 			nextRecoveryStartHeight = s.resumeCosmosCursor(ctx, latestHeight, lookback)
 		}
 
-		err := s.subscribeCosmosOnce(stdCtx, ctx, batchBuilder, &nextRecoveryStartHeight, seenEvents, &quietScans, &liveHealth)
+		// Declared per iteration, not once for the loop: each pass is one
+		// subscription, and a rate window must not span two of them. Whatever the
+		// chain did while this loop was reconnecting was not observed, so averaging
+		// across it reports the size of the gap rather than the rate of the chain.
+		// A fresh value per subscription makes that unforgettable -- there is no
+		// reset call anyone can drop.
+		var rate blockRate
+
+		err := s.subscribeCosmosOnce(stdCtx, ctx, batchBuilder, &nextRecoveryStartHeight, seenEvents, &quietScans, &liveHealth, &rate)
 		ctx.Logger.Printf("[SubscribeCosmos] Subscription loop ended: %v", err)
 		s.persistCosmosCursor(ctx, batchBuilder, nextRecoveryStartHeight)
 		if !sleepOrDone(stdCtx, cosmosSubscriptionReconnectDelay) {
@@ -221,6 +229,7 @@ func (s *Subscriber) subscribeCosmosOnce(
 	seenEvents map[cosmosEventKey]struct{},
 	quietScans *uint64,
 	liveHealth *cosmosLiveHealth,
+	rate *blockRate,
 ) error {
 	if err := stdCtx.Err(); err != nil {
 		return err
@@ -250,11 +259,12 @@ func (s *Subscriber) subscribeCosmosOnce(
 	// never delivers anything is the case this watchdog exists for.
 	liveHealth.recordSubscribed(time.Now())
 
-	if _, err := s.recoverCosmosGapToLatest(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth); err != nil {
+	if _, err := s.recoverCosmosGapToLatest(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth, rate); err != nil {
 		ctx.Logger.Printf("[SubscribeCosmos] startup recovery failed: %v", err)
 	}
 
-	gapRecoveryTicker := time.NewTicker(cosmosGapRecoveryInterval)
+	// Starts at the ceiling and narrows once the chain's rate is observable.
+	gapRecoveryTicker := time.NewTicker(recoveryTick(0))
 	defer gapRecoveryTicker.Stop()
 
 	for {
@@ -282,9 +292,12 @@ func (s *Subscriber) subscribeCosmosOnce(
 			}
 			s.processLiveCosmosEvent(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, liveHealth, e)
 		case <-gapRecoveryTicker.C:
-			stale, err := s.recoverCosmosGapToLatest(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth)
+			stale, err := s.recoverCosmosGapToLatest(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth, rate)
 			if err != nil {
 				ctx.Logger.Printf("[SubscribeCosmos] periodic recovery failed: %v", err)
+			}
+			if blockTime, ok := rate.blockTime(); ok {
+				gapRecoveryTicker.Reset(recoveryTick(blockTime))
 			}
 			// CometBFT never closes the Go channel when a subscription dies -- not
 			// when the node cancels it for exceeding its buffer, and not when a
@@ -417,6 +430,7 @@ func (s *Subscriber) recoverCosmosGapToLatest(
 	seenEvents map[cosmosEventKey]struct{},
 	quietScans *uint64,
 	liveHealth *cosmosLiveHealth,
+	rate *blockRate,
 ) (stale bool, err error) {
 	if *nextRecoveryStartHeight == 0 {
 		return false, nil
@@ -426,6 +440,8 @@ func (s *Subscriber) recoverCosmosGapToLatest(
 	if err != nil {
 		return false, err
 	}
+	// The head this pass already read is the block-rate sample; see blockRate.
+	rate.observe(latestHeight, time.Now())
 
 	// Judge the live path before the scan, not after it. The previous version
 	// only asked when recovery had already relayed something -- i.e. after the

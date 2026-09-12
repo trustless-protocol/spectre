@@ -335,14 +335,15 @@ func (d *Destination) HasPacketReceipt(_ context.Context, _ []byte) (bool, error
 // slot. We report one period after that slot's time — deliberately early so the
 // refresh routine never lets it lapse (a wrong-too-late value would expire the
 // client, the failure class we care about most).
-func (d *Destination) ClientExpiresAt(ctx context.Context, _ string) (time.Time, error) {
+func (d *Destination) ClientExpiresAt(ctx context.Context, _ string) (time.Time, time.Duration, error) {
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	cs, err := relayerclient.GetEthereumClientStateWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("cosmos dest: eth client state: %w", err)
+		return time.Time{}, 0, fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
-	return ethClientExpiry(cs), nil
+	expiresAt, period := ethClientExpiry(cs)
+	return expiresAt, period, nil
 }
 
 // ethClientExpiry derives the conservative expiry of the 08-wasm Ethereum light
@@ -359,10 +360,14 @@ func (d *Destination) ClientExpiresAt(ctx context.Context, _ string) (time.Time,
 // unset). Reporting the zero time rather than an error is what the module reads as
 // "no expiry", so it falls back to the periodic refresh instead of treating a
 // malformed client state as an expiry emergency.
-func ethClientExpiry(cs *relayerclient.EthereumClientState) time.Time {
+func ethClientExpiry(cs *relayerclient.EthereumClientState) (time.Time, time.Duration) {
 	periodSecs := cs.EpochsPerSyncCommitteePeriod * cs.SlotsPerEpoch * cs.SecondsPerSlot
 	if periodSecs == 0 {
-		return time.Time{}
+		return time.Time{}, 0
 	}
-	return time.Unix(int64(cs.ComputeTimestampAtSlot(cs.LatestSlot)+periodSecs), 0)
+	// One sync-committee period stands in for the trusting period here: it is the
+	// window the client must be advanced within, and it is what the expiry above
+	// is measured from.
+	return time.Unix(int64(cs.ComputeTimestampAtSlot(cs.LatestSlot)+periodSecs), 0),
+		time.Duration(periodSecs) * time.Second
 }

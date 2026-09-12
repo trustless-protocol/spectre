@@ -169,6 +169,7 @@ func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool
 // SHARED L1 (Ethereum) client, whose freshness the ETH path refreshes. So the L2
 // client has no self-expiry timer — return a far-future time so the anti-expiry
 // refresh routine never force-updates it (its freshness is the L1 client's).
-func (d *Destination) ClientExpiresAt(_ context.Context, _ string) (time.Time, error) {
-	return time.Now().Add(100 * 365 * 24 * time.Hour), nil
+func (d *Destination) ClientExpiresAt(_ context.Context, _ string) (time.Time, time.Duration, error) {
+	// No self-expiry, so no trusting period to size a margin against.
+	return time.Now().Add(100 * 365 * 24 * time.Hour), 0, nil
 }

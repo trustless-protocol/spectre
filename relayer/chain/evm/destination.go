@@ -191,6 +191,6 @@ func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool
 // ClientExpiresAt returns when the SpectreClient-of-Cosmos on this chain expires
 // (trusted consensus timestamp + trusting period), so the RelayModule refresh
 // routine can advance the client before it lapses.
-func (d *Destination) ClientExpiresAt(ctx context.Context, _ string) (time.Time, error) {
+func (d *Destination) ClientExpiresAt(ctx context.Context, _ string) (time.Time, time.Duration, error) {
 	return services.CosmosClientExpiry(ctx, d.cosmos, d.evm)
 }

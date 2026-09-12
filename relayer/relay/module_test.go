@@ -73,9 +73,12 @@ type mockDest struct {
 	// poison: Raw payload -> this packet deterministically reverts any batch it is
 	// in (chain.Permanent), like a timed-out/duplicate packet in a real multicall.
 	poison map[string]bool
-	// expiresAt / expiresErr drive ClientExpiresAt for the anti-expiry refresh tests.
-	expiresAt  time.Time
-	expiresErr error
+	// expiresAt / trustingPeriod / expiresErr drive ClientExpiresAt for the
+	// anti-expiry refresh tests. A zero trustingPeriod means the destination could
+	// not report one, which is what makes the module fall back to its default margin.
+	trustingPeriod time.Duration
+	expiresAt      time.Time
+	expiresErr     error
 }
 
 func (m *mockDest) Chain() chain.ChainType { return chain.Ethereum }
@@ -100,8 +103,8 @@ func (m *mockDest) RelayPackets(_ context.Context, packets []chain.RelayPacket) 
 	return nil
 }
 func (m *mockDest) HasPacketReceipt(context.Context, []byte) (bool, error) { return false, nil }
-func (m *mockDest) ClientExpiresAt(context.Context, string) (time.Time, error) {
-	return m.expiresAt, m.expiresErr
+func (m *mockDest) ClientExpiresAt(context.Context, string) (time.Time, time.Duration, error) {
+	return m.expiresAt, m.trustingPeriod, m.expiresErr
 }
 
 type foldingMockDest struct {
@@ -850,24 +853,76 @@ func TestFoldedUpdateFailureDoesNotAdvanceHeight(t *testing.T) {
 func TestNeedsRefresh(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 
-	tests := []struct {
-		name      string
-		expiresAt time.Time
-		want      bool
+	// With no reported trusting period the module keeps its fixed default. This
+	// is the L2 case: no self-expiry, so nothing to take a fraction of.
+	t.Run("falls back to the default margin when no period is reported", func(t *testing.T) {
+		margin := defaultRefreshMargin
+		for _, tt := range []struct {
+			name      string
+			expiresAt time.Time
+			want      bool
+		}{
+			{"no expiry at all", time.Time{}, false},
+			{"expiry far beyond the margin", now.Add(margin + time.Hour), false},
+			{"one second more headroom than the margin", now.Add(margin + time.Second), false},
+			{"exactly the margin", now.Add(margin), true},
+			{"one second inside the margin", now.Add(margin - time.Second), true},
+			{"about to expire", now.Add(time.Minute), true},
+			{"already expired", now.Add(-time.Hour), true},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				if got := needsRefresh(tt.expiresAt, now, 0); got != tt.want {
+					t.Fatalf("needsRefresh = %v, want %v (headroom %s, margin %s)",
+						got, tt.want, tt.expiresAt.Sub(now), margin)
+				}
+			})
+		}
+	})
+
+	// The defect this replaces: a margin fixed at 30 minutes against a trusting
+	// period SHORTER than 30 minutes makes the condition always true, so the
+	// routine refreshes on every tick forever instead of when the client needs it.
+	t.Run("a short trusting period does not make every tick a refresh", func(t *testing.T) {
+		const period = 10 * time.Minute
+		// Eight minutes of headroom out of a ten-minute period is plenty; under the
+		// old fixed 30-minute margin this reported "refresh now".
+		if needsRefresh(now.Add(8*time.Minute), now, period) {
+			t.Fatalf("refreshed with 8m of headroom on a %s period; the margin must scale with the period", period)
+		}
+		// One minute of headroom out of ten is not.
+		if !needsRefresh(now.Add(time.Minute), now, period) {
+			t.Fatalf("did not refresh with 1m of headroom on a %s period", period)
+		}
+	})
+
+	// And the other direction: a period measured in days must not be refreshed
+	// only in its last half hour.
+	t.Run("a long trusting period gets a proportionally larger margin", func(t *testing.T) {
+		const period = 14 * 24 * time.Hour
+		if got := refreshMarginFor(period); got <= defaultRefreshMargin {
+			t.Fatalf("margin for a %s period = %s, want more than the %s default", period, got, defaultRefreshMargin)
+		}
+	})
+}
+
+// TestRefreshMarginFor pins the rule itself: the margin is a fraction of the
+// client's own trusting period, and it is the SAME rule the refresh-interval
+// calculation uses. Two rules for one concept is how the fixed 30 minutes
+// survived.
+func TestRefreshMarginFor(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		period time.Duration
+		want   time.Duration
 	}{
-		{"no expiry at all", time.Time{}, false},
-		{"expiry far beyond the margin", now.Add(refreshMargin + time.Hour), false},
-		{"one second more headroom than the margin", now.Add(refreshMargin + time.Second), false},
-		{"exactly the margin", now.Add(refreshMargin), true},
-		{"one second inside the margin", now.Add(refreshMargin - time.Second), true},
-		{"about to expire", now.Add(time.Minute), true},
-		{"already expired", now.Add(-time.Hour), true},
-	}
-	for _, tt := range tests {
+		{"unknown period falls back", 0, defaultRefreshMargin},
+		{"negative period falls back", -time.Hour, defaultRefreshMargin},
+		{"a short period gets a quarter of itself", 10 * time.Minute, 150 * time.Second},
+		{"a long period is capped at an hour", 14 * 24 * time.Hour, time.Hour},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := needsRefresh(tt.expiresAt, now); got != tt.want {
-				t.Fatalf("needsRefresh = %v, want %v (headroom %s, margin %s)",
-					got, tt.want, tt.expiresAt.Sub(now), refreshMargin)
+			if got := refreshMarginFor(tt.period); got != tt.want {
+				t.Fatalf("refreshMarginFor(%s) = %s, want %s", tt.period, got, tt.want)
 			}
 		})
 	}
@@ -1050,7 +1105,7 @@ func TestRefreshLoop(t *testing.T) {
 		withFastRefreshTick(t)
 
 		src := &mockSource{latest: 42}
-		dst := &mockDest{expiresAt: time.Now().Add(time.Minute)} // well inside refreshMargin
+		dst := &mockDest{expiresAt: time.Now().Add(time.Minute)} // well inside the default margin
 		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1074,7 +1129,7 @@ func TestRefreshLoop(t *testing.T) {
 		withFastRefreshTick(t)
 
 		src := &mockSource{latest: 42}
-		dst := &mockDest{expiresAt: time.Now().Add(refreshMargin + time.Hour)}
+		dst := &mockDest{expiresAt: time.Now().Add(defaultRefreshMargin + time.Hour)}
 		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
 
 		ctx, cancel := context.WithCancel(context.Background())

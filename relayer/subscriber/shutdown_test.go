@@ -138,7 +138,7 @@ func TestSubscribeEthWatchHonorsCancellation(t *testing.T) {
 	go func() {
 		done <- NewSubscriber().subscribeEthOnce(
 			ctx, deps, services.NewBatchBuilder(), watchClient, recoveryFilterer,
-			1, new(uint64), new(uint64), nil, new(uint64), &relayerclient.LogSpan{},
+			1, new(uint64), new(uint64), nil, new(uint64), &relayerclient.LogSpan{}, &blockRate{},
 		)
 	}()
 

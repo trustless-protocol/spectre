@@ -128,24 +128,25 @@ func NewWithPendingState(txHandler TransactionHandler, prover Prover, cosmosConf
 // trusted consensus timestamp plus the trusting period. Unlike
 // seedCosmosClientFreshness this is side-effect-free (no timestamp mutation, no
 // logging), so the relay module's refresh routine can poll it periodically.
-func CosmosClientExpiry(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint) (time.Time, error) {
+func CosmosClientExpiry(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint) (time.Time, time.Duration, error) {
 	readCtx, cancelRead := fetchCtx(stdCtx, defaultFetchTimeout)
 	clientState, err := fetchOnChainClientStateWithContext(readCtx, evm)
 	cancelRead()
 	if err != nil {
-		return time.Time{}, err
+		return time.Time{}, 0, err
 	}
 	trustedHeight, err := clientStateRevisionHeightInt64(clientState)
 	if err != nil {
-		return time.Time{}, err
+		return time.Time{}, 0, err
 	}
 	lightCtx, cancelLight := fetchCtx(stdCtx, defaultFetchTimeout)
 	defer cancelLight()
 	lightBlock, err := client.GetLightBlockWithContext(lightCtx, cosmos.CosmosClient(), trustedHeight)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("cosmos client expiry: trusted light block %d: %w", trustedHeight, err)
+		return time.Time{}, 0, fmt.Errorf("cosmos client expiry: trusted light block %d: %w", trustedHeight, err)
 	}
-	return tendermintClientExpiry(lightBlock.SignedHeader.Header.Time, clientState.TrustingPeriod), nil
+	period := time.Duration(clientState.TrustingPeriod) * time.Second
+	return tendermintClientExpiry(lightBlock.SignedHeader.Header.Time, clientState.TrustingPeriod), period, nil
 }
 
 // tendermintClientExpiry derives when the Tendermint light client on the EVM side
@@ -189,6 +190,15 @@ func deriveCosmosRefreshInterval(cfg Config, trustingPeriod time.Duration) (time
 		return maxInterval, nil
 	}
 	return configured, nil
+}
+
+// RefreshSafetyMargin is exported because the relay module needs the same rule
+// the refresh-interval calculation already uses: a margin that is a FRACTION of
+// the trusting period, not a fixed number of minutes. Two rules for one concept
+// is how the module ended up with a hard-coded 30 minutes that has no relation
+// to any client's real trusting period.
+func RefreshSafetyMargin(trustingPeriod time.Duration) time.Duration {
+	return refreshSafetyMargin(trustingPeriod)
 }
 
 func refreshSafetyMargin(trustingPeriod time.Duration) time.Duration {

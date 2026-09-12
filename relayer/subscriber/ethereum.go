@@ -554,6 +554,7 @@ func (s *Subscriber) recoverEthGapToLatest(
 	seenEvents map[ethEventKey]struct{},
 	quietScans *uint64,
 	span *relayerclient.LogSpan,
+	rate *blockRate,
 ) error {
 	rpcCtx, cancel := context.WithTimeout(stdCtx, subscriberRPCTimeout)
 	defer cancel()
@@ -561,6 +562,8 @@ func (s *Subscriber) recoverEthGapToLatest(
 	if err != nil {
 		return err
 	}
+	// The head this pass already read is the block-rate sample; see blockRate.
+	rate.observe(latestBlock, time.Now())
 	return s.recoverEthGapToBlock(
 		stdCtx,
 		ctx,
@@ -587,6 +590,7 @@ func (s *Subscriber) subscribeEthOnce(
 	seenEvents map[ethEventKey]struct{},
 	quietScans *uint64,
 	span *relayerclient.LogSpan,
+	rate *blockRate,
 ) error {
 	watchFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.EVM.RouterContract(), watchClient)
 	if err != nil {
@@ -632,7 +636,8 @@ func (s *Subscriber) subscribeEthOnce(
 		ctx.Logger.Printf("[SubscribeEth] Successfully subscribed to ICS26Router events from block %d", watchStartBlock)
 	}
 
-	gapRecoveryTicker := time.NewTicker(ethGapRecoveryInterval)
+	// Starts at the ceiling and narrows once the chain's rate is observable.
+	gapRecoveryTicker := time.NewTicker(recoveryTick(0))
 	defer gapRecoveryTicker.Stop()
 
 	for {
@@ -703,8 +708,12 @@ func (s *Subscriber) subscribeEthOnce(
 				seenEvents,
 				quietScans,
 				span,
+				rate,
 			); err != nil {
 				ctx.Logger.Printf("[SubscribeEth] periodic recovery failed: %v", err)
+			}
+			if blockTime, ok := rate.blockTime(); ok {
+				gapRecoveryTicker.Reset(recoveryTick(blockTime))
 			}
 		}
 	}
@@ -795,6 +804,14 @@ func (s *Subscriber) SubscribeEth(stdCtx context.Context, cosmos services.Cosmos
 			continue
 		}
 
+		// Declared per iteration, not once for the loop: each pass is one
+		// subscription, and a rate window must not span two of them. Whatever the
+		// chain did while this loop was reconnecting was not observed, so averaging
+		// across it reports the size of the gap rather than the rate of the chain.
+		// A fresh value per subscription makes that unforgettable -- there is no
+		// reset call anyone can drop.
+		var rate blockRate
+
 		err = s.subscribeEthOnce(
 			stdCtx,
 			ctx,
@@ -807,6 +824,7 @@ func (s *Subscriber) SubscribeEth(stdCtx context.Context, cosmos services.Cosmos
 			seenEvents,
 			&quietScans,
 			&span,
+			&rate,
 		)
 		watchClient.Close()
 		ctx.Logger.Printf("[SubscribeEth] Subscription loop ended: %v", err)

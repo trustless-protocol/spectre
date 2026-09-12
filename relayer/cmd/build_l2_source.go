@@ -180,6 +180,13 @@ func l2RouterFromProfile(profile json.RawMessage) (common.Address, error) {
 // SpectreClient/ICS26Router return path. It returns the module and a cleanup that
 // closes the dialed clients. The caller runs module.Run(ctx) on its own goroutine.
 func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler services.TransactionHandler, timeoutReturn l2TimeoutReturnPath) (*relay.Module, func(), error) {
+	// Before anything dials: a retired env key that silently sizes nothing is the
+	// failure NFR 10 forbids. Checked here rather than globally because the key
+	// only ever affected this path, so a deployment without an l2_to_cosmos
+	// module has nothing to correct.
+	if err := l2rollup.RejectRetiredLookbackEnv(); err != nil {
+		return nil, nil, err
+	}
 	headKind, err := parseHeadKind(cfg.HeadKind)
 	if err != nil {
 		return nil, nil, err

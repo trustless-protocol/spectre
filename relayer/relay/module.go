@@ -14,11 +14,20 @@ import (
 	"time"
 
 	"relayer/chain"
+	"relayer/services"
 )
 
-// refreshMargin is how far ahead of a client's expiry the refresh routine
-// proactively advances it, so a slow proof/tx cannot let the client expire.
-const refreshMargin = 30 * time.Minute
+// defaultRefreshMargin is used only when the destination cannot report a
+// trusting period. A margin fixed in absolute time is wrong in both directions:
+// against a period measured in days it acts far earlier than needed, and against
+// one shorter than the margin itself the condition below is ALWAYS true, so the
+// routine refreshes on every tick forever instead of when the client needs it.
+//
+// The real margin is a fraction of the period the destination reports; see
+// services.RefreshSafetyMargin, which is the same rule the refresh-interval
+// calculation already uses. Keeping a second rule here is what produced a
+// hard-coded 30 minutes with no relation to any client's real trusting period.
+const defaultRefreshMargin = 30 * time.Minute
 
 // refreshTick is how often the refresh routine re-checks client expiry.
 // It is a var, not a const, only so tests can drive the loop without waiting a
@@ -327,11 +336,21 @@ func (m *Module) recordClientUpdate(update chain.ClientUpdate) {
 // nothing to do yet, and that is the comparison worth pinning, because inverting
 // it produces a routine that refreshes only while there is plenty of time and
 // goes quiet exactly when the client is about to expire.
-func needsRefresh(expiresAt, now time.Time) bool {
+func needsRefresh(expiresAt, now time.Time, trustingPeriod time.Duration) bool {
 	if expiresAt.IsZero() {
 		return false
 	}
-	return expiresAt.Sub(now) <= refreshMargin
+	return expiresAt.Sub(now) <= refreshMarginFor(trustingPeriod)
+}
+
+// refreshMarginFor sizes the margin against the client's own trusting period.
+// A zero period means the destination could not report one (an L2 client has no
+// self-expiry), and the fixed default stands in.
+func refreshMarginFor(trustingPeriod time.Duration) time.Duration {
+	if trustingPeriod <= 0 {
+		return defaultRefreshMargin
+	}
+	return services.RefreshSafetyMargin(trustingPeriod)
 }
 
 // refreshLoop proactively advances the destination client before it expires,
@@ -347,12 +366,12 @@ func (m *Module) refreshLoop(ctx context.Context) {
 			if ctx.Err() != nil { // select may pick the tick even when ctx is done
 				return
 			}
-			expiresAt, err := m.dst.ClientExpiresAt(ctx, m.clientID)
+			expiresAt, trustingPeriod, err := m.dst.ClientExpiresAt(ctx, m.clientID)
 			if err != nil {
 				log.Printf("[relay %s] query client expiry: %v", m.name, err)
 				continue
 			}
-			if !needsRefresh(expiresAt, time.Now()) {
+			if !needsRefresh(expiresAt, time.Now(), trustingPeriod) {
 				continue
 			}
 			latest, err := m.src.LatestHeight(ctx)
