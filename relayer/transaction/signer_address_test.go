@@ -5,10 +5,23 @@ import (
 	"testing"
 
 	sdkbech32 "github.com/cosmos/cosmos-sdk/types/bech32"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 // Devnet-only sample key (relayer/.env); safe to embed in tests.
 const testCosmosPrivKeyHex = "a81f9eb900c02f35d28ec80d1da79dde52cc4cc37d6fbaef5768ab59f32cbfdd"
+
+func TestEthSignerAddress(t *testing.T) {
+	t.Setenv("ETH_PRIVATE_KEY", testCosmosPrivKeyHex)
+
+	address, err := (&Handler{}).EthSignerAddress()
+	if err != nil {
+		t.Fatalf("EthSignerAddress: %v", err)
+	}
+	if want := common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1"); address != want {
+		t.Fatalf("EthSignerAddress = %s, want %s", address.Hex(), want.Hex())
+	}
+}
 
 func TestCosmosSignerAddressPrefix(t *testing.T) {
 	tests := []struct {

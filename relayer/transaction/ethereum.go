@@ -120,14 +120,31 @@ func (h *Handler) keySigner() Signer {
 }
 
 // ValidateKeys forces both ordinary signing keys through the same seam used by
-// send paths and derives the Cosmos signer address, so startup also validates
-// the configured bech32 prefix.
+// send paths and derives both signer addresses, so startup also validates the
+// configured bech32 prefix.
 func (h *Handler) ValidateKeys() error {
-	if _, err := h.keySigner().EthKey(); err != nil {
+	if _, err := h.EthSignerAddress(); err != nil {
 		return err
 	}
 	_, err := h.CosmosSignerAddress()
 	return err
+}
+
+// EthSignerAddress returns the EVM address derived from ETH_PRIVATE_KEY.
+//
+// It belongs beside CosmosSignerAddress rather than at a submit call site: a
+// caller that needs to identify the EVM nonce domain before sending must derive
+// exactly the same address SendEthTx will use, through the same signer seam.
+func (h *Handler) EthSignerAddress() (common.Address, error) {
+	privateKey, err := h.keySigner().EthKey()
+	if err != nil {
+		return common.Address{}, fmt.Errorf("failed to restore ETH private key: %w", err)
+	}
+	publicKey, err := keys.PublicKey(privateKey)
+	if err != nil {
+		return common.Address{}, fmt.Errorf("failed to derive ETH public key: %w", err)
+	}
+	return crypto.PubkeyToAddress(*publicKey), nil
 }
 
 // evmNonceKey identifies one independent EVM nonce domain. The relayer shares

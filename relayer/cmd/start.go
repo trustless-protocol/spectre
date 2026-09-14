@@ -106,6 +106,16 @@ func Start(logger *zap.Logger) *cobra.Command {
 			if err := validateL2ChainIDs(runCtx, l2Sources); err != nil {
 				return err
 			}
+			// EVM nonces are per (chain id, sender), and the Handler mutex only
+			// serializes allocations in this process. Resolve every EVM endpoint's
+			// actual chain id and hold those cross-process locks before any builder
+			// can submit. A non-answer is fatal here: starting without a chain id
+			// would silently mean starting without this guard.
+			releaseEVMSignerLocks, err := acquireEVMSignerLocks(runCtx, cfg)
+			if err != nil {
+				return err
+			}
+			defer releaseEVMSignerLocks()
 			// Env overrides (ICS26_CLIENT_ID, COSMOS_WASM_CLIENT_ID, ROLE_MANAGER)
 			// name a single source; only honor them when exactly one is
 			// configured, otherwise they would wrongly apply to every source.
