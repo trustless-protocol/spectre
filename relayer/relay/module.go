@@ -15,6 +15,7 @@ import (
 
 	"relayer/chain"
 	"relayer/services"
+	workergroup "relayer/workers"
 )
 
 // defaultRefreshMargin is used only when the destination cannot report a
@@ -141,7 +142,7 @@ func NewModule(name, clientID string, src chain.Source, dst chain.Destination, b
 // that keeps the destination client from expiring.
 func (m *Module) Run(ctx context.Context) error {
 	runCtx, cancel := context.WithCancel(ctx)
-	workers := newWorkerGroup()
+	workers := workergroup.New()
 	subscribeErr := make(chan error, 1)
 
 	workers.Go("subscriber", func() {
@@ -164,16 +165,38 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 	cancel()
 
-	if running := workers.drain(shutdownDrainTimeout); len(running) > 0 {
-		return fmt.Errorf("relay %s: shutdown drain timed out after %s; workers still running: %v", m.name, shutdownDrainTimeout, running)
+	if running := workers.Drain(workergroup.ShutdownDrainTimeout); len(running) > 0 {
+		return fmt.Errorf("relay %s: shutdown drain timed out after %s; workers still running: %v", m.name, workergroup.ShutdownDrainTimeout, running)
 	}
+
+	// On SIGTERM the select above takes ctx.Done() and never reads subscribeErr,
+	// so whatever Subscribe returned was dropped -- including a report that one of
+	// its own goroutines never stopped. The drain has just waited for that worker,
+	// so its value is in the buffered channel now; prefer it over a bare
+	// cancellation, which the normalisation below would turn into a clean exit.
+	if isShutdownCancellation(runErr) {
+		select {
+		case err := <-subscribeErr:
+			if err != nil && !isShutdownCancellation(err) {
+				runErr = err
+			}
+		default:
+		}
+	}
+
 	if runErr != nil {
-		if ctx.Err() != nil && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, context.DeadlineExceeded)) {
+		if ctx.Err() != nil && isShutdownCancellation(runErr) {
 			return nil
 		}
 		return fmt.Errorf("relay %s: subscribe: %w", m.name, runErr)
 	}
 	return nil
+}
+
+// isShutdownCancellation reports whether err is the ordinary "we asked it to
+// stop" signal, as opposed to something that went wrong while stopping.
+func isShutdownCancellation(err error) bool {
+	return err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // scanLoop periodically runs the timeout-recovery sweep so packets that were

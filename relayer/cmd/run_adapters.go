@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -30,8 +31,12 @@ import (
 //     tracker (avoiding a redundant double-add); ScanEthTimeouts drains that
 //     tracker.
 //
-// It returns nil on clean context cancellation, or the first module's fatal error
-// (cancelling the other).
+// The first module to exit cancels the other, and BOTH results are joined into
+// the return value. Returning only the first is what hid the failure this engine
+// now surfaces: on SIGTERM the unaffected direction usually returns nil first,
+// and returning that discarded the other direction's drain failure. Each module
+// normalizes cancellation of the run context to nil while preserving real RPC
+// deadlines and drain failures, so a clean stop joins two nils and stays nil.
 func runAdapterEngine(ctx context.Context, svc *services.Services, deps services.RelayDeps) error {
 	worker := svc.Worker()
 	bb := svc.BatchBuilder
@@ -123,11 +128,12 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	go func() { errCh <- cosmosToEth.Run(runCtx) }()
 	go func() { errCh <- ethToCosmos.Run(runCtx) }()
 
-	err = <-errCh // first module to exit
-	cancel()      // stop the other
-	<-errCh       // wait for it so no goroutine leaks
+	first := <-errCh // first module to exit
+	cancel()         // stop the other
+	second := <-errCh
 
-	// Each module normalizes cancellation of the parent run context to nil while
-	// preserving real RPC deadlines and drain failures. Return that result as-is.
-	return err
+	// BOTH results, not just the first -- see the contract on this function.
+	// Reading the second only to avoid a goroutine leak is what discarded the
+	// other direction's drain failure before it could reach loopErrCh.
+	return errors.Join(first, second)
 }

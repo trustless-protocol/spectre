@@ -7,15 +7,16 @@ package cosmos
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"relayer/chain"
 	relayerclient "relayer/client"
 	"relayer/services"
 	"relayer/subscriber"
+	workergroup "relayer/workers"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
@@ -204,24 +205,44 @@ const drainInterval = 500 * time.Millisecond
 // the builder on the configured batch window and emits each queued CosmosPacket
 // as a chain.Event. It uses the batch config (not BatchSize=1) so CheckCosmos
 // returns multi-packet batches the module folds into one RelayPackets multicall.
-func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []chain.Event) []int) error {
+func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []chain.Event) []int) (err error) {
 	sub := subscriber.NewSubscriber(s.recovery)
-	var workers sync.WaitGroup
-	workers.Add(1)
-	go func() {
-		defer workers.Done()
+	// Named rather than anonymous: when a shutdown times out, the module reports
+	// "workers still running: [subscribe]" and the two goroutines below are what
+	// is inside it. Without names the log stops one level above the thing that is
+	// stuck, which is exactly where diagnosis needs it.
+	workers := workergroup.New()
+	workers.Go("cosmos-subscribe", func() {
 		sub.SubscribeCosmos(ctx, s.cosmos, s.evm, s.ids, s.logger, s.bb)
+	})
+	defer func() {
+		running := workers.Drain(workergroup.SourceDrainTimeout)
+		if len(running) == 0 {
+			return
+		}
+		s.logger.Printf("[cosmos source] shutdown drain timed out after %s; workers still running: %v",
+			workergroup.SourceDrainTimeout, running)
+		// RETURN it, do not only log it. The caller cancels on SIGTERM and then
+		// normalises context.Canceled to a clean exit, so a stuck worker reported
+		// only through ctx.Err() is reported as a successful shutdown. This error
+		// is not a cancellation, so it survives that normalisation.
+		stuck := fmt.Errorf("cosmos source: %w after %s; workers still running: %v",
+			workergroup.ErrWorkersStillRunning, workergroup.SourceDrainTimeout, running)
+		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			err = stuck
+			return
+		}
+		// A real failure already happened; keep it, and carry the drain alongside
+		// rather than choosing between two things the operator needs.
+		err = errors.Join(err, stuck)
 	}()
-	defer workers.Wait()
 
 	// Use the configured batch window so CheckCosmos returns multi-packet batches
 	// the handler can fold into one multicall (BatchSize=1 would defeat that).
 	cfg := s.batchConfig
 	ch := make(chan services.CosmosBatch, services.BatchHandoffCapacity)
 
-	workers.Add(1)
-	go func() {
-		defer workers.Done()
+	workers.Go("cosmos-drain-batches", func() {
 		ticker := time.NewTicker(drainInterval)
 		defer ticker.Stop()
 		for {
@@ -232,7 +253,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 				s.bb.CheckCosmos(ctx, cfg, ch)
 			}
 		}
-	}()
+	})
 
 	for {
 		select {

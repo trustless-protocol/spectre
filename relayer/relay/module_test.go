@@ -1483,6 +1483,162 @@ func TestHandleBatch_StuckSendNamesTheTimeoutExit(t *testing.T) {
 	}
 }
 
+type drainingSource struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (s *drainingSource) Chain() chain.ChainType { return chain.Cosmos }
+func (s *drainingSource) Subscribe(ctx context.Context, _ func(context.Context, []chain.Event) []int) error {
+	close(s.started)
+	<-ctx.Done()
+	close(s.stopped)
+	return ctx.Err()
+}
+func (s *drainingSource) LatestHeight(context.Context) (uint64, error)        { return 0, nil }
+func (s *drainingSource) RelayableHeight(context.Context) (uint64, error)     { return 0, nil }
+func (s *drainingSource) QueryHeader(context.Context, uint64) ([]byte, error) { return nil, nil }
+func (s *drainingSource) MembershipProof(context.Context, []byte, uint64, chain.EventType) ([]byte, error) {
+	return nil, nil
+}
+func (s *drainingSource) NonMembershipProof(context.Context, []byte, uint64) ([]byte, error) {
+	return nil, nil
+}
+
+func TestModuleCleanCancellationDrainsSubscriber(t *testing.T) {
+	src := &drainingSource{started: make(chan struct{}), stopped: make(chan struct{})}
+	m := NewModule("test", "client", src, &mockDest{}, &mockBuilder{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	<-src.started
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run cancellation error = %v, want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not drain after cancellation")
+	}
+	select {
+	case <-src.stopped:
+	default:
+		t.Fatal("Run returned before subscriber stopped")
+	}
+}
+
+type internallyCancelledSource struct{}
+
+func (internallyCancelledSource) Chain() chain.ChainType { return chain.Cosmos }
+func (internallyCancelledSource) Subscribe(context.Context, func(context.Context, []chain.Event) []int) error {
+	return context.Canceled
+}
+func (internallyCancelledSource) LatestHeight(context.Context) (uint64, error) { return 0, nil }
+func (internallyCancelledSource) RelayableHeight(context.Context) (uint64, error) {
+	return 0, nil
+}
+func (internallyCancelledSource) QueryHeader(context.Context, uint64) ([]byte, error) {
+	return nil, nil
+}
+func (internallyCancelledSource) MembershipProof(context.Context, []byte, uint64, chain.EventType) ([]byte, error) {
+	return nil, nil
+}
+func (internallyCancelledSource) NonMembershipProof(context.Context, []byte, uint64) ([]byte, error) {
+	return nil, nil
+}
+
+func TestModuleReportsInternalSubscriberCancellation(t *testing.T) {
+	m := NewModule("test", "client", internallyCancelledSource{}, &mockDest{}, &mockBuilder{})
+	err := m.Run(context.Background())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want wrapped context.Canceled", err)
+	}
+}
+
+// stuckWorkerSource is what the real Cosmos and EVM adapters became: on
+// cancellation they drain their own goroutines, and if one of them never
+// returns they report THAT rather than the cancellation that triggered it.
+type stuckWorkerSource struct {
+	started chan struct{}
+	err     error
+}
+
+func (s *stuckWorkerSource) Chain() chain.ChainType { return chain.Cosmos }
+func (s *stuckWorkerSource) Subscribe(ctx context.Context, _ func(context.Context, []chain.Event) []int) error {
+	close(s.started)
+	<-ctx.Done()
+	return s.err
+}
+func (s *stuckWorkerSource) LatestHeight(context.Context) (uint64, error)        { return 0, nil }
+func (s *stuckWorkerSource) RelayableHeight(context.Context) (uint64, error)     { return 0, nil }
+func (s *stuckWorkerSource) QueryHeader(context.Context, uint64) ([]byte, error) { return nil, nil }
+func (s *stuckWorkerSource) MembershipProof(context.Context, []byte, uint64, chain.EventType) ([]byte, error) {
+	return nil, nil
+}
+func (s *stuckWorkerSource) NonMembershipProof(context.Context, []byte, uint64) ([]byte, error) {
+	return nil, nil
+}
+
+// Reported by @DongLieu on #434. Two things had to line up for a stuck worker to
+// be reported as a clean shutdown, and both were true:
+//
+//  1. Run's select takes ctx.Done() on SIGTERM, sets runErr = context.Canceled,
+//     and NEVER reads subscribeErr -- so whatever Subscribe returned was dropped.
+//  2. A bare context.Canceled during shutdown is normalised to nil.
+//
+// So a source that knew one of its own goroutines had not stopped had no way to
+// say so: the value it returned was discarded, and the value that replaced it
+// meant "stopped cleanly". The process exited 0 with a goroutine still running.
+func TestRunReportsASourceThatCouldNotStopItsOwnWorkers(t *testing.T) {
+	stuck := errors.New("cosmos source: shutdown drain timed out after 20s; workers still running: [cosmos-subscribe]")
+	src := &stuckWorkerSource{started: make(chan struct{}), err: stuck}
+	m := NewModule("test", "client", src, &mockDest{}, &mockBuilder{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	<-src.started
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Run reported a clean shutdown while a named source worker was still running; " +
+				"SIGTERM would exit 0 with the goroutine alive")
+		}
+		if !errors.Is(err, stuck) {
+			t.Fatalf("Run error = %v, want it to carry the source's drain failure", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+}
+
+// The mirror of TestModuleCleanCancellationDrainsSubscriber: preferring the
+// source's error must not turn an ordinary stop into a failure. A source that
+// returns the cancellation it was given is still a clean shutdown.
+func TestRunStillExitsCleanWhenTheSourceOnlyReportsCancellation(t *testing.T) {
+	src := &stuckWorkerSource{started: make(chan struct{}), err: context.Canceled}
+	m := NewModule("test", "client", src, &mockDest{}, &mockBuilder{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	<-src.started
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil: an ordinary stop is not a failure", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+}
+
 // A permanently-failing source -- a misconfigured attestor route, a malformed
 // request, an RPC the daemon does not implement -- used to be asked again on
 // every pass. The L2 loop re-offers its queued packets every 4s and deliberately

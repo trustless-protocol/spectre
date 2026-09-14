@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/joho/godotenv"
@@ -172,8 +173,14 @@ func Start(logger *zap.Logger) *cobra.Command {
 					}
 				}
 			}
-			stopAndCleanup := func() {
-				stopRelaysAndCleanup(cancelRelays, wg.Wait, cleanups)
+			// Set by any engine whose source gave up on its inner drain. Read by
+			// stopRelaysAndCleanup, which then leaves the clients open.
+			var workersStuck atomic.Bool
+			// Returns the error rather than swallowing it: awaitRelayExit decides
+			// whether a shutdown overrun is the thing to report or is outranked by
+			// the failure that caused the shutdown.
+			stopAndCleanup := func() error {
+				return stopRelaysAndCleanup(cancelRelays, wg.Wait, cleanups, workersStuck.Load)
 			}
 			for i := range sources {
 				svc, deps, cleanup, err := buildCosmosToEthSource(
@@ -197,10 +204,11 @@ func Start(logger *zap.Logger) *cobra.Command {
 				wg.Add(1)
 				go func(svc *services.Services, deps services.RelayDeps, cleanup func()) {
 					defer wg.Done()
-					defer cleanup()
 					// Chain-adapter RelayModule engine — the sole relay engine since
 					// the legacy services.StartLoop was removed after the cutover.
-					if err := runAdapterEngine(relayCtx, svc, deps); err != nil {
+					err := runAdapterEngine(relayCtx, svc, deps)
+					releaseOrHold(logger, cleanup, &workersStuck, err, "cosmos_to_eth", deps.IDs.CosmosOnEVM)
+					if err != nil {
 						loopErrCh <- fmt.Errorf("cosmos_to_eth source %q: %w", deps.IDs.CosmosOnEVM, err)
 					}
 				}(svc, deps, cleanup)
@@ -283,8 +291,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 				wg.Add(1)
 				go func(svc *services.Services, deps services.RelayDeps, cleanup func()) {
 					defer wg.Done()
-					defer cleanup()
-					if err := runCosmosToL2Engine(relayCtx, svc, deps); err != nil {
+					err := runCosmosToL2Engine(relayCtx, svc, deps)
+					releaseOrHold(logger, cleanup, &workersStuck, err, "cosmos_to_l2", deps.IDs.CosmosOnEVM)
+					if err != nil {
 						loopErrCh <- fmt.Errorf("cosmos_to_l2 dest %q: %w", deps.IDs.CosmosOnEVM, err)
 					}
 				}(d.svc, d.deps, d.cleanup)
@@ -293,8 +302,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 				wg.Add(1)
 				go func(module *relay.Module, cleanup func(), srcChain string) {
 					defer wg.Done()
-					defer cleanup()
-					if err := runL2Engine(relayCtx, module); err != nil {
+					err := runL2Engine(relayCtx, module)
+					releaseOrHold(logger, cleanup, &workersStuck, err, "l2_to_cosmos", srcChain)
+					if err != nil {
 						loopErrCh <- fmt.Errorf("l2_to_cosmos source %q: %w", srcChain, err)
 					}
 				}(s.module, s.cleanup, s.srcChain)
@@ -307,27 +317,11 @@ func Start(logger *zap.Logger) *cobra.Command {
 				close(done)
 			}()
 
-			select {
-			case err := <-loopErrCh:
-				stopAndCleanup()
-				return err
-			case <-done:
-				// A worker sends its error before its deferred wg.Done. If all
-				// workers have returned, prefer that buffered error over treating
-				// the coincident done signal as a clean shutdown.
-				select {
-				case err := <-loopErrCh:
-					return err
-				default:
-					return nil
-				}
-			case <-runCtx.Done():
-				logger.Sugar().Infof("Relayer shutdown requested: %v", runCtx.Err())
-				stopAndCleanup()
-				logger.Sugar().Info("Relayer clients stopped; exiting")
-			}
-
-			return nil
+			// awaitRelayExit rather than an inline select. The docstring on it
+			// already said it was extracted "so all three endings can be tested" --
+			// and then nothing called it, so Start kept the ending that drops a
+			// recorded failure and exits 0. Found in review.
+			return awaitRelayExit(runCtx, done, loopErrCh, stopAndCleanup, logger)
 		},
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
