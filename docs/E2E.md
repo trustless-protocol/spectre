@@ -159,15 +159,33 @@ cp relayer/config.ethereum.example.json relayer/config.json
 #    GPU run:
 #    ./relayer start --config config.json --gpu-prove
 #
-#    Multiple Cosmos sources: add one `cosmos_to_eth` module per source to
-#    config.json, each with a distinct `ics26_client_id` — the ETH router's
-#    client id for that Cosmos chain (config.example.json uses "cosmoshub-1";
-#    a second source might be "osmosis-1"). Create its clients with --source,
-#    then start once — `start` runs one independent relay loop per source in
-#    the same process (shared prover + ETH endpoint):
-#      ./relayer create-clients-cosmos --config config.json --source osmosis-1 --wasm-checksum <hex>
-#      ./relayer create-clients-eth    --config config.json --source osmosis-1
-#      ./relayer start --config config.json
+#    Multiple Cosmos sources: ONE PROCESS PER SOURCE. `start` refuses a config
+#    that declares more than one relay path, naming each path it found — so give
+#    each source its own config file with its own `ics26_client_id` (the ETH
+#    router's client id for that Cosmos chain; config.example.json uses
+#    "cosmoshub-1", a second source might be "osmosis-1") and its own state
+#    directory. Create each source's clients with --source, then start one
+#    process per file:
+#      ./relayer create-clients-cosmos --config config-osmosis.json --source osmosis-1 --wasm-checksum <hex>
+#      ./relayer create-clients-eth    --config config-osmosis.json --source osmosis-1
+#      ./relayer start --config config.json &
+#      ./relayer start --config config-osmosis.json &
+#    Give each process its OWN COSMOS_PRIVATE_KEY *and* its own ETH_PRIVATE_KEY.
+#    Both keys serialize only within a process: cosmosMu for the account sequence,
+#    and the EVM nonce cache (keyed by chain id + sender) for the Ethereum nonce.
+#    Every Cosmos source relays to the SAME Ethereum router, so two processes on
+#    one ETH key share a single nonce domain and will allocate the same nonce —
+#    one of the two transactions is then replaced or rejected. The second ETH key
+#    needs the ICS26Router relayer role and a funded balance, exactly like the
+#    first.
+#
+#    NOTHING AT STARTUP ENFORCES ANY OF THIS. `start` calls ValidateKeys
+#    (transaction/ethereum.go:124), which parses the ETH key and derives the
+#    Cosmos signer address -- both process-local. There is no cross-process lock
+#    on either key at this commit, so two processes on one key start happily and
+#    collide at the first concurrent submission. Distinct keys are a REQUIREMENT
+#    you have to meet yourself. The Cosmos-side lock is #467 and the EVM-side
+#    one, keyed (chain id, sender), is #483.
 
 # 7. send packet
 

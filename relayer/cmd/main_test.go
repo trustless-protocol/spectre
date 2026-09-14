@@ -562,9 +562,10 @@ func TestValidateRelayStartupConfigRequiresEthWs(t *testing.T) {
 	}
 }
 
-// Multi-source is a supported deployment, and runAdapterEngine spawns an eth->cosmos
-// leg per source using that source's own eth_ws_url. Checking only the first source
-// let every later one reach the same half-dead state the guard exists to prevent.
+// A first-entry-only check let every later source reach the same half-dead state
+// the guard exists to prevent. `start` now rejects a second source earlier
+// (validateSingleRelayPair), so this is the function's own contract rather than a
+// reachable deployment: it validates every entry it is handed.
 func TestValidateRelayStartupConfigChecksEverySource(t *testing.T) {
 	const cfg = `{
 		"modules": [

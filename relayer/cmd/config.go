@@ -1051,3 +1051,85 @@ func selectSource(cfg *appConfig, clientID string) (*appConfig, error) {
 	}
 	return nil, fmt.Errorf("no cosmos_to_eth or cosmos_to_l2 source with ics26_client_id %q", clientID)
 }
+
+// validateSingleRelayPair enforces that one `start` process serves exactly one
+// source → destination pair.
+//
+// The rule is not a simplification for its own sake — running several paths in one
+// process is what forces every shared structure between them: one nonce cache
+// across unrelated chains (#320), one loopErrCh where a single dead loop takes the
+// others down (#321), and one state directory two paths write into. A process per
+// path removes all three by construction, so the blast radius of a failure is that
+// path alone.
+//
+// A Cosmos→L2 destination and its L2→Cosmos return leg are ONE pair: they relay
+// opposite directions of the same path, and the return leg resolves its timeout
+// path from the forward one (findL2TimeoutReturnPath). The Cosmos↔ETH pair needs no
+// equivalent grouping — runAdapterEngine already drives both directions from a
+// single cosmos_to_eth module, with eth_to_cosmos supplying only the beacon URL.
+//
+// This runs before the prover load so a config mistake surfaces at once rather than
+// after the bucket registry is read.
+func validateSingleRelayPair(cfg *appConfig, configPath string) error {
+	if cfg == nil {
+		return fmt.Errorf("no relay source configured in %s (need a cosmos_to_eth, cosmos_to_l2, or l2_to_cosmos module)", configPath)
+	}
+
+	declared := declaredRelayPaths(cfg)
+	if len(declared) == 0 {
+		return fmt.Errorf("no relay source configured in %s (need a cosmos_to_eth, cosmos_to_l2, or l2_to_cosmos module)", configPath)
+	}
+
+	// Count paths, not modules: the L2 forward and return legs pair up, so the
+	// number of Cosmos↔L2 paths is however many legs the longer side declares.
+	l2Paths := len(cfg.CosmosToL2Configs)
+	if n := len(cfg.L2ToCosmosConfigs); n > l2Paths {
+		l2Paths = n
+	}
+	if len(cfg.CosmosToEthConfigs)+l2Paths <= 1 {
+		return nil
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s declares more than one relay path, but one relayer process serves exactly one source → destination pair.\n", configPath)
+	b.WriteString("declared:\n")
+	for _, d := range declared {
+		fmt.Fprintf(&b, "  %s\n", d)
+	}
+	b.WriteString("a cosmos_to_l2 destination and its l2_to_cosmos return leg are one path; everything else is a path of its own.\n")
+	b.WriteString("keep one path per config file and start one process per file:\n")
+	b.WriteString("  ./relayer start --config <one-path>.json")
+	return fmt.Errorf("%s", b.String())
+}
+
+// declaredRelayPaths lists every relay module the config declares, each identified
+// by the field an operator edits it by. Modules are listed individually rather than
+// paired up: which forward leg a return leg belongs to is resolved at runtime from
+// the L2 chain id, so pairing them here by file order would name the wrong partner
+// exactly when the counts disagree — the case this error exists for.
+func declaredRelayPaths(cfg *appConfig) []string {
+	out := make([]string, 0, len(cfg.CosmosToEthConfigs)+len(cfg.CosmosToL2Configs)+len(cfg.L2ToCosmosConfigs))
+	for i := range cfg.CosmosToEthConfigs {
+		out = append(out, fmt.Sprintf("cosmos_to_eth ics26_client_id=%q", cfg.CosmosToEthConfigs[i].ICS26ClientID))
+	}
+	for i := range cfg.CosmosToL2Configs {
+		name := ""
+		if i < len(cfg.CosmosToL2Names) {
+			name = cfg.CosmosToL2Names[i]
+		}
+		out = append(out, fmt.Sprintf("cosmos_to_l2 ics26_client_id=%q%s", cfg.CosmosToL2Configs[i].ICS26ClientID, moduleNameSuffix(name)))
+	}
+	for i := range cfg.L2ToCosmosConfigs {
+		out = append(out, fmt.Sprintf("l2_to_cosmos attestor_src_chain=%q", cfg.L2ToCosmosConfigs[i].AttestorSrcChain))
+	}
+	return out
+}
+
+// moduleNameSuffix appends the config module's label when it has one, so an
+// operator who labelled their modules sees the label they wrote.
+func moduleNameSuffix(name string) string {
+	if strings.TrimSpace(name) == "" {
+		return ""
+	}
+	return fmt.Sprintf(" (module %q)", name)
+}

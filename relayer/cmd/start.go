@@ -62,6 +62,14 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// Checks that only apply to relaying, so they live here rather than in
 			// the shared loadConfig. Run before the prover load: a config error
 			// should surface immediately, not after the bucket registry is read.
+			// One process, one source → destination pair. First of the two: a config
+			// declaring two paths is the more fundamental mistake, and reporting a
+			// missing field on one of them would send the operator to fix the wrong
+			// thing. Both run before the prover load, so a config error surfaces at
+			// once rather than after the bucket registry is read.
+			if err := validateSingleRelayPair(cfg, configPath); err != nil {
+				return err
+			}
 			if err := validateRelayStartupConfig(cfg); err != nil {
 				return err
 			}
@@ -87,12 +95,11 @@ func Start(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("failed to load prover: %w", err)
 			}
 
+			// validateSingleRelayPair proved above that these hold at most one entry
+			// each, and that together they hold at least one.
 			sources := cfg.CosmosToEthConfigs
 			l2Dests := cfg.CosmosToL2Configs
 			l2Sources := cfg.L2ToCosmosConfigs
-			if len(sources) == 0 && len(l2Dests) == 0 && len(l2Sources) == 0 {
-				return fmt.Errorf("no relay source configured in %s (need a cosmos_to_eth, cosmos_to_l2, or l2_to_cosmos module)", configPath)
-			}
 			// validateL2TimeoutReturnPathConfigs is gone with #328: the return path
 			// is now resolved per dest by matching the L2 chain id at build time
 			// (l2TimeoutReturnPathConfigForDest), so a separate up-front pass would
@@ -119,7 +126,11 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// Env overrides (ICS26_CLIENT_ID, COSMOS_WASM_CLIENT_ID, ROLE_MANAGER)
 			// name a single source; only honor them when exactly one is
 			// configured, otherwise they would wrongly apply to every source.
-			allowEnvOverride := len(sources) == 1
+			// name a single source, and a process now runs exactly one — so they
+			// can only ever apply to the source that is running. What used to keep
+			// them off the wrong source was a count taken here; that job belongs to
+			// validateSingleRelayPair now.
+			const allowEnvOverride = true
 
 			// One shared TransactionHandler across all sources. What sharing buys is
 			// the mutex, not the cache: two sources can target the SAME (chain,
@@ -144,9 +155,12 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// same ICS26Router (ETH events are partitioned by the per-source
 			// router client id filter).
 			var wg sync.WaitGroup
-			total := len(sources) + len(l2Dests) + len(l2Sources)
-			loopErrCh := make(chan error, total)
-			cleanups := make([]func(), 0, total)
+			// A path runs at most two engines: the forward leg, plus the return leg
+			// for Cosmos↔L2. Cosmos↔ETH is one engine — runAdapterEngine drives both
+			// of its directions internally.
+			const maxEnginesPerPath = 2
+			loopErrCh := make(chan error, maxEnginesPerPath)
+			cleanups := make([]func(), 0, maxEnginesPerPath)
 			relayCtx, cancelRelays := context.WithCancel(runCtx)
 			defer cancelRelays()
 			l2ReturnPaths := make([]l2TimeoutReturnPathConfig, 0, len(l2Dests))

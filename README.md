@@ -220,10 +220,10 @@ go run -tags=icicle ./prover/cmd -gpu-prove ./bin ../contracts/verifiers
 go build -tags=icicle -o relayer ./cmd
 
 # Run the relayer on GPU
-./relayer start --config config.example.json --gpu-prove
+./relayer start --config config.json --gpu-prove
 
 # Equivalent env-based run
-GPU_PROVE=1 ./relayer start --config config.example.json
+GPU_PROVE=1 ./relayer start --config config.json
 ```
 
 ### ICICLE Environment
@@ -252,10 +252,10 @@ opt-in via flag or env:
 
 ```bash
 # CLI flag
-./relayer start --config config.example.json --benchmark
+./relayer start --config config.json --benchmark
 
 # Env (equivalent)
-RELAYER_BENCHMARK=1 ./relayer start --config config.example.json
+RELAYER_BENCHMARK=1 ./relayer start --config config.json
 ```
 
 Either source turns it on; flag is the override. The relayer logs
