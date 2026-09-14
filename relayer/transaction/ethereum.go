@@ -104,7 +104,7 @@ type Handler struct {
 // turn the next send into a nil-pointer panic.
 func (h *Handler) SetSigner(s Signer) {
 	if s == nil {
-		log.Printf("[Handler] SetSigner(nil) ignored; keeping the existing key source")
+		log.Printf("[start] SetSigner(nil) ignored; keeping the existing key source")
 		return
 	}
 	h.signer = s
@@ -351,14 +351,14 @@ func logInnerGasFromTrace(stdCtx context.Context, endpoint services.EVMEndpoint,
 	for i, child := range frame.Calls {
 		gasUsed, perr := hexToUint64(child.GasUsed)
 		if perr != nil {
-			log.Printf("[bench][eth] inner[%d] gas parse failed: %v", i, perr)
+			log.Printf("[bench] eth inner[%d] gas parse failed: %v", i, perr)
 			continue
 		}
 		label := fmt.Sprintf("inner[%d]", i)
 		if i < len(labels) {
 			label = fmt.Sprintf("inner[%d] %s", i, labels[i])
 		}
-		log.Printf("[bench][eth] %s gas=%d (from trace)", label, gasUsed)
+		log.Printf("[bench] eth %s gas=%d (from trace)", label, gasUsed)
 	}
 	return nil
 }
@@ -472,7 +472,7 @@ func gasPriceWithBaseFeeHeadroom(stdCtx context.Context, endpoint services.EVMEn
 	}
 	lifted := liftAboveBaseFee(suggested, header.BaseFee)
 	if lifted != suggested {
-		log.Printf("[gas] lifting suggested price %v to %v to clear base fee %v",
+		log.Printf("[SendTx] lifting suggested price %v to %v to clear base fee %v",
 			suggested, lifted, header.BaseFee)
 	}
 	return lifted
@@ -749,7 +749,7 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 
 	log.Printf("[SendEthTx] Tx %s confirmed in block %d (gasUsed=%d)", receipt.TxHash.Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
 	if benchEnabled {
-		log.Printf("[bench][eth] %s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
+		log.Printf("[bench] eth %s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			txLabel, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
 	}
 
@@ -981,10 +981,10 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 	log.Printf("[SendEthTxBatch] Tx %s confirmed in block %d (gasUsed=%d, inner=%d)",
 		receipt.TxHash.Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed, len(calldata))
 	if benchEnabled {
-		log.Printf("[bench][eth] multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
+		log.Printf("[bench] eth multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
 		if traceErr := logInnerGasFromTrace(stdCtx, endpoint, receipt.TxHash, labels); traceErr != nil {
-			log.Printf("[bench][eth] inner gas trace unavailable (RPC may lack debug_ namespace): %v", traceErr)
+			log.Printf("[bench] eth inner gas trace unavailable (RPC may lack debug_ namespace): %v", traceErr)
 		}
 	}
 

@@ -311,7 +311,7 @@ func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.Untra
 	trackL2Pending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[adapter l2->cosmos] track pending: decode packet: %v", err)
+			log.Printf("[l2->cosmos] track pending: decode packet: %v", err)
 			return false
 		}
 		return svc.TrackL2Pending(pkt, height)
@@ -319,7 +319,7 @@ func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.Untra
 	untrackL2Pending := func(raw []byte) {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[adapter l2->cosmos] untrack pending: decode packet: %v", err)
+			log.Printf("[l2->cosmos] untrack pending: decode packet: %v", err)
 			return
 		}
 		svc.UntrackL2Pending(pkt)

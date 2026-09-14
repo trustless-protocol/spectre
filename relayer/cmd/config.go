@@ -1125,6 +1125,39 @@ func declaredRelayPaths(cfg *appConfig) []string {
 	return out
 }
 
+// relayPathID names the single relay path this process serves, compactly enough
+// to sit on every log line.
+//
+// A1 makes this well defined: start refuses a config declaring more than one
+// path, so the answer is a process-level constant and can be stamped once as a
+// log prefix. Direction is NOT a process-level constant and deliberately absent
+// here -- a path is bidirectional (cmd/run_adapters.go runs a cosmos->eth and an
+// eth->cosmos module side by side), so the direction belongs on the labels of
+// the code that actually knows it.
+//
+// The client id is part of the identity because three processes all relaying
+// cosmos->eth from different source clients is a valid deployment, and their
+// logs are merged by journald or Loki with no file boundary left to tell them
+// apart. That merge is the problem this solves.
+func relayPathID(cfg *appConfig) string {
+	switch {
+	case len(cfg.CosmosToEthConfigs) > 0:
+		return "cosmos<->eth/" + cfg.CosmosToEthConfigs[0].ICS26ClientID
+	case len(cfg.CosmosToL2Configs) > 0:
+		// Prefer the rollup's own name over a generic "l2": the return leg names
+		// the chain family (opstack / arbitrum / base) and an operator running two
+		// rollups needs to tell them apart.
+		kind := "l2"
+		if len(cfg.L2ToCosmosConfigs) > 0 && cfg.L2ToCosmosConfigs[0].AttestorSrcChain != "" {
+			kind = cfg.L2ToCosmosConfigs[0].AttestorSrcChain
+		}
+		return "cosmos<->" + kind + "/" + cfg.CosmosToL2Configs[0].ICS26ClientID
+	case len(cfg.L2ToCosmosConfigs) > 0:
+		return cfg.L2ToCosmosConfigs[0].AttestorSrcChain + "->cosmos"
+	}
+	return "relayer"
+}
+
 // moduleNameSuffix appends the config module's label when it has one, so an
 // operator who labelled their modules sees the label they wrote.
 func moduleNameSuffix(name string) string {

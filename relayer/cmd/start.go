@@ -75,6 +75,20 @@ func Start(logger *zap.Logger) *cobra.Command {
 				return err
 			}
 
+			// Stamp the path onto every log line from here on. A1 makes this a
+			// process-level constant, and the merge point (journald, Loki) is where
+			// several relayer processes lose the file boundary that used to tell
+			// their lines apart.
+			//
+			// It sits after validation and before the prover load on purpose: the
+			// two checks above report a config the operator can read back from the
+			// file, so a path label would add nothing, while every line from the
+			// prover onward comes from one of several processes.
+			// Shadowing `logger` is deliberate: every builder and lifecycle line
+			// below takes it from here, so the scoped logger reaches them without
+			// anyone having to remember to pass the right one.
+			logger := stampRelayPath(logger, relayPathID(cfg))
+
 			// Load the prover once and share it across every source loop — the
 			// bucket registry (r1cs/pk/vk) is read-only after load, so concurrent
 			// GenerateProof calls are safe. On a GPU backend the calls serialize

@@ -485,6 +485,7 @@ func TestDecodeCosmosPacketsFromEvents(t *testing.T) {
 			EVENT_TX_HEIGHT_FIELD:        {"44"},
 		},
 		"test",
+		"",
 	)
 
 	if len(packets) != 4 {

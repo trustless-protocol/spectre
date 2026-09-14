@@ -959,7 +959,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 
 	log.Printf("[SendCosmosTxBatch] Tx confirmed at height %d hash=%s (msgs=%d)", txResult.Height, txResult.Hash.String(), len(sdkMsgs))
 	if benchEnabled {
-		log.Printf("[bench][cosmos] batch msgs=%d gasWanted=%d gasUsed=%d broadcast=%s height=%d hash=%s",
+		log.Printf("[bench] cosmos batch msgs=%d gasWanted=%d gasUsed=%d broadcast=%s height=%d hash=%s",
 			len(sdkMsgs), txResult.TxResult.GasWanted, txResult.TxResult.GasUsed,
 			broadcastDur, txResult.Height, txResult.Hash.String())
 	}
@@ -1037,7 +1037,7 @@ func (h *Handler) sendCosmosTxBatch(stdCtx context.Context, svcCtx services.Cosm
 
 	_, succCount, err := h.sendCosmosTxBatchWithSplitting(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence, allowSplit)
 	if benchEnabled {
-		log.Printf("[bench][cosmos] batch msgs=%d total=%s", len(msgs), time.Since(benchStart))
+		log.Printf("[bench] cosmos batch msgs=%d total=%s", len(msgs), time.Since(benchStart))
 	}
 	if err != nil {
 		if succCount > 0 {

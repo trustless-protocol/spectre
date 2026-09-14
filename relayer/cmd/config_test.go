@@ -155,3 +155,65 @@ func TestShippedExamplesCarryOnePathEach(t *testing.T) {
 		}
 	})
 }
+
+// The path is what the log prefix carries, so it has to be derivable from config
+// alone and stable for the life of the process. A1 makes that true by refusing a
+// config with more than one path.
+func TestRelayPathID(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  *appConfig
+		want string
+	}{
+		{
+			name: "cosmos to eth carries the source client id",
+			cfg:  &appConfig{CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "cosmoshub-1"}}},
+			want: "cosmos<->eth/cosmoshub-1",
+		},
+		{
+			// The rollup names itself: an operator running an OP and an Arbitrum
+			// path needs to tell the two apart, and "l2" does not.
+			name: "cosmos to l2 names the rollup from the return leg",
+			cfg: &appConfig{
+				CosmosToL2Configs: []cosmosToEthConfig{{ICS26ClientID: "cosmoshub-1"}},
+				L2ToCosmosConfigs: []l2ToCosmosConfig{{AttestorSrcChain: "arbitrum"}},
+			},
+			want: "cosmos<->arbitrum/cosmoshub-1",
+		},
+		{
+			name: "cosmos to l2 without a return leg still identifies the path",
+			cfg:  &appConfig{CosmosToL2Configs: []cosmosToEthConfig{{ICS26ClientID: "cosmoshub-1"}}},
+			want: "cosmos<->l2/cosmoshub-1",
+		},
+		{
+			name: "return leg only",
+			cfg:  &appConfig{L2ToCosmosConfigs: []l2ToCosmosConfig{{AttestorSrcChain: "opstack"}}},
+			want: "opstack->cosmos",
+		},
+		{
+			// Never empty: an empty prefix would silently drop the identity from
+			// every line rather than being obviously wrong.
+			name: "nothing configured still yields a label",
+			cfg:  &appConfig{},
+			want: "relayer",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := relayPathID(tc.cfg); got != tc.want {
+				t.Fatalf("relayPathID = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Two processes relaying cosmos->eth from different source clients are a valid
+// deployment, and their lines are merged by journald or Loki with no file
+// boundary left. The prefix is the only thing that tells them apart, so it must
+// actually differ.
+func TestRelayPathIDDistinguishesTwoCosmosSources(t *testing.T) {
+	a := relayPathID(&appConfig{CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "cosmoshub-1"}}})
+	b := relayPathID(&appConfig{CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "osmosis-1"}}})
+	if a == b {
+		t.Fatalf("both sources produced %q; merged logs cannot be told apart", a)
+	}
+}

@@ -179,12 +179,12 @@ func (s *Services) logRoutineQueueLines(now time.Time, state queueState) {
 
 func (s *Services) logQueueAttention(state queueState) {
 	if state.cosmosTimeoutDead > 0 || state.ethTimeoutDead > 0 || state.l2TimeoutDead > 0 {
-		log.Printf("[QueueState][ATTENTION] timeout submission gave up for cosmos=%d eth=%d l2=%d packet(s) (oldest: cosmos=%s eth=%s l2=%s); their escrowed funds require operator action.",
+		log.Printf("[QueueState] ATTENTION: timeout submission gave up for cosmos=%d eth=%d l2=%d packet(s) (oldest: cosmos=%s eth=%s l2=%s); their escrowed funds require operator action.",
 			state.cosmosTimeoutDead, state.ethTimeoutDead, state.l2TimeoutDead,
 			state.cosmosTimeoutDeadAge.Truncate(time.Second), state.ethTimeoutDeadAge.Truncate(time.Second), state.l2TimeoutDeadAge.Truncate(time.Second))
 	}
 	if state.cosmosStuck > 0 || state.ethStuck > 0 || state.l2Stuck > 0 {
-		log.Printf("[QueueState][ATTENTION] timeout deferrals are stuck for cosmos=%d eth=%d l2=%d packet(s) (most deferrals: cosmos=%d eth=%d l2=%d); check counterparty RPC and light-client health.",
+		log.Printf("[QueueState] ATTENTION: timeout deferrals are stuck for cosmos=%d eth=%d l2=%d packet(s) (most deferrals: cosmos=%d eth=%d l2=%d); check counterparty RPC and light-client health.",
 			state.cosmosStuck, state.ethStuck, state.l2Stuck,
 			state.cosmosWorstDeferrals, state.ethWorstDeferrals, state.l2WorstDeferrals)
 	}

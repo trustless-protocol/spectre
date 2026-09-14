@@ -336,7 +336,7 @@ func (s *Subscriber) processLiveCosmosEvent(
 
 	liveHealth.recordEvent()
 
-	packets := decodeCosmosPacketsFromEvents(ctx.Logger, e.Data, e.Events, "SubscribeCosmos")
+	packets := decodeCosmosPacketsFromEvents(ctx.Logger, e.Data, e.Events, "SubscribeCosmos", "")
 	stats, err := enqueueCosmosPackets(stdCtx, ctx, batchBuilder, packets, seenEvents, false)
 	if err != nil {
 		ctx.Logger.Printf("[SubscribeCosmos] live enqueue failed: %v", err)
@@ -450,7 +450,7 @@ func (s *Subscriber) recoverCosmosGapToLatest(
 	// which a packet can be lost outright.
 	stale, silence, report := liveHealth.livePathStale(liveHealth.observeChainHeight(latestHeight), time.Now())
 	if report {
-		ctx.Logger.Printf("[SubscribeCosmos][ATTENTION] live subscription has delivered nothing for %s "+
+		ctx.Logger.Printf("[SubscribeCosmos] ATTENTION: live subscription has delivered nothing for %s "+
 			"while the chain advanced to height %d (%d live event(s) this run). Gap recovery is the "+
 			"BACKSTOP, not the delivery path -- it stops short of the head, so a packet in the newest "+
 			"blocks can still be missed. Reconnecting.",
@@ -591,7 +591,7 @@ func recoverCosmosEventsForQuery(
 				continue
 			}
 			data, events := cosmosEventsFromTxResult(tx)
-			packets := decodeCosmosPacketsFromEvents(ctx.Logger, data, events, "SubscribeCosmos][recovery")
+			packets := decodeCosmosPacketsFromEvents(ctx.Logger, data, events, "SubscribeCosmos", "recovery:")
 			enqueued, err := enqueueCosmosPackets(stdCtx, ctx, batchBuilder, packets, seenEvents, true)
 			stats.recovered += enqueued.recovered
 			stats.skipped += enqueued.skipped
@@ -643,7 +643,16 @@ func decodeCosmosPacketsFromEvents(
 	data commettypes.TMEventData,
 	events map[string][]string,
 	logPrefix string,
+	phase string,
 ) []services.CosmosPacket {
+	// One bracketed label, with the phase composed INSIDE it rather than as a
+	// second pair of brackets. `[a][b]` reads as a second tier that the label
+	// vocabulary does not have; `[a] b` keeps one tier and still says which pass
+	// produced the line.
+	label := "[" + logPrefix + "]"
+	if phase != "" {
+		label += " " + phase
+	}
 	if logger == nil {
 		logger = log.Default()
 	}
@@ -655,18 +664,18 @@ func decodeCosmosPacketsFromEvents(
 	for _, packetEncodedStr := range sendPacketEvent {
 		packetBytes, err := hex.DecodeString(packetEncodedStr)
 		if err != nil {
-			logger.Printf("[%s] send_packet: failed to decode hex: %v", logPrefix, err)
+			logger.Printf("%s send_packet: failed to decode hex: %v", label, err)
 			continue
 		}
 
 		var packet channeltypesv2.Packet
 		err = proto.Unmarshal(packetBytes, &packet)
 		if err != nil {
-			logger.Printf("[%s] send_packet: failed to unmarshal: %v", logPrefix, err)
+			logger.Printf("%s send_packet: failed to unmarshal: %v", label, err)
 			continue
 		}
 
-		logger.Printf("[%s] send_packet received: seq=%d src=%s",
+		logger.Printf("%s send_packet received: seq=%d src=%s",
 			logPrefix, packet.Sequence, packet.SourceClient)
 		packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
 		packets = append(packets, services.CosmosPacket{
@@ -680,26 +689,26 @@ func decodeCosmosPacketsFromEvents(
 	ackEvent := events[EVENT_ACKNOWLEDGEMENT_FIELD]
 	if len(ackPacketEvent) != 0 || len(ackEvent) != 0 {
 		if len(ackPacketEvent) != len(ackEvent) {
-			logger.Printf("[%s] write_ack: packet/ack count mismatch (%d vs %d), skipping",
+			logger.Printf("%s write_ack: packet/ack count mismatch (%d vs %d), skipping",
 				logPrefix, len(ackPacketEvent), len(ackEvent))
 		} else {
 			for i := range ackPacketEvent {
 				packetBytes, err := hex.DecodeString(ackPacketEvent[i])
 				if err != nil {
-					logger.Printf("[%s] write_ack: failed to decode packet hex: %v", logPrefix, err)
+					logger.Printf("%s write_ack: failed to decode packet hex: %v", label, err)
 					continue
 				}
 
 				var packet channeltypesv2.Packet
 				err = proto.Unmarshal(packetBytes, &packet)
 				if err != nil {
-					logger.Printf("[%s] write_ack: failed to unmarshal packet: %v", logPrefix, err)
+					logger.Printf("%s write_ack: failed to unmarshal packet: %v", label, err)
 					continue
 				}
 
 				ackBytes, err := hex.DecodeString(ackEvent[i])
 				if err != nil {
-					logger.Printf("[%s] write_ack seq=%d: failed to decode ack hex: %v",
+					logger.Printf("%s write_ack seq=%d: failed to decode ack hex: %v",
 						logPrefix, packet.Sequence, err)
 					continue
 				}
@@ -707,16 +716,16 @@ func decodeCosmosPacketsFromEvents(
 				var acknowledgement channeltypesv2.Acknowledgement
 				err = proto.Unmarshal(ackBytes, &acknowledgement)
 				if err != nil {
-					logger.Printf("[%s] write_ack seq=%d: failed to unmarshal ack: %v",
+					logger.Printf("%s write_ack seq=%d: failed to unmarshal ack: %v",
 						logPrefix, packet.Sequence, err)
 					continue
 				}
 				if len(acknowledgement.AppAcknowledgements) == 0 {
-					logger.Printf("[%s] write_ack seq=%d: missing app acknowledgements", logPrefix, packet.Sequence)
+					logger.Printf("%s write_ack seq=%d: missing app acknowledgements", label, packet.Sequence)
 					continue
 				}
 
-				logger.Printf("[%s] write_ack received: seq=%d src=%s",
+				logger.Printf("%s write_ack received: seq=%d src=%s",
 					logPrefix, packet.Sequence, packet.SourceClient)
 				packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
 				packets = append(packets, services.CosmosPacket{
@@ -733,18 +742,18 @@ func decodeCosmosPacketsFromEvents(
 	for _, packetEncodedStr := range timeoutPacketEvent {
 		packetBytes, err := hex.DecodeString(packetEncodedStr)
 		if err != nil {
-			logger.Printf("[%s] timeout: failed to decode hex: %v", logPrefix, err)
+			logger.Printf("%s timeout: failed to decode hex: %v", label, err)
 			continue
 		}
 
 		var packet channeltypesv2.Packet
 		err = proto.Unmarshal(packetBytes, &packet)
 		if err != nil {
-			logger.Printf("[%s] timeout: failed to unmarshal: %v", logPrefix, err)
+			logger.Printf("%s timeout: failed to unmarshal: %v", label, err)
 			continue
 		}
 
-		logger.Printf("[%s] timeout received: seq=%d src=%s",
+		logger.Printf("%s timeout received: seq=%d src=%s",
 			logPrefix, packet.Sequence, packet.SourceClient)
 		packet.TimeoutTimestamp = normalizeTimeoutSeconds(packet.TimeoutTimestamp)
 		packets = append(packets, services.CosmosPacket{

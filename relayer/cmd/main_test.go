@@ -1,11 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestValidateStartupKeysRejectsInvalidCosmosAddressPrefix(t *testing.T) {
@@ -652,5 +660,142 @@ func TestLoadConfigAcceptsEthToCosmosWithWs(t *testing.T) {
 	}
 	if err := validateRelayStartupConfig(appCfg); err != nil {
 		t.Fatalf("start rejected a complete config: %v", err)
+	}
+}
+
+// The prefix has to land AFTER the timestamp. Without log.Lmsgprefix the
+// standard logger writes it first, so every line starts with the path and the
+// times stop lining up as a column — which is how a merged log is actually read.
+func TestStampRelayPathOnLogsPutsThePathAfterTheTimestamp(t *testing.T) {
+	origFlags, origPrefix := log.Flags(), log.Prefix()
+	origOut := log.Writer()
+	t.Cleanup(func() {
+		log.SetFlags(origFlags)
+		log.SetPrefix(origPrefix)
+		log.SetOutput(origOut)
+	})
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	stampRelayPath(zap.NewNop(), "cosmos<->eth/cosmoshub-1")
+	log.Printf("[Subscribe] send_packet received: seq=7")
+
+	line := buf.String()
+	if !strings.Contains(line, "[cosmos<->eth/cosmoshub-1]") {
+		t.Fatalf("line %q does not carry the path", line)
+	}
+	if !strings.Contains(line, "[Subscribe] send_packet received: seq=7") {
+		t.Fatalf("line %q lost the original message", line)
+	}
+	pathAt := strings.Index(line, "[cosmos<->eth/cosmoshub-1]")
+	if pathAt == 0 {
+		t.Fatalf("the path is written before the timestamp; log.Lmsgprefix is missing: %q", line)
+	}
+	// The timestamp must be everything before the path, not a substring of it.
+	if stamp := strings.TrimSpace(line[:pathAt]); stamp == "" {
+		t.Fatalf("nothing precedes the path, so the timestamp was dropped: %q", line)
+	}
+}
+
+// The other half of the same call: the injected zap logger must carry the path
+// too. Found in review -- the first version stamped only log.Default(), so every
+// lifecycle line Start emits through zap ("Relayer started", "shutdown
+// requested", "clients stopped") stayed unattributable in a merged log, and the
+// test then in place only looked at log.Prefix() so it could not see that.
+func TestStampRelayPathScopesTheZapLoggerToo(t *testing.T) {
+	origFlags, origPrefix, origOut := log.Flags(), log.Prefix(), log.Writer()
+	t.Cleanup(func() {
+		log.SetFlags(origFlags)
+		log.SetPrefix(origPrefix)
+		log.SetOutput(origOut)
+	})
+	log.SetOutput(&bytes.Buffer{})
+
+	core, logs := observer.New(zapcore.InfoLevel)
+	scoped := stampRelayPath(zap.New(core), "cosmos<->eth/cosmoshub-1")
+	scoped.Info("Relayer started")
+
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	got, ok := entries[0].ContextMap()[relayPathLogField]
+	if !ok {
+		t.Fatalf("the zap line carries no %q field: %+v; a merged log cannot attribute it "+
+			"to a relay path", relayPathLogField, entries[0].ContextMap())
+	}
+	if got != "cosmos<->eth/cosmoshub-1" {
+		t.Fatalf("%s = %v, want the relay path", relayPathLogField, got)
+	}
+}
+
+// Two label families are the target: [<direction> <Work>] and the closed
+// lowercase list. Neither can contain "][", which is how a caller fakes a second
+// tier when the function it calls is missing a parameter (subscriber/event.go
+// passed "SubscribeCosmos][recovery" as a label). This fails on the forgery, not
+// on the confusing log line it produces months later.
+//
+// [ATTENTION] is exempt, and is the one exemption. It is not a forged label: it
+// is a fixed severity tier this repository already uses in 12 files, arriving
+// over #377, #395, #415 and #457, and it is written the way this test asks for --
+// the label is a parameter, the tier a literal after it. Forbidding it would mean
+// rewriting a settled convention to satisfy a gate aimed at something else.
+func TestNoLogLabelForgesASecondTier(t *testing.T) {
+	root := ".."
+	var offenders []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if name := info.Name(); name == "bindings" || name == "third_party" || name == "bin" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.Contains(line, "][") || strings.HasPrefix(trimmed, "//") {
+				// A comment describing a past forgery is not one.
+				continue
+			}
+			// "][" is ordinary Go outside a string literal (`map[k][]byte`,
+			// `x[i][j]`). Only a quoted occurrence is a forged label.
+			quoted := strings.SplitN(line, `"`, 2)
+			if len(quoted) != 2 {
+				continue
+			}
+			// Drop the one allowed tier before looking, so "[%s][ATTENTION][x]"
+			// is still caught: only the exemption itself is removed, not the line.
+			if rest := strings.ReplaceAll(quoted[1], "][ATTENTION]", "]"); strings.Contains(rest, "][") {
+				offenders = append(offenders, fmt.Sprintf("%s:%d: %s", path, i+1, trimmed))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("log labels forging a second tier:\n%s\n\nA label that needs a second level needs a "+
+			"parameter, not a closing bracket in the middle of the format string.", strings.Join(offenders, "\n"))
+	}
+}
+
+// The two noise words are gone and must stay gone: the direction is already the
+// label (or the process prefix), so "relay" and "adapter" said nothing.
+func TestNoLogLabelRepeatsTheLayerName(t *testing.T) {
+	for _, banned := range []string{`"[relay `, `"[adapter `, `"\n[relay `, `"\n[adapter `} {
+		out, err := exec.Command("grep", "-rl", "--include=*.go", banned, "..").Output()
+		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+			t.Errorf("label %q is back in:\n%s", strings.TrimSpace(banned), out)
+		}
 	}
 }

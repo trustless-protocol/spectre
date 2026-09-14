@@ -185,7 +185,7 @@ func deriveCosmosRefreshInterval(cfg Config, trustingPeriod time.Duration) (time
 		)
 	}
 	if configured >= maxInterval {
-		log.Printf("[Routine] Default refresh interval %s exceeds safe interval %s; deriving from on-chain trusting period %s",
+		log.Printf("[start] Default refresh interval %s exceeds safe interval %s; deriving from on-chain trusting period %s",
 			configured, maxInterval, trustingPeriod)
 		return maxInterval, nil
 	}

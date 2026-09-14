@@ -259,7 +259,7 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 				// the signer's gas (the legacy routineBackoff). Never slower than the
 				// normal cadence (guards a configuration with a shorter interval).
 				backoff = nextPeriodicUpdateBackoff(backoff)
-				log.Printf("[relay %s] periodic update: %v; retrying after %s", m.name, err, backoff)
+				log.Printf("[%s] periodic update: %v; retrying after %s", m.name, err, backoff)
 				next = min(backoff, m.periodicUpdateInterval)
 			} else {
 				backoff = 0 // success resets the backoff
@@ -391,7 +391,7 @@ func (m *Module) refreshLoop(ctx context.Context) {
 			}
 			expiresAt, trustingPeriod, err := m.dst.ClientExpiresAt(ctx, m.clientID)
 			if err != nil {
-				log.Printf("[relay %s] query client expiry: %v", m.name, err)
+				log.Printf("[%s] query client expiry: %v", m.name, err)
 				continue
 			}
 			if !needsRefresh(expiresAt, time.Now(), trustingPeriod) {
@@ -399,11 +399,11 @@ func (m *Module) refreshLoop(ctx context.Context) {
 			}
 			latest, err := m.src.LatestHeight(ctx)
 			if err != nil {
-				log.Printf("[relay %s] latest source height for refresh: %v", m.name, err)
+				log.Printf("[%s] latest source height for refresh: %v", m.name, err)
 				continue
 			}
 			if err := m.updateClientTo(ctx, latest); err != nil {
-				log.Printf("[relay %s] refresh update to %d: %v", m.name, latest, err)
+				log.Printf("[%s] refresh update to %d: %v", m.name, latest, err)
 			}
 		}
 	}

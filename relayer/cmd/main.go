@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"sync/atomic"
 	"time"
 
@@ -150,6 +151,38 @@ func awaitRelayExit(
 		return nil
 	}
 }
+
+// stampRelayPathOnLogs prefixes every standard-library log line with the relay
+// path this process serves.
+//
+// It reaches every relay-path log line in one call because they all go through
+// the standard logger: services and subscriber take an injected *log.Logger, and
+// the composition root passes log.Default() (cmd/build_source.go,
+// cmd/build_cosmos_to_l2.go) -- there is no log.New anywhere in the tree. zap is
+// used only in cmd/ for startup and CLI messages, which already name the path.
+//
+// Lmsgprefix is not optional: without it the standard logger writes the prefix
+// BEFORE the timestamp, so every line would start with the path and the times
+// would no longer line up when read as a column.
+// stampRelayPath labels BOTH loggers with the relay path and returns the
+// path-scoped zap logger the caller must use from then on.
+//
+// One function rather than two calls, because the first version stamped only
+// log.Default() and every line the injected *zap.Logger emitted after it stayed
+// unattributable -- "Relayer started", "shutdown requested", "clients stopped".
+// Found in review. Splitting it into a stamp and a separate logger.With() would
+// leave the same half-done state one forgotten line away, whereas a function
+// that returns the scoped logger cannot be half-used: the caller either takes
+// the return value or has nothing to log with.
+func stampRelayPath(logger *zap.Logger, pathID string) *zap.Logger {
+	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
+	log.SetPrefix("[" + pathID + "] ")
+	return logger.With(zap.String(relayPathLogField, pathID))
+}
+
+// relayPathLogField is the structured key; the stdlib side has no fields and
+// carries the same value as a message prefix instead.
+const relayPathLogField = "relay_path"
 
 // logShutdownFailure reports a shutdown that overran its budget on a path whose
 // return value is already carrying a more actionable error (a build failure, or

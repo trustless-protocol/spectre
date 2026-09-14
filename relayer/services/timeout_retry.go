@@ -47,7 +47,7 @@ func deferTimeoutRetries(tracker *PendingPacketTracker, pending []pendingPacketI
 	for i, info := range pending {
 		deferrals := deferralCounts[i]
 		if deferralIsStuck(deferrals) {
-			log.Printf("[%s][STUCK] seq=%d has deferred timeout %d times; funds remain escrowed", tag, info.Packet.Sequence, deferrals)
+			log.Printf("[%s] STUCK: seq=%d has deferred timeout %d times; funds remain escrowed", tag, info.Packet.Sequence, deferrals)
 		}
 	}
 	return true

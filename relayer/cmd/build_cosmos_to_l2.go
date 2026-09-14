@@ -157,7 +157,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 	trackCosmosPending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[adapter cosmos->l2] track pending: decode packet: %v", err)
+			log.Printf("[cosmos->l2] track pending: decode packet: %v", err)
 			return false
 		}
 		return svc.TrackCosmosPending(pkt, height)
@@ -165,7 +165,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 	untrackCosmosPending := func(raw []byte) {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[adapter cosmos->l2] untrack pending: decode packet: %v", err)
+			log.Printf("[cosmos->l2] untrack pending: decode packet: %v", err)
 			return
 		}
 		svc.UntrackCosmosPending(pkt)
@@ -185,7 +185,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		if isShutdownErr(err) && ctx.Err() != nil {
 			return nil
 		}
-		log.Printf("[adapter cosmos->l2] derive initial rotation delay: %v; rotating on startup", err)
+		log.Printf("[cosmos->l2] derive initial rotation delay: %v; rotating on startup", err)
 		initialRotationDelay = 0
 	}
 
