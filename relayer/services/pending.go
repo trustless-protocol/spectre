@@ -670,7 +670,19 @@ func (t *PendingPacketTracker) OldestDeadLetteredTimeout(now time.Time) time.Dur
 }
 
 // DeadLetteredTimeoutPackets returns the dead-lettered packets without removing
-// them, so a status endpoint can list what needs intervention.
+// them, so an operator can see WHICH packets need intervention rather than only
+// how many.
+//
+// The count and the age (DeadLetteredTimeouts, OldestDeadLetteredTimeout) answer
+// "is something stuck" and "for how long". Neither answers "which", and the
+// difference is not cosmetic: a packet's identity is source client PLUS
+// sequence -- see packetIdentity and the note on pendingPacketInfo -- while the
+// one log line emitted at dead-letter time carries the sequence alone. With more
+// than one client in play, a non-zero gauge and a full log cannot together name
+// the packet whose funds are escrowed. This can.
+//
+// Returned by value: the caller gets a copy it cannot use to mutate tracker
+// state, and reading is not allowed to clear the alarm.
 func (t *PendingPacketTracker) DeadLetteredTimeoutPackets() []channeltypesv2.Packet {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()

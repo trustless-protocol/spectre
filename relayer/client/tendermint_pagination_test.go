@@ -65,7 +65,7 @@ func TestFetchAllValidators_PagesFullSet(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakePager{all: makeVals(tc.total)}
-			got, err := fetchAllValidators(f, 42)
+			got, err := fetchAllValidators(context.Background(), f, 42)
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -86,7 +86,7 @@ func TestFetchAllValidators_PagesFullSet(t *testing.T) {
 
 func TestFetchAllValidators_PropagatesError(t *testing.T) {
 	f := &fakePager{all: makeVals(150), failOnPage: 2}
-	_, err := fetchAllValidators(f, 42)
+	_, err := fetchAllValidators(context.Background(), f, 42)
 	if err == nil {
 		t.Fatal("expected error when a page fetch fails, got nil")
 	}

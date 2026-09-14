@@ -167,6 +167,7 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 					return fmt.Errorf("update-client: reached --max-hops=%d without catching up", maxHops)
 				}
 				result, err := worker.BuildCosmosClientUpdateMsg(
+					cmd.Context(),
 					deps.Cosmos,
 					deps.EVM,
 					cosmosConfig.FetchTimeout,

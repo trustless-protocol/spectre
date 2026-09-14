@@ -41,19 +41,16 @@ func (s *Services) ScanL2Timeouts(stdCtx context.Context, cosmos CosmosEndpoint,
 }
 
 // TrackCosmosPending records a Cosmos-origin packet just recv-relayed to ETH so
-// ScanCosmosTimeouts can later refund it if it expires undelivered. Mirrors the
-// PendingTracker.Add that handleCosmos performs in the StartLoop path. False
-// means the durable state write failed and the source event must be retried.
+// ScanCosmosTimeouts can later refund it if it expires undelivered. False means
+// the durable state write failed and the source event must be retried.
 func (s *Services) TrackCosmosPending(packet channeltypesv2.Packet, blockNumber uint64) bool {
 	return s.BatchBuilder.PendingTracker.Add(packet, blockNumber)
 }
 
 // UntrackCosmosPending removes a Cosmos-origin packet from the pending tracker
 // once it has been successfully received on ETH — it can no longer time out, so
-// the timeout scanner need not keep querying its receipt. Mirrors the
-// PendingTracker.Remove-on-recv that handleCosmos performs in the StartLoop path.
-// If persistence fails, the packet remains tracked and the failure is logged for
-// operator attention.
+// the timeout scanner need not keep querying its receipt. If persistence fails,
+// the packet remains tracked and the failure is logged for operator attention.
 func (s *Services) UntrackCosmosPending(packet channeltypesv2.Packet) {
 	if err := s.BatchBuilder.PendingTracker.RemovePacketIfCurrent(packet); err != nil {
 		log.Printf("[Services][ATTENTION] failed to persist removal of settled Cosmos packet seq=%d: %v", packet.Sequence, err)
@@ -85,7 +82,7 @@ func (s *Services) Worker() *Worker { return s.worker }
 
 // CosmosConfig exposes the resolved Cosmos-source config (ProofType, TrustLevel,
 // BatchConfig, …) so the adapter wiring can build the groth16 client-update
-// builder with the same parameters StartLoop uses.
+// builder from the same resolved config the rest of the path uses.
 func (s *Services) CosmosConfig() Config { return s.cosmosConfig }
 
 // RotatePinnedSet force-rotates the on-chain SpectreClient's pinned
@@ -113,7 +110,7 @@ func (s *Services) RotatePinnedSet(stdCtx context.Context, cosmos CosmosEndpoint
 func (s *Services) PinnedSetRotationInterval(stdCtx context.Context, evm EVMEndpoint) (time.Duration, error) {
 	readCtx, cancel := fetchCtx(stdCtx, s.cosmosConfig.FetchTimeout)
 	defer cancel()
-	clientState, err := fetchOnChainClientStateWithContext(readCtx, evm)
+	clientState, err := fetchOnChainClientState(readCtx, evm)
 	if err != nil {
 		return 0, err
 	}
@@ -134,14 +131,14 @@ func (s *Services) PinnedSetRotationDueIn(stdCtx context.Context, cosmos CosmosE
 		return 0, err
 	}
 	readCtx, cancel := fetchCtx(stdCtx, s.cosmosConfig.FetchTimeout)
-	trustedHeight, err := FetchOnChainTrustedHeightWithContext(readCtx, evm)
+	trustedHeight, err := FetchOnChainTrustedHeight(readCtx, evm)
 	cancel()
 	if err != nil {
 		return 0, err
 	}
 	lightCtx, cancelLight := fetchCtx(stdCtx, s.cosmosConfig.FetchTimeout)
 	defer cancelLight()
-	lightBlock, err := client.GetLightBlockWithContext(lightCtx, cosmos.CosmosClient(), trustedHeight)
+	lightBlock, err := client.GetLightBlock(lightCtx, cosmos.CosmosClient(), trustedHeight)
 	if err != nil {
 		return 0, err
 	}
@@ -160,8 +157,10 @@ func (s *Services) PinnedSetRotationDueIn(stdCtx context.Context, cosmos CosmosE
 // SeedEVMOnCosmosUpdate records the timestamp already trusted by the on-chain
 // beacon client so the first queue report is useful even before packet traffic
 // or a refresh advances it in this process.
-func (s *Services) SeedEVMOnCosmosUpdate(cosmos CosmosEndpoint, ethClientID string) error {
-	state, err := client.GetEthereumClientState(cosmos.CosmosClient(), ethClientID)
+func (s *Services) SeedEVMOnCosmosUpdate(stdCtx context.Context, cosmos CosmosEndpoint, ethClientID string) error {
+	readCtx, cancel := fetchCtx(stdCtx, s.cosmosConfig.FetchTimeout)
+	defer cancel()
+	state, err := client.GetEthereumClientState(readCtx, cosmos.CosmosClient(), ethClientID)
 	if err != nil {
 		return err
 	}

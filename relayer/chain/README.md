@@ -64,21 +64,30 @@ Adapters tag their errors: e.g. a source's `MembershipProof` returns
 `RelayPackets` wraps `services.ErrPermanentRelayFailure` (on-chain revert) as
 `chain.Permanent`.
 
-## Adding a chain = register + config, zero core edits
+## Adding a chain = a package here, plus one branch at the composition root
+
+Adapters are constructed **directly**, by their own package's constructor, in
+`cmd/`. There is no registry and no factory indirection:
 
 ```go
-func init() {
-    chain.RegisterSource(chain.OPStack, newOptimismSource)
-    chain.RegisterDestination(chain.OPStack, newOptimismDestination)
-    chain.RegisterClientUpdateBuilder("l2-opstack", newOPStackBuilder)
-}
+// cmd/build_l2_source.go
+source := l2rollup.NewSource(cfg.kind, l2, headKind, /* ... */)
+dest := l2rollup.NewDestination(worker, svcCtx, cfg.L2WasmClientID)
+builder := l2rollup.NewBuilder(headerBuilder)
 ```
 
-Config selects adapters by `src_chain` / `dst_chain` (a `ChainType`) and
-`builder` (a name). An unregistered name fails loudly at startup
-(`UnknownAdapterError`). (The Cosmos↔ETH adapters are currently wired directly by
-`cmd/run_adapters.go` because they need the shared `services` context/worker; the
-cfg-only registry is for the pure-config L2 adapters.)
+`ChainType` still selects the branch — `src_chain` / `dst_chain` in config
+resolve to one — but the branch calls the constructor rather than looking up a
+factory. Adding a chain means adding a package under `chain/` and one branch in
+`cmd/`; `relay/` does not change, which is the property that matters.
+
+A registry (`RegisterSource` / `RegisterDestination` /
+`RegisterClientUpdateBuilder` / `UnknownAdapterError`) was built for this and
+never wired to anything: no caller, no writer, no reader, at any link in the
+chain. Both shapes satisfy the requirement, so the one that was actually running
+stayed and the other was deleted rather than left as a second way to do the same
+thing. Constructors also take the shared `services` context and worker, which a
+cfg-only factory could not.
 
 ## Principle: wrap, don't rewrite
 

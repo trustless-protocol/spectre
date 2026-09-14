@@ -130,7 +130,7 @@ func NewWithPendingState(txHandler TransactionHandler, prover Prover, cosmosConf
 // logging), so the relay module's refresh routine can poll it periodically.
 func CosmosClientExpiry(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint) (time.Time, time.Duration, error) {
 	readCtx, cancelRead := fetchCtx(stdCtx, defaultFetchTimeout)
-	clientState, err := fetchOnChainClientStateWithContext(readCtx, evm)
+	clientState, err := fetchOnChainClientState(readCtx, evm)
 	cancelRead()
 	if err != nil {
 		return time.Time{}, 0, err
@@ -141,7 +141,7 @@ func CosmosClientExpiry(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEn
 	}
 	lightCtx, cancelLight := fetchCtx(stdCtx, defaultFetchTimeout)
 	defer cancelLight()
-	lightBlock, err := client.GetLightBlockWithContext(lightCtx, cosmos.CosmosClient(), trustedHeight)
+	lightBlock, err := client.GetLightBlock(lightCtx, cosmos.CosmosClient(), trustedHeight)
 	if err != nil {
 		return time.Time{}, 0, fmt.Errorf("cosmos client expiry: trusted light block %d: %w", trustedHeight, err)
 	}
@@ -489,7 +489,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 		func() (*client.EthereumClientState, error) {
 			readCtx, cancel := fetchCtx(stdCtx, defaultFetchTimeout)
 			defer cancel()
-			return client.GetEthereumClientStateWithContext(readCtx, cosmos.CosmosClient(), ethClientID)
+			return client.GetEthereumClientState(readCtx, cosmos.CosmosClient(), ethClientID)
 		},
 	)
 	if !ok {
@@ -697,7 +697,7 @@ func (s *Services) buildCosmosTimeoutMsg(stdCtx context.Context, evm EVMEndpoint
 func CosmosMembership(stdCtx context.Context, ctx CosmosEndpoint, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {
 	height := latestLightBlock.BlockHeight
 	ibcPath := utils.IbcPath(clientID, packet.Sequence, pathType)
-	value, proof, err := client.ProvePathWithContext(stdCtx, ctx.CosmosClient(), height, ibcPath)
+	value, proof, err := client.ProvePath(stdCtx, ctx.CosmosClient(), height, ibcPath)
 	if err != nil {
 		return nil, err
 	}
@@ -741,7 +741,7 @@ func CosmosMembership(stdCtx context.Context, ctx CosmosEndpoint, packet channel
 func CosmosNonMembership(stdCtx context.Context, ctx CosmosEndpoint, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {
 	height := latestLightBlock.BlockHeight
 	ibcPath := utils.IbcPath(clientID, packet.Sequence, pathType)
-	value, proof, err := client.ProvePathWithContext(stdCtx, ctx.CosmosClient(), height, ibcPath)
+	value, proof, err := client.ProvePath(stdCtx, ctx.CosmosClient(), height, ibcPath)
 	if err != nil {
 		return nil, err
 	}

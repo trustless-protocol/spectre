@@ -208,11 +208,7 @@ func hasPendingCosmosPacketCommitment(stdCtx context.Context, ctx ethDeps, packe
 
 // HasCosmosPacketReceipt is retained for one-shot callers. Long-running relay
 // paths must call HasCosmosPacketReceiptWithContext.
-func HasCosmosPacketReceipt(endpoint services.CosmosEndpoint, packet channeltypesv2.Packet) (bool, error) {
-	return HasCosmosPacketReceiptWithContext(context.Background(), endpoint, packet)
-}
-
-func HasCosmosPacketReceiptWithContext(stdCtx context.Context, endpoint services.CosmosEndpoint, packet channeltypesv2.Packet) (bool, error) {
+func HasCosmosPacketReceipt(stdCtx context.Context, endpoint services.CosmosEndpoint, packet channeltypesv2.Packet) (bool, error) {
 	return hasCosmosIBCPathValue(stdCtx, endpoint, utils.IbcPath(packet.DestinationClient, packet.Sequence, []byte{2}))
 }
 
@@ -256,7 +252,7 @@ func recoverEthSendPackets(
 
 		cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 
-		received, err := HasCosmosPacketReceiptWithContext(stdCtx, ctx.Cosmos, cosmosPacket)
+		received, err := HasCosmosPacketReceipt(stdCtx, ctx.Cosmos, cosmosPacket)
 		if err != nil {
 			ctx.Logger.Printf("[SubscribeEth] recovery: seq=%d failed to check Cosmos packet receipt: %v",
 				cosmosPacket.Sequence, err)

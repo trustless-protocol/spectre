@@ -13,10 +13,10 @@ import (
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
 
-// runAdapterEngine drives one source's bidirectional relay using the chain-adapter
-// RelayModule instead of services.StartLoop. It is the cutover target: same
-// battle-tested pipeline (proof gen, gap recovery, timeout scanning) reused via
-// adapters, but orchestrated by the generic module.
+// runAdapterEngine drives one source's bidirectional relay through the generic
+// relay.Module. Proof generation, gap recovery and timeout scanning stay in
+// services and are reached through the chain adapters; the module owns only the
+// orchestration.
 //
 // Two modules run concurrently on a shared child context and the source's shared
 // services.BatchBuilder (SubscribeCosmos/SubscribeEth push to disjoint queues, so
@@ -57,11 +57,11 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		svc.UntrackCosmosPending(pkt)
 	}
 
-	// Pinned-set rotation cadence, derived from the on-chain trusting period (as
-	// the legacy routine did). A derivation failure is FATAL — the legacy StartLoop
-	// rejected an unsafe/underivable interval at startup rather than silently
-	// falling back to a fixed default that could exceed the trusting period and let
-	// the client expire. Fail loud so the operator fixes the config.
+	// Pinned-set rotation cadence, derived from the on-chain trusting period. A
+	// derivation failure is FATAL: an unsafe or underivable interval must be
+	// rejected at startup rather than silently replaced by a fixed default that
+	// could exceed the trusting period and let the client expire. Fail loud so the
+	// operator fixes the config.
 	periodicUpdateInterval, err := svc.PinnedSetRotationInterval(ctx, deps.EVM)
 	if err != nil {
 		if isShutdownErr(err) && ctx.Err() != nil {
@@ -81,7 +81,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		log.Printf("[adapter cosmos->eth] derive initial rotation delay: %v; rotating on startup", err)
 		initialRotationDelay = 0
 	}
-	if err := svc.SeedEVMOnCosmosUpdate(deps.Cosmos, deps.IDs.EVMOnCosmos); err != nil {
+	if err := svc.SeedEVMOnCosmosUpdate(ctx, deps.Cosmos, deps.IDs.EVMOnCosmos); err != nil {
 		log.Printf("[adapter eth->cosmos] seed client-update age: %v", err)
 	}
 
@@ -97,9 +97,8 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		}),
 		relay.WithPacketTracker(trackCosmosPending, untrackCosmosPending),
 		// Force-rotate the pinned validator set on a fixed cadence so it never
-		// decays below quorum during a quiet period (the guaranteed rotation the
-		// legacy StartLoop routine provided). ETH->Cosmos needs no equivalent —
-		// the beacon client has no pinned set.
+		// decays below quorum during a quiet period. ETH->Cosmos needs no
+		// equivalent — the beacon client has no pinned set.
 		relay.WithPeriodicUpdate(periodicUpdateInterval, initialRotationDelay, func(c context.Context) error {
 			return svc.RotatePinnedSet(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM)
 		}),

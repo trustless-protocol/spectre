@@ -59,7 +59,7 @@ func (s *Source) Chain() chain.ChainType { return chain.Cosmos }
 func (s *Source) LatestHeight(ctx context.Context) (uint64, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
 	defer cancel()
-	lb, err := relayerclient.GetLatestLightBlockWithContext(fetchCtx, s.cosmos.CosmosClient())
+	lb, err := relayerclient.GetLatestLightBlock(fetchCtx, s.cosmos.CosmosClient())
 	if err != nil {
 		return 0, fmt.Errorf("cosmos source: latest light block: %w", err)
 	}
@@ -106,7 +106,7 @@ func relayableFromLatest(latest uint64) uint64 {
 func (s *Source) QueryHeader(ctx context.Context, height uint64) ([]byte, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
 	defer cancel()
-	lb, err := relayerclient.GetLightBlockWithContext(fetchCtx, s.cosmos.CosmosClient(), int64(height))
+	lb, err := relayerclient.GetLightBlock(fetchCtx, s.cosmos.CosmosClient(), int64(height))
 	if err != nil {
 		return nil, fmt.Errorf("cosmos source: light block at %d: %w", height, err)
 	}
@@ -188,7 +188,7 @@ func (s *Source) decodePacketAndBlock(ctx context.Context, packet []byte, height
 	}
 	fetchCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
 	defer cancel()
-	lb, err := relayerclient.GetLightBlockWithContext(fetchCtx, s.cosmos.CosmosClient(), int64(height))
+	lb, err := relayerclient.GetLightBlock(fetchCtx, s.cosmos.CosmosClient(), int64(height))
 	if err != nil {
 		return channeltypesv2.Packet{}, nil, fmt.Errorf("cosmos source: light block at %d: %w", height, err)
 	}

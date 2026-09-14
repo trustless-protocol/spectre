@@ -146,7 +146,7 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 func (d *Destination) proofHeight(ctx context.Context) (clienttypes.Height, error) {
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	h, err := relayerclient.GetWasmClientLatestHeightWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
+	h, err := relayerclient.GetWasmClientLatestHeight(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return clienttypes.Height{}, fmt.Errorf("l2 dest: read L2 client latest height: %w", err)
 	}
@@ -160,7 +160,7 @@ func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool
 	if err := pkt.Unmarshal(packet); err != nil {
 		return false, fmt.Errorf("l2 dest: decode packet: %w", err)
 	}
-	return subscriber.HasCosmosPacketReceiptWithContext(ctx, d.cosmos, pkt)
+	return subscriber.HasCosmosPacketReceipt(ctx, d.cosmos, pkt)
 }
 
 // ClientExpiresAt reports when the L2 wasm client would expire on its own timer.

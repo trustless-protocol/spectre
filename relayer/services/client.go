@@ -179,7 +179,7 @@ func (w *Worker) RefreshCosmosClient(
 			return nil, err
 		}
 		readCtx, cancel := fetchCtx(stdCtx, fetchTimeout)
-		onChainTrusted, err := FetchOnChainTrustedHeightWithContext(readCtx, deps.evm)
+		onChainTrusted, err := FetchOnChainTrustedHeight(readCtx, deps.evm)
 		cancel()
 		if err != nil {
 			return nil, fmt.Errorf("[RefreshCosmosClient] fetch on-chain height: %w", err)
@@ -226,12 +226,8 @@ func getOnChainPinnedValidatorsHash(stdCtx context.Context, ctx EVMEndpoint) ([3
 // FetchOnChainTrustedHeight reads the ICS07 client state on ETH and returns its
 // latest trusted revision height. This is a cheap eth_call relative to the
 // Groth16 proof, so it's always worth doing before committing to proof gen.
-func FetchOnChainTrustedHeight(ctx EVMEndpoint) (int64, error) {
-	return FetchOnChainTrustedHeightWithContext(context.Background(), ctx)
-}
-
-func FetchOnChainTrustedHeightWithContext(stdCtx context.Context, ctx EVMEndpoint) (int64, error) {
-	onChainClientState, err := fetchOnChainClientStateWithContext(stdCtx, ctx)
+func FetchOnChainTrustedHeight(stdCtx context.Context, ctx EVMEndpoint) (int64, error) {
+	onChainClientState, err := fetchOnChainClientState(stdCtx, ctx)
 	if err != nil {
 		return 0, err
 	}
@@ -242,11 +238,7 @@ func FetchOnChainTrustedHeightWithContext(stdCtx context.Context, ctx EVMEndpoin
 	return clientStateRevisionHeightInt64(onChainClientState)
 }
 
-func fetchOnChainClientState(ctx EVMEndpoint) (relayerclient.ClientState, error) {
-	return fetchOnChainClientStateWithContext(context.Background(), ctx)
-}
-
-func fetchOnChainClientStateWithContext(stdCtx context.Context, ctx EVMEndpoint) (relayerclient.ClientState, error) {
+func fetchOnChainClientState(stdCtx context.Context, ctx EVMEndpoint) (relayerclient.ClientState, error) {
 	ics07, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
 	if err != nil {
 		return relayerclient.ClientState{}, fmt.Errorf("failed to create ICS07 instance: %w", err)
@@ -307,11 +299,7 @@ type hopProbeResult struct {
 // targetHeight overrides the update destination: 0 uses the chain's current
 // latest height; a nonzero value must not exceed it. This is the RLY-01
 // --target-height operator stopgap (relayer/cmd/main.go's update-client).
-func (w *Worker) BuildCosmosClientUpdateMsg(cosmos CosmosEndpoint, evm EVMEndpoint, fetchTimeout time.Duration, rotationThreshold string, proofType string, trustedBlock int64, trustLevel string, forceRotation bool, targetHeight int64) (*CosmosClientUpdateBuildResult, error) {
-	return w.BuildCosmosClientUpdateMsgWithContext(context.Background(), cosmos, evm, fetchTimeout, rotationThreshold, proofType, trustedBlock, trustLevel, forceRotation, targetHeight)
-}
-
-func (w *Worker) BuildCosmosClientUpdateMsgWithContext(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, fetchTimeout time.Duration, rotationThreshold string, proofType string, trustedBlock int64, trustLevel string, forceRotation bool, targetHeight int64) (*CosmosClientUpdateBuildResult, error) {
+func (w *Worker) BuildCosmosClientUpdateMsg(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, fetchTimeout time.Duration, rotationThreshold string, proofType string, trustedBlock int64, trustLevel string, forceRotation bool, targetHeight int64) (*CosmosClientUpdateBuildResult, error) {
 	return w.buildCosmosClientUpdateMsg(stdCtx, cosmosClientDeps{cosmos: cosmos, evm: evm, fetchTimeout: fetchTimeout, rotationThreshold: rotationThreshold}, proofType, trustedBlock, trustLevel, forceRotation, targetHeight)
 }
 
@@ -344,7 +332,7 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 	// (issue #76 #2). The on-chain height always wins because only it is
 	// guaranteed to identify a stored consensus state.
 	onChainCtx, cancelOnChain := fetchCtx(stdCtx, ctx.fetchTimeout)
-	onChainTrusted, err := FetchOnChainTrustedHeightWithContext(onChainCtx, ctx.evm)
+	onChainTrusted, err := FetchOnChainTrustedHeight(onChainCtx, ctx.evm)
 	cancelOnChain()
 	if err != nil {
 		return nil, err
@@ -363,7 +351,7 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 				trustedBlock, target)
 			lightCtx, cancel := fetchCtx(stdCtx, ctx.fetchTimeout)
 			defer cancel()
-			lightBlock, err := relayerclient.GetLightBlockWithContext(lightCtx, ctx.cosmos.CosmosClient(), trustedBlock)
+			lightBlock, err := relayerclient.GetLightBlock(lightCtx, ctx.cosmos.CosmosClient(), trustedBlock)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get current light block while up-to-date: %w", err)
 			}
@@ -374,14 +362,14 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 
 	log.Printf("[UpdateCosmosClient] Fetching trustedLightBlock at height %d, targetLightBlock at height %d", trustedBlock, target)
 	trustedCtx, cancelTrusted := fetchCtx(stdCtx, ctx.fetchTimeout)
-	trustedLightBlock, err := relayerclient.GetLightBlockWithContext(trustedCtx, ctx.cosmos.CosmosClient(), trustedBlock)
+	trustedLightBlock, err := relayerclient.GetLightBlock(trustedCtx, ctx.cosmos.CosmosClient(), trustedBlock)
 	cancelTrusted()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get trusted light block: %w", err)
 	}
 
 	targetCtx, cancelTarget := fetchCtx(stdCtx, ctx.fetchTimeout)
-	latestLightBlock, err := relayerclient.GetLightBlockWithContext(targetCtx, ctx.cosmos.CosmosClient(), target)
+	latestLightBlock, err := relayerclient.GetLightBlock(targetCtx, ctx.cosmos.CosmosClient(), target)
 	cancelTarget()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get target light block: %w", err)
@@ -784,7 +772,7 @@ func (w *Worker) BuildEthClientUpdateHeaders(stdCtx context.Context, cosmos Cosm
 	}
 
 	readCtx, cancelRead := fetchCtx(stdCtx, defaultFetchTimeout)
-	ethClientState, err := relayerclient.GetEthereumClientStateWithContext(readCtx, cosmos.CosmosClient(), ethClientID)
+	ethClientState, err := relayerclient.GetEthereumClientState(readCtx, cosmos.CosmosClient(), ethClientID)
 	cancelRead()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ethereum client state: %w", err)

@@ -38,9 +38,6 @@ func (e CosmosEndpoint) CosmosClient() *rpchttp.HTTP { return e.Client }
 
 func (e EVMEndpoint) EthClient() *ethclient.Client { return e.Client }
 func (e EVMEndpoint) EthWsURL() string             { return e.WSURL }
-func (e EVMEndpoint) SignatureVerifierContract() *common.Address {
-	return &e.Contracts.SignatureVerifier
-}
 func (e EVMEndpoint) MembershipContract() *common.Address {
 	return &e.Contracts.Membership
 }

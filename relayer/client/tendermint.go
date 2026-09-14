@@ -165,7 +165,10 @@ func GetGenesis(client *rpchttp.HTTP, trustedBlock int64, trustingPeriod uint32,
 		trustedBlock = status.SyncInfo.LatestBlockHeight
 	}
 
-	trustedLightBlock, err := GetLightBlock(client, trustedBlock)
+	// GetGenesis is a one-shot CLI path with no context of its own (see the
+	// client.Status call above); the ctx-less RPC is explicit at the call site
+	// rather than hidden behind a wrapper.
+	trustedLightBlock, err := GetLightBlock(context.Background(), client, trustedBlock)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get light block: %w", err)
 	}
@@ -265,17 +268,13 @@ func GetUnbondingTime(client *rpchttp.HTTP) (float64, error) {
 	return params.Params.UnbondingTime.Seconds(), nil
 }
 
-func GetLatestLightBlock(client *rpchttp.HTTP) (*LightBlock, error) {
-	return GetLatestLightBlockWithContext(context.Background(), client)
-}
-
-func GetLatestLightBlockWithContext(ctx context.Context, client *rpchttp.HTTP) (*LightBlock, error) {
+func GetLatestLightBlock(ctx context.Context, client *rpchttp.HTTP) (*LightBlock, error) {
 	status, err := client.Status(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
 	}
 
-	return GetLightBlockWithContext(ctx, client, status.SyncInfo.LatestBlockHeight)
+	return GetLightBlock(ctx, client, status.SyncInfo.LatestBlockHeight)
 }
 
 // cometBFTMaxPerPage is the largest page size the CometBFT /validators RPC
@@ -297,11 +296,7 @@ type validatorsPager interface {
 // than 30 — the assembled set then has the wrong hash and signer extraction
 // fails for indices >= 30. We page explicitly and loop until the reported Total
 // is collected (issue #105).
-func fetchAllValidators(client validatorsPager, height int64) ([]*commettypes.Validator, error) {
-	return fetchAllValidatorsWithContext(context.Background(), client, height)
-}
-
-func fetchAllValidatorsWithContext(ctx context.Context, client validatorsPager, height int64) ([]*commettypes.Validator, error) {
+func fetchAllValidators(ctx context.Context, client validatorsPager, height int64) ([]*commettypes.Validator, error) {
 	var collected []*commettypes.Validator
 	perPage := cometBFTMaxPerPage
 	for page := 1; ; page++ {
@@ -319,14 +314,9 @@ func fetchAllValidatorsWithContext(ctx context.Context, client validatorsPager, 
 	return collected, nil
 }
 
-func GetLightBlock(client *rpchttp.HTTP, height int64) (*LightBlock, error) {
-	return GetLightBlockWithContext(context.Background(), client, height)
-}
-
-// GetLightBlockWithContext fetches a complete light block while propagating
-// cancellation through every CometBFT request. GetLightBlock remains as the
-// compatibility wrapper for relay paths that do not yet carry a context.
-func GetLightBlockWithContext(ctx context.Context, client *rpchttp.HTTP, height int64) (*LightBlock, error) {
+// GetLightBlock fetches a complete light block, propagating cancellation
+// through every CometBFT request.
+func GetLightBlock(ctx context.Context, client *rpchttp.HTTP, height int64) (*LightBlock, error) {
 	status, err := client.Status(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get status: %w", err)
@@ -341,7 +331,7 @@ func GetLightBlockWithContext(ctx context.Context, client *rpchttp.HTTP, height 
 	signedHeader := commitResp.SignedHeader
 	proposerAddr := signedHeader.Header.ProposerAddress
 	var proposer *commettypes.Validator
-	validators, err := fetchAllValidatorsWithContext(ctx, client, height)
+	validators, err := fetchAllValidators(ctx, client, height)
 	if err != nil {
 		return nil, err
 	}
@@ -367,7 +357,7 @@ func GetLightBlockWithContext(ctx context.Context, client *rpchttp.HTTP, height 
 	}
 
 	nextHeight := height + 1
-	nextValidators, err := fetchAllValidatorsWithContext(ctx, client, nextHeight)
+	nextValidators, err := fetchAllValidators(ctx, client, nextHeight)
 	if err != nil {
 		return nil, err
 	}
@@ -399,13 +389,7 @@ func GetLightBlockWithContext(ctx context.Context, client *rpchttp.HTTP, height 
 
 }
 
-func ProvePath(client *rpchttp.HTTP, height int64, path [][]byte) ([]byte, *commitmenttypes.MerkleProof, error) {
-	return ProvePathWithContext(context.Background(), client, height, path)
-}
-
-// ProvePathWithContext propagates cancellation into the ABCI proof query. The
-// compatibility wrapper above remains for one-shot commands.
-func ProvePathWithContext(ctx context.Context, client *rpchttp.HTTP, height int64, path [][]byte) ([]byte, *commitmenttypes.MerkleProof, error) {
+func ProvePath(ctx context.Context, client *rpchttp.HTTP, height int64, path [][]byte) ([]byte, *commitmenttypes.MerkleProof, error) {
 	queryPath := fmt.Sprintf("store/%s/key", string(path[0]))
 	request := slices.Concat(path[1:]...)
 
@@ -464,13 +448,10 @@ func bytesToBytes32(data []byte) [32]byte {
 	copy(result[:], data)
 	return result
 }
-func GetEthereumClientState(cosmosClient *rpchttp.HTTP, clientID string) (*EthereumClientState, error) {
-	return GetEthereumClientStateWithContext(context.Background(), cosmosClient, clientID)
-}
 
-// GetEthereumClientStateWithContext propagates cancellation into the Cosmos
-// ABCI query. The wrapper above is retained for one-shot commands.
-func GetEthereumClientStateWithContext(ctx context.Context, cosmosClient *rpchttp.HTTP, clientID string) (*EthereumClientState, error) {
+// GetEthereumClientState reads the 08-wasm Ethereum client state on Cosmos,
+// propagating cancellation into the ABCI query.
+func GetEthereumClientState(ctx context.Context, cosmosClient *rpchttp.HTTP, clientID string) (*EthereumClientState, error) {
 	queryReq := &clienttypes.QueryClientStateRequest{
 		ClientId: clientID,
 	}
@@ -511,11 +492,7 @@ func GetEthereumClientStateWithContext(ctx context.Context, cosmosClient *rpchtt
 // (ETH beacon, L2 rollup, ...). The wasm ClientState carries LatestHeight directly,
 // so this does not decode the client-specific inner Data — for an L2 client the
 // revision height IS the L2 block number the client trusts, i.e. the proof height.
-func GetWasmClientLatestHeight(cosmosClient *rpchttp.HTTP, clientID string) (clienttypes.Height, error) {
-	return GetWasmClientLatestHeightWithContext(context.Background(), cosmosClient, clientID)
-}
-
-func GetWasmClientLatestHeightWithContext(ctx context.Context, cosmosClient *rpchttp.HTTP, clientID string) (clienttypes.Height, error) {
+func GetWasmClientLatestHeight(ctx context.Context, cosmosClient *rpchttp.HTTP, clientID string) (clienttypes.Height, error) {
 	queryReq := &clienttypes.QueryClientStateRequest{ClientId: clientID}
 	reqBytes, err := proto.Marshal(queryReq)
 	if err != nil {

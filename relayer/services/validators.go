@@ -227,7 +227,7 @@ func findHighestFeasibleHop(
 		probed[height] = struct{}{}
 		fetchCtx, cancel := fetchCtx(stdCtx, ctx.fetchTimeout)
 		defer cancel()
-		lb, err := relayerclient.GetLightBlockWithContext(fetchCtx, ctx.cosmos.CosmosClient(), height)
+		lb, err := relayerclient.GetLightBlock(fetchCtx, ctx.cosmos.CosmosClient(), height)
 		if err != nil {
 			return hopProbeResult{}, fmt.Errorf("fetch light block at height %d: %w", height, err)
 		}

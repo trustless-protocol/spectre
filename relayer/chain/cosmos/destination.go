@@ -75,7 +75,7 @@ func (d *Destination) UpdateClient(ctx context.Context, clientID string, update 
 	}
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	ethClientState, err := relayerclient.GetEthereumClientStateWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
+	ethClientState, err := relayerclient.GetEthereumClientState(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
@@ -166,7 +166,7 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 	}
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	ethClientState, err := relayerclient.GetEthereumClientStateWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
+	ethClientState, err := relayerclient.GetEthereumClientState(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
@@ -229,7 +229,7 @@ func (d *Destination) RelayWithUpdate(ctx context.Context, clientID string, upda
 	}
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	ethClientState, err := relayerclient.GetEthereumClientStateWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
+	ethClientState, err := relayerclient.GetEthereumClientState(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
@@ -338,7 +338,7 @@ func (d *Destination) HasPacketReceipt(_ context.Context, _ []byte) (bool, error
 func (d *Destination) ClientExpiresAt(ctx context.Context, _ string) (time.Time, time.Duration, error) {
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	cs, err := relayerclient.GetEthereumClientStateWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
+	cs, err := relayerclient.GetEthereumClientState(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return time.Time{}, 0, fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
