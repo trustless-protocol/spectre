@@ -45,6 +45,101 @@ Sharing is per **enclave**, and the defaults differ: `run_optimism_node.sh` and
 plain ETH↔Cosmos devnet (`run_eth_node.sh` on its own) uses `my-testnet` and is a
 separate L1. Set `ENCLAVE` explicitly to put them together.
 
+### Signing keys when several processes share a chain
+
+`start` serves exactly one relay path per process, so any deployment with more than
+one path runs more than one process. Two rules follow, and they are not the same
+rule for the two chains.
+
+**Every `start` process needs its own `COSMOS_PRIVATE_KEY`.** This holds for *every*
+path, including one that looks like it only writes to an EVM chain: a Cosmos→L2
+process still refunds expired Cosmos-origin packets **on Cosmos** through its timeout
+scanner. So the running example — one `cosmos↔eth` process plus one `cosmos↔l2`
+process against the same Cosmos chain — needs two keys, not one:
+
+| Process | Writes Cosmos from |
+| --- | --- |
+| `cosmos↔eth` | the eth→cosmos direction, and `ScanCosmosTimeouts` refunds |
+| `cosmos↔l2` | the l2→cosmos return leg, and `ScanCosmosTimeouts` refunds |
+| `cosmos→l2`, forward only | `ScanCosmosTimeouts` refunds |
+
+There is no `start` configuration that never writes to Cosmos, which is why the rule
+has no exceptions to remember.
+
+Sharing one key means sharing one account sequence, and nothing coordinates the two
+processes. Each reads the sequence from committed state before signing, so the
+collision window is a whole block, not an instant. If both processes talk to the same
+RPC node the loser fails at CheckTx, which the relayer treats as transient and
+retries — wasteful but safe. If they talk to **different** nodes both pass CheckTx and
+the loser fails at DeliverTx instead, which is classified as a deterministic on-chain
+failure: a single-packet transaction is then **dropped**, and its funds sit in escrow
+until the timeout scanner refunds them. A shared key turns an infrastructure race into
+a failed user transfer.
+
+**`ETH_PRIVATE_KEY` only needs to differ between processes writing the same EVM
+chain.** Nonces are tracked per `{chain id, address}`, so the `cosmos↔eth` process
+(L1) and the `cosmos↔l2` process (L2) can share one key — different chains, independent
+nonces. Two `cosmos↔eth` processes relaying two Cosmos sources into the *same* L1 do
+need separate keys.
+
+A shared ETH key also degrades more gracefully than a shared Cosmos one: an
+unrecognised broadcast error invalidates the cached nonce and returns a transient
+error, so the packet is re-queued rather than dropped.
+
+**`start` enforces the EVM rule and not the Cosmos one.** At startup it takes one
+advisory lock per EVM nonce domain it can write -- a file per `{chain id, address}`
+under `/tmp/fast-ibc-relayer-<uid>/`, named `evm-signer-<chain id>-<address>.lock`
+(`cmd/evm_signer_lock.go:221`) -- so a second process sharing `ETH_PRIVATE_KEY` on a
+chain this one writes refuses to boot, naming the address, the chain id and the lock
+file, instead of colliding at the first submission. The guard reaches one user on one
+machine; two hosts sharing a key still collide and nothing local can see it.
+
+Nothing enforces the COSMOS half yet. `ValidateKeys` parses the ETH key and derives
+the Cosmos signer address, both process-local and neither a cross-process lock, so
+two processes on one Cosmos key start happily. Distinct Cosmos keys are a REQUIREMENT
+you have to meet yourself; the guard for it is #467.
+
+**A second ETH key is not usable until it is funded AND granted the router's
+`RELAYER_ROLE`.** This is the step that costs an afternoon if it is missed, because
+the two failures look identical from the relayer: `E2ETestDeploy.s.sol:95-96` builds
+a one-element relayer list and grants the role to `msg.sender` alone, so any key
+other than the deployer's is unauthorized. `updateApplicationState` then reverts with
+a bare custom error — no revert string, and nothing in the relayer log beyond
+`execution reverted`. Funding the address does not help; it is authorization, not
+gas. `cast run <tx>` names the cause in one line: `canCall(<signer>, <ICS26Router>,
+0x9c11bece) -> false`.
+
+Grant it from the AccessManager admin, which is the account that deployed the
+contracts. `RELAYER_ROLE` is `1` (`contracts/shared/access/IBCRolesLib.sol:14`):
+
+```bash
+AM=$(cast call <ICS26Router> "authority()(address)" --rpc-url $RPC)
+cast send $AM "grantRole(uint64,address,uint32)" 1 <second-relayer-address> 0 \
+  --private-key <deployer-key> --rpc-url $RPC
+```
+
+Then fund the address for gas. Repeat per extra EVM signer, and per chain: a key
+authorized on the L1 router has no standing on an L2 router.
+
+**`create-clients-cosmos` signs with the same key.** It is the one command besides
+`start` that writes to Cosmos, so running it against a chain a `start` process is
+already relaying will collide. Give it its own key, or run it while `start` is
+stopped. The other commands do not touch the Cosmos signer: `update-client` and
+`create-clients-eth` submit to Ethereum, `submit-misbehaviour` submits to Ethereum
+under its own `MISBEHAVIOUR_PRIVATE_KEY`, and `genesis` broadcasts nothing.
+
+Keys can be set per process without touching `relayer/.env`: `godotenv` does not
+override a variable that is already set, so the export wins. Each runbook below
+copies its example to `relayer/config.json`, so running two paths at once means
+naming the second copy something else:
+
+```bash
+COSMOS_PRIVATE_KEY=$KEY_ETH_PATH ./relayer start --config config.json &
+COSMOS_PRIVATE_KEY=$KEY_OP_PATH  ./relayer start --config config.op.json &
+```
+
+Each key is a distinct account and needs its own gas balance on the Cosmos chain.
+
 ## Local Cosmos ↔ Ethereum E2E
 
 End-to-end run on local Cosmos + Ethereum nodes. Requires Docker + Kurtosis on
@@ -170,22 +265,11 @@ cp relayer/config.ethereum.example.json relayer/config.json
 #      ./relayer create-clients-eth    --config config-osmosis.json --source osmosis-1
 #      ./relayer start --config config.json &
 #      ./relayer start --config config-osmosis.json &
-#    Give each process its OWN COSMOS_PRIVATE_KEY *and* its own ETH_PRIVATE_KEY.
-#    Both keys serialize only within a process: cosmosMu for the account sequence,
-#    and the EVM nonce cache (keyed by chain id + sender) for the Ethereum nonce.
-#    Every Cosmos source relays to the SAME Ethereum router, so two processes on
-#    one ETH key share a single nonce domain and will allocate the same nonce —
-#    one of the two transactions is then replaced or rejected. The second ETH key
-#    needs the ICS26Router relayer role and a funded balance, exactly like the
-#    first.
-#
-#    NOTHING AT STARTUP ENFORCES ANY OF THIS. `start` calls ValidateKeys
-#    (transaction/ethereum.go:124), which parses the ETH key and derives the
-#    Cosmos signer address -- both process-local. There is no cross-process lock
-#    on either key at this commit, so two processes on one key start happily and
-#    collide at the first concurrent submission. Distinct keys are a REQUIREMENT
-#    you have to meet yourself. The Cosmos-side lock is #467 and the EVM-side
-#    one, keyed (chain id, sender), is #483.
+#    Give each process its own COSMOS_PRIVATE_KEY, and — because every Cosmos
+#    source relays into the SAME L1 router — its own ETH_PRIVATE_KEY too. See
+#    "Signing keys when several processes share a chain" above for why, for what
+#    each extra ETH key has to be granted, and for the cases where sharing one
+#    ETH key is fine.
 
 # 7. send packet
 

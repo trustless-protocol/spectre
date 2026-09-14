@@ -245,6 +245,33 @@ startup with errors such as `library 'icicle_device' not found`. In that case,
 ensure ICICLE shared libraries are installed and `LD_LIBRARY_PATH` covers the
 directory containing the `libicicle_*` files.
 
+### One relay path per process
+
+`start` serves exactly one source→destination path and refuses a config declaring
+more than one, so any real deployment runs several processes side by side.
+
+**Give each `start` process its own `COSMOS_PRIVATE_KEY`.** Every path writes to
+Cosmos — even a Cosmos→L2 path that appears to write only to the L2, because its
+timeout scanner refunds expired Cosmos-origin packets on Cosmos. Two processes
+sharing a key share an account sequence with nothing coordinating them, and the
+loser of that race can have a single-packet transaction dropped, stranding the
+transfer in escrow until it times out.
+
+`ETH_PRIVATE_KEY` is a weaker rule: nonces are tracked per `{chain id, address}`,
+so a Cosmos↔Ethereum process (L1) and a Cosmos↔L2 process (L2) can share one key.
+Only processes writing the **same** EVM chain need separate ones.
+
+Set them per process rather than editing `relayer/.env` — `godotenv` does not
+override an already-set variable:
+
+```bash
+COSMOS_PRIVATE_KEY=$KEY_ETH_PATH ./relayer start --config config.json &
+COSMOS_PRIVATE_KEY=$KEY_OP_PATH  ./relayer start --config config.op.json &
+```
+
+Full reasoning, including the one other command that shares the Cosmos key:
+[docs/E2E.md](docs/E2E.md#signing-keys-when-several-processes-share-a-chain).
+
 ## Benchmark mode
 
 Detailed per-step gas + timing logs are off by default (production noise) and
