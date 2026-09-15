@@ -168,3 +168,30 @@ func TestQueueReporterTreatsPausedRetriesAsAChange(t *testing.T) {
 		t.Fatal("an age difference reached counts(); every tick would look like a change")
 	}
 }
+
+// The merge with #469 brought the counts() dedupe onto this branch after
+// ackDueUnwritten already existed, so the new field had never been considered
+// for it. It belongs there by that file's own rule -- a count of records that
+// failed to reach disk is signal, not something that advances on its own.
+//
+// Leaving it out hides the storage problem CLEARING: the ATTENTION line simply
+// stops firing, and with the routine lines still suppressed, because no other
+// count moved, the log goes quiet with nothing saying the writes started
+// landing again.
+func TestQueueReporterTreatsUnwrittenAckRecordsAsAChange(t *testing.T) {
+	base := queueState{cosmosQueued: 1}
+
+	unwritten := base
+	unwritten.ackDueUnwritten = 2
+	if base.counts() == unwritten.counts() {
+		t.Fatal("owed-acknowledgement records that could not be written are invisible to the change check; " +
+			"neither the problem starting nor it clearing would reprint the routine lines")
+	}
+
+	// The other half of the rule the merge must not break.
+	aged := base
+	aged.cosmosTimeoutDeadAge = time.Hour
+	if base.counts() != aged.counts() {
+		t.Fatal("an age difference reached counts(); every tick would look like a change")
+	}
+}

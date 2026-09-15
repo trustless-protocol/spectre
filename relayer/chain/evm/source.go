@@ -153,7 +153,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		case <-ctx.Done():
 			return ctx.Err()
 		case batch := <-ch:
-			events, orig := eventsWithOrigins(batch.Packets, s.bb.EthPendingTracker.RemovePacketIfCurrent)
+			events, orig := eventsWithOrigins(batch.Packets, s.bb.EthPendingTracker.RemovePacketIfCurrent, s.bb.SettleOwedAck)
 			// Re-queue un-relayed packets with a waiting backoff so a packet not yet
 			// relayable (beacon finality lag) or hit by a brief RPC hiccup is retried
 			// with a growing delay instead of every batch period — quiet, and no
@@ -179,13 +179,24 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 // settle removes an acked or timed-out ETH-origin send from the pending tracker so
 // the timeout scanner stops considering it (the legacy handleEth EthAck/EthTimeout
 // tracker removal); such a packet is then skipped, as there is nothing to relay.
-func eventsWithOrigins(packets []services.EthPacket, settle func(channeltypesv2.Packet) error) ([]chain.Event, []services.EthPacket) {
+func eventsWithOrigins(
+	packets []services.EthPacket,
+	settle func(channeltypesv2.Packet) error,
+	settleOwedAck func(channeltypesv2.Packet),
+) ([]chain.Event, []services.EthPacket) {
 	events := make([]chain.Event, 0, len(packets))
 	orig := make([]services.EthPacket, 0, len(packets))
 	for _, p := range packets {
 		if p.Packet != nil && (p.Type == services.EthAck || p.Type == services.EthTimeout) {
 			if err := settle(*p.Packet); err != nil {
 				log.Printf("[PendingTracker][ATTENTION] failed to persist removal of settled ETH packet seq=%d: %v", p.Packet.Sequence, err)
+			}
+			// Only EthAck settles an owed acknowledgement. A timeout is the other
+			// ending: the packet is refunded, no acknowledgement is owed or coming,
+			// and clearing a debt on it would hide a real one if both were somehow
+			// recorded for one slot.
+			if p.Type == services.EthAck {
+				settleOwedAck(*p.Packet)
 			}
 			continue
 		}

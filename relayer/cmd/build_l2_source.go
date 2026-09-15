@@ -277,10 +277,15 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		// waiting for a timeout scan to query for it. Same hook the module uses to
 		// untrack after its own successful relay -- one settlement path, two ways
 		// of learning about it.
-		WithSettleHook(untrackL2Pending)
+		WithSettleHook(untrackL2Pending).
+		// The acknowledged half also closes the owed-acknowledgement record. The
+		// same Services instance backs both directions of this pair, which is what
+		// lets a debt one side recorded be settled from the other.
+		WithAckSettleHook(settleL2OwedAck(timeoutReturn.svc))
 	dest := l2rollup.NewDestination(worker, svcCtx, cfg.L2WasmClientID)
 	builder := l2rollup.NewBuilder(headerBuilder)
 
+	ackDue, ackSettled := ackWatchHooks(timeoutReturn.svc)
 	module := relay.NewModule(
 		fmt.Sprintf("%s->cosmos", cfg.kind),
 		cfg.L2ICS26ClientID,
@@ -289,6 +294,13 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 			timeoutReturn.svc.ScanL2Timeouts(c, timeoutReturn.deps.Cosmos, timeoutReturn.deps.EVM, timeoutReturn.deps.IDs.CosmosOnEVM)
 		}),
 		relay.WithPacketTracker(trackL2Pending, untrackL2Pending),
+		// The mirror of the cosmos->l2 hooks, over the SAME Services: that leg
+		// records what a delivered receive owes, this one settles it when the
+		// acknowledgement returns. The overdue reporter lives here rather than on
+		// the outbound leg because this module exists exactly when the pair is
+		// complete -- a forward-only deployment has no return leg and must not
+		// alarm about acknowledgements it was never going to relay.
+		relay.WithAckWatch(0, 0, ackDue, ackSettled, timeoutReturn.svc.OverdueAcks),
 	)
 	logger.Sugar().Infof("l2->cosmos source: %s (attestors=%d threshold=%d src_chain=%s wasm_client=%s head=%s)",
 		cfg.kind, len(cfg.AttestorEndpoints), cfg.Attestors.Threshold, cfg.AttestorSrcChain, cfg.L2WasmClientID, cfg.HeadKind)
@@ -305,6 +317,19 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		}
 	}
 	return module, cleanup, nil
+}
+
+// settleL2OwedAck closes an owed-acknowledgement record from a terminal L2
+// AckPacket, whoever relayed it.
+func settleL2OwedAck(svc *services.Services) func(raw []byte) {
+	return func(raw []byte) {
+		var pkt channeltypesv2.Packet
+		if err := pkt.Unmarshal(raw); err != nil {
+			log.Printf("[AckWatch] settle owed ack from terminal L2 event: decode packet: %v", err)
+			return
+		}
+		svc.ClearAckDue(pkt)
+	}
 }
 
 func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.UntrackFunc) {

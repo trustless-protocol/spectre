@@ -1743,6 +1743,117 @@ func TestPermanentSourceFailureIsHeldOff(t *testing.T) {
 	})
 }
 
+func TestAckWatch(t *testing.T) {
+	send := chain.RelayPacket{Type: chain.SendPacket, Sequence: 7, Packet: []byte("pkt-7")}
+	ack := chain.RelayPacket{Type: chain.AckPacket, Sequence: 7, Packet: []byte("pkt-7")}
+
+	newModule := func(due AckDueFunc, settled AckSettledFunc, overdue OverdueAcksFunc) *Module {
+		return NewModule("cosmos->eth", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithAckWatch(0, 0, due, settled, overdue))
+	}
+
+	t.Run("a delivered receive makes the acknowledgement owed", func(t *testing.T) {
+		var recorded [][]byte
+		m := newModule(func(raw []byte) bool { recorded = append(recorded, raw); return true }, nil, func(time.Duration) []string { return nil })
+
+		m.settleDelivered([]chain.RelayPacket{send})
+
+		if len(recorded) != 1 || string(recorded[0]) != "pkt-7" {
+			t.Fatalf("recorded %v, want the delivered packet: the debt starts when WE deliver, not when we see the send", recorded)
+		}
+	})
+
+	t.Run("a relayed acknowledgement closes the debt", func(t *testing.T) {
+		var cleared [][]byte
+		m := newModule(nil, func(raw []byte) { cleared = append(cleared, raw) }, func(time.Duration) []string { return nil })
+
+		m.settleDelivered([]chain.RelayPacket{ack})
+
+		if len(cleared) != 1 || string(cleared[0]) != "pkt-7" {
+			t.Fatalf("cleared %v, want the acknowledged packet", cleared)
+		}
+	})
+
+	// A durable write that fails is the case where the record would exist only in
+	// memory -- and a restart is the most likely reason the ack was missed in the
+	// first place, so failing quietly here loses exactly the packet this watches.
+	t.Run("a failed record is reported", func(t *testing.T) {
+		m := newModule(func([]byte) bool { return false }, nil, func(time.Duration) []string { return nil })
+
+		out := captureLog(func() { m.settleDelivered([]chain.RelayPacket{send}) })
+
+		if !strings.Contains(out, "could not durably record the owed acknowledgement for seq=7") {
+			t.Fatalf("a failed durable write must reach the log:\n%s", out)
+		}
+	})
+
+	// The retry itself is NOT tested here any more: it moved into
+	// services.ackDueLedger, because the module that records a debt is not the one
+	// that settles it, so a per-module queue could never be cancelled by the
+	// settlement. See services/ackdue_test.go -- "a settlement cancels a record
+	// still queued for writing".
+
+	// The second module gets the hooks with a nil overdue reporter: the tracker
+	// is shared, so a second watch loop would report every overdue ack twice.
+	// nil must leave the loop unstarted while recording and settlement still work
+	// -- that combination is what lets the debt be recorded on one relay
+	// direction and cleared on the other.
+	t.Run("a nil overdue reporter still wires recording and settlement", func(t *testing.T) {
+		var recorded, cleared [][]byte
+		m := newModule(
+			func(raw []byte) bool { recorded = append(recorded, raw); return true },
+			func(raw []byte) { cleared = append(cleared, raw) },
+			nil,
+		)
+		if m.overdueAcks != nil {
+			t.Fatal("a nil reporter must stay nil; Module.Run starts the watch loop on it")
+		}
+
+		m.settleDelivered([]chain.RelayPacket{send})
+		m.settleDelivered([]chain.RelayPacket{ack})
+
+		if len(recorded) != 1 || len(cleared) != 1 {
+			t.Fatalf("recorded %d and cleared %d, want 1 each without a watch loop", len(recorded), len(cleared))
+		}
+	})
+
+	t.Run("the watch names overdue acknowledgements and stays quiet otherwise", func(t *testing.T) {
+		var threshold time.Duration
+		overdue := []string{"seq=7 src=08-wasm-0"}
+		m := newModule(nil, nil, func(d time.Duration) []string { threshold = d; return overdue })
+		m.ackWatchInterval = time.Millisecond
+
+		ctx, cancel := context.WithCancel(context.Background())
+		out := captureLog(func() {
+			done := make(chan struct{})
+			go func() { defer close(done); m.ackWatchLoop(ctx) }()
+			time.Sleep(20 * time.Millisecond)
+			cancel()
+			<-done
+		})
+
+		if !strings.Contains(out, "seq=7 src=08-wasm-0") {
+			t.Fatalf("an overdue acknowledgement must be named:\n%s", out)
+		}
+		if threshold != defaultAckOverdueAfter {
+			t.Fatalf("watch asked for packets older than %s, want the default %s", threshold, defaultAckOverdueAfter)
+		}
+
+		overdue = nil
+		quiet := captureLog(func() {
+			ctx2, cancel2 := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { defer close(done); m.ackWatchLoop(ctx2) }()
+			time.Sleep(20 * time.Millisecond)
+			cancel2()
+			<-done
+		})
+		if strings.Contains(quiet, "acknowledgement(s) owed") {
+			t.Fatalf("nothing overdue must produce no line:\n%s", quiet)
+		}
+	})
+}
+
 func TestFlushOnce(t *testing.T) {
 	send := chain.Event{Type: chain.SendPacket, Sequence: 7, Height: 40, Raw: []byte("old-packet")}
 
@@ -1827,6 +1938,82 @@ func TestFlushOnce(t *testing.T) {
 		}
 		if !strings.Contains(out, "packet flush:") {
 			t.Fatalf("a failed enumeration must reach the log:\n%s", out)
+		}
+	})
+}
+
+// The restart boundary the ledger exists to close, and the one it did not until
+// a review caught the order.
+//
+// A delivered receive moves from one durable obligation to another: the pending
+// record that would time it out, and the owed-ack record that says an
+// acknowledgement is expected. Between those two there must never be an instant
+// where the packet is in neither -- the receive is committed on the destination,
+// so it can no longer time out, and with no owed-ack record nothing durable is
+// left from which the missing acknowledgement could be noticed.
+func TestSettleDelivered_NeverLeavesAPacketInNeitherLedger(t *testing.T) {
+	send := chain.RelayPacket{Type: chain.SendPacket, Sequence: 7, Packet: []byte("pkt-7")}
+
+	// order records which durable obligation was touched, and when. The sequence
+	// is the property: "recorded" must precede "untracked", because a crash
+	// between them must leave the packet in the FIRST ledger, not in none.
+	newModule := func(t *testing.T, durable bool, order *[]string) *Module {
+		t.Helper()
+		return NewModule("cosmos->eth", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithPacketTracker(
+				func([]byte, uint64) bool { return true },
+				func([]byte) { *order = append(*order, "untracked") },
+			),
+			WithAckWatch(0, 0,
+				func([]byte) bool { *order = append(*order, "recorded"); return durable },
+				nil, nil),
+		)
+	}
+
+	t.Run("records the owed acknowledgement before releasing the pending record", func(t *testing.T) {
+		var order []string
+		m := newModule(t, true, &order)
+
+		m.settleDelivered([]chain.RelayPacket{send})
+
+		want := []string{"recorded", "untracked"}
+		if len(order) != 2 || order[0] != want[0] || order[1] != want[1] {
+			t.Fatalf("order = %v, want %v: a crash between the two must land in the owed-ack ledger, not in neither",
+				order, want)
+		}
+	})
+
+	// The write failing is the case the reviewer named, and it is the easier half:
+	// the ORDER covers the crash, this covers the error return.
+	t.Run("keeps the pending record when the owed-ack write does not reach disk", func(t *testing.T) {
+		var order []string
+		m := newModule(t, false, &order)
+
+		m.settleDelivered([]chain.RelayPacket{send})
+
+		if len(order) != 1 || order[0] != "recorded" {
+			t.Fatalf("order = %v; the pending record was released even though the owed-ack write failed, "+
+				"leaving the packet in neither durable ledger", order)
+		}
+	})
+
+	// A path with no return leg has no second obligation to hand the packet to,
+	// so holding the pending record forever would strand it instead of protecting
+	// it. Per-destination gating leaves ackDue nil there.
+	t.Run("releases the pending record when there is no acknowledgement ledger", func(t *testing.T) {
+		var order []string
+		m := NewModule("cosmos->l2", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithPacketTracker(
+				func([]byte, uint64) bool { return true },
+				func([]byte) { order = append(order, "untracked") },
+			),
+		)
+
+		m.settleDelivered([]chain.RelayPacket{send})
+
+		if len(order) != 1 || order[0] != "untracked" {
+			t.Fatalf("order = %v, want the pending record released: with no ledger to hand it to, keeping it strands the packet",
+				order)
 		}
 	})
 }

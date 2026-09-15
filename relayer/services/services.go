@@ -73,6 +73,11 @@ type Services struct {
 	BatchBuilder  *BatchBuilder
 	clientUpdates clientUpdateTimes
 	recovery      *RecoveryStateStore
+
+	// ackDue is the retry ledger for owed-acknowledgement records. Zero value is
+	// usable, so neither constructor has to build it. See ackdue.go for why it
+	// lives here and not in relay.Module.
+	ackDue ackDueLedger
 }
 
 type evmTimeoutDeps struct {
@@ -86,7 +91,7 @@ func New(txHandler TransactionHandler, prover Prover, cosmosConfig Config, recov
 	if len(recovery) > 0 {
 		recoveryStore = recovery[0]
 	}
-	return &Services{
+	svc := &Services{
 		cosmosConfig: cosmosConfig,
 		worker: &Worker{
 			txHandler,
@@ -95,6 +100,8 @@ func New(txHandler TransactionHandler, prover Prover, cosmosConfig Config, recov
 		BatchBuilder: NewBatchBuilder(),
 		recovery:     recoveryStore,
 	}
+	svc.BatchBuilder.WithOwedAckSettler(svc.ClearAckDue)
+	return svc
 }
 
 // RecoveryState returns the durable recovery store wired for this source. It is
@@ -113,7 +120,7 @@ func NewWithPendingState(txHandler TransactionHandler, prover Prover, cosmosConf
 	if len(recovery) > 0 {
 		recoveryStore = recovery[0]
 	}
-	return &Services{
+	svc := &Services{
 		cosmosConfig: cosmosConfig,
 		worker: &Worker{
 			txHandler,
@@ -121,7 +128,9 @@ func NewWithPendingState(txHandler TransactionHandler, prover Prover, cosmosConf
 		},
 		BatchBuilder: batchBuilder,
 		recovery:     recoveryStore,
-	}, nil
+	}
+	svc.BatchBuilder.WithOwedAckSettler(svc.ClearAckDue)
+	return svc, nil
 }
 
 // CosmosClientExpiry returns when the on-chain Cosmos SpectreClient expires: the

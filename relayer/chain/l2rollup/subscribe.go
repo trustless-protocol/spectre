@@ -469,7 +469,7 @@ func (s *Source) scanTerminalLogs(opts *bind.FilterOpts, filterer *contractICS26
 	}
 	defer acked.Close()
 	for acked.Next() {
-		s.settleTerminal("AckPacket", acked.Event.Packet, acked.Event.Sequence, settled)
+		s.settleTerminal("AckPacket", true, acked.Event.Packet, acked.Event.Sequence, settled)
 	}
 	if err := acked.Error(); err != nil {
 		return nil, fmt.Errorf("iterate AckPacket: %w", err)
@@ -481,7 +481,7 @@ func (s *Source) scanTerminalLogs(opts *bind.FilterOpts, filterer *contractICS26
 	}
 	defer timedOut.Close()
 	for timedOut.Next() {
-		s.settleTerminal("TimeoutPacket", timedOut.Event.Packet, timedOut.Event.Sequence, settled)
+		s.settleTerminal("TimeoutPacket", false, timedOut.Event.Packet, timedOut.Event.Sequence, settled)
 	}
 	if err := timedOut.Error(); err != nil {
 		return nil, fmt.Errorf("iterate TimeoutPacket: %w", err)
@@ -534,7 +534,11 @@ func dropSettled(batch []chain.Event, settled map[settledKey]struct{}) []chain.E
 
 // settleTerminal converts one terminal log to the packet identity the tracker
 // keys on and hands it to the hook.
-func (s *Source) settleTerminal(kind string, packet contractICS26Router.IICS26RouterMsgsPacket, sequence *big.Int, settled map[settledKey]struct{}) {
+// acknowledged separates the two terminal endings. Both drop the pending record;
+// only an acknowledgement settles an owed one. A timeout is the other ending --
+// the packet is refunded and no acknowledgement is owed or coming -- so clearing
+// a debt on it would hide a real one.
+func (s *Source) settleTerminal(kind string, acknowledged bool, packet contractICS26Router.IICS26RouterMsgsPacket, sequence *big.Int, settled map[settledKey]struct{}) {
 	cosmosPacket := subscriber.EthPacketToCosmosPacket(packet, sequence)
 	raw, err := proto.Marshal(&cosmosPacket)
 	if err != nil {
@@ -547,6 +551,9 @@ func (s *Source) settleTerminal(kind string, packet contractICS26Router.IICS26Ro
 	log.Printf("[l2->cosmos Subscribe] %s seq=%d settled; dropped from the pending tracker", kind, cosmosPacket.Sequence)
 	settled[settledKey(raw)] = struct{}{}
 	s.settle(raw)
+	if acknowledged && s.settleAck != nil {
+		s.settleAck(raw)
+	}
 }
 
 // l2SendToEvent maps a SendPacket log to a recv (SendPacket) chain.Event, reusing the

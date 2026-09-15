@@ -439,6 +439,35 @@ func (t *PendingPacketTracker) RemovePacketIfCurrent(packet channeltypesv2.Packe
 	return t.commitLocked(func() { delete(t.packets, key) })
 }
 
+// RemoveSlotIfPresent removes whatever entry occupies (sourceClient, sequence),
+// regardless of its identity, and reports whether there was one.
+//
+// This is deliberately NOT how the pending trackers remove. There, a replayed
+// sequence is a DIFFERENT packet that still needs its own timeout, which is
+// exactly why RemovePacketIfCurrent compares identity before deleting.
+//
+// It is the right removal for the owed-acknowledgement ledger, where the slot
+// holds a debt rather than a packet awaiting timeout. An acknowledgement for
+// (client, sequence) settles that slot, and a debt left there for a superseded
+// identity can never be settled by anything else: the packet it belonged to no
+// longer exists on the source, so no further acknowledgement will ever name it.
+// Left alone it is reported overdue for the life of the state file.
+//
+// Only ClearAckDue should call this. A caller reaching for it on PendingTracker,
+// EthPendingTracker or L2PendingTracker wants RemovePacketIfCurrent instead.
+func (t *PendingPacketTracker) RemoveSlotIfPresent(sourceClient string, sequence uint64) (bool, error) {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	key := packetKey{sourceClient: sourceClient, sequence: sequence}
+	if _, ok := t.packets[key]; !ok {
+		return false, nil
+	}
+	if err := t.commitLocked(func() { delete(t.packets, key) }); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // RemoveIfCurrent applies a scanner outcome only when the active packet is the
 // exact packet represented by the scan snapshot.
 func (t *PendingPacketTracker) RemoveIfCurrent(scanned pendingPacketInfo) error {
@@ -479,6 +508,30 @@ func (t *PendingPacketTracker) PersistenceError() error {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
 	return t.persistenceErr
+}
+
+// OlderThan returns the packets observed longer ago than d, oldest first.
+//
+// It sorts because the caller reports a capped list and the oldest entry is the
+// one worth naming: a packet owed an acknowledgement for a day is a different
+// problem from one owed it for a minute, and an unsorted cap would hide the
+// first behind an arbitrary handful of the second.
+func (t *PendingPacketTracker) OlderThan(d time.Duration) []channeltypesv2.Packet {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+	cutoff := time.Now().Add(-d)
+	due := make([]pendingPacketInfo, 0, len(t.packets))
+	for _, info := range t.packets {
+		if info.ObservedAt.Before(cutoff) {
+			due = append(due, info)
+		}
+	}
+	sort.Slice(due, func(i, j int) bool { return due[i].ObservedAt.Before(due[j].ObservedAt) })
+	packets := make([]channeltypesv2.Packet, 0, len(due))
+	for _, info := range due {
+		packets = append(packets, info.Packet)
+	}
+	return packets
 }
 
 func (t *PendingPacketTracker) GetAll() []pendingPacketInfo {

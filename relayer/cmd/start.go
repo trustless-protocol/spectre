@@ -262,11 +262,6 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// every l2_to_cosmos source, then launch the goroutines below. This way
 			// a return-path mismatch aborts before any Cosmos→L2 connection opens,
 			// instead of after the relay loop is already dialing/subscribing.
-			type builtL2Dest struct {
-				svc     *services.Services
-				deps    services.RelayDeps
-				cleanup func()
-			}
 			builtL2Dests := make([]builtL2Dest, 0, len(l2Dests))
 			for i := range l2Dests {
 				svc, deps, cleanup, err := buildCosmosToL2Dest(
@@ -297,6 +292,12 @@ func Start(logger *zap.Logger) *cobra.Command {
 				}
 				// Accumulate rather than launching here: nothing dials, subscribes
 				// or submits until every dest and source has built and matched.
+				// hasReturnLeg is deliberately NOT set here: which destinations an
+				// l2_to_cosmos source actually resolves to is only known once the
+				// source loop below has matched them. Deriving it from
+				// len(l2Sources) > 0 was wrong for any multi-L2 config -- a source
+				// matches exactly one destination, so every other destination
+				// recorded debt nothing in this process could ever settle.
 				builtL2Dests = append(builtL2Dests, builtL2Dest{svc: svc, deps: deps, cleanup: cleanup})
 			}
 
@@ -309,12 +310,18 @@ func Start(logger *zap.Logger) *cobra.Command {
 				srcChain string
 			}
 			builtL2Sources := make([]builtL2Source, 0, len(l2Sources))
+			settling := make([]*services.Services, 0, len(l2Sources))
 			for i := range l2Sources {
 				timeoutReturn, err := findL2TimeoutReturnPath(runCtx, l2Sources[i], l2ReturnPaths)
 				if err != nil {
 					stopAndCleanup()
 					return fmt.Errorf("l2_to_cosmos source %q: %w", l2Sources[i].AttestorSrcChain, err)
 				}
+				// Remember WHICH destination this source settles for. timeoutReturn
+				// carries that destination's own *services.Services, and sharing
+				// that instance is the whole mechanism: one side records the debt,
+				// the other clears it from the same ledger.
+				settling = append(settling, timeoutReturn.svc)
 				module, cleanup, err := buildL2ToCosmosModule(logger, l2Sources[i], txHandler, timeoutReturn)
 				if err != nil {
 					stopAndCleanup()
@@ -325,18 +332,22 @@ func Start(logger *zap.Logger) *cobra.Command {
 				builtL2Sources = append(builtL2Sources, builtL2Source{module: module, cleanup: cleanup, srcChain: l2Sources[i].AttestorSrcChain})
 			}
 
+			// Now that every source has matched, each destination knows whether
+			// anything will settle what it records.
+			markReturnLegs(builtL2Dests, settling)
+
 			// Every Cosmos→L2 dest and L2→Cosmos source above built and matched
 			// cleanly — only now do we start dialing/subscribing/submitting.
 			for _, d := range builtL2Dests {
 				wg.Add(1)
-				go func(svc *services.Services, deps services.RelayDeps, cleanup func()) {
+				go func(svc *services.Services, deps services.RelayDeps, cleanup func(), watchAcks bool) {
 					defer wg.Done()
-					err := runCosmosToL2Engine(relayCtx, svc, deps)
+					err := runCosmosToL2Engine(relayCtx, svc, deps, watchAcks)
 					releaseOrHold(logger, cleanup, &workersStuck, err, "cosmos_to_l2", deps.IDs.CosmosOnEVM)
 					if err != nil {
 						loopErrCh <- fmt.Errorf("cosmos_to_l2 dest %q: %w", deps.IDs.CosmosOnEVM, err)
 					}
-				}(d.svc, d.deps, d.cleanup)
+				}(d.svc, d.deps, d.cleanup, d.hasReturnLeg)
 			}
 			for _, s := range builtL2Sources {
 				wg.Add(1)

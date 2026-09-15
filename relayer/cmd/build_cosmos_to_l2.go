@@ -147,7 +147,12 @@ func buildCosmosToL2Dest(
 // SpectreClient destination → groth16 builder, with timeout scanning + pinned-set
 // rotation), but WITHOUT the ETH→Cosmos beacon module. It returns nil on clean context
 // cancellation, or the module's first fatal error.
-func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps services.RelayDeps) error {
+// watchAcks is false for a forward-only deployment. Recording a debt there
+// would be worse than recording nothing: with no l2_to_cosmos leg this process
+// never sees the returning acknowledgement, so every entry stays owed forever --
+// durable, unsettleable, and eventually reported as overdue for packets another
+// relayer may well have acknowledged.
+func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps services.RelayDeps, watchAcks bool) error {
 	worker := svc.Worker()
 	bb := svc.BatchBuilder
 	cfg := svc.CosmosConfig()
@@ -189,12 +194,8 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		initialRotationDelay = 0
 	}
 
-	module := relay.NewModule(
-		"cosmos->l2",
-		deps.IDs.CosmosOnEVM,
-		cosmos.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.FetchTimeout, deps.Config.BatchConfig, deps.Logger, bb, svc.RecoveryState()),
-		evm.NewDestination(worker, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM),
-		cosmos.NewGroth16Builder(worker, deps.Cosmos, deps.EVM, deps.Config.FetchTimeout, deps.Config.RotationThreshold, cfg.ProofType, cfg.TrustLevel),
+	ackDue, ackSettled := ackWatchHooks(svc)
+	options := []relay.Option{
 		relay.WithTimeoutScanner(0, func(c context.Context) {
 			svc.ScanCosmosTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos)
 		}),
@@ -202,6 +203,20 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		relay.WithPeriodicUpdate(periodicUpdateInterval, initialRotationDelay, func(c context.Context) error {
 			return svc.RotatePinnedSet(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM)
 		}),
+	}
+	if watchAcks {
+		// This direction RECORDS the debt; the l2->cosmos leg settles it and owns
+		// the single overdue reporter. Both close over this svc, which is what lets
+		// the settlement from the other side find the entry.
+		options = append(options, relay.WithAckWatch(0, 0, ackDue, ackSettled, nil))
+	}
+	module := relay.NewModule(
+		"cosmos->l2",
+		deps.IDs.CosmosOnEVM,
+		cosmos.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.FetchTimeout, deps.Config.BatchConfig, deps.Logger, bb, svc.RecoveryState()),
+		evm.NewDestination(worker, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM),
+		cosmos.NewGroth16Builder(worker, deps.Cosmos, deps.EVM, deps.Config.FetchTimeout, deps.Config.RotationThreshold, cfg.ProofType, cfg.TrustLevel),
+		options...,
 	)
 
 	runCtx, cancel := context.WithCancel(ctx)

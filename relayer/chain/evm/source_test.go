@@ -145,13 +145,39 @@ func TestEventsWithOrigins_StaysIndexAligned(t *testing.T) {
 	}
 
 	var settled []uint64
+	var owedSettled []uint64
 	events, orig := eventsWithOrigins(packets, func(p channeltypesv2.Packet) error {
 		settled = append(settled, p.Sequence)
 		return nil
+	}, func(p channeltypesv2.Packet) {
+		owedSettled = append(owedSettled, p.Sequence)
 	})
 
 	if len(events) != len(orig) {
 		t.Fatalf("slices out of step: %d events vs %d origins", len(events), len(orig))
+	}
+
+	// Only an EthAck settles an owed acknowledgement. An EthTimeout is the other
+	// ending -- refunded, nothing owed -- so clearing a debt on it would hide a
+	// real one. Reported by @DongLieu: this path settled the pending tracker and
+	// left the ledger untouched, so an acknowledgement another relayer submitted
+	// left the debt reported overdue forever.
+	var wantOwed []uint64
+	for _, p := range packets {
+		if p.Packet != nil && p.Type == services.EthAck {
+			wantOwed = append(wantOwed, p.Packet.Sequence)
+		}
+	}
+	if len(wantOwed) == 0 {
+		t.Fatal("this fixture has no EthAck; the owed-ack assertion below would prove nothing")
+	}
+	if len(owedSettled) != len(wantOwed) {
+		t.Fatalf("owed acknowledgements settled = %v, want %v", owedSettled, wantOwed)
+	}
+	for i := range wantOwed {
+		if owedSettled[i] != wantOwed[i] {
+			t.Fatalf("owed acknowledgements settled = %v, want %v", owedSettled, wantOwed)
+		}
 	}
 	for i := range events {
 		if orig[i].Packet == nil {
@@ -196,7 +222,7 @@ func TestEventsWithOrigins_LogsTerminalSettlementFailure(t *testing.T) {
 
 	events, orig := eventsWithOrigins([]services.EthPacket{p}, func(channeltypesv2.Packet) error {
 		return errors.New("disk unavailable")
-	})
+	}, func(channeltypesv2.Packet) {})
 	if len(events) != 0 || len(orig) != 0 {
 		t.Fatalf("terminal packet must not be relayed, got %d events / %d origins", len(events), len(orig))
 	}

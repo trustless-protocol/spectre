@@ -40,6 +40,19 @@ var refreshTick = time.Minute
 // defaultScanInterval matches the legacy StartLoop timeout scan cadence (30s).
 const defaultScanInterval = 30 * time.Second
 
+// defaultAckWatchInterval is how often the owed-acknowledgement records are
+// checked, and defaultAckOverdueAfter how long an acknowledgement may be owed
+// before it is named.
+//
+// Fifteen minutes is past every normal round trip on the paths this drives -- a
+// finalized L2 frontier is the slowest and sits tens of minutes behind the head,
+// so the threshold has to clear that or a perfectly healthy packet would be
+// reported as overdue.
+const (
+	defaultAckWatchInterval = 5 * time.Minute
+	defaultAckOverdueAfter  = 15 * time.Minute
+)
+
 // defaultFlushInterval is the cadence of the enumeration backstop. Five minutes
 // rather than the scan's thirty seconds: each pass is real queries against both
 // chains, and since a query finds a packet at ANY age, running it more often
@@ -71,6 +84,11 @@ type Module struct {
 	// e.g. a mock or a permissioned client that cannot time out).
 	scan                ScanFunc
 	scanInterval        time.Duration
+	ackDue              AckDueFunc
+	ackSettled          AckSettledFunc
+	overdueAcks         OverdueAcksFunc
+	ackWatchInterval    time.Duration
+	ackOverdueAfter     time.Duration
 	flushInterval       time.Duration
 	track               TrackFunc
 	untrack             UntrackFunc
@@ -176,6 +194,9 @@ func (m *Module) Run(ctx context.Context) error {
 	if m.periodicUpdate != nil {
 		workers.Go("periodic-update", func() { m.periodicUpdateLoop(runCtx) })
 	}
+	if m.overdueAcks != nil {
+		workers.Go("ack-watch", func() { m.ackWatchLoop(runCtx) })
+	}
 	if lister, ok := m.src.(chain.PacketLister); ok && m.flushInterval > 0 {
 		workers.Go("packet-flush", func() { m.flushLoop(runCtx, lister) })
 	}
@@ -277,7 +298,7 @@ func (m *Module) flushLoop(ctx context.Context, lister chain.PacketLister) {
 func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	candidates, err := lister.UnrelayedPackets(ctx)
 	if err != nil {
-		log.Printf("[relay %s] packet flush: %v", m.name, err)
+		log.Printf("[%s Relay] packet flush: %v", m.name, err)
 		return
 	}
 	if len(candidates) == 0 {
@@ -305,7 +326,7 @@ func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	// Worth a line every time. A flush that finds work means the block scan
 	// missed it, which is the condition an operator wants to know about even
 	// though the packet is now being relayed.
-	log.Printf("[relay %s] packet flush found %d packet(s) the scan did not: %s",
+	log.Printf("[%s Relay] packet flush found %d packet(s) the scan did not: %s",
 		m.name, len(unsettled), describeEvents(unsettled))
 	m.handleBatchLocked(ctx, unsettled)
 }
@@ -328,7 +349,7 @@ func (m *Module) dropSettled(ctx context.Context, candidates []chain.Event) []ch
 	for _, e := range candidates {
 		delivered, err := m.dst.HasPacketReceipt(ctx, e.Raw)
 		if err != nil {
-			log.Printf("[relay %s] packet flush: receipt check for %s seq=%d: %v; relaying anyway",
+			log.Printf("[%s Relay] packet flush: receipt check for %s seq=%d: %v; relaying anyway",
 				m.name, e.Type, e.Sequence, err)
 			unsettled = append(unsettled, e)
 			continue
@@ -424,8 +445,93 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 func (m *Module) settleDelivered(packets []chain.RelayPacket) {
 	for _, p := range packets {
 		m.waits.clearPacket(p)
-		if m.untrack != nil && p.Type == chain.SendPacket {
+		// A delivered receive is the moment the acknowledgement becomes owed, and
+		// a relayed acknowledgement is the moment the debt closes. Recording it
+		// here rather than where the event was observed is deliberate: an ack is
+		// owed because WE delivered the packet, not because we saw it sent.
+		switch {
+		case p.Type == chain.SendPacket:
+			m.handOverDeliveredSend(p)
+		case p.Type == chain.AckPacket && m.ackSettled != nil:
+			m.ackSettled(p.Packet)
+		}
+	}
+}
+
+// handOverDeliveredSend moves one delivered receive from the timeout obligation
+// to the acknowledgement obligation, in the order that leaves a durable record
+// of it at every instant.
+//
+// The owed-ack record is written FIRST, and the pending record is removed only
+// once that write is confirmed on disk. The other order -- which this took until
+// a review caught it -- has a window where NEITHER durable record exists: the
+// timeout obligation is already deleted, the owed-ack record was never written,
+// and the receive is committed on the destination, so the packet can no longer
+// time out and nothing durable remains from which the missing acknowledgement
+// could be noticed. A crash between the two calls produces that state even when
+// both writes would have succeeded, so handling the write failure alone is not
+// enough -- the ORDER is the fix.
+//
+// When the write does fail the pending record is KEPT. It is then slightly wrong
+// -- the packet cannot time out any more -- but wrong in the recoverable
+// direction: the timeout scanner checks for a receipt before acting on it, finds
+// one, and removes the record itself. A packet in neither ledger has no such
+// path back.
+//
+// The ledger behind ackDue is SHARED between the two modules on purpose: the
+// acknowledgement that settles this debt is relayed by the other one, and only a
+// shared ledger lets that settlement cancel a record still queued here. See
+// services/ackdue.go.
+func (m *Module) handOverDeliveredSend(p chain.RelayPacket) {
+	if m.ackDue == nil {
+		// No acknowledgement ledger on this path -- a destination with no return
+		// leg -- so there is no second obligation to hand this to, and nothing to
+		// wait for before releasing the first.
+		if m.untrack != nil {
 			m.untrack(p.Packet)
+		}
+		return
+	}
+	if !m.ackDue(p.Packet) {
+		log.Printf("[%s Relay] ATTENTION: could not durably record the owed acknowledgement for seq=%d; "+
+			"keeping the pending record so the packet stays recoverable, and queued for retry",
+			m.name, p.Sequence)
+		return
+	}
+	if m.untrack != nil {
+		m.untrack(p.Packet)
+	}
+}
+
+// ackWatchLoop names acknowledgements that never came back. It reports rather
+// than acts: an overdue ack is not automatically recoverable -- the packet has a
+// receipt on the destination, so it can never be timed out either -- and the
+// operator needs the sequence before anything else can be decided.
+func (m *Module) ackWatchLoop(ctx context.Context) {
+	ticker := time.NewTicker(m.ackWatchInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if ctx.Err() != nil { // select may pick the tick even when ctx is done
+				return
+			}
+			overdue := m.overdueAcks(m.ackOverdueAfter)
+			if len(overdue) == 0 {
+				continue
+			}
+			shown := overdue
+			if len(shown) > waitListLimit {
+				shown = shown[:waitListLimit]
+			}
+			line := strings.Join(shown, ", ")
+			if len(overdue) > len(shown) {
+				line += fmt.Sprintf(", +%d more", len(overdue)-len(shown))
+			}
+			log.Printf("[%s Relay] %d acknowledgement(s) owed for more than %s and never seen: %s",
+				m.name, len(overdue), m.ackOverdueAfter, line)
 		}
 	}
 }

@@ -102,6 +102,48 @@ func WithPeriodicUpdate(interval, initialDelay time.Duration, periodicUpdate Per
 	}
 }
 
+// AckDueFunc records that a receive relay succeeded and its acknowledgement is
+// now owed. False means the durable write failed; the caller must not treat the
+// packet as recorded.
+type AckDueFunc func(packet []byte) bool
+
+// AckSettledFunc closes an owed-acknowledgement record.
+type AckSettledFunc func(packet []byte)
+
+// OverdueAcksFunc lists packets whose acknowledgement has been owed longer than
+// the configured threshold, oldest first.
+type OverdueAcksFunc func(threshold time.Duration) []string
+
+// WithAckWatch names the acknowledgements that never came back.
+//
+// waitTracker can only follow packets it OBSERVED. An acknowledgement written
+// while the relayer was down, or outside the scan window, produces no event to
+// wait on -- so a missing ack is indistinguishable from one that has simply not
+// arrived yet, and the packet's escrow stays locked in silence. Recording the
+// debt at the moment the receive relay succeeds is what makes it nameable
+// later.
+//
+// The record must be DURABLE or it says nothing after the restart that is the
+// most likely reason the ack was missed in the first place.
+//
+// interval <= 0 falls back to defaultAckWatchInterval; threshold <= 0 to
+// defaultAckOverdueAfter.
+func WithAckWatch(interval, threshold time.Duration, due AckDueFunc, settled AckSettledFunc, overdue OverdueAcksFunc) Option {
+	return func(m *Module) {
+		if interval <= 0 {
+			interval = defaultAckWatchInterval
+		}
+		if threshold <= 0 {
+			threshold = defaultAckOverdueAfter
+		}
+		m.ackDue = due
+		m.ackSettled = settled
+		m.overdueAcks = overdue
+		m.ackWatchInterval = interval
+		m.ackOverdueAfter = threshold
+	}
+}
+
 // WithPacketFlush periodically asks the source to ENUMERATE its outstanding
 // packets and relays whatever the destination has not settled. It is a no-op
 // unless the source implements chain.PacketLister.

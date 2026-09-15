@@ -824,6 +824,10 @@ func enqueueCosmosPackets(
 		if packet.Type == services.CosmosAcknowledged {
 			seenEvents[key] = struct{}{}
 			batchBuilder.PendingTracker.RemovePacketIfCurrent(*packet.Packet)
+			// The owed-acknowledgement ledger too, not only the pending tracker.
+			// This branch runs when the acknowledgement arrived -- whoever relayed
+			// it -- and a debt this process recorded is settled by that fact.
+			batchBuilder.SettleOwedAck(*packet.Packet)
 			// The queue too, not only the tracker: one pass can read a send and,
 			// further down the same list, the acknowledge_packet that closes it.
 			dequeued := batchBuilder.DropCosmosQueued(*packet.Packet)

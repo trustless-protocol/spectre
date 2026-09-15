@@ -90,6 +90,20 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		log.Printf("[eth->cosmos UpdateClient] seed client-update age: %v", err)
 	}
 
+	// A delivered receive makes its acknowledgement owed; a relayed ack closes the
+	// debt. Both take the marshaled packet, like the tracker hooks beside them.
+	//
+	// They are wired to BOTH modules because the two halves land on opposite
+	// ones. A Cosmos-origin send is delivered by cosmos->eth (the debt), and the
+	// acknowledgement the destination writes for it comes back as an ETH
+	// WriteAcknowledgement relayed by eth->cosmos (the settlement) -- and the
+	// mirror image for an ETH-origin send. Attaching the pair to one module only
+	// meant every module recorded debts that the OTHER module settled, so no debt
+	// ever cleared and every returned acknowledgement stayed overdue forever.
+	// The tracker behind these hooks is shared (svc.BatchBuilder.AckDueTracker),
+	// which is what lets the settlement land from the other side.
+	ackDue, ackSettled := ackWatchHooks(svc)
+
 	cosmosToEth := relay.NewModule(
 		"cosmos->eth",
 		deps.IDs.CosmosOnEVM,
@@ -101,6 +115,10 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 			svc.ScanCosmosTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos)
 		}),
 		relay.WithPacketTracker(trackCosmosPending, untrackCosmosPending),
+		// Name the acknowledgements that never come back. The wait tracker only
+		// follows packets it OBSERVED, so an ack written while this process was
+		// down leaves the packet silently unfinished and its escrow locked.
+		relay.WithAckWatch(0, 0, ackDue, ackSettled, svc.OverdueAcks),
 		// The enumeration backstop. The block scan only ever sees its own window,
 		// so a lost cursor, an outage longer than the window, or a second relayer
 		// joining this path all leave older packets invisible to it. Only the
@@ -123,6 +141,11 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		evm.NewBeaconBuilder(worker, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos),
 		relay.WithClientUpdateObserver(svc.ObserveEVMOnCosmosUpdate),
 		relay.WithTimeoutScanner(0, func(c context.Context) { svc.ScanEthTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM) }),
+		// The same pair of hooks, and deliberately NO overdue reporter: the
+		// tracker is shared, so a second watch loop would report the same set
+		// twice. nil leaves the loop unstarted (see Module.Run) while the debt
+		// recording and settlement still happen on this side.
+		relay.WithAckWatch(0, 0, ackDue, ackSettled, nil),
 	)
 
 	// Child context so the first fatal error stops both modules.
@@ -142,4 +165,33 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	// Reading the second only to avoid a goroutine leak is what discarded the
 	// other direction's drain failure before it could reach loopErrCh.
 	return errors.Join(first, second)
+}
+
+// ackWatchHooks builds the record/settle pair for one ledger.
+//
+// It is a function rather than two closures written at each call site because
+// the pair only works when BOTH sides of a relay path close over the SAME
+// Services: one direction records the debt a delivered receive owes, the other
+// settles it when the acknowledgement comes back. Written out per site, the
+// easiest mistake is to hand one direction a different instance, and the symptom
+// is silence -- every debt recorded, none ever cleared, every returned ack
+// reported overdue forever.
+func ackWatchHooks(svc *services.Services) (func([]byte) bool, func([]byte)) {
+	due := func(raw []byte) bool {
+		var pkt channeltypesv2.Packet
+		if err := pkt.Unmarshal(raw); err != nil {
+			log.Printf("[AckWatch] record owed ack: decode packet: %v", err)
+			return false
+		}
+		return svc.RecordAckDue(pkt)
+	}
+	settled := func(raw []byte) {
+		var pkt channeltypesv2.Packet
+		if err := pkt.Unmarshal(raw); err != nil {
+			log.Printf("[AckWatch] settle owed ack: decode packet: %v", err)
+			return
+		}
+		svc.ClearAckDue(pkt)
+	}
+	return due, settled
 }

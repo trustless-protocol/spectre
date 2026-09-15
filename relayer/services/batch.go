@@ -106,11 +106,60 @@ type BatchBuilder struct {
 	EthPendingTracker *PendingPacketTracker
 	L2PendingTracker  *PendingPacketTracker
 
+	// AckDueTracker records packets whose receive we relayed and whose
+	// acknowledgement has not come back. It is the only way to notice an ack the
+	// scan window missed: waitTracker follows events it OBSERVED, and an ack
+	// nobody saw produces no event to wait on.
+	AckDueTracker *PendingPacketTracker
+
+	// settleOwedAck closes the owed-acknowledgement record for a packet whose
+	// acknowledgement has arrived BY ANY ROUTE, not only by this process relaying
+	// it. The Services constructors wire it to ClearAckDue; nil means no ledger.
+	//
+	// It lives here rather than on Services because the three places that observe
+	// a terminal acknowledgement -- the Cosmos subscriber, the EVM source and the
+	// L2 source -- hold a BatchBuilder and not a Services. The clearing has to go
+	// through ClearAckDue: cancelling a queued intent and retrying a rolled-back
+	// removal are state on Services, so reaching into AckDueTracker directly would
+	// leave a settled debt queued for rewriting.
+	settleOwedAck func(channeltypesv2.Packet)
+
 	// A flushed chunk is absent from the queue while its handler is running.
 	// Keep a multiset of its lowest source heights so durable recovery cursors
 	// cannot advance past packets that still only exist in this process.
 	cosmosInFlight map[uint64]int
 	ethInFlight    map[uint64]int
+}
+
+// WithOwedAckSettler installs the hook that closes an owed-acknowledgement
+// record. Called once by each Services constructor.
+func (b *BatchBuilder) WithOwedAckSettler(settle func(channeltypesv2.Packet)) {
+	if b == nil {
+		return
+	}
+	b.settleOwedAck = settle
+}
+
+// SettleOwedAck closes the owed-acknowledgement record for a packet whose
+// acknowledgement arrived, whoever relayed it.
+//
+// Reported by @DongLieu: the ledger was cleared only when THIS process relayed
+// the AckPacket, while the three terminal-event paths removed the pending record
+// and stopped there. Running two relayers is the ordinary case, so the ordinary
+// sequence was: this process delivers the receive and records the debt, the other
+// submits the acknowledgement, this one observes the terminal event and drops its
+// pending record -- and keeps the debt. The packet is settled on-chain and now has
+// a receipt, so it can never time out either; the debt is durable, so it survives
+// the restart, and the watcher reports it overdue for as long as the state file
+// lives. A watcher that names settled packets is worse than no watcher: the real
+// overdue entry is then indistinguishable from the noise.
+//
+// A no-op when no ledger is running, so the terminal paths call it unconditionally.
+func (b *BatchBuilder) SettleOwedAck(packet channeltypesv2.Packet) {
+	if b == nil || b.settleOwedAck == nil {
+		return
+	}
+	b.settleOwedAck(packet)
 }
 
 func NewBatchBuilder() *BatchBuilder {
@@ -123,8 +172,13 @@ func NewBatchBuilder() *BatchBuilder {
 		PendingTracker:    NewPendingPacketTracker(),
 		EthPendingTracker: NewPendingPacketTracker(),
 		L2PendingTracker:  NewPendingPacketTracker(),
-		cosmosInFlight:    map[uint64]int{},
-		ethInFlight:       map[uint64]int{},
+		// In-memory like its three siblings above. Leaving it nil made every
+		// non-persistent setup panic on the first RecordAckDue -- Add takes
+		// t.mtx on a nil receiver -- and Services.New uses THIS constructor, so
+		// that is the default adapter-engine path, not an exotic one.
+		AckDueTracker:  NewPendingPacketTracker(),
+		cosmosInFlight: map[uint64]int{},
+		ethInFlight:    map[uint64]int{},
 	}
 }
 
@@ -140,6 +194,16 @@ func NewPersistentBatchBuilder(stateDir string) (*BatchBuilder, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A fourth tracker, holding a different KIND of record: not "sent, may need a
+	// timeout refund" but "we relayed the receive, the acknowledgement is owed".
+	// It reuses the same durable machinery because the requirement is the same --
+	// survive a restart -- and ObservedAt is exactly the due-since the overdue
+	// check needs.
+	ackDueTracker, err := NewPersistentPendingPacketTracker(filepath.Join(stateDir, "awaiting-acks.json"))
+	if err != nil {
+		return nil, err
+	}
+
 	l2Tracker, err := NewPersistentPendingPacketTracker(filepath.Join(stateDir, "l2.json"))
 	if err != nil {
 		return nil, err
@@ -153,6 +217,7 @@ func NewPersistentBatchBuilder(stateDir string) (*BatchBuilder, error) {
 		PendingTracker:    cosmosTracker,
 		EthPendingTracker: ethTracker,
 		L2PendingTracker:  l2Tracker,
+		AckDueTracker:     ackDueTracker,
 		cosmosInFlight:    map[uint64]int{},
 		ethInFlight:       map[uint64]int{},
 	}, nil

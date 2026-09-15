@@ -110,6 +110,11 @@ type Source struct {
 	// source drops them, which is what it did before terminal events were read.
 	settle func(packet []byte)
 
+	// settleAck is called for the ACKNOWLEDGED half of those, and closes the
+	// owed-acknowledgement record. Separate from settle because a timeout is also
+	// terminal and settles no debt. nil means no ledger is running.
+	settleAck func(packet []byte)
+
 	// logScanChunk caps the block span of a single eth_getLogs. 0 means "one call
 	// for the whole range", which is what every provider that does not cap the span
 	// wants. Providers that do cap it vary by three orders of magnitude (Alchemy's
@@ -160,6 +165,18 @@ func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKi
 // the behaviour every L2 source had before this existed.
 func (s *Source) WithSettleHook(settle func(packet []byte)) *Source {
 	s.settle = settle
+	return s
+}
+
+// WithAckSettleHook registers what to do when the L2 emits a terminal
+// ACKNOWLEDGEMENT, as opposed to any terminal event.
+//
+// Reported by @DongLieu: WithSettleHook was wired to the pending tracker alone,
+// so an acknowledgement another relayer submitted dropped this process's pending
+// record and left its owed-acknowledgement debt untouched -- durable, surviving
+// restart, and reported overdue forever for a packet that is settled on-chain.
+func (s *Source) WithAckSettleHook(settle func(packet []byte)) *Source {
+	s.settleAck = settle
 	return s
 }
 

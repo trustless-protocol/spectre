@@ -1525,6 +1525,34 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 		}
 	})
 
+	// The multi-relayer case. This process delivered the receive and recorded an
+	// owed acknowledgement; ANOTHER process submitted the acknowledgement, so this
+	// one only ever sees the terminal event. Reported by @DongLieu: the branch
+	// settled the pending tracker and stopped, leaving the debt durable, surviving
+	// restart, and reported overdue for a packet already settled on-chain -- which
+	// can never time out either, because the receive left a receipt.
+	t.Run("a terminal acknowledge_packet closes the owed-acknowledgement record too", func(t *testing.T) {
+		bb := services.NewBatchBuilder()
+		var settledOwed []uint64
+		bb.WithOwedAckSettler(func(p channeltypesv2.Packet) {
+			settledOwed = append(settledOwed, p.Sequence)
+		})
+
+		packet := cosmosTestPacket(9, "cosmos-client", cosmosOnEVM)
+		packet.Type = services.CosmosAcknowledged
+		bb.PendingTracker.Add(*packet.Packet, 40)
+
+		if _, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+			[]services.CosmosPacket{packet}, map[cosmosEventKey]struct{}{}, false); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+
+		if len(settledOwed) != 1 || settledOwed[0] != 9 {
+			t.Fatalf("owed acknowledgements settled = %v, want [9]: the acknowledgement arrived, "+
+				"so the debt this process recorded is closed whoever relayed it", settledOwed)
+		}
+	})
+
 	// The rule that makes terminal events safe to read at all: they close a
 	// packet's lifecycle, so they settle the tracker and must NEVER reach the
 	// batch. A terminal event in the relay queue is an empty "relay" of a packet

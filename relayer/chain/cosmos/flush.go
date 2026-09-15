@@ -111,7 +111,7 @@ func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 		if err != nil {
 			// One unresolvable sequence must not discard the rest: the others are
 			// exactly the packets this pass exists to recover.
-			s.logger.Printf("[flush] resolve send packet seq=%d: %v", commitment.sequence, err)
+			s.logger.Printf("[FlushCosmos] resolve send packet seq=%d: %v", commitment.sequence, err)
 			continue
 		}
 		if !found {
@@ -119,7 +119,7 @@ func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 			// it commits to. On a pruned node that is expected for an old packet, and
 			// it is worth saying so once per pass rather than silently returning a
 			// shorter list.
-			s.logger.Printf("[flush] commitment for seq=%d has no indexed send_packet tx matching it (pruned history?)",
+			s.logger.Printf("[FlushCosmos] commitment for seq=%d has no indexed send_packet tx matching it (pruned history?)",
 				commitment.sequence)
 			continue
 		}
@@ -175,7 +175,7 @@ func (s *Source) outstandingCommitments(ctx context.Context) ([]flushCommitment,
 	}
 
 	if len(window) == flushSequenceCap {
-		s.logger.Printf("[flush] resolving %d outstanding commitments on %s this pass (seq %d..%d); "+
+		s.logger.Printf("[FlushCosmos] resolving %d outstanding commitments on %s this pass (seq %d..%d); "+
 			"the window is full, so more may remain for the next pass",
 			len(window), s.commitmentQueryClientID(), window[0].sequence, window[len(window)-1].sequence)
 	}
@@ -284,7 +284,7 @@ func (s *Source) sendEventForCommitment(ctx context.Context, commitment flushCom
 			return chain.Event{}, false, nil
 		}
 		if scanned >= flushTxSearchMaxResults {
-			log.Printf("[flush] sequence %d on %s: scanned %d of %d indexed transactions without "+
+			log.Printf("[FlushCosmos] sequence %d on %s: scanned %d of %d indexed transactions without "+
 				"finding the commitment the chain holds; giving up on this sequence for this pass. "+
 				"That many matches for one (sequence, client) pair means the node's transaction "+
 				"index is conflating events -- a psql index, or kv entries in the legacy format",

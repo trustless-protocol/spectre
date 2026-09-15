@@ -68,6 +68,11 @@ type queueState struct {
 	cosmosWorstDeferrals, ethWorstDeferrals, l2WorstDeferrals int
 	cosmosTimeoutDeadAge, ethTimeoutDeadAge, l2TimeoutDeadAge time.Duration
 	cosmosRetryPaused, ethRetryPaused, l2RetryPaused          bool
+	// ackDueUnwritten is the number of owed-acknowledgement records that have not
+	// reached disk. Reported here rather than only at the moment of failure: a
+	// storage problem persists, and a single line at the failure scrolls away
+	// while the records stay unwritten.
+	ackDueUnwritten int
 }
 
 func (s *Services) queueStateAt(now time.Time) queueState {
@@ -76,6 +81,7 @@ func (s *Services) queueStateAt(now time.Time) queueState {
 	ethStuck, ethWorst := s.BatchBuilder.EthPendingTracker.StuckTimeouts()
 	l2Stuck, l2Worst := s.BatchBuilder.L2PendingTracker.StuckTimeouts()
 	return queueState{
+		ackDueUnwritten:      s.PendingAckDueWrites(),
 		cosmosQueued:         cosmosQueued,
 		ethQueued:            ethQueued,
 		cosmosPending:        s.BatchBuilder.PendingTracker.Len(),
@@ -115,6 +121,7 @@ func (q queueState) counts() queueCounts {
 		cosmosStuck: q.cosmosStuck, ethStuck: q.ethStuck, l2Stuck: q.l2Stuck,
 		cosmosWorstDeferrals: q.cosmosWorstDeferrals, ethWorstDeferrals: q.ethWorstDeferrals, l2WorstDeferrals: q.l2WorstDeferrals,
 		cosmosRetryPaused: q.cosmosRetryPaused, ethRetryPaused: q.ethRetryPaused, l2RetryPaused: q.l2RetryPaused,
+		ackDueUnwritten: q.ackDueUnwritten,
 	}
 }
 
@@ -130,6 +137,11 @@ type queueCounts struct {
 	// without this the routine lines would stay suppressed and the log would go
 	// quiet with nothing saying the state directory came back.
 	cosmosRetryPaused, ethRetryPaused, l2RetryPaused bool
+	// Same rule, same reason: a count of records that failed to reach disk is
+	// signal, not something that advances on its own. Without it the storage
+	// problem CLEARING is invisible -- the ATTENTION line just stops, and the
+	// routine lines stay suppressed because no other count moved.
+	ackDueUnwritten int
 }
 
 // reportQueueState prints the routine lines only when something changed, or
@@ -191,6 +203,11 @@ func (s *Services) logQueueAttention(state queueState) {
 	if state.cosmosRetryPaused || state.ethRetryPaused || state.l2RetryPaused {
 		log.Printf("[QueueState][ATTENTION] timeout retries are paused because pending-state persistence is unavailable (cosmos=%t eth=%t l2=%t); restore the state directory before retries resume.",
 			state.cosmosRetryPaused, state.ethRetryPaused, state.l2RetryPaused)
+	}
+	if state.ackDueUnwritten > 0 {
+		log.Printf("[QueueState][ATTENTION] %d owed-acknowledgement record(s) could not be written durably and are queued for retry; "+
+			"until they land, a missing acknowledgement for those packets cannot be reported after a restart.",
+			state.ackDueUnwritten)
 	}
 }
 

@@ -233,7 +233,7 @@ func TestSettledIdentitySurvivesASequenceReplay(t *testing.T) {
 
 	// Both carry sequence 1 -- the migration restarted the numbering.
 	settled := map[settledKey]struct{}{}
-	source.settleTerminal("AckPacket", old, big.NewInt(1), settled)
+	source.settleTerminal("AckPacket", true, old, big.NewInt(1), settled)
 
 	event, ok := l2SendToEvent(&contractICS26Router.ContractICS26RouterSendPacket{
 		Sequence: big.NewInt(1), Packet: replayed,
@@ -440,5 +440,41 @@ func TestMeasureBlockTimeIsBounded(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > blockTimeSampleTimeout+5*time.Second {
 		t.Fatalf("measureBlockTime took %s; it must be bounded by %s", elapsed, blockTimeSampleTimeout)
+	}
+}
+
+// Both L2 terminal endings drop the pending record; only the acknowledged one
+// closes an owed-acknowledgement record.
+//
+// Reported by @DongLieu: WithSettleHook was wired to the pending tracker alone,
+// so an acknowledgement another relayer submitted left this process's debt in
+// place -- durable, surviving restart, reported overdue for a packet settled
+// on-chain. A timeout must NOT clear a debt: the packet is refunded and nothing
+// is owed, so clearing there would hide a real entry.
+func TestSettleTerminalClosesTheOwedAckOnlyOnAnAcknowledgement(t *testing.T) {
+	for _, tc := range []struct {
+		kind         string
+		acknowledged bool
+		wantAck      int
+	}{
+		{"AckPacket", true, 1},
+		{"TimeoutPacket", false, 0},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			var settled, ackSettled int
+			src := &Source{
+				settle:    func([]byte) { settled++ },
+				settleAck: func([]byte) { ackSettled++ },
+			}
+			src.settleTerminal(tc.kind, tc.acknowledged,
+				contractICS26Router.IICS26RouterMsgsPacket{}, big.NewInt(1), map[settledKey]struct{}{})
+
+			if settled != 1 {
+				t.Fatalf("pending settlements = %d, want 1: every terminal ending drops the record", settled)
+			}
+			if ackSettled != tc.wantAck {
+				t.Fatalf("owed-ack settlements = %d, want %d", ackSettled, tc.wantAck)
+			}
+		})
 	}
 }

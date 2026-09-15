@@ -186,3 +186,57 @@ func formatL2TimeoutReturnPathCandidates(candidates []l2TimeoutReturnPathCandida
 	}
 	return strings.Join(out, "; ")
 }
+
+// destHasReturnLeg reports whether any l2_to_cosmos source resolved to this
+// Cosmos→L2 destination, which is the only condition under which a debt the
+// destination records can ever be settled.
+//
+// The comparison is by *services.Services IDENTITY, not by config equality,
+// because sharing that instance IS the settlement mechanism: the forward
+// direction records into svc's ledger and the return direction clears from the
+// same one. Two destinations with identical config are still two ledgers.
+//
+// Found in review: this used to be `len(l2Sources) > 0`. A source matches
+// exactly one destination (by L2 chain id, Cosmos RPC URL and router address),
+// so in any multi-L2 deployment the global count marked every forward-only
+// destination as settleable. Those paths then persisted ack debt no module
+// shared their ledger to clear, and reported it overdue forever -- even for
+// packets another relayer had acknowledged.
+func destHasReturnLeg(dest *services.Services, settling []*services.Services) bool {
+	if dest == nil {
+		return false
+	}
+	for _, svc := range settling {
+		if svc == dest {
+			return true
+		}
+	}
+	return false
+}
+
+// builtL2Dest is one built-but-not-yet-running Cosmos→L2 destination.
+//
+// It lives at package level rather than inside the start command so that
+// markReturnLegs below can be tested without standing up a chain, a prover and
+// an attestor. The review that found the len(l2Sources) > 0 bug also found that
+// nothing could have caught it, and that was a direct consequence of the
+// decision living inside an untestable closure.
+type builtL2Dest struct {
+	svc     *services.Services
+	deps    services.RelayDeps
+	cleanup func()
+	// hasReturnLeg gates the owed-ack ledger: unless some l2_to_cosmos source
+	// settles for THIS destination, nothing ever clears a debt it records.
+	hasReturnLeg bool
+}
+
+// markReturnLegs sets hasReturnLeg on each destination a source settles for.
+//
+// It mutates in place because the caller holds the slice it is about to launch
+// goroutines from; returning a copy would leave the original silently unmarked,
+// which fails in the permissive direction this whole gate exists to prevent.
+func markReturnLegs(dests []builtL2Dest, settling []*services.Services) {
+	for i := range dests {
+		dests[i].hasReturnLeg = destHasReturnLeg(dests[i].svc, settling)
+	}
+}

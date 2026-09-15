@@ -824,6 +824,14 @@ func TestLogLabelsStayOnTheAgreedList(t *testing.T) {
 		"UpdateCosmosClient": true, "UpdateEthClient": true, "RefreshCosmosClient": true,
 		"CosmosTimeoutScan": true, "%sTimeoutScan": true,
 		"Misbehaviour": true, "PendingTracker": true,
+		// Added on purpose, which is what the message below asks for. #452's
+		// enumeration backstop and #454's owed-ack ledger both landed after the
+		// E3 renaming pass ran, so their labels were never put through it:
+		// FlushCosmos is chain-qualified for the same reason SubscribeCosmos is
+		// (cosmos.NewSource serves both cosmos->eth and cosmos->l2), and AckWatch
+		// replaces a bare [adapter], which is one of the two noise words E3
+		// removed.
+		"FlushCosmos": true, "AckWatch": true,
 
 		// The closed lowercase list: shared by every path, so a direction would
 		// be a lie.
