@@ -53,7 +53,7 @@ func (s *Services) TrackCosmosPending(packet channeltypesv2.Packet, blockNumber 
 // the packet remains tracked and the failure is logged for operator attention.
 func (s *Services) UntrackCosmosPending(packet channeltypesv2.Packet) {
 	if err := s.BatchBuilder.PendingTracker.RemovePacketIfCurrent(packet); err != nil {
-		log.Printf("[Services][ATTENTION] failed to persist removal of settled Cosmos packet seq=%d: %v", packet.Sequence, err)
+		log.Printf("[PendingTracker][ATTENTION] failed to persist removal of settled Cosmos packet seq=%d: %v", packet.Sequence, err)
 	}
 }
 
@@ -70,7 +70,7 @@ func (s *Services) TrackL2Pending(packet channeltypesv2.Packet, blockNumber uint
 // operator attention.
 func (s *Services) UntrackL2Pending(packet channeltypesv2.Packet) {
 	if err := s.BatchBuilder.L2PendingTracker.RemovePacketIfCurrent(packet); err != nil {
-		log.Printf("[Services][ATTENTION] failed to persist removal of settled L2 packet seq=%d: %v", packet.Sequence, err)
+		log.Printf("[PendingTracker][ATTENTION] failed to persist removal of settled L2 packet seq=%d: %v", packet.Sequence, err)
 	}
 }
 

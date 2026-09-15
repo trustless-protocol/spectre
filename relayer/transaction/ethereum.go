@@ -472,7 +472,7 @@ func gasPriceWithBaseFeeHeadroom(stdCtx context.Context, endpoint services.EVMEn
 	}
 	lifted := liftAboveBaseFee(suggested, header.BaseFee)
 	if lifted != suggested {
-		log.Printf("[SendTx] lifting suggested price %v to %v to clear base fee %v",
+		log.Printf("[SendEthTx] lifting suggested price %v to %v to clear base fee %v",
 			suggested, lifted, header.BaseFee)
 	}
 	return lifted
@@ -847,7 +847,7 @@ func (h *Handler) SubmitMisbehaviour(
 	if err != nil {
 		return fmt.Errorf("submit misbehaviour: %w", err)
 	}
-	log.Printf("[SubmitMisbehaviour] report signed by %s confirmed in block %d", fromAddress.Hex(), receipt.BlockNumber.Uint64())
+	log.Printf("[Misbehaviour] report signed by %s confirmed in block %d", fromAddress.Hex(), receipt.BlockNumber.Uint64())
 	return nil
 }
 
@@ -873,7 +873,7 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 
 	parsedABI, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
 	if err != nil {
-		return fmt.Errorf("[SendEthTxBatch] failed to load ICS26Router ABI: %w", err)
+		return fmt.Errorf("[SendEthTx] failed to load ICS26Router ABI: %w", err)
 	}
 
 	// cosmosClientID is only consulted when the batch contains an updateClient
@@ -910,34 +910,34 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 			// that path can't be expressed inside multicall, so caller must
 			// submit the update as a standalone tx.
 			if !routerManagesProofSubmission(endpoint) {
-				return fmt.Errorf("[SendEthTxBatch] client update cannot be batched when ICS26Router is not the proof submitter; submit it via SendEthTx instead")
+				return fmt.Errorf("[SendEthTx] client update cannot be batched when ICS26Router is not the proof submitter; submit it via SendEthTx instead")
 			}
 			if !clientIDResolved {
 				if cosmosClientID == "" {
-					return fmt.Errorf("[SendEthTxBatch] resolve cosmos client id: cosmos router client id is not configured")
+					return fmt.Errorf("[SendEthTx] resolve cosmos client id: cosmos router client id is not configured")
 				}
 				clientIDResolved = true
 			}
 			if m.Kind == services.ConsensusUpdate {
 				encoded, encErr := relayerclient.EncodeUpdateConsensusStateMsg(m.AppMsg, m.NewValSet)
 				if encErr != nil {
-					return fmt.Errorf("[SendEthTxBatch] encode updateConsensusState msg %d: %w", i, encErr)
+					return fmt.Errorf("[SendEthTx] encode updateConsensusState msg %d: %w", i, encErr)
 				}
 				data, perr = parsedABI.Pack("updateConsensusState", cosmosClientID, encoded)
 				lbl = "updateConsensusState"
 			} else {
 				encoded, encErr := relayerclient.EncodeUpdateApplicationStateMsg(m.AppMsg)
 				if encErr != nil {
-					return fmt.Errorf("[SendEthTxBatch] encode updateApplicationState msg %d: %w", i, encErr)
+					return fmt.Errorf("[SendEthTx] encode updateApplicationState msg %d: %w", i, encErr)
 				}
 				data, perr = parsedABI.Pack("updateApplicationState", cosmosClientID, encoded)
 				lbl = "updateApplicationState"
 			}
 		default:
-			return fmt.Errorf("[SendEthTxBatch] unsupported message type at index %d: %T (only client update/recvPacket/ackPacket/timeoutPacket allowed in multicall)", i, msg)
+			return fmt.Errorf("[SendEthTx] unsupported message type at index %d: %T (only client update/recvPacket/ackPacket/timeoutPacket allowed in multicall)", i, msg)
 		}
 		if perr != nil {
-			return fmt.Errorf("[SendEthTxBatch] pack msg %d (%s): %w", i, lbl, perr)
+			return fmt.Errorf("[SendEthTx] pack msg %d (%s): %w", i, lbl, perr)
 		}
 		calldata = append(calldata, data)
 		labels = append(labels, lbl)
@@ -947,19 +947,19 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 
 	privateKey, err := h.keySigner().EthKey()
 	if err != nil {
-		return fmt.Errorf("[SendEthTxBatch] failed to restore private key: %w", err)
+		return fmt.Errorf("[SendEthTx] failed to restore private key: %w", err)
 	}
 	// A malformed override used to be discarded in silence -- the operator set a
 	// limit, the default was used, and nothing said so. Fail instead, matching
 	// EthGasLimit above.
 	multicallGasLimit, err := envUint64("ETH_MULTICALL_GAS_LIMIT", 16000000)
 	if err != nil {
-		return fmt.Errorf("[SendEthTxBatch] %w", err)
+		return fmt.Errorf("[SendEthTx] %w", err)
 	}
 
 	ics26Router, err := contractICS26Router.NewContractICS26Router(*endpoint.RouterContract(), endpoint.EthClient())
 	if err != nil {
-		return fmt.Errorf("[SendEthTxBatch] failed to bind ICS26Router: %w", err)
+		return fmt.Errorf("[SendEthTx] failed to bind ICS26Router: %w", err)
 	}
 
 	benchEnabled := utils.BenchEnabled()
@@ -969,7 +969,7 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 	}
 
 	senderFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
-		log.Printf("[SendEthTxBatch] Submitting multicall: %d inner calls (%s)", len(calldata), labelStr)
+		log.Printf("[SendEthTx] Submitting multicall: %d inner calls (%s)", len(calldata), labelStr)
 		return ics26Router.Multicall(auth, calldata)
 	}
 
@@ -978,7 +978,7 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 		return fmt.Errorf("multicall labels=%s: %w", labelStr, err)
 	}
 
-	log.Printf("[SendEthTxBatch] Tx %s confirmed in block %d (gasUsed=%d, inner=%d)",
+	log.Printf("[SendEthTx] Tx %s confirmed in block %d (gasUsed=%d, inner=%d)",
 		receipt.TxHash.Hex(), receipt.BlockNumber.Uint64(), receipt.GasUsed, len(calldata))
 	if benchEnabled {
 		log.Printf("[bench] eth multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
@@ -1030,7 +1030,7 @@ func waitForReceipts(ctx context.Context, client *ethclient.Client, hashes []com
 					continue
 				}
 				if err != nil && !errors.Is(err, ethereum.NotFound) {
-					log.Printf("[EthTxSender] Transient error polling receipt for %s: %v. Retrying...", hash.Hex(), err)
+					log.Printf("[SendEthTx] Transient error polling receipt for %s: %v. Retrying...", hash.Hex(), err)
 					continue
 				}
 			}
@@ -1311,14 +1311,14 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 		}
 
 		if isNonceTooLowError(callErr) {
-			log.Printf("[EthTxSender] Nonce %d too low (attempt %d/%d). Resetting nonce cache.", currentNonce, nonceAttempt, maxNonceRetries)
+			log.Printf("[SendEthTx] Nonce %d too low (attempt %d/%d). Resetting nonce cache.", currentNonce, nonceAttempt, maxNonceRetries)
 			state.nonceValid = false
 			h.mu.Unlock()
 			continue
 		}
 
 		if isAlreadyKnownError(callErr) && signedTx != nil {
-			log.Printf("[EthTxSender] Transaction already known in mempool: %s. Proceeding to wait.", signedTx.Hash().Hex())
+			log.Printf("[SendEthTx] Transaction already known in mempool: %s. Proceeding to wait.", signedTx.Hash().Hex())
 			tx = signedTx
 			submitDur = time.Since(submitStart)
 
@@ -1379,7 +1379,7 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 				_, callErr := endpoint.EthClient().CallContract(callCtx, callMsg, receipt.BlockNumber)
 				callCancel()
 				if callErr != nil {
-					log.Printf("[EthTxSender] Revert reason: %v", callErr)
+					log.Printf("[SendEthTx] Revert reason: %v", callErr)
 					if name, ok := validatorCacheRaceErrorName(callErr); ok {
 						return receipt, submitDur, waitDur, fmt.Errorf(
 							"tx %s reverted with %s (status=0, gasUsed=%d): %w",
@@ -1425,7 +1425,7 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 					if nextCeiling > 0 && nextGasLimit > nextCeiling {
 						nextGasLimit = nextCeiling
 					}
-					log.Printf("[EthTxSender] Tx %s ran out of gas at %d; retrying with fresh nonce and gas limit %d (step %d/%d)",
+					log.Printf("[SendEthTx] Tx %s ran out of gas at %d; retrying with fresh nonce and gas limit %d (step %d/%d)",
 						receipt.TxHash.Hex(), tx.Gas(), nextGasLimit, nextStep+1, len(evmGasHeadroomBasisPoints))
 					retryReceipt, retrySubmitDur, retryWaitDur, retryErr := h.executeWithRetryAndResubmissionAtGasStep(
 						stdCtx, endpoint, privateKey, baseGasLimit, nextStep, nextCeiling, senderFn, knob,
@@ -1451,7 +1451,7 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 			// Equal means our transaction is simply not in the pool — a drop, which
 			// a resubmit can still fix — so only the strict inequality short-circuits.
 			if pending, nonceErr := endpoint.EthClient().PendingNonceAt(stdCtx, fromAddress); nonceErr != nil {
-				log.Printf("[EthTxSender] Tx %s not mined in %s; pending-nonce probe failed: %v",
+				log.Printf("[SendEthTx] Tx %s not mined in %s; pending-nonce probe failed: %v",
 					tx.Hash().Hex(), attemptTimeout, nonceErr)
 			} else if pending < tx.Nonce() {
 				h.mu.Lock()
@@ -1470,14 +1470,14 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 				return nil, submitDur, time.Since(waitStart), fmt.Errorf("transaction wait mined timed out after %d attempts (last hash: %s): %w", attempt, tx.Hash().Hex(), waitErr)
 			}
 
-			log.Printf("[EthTxSender] Tx %s not mined in %s, bumping gas price...", tx.Hash().Hex(), attemptTimeout)
+			log.Printf("[SendEthTx] Tx %s not mined in %s, bumping gas price...", tx.Hash().Hex(), attemptTimeout)
 			bumpedTx, bumpErr := h.bumpGasAndResubmit(stdCtx, endpoint, tx, auth, attempt)
 			if bumpErr != nil {
-				log.Printf("[EthTxSender] Gas bump attempt %d failed: %v. Will continue waiting.", attempt, bumpErr)
+				log.Printf("[SendEthTx] Gas bump attempt %d failed: %v. Will continue waiting.", attempt, bumpErr)
 			} else {
 				tx = bumpedTx
 				sentHashes = append(sentHashes, tx.Hash())
-				log.Printf("[EthTxSender] Gas bumped tx submitted: %s (attempt %d)", tx.Hash().Hex(), attempt+1)
+				log.Printf("[SendEthTx] Gas bumped tx submitted: %s (attempt %d)", tx.Hash().Hex(), attempt+1)
 
 				h.mu.Lock()
 				state := h.senderState(chainIdInt.String(), fromAddress)

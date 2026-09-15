@@ -261,11 +261,11 @@ func pendingPacketsTimedOutAtTimestamp(pending []pendingPacketInfo, timestamp ui
 func (s *Services) updateCosmosClientForEth(stdCtx context.Context, deps evmTimeoutDeps, tag string) (*client.LightBlock, bool) {
 	latestLightBlock, err := s.worker.UpdateCosmosClient(stdCtx, deps.cosmos, deps.evm, deps.routerClientID, s.cosmosConfig.FetchTimeout, s.cosmosConfig.RotationThreshold, s.cosmosConfig.ProofType, 0, s.cosmosConfig.TrustLevel, false, 0)
 	if err != nil {
-		log.Printf("[%s] Failed to update cosmos light client: %v", tag, err)
+		log.Printf("[%sTimeoutScan] Failed to update cosmos light client: %v", tag, err)
 		return nil, false
 	}
 	if latestLightBlock == nil {
-		log.Printf("[%s] Failed to update cosmos light client: latestLightBlock is nil", tag)
+		log.Printf("[%sTimeoutScan] Failed to update cosmos light client: latestLightBlock is nil", tag)
 		return nil, false
 	}
 	s.ObserveCosmosOnEVMUpdate(latestLightBlock.SignedHeader.Header.Time)
@@ -274,16 +274,16 @@ func (s *Services) updateCosmosClientForEth(stdCtx context.Context, deps evmTime
 }
 
 func (s *Services) timeoutEVMSend(stdCtx context.Context, deps evmTimeoutDeps, packet EthPacket, tag string, latestLightBlock *client.LightBlock) timeoutSendOutcome {
-	log.Printf("[%sTimeout] seq=%d: packet expired, preparing timeout proof", tag, packet.Packet.Sequence)
+	log.Printf("[%sTimeoutScan] src=%s seq=%d: packet expired, preparing timeout proof", tag, packet.Packet.SourceClient, packet.Packet.Sequence)
 	counterpartyTime := uint64(latestLightBlock.SignedHeader.Header.Time.Unix())
 	if counterpartyTime < packet.Packet.TimeoutTimestamp {
-		log.Printf("[%sTimeout] seq=%d: counterparty time %d < timeout %d, skipping", tag, packet.Packet.Sequence, counterpartyTime, packet.Packet.TimeoutTimestamp)
+		log.Printf("[%sTimeoutScan] src=%s seq=%d: counterparty time %d < timeout %d, skipping", tag, packet.Packet.SourceClient, packet.Packet.Sequence, counterpartyTime, packet.Packet.TimeoutTimestamp)
 		return timeoutNotDue
 	}
 
 	calldata, err := CosmosNonMembership(stdCtx, deps.cosmos, *packet.Packet, packet.Packet.DestinationClient, []byte{2}, latestLightBlock)
 	if err != nil {
-		log.Printf("[%sTimeout] seq=%d: %v", tag, packet.Packet.Sequence, err)
+		log.Printf("[%sTimeoutScan] src=%s seq=%d: %v", tag, packet.Packet.SourceClient, packet.Packet.Sequence, err)
 		return timeoutOutcomeForError(err)
 	}
 	msgTimeoutPacket := contractICS26Router.IICS26RouterMsgsMsgTimeoutPacket{
@@ -291,10 +291,10 @@ func (s *Services) timeoutEVMSend(stdCtx context.Context, deps evmTimeoutDeps, p
 		NonMembershipMsg: calldata,
 	}
 	if err := s.worker.TxHandler.SendEthTx(stdCtx, deps.evm, deps.routerClientID, msgTimeoutPacket); err != nil {
-		log.Printf("[%sTimeout] seq=%d: SendEthTx failed: %v", tag, packet.Packet.Sequence, err)
+		log.Printf("[%sTimeoutScan] src=%s seq=%d: SendEthTx failed: %v", tag, packet.Packet.SourceClient, packet.Packet.Sequence, err)
 		return timeoutOutcomeForError(err)
 	}
-	log.Printf("[%sTimeout] seq=%d: relay completed", tag, packet.Packet.Sequence)
+	log.Printf("[%sTimeoutScan] src=%s seq=%d: relay completed", tag, packet.Packet.SourceClient, packet.Packet.Sequence)
 	return timeoutSent
 }
 
@@ -374,7 +374,7 @@ func (s *Services) scanForEVMTimeouts(stdCtx context.Context, deps evmTimeoutDep
 	for _, info := range expired {
 		pendingCommitment, err := opts.hasPendingCommitment(stdCtx, deps, info.Packet)
 		if err != nil {
-			log.Printf("[%sTimeoutScan] seq=%d: failed to check EVM packet commitment: %v", opts.tag, info.Packet.Sequence, err)
+			log.Printf("[%sTimeoutScan] src=%s seq=%d: failed to check EVM packet commitment: %v", opts.tag, info.Packet.SourceClient, info.Packet.Sequence, err)
 			if !applyTimeoutOutcome(opts.tracker, info, timeoutDeferred, time.Now(), opts.tag+"Timeout") {
 				return
 			}
@@ -385,7 +385,7 @@ func (s *Services) scanForEVMTimeouts(stdCtx context.Context, deps evmTimeoutDep
 				log.Printf("[%sTimeoutScan][ATTENTION] failed to persist cleared commitment: %v", opts.tag, err)
 				return
 			}
-			log.Printf("[%sTimeoutScan] seq=%d: EVM commitment already cleared, removed from pending tracker", opts.tag, info.Packet.Sequence)
+			log.Printf("[%sTimeoutScan] src=%s seq=%d: EVM commitment already cleared, removed from pending tracker", opts.tag, info.Packet.SourceClient, info.Packet.Sequence)
 			continue
 		}
 		candidates = append(candidates, info)
@@ -459,7 +459,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 	for _, info := range expired {
 		received, err := HasEthPacketReceipt(stdCtx, evm, info.Packet)
 		if err != nil {
-			log.Printf("[CosmosTimeoutScan] seq=%d: failed to check ETH packet receipt: %v", info.Packet.Sequence, err)
+			log.Printf("[CosmosTimeoutScan] src=%s seq=%d: failed to check ETH packet receipt: %v", info.Packet.SourceClient, info.Packet.Sequence, err)
 			if !deferTimeoutRetries(tracker, []pendingPacketInfo{info}, time.Now(), "CosmosTimeout") {
 				return
 			}
@@ -470,7 +470,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 				log.Printf("[CosmosTimeoutScan][ATTENTION] failed to persist received packet removal: %v", err)
 				return
 			}
-			log.Printf("[CosmosTimeoutScan] seq=%d: ETH receipt already exists, removed from pending tracker", info.Packet.Sequence)
+			log.Printf("[CosmosTimeoutScan] src=%s seq=%d: ETH receipt already exists, removed from pending tracker", info.Packet.SourceClient, info.Packet.Sequence)
 			continue
 		}
 		unreceived = append(unreceived, info)
@@ -519,10 +519,10 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 					log.Printf("[CosmosTimeoutScan][ATTENTION] failed to persist received packet removal: %v", err)
 					return
 				}
-				log.Printf("[CosmosTimeout] seq=%d: receipt exists at proof height, removed from pending tracker", info.Packet.Sequence)
+				log.Printf("[CosmosTimeoutScan] src=%s seq=%d: receipt exists at proof height, removed from pending tracker", info.Packet.SourceClient, info.Packet.Sequence)
 				continue
 			}
-			log.Printf("[CosmosTimeout] seq=%d: %v", info.Packet.Sequence, err)
+			log.Printf("[CosmosTimeoutScan] src=%s seq=%d: %v", info.Packet.SourceClient, info.Packet.Sequence, err)
 			if !deferTimeoutRetries(tracker, []pendingPacketInfo{info}, time.Now(), "CosmosTimeout") {
 				return
 			}
@@ -568,7 +568,7 @@ func (s *Services) scanForCosmosTimeouts(stdCtx context.Context, cosmos CosmosEn
 			log.Printf("[CosmosTimeoutScan][ATTENTION] timeout succeeded but completion state was not durable: %v", err)
 			return
 		}
-		log.Printf("[CosmosTimeout] seq=%d: timeout relay completed", info.Packet.Sequence)
+		log.Printf("[CosmosTimeoutScan] src=%s seq=%d: timeout relay completed", info.Packet.SourceClient, info.Packet.Sequence)
 	}
 	if updateResult.ProofTimestamp > 0 {
 		s.ObserveEVMOnCosmosUpdate(time.Unix(int64(updateResult.ProofTimestamp), 0))
@@ -622,7 +622,7 @@ func (s *Services) handleCosmosTimeoutBatchFailure(stdCtx context.Context, cosmo
 		}
 		for _, info := range remainingInfos[:succeeded] {
 			if err := tracker.RemoveIfCurrent(info); err != nil {
-				log.Printf("[CosmosTimeout][ATTENTION] successful timeout completion was not durable: %v", err)
+				log.Printf("[CosmosTimeoutScan][ATTENTION] successful timeout completion was not durable: %v", err)
 				return
 			}
 		}
@@ -640,13 +640,13 @@ func (s *Services) handleCosmosTimeoutBatchFailure(stdCtx context.Context, cosmo
 		err := s.worker.TxHandler.SendCosmosTxBatch(stdCtx, cosmos, []any{remainingMsgs[i]})
 		if err == nil {
 			if err := tracker.RemoveIfCurrent(info); err != nil {
-				log.Printf("[CosmosTimeout][ATTENTION] successful timeout completion was not durable: %v", err)
+				log.Printf("[CosmosTimeoutScan][ATTENTION] successful timeout completion was not durable: %v", err)
 				return
 			}
 			continue
 		}
 		if errors.Is(err, ErrPermanentRelayFailure) {
-			if !chargeTimeoutFailure(tracker, info, time.Now(), "CosmosTimeout") {
+			if !chargeTimeoutFailure(tracker, info, time.Now(), "Cosmos") {
 				return
 			}
 		} else {

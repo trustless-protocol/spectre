@@ -228,7 +228,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		if len(running) == 0 {
 			return
 		}
-		s.logger.Printf("[cosmos source] shutdown drain timed out after %s; workers still running: %v",
+		s.logger.Printf("[SubscribeCosmos] shutdown drain timed out after %s; workers still running: %v",
 			workergroup.SourceDrainTimeout, running)
 		// RETURN it, do not only log it. The caller cancels on SIGTERM and then
 		// normalises context.Canceled to a clean exit, so a stuck worker reported

@@ -39,7 +39,7 @@ import (
 )
 
 func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.CosmosEndpoint, clientState exported.ClientState, consensusState exported.ConsensusState, counterpartyClientID string) (string, error) {
-	log.Printf("[CreateWasmClientTx] starting")
+	log.Printf("[CreateEthClient] starting")
 	// counterpartyClientID is the client on the counterparty chain that tracks Cosmos.
 	// It is a config value known upfront (registration is only a naming binding in
 	// ICS26Router — the counterparty light client need not exist yet), so each caller
@@ -56,7 +56,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 	if err != nil {
 		return "", err
 	}
-	log.Printf("[CreateWasmClient] signer: %s", signerAddr)
+	log.Printf("[CreateEthClient] signer: %s", signerAddr)
 
 	// Get chain configuration from environment
 	chainID := os.Getenv("COSMOS_CHAIN_ID")
@@ -80,7 +80,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 	if err != nil {
 		return "", err
 	}
-	log.Printf("[CreateWasmClientTx] gas config: gasLimit=%d fee=%d%s", gasLimit, feeAmount, feeDenom)
+	log.Printf("[CreateEthClient] gas config: gasLimit=%d fee=%d%s", gasLimit, feeAmount, feeDenom)
 
 	// Creating and registering the client can broadcast two Cosmos transactions.
 	// Keep both sequence reads and broadcasts exclusive with relay batches so a
@@ -89,12 +89,12 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 	defer h.cosmosMu.Unlock()
 
 	// Query account info (account number and sequence) from the chain
-	log.Printf("[CreateWasmClientTx] querying cosmos account info")
+	log.Printf("[CreateEthClient] querying cosmos account info")
 	accountNumber, sequence, err := h.queryAccountInfo(stdCtx, endpoint, signerAddr)
 	if err != nil {
 		return "", fmt.Errorf("failed to query account info: %w", err)
 	}
-	log.Printf("[CreateWasmClientTx] account info: accountNumber=%d sequence=%d", accountNumber, sequence)
+	log.Printf("[CreateEthClient] account info: accountNumber=%d sequence=%d", accountNumber, sequence)
 
 	// Setup encoding config
 	interfaceRegistry := codectypes.NewInterfaceRegistry()
@@ -110,7 +110,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 	if err != nil {
 		return "", err
 	}
-	log.Printf("[CreateWasmClientTx] MsgCreateClient built")
+	log.Printf("[CreateEthClient] MsgCreateClient built")
 
 	// Build the transaction
 	txBuilder := txConfig.NewTxBuilder()
@@ -183,7 +183,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 	}
 
 	// Broadcast the transaction
-	log.Printf("[CreateWasmClientTx] broadcasting MsgCreateClient")
+	log.Printf("[CreateEthClient] broadcasting MsgCreateClient")
 	bctx, bcancel := context.WithTimeout(stdCtx, cosmosRPCTimeout)
 	result, err := endpoint.CosmosClient().BroadcastTxSync(bctx, txBytes)
 	bcancel()
@@ -195,10 +195,10 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 		return "", fmt.Errorf("transaction failed with code %d: %s", result.Code, result.Log)
 	}
 
-	log.Printf("[CreateWasmClient] MsgCreateClient broadcast successfully. Hash: %s", result.Hash.String())
+	log.Printf("[CreateEthClient] MsgCreateClient broadcast successfully. Hash: %s", result.Hash.String())
 
 	// Wait for MsgCreateClient tx and extract the new client ID from events
-	log.Printf("[CreateWasmClientTx] waiting for MsgCreateClient tx result")
+	log.Printf("[CreateEthClient] waiting for MsgCreateClient tx result")
 	txResult, err := h.waitForTxResult(stdCtx, endpoint, result.Hash, 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("failed waiting for MsgCreateClient tx: %w", err)
@@ -212,7 +212,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 	if newClientID == "" {
 		return "", fmt.Errorf("MsgCreateClient tx confirmed but client_id not found in events")
 	}
-	log.Printf("[CreateWasmClient] new client ID: %s", newClientID)
+	log.Printf("[CreateEthClient] new client ID: %s", newClientID)
 
 	// No counterparty id given (e.g. an L2 bootstrap whose L2-side client id is not yet
 	// configured): the client is created, its counterparty registered later.
@@ -227,15 +227,15 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 		counterpartyClientID,
 		signerAddr,
 	)
-	log.Printf("[CreateWasmClientTx] MsgRegisterCounterparty built for clientID=%s", newClientID)
+	log.Printf("[CreateEthClient] MsgRegisterCounterparty built for clientID=%s", newClientID)
 
 	// Re-query account info (sequence incremented after first tx)
-	log.Printf("[CreateWasmClientTx] querying cosmos account info for register counterparty")
+	log.Printf("[CreateEthClient] querying cosmos account info for register counterparty")
 	accountNumber, sequence, err = h.queryAccountInfo(stdCtx, endpoint, signerAddr)
 	if err != nil {
 		return "", fmt.Errorf("failed to query account info for register counterparty: %w", err)
 	}
-	log.Printf("[CreateWasmClientTx] register counterparty account info: accountNumber=%d sequence=%d", accountNumber, sequence)
+	log.Printf("[CreateEthClient] register counterparty account info: accountNumber=%d sequence=%d", accountNumber, sequence)
 
 	txBuilder2 := txConfig.NewTxBuilder()
 	if err := txBuilder2.SetMsgs(registerMsg); err != nil {
@@ -297,7 +297,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 		return "", fmt.Errorf("failed to encode register counterparty tx: %w", err)
 	}
 
-	log.Printf("[CreateWasmClientTx] broadcasting MsgRegisterCounterparty")
+	log.Printf("[CreateEthClient] broadcasting MsgRegisterCounterparty")
 	bctx2, bcancel2 := context.WithTimeout(stdCtx, cosmosRPCTimeout)
 	result2, err := endpoint.CosmosClient().BroadcastTxSync(bctx2, txBytes2)
 	bcancel2()
@@ -317,7 +317,7 @@ func (h *Handler) CreateWasmClient(stdCtx context.Context, endpoint services.Cos
 	// that tx queries the account sequence — a still-uncommitted registration hands
 	// back the pre-registration sequence and the next tx fails with
 	// "account sequence mismatch".
-	log.Printf("[CreateWasmClientTx] waiting for MsgRegisterCounterparty tx result")
+	log.Printf("[CreateEthClient] waiting for MsgRegisterCounterparty tx result")
 	txResult2, err := h.waitForTxResult(stdCtx, endpoint, result2.Hash, 30*time.Second)
 	if err != nil {
 		return "", fmt.Errorf("failed waiting for MsgRegisterCounterparty tx: %w", err)
@@ -515,7 +515,7 @@ func splitCosmosBatchAfterDuplicateWith(
 		stdCtx, svcCtx, sdkMsgs[:mid], accountNumber, sequence, true,
 	)
 	if err != nil {
-		log.Printf("[SendCosmosTxBatch] first half after duplicate split failed: %v", err)
+		log.Printf("[SendCosmosTx] first half after duplicate split failed: %v", err)
 		return nextSequence, succeeded, err
 	}
 	finalSequence, succeededSecond, err := send(
@@ -645,12 +645,12 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 	if len(sdkMsgs) > 0 {
 		simulatedGas, err := h.simulateMsgs(stdCtx, svcCtx, sdkMsgs, sequence)
 		if err != nil {
-			log.Printf("[SendCosmosTxBatch] Simulation failed for batch of size %d: %v", len(sdkMsgs), err)
+			log.Printf("[SendCosmosTx] Simulation failed for batch of size %d: %v", len(sdkMsgs), err)
 			if !allowSplit {
-				return sequence, 0, fmt.Errorf("[SendCosmosTxBatchAtomic] simulation failed; refusing to split atomic batch: %w", err)
+				return sequence, 0, fmt.Errorf("[SendCosmosTx] simulation failed; refusing to split atomic batch: %w", err)
 			}
 			if len(sdkMsgs) > 1 {
-				log.Printf("[SendCosmosTxBatch] Splitting batch...")
+				log.Printf("[SendCosmosTx] Splitting batch...")
 				shouldSplit = true
 			}
 		} else {
@@ -658,12 +658,12 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			unscaledGasLimit = simulatedGas
 			adjustedGas := applyCosmosGasHeadroom(simulatedGas, headroomStep)
 			if maxBlockGas > 0 && adjustedGas >= maxBlockGas {
-				log.Printf("[SendCosmosTxBatch] Adjusted gas %d exceeds max block gas %d for batch of size %d", adjustedGas, maxBlockGas, len(sdkMsgs))
+				log.Printf("[SendCosmosTx] Adjusted gas %d exceeds max block gas %d for batch of size %d", adjustedGas, maxBlockGas, len(sdkMsgs))
 				if len(sdkMsgs) > 1 {
 					if !allowSplit {
-						return sequence, 0, fmt.Errorf("[SendCosmosTxBatchAtomic] adjusted gas %d exceeds max block gas %d; refusing to split atomic batch", adjustedGas, maxBlockGas)
+						return sequence, 0, fmt.Errorf("[SendCosmosTx] adjusted gas %d exceeds max block gas %d; refusing to split atomic batch", adjustedGas, maxBlockGas)
 					}
-					log.Printf("[SendCosmosTxBatch] Splitting batch...")
+					log.Printf("[SendCosmosTx] Splitting batch...")
 					shouldSplit = true
 				} else {
 					// Single message exceeds block limit; clamp it to max block gas.
@@ -851,7 +851,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 		return sequence, 0, fmt.Errorf("failed to broadcast transaction: %w", err)
 	}
 	if syncResult.Code != 0 {
-		log.Printf("[SendCosmosTxBatch] CheckTx FAILED: code=%d codespace=%s log=%s data=%x",
+		log.Printf("[SendCosmosTx] CheckTx FAILED: code=%d codespace=%s log=%s data=%x",
 			syncResult.Code, syncResult.Codespace, syncResult.Log, syncResult.Data)
 		if cosmosOutOfGas(syncResult.Codespace, syncResult.Code) {
 			// CheckTx rejects the transaction before inclusion, so its sequence
@@ -868,25 +868,25 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			plan, at := planCosmosOutOfGas(cause, len(sdkMsgs), headroomStep, unscaledGasLimit, maxBlockGas, allowSplit)
 			next, bottom, ok := chain.Climb(plan, at)
 			if !ok {
-				log.Printf("[SendCosmosTxBatch] CheckTx out-of-gas batch cannot receive more gas; reporting permanent")
+				log.Printf("[SendCosmosTx] CheckTx out-of-gas batch cannot receive more gas; reporting permanent")
 				return sequence, 0, bottom
 			}
 			switch next.What {
 			case knobBatchSize:
-				log.Printf("[SendCosmosTxBatch] splitting CheckTx out-of-gas batch of %d to %d", len(sdkMsgs), next.To)
+				log.Printf("[SendCosmosTx] splitting CheckTx out-of-gas batch of %d to %d", len(sdkMsgs), next.To)
 				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence)
 			default:
-				log.Printf("[SendCosmosTxBatch] retrying CheckTx out-of-gas batch at %s", next)
+				log.Printf("[SendCosmosTx] retrying CheckTx out-of-gas batch at %s", next)
 				return h.sendCosmosTxBatchAtHeadroom(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence, allowSplit, headroomStep+1)
 			}
 		}
 		if isCosmosDuplicatePacketError(syncResult.Codespace, syncResult.Code) {
 			if duplicateDropIsSafe(len(sdkMsgs)) {
-				log.Printf("[SendCosmosTxBatch] duplicate packet (codespace=%s code=%d), dropping", syncResult.Codespace, syncResult.Code)
+				log.Printf("[SendCosmosTx] duplicate packet (codespace=%s code=%d), dropping", syncResult.Codespace, syncResult.Code)
 				return sequence, 1, nil
 			}
 			if allowSplit {
-				log.Printf("[SendCosmosTxBatch] duplicate packet in batch of %d; splitting to isolate it", len(sdkMsgs))
+				log.Printf("[SendCosmosTx] duplicate packet in batch of %d; splitting to isolate it", len(sdkMsgs))
 				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence)
 			}
 		}
@@ -906,17 +906,17 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 	}
 
 	if txResult.TxResult.Code != 0 {
-		log.Printf("[SendCosmosTxBatch] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
+		log.Printf("[SendCosmosTx] DeliverTx FAILED: code=%d codespace=%s log=%s data=%x",
 			txResult.TxResult.Code, txResult.TxResult.Codespace, txResult.TxResult.Log, txResult.TxResult.Data)
 		if isCosmosDuplicatePacketError(txResult.TxResult.Codespace, txResult.TxResult.Code) {
 			if duplicateDropIsSafe(len(sdkMsgs)) {
-				log.Printf("[SendCosmosTxBatch] duplicate packet (codespace=%s code=%d), dropping", txResult.TxResult.Codespace, txResult.TxResult.Code)
+				log.Printf("[SendCosmosTx] duplicate packet (codespace=%s code=%d), dropping", txResult.TxResult.Codespace, txResult.TxResult.Code)
 				return sequence + 1, 1, nil
 			}
 			if allowSplit {
 				// DeliverTx was included, so its account sequence was consumed even
 				// though message execution reverted.
-				log.Printf("[SendCosmosTxBatch] duplicate packet in batch of %d; splitting to isolate it", len(sdkMsgs))
+				log.Printf("[SendCosmosTx] duplicate packet in batch of %d; splitting to isolate it", len(sdkMsgs))
 				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, sequence+1)
 			}
 		}
@@ -935,15 +935,15 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			plan, at := planCosmosOutOfGas(cause, len(sdkMsgs), headroomStep, unscaledGasLimit, maxBlockGas, allowSplit)
 			next, bottom, ok := chain.Climb(plan, at)
 			if !ok {
-				log.Printf("[SendCosmosTxBatch] out-of-gas batch cannot receive more gas; reporting permanent")
+				log.Printf("[SendCosmosTx] out-of-gas batch cannot receive more gas; reporting permanent")
 				return nextSequence, 0, bottom
 			}
 			switch next.What {
 			case knobBatchSize:
-				log.Printf("[SendCosmosTxBatch] splitting included out-of-gas batch of %d to %d", len(sdkMsgs), next.To)
+				log.Printf("[SendCosmosTx] splitting included out-of-gas batch of %d to %d", len(sdkMsgs), next.To)
 				return h.splitCosmosBatchAfterDuplicate(stdCtx, svcCtx, sdkMsgs, accountNumber, nextSequence)
 			default:
-				log.Printf("[SendCosmosTxBatch] retrying included out-of-gas batch at %s", next)
+				log.Printf("[SendCosmosTx] retrying included out-of-gas batch at %s", next)
 				return h.sendCosmosTxBatchAtHeadroom(stdCtx, svcCtx, sdkMsgs, accountNumber, nextSequence, allowSplit, headroomStep+1)
 			}
 		}
@@ -957,7 +957,7 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 		}
 	}
 
-	log.Printf("[SendCosmosTxBatch] Tx confirmed at height %d hash=%s (msgs=%d)", txResult.Height, txResult.Hash.String(), len(sdkMsgs))
+	log.Printf("[SendCosmosTx] Tx confirmed at height %d hash=%s (msgs=%d)", txResult.Height, txResult.Hash.String(), len(sdkMsgs))
 	if benchEnabled {
 		log.Printf("[bench] cosmos batch msgs=%d gasWanted=%d gasUsed=%d broadcast=%s height=%d hash=%s",
 			len(sdkMsgs), txResult.TxResult.GasWanted, txResult.TxResult.GasUsed,
@@ -1112,7 +1112,7 @@ func (h *Handler) waitForTxResult(stdCtx context.Context, svcCtx services.Cosmos
 		result, err := svcCtx.CosmosClient().Tx(qctx, txHash, false)
 		qcancel()
 		if err == nil && result != nil && result.Height > 0 {
-			log.Printf("[WaitForTx] Tx %X confirmed at height %d", txHash, result.Height)
+			log.Printf("[SendCosmosTx] Tx %X confirmed at height %d", txHash, result.Height)
 			return result, nil
 		}
 		// Wait before the next poll, but cancel out immediately instead of sleeping a

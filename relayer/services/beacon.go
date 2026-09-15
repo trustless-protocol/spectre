@@ -90,7 +90,7 @@ func (w *Worker) buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx context.Co
 	// If the latest header is earlier than the finality update, add a header for the finality update.
 	if finalizedSlot > latestTrustedSlot {
 		attestedSlot := finalityUpdate.AttestedHeader.Beacon.Slot
-		log.Printf("[updateEthClient] final update: attestedSlot=%s finalizedSlot=%d latestTrustedSlot=%d",
+		log.Printf("[UpdateEthClient] final update: attestedSlot=%s finalizedSlot=%d latestTrustedSlot=%d",
 			attestedSlot, finalizedSlot, latestTrustedSlot)
 
 		// The finality update is signed by the committee active at its attested slot,

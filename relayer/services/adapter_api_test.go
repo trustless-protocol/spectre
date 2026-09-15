@@ -54,7 +54,7 @@ func TestUntrackPendingLogsPersistenceFailure(t *testing.T) {
 
 			tc.untrack(svc, packet)
 
-			want := "[Services][ATTENTION] failed to persist removal of settled " + tc.kind + " packet seq=42"
+			want := "[PendingTracker][ATTENTION] failed to persist removal of settled " + tc.kind + " packet seq=42"
 			if !strings.Contains(logs.String(), want) {
 				t.Fatalf("persistence failure was not logged with context %q: %q", want, logs.String())
 			}

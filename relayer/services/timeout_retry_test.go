@@ -1,6 +1,10 @@
 package services
 
 import (
+	"fmt"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,5 +132,66 @@ func TestOldestDeadLetterReportsAge(t *testing.T) {
 	}
 	if age := tracker.OldestDeadLetteredTimeout(deadAt.Add(time.Hour)); age < time.Hour {
 		t.Fatalf("timeout dead-letter age = %s, want at least an hour", age)
+	}
+}
+
+// A sequence is not an identity. packetIdentity pairs it with the source client
+// precisely because a sequence is reused across clients, and after A1 a merged
+// operator log carries several of them.
+//
+// The two lines that matter most are the ones telling an operator to act --
+// STUCK and ATTENTION, both of which say funds are escrowed. Naming a sequence
+// there without its client tells them something is wrong and not which packet
+// it is. The rest of the scanner's lines are the trail leading to those two, so
+// the rule covers the whole family rather than the two endpoints.
+//
+// Structural rather than behavioural: asserting on captured log output would pin
+// the wording, and the invariant is about what the line identifies, not how it
+// reads.
+func TestTimeoutScanLogsIdentifyThePacketNotJustTheSequence(t *testing.T) {
+	var offenders []string
+	for _, file := range []string{"services.go", "timeout_retry.go", "pending.go", "batch.go"} {
+		src, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read %s: %v", file, err)
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if strings.HasPrefix(trimmed, "//") || !strings.Contains(line, "TimeoutScan]") {
+				continue
+			}
+			if !strings.Contains(line, "seq=%d") || strings.Contains(line, "src=%s") {
+				continue
+			}
+			offenders = append(offenders, fmt.Sprintf("%s:%d: %s", file, i+1, trimmed))
+		}
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("timeout-scan log lines naming a sequence with no source client:\n%s\n\n"+
+			"An operator reading a merged log cannot tell which client's packet this is.",
+			strings.Join(offenders, "\n"))
+	}
+}
+
+// A tag is interpolated into "[%sTimeoutScan]", so the value passed must be the
+// CHAIN, not a name that already ends in Timeout.
+//
+// Found while merging main into #436: services.go passed "CosmosTimeout", which
+// rendered as [CosmosTimeoutTimeoutScan] -- a fourth name for the scanner this
+// branch exists to give one name. The label gate in cmd cannot see it, because
+// the format string there is correct and only the argument is wrong.
+func TestTimeoutScanTagsAreChainNamesNotWorkNames(t *testing.T) {
+	src, err := os.ReadFile("services.go")
+	if err != nil {
+		t.Fatalf("read services.go: %v", err)
+	}
+	tagRe := regexp.MustCompile(`(?:tag:\s*|chargeTimeoutFailure\([^"]*)"([A-Za-z0-9]+)"`)
+	for i, line := range strings.Split(string(src), "\n") {
+		for _, m := range tagRe.FindAllStringSubmatch(line, -1) {
+			if strings.Contains(m[1], "Timeout") || strings.Contains(m[1], "Scan") {
+				t.Errorf("services.go:%d: tag %q becomes [%sTimeoutScan]; pass the chain alone",
+					i+1, m[1], m[1])
+			}
+		}
 	}
 }

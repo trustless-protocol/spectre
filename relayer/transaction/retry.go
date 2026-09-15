@@ -81,7 +81,7 @@ func classifyEthRevert(
 	probeCtx, cancel := context.WithTimeout(stdCtx, ethRevertProbeTimeout)
 	defer cancel()
 	if header, err := endpoint.EthClient().HeaderByNumber(probeCtx, blockNumber); err == nil && header.GasLimit > 0 && probeGas > header.GasLimit {
-		log.Printf("[EthTxSender] revert probe: clamping %d gas to block limit %d", probeGas, header.GasLimit)
+		log.Printf("[SendEthTx] revert probe: clamping %d gas to block limit %d", probeGas, header.GasLimit)
 		probeGas = header.GasLimit
 	}
 

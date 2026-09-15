@@ -859,11 +859,11 @@ func (w *Worker) WaitForCosmosCatchUp(stdCtx context.Context, cosmos CosmosEndpo
 		currentSlot := ethClientState.ComputeSlotAtTimestamp(cosmosTime)
 		lastSlot = currentSlot
 		if cosmosCurrentSlotReady(currentSlot, sigSlot) {
-			log.Printf("[updateEthClient] timing OK: currentSlot=%d >= requiredSlot=%d (signatureSlot=%d safety=%d)",
+			log.Printf("[UpdateEthClient] timing OK: currentSlot=%d >= requiredSlot=%d (signatureSlot=%d safety=%d)",
 				currentSlot, requiredSlot, sigSlot, cosmosCatchUpSafetySlots)
 			return nil
 		}
-		log.Printf("[updateEthClient] waiting for target chain to catch up to required slot %d (signatureSlot=%d current=%d safety=%d)",
+		log.Printf("[UpdateEthClient] waiting for target chain to catch up to required slot %d (signatureSlot=%d current=%d safety=%d)",
 			requiredSlot, sigSlot, currentSlot, cosmosCatchUpSafetySlots)
 		select {
 		case <-stdCtx.Done():

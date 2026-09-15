@@ -48,7 +48,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	trackCosmosPending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[cosmos->eth] track pending: decode packet: %v", err)
+			log.Printf("[cosmos->eth Relay] track pending: decode packet: %v", err)
 			return false
 		}
 		return svc.TrackCosmosPending(pkt, height)
@@ -56,7 +56,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	untrackCosmosPending := func(raw []byte) {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[cosmos->eth] untrack pending: decode packet: %v", err)
+			log.Printf("[cosmos->eth Relay] untrack pending: decode packet: %v", err)
 			return
 		}
 		svc.UntrackCosmosPending(pkt)
@@ -83,11 +83,11 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		if isShutdownErr(err) && ctx.Err() != nil {
 			return nil
 		}
-		log.Printf("[cosmos->eth] derive initial rotation delay: %v; rotating on startup", err)
+		log.Printf("[cosmos->eth UpdateClient] derive initial rotation delay: %v; rotating on startup", err)
 		initialRotationDelay = 0
 	}
 	if err := svc.SeedEVMOnCosmosUpdate(ctx, deps.Cosmos, deps.IDs.EVMOnCosmos); err != nil {
-		log.Printf("[eth->cosmos] seed client-update age: %v", err)
+		log.Printf("[eth->cosmos UpdateClient] seed client-update age: %v", err)
 	}
 
 	cosmosToEth := relay.NewModule(

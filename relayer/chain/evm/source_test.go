@@ -200,7 +200,7 @@ func TestEventsWithOrigins_LogsTerminalSettlementFailure(t *testing.T) {
 	if len(events) != 0 || len(orig) != 0 {
 		t.Fatalf("terminal packet must not be relayed, got %d events / %d origins", len(events), len(orig))
 	}
-	if got := logs.String(); !strings.Contains(got, "[EVMSource][ATTENTION]") ||
+	if got := logs.String(); !strings.Contains(got, "[PendingTracker][ATTENTION]") ||
 		!strings.Contains(got, "seq=44") || !strings.Contains(got, "disk unavailable") {
 		t.Fatalf("settlement persistence failure was not logged with context: %q", got)
 	}

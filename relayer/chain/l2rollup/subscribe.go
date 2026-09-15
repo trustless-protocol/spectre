@@ -147,7 +147,7 @@ func startupWindowFromEnv(raw string) time.Duration {
 	}
 	window, err := time.ParseDuration(raw)
 	if err != nil || window < 0 {
-		log.Printf("[recovery] ignoring invalid %s=%q; using the default window", l2StartupLookbackEnv, raw)
+		log.Printf("[start] ignoring invalid %s=%q; using the default window", l2StartupLookbackEnv, raw)
 		return 0
 	}
 	return window
@@ -198,7 +198,7 @@ func (s *Source) startupLookback(ctx context.Context, head uint64) uint64 {
 	window := startupWindow(startupWindowFromEnv(os.Getenv(l2StartupLookbackEnv)))
 	blockTime, err := s.measureBlockTime(ctx, head)
 	if err != nil {
-		log.Printf("[SubscribeL2] block time unmeasurable (%v); sizing the %s startup window at %s per block",
+		log.Printf("[l2->cosmos Subscribe] block time unmeasurable (%v); sizing the %s startup window at %s per block",
 			err, window, fallbackBlockTime)
 		blockTime = fallbackBlockTime
 	}
@@ -206,7 +206,7 @@ func (s *Source) startupLookback(ctx context.Context, head uint64) uint64 {
 	// rejects timestamps that did not advance -- so the cap, not the error path,
 	// is what keeps the window from collapsing.
 	if blockTime > maxMeasuredBlockTime {
-		log.Printf("[SubscribeL2] measured block time %s exceeds the %s cap (an idle span inflates a "+
+		log.Printf("[l2->cosmos Subscribe] measured block time %s exceeds the %s cap (an idle span inflates a "+
 			"two-sample average); sizing the %s startup window at the cap instead",
 			blockTime, maxMeasuredBlockTime, window)
 		blockTime = maxMeasuredBlockTime
@@ -251,7 +251,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 
 		head, err := s.head(ctx)
 		if err != nil {
-			log.Printf("[SubscribeL2] head: %v", err)
+			log.Printf("[l2->cosmos Subscribe] head: %v", err)
 			continue // do NOT advance the cursor on failure
 		}
 		if !seeded {
@@ -263,7 +263,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 				from = head - lookback
 			}
 			seeded = true
-			log.Printf("[SubscribeL2] polling ICS26Router %s from block %d (%d block lookback, client_id=%s)",
+			log.Printf("[l2->cosmos Subscribe] polling ICS26Router %s from block %d (%d block lookback, client_id=%s)",
 				s.router.Hex(), from, lookback, s.l2ClientID)
 		}
 
@@ -282,7 +282,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		if head >= from {
 			fresh, settled, err = s.scanPacketLogs(ctx, filterer, from, head, &span)
 			if err != nil {
-				log.Printf("[SubscribeL2] scan [%d,%d]: %v", from, head, err)
+				log.Printf("[l2->cosmos Subscribe] scan [%d,%d]: %v", from, head, err)
 				continue // do NOT advance the cursor on failure (re-scan next tick)
 			}
 			from = head + 1 // range consumed; fresh events are now carried in the batch
@@ -387,7 +387,7 @@ func scanNarrowing(
 			return nil, nil, bottom
 		}
 		span.Chunk = next.To
-		log.Printf("[SubscribeL2] provider refused a %d-block log range; narrowing to %d and rescanning [%d,%d]: %v",
+		log.Printf("[l2->cosmos Subscribe] provider refused a %d-block log range; narrowing to %d and rescanning [%d,%d]: %v",
 			width, next.To, from, to, failed)
 	}
 }
@@ -523,7 +523,7 @@ func dropSettled(batch []chain.Event, settled map[settledKey]struct{}) []chain.E
 	kept := batch[:0:0]
 	for _, e := range batch {
 		if _, done := settled[settledKey(e.Raw)]; done {
-			log.Printf("[SubscribeL2] dropping %s seq=%d from this batch: it settled inside the same scan range",
+			log.Printf("[l2->cosmos Subscribe] dropping %s seq=%d from this batch: it settled inside the same scan range",
 				e.Type, e.Sequence)
 			continue
 		}
@@ -541,10 +541,10 @@ func (s *Source) settleTerminal(kind string, packet contractICS26Router.IICS26Ro
 		// The packet came from the chain's own log, so this cannot happen without
 		// the binding and the proto type having diverged. Say so rather than
 		// settling a packet identity nobody can reproduce.
-		log.Printf("[SubscribeL2] %s seq=%d: marshal for settlement: %v", kind, cosmosPacket.Sequence, err)
+		log.Printf("[l2->cosmos Subscribe] %s seq=%d: marshal for settlement: %v", kind, cosmosPacket.Sequence, err)
 		return
 	}
-	log.Printf("[SubscribeL2] %s seq=%d settled; dropped from the pending tracker", kind, cosmosPacket.Sequence)
+	log.Printf("[l2->cosmos Subscribe] %s seq=%d settled; dropped from the pending tracker", kind, cosmosPacket.Sequence)
 	settled[settledKey(raw)] = struct{}{}
 	s.settle(raw)
 }

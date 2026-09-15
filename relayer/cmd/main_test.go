@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -797,5 +798,79 @@ func TestNoLogLabelRepeatsTheLayerName(t *testing.T) {
 		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
 			t.Errorf("label %q is back in:\n%s", strings.TrimSpace(banned), out)
 		}
+	}
+}
+
+// The point of E3 is one concept, one name. Four names for the timeout scanner
+// and three for the Ethereum sender is not a formatting problem: an operator
+// grepping [SendEthTx] silently missed a third of the sender's own lines.
+//
+// This pins the closed set. Adding a label is deliberate and cheap -- add it
+// here too. Re-inventing a name for something already named is what this stops.
+func TestLogLabelsStayOnTheAgreedList(t *testing.T) {
+	allowed := map[string]bool{
+		// [<direction> <Work>] -- direction is literal where the code knows it,
+		// and "%s" where it comes from the module's own name.
+		"eth->cosmos Subscribe": true, "l2->cosmos Subscribe": true,
+		"cosmos->eth Relay": true, "cosmos->l2 Relay": true, "l2->cosmos Relay": true,
+		"cosmos->eth UpdateClient": true, "cosmos->l2 UpdateClient": true,
+		"eth->cosmos UpdateClient": true,
+		"%s Relay":                 true, "%s UpdateClient": true,
+
+		// [<Work>] -- the emitting code serves more than one direction, so the
+		// chain stays in the name: it is the only thing left that separates them.
+		"SubscribeCosmos": true, "SendEthTx": true, "SendCosmosTx": true,
+		"CreateEthClient": true, "CreateCosmosClient": true,
+		"UpdateCosmosClient": true, "UpdateEthClient": true, "RefreshCosmosClient": true,
+		"CosmosTimeoutScan": true, "%sTimeoutScan": true,
+		"Misbehaviour": true, "PendingTracker": true,
+
+		// The closed lowercase list: shared by every path, so a direction would
+		// be a lie.
+		// `create-clients` sits here for the same reason as `start`: it names a CLI
+		// command that serves both directions, so a direction in the label would be
+		// a lie.
+		"bench": true, "prover": true, "BatchBuilder": true, "QueueState": true, "start": true,
+		"create-clients": true,
+
+		// Deleted by #417 along with the unbound-header fallback it belongs to;
+		// touching it here would only conflict with that PR.
+		"%s": true,
+	}
+
+	labelRe := regexp.MustCompile(`\.(?:Printf|Println|Fatalf|Infof|Warnf|Errorf|Debugf)\("(?:\\n)?\[([^\]"]+)\]`)
+	var offenders []string
+	err := filepath.Walk("..", func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if n := info.Name(); n == "bindings" || n == "third_party" || n == "bin" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			for _, m := range labelRe.FindAllStringSubmatch(line, -1) {
+				if !allowed[m[1]] {
+					offenders = append(offenders, fmt.Sprintf("%s:%d: [%s]", path, i+1, m[1]))
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("log labels outside the agreed set:\n%s\n\nEither reuse the name this concept already "+
+			"has, or add the new one to this list on purpose.", strings.Join(offenders, "\n"))
 	}
 }

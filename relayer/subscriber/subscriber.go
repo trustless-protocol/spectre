@@ -193,7 +193,7 @@ func recoveryChunkSize(envName string, fallback uint64) uint64 {
 		if err == nil && value > 0 {
 			return value
 		}
-		log.Printf("[recovery] ignoring invalid %s=%q; using %d", envName, raw, fallback)
+		log.Printf("[start] ignoring invalid %s=%q; using %d", envName, raw, fallback)
 	}
 	return fallback
 }

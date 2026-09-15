@@ -320,11 +320,11 @@ func (t *PendingPacketTracker) commitLocked(mutate func()) error {
 		t.deadLettered = before.deadLettered
 		t.deadLetteredByKey = before.deadLetteredByKey
 		t.persistenceErr = fmt.Errorf("persist pending packet state %s: %w", t.statePath, err)
-		log.Printf("[PendingPacketTracker][ATTENTION] %v; mutation rolled back and timeout retries are paused", t.persistenceErr)
+		log.Printf("[PendingTracker][ATTENTION] %v; mutation rolled back and timeout retries are paused", t.persistenceErr)
 		return t.persistenceErr
 	}
 	if t.persistenceErr != nil {
-		log.Printf("[PendingPacketTracker] pending packet state recovered at %s; timeout retries may resume", t.statePath)
+		log.Printf("[PendingTracker] pending packet state recovered at %s; timeout retries may resume", t.statePath)
 		t.persistenceErr = nil
 	}
 	return nil
@@ -467,7 +467,7 @@ func (t *PendingPacketTracker) TimeoutRetriesAllowed() (bool, error) {
 		t.persistenceErr = fmt.Errorf("persist pending packet state %s: %w", t.statePath, err)
 		return false, t.persistenceErr
 	}
-	log.Printf("[PendingPacketTracker] pending packet state recovered at %s; holding one timeout scan before retrying", t.statePath)
+	log.Printf("[PendingTracker] pending packet state recovered at %s; holding one timeout scan before retrying", t.statePath)
 	t.persistenceErr = nil
 	return false, nil
 }

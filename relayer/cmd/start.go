@@ -45,7 +45,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 			}
 			utils.SetBenchEnabled(benchmarkFlag || utils.BenchEnabled())
 			if utils.BenchEnabled() {
-				log.Printf("[benchmark] enabled: detailed gas/timing logs are active")
+				log.Printf("[bench] enabled: detailed gas/timing logs are active")
 			}
 
 			if err := validateStartupKeys(); err != nil {
