@@ -101,6 +101,12 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 			svc.ScanCosmosTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos)
 		}),
 		relay.WithPacketTracker(trackCosmosPending, untrackCosmosPending),
+		// The enumeration backstop. The block scan only ever sees its own window,
+		// so a lost cursor, an outage longer than the window, or a second relayer
+		// joining this path all leave older packets invisible to it. Only the
+		// Cosmos source implements chain.PacketLister today; the option is inert
+		// on a source that does not.
+		relay.WithPacketFlush(0),
 		// Force-rotate the pinned validator set on a fixed cadence so it never
 		// decays below quorum during a quiet period. ETH->Cosmos needs no
 		// equivalent — the beacon client has no pinned set.

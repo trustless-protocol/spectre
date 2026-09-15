@@ -211,6 +211,42 @@ type Destination interface {
 	ClientExpiresAt(ctx context.Context, clientID string) (expiresAt time.Time, trustingPeriod time.Duration, err error)
 }
 
+// PacketLister is an OPTIONAL Source capability: enumerate packets this source
+// has sent that are still outstanding, WITHOUT being told which packets to look
+// for.
+//
+// Every other query in this package is a point lookup by path -- MembershipProof
+// takes a packet, HasPacketReceipt takes a packet. They can only answer questions
+// about packets the relayer already knows about, which means the relayer cannot
+// find what it never saw. Three situations produce exactly that:
+//
+//   - the persisted cursor is lost or corrupt and the downtime exceeded the
+//     startup window, so the rescan starts above the missing packet;
+//   - a SECOND relayer is stood up on a path that is already running -- it has no
+//     cursor at all, scans one window, and every older packet is invisible to it;
+//   - a packet has been in flight longer than the window and nobody relayed it.
+//
+// The second is not hypothetical: this design deliberately does not assume it is
+// the only relayer on a path, and production grants the relay role to several
+// independent addresses.
+//
+// Block scanning and enumeration catch different things -- cosmos/relayer, which
+// runs both, documents that its packet queries "can miss things that the block
+// scanning performed during standard operation wouldn't". The goal is both, not
+// a choice between them.
+//
+// Cost is asymmetric and that shapes the implementations: Cosmos can enumerate
+// commitments in one paginated query, while EVM storage is a mapping whose keys
+// cannot be listed, so an EVM implementation must bound a probe with
+// nextSequenceSend rather than sweeping 1..N.
+//
+// Returning candidates is enough: the caller filters what the destination has
+// already settled. An implementation must NOT assume it is called on any
+// particular cadence.
+type PacketLister interface {
+	UnrelayedPackets(ctx context.Context) ([]Event, error)
+}
+
 // FoldingDestination is an optional destination capability for submitting a
 // client update followed by packet messages in one atomic transaction. The
 // relay module uses it only when SupportsUpdatePacketFolding returns true;

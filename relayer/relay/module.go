@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,12 @@ var refreshTick = time.Minute
 // defaultScanInterval matches the legacy StartLoop timeout scan cadence (30s).
 const defaultScanInterval = 30 * time.Second
 
+// defaultFlushInterval is the cadence of the enumeration backstop. Five minutes
+// rather than the scan's thirty seconds: each pass is real queries against both
+// chains, and since a query finds a packet at ANY age, running it more often
+// buys nothing -- unlike the block scan, which only ever sees its own window.
+const defaultFlushInterval = 5 * time.Minute
+
 // Periodic-update failure backoff bounds (exponential 1m→15m), mirroring the legacy
 // routineBackoff: a persistently failing client-update — e.g. a rotation tx that
 // keeps reverting — must not resubmit every interval and drain the signer's gas.
@@ -64,6 +71,7 @@ type Module struct {
 	// e.g. a mock or a permissioned client that cannot time out).
 	scan                ScanFunc
 	scanInterval        time.Duration
+	flushInterval       time.Duration
 	track               TrackFunc
 	untrack             UntrackFunc
 	observeClientUpdate ClientUpdateObserver
@@ -104,9 +112,22 @@ type Module struct {
 	sourceProbeAt time.Time
 	sourceBackoff time.Duration
 
+	// batchMu serializes handleBatch.
+	//
+	// It has two callers now, not one: the Subscribe callback and the flush loop,
+	// on separate goroutines. Without it they can build and submit a client update
+	// at the same time, and relay the same packet twice -- the flush enumerates
+	// outstanding commitments, which includes packets the scan is delivering at
+	// that moment. The lock is held across the whole batch, proving included,
+	// because that is the work that must not overlap; a flush waiting on a live
+	// batch is the intended outcome.
+	//
+	// It is NOT m.mu: that one guards lastHeight and is taken inside the batch.
+	batchMu sync.Mutex
+
 	// lastWait is the last "not yet relayable" state logged, so a wait that is not
-	// progressing prints once instead of once per flush. Touched only from the
-	// Subscribe callback goroutine (handleBatch), which is the sole caller.
+	// progressing prints once instead of once per flush. Guarded by batchMu --
+	// handleBatch is its only reader and writer.
 	lastWait waitLogState
 }
 
@@ -154,6 +175,9 @@ func (m *Module) Run(ctx context.Context) error {
 	}
 	if m.periodicUpdate != nil {
 		workers.Go("periodic-update", func() { m.periodicUpdateLoop(runCtx) })
+	}
+	if lister, ok := m.src.(chain.PacketLister); ok && m.flushInterval > 0 {
+		workers.Go("packet-flush", func() { m.flushLoop(runCtx, lister) })
 	}
 
 	var runErr error
@@ -217,6 +241,121 @@ func (m *Module) scanLoop(ctx context.Context) {
 			m.scan(ctx)
 		}
 	}
+}
+
+// flushLoop is the enumeration backstop: it asks the source which packets are
+// still outstanding and relays the ones the destination has not settled.
+//
+// Unlike scanLoop it does not run on the first tick alone -- it runs one pass
+// IMMEDIATELY. The situation it exists for (a fresh process with no cursor, on a
+// path with an old unrelayed packet) is at its worst at startup, and waiting a
+// full interval before the first query is waiting exactly where the block scan
+// is already blind.
+func (m *Module) flushLoop(ctx context.Context, lister chain.PacketLister) {
+	m.flushOnce(ctx, lister)
+	ticker := time.NewTicker(m.flushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if ctx.Err() != nil { // select may pick the tick even when ctx is done
+				return
+			}
+			m.flushOnce(ctx, lister)
+		}
+	}
+}
+
+// flushOnce runs one enumeration pass.
+//
+// The requeue list handleBatch returns is deliberately DISCARDED. The query is
+// the source of truth here: anything still outstanding is found again by the
+// next pass, so keeping a second pending buffer beside the subscriber's would
+// duplicate state and give a packet two independent retry clocks.
+func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
+	candidates, err := lister.UnrelayedPackets(ctx)
+	if err != nil {
+		log.Printf("[relay %s] packet flush: %v", m.name, err)
+		return
+	}
+	if len(candidates) == 0 {
+		return
+	}
+	// Filter once outside the lock. This is the bulk of the work after downtime
+	// -- one receipt query per outstanding commitment -- and holding batchMu
+	// across all of it would stall the live relay path for the whole pass.
+	unsettled := m.dropSettled(ctx, candidates)
+	if len(unsettled) == 0 {
+		return
+	}
+
+	m.batchMu.Lock()
+	defer m.batchMu.Unlock()
+	// Re-check under the lock, over the few that survived. The filter above is an
+	// optimisation and carries no guarantee: a live subscription batch can relay
+	// any of these between that check and this point, and the flush would then
+	// submit a duplicate receive -- an on-chain revert and wasted gas, and one
+	// that can poison a batch carrying other packets with it.
+	unsettled = m.dropSettled(ctx, unsettled)
+	if len(unsettled) == 0 {
+		return
+	}
+	// Worth a line every time. A flush that finds work means the block scan
+	// missed it, which is the condition an operator wants to know about even
+	// though the packet is now being relayed.
+	log.Printf("[relay %s] packet flush found %d packet(s) the scan did not: %s",
+		m.name, len(unsettled), describeEvents(unsettled))
+	m.handleBatchLocked(ctx, unsettled)
+}
+
+// dropSettled removes candidates the destination has already delivered. An
+// outstanding source commitment only says the packet was never acknowledged
+// BACK -- the destination may hold a receipt already, with the ack still in
+// flight. Relaying those would re-prove and re-submit the same packets every
+// pass for as long as the ack takes.
+//
+// A receipt query that fails KEEPS the packet: dropping on an RPC error would
+// silently skip exactly the packet this loop exists to find, and a duplicate
+// receive costs gas where a missed packet costs the user their funds.
+//
+// This is NOT a guarantee on its own -- handleBatch does not re-check receipts.
+// flushOnce calls it a second time under batchMu, and that call is what makes
+// the decision hold until submission.
+func (m *Module) dropSettled(ctx context.Context, candidates []chain.Event) []chain.Event {
+	unsettled := make([]chain.Event, 0, len(candidates))
+	for _, e := range candidates {
+		delivered, err := m.dst.HasPacketReceipt(ctx, e.Raw)
+		if err != nil {
+			log.Printf("[relay %s] packet flush: receipt check for %s seq=%d: %v; relaying anyway",
+				m.name, e.Type, e.Sequence, err)
+			unsettled = append(unsettled, e)
+			continue
+		}
+		if !delivered {
+			unsettled = append(unsettled, e)
+		}
+	}
+	return unsettled
+}
+
+// describeEvents names the packets in a flush line, capped like the waiting log
+// so a large backlog does not produce a log line of hundreds of entries.
+func describeEvents(events []chain.Event) string {
+	shown := events
+	if len(shown) > waitListLimit {
+		shown = shown[:waitListLimit]
+	}
+	parts := make([]string, 0, len(shown))
+	for _, e := range shown {
+		parts = append(parts, fmt.Sprintf("%s seq=%d h=%d", e.Type, e.Sequence, e.Height))
+	}
+	out := strings.Join(parts, ", ")
+	if len(events) > len(shown) {
+		out += fmt.Sprintf(", +%d more", len(events)-len(shown))
+	}
+	return out
 }
 
 // nextPeriodicUpdateBackoff advances the exponential failure backoff: the first

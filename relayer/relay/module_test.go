@@ -65,11 +65,20 @@ func (m *mockSource) NonMembershipProof(_ context.Context, _ []byte, height uint
 }
 
 type mockDest struct {
-	updates    []chain.ClientUpdate // recorded UpdateClient calls
-	updateErr  error                // if set, UpdateClient returns it
-	relayed    []chain.RelayPacket  // recorded RelayPackets calls
-	relayCalls int                  // number of RelayPackets invocations (multicall folding check)
-	relayErr   error                // if set, RelayPackets returns it (transient)
+	updates   []chain.ClientUpdate // recorded UpdateClient calls
+	updateErr error                // if set, UpdateClient returns it
+	relayed   []chain.RelayPacket  // recorded RelayPackets calls
+	// hasReceipt / receiptErr drive HasPacketReceipt for the flush tests: an
+	// outstanding source commitment does not say whether the destination already
+	// delivered the packet, so the flush asks.
+	hasReceipt bool
+	receiptErr error
+	// receiptAnswers, when non-empty, is consumed one per HasPacketReceipt call
+	// and falls back to hasReceipt once exhausted. It is how a test makes a packet
+	// become delivered BETWEEN the flush's two receipt checks.
+	receiptAnswers []bool
+	relayCalls     int   // number of RelayPackets invocations (multicall folding check)
+	relayErr       error // if set, RelayPackets returns it (transient)
 	// poison: Raw payload -> this packet deterministically reverts any batch it is
 	// in (chain.Permanent), like a timed-out/duplicate packet in a real multicall.
 	poison map[string]bool
@@ -102,7 +111,14 @@ func (m *mockDest) RelayPackets(_ context.Context, packets []chain.RelayPacket) 
 	m.relayed = append(m.relayed, packets...)
 	return nil
 }
-func (m *mockDest) HasPacketReceipt(context.Context, []byte) (bool, error) { return false, nil }
+func (m *mockDest) HasPacketReceipt(context.Context, []byte) (bool, error) {
+	if len(m.receiptAnswers) > 0 {
+		answer := m.receiptAnswers[0]
+		m.receiptAnswers = m.receiptAnswers[1:]
+		return answer, m.receiptErr
+	}
+	return m.hasReceipt, m.receiptErr
+}
 func (m *mockDest) ClientExpiresAt(context.Context, string) (time.Time, time.Duration, error) {
 	return m.expiresAt, m.trustingPeriod, m.expiresErr
 }
@@ -1725,4 +1741,182 @@ func TestPermanentSourceFailureIsHeldOff(t *testing.T) {
 			t.Fatalf("source asked %d times across two passes, want 2: a transient failure was treated as permanent", src.relayableCalls)
 		}
 	})
+}
+
+func TestFlushOnce(t *testing.T) {
+	send := chain.Event{Type: chain.SendPacket, Sequence: 7, Height: 40, Raw: []byte("old-packet")}
+
+	t.Run("relays a packet the scan never saw", func(t *testing.T) {
+		src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, candidate: []chain.Event{send}}
+		dst := &mockDest{}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+		out := captureLog(func() { m.flushOnce(context.Background(), src) })
+
+		if len(dst.relayed) != 1 {
+			t.Fatalf("relayed %d packets, want 1: the flush exists to relay what the scan cannot reach", len(dst.relayed))
+		}
+		if !strings.Contains(out, "packet flush found 1 packet(s)") {
+			t.Fatalf("a flush that finds work must say so:\n%s", out)
+		}
+	})
+
+	// An outstanding source commitment only says the packet was never acked BACK.
+	// A delivered packet whose ack is in flight still has one, and re-proving it
+	// every pass for as long as the ack takes is pure waste.
+	t.Run("skips packets the destination already holds a receipt for", func(t *testing.T) {
+		src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, candidate: []chain.Event{send}}
+		dst := &mockDest{hasReceipt: true}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+		out := captureLog(func() { m.flushOnce(context.Background(), src) })
+
+		if len(dst.relayed) != 0 {
+			t.Fatalf("relayed %d packets, want 0: the destination already has a receipt", len(dst.relayed))
+		}
+		if strings.Contains(out, "packet flush found") {
+			t.Fatalf("a pass that finds nothing unsettled must stay quiet:\n%s", out)
+		}
+	})
+
+	// The receipt check has to be serialized with submission. It used to run
+	// entirely outside batchMu, so a live subscription batch could relay the
+	// packet between the check and the lock -- and the flush then submitted a
+	// duplicate receive: an on-chain revert, wasted gas, and a permanent failure
+	// that takes any other packet folded into the same batch down with it.
+	t.Run("re-checks receipts under the batch lock", func(t *testing.T) {
+		src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, candidate: []chain.Event{send}}
+		// Outstanding at the first check; delivered by the time the lock is held.
+		dst := &mockDest{receiptAnswers: []bool{false, true}}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+		out := captureLog(func() { m.flushOnce(context.Background(), src) })
+
+		if len(dst.relayed) != 0 {
+			t.Fatalf("relayed %d packet(s), want 0: it was delivered between the two checks, so this is a duplicate receive", len(dst.relayed))
+		}
+		if strings.Contains(out, "packet flush found") {
+			t.Fatalf("a pass whose packets were relayed underneath it must stay quiet:\n%s", out)
+		}
+	})
+
+	// Dropping on a failed receipt query would silently skip exactly the packet
+	// this loop exists to find, and the next pass would ask the same broken
+	// endpoint again.
+	t.Run("a failed receipt check relays rather than skips", func(t *testing.T) {
+		src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, candidate: []chain.Event{send}}
+		dst := &mockDest{receiptErr: errors.New("rpc down")}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+		captureLog(func() { m.flushOnce(context.Background(), src) })
+
+		if len(dst.relayed) != 1 {
+			t.Fatalf("relayed %d packets, want 1: an unknown receipt must not be read as delivered", len(dst.relayed))
+		}
+	})
+
+	t.Run("an enumeration failure is logged and relays nothing", func(t *testing.T) {
+		src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, listErr: errors.New("query failed")}
+		dst := &mockDest{}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+		out := captureLog(func() { m.flushOnce(context.Background(), src) })
+
+		if len(dst.relayed) != 0 {
+			t.Fatalf("relayed %d packets on a failed query, want 0", len(dst.relayed))
+		}
+		if !strings.Contains(out, "packet flush:") {
+			t.Fatalf("a failed enumeration must reach the log:\n%s", out)
+		}
+	})
+}
+
+func TestFlushLoop_RunsImmediately(t *testing.T) {
+	src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}}
+	m := NewModule("cosmos->eth", "client-0", src, &mockDest{}, &mockBuilder{})
+	m.flushInterval = time.Hour // so only the immediate pass can run
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); m.flushLoop(ctx, src) }()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && src.callCount() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if got := src.callCount(); got != 1 {
+		t.Fatalf("enumeration ran %d times before the first tick, want 1", got)
+	}
+}
+
+type listerSource struct {
+	mockSource
+	mu        sync.Mutex
+	calls     int
+	candidate []chain.Event
+	listErr   error
+}
+
+func (l *listerSource) UnrelayedPackets(context.Context) ([]chain.Event, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls++
+	return append([]chain.Event(nil), l.candidate...), l.listErr
+}
+
+func (l *listerSource) callCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.calls
+}
+
+// handleBatch has two callers now -- the Subscribe callback and the flush loop,
+// on separate goroutines -- and it writes m.lastWait, which no lock covered.
+// Under -race that write is a data race without Module.batchMu.
+//
+// The race is the smaller half. Two batches in flight at once can each build and
+// submit a client update, and can relay the same packet twice: the flush
+// enumerates outstanding commitments, which includes the packets the scan is
+// delivering at that moment.
+//
+// Overlap is measured from INSIDE the batch, through a source call handleBatch
+// makes while holding the lock. Counting around the call instead would count
+// goroutines queued on the lock, not batches running in it -- which is what a
+// first version of this test did, and it failed against correct code.
+type overlapProbeSource struct {
+	mockSource
+	inFlight atomic.Int32
+	overlap  atomic.Bool
+}
+
+func (s *overlapProbeSource) RelayableHeight(ctx context.Context) (uint64, error) {
+	if s.inFlight.Add(1) > 1 {
+		s.overlap.Store(true)
+	}
+	time.Sleep(time.Millisecond) // widen the window a real batch would occupy
+	s.inFlight.Add(-1)
+	return s.mockSource.RelayableHeight(ctx)
+}
+
+func TestHandleBatchIsSerializedAcrossCallers(t *testing.T) {
+	source := &overlapProbeSource{}
+	m := NewModule("test", "client", source, &mockDest{}, &mockBuilder{})
+	events := []chain.Event{{Type: chain.SendPacket, Sequence: 1, Height: 500}}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.handleBatch(context.Background(), events)
+		}()
+	}
+	wg.Wait()
+
+	if source.overlap.Load() {
+		t.Fatal("two handleBatch calls were inside the batch at once; batchMu is not held for the whole of it")
+	}
 }

@@ -46,6 +46,14 @@ type Source struct {
 	logger       *log.Logger
 	bb           *services.BatchBuilder
 	recovery     *services.RecoveryStateStore
+
+	// flushCursor is the last sequence the enumeration pass took, so the next
+	// pass starts after it. Without it every pass re-takes the same oldest
+	// flushSequenceCap sequences, and a prefix that never resolves -- pruned
+	// history, or delivered packets still waiting on their acknowledgement --
+	// starves every later packet permanently. Touched only from UnrelayedPackets,
+	// which the relay module calls on one goroutine.
+	flushCursor uint64
 }
 
 // NewSource wires the Cosmos source to its endpoints and the shared batch builder.

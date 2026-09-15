@@ -23,6 +23,21 @@ import (
 // of events that failed TRANSIENTLY and must be re-queued; successfully-relayed
 // and permanently-dropped events are omitted.
 func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
+	// Serialized: see Module.batchMu. Nothing below re-enters handleBatch --
+	// relayIsolated and relayFoldedIsolated are the only retry paths and neither
+	// calls back into it -- so this cannot deadlock on itself.
+	m.batchMu.Lock()
+	defer m.batchMu.Unlock()
+	return m.handleBatchLocked(ctx, events)
+}
+
+// handleBatchLocked is handleBatch's body, for callers that must do something
+// else under the same lock. flushOnce is the one: its receipt check has to be
+// serialized with submission, or a live batch can relay the packet in between
+// and the flush submits a duplicate receive.
+//
+// Callers MUST hold batchMu.
+func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []int {
 	if len(events) == 0 {
 		return nil
 	}

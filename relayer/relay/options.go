@@ -101,3 +101,24 @@ func WithPeriodicUpdate(interval, initialDelay time.Duration, periodicUpdate Per
 		m.periodicUpdateInitialDelay = initialDelay
 	}
 }
+
+// WithPacketFlush periodically asks the source to ENUMERATE its outstanding
+// packets and relays whatever the destination has not settled. It is a no-op
+// unless the source implements chain.PacketLister.
+//
+// This is the backstop that block scanning cannot be: a scan can only find
+// packets inside the window it scans, so a lost cursor, a long outage, or a
+// second relayer joining a running path all leave older packets invisible. A
+// query finds a packet at any age.
+//
+// interval <= 0 falls back to defaultFlushInterval. It is minutes, not seconds:
+// every pass is real queries against both chains, and because it finds packets
+// at any age there is nothing to gain from running it often.
+func WithPacketFlush(interval time.Duration) Option {
+	return func(m *Module) {
+		if interval <= 0 {
+			interval = defaultFlushInterval
+		}
+		m.flushInterval = interval
+	}
+}
