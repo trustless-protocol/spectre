@@ -175,7 +175,18 @@ func TestNarrowedSpanIsRemembered(t *testing.T) {
 // loop. chain.Climb is what ends it, and it must end as permanent.
 func TestScanStopsWhenTheSpanCannotShrinkFurther(t *testing.T) {
 	span := &relayerclient.LogSpan{Chunk: 4}
+	// The bound is the half of this test that fails LOUDLY. Its own subject is
+	// "the scan halves forever", and a scan that never narrows does not report a
+	// wrong answer -- it reports none, and the assertions below are never
+	// reached. 4 -> 2 -> 1 -> bottom is three rejections; anything past a
+	// generous multiple of that is the loop this test exists to rule out.
+	calls := 0
 	_, _, err := scanNarrowing(0, 7, span, func(from, to uint64) ([]chain.Event, map[settledKey]struct{}, error) {
+		calls++
+		if calls > 8 {
+			t.Fatalf("the scan asked for [%d,%d] a %dth time without reaching the bottom of the ladder; it is not narrowing",
+				from, to, calls)
+		}
 		return nil, nil, errors.New("block range too large")
 	})
 	if err == nil {
@@ -278,7 +289,16 @@ func TestNarrowingUnionsSettledAcrossPieces(t *testing.T) {
 func TestNarrowingDoesNotCarrySettledAcrossARestart(t *testing.T) {
 	span := &relayerclient.LogSpan{Chunk: 32}
 	refused := false
+	// Same bound, same reason as TestScanStopsWhenTheSpanCannotShrinkFurther: the
+	// stub refuses every piece wider than 16, so a scan that does not narrow asks
+	// forever and the assertions below are never reached. Two calls at span 32
+	// plus four at 16 is six; the cap is a generous multiple.
+	calls := 0
 	_, settled, err := scanNarrowing(0, 63, span, func(from, to uint64) ([]chain.Event, map[settledKey]struct{}, error) {
+		calls++
+		if calls > 24 {
+			t.Fatalf("the scan asked for [%d,%d] a %dth time; the span is not narrowing", from, to, calls)
+		}
 		if to-from+1 > 16 {
 			if from == 0 {
 				return nil, map[settledKey]struct{}{"unwound-by-the-reorg": {}}, nil

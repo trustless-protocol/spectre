@@ -1454,6 +1454,19 @@ func TestExecuteWithRetryAndResubmission_OutOfGasEscalatesInProcess(t *testing.T
 	if len(gasLimits) != 2 || gasLimits[1] <= gasLimits[0] {
 		t.Fatalf("gas limits = %v, want one larger in-process retry", gasLimits)
 	}
+
+	// Larger is not enough: it has to be the rung the ladder named. The call site
+	// computes next.To and then hands the callee baseGasLimit plus the step,
+	// which re-derives the same quantity -- so next.To reaches the log line and
+	// nothing else. Unpinned, the two derivations drift and "retrying with gas
+	// limit %d" reports a limit no transaction ever carried.
+	rung, ok := EVMGasLadder(100_000)(0)
+	if !ok {
+		t.Fatal("the gas ladder reports no first rung, so the escalation above came from somewhere else")
+	}
+	if gasLimits[1] != rung.To {
+		t.Fatalf("the ladder named gas limit %d but the retry submitted %d", rung.To, gasLimits[1])
+	}
 	if len(nonces) != 2 || nonces[1] != nonces[0]+1 {
 		t.Fatalf("nonces = %v, want included OOG to consume one nonce", nonces)
 	}
