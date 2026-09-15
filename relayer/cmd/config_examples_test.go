@@ -169,3 +169,73 @@ func TestPathExamplesLoad(t *testing.T) {
 		})
 	}
 }
+
+func TestExampleRollupProfilesUseOnlyFreshV2Schema(t *testing.T) {
+	t.Parallel()
+
+	examples := map[string]int{
+		"config.example.json":          3,
+		"config.op.example.json":       1,
+		"config.base.example.json":     1,
+		"config.arbitrum.example.json": 1,
+		"op-l2-config.example.json":    1,
+		"base-l2-config.example.json":  1,
+		"arb-l2-config.example.json":   1,
+	}
+	wantKeys := map[string]struct{}{
+		"l2_chain_id": {}, "l2_router": {}, "commitment_slot": {},
+		"profile_version": {}, "l2_header_fork": {},
+	}
+	allowedVersions := map[string]struct{}{
+		"op_attestor_v1": {}, "base_attestor_v1": {}, "arbitrum_attestor_v1": {},
+	}
+
+	var collectProfiles func(any, *[]map[string]any)
+	collectProfiles = func(value any, profiles *[]map[string]any) {
+		switch value := value.(type) {
+		case map[string]any:
+			if version, ok := value["profile_version"].(string); ok {
+				if _, allowed := allowedVersions[version]; allowed {
+					*profiles = append(*profiles, value)
+				}
+			}
+			for _, child := range value {
+				collectProfiles(child, profiles)
+			}
+		case []any:
+			for _, child := range value {
+				collectProfiles(child, profiles)
+			}
+		}
+	}
+
+	for file, wantCount := range examples {
+		file, wantCount := file, wantCount
+		t.Run(file, func(t *testing.T) {
+			t.Parallel()
+			raw, err := os.ReadFile(filepath.Join("..", file))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var document any
+			if err := json.Unmarshal(raw, &document); err != nil {
+				t.Fatal(err)
+			}
+			var profiles []map[string]any
+			collectProfiles(document, &profiles)
+			if len(profiles) != wantCount {
+				t.Fatalf("found %d authenticated rollup profiles, want %d", len(profiles), wantCount)
+			}
+			for _, profile := range profiles {
+				if len(profile) != len(wantKeys) {
+					t.Fatalf("profile has %d fields, want exactly five: %#v", len(profile), profile)
+				}
+				for key := range profile {
+					if _, ok := wantKeys[key]; !ok {
+						t.Fatalf("profile contains stale/unknown field %q", key)
+					}
+				}
+			}
+		})
+	}
+}

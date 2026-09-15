@@ -194,7 +194,7 @@ func trustedLightBlockForHeader(
 	}
 	queryCtx, cancel := fetchCtx(stdCtx, fetchTimeout)
 	defer cancel()
-	trusted, err := relayerclient.GetLightBlockWithContext(queryCtx, cosmos.CosmosClient(), int64(height))
+	trusted, err := relayerclient.GetLightBlock(queryCtx, cosmos.CosmosClient(), int64(height))
 	if err != nil {
 		return nil, fmt.Errorf("fetch trusted light block %d: %w", height, err)
 	}
@@ -244,7 +244,7 @@ func (s *Services) PrepareCosmosMisbehaviour(
 		return PreparedCosmosMisbehaviour{}, fmt.Errorf("Cosmos RPC, EVM RPC, and SpectreClient address are required")
 	}
 	queryCtx, cancel := fetchCtx(stdCtx, s.cosmosConfig.FetchTimeout)
-	clientState, err := fetchOnChainClientStateWithContext(queryCtx, evm)
+	clientState, err := fetchOnChainClientState(queryCtx, evm)
 	cancel()
 	if err != nil {
 		return PreparedCosmosMisbehaviour{}, fmt.Errorf("on-chain client state: %w", err)

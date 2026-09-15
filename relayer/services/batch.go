@@ -19,6 +19,8 @@ func (p CosmosPacketType) String() string {
 		return "Ack"
 	case CosmosTimeout:
 		return "Timeout"
+	case CosmosAcknowledged:
+		return "Acknowledged"
 	default:
 		return fmt.Sprintf("Unknown(%d)", int(p))
 	}
@@ -45,6 +47,11 @@ const (
 	CosmosSend CosmosPacketType = iota
 	CosmosAck
 	CosmosTimeout
+	// CosmosAcknowledged is a TERMINAL event: Cosmos consumed the acknowledgement
+	// for a packet it sent, so that packet's lifecycle is closed. It creates no
+	// relay work -- it only settles the pending tracker -- and must never reach
+	// the batch, or it becomes an empty "relay" of a packet with nothing to do.
+	CosmosAcknowledged
 )
 
 type EthPacketType int
@@ -99,11 +106,60 @@ type BatchBuilder struct {
 	EthPendingTracker *PendingPacketTracker
 	L2PendingTracker  *PendingPacketTracker
 
+	// AckDueTracker records packets whose receive we relayed and whose
+	// acknowledgement has not come back. It is the only way to notice an ack the
+	// scan window missed: waitTracker follows events it OBSERVED, and an ack
+	// nobody saw produces no event to wait on.
+	AckDueTracker *PendingPacketTracker
+
+	// settleOwedAck closes the owed-acknowledgement record for a packet whose
+	// acknowledgement has arrived BY ANY ROUTE, not only by this process relaying
+	// it. The Services constructors wire it to ClearAckDue; nil means no ledger.
+	//
+	// It lives here rather than on Services because the three places that observe
+	// a terminal acknowledgement -- the Cosmos subscriber, the EVM source and the
+	// L2 source -- hold a BatchBuilder and not a Services. The clearing has to go
+	// through ClearAckDue: cancelling a queued intent and retrying a rolled-back
+	// removal are state on Services, so reaching into AckDueTracker directly would
+	// leave a settled debt queued for rewriting.
+	settleOwedAck func(channeltypesv2.Packet)
+
 	// A flushed chunk is absent from the queue while its handler is running.
 	// Keep a multiset of its lowest source heights so durable recovery cursors
 	// cannot advance past packets that still only exist in this process.
 	cosmosInFlight map[uint64]int
 	ethInFlight    map[uint64]int
+}
+
+// WithOwedAckSettler installs the hook that closes an owed-acknowledgement
+// record. Called once by each Services constructor.
+func (b *BatchBuilder) WithOwedAckSettler(settle func(channeltypesv2.Packet)) {
+	if b == nil {
+		return
+	}
+	b.settleOwedAck = settle
+}
+
+// SettleOwedAck closes the owed-acknowledgement record for a packet whose
+// acknowledgement arrived, whoever relayed it.
+//
+// Reported by @DongLieu: the ledger was cleared only when THIS process relayed
+// the AckPacket, while the three terminal-event paths removed the pending record
+// and stopped there. Running two relayers is the ordinary case, so the ordinary
+// sequence was: this process delivers the receive and records the debt, the other
+// submits the acknowledgement, this one observes the terminal event and drops its
+// pending record -- and keeps the debt. The packet is settled on-chain and now has
+// a receipt, so it can never time out either; the debt is durable, so it survives
+// the restart, and the watcher reports it overdue for as long as the state file
+// lives. A watcher that names settled packets is worse than no watcher: the real
+// overdue entry is then indistinguishable from the noise.
+//
+// A no-op when no ledger is running, so the terminal paths call it unconditionally.
+func (b *BatchBuilder) SettleOwedAck(packet channeltypesv2.Packet) {
+	if b == nil || b.settleOwedAck == nil {
+		return
+	}
+	b.settleOwedAck(packet)
 }
 
 func NewBatchBuilder() *BatchBuilder {
@@ -116,8 +172,13 @@ func NewBatchBuilder() *BatchBuilder {
 		PendingTracker:    NewPendingPacketTracker(),
 		EthPendingTracker: NewPendingPacketTracker(),
 		L2PendingTracker:  NewPendingPacketTracker(),
-		cosmosInFlight:    map[uint64]int{},
-		ethInFlight:       map[uint64]int{},
+		// In-memory like its three siblings above. Leaving it nil made every
+		// non-persistent setup panic on the first RecordAckDue -- Add takes
+		// t.mtx on a nil receiver -- and Services.New uses THIS constructor, so
+		// that is the default adapter-engine path, not an exotic one.
+		AckDueTracker:  NewPendingPacketTracker(),
+		cosmosInFlight: map[uint64]int{},
+		ethInFlight:    map[uint64]int{},
 	}
 }
 
@@ -133,6 +194,16 @@ func NewPersistentBatchBuilder(stateDir string) (*BatchBuilder, error) {
 	if err != nil {
 		return nil, err
 	}
+	// A fourth tracker, holding a different KIND of record: not "sent, may need a
+	// timeout refund" but "we relayed the receive, the acknowledgement is owed".
+	// It reuses the same durable machinery because the requirement is the same --
+	// survive a restart -- and ObservedAt is exactly the due-since the overdue
+	// check needs.
+	ackDueTracker, err := NewPersistentPendingPacketTracker(filepath.Join(stateDir, "awaiting-acks.json"))
+	if err != nil {
+		return nil, err
+	}
+
 	l2Tracker, err := NewPersistentPendingPacketTracker(filepath.Join(stateDir, "l2.json"))
 	if err != nil {
 		return nil, err
@@ -146,6 +217,7 @@ func NewPersistentBatchBuilder(stateDir string) (*BatchBuilder, error) {
 		PendingTracker:    cosmosTracker,
 		EthPendingTracker: ethTracker,
 		L2PendingTracker:  l2Tracker,
+		AckDueTracker:     ackDueTracker,
 		cosmosInFlight:    map[uint64]int{},
 		ethInFlight:       map[uint64]int{},
 	}, nil
@@ -158,6 +230,41 @@ func (b *BatchBuilder) AddCosmos(packet CosmosPacket) {
 	b.cosmosMtx.Unlock()
 	log.Printf("[BatchBuilder] Inserted cosmos packet: type=%s seq=%d (batch size: %d)",
 		packet.Type, packet.Packet.Sequence, count)
+}
+
+// DropCosmosQueued removes a packet from the Cosmos relay queue by identity.
+//
+// Settling the pending tracker is not enough on its own. A recovery scan can
+// read a send and, later in the SAME pass, the acknowledge_packet that closes
+// it; the send is already queued by then, and removing only the tracker entry
+// leaves the queue to relay a packet whose lifecycle is over -- and the relay
+// re-adds the tracker entry that settling just removed, after the scan cursor
+// has moved past the terminal event that would clear it again.
+//
+// It reports whether anything was removed so the caller can say so once rather
+// than logging a removal that did not happen.
+func (b *BatchBuilder) DropCosmosQueued(packet channeltypesv2.Packet) bool {
+	b.cosmosMtx.Lock()
+	defer b.cosmosMtx.Unlock()
+	// Full identity, not just the client pair and the sequence. A client
+	// migration keeps the client id and restarts sequences from 1
+	// (create-clients-eth repoints the existing client rather than adding one),
+	// so seq=N can name two different packets over the life of one client. A
+	// stale terminal event for the OLD seq=N would otherwise silently drop the
+	// NEW one from the queue -- never relayed, and nothing left to notice.
+	// packetIdentity is the tracker's own answer to exactly this replay, which is
+	// why the queue uses it too rather than a weaker key of its own.
+	target := identifyPacket(packet)
+	kept := b.cosmosPackets[:0:0]
+	for _, queued := range b.cosmosPackets {
+		if queued.Packet != nil && identifyPacket(*queued.Packet) == target {
+			continue
+		}
+		kept = append(kept, queued)
+	}
+	removed := len(kept) != len(b.cosmosPackets)
+	b.cosmosPackets = kept
+	return removed
 }
 
 func (b *BatchBuilder) AddEth(packet EthPacket) {

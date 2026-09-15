@@ -75,9 +75,9 @@ const (
 	// This file is generated and then deleted by the test.
 	Groth16GenesisFilePath = "scripts/genesis.json"
 	// SolidityFixturesDir is the directory where the Solidity fixtures are stored.
-	SolidityFixturesDir = "test/solidity-ibc/fixtures/"
+	SolidityFixturesDir = "test/fixtures/solidity/"
 	// SpectreFixturesDir is the directory where the Spectre fixtures are stored.
-	SpectreFixturesDir = "test/spectre/fixtures"
+	SpectreFixturesDir = "test/light-clients/spectre/fixtures"
 	// WasmFixturesDir is the directory where the Rust fixtures are stored.
 	WasmFixturesDir = "packages/ethereum/light-client/src/test_utils/fixtures"
 	// RelayerConfigFilePath is the path to generate the relayer config file.

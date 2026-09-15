@@ -17,6 +17,27 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+// mapStatus translates transport codes into the consumer-side error taxonomy.
+// Unknown codes remain unclassified and therefore default to transient.
+func mapStatus(err error) error {
+	var sentinel error
+	switch status.Code(err) {
+	case codes.InvalidArgument:
+		sentinel = l2rollup.ErrAttestorBadRequest
+	case codes.NotFound:
+		sentinel = l2rollup.ErrAttestorUnknownRoute
+	case codes.FailedPrecondition:
+		sentinel = l2rollup.ErrAttestorReplicaBehind
+	case codes.Unavailable, codes.DeadlineExceeded:
+		sentinel = l2rollup.ErrAttestorUnavailable
+	case codes.Unimplemented:
+		sentinel = l2rollup.ErrAttestorUnimplemented
+	default:
+		return err
+	}
+	return fmt.Errorf("%w: %w", sentinel, err)
+}
+
 // Client adapts the generated AttestorServiceClient to l2rollup.AttestorClient.
 type Client struct {
 	conn *grpc.ClientConn
@@ -45,7 +66,7 @@ func (c *Client) AttestedUpTo(ctx context.Context, srcChain string, includeProvi
 		IncludeProvisional: includeProvisional,
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("attestorgrpc: AttestedUpTo(%s): %w", srcChain, err)
+		return nil, false, fmt.Errorf("attestorgrpc: AttestedUpTo(%s): %w", srcChain, mapStatus(err))
 	}
 	if !resp.GetFound() {
 		return nil, false, nil
@@ -64,7 +85,7 @@ func (c *Client) AttestedRootAtOrBelow(ctx context.Context, srcChain string, l2B
 		IncludeProvisional: includeProvisional,
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("attestorgrpc: AttestedRootAtOrBelow(%s, %d): %w", srcChain, l2BlockNumber, err)
+		return nil, false, fmt.Errorf("attestorgrpc: AttestedRootAtOrBelow(%s, %d): %w", srcChain, l2BlockNumber, mapStatus(err))
 	}
 	if !resp.GetFound() {
 		return nil, false, nil
@@ -76,25 +97,27 @@ func (c *Client) AttestedRootAtOrBelow(ctx context.Context, srcChain string, l2B
 }
 
 // VerifyStateRoot compares one block identity against the attestor's replica.
-//
-// Every in-tree attestor serves this RPC. An attestor binary older than that
-// answers Unimplemented, which is reported as ErrVerifyStateRootUnsupported so the
-// caller can tell "this attestor cannot answer" apart from "this attestor says no"
-// — the two must not collapse, because the first is a version skew and the second
-// is a divergence.
-func (c *Client) VerifyStateRoot(ctx context.Context, srcChain string, l2BlockNumber uint64, stateRoot, blockHash []byte, runMode attestorpb.RunMode) (bool, error) {
+func (c *Client) VerifyStateRoot(ctx context.Context, request l2rollup.VerificationRequest) (l2rollup.SignedVerdict, error) {
 	resp, err := c.rpc.VerifyStateRoot(ctx, &attestorpb.VerifyStateRootRequest{
-		SrcChain:          srcChain,
-		BlockNumber:       l2BlockNumber,
-		ExpectedStateRoot: stateRoot,
-		ExpectedBlockHash: blockHash,
-		RunMode:           runMode,
+		SrcChain:          request.SrcChain,
+		BlockNumber:       request.BlockNumber,
+		ExpectedStateRoot: request.StateRoot,
+		ExpectedBlockHash: request.BlockHash,
+		RunMode:           request.RunMode,
+		L2Router:          request.L2Router[:],
+		AttestorSetHash:   request.AttestorSetHash[:],
 	})
 	if err != nil {
 		if status.Code(err) == codes.Unimplemented {
-			return false, fmt.Errorf("%w: %v", l2rollup.ErrVerifyStateRootUnsupported, err)
+			return l2rollup.SignedVerdict{}, fmt.Errorf("%w: %w", l2rollup.ErrVerifyStateRootUnsupported, err)
 		}
-		return false, fmt.Errorf("attestorgrpc: VerifyStateRoot(%d): %w", l2BlockNumber, err)
+		return l2rollup.SignedVerdict{}, fmt.Errorf("attestorgrpc: VerifyStateRoot(%d): %w", request.BlockNumber, mapStatus(err))
 	}
-	return resp.GetValid(), nil
+	return l2rollup.SignedVerdict{
+		Valid:       resp.GetValid(),
+		BlockNumber: resp.GetBlockNumber(),
+		BlockHash:   append([]byte(nil), resp.GetBlockHash()...),
+		StateRoot:   append([]byte(nil), resp.GetStateRoot()...),
+		Signature:   append([]byte(nil), resp.GetAttestationSignature()...),
+	}, nil
 }

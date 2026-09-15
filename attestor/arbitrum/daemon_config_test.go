@@ -24,6 +24,7 @@ func TestLoadDaemonConfigResolvesStatePathAndLoadsNitroEndpoints(t *testing.T) {
 		"l1_rpc_url":"https://ethereum.example",
 		"l1_chain_id":1,
 		"l2_chain_id":42161,
+		"attestation_signing_key":"env:ARBITRUM_TEST_ATTESTOR_SIGNING_KEY",
 		"rollup_core_address":"0x0000000000000000000000000000000000000001",
 		"assertions_mapping_slot":"0x0000000000000000000000000000000000000000000000000000000000000076",
 		"assertion_status_offset":25,
@@ -199,6 +200,51 @@ func TestDaemonConfigRequiresBoLDStorageLayout(t *testing.T) {
 	}
 }
 
+func TestDaemonConfigRequiresAttestationSigningKey(t *testing.T) {
+	config := validDaemonConfig(t)
+	config.AttestationSigningKey = ""
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "attestation_signing_key") {
+		t.Fatalf("validate missing signing key: got %v", err)
+	}
+}
+
+func TestDaemonConfigValidationFailureMatrix(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*DaemonConfig)
+		want   string
+	}{
+		{name: "missing gRPC listener", mutate: func(c *DaemonConfig) { c.GRPCListenAddress = "" }, want: "grpc_listen_address"},
+		{name: "invalid runtime interval", mutate: func(c *DaemonConfig) { c.RuntimePollInterval = "0s" }, want: "runtime_poll_interval"},
+		{name: "invalid attestation head", mutate: func(c *DaemonConfig) { c.AttestationHead = "unknown" }, want: "attestation_head"},
+		{name: "missing source chain", mutate: func(c *DaemonConfig) { c.SrcChain = "" }, want: "src_chain"},
+		{name: "missing L1 RPC", mutate: func(c *DaemonConfig) { c.L1RPCURL = "" }, want: "l1_rpc_url"},
+		{name: "invalid L1 RPC scheme", mutate: func(c *DaemonConfig) { c.L1RPCURL = "ftp://ethereum.example" }, want: "l1_rpc_url"},
+		{name: "L1 RPC lacks host", mutate: func(c *DaemonConfig) { c.L1RPCURL = "https:///" }, want: "l1_rpc_url"},
+		{name: "zero L1 chain ID", mutate: func(c *DaemonConfig) { c.L1ChainID = 0 }, want: "l1_chain_id"},
+		{name: "zero L2 chain ID", mutate: func(c *DaemonConfig) { c.L2ChainID = 0 }, want: "l2_chain_id"},
+		{name: "blank signing key", mutate: func(c *DaemonConfig) { c.AttestationSigningKey = " \t" }, want: "attestation_signing_key"},
+		{name: "invalid RollupCore address", mutate: func(c *DaemonConfig) { c.RollupCoreAddress = "0xnot-an-address" }, want: "rollup_core_address"},
+		{name: "zero RollupCore address", mutate: func(c *DaemonConfig) { c.RollupCoreAddress = "0x0000000000000000000000000000000000000000" }, want: "rollup_core_address"},
+		{name: "invalid mapping slot", mutate: func(c *DaemonConfig) { c.AssertionsMappingSlot = "0x12" }, want: "assertions_mapping_slot"},
+		{name: "status offset outside word", mutate: func(c *DaemonConfig) { c.AssertionStatusOffset = 32 }, want: "assertion_status_offset"},
+		{name: "zero assertion start", mutate: func(c *DaemonConfig) { c.AssertionStartBlock = 0 }, want: "assertion_start_block"},
+		{name: "invalid assertion poll", mutate: func(c *DaemonConfig) { c.AssertionPollInterval = "-1s" }, want: "assertion_poll_interval"},
+		{name: "relative state path", mutate: func(c *DaemonConfig) { c.AttestorStatePath = "state.json" }, want: "attestor_state_path"},
+		{name: "invalid Nitro HTTP URL", mutate: func(c *DaemonConfig) { c.NitroRPCURL = "wss://nitro.example" }, want: "nitro_rpc_url"},
+		{name: "invalid Nitro websocket URL", mutate: func(c *DaemonConfig) { c.NitroWSURL = "https://nitro.example" }, want: "nitro_ws_url"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := validDaemonConfig(t)
+			tc.mutate(&config)
+			err := config.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Validate error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestArbitrumSepoliaConfigPinsBoLDDeployment(t *testing.T) {
 	config, err := LoadDaemonConfig("config.arbitrum-sepolia.json")
 	if err != nil {
@@ -230,6 +276,7 @@ func validDaemonConfig(t *testing.T) DaemonConfig {
 		L1RPCURL:              "https://ethereum.example",
 		L1ChainID:             1,
 		L2ChainID:             42161,
+		AttestationSigningKey: "env:ARBITRUM_TEST_ATTESTOR_SIGNING_KEY",
 		RollupCoreAddress:     "0x0000000000000000000000000000000000000001",
 		AssertionsMappingSlot: "0x" + strings.Repeat("0", 62) + "76",
 		AssertionStatusOffset: 25,

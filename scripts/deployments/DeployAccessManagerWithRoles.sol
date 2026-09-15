@@ -3,8 +3,9 @@ pragma solidity ^0.8.28;
 
 // solhint-disable gas-custom-errors,reason-string
 
-import { IBCRolesLib } from "../../contracts/utils/IBCRolesLib.sol";
-import { SignatureVerifier } from "../../contracts/light-clients/SignatureVerifier.sol";
+import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
+import { IBCSelectorLib } from "scripts/deployments/IBCSelectorLib.sol";
+import { SignatureVerifier } from "contracts/light-clients/spectre/SignatureVerifier.sol";
 import { IAccessManager } from "@openzeppelin-contracts/access/manager/IAccessManager.sol";
 
 abstract contract DeployAccessManagerWithRoles {
@@ -17,31 +18,31 @@ abstract contract DeployAccessManagerWithRoles {
         public
     {
         accessManager.setTargetFunctionRole(
-            ics26, IBCRolesLib.ics26IdCustomizerSelectors(), IBCRolesLib.ID_CUSTOMIZER_ROLE
+            ics26, IBCSelectorLib.ics26IdCustomizerSelectors(), IBCRolesLib.ID_CUSTOMIZER_ROLE
         );
-        accessManager.setTargetFunctionRole(ics26, IBCRolesLib.ics26RelayerSelectors(), IBCRolesLib.RELAYER_ROLE);
-        accessManager.setTargetFunctionRole(ics26, IBCRolesLib.pauserSelectors(), IBCRolesLib.PAUSER_ROLE);
-        accessManager.setTargetFunctionRole(ics26, IBCRolesLib.unpauserSelectors(), IBCRolesLib.UNPAUSER_ROLE);
-        accessManager.setTargetFunctionRole(ics20, IBCRolesLib.pauserSelectors(), IBCRolesLib.PAUSER_ROLE);
-        accessManager.setTargetFunctionRole(ics20, IBCRolesLib.unpauserSelectors(), IBCRolesLib.UNPAUSER_ROLE);
+        accessManager.setTargetFunctionRole(ics26, IBCSelectorLib.ics26RelayerSelectors(), IBCRolesLib.RELAYER_ROLE);
+        accessManager.setTargetFunctionRole(ics26, IBCSelectorLib.pauserSelectors(), IBCRolesLib.PAUSER_ROLE);
+        accessManager.setTargetFunctionRole(ics26, IBCSelectorLib.unpauserSelectors(), IBCRolesLib.UNPAUSER_ROLE);
+        accessManager.setTargetFunctionRole(ics20, IBCSelectorLib.pauserSelectors(), IBCRolesLib.PAUSER_ROLE);
+        accessManager.setTargetFunctionRole(ics20, IBCSelectorLib.unpauserSelectors(), IBCRolesLib.UNPAUSER_ROLE);
         accessManager.setTargetFunctionRole(
-            ics20, IBCRolesLib.erc20CustomizerSelectors(), IBCRolesLib.ERC20_CUSTOMIZER_ROLE
-        );
-        accessManager.setTargetFunctionRole(
-            ics20, IBCRolesLib.delegateSenderSelectors(), IBCRolesLib.DELEGATE_SENDER_ROLE
+            ics20, IBCSelectorLib.erc20CustomizerSelectors(), IBCRolesLib.ERC20_CUSTOMIZER_ROLE
         );
         accessManager.setTargetFunctionRole(
-            ics26, IBCRolesLib.ics26MisbehaviourSelectors(), IBCRolesLib.MISBEHAVIOUR_SUBMITTER_ROLE
+            ics20, IBCSelectorLib.delegateSenderSelectors(), IBCRolesLib.DELEGATE_SENDER_ROLE
+        );
+        accessManager.setTargetFunctionRole(
+            ics26, IBCSelectorLib.ics26MisbehaviourSelectors(), IBCRolesLib.MISBEHAVIOUR_SUBMITTER_ROLE
         );
 
         // Add admin role for upgradeable contracts
         // This is actually a no-op since if no role is set, the admin role is assumed
-        accessManager.setTargetFunctionRole(ics20, IBCRolesLib.beaconUpgradeSelectors(), IBCRolesLib.ADMIN_ROLE);
-        accessManager.setTargetFunctionRole(ics20, IBCRolesLib.uupsUpgradeSelectors(), IBCRolesLib.ADMIN_ROLE);
-        accessManager.setTargetFunctionRole(ics26, IBCRolesLib.uupsUpgradeSelectors(), IBCRolesLib.ADMIN_ROLE);
+        accessManager.setTargetFunctionRole(ics20, IBCSelectorLib.beaconUpgradeSelectors(), IBCRolesLib.ADMIN_ROLE);
+        accessManager.setTargetFunctionRole(ics20, IBCSelectorLib.uupsUpgradeSelectors(), IBCRolesLib.ADMIN_ROLE);
+        accessManager.setTargetFunctionRole(ics26, IBCSelectorLib.uupsUpgradeSelectors(), IBCRolesLib.ADMIN_ROLE);
 
         if (pubRelay) {
-            accessManager.setTargetFunctionRole(ics26, IBCRolesLib.ics26RelayerSelectors(), IBCRolesLib.PUBLIC_ROLE);
+            accessManager.setTargetFunctionRole(ics26, IBCSelectorLib.ics26RelayerSelectors(), IBCRolesLib.PUBLIC_ROLE);
         }
     }
 
@@ -56,8 +57,8 @@ abstract contract DeployAccessManagerWithRoles {
     )
         public
     {
-        accessManager.setTargetFunctionRole(ics26, IBCRolesLib.uupsUpgradeSelectors(), IBCRolesLib.UPGRADER_ROLE);
-        accessManager.setTargetFunctionRole(ics20, IBCRolesLib.upgraderSelectors(), IBCRolesLib.UPGRADER_ROLE);
+        accessManager.setTargetFunctionRole(ics26, IBCSelectorLib.uupsUpgradeSelectors(), IBCRolesLib.UPGRADER_ROLE);
+        accessManager.setTargetFunctionRole(ics20, IBCSelectorLib.upgraderSelectors(), IBCRolesLib.UPGRADER_ROLE);
         bytes4[] memory verifierSelectors = new bytes4[](1);
         verifierSelectors[0] = SignatureVerifier.setBucket.selector;
         accessManager.setTargetFunctionRole(signatureVerifier, verifierSelectors, IBCRolesLib.UPGRADER_ROLE);

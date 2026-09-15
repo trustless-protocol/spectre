@@ -91,15 +91,17 @@ func TestProbeErrorClassesAreDisjoint(t *testing.T) {
 	}
 }
 
+// An atomic batch keeps its all-or-nothing shape: it must never be split, only
+// given more gas, however many messages it carries.
 func TestPlanCosmosOutOfGasTerminatesAndPreservesAtomicity(t *testing.T) {
-	if got := planCosmosOutOfGas(2, 0, 1, 10, true); got != oogSplitBatch {
-		t.Fatalf("splittable batch action = %v, want split", got)
+	if next, _, ok := oogPlan(t, 2, 0, 1, 10, true); !ok || next.What != knobBatchSize {
+		t.Fatalf("splittable batch planned %v (ok=%v), want a split", next, ok)
 	}
-	if got := planCosmosOutOfGas(2, 0, 1, 10, false); got != oogEscalateHeadroom {
-		t.Fatalf("atomic batch action = %v, want headroom escalation", got)
+	if next, _, ok := oogPlan(t, 2, 0, 1, 10, false); !ok || next.What != knobCosmosGas {
+		t.Fatalf("atomic batch planned %v (ok=%v), want a gas escalation and never a split", next, ok)
 	}
-	if got := planCosmosOutOfGas(1, len(cosmosGasHeadroom)-1, 10, 10, false); got != oogPermanent {
-		t.Fatalf("ceiling action = %v, want permanent", got)
+	if next, _, ok := oogPlan(t, 1, len(cosmosGasHeadroom)-1, 10, 10, false); ok {
+		t.Fatalf("at the ceiling planned %v, want permanent", next)
 	}
 }
 

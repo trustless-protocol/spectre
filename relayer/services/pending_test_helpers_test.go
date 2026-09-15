@@ -21,12 +21,23 @@ func (t *PendingPacketTracker) removeCurrentForTest(sourceClient string, sequenc
 
 func (t *PendingPacketTracker) recordTimeoutFailureForTest(sourceClient string, sequence uint64, now time.Time) bool {
 	info, ok := t.currentPacketForTest(sourceClient, sequence)
-	return ok && t.RecordTimeoutFailureIfCurrent(info, now)
+	if !ok {
+		return false
+	}
+	deadLettered, err := t.RecordTimeoutFailureIfCurrent(info, now)
+	if err != nil {
+		return false
+	}
+	return deadLettered
 }
 
 func (t *PendingPacketTracker) deferTimeoutRetryForTest(sourceClient string, sequence uint64, now time.Time) int {
 	if info, ok := t.currentPacketForTest(sourceClient, sequence); ok {
-		return t.DeferTimeoutRetryIfCurrent(info, now)
+		count, err := t.DeferTimeoutRetryIfCurrent(info, now)
+		if err != nil {
+			return 0
+		}
+		return count
 	}
 	return 0
 }

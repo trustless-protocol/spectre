@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 
@@ -13,10 +14,10 @@ import (
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
 
-// runAdapterEngine drives one source's bidirectional relay using the chain-adapter
-// RelayModule instead of services.StartLoop. It is the cutover target: same
-// battle-tested pipeline (proof gen, gap recovery, timeout scanning) reused via
-// adapters, but orchestrated by the generic module.
+// runAdapterEngine drives one source's bidirectional relay through the generic
+// relay.Module. Proof generation, gap recovery and timeout scanning stay in
+// services and are reached through the chain adapters; the module owns only the
+// orchestration.
 //
 // Two modules run concurrently on a shared child context and the source's shared
 // services.BatchBuilder (SubscribeCosmos/SubscribeEth push to disjoint queues, so
@@ -30,8 +31,12 @@ import (
 //     tracker (avoiding a redundant double-add); ScanEthTimeouts drains that
 //     tracker.
 //
-// It returns nil on clean context cancellation, or the first module's fatal error
-// (cancelling the other).
+// The first module to exit cancels the other, and BOTH results are joined into
+// the return value. Returning only the first is what hid the failure this engine
+// now surfaces: on SIGTERM the unaffected direction usually returns nil first,
+// and returning that discarded the other direction's drain failure. Each module
+// normalizes cancellation of the run context to nil while preserving real RPC
+// deadlines and drain failures, so a clean stop joins two nils and stays nil.
 func runAdapterEngine(ctx context.Context, svc *services.Services, deps services.RelayDeps) error {
 	worker := svc.Worker()
 	bb := svc.BatchBuilder
@@ -43,7 +48,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	trackCosmosPending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[adapter cosmos->eth] track pending: decode packet: %v", err)
+			log.Printf("[cosmos->eth Relay] track pending: decode packet: %v", err)
 			return false
 		}
 		return svc.TrackCosmosPending(pkt, height)
@@ -51,17 +56,17 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	untrackCosmosPending := func(raw []byte) {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[adapter cosmos->eth] untrack pending: decode packet: %v", err)
+			log.Printf("[cosmos->eth Relay] untrack pending: decode packet: %v", err)
 			return
 		}
 		svc.UntrackCosmosPending(pkt)
 	}
 
-	// Pinned-set rotation cadence, derived from the on-chain trusting period (as
-	// the legacy routine did). A derivation failure is FATAL — the legacy StartLoop
-	// rejected an unsafe/underivable interval at startup rather than silently
-	// falling back to a fixed default that could exceed the trusting period and let
-	// the client expire. Fail loud so the operator fixes the config.
+	// Pinned-set rotation cadence, derived from the on-chain trusting period. A
+	// derivation failure is FATAL: an unsafe or underivable interval must be
+	// rejected at startup rather than silently replaced by a fixed default that
+	// could exceed the trusting period and let the client expire. Fail loud so the
+	// operator fixes the config.
 	periodicUpdateInterval, err := svc.PinnedSetRotationInterval(ctx, deps.EVM)
 	if err != nil {
 		if isShutdownErr(err) && ctx.Err() != nil {
@@ -78,12 +83,26 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		if isShutdownErr(err) && ctx.Err() != nil {
 			return nil
 		}
-		log.Printf("[adapter cosmos->eth] derive initial rotation delay: %v; rotating on startup", err)
+		log.Printf("[cosmos->eth UpdateClient] derive initial rotation delay: %v; rotating on startup", err)
 		initialRotationDelay = 0
 	}
-	if err := svc.SeedEVMOnCosmosUpdate(deps.Cosmos, deps.IDs.EVMOnCosmos); err != nil {
-		log.Printf("[adapter eth->cosmos] seed client-update age: %v", err)
+	if err := svc.SeedEVMOnCosmosUpdate(ctx, deps.Cosmos, deps.IDs.EVMOnCosmos); err != nil {
+		log.Printf("[eth->cosmos UpdateClient] seed client-update age: %v", err)
 	}
+
+	// A delivered receive makes its acknowledgement owed; a relayed ack closes the
+	// debt. Both take the marshaled packet, like the tracker hooks beside them.
+	//
+	// They are wired to BOTH modules because the two halves land on opposite
+	// ones. A Cosmos-origin send is delivered by cosmos->eth (the debt), and the
+	// acknowledgement the destination writes for it comes back as an ETH
+	// WriteAcknowledgement relayed by eth->cosmos (the settlement) -- and the
+	// mirror image for an ETH-origin send. Attaching the pair to one module only
+	// meant every module recorded debts that the OTHER module settled, so no debt
+	// ever cleared and every returned acknowledgement stayed overdue forever.
+	// The tracker behind these hooks is shared (svc.BatchBuilder.AckDueTracker),
+	// which is what lets the settlement land from the other side.
+	ackDue, ackSettled := ackWatchHooks(svc)
 
 	cosmosToEth := relay.NewModule(
 		"cosmos->eth",
@@ -96,10 +115,19 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 			svc.ScanCosmosTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos)
 		}),
 		relay.WithPacketTracker(trackCosmosPending, untrackCosmosPending),
+		// Name the acknowledgements that never come back. The wait tracker only
+		// follows packets it OBSERVED, so an ack written while this process was
+		// down leaves the packet silently unfinished and its escrow locked.
+		relay.WithAckWatch(0, 0, ackDue, ackSettled, svc.OverdueAcks),
+		// The enumeration backstop. The block scan only ever sees its own window,
+		// so a lost cursor, an outage longer than the window, or a second relayer
+		// joining this path all leave older packets invisible to it. Only the
+		// Cosmos source implements chain.PacketLister today; the option is inert
+		// on a source that does not.
+		relay.WithPacketFlush(0),
 		// Force-rotate the pinned validator set on a fixed cadence so it never
-		// decays below quorum during a quiet period (the guaranteed rotation the
-		// legacy StartLoop routine provided). ETH->Cosmos needs no equivalent —
-		// the beacon client has no pinned set.
+		// decays below quorum during a quiet period. ETH->Cosmos needs no
+		// equivalent — the beacon client has no pinned set.
 		relay.WithPeriodicUpdate(periodicUpdateInterval, initialRotationDelay, func(c context.Context) error {
 			return svc.RotatePinnedSet(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM)
 		}),
@@ -113,6 +141,11 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		evm.NewBeaconBuilder(worker, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos),
 		relay.WithClientUpdateObserver(svc.ObserveEVMOnCosmosUpdate),
 		relay.WithTimeoutScanner(0, func(c context.Context) { svc.ScanEthTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM) }),
+		// The same pair of hooks, and deliberately NO overdue reporter: the
+		// tracker is shared, so a second watch loop would report the same set
+		// twice. nil leaves the loop unstarted (see Module.Run) while the debt
+		// recording and settlement still happen on this side.
+		relay.WithAckWatch(0, 0, ackDue, ackSettled, nil),
 	)
 
 	// Child context so the first fatal error stops both modules.
@@ -124,11 +157,41 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	go func() { errCh <- cosmosToEth.Run(runCtx) }()
 	go func() { errCh <- ethToCosmos.Run(runCtx) }()
 
-	err = <-errCh // first module to exit
-	cancel()      // stop the other
-	<-errCh       // wait for it so no goroutine leaks
+	first := <-errCh // first module to exit
+	cancel()         // stop the other
+	second := <-errCh
 
-	// Each module normalizes cancellation of the parent run context to nil while
-	// preserving real RPC deadlines and drain failures. Return that result as-is.
-	return err
+	// BOTH results, not just the first -- see the contract on this function.
+	// Reading the second only to avoid a goroutine leak is what discarded the
+	// other direction's drain failure before it could reach loopErrCh.
+	return errors.Join(first, second)
+}
+
+// ackWatchHooks builds the record/settle pair for one ledger.
+//
+// It is a function rather than two closures written at each call site because
+// the pair only works when BOTH sides of a relay path close over the SAME
+// Services: one direction records the debt a delivered receive owes, the other
+// settles it when the acknowledgement comes back. Written out per site, the
+// easiest mistake is to hand one direction a different instance, and the symptom
+// is silence -- every debt recorded, none ever cleared, every returned ack
+// reported overdue forever.
+func ackWatchHooks(svc *services.Services) (func([]byte) bool, func([]byte)) {
+	due := func(raw []byte) bool {
+		var pkt channeltypesv2.Packet
+		if err := pkt.Unmarshal(raw); err != nil {
+			log.Printf("[AckWatch] record owed ack: decode packet: %v", err)
+			return false
+		}
+		return svc.RecordAckDue(pkt)
+	}
+	settled := func(raw []byte) {
+		var pkt channeltypesv2.Packet
+		if err := pkt.Unmarshal(raw); err != nil {
+			log.Printf("[AckWatch] settle owed ack: decode packet: %v", err)
+			return
+		}
+		svc.ClearAckDue(pkt)
+	}
+	return due, settled
 }

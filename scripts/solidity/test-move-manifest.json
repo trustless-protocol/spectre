@@ -1,0 +1,281 @@
+{
+  "schema_version": 1,
+  "entries": [
+    {
+      "current": "test/solidity-ibc/ChainIdTest.t.sol",
+      "target": "test/light-clients/spectre/ChainIdTest.t.sol",
+      "baseline_test_functions": 12,
+      "current_test_functions": 12
+    },
+    {
+      "current": "test/solidity-ibc/EVMRollupIBCFlowTest.t.sol",
+      "target": "test/integration/EVMRollupIBCFlowTest.t.sol",
+      "baseline_test_functions": 4,
+      "current_test_functions": 4
+    },
+    {
+      "current": "test/solidity-ibc/EncodeTest.t.sol",
+      "target": "test/light-clients/spectre/EncodeTest.t.sol",
+      "baseline_test_functions": 43,
+      "current_test_functions": 43
+    },
+    {
+      "current": "test/solidity-ibc/EncodeWrapper.sol",
+      "target": "test/light-clients/spectre/EncodeWrapper.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/solidity-ibc/EscrowTest.t.sol",
+      "target": "test/apps/ics20/EscrowTest.t.sol",
+      "baseline_test_functions": 12,
+      "current_test_functions": 12
+    },
+    {
+      "current": "test/solidity-ibc/IBCAdminTest.t.sol",
+      "target": "test/core/IBCAdminTest.t.sol",
+      "baseline_test_functions": 11,
+      "current_test_functions": 11
+    },
+    {
+      "current": "test/solidity-ibc/IBCERC20Test.t.sol",
+      "target": "test/apps/ics20/IBCERC20Test.t.sol",
+      "baseline_test_functions": 10,
+      "current_test_functions": 10
+    },
+    {
+      "current": "test/solidity-ibc/ICS02ClientTest.t.sol",
+      "target": "test/core/client-registry/ICS02ClientTest.t.sol",
+      "baseline_test_functions": 25,
+      "current_test_functions": 25
+    },
+    {
+      "current": "test/solidity-ibc/ICS20LibTest.t.sol",
+      "target": "test/apps/ics20/ICS20LibTest.t.sol",
+      "baseline_test_functions": 6,
+      "current_test_functions": 6
+    },
+    {
+      "current": "test/solidity-ibc/ICS20TransferStorageLayoutTest.t.sol",
+      "target": "test/apps/ics20/ICS20TransferStorageLayoutTest.t.sol",
+      "baseline_test_functions": 1,
+      "current_test_functions": 1
+    },
+    {
+      "current": "test/solidity-ibc/ICS20TransferTest.t.sol",
+      "target": "test/apps/ics20/ICS20TransferTest.t.sol",
+      "baseline_test_functions": 22,
+      "current_test_functions": 22
+    },
+    {
+      "current": "test/solidity-ibc/ICS24HostTest.t.sol",
+      "target": "test/core/ICS24HostTest.t.sol",
+      "baseline_test_functions": 4,
+      "current_test_functions": 4
+    },
+    {
+      "current": "test/solidity-ibc/ICS26RouterTest.t.sol",
+      "target": "test/core/ICS26RouterTest.t.sol",
+      "baseline_test_functions": 10,
+      "current_test_functions": 10
+    },
+    {
+      "current": "test/solidity-ibc/IbcIdentifiersTest.t.sol",
+      "target": "test/shared/access/IBCIdentifiersTest.t.sol",
+      "baseline_test_functions": 2,
+      "current_test_functions": 2
+    },
+    {
+      "current": "test/solidity-ibc/Integration2Test.t.sol",
+      "target": "test/integration/Integration2Test.t.sol",
+      "baseline_test_functions": 14,
+      "current_test_functions": 14
+    },
+    {
+      "current": "test/solidity-ibc/Integration3Test.t.sol",
+      "target": "test/integration/Integration3Test.t.sol",
+      "baseline_test_functions": 2,
+      "current_test_functions": 2
+    },
+    {
+      "current": "test/solidity-ibc/IntegrationTest.t.sol",
+      "target": "test/integration/IntegrationTest.t.sol",
+      "baseline_test_functions": 5,
+      "current_test_functions": 5
+    },
+    {
+      "current": "test/solidity-ibc/MembershipApplyOpsTest.t.sol",
+      "target": "test/light-clients/spectre/MembershipApplyOpsTest.t.sol",
+      "baseline_test_functions": 9,
+      "current_test_functions": 9
+    },
+    {
+      "current": "test/solidity-ibc/MembershipCompareBytesTest.t.sol",
+      "target": "test/light-clients/spectre/MembershipCompareBytesTest.t.sol",
+      "baseline_test_functions": 9,
+      "current_test_functions": 9
+    },
+    {
+      "current": "test/solidity-ibc/MembershipDepthTest.t.sol",
+      "target": "test/light-clients/spectre/MembershipDepthTest.t.sol",
+      "baseline_test_functions": 5,
+      "current_test_functions": 5
+    },
+    {
+      "current": "test/solidity-ibc/MembershipInnerSpecTest.t.sol",
+      "target": "test/light-clients/spectre/MembershipInnerSpecTest.t.sol",
+      "baseline_test_functions": 3,
+      "current_test_functions": 3
+    },
+    {
+      "current": "test/solidity-ibc/MembershipNonExistenceRootTest.t.sol",
+      "target": "test/light-clients/spectre/MembershipNonExistenceRootTest.t.sol",
+      "baseline_test_functions": 4,
+      "current_test_functions": 4
+    },
+    {
+      "current": "test/solidity-ibc/MembershipValueLengthTest.t.sol",
+      "target": "test/light-clients/spectre/MembershipValueLengthTest.t.sol",
+      "baseline_test_functions": 3,
+      "current_test_functions": 3
+    },
+    {
+      "current": "test/solidity-ibc/ProductionDeploymentTest.t.sol",
+      "target": "test/deployment/ProductionDeploymentTest.t.sol",
+      "baseline_test_functions": 1,
+      "current_test_functions": 1
+    },
+    {
+      "current": "test/solidity-ibc/ProductionEscrowConfigTest.t.sol",
+      "target": "test/deployment/ProductionEscrowConfigTest.t.sol",
+      "baseline_test_functions": 5,
+      "current_test_functions": 5
+    },
+    {
+      "current": "test/solidity-ibc/RecvPacketGasTest.t.sol",
+      "target": "test/apps/ics20/RecvPacketGasTest.t.sol",
+      "baseline_test_functions": 6,
+      "current_test_functions": 6
+    },
+    {
+      "current": "test/solidity-ibc/ReplayProofTest.t.sol",
+      "target": "test/integration/ReplayProofTest.t.sol",
+      "baseline_test_functions": 1,
+      "current_test_functions": 1
+    },
+    {
+      "current": "test/solidity-ibc/SignatureVerifierBypassTest.t.sol",
+      "target": "test/light-clients/spectre/SignatureVerifierBypassTest.t.sol",
+      "baseline_test_functions": 5,
+      "current_test_functions": 5
+    },
+    {
+      "current": "test/solidity-ibc/SignatureVerifierHashEquivalenceTest.t.sol",
+      "target": "test/light-clients/spectre/SignatureVerifierHashEquivalenceTest.t.sol",
+      "baseline_test_functions": 3,
+      "current_test_functions": 3
+    },
+    {
+      "current": "test/solidity-ibc/UpdateClientCacheTest.t.sol",
+      "target": "test/light-clients/spectre/UpdateClientCacheTest.t.sol",
+      "baseline_test_functions": 22,
+      "current_test_functions": 22
+    },
+    {
+      "current": "test/solidity-ibc/UpdateClientGasTest.t.sol",
+      "target": "test/light-clients/spectre/UpdateClientGasTest.t.sol",
+      "baseline_test_functions": 11,
+      "current_test_functions": 11
+    },
+    {
+      "current": "test/solidity-ibc/ValidatorSetLibTest.t.sol",
+      "target": "test/light-clients/spectre/ValidatorSetLibTest.t.sol",
+      "baseline_test_functions": 2,
+      "current_test_functions": 2
+    },
+    {
+      "current": "test/solidity-ibc/mocks/AttackerIBCERC20.sol",
+      "target": "test/mocks/AttackerIBCERC20.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/solidity-ibc/mocks/CallbackReceiver.sol",
+      "target": "test/mocks/CallbackReceiver.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/solidity-ibc/mocks/DummyInitializable.sol",
+      "target": "test/mocks/DummyInitializable.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/solidity-ibc/mocks/DummyLightClient.sol",
+      "target": "test/mocks/DummyLightClient.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/solidity-ibc/mocks/TestERC20.sol",
+      "target": "test/mocks/TestERC20.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/solidity-ibc/utils/IbcImpl.sol",
+      "target": "test/utils/IbcImpl.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/solidity-ibc/utils/IntegrationEnv.sol",
+      "target": "test/utils/IntegrationEnv.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/solidity-ibc/utils/PermitSignature.sol",
+      "target": "test/utils/PermitSignature.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/solidity-ibc/utils/RefImplIBCERC20.sol",
+      "target": "test/utils/RefImplIBCERC20.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/solidity-ibc/utils/SolidityLightClient.sol",
+      "target": "test/utils/SolidityLightClient.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/solidity-ibc/utils/TestHelper.sol",
+      "target": "test/utils/TestHelper.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/spectre/BenchGroth16Verifier_N4.sol",
+      "target": "test/light-clients/spectre/BenchGroth16Verifier_N4.sol",
+      "baseline_test_functions": 0,
+      "current_test_functions": 0
+    },
+    {
+      "current": "test/spectre/MembershipTrustingPeriodTest.t.sol",
+      "target": "test/light-clients/spectre/MembershipTrustingPeriodTest.t.sol",
+      "baseline_test_functions": 9,
+      "current_test_functions": 9
+    },
+    {
+      "current": "test/spectre/MisbehaviourTest.t.sol",
+      "target": "test/light-clients/spectre/MisbehaviourTest.t.sol",
+      "baseline_test_functions": 16,
+      "current_test_functions": 16
+    }
+  ]
+}

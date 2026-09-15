@@ -8,9 +8,9 @@
     unused_crate_dependencies
 )]
 
-use base_verifier as _;
 use cosmwasm_std as _;
 use l2_client as _;
+use l2_op_stack as _;
 
 pub mod contract;
 pub mod msg;

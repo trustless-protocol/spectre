@@ -1,5 +1,7 @@
 package l2rollup
 
+import "fmt"
+
 // This file mirrors, byte-for-byte on the JSON wire, the header types the cw-ics08
 // L2 wasm light clients deserialize. Ground truth, and there is no longer a
 // per-chain half — the three verifier crates are identical adapters:
@@ -8,12 +10,8 @@ package l2rollup
 //   - packages/l2-client/src/canonical_header.rs → CanonicalEvmHeader
 //
 // The client verifies the header against itself (the canonical fork layout pinned in
-// the profile, and the block hash derived from it) and the L2 router account proof
-// against the state root that header declares. It does NOT verify any L1 settlement
-// object: there is no dispute game, no BoLD assertion, and no shared
-// cw-ics08-wasm-eth client in the picture any more. What makes a header trustworthy
-// is the attestor gate on the relayer side, which the client cannot re-check —
-// see attestedHeaderBuilder for what that does and does not cover.
+// the profile, and the block hash derived from it), validates every attestor
+// signature, then checks the L2 router account proof against the header state root.
 //
 // Field NAMES and value REPRESENTATIONS are the frozen encoding contract (Dũng, PR
 // #245); the Rust structs carry `#[serde(deny_unknown_fields)]`, so emit exactly
@@ -21,10 +19,8 @@ package l2rollup
 //
 // scalar wire types (hexBytes / byteList / byteMatrix / u256) live in wire.go.
 
-// ClientMessage is a header that encodes to the wasm ClientMessage envelope
-// {"type":"header","value":<header>}. *AttestedL2Header is the only implementation;
-// the interface stays because the envelope is the stable part and the header shape
-// is what the signed-attestation wire version will change.
+// ClientMessage is a signed header that encodes to the wasm ClientMessage envelope
+// {"type":"header","value":<header>}.
 type ClientMessage interface {
 	// EncodeClientMessage marshals the header into the tagged ClientMessage JSON.
 	EncodeClientMessage() ([]byte, error)
@@ -73,24 +69,36 @@ type CanonicalEvmHeader struct {
 	RequestsHash          *hexBytes `json:"requests_hash,omitempty"`
 }
 
-// AttestedL2Header mirrors l2-client `AttestedL2Header` — the only update shape the
-// attestor-trusted clients accept, and identical for every chain.
+// IndexedAttestorSignature mirrors l2-client `IndexedAttestorSignature`. Its
+// signature is base64 JSON, as CosmWasm Binary expects.
+type IndexedAttestorSignature struct {
+	AttestorIndex uint16 `json:"attestor_index"`
+	Signature     []byte `json:"signature"`
+}
+
+// AttestedL2Header mirrors l2-client `SignedAttestedL2Header` — the only update
+// shape the attestor-trusted clients accept, and identical for every chain.
 //
 // The settlement fields the per-chain headers used to carry (beacon_slot,
 // l1_state_root, factory/game/assertion proofs, output-root preimages) are gone
-// because nothing verifies them any more. So is the attestation metadata that
-// briefly replaced them: the client reads no level, no attestor id and no L1
-// origin, and a field carried but unchecked reads as load-bearing when it is not.
+// because nothing verifies them any more. Indexed signatures replace settlement
+// evidence as the contract-verifiable source of trust.
 type AttestedL2Header struct {
-	L2Header    CanonicalEvmHeader `json:"l2_header"`
-	RouterProof EvmAccountProof    `json:"router_proof"`
+	L2Header          CanonicalEvmHeader         `json:"l2_header"`
+	RouterProof       EvmAccountProof            `json:"router_proof"`
+	AttestorSignature []IndexedAttestorSignature `json:"attestor_signature"`
 }
 
 // EncodeClientMessage marshals the header into the ClientMessage envelope. There is
 // no inner envelope any more: the Arbitrum verifier used to wrap its header in a
 // second tagged enum (`{"type":"bold_v2",...}`) because it had more than one header
 // variant, and it no longer does.
-func (h *AttestedL2Header) EncodeClientMessage() ([]byte, error) { return encodeHeaderMessage(h) }
+func (h *AttestedL2Header) EncodeClientMessage() ([]byte, error) {
+	if len(h.AttestorSignature) == 0 {
+		return nil, fmt.Errorf("l2 client message: signed header requires at least one attestor signature")
+	}
+	return encodeHeaderMessage(h)
+}
 
 // Header types satisfy ClientMessage.
 var _ ClientMessage = (*AttestedL2Header)(nil)

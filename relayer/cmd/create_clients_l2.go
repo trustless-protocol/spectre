@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"os"
 
+	"attestor/types/attestation"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 
@@ -39,6 +40,9 @@ type l2ClientConfig struct {
 	// tracks Cosmos, registered inline as this L2 client's counterparty. Optional:
 	// leave empty to defer registration until the L2-side client id is known.
 	CounterpartyClientID string `json:"counterparty_client_id"`
+	// Attestors is the exact immutable Ed25519 signing set stored in the wasm
+	// client. Its public_keys are base64-encoded 32-byte keys in strict byte order.
+	Attestors attestation.AttestorConfig `json:"attestors"`
 }
 
 // profileCommon is the subset of the verifier Profile the command reads to locate
@@ -81,6 +85,9 @@ func (c *l2ClientConfig) validate() error {
 	}
 	if _, err := c.routerAddress(); err != nil {
 		return err
+	}
+	if err := c.Attestors.Validate(); err != nil {
+		return fmt.Errorf("l2-config: invalid attestors: %w", err)
 	}
 	return nil
 }
@@ -169,7 +176,7 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 	// the config copy while the on-chain client stayed wrong.
 	//
 	// Unreachable is fatal here, unlike in `start` — see l2ChainIDCheck.
-	wantChainID, err := preflightL2ClientChainID(context.Background(), l2cfg)
+	wantChainID, err := validateL2ClientChainID(context.Background(), l2cfg)
 	if err != nil {
 		return "", err
 	}
@@ -204,6 +211,7 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 		RollupProfile:        l2cfg.RollupProfile,
 		Bootstrap:            bootstrap,
 		CounterpartyClientID: l2cfg.CounterpartyClientID,
+		Attestors:            l2cfg.Attestors,
 	})
 	if err != nil {
 		return "", fmt.Errorf("create L2 client on Cosmos: %w", err)

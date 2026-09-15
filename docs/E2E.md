@@ -45,6 +45,111 @@ Sharing is per **enclave**, and the defaults differ: `run_optimism_node.sh` and
 plain ETH↔Cosmos devnet (`run_eth_node.sh` on its own) uses `my-testnet` and is a
 separate L1. Set `ENCLAVE` explicitly to put them together.
 
+### Signing keys when several processes share a chain
+
+`start` serves exactly one relay path per process, so any deployment with more than
+one path runs more than one process. Two rules follow, and they are not the same
+rule for the two chains.
+
+**Every `start` process needs its own `COSMOS_PRIVATE_KEY`.** This holds for *every*
+path, including one that looks like it only writes to an EVM chain: a Cosmos→L2
+process still refunds expired Cosmos-origin packets **on Cosmos** through its timeout
+scanner. So the running example — one `cosmos↔eth` process plus one `cosmos↔l2`
+process against the same Cosmos chain — needs two keys, not one:
+
+| Process | Writes Cosmos from |
+| --- | --- |
+| `cosmos↔eth` | the eth→cosmos direction, and `ScanCosmosTimeouts` refunds |
+| `cosmos↔l2` | the l2→cosmos return leg, and `ScanCosmosTimeouts` refunds |
+| `cosmos→l2`, forward only | `ScanCosmosTimeouts` refunds |
+
+There is no `start` configuration that never writes to Cosmos, which is why the rule
+has no exceptions to remember.
+
+Sharing one key means sharing one account sequence, and nothing coordinates the two
+processes. Each reads the sequence from committed state before signing, so the
+collision window is a whole block, not an instant. If both processes talk to the same
+RPC node the loser fails at CheckTx, which the relayer treats as transient and
+retries — wasteful but safe. If they talk to **different** nodes both pass CheckTx and
+the loser fails at DeliverTx instead, which is classified as a deterministic on-chain
+failure: a single-packet transaction is then **dropped**, and its funds sit in escrow
+until the timeout scanner refunds them. A shared key turns an infrastructure race into
+a failed user transfer.
+
+**`ETH_PRIVATE_KEY` only needs to differ between processes writing the same EVM
+chain.** Nonces are tracked per `{chain id, address}`, so the `cosmos↔eth` process
+(L1) and the `cosmos↔l2` process (L2) can share one key — different chains, independent
+nonces. Two `cosmos↔eth` processes relaying two Cosmos sources into the *same* L1 do
+need separate keys.
+
+A shared ETH key also degrades more gracefully than a shared Cosmos one: an
+unrecognised broadcast error invalidates the cached nonce and returns a transient
+error, so the packet is re-queued rather than dropped.
+
+**`start` enforces both rules**, with one advisory lock per contended resource, all
+under `/tmp/fast-ibc-relayer-<uid>/`.
+
+The EVM half takes one lock per nonce domain it can write: a file per
+`{chain id, address}`, named `evm-signer-<chain id>-<address>.lock`
+(`cmd/evm_signer_lock.go:221`). The chain id is resolved from each configured
+endpoint at startup rather than read from the config, so the lock names the domain
+the process will actually write. A `cosmos<->eth` and a `cosmos<->l2` process write
+different chains, take different locks, and may share one key -- the guard permits
+exactly what the rule above permits.
+
+The Cosmos half takes one lock on the signing address alone, named
+`cosmos-signer-<address>.lock` (`cmd/cosmos_signer_lock.go`). Deliberately nothing
+else is in that name -- not the chain id, not the config path, not the state
+directory. A lock named after anything the runbook tells operators to vary per
+process is not a lock: the two processes it exists to catch each take their own file
+and both start. The directory itself reads no environment variable for the same
+reason, since `.env` is loaded before the lock is taken.
+
+Either lock refuses to boot and names the address and the lock file, instead of
+colliding at the first submission. Both are `flock`, so they reach one user on one
+machine; two hosts sharing a key still collide and nothing local can see it.
+
+**A second ETH key is not usable until it is funded AND granted the router's
+`RELAYER_ROLE`.** This is the step that costs an afternoon if it is missed, because
+the two failures look identical from the relayer: `E2ETestDeploy.s.sol:95-96` builds
+a one-element relayer list and grants the role to `msg.sender` alone, so any key
+other than the deployer's is unauthorized. `updateApplicationState` then reverts with
+a bare custom error — no revert string, and nothing in the relayer log beyond
+`execution reverted`. Funding the address does not help; it is authorization, not
+gas. `cast run <tx>` names the cause in one line: `canCall(<signer>, <ICS26Router>,
+0x9c11bece) -> false`.
+
+Grant it from the AccessManager admin, which is the account that deployed the
+contracts. `RELAYER_ROLE` is `1` (`contracts/shared/access/IBCRolesLib.sol:14`):
+
+```bash
+AM=$(cast call <ICS26Router> "authority()(address)" --rpc-url $RPC)
+cast send $AM "grantRole(uint64,address,uint32)" 1 <second-relayer-address> 0 \
+  --private-key <deployer-key> --rpc-url $RPC
+```
+
+Then fund the address for gas. Repeat per extra EVM signer, and per chain: a key
+authorized on the L1 router has no standing on an L2 router.
+
+**`create-clients-cosmos` signs with the same key.** It is the one command besides
+`start` that writes to Cosmos, so running it against a chain a `start` process is
+already relaying will collide. Give it its own key, or run it while `start` is
+stopped. The other commands do not touch the Cosmos signer: `update-client` and
+`create-clients-eth` submit to Ethereum, `submit-misbehaviour` submits to Ethereum
+under its own `MISBEHAVIOUR_PRIVATE_KEY`, and `genesis` broadcasts nothing.
+
+Keys can be set per process without touching `relayer/.env`: `godotenv` does not
+override a variable that is already set, so the export wins. Each runbook below
+copies its example to `relayer/config.json`, so running two paths at once means
+naming the second copy something else:
+
+```bash
+COSMOS_PRIVATE_KEY=$KEY_ETH_PATH ./relayer start --config config.json &
+COSMOS_PRIVATE_KEY=$KEY_OP_PATH  ./relayer start --config config.op.json &
+```
+
+Each key is a distinct account and needs its own gas balance on the Cosmos chain.
+
 ## Local Cosmos ↔ Ethereum E2E
 
 End-to-end run on local Cosmos + Ethereum nodes. Requires Docker + Kurtosis on
@@ -159,15 +264,22 @@ cp relayer/config.ethereum.example.json relayer/config.json
 #    GPU run:
 #    ./relayer start --config config.json --gpu-prove
 #
-#    Multiple Cosmos sources: add one `cosmos_to_eth` module per source to
-#    config.json, each with a distinct `ics26_client_id` — the ETH router's
-#    client id for that Cosmos chain (config.example.json uses "cosmoshub-1";
-#    a second source might be "osmosis-1"). Create its clients with --source,
-#    then start once — `start` runs one independent relay loop per source in
-#    the same process (shared prover + ETH endpoint):
-#      ./relayer create-clients-cosmos --config config.json --source osmosis-1 --wasm-checksum <hex>
-#      ./relayer create-clients-eth    --config config.json --source osmosis-1
-#      ./relayer start --config config.json
+#    Multiple Cosmos sources: ONE PROCESS PER SOURCE. `start` refuses a config
+#    that declares more than one relay path, naming each path it found — so give
+#    each source its own config file with its own `ics26_client_id` (the ETH
+#    router's client id for that Cosmos chain; config.example.json uses
+#    "cosmoshub-1", a second source might be "osmosis-1") and its own state
+#    directory. Create each source's clients with --source, then start one
+#    process per file:
+#      ./relayer create-clients-cosmos --config config-osmosis.json --source osmosis-1 --wasm-checksum <hex>
+#      ./relayer create-clients-eth    --config config-osmosis.json --source osmosis-1
+#      ./relayer start --config config.json &
+#      ./relayer start --config config-osmosis.json &
+#    Give each process its own COSMOS_PRIVATE_KEY, and — because every Cosmos
+#    source relays into the SAME L1 router — its own ETH_PRIVATE_KEY too. See
+#    "Signing keys when several processes share a chain" above for why, for what
+#    each extra ETH key has to be granted, and for the cases where sharing one
+#    ETH key is fine.
 
 # 7. send packet
 
@@ -267,7 +379,9 @@ OP Sepolia, or a replica you already run — skip step 1 and point the attestor 
 There is no local L1 to start either: the attestor-trusted client verifies nothing
 against L1, so only the *attestor* needs an L1 RPC, and a public endpoint is enough.
 
-Verified end to end against OP Sepolia; every value below was needed to get there.
+The predecessor of this flow was verified against OP Sepolia. The authenticated flow below
+includes every required signing input, but must be revalidated live on the current stack before
+it can be described as verified end to end.
 
 ```bash
 # 1. Attestor against the existing replica. NETWORK must name the real chain, and
@@ -276,6 +390,8 @@ Verified end to end against OP Sepolia; every value below was needed to get ther
 OP_NODE_RPC_URL=http://<host>:9545 \
 L1_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
 NETWORK=op-sepolia SRC_CHAIN=op-sepolia \
+L2_CHAIN_ID=11155420 \
+ATTESTOR_SIGNING_KEY=<32-byte-ed25519-seed-hex> \
 ATTESTATION_HEAD=unsafe DERIVED_GAP_BLOCKS=10 \
 DISPUTE_GAME_FACTORY=0x05F9613aDB30026FFd634f38e5C4dFd30a197Fa1 \
 RESPECTED_GAME_TYPE=8 \
@@ -302,7 +418,8 @@ L2_DEPLOYER_ADDRESS=0x... L2_DEPLOYER_PRIVATE_KEY=... \
 #    in the environment rather than editing relayer/.env — godotenv does not
 #    override a variable already set, so the export wins.
 cp relayer/op-l2-config.example.json relayer/op-l2-config.json
-# fill in wasm_checksum (step 2), l2_rpc_url, and l2_router (= ICS26_ADDRESS from step 4)
+# fill in wasm_checksum (step 2), l2_rpc_url, l2_router (= ICS26_ADDRESS from step 4),
+# and the attestor public key as described below
 cd relayer
 ./relayer create-clients-cosmos --config config.json --l2-config op-l2-config.json
 ETH_PRIVATE_KEY=<deployer-key> ./relayer create-clients-eth --config config.json \
@@ -315,6 +432,13 @@ ETH_PRIVATE_KEY=<deployer-key> ./relayer start --config config.json
 Everything not listed here is written for you — see
 [What the tooling fills in for you](#what-the-tooling-fills-in-for-you).
 
+The attestor logs its public key twice at startup: hex for human comparison and standard base64
+for the relayer. Copy the base64 value from
+`.op-attestor-run/attestor.log` into both locations below before creating the client. They must
+contain the public half of the exact `ATTESTOR_SIGNING_KEY` supplied in step 1; leaving the
+checked-in disposable devnet key in either file lets the daemon start but makes every certificate
+fail against the client or relayer configuration.
+
 **`relayer/config.json`:**
 
 | Field | Module | Value comes from |
@@ -326,11 +450,13 @@ Everything not listed here is written for you — see
 | `attestor_src_chain` | `op-to-cosmos` | the `SRC_CHAIN` you passed in step 1 (`op-sepolia`) — must match, or `AttestedUpTo` answers for another chain |
 | `head_kind` | `op-to-cosmos` | the same choice as `ATTESTATION_HEAD` in step 1 |
 | `rollup_profile.common.l2_chain_id` | `op-to-cosmos` | `eth_chainId` on your L2 (`11155420` on OP Sepolia). `start` verifies this against the RPC and refuses to boot on a mismatch |
+| `attestors.public_keys` | `op-to-cosmos` | the base64 public key logged by the attestor started with `ATTESTOR_SIGNING_KEY` |
 | `log_scan_chunk` | `op-to-cosmos` | your provider's `eth_getLogs` span cap — measure it, see the Arbitrum section |
 
 **`relayer/op-l2-config.json`:** `wasm_checksum` (from `wasm_op.sh`), `l2_rpc_url`, and
 `rollup_profile.common.l2_router` (= `ICS26_ADDRESS` printed by step 4 — which is why
-this file is filled in after the deploy).
+this file is filled in after the deploy), plus the same base64 key in
+`attestors.public_keys`.
 
 **Resolving the dispute-game contracts.** `run_op_attestor.sh` can derive them with
 `cast` for a chain it knows; for a public network it exits with
@@ -445,7 +571,9 @@ The Arbitrum counterpart of the OP section above. There is no local L1 and no lo
 Nitro: the attestor reads a public Arbitrum RPC and a public Sepolia RPC, and the
 client verifies nothing against L1, so nothing else needs an L1 endpoint.
 
-Verified end to end against **Arbitrum Sepolia**; every value below was needed.
+The predecessor of this flow was verified against Arbitrum Sepolia. The authenticated flow below
+includes every required signing input, but must be revalidated live on the current stack before
+it can be described as verified end to end.
 
 ```bash
 # 1. Attestor. CHAIN_PROFILE supplies the RollupCore address, both chain ids, the
@@ -455,6 +583,7 @@ CHAIN_PROFILE=arbitrum-sepolia \
 L1_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
 L2_RPC_URL=<arbitrum-sepolia-rpc> \
 L2_WS_URL=<arbitrum-sepolia-ws> \
+ATTESTOR_SIGNING_KEY=<32-byte-ed25519-seed-hex> \
 ATTESTATION_HEAD=unsafe DERIVED_GAP_BLOCKS=10 GRPC_PORT=3002 DETACH=1 \
   ./scripts/local/run_arbitrum_attestor.sh
 
@@ -480,7 +609,8 @@ L2_DEPLOYER_ADDRESS=0x... L2_DEPLOYER_PRIVATE_KEY=... \
 #    environment rather than editing relayer/.env — godotenv does not override a
 #    variable already set, so the export wins.
 cp relayer/arb-l2-config.example.json relayer/arb-l2-config.json
-# fill in wasm_checksum (step 2), l2_rpc_url, and l2_router (= ICS26_ADDRESS from step 4)
+# fill in wasm_checksum (step 2), l2_rpc_url, l2_router (= ICS26_ADDRESS from step 4),
+# and the attestor public key as described below
 cd relayer
 ./relayer create-clients-cosmos --config config.json --l2-config arb-l2-config.json
 ETH_PRIVATE_KEY=<deployer-key> ./relayer create-clients-eth --config config.json \
@@ -521,10 +651,16 @@ beat the profile — a stale one used to silently produce `l2_chain_id=412346` a
 
 #### Values you fill in by hand, and where each comes from
 
-Ten values. Everything else in both files is written for you — the table after this one
-says by what. Verified by running this section end to end against Arbitrum Sepolia.
+Everything else in both files is written for you — the table after this one says by what.
 
-**`relayer/config.json`** — seven:
+The attestor logs its public key twice at startup: hex for human comparison and standard base64
+for the relayer. Copy the base64 value from
+`.arbitrum-attestor-run/attestor.log` into both locations below before creating the client. They
+must contain the public half of the exact `ATTESTOR_SIGNING_KEY` supplied in step 1; leaving the
+checked-in disposable devnet key in either file lets the daemon start but makes every certificate
+fail against the client or relayer configuration.
+
+**`relayer/config.json`:**
 
 | Field | Module | Value comes from |
 |---|---|---|
@@ -535,15 +671,17 @@ says by what. Verified by running this section end to end against Arbitrum Sepol
 | `attestor_src_chain` | `arbitrum-to-cosmos` | `src_chain` in `attestor/arbitrum/config.<profile>.json` (`arbitrum-sepolia`). Must equal what the attestor reports, or `AttestedUpTo` answers for a chain you did not ask about |
 | `head_kind` | `arbitrum-to-cosmos` | `unsafe`, `safe` or `finalized` — the same choice as `ATTESTATION_HEAD` in step 1 |
 | `rollup_profile.common.l2_chain_id` | `arbitrum-to-cosmos` | `eth_chainId` on your L2 (`421614` on Arbitrum Sepolia, `412346` on the local devnet). `start` verifies this against the RPC and refuses to boot on a mismatch |
+| `attestors.public_keys` | `arbitrum-to-cosmos` | the base64 public key logged by the attestor started with `ATTESTOR_SIGNING_KEY` |
 | `log_scan_chunk` | `arbitrum-to-cosmos` | your provider's `eth_getLogs` span cap — measure it, see below |
 
-**`relayer/arb-l2-config.json`** — three:
+**`relayer/arb-l2-config.json`:**
 
 | Field | Value comes from |
 |---|---|
 | `wasm_checksum` | the hex printed by `wasm_arb.sh` in step 2 |
 | `l2_rpc_url` | your L2 HTTP endpoint |
 | `rollup_profile.common.l2_router` | `ICS26_ADDRESS` printed by step 4 — so this file is filled in *after* the deploy, which is why step 5 comes after step 4 |
+| `attestors.public_keys` | the same base64 public key logged by the attestor |
 
 `counterparty_client_id` and `l2_chain_id` in that file already match the example config
 (`arb-client-0`, `421614`); change them only if you changed the module's
@@ -633,9 +771,13 @@ else; an unknown key fails `instantiate` on the Rust side. `profile_version` mus
 the wasm artifact (`op_attestor_v1`, `base_attestor_v1`, `arbitrum_attestor_v1`), and
 `l2_header_fork` must match the chain's execution-header layout: `prague` for OP and
 Base, `london` for Arbitrum Nitro, which produces none of the post-London header fields.
-`packages/op-verifier/config/op-sepolia.json`,
-`packages/base-verifier/config/base-sepolia.json` and
-`packages/arbitrum-verifier/config/arbitrum-sepolia.json` are working public-network
+`head_kind` remains outside the 164-byte signed statement, so modules using different finality
+tiers must use disjoint `attestors.public_keys`/KMS keys. The relayer refuses to load one config
+with any public-key overlap across two `head_kind` values, even when the complete set hashes differ;
+the attestor also rejects a verification request whose `run_mode` differs from its configured head.
+`packages/l2-op-stack/config/op-sepolia.json`,
+`packages/l2-op-stack/config/base-sepolia.json` and
+`packages/l2-arbitrum/config/arbitrum-sepolia.json` are working public-network
 templates.
 
 ### Sending a test packet
@@ -796,6 +938,9 @@ proves half the system.
 | Optimizer fails: `rustc 1.86.0 is not supported ... requires rustc 1.90` | A dependency raised its MSRV above the optimizer image's Rust. Pin the dependency down (e.g. `cargo update -p ruint --precise 1.17.0`) or bump the optimizer image. |
 | `MsgCreateClient`: `status Unknown: client state is not active` | 08-wasm Stargate allowlist is missing `ClientStatus` — see [docs/L2_CLIENTS.md](L2_CLIENTS.md#host-requirements-and-verification). |
 | L2 client update panics the tx: `returning attributes from a contract is not allowed` | The deployed wasm predates the fix that made the client return data only. Rebuild through `cosmwasm/optimizer` and gov-store it. |
+| L2 client update fails: `unsigned L2 headers are unsupported` | The producer is stale or misconfigured: the authenticated client requires the relayer to collect the configured threshold of indexed attestor signatures before submitting any router proof. Confirm the relayer and wasm are from the same stack and that `attestor_endpoints`, indices and key set match the fresh authenticated client; see [docs/L2_CLIENTS.md](L2_CLIENTS.md#signed-update-contract). |
+| `only N valid attestor signatures` or `only N attestor frontiers available` | Fewer than the configured threshold of endpoints answered with a valid signature/frontier. The relayer queries endpoints concurrently, so one failed endpoint is tolerated whenever the remaining endpoints still satisfy the threshold; check every endpoint address, immutable index and daemon health. |
+| Relayer startup fails with `reuse attestor public key ... across different head_kind values` | Two finality tiers share at least one key. Provision disjoint attestor/KMS keys for each tier and update `attestors` plus endpoint indices; finality is deliberately outside the signed 164-byte statement. |
 | `updateApplicationState` reverts, ~82k gas, no revert string | The relayer's signer lacks the ICS26Router relayer role on the L2. `cast run <tx>` shows `canCall(...) → false`; funding the address does not help. |
 | Send fails: `timeout exceeds the maximum expected value` | Sent without `--absolute-timeouts`, so the CLI writes `timeout_timestamp` in nanoseconds while IBC v2 reads seconds. |
 | ETH client stops advancing: `404 NOT_FOUND: Sync committee for period N not found` | The beacon does not serve a `light_client/bootstrap` for that period. The relayer takes the committee from the preceding period's update instead, so this should only appear if that update is also unavailable — check the endpoint serves `/eth/v1/beacon/light_client/updates`. |
@@ -880,8 +1025,10 @@ the same attestor and the same L2 contracts.
 
 ### Running against an existing Base L2 (no devnet L2)
 
-Skip step 1 and point the attestor at the node someone else runs. Verified end to
-end against **Base Sepolia**, relaying both directions.
+Skip step 1 and point the attestor at the node someone else runs. The predecessor of this flow
+was verified against Base Sepolia. The authenticated flow below includes every required signing
+input, but must be revalidated live on the current stack before it can be described as verified
+end to end.
 
 ```bash
 # 1. Attestor against the existing node. NETWORK must name the real chain, and the
@@ -890,6 +1037,9 @@ end against **Base Sepolia**, relaying both directions.
 OP_NODE_RPC_URL=http://<host>:7545 \
 L1_RPC_URL=https://ethereum-sepolia-rpc.publicnode.com \
 NETWORK=base-sepolia SRC_CHAIN=base-sepolia \
+L2_CHAIN_ID=84532 \
+ATTESTOR_SIGNING_KEY=<32-byte-ed25519-seed-hex> \
+ATTESTOR_RUN_DIR=.base-attestor-run \
 ATTESTATION_HEAD=unsafe DERIVED_GAP_BLOCKS=10 \
 DISPUTE_GAME_FACTORY=0xd6E6dBf4F7EA0ac412fD8b65ED297e64BB7a06E1 \
 RESPECTED_GAME_TYPE=621 \
@@ -918,7 +1068,8 @@ L2_DEPLOYER_ADDRESS=0x... L2_DEPLOYER_PRIVATE_KEY=... \
 #    the environment rather than editing relayer/.env — godotenv does not override
 #    a variable already set, so the export wins.
 cp relayer/base-l2-config.example.json relayer/base-l2-config.json
-# fill in wasm_checksum (step 2), l2_rpc_url, and l2_router (= ICS26_ADDRESS from step 4)
+# fill in wasm_checksum (step 2), l2_rpc_url, l2_router (= ICS26_ADDRESS from step 4),
+# and the attestor public key as described below
 cd relayer
 ./relayer create-clients-cosmos --config config.json --l2-config base-l2-config.json
 ETH_PRIVATE_KEY=<deployer-key> ./relayer create-clients-eth --config config.json \
@@ -931,6 +1082,13 @@ ETH_PRIVATE_KEY=<deployer-key> ./relayer start --config config.json
 Everything not listed here is written for you — see
 [What the tooling fills in for you](#what-the-tooling-fills-in-for-you).
 
+Base uses the OP Stack attestor, which logs its public key twice at startup: hex for human
+comparison and standard base64 for the relayer. Copy the base64 value from
+`.base-attestor-run/attestor.log` into both locations below before creating the client. They must
+contain the public half of the exact `ATTESTOR_SIGNING_KEY` supplied in step 1; leaving the
+checked-in disposable devnet key in either file lets the daemon start but makes every certificate
+fail against the client or relayer configuration.
+
 **`relayer/config.json`:**
 
 | Field | Module | Value comes from |
@@ -942,10 +1100,12 @@ Everything not listed here is written for you — see
 | `attestor_src_chain` | `base-to-cosmos` | the `SRC_CHAIN` you passed in step 1 (`base-sepolia`) |
 | `head_kind` | `base-to-cosmos` | the same choice as `ATTESTATION_HEAD` in step 1 |
 | `rollup_profile.common.l2_chain_id` | `base-to-cosmos` | `eth_chainId` on your L2 (`84532` on Base Sepolia). `start` verifies this against the RPC and refuses to boot on a mismatch |
+| `attestors.public_keys` | `base-to-cosmos` | the base64 public key logged by the attestor started with `ATTESTOR_SIGNING_KEY` |
 | `log_scan_chunk` | `base-to-cosmos` | your provider's `eth_getLogs` span cap — measure it, see the Arbitrum section |
 
 **`relayer/base-l2-config.json`:** `wasm_checksum` (from `wasm_base.sh`), `l2_rpc_url`,
-and `rollup_profile.common.l2_router` (= `ICS26_ADDRESS` printed by step 4).
+and `rollup_profile.common.l2_router` (= `ICS26_ADDRESS` printed by step 4), plus the same
+base64 key in `attestors.public_keys`.
 
 **Fund the deployer on Base itself.** An account funded on L1 Sepolia, OP Sepolia or
 Arbitrum Sepolia has nothing here — balances do not carry across rollups. The deploy

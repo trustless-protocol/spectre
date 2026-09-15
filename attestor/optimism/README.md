@@ -17,7 +17,7 @@ not trust.
 
 ```
 [L1 node] ← derives ← [op-node + op-reth replica] ← RPC ← [attestor] ← gRPC ← [relayer]
-   batches/blobs        verify mode, operator-owned        feed + metrics      (op_to_cosmos, future)
+   batches/blobs        verify mode, operator-owned       Ed25519 signature      submits to Cosmos
 ```
 
 One attestation pass: ingest new factory games (exact index cursor) → read
@@ -62,6 +62,7 @@ Provisional semantics are defined in the Operator Guide's
 | `AttestedUpTo` | The attested frontier (`include_provisional` opt-in) |
 | `AttestedRootAtOrBelow` | The relay-path query: highest attested root covering a packet's height |
 | `WatchAttested` | Server-streamed frontier advances (streams the frontier, not every entry) |
+| `VerifyStateRoot` | Requires `run_mode` to match the configured attestation head, compares a candidate block with that replica head and, on a match, returns its Ed25519 attestation signature |
 
 Go consumers use `attestor/optimism/client` (`client.Dial(addr)`), which
 mirrors the store's read interface — in-process and sidecar consumption are

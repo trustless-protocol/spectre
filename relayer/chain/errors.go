@@ -1,9 +1,6 @@
 package chain
 
-import (
-	"errors"
-	"fmt"
-)
+import "errors"
 
 // ErrRetryable marks a transient relay failure: the event is still valid but
 // could not be relayed right now — an RPC blip, the source state not yet
@@ -19,15 +16,6 @@ import (
 // dropped (permanent) packet that later expires is still refunded by the timeout
 // scanner, so funds stay safe.
 var ErrRetryable = errors.New("retryable relay failure")
-
-// Retryable wraps err so IsRetryable reports true while preserving the cause for
-// logging. Returns nil when err is nil.
-func Retryable(err error) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("%w: %v", ErrRetryable, err)
-}
 
 // IsRetryable reports whether err (or anything it wraps) is an ErrRetryable.
 func IsRetryable(err error) bool {
@@ -46,15 +34,6 @@ func IsRetryable(err error) bool {
 // Funds are still safe: a timed-out packet is refunded by the timeout scanner,
 // which is fed independently of this drop.
 var ErrPermanent = errors.New("permanent relay failure")
-
-// Permanent wraps err so IsPermanent reports true while preserving the cause for
-// logging. Returns nil when err is nil.
-func Permanent(err error) error {
-	if err == nil {
-		return nil
-	}
-	return fmt.Errorf("%w: %v", ErrPermanent, err)
-}
 
 // IsPermanent reports whether err (or anything it wraps) is an ErrPermanent.
 func IsPermanent(err error) bool {

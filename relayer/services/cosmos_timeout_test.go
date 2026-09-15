@@ -9,7 +9,7 @@ import (
 // TestShouldRelayCosmosTimeoutToEth pins the direction-detection logic that
 // decides whether a CosmosTimeout event needs a follow-up timeoutPacket on
 // ETH. The old guard compared SourceClient against the router client ID — a
-// mismatch in IBC v2 Eureka because:
+// mismatch in IBC v2 because:
 //
 //   - For a Cosmos→ETH packet, the Cosmos-emitted event has
 //     SourceClient="08-wasm-0" (Cosmos's client identifying the ETH chain) and

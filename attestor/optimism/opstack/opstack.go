@@ -17,6 +17,10 @@ import (
 type gameSource interface {
 	GameCount(ctx context.Context) (uint64, error)
 	GameAtIndex(ctx context.Context, index uint64) (ProposedRoot, error)
+	// FinalizedView produces one immutable, finalized-L1 view for an ingestion
+	// pass. The attestor must never advance its durable factory cursor from a
+	// latest-L1 view because that view can disappear in a reorg.
+	FinalizedView(context.Context) (gameSource, uint64, error)
 }
 
 type replica interface {
@@ -179,7 +183,11 @@ func (a *OpStackAttestor) Run(ctx context.Context) error {
 // bootstrap sets the initial ingest cursor on a fresh store: the first game
 // created inside the configured L1 lookback window.
 func (a *OpStackAttestor) bootstrap(ctx context.Context) error {
-	count, err := a.games.GameCount(ctx)
+	games, _, err := a.finalizedGames(ctx)
+	if err != nil {
+		return err
+	}
+	count, err := games.GameCount(ctx)
 	if err != nil {
 		return err
 	}
@@ -192,12 +200,13 @@ func (a *OpStackAttestor) bootstrap(ctx context.Context) error {
 			cutoff = nowSecs - lookbackSecs
 		}
 	}
-	start, err := bootstrapStartIndex(ctx, a.games, count, cutoff)
+	start, err := bootstrapStartIndex(ctx, games, count, cutoff)
 	if err != nil {
 		return err
 	}
-	a.store.Bootstrap(start)
-	if err := a.store.Save(); err != nil {
+	if err := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+		return store.Bootstrap(start), nil
+	}); err != nil {
 		return err
 	}
 	a.logger.Infof("%s: bootstrapped ingest cursor at game index %d of %d (lookback %d L1 blocks)",
@@ -260,34 +269,80 @@ func (a *OpStackAttestor) runOnce(ctx context.Context) error {
 // ingest advances the game-index cursor through the factory list. The cursor
 // only ever moves past an index whose fetch succeeded.
 func (a *OpStackAttestor) ingest(ctx context.Context) error {
-	count, err := a.games.GameCount(ctx)
+	games, finalizedL1Block, err := a.finalizedGames(ctx)
+	if err != nil {
+		return err
+	}
+	count, err := games.GameCount(ctx)
 	if err != nil {
 		return err
 	}
 	start := a.store.NextGameIndex()
 	if start >= count {
+		if finalizedL1Block > a.store.LastFinalizedL1Block() {
+			return a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+				return store.RecordFinalizedL1Block(finalizedL1Block), nil
+			})
+		}
 		return nil
 	}
+	ingested := make([]ProposedRoot, 0)
+	persist := func() error {
+		return a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+			store.RecordFinalizedL1Block(finalizedL1Block)
+			for offset := range ingested {
+				game := &ingested[offset]
+				if game.GameType == a.cfg.RespectedGameType {
+					store.AdvanceIngest(start+uint64(offset)+1, game)
+					continue
+				}
+				store.AdvanceIngest(start+uint64(offset)+1, nil)
+			}
+			return true, nil
+		})
+	}
+	report := func() {
+		for idx, game := range ingested {
+			a.count(func(m *Metrics) { m.GamesIngested.WithLabelValues(a.cfg.SrcChain).Inc() })
+			if game.GameType != a.cfg.RespectedGameType {
+				a.logger.Debugf("%s: skipping game %d: type %d != respected type %d", a.Name(), start+uint64(idx), game.GameType, a.cfg.RespectedGameType)
+				continue
+			}
+			a.logger.Infof("%s: ingested proposal: game %d, l2 block %d, root %x", a.Name(), start+uint64(idx), game.L2BlockNumber, game.RootClaim)
+		}
+	}
 	for idx := start; idx < count; idx++ {
-		game, err := a.games.GameAtIndex(ctx, idx)
+		game, err := games.GameAtIndex(ctx, idx)
 		if err != nil {
-			// Persist what was ingested so far; the cursor stays at idx.
-			if saveErr := a.store.Save(); saveErr != nil {
-				a.logger.Warnf("%s: failed to persist state after partial ingest: %v", a.Name(), saveErr)
+			if len(ingested) != 0 {
+				if persistErr := persist(); persistErr != nil {
+					return fmt.Errorf("persisting ingest through game index %d: %w", idx-1, persistErr)
+				}
+				report()
 			}
 			return fmt.Errorf("ingest stopped at game index %d: %w", idx, err)
 		}
-		a.count(func(m *Metrics) { m.GamesIngested.WithLabelValues(a.cfg.SrcChain).Inc() })
-		if game.GameType != a.cfg.RespectedGameType {
-			a.logger.Debugf("%s: skipping game %d: type %d != respected type %d", a.Name(), idx, game.GameType, a.cfg.RespectedGameType)
-			a.store.AdvanceIngest(idx+1, nil)
-			continue
-		}
-		a.logger.Infof("%s: ingested proposal: game %d, l2 block %d, root %x", a.Name(), idx, game.L2BlockNumber, game.RootClaim)
-		g := game
-		a.store.AdvanceIngest(idx+1, &g)
+		ingested = append(ingested, game)
 	}
-	return a.store.Save()
+	if err := persist(); err != nil {
+		return fmt.Errorf("persisting ingest through game index %d: %w", count-1, err)
+	}
+	report()
+	return nil
+}
+
+func (a *OpStackAttestor) finalizedGames(ctx context.Context) (gameSource, uint64, error) {
+	if a.games == nil {
+		return nil, 0, errors.New("DisputeGameFactory source is not configured")
+	}
+	view, finalizedL1Block, err := a.games.FinalizedView(ctx)
+	if err != nil {
+		return nil, 0, fmt.Errorf("read finalized DisputeGameFactory view: %w", err)
+	}
+	if view == nil {
+		return nil, 0, errors.New("finalized DisputeGameFactory view is nil")
+	}
+	return view, finalizedL1Block, nil
 }
 
 // decidePending issues verdicts for pending games covered by the gating head.
@@ -307,8 +362,7 @@ func (a *OpStackAttestor) decidePending(ctx context.Context, status SyncStatus) 
 		// Provisional iff the verdict covers a block the finalized head has
 		// not yet re-derived from finalized L1 data.
 		provisional := game.L2BlockNumber > status.FinalizedL2
-		a.recordVerdict(ctx, game, local, provisional)
-		if err := a.store.Save(); err != nil {
+		if err := a.recordVerdict(ctx, game, local, provisional); err != nil {
 			return fmt.Errorf("persisting verdict for game %d: %w", game.GameIndex, err)
 		}
 	}
@@ -335,17 +389,24 @@ func (a *OpStackAttestor) attestDerived(ctx context.Context, status SyncStatus) 
 		return fmt.Errorf("deriving output root at head block %d: %w", gate, err)
 	}
 	provisional := gate > status.FinalizedL2
-	a.store.AppendDerived(gate, root, a.now(), provisional)
+	pruned := 0
+	if err := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+		store.AppendDerived(gate, root, a.now(), provisional)
+		pruned = store.PruneDerived(int(a.cfg.MaxDerivedRoots))
+		return true, nil
+	}); err != nil {
+		return fmt.Errorf("persisting derived root at head block %d: %w", gate, err)
+	}
 	a.count(func(m *Metrics) { m.RootsDerived.WithLabelValues(a.cfg.SrcChain).Inc() })
 	if provisional {
 		a.count(func(m *Metrics) { m.RootsProvisional.WithLabelValues(a.cfg.SrcChain).Inc() })
 	}
 	a.logger.Infof("%s: derived root attested at l2 block %d (root %x, head=%s, provisional=%t)",
 		a.Name(), gate, root, a.cfg.AttestationHead, provisional)
-	if pruned := a.store.PruneDerived(int(a.cfg.MaxDerivedRoots)); pruned > 0 {
+	if pruned > 0 {
 		a.logger.Debugf("%s: pruned %d confirmed derived roots beyond cap %d", a.Name(), pruned, a.cfg.MaxDerivedRoots)
 	}
-	return a.store.Save()
+	return nil
 }
 
 // reverifyDerived re-computes provisional derived roots once the finalized
@@ -359,10 +420,28 @@ func (a *OpStackAttestor) reverifyDerived(ctx context.Context, finalized uint64)
 			return fmt.Errorf("reverifying derived root at l2 block %d: %w", entry.L2BlockNumber, err)
 		}
 		if root == entry.Root {
-			a.store.ConfirmDerived(entry.L2BlockNumber)
+			var confirmed bool
+			if err := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+				confirmed = store.ConfirmDerived(entry.L2BlockNumber)
+				return confirmed, nil
+			}); err != nil {
+				return fmt.Errorf("persisting derived reverification at l2 block %d: %w", entry.L2BlockNumber, err)
+			}
+			if !confirmed {
+				return fmt.Errorf("provisional derived root at l2 block %d disappeared before confirmation", entry.L2BlockNumber)
+			}
 			a.logger.Infof("%s: finalized head confirmed derived root at l2 block %d", a.Name(), entry.L2BlockNumber)
 		} else {
-			a.store.CorrectDerived(entry.L2BlockNumber, root, a.now())
+			var corrected bool
+			if err := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+				corrected = store.CorrectDerived(entry.L2BlockNumber, root, a.now())
+				return corrected, nil
+			}); err != nil {
+				return fmt.Errorf("persisting derived reverification at l2 block %d: %w", entry.L2BlockNumber, err)
+			}
+			if !corrected {
+				return fmt.Errorf("provisional derived root at l2 block %d disappeared before correction", entry.L2BlockNumber)
+			}
 			a.count(func(m *Metrics) { m.HeadDivergence.WithLabelValues(a.cfg.SrcChain).Inc() })
 			a.logger.Errorw("[opstack attestor] HEAD DIVERGENCE — finalized derivation contradicts provisional derived root",
 				"chain", a.cfg.SrcChain,
@@ -371,22 +450,28 @@ func (a *OpStackAttestor) reverifyDerived(ctx context.Context, finalized uint64)
 				"finalized_root", fmt.Sprintf("%x", root),
 			)
 		}
-		if err := a.store.Save(); err != nil {
-			return fmt.Errorf("persisting derived reverification at l2 block %d: %w", entry.L2BlockNumber, err)
-		}
 	}
 	return nil
 }
 
-func (a *OpStackAttestor) recordVerdict(ctx context.Context, game ProposedRoot, local [32]byte, provisional bool) {
+func (a *OpStackAttestor) recordVerdict(ctx context.Context, game ProposedRoot, local [32]byte, provisional bool) error {
 	now := a.now()
-	if local == game.RootClaim {
-		a.store.RecordMatch(game, now, provisional)
+	match := local == game.RootClaim
+	if err := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+		if match {
+			store.RecordMatch(game, now, provisional)
+			return true, nil
+		}
+		store.RecordMismatch(game, local, now, provisional)
+		return true, nil
+	}); err != nil {
+		return err
+	}
+	if match {
 		a.count(func(m *Metrics) { m.RootsMatched.WithLabelValues(a.cfg.SrcChain).Inc() })
 		a.logger.Infof("%s: attested game %d (l2 block %d, root %x, provisional=%t)",
 			a.Name(), game.GameIndex, game.L2BlockNumber, game.RootClaim, provisional)
 	} else {
-		a.store.RecordMismatch(game, local, now, provisional)
 		a.count(func(m *Metrics) { m.RootsMismatched.WithLabelValues(a.cfg.SrcChain).Inc() })
 		if err := a.hook.OnMismatch(ctx, game, local); err != nil {
 			a.logger.Errorf("%s: challenge hook failed for game %d: %v", a.Name(), game.GameIndex, err)
@@ -395,6 +480,7 @@ func (a *OpStackAttestor) recordVerdict(ctx context.Context, game ProposedRoot, 
 	if provisional {
 		a.count(func(m *Metrics) { m.RootsProvisional.WithLabelValues(a.cfg.SrcChain).Inc() })
 	}
+	return nil
 }
 
 // resolveRechecks re-runs provisional game verdicts once the finalized head
@@ -413,11 +499,21 @@ func (a *OpStackAttestor) resolveRechecks(ctx context.Context, finalized uint64)
 		}
 		finalMatch := local == entry.Game.RootClaim
 		if finalMatch == entry.ProvisionalMatch {
-			a.store.ConfirmProvisional(entry.Game.GameIndex)
+			if err := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+				store.ConfirmProvisional(entry.Game.GameIndex)
+				return true, nil
+			}); err != nil {
+				return fmt.Errorf("persisting recheck for game %d: %w", entry.Game.GameIndex, err)
+			}
 			a.logger.Infof("%s: finalized head confirmed provisional verdict for game %d (match=%t)",
 				a.Name(), entry.Game.GameIndex, finalMatch)
 		} else {
-			a.store.CorrectProvisional(entry, local, a.now())
+			if err := a.store.Commit(func(store *AttestedRootStore) (bool, error) {
+				store.CorrectProvisional(entry, local, a.now())
+				return true, nil
+			}); err != nil {
+				return fmt.Errorf("persisting recheck for game %d: %w", entry.Game.GameIndex, err)
+			}
 			a.count(func(m *Metrics) { m.HeadDivergence.WithLabelValues(a.cfg.SrcChain).Inc() })
 			a.logger.Errorw("[opstack attestor] HEAD DIVERGENCE — finalized recheck contradicts provisional verdict",
 				"chain", a.cfg.SrcChain,
@@ -431,9 +527,6 @@ func (a *OpStackAttestor) resolveRechecks(ctx context.Context, finalized uint64)
 					a.logger.Errorf("%s: challenge hook failed for rechecked game %d: %v", a.Name(), entry.Game.GameIndex, err)
 				}
 			}
-		}
-		if err := a.store.Save(); err != nil {
-			return fmt.Errorf("persisting recheck for game %d: %w", entry.Game.GameIndex, err)
 		}
 	}
 	return nil

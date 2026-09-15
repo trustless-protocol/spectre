@@ -30,6 +30,7 @@
   ],
   "wasm_checksum": "<hex checksum of the Arbitrum client wasm, printed by scripts/local/wasm_arb.sh>",
   "l2_rpc_url": "http://127.0.0.1:8547",
+  "attestors": {"public_keys": ["XZ+76qOWCo/r113X56pAXt0hi3AZpY9LU44nF4vCMmg="], "threshold": 1},
   "rollup_profile": {
     "common": {
       "l2_chain_id": 421614,

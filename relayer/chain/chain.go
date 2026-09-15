@@ -201,7 +201,50 @@ type Destination interface {
 	// expire, so the generic refresh routine can schedule updates ahead of it. A
 	// zero time means "no expiry" (e.g. a permissioned client with no trusting
 	// period).
-	ClientExpiresAt(ctx context.Context, clientID string) (time.Time, error)
+	//
+	// It also returns the trusting period that expiry was derived from. The
+	// caller needs it to size its safety margin: a margin fixed in absolute time
+	// is either wasteful against a period measured in days or unreachable against
+	// one measured in minutes, and every implementation already has the number --
+	// it computes the expiry from it. A zero period means "unknown", and the
+	// caller falls back to its own default.
+	ClientExpiresAt(ctx context.Context, clientID string) (expiresAt time.Time, trustingPeriod time.Duration, err error)
+}
+
+// PacketLister is an OPTIONAL Source capability: enumerate packets this source
+// has sent that are still outstanding, WITHOUT being told which packets to look
+// for.
+//
+// Every other query in this package is a point lookup by path -- MembershipProof
+// takes a packet, HasPacketReceipt takes a packet. They can only answer questions
+// about packets the relayer already knows about, which means the relayer cannot
+// find what it never saw. Three situations produce exactly that:
+//
+//   - the persisted cursor is lost or corrupt and the downtime exceeded the
+//     startup window, so the rescan starts above the missing packet;
+//   - a SECOND relayer is stood up on a path that is already running -- it has no
+//     cursor at all, scans one window, and every older packet is invisible to it;
+//   - a packet has been in flight longer than the window and nobody relayed it.
+//
+// The second is not hypothetical: this design deliberately does not assume it is
+// the only relayer on a path, and production grants the relay role to several
+// independent addresses.
+//
+// Block scanning and enumeration catch different things -- cosmos/relayer, which
+// runs both, documents that its packet queries "can miss things that the block
+// scanning performed during standard operation wouldn't". The goal is both, not
+// a choice between them.
+//
+// Cost is asymmetric and that shapes the implementations: Cosmos can enumerate
+// commitments in one paginated query, while EVM storage is a mapping whose keys
+// cannot be listed, so an EVM implementation must bound a probe with
+// nextSequenceSend rather than sweeping 1..N.
+//
+// Returning candidates is enough: the caller filters what the destination has
+// already settled. An implementation must NOT assume it is called on any
+// particular cadence.
+type PacketLister interface {
+	UnrelayedPackets(ctx context.Context) ([]Event, error)
 }
 
 // FoldingDestination is an optional destination capability for submitting a
@@ -239,65 +282,4 @@ type FoldingDestination interface {
 type ClientUpdateBuilder interface {
 	Name() string
 	Build(ctx context.Context, header []byte) (ClientUpdate, error)
-}
-
-// --- Registry: adding a chain/builder = register + config, zero core edits. ---
-
-type (
-	SourceFactory              func(cfg []byte) (Source, error)
-	DestinationFactory         func(cfg []byte) (Destination, error)
-	ClientUpdateBuilderFactory func(cfg []byte) (ClientUpdateBuilder, error)
-)
-
-var (
-	sources      = map[ChainType]SourceFactory{}
-	destinations = map[ChainType]DestinationFactory{}
-	builders     = map[string]ClientUpdateBuilderFactory{}
-)
-
-// RegisterSource wires a source-chain family. Call from an adapter's init().
-func RegisterSource(chain ChainType, factory SourceFactory) { sources[chain] = factory }
-
-// RegisterDestination wires a destination-chain family.
-func RegisterDestination(chain ChainType, factory DestinationFactory) { destinations[chain] = factory }
-
-// RegisterClientUpdateBuilder wires a client-update strategy by name (config field `builder`).
-func RegisterClientUpdateBuilder(name string, factory ClientUpdateBuilderFactory) {
-	builders[name] = factory
-}
-
-// NewSource / NewDestination / NewClientUpdateBuilder build a configured adapter,
-// or report an unknown chain/builder so a typo in config fails loudly at startup.
-func NewSource(chain ChainType, cfg []byte) (Source, error) {
-	factory, ok := sources[chain]
-	if !ok {
-		return nil, &UnknownAdapterError{Category: "source", Name: string(chain)}
-	}
-	return factory(cfg)
-}
-
-func NewDestination(chain ChainType, cfg []byte) (Destination, error) {
-	factory, ok := destinations[chain]
-	if !ok {
-		return nil, &UnknownAdapterError{Category: "destination", Name: string(chain)}
-	}
-	return factory(cfg)
-}
-
-func NewClientUpdateBuilder(name string, cfg []byte) (ClientUpdateBuilder, error) {
-	factory, ok := builders[name]
-	if !ok {
-		return nil, &UnknownAdapterError{Category: "client-update builder", Name: name}
-	}
-	return factory(cfg)
-}
-
-// UnknownAdapterError is returned when config names an unregistered adapter.
-type UnknownAdapterError struct {
-	Category string
-	Name     string
-}
-
-func (e *UnknownAdapterError) Error() string {
-	return "chain: no registered " + e.Category + " for " + e.Name
 }

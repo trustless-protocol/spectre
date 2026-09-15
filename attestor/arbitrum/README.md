@@ -30,12 +30,12 @@ the configured endpoint immediately; `safe` and `finalized` select Nitro's
 corresponding L1-derived heads. Set `disable_derived_roots=true` when the feed
 must contain only RollupCore-backed assertions.
 
-The L2 client does not see this distinction. It accepts one header shape — the
-canonical L2 execution header plus the router account proof — and verifies no
-settlement object, so `source` and `attestation_head` govern only what this
-daemon puts in the feed, not what the client will admit. This daemon does not
-authenticate the eventual `MsgUpdateClient` submitter either; see
-`docs/L2_CLIENTS.md` for what that leaves open.
+The L2 client does not verify the chain-specific assertion itself. It accepts a
+canonical L2 execution header only with this daemon's Ed25519 signature and
+verifies the router account proof against the signed header state root. Thus
+`source` and `attestation_head` govern what this daemon will sign; the
+permissionless Cosmos transaction sender cannot fabricate the signed block
+identity. See `docs/L2_CLIENTS.md` for the exact signature format.
 
 ## Prerequisites
 
@@ -44,6 +44,13 @@ The Nitro HTTP endpoint must support `eth_getBlockByNumber` with `latest`,
 `safe`, and `finalized` tags. The WebSocket endpoint must support
 `eth_subscribe("newHeads")`. Both endpoints are checked against `l2_chain_id`
 at startup.
+
+### Upgrade note
+
+Existing configurations must set `attestation_signing_key` before upgrading.
+Configuration validation now rejects a blank key at load time. Prefer an
+environment reference such as `"attestation_signing_key": "env:ATTESTOR_SIGNING_KEY"`
+so the 32-byte Ed25519 seed is not stored in the configuration file.
 
 Copy `config.example.json` to `config.json` and configure:
 
@@ -84,6 +91,9 @@ Copy `config.example.json` to `config.json` and configure:
   assertion status reads. The endpoint must support the `finalized` block tag.
 - `l1_chain_id` and `l2_chain_id`: expected Ethereum and Arbitrum IDs. Startup
   fails if the connected L1 or RollupCore reports a different chain.
+- `attestation_signing_key`: 32-byte Ed25519 seed as hex, or `env:NAME`. Keep
+  it outside the config file where practical; pin the matching public key in
+  the Cosmos client's immutable profile.
 - `rollup_core_address`: deployed Arbitrum RollupCore proxy address.
 - `assertions_mapping_slot` and `assertion_status_offset`: reviewed BoLD
   `_assertions` storage layout values. They must match the Cosmos Arbitrum
@@ -124,7 +134,8 @@ sequencer/batch-poster/staker without creating another L1.
 validates the configured BoLD storage layout against a finalized assertion
 when one is available, and writes the published endpoints, chain IDs, and
 RollupCore metadata to
-`.arbitrum-devnet-run/attestor.env`.
+`.arbitrum-devnet-run/attestor.env`, including the devnet-only signing seed and
+the public key that must be pinned in the matching Cosmos client profile.
 
 `run_arbitrum_attestor.sh` automatically sources that handoff, builds the
 attestor image, and connects it to the Nitro HTTP and WebSocket endpoints
@@ -273,13 +284,12 @@ diagnostic RPC. The caller supplies:
 - `run_mode` as `RUN_MODE_UNSAFE`, `RUN_MODE_SAFE`, or `RUN_MODE_FINALIZED`
 
 The response returns `valid` plus Nitro's canonical block hash and state root.
-A mismatch is a successful gRPC response with `valid=false`; malformed requests,
+A block-identity mismatch is a successful gRPC response with `valid=false`; malformed requests,
 missing blocks, and Nitro availability failures use gRPC status errors.
 
-Every verification request is bounded by its requested run-mode head: unsafe uses Nitro's
-latest head, safe uses its safe head, and finalized uses its finalized head.
-The service supports all three modes concurrently and rejects an unspecified
-mode or a requested block above the selected head.
+Every verification request must name the daemon's configured attestation head exactly.
+The service rejects an unspecified or different `run_mode`, and rejects a requested block above
+that configured head. Deploy separate daemon/key configurations for different finality tiers.
 
 In the background, the attestor subscribes to Nitro's `newHeads` stream over
 the configured WebSocket endpoint. Each unsafe-head event triggers a refresh

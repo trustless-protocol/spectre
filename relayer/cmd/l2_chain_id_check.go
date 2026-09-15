@@ -50,12 +50,14 @@ func l2ChainIDFromProfile(profile json.RawMessage) (uint64, error) {
 // every L2 in docs/E2E.md, so an operator reasonably assumes a wrong value is
 // caught. This is what catches it.
 //
-// A NON-ANSWERING endpoint does not fail startup. That is an availability
-// problem, not a configuration one: the relay loops already retry RPCs, and
-// refusing to boot because a node was briefly unreachable would turn a blip into
-// an outage. Only a definite disagreement — the endpoint answered, and answered
-// with a different chain — is fatal, because no amount of retrying fixes it and
-// every packet relayed meanwhile is relayed against the wrong chain.
+// A NON-ANSWERING endpoint does not fail this configuration comparison. That is
+// an availability problem, not evidence that rollup_profile is wrong, so this
+// check reports it as unknown rather than as a mismatch. The startup EVM signer
+// lock separately requires eth_chainId before it can identify the nonce domain;
+// it will stop startup rather than silently run without that lock. Only a
+// definite disagreement here — the endpoint answered, and answered with a
+// different chain — is a configuration error, because no amount of retrying
+// fixes it and every packet relayed meanwhile is relayed against the wrong chain.
 func validateL2ChainIDs(stdCtx context.Context, sources []l2ToCosmosConfig) error {
 	for i := range sources {
 		src := sources[i]
@@ -80,7 +82,7 @@ func validateL2ChainIDs(stdCtx context.Context, sources []l2ToCosmosConfig) erro
 		// which is the one thing the log must not say.
 		if !verified {
 			log.Printf("[start] could not read eth_chainId from %s; skipping the l2_chain_id check for %q "+
-				"(declared %d). The relayer will keep retrying the endpoint.",
+				"(declared %d). The EVM signer lock still needs that answer, so startup will stop rather than run without its nonce guard.",
 				src.L2RpcUrl, src.AttestorSrcChain, want)
 			continue
 		}
@@ -94,9 +96,10 @@ func validateL2ChainIDs(stdCtx context.Context, sources []l2ToCosmosConfig) erro
 // tolerateNoAnswer differs by caller on purpose, because "the endpoint did not
 // answer" means different things to each:
 //
-//   - start (true): an unreachable node is an availability problem, not a
-//     configuration one. The relay loops already retry, so refusing to boot on a
-//     blip would turn it into an outage.
+//   - start (true): an unreachable node is not evidence of a profile mismatch,
+//     so this comparison reports it as unverified rather than wrong. The EVM
+//     signer lock is a separate startup gate and must still resolve the chain id
+//     before the relayer can submit safely.
 //   - create-clients (false): the command is about to commit this profile into
 //     an on-chain client that nothing can later repair, and it dials the very
 //     same RPC moments afterwards for the bootstrap roots. It cannot succeed
@@ -174,14 +177,14 @@ func probeL2ChainID(stdCtx context.Context, rpcURL string) *big.Int {
 	return chainID
 }
 
-// preflightL2ClientChainID verifies an --l2-config profile against the chain its
+// validateL2ClientChainID verifies an --l2-config profile against the chain its
 // RPC serves, and returns the declared id on success.
 //
 // It exists as its own function so the create-clients path's behaviour is
 // testable without standing up Cosmos: it composes exactly what that path needs
 // (parse the profile, probe the endpoint, compare, refuse on no answer), against
 // a real l2ClientConfig rather than a hand-picked chain id.
-func preflightL2ClientChainID(stdCtx context.Context, l2cfg *l2ClientConfig) (uint64, error) {
+func validateL2ClientChainID(stdCtx context.Context, l2cfg *l2ClientConfig) (uint64, error) {
 	want, err := l2ChainIDFromProfile(l2cfg.RollupProfile)
 	if err != nil {
 		return 0, fmt.Errorf("l2-config: %w", err)

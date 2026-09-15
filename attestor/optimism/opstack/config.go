@@ -3,10 +3,37 @@ package opstack
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
+
+// validateRPCURL accepts the URL transports supported by go-ethereum, plus an
+// absolute IPC socket path where the caller uses an RPC client. WebSocket-only
+// fields leave allowIPC false.
+func validateRPCURL(value, name string, allowIPC bool, schemes ...string) error {
+	if allowIPC && filepath.IsAbs(value) {
+		return nil
+	}
+	parsed, err := url.ParseRequestURI(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		if err != nil {
+			return fmt.Errorf("%s is not a valid URL: %w", name, err)
+		}
+		if allowIPC {
+			return fmt.Errorf("%s must be an absolute URL with scheme and host, or an absolute IPC path", name)
+		}
+		return fmt.Errorf("%s must be an absolute URL with scheme and host", name)
+	}
+	for _, scheme := range schemes {
+		if parsed.Scheme == scheme {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s must use one of %s, got %q", name, strings.Join(schemes, ", "), parsed.Scheme)
+}
 
 // Head selects which replica head gates attestation verdicts. Any verdict
 // made on a block the finalized head does not yet cover is provisional and is
@@ -45,12 +72,18 @@ type Config struct {
 	SrcChain string
 	// L1RpcUrl is the Ethereum L1 HTTP RPC endpoint.
 	L1RpcUrl string
+	// L1ChainID is the expected settlement-chain identity used to bind the
+	// persistent factory cursor to one concrete deployment.
+	L1ChainID uint64
 	// L1WsUrl optionally enables the DisputeGameCreated wake hint. Empty means
 	// poll-only.
 	L1WsUrl string
 	// OpNodeRpcUrl is the RPC endpoint of the op-node driving the verify-mode
 	// replica (optimism_syncStatus / optimism_outputAtBlock).
 	OpNodeRpcUrl string
+	// L2ChainID is the expected execution-chain identity recorded in
+	// OpNodeRpcUrl's optimism_rollupConfig response.
+	L2ChainID uint64
 	// DisputeGameFactory is the L1 DisputeGameFactory address.
 	DisputeGameFactory common.Address
 	// RespectedGameType filters ingested games; games of any other type are
@@ -102,24 +135,34 @@ func (c *Config) Validate() error {
 	if c.SrcChain == "" {
 		return fmt.Errorf("op_source.src_chain is required")
 	}
-	for _, u := range []struct{ val, name string }{
-		{c.L1RpcUrl, "op_source.l1_rpc_url"},
-		{c.OpNodeRpcUrl, "op_source.op_node_rpc_url"},
+	for _, endpoint := range []struct {
+		value   string
+		name    string
+		schemes []string
+	}{
+		{c.L1RpcUrl, "op_source.l1_rpc_url", []string{"http", "https", "ws", "wss"}},
+		{c.OpNodeRpcUrl, "op_source.op_node_rpc_url", []string{"http", "https", "ws", "wss"}},
 	} {
-		if u.val == "" {
-			return fmt.Errorf("%s is required", u.name)
+		if endpoint.value == "" {
+			return fmt.Errorf("%s is required", endpoint.name)
 		}
-		if _, err := url.Parse(u.val); err != nil {
-			return fmt.Errorf("%s is not a valid URL: %w", u.name, err)
+		if err := validateRPCURL(endpoint.value, endpoint.name, true, endpoint.schemes...); err != nil {
+			return err
 		}
 	}
 	if c.L1WsUrl != "" {
-		if _, err := url.Parse(c.L1WsUrl); err != nil {
-			return fmt.Errorf("op_source.l1_ws_url is not a valid URL: %w", err)
+		if err := validateRPCURL(c.L1WsUrl, "op_source.l1_ws_url", false, "ws", "wss"); err != nil {
+			return err
 		}
 	}
 	if c.DisputeGameFactory == (common.Address{}) {
 		return fmt.Errorf("op_source.dispute_game_factory is required")
+	}
+	if c.L1ChainID == 0 {
+		return fmt.Errorf("op_source.l1_chain_id is required")
+	}
+	if c.L2ChainID == 0 {
+		return fmt.Errorf("op_source.l2_chain_id is required")
 	}
 	switch c.AttestationHead {
 	case HeadFinalized:
@@ -132,6 +175,9 @@ func (c *Config) Validate() error {
 	}
 	if c.StatePath == "" {
 		return fmt.Errorf("op_source.state_path is required")
+	}
+	if c.PollInterval < 0 {
+		return fmt.Errorf("op_source.poll_interval must not be negative")
 	}
 	return nil
 }

@@ -2,30 +2,20 @@
 //! In case some message types are not found in the `ics26` module nor the `groth16_ics07` module,
 //! they are defined here.
 
-use std::str::FromStr;
-
-use crate::FromStrError;
-
-use super::groth16_ics07;
-use alloy_sol_types::SolValue;
 use ibc_client_tendermint_types::ConsensusState as ICS07TendermintConsensusState;
 use ibc_core_commitment_types::{commitment::CommitmentRoot, merkle::MerklePath};
 use tendermint::{hash::Algorithm, Time};
-use tendermint_light_client_verifier::types::{Hash, TrustThreshold as TendermintTrustThreshold};
+use tendermint_light_client_verifier::types::Hash;
 use time::OffsetDateTime;
 
-alloy_sol_types::sol!("../../contracts/msgs/IICS26RouterMsgs.sol");
-alloy_sol_types::sol!("../../contracts/msgs/IICS02ClientMsgs.sol");
-alloy_sol_types::sol!("../../contracts/msgs/ILightClientMsgs.sol");
-alloy_sol_types::sol!("../../contracts/msgs/IICS20TransferMsgs.sol");
-alloy_sol_types::sol!("../../contracts/msgs/IIBCAppCallbacks.sol");
+alloy_sol_types::sol!("../../contracts/core/messages/IICS26RouterMsgs.sol");
+alloy_sol_types::sol!("../../contracts/core/messages/IICS02ClientMsgs.sol");
+alloy_sol_types::sol!("../../contracts/apps/ics20/messages/IICS20TransferMsgs.sol");
+alloy_sol_types::sol!("../../contracts/core/messages/IIBCAppCallbacks.sol");
 
-alloy_sol_types::sol!("../../contracts/light-clients/msgs/IICS07TendermintMsgs.sol");
-alloy_sol_types::sol!("../../contracts/light-clients/msgs/IGroth16Msgs.sol");
-alloy_sol_types::sol!("../../contracts/light-clients/msgs/IMembershipMsgs.sol");
-alloy_sol_types::sol!("../../contracts/light-clients/msgs/IMisbehaviourMsgs.sol");
-alloy_sol_types::sol!("../../contracts/light-clients/msgs/IUpdateClientMsgs.sol");
-alloy_sol_types::sol!("../../contracts/light-clients/msgs/IUcAndMembershipMsgs.sol");
+alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol");
+alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/IGroth16Msgs.sol");
+alloy_sol_types::sol!("../../contracts/light-clients/spectre/messages/IMembershipMsgs.sol");
 
 #[cfg(feature = "rpc")]
 impl IGroth16Msgs::Groth16Proof {
@@ -109,85 +99,11 @@ impl From<IMembershipMsgs::KVPair> for (MerklePath, Vec<u8>) {
     }
 }
 
-impl From<IMembershipMsgs::Groth16MembershipProof> for IMembershipMsgs::MembershipProof {
-    fn from(proof: IMembershipMsgs::Groth16MembershipProof) -> Self {
-        Self {
-            proofType: IMembershipMsgs::MembershipProofType::Groth16MembershipProof,
-            proof: proof.abi_encode().into(),
-        }
-    }
-}
-
-impl From<IMembershipMsgs::Groth16MembershipAndUpdateClientProof>
-    for IMembershipMsgs::MembershipProof
-{
-    fn from(proof: IMembershipMsgs::Groth16MembershipAndUpdateClientProof) -> Self {
-        Self {
-            proofType: IMembershipMsgs::MembershipProofType::Groth16MembershipAndUpdateClientProof,
-            proof: proof.abi_encode().into(),
-        }
-    }
-}
-
-impl From<groth16_ics07::IICS07TendermintMsgs::TrustThreshold>
-    for IICS07TendermintMsgs::TrustThreshold
-{
-    fn from(trust_threshold: groth16_ics07::IICS07TendermintMsgs::TrustThreshold) -> Self {
-        Self {
-            numerator: trust_threshold.numerator,
-            denominator: trust_threshold.denominator,
-        }
-    }
-}
-
-impl From<groth16_ics07::IICS02ClientMsgs::Height> for IICS02ClientMsgs::Height {
-    fn from(height: groth16_ics07::IICS02ClientMsgs::Height) -> Self {
-        Self {
-            revisionNumber: height.revisionNumber,
-            revisionHeight: height.revisionHeight,
-        }
-    }
-}
-
-#[allow(clippy::fallible_impl_from)]
-impl From<IICS07TendermintMsgs::TrustThreshold> for TendermintTrustThreshold {
-    fn from(trust_threshold: IICS07TendermintMsgs::TrustThreshold) -> Self {
-        Self::new(
-            trust_threshold.numerator.into(),
-            trust_threshold.denominator.into(),
-        )
-        .unwrap()
-    }
-}
-
-impl TryFrom<TendermintTrustThreshold> for IICS07TendermintMsgs::TrustThreshold {
-    type Error = <u64 as TryInto<u32>>::Error;
-
-    fn try_from(trust_threshold: TendermintTrustThreshold) -> Result<Self, Self::Error> {
-        Ok(Self {
-            numerator: trust_threshold.numerator().try_into()?,
-            denominator: trust_threshold.denominator().try_into()?,
-        })
-    }
-}
-
 impl From<ibc_core_client_types::Height> for IICS02ClientMsgs::Height {
     fn from(height: ibc_core_client_types::Height) -> Self {
         Self {
             revisionNumber: height.revision_number(),
             revisionHeight: height.revision_height(),
-        }
-    }
-}
-
-impl FromStr for IICS07TendermintMsgs::SupportedZkAlgorithm {
-    type Err = FromStrError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "groth16" => Ok(Self::Groth16),
-            "plonk" => Ok(Self::Plonk),
-            _ => Err(FromStrError::UnsupportedZkAlgorithm(s.to_string())),
         }
     }
 }

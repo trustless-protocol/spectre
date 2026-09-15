@@ -1,8 +1,11 @@
 package opstack
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"math/big"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -33,6 +36,46 @@ func DialReplica(ctx context.Context, url string) (*ReplicaClient, error) {
 
 func (r *ReplicaClient) Close() {
 	r.c.Close()
+}
+
+// L2ChainID reads the rollup's L2 identity from op-node itself. Unlike
+// eth_chainId, optimism_rollupConfig belongs to the documented op-node RPC
+// surface, so this works with the standard op-node endpoint (port 9545)
+// without also requiring an execution-client RPC endpoint.
+func (r *ReplicaClient) L2ChainID(ctx context.Context) (*big.Int, error) {
+	var config struct {
+		L2ChainID json.RawMessage `json:"l2_chain_id"`
+	}
+	if err := r.c.CallContext(ctx, &config, "optimism_rollupConfig"); err != nil {
+		return nil, fmt.Errorf("optimism_rollupConfig failed: %w", err)
+	}
+
+	chainID, err := parseRollupChainID(config.L2ChainID)
+	if err != nil {
+		return nil, fmt.Errorf("optimism_rollupConfig returned invalid l2_chain_id: %w", err)
+	}
+	return chainID, nil
+}
+
+// parseRollupChainID accepts the decimal JSON number returned by op-node and
+// the quoted hexadecimal form used by some JSON-RPC tooling.
+func parseRollupChainID(raw json.RawMessage) (*big.Int, error) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("missing value")
+	}
+
+	value := string(raw)
+	if raw[0] == '"' {
+		if err := json.Unmarshal(raw, &value); err != nil {
+			return nil, fmt.Errorf("decode quoted value: %w", err)
+		}
+	}
+	chainID, ok := new(big.Int).SetString(value, 0)
+	if !ok {
+		return nil, fmt.Errorf("%q is not an integer", value)
+	}
+	return chainID, nil
 }
 
 // l2BlockRef is the subset of op-node's L2BlockRef the attestor reads.

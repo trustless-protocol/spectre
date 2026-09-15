@@ -14,6 +14,8 @@ pub const PROOF_LIMITS: ProofLimits = ProofLimits {
     max_storage_nodes: 64,
     max_node_bytes: 32 * 1024,
 };
+const MAX_COMMITMENT_PATH_BYTES: usize = 256;
+const MAX_COMMITMENT_VALUE_BYTES: usize = 32;
 
 /// Derives the Solidity mapping slot for an already-hashed IBC commitment path.
 ///
@@ -56,6 +58,7 @@ pub fn verify_membership(
     value: &[u8],
     proof: &EvmStorageProof,
 ) -> Result<(), Error> {
+    validate_packet_bounds(path, value, proof)?;
     let expected_key = commitment_storage_slot_at(commitment_path_hash(path)?, commitment_slot);
     if proof.key != expected_key || proof.value != value {
         return Err(Error::Proof(
@@ -73,6 +76,7 @@ pub fn verify_non_membership(
     path: &[u8],
     proof: &EvmStorageProof,
 ) -> Result<(), Error> {
+    validate_packet_bounds(path, &[], proof)?;
     let expected_key = commitment_storage_slot_at(commitment_path_hash(path)?, commitment_slot);
     if proof.key != expected_key {
         return Err(Error::Proof(
@@ -81,4 +85,20 @@ pub fn verify_non_membership(
     }
     let root: [u8; 32] = storage_root.into();
     verify_bounded_storage_zero(PROOF_LIMITS, &root, proof)
+}
+
+fn validate_packet_bounds(path: &[u8], value: &[u8], proof: &EvmStorageProof) -> Result<(), Error> {
+    if path.len() > MAX_COMMITMENT_PATH_BYTES {
+        return Err(Error::ProofLimit {
+            limit: "IBC commitment path byte length",
+            maximum: MAX_COMMITMENT_PATH_BYTES,
+        });
+    }
+    if value.len() > MAX_COMMITMENT_VALUE_BYTES || proof.value.len() > MAX_COMMITMENT_VALUE_BYTES {
+        return Err(Error::ProofLimit {
+            limit: "IBC commitment value byte length",
+            maximum: MAX_COMMITMENT_VALUE_BYTES,
+        });
+    }
+    PROOF_LIMITS.validate_storage(proof)
 }

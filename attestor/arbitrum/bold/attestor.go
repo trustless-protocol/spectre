@@ -154,21 +154,23 @@ func (a *AssertionAttestor) SyncOnce(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
-		for _, proposal := range proposals {
-			if err := a.store.RecordProposal(proposal); err != nil {
-				return err
+		if err := a.store.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
+			for _, proposal := range proposals {
+				if err := store.RecordProposal(proposal); err != nil {
+					return false, err
+				}
 			}
-		}
-		for _, confirmation := range confirmations {
-			if err := a.store.MarkAssertionConfirmed(
-				confirmation.AssertionHash,
-				confirmation.L2BlockHash,
-			); err != nil {
-				return err
+			for _, confirmation := range confirmations {
+				if err := store.MarkAssertionConfirmed(
+					confirmation.AssertionHash,
+					confirmation.L2BlockHash,
+				); err != nil {
+					return false, err
+				}
 			}
-		}
-		a.store.SetNextL1Block(to + 1)
-		if err := a.store.Save(); err != nil {
+			store.SetNextL1Block(to + 1)
+			return true, nil
+		}); err != nil {
 			return err
 		}
 		if to == finalizedL1Block {
@@ -183,7 +185,7 @@ func (a *AssertionAttestor) SyncOnce(ctx context.Context) error {
 	if err := a.reconcileProvisional(ctx, finalizedL1Block); err != nil {
 		return err
 	}
-	return a.store.Save()
+	return nil
 }
 
 func (a *AssertionAttestor) reconcileProposals(
@@ -201,16 +203,15 @@ func (a *AssertionAttestor) reconcileProposals(
 		}
 		switch status {
 		case assertionStatusNone:
-			a.store.RemoveAssertion(proposal.AssertionHash)
+			if err := a.store.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
+				store.RemoveAssertion(proposal.AssertionHash)
+				return true, nil
+			}); err != nil {
+				return err
+			}
 			continue
 		case assertionStatusConfirmed:
 			proposal.Confirmed = true
-			if err := a.store.MarkAssertionConfirmed(
-				proposal.AssertionHash,
-				proposal.L2BlockHash,
-			); err != nil {
-				return err
-			}
 		case assertionStatusPending:
 			if proposal.Confirmed {
 				return fmt.Errorf(
@@ -229,19 +230,25 @@ func (a *AssertionAttestor) reconcileProposals(
 		commitment, provisional, err := a.resolveProposal(ctx, proposal)
 		switch {
 		case errors.Is(err, arbitrum.ErrCommitmentNotReady):
+			if proposal.Confirmed {
+				if err := a.store.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
+					return true, store.MarkAssertionConfirmed(proposal.AssertionHash, proposal.L2BlockHash)
+				}); err != nil {
+					return err
+				}
+			}
 			continue
 		case errors.Is(err, arbitrum.ErrCommitmentMismatch):
-			a.rejectAssertion(proposal.AssertionHash, proposal.L2BlockHash, err)
+			if err := a.rejectAssertion(proposal.AssertionHash, proposal.L2BlockHash, err); err != nil {
+				return err
+			}
 			continue
 		case err != nil:
 			return err
 		}
-		if err := a.store.RecordAssertionAttestation(
-			proposal,
-			commitment,
-			a.now(),
-			provisional,
-		); err != nil {
+		if err := a.store.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
+			return true, store.RecordAssertionAttestation(proposal, commitment, a.now(), provisional)
+		}); err != nil {
 			return err
 		}
 	}
@@ -293,7 +300,12 @@ func (a *AssertionAttestor) reconcileProvisional(
 			return err
 		}
 		if status == assertionStatusNone {
-			a.store.RemoveAssertion(entry.AssertionHash)
+			if err := a.store.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
+				store.RemoveAssertion(entry.AssertionHash)
+				return true, nil
+			}); err != nil {
+				return err
+			}
 			continue
 		}
 		if status != assertionStatusPending && status != assertionStatusConfirmed {
@@ -313,7 +325,9 @@ func (a *AssertionAttestor) reconcileProvisional(
 		case errors.Is(err, arbitrum.ErrCommitmentNotReady):
 			continue
 		case errors.Is(err, arbitrum.ErrCommitmentMismatch):
-			a.rejectAssertion(entry.AssertionHash, entry.L2BlockHash, err)
+			if err := a.rejectAssertion(entry.AssertionHash, entry.L2BlockHash, err); err != nil {
+				return err
+			}
 			continue
 		case err != nil:
 			return err
@@ -321,13 +335,6 @@ func (a *AssertionAttestor) reconcileProvisional(
 		if status != assertionStatusConfirmed {
 			continue
 		}
-		if err := a.store.MarkAssertionConfirmed(
-			entry.AssertionHash,
-			entry.L2BlockHash,
-		); err != nil {
-			return err
-		}
-
 		_, err = a.runtime.ResolveCanonicalBlockHash(
 			ctx,
 			entry.L2BlockHash,
@@ -335,14 +342,29 @@ func (a *AssertionAttestor) reconcileProvisional(
 		)
 		switch {
 		case errors.Is(err, arbitrum.ErrCommitmentNotReady):
+			if err := a.store.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
+				return true, store.MarkAssertionConfirmed(entry.AssertionHash, entry.L2BlockHash)
+			}); err != nil {
+				return err
+			}
 			continue
 		case errors.Is(err, arbitrum.ErrCommitmentMismatch):
-			a.rejectAssertion(entry.AssertionHash, entry.L2BlockHash, err)
+			if err := a.rejectAssertion(entry.AssertionHash, entry.L2BlockHash, err); err != nil {
+				return err
+			}
 			continue
 		case err != nil:
 			return err
 		}
-		a.store.PromoteAssertion(entry.AssertionHash)
+		if err := a.store.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
+			if err := store.MarkAssertionConfirmed(entry.AssertionHash, entry.L2BlockHash); err != nil {
+				return false, err
+			}
+			store.PromoteAssertion(entry.AssertionHash)
+			return true, nil
+		}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -351,17 +373,18 @@ func (a *AssertionAttestor) rejectAssertion(
 	assertionHash common.Hash,
 	l2BlockHash common.Hash,
 	err error,
-) {
-	a.store.RecordAssertionMismatch(
-		assertionHash,
-		l2BlockHash,
-		err.Error(),
-		a.now(),
-	)
+) error {
+	if commitErr := a.store.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
+		store.RecordAssertionMismatch(assertionHash, l2BlockHash, err.Error(), a.now())
+		return true, nil
+	}); commitErr != nil {
+		return commitErr
+	}
 	log.Printf(
 		"Arbitrum assertion rejected: assertion_hash=%s l2_block_hash=%s reason=%v",
 		assertionHash,
 		l2BlockHash,
 		err,
 	)
+	return nil
 }

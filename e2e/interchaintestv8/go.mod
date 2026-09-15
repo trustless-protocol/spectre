@@ -21,6 +21,7 @@ require (
 	github.com/cosmos/interchaintest/v10 v10.0.0
 	github.com/decentrio/fast-ibc/packages/go-abigen v0.0.0
 	github.com/ethereum/go-ethereum v1.16.2
+	github.com/herumi/bls-eth-go-binary v1.31.0
 	github.com/holiman/uint256 v1.3.2
 	github.com/kurtosis-tech/kurtosis/api/golang v1.16.6
 	github.com/moby/moby v27.5.1+incompatible

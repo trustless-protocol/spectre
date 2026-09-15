@@ -1,10 +1,14 @@
 package services
 
 import (
+	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	client "relayer/client"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
@@ -82,8 +86,18 @@ func TestPersistentPendingPacketTrackerRollsBackFailedMutation(t *testing.T) {
 	tracker.Add(packet, 10)
 	tracker.writeState = func(string, []byte) error { return errors.New("disk full") }
 
-	if dead := tracker.recordTimeoutFailureForTest(packet.SourceClient, packet.Sequence, time.Now()); dead {
+	info := tracker.GetAll()[0]
+	if dead, err := tracker.RecordTimeoutFailureIfCurrent(info, time.Now()); err == nil || dead {
 		t.Fatal("failed persistence reported a committed dead letter")
+	}
+	if tracker.PersistenceError() == nil {
+		t.Fatal("failed retry-state mutation did not surface the persistence error")
+	}
+	if due := tracker.GetDue(time.Now()); len(due) != 0 {
+		t.Fatalf("failed retry-state mutation left %d packet(s) immediately due", len(due))
+	}
+	if _, err := tracker.DeferTimeoutRetriesIfCurrent([]pendingPacketInfo{info}, time.Now()); err == nil {
+		t.Fatal("failed deferral mutation did not report its persistence error")
 	}
 	got := tracker.GetAll()
 	if len(got) != 1 || got[0].TimeoutAttempts != 0 || !got[0].NotBefore.IsZero() {
@@ -97,6 +111,36 @@ func TestPersistentPendingPacketTrackerRollsBackFailedMutation(t *testing.T) {
 	persisted := restored.GetAll()
 	if len(persisted) != 1 || persisted[0].TimeoutAttempts != 0 || !persisted[0].NotBefore.IsZero() {
 		t.Fatalf("failed mutation leaked to durable retry state: %#v", persisted)
+	}
+}
+
+func TestWriteStateFileSyncsParentDirectoryAfterRename(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state", "pending.json")
+	called := ""
+	syncDir := func(dir string) error {
+		called = dir
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if string(data) != "snapshot" {
+			return errors.New("directory synced before replacement became visible")
+		}
+		return nil
+	}
+
+	if err := writeStateFileWithDirSync(path, []byte("snapshot"), syncDir); err != nil {
+		t.Fatal(err)
+	}
+	if called != filepath.Dir(path) {
+		t.Fatalf("synced directory = %q, want %q", called, filepath.Dir(path))
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "snapshot" {
+		t.Fatalf("snapshot contents = %q, want replacement data", data)
 	}
 }
 
@@ -128,6 +172,69 @@ func TestPersistentPendingPacketTrackerAddReportsFailedMutation(t *testing.T) {
 	}
 }
 
+func TestTimeoutRetryPersistenceFailureCircuitBreaksUntilRecovery(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pending.json")
+	tracker, err := NewPersistentPendingPacketTracker(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tracker.Add(channeltypesv2.Packet{
+		SourceClient: "src-0", DestinationClient: "dst-0", Sequence: 1,
+		TimeoutTimestamp: uint64(time.Now().Add(-time.Minute).Unix()),
+	}, 10)
+	tracker.writeState = func(string, []byte) error { return errors.New("disk full") }
+
+	prepareCalls := 0
+	timeoutCalls := 0
+	svc := New(nil, nil, DefaultConfig())
+	scan := func() {
+		svc.scanForEVMTimeouts(context.Background(), evmTimeoutDeps{}, evmTimeoutScanOptions{
+			tag:     "Persistence",
+			tracker: tracker,
+			prepareTimeouts: func(context.Context, evmTimeoutDeps) (*client.LightBlock, bool) {
+				prepareCalls++
+				return &client.LightBlock{}, true
+			},
+			hasPendingCommitment: func(context.Context, evmTimeoutDeps, channeltypesv2.Packet) (bool, error) {
+				return true, nil
+			},
+			timeoutSend: func(context.Context, evmTimeoutDeps, EthPacket, *client.LightBlock) timeoutSendOutcome {
+				timeoutCalls++
+				return timeoutDeferred
+			},
+		})
+	}
+
+	scan()
+	if prepareCalls != 1 || timeoutCalls != 1 {
+		t.Fatalf("initial timeout work = prepare:%d send:%d, want 1:1", prepareCalls, timeoutCalls)
+	}
+	if tracker.PersistenceError() == nil {
+		t.Fatal("failed timeout backoff did not trip the circuit breaker")
+	}
+	scan()
+	if prepareCalls != 1 || timeoutCalls != 1 {
+		t.Fatalf("circuit-broken timeout work repeated = prepare:%d send:%d", prepareCalls, timeoutCalls)
+	}
+
+	tracker.writeState = replaceStateFile
+	scan() // successful probe clears the breaker but deliberately holds this scan.
+	if prepareCalls != 1 || timeoutCalls != 1 {
+		t.Fatalf("recovery probe repeated timeout work = prepare:%d send:%d", prepareCalls, timeoutCalls)
+	}
+	if tracker.PersistenceError() != nil {
+		t.Fatalf("successful persistence probe left circuit breaker open: %v", tracker.PersistenceError())
+	}
+	scan()
+	if prepareCalls != 2 || timeoutCalls != 2 {
+		t.Fatalf("timeout work did not resume after persistence recovery = prepare:%d send:%d", prepareCalls, timeoutCalls)
+	}
+	info := tracker.GetAll()
+	if len(info) != 1 || info[0].Deferrals != 1 || info[0].NotBefore.IsZero() {
+		t.Fatalf("recovered timeout backoff was not durable: %#v", info)
+	}
+}
+
 func TestDeferTimeoutRetriesIfCurrentPersistsBatchOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pending.json")
 	tracker, err := NewPersistentPendingPacketTracker(path)
@@ -146,7 +253,10 @@ func TestDeferTimeoutRetriesIfCurrentPersistsBatchOnce(t *testing.T) {
 		writes++
 		return nil
 	}
-	counts := tracker.DeferTimeoutRetriesIfCurrent(tracker.GetAll(), time.Now())
+	counts, err := tracker.DeferTimeoutRetriesIfCurrent(tracker.GetAll(), time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if writes != 1 {
 		t.Fatalf("persist writes = %d, want 1 for the full deferral batch", writes)
 	}

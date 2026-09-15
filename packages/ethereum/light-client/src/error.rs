@@ -6,11 +6,24 @@ use ethereum_types::consensus::bls::BlsPublicKey;
 #[derive(thiserror::Error, Debug, Clone, PartialEq)]
 #[allow(missing_docs, clippy::module_name_repetitions)]
 pub enum EthereumIBCError {
+    #[error("{resource} exceeds maximum byte length of {maximum}: found {found}")]
+    ResourceLimit {
+        resource: &'static str,
+        maximum: usize,
+        found: usize,
+    },
+
     #[error("invalid path length, expected {expected} but found {found}")]
     InvalidPathLength { expected: usize, found: usize },
 
     #[error("unable to decode storage proof")]
     StorageProofDecode,
+
+    #[error("proof exceeds maximum node count of {maximum}: found {found}")]
+    ProofNodeCount { maximum: usize, found: usize },
+
+    #[error("proof node exceeds maximum byte length of {maximum}: found {found}")]
+    ProofNodeSize { maximum: usize, found: usize },
 
     #[error("invalid commitment key, expected ({0}) but found ({1})")]
     InvalidCommitmentKey(String, String),
@@ -49,6 +62,12 @@ pub enum EthereumIBCError {
         num_extra: usize,
         normalized_branch: Vec<B256>,
     },
+
+    #[error("normalized merkle branch is too short: expected at least {expected}, found {found}")]
+    NormalizedMerkleBranchTooShort { expected: usize, found: usize },
+
+    #[error("merkle branch is too long: maximum {maximum}, found {found}")]
+    MerkleBranchTooLong { maximum: usize, found: usize },
 
     #[error("finalized slot cannot be the genesis slot")]
     FinalizedSlotIsGenesis,
@@ -156,10 +175,10 @@ pub enum EthereumIBCError {
     NotEnoughSignatures,
 
     #[error("failed to verify finalized_header is finalized: {0}")]
-    ValidateFinalizedHeaderFailed(#[source] Box<EthereumIBCError>),
+    ValidateFinalizedHeaderFailed(#[source] Box<Self>),
 
     #[error("failed to verify next sync committee against attested header: {0}")]
-    ValidateNextSyncCommitteeFailed(#[source] Box<EthereumIBCError>),
+    ValidateNextSyncCommitteeFailed(#[source] Box<Self>),
 
     #[error("client's store period must be equal to update's finalized period")]
     StorePeriodMustBeEqualToFinalizedPeriod,

@@ -22,6 +22,11 @@ type mockSource struct {
 	proofHeights          []uint64
 	failMembershipOn      map[string]bool // Raw payload -> return a retryable proof error
 	permanentMembershipOn map[string]bool // Raw payload -> return a permanent proof error
+	// relayableErr, when set, is returned by RelayableHeight instead of a height.
+	// relayableCalls counts how often the source was actually asked, which is the
+	// thing the permanent-failure hold is about.
+	relayableErr   error
+	relayableCalls int
 }
 
 func (m *mockSource) Chain() chain.ChainType { return chain.Cosmos }
@@ -30,6 +35,10 @@ func (m *mockSource) Subscribe(context.Context, func(context.Context, []chain.Ev
 }
 func (m *mockSource) LatestHeight(context.Context) (uint64, error) { return m.latest, nil }
 func (m *mockSource) RelayableHeight(context.Context) (uint64, error) {
+	m.relayableCalls++
+	if m.relayableErr != nil {
+		return 0, m.relayableErr
+	}
 	if m.relayable != 0 {
 		return m.relayable, nil
 	}
@@ -45,7 +54,7 @@ func (m *mockSource) MembershipProof(_ context.Context, packet []byte, height ui
 		return nil, chain.Permanent(errors.New("timed out"))
 	}
 	if m.failMembershipOn[string(packet)] {
-		return nil, chain.Retryable(errors.New("proof unavailable"))
+		return nil, chain.Transient(errors.New("proof unavailable"))
 	}
 	return []byte("membership"), nil
 }
@@ -56,17 +65,29 @@ func (m *mockSource) NonMembershipProof(_ context.Context, _ []byte, height uint
 }
 
 type mockDest struct {
-	updates    []chain.ClientUpdate // recorded UpdateClient calls
-	updateErr  error                // if set, UpdateClient returns it
-	relayed    []chain.RelayPacket  // recorded RelayPackets calls
-	relayCalls int                  // number of RelayPackets invocations (multicall folding check)
-	relayErr   error                // if set, RelayPackets returns it (transient)
+	updates   []chain.ClientUpdate // recorded UpdateClient calls
+	updateErr error                // if set, UpdateClient returns it
+	relayed   []chain.RelayPacket  // recorded RelayPackets calls
+	// hasReceipt / receiptErr drive HasPacketReceipt for the flush tests: an
+	// outstanding source commitment does not say whether the destination already
+	// delivered the packet, so the flush asks.
+	hasReceipt bool
+	receiptErr error
+	// receiptAnswers, when non-empty, is consumed one per HasPacketReceipt call
+	// and falls back to hasReceipt once exhausted. It is how a test makes a packet
+	// become delivered BETWEEN the flush's two receipt checks.
+	receiptAnswers []bool
+	relayCalls     int   // number of RelayPackets invocations (multicall folding check)
+	relayErr       error // if set, RelayPackets returns it (transient)
 	// poison: Raw payload -> this packet deterministically reverts any batch it is
 	// in (chain.Permanent), like a timed-out/duplicate packet in a real multicall.
 	poison map[string]bool
-	// expiresAt / expiresErr drive ClientExpiresAt for the anti-expiry refresh tests.
-	expiresAt  time.Time
-	expiresErr error
+	// expiresAt / trustingPeriod / expiresErr drive ClientExpiresAt for the
+	// anti-expiry refresh tests. A zero trustingPeriod means the destination could
+	// not report one, which is what makes the module fall back to its default margin.
+	trustingPeriod time.Duration
+	expiresAt      time.Time
+	expiresErr     error
 }
 
 func (m *mockDest) Chain() chain.ChainType { return chain.Ethereum }
@@ -90,9 +111,16 @@ func (m *mockDest) RelayPackets(_ context.Context, packets []chain.RelayPacket) 
 	m.relayed = append(m.relayed, packets...)
 	return nil
 }
-func (m *mockDest) HasPacketReceipt(context.Context, []byte) (bool, error) { return false, nil }
-func (m *mockDest) ClientExpiresAt(context.Context, string) (time.Time, error) {
-	return m.expiresAt, m.expiresErr
+func (m *mockDest) HasPacketReceipt(context.Context, []byte) (bool, error) {
+	if len(m.receiptAnswers) > 0 {
+		answer := m.receiptAnswers[0]
+		m.receiptAnswers = m.receiptAnswers[1:]
+		return answer, m.receiptErr
+	}
+	return m.hasReceipt, m.receiptErr
+}
+func (m *mockDest) ClientExpiresAt(context.Context, string) (time.Time, time.Duration, error) {
+	return m.expiresAt, m.trustingPeriod, m.expiresErr
 }
 
 type foldingMockDest struct {
@@ -841,24 +869,76 @@ func TestFoldedUpdateFailureDoesNotAdvanceHeight(t *testing.T) {
 func TestNeedsRefresh(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 
-	tests := []struct {
-		name      string
-		expiresAt time.Time
-		want      bool
+	// With no reported trusting period the module keeps its fixed default. This
+	// is the L2 case: no self-expiry, so nothing to take a fraction of.
+	t.Run("falls back to the default margin when no period is reported", func(t *testing.T) {
+		margin := defaultRefreshMargin
+		for _, tt := range []struct {
+			name      string
+			expiresAt time.Time
+			want      bool
+		}{
+			{"no expiry at all", time.Time{}, false},
+			{"expiry far beyond the margin", now.Add(margin + time.Hour), false},
+			{"one second more headroom than the margin", now.Add(margin + time.Second), false},
+			{"exactly the margin", now.Add(margin), true},
+			{"one second inside the margin", now.Add(margin - time.Second), true},
+			{"about to expire", now.Add(time.Minute), true},
+			{"already expired", now.Add(-time.Hour), true},
+		} {
+			t.Run(tt.name, func(t *testing.T) {
+				if got := needsRefresh(tt.expiresAt, now, 0); got != tt.want {
+					t.Fatalf("needsRefresh = %v, want %v (headroom %s, margin %s)",
+						got, tt.want, tt.expiresAt.Sub(now), margin)
+				}
+			})
+		}
+	})
+
+	// The defect this replaces: a margin fixed at 30 minutes against a trusting
+	// period SHORTER than 30 minutes makes the condition always true, so the
+	// routine refreshes on every tick forever instead of when the client needs it.
+	t.Run("a short trusting period does not make every tick a refresh", func(t *testing.T) {
+		const period = 10 * time.Minute
+		// Eight minutes of headroom out of a ten-minute period is plenty; under the
+		// old fixed 30-minute margin this reported "refresh now".
+		if needsRefresh(now.Add(8*time.Minute), now, period) {
+			t.Fatalf("refreshed with 8m of headroom on a %s period; the margin must scale with the period", period)
+		}
+		// One minute of headroom out of ten is not.
+		if !needsRefresh(now.Add(time.Minute), now, period) {
+			t.Fatalf("did not refresh with 1m of headroom on a %s period", period)
+		}
+	})
+
+	// And the other direction: a period measured in days must not be refreshed
+	// only in its last half hour.
+	t.Run("a long trusting period gets a proportionally larger margin", func(t *testing.T) {
+		const period = 14 * 24 * time.Hour
+		if got := refreshMarginFor(period); got <= defaultRefreshMargin {
+			t.Fatalf("margin for a %s period = %s, want more than the %s default", period, got, defaultRefreshMargin)
+		}
+	})
+}
+
+// TestRefreshMarginFor pins the rule itself: the margin is a fraction of the
+// client's own trusting period, and it is the SAME rule the refresh-interval
+// calculation uses. Two rules for one concept is how the fixed 30 minutes
+// survived.
+func TestRefreshMarginFor(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		period time.Duration
+		want   time.Duration
 	}{
-		{"no expiry at all", time.Time{}, false},
-		{"expiry far beyond the margin", now.Add(refreshMargin + time.Hour), false},
-		{"one second more headroom than the margin", now.Add(refreshMargin + time.Second), false},
-		{"exactly the margin", now.Add(refreshMargin), true},
-		{"one second inside the margin", now.Add(refreshMargin - time.Second), true},
-		{"about to expire", now.Add(time.Minute), true},
-		{"already expired", now.Add(-time.Hour), true},
-	}
-	for _, tt := range tests {
+		{"unknown period falls back", 0, defaultRefreshMargin},
+		{"negative period falls back", -time.Hour, defaultRefreshMargin},
+		{"a short period gets a quarter of itself", 10 * time.Minute, 150 * time.Second},
+		{"a long period is capped at an hour", 14 * 24 * time.Hour, time.Hour},
+	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := needsRefresh(tt.expiresAt, now); got != tt.want {
-				t.Fatalf("needsRefresh = %v, want %v (headroom %s, margin %s)",
-					got, tt.want, tt.expiresAt.Sub(now), refreshMargin)
+			if got := refreshMarginFor(tt.period); got != tt.want {
+				t.Fatalf("refreshMarginFor(%s) = %s, want %s", tt.period, got, tt.want)
 			}
 		})
 	}
@@ -1041,7 +1121,7 @@ func TestRefreshLoop(t *testing.T) {
 		withFastRefreshTick(t)
 
 		src := &mockSource{latest: 42}
-		dst := &mockDest{expiresAt: time.Now().Add(time.Minute)} // well inside refreshMargin
+		dst := &mockDest{expiresAt: time.Now().Add(time.Minute)} // well inside the default margin
 		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1065,7 +1145,7 @@ func TestRefreshLoop(t *testing.T) {
 		withFastRefreshTick(t)
 
 		src := &mockSource{latest: 42}
-		dst := &mockDest{expiresAt: time.Now().Add(refreshMargin + time.Hour)}
+		dst := &mockDest{expiresAt: time.Now().Add(defaultRefreshMargin + time.Hour)}
 		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
 
 		ctx, cancel := context.WithCancel(context.Background())
@@ -1416,5 +1496,614 @@ func TestHandleBatch_StuckSendNamesTheTimeoutExit(t *testing.T) {
 	}
 	if strings.Contains(stuck, "no other exit") {
 		t.Fatalf("a send is refunded once past its timeout, so it does have another exit:\n%s", stuck)
+	}
+}
+
+type drainingSource struct {
+	started chan struct{}
+	stopped chan struct{}
+}
+
+func (s *drainingSource) Chain() chain.ChainType { return chain.Cosmos }
+func (s *drainingSource) Subscribe(ctx context.Context, _ func(context.Context, []chain.Event) []int) error {
+	close(s.started)
+	<-ctx.Done()
+	close(s.stopped)
+	return ctx.Err()
+}
+func (s *drainingSource) LatestHeight(context.Context) (uint64, error)        { return 0, nil }
+func (s *drainingSource) RelayableHeight(context.Context) (uint64, error)     { return 0, nil }
+func (s *drainingSource) QueryHeader(context.Context, uint64) ([]byte, error) { return nil, nil }
+func (s *drainingSource) MembershipProof(context.Context, []byte, uint64, chain.EventType) ([]byte, error) {
+	return nil, nil
+}
+func (s *drainingSource) NonMembershipProof(context.Context, []byte, uint64) ([]byte, error) {
+	return nil, nil
+}
+
+func TestModuleCleanCancellationDrainsSubscriber(t *testing.T) {
+	src := &drainingSource{started: make(chan struct{}), stopped: make(chan struct{})}
+	m := NewModule("test", "client", src, &mockDest{}, &mockBuilder{})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	<-src.started
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run cancellation error = %v, want nil", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not drain after cancellation")
+	}
+	select {
+	case <-src.stopped:
+	default:
+		t.Fatal("Run returned before subscriber stopped")
+	}
+}
+
+type internallyCancelledSource struct{}
+
+func (internallyCancelledSource) Chain() chain.ChainType { return chain.Cosmos }
+func (internallyCancelledSource) Subscribe(context.Context, func(context.Context, []chain.Event) []int) error {
+	return context.Canceled
+}
+func (internallyCancelledSource) LatestHeight(context.Context) (uint64, error) { return 0, nil }
+func (internallyCancelledSource) RelayableHeight(context.Context) (uint64, error) {
+	return 0, nil
+}
+func (internallyCancelledSource) QueryHeader(context.Context, uint64) ([]byte, error) {
+	return nil, nil
+}
+func (internallyCancelledSource) MembershipProof(context.Context, []byte, uint64, chain.EventType) ([]byte, error) {
+	return nil, nil
+}
+func (internallyCancelledSource) NonMembershipProof(context.Context, []byte, uint64) ([]byte, error) {
+	return nil, nil
+}
+
+func TestModuleReportsInternalSubscriberCancellation(t *testing.T) {
+	m := NewModule("test", "client", internallyCancelledSource{}, &mockDest{}, &mockBuilder{})
+	err := m.Run(context.Background())
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run error = %v, want wrapped context.Canceled", err)
+	}
+}
+
+// stuckWorkerSource is what the real Cosmos and EVM adapters became: on
+// cancellation they drain their own goroutines, and if one of them never
+// returns they report THAT rather than the cancellation that triggered it.
+type stuckWorkerSource struct {
+	started chan struct{}
+	err     error
+}
+
+func (s *stuckWorkerSource) Chain() chain.ChainType { return chain.Cosmos }
+func (s *stuckWorkerSource) Subscribe(ctx context.Context, _ func(context.Context, []chain.Event) []int) error {
+	close(s.started)
+	<-ctx.Done()
+	return s.err
+}
+func (s *stuckWorkerSource) LatestHeight(context.Context) (uint64, error)        { return 0, nil }
+func (s *stuckWorkerSource) RelayableHeight(context.Context) (uint64, error)     { return 0, nil }
+func (s *stuckWorkerSource) QueryHeader(context.Context, uint64) ([]byte, error) { return nil, nil }
+func (s *stuckWorkerSource) MembershipProof(context.Context, []byte, uint64, chain.EventType) ([]byte, error) {
+	return nil, nil
+}
+func (s *stuckWorkerSource) NonMembershipProof(context.Context, []byte, uint64) ([]byte, error) {
+	return nil, nil
+}
+
+// Reported by @DongLieu on #434. Two things had to line up for a stuck worker to
+// be reported as a clean shutdown, and both were true:
+//
+//  1. Run's select takes ctx.Done() on SIGTERM, sets runErr = context.Canceled,
+//     and NEVER reads subscribeErr -- so whatever Subscribe returned was dropped.
+//  2. A bare context.Canceled during shutdown is normalised to nil.
+//
+// So a source that knew one of its own goroutines had not stopped had no way to
+// say so: the value it returned was discarded, and the value that replaced it
+// meant "stopped cleanly". The process exited 0 with a goroutine still running.
+func TestRunReportsASourceThatCouldNotStopItsOwnWorkers(t *testing.T) {
+	stuck := errors.New("cosmos source: shutdown drain timed out after 20s; workers still running: [cosmos-subscribe]")
+	src := &stuckWorkerSource{started: make(chan struct{}), err: stuck}
+	m := NewModule("test", "client", src, &mockDest{}, &mockBuilder{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	<-src.started
+	cancel()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Run reported a clean shutdown while a named source worker was still running; " +
+				"SIGTERM would exit 0 with the goroutine alive")
+		}
+		if !errors.Is(err, stuck) {
+			t.Fatalf("Run error = %v, want it to carry the source's drain failure", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+}
+
+// The mirror of TestModuleCleanCancellationDrainsSubscriber: preferring the
+// source's error must not turn an ordinary stop into a failure. A source that
+// returns the cancellation it was given is still a clean shutdown.
+func TestRunStillExitsCleanWhenTheSourceOnlyReportsCancellation(t *testing.T) {
+	src := &stuckWorkerSource{started: make(chan struct{}), err: context.Canceled}
+	m := NewModule("test", "client", src, &mockDest{}, &mockBuilder{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- m.Run(ctx) }()
+	<-src.started
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run error = %v, want nil: an ordinary stop is not a failure", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Run did not return after cancellation")
+	}
+}
+
+// A permanently-failing source -- a misconfigured attestor route, a malformed
+// request, an RPC the daemon does not implement -- used to be asked again on
+// every pass. The L2 loop re-offers its queued packets every 4s and deliberately
+// does so even when the chain produced no block, so one bad config line became
+// roughly 21,600 attestor calls and log lines a day, each looking like an
+// ordinary transient RPC failure.
+//
+// The hold changes only how often the source is asked. It must not drop a packet
+// and must not skip the durable tracking that pays for the timeout refund.
+func TestPermanentSourceFailureIsHeldOff(t *testing.T) {
+	events := []chain.Event{{Type: chain.SendPacket, Sequence: 7, Height: 40, Raw: []byte("pkt-7")}}
+
+	t.Run("the source is not asked again during the hold", func(t *testing.T) {
+		src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}
+		m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+
+		out := captureLog(func() { m.handleBatch(context.Background(), events) })
+		if src.relayableCalls != 1 {
+			t.Fatalf("first pass asked the source %d times, want 1", src.relayableCalls)
+		}
+		if !strings.Contains(out, "PERMANENT") {
+			t.Fatalf("a permanent source failure must say so, not read as a transient RPC error:\n%s", out)
+		}
+
+		for i := 0; i < 5; i++ {
+			m.handleBatch(context.Background(), events)
+		}
+		if src.relayableCalls != 1 {
+			t.Fatalf("source asked %d times across 6 passes; the hold is not holding", src.relayableCalls)
+		}
+	})
+
+	// The hold skips the RPC and the proof, never the durable record: a packet
+	// queued while the source is held off must still be tracked, or it can never
+	// be refunded when it expires.
+	t.Run("packets are still tracked while held off", func(t *testing.T) {
+		src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}
+		var tracked [][]byte
+		m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{},
+			WithPacketTracker(func(raw []byte, _ uint64) bool {
+				tracked = append(tracked, raw)
+				return true
+			}, nil))
+
+		m.handleBatch(context.Background(), events) // arms the hold
+		m.handleBatch(context.Background(), events) // held off
+
+		if len(tracked) != 2 {
+			t.Fatalf("tracked %d packets across two passes, want 2: a packet queued during the hold "+
+				"that is never tracked can never be refunded", len(tracked))
+		}
+	})
+
+	t.Run("the hold clears once the source answers", func(t *testing.T) {
+		src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}
+		m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+
+		m.handleBatch(context.Background(), events)
+		m.sourceProbeAt = time.Now().Add(-time.Second) // the operator fixed the config
+		src.relayableErr = nil
+
+		out := captureLog(func() { m.handleBatch(context.Background(), events) })
+		if src.relayableCalls != 2 {
+			t.Fatalf("source asked %d times; the probe after the hold expired did not happen", src.relayableCalls)
+		}
+		if !strings.Contains(out, "permanent-failure hold cleared") {
+			t.Fatalf("a recovered source must say so:\n%s", out)
+		}
+		if !m.sourceProbeAt.IsZero() || m.sourceBackoff != 0 {
+			t.Fatalf("hold state survived recovery: probeAt=%v backoff=%v", m.sourceProbeAt, m.sourceBackoff)
+		}
+	})
+
+	// A transient failure must not arm the hold, or a source that is merely
+	// unreachable for a moment goes quiet for up to fifteen minutes.
+	t.Run("a transient failure does not arm the hold", func(t *testing.T) {
+		src := &mockSource{latest: 100, relayableErr: chain.Transient(errors.New("attestor unavailable"))}
+		m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+
+		m.handleBatch(context.Background(), events)
+		m.handleBatch(context.Background(), events)
+
+		if src.relayableCalls != 2 {
+			t.Fatalf("source asked %d times across two passes, want 2: a transient failure was treated as permanent", src.relayableCalls)
+		}
+	})
+}
+
+func TestAckWatch(t *testing.T) {
+	send := chain.RelayPacket{Type: chain.SendPacket, Sequence: 7, Packet: []byte("pkt-7")}
+	ack := chain.RelayPacket{Type: chain.AckPacket, Sequence: 7, Packet: []byte("pkt-7")}
+
+	newModule := func(due AckDueFunc, settled AckSettledFunc, overdue OverdueAcksFunc) *Module {
+		return NewModule("cosmos->eth", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithAckWatch(0, 0, due, settled, overdue))
+	}
+
+	t.Run("a delivered receive makes the acknowledgement owed", func(t *testing.T) {
+		var recorded [][]byte
+		m := newModule(func(raw []byte) bool { recorded = append(recorded, raw); return true }, nil, func(time.Duration) []string { return nil })
+
+		m.settleDelivered([]chain.RelayPacket{send})
+
+		if len(recorded) != 1 || string(recorded[0]) != "pkt-7" {
+			t.Fatalf("recorded %v, want the delivered packet: the debt starts when WE deliver, not when we see the send", recorded)
+		}
+	})
+
+	t.Run("a relayed acknowledgement closes the debt", func(t *testing.T) {
+		var cleared [][]byte
+		m := newModule(nil, func(raw []byte) { cleared = append(cleared, raw) }, func(time.Duration) []string { return nil })
+
+		m.settleDelivered([]chain.RelayPacket{ack})
+
+		if len(cleared) != 1 || string(cleared[0]) != "pkt-7" {
+			t.Fatalf("cleared %v, want the acknowledged packet", cleared)
+		}
+	})
+
+	// A durable write that fails is the case where the record would exist only in
+	// memory -- and a restart is the most likely reason the ack was missed in the
+	// first place, so failing quietly here loses exactly the packet this watches.
+	t.Run("a failed record is reported", func(t *testing.T) {
+		m := newModule(func([]byte) bool { return false }, nil, func(time.Duration) []string { return nil })
+
+		out := captureLog(func() { m.settleDelivered([]chain.RelayPacket{send}) })
+
+		if !strings.Contains(out, "could not durably record the owed acknowledgement for seq=7") {
+			t.Fatalf("a failed durable write must reach the log:\n%s", out)
+		}
+	})
+
+	// The retry itself is NOT tested here any more: it moved into
+	// services.ackDueLedger, because the module that records a debt is not the one
+	// that settles it, so a per-module queue could never be cancelled by the
+	// settlement. See services/ackdue_test.go -- "a settlement cancels a record
+	// still queued for writing".
+
+	// The second module gets the hooks with a nil overdue reporter: the tracker
+	// is shared, so a second watch loop would report every overdue ack twice.
+	// nil must leave the loop unstarted while recording and settlement still work
+	// -- that combination is what lets the debt be recorded on one relay
+	// direction and cleared on the other.
+	t.Run("a nil overdue reporter still wires recording and settlement", func(t *testing.T) {
+		var recorded, cleared [][]byte
+		m := newModule(
+			func(raw []byte) bool { recorded = append(recorded, raw); return true },
+			func(raw []byte) { cleared = append(cleared, raw) },
+			nil,
+		)
+		if m.overdueAcks != nil {
+			t.Fatal("a nil reporter must stay nil; Module.Run starts the watch loop on it")
+		}
+
+		m.settleDelivered([]chain.RelayPacket{send})
+		m.settleDelivered([]chain.RelayPacket{ack})
+
+		if len(recorded) != 1 || len(cleared) != 1 {
+			t.Fatalf("recorded %d and cleared %d, want 1 each without a watch loop", len(recorded), len(cleared))
+		}
+	})
+
+	t.Run("the watch names overdue acknowledgements and stays quiet otherwise", func(t *testing.T) {
+		var threshold time.Duration
+		overdue := []string{"seq=7 src=08-wasm-0"}
+		m := newModule(nil, nil, func(d time.Duration) []string { threshold = d; return overdue })
+		m.ackWatchInterval = time.Millisecond
+
+		ctx, cancel := context.WithCancel(context.Background())
+		out := captureLog(func() {
+			done := make(chan struct{})
+			go func() { defer close(done); m.ackWatchLoop(ctx) }()
+			time.Sleep(20 * time.Millisecond)
+			cancel()
+			<-done
+		})
+
+		if !strings.Contains(out, "seq=7 src=08-wasm-0") {
+			t.Fatalf("an overdue acknowledgement must be named:\n%s", out)
+		}
+		if threshold != defaultAckOverdueAfter {
+			t.Fatalf("watch asked for packets older than %s, want the default %s", threshold, defaultAckOverdueAfter)
+		}
+
+		overdue = nil
+		quiet := captureLog(func() {
+			ctx2, cancel2 := context.WithCancel(context.Background())
+			done := make(chan struct{})
+			go func() { defer close(done); m.ackWatchLoop(ctx2) }()
+			time.Sleep(20 * time.Millisecond)
+			cancel2()
+			<-done
+		})
+		if strings.Contains(quiet, "acknowledgement(s) owed") {
+			t.Fatalf("nothing overdue must produce no line:\n%s", quiet)
+		}
+	})
+}
+
+func TestFlushOnce(t *testing.T) {
+	send := chain.Event{Type: chain.SendPacket, Sequence: 7, Height: 40, Raw: []byte("old-packet")}
+
+	t.Run("relays a packet the scan never saw", func(t *testing.T) {
+		src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, candidate: []chain.Event{send}}
+		dst := &mockDest{}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+		out := captureLog(func() { m.flushOnce(context.Background(), src) })
+
+		if len(dst.relayed) != 1 {
+			t.Fatalf("relayed %d packets, want 1: the flush exists to relay what the scan cannot reach", len(dst.relayed))
+		}
+		if !strings.Contains(out, "packet flush found 1 packet(s)") {
+			t.Fatalf("a flush that finds work must say so:\n%s", out)
+		}
+	})
+
+	// An outstanding source commitment only says the packet was never acked BACK.
+	// A delivered packet whose ack is in flight still has one, and re-proving it
+	// every pass for as long as the ack takes is pure waste.
+	t.Run("skips packets the destination already holds a receipt for", func(t *testing.T) {
+		src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, candidate: []chain.Event{send}}
+		dst := &mockDest{hasReceipt: true}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+		out := captureLog(func() { m.flushOnce(context.Background(), src) })
+
+		if len(dst.relayed) != 0 {
+			t.Fatalf("relayed %d packets, want 0: the destination already has a receipt", len(dst.relayed))
+		}
+		if strings.Contains(out, "packet flush found") {
+			t.Fatalf("a pass that finds nothing unsettled must stay quiet:\n%s", out)
+		}
+	})
+
+	// The receipt check has to be serialized with submission. It used to run
+	// entirely outside batchMu, so a live subscription batch could relay the
+	// packet between the check and the lock -- and the flush then submitted a
+	// duplicate receive: an on-chain revert, wasted gas, and a permanent failure
+	// that takes any other packet folded into the same batch down with it.
+	t.Run("re-checks receipts under the batch lock", func(t *testing.T) {
+		src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, candidate: []chain.Event{send}}
+		// Outstanding at the first check; delivered by the time the lock is held.
+		dst := &mockDest{receiptAnswers: []bool{false, true}}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+		out := captureLog(func() { m.flushOnce(context.Background(), src) })
+
+		if len(dst.relayed) != 0 {
+			t.Fatalf("relayed %d packet(s), want 0: it was delivered between the two checks, so this is a duplicate receive", len(dst.relayed))
+		}
+		if strings.Contains(out, "packet flush found") {
+			t.Fatalf("a pass whose packets were relayed underneath it must stay quiet:\n%s", out)
+		}
+	})
+
+	// Dropping on a failed receipt query would silently skip exactly the packet
+	// this loop exists to find, and the next pass would ask the same broken
+	// endpoint again.
+	t.Run("a failed receipt check relays rather than skips", func(t *testing.T) {
+		src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, candidate: []chain.Event{send}}
+		dst := &mockDest{receiptErr: errors.New("rpc down")}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+		captureLog(func() { m.flushOnce(context.Background(), src) })
+
+		if len(dst.relayed) != 1 {
+			t.Fatalf("relayed %d packets, want 1: an unknown receipt must not be read as delivered", len(dst.relayed))
+		}
+	})
+
+	t.Run("an enumeration failure is logged and relays nothing", func(t *testing.T) {
+		src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, listErr: errors.New("query failed")}
+		dst := &mockDest{}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+		out := captureLog(func() { m.flushOnce(context.Background(), src) })
+
+		if len(dst.relayed) != 0 {
+			t.Fatalf("relayed %d packets on a failed query, want 0", len(dst.relayed))
+		}
+		if !strings.Contains(out, "packet flush:") {
+			t.Fatalf("a failed enumeration must reach the log:\n%s", out)
+		}
+	})
+}
+
+// The restart boundary the ledger exists to close, and the one it did not until
+// a review caught the order.
+//
+// A delivered receive moves from one durable obligation to another: the pending
+// record that would time it out, and the owed-ack record that says an
+// acknowledgement is expected. Between those two there must never be an instant
+// where the packet is in neither -- the receive is committed on the destination,
+// so it can no longer time out, and with no owed-ack record nothing durable is
+// left from which the missing acknowledgement could be noticed.
+func TestSettleDelivered_NeverLeavesAPacketInNeitherLedger(t *testing.T) {
+	send := chain.RelayPacket{Type: chain.SendPacket, Sequence: 7, Packet: []byte("pkt-7")}
+
+	// order records which durable obligation was touched, and when. The sequence
+	// is the property: "recorded" must precede "untracked", because a crash
+	// between them must leave the packet in the FIRST ledger, not in none.
+	newModule := func(t *testing.T, durable bool, order *[]string) *Module {
+		t.Helper()
+		return NewModule("cosmos->eth", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithPacketTracker(
+				func([]byte, uint64) bool { return true },
+				func([]byte) { *order = append(*order, "untracked") },
+			),
+			WithAckWatch(0, 0,
+				func([]byte) bool { *order = append(*order, "recorded"); return durable },
+				nil, nil),
+		)
+	}
+
+	t.Run("records the owed acknowledgement before releasing the pending record", func(t *testing.T) {
+		var order []string
+		m := newModule(t, true, &order)
+
+		m.settleDelivered([]chain.RelayPacket{send})
+
+		want := []string{"recorded", "untracked"}
+		if len(order) != 2 || order[0] != want[0] || order[1] != want[1] {
+			t.Fatalf("order = %v, want %v: a crash between the two must land in the owed-ack ledger, not in neither",
+				order, want)
+		}
+	})
+
+	// The write failing is the case the reviewer named, and it is the easier half:
+	// the ORDER covers the crash, this covers the error return.
+	t.Run("keeps the pending record when the owed-ack write does not reach disk", func(t *testing.T) {
+		var order []string
+		m := newModule(t, false, &order)
+
+		m.settleDelivered([]chain.RelayPacket{send})
+
+		if len(order) != 1 || order[0] != "recorded" {
+			t.Fatalf("order = %v; the pending record was released even though the owed-ack write failed, "+
+				"leaving the packet in neither durable ledger", order)
+		}
+	})
+
+	// A path with no return leg has no second obligation to hand the packet to,
+	// so holding the pending record forever would strand it instead of protecting
+	// it. Per-destination gating leaves ackDue nil there.
+	t.Run("releases the pending record when there is no acknowledgement ledger", func(t *testing.T) {
+		var order []string
+		m := NewModule("cosmos->l2", "client-0", &mockSource{}, &mockDest{}, &mockBuilder{},
+			WithPacketTracker(
+				func([]byte, uint64) bool { return true },
+				func([]byte) { order = append(order, "untracked") },
+			),
+		)
+
+		m.settleDelivered([]chain.RelayPacket{send})
+
+		if len(order) != 1 || order[0] != "untracked" {
+			t.Fatalf("order = %v, want the pending record released: with no ledger to hand it to, keeping it strands the packet",
+				order)
+		}
+	})
+}
+
+func TestFlushLoop_RunsImmediately(t *testing.T) {
+	src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}}
+	m := NewModule("cosmos->eth", "client-0", src, &mockDest{}, &mockBuilder{})
+	m.flushInterval = time.Hour // so only the immediate pass can run
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); m.flushLoop(ctx, src) }()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && src.callCount() == 0 {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	if got := src.callCount(); got != 1 {
+		t.Fatalf("enumeration ran %d times before the first tick, want 1", got)
+	}
+}
+
+type listerSource struct {
+	mockSource
+	mu        sync.Mutex
+	calls     int
+	candidate []chain.Event
+	listErr   error
+}
+
+func (l *listerSource) UnrelayedPackets(context.Context) ([]chain.Event, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls++
+	return append([]chain.Event(nil), l.candidate...), l.listErr
+}
+
+func (l *listerSource) callCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.calls
+}
+
+// handleBatch has two callers now -- the Subscribe callback and the flush loop,
+// on separate goroutines -- and it writes m.lastWait, which no lock covered.
+// Under -race that write is a data race without Module.batchMu.
+//
+// The race is the smaller half. Two batches in flight at once can each build and
+// submit a client update, and can relay the same packet twice: the flush
+// enumerates outstanding commitments, which includes the packets the scan is
+// delivering at that moment.
+//
+// Overlap is measured from INSIDE the batch, through a source call handleBatch
+// makes while holding the lock. Counting around the call instead would count
+// goroutines queued on the lock, not batches running in it -- which is what a
+// first version of this test did, and it failed against correct code.
+type overlapProbeSource struct {
+	mockSource
+	inFlight atomic.Int32
+	overlap  atomic.Bool
+}
+
+func (s *overlapProbeSource) RelayableHeight(ctx context.Context) (uint64, error) {
+	if s.inFlight.Add(1) > 1 {
+		s.overlap.Store(true)
+	}
+	time.Sleep(time.Millisecond) // widen the window a real batch would occupy
+	s.inFlight.Add(-1)
+	return s.mockSource.RelayableHeight(ctx)
+}
+
+func TestHandleBatchIsSerializedAcrossCallers(t *testing.T) {
+	source := &overlapProbeSource{}
+	m := NewModule("test", "client", source, &mockDest{}, &mockBuilder{})
+	events := []chain.Event{{Type: chain.SendPacket, Sequence: 1, Height: 500}}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			m.handleBatch(context.Background(), events)
+		}()
+	}
+	wg.Wait()
+
+	if source.overlap.Load() {
+		t.Fatal("two handleBatch calls were inside the batch at once; batchMu is not held for the whole of it")
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"attestor/types/attestation"
 	relayerclient "relayer/client"
 
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
@@ -41,6 +42,9 @@ type L2ClientParams struct {
 	// tracks Cosmos, registered inline as this client's counterparty. Empty when the
 	// L2-side client id is not yet known, in which case registration is deferred.
 	CounterpartyClientID string
+	// Attestors is the immutable, canonically ordered Ed25519 set that signs every
+	// header update. It is part of ClientState, not relayer-only configuration.
+	Attestors attestation.AttestorConfig
 }
 
 // The JSON shapes below mirror the ICS-08 CosmWasm L2 client types
@@ -56,12 +60,13 @@ type L2ClientParams struct {
 // timestamp_nanos = timestamp_seconds * 1e9 (matches Header::consensus_state).
 
 // l2ClientStateJSON mirrors l2-client `ClientState`. The policy fields are gone with
-// the finality taxonomy: the client stores no levels, so there is nothing to gate on.
-// They return with the attestor signature, which is what makes a level mean anything.
+// the finality taxonomy: the client stores no levels. Each update instead carries
+// signatures that bind the exact L2 block identity to this immutable attestor set.
 type l2ClientStateJSON struct {
-	LatestHeight uint64          `json:"latest_height"`
-	FrozenHeight *uint64         `json:"frozen_height"`
-	Profile      json.RawMessage `json:"profile"`
+	LatestHeight uint64                     `json:"latest_height"`
+	FrozenHeight *uint64                    `json:"frozen_height"`
+	Profile      json.RawMessage            `json:"profile"`
+	Attestors    attestation.AttestorConfig `json:"attestors"`
 }
 
 // l2ConsensusStateJSON mirrors l2-client `ConsensusState`. The settlement provenance
@@ -94,6 +99,9 @@ func BuildL2WasmClientState(p L2ClientParams) (ibcexported.ClientState, ibcexpor
 	if len(p.RollupProfile) == 0 {
 		return nil, nil, fmt.Errorf("l2 client: rollup profile is required")
 	}
+	if err := p.Attestors.Validate(); err != nil {
+		return nil, nil, fmt.Errorf("l2 client: invalid attestor set: %w", err)
+	}
 	if p.Bootstrap.TimestampSeconds > ^uint64(0)/1_000_000_000 {
 		return nil, nil, fmt.Errorf("l2 client: bootstrap timestamp overflows nanoseconds")
 	}
@@ -101,6 +109,7 @@ func BuildL2WasmClientState(p L2ClientParams) (ibcexported.ClientState, ibcexpor
 		LatestHeight: p.Bootstrap.Height,
 		FrozenHeight: nil,
 		Profile:      p.RollupProfile,
+		Attestors:    p.Attestors,
 	}
 	clientStateBz, err := json.Marshal(clientState)
 	if err != nil {

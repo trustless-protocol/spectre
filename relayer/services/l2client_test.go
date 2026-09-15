@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"attestor/types/attestation"
 	relayerclient "relayer/client"
 
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
@@ -22,6 +23,10 @@ func testL2Params() L2ClientParams {
 			RouterStorageRoot: common.HexToHash("0xbbbb"),
 			TimestampSeconds:  1700000000,
 		},
+		Attestors: attestation.AttestorConfig{
+			PublicKeys: [][]byte{{0x82, 0x88, 0xe3, 0xdd, 0x74, 0x09, 0xf1, 0x95, 0xfd, 0x52, 0xdb, 0x2d, 0x3c, 0xba, 0x5d, 0x72, 0xca, 0x67, 0x09, 0xbf, 0x1d, 0x94, 0x12, 0x1b, 0xf3, 0x74, 0x88, 0x01, 0xb4, 0x0f, 0x6f, 0x5c}},
+			Threshold:  1,
+		},
 	}
 }
 
@@ -39,7 +44,8 @@ func TestBuildL2WasmClientState_ClientStateShape(t *testing.T) {
 	}
 
 	// The client-state Data must be ClientState<Profile>: latest_height, frozen_height
-	// (null), and the rollup profile embedded verbatim as `profile`.
+	// (null), the immutable attestor set, and the rollup profile embedded verbatim
+	// as `profile`.
 	var clientState l2ClientStateJSON
 	if err := json.Unmarshal(wasmCS.Data, &clientState); err != nil {
 		t.Fatalf("client-state Data is not JSON: %v", err)
@@ -52,6 +58,9 @@ func TestBuildL2WasmClientState_ClientStateShape(t *testing.T) {
 	}
 	if string(clientState.Profile) != string(testL2Params().RollupProfile) {
 		t.Fatalf("profile not embedded verbatim: %s", clientState.Profile)
+	}
+	if len(clientState.Attestors.PublicKeys) != 1 || clientState.Attestors.Threshold != 1 {
+		t.Fatalf("attestors missing from client state: %+v", clientState.Attestors)
 	}
 	var clientStateFields map[string]json.RawMessage
 	if err := json.Unmarshal(wasmCS.Data, &clientStateFields); err != nil {
@@ -93,6 +102,14 @@ func TestBuildL2WasmClientState_RequiresRollupProfile(t *testing.T) {
 	}
 }
 
+func TestBuildL2WasmClientState_RequiresValidAttestors(t *testing.T) {
+	p := testL2Params()
+	p.Attestors = attestation.AttestorConfig{}
+	if _, _, err := BuildL2WasmClientState(p); err == nil {
+		t.Fatal("missing attestor set must error")
+	}
+}
+
 // The consensus state faces the same deny_unknown_fields as the client state, and it
 // lost more fields in the rebuild — the settlement provenance (l1_origin_*,
 // evidence_hash, rollup_commitment) and the finality taxonomy (finality_level,
@@ -126,7 +143,7 @@ func TestBuildL2WasmConsensusState_EmitsOnlyTheFieldsTheClientReads(t *testing.T
 }
 
 // The client state carries no policy fields any more, so the wire form is exactly
-// the three the contract reads. A stray key would be rejected by the Rust side's
+// the four the contract reads. A stray key would be rejected by the Rust side's
 // deny_unknown_fields, which is only visible on chain — assert it here instead.
 func TestBuildL2WasmClientState_EmitsOnlyTheFieldsTheClientReads(t *testing.T) {
 	cs, _, err := BuildL2WasmClientState(testL2Params())
@@ -137,7 +154,7 @@ func TestBuildL2WasmClientState_EmitsOnlyTheFieldsTheClientReads(t *testing.T) {
 	if err := json.Unmarshal(cs.(*ibcwasmtypes.ClientState).Data, &fields); err != nil {
 		t.Fatalf("decode client state: %v", err)
 	}
-	want := map[string]bool{"latest_height": true, "frozen_height": true, "profile": true}
+	want := map[string]bool{"latest_height": true, "frozen_height": true, "profile": true, "attestors": true}
 	for k := range fields {
 		if !want[k] {
 			t.Fatalf("client state carries %q, which the contract does not read", k)

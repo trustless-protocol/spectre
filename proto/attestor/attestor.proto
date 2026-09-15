@@ -190,6 +190,17 @@ message VerifyStateRootRequest {
   // Optional for compatibility: an empty value is accepted when the attestor
   // serves exactly one chain, and rejected otherwise.
   string src_chain = 5;
+
+  // L2Router is the 20-byte ICS26Router address in the receiving wasm client
+  // profile. It is included in the signed update statement so a signature for
+  // one router cannot be replayed to another client.
+  bytes l2_router = 6;
+
+  // AttestorSetHash is SHA-256(u16be(threshold) || u16be(count) || sorted
+  // public keys) for the immutable set in the receiving wasm ClientState.
+  // It is included in every signature so attestor-set migrations cannot replay
+  // old signatures.
+  bytes attestor_set_hash = 7;
 }
 
 // VerifyStateRootResponse returns the replica's canonical block commitment.
@@ -205,4 +216,10 @@ message VerifyStateRootResponse {
 
   // StateRoot is the root committed by the canonical block header.
   bytes state_root = 4;
+
+  // AttestationSignature is an Ed25519 signature over the canonical block
+  // identity returned here. It is set only when Valid is true. The relayer
+  // carries it to the L2 wasm client, which verifies it against its immutable
+  // attestor public key before accepting the header.
+  bytes attestation_signature = 5;
 }

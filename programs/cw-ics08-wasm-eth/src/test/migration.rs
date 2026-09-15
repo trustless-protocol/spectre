@@ -88,7 +88,7 @@ pub mod v1_2_0 {
         let info = message_info(&creator, &coins(1, "uatom"));
 
         let fixture: StepsFixture =
-            fixtures::load("Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack");
+            fixtures::load("Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack");
 
         let initial_state: InitialState = fixture.get_data_at_step(0);
 

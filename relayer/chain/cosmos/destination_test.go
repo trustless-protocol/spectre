@@ -311,7 +311,7 @@ func TestEthClientExpiry(t *testing.T) {
 
 	t.Run("one sync-committee period after the latest tracked slot", func(t *testing.T) {
 		cs := base()
-		got := ethClientExpiry(cs)
+		got, _ := ethClientExpiry(cs)
 		want := time.Unix(int64(genesisTime+1000*secondsPerSlot+onePeriod), 0)
 		if !got.Equal(want) {
 			t.Fatalf("expiry = %s, want %s", got, want)
@@ -326,7 +326,9 @@ func TestEthClientExpiry(t *testing.T) {
 		older.LatestSlot = 1000
 		newer.LatestSlot = 2000
 
-		gap := ethClientExpiry(newer).Sub(ethClientExpiry(older))
+		newerExpiry, _ := ethClientExpiry(newer)
+		olderExpiry, _ := ethClientExpiry(older)
+		gap := newerExpiry.Sub(olderExpiry)
 		want := time.Duration(1000*secondsPerSlot) * time.Second
 		if gap != want {
 			t.Fatalf("1000 slots of progress moved the expiry by %s, want %s", gap, want)
@@ -346,7 +348,7 @@ func TestEthClientExpiry(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				cs := base()
 				mutate(cs)
-				if got := ethClientExpiry(cs); !got.IsZero() {
+				if got, _ := ethClientExpiry(cs); !got.IsZero() {
 					t.Fatalf("expiry = %s, want the zero time", got)
 				}
 			})
@@ -361,7 +363,7 @@ func TestEthClientExpiry(t *testing.T) {
 		cs.GenesisSlot = 500
 		cs.LatestSlot = 100 // below genesis
 
-		got := ethClientExpiry(cs)
+		got, _ := ethClientExpiry(cs)
 		want := time.Unix(int64(genesisTime+onePeriod), 0)
 		if !got.Equal(want) {
 			t.Fatalf("expiry = %s, want %s (genesis time plus one period)", got, want)

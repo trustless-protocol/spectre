@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 
+	"attestor/types/attestation"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
@@ -31,11 +32,14 @@ type l2ToCosmosConfig struct {
 	L2RpcUrl string `json:"l2_rpc_url"`
 	TmRpcUrl string `json:"tm_rpc_url"`
 
-	AttestorAddr     string `json:"attestor_addr"`
-	AttestorSrcChain string `json:"attestor_src_chain"`
-	L2WasmClientID   string `json:"l2_wasm_client_id"`
-	L2ICS26ClientID  string `json:"l2_ics26_client_id"`
-	HeadKind         string `json:"head_kind"`
+	AttestorEndpoints []l2AttestorEndpointConfig `json:"attestor_endpoints"`
+	AttestorSrcChain  string                     `json:"attestor_src_chain"`
+	// Attestors is the exact immutable key set stored in the paired wasm client.
+	// Every endpoint below names one key by its canonical set index.
+	Attestors       attestation.AttestorConfig `json:"attestors"`
+	L2WasmClientID  string                     `json:"l2_wasm_client_id"`
+	L2ICS26ClientID string                     `json:"l2_ics26_client_id"`
+	HeadKind        string                     `json:"head_kind"`
 	// IncludeProvisional accepts attestor verdicts that have not yet been re-derived
 	// from finalized L1 data. It is deliberately its own field: it used to be inferred
 	// from head_kind, which conflated two independent axes — head_kind selects which
@@ -63,6 +67,14 @@ type l2ToCosmosConfig struct {
 	kind chain.ChainType
 }
 
+// l2AttestorEndpointConfig maps a reachable attestor daemon to its immutable
+// ClientState public-key index. Keeping the key in one canonical set prevents a
+// typo from making the relayer sign for a different client than it bootstrapped.
+type l2AttestorEndpointConfig struct {
+	Address       string `json:"address"`
+	AttestorIndex uint16 `json:"attestor_index"`
+}
+
 // validate checks everything the relay path needs, including the id of an L2 wasm
 // client that must already exist on Cosmos.
 func (c l2ToCosmosConfig) validate() error {
@@ -86,7 +98,7 @@ func (c l2ToCosmosConfig) validateForClientCreation() error {
 func (c l2ToCosmosConfig) validateWith(requireWasmClientID bool) error {
 	required := map[string]string{
 		"l2_rpc_url": c.L2RpcUrl, "tm_rpc_url": c.TmRpcUrl,
-		"attestor_addr": c.AttestorAddr, "attestor_src_chain": c.AttestorSrcChain,
+		"attestor_src_chain": c.AttestorSrcChain,
 		"l2_ics26_client_id": c.L2ICS26ClientID,
 	}
 	if requireWasmClientID {
@@ -105,6 +117,28 @@ func (c l2ToCosmosConfig) validateWith(requireWasmClientID bool) error {
 	}
 	if _, err := l2RouterFromProfile(c.RollupProfile); err != nil {
 		return err
+	}
+	if _, err := l2ChainIDFromProfile(c.RollupProfile); err != nil {
+		return fmt.Errorf("l2_to_cosmos config: %w", err)
+	}
+	if err := c.Attestors.Validate(); err != nil {
+		return fmt.Errorf("l2_to_cosmos config: invalid attestors: %w", err)
+	}
+	if len(c.AttestorEndpoints) < int(c.Attestors.Threshold) {
+		return fmt.Errorf("l2_to_cosmos config: %d attestor_endpoints cannot satisfy threshold %d", len(c.AttestorEndpoints), c.Attestors.Threshold)
+	}
+	seen := make(map[uint16]struct{}, len(c.AttestorEndpoints))
+	for _, endpoint := range c.AttestorEndpoints {
+		if endpoint.Address == "" {
+			return fmt.Errorf("l2_to_cosmos config: attestor endpoint address is required")
+		}
+		if int(endpoint.AttestorIndex) >= len(c.Attestors.PublicKeys) {
+			return fmt.Errorf("l2_to_cosmos config: attestor endpoint index %d is outside attestors.public_keys", endpoint.AttestorIndex)
+		}
+		if _, duplicate := seen[endpoint.AttestorIndex]; duplicate {
+			return fmt.Errorf("l2_to_cosmos config: duplicate attestor endpoint index %d", endpoint.AttestorIndex)
+		}
+		seen[endpoint.AttestorIndex] = struct{}{}
 	}
 	return nil
 }
@@ -146,6 +180,13 @@ func l2RouterFromProfile(profile json.RawMessage) (common.Address, error) {
 // SpectreClient/ICS26Router return path. It returns the module and a cleanup that
 // closes the dialed clients. The caller runs module.Run(ctx) on its own goroutine.
 func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler services.TransactionHandler, timeoutReturn l2TimeoutReturnPath) (*relay.Module, func(), error) {
+	// Before anything dials: a retired env key that silently sizes nothing is the
+	// failure NFR 10 forbids. Checked here rather than globally because the key
+	// only ever affected this path, so a deployment without an l2_to_cosmos
+	// module has nothing to correct.
+	if err := l2rollup.RejectRetiredLookbackEnv(); err != nil {
+		return nil, nil, err
+	}
 	headKind, err := parseHeadKind(cfg.HeadKind)
 	if err != nil {
 		return nil, nil, err
@@ -156,6 +197,10 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	}
 	if err := timeoutReturn.validate(); err != nil {
 		return nil, nil, err
+	}
+	chainID, err := l2ChainIDFromProfile(cfg.RollupProfile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("l2_to_cosmos config: %w", err)
 	}
 	includeProvisional := headKind != l2rollup.Finalized
 	if cfg.IncludeProvisional != nil {
@@ -175,13 +220,22 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		l2.Close()
 		return nil, nil, fmt.Errorf("start Cosmos rpc client: %w", err)
 	}
-	attestor, err := attestorgrpc.Dial(cfg.AttestorAddr)
-	if err != nil {
-		l2.Close()
-		if stopErr := cosmosClient.Stop(); stopErr != nil {
-			log.Printf("failed to terminate cosmos client: %v", stopErr)
+	attestors := make([]*attestorgrpc.Client, 0, len(cfg.AttestorEndpoints))
+	signingAttestors := make([]l2rollup.SigningAttestor, 0, len(cfg.AttestorEndpoints))
+	for _, endpoint := range cfg.AttestorEndpoints {
+		attestor, err := attestorgrpc.Dial(endpoint.Address)
+		if err != nil {
+			l2.Close()
+			if stopErr := cosmosClient.Stop(); stopErr != nil {
+				log.Printf("failed to terminate cosmos client: %v", stopErr)
+			}
+			for _, opened := range attestors {
+				_ = opened.Close()
+			}
+			return nil, nil, fmt.Errorf("dial attestor index %d (%s): %w", endpoint.AttestorIndex, endpoint.Address, err)
 		}
-		return nil, nil, fmt.Errorf("dial attestor: %w", err)
+		attestors = append(attestors, attestor)
+		signingAttestors = append(signingAttestors, l2rollup.SigningAttestor{Index: endpoint.AttestorIndex, Client: attestor})
 	}
 
 	// Cosmos-side context for the destination (it uses only CosmosClient + the
@@ -191,16 +245,47 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 
 	// One builder for every chain: the header is the canonical L2 block plus a router
 	// account proof, and nothing about that is chain-specific any more. It takes the
-	// same attestor the source gates heights on, so the block it packages is bound to
-	// what that attestor's replica actually has at that height.
-	headerBuilder := l2rollup.NewAttestedHeaderBuilder(l2, router, attestor, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
-
-	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, attestor, includeProvisional).
-		WithLogScanChunk(cfg.LogScanChunk)
+	// same endpoint set the source gates heights on, so the block it packages is
+	// bound to a threshold of replicas that independently recognise that height.
+	headerBuilder, err := l2rollup.NewAttestedHeaderBuilder(l2, router, chainID, cfg.Attestors, signingAttestors, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
+	if err != nil {
+		l2.Close()
+		if stopErr := cosmosClient.Stop(); stopErr != nil {
+			log.Printf("failed to terminate cosmos client: %v", stopErr)
+		}
+		for _, opened := range attestors {
+			_ = opened.Close()
+		}
+		return nil, nil, err
+	}
+	frontier, err := l2rollup.NewQuorumAttestationFrontier(signingAttestors, cfg.Attestors.Threshold)
+	if err != nil {
+		l2.Close()
+		if stopErr := cosmosClient.Stop(); stopErr != nil {
+			log.Printf("failed to terminate cosmos client: %v", stopErr)
+		}
+		for _, opened := range attestors {
+			_ = opened.Close()
+		}
+		return nil, nil, err
+	}
+	trackL2Pending, untrackL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
+	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, frontier, includeProvisional).
+		WithLogScanChunk(cfg.LogScanChunk).
+		// AckPacket / TimeoutPacket on the L2 close a packet's lifecycle. Reading
+		// them lets the tracker drop a packet another relayer settled without
+		// waiting for a timeout scan to query for it. Same hook the module uses to
+		// untrack after its own successful relay -- one settlement path, two ways
+		// of learning about it.
+		WithSettleHook(untrackL2Pending).
+		// The acknowledged half also closes the owed-acknowledgement record. The
+		// same Services instance backs both directions of this pair, which is what
+		// lets a debt one side recorded be settled from the other.
+		WithAckSettleHook(settleL2OwedAck(timeoutReturn.svc))
 	dest := l2rollup.NewDestination(worker, svcCtx, cfg.L2WasmClientID)
 	builder := l2rollup.NewBuilder(headerBuilder)
-	trackL2Pending, untrackL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
 
+	ackDue, ackSettled := ackWatchHooks(timeoutReturn.svc)
 	module := relay.NewModule(
 		fmt.Sprintf("%s->cosmos", cfg.kind),
 		cfg.L2ICS26ClientID,
@@ -209,27 +294,49 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 			timeoutReturn.svc.ScanL2Timeouts(c, timeoutReturn.deps.Cosmos, timeoutReturn.deps.EVM, timeoutReturn.deps.IDs.CosmosOnEVM)
 		}),
 		relay.WithPacketTracker(trackL2Pending, untrackL2Pending),
+		// The mirror of the cosmos->l2 hooks, over the SAME Services: that leg
+		// records what a delivered receive owes, this one settles it when the
+		// acknowledgement returns. The overdue reporter lives here rather than on
+		// the outbound leg because this module exists exactly when the pair is
+		// complete -- a forward-only deployment has no return leg and must not
+		// alarm about acknowledgements it was never going to relay.
+		relay.WithAckWatch(0, 0, ackDue, ackSettled, timeoutReturn.svc.OverdueAcks),
 	)
-	logger.Sugar().Infof("l2->cosmos source: %s (attestor=%s src_chain=%s wasm_client=%s head=%s)",
-		cfg.kind, cfg.AttestorAddr, cfg.AttestorSrcChain, cfg.L2WasmClientID, cfg.HeadKind)
+	logger.Sugar().Infof("l2->cosmos source: %s (attestors=%d threshold=%d src_chain=%s wasm_client=%s head=%s)",
+		cfg.kind, len(cfg.AttestorEndpoints), cfg.Attestors.Threshold, cfg.AttestorSrcChain, cfg.L2WasmClientID, cfg.HeadKind)
 
 	cleanup := func() {
 		l2.Close()
 		if err := cosmosClient.Stop(); err != nil {
 			log.Printf("failed to terminate cosmos client: %v", err)
 		}
-		if err := attestor.Close(); err != nil {
-			log.Printf("failed to close attestor client: %v", err)
+		for _, attestor := range attestors {
+			if err := attestor.Close(); err != nil {
+				log.Printf("failed to close attestor client: %v", err)
+			}
 		}
 	}
 	return module, cleanup, nil
+}
+
+// settleL2OwedAck closes an owed-acknowledgement record from a terminal L2
+// AckPacket, whoever relayed it.
+func settleL2OwedAck(svc *services.Services) func(raw []byte) {
+	return func(raw []byte) {
+		var pkt channeltypesv2.Packet
+		if err := pkt.Unmarshal(raw); err != nil {
+			log.Printf("[AckWatch] settle owed ack from terminal L2 event: decode packet: %v", err)
+			return
+		}
+		svc.ClearAckDue(pkt)
+	}
 }
 
 func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.UntrackFunc) {
 	trackL2Pending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[adapter l2->cosmos] track pending: decode packet: %v", err)
+			log.Printf("[l2->cosmos Relay] track pending: decode packet: %v", err)
 			return false
 		}
 		return svc.TrackL2Pending(pkt, height)
@@ -237,7 +344,7 @@ func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.Untra
 	untrackL2Pending := func(raw []byte) {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[adapter l2->cosmos] untrack pending: decode packet: %v", err)
+			log.Printf("[l2->cosmos Relay] untrack pending: decode packet: %v", err)
 			return
 		}
 		svc.UntrackL2Pending(pkt)

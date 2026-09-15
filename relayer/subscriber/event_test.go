@@ -5,26 +5,31 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	"io"
 	"log"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
+	relayerclient "relayer/client"
 	"relayer/services"
 
 	abcitypes "github.com/cometbft/cometbft/abci/types"
+	rpchttp "github.com/cometbft/cometbft/rpc/client/http"
 	coretypes "github.com/cometbft/cometbft/rpc/core/types"
 	commettypes "github.com/cometbft/cometbft/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	"github.com/ethereum/go-ethereum/common"
 	gethtypes "github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/gogo/protobuf/proto"
 )
 
@@ -459,6 +464,11 @@ func TestDecodeCosmosPacketsFromEvents(t *testing.T) {
 		SourceClient:      "eth-client",
 		DestinationClient: "other-client",
 	})
+	settledPacketHex := mustPacketHex(t, channeltypesv2.Packet{
+		Sequence:          14,
+		SourceClient:      "cosmos-client",
+		DestinationClient: "eth-client",
+	})
 	ackHex := mustAckHex(t, channeltypesv2.Acknowledgement{
 		AppAcknowledgements: [][]byte{[]byte("ack")},
 	})
@@ -471,13 +481,15 @@ func TestDecodeCosmosPacketsFromEvents(t *testing.T) {
 			EVENT_WRITE_ACK_PACKET_FIELD: {ackPacketHex},
 			EVENT_ACKNOWLEDGEMENT_FIELD:  {ackHex},
 			EVENT_TIMEOUT_PACKET_FIELD:   {timeoutPacketHex},
+			EVENT_ACK_PACKET_FIELD:       {settledPacketHex},
 			EVENT_TX_HEIGHT_FIELD:        {"44"},
 		},
 		"test",
+		"",
 	)
 
-	if len(packets) != 3 {
-		t.Fatalf("decoded packet count = %d, want 3", len(packets))
+	if len(packets) != 4 {
+		t.Fatalf("decoded packet count = %d, want 4", len(packets))
 	}
 	if packets[0].Type != services.CosmosSend || packets[0].Packet.Sequence != 11 {
 		t.Fatalf("packet[0] = type %v seq %d, want CosmosSend seq 11", packets[0].Type, packets[0].Packet.Sequence)
@@ -493,6 +505,13 @@ func TestDecodeCosmosPacketsFromEvents(t *testing.T) {
 	}
 	if packets[2].Type != services.CosmosTimeout || packets[2].Packet.Sequence != 13 {
 		t.Fatalf("packet[2] = type %v seq %d, want CosmosTimeout seq 13", packets[2].Type, packets[2].Packet.Sequence)
+	}
+	// acknowledge_packet is the fourth event and the only terminal one on this
+	// side: Cosmos consumed the ack for a packet it sent, so that packet is done.
+	// Without it a packet another relayer acknowledged stays in the pending
+	// tracker until a timeout scan happens to query for it.
+	if packets[3].Type != services.CosmosAcknowledged || packets[3].Packet.Sequence != 14 {
+		t.Fatalf("packet[3] = type %v seq %d, want CosmosAcknowledged seq 14", packets[3].Type, packets[3].Packet.Sequence)
 	}
 	for i, p := range packets {
 		if p.BlockNumber != 55 {
@@ -552,7 +571,9 @@ func TestEnqueueEthSendPacket(t *testing.T) {
 		Raw: gethtypes.Log{BlockNumber: 88},
 	}
 
-	enqueueEthSendPacket(bb, ev, nil)
+	if _, err := enqueueEthSendPacket(bb, ev, nil); err != nil {
+		t.Fatal(err)
+	}
 
 	got := flushSingleEthPacket(t, bb)
 	if got.Type != services.EthSend {
@@ -588,10 +609,10 @@ func TestEnqueueEthSendPacketDedupesSeenEvent(t *testing.T) {
 	}
 	seen := make(map[ethEventKey]struct{})
 
-	if !enqueueEthSendPacket(bb, ev, seen) {
+	if enqueued, err := enqueueEthSendPacket(bb, ev, seen); err != nil || !enqueued {
 		t.Fatal("first enqueue should be accepted")
 	}
-	if enqueueEthSendPacket(bb, ev, seen) {
+	if enqueued, err := enqueueEthSendPacket(bb, ev, seen); err != nil || enqueued {
 		t.Fatal("duplicate enqueue should be skipped")
 	}
 
@@ -610,10 +631,13 @@ func TestEnqueueEthSendPacketRetriesWhenPendingStateCannotPersist(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o500); err != nil {
+	statePath := filepath.Join(dir, "eth.json")
+	if err := os.Remove(statePath); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+	if err := os.Mkdir(statePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
 
 	ev := &contractICS26Router.ContractICS26RouterSendPacket{
 		Sequence: big.NewInt(7),
@@ -625,7 +649,7 @@ func TestEnqueueEthSendPacketRetriesWhenPendingStateCannotPersist(t *testing.T) 
 	}
 	seen := make(map[ethEventKey]struct{})
 
-	if enqueueEthSendPacket(bb, ev, seen) {
+	if enqueued, err := enqueueEthSendPacket(bb, ev, seen); err == nil || enqueued {
 		t.Fatal("enqueue succeeded after pending-state persistence failed")
 	}
 	if len(seen) != 0 {
@@ -641,6 +665,130 @@ func TestEnqueueEthSendPacketRetriesWhenPendingStateCannotPersist(t *testing.T) 
 	case batch := <-ch:
 		t.Fatalf("failed pending-state write still enqueued relay batch: %+v", batch)
 	default:
+	}
+}
+
+func TestFailedEthPendingAddKeepsRecoveryCursorRetryable(t *testing.T) {
+	dir := t.TempDir()
+	bb, err := services.NewPersistentBatchBuilder(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "eth.json")
+	if err := os.Remove(statePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(statePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	router := common.HexToAddress("0x00000000000000000000000000000000000000AA")
+	server := ethRecoveryRPCServer(t, ethRecoverySendPacketLog(t, router))
+	ethClient, err := ethclient.Dial(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(ethClient.Close)
+	cosmosClient, err := rpchttp.New(server.URL, "/websocket")
+	if err != nil {
+		t.Fatal(err)
+	}
+	filterer, err := contractICS26Router.NewContractICS26RouterFilterer(router, ethClient)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cursor := uint64(88)
+	sub := NewSubscriber(nil)
+	deps := ethDeps{
+		Cosmos: services.CosmosEndpoint{Client: cosmosClient},
+		EVM: services.EVMEndpoint{
+			Client:    ethClient,
+			Contracts: services.EVMContracts{Router: router},
+		},
+		Logger: log.New(io.Discard, "", 0),
+	}
+	span := &relayerclient.LogSpan{Chunk: 3}
+	_, err = sub.scanEthRangeInChunks(context.Background(), deps, "SendPacket", &cursor, 90, span,
+		func(from, to uint64) (ethRecoveryStats, error) {
+			return recoverEthSendPackets(context.Background(), deps, bb, filterer, from, to, nil)
+		}, func() {})
+	if err == nil {
+		t.Fatal("failed durable pending add did not fail the recovery chunk")
+	}
+	if cursor != 88 {
+		t.Fatalf("recovery cursor advanced to %d after failed durable add, want 88", cursor)
+	}
+	if bb.EthPendingTracker.Len() != 0 {
+		t.Fatal("failed durable pending add left packet tracked")
+	}
+}
+
+func ethRecoveryRPCServer(t *testing.T, sendPacketLog gethtypes.Log) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		var result any
+		switch request.Method {
+		case "eth_getLogs":
+			result = []gethtypes.Log{sendPacketLog}
+		case "eth_getStorageAt":
+			// The pending commitment exists, so recovery reaches the durable Add.
+			result = "0x01"
+		case "abci_query":
+			// No Cosmos receipt exists for the SendPacket yet.
+			result = map[string]any{"response": map[string]any{"code": 0, "value": ""}}
+		default:
+			http.Error(w, "unexpected RPC method: "+request.Method, http.StatusNotImplemented)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request.ID,
+			"result":  result,
+		}); err != nil {
+			t.Error(err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+func ethRecoverySendPacketLog(t *testing.T, router common.Address) gethtypes.Log {
+	t.Helper()
+	parsed, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := parsed.Events["SendPacket"]
+	packet := contractICS26Router.IICS26RouterMsgsPacket{
+		SourceClient: "eth-client-0",
+		DestClient:   "cosmos-client-0",
+	}
+	data, err := event.Inputs.NonIndexed().Pack(packet)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return gethtypes.Log{
+		Address: router,
+		Topics: []common.Hash{
+			event.ID,
+			crypto.Keccak256Hash([]byte(packet.SourceClient)),
+			common.BigToHash(big.NewInt(8)),
+		},
+		Data:        data,
+		BlockNumber: 88,
+		Index:       4,
 	}
 }
 
@@ -996,7 +1144,7 @@ func TestEnqueueEthTerminalRecordsBlockNumber(t *testing.T) {
 				SourceClient: "eth-client-0",
 				DestClient:   "cosmos-client-0",
 			}
-			enqueueEthTerminal(bb, tc.typ, pkt, big.NewInt(4), tc.ackBytes, 4242)
+			enqueueEthTerminal(bb, log.New(io.Discard, "", 0), tc.typ, pkt, big.NewInt(4), tc.ackBytes, 4242)
 
 			ch := make(chan services.EthBatch, 1)
 			bb.CheckEth(context.Background(), services.BatchConfig{BatchSize: 1}, ch)
@@ -1036,7 +1184,7 @@ func TestEnqueueEthTerminalSettlesThePendingTracker(t *testing.T) {
 		t.Fatalf("tracker not seeded")
 	}
 
-	enqueueEthTerminal(bb, services.EthAck, pkt, big.NewInt(4), [][]byte{[]byte("ack")}, 4242)
+	enqueueEthTerminal(bb, log.New(io.Discard, "", 0), services.EthAck, pkt, big.NewInt(4), [][]byte{[]byte("ack")}, 4242)
 
 	if got := bb.EthPendingTracker.Len(); got != 0 {
 		t.Fatalf("tracker length = %d after settlement, want 0", got)
@@ -1349,6 +1497,88 @@ func TestEnqueueCosmosPackets(t *testing.T) {
 		}
 		if cosmos, _ := bb.QueueDepths(); cosmos != 1 {
 			t.Fatalf("queued %d packets, want 1", cosmos)
+		}
+	})
+
+	// One pass can carry BOTH a send and the acknowledge_packet that closes it --
+	// ordinary during recovery, where the window is sized to cover the downtime.
+	// Settling only the tracker leaves the send QUEUED, so it is relayed for
+	// nothing and, worse, tracked again by that relay: after settling removed it,
+	// and after the cursor moved past the terminal event that would clear it a
+	// second time. The entry then stays pending for the life of the process.
+	t.Run("a send settled later in the same pass is removed from the queue too", func(t *testing.T) {
+		bb := services.NewBatchBuilder()
+		send := cosmosTestPacket(7, "cosmos-client", cosmosOnEVM)
+		settled := cosmosTestPacket(7, "cosmos-client", cosmosOnEVM)
+		settled.Type = services.CosmosAcknowledged
+
+		if _, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+			[]services.CosmosPacket{send, settled}, map[cosmosEventKey]struct{}{}, false); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+
+		if cosmos, _ := bb.QueueDepths(); cosmos != 0 {
+			t.Fatalf("queued %d packet(s); the send settled in this very pass and must not be relayed", cosmos)
+		}
+		if got := bb.PendingTracker.Len(); got != 0 {
+			t.Fatalf("pending tracker holds %d packet(s) after the settlement", got)
+		}
+	})
+
+	// The multi-relayer case. This process delivered the receive and recorded an
+	// owed acknowledgement; ANOTHER process submitted the acknowledgement, so this
+	// one only ever sees the terminal event. Reported by @DongLieu: the branch
+	// settled the pending tracker and stopped, leaving the debt durable, surviving
+	// restart, and reported overdue for a packet already settled on-chain -- which
+	// can never time out either, because the receive left a receipt.
+	t.Run("a terminal acknowledge_packet closes the owed-acknowledgement record too", func(t *testing.T) {
+		bb := services.NewBatchBuilder()
+		var settledOwed []uint64
+		bb.WithOwedAckSettler(func(p channeltypesv2.Packet) {
+			settledOwed = append(settledOwed, p.Sequence)
+		})
+
+		packet := cosmosTestPacket(9, "cosmos-client", cosmosOnEVM)
+		packet.Type = services.CosmosAcknowledged
+		bb.PendingTracker.Add(*packet.Packet, 40)
+
+		if _, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+			[]services.CosmosPacket{packet}, map[cosmosEventKey]struct{}{}, false); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+
+		if len(settledOwed) != 1 || settledOwed[0] != 9 {
+			t.Fatalf("owed acknowledgements settled = %v, want [9]: the acknowledgement arrived, "+
+				"so the debt this process recorded is closed whoever relayed it", settledOwed)
+		}
+	})
+
+	// The rule that makes terminal events safe to read at all: they close a
+	// packet's lifecycle, so they settle the tracker and must NEVER reach the
+	// batch. A terminal event in the relay queue is an empty "relay" of a packet
+	// with nothing left to do -- it would be proven, submitted, and rejected.
+	t.Run("a terminal acknowledge_packet settles the tracker and never reaches the batch", func(t *testing.T) {
+		bb := services.NewBatchBuilder()
+		packet := cosmosTestPacket(1, "cosmos-client", cosmosOnEVM)
+		packet.Type = services.CosmosAcknowledged
+		bb.PendingTracker.Add(*packet.Packet, 40)
+		if bb.PendingTracker.Len() != 1 {
+			t.Fatal("the packet must be tracked before the terminal event arrives")
+		}
+
+		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps(ethOnCosmos, cosmosOnEVM), bb,
+			[]services.CosmosPacket{packet}, map[cosmosEventKey]struct{}{}, false)
+		if err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		if cosmos, _ := bb.QueueDepths(); cosmos != 0 {
+			t.Fatalf("queued %d terminal event(s); a settled packet has no relay work left", cosmos)
+		}
+		if got := bb.PendingTracker.Len(); got != 0 {
+			t.Fatalf("pending tracker holds %d packet(s) after the settlement; the whole point is dropping it without a query", got)
+		}
+		if stats.recovered != 1 {
+			t.Fatalf("stats = %+v: a settlement is progress, not a skip", stats)
 		}
 	})
 

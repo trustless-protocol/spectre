@@ -35,34 +35,53 @@ func timeoutOutcomeForError(err error) timeoutSendOutcome {
 	return timeoutDeferred
 }
 
-func deferTimeoutRetries(tracker *PendingPacketTracker, pending []pendingPacketInfo, now time.Time, tag string) {
-	deferralCounts := tracker.DeferTimeoutRetriesIfCurrent(pending, now)
+// deferTimeoutRetries returns false when the state transition was not durable.
+// Callers must stop this scan: the tracker has entered its fail-closed circuit
+// breaker and a later scan will first verify that persistence recovered.
+func deferTimeoutRetries(tracker *PendingPacketTracker, pending []pendingPacketInfo, now time.Time, tag string) bool {
+	deferralCounts, err := tracker.DeferTimeoutRetriesIfCurrent(pending, now)
+	if err != nil {
+		log.Printf("[%sTimeoutScan][ATTENTION] timeout retry state was not durable: %v; pausing timeout work", tag, err)
+		return false
+	}
 	for i, info := range pending {
 		deferrals := deferralCounts[i]
 		if deferralIsStuck(deferrals) {
-			log.Printf("[%s][STUCK] seq=%d has deferred timeout %d times; funds remain escrowed", tag, info.Packet.Sequence, deferrals)
+			log.Printf("[%sTimeoutScan] STUCK: src=%s seq=%d has deferred timeout %d times; funds remain escrowed", tag, info.Packet.SourceClient, info.Packet.Sequence, deferrals)
 		}
 	}
+	return true
 }
 
-func chargeTimeoutFailure(tracker *PendingPacketTracker, info pendingPacketInfo, now time.Time, tag string) {
-	if tracker.RecordTimeoutFailureIfCurrent(info, now) {
-		log.Printf("[%s][ATTENTION] seq=%d exhausted timeout attempts; escrowed funds require operator action", tag, info.Packet.Sequence)
+func chargeTimeoutFailure(tracker *PendingPacketTracker, info pendingPacketInfo, now time.Time, tag string) bool {
+	deadLettered, err := tracker.RecordTimeoutFailureIfCurrent(info, now)
+	if err != nil {
+		log.Printf("[%sTimeoutScan][ATTENTION] timeout attempt state was not durable: %v; pausing timeout work", tag, err)
+		return false
 	}
+	if deadLettered {
+		log.Printf("[%sTimeoutScan][ATTENTION] src=%s seq=%d exhausted timeout attempts; escrowed funds require operator action", tag, info.Packet.SourceClient, info.Packet.Sequence)
+	}
+	return true
 }
 
-func applyTimeoutOutcome(tracker *PendingPacketTracker, info pendingPacketInfo, outcome timeoutSendOutcome, now time.Time, tag string) {
+func applyTimeoutOutcome(tracker *PendingPacketTracker, info pendingPacketInfo, outcome timeoutSendOutcome, now time.Time, tag string) bool {
 	switch {
 	case outcome.packetIsDone():
-		tracker.RemoveIfCurrent(info)
+		if err := tracker.RemoveIfCurrent(info); err != nil {
+			log.Printf("[%sTimeoutScan][ATTENTION] completed timeout state was not durable: %v; pausing timeout work", tag, err)
+			return false
+		}
+		return true
 	case outcome == timeoutNotDue:
 		// The counterparty clock has not reached the packet deadline. This is not
 		// chargeable, but leaving it immediately due makes every scan repeat the
 		// shared client update and proof preparation while the clock is lagging.
-		deferTimeoutRetries(tracker, []pendingPacketInfo{info}, now, tag)
+		return deferTimeoutRetries(tracker, []pendingPacketInfo{info}, now, tag)
 	case outcome == timeoutDeferred:
-		deferTimeoutRetries(tracker, []pendingPacketInfo{info}, now, tag)
+		return deferTimeoutRetries(tracker, []pendingPacketInfo{info}, now, tag)
 	case outcome == timeoutFailed:
-		chargeTimeoutFailure(tracker, info, now, tag)
+		return chargeTimeoutFailure(tracker, info, now, tag)
 	}
+	return true
 }

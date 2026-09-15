@@ -14,9 +14,24 @@ use ibc_proto::ibc::{
 
 use crate::{
     msg::InstantiateMsg,
-    state::{store_client_state, store_consensus_state},
+    state::{consensus_db_key, encode_client_state, encode_consensus_state, HOST_CLIENT_STATE_KEY},
     ContractError,
 };
+
+/// Fully validated and encoded bootstrap writes.
+pub struct PreparedClient {
+    client: Vec<u8>,
+    consensus_key: Vec<u8>,
+    consensus: Vec<u8>,
+}
+
+impl PreparedClient {
+    /// Commits the already validated bootstrap state without fallible work between writes.
+    pub fn commit(self, storage: &mut dyn Storage) {
+        storage.set(HOST_CLIENT_STATE_KEY.as_bytes(), &self.client);
+        storage.set(&self.consensus_key, &self.consensus);
+    }
+}
 
 /// Initializes the client state and consensus state
 /// # Errors
@@ -24,7 +39,7 @@ use crate::{
 /// # Panics
 /// Will panic if the client state latest height cannot be unwrapped
 #[allow(clippy::needless_pass_by_value)]
-pub fn client(storage: &mut dyn Storage, msg: InstantiateMsg) -> Result<(), ContractError> {
+pub fn prepare_client(msg: InstantiateMsg) -> Result<PreparedClient, ContractError> {
     let client_state_bz: Vec<u8> = msg.client_state.into();
     let client_state: EthClientState = serde_json::from_slice(&client_state_bz)
         .map_err(ContractError::DeserializeClientStateFailed)?;
@@ -53,6 +68,15 @@ pub fn client(storage: &mut dyn Storage, msg: InstantiateMsg) -> Result<(), Cont
         client_state.latest_slot == consensus_state.slot,
         ContractError::ClientAndConsensusStateMismatch
     );
+    ensure!(client_state.latest_slot != 0, ContractError::ZeroHeight);
+    ensure!(
+        client_state.slots_per_epoch != 0,
+        ContractError::InvalidClientState("slots_per_epoch must be non-zero")
+    );
+    ensure!(
+        client_state.epochs_per_sync_committee_period != 0,
+        ContractError::InvalidClientState("epochs_per_sync_committee_period must be non-zero")
+    );
 
     client_state
         .verify_supported_fork_at_epoch(
@@ -60,8 +84,9 @@ pub fn client(storage: &mut dyn Storage, msg: InstantiateMsg) -> Result<(), Cont
         )
         .map_err(ContractError::UnsupportedForkVersion)?;
 
-    store_client_state(storage, &wasm_client_state)?;
-    store_consensus_state(storage, &wasm_consensus_state, consensus_state.slot)?;
-
-    Ok(())
+    Ok(PreparedClient {
+        client: encode_client_state(&wasm_client_state)?,
+        consensus_key: consensus_db_key(consensus_state.slot).into_bytes(),
+        consensus: encode_consensus_state(&wasm_consensus_state)?,
+    })
 }

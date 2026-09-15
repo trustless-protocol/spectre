@@ -57,7 +57,7 @@ pub struct ForkParameters {
 
 /// The default `fulu` fork for inputs that predate Fulu support: a zero version
 /// pinned to `u64::MAX` so `compute_fork_version` never selects it.
-fn fork_not_scheduled() -> Fork {
+const fn fork_not_scheduled() -> Fork {
     Fork {
         version: Version::ZERO,
         epoch: u64::MAX,

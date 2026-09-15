@@ -1,11 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 func TestValidateStartupKeysRejectsInvalidCosmosAddressPrefix(t *testing.T) {
@@ -562,9 +571,10 @@ func TestValidateRelayStartupConfigRequiresEthWs(t *testing.T) {
 	}
 }
 
-// Multi-source is a supported deployment, and runAdapterEngine spawns an eth->cosmos
-// leg per source using that source's own eth_ws_url. Checking only the first source
-// let every later one reach the same half-dead state the guard exists to prevent.
+// A first-entry-only check let every later source reach the same half-dead state
+// the guard exists to prevent. `start` now rejects a second source earlier
+// (validateSingleRelayPair), so this is the function's own contract rather than a
+// reachable deployment: it validates every entry it is handed.
 func TestValidateRelayStartupConfigChecksEverySource(t *testing.T) {
 	const cfg = `{
 		"modules": [
@@ -651,5 +661,224 @@ func TestLoadConfigAcceptsEthToCosmosWithWs(t *testing.T) {
 	}
 	if err := validateRelayStartupConfig(appCfg); err != nil {
 		t.Fatalf("start rejected a complete config: %v", err)
+	}
+}
+
+// The prefix has to land AFTER the timestamp. Without log.Lmsgprefix the
+// standard logger writes it first, so every line starts with the path and the
+// times stop lining up as a column — which is how a merged log is actually read.
+func TestStampRelayPathOnLogsPutsThePathAfterTheTimestamp(t *testing.T) {
+	origFlags, origPrefix := log.Flags(), log.Prefix()
+	origOut := log.Writer()
+	t.Cleanup(func() {
+		log.SetFlags(origFlags)
+		log.SetPrefix(origPrefix)
+		log.SetOutput(origOut)
+	})
+
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	stampRelayPath(zap.NewNop(), "cosmos<->eth/cosmoshub-1")
+	log.Printf("[Subscribe] send_packet received: seq=7")
+
+	line := buf.String()
+	if !strings.Contains(line, "[cosmos<->eth/cosmoshub-1]") {
+		t.Fatalf("line %q does not carry the path", line)
+	}
+	if !strings.Contains(line, "[Subscribe] send_packet received: seq=7") {
+		t.Fatalf("line %q lost the original message", line)
+	}
+	pathAt := strings.Index(line, "[cosmos<->eth/cosmoshub-1]")
+	if pathAt == 0 {
+		t.Fatalf("the path is written before the timestamp; log.Lmsgprefix is missing: %q", line)
+	}
+	// The timestamp must be everything before the path, not a substring of it.
+	if stamp := strings.TrimSpace(line[:pathAt]); stamp == "" {
+		t.Fatalf("nothing precedes the path, so the timestamp was dropped: %q", line)
+	}
+}
+
+// The other half of the same call: the injected zap logger must carry the path
+// too. Found in review -- the first version stamped only log.Default(), so every
+// lifecycle line Start emits through zap ("Relayer started", "shutdown
+// requested", "clients stopped") stayed unattributable in a merged log, and the
+// test then in place only looked at log.Prefix() so it could not see that.
+func TestStampRelayPathScopesTheZapLoggerToo(t *testing.T) {
+	origFlags, origPrefix, origOut := log.Flags(), log.Prefix(), log.Writer()
+	t.Cleanup(func() {
+		log.SetFlags(origFlags)
+		log.SetPrefix(origPrefix)
+		log.SetOutput(origOut)
+	})
+	log.SetOutput(&bytes.Buffer{})
+
+	core, logs := observer.New(zapcore.InfoLevel)
+	scoped := stampRelayPath(zap.New(core), "cosmos<->eth/cosmoshub-1")
+	scoped.Info("Relayer started")
+
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	got, ok := entries[0].ContextMap()[relayPathLogField]
+	if !ok {
+		t.Fatalf("the zap line carries no %q field: %+v; a merged log cannot attribute it "+
+			"to a relay path", relayPathLogField, entries[0].ContextMap())
+	}
+	if got != "cosmos<->eth/cosmoshub-1" {
+		t.Fatalf("%s = %v, want the relay path", relayPathLogField, got)
+	}
+}
+
+// Two label families are the target: [<direction> <Work>] and the closed
+// lowercase list. Neither can contain "][", which is how a caller fakes a second
+// tier when the function it calls is missing a parameter (subscriber/event.go
+// passed "SubscribeCosmos][recovery" as a label). This fails on the forgery, not
+// on the confusing log line it produces months later.
+//
+// [ATTENTION] is exempt, and is the one exemption. It is not a forged label: it
+// is a fixed severity tier this repository already uses in 12 files, arriving
+// over #377, #395, #415 and #457, and it is written the way this test asks for --
+// the label is a parameter, the tier a literal after it. Forbidding it would mean
+// rewriting a settled convention to satisfy a gate aimed at something else.
+func TestNoLogLabelForgesASecondTier(t *testing.T) {
+	root := ".."
+	var offenders []string
+	err := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if name := info.Name(); name == "bindings" || name == "third_party" || name == "bin" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			trimmed := strings.TrimSpace(line)
+			if !strings.Contains(line, "][") || strings.HasPrefix(trimmed, "//") {
+				// A comment describing a past forgery is not one.
+				continue
+			}
+			// "][" is ordinary Go outside a string literal (`map[k][]byte`,
+			// `x[i][j]`). Only a quoted occurrence is a forged label.
+			quoted := strings.SplitN(line, `"`, 2)
+			if len(quoted) != 2 {
+				continue
+			}
+			// Drop the one allowed tier before looking, so "[%s][ATTENTION][x]"
+			// is still caught: only the exemption itself is removed, not the line.
+			if rest := strings.ReplaceAll(quoted[1], "][ATTENTION]", "]"); strings.Contains(rest, "][") {
+				offenders = append(offenders, fmt.Sprintf("%s:%d: %s", path, i+1, trimmed))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("log labels forging a second tier:\n%s\n\nA label that needs a second level needs a "+
+			"parameter, not a closing bracket in the middle of the format string.", strings.Join(offenders, "\n"))
+	}
+}
+
+// The two noise words are gone and must stay gone: the direction is already the
+// label (or the process prefix), so "relay" and "adapter" said nothing.
+func TestNoLogLabelRepeatsTheLayerName(t *testing.T) {
+	for _, banned := range []string{`"[relay `, `"[adapter `, `"\n[relay `, `"\n[adapter `} {
+		out, err := exec.Command("grep", "-rl", "--include=*.go", banned, "..").Output()
+		if err == nil && len(strings.TrimSpace(string(out))) > 0 {
+			t.Errorf("label %q is back in:\n%s", strings.TrimSpace(banned), out)
+		}
+	}
+}
+
+// The point of E3 is one concept, one name. Four names for the timeout scanner
+// and three for the Ethereum sender is not a formatting problem: an operator
+// grepping [SendEthTx] silently missed a third of the sender's own lines.
+//
+// This pins the closed set. Adding a label is deliberate and cheap -- add it
+// here too. Re-inventing a name for something already named is what this stops.
+func TestLogLabelsStayOnTheAgreedList(t *testing.T) {
+	allowed := map[string]bool{
+		// [<direction> <Work>] -- direction is literal where the code knows it,
+		// and "%s" where it comes from the module's own name.
+		"eth->cosmos Subscribe": true, "l2->cosmos Subscribe": true,
+		"cosmos->eth Relay": true, "cosmos->l2 Relay": true, "l2->cosmos Relay": true,
+		"cosmos->eth UpdateClient": true, "cosmos->l2 UpdateClient": true,
+		"eth->cosmos UpdateClient": true,
+		"%s Relay":                 true, "%s UpdateClient": true,
+
+		// [<Work>] -- the emitting code serves more than one direction, so the
+		// chain stays in the name: it is the only thing left that separates them.
+		"SubscribeCosmos": true, "SendEthTx": true, "SendCosmosTx": true,
+		"CreateEthClient": true, "CreateCosmosClient": true,
+		"UpdateCosmosClient": true, "UpdateEthClient": true, "RefreshCosmosClient": true,
+		"CosmosTimeoutScan": true, "%sTimeoutScan": true,
+		"Misbehaviour": true, "PendingTracker": true,
+		// Added on purpose, which is what the message below asks for. #452's
+		// enumeration backstop and #454's owed-ack ledger both landed after the
+		// E3 renaming pass ran, so their labels were never put through it:
+		// FlushCosmos is chain-qualified for the same reason SubscribeCosmos is
+		// (cosmos.NewSource serves both cosmos->eth and cosmos->l2), and AckWatch
+		// replaces a bare [adapter], which is one of the two noise words E3
+		// removed.
+		"FlushCosmos": true, "AckWatch": true,
+
+		// The closed lowercase list: shared by every path, so a direction would
+		// be a lie.
+		// `create-clients` sits here for the same reason as `start`: it names a CLI
+		// command that serves both directions, so a direction in the label would be
+		// a lie.
+		"bench": true, "prover": true, "BatchBuilder": true, "QueueState": true, "start": true,
+		"create-clients": true,
+
+		// Deleted by #417 along with the unbound-header fallback it belongs to;
+		// touching it here would only conflict with that PR.
+		"%s": true,
+	}
+
+	labelRe := regexp.MustCompile(`\.(?:Printf|Println|Fatalf|Infof|Warnf|Errorf|Debugf)\("(?:\\n)?\[([^\]"]+)\]`)
+	var offenders []string
+	err := filepath.Walk("..", func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			if n := info.Name(); n == "bindings" || n == "third_party" || n == "bin" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+			return nil
+		}
+		src, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		for i, line := range strings.Split(string(src), "\n") {
+			for _, m := range labelRe.FindAllStringSubmatch(line, -1) {
+				if !allowed[m[1]] {
+					offenders = append(offenders, fmt.Sprintf("%s:%d: [%s]", path, i+1, m[1]))
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	if len(offenders) > 0 {
+		t.Fatalf("log labels outside the agreed set:\n%s\n\nEither reuse the name this concept already "+
+			"has, or add the new one to this list on purpose.", strings.Join(offenders, "\n"))
 	}
 }

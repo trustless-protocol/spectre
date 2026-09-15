@@ -1,9 +1,12 @@
 package arbitrum
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,6 +92,55 @@ func TestDerivedRootAttestorFinalizedRecheckCorrectsDivergence(t *testing.T) {
 	root, found := store.HighestAttested(false)
 	if !found || root.Provisional || root.Root != finalized.StateRoot || root.L2BlockHash != finalized.BlockHash {
 		t.Fatalf("finalized corrected root: found=%t root=%+v", found, root)
+	}
+}
+
+func TestDerivedRootAttestorReportsWrongHeightDivergence(t *testing.T) {
+	store, err := NewAttestedRootStore("arbitrum-one", 1)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	provisional := testStoreCommitment(100)
+	if err := store.AppendDerived(provisional, time.Unix(1, 0), true); err != nil {
+		t.Fatalf("append provisional root: %v", err)
+	}
+	wrongHeight := testStoreCommitment(101)
+	wrongHeight.BlockHash = common.HexToHash("0xf1")
+	wrongHeight.StateRoot = common.HexToHash("0xf2")
+	runtime := &derivedTestRuntime{
+		snapshot: RuntimeSnapshot{
+			Finalized:      wrongHeight,
+			FinalizedSeen:  true,
+			Unsafe:         wrongHeight,
+			UnsafeObserved: true,
+		},
+		commitments: map[uint64]BlockCommitment{100: wrongHeight},
+	}
+	attestor, err := NewDerivedRootAttestor(runtime, store, DerivedAttestorConfig{
+		AttestationHead: RunModeUnsafe,
+		Disabled:        true,
+		GapBlocks:       1,
+		MaxRoots:        10,
+	})
+	if err != nil {
+		t.Fatalf("create derived attestor: %v", err)
+	}
+
+	var logs bytes.Buffer
+	previousOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(previousOutput) })
+
+	err = attestor.SyncOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "returned commitment for L2 block 101") {
+		t.Fatalf("SyncOnce error = %v, want wrong-height recheck failure", err)
+	}
+	if !strings.Contains(logs.String(), "Arbitrum HEAD DIVERGENCE") {
+		t.Fatalf("wrong-height divergence was not logged: %q", logs.String())
+	}
+	root, found := store.DerivedAt(100)
+	if !found || !root.Provisional || root.Root != provisional.StateRoot {
+		t.Fatalf("wrong-height response mutated provisional root: found=%t root=%+v", found, root)
 	}
 }
 
@@ -228,6 +280,90 @@ func TestDerivedRootAttestorPersistsProgressAcrossTransientRecheckFailure(t *tes
 	}
 	if root, found := reloaded.DerivedAt(120); !found || !root.Provisional {
 		t.Fatalf("new unsafe root was not persisted: found=%t root=%+v", found, root)
+	}
+}
+
+func TestNewDerivedRootAttestorFailureMatrix(t *testing.T) {
+	store, err := NewAttestedRootStore("arbitrum-one", 1)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	runtime := &derivedTestRuntime{}
+	for _, tc := range []struct {
+		name string
+		make func() (DerivedRuntime, *AttestedRootStore, DerivedAttestorConfig)
+		want string
+	}{
+		{
+			name: "nil runtime",
+			make: func() (DerivedRuntime, *AttestedRootStore, DerivedAttestorConfig) {
+				return nil, store, DerivedAttestorConfig{GapBlocks: 1, MaxRoots: 1}
+			},
+			want: "runtime",
+		},
+		{
+			name: "nil store",
+			make: func() (DerivedRuntime, *AttestedRootStore, DerivedAttestorConfig) {
+				return runtime, nil, DerivedAttestorConfig{GapBlocks: 1, MaxRoots: 1}
+			},
+			want: "store",
+		},
+		{
+			name: "invalid attestation head",
+			make: func() (DerivedRuntime, *AttestedRootStore, DerivedAttestorConfig) {
+				return runtime, store, DerivedAttestorConfig{AttestationHead: "invalid", GapBlocks: 1, MaxRoots: 1}
+			},
+			want: "must be one of",
+		},
+		{
+			name: "zero gap",
+			make: func() (DerivedRuntime, *AttestedRootStore, DerivedAttestorConfig) {
+				return runtime, store, DerivedAttestorConfig{AttestationHead: RunModeFinalized, GapBlocks: 0, MaxRoots: 1}
+			},
+			want: "gap",
+		},
+		{
+			name: "zero root limit",
+			make: func() (DerivedRuntime, *AttestedRootStore, DerivedAttestorConfig) {
+				return runtime, store, DerivedAttestorConfig{AttestationHead: RunModeFinalized, GapBlocks: 1, MaxRoots: 0}
+			},
+			want: "limit",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime, store, config := tc.make()
+			_, err := NewDerivedRootAttestor(runtime, store, config)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("NewDerivedRootAttestor error = %v, want %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestDerivedRootAttestorFailsClosedWhenHeadCommitmentIsInvalid(t *testing.T) {
+	store, err := NewAttestedRootStore("arbitrum-one", 1)
+	if err != nil {
+		t.Fatalf("create store: %v", err)
+	}
+	runtime := &derivedTestRuntime{snapshot: RuntimeSnapshot{
+		Finalized:      BlockCommitment{BlockNumber: 100},
+		FinalizedSeen:  true,
+		Unsafe:         BlockCommitment{BlockNumber: 101},
+		UnsafeObserved: true,
+	}}
+	attestor, err := NewDerivedRootAttestor(runtime, store, DerivedAttestorConfig{
+		AttestationHead: RunModeUnsafe,
+		GapBlocks:       1,
+		MaxRoots:        1,
+	})
+	if err != nil {
+		t.Fatalf("NewDerivedRootAttestor: %v", err)
+	}
+	if err := attestor.SyncOnce(context.Background()); err == nil || !strings.Contains(err.Error(), "block hash") {
+		t.Fatalf("SyncOnce error = %v, want invalid commitment", err)
+	}
+	if _, found := store.HighestAttested(true); found {
+		t.Fatal("invalid Nitro head entered attested feed")
 	}
 }
 

@@ -16,8 +16,6 @@ import (
 
 	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/core/types"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/test/bufconn"
 )
 
 func TestStartCommandPassesConfigAndContext(t *testing.T) {
@@ -320,18 +318,6 @@ func TestMonitorRuntimeStateBacksOffAfterFailedRefresh(t *testing.T) {
 	}
 }
 
-func TestServeAttestorStopsOnContextCancellation(t *testing.T) {
-	listener := bufconn.Listen(1024)
-	server := grpc.NewServer()
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	err := serveAttestor(ctx, server, listener)
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("context cancellation: got %v", err)
-	}
-}
-
 func TestValidateNitroChainID(t *testing.T) {
 	if err := validateNitroChainID(
 		context.Background(),
@@ -357,22 +343,29 @@ func TestValidateNitroChainID(t *testing.T) {
 	}
 }
 
-func TestGracefulStopReturns(t *testing.T) {
-	listener := bufconn.Listen(1024)
-	server := grpc.NewServer()
-	serveDone := make(chan error, 1)
-	go func() { serveDone <- server.Serve(listener) }()
-
-	gracefulStop(server, time.Second)
-	if err := <-serveDone; err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-		t.Fatalf("serve after graceful stop: got %v", err)
-	}
-}
-
 type chainIDReaderFunc func(context.Context) (*big.Int, error)
 
 func (f chainIDReaderFunc) ChainID(ctx context.Context) (*big.Int, error) {
 	return f(ctx)
+}
+
+func monitorRuntimeStateWithRetry(
+	ctx context.Context,
+	runtimeState runtimeStateRefresher,
+	subscriber arbitrum.NitroHeadSubscriber,
+	reconcileInterval time.Duration,
+	subscriptionRetryInterval time.Duration,
+) {
+	if err := arbitrum.MonitorRuntimeState(ctx, runtimeState, subscriber, arbitrum.RuntimeMonitorConfig{
+		ReconcileInterval:         reconcileInterval,
+		SubscriptionRetryInterval: subscriptionRetryInterval,
+	}); err != nil {
+		panic(err)
+	}
+}
+
+func refreshBackoff(failures int, rateLimited bool) time.Duration {
+	return arbitrum.RuntimeRefreshBackoff(failures, rateLimited)
 }
 
 type testRuntimeRefresher struct {

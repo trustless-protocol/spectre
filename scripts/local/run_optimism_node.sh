@@ -20,11 +20,16 @@
 #   RUN_DIR (.op-devnet-run)    package clones + downloaded artifacts + attestor.env
 #   GAME_WAIT_SECS (900)        max wait for the first proposed game
 #   OP_OBSERVABILITY (0)        set to 1 to include Grafana/Loki/Prometheus
+#   ATTESTOR_SIGNING_KEY / ATTESTOR_PUBLIC_KEY
+#                              optional matching Ed25519 devnet identity; set both
+#                              to replace the checked-in disposable test identity
 
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 REPO_ROOT=$PWD
+# shellcheck disable=SC1091
+. "$REPO_ROOT/scripts/local/devnet_attestor_identity.sh"
 
 ENCLAVE=${ENCLAVE:-op-devnet}
 # main @ 2025-09-19 — newest optimism-package; its ethereum-package pin is Fulu-era,
@@ -232,7 +237,7 @@ ENCLAVE="$ENCLAVE" ETH_PIN="$ETH_PIN" RUN_DIR="$RUN_DIR" \
 . "$RUN_DIR/eth.env" # ETH_RPC / ETH_WS / ETH_BEACON_API
 L1_RPC_URL=$ETH_RPC
 
-# Preflight: fail fast if the beacon endpoint itself is unreachable (wrong port
+# Validate up front: fail fast if the beacon endpoint itself is unreachable (wrong port
 # discovered, or the CL service is down) instead of the finality wait silently
 # looping for 360s. A live beacon answers this endpoint within seconds of the L1
 # coming up — even before finality, it returns 200 with finalized.epoch == 0.
@@ -349,6 +354,9 @@ export ETH_BEACON_API=$ETH_BEACON_API
 export OP_NODE_RPC_URL=$OP_NODE_RPC_URL
 export L2_RPC_URL=$L2_RPC_URL
 export L2_WS_URL=$L2_WS_URL
+export L2_CHAIN_ID=$L2_CHAIN_ID
+export ATTESTOR_SIGNING_KEY=$ATTESTOR_SIGNING_KEY
+export ATTESTOR_PUBLIC_KEY=$ATTESTOR_PUBLIC_KEY
 export DISPUTE_GAME_FACTORY=$DISPUTE_GAME_FACTORY
 export OPTIMISM_PORTAL=$OPTIMISM_PORTAL
 export RESPECTED_GAME_TYPE=$RESPECTED_GAME_TYPE
@@ -362,6 +370,7 @@ export POLL_INTERVAL_SECONDS=2
 export DERIVED_GAP_BLOCKS=5
 export LOOKBACK_BLOCKS=1000
 EOF
+chmod 600 "$ENV_FILE"
 
 log "devnet is up. Attestor env written to $ENV_FILE"
 cat <<EOF

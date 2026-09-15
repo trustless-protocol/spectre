@@ -37,13 +37,13 @@ import (
 	relayertypes "github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/relayer"
 )
 
-// RelayerTestSuite is a suite of tests that wraps IbcEurekaTestSuite
+// RelayerTestSuite is a suite of tests that wraps EthCosmosTestSuite
 // and can provide additional functionality
 type RelayerTestSuite struct {
-	IbcEurekaTestSuite
+	EthCosmosTestSuite
 }
 
-// TestWithIbcEurekaTestSuite is the boilerplate code that allows the test suite to be run
+// TestWithRelayerTestSuite is the boilerplate code that allows the test suite to be run
 func TestWithRelayerTestSuite(t *testing.T) {
 	suite.Run(t, new(RelayerTestSuite))
 }
@@ -318,7 +318,7 @@ func (s *RelayerTestSuite) ICS20TransferERC20TokenBatchedAckToEthTest(
 	}))
 }
 
-func (s *IbcEurekaTestSuite) Test_5_FinalizedTimeoutPacketFromEth() {
+func (s *EthCosmosTestSuite) Test_5_FinalizedTimeoutPacketFromEth() {
 	s.T().Skip("requires upstream gRPC RelayByTx tx retrieval; fast-ibc's daemon auto-relays instead")
 
 	ctx := context.Background()
@@ -326,7 +326,7 @@ func (s *IbcEurekaTestSuite) Test_5_FinalizedTimeoutPacketFromEth() {
 	s.ICS20FinalizedTimeoutPacketFromEthTest(ctx, proofType, 5)
 }
 
-func (s *IbcEurekaTestSuite) ICS20FinalizedTimeoutPacketFromEthTest(
+func (s *EthCosmosTestSuite) ICS20FinalizedTimeoutPacketFromEthTest(
 	ctx context.Context, pt types.SupportedProofType, numOfTransfers int,
 ) {
 	s.Require().Greater(numOfTransfers, 0)

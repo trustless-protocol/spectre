@@ -167,7 +167,7 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 		return
 	}
 	if benchEnabled {
-		log.Printf("[bench][prover] start sigs=%d bucket=%d", len(sigs), bucket)
+		log.Printf("[bench] prover start sigs=%d bucket=%d", len(sigs), bucket)
 	}
 
 	paddedSigs, err = padWithDummies(sigs, art.dummys)
@@ -234,7 +234,7 @@ func (p *EcipProver) GenerateProof(sigs []ValidatorSignature) (
 
 	proof, commitments, commitmentPok, err = ProofToBigInts(gnarkProof)
 	if benchEnabled {
-		log.Printf("[bench][prover] done sigs=%d bucket=%d witness=%s prove=%s verify=%s total=%s",
+		log.Printf("[bench] prover done sigs=%d bucket=%d witness=%s prove=%s verify=%s total=%s",
 			len(sigs), bucket, witnessDur, proveDur, verifyDur, time.Since(totalStart))
 	}
 	return

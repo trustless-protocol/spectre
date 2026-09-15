@@ -2,7 +2,7 @@
 
 set -euxo pipefail
 
-# Deploys the IBC Eureka contracts (E2ETestDeploy) to a running local Ethereum devnet
+# Deploys the IBC v2 contracts (E2ETestDeploy) to a running local Ethereum devnet
 # and patches the relayer config with the resulting addresses + endpoints. The node is
 # owned by scripts/local/run_eth_node.sh; this script is the deploy half that was split
 # out of it.

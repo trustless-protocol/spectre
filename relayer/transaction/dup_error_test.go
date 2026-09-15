@@ -3,6 +3,7 @@ package transaction
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -142,5 +143,52 @@ func TestSplitAroundDuplicateThreadsSequenceAndSumsOnSuccess(t *testing.T) {
 	}
 	if len(seenSequences) != 2 || seenSequences[0] != 100 || seenSequences[1] != 102 {
 		t.Fatalf("halves must be signed with consecutive sequences [100 102], got %v", seenSequences)
+	}
+}
+
+// The batch rung and the split that carries it out are computed in two
+// different places: CosmosBatchLadder returns a size, and
+// splitCosmosBatchAfterDuplicateWith halves the slice itself. Both were pinned
+// -- the ladder by TestLaddersChangeSomethingEachRungAndEnd, the split by the
+// hard-coded sequences above -- but nothing tied them to each other, so either
+// could be changed alone and stay green. The rung is what the operator reads in
+// "splitting ... of %d to %d"; when the two disagree that line reports a size
+// the retry never submitted, and C1's claim that the call site only describes
+// the ladder stops being true.
+func TestSplitAfterDuplicateSubmitsTheSizeTheLadderNames(t *testing.T) {
+	// Odd counts are the interesting ones: integer division is where two
+	// independent halvings drift first.
+	for _, count := range []int{2, 3, 4, 5, 9, 32} {
+		t.Run(fmt.Sprintf("%d messages", count), func(t *testing.T) {
+			rung, ok := CosmosBatchLadder(count)(0)
+			if !ok {
+				t.Fatalf("the ladder reports no rung for %d messages, so the split must not be reached at all", count)
+			}
+
+			var firstSubmitted int
+			send := func(
+				_ context.Context,
+				_ services.CosmosEndpoint,
+				sub []sdk.Msg,
+				_, sequence uint64,
+				_ bool,
+			) (uint64, int, error) {
+				if firstSubmitted == 0 {
+					firstSubmitted = len(sub)
+				}
+				return sequence + uint64(len(sub)), len(sub), nil
+			}
+
+			if _, _, err := splitCosmosBatchAfterDuplicateWith(
+				send, context.Background(), services.CosmosEndpoint{}, make([]sdk.Msg, count), 7, 100,
+			); err != nil {
+				t.Fatalf("split: %v", err)
+			}
+
+			if firstSubmitted != int(rung.To) {
+				t.Fatalf("the ladder named %d messages but the split submitted %d; the log line and the retry disagree",
+					rung.To, firstSubmitted)
+			}
+		})
 	}
 }

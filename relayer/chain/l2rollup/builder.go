@@ -58,12 +58,17 @@ func (b *Builder) Name() string { return b.headerBuilder.Name() }
 
 // Build assembles the trustless client message for the L2 height in header. A
 // proof-assembly failure (L1/L2 RPC down, height not yet available on L1) is
-// transient, so it is wrapped chain.Retryable and the module re-queues; a marshal
-// failure of a fully-assembled header is a programming error, not transient.
+// transient and the module re-queues; a marshal failure of a fully-assembled
+// header is a programming error, not transient.
+//
+// The header-build failure uses chain.Keep, not chain.Transient. Transient here
+// re-labelled everything the header builder had already classified — an attestor
+// answering "that source chain does not exist" arrived at the engine looking like
+// an RPC blip, and no amount of reading the engine would show why.
 func (b *Builder) Build(ctx context.Context, header []byte) (chain.ClientUpdate, error) {
 	request, err := decodeHeaderRequest(header)
 	if err != nil {
-		return chain.ClientUpdate{}, chain.Retryable(err)
+		return chain.ClientUpdate{}, chain.Transient(err)
 	}
 	// Bound the whole proof assembly. A header build is a handful of L1/L2 JSON-RPC
 	// calls, and go-ethereum's HTTP client has no timeout of its own — a node that
@@ -77,7 +82,7 @@ func (b *Builder) Build(ctx context.Context, header []byte) (chain.ClientUpdate,
 
 	msg, committedHeight, err := b.headerBuilder.BuildHeader(ctx, request)
 	if err != nil {
-		return chain.ClientUpdate{}, chain.Retryable(fmt.Errorf("l2: assemble header at height %d: %w", request.Height, err))
+		return chain.ClientUpdate{}, chain.Keep(fmt.Errorf("l2: assemble header at height %d: %w", request.Height, err))
 	}
 	payload, err := msg.EncodeClientMessage()
 	if err != nil {

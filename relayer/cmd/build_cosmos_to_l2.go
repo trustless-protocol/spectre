@@ -49,27 +49,9 @@ func buildCosmosToL2Dest(
 ) (*services.Services, services.RelayDeps, func(), error) {
 	var zero services.RelayDeps
 
-	ethClient, err := relayerclient.DialEthRPC(context.Background(), c2l.EthRpcUrl, relayerclient.DefaultRPCTimeout)
-	if err != nil {
-		return nil, zero, nil, fmt.Errorf("failed to connect to L2 exec rpc: %w", err)
-	}
-
-	var ethWsClient *ethclient.Client
-	if c2l.EthWsUrl != "" {
-		if !strings.HasPrefix(c2l.EthWsUrl, "ws://") && !strings.HasPrefix(c2l.EthWsUrl, "wss://") {
-			return nil, zero, nil, fmt.Errorf("eth_ws_url must use ws:// or wss://, got: %s", c2l.EthWsUrl)
-		}
-		ethWsClient, err = relayerclient.DialEthRPC(context.Background(), c2l.EthWsUrl, relayerclient.DefaultRPCTimeout)
-		if err != nil {
-			return nil, zero, nil, fmt.Errorf("failed to connect to L2 exec ws: %w", err)
-		}
-	}
-
-	cosmosClient, err := relayerclient.DialCosmosRPC(c2l.TmRpcUrl, "/websocket", relayerclient.DefaultRPCTimeout)
-	if err != nil {
-		return nil, zero, nil, fmt.Errorf("failed to create Cosmos RPC client: %w", err)
-	}
-
+	// Config-only validation runs first, for the reason spelled out in
+	// buildCosmosToEthSource: nothing below here has a resource to release.
+	//
 	// No beacon URL and no eth-client-on-Cosmos id: the Cosmos→L2 direction consumes
 	// neither (both belong to the ETH→Cosmos beacon path).
 	if c2l.ICS26ClientID == "" {
@@ -78,10 +60,48 @@ func buildCosmosToL2Dest(
 	if c2l.SpectreClient == "" {
 		return nil, zero, nil, fmt.Errorf("spectre_client address is required in cosmos_to_l2 config")
 	}
+	if c2l.EthWsUrl != "" {
+		if !strings.HasPrefix(c2l.EthWsUrl, "ws://") && !strings.HasPrefix(c2l.EthWsUrl, "wss://") {
+			return nil, zero, nil, fmt.Errorf("eth_ws_url must use ws:// or wss://, got: %s", c2l.EthWsUrl)
+		}
+	}
+	// Parses FETCH_TIMEOUT, so it can fail on a malformed override.
+	cosmosConfig, err := buildCosmosConfig(c2l, batchCfg)
+	if err != nil {
+		return nil, zero, nil, err
+	}
+
+	ethClient, err := relayerclient.DialEthRPC(context.Background(), c2l.EthRpcUrl, relayerclient.DefaultRPCTimeout)
+	if err != nil {
+		return nil, zero, nil, fmt.Errorf("failed to connect to L2 exec rpc: %w", err)
+	}
+
+	var ethWsClient *ethclient.Client
+	if c2l.EthWsUrl != "" {
+		ethWsClient, err = relayerclient.DialEthRPC(context.Background(), c2l.EthWsUrl, relayerclient.DefaultRPCTimeout)
+		if err != nil {
+			ethClient.Close()
+			return nil, zero, nil, fmt.Errorf("failed to connect to L2 exec ws: %w", err)
+		}
+	}
+
+	cosmosClient, err := relayerclient.DialCosmosRPC(c2l.TmRpcUrl, "/websocket", relayerclient.DefaultRPCTimeout)
+	if err != nil {
+		ethClient.Close()
+		if ethWsClient != nil {
+			ethWsClient.Close()
+		}
+		return nil, zero, nil, fmt.Errorf("failed to create Cosmos RPC client: %w", err)
+	}
+
 	if err := cosmosClient.Start(); err != nil {
+		ethClient.Close()
+		if ethWsClient != nil {
+			ethWsClient.Close()
+		}
 		return nil, zero, nil, fmt.Errorf("failed to start Cosmos WS client: %w", err)
 	}
-	cosmosConfig := buildCosmosConfig(c2l, batchCfg)
+
 	deps := services.RelayDeps{
 		Cosmos: services.CosmosEndpoint{Client: cosmosClient},
 		EVM: services.EVMEndpoint{Client: ethClient, WSURL: c2l.EthWsUrl, Contracts: services.EVMContracts{
@@ -127,7 +147,12 @@ func buildCosmosToL2Dest(
 // SpectreClient destination → groth16 builder, with timeout scanning + pinned-set
 // rotation), but WITHOUT the ETH→Cosmos beacon module. It returns nil on clean context
 // cancellation, or the module's first fatal error.
-func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps services.RelayDeps) error {
+// watchAcks is false for a forward-only deployment. Recording a debt there
+// would be worse than recording nothing: with no l2_to_cosmos leg this process
+// never sees the returning acknowledgement, so every entry stays owed forever --
+// durable, unsettleable, and eventually reported as overdue for packets another
+// relayer may well have acknowledged.
+func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps services.RelayDeps, watchAcks bool) error {
 	worker := svc.Worker()
 	bb := svc.BatchBuilder
 	cfg := svc.CosmosConfig()
@@ -137,7 +162,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 	trackCosmosPending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[adapter cosmos->l2] track pending: decode packet: %v", err)
+			log.Printf("[cosmos->l2 Relay] track pending: decode packet: %v", err)
 			return false
 		}
 		return svc.TrackCosmosPending(pkt, height)
@@ -145,7 +170,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 	untrackCosmosPending := func(raw []byte) {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[adapter cosmos->l2] untrack pending: decode packet: %v", err)
+			log.Printf("[cosmos->l2 Relay] untrack pending: decode packet: %v", err)
 			return
 		}
 		svc.UntrackCosmosPending(pkt)
@@ -165,16 +190,12 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		if isShutdownErr(err) && ctx.Err() != nil {
 			return nil
 		}
-		log.Printf("[adapter cosmos->l2] derive initial rotation delay: %v; rotating on startup", err)
+		log.Printf("[cosmos->l2 UpdateClient] derive initial rotation delay: %v; rotating on startup", err)
 		initialRotationDelay = 0
 	}
 
-	module := relay.NewModule(
-		"cosmos->l2",
-		deps.IDs.CosmosOnEVM,
-		cosmos.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.FetchTimeout, deps.Config.BatchConfig, deps.Logger, bb, svc.RecoveryState()),
-		evm.NewDestination(worker, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM),
-		cosmos.NewGroth16Builder(worker, deps.Cosmos, deps.EVM, deps.Config.FetchTimeout, deps.Config.RotationThreshold, cfg.ProofType, cfg.TrustLevel),
+	ackDue, ackSettled := ackWatchHooks(svc)
+	options := []relay.Option{
 		relay.WithTimeoutScanner(0, func(c context.Context) {
 			svc.ScanCosmosTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos)
 		}),
@@ -182,6 +203,20 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		relay.WithPeriodicUpdate(periodicUpdateInterval, initialRotationDelay, func(c context.Context) error {
 			return svc.RotatePinnedSet(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM)
 		}),
+	}
+	if watchAcks {
+		// This direction RECORDS the debt; the l2->cosmos leg settles it and owns
+		// the single overdue reporter. Both close over this svc, which is what lets
+		// the settlement from the other side find the entry.
+		options = append(options, relay.WithAckWatch(0, 0, ackDue, ackSettled, nil))
+	}
+	module := relay.NewModule(
+		"cosmos->l2",
+		deps.IDs.CosmosOnEVM,
+		cosmos.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.FetchTimeout, deps.Config.BatchConfig, deps.Logger, bb, svc.RecoveryState()),
+		evm.NewDestination(worker, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM),
+		cosmos.NewGroth16Builder(worker, deps.Cosmos, deps.EVM, deps.Config.FetchTimeout, deps.Config.RotationThreshold, cfg.ProofType, cfg.TrustLevel),
+		options...,
 	)
 
 	runCtx, cancel := context.WithCancel(ctx)

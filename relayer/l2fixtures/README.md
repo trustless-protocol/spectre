@@ -15,8 +15,8 @@ number, and a list of uniquely named proof requests. Each request has `role`,
 Run it only with archive-capable endpoints:
 
 ```text
-just capture-l2-fixture /secure/base-capture.json packages/base-verifier/fixtures/base-sepolia
-just capture-l2-fixture /secure/op-capture.json packages/op-verifier/fixtures/op-sepolia
+just capture-l2-fixture /secure/base-capture.json packages/l2-op-stack/fixtures/base-sepolia
+just capture-l2-fixture /secure/op-capture.json packages/l2-op-stack/fixtures/op-sepolia
 ```
 
 The command creates `fixture.json` and a schema-v2 `provenance.json` accepted by

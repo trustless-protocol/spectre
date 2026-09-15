@@ -8,8 +8,8 @@
     unused_crate_dependencies
 )]
 
-use arbitrum_verifier as _;
 use cosmwasm_std as _;
+use l2_arbitrum as _;
 use l2_client as _;
 
 pub mod contract;

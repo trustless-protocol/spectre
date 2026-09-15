@@ -33,7 +33,9 @@ const l2SourceConfigJSON = `{
         "rollup_profile": {
           "common": {
             "l2_router": "0xrouter",
-            "profile_version": "op_attestor_v1"
+            "profile_version": "op_attestor_v1",
+            "attestor_public_key": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "attestation_head": "safe"
           }
         }
       }

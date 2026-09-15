@@ -31,6 +31,7 @@ type DaemonConfig struct {
 	L1RPCURL                   string  `json:"l1_rpc_url"`
 	L1ChainID                  uint64  `json:"l1_chain_id"`
 	L2ChainID                  uint64  `json:"l2_chain_id"`
+	AttestationSigningKey      string  `json:"attestation_signing_key"`
 	RollupCoreAddress          string  `json:"rollup_core_address"`
 	AssertionsMappingSlot      string  `json:"assertions_mapping_slot"`
 	AssertionStatusOffset      uint8   `json:"assertion_status_offset"`
@@ -119,6 +120,9 @@ func (c DaemonConfig) Validate() error {
 	}
 	if c.L2ChainID == 0 {
 		return errors.New("l2_chain_id must be greater than zero")
+	}
+	if strings.TrimSpace(c.AttestationSigningKey) == "" {
+		return errors.New("attestation_signing_key is required")
 	}
 	if !common.IsHexAddress(c.RollupCoreAddress) ||
 		common.HexToAddress(c.RollupCoreAddress) == (common.Address{}) {

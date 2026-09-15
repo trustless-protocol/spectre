@@ -32,7 +32,9 @@ func profileWithChainID(id uint64) json.RawMessage {
 			"l2_router": "0x6c4729db04a00b4a76d854df35980e1646dff4ba",
 			"commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
 			"profile_version": "arbitrum_attestor_v1",
-			"l2_header_fork": "london"
+			"l2_header_fork": "london",
+			"attestor_public_key": "0x1111111111111111111111111111111111111111111111111111111111111111",
+			"attestation_head": "safe"
 		}
 	}`, id))
 }
@@ -85,9 +87,9 @@ func TestValidateL2ChainIDsAcceptsAMatch(t *testing.T) {
 // TestValidateL2ChainIDsToleratesAnUnreachableEndpoint separates "wrong" from
 // "unknown".
 //
-// A node that is briefly down is an availability problem, not a configuration
-// one — the relay loops already retry RPCs, so refusing to boot would turn a
-// blip into an outage. Only a definite disagreement is fatal.
+// The comparison reports a briefly down node as unknown rather than as a
+// profile mismatch. The EVM signer lock remains a separate startup gate and
+// refuses to submit without an endpoint-reported chain id.
 func TestValidateL2ChainIDsToleratesAnUnreachableEndpoint(t *testing.T) {
 	t.Parallel()
 
@@ -98,7 +100,7 @@ func TestValidateL2ChainIDsToleratesAnUnreachableEndpoint(t *testing.T) {
 	}
 
 	if err := validateL2ChainIDs(context.Background(), []l2ToCosmosConfig{cfg}); err != nil {
-		t.Fatalf("an unreachable endpoint must not block startup: %v", err)
+		t.Fatalf("an unreachable endpoint must not be reported as a profile mismatch: %v", err)
 	}
 }
 
@@ -177,10 +179,10 @@ func TestValidateL2ChainIDsRejectsAnOutOfRangeAnswer(t *testing.T) {
 }
 
 // TestVerifyL2ChainIDNoAnswerPolicyDiffersByCaller pins the deliberate asymmetry
-// between the two callers: `start` tolerates an unreachable endpoint (retrying
-// is the relay loops' job, and a blip must not become an outage), while
-// create-clients refuses (it is about to commit the profile into a client that
-// cannot be repaired afterwards).
+// between the two profile-check callers: start reports an unreachable endpoint
+// as unverified, while create-clients refuses because it is about to commit the
+// profile into a client that cannot be repaired. start's EVM signer lock remains
+// a separate gate and will refuse to submit with no chain id.
 func TestVerifyL2ChainIDNoAnswerPolicyDiffersByCaller(t *testing.T) {
 	t.Parallel()
 
@@ -193,7 +195,7 @@ func TestVerifyL2ChainIDNoAnswerPolicyDiffersByCaller(t *testing.T) {
 			label: "l2_to_cosmos config", rpcURL: dead, want: 1, tolerateNoAnswer: true,
 		})
 		if err != nil {
-			t.Fatalf("an unreachable endpoint must not stop startup: %v", err)
+			t.Fatalf("an unreachable endpoint must remain unverified rather than mismatched: %v", err)
 		}
 		if verified {
 			t.Fatal("a tolerated no-answer must report verified=false; " +
@@ -222,7 +224,7 @@ func TestVerifyL2ChainIDRejectsAMismatchForCreateClients(t *testing.T) {
 	t.Parallel()
 
 	srv := chainIDServer(t, "0x66eee") // 421614
-	_, err := preflightL2ClientChainID(context.Background(), &l2ClientConfig{
+	_, err := validateL2ClientChainID(context.Background(), &l2ClientConfig{
 		L2RPCURL:      srv.URL,
 		RollupProfile: profileWithChainID(412346), // the devnet
 	})
@@ -249,14 +251,15 @@ func TestValidateL2ChainIDsDoesNotClaimAnUnrunCheck(t *testing.T) {
 	log.SetOutput(&buf)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
-	// Nothing is listening, so the probe gets no answer and startup tolerates it.
+	// Nothing is listening, so the profile comparison gets no answer. The later
+	// EVM signer lock will stop startup rather than run without a nonce guard.
 	sources := []l2ToCosmosConfig{{
 		AttestorSrcChain: "unreachable",
 		L2RpcUrl:         "http://127.0.0.1:1",
 		RollupProfile:    json.RawMessage(`{"common":{"l2_chain_id":421614}}`),
 	}}
 	if err := validateL2ChainIDs(context.Background(), sources); err != nil {
-		t.Fatalf("an unreachable endpoint must not stop startup: %v", err)
+		t.Fatalf("an unreachable endpoint must remain unverified rather than mismatched: %v", err)
 	}
 
 	out := buf.String()

@@ -1,15 +1,12 @@
 // Package l2rollup holds the relayer adapters for the L2->Cosmos path (Arbitrum /
-// OP-Stack). Per Dũng's light-client design the Cosmos side is TRUSTLESS — no
-// relayer signature: the L2 wasm light client verifies L2 state against the shared
-// Ethereum light client + L1 rollup proofs. So this Destination mirrors the
-// existing beacon (ETH->Cosmos) Cosmos destination almost exactly:
+// OP-Stack). The Cosmos-side wasm client authenticates a canonical L2 block identity
+// with its pinned Ed25519 threshold set, then verifies the router account proof
+// against that authenticated state root. This Destination mirrors the existing
+// beacon (ETH->Cosmos) Cosmos destination almost exactly:
 //
 //   - UpdateClient submits MsgUpdateClient wrapping a wasm ClientMessage whose Data
-//     is the L2 header (the builder produces it). No ETH-first ordering step is
-//     needed: the header builder proves against the ETH client's ALREADY-trusted L1
-//     block (it reads EthClientLatestSlotAndBlock), so the update verifies against
-//     current ETH state. ETH-client freshness only bounds how recent an L2 update
-//     can be, it is not a correctness ordering requirement.
+//     is the signed L2 header (the builder produces it). No ETH-first ordering step
+//     is needed: the attestor-trusted L2 client has no Ethereum-client dependency.
 //   - RelayPackets submits the standard channeltypesv2 recv / ack / timeout
 //     messages, which the client maps to VerifyMembership / VerifyNonMembership.
 //     The L2 client does not decode packets.
@@ -149,7 +146,7 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 func (d *Destination) proofHeight(ctx context.Context) (clienttypes.Height, error) {
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	h, err := relayerclient.GetWasmClientLatestHeightWithContext(readCtx, d.cosmos.CosmosClient(), d.clientID)
+	h, err := relayerclient.GetWasmClientLatestHeight(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
 		return clienttypes.Height{}, fmt.Errorf("l2 dest: read L2 client latest height: %w", err)
 	}
@@ -163,7 +160,7 @@ func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool
 	if err := pkt.Unmarshal(packet); err != nil {
 		return false, fmt.Errorf("l2 dest: decode packet: %w", err)
 	}
-	return subscriber.HasCosmosPacketReceiptWithContext(ctx, d.cosmos, pkt)
+	return subscriber.HasCosmosPacketReceipt(ctx, d.cosmos, pkt)
 }
 
 // ClientExpiresAt reports when the L2 wasm client would expire on its own timer.
@@ -172,6 +169,7 @@ func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool
 // SHARED L1 (Ethereum) client, whose freshness the ETH path refreshes. So the L2
 // client has no self-expiry timer — return a far-future time so the anti-expiry
 // refresh routine never force-updates it (its freshness is the L1 client's).
-func (d *Destination) ClientExpiresAt(_ context.Context, _ string) (time.Time, error) {
-	return time.Now().Add(100 * 365 * 24 * time.Hour), nil
+func (d *Destination) ClientExpiresAt(_ context.Context, _ string) (time.Time, time.Duration, error) {
+	// No self-expiry, so no trusting period to size a margin against.
+	return time.Now().Add(100 * 365 * 24 * time.Hour), 0, nil
 }

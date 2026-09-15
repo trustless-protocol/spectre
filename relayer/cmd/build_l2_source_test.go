@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -19,15 +20,16 @@ import (
 
 func validL2Config() l2ToCosmosConfig {
 	return l2ToCosmosConfig{
-		L2RpcUrl:         "http://127.0.0.1:9545",
-		TmRpcUrl:         "http://127.0.0.1:26657",
-		AttestorAddr:     "127.0.0.1:3001",
-		AttestorSrcChain: "op-sepolia",
-		L2WasmClientID:   "08-wasm-1",
-		L2ICS26ClientID:  "client-0",
-		HeadKind:         "safe",
-		RollupProfile:    json.RawMessage(`{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}`),
-		kind:             chain.OPStack,
+		L2RpcUrl:          "http://127.0.0.1:9545",
+		TmRpcUrl:          "http://127.0.0.1:26657",
+		AttestorEndpoints: []l2AttestorEndpointConfig{{Address: "127.0.0.1:3001", AttestorIndex: 0}},
+		AttestorSrcChain:  "op-sepolia",
+		Attestors:         validL2Attestors(),
+		L2WasmClientID:    "08-wasm-1",
+		L2ICS26ClientID:   "client-0",
+		HeadKind:          "safe",
+		RollupProfile:     json.RawMessage(`{"common":{"l2_chain_id":10,"l2_router":"0x1111111111111111111111111111111111111111"}}`),
+		kind:              chain.OPStack,
 	}
 }
 
@@ -37,10 +39,10 @@ func TestL2Config_Validate(t *testing.T) {
 	}
 
 	cases := map[string]func(*l2ToCosmosConfig){
-		"missing l2_rpc_url":     func(c *l2ToCosmosConfig) { c.L2RpcUrl = "" },
-		"missing attestor_addr":  func(c *l2ToCosmosConfig) { c.AttestorAddr = "" },
-		"missing wasm client id": func(c *l2ToCosmosConfig) { c.L2WasmClientID = "" },
-		"empty profile":          func(c *l2ToCosmosConfig) { c.RollupProfile = nil },
+		"missing l2_rpc_url":        func(c *l2ToCosmosConfig) { c.L2RpcUrl = "" },
+		"missing attestor endpoint": func(c *l2ToCosmosConfig) { c.AttestorEndpoints = nil },
+		"missing wasm client id":    func(c *l2ToCosmosConfig) { c.L2WasmClientID = "" },
+		"empty profile":             func(c *l2ToCosmosConfig) { c.RollupProfile = nil },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -67,13 +69,13 @@ func TestL2Config_ValidateForClientCreation(t *testing.T) {
 
 	// The exemption is narrow: it must not spill onto the other required fields.
 	for name, mutate := range map[string]func(*l2ToCosmosConfig){
-		"missing l2_rpc_url":      func(c *l2ToCosmosConfig) { c.L2RpcUrl = "" },
-		"missing attestor_addr":   func(c *l2ToCosmosConfig) { c.AttestorAddr = "" },
-		"missing l2_ics26_client": func(c *l2ToCosmosConfig) { c.L2ICS26ClientID = "" },
-		"missing tm_rpc_url":      func(c *l2ToCosmosConfig) { c.TmRpcUrl = "" },
-		"missing attestor_src":    func(c *l2ToCosmosConfig) { c.AttestorSrcChain = "" },
-		"empty profile":           func(c *l2ToCosmosConfig) { c.RollupProfile = nil },
-		"bad head_kind":           func(c *l2ToCosmosConfig) { c.HeadKind = "nonsense" },
+		"missing l2_rpc_url":        func(c *l2ToCosmosConfig) { c.L2RpcUrl = "" },
+		"missing attestor endpoint": func(c *l2ToCosmosConfig) { c.AttestorEndpoints = nil },
+		"missing l2_ics26_client":   func(c *l2ToCosmosConfig) { c.L2ICS26ClientID = "" },
+		"missing tm_rpc_url":        func(c *l2ToCosmosConfig) { c.TmRpcUrl = "" },
+		"missing attestor_src":      func(c *l2ToCosmosConfig) { c.AttestorSrcChain = "" },
+		"empty profile":             func(c *l2ToCosmosConfig) { c.RollupProfile = nil },
+		"bad head_kind":             func(c *l2ToCosmosConfig) { c.HeadKind = "nonsense" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			c := validL2Config()
@@ -101,9 +103,10 @@ func TestLoadConfigForClientCreation_AcceptsUncreatedWasmClient(t *testing.T) {
 			"ics26_client_id":"arb-client-0"}},
 		{"name":"arb-to-cosmos","src_chain":"arbitrum","dst_chain":"cosmos","config":{
 			"l2_rpc_url":"http://l2","tm_rpc_url":"http://tm",
-			"attestor_addr":"127.0.0.1:3002","attestor_src_chain":"arbitrum-sepolia",
+			"attestor_endpoints":[{"address":"127.0.0.1:3002","attestor_index":0}],"attestor_src_chain":"arbitrum-sepolia",
+			"attestors":{"public_keys":["gojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="],"threshold":1},
 			"l2_wasm_client_id":"","l2_ics26_client_id":"arb-client-0","head_kind":"unsafe",
-			"rollup_profile":{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}}}]}`
+			"rollup_profile":{"common":{"l2_chain_id":10,"l2_router":"0x1111111111111111111111111111111111111111"}}}}]}`
 
 	path := filepath.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
@@ -183,10 +186,11 @@ func TestL2RouterFromProfile(t *testing.T) {
 func TestLoadConfig_L2Source(t *testing.T) {
 	raw := `{"modules":[{"name":"op","src_chain":"opstack","dst_chain":"cosmos","config":{
 		"l1_rpc_url":"http://l1","l2_rpc_url":"http://l2","tm_rpc_url":"http://tm",
-		"attestor_addr":"127.0.0.1:3001","attestor_src_chain":"op-sepolia",
+		"attestor_endpoints":[{"address":"127.0.0.1:3001","attestor_index":0}],"attestor_src_chain":"op-sepolia",
+		"attestors":{"public_keys":["gojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="],"threshold":1},
 		"eth_beacon_api_url":"http://beacon",
 		"l2_wasm_client_id":"08-wasm-1","l2_ics26_client_id":"client-0","head_kind":"safe",
-		"rollup_profile":{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}}}]}`
+		"rollup_profile":{"common":{"l2_chain_id":10,"l2_router":"0x1111111111111111111111111111111111111111"}}}}]}`
 	var jc jsonConfig
 	if err := json.Unmarshal([]byte(raw), &jc); err != nil {
 		t.Fatalf("unmarshal: %v", err)
@@ -206,6 +210,69 @@ func TestLoadConfig_L2Source(t *testing.T) {
 	}
 	if one.kind != chain.OPStack || one.AttestorSrcChain != "op-sepolia" {
 		t.Fatalf("parsed config mismatch: %+v", one)
+	}
+}
+
+func TestLoadConfig_RejectsAttestorKeyReuseAcrossFinalityTiers(t *testing.T) {
+	module := func(name, head string, attestors [][]byte) configModule {
+		cfg := validL2Config()
+		cfg.HeadKind = head
+		cfg.Attestors.PublicKeys = attestors
+		raw, err := json.Marshal(cfg)
+		if err != nil {
+			t.Fatalf("marshal L2 config: %v", err)
+		}
+		return configModule{
+			Name: name, SrcChain: string(chain.OPStack), DstChain: string(chain.Cosmos), Config: raw,
+		}
+	}
+	writeConfig := func(modules []configModule) string {
+		t.Helper()
+		raw, err := json.Marshal(jsonConfig{Modules: modules})
+		if err != nil {
+			t.Fatalf("marshal config: %v", err)
+		}
+		path := filepath.Join(t.TempDir(), "config.json")
+		if err := os.WriteFile(path, raw, 0o600); err != nil {
+			t.Fatalf("write config: %v", err)
+		}
+		return path
+	}
+
+	shared := validL2Attestors().PublicKeys
+	_, err := loadConfig(writeConfig([]configModule{
+		module("op-safe", "safe", shared),
+		module("op-finalized", "finalized", shared),
+	}))
+	if err == nil || !strings.Contains(err.Error(), "reuse attestor public key") || !strings.Contains(err.Error(), "disjoint keys per finality tier") {
+		t.Fatalf("cross-tier key reuse error = %v", err)
+	}
+
+	distinct := make([]byte, len(shared[0]))
+	copy(distinct, shared[0])
+	distinct[0]--
+	overlapping := [][]byte{shared[0], distinct}
+	sort.Slice(overlapping, func(i, j int) bool { return string(overlapping[i]) < string(overlapping[j]) })
+	_, err = loadConfig(writeConfig([]configModule{
+		module("op-safe", "safe", shared),
+		module("op-finalized", "finalized", overlapping),
+	}))
+	if err == nil || !strings.Contains(err.Error(), "reuse attestor public key") {
+		t.Fatalf("partially overlapping cross-tier keys error = %v", err)
+	}
+
+	if _, err := loadConfig(writeConfig([]configModule{
+		module("op-safe-a", "safe", shared),
+		module("op-safe-b", "", shared),
+	})); err != nil {
+		t.Fatalf("same-tier key reuse rejected: %v", err)
+	}
+
+	if _, err := loadConfig(writeConfig([]configModule{
+		module("op-safe", "safe", shared),
+		module("op-finalized", "finalized", [][]byte{distinct}),
+	})); err != nil {
+		t.Fatalf("separate finality-tier key sets rejected: %v", err)
 	}
 }
 
@@ -248,7 +315,7 @@ func TestFindL2TimeoutReturnPath(t *testing.T) {
 	src := validL2Config()
 	src.L2RpcUrl = sourceRPC.URL
 	src.TmRpcUrl = "http://cosmos-a"
-	src.RollupProfile = json.RawMessage(`{"common":{"l2_router":"0x1111111111111111111111111111111111111111"}}`)
+	src.RollupProfile = json.RawMessage(`{"common":{"l2_chain_id":10,"l2_router":"0x1111111111111111111111111111111111111111"}}`)
 	matchingDest := cosmosToEthConfig{
 		EthRpcUrl:     "http://write-l2-a",
 		TmRpcUrl:      "http://cosmos-a",

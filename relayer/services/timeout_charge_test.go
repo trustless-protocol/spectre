@@ -158,12 +158,12 @@ func TestDeadLetteredTimeoutsAreInspectable(t *testing.T) {
 	}
 
 	packets := tracker.DeadLetteredTimeoutPackets()
-	if len(packets) != 1 || packets[0].Sequence != 42 {
-		t.Fatalf("dead-lettered packets must be listable for an operator, got %+v", packets)
+	if len(packets) != 1 || packets[0].Sequence != 42 || packets[0].SourceClient != pkt.SourceClient {
+		t.Fatalf("the listing must identify which packet gave up (client and sequence), got %+v", packets)
 	}
 
 	if again := tracker.DeadLetteredTimeoutPackets(); len(again) != 1 || again[0].Sequence != pkt.Sequence {
-		t.Fatalf("listing must not silence the timeout alarm, got %+v", again)
+		t.Fatalf("reading must not silence the timeout alarm, got %+v", again)
 	}
 }
 

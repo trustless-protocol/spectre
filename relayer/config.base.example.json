@@ -30,8 +30,9 @@
       "config": {
         "l2_rpc_url": "http://127.0.0.1:8545",
         "tm_rpc_url": "http://127.0.0.1:26657",
-        "attestor_addr": "127.0.0.1:3003",
+        "attestor_endpoints": [{"address": "127.0.0.1:3003", "attestor_index": 0}],
         "attestor_src_chain": "basedev",
+        "attestors": {"public_keys": ["XZ+76qOWCo/r113X56pAXt0hi3AZpY9LU44nF4vCMmg="], "threshold": 1},
         "l2_wasm_client_id": "08-wasm-3",
         "l2_ics26_client_id": "base-client-0",
         "head_kind": "safe",

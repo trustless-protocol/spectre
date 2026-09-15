@@ -26,8 +26,16 @@ import (
 // circuit fails fast before the operator tries to use it.
 func main() {
 	var gpuProve bool
+	var listBuckets bool
 	flag.BoolVar(&gpuProve, "gpu-prove", false, "use the ICICLE GPU backend for setup/proving (or set GPU_PROVE=1); requires an icicle-enabled build")
+	flag.BoolVar(&listBuckets, "list-buckets", false, "print the configured prover buckets and exit")
 	flag.Parse()
+	if listBuckets {
+		for _, bucket := range prover.Buckets {
+			fmt.Println(bucket)
+		}
+		return
+	}
 
 	outDir := "bin"
 	solOutDir := filepath.Join("..", "contracts", "verifiers")

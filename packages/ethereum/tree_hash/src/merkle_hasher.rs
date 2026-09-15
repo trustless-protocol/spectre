@@ -233,6 +233,9 @@ impl MerkleHasher {
     /// Returns an error if the given leaf would exceed the maximum permissible number of leaves
     /// defined by the initialization `depth`. E.g., a tree of `depth == 2` can only accept 2
     /// leaves. A tree of `depth == 14` can only accept 8,192 leaves.
+    // Keep the modulo form for the pinned optimizer's Rust MSRV; newer Clippy otherwise
+    // recommends usize::is_multiple_of, which is unavailable there.
+    #[allow(clippy::manual_is_multiple_of)]
     fn process_leaf(&mut self, leaf: &[u8]) -> Result<(), Error> {
         assert_eq!(leaf.len(), HASHSIZE, "a leaf must be 32 bytes");
 

@@ -22,6 +22,12 @@ pub struct ProofLimits {
 }
 
 impl ProofLimits {
+    /// Validates only cheap count and byte-length account-proof bounds.
+    /// RLP shape validation remains part of proof verification after authentication.
+    pub fn validate_account_bounds(self, proof: &EvmAccountProof) -> Result<(), Error> {
+        validate_node_bounds(&proof.proof, self.max_account_nodes, self.max_node_bytes)
+    }
+
     /// Validates an account proof before it is passed to the trie database.
     pub fn validate_account(self, proof: &EvmAccountProof) -> Result<(), Error> {
         validate_nodes(&proof.proof, self.max_account_nodes, self.max_node_bytes)
@@ -80,6 +86,22 @@ pub fn verify_bounded_storage_zero(
 }
 
 fn validate_nodes(nodes: &[Vec<u8>], max_nodes: usize, max_node_bytes: usize) -> Result<(), Error> {
+    validate_node_bounds(nodes, max_nodes, max_node_bytes)?;
+    for node in nodes {
+        match rlp::Rlp::new(node).item_count() {
+            Ok(2 | 17) => {}
+            Ok(_) => return Err(Error::Proof("invalid RLP trie node shape".into())),
+            Err(_) => return Err(Error::Proof("malformed RLP trie node".into())),
+        }
+    }
+    Ok(())
+}
+
+fn validate_node_bounds(
+    nodes: &[Vec<u8>],
+    max_nodes: usize,
+    max_node_bytes: usize,
+) -> Result<(), Error> {
     if nodes.len() > max_nodes {
         return Err(Error::ProofLimit {
             limit: "proof node count",
@@ -91,13 +113,6 @@ fn validate_nodes(nodes: &[Vec<u8>], max_nodes: usize, max_node_bytes: usize) ->
             limit: "RLP node byte length",
             maximum: max_node_bytes,
         });
-    }
-    for node in nodes {
-        match rlp::Rlp::new(node).item_count() {
-            Ok(2 | 17) => {}
-            Ok(_) => return Err(Error::Proof("invalid RLP trie node shape".into())),
-            Err(_) => return Err(Error::Proof("malformed RLP trie node".into())),
-        }
     }
     Ok(())
 }

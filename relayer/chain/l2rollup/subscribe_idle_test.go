@@ -28,31 +28,6 @@ const (
 	idleTestHead     = uint64(100)
 )
 
-// This covers the FALLBACK behaviour, not the size of the window: comparing
-// against defaultL2StartupLookback is right here, because the property under test
-// is "an absent or unparseable env var falls back to the default", whatever the
-// default is. TestDefaultL2StartupLookbackIsPinned owns the value itself.
-func TestL2StartupLookbackBlocksFromEnv(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		name string
-		raw  string
-		want uint64
-	}{
-		{name: "empty uses default", raw: "", want: defaultL2StartupLookback},
-		{name: "valid override", raw: "1200", want: 1200},
-		{name: "zero disables startup recovery", raw: "0", want: 0},
-		{name: "invalid uses default", raw: "not-a-number", want: defaultL2StartupLookback},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			if got := l2StartupLookbackBlocksFromEnv(tc.raw); got != tc.want {
-				t.Fatalf("l2StartupLookbackBlocksFromEnv(%q) = %d, want %d", tc.raw, got, tc.want)
-			}
-		})
-	}
-}
-
 // idleL2Node is a JSON-RPC stub for a demand-driven rollup that has gone quiet:
 // it serves one SendPacket log on the first eth_getLogs call and nothing after,
 // while eth_getBlockByNumber reports the same head forever. Arbitrum Nitro seals a
@@ -127,7 +102,9 @@ func (n *idleL2Node) start(t *testing.T) *ethclient.Client {
 			if head == 0 {
 				head = idleTestHead
 			}
-			result = idleHeaderJSON(head)
+			// measureBlockTime asks for two specific heights; answering every
+			// request with the head would report a chain whose clock never moves.
+			result = idleHeaderJSON(idleRequestedBlock(t, req.Params, head))
 		case "eth_getLogs":
 			from, to := idleFilterRange(t, req.Params)
 			n.mu.Lock()
@@ -232,15 +209,23 @@ func IICS26RouterMsgsPacketFor(sourceClient, destClient string) contractICS26Rou
 }
 
 // idleHeaderJSON is the minimum header go-ethereum decodes into types.Header.
+// idleTestBlockTime is the block time the fake node's timestamps imply, so
+// measureBlockTime reads a real number rather than falling back.
+const idleTestBlockTime = 2 * time.Second
+
 func idleHeaderJSON(number uint64) string {
 	zero := ethcommon.Hash{}.Hex()
+	// Timestamps advance with the block number at idleTestBlockTime. A header
+	// endpoint reporting one timestamp for every block is indistinguishable from
+	// a stopped chain, and measureBlockTime rightly refuses to size a window from it.
+	timestamp := number * uint64(idleTestBlockTime/time.Second)
 	return fmt.Sprintf(`{
 		"parentHash":%q,"sha3Uncles":%q,"miner":"0x0000000000000000000000000000000000000000",
 		"stateRoot":%q,"transactionsRoot":%q,"receiptsRoot":%q,
 		"logsBloom":"0x%0512x","difficulty":"0x1","number":"0x%x",
-		"gasLimit":"0x1","gasUsed":"0x0","timestamp":"0x1","extraData":"0x",
+		"gasLimit":"0x1","gasUsed":"0x0","timestamp":"0x%x","extraData":"0x",
 		"mixHash":%q,"nonce":"0x0000000000000000","baseFeePerGas":"0x1","hash":%q
-	}`, zero, zero, zero, zero, zero, 0, number, zero, zero)
+	}`, zero, zero, zero, zero, zero, 0, number, timestamp, zero, zero)
 }
 
 // TestSubscribeRetriesPendingWhileL2IsIdle is the regression test for a stall that
@@ -501,32 +486,30 @@ func TestSubscribeSurvivesTransientHeadErrorAtStartup(t *testing.T) {
 	if len(ranges) == 0 {
 		t.Fatal("no eth_getLogs range recorded")
 	}
-	if wantFrom := startHead - defaultL2StartupLookback; ranges[0][0] != wantFrom {
-		t.Fatalf("first scan started at %d, want %d (head - lookback)", ranges[0][0], wantFrom)
+	wantLookback := lookbackBlocks(startupWindow(0), idleTestBlockTime)
+	if wantFrom := startHead - wantLookback; ranges[0][0] != wantFrom {
+		t.Fatalf("first scan started at %d, want %d (head - %d block lookback)", ranges[0][0], wantFrom, wantLookback)
 	}
 }
 
-// The startup lookback is the ENTIRE crash-recovery window for the L2 path: the
-// cursor is not persisted, so a packet emitted more than this many blocks before a
-// restart is never rescanned and its escrow stays locked. That makes the number
-// itself a safety property, not a tuning knob.
-//
-// It needs its own test because the behavioural tests around it compare against
-// the constant rather than against a value — correctly so, since they are checking
-// the fallback and the head-minus-lookback arithmetic, not the size of the window.
-// Nothing there fails if the window shrinks to a single block, which is how a
-// change to this value would otherwise reach main unnoticed.
-//
-// If this test fails, the value was changed. That is allowed, but not silently:
-// re-derive it against the worst-case attestor/finality lag for the configured
-// head_kind (a finalized OP frontier can sit 20-40 minutes behind the head) and
-// update the reasoning in the constant's comment along with the number here.
-func TestDefaultL2StartupLookback_IsPinned(t *testing.T) {
-	t.Parallel()
-
-	const want = 256 // ~8 minutes of OP blocks at 2s
-	if defaultL2StartupLookback != want {
-		t.Fatalf("defaultL2StartupLookback = %d, want %d; see the comment above before changing this",
-			defaultL2StartupLookback, want)
+// idleRequestedBlock reads the block number an eth_getBlockByNumber call asked
+// for. Tags ("latest", "safe", "finalized") mean the head; a hex quantity means
+// that exact block, which is what measureBlockTime needs.
+func idleRequestedBlock(t *testing.T, params []json.RawMessage, head uint64) uint64 {
+	t.Helper()
+	if len(params) == 0 {
+		return head
 	}
+	var raw string
+	if err := json.Unmarshal(params[0], &raw); err != nil {
+		return head
+	}
+	if !strings.HasPrefix(raw, "0x") {
+		return head
+	}
+	number, err := strconv.ParseUint(strings.TrimPrefix(raw, "0x"), 16, 64)
+	if err != nil {
+		return head
+	}
+	return number
 }

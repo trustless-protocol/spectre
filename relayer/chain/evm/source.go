@@ -2,17 +2,18 @@ package evm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"math/big"
 	"strconv"
-	"sync"
 	"time"
 
 	"relayer/chain"
 	relayerclient "relayer/client"
 	"relayer/services"
 	"relayer/subscriber"
+	workergroup "relayer/workers"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -99,24 +100,42 @@ const ethDrainInterval = 500 * time.Millisecond
 // SubscribeEth pushing into a BatchBuilder, drains it, and emits each EthSend as
 // a recv event and each EthWriteAck as an ack event. EthTimeout is skipped —
 // ETH-origin timeouts are handled by the async scanner, not this path.
-func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []chain.Event) []int) error {
+func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []chain.Event) []int) (err error) {
 	sub := subscriber.NewSubscriber(s.recovery)
-	var workers sync.WaitGroup
-	workers.Add(1)
-	go func() {
-		defer workers.Done()
+	// Named for the same reason as the Cosmos mirror: a stuck shutdown must name
+	// which of the two goroutines did not return, not just that "subscribe" did not.
+	workers := workergroup.New()
+	workers.Go("eth-subscribe", func() {
 		sub.SubscribeEth(ctx, s.cosmos, s.evm, s.ids, s.logger, s.bb)
+	})
+	defer func() {
+		running := workers.Drain(workergroup.SourceDrainTimeout)
+		if len(running) == 0 {
+			return
+		}
+		s.logger.Printf("[eth->cosmos Subscribe] shutdown drain timed out after %s; workers still running: %v",
+			workergroup.SourceDrainTimeout, running)
+		// RETURN it, do not only log it. The caller cancels on SIGTERM and then
+		// normalises context.Canceled to a clean exit, so a stuck worker reported
+		// only through ctx.Err() is reported as a successful shutdown. This error
+		// is not a cancellation, so it survives that normalisation.
+		stuck := fmt.Errorf("eth source: %w after %s; workers still running: %v",
+			workergroup.ErrWorkersStillRunning, workergroup.SourceDrainTimeout, running)
+		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			err = stuck
+			return
+		}
+		// A real failure already happened; keep it, and carry the drain alongside
+		// rather than choosing between two things the operator needs.
+		err = errors.Join(err, stuck)
 	}()
-	defer workers.Wait()
 
 	// Use the configured batch window so CheckEth returns multi-packet batches the
 	// handler can fold into one multicall (BatchSize=1 would defeat that).
 	cfg := s.batchConfig
 	ch := make(chan services.EthBatch, services.BatchHandoffCapacity)
 
-	workers.Add(1)
-	go func() {
-		defer workers.Done()
+	workers.Go("eth-drain-batches", func() {
 		ticker := time.NewTicker(ethDrainInterval)
 		defer ticker.Stop()
 		for {
@@ -127,14 +146,14 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 				s.bb.CheckEth(ctx, cfg, ch)
 			}
 		}
-	}()
+	})
 
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case batch := <-ch:
-			events, orig := eventsWithOrigins(batch.Packets, s.bb.EthPendingTracker.RemovePacketIfCurrent)
+			events, orig := eventsWithOrigins(batch.Packets, s.bb.EthPendingTracker.RemovePacketIfCurrent, s.bb.SettleOwedAck)
 			// Re-queue un-relayed packets with a waiting backoff so a packet not yet
 			// relayable (beacon finality lag) or hit by a brief RPC hiccup is retried
 			// with a growing delay instead of every batch period — quiet, and no
@@ -160,12 +179,25 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 // settle removes an acked or timed-out ETH-origin send from the pending tracker so
 // the timeout scanner stops considering it (the legacy handleEth EthAck/EthTimeout
 // tracker removal); such a packet is then skipped, as there is nothing to relay.
-func eventsWithOrigins(packets []services.EthPacket, settle func(channeltypesv2.Packet)) ([]chain.Event, []services.EthPacket) {
+func eventsWithOrigins(
+	packets []services.EthPacket,
+	settle func(channeltypesv2.Packet) error,
+	settleOwedAck func(channeltypesv2.Packet),
+) ([]chain.Event, []services.EthPacket) {
 	events := make([]chain.Event, 0, len(packets))
 	orig := make([]services.EthPacket, 0, len(packets))
 	for _, p := range packets {
 		if p.Packet != nil && (p.Type == services.EthAck || p.Type == services.EthTimeout) {
-			settle(*p.Packet)
+			if err := settle(*p.Packet); err != nil {
+				log.Printf("[PendingTracker][ATTENTION] failed to persist removal of settled ETH packet seq=%d: %v", p.Packet.Sequence, err)
+			}
+			// Only EthAck settles an owed acknowledgement. A timeout is the other
+			// ending: the packet is refunded, no acknowledgement is owed or coming,
+			// and clearing a debt on it would hide a real one if both were somehow
+			// recorded for one slot.
+			if p.Type == services.EthAck {
+				settleOwedAck(*p.Packet)
+			}
 			continue
 		}
 		e, ok := ethPacketToEvent(p)

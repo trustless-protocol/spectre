@@ -33,26 +33,26 @@ build-attestor:
 # Build and optimize the eth wasm light client using `cosmwasm/optimizer`. Requires `docker` and `gzip`
 [group('build')]
 build-cw-ics08-wasm-eth:
-	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0 ./programs/cw-ics08-wasm-eth
+	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0@sha256:7e0b9229c1a4118d0c9a2af2e7f5d95a91f264c26a2ce5681c779926e74d7f85 ./programs/cw-ics08-wasm-eth
 	cp artifacts/cw_ics08_wasm_eth.wasm e2e/interchaintestv8/wasm
 	gzip -n e2e/interchaintestv8/wasm/cw_ics08_wasm_eth.wasm -f
 
 # Build and optimize the L2 Wasm light clients. Each recipe emits a distinct artifact.
 [group('build')]
 build-cw-ics08-wasm-arbitrum:
-	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0 ./programs/cw-ics08-wasm-arbitrum
+	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0@sha256:7e0b9229c1a4118d0c9a2af2e7f5d95a91f264c26a2ce5681c779926e74d7f85 ./programs/cw-ics08-wasm-arbitrum
 	cp artifacts/cw_ics08_wasm_arbitrum.wasm e2e/interchaintestv8/wasm
 	gzip -n e2e/interchaintestv8/wasm/cw_ics08_wasm_arbitrum.wasm -f
 
 [group('build')]
 build-cw-ics08-wasm-base:
-	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0 ./programs/cw-ics08-wasm-base
+	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0@sha256:7e0b9229c1a4118d0c9a2af2e7f5d95a91f264c26a2ce5681c779926e74d7f85 ./programs/cw-ics08-wasm-base
 	cp artifacts/cw_ics08_wasm_base.wasm e2e/interchaintestv8/wasm
 	gzip -n e2e/interchaintestv8/wasm/cw_ics08_wasm_base.wasm -f
 
 [group('build')]
 build-cw-ics08-wasm-op:
-	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0 ./programs/cw-ics08-wasm-op
+	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0@sha256:7e0b9229c1a4118d0c9a2af2e7f5d95a91f264c26a2ce5681c779926e74d7f85 ./programs/cw-ics08-wasm-op
 	cp artifacts/cw_ics08_wasm_op.wasm e2e/interchaintestv8/wasm
 	gzip -n e2e/interchaintestv8/wasm/cw_ics08_wasm_op.wasm -f
 
@@ -69,7 +69,7 @@ capture-l2-fixture config out:
 # Build the relayer docker image
 [group('build')]
 build-relayer-image:
-    docker build -t eureka-relayer:latest -f programs/relayer/Dockerfile .
+    docker build -t fast-ibc-relayer:latest -f programs/relayer/Dockerfile .
 
 # Install the Go relayer for use in the e2e tests.
 # Builds with an explicit -o name because the package dir is `cmd/`, so a plain
@@ -78,17 +78,11 @@ build-relayer-image:
 install-go-relayer:
 	cd relayer && go build -o $(go env GOPATH)/bin/relayer ./cmd
 
-# Generate per-bucket prover artifacts (r1cs/pk/vk + Solidity verifiers) if missing.
-# Probes for the bucket-4 vk.bin AND the bucket-4 Solidity verifier — the cheapest
-# "present?" signal because bucket 4 is the smallest and is always built first.
+# Generate the complete configured prover artifact set only when any artifact is missing.
+# Run `scripts/solidity/build-prover-artifacts.sh --force` for an intentional randomized rebuild.
 [group('build')]
 build-prover-artifacts:
-	@if [ ! -f relayer/bin/n4/vk.bin ] || [ ! -f contracts/verifiers/Groth16Verifier_N4.sol ]; then \
-		echo "Building prover artifacts..."; \
-		cd relayer && go run ./prover/cmd ./bin ../contracts/verifiers ; \
-	else \
-		echo "Prover artifacts already present, skipping setup"; \
-	fi
+	scripts/solidity/build-prover-artifacts.sh
 
 # Run all linters
 [group('lint')]
@@ -103,7 +97,7 @@ lint:
 [group('lint')]
 lint-solidity:
 	@echo "Linting the Solidity code..."
-	forge fmt --check
+	scripts/check-solidity-format.sh
 	bun solhint -w 0 '{scripts,contracts,test}/**/*.sol'
 	natlint run --include 'contracts/**/*.sol'
 
@@ -134,34 +128,23 @@ lint-rust:
 # Generate the (non-bytecode) ABI files for the contracts
 [group('generate')]
 generate-abi: build-contracts
-	jq '.abi' out/ICS26Router.sol/ICS26Router.json > abi/ICS26Router.json
-	jq '.abi' out/ICS20Transfer.sol/ICS20Transfer.json > abi/ICS20Transfer.json
-	jq '.abi' out/SpectreClient.sol/SpectreClient.json > abi/SpectreClient.json
-	jq '.abi' out/ERC20.sol/ERC20.json > abi/ERC20.json
-	jq '.abi' out/IBCERC20.sol/IBCERC20.json > abi/IBCERC20.json
-	jq '.abi' out/RelayerHelper.sol/RelayerHelper.json > abi/RelayerHelper.json
-	abigen --abi abi/ERC20.json --pkg erc20 --type Contract --out e2e/interchaintestv8/types/erc20/contract.go
-	abigen --abi abi/SpectreClient.json --pkg spectreclient --type Contract --out packages/go-abigen/spectreclient/contract.go
-	abigen --abi abi/ICS20Transfer.json --pkg ics20transfer --type Contract --out packages/go-abigen/ics20transfer/contract.go
-	abigen --abi abi/ICS26Router.json --pkg ics26router --type Contract --out packages/go-abigen/ics26router/contract.go
-	abigen --abi abi/IBCERC20.json --pkg ibcerc20 --type Contract --out packages/go-abigen/ibcerc20/contract.go
-	abigen --abi abi/RelayerHelper.json --pkg relayerhelper --type Contract --out packages/go-abigen/relayerhelper/contract.go
+	scripts/solidity/generate-bindings.sh shared
 
 # Generate the ABI files with bytecode for the required contracts (only SpectreClient)
 [group('generate')]
 generate-abi-bytecode: build-contracts
-	cp out/SpectreClient.sol/SpectreClient.json abi/bytecode
+	scripts/solidity/generate-bindings.sh bytecode
 
 # Generate the fixtures for the wasm tests using the e2e tests
 [group('generate')]
 generate-fixtures-wasm: clean-foundry install-go-relayer build-prover-artifacts
 	@echo "Generating fixtures... This may take a while."
 	@echo "Generating recvPacket and acknowledgePacket groth16 fixtures..."
-	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithIbcEurekaTestSuite/Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack$' -timeout 60m
+	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithEthCosmosTestSuite/Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack$' -timeout 60m
 	@echo "Generating native SdkCoin recvPacket groth16 fixtures..."
-	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithIbcEurekaTestSuite/Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack$' -timeout 60m
+	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithEthCosmosTestSuite/Test_ICS20TransferNativeCosmosCoinsToEthereumAndBack$' -timeout 60m
 	@echo "Generating timeoutPacket groth16 fixtures..."
-	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithIbcEurekaTestSuite/Test_TimeoutPacketFromCosmos$' -timeout 60m
+	cd e2e/interchaintestv8 && ETH_TESTNET_TYPE=pos GENERATE_WASM_FIXTURES=true E2E_PROOF_TYPE=groth16 go test -v -run '^TestWithEthCosmosTestSuite/Test_TimeoutPacketFromCosmos$' -timeout 60m
 
 # Generate go types for the e2e tests from the ethereum light client code
 [group('generate')]
@@ -191,12 +174,18 @@ test-foundry testname=".\\*":
 # Run the benchmark tests
 [group('test')]
 test-benchmark testname=".\\*":
-	forge test -vvv --show-progress --gas-report --match-path test/solidity-ibc/BenchmarkTest.t.sol --match-test {{testname}}
+	forge test -vvv --show-progress --gas-report --match-path 'test/**/*GasTest.t.sol' --match-test {{testname}}
 
 # Run the cargo tests
 [group('test')]
 test-cargo testname="--all":
 	cargo test {{testname}} --locked --no-fail-fast -- --nocapture
+
+# Run the complete optimized-Wasm release gate locally. This intentionally stays
+# independent of GitHub Actions while automated workflows are disabled.
+[group('test')]
+validate-wasm-release:
+	VALIDATE_OPTIMIZED=1 scripts/validate-l2-clients.sh
 
 # Run the tests in abigen
 [group('test')]
@@ -222,7 +211,7 @@ test-attestor:
 	@echo "Running Optimism attestor tests..."
 	cd attestor/optimism && go test -v ./...
 
-# Run any e2e test using the test's full name. For example, `just test-e2e TestWithIbcEurekaTestSuite/Test_Deploy`
+# Run any e2e test using the test's full name. For example, `just test-e2e TestWithEthCosmosTestSuite/Test_Deploy`
 #
 # ETH_TESTNET_TYPE=pos picks the Kurtosis PoS network (with beacon API), which is what
 # the wasm light client + the cosmos→eth direction need. Override to "pow" only if the
@@ -237,11 +226,11 @@ test-e2e testname: clean-foundry install-go-relayer build-prover-artifacts
 		E2E_PROOF_TYPE="${E2E_PROOF_TYPE:-groth16}" \
 		go test -v -run '^{{testname}}$' -timeout 120m
 
-# Run any e2e test in the IbcEurekaTestSuite. For example, `just test-e2e-eureka Test_Deploy`
+# Run any e2e test in the EthCosmosTestSuite. For example, `just test-e2e-eth-cosmos Test_Deploy`
 [group('test')]
-test-e2e-eureka testname:
+test-e2e-eth-cosmos testname:
 	@echo "Running {{testname}} test..."
-	just test-e2e TestWithIbcEurekaTestSuite/{{testname}}
+	just test-e2e TestWithEthCosmosTestSuite/{{testname}}
 
 # Run any e2e test in the RelayerTestSuite. For example, `just test-e2e-relayer Test_RelayerInfo`
 [group('test')]

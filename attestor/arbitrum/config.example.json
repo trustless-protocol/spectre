@@ -11,6 +11,7 @@
     "l1_rpc_url": "https://REPLACE_WITH_ETHEREUM_EXECUTION_RPC",
     "l1_chain_id": 1,
     "l2_chain_id": 42161,
+    "attestation_signing_key": "env:ATTESTOR_SIGNING_KEY",
     "rollup_core_address": "REPLACE_WITH_ARBITRUM_ROLLUP_CORE_ADDRESS",
     "assertions_mapping_slot": "REPLACE_WITH_32_BYTE_ASSERTIONS_MAPPING_SLOT",
     "assertion_status_offset": 25,

@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"relayer/chain"
+	relayerclient "relayer/client"
 	"relayer/services"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
@@ -79,8 +81,12 @@ func TestScanEthRangePersistsOnlySuccessfulChunks(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// "provider limit" is deliberately NOT a range rejection: it names no range, no
+	// block window and no result-set size, so it stays an ordinary failure and the
+	// scan stops at the chunk that failed rather than narrowing.
 	wantErr := errors.New("provider limit")
-	_, err := sub.scanEthRangeInChunks(context.Background(), deps, "send", &cursor, 10, 4,
+	span := &relayerclient.LogSpan{Chunk: 4}
+	_, err := sub.scanEthRangeInChunks(context.Background(), deps, "send", &cursor, 10, span,
 		func(from, to uint64) (ethRecoveryStats, error) {
 			calls++
 			if calls == 2 {
@@ -97,5 +103,99 @@ func TestScanEthRangePersistsOnlySuccessfulChunks(t *testing.T) {
 	got, _ := store.Get("source-a")
 	if got.EthSendBlock != 5 {
 		t.Fatalf("persisted cursor = %d, want 5", got.EthSendBlock)
+	}
+}
+
+// The ETH mirror of the L2 narrowing branch, and the one place the two policies
+// differ on purpose: this side persists a cursor after every piece that
+// succeeded, so a narrowing must resume at that cursor rather than re-scan the
+// range. Re-scanning would re-offer events already handed to the batch builder.
+func TestScanEthRangeNarrowsAndResumesAtTheCursor(t *testing.T) {
+	sub, store, deps := newRecoveryTestSubscriber(t)
+	cursor := uint64(1)
+	span := &relayerclient.LogSpan{Chunk: 8}
+	persist := func() {
+		if err := store.SaveCheckpoint("source-a", services.RecoveryCursors{EthSendBlock: cursor}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	const cap = uint64(2)
+	var asked [][2]uint64
+	_, err := sub.scanEthRangeInChunks(context.Background(), deps, "send", &cursor, 16, span,
+		func(from, to uint64) (ethRecoveryStats, error) {
+			asked = append(asked, [2]uint64{from, to})
+			// Bounded on purpose: a scan that does not narrow asks for the same
+			// refused width forever, and an unbounded test reports that as a
+			// wall-clock timeout rather than as the defect it is.
+			if len(asked) > 64 {
+				t.Fatalf("the scan asked 64 times without settling: %v", asked)
+			}
+			if to-from+1 > cap {
+				return ethRecoveryStats{}, errors.New("query returned more than 10000 results")
+			}
+			return ethRecoveryStats{recovered: 1}, nil
+		}, persist)
+	if err != nil {
+		t.Fatalf("scan never found a servable span: %v", err)
+	}
+	if span.Chunk > cap {
+		t.Fatalf("span settled at %d, want <= %d", span.Chunk, cap)
+	}
+	if cursor != 17 {
+		t.Fatalf("cursor = %d, want 17 (the range was not finished)", cursor)
+	}
+	// Every refused attempt must have started at the SAME block: narrowing changes
+	// the width, never the position, and the cursor never moves on a failure.
+	if asked[0][0] != 1 {
+		t.Fatalf("first attempt started at %d, want 1", asked[0][0])
+	}
+	for i := 1; i < len(asked); i++ {
+		prev, cur := asked[i-1], asked[i]
+		if prev[1]-prev[0]+1 > cap && cur[0] != prev[0] {
+			t.Fatalf("after refusing [%d,%d] the scan moved to [%d,%d]; a failed piece must be retried in place, not skipped",
+				prev[0], prev[1], cur[0], cur[1])
+		}
+	}
+	// The pieces that succeeded must tile the range with no gap — a gap here is a
+	// silently missed packet, which is what this recovery scan exists to prevent.
+	var next uint64 = 1
+	for _, a := range asked {
+		if a[1]-a[0]+1 > cap {
+			continue // refused, contributed nothing
+		}
+		if a[0] != next {
+			t.Fatalf("gap or overlap: expected a piece starting at %d, got [%d,%d]", next, a[0], a[1])
+		}
+		next = a[1] + 1
+	}
+	if next != 17 {
+		t.Fatalf("scanned pieces ended at %d, want 17", next)
+	}
+}
+
+// The bottom of the ladder on the ETH side. A one-block span still refused is not
+// a sizing problem; halving further is how the recovery scan would spin forever.
+func TestScanEthRangeStopsWhenTheSpanCannotShrinkFurther(t *testing.T) {
+	sub, _, deps := newRecoveryTestSubscriber(t)
+	cursor := uint64(1)
+	span := &relayerclient.LogSpan{Chunk: 4}
+	calls := 0
+	_, err := sub.scanEthRangeInChunks(context.Background(), deps, "send", &cursor, 8, span,
+		func(from, to uint64) (ethRecoveryStats, error) {
+			calls++
+			if calls > 32 {
+				t.Fatal("the scan is halving forever instead of bottoming out")
+			}
+			return ethRecoveryStats{}, errors.New("block range too large")
+		}, func() {})
+	if err == nil {
+		t.Fatal("a provider refusing every span was reported as a successful scan")
+	}
+	if !chain.IsPermanent(err) {
+		t.Fatalf("error = %v, want permanent at the bottom of the ladder", err)
+	}
+	if cursor != 1 {
+		t.Fatalf("cursor = %d, want 1 — it must never advance past a piece that failed", cursor)
 	}
 }

@@ -10,30 +10,25 @@ pragma solidity ^0.8.28;
 import { stdJson } from "forge-std/StdJson.sol";
 import { Script } from "forge-std/Script.sol";
 
-import { IICS07TendermintMsgs } from "../contracts/light-clients/msgs/IICS07TendermintMsgs.sol";
-import { ICS26Router } from "../contracts/ICS26Router.sol";
-import { ICS20Transfer } from "../contracts/ICS20Transfer.sol";
-import { TestERC20 } from "../test/solidity-ibc/mocks/TestERC20.sol";
+import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ICS26Router } from "contracts/core/ICS26Router.sol";
+import { ICS20Transfer } from "contracts/apps/ics20/ICS20Transfer.sol";
+import { TestERC20 } from "test/mocks/TestERC20.sol";
 import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
-import { ICS20Lib } from "../contracts/utils/ICS20Lib.sol";
+import { ICS20Lib } from "contracts/apps/ics20/libraries/ICS20Lib.sol";
 import { ERC1967Proxy } from "@openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
-import { DeployAccessManagerWithRoles } from "./deployments/DeployAccessManagerWithRoles.sol";
-import { IBCERC20 } from "../contracts/utils/IBCERC20.sol";
-import { Escrow } from "../contracts/utils/Escrow.sol";
-import { SignatureVerifier } from "../contracts/light-clients/SignatureVerifier.sol";
+import { DeployAccessManagerWithRoles } from "scripts/deployments/DeployAccessManagerWithRoles.sol";
+import { IBCERC20 } from "contracts/apps/ics20/IBCERC20.sol";
+import { Escrow } from "contracts/apps/ics20/Escrow.sol";
+import { SignatureVerifier } from "contracts/light-clients/spectre/SignatureVerifier.sol";
 
-import { Groth16Verifier_N4 } from "../contracts/verifiers/Groth16Verifier_N4.sol";
-// import { Groth16Verifier_N8 } from "../contracts/verifiers/Groth16Verifier_N8.sol";
-// import { Groth16Verifier_N16 } from "../contracts/verifiers/Groth16Verifier_N16.sol";
-// import { Groth16Verifier_N32 } from "../contracts/verifiers/Groth16Verifier_N32.sol";
-// import { Groth16Verifier_N64 } from "../contracts/verifiers/Groth16Verifier_N64.sol";
-// import { Groth16Verifier_N128 } from "../contracts/verifiers/Groth16Verifier_N128.sol";
+import { Groth16Verifier_N4 } from "contracts/verifiers/Groth16Verifier_N4.sol";
 
-import { Membership } from "../contracts/light-clients/modules/Membership.sol";
-import { UpdateClient } from "../contracts/light-clients/modules/UpdateClient.sol";
-import { Misbehaviour } from "../contracts/light-clients/modules/Misbehaviour.sol";
-import { ClientMigrationProposer } from "../contracts/light-clients/modules/ClientMigrationProposer.sol";
-import { ClientMigrationExecutor } from "../contracts/light-clients/modules/ClientMigrationExecutor.sol";
+import { Membership } from "contracts/light-clients/spectre/modules/Membership.sol";
+import { UpdateClient } from "contracts/light-clients/spectre/modules/UpdateClient.sol";
+import { Misbehaviour } from "contracts/light-clients/spectre/modules/Misbehaviour.sol";
+import { ClientMigrationProposer } from "contracts/core/client-registry/migration/modules/ClientMigrationProposer.sol";
+import { ClientMigrationExecutor } from "contracts/core/client-registry/migration/modules/ClientMigrationExecutor.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 
 /// @dev See the Solidity Scripting tutorial: https://book.getfoundry.sh/tutorials/solidity-scripting
@@ -57,22 +52,12 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         SignatureVerifier signatureVerifier = new SignatureVerifier(msg.sender);
 
         address verifierN4 = address(new Groth16Verifier_N4());
-        // address verifierN8 = address(new Groth16Verifier_N8());
-        // address verifierN16 = address(new Groth16Verifier_N16());
-        // address verifierN32 = address(new Groth16Verifier_N32());
-        // address verifierN64 = address(new Groth16Verifier_N64());
-        // address verifierN128 = address(new Groth16Verifier_N128());
 
         // Hash-aggregate exposes the fixed 32-byte SHA-256 digest as two
         // 128-bit field elements, so every bucket uses the same uint256[2]
         // verifier ABI.
 
         signatureVerifier.setBucket(4, verifierN4, Groth16Verifier_N4.verifyProof.selector);
-        // signatureVerifier.setBucket(8, verifierN8, Groth16Verifier_N8.verifyProof.selector);
-        // signatureVerifier.setBucket(16, verifierN16, Groth16Verifier_N16.verifyProof.selector);
-        // signatureVerifier.setBucket(32, verifierN32, Groth16Verifier_N32.verifyProof.selector);
-        // signatureVerifier.setBucket(64, verifierN64, Groth16Verifier_N64.verifyProof.selector);
-        // signatureVerifier.setBucket(128, verifierN128, Groth16Verifier_N128.verifyProof.selector);
 
         address membership = address(new Membership());
         address updateClient = address(new UpdateClient(address(signatureVerifier)));
@@ -81,7 +66,7 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
         address clientMigrationExecutor = address(new ClientMigrationExecutor());
         // address verifierMock = address(new MockGroth16Verifier());
 
-        // Deploy IBC Eureka with proxy
+        // Deploy IBC v2 with proxy
         address ics26RouterLogic = address(new ICS26Router(clientMigrationProposer, clientMigrationExecutor));
         address ics20TransferLogic = address(new ICS20Transfer());
 
@@ -104,7 +89,7 @@ contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithR
             )
         );
 
-        // Wire up the IBCAdmin and access control using Eureka's relayer roles.
+        // Wire up the IBCAdmin and access control using the relayer roles.
         accessManagerSetTargetRoles(accessManager, address(routerProxy), address(transferProxy), false);
 
         address[] memory relayers = new address[](1);

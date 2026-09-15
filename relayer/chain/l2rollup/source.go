@@ -22,9 +22,10 @@ import (
 
 // HeadKind is the L2 confirmation policy — the single anti-reorg knob — using the
 // OP Stack / attestor head vocabulary (unsafe / safe / finalized). The on-chain L2
-// light client verifies VALIDITY (L2 state derived from L1 rollup proofs); this
-// decides how much reorg risk we accept for latency by choosing which L2 head we
-// relay.
+// light client authenticates the exact L2 block identity with its pinned attestor
+// set; this chooses the replica head those attestors must answer against. Finality
+// is not in the 164-byte statement, so config validation requires a distinct key
+// set for every finality tier.
 type HeadKind int
 
 const (
@@ -87,12 +88,12 @@ type Source struct {
 	cosmosWasmClientID string            // the Cosmos wasm client id paired with l2ClientID
 	router             ethcommon.Address // the L2 ICS26Router address (from rollup_profile.common.l2_router)
 
-	// attestor gates RelayableHeight on the chain-specific attestation policy.
+	// attestor gates RelayableHeight on a quorum of the configured attestors.
 	// OP re-derives from L1; Arbitrum unsafe explicitly trusts the configured
 	// Nitro node. When nil, RelayableHeight falls back to the raw L2 head.
 	// srcChainID is the attestor's src_chain key (distinct from the on-L2
 	// client id).
-	attestor   AttestorClient
+	attestor   AttestationFrontier
 	srcChainID string
 
 	// includeProvisional decides whether a verdict the attestor has not yet
@@ -104,6 +105,15 @@ type Source struct {
 	// made "safe" silently imply "accept provisional", with no way to ask for safe
 	// without it.
 	includeProvisional bool
+
+	// settle is called for terminal L2 events; see WithSettleHook. nil means the
+	// source drops them, which is what it did before terminal events were read.
+	settle func(packet []byte)
+
+	// settleAck is called for the ACKNOWLEDGED half of those, and closes the
+	// owed-acknowledgement record. Separate from settle because a timeout is also
+	// terminal and settles no debt. nil means no ledger is running.
+	settleAck func(packet []byte)
 
 	// logScanChunk caps the block span of a single eth_getLogs. 0 means "one call
 	// for the whole range", which is what every provider that does not cap the span
@@ -119,8 +129,8 @@ var _ chain.Source = (*Source)(nil)
 
 // NewSource wires an L2 source. router is the L2 ICS26Router address (the packet
 // membership proofs are taken against its storage_root). attestor may be nil
-// (raw-head interim); when set, srcChainID identifies this L2 to the attestor.
-func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKind, l2ClientID, cosmosWasmClientID, srcChainID string, router ethcommon.Address, attestor AttestorClient, includeProvisional bool) *Source {
+// (raw-head interim); when set, srcChainID identifies this L2 to the frontier.
+func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKind, l2ClientID, cosmosWasmClientID, srcChainID string, router ethcommon.Address, attestor AttestationFrontier, includeProvisional bool) *Source {
 	return &Source{
 		chainType:          chainType,
 		eth:                eth,
@@ -136,6 +146,40 @@ func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKi
 
 // WithLogScanChunk caps the block span of each eth_getLogs this source issues.
 // A zero or unset value keeps the single-call behaviour.
+// WithSettleHook registers what to do when the L2 emits a TERMINAL packet event
+// -- AckPacket or TimeoutPacket. Those close a packet's lifecycle rather than
+// creating relay work, so they never become a chain.Event: handing one to the
+// relay loop would produce an empty "relay" of a packet with nothing left to do.
+//
+// It takes the proto-marshaled packet, the same form chain.Event.Raw carries and
+// the same the module's untrack hook already takes, so one settlement path
+// serves both ways of learning that a packet is done.
+//
+// The hook is how the source settles the pending tracker without owning it. It
+// matters because the alternative is finding out by QUERY: today an ack another
+// relayer submitted leaves our packet in the tracker until a timeout scan looks,
+// and the doc's acceptance for this is explicit -- another relayer settles the
+// packet and our tracker drops it with no query at all.
+//
+// Optional; a source built without it simply ignores terminal events, which is
+// the behaviour every L2 source had before this existed.
+func (s *Source) WithSettleHook(settle func(packet []byte)) *Source {
+	s.settle = settle
+	return s
+}
+
+// WithAckSettleHook registers what to do when the L2 emits a terminal
+// ACKNOWLEDGEMENT, as opposed to any terminal event.
+//
+// Reported by @DongLieu: WithSettleHook was wired to the pending tracker alone,
+// so an acknowledgement another relayer submitted dropped this process's pending
+// record and left its owed-acknowledgement debt untouched -- durable, surviving
+// restart, and reported overdue forever for a packet that is settled on-chain.
+func (s *Source) WithAckSettleHook(settle func(packet []byte)) *Source {
+	s.settleAck = settle
+	return s
+}
+
 func (s *Source) WithLogScanChunk(n uint64) *Source {
 	s.logScanChunk = n
 	return s
@@ -162,10 +206,15 @@ func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 	defer cancel()
 	root, found, err := s.attestor.AttestedUpTo(cctx, s.srcChainID, s.includeProvisional)
 	if err != nil {
-		return 0, fmt.Errorf("l2 source: attested-up-to (kind=%d): %w", s.headKind, err)
+		return 0, classifyAttestorFailure("L2Source:"+s.srcChainID,
+			fmt.Errorf("l2 source: attested-up-to (kind=%d): %w", s.headKind, err))
 	}
 	if !found {
-		return 0, nil // nothing attested yet — the module waits
+		// found=false is NOT a failure: the attestor has simply not attested
+		// anything yet. It is the same "not yet" as a RelayableHeight that has not
+		// caught up, so it must not be classified, logged as an error, or charged to
+		// any retry budget — the module waits.
+		return 0, nil
 	}
 	return root.GetL2BlockNumber(), nil
 }

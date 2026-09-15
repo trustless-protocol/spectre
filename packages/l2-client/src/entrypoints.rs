@@ -7,8 +7,8 @@ use cosmwasm_std::{to_json_binary, Binary, Deps, DepsMut, Env, Response};
 use crate::{
     error::Error,
     msg::{
-        AttestedL2Header, CheckForMisbehaviourResult, ClientMessage, IbcHeight, InstantiateMsg,
-        QueryMsg, StatusResult, SudoMsg, TimestampAtHeightResult, UpdateStateResult,
+        CheckForMisbehaviourResult, ClientMessage, IbcHeight, InstantiateMsg, MigrateMsg, QueryMsg,
+        SignedAttestedL2Header, StatusResult, SudoMsg, TimestampAtHeightResult,
     },
     runtime,
     state::{ClientState, ConsensusState},
@@ -33,6 +33,12 @@ pub fn instantiate<Adapter: L2LightClient>(
     Ok(Response::default())
 }
 
+/// Validates the current client and optionally rotates only its active attestor set.
+pub fn migrate<Adapter: L2LightClient>(deps: DepsMut, msg: MigrateMsg) -> Result<Response, Error> {
+    runtime::migrate::<Adapter::Profile>(deps.storage, msg)?;
+    Ok(Response::default())
+}
+
 /// Executes a host sudo operation without emitting attributes, events, or messages.
 ///
 /// No attributes, events, or messages may be attached to this response: ibc-go's 08-wasm keeper
@@ -48,20 +54,7 @@ pub fn sudo<Adapter: L2LightClient>(
     let data = match msg {
         SudoMsg::UpdateState { client_message } => {
             let header = decode_header::<Adapter>(&client_message, deps.as_ref())?;
-            let updated = runtime::update::<Adapter::Profile>(
-                deps.storage,
-                &header,
-                env.block.time.seconds(),
-            )?;
-            to_json_binary(&UpdateStateResult {
-                heights: updated
-                    .into_iter()
-                    .map(|revision_height| IbcHeight {
-                        revision_number: 0,
-                        revision_height,
-                    })
-                    .collect(),
-            })?
+            runtime::update::<Adapter::Profile>(deps.storage, &header, env.block.time.seconds())?
         }
         SudoMsg::UpdateStateOnMisbehaviour { client_message } => {
             let (first, second) = decode_misbehaviour::<Adapter>(&client_message, deps.as_ref())?;
@@ -72,40 +65,62 @@ pub fn sudo<Adapter: L2LightClient>(
         }
         SudoMsg::VerifyMembership {
             height,
+            delay_time_period,
+            delay_block_period,
             proof,
             merkle_path,
             value,
-            ..
         } => {
-            let path = single_path(&merkle_path.key_path)?;
+            ensure_zero_delay(delay_time_period, delay_block_period)?;
             validate_height(&height)?;
             runtime::verify_membership::<Adapter::Profile>(
                 deps.storage,
                 height.revision_height,
-                path,
+                &merkle_path.key_path,
                 &value,
-                &serde_json::from_slice(&proof)?,
+                &proof,
             )?;
             Binary::default()
         }
         SudoMsg::VerifyNonMembership {
             height,
+            delay_time_period,
+            delay_block_period,
             proof,
             merkle_path,
-            ..
         } => {
-            let path = single_path(&merkle_path.key_path)?;
+            ensure_zero_delay(delay_time_period, delay_block_period)?;
             validate_height(&height)?;
             runtime::verify_non_membership::<Adapter::Profile>(
                 deps.storage,
                 height.revision_height,
-                path,
-                &serde_json::from_slice(&proof)?,
+                &merkle_path.key_path,
+                &proof,
             )?;
             Binary::default()
         }
+        SudoMsg::VerifyUpgradeAndUpdateState { .. } => {
+            return Err(Error::UnsupportedLifecycleOperation {
+                operation: "verify_upgrade_and_update_state",
+            });
+        }
+        SudoMsg::MigrateClientStore {} => {
+            return Err(Error::UnsupportedLifecycleOperation {
+                operation: "migrate_client_store",
+            });
+        }
     };
     Ok(Response::default().set_data(data))
+}
+
+const fn ensure_zero_delay(delay_time_period: u64, delay_block_period: u64) -> Result<(), Error> {
+    if delay_time_period != 0 || delay_block_period != 0 {
+        return Err(Error::UnsupportedNonZeroDelay {
+            delay_time_period,
+            delay_block_period,
+        });
+    }
+    Ok(())
 }
 
 /// Executes a read-only host query.
@@ -114,7 +129,7 @@ pub fn query<Adapter: L2LightClient>(deps: Deps, msg: QueryMsg) -> Result<Binary
         QueryMsg::VerifyClientMessage { client_message } => {
             match decode_client_message::<Adapter>(&client_message, deps)? {
                 ClientMessage::Header(header) => {
-                    header.consensus_state(0)?;
+                    header.header().consensus_state(0)?;
                 }
                 ClientMessage::Misbehaviour { header_1, header_2 } => {
                     if !runtime::is_actionable_misbehaviour(&header_1, &header_2)? {
@@ -141,6 +156,7 @@ pub fn query<Adapter: L2LightClient>(deps: Deps, msg: QueryMsg) -> Result<Binary
         }
         QueryMsg::Status {} => {
             let client = runtime::client_state::<Adapter::Profile>(deps.storage)?;
+            client.validate()?;
             to_json_binary(&StatusResult {
                 status: if client.frozen_height.is_some() {
                     "Frozen"
@@ -157,7 +173,7 @@ pub fn query<Adapter: L2LightClient>(deps: Deps, msg: QueryMsg) -> Result<Binary
 fn decode_header<Adapter: L2LightClient>(
     data: &Binary,
     deps: Deps,
-) -> Result<crate::state::Header, Error> {
+) -> Result<crate::verification::AuthenticatedHeader, Error> {
     let ClientMessage::Header(header) = decode_client_message::<Adapter>(data, deps)? else {
         return Err(Error::InvalidHeader("header envelope required"));
     };
@@ -167,7 +183,13 @@ fn decode_header<Adapter: L2LightClient>(
 fn decode_misbehaviour<Adapter: L2LightClient>(
     data: &Binary,
     deps: Deps,
-) -> Result<(crate::state::Header, crate::state::Header), Error> {
+) -> Result<
+    (
+        crate::verification::AuthenticatedHeader,
+        crate::verification::AuthenticatedHeader,
+    ),
+    Error,
+> {
     let ClientMessage::Misbehaviour { header_1, header_2 } =
         decode_client_message::<Adapter>(data, deps)?
     else {
@@ -179,19 +201,47 @@ fn decode_misbehaviour<Adapter: L2LightClient>(
 fn decode_client_message<Adapter: L2LightClient>(
     data: &Binary,
     deps: Deps,
-) -> Result<ClientMessage<crate::state::Header>, Error> {
-    let message: ClientMessage<AttestedL2Header> = serde_json::from_slice(data)?;
+) -> Result<ClientMessage<crate::verification::AuthenticatedHeader>, Error> {
+    let value: serde_json::Value = serde_json::from_slice(data)?;
+    reject_unsigned_v1(&value)?;
+    let message: ClientMessage<SignedAttestedL2Header> = serde_json::from_value(value)?;
     let client = runtime::client_state::<Adapter::Profile>(deps.storage)?;
+    client.validate()?;
+    if let Some(height) = client.frozen_height {
+        return Err(Error::Frozen(height));
+    }
     match message {
         ClientMessage::Header(header) => Ok(ClientMessage::Header(Adapter::verify(
-            &client.profile,
-            &header,
+            deps.api, &client, &header,
         )?)),
-        ClientMessage::Misbehaviour { header_1, header_2 } => Ok(ClientMessage::Misbehaviour {
-            header_1: Adapter::verify(&client.profile, &header_1)?,
-            header_2: Adapter::verify(&client.profile, &header_2)?,
-        }),
+        ClientMessage::Misbehaviour { header_1, header_2 } => {
+            let (header_1, header_2) =
+                Adapter::verify_misbehaviour(deps.api, &client, &header_1, &header_2)?;
+            Ok(ClientMessage::Misbehaviour { header_1, header_2 })
+        }
     }
+}
+
+fn reject_unsigned_v1(value: &serde_json::Value) -> Result<(), Error> {
+    let Some(message_type) = value.get("type").and_then(serde_json::Value::as_str) else {
+        return Ok(());
+    };
+    let Some(payload) = value.get("value") else {
+        return Ok(());
+    };
+    let missing = match message_type {
+        "header" => payload.get("attestor_signature").is_none(),
+        "misbehaviour" => ["header_1", "header_2"].iter().any(|field| {
+            payload
+                .get(field)
+                .is_some_and(|header| header.get("attestor_signature").is_none())
+        }),
+        _ => false,
+    };
+    if missing {
+        return Err(Error::UnsupportedUnsignedHeader);
+    }
+    Ok(())
 }
 
 const fn validate_height(height: &IbcHeight) -> Result<(), Error> {
@@ -202,13 +252,4 @@ const fn validate_height(height: &IbcHeight) -> Result<(), Error> {
         return Err(Error::ZeroHeight);
     }
     Ok(())
-}
-
-fn single_path(paths: &[Binary]) -> Result<&Binary, Error> {
-    let [path] = paths else {
-        return Err(Error::Proof(
-            "exactly one IBC commitment path is required".into(),
-        ));
-    };
-    Ok(path)
 }

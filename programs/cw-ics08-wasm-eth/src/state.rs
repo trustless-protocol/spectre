@@ -81,11 +81,8 @@ pub fn store_consensus_state(
     wasm_consensus_state: &WasmConsensusState,
     slot: u64,
 ) -> Result<(), ContractError> {
-    let wasm_consensus_state_any = Any::from_msg(wasm_consensus_state)?;
-    storage.set(
-        consensus_db_key(slot).as_bytes(),
-        wasm_consensus_state_any.encode_to_vec().as_slice(),
-    );
+    let encoded = encode_consensus_state(wasm_consensus_state)?;
+    storage.set(consensus_db_key(slot).as_bytes(), &encoded);
 
     Ok(())
 }
@@ -98,11 +95,26 @@ pub fn store_client_state(
     storage: &mut dyn Storage,
     wasm_client_state: &WasmClientState,
 ) -> Result<(), ContractError> {
-    let wasm_client_state_any = Any::from_msg(wasm_client_state)?;
-    storage.set(
-        HOST_CLIENT_STATE_KEY.as_bytes(),
-        wasm_client_state_any.encode_to_vec().as_slice(),
-    );
+    let encoded = encode_client_state(wasm_client_state)?;
+    storage.set(HOST_CLIENT_STATE_KEY.as_bytes(), &encoded);
 
     Ok(())
+}
+
+/// Encodes a client envelope without mutating storage.
+///
+/// # Errors
+/// Returns a protobuf encoding error if the host envelope cannot be encoded.
+pub fn encode_client_state(wasm_client_state: &WasmClientState) -> Result<Vec<u8>, ContractError> {
+    Ok(Any::from_msg(wasm_client_state)?.encode_to_vec())
+}
+
+/// Encodes a consensus envelope without mutating storage.
+///
+/// # Errors
+/// Returns a protobuf encoding error if the host envelope cannot be encoded.
+pub fn encode_consensus_state(
+    wasm_consensus_state: &WasmConsensusState,
+) -> Result<Vec<u8>, ContractError> {
+    Ok(Any::from_msg(wasm_consensus_state)?.encode_to_vec())
 }

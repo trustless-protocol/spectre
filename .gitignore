@@ -95,3 +95,10 @@ proposal.json
 .agents/
 .specify/
 specs/
+.artifacts/solidity/
+
+# Merge/patch backups. `patch` writes <file>.orig and <file>.rej beside the file
+# it edits, and a blanket `git add <dir>` sweeps them in -- which is how an
+# 805-line stale copy of subscriber/cosmos.go reached main in #457.
+*.orig
+*.rej

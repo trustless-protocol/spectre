@@ -2,36 +2,25 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
 	"math/big"
-	"math/rand/v2"
 	"net"
 	"os"
 	"os/signal"
-	"sync/atomic"
 	"syscall"
-	"time"
 
 	"attestor/arbitrum"
+	"attestor/arbitrum/adapter"
 	boldattestor "attestor/arbitrum/bold"
-	attestorserver "attestor/arbitrum/server"
-	attestorpb "attestor/types/attestor"
+	"attestor/core"
+	"attestor/host"
+	"attestor/types/attestation"
 
-	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
-	healthv1 "google.golang.org/grpc/health/grpc_health_v1"
-)
-
-const (
-	grpcGracefulStopPeriod         = 10 * time.Second
-	nitroSubscriptionRetryInterval = time.Second
-	nitroHeadBufferSize            = 64
 )
 
 func main() {
@@ -66,6 +55,16 @@ func runAttestor(ctx context.Context, configPath string) error {
 	if err := validateNitroChainID(ctx, nitroWSClient, config.L2ChainID, "WebSocket"); err != nil {
 		return err
 	}
+	signer, err := attestation.NewSigner(config.L2ChainID, config.AttestationSigningKey)
+	if err != nil {
+		return fmt.Errorf("load attestation signing key: %w", err)
+	}
+	publicKey := signer.PublicKey()
+	log.Printf("Arbitrum attestation public key: 0x%x", publicKey)
+	log.Printf(
+		"Arbitrum attestation public key (base64 for relayer attestors.public_keys): %s",
+		base64.StdEncoding.EncodeToString(publicKey),
+	)
 
 	runtimeState, err := arbitrum.NewRuntimeStateWithConfig(nitroClient, arbitrum.RuntimeStateConfig{
 		BackfillMaxBlocks:   config.BackfillMaxBlocks(),
@@ -115,11 +114,10 @@ func runAttestor(ctx context.Context, configPath string) error {
 		return fmt.Errorf("validate Arbitrum deployment identity: %w", err)
 	}
 	sourceIdentity := assertionSourceIdentity(config)
-	if err := attestedRootStore.BindSourceIdentity(sourceIdentity); err != nil {
-		return fmt.Errorf("bind attested-root source identity: %w", err)
-	}
-	if err := attestedRootStore.Save(); err != nil {
-		return fmt.Errorf("persist attested-root source identity: %w", err)
+	if err := attestedRootStore.Commit(func(store *arbitrum.AttestedRootStore) (bool, error) {
+		return true, store.BindSourceIdentity(sourceIdentity)
+	}); err != nil {
+		return fmt.Errorf("bind and persist attested-root source identity: %w", err)
 	}
 	attestationHead, err := config.NormalizedAttestationHead()
 	if err != nil {
@@ -138,28 +136,15 @@ func runAttestor(ctx context.Context, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("initialize Arbitrum derived-root attestor: %w", err)
 	}
-	go monitorRuntimeState(
-		ctx,
-		runtimeAndDerivedRefresher{runtime: runtimeState, derived: derivedAttestor},
-		nitroWSClient,
-		runtimePollInterval,
-	)
-	// Assertion backfill can be large when using a rate-limited public L1 RPC.
-	// Start it in the retrying background loop so a transient log-query failure
-	// does not prevent the gRPC service from becoming available.
-	go assertionLoop.Run(ctx)
-
-	grpcService, err := attestorserver.NewAttestorServerWithRuntimeFeedsAndHeads(
-		runtimeState,
-		map[string]attestorserver.AttestedRootReader{
-			config.SrcChain: attestedRootStore,
-		},
-		map[string]arbitrum.RunMode{
-			config.SrcChain: attestationHead,
-		},
-	)
+	bridge, err := adapter.New(adapter.Options{
+		SrcChain:        config.SrcChain,
+		Runtime:         runtimeState,
+		Feed:            attestedRootStore,
+		AttestationHead: attestationHead,
+		Signer:          signer,
+	})
 	if err != nil {
-		return fmt.Errorf("initialize attestor gRPC service: %w", err)
+		return fmt.Errorf("compose Arbitrum attestor bridge: %w", err)
 	}
 	listener, err := net.Listen("tcp", config.GRPCListenAddress)
 	if err != nil {
@@ -167,16 +152,40 @@ func runAttestor(ctx context.Context, configPath string) error {
 	}
 	defer listener.Close()
 
-	grpcServer := grpc.NewServer()
-	attestorpb.RegisterAttestorServiceServer(grpcServer, grpcService)
-	healthServer := health.NewServer()
-	healthServer.SetServingStatus("", healthv1.HealthCheckResponse_SERVING)
-	healthServer.SetServingStatus(attestorpb.AttestorService_ServiceDesc.ServiceName, healthv1.HealthCheckResponse_SERVING)
-	healthv1.RegisterHealthServer(grpcServer, healthServer)
-
+	attestorHost, err := host.New(host.Config{
+		Routes: map[string]core.Ports{
+			config.SrcChain: {Feed: bridge, Verifier: bridge, Status: bridge},
+		},
+		Runners: []host.RunnerSpec{
+			{
+				Name: "nitro-runtime-monitor",
+				Runner: host.RunnerFunc(func(runCtx context.Context) error {
+					return arbitrum.MonitorRuntimeState(
+						runCtx,
+						runtimeAndDerivedRefresher{runtime: runtimeState, derived: derivedAttestor},
+						nitroWSClient,
+						arbitrum.RuntimeMonitorConfig{ReconcileInterval: runtimePollInterval},
+					)
+				}),
+			},
+			{
+				Name: "arbitrum-assertion-attestor",
+				Runner: host.RunnerFunc(func(runCtx context.Context) error {
+					// Assertion backfill can be large; its loop retries transient L1
+					// failures without taking the sidecar down.
+					assertionLoop.Run(runCtx)
+					return nil
+				}),
+			},
+		},
+		Listener: listener,
+	})
+	if err != nil {
+		return fmt.Errorf("initialize attestor host: %w", err)
+	}
 	log.Printf("attestor gRPC listening at %s", listener.Addr())
-	if err := serveAttestor(ctx, grpcServer, listener); err != nil {
-		return fmt.Errorf("serve attestor gRPC: %w", err)
+	if err := attestorHost.Run(ctx); err != nil {
+		return fmt.Errorf("run attestor host: %w", err)
 	}
 	return nil
 }
@@ -255,297 +264,4 @@ func (r runtimeAndDerivedRefresher) Refresh(
 		return nil, err
 	}
 	return checks, nil
-}
-
-type nitroHeadSubscriber interface {
-	SubscribeNewHead(context.Context, chan<- *types.Header) (ethereum.Subscription, error)
-}
-
-func monitorRuntimeState(
-	ctx context.Context,
-	runtimeState runtimeStateRefresher,
-	subscriber nitroHeadSubscriber,
-	interval time.Duration,
-) {
-	monitorRuntimeStateWithRetry(
-		ctx,
-		runtimeState,
-		subscriber,
-		interval,
-		nitroSubscriptionRetryInterval,
-	)
-}
-
-func monitorRuntimeStateWithRetry(
-	ctx context.Context,
-	runtimeState runtimeStateRefresher,
-	subscriber nitroHeadSubscriber,
-	reconcileInterval time.Duration,
-	subscriptionRetryInterval time.Duration,
-) {
-	headUpdates := make(chan struct{}, 1)
-	go streamNitroHeadUpdates(ctx, subscriber, headUpdates, subscriptionRetryInterval)
-
-	var refreshStartNanos atomic.Int64
-	go watchRuntimeRefresh(ctx, &refreshStartNanos, reconcileInterval)
-
-	refresh := func() error {
-		start := time.Now()
-		refreshStartNanos.Store(start.UnixNano())
-		defer refreshStartNanos.Store(0)
-		checks, err := runtimeState.Refresh(ctx)
-		if elapsed := time.Since(start); elapsed > reconcileInterval {
-			log.Printf("attestor runtime refresh slow: elapsed=%s interval=%s", elapsed, reconcileInterval)
-		}
-		if err != nil {
-			if ctx.Err() == nil {
-				log.Printf("attestor runtime refresh failed: %v", err)
-			}
-			return err
-		}
-		for _, check := range checks {
-			switch {
-			case check.FinalizedReorg:
-				log.Printf(
-					"attestor finalized head changed or regressed: height=%d state_root=%s previous_height=%d previous_state_root=%s",
-					check.Finalized.BlockNumber,
-					check.Finalized.StateRoot.Hex(),
-					check.PreviousFinalized.BlockNumber,
-					check.PreviousFinalized.StateRoot.Hex(),
-				)
-			case check.Consistent():
-				log.Printf(
-					"attestor finalized consistency verified: height=%d state_root=%s",
-					check.Finalized.BlockNumber,
-					check.Finalized.StateRoot.Hex(),
-				)
-			case !check.UnsafeObserved || !check.SafeObserved:
-				log.Printf(
-					"attestor finalized consistency incomplete: height=%d unsafe_observed=%t safe_observed=%t",
-					check.Finalized.BlockNumber,
-					check.UnsafeObserved,
-					check.SafeObserved,
-				)
-			default:
-				log.Printf(
-					"attestor finalized consistency mismatch: height=%d finalized_root=%s unsafe_root=%s safe_root=%s finalized_reorg=%t",
-					check.Finalized.BlockNumber,
-					check.Finalized.StateRoot.Hex(),
-					check.Unsafe.StateRoot.Hex(),
-					check.Safe.StateRoot.Hex(),
-					check.FinalizedReorg,
-				)
-			}
-		}
-		return nil
-	}
-
-	// A failed refresh backs off before the next attempt instead of letting
-	// every new-head event retrigger it immediately: without this, a tripped
-	// RPC rate limit is hammered ~once per L2 block and never recovers.
-	failures := 0
-	runRefresh := func() {
-		if err := refresh(); err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			failures++
-			rateLimited := arbitrum.IsRateLimited(err)
-			delay := refreshBackoff(failures, rateLimited)
-			log.Printf(
-				"attestor runtime refresh backing off: failures=%d delay=%s rate_limited=%t",
-				failures,
-				delay,
-				rateLimited,
-			)
-			select {
-			case <-ctx.Done():
-			case <-time.After(delay):
-			}
-			return
-		}
-		failures = 0
-	}
-
-	runRefresh()
-	ticker := time.NewTicker(reconcileInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-headUpdates:
-			runRefresh()
-		case <-ticker.C:
-			runRefresh()
-		}
-	}
-}
-
-const (
-	refreshBackoffBase          = time.Second
-	refreshBackoffRateLimitBase = 10 * time.Second
-	refreshBackoffMax           = time.Minute
-)
-
-// refreshBackoff returns the wait before the next refresh attempt after
-// consecutive failures: exponential from the base, capped, with up to +20%
-// jitter so restarted attestors sharing an endpoint do not retry in lockstep.
-// A rate-limited failure starts high — retrying a 429 quickly only extends it.
-func refreshBackoff(failures int, rateLimited bool) time.Duration {
-	base := refreshBackoffBase
-	if rateLimited {
-		base = refreshBackoffRateLimitBase
-	}
-	backoff := base
-	for i := 1; i < failures; i++ {
-		backoff *= 2
-		if backoff >= refreshBackoffMax {
-			backoff = refreshBackoffMax
-			break
-		}
-	}
-	if backoff > refreshBackoffMax {
-		backoff = refreshBackoffMax
-	}
-	return backoff + rand.N(backoff/5)
-}
-
-// watchRuntimeRefresh logs when a runtime refresh has been in flight longer
-// than twice the reconcile interval, so a hung Nitro RPC call stays visible
-// even though the monitor goroutine is blocked inside Refresh.
-func watchRuntimeRefresh(ctx context.Context, startNanos *atomic.Int64, interval time.Duration) {
-	threshold := 2 * interval
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			started := startNanos.Load()
-			if started == 0 {
-				continue
-			}
-			if elapsed := time.Since(time.Unix(0, started)); elapsed > threshold {
-				log.Printf("attestor runtime refresh still running: elapsed=%s threshold=%s", elapsed, threshold)
-			}
-		}
-	}
-}
-
-func streamNitroHeadUpdates(
-	ctx context.Context,
-	subscriber nitroHeadSubscriber,
-	updates chan<- struct{},
-	retryInterval time.Duration,
-) {
-	for {
-		headers := make(chan *types.Header, nitroHeadBufferSize)
-		subscription, err := subscriber.SubscribeNewHead(ctx, headers)
-		if err != nil {
-			if ctx.Err() != nil {
-				return
-			}
-			log.Printf("subscribe to Nitro new heads failed: %v", err)
-			if !waitForRetry(ctx, retryInterval) {
-				return
-			}
-			continue
-		}
-
-		// Reconcile immediately after subscribing to close the gap between the
-		// previous snapshot and the subscription becoming active.
-		signalRuntimeUpdate(updates)
-		err = consumeNitroHeadSubscription(ctx, subscription, headers, updates)
-		subscription.Unsubscribe()
-		if ctx.Err() != nil {
-			return
-		}
-		log.Printf("Nitro new-head subscription ended: %v; reconnecting", err)
-		if !waitForRetry(ctx, retryInterval) {
-			return
-		}
-	}
-}
-
-func consumeNitroHeadSubscription(
-	ctx context.Context,
-	subscription ethereum.Subscription,
-	headers <-chan *types.Header,
-	updates chan<- struct{},
-) error {
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case header, ok := <-headers:
-			if !ok {
-				return errors.New("Nitro new-head channel closed")
-			}
-			if header != nil {
-				signalRuntimeUpdate(updates)
-			}
-		case err, ok := <-subscription.Err():
-			if !ok || err == nil {
-				return errors.New("Nitro new-head subscription closed")
-			}
-			return err
-		}
-	}
-}
-
-func signalRuntimeUpdate(updates chan<- struct{}) {
-	select {
-	case updates <- struct{}{}:
-	default:
-	}
-}
-
-func waitForRetry(ctx context.Context, interval time.Duration) bool {
-	timer := time.NewTimer(interval)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
-}
-
-func serveAttestor(
-	ctx context.Context,
-	server *grpc.Server,
-	listener net.Listener,
-) error {
-	serveDone := make(chan error, 1)
-	go func() {
-		serveDone <- server.Serve(listener)
-	}()
-
-	select {
-	case err := <-serveDone:
-		if errors.Is(err, grpc.ErrServerStopped) {
-			return nil
-		}
-		return err
-	case <-ctx.Done():
-		gracefulStop(server, grpcGracefulStopPeriod)
-		<-serveDone
-		return ctx.Err()
-	}
-}
-
-func gracefulStop(server *grpc.Server, timeout time.Duration) {
-	done := make(chan struct{})
-	go func() {
-		server.GracefulStop()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(timeout):
-		server.Stop()
-		<-done
-	}
 }

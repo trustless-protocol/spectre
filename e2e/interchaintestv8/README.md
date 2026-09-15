@@ -37,10 +37,10 @@ From the repo root:
 
 ```bash
 # Single test by full name (SUITE/CASE)
-just test-e2e TestWithIbcEurekaTestSuite/Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack
+just test-e2e TestWithEthCosmosTestSuite/Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack
 
 # Shortcut by suite (drops the TestWith...Suite/ prefix)
-just test-e2e-eureka Test_Deploy
+just test-e2e-eth-cosmos Test_Deploy
 just test-e2e-relayer Test_RelayerInfo
 just test-e2e-multichain Test_Deploy
 ```
@@ -48,11 +48,11 @@ just test-e2e-multichain Test_Deploy
 The recipe sets `ETH_TESTNET_TYPE=pos`, `RELAYER_BINARY=$GOPATH/bin/relayer`,
 and `PROVER_BIN_DIR=<repo>/relayer/bin` for you.
 
-## `IbcEurekaTestSuite` daemon cases
+## `EthCosmosTestSuite` daemon cases
 
 | Test | What it verifies |
 |------|------------------|
-| `Test_Deploy` | contracts deployed, wasm-eth client + ICS07 + AddClient + counterparty register all wired |
+| `Test_Deploy` | contracts deployed, wasm-eth client + Spectre + AddClient + counterparty register all wired |
 | `Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack` | full ETH→Cosmos→ETH round-trip (5 phases: recv, ack, return-send, return-recv, return-ack) |
 | `Test_25_ICS20TransferERC20TokenfromEthereumToCosmosAndBack` | batched 25-packet ETH→Cosmos→ETH round-trip using auto-relay waits |
 | `Test_50_ICS20TransferERC20TokenfromEthereumToCosmosAndBack` | batched 50-packet ETH→Cosmos→ETH round-trip using auto-relay waits |
@@ -70,8 +70,8 @@ and `PROVER_BIN_DIR=<repo>/relayer/bin` for you.
 These suites still assume upstream-only flows or tooling and are not part of the
 fast-ibc daemon matrix.
 
-- `groth16_ics07_test.go` (fixture-generation flow) — references the deleted
-  `fixtures membership` CLI subcommand.
+- `spectre_client_test.go` (standalone Spectre client/deployment flow) —
+  fixture generation remains explicitly unsupported.
 - `relayer_test.go` `RelayerTestSuite` cases — still use gRPC `RelayByTx` +
   manual broadcast pattern.
 
@@ -84,4 +84,4 @@ relay tx via `s.RelayerClient.RelayByTx(...)` and broadcasting it themselves.
 
 The `s.RelayerClient` / `s.EthRelayerSubmitter` plumbing kept from upstream
 is still wired in `e2esuite/suite.go` for the out-of-scope raw-tx broadcast
-flows, but the IbcEurekaTestSuite cases above avoid it entirely.
+flows, but the EthCosmosTestSuite cases above avoid it entirely.

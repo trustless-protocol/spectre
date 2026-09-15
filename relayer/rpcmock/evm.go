@@ -26,19 +26,21 @@ import (
 type EVMNode struct {
 	server *httptest.Server
 
-	mu           sync.Mutex
-	chainID      uint64
-	gasPrice     *big.Int
-	blockGasLim  uint64
-	nonces       map[common.Address]uint64
-	receipts     map[common.Hash]*RawReceipt
-	defaultRcpt  *RawReceipt
-	sendErr      error
-	callResult   string
-	callErr      error
-	sentRawTxs   []string
-	nonceQueries map[common.Address]int
-	methodCalls  map[string]int
+	mu             sync.Mutex
+	chainID        uint64
+	gasPrice       *big.Int
+	blockGasLim    uint64
+	nonces         map[common.Address]uint64
+	receipts       map[common.Hash]*RawReceipt
+	defaultRcpt    *RawReceipt
+	sendErr        error
+	callResult     string
+	callBySelector map[string]string
+	callErr        error
+	sentRawTxs     []string
+	nonceQueries   map[common.Address]int
+	methodCalls    map[string]int
+	code           map[common.Address]string
 }
 
 // RawReceipt is the subset of a transaction receipt the stub serves. It is a
@@ -54,14 +56,16 @@ type RawReceipt struct {
 func NewEVMNode(t testing.TB) *EVMNode {
 	t.Helper()
 	n := &EVMNode{
-		chainID:      1,
-		gasPrice:     big.NewInt(1_000_000_000), // 1 gwei
-		blockGasLim:  0xffffff,
-		nonces:       make(map[common.Address]uint64),
-		receipts:     make(map[common.Hash]*RawReceipt),
-		callResult:   "0x",
-		nonceQueries: make(map[common.Address]int),
-		methodCalls:  make(map[string]int),
+		chainID:        1,
+		gasPrice:       big.NewInt(1_000_000_000), // 1 gwei
+		blockGasLim:    0xffffff,
+		nonces:         make(map[common.Address]uint64),
+		receipts:       make(map[common.Hash]*RawReceipt),
+		callResult:     "0x",
+		callBySelector: map[string]string{},
+		nonceQueries:   make(map[common.Address]int),
+		methodCalls:    make(map[string]int),
+		code:           make(map[common.Address]string),
 	}
 	n.server = httptest.NewServer(n)
 	t.Cleanup(n.server.Close)
@@ -110,6 +114,32 @@ func (n *EVMNode) MineEverything(r RawReceipt) { n.withLock(func() { n.defaultRc
 // FailSend makes eth_sendRawTransaction return an RPC error. Pass nil to accept
 // again.
 func (n *EVMNode) FailSend(err error) { n.withLock(func() { n.sendErr = err }) }
+
+// SetCode makes eth_getCode report codeHex ("0x...") for addr, modelling a
+// deployed contract. An address left unset answers "0x", which is what a real
+// node returns for one nobody deployed to — so a test must opt IN to a contract
+// existing, and can never accidentally assume one does.
+func (n *EVMNode) SetCode(addr common.Address, codeHex string) {
+	n.withLock(func() { n.code[addr] = codeHex })
+}
+
+// SetCallResult sets the ABI-encoded return data eth_call answers with.
+func (n *EVMNode) SetCallResult(hexData string) { n.withLock(func() { n.callResult = hexData }) }
+
+// SetCallResultFor answers one 4-byte selector differently from the rest.
+//
+// SetCallResult alone cannot express a contract whose methods disagree, and that
+// is exactly what a wiring check reads: getClient returns an address while
+// getCounterparty returns a struct, and a test that cannot tell them apart can
+// only assert that some call happened. selector is the hex method id, with or
+// without the 0x prefix.
+func (n *EVMNode) SetCallResultFor(selector, hexData string) {
+	n.withLock(func() { n.callBySelector[normalizeSelector(selector)] = hexData })
+}
+
+func normalizeSelector(selector string) string {
+	return strings.ToLower(strings.TrimPrefix(selector, "0x"))
+}
 
 // FailCall makes eth_call return an RPC error, the shape a reverting contract
 // read takes.
@@ -217,9 +247,21 @@ func (n *EVMNode) dispatch(req rpcRequest) (any, *rpcError) {
 		return receiptJSON(hash, receipt), nil
 	case "eth_getBlockByNumber":
 		return n.blockJSON(), nil
+	case "eth_getCode":
+		// "0x" is the honest default: an address nobody deployed to holds no
+		// code, and that is what a real node answers. A test about a deployed
+		// contract says so with SetCode.
+		addr := common.HexToAddress(stringParam(req.Params, 0))
+		if code, ok := n.code[addr]; ok {
+			return code, nil
+		}
+		return "0x", nil
 	case "eth_call":
 		if n.callErr != nil {
 			return nil, &rpcError{Code: -32000, Message: n.callErr.Error()}
+		}
+		if result, ok := n.callResultForRequest(req.Params); ok {
+			return result, nil
 		}
 		return n.callResult, nil
 	case "eth_estimateGas":
@@ -281,4 +323,31 @@ func (n *EVMNode) blockJSON() map[string]any {
 		"nonce":            "0x0000000000000000",
 		"baseFeePerGas":    "0x" + n.gasPrice.Text(16),
 	}
+}
+
+// callResultForRequest picks a per-selector answer when one was registered.
+func (n *EVMNode) callResultForRequest(params []json.RawMessage) (string, bool) {
+	if len(n.callBySelector) == 0 {
+		return "", false
+	}
+	if len(params) == 0 {
+		return "", false
+	}
+	var arg struct {
+		Data  string `json:"data"`
+		Input string `json:"input"`
+	}
+	if err := json.Unmarshal(params[0], &arg); err != nil {
+		return "", false
+	}
+	data := arg.Data
+	if data == "" {
+		data = arg.Input
+	}
+	data = normalizeSelector(data)
+	if len(data) < 8 {
+		return "", false
+	}
+	result, ok := n.callBySelector[data[:8]]
+	return result, ok
 }
