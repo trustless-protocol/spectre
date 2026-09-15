@@ -86,18 +86,28 @@ A shared ETH key also degrades more gracefully than a shared Cosmos one: an
 unrecognised broadcast error invalidates the cached nonce and returns a transient
 error, so the packet is re-queued rather than dropped.
 
-**`start` enforces the EVM rule and not the Cosmos one.** At startup it takes one
-advisory lock per EVM nonce domain it can write -- a file per `{chain id, address}`
-under `/tmp/fast-ibc-relayer-<uid>/`, named `evm-signer-<chain id>-<address>.lock`
-(`cmd/evm_signer_lock.go:221`) -- so a second process sharing `ETH_PRIVATE_KEY` on a
-chain this one writes refuses to boot, naming the address, the chain id and the lock
-file, instead of colliding at the first submission. The guard reaches one user on one
-machine; two hosts sharing a key still collide and nothing local can see it.
+**`start` enforces both rules**, with one advisory lock per contended resource, all
+under `/tmp/fast-ibc-relayer-<uid>/`.
 
-Nothing enforces the COSMOS half yet. `ValidateKeys` parses the ETH key and derives
-the Cosmos signer address, both process-local and neither a cross-process lock, so
-two processes on one Cosmos key start happily. Distinct Cosmos keys are a REQUIREMENT
-you have to meet yourself; the guard for it is #467.
+The EVM half takes one lock per nonce domain it can write: a file per
+`{chain id, address}`, named `evm-signer-<chain id>-<address>.lock`
+(`cmd/evm_signer_lock.go:221`). The chain id is resolved from each configured
+endpoint at startup rather than read from the config, so the lock names the domain
+the process will actually write. A `cosmos<->eth` and a `cosmos<->l2` process write
+different chains, take different locks, and may share one key -- the guard permits
+exactly what the rule above permits.
+
+The Cosmos half takes one lock on the signing address alone, named
+`cosmos-signer-<address>.lock` (`cmd/cosmos_signer_lock.go`). Deliberately nothing
+else is in that name -- not the chain id, not the config path, not the state
+directory. A lock named after anything the runbook tells operators to vary per
+process is not a lock: the two processes it exists to catch each take their own file
+and both start. The directory itself reads no environment variable for the same
+reason, since `.env` is loaded before the lock is taken.
+
+Either lock refuses to boot and names the address and the lock file, instead of
+colliding at the first submission. Both are `flock`, so they reach one user on one
+machine; two hosts sharing a key still collide and nothing local can see it.
 
 **A second ETH key is not usable until it is funded AND granted the router's
 `RELAYER_ROLE`.** This is the step that costs an afternoon if it is missed, because

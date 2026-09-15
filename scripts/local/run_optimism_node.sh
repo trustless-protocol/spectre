@@ -237,7 +237,7 @@ ENCLAVE="$ENCLAVE" ETH_PIN="$ETH_PIN" RUN_DIR="$RUN_DIR" \
 . "$RUN_DIR/eth.env" # ETH_RPC / ETH_WS / ETH_BEACON_API
 L1_RPC_URL=$ETH_RPC
 
-# Preflight: fail fast if the beacon endpoint itself is unreachable (wrong port
+# Validate up front: fail fast if the beacon endpoint itself is unreachable (wrong port
 # discovered, or the CL service is down) instead of the finality wait silently
 # looping for 360s. A live beacon answers this endpoint within seconds of the L1
 # coming up — even before finality, it returns 200 with finalized.epoch == 0.

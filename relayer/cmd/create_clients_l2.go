@@ -176,7 +176,7 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 	// the config copy while the on-chain client stayed wrong.
 	//
 	// Unreachable is fatal here, unlike in `start` — see l2ChainIDCheck.
-	wantChainID, err := preflightL2ClientChainID(context.Background(), l2cfg)
+	wantChainID, err := validateL2ClientChainID(context.Background(), l2cfg)
 	if err != nil {
 		return "", err
 	}

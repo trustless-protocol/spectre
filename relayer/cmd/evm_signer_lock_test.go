@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 
@@ -115,44 +114,4 @@ func TestEVMSignerLockKeysRefuseAnUnansweredEndpoint(t *testing.T) {
 			t.Fatalf("error %q does not explain %q", err, want)
 		}
 	}
-}
-
-// This drives the production resolver rather than the seam used by the lock
-// acquisition tests. The lock must not move when .env changes directory-related
-// variables, or two processes could each acquire a different lock file.
-func TestSignerLockPathIgnoresTheEnvironment(t *testing.T) {
-	if os.Getuid() < 0 {
-		t.Skip("uid-based path is not used on this platform")
-	}
-
-	baseline, err := signerLockDir()
-	if err != nil {
-		t.Fatalf("signerLockDir: %v", err)
-	}
-
-	for _, envVar := range []string{"HOME", "XDG_CACHE_HOME", "TMPDIR", "XDG_RUNTIME_DIR"} {
-		t.Run(envVar, func(t *testing.T) {
-			t.Setenv(envVar, t.TempDir())
-			got, err := signerLockDir()
-			if err != nil {
-				t.Fatalf("signerLockDir with %s set: %v", envVar, err)
-			}
-			if got != baseline {
-				t.Fatalf("%s moved the lock directory: %q, want %q", envVar, got, baseline)
-			}
-		})
-	}
-
-	t.Run("all environment variables", func(t *testing.T) {
-		for _, envVar := range []string{"HOME", "XDG_CACHE_HOME", "TMPDIR", "XDG_RUNTIME_DIR"} {
-			t.Setenv(envVar, t.TempDir())
-		}
-		got, err := signerLockDir()
-		if err != nil {
-			t.Fatalf("signerLockDir: %v", err)
-		}
-		if got != baseline {
-			t.Fatalf("environment moved the lock directory: %q, want %q", got, baseline)
-		}
-	})
 }

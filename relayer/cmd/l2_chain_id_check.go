@@ -177,14 +177,14 @@ func probeL2ChainID(stdCtx context.Context, rpcURL string) *big.Int {
 	return chainID
 }
 
-// preflightL2ClientChainID verifies an --l2-config profile against the chain its
+// validateL2ClientChainID verifies an --l2-config profile against the chain its
 // RPC serves, and returns the declared id on success.
 //
 // It exists as its own function so the create-clients path's behaviour is
 // testable without standing up Cosmos: it composes exactly what that path needs
 // (parse the profile, probe the endpoint, compare, refuse on no answer), against
 // a real l2ClientConfig rather than a hand-picked chain id.
-func preflightL2ClientChainID(stdCtx context.Context, l2cfg *l2ClientConfig) (uint64, error) {
+func validateL2ClientChainID(stdCtx context.Context, l2cfg *l2ClientConfig) (uint64, error) {
 	want, err := l2ChainIDFromProfile(l2cfg.RollupProfile)
 	if err != nil {
 		return 0, fmt.Errorf("l2-config: %w", err)

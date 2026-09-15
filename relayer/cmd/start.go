@@ -74,20 +74,44 @@ func Start(logger *zap.Logger) *cobra.Command {
 			if err := validateRelayStartupConfig(cfg); err != nil {
 				return err
 			}
-
 			// Stamp the path onto every log line from here on. A1 makes this a
 			// process-level constant, and the merge point (journald, Loki) is where
 			// several relayer processes lose the file boundary that used to tell
 			// their lines apart.
 			//
-			// It sits after validation and before the prover load on purpose: the
-			// two checks above report a config the operator can read back from the
-			// file, so a path label would add nothing, while every line from the
-			// prover onward comes from one of several processes.
+			// The boundary it sits on is "answerable from the file" versus "needs a
+			// read". The two checks above report a config the operator can read back
+			// from the file, so a label would add nothing; everything below -- the
+			// chain-id and deployment probes, the signer lock, the prover, the relay
+			// loops -- describes live state, and in a merged log that is where the
+			// line stops saying which process it came from. relayPathID is safe here
+			// because validateSingleRelayPair has already proved there is exactly one.
+			//
 			// Shadowing `logger` is deliberate: every builder and lifecycle line
 			// below takes it from here, so the scoped logger reaches them without
 			// anyone having to remember to pass the right one.
 			logger := stampRelayPath(logger, relayPathID(cfg))
+
+			// Third: everything that needs a read to prove wrong — the state
+			// directory, the Cosmos chain id, the deployed contracts and the client
+			// ids. Last of the three because the two above are answerable from the
+			// file alone, and reporting a chain disagreement for a config that
+			// declares two paths would name the wrong problem. runCtx, not
+			// cmd.Context(): each probe wraps what it is given in a timeout, so on
+			// cmd.Context() a Ctrl-C during a hung endpoint would wait the full
+			// budget out per endpoint.
+			if err := validateStartupConfig(runCtx, cfg); err != nil {
+				return err
+			}
+			// Last of the startup gates, because it is the only one that takes
+			// something: an exclusive lock on this process's Cosmos signing
+			// address. Running it after the read-only checks means a config
+			// mistake is reported without ever contending for the lock.
+			releaseSigner, err := acquireCosmosSignerLock()
+			if err != nil {
+				return err
+			}
+			defer releaseSigner()
 
 			// Load the prover once and share it across every source loop — the
 			// bucket registry (r1cs/pk/vk) is read-only after load, so concurrent
@@ -139,12 +163,14 @@ func Start(logger *zap.Logger) *cobra.Command {
 			}
 			defer releaseEVMSignerLocks()
 			// Env overrides (ICS26_CLIENT_ID, COSMOS_WASM_CLIENT_ID, ROLE_MANAGER)
-			// name a single source; only honor them when exactly one is
-			// configured, otherwise they would wrongly apply to every source.
 			// name a single source, and a process now runs exactly one — so they
 			// can only ever apply to the source that is running. What used to keep
 			// them off the wrong source was a count taken here; that job belongs to
 			// validateSingleRelayPair now.
+			//
+			// They reach the cosmos_to_eth builder only. buildCosmosToL2Dest does
+			// not consult the environment, so evmDeploymentsInConfig must not apply
+			// them to a cosmos_to_l2 entry either -- see the two loops there.
 			const allowEnvOverride = true
 
 			// One shared TransactionHandler across all sources. What sharing buys is

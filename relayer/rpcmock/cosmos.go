@@ -54,6 +54,11 @@ func (n *CosmosNode) Handle(method string, h func(params json.RawMessage) (any, 
 	n.handlers[method] = h
 }
 
+// URL is the stub's address, for a caller that dials it itself — the shape a
+// config field takes, where the value under test is the URL rather than the
+// client built from it.
+func (n *CosmosNode) URL() string { return n.server.URL }
+
 // Client dials the stub and returns a real *rpchttp.HTTP. The caller wraps it in
 // whatever endpoint struct it needs; this package deliberately imports nothing
 // from the relayer, so that a package the endpoint type depends on can use it

@@ -224,7 +224,7 @@ func TestVerifyL2ChainIDRejectsAMismatchForCreateClients(t *testing.T) {
 	t.Parallel()
 
 	srv := chainIDServer(t, "0x66eee") // 421614
-	_, err := preflightL2ClientChainID(context.Background(), &l2ClientConfig{
+	_, err := validateL2ClientChainID(context.Background(), &l2ClientConfig{
 		L2RPCURL:      srv.URL,
 		RollupProfile: profileWithChainID(412346), // the devnet
 	})
