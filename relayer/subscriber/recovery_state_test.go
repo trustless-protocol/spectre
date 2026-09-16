@@ -38,7 +38,7 @@ func TestRecoveryChunkSize(t *testing.T) {
 
 func TestSubscriberResumesFromPersistedCursors(t *testing.T) {
 	sub, store, deps := newRecoveryTestSubscriber(t)
-	if err := store.SaveCheckpoint("source-a", services.RecoveryCursors{CosmosHeight: 100, EthSendBlock: 120, EthWriteAckBlk: 900}); err != nil {
+	if err := store.SaveCheckpoint(services.RecoveryCursors{"cosmos": 100, "eth_send": 120, "eth_write_ack": 900}); err != nil {
 		t.Fatal(err)
 	}
 	if got := sub.resumeCosmosCursor(deps, 1000, 256); got != 100 {
@@ -54,7 +54,7 @@ func TestPersistCursorsClampToOutstandingPackets(t *testing.T) {
 	sub, store, deps := newRecoveryTestSubscriber(t)
 	// Seed progress above the outstanding packets. The safety clamp must be able
 	// to rewind an already-persisted cursor, not only constrain its first write.
-	if err := store.SaveCheckpoint("source-a", services.RecoveryCursors{CosmosHeight: 90, EthSendBlock: 100, EthWriteAckBlk: 100}); err != nil {
+	if err := store.SaveCheckpoint(services.RecoveryCursors{"cosmos": 90, "eth_send": 100, "eth_write_ack": 100}); err != nil {
 		t.Fatal(err)
 	}
 	bb := services.NewBatchBuilder()
@@ -63,11 +63,11 @@ func TestPersistCursorsClampToOutstandingPackets(t *testing.T) {
 
 	sub.persistCosmosCursor(deps, bb, 100)
 	sub.persistEthCursors(deps, bb, 110, 120)
-	got, ok := store.Get("source-a")
+	got, ok := store.Get()
 	if !ok {
 		t.Fatal("source cursors not saved")
 	}
-	if got.CosmosHeight != 50 || got.EthSendBlock != 60 || got.EthWriteAckBlk != 60 {
+	if got["cosmos"] != 50 || got["eth_send"] != 60 || got["eth_write_ack"] != 60 {
 		t.Fatalf("clamped cursors = %+v", got)
 	}
 }
@@ -77,7 +77,7 @@ func TestScanEthRangePersistsOnlySuccessfulChunks(t *testing.T) {
 	cursor := uint64(1)
 	calls := 0
 	persist := func() {
-		if err := store.SaveCheckpoint("source-a", services.RecoveryCursors{EthSendBlock: cursor}); err != nil {
+		if err := store.SaveCheckpoint(services.RecoveryCursors{"eth_send": cursor}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -100,9 +100,9 @@ func TestScanEthRangePersistsOnlySuccessfulChunks(t *testing.T) {
 	if cursor != 5 {
 		t.Fatalf("cursor = %d, want first failed chunk start 5", cursor)
 	}
-	got, _ := store.Get("source-a")
-	if got.EthSendBlock != 5 {
-		t.Fatalf("persisted cursor = %d, want 5", got.EthSendBlock)
+	got, _ := store.Get()
+	if got["eth_send"] != 5 {
+		t.Fatalf("persisted cursor = %d, want 5", got["eth_send"])
 	}
 }
 
@@ -115,7 +115,7 @@ func TestScanEthRangeNarrowsAndResumesAtTheCursor(t *testing.T) {
 	cursor := uint64(1)
 	span := &relayerclient.LogSpan{Chunk: 8}
 	persist := func() {
-		if err := store.SaveCheckpoint("source-a", services.RecoveryCursors{EthSendBlock: cursor}); err != nil {
+		if err := store.SaveCheckpoint(services.RecoveryCursors{"eth_send": cursor}); err != nil {
 			t.Fatal(err)
 		}
 	}

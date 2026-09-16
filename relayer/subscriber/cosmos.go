@@ -83,15 +83,15 @@ func (s *Subscriber) resumeCosmosCursor(ctx cosmosDeps, latestHeight, lookback u
 	if s.recovery == nil {
 		return lookbackStart
 	}
-	cursors, ok := s.recovery.Get(recoverySourceID(ctx.IDs))
+	cursors, ok := s.recovery.Get()
 	if !ok {
 		return lookbackStart
 	}
-	start, resumed, behind := services.ResumeCursor(cursors.CosmosHeight, lookbackStart, latestHeight)
+	start, resumed, behind := services.ResumeCursor(cursors[cursorCosmos], lookbackStart, latestHeight)
 	if resumed && behind > 0 {
 		ctx.Logger.Printf("[SubscribeCosmos] resuming from persisted height %d, %d block(s) behind head %d", start, behind, latestHeight)
 	} else if resumed {
-		ctx.Logger.Printf("[SubscribeCosmos] persisted cursor %d is inside the lookback window; rescanning from %d", cursors.CosmosHeight, start)
+		ctx.Logger.Printf("[SubscribeCosmos] persisted cursor %d is inside the lookback window; rescanning from %d", cursors[cursorCosmos], start)
 	}
 	return start
 }
@@ -106,7 +106,7 @@ func (s *Subscriber) persistCosmosCursor(ctx cosmosDeps, batchBuilder *services.
 	if height == 0 {
 		return
 	}
-	if err := s.recovery.SaveCheckpoint(recoverySourceID(ctx.IDs), services.RecoveryCursors{CosmosHeight: height}); err != nil {
+	if err := s.recovery.SaveCheckpoint(services.RecoveryCursors{cursorCosmos: height}); err != nil {
 		ctx.Logger.Printf("[SubscribeCosmos] failed to persist recovery cursor (height %d): %v", height, err)
 	}
 }

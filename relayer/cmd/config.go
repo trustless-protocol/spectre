@@ -1219,13 +1219,13 @@ func moduleNameSuffix(name string) string {
 //     would look right and fire on the wrong configs.
 //
 // Both land once #417 settles the attestor's startup contract.
-func validateStartupConfig(stdCtx context.Context, cfg *appConfig) error {
+func validateStartupConfig(stdCtx context.Context, cfg *appConfig, stateDir string) error {
 	if cfg == nil {
 		return nil
 	}
 
 	var findings []configFinding
-	findings = append(findings, validateStateDir()...)
+	findings = append(findings, validateStateDir(stateDir)...)
 	findings = append(findings, validateCosmosChainID(stdCtx, cfg)...)
 	findings = append(findings, validateEVMDeployments(stdCtx, cfg)...)
 
@@ -1274,10 +1274,19 @@ const stateDirProbeFile = ".relayer-write-probe"
 // failure this check removes; the run creates that same directory moments later
 // anyway. Nothing on a chain changes, and nothing another process can observe
 // beyond a directory that was about to exist.
-func validateStateDir() []configFinding {
-	path := services.RecoveryStatePath()
-	key := "RELAYER_RECOVERY_STATE_FILE"
-	dir := filepath.Dir(path)
+// stateDir is the per-path directory this process will write into, which the
+// caller derives from the config (relayStateDir). It used to be read from
+// services.RecoveryStatePath and RELAYER_RECOVERY_STATE_FILE; this branch moved
+// the cursor into the per-path directory and checkLegacyStateLayout now REFUSES
+// that variable outright, so validating the old location would be checking a
+// path nothing writes.
+func validateStateDir(stateDir string) []configFinding {
+	if stateDir == "" {
+		return nil // no path resolved yet: nothing to judge, and nothing is written either
+	}
+	path := filepath.Join(stateDir, services.RecoveryCursorsFileName)
+	key := "state directory"
+	dir := stateDir
 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return []configFinding{{

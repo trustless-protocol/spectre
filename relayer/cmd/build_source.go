@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"math"
@@ -36,9 +37,20 @@ import (
 // from one-shot operator commands. Incident commands use only HTTP RPCs and
 // must not depend on websocket infrastructure they never consume.
 type buildCosmosToEthSourceOptions struct {
-	allowEnvOverride   bool
+	// ids are the EFFECTIVE client ids this source will relay with, resolved by
+	// the caller. They are passed rather than re-derived here on purpose: the
+	// caller also names relayStateDir from them, and a second derivation is a
+	// second chance to disagree. Start used to name the directory from the raw
+	// config id while this builder applied the environment overrides, so the
+	// lock and the cursors described a pair the process was not serving. Found
+	// in review. One derivation, two consumers, no way to diverge.
+	ids relayClientIDs
+	// roleManager is the effective role-manager address, resolved by the caller
+	// for the same reason ids are. Not part of the relay identity, but subject to
+	// the same allow/disable decision.
+	roleManager        string
 	startSubscriptions bool
-	pendingStateDir    string
+	relayStateDir      string
 
 	// relaysEVMToCosmos says this caller will drive the eth->cosmos direction,
 	// which is the only consumer of cosmos_wasm_client_id -- the id of the
@@ -57,17 +69,234 @@ type buildCosmosToEthSourceOptions struct {
 	relaysEVMToCosmos bool
 }
 
-// pendingStateDir keeps restart state beside the selected config while
-// separating relay kinds and client ids. The digest avoids treating client ids
-// as paths and also scopes state to the config file when several deployments
-// run from the same directory.
-func pendingStateDir(configPath, relayKind, clientID string) string {
-	absConfigPath, err := filepath.Abs(configPath)
-	if err != nil {
-		absConfigPath = configPath
+// relayClientIDs is one cosmos_to_eth path's identity after overrides.
+type relayClientIDs struct {
+	router string
+	wasm   string
+}
+
+// relayStateDir is where one process keeps everything it must not lose across a
+// restart: the recovery cursors and the pending-packet trackers, in one place.
+//
+// Three properties, each for a reason:
+//
+//   - Rooted at the CONFIG's directory, not the working directory. Running
+//     `start` from two different directories with the same config must reach the
+//     same state, and a cwd-relative root is the surest way to get two.
+//   - A pure function of identity (absolute config path, direction, and BOTH
+//     client ids of the pair). Same identity, same directory, always; different
+//     identity, different directory, with nothing to coordinate.
+//   - A digest rather than the raw client ids, which may contain characters that
+//     are not valid in a path component.
+//
+// Before this the two mechanisms disagreed on all three: cursors lived under a
+// cwd-relative root in one file keyed by source id, trackers beside the config
+// in a per-identity directory. Changing directory moved half the state.
+//
+// The pair, not the router alone. Reported by @neitdung: the directory was named
+// from the router id while the builder was handed {router, wasm}, so holding the
+// config and the router fixed and changing only COSMOS_WASM_CLIENT_ID served a
+// DIFFERENT relay path out of the same directory -- the same lock, the same
+// cursors, the same pending trackers. On restart the new wasm client inherits a
+// cursor that skips its own older events, and pending packets from the previous
+// pair replay under the new destination. "A pure function of the relay identity"
+// was stated in this comment while half the identity was missing from the input.
+func relayStateDir(configPath, relayKind string, ids relayClientIDs) string {
+	canonical := canonicalConfigPath(configPath)
+	sum := relayIdentityDigest(canonical, relayKind, ids)
+	return filepath.Join(filepath.Dir(canonical), ".spectre-state", fmt.Sprintf("%s-%x", relayKind, sum[:8]))
+}
+
+// relayIdentityDigest frames each field by LENGTH rather than separating them
+// with a byte.
+//
+// A separator is only unambiguous while no field can contain it. These fields
+// come from a JSON config, so nothing stops an operator -- or a generator -- from
+// putting one there, and a separator-based digest lets two distinct identities
+// collide into one directory: exactly the duplicate-owner case the lock exists to
+// prevent, and it would appear as two processes quietly sharing one cursor rather
+// than as an error. Length framing has no such input.
+func relayIdentityDigest(canonicalPath, relayKind string, ids relayClientIDs) [sha256.Size]byte {
+	h := sha256.New()
+	for _, field := range []string{canonicalPath, relayKind, ids.router, ids.wasm} {
+		var length [8]byte
+		binary.BigEndian.PutUint64(length[:], uint64(len(field)))
+		h.Write(length[:])
+		h.Write([]byte(field))
 	}
-	sum := sha256.Sum256([]byte(absConfigPath + "\x00" + relayKind + "\x00" + clientID))
-	return filepath.Join(filepath.Dir(configPath), ".fast-ibc-state", fmt.Sprintf("%s-%x", relayKind, sum[:8]))
+	var sum [sha256.Size]byte
+	copy(sum[:], h.Sum(nil))
+	return sum
+}
+
+// canonicalConfigPath resolves configPath to one name the filesystem agrees on,
+// so two ways of naming the same file cannot produce two state directories.
+//
+// Both the ROOT and the HASH now come from it, which they did not: the hash used
+// filepath.Abs while the root used filepath.Dir(configPath) unchanged, so a
+// relative --config produced a cwd-relative root -- the exact thing the comment
+// above warns against.
+//
+// filepath.Abs alone is not enough, because it does not resolve symlinks, and
+// that is not a corner case. On macOS /var is a symlink to /private/var, so
+// running `--config config.json` from the config's own directory and passing the
+// same file by absolute path already produced two different digests AND two
+// different roots for one config. Two state directories mean two lock files, and
+// two locks that never contend mean the duplicate-owner case this file exists to
+// prevent.
+//
+// A path that cannot be resolved falls back to the absolute form rather than
+// failing: the caller has already loaded the config, so this is a filesystem
+// oddity rather than a missing file, and refusing to start over it would be worse
+// than a slightly less canonical name.
+func canonicalConfigPath(configPath string) string {
+	abs, err := filepath.Abs(configPath)
+	if err != nil {
+		abs = configPath
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return abs
+	}
+	return resolved
+}
+
+// Legacy state locations, kept only so startup can REFUSE them by name.
+const (
+	legacyTrackerDirName  = ".fast-ibc-state"
+	legacyCursorDirName   = ".relayer-state"
+	legacyCursorFileEnvar = "RELAYER_RECOVERY_STATE_FILE"
+)
+
+// checkLegacyStateLayout refuses to start when state from the previous layout is
+// present, instead of silently ignoring it.
+//
+// The new binary reads neither the old tracker directory nor the old cursor file,
+// so an upgrade would begin with an empty tracker and an empty cursor set and say
+// nothing about it. Everything outside the startup lookback then falls out of
+// timeout tracking, and a packet whose refund depended on that tracker is simply
+// not refunded.
+//
+// It does not migrate. Nothing is deployed outside devnets, so a converter for a
+// layout with no users would be machinery with no purpose -- and a converter
+// never exercised on real state is a worse promise than an error. What matters is
+// that the change is VISIBLE: an operator who sees this clears stale devnet state
+// in one command, and one who cannot afford to is told before the relayer starts
+// rather than after a packet is missed.
+func checkLegacyStateLayout(configPath string) error {
+	var found []string
+	if path := os.Getenv(legacyCursorFileEnvar); path != "" {
+		found = append(found, fmt.Sprintf("%s=%s (no longer read)", legacyCursorFileEnvar, path))
+	}
+	// Both parents of the config, RAW and canonical, and the raw one first.
+	//
+	// The previous layout joined the tracker directory onto
+	// filepath.Dir(configPath) with no Abs and no EvalSymlinks (see 47bbc901), so
+	// legacy state sits beside the config path AS SPELLED on the command line.
+	// Canonicalising this lookup -- which the identity derivation above rightly
+	// does -- looks in the wrong place whenever the two differ: an operator who
+	// ran the old build through a config symlink, and upgrades through that same
+	// symlink, would have the guard resolve to the target's parent, find nothing,
+	// and start with an empty tracker. That is the silent upgrade loss this guard
+	// exists to make loud. Found in review.
+	//
+	// legacyCursorDirName stays relative on purpose: the old default was the bare
+	// ".relayer-state/recovery-cursors.json" (e60b69ad), resolved against the
+	// process working directory, so that is where to look for it.
+	candidates := []string{
+		filepath.Join(filepath.Dir(configPath), legacyTrackerDirName),
+		filepath.Join(filepath.Dir(canonicalConfigPath(configPath)), legacyTrackerDirName),
+		legacyCursorDirName,
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		// Dedupe by RESOLVED form but report the spelling: the same directory
+		// reached two ways must not be listed as two problems, and the operator is
+		// best served by the name they typed.
+		//
+		// The key has to resolve symlinks, not merely absolutise. The first version
+		// used filepath.Abs and its own dedupe test caught it: on macOS
+		// t.TempDir() hands back /var/folders/... which IS a symlink to
+		// /private/var/folders/..., so the raw and canonical parents were one
+		// directory spelled two ways and both survived. Deduping a symlink-driven
+		// pair with a function that ignores symlinks is the same mistake this
+		// guard is about, one level down.
+		key := candidate
+		if resolved, err := filepath.EvalSymlinks(candidate); err == nil {
+			key = resolved
+		} else if abs, absErr := filepath.Abs(candidate); absErr == nil {
+			// EvalSymlinks fails on a path that does not exist, which the os.Stat
+			// below is about to reject anyway; Abs keeps the key stable meanwhile.
+			key = filepath.Clean(abs)
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		if _, err := os.Stat(candidate); err == nil {
+			found = append(found, candidate)
+		}
+	}
+	if len(found) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"state from the previous layout is still present: %s. This build keeps one state directory "+
+			"per relay path under .spectre-state beside the config and does not read the old "+
+			"locations, so starting would silently begin with an empty pending tracker and an empty "+
+			"cursor set -- packets older than the startup lookback would stop being tracked for "+
+			"timeout refunds. There is no migration: remove the listed paths (and unset %s) to start "+
+			"fresh, which is what a devnet wants, or relay them out with the previous build first",
+		strings.Join(found, ", "), legacyCursorFileEnvar)
+}
+
+// effectiveRelayIDs resolves the client ids a cosmos_to_eth path will actually
+// RUN with, which is not always the pair written in the file: buildCosmosToEthSource
+// applies ICS26_CLIENT_ID and COSMOS_WASM_CLIENT_ID over the config when the
+// caller allows overrides.
+//
+// It exists because two consumers must agree and they used to disagree. Start
+// named the state directory -- the lock, the cursors, the pending trackers --
+// from the RAW config id while the builder relayed the effective one. Two
+// consequences, both found in review:
+//
+//   - change an override and restart, and the process relays a different pair
+//     while reusing the previous pair's persisted cursors and pending work;
+//   - two configs whose raw ids differ but whose effective ids are the same take
+//     two DIFFERENT locks and both start on one relay path, which is the
+//     duplicate-owner case this directory scheme exists to prevent.
+//
+// Deriving both from one function is what makes "the directory is a pure
+// function of the relay identity" true rather than merely stated.
+func effectiveRelayIDs(c2e cosmosToEthConfig, allowEnvOverride bool) relayClientIDs {
+	ids := relayClientIDs{router: c2e.ICS26ClientID, wasm: c2e.CosmosWasmClientID}
+	if allowEnvOverride {
+		ids.router = envOrDefault("ICS26_CLIENT_ID", ids.router)
+		ids.wasm = envOrDefault("COSMOS_WASM_CLIENT_ID", ids.wasm)
+	}
+	return ids
+}
+
+// effectiveRoleManager resolves the role-manager address the same way, and for
+// the same reason: allowEnvOverride is not a statement about identity, it is
+// "the environment may not speak for a source the operator selected by name".
+//
+// Getting that wrong is not cosmetic. RouterManagesProofSubmission compares this
+// address with the router to decide whether proofs go through ICS26Router or
+// straight to SpectreClient, so a stale value routes incident evidence down the
+// wrong contract path -- and submit-misbehaviour is exactly the command that
+// disables overrides, because it is the one an operator runs with a narrowed
+// config during an incident.
+//
+// It lives beside effectiveRelayIDs rather than inside the builder so that
+// EVERY value the environment may override for a source is decided in one place.
+// The builder reading one of them itself is how this regressed: the identity
+// honoured allowEnvOverride and this did not.
+func effectiveRoleManager(c2e cosmosToEthConfig, allowEnvOverride bool) string {
+	if !allowEnvOverride {
+		return c2e.ICS26Address
+	}
+	return envOrDefault("ROLE_MANAGER", c2e.ICS26Address)
 }
 
 func buildCosmosToEthSource(
@@ -86,24 +315,21 @@ func buildCosmosToEthSource(
 	// resource to release; one above it would have to unwind a dialled ETH client
 	// and a started Cosmos WS subscription, and the cleanup closure that knows how
 	// to do that is not built until the end of this function.
-	cosmosWasmClientID := c2e.CosmosWasmClientID
-	if options.allowEnvOverride {
-		cosmosWasmClientID = envOrDefault("COSMOS_WASM_CLIENT_ID", cosmosWasmClientID)
-	}
+	// Resolved by the CALLER, not read from the environment here: an explicitly
+	// selected source must be protected from a stale process environment, and one
+	// derivation of these values is what makes the state directory and the relay
+	// identity the same thing (effectiveRelayIDs).
+	cosmosRouterClientID, cosmosWasmClientID := options.ids.router, options.ids.wasm
+	roleManager := options.roleManager
+	// Guarded by the caller's DIRECTION rather than required unconditionally:
+	// submit-misbehaviour on a cosmos_to_l2 source, which deliberately carries no
+	// cosmos_wasm_client_id, was otherwise refused for a field it never reads.
 	if options.relaysEVMToCosmos && cosmosWasmClientID == "" {
 		return nil, zero, nil, fmt.Errorf(
 			"cosmos_wasm_client_id is required in cosmos_to_eth config to relay eth->cosmos")
 	}
-	cosmosRouterClientID := c2e.ICS26ClientID
-	if options.allowEnvOverride {
-		cosmosRouterClientID = envOrDefault("ICS26_CLIENT_ID", cosmosRouterClientID)
-	}
 	if cosmosRouterClientID == "" {
 		return nil, zero, nil, fmt.Errorf("cosmos router client ID (ICS26_CLIENT_ID or ics26_client_id) is required and cannot be empty")
-	}
-	roleManager := c2e.ICS26Address
-	if options.allowEnvOverride {
-		roleManager = envOrDefault("ROLE_MANAGER", roleManager)
 	}
 	// SpectreClient is already deployed; this is its address, not a request to deploy.
 	if c2e.SpectreClient == "" {
@@ -146,6 +372,11 @@ func buildCosmosToEthSource(
 		return nil, zero, nil, fmt.Errorf("failed to create Cosmos RPC client: %w", err)
 	}
 
+	// Assemble the scoped chain dependencies, including the beacon API.
+	// Set SpectreClient address (already deployed)
+	if c2e.SpectreClient == "" {
+		return nil, zero, nil, fmt.Errorf("spectre_client address is required in cosmos_to_eth config")
+	}
 	if options.startSubscriptions {
 		if err := cosmosClient.Start(); err != nil {
 			ethClient.Close()
@@ -191,16 +422,17 @@ func buildCosmosToEthSource(
 	}
 
 	var recoveryState *services.RecoveryStateStore
-	if options.startSubscriptions {
-		recoveryState, err = services.LoadRecoveryState(services.RecoveryStatePath())
+	if options.startSubscriptions && options.relayStateDir != "" {
+		recoveryState, err = services.LoadRecoveryState(
+			filepath.Join(options.relayStateDir, services.RecoveryCursorsFileName))
 		if err != nil {
 			cleanup()
 			return nil, zero, nil, fmt.Errorf("load recovery state: %w", err)
 		}
 	}
 	var svc *services.Services
-	if options.pendingStateDir != "" {
-		svc, err = services.NewWithPendingState(txHandler, p, cosmosConfig, options.pendingStateDir, recoveryState)
+	if options.relayStateDir != "" {
+		svc, err = services.NewWithPendingState(txHandler, p, cosmosConfig, options.relayStateDir, recoveryState)
 		if err != nil {
 			cleanup()
 			return nil, zero, nil, err

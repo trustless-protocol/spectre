@@ -106,6 +106,15 @@ type Source struct {
 	// without it.
 	includeProvisional bool
 
+	// cosmosState reconciles scanned events against what Cosmos already records,
+	// so a packet another relayer settled is not proven a second time. nil skips
+	// reconciliation entirely (one-shot and test callers).
+	cosmosState CosmosPacketState
+
+	// recovery persists the scan cursor across restarts. nil keeps the cursor in
+	// memory only, which is what the tests and any one-shot caller want.
+	recovery *services.RecoveryStateStore
+
 	// settle is called for terminal L2 events; see WithSettleHook. nil means the
 	// source drops them, which is what it did before terminal events were read.
 	settle func(packet []byte)
@@ -142,6 +151,33 @@ func NewSource(chainType chain.ChainType, eth *ethclient.Client, headKind HeadKi
 		srcChainID:         srcChainID,
 		includeProvisional: includeProvisional,
 	}
+}
+
+// WithRecoveryState gives this source a durable scan cursor. Without one the
+// cursor lives only in Subscribe's stack frame, so a restart resumes at
+// head - L2_STARTUP_LOOKBACK_BLOCKS and anything older is never rescanned --
+// an acknowledgement written before that window strands its packet, and its
+// escrow with it, silently (#308).
+//
+// An option rather than a constructor parameter because it is genuinely
+// optional: the one-shot and test paths run without durable state, and
+// NewSource already carries nine arguments.
+func (s *Source) WithRecoveryState(store *services.RecoveryStateStore) *Source {
+	s.recovery = store
+	return s
+}
+
+// WithCosmosPacketState lets the scan reconcile against Cosmos before relaying:
+// an event whose work is already settled there is dropped rather than proven
+// again. Without it the L2 path is the only one of the four that relays purely on
+// what it saw in a block, with no on-chain check that the work is still needed --
+// so a second relayer settling a packet leaves this one proving it anyway.
+//
+// An option, not a constructor parameter, for the same reason as
+// WithRecoveryState: the one-shot and test paths have no Cosmos endpoint.
+func (s *Source) WithCosmosPacketState(state CosmosPacketState) *Source {
+	s.cosmosState = state
+	return s
 }
 
 // WithLogScanChunk caps the block span of each eth_getLogs this source issues.

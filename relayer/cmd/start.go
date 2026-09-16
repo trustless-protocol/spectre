@@ -74,6 +74,13 @@ func Start(logger *zap.Logger) *cobra.Command {
 			if err := validateRelayStartupConfig(cfg); err != nil {
 				return err
 			}
+			// Before anything opens a state directory: state written by the previous
+			// layout is not read by this build, and starting anyway would look like a
+			// clean first run while pending packets quietly stopped being tracked.
+			if err := checkLegacyStateLayout(configPath); err != nil {
+				return err
+			}
+
 			// Stamp the path onto every log line from here on. A1 makes this a
 			// process-level constant, and the merge point (journald, Loki) is where
 			// several relayer processes lose the file boundary that used to tell
@@ -100,7 +107,10 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// cmd.Context(): each probe wraps what it is given in a timeout, so on
 			// cmd.Context() a Ctrl-C during a hung endpoint would wait the full
 			// budget out per endpoint.
-			if err := validateStartupConfig(runCtx, cfg); err != nil {
+			// The state directory this process will actually write into, derived
+			// the same way the loops below derive it. A1 has already proved there
+			// is exactly one path, so there is exactly one directory to judge.
+			if err := validateStartupConfig(runCtx, cfg, startupStateDir(configPath, cfg)); err != nil {
 				return err
 			}
 			// Last of the startup gates, because it is the only one that takes
@@ -199,6 +209,22 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// A path runs at most two engines: the forward leg, plus the return leg
 			// for Cosmos↔L2. Cosmos↔ETH is one engine — runAdapterEngine drives both
 			// of its directions internally.
+			// Held for the life of the process: the lock IS the descriptor, so these
+			// are collected early and never deferred into a shorter scope. The
+			// kernel releases them at exit, including on SIGKILL.
+			var stateLocks []*os.File
+			// Released only here, when RunE returns and the process is leaving.
+			// This is not tidiness: os.File carries a finalizer that closes the
+			// descriptor once the value is unreachable, and closing it releases the
+			// flock. A slice that is only ever appended to is exactly the shape the
+			// collector is free to reclaim, which would silently hand the directory
+			// to a second process while this one is still running.
+			defer func() {
+				for _, lock := range stateLocks {
+					_ = lock.Close()
+				}
+			}()
+
 			const maxEnginesPerPath = 2
 			loopErrCh := make(chan error, maxEnginesPerPath)
 			cleanups := make([]func(), 0, maxEnginesPerPath)
@@ -223,16 +249,36 @@ func Start(logger *zap.Logger) *cobra.Command {
 				return stopRelaysAndCleanup(cancelRelays, wg.Wait, cleanups, workersStuck.Load)
 			}
 			for i := range sources {
+				// The EFFECTIVE id, the one the builder below will relay with. Naming
+				// the directory from the raw config id let the lock and the cursors
+				// describe a different relay pair than the process actually served.
+				// Resolved ONCE. The same value names the directory below and is
+				// handed to the builder, so the lock, the cursors and the pair being
+				// relayed cannot describe different clients.
+				ids := effectiveRelayIDs(sources[i], allowEnvOverride)
+				stateDir := relayStateDir(configPath, "cosmos-to-eth", ids)
+				// Claim the directory before dialling anything. A second process
+				// with the same identity must stop here, not after it has opened
+				// sockets and begun advancing the cursors this one owns.
+				lock, err := lockStateDir(stateDir)
+				if err != nil {
+					stopAndCleanup()
+					return err
+				}
+				stateLocks = append(stateLocks, lock)
 				svc, deps, cleanup, err := buildCosmosToEthSource(
 					logger, sources[i], cfg.EthToCosmosConfig, cfg.BatchConfig, p, txHandler,
 					buildCosmosToEthSourceOptions{
-						allowEnvOverride:   allowEnvOverride,
+						ids:                ids,
+						roleManager:        effectiveRoleManager(sources[i], allowEnvOverride),
 						startSubscriptions: true,
+						relayStateDir:      stateDir,
 						// start drives the eth->cosmos direction, so a missing
 						// cosmos_wasm_client_id must fail here rather than at the
-						// first packet that needs it.
+						// first packet that needs it. Unrelated to the state
+						// directory above, and it arrived after this branch was
+						// cut, so it is kept rather than replaced.
 						relaysEVMToCosmos: true,
-						pendingStateDir:   pendingStateDir(configPath, "cosmos-to-eth", sources[i].ICS26ClientID),
 					},
 				)
 				if err != nil {
@@ -264,9 +310,19 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// instead of after the relay loop is already dialing/subscribing.
 			builtL2Dests := make([]builtL2Dest, 0, len(l2Dests))
 			for i := range l2Dests {
+				l2StateDir := relayStateDir(configPath, "cosmos-to-l2", relayClientIDs{
+					router: l2Dests[i].ICS26ClientID,
+					wasm:   l2Dests[i].CosmosWasmClientID,
+				})
+				l2Lock, err := lockStateDir(l2StateDir)
+				if err != nil {
+					stopAndCleanup()
+					return err
+				}
+				stateLocks = append(stateLocks, l2Lock)
 				svc, deps, cleanup, err := buildCosmosToL2Dest(
 					logger, l2Dests[i], cfg.BatchConfig, p, txHandler,
-					pendingStateDir(configPath, "cosmos-to-l2", l2Dests[i].ICS26ClientID),
+					l2StateDir,
 				)
 				if err != nil {
 					stopAndCleanup()
@@ -317,12 +373,22 @@ func Start(logger *zap.Logger) *cobra.Command {
 					stopAndCleanup()
 					return fmt.Errorf("l2_to_cosmos source %q: %w", l2Sources[i].AttestorSrcChain, err)
 				}
+				l2SrcStateDir := relayStateDir(configPath, "l2-to-cosmos", relayClientIDs{
+					router: l2Sources[i].L2ICS26ClientID,
+					wasm:   l2Sources[i].L2WasmClientID,
+				})
+				l2SrcLock, err := lockStateDir(l2SrcStateDir)
+				if err != nil {
+					stopAndCleanup()
+					return err
+				}
+				stateLocks = append(stateLocks, l2SrcLock)
 				// Remember WHICH destination this source settles for. timeoutReturn
 				// carries that destination's own *services.Services, and sharing
 				// that instance is the whole mechanism: one side records the debt,
 				// the other clears it from the same ledger.
 				settling = append(settling, timeoutReturn.svc)
-				module, cleanup, err := buildL2ToCosmosModule(logger, l2Sources[i], txHandler, timeoutReturn)
+				module, cleanup, err := buildL2ToCosmosModule(logger, l2Sources[i], txHandler, timeoutReturn, l2SrcStateDir)
 				if err != nil {
 					stopAndCleanup()
 					return fmt.Errorf("l2_to_cosmos source %q: %w", l2Sources[i].AttestorSrcChain, err)
@@ -379,4 +445,29 @@ func Start(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().Bool(flagGPUProve, false, "use the ICICLE GPU backend for proving (or set GPU_PROVE=1); requires an icicle-enabled build")
 	cmd.Flags().Bool(flagBenchmark, false, "enable detailed benchmark gas/timing logs (or set RELAYER_BENCHMARK=1)")
 	return cmd
+}
+
+// startupStateDir names the one state directory this process will use, or "" if
+// the config declares no path this build can resolve one for.
+//
+// It exists so validateStartupConfig can judge the directory that will really be
+// written rather than the retired RELAYER_RECOVERY_STATE_FILE location. The
+// derivation is the same relayStateDir the loops use, which is the point: a
+// check against a different directory would pass while the real one failed.
+func startupStateDir(configPath string, cfg *appConfig) string {
+	switch {
+	case len(cfg.CosmosToEthConfigs) > 0:
+		return relayStateDir(configPath, "cosmos-to-eth", effectiveRelayIDs(cfg.CosmosToEthConfigs[0], true))
+	case len(cfg.CosmosToL2Configs) > 0:
+		d := cfg.CosmosToL2Configs[0]
+		return relayStateDir(configPath, "cosmos-to-l2", relayClientIDs{
+			router: d.ICS26ClientID, wasm: d.CosmosWasmClientID,
+		})
+	case len(cfg.L2ToCosmosConfigs) > 0:
+		src := cfg.L2ToCosmosConfigs[0]
+		return relayStateDir(configPath, "l2-to-cosmos", relayClientIDs{
+			router: src.L2ICS26ClientID, wasm: src.L2WasmClientID,
+		})
+	}
+	return ""
 }

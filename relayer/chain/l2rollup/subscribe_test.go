@@ -6,11 +6,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	ethcommon "github.com/ethereum/go-ethereum/common"
+
 	"relayer/chain"
+	"relayer/services"
 
 	contractICS26Router "relayer/bindings/ICS26Router"
 
@@ -92,6 +96,205 @@ func TestL2AckToEvent_AllowsConfiguredCosmosClient(t *testing.T) {
 	if got.Type != chain.AckPacket || got.Height != 0 || len(got.AckBytes) != 1 {
 		t.Fatalf("unexpected event: %+v", got)
 	}
+}
+
+// #308: the L2 scan cursor used to live only in Subscribe's stack frame, so a
+// restart resumed at head - L2_STARTUP_LOOKBACK_BLOCKS and never looked below
+// it. An acknowledgement written before that window stranded its packet, and
+// its escrow, with nothing in the log to say why.
+//
+// The distinguishing case is a restart AFTER the chain has moved past the
+// lookback window -- exactly the outage the cursor is for. A restart inside the
+// window is indistinguishable with or without persistence, so a test using one
+// would pass either way.
+func TestSubscribePersistsItsScanCursorAcrossRestarts(t *testing.T) {
+	restore := l2SubscribeInterval
+	l2SubscribeInterval = 20 * time.Millisecond
+	t.Cleanup(func() { l2SubscribeInterval = restore })
+
+	router := ethcommon.HexToAddress("0x2222222222222222222222222222222222222222")
+	store, err := services.LoadRecoveryState(filepath.Join(t.TempDir(), "cursors.json"))
+	if err != nil {
+		t.Fatalf("load store: %v", err)
+	}
+
+	// First run: a quiet chain at block 100. The scan consumes [90,100] and the
+	// cursor lands at 101.
+	first := &idleL2Node{router: router, head: 100, logBlock: 100}
+	persisted := runUntilCursor(t, &Source{
+		eth: first.start(t), headKind: Unsafe, router: router,
+		l2ClientID: idleTestClientID, cosmosWasmClientID: idleTestDestID,
+		recovery: store,
+	}, store)
+
+	// Second run, after a long outage: the head is now 1000, so the lookback
+	// alone would start at 990 and blocks 101..989 would never be scanned.
+	second := &idleL2Node{router: router, head: 1000, logBlock: 1000}
+	runUntilScanned(t, &Source{
+		eth: second.start(t), headKind: Unsafe, router: router,
+		l2ClientID: idleTestClientID, cosmosWasmClientID: idleTestDestID,
+		recovery: store,
+	}, second)
+
+	ranges := second.scannedRanges()
+	if len(ranges) == 0 {
+		t.Fatal("the restarted source never scanned")
+	}
+	if got := ranges[0][0]; got != persisted {
+		t.Fatalf("the restart scanned from block %d, want the persisted cursor %d "+
+			"(the lookback alone would have started at 990 and skipped everything below it)", got, persisted)
+	}
+}
+
+// The control, and the shape of the bug: without a store the same restart starts
+// at the lookback and the blocks below it are never read. Without this, the test
+// above would also pass against a source that always rescans from zero.
+func TestSubscribeWithoutAStoreResumesOnlyFromTheLookback(t *testing.T) {
+	restore := l2SubscribeInterval
+	l2SubscribeInterval = 20 * time.Millisecond
+	t.Cleanup(func() { l2SubscribeInterval = restore })
+	t.Setenv(l2StartupLookbackEnv, "10")
+
+	router := ethcommon.HexToAddress("0x3333333333333333333333333333333333333333")
+	node := &idleL2Node{router: router, head: 1000, logBlock: 1000}
+	runUntilScanned(t, &Source{
+		eth: node.start(t), headKind: Unsafe, router: router,
+		l2ClientID: idleTestClientID, cosmosWasmClientID: idleTestDestID,
+	}, node)
+
+	ranges := node.scannedRanges()
+	if len(ranges) == 0 {
+		t.Fatal("never scanned")
+	}
+	// Against the window the source itself computes, not a literal. The number
+	// used to be head-minus-10, set through L2_STARTUP_LOOKBACK; that knob was
+	// retired for a measured window, so a literal here would pin the old knob
+	// rather than the property -- which is that WITHOUT a store the scan starts at
+	// the window and nowhere else.
+	src := &Source{eth: node.start(t), headKind: Unsafe, router: router}
+	lookback := src.startupLookback(context.Background(), 1000)
+	want := uint64(0)
+	if 1000 > lookback {
+		want = 1000 - lookback
+	}
+	if got := ranges[0][0]; got != want {
+		t.Fatalf("scanned from %d, want the window start %d (head 1000 - lookback %d)", got, want, lookback)
+	}
+}
+
+// The cursor must never advance past an event the handler re-queued. Such an
+// event exists only in memory; if the cursor moved beyond its block and the
+// process died, the restart would scan from above it and the packet would never
+// be seen again. This is why the store overlays rather than takes a maximum --
+// the cursor is allowed to move backwards.
+func TestSubscribeCursorNeverPassesARequeuedEvent(t *testing.T) {
+	restore := l2SubscribeInterval
+	l2SubscribeInterval = 20 * time.Millisecond
+	t.Cleanup(func() { l2SubscribeInterval = restore })
+	t.Setenv(l2StartupLookbackEnv, "10")
+
+	router := ethcommon.HexToAddress("0x4444444444444444444444444444444444444444")
+	store, err := services.LoadRecoveryState(filepath.Join(t.TempDir(), "cursors.json"))
+	if err != nil {
+		t.Fatalf("load store: %v", err)
+	}
+	// The log sits at 95, inside the scanned range, and the handler never accepts it.
+	node := &idleL2Node{router: router, head: 100, logBlock: 95}
+	src := &Source{
+		eth: node.start(t), headKind: Unsafe, router: router,
+		l2ClientID: idleTestClientID, cosmosWasmClientID: idleTestDestID,
+		recovery: store,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- src.Subscribe(ctx, func(_ context.Context, batch []chain.Event) []int {
+			requeue := make([]int, len(batch))
+			for i := range batch {
+				requeue[i] = i
+			}
+			return requeue
+		})
+	}()
+
+	// Same reason as runUntilCursor: wait for the cursor, not for the scan that
+	// precedes it in the same iteration.
+	var cursors services.RecoveryCursors
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if got, ok := store.Get(); ok && got[cursorL2] != 0 {
+			cursors = got
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	if cursors == nil {
+		t.Fatal("nothing was persisted")
+	}
+	if got := cursors[cursorL2]; got > 95 {
+		t.Fatalf("cursor = %d, want no higher than the re-queued event's block 95; "+
+			"a restart would scan past a packet that only exists in memory", got)
+	}
+}
+
+// runUntilScanned drives one Subscribe run until the node has served at least
+// one eth_getLogs, then stops it. Bounded: a hung run fails the test rather than
+// hanging it.
+func runUntilScanned(t *testing.T, src *Source, node *idleL2Node) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- src.Subscribe(ctx, func(context.Context, []chain.Event) []int { return nil })
+	}()
+	waitForScan(t, node)
+	cancel()
+	<-done
+}
+
+// runUntilCursor waits for the postcondition that actually matters -- a cursor
+// in the store -- rather than for the scan that precedes it. Waiting on the scan
+// races the persist that follows it in the same iteration, and the race is
+// invisible: the test simply reports "nothing was persisted".
+func runUntilCursor(t *testing.T, src *Source, store *services.RecoveryStateStore) uint64 {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- src.Subscribe(ctx, func(context.Context, []chain.Event) []int { return nil })
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if cursors, ok := store.Get(); ok && cursors[cursorL2] != 0 {
+			cancel()
+			<-done
+			return cursors[cursorL2]
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	t.Fatal("no cursor was persisted after a successful scan")
+	return 0
+}
+
+func waitForScan(t *testing.T, node *idleL2Node) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(node.scannedRanges()) > 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the source never issued an eth_getLogs")
 }
 
 // TestScanTerminalLogs_SettlesWithoutRelaying pins the rule that makes terminal

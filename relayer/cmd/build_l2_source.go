@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"path/filepath"
 
 	"attestor/types/attestation"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
@@ -179,7 +180,9 @@ func l2RouterFromProfile(profile json.RawMessage) (common.Address, error) {
 // per-L2 header builder, and timeout recovery through the matching Cosmos->L2
 // SpectreClient/ICS26Router return path. It returns the module and a cleanup that
 // closes the dialed clients. The caller runs module.Run(ctx) on its own goroutine.
-func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler services.TransactionHandler, timeoutReturn l2TimeoutReturnPath) (*relay.Module, func(), error) {
+// stateDir may be empty, which keeps the scan cursor in memory only. `start`
+// always supplies one; the tests do not.
+func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler services.TransactionHandler, timeoutReturn l2TimeoutReturnPath, stateDir string) (*relay.Module, func(), error) {
 	// Before anything dials: a retired env key that silently sizes nothing is the
 	// failure NFR 10 forbids. Checked here rather than globally because the key
 	// only ever affected this path, so a deployment without an l2_to_cosmos
@@ -205,6 +208,17 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	includeProvisional := headKind != l2rollup.Finalized
 	if cfg.IncludeProvisional != nil {
 		includeProvisional = *cfg.IncludeProvisional
+	}
+
+	// Read before dialling anything. A corrupt cursor file is fatal (B6/G4), and
+	// it must be fatal here, where there is nothing open to unwind -- not after
+	// three clients and an attestor connection are already up.
+	var recoveryState *services.RecoveryStateStore
+	if stateDir != "" {
+		recoveryState, err = services.LoadRecoveryState(filepath.Join(stateDir, services.RecoveryCursorsFileName))
+		if err != nil {
+			return nil, nil, fmt.Errorf("load L2 recovery state: %w", err)
+		}
 	}
 
 	l2, err := relayerclient.DialEthRPC(context.Background(), cfg.L2RpcUrl, relayerclient.DefaultRPCTimeout)
@@ -278,10 +292,18 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		// untrack after its own successful relay -- one settlement path, two ways
 		// of learning about it.
 		WithSettleHook(untrackL2Pending).
+		// Reconcile against what Cosmos already records, so a packet another
+		// relayer settled is not proven a second time.
+		WithCosmosPacketState(l2rollup.NewCosmosPacketState(svcCtx)).
 		// The acknowledged half also closes the owed-acknowledgement record. The
 		// same Services instance backs both directions of this pair, which is what
 		// lets a debt one side recorded be settled from the other.
 		WithAckSettleHook(settleL2OwedAck(timeoutReturn.svc))
+	if recoveryState != nil {
+		// The scan cursor survives a restart only when the caller gave this path
+		// a state directory; `start` always does, the tests do not.
+		source = source.WithRecoveryState(recoveryState)
+	}
 	dest := l2rollup.NewDestination(worker, svcCtx, cfg.L2WasmClientID)
 	builder := l2rollup.NewBuilder(headerBuilder)
 

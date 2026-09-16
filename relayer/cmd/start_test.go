@@ -36,6 +36,20 @@ func TestStartStampsTheRelayPathBeforeItCanFail(t *testing.T) {
 	log.SetOutput(&bytes.Buffer{})
 	log.SetPrefix("")
 
+	// Run from a scratch directory. checkLegacyStateLayout looks for the previous
+	// layout beside the CONFIG and in the working directory, so a stray
+	// .relayer-state left in the checkout by an older build makes this test refuse
+	// to start -- a result that depends on debris in someone's tree rather than on
+	// the code. #439's own tests do the same for the same reason.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	config := `{"modules":[{"name":"cosmos_to_eth","src_chain":"cosmoshub-1","config":{` +
@@ -67,7 +81,7 @@ func TestStartStampsTheRelayPathBeforeItCanFail(t *testing.T) {
 	command.SetArgs([]string{"--config", configPath, "--gpu-prove=false"})
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	err := command.Execute()
+	err = command.Execute()
 
 	if got := log.Prefix(); !strings.Contains(got, "cosmoshub-1") {
 		t.Fatalf("log prefix = %q, want it to carry the relay path; "+
@@ -112,6 +126,19 @@ func TestStartStampsThePathBeforeTheChecksThatNeedARead(t *testing.T) {
 	log.SetPrefix("")
 	t.Cleanup(func() { log.SetPrefix("") })
 
+	// From a scratch directory: checkLegacyStateLayout looks for the previous
+	// layout in the working directory too, so a stray .relayer-state left in the
+	// checkout would stop this run at THAT gate and the ordering below would never
+	// be exercised.
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(wd) })
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	config := `{"modules":[{"name":"cosmos_to_eth","src_chain":"cosmoshub-1","config":{` +
@@ -131,7 +158,7 @@ func TestStartStampsThePathBeforeTheChecksThatNeedARead(t *testing.T) {
 	command.SetArgs([]string{"--config", configPath, "--gpu-prove=false"})
 	command.SetOut(&bytes.Buffer{})
 	command.SetErr(&bytes.Buffer{})
-	err := command.Execute()
+	err = command.Execute()
 
 	if err == nil {
 		t.Fatal("start succeeded without COSMOS_CHAIN_ID; this test needs that gate to be the one that stops it")

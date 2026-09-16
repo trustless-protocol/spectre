@@ -171,10 +171,13 @@ func TestShippedExamplesCarryOnePathEach(t *testing.T) {
 // --- state directory ---------------------------------------------------------
 
 func TestValidateStateDirAcceptsAWritableDirAndLeavesNothingBehind(t *testing.T) {
+	// The directory the process will really write into, passed in. It used to be
+	// read from RELAYER_RECOVERY_STATE_FILE; that variable is now REFUSED at
+	// startup, so validating it would judge a path nothing writes.
 	dir := t.TempDir()
-	t.Setenv("RELAYER_RECOVERY_STATE_FILE", filepath.Join(dir, "state", "recovery-cursors.json"))
+	stateDir := filepath.Join(dir, "state")
 
-	if findings := validateStateDir(); len(findings) != 0 {
+	if findings := validateStateDir(stateDir); len(findings) != 0 {
 		t.Fatalf("expected no findings for a writable dir, got %+v", findings)
 	}
 
@@ -205,14 +208,12 @@ func TestValidateStateDirRejectsADirectoryItCannotWrite(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(readOnly, 0o700) })
 
-	t.Setenv("RELAYER_RECOVERY_STATE_FILE", filepath.Join(readOnly, "nested", "recovery-cursors.json"))
-
-	findings := validateStateDir()
+	findings := validateStateDir(filepath.Join(readOnly, "nested"))
 	if len(findings) != 1 {
 		t.Fatalf("expected exactly one finding, got %+v", findings)
 	}
-	if findings[0].key != "RELAYER_RECOVERY_STATE_FILE" {
-		t.Fatalf("finding names %q, want the env var an operator would fix", findings[0].key)
+	if findings[0].key != "state directory" {
+		t.Fatalf("finding names %q, want the thing an operator would fix", findings[0].key)
 	}
 }
 
@@ -698,7 +699,7 @@ func TestValidateStartupConfigReportsEveryProblemInASingleMessage(t *testing.T) 
 
 	err := validateStartupConfig(context.Background(), &appConfig{
 		CosmosToEthConfigs: []cosmosToEthConfig{cfg},
-	})
+	}, "")
 	if err == nil {
 		t.Fatal("expected config validation to fail")
 	}
@@ -720,7 +721,7 @@ func TestValidateStartupConfigPassesOnAConfigWithNothingToCheck(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("RELAYER_RECOVERY_STATE_FILE", filepath.Join(dir, "recovery-cursors.json"))
 
-	if err := validateStartupConfig(context.Background(), &appConfig{}); err != nil {
+	if err := validateStartupConfig(context.Background(), &appConfig{}, ""); err != nil {
 		t.Fatalf("an empty config has nothing to disagree with: %v", err)
 	}
 }

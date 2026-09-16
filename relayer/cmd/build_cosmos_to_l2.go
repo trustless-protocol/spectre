@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"path/filepath"
 	"strings"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -45,7 +46,7 @@ func buildCosmosToL2Dest(
 	batchCfg services.BatchConfig,
 	p *prover.EcipProver,
 	txHandler services.TransactionHandler,
-	pendingStateDir string,
+	relayStateDir string,
 ) (*services.Services, services.RelayDeps, func(), error) {
 	var zero services.RelayDeps
 
@@ -124,14 +125,14 @@ func buildCosmosToL2Dest(
 	logger.Sugar().Infof("cosmos->l2 dest %q: spectre_client=%s l2_rpc=%s tm=%s",
 		c2l.ICS26ClientID, c2l.SpectreClient, c2l.EthRpcUrl, c2l.TmRpcUrl)
 
-	recoveryState, err := services.LoadRecoveryState(services.RecoveryStatePath())
+	recoveryState, err := services.LoadRecoveryState(filepath.Join(relayStateDir, services.RecoveryCursorsFileName))
 	if err != nil {
 		cleanup()
 		return nil, zero, nil, fmt.Errorf("load recovery state: %w", err)
 	}
 	var svc *services.Services
-	if pendingStateDir != "" {
-		svc, err = services.NewWithPendingState(txHandler, p, cosmosConfig, pendingStateDir, recoveryState)
+	if relayStateDir != "" {
+		svc, err = services.NewWithPendingState(txHandler, p, cosmosConfig, relayStateDir, recoveryState)
 		if err != nil {
 			cleanup()
 			return nil, zero, nil, err

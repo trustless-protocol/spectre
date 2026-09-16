@@ -192,7 +192,10 @@ func SubmitMisbehaviour(logger *zap.Logger) *cobra.Command {
 				cfg.BatchConfig,
 				proverEngine,
 				txHandler,
-				buildCosmosToEthSourceOptions{allowEnvOverride: allowEnvOverride},
+				buildCosmosToEthSourceOptions{
+					ids:         effectiveRelayIDs(cfg.CosmosToEthConfig, allowEnvOverride),
+					roleManager: effectiveRoleManager(cfg.CosmosToEthConfig, allowEnvOverride),
+				},
 			)
 			if err != nil {
 				return fmt.Errorf("build evidence context: %w", err)

@@ -208,6 +208,19 @@ func hasPendingCosmosPacketCommitment(stdCtx context.Context, ctx ethDeps, packe
 
 // HasCosmosPacketReceipt is retained for one-shot callers. Long-running relay
 // paths must call HasCosmosPacketReceiptWithContext.
+// HasPendingCosmosPacketCommitment reports whether Cosmos still stores the
+// packet's commitment. A cleared commitment means the packet has already been
+// acknowledged or timed out there, so relaying its acknowledgement again is work
+// with no effect. Exported alongside HasCosmosPacketReceipt for the L2 source,
+// which reconciles against the same two pieces of Cosmos state.
+func HasPendingCosmosPacketCommitment(
+	stdCtx context.Context,
+	endpoint services.CosmosEndpoint,
+	packet channeltypesv2.Packet,
+) (bool, error) {
+	return hasCosmosIBCPathValue(stdCtx, endpoint, utils.IbcCommitmentPath(packet, []byte{1}))
+}
+
 func HasCosmosPacketReceipt(stdCtx context.Context, endpoint services.CosmosEndpoint, packet channeltypesv2.Packet) (bool, error) {
 	return hasCosmosIBCPathValue(stdCtx, endpoint, utils.IbcPath(packet.DestinationClient, packet.Sequence, []byte{2}))
 }
@@ -836,15 +849,15 @@ func (s *Subscriber) resumeEthCursors(ctx ethDeps, latestBlock, lookback uint64)
 	if s.recovery == nil {
 		return lookbackStart, lookbackStart
 	}
-	cursors, ok := s.recovery.Get(recoverySourceID(ctx.IDs))
+	cursors, ok := s.recovery.Get()
 	if !ok {
 		return lookbackStart, lookbackStart
 	}
-	send, sendResumed, sendBehind := services.ResumeCursor(cursors.EthSendBlock, lookbackStart, latestBlock)
-	writeAck, ackResumed, ackBehind := services.ResumeCursor(cursors.EthWriteAckBlk, lookbackStart, latestBlock)
+	send, sendResumed, sendBehind := services.ResumeCursor(cursors[cursorEthSend], lookbackStart, latestBlock)
+	writeAck, ackResumed, ackBehind := services.ResumeCursor(cursors[cursorEthWriteAck], lookbackStart, latestBlock)
 	if sendResumed || ackResumed {
 		ctx.Logger.Printf("[eth->cosmos Subscribe] scanning from send=%d write_ack=%d (persisted send=%d write_ack=%d, head=%d); behind send=%d write_ack=%d",
-			send, writeAck, cursors.EthSendBlock, cursors.EthWriteAckBlk, latestBlock, sendBehind, ackBehind)
+			send, writeAck, cursors[cursorEthSend], cursors[cursorEthWriteAck], latestBlock, sendBehind, ackBehind)
 	}
 	return send, writeAck
 }
@@ -858,7 +871,7 @@ func (s *Subscriber) persistEthCursors(ctx ethDeps, batchBuilder *services.Batch
 		send = clampRecoveryCursor(send, floor)
 		writeAck = clampRecoveryCursor(writeAck, floor)
 	}
-	if err := s.recovery.SaveCheckpoint(recoverySourceID(ctx.IDs), services.RecoveryCursors{EthSendBlock: send, EthWriteAckBlk: writeAck}); err != nil {
+	if err := s.recovery.SaveCheckpoint(services.RecoveryCursors{cursorEthSend: send, cursorEthWriteAck: writeAck}); err != nil {
 		ctx.Logger.Printf("[eth->cosmos Subscribe] failed to persist recovery cursors (send=%d write_ack=%d): %v", send, writeAck, err)
 	}
 }
