@@ -99,50 +99,46 @@ func stopRelaysAndCleanup(cancel func(), wait func(), cleanups []func(), workers
 // be wrong is unreachable from a unit test while it lives inside the command
 // closure, and it was wrong for exactly that reason.
 //
-// loopErrCh is BUFFERED, which is what makes the reads below load-bearing: an
-// engine can record its failure and return without anyone ever selecting on the
-// channel.
+// engineErrs holds what the buffered channel used to: an engine can record its
+// failure and return without anyone selecting on anything, and recording cancels
+// the rest of the path so every engine returns and done closes.
+//
+// That is why there are two endings here and not three. The channel arm existed
+// to observe a failure WHILE siblings were still running; recording now cancels
+// them, and their drain is bounded (relay.Module.Run reports the workers that
+// overran rather than waiting on them), so the failure reaches the done branch
+// promptly instead of needing an arm of its own. The nested select inside done
+// goes with it: "all workers returned" and "one of them failed" are one question
+// now, and engineErrors.first is the answer.
 func awaitRelayExit(
 	runCtx context.Context,
 	done <-chan struct{},
-	loopErrCh <-chan error,
+	engineErrs *engineErrors,
 	stopAndCleanup func() error,
 	logger *zap.Logger,
 ) error {
 	select {
-	case err := <-loopErrCh:
-		// An engine failed while running. That error is the actionable one, so a
-		// shutdown that also overruns is logged rather than returned in its place.
-		logShutdownFailure(logger, stopAndCleanup())
-		return err
-
 	case <-done:
-		// A worker sends its error before its deferred wg.Done. If all workers
-		// have returned, prefer that buffered error over treating the coincident
-		// done signal as a clean shutdown.
-		select {
-		case err := <-loopErrCh:
+		if err := engineErrs.first(); err != nil {
+			// An engine failed while running. That error is the actionable one, so a
+			// shutdown that also overruns is logged rather than returned in its place.
+			logShutdownFailure(logger, stopAndCleanup())
 			return err
-		default:
-			return nil
 		}
+		return nil
 
 	case <-runCtx.Done():
 		// SIGTERM. A module that overran its drain reports which workers are still
-		// running (relay.Module.Run) and that error lands in the buffered channel.
+		// running (relay.Module.Run), and that error is recorded like any other.
 		// This branch did not read it, so a stuck worker produced exit code 0 with
 		// "Relayer clients stopped; exiting" as the last line -- the failure was
-		// recorded and then dropped, which is the worst of the three outcomes
-		// because it looks exactly like success. The read is the same non-blocking
-		// one the <-done branch above already does; the two must stay in step.
+		// recorded and then dropped, which is the worst of the endings because it
+		// looks exactly like success. It asks engineErrors the same question the
+		// done branch above asks; the two must stay in step.
 		logger.Sugar().Infof("Relayer shutdown requested: %v", runCtx.Err())
 		shutdownErr := stopAndCleanup()
-		select {
-		case err := <-loopErrCh:
-			if err != nil {
-				return err
-			}
-		default:
+		if err := engineErrs.first(); err != nil {
+			return err
 		}
 		if shutdownErr != nil {
 			return shutdownErr

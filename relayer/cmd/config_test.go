@@ -21,7 +21,7 @@ import (
 // One relayer process serves exactly one source → destination pair (03-Relayer
 // §2.1 requirement 5). Before this guard, `start` looped over every configured
 // module and ran them in one process, which is what made a shared nonce cache and
-// a shared loopErrCh necessary in the first place.
+// a shared error path necessary in the first place.
 func TestValidateSingleRelayPair(t *testing.T) {
 	c2e := func(ids ...string) []cosmosToEthConfig {
 		out := make([]cosmosToEthConfig, 0, len(ids))

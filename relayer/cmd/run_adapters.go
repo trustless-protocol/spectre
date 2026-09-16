@@ -185,7 +185,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 
 	// BOTH results, not just the first -- see the contract on this function.
 	// Reading the second only to avoid a goroutine leak is what discarded the
-	// other direction's drain failure before it could reach loopErrCh.
+	// other direction's drain failure before it could be recorded.
 	return errors.Join(first, second)
 }
 

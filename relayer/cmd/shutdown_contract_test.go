@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -107,13 +109,62 @@ func TestAwaitRelayExitReportsAFailureRecordedDuringShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // SIGTERM already landed
 
-	loopErrCh := make(chan error, 1)
-	loopErrCh <- errors.New("cosmos source: workers still running")
+	engineErrs := newEngineErrors(func() {})
+	engineErrs.record(errors.New("cosmos source: workers still running"))
 
-	err := awaitRelayExit(ctx, make(chan struct{}), loopErrCh,
+	err := awaitRelayExit(ctx, make(chan struct{}), engineErrs,
 		func() error { return nil }, zap.NewNop())
 	if err == nil {
-		t.Fatal("exit code 0 with a failure sitting in the buffered channel: the relayer " +
-			"reports success and the operator never learns a worker was stuck")
+		t.Fatal("exit code 0 with a recorded failure: the relayer reports success " +
+			"and the operator never learns a worker was stuck")
+	}
+}
+
+// The half of A3's acceptance that awaitRelayExit's own tests cannot reach:
+// "the single path's error still exits the process" needs the engines to HAND
+// their failure to engineErrors in the first place. Removing one of those calls
+// left every test in this package green, which is how a relayer would exit 0 on
+// a dead cosmos_to_eth engine with nothing in the log.
+//
+// Asserted structurally, in the shape TestStartOptsIntoTheWasmClientIDRequirement
+// already uses here, because the alternative is booting a real relayer: each
+// engine runs on its own goroutine inside the command closure, behind RPC dials
+// a unit test has no way to satisfy.
+//
+// It derives the engine list from the source rather than hard-coding three, so a
+// fourth engine is covered the day it is added instead of the day someone
+// remembers to update a count.
+func TestEveryEngineFailureIsRecorded(t *testing.T) {
+	src, err := os.ReadFile("start.go")
+	if err != nil {
+		t.Fatalf("read start.go: %v", err)
+	}
+	body := string(src)
+
+	engineCall := regexp.MustCompile(`err := (run\w*Engine)\(`)
+	calls := engineCall.FindAllStringSubmatchIndex(body, -1)
+	if len(calls) == 0 {
+		t.Fatal("start.go runs no engines; this test no longer describes it")
+	}
+
+	for _, c := range calls {
+		name := body[c[2]:c[3]]
+		// The goroutine body ends at the closing of the `go func(...) {...}(...)`
+		// it lives in; the next `}(` is a tight enough bound and does not depend
+		// on brace counting.
+		tail := body[c[1]:]
+		end := strings.Index(tail, "}(")
+		if end < 0 {
+			end = len(tail)
+		}
+		if !strings.Contains(tail[:end], "recordEngineErr(") {
+			t.Errorf("%s's failure is never handed to engineErrors; the process would exit 0 "+
+				"on a dead engine, which is the outcome A3 is about", name)
+		}
+	}
+
+	// And the collection has to reach the ending that reports it.
+	if !strings.Contains(body, "awaitRelayExit(runCtx, done, engineErrs,") {
+		t.Error("start does not pass engineErrs to awaitRelayExit, so nothing recorded is ever read")
 	}
 }

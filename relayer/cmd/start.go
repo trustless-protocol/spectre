@@ -235,10 +235,23 @@ func Start(logger *zap.Logger) *cobra.Command {
 			}()
 
 			const maxEnginesPerPath = 2
-			loopErrCh := make(chan error, maxEnginesPerPath)
 			cleanups := make([]func(), 0, maxEnginesPerPath)
 			relayCtx, cancelRelays := context.WithCancel(runCtx)
 			defer cancelRelays()
+
+			// One path per process (#418), so an engine failure is THE failure: no
+			// other path is left to keep serving. What used to be here was a
+			// buffered channel, a select arm on it, and a nested select to prefer a
+			// buffered error over a coincident done -- a gathering layer sized for
+			// many unrelated loops in one process, which is the arrangement #418
+			// removed.
+			//
+			// The collection stays, because a Cosmos<->L2 path still runs two
+			// engines. First error wins and cancels its sibling: the return leg has
+			// nothing to do once the forward leg is gone, and cancelling is what
+			// keeps the teardown as prompt as the channel made it. See engineErrors.
+			engineErrs := newEngineErrors(cancelRelays)
+			recordEngineErr := engineErrs.record
 			l2ReturnPaths := make([]l2TimeoutReturnPathConfig, 0, len(l2Dests))
 			onceCleanup := func(cleanup func()) func() {
 				var once sync.Once
@@ -331,7 +344,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 					err := runAdapterEngine(relayCtx, svc, deps, statusReg)
 					releaseOrHold(logger, cleanup, &workersStuck, err, "cosmos_to_eth", deps.IDs.CosmosOnEVM)
 					if err != nil {
-						loopErrCh <- fmt.Errorf("cosmos_to_eth source %q: %w", deps.IDs.CosmosOnEVM, err)
+						recordEngineErr(fmt.Errorf("cosmos_to_eth source %q: %w", deps.IDs.CosmosOnEVM, err))
 					}
 				}(svc, deps, cleanup)
 			}
@@ -447,7 +460,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 					err := runCosmosToL2Engine(relayCtx, svc, deps, statusReg, watchAcks)
 					releaseOrHold(logger, cleanup, &workersStuck, err, "cosmos_to_l2", deps.IDs.CosmosOnEVM)
 					if err != nil {
-						loopErrCh <- fmt.Errorf("cosmos_to_l2 dest %q: %w", deps.IDs.CosmosOnEVM, err)
+						recordEngineErr(fmt.Errorf("cosmos_to_l2 dest %q: %w", deps.IDs.CosmosOnEVM, err))
 					}
 				}(d.svc, d.deps, d.cleanup, d.hasReturnLeg)
 			}
@@ -458,7 +471,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 					err := runL2Engine(relayCtx, module, statusReg)
 					releaseOrHold(logger, cleanup, &workersStuck, err, "l2_to_cosmos", srcChain)
 					if err != nil {
-						loopErrCh <- fmt.Errorf("l2_to_cosmos source %q: %w", srcChain, err)
+						recordEngineErr(fmt.Errorf("l2_to_cosmos source %q: %w", srcChain, err))
 					}
 				}(s.module, s.cleanup, s.srcChain)
 			}
@@ -474,7 +487,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// already said it was extracted "so all three endings can be tested" --
 			// and then nothing called it, so Start kept the ending that drops a
 			// recorded failure and exits 0. Found in review.
-			return awaitRelayExit(runCtx, done, loopErrCh, stopAndCleanup, logger)
+			return awaitRelayExit(runCtx, done, engineErrs, stopAndCleanup, logger)
 		},
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")

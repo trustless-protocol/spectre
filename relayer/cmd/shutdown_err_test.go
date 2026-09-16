@@ -129,9 +129,9 @@ func TestStopRelaysAndCleanupReportsNothingOnACleanStop(t *testing.T) {
 }
 
 // awaitRelayExit decides the process exit code. The SIGTERM branch is the one
-// that was wrong: a module reports the workers it could not drain, that error
-// sits in the BUFFERED channel, and the branch returned nil anyway -- a stuck
-// worker looked exactly like a clean stop.
+// that was wrong: a module reports the workers it could not drain, that error is
+// recorded, and the branch returned nil anyway -- a stuck worker looked exactly
+// like a clean stop.
 func TestAwaitRelayExit(t *testing.T) {
 	logger := zap.NewNop()
 	noopStop := func() error { return nil }
@@ -139,30 +139,37 @@ func TestAwaitRelayExit(t *testing.T) {
 	t.Run("clean stop returns nil", func(t *testing.T) {
 		done := make(chan struct{})
 		close(done)
-		if err := awaitRelayExit(context.Background(), done, make(chan error, 1), noopStop, logger); err != nil {
+		if err := awaitRelayExit(context.Background(), done, newEngineErrors(func() {}), noopStop, logger); err != nil {
 			t.Fatalf("clean stop returned %v", err)
 		}
 	})
 
+	// The failure reaches this function through done, not through an arm of its
+	// own: recording cancels the sibling engines, so every engine returns and the
+	// wait group closes done. The assertion is that "all engines returned" no
+	// longer reads as a clean exit when one of them returned because it failed.
 	t.Run("an engine failure is returned", func(t *testing.T) {
-		loopErrCh := make(chan error, 1)
-		loopErrCh <- errors.New("cosmos_to_eth source \"cosmos-0\": boom")
-		err := awaitRelayExit(context.Background(), make(chan struct{}), loopErrCh, noopStop, logger)
+		done := make(chan struct{})
+		close(done)
+		engineErrs := newEngineErrors(func() {})
+		engineErrs.record(errors.New("cosmos_to_eth source \"cosmos-0\": boom"))
+
+		err := awaitRelayExit(context.Background(), done, engineErrs, noopStop, logger)
 		if err == nil || !strings.Contains(err.Error(), "boom") {
 			t.Fatalf("engine failure = %v, want the engine's own error", err)
 		}
 	})
 
-	t.Run("SIGTERM surfaces a drain failure left in the buffer", func(t *testing.T) {
+	t.Run("SIGTERM surfaces a recorded drain failure", func(t *testing.T) {
 		// Exactly the shape relay.Module.Run produces on an overrun.
 		const stuck = `relay cosmos->eth: shutdown drain timed out after 30s; workers still running: [cosmos-subscribe]`
-		loopErrCh := make(chan error, 1)
-		loopErrCh <- errors.New(stuck)
+		engineErrs := newEngineErrors(func() {})
+		engineErrs.record(errors.New(stuck))
 
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
 
-		err := awaitRelayExit(ctx, make(chan struct{}), loopErrCh, noopStop, logger)
+		err := awaitRelayExit(ctx, make(chan struct{}), engineErrs, noopStop, logger)
 		if err == nil {
 			t.Fatal("SIGTERM with a stuck worker exited cleanly; that is the bug this branch had")
 		}
@@ -176,7 +183,7 @@ func TestAwaitRelayExit(t *testing.T) {
 		cancel()
 		stopErr := errors.New("relay engines did not drain within 30s")
 
-		err := awaitRelayExit(ctx, make(chan struct{}), make(chan error, 1),
+		err := awaitRelayExit(ctx, make(chan struct{}), newEngineErrors(func() {}),
 			func() error { return stopErr }, logger)
 		if !errors.Is(err, stopErr) {
 			t.Fatalf("SIGTERM returned %v, want the shutdown failure", err)
@@ -188,7 +195,7 @@ func TestAwaitRelayExit(t *testing.T) {
 	t.Run("an ordinary SIGTERM exits cleanly", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		if err := awaitRelayExit(ctx, make(chan struct{}), make(chan error, 1), noopStop, logger); err != nil {
+		if err := awaitRelayExit(ctx, make(chan struct{}), newEngineErrors(func() {}), noopStop, logger); err != nil {
 			t.Fatalf("ordinary SIGTERM returned %v, want nil", err)
 		}
 	})

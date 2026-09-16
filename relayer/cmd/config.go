@@ -1084,8 +1084,8 @@ func selectSource(cfg *appConfig, clientID string) (*appConfig, error) {
 //
 // The rule is not a simplification for its own sake — running several paths in one
 // process is what forces every shared structure between them: one nonce cache
-// across unrelated chains (#320), one loopErrCh where a single dead loop takes the
-// others down (#321), and one state directory two paths write into. A process per
+// across unrelated chains (#320), one error path where a single dead loop takes
+// the others down (#321), and one state directory two paths write into. A process per
 // path removes all three by construction, so the blast radius of a failure is that
 // path alone.
 //
