@@ -189,6 +189,20 @@ func TestIngestUsesOnlyTheFinalizedFactoryView(t *testing.T) {
 	if _, found := a.store.HighestAttestedAtOrBelow(100, true); found {
 		t.Fatal("latest-only game was published before its L1 evidence finalized")
 	}
+	// A latest-L1 reorg can replace the still-unfinalized object repeatedly.
+	// Neither replacement may advance the cursor or become provenance for the
+	// feed while the finalized view remains unchanged.
+	latestReplacement := root(0xbb)
+	games.games = []ProposedRoot{game(0, 0, 100, latestReplacement)}
+	if err := a.runOnce(context.Background()); err != nil {
+		t.Fatalf("runOnce after latest-only factory reorg: %v", err)
+	}
+	if got := a.store.NextGameIndex(); got != 0 {
+		t.Fatalf("cursor after latest-only factory reorg = %d, want 0", got)
+	}
+	if _, found := a.store.HighestAttestedAtOrBelow(100, true); found {
+		t.Fatal("latest-only replacement became provenance for the feed before finalization")
+	}
 
 	// Advancing the finalized view makes the exact game available once.
 	games.finalizedGames = []ProposedRoot{game(0, 0, 100, claim)}
