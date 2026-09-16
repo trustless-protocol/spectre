@@ -55,7 +55,10 @@ so the 32-byte Ed25519 seed is not stored in the configuration file.
 Copy `config.example.json` to `config.json` and configure:
 
 - `grpc_listen_address`: attestor gRPC bind address. The example uses loopback
-  because the server does not provide TLS or authentication.
+  because the server does not provide TLS or authentication. Direct plaintext
+  gRPC is supported only as a same-host sidecar interface.
+- `metrics_listen_address`: Prometheus `/metrics` bind address. Use loopback
+  and publish the container port only to a loopback host address.
 - `runtime_poll_interval`: fallback reconciliation interval for Nitro's unsafe,
   safe, and finalized L2 commitments. New unsafe heads normally trigger
   immediate reconciliation through the WebSocket subscription.
@@ -305,6 +308,14 @@ result. This in-memory result is intended as the source for future alerting;
 Nitro remains the persistent owner of chain state.
 
 The standard gRPC health service is also registered for readiness checks.
+
+## Operations
+
+Prometheus metrics use the `fast_ibc_arbitrum_attestor_*` prefix and only the
+configured `chain` label. They cover Nitro heads and refresh failures, L1
+assertion backlog, provisional roots, divergence/reorg records, and durable
+save failures. See the shared [attestor operations runbook](../../docs/ATTESTOR_RUNBOOK.md)
+for the supported plaintext boundary and the required response to a mismatch.
 
 The relayer builds the same header at every head kind: the canonical Nitro L2
 header at the target height plus the router account proof. It never proves a

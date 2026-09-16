@@ -15,6 +15,7 @@ func TestLoadDaemonConfigResolvesStatePathAndLoadsNitroEndpoints(t *testing.T) {
 	path := filepath.Join(dir, "attestor.json")
 	data := `{
 		"grpc_listen_address":"127.0.0.1:50051",
+		"metrics_listen_address":"127.0.0.1:9090",
 		"runtime_poll_interval":"2s",
 		"attestation_head":"unsafe",
 		"disable_derived_roots":true,
@@ -117,6 +118,14 @@ func TestDaemonConfigRejectsInvalidGRPCAddress(t *testing.T) {
 	}
 }
 
+func TestDaemonConfigRejectsInvalidMetricsAddress(t *testing.T) {
+	config := validDaemonConfig(t)
+	config.MetricsListenAddress = "127.0.0.1"
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "metrics_listen_address") {
+		t.Fatalf("validate metrics address: got %v", err)
+	}
+}
+
 func TestDaemonConfigRuntimePollInterval(t *testing.T) {
 	config := validDaemonConfig(t)
 	interval, err := config.RuntimePollDuration()
@@ -215,6 +224,7 @@ func TestDaemonConfigValidationFailureMatrix(t *testing.T) {
 		want   string
 	}{
 		{name: "missing gRPC listener", mutate: func(c *DaemonConfig) { c.GRPCListenAddress = "" }, want: "grpc_listen_address"},
+		{name: "missing metrics listener", mutate: func(c *DaemonConfig) { c.MetricsListenAddress = "" }, want: "metrics_listen_address"},
 		{name: "invalid runtime interval", mutate: func(c *DaemonConfig) { c.RuntimePollInterval = "0s" }, want: "runtime_poll_interval"},
 		{name: "invalid attestation head", mutate: func(c *DaemonConfig) { c.AttestationHead = "unknown" }, want: "attestation_head"},
 		{name: "missing source chain", mutate: func(c *DaemonConfig) { c.SrcChain = "" }, want: "src_chain"},
@@ -272,6 +282,7 @@ func validDaemonConfig(t *testing.T) DaemonConfig {
 	dir := t.TempDir()
 	return DaemonConfig{
 		GRPCListenAddress:     "127.0.0.1:50051",
+		MetricsListenAddress:  "127.0.0.1:9090",
 		SrcChain:              "arbitrum-one",
 		L1RPCURL:              "https://ethereum.example",
 		L1ChainID:             1,

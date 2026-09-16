@@ -20,6 +20,7 @@ import (
 // external Nitro RPC endpoints.
 type DaemonConfig struct {
 	GRPCListenAddress          string  `json:"grpc_listen_address"`
+	MetricsListenAddress       string  `json:"metrics_listen_address"`
 	RuntimePollInterval        string  `json:"runtime_poll_interval"`
 	RuntimeBackfillMaxBlocks   uint64  `json:"runtime_backfill_max_blocks"`
 	RuntimeBackfillConcurrency uint64  `json:"runtime_backfill_concurrency"`
@@ -101,6 +102,9 @@ func rejectManagedNitroFields(data []byte) error {
 // Validate checks the gRPC listener and external RPC settings.
 func (c DaemonConfig) Validate() error {
 	if err := validateListenAddress(c.GRPCListenAddress); err != nil {
+		return err
+	}
+	if err := validateMetricsListenAddress(c.MetricsListenAddress); err != nil {
 		return err
 	}
 	if _, err := c.RuntimePollDuration(); err != nil {
@@ -251,6 +255,21 @@ func validateListenAddress(address string) error {
 	port, err := strconv.ParseUint(rawPort, 10, 16)
 	if err != nil || port == 0 {
 		return errors.New("grpc_listen_address must contain a port between 1 and 65535")
+	}
+	return nil
+}
+
+func validateMetricsListenAddress(address string) error {
+	if address == "" {
+		return errors.New("metrics_listen_address is required")
+	}
+	_, rawPort, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("parse metrics_listen_address: %w", err)
+	}
+	port, err := strconv.ParseUint(rawPort, 10, 16)
+	if err != nil || port == 0 {
+		return errors.New("metrics_listen_address must contain a port between 1 and 65535")
 	}
 	return nil
 }

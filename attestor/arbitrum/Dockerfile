@@ -37,10 +37,11 @@ WORKDIR /config
 
 ENV ATTESTOR_CONFIG=/config/config.json \
     ATTESTOR_GRPC_LISTEN_ADDRESS=0.0.0.0:50051 \
+    ATTESTOR_METRICS_LISTEN_ADDRESS=0.0.0.0:9090 \
     ATTESTOR_STATE_PATH=/var/lib/fast-ibc/attestor/attested-roots.json
 
 VOLUME ["/var/lib/fast-ibc/attestor"]
-EXPOSE 50051
+EXPOSE 50051 9090
 
 ENTRYPOINT ["/usr/local/bin/attestor-entrypoint"]
 CMD ["start"]

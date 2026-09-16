@@ -1,5 +1,6 @@
 {
     "grpc_listen_address": "127.0.0.1:50051",
+    "metrics_listen_address": "127.0.0.1:9090",
     "runtime_poll_interval": "15s",
     "runtime_backfill_max_blocks": 2048,
     "runtime_backfill_concurrency": 8,

@@ -118,9 +118,23 @@ func (a *AssertionAttestor) ValidateChainIDs(
 // Transient L1 or Nitro failures leave the last persisted frontier intact and
 // are retried on the next tick.
 func (a *AssertionAttestor) Run(ctx context.Context) {
+	a.RunWithObserver(ctx, nil)
+}
+
+// RunWithObserver is Run with an optional per-pass callback for composition
+// roots. The callback observes only the pass outcome; it cannot alter
+// settlement ingestion or the durable feed.
+func (a *AssertionAttestor) RunWithObserver(ctx context.Context, observe func(error)) {
 	sync := func() {
-		if err := a.SyncOnce(ctx); err != nil && ctx.Err() == nil {
+		err := a.SyncOnce(ctx)
+		if err != nil && ctx.Err() != nil {
+			return
+		}
+		if err != nil {
 			log.Printf("Arbitrum assertion attestation failed: %v", err)
+		}
+		if observe != nil {
+			observe(err)
 		}
 	}
 	sync()
