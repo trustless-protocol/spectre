@@ -28,8 +28,18 @@ import (
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
 
-// Destination satisfies chain.Destination.
+// Destination satisfies chain.Destination, and the folding half of it: the relay
+// engine folds automatically once an adapter advertises the capability.
 var _ chain.Destination = (*Destination)(nil)
+var _ chain.FoldingDestination = (*Destination)(nil)
+
+// atomicCosmosTxHandler is the submission guarantee folding needs: one
+// transaction, no recursive splitting. A split batch would land the update
+// without its packets, or land some packets against a client the same failed
+// batch never advanced.
+type atomicCosmosTxHandler interface {
+	SendCosmosTxBatchAtomic(context.Context, services.CosmosEndpoint, []any) error
+}
 
 // isPermanentCosmosFailure reports whether a Cosmos submit error is a
 // deterministic on-chain revert (drop) vs a transient one (retry) — same
@@ -98,11 +108,30 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 		return err
 	}
 
+	msgs, err := buildPacketMessages(signer, proofHeight, packets)
+	if err != nil {
+		return err
+	}
+	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.cosmos, msgs); err != nil {
+		if isPermanentCosmosFailure(err) {
+			return chain.Permanent(err)
+		}
+		return err
+	}
+	return nil
+}
+
+// buildPacketMessages turns proven packets into the Cosmos messages that carry
+// them. Shared by the folded and unfolded paths so the two cannot disagree about
+// what a packet message looks like -- which is how the ETH path's folded batches
+// came to declare a height their proofs were not built at.
+func buildPacketMessages(signer string, proofHeight clienttypes.Height, packets []chain.RelayPacket) ([]any, error) {
 	msgs := make([]any, 0, len(packets))
 	for _, rp := range packets {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(rp.Packet); err != nil {
-			return fmt.Errorf("l2 dest: decode packet: %w", err)
+			// A malformed packet is deterministic; it will not decode on retry.
+			return nil, chain.Permanent(fmt.Errorf("l2 dest: decode packet: %w", err))
 		}
 		switch rp.Type {
 		case chain.SendPacket:
@@ -128,10 +157,102 @@ func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPac
 				Signer:          signer,
 			})
 		default:
-			return fmt.Errorf("l2 dest: unsupported packet type %d (seq=%d)", rp.Type, pkt.Sequence)
+			return nil, chain.Permanent(fmt.Errorf("l2 dest: unsupported packet type %d (seq=%d)", rp.Type, pkt.Sequence))
 		}
 	}
-	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.cosmos, msgs); err != nil {
+	return msgs, nil
+}
+
+// requireProofsBuiltAt refuses a batch whose proofs were built against a height
+// this submission does not install.
+//
+// This is the expensive half of folding, not the folding itself. Unfolded, the
+// proof height is READ from the on-chain client, so it is true by construction.
+// Folded, the update is not on chain yet: the client still reports the old
+// height while the packet messages declare the one the update is about to
+// install, and the two numbers are now chosen in different places with nothing
+// tying them together.
+//
+// The ETH->Cosmos path shipped exactly that mistake and it cost a night (#443).
+// It surfaced as "get trie node failed: Invalid state root" from inside CosmWasm,
+// naming no height at all -- and because the atomic batch refuses to split, the
+// client update died with the packets, turning "a packet is stuck" into "nothing
+// advances".
+func requireProofsBuiltAt(packets []chain.RelayPacket, height uint64) error {
+	for _, rp := range packets {
+		if rp.Height != height {
+			return fmt.Errorf(
+				"l2 dest: proof for seq=%d was built at L2 height %d but this batch installs height %d; not submitting a proof that cannot verify",
+				rp.Sequence, rp.Height, height)
+		}
+	}
+	return nil
+}
+
+// SupportsUpdatePacketFolding reports whether the transaction handler can submit
+// the update and its packets as ONE Cosmos transaction. Without that guarantee a
+// split would land the client update and lose the packets, or the reverse.
+func (d *Destination) SupportsUpdatePacketFolding() bool {
+	if d.worker == nil || d.worker.TxHandler == nil {
+		return false
+	}
+	_, ok := d.worker.TxHandler.(atomicCosmosTxHandler)
+	return ok
+}
+
+// RelayWithUpdate submits the L2 header update and every packet message in one
+// Cosmos transaction.
+//
+// This path is why the L2 leg cost TWO transactions per batch while the other
+// three cost one -- on the leg with the highest latency of the four. Packet
+// proofs target the height this update installs rather than the height the
+// on-chain client still reports, which is only sound because requireProofsBuiltAt
+// checks it first.
+func (d *Destination) RelayWithUpdate(ctx context.Context, clientID string, update chain.ClientUpdate, packets []chain.RelayPacket) error {
+	if err := ctx.Err(); err != nil {
+		return err // shutting down — do not start a folded tx
+	}
+	if len(update.Payloads) != 1 {
+		return fmt.Errorf("l2 dest: folded relay expects exactly one client update payload, got %d", len(update.Payloads))
+	}
+	if d.worker == nil || d.worker.TxHandler == nil {
+		return fmt.Errorf("l2 dest: transaction handler is not configured")
+	}
+	atomicSender, ok := d.worker.TxHandler.(atomicCosmosTxHandler)
+	if !ok {
+		return fmt.Errorf("l2 dest: transaction handler does not support atomic update/packet batches")
+	}
+	if clientID == "" {
+		clientID = d.clientID
+	}
+	signer, err := d.worker.TxHandler.CosmosSignerAddress()
+	if err != nil {
+		return fmt.Errorf("l2 dest: signer address: %w", err)
+	}
+
+	// Before building anything: a mismatch here is not worth a transaction, and
+	// the chain's own complaint about it names no height.
+	if err := requireProofsBuiltAt(packets, update.Height); err != nil {
+		return err
+	}
+
+	updateMsg, err := wasmclient.BuildUpdateClient(signer, clientID, update.Payloads[0])
+	if err != nil {
+		return err
+	}
+	packetMsgs, err := buildPacketMessages(
+		signer, clienttypes.Height{RevisionNumber: 0, RevisionHeight: update.Height}, packets)
+	if err != nil {
+		return err
+	}
+
+	// Update first: the packet proofs verify against the state it installs, and
+	// SendCosmosTxBatchAtomic preserves order.
+	msgs := make([]any, 0, 1+len(packetMsgs))
+	msgs = append(msgs, updateMsg)
+	msgs = append(msgs, packetMsgs...)
+
+	if err := atomicSender.SendCosmosTxBatchAtomic(ctx, d.cosmos, msgs); err != nil {
 		if isPermanentCosmosFailure(err) {
 			return chain.Permanent(err)
 		}

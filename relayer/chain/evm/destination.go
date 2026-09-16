@@ -15,7 +15,6 @@ import (
 	"relayer/services"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
-	"github.com/ethereum/go-ethereum/common"
 )
 
 // Destination is the EVM implementation of chain.Destination for a chain that
@@ -40,15 +39,7 @@ func (d *Destination) Chain() chain.ChainType { return chain.Ethereum }
 // submitter. Only that deployment shape can express the client update as an
 // inner router call in the same multicall as the packets.
 func (d *Destination) SupportsUpdatePacketFolding() bool {
-	roleManager := d.evm.RoleManagerAddress()
-	router := d.evm.RouterContract()
-	if roleManager == nil || router == nil {
-		return false
-	}
-	if *roleManager == (common.Address{}) || *router == (common.Address{}) {
-		return false
-	}
-	return *roleManager == *router
+	return d.evm.RouterManagesProofSubmission()
 }
 
 // UpdateClient decodes the Cosmos->ETH update payload back into the typed message

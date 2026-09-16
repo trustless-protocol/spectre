@@ -57,7 +57,7 @@ func buildMisbehaviourCalldata(
 	prepared services.PreparedCosmosMisbehaviour,
 ) (common.Address, string, []byte, error) {
 	router := evm.RouterContract()
-	if transaction.RouterManagesProofSubmission(evm) {
+	if evm.RouterManagesProofSubmission() {
 		parsed, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
 		if err != nil {
 			return common.Address{}, "", nil, fmt.Errorf("load ICS26Router ABI: %w", err)

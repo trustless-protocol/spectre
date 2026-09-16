@@ -18,6 +18,7 @@ import (
 	"math/big"
 	spectreContract "relayer/bindings/SpectreClient"
 	updateclientContract "relayer/bindings/UpdateClient"
+	"relayer/chain"
 	relayerclient "relayer/client"
 	"relayer/prover"
 	"strconv"
@@ -143,7 +144,7 @@ func (w *Worker) UpdateCosmosClient(stdCtx context.Context, cosmos CosmosEndpoin
 // RefreshCosmosClient call will submit. If churn requires more hops than this
 // to fully catch up, the function returns an error rather than looping
 // unbounded, so the periodic-update backoff (relay/module.go) retries soon.
-const maxHopsPerRefresh = 16
+const maxHopsPerRefresh = chain.MaxClientUpdateHops
 const hopExhaustionSampleLimit = 4
 
 // RefreshCosmosClient advances the Spectre light client on Ethereum without any

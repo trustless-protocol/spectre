@@ -293,24 +293,6 @@ const ethDeployGasHeadroomPercent uint64 = 20
 const cosmosRPCTimeout = 30 * time.Second       // a single Cosmos RPC call (query / sync broadcast)
 const cosmosInclusionTimeout = 90 * time.Second // total bounded wait for a broadcast tx to land in a block
 
-func routerManagesProofSubmission(endpoint services.EVMEndpoint) bool {
-	roleManager := endpoint.RoleManagerAddress()
-	router := endpoint.RouterContract()
-	if roleManager == nil || router == nil {
-		return false
-	}
-	if *roleManager == (common.Address{}) || *router == (common.Address{}) {
-		return false
-	}
-	return *roleManager == *router
-}
-
-// RouterManagesProofSubmission reports whether proof calls must route through
-// ICS26Router rather than directly to SpectreClient.
-func RouterManagesProofSubmission(endpoint services.EVMEndpoint) bool {
-	return routerManagesProofSubmission(endpoint)
-}
-
 // callTrace mirrors the geth callTracer output. We only need the gasUsed of
 // the top-level call's direct children (one entry per multicall inner). Other
 // fields are ignored.
@@ -692,7 +674,7 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 				if err != nil {
 					return nil, fmt.Errorf("failed to encode updateConsensusState msg: %w", err)
 				}
-				if routerManagesProofSubmission(endpoint) {
+				if endpoint.RouterManagesProofSubmission() {
 					log.Printf("[SendEthTx] Sending ICS26Router.updateConsensusState tx for clientId=%s...", cosmosClientID)
 					return ics26Router.UpdateConsensusState(auth, cosmosClientID, data)
 				}
@@ -704,7 +686,7 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 				if err != nil {
 					return nil, fmt.Errorf("failed to encode updateApplicationState msg: %w", err)
 				}
-				if routerManagesProofSubmission(endpoint) {
+				if endpoint.RouterManagesProofSubmission() {
 					log.Printf("[SendEthTx] Sending ICS26Router.updateApplicationState tx for clientId=%s...", cosmosClientID)
 					return ics26Router.UpdateApplicationState(auth, cosmosClientID, data)
 				}
@@ -713,14 +695,14 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 			}
 		case spectreContract.ILightClientMsgsMsgVerifyMembership:
 			txLabel = "verifyMembership"
-			if routerManagesProofSubmission(endpoint) {
+			if endpoint.RouterManagesProofSubmission() {
 				return nil, fmt.Errorf("direct verifyMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead")
 			}
 			log.Printf("[SendEthTx] Sending verifyMembership tx...")
 			return ics07Tendermint.VerifyMembership(auth, msg)
 		case spectreContract.ILightClientMsgsMsgVerifyNonMembership:
 			txLabel = "verifyNonMembership"
-			if routerManagesProofSubmission(endpoint) {
+			if endpoint.RouterManagesProofSubmission() {
 				return nil, fmt.Errorf("direct verifyNonMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead")
 			}
 			log.Printf("[SendEthTx] Sending verifyNonMembership tx...")
@@ -795,7 +777,7 @@ func (h *Handler) SubmitMisbehaviour(
 		return fmt.Errorf("query permissionless misbehaviour role: %w", err)
 	}
 
-	useRouter := routerManagesProofSubmission(endpoint)
+	useRouter := endpoint.RouterManagesProofSubmission()
 	var router *contractICS26Router.ContractICS26Router
 	if useRouter {
 		if endpoint.RouterContract() == nil || *endpoint.RouterContract() == (common.Address{}) {
@@ -909,7 +891,7 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 			// In direct-submission mode SendEthTx calls SpectreClient directly;
 			// that path can't be expressed inside multicall, so caller must
 			// submit the update as a standalone tx.
-			if !routerManagesProofSubmission(endpoint) {
+			if !endpoint.RouterManagesProofSubmission() {
 				return fmt.Errorf("[SendEthTx] client update cannot be batched when ICS26Router is not the proof submitter; submit it via SendEthTx instead")
 			}
 			if !clientIDResolved {

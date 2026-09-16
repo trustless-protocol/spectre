@@ -24,8 +24,8 @@ import (
 // and permanently-dropped events are omitted.
 func (m *Module) handleBatch(ctx context.Context, events []chain.Event) []int {
 	// Serialized: see Module.batchMu. Nothing below re-enters handleBatch --
-	// relayIsolated and relayFoldedIsolated are the only retry paths and neither
-	// calls back into it -- so this cannot deadlock on itself.
+	// relayIsolated is the only retry path and it calls the destination directly
+	// rather than back into this -- so this cannot deadlock on itself.
 	m.batchMu.Lock()
 	defer m.batchMu.Unlock()
 	return m.handleBatchLocked(ctx, events)
@@ -311,21 +311,66 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		m.settleDelivered(packets)
 		return requeue
 	}
-	if foldPlan != nil {
-		foldPlan.release()
-	}
 	if !chain.IsPermanent(err) {
 		// Transient (RPC, nonce, broadcast) → re-queue the whole batch for retry.
+		if foldPlan != nil {
+			foldPlan.release()
+		}
 		log.Printf("[%s Relay] relay %d packet(s) at height %d: %v", m.name, len(packets), proofHeight, err)
 		return append(requeue, relayedIdx...)
 	}
-	// Permanent (deterministic on-chain revert). A single packet is the poison —
-	// DROP it (the timeout scanner refunds it if it later expires). But a multicall
-	// is atomic: one bad packet (timed out / duplicate / already received) reverts
-	// the whole tx, so dropping the batch would discard its VALID siblings too.
-	// Isolate: retry each packet on its own, so the poison fails (and drops) alone
-	// while its siblings still relay. This is the failure path only (rare), so the
-	// extra per-packet txs are acceptable to avoid losing valid packets.
+	// A folded transaction carried the client update AND the packets, so a
+	// deterministic rejection of it does not say which of the two the chain
+	// refused. The poison logic below assumes it does -- and it is only entitled
+	// to, for a transaction that contained nothing but packets.
+	//
+	// Reported by @neitdung: with the update folded in, a rejected UPDATE looked
+	// like a poison packet. A single ack was dropped outright, and a larger batch
+	// was retried as folded singletons carrying the same update, so every one
+	// failed for the same reason and every packet was dropped in turn. An ack and
+	// a timeout have no independent escape -- the counterparty already holds a
+	// receipt, so nothing times them out and nothing refunds them -- and dropping
+	// one on a failure never shown to be its own strands the escrow.
+	//
+	// So attribute before isolating: submit the update by itself. It lands, or it
+	// does not, and either answer is worth one transaction on a path this rare.
+	if foldPlan != nil {
+		if updateErr := m.dst.UpdateClient(ctx, m.clientID, foldPlan.update); updateErr != nil {
+			// The update is what the chain refused. Nothing has been shown about
+			// any packet, so nothing may be dropped: hold them all and let the
+			// next flush rebuild against whatever the client then trusts.
+			foldPlan.release()
+			log.Printf("[%s Relay][ATTENTION] the folded client update at height %d was refused on its own (%v); "+
+				"holding %d packet(s) rather than attributing that to them (folded failure: %v)",
+				m.name, foldPlan.update.Height, updateErr, len(packets), err)
+			return append(requeue, relayedIdx...)
+		}
+		// The update lands alone. That clears the update, and nothing more: the
+		// folded transaction was one atomic unit, and a unit can be refused for
+		// what the two are together (its gas envelope, its route) while each half
+		// passes on its own. So the packets have still not been tried, and every
+		// one of them -- a single one included -- goes through the packets-only
+		// path before anything is dropped; a drop there rests on that packet's own
+		// failure, not on the folded one. The client now covers the height the
+		// proofs were built at, so those sends are valid as built.
+		//
+		// Reported by @neitdung, second round: the single-packet case skipped
+		// this and dropped the packet on the folded error, unattributed.
+		m.lastHeight = foldPlan.update.Height
+		m.recordClientUpdate(foldPlan.update)
+		foldPlan.release()
+		log.Printf("[%s Relay] folded transaction at height %d failed (%v) but its client update landed alone; relaying %d packet(s) on their own",
+			m.name, proofHeight, err, len(packets))
+		return append(requeue, m.relayIsolated(ctx, packets, relayedIdx)...)
+	}
+	// Permanent (deterministic on-chain revert) of a transaction that carried
+	// packets and nothing else. A single packet is the poison — DROP it (the
+	// timeout scanner refunds it if it later expires). But a multicall is atomic:
+	// one bad packet (timed out / duplicate / already received) reverts the whole
+	// tx, so dropping the batch would discard its VALID siblings too. Isolate:
+	// retry each packet on its own, so the poison fails (and drops) alone while
+	// its siblings still relay. This is the failure path only (rare), so the extra
+	// per-packet txs are acceptable to avoid losing valid packets.
 	if len(packets) == 1 {
 		m.waits.clearPacket(packets[0]) // dead for good — stop reporting a wait for it
 		log.Printf("[%s Relay] DROP packet (%s seq=%d) at height %d (permanent): %v",
@@ -333,9 +378,6 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		return requeue
 	}
 	log.Printf("[%s Relay] permanent batch failure at height %d (%v); isolating %d packet(s) individually", m.name, proofHeight, err, len(packets))
-	if foldPlan != nil {
-		return append(requeue, m.relayFoldedIsolated(ctx, foldPlan.destination, foldPlan.update, packets, relayedIdx)...)
-	}
 	return append(requeue, m.relayIsolated(ctx, packets, relayedIdx)...)
 }
 
@@ -373,35 +415,82 @@ func (m *Module) prepareBatchUpdate(ctx context.Context, height uint64) (*folded
 		return nil, 0, err
 	}
 
-	if height <= m.lastHeight {
-		proofHeight := m.lastHeight
-		release()
-		return nil, proofHeight, nil
-	}
-	header, err := m.src.QueryHeader(ctx, height)
+	update, foldable, err := m.climbToFoldableLocked(ctx, height)
 	if err != nil {
-		return fail(fmt.Errorf("query header at %d: %w", height, err))
+		return fail(err)
 	}
-	update, err := m.builder.Build(ctx, header)
-	if err != nil {
-		return fail(fmt.Errorf("build client update: %w", err))
-	}
-	if len(update.Payloads) == 0 {
-		if update.Height > m.lastHeight {
-			m.lastHeight = update.Height
-		}
-		m.recordClientUpdate(update)
+	if !foldable {
 		proofHeight := m.lastHeight
 		release()
 		return nil, proofHeight, nil
 	}
-	if update.Height <= m.lastHeight {
-		proofHeight := m.lastHeight
-		release()
-		return nil, proofHeight, nil
-	}
-
 	return &foldedUpdatePlan{destination: folding, update: update, release: release}, update.Height, nil
+}
+
+// climbToFoldableLocked advances the client until one more update reaches height,
+// and returns that last update STILL UNSUBMITTED so the caller can fold it into
+// the packet transaction. foldable is false when there is nothing left to submit:
+// the client already covers height, or the builder reported no work.
+//
+// The climb belongs here and not only in updateClientTo because the two branches
+// of prepareBatchUpdate must cross a churn gap the same way. The unfolded branch
+// delegates to updateClientTo, which loops; this one built exactly one update, so
+// a folding destination behind a gap advanced one hop per flush -- sixteen hops
+// at the 30s scan cadence is eight minutes of re-queueing, on the packet-driven
+// path, with packets waiting.
+//
+// An intermediate hop cannot be folded: it lands BELOW the requested height by
+// definition, so the packets riding it would declare a proof height the update
+// does not install -- the invariant requireProofsBuiltAt exists to hold. Each hop
+// therefore goes out on its own, and only the rung that reaches the target is
+// handed back to be folded.
+//
+// The caller holds m.mu, and keeps holding it across the whole climb: an update
+// submitted by another goroutine in between would leave the hop chain reasoning
+// about a trusted height that no longer holds.
+func (m *Module) climbToFoldableLocked(ctx context.Context, height uint64) (chain.ClientUpdate, bool, error) {
+	for hop := 0; ; hop++ {
+		if hop >= chain.MaxClientUpdateHops {
+			return chain.ClientUpdate{}, false, fmt.Errorf(
+				"relay %s: client still short of height %d after %d hop(s); the trust overlap has not been re-established",
+				m.name, height, hop)
+		}
+		if height <= m.lastHeight {
+			return chain.ClientUpdate{}, false, nil // already covered — nothing to prove
+		}
+		header, err := m.src.QueryHeader(ctx, height)
+		if err != nil {
+			return chain.ClientUpdate{}, false, fmt.Errorf("query header at %d: %w", height, err)
+		}
+		update, err := m.builder.Build(ctx, header)
+		if err != nil {
+			return chain.ClientUpdate{}, false, fmt.Errorf("build client update: %w", err)
+		}
+		// An empty payload list means "client already current"; learn the height the
+		// builder reports without submitting a tx, exactly as updateClientStepLocked does.
+		if len(update.Payloads) == 0 {
+			if update.Height > m.lastHeight {
+				m.lastHeight = update.Height
+			}
+			m.recordClientUpdate(update)
+			return chain.ClientUpdate{}, false, nil
+		}
+		// A stale update is skipped without a tx. This is also the anti-spin guard:
+		// a hop that installs nothing ends the climb instead of repeating it.
+		if update.Height <= m.lastHeight {
+			return chain.ClientUpdate{}, false, nil
+		}
+		if !update.IsHop {
+			return update, true, nil
+		}
+		if err := m.dst.UpdateClient(ctx, m.clientID, update); err != nil {
+			return chain.ClientUpdate{}, false, fmt.Errorf("submit client update at %d: %w", update.Height, err)
+		}
+		m.lastHeight = update.Height
+		m.recordClientUpdate(update)
+		log.Printf("[%s Relay] client update hop %d landed at %d, short of %d; climbing again",
+			m.name, hop, m.lastHeight, height)
+	}
 }
 
 // relayIsolated re-submits each packet of a permanently-failed batch on its own
@@ -424,49 +513,6 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 				continue
 			}
 			log.Printf("[%s Relay] isolated relay (%s seq=%d height=%d): %v", m.name, p.Type, p.Sequence, p.Height, err)
-			requeue = append(requeue, relayedIdx[j])
-			continue
-		}
-		m.settleDelivered(single)
-	}
-	return requeue
-}
-
-// relayFoldedIsolated preserves poison-packet isolation after an atomic folded
-// batch reverts. Until one singleton succeeds, each attempt carries the update;
-// after that success installed the target height, remaining singletons use the
-// packets-only path.
-func (m *Module) relayFoldedIsolated(ctx context.Context, folding chain.FoldingDestination, update chain.ClientUpdate, packets []chain.RelayPacket, relayedIdx []int) []int {
-	var requeue []int
-	for j, p := range packets {
-		if ctx.Err() != nil {
-			requeue = append(requeue, relayedIdx[j:]...)
-			break
-		}
-
-		single := []chain.RelayPacket{p}
-		m.mu.Lock()
-		needsUpdate := update.Height > m.lastHeight
-		var err error
-		if needsUpdate {
-			err = folding.RelayWithUpdate(ctx, m.clientID, update, single)
-			if err == nil {
-				m.lastHeight = update.Height
-				m.recordClientUpdate(update)
-			}
-			m.mu.Unlock()
-		} else {
-			m.mu.Unlock()
-			err = m.dst.RelayPackets(ctx, single)
-		}
-
-		if err != nil {
-			if chain.IsPermanent(err) {
-				m.waits.clearPacket(p) // dead for good — stop reporting a wait for it
-				log.Printf("[%s Relay] DROP folded packet (%s seq=%d height=%d, permanent): %v", m.name, p.Type, p.Sequence, p.Height, err)
-				continue
-			}
-			log.Printf("[%s Relay] isolated folded relay (%s seq=%d height=%d): %v", m.name, p.Type, p.Sequence, p.Height, err)
 			requeue = append(requeue, relayedIdx[j])
 			continue
 		}

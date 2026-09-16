@@ -150,6 +150,11 @@ type mockBuilder struct {
 	forceHeight uint64 // if non-zero, always return this height
 	noPayload   bool   // if true, return no payloads ("client already current")
 	built       int    // count of Build calls
+	// hops is the ladder a churn-blocked builder walks: each Build returns the
+	// next entry and marks it IsHop, until the list runs out and the last update
+	// is the real one. Empty means "never hops", which is every adapter but the
+	// Groth16 one.
+	hops []uint64
 	// trustedAt is the timestamp the built update claims the client now trusts.
 	// It is what the client-update observer reports, so a test that checks the
 	// observer must be able to set it to something distinguishable.
@@ -159,6 +164,14 @@ type mockBuilder struct {
 func (m *mockBuilder) Name() string { return "mock" }
 func (m *mockBuilder) Build(_ context.Context, header []byte) (chain.ClientUpdate, error) {
 	m.built++
+	if len(m.hops) > 0 {
+		h := m.hops[0]
+		m.hops = m.hops[1:]
+		return chain.ClientUpdate{
+			Height: h, Payloads: [][]byte{header}, TrustedAt: m.trustedAt,
+			IsHop: len(m.hops) > 0, // the last rung is the target, not a hop
+		}, nil
+	}
 	h := uint64(header[0])
 	if m.forceHeight != 0 {
 		h = m.forceHeight
@@ -320,16 +333,24 @@ func TestHandleBatch_FoldedIsolationPreservesValidSiblings(t *testing.T) {
 		{Type: chain.SendPacket, Height: 9, Raw: []byte("good-2")},
 	}
 	if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
-		t.Fatalf("folded isolation must drop only poison, got requeue %v", rq)
+		t.Fatalf("isolation must drop only poison, got requeue %v", rq)
 	}
-	if dst.foldCalls != 2 { // failed batch, then first successful singleton installs update
-		t.Fatalf("folded update must be retried only until installed, got %d fold calls", dst.foldCalls)
+	// One fold: the batch. Isolation no longer re-folds, because the update is
+	// installed by the attribution step before any packet is judged -- see
+	// TestHandleBatch_FoldedUpdateRejectionDoesNotDropInnocentPackets for why
+	// that step exists.
+	if dst.foldCalls != 1 {
+		t.Fatalf("folded batch should be attempted once, got %d fold calls", dst.foldCalls)
+	}
+	if len(dst.updates) != 1 || dst.updates[0].Height != 100 {
+		t.Fatalf("the update must be installed on its own before any packet is judged, got %+v", dst.updates)
 	}
 	if m.lastHeight != 100 {
-		t.Fatalf("successful singleton fold must advance lastHeight, got %d", m.lastHeight)
+		t.Fatalf("the standalone update must advance lastHeight, got %d", m.lastHeight)
 	}
-	if len(dst.relayed) != 1 || string(dst.relayed[0].Packet) != "good-2" {
-		t.Fatalf("packets after update should use packets-only isolation, got %+v", dst.relayed)
+	if len(dst.relayed) != 2 ||
+		string(dst.relayed[0].Packet) != "good-1" || string(dst.relayed[1].Packet) != "good-2" {
+		t.Fatalf("both valid siblings must still relay, got %+v", dst.relayed)
 	}
 }
 
@@ -704,10 +725,14 @@ func TestNextPeriodicUpdateBackoff(t *testing.T) {
 func TestFoldedIsolatedPermanentDropClearsTheWait(t *testing.T) {
 	src := &mockSource{relayable: 100}
 	dst := &foldingMockDest{enabled: true}
-	// Every fold reverts permanently: the batch first, then each isolated singleton.
+	// The folded batch reverts, the update lands on its own -- so the packets are
+	// the poison -- and each isolated singleton then reverts too. Both halves are
+	// needed: without the second the packets would simply relay, and this test
+	// would assert an empty wait tracker for the wrong reason.
 	dst.foldFn = func(_ chain.ClientUpdate, _ []chain.RelayPacket) error {
 		return chain.Permanent(errors.New("reverted"))
 	}
+	dst.relayErr = chain.Permanent(errors.New("reverted"))
 	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
 
 	events := []chain.Event{
@@ -731,8 +756,11 @@ func TestFoldedIsolatedPermanentDropClearsTheWait(t *testing.T) {
 	if got := len(m.waits.entries); got != 0 {
 		t.Fatalf("folded isolated drop left %d wait entry/entries behind; every terminal path must clear", got)
 	}
-	if dst.foldCalls < 2 {
-		t.Fatalf("expected the batch fold plus per-packet isolation, got %d fold calls", dst.foldCalls)
+	if dst.foldCalls != 1 {
+		t.Fatalf("expected one folded batch attempt, got %d", dst.foldCalls)
+	}
+	if dst.relayCalls != len(events) {
+		t.Fatalf("expected one packets-only attempt per packet, got %d for %d packet(s)", dst.relayCalls, len(events))
 	}
 }
 
@@ -1743,6 +1771,95 @@ func TestPermanentSourceFailureIsHeldOff(t *testing.T) {
 	})
 }
 
+// Validator churn can outrun the trust-overlap requirement: an update from the
+// trusted height straight to the head then cannot be verified at all, and the
+// only way across is a chain of updates that each overlap the last.
+//
+// That mechanism lived only in the manual `update-client` command, so the
+// AUTOMATIC path could not cross a churn gap: the client stayed stuck until a
+// person typed a command, while refreshLoop retried and failed underneath.
+func TestUpdateClientTo_ClimbsThroughIntermediateHops(t *testing.T) {
+	t.Run("crosses a churn gap without a manual command", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &mockDest{}
+		b := &mockBuilder{hops: []uint64{30, 60, 90}} // two hops, then the target
+		m := NewModule("test", "client-0", src, dst, b)
+
+		if err := m.updateClientTo(context.Background(), 90); err != nil {
+			t.Fatalf("climb: %v", err)
+		}
+		if len(dst.updates) != 3 {
+			t.Fatalf("submitted %d updates, want the two hops and the target", len(dst.updates))
+		}
+		for i, want := range []uint64{30, 60, 90} {
+			if dst.updates[i].Height != want {
+				t.Fatalf("update %d at height %d, want %d: each hop must overlap the last",
+					i, dst.updates[i].Height, want)
+			}
+		}
+		if m.lastHeight != 90 {
+			t.Fatalf("lastHeight = %d, want 90", m.lastHeight)
+		}
+	})
+
+	// An adapter that never hops must behave exactly as before: one Build, one
+	// update, no loop.
+	t.Run("an adapter that does not hop is unchanged", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &mockDest{}
+		b := &mockBuilder{}
+		m := NewModule("test", "client-0", src, dst, b)
+
+		if err := m.updateClientTo(context.Background(), 42); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if b.built != 1 || len(dst.updates) != 1 {
+			t.Fatalf("built %d, submitted %d; want exactly one of each", b.built, len(dst.updates))
+		}
+	})
+
+	// Each hop costs a proof and a transaction, so an unbounded climb is an
+	// expensive silent loop -- the third failure class dressed as progress.
+	t.Run("stops at the ceiling and says how far it got", func(t *testing.T) {
+		endless := make([]uint64, MaxClientUpdateHops+5)
+		for i := range endless {
+			endless[i] = uint64(i + 1)
+		}
+		src := &mockSource{latest: 1000}
+		dst := &mockDest{}
+		b := &mockBuilder{hops: endless}
+		m := NewModule("test", "client-0", src, dst, b)
+
+		err := m.updateClientTo(context.Background(), 1000)
+		if err == nil {
+			t.Fatal("an endless climb reported success")
+		}
+		if !strings.Contains(err.Error(), "hop") {
+			t.Errorf("error = %v; it must say the climb ran out, not look like a build failure", err)
+		}
+		if len(dst.updates) > MaxClientUpdateHops {
+			t.Fatalf("submitted %d updates past a ceiling of %d", len(dst.updates), MaxClientUpdateHops)
+		}
+	})
+
+	// A hop that installs nothing must end the climb rather than repeat it. This
+	// is the anti-spin guard, and without it a builder stuck on one height would
+	// burn the whole ceiling in proofs.
+	t.Run("a hop that does not advance ends the climb", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &mockDest{}
+		b := &mockBuilder{hops: []uint64{50, 50, 50, 50}}
+		m := NewModule("test", "client-0", src, dst, b)
+
+		if err := m.updateClientTo(context.Background(), 90); err != nil {
+			t.Fatalf("climb: %v", err)
+		}
+		if len(dst.updates) != 1 {
+			t.Fatalf("submitted %d updates for a builder stuck at one height, want 1", len(dst.updates))
+		}
+	})
+}
+
 func TestAckWatch(t *testing.T) {
 	send := chain.RelayPacket{Type: chain.SendPacket, Sequence: 7, Packet: []byte("pkt-7")}
 	ack := chain.RelayPacket{Type: chain.AckPacket, Sequence: 7, Packet: []byte("pkt-7")}
@@ -2018,6 +2135,106 @@ func TestSettleDelivered_NeverLeavesAPacketInNeitherLedger(t *testing.T) {
 	})
 }
 
+// The churn-gap climb has to exist on BOTH sides of prepareBatchUpdate. The
+// unfolded branch delegates to updateClientTo, which loops; the folded branch
+// built exactly one update and returned it, so a client behind a churn gap
+// advanced one hop per flush. With a 30s scan interval and a ceiling of 16 that
+// is eight minutes of re-queueing to cross a gap the unfolded path crosses in
+// one call -- on the packet-driven path, which is the one with packets waiting.
+func TestHandleBatch_FoldedPathClimbsAChurnGapInOneFlush(t *testing.T) {
+	t.Run("crosses the gap in one flush and folds only the last rung", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &foldingMockDest{enabled: true}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{hops: []uint64{30, 60, 90}})
+		m.lastHeight = 10
+
+		batch := []chain.Event{{Type: chain.SendPacket, Height: 90, Raw: []byte("a")}}
+		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+			t.Fatalf("a climbable gap must not re-queue the batch, got %v", rq)
+		}
+
+		// The two intermediate hops cannot carry the packets -- each lands below
+		// the packet height -- so they go out on their own. Only the rung that
+		// reaches the target is folded.
+		if len(dst.updates) != 2 || dst.updates[0].Height != 30 || dst.updates[1].Height != 60 {
+			t.Fatalf("standalone updates = %+v, want the two intermediate hops at 30 and 60", dst.updates)
+		}
+		if dst.foldCalls != 1 || len(dst.foldedUpdates) != 1 || dst.foldedUpdates[0].Height != 90 {
+			t.Fatalf("want one folded update at the target height 90, calls=%d updates=%+v", dst.foldCalls, dst.foldedUpdates)
+		}
+		if len(dst.foldedPackets) != 1 || len(dst.foldedPackets[0]) != 1 {
+			t.Fatalf("the packet must ride the final tx, got %+v", dst.foldedPackets)
+		}
+		if m.lastHeight != 90 {
+			t.Fatalf("lastHeight = %d, want 90", m.lastHeight)
+		}
+	})
+
+	// The ceiling is the whole reason the climb is safe to run on the packet path:
+	// each hop is a proof and a transaction, so an unbounded one is a gas drain
+	// that looks like progress.
+	t.Run("stops at the ceiling instead of climbing forever", func(t *testing.T) {
+		endless := make([]uint64, chain.MaxClientUpdateHops+5)
+		for i := range endless {
+			endless[i] = uint64(i + 1)
+		}
+		src := &mockSource{latest: 1000, relayable: 1000}
+		dst := &foldingMockDest{enabled: true}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{hops: endless})
+
+		batch := []chain.Event{{Type: chain.SendPacket, Height: 900, Raw: []byte("a")}}
+		if rq := m.handleBatch(context.Background(), batch); len(rq) != 1 {
+			t.Fatalf("a batch behind an uncrossable gap must be re-queued, got %v", rq)
+		}
+		if len(dst.updates) > chain.MaxClientUpdateHops {
+			t.Fatalf("submitted %d standalone updates past a ceiling of %d", len(dst.updates), chain.MaxClientUpdateHops)
+		}
+		if dst.foldCalls != 0 {
+			t.Fatalf("nothing reached the target, so nothing may be folded; foldCalls=%d", dst.foldCalls)
+		}
+	})
+
+	// A hop that installs nothing must end the climb rather than repeat it -- the
+	// mirror of the same guard on updateClientTo. Without it a builder stuck on one
+	// height burns the whole ceiling in proofs and transactions, per flush, on the
+	// packet path.
+	t.Run("a hop that does not advance ends the climb", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &foldingMockDest{enabled: true}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{hops: []uint64{50, 50, 50, 50}})
+
+		batch := []chain.Event{{Type: chain.SendPacket, Height: 90, Raw: []byte("a")}}
+		if rq := m.handleBatch(context.Background(), batch); len(rq) != 1 {
+			t.Fatalf("a packet above a stalled climb must be re-queued, got %v", rq)
+		}
+		if len(dst.updates) != 1 {
+			t.Fatalf("submitted %d updates for a builder stuck at one height, want 1", len(dst.updates))
+		}
+		if dst.foldCalls != 0 {
+			t.Fatalf("the climb never reached the target, so nothing may be folded; foldCalls=%d", dst.foldCalls)
+		}
+	})
+
+	// An adapter that never hops must behave exactly as it did before the climb
+	// existed: one Build, nothing submitted on its own, everything folded.
+	t.Run("a builder that never hops is unchanged", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &foldingMockDest{enabled: true}
+		b := &mockBuilder{forceHeight: 80}
+		m := NewModule("test", "client-0", src, dst, b)
+		m.lastHeight = 10
+
+		batch := []chain.Event{{Type: chain.SendPacket, Height: 30, Raw: []byte("a")}}
+		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+			t.Fatalf("re-queued %v", rq)
+		}
+		if b.built != 1 || len(dst.updates) != 0 || dst.foldCalls != 1 {
+			t.Fatalf("built=%d standalone=%d folds=%d; want one build, no standalone tx, one fold",
+				b.built, len(dst.updates), dst.foldCalls)
+		}
+	})
+}
+
 func TestFlushLoop_RunsImmediately(t *testing.T) {
 	src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}}
 	m := NewModule("cosmos->eth", "client-0", src, &mockDest{}, &mockBuilder{})
@@ -2106,4 +2323,120 @@ func TestHandleBatchIsSerializedAcrossCallers(t *testing.T) {
 	if source.overlap.Load() {
 		t.Fatal("two handleBatch calls were inside the batch at once; batchMu is not held for the whole of it")
 	}
+}
+
+// Reported by @neitdung. A folded transaction carries the client update AND the
+// packets, so a deterministic rejection of it says nothing about WHICH of the
+// two the chain refused -- but the code read every permanent failure as "the
+// packet is poison". A single packet was therefore dropped outright, and a batch
+// was retried as folded singletons carrying the SAME update, so each failed for
+// the same reason and every packet was dropped in turn.
+//
+// An ack has no independent escape: its counterparty already holds a receipt, so
+// nothing times it out and nothing refunds it. Dropping it on a failure never
+// shown to be its own strands the escrow.
+//
+// The fixture has to reject the update on BOTH paths, folded and standalone --
+// that is what "the update is the problem" means. A fold that fails while the
+// standalone update succeeds is the opposite case, and the last subtest pins
+// that the two are still told apart.
+func TestHandleBatch_FoldedUpdateRejectionDoesNotDropInnocentPackets(t *testing.T) {
+	rejected := func() *foldingMockDest {
+		dst := &foldingMockDest{enabled: true, foldErr: chain.Permanent(errors.New("client update rejected"))}
+		dst.updateErr = chain.Permanent(errors.New("client update rejected"))
+		return dst
+	}
+
+	t.Run("a single ack is held, not dropped", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := rejected()
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
+		m.lastHeight = 10
+
+		batch := []chain.Event{{Type: chain.AckPacket, Sequence: 7, Height: 30, Raw: []byte("a")}}
+		requeue := m.handleBatch(context.Background(), batch)
+
+		if len(requeue) != 1 {
+			t.Fatalf("re-queued %v, want the ack held: the update was refused on its own, "+
+				"so nothing was ever shown about the packet", requeue)
+		}
+		if m.lastHeight != 10 {
+			t.Fatalf("lastHeight = %d, want 10: an update the chain refused must not be recorded", m.lastHeight)
+		}
+	})
+
+	// The batch shape is the worse one: isolation would have retried every packet
+	// with the same rejected update and dropped all of them.
+	t.Run("a whole batch is held, not dropped one by one", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := rejected()
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
+		m.lastHeight = 10
+
+		batch := []chain.Event{
+			{Type: chain.AckPacket, Sequence: 1, Height: 30, Raw: []byte("a")},
+			{Type: chain.AckPacket, Sequence: 2, Height: 31, Raw: []byte("b")},
+			{Type: chain.TimeoutPacket, Sequence: 3, Height: 32, Raw: []byte("c")},
+		}
+		requeue := m.handleBatch(context.Background(), batch)
+
+		if len(requeue) != len(batch) {
+			t.Fatalf("re-queued %v, want all %d held", requeue, len(batch))
+		}
+	})
+
+	// Second round, also @neitdung. The update landing alone clears the UPDATE,
+	// and nothing more: the folded transaction was one atomic unit, and a unit can
+	// be refused for what the two are together (its gas envelope, its route)
+	// while each half passes on its own. The first fix drew the stronger
+	// conclusion -- "the update landed, so the packet is poison" -- and dropped a
+	// single packet on the folded error without ever sending it by itself. The
+	// batch shape went through packet-only isolation; the singleton skipped it.
+	t.Run("a packet that fails only in the folded composition is delivered, not dropped", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &foldingMockDest{enabled: true, foldErr: chain.Permanent(errors.New("folded tx reverted"))}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
+		m.lastHeight = 10
+
+		batch := []chain.Event{{Type: chain.AckPacket, Sequence: 7, Height: 30, Raw: []byte("a")}}
+		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+			t.Fatalf("re-queued %v, want nothing outstanding: the packet relays on its own", rq)
+		}
+		if dst.relayCalls != 1 {
+			t.Fatalf("packet-only relay calls = %d, want 1: the folded error says nothing about the packet alone", dst.relayCalls)
+		}
+		if len(dst.relayed) != 1 || dst.relayed[0].Sequence != 7 {
+			t.Fatalf("delivered %+v, want the ack: it was dropped on a failure never shown to be its own", dst.relayed)
+		}
+		if m.lastHeight != 80 {
+			t.Fatalf("lastHeight = %d, want 80: the standalone update installed", m.lastHeight)
+		}
+		if len(dst.updates) != 1 || dst.updates[0].Height != 80 {
+			t.Fatalf("standalone update calls = %+v, want exactly the folded update", dst.updates)
+		}
+	})
+
+	// The control: a packet that fails on its own too is still dropped -- after
+	// that attempt, on that attempt's error, not on the folded one.
+	t.Run("a packet that really is poison is dropped once it has failed alone", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &foldingMockDest{enabled: true, foldErr: chain.Permanent(errors.New("folded tx reverted"))}
+		dst.poison = map[string]bool{"a": true}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
+		m.lastHeight = 10
+
+		batch := []chain.Event{{Type: chain.AckPacket, Sequence: 7, Height: 30, Raw: []byte("a")}}
+		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+			t.Fatalf("re-queued %v; the packet failed on its own, so it is dropped", rq)
+		}
+		if dst.relayCalls != 1 {
+			t.Fatalf("packet-only relay calls = %d, want 1: dropping needs the packet's own failure first", dst.relayCalls)
+		}
+		if len(dst.relayed) != 0 {
+			t.Fatalf("delivered %+v, want nothing: the packet is poison", dst.relayed)
+		}
+		if m.lastHeight != 80 {
+			t.Fatalf("lastHeight = %d, want 80: the standalone update installed", m.lastHeight)
+		}
+	})
 }

@@ -58,6 +58,19 @@ func (b *Groth16Builder) Build(ctx context.Context, _ []byte) (chain.ClientUpdat
 	if err != nil {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: build cosmos update: %w", err)
 	}
+	return groth16Update(result, trustedBlock)
+}
+
+// groth16Update turns the pipeline's result into the engine's ClientUpdate.
+//
+// Split out of Build because everything above it needs two live endpoints and
+// everything below it is a pure mapping -- including whether the update is an
+// intermediate hop, which decides whether the engine climbs again. Left inline,
+// that field could stop being carried and nothing would be red.
+func groth16Update(result *services.CosmosClientUpdateBuildResult, trustedBlock int64) (chain.ClientUpdate, error) {
+	if result == nil {
+		return chain.ClientUpdate{}, fmt.Errorf("groth16: builder returned no result")
+	}
 	if !result.HasMsg || result.LightBlock == nil {
 		// Client already current — report the trusted height so the module can seed
 		// its provability guard; nil payload means "no tx".
@@ -78,5 +91,9 @@ func (b *Groth16Builder) Build(ctx context.Context, _ []byte) (chain.ClientUpdat
 	return chain.ClientUpdate{
 		Height: uint64(result.LightBlock.BlockHeight), Payloads: [][]byte{payload},
 		TrustedAt: result.LightBlock.SignedHeader.Header.Time,
+		// Carried through rather than inferred. "The update landed below the height
+		// we asked for" is true of a hop AND of an adapter that simply cannot prove
+		// that far yet, and looping on the second one spins.
+		IsHop: result.IsHop,
 	}, nil
 }

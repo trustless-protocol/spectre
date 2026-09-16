@@ -548,21 +548,68 @@ func allIndices(n int) []int {
 // updateClientTo advances the destination client so it covers source height,
 // honoring the append-only invariant. It is safe to call from multiple
 // goroutines.
+// MaxClientUpdateHops re-exports the ceiling so `update-client --max-hops` can
+// default to it without cmd reaching into chain for a number. The definition is
+// chain.MaxClientUpdateHops -- there is one, and services/client.go's periodic
+// refresh climb uses the same one.
+const MaxClientUpdateHops = chain.MaxClientUpdateHops
+
+// updateClientTo advances the destination client to height, climbing through
+// intermediate updates when one is not enough.
+//
+// Validator churn can outrun the trust-overlap requirement: when too much of the
+// set has rotated since the trusted height, an update straight to the live head
+// cannot be verified at all, and the only way across is a chain of updates that
+// each overlap the last.
+//
+// Two climbers already existed: the manual `update-client` command, and the
+// periodic pinned-set refresh (services.Worker.RefreshCosmosClient, reached from
+// periodicUpdateLoop through Services.RotatePinnedSet). What had none were the
+// engine's own paths -- refreshLoop and the packet-driven batch update -- so a
+// client that drifted past the threshold stayed stuck there until the rotation
+// cadence or a person happened to cross the gap for it, while refreshLoop
+// retried and failed every cycle underneath.
+//
+// The climb is bounded and each step is logged with its number, because linear
+// cost with no ceiling is how a fix becomes an outage.
 func (m *Module) updateClientTo(ctx context.Context, height uint64) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	for hop := 0; ; hop++ {
+		if hop >= MaxClientUpdateHops {
+			return fmt.Errorf(
+				"relay %s: client still short of height %d after %d hop(s); the trust overlap has not been re-established",
+				m.name, height, hop)
+		}
+		again, err := m.updateClientStepLocked(ctx, height)
+		if err != nil || !again {
+			return err
+		}
+		log.Printf("[%s Relay] client update hop %d landed at %d, short of %d; climbing again",
+			m.name, hop, m.lastHeight, height)
+	}
+}
+
+// updateClientStepLocked performs one update and reports whether another is
+// needed. The caller holds m.mu.
+//
+// again is true ONLY when the builder said it took a hop AND the client actually
+// moved. Both halves matter: without the first, an adapter that simply cannot
+// prove as far as asked would be climbed at forever; without the second, a hop
+// that installs nothing would loop without progress.
+func (m *Module) updateClientStepLocked(ctx context.Context, height uint64) (again bool, err error) {
 	if height <= m.lastHeight {
-		return nil // already covered — nothing to prove
+		return false, nil // already covered — nothing to prove
 	}
 
 	header, err := m.src.QueryHeader(ctx, height)
 	if err != nil {
-		return fmt.Errorf("query header at %d: %w", height, err)
+		return false, fmt.Errorf("query header at %d: %w", height, err)
 	}
 	update, err := m.builder.Build(ctx, header)
 	if err != nil {
-		return fmt.Errorf("build client update: %w", err)
+		return false, fmt.Errorf("build client update: %w", err)
 	}
 	// An empty payload list means "client already current"; the builder still reports
 	// its current height, so learn it (seeding lastHeight from on-chain reality)
@@ -574,19 +621,21 @@ func (m *Module) updateClientTo(ctx context.Context, height uint64) error {
 			m.lastHeight = update.Height
 		}
 		m.recordClientUpdate(update)
-		return nil
+		return false, nil
 	}
 	// A stale update (at or below what we already trust) is skipped without a tx.
+	// This is also the anti-spin guard for the climb: a hop that installs nothing
+	// ends the loop instead of repeating.
 	if update.Height <= m.lastHeight {
-		return nil
+		return false, nil
 	}
 
 	if err := m.dst.UpdateClient(ctx, m.clientID, update); err != nil {
-		return fmt.Errorf("submit client update at %d: %w", update.Height, err)
+		return false, fmt.Errorf("submit client update at %d: %w", update.Height, err)
 	}
 	m.lastHeight = update.Height
 	m.recordClientUpdate(update)
-	return nil
+	return update.IsHop, nil
 }
 
 func (m *Module) recordClientUpdate(update chain.ClientUpdate) {

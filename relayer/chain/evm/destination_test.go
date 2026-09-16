@@ -167,3 +167,36 @@ func TestRelayWithUpdate_SubmitsOneOrderedBatch(t *testing.T) {
 		t.Fatalf("second inner message = %T, want MsgRecvPacket", batch[1])
 	}
 }
+
+// SupportsUpdatePacketFolding and services.EVMEndpoint.RouterManagesProofSubmission
+// are one question asked at two layers -- the chain.FoldingDestination contract
+// and the deployment shape it depends on. They were separately implemented and
+// byte-identical, which is how two things drift: nothing said they had to agree.
+//
+// This says it. Re-inlining the predicate here is only safe while the two answer
+// the same, and the moment they do not, this is red.
+func TestSupportsUpdatePacketFoldingAgreesWithTheEndpoint(t *testing.T) {
+	addr := func(b byte) ethcommon.Address { return ethcommon.Address{b} }
+
+	for _, tc := range []struct {
+		name        string
+		roleManager ethcommon.Address
+		router      ethcommon.Address
+	}{
+		{name: "router is the role manager", roleManager: addr(1), router: addr(1)},
+		{name: "separate role manager", roleManager: addr(2), router: addr(1)},
+		{name: "both unset"},
+		{name: "role manager unset", router: addr(1)},
+		{name: "router unset", roleManager: addr(1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			endpoint := services.EVMEndpoint{
+				Contracts: services.EVMContracts{RoleManager: tc.roleManager, Router: tc.router},
+			}
+			d := &Destination{evm: endpoint}
+			if got, want := d.SupportsUpdatePacketFolding(), endpoint.RouterManagesProofSubmission(); got != want {
+				t.Fatalf("folding says %v, the deployment says %v; the two definitions have drifted", got, want)
+			}
+		})
+	}
+}

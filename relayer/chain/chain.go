@@ -97,7 +97,32 @@ type ClientUpdate struct {
 	Height    uint64
 	Payloads  [][]byte
 	TrustedAt time.Time
+
+	// IsHop means this update is an INTERMEDIATE step, not the target: the
+	// builder could not reach the requested height in one update and picked a
+	// height in between. The caller must ask again from the height this installs.
+	//
+	// It exists because validator churn can outrun the trust-overlap requirement.
+	// When too much of the set has rotated, an update from the trusted height to
+	// the live head cannot be verified at all, and the only way across is a chain
+	// of updates each of which overlaps the last. Only the builder knows it took
+	// that route, so only the builder can say so.
+	//
+	// Adapters that never hop leave it false, which is the whole of their
+	// participation: the engine then does exactly what it did before.
+	IsHop bool
 }
+
+// MaxClientUpdateHops bounds a chain of intermediate client updates. Each hop
+// costs a proof and a transaction, so an unbounded climb is an expensive silent
+// loop dressed as progress.
+//
+// It lives beside IsHop, the field that drives the climb, because every climber
+// must agree on it: the relay engine's packet and refresh paths, the periodic
+// pinned-set refresh in services, and `update-client --max-hops`. Two constants
+// would eventually be two different ceilings, and the operator would have no way
+// to tell which one their client stopped at.
+const MaxClientUpdateHops = 16
 
 // RelayPacket is a source packet together with the source proof the destination
 // needs to submit it. The destination adapter turns it into the concrete IBC

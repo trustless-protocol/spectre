@@ -15,6 +15,7 @@ import (
 
 	tendermintClient "relayer/client"
 	"relayer/prover"
+	"relayer/relay"
 	"relayer/services"
 	"relayer/transaction"
 )
@@ -207,6 +208,6 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().Bool(flagGPUProve, false, "use the ICICLE GPU backend for proving (or set GPU_PROVE=1); requires an icicle-enabled build")
 	cmd.Flags().Bool(flagForceRotation, false, "force pinned-set rotation regardless of overlap threshold (operator stopgap for RLY-01)")
 	cmd.Flags().Int64(flagTargetHeight, 0, "override the update target height; 0 uses the chain's current latest height (operator stopgap for RLY-01)")
-	cmd.Flags().Int64(flagMaxHops, 16, "maximum multi-hop iterations before giving up in one invocation")
+	cmd.Flags().Int64(flagMaxHops, relay.MaxClientUpdateHops, "maximum multi-hop iterations before giving up in one invocation")
 	return cmd
 }
