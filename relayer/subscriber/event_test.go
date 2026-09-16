@@ -12,6 +12,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -19,6 +21,7 @@ import (
 
 	contractICS26Router "relayer/bindings/ICS26Router"
 	relayerclient "relayer/client"
+	"relayer/rpcmock"
 	"relayer/services"
 
 	abcitypes "github.com/cometbft/cometbft/abci/types"
@@ -1082,20 +1085,73 @@ func TestLivePathStale(t *testing.T) {
 	})
 }
 
-// Block production is what makes silence meaningful, so the baseline pass must
-// not claim an advance it cannot know about.
-func TestObserveChainHeight(t *testing.T) {
+// IBC traffic, not block production, is what makes silence meaningful. Asking
+// whether the chain advanced tore down a healthy subscription every
+// cosmosLivePathStaleAfter on any Cosmos chain, because CometBFT produces blocks
+// whether or not a packet moves.
+func TestHadTrafficToDeliver(t *testing.T) {
 	t.Parallel()
 
 	var h cosmosLiveHealth
-	if h.observeChainHeight(100) {
-		t.Fatal("the first observation has nothing to compare against and must not report an advance")
+	if h.hadTrafficToDeliver() {
+		t.Fatal("before any scan there is no evidence either way, so silence must prove nothing")
 	}
-	if h.observeChainHeight(100) {
-		t.Fatal("an unchanged head is not an advance")
+
+	h.recordRecoveryPass(0, 0)
+	if h.hadTrafficToDeliver() {
+		t.Fatal("a scan that found no IBC event means there was nothing to deliver, not a dead subscription")
 	}
-	if !h.observeChainHeight(101) {
-		t.Fatal("a rising head is the signal that the chain is producing")
+
+	// skipped counts events recovery found that the live path had ALREADY
+	// delivered. It is still proof the chain carried traffic.
+	h.recordRecoveryPass(0, 1)
+	if !h.hadTrafficToDeliver() {
+		t.Fatal("an event the live path delivered is still traffic")
+	}
+
+	h.recordRecoveryPass(2, 0)
+	if !h.hadTrafficToDeliver() {
+		t.Fatal("an event the live path missed is the strongest evidence of traffic")
+	}
+
+	// The window does not latch: a burst followed by a quiet stretch must go
+	// back to proving nothing, or one packet would arm the reconnect loop for
+	// the life of the process.
+	h.recordRecoveryPass(0, 0)
+	if h.hadTrafficToDeliver() {
+		t.Fatal("traffic seen once must not keep justifying reconnects after it stops")
+	}
+}
+
+// The regression this fixes, stated as the arithmetic that produced it: a quiet
+// chain must never be judged stale, however long the silence runs.
+func TestLivePathStaleIgnoresSilenceOnAQuietChain(t *testing.T) {
+	t.Parallel()
+
+	start := time.Unix(1_700_000_000, 0)
+	var h cosmosLiveHealth
+	h.recordSubscribed(start)
+	h.recordRecoveryPass(0, 0) // a scan that found nothing
+
+	// Six hours of silence, the length of the run that exposed this.
+	for _, after := range []time.Duration{
+		cosmosLivePathStaleAfter, 10 * time.Minute, time.Hour, 6 * time.Hour,
+	} {
+		stale, _, report := h.livePathStale(h.hadTrafficToDeliver(), start.Add(after))
+		if stale {
+			t.Fatalf("silence for %s on a chain with no IBC traffic was judged stale", after)
+		}
+		if report {
+			t.Fatalf("silence for %s on a quiet chain was reported", after)
+		}
+	}
+
+	// One event in the window, still undelivered live, and the same silence is
+	// now evidence: the subscription had something to deliver and did not.
+	h.recordRecoveryPass(1, 0)
+	stale, _, _ := h.livePathStale(h.hadTrafficToDeliver(), start.Add(cosmosLivePathStaleAfter))
+	if !stale {
+		t.Fatal("silence while the chain carried IBC traffic is exactly what must trigger a reconnect")
 	}
 }
 
@@ -1938,5 +1994,373 @@ func TestProcessLiveCosmosEvent_HeightlessEventDoesNotPrune(t *testing.T) {
 	}
 	if cursor != 100 {
 		t.Fatalf("cursor moved to %d on an event with no height", cursor)
+	}
+}
+
+// TestLiveHealthScopeIsTheSubscriptionNotTheClient pins the invariant the review
+// round turned on, because reading the code two people reached opposite answers.
+//
+// The finding was that stats.skipped counts packets dropped as unrelated-client,
+// so traffic for someone else's client arms the stale check. That half is true.
+// What makes it harmless is the other half: the live subscriptions carry NO
+// client filter, and processLiveCosmosEvent calls recordEvent BEFORE
+// enqueueCosmosPackets filters anything. So the same unrelated event that
+// inflates skipped also refreshes lastSeen, and the check cannot fire on it.
+//
+// The two sides must therefore stay scoped together. Narrowing skipped to this
+// relayer's client without narrowing recordEvent the same way would arm the
+// guard with traffic that can never clear it -- a healthy subscription torn down
+// every cosmosLivePathStaleAfter, which is the bug this PR exists to remove.
+func TestLiveHealthScopeIsTheSubscriptionNotTheClient(t *testing.T) {
+	const (
+		ours   = "08-wasm-7"
+		theirs = "08-wasm-OTHER"
+	)
+	foreign := channeltypesv2.Packet{Sequence: 3, SourceClient: theirs, DestinationClient: "someone-else"}
+
+	t.Run("an unrelated client's live event still counts as delivery", func(t *testing.T) {
+		var s Subscriber
+		health := &cosmosLiveHealth{}
+		cursor := uint64(0)
+
+		s.processLiveCosmosEvent(context.Background(), cosmosTestDeps("08-wasm-0", ours),
+			services.NewBatchBuilder(), &cursor, map[cosmosEventKey]struct{}{}, health,
+			coretypes.ResultEvent{
+				Data: commettypes.EventDataTx{TxResult: abcitypes.TxResult{Height: 10}},
+				Events: map[string][]string{
+					"send_packet.encoded_packet_hex": {mustPacketHex(t, foreign)},
+				},
+			})
+
+		if health.events != 1 {
+			t.Fatalf("events = %d, want 1: recordEvent runs before any client filter, so this refreshes lastSeen", health.events)
+		}
+		if health.lastSeen.IsZero() {
+			t.Fatal("lastSeen was not refreshed; an unrelated event would then arm the stale check without ever clearing it")
+		}
+	})
+
+	t.Run("and the same event is what skipped counts", func(t *testing.T) {
+		stats, err := enqueueCosmosPackets(context.Background(), cosmosTestDeps("08-wasm-0", ours),
+			services.NewBatchBuilder(),
+			[]services.CosmosPacket{{Type: services.CosmosSend, BlockNumber: 10, Packet: &foreign}},
+			map[cosmosEventKey]struct{}{}, false)
+		if err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		if stats.skipped != 1 || stats.recovered != 0 {
+			t.Fatalf("stats = %+v, want skipped=1: an unrelated client is dropped here, and that is what arms sawTraffic", stats)
+		}
+	})
+}
+
+// Evidence from before this subscription existed is not evidence about it. The
+// startup lookback and the gap after a reconnect both cover events no live
+// subscription was running to deliver; counting them arms the stale check
+// against a subscription that has had nothing to do yet, and the teardown that
+// follows re-seeds exactly the same gap.
+func TestTrafficBeforeThisSubscriptionIsNotEvidence(t *testing.T) {
+	h := &cosmosLiveHealth{}
+
+	// PRODUCTION ORDER, which the first version of this test had backwards: the
+	// subscription is established first (cosmos.go:279) and the startup recovery
+	// runs immediately after (cosmos.go:281). Asserting the clear in the other
+	// order proved something that never happens, and missed the ordering that
+	// does -- found in review by @DongLieu.
+	h.recordSubscribed(time.Now())
+	if h.hadTrafficToDeliver() {
+		t.Fatal("a fresh subscription starts with no traffic verdict")
+	}
+
+	// The startup pass scans the historical lookback and finds old events. It must
+	// not write them to the signal; the gate that stops it is the armsWatchdog
+	// parameter, exercised directly below.
+	if h.hadTrafficToDeliver() {
+		t.Fatal("startup lookback traffic armed the watchdog for a subscription that " +
+			"has not been asked to carry anything yet")
+	}
+
+	stale, _, _ := h.livePathStale(h.hadTrafficToDeliver(), time.Now().Add(2*cosmosLivePathStaleAfter))
+	if stale {
+		t.Fatal("a brand-new subscription over a quiet window must not be judged dead")
+	}
+}
+
+// The gate itself, at the level that owns it. recordRecoveryPass is the ONLY way
+// sawTraffic is armed, so a pass that cannot call it cannot arm the watchdog --
+// which is what makes gating that one call the whole fix.
+// The bool gate this used to test (armsWatchdog, passed false by the startup
+// call and true by every tick) is gone. It rested on "the startup pass has
+// consumed the lookback and moved the cursor to the head", and subscribeCosmosOnce
+// treats a startup failure as non-fatal -- so the cursor could stay inside the
+// pre-subscription lookback and the first tick rescanned it with arming ON.
+// Arming is now decided by the height boundary captured when the subscription
+// came up, which is a property of the heights rather than of the caller. The
+// three tests below cover it: history does not arm even when re-read by a tick,
+// heights above the boundary do, and evidence already gathered is not thrown
+// away by a later chunk's error.
+
+// rangedTxSearchCosmosDeps answers `status` with a fixed head and `tx_search`
+// per height range, so a test can place traffic at chosen heights and fail
+// chosen chunks. answer reports how many unrelated-client packets the range
+// holds (each counts as one `skipped`, which is what arms sawTraffic) and
+// whether the query should fail.
+func rangedTxSearchCosmosDeps(t *testing.T, head int64, ours string,
+	answer func(from, to uint64) (foreign int, fail bool),
+) cosmosDeps {
+	t.Helper()
+	rangeRe := regexp.MustCompile(`tx\.height >= (\d+) AND tx\.height <= (\d+)`)
+	foreign := channeltypesv2.Packet{Sequence: 1, SourceClient: "08-wasm-SOMEONE-ELSE", DestinationClient: "not-ours"}
+	packetHex := mustPacketHex(t, foreign)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params struct {
+				Query string `json:"query"`
+			} `json:"params"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		id := string(req.ID)
+
+		switch req.Method {
+		case "status":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"sync_info":{"latest_block_height":"%d"}}}`, id, head)
+		case "tx_search":
+			m := rangeRe.FindStringSubmatch(req.Params.Query)
+			if m == nil {
+				_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"no height range in %q"}}`, id, req.Params.Query)
+				return
+			}
+			from, _ := strconv.ParseUint(m[1], 10, 64)
+			to, _ := strconv.ParseUint(m[2], 10, 64)
+			n, fail := answer(from, to)
+			if fail {
+				_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32000,"message":"tx_search refused [%d,%d]"}}`, id, from, to)
+				return
+			}
+			txs := make([]string, 0, n)
+			for i := 0; i < n; i++ {
+				txs = append(txs, fmt.Sprintf(`{"hash":"%064X","height":"%d","index":%d,"tx_result":{"code":0,"events":[{"type":"send_packet","attributes":[{"key":"encoded_packet_hex","value":"%s"}]}]},"tx":""}`,
+					i+1, to, i, packetHex))
+			}
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{"txs":[%s],"total_count":"%d"}}`, id, strings.Join(txs, ","), n)
+		default:
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"unexpected method %s"}}`, id, req.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := rpchttp.New(server.URL, "/websocket")
+	if err != nil {
+		t.Fatalf("create CometBFT client: %v", err)
+	}
+	deps := cosmosTestDeps("08-wasm-0", ours)
+	deps.Cosmos = services.CosmosEndpoint{Client: client}
+	return deps
+}
+
+// P1, found in review: a startup scan that FAILS leaves the cursor inside the
+// pre-subscription lookback, because subscribeCosmosOnce logs the error and
+// starts the loop anyway. The next tick then re-reads that historical range. If
+// arming depends on which caller is asking, that tick arms the watchdog with
+// events produced before the subscription existed -- and two minutes of
+// legitimate quiet tears down a healthy subscription, the false positive this
+// file exists to remove.
+func TestAFailedStartupScanDoesNotLetHistoryArmTheWatchdog(t *testing.T) {
+	const (
+		head   = int64(200)
+		cursor = uint64(100) // inside the lookback, below the boundary
+		ours   = "08-wasm-7"
+	)
+	var attempt int
+	deps := rangedTxSearchCosmosDeps(t, head, ours, func(from, to uint64) (int, bool) {
+		attempt++
+		if attempt <= 3 { // the startup pass issues three queries; fail them all
+			return 0, true
+		}
+		return 1, false // the tick retries the same historical range, and finds an old event
+	})
+
+	var s Subscriber
+	health := &cosmosLiveHealth{}
+	health.recordSubscribed(time.Now())
+	c := cursor
+	var quiet uint64
+
+	// startup pass: fails, so the cursor cannot move off the lookback
+	if _, err := s.recoverCosmosGapToLatest(context.Background(), deps, services.NewBatchBuilder(),
+		&c, map[cosmosEventKey]struct{}{}, &quiet, health, &blockRate{}); err == nil {
+		t.Fatal("startup scan was expected to fail; the test would not reach the case it covers")
+	}
+	if c != cursor {
+		t.Fatalf("cursor moved to %d after a failed startup scan; this test needs it to stay at %d", c, cursor)
+	}
+	if health.armFromHeight != uint64(head) {
+		t.Fatalf("armFromHeight = %d, want %d: the boundary is the head read when the subscription came up",
+			health.armFromHeight, head)
+	}
+
+	// the tick re-reads the very same historical range, this time successfully
+	if _, err := s.recoverCosmosGapToLatest(context.Background(), deps, services.NewBatchBuilder(),
+		&c, map[cosmosEventKey]struct{}{}, &quiet, health, &blockRate{}); err != nil {
+		t.Fatalf("periodic pass: %v", err)
+	}
+	if health.hadTrafficToDeliver() {
+		t.Fatal("a tick that re-read the pre-subscription lookback armed the watchdog: " +
+			"two minutes of quiet now tears down a subscription that has carried nothing")
+	}
+}
+
+// A reconnect gets its own boundary. Found by mutation: recordSubscribed cleared
+// sawTraffic but leaving armFromHeight alone still passed everything. The stale
+// boundary then belongs to the PREVIOUS subscription, so the heights produced
+// while the connection was down -- the gap this reconnect exists to close, and
+// which no live subscription was running to deliver -- sit above it and arm the
+// watchdog for a subscription that has carried nothing. The same false positive
+// as the startup case, one reconnect later.
+func TestAReconnectDoesNotInheritThePreviousBoundary(t *testing.T) {
+	const ours = "08-wasm-7"
+	deps := rangedTxSearchCosmosDeps(t, 400, ours, func(from, to uint64) (int, bool) {
+		return 1, false // there is traffic in the gap, as there would be
+	})
+
+	var s Subscriber
+	health := &cosmosLiveHealth{}
+	health.armFromHeight = 100 // the subscription that just died came up at 100
+
+	// reconnecting: this subscription is new, and so is its boundary
+	health.recordSubscribed(time.Now())
+	if health.armFromHeight != 0 {
+		t.Fatalf("armFromHeight = %d after resubscribing, want 0: the previous "+
+			"subscription's boundary says nothing about this one", health.armFromHeight)
+	}
+
+	c := uint64(300) // the gap left behind by the outage
+	var quiet uint64
+	if _, err := s.recoverCosmosGapToLatest(context.Background(), deps, services.NewBatchBuilder(),
+		&c, map[cosmosEventKey]struct{}{}, &quiet, health, &blockRate{}); err != nil {
+		t.Fatalf("recovery pass: %v", err)
+	}
+	if health.hadTrafficToDeliver() {
+		t.Fatal("traffic from the outage gap armed the reconnected subscription: " +
+			"it is being held responsible for events it was not running to receive")
+	}
+}
+
+// The mirror, so the test above cannot pass by never arming at all: an event at
+// a height produced while the subscription was up IS evidence the live path
+// should have delivered something.
+func TestEvidenceAboveTheSubscriptionBoundaryArmsTheWatchdog(t *testing.T) {
+	const ours = "08-wasm-7"
+	deps := rangedTxSearchCosmosDeps(t, 400, ours, func(from, to uint64) (int, bool) {
+		return 1, false
+	})
+
+	var s Subscriber
+	health := &cosmosLiveHealth{}
+	health.recordSubscribed(time.Now())
+	health.armFromHeight = 100 // subscription came up at height 100
+	c := uint64(300)           // scanning well above it
+	var quiet uint64
+
+	if _, err := s.recoverCosmosGapToLatest(context.Background(), deps, services.NewBatchBuilder(),
+		&c, map[cosmosEventKey]struct{}{}, &quiet, health, &blockRate{}); err != nil {
+		t.Fatalf("recovery pass: %v", err)
+	}
+	if !health.hadTrafficToDeliver() {
+		t.Fatal("traffic above the boundary did not arm the watchdog: a dead subscription " +
+			"would now never be reported, and its packets sit until they time out")
+	}
+}
+
+// P2, found in review: the chunk loop persists the cursor after every chunk that
+// succeeds, but the health signal was only recorded once the WHOLE range did. So
+// traffic found in chunk 1 was thrown away by an error in chunk 2 -- and since
+// the cursor had already moved past chunk 1, no later pass would ever see that
+// evidence again. A live subscription recovery had just proved dead stayed
+// unarmed, so the watchdog never fired and it was never reconnected.
+func TestEvidenceFromCompletedChunksSurvivesALaterChunkError(t *testing.T) {
+	const ours = "08-wasm-7"
+	t.Setenv(cosmosRecoveryChunkEnv, "10")
+
+	deps := rangedTxSearchCosmosDeps(t, 400, ours, func(from, to uint64) (int, bool) {
+		if from >= 310 { // the second chunk onwards
+			return 0, true
+		}
+		return 1, false // chunk one holds real traffic
+	})
+
+	var s Subscriber
+	health := &cosmosLiveHealth{}
+	health.recordSubscribed(time.Now())
+	health.armFromHeight = 100 // everything scanned here is the subscription's own window
+	c := uint64(300)
+	var quiet uint64
+
+	if _, err := s.recoverCosmosGapToLatest(context.Background(), deps, services.NewBatchBuilder(),
+		&c, map[cosmosEventKey]struct{}{}, &quiet, health, &blockRate{}); err == nil {
+		t.Fatal("the later chunk was expected to fail; the test would not reach the case it covers")
+	}
+	if c <= 300 {
+		t.Fatalf("cursor = %d, want it past the chunk that succeeded: this test is about "+
+			"evidence being unreachable BECAUSE the cursor moved", c)
+	}
+	if !health.hadTrafficToDeliver() {
+		t.Fatal("evidence from the chunk that completed was discarded by the later chunk's error, " +
+			"and the cursor has already moved past those heights: it can never be seen again")
+	}
+}
+
+// statusOnlyCosmosDeps answers `status` with a fixed height and nothing else, so
+// a recovery pass can be driven to the point where it decides whether there is a
+// range to scan.
+func statusOnlyCosmosDeps(t *testing.T, height int64) cosmosDeps {
+	t.Helper()
+	node := rpcmock.NewCosmosNode(t)
+	node.Handle("status", func(json.RawMessage) (any, error) {
+		return &coretypes.ResultStatus{SyncInfo: coretypes.SyncInfo{LatestBlockHeight: height}}, nil
+	})
+	deps := cosmosTestDeps("08-wasm-0", "eth-router-0")
+	deps.Cosmos = services.CosmosEndpoint{Client: node.Client(t)}
+	return deps
+}
+
+// A pass that finds no newly indexable range must SAY it saw nothing, not leave
+// the previous pass's answer standing.
+//
+// Found in review: livePathStale was judged before the range was known, and the
+// no-range path returned without recording anything. A chain that stops
+// producing blocks therefore kept the last "there was traffic" verdict alive,
+// and two minutes later tore down a live subscription that was healthy and
+// simply had nothing to carry -- the very false positive this change removes.
+func TestQuietRecoveryPassClearsTheTrafficSignal(t *testing.T) {
+	const latest = int64(100)
+	deps := statusOnlyCosmosDeps(t, latest)
+
+	var s Subscriber
+	health := &cosmosLiveHealth{}
+	// The previous pass found traffic, and the live path has been silent well past
+	// the threshold: exactly the state that used to force a reconnect.
+	health.recordRecoveryPass(0, 5)
+	health.lastSeen = time.Now().Add(-10 * cosmosLivePathStaleAfter)
+
+	// Above the highest indexable height, so cosmosScanRange finds nothing.
+	cursor := uint64(latest)
+	var quietScans uint64
+
+	stale, err := s.recoverCosmosGapToLatest(context.Background(), deps, services.NewBatchBuilder(),
+		&cursor, map[cosmosEventKey]struct{}{}, &quietScans, health, &blockRate{})
+	if err != nil {
+		t.Fatalf("recovery pass: %v", err)
+	}
+
+	if stale {
+		t.Fatal("a pass with nothing new to scan judged a healthy subscription dead on the previous pass's evidence")
+	}
+	if health.hadTrafficToDeliver() {
+		t.Fatal("the traffic signal stayed latched; the next pass would tear the subscription down for the same reason")
 	}
 }
