@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -104,6 +105,9 @@ type Module struct {
 	// logs report an age and not just a count. Purely observational — it never
 	// gates a relay decision.
 	waits *waitTracker
+	// beats records when each background loop last completed a pass, so a quiet
+	// direction can be told from a wedged one without a goroutine dump.
+	beats *heartbeats
 
 	// lastHeight is the highest source height whose ClientUpdate we have
 	// submitted. It enforces the append-only / monotonic invariant across the
@@ -169,6 +173,7 @@ func NewModule(name, clientID string, src chain.Source, dst chain.Destination, b
 	m := &Module{
 		name: name, clientID: clientID, src: src, dst: dst, builder: builder,
 		waits: newWaitTracker(),
+		beats: newHeartbeats(),
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -184,15 +189,15 @@ func (m *Module) Run(ctx context.Context) error {
 	workers := workergroup.New()
 	subscribeErr := make(chan error, 1)
 
-	workers.Go("subscriber", func() {
+	workers.Go(workerSubscriber, func() {
 		subscribeErr <- m.src.Subscribe(runCtx, m.handleBatch)
 	})
-	workers.Go("refresh", func() { m.refreshLoop(runCtx) })
+	workers.Go(workerRefresh, func() { m.refreshLoop(runCtx) })
 	if m.scan != nil {
-		workers.Go("timeout-scan", func() { m.scanLoop(runCtx) })
+		workers.Go(workerTimeoutScan, func() { m.scanLoop(runCtx) })
 	}
 	if m.periodicUpdate != nil {
-		workers.Go("periodic-update", func() { m.periodicUpdateLoop(runCtx) })
+		workers.Go(workerPeriodicUpdate, func() { m.periodicUpdateLoop(runCtx) })
 	}
 	if m.overdueAcks != nil {
 		workers.Go("ack-watch", func() { m.ackWatchLoop(runCtx) })
@@ -260,6 +265,9 @@ func (m *Module) scanLoop(ctx context.Context) {
 				return
 			}
 			m.scan(ctx)
+			// After the sweep, not before: the beat means "a pass finished", and a
+			// sweep that hangs must not look like one that ran.
+			m.beats.record(workerTimeoutScan, "")
 		}
 	}
 }
@@ -299,9 +307,17 @@ func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	candidates, err := lister.UnrelayedPackets(ctx)
 	if err != nil {
 		log.Printf("[%s Relay] packet flush: %v", m.name, err)
+		// A failed pass beats too, which is heartbeats.record's stated contract.
+		// Reported by @DongLieu: this loop recorded nothing at all, so `relayer
+		// status` omitted it entirely -- and it is the ENUMERATION backstop, the
+		// one that finds packets a lost cursor or an outage hid from the block
+		// scan. An operator asking "is anything still looking for my old packet"
+		// got no answer at all, which reads as a loop that never started.
+		m.beats.record(workerPacketFlush, "enumeration failed: "+err.Error())
 		return
 	}
 	if len(candidates) == 0 {
+		m.beats.record(workerPacketFlush, "nothing outstanding")
 		return
 	}
 	// Filter once outside the lock. This is the bulk of the work after downtime
@@ -309,6 +325,7 @@ func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	// across all of it would stall the live relay path for the whole pass.
 	unsettled := m.dropSettled(ctx, candidates)
 	if len(unsettled) == 0 {
+		m.beats.record(workerPacketFlush, strconv.Itoa(len(candidates))+" outstanding, all already settled")
 		return
 	}
 
@@ -321,6 +338,7 @@ func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	// that can poison a batch carrying other packets with it.
 	unsettled = m.dropSettled(ctx, unsettled)
 	if len(unsettled) == 0 {
+		m.beats.record(workerPacketFlush, strconv.Itoa(len(candidates))+" outstanding, settled while this pass ran")
 		return
 	}
 	// Worth a line every time. A flush that finds work means the block scan
@@ -328,6 +346,7 @@ func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	// though the packet is now being relayed.
 	log.Printf("[%s Relay] packet flush found %d packet(s) the scan did not: %s",
 		m.name, len(unsettled), describeEvents(unsettled))
+	m.beats.record(workerPacketFlush, "relaying "+strconv.Itoa(len(unsettled))+" the scan did not find")
 	m.handleBatchLocked(ctx, unsettled)
 }
 
@@ -424,6 +443,7 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 			} else {
 				backoff = 0 // success resets the backoff
 			}
+			m.beats.record(workerPeriodicUpdate, "next in "+next.String())
 			timer.Reset(next)
 		}
 	}
@@ -683,22 +703,40 @@ func (m *Module) refreshLoop(ctx context.Context) {
 			if ctx.Err() != nil { // select may pick the tick even when ctx is done
 				return
 			}
+			// Every ending of this pass beats, including the failures, and the
+			// NOTE carries what happened. Reported by @DongLieu: the beat used to
+			// sit after the expiry query succeeded, on the argument that "the loop
+			// is scheduled" and "the loop can reach the chain" are different
+			// claims. They are -- but this measures the first, heartbeat.record
+			// says so outright ("a pass that FAILED still counts"), and the second
+			// is what the note is for. Against an unreachable RPC every tick took
+			// the error path, so no beat was ever recorded and `relayer status`
+			// showed the anti-expiry loop as never started: wedged and merely
+			// failing look the same again, which is the confusion this type
+			// exists to remove -- on the one loop whose liveness matters most
+			// exactly when an endpoint is down.
 			expiresAt, trustingPeriod, err := m.dst.ClientExpiresAt(ctx, m.clientID)
 			if err != nil {
 				log.Printf("[%s UpdateClient] query client expiry: %v", m.name, err)
+				m.beats.record(workerRefresh, "query client expiry failed: "+err.Error())
 				continue
 			}
 			if !needsRefresh(expiresAt, time.Now(), trustingPeriod) {
+				m.beats.record(workerRefresh, "client expires in "+time.Until(expiresAt).Round(time.Second).String())
 				continue
 			}
 			latest, err := m.src.LatestHeight(ctx)
 			if err != nil {
 				log.Printf("[%s UpdateClient] latest source height for refresh: %v", m.name, err)
+				m.beats.record(workerRefresh, "refresh due, source height unavailable: "+err.Error())
 				continue
 			}
 			if err := m.updateClientTo(ctx, latest); err != nil {
 				log.Printf("[%s UpdateClient] refresh update to %d: %v", m.name, latest, err)
+				m.beats.record(workerRefresh, "refresh to "+strconv.FormatUint(latest, 10)+" failed: "+err.Error())
+				continue
 			}
+			m.beats.record(workerRefresh, "refreshed to "+strconv.FormatUint(latest, 10))
 		}
 	}
 }

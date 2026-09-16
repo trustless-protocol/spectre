@@ -722,9 +722,25 @@ func (t *PendingPacketTracker) OldestDeadLetteredTimeout(now time.Time) time.Dur
 	return now.Sub(t.deadLettered[0].DeadLetteredAt)
 }
 
+// DeadLetterEntry is one packet that stopped being retried, with what an
+// operator needs to decide about it: which packet, how long it has been
+// stranded, and how many attempts were spent before giving up.
+//
+// The packet alone was not enough. "Three packets are dead-lettered" and "three
+// packets have been dead-lettered since Tuesday" call for different actions, and
+// the attempt count is the difference between a deterministic failure and a
+// ladder that merely ran out during an outage.
+type DeadLetterEntry struct {
+	Packet         channeltypesv2.Packet `json:"-"`
+	SourceClient   string                `json:"source_client"`
+	Sequence       uint64                `json:"sequence"`
+	DeadLetteredAt time.Time             `json:"dead_lettered_at"`
+	Attempts       int                   `json:"attempts"`
+}
+
 // DeadLetteredTimeoutPackets returns the dead-lettered packets without removing
-// them, so an operator can see WHICH packets need intervention rather than only
-// how many.
+// them, so a status endpoint can list WHICH packets need intervention rather
+// than only how many.
 //
 // The count and the age (DeadLetteredTimeouts, OldestDeadLetteredTimeout) answer
 // "is something stuck" and "for how long". Neither answers "which", and the
@@ -736,14 +752,59 @@ func (t *PendingPacketTracker) OldestDeadLetteredTimeout(now time.Time) time.Dur
 //
 // Returned by value: the caller gets a copy it cannot use to mutate tracker
 // state, and reading is not allowed to clear the alarm.
-func (t *PendingPacketTracker) DeadLetteredTimeoutPackets() []channeltypesv2.Packet {
+func (t *PendingPacketTracker) DeadLetteredTimeoutPackets() []DeadLetterEntry {
 	t.mtx.Lock()
 	defer t.mtx.Unlock()
-	out := make([]channeltypesv2.Packet, 0, len(t.deadLettered))
+	out := make([]DeadLetterEntry, 0, len(t.deadLettered))
 	for _, info := range t.deadLettered {
-		out = append(out, info.Packet)
+		out = append(out, DeadLetterEntry{
+			Packet:         info.Packet,
+			SourceClient:   info.Packet.SourceClient,
+			Sequence:       info.Packet.Sequence,
+			DeadLetteredAt: info.DeadLetteredAt,
+			Attempts:       info.TimeoutAttempts,
+		})
 	}
 	return out
+}
+
+// ReactivateDeadLetteredTimeout returns one dead-lettered packet to the timeout
+// scan set. It is the ONLY way out of that set, deliberately: the dead-letter
+// log tells an operator to intervene, and until now the only mechanism for
+// intervening was unreachable Go.
+//
+// The retry budget is reset rather than resumed. A packet reaches the
+// dead-letter set by exhausting the ladder, so returning it with the ladder
+// still exhausted would spend one scan re-discovering that. Reactivating means a
+// person decided the cause is gone -- a client repaired, an endpoint replaced --
+// and the packet deserves the same budget a fresh one gets.
+//
+// It refuses an unknown packet rather than succeeding quietly: an operator who
+// mistyped a sequence must learn that here, not by watching nothing happen.
+func (t *PendingPacketTracker) ReactivateDeadLetteredTimeout(sourceClient string, sequence uint64) error {
+	t.mtx.Lock()
+	defer t.mtx.Unlock()
+
+	key := packetKey{sourceClient: sourceClient, sequence: sequence}
+	info, dead := t.deadLetteredByKey[key]
+	if !dead {
+		return fmt.Errorf("no dead-lettered packet for client %s sequence %d", sourceClient, sequence)
+	}
+	if _, active := t.packets[key]; active {
+		// Both sets holding one key is the invalid state the snapshot decoder
+		// already refuses to load. Reactivating into it would make the duplicate
+		// permanent instead of visible.
+		return fmt.Errorf("packet %s/%d is both active and dead-lettered; refusing to reactivate into an inconsistent tracker",
+			sourceClient, sequence)
+	}
+
+	return t.commitLocked(func() {
+		t.removeDeadLettered(key)
+		info.TimeoutAttempts = 0
+		info.NotBefore = time.Time{}      // due on the next scan
+		info.DeadLetteredAt = time.Time{} // no longer given up on
+		t.packets[key] = info
+	})
 }
 
 func (t *PendingPacketTracker) Len() int {

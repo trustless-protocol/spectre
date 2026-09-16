@@ -1,4 +1,6 @@
 {
+  "status_address": "",
+  "status_allow_control": false,
   "modules": [
     {
       "name": "cosmos-to-eth",

@@ -242,3 +242,88 @@ func TestPendingTracker_PurgeStaleWithoutTimeout(t *testing.T) {
 		t.Fatalf("expected packet with timeout to remain, got seq=%d", all[0].Packet.Sequence)
 	}
 }
+
+// A dead-lettered packet has funds escrowed and a log line asking an operator to
+// intervene. Until this existed, the only mechanism for intervening was
+// unreachable Go: the set could be listed and never left.
+func TestReactivateDeadLetteredTimeout(t *testing.T) {
+	deadLetter := func(t *testing.T) (*PendingPacketTracker, channeltypesv2.Packet) {
+		t.Helper()
+		tracker := NewPendingPacketTracker()
+		pkt := channeltypesv2.Packet{SourceClient: "src-0", Sequence: 7, TimeoutTimestamp: 1}
+		if !tracker.Add(pkt, 100) {
+			t.Fatal("Add rejected the packet")
+		}
+		for i := 0; i <= maxTimeoutAttempts; i++ {
+			tracker.recordTimeoutFailureForTest(pkt.SourceClient, pkt.Sequence, time.Now())
+		}
+		if tracker.DeadLetteredTimeouts() != 1 {
+			t.Fatalf("dead-lettered %d, want the packet to have given up first", tracker.DeadLetteredTimeouts())
+		}
+		return tracker, pkt
+	}
+
+	t.Run("returns the packet to the scan set", func(t *testing.T) {
+		tracker, pkt := deadLetter(t)
+
+		if err := tracker.ReactivateDeadLetteredTimeout(pkt.SourceClient, pkt.Sequence); err != nil {
+			t.Fatalf("reactivate: %v", err)
+		}
+		if got := tracker.DeadLetteredTimeouts(); got != 0 {
+			t.Fatalf("still %d dead-lettered; the tombstone would keep denying it a retry budget", got)
+		}
+		info, ok := tracker.currentPacketForTest(pkt.SourceClient, pkt.Sequence)
+		if !ok {
+			t.Fatal("the packet left the dead-letter set without joining the active one; it is now in neither")
+		}
+
+		// Resumed rather than reset, the ladder is still exhausted and the very
+		// next scan spends an attempt re-discovering that.
+		if info.TimeoutAttempts != 0 {
+			t.Errorf("attempts = %d, want a fresh budget: reactivating means a person decided the cause is gone",
+				info.TimeoutAttempts)
+		}
+		if !info.NotBefore.IsZero() {
+			t.Errorf("NotBefore = %s, want it due on the next scan", info.NotBefore)
+		}
+		if !info.DeadLetteredAt.IsZero() {
+			t.Errorf("DeadLetteredAt = %s, want it cleared: the packet has not given up any more", info.DeadLetteredAt)
+		}
+	})
+
+	t.Run("is due on the very next scan", func(t *testing.T) {
+		tracker, pkt := deadLetter(t)
+		if err := tracker.ReactivateDeadLetteredTimeout(pkt.SourceClient, pkt.Sequence); err != nil {
+			t.Fatalf("reactivate: %v", err)
+		}
+		if due := tracker.GetDue(time.Now()); len(due) != 1 || due[0].Packet.Sequence != pkt.Sequence {
+			t.Fatalf("due = %+v, want the reactivated packet: anything else and the operator's action did nothing", due)
+		}
+	})
+
+	// An operator who mistyped a sequence must learn it here, not by watching
+	// nothing happen for the next half hour.
+	t.Run("refuses a packet it does not hold", func(t *testing.T) {
+		tracker, pkt := deadLetter(t)
+
+		if err := tracker.ReactivateDeadLetteredTimeout("src-0", 999); err == nil {
+			t.Error("reactivating an unknown sequence reported success")
+		}
+		if err := tracker.ReactivateDeadLetteredTimeout("src-other", pkt.Sequence); err == nil {
+			t.Error("reactivating another client's sequence reported success")
+		}
+		if tracker.DeadLetteredTimeouts() != 1 {
+			t.Fatal("a refused reactivation changed the dead-letter set")
+		}
+	})
+
+	t.Run("refuses a packet that is merely pending", func(t *testing.T) {
+		tracker := NewPendingPacketTracker()
+		pkt := channeltypesv2.Packet{SourceClient: "src-0", Sequence: 3, TimeoutTimestamp: 1}
+		tracker.Add(pkt, 100)
+
+		if err := tracker.ReactivateDeadLetteredTimeout(pkt.SourceClient, pkt.Sequence); err == nil {
+			t.Error("reactivated a packet that had not given up; the command would read as a no-op that worked")
+		}
+	})
+}

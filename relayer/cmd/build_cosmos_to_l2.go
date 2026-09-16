@@ -20,6 +20,7 @@ import (
 	"relayer/prover"
 	"relayer/relay"
 	"relayer/services"
+	"relayer/status"
 )
 
 // Cosmos→L2 reuses the Cosmos→ETH machinery verbatim: an L2 rollup that hosts a
@@ -153,7 +154,7 @@ func buildCosmosToL2Dest(
 // never sees the returning acknowledgement, so every entry stays owed forever --
 // durable, unsettleable, and eventually reported as overdue for packets another
 // relayer may well have acknowledged.
-func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps services.RelayDeps, watchAcks bool) error {
+func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps services.RelayDeps, reg *status.Registry, watchAcks bool) error {
 	worker := svc.Worker()
 	bb := svc.BatchBuilder
 	cfg := svc.CosmosConfig()
@@ -222,6 +223,10 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	reg.AddPath(module.Status)
+	reg.AddQueues(engineCosmosL2, svc.QueueStatus)
+	reg.AddReactivator(engineCosmosL2, svc.ReactivateDeadLetter)
+
 	go svc.RunQueueReporter(runCtx)
 	if err := module.Run(runCtx); err != nil && !errors.Is(err, context.Canceled) {
 		return err

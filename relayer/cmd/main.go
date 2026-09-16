@@ -263,6 +263,7 @@ func main() {
 		UpdateClient(zLogger),
 		SubmitMisbehaviour(zLogger),
 		Genesis(zLogger),
+		Status(zLogger),
 	)
 
 	if err := rootCmd.Execute(); err != nil {

@@ -839,6 +839,9 @@ func TestLogLabelsStayOnTheAgreedList(t *testing.T) {
 		// command that serves both directions, so a direction in the label would be
 		// a lie.
 		"bench": true, "prover": true, "BatchBuilder": true, "QueueState": true, "start": true,
+		// The status endpoint serves the whole process, so a direction would be a
+		// lie -- the same reason start and create-clients sit here.
+		"status":         true,
 		"create-clients": true,
 
 		// Deleted by #417 along with the unbound-header fallback it belongs to;

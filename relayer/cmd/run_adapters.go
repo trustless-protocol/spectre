@@ -10,6 +10,7 @@ import (
 	"relayer/chain/evm"
 	"relayer/relay"
 	"relayer/services"
+	"relayer/status"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
@@ -31,13 +32,22 @@ import (
 //     tracker (avoiding a redundant double-add); ScanEthTimeouts drains that
 //     tracker.
 //
+// Engine names. One services instance per engine, and the name is what a
+// reactivation addresses -- so they are declared together rather than written as
+// literals at the two registration sites, where they could drift apart from each
+// other and from what the CLI is told to accept.
+const (
+	engineCosmosEth = "cosmos<->eth"
+	engineCosmosL2  = "cosmos->l2"
+)
+
 // The first module to exit cancels the other, and BOTH results are joined into
 // the return value. Returning only the first is what hid the failure this engine
 // now surfaces: on SIGTERM the unaffected direction usually returns nil first,
 // and returning that discarded the other direction's drain failure. Each module
 // normalizes cancellation of the run context to nil while preserving real RPC
 // deadlines and drain failures, so a clean stop joins two nils and stays nil.
-func runAdapterEngine(ctx context.Context, svc *services.Services, deps services.RelayDeps) error {
+func runAdapterEngine(ctx context.Context, svc *services.Services, deps services.RelayDeps, reg *status.Registry) error {
 	worker := svc.Worker()
 	bb := svc.BatchBuilder
 	cfg := svc.CosmosConfig()
@@ -147,6 +157,18 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		// recording and settlement still happen on this side.
 		relay.WithAckWatch(0, 0, ackDue, ackSettled, nil),
 	)
+
+	// Both modules, one services instance: the queues are shared, so registering
+	// them per module would report the same set twice.
+	//
+	// engineCosmosEth names the pair, not either direction, because that shared
+	// instance is what a reactivation has to address. The name is stamped onto
+	// every queue this engine reports, so the string an operator reads in
+	// `relayer status` is the string `status reactivate --path` accepts.
+	reg.AddPath(cosmosToEth.Status)
+	reg.AddPath(ethToCosmos.Status)
+	reg.AddQueues(engineCosmosEth, svc.QueueStatus)
+	reg.AddReactivator(engineCosmosEth, svc.ReactivateDeadLetter)
 
 	// Child context so the first fatal error stops both modules.
 	runCtx, cancel := context.WithCancel(ctx)

@@ -18,6 +18,7 @@ import (
 	relayerclient "relayer/client"
 	"relayer/relay"
 	"relayer/services"
+	"relayer/status"
 )
 
 // l2ToCosmosConfig is one L2->Cosmos source's `config` block. It is self-contained:
@@ -376,6 +377,7 @@ func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.Untra
 
 // runL2Engine drives one L2->Cosmos module until ctx is cancelled. A cancelled
 // context is a clean shutdown, not a relay failure.
-func runL2Engine(ctx context.Context, module *relay.Module) error {
+func runL2Engine(ctx context.Context, module *relay.Module, reg *status.Registry) error {
+	reg.AddPath(module.Status)
 	return module.Run(ctx)
 }

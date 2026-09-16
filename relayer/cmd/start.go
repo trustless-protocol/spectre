@@ -15,9 +15,12 @@ import (
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 
+	"time"
+
 	"relayer/prover"
 	"relayer/relay"
 	"relayer/services"
+	"relayer/status"
 	"relayer/transaction"
 	utils "relayer/utils"
 )
@@ -25,6 +28,12 @@ import (
 // Start starts the relay service loop.
 // It loads config from a JSON file, connects to Cosmos and Ethereum,
 // and subscribes to send_packet events to relay packets.
+// statusBindGrace is how long start waits to see whether the status endpoint
+// bound before carrying on. Listening either works immediately or fails
+// immediately, so this is long enough to catch "port already in use" and short
+// enough that it never delays a healthy start noticeably.
+const statusBindGrace = 200 * time.Millisecond
+
 func Start(logger *zap.Logger) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -248,6 +257,33 @@ func Start(logger *zap.Logger) *cobra.Command {
 			stopAndCleanup := func() error {
 				return stopRelaysAndCleanup(cancelRelays, wg.Wait, cleanups, workersStuck.Load)
 			}
+
+			// One endpoint answers for the whole process, so the engines below
+			// register with it as they start. It binds nothing unless the config
+			// asked for an address, and a failure to bind stops the relayer rather
+			// than leaving an operator to discover during an incident that the thing
+			// they were told to query was never listening.
+			statusReg := &status.Registry{}
+			statusErrCh := make(chan error, 1)
+			if cfg.StatusAddress != "" {
+				var controls *status.Controls
+				if cfg.StatusAllowControl {
+					controls = &status.Controls{Reactivate: statusReg.Reactivate}
+				}
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					if err := status.Serve(relayCtx, cfg.StatusAddress, statusReg.Snapshot, controls); err != nil {
+						statusErrCh <- err
+					}
+				}()
+				select {
+				case err := <-statusErrCh:
+					stopAndCleanup()
+					return err
+				case <-time.After(statusBindGrace):
+				}
+			}
 			for i := range sources {
 				// The EFFECTIVE id, the one the builder below will relay with. Naming
 				// the directory from the raw config id let the lock and the cursors
@@ -292,7 +328,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 					defer wg.Done()
 					// Chain-adapter RelayModule engine — the sole relay engine since
 					// the legacy services.StartLoop was removed after the cutover.
-					err := runAdapterEngine(relayCtx, svc, deps)
+					err := runAdapterEngine(relayCtx, svc, deps, statusReg)
 					releaseOrHold(logger, cleanup, &workersStuck, err, "cosmos_to_eth", deps.IDs.CosmosOnEVM)
 					if err != nil {
 						loopErrCh <- fmt.Errorf("cosmos_to_eth source %q: %w", deps.IDs.CosmosOnEVM, err)
@@ -408,7 +444,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 				wg.Add(1)
 				go func(svc *services.Services, deps services.RelayDeps, cleanup func(), watchAcks bool) {
 					defer wg.Done()
-					err := runCosmosToL2Engine(relayCtx, svc, deps, watchAcks)
+					err := runCosmosToL2Engine(relayCtx, svc, deps, statusReg, watchAcks)
 					releaseOrHold(logger, cleanup, &workersStuck, err, "cosmos_to_l2", deps.IDs.CosmosOnEVM)
 					if err != nil {
 						loopErrCh <- fmt.Errorf("cosmos_to_l2 dest %q: %w", deps.IDs.CosmosOnEVM, err)
@@ -419,7 +455,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 				wg.Add(1)
 				go func(module *relay.Module, cleanup func(), srcChain string) {
 					defer wg.Done()
-					err := runL2Engine(relayCtx, module)
+					err := runL2Engine(relayCtx, module, statusReg)
 					releaseOrHold(logger, cleanup, &workersStuck, err, "l2_to_cosmos", srcChain)
 					if err != nil {
 						loopErrCh <- fmt.Errorf("l2_to_cosmos source %q: %w", srcChain, err)

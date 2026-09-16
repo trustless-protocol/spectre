@@ -169,16 +169,28 @@ type batchConfig struct {
 	BatchPeriodSeconds uint64 `json:"batch_period_seconds"`
 }
 
-// jsonConfig deliberately has no `server` member. One existed — log_level, address,
-// port — and nothing ever read it: the relayer opens no listener at all, so there
-// was no HTTP endpoint, no configurable bind address, and no way for log_level to
-// affect anything. Configs that still carry the block keep loading, because
-// encoding/json ignores unknown members and nothing here sets
-// DisallowUnknownFields (pinned by TestLoadConfig_IgnoresLegacyServerBlock).
+// jsonConfig still has no `server` member. One existed — log_level, address,
+// port — and nothing ever read any of it: the relayer opened no listener, so
+// there was no HTTP endpoint and no way for log_level to affect anything. Configs
+// that still carry the block keep loading, because encoding/json ignores unknown
+// members and nothing here sets DisallowUnknownFields (pinned by
+// TestLoadConfig_IgnoresLegacyServerBlock).
+//
+// status_address is the one member that now HAS a reader, and it is flat rather
+// than a block for exactly that reason: a block invites unread neighbours, which
+// is how the last one came to describe a server that did not exist.
 type jsonConfig struct {
 	Batch                 batchConfig      `json:"batch"`
 	DeprecatedBatchConfig *json.RawMessage `json:"batch_config"`
 	Modules               []configModule   `json:"modules"`
+	// StatusAddress is where `relayer start` serves its read-only status
+	// snapshot. Empty (the default) means it binds nothing.
+	StatusAddress string `json:"status_address"`
+	// StatusAllowControl adds the one write route to that endpoint, which
+	// returns a dead-lettered packet to the timeout scan set. Off by default and
+	// separate from the address on purpose: turning on a way to READ what is stuck
+	// must not also turn on a way to change it.
+	StatusAllowControl bool `json:"status_allow_control"`
 }
 
 type appConfig struct {
@@ -210,6 +222,12 @@ type appConfig struct {
 	// in file order; `start` runs one independent relay module per entry.
 	L2ToCosmosConfigs []l2ToCosmosConfig
 	BatchConfig       services.BatchConfig
+	// StatusAddress is the bind address for the read-only status endpoint, empty
+	// when it is off. Off is the default: adding a status feature must not make a
+	// relayer that was never asked to bind a port start listening.
+	StatusAddress string
+	// StatusAllowControl enables the endpoint's single write route.
+	StatusAllowControl bool
 }
 
 // writeConfigMember rewrites configPath in place, setting
@@ -819,6 +837,8 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 		EthToCosmosConfig:  e2c,
 		L2ToCosmosConfigs:  l2List,
 		BatchConfig:        batch,
+		StatusAddress:      jc.StatusAddress,
+		StatusAllowControl: jc.StatusAllowControl,
 	}, nil
 }
 
