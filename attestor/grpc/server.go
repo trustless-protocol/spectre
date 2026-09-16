@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 
 	"attestor/core"
 	attestorpb "attestor/types/attestor"
@@ -18,23 +19,16 @@ import (
 
 const signatureLength = 64
 
-// Options controls documented compatibility behavior at the transport
-// boundary. New callers should always provide src_chain.
-type Options struct {
-	AllowLegacyEmptySrcChain bool
-}
-
 // Server implements AttestorService using immutable core port routes.
 type Server struct {
 	attestorpb.UnimplementedAttestorServiceServer
 	routes       map[string]core.Ports
 	sourceChains []string
-	options      Options
 }
 
 // New validates and copies the composition root's routing table. Subsequent
 // mutation by the caller cannot make a request route to a different plugin.
-func New(routes map[string]core.Ports, options Options) (*Server, error) {
+func New(routes map[string]core.Ports) (*Server, error) {
 	if len(routes) == 0 {
 		return nil, fmt.Errorf("attestor routing table must not be empty")
 	}
@@ -51,7 +45,7 @@ func New(routes map[string]core.Ports, options Options) (*Server, error) {
 		names = append(names, srcChain)
 	}
 	sort.Strings(names)
-	return &Server{routes: copied, sourceChains: names, options: options}, nil
+	return &Server{routes: copied, sourceChains: names}, nil
 }
 
 // Register attaches this adapter to a gRPC server.
@@ -219,25 +213,14 @@ func (s *Server) VerifyStateRoot(ctx context.Context, request *attestorpb.Verify
 }
 
 func (s *Server) route(requested string) (string, core.Ports, error) {
-	if requested != "" {
-		ports, found := s.routes[requested]
-		if !found {
-			return "", core.Ports{}, status.Errorf(codes.NotFound, "source chain %q is not configured", requested)
-		}
-		return requested, ports, nil
-	}
-	if !s.options.AllowLegacyEmptySrcChain {
+	if strings.TrimSpace(requested) == "" {
 		return "", core.Ports{}, status.Error(codes.InvalidArgument, "src_chain must not be empty")
 	}
-	switch len(s.sourceChains) {
-	case 0:
-		return "", core.Ports{}, status.Error(codes.NotFound, "no chains are configured")
-	case 1:
-		name := s.sourceChains[0]
-		return name, s.routes[name], nil
-	default:
-		return "", core.Ports{}, status.Errorf(codes.InvalidArgument, "src_chain is required: this attestor serves %d chains (%s)", len(s.sourceChains), joinSourceChains(s.sourceChains))
+	ports, found := s.routes[requested]
+	if !found {
+		return "", core.Ports{}, status.Errorf(codes.NotFound, "source chain %q is not configured", requested)
 	}
+	return requested, ports, nil
 }
 
 func requestFromProto(request *attestorpb.VerifyStateRootRequest) (core.BlockIdentityRequest, error) {
@@ -314,15 +297,4 @@ func mapError(err error) error {
 	default:
 		return status.Error(codes.Internal, err.Error())
 	}
-}
-
-func joinSourceChains(sourceChains []string) string {
-	if len(sourceChains) == 0 {
-		return ""
-	}
-	joined := sourceChains[0]
-	for _, sourceChain := range sourceChains[1:] {
-		joined += ", " + sourceChain
-	}
-	return joined
 }

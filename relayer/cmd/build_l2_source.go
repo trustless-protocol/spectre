@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 
 	"attestor/types/attestation"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
@@ -107,7 +108,7 @@ func (c l2ToCosmosConfig) validateWith(requireWasmClientID bool) error {
 		required["l2_wasm_client_id"] = c.L2WasmClientID
 	}
 	for name, v := range required {
-		if v == "" {
+		if strings.TrimSpace(v) == "" {
 			return fmt.Errorf("l2_to_cosmos config: %s is required", name)
 		}
 	}
@@ -206,9 +207,9 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	if err != nil {
 		return nil, nil, fmt.Errorf("l2_to_cosmos config: %w", err)
 	}
-	includeProvisional := headKind != l2rollup.Finalized
-	if cfg.IncludeProvisional != nil {
-		includeProvisional = *cfg.IncludeProvisional
+	includeProvisional, warning := resolveIncludeProvisional(headKind, cfg.IncludeProvisional)
+	if warning != "" {
+		logger.Sugar().Warn(warning)
 	}
 
 	// Read before dialling anything. A corrupt cursor file is fatal (B6/G4), and
@@ -340,6 +341,20 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		}
 	}
 	return module, cleanup, nil
+}
+
+// resolveIncludeProvisional applies the documented default while retaining the
+// explicit override. A finalized replica head and the attestor's provisional
+// frontier are independent policies: an override changes the latter only.
+func resolveIncludeProvisional(headKind l2rollup.HeadKind, override *bool) (bool, string) {
+	includeProvisional := headKind != l2rollup.Finalized
+	if override != nil {
+		includeProvisional = *override
+	}
+	if headKind == l2rollup.Finalized && includeProvisional {
+		return true, "l2->cosmos finalized head_kind with include_provisional=true accepts provisional attestor roots for relayability; state-root verification remains finalized"
+	}
+	return includeProvisional, ""
 }
 
 // settleL2OwedAck closes an owed-acknowledgement record from a terminal L2

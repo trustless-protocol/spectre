@@ -40,6 +40,7 @@ func TestL2Config_Validate(t *testing.T) {
 
 	cases := map[string]func(*l2ToCosmosConfig){
 		"missing l2_rpc_url":        func(c *l2ToCosmosConfig) { c.L2RpcUrl = "" },
+		"blank attestor source":     func(c *l2ToCosmosConfig) { c.AttestorSrcChain = " \t" },
 		"missing attestor endpoint": func(c *l2ToCosmosConfig) { c.AttestorEndpoints = nil },
 		"missing wasm client id":    func(c *l2ToCosmosConfig) { c.L2WasmClientID = "" },
 		"empty profile":             func(c *l2ToCosmosConfig) { c.RollupProfile = nil },
@@ -74,6 +75,7 @@ func TestL2Config_ValidateForClientCreation(t *testing.T) {
 		"missing l2_ics26_client":   func(c *l2ToCosmosConfig) { c.L2ICS26ClientID = "" },
 		"missing tm_rpc_url":        func(c *l2ToCosmosConfig) { c.TmRpcUrl = "" },
 		"missing attestor_src":      func(c *l2ToCosmosConfig) { c.AttestorSrcChain = "" },
+		"blank attestor_src":        func(c *l2ToCosmosConfig) { c.AttestorSrcChain = " \t" },
 		"empty profile":             func(c *l2ToCosmosConfig) { c.RollupProfile = nil },
 		"bad head_kind":             func(c *l2ToCosmosConfig) { c.HeadKind = "nonsense" },
 	} {
@@ -161,6 +163,38 @@ func TestParseHeadKind(t *testing.T) {
 	}
 	if _, err := parseHeadKind("nonsense"); err == nil {
 		t.Fatal("expected error for invalid head_kind")
+	}
+}
+
+func TestResolveIncludeProvisional(t *testing.T) {
+	trueValue, falseValue := true, false
+	cases := []struct {
+		name        string
+		headKind    l2rollup.HeadKind
+		override    *bool
+		wantInclude bool
+		wantWarning string
+	}{
+		{name: "unsafe default", headKind: l2rollup.Unsafe, wantInclude: true},
+		{name: "safe default", headKind: l2rollup.Safe, wantInclude: true},
+		{name: "finalized default", headKind: l2rollup.Finalized, wantInclude: false},
+		{name: "finalized explicit false", headKind: l2rollup.Finalized, override: &falseValue, wantInclude: false},
+		{
+			name:        "finalized explicit true warns that the height gate accepts provisional roots",
+			headKind:    l2rollup.Finalized,
+			override:    &trueValue,
+			wantInclude: true,
+			wantWarning: "l2->cosmos finalized head_kind with include_provisional=true accepts provisional attestor roots for relayability; state-root verification remains finalized",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotInclude, gotWarning := resolveIncludeProvisional(tc.headKind, tc.override)
+			if gotInclude != tc.wantInclude || gotWarning != tc.wantWarning {
+				t.Fatalf("resolveIncludeProvisional() = (%v, %q), want (%v, %q)", gotInclude, gotWarning, tc.wantInclude, tc.wantWarning)
+			}
+		})
 	}
 }
 

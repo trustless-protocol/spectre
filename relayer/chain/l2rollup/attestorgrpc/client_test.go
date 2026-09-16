@@ -174,3 +174,26 @@ func TestAnUnmappedCodeStaysTransient(t *testing.T) {
 		}
 	}
 }
+
+func TestRequireSrcChain(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		value     string
+		want      bool
+		permanent bool
+	}{
+		{name: "configured", value: "op-mainnet"},
+		{name: "empty", want: true, permanent: true},
+		{name: "whitespace", value: " \t", want: true, permanent: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := requireSrcChain(tc.value)
+			if (err != nil) != tc.want {
+				t.Fatalf("requireSrcChain(%q) error = %v, want error=%t", tc.value, err, tc.want)
+			}
+			if errors.Is(err, l2rollup.ErrAttestorBadRequest) != tc.permanent {
+				t.Fatalf("requireSrcChain(%q) permanent = %t, want %t", tc.value, errors.Is(err, l2rollup.ErrAttestorBadRequest), tc.permanent)
+			}
+		})
+	}
+}

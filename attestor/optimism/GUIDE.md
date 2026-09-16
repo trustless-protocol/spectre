@@ -196,7 +196,8 @@ relationship it has with the prover.
 ```
 
 - `server.grpc_port` enables the API (plaintext gRPC — localhost or private
-  network only); HTTP metrics stays on `server.port`.
+  network only); HTTP metrics stays on `server.port`. Every production
+  request must name `src_chain`; the daemon never infers it from one feed.
 - Service definition: `proto/attestor/attestor.proto` (regenerate via
   `buf.gen.attestor.yaml`; generated code is never hand-edited). Methods:
   `Info`, `AttestedUpTo`, `AttestedRootAtOrBelow`, `WatchAttested` — see the

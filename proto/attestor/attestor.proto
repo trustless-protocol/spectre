@@ -10,11 +10,12 @@ service AttestorService {
   rpc Info(InfoRequest) returns (InfoResponse);
 
   // AttestedUpTo returns the highest independently verified L2 commitment for
-  // a source chain.
+  // the required source chain. Production callers must always set src_chain.
   rpc AttestedUpTo(AttestedUpToRequest) returns (AttestedUpToResponse);
 
   // AttestedRootAtOrBelow returns the highest independently verified L2
-  // commitment at or below the requested block number.
+  // commitment at or below the requested block number for the required source
+  // chain.
   rpc AttestedRootAtOrBelow(AttestedRootAtOrBelowRequest) returns (AttestedRootAtOrBelowResponse);
 
   // WatchAttested streams the current frontier, then a message whenever its
@@ -25,7 +26,8 @@ service AttestorService {
   rpc WatchAttested(WatchAttestedRequest) returns (stream WatchAttestedResponse);
 
   // VerifyStateRoot compares an expected root, and optionally a block hash,
-  // with the replica's canonical block at the requested L2 height.
+  // with the replica's canonical block at the requested L2 height. src_chain
+  // is required for production callers.
   rpc VerifyStateRoot(VerifyStateRootRequest) returns (VerifyStateRootResponse);
 }
 
@@ -66,7 +68,7 @@ message InfoRequest {}
 
 // ChainInfo reports one configured attestor.
 message ChainInfo {
-  // SrcChain is the configured source-chain identifier.
+  // SrcChain is the required configured source-chain routing identifier.
   string src_chain = 1;
 
   // AttestationHead is the configured gating head.
@@ -101,7 +103,7 @@ message InfoResponse {
 
 // AttestedUpToRequest selects one source-chain frontier.
 message AttestedUpToRequest {
-  // SrcChain is the configured source-chain identifier.
+  // SrcChain is the required configured source-chain routing identifier.
   string src_chain = 1;
 
   // IncludeProvisional allows locally verified commitments that still await
@@ -120,7 +122,7 @@ message AttestedUpToResponse {
 
 // AttestedRootAtOrBelowRequest selects an inclusive L2-height bound.
 message AttestedRootAtOrBelowRequest {
-  // SrcChain is the configured source-chain identifier.
+  // SrcChain is the required configured source-chain routing identifier.
   string src_chain = 1;
 
   // L2BlockNumber is the inclusive upper bound.
@@ -142,7 +144,7 @@ message AttestedRootAtOrBelowResponse {
 
 // WatchAttestedRequest selects a source-chain frontier stream.
 message WatchAttestedRequest {
-  // SrcChain is the configured source-chain identifier.
+  // SrcChain is the required configured source-chain routing identifier.
   string src_chain = 1;
 
   // IncludeProvisional allows provisional entries to advance the stream.
@@ -187,8 +189,8 @@ message VerifyStateRootRequest {
   // meant — and guessing answers valid=false for a perfectly good header,
   // which the caller reads as a divergence rather than a misroute.
   //
-  // Optional for compatibility: an empty value is accepted when the attestor
-  // serves exactly one chain, and rejected otherwise.
+  // Required for production callers. An empty value is rejected rather than
+  // inferred from a configured route.
   string src_chain = 5;
 
   // L2Router is the 20-byte ICS26Router address in the receiving wasm client

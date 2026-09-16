@@ -334,11 +334,10 @@ func run(logger *zap.Logger, cmd *cobra.Command) error {
 	}
 
 	attestorHost, err := host.New(host.Config{
-		Routes:                   routes,
-		Runners:                  runners,
-		Listener:                 grpcListener,
-		AllowLegacyEmptySrcChain: true,
-		EnableReflection:         true,
+		Routes:           routes,
+		Runners:          runners,
+		Listener:         grpcListener,
+		EnableReflection: true,
 	})
 	if err != nil {
 		return fmt.Errorf("initialize attestor host: %w", err)
