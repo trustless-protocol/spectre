@@ -38,6 +38,7 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
+			logConfigTarget(logger, "update-client", configPath, cfg)
 
 			ethClient, err := tendermintClient.DialEthRPC(context.Background(), cfg.CosmosToEthConfig.EthRpcUrl, tendermintClient.DefaultRPCTimeout)
 			if err != nil {

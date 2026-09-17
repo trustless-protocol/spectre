@@ -164,6 +164,9 @@ func SubmitMisbehaviour(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// After selectSource, matching create-clients: the line must name
+			// the source this run acts on, not the first one in the file.
+			logConfigTarget(logger, "submit-misbehaviour", configPath, cfg)
 			evidence, err := loadMisbehaviourEvidence(evidencePath)
 			if err != nil {
 				return err

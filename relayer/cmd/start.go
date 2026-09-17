@@ -108,6 +108,19 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// anyone having to remember to pass the right one.
 			logger := stampRelayPath(logger, relayPathID(cfg))
 
+			// After the stamp, not before: TestStartStampsTheRelayPathBeforeItCanFail
+			// holds that EVERY zap line start emits carries relay_path, and a line
+			// above the stamp would be the first exception. Putting this one line
+			// below costs nothing the two checks above do not already cover --
+			// validateSingleRelayPair names configPath in all three of its errors --
+			// and it still runs before anything that needs a network read, which is
+			// where a run against the wrong file starts reporting live state the
+			// operator cannot find in the file they were looking at.
+			//
+			// (validateRelayStartupConfig's error names the client id but not the
+			// file; that gap predates this and is not this change's to close.)
+			logConfigTarget(logger, "start", configPath, cfg)
+
 			// Third: everything that needs a read to prove wrong — the state
 			// directory, the Cosmos chain id, the deployed contracts and the client
 			// ids. Last of the three because the two above are answerable from the
