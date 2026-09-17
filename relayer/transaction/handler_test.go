@@ -395,6 +395,23 @@ type mockJSONRPC struct {
 	blockGas     uint64
 	blockGases   map[string]uint64
 	callSucceeds bool
+
+	// sentTxs are the decoded transactions passed to eth_sendRawTransaction, in
+	// order. A test that asserts what was broadcast -- not merely that something
+	// was -- needs the transaction itself, so the raw payload is decoded here
+	// rather than kept as hex.
+	sentTxs []*types.Transaction
+	// sendErrFor rejects individual transactions, which sendErr (all of them)
+	// cannot express: cancelling an abandoned transaction succeeds or fails on
+	// its own, while the payload before it was accepted.
+	sendErrFor func(*types.Transaction) error
+}
+
+// sentTransactions snapshots what the node was asked to broadcast.
+func (m *mockJSONRPC) sentTransactions() []*types.Transaction {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]*types.Transaction(nil), m.sentTxs...)
 }
 
 func newMockJSONRPC() *mockJSONRPC {
@@ -451,10 +468,23 @@ func (m *mockJSONRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		result = fmt.Sprintf("0x%x", nonce)
 	case "eth_sendRawTransaction":
-		if m.sendErr != nil {
+		sendErr := m.sendErr
+		if len(req.Params) > 0 {
+			var raw string
+			if err := json.Unmarshal(req.Params[0], &raw); err == nil {
+				decoded := new(types.Transaction)
+				if err := decoded.UnmarshalBinary(common.FromHex(raw)); err == nil {
+					m.sentTxs = append(m.sentTxs, decoded)
+					if sendErr == nil && m.sendErrFor != nil {
+						sendErr = m.sendErrFor(decoded)
+					}
+				}
+			}
+		}
+		if sendErr != nil {
 			rpcErr = &jsonrpcError{
 				Code:    -32000,
-				Message: m.sendErr.Error(),
+				Message: sendErr.Error(),
 			}
 		} else {
 			result = "0x0000000000000000000000000000000000000000000000000000000000000000"
@@ -1762,8 +1792,19 @@ func TestExecuteWithRetryAndResubmission_TransientWaitFailure(t *testing.T) {
 		t.Fatal("expected error, got nil")
 	}
 
-	if errors.Is(err, services.ErrPermanentRelayFailure) {
-		t.Errorf("expected transient error, but errors.Is(err, ErrPermanentRelayFailure) was true: %v", err)
+	// This used to assert the opposite -- that giving up on the wait leaves a
+	// RETRYABLE failure -- and that assertion is the bug @DongLieu reported on
+	// #485. The transaction the relayer stopped waiting for does not stop
+	// existing: the cancellation reaches one node's pool, which is acceptance and
+	// not inclusion, so the original may still mine. Retrying the payload at a
+	// fresh nonce while that is true runs the action twice.
+	//
+	// So the ending is unresolved, and unresolved is not retryable.
+	if !errors.Is(err, services.ErrUnresolvedEVMNonce) {
+		t.Errorf("error = %v, want it to carry ErrUnresolvedEVMNonce: the abandoned nonce is undecided", err)
+	}
+	if !errors.Is(err, services.ErrPermanentRelayFailure) {
+		t.Errorf("error = %v, want permanent: nothing derived from this attempt may be sent again", err)
 	}
 }
 func TestExecuteWithRetryAndResubmission_SuggestGasPriceErrorNonceInvalidation(t *testing.T) {

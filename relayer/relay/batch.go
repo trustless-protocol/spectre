@@ -9,11 +9,13 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"relayer/chain"
+	"relayer/services"
 )
 
 // handleBatch relays one batch of source packets. When the destination supports
@@ -345,6 +347,31 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		}
 		log.Printf("[%s Relay] relay %d packet(s) at height %d: %v", m.name, len(packets), proofHeight, err)
 		return append(requeue, relayedIdx...)
+	}
+	// An UNRESOLVED abandoned nonce is permanent, but it is not a revert, and the
+	// two endings below are both wrong for it.
+	//
+	// Reported by @DongLieu on #485. When the EVM sender gives up waiting, the
+	// transaction it abandoned may still execute -- a cancellation broadcast to
+	// one node is not inclusion, and the account's nonce may already have been
+	// consumed by the payload itself. Isolating here resubmits every packet
+	// individually against a freshly invalidated nonce cache, so they can take
+	// LOWER nonces and mine before the original: the double execution the give-up
+	// path exists to prevent, reached through the mechanism meant to prevent it.
+	// Dropping is no better -- the packet may be mid-flight, not dead.
+	//
+	// So neither. The packets keep their durable pending records, which is what
+	// settles them when the acknowledgement arrives or refunds them when they time
+	// out; this path stops touching them.
+	if errors.Is(err, services.ErrUnresolvedEVMNonce) {
+		log.Printf("[%s Relay][ATTENTION] %d packet(s) at height %d left in an unresolved state: %v; "+
+			"not retried and not dropped, because the abandoned transaction may still execute. "+
+			"They stay in the pending tracker and settle on their acknowledgement or time out.",
+			m.name, len(packets), proofHeight, err)
+		if foldPlan != nil {
+			foldPlan.release() // folding is L2-only, so this is nil here; keep the lock discipline anyway
+		}
+		return requeue
 	}
 	// A folded transaction carried the client update AND the packets, so a
 	// deterministic rejection of it does not say which of the two the chain

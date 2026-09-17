@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"strings"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"relayer/chain"
+	"relayer/services"
 )
 
 // --- mock adapters (the whole point: Module is testable without any chain) ---
@@ -2073,6 +2075,72 @@ func TestHandleBatch_PartialCommit(t *testing.T) {
 			t.Fatalf("untracked %d packet(s), want at most the 3 in the batch", len(untracked))
 		}
 	})
+}
+
+// An unresolved abandoned nonce must not be isolated, and must not be dropped.
+//
+// Reported by @DongLieu on #485. The EVM sender marks this failure permanent so
+// nothing resubmits the payload, but permanent already meant "deterministic
+// revert" here, and that ending ISOLATES a multi-packet batch: each packet goes
+// out on its own, against a nonce cache the give-up path just invalidated, so
+// they can take LOWER nonces and mine before the original. The classification
+// meant to prevent a double execution was the thing causing it.
+func TestHandleBatch_UnresolvedNonceIsNeitherIsolatedNorDropped(t *testing.T) {
+	batch := []chain.Event{
+		{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")},
+		{Type: chain.SendPacket, Height: 8, Raw: []byte("send-2")},
+		{Type: chain.SendPacket, Height: 9, Raw: []byte("send-3")},
+	}
+
+	// What the adapter actually hands up: chain.Permanent wrapping the sender's
+	// error (chain/evm/destination.go:172), so the sentinels stay reachable
+	// through it. A fixture that skipped the wrap would test a path production
+	// never takes.
+	unresolved := chain.Permanent(fmt.Errorf("gave up waiting: %w",
+		errors.Join(services.ErrUnresolvedEVMNonce, services.ErrPermanentRelayFailure)))
+
+	var untracked [][]byte
+	dst := &mockDest{relayErr: unresolved}
+	m := NewModule("test", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{},
+		WithPacketTracker(
+			func([]byte, uint64) bool { return true },
+			func(pkt []byte) { untracked = append(untracked, pkt) },
+		),
+	)
+
+	requeue := m.handleBatch(context.Background(), batch)
+
+	if dst.relayCalls != 1 {
+		t.Fatalf("RelayPackets called %d times, want 1: isolating resubmits every packet against a nonce "+
+			"whose outcome is unknown, which is the double execution this state exists to prevent", dst.relayCalls)
+	}
+	if len(requeue) != 0 {
+		t.Fatalf("requeue = %v, want none: a retry is a resubmission too", requeue)
+	}
+	if len(untracked) != 0 {
+		t.Fatalf("untracked %d packet(s); the durable pending record is what settles or refunds them, "+
+			"so dropping it strands the packet", len(untracked))
+	}
+}
+
+// The ordinary permanent ending must keep isolating. The guard above is narrow,
+// and a guard that swallowed every permanent failure would trade one bug for the
+// loss of valid siblings that isolation exists to save.
+func TestHandleBatch_AnOrdinaryPermanentFailureStillIsolates(t *testing.T) {
+	batch := []chain.Event{
+		{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")},
+		{Type: chain.SendPacket, Height: 8, Raw: []byte("send-2")},
+	}
+
+	dst := &mockDest{relayErr: chain.Permanent(fmt.Errorf("reverted: %w", services.ErrPermanentRelayFailure))}
+	m := NewModule("test", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{})
+
+	m.handleBatch(context.Background(), batch)
+
+	if dst.relayCalls < 2 {
+		t.Fatalf("RelayPackets called %d times, want the batch plus one per packet: a deterministic revert "+
+			"must still be isolated so the poison fails alone", dst.relayCalls)
+	}
 }
 
 func TestFlushOnce(t *testing.T) {

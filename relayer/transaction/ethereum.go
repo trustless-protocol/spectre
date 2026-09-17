@@ -1020,41 +1020,58 @@ func waitForReceipts(ctx context.Context, client *ethclient.Client, hashes []com
 	}
 }
 
-func (h *Handler) bumpGasAndResubmit(stdCtx context.Context, endpoint services.EVMEndpoint, tx *types.Transaction, auth *bind.TransactOpts, attempt int) (*types.Transaction, error) {
-	currentGasPrice := tx.GasPrice()
+// evmReplacementBumpPercent prices a transaction that must displace another at
+// the same nonce. A node accepts a replacement only when it raises the fee by a
+// margin: go-ethereum's default PriceBump is 10 (legacypool.go:166), and below
+// it the send is rejected with ErrReplaceUnderpriced. 115 leaves headroom for a
+// node configured stricter than the default without overpaying for the eviction.
+const evmReplacementBumpPercent = 115
+
+// replacementFees prices a transaction sent at a nonce that already carries tx.
+// Both the bump over tx and the current network suggestion are considered and
+// the higher wins: a bump alone can still sit under a risen base fee, and the
+// suggestion alone can sit under a transaction that was already bumped.
+//
+// tipCap and feeCap are nil unless tx is a dynamic-fee transaction, which is
+// also the only case that reads SuggestGasTipCap.
+func replacementFees(stdCtx context.Context, endpoint services.EVMEndpoint, tx *types.Transaction) (gasPrice, tipCap, feeCap *big.Int) {
+	bump := func(v *big.Int) *big.Int {
+		out := new(big.Int).Mul(v, big.NewInt(evmReplacementBumpPercent))
+		return out.Div(out, big.NewInt(100))
+	}
 
 	suggestedGasPrice, err := endpoint.EthClient().SuggestGasPrice(stdCtx)
 	if err != nil {
-		suggestedGasPrice = currentGasPrice
+		suggestedGasPrice = tx.GasPrice()
 	}
 
-	bumpedGasPrice := new(big.Int).Mul(currentGasPrice, big.NewInt(115))
-	bumpedGasPrice.Div(bumpedGasPrice, big.NewInt(100))
-
-	if suggestedGasPrice.Cmp(bumpedGasPrice) > 0 {
-		bumpedGasPrice = suggestedGasPrice
+	gasPrice = bump(tx.GasPrice())
+	if suggestedGasPrice.Cmp(gasPrice) > 0 {
+		gasPrice = suggestedGasPrice
 	}
+
+	if tx.Type() != types.DynamicFeeTxType {
+		return gasPrice, nil, nil
+	}
+
+	tipCap = bump(tx.GasTipCap())
+	feeCap = bump(tx.GasFeeCap())
+	if suggestedTipCap, err := endpoint.EthClient().SuggestGasTipCap(stdCtx); err == nil {
+		if suggestedTipCap.Cmp(tipCap) > 0 {
+			tipCap = suggestedTipCap
+		}
+	}
+	if suggestedGasPrice.Cmp(feeCap) > 0 {
+		feeCap = suggestedGasPrice
+	}
+	return gasPrice, tipCap, feeCap
+}
+
+func (h *Handler) bumpGasAndResubmit(stdCtx context.Context, endpoint services.EVMEndpoint, tx *types.Transaction, auth *bind.TransactOpts, attempt int) (*types.Transaction, error) {
+	bumpedGasPrice, bumpedTipCap, bumpedFeeCap := replacementFees(stdCtx, endpoint, tx)
 
 	var newTx *types.Transaction
 	if tx.Type() == types.DynamicFeeTxType {
-		tipCap := tx.GasTipCap()
-		feeCap := tx.GasFeeCap()
-
-		bumpedTipCap := new(big.Int).Mul(tipCap, big.NewInt(115))
-		bumpedTipCap.Div(bumpedTipCap, big.NewInt(100))
-
-		bumpedFeeCap := new(big.Int).Mul(feeCap, big.NewInt(115))
-		bumpedFeeCap.Div(bumpedFeeCap, big.NewInt(100))
-
-		if suggestedTipCap, err := endpoint.EthClient().SuggestGasTipCap(stdCtx); err == nil {
-			if suggestedTipCap.Cmp(bumpedTipCap) > 0 {
-				bumpedTipCap = suggestedTipCap
-			}
-		}
-		if suggestedGasPrice.Cmp(bumpedFeeCap) > 0 {
-			bumpedFeeCap = suggestedGasPrice
-		}
-
 		newTx = types.NewTx(&types.DynamicFeeTx{
 			ChainID:    tx.ChainId(),
 			Nonce:      tx.Nonce(),
@@ -1101,6 +1118,201 @@ func (h *Handler) bumpGasAndResubmit(stdCtx context.Context, endpoint services.E
 	}
 
 	return signedTx, nil
+}
+
+// evmCancelGasLimit is the intrinsic cost of a value transfer carrying no
+// calldata, which is all a cancellation is.
+const evmCancelGasLimit uint64 = 21_000
+
+// cancelAbandonedTx replaces an abandoned transaction with a zero-value
+// self-transfer at the same nonce, so whatever eventually executes at that
+// nonce is a no-op instead of the payload we stopped waiting for.
+//
+// Giving up on a transaction is not the same as it never happening: it stays
+// queued in the mempool, while the next attempt re-queries the nonce and takes a
+// LOWER one. Filling that gap makes the abandoned transaction executable again
+// and the action runs twice (#410). The replacement is what makes "we gave up"
+// true on the chain as well as in this process.
+//
+// This works at a nonce the account has not reached yet, which is the case the
+// pending-nonce probe gives up on: go-ethereum applies the same price-bump
+// replacement rule to the queued (non-executable) pool as to the pending one
+// (core/txpool/legacypool/queue.go:133), so the cancellation takes the payload's
+// place in the queue and is what executes when the gap closes.
+//
+// A nonce the chain has already consumed is not a hazard, and the node says so
+// by rejecting the replacement as too low: the payload either mined or was
+// itself replaced, and either way nothing further can execute there. Every other
+// send failure is reported, because the caller must not resubmit the payload
+// while the original can still execute.
+func (h *Handler) cancelAbandonedTx(
+	stdCtx context.Context,
+	endpoint services.EVMEndpoint,
+	privateKey *ecdsa.PrivateKey,
+	tx *types.Transaction,
+	from common.Address,
+	chainID *big.Int,
+) (cancelOutcome, error) {
+	gasPrice, tipCap, feeCap := replacementFees(stdCtx, endpoint, tx)
+
+	// Two shapes, not three: the cancellation carries no calldata, so an
+	// access-list original is replaced by a legacy transaction. Nodes compare
+	// replacements by effective fee, not by type.
+	var cancelTx *types.Transaction
+	if tx.Type() == types.DynamicFeeTxType {
+		cancelTx = types.NewTx(&types.DynamicFeeTx{
+			ChainID:   chainID,
+			Nonce:     tx.Nonce(),
+			GasTipCap: tipCap,
+			GasFeeCap: feeCap,
+			Gas:       evmCancelGasLimit,
+			To:        &from,
+			Value:     big.NewInt(0),
+		})
+	} else {
+		cancelTx = types.NewTx(&types.LegacyTx{
+			Nonce:    tx.Nonce(),
+			GasPrice: gasPrice,
+			Gas:      evmCancelGasLimit,
+			To:       &from,
+			Value:    big.NewInt(0),
+		})
+	}
+
+	signedCancel, err := types.SignTx(cancelTx, types.LatestSignerForChainID(chainID), privateKey)
+	if err != nil {
+		return cancelUnresolved, fmt.Errorf("sign cancellation for nonce %d: %w", tx.Nonce(), err)
+	}
+
+	sendCtx, cancel := context.WithTimeout(stdCtx, ethTxBroadcastTimeout)
+	defer cancel()
+	if sendErr := endpoint.EthClient().SendTransaction(sendCtx, signedCancel); sendErr != nil {
+		if isNonceTooLowError(sendErr) {
+			// NOT a cancellation, and this used to be read as one. The account
+			// being past the nonce says something consumed it -- and the most
+			// likely something is the original payload, which would mean the
+			// operation SUCCEEDED. Reported by @DongLieu: returning success here
+			// let the caller resubmit a payload that had already executed.
+			return cancelUnresolved, fmt.Errorf(
+				"nonce %d is already consumed, so the abandoned tx %s may have executed: %w",
+				tx.Nonce(), tx.Hash().Hex(), sendErr)
+		}
+		if isAlreadyKnownError(sendErr) {
+			// The cancellation is in this node's pool, which is acceptance, not
+			// inclusion -- the same claim as the success path below.
+			return cancelBroadcast, nil
+		}
+		return cancelUnresolved, fmt.Errorf("broadcast cancellation for nonce %d: %w", tx.Nonce(), sendErr)
+	}
+
+	log.Printf("[SendEthTx] Broadcast a cancellation for abandoned tx %s: nonce %d replaced with a zero-value self-transfer %s",
+		tx.Hash().Hex(), tx.Nonce(), signedCancel.Hash().Hex())
+	return cancelBroadcast, nil
+}
+
+// cancelOutcome is what cancelAbandonedTx established about the abandoned nonce.
+//
+// There is no "cancelled" value on purpose. A node accepting the replacement
+// says it is in THAT node's pool; another node may still hold the original, and
+// the nonce gap closing decides between them later. Reported by @DongLieu:
+// acceptance was being treated as a confirmed cancellation. Broadcasting is the
+// most this function can claim without waiting for inclusion -- and waiting is
+// the unbounded window the give-up path exists to close.
+type cancelOutcome int
+
+const (
+	// cancelUnresolved: nothing is known about the nonce. Nothing may be resubmitted.
+	cancelUnresolved cancelOutcome = iota
+	// cancelBroadcast: a replacement is in a pool. Better than nothing and still
+	// not a decision, so the payload stays unsubmittable either way.
+	cancelBroadcast
+)
+
+// onGiveUp is the single exit taken when the wait loop stops waiting for tx. It
+// cancels the abandoned transaction, invalidates the cached nonce so the next
+// attempt re-queries the chain, and returns the error the caller should return.
+//
+// The error always carries services.ErrUnresolvedEVMNonce, and that is the whole
+// point of this function.
+//
+// Reported by @DongLieu: the previous version returned the bare cause when the
+// cancellation was "successful", and a plain permanent failure when it was not.
+// Both were wrong, for the same reason in opposite directions:
+//
+//   - Broadcasting a replacement is acceptance by one node, not inclusion. The
+//     original may still be in another pool and may still execute.
+//   - A permanent failure is read by relay/batch.go as a deterministic revert,
+//     which makes it ISOLATE the batch -- resubmitting every packet individually,
+//     with a freshly invalidated nonce cache, so they can take LOWER nonces and
+//     mine before the original. That is the double execution this exit exists to
+//     prevent, arrived at through the mechanism meant to prevent it.
+//
+// So the outcome at that nonce is UNRESOLVED in every branch, and the sentinel
+// says so to every layer above. The permanent sentinel rides along because
+// nothing here is retryable either, and the two together are the honest claim:
+// this attempt is over, and nothing derived from it may be sent.
+//
+// A receipt found for one of the hashes already sent is the one case that
+// resolves itself -- the payload executed -- and it is named in the error rather
+// than reported as success, because by then this call has already given up on
+// waiting and the packet's own terminal event is what settles it.
+//
+// The nonce is invalidated in every branch: the chain disagrees with the cached
+// value whatever happened, and a caller that ignores the error must still not
+// reuse it.
+func (h *Handler) onGiveUp(
+	stdCtx context.Context,
+	endpoint services.EVMEndpoint,
+	privateKey *ecdsa.PrivateKey,
+	tx *types.Transaction,
+	from common.Address,
+	chainID *big.Int,
+	sentHashes []common.Hash,
+	cause error,
+) error {
+	outcome, cancelErr := h.cancelAbandonedTx(stdCtx, endpoint, privateKey, tx, from, chainID)
+
+	h.mu.Lock()
+	h.senderState(chainID.String(), from).nonceValid = false
+	h.mu.Unlock()
+
+	if mined := h.minedHash(stdCtx, endpoint, sentHashes); mined != nil {
+		return fmt.Errorf(
+			"%w; but %s is mined, so the payload already executed and must not be sent again: %w",
+			cause, mined.Hex(), errors.Join(services.ErrUnresolvedEVMNonce, services.ErrPermanentRelayFailure))
+	}
+
+	detail := "a cancellation was broadcast, but acceptance by one node is not inclusion"
+	if outcome == cancelUnresolved {
+		detail = "and its cancellation could not be broadcast"
+		if cancelErr != nil {
+			detail += ": " + cancelErr.Error()
+		}
+	}
+	return fmt.Errorf("%w; %s, so nothing derived from this attempt may be resubmitted: %w",
+		cause, detail, errors.Join(services.ErrUnresolvedEVMNonce, services.ErrPermanentRelayFailure))
+}
+
+// minedHash reports the first of hashes that already has a receipt, or nil.
+//
+// One pass, no polling: the caller has already stopped waiting, and the question
+// here is what is true NOW rather than what will become true. A lookup error is
+// not a negative answer -- it leaves the outcome unresolved, which is what the
+// caller assumes anyway.
+func (h *Handler) minedHash(stdCtx context.Context, endpoint services.EVMEndpoint, hashes []common.Hash) *common.Hash {
+	client := endpoint.EthClient()
+	if client == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(stdCtx, ethTxBroadcastTimeout)
+	defer cancel()
+	for i := len(hashes) - 1; i >= 0; i-- {
+		hash := hashes[i]
+		if receipt, err := client.TransactionReceipt(ctx, hash); err == nil && receipt != nil {
+			return &hash
+		}
+	}
+	return nil
 }
 
 func (h *Handler) executeWithRetryAndResubmission(
@@ -1436,20 +1648,18 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 				log.Printf("[SendEthTx] Tx %s not mined in %s; pending-nonce probe failed: %v",
 					tx.Hash().Hex(), attemptTimeout, nonceErr)
 			} else if pending < tx.Nonce() {
-				h.mu.Lock()
-				h.senderState(chainIdInt.String(), fromAddress).nonceValid = false
-				h.mu.Unlock()
-				return nil, submitDur, time.Since(waitStart), fmt.Errorf(
+				cause := fmt.Errorf(
 					"tx %s cannot mine: sent with nonce %d but account %s still needs nonce %d, so %d-%d are missing; "+
 						"cached nonce invalidated, retry will re-query",
 					tx.Hash().Hex(), tx.Nonce(), fromAddress.Hex(), pending, pending, tx.Nonce()-1)
+				return nil, submitDur, time.Since(waitStart),
+					h.onGiveUp(stdCtx, endpoint, privateKey, tx, fromAddress, chainIdInt, sentHashes, cause)
 			}
 
 			if attempt >= maxAttempts {
-				h.mu.Lock()
-				h.senderState(chainIdInt.String(), fromAddress).nonceValid = false
-				h.mu.Unlock()
-				return nil, submitDur, time.Since(waitStart), fmt.Errorf("transaction wait mined timed out after %d attempts (last hash: %s): %w", attempt, tx.Hash().Hex(), waitErr)
+				cause := fmt.Errorf("transaction wait mined timed out after %d attempts (last hash: %s): %w", attempt, tx.Hash().Hex(), waitErr)
+				return nil, submitDur, time.Since(waitStart),
+					h.onGiveUp(stdCtx, endpoint, privateKey, tx, fromAddress, chainIdInt, sentHashes, cause)
 			}
 
 			log.Printf("[SendEthTx] Tx %s not mined in %s, bumping gas price...", tx.Hash().Hex(), attemptTimeout)
@@ -1479,9 +1689,18 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 			continue
 		}
 
+		// waitForReceipts only ever ends on its context, and the deadline case is
+		// handled above, so reaching here means the parent context was cancelled --
+		// the process is shutting down. That leaves tx outstanding at its nonce and
+		// carries the same #410 hazard across a restart, but a cancelled context
+		// cannot broadcast the cancellation, and detaching one to broadcast during
+		// shutdown belongs with the bounded drain (A5) rather than here. Name the
+		// outstanding nonce so an operator can see what was left behind.
 		h.mu.Lock()
 		h.senderState(chainIdInt.String(), fromAddress).nonceValid = false
 		h.mu.Unlock()
-		return nil, submitDur, time.Since(waitStart), fmt.Errorf("failed waiting for tx receipt: %w", waitErr)
+		return nil, submitDur, time.Since(waitStart), fmt.Errorf(
+			"failed waiting for tx receipt, leaving tx %s outstanding at nonce %d: %w",
+			tx.Hash().Hex(), tx.Nonce(), waitErr)
 	}
 }

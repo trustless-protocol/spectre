@@ -23,6 +23,29 @@ import (
 // errors.Is.
 var ErrPermanentRelayFailure = errors.New("permanent relay failure (on-chain revert)")
 
+// ErrUnresolvedEVMNonce marks a failure whose transaction may STILL EXECUTE.
+//
+// It is not the same claim as ErrPermanentRelayFailure, and conflating the two
+// is what made this necessary. Permanent means "this attempt cannot succeed --
+// the chain rejected it deterministically", and relay/batch.go acts on that by
+// ISOLATING a multi-packet batch: it resubmits each packet on its own so one
+// poison packet does not discard its valid siblings. That is right for a revert
+// and wrong here.
+//
+// Reported by @DongLieu on #485. When the relayer gives up waiting for a
+// transaction, the abandoned nonce has one of three outcomes and the node has
+// told us none of them: the cancellation replaced it, the original still
+// executes, or the original already did. Resubmitting the payload -- as a whole
+// batch, as isolated packets, or as a timeout retry -- can run the operation a
+// second time while the first is still live, and the invalidated nonce cache
+// means the second attempt may take a LOWER nonce and mine first.
+//
+// So a failure carrying this sentinel means: do not resubmit anything on this
+// path until the outcome at that nonce is established. The packets stay in the
+// pending tracker, which is the durable record, and settle by their terminal
+// event or are refunded by the timeout scanner.
+var ErrUnresolvedEVMNonce = errors.New("the outcome of an abandoned EVM nonce is unresolved; the payload must not be resubmitted")
+
 // ErrValidatorCacheRace marks an updateClient revert caused by the validator
 // cache changing after the relayer built a cached/delta update. Rebuilding the
 // update from fresh on-chain state, or retrying with the full validator set, can
