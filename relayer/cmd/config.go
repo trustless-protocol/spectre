@@ -1185,20 +1185,11 @@ func moduleNameSuffix(name string) string {
 // direction below is a single value behind a presence flag. An absent direction
 // is the normal shape for the one this process does not serve.
 //
-// NOT HERE, deliberately — the attestor half. Two checks belong to this
-// validation by intent and cannot be written correctly yet:
-//
-//   - Asking the attestor at startup whether it can verify state roots, instead
-//     of warning once per process and relaying on. The mechanism meant to carry
-//     the answer — a capabilities list on ChainInfo — is superseded by the
-//     per-header Ed25519 attestations in #417, so building against the old shape
-//     would add a check for a field the new attestor does not send.
-//   - Rejecting an include_provisional that cannot take effect. Whether it is a
-//     no-op depends on the FEED's attestation_head, which is the attestor's
-//     answer, not a config key here. Keying the warning off head_kind instead
-//     would look right and fire on the wrong configs.
-//
-// Both land once #417 settles the attestor's startup contract.
+// The attestor half lives in validateAttestorHeads (attestor_head_check.go).
+// It could not be written until #441 settled the attestor's startup contract —
+// the capabilities list it was going to read never shipped, replaced by the
+// per-header Ed25519 attestations — and now reads the one field that contract
+// does expose: the head each feed gates on.
 func validateStartupConfig(stdCtx context.Context, cfg *appConfig, stateDir string) error {
 	if cfg == nil {
 		return nil
@@ -1208,6 +1199,7 @@ func validateStartupConfig(stdCtx context.Context, cfg *appConfig, stateDir stri
 	findings = append(findings, validateStateDir(stateDir)...)
 	findings = append(findings, validateCosmosChainID(stdCtx, cfg)...)
 	findings = append(findings, validateEVMDeployments(stdCtx, cfg)...)
+	findings = append(findings, validateAttestorHeads(stdCtx, cfg)...)
 
 	if len(findings) == 0 {
 		log.Printf("[start] config validated")

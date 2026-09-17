@@ -60,6 +60,18 @@ func Dial(addr string) (*Client, error) {
 // Close releases the gRPC connection.
 func (c *Client) Close() error { return c.conn.Close() }
 
+// Info returns every chain the attestor is configured to serve, with the head
+// each feed gates on. It is the one call that answers "is this the right
+// attestor for this L2, and does it sign at the head this relayer will ask
+// for" before any header is built; startup validation reads it once.
+func (c *Client) Info(ctx context.Context) ([]*attestorpb.ChainInfo, error) {
+	resp, err := c.rpc.Info(ctx, &attestorpb.InfoRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("attestorgrpc: Info: %w", mapStatus(err))
+	}
+	return resp.GetChains(), nil
+}
+
 // AttestedUpTo returns the attestor's highest independently-re-derived frontier.
 func (c *Client) AttestedUpTo(ctx context.Context, srcChain string, includeProvisional bool) (*attestorpb.AttestedRoot, bool, error) {
 	if err := requireSrcChain(srcChain); err != nil {

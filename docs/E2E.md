@@ -448,7 +448,7 @@ fail against the client or relayer configuration.
 | `l2_rpc_url` | `op-to-cosmos` | the same L2 HTTP endpoint (step 4 overwrites it with `L2_RPC` anyway) |
 | `attestor_addr` | `op-to-cosmos` | `127.0.0.1:$GRPC_PORT` from step 1; the example ships `127.0.0.1:3001`, which matches the script default |
 | `attestor_src_chain` | `op-to-cosmos` | the `SRC_CHAIN` you passed in step 1 (`op-sepolia`) — must match, or `AttestedUpTo` answers for another chain |
-| `head_kind` | `op-to-cosmos` | the same choice as `ATTESTATION_HEAD` in step 1 |
+| `head_kind` | `op-to-cosmos` | the same choice as `ATTESTATION_HEAD` in step 1. `start` asks each attestor's `Info` for the head it gates on and refuses to boot when the two differ — the attestor signs only its configured head, so a mismatch relays nothing |
 | `rollup_profile.common.l2_chain_id` | `op-to-cosmos` | `eth_chainId` on your L2 (`11155420` on OP Sepolia). `start` verifies this against the RPC and refuses to boot on a mismatch |
 | `attestors.public_keys` | `op-to-cosmos` | the base64 public key logged by the attestor started with `ATTESTOR_SIGNING_KEY` |
 | `log_scan_chunk` | `op-to-cosmos` | your provider's `eth_getLogs` span cap — measure it, see the Arbitrum section |
@@ -669,7 +669,7 @@ fail against the client or relayer configuration.
 | `l2_rpc_url` | `arbitrum-to-cosmos` | the same L2 HTTP endpoint. Step 4 overwrites this with `L2_RPC`, so a mismatch here is corrected rather than fatal |
 | `attestor_addr` | `arbitrum-to-cosmos` | `127.0.0.1:$GRPC_PORT` from step 1. The example ships `127.0.0.1:3002`, which matches the `GRPC_PORT=3002` above — **change it if you used a different port**, or the relayer dials a closed socket |
 | `attestor_src_chain` | `arbitrum-to-cosmos` | `src_chain` in `attestor/arbitrum/config.<profile>.json` (`arbitrum-sepolia`). Must equal what the attestor reports, or `AttestedUpTo` answers for a chain you did not ask about |
-| `head_kind` | `arbitrum-to-cosmos` | `unsafe`, `safe` or `finalized` — the same choice as `ATTESTATION_HEAD` in step 1 |
+| `head_kind` | `arbitrum-to-cosmos` | `unsafe`, `safe` or `finalized` — the same choice as `ATTESTATION_HEAD` in step 1. `start` asks each attestor's `Info` for the head it gates on and refuses to boot when the two differ — the attestor signs only its configured head, so a mismatch relays nothing |
 | `rollup_profile.common.l2_chain_id` | `arbitrum-to-cosmos` | `eth_chainId` on your L2 (`421614` on Arbitrum Sepolia, `412346` on the local devnet). `start` verifies this against the RPC and refuses to boot on a mismatch |
 | `attestors.public_keys` | `arbitrum-to-cosmos` | the base64 public key logged by the attestor started with `ATTESTOR_SIGNING_KEY` |
 | `log_scan_chunk` | `arbitrum-to-cosmos` | your provider's `eth_getLogs` span cap — measure it, see below |
@@ -957,6 +957,7 @@ proves half the system.
 | `eth_getProof` returns nothing at all — no result, no error, the call just hangs | The node prunes state below some depth and does not say so. Measure the boundary (see the external-L2 sections) and keep the attested height inside it; `DERIVED_GAP_BLOCKS=10` trails ~10–20 blocks, `head_kind=finalized` trails ~600. |
 | Arbitrum attestor stops attesting: last log line is a normal attestation, container still up | Its sequential per-block back-fill cannot keep pace with the chain — issue #358. Nothing is logged because the head never changes, so no error path is taken. `docker restart fast-ibc-arbitrum-attestor` re-anchors it at the head for roughly another minute. |
 | `start` refuses to boot: `l2_chain_id is N but l2_rpc_url ... serves chain M` | The profile and the RPC name different chains. Until this check existed the relayer started anyway and relayed against **M**, because transactions take their chain id from `eth_chainId` and nothing reads `l2_chain_id` — so the config, the client's committed profile and the docs all said **N** while the packets went to **M**. Fix whichever is wrong; the error prints both. |
+| `start` refuses to boot: `head_kind is "unsafe" but attestor N at ... gates "opstack" on attestation_head "finalized"` | `head_kind` and the attestor's `ATTESTATION_HEAD` disagree. The builder sends `head_kind` as the `run_mode` and the attestor refuses any `run_mode` but its own, so every header would be rejected at the first packet. Make them equal; the error names both. The sibling `serves [...], not attestor_src_chain` means the endpoint is an attestor for a different L2. An attestor that does not answer `Info` is skipped with a log line, not refused. |
 | Arbitrum attestor attests the wrong chain (`src_chain=arbdev`, `l2_chain_id=412346`) despite `CHAIN_PROFILE=arbitrum-sepolia` | A leftover `.arbitrum-devnet-run/attestor.env` was sourced; its exports are real env vars and beat the profile. Fixed — a non-`devnet` `CHAIN_PROFILE` now ignores the handoff and logs that it did. Delete the directory if you are on an older checkout. |
 | `eth_getLogs` rejected: `you can make eth_getLogs requests with up to a 10 block range` | The provider caps the log span. Set `log_scan_chunk` in the `l2_to_cosmos` module to that cap (Alchemy free tier 10, drpc 10 000). |
 | Return direction sees no events at all, forward direction fine | `l2_ics26_client_id` does not equal the forward module's `ics26_client_id`. The L2 subscriber filters events on it, so a mismatch drops every one silently. |
@@ -1098,7 +1099,7 @@ fail against the client or relayer configuration.
 | `l2_rpc_url` | `base-to-cosmos` | the same L2 HTTP endpoint (step 4 overwrites it with `L2_RPC` anyway) |
 | `attestor_addr` | `base-to-cosmos` | `127.0.0.1:$GRPC_PORT` from step 1. The example ships `127.0.0.1:3003`, matching the `GRPC_PORT=3003` above — Base needs its own port so it can coexist with an OP attestor on 3001 |
 | `attestor_src_chain` | `base-to-cosmos` | the `SRC_CHAIN` you passed in step 1 (`base-sepolia`) |
-| `head_kind` | `base-to-cosmos` | the same choice as `ATTESTATION_HEAD` in step 1 |
+| `head_kind` | `base-to-cosmos` | the same choice as `ATTESTATION_HEAD` in step 1. `start` asks each attestor's `Info` for the head it gates on and refuses to boot when the two differ — the attestor signs only its configured head, so a mismatch relays nothing |
 | `rollup_profile.common.l2_chain_id` | `base-to-cosmos` | `eth_chainId` on your L2 (`84532` on Base Sepolia). `start` verifies this against the RPC and refuses to boot on a mismatch |
 | `attestors.public_keys` | `base-to-cosmos` | the base64 public key logged by the attestor started with `ATTESTOR_SIGNING_KEY` |
 | `log_scan_chunk` | `base-to-cosmos` | your provider's `eth_getLogs` span cap — measure it, see the Arbitrum section |

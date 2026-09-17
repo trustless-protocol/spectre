@@ -28,6 +28,13 @@ func (s *codeServer) VerifyStateRoot(context.Context, *attestorpb.VerifyStateRoo
 	return nil, status.Error(s.code, "from the server")
 }
 
+func (s *codeServer) Info(context.Context, *attestorpb.InfoRequest) (*attestorpb.InfoResponse, error) {
+	if s.code == codes.OK {
+		return &attestorpb.InfoResponse{Chains: []*attestorpb.ChainInfo{{SrcChain: "opstack", AttestationHead: "safe"}}}, nil
+	}
+	return nil, status.Error(s.code, "from the server")
+}
+
 func (s *codeServer) AttestedUpTo(context.Context, *attestorpb.AttestedUpToRequest) (*attestorpb.AttestedUpToResponse, error) {
 	return nil, status.Error(s.code, "from the server")
 }
@@ -195,5 +202,24 @@ func TestRequireSrcChain(t *testing.T) {
 				t.Fatalf("requireSrcChain(%q) permanent = %t, want %t", tc.value, errors.Is(err, l2rollup.ErrAttestorBadRequest), tc.permanent)
 			}
 		})
+	}
+}
+
+// Info is read once at startup to prove the attestor serves this L2 at the head
+// the relayer will ask for. The table it returns is the attestor's own proto
+// shape; an unreachable attestor maps like every other call so the caller can
+// tell "did not answer" from "answered wrong".
+func TestInfoReturnsTheChainTableAndMapsFailures(t *testing.T) {
+	chains, err := dialCodeServer(t, codes.OK).Info(context.Background())
+	if err != nil {
+		t.Fatalf("Info: %v", err)
+	}
+	if len(chains) != 1 || chains[0].GetSrcChain() != "opstack" || chains[0].GetAttestationHead() != "safe" {
+		t.Fatalf("Info returned %v, want the server's one opstack/safe entry", chains)
+	}
+
+	_, err = dialCodeServer(t, codes.Unavailable).Info(context.Background())
+	if !errors.Is(err, l2rollup.ErrAttestorUnavailable) {
+		t.Fatalf("Info on an unavailable server = %v, want ErrAttestorUnavailable", err)
 	}
 }
