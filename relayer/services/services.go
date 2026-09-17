@@ -711,7 +711,10 @@ func CosmosMembership(stdCtx context.Context, ctx CosmosEndpoint, packet channel
 		return nil, err
 	}
 	if len(value) == 0 {
-		return nil, fmt.Errorf("commitment empty at height=%d", height)
+		// Already the right CLASS -- a bare error is transient -- but not the right
+		// name. Wrapping the sentinel is what lets one test assert this row of the
+		// failure catalog across all three sources instead of per adapter.
+		return nil, fmt.Errorf("commitment empty at height=%d: %w", height, client.ErrCommitmentAbsent)
 	}
 
 	merkleProof, err := parseMerkleProof(proof.Proofs, packet.Sequence)

@@ -2,16 +2,21 @@ package l2rollup
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"attestor/types/attestation"
 	attestorpb "attestor/types/attestor"
 	"relayer/chain"
+	relayerclient "relayer/client"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 // fakeAttestor is a hand-rolled AttestorClient recording the includeProvisional
@@ -209,4 +214,79 @@ func TestRelayableHeight_ProvisionalMapping(t *testing.T) {
 			t.Fatalf("kind %d: include_provisional = %v, want %v", kind, at.gotProvisional, wantProvisional)
 		}
 	}
+}
+
+// l2ProofServer answers eth_getProof with one storage proof whose value is the
+// raw byte list valueHex (empty for a slot that was never written).
+func l2ProofServer(t *testing.T, valueHex string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{
+			"accountProof":["0xf8"],
+			"storageHash":"0x0000000000000000000000000000000000000000000000000000000000000042",
+			"storageProof":[{"key":"0x0000000000000000000000000000000000000000000000000000000000000001","value":%q,"proof":["0xf8"]}]
+		}}`, req.ID, valueHex)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// An unwritten commitment slot reads back as zero, and zero left-padded to a
+// full word is still zero. Marshalling that as a proof sends the L2 wasm client
+// something it must reject, so the packet costs a transaction and then reads as a
+// deterministic revert -- dropped, when its only problem was being proven at a
+// height the destination client had not reached yet.
+func TestL2StorageProof(t *testing.T) {
+	dial := func(t *testing.T, srv *httptest.Server) *ethclient.Client {
+		t.Helper()
+		c, err := ethclient.Dial(srv.URL)
+		if err != nil {
+			t.Fatalf("dial stub: %v", err)
+		}
+		t.Cleanup(c.Close)
+		return c
+	}
+
+	// "0x0" is the only empty form a node sends: eth_getProof reports the value as
+	// a minimal hex number, so an unwritten slot is zero and never "0x" or a
+	// zero-padded word -- hexutil.Big rejects both, which is why the stub must
+	// speak the real shape.
+	t.Run("an empty slot is an absent commitment", func(t *testing.T) {
+		_, err := l2StorageProof(
+			context.Background(), dial(t, l2ProofServer(t, "0x0")),
+			ethcommon.Address{}, []byte("path"), 99)
+		if err == nil {
+			t.Fatal("an empty slot produced a proof; the L2 client would reject it and the packet would be dropped")
+		}
+		if !errors.Is(err, relayerclient.ErrCommitmentAbsent) {
+			t.Fatalf("error = %v, want it to name the commitment as absent", err)
+		}
+		if chain.IsPermanent(err) {
+			t.Fatalf("error = %v, want transient: the proof height moves, and a packet that is merely early must not be dropped", err)
+		}
+	})
+
+	t.Run("a populated slot produces a proof carrying the full word", func(t *testing.T) {
+		raw, err := l2StorageProof(
+			context.Background(), dial(t, l2ProofServer(t, "0x2a")),
+			ethcommon.Address{}, []byte("path"), 99)
+		if err != nil {
+			t.Fatalf("a written slot must still prove: %v", err)
+		}
+		var got EvmStorageProof
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("decode proof: %v", err)
+		}
+		if len(got.Value) != 32 {
+			t.Fatalf("value is %d bytes, want the full 32-byte word the client compares against", len(got.Value))
+		}
+		if got.Value[31] != 0x2a {
+			t.Fatalf("value = %v, want the slot contents left-padded", got.Value)
+		}
+	})
 }

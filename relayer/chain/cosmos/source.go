@@ -129,9 +129,13 @@ func (s *Source) QueryHeader(ctx context.Context, height uint64) ([]byte, error)
 // MembershipProof proves the packet's commitment (recv) or ack (ack) exists at
 // height, wrapping services.CosmosMembership. eventType selects the ICS-24 path.
 func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint64, eventType chain.EventType) ([]byte, error) {
-	pkt, lb, err := s.decodePacketAndBlock(ctx, packet, height)
-	if err != nil {
-		return nil, err
+	// Decode and classify BEFORE fetching the light block, the way the ETH and L2
+	// sources already do. Both inputs are permanently wrong when they are wrong,
+	// so discovering it after a round trip spends one for nothing -- and on a
+	// slow endpoint it arrives as a timeout, hiding the real cause.
+	var pkt channeltypesv2.Packet
+	if err := pkt.Unmarshal(packet); err != nil {
+		return nil, fmt.Errorf("cosmos source: decode packet: %w", err)
 	}
 	var clientID string
 	var pathType []byte
@@ -154,6 +158,10 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint
 		clientID, pathType = pkt.DestinationClient, pathAck
 	default:
 		return nil, fmt.Errorf("cosmos source: MembershipProof: unsupported event type %d", eventType)
+	}
+	lb, err := s.lightBlock(ctx, height)
+	if err != nil {
+		return nil, err
 	}
 	proofCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
 	defer cancel()
@@ -195,13 +203,23 @@ func (s *Source) decodePacketAndBlock(ctx context.Context, packet []byte, height
 	if err := pkt.Unmarshal(packet); err != nil {
 		return channeltypesv2.Packet{}, nil, fmt.Errorf("cosmos source: decode packet: %w", err)
 	}
+	lb, err := s.lightBlock(ctx, height)
+	if err != nil {
+		return channeltypesv2.Packet{}, nil, err
+	}
+	return pkt, lb, nil
+}
+
+// lightBlock is the round trip the proof paths share, split out so a caller can
+// finish validating its cheap inputs before spending one.
+func (s *Source) lightBlock(ctx context.Context, height uint64) (*relayerclient.LightBlock, error) {
 	fetchCtx, cancel := context.WithTimeout(ctx, s.fetchTimeout)
 	defer cancel()
 	lb, err := relayerclient.GetLightBlock(fetchCtx, s.cosmos.CosmosClient(), int64(height))
 	if err != nil {
-		return channeltypesv2.Packet{}, nil, fmt.Errorf("cosmos source: light block at %d: %w", height, err)
+		return nil, fmt.Errorf("cosmos source: light block at %d: %w", height, err)
 	}
-	return pkt, lb, nil
+	return lb, nil
 }
 
 // drainInterval is how often the Subscribe bridge flushes the batch builder.

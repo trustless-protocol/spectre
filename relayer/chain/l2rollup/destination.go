@@ -74,6 +74,9 @@ func (d *Destination) Chain() chain.ChainType { return chain.Cosmos }
 // client's freshness bounds how recent an L2 update can be, but advancing it is not a
 // prerequisite for this submit to verify.
 func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.ClientUpdate) error {
+	if err := ctx.Err(); err != nil {
+		return err // shutting down — do not start a client-update tx
+	}
 	if len(update.Payloads) != 1 {
 		return fmt.Errorf("l2 dest: expected exactly one client update payload, got %d", len(update.Payloads))
 	}
@@ -95,30 +98,39 @@ func (d *Destination) UpdateClient(ctx context.Context, _ string, update chain.C
 // from the L2-origin packets + storage proofs and submits them. Same wrappers as
 // the existing Cosmos beacon destination; only the proof height differs (the L2
 // client's latest tracked height instead of the beacon slot).
-func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) error {
+//
+// One message per packet, in slice order, and SendCosmosTxBatch commits
+// sub-batches front to back -- so the count it reports is the packet prefix that
+// was delivered. This destination submits to Cosmos, so unlike the EVM one it
+// really can stop half way.
+func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) (int, error) {
 	if len(packets) == 0 {
-		return nil
+		return 0, nil
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err // shutting down — do not start a packet tx
 	}
 	signer, err := d.worker.TxHandler.CosmosSignerAddress()
 	if err != nil {
-		return fmt.Errorf("l2 dest: signer address: %w", err)
+		return 0, fmt.Errorf("l2 dest: signer address: %w", err)
 	}
 	proofHeight, err := d.proofHeight(ctx)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	msgs, err := buildPacketMessages(signer, proofHeight, packets)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.cosmos, msgs); err != nil {
+		committed := services.CommittedBeforeFailure(err)
 		if isPermanentCosmosFailure(err) {
-			return chain.Permanent(err)
+			return committed, chain.Permanent(err)
 		}
-		return err
+		return committed, err
 	}
-	return nil
+	return len(packets), nil
 }
 
 // buildPacketMessages turns proven packets into the Cosmos messages that carry

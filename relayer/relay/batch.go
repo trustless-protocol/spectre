@@ -297,20 +297,47 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// Submit the whole batch. A folded plan prepends the not-yet-on-chain client
 	// update in the same atomic tx; otherwise the client is already current and the
 	// destination submits packets only.
+	var committed int
 	if foldPlan != nil {
 		err = foldPlan.destination.RelayWithUpdate(ctx, m.clientID, foldPlan.update, packets)
 		if err == nil {
+			committed = len(packets)              // the folded path is one atomic tx: all or nothing
 			m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
 			m.recordClientUpdate(foldPlan.update)
 			foldPlan.release()
 		}
 	} else {
-		err = m.dst.RelayPackets(ctx, packets)
+		committed, err = m.dst.RelayPackets(ctx, packets)
 	}
 	if err == nil {
 		m.settleDelivered(packets)
 		return requeue
 	}
+	// A destination that stopped part way has delivered packets[:committed]. Both
+	// endings below are wrong for those: re-queueing submits them a second time,
+	// and isolating them reports each as DROPPED while it sits delivered on the
+	// destination. Settle the prefix and carry on with the tail alone. Only the
+	// packets-only path can stop part way -- a folded transaction is atomic, so
+	// committed is 0 on its failure and this block is a no-op there.
+	if committed > len(packets) {
+		log.Printf("[%s Relay][ATTENTION] destination reported %d of %d packet(s) committed; clamping, the adapter is breaking its contract",
+			m.name, committed, len(packets))
+		committed = len(packets)
+	}
+	if committed > 0 {
+		log.Printf("[%s Relay] %d of %d packet(s) were committed before the failure at height %d; settling those and retrying the rest",
+			m.name, committed, len(packets), proofHeight)
+		m.settleDelivered(packets[:committed])
+		packets = packets[committed:]
+		relayedIdx = relayedIdx[committed:]
+		if len(packets) == 0 {
+			if foldPlan != nil {
+				foldPlan.release()
+			}
+			return requeue // the whole batch landed; the error is about nothing left to retry
+		}
+	}
+
 	if !chain.IsPermanent(err) {
 		// Transient (RPC, nonce, broadcast) → re-queue the whole batch for retry.
 		if foldPlan != nil {
@@ -506,7 +533,8 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 			break
 		}
 		single := []chain.RelayPacket{p}
-		if err := m.dst.RelayPackets(ctx, single); err != nil {
+		// One packet has no prefix to report: a nil error means it landed.
+		if _, err := m.dst.RelayPackets(ctx, single); err != nil {
 			if chain.IsPermanent(err) {
 				m.waits.clearPacket(p) // dead for good — stop reporting a wait for it
 				log.Printf("[%s Relay] DROP packet (%s seq=%d height=%d, permanent): %v", m.name, p.Type, p.Sequence, p.Height, err)

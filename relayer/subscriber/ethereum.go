@@ -186,6 +186,13 @@ func enqueueEthSendPacket(
 }
 
 func hasCosmosIBCPathValue(stdCtx context.Context, endpoint services.CosmosEndpoint, path [][]byte) (bool, error) {
+	// The guard services.HasEthIBCPathValue already has on its side. Without it an
+	// unconfigured endpoint panics here instead of erroring, and a panic inside a
+	// receipt check is the worst place for one: the answer this returns decides
+	// whether a packet may be timed out.
+	if endpoint.CosmosClient() == nil {
+		return false, fmt.Errorf("cosmos client is nil")
+	}
 	queryPath := fmt.Sprintf("store/%s/key", string(path[0]))
 	request := path[1]
 

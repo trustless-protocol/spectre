@@ -365,6 +365,15 @@ func l2StorageProof(ctx context.Context, l2 *ethclient.Client, router ethcommon.
 	}
 	copy(value[len(value)-len(sp.Value):], sp.Value) // left-pad to the full word
 
+	// An all-zero word is an empty slot, not a commitment. Marshalling it anyway
+	// produces a proof the L2 wasm client rejects, which costs a transaction and
+	// reads as permanent -- dropping a packet whose only problem was being proven
+	// at a height the destination client had not reached yet.
+	if value == ([32]byte{}) {
+		return nil, fmt.Errorf("l2 source: commitment slot %s is empty at height %d: %w",
+			storageKey.Hex(), height, relayerclient.ErrCommitmentAbsent)
+	}
+
 	return json.Marshal(EvmStorageProof{
 		Key:   hexBytes(storageKey.Bytes()),
 		Value: byteList(value[:]),

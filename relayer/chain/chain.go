@@ -214,12 +214,34 @@ type Destination interface {
 
 	// RelayPackets builds and submits the concrete IBC packet messages
 	// (recv/ack/timeout) from the given source packets + proofs.
-	RelayPackets(ctx context.Context, packets []RelayPacket) error
+	//
+	// committed is how many packets, counted from the FRONT of the slice, are on
+	// chain when this returns. It is the answer to what a partial failure means:
+	// a bare error leaves the caller unable to tell whether to re-queue five
+	// packets or two, and re-queueing the ones already delivered submits them
+	// again. Returning the count rather than wrapping it in an error type is
+	// deliberate -- a caller cannot forget to unwrap what the signature makes it
+	// take.
+	//
+	// Three rules the caller depends on, and every adapter must keep:
+	//   - committed is a PREFIX count. Adapters that may commit only part of a
+	//     batch must submit in slice order, so packets[:committed] is exactly the
+	//     delivered set.
+	//   - on a nil error, committed == len(packets).
+	//   - an adapter that submits atomically returns 0 with any error. That is
+	//     information, not a default: it says nothing was delivered.
+	RelayPackets(ctx context.Context, packets []RelayPacket) (committed int, err error)
 
 	// HasPacketReceipt reports whether a packet was already delivered on this
 	// chain, so timeout scanners can skip already-settled packets (the #232
 	// pre-check, generalized). Prevents advancing state on already-resolved
 	// packets.
+	//
+	// A non-nil error means "DO NOT KNOW", never "not delivered". The caller must
+	// stop rather than fall back to the false answer: reading an RPC failure as
+	// "no receipt" is the open path to proving a timeout for a packet that was in
+	// fact delivered, which refunds the sender for a transfer the receiver got.
+	// An adapter that cannot answer must error rather than return false.
 	HasPacketReceipt(ctx context.Context, packet []byte) (bool, error)
 
 	// ClientExpiresAt returns when the light-client-of-source on this chain will

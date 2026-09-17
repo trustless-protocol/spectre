@@ -5,10 +5,16 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"math/big"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	ethcommon "github.com/ethereum/go-ethereum/common"
 
 	"relayer/rpcmock"
 )
@@ -575,5 +581,83 @@ func TestGetBeaconBlockRoot(t *testing.T) {
 	})
 	t.Run("reports a node error", func(t *testing.T) {
 		assertReportsNodeError(t, path, call)
+	})
+}
+
+// ethProofServer answers eth_getProof with one storage proof whose value field
+// is valueJSON, inserted raw so a caller can send a JSON null -- which is what a
+// node may report for a slot it has never written, alongside "0x0".
+func ethProofServer(t *testing.T, valueJSON string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID json.RawMessage `json:"id"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{
+			"accountProof":["0xf8"],
+			"storageHash":"0x0000000000000000000000000000000000000000000000000000000000000042",
+			"storageProof":[{"key":"0x0000000000000000000000000000000000000000000000000000000000000001","value":%s,"proof":["0xf8"]}]
+		}}`, req.ID, valueJSON)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// The two proof helpers are halves of one guard, and only one half existed.
+// GetEthNonMembershipProof already refuses a slot that is NOT empty — evidence
+// the packet was received. GetEthMembershipProof accepted a slot that IS empty
+// and marshalled a "proof" of zero, which the destination's light client rejects.
+// That costs a transaction, and the revert reads as deterministic, so a packet
+// whose only problem was a proof height the destination had not reached yet was
+// dropped after paying to discover it.
+func TestGetEthMembershipProof(t *testing.T) {
+	t.Run("an empty slot is an absent commitment, not a proof of zero", func(t *testing.T) {
+		for _, tc := range []struct{ name, valueJSON string }{
+			{name: "zero", valueJSON: `"0x0"`},
+			{name: "null", valueJSON: `null`},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				srv := ethProofServer(t, tc.valueJSON)
+				c, err := DialEthRPC(context.Background(), srv.URL, time.Minute)
+				if err != nil {
+					t.Fatalf("DialEthRPC: %v", err)
+				}
+				t.Cleanup(c.Close)
+
+				_, err = GetEthMembershipProof(
+					context.Background(), c, ethcommon.Address{}, []byte("path"), ethcommon.Hash{}, big.NewInt(7))
+				if err == nil {
+					t.Fatal("an empty slot produced a proof; the chain would reject it and the packet would be dropped")
+				}
+				if !errors.Is(err, ErrCommitmentAbsent) {
+					t.Fatalf("error = %v, want it to name the commitment as absent", err)
+				}
+				// Absent is not dead: the height moves, and permanent here would
+				// drop a packet that is merely early.
+				if errors.Is(err, ErrPacketAlreadyReceived) {
+					t.Fatal("an absent commitment was reported as a delivered packet")
+				}
+			})
+		}
+	})
+
+	t.Run("a populated slot produces a proof", func(t *testing.T) {
+		srv := ethProofServer(t, `"0x2a"`)
+		c, err := DialEthRPC(context.Background(), srv.URL, time.Minute)
+		if err != nil {
+			t.Fatalf("DialEthRPC: %v", err)
+		}
+		t.Cleanup(c.Close)
+
+		raw, err := GetEthMembershipProof(
+			context.Background(), c, ethcommon.Address{}, []byte("path"), ethcommon.Hash{}, big.NewInt(7))
+		if err != nil {
+			t.Fatalf("a non-empty slot must still prove: %v", err)
+		}
+		if !strings.Contains(string(raw), "0x2a") {
+			t.Fatalf("proof does not carry the slot value: %s", raw)
+		}
 	})
 }

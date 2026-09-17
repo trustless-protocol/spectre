@@ -79,15 +79,20 @@ func decodeClientUpdate(update chain.ClientUpdate) (services.CosmosClientUpdateB
 // given source packets + injected proofs and submits them via SendEthTxBatch.
 // The proofs are already built by the source (Membership/NonMembershipProof), so
 // unlike the legacy planCosmosPacketMsgs this does no proof generation.
-func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) error {
+// Every packet rides in one ICS26Router multicall, so this destination has no
+// partial state to report: committed is len(packets) or zero, never in between.
+func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) (int, error) {
 	if err := ctx.Err(); err != nil {
-		return err // shutting down — do not start a packet tx
+		return 0, err // shutting down — do not start a packet tx
 	}
 	msgs, err := buildPacketMessages(packets)
 	if err != nil {
-		return err
+		return 0, err
 	}
-	return d.sendPacketBatch(ctx, msgs)
+	if err := d.sendPacketBatch(ctx, msgs); err != nil {
+		return 0, err
+	}
+	return len(packets), nil
 }
 
 // RelayWithUpdate prepends the decoded Cosmos-client update to the packet calls

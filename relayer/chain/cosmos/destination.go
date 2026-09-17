@@ -153,30 +153,33 @@ func highestBeaconFinalizedSlot(payloads [][]byte) (uint64, error) {
 // and the resulting failure surfaces as an opaque trie error from inside CosmWasm.
 //
 // ETH-origin timeouts are handled by the async scanner, not this path.
-func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) error {
+// buildPacketMessages emits exactly one message per packet, in order, and
+// SendCosmosTxBatch commits sub-batches front to back, so the message count it
+// reports as committed is also the packet prefix that was delivered.
+func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) (int, error) {
 	if len(packets) == 0 {
-		return nil
+		return 0, nil
 	}
 	if err := ctx.Err(); err != nil {
-		return err // shutting down — do not start a packet tx
+		return 0, err // shutting down — do not start a packet tx
 	}
 	signerAddr, err := d.worker.TxHandler.CosmosSignerAddress()
 	if err != nil {
-		return fmt.Errorf("cosmos dest: signer address: %w", err)
+		return 0, fmt.Errorf("cosmos dest: signer address: %w", err)
 	}
 	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	ethClientState, err := relayerclient.GetEthereumClientState(readCtx, d.cosmos.CosmosClient(), d.clientID)
 	if err != nil {
-		return fmt.Errorf("cosmos dest: eth client state: %w", err)
+		return 0, fmt.Errorf("cosmos dest: eth client state: %w", err)
 	}
 	if err := requireProofsBuiltAt(packets, ethClientState.LatestExecutionBlockNumber); err != nil {
-		return err
+		return 0, err
 	}
 	proofHeight := clienttypes.Height{RevisionNumber: 0, RevisionHeight: ethClientState.LatestSlot}
 	msgs, err := buildPacketMessages(signerAddr, proofHeight, packets)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	return d.sendPacketBatch(ctx, msgs)
 }
@@ -303,21 +306,26 @@ func buildPacketMessages(signer string, proofHeight clienttypes.Height, packets 
 	return msgs, nil
 }
 
-func (d *Destination) sendPacketBatch(ctx context.Context, msgs []any) error {
+// sendPacketBatch returns how many of msgs are on chain. A split batch can
+// commit its leading sub-batches and then fail, and SendCosmosTxBatch reports
+// that count in BatchPartialError; dropping it here is what made the caller
+// re-queue -- and re-submit -- packets that were already delivered.
+func (d *Destination) sendPacketBatch(ctx context.Context, msgs []any) (int, error) {
 	if len(msgs) == 0 {
-		return nil
+		return 0, nil
 	}
 	// A deterministic Cosmos DeliverTx revert cannot succeed on retry — surface it
 	// as chain.Permanent so the module DROPS the batch rather than re-queueing it
 	// forever (each retry re-runs the beacon client update and drains gas). CheckTx/
 	// broadcast/RPC errors stay transient and are re-queued.
 	if err := d.worker.TxHandler.SendCosmosTxBatch(ctx, d.cosmos, msgs); err != nil {
+		committed := services.CommittedBeforeFailure(err)
 		if errors.Is(err, services.ErrPermanentRelayFailure) {
-			return chain.Permanent(err)
+			return committed, chain.Permanent(err)
 		}
-		return err
+		return committed, err
 	}
-	return nil
+	return len(msgs), nil
 }
 
 // HasPacketReceipt reports whether an ETH-origin packet was already delivered on

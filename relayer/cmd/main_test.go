@@ -730,6 +730,33 @@ func TestStampRelayPathScopesTheZapLoggerToo(t *testing.T) {
 	}
 }
 
+// stringLiterals returns the contents of each double-quoted literal on a line,
+// so a check meant for format strings cannot read the code around them.
+//
+// Escapes are honoured only far enough to keep \" from ending a literal early;
+// this reads Go source for one narrow property, not to compile it.
+func stringLiterals(line string) []string {
+	var out []string
+	inside, escaped := false, false
+	start := 0
+	for i, r := range line {
+		switch {
+		case escaped:
+			escaped = false
+		case r == '\\' && inside:
+			escaped = true
+		case r == '"':
+			if inside {
+				out = append(out, line[start:i])
+			} else {
+				start = i + 1
+			}
+			inside = !inside
+		}
+	}
+	return out
+}
+
 // Two label families are the target: [<direction> <Work>] and the closed
 // lowercase list. Neither can contain "][", which is how a caller fakes a second
 // tier when the function it calls is missing a parameter (subscriber/event.go
@@ -768,15 +795,21 @@ func TestNoLogLabelForgesASecondTier(t *testing.T) {
 				continue
 			}
 			// "][" is ordinary Go outside a string literal (`map[k][]byte`,
-			// `x[i][j]`). Only a quoted occurrence is a forged label.
-			quoted := strings.SplitN(line, `"`, 2)
-			if len(quoted) != 2 {
-				continue
-			}
-			// Drop the one allowed tier before looking, so "[%s][ATTENTION][x]"
-			// is still caught: only the exemption itself is removed, not the line.
-			if rest := strings.ReplaceAll(quoted[1], "][ATTENTION]", "]"); strings.Contains(rest, "][") {
-				offenders = append(offenders, fmt.Sprintf("%s:%d: %s", path, i+1, trimmed))
+			// `x[i][j]`). Only a quoted occurrence is a forged label, so the
+			// literals are extracted and nothing else on the line is read.
+			//
+			// Splitting on the first quote and scanning the remainder is not the
+			// same thing, and the difference is a false positive: on
+			//   dst.UpdateClient(ctx, "client-0", chain.ClientUpdate{Payloads: [][]byte{{1}}})
+			// the [][]byte sits after a string literal and was reported as a
+			// forged label.
+			for _, literal := range stringLiterals(line) {
+				// Drop the one allowed tier before looking, so "[%s][ATTENTION][x]"
+				// is still caught: only the exemption itself is removed.
+				if rest := strings.ReplaceAll(literal, "][ATTENTION]", "]"); strings.Contains(rest, "][") {
+					offenders = append(offenders, fmt.Sprintf("%s:%d: %s", path, i+1, trimmed))
+					break
+				}
 			}
 		}
 		return nil

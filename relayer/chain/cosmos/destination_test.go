@@ -3,6 +3,7 @@ package cosmos
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +18,17 @@ import (
 )
 
 type atomicTestTxHandler struct{ services.TransactionHandler }
+
+// partialTestTxHandler returns whatever a split batch would: a plain failure, or
+// a partial one carrying how many messages landed first.
+type partialTestTxHandler struct {
+	services.TransactionHandler
+	err error
+}
+
+func (h *partialTestTxHandler) SendCosmosTxBatch(context.Context, services.CosmosEndpoint, []any) error {
+	return h.err
+}
 
 func (*atomicTestTxHandler) SendCosmosTxBatchAtomic(context.Context, services.CosmosEndpoint, []any) error {
 	return nil
@@ -192,7 +204,7 @@ func TestDestination(t *testing.T) {
 		d := &Destination{}
 		packets := []chain.RelayPacket{{Type: chain.SendPacket, Packet: mustMarshalCosmosPacket(t)}}
 
-		if err := d.RelayPackets(cancelledCtx(), packets); err == nil {
+		if _, err := d.RelayPackets(cancelledCtx(), packets); err == nil {
 			t.Error("RelayPackets started a packet tx during shutdown")
 		}
 		if err := d.UpdateClient(cancelledCtx(), "", chain.ClientUpdate{Payloads: [][]byte{{1}}}); err == nil {
@@ -203,12 +215,64 @@ func TestDestination(t *testing.T) {
 		}
 	})
 
+	// SendCosmosTxBatch may split a batch, commit the leading sub-batches and then
+	// fail. Those messages are on chain; dropping the count here is what made the
+	// module re-queue -- and re-submit -- packets it had already delivered, and
+	// report them as DROPPED on the permanent ending.
+	t.Run("reports the prefix a split batch committed", func(t *testing.T) {
+		for _, tc := range []struct {
+			name      string
+			err       error
+			want      int
+			permanent bool
+		}{
+			{
+				name: "a partial failure reports what landed",
+				err:  &services.BatchPartialError{SucceededCount: 2, Err: errors.New("node went away")},
+				want: 2,
+			},
+			{
+				name: "a whole-batch failure reports nothing",
+				err:  errors.New("broadcast failed"),
+				want: 0,
+			},
+			{
+				// The prefix is a fact about the chain, not about the class of the
+				// failure: a deterministic revert in the LAST sub-batch does not
+				// un-commit the ones before it.
+				name:      "a permanent partial failure still reports its prefix",
+				err:       &services.BatchPartialError{SucceededCount: 2, Err: services.ErrPermanentRelayFailure},
+				want:      2,
+				permanent: true,
+			},
+			{
+				name: "every message landed",
+				err:  nil,
+				want: 3,
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				d := &Destination{worker: services.NewWorker(&partialTestTxHandler{err: tc.err}, nil)}
+				committed, err := d.sendPacketBatch(context.Background(), []any{1, 2, 3})
+				if committed != tc.want {
+					t.Fatalf("committed = %d, want %d", committed, tc.want)
+				}
+				if (err != nil) != (tc.err != nil) {
+					t.Fatalf("error = %v, want an error: %v", err, tc.err != nil)
+				}
+				if got := chain.IsPermanent(err); got != tc.permanent {
+					t.Fatalf("permanent = %v, want %v", got, tc.permanent)
+				}
+			})
+		}
+	})
+
 	// An empty packet list is a no-op, not an error: the module can hand over a batch
 	// that emptied out after filtering, and turning that into an error would fail a
 	// relay cycle that had nothing wrong with it.
 	t.Run("treats an empty packet list as a no-op", func(t *testing.T) {
 		d := &Destination{}
-		if err := d.RelayPackets(context.Background(), nil); err != nil {
+		if committed, err := d.RelayPackets(context.Background(), nil); err != nil || committed != 0 {
 			t.Fatalf("empty packet list must be a no-op, got %v", err)
 		}
 	})

@@ -43,7 +43,7 @@ func mustMarshalPacket(t *testing.T) []byte {
 // cannot build a MsgAckPacket and must error, not silently drop or panic.
 func TestRelayPackets_AckMissingBytes(t *testing.T) {
 	d := &Destination{}
-	err := d.RelayPackets(context.Background(), []chain.RelayPacket{{
+	_, err := d.RelayPackets(context.Background(), []chain.RelayPacket{{
 		Type:   chain.AckPacket,
 		Packet: mustMarshalPacket(t),
 		// AckBytes deliberately empty
@@ -57,7 +57,7 @@ func TestRelayPackets_AckMissingBytes(t *testing.T) {
 // destination does not build a message for).
 func TestRelayPackets_UnknownType(t *testing.T) {
 	d := &Destination{}
-	err := d.RelayPackets(context.Background(), []chain.RelayPacket{{
+	_, err := d.RelayPackets(context.Background(), []chain.RelayPacket{{
 		Type:   chain.EventType(99),
 		Packet: mustMarshalPacket(t),
 	}})
@@ -70,7 +70,7 @@ func TestRelayPackets_UnknownType(t *testing.T) {
 func TestRelayPackets_MalformedPacket(t *testing.T) {
 	d := &Destination{}
 	// A byte string that is not a valid proto packet.
-	err := d.RelayPackets(context.Background(), []chain.RelayPacket{{
+	_, err := d.RelayPackets(context.Background(), []chain.RelayPacket{{
 		Type:   chain.SendPacket,
 		Packet: []byte{0xff, 0xff, 0xff, 0xff},
 	}})
@@ -83,7 +83,7 @@ func TestRelayPackets_MalformedPacket(t *testing.T) {
 // worker), matching the module's "nothing to relay" contract.
 func TestRelayPackets_Empty(t *testing.T) {
 	d := &Destination{}
-	if err := d.RelayPackets(context.Background(), nil); err != nil {
+	if committed, err := d.RelayPackets(context.Background(), nil); err != nil || committed != 0 {
 		t.Fatalf("empty relay must be a no-op, got %v", err)
 	}
 }

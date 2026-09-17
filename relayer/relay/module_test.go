@@ -1,8 +1,11 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -65,9 +68,14 @@ func (m *mockSource) NonMembershipProof(_ context.Context, _ []byte, height uint
 }
 
 type mockDest struct {
-	updates   []chain.ClientUpdate // recorded UpdateClient calls
-	updateErr error                // if set, UpdateClient returns it
-	relayed   []chain.RelayPacket  // recorded RelayPackets calls
+	updates    []chain.ClientUpdate // recorded UpdateClient calls
+	updateErr  error                // if set, UpdateClient returns it
+	relayed    []chain.RelayPacket  // recorded RelayPackets calls
+	relayCalls int                  // number of RelayPackets invocations (multicall folding check)
+	relayErr   error                // if set, RelayPackets returns it (transient)
+	// relayCommit is how many packets a FAILING RelayPackets reports as already on
+	// chain, so a partial commit can be driven. Read only when relayErr is set.
+	relayCommit int
 	// hasReceipt / receiptErr drive HasPacketReceipt for the flush tests: an
 	// outstanding source commitment does not say whether the destination already
 	// delivered the packet, so the flush asks.
@@ -77,8 +85,6 @@ type mockDest struct {
 	// and falls back to hasReceipt once exhausted. It is how a test makes a packet
 	// become delivered BETWEEN the flush's two receipt checks.
 	receiptAnswers []bool
-	relayCalls     int   // number of RelayPackets invocations (multicall folding check)
-	relayErr       error // if set, RelayPackets returns it (transient)
 	// poison: Raw payload -> this packet deterministically reverts any batch it is
 	// in (chain.Permanent), like a timed-out/duplicate packet in a real multicall.
 	poison map[string]bool
@@ -98,18 +104,29 @@ func (m *mockDest) UpdateClient(_ context.Context, _ string, u chain.ClientUpdat
 	m.updates = append(m.updates, u)
 	return nil
 }
-func (m *mockDest) RelayPackets(_ context.Context, packets []chain.RelayPacket) error {
+func (m *mockDest) RelayPackets(_ context.Context, packets []chain.RelayPacket) (int, error) {
 	m.relayCalls++
 	if m.relayErr != nil {
-		return m.relayErr
+		// A reported prefix has to be RECORDED as relayed too. A stub that claims
+		// a commit without delivering anything would let the engine mis-settle and
+		// still pass.
+		//
+		// The COUNT is returned unclamped on purpose. Clamping it here would make
+		// the stub incapable of the contract violation one subtest is about, and
+		// that subtest would then pass with the engine's own clamp deleted. Only
+		// the recording is bounded: a stub cannot deliver what it was not given.
+		m.relayed = append(m.relayed, packets[:min(m.relayCommit, len(packets))]...)
+		return m.relayCommit, m.relayErr
 	}
 	for _, p := range packets {
 		if m.poison[string(p.Packet)] {
-			return chain.Permanent(errors.New("poison packet reverted the batch"))
+			// This mock is an EVM destination: one multicall, so a revert commits
+			// nothing.
+			return 0, chain.Permanent(errors.New("poison packet reverted the batch"))
 		}
 	}
 	m.relayed = append(m.relayed, packets...)
-	return nil
+	return len(packets), nil
 }
 func (m *mockDest) HasPacketReceipt(context.Context, []byte) (bool, error) {
 	if len(m.receiptAnswers) > 0 {
@@ -492,16 +509,16 @@ type transientOnIsolate struct {
 	transientFor string
 }
 
-func (d *transientOnIsolate) RelayPackets(_ context.Context, packets []chain.RelayPacket) error {
+func (d *transientOnIsolate) RelayPackets(_ context.Context, packets []chain.RelayPacket) (int, error) {
 	for _, p := range packets {
 		if string(p.Packet) == d.poison {
-			return chain.Permanent(errors.New("poison"))
+			return 0, chain.Permanent(errors.New("poison")) // one multicall: nothing lands
 		}
 	}
 	if len(packets) == 1 && string(packets[0].Packet) == d.transientFor {
-		return errors.New("rpc blip") // transient
+		return 0, errors.New("rpc blip") // transient
 	}
-	return nil
+	return len(packets), nil
 }
 
 // TestHandleBatch_CancelledContextRelaysNothing verifies that a cancelled context
@@ -1971,6 +1988,93 @@ func TestAckWatch(t *testing.T) {
 	})
 }
 
+// A destination can commit part of a batch and then fail: a Cosmos batch that
+// splits submits its leading sub-batches, and the node can go away between two
+// of them. Those packets are on chain.
+//
+// Before the committed count reached the engine, both endings were wrong for
+// them. The transient ending re-queued the whole batch, so the delivered packets
+// were submitted a second time — and then reverted as duplicates, which the
+// engine reads as permanent and reports as DROP for packets that were in fact
+// delivered. The permanent ending isolated all of them, one wasted transaction
+// each, with the same misleading DROP.
+func TestHandleBatch_PartialCommit(t *testing.T) {
+	batch := []chain.Event{
+		{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")},
+		{Type: chain.SendPacket, Height: 8, Raw: []byte("send-2")},
+		{Type: chain.SendPacket, Height: 9, Raw: []byte("send-3")},
+	}
+
+	run := func(t *testing.T, dst *mockDest) (requeue []int, untracked [][]byte) {
+		t.Helper()
+		m := NewModule("test", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{},
+			WithPacketTracker(
+				func([]byte, uint64) bool { return true },
+				func(pkt []byte) { untracked = append(untracked, pkt) },
+			),
+		)
+		return m.handleBatch(context.Background(), batch), untracked
+	}
+
+	t.Run("a transient failure re-queues only the uncommitted tail", func(t *testing.T) {
+		dst := &mockDest{relayErr: errors.New("node went away"), relayCommit: 2}
+		requeue, untracked := run(t, dst)
+
+		if len(requeue) != 1 || requeue[0] != 2 {
+			t.Fatalf("requeue = %v, want only index 2; the first two are already on chain", requeue)
+		}
+		if len(untracked) != 2 {
+			t.Fatalf("untracked %d packet(s) (%q), want the 2 that were committed", len(untracked), untracked)
+		}
+		if dst.relayCalls != 1 {
+			t.Fatalf("relay calls = %d, want 1; a transient failure must not start isolating", dst.relayCalls)
+		}
+	})
+
+	t.Run("a permanent failure isolates only the uncommitted tail", func(t *testing.T) {
+		dst := &mockDest{relayErr: chain.Permanent(errors.New("reverted")), relayCommit: 2}
+		requeue, untracked := run(t, dst)
+
+		// The tail is a single packet, so it is dropped outright rather than
+		// isolated — and the committed two must not be dropped with it.
+		if len(requeue) != 0 {
+			t.Fatalf("requeue = %v, want none: two landed and the third is permanently dead", requeue)
+		}
+		if len(untracked) != 2 {
+			t.Fatalf("untracked %d packet(s) (%q), want the 2 that were committed", len(untracked), untracked)
+		}
+		if dst.relayCalls != 1 {
+			t.Fatalf("relay calls = %d, want 1; the committed prefix must not be re-submitted for isolation", dst.relayCalls)
+		}
+	})
+
+	t.Run("a batch that fully committed before the error re-queues nothing", func(t *testing.T) {
+		dst := &mockDest{relayErr: errors.New("receipt wait timed out"), relayCommit: 3}
+		requeue, untracked := run(t, dst)
+
+		if len(requeue) != 0 {
+			t.Fatalf("requeue = %v, want none: every packet is on chain", requeue)
+		}
+		if len(untracked) != 3 {
+			t.Fatalf("untracked %d packet(s), want all 3", len(untracked))
+		}
+	})
+
+	t.Run("a count larger than the batch is clamped, not indexed with", func(t *testing.T) {
+		// An adapter breaking the contract must not take the relay loop down with
+		// a slice bounds panic.
+		dst := &mockDest{relayErr: errors.New("node went away"), relayCommit: 99}
+		requeue, untracked := run(t, dst)
+
+		if len(requeue) != 0 {
+			t.Fatalf("requeue = %v, want none after clamping", requeue)
+		}
+		if len(untracked) != 3 {
+			t.Fatalf("untracked %d packet(s), want at most the 3 in the batch", len(untracked))
+		}
+	})
+}
+
 func TestFlushOnce(t *testing.T) {
 	send := chain.Event{Type: chain.SendPacket, Sequence: 7, Height: 40, Raw: []byte("old-packet")}
 
@@ -2235,6 +2339,267 @@ func TestHandleBatch_FoldedPathClimbsAChurnGapInOneFlush(t *testing.T) {
 	})
 }
 
+// C4 asks for a decision, not a default: the retry spacing after a failed
+// refresh must be stated and bounded. The bound is what makes backing off safe
+// here -- the loop exists to act inside the refresh margin, so a backoff that can
+// grow past it trades a gas leak for an expired client.
+func TestNextRefreshBackoff(t *testing.T) {
+	// A long trusting period, so the margin is the default hour and the ceiling
+	// is what bounds the backoff. The short-period case is the test below.
+	const longPeriod = 24 * time.Hour
+	ceiling := refreshBackoffMaxFor(longPeriod)
+
+	t.Run("the first failure waits one tick, then doubles", func(t *testing.T) {
+		first := nextRefreshBackoff(0, longPeriod)
+		if first != refreshTick {
+			t.Fatalf("first backoff = %s, want one tick (%s)", first, refreshTick)
+		}
+		if second := nextRefreshBackoff(first, longPeriod); second != 2*first {
+			t.Fatalf("second backoff = %s, want %s: a retry that waits the same as the last one is not spacing out",
+				second, 2*first)
+		}
+	})
+
+	t.Run("it stops at the cap", func(t *testing.T) {
+		if got := nextRefreshBackoff(ceiling, longPeriod); got != ceiling {
+			t.Fatalf("backoff grew past the cap to %s, want %s", got, ceiling)
+		}
+		if got := nextRefreshBackoff(ceiling*4, longPeriod); got != ceiling {
+			t.Fatalf("backoff = %s from above the cap, want it clamped to %s", got, ceiling)
+		}
+	})
+}
+
+// The constraint C4 states outright, checked at EVERY trusting period rather than
+// at the one the fixed margin used to be.
+//
+// Found in review by @neitdung: the cap was a fixed five minutes, written when
+// the margin was a fixed thirty. main derives the margin from the destination's
+// own trusting period, so at twenty minutes or less the margin is five minutes or
+// less and one backoff step could span the whole window -- the anti-expiry
+// routine sitting out exactly the period it exists for. A fixed cap cannot be
+// made safe by choosing a smaller number, because the margin has no lower bound
+// that a constant can stay under; the cap has to be derived from the same input.
+func TestRefreshBackoffStaysInsideTheWindowAtEveryTrustingPeriod(t *testing.T) {
+	for _, trustingPeriod := range []time.Duration{
+		0, // the destination reports none: the default margin stands in
+		30 * time.Second, 2 * time.Minute, 4 * time.Minute, 10 * time.Minute,
+		20 * time.Minute, time.Hour, 4 * time.Hour, 14 * 24 * time.Hour,
+	} {
+		t.Run(trustingPeriod.String(), func(t *testing.T) {
+			margin := refreshMarginFor(trustingPeriod)
+			cap := refreshBackoffMaxFor(trustingPeriod)
+			if cap >= margin {
+				t.Fatalf("backoff cap %s is not below the margin %s; one gap could span the window the loop exists to work inside",
+					cap, margin)
+			}
+
+			attempts := 0
+			for elapsed, backoff := time.Duration(0), time.Duration(0); elapsed < margin; attempts++ {
+				backoff = nextRefreshBackoff(backoff, trustingPeriod)
+				elapsed += backoff
+			}
+			if attempts < 4 {
+				t.Fatalf("only %d attempts fit in the %s window (cap %s); the cap is too high to be an emergency routine",
+					attempts, margin, cap)
+			}
+		})
+	}
+}
+
+// The wiring half: the loop must actually space its attempts out. The pure
+// function above can be perfect while the loop calls it and ignores the answer.
+func TestRefreshLoop_BacksOffWhenRefreshKeepsFailing(t *testing.T) {
+	withFastRefreshTick(t) // 1ms, so the backoff doubles in milliseconds
+
+	src := &mockSource{latest: 42}
+	dst := &countingExpiryDest{expiresErr: errors.New("rpc down")}
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); m.refreshLoop(ctx) }()
+
+	const window = 300 * time.Millisecond
+	time.Sleep(window)
+	cancel()
+	wg.Wait()
+
+	attempts := dst.calls()
+	// Unspaced, a 1ms tick would try ~300 times in this window. Backing off 1, 2,
+	// 4, 8 ... reaches 300ms in nine attempts. The bound is loose because the
+	// scheduler is not, but it cannot be met by a loop that ignores the backoff.
+	if attempts > 30 {
+		t.Fatalf("%d attempts in %s: the loop is retrying on every tick, not backing off", attempts, window)
+	}
+	if attempts < 2 {
+		t.Fatalf("%d attempts in %s: the loop stopped retrying altogether", attempts, window)
+	}
+}
+
+// Backing off must not wedge the loop: once the cause clears, the client still
+// gets advanced. A backoff that outlived its failure would be the expired-client
+// outcome the cap exists to prevent, arriving by another route.
+func TestRefreshLoop_RecoversAfterTheFailureClears(t *testing.T) {
+	withFastRefreshTick(t)
+
+	src := &mockSource{latest: 42}
+	dst := &countingExpiryDest{expiresErr: errors.New("rpc down")}
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); m.refreshLoop(ctx) }()
+
+	waitFor(t, ctx, func() bool { return dst.calls() >= 3 }, "the loop never made its first few attempts")
+	dst.heal(time.Now().Add(time.Minute)) // inside refreshMargin, so a refresh is due
+
+	waitFor(t, ctx, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.lastHeight == 42
+	}, "the loop never advanced the client after the failure cleared; the backoff outlived its cause")
+	cancel()
+	wg.Wait()
+}
+
+// A backoff that survives its own cause is a slow leak: a client that failed a
+// dozen times last week and recovered would wait the full cap before its next
+// isolated blip is retried, inside a window that exists to keep trying.
+func TestRefreshLoop_BackoffDoesNotOutliveItsCause(t *testing.T) {
+	withFastRefreshTick(t)
+
+	src := &mockSource{latest: 42}
+	dst := &countingExpiryDest{expiresErr: errors.New("rpc down")}
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); m.refreshLoop(ctx) }()
+
+	// Ten failures at a 1ms tick take the backoff to roughly half a second, which
+	// is what makes the difference below measurable rather than theoretical.
+	waitFor(t, ctx, func() bool { return dst.calls() >= 10 }, "the loop never accumulated a backoff to clear")
+	dst.heal(time.Now().Add(time.Minute))
+	waitFor(t, ctx, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.lastHeight == 42
+	}, "the loop never recovered")
+
+	// Break it again. With the backoff cleared by the success, the next attempts
+	// are one tick apart; carried over, the first would be half a second away.
+	before := dst.calls()
+	dst.fail(errors.New("rpc down again"))
+	deadline, ok := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer ok()
+	promptly := true
+	waitForSoft(deadline, func() bool { return dst.calls() >= before+3 }, &promptly)
+	if !promptly {
+		t.Fatalf("only %d attempts in 300ms after a fresh failure; the backoff was carried over from the outage that already ended",
+			dst.calls()-before)
+	}
+	cancel()
+	wg.Wait()
+}
+
+// waitForSoft is waitFor without the t.Fatal: the caller decides what a timeout
+// means, because here it is the assertion rather than a broken test.
+func waitForSoft(ctx context.Context, cond func() bool, ok *bool) {
+	for {
+		if cond() {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			*ok = false
+			return
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+// D5: three states, and two of them used to be silence. An operator reading the
+// log could not tell "the client has hours left" from "it has minutes left and
+// the last refresh worked".
+func TestRefreshLoop_SaysWhatItIsDoing(t *testing.T) {
+	withFastRefreshTick(t)
+
+	var logs bytes.Buffer
+	oldOutput := log.Writer()
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(oldOutput) })
+
+	src := &mockSource{latest: 42}
+	dst := &mockDest{expiresAt: time.Now().Add(time.Minute)} // inside refreshMargin
+	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); m.refreshLoop(ctx) }()
+	waitFor(t, ctx, func() bool {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		return m.lastHeight == 42
+	}, "the refresh loop never advanced the client")
+	cancel()
+	wg.Wait()
+
+	out := logs.String()
+	if !strings.Contains(out, "client expires in") {
+		t.Errorf("no line saying a refresh was due, so a due refresh is indistinguishable from a healthy client:\n%s", out)
+	}
+	if !strings.Contains(out, "advanced the client to height 42") {
+		t.Errorf("no line saying the refresh succeeded, so success is indistinguishable from failure:\n%s", out)
+	}
+	if !strings.Contains(out, "of trust left") {
+		t.Errorf("the lines carry no remaining lifetime, which is the number an operator is reading for:\n%s", out)
+	}
+}
+
+// countingExpiryDest counts expiry queries -- one per refresh ATTEMPT, since it
+// is the first call the loop makes -- and can be healed mid-test.
+type countingExpiryDest struct {
+	mockDest
+	mu             sync.Mutex
+	n              int
+	expiresErr     error
+	expiresAt      time.Time
+	trustingPeriod time.Duration
+}
+
+func (d *countingExpiryDest) ClientExpiresAt(context.Context, string) (time.Time, time.Duration, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.n++
+	return d.expiresAt, d.trustingPeriod, d.expiresErr
+}
+
+func (d *countingExpiryDest) calls() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.n
+}
+
+func (d *countingExpiryDest) heal(expiresAt time.Time) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.expiresErr, d.expiresAt = nil, expiresAt
+}
+
+func (d *countingExpiryDest) fail(err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.expiresErr = err
+}
+
 func TestFlushLoop_RunsImmediately(t *testing.T) {
 	src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}}
 	m := NewModule("cosmos->eth", "client-0", src, &mockDest{}, &mockBuilder{})
@@ -2437,6 +2802,67 @@ func TestHandleBatch_FoldedUpdateRejectionDoesNotDropInnocentPackets(t *testing.
 		}
 		if m.lastHeight != 80 {
 			t.Fatalf("lastHeight = %d, want 80: the standalone update installed", m.lastHeight)
+		}
+	})
+}
+
+// A failing expiry query must keep sizing its retry against THIS client's margin.
+//
+// Reported by @DongLieu on #487, against the commit that fixed the same class of
+// bug one line away. The failure path passed a zero trusting period, which falls
+// back to the default margin, whose cap is the five-minute ceiling. On a
+// ten-minute trusting period the real margin is 2m30s, so a run of query failures
+// could schedule a retry spanning twice the window the loop exists to work
+// inside -- and a query that keeps failing is exactly the case where no later
+// pass arrives to narrow it.
+func TestRefreshBackoffKeepsTheLastKnownTrustingPeriodWhenTheQueryFails(t *testing.T) {
+	const trustingPeriod = 10 * time.Minute
+
+	// The rule. A failing query must not fall back to the default margin's cap,
+	// because that cap is the larger one for every short trusting period.
+	t.Run("the default cap is the wrong size for a short period", func(t *testing.T) {
+		margin := refreshMarginFor(trustingPeriod)
+		if refreshBackoffMaxFor(0) < margin {
+			t.Fatal("the default cap already fits inside this margin; there would be nothing to fix")
+		}
+		if refreshBackoffMaxFor(trustingPeriod) >= margin {
+			t.Fatalf("this client's own cap %s does not fit inside its %s margin",
+				refreshBackoffMaxFor(trustingPeriod), margin)
+		}
+	})
+
+	// The wiring, asserted structurally. Driving the loop to saturation is not
+	// practical here: the backoff starts at one tick and doubles, so reaching a
+	// 37s cap takes about fifteen failures and the loop SLEEPS each backoff in
+	// between -- minutes of wall clock for one assertion. The early spacings are
+	// identical whichever period is passed, so a log-reading test passes against
+	// the bug; I tried that first and the mutation walked through it.
+	//
+	// So the assertion is on the call site, the same technique services uses for
+	// fsync: the property is invisible from outside at test speed, and a test that
+	// cannot see it should say which half it is pinning.
+	t.Run("the failure path passes the remembered period, not zero", func(t *testing.T) {
+		src, err := os.ReadFile("module.go")
+		if err != nil {
+			t.Fatalf("read module.go: %v", err)
+		}
+		body := string(src)
+		start := strings.Index(body, "func (m *Module) refreshLoop(")
+		if start < 0 {
+			t.Fatal("refreshLoop not found")
+		}
+		end := strings.Index(body[start:], "\nfunc ")
+		if end < 0 {
+			end = len(body) - start
+		}
+		fn := body[start : start+end]
+
+		if !strings.Contains(fn, "lastTrustingPeriod = trustingPeriod") {
+			t.Error("refreshLoop does not remember the period it read, so a failing query has nothing to size with")
+		}
+		if !strings.Contains(fn, `refreshFailed(backoff, lastTrustingPeriod, "query client expiry"`) {
+			t.Error("the expiry-query failure path does not size its retry with the remembered trusting period; " +
+				"falling back to the default lets the backoff span the refresh window on a short-lived client")
 		}
 	})
 }

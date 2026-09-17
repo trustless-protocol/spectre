@@ -76,3 +76,22 @@ func (e *BatchPartialError) Error() string {
 func (e *BatchPartialError) Unwrap() error {
 	return e.Err
 }
+
+// CommittedBeforeFailure reads the delivered prefix out of a batch failure.
+//
+// A split batch can commit its leading sub-batches and then fail, and that count
+// is the only thing that tells a caller how much of its batch to re-queue.
+// Dropping it forces the caller to choose between re-submitting what was already
+// delivered and discarding what was not.
+//
+// Any other error means nothing was delivered: the send either never reached a
+// transaction or the single transaction it built failed as a whole. It lives here
+// rather than in an adapter because both Cosmos-bound destinations need it and
+// both already depend on this package.
+func CommittedBeforeFailure(err error) int {
+	var partial *BatchPartialError
+	if errors.As(err, &partial) && partial.SucceededCount > 0 {
+		return partial.SucceededCount
+	}
+	return 0
+}
