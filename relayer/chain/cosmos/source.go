@@ -54,6 +54,10 @@ type Source struct {
 	// starves every later packet permanently. Touched only from UnrelayedPackets,
 	// which the relay module calls on one goroutine.
 	flushCursor uint64
+	// ackProbeCursor is the same rotation for the acknowledgement leg, over the
+	// EVM router's commitments rather than this chain's: the lowest sequence the
+	// last probe reached, 0 meaning "start from the newest".
+	ackProbeCursor uint64
 }
 
 // NewSource wires the Cosmos source to its endpoints and the shared batch builder.

@@ -131,9 +131,9 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		relay.WithAckWatch(0, 0, ackDue, ackSettled, svc.OverdueAcks),
 		// The enumeration backstop. The block scan only ever sees its own window,
 		// so a lost cursor, an outage longer than the window, or a second relayer
-		// joining this path all leave older packets invisible to it. Only the
-		// Cosmos source implements chain.PacketLister today; the option is inert
-		// on a source that does not.
+		// joining this path all leave older packets invisible to it. The Cosmos
+		// source lists its outstanding sends and the acknowledgements it wrote
+		// for ETH sends; the ETH source below does the mirror.
 		relay.WithPacketFlush(0),
 		// Force-rotate the pinned validator set on a fixed cadence so it never
 		// decays below quorum during a quiet period. ETH->Cosmos needs no
@@ -156,6 +156,10 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		// twice. nil leaves the loop unstarted (see Module.Run) while the debt
 		// recording and settlement still happen on this side.
 		relay.WithAckWatch(0, 0, ackDue, ackSettled, nil),
+		// The enumeration backstop for this direction: ETH sends the router still
+		// holds a commitment for, and acknowledgements it wrote for Cosmos sends
+		// that Cosmos still holds a commitment for.
+		relay.WithPacketFlush(0),
 	)
 
 	// Both modules, one services instance: the queues are shared, so registering

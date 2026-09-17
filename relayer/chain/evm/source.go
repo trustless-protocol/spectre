@@ -34,6 +34,11 @@ type Source struct {
 	logger      *log.Logger
 	bb          *services.BatchBuilder
 	recovery    *services.RecoveryStateStore
+
+	// flush is the enumeration backstop's cursors and log-range policy; see
+	// flush.go. Touched only from UnrelayedPackets, which the relay module calls
+	// on one goroutine.
+	flush flushState
 }
 
 // NewSource wires the Ethereum source to its endpoints and the shared batch builder.

@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
-	"testing"
-	"time"
-
 	"relayer/relay"
 	"relayer/services"
 	"relayer/status"
+	"strings"
+	"testing"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -108,7 +107,7 @@ func render(t *testing.T, snap status.Snapshot) string {
 // The config line is owed only when the file is read. --addr skips the file, so
 // a line naming it there would be the wrong-file misdirection the line exists to
 // prevent.
-func TestStatusTargetNamesTheConfigOnlyWhenItReadsOne(t *testing.T) {
+func TestStatusTarget_NamesTheConfigOnlyWhenItReadsOne(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "config.json")

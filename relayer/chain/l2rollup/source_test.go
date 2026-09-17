@@ -1,19 +1,19 @@
 package l2rollup
 
 import (
+	"attestor/types/attestation"
+	attestorpb "attestor/types/attestor"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"relayer/chain"
+	"relayer/chain/chaintest"
+	relayerclient "relayer/client"
 	"testing"
 	"time"
-
-	"attestor/types/attestation"
-	attestorpb "attestor/types/attestor"
-	"relayer/chain"
-	relayerclient "relayer/client"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -110,44 +110,106 @@ func newAttestedSource(kind HeadKind, at *fakeAttestor) *Source {
 	return NewSource(chain.ChainType("opstack"), nil, kind, "07-tendermint-0", "08-wasm-0", "op-sepolia", ethcommon.Address{}, at, kind != Finalized)
 }
 
-func TestRelayableHeight_UsesAttestedFrontier(t *testing.T) {
-	at := &fakeAttestor{root: &attestorpb.AttestedRoot{L2BlockNumber: 100}, found: true}
-	got, err := newAttestedSource(Safe, at).RelayableHeight(context.Background())
-	if err != nil {
-		t.Fatalf("relayable height: %v", err)
-	}
-	if got != 100 {
-		t.Fatalf("relayable height = %d, want 100", got)
-	}
-	if !at.attestedUpCalled || at.gotSrcChain != "op-sepolia" {
-		t.Fatalf("attestor not queried with src chain: %+v", at)
-	}
+func TestRelayableHeight(t *testing.T) {
+	t.Run("uses attested frontier", func(t *testing.T) {
+		at := &fakeAttestor{root: &attestorpb.AttestedRoot{L2BlockNumber: 100}, found: true}
+		got, err := newAttestedSource(Safe, at).RelayableHeight(context.Background())
+		if err != nil {
+			t.Fatalf("relayable height: %v", err)
+		}
+		if got != 100 {
+			t.Fatalf("relayable height = %d, want 100", got)
+		}
+		if !at.attestedUpCalled || at.gotSrcChain != "op-sepolia" {
+			t.Fatalf("attestor not queried with src chain: %+v", at)
+		}
+	})
+
+	t.Run("uses quorum when first attestor hangs", func(t *testing.T) {
+		blocked := make(chan struct{})
+		attestors := []SigningAttestor{
+			{Index: 0, Client: &fakeAttestor{frontierBlock: blocked}},
+			{Index: 1, Client: &fakeAttestor{root: &attestorpb.AttestedRoot{L2BlockNumber: 100}, found: true}},
+			{Index: 2, Client: &fakeAttestor{root: &attestorpb.AttestedRoot{L2BlockNumber: 90}, found: true}},
+		}
+		frontier, err := NewQuorumAttestationFrontier(attestors, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := NewSource(chain.ChainType("opstack"), nil, Safe, "07-tendermint-0", "08-wasm-0", "op-sepolia", ethcommon.Address{}, frontier, true)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		got, err := source.RelayableHeight(ctx)
+		if err != nil {
+			t.Fatalf("healthy frontier quorum blocked by first endpoint: %v", err)
+		}
+		if got != 90 {
+			t.Fatalf("relayable height = %d, want quorum minimum 90", got)
+		}
+	})
+
+	// TestRelayableHeight/not attested yet: before the first attestation the source must
+	// report 0 (nothing relayable) — never a raw head — so the module waits.
+	t.Run("not attested yet", func(t *testing.T) {
+		at := &fakeAttestor{found: false}
+		got, err := newAttestedSource(Finalized, at).RelayableHeight(context.Background())
+		if err != nil {
+			t.Fatalf("relayable height: %v", err)
+		}
+		if got != 0 {
+			t.Fatalf("relayable height = %d, want 0 (not yet attested)", got)
+		}
+	})
+
+	t.Run("error propagates", func(t *testing.T) {
+		at := &fakeAttestor{err: errors.New("attestor down")}
+		_, err := newAttestedSource(Safe, at).RelayableHeight(context.Background())
+		if err == nil {
+			t.Fatal("expected attestor error to propagate")
+		}
+	})
+
+	// TestRelayableHeight/provisional mapping locks the head-kind → include_provisional
+	// contract: only Finalized demands non-provisional (finalized) roots.
+	t.Run("provisional mapping", func(t *testing.T) {
+		cases := map[HeadKind]bool{
+			Unsafe:    true,
+			Safe:      true,
+			Finalized: false,
+		}
+		for kind, wantProvisional := range cases {
+			at := &fakeAttestor{root: &attestorpb.AttestedRoot{L2BlockNumber: 1}, found: true}
+			if _, err := newAttestedSource(kind, at).RelayableHeight(context.Background()); err != nil {
+				t.Fatalf("kind %d: %v", kind, err)
+			}
+			if at.gotProvisional != wantProvisional {
+				t.Fatalf("kind %d: include_provisional = %v, want %v", kind, at.gotProvisional, wantProvisional)
+			}
+		}
+	})
+
+	// found=false is the row that is NOT an error. It must not be classified, must
+	// not be logged as a failure, and must not cost a retry budget: it means the
+	// attestor has attested nothing yet, which is the same "not yet" as a height that
+	// has not caught up.
+	t.Run("treats nothing attested as waiting", func(t *testing.T) {
+		buf := captureLog(t)
+		s := &Source{attestor: &fakeAttestor{}, srcChainID: "base"}
+
+		height, err := s.RelayableHeight(context.Background())
+		if err != nil {
+			t.Fatalf("nothing attested yet returned an error: %v", err)
+		}
+		if height != 0 {
+			t.Fatalf("relayable height = %d, want 0 so the module waits", height)
+		}
+		if buf.Len() != 0 {
+			t.Fatalf("waiting produced log output: %q; this fires every flush and buries real errors", buf.String())
+		}
+	})
 }
 
-func TestRelayableHeight_UsesQuorumWhenFirstAttestorHangs(t *testing.T) {
-	blocked := make(chan struct{})
-	attestors := []SigningAttestor{
-		{Index: 0, Client: &fakeAttestor{frontierBlock: blocked}},
-		{Index: 1, Client: &fakeAttestor{root: &attestorpb.AttestedRoot{L2BlockNumber: 100}, found: true}},
-		{Index: 2, Client: &fakeAttestor{root: &attestorpb.AttestedRoot{L2BlockNumber: 90}, found: true}},
-	}
-	frontier, err := NewQuorumAttestationFrontier(attestors, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := NewSource(chain.ChainType("opstack"), nil, Safe, "07-tendermint-0", "08-wasm-0", "op-sepolia", ethcommon.Address{}, frontier, true)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	got, err := source.RelayableHeight(ctx)
-	if err != nil {
-		t.Fatalf("healthy frontier quorum blocked by first endpoint: %v", err)
-	}
-	if got != 90 {
-		t.Fatalf("relayable height = %d, want quorum minimum 90", got)
-	}
-}
-
-func TestQuorumFrontier_WaitsWhenReachableMembersHaveNotAttested(t *testing.T) {
+func TestQuorumAttestationFrontier_WaitsWhenReachableMembersHaveNotAttested(t *testing.T) {
 	frontier, err := NewQuorumAttestationFrontier([]SigningAttestor{
 		{Index: 0, Client: &fakeAttestor{found: false}},
 		{Index: 1, Client: &fakeAttestor{found: false}},
@@ -162,7 +224,7 @@ func TestQuorumFrontier_WaitsWhenReachableMembersHaveNotAttested(t *testing.T) {
 	}
 }
 
-func TestQuorumFrontier_ClassifiesImpossiblePermanentQuorum(t *testing.T) {
+func TestQuorumAttestationFrontier_ClassifiesImpossiblePermanentQuorum(t *testing.T) {
 	frontier, err := NewQuorumAttestationFrontier([]SigningAttestor{
 		{Index: 0, Client: &fakeAttestor{err: fmt.Errorf("%w: bad route", ErrAttestorUnknownRoute)}},
 		{Index: 1, Client: &fakeAttestor{found: false}},
@@ -173,46 +235,6 @@ func TestQuorumFrontier_ClassifiesImpossiblePermanentQuorum(t *testing.T) {
 	_, _, queryErr := frontier.AttestedUpTo(context.Background(), "op", true)
 	if queryErr == nil || !errors.Is(queryErr, ErrAttestorUnknownRoute) || !chain.IsPermanent(queryErr) {
 		t.Fatalf("error = %v, want permanent impossible quorum", queryErr)
-	}
-}
-
-// TestRelayableHeight_NotAttestedYet: before the first attestation the source must
-// report 0 (nothing relayable) — never a raw head — so the module waits.
-func TestRelayableHeight_NotAttestedYet(t *testing.T) {
-	at := &fakeAttestor{found: false}
-	got, err := newAttestedSource(Finalized, at).RelayableHeight(context.Background())
-	if err != nil {
-		t.Fatalf("relayable height: %v", err)
-	}
-	if got != 0 {
-		t.Fatalf("relayable height = %d, want 0 (not yet attested)", got)
-	}
-}
-
-func TestRelayableHeight_ErrorPropagates(t *testing.T) {
-	at := &fakeAttestor{err: errors.New("attestor down")}
-	_, err := newAttestedSource(Safe, at).RelayableHeight(context.Background())
-	if err == nil {
-		t.Fatal("expected attestor error to propagate")
-	}
-}
-
-// TestRelayableHeight_ProvisionalMapping locks the head-kind → include_provisional
-// contract: only Finalized demands non-provisional (finalized) roots.
-func TestRelayableHeight_ProvisionalMapping(t *testing.T) {
-	cases := map[HeadKind]bool{
-		Unsafe:    true,
-		Safe:      true,
-		Finalized: false,
-	}
-	for kind, wantProvisional := range cases {
-		at := &fakeAttestor{root: &attestorpb.AttestedRoot{L2BlockNumber: 1}, found: true}
-		if _, err := newAttestedSource(kind, at).RelayableHeight(context.Background()); err != nil {
-			t.Fatalf("kind %d: %v", kind, err)
-		}
-		if at.gotProvisional != wantProvisional {
-			t.Fatalf("kind %d: include_provisional = %v, want %v", kind, at.gotProvisional, wantProvisional)
-		}
 	}
 }
 
@@ -289,4 +311,21 @@ func TestL2StorageProof(t *testing.T) {
 			t.Fatalf("value = %v, want the slot contents left-padded", got.Value)
 		}
 	})
+}
+
+// The adapter contract suite. Everything asserted here is asserted identically
+// on the other two adapters: adding a fourth chain is a package plus this file.
+func TestAdapterContract(t *testing.T) {
+	chaintest.RunSourceContract(t, chaintest.SourceFixture{Name: "l2rollup", Unwired: &Source{chainType: chain.OPStack}})
+	chaintest.RunDestinationContract(t, chaintest.DestinationFixture{Name: "l2rollup", Unwired: &Destination{}})
+}
+
+func TestWithLogScanChunk_IsRecorded(t *testing.T) {
+	s := (&Source{}).WithLogScanChunk(10)
+	if s.logScanChunk != 10 {
+		t.Fatalf("logScanChunk = %d, want 10", s.logScanChunk)
+	}
+	if (&Source{}).WithLogScanChunk(0).logScanChunk != 0 {
+		t.Fatal("zero must stay zero — that is the unchunked default")
+	}
 }

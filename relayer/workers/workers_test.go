@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-func TestWorkerGroupDrainsAndNamesStuckWorkers(t *testing.T) {
+func TestDrain_WorkerGroupDrainsAndNamesStuckWorkers(t *testing.T) {
 	g := New()
 	done := make(chan struct{})
 	g.Go("subscriber", func() { <-done })

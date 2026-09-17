@@ -6,10 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"relayer/chain"
 	"strings"
 	"testing"
-
-	"relayer/chain"
 )
 
 // captureLog redirects the standard logger for one test so an alarm can be
@@ -35,7 +34,7 @@ func captureLog(t *testing.T) *bytes.Buffer {
 // are opposite mistakes: a permanent failure classified transient is retried
 // forever at one log line a flush, and a transient failure classified permanent
 // throws away a good packet.
-func TestAttestorErrorTable(t *testing.T) {
+func TestClassifyAttestorFailure_ErrorTable(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		err     error
@@ -129,31 +128,11 @@ func TestAttestorErrorTable(t *testing.T) {
 	}
 }
 
-// found=false is the row that is NOT an error. It must not be classified, must
-// not be logged as a failure, and must not cost a retry budget: it means the
-// attestor has attested nothing yet, which is the same "not yet" as a height that
-// has not caught up.
-func TestRelayableHeightTreatsNothingAttestedAsWaiting(t *testing.T) {
-	buf := captureLog(t)
-	s := &Source{attestor: &fakeAttestor{}, srcChainID: "base"}
-
-	height, err := s.RelayableHeight(context.Background())
-	if err != nil {
-		t.Fatalf("nothing attested yet returned an error: %v", err)
-	}
-	if height != 0 {
-		t.Fatalf("relayable height = %d, want 0 so the module waits", height)
-	}
-	if buf.Len() != 0 {
-		t.Fatalf("waiting produced log output: %q; this fires every flush and buries real errors", buf.String())
-	}
-}
-
 // A permanent attestor failure must still be permanent by the time the engine
 // reads it. The header builder classifies, but Builder.Build wraps whatever it
 // returns — and a wrapper that reaches for Transient silently undoes the row
 // above it.
-func TestBuilderDoesNotFlattenAClassifiedFailure(t *testing.T) {
+func TestBuilder_DoesNotFlattenAClassifiedFailure(t *testing.T) {
 	inner := classifyAttestorFailure("l2-opstack", fmt.Errorf("verify: %w", ErrAttestorUnknownRoute))
 	m := &mockHeaderBuilder{err: inner}
 

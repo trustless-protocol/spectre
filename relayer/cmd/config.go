@@ -173,7 +173,7 @@ type batchConfig struct {
 // there was no HTTP endpoint and no way for log_level to affect anything. Configs
 // that still carry the block keep loading, because encoding/json ignores unknown
 // members and nothing here sets DisallowUnknownFields (pinned by
-// TestLoadConfig_IgnoresLegacyServerBlock).
+// TestLoadConfig/ignores legacy server block).
 //
 // status_address is the one member that now HAS a reader, and it is flat rather
 // than a block for exactly that reason: a block invites unread neighbours, which

@@ -9,7 +9,7 @@ import (
 // The predicate that had three copies. Its truth table is short, which is part
 // of why it was easy to write out again each time it was needed -- and why the
 // copies agreed right up until one of them would not have.
-func TestEVMEndpointRouterManagesProofSubmission(t *testing.T) {
+func TestEVMEndpoint_RouterManagesProofSubmission(t *testing.T) {
 	addr := func(b byte) common.Address { return common.Address{b} }
 
 	for _, tc := range []struct {

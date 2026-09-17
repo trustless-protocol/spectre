@@ -2,14 +2,20 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"math/big"
-	"testing"
-
+	"reflect"
 	misbehaviourContract "relayer/bindings/Misbehaviour"
 	spectreContract "relayer/bindings/SpectreClient"
 	updateClientContract "relayer/bindings/UpdateClient"
+	"testing"
+	"time"
 
+	cmted25519 "github.com/cometbft/cometbft/crypto/ed25519"
+	coretypes "github.com/cometbft/cometbft/rpc/core/types"
+	commettypes "github.com/cometbft/cometbft/types"
 	ics23 "github.com/cosmos/ics23/go"
 	"github.com/ethereum/go-ethereum/accounts/abi"
 )
@@ -260,7 +266,7 @@ func TestEncodeConsensusState(t *testing.T) {
 	})
 }
 
-// TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI checks that the manual
+// TestEncodeUpdateApplicationStateMsg_MatchesGeneratedABI checks that the manual
 // ABI tuple (updateApplicationStateMsgType) produces bytes that the abigen-
 // generated UpdateClient.verifyHeader input tuple can round-trip — i.e. the
 // hand-built encoding matches the generated ABI exactly.
@@ -320,7 +326,7 @@ func fullyPopulatedApplicationStateMsg() updateClientContract.ISpectreClientMsgs
 	return msg
 }
 
-func TestEncodeUpdateApplicationStateMsgMatchesGeneratedABI(t *testing.T) {
+func TestEncodeUpdateApplicationStateMsg_MatchesGeneratedABI(t *testing.T) {
 	var validatorsHash [32]byte
 	validatorsHash[0] = 0x88
 	validatorsHash[1] = 0xbe
@@ -547,4 +553,144 @@ func TestEncodeUpdateConsensusStateMsg(t *testing.T) {
 			t.Errorf("commit sig validator address = %x, want %x", got, want)
 		}
 	})
+}
+
+func TestSpectreClientGenesis_PinsNextValidatorSet(t *testing.T) {
+	currentValSet := genesisTestValSet("current", 10, 20, 30)
+	nextValSet := genesisTestValSet("next", 10, 20, 30)
+	if bytes.Equal(currentValSet.Hash(), nextValSet.Hash()) {
+		t.Fatal("test setup requires different current and next validator-set hashes")
+	}
+
+	trustedLightBlock := &LightBlock{
+		SignedHeader: commettypes.SignedHeader{
+			Header: &commettypes.Header{
+				ChainID:            "test-chain-1",
+				Height:             123,
+				Time:               time.Unix(1_700_000_000, 0),
+				ValidatorsHash:     currentValSet.Hash(),
+				NextValidatorsHash: nextValSet.Hash(),
+				AppHash:            []byte("app-hash"),
+			},
+		},
+		ValSet:      currentValSet,
+		NextValSet:  nextValSet,
+		BlockHeight: 123,
+	}
+
+	genesis, err := spectreClientGenesisFromLightBlock(trustedLightBlock, 1_814_400, 0, "2/3", 0)
+	if err != nil {
+		t.Fatalf("unexpected genesis error: %v", err)
+	}
+
+	currentPinned, err := ValidatorSetToContract(currentValSet, "current")
+	if err != nil {
+		t.Fatalf("current ValidatorSetToContract: %v", err)
+	}
+	nextPinned, err := ValidatorSetToContract(nextValSet, "next")
+	if err != nil {
+		t.Fatalf("next ValidatorSetToContract: %v", err)
+	}
+
+	if got, want := genesis.TrustedConsensusState.NextValidatorsHash, bytesToBytes32(nextValSet.Hash()); got != want {
+		t.Fatalf("next validators hash: got %X, want %X", got, want)
+	}
+	if !reflect.DeepEqual(genesis.InitialPinnedValidatorSet, nextPinned) {
+		t.Fatal("initial pinned validator set should come from the trusted light block's next validator set")
+	}
+	if reflect.DeepEqual(genesis.InitialPinnedValidatorSet, currentPinned) {
+		t.Fatal("initial pinned validator set must not come from the current validator set")
+	}
+}
+
+func genesisTestValSet(name string, powers ...int64) commettypes.ValidatorSet {
+	validators := make([]*commettypes.Validator, len(powers))
+	for i, power := range powers {
+		secret := []byte(fmt.Sprintf("%s-%d", name, i))
+		validators[i] = commettypes.NewValidator(cmted25519.GenPrivKeyFromSecret(secret).PubKey(), power)
+	}
+	return *commettypes.NewValidatorSet(validators)
+}
+
+// fakePager is a test double for the CometBFT validators RPC. It paginates a
+// backing slice and records the perPage values it was asked for, so tests can
+// assert we never fall back to the nil/default-30 behavior (issue #105).
+type fakePager struct {
+	all         []*commettypes.Validator
+	perPageSeen []int
+	failOnPage  int // 0 = never fail
+}
+
+func (f *fakePager) Validators(_ context.Context, _ *int64, page, perPage *int) (*coretypes.ResultValidators, error) {
+	if perPage == nil {
+		return nil, fmt.Errorf("perPage must not be nil (would trigger default-30 truncation)")
+	}
+	f.perPageSeen = append(f.perPageSeen, *perPage)
+	if f.failOnPage != 0 && *page == f.failOnPage {
+		return nil, fmt.Errorf("simulated RPC failure on page %d", *page)
+	}
+	pp := *perPage
+	start := min((*page-1)*pp, len(f.all))
+	end := min(start+pp, len(f.all))
+	return &coretypes.ResultValidators{
+		Validators: f.all[start:end],
+		Count:      end - start,
+		Total:      len(f.all),
+	}, nil
+}
+
+func makeVals(n int) []*commettypes.Validator {
+	vals := make([]*commettypes.Validator, n)
+	for i := range vals {
+		vals[i] = &commettypes.Validator{
+			Address:     fmt.Appendf(nil, "addr-%04d", i),
+			VotingPower: int64(i + 1),
+		}
+	}
+	return vals
+}
+
+func TestFetchAllValidators_PagesFullSet(t *testing.T) {
+	cases := []struct {
+		name      string
+		total     int
+		wantPages int
+	}{
+		{"empty", 0, 1},
+		{"under one page", 17, 1},
+		{"exactly 30 (old default boundary)", 30, 1},
+		{"just over old default", 31, 1},
+		{"exactly one max page", 100, 1},
+		{"just over one page", 101, 2},
+		{"large set (180 validators)", 180, 2},
+		{"multi page (250)", 250, 3},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakePager{all: makeVals(tc.total)}
+			got, err := fetchAllValidators(context.Background(), f, 42)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(got) != tc.total {
+				t.Fatalf("got %d validators, want full set of %d (truncation regression)", len(got), tc.total)
+			}
+			if len(f.perPageSeen) != tc.wantPages {
+				t.Fatalf("made %d RPC pages, want %d", len(f.perPageSeen), tc.wantPages)
+			}
+			for i, pp := range f.perPageSeen {
+				if pp != cometBFTMaxPerPage {
+					t.Fatalf("page %d requested perPage=%d, want explicit %d (nil would default to 30)", i+1, pp, cometBFTMaxPerPage)
+				}
+			}
+		})
+	}
+}
+
+func TestFetchAllValidators_PropagatesError(t *testing.T) {
+	f := &fakePager{all: makeVals(150), failOnPage: 2}
+	_, err := fetchAllValidators(context.Background(), f, 42)
+	if err == nil {
+		t.Fatal("expected error when a page fetch fails, got nil")
+	}
 }

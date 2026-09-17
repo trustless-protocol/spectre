@@ -6,13 +6,12 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
-	"strings"
-	"testing"
-	"time"
-
 	updateclientContract "relayer/bindings/UpdateClient"
 	relayerclient "relayer/client"
 	"relayer/prover"
+	"strings"
+	"testing"
+	"time"
 
 	cmted25519 "github.com/cometbft/cometbft/crypto/ed25519"
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
@@ -20,7 +19,7 @@ import (
 	tenderminttypes "github.com/cosmos/ibc-go/v10/modules/light-clients/07-tendermint"
 )
 
-func TestUpdateCommitToMisbehaviourPreservesValidatorAddress(t *testing.T) {
+func TestUpdateCommitToMisbehaviour_PreservesValidatorAddress(t *testing.T) {
 	wantAddress := [20]byte{0x01, 0x23, 0x45, 0x67, 0x89}
 	converted := updateCommitToMisbehaviour(updateclientContract.IICS07TendermintMsgsBlockCommit{
 		CommitSigs: []updateclientContract.IICS07TendermintMsgsCommitSig{{
@@ -37,7 +36,7 @@ func TestUpdateCommitToMisbehaviourPreservesValidatorAddress(t *testing.T) {
 	}
 }
 
-func TestMisbehaviourEvidenceDetectsPinnedSetEquivocation(t *testing.T) {
+func TestMisbehaviourEvidenceFromCandidates_DetectsPinnedSetEquivocation(t *testing.T) {
 	pubkey0 := [32]byte{0x01}
 	pubkey1 := [32]byte{0x02}
 	pubkey2 := [32]byte{0x03}
@@ -81,7 +80,7 @@ func TestMisbehaviourEvidenceDetectsPinnedSetEquivocation(t *testing.T) {
 	}
 }
 
-func TestMisbehaviourEvidenceIgnoresConflictsWithoutPinnedQuorum(t *testing.T) {
+func TestMisbehaviourEvidenceFromCandidates_IgnoresConflictsWithoutPinnedQuorum(t *testing.T) {
 	pubkey0 := [32]byte{0x01}
 	pubkey1 := [32]byte{0x02}
 	pubkey2 := [32]byte{0x03}
@@ -113,7 +112,7 @@ func TestMisbehaviourEvidenceIgnoresConflictsWithoutPinnedQuorum(t *testing.T) {
 	}
 }
 
-func TestMisbehaviourBatchProofBuildsPinnedMetadata(t *testing.T) {
+func TestMisbehaviourBatchProof_BuildsPinnedMetadata(t *testing.T) {
 	pubkey0 := [32]byte{0x01}
 	pubkey1 := [32]byte{0x02}
 	pinned := pinnedCosmosValidatorSet{

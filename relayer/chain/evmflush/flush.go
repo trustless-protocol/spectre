@@ -1,0 +1,330 @@
+// Package evmflush enumerates the IBC packets an ICS26Router still holds
+// commitments or acknowledgements for, WITHOUT being told which packets to look
+// for. It is the EVM half of the enumeration backstop (chain.PacketLister); the
+// Cosmos half is services.CosmosCommitmentWindow.
+//
+// Two facts about the router shape everything here:
+//
+//   - Its store is a mapping. The keys cannot be listed, so "which sequences
+//     are outstanding" has to be a PROBE: one storage read per candidate
+//     sequence, bounded above by prevSequenceSend (the last sequence the router
+//     assigned) and below by a window, never 1..N.
+//   - Its events are indexed by client id and sequence. So once a sequence is
+//     known to be outstanding, the packet bytes behind it are one eth_getLogs
+//     with a topic filter -- which is also what makes the range the provider is
+//     asked for the only cost that can grow. The filter matches one log per
+//     GENERATION of the client id (a re-created client restarts at 1), and the
+//     held commitment says which generation is the live one.
+//
+// Both the ETH L1 source and the L2 sources sit on this router, and they share
+// this code so the two cannot disagree about how a probe is bounded.
+package evmflush
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"log"
+	"math/big"
+
+	"relayer/chain"
+	relayerclient "relayer/client"
+	"relayer/services"
+	"relayer/subscriber"
+
+	contractICS26Router "relayer/bindings/ICS26Router"
+
+	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	"github.com/ethereum/go-ethereum/accounts/abi/bind"
+	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/ethereum/go-ethereum/rpc"
+)
+
+// ProbeCap bounds how many sequences one pass probes. The remainder is not
+// lost: the cursor makes the next pass continue where this one stopped, and
+// wrap to the newest when it reaches the oldest.
+const ProbeCap = 200
+
+// probeBatch caps one JSON-RPC batch. Providers cap batch sizes at varying
+// numbers; 100 is under every documented limit.
+const probeBatch = 100
+
+// MaxLogChunks bounds how far back from the head one log lookup walks once the
+// provider has refused the full range. A packet's commitment already proves it
+// is outstanding; what this walk is looking for is the event carrying its
+// bytes, which was emitted when it was sent -- possibly a very long time ago.
+// Walking the whole history of a rollup in provider-sized chunks would be a
+// stampede, so the walk gives up, says so, and leaves the packet for a source
+// pointed at a provider that serves the range.
+const MaxLogChunks = 64
+
+// Router is one ICS26Router to enumerate against.
+type Router struct {
+	Client  *ethclient.Client
+	Address ethcommon.Address
+	// Span is the log range policy, narrowed in place when the provider refuses
+	// a range. Owned by the caller's flush goroutine, like every LogSpan.
+	Span *relayerclient.LogSpan
+	// Label prefixes every log line, e.g. "[FlushEth]".
+	Label  string
+	Logger *log.Logger
+}
+
+// Slot is one probed sequence whose slot holds a value: the sequence and the
+// 32-byte commitment (or acknowledgement) hash the router stores for it.
+//
+// The hash is what says WHICH packet the sequence names. The router reuses a
+// sequence position after a client is re-created, and the event index keeps the
+// old send, so a lookup by sequence alone can rebuild a packet that closed long
+// ago. Comparing the rebuilt packet's commitment against this hash is what tells
+// the two apart -- the same check the Cosmos source makes against its store.
+type Slot struct {
+	Sequence uint64
+	Value    ethcommon.Hash
+}
+
+// Window is the sequence range one pass probes, chosen from the router's
+// prevSequenceSend and a rotating cursor.
+//
+// The cursor is the LOWEST sequence the previous pass probed; the next pass
+// continues below it. Zero means "start from the newest", which is also where
+// the walk wraps to after reaching sequence 1. Newest-first is deliberate: the
+// live path handles what is new, so the packets an enumeration is most likely
+// to be needed for are the ones just below the live window -- and a lost cursor
+// or a second relayer both want those first.
+//
+// prev is prevSequenceSend; a router that has never sent has nothing to probe.
+func Window(prev, cursor uint64, cap int) (lo, hi uint64, ok bool) {
+	if prev == 0 || cap <= 0 {
+		return 0, 0, false
+	}
+	hi = prev
+	if cursor > 1 && cursor <= prev {
+		hi = cursor - 1
+	}
+	lo = 1
+	if uint64(cap) < hi {
+		lo = hi - uint64(cap) + 1
+	}
+	return lo, hi, true
+}
+
+// PrevSequenceSend reads the last sequence the router assigned to a send on
+// clientID; see services.EthPrevSequenceSendKey for why it is a storage read.
+func (r Router) PrevSequenceSend(ctx context.Context, clientID string) (uint64, error) {
+	word, err := r.Client.StorageAt(ctx, r.Address, services.EthPrevSequenceSendKey(clientID), nil)
+	if err != nil {
+		return 0, fmt.Errorf("%s read prevSequenceSend(%s): %w", r.Label, clientID, err)
+	}
+	prev, err := services.EthStorageUint64(word)
+	if err != nil {
+		return 0, fmt.Errorf("%s prevSequenceSend(%s): %w", r.Label, clientID, err)
+	}
+	return prev, nil
+}
+
+// OutstandingSlots probes the router's storage for each sequence and returns the
+// ones whose slot is non-zero, in the order given. pathFor builds the ICS-24
+// path to probe for a sequence -- the commitment path for sends, the
+// acknowledgement path for acks -- so the same probe serves both.
+//
+// It is batched so that a pass costs one round trip per probeBatch sequences
+// rather than one per sequence. A provider that rejects batches is reported,
+// not worked around: the pass would otherwise be quietly 100× slower.
+func (r Router) OutstandingSlots(ctx context.Context, sequences []uint64, pathFor func(uint64) []byte) ([]Slot, error) {
+	var out []Slot
+	for start := 0; start < len(sequences); start += probeBatch {
+		end := min(start+probeBatch, len(sequences))
+		batch := make([]rpc.BatchElem, 0, end-start)
+		results := make([]string, end-start)
+		for i, seq := range sequences[start:end] {
+			batch = append(batch, rpc.BatchElem{
+				Method: "eth_getStorageAt",
+				Args:   []any{r.Address, services.EthIBCStorageKey(pathFor(seq)), "latest"},
+				Result: &results[i],
+			})
+		}
+		if err := r.Client.Client().BatchCallContext(ctx, batch); err != nil {
+			return nil, fmt.Errorf("%s probe %d slot(s): %w", r.Label, len(batch), err)
+		}
+		for i, elem := range batch {
+			if elem.Error != nil {
+				return nil, fmt.Errorf("%s probe seq=%d: %w", r.Label, sequences[start+i], elem.Error)
+			}
+			value := ethcommon.HexToHash(results[i])
+			if value == (ethcommon.Hash{}) {
+				continue
+			}
+			out = append(out, Slot{Sequence: sequences[start+i], Value: value})
+		}
+	}
+	return out, nil
+}
+
+// Sequences lists lo..hi descending, newest first, which is the order the
+// probe wants its results in.
+func Sequences(lo, hi uint64) []uint64 {
+	if hi < lo {
+		return nil
+	}
+	out := make([]uint64, 0, hi-lo+1)
+	for seq := hi; ; seq-- {
+		out = append(out, seq)
+		if seq == lo {
+			return out
+		}
+	}
+}
+
+// SendLog finds the SendPacket log the router emitted for the packet whose
+// commitment the router holds at (clientID, sequence). Both are indexed topics,
+// so the filter is cheap; the range is the whole chain, narrowed the way the
+// scan loop narrows when the provider refuses it.
+//
+// The filter can match MORE than one log: a client re-created on the same id
+// restarts its sequences, and the log index keeps every generation's send. Only
+// the packet whose commitment equals what the router holds is the current one,
+// so every candidate is checked and the older generations are passed over --
+// stopping at the first would rebuild a packet that closed long ago, and on a
+// full-range query the older log is the one that comes back first.
+func (r Router) SendLog(ctx context.Context, clientID string, sequence uint64, commitment ethcommon.Hash) (*contractICS26Router.ContractICS26RouterSendPacket, bool, error) {
+	filterer, err := contractICS26Router.NewContractICS26RouterFilterer(r.Address, r.Client)
+	if err != nil {
+		return nil, false, fmt.Errorf("%s bind router filterer: %w", r.Label, err)
+	}
+	var found *contractICS26Router.ContractICS26RouterSendPacket
+	stale := 0
+	ok, err := r.findLog(ctx, sequence, func(opts *bind.FilterOpts) (bool, error) {
+		it, err := filterer.FilterSendPacket(opts, []string{clientID}, []*big.Int{new(big.Int).SetUint64(sequence)})
+		if err != nil {
+			return false, err
+		}
+		defer it.Close()
+		for it.Next() {
+			if PacketCommitment(it.Event.Packet, it.Event.Sequence) == commitment {
+				found = it.Event
+				return true, nil
+			}
+			stale++
+		}
+		return false, it.Error()
+	})
+	if err == nil && !ok && stale > 0 {
+		r.logf("seq=%d: %d SendPacket log(s) carry this sequence and none matches the commitment the router holds (re-created client?); skipping",
+			sequence, stale)
+	}
+	return found, ok, err
+}
+
+// WriteAckLog finds the WriteAcknowledgement log the router emitted for
+// (clientID, sequence), where clientID is the packet's DESTINATION client --
+// the one the router received it on -- and commitment is what the SENDING chain
+// holds for the packet. Same generation rule as SendLog: the sender's
+// commitment decides which of several same-sequence logs is the live one.
+func (r Router) WriteAckLog(ctx context.Context, clientID string, sequence uint64, commitment []byte) (*contractICS26Router.ContractICS26RouterWriteAcknowledgement, bool, error) {
+	filterer, err := contractICS26Router.NewContractICS26RouterFilterer(r.Address, r.Client)
+	if err != nil {
+		return nil, false, fmt.Errorf("%s bind router filterer: %w", r.Label, err)
+	}
+	var found *contractICS26Router.ContractICS26RouterWriteAcknowledgement
+	stale := 0
+	ok, err := r.findLog(ctx, sequence, func(opts *bind.FilterOpts) (bool, error) {
+		it, err := filterer.FilterWriteAcknowledgement(opts, []string{clientID}, []*big.Int{new(big.Int).SetUint64(sequence)})
+		if err != nil {
+			return false, err
+		}
+		defer it.Close()
+		for it.Next() {
+			if bytes.Equal(PacketCommitment(it.Event.Packet, it.Event.Sequence).Bytes(), commitment) {
+				found = it.Event
+				return true, nil
+			}
+			stale++
+		}
+		return false, it.Error()
+	})
+	if err == nil && !ok && stale > 0 {
+		r.logf("ack seq=%d: %d WriteAcknowledgement log(s) carry this sequence and none matches the commitment the sender holds; skipping",
+			sequence, stale)
+	}
+	return found, ok, err
+}
+
+// PacketCommitment is the ICS-24 commitment of a packet as the router logged
+// it: the same bytes the router stores in its commitment slot and Cosmos stores
+// under the sender's client, so it is the one value both sides can be compared
+// on. Solidity's packetCommitmentBytes32 and ibc-go's CommitPacket agree byte
+// for byte (services/evm_flush_test.go pins it).
+func PacketCommitment(pkt contractICS26Router.IICS26RouterMsgsPacket, sequence *big.Int) ethcommon.Hash {
+	return ethcommon.BytesToHash(channeltypesv2.CommitPacket(subscriber.EthPacketToCosmosPacket(pkt, sequence)))
+}
+
+// findLog runs one topic-filtered lookup over the whole chain, walking back from
+// the head in chunks once the provider has refused a range.
+//
+// Full range first: a topic filter that matches one log is cheap for any
+// provider that does not cap the span, and most self-hosted nodes do not. On a
+// refusal the span is narrowed on the same ladder the scan loop uses and the
+// walk starts at the head, because the packets an enumeration is for are far
+// more likely recent than ancient. It stops after MaxLogChunks rather than
+// walking a rollup's whole history one provider-sized chunk at a time.
+func (r Router) findLog(ctx context.Context, sequence uint64, query func(*bind.FilterOpts) (bool, error)) (bool, error) {
+	head, err := r.Client.BlockNumber(ctx)
+	if err != nil {
+		return false, fmt.Errorf("%s head: %w", r.Label, err)
+	}
+	span := r.Span
+	if span == nil {
+		span = &relayerclient.LogSpan{}
+	}
+	from, to := uint64(0), head
+	chunks := 0
+	for {
+		width := span.Width(from, to)
+		lo := from
+		if to-from+1 > width {
+			lo = to - width + 1
+		}
+		opts := &bind.FilterOpts{Start: lo, End: &to, Context: ctx}
+		found, err := query(opts)
+		if err == nil {
+			if found {
+				return true, nil
+			}
+			if lo == 0 || lo <= from {
+				return false, nil // the whole chain has been asked
+			}
+			chunks++
+			if chunks >= MaxLogChunks {
+				r.logf("seq=%d: no log in the newest %d blocks (%d chunks of %d); giving up on it this pass. "+
+					"Its commitment says it is outstanding, so the event is older than this provider will serve in one walk -- "+
+					"point this source at a provider without a block-range cap to enumerate it",
+					sequence, to-lo+1+uint64(chunks-1)*width, chunks, width)
+				return false, nil
+			}
+			to = lo - 1
+			continue
+		}
+		if !relayerclient.IsLogRangeRejection(err) {
+			return false, fmt.Errorf("%s seq=%d logs [%d,%d]: %w", r.Label, sequence, lo, to, err)
+		}
+		next, bottom, ok := chain.Climb(
+			chain.NeedsChange(err, chain.HalvingLadder(relayerclient.KnobBlocksPerLogRange, width)),
+			0, // each rejection re-anchors on the span that was just refused
+		)
+		if !ok {
+			return false, fmt.Errorf("%s seq=%d: %w", r.Label, sequence, bottom)
+		}
+		span.Chunk = next.To
+		r.logf("provider refused a %d-block log range; narrowing to %d and walking back from %d: %v", width, next.To, to, err)
+	}
+}
+
+func (r Router) logf(format string, args ...any) {
+	if r.Logger == nil {
+		log.Printf(r.Label+" "+format, args...)
+		return
+	}
+	r.Logger.Printf(r.Label+" "+format, args...)
+}

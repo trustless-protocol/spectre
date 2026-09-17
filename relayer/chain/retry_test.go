@@ -9,7 +9,7 @@ import (
 // §3.6 says there are three error classes and the third carries its own remedy.
 // The type exists so that carrying it is not optional: the compiler, not a
 // comment, is what stops a NeedsChange without a change.
-func TestRetryClassification(t *testing.T) {
+func TestRetry_Classification(t *testing.T) {
 	cause := errors.New("boom")
 
 	t.Run("transient retries the same attempt", func(t *testing.T) {
@@ -78,7 +78,7 @@ func TestRetryClassification(t *testing.T) {
 // Classify is the reading end. An error nobody classified must default to
 // transient: a packet re-queued in error costs a retry, a packet dropped in
 // error costs the funds in its escrow until the timeout scanner finds it.
-func TestClassifyDefaultsToKeepingThePacket(t *testing.T) {
+func TestClassify_DefaultsToKeepingThePacket(t *testing.T) {
 	t.Run("an unclassified error is transient and says so", func(t *testing.T) {
 		r, known := Classify(errors.New("who knows"))
 		if known {

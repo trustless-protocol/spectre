@@ -7,14 +7,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"relayer/chain"
+	"relayer/chain/l2rollup"
+	"relayer/services"
 	"strings"
 	"testing"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
-
-	"relayer/chain"
-	"relayer/chain/l2rollup"
-	"relayer/services"
 )
 
 func validL2Config() l2ToCosmosConfig {
@@ -32,7 +31,7 @@ func validL2Config() l2ToCosmosConfig {
 	}
 }
 
-func TestL2Config_Validate(t *testing.T) {
+func TestL2ToCosmosConfig_Validate(t *testing.T) {
 	if err := validL2Config().validate(); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
@@ -55,12 +54,12 @@ func TestL2Config_Validate(t *testing.T) {
 	}
 }
 
-// TestL2Config_ValidateForClientCreation covers #309: create-clients-cosmos is the
+// TestL2ToCosmosConfig_ValidateForClientCreation covers #309: create-clients-cosmos is the
 // command that CREATES the L2 wasm client and writes its id back into the config,
 // so requiring that id to already be present made a fresh config unusable — the
 // operator had to invent a plausible one, which the command then overwrote. Only
 // that id is exempt; everything else is still needed to reach the chain at all.
-func TestL2Config_ValidateForClientCreation(t *testing.T) {
+func TestL2ToCosmosConfig_ValidateForClientCreation(t *testing.T) {
 	c := validL2Config()
 	c.L2WasmClientID = ""
 	if err := c.validateForClientCreation(); err != nil {
@@ -212,38 +211,66 @@ func TestL2RouterFromProfile(t *testing.T) {
 			t.Fatalf("expected error for %q", bad)
 		}
 	}
-}
 
-// TestLoadConfig_L2Source confirms an l2_to_cosmos module parses into
-// appConfig.L2ToCosmosConfig (no longer the fail-loud "not wired" error).
-func TestLoadConfig_L2Source(t *testing.T) {
-	raw := `{"modules":[{"name":"op","src_chain":"opstack","dst_chain":"cosmos","config":{
-		"l1_rpc_url":"http://l1","l2_rpc_url":"http://l2","tm_rpc_url":"http://tm",
-		"attestor_endpoints":[{"address":"127.0.0.1:3001","attestor_index":0}],"attestor_src_chain":"op-sepolia",
-		"attestors":{"public_keys":["gojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="],"threshold":1},
-		"eth_beacon_api_url":"http://beacon",
-		"l2_wasm_client_id":"08-wasm-1","l2_ics26_client_id":"client-0","head_kind":"safe",
-		"rollup_profile":{"common":{"l2_chain_id":10,"l2_router":"0x1111111111111111111111111111111111111111"}}}}]}`
-	var jc jsonConfig
-	if err := json.Unmarshal([]byte(raw), &jc); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	m := jc.Modules[0]
-	dir, _, err := classifyModule(m)
-	if err != nil || dir != dirL2ToCosmos {
-		t.Fatalf("classify = %v, %v; want dirL2ToCosmos", dir, err)
-	}
-	var one l2ToCosmosConfig
-	if err := json.Unmarshal(m.Config, &one); err != nil {
-		t.Fatalf("parse l2 config: %v", err)
-	}
-	one.kind = chain.ChainType(m.SrcChain)
-	if err := one.validate(); err != nil {
-		t.Fatalf("validate parsed l2 config: %v", err)
-	}
-	if one.kind != chain.OPStack || one.AttestorSrcChain != "op-sepolia" {
-		t.Fatalf("parsed config mismatch: %+v", one)
-	}
+	// TestL2RouterFromProfile/example L2 router matches pair pins the one cross-module invariant the example
+	// has to demonstrate: a return module's rollup_profile.common.l2_router is the
+	// SAME contract as its forward pair's ics26_address. deploy_l2_contracts.sh
+	// writes both from one deploy, so an example where they disagree teaches the
+	// mistake that used to break the return direction silently.
+	t.Run("example L2 router matches pair", func(t *testing.T) {
+		t.Parallel()
+
+		raw, err := os.ReadFile(filepath.Join("..", "config.example.json"))
+		if err != nil {
+			t.Fatalf("read catalogue: %v", err)
+		}
+		var parsed struct {
+			Modules []struct {
+				Name   string `json:"name"`
+				Config struct {
+					ICS26Address    string `json:"ics26_address"`
+					ICS26ClientID   string `json:"ics26_client_id"`
+					L2ICS26ClientID string `json:"l2_ics26_client_id"`
+					RollupProfile   *struct {
+						Common struct {
+							L2Router string `json:"l2_router"`
+						} `json:"common"`
+					} `json:"rollup_profile"`
+				} `json:"config"`
+			} `json:"modules"`
+		}
+		if err := json.Unmarshal(raw, &parsed); err != nil {
+			t.Fatalf("parse catalogue: %v", err)
+		}
+
+		routerByClientID := map[string]string{}
+		for _, m := range parsed.Modules {
+			if m.Config.ICS26ClientID != "" && m.Config.ICS26Address != "" {
+				routerByClientID[m.Config.ICS26ClientID] = m.Config.ICS26Address
+			}
+		}
+
+		checked := 0
+		for _, m := range parsed.Modules {
+			if m.Config.RollupProfile == nil {
+				continue
+			}
+			want, ok := routerByClientID[m.Config.L2ICS26ClientID]
+			if !ok {
+				t.Errorf("module %q has l2_ics26_client_id %q with no forward pair",
+					m.Name, m.Config.L2ICS26ClientID)
+				continue
+			}
+			if got := m.Config.RollupProfile.Common.L2Router; got != want {
+				t.Errorf("module %q l2_router = %s, want its pair's ics26_address %s",
+					m.Name, got, want)
+			}
+			checked++
+		}
+		if checked == 0 {
+			t.Fatal("no l2_to_cosmos modules were checked; the catalogue lost its L2 pairs")
+		}
+	})
 }
 
 func newChainIDRPCServer(t *testing.T, chainIDHex string) *httptest.Server {

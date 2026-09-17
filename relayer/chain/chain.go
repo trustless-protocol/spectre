@@ -294,6 +294,27 @@ type PacketLister interface {
 	UnrelayedPackets(ctx context.Context) ([]Event, error)
 }
 
+// SettlementChecker is an OPTIONAL Destination capability: for an event the
+// enumeration backstop found, report whether this destination has already
+// settled it, asking the question that matches the event's TYPE.
+//
+// HasPacketReceipt answers only for a receive: a receipt is what a delivered
+// SendPacket leaves behind. It is the wrong question for an acknowledgement,
+// whose settled form on the destination is the ABSENCE of the original send's
+// commitment -- the destination deletes it when the ack lands -- and a receipt
+// check on an ack's packet asks about a receipt that lives on the other chain,
+// so it answers "not delivered" forever and the ack is re-submitted every pass.
+//
+//   - SendPacket    settled ⇔ this destination holds the packet's receipt
+//   - AckPacket     settled ⇔ this destination no longer holds the send's commitment
+//   - TimeoutPacket settled ⇔ same as AckPacket (a timeout also clears it)
+//
+// A destination that does not implement it leaves the module with the receipt
+// check for receives and no filter for the rest.
+type SettlementChecker interface {
+	PacketSettled(ctx context.Context, e Event) (bool, error)
+}
+
 // FoldingDestination is an optional destination capability for submitting a
 // client update followed by packet messages in one atomic transaction. The
 // relay module uses it only when SupportsUpdatePacketFolding returns true;

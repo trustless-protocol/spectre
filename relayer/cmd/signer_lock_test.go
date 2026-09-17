@@ -16,7 +16,7 @@ import (
 // The lock path must therefore be a function of the user and the machine and
 // nothing else. This drives the REAL resolver, not the test seam, because the
 // property under test is which inputs it reads.
-func TestSignerLockPathIgnoresTheEnvironment(t *testing.T) {
+func TestSignerLockPathFor_IgnoresTheEnvironment(t *testing.T) {
 	if os.Getuid() < 0 {
 		t.Skip("uid-based path is not used on this platform")
 	}

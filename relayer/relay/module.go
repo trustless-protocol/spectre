@@ -406,18 +406,35 @@ func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 func (m *Module) dropSettled(ctx context.Context, candidates []chain.Event) []chain.Event {
 	unsettled := make([]chain.Event, 0, len(candidates))
 	for _, e := range candidates {
-		delivered, err := m.dst.HasPacketReceipt(ctx, e.Raw)
+		settled, err := m.packetSettled(ctx, e)
 		if err != nil {
-			log.Printf("[%s Relay] packet flush: receipt check for %s seq=%d: %v; relaying anyway",
+			log.Printf("[%s Relay] packet flush: settlement check for %s seq=%d: %v; relaying anyway",
 				m.name, e.Type, e.Sequence, err)
 			unsettled = append(unsettled, e)
 			continue
 		}
-		if !delivered {
+		if !settled {
 			unsettled = append(unsettled, e)
 		}
 	}
 	return unsettled
+}
+
+// packetSettled asks the destination the question that fits the event's type.
+//
+// A destination that implements chain.SettlementChecker answers for every type;
+// one that does not can only answer the receive question, and an
+// acknowledgement or timeout it is handed is left unsettled -- relayed, and
+// answered on chain with a no-op -- rather than judged by a receipt that lives
+// on the other chain and would say "not delivered" forever.
+func (m *Module) packetSettled(ctx context.Context, e chain.Event) (bool, error) {
+	if checker, ok := m.dst.(chain.SettlementChecker); ok {
+		return checker.PacketSettled(ctx, e)
+	}
+	if e.Type != chain.SendPacket {
+		return false, nil
+	}
+	return m.dst.HasPacketReceipt(ctx, e.Raw)
 }
 
 // describeEvents names the packets in a flush line, capped like the waiting log

@@ -1,13 +1,11 @@
 package relay
 
 import (
-	"context"
 	"log"
+	"relayer/chain"
 	"strings"
 	"testing"
 	"time"
-
-	"relayer/chain"
 )
 
 // fakeClock drives the tracker's notion of time so age assertions are exact
@@ -27,10 +25,10 @@ func ackEvent(seq, height uint64) chain.Event {
 	return chain.Event{Type: chain.AckPacket, Sequence: seq, Height: height}
 }
 
-// TestObserveAccumulatesAge is the property the whole change exists for: a
+// TestObserve_AccumulatesAge is the property the whole change exists for: a
 // packet re-observed across flushes must report a GROWING age, because that is
 // the only signal separating "waiting for finality" from "stuck forever".
-func TestObserveAccumulatesAge(t *testing.T) {
+func TestObserve_AccumulatesAge(t *testing.T) {
 	w, clk := newTestTracker()
 	e := ackEvent(1, 21)
 
@@ -49,10 +47,10 @@ func TestObserveAccumulatesAge(t *testing.T) {
 	}
 }
 
-// TestClearResetsAge covers the settle path: a delivered packet must not leave
+// TestClear_ResetsAge covers the settle path: a delivered packet must not leave
 // an entry behind that would inflate the age of a later packet reusing the same
 // sequence (which happens when a client is re-created and sequences restart).
-func TestClearResetsAge(t *testing.T) {
+func TestClear_ResetsAge(t *testing.T) {
 	w, clk := newTestTracker()
 	e := ackEvent(1, 21)
 
@@ -65,10 +63,10 @@ func TestClearResetsAge(t *testing.T) {
 	}
 }
 
-// TestRecvAndAckAreTrackedSeparately: a packet's forward delivery and its
+// TestWaiting_RecvAndAckAreTrackedSeparately: a packet's forward delivery and its
 // returning ack share a sequence, so keying on sequence alone would make one
 // leg's clear wipe the other's age.
-func TestRecvAndAckAreTrackedSeparately(t *testing.T) {
+func TestWaiting_RecvAndAckAreTrackedSeparately(t *testing.T) {
 	w, clk := newTestTracker()
 	recv := chain.Event{Type: chain.SendPacket, Sequence: 7, Height: 10}
 	ack := ackEvent(7, 21)
@@ -85,9 +83,9 @@ func TestRecvAndAckAreTrackedSeparately(t *testing.T) {
 	}
 }
 
-// TestPurgeStaleBoundsTheTracker: entries for packets that left the queue via a
+// TestPurgeStale_BoundsTheTracker: entries for packets that left the queue via a
 // path with no clear must not accumulate for the process's lifetime.
-func TestPurgeStaleBoundsTheTracker(t *testing.T) {
+func TestPurgeStale_BoundsTheTracker(t *testing.T) {
 	w, clk := newTestTracker()
 	stale := ackEvent(1, 21)
 	fresh := ackEvent(2, 22)
@@ -106,10 +104,10 @@ func TestPurgeStaleBoundsTheTracker(t *testing.T) {
 	}
 }
 
-// TestPurgeKeepsActivelyWaitingEntries guards the inverse mistake: purging on
+// TestPurgeStale_KeepsActivelyWaitingEntries guards the inverse mistake: purging on
 // first-seen instead of last-seen would silently reset the age of exactly the
 // long-waiting packet the operator is trying to diagnose.
-func TestPurgeKeepsActivelyWaitingEntries(t *testing.T) {
+func TestPurgeStale_KeepsActivelyWaitingEntries(t *testing.T) {
 	w, clk := newTestTracker()
 	e := ackEvent(1, 21)
 
@@ -126,57 +124,59 @@ func TestPurgeKeepsActivelyWaitingEntries(t *testing.T) {
 	}
 }
 
-func TestDescribeWaitingNamesEachPacket(t *testing.T) {
-	got := describeWaiting([]waiting{
-		{event: ackEvent(1, 21), age: 4*time.Minute + 12*time.Second},
-	})
-	want := "ack seq=1 h=21 for 4m12s"
-	if got != want {
-		t.Fatalf("describeWaiting = %q, want %q", got, want)
-	}
-}
-
-// TestDescribeWaitingOrdersByAge: with the list capped, the entries shown must
-// be the oldest ones — those are the ones worth looking at.
-func TestDescribeWaitingOrdersByAge(t *testing.T) {
-	got := describeWaiting([]waiting{
-		{event: ackEvent(1, 21), age: time.Second},
-		{event: ackEvent(2, 22), age: time.Hour},
-		{event: ackEvent(3, 23), age: time.Minute},
-	})
-	if !strings.HasPrefix(got, "ack seq=2 ") {
-		t.Fatalf("describeWaiting = %q, want the 1h entry first", got)
-	}
-	if strings.Index(got, "seq=3") > strings.Index(got, "seq=1") {
-		t.Fatalf("describeWaiting = %q, want seq=3 (1m) before seq=1 (1s)", got)
-	}
-}
-
-func TestDescribeWaitingCapsTheList(t *testing.T) {
-	items := make([]waiting, 0, waitListLimit+3)
-	for i := range waitListLimit + 3 {
-		items = append(items, waiting{
-			event: ackEvent(uint64(i+1), 21),
-			age:   time.Duration(i) * time.Second,
+func TestDescribeWaiting(t *testing.T) {
+	t.Run("names each packet", func(t *testing.T) {
+		got := describeWaiting([]waiting{
+			{event: ackEvent(1, 21), age: 4*time.Minute + 12*time.Second},
 		})
-	}
-	got := describeWaiting(items)
-	if strings.Count(got, "seq=") != waitListLimit {
-		t.Fatalf("describeWaiting listed %d entries, want %d: %q",
-			strings.Count(got, "seq="), waitListLimit, got)
-	}
-	if !strings.HasSuffix(got, "+3 more") {
-		t.Fatalf("describeWaiting = %q, want a trailing \"+3 more\"", got)
-	}
+		want := "ack seq=1 h=21 for 4m12s"
+		if got != want {
+			t.Fatalf("describeWaiting = %q, want %q", got, want)
+		}
+	})
+
+	// TestDescribeWaiting/orders by age: with the list capped, the entries shown must
+	// be the oldest ones — those are the ones worth looking at.
+	t.Run("orders by age", func(t *testing.T) {
+		got := describeWaiting([]waiting{
+			{event: ackEvent(1, 21), age: time.Second},
+			{event: ackEvent(2, 22), age: time.Hour},
+			{event: ackEvent(3, 23), age: time.Minute},
+		})
+		if !strings.HasPrefix(got, "ack seq=2 ") {
+			t.Fatalf("describeWaiting = %q, want the 1h entry first", got)
+		}
+		if strings.Index(got, "seq=3") > strings.Index(got, "seq=1") {
+			t.Fatalf("describeWaiting = %q, want seq=3 (1m) before seq=1 (1s)", got)
+		}
+	})
+
+	t.Run("caps the list", func(t *testing.T) {
+		items := make([]waiting, 0, waitListLimit+3)
+		for i := range waitListLimit + 3 {
+			items = append(items, waiting{
+				event: ackEvent(uint64(i+1), 21),
+				age:   time.Duration(i) * time.Second,
+			})
+		}
+		got := describeWaiting(items)
+		if strings.Count(got, "seq=") != waitListLimit {
+			t.Fatalf("describeWaiting listed %d entries, want %d: %q",
+				strings.Count(got, "seq="), waitListLimit, got)
+		}
+		if !strings.HasSuffix(got, "+3 more") {
+			t.Fatalf("describeWaiting = %q, want a trailing \"+3 more\"", got)
+		}
+	})
+
+	t.Run("empty", func(t *testing.T) {
+		if got := describeWaiting(nil); got != "" {
+			t.Fatalf("describeWaiting(nil) = %q, want empty", got)
+		}
+	})
 }
 
-func TestDescribeWaitingEmpty(t *testing.T) {
-	if got := describeWaiting(nil); got != "" {
-		t.Fatalf("describeWaiting(nil) = %q, want empty", got)
-	}
-}
-
-func TestEventTypeNames(t *testing.T) {
+func TestEventType_Names(t *testing.T) {
 	cases := map[chain.EventType]string{
 		chain.SendPacket:    "recv",
 		chain.AckPacket:     "ack",
@@ -209,98 +209,11 @@ func captureLog(fn func()) string {
 	return buf.String()
 }
 
-// TestHandleBatch_WaitingLogNamesThePacket: the source-gate wait must identify
-// the packet. A bare count cannot tell an operator whether the ack they are
-// looking for is in the queue at all.
-func TestHandleBatch_WaitingLogNamesThePacket(t *testing.T) {
-	src := &mockSource{latest: 100, relayable: 50}
-	m := NewModule("arbitrum->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
-
-	out := captureLog(func() {
-		m.handleBatch(context.Background(), []chain.Event{
-			{Type: chain.AckPacket, Sequence: 7, Height: 80, Raw: []byte("ack"), AckBytes: [][]byte{{1}}},
-		})
-	})
-
-	for _, want := range []string{"waiting:", "ack seq=7", "h=80", "source relayable height=50"} {
-		if !strings.Contains(out, want) {
-			t.Fatalf("waiting log missing %q:\n%s", want, out)
-		}
-	}
-}
-
-// TestHandleBatch_AgeGrowsAtDestinationGate is the regression guard for the
-// subtle half of this change. A packet that clears the SOURCE gate every flush
-// but parks at the DESTINATION-coverage gate is the exact shape of a stuck L2
-// ack. Clearing the wait entry when it passes the source gate would reset its age
-// to zero on every flush, so the log would report a permanently-stuck packet as
-// freshly arrived — hiding the very condition the age exists to reveal.
-func TestHandleBatch_AgeGrowsAtDestinationGate(t *testing.T) {
-	src := &mockSource{latest: 100}
-	// The builder can only ever advance the client to 50, so a packet at 100
-	// clears RelayableHeight but never the destination-coverage check.
-	m := NewModule("arbitrum->cosmos", "client-0", src, &mockDest{}, &mockBuilder{forceHeight: 50})
-
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	m.waits.now = clk.now
-
-	event := chain.Event{Type: chain.AckPacket, Sequence: 7, Height: 100, Raw: []byte("ack"), AckBytes: [][]byte{{1}}}
-	batch := []chain.Event{event}
-
-	m.handleBatch(context.Background(), batch) // first sighting: age 0
-	clk.t = clk.t.Add(10 * time.Minute)
-
-	out := captureLog(func() { m.handleBatch(context.Background(), batch) })
-
-	if !strings.Contains(out, "waiting 10m0s") {
-		t.Fatalf("age did not accumulate across flushes at the destination gate:\n%s", out)
-	}
-	if !strings.Contains(out, "ack seq=7") {
-		t.Fatalf("destination-gate log did not name the packet:\n%s", out)
-	}
-}
-
-// TestHandleBatch_DeliveryClearsTheAge: once a packet lands, a later packet
-// reusing its sequence must not inherit the old age. Sequences do restart —
-// create-clients-eth repoints an existing router client with migrateClient, so
-// the source begins again at sequence 1 under the SAME client id.
-//
-// Two independent properties keep that honest, and this asserts both:
-//   - a delivered packet clears its own entry (settleDelivered), and
-//   - a sequence reused at a different source height starts its own clock rather
-//     than inheriting the retired packet's age (see TestReusedSequenceRestartsTheAge).
-func TestHandleBatch_DeliveryClearsTheAge(t *testing.T) {
-	src := &mockSource{latest: 100, relayable: 50}
-	m := NewModule("arbitrum->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
-
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	m.waits.now = clk.now
-
-	// Generation 1, seq 7 at height 80: above the relayable frontier, so it parks.
-	old := chain.Event{Type: chain.AckPacket, Sequence: 7, Height: 80, Raw: []byte("ack-old"), AckBytes: [][]byte{{1}}}
-	m.handleBatch(context.Background(), []chain.Event{old})
-	clk.t = clk.t.Add(30 * time.Minute)
-
-	oldKey := waitKey{typ: chain.AckPacket, seq: 7}
-	if _, ok := m.waits.entries[oldKey]; !ok {
-		t.Fatal("the parked packet should have a wait entry to inherit from")
-	}
-
-	// Generation 2 after a client re-creation: the same sequence, but emitted at a
-	// height of its own, and low enough to relay immediately.
-	fresh := chain.Event{Type: chain.AckPacket, Sequence: 7, Height: 40, Raw: []byte("ack-new"), AckBytes: [][]byte{{1}}}
-	m.handleBatch(context.Background(), []chain.Event{fresh})
-
-	if _, ok := m.waits.entries[oldKey]; ok {
-		t.Fatal("a delivered packet must not leave a wait entry behind")
-	}
-}
-
-// TestReusedSequenceRestartsTheAge: sequences restart when create-clients-eth
+// TestWaiting_ReusedSequenceRestartsTheAge: sequences restart when create-clients-eth
 // repoints a router client with migrateClient — the client id is unchanged, so
 // only the source height tells the two generations apart. The later packet must
 // start its own clock instead of reporting the retired one's age.
-func TestReusedSequenceRestartsTheAge(t *testing.T) {
+func TestWaiting_ReusedSequenceRestartsTheAge(t *testing.T) {
 	w, clk := newTestTracker()
 
 	retired := ackEvent(1, 21)

@@ -12,7 +12,7 @@ import (
 // WITHIN a process, so two processes sharing a key each believe they own it and
 // the loser of every race sees "account sequence mismatch" -- a message naming
 // neither the other process nor the shared key.
-func TestCosmosSignerLock(t *testing.T) {
+func TestAcquireCosmosSignerLock(t *testing.T) {
 	const address = "cosmos1testsigneraddress"
 
 	// One cache dir per subtest stands in for one machine. Every acquire inside a

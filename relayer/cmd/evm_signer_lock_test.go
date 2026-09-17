@@ -9,10 +9,10 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// TestEVMSignerLock pins the distinction that makes this guard different from
+// TestAcquireEVMSignerLocks pins the distinction that makes this guard different from
 // the Cosmos signer lock: an EVM nonce belongs to (chain id, address), not to
 // an address alone. The same key on two chains must therefore take two locks.
-func TestEVMSignerLock(t *testing.T) {
+func TestAcquireEVMSignerLocks(t *testing.T) {
 	address := common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1")
 
 	setup := func(t *testing.T) {
@@ -65,7 +65,7 @@ func TestEVMSignerLock(t *testing.T) {
 	})
 }
 
-func TestEVMSignerLockKeysCoverEveryEVMSubmitPath(t *testing.T) {
+func TestEvmSignerLockKeys_CoverEveryEVMSubmitPath(t *testing.T) {
 	address := common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1")
 	chainIDs := map[string]string{
 		"http://eth":        "1",
@@ -100,7 +100,7 @@ func TestEVMSignerLockKeysCoverEveryEVMSubmitPath(t *testing.T) {
 	}
 }
 
-func TestEVMSignerLockKeysRefuseAnUnansweredEndpoint(t *testing.T) {
+func TestEvmSignerLockKeysWithChainID_RefuseAnUnansweredEndpoint(t *testing.T) {
 	_, err := evmSignerLockKeysWithChainID(context.Background(), &appConfig{
 		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: "http://unavailable"},
 	}, common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1"), func(context.Context, string) (string, error) {

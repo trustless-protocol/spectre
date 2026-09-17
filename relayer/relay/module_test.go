@@ -7,18 +7,16 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"relayer/chain"
+	"relayer/services"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-
-	"relayer/chain"
-	"relayer/services"
 )
 
 // --- mock adapters (the whole point: Module is testable without any chain) ---
-
 type mockSource struct {
 	latest                uint64
 	relayable             uint64 // highest provable height; if 0, defaults to latest
@@ -35,10 +33,13 @@ type mockSource struct {
 }
 
 func (m *mockSource) Chain() chain.ChainType { return chain.Cosmos }
+
 func (m *mockSource) Subscribe(context.Context, func(context.Context, []chain.Event) []int) error {
 	return nil
 }
+
 func (m *mockSource) LatestHeight(context.Context) (uint64, error) { return m.latest, nil }
+
 func (m *mockSource) RelayableHeight(context.Context) (uint64, error) {
 	m.relayableCalls++
 	if m.relayableErr != nil {
@@ -49,9 +50,11 @@ func (m *mockSource) RelayableHeight(context.Context) (uint64, error) {
 	}
 	return m.latest, nil
 }
+
 func (m *mockSource) QueryHeader(_ context.Context, h uint64) ([]byte, error) {
 	return []byte{byte(h)}, nil
 }
+
 func (m *mockSource) MembershipProof(_ context.Context, packet []byte, height uint64, _ chain.EventType) ([]byte, error) {
 	m.membershipCalls++
 	m.proofHeights = append(m.proofHeights, height)
@@ -63,6 +66,7 @@ func (m *mockSource) MembershipProof(_ context.Context, packet []byte, height ui
 	}
 	return []byte("membership"), nil
 }
+
 func (m *mockSource) NonMembershipProof(_ context.Context, _ []byte, height uint64) ([]byte, error) {
 	m.nonMembershipCalls++
 	m.proofHeights = append(m.proofHeights, height)
@@ -99,6 +103,7 @@ type mockDest struct {
 }
 
 func (m *mockDest) Chain() chain.ChainType { return chain.Ethereum }
+
 func (m *mockDest) UpdateClient(_ context.Context, _ string, u chain.ClientUpdate) error {
 	if m.updateErr != nil {
 		return m.updateErr
@@ -106,6 +111,7 @@ func (m *mockDest) UpdateClient(_ context.Context, _ string, u chain.ClientUpdat
 	m.updates = append(m.updates, u)
 	return nil
 }
+
 func (m *mockDest) RelayPackets(_ context.Context, packets []chain.RelayPacket) (int, error) {
 	m.relayCalls++
 	if m.relayErr != nil {
@@ -130,6 +136,7 @@ func (m *mockDest) RelayPackets(_ context.Context, packets []chain.RelayPacket) 
 	m.relayed = append(m.relayed, packets...)
 	return len(packets), nil
 }
+
 func (m *mockDest) HasPacketReceipt(context.Context, []byte) (bool, error) {
 	if len(m.receiptAnswers) > 0 {
 		answer := m.receiptAnswers[0]
@@ -138,6 +145,7 @@ func (m *mockDest) HasPacketReceipt(context.Context, []byte) (bool, error) {
 	}
 	return m.hasReceipt, m.receiptErr
 }
+
 func (m *mockDest) ClientExpiresAt(context.Context, string) (time.Time, time.Duration, error) {
 	return m.expiresAt, m.trustingPeriod, m.expiresErr
 }
@@ -153,6 +161,7 @@ type foldingMockDest struct {
 }
 
 func (m *foldingMockDest) SupportsUpdatePacketFolding() bool { return m.enabled }
+
 func (m *foldingMockDest) RelayWithUpdate(_ context.Context, _ string, update chain.ClientUpdate, packets []chain.RelayPacket) error {
 	m.foldCalls++
 	m.foldedUpdates = append(m.foldedUpdates, update)
@@ -181,6 +190,7 @@ type mockBuilder struct {
 }
 
 func (m *mockBuilder) Name() string { return "mock" }
+
 func (m *mockBuilder) Build(_ context.Context, header []byte) (chain.ClientUpdate, error) {
 	m.built++
 	if len(m.hops) > 0 {
@@ -201,306 +211,1266 @@ func (m *mockBuilder) Build(_ context.Context, header []byte) (chain.ClientUpdat
 	return chain.ClientUpdate{Height: h, Payloads: [][]byte{header}, TrustedAt: m.trustedAt}, nil
 }
 
-func TestHandleBatch_ProofByType(t *testing.T) {
-	src := &mockSource{latest: 100} // chain tip well above the packet heights
-	dst := &mockDest{}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+func TestHandleBatch(t *testing.T) {
+	// TestHandleBatch/waiting log names the packet: the source-gate wait must identify
+	// the packet. A bare count cannot tell an operator whether the ack they are
+	// looking for is in the queue at all.
+	t.Run("waiting log names the packet", func(t *testing.T) {
+		src := &mockSource{latest: 100, relayable: 50}
+		m := NewModule("arbitrum->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
 
-	// recv/ack packets prove membership (commitment exists)
-	if rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 5, Raw: []byte("pkt-a")}}); len(rq) != 0 {
-		t.Fatalf("clean send must not re-queue, got %v", rq)
-	}
-	if src.membershipCalls != 1 || src.nonMembershipCalls != 0 {
-		t.Fatalf("send packet must use membership proof: m=%d nm=%d", src.membershipCalls, src.nonMembershipCalls)
-	}
-	if len(dst.relayed) != 1 || string(dst.relayed[0].Proof) != "membership" {
-		t.Fatalf("relayed packet must carry membership proof, got %+v", dst.relayed)
-	}
+		out := captureLog(func() {
+			m.handleBatch(context.Background(), []chain.Event{
+				{Type: chain.AckPacket, Sequence: 7, Height: 80, Raw: []byte("ack"), AckBytes: [][]byte{{1}}},
+			})
+		})
 
-	// timeouts prove non-membership (receipt absent)
-	if rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.TimeoutPacket, Height: 6, Raw: []byte("pkt-b")}}); len(rq) != 0 {
-		t.Fatalf("clean timeout must not re-queue, got %v", rq)
-	}
-	if src.nonMembershipCalls != 1 {
-		t.Fatalf("timeout must use non-membership proof: nm=%d", src.nonMembershipCalls)
-	}
-	if len(dst.relayed) != 2 || string(dst.relayed[1].Proof) != "non-membership" {
-		t.Fatalf("timeout relayed packet must carry non-membership proof, got %+v", dst.relayed)
-	}
-}
-
-// TestHandleBatch_Multicall verifies a multi-event batch folds into ONE
-// RelayPackets call (the multicall that amortizes per-tx intrinsic gas).
-func TestHandleBatch_Multicall(t *testing.T) {
-	src := &mockSource{latest: 100} // chain tip well above the packet heights
-	dst := &mockDest{}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	batch := []chain.Event{
-		{Type: chain.SendPacket, Height: 7, Raw: []byte("a")},
-		{Type: chain.SendPacket, Height: 9, Raw: []byte("b")},
-		{Type: chain.AckPacket, Height: 8, Raw: []byte("c")},
-	}
-	if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
-		t.Fatalf("clean batch must not re-queue, got %v", rq)
-	}
-	// One client update advancing to the source tip (100), one submit for all 3.
-	if len(dst.updates) != 1 || dst.updates[0].Height != 100 {
-		t.Fatalf("want single update at source tip 100, got %+v", dst.updates)
-	}
-	if dst.relayCalls != 1 {
-		t.Fatalf("want packets folded into ONE RelayPackets call, got %d calls", dst.relayCalls)
-	}
-	if len(dst.relayed) != 3 {
-		t.Fatalf("want 3 packets relayed, got %d", len(dst.relayed))
-	}
-}
-
-func TestHandleBatch_FoldsUpdateAndProofsAtTargetHeight(t *testing.T) {
-	src := &mockSource{latest: 100}
-	dst := &foldingMockDest{enabled: true}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
-	m.lastHeight = 10
-
-	batch := []chain.Event{
-		{Type: chain.SendPacket, Height: 30, Raw: []byte("a")},
-		{Type: chain.AckPacket, Height: 50, Raw: []byte("b")},
-	}
-	if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
-		t.Fatalf("clean folded batch must not re-queue, got %v", rq)
-	}
-	if dst.foldCalls != 1 || len(dst.foldedUpdates) != 1 || dst.foldedUpdates[0].Height != 80 {
-		t.Fatalf("want one folded update at target height 80, calls=%d updates=%+v", dst.foldCalls, dst.foldedUpdates)
-	}
-	if len(dst.updates) != 0 || dst.relayCalls != 0 {
-		t.Fatalf("folded path must not submit standalone txs: updates=%d relays=%d", len(dst.updates), dst.relayCalls)
-	}
-	if len(src.proofHeights) != 2 || src.proofHeights[0] != 80 || src.proofHeights[1] != 80 {
-		t.Fatalf("proofs must target not-yet-on-chain update height 80, got %v", src.proofHeights)
-	}
-	for _, packet := range dst.foldedPackets[0] {
-		if packet.Height != 80 {
-			t.Fatalf("folded packet height = %d, want 80", packet.Height)
+		for _, want := range []string{"waiting:", "ack seq=7", "h=80", "source relayable height=50"} {
+			if !strings.Contains(out, want) {
+				t.Fatalf("waiting log missing %q:\n%s", want, out)
+			}
 		}
-	}
-	if m.lastHeight != 80 {
-		t.Fatalf("successful atomic tx must advance lastHeight to 80, got %d", m.lastHeight)
-	}
-}
+	})
 
-func TestHandleBatch_FoldingCapabilityDisabledFallsBack(t *testing.T) {
-	src := &mockSource{latest: 100}
-	dst := &foldingMockDest{enabled: false}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+	// TestHandleBatch/age grows at destination gate is the regression guard for the
+	// subtle half of this change. A packet that clears the SOURCE gate every flush
+	// but parks at the DESTINATION-coverage gate is the exact shape of a stuck L2
+	// ack. Clearing the wait entry when it passes the source gate would reset its age
+	// to zero on every flush, so the log would report a permanently-stuck packet as
+	// freshly arrived — hiding the very condition the age exists to reveal.
+	t.Run("age grows at destination gate", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		// The builder can only ever advance the client to 50, so a packet at 100
+		// clears RelayableHeight but never the destination-coverage check.
+		m := NewModule("arbitrum->cosmos", "client-0", src, &mockDest{}, &mockBuilder{forceHeight: 50})
 
-	if rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 20, Raw: []byte("p")}}); len(rq) != 0 {
-		t.Fatalf("fallback batch must not re-queue, got %v", rq)
-	}
-	if dst.foldCalls != 0 || len(dst.updates) != 1 || dst.relayCalls != 1 {
-		t.Fatalf("disabled folding must use two-tx fallback: folds=%d updates=%d relays=%d", dst.foldCalls, len(dst.updates), dst.relayCalls)
-	}
-}
+		clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+		m.waits.now = clk.now
 
-func TestHandleBatch_FoldFailureDoesNotAdvanceState(t *testing.T) {
-	src := &mockSource{latest: 100}
-	dst := &foldingMockDest{enabled: true, foldErr: errors.New("rpc unavailable")}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+		event := chain.Event{Type: chain.AckPacket, Sequence: 7, Height: 100, Raw: []byte("ack"), AckBytes: [][]byte{{1}}}
+		batch := []chain.Event{event}
 
-	rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 20, Raw: []byte("p")}})
-	if len(rq) != 1 || rq[0] != 0 {
-		t.Fatalf("transient folded failure must re-queue packet, got %v", rq)
-	}
-	if m.lastHeight != 0 {
-		t.Fatalf("failed atomic tx must not advance lastHeight, got %d", m.lastHeight)
-	}
-	if len(dst.updates) != 0 || dst.relayCalls != 0 {
-		t.Fatalf("failed folded path must not fall through to standalone txs")
-	}
-}
+		m.handleBatch(context.Background(), batch) // first sighting: age 0
+		clk.t = clk.t.Add(10 * time.Minute)
 
-func TestHandleBatch_NoUpdateNeededRelaysPacketsOnly(t *testing.T) {
-	src := &mockSource{latest: 200}
-	dst := &foldingMockDest{enabled: true}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{noPayload: true, forceHeight: 200})
+		out := captureLog(func() { m.handleBatch(context.Background(), batch) })
 
-	if rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 180, Raw: []byte("p")}}); len(rq) != 0 {
-		t.Fatalf("current-client batch must relay, got %v", rq)
-	}
-	if dst.foldCalls != 0 || len(dst.updates) != 0 || dst.relayCalls != 1 {
-		t.Fatalf("no-update branch must submit packets only: folds=%d updates=%d relays=%d", dst.foldCalls, len(dst.updates), dst.relayCalls)
-	}
-	if len(src.proofHeights) != 1 || src.proofHeights[0] != 200 {
-		t.Fatalf("no-update proof height = %v, want [200]", src.proofHeights)
-	}
-}
-
-func TestHandleBatch_FoldedIsolationPreservesValidSiblings(t *testing.T) {
-	src := &mockSource{latest: 100}
-	dst := &foldingMockDest{enabled: true}
-	dst.poison = map[string]bool{"bad": true}
-	dst.foldFn = func(_ chain.ClientUpdate, packets []chain.RelayPacket) error {
-		if len(packets) > 1 {
-			return chain.Permanent(errors.New("folded batch reverted"))
+		if !strings.Contains(out, "waiting 10m0s") {
+			t.Fatalf("age did not accumulate across flushes at the destination gate:\n%s", out)
 		}
-		return nil
-	}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+		if !strings.Contains(out, "ack seq=7") {
+			t.Fatalf("destination-gate log did not name the packet:\n%s", out)
+		}
+	})
 
-	batch := []chain.Event{
-		{Type: chain.SendPacket, Height: 7, Raw: []byte("good-1")},
-		{Type: chain.SendPacket, Height: 8, Raw: []byte("bad")},
-		{Type: chain.SendPacket, Height: 9, Raw: []byte("good-2")},
-	}
-	if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
-		t.Fatalf("isolation must drop only poison, got requeue %v", rq)
-	}
-	// One fold: the batch. Isolation no longer re-folds, because the update is
-	// installed by the attribution step before any packet is judged -- see
-	// TestHandleBatch_FoldedUpdateRejectionDoesNotDropInnocentPackets for why
-	// that step exists.
-	if dst.foldCalls != 1 {
-		t.Fatalf("folded batch should be attempted once, got %d fold calls", dst.foldCalls)
-	}
-	if len(dst.updates) != 1 || dst.updates[0].Height != 100 {
-		t.Fatalf("the update must be installed on its own before any packet is judged, got %+v", dst.updates)
-	}
-	if m.lastHeight != 100 {
-		t.Fatalf("the standalone update must advance lastHeight, got %d", m.lastHeight)
-	}
-	if len(dst.relayed) != 2 ||
-		string(dst.relayed[0].Packet) != "good-1" || string(dst.relayed[1].Packet) != "good-2" {
-		t.Fatalf("both valid siblings must still relay, got %+v", dst.relayed)
-	}
-}
+	// TestHandleBatch/delivery clears the age: once a packet lands, a later packet
+	// reusing its sequence must not inherit the old age. Sequences do restart —
+	// create-clients-eth repoints an existing router client with migrateClient, so
+	// the source begins again at sequence 1 under the SAME client id.
+	//
+	// Two independent properties keep that honest, and this asserts both:
+	//   - a delivered packet clears its own entry (settleDelivered), and
+	//   - a sequence reused at a different source height starts its own clock rather
+	//     than inheriting the retired packet's age (see TestWaiting_ReusedSequenceRestartsTheAge).
+	t.Run("delivery clears the age", func(t *testing.T) {
+		src := &mockSource{latest: 100, relayable: 50}
+		m := NewModule("arbitrum->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
 
-// TestHandleBatch_UntracksDeliveredSends verifies that after a successful relay
-// the module removes each delivered SendPacket from the pending tracker (via the
-// untrack hook) — and only SendPacket, not acks — so the timeout scanner stops
-// considering a packet that can no longer time out.
-func TestHandleBatch_UntracksDeliveredSends(t *testing.T) {
-	src := &mockSource{latest: 100}
-	dst := &mockDest{}
-	var untracked [][]byte
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{},
-		WithPacketTracker(
-			func([]byte, uint64) bool { return true }, // track: no-op for this test
-			func(pkt []byte) { untracked = append(untracked, pkt) },
-		),
-	)
+		clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+		m.waits.now = clk.now
 
-	batch := []chain.Event{
-		{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")},
-		{Type: chain.AckPacket, Height: 8, Raw: []byte("ack-1")},
-		{Type: chain.SendPacket, Height: 9, Raw: []byte("send-2")},
-	}
-	if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
-		t.Fatalf("clean batch must not re-queue, got %v", rq)
-	}
-	if len(untracked) != 2 {
-		t.Fatalf("want 2 sends untracked, got %d (%q)", len(untracked), untracked)
-	}
-	if string(untracked[0]) != "send-1" || string(untracked[1]) != "send-2" {
-		t.Fatalf("untracked the wrong packets (acks must not be untracked): %q", untracked)
-	}
-}
+		// Generation 1, seq 7 at height 80: above the relayable frontier, so it parks.
+		old := chain.Event{Type: chain.AckPacket, Sequence: 7, Height: 80, Raw: []byte("ack-old"), AckBytes: [][]byte{{1}}}
+		m.handleBatch(context.Background(), []chain.Event{old})
+		clk.t = clk.t.Add(30 * time.Minute)
 
-// TestHandleBatch_NoUntrackOnRelayFailure verifies a failed relay does NOT untrack
-// any packet — a packet that was not delivered must stay in the tracker so the
-// timeout scanner can still refund it.
-func TestHandleBatch_NoUntrackOnRelayFailure(t *testing.T) {
-	src := &mockSource{latest: 100}
-	dst := &mockDest{relayErr: errors.New("rpc down")} // transient relay failure
-	var untracked [][]byte
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{},
-		WithPacketTracker(
-			func([]byte, uint64) bool { return true },
-			func(pkt []byte) { untracked = append(untracked, pkt) },
-		),
-	)
+		oldKey := waitKey{typ: chain.AckPacket, seq: 7}
+		if _, ok := m.waits.entries[oldKey]; !ok {
+			t.Fatal("the parked packet should have a wait entry to inherit from")
+		}
 
-	rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")}})
-	if len(rq) != 1 {
-		t.Fatalf("transient relay failure must re-queue the send, got %v", rq)
-	}
-	if len(untracked) != 0 {
-		t.Fatalf("a failed relay must not untrack anything, got %q", untracked)
-	}
-}
+		// Generation 2 after a client re-creation: the same sequence, but emitted at a
+		// height of its own, and low enough to relay immediately.
+		fresh := chain.Event{Type: chain.AckPacket, Sequence: 7, Height: 40, Raw: []byte("ack-new"), AckBytes: [][]byte{{1}}}
+		m.handleBatch(context.Background(), []chain.Event{fresh})
 
-func TestHandleBatch_RequeuesSendWhenPendingTrackingFails(t *testing.T) {
-	src := &mockSource{latest: 100}
-	dst := &mockDest{}
-	trackCalls := 0
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{},
-		WithPacketTracker(
-			func([]byte, uint64) bool {
-				trackCalls++
-				return trackCalls > 1
-			},
-			nil,
-		),
-	)
-	event := chain.Event{Type: chain.SendPacket, Height: 7, Sequence: 9, Raw: []byte("send-1")}
+		if _, ok := m.waits.entries[oldKey]; ok {
+			t.Fatal("a delivered packet must not leave a wait entry behind")
+		}
+	})
 
-	if got := m.handleBatch(context.Background(), []chain.Event{event}); len(got) != 1 || got[0] != 0 {
-		t.Fatalf("failed durable tracking requeue = %v, want [0]", got)
-	}
-	if dst.relayCalls != 0 {
-		t.Fatalf("relay calls after failed durable tracking = %d, want 0", dst.relayCalls)
-	}
+	t.Run("proof by type", func(t *testing.T) {
+		src := &mockSource{latest: 100} // chain tip well above the packet heights
+		dst := &mockDest{}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
 
-	if got := m.handleBatch(context.Background(), []chain.Event{event}); len(got) != 0 {
-		t.Fatalf("requeue after tracking recovered = %v, want none", got)
-	}
-	if dst.relayCalls != 1 {
-		t.Fatalf("relay calls after tracking recovered = %d, want 1", dst.relayCalls)
-	}
-}
+		// recv/ack packets prove membership (commitment exists)
+		if rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 5, Raw: []byte("pkt-a")}}); len(rq) != 0 {
+			t.Fatalf("clean send must not re-queue, got %v", rq)
+		}
+		if src.membershipCalls != 1 || src.nonMembershipCalls != 0 {
+			t.Fatalf("send packet must use membership proof: m=%d nm=%d", src.membershipCalls, src.nonMembershipCalls)
+		}
+		if len(dst.relayed) != 1 || string(dst.relayed[0].Proof) != "membership" {
+			t.Fatalf("relayed packet must carry membership proof, got %+v", dst.relayed)
+		}
 
-// TestHandleBatch_IsolatesPoisonPacket verifies that when a multi-packet batch
-// hits a permanent (deterministic revert) failure, the module isolates the poison
-// packet by retrying each packet individually — so the poison is dropped alone and
-// its VALID siblings still relay, rather than the whole batch being discarded.
-func TestHandleBatch_IsolatesPoisonPacket(t *testing.T) {
-	src := &mockSource{latest: 100}
-	dst := &mockDest{poison: map[string]bool{"bad": true}}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+		// timeouts prove non-membership (receipt absent)
+		if rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.TimeoutPacket, Height: 6, Raw: []byte("pkt-b")}}); len(rq) != 0 {
+			t.Fatalf("clean timeout must not re-queue, got %v", rq)
+		}
+		if src.nonMembershipCalls != 1 {
+			t.Fatalf("timeout must use non-membership proof: nm=%d", src.nonMembershipCalls)
+		}
+		if len(dst.relayed) != 2 || string(dst.relayed[1].Proof) != "non-membership" {
+			t.Fatalf("timeout relayed packet must carry non-membership proof, got %+v", dst.relayed)
+		}
+	})
 
-	batch := []chain.Event{
-		{Type: chain.SendPacket, Height: 7, Raw: []byte("good-1")},
-		{Type: chain.SendPacket, Height: 8, Raw: []byte("bad")},
-		{Type: chain.SendPacket, Height: 9, Raw: []byte("good-2")},
-	}
-	if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
-		t.Fatalf("isolation drops only the poison and re-queues nothing, got %v", rq)
-	}
-	var relayed []string
-	for _, p := range dst.relayed {
-		relayed = append(relayed, string(p.Packet))
-	}
-	if len(relayed) != 2 || relayed[0] != "good-1" || relayed[1] != "good-2" {
-		t.Fatalf("valid siblings must still relay (poison dropped), got %v", relayed)
-	}
-}
+	// TestHandleBatch/multicall verifies a multi-event batch folds into ONE
+	// RelayPackets call (the multicall that amortizes per-tx intrinsic gas).
+	t.Run("multicall", func(t *testing.T) {
+		src := &mockSource{latest: 100} // chain tip well above the packet heights
+		dst := &mockDest{}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
 
-// TestHandleBatch_IsolationRequeuesTransient verifies that if an isolated retry
-// hits a TRANSIENT failure, that packet's index is re-queued (not dropped), while
-// the poison packet is still dropped.
-func TestHandleBatch_IsolationRequeuesTransient(t *testing.T) {
-	src := &mockSource{latest: 100}
-	// Whole batch reverts permanently (poison "bad"); when retried alone, "good-1"
-	// fails transiently and "bad" fails permanently.
-	dst := &transientOnIsolate{poison: "bad", transientFor: "good-1"}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-	batch := []chain.Event{
-		{Type: chain.SendPacket, Height: 7, Raw: []byte("good-1")},
-		{Type: chain.SendPacket, Height: 8, Raw: []byte("bad")},
-	}
-	rq := m.handleBatch(context.Background(), batch)
-	// good-1 (index 0) transient → re-queued; bad (index 1) permanent → dropped.
-	if len(rq) != 1 || rq[0] != 0 {
-		t.Fatalf("transient isolated retry must re-queue only good-1's index [0], got %v", rq)
-	}
+		batch := []chain.Event{
+			{Type: chain.SendPacket, Height: 7, Raw: []byte("a")},
+			{Type: chain.SendPacket, Height: 9, Raw: []byte("b")},
+			{Type: chain.AckPacket, Height: 8, Raw: []byte("c")},
+		}
+		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+			t.Fatalf("clean batch must not re-queue, got %v", rq)
+		}
+		// One client update advancing to the source tip (100), one submit for all 3.
+		if len(dst.updates) != 1 || dst.updates[0].Height != 100 {
+			t.Fatalf("want single update at source tip 100, got %+v", dst.updates)
+		}
+		if dst.relayCalls != 1 {
+			t.Fatalf("want packets folded into ONE RelayPackets call, got %d calls", dst.relayCalls)
+		}
+		if len(dst.relayed) != 3 {
+			t.Fatalf("want 3 packets relayed, got %d", len(dst.relayed))
+		}
+	})
+
+	t.Run("folds update and proofs at target height", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &foldingMockDest{enabled: true}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
+		m.lastHeight = 10
+
+		batch := []chain.Event{
+			{Type: chain.SendPacket, Height: 30, Raw: []byte("a")},
+			{Type: chain.AckPacket, Height: 50, Raw: []byte("b")},
+		}
+		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+			t.Fatalf("clean folded batch must not re-queue, got %v", rq)
+		}
+		if dst.foldCalls != 1 || len(dst.foldedUpdates) != 1 || dst.foldedUpdates[0].Height != 80 {
+			t.Fatalf("want one folded update at target height 80, calls=%d updates=%+v", dst.foldCalls, dst.foldedUpdates)
+		}
+		if len(dst.updates) != 0 || dst.relayCalls != 0 {
+			t.Fatalf("folded path must not submit standalone txs: updates=%d relays=%d", len(dst.updates), dst.relayCalls)
+		}
+		if len(src.proofHeights) != 2 || src.proofHeights[0] != 80 || src.proofHeights[1] != 80 {
+			t.Fatalf("proofs must target not-yet-on-chain update height 80, got %v", src.proofHeights)
+		}
+		for _, packet := range dst.foldedPackets[0] {
+			if packet.Height != 80 {
+				t.Fatalf("folded packet height = %d, want 80", packet.Height)
+			}
+		}
+		if m.lastHeight != 80 {
+			t.Fatalf("successful atomic tx must advance lastHeight to 80, got %d", m.lastHeight)
+		}
+	})
+
+	t.Run("folding capability disabled falls back", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &foldingMockDest{enabled: false}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		if rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 20, Raw: []byte("p")}}); len(rq) != 0 {
+			t.Fatalf("fallback batch must not re-queue, got %v", rq)
+		}
+		if dst.foldCalls != 0 || len(dst.updates) != 1 || dst.relayCalls != 1 {
+			t.Fatalf("disabled folding must use two-tx fallback: folds=%d updates=%d relays=%d", dst.foldCalls, len(dst.updates), dst.relayCalls)
+		}
+	})
+
+	t.Run("fold failure does not advance state", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &foldingMockDest{enabled: true, foldErr: errors.New("rpc unavailable")}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 20, Raw: []byte("p")}})
+		if len(rq) != 1 || rq[0] != 0 {
+			t.Fatalf("transient folded failure must re-queue packet, got %v", rq)
+		}
+		if m.lastHeight != 0 {
+			t.Fatalf("failed atomic tx must not advance lastHeight, got %d", m.lastHeight)
+		}
+		if len(dst.updates) != 0 || dst.relayCalls != 0 {
+			t.Fatalf("failed folded path must not fall through to standalone txs")
+		}
+	})
+
+	t.Run("no update needed relays packets only", func(t *testing.T) {
+		src := &mockSource{latest: 200}
+		dst := &foldingMockDest{enabled: true}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{noPayload: true, forceHeight: 200})
+
+		if rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 180, Raw: []byte("p")}}); len(rq) != 0 {
+			t.Fatalf("current-client batch must relay, got %v", rq)
+		}
+		if dst.foldCalls != 0 || len(dst.updates) != 0 || dst.relayCalls != 1 {
+			t.Fatalf("no-update branch must submit packets only: folds=%d updates=%d relays=%d", dst.foldCalls, len(dst.updates), dst.relayCalls)
+		}
+		if len(src.proofHeights) != 1 || src.proofHeights[0] != 200 {
+			t.Fatalf("no-update proof height = %v, want [200]", src.proofHeights)
+		}
+	})
+
+	t.Run("folded isolation preserves valid siblings", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &foldingMockDest{enabled: true}
+		dst.poison = map[string]bool{"bad": true}
+		dst.foldFn = func(_ chain.ClientUpdate, packets []chain.RelayPacket) error {
+			if len(packets) > 1 {
+				return chain.Permanent(errors.New("folded batch reverted"))
+			}
+			return nil
+		}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		batch := []chain.Event{
+			{Type: chain.SendPacket, Height: 7, Raw: []byte("good-1")},
+			{Type: chain.SendPacket, Height: 8, Raw: []byte("bad")},
+			{Type: chain.SendPacket, Height: 9, Raw: []byte("good-2")},
+		}
+		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+			t.Fatalf("isolation must drop only poison, got requeue %v", rq)
+		}
+		// One fold: the batch. Isolation no longer re-folds, because the update is
+		// installed by the attribution step before any packet is judged -- see
+		// TestHandleBatch/folded update rejection does not drop innocent packets for why
+		// that step exists.
+		if dst.foldCalls != 1 {
+			t.Fatalf("folded batch should be attempted once, got %d fold calls", dst.foldCalls)
+		}
+		if len(dst.updates) != 1 || dst.updates[0].Height != 100 {
+			t.Fatalf("the update must be installed on its own before any packet is judged, got %+v", dst.updates)
+		}
+		if m.lastHeight != 100 {
+			t.Fatalf("the standalone update must advance lastHeight, got %d", m.lastHeight)
+		}
+		if len(dst.relayed) != 2 ||
+			string(dst.relayed[0].Packet) != "good-1" || string(dst.relayed[1].Packet) != "good-2" {
+			t.Fatalf("both valid siblings must still relay, got %+v", dst.relayed)
+		}
+	})
+
+	// TestHandleBatch/untracks delivered sends verifies that after a successful relay
+	// the module removes each delivered SendPacket from the pending tracker (via the
+	// untrack hook) — and only SendPacket, not acks — so the timeout scanner stops
+	// considering a packet that can no longer time out.
+	t.Run("untracks delivered sends", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &mockDest{}
+		var untracked [][]byte
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{},
+			WithPacketTracker(
+				func([]byte, uint64) bool { return true }, // track: no-op for this test
+				func(pkt []byte) { untracked = append(untracked, pkt) },
+			),
+		)
+
+		batch := []chain.Event{
+			{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")},
+			{Type: chain.AckPacket, Height: 8, Raw: []byte("ack-1")},
+			{Type: chain.SendPacket, Height: 9, Raw: []byte("send-2")},
+		}
+		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+			t.Fatalf("clean batch must not re-queue, got %v", rq)
+		}
+		if len(untracked) != 2 {
+			t.Fatalf("want 2 sends untracked, got %d (%q)", len(untracked), untracked)
+		}
+		if string(untracked[0]) != "send-1" || string(untracked[1]) != "send-2" {
+			t.Fatalf("untracked the wrong packets (acks must not be untracked): %q", untracked)
+		}
+	})
+
+	// TestHandleBatch/no untrack on relay failure verifies a failed relay does NOT untrack
+	// any packet — a packet that was not delivered must stay in the tracker so the
+	// timeout scanner can still refund it.
+	t.Run("no untrack on relay failure", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &mockDest{relayErr: errors.New("rpc down")} // transient relay failure
+		var untracked [][]byte
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{},
+			WithPacketTracker(
+				func([]byte, uint64) bool { return true },
+				func(pkt []byte) { untracked = append(untracked, pkt) },
+			),
+		)
+
+		rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")}})
+		if len(rq) != 1 {
+			t.Fatalf("transient relay failure must re-queue the send, got %v", rq)
+		}
+		if len(untracked) != 0 {
+			t.Fatalf("a failed relay must not untrack anything, got %q", untracked)
+		}
+	})
+
+	t.Run("requeues send when pending tracking fails", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &mockDest{}
+		trackCalls := 0
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{},
+			WithPacketTracker(
+				func([]byte, uint64) bool {
+					trackCalls++
+					return trackCalls > 1
+				},
+				nil,
+			),
+		)
+		event := chain.Event{Type: chain.SendPacket, Height: 7, Sequence: 9, Raw: []byte("send-1")}
+
+		if got := m.handleBatch(context.Background(), []chain.Event{event}); len(got) != 1 || got[0] != 0 {
+			t.Fatalf("failed durable tracking requeue = %v, want [0]", got)
+		}
+		if dst.relayCalls != 0 {
+			t.Fatalf("relay calls after failed durable tracking = %d, want 0", dst.relayCalls)
+		}
+
+		if got := m.handleBatch(context.Background(), []chain.Event{event}); len(got) != 0 {
+			t.Fatalf("requeue after tracking recovered = %v, want none", got)
+		}
+		if dst.relayCalls != 1 {
+			t.Fatalf("relay calls after tracking recovered = %d, want 1", dst.relayCalls)
+		}
+	})
+
+	// TestHandleBatch/isolates poison packet verifies that when a multi-packet batch
+	// hits a permanent (deterministic revert) failure, the module isolates the poison
+	// packet by retrying each packet individually — so the poison is dropped alone and
+	// its VALID siblings still relay, rather than the whole batch being discarded.
+	t.Run("isolates poison packet", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &mockDest{poison: map[string]bool{"bad": true}}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		batch := []chain.Event{
+			{Type: chain.SendPacket, Height: 7, Raw: []byte("good-1")},
+			{Type: chain.SendPacket, Height: 8, Raw: []byte("bad")},
+			{Type: chain.SendPacket, Height: 9, Raw: []byte("good-2")},
+		}
+		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+			t.Fatalf("isolation drops only the poison and re-queues nothing, got %v", rq)
+		}
+		var relayed []string
+		for _, p := range dst.relayed {
+			relayed = append(relayed, string(p.Packet))
+		}
+		if len(relayed) != 2 || relayed[0] != "good-1" || relayed[1] != "good-2" {
+			t.Fatalf("valid siblings must still relay (poison dropped), got %v", relayed)
+		}
+	})
+
+	// TestHandleBatch/isolation requeues transient verifies that if an isolated retry
+	// hits a TRANSIENT failure, that packet's index is re-queued (not dropped), while
+	// the poison packet is still dropped.
+	t.Run("isolation requeues transient", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		// Whole batch reverts permanently (poison "bad"); when retried alone, "good-1"
+		// fails transiently and "bad" fails permanently.
+		dst := &transientOnIsolate{poison: "bad", transientFor: "good-1"}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+		batch := []chain.Event{
+			{Type: chain.SendPacket, Height: 7, Raw: []byte("good-1")},
+			{Type: chain.SendPacket, Height: 8, Raw: []byte("bad")},
+		}
+		rq := m.handleBatch(context.Background(), batch)
+		// good-1 (index 0) transient → re-queued; bad (index 1) permanent → dropped.
+		if len(rq) != 1 || rq[0] != 0 {
+			t.Fatalf("transient isolated retry must re-queue only good-1's index [0], got %v", rq)
+		}
+	})
+
+	// TestHandleBatch/cancelled context relays nothing verifies that a cancelled context
+	// short-circuits handleBatch: everything is re-queued and no proof/relay work runs.
+	t.Run("cancelled context relays nothing", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &mockDest{}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel() // already cancelled
+
+		batch := []chain.Event{
+			{Type: chain.SendPacket, Height: 7, Raw: []byte("a")},
+			{Type: chain.SendPacket, Height: 8, Raw: []byte("b")},
+		}
+		rq := m.handleBatch(ctx, batch)
+		if len(rq) != 2 {
+			t.Fatalf("cancelled ctx must re-queue every event, got %v", rq)
+		}
+		if src.membershipCalls != 0 || dst.relayCalls != 0 || len(dst.updates) != 0 {
+			t.Fatalf("cancelled ctx must not run proof/update/relay work: m=%d relay=%d upd=%d",
+				src.membershipCalls, dst.relayCalls, len(dst.updates))
+		}
+	})
+
+	// TestHandleBatch/requeue transient verifies a per-packet transient proof failure
+	// re-queues exactly that event's index while the rest still relay.
+	t.Run("requeue transient", func(t *testing.T) {
+		src := &mockSource{latest: 100, failMembershipOn: map[string]bool{"bad": true}}
+		dst := &mockDest{}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		batch := []chain.Event{
+			{Type: chain.SendPacket, Height: 3, Raw: []byte("ok1")},
+			{Type: chain.SendPacket, Height: 4, Raw: []byte("bad")},
+			{Type: chain.SendPacket, Height: 5, Raw: []byte("ok2")},
+		}
+		rq := m.handleBatch(context.Background(), batch)
+		if len(rq) != 1 || rq[0] != 1 {
+			t.Fatalf("want re-queue of index 1 only, got %v", rq)
+		}
+		if len(dst.relayed) != 2 {
+			t.Fatalf("want the 2 good packets relayed, got %d", len(dst.relayed))
+		}
+	})
+
+	// TestHandleBatch/drop permanent proof verifies a permanent proof failure (a
+	// timed-out packet) is DROPPED, not re-queued — the fix for the gas-drain bug
+	// where a dead packet spun forever, each retry re-running a client update.
+	t.Run("drop permanent proof", func(t *testing.T) {
+		src := &mockSource{latest: 100, permanentMembershipOn: map[string]bool{"dead": true}}
+		dst := &mockDest{}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		batch := []chain.Event{
+			{Type: chain.SendPacket, Height: 3, Raw: []byte("ok")},
+			{Type: chain.SendPacket, Height: 4, Raw: []byte("dead")}, // timed out → permanent
+		}
+		rq := m.handleBatch(context.Background(), batch)
+		if len(rq) != 0 {
+			t.Fatalf("permanent packet must be DROPPED, not re-queued, got %v", rq)
+		}
+		if len(dst.relayed) != 1 || string(dst.relayed[0].Packet) != "ok" {
+			t.Fatalf("only the live packet should relay, got %+v", dst.relayed)
+		}
+	})
+
+	// TestHandleBatch/drop permanent relay verifies a permanent relay (on-chain revert)
+	// failure drops the batch instead of re-queueing it forever.
+	t.Run("drop permanent relay", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &mockDest{relayErr: chain.Permanent(errors.New("reverted"))}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 5, Raw: []byte("p")}})
+		if len(rq) != 0 {
+			t.Fatalf("permanent relay revert must DROP, not re-queue, got %v", rq)
+		}
+	})
+
+	// TestHandleBatch/requeue transient relay verifies a transient relay failure (RPC,
+	// nonce) re-queues the batch (unlike a permanent revert).
+	t.Run("requeue transient relay", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &mockDest{relayErr: errors.New("rpc unavailable")} // not permanent
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 5, Raw: []byte("p")}})
+		if len(rq) != 1 {
+			t.Fatalf("transient relay failure must re-queue, got %v", rq)
+		}
+	})
+
+	// TestHandleBatch/precondition skip verifies the RelayableHeight precondition: a
+	// packet whose source height is above the relayable height (Cosmos AppHash lag /
+	// ETH finality lag) is re-queued WITHOUT any client update or proof — the fix for
+	// the re-prove/spam regression where the module burned a proof every flush while
+	// waiting.
+	t.Run("precondition skip", func(t *testing.T) {
+		src := &mockSource{latest: 100, relayable: 50} // tip 100, but only <=50 provable
+		dst := &mockDest{}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 80, Raw: []byte("pending")}})
+		if len(rq) != 1 || rq[0] != 0 {
+			t.Fatalf("packet above relayable height must re-queue, got %v", rq)
+		}
+		if len(dst.updates) != 0 {
+			t.Fatalf("must NOT advance the client for an unprovable batch, got %d updates", len(dst.updates))
+		}
+		if src.membershipCalls != 0 {
+			t.Fatalf("must NOT build a proof for an unprovable batch, got %d", src.membershipCalls)
+		}
+	})
+
+	// TestHandleBatch/provability guard verifies that when the destination client can
+	// only advance to a height below the packet's (the ETH->Cosmos finality-lag case),
+	// the packet is re-queued instead of proven against a state that lacks it.
+	t.Run("provability guard", func(t *testing.T) {
+		src := &mockSource{latest: 100}
+		dst := &mockDest{}
+		// Builder can only advance the client to height 50 (finality lag), regardless
+		// of the requested height.
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 50})
+
+		// Packet observed at execution height 100, but the client only reaches 50.
+		rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 100, Raw: []byte("future")}})
+		if len(rq) != 1 || rq[0] != 0 {
+			t.Fatalf("packet above provable height must re-queue, got %v", rq)
+		}
+		if src.membershipCalls != 0 {
+			t.Fatalf("must not attempt a proof for an unprovable packet, got %d", src.membershipCalls)
+		}
+		if len(dst.relayed) != 0 {
+			t.Fatalf("nothing should be relayed, got %d", len(dst.relayed))
+		}
+	})
+
+	// A permanently-failing packet must leave no wait entry behind, on EVERY terminal
+	// path. The folded isolated path was the one that did not clear: a batch fold
+	// reverts, isolation retries each packet carrying the update, and a packet that
+	// fails permanently there stayed in the tracker until its TTL — so `status` and
+	// the waiting log would keep reporting an age for a packet that was already dropped.
+	//
+	// Asserting on the tracker rather than on a log line is deliberate: the tracker is
+	// what a future status command reads, and it is what a fifth terminal path would
+	// also have to clear.
+	t.Run("folded isolated permanent drop clears the wait", func(t *testing.T) {
+		src := &mockSource{relayable: 100}
+		dst := &foldingMockDest{enabled: true}
+		// The folded batch reverts, the update lands on its own -- so the packets are
+		// the poison -- and each isolated singleton then reverts too. Both halves are
+		// needed: without the second the packets would simply relay, and this test
+		// would assert an empty wait tracker for the wrong reason.
+		dst.foldFn = func(_ chain.ClientUpdate, _ []chain.RelayPacket) error {
+			return chain.Permanent(errors.New("reverted"))
+		}
+		dst.relayErr = chain.Permanent(errors.New("reverted"))
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		events := []chain.Event{
+			{Type: chain.SendPacket, Height: 10, Sequence: 1, Raw: []byte("a")},
+			{Type: chain.SendPacket, Height: 10, Sequence: 2, Raw: []byte("b")},
+		}
+		// First pass: nothing is relayable yet, so both packets are observed as waiting.
+		src.relayable = 5
+		if rq := m.handleBatch(context.Background(), events); len(rq) != 2 {
+			t.Fatalf("both packets should be re-queued while unrelayable, got %d", len(rq))
+		}
+		if got := len(m.waits.entries); got != 2 {
+			t.Fatalf("expected 2 tracked waits after the first pass, got %d", got)
+		}
+
+		// Second pass: relayable, folded batch reverts, isolation drops both permanently.
+		src.relayable = 100
+		if rq := m.handleBatch(context.Background(), events); len(rq) != 0 {
+			t.Fatalf("permanently dropped packets must not be re-queued, got %d", len(rq))
+		}
+		if got := len(m.waits.entries); got != 0 {
+			t.Fatalf("folded isolated drop left %d wait entry/entries behind; every terminal path must clear", got)
+		}
+		if dst.foldCalls != 1 {
+			t.Fatalf("expected one folded batch attempt, got %d", dst.foldCalls)
+		}
+		if dst.relayCalls != len(events) {
+			t.Fatalf("expected one packets-only attempt per packet, got %d for %d packet(s)", dst.relayCalls, len(events))
+		}
+	})
+
+	// A packet waiting on the source frontier is re-queued every flush — every batch
+	// period, on no backoff. A measured OP Sepolia wait produced 67 identical lines in
+	// 4m12s, and a default 150-block attestor gap makes ~100 the normal case. The line
+	// must therefore report transitions, not repetitions: the same wait says nothing
+	// new, a frontier that moved does.
+	t.Run("waiting logs only on change", func(t *testing.T) {
+		src := &mockSource{latest: 100, relayable: 5}
+		m := NewModule("test", "client-0", src, &mockDest{}, &mockBuilder{})
+		waiting := []chain.Event{{Type: chain.SendPacket, Height: 50, Raw: []byte("pkt-far")}}
+
+		if rq := m.handleBatch(context.Background(), waiting); len(rq) != 1 {
+			t.Fatalf("packet above the relayable height must re-queue, got %v", rq)
+		}
+		first := m.lastWait
+		if !first.logged || first.packets != 1 || first.relayable != 5 || first.description == "" {
+			t.Fatalf("first wait must be recorded as logged: %+v", first)
+		}
+
+		// Same picture again: nothing to say.
+		m.handleBatch(context.Background(), waiting)
+		if m.lastWait != first {
+			t.Fatalf("an unchanged wait must not update the log state: %+v -> %+v", first, m.lastWait)
+		}
+
+		// Frontier advances — that is the signal worth printing.
+		src.relayable = 20
+		m.handleBatch(context.Background(), waiting)
+		if m.lastWait == first {
+			t.Fatal("a moving frontier must be reported")
+		}
+		if m.lastWait.relayable != 20 {
+			t.Fatalf("log state must track the new frontier, got %+v", m.lastWait)
+		}
+
+		// Once everything is relayable the state resets, so the next wait reports
+		// itself even if it looks identical to the one before.
+		src.relayable = 100
+		if rq := m.handleBatch(context.Background(), waiting); len(rq) != 0 {
+			t.Fatalf("packet below the relayable height must not re-queue, got %v", rq)
+		}
+		if m.lastWait.logged {
+			t.Fatalf("a cleared wait must reset the log state, got %+v", m.lastWait)
+		}
+	})
+
+	// TestHandleBatch/folded update submitted when no packet is provable pins the escape from a loop
+	// the relayer could not leave on its own.
+	//
+	// A folding destination leaves the client update unsubmitted so it can ride in
+	// the packet transaction. When every proof fails there are no packets, and the
+	// update used to be dropped with them — but the proofs are built at the height
+	// the client already trusts, so the client standing still is exactly why they
+	// failed:
+	//
+	//	proofs target the trusted height -> that height falls out of the execution
+	//	node's state window -> every proof fails -> no packets -> the update is
+	//	dropped -> the client stays put -> the gap only widens
+	//
+	// Observed on Sepolia: trustedSlot pinned at 10885728 for twenty minutes while
+	// finalizedSlot advanced, every pass logging `eth_getProof failed: historical
+	// state ... is not available`, and no update ever submitted.
+	t.Run("folded update submitted when no packet is provable", func(t *testing.T) {
+		src := &mockSource{latest: 200, failMembershipOn: map[string]bool{"p": true}}
+		dst := &foldingMockDest{enabled: true}
+		b := &mockBuilder{}
+		m := NewModule("test", "client-0", src, dst, b)
+
+		rq := m.handleBatch(context.Background(), []chain.Event{
+			{Type: chain.SendPacket, Height: 180, Raw: []byte("p")},
+		})
+
+		if len(rq) != 1 {
+			t.Fatalf("the unprovable packet must be re-queued, got %v", rq)
+		}
+		if len(dst.updates) != 1 {
+			t.Fatalf("the client update must still be submitted with no packets to fold it into, got %d", len(dst.updates))
+		}
+		if dst.foldCalls != 0 {
+			t.Fatalf("RelayWithUpdate is specified to carry packets; with none it must not be called, got %d calls", dst.foldCalls)
+		}
+		if m.lastHeight != 200 {
+			t.Fatalf("lastHeight must advance to the submitted update height, got %d", m.lastHeight)
+		}
+	})
+
+	// The lock the folded plan holds must be released on this path too, or the next
+	// flush deadlocks — a stall that would look exactly like the bug being fixed.
+	t.Run("folded update with no packets releases the lock", func(t *testing.T) {
+		src := &mockSource{latest: 200, failMembershipOn: map[string]bool{"p": true}}
+		dst := &foldingMockDest{enabled: true}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		evts := []chain.Event{{Type: chain.SendPacket, Height: 180, Raw: []byte("p")}}
+		m.handleBatch(context.Background(), evts)
+
+		done := make(chan struct{})
+		go func() { defer close(done); m.handleBatch(context.Background(), evts) }()
+		select {
+		case <-done:
+		case <-time.After(3 * time.Second):
+			t.Fatal("second flush blocked: the folded plan's lock was not released after the packet-less update")
+		}
+	})
+
+	// A failed update must not advance lastHeight — otherwise the module would
+	// believe the client covers heights it does not, and build proofs the
+	// destination cannot verify.
+	t.Run("folded update failure does not advance height", func(t *testing.T) {
+		src := &mockSource{latest: 200, failMembershipOn: map[string]bool{"p": true}}
+		dst := &foldingMockDest{enabled: true}
+		dst.updateErr = errors.New("cosmos rpc down")
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		m.handleBatch(context.Background(), []chain.Event{
+			{Type: chain.SendPacket, Height: 180, Raw: []byte("p")},
+		})
+
+		if m.lastHeight != 0 {
+			t.Fatalf("a failed update must leave lastHeight at 0, got %d", m.lastHeight)
+		}
+	})
+
+	// The ladder is dead code unless handleBatch actually goes through it. This is
+	// the production shape: an ack whose proof keeps failing, flushed repeatedly.
+	t.Run("escalates a repeated proof failure", func(t *testing.T) {
+		src := &mockSource{
+			latest:           100,
+			relayable:        50, // packet at 80 is not provable yet: it waits first
+			failMembershipOn: map[string]bool{"ack": true},
+		}
+		m := NewModule("eth->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+		clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+		m.waits.now = clk.now
+
+		batch := []chain.Event{{Type: chain.AckPacket, Sequence: 21, Height: 80, Raw: []byte("ack"), AckBytes: [][]byte{{1}}}}
+
+		// Sixteen minutes parked at the source gate before a proof is ever attempted.
+		// This is the normal case on an L2 return leg, and none of it is a proof
+		// failure -- so it must not be charged to the ladder below.
+		m.handleBatch(context.Background(), batch)
+		clk.t = clk.t.Add(16 * time.Minute)
+		src.relayable = 100
+
+		first := captureLog(func() { m.handleBatch(context.Background(), batch) })
+		if !strings.Contains(first, "ack seq=21") {
+			t.Fatalf("the first proof failure must reach the log:\n%s", first)
+		}
+		if strings.Contains(first, "STUCK") {
+			t.Fatalf("the FIRST proof failure was reported as STUCK because it inherited the pre-proof wait:\n%s", first)
+		}
+
+		// Ten more flushes within the same threshold: silent. This is the case that
+		// produced 296 byte-identical lines.
+		repeats := captureLog(func() {
+			for i := 0; i < 10; i++ {
+				clk.t = clk.t.Add(2 * time.Second)
+				m.handleBatch(context.Background(), batch)
+			}
+		})
+		if strings.Contains(repeats, "ack seq=21") {
+			t.Fatalf("repeats inside one threshold must be suppressed:\n%s", repeats)
+		}
+
+		// Past the stuck threshold the wording has to change: an operator reading
+		// "proof for packet" cannot tell a retry from a packet with no way out.
+		clk.t = clk.t.Add(proofFailureStuckAfter + time.Minute)
+		stuck := captureLog(func() { m.handleBatch(context.Background(), batch) })
+		for _, want := range []string{"STUCK", "ack seq=21", "no other exit"} {
+			if !strings.Contains(stuck, want) {
+				t.Fatalf("the escalated line must contain %q:\n%s", want, stuck)
+			}
+		}
+	})
+
+	// TestHandleBatch/stuck send names the timeout exit: "no other exit" is true of an ack
+	// and false of a send. Every source reports an expired send as permanent, the
+	// module drops it, and the timeout scanner refunds it -- so telling an operator a
+	// send is unrecoverable sends them looking for a problem that resolves itself.
+	// The two packet types need different next actions, so they need different lines.
+	t.Run("stuck send names the timeout exit", func(t *testing.T) {
+		src := &mockSource{
+			latest:           100,
+			relayable:        100,
+			failMembershipOn: map[string]bool{"snd": true},
+		}
+		m := NewModule("eth->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+		clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
+		m.waits.now = clk.now
+
+		batch := []chain.Event{{Type: chain.SendPacket, Sequence: 21, Height: 80, Raw: []byte("snd")}}
+
+		m.handleBatch(context.Background(), batch)
+		clk.t = clk.t.Add(proofFailureStuckAfter + time.Minute)
+		stuck := captureLog(func() { m.handleBatch(context.Background(), batch) })
+
+		// A SendPacket prints as "recv": the line names the message the destination
+		// will be asked for, not the event's origin (see TestEventType_Names).
+		for _, want := range []string{"STUCK", "recv seq=21", "timeout scanner"} {
+			if !strings.Contains(stuck, want) {
+				t.Fatalf("a stuck send must name the exit it actually has (%q):\n%s", want, stuck)
+			}
+		}
+		if strings.Contains(stuck, "no other exit") {
+			t.Fatalf("a send is refunded once past its timeout, so it does have another exit:\n%s", stuck)
+		}
+	})
+
+	// A permanently-failing source -- a misconfigured attestor route, a malformed
+	// request, an RPC the daemon does not implement -- used to be asked again on
+	// every pass. The L2 loop re-offers its queued packets every 4s and deliberately
+	// does so even when the chain produced no block, so one bad config line became
+	// roughly 21,600 attestor calls and log lines a day, each looking like an
+	// ordinary transient RPC failure.
+	//
+	// The hold changes only how often the source is asked. It must not drop a packet
+	// and must not skip the durable tracking that pays for the timeout refund.
+	t.Run("permanent source failure is held off", func(t *testing.T) {
+		events := []chain.Event{{Type: chain.SendPacket, Sequence: 7, Height: 40, Raw: []byte("pkt-7")}}
+
+		t.Run("the source is not asked again during the hold", func(t *testing.T) {
+			src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}
+			m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+
+			out := captureLog(func() { m.handleBatch(context.Background(), events) })
+			if src.relayableCalls != 1 {
+				t.Fatalf("first pass asked the source %d times, want 1", src.relayableCalls)
+			}
+			if !strings.Contains(out, "PERMANENT") {
+				t.Fatalf("a permanent source failure must say so, not read as a transient RPC error:\n%s", out)
+			}
+
+			for i := 0; i < 5; i++ {
+				m.handleBatch(context.Background(), events)
+			}
+			if src.relayableCalls != 1 {
+				t.Fatalf("source asked %d times across 6 passes; the hold is not holding", src.relayableCalls)
+			}
+		})
+
+		// The hold skips the RPC and the proof, never the durable record: a packet
+		// queued while the source is held off must still be tracked, or it can never
+		// be refunded when it expires.
+		t.Run("packets are still tracked while held off", func(t *testing.T) {
+			src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}
+			var tracked [][]byte
+			m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{},
+				WithPacketTracker(func(raw []byte, _ uint64) bool {
+					tracked = append(tracked, raw)
+					return true
+				}, nil))
+
+			m.handleBatch(context.Background(), events) // arms the hold
+			m.handleBatch(context.Background(), events) // held off
+
+			if len(tracked) != 2 {
+				t.Fatalf("tracked %d packets across two passes, want 2: a packet queued during the hold "+
+					"that is never tracked can never be refunded", len(tracked))
+			}
+		})
+
+		t.Run("the hold clears once the source answers", func(t *testing.T) {
+			src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}
+			m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+
+			m.handleBatch(context.Background(), events)
+			m.sourceProbeAt = time.Now().Add(-time.Second) // the operator fixed the config
+			src.relayableErr = nil
+
+			out := captureLog(func() { m.handleBatch(context.Background(), events) })
+			if src.relayableCalls != 2 {
+				t.Fatalf("source asked %d times; the probe after the hold expired did not happen", src.relayableCalls)
+			}
+			if !strings.Contains(out, "permanent-failure hold cleared") {
+				t.Fatalf("a recovered source must say so:\n%s", out)
+			}
+			if !m.sourceProbeAt.IsZero() || m.sourceBackoff != 0 {
+				t.Fatalf("hold state survived recovery: probeAt=%v backoff=%v", m.sourceProbeAt, m.sourceBackoff)
+			}
+		})
+
+		// A transient failure must not arm the hold, or a source that is merely
+		// unreachable for a moment goes quiet for up to fifteen minutes.
+		t.Run("a transient failure does not arm the hold", func(t *testing.T) {
+			src := &mockSource{latest: 100, relayableErr: chain.Transient(errors.New("attestor unavailable"))}
+			m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
+
+			m.handleBatch(context.Background(), events)
+			m.handleBatch(context.Background(), events)
+
+			if src.relayableCalls != 2 {
+				t.Fatalf("source asked %d times across two passes, want 2: a transient failure was treated as permanent", src.relayableCalls)
+			}
+		})
+	})
+
+	// A destination can commit part of a batch and then fail: a Cosmos batch that
+	// splits submits its leading sub-batches, and the node can go away between two
+	// of them. Those packets are on chain.
+	//
+	// Before the committed count reached the engine, both endings were wrong for
+	// them. The transient ending re-queued the whole batch, so the delivered packets
+	// were submitted a second time — and then reverted as duplicates, which the
+	// engine reads as permanent and reports as DROP for packets that were in fact
+	// delivered. The permanent ending isolated all of them, one wasted transaction
+	// each, with the same misleading DROP.
+	t.Run("partial commit", func(t *testing.T) {
+		batch := []chain.Event{
+			{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")},
+			{Type: chain.SendPacket, Height: 8, Raw: []byte("send-2")},
+			{Type: chain.SendPacket, Height: 9, Raw: []byte("send-3")},
+		}
+
+		run := func(t *testing.T, dst *mockDest) (requeue []int, untracked [][]byte) {
+			t.Helper()
+			m := NewModule("test", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{},
+				WithPacketTracker(
+					func([]byte, uint64) bool { return true },
+					func(pkt []byte) { untracked = append(untracked, pkt) },
+				),
+			)
+			return m.handleBatch(context.Background(), batch), untracked
+		}
+
+		t.Run("a transient failure re-queues only the uncommitted tail", func(t *testing.T) {
+			dst := &mockDest{relayErr: errors.New("node went away"), relayCommit: 2}
+			requeue, untracked := run(t, dst)
+
+			if len(requeue) != 1 || requeue[0] != 2 {
+				t.Fatalf("requeue = %v, want only index 2; the first two are already on chain", requeue)
+			}
+			if len(untracked) != 2 {
+				t.Fatalf("untracked %d packet(s) (%q), want the 2 that were committed", len(untracked), untracked)
+			}
+			if dst.relayCalls != 1 {
+				t.Fatalf("relay calls = %d, want 1; a transient failure must not start isolating", dst.relayCalls)
+			}
+		})
+
+		t.Run("a permanent failure isolates only the uncommitted tail", func(t *testing.T) {
+			dst := &mockDest{relayErr: chain.Permanent(errors.New("reverted")), relayCommit: 2}
+			requeue, untracked := run(t, dst)
+
+			// The tail is a single packet, so it is dropped outright rather than
+			// isolated — and the committed two must not be dropped with it.
+			if len(requeue) != 0 {
+				t.Fatalf("requeue = %v, want none: two landed and the third is permanently dead", requeue)
+			}
+			if len(untracked) != 2 {
+				t.Fatalf("untracked %d packet(s) (%q), want the 2 that were committed", len(untracked), untracked)
+			}
+			if dst.relayCalls != 1 {
+				t.Fatalf("relay calls = %d, want 1; the committed prefix must not be re-submitted for isolation", dst.relayCalls)
+			}
+		})
+
+		t.Run("a batch that fully committed before the error re-queues nothing", func(t *testing.T) {
+			dst := &mockDest{relayErr: errors.New("receipt wait timed out"), relayCommit: 3}
+			requeue, untracked := run(t, dst)
+
+			if len(requeue) != 0 {
+				t.Fatalf("requeue = %v, want none: every packet is on chain", requeue)
+			}
+			if len(untracked) != 3 {
+				t.Fatalf("untracked %d packet(s), want all 3", len(untracked))
+			}
+		})
+
+		t.Run("a count larger than the batch is clamped, not indexed with", func(t *testing.T) {
+			// An adapter breaking the contract must not take the relay loop down with
+			// a slice bounds panic.
+			dst := &mockDest{relayErr: errors.New("node went away"), relayCommit: 99}
+			requeue, untracked := run(t, dst)
+
+			if len(requeue) != 0 {
+				t.Fatalf("requeue = %v, want none after clamping", requeue)
+			}
+			if len(untracked) != 3 {
+				t.Fatalf("untracked %d packet(s), want at most the 3 in the batch", len(untracked))
+			}
+		})
+	})
+
+	// An unresolved abandoned nonce must not be isolated, and must not be dropped.
+	//
+	// Reported by @DongLieu on #485. The EVM sender marks this failure permanent so
+	// nothing resubmits the payload, but permanent already meant "deterministic
+	// revert" here, and that ending ISOLATES a multi-packet batch: each packet goes
+	// out on its own, against a nonce cache the give-up path just invalidated, so
+	// they can take LOWER nonces and mine before the original. The classification
+	// meant to prevent a double execution was the thing causing it.
+	t.Run("unresolved nonce is neither isolated nor dropped", func(t *testing.T) {
+		batch := []chain.Event{
+			{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")},
+			{Type: chain.SendPacket, Height: 8, Raw: []byte("send-2")},
+			{Type: chain.SendPacket, Height: 9, Raw: []byte("send-3")},
+		}
+
+		// What the adapter actually hands up: chain.Permanent wrapping the sender's
+		// error (chain/evm/destination.go:172), so the sentinels stay reachable
+		// through it. A fixture that skipped the wrap would test a path production
+		// never takes.
+		unresolved := chain.Permanent(fmt.Errorf("gave up waiting: %w",
+			errors.Join(services.ErrUnresolvedEVMNonce, services.ErrPermanentRelayFailure)))
+
+		var untracked [][]byte
+		dst := &mockDest{relayErr: unresolved}
+		m := NewModule("test", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{},
+			WithPacketTracker(
+				func([]byte, uint64) bool { return true },
+				func(pkt []byte) { untracked = append(untracked, pkt) },
+			),
+		)
+
+		requeue := m.handleBatch(context.Background(), batch)
+
+		if dst.relayCalls != 1 {
+			t.Fatalf("RelayPackets called %d times, want 1: isolating resubmits every packet against a nonce "+
+				"whose outcome is unknown, which is the double execution this state exists to prevent", dst.relayCalls)
+		}
+		if len(requeue) != 0 {
+			t.Fatalf("requeue = %v, want none: a retry is a resubmission too", requeue)
+		}
+		if len(untracked) != 0 {
+			t.Fatalf("untracked %d packet(s); the durable pending record is what settles or refunds them, "+
+				"so dropping it strands the packet", len(untracked))
+		}
+	})
+
+	// The ordinary permanent ending must keep isolating. The guard above is narrow,
+	// and a guard that swallowed every permanent failure would trade one bug for the
+	// loss of valid siblings that isolation exists to save.
+	t.Run("an ordinary permanent failure still isolates", func(t *testing.T) {
+		batch := []chain.Event{
+			{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")},
+			{Type: chain.SendPacket, Height: 8, Raw: []byte("send-2")},
+		}
+
+		dst := &mockDest{relayErr: chain.Permanent(fmt.Errorf("reverted: %w", services.ErrPermanentRelayFailure))}
+		m := NewModule("test", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{})
+
+		m.handleBatch(context.Background(), batch)
+
+		if dst.relayCalls < 2 {
+			t.Fatalf("RelayPackets called %d times, want the batch plus one per packet: a deterministic revert "+
+				"must still be isolated so the poison fails alone", dst.relayCalls)
+		}
+	})
+
+	// The churn-gap climb has to exist on BOTH sides of prepareBatchUpdate. The
+	// unfolded branch delegates to updateClientTo, which loops; the folded branch
+	// built exactly one update and returned it, so a client behind a churn gap
+	// advanced one hop per flush. With a 30s scan interval and a ceiling of 16 that
+	// is eight minutes of re-queueing to cross a gap the unfolded path crosses in
+	// one call -- on the packet-driven path, which is the one with packets waiting.
+	t.Run("folded path climbs a churn gap in one flush", func(t *testing.T) {
+		t.Run("crosses the gap in one flush and folds only the last rung", func(t *testing.T) {
+			src := &mockSource{latest: 100}
+			dst := &foldingMockDest{enabled: true}
+			m := NewModule("test", "client-0", src, dst, &mockBuilder{hops: []uint64{30, 60, 90}})
+			m.lastHeight = 10
+
+			batch := []chain.Event{{Type: chain.SendPacket, Height: 90, Raw: []byte("a")}}
+			if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+				t.Fatalf("a climbable gap must not re-queue the batch, got %v", rq)
+			}
+
+			// The two intermediate hops cannot carry the packets -- each lands below
+			// the packet height -- so they go out on their own. Only the rung that
+			// reaches the target is folded.
+			if len(dst.updates) != 2 || dst.updates[0].Height != 30 || dst.updates[1].Height != 60 {
+				t.Fatalf("standalone updates = %+v, want the two intermediate hops at 30 and 60", dst.updates)
+			}
+			if dst.foldCalls != 1 || len(dst.foldedUpdates) != 1 || dst.foldedUpdates[0].Height != 90 {
+				t.Fatalf("want one folded update at the target height 90, calls=%d updates=%+v", dst.foldCalls, dst.foldedUpdates)
+			}
+			if len(dst.foldedPackets) != 1 || len(dst.foldedPackets[0]) != 1 {
+				t.Fatalf("the packet must ride the final tx, got %+v", dst.foldedPackets)
+			}
+			if m.lastHeight != 90 {
+				t.Fatalf("lastHeight = %d, want 90", m.lastHeight)
+			}
+		})
+
+		// The ceiling is the whole reason the climb is safe to run on the packet path:
+		// each hop is a proof and a transaction, so an unbounded one is a gas drain
+		// that looks like progress.
+		t.Run("stops at the ceiling instead of climbing forever", func(t *testing.T) {
+			endless := make([]uint64, chain.MaxClientUpdateHops+5)
+			for i := range endless {
+				endless[i] = uint64(i + 1)
+			}
+			src := &mockSource{latest: 1000, relayable: 1000}
+			dst := &foldingMockDest{enabled: true}
+			m := NewModule("test", "client-0", src, dst, &mockBuilder{hops: endless})
+
+			batch := []chain.Event{{Type: chain.SendPacket, Height: 900, Raw: []byte("a")}}
+			if rq := m.handleBatch(context.Background(), batch); len(rq) != 1 {
+				t.Fatalf("a batch behind an uncrossable gap must be re-queued, got %v", rq)
+			}
+			if len(dst.updates) > chain.MaxClientUpdateHops {
+				t.Fatalf("submitted %d standalone updates past a ceiling of %d", len(dst.updates), chain.MaxClientUpdateHops)
+			}
+			if dst.foldCalls != 0 {
+				t.Fatalf("nothing reached the target, so nothing may be folded; foldCalls=%d", dst.foldCalls)
+			}
+		})
+
+		// A hop that installs nothing must end the climb rather than repeat it -- the
+		// mirror of the same guard on updateClientTo. Without it a builder stuck on one
+		// height burns the whole ceiling in proofs and transactions, per flush, on the
+		// packet path.
+		t.Run("a hop that does not advance ends the climb", func(t *testing.T) {
+			src := &mockSource{latest: 100}
+			dst := &foldingMockDest{enabled: true}
+			m := NewModule("test", "client-0", src, dst, &mockBuilder{hops: []uint64{50, 50, 50, 50}})
+
+			batch := []chain.Event{{Type: chain.SendPacket, Height: 90, Raw: []byte("a")}}
+			if rq := m.handleBatch(context.Background(), batch); len(rq) != 1 {
+				t.Fatalf("a packet above a stalled climb must be re-queued, got %v", rq)
+			}
+			if len(dst.updates) != 1 {
+				t.Fatalf("submitted %d updates for a builder stuck at one height, want 1", len(dst.updates))
+			}
+			if dst.foldCalls != 0 {
+				t.Fatalf("the climb never reached the target, so nothing may be folded; foldCalls=%d", dst.foldCalls)
+			}
+		})
+
+		// An adapter that never hops must behave exactly as it did before the climb
+		// existed: one Build, nothing submitted on its own, everything folded.
+		t.Run("a builder that never hops is unchanged", func(t *testing.T) {
+			src := &mockSource{latest: 100}
+			dst := &foldingMockDest{enabled: true}
+			b := &mockBuilder{forceHeight: 80}
+			m := NewModule("test", "client-0", src, dst, b)
+			m.lastHeight = 10
+
+			batch := []chain.Event{{Type: chain.SendPacket, Height: 30, Raw: []byte("a")}}
+			if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+				t.Fatalf("re-queued %v", rq)
+			}
+			if b.built != 1 || len(dst.updates) != 0 || dst.foldCalls != 1 {
+				t.Fatalf("built=%d standalone=%d folds=%d; want one build, no standalone tx, one fold",
+					b.built, len(dst.updates), dst.foldCalls)
+			}
+		})
+	})
+
+	t.Run("is serialized across callers", func(t *testing.T) {
+		source := &overlapProbeSource{}
+		m := NewModule("test", "client", source, &mockDest{}, &mockBuilder{})
+		events := []chain.Event{{Type: chain.SendPacket, Sequence: 1, Height: 500}}
+
+		var wg sync.WaitGroup
+		for i := 0; i < 8; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				m.handleBatch(context.Background(), events)
+			}()
+		}
+		wg.Wait()
+
+		if source.overlap.Load() {
+			t.Fatal("two handleBatch calls were inside the batch at once; batchMu is not held for the whole of it")
+		}
+	})
+
+	// Reported by @neitdung. A folded transaction carries the client update AND the
+	// packets, so a deterministic rejection of it says nothing about WHICH of the
+	// two the chain refused -- but the code read every permanent failure as "the
+	// packet is poison". A single packet was therefore dropped outright, and a batch
+	// was retried as folded singletons carrying the SAME update, so each failed for
+	// the same reason and every packet was dropped in turn.
+	//
+	// An ack has no independent escape: its counterparty already holds a receipt, so
+	// nothing times it out and nothing refunds it. Dropping it on a failure never
+	// shown to be its own strands the escrow.
+	//
+	// The fixture has to reject the update on BOTH paths, folded and standalone --
+	// that is what "the update is the problem" means. A fold that fails while the
+	// standalone update succeeds is the opposite case, and the last subtest pins
+	// that the two are still told apart.
+	t.Run("folded update rejection does not drop innocent packets", func(t *testing.T) {
+		rejected := func() *foldingMockDest {
+			dst := &foldingMockDest{enabled: true, foldErr: chain.Permanent(errors.New("client update rejected"))}
+			dst.updateErr = chain.Permanent(errors.New("client update rejected"))
+			return dst
+		}
+
+		t.Run("a single ack is held, not dropped", func(t *testing.T) {
+			src := &mockSource{latest: 100}
+			dst := rejected()
+			m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
+			m.lastHeight = 10
+
+			batch := []chain.Event{{Type: chain.AckPacket, Sequence: 7, Height: 30, Raw: []byte("a")}}
+			requeue := m.handleBatch(context.Background(), batch)
+
+			if len(requeue) != 1 {
+				t.Fatalf("re-queued %v, want the ack held: the update was refused on its own, "+
+					"so nothing was ever shown about the packet", requeue)
+			}
+			if m.lastHeight != 10 {
+				t.Fatalf("lastHeight = %d, want 10: an update the chain refused must not be recorded", m.lastHeight)
+			}
+		})
+
+		// The batch shape is the worse one: isolation would have retried every packet
+		// with the same rejected update and dropped all of them.
+		t.Run("a whole batch is held, not dropped one by one", func(t *testing.T) {
+			src := &mockSource{latest: 100}
+			dst := rejected()
+			m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
+			m.lastHeight = 10
+
+			batch := []chain.Event{
+				{Type: chain.AckPacket, Sequence: 1, Height: 30, Raw: []byte("a")},
+				{Type: chain.AckPacket, Sequence: 2, Height: 31, Raw: []byte("b")},
+				{Type: chain.TimeoutPacket, Sequence: 3, Height: 32, Raw: []byte("c")},
+			}
+			requeue := m.handleBatch(context.Background(), batch)
+
+			if len(requeue) != len(batch) {
+				t.Fatalf("re-queued %v, want all %d held", requeue, len(batch))
+			}
+		})
+
+		// Second round, also @neitdung. The update landing alone clears the UPDATE,
+		// and nothing more: the folded transaction was one atomic unit, and a unit can
+		// be refused for what the two are together (its gas envelope, its route)
+		// while each half passes on its own. The first fix drew the stronger
+		// conclusion -- "the update landed, so the packet is poison" -- and dropped a
+		// single packet on the folded error without ever sending it by itself. The
+		// batch shape went through packet-only isolation; the singleton skipped it.
+		t.Run("a packet that fails only in the folded composition is delivered, not dropped", func(t *testing.T) {
+			src := &mockSource{latest: 100}
+			dst := &foldingMockDest{enabled: true, foldErr: chain.Permanent(errors.New("folded tx reverted"))}
+			m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
+			m.lastHeight = 10
+
+			batch := []chain.Event{{Type: chain.AckPacket, Sequence: 7, Height: 30, Raw: []byte("a")}}
+			if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+				t.Fatalf("re-queued %v, want nothing outstanding: the packet relays on its own", rq)
+			}
+			if dst.relayCalls != 1 {
+				t.Fatalf("packet-only relay calls = %d, want 1: the folded error says nothing about the packet alone", dst.relayCalls)
+			}
+			if len(dst.relayed) != 1 || dst.relayed[0].Sequence != 7 {
+				t.Fatalf("delivered %+v, want the ack: it was dropped on a failure never shown to be its own", dst.relayed)
+			}
+			if m.lastHeight != 80 {
+				t.Fatalf("lastHeight = %d, want 80: the standalone update installed", m.lastHeight)
+			}
+			if len(dst.updates) != 1 || dst.updates[0].Height != 80 {
+				t.Fatalf("standalone update calls = %+v, want exactly the folded update", dst.updates)
+			}
+		})
+
+		// The control: a packet that fails on its own too is still dropped -- after
+		// that attempt, on that attempt's error, not on the folded one.
+		t.Run("a packet that really is poison is dropped once it has failed alone", func(t *testing.T) {
+			src := &mockSource{latest: 100}
+			dst := &foldingMockDest{enabled: true, foldErr: chain.Permanent(errors.New("folded tx reverted"))}
+			dst.poison = map[string]bool{"a": true}
+			m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
+			m.lastHeight = 10
+
+			batch := []chain.Event{{Type: chain.AckPacket, Sequence: 7, Height: 30, Raw: []byte("a")}}
+			if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
+				t.Fatalf("re-queued %v; the packet failed on its own, so it is dropped", rq)
+			}
+			if dst.relayCalls != 1 {
+				t.Fatalf("packet-only relay calls = %d, want 1: dropping needs the packet's own failure first", dst.relayCalls)
+			}
+			if len(dst.relayed) != 0 {
+				t.Fatalf("delivered %+v, want nothing: the packet is poison", dst.relayed)
+			}
+			if m.lastHeight != 80 {
+				t.Fatalf("lastHeight = %d, want 80: the standalone update installed", m.lastHeight)
+			}
+		})
+	})
 }
 
 // transientOnIsolate is a destination where the whole batch reverts permanently
@@ -521,142 +1491,6 @@ func (d *transientOnIsolate) RelayPackets(_ context.Context, packets []chain.Rel
 		return 0, errors.New("rpc blip") // transient
 	}
 	return len(packets), nil
-}
-
-// TestHandleBatch_CancelledContextRelaysNothing verifies that a cancelled context
-// short-circuits handleBatch: everything is re-queued and no proof/relay work runs.
-func TestHandleBatch_CancelledContextRelaysNothing(t *testing.T) {
-	src := &mockSource{latest: 100}
-	dst := &mockDest{}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already cancelled
-
-	batch := []chain.Event{
-		{Type: chain.SendPacket, Height: 7, Raw: []byte("a")},
-		{Type: chain.SendPacket, Height: 8, Raw: []byte("b")},
-	}
-	rq := m.handleBatch(ctx, batch)
-	if len(rq) != 2 {
-		t.Fatalf("cancelled ctx must re-queue every event, got %v", rq)
-	}
-	if src.membershipCalls != 0 || dst.relayCalls != 0 || len(dst.updates) != 0 {
-		t.Fatalf("cancelled ctx must not run proof/update/relay work: m=%d relay=%d upd=%d",
-			src.membershipCalls, dst.relayCalls, len(dst.updates))
-	}
-}
-
-// TestHandleBatch_RequeueTransient verifies a per-packet transient proof failure
-// re-queues exactly that event's index while the rest still relay.
-func TestHandleBatch_RequeueTransient(t *testing.T) {
-	src := &mockSource{latest: 100, failMembershipOn: map[string]bool{"bad": true}}
-	dst := &mockDest{}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	batch := []chain.Event{
-		{Type: chain.SendPacket, Height: 3, Raw: []byte("ok1")},
-		{Type: chain.SendPacket, Height: 4, Raw: []byte("bad")},
-		{Type: chain.SendPacket, Height: 5, Raw: []byte("ok2")},
-	}
-	rq := m.handleBatch(context.Background(), batch)
-	if len(rq) != 1 || rq[0] != 1 {
-		t.Fatalf("want re-queue of index 1 only, got %v", rq)
-	}
-	if len(dst.relayed) != 2 {
-		t.Fatalf("want the 2 good packets relayed, got %d", len(dst.relayed))
-	}
-}
-
-// TestHandleBatch_DropPermanentProof verifies a permanent proof failure (a
-// timed-out packet) is DROPPED, not re-queued — the fix for the gas-drain bug
-// where a dead packet spun forever, each retry re-running a client update.
-func TestHandleBatch_DropPermanentProof(t *testing.T) {
-	src := &mockSource{latest: 100, permanentMembershipOn: map[string]bool{"dead": true}}
-	dst := &mockDest{}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	batch := []chain.Event{
-		{Type: chain.SendPacket, Height: 3, Raw: []byte("ok")},
-		{Type: chain.SendPacket, Height: 4, Raw: []byte("dead")}, // timed out → permanent
-	}
-	rq := m.handleBatch(context.Background(), batch)
-	if len(rq) != 0 {
-		t.Fatalf("permanent packet must be DROPPED, not re-queued, got %v", rq)
-	}
-	if len(dst.relayed) != 1 || string(dst.relayed[0].Packet) != "ok" {
-		t.Fatalf("only the live packet should relay, got %+v", dst.relayed)
-	}
-}
-
-// TestHandleBatch_DropPermanentRelay verifies a permanent relay (on-chain revert)
-// failure drops the batch instead of re-queueing it forever.
-func TestHandleBatch_DropPermanentRelay(t *testing.T) {
-	src := &mockSource{latest: 100}
-	dst := &mockDest{relayErr: chain.Permanent(errors.New("reverted"))}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 5, Raw: []byte("p")}})
-	if len(rq) != 0 {
-		t.Fatalf("permanent relay revert must DROP, not re-queue, got %v", rq)
-	}
-}
-
-// TestHandleBatch_RequeueTransientRelay verifies a transient relay failure (RPC,
-// nonce) re-queues the batch (unlike a permanent revert).
-func TestHandleBatch_RequeueTransientRelay(t *testing.T) {
-	src := &mockSource{latest: 100}
-	dst := &mockDest{relayErr: errors.New("rpc unavailable")} // not permanent
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 5, Raw: []byte("p")}})
-	if len(rq) != 1 {
-		t.Fatalf("transient relay failure must re-queue, got %v", rq)
-	}
-}
-
-// TestHandleBatch_PreconditionSkip verifies the RelayableHeight precondition: a
-// packet whose source height is above the relayable height (Cosmos AppHash lag /
-// ETH finality lag) is re-queued WITHOUT any client update or proof — the fix for
-// the re-prove/spam regression where the module burned a proof every flush while
-// waiting.
-func TestHandleBatch_PreconditionSkip(t *testing.T) {
-	src := &mockSource{latest: 100, relayable: 50} // tip 100, but only <=50 provable
-	dst := &mockDest{}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 80, Raw: []byte("pending")}})
-	if len(rq) != 1 || rq[0] != 0 {
-		t.Fatalf("packet above relayable height must re-queue, got %v", rq)
-	}
-	if len(dst.updates) != 0 {
-		t.Fatalf("must NOT advance the client for an unprovable batch, got %d updates", len(dst.updates))
-	}
-	if src.membershipCalls != 0 {
-		t.Fatalf("must NOT build a proof for an unprovable batch, got %d", src.membershipCalls)
-	}
-}
-
-// TestHandleBatch_ProvabilityGuard verifies that when the destination client can
-// only advance to a height below the packet's (the ETH->Cosmos finality-lag case),
-// the packet is re-queued instead of proven against a state that lacks it.
-func TestHandleBatch_ProvabilityGuard(t *testing.T) {
-	src := &mockSource{latest: 100}
-	dst := &mockDest{}
-	// Builder can only advance the client to height 50 (finality lag), regardless
-	// of the requested height.
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 50})
-
-	// Packet observed at execution height 100, but the client only reaches 50.
-	rq := m.handleBatch(context.Background(), []chain.Event{{Type: chain.SendPacket, Height: 100, Raw: []byte("future")}})
-	if len(rq) != 1 || rq[0] != 0 {
-		t.Fatalf("packet above provable height must re-queue, got %v", rq)
-	}
-	if src.membershipCalls != 0 {
-		t.Fatalf("must not attempt a proof for an unprovable packet, got %d", src.membershipCalls)
-	}
-	if len(dst.relayed) != 0 {
-		t.Fatalf("nothing should be relayed, got %d", len(dst.relayed))
-	}
 }
 
 // TestPeriodicUpdateLoop_Runs verifies the fixed-cadence forced update fires
@@ -729,179 +1563,6 @@ func TestNextPeriodicUpdateBackoff(t *testing.T) {
 	// A success (reset to 0) restarts the sequence at the minimum.
 	if got := nextPeriodicUpdateBackoff(0); got != periodicUpdateBackoffMin {
 		t.Fatalf("reset backoff: got %s, want %s", got, periodicUpdateBackoffMin)
-	}
-}
-
-// A permanently-failing packet must leave no wait entry behind, on EVERY terminal
-// path. The folded isolated path was the one that did not clear: a batch fold
-// reverts, isolation retries each packet carrying the update, and a packet that
-// fails permanently there stayed in the tracker until its TTL — so `status` and
-// the waiting log would keep reporting an age for a packet that was already dropped.
-//
-// Asserting on the tracker rather than on a log line is deliberate: the tracker is
-// what a future status command reads, and it is what a fifth terminal path would
-// also have to clear.
-func TestFoldedIsolatedPermanentDropClearsTheWait(t *testing.T) {
-	src := &mockSource{relayable: 100}
-	dst := &foldingMockDest{enabled: true}
-	// The folded batch reverts, the update lands on its own -- so the packets are
-	// the poison -- and each isolated singleton then reverts too. Both halves are
-	// needed: without the second the packets would simply relay, and this test
-	// would assert an empty wait tracker for the wrong reason.
-	dst.foldFn = func(_ chain.ClientUpdate, _ []chain.RelayPacket) error {
-		return chain.Permanent(errors.New("reverted"))
-	}
-	dst.relayErr = chain.Permanent(errors.New("reverted"))
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	events := []chain.Event{
-		{Type: chain.SendPacket, Height: 10, Sequence: 1, Raw: []byte("a")},
-		{Type: chain.SendPacket, Height: 10, Sequence: 2, Raw: []byte("b")},
-	}
-	// First pass: nothing is relayable yet, so both packets are observed as waiting.
-	src.relayable = 5
-	if rq := m.handleBatch(context.Background(), events); len(rq) != 2 {
-		t.Fatalf("both packets should be re-queued while unrelayable, got %d", len(rq))
-	}
-	if got := len(m.waits.entries); got != 2 {
-		t.Fatalf("expected 2 tracked waits after the first pass, got %d", got)
-	}
-
-	// Second pass: relayable, folded batch reverts, isolation drops both permanently.
-	src.relayable = 100
-	if rq := m.handleBatch(context.Background(), events); len(rq) != 0 {
-		t.Fatalf("permanently dropped packets must not be re-queued, got %d", len(rq))
-	}
-	if got := len(m.waits.entries); got != 0 {
-		t.Fatalf("folded isolated drop left %d wait entry/entries behind; every terminal path must clear", got)
-	}
-	if dst.foldCalls != 1 {
-		t.Fatalf("expected one folded batch attempt, got %d", dst.foldCalls)
-	}
-	if dst.relayCalls != len(events) {
-		t.Fatalf("expected one packets-only attempt per packet, got %d for %d packet(s)", dst.relayCalls, len(events))
-	}
-}
-
-// A packet waiting on the source frontier is re-queued every flush — every batch
-// period, on no backoff. A measured OP Sepolia wait produced 67 identical lines in
-// 4m12s, and a default 150-block attestor gap makes ~100 the normal case. The line
-// must therefore report transitions, not repetitions: the same wait says nothing
-// new, a frontier that moved does.
-func TestHandleBatch_WaitingLogsOnlyOnChange(t *testing.T) {
-	src := &mockSource{latest: 100, relayable: 5}
-	m := NewModule("test", "client-0", src, &mockDest{}, &mockBuilder{})
-	waiting := []chain.Event{{Type: chain.SendPacket, Height: 50, Raw: []byte("pkt-far")}}
-
-	if rq := m.handleBatch(context.Background(), waiting); len(rq) != 1 {
-		t.Fatalf("packet above the relayable height must re-queue, got %v", rq)
-	}
-	first := m.lastWait
-	if !first.logged || first.packets != 1 || first.relayable != 5 || first.description == "" {
-		t.Fatalf("first wait must be recorded as logged: %+v", first)
-	}
-
-	// Same picture again: nothing to say.
-	m.handleBatch(context.Background(), waiting)
-	if m.lastWait != first {
-		t.Fatalf("an unchanged wait must not update the log state: %+v -> %+v", first, m.lastWait)
-	}
-
-	// Frontier advances — that is the signal worth printing.
-	src.relayable = 20
-	m.handleBatch(context.Background(), waiting)
-	if m.lastWait == first {
-		t.Fatal("a moving frontier must be reported")
-	}
-	if m.lastWait.relayable != 20 {
-		t.Fatalf("log state must track the new frontier, got %+v", m.lastWait)
-	}
-
-	// Once everything is relayable the state resets, so the next wait reports
-	// itself even if it looks identical to the one before.
-	src.relayable = 100
-	if rq := m.handleBatch(context.Background(), waiting); len(rq) != 0 {
-		t.Fatalf("packet below the relayable height must not re-queue, got %v", rq)
-	}
-	if m.lastWait.logged {
-		t.Fatalf("a cleared wait must reset the log state, got %+v", m.lastWait)
-	}
-}
-
-// TestFoldedUpdateSubmittedWhenNoPacketIsProvable pins the escape from a loop
-// the relayer could not leave on its own.
-//
-// A folding destination leaves the client update unsubmitted so it can ride in
-// the packet transaction. When every proof fails there are no packets, and the
-// update used to be dropped with them — but the proofs are built at the height
-// the client already trusts, so the client standing still is exactly why they
-// failed:
-//
-//	proofs target the trusted height -> that height falls out of the execution
-//	node's state window -> every proof fails -> no packets -> the update is
-//	dropped -> the client stays put -> the gap only widens
-//
-// Observed on Sepolia: trustedSlot pinned at 10885728 for twenty minutes while
-// finalizedSlot advanced, every pass logging `eth_getProof failed: historical
-// state ... is not available`, and no update ever submitted.
-func TestFoldedUpdateSubmittedWhenNoPacketIsProvable(t *testing.T) {
-	src := &mockSource{latest: 200, failMembershipOn: map[string]bool{"p": true}}
-	dst := &foldingMockDest{enabled: true}
-	b := &mockBuilder{}
-	m := NewModule("test", "client-0", src, dst, b)
-
-	rq := m.handleBatch(context.Background(), []chain.Event{
-		{Type: chain.SendPacket, Height: 180, Raw: []byte("p")},
-	})
-
-	if len(rq) != 1 {
-		t.Fatalf("the unprovable packet must be re-queued, got %v", rq)
-	}
-	if len(dst.updates) != 1 {
-		t.Fatalf("the client update must still be submitted with no packets to fold it into, got %d", len(dst.updates))
-	}
-	if dst.foldCalls != 0 {
-		t.Fatalf("RelayWithUpdate is specified to carry packets; with none it must not be called, got %d calls", dst.foldCalls)
-	}
-	if m.lastHeight != 200 {
-		t.Fatalf("lastHeight must advance to the submitted update height, got %d", m.lastHeight)
-	}
-}
-
-// The lock the folded plan holds must be released on this path too, or the next
-// flush deadlocks — a stall that would look exactly like the bug being fixed.
-func TestFoldedUpdateWithNoPacketsReleasesTheLock(t *testing.T) {
-	src := &mockSource{latest: 200, failMembershipOn: map[string]bool{"p": true}}
-	dst := &foldingMockDest{enabled: true}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	evts := []chain.Event{{Type: chain.SendPacket, Height: 180, Raw: []byte("p")}}
-	m.handleBatch(context.Background(), evts)
-
-	done := make(chan struct{})
-	go func() { defer close(done); m.handleBatch(context.Background(), evts) }()
-	select {
-	case <-done:
-	case <-time.After(3 * time.Second):
-		t.Fatal("second flush blocked: the folded plan's lock was not released after the packet-less update")
-	}
-}
-
-// A failed update must not advance lastHeight — otherwise the module would
-// believe the client covers heights it does not, and build proofs the
-// destination cannot verify.
-func TestFoldedUpdateFailureDoesNotAdvanceHeight(t *testing.T) {
-	src := &mockSource{latest: 200, failMembershipOn: map[string]bool{"p": true}}
-	dst := &foldingMockDest{enabled: true}
-	dst.updateErr = errors.New("cosmos rpc down")
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	m.handleBatch(context.Background(), []chain.Event{
-		{Type: chain.SendPacket, Height: 180, Raw: []byte("p")},
-	})
-
-	if m.lastHeight != 0 {
-		t.Fatalf("a failed update must leave lastHeight at 0, got %d", m.lastHeight)
 	}
 }
 
@@ -1152,6 +1813,111 @@ func TestUpdateClientTo(t *testing.T) {
 			t.Fatalf("lastHeight = %d, want it unchanged at 10", m.lastHeight)
 		}
 	})
+
+	// A module with no observer must still update. The option is optional, and the
+	// nil check is what stops every path that does not set one from panicking on its
+	// first client update.
+	//
+	// The builder MUST report a non-zero TrustedAt here. recordClientUpdate is
+	// guarded by `observer != nil && !TrustedAt.IsZero()`, so a zero timestamp short-
+	// circuits before the nil check is reached -- an earlier version of this test
+	// used the default builder and passed with the nil guard deleted.
+	t.Run("works without an observer", func(t *testing.T) {
+		b := &mockBuilder{trustedAt: time.Unix(1_700_000_000, 0)}
+		m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, b)
+		if err := m.updateClientTo(context.Background(), 10); err != nil {
+			t.Fatalf("update without an observer: %v", err)
+		}
+	})
+
+	// Validator churn can outrun the trust-overlap requirement: an update from the
+	// trusted height straight to the head then cannot be verified at all, and the
+	// only way across is a chain of updates that each overlap the last.
+	//
+	// That mechanism lived only in the manual `update-client` command, so the
+	// AUTOMATIC path could not cross a churn gap: the client stayed stuck until a
+	// person typed a command, while refreshLoop retried and failed underneath.
+	t.Run("climbs through intermediate hops", func(t *testing.T) {
+		t.Run("crosses a churn gap without a manual command", func(t *testing.T) {
+			src := &mockSource{latest: 100}
+			dst := &mockDest{}
+			b := &mockBuilder{hops: []uint64{30, 60, 90}} // two hops, then the target
+			m := NewModule("test", "client-0", src, dst, b)
+
+			if err := m.updateClientTo(context.Background(), 90); err != nil {
+				t.Fatalf("climb: %v", err)
+			}
+			if len(dst.updates) != 3 {
+				t.Fatalf("submitted %d updates, want the two hops and the target", len(dst.updates))
+			}
+			for i, want := range []uint64{30, 60, 90} {
+				if dst.updates[i].Height != want {
+					t.Fatalf("update %d at height %d, want %d: each hop must overlap the last",
+						i, dst.updates[i].Height, want)
+				}
+			}
+			if m.lastHeight != 90 {
+				t.Fatalf("lastHeight = %d, want 90", m.lastHeight)
+			}
+		})
+
+		// An adapter that never hops must behave exactly as before: one Build, one
+		// update, no loop.
+		t.Run("an adapter that does not hop is unchanged", func(t *testing.T) {
+			src := &mockSource{latest: 100}
+			dst := &mockDest{}
+			b := &mockBuilder{}
+			m := NewModule("test", "client-0", src, dst, b)
+
+			if err := m.updateClientTo(context.Background(), 42); err != nil {
+				t.Fatalf("update: %v", err)
+			}
+			if b.built != 1 || len(dst.updates) != 1 {
+				t.Fatalf("built %d, submitted %d; want exactly one of each", b.built, len(dst.updates))
+			}
+		})
+
+		// Each hop costs a proof and a transaction, so an unbounded climb is an
+		// expensive silent loop -- the third failure class dressed as progress.
+		t.Run("stops at the ceiling and says how far it got", func(t *testing.T) {
+			endless := make([]uint64, MaxClientUpdateHops+5)
+			for i := range endless {
+				endless[i] = uint64(i + 1)
+			}
+			src := &mockSource{latest: 1000}
+			dst := &mockDest{}
+			b := &mockBuilder{hops: endless}
+			m := NewModule("test", "client-0", src, dst, b)
+
+			err := m.updateClientTo(context.Background(), 1000)
+			if err == nil {
+				t.Fatal("an endless climb reported success")
+			}
+			if !strings.Contains(err.Error(), "hop") {
+				t.Errorf("error = %v; it must say the climb ran out, not look like a build failure", err)
+			}
+			if len(dst.updates) > MaxClientUpdateHops {
+				t.Fatalf("submitted %d updates past a ceiling of %d", len(dst.updates), MaxClientUpdateHops)
+			}
+		})
+
+		// A hop that installs nothing must end the climb rather than repeat it. This
+		// is the anti-spin guard, and without it a builder stuck on one height would
+		// burn the whole ceiling in proofs.
+		t.Run("a hop that does not advance ends the climb", func(t *testing.T) {
+			src := &mockSource{latest: 100}
+			dst := &mockDest{}
+			b := &mockBuilder{hops: []uint64{50, 50, 50, 50}}
+			m := NewModule("test", "client-0", src, dst, b)
+
+			if err := m.updateClientTo(context.Background(), 90); err != nil {
+				t.Fatalf("climb: %v", err)
+			}
+			if len(dst.updates) != 1 {
+				t.Fatalf("submitted %d updates for a builder stuck at one height, want 1", len(dst.updates))
+			}
+		})
+	})
 }
 
 // refreshLoop is the anti-expiry routine: it acts only on the decision
@@ -1242,6 +2008,205 @@ func TestRefreshLoop(t *testing.T) {
 		cancel()
 		wg.Wait()
 	})
+
+	// The wiring half: the loop must actually space its attempts out. The pure
+	// function above can be perfect while the loop calls it and ignores the answer.
+	t.Run("backs off when refresh keeps failing", func(t *testing.T) {
+		withFastRefreshTick(t) // 1ms, so the backoff doubles in milliseconds
+
+		src := &mockSource{latest: 42}
+		dst := &countingExpiryDest{expiresErr: errors.New("rpc down")}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		ctx, cancel := context.WithCancel(context.Background())
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); m.refreshLoop(ctx) }()
+
+		const window = 300 * time.Millisecond
+		time.Sleep(window)
+		cancel()
+		wg.Wait()
+
+		attempts := dst.calls()
+		// Unspaced, a 1ms tick would try ~300 times in this window. Backing off 1, 2,
+		// 4, 8 ... reaches 300ms in nine attempts. The bound is loose because the
+		// scheduler is not, but it cannot be met by a loop that ignores the backoff.
+		if attempts > 30 {
+			t.Fatalf("%d attempts in %s: the loop is retrying on every tick, not backing off", attempts, window)
+		}
+		if attempts < 2 {
+			t.Fatalf("%d attempts in %s: the loop stopped retrying altogether", attempts, window)
+		}
+	})
+
+	// Backing off must not wedge the loop: once the cause clears, the client still
+	// gets advanced. A backoff that outlived its failure would be the expired-client
+	// outcome the cap exists to prevent, arriving by another route.
+	t.Run("recovers after the failure clears", func(t *testing.T) {
+		withFastRefreshTick(t)
+
+		src := &mockSource{latest: 42}
+		dst := &countingExpiryDest{expiresErr: errors.New("rpc down")}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); m.refreshLoop(ctx) }()
+
+		waitFor(t, ctx, func() bool { return dst.calls() >= 3 }, "the loop never made its first few attempts")
+		dst.heal(time.Now().Add(time.Minute)) // inside refreshMargin, so a refresh is due
+
+		waitFor(t, ctx, func() bool {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			return m.lastHeight == 42
+		}, "the loop never advanced the client after the failure cleared; the backoff outlived its cause")
+		cancel()
+		wg.Wait()
+	})
+
+	// A backoff that survives its own cause is a slow leak: a client that failed a
+	// dozen times last week and recovered would wait the full cap before its next
+	// isolated blip is retried, inside a window that exists to keep trying.
+	t.Run("backoff does not outlive its cause", func(t *testing.T) {
+		withFastRefreshTick(t)
+
+		src := &mockSource{latest: 42}
+		dst := &countingExpiryDest{expiresErr: errors.New("rpc down")}
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); m.refreshLoop(ctx) }()
+
+		// Ten failures at a 1ms tick take the backoff to roughly half a second, which
+		// is what makes the difference below measurable rather than theoretical.
+		waitFor(t, ctx, func() bool { return dst.calls() >= 10 }, "the loop never accumulated a backoff to clear")
+		dst.heal(time.Now().Add(time.Minute))
+		waitFor(t, ctx, func() bool {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			return m.lastHeight == 42
+		}, "the loop never recovered")
+
+		// Break it again. With the backoff cleared by the success, the next attempts
+		// are one tick apart; carried over, the first would be half a second away.
+		before := dst.calls()
+		dst.fail(errors.New("rpc down again"))
+		deadline, ok := context.WithTimeout(ctx, 300*time.Millisecond)
+		defer ok()
+		promptly := true
+		waitForSoft(deadline, func() bool { return dst.calls() >= before+3 }, &promptly)
+		if !promptly {
+			t.Fatalf("only %d attempts in 300ms after a fresh failure; the backoff was carried over from the outage that already ended",
+				dst.calls()-before)
+		}
+		cancel()
+		wg.Wait()
+	})
+
+	// D5: three states, and two of them used to be silence. An operator reading the
+	// log could not tell "the client has hours left" from "it has minutes left and
+	// the last refresh worked".
+	t.Run("says what it is doing", func(t *testing.T) {
+		withFastRefreshTick(t)
+
+		var logs bytes.Buffer
+		oldOutput := log.Writer()
+		log.SetOutput(&logs)
+		t.Cleanup(func() { log.SetOutput(oldOutput) })
+
+		src := &mockSource{latest: 42}
+		dst := &mockDest{expiresAt: time.Now().Add(time.Minute)} // inside refreshMargin
+		m := NewModule("test", "client-0", src, dst, &mockBuilder{})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() { defer wg.Done(); m.refreshLoop(ctx) }()
+		waitFor(t, ctx, func() bool {
+			m.mu.Lock()
+			defer m.mu.Unlock()
+			return m.lastHeight == 42
+		}, "the refresh loop never advanced the client")
+		cancel()
+		wg.Wait()
+
+		out := logs.String()
+		if !strings.Contains(out, "client expires in") {
+			t.Errorf("no line saying a refresh was due, so a due refresh is indistinguishable from a healthy client:\n%s", out)
+		}
+		if !strings.Contains(out, "advanced the client to height 42") {
+			t.Errorf("no line saying the refresh succeeded, so success is indistinguishable from failure:\n%s", out)
+		}
+		if !strings.Contains(out, "of trust left") {
+			t.Errorf("the lines carry no remaining lifetime, which is the number an operator is reading for:\n%s", out)
+		}
+	})
+
+	// A pass that FAILED still counts. heartbeats.record says so outright, and the
+	// refresh loop is where it matters most: it is the anti-expiry routine, so the
+	// moment an operator needs to know whether it is still turning is exactly the
+	// moment its RPC is unreachable.
+	//
+	// Reported by @DongLieu: the beat sat after the expiry query succeeded, so
+	// against a dead endpoint every tick took the error path and no beat was ever
+	// recorded. `relayer status` then showed the loop as never started -- wedged and
+	// merely failing look identical again, which is the confusion this type removes.
+	t.Run("beats on every ending", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			dst  *mockDest
+			want string
+		}{
+			{
+				name: "the expiry query fails",
+				dst:  &mockDest{expiresErr: errors.New("connection refused")},
+				want: "query client expiry failed",
+			},
+			{
+				name: "healthy, nothing to do",
+				dst:  &mockDest{expiresAt: time.Now().Add(refreshMarginFor(0) + time.Hour)},
+				want: "client expires in",
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				withFastRefreshTick(t)
+
+				m := NewModule("test", "client-0", &mockSource{latest: 42}, tc.dst, &mockBuilder{})
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+
+				done := make(chan struct{})
+				go func() { defer close(done); m.refreshLoop(ctx) }()
+
+				deadline := time.After(3 * time.Second)
+				for {
+					if note, ok := refreshBeatNote(m); ok {
+						if !strings.Contains(note, tc.want) {
+							t.Fatalf("refresh note = %q, want it to contain %q", note, tc.want)
+						}
+						cancel()
+						<-done
+						return
+					}
+					select {
+					case <-deadline:
+						cancel()
+						<-done
+						t.Fatalf("the refresh loop ran and recorded no heartbeat; status would report it as never started")
+					case <-time.After(time.Millisecond):
+					}
+				}
+			})
+		}
+	})
 }
 
 // --- the optional capabilities ---
@@ -1303,22 +2268,6 @@ func TestWithClientUpdateObserver(t *testing.T) {
 	// relayer happened to submit it: the freshness metric is about the CLIENT.
 	if !seen[0].Equal(trustedAt) {
 		t.Fatalf("observer got %s, want the update's TrustedAt %s", seen[0], trustedAt)
-	}
-}
-
-// A module with no observer must still update. The option is optional, and the
-// nil check is what stops every path that does not set one from panicking on its
-// first client update.
-//
-// The builder MUST report a non-zero TrustedAt here. recordClientUpdate is
-// guarded by `observer != nil && !TrustedAt.IsZero()`, so a zero timestamp short-
-// circuits before the nil check is reached -- an earlier version of this test
-// used the default builder and passed with the nil guard deleted.
-func TestUpdateClientTo_WorksWithoutAnObserver(t *testing.T) {
-	b := &mockBuilder{trustedAt: time.Unix(1_700_000_000, 0)}
-	m := NewModule("test", "client-0", &mockSource{}, &mockDest{}, b)
-	if err := m.updateClientTo(context.Background(), 10); err != nil {
-		t.Fatalf("update without an observer: %v", err)
 	}
 }
 
@@ -1461,163 +2410,191 @@ func TestScanLoop(t *testing.T) {
 	})
 }
 
-// The ladder is dead code unless handleBatch actually goes through it. This is
-// the production shape: an ack whose proof keeps failing, flushed repeatedly.
-func TestHandleBatch_EscalatesARepeatedProofFailure(t *testing.T) {
-	src := &mockSource{
-		latest:           100,
-		relayable:        50, // packet at 80 is not provable yet: it waits first
-		failMembershipOn: map[string]bool{"ack": true},
-	}
-	m := NewModule("eth->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	m.waits.now = clk.now
-
-	batch := []chain.Event{{Type: chain.AckPacket, Sequence: 21, Height: 80, Raw: []byte("ack"), AckBytes: [][]byte{{1}}}}
-
-	// Sixteen minutes parked at the source gate before a proof is ever attempted.
-	// This is the normal case on an L2 return leg, and none of it is a proof
-	// failure -- so it must not be charged to the ladder below.
-	m.handleBatch(context.Background(), batch)
-	clk.t = clk.t.Add(16 * time.Minute)
-	src.relayable = 100
-
-	first := captureLog(func() { m.handleBatch(context.Background(), batch) })
-	if !strings.Contains(first, "ack seq=21") {
-		t.Fatalf("the first proof failure must reach the log:\n%s", first)
-	}
-	if strings.Contains(first, "STUCK") {
-		t.Fatalf("the FIRST proof failure was reported as STUCK because it inherited the pre-proof wait:\n%s", first)
-	}
-
-	// Ten more flushes within the same threshold: silent. This is the case that
-	// produced 296 byte-identical lines.
-	repeats := captureLog(func() {
-		for i := 0; i < 10; i++ {
-			clk.t = clk.t.Add(2 * time.Second)
-			m.handleBatch(context.Background(), batch)
-		}
-	})
-	if strings.Contains(repeats, "ack seq=21") {
-		t.Fatalf("repeats inside one threshold must be suppressed:\n%s", repeats)
-	}
-
-	// Past the stuck threshold the wording has to change: an operator reading
-	// "proof for packet" cannot tell a retry from a packet with no way out.
-	clk.t = clk.t.Add(proofFailureStuckAfter + time.Minute)
-	stuck := captureLog(func() { m.handleBatch(context.Background(), batch) })
-	for _, want := range []string{"STUCK", "ack seq=21", "no other exit"} {
-		if !strings.Contains(stuck, want) {
-			t.Fatalf("the escalated line must contain %q:\n%s", want, stuck)
-		}
-	}
-}
-
-// TestHandleBatch_StuckSendNamesTheTimeoutExit: "no other exit" is true of an ack
-// and false of a send. Every source reports an expired send as permanent, the
-// module drops it, and the timeout scanner refunds it -- so telling an operator a
-// send is unrecoverable sends them looking for a problem that resolves itself.
-// The two packet types need different next actions, so they need different lines.
-func TestHandleBatch_StuckSendNamesTheTimeoutExit(t *testing.T) {
-	src := &mockSource{
-		latest:           100,
-		relayable:        100,
-		failMembershipOn: map[string]bool{"snd": true},
-	}
-	m := NewModule("eth->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
-	clk := &fakeClock{t: time.Unix(1_700_000_000, 0)}
-	m.waits.now = clk.now
-
-	batch := []chain.Event{{Type: chain.SendPacket, Sequence: 21, Height: 80, Raw: []byte("snd")}}
-
-	m.handleBatch(context.Background(), batch)
-	clk.t = clk.t.Add(proofFailureStuckAfter + time.Minute)
-	stuck := captureLog(func() { m.handleBatch(context.Background(), batch) })
-
-	// A SendPacket prints as "recv": the line names the message the destination
-	// will be asked for, not the event's origin (see TestEventTypeNames).
-	for _, want := range []string{"STUCK", "recv seq=21", "timeout scanner"} {
-		if !strings.Contains(stuck, want) {
-			t.Fatalf("a stuck send must name the exit it actually has (%q):\n%s", want, stuck)
-		}
-	}
-	if strings.Contains(stuck, "no other exit") {
-		t.Fatalf("a send is refunded once past its timeout, so it does have another exit:\n%s", stuck)
-	}
-}
-
 type drainingSource struct {
 	started chan struct{}
 	stopped chan struct{}
 }
 
 func (s *drainingSource) Chain() chain.ChainType { return chain.Cosmos }
+
 func (s *drainingSource) Subscribe(ctx context.Context, _ func(context.Context, []chain.Event) []int) error {
 	close(s.started)
 	<-ctx.Done()
 	close(s.stopped)
 	return ctx.Err()
 }
-func (s *drainingSource) LatestHeight(context.Context) (uint64, error)        { return 0, nil }
-func (s *drainingSource) RelayableHeight(context.Context) (uint64, error)     { return 0, nil }
+
+func (s *drainingSource) LatestHeight(context.Context) (uint64, error) { return 0, nil }
+
+func (s *drainingSource) RelayableHeight(context.Context) (uint64, error) { return 0, nil }
+
 func (s *drainingSource) QueryHeader(context.Context, uint64) ([]byte, error) { return nil, nil }
+
 func (s *drainingSource) MembershipProof(context.Context, []byte, uint64, chain.EventType) ([]byte, error) {
 	return nil, nil
 }
+
 func (s *drainingSource) NonMembershipProof(context.Context, []byte, uint64) ([]byte, error) {
 	return nil, nil
 }
 
-func TestModuleCleanCancellationDrainsSubscriber(t *testing.T) {
-	src := &drainingSource{started: make(chan struct{}), stopped: make(chan struct{})}
-	m := NewModule("test", "client", src, &mockDest{}, &mockBuilder{})
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { done <- m.Run(ctx) }()
-	<-src.started
-	cancel()
+func TestModule(t *testing.T) {
+	// Status is the read side of a running path, so the two things that make it
+	// usable during an incident are that it reports the oldest wait first and that
+	// it answers at all while the path is busy.
+	t.Run("status", func(t *testing.T) {
+		t.Run("reports the waiting set oldest first", func(t *testing.T) {
+			m := NewModule("test", "client-0", &mockSource{latest: 100, relayable: 90}, &mockDest{}, &mockBuilder{})
 
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("Run cancellation error = %v, want nil", err)
+			// Distinct ages, inserted youngest first so a passing test cannot be map
+			// iteration order.
+			base := time.Now()
+			m.waits.now = func() time.Time { return base }
+			m.waits.observe(chain.Event{Type: chain.AckPacket, Sequence: 2, Height: 8})
+			m.waits.now = func() time.Time { return base.Add(-2 * time.Minute) }
+			m.waits.observe(chain.Event{Type: chain.SendPacket, Sequence: 1, Height: 7})
+			m.waits.now = func() time.Time { return base.Add(time.Minute) }
+
+			got := m.Status(context.Background())
+			if len(got.Waiting) != 2 {
+				t.Fatalf("waiting = %+v, want both packets", got.Waiting)
+			}
+			if got.Waiting[0].Sequence != 1 {
+				t.Fatalf("first entry is seq=%d; the oldest wait must lead, because it is the one most likely to be stuck",
+					got.Waiting[0].Sequence)
+			}
+			if got.Waiting[0].Age <= got.Waiting[1].Age {
+				t.Fatalf("ages = %s, %s: not sorted oldest first", got.Waiting[0].Age, got.Waiting[1].Age)
+			}
+			if got.Waiting[0].AgeText == "" {
+				t.Error("no human-readable age; the raw nanoseconds are for machines, not the operator reading this")
+			}
+		})
+
+		t.Run("reports the heights the operator is asking for", func(t *testing.T) {
+			m := NewModule("test", "client-0", &mockSource{latest: 100, relayable: 90}, &mockDest{}, &mockBuilder{})
+			m.lastHeight = 88
+
+			got := m.Status(context.Background())
+			if got.TrustedHeight != 88 {
+				t.Errorf("trusted height = %d, want 88", got.TrustedHeight)
+			}
+			if got.RelayableHeight != 90 {
+				t.Errorf("relayable height = %d, want 90: this is the number that answers 'why has nothing moved'", got.RelayableHeight)
+			}
+			if got.Path != "test" || got.ClientID != "client-0" {
+				t.Errorf("identity = %s/%s, want the module's", got.Path, got.ClientID)
+			}
+		})
+
+		// The one RPC in the snapshot must not be able to fail the snapshot: an
+		// unreachable source is exactly when someone runs this.
+		t.Run("a failed probe is reported, not fatal", func(t *testing.T) {
+			src := &mockSource{latest: 100, relayableErr: errors.New("source rpc down")}
+			m := NewModule("test", "client-0", src, &mockDest{}, &mockBuilder{})
+			m.lastHeight = 88
+
+			got := m.Status(context.Background())
+			if got.RelayableHeightErr == "" {
+				t.Fatal("a failed probe produced no error text; the field would read as height 0")
+			}
+			if got.TrustedHeight != 88 {
+				t.Errorf("trusted height = %d, want the in-memory value to survive a failed probe", got.TrustedHeight)
+			}
+		})
+
+		// updateClientTo holds m.mu across the builder, which on the Cosmos->EVM path
+		// is across proof generation. A status command that blocks for the length of a
+		// Groth16 proof is useless at the moment someone runs it, so the busy lock is
+		// reported as an answer instead of waited on.
+		t.Run("answers while a client update holds the lock", func(t *testing.T) {
+			m := NewModule("test", "client-0", &mockSource{latest: 100, relayable: 90}, &mockDest{}, &mockBuilder{})
+			m.mu.Lock()
+			defer m.mu.Unlock()
+
+			done := make(chan Status, 1)
+			go func() { done <- m.Status(context.Background()) }()
+			select {
+			case got := <-done:
+				if !got.UpdateInFlight {
+					t.Fatal("the snapshot did not say an update was in flight, so a stale trusted height reads as current")
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("Status blocked on the module lock: it would hang for the length of a proof")
+			}
+		})
+	})
+
+	t.Run("clean cancellation drains subscriber", func(t *testing.T) {
+		src := &drainingSource{started: make(chan struct{}), stopped: make(chan struct{})}
+		m := NewModule("test", "client", src, &mockDest{}, &mockBuilder{})
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- m.Run(ctx) }()
+		<-src.started
+		cancel()
+
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Run cancellation error = %v, want nil", err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatal("Run did not drain after cancellation")
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("Run did not drain after cancellation")
-	}
-	select {
-	case <-src.stopped:
-	default:
-		t.Fatal("Run returned before subscriber stopped")
-	}
+		select {
+		case <-src.stopped:
+		default:
+			t.Fatal("Run returned before subscriber stopped")
+		}
+	})
+
+	t.Run("reports internal subscriber cancellation", func(t *testing.T) {
+		m := NewModule("test", "client", internallyCancelledSource{}, &mockDest{}, &mockBuilder{})
+		err := m.Run(context.Background())
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run error = %v, want wrapped context.Canceled", err)
+		}
+	})
+
+	// The loops must reach the status snapshot, or the heartbeat is a field nobody
+	// reads. This is the wiring half: the type above can be perfect while nothing
+	// calls it.
+	t.Run("status carries the loop health", func(t *testing.T) {
+		m := NewModule("test", "client-0", &mockSource{latest: 100, relayable: 90}, &mockDest{}, &mockBuilder{})
+		m.beats.record(workerTimeoutScan, "")
+
+		got := m.Status(context.Background())
+		if len(got.Loops) != 1 || got.Loops[0].Worker != workerTimeoutScan {
+			t.Fatalf("loops = %+v, want the timeout scan's beat", got.Loops)
+		}
+	})
 }
 
 type internallyCancelledSource struct{}
 
 func (internallyCancelledSource) Chain() chain.ChainType { return chain.Cosmos }
+
 func (internallyCancelledSource) Subscribe(context.Context, func(context.Context, []chain.Event) []int) error {
 	return context.Canceled
 }
+
 func (internallyCancelledSource) LatestHeight(context.Context) (uint64, error) { return 0, nil }
+
 func (internallyCancelledSource) RelayableHeight(context.Context) (uint64, error) {
 	return 0, nil
 }
+
 func (internallyCancelledSource) QueryHeader(context.Context, uint64) ([]byte, error) {
 	return nil, nil
 }
+
 func (internallyCancelledSource) MembershipProof(context.Context, []byte, uint64, chain.EventType) ([]byte, error) {
 	return nil, nil
 }
+
 func (internallyCancelledSource) NonMembershipProof(context.Context, []byte, uint64) ([]byte, error) {
 	return nil, nil
-}
-
-func TestModuleReportsInternalSubscriberCancellation(t *testing.T) {
-	m := NewModule("test", "client", internallyCancelledSource{}, &mockDest{}, &mockBuilder{})
-	err := m.Run(context.Background())
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("Run error = %v, want wrapped context.Canceled", err)
-	}
 }
 
 // stuckWorkerSource is what the real Cosmos and EVM adapters became: on
@@ -1629,17 +2606,23 @@ type stuckWorkerSource struct {
 }
 
 func (s *stuckWorkerSource) Chain() chain.ChainType { return chain.Cosmos }
+
 func (s *stuckWorkerSource) Subscribe(ctx context.Context, _ func(context.Context, []chain.Event) []int) error {
 	close(s.started)
 	<-ctx.Done()
 	return s.err
 }
-func (s *stuckWorkerSource) LatestHeight(context.Context) (uint64, error)        { return 0, nil }
-func (s *stuckWorkerSource) RelayableHeight(context.Context) (uint64, error)     { return 0, nil }
+
+func (s *stuckWorkerSource) LatestHeight(context.Context) (uint64, error) { return 0, nil }
+
+func (s *stuckWorkerSource) RelayableHeight(context.Context) (uint64, error) { return 0, nil }
+
 func (s *stuckWorkerSource) QueryHeader(context.Context, uint64) ([]byte, error) { return nil, nil }
+
 func (s *stuckWorkerSource) MembershipProof(context.Context, []byte, uint64, chain.EventType) ([]byte, error) {
 	return nil, nil
 }
+
 func (s *stuckWorkerSource) NonMembershipProof(context.Context, []byte, uint64) ([]byte, error) {
 	return nil, nil
 }
@@ -1654,7 +2637,7 @@ func (s *stuckWorkerSource) NonMembershipProof(context.Context, []byte, uint64) 
 // So a source that knew one of its own goroutines had not stopped had no way to
 // say so: the value it returned was discarded, and the value that replaced it
 // meant "stopped cleanly". The process exited 0 with a goroutine still running.
-func TestRunReportsASourceThatCouldNotStopItsOwnWorkers(t *testing.T) {
+func TestRun_ReportsASourceThatCouldNotStopItsOwnWorkers(t *testing.T) {
 	stuck := errors.New("cosmos source: shutdown drain timed out after 20s; workers still running: [cosmos-subscribe]")
 	src := &stuckWorkerSource{started: make(chan struct{}), err: stuck}
 	m := NewModule("test", "client", src, &mockDest{}, &mockBuilder{})
@@ -1679,10 +2662,10 @@ func TestRunReportsASourceThatCouldNotStopItsOwnWorkers(t *testing.T) {
 	}
 }
 
-// The mirror of TestModuleCleanCancellationDrainsSubscriber: preferring the
+// The mirror of TestModule/clean cancellation drains subscriber: preferring the
 // source's error must not turn an ordinary stop into a failure. A source that
 // returns the cancellation it was given is still a clean shutdown.
-func TestRunStillExitsCleanWhenTheSourceOnlyReportsCancellation(t *testing.T) {
+func TestRun_StillExitsCleanWhenTheSourceOnlyReportsCancellation(t *testing.T) {
 	src := &stuckWorkerSource{started: make(chan struct{}), err: context.Canceled}
 	m := NewModule("test", "client", src, &mockDest{}, &mockBuilder{})
 
@@ -1702,184 +2685,7 @@ func TestRunStillExitsCleanWhenTheSourceOnlyReportsCancellation(t *testing.T) {
 	}
 }
 
-// A permanently-failing source -- a misconfigured attestor route, a malformed
-// request, an RPC the daemon does not implement -- used to be asked again on
-// every pass. The L2 loop re-offers its queued packets every 4s and deliberately
-// does so even when the chain produced no block, so one bad config line became
-// roughly 21,600 attestor calls and log lines a day, each looking like an
-// ordinary transient RPC failure.
-//
-// The hold changes only how often the source is asked. It must not drop a packet
-// and must not skip the durable tracking that pays for the timeout refund.
-func TestPermanentSourceFailureIsHeldOff(t *testing.T) {
-	events := []chain.Event{{Type: chain.SendPacket, Sequence: 7, Height: 40, Raw: []byte("pkt-7")}}
-
-	t.Run("the source is not asked again during the hold", func(t *testing.T) {
-		src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}
-		m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
-
-		out := captureLog(func() { m.handleBatch(context.Background(), events) })
-		if src.relayableCalls != 1 {
-			t.Fatalf("first pass asked the source %d times, want 1", src.relayableCalls)
-		}
-		if !strings.Contains(out, "PERMANENT") {
-			t.Fatalf("a permanent source failure must say so, not read as a transient RPC error:\n%s", out)
-		}
-
-		for i := 0; i < 5; i++ {
-			m.handleBatch(context.Background(), events)
-		}
-		if src.relayableCalls != 1 {
-			t.Fatalf("source asked %d times across 6 passes; the hold is not holding", src.relayableCalls)
-		}
-	})
-
-	// The hold skips the RPC and the proof, never the durable record: a packet
-	// queued while the source is held off must still be tracked, or it can never
-	// be refunded when it expires.
-	t.Run("packets are still tracked while held off", func(t *testing.T) {
-		src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}
-		var tracked [][]byte
-		m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{},
-			WithPacketTracker(func(raw []byte, _ uint64) bool {
-				tracked = append(tracked, raw)
-				return true
-			}, nil))
-
-		m.handleBatch(context.Background(), events) // arms the hold
-		m.handleBatch(context.Background(), events) // held off
-
-		if len(tracked) != 2 {
-			t.Fatalf("tracked %d packets across two passes, want 2: a packet queued during the hold "+
-				"that is never tracked can never be refunded", len(tracked))
-		}
-	})
-
-	t.Run("the hold clears once the source answers", func(t *testing.T) {
-		src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}
-		m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
-
-		m.handleBatch(context.Background(), events)
-		m.sourceProbeAt = time.Now().Add(-time.Second) // the operator fixed the config
-		src.relayableErr = nil
-
-		out := captureLog(func() { m.handleBatch(context.Background(), events) })
-		if src.relayableCalls != 2 {
-			t.Fatalf("source asked %d times; the probe after the hold expired did not happen", src.relayableCalls)
-		}
-		if !strings.Contains(out, "permanent-failure hold cleared") {
-			t.Fatalf("a recovered source must say so:\n%s", out)
-		}
-		if !m.sourceProbeAt.IsZero() || m.sourceBackoff != 0 {
-			t.Fatalf("hold state survived recovery: probeAt=%v backoff=%v", m.sourceProbeAt, m.sourceBackoff)
-		}
-	})
-
-	// A transient failure must not arm the hold, or a source that is merely
-	// unreachable for a moment goes quiet for up to fifteen minutes.
-	t.Run("a transient failure does not arm the hold", func(t *testing.T) {
-		src := &mockSource{latest: 100, relayableErr: chain.Transient(errors.New("attestor unavailable"))}
-		m := NewModule("l2->cosmos", "client-0", src, &mockDest{}, &mockBuilder{})
-
-		m.handleBatch(context.Background(), events)
-		m.handleBatch(context.Background(), events)
-
-		if src.relayableCalls != 2 {
-			t.Fatalf("source asked %d times across two passes, want 2: a transient failure was treated as permanent", src.relayableCalls)
-		}
-	})
-}
-
-// Validator churn can outrun the trust-overlap requirement: an update from the
-// trusted height straight to the head then cannot be verified at all, and the
-// only way across is a chain of updates that each overlap the last.
-//
-// That mechanism lived only in the manual `update-client` command, so the
-// AUTOMATIC path could not cross a churn gap: the client stayed stuck until a
-// person typed a command, while refreshLoop retried and failed underneath.
-func TestUpdateClientTo_ClimbsThroughIntermediateHops(t *testing.T) {
-	t.Run("crosses a churn gap without a manual command", func(t *testing.T) {
-		src := &mockSource{latest: 100}
-		dst := &mockDest{}
-		b := &mockBuilder{hops: []uint64{30, 60, 90}} // two hops, then the target
-		m := NewModule("test", "client-0", src, dst, b)
-
-		if err := m.updateClientTo(context.Background(), 90); err != nil {
-			t.Fatalf("climb: %v", err)
-		}
-		if len(dst.updates) != 3 {
-			t.Fatalf("submitted %d updates, want the two hops and the target", len(dst.updates))
-		}
-		for i, want := range []uint64{30, 60, 90} {
-			if dst.updates[i].Height != want {
-				t.Fatalf("update %d at height %d, want %d: each hop must overlap the last",
-					i, dst.updates[i].Height, want)
-			}
-		}
-		if m.lastHeight != 90 {
-			t.Fatalf("lastHeight = %d, want 90", m.lastHeight)
-		}
-	})
-
-	// An adapter that never hops must behave exactly as before: one Build, one
-	// update, no loop.
-	t.Run("an adapter that does not hop is unchanged", func(t *testing.T) {
-		src := &mockSource{latest: 100}
-		dst := &mockDest{}
-		b := &mockBuilder{}
-		m := NewModule("test", "client-0", src, dst, b)
-
-		if err := m.updateClientTo(context.Background(), 42); err != nil {
-			t.Fatalf("update: %v", err)
-		}
-		if b.built != 1 || len(dst.updates) != 1 {
-			t.Fatalf("built %d, submitted %d; want exactly one of each", b.built, len(dst.updates))
-		}
-	})
-
-	// Each hop costs a proof and a transaction, so an unbounded climb is an
-	// expensive silent loop -- the third failure class dressed as progress.
-	t.Run("stops at the ceiling and says how far it got", func(t *testing.T) {
-		endless := make([]uint64, MaxClientUpdateHops+5)
-		for i := range endless {
-			endless[i] = uint64(i + 1)
-		}
-		src := &mockSource{latest: 1000}
-		dst := &mockDest{}
-		b := &mockBuilder{hops: endless}
-		m := NewModule("test", "client-0", src, dst, b)
-
-		err := m.updateClientTo(context.Background(), 1000)
-		if err == nil {
-			t.Fatal("an endless climb reported success")
-		}
-		if !strings.Contains(err.Error(), "hop") {
-			t.Errorf("error = %v; it must say the climb ran out, not look like a build failure", err)
-		}
-		if len(dst.updates) > MaxClientUpdateHops {
-			t.Fatalf("submitted %d updates past a ceiling of %d", len(dst.updates), MaxClientUpdateHops)
-		}
-	})
-
-	// A hop that installs nothing must end the climb rather than repeat it. This
-	// is the anti-spin guard, and without it a builder stuck on one height would
-	// burn the whole ceiling in proofs.
-	t.Run("a hop that does not advance ends the climb", func(t *testing.T) {
-		src := &mockSource{latest: 100}
-		dst := &mockDest{}
-		b := &mockBuilder{hops: []uint64{50, 50, 50, 50}}
-		m := NewModule("test", "client-0", src, dst, b)
-
-		if err := m.updateClientTo(context.Background(), 90); err != nil {
-			t.Fatalf("climb: %v", err)
-		}
-		if len(dst.updates) != 1 {
-			t.Fatalf("submitted %d updates for a builder stuck at one height, want 1", len(dst.updates))
-		}
-	})
-}
-
-func TestAckWatch(t *testing.T) {
+func TestAckWatchLoop(t *testing.T) {
 	send := chain.RelayPacket{Type: chain.SendPacket, Sequence: 7, Packet: []byte("pkt-7")}
 	ack := chain.RelayPacket{Type: chain.AckPacket, Sequence: 7, Packet: []byte("pkt-7")}
 
@@ -1990,159 +2796,6 @@ func TestAckWatch(t *testing.T) {
 	})
 }
 
-// A destination can commit part of a batch and then fail: a Cosmos batch that
-// splits submits its leading sub-batches, and the node can go away between two
-// of them. Those packets are on chain.
-//
-// Before the committed count reached the engine, both endings were wrong for
-// them. The transient ending re-queued the whole batch, so the delivered packets
-// were submitted a second time — and then reverted as duplicates, which the
-// engine reads as permanent and reports as DROP for packets that were in fact
-// delivered. The permanent ending isolated all of them, one wasted transaction
-// each, with the same misleading DROP.
-func TestHandleBatch_PartialCommit(t *testing.T) {
-	batch := []chain.Event{
-		{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")},
-		{Type: chain.SendPacket, Height: 8, Raw: []byte("send-2")},
-		{Type: chain.SendPacket, Height: 9, Raw: []byte("send-3")},
-	}
-
-	run := func(t *testing.T, dst *mockDest) (requeue []int, untracked [][]byte) {
-		t.Helper()
-		m := NewModule("test", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{},
-			WithPacketTracker(
-				func([]byte, uint64) bool { return true },
-				func(pkt []byte) { untracked = append(untracked, pkt) },
-			),
-		)
-		return m.handleBatch(context.Background(), batch), untracked
-	}
-
-	t.Run("a transient failure re-queues only the uncommitted tail", func(t *testing.T) {
-		dst := &mockDest{relayErr: errors.New("node went away"), relayCommit: 2}
-		requeue, untracked := run(t, dst)
-
-		if len(requeue) != 1 || requeue[0] != 2 {
-			t.Fatalf("requeue = %v, want only index 2; the first two are already on chain", requeue)
-		}
-		if len(untracked) != 2 {
-			t.Fatalf("untracked %d packet(s) (%q), want the 2 that were committed", len(untracked), untracked)
-		}
-		if dst.relayCalls != 1 {
-			t.Fatalf("relay calls = %d, want 1; a transient failure must not start isolating", dst.relayCalls)
-		}
-	})
-
-	t.Run("a permanent failure isolates only the uncommitted tail", func(t *testing.T) {
-		dst := &mockDest{relayErr: chain.Permanent(errors.New("reverted")), relayCommit: 2}
-		requeue, untracked := run(t, dst)
-
-		// The tail is a single packet, so it is dropped outright rather than
-		// isolated — and the committed two must not be dropped with it.
-		if len(requeue) != 0 {
-			t.Fatalf("requeue = %v, want none: two landed and the third is permanently dead", requeue)
-		}
-		if len(untracked) != 2 {
-			t.Fatalf("untracked %d packet(s) (%q), want the 2 that were committed", len(untracked), untracked)
-		}
-		if dst.relayCalls != 1 {
-			t.Fatalf("relay calls = %d, want 1; the committed prefix must not be re-submitted for isolation", dst.relayCalls)
-		}
-	})
-
-	t.Run("a batch that fully committed before the error re-queues nothing", func(t *testing.T) {
-		dst := &mockDest{relayErr: errors.New("receipt wait timed out"), relayCommit: 3}
-		requeue, untracked := run(t, dst)
-
-		if len(requeue) != 0 {
-			t.Fatalf("requeue = %v, want none: every packet is on chain", requeue)
-		}
-		if len(untracked) != 3 {
-			t.Fatalf("untracked %d packet(s), want all 3", len(untracked))
-		}
-	})
-
-	t.Run("a count larger than the batch is clamped, not indexed with", func(t *testing.T) {
-		// An adapter breaking the contract must not take the relay loop down with
-		// a slice bounds panic.
-		dst := &mockDest{relayErr: errors.New("node went away"), relayCommit: 99}
-		requeue, untracked := run(t, dst)
-
-		if len(requeue) != 0 {
-			t.Fatalf("requeue = %v, want none after clamping", requeue)
-		}
-		if len(untracked) != 3 {
-			t.Fatalf("untracked %d packet(s), want at most the 3 in the batch", len(untracked))
-		}
-	})
-}
-
-// An unresolved abandoned nonce must not be isolated, and must not be dropped.
-//
-// Reported by @DongLieu on #485. The EVM sender marks this failure permanent so
-// nothing resubmits the payload, but permanent already meant "deterministic
-// revert" here, and that ending ISOLATES a multi-packet batch: each packet goes
-// out on its own, against a nonce cache the give-up path just invalidated, so
-// they can take LOWER nonces and mine before the original. The classification
-// meant to prevent a double execution was the thing causing it.
-func TestHandleBatch_UnresolvedNonceIsNeitherIsolatedNorDropped(t *testing.T) {
-	batch := []chain.Event{
-		{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")},
-		{Type: chain.SendPacket, Height: 8, Raw: []byte("send-2")},
-		{Type: chain.SendPacket, Height: 9, Raw: []byte("send-3")},
-	}
-
-	// What the adapter actually hands up: chain.Permanent wrapping the sender's
-	// error (chain/evm/destination.go:172), so the sentinels stay reachable
-	// through it. A fixture that skipped the wrap would test a path production
-	// never takes.
-	unresolved := chain.Permanent(fmt.Errorf("gave up waiting: %w",
-		errors.Join(services.ErrUnresolvedEVMNonce, services.ErrPermanentRelayFailure)))
-
-	var untracked [][]byte
-	dst := &mockDest{relayErr: unresolved}
-	m := NewModule("test", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{},
-		WithPacketTracker(
-			func([]byte, uint64) bool { return true },
-			func(pkt []byte) { untracked = append(untracked, pkt) },
-		),
-	)
-
-	requeue := m.handleBatch(context.Background(), batch)
-
-	if dst.relayCalls != 1 {
-		t.Fatalf("RelayPackets called %d times, want 1: isolating resubmits every packet against a nonce "+
-			"whose outcome is unknown, which is the double execution this state exists to prevent", dst.relayCalls)
-	}
-	if len(requeue) != 0 {
-		t.Fatalf("requeue = %v, want none: a retry is a resubmission too", requeue)
-	}
-	if len(untracked) != 0 {
-		t.Fatalf("untracked %d packet(s); the durable pending record is what settles or refunds them, "+
-			"so dropping it strands the packet", len(untracked))
-	}
-}
-
-// The ordinary permanent ending must keep isolating. The guard above is narrow,
-// and a guard that swallowed every permanent failure would trade one bug for the
-// loss of valid siblings that isolation exists to save.
-func TestHandleBatch_AnOrdinaryPermanentFailureStillIsolates(t *testing.T) {
-	batch := []chain.Event{
-		{Type: chain.SendPacket, Height: 7, Raw: []byte("send-1")},
-		{Type: chain.SendPacket, Height: 8, Raw: []byte("send-2")},
-	}
-
-	dst := &mockDest{relayErr: chain.Permanent(fmt.Errorf("reverted: %w", services.ErrPermanentRelayFailure))}
-	m := NewModule("test", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{})
-
-	m.handleBatch(context.Background(), batch)
-
-	if dst.relayCalls < 2 {
-		t.Fatalf("RelayPackets called %d times, want the batch plus one per packet: a deterministic revert "+
-			"must still be isolated so the poison fails alone", dst.relayCalls)
-	}
-}
-
 func TestFlushOnce(t *testing.T) {
 	send := chain.Event{Type: chain.SendPacket, Sequence: 7, Height: 40, Raw: []byte("old-packet")}
 
@@ -2229,6 +2882,70 @@ func TestFlushOnce(t *testing.T) {
 			t.Fatalf("a failed enumeration must reach the log:\n%s", out)
 		}
 	})
+
+	// The enumeration backstop lists acknowledgements as well as sends, and a
+	// receipt is the wrong question for an acknowledgement: it lives on the OTHER
+	// chain, so asking this destination answers "not delivered" forever and the ack
+	// is re-submitted every pass. A destination that can answer per type is asked
+	// per type, and one that cannot is not asked a question it would get wrong.
+	t.Run("settles acknowledgements by commitment not receipt", func(t *testing.T) {
+		ack := chain.Event{Type: chain.AckPacket, Sequence: 7, Height: 40, Raw: []byte("old-packet"), AckBytes: [][]byte{[]byte("ok")}}
+
+		t.Run("an acknowledgement the destination already settled is dropped", func(t *testing.T) {
+			src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, candidate: []chain.Event{ack}}
+			dst := &checkingDest{settled: map[string]bool{settledKey(ack): true}}
+			m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+			m.flushOnce(context.Background(), src)
+
+			if len(dst.relayed) != 0 {
+				t.Fatalf("relayed %d packets, want 0: the destination no longer holds the send's commitment, so the ack landed", len(dst.relayed))
+			}
+			if len(dst.asked) == 0 || dst.asked[0] != chain.AckPacket {
+				t.Fatalf("destination asked about %v, want the event's own type (ack)", dst.asked)
+			}
+		})
+
+		t.Run("an acknowledgement still owed is relayed", func(t *testing.T) {
+			src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, candidate: []chain.Event{ack}}
+			dst := &checkingDest{settled: map[string]bool{}}
+			m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+			m.flushOnce(context.Background(), src)
+
+			if len(dst.relayed) != 1 || dst.relayed[0].Type != chain.AckPacket {
+				t.Fatalf("relayed %+v, want the one owed acknowledgement", dst.relayed)
+			}
+		})
+
+		// The fallback: a destination with only a receipt check must not have that
+		// check applied to an acknowledgement. hasReceipt is true here, and it
+		// would drop the ack if the receipt question were asked of it.
+		t.Run("a receipt-only destination is not asked about an acknowledgement", func(t *testing.T) {
+			src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, candidate: []chain.Event{ack}}
+			dst := &mockDest{hasReceipt: true}
+			m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+			m.flushOnce(context.Background(), src)
+
+			if len(dst.relayed) != 1 {
+				t.Fatalf("relayed %d packets, want 1: a receipt says nothing about an acknowledgement and must not drop it", len(dst.relayed))
+			}
+		})
+
+		t.Run("a receive is still judged by its receipt through the checker", func(t *testing.T) {
+			send := chain.Event{Type: chain.SendPacket, Sequence: 8, Height: 40, Raw: []byte("old-packet")}
+			src := &listerSource{mockSource: mockSource{latest: 100, relayable: 100}, candidate: []chain.Event{send}}
+			dst := &checkingDest{settled: map[string]bool{settledKey(send): true}}
+			m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{})
+
+			m.flushOnce(context.Background(), src)
+
+			if len(dst.relayed) != 0 {
+				t.Fatalf("relayed %d packets, want 0: the destination holds the receipt", len(dst.relayed))
+			}
+		})
+	})
 }
 
 // The restart boundary the ledger exists to close, and the one it did not until
@@ -2307,106 +3024,6 @@ func TestSettleDelivered_NeverLeavesAPacketInNeitherLedger(t *testing.T) {
 	})
 }
 
-// The churn-gap climb has to exist on BOTH sides of prepareBatchUpdate. The
-// unfolded branch delegates to updateClientTo, which loops; the folded branch
-// built exactly one update and returned it, so a client behind a churn gap
-// advanced one hop per flush. With a 30s scan interval and a ceiling of 16 that
-// is eight minutes of re-queueing to cross a gap the unfolded path crosses in
-// one call -- on the packet-driven path, which is the one with packets waiting.
-func TestHandleBatch_FoldedPathClimbsAChurnGapInOneFlush(t *testing.T) {
-	t.Run("crosses the gap in one flush and folds only the last rung", func(t *testing.T) {
-		src := &mockSource{latest: 100}
-		dst := &foldingMockDest{enabled: true}
-		m := NewModule("test", "client-0", src, dst, &mockBuilder{hops: []uint64{30, 60, 90}})
-		m.lastHeight = 10
-
-		batch := []chain.Event{{Type: chain.SendPacket, Height: 90, Raw: []byte("a")}}
-		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
-			t.Fatalf("a climbable gap must not re-queue the batch, got %v", rq)
-		}
-
-		// The two intermediate hops cannot carry the packets -- each lands below
-		// the packet height -- so they go out on their own. Only the rung that
-		// reaches the target is folded.
-		if len(dst.updates) != 2 || dst.updates[0].Height != 30 || dst.updates[1].Height != 60 {
-			t.Fatalf("standalone updates = %+v, want the two intermediate hops at 30 and 60", dst.updates)
-		}
-		if dst.foldCalls != 1 || len(dst.foldedUpdates) != 1 || dst.foldedUpdates[0].Height != 90 {
-			t.Fatalf("want one folded update at the target height 90, calls=%d updates=%+v", dst.foldCalls, dst.foldedUpdates)
-		}
-		if len(dst.foldedPackets) != 1 || len(dst.foldedPackets[0]) != 1 {
-			t.Fatalf("the packet must ride the final tx, got %+v", dst.foldedPackets)
-		}
-		if m.lastHeight != 90 {
-			t.Fatalf("lastHeight = %d, want 90", m.lastHeight)
-		}
-	})
-
-	// The ceiling is the whole reason the climb is safe to run on the packet path:
-	// each hop is a proof and a transaction, so an unbounded one is a gas drain
-	// that looks like progress.
-	t.Run("stops at the ceiling instead of climbing forever", func(t *testing.T) {
-		endless := make([]uint64, chain.MaxClientUpdateHops+5)
-		for i := range endless {
-			endless[i] = uint64(i + 1)
-		}
-		src := &mockSource{latest: 1000, relayable: 1000}
-		dst := &foldingMockDest{enabled: true}
-		m := NewModule("test", "client-0", src, dst, &mockBuilder{hops: endless})
-
-		batch := []chain.Event{{Type: chain.SendPacket, Height: 900, Raw: []byte("a")}}
-		if rq := m.handleBatch(context.Background(), batch); len(rq) != 1 {
-			t.Fatalf("a batch behind an uncrossable gap must be re-queued, got %v", rq)
-		}
-		if len(dst.updates) > chain.MaxClientUpdateHops {
-			t.Fatalf("submitted %d standalone updates past a ceiling of %d", len(dst.updates), chain.MaxClientUpdateHops)
-		}
-		if dst.foldCalls != 0 {
-			t.Fatalf("nothing reached the target, so nothing may be folded; foldCalls=%d", dst.foldCalls)
-		}
-	})
-
-	// A hop that installs nothing must end the climb rather than repeat it -- the
-	// mirror of the same guard on updateClientTo. Without it a builder stuck on one
-	// height burns the whole ceiling in proofs and transactions, per flush, on the
-	// packet path.
-	t.Run("a hop that does not advance ends the climb", func(t *testing.T) {
-		src := &mockSource{latest: 100}
-		dst := &foldingMockDest{enabled: true}
-		m := NewModule("test", "client-0", src, dst, &mockBuilder{hops: []uint64{50, 50, 50, 50}})
-
-		batch := []chain.Event{{Type: chain.SendPacket, Height: 90, Raw: []byte("a")}}
-		if rq := m.handleBatch(context.Background(), batch); len(rq) != 1 {
-			t.Fatalf("a packet above a stalled climb must be re-queued, got %v", rq)
-		}
-		if len(dst.updates) != 1 {
-			t.Fatalf("submitted %d updates for a builder stuck at one height, want 1", len(dst.updates))
-		}
-		if dst.foldCalls != 0 {
-			t.Fatalf("the climb never reached the target, so nothing may be folded; foldCalls=%d", dst.foldCalls)
-		}
-	})
-
-	// An adapter that never hops must behave exactly as it did before the climb
-	// existed: one Build, nothing submitted on its own, everything folded.
-	t.Run("a builder that never hops is unchanged", func(t *testing.T) {
-		src := &mockSource{latest: 100}
-		dst := &foldingMockDest{enabled: true}
-		b := &mockBuilder{forceHeight: 80}
-		m := NewModule("test", "client-0", src, dst, b)
-		m.lastHeight = 10
-
-		batch := []chain.Event{{Type: chain.SendPacket, Height: 30, Raw: []byte("a")}}
-		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
-			t.Fatalf("re-queued %v", rq)
-		}
-		if b.built != 1 || len(dst.updates) != 0 || dst.foldCalls != 1 {
-			t.Fatalf("built=%d standalone=%d folds=%d; want one build, no standalone tx, one fold",
-				b.built, len(dst.updates), dst.foldCalls)
-		}
-	})
-}
-
 // C4 asks for a decision, not a default: the retry spacing after a failed
 // refresh must be stated and bounded. The bound is what makes backing off safe
 // here -- the loop exists to act inside the refresh margin, so a backoff that can
@@ -2448,7 +3065,7 @@ func TestNextRefreshBackoff(t *testing.T) {
 // routine sitting out exactly the period it exists for. A fixed cap cannot be
 // made safe by choosing a smaller number, because the margin has no lower bound
 // that a constant can stay under; the cap has to be derived from the same input.
-func TestRefreshBackoffStaysInsideTheWindowAtEveryTrustingPeriod(t *testing.T) {
+func TestRefreshBackoffMaxFor_StaysInsideTheWindowAtEveryTrustingPeriod(t *testing.T) {
 	for _, trustingPeriod := range []time.Duration{
 		0, // the destination reports none: the default margin stands in
 		30 * time.Second, 2 * time.Minute, 4 * time.Minute, 10 * time.Minute,
@@ -2475,107 +3092,6 @@ func TestRefreshBackoffStaysInsideTheWindowAtEveryTrustingPeriod(t *testing.T) {
 	}
 }
 
-// The wiring half: the loop must actually space its attempts out. The pure
-// function above can be perfect while the loop calls it and ignores the answer.
-func TestRefreshLoop_BacksOffWhenRefreshKeepsFailing(t *testing.T) {
-	withFastRefreshTick(t) // 1ms, so the backoff doubles in milliseconds
-
-	src := &mockSource{latest: 42}
-	dst := &countingExpiryDest{expiresErr: errors.New("rpc down")}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	ctx, cancel := context.WithCancel(context.Background())
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() { defer wg.Done(); m.refreshLoop(ctx) }()
-
-	const window = 300 * time.Millisecond
-	time.Sleep(window)
-	cancel()
-	wg.Wait()
-
-	attempts := dst.calls()
-	// Unspaced, a 1ms tick would try ~300 times in this window. Backing off 1, 2,
-	// 4, 8 ... reaches 300ms in nine attempts. The bound is loose because the
-	// scheduler is not, but it cannot be met by a loop that ignores the backoff.
-	if attempts > 30 {
-		t.Fatalf("%d attempts in %s: the loop is retrying on every tick, not backing off", attempts, window)
-	}
-	if attempts < 2 {
-		t.Fatalf("%d attempts in %s: the loop stopped retrying altogether", attempts, window)
-	}
-}
-
-// Backing off must not wedge the loop: once the cause clears, the client still
-// gets advanced. A backoff that outlived its failure would be the expired-client
-// outcome the cap exists to prevent, arriving by another route.
-func TestRefreshLoop_RecoversAfterTheFailureClears(t *testing.T) {
-	withFastRefreshTick(t)
-
-	src := &mockSource{latest: 42}
-	dst := &countingExpiryDest{expiresErr: errors.New("rpc down")}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() { defer wg.Done(); m.refreshLoop(ctx) }()
-
-	waitFor(t, ctx, func() bool { return dst.calls() >= 3 }, "the loop never made its first few attempts")
-	dst.heal(time.Now().Add(time.Minute)) // inside refreshMargin, so a refresh is due
-
-	waitFor(t, ctx, func() bool {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		return m.lastHeight == 42
-	}, "the loop never advanced the client after the failure cleared; the backoff outlived its cause")
-	cancel()
-	wg.Wait()
-}
-
-// A backoff that survives its own cause is a slow leak: a client that failed a
-// dozen times last week and recovered would wait the full cap before its next
-// isolated blip is retried, inside a window that exists to keep trying.
-func TestRefreshLoop_BackoffDoesNotOutliveItsCause(t *testing.T) {
-	withFastRefreshTick(t)
-
-	src := &mockSource{latest: 42}
-	dst := &countingExpiryDest{expiresErr: errors.New("rpc down")}
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() { defer wg.Done(); m.refreshLoop(ctx) }()
-
-	// Ten failures at a 1ms tick take the backoff to roughly half a second, which
-	// is what makes the difference below measurable rather than theoretical.
-	waitFor(t, ctx, func() bool { return dst.calls() >= 10 }, "the loop never accumulated a backoff to clear")
-	dst.heal(time.Now().Add(time.Minute))
-	waitFor(t, ctx, func() bool {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		return m.lastHeight == 42
-	}, "the loop never recovered")
-
-	// Break it again. With the backoff cleared by the success, the next attempts
-	// are one tick apart; carried over, the first would be half a second away.
-	before := dst.calls()
-	dst.fail(errors.New("rpc down again"))
-	deadline, ok := context.WithTimeout(ctx, 300*time.Millisecond)
-	defer ok()
-	promptly := true
-	waitForSoft(deadline, func() bool { return dst.calls() >= before+3 }, &promptly)
-	if !promptly {
-		t.Fatalf("only %d attempts in 300ms after a fresh failure; the backoff was carried over from the outage that already ended",
-			dst.calls()-before)
-	}
-	cancel()
-	wg.Wait()
-}
-
 // waitForSoft is waitFor without the t.Fatal: the caller decides what a timeout
 // means, because here it is the assertion rather than a broken test.
 func waitForSoft(ctx context.Context, cond func() bool, ok *bool) {
@@ -2589,46 +3105,6 @@ func waitForSoft(ctx context.Context, cond func() bool, ok *bool) {
 			return
 		case <-time.After(time.Millisecond):
 		}
-	}
-}
-
-// D5: three states, and two of them used to be silence. An operator reading the
-// log could not tell "the client has hours left" from "it has minutes left and
-// the last refresh worked".
-func TestRefreshLoop_SaysWhatItIsDoing(t *testing.T) {
-	withFastRefreshTick(t)
-
-	var logs bytes.Buffer
-	oldOutput := log.Writer()
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(oldOutput) })
-
-	src := &mockSource{latest: 42}
-	dst := &mockDest{expiresAt: time.Now().Add(time.Minute)} // inside refreshMargin
-	m := NewModule("test", "client-0", src, dst, &mockBuilder{})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() { defer wg.Done(); m.refreshLoop(ctx) }()
-	waitFor(t, ctx, func() bool {
-		m.mu.Lock()
-		defer m.mu.Unlock()
-		return m.lastHeight == 42
-	}, "the refresh loop never advanced the client")
-	cancel()
-	wg.Wait()
-
-	out := logs.String()
-	if !strings.Contains(out, "client expires in") {
-		t.Errorf("no line saying a refresh was due, so a due refresh is indistinguishable from a healthy client:\n%s", out)
-	}
-	if !strings.Contains(out, "advanced the client to height 42") {
-		t.Errorf("no line saying the refresh succeeded, so success is indistinguishable from failure:\n%s", out)
-	}
-	if !strings.Contains(out, "of trust left") {
-		t.Errorf("the lines carry no remaining lifetime, which is the number an operator is reading for:\n%s", out)
 	}
 }
 
@@ -2738,142 +3214,6 @@ func (s *overlapProbeSource) RelayableHeight(ctx context.Context) (uint64, error
 	return s.mockSource.RelayableHeight(ctx)
 }
 
-func TestHandleBatchIsSerializedAcrossCallers(t *testing.T) {
-	source := &overlapProbeSource{}
-	m := NewModule("test", "client", source, &mockDest{}, &mockBuilder{})
-	events := []chain.Event{{Type: chain.SendPacket, Sequence: 1, Height: 500}}
-
-	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			m.handleBatch(context.Background(), events)
-		}()
-	}
-	wg.Wait()
-
-	if source.overlap.Load() {
-		t.Fatal("two handleBatch calls were inside the batch at once; batchMu is not held for the whole of it")
-	}
-}
-
-// Reported by @neitdung. A folded transaction carries the client update AND the
-// packets, so a deterministic rejection of it says nothing about WHICH of the
-// two the chain refused -- but the code read every permanent failure as "the
-// packet is poison". A single packet was therefore dropped outright, and a batch
-// was retried as folded singletons carrying the SAME update, so each failed for
-// the same reason and every packet was dropped in turn.
-//
-// An ack has no independent escape: its counterparty already holds a receipt, so
-// nothing times it out and nothing refunds it. Dropping it on a failure never
-// shown to be its own strands the escrow.
-//
-// The fixture has to reject the update on BOTH paths, folded and standalone --
-// that is what "the update is the problem" means. A fold that fails while the
-// standalone update succeeds is the opposite case, and the last subtest pins
-// that the two are still told apart.
-func TestHandleBatch_FoldedUpdateRejectionDoesNotDropInnocentPackets(t *testing.T) {
-	rejected := func() *foldingMockDest {
-		dst := &foldingMockDest{enabled: true, foldErr: chain.Permanent(errors.New("client update rejected"))}
-		dst.updateErr = chain.Permanent(errors.New("client update rejected"))
-		return dst
-	}
-
-	t.Run("a single ack is held, not dropped", func(t *testing.T) {
-		src := &mockSource{latest: 100}
-		dst := rejected()
-		m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
-		m.lastHeight = 10
-
-		batch := []chain.Event{{Type: chain.AckPacket, Sequence: 7, Height: 30, Raw: []byte("a")}}
-		requeue := m.handleBatch(context.Background(), batch)
-
-		if len(requeue) != 1 {
-			t.Fatalf("re-queued %v, want the ack held: the update was refused on its own, "+
-				"so nothing was ever shown about the packet", requeue)
-		}
-		if m.lastHeight != 10 {
-			t.Fatalf("lastHeight = %d, want 10: an update the chain refused must not be recorded", m.lastHeight)
-		}
-	})
-
-	// The batch shape is the worse one: isolation would have retried every packet
-	// with the same rejected update and dropped all of them.
-	t.Run("a whole batch is held, not dropped one by one", func(t *testing.T) {
-		src := &mockSource{latest: 100}
-		dst := rejected()
-		m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
-		m.lastHeight = 10
-
-		batch := []chain.Event{
-			{Type: chain.AckPacket, Sequence: 1, Height: 30, Raw: []byte("a")},
-			{Type: chain.AckPacket, Sequence: 2, Height: 31, Raw: []byte("b")},
-			{Type: chain.TimeoutPacket, Sequence: 3, Height: 32, Raw: []byte("c")},
-		}
-		requeue := m.handleBatch(context.Background(), batch)
-
-		if len(requeue) != len(batch) {
-			t.Fatalf("re-queued %v, want all %d held", requeue, len(batch))
-		}
-	})
-
-	// Second round, also @neitdung. The update landing alone clears the UPDATE,
-	// and nothing more: the folded transaction was one atomic unit, and a unit can
-	// be refused for what the two are together (its gas envelope, its route)
-	// while each half passes on its own. The first fix drew the stronger
-	// conclusion -- "the update landed, so the packet is poison" -- and dropped a
-	// single packet on the folded error without ever sending it by itself. The
-	// batch shape went through packet-only isolation; the singleton skipped it.
-	t.Run("a packet that fails only in the folded composition is delivered, not dropped", func(t *testing.T) {
-		src := &mockSource{latest: 100}
-		dst := &foldingMockDest{enabled: true, foldErr: chain.Permanent(errors.New("folded tx reverted"))}
-		m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
-		m.lastHeight = 10
-
-		batch := []chain.Event{{Type: chain.AckPacket, Sequence: 7, Height: 30, Raw: []byte("a")}}
-		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
-			t.Fatalf("re-queued %v, want nothing outstanding: the packet relays on its own", rq)
-		}
-		if dst.relayCalls != 1 {
-			t.Fatalf("packet-only relay calls = %d, want 1: the folded error says nothing about the packet alone", dst.relayCalls)
-		}
-		if len(dst.relayed) != 1 || dst.relayed[0].Sequence != 7 {
-			t.Fatalf("delivered %+v, want the ack: it was dropped on a failure never shown to be its own", dst.relayed)
-		}
-		if m.lastHeight != 80 {
-			t.Fatalf("lastHeight = %d, want 80: the standalone update installed", m.lastHeight)
-		}
-		if len(dst.updates) != 1 || dst.updates[0].Height != 80 {
-			t.Fatalf("standalone update calls = %+v, want exactly the folded update", dst.updates)
-		}
-	})
-
-	// The control: a packet that fails on its own too is still dropped -- after
-	// that attempt, on that attempt's error, not on the folded one.
-	t.Run("a packet that really is poison is dropped once it has failed alone", func(t *testing.T) {
-		src := &mockSource{latest: 100}
-		dst := &foldingMockDest{enabled: true, foldErr: chain.Permanent(errors.New("folded tx reverted"))}
-		dst.poison = map[string]bool{"a": true}
-		m := NewModule("test", "client-0", src, dst, &mockBuilder{forceHeight: 80})
-		m.lastHeight = 10
-
-		batch := []chain.Event{{Type: chain.AckPacket, Sequence: 7, Height: 30, Raw: []byte("a")}}
-		if rq := m.handleBatch(context.Background(), batch); len(rq) != 0 {
-			t.Fatalf("re-queued %v; the packet failed on its own, so it is dropped", rq)
-		}
-		if dst.relayCalls != 1 {
-			t.Fatalf("packet-only relay calls = %d, want 1: dropping needs the packet's own failure first", dst.relayCalls)
-		}
-		if len(dst.relayed) != 0 {
-			t.Fatalf("delivered %+v, want nothing: the packet is poison", dst.relayed)
-		}
-		if m.lastHeight != 80 {
-			t.Fatalf("lastHeight = %d, want 80: the standalone update installed", m.lastHeight)
-		}
-	})
-}
-
 // A failing expiry query must keep sizing its retry against THIS client's margin.
 //
 // Reported by @DongLieu on #487, against the commit that fixed the same class of
@@ -2883,7 +3223,7 @@ func TestHandleBatch_FoldedUpdateRejectionDoesNotDropInnocentPackets(t *testing.
 // could schedule a retry spanning twice the window the loop exists to work
 // inside -- and a query that keeps failing is exactly the case where no later
 // pass arrives to narrow it.
-func TestRefreshBackoffKeepsTheLastKnownTrustingPeriodWhenTheQueryFails(t *testing.T) {
+func TestRefreshBackoffMaxFor_KeepsTheLastKnownTrustingPeriodWhenTheQueryFails(t *testing.T) {
 	const trustingPeriod = 10 * time.Minute
 
 	// The rule. A failing query must not fall back to the default margin's cap,
@@ -2933,4 +3273,22 @@ func TestRefreshBackoffKeepsTheLastKnownTrustingPeriodWhenTheQueryFails(t *testi
 				"falling back to the default lets the backoff span the refresh window on a short-lived client")
 		}
 	})
+}
+
+// checkingDest is a destination that answers settlement PER EVENT TYPE, the
+// capability chain.SettlementChecker adds over the bare receipt check.
+type checkingDest struct {
+	mockDest
+	mu      sync.Mutex
+	settled map[string]bool
+	asked   []chain.EventType
+}
+
+func settledKey(e chain.Event) string { return fmt.Sprintf("%s/%d", e.Type, e.Sequence) }
+
+func (d *checkingDest) PacketSettled(_ context.Context, e chain.Event) (bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.asked = append(d.asked, e.Type)
+	return d.settled[settledKey(e)], nil
 }

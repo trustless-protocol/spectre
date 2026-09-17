@@ -10,13 +10,14 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"relayer/rpcmock"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ethereum/go-ethereum/common"
 	ethcommon "github.com/ethereum/go-ethereum/common"
-
-	"relayer/rpcmock"
+	"github.com/ethereum/go-ethereum/ethclient"
 )
 
 func TestComputeSyncCommitteePeriodAtSlot(t *testing.T) {
@@ -267,14 +268,14 @@ func TestToForkParameters(t *testing.T) {
 	})
 }
 
-// TestSyncCommitteeTreeHash verifies sszTreeHashBLSPubkeys against the known Rust test vector
+// TestSyncCommittee_TreeHash verifies sszTreeHashBLSPubkeys against the known Rust test vector
 // from packages/ethereum/types/src/consensus/sync_committee.rs test_sync_committee_tree_hash_root.
 //
 // The Rust test uses 32 pubkeys and checks SyncCommittee::tree_hash_root().
 // SyncCommittee is a container with 2 fields: [pubkeys_root, aggregate_pubkey_root]
 // container_root = sha256(pubkeys_root || aggregate_pubkey_root)
 // expected container_root = 0x5361eb179f7499edbf09e514d317002f1d365d72e14a56c931e9edaccca3ff29
-func TestSyncCommitteeTreeHash(t *testing.T) {
+func TestSyncCommittee_TreeHash(t *testing.T) {
 	pubkeys := []string{
 		"0x81ea9f74ef7d935b807474e38954ae3934856219a23e074954b2e860c5a3c400f9aedb42cd27cb4ceb697ca36d1e58cb",
 		"0x84d08d58c31bcd3cddf93e13d6f50203897384afa34644bff1135efe8e01c81c6a91ca6c234bb1e51ca32e41b828aaf9",
@@ -660,4 +661,113 @@ func TestGetEthMembershipProof(t *testing.T) {
 			t.Fatalf("proof does not carry the slot value: %s", raw)
 		}
 	})
+
+	// The proof helpers are called from goroutines that drive one relay direction
+	// each, so an eth_getProof that never comes back used to wedge that direction
+	// with no error and nothing in the log. These tests pin that the caller's
+	// context can now interrupt the call.
+	//
+	// Both run against a server that accepts the request and never answers — the
+	// shape of the incident, rather than a connection failure, which would prove
+	// nothing about context handling.
+	t.Run("honours context", func(t *testing.T) {
+		srv := blackHoleServer(t)
+		c, err := DialEthRPC(context.Background(), srv.URL, time.Hour)
+		if err != nil {
+			t.Fatalf("DialEthRPC: %v", err)
+		}
+		t.Cleanup(c.Close)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+
+		done := make(chan error, 1)
+		go func() {
+			_, err := GetEthMembershipProof(ctx, c, ethcommon.Address{}, []byte("path"), ethcommon.Hash{}, big.NewInt(1))
+			done <- err
+		}()
+
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("expected an error from the cancelled call")
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("GetEthMembershipProof ignored its context: the relay direction would be wedged")
+		}
+	})
+
+	t.Run("RPCs honor cancellation", func(t *testing.T) {
+		for _, tc := range []struct {
+			name string
+			call func(context.Context, *ethclient.Client) error
+		}{
+			{"membership", func(ctx context.Context, client *ethclient.Client) error {
+				_, err := GetEthMembershipProof(ctx, client, common.Address{}, []byte("path"), common.Hash{}, big.NewInt(1))
+				return err
+			}},
+			{"non-membership", func(ctx context.Context, client *ethclient.Client) error {
+				_, err := GetEthNonMembershipProof(ctx, client, common.Address{}, []byte("path"), common.Hash{}, big.NewInt(1))
+				return err
+			}},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				done := make(chan error, 1)
+				client := silentEthRPC(t)
+				go func() { done <- tc.call(ctx, client) }()
+				time.Sleep(30 * time.Millisecond)
+				cancel()
+				select {
+				case err := <-done:
+					if !errors.Is(err, context.Canceled) {
+						t.Fatalf("error = %v, want context.Canceled", err)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("proof RPC ignored cancellation")
+				}
+			})
+		}
+	})
+}
+
+func TestGetEthNonMembershipProof_HonoursContext(t *testing.T) {
+	srv := blackHoleServer(t)
+	c, err := DialEthRPC(context.Background(), srv.URL, time.Hour)
+	if err != nil {
+		t.Fatalf("DialEthRPC: %v", err)
+	}
+	t.Cleanup(c.Close)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := GetEthNonMembershipProof(ctx, c, ethcommon.Address{}, []byte("path"), ethcommon.Hash{}, big.NewInt(1))
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected an error from the cancelled call")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("GetEthNonMembershipProof ignored its context: the timeout scanner would stop for good")
+	}
+}
+
+func silentEthRPC(t *testing.T) *ethclient.Client {
+	t.Helper()
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { <-release }))
+	t.Cleanup(server.Close)
+	t.Cleanup(func() { close(release) })
+	client, err := ethclient.Dial(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Close)
+	return client
 }

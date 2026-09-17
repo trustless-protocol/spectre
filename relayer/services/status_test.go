@@ -42,7 +42,7 @@ func newServicesWithDeadLetterInBoth(t *testing.T, sourceClient string, sequence
 // on the first success. A packet identity is (source client, sequence) and
 // client ids are chain-local, so two trackers can hold the same pair -- and the
 // operator's choice was then decided by the order of a switch statement.
-func TestReactivateDeadLetterActsOnTheNamedTrackerAlone(t *testing.T) {
+func TestReactivateDeadLetter_ActsOnTheNamedTrackerAlone(t *testing.T) {
 	const client = "client-0"
 	const sequence = uint64(9)
 
@@ -64,7 +64,7 @@ func TestReactivateDeadLetterActsOnTheNamedTrackerAlone(t *testing.T) {
 
 // An unknown direction is refused rather than treated as "search them all",
 // which would restore the scan this replaced.
-func TestReactivateDeadLetterRefusesAnUnknownDirection(t *testing.T) {
+func TestReactivateDeadLetter_RefusesAnUnknownDirection(t *testing.T) {
 	svc := newServicesWithDeadLetterInBoth(t, "client-0", 9)
 
 	err := svc.ReactivateDeadLetter("", "client-0", 9)

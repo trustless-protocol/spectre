@@ -325,6 +325,11 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		// complete -- a forward-only deployment has no return leg and must not
 		// alarm about acknowledgements it was never going to relay.
 		relay.WithAckWatch(0, 0, ackDue, ackSettled, timeoutReturn.svc.OverdueAcks),
+		// The enumeration backstop: L2 sends the L2 router still holds a
+		// commitment for, and acknowledgements it wrote for Cosmos sends that
+		// Cosmos still holds a commitment for. The L2 scan window is the
+		// shortest of the four paths (#308), so this is the leg that needs it most.
+		relay.WithPacketFlush(0),
 	)
 	logger.Sugar().Infof("l2->cosmos source: %s (attestors=%d threshold=%d src_chain=%s wasm_client=%s head=%s)",
 		cfg.kind, len(cfg.AttestorEndpoints), cfg.Attestors.Threshold, cfg.AttestorSrcChain, cfg.L2WasmClientID, cfg.HeadKind)

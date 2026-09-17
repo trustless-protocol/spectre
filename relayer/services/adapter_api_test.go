@@ -11,7 +11,7 @@ import (
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
 
-func TestUntrackPendingLogsPersistenceFailure(t *testing.T) {
+func TestUntrackCosmosPending_LogsPersistenceFailure(t *testing.T) {
 	tests := []struct {
 		name    string
 		track   func(*Services, channeltypesv2.Packet) bool
@@ -62,5 +62,24 @@ func TestUntrackPendingLogsPersistenceFailure(t *testing.T) {
 				t.Fatalf("failed persistence removed %s pending packet", tc.name)
 			}
 		})
+	}
+}
+
+func TestTrackL2Pending(t *testing.T) {
+	svc := New(nil, nil, DefaultConfig())
+	pkt := channeltypesv2.Packet{SourceClient: "l2-client-0", Sequence: 9}
+
+	svc.TrackL2Pending(pkt, 456)
+	pending := svc.BatchBuilder.L2PendingTracker.GetAll()
+	if len(pending) != 1 {
+		t.Fatalf("pending len = %d, want 1", len(pending))
+	}
+	if pending[0].BlockNumber != 456 {
+		t.Fatalf("pending block = %d, want 456", pending[0].BlockNumber)
+	}
+
+	svc.UntrackL2Pending(pkt)
+	if got := svc.BatchBuilder.L2PendingTracker.Len(); got != 0 {
+		t.Fatalf("pending len after untrack = %d, want 0", got)
 	}
 }

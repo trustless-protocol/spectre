@@ -4,18 +4,17 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
-	"testing"
-
 	contractICS26Router "relayer/bindings/ICS26Router"
 	spectreContract "relayer/bindings/SpectreClient"
 	"relayer/services"
+	"strings"
+	"testing"
 
 	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
 )
 
-func TestLoadMisbehaviourEvidenceStandardJSON(t *testing.T) {
+func TestLoadMisbehaviourEvidence_StandardJSON(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "evidence.json")
 	data := []byte(`{
   "client_id": "client-0",
@@ -40,40 +39,42 @@ func TestLoadMisbehaviourEvidenceStandardJSON(t *testing.T) {
 	}
 }
 
-func TestSubmitMisbehaviourDryRunRejectsInvalidGasLimitBeforeLoadingConfig(t *testing.T) {
-	t.Setenv("ETH_MISBEHAVIOUR_GAS_LIMIT", "invalid")
+func TestSubmitMisbehaviour(t *testing.T) {
+	t.Run("dry run rejects invalid gas limit before loading config", func(t *testing.T) {
+		t.Setenv("ETH_MISBEHAVIOUR_GAS_LIMIT", "invalid")
 
-	cmd := SubmitMisbehaviour(zap.NewNop())
-	cmd.SetArgs([]string{"--dry-run", "--evidence", "missing.json", "--config", "missing.json"})
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "invalid ETH_MISBEHAVIOUR_GAS_LIMIT") {
-		t.Fatalf("Execute() error = %v, want invalid gas limit", err)
-	}
+		cmd := SubmitMisbehaviour(zap.NewNop())
+		cmd.SetArgs([]string{"--dry-run", "--evidence", "missing.json", "--config", "missing.json"})
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "invalid ETH_MISBEHAVIOUR_GAS_LIMIT") {
+			t.Fatalf("Execute() error = %v, want invalid gas limit", err)
+		}
+	})
+
+	t.Run("rejects invalid private key before loading config", func(t *testing.T) {
+		t.Setenv("MISBEHAVIOUR_PRIVATE_KEY", "invalid")
+
+		cmd := SubmitMisbehaviour(zap.NewNop())
+		cmd.SetArgs([]string{"--evidence", "missing.json", "--config", "missing.json"})
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "invalid MISBEHAVIOUR_PRIVATE_KEY") {
+			t.Fatalf("Execute() error = %v, want invalid private key", err)
+		}
+	})
+
+	t.Run("dry run does not read private key", func(t *testing.T) {
+		t.Setenv("MISBEHAVIOUR_PRIVATE_KEY", "invalid")
+
+		cmd := SubmitMisbehaviour(zap.NewNop())
+		cmd.SetArgs([]string{"--dry-run", "--evidence", "missing.json", "--config", "missing.json"})
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "load config") {
+			t.Fatalf("Execute() error = %v, want config error before any key access", err)
+		}
+	})
 }
 
-func TestSubmitMisbehaviourRejectsInvalidPrivateKeyBeforeLoadingConfig(t *testing.T) {
-	t.Setenv("MISBEHAVIOUR_PRIVATE_KEY", "invalid")
-
-	cmd := SubmitMisbehaviour(zap.NewNop())
-	cmd.SetArgs([]string{"--evidence", "missing.json", "--config", "missing.json"})
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "invalid MISBEHAVIOUR_PRIVATE_KEY") {
-		t.Fatalf("Execute() error = %v, want invalid private key", err)
-	}
-}
-
-func TestSubmitMisbehaviourDryRunDoesNotReadPrivateKey(t *testing.T) {
-	t.Setenv("MISBEHAVIOUR_PRIVATE_KEY", "invalid")
-
-	cmd := SubmitMisbehaviour(zap.NewNop())
-	cmd.SetArgs([]string{"--dry-run", "--evidence", "missing.json", "--config", "missing.json"})
-	err := cmd.Execute()
-	if err == nil || !strings.Contains(err.Error(), "load config") {
-		t.Fatalf("Execute() error = %v, want config error before any key access", err)
-	}
-}
-
-func TestBuildMisbehaviourCalldataRouterAndDirect(t *testing.T) {
+func TestBuildMisbehaviourCalldata_RouterAndDirect(t *testing.T) {
 	routerAddress := common.HexToAddress("0x1000000000000000000000000000000000000001")
 	spectreAddress := common.HexToAddress("0x2000000000000000000000000000000000000002")
 	prepared := services.PreparedCosmosMisbehaviour{EncodedMessage: []byte{0xaa, 0xbb}}

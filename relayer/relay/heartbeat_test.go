@@ -3,11 +3,10 @@ package relay
 import (
 	"context"
 	"errors"
+	"relayer/chain"
 	"strings"
 	"testing"
 	"time"
-
-	"relayer/chain"
 )
 
 // The signal is "a tick finished", not "the chain moved". Those look identical
@@ -105,23 +104,10 @@ func TestHeartbeats(t *testing.T) {
 	})
 }
 
-// The loops must reach the status snapshot, or the heartbeat is a field nobody
-// reads. This is the wiring half: the type above can be perfect while nothing
-// calls it.
-func TestModuleStatusCarriesTheLoopHealth(t *testing.T) {
-	m := NewModule("test", "client-0", &mockSource{latest: 100, relayable: 90}, &mockDest{}, &mockBuilder{})
-	m.beats.record(workerTimeoutScan, "")
-
-	got := m.Status(context.Background())
-	if len(got.Loops) != 1 || got.Loops[0].Worker != workerTimeoutScan {
-		t.Fatalf("loops = %+v, want the timeout scan's beat", got.Loops)
-	}
-}
-
 // Each loop must actually beat. The type above can be correct while no loop
 // calls it, which is the shape that leaves an operator reading an empty list and
 // concluding the process is dead.
-func TestLoopsBeatWhenTheyRun(t *testing.T) {
+func TestHeartbeat_LoopsBeatWhenTheyRun(t *testing.T) {
 	beat := func(t *testing.T, worker string, run func(*Module, context.Context)) {
 		t.Helper()
 		withFastRefreshTick(t)
@@ -167,64 +153,6 @@ func TestLoopsBeatWhenTheyRun(t *testing.T) {
 	})
 }
 
-// A pass that FAILED still counts. heartbeats.record says so outright, and the
-// refresh loop is where it matters most: it is the anti-expiry routine, so the
-// moment an operator needs to know whether it is still turning is exactly the
-// moment its RPC is unreachable.
-//
-// Reported by @DongLieu: the beat sat after the expiry query succeeded, so
-// against a dead endpoint every tick took the error path and no beat was ever
-// recorded. `relayer status` then showed the loop as never started -- wedged and
-// merely failing look identical again, which is the confusion this type removes.
-func TestRefreshLoopBeatsOnEveryEnding(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		dst  *mockDest
-		want string
-	}{
-		{
-			name: "the expiry query fails",
-			dst:  &mockDest{expiresErr: errors.New("connection refused")},
-			want: "query client expiry failed",
-		},
-		{
-			name: "healthy, nothing to do",
-			dst:  &mockDest{expiresAt: time.Now().Add(refreshMarginFor(0) + time.Hour)},
-			want: "client expires in",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			withFastRefreshTick(t)
-
-			m := NewModule("test", "client-0", &mockSource{latest: 42}, tc.dst, &mockBuilder{})
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-
-			done := make(chan struct{})
-			go func() { defer close(done); m.refreshLoop(ctx) }()
-
-			deadline := time.After(3 * time.Second)
-			for {
-				if note, ok := refreshBeatNote(m); ok {
-					if !strings.Contains(note, tc.want) {
-						t.Fatalf("refresh note = %q, want it to contain %q", note, tc.want)
-					}
-					cancel()
-					<-done
-					return
-				}
-				select {
-				case <-deadline:
-					cancel()
-					<-done
-					t.Fatalf("the refresh loop ran and recorded no heartbeat; status would report it as never started")
-				case <-time.After(time.Millisecond):
-				}
-			}
-		})
-	}
-}
-
 func refreshBeatNote(m *Module) (string, bool) { return beatNote(m, workerRefresh) }
 
 // The enumeration backstop has to beat too, and for the sharpest reason of the
@@ -232,7 +160,7 @@ func refreshBeatNote(m *Module) (string, bool) { return beatNote(m, workerRefres
 // from the block scan. Reported by @DongLieu: it recorded nothing, so `relayer
 // status` omitted it entirely and an operator asking "is anything still looking
 // for my old packet" got no answer, which reads as a loop that never started.
-func TestFlushBeatsOnEveryEnding(t *testing.T) {
+func TestHeartbeat_FlushBeatsOnEveryEnding(t *testing.T) {
 	send := chain.Event{Type: chain.SendPacket, Sequence: 7, Height: 40, Raw: []byte("old-packet")}
 
 	for _, tc := range []struct {

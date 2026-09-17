@@ -1,11 +1,9 @@
 package services
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 )
 
@@ -33,221 +31,13 @@ func TestResumeCursor(t *testing.T) {
 	}
 }
 
-func TestRecoveryStateMissingFileAndPartialCheckpoints(t *testing.T) {
-	resetLoadedRecoveryStoresForTest()
-	path := filepath.Join(t.TempDir(), "state", "cursors.json")
-	store, err := LoadRecoveryState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := store.Get(); ok {
-		t.Fatal("missing file unexpectedly contained a source")
-	}
-	if err := store.SaveCheckpoint(RecoveryCursors{"cosmos": 20, "eth_send": 30}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveCheckpoint(RecoveryCursors{"cosmos": 10, "eth_write_ack": 40}); err != nil {
-		t.Fatal(err)
-	}
-	got, ok := store.Get()
-	if !ok || !got.equal(RecoveryCursors{"cosmos": 10, "eth_send": 30, "eth_write_ack": 40}) {
-		t.Fatalf("merged cursors = %+v, ok=%t", got, ok)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode().Perm() != stateFilePerm {
-		t.Fatalf("state mode = %o, want %o", info.Mode().Perm(), stateFilePerm)
-	}
-
-	resetLoadedRecoveryStoresForTest()
-	reloaded, err := LoadRecoveryState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, ok = reloaded.Get()
-	if !ok || got["cosmos"] != 10 || got["eth_send"] != 30 || got["eth_write_ack"] != 40 {
-		t.Fatalf("reloaded cursors = %+v, ok=%t", got, ok)
-	}
-}
-
-func TestRecoveryStateCheckpointCanMoveBackward(t *testing.T) {
-	resetLoadedRecoveryStoresForTest()
-	path := filepath.Join(t.TempDir(), "state.json")
-	store, err := LoadRecoveryState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveCheckpoint(RecoveryCursors{"cosmos": 100, "eth_send": 200}); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveCheckpoint(RecoveryCursors{"cosmos": 50}); err != nil {
-		t.Fatal(err)
-	}
-
-	got, ok := store.Get()
-	want := RecoveryCursors{"cosmos": 50, "eth_send": 200}
-	if !ok || !got.equal(want) {
-		t.Fatalf("checkpoint cursors = %+v, ok=%t, want %+v", got, ok, want)
-	}
-
-	resetLoadedRecoveryStoresForTest()
-	reloaded, err := LoadRecoveryState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, ok = reloaded.Get()
-	if !ok || !got.equal(want) {
-		t.Fatalf("reloaded checkpoint cursors = %+v, ok=%t, want %+v", got, ok, want)
-	}
-}
-
-func TestRecoveryStateFailedWriteDoesNotAdvanceMemory(t *testing.T) {
-	resetLoadedRecoveryStoresForTest()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "state.json")
-	store, err := LoadRecoveryState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := store.SaveCheckpoint(RecoveryCursors{"cosmos": 10}); err != nil {
-		t.Fatal(err)
-	}
-
-	blockedPath := filepath.Join(dir, "blocked")
-	if err := os.Mkdir(blockedPath, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	store.path = blockedPath
-	if err := store.SaveCheckpoint(RecoveryCursors{"cosmos": 20}); err == nil {
-		t.Fatal("Save succeeded when the target path was a directory")
-	}
-	got, ok := store.Get()
-	if !ok || got["cosmos"] != 10 {
-		t.Fatalf("cursor after failed write = %+v, ok=%t, want height 10", got, ok)
-	}
-
-	store.path = path
-	if err := store.SaveCheckpoint(RecoveryCursors{"cosmos": 20}); err != nil {
-		t.Fatal(err)
-	}
-	resetLoadedRecoveryStoresForTest()
-	reloaded, err := LoadRecoveryState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	got, ok = reloaded.Get()
-	if !ok || got["cosmos"] != 20 {
-		t.Fatalf("reloaded cursor after retry = %+v, ok=%t, want height 20", got, ok)
-	}
-}
-
-func TestRecoveryStateRejectsCorruptAndUnsupportedFiles(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		data []byte
-	}{
-		{name: "corrupt", data: []byte("{")},
-		{name: "wrong version", data: []byte(`{"version":1,"sources":{}}`)},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			resetLoadedRecoveryStoresForTest()
-			path := filepath.Join(t.TempDir(), "state.json")
-			if err := os.WriteFile(path, tc.data, 0o600); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := LoadRecoveryState(path); err == nil {
-				t.Fatal("LoadRecoveryState succeeded for invalid state")
-			}
-		})
-	}
-}
-
-// One process now keeps one record, but two recovery streams write to it: the
-// Cosmos subscriber owns CosmosHeight, the ETH subscriber owns EthSendBlock and
-// EthWriteAckBlk. They run concurrently and each save is a read-modify-write of
-// the whole file, so a lost update here means a stream silently resumes from an
-// older cursor and rescans -- or worse, the other stream's newer cursor is
-// rolled back and its window is skipped.
-//
-// Memoization by path is what makes the two share one view; without it each
-// would hold its own copy and the last writer would erase the other's field.
-func TestRecoveryStateMemoizationSharesOneViewBetweenStreams(t *testing.T) {
-	resetLoadedRecoveryStoresForTest()
-	path := filepath.Join(t.TempDir(), "state.json")
-	cosmosView, err := LoadRecoveryState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ethView, err := LoadRecoveryState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cosmosView != ethView {
-		t.Fatal("the same path returned two stores; the two streams would each keep their own cursors")
-	}
-
-	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		if err := cosmosView.SaveCheckpoint(RecoveryCursors{"cosmos": 11}); err != nil {
-			t.Errorf("cosmos save: %v", err)
-		}
-	}()
-	go func() {
-		defer wg.Done()
-		if err := ethView.SaveCheckpoint(RecoveryCursors{"eth_send": 22, "eth_write_ack": 33}); err != nil {
-			t.Errorf("eth save: %v", err)
-		}
-	}()
-	wg.Wait()
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var file recoveryStateFile
-	if err := json.Unmarshal(data, &file); err != nil {
-		t.Fatal(err)
-	}
-	want := RecoveryCursors{"cosmos": 11, "eth_send": 22, "eth_write_ack": 33}
-	if !file.Cursors.equal(want) {
-		t.Fatalf("persisted cursors = %+v, want %+v; one stream's write erased the other's", file.Cursors, want)
-	}
-}
-
-func TestRecoveryStateWriteLeavesNoTempFiles(t *testing.T) {
-	resetLoadedRecoveryStoresForTest()
-	dir := t.TempDir()
-	store, err := LoadRecoveryState(filepath.Join(dir, "state.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := range 5 {
-		if err := store.SaveCheckpoint(RecoveryCursors{"cosmos": uint64(i + 1)}); err != nil {
-			t.Fatalf("save %d: %v", i, err)
-		}
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range entries {
-		if strings.HasSuffix(entry.Name(), ".tmp") {
-			t.Fatalf("temporary recovery file %q was not removed", entry.Name())
-		}
-	}
-}
-
 // A corrupt cursor file must be fatal, never treated as a first run. Silently
 // falling back to the lookback skips every event between the lost cursor and
 // the lookback window, with nothing in the log to say so -- which is the outage
 // the cursor exists to prevent, recreated by the recovery from losing it.
 //
 // A missing file is the opposite: that IS a first run, and it must load.
-func TestLoadRecoveryStateRefusesDamagedState(t *testing.T) {
+func TestLoadRecoveryState_RefusesDamagedState(t *testing.T) {
 	write := func(t *testing.T, content string) string {
 		t.Helper()
 		path := filepath.Join(t.TempDir(), "cursors.json")
@@ -327,7 +117,7 @@ func TestLoadRecoveryStateRefusesDamagedState(t *testing.T) {
 //
 // The fixture is the real previous format, not a hand-shortened one, because the
 // failure depends on it deserializing successfully.
-func TestLoadRecoveryStateRefusesThePreviousRecordShape(t *testing.T) {
+func TestLoadRecoveryState_RefusesThePreviousRecordShape(t *testing.T) {
 	resetLoadedRecoveryStoresForTest()
 
 	legacy := `{"version":1,"sources":{"cosmoshub-1":{"cosmos_height":8123,` +

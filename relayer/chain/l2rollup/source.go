@@ -131,6 +131,11 @@ type Source struct {
 	// names neither the setting nor a workable value — so this is configuration,
 	// not a constant.
 	logScanChunk uint64
+
+	// flush is the enumeration backstop's cursors and log-range policy; see
+	// flush.go. Touched only from UnrelayedPackets, which the relay module calls
+	// on one goroutine.
+	flush flushState
 }
 
 // Source satisfies chain.Source.

@@ -12,6 +12,7 @@ import (
 	"relayer/chain/wasmclient"
 	relayerclient "relayer/client"
 	"relayer/services"
+	"relayer/subscriber"
 
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
@@ -329,12 +330,19 @@ func (d *Destination) sendPacketBatch(ctx context.Context, msgs []any) (int, err
 }
 
 // HasPacketReceipt reports whether an ETH-origin packet was already delivered on
-// Cosmos. NOTE: not used by the current RelayModule flow (it drives timeout
-// scanning, which is not yet wired into the module). A correct implementation
-// needs a verified Cosmos-side packet-receipt ABCI query; left explicit rather
-// than guessed.
-func (d *Destination) HasPacketReceipt(_ context.Context, _ []byte) (bool, error) {
-	return false, fmt.Errorf("cosmos dest: HasPacketReceipt not wired (timeout-scan, unused by module)")
+// Cosmos, via the same receipt ABCI query the ETH recovery path and the L2
+// destination use. It used to be a "not wired" stub because nothing in the
+// module read it; the enumeration backstop does (dropSettled), so an answer
+// that is always an error would have relayed every enumerated receive twice.
+func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool, error) {
+	if d.cosmos.CosmosClient() == nil {
+		return false, fmt.Errorf("cosmos dest: no Cosmos client to query receipts on")
+	}
+	var pkt channeltypesv2.Packet
+	if err := pkt.Unmarshal(packet); err != nil {
+		return false, fmt.Errorf("cosmos dest: decode packet: %w", err)
+	}
+	return subscriber.HasCosmosPacketReceipt(ctx, d.cosmos, pkt)
 }
 
 // ClientExpiresAt returns a conservative expiry for the 08-wasm ETH light client

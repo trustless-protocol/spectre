@@ -41,6 +41,32 @@ type EVMNode struct {
 	nonceQueries   map[common.Address]int
 	methodCalls    map[string]int
 	code           map[common.Address]string
+	// storage is served by eth_getStorageAt, keyed by contract then slot. A slot
+	// nobody set answers zero, which is what a real node says about an empty
+	// mapping entry -- the honest default for "no commitment here".
+	storage map[common.Address]map[common.Hash]common.Hash
+	// logs is served by eth_getLogs, filtered the way a node filters: by
+	// address, by positional topic (each position an OR-list), by block range.
+	logs        []RawLog
+	blockNumber uint64
+	// logRangeCap, when non-zero, makes eth_getLogs refuse any span wider than
+	// it with logRangeMsg -- the shape of a provider's block-range limit.
+	logRangeCap uint64
+	logRangeMsg string
+	// batches counts JSON-RPC batch requests, so a test can assert that a
+	// probe was one round trip rather than one per slot.
+	batches int
+}
+
+// RawLog is one event log the stub serves. Topics[0] is the event signature
+// hash, as on a real node; Data is the ABI-encoded non-indexed fields.
+type RawLog struct {
+	Address     common.Address
+	Topics      []common.Hash
+	Data        []byte
+	BlockNumber uint64
+	TxHash      common.Hash
+	Index       uint
 }
 
 // RawReceipt is the subset of a transaction receipt the stub serves. It is a
@@ -66,10 +92,42 @@ func NewEVMNode(t testing.TB) *EVMNode {
 		nonceQueries:   make(map[common.Address]int),
 		methodCalls:    make(map[string]int),
 		code:           make(map[common.Address]string),
+		storage:        make(map[common.Address]map[common.Hash]common.Hash),
+		blockNumber:    1,
 	}
 	n.server = httptest.NewServer(n)
 	t.Cleanup(n.server.Close)
 	return n
+}
+
+// SetStorage makes eth_getStorageAt answer value for slot on addr. An unset
+// slot answers zero, so a test opts IN to every commitment it wants to exist.
+func (n *EVMNode) SetStorage(addr common.Address, slot, value common.Hash) {
+	n.withLock(func() {
+		if n.storage[addr] == nil {
+			n.storage[addr] = make(map[common.Hash]common.Hash)
+		}
+		n.storage[addr][slot] = value
+	})
+}
+
+// SetBlockNumber changes the head eth_blockNumber reports.
+func (n *EVMNode) SetBlockNumber(head uint64) { n.withLock(func() { n.blockNumber = head }) }
+
+// AddLog appends an event log eth_getLogs can serve.
+func (n *EVMNode) AddLog(l RawLog) { n.withLock(func() { n.logs = append(n.logs, l) }) }
+
+// CapLogRange makes eth_getLogs refuse any [from,to] wider than maxBlocks with
+// message, which is how a capped provider answers. 0 lifts the cap.
+func (n *EVMNode) CapLogRange(maxBlocks uint64, message string) {
+	n.withLock(func() { n.logRangeCap, n.logRangeMsg = maxBlocks, message })
+}
+
+// Batches counts JSON-RPC batch requests received.
+func (n *EVMNode) Batches() int {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.batches
 }
 
 // URL is the stub's address, for a caller that dials it itself.
@@ -201,18 +259,44 @@ type rpcError struct {
 }
 
 func (n *EVMNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	var req rpcRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	var body json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json")
 
+	// A JSON-RPC batch is an array of requests answered by an array of
+	// responses, in order. go-ethereum's BatchCallContext sends exactly that.
+	if len(body) > 0 && body[0] == '[' {
+		var reqs []rpcRequest
+		if err := json.Unmarshal(body, &reqs); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		n.mu.Lock()
+		n.batches++
+		responses := make([]rpcResponse, 0, len(reqs))
+		for _, req := range reqs {
+			n.methodCalls[req.Method]++
+			result, rpcErr := n.dispatch(req)
+			responses = append(responses, rpcResponse{JSONRPC: "2.0", ID: req.ID, Result: result, Error: rpcErr})
+		}
+		n.mu.Unlock()
+		_ = json.NewEncoder(w).Encode(responses)
+		return
+	}
+
+	var req rpcRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	n.mu.Lock()
 	n.methodCalls[req.Method]++
 	result, rpcErr := n.dispatch(req)
 	n.mu.Unlock()
 
-	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(rpcResponse{
 		JSONRPC: "2.0", ID: req.ID, Result: result, Error: rpcErr,
 	})
@@ -266,9 +350,128 @@ func (n *EVMNode) dispatch(req rpcRequest) (any, *rpcError) {
 		return n.callResult, nil
 	case "eth_estimateGas":
 		return hexUint(21_000), nil
+	case "eth_blockNumber":
+		return hexUint(n.blockNumber), nil
+	case "eth_getStorageAt":
+		addr := common.HexToAddress(stringParam(req.Params, 0))
+		slot := common.HexToHash(stringParam(req.Params, 1))
+		return n.storage[addr][slot].Hex(), nil
+	case "eth_getLogs":
+		return n.getLogs(req.Params)
 	default:
 		return nil, &rpcError{Code: -32601, Message: "method not found: " + req.Method}
 	}
+}
+
+// getLogs filters n.logs the way a node does. The caller holds n.mu.
+func (n *EVMNode) getLogs(params []json.RawMessage) (any, *rpcError) {
+	if len(params) == 0 {
+		return nil, &rpcError{Code: -32602, Message: "missing filter"}
+	}
+	var filter struct {
+		FromBlock string            `json:"fromBlock"`
+		ToBlock   string            `json:"toBlock"`
+		Address   json.RawMessage   `json:"address"`
+		Topics    []json.RawMessage `json:"topics"`
+	}
+	if err := json.Unmarshal(params[0], &filter); err != nil {
+		return nil, &rpcError{Code: -32602, Message: err.Error()}
+	}
+	from := n.blockParam(filter.FromBlock, 0)
+	to := n.blockParam(filter.ToBlock, n.blockNumber)
+	if n.logRangeCap > 0 && to >= from && to-from+1 > n.logRangeCap {
+		return nil, &rpcError{Code: -32005, Message: n.logRangeMsg}
+	}
+	addresses := hashListParam(filter.Address)
+	topics := make([][]string, len(filter.Topics))
+	for i, raw := range filter.Topics {
+		topics[i] = hashListParam(raw)
+	}
+
+	out := []any{}
+	for _, l := range n.logs {
+		if l.BlockNumber < from || l.BlockNumber > to {
+			continue
+		}
+		if len(addresses) > 0 && !containsFold(addresses, l.Address.Hex()) {
+			continue
+		}
+		if !topicsMatch(topics, l.Topics) {
+			continue
+		}
+		hexTopics := make([]string, len(l.Topics))
+		for i, t := range l.Topics {
+			hexTopics[i] = t.Hex()
+		}
+		out = append(out, map[string]any{
+			"address":          l.Address.Hex(),
+			"topics":           hexTopics,
+			"data":             "0x" + common.Bytes2Hex(l.Data),
+			"blockNumber":      hexUint(l.BlockNumber),
+			"transactionHash":  l.TxHash.Hex(),
+			"transactionIndex": "0x0",
+			"blockHash":        zeroHash,
+			"logIndex":         hexUint(uint64(l.Index)),
+			"removed":          false,
+		})
+	}
+	return out, nil
+}
+
+// blockParam decodes a block tag or hex quantity; tags mean the head.
+func (n *EVMNode) blockParam(raw string, dflt uint64) uint64 {
+	switch raw {
+	case "":
+		return dflt
+	case "latest", "pending", "safe", "finalized":
+		return n.blockNumber
+	case "earliest":
+		return 0
+	}
+	v, ok := new(big.Int).SetString(strings.TrimPrefix(raw, "0x"), 16)
+	if !ok {
+		return dflt
+	}
+	return v.Uint64()
+}
+
+// hashListParam decodes a filter member that is a hex string, a list of them,
+// or null (match anything) into a list; empty means "any".
+func hashListParam(raw json.RawMessage) []string {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var one string
+	if err := json.Unmarshal(raw, &one); err == nil {
+		return []string{one}
+	}
+	var many []string
+	_ = json.Unmarshal(raw, &many)
+	return many
+}
+
+func containsFold(list []string, want string) bool {
+	for _, s := range list {
+		if strings.EqualFold(s, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// topicsMatch applies positional topic filters: a nil position matches any
+// topic, a list matches any of its members, and a log shorter than the filter
+// does not match.
+func topicsMatch(filter [][]string, topics []common.Hash) bool {
+	for i, want := range filter {
+		if len(want) == 0 {
+			continue
+		}
+		if i >= len(topics) || !containsFold(want, topics[i].Hex()) {
+			return false
+		}
+	}
+	return true
 }
 
 const zeroHash = "0x0000000000000000000000000000000000000000000000000000000000000000"

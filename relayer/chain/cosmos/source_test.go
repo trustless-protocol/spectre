@@ -2,10 +2,10 @@ package cosmos
 
 import (
 	"context"
-	"testing"
-
 	"relayer/chain"
+	"relayer/chain/chaintest"
 	"relayer/services"
+	"testing"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
@@ -25,72 +25,74 @@ func cosmosPacket(t services.CosmosPacketType, src, dst string) services.CosmosP
 	return p
 }
 
-func TestCosmosPacketToEvent_TimeoutFilter(t *testing.T) {
-	tests := []struct {
-		name     string
-		packet   services.CosmosPacket
-		wantOK   bool
-		wantType chain.EventType
-	}{
-		{
-			// Cosmos-originated: destination_client == our router id → timeout fires
-			// on Cosmos, ETH holds no commitment → must NOT relay to ETH.
-			name:   "cosmos-originated timeout dropped",
-			packet: cosmosPacket(services.CosmosTimeout, "08-wasm-0", routerClientID),
-			wantOK: false,
-		},
-		{
-			// ETH-originated: destination_client != our router id → ETH still owns a
-			// commitment that the timeout must delete + refund → relay it.
-			name:     "eth-originated timeout relayed",
-			packet:   cosmosPacket(services.CosmosTimeout, routerClientID, "08-wasm-0"),
-			wantOK:   true,
-			wantType: chain.TimeoutPacket,
-		},
-		{
-			name:     "send always relayed",
-			packet:   cosmosPacket(services.CosmosSend, routerClientID, "08-wasm-0"),
-			wantOK:   true,
-			wantType: chain.SendPacket,
-		},
-		{
-			name:     "ack always relayed",
-			packet:   cosmosPacket(services.CosmosAck, "08-wasm-0", routerClientID),
-			wantOK:   true,
-			wantType: chain.AckPacket,
-		},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			e, ok := cosmosPacketToEvent(tc.packet, routerClientID)
-			if ok != tc.wantOK {
-				t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
-			}
-			if ok && e.Type != tc.wantType {
-				t.Fatalf("type = %d, want %d", e.Type, tc.wantType)
-			}
-		})
-	}
-}
+func TestCosmosPacketToEvent(t *testing.T) {
+	t.Run("timeout filter", func(t *testing.T) {
+		tests := []struct {
+			name     string
+			packet   services.CosmosPacket
+			wantOK   bool
+			wantType chain.EventType
+		}{
+			{
+				// Cosmos-originated: destination_client == our router id → timeout fires
+				// on Cosmos, ETH holds no commitment → must NOT relay to ETH.
+				name:   "cosmos-originated timeout dropped",
+				packet: cosmosPacket(services.CosmosTimeout, "08-wasm-0", routerClientID),
+				wantOK: false,
+			},
+			{
+				// ETH-originated: destination_client != our router id → ETH still owns a
+				// commitment that the timeout must delete + refund → relay it.
+				name:     "eth-originated timeout relayed",
+				packet:   cosmosPacket(services.CosmosTimeout, routerClientID, "08-wasm-0"),
+				wantOK:   true,
+				wantType: chain.TimeoutPacket,
+			},
+			{
+				name:     "send always relayed",
+				packet:   cosmosPacket(services.CosmosSend, routerClientID, "08-wasm-0"),
+				wantOK:   true,
+				wantType: chain.SendPacket,
+			},
+			{
+				name:     "ack always relayed",
+				packet:   cosmosPacket(services.CosmosAck, "08-wasm-0", routerClientID),
+				wantOK:   true,
+				wantType: chain.AckPacket,
+			},
+		}
+		for _, tc := range tests {
+			t.Run(tc.name, func(t *testing.T) {
+				e, ok := cosmosPacketToEvent(tc.packet, routerClientID)
+				if ok != tc.wantOK {
+					t.Fatalf("ok = %v, want %v", ok, tc.wantOK)
+				}
+				if ok && e.Type != tc.wantType {
+					t.Fatalf("type = %d, want %d", e.Type, tc.wantType)
+				}
+			})
+		}
+	})
 
-// TestCosmosPacketToEvent_NilPacket guards the encode-failure skip.
-func TestCosmosPacketToEvent_NilPacket(t *testing.T) {
-	if _, ok := cosmosPacketToEvent(services.CosmosPacket{Type: services.CosmosSend}, routerClientID); ok {
-		t.Fatal("nil packet must be skipped")
-	}
-}
+	// TestCosmosPacketToEvent/nil packet guards the encode-failure skip.
+	t.Run("nil packet", func(t *testing.T) {
+		if _, ok := cosmosPacketToEvent(services.CosmosPacket{Type: services.CosmosSend}, routerClientID); ok {
+			t.Fatal("nil packet must be skipped")
+		}
+	})
 
-// TestCosmosPacketToEvent_EmptyAckSkipped guards the no-ack-bytes skip: an ack
-// without acknowledgement bytes cannot be relayed and must not be emitted.
-func TestCosmosPacketToEvent_EmptyAckSkipped(t *testing.T) {
-	p := services.CosmosPacket{
-		Type:   services.CosmosAck,
-		Packet: &channeltypesv2.Packet{Sequence: 1, SourceClient: "08-wasm-0", DestinationClient: routerClientID},
-		// AckBytes deliberately empty
-	}
-	if _, ok := cosmosPacketToEvent(p, routerClientID); ok {
-		t.Fatal("ack with no acknowledgement bytes must be skipped")
-	}
+	// TestCosmosPacketToEvent/empty ack skipped guards the no-ack-bytes skip: an ack
+	// without acknowledgement bytes cannot be relayed and must not be emitted.
+	t.Run("empty ack skipped", func(t *testing.T) {
+		p := services.CosmosPacket{
+			Type:   services.CosmosAck,
+			Packet: &channeltypesv2.Packet{Sequence: 1, SourceClient: "08-wasm-0", DestinationClient: routerClientID},
+			// AckBytes deliberately empty
+		}
+		if _, ok := cosmosPacketToEvent(p, routerClientID); ok {
+			t.Fatal("ack with no acknowledgement bytes must be skipped")
+		}
+	})
 }
 
 // eventsWithOrigins returns two slices that Subscribe treats as index-aligned: the
@@ -211,4 +213,11 @@ func TestSource_MalformedPacketFailsBeforeAnyRPC(t *testing.T) {
 	if _, err := s.NonMembershipProof(context.Background(), garbage, 10); err == nil {
 		t.Error("NonMembershipProof accepted undecodable packet bytes")
 	}
+}
+
+// The adapter contract suite. Everything asserted here is asserted identically
+// on the other two adapters: adding a fourth chain is a package plus this file.
+func TestAdapterContract(t *testing.T) {
+	chaintest.RunSourceContract(t, chaintest.SourceFixture{Name: "cosmos", Unwired: &Source{}})
+	chaintest.RunDestinationContract(t, chaintest.DestinationFixture{Name: "cosmos", Unwired: &Destination{}})
 }

@@ -60,7 +60,7 @@ func TestIsLogRangeRejection(t *testing.T) {
 // Width is what makes narrowing work for a source nobody configured: with no
 // chunk set, the ladder must anchor on the span the provider actually refused,
 // not on a zero that would end the ladder immediately.
-func TestLogSpanWidthAnchorsOnWhatWasAsked(t *testing.T) {
+func TestLogSpan_WidthAnchorsOnWhatWasAsked(t *testing.T) {
 	full := &LogSpan{}
 	if got := full.Width(100, 199); got != 100 {
 		t.Fatalf("unconfigured span over [100,199] = %d, want the full 100 blocks", got)

@@ -107,7 +107,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// anyone having to remember to pass the right one.
 			logger := stampRelayPath(logger, relayPathID(cfg))
 
-			// After the stamp, not before: TestStartStampsTheRelayPathBeforeItCanFail
+			// After the stamp, not before: TestStart/stamps the relay path before it can fail
 			// holds that EVERY zap line start emits carries relay_path, and a line
 			// above the stamp would be the first exception. Putting this one line
 			// below costs nothing the two checks above do not already cover --

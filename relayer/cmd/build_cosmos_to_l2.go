@@ -205,6 +205,11 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		relay.WithPeriodicUpdate(periodicUpdateInterval, initialRotationDelay, func(c context.Context) error {
 			return svc.RotatePinnedSet(c, deps.Cosmos, deps.EVM, deps.IDs.CosmosOnEVM)
 		}),
+		// The enumeration backstop. The Cosmos source lists its own outstanding
+		// sends and the acknowledgements it wrote for L2 sends; it was wired on
+		// the cosmos->eth leg alone, and this leg is the same source pointed at
+		// the L2.
+		relay.WithPacketFlush(0),
 	}
 	if watchAcks {
 		// This direction RECORDS the debt; the l2->cosmos leg settles it and owns

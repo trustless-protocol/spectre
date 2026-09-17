@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"os"
-
 	"testing"
 )
 
@@ -79,65 +78,66 @@ func readParsed(t *testing.T, path string) parsedConfig {
 	return cfg
 }
 
-// The reason this write-back exists: l2_wasm_client_id is assigned by ibc-go's global
-// client sequence, so the config can only ship a placeholder, and a stale one makes the
-// relayer query a different client than the packets were committed against.
-func TestWriteL2SourceClientIDsWritesTheWasmClientID(t *testing.T) {
-	path := writeTempConfig(t, l2SourceConfigJSON)
+func TestWriteL2SourceClientIDs(t *testing.T) {
+	// The reason this write-back exists: l2_wasm_client_id is assigned by ibc-go's global
+	// client sequence, so the config can only ship a placeholder, and a stale one makes the
+	// relayer query a different client than the packets were committed against.
+	t.Run("writes the wasm client ID", func(t *testing.T) {
+		path := writeTempConfig(t, l2SourceConfigJSON)
 
-	if err := writeL2SourceClientIDs(path, "cosmoshub-2", "08-wasm-5"); err != nil {
-		t.Fatalf("writeL2SourceClientIDs: %v", err)
-	}
+		if err := writeL2SourceClientIDs(path, "cosmoshub-2", "08-wasm-5"); err != nil {
+			t.Fatalf("writeL2SourceClientIDs: %v", err)
+		}
 
-	if got := readParsed(t, path).Modules[1].Config.L2WasmClientID; got != "08-wasm-5" {
-		t.Errorf("l2_wasm_client_id = %q, want 08-wasm-5", got)
-	}
-}
+		if got := readParsed(t, path).Modules[1].Config.L2WasmClientID; got != "08-wasm-5" {
+			t.Errorf("l2_wasm_client_id = %q, want 08-wasm-5", got)
+		}
+	})
 
-func TestWriteL2SourceClientIDsPreservesSiblings(t *testing.T) {
-	path := writeTempConfig(t, l2SourceConfigJSON)
+	t.Run("preserves siblings", func(t *testing.T) {
+		path := writeTempConfig(t, l2SourceConfigJSON)
 
-	if err := writeL2SourceClientIDs(path, "cosmoshub-2", "08-wasm-5"); err != nil {
-		t.Fatalf("writeL2SourceClientIDs: %v", err)
-	}
+		if err := writeL2SourceClientIDs(path, "cosmoshub-2", "08-wasm-5"); err != nil {
+			t.Fatalf("writeL2SourceClientIDs: %v", err)
+		}
 
-	cfg := readParsed(t, path)
-	// The cosmos_to_l2 module shares the same client id; it must not be swept up by
-	// the l2_to_cosmos write.
-	if got := cfg.Modules[0].Config.CosmosWasmClientID; got != "08-wasm-0" {
-		t.Errorf("cosmos_to_l2 cosmos_wasm_client_id = %q, want it untouched (08-wasm-0)", got)
-	}
-	l2 := cfg.Modules[1].Config
-	if l2.HeadKind != "safe" {
-		t.Errorf("head_kind = %q, want it untouched (safe)", l2.HeadKind)
-	}
-	if l2.RollupProfile.Common.L2Router != "0xrouter" {
-		t.Errorf("l2_router = %q, want it untouched", l2.RollupProfile.Common.L2Router)
-	}
-	if l2.RollupProfile.Common.ProfileVersion != "op_attestor_v1" {
-		t.Errorf("profile_version = %q, want it untouched", l2.RollupProfile.Common.ProfileVersion)
-	}
-}
+		cfg := readParsed(t, path)
+		// The cosmos_to_l2 module shares the same client id; it must not be swept up by
+		// the l2_to_cosmos write.
+		if got := cfg.Modules[0].Config.CosmosWasmClientID; got != "08-wasm-0" {
+			t.Errorf("cosmos_to_l2 cosmos_wasm_client_id = %q, want it untouched (08-wasm-0)", got)
+		}
+		l2 := cfg.Modules[1].Config
+		if l2.HeadKind != "safe" {
+			t.Errorf("head_kind = %q, want it untouched (safe)", l2.HeadKind)
+		}
+		if l2.RollupProfile.Common.L2Router != "0xrouter" {
+			t.Errorf("l2_router = %q, want it untouched", l2.RollupProfile.Common.L2Router)
+		}
+		if l2.RollupProfile.Common.ProfileVersion != "op_attestor_v1" {
+			t.Errorf("profile_version = %q, want it untouched", l2.RollupProfile.Common.ProfileVersion)
+		}
+	})
 
-// An empty id is a caller bug, not "nothing to persist": the only caller has just
-// created the client, so an empty value means the id was lost somewhere upstream and
-// silently leaving the placeholder in place is the failure this write-back prevents.
-func TestWriteL2SourceClientIDsRejectsEmptyWasmClientID(t *testing.T) {
-	path := writeTempConfig(t, l2SourceConfigJSON)
+	// An empty id is a caller bug, not "nothing to persist": the only caller has just
+	// created the client, so an empty value means the id was lost somewhere upstream and
+	// silently leaving the placeholder in place is the failure this write-back prevents.
+	t.Run("rejects empty wasm client ID", func(t *testing.T) {
+		path := writeTempConfig(t, l2SourceConfigJSON)
 
-	if err := writeL2SourceClientIDs(path, "cosmoshub-2", ""); err == nil {
-		t.Fatal("writeL2SourceClientIDs accepted an empty l2_wasm_client_id, want an error")
-	}
+		if err := writeL2SourceClientIDs(path, "cosmoshub-2", ""); err == nil {
+			t.Fatal("writeL2SourceClientIDs accepted an empty l2_wasm_client_id, want an error")
+		}
 
-	if got := readParsed(t, path).Modules[1].Config.L2WasmClientID; got != "08-wasm-1" {
-		t.Errorf("l2_wasm_client_id = %q, want the pre-existing 08-wasm-1 left alone", got)
-	}
-}
+		if got := readParsed(t, path).Modules[1].Config.L2WasmClientID; got != "08-wasm-1" {
+			t.Errorf("l2_wasm_client_id = %q, want the pre-existing 08-wasm-1 left alone", got)
+		}
+	})
 
-// A module that ships no placeholder at all must still end up with the id, otherwise
-// the operator is back to hand-copying it.
-func TestWriteL2SourceClientIDsCreatesMissingMember(t *testing.T) {
-	path := writeTempConfig(t, `{
+	// A module that ships no placeholder at all must still end up with the id, otherwise
+	// the operator is back to hand-copying it.
+	t.Run("creates missing member", func(t *testing.T) {
+		path := writeTempConfig(t, `{
   "modules": [
     {
       "src_chain": "opstack",
@@ -150,18 +150,18 @@ func TestWriteL2SourceClientIDsCreatesMissingMember(t *testing.T) {
   ]
 }`)
 
-	if err := writeL2SourceClientIDs(path, "cosmoshub-2", "08-wasm-5"); err != nil {
-		t.Fatalf("writeL2SourceClientIDs: %v", err)
-	}
+		if err := writeL2SourceClientIDs(path, "cosmoshub-2", "08-wasm-5"); err != nil {
+			t.Fatalf("writeL2SourceClientIDs: %v", err)
+		}
 
-	if got := readParsed(t, path).Modules[0].Config.L2WasmClientID; got != "08-wasm-5" {
-		t.Errorf("l2_wasm_client_id = %q, want 08-wasm-5", got)
-	}
-}
+		if got := readParsed(t, path).Modules[0].Config.L2WasmClientID; got != "08-wasm-5" {
+			t.Errorf("l2_wasm_client_id = %q, want 08-wasm-5", got)
+		}
+	})
 
-// Several L2 sources share one config; the write must land on the addressed one.
-func TestWriteL2SourceClientIDsTargetsMatchingSource(t *testing.T) {
-	path := writeTempConfig(t, `{
+	// Several L2 sources share one config; the write must land on the addressed one.
+	t.Run("targets matching source", func(t *testing.T) {
+		path := writeTempConfig(t, `{
   "modules": [
     {
       "src_chain": "opstack",
@@ -182,33 +182,33 @@ func TestWriteL2SourceClientIDsTargetsMatchingSource(t *testing.T) {
   ]
 }`)
 
-	if err := writeL2SourceClientIDs(path, "cosmoshub-3", "08-wasm-7"); err != nil {
-		t.Fatalf("writeL2SourceClientIDs: %v", err)
-	}
+		if err := writeL2SourceClientIDs(path, "cosmoshub-3", "08-wasm-7"); err != nil {
+			t.Fatalf("writeL2SourceClientIDs: %v", err)
+		}
 
-	cfg := readParsed(t, path)
-	if got := cfg.Modules[0].Config.L2WasmClientID; got != "08-wasm-0" {
-		t.Errorf("opstack l2_wasm_client_id = %q, want it untouched", got)
-	}
-	if got := cfg.Modules[1].Config.L2WasmClientID; got != "08-wasm-7" {
-		t.Errorf("arbitrum l2_wasm_client_id = %q, want 08-wasm-7", got)
-	}
-}
+		cfg := readParsed(t, path)
+		if got := cfg.Modules[0].Config.L2WasmClientID; got != "08-wasm-0" {
+			t.Errorf("opstack l2_wasm_client_id = %q, want it untouched", got)
+		}
+		if got := cfg.Modules[1].Config.L2WasmClientID; got != "08-wasm-7" {
+			t.Errorf("arbitrum l2_wasm_client_id = %q, want 08-wasm-7", got)
+		}
+	})
 
-// A missing target must fail loudly: silently writing nothing is how a stale id
-// survives into a running deployment.
-func TestWriteL2SourceClientIDsFailsOnUnknownSource(t *testing.T) {
-	path := writeTempConfig(t, l2SourceConfigJSON)
+	// A missing target must fail loudly: silently writing nothing is how a stale id
+	// survives into a running deployment.
+	t.Run("fails on unknown source", func(t *testing.T) {
+		path := writeTempConfig(t, l2SourceConfigJSON)
 
-	err := writeL2SourceClientIDs(path, "cosmoshub-9", "08-wasm-5")
-	if err == nil {
-		t.Fatal("writeL2SourceClientIDs succeeded for an unknown l2_ics26_client_id, want an error")
-	}
-}
+		err := writeL2SourceClientIDs(path, "cosmoshub-9", "08-wasm-5")
+		if err == nil {
+			t.Fatal("writeL2SourceClientIDs succeeded for an unknown l2_ics26_client_id, want an error")
+		}
+	})
 
-// Classification must follow src_chain/dst_chain, not the free-form module name.
-func TestWriteL2SourceClientIDsIgnoresModuleName(t *testing.T) {
-	path := writeTempConfig(t, `{
+	// Classification must follow src_chain/dst_chain, not the free-form module name.
+	t.Run("ignores module name", func(t *testing.T) {
+		path := writeTempConfig(t, `{
   "modules": [
     {
       "name": "whatever-label",
@@ -222,20 +222,20 @@ func TestWriteL2SourceClientIDsIgnoresModuleName(t *testing.T) {
   ]
 }`)
 
-	if err := writeL2SourceClientIDs(path, "cosmoshub-2", "08-wasm-4"); err != nil {
-		t.Fatalf("writeL2SourceClientIDs: %v", err)
-	}
-	if got := readParsed(t, path).Modules[0].Config.L2WasmClientID; got != "08-wasm-4" {
-		t.Errorf("l2_wasm_client_id = %q, want 08-wasm-4", got)
-	}
-}
+		if err := writeL2SourceClientIDs(path, "cosmoshub-2", "08-wasm-4"); err != nil {
+			t.Fatalf("writeL2SourceClientIDs: %v", err)
+		}
+		if got := readParsed(t, path).Modules[0].Config.L2WasmClientID; got != "08-wasm-4" {
+			t.Errorf("l2_wasm_client_id = %q, want 08-wasm-4", got)
+		}
+	})
 
-// Regression for a High found in review: a cosmos_to_eth and a cosmos_to_l2 module may
-// legitimately share an ics26_client_id (config.example.json ships exactly that), and
-// the direction-agnostic writer resolved the ambiguity by file order — writing the L2
-// client id into the Ethereum module and leaving the L2 one untouched.
-func TestWriteWasmClientIDRespectsModuleDirection(t *testing.T) {
-	const shared = `{
+	// Regression for a High found in review: a cosmos_to_eth and a cosmos_to_l2 module may
+	// legitimately share an ics26_client_id (config.example.json ships exactly that), and
+	// the direction-agnostic writer resolved the ambiguity by file order — writing the L2
+	// client id into the Ethereum module and leaving the L2 one untouched.
+	t.Run("wasm client ID respects module direction", func(t *testing.T) {
+		const shared = `{
   "modules": [
     {"src_chain": "cosmos", "dst_chain": "ethereum",
      "config": {"ics26_client_id": "cosmoshub-1", "cosmos_wasm_client_id": "eth-original"}},
@@ -244,31 +244,32 @@ func TestWriteWasmClientIDRespectsModuleDirection(t *testing.T) {
   ]
 }`
 
-	t.Run("l2 write lands on the cosmos_to_l2 module", func(t *testing.T) {
-		path := writeTempConfig(t, shared)
-		if err := writeL2WasmClientID(path, "cosmoshub-1", "08-wasm-7"); err != nil {
-			t.Fatalf("writeL2WasmClientID: %v", err)
-		}
-		cfg := readParsed(t, path)
-		if got := cfg.Modules[0].Config.CosmosWasmClientID; got != "eth-original" {
-			t.Errorf("cosmos_to_eth cosmos_wasm_client_id = %q, want it untouched", got)
-		}
-		if got := cfg.Modules[1].Config.CosmosWasmClientID; got != "08-wasm-7" {
-			t.Errorf("cosmos_to_l2 cosmos_wasm_client_id = %q, want 08-wasm-7", got)
-		}
-	})
+		t.Run("l2 write lands on the cosmos_to_l2 module", func(t *testing.T) {
+			path := writeTempConfig(t, shared)
+			if err := writeL2WasmClientID(path, "cosmoshub-1", "08-wasm-7"); err != nil {
+				t.Fatalf("writeL2WasmClientID: %v", err)
+			}
+			cfg := readParsed(t, path)
+			if got := cfg.Modules[0].Config.CosmosWasmClientID; got != "eth-original" {
+				t.Errorf("cosmos_to_eth cosmos_wasm_client_id = %q, want it untouched", got)
+			}
+			if got := cfg.Modules[1].Config.CosmosWasmClientID; got != "08-wasm-7" {
+				t.Errorf("cosmos_to_l2 cosmos_wasm_client_id = %q, want 08-wasm-7", got)
+			}
+		})
 
-	t.Run("eth write lands on the cosmos_to_eth module", func(t *testing.T) {
-		path := writeTempConfig(t, shared)
-		if err := writeEthWasmClientID(path, "cosmoshub-1", "08-wasm-4"); err != nil {
-			t.Fatalf("writeEthWasmClientID: %v", err)
-		}
-		cfg := readParsed(t, path)
-		if got := cfg.Modules[0].Config.CosmosWasmClientID; got != "08-wasm-4" {
-			t.Errorf("cosmos_to_eth cosmos_wasm_client_id = %q, want 08-wasm-4", got)
-		}
-		if got := cfg.Modules[1].Config.CosmosWasmClientID; got != "l2-original" {
-			t.Errorf("cosmos_to_l2 cosmos_wasm_client_id = %q, want it untouched", got)
-		}
+		t.Run("eth write lands on the cosmos_to_eth module", func(t *testing.T) {
+			path := writeTempConfig(t, shared)
+			if err := writeEthWasmClientID(path, "cosmoshub-1", "08-wasm-4"); err != nil {
+				t.Fatalf("writeEthWasmClientID: %v", err)
+			}
+			cfg := readParsed(t, path)
+			if got := cfg.Modules[0].Config.CosmosWasmClientID; got != "08-wasm-4" {
+				t.Errorf("cosmos_to_eth cosmos_wasm_client_id = %q, want 08-wasm-4", got)
+			}
+			if got := cfg.Modules[1].Config.CosmosWasmClientID; got != "l2-original" {
+				t.Errorf("cosmos_to_l2 cosmos_wasm_client_id = %q, want it untouched", got)
+			}
+		})
 	})
 }

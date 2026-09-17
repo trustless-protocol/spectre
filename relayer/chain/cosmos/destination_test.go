@@ -4,13 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
-	"testing"
-	"time"
-
 	"relayer/chain"
 	relayerclient "relayer/client"
 	"relayer/services"
+	"strings"
+	"testing"
+	"time"
 
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
@@ -61,30 +60,32 @@ func mustBeaconHeader(t *testing.T, signatureSlot string) []byte {
 	return payload
 }
 
-func TestHighestBeaconSignatureSlot_UsesLatestHeader(t *testing.T) {
-	slot, err := highestBeaconSignatureSlot([][]byte{
-		mustBeaconHeader(t, "123"),
-		mustBeaconHeader(t, "130"),
-		mustBeaconHeader(t, "127"),
+func TestHighestBeaconSignatureSlot(t *testing.T) {
+	t.Run("uses latest header", func(t *testing.T) {
+		slot, err := highestBeaconSignatureSlot([][]byte{
+			mustBeaconHeader(t, "123"),
+			mustBeaconHeader(t, "130"),
+			mustBeaconHeader(t, "127"),
+		})
+		if err != nil {
+			t.Fatalf("highest slot: %v", err)
+		}
+		if slot != 130 {
+			t.Fatalf("slot = %d, want 130", slot)
+		}
 	})
-	if err != nil {
-		t.Fatalf("highest slot: %v", err)
-	}
-	if slot != 130 {
-		t.Fatalf("slot = %d, want 130", slot)
-	}
-}
 
-func TestHighestBeaconSignatureSlot_RejectsMalformedPayload(t *testing.T) {
-	if _, err := highestBeaconSignatureSlot([][]byte{[]byte("not-json")}); err == nil {
-		t.Fatal("malformed header must fail")
-	}
-}
+	t.Run("rejects malformed payload", func(t *testing.T) {
+		if _, err := highestBeaconSignatureSlot([][]byte{[]byte("not-json")}); err == nil {
+			t.Fatal("malformed header must fail")
+		}
+	})
 
-func TestHighestBeaconSignatureSlot_RejectsInvalidSlot(t *testing.T) {
-	if _, err := highestBeaconSignatureSlot([][]byte{mustBeaconHeader(t, "not-a-slot")}); err == nil {
-		t.Fatal("invalid signature slot must fail")
-	}
+	t.Run("rejects invalid slot", func(t *testing.T) {
+		if _, err := highestBeaconSignatureSlot([][]byte{mustBeaconHeader(t, "not-a-slot")}); err == nil {
+			t.Fatal("invalid signature slot must fail")
+		}
+	})
 }
 
 func TestHighestBeaconFinalizedSlot_UsesLatestHeader(t *testing.T) {
@@ -336,17 +337,17 @@ func TestDestination(t *testing.T) {
 		}
 	})
 
-	// HasPacketReceipt is deliberately unimplemented on this side. It must report that
-	// loudly rather than answering "no receipt", which a caller would read as "safe to
+	// A receipt check with no Cosmos client behind it must report that loudly
+	// rather than answering "no receipt", which a caller would read as "safe to
 	// time this packet out" — refunding a packet that was in fact delivered.
-	t.Run("reports that HasPacketReceipt is not wired", func(t *testing.T) {
+	t.Run("refuses to answer HasPacketReceipt without a client", func(t *testing.T) {
 		d := &Destination{}
 		ok, err := d.HasPacketReceipt(context.Background(), nil)
 		if err == nil {
-			t.Fatal("an unimplemented receipt check must error, not answer")
+			t.Fatal("a receipt check with nothing to query must error, not answer")
 		}
 		if ok {
-			t.Fatal("an unimplemented receipt check must never report a receipt")
+			t.Fatal("a receipt check with nothing to query must never report a receipt")
 		}
 	})
 }
