@@ -73,49 +73,6 @@ func TestSubmitMisbehaviourDryRunDoesNotReadPrivateKey(t *testing.T) {
 	}
 }
 
-func TestAllowMisbehaviourEnvOverrideOnlyForSingleSource(t *testing.T) {
-	tests := []struct {
-		name string
-		cfg  *appConfig
-		want bool
-	}{
-		{
-			name: "one ethereum destination",
-			cfg:  &appConfig{CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "eth-client"}}},
-			want: true,
-		},
-		{
-			name: "one l2 destination",
-			cfg:  &appConfig{CosmosToL2Configs: []cosmosToEthConfig{{ICS26ClientID: "l2-client"}}},
-			want: true,
-		},
-		{
-			name: "multiple ethereum destinations",
-			cfg: &appConfig{CosmosToEthConfigs: []cosmosToEthConfig{
-				{ICS26ClientID: "eth-a"},
-				{ICS26ClientID: "eth-b"},
-			}},
-			want: false,
-		},
-		{
-			name: "mixed destinations",
-			cfg: &appConfig{
-				CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "eth-client"}},
-				CosmosToL2Configs:  []cosmosToEthConfig{{ICS26ClientID: "l2-client"}},
-			},
-			want: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := allowMisbehaviourEnvOverride(tt.cfg); got != tt.want {
-				t.Fatalf("allowMisbehaviourEnvOverride() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestBuildMisbehaviourCalldataRouterAndDirect(t *testing.T) {
 	routerAddress := common.HexToAddress("0x1000000000000000000000000000000000000001")
 	spectreAddress := common.HexToAddress("0x2000000000000000000000000000000000000002")

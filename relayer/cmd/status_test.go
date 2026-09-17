@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +11,10 @@ import (
 	"relayer/relay"
 	"relayer/services"
 	"relayer/status"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 // What renderStatus prints is what an operator reads under pressure, so it is a
@@ -97,4 +103,46 @@ func render(t *testing.T, snap status.Snapshot) string {
 		t.Fatalf("renderStatus: %v", err)
 	}
 	return buf.String()
+}
+
+// The config line is owed only when the file is read. --addr skips the file, so
+// a line naming it there would be the wrong-file misdirection the line exists to
+// prevent.
+func TestStatusTargetNamesTheConfigOnlyWhenItReadsOne(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"status_address":"127.0.0.1:9"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("from the config", func(t *testing.T) {
+		t.Parallel()
+		core, logs := observer.New(zapcore.InfoLevel)
+		target, err := statusTarget(zap.New(core), "status", "", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if target != "127.0.0.1:9" {
+			t.Fatalf("target = %q, want the config's status_address", target)
+		}
+		if n := logs.FilterMessageSnippet(path).Len(); n != 1 {
+			t.Fatalf("config named %d time(s), want 1: %v", n, logs.All())
+		}
+	})
+
+	t.Run("from --addr", func(t *testing.T) {
+		t.Parallel()
+		core, logs := observer.New(zapcore.InfoLevel)
+		target, err := statusTarget(zap.New(core), "status", "127.0.0.1:8", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if target != "127.0.0.1:8" {
+			t.Fatalf("target = %q, want the flag", target)
+		}
+		if n := logs.Len(); n != 0 {
+			t.Fatalf("logged %d line(s) without reading a config: %v", n, logs.All())
+		}
+	})
 }

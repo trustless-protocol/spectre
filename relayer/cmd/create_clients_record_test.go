@@ -12,8 +12,8 @@ import (
 
 // ethToCosmosPlusL2Config is the shape that makes #310 reachable: an eth_to_cosmos
 // module supplies the beacon endpoint, an L2 module supplies the ics26_client_id
-// selectSource lands in CosmosToEthConfig, and no cosmos_to_eth module exists for
-// the write-back to target. Every guard except the write itself passes.
+// selectCosmosSource promotes into CosmosToEthConfig, and no cosmos_to_eth module
+// exists for the write-back to target. Every guard except the write itself passes.
 const ethToCosmosPlusL2Config = `{
 	"modules": [
 		{"name": "eth-to-cosmos", "src_chain": "ethereum", "dst_chain": "cosmos",
@@ -47,13 +47,10 @@ func TestCreateClientsCosmosRefusesAConfigItCannotRecordInto(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	sel, err := selectSource(cfg, "")
-	if err != nil {
-		t.Fatalf("selectSource: %v", err)
-	}
+	sel := selectCosmosSource(cfg)
 	// Precondition of the regression: this config reaches the spend in every other way.
 	if sel.CosmosToEthConfig.ICS26ClientID != "arb-client-0" {
-		t.Fatalf("selectSource picked %q, want the L2 module — fixture no longer reproduces the shape",
+		t.Fatalf("selectCosmosSource picked %q, want the L2 module — fixture no longer reproduces the shape",
 			sel.CosmosToEthConfig.ICS26ClientID)
 	}
 	if resolveBeaconURL(sel) == "" {

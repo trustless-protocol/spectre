@@ -74,9 +74,9 @@ func TestEVMSignerLockKeysCoverEveryEVMSubmitPath(t *testing.T) {
 	}
 
 	keys, err := evmSignerLockKeysWithChainID(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{{EthRpcUrl: "http://eth"}},
-		CosmosToL2Configs:  []cosmosToEthConfig{{EthRpcUrl: "http://l2"}},
-		L2ToCosmosConfigs:  []l2ToCosmosConfig{{L2RpcUrl: "http://return-leg"}},
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: "http://eth"},
+		HasCosmosToL2: true, CosmosToL2Config: cosmosToEthConfig{EthRpcUrl: "http://l2"},
+		HasL2ToCosmos: true, L2ToCosmosConfig: l2ToCosmosConfig{L2RpcUrl: "http://return-leg"},
 	}, address, func(_ context.Context, endpoint string) (string, error) {
 		return chainIDs[endpoint], nil
 	})
@@ -102,14 +102,14 @@ func TestEVMSignerLockKeysCoverEveryEVMSubmitPath(t *testing.T) {
 
 func TestEVMSignerLockKeysRefuseAnUnansweredEndpoint(t *testing.T) {
 	_, err := evmSignerLockKeysWithChainID(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{{EthRpcUrl: "http://unavailable"}},
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: "http://unavailable"},
 	}, common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1"), func(context.Context, string) (string, error) {
 		return "", errors.New("endpoint did not answer")
 	})
 	if err == nil {
 		t.Fatal("startup accepted an EVM endpoint without a chain id and would have run without its nonce lock")
 	}
-	for _, want := range []string{"eth_chainId", "cosmos_to_eth[0]", "without the nonce-domain lock"} {
+	for _, want := range []string{"eth_chainId", "cosmos_to_eth.eth_rpc_url", "without the nonce-domain lock"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q does not explain %q", err, want)
 		}

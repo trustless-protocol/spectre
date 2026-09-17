@@ -156,7 +156,7 @@ func TestLoadConfig_L2ToCosmosNotWired(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_CosmosToL2Parses: a cosmos→L2 module parses into CosmosToL2Configs
+// TestLoadConfig_CosmosToL2Parses: a cosmos→L2 module parses into CosmosToL2Config
 // (same schema as cosmos_to_eth), pointed at the L2 endpoint.
 func TestLoadConfig_CosmosToL2Parses(t *testing.T) {
 	t.Parallel()
@@ -167,14 +167,14 @@ func TestLoadConfig_CosmosToL2Parses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if len(cfg.CosmosToL2Configs) != 1 {
-		t.Fatalf("CosmosToL2Configs len = %d, want 1", len(cfg.CosmosToL2Configs))
+	if !cfg.HasCosmosToL2 {
+		t.Fatal("HasCosmosToL2 = false, want the module recorded")
 	}
-	if got := cfg.CosmosToL2Configs[0].ICS26ClientID; got != "arb-client-0" {
+	if got := cfg.CosmosToL2Config.ICS26ClientID; got != "arb-client-0" {
 		t.Fatalf("ics26_client_id = %q, want arb-client-0", got)
 	}
-	if len(cfg.CosmosToEthConfigs) != 0 {
-		t.Fatalf("CosmosToEthConfigs should be empty for a cosmos_to_l2-only config, got %d", len(cfg.CosmosToEthConfigs))
+	if cfg.HasCosmosToEth {
+		t.Fatal("HasCosmosToEth should be false for a cosmos_to_l2-only config")
 	}
 }
 

@@ -264,15 +264,15 @@ cp relayer/config.ethereum.example.json relayer/config.json
 #    GPU run:
 #    ./relayer start --config config.json --gpu-prove
 #
-#    Multiple Cosmos sources: ONE PROCESS PER SOURCE. `start` refuses a config
-#    that declares more than one relay path, naming each path it found — so give
+#    Multiple Cosmos sources: ONE PROCESS PER SOURCE. The relayer refuses a config
+#    that declares more than one relay path at load, naming each path it found — so give
 #    each source its own config file with its own `ics26_client_id` (the ETH
 #    router's client id for that Cosmos chain; config.example.json uses
 #    "cosmoshub-1", a second source might be "osmosis-1") and its own state
-#    directory. Create each source's clients with --source, then start one
+#    directory. Create each source's clients from its own file, then start one
 #    process per file:
-#      ./relayer create-clients-cosmos --config config-osmosis.json --source osmosis-1 --wasm-checksum <hex>
-#      ./relayer create-clients-eth    --config config-osmosis.json --source osmosis-1
+#      ./relayer create-clients-cosmos --config config-osmosis.json --wasm-checksum <hex>
+#      ./relayer create-clients-eth    --config config-osmosis.json
 #      ./relayer start --config config.json &
 #      ./relayer start --config config-osmosis.json &
 #    Give each process its own COSMOS_PRIVATE_KEY, and — because every Cosmos
@@ -366,7 +366,7 @@ L2_DEPLOYER_PRIVATE_KEY=bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214
 #    step 3, the L2 router address from step 4, and the L2 chain id.
 cd relayer
 ./relayer create-clients-cosmos --config config.json --l2-config op-l2-config.json
-./relayer create-clients-eth --config config.json --source <ics26_client_id> --trust-level 2/3
+./relayer create-clients-eth --config config.json --trust-level 2/3
 
 # 6. Relay both directions.
 ./relayer start --config config.json
@@ -423,7 +423,7 @@ cp relayer/op-l2-config.example.json relayer/op-l2-config.json
 cd relayer
 ./relayer create-clients-cosmos --config config.json --l2-config op-l2-config.json
 ETH_PRIVATE_KEY=<deployer-key> ./relayer create-clients-eth --config config.json \
-  --source <ics26_client_id> --trust-level 2/3
+  --trust-level 2/3
 ETH_PRIVATE_KEY=<deployer-key> ./relayer start --config config.json
 ```
 
@@ -542,7 +542,7 @@ cd relayer
 #    a working deployment rewrites cosmos_to_eth.cosmos_wasm_client_id and repoints the
 #    path at a client the Sepolia-side SpectreClient was never registered against; every
 #    recvPacket then reverts on a counterparty mismatch.
-./relayer create-clients-eth --config config.json --source <ics26_client_id> --trust-level 2/3
+./relayer create-clients-eth --config config.json --trust-level 2/3
 
 # 6. Relay both directions.
 ./relayer start --config config.json
@@ -614,7 +614,7 @@ cp relayer/arb-l2-config.example.json relayer/arb-l2-config.json
 cd relayer
 ./relayer create-clients-cosmos --config config.json --l2-config arb-l2-config.json
 ETH_PRIVATE_KEY=<deployer-key> ./relayer create-clients-eth --config config.json \
-  --source arb-client-0 --trust-level 2/3
+  --trust-level 2/3
 ETH_PRIVATE_KEY=<deployer-key> ./relayer start --config config.json
 ```
 
@@ -1013,7 +1013,7 @@ DST_CHAIN=base ./scripts/local/deploy_l2_contracts.sh
 cd relayer && go build -o relayer ./cmd
 ./relayer create-clients-cosmos --config config.json --l2-config base-l2-config.json
 ./relayer create-clients-eth --config config.json \
-    --source base-client-0 --trust-level 2/3
+    --trust-level 2/3
 
 # 6. Relay.
 ./relayer start --config config.json
@@ -1073,7 +1073,7 @@ cp relayer/base-l2-config.example.json relayer/base-l2-config.json
 cd relayer
 ./relayer create-clients-cosmos --config config.json --l2-config base-l2-config.json
 ETH_PRIVATE_KEY=<deployer-key> ./relayer create-clients-eth --config config.json \
-  --source base-client-0 --trust-level 2/3
+  --trust-level 2/3
 ETH_PRIVATE_KEY=<deployer-key> ./relayer start --config config.json
 ```
 

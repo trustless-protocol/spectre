@@ -21,83 +21,102 @@ import (
 // One relayer process serves exactly one source → destination pair (03-Relayer
 // §2.1 requirement 5). Before this guard, `start` looped over every configured
 // module and ran them in one process, which is what made a shared nonce cache and
-// a shared error path necessary in the first place.
-func TestValidateSingleRelayPair(t *testing.T) {
-	c2e := func(ids ...string) []cosmosToEthConfig {
-		out := make([]cosmosToEthConfig, 0, len(ids))
+// a shared error path necessary in the first place. A7 moved the guard to parse
+// time: loadConfig takes a census of the modules and refuses a second path
+// before any module is parsed in full, so nothing downstream ever holds a list.
+//
+// The census is taken from the raw modules, so the cases below carry only the
+// identity each module is named by; that a fully valid single-path file loads
+// is TestShippedExamplesCarryOnePathEach's job.
+func TestRejectExtraRelayPaths(t *testing.T) {
+	c2e := func(ids ...string) []string {
+		out := make([]string, 0, len(ids))
 		for _, id := range ids {
-			out = append(out, cosmosToEthConfig{ICS26ClientID: id})
+			out = append(out, `{"name":"cosmos_to_eth","src_chain":"cosmos","dst_chain":"ethereum","config":{"ics26_client_id":"`+id+`"}}`)
 		}
 		return out
 	}
-	l2src := func(chains ...string) []l2ToCosmosConfig {
-		out := make([]l2ToCosmosConfig, 0, len(chains))
+	c2l2 := func(ids ...string) []string {
+		out := make([]string, 0, len(ids))
+		for _, id := range ids {
+			out = append(out, `{"name":"cosmos_to_l2","src_chain":"cosmos","dst_chain":"opstack","config":{"ics26_client_id":"`+id+`"}}`)
+		}
+		return out
+	}
+	l2src := func(chains ...string) []string {
+		out := make([]string, 0, len(chains))
 		for _, c := range chains {
-			out = append(out, l2ToCosmosConfig{AttestorSrcChain: c})
+			out = append(out, `{"name":"l2_to_cosmos","src_chain":"`+c+`","dst_chain":"cosmos","config":{"attestor_src_chain":"`+c+`"}}`)
+		}
+		return out
+	}
+	join := func(groups ...[]string) []string {
+		var out []string
+		for _, g := range groups {
+			out = append(out, g...)
 		}
 		return out
 	}
 
 	tests := []struct {
-		name string
-		cfg  appConfig
+		name    string
+		modules []string
 		// wantNames are the identities the error must name so the operator knows
 		// which paths to split apart; empty means the config must be accepted.
 		wantNames []string
 	}{
 		{
-			name: "one cosmos_to_eth",
-			cfg:  appConfig{CosmosToEthConfigs: c2e("chain-a")},
+			name:    "one cosmos_to_eth",
+			modules: c2e("chain-a"),
 		},
 		{
-			name: "one cosmos_to_l2 with its return leg is one pair",
-			cfg: appConfig{
-				CosmosToL2Configs: c2e("08-wasm-3"),
-				L2ToCosmosConfigs: l2src("opstack"),
-			},
+			name:    "one cosmos_to_l2 with its return leg is one pair",
+			modules: join(c2l2("08-wasm-3"), l2src("opstack")),
 		},
 		{
-			name: "forward-only cosmos_to_l2",
-			cfg:  appConfig{CosmosToL2Configs: c2e("08-wasm-3")},
+			name:    "forward-only cosmos_to_l2",
+			modules: c2l2("08-wasm-3"),
 		},
 		{
-			name: "two cosmos_to_eth sources",
-			cfg:  appConfig{CosmosToEthConfigs: c2e("chain-a", "chain-b")},
+			name:    "two cosmos_to_eth sources",
+			modules: c2e("chain-a", "chain-b"),
 			// Naming both is the point: "config has 2 sources" leaves the operator
 			// guessing which two, and file order is not what they edited by.
 			wantNames: []string{"chain-a", "chain-b"},
 		},
 		{
 			name:      "two cosmos_to_l2 destinations",
-			cfg:       appConfig{CosmosToL2Configs: c2e("08-wasm-3", "08-wasm-4")},
+			modules:   c2l2("08-wasm-3", "08-wasm-4"),
 			wantNames: []string{"08-wasm-3", "08-wasm-4"},
 		},
 		{
 			name:      "two l2_to_cosmos sources",
-			cfg:       appConfig{L2ToCosmosConfigs: l2src("opstack", "arbitrum")},
+			modules:   l2src("opstack", "arbitrum"),
 			wantNames: []string{"opstack", "arbitrum"},
 		},
 		{
-			name: "cosmos_to_eth alongside cosmos_to_l2 is two pairs",
-			cfg: appConfig{
-				CosmosToEthConfigs: c2e("chain-a"),
-				CosmosToL2Configs:  c2e("08-wasm-3"),
-			},
+			name:      "cosmos_to_eth alongside cosmos_to_l2 is two pairs",
+			modules:   join(c2e("chain-a"), c2l2("08-wasm-3")),
 			wantNames: []string{"chain-a", "08-wasm-3"},
 		},
 		{
-			name: "cosmos_to_eth alongside an l2_to_cosmos return leg is two pairs",
-			cfg: appConfig{
-				CosmosToEthConfigs: c2e("chain-a"),
-				L2ToCosmosConfigs:  l2src("opstack"),
-			},
+			name:      "cosmos_to_eth alongside an l2_to_cosmos return leg is two pairs",
+			modules:   join(c2e("chain-a"), l2src("opstack")),
 			wantNames: []string{"chain-a", "opstack"},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateSingleRelayPair(&tt.cfg, "config.json")
+			var jc jsonConfig
+			if err := json.Unmarshal([]byte(`{"modules":[`+strings.Join(tt.modules, ",")+`]}`), &jc); err != nil {
+				t.Fatalf("parse fixture: %v", err)
+			}
+			census, err := censusRelayPaths(jc.Modules)
+			if err != nil {
+				t.Fatalf("census: %v", err)
+			}
+			err = rejectExtraRelayPaths("config.json", census)
 			if len(tt.wantNames) == 0 {
 				if err != nil {
 					t.Fatalf("single-pair config rejected: %v", err)
@@ -122,8 +141,8 @@ func TestValidateSingleRelayPair(t *testing.T) {
 }
 
 // `start` with nothing to relay is a config mistake, not an idle process.
-func TestValidateSingleRelayPairRejectsEmptyConfig(t *testing.T) {
-	err := validateSingleRelayPair(&appConfig{}, "/etc/relayer/config.json")
+func TestRequireRelayPathRejectsEmptyConfig(t *testing.T) {
+	err := requireRelayPath(&appConfig{}, "/etc/relayer/config.json")
 	if err == nil {
 		t.Fatal("start accepted a config with no relay module")
 	}
@@ -146,21 +165,20 @@ func TestShippedExamplesCarryOnePathEach(t *testing.T) {
 			if err != nil {
 				t.Fatalf("loadConfig(%s): %v", file, err)
 			}
-			if err := validateSingleRelayPair(cfg, file); err != nil {
+			if err := requireRelayPath(cfg, file); err != nil {
 				t.Fatalf("%s is a runnable example but start rejects it: %v", file, err)
 			}
 		})
 	}
 
-	t.Run("catalogue is not runnable", func(t *testing.T) {
+	// Refused at load, not merely at start: every command that reads a config
+	// shares loadConfig, and none of them can do anything sensible with a file
+	// that names several paths.
+	t.Run("catalogue is not loadable", func(t *testing.T) {
 		t.Parallel()
-		cfg, err := loadConfig(filepath.Join("..", "config.example.json"))
-		if err != nil {
-			t.Fatalf("loadConfig(config.example.json): %v", err)
-		}
-		err = validateSingleRelayPair(cfg, "config.example.json")
+		_, err := loadConfig(filepath.Join("..", "config.example.json"))
 		if err == nil {
-			t.Fatal("the catalogue lists every path; start must send the operator to a per-path file instead")
+			t.Fatal("the catalogue lists every path; loadConfig must send the operator to a per-path file instead")
 		}
 		if !strings.Contains(err.Error(), "--config") {
 			t.Errorf("the rejection must show the way out; got: %v", err)
@@ -227,7 +245,7 @@ func TestValidateCosmosChainIDFailsBeforeDialingWhenTheVariableIsUnset(t *testin
 	t.Setenv("COSMOS_CHAIN_ID", "")
 
 	findings := validateCosmosChainID(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{{TmRpcUrl: node.URL()}},
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{TmRpcUrl: node.URL()},
 	})
 
 	if len(findings) != 1 || findings[0].key != "COSMOS_CHAIN_ID" {
@@ -248,7 +266,7 @@ func TestValidateCosmosChainIDReportsADefiniteDisagreement(t *testing.T) {
 	t.Setenv("COSMOS_CHAIN_ID", "declared-chain")
 
 	findings := validateCosmosChainID(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{{TmRpcUrl: node.URL()}},
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{TmRpcUrl: node.URL()},
 	})
 
 	if len(findings) != 1 {
@@ -271,7 +289,7 @@ func TestValidateCosmosChainIDAcceptsAMatch(t *testing.T) {
 	t.Setenv("COSMOS_CHAIN_ID", "test-ibc-eth")
 
 	if findings := validateCosmosChainID(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{{TmRpcUrl: node.URL()}},
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{TmRpcUrl: node.URL()},
 	}); len(findings) != 0 {
 		t.Fatalf("expected no findings for a matching chain id, got %+v", findings)
 	}
@@ -285,20 +303,20 @@ func TestValidateCosmosChainIDToleratesAnEndpointThatDoesNotAnswer(t *testing.T)
 	t.Setenv("COSMOS_CHAIN_ID", "declared-chain")
 
 	if findings := validateCosmosChainID(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{{TmRpcUrl: node.URL()}},
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{TmRpcUrl: node.URL()},
 	}); len(findings) != 0 {
 		t.Fatalf("a non-answering endpoint must not fail startup, got %+v", findings)
 	}
 }
 
-func TestCosmosEndpointsAreGatheredFromEveryModuleListWithoutDuplicates(t *testing.T) {
+func TestCosmosEndpointsAreGatheredFromEveryDirectionWithoutDuplicates(t *testing.T) {
 	cfg := &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{{TmRpcUrl: "http://a"}, {TmRpcUrl: "http://b"}},
-		CosmosToL2Configs:  []cosmosToEthConfig{{TmRpcUrl: "http://a"}},
-		L2ToCosmosConfigs:  []l2ToCosmosConfig{{TmRpcUrl: "http://c"}, {TmRpcUrl: ""}},
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{TmRpcUrl: "http://a"},
+		HasCosmosToL2: true, CosmosToL2Config: cosmosToEthConfig{TmRpcUrl: "http://a"},
+		HasL2ToCosmos: true, L2ToCosmosConfig: l2ToCosmosConfig{TmRpcUrl: "http://c"},
 	}
 	got := cosmosEndpointsInConfig(cfg)
-	want := []string{"http://a", "http://b", "http://c"}
+	want := []string{"http://a", "http://c"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("gathered %v, want %v", got, want)
 	}
@@ -343,7 +361,7 @@ func TestValidateEVMDeploymentsReportsEveryAddressThatHoldsNoCode(t *testing.T) 
 	node.SetCallResult("0x000000000000000000000000" + strings.Repeat("ab", 20))
 
 	findings := validateEVMDeployments(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{cfg},
+		HasCosmosToEth: true, CosmosToEthConfig: cfg,
 	})
 
 	got := map[string]bool{}
@@ -385,7 +403,7 @@ func TestFindingsAreNotReportedTwice(t *testing.T) {
 	node.SetCallResult("0x000000000000000000000000" + strings.Repeat("ab", 20))
 
 	findings := validateEVMDeployments(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{cfg},
+		HasCosmosToEth: true, CosmosToEthConfig: cfg,
 	})
 
 	seen := map[string]int{}
@@ -418,7 +436,7 @@ func TestCosmosToL2ValidatesTheConfigIDNotTheEnvOverride(t *testing.T) {
 	t.Setenv("ICS26_CLIENT_ID", "stale-from-dotenv")
 
 	findings := validateEVMDeployments(context.Background(),
-		&appConfig{CosmosToL2Configs: []cosmosToEthConfig{cfg}})
+		&appConfig{HasCosmosToL2: true, CosmosToL2Config: cfg})
 
 	if len(findings) == 0 {
 		t.Fatal("no finding at all; the cosmos_to_l2 entry was not validated")
@@ -444,7 +462,7 @@ func TestValidateEVMDeploymentsAcceptsAFullyDeployedModule(t *testing.T) {
 	deployAll(node, cfg)
 
 	if findings := validateEVMDeployments(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{cfg},
+		HasCosmosToEth: true, CosmosToEthConfig: cfg,
 	}); len(findings) != 0 {
 		t.Fatalf("expected no findings for a deployed module, got %+v", findings)
 	}
@@ -459,7 +477,7 @@ func TestValidateEVMDeploymentsReportsAClientIDTheRouterDoesNotKnow(t *testing.T
 	node.FailCall(errors.New("execution reverted"))
 
 	findings := validateEVMDeployments(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{cfg},
+		HasCosmosToEth: true, CosmosToEthConfig: cfg,
 	})
 
 	if len(findings) != 1 || findings[0].key != "cosmos_to_eth.ics26_client_id" {
@@ -479,7 +497,7 @@ func TestValidateEVMDeploymentsToleratesATransportErrorFromTheRouterCall(t *test
 	node.FailCall(errors.New("connection reset by peer"))
 
 	if findings := validateEVMDeployments(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{cfg},
+		HasCosmosToEth: true, CosmosToEthConfig: cfg,
 	}); len(findings) != 0 {
 		t.Fatalf("a transport error must not fail startup, got %+v", findings)
 	}
@@ -498,7 +516,7 @@ func TestValidateEVMDeploymentsDoesNotReportTheClientIDWhenTheRouterItselfIsMiss
 	node.FailCall(errors.New("execution reverted"))
 
 	findings := validateEVMDeployments(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{cfg},
+		HasCosmosToEth: true, CosmosToEthConfig: cfg,
 	})
 
 	if len(findings) != 1 || findings[0].key != "cosmos_to_eth.ics26_address" {
@@ -517,7 +535,7 @@ func TestValidateEVMDeploymentsToleratesAnUnreachableEndpoint(t *testing.T) {
 	defer cancel()
 
 	if findings := validateEVMDeployments(ctx, &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{cfg},
+		HasCosmosToEth: true, CosmosToEthConfig: cfg,
 	}); len(findings) != 0 {
 		t.Fatalf("an unreachable endpoint must not fail startup, got %+v", findings)
 	}
@@ -525,16 +543,16 @@ func TestValidateEVMDeploymentsToleratesAnUnreachableEndpoint(t *testing.T) {
 
 func TestEVMDeploymentsSkipUnsetAndMalformedAddresses(t *testing.T) {
 	deployments := evmDeploymentsInConfig(&appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{{
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{
 			EthRpcUrl:     "http://eth",
 			ICS26Address:  "0x1111111111111111111111111111111111111111",
 			SpectreClient: "",            // unset
 			Membership:    "not-an-addr", // malformed
-		}},
-		CosmosToL2Configs: []cosmosToEthConfig{{
+		},
+		HasCosmosToL2: true, CosmosToL2Config: cosmosToEthConfig{
 			EthRpcUrl:    "http://l2",
 			ICS26Address: "0x2222222222222222222222222222222222222222",
-		}},
+		},
 	})
 
 	if len(deployments) != 2 {
@@ -557,12 +575,13 @@ func TestValidateEVMDeploymentsCoversTheL2ReturnLegToo(t *testing.T) {
 	node := rpcmock.NewEVMNode(t)
 	router := "0x7777777777777777777777777777777777777777"
 	cfg := &appConfig{
-		L2ToCosmosConfigs: []l2ToCosmosConfig{{
+		HasL2ToCosmos: true,
+		L2ToCosmosConfig: l2ToCosmosConfig{
 			L2RpcUrl:        node.URL(),
 			L2ICS26ClientID: "l2-client-0",
 			RollupProfile: json.RawMessage(
 				`{"common":{"l2_chain_id":1,"l2_router":"` + router + `"}}`),
-		}},
+		},
 	}
 
 	// Undeployed router AND a reverting getClient. Both facts have the same
@@ -593,7 +612,7 @@ func TestValidateEVMDeploymentsCoversTheL2ReturnLegToo(t *testing.T) {
 
 func TestEVMDeploymentsSkipAModuleWithNoRPC(t *testing.T) {
 	if d := evmDeploymentsInConfig(&appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{{ICS26Address: "0x1111111111111111111111111111111111111111"}},
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{ICS26Address: "0x1111111111111111111111111111111111111111"},
 	}); len(d) != 0 {
 		t.Fatalf("a module with no eth_rpc_url has nothing to probe, got %+v", d)
 	}
@@ -643,7 +662,7 @@ func TestRelayPathID(t *testing.T) {
 	}{
 		{
 			name: "cosmos to eth carries the source client id",
-			cfg:  &appConfig{CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "cosmoshub-1"}}},
+			cfg:  &appConfig{HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{ICS26ClientID: "cosmoshub-1"}},
 			want: "cosmos<->eth/cosmoshub-1",
 		},
 		{
@@ -651,19 +670,19 @@ func TestRelayPathID(t *testing.T) {
 			// path needs to tell the two apart, and "l2" does not.
 			name: "cosmos to l2 names the rollup from the return leg",
 			cfg: &appConfig{
-				CosmosToL2Configs: []cosmosToEthConfig{{ICS26ClientID: "cosmoshub-1"}},
-				L2ToCosmosConfigs: []l2ToCosmosConfig{{AttestorSrcChain: "arbitrum"}},
+				HasCosmosToL2: true, CosmosToL2Config: cosmosToEthConfig{ICS26ClientID: "cosmoshub-1"},
+				HasL2ToCosmos: true, L2ToCosmosConfig: l2ToCosmosConfig{AttestorSrcChain: "arbitrum"},
 			},
 			want: "cosmos<->arbitrum/cosmoshub-1",
 		},
 		{
 			name: "cosmos to l2 without a return leg still identifies the path",
-			cfg:  &appConfig{CosmosToL2Configs: []cosmosToEthConfig{{ICS26ClientID: "cosmoshub-1"}}},
+			cfg:  &appConfig{HasCosmosToL2: true, CosmosToL2Config: cosmosToEthConfig{ICS26ClientID: "cosmoshub-1"}},
 			want: "cosmos<->l2/cosmoshub-1",
 		},
 		{
 			name: "return leg only",
-			cfg:  &appConfig{L2ToCosmosConfigs: []l2ToCosmosConfig{{AttestorSrcChain: "opstack"}}},
+			cfg:  &appConfig{HasL2ToCosmos: true, L2ToCosmosConfig: l2ToCosmosConfig{AttestorSrcChain: "opstack"}},
 			want: "opstack->cosmos",
 		},
 		{
@@ -698,7 +717,7 @@ func TestValidateStartupConfigReportsEveryProblemInASingleMessage(t *testing.T) 
 	cfg.TmRpcUrl = cosmos.URL()
 
 	err := validateStartupConfig(context.Background(), &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{cfg},
+		HasCosmosToEth: true, CosmosToEthConfig: cfg,
 	}, "")
 	if err == nil {
 		t.Fatal("expected config validation to fail")
@@ -784,7 +803,7 @@ func TestValidateEVMDeploymentsRejectsARouterWiredToAnotherClient(t *testing.T) 
 		node.SetCallResultFor(getClientSelector, abiAddress("0x9999999999999999999999999999999999999999"))
 		local := cfg
 		local.CosmosWasmClientID = "08-wasm-0"
-		findings := validateEVMDeployments(context.Background(), &appConfig{CosmosToEthConfigs: []cosmosToEthConfig{local}})
+		findings := validateEVMDeployments(context.Background(), &appConfig{HasCosmosToEth: true, CosmosToEthConfig: local})
 		if len(findings) == 0 {
 			t.Fatal("a router pointing that client id at another light client was accepted; " +
 				"updates would target spectre_client while the router verifies something else")
@@ -795,7 +814,7 @@ func TestValidateEVMDeploymentsRejectsARouterWiredToAnotherClient(t *testing.T) 
 		node.SetCallResultFor(getClientSelector, abiAddress(cfg.SpectreClient))
 		local := cfg
 		local.CosmosWasmClientID = "08-wasm-7" // the router says 08-wasm-0
-		findings := validateEVMDeployments(context.Background(), &appConfig{CosmosToEthConfigs: []cosmosToEthConfig{local}})
+		findings := validateEVMDeployments(context.Background(), &appConfig{HasCosmosToEth: true, CosmosToEthConfig: local})
 		if len(findings) == 0 {
 			t.Fatal("a router counterparty-wired to another Cosmos client was accepted; " +
 				"recvPacket would reject every packet's counterparty")
@@ -806,7 +825,7 @@ func TestValidateEVMDeploymentsRejectsARouterWiredToAnotherClient(t *testing.T) 
 		node.SetCallResultFor(getClientSelector, abiAddress(cfg.SpectreClient))
 		local := cfg
 		local.CosmosWasmClientID = "08-wasm-0"
-		if findings := validateEVMDeployments(context.Background(), &appConfig{CosmosToEthConfigs: []cosmosToEthConfig{local}}); len(findings) != 0 {
+		if findings := validateEVMDeployments(context.Background(), &appConfig{HasCosmosToEth: true, CosmosToEthConfig: local}); len(findings) != 0 {
 			t.Fatalf("a correctly wired router was rejected: %v", findings)
 		}
 	})
@@ -825,7 +844,7 @@ func TestValidateEVMDeploymentsValidatesTheIDStartupWillActuallyUse(t *testing.T
 	node.FailCall(errors.New("execution reverted"))
 
 	t.Setenv("ICS26_CLIENT_ID", "stale-from-dotenv")
-	findings := validateEVMDeployments(context.Background(), &appConfig{CosmosToEthConfigs: []cosmosToEthConfig{cfg}})
+	findings := validateEVMDeployments(context.Background(), &appConfig{HasCosmosToEth: true, CosmosToEthConfig: cfg})
 	if len(findings) == 0 {
 		t.Fatal("the override was ignored and the config value validated instead; a stale " +
 			"ICS26_CLIENT_ID in .env would pass startup and fail at the first packet")
@@ -861,8 +880,8 @@ func abiCounterparty(clientID string) string {
 // boundary left. The prefix is the only thing that tells them apart, so it must
 // actually differ.
 func TestRelayPathIDDistinguishesTwoCosmosSources(t *testing.T) {
-	a := relayPathID(&appConfig{CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "cosmoshub-1"}}})
-	b := relayPathID(&appConfig{CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "osmosis-1"}}})
+	a := relayPathID(&appConfig{HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{ICS26ClientID: "cosmoshub-1"}})
+	b := relayPathID(&appConfig{HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{ICS26ClientID: "osmosis-1"}})
 	if a == b {
 		t.Fatalf("both sources produced %q; merged logs cannot be told apart", a)
 	}

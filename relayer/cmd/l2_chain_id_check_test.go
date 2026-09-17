@@ -39,7 +39,7 @@ func profileWithChainID(id uint64) json.RawMessage {
 	}`, id))
 }
 
-// TestValidateL2ChainIDsRejectsAMismatch is the case this check exists for.
+// TestValidateL2ChainIDRejectsAMismatch is the case this check exists for.
 //
 // It is exactly what happened on a real bring-up: the profile still named the
 // local devnet (412346) while l2_rpc_url pointed at Arbitrum Sepolia (421614),
@@ -47,7 +47,7 @@ func profileWithChainID(id uint64) json.RawMessage {
 // eth_chainId, and nothing on either side of the bridge reads l2_chain_id. The
 // operator only noticed because the transactions turned up on a chain they had
 // not configured.
-func TestValidateL2ChainIDsRejectsAMismatch(t *testing.T) {
+func TestValidateL2ChainIDRejectsAMismatch(t *testing.T) {
 	t.Parallel()
 
 	srv := chainIDServer(t, "0x66eee") // 421614, Arbitrum Sepolia
@@ -57,7 +57,7 @@ func TestValidateL2ChainIDsRejectsAMismatch(t *testing.T) {
 		RollupProfile:    profileWithChainID(412346), // the devnet
 	}
 
-	err := validateL2ChainIDs(context.Background(), []l2ToCosmosConfig{cfg})
+	err := validateL2ChainID(context.Background(), cfg)
 	if err == nil {
 		t.Fatal("a profile naming a different chain than the RPC serves must not start")
 	}
@@ -69,7 +69,7 @@ func TestValidateL2ChainIDsRejectsAMismatch(t *testing.T) {
 	}
 }
 
-func TestValidateL2ChainIDsAcceptsAMatch(t *testing.T) {
+func TestValidateL2ChainIDAcceptsAMatch(t *testing.T) {
 	t.Parallel()
 
 	srv := chainIDServer(t, "0x66eee") // 421614
@@ -79,18 +79,18 @@ func TestValidateL2ChainIDsAcceptsAMatch(t *testing.T) {
 		RollupProfile:    profileWithChainID(421614),
 	}
 
-	if err := validateL2ChainIDs(context.Background(), []l2ToCosmosConfig{cfg}); err != nil {
+	if err := validateL2ChainID(context.Background(), cfg); err != nil {
 		t.Fatalf("a correct config must start: %v", err)
 	}
 }
 
-// TestValidateL2ChainIDsToleratesAnUnreachableEndpoint separates "wrong" from
+// TestValidateL2ChainIDToleratesAnUnreachableEndpoint separates "wrong" from
 // "unknown".
 //
 // The comparison reports a briefly down node as unknown rather than as a
 // profile mismatch. The EVM signer lock remains a separate startup gate and
 // refuses to submit without an endpoint-reported chain id.
-func TestValidateL2ChainIDsToleratesAnUnreachableEndpoint(t *testing.T) {
+func TestValidateL2ChainIDToleratesAnUnreachableEndpoint(t *testing.T) {
 	t.Parallel()
 
 	cfg := l2ToCosmosConfig{
@@ -99,7 +99,7 @@ func TestValidateL2ChainIDsToleratesAnUnreachableEndpoint(t *testing.T) {
 		RollupProfile:    profileWithChainID(421614),
 	}
 
-	if err := validateL2ChainIDs(context.Background(), []l2ToCosmosConfig{cfg}); err != nil {
+	if err := validateL2ChainID(context.Background(), cfg); err != nil {
 		t.Fatalf("an unreachable endpoint must not be reported as a profile mismatch: %v", err)
 	}
 }
@@ -107,7 +107,7 @@ func TestValidateL2ChainIDsToleratesAnUnreachableEndpoint(t *testing.T) {
 // A profile with no l2_chain_id IS fatal, unlike an unreachable endpoint: the
 // Rust verifier declares the field non-optional under deny_unknown_fields, so
 // such a profile cannot create a client at all.
-func TestValidateL2ChainIDsRejectsAMissingChainID(t *testing.T) {
+func TestValidateL2ChainIDRejectsAMissingChainID(t *testing.T) {
 	t.Parallel()
 
 	srv := chainIDServer(t, "0x66eee")
@@ -119,38 +119,13 @@ func TestValidateL2ChainIDsRejectsAMissingChainID(t *testing.T) {
 		}`),
 	}
 
-	err := validateL2ChainIDs(context.Background(), []l2ToCosmosConfig{cfg})
+	err := validateL2ChainID(context.Background(), cfg)
 	if err == nil || !strings.Contains(err.Error(), "l2_chain_id") {
 		t.Fatalf("a profile without l2_chain_id must be rejected by name, got: %v", err)
 	}
 }
 
-// Every source is checked, not just the first — the same shape of bug as the
-// eth_ws_url guard that only looked at c2eList[0] (#298).
-func TestValidateL2ChainIDsChecksEverySource(t *testing.T) {
-	t.Parallel()
-
-	good := chainIDServer(t, "0x66eee") // 421614
-	bad := chainIDServer(t, "0x14a34")  // 84532, Base Sepolia
-
-	sources := []l2ToCosmosConfig{
-		{AttestorSrcChain: "arbitrum-sepolia", L2RpcUrl: good.URL, RollupProfile: profileWithChainID(421614)},
-		{AttestorSrcChain: "base-sepolia", L2RpcUrl: bad.URL, RollupProfile: profileWithChainID(8453)},
-	}
-
-	err := validateL2ChainIDs(context.Background(), sources)
-	if err == nil {
-		t.Fatal("a mismatch on the second source must still be caught")
-	}
-	if !strings.Contains(err.Error(), "base-sepolia") {
-		t.Fatalf("error must name the offending source, got: %v", err)
-	}
-	if strings.Contains(err.Error(), "arbitrum-sepolia") {
-		t.Fatalf("error must not blame the correctly-configured source, got: %v", err)
-	}
-}
-
-// TestValidateL2ChainIDsRejectsAnOutOfRangeAnswer is the hole the first five
+// TestValidateL2ChainIDRejectsAnOutOfRangeAnswer is the hole the first five
 // tests left open, reported by @neitdung and confirmed by @DongLieu.
 //
 // probeL2ChainID used to return (0, false) — the "endpoint did not answer"
@@ -159,7 +134,7 @@ func TestValidateL2ChainIDsChecksEverySource(t *testing.T) {
 // uint64), yet the caller logged "could not read eth_chainId ... skipping" and
 // let startup proceed. That routed a definite disagreement into the "unknown,
 // tolerate" branch, which is the opposite of the rule this check enforces.
-func TestValidateL2ChainIDsRejectsAnOutOfRangeAnswer(t *testing.T) {
+func TestValidateL2ChainIDRejectsAnOutOfRangeAnswer(t *testing.T) {
 	t.Parallel()
 
 	srv := chainIDServer(t, "0x10000000000000000") // 2^64, one past uint64
@@ -169,7 +144,7 @@ func TestValidateL2ChainIDsRejectsAnOutOfRangeAnswer(t *testing.T) {
 		RollupProfile:    profileWithChainID(1),
 	}
 
-	err := validateL2ChainIDs(context.Background(), []l2ToCosmosConfig{cfg})
+	err := validateL2ChainID(context.Background(), cfg)
 	if err == nil {
 		t.Fatal("an answered-but-unmatchable chain id must be a mismatch, not a skipped check")
 	}
@@ -238,7 +213,7 @@ func TestVerifyL2ChainIDRejectsAMismatchForCreateClients(t *testing.T) {
 	}
 }
 
-// TestValidateL2ChainIDsDoesNotClaimAnUnrunCheck pins the operator-facing half.
+// TestValidateL2ChainIDDoesNotClaimAnUnrunCheck pins the operator-facing half.
 //
 // The skip branch logged "skipping the l2_chain_id check", and then the success
 // line ran unconditionally right after it — so an unreachable endpoint produced
@@ -246,19 +221,19 @@ func TestVerifyL2ChainIDRejectsAMismatchForCreateClients(t *testing.T) {
 // check having passed. The two are now mutually exclusive by construction: the
 // caller branches on whether a comparison actually happened, rather than
 // remembering to skip a log line.
-func TestValidateL2ChainIDsDoesNotClaimAnUnrunCheck(t *testing.T) {
+func TestValidateL2ChainIDDoesNotClaimAnUnrunCheck(t *testing.T) {
 	var buf bytes.Buffer
 	log.SetOutput(&buf)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
 	// Nothing is listening, so the profile comparison gets no answer. The later
 	// EVM signer lock will stop startup rather than run without a nonce guard.
-	sources := []l2ToCosmosConfig{{
+	src := l2ToCosmosConfig{
 		AttestorSrcChain: "unreachable",
 		L2RpcUrl:         "http://127.0.0.1:1",
 		RollupProfile:    json.RawMessage(`{"common":{"l2_chain_id":421614}}`),
-	}}
-	if err := validateL2ChainIDs(context.Background(), sources); err != nil {
+	}
+	if err := validateL2ChainID(context.Background(), src); err != nil {
 		t.Fatalf("an unreachable endpoint must remain unverified rather than mismatched: %v", err)
 	}
 

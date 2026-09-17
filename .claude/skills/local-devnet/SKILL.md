@@ -88,7 +88,7 @@ DST_CHAIN=opstack L2_DEPLOYER_ADDRESS=<l2-funded> L2_DEPLOYER_PRIVATE_KEY=<key> 
   ./scripts/local/deploy_l2_contracts.sh
 cd relayer
 ./relayer create-clients-cosmos --config config.json --l2-config <op.json>
-./relayer create-clients-eth --config config.json --source <ics26_client_id> --trust-level 2/3
+./relayer create-clients-eth --config config.json --trust-level 2/3
 ./relayer start --config config.json
 ```
 

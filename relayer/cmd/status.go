@@ -25,9 +25,7 @@ const statusFetchTimeout = 30 * time.Second
 // surviving on the source says the round trip is incomplete, but not WHICH HALF
 // is stuck. The waiting set is "not relayed yet, and here is the gate"; the
 // pending set is "relayed, awaiting delivery or a timeout refund".
-// The logger parameter keeps the signature uniform with every other command,
-// which is how main.go registers them.
-func Status(_ *zap.Logger) *cobra.Command {
+func Status(logger *zap.Logger) *cobra.Command {
 	var configPath, addr string
 	var asJSON bool
 
@@ -36,7 +34,7 @@ func Status(_ *zap.Logger) *cobra.Command {
 		Short: "Read a running relayer's in-flight state",
 		Args:  cobra.ExactArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			target, err := statusTarget(addr, configPath)
+			target, err := statusTarget(logger, "status", addr, configPath)
 			if err != nil {
 				return err
 			}
@@ -65,7 +63,7 @@ func Status(_ *zap.Logger) *cobra.Command {
 	cmd.PersistentFlags().StringVar(&configPath, flagConfigPath, "config.json", "config file to read status_address from")
 	cmd.PersistentFlags().StringVar(&addr, "addr", "", "status endpoint to query, overriding the config")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "print the raw snapshot instead of the table")
-	cmd.AddCommand(statusReactivate(&configPath, &addr))
+	cmd.AddCommand(statusReactivate(logger, &configPath, &addr))
 	return cmd
 }
 
@@ -76,7 +74,7 @@ func Status(_ *zap.Logger) *cobra.Command {
 // A dead-lettered packet has funds escrowed and a log line asking for
 // intervention; until this existed, the only mechanism for intervening was
 // unreachable Go.
-func statusReactivate(configPath, addr *string) *cobra.Command {
+func statusReactivate(logger *zap.Logger, configPath, addr *string) *cobra.Command {
 	var sel status.DeadLetterSelector
 
 	cmd := &cobra.Command{
@@ -89,7 +87,7 @@ func statusReactivate(configPath, addr *string) *cobra.Command {
 			if err := sel.Validate(); err != nil {
 				return err
 			}
-			target, err := statusTarget(*addr, *configPath)
+			target, err := statusTarget(logger, "status reactivate", *addr, *configPath)
 			if err != nil {
 				return err
 			}
@@ -117,7 +115,11 @@ func statusReactivate(configPath, addr *string) *cobra.Command {
 // statusTarget resolves which relayer to talk to: the flag when given, otherwise
 // the config. One resolution, so the two subcommands cannot address different
 // processes from the same invocation.
-func statusTarget(addr, configPath string) (string, error) {
+//
+// The config file is named only when it is actually read: with --addr no file
+// is opened, and a line claiming one was would be the misdirection
+// logConfigTarget exists to prevent.
+func statusTarget(logger *zap.Logger, command, addr, configPath string) (string, error) {
 	if addr != "" {
 		return addr, nil
 	}
@@ -125,6 +127,7 @@ func statusTarget(addr, configPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	logConfigTarget(logger, command, configPath, cfg)
 	if cfg.StatusAddress == "" {
 		return "", fmt.Errorf(
 			"no status address: the endpoint is off by default, so set status_address in %s or pass --addr",

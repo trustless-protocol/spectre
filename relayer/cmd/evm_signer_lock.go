@@ -113,21 +113,20 @@ func evmSignerLockEndpoints(cfg *appConfig) []evmSignerLockEndpoint {
 		return nil
 	}
 
-	endpoints := make([]evmSignerLockEndpoint, 0,
-		len(cfg.CosmosToEthConfigs)+len(cfg.CosmosToL2Configs)+len(cfg.L2ToCosmosConfigs))
-	for i := range cfg.CosmosToEthConfigs {
+	var endpoints []evmSignerLockEndpoint
+	if cfg.HasCosmosToEth {
 		endpoints = append(endpoints, evmSignerLockEndpoint{
-			label: fmt.Sprintf("cosmos_to_eth[%d].eth_rpc_url", i), rpcURL: cfg.CosmosToEthConfigs[i].EthRpcUrl,
+			label: "cosmos_to_eth.eth_rpc_url", rpcURL: cfg.CosmosToEthConfig.EthRpcUrl,
 		})
 	}
-	for i := range cfg.CosmosToL2Configs {
+	if cfg.HasCosmosToL2 {
 		endpoints = append(endpoints, evmSignerLockEndpoint{
-			label: fmt.Sprintf("cosmos_to_l2[%d].eth_rpc_url", i), rpcURL: cfg.CosmosToL2Configs[i].EthRpcUrl,
+			label: "cosmos_to_l2.eth_rpc_url", rpcURL: cfg.CosmosToL2Config.EthRpcUrl,
 		})
 	}
-	for i := range cfg.L2ToCosmosConfigs {
+	if cfg.HasL2ToCosmos {
 		endpoints = append(endpoints, evmSignerLockEndpoint{
-			label: fmt.Sprintf("l2_to_cosmos[%d].l2_rpc_url", i), rpcURL: cfg.L2ToCosmosConfigs[i].L2RpcUrl,
+			label: "l2_to_cosmos.l2_rpc_url", rpcURL: cfg.L2ToCosmosConfig.L2RpcUrl,
 		})
 	}
 	return endpoints

@@ -112,9 +112,10 @@ func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasm
 	// discovering the destination is missing afterwards leaves a paid-for client that
 	// nothing points at and nothing advances until it expires (#310).
 	//
-	// selectSource picks a cosmos_to_l2 module into CosmosToEthConfig when the config
-	// has no cosmos_to_eth source, and the write-back is pinned to cosmos_to_eth — so
-	// an eth_to_cosmos + L2 config passes every other guard and fails only here.
+	// selectCosmosSource promotes the cosmos_to_l2 module into CosmosToEthConfig when
+	// the config has no cosmos_to_eth source, and the write-back is pinned to
+	// cosmos_to_eth — so an eth_to_cosmos + L2 config passes every other guard and
+	// fails only here.
 	// Cheap to know, irreversible to learn late.
 	if err := assertConfigMemberWritable(configPath, cfg.CosmosToEthConfig.ICS26ClientID,
 		"cosmos_wasm_client_id", dirCosmosToEth); err != nil {
@@ -249,14 +250,7 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
-			source, err := cmd.Flags().GetString(flagSource)
-			if err != nil {
-				return fmt.Errorf("failed to get source flag: %w", err)
-			}
-			cfg, err = selectSource(cfg, source)
-			if err != nil {
-				return err
-			}
+			cfg = selectCosmosSource(cfg)
 			logConfigTarget(logger, "create-clients-cosmos", configPath, cfg)
 			if err := preflightCreateClients(cfg); err != nil {
 				return err
@@ -279,15 +273,16 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 			// attestor-trusted profile has no ethereum_client member, so that reason is
 			// gone — and combining them is actively harmful. runCreateClientsCosmos keys
 			// its cosmos_wasm_client_id write-back on cfg.CosmosToEthConfig, which
-			// selectSource may have set to a cosmos_to_l2 module: with --source naming an
-			// L2 (say arb-client-0) the Ethereum MsgCreateClient lands and the write-back
-			// then fails because no cosmos_to_eth module carries that id, leaving an
-			// orphaned client on chain. When an L2 module instead shares its id with the
-			// Ethereum one (config.example.json ships cosmos-to-eth and cosmos-to-op both
-			// on cosmoshub-1), the write-back succeeds and repoints the Ethereum module at
-			// a brand-new client the Ethereum-side SpectreClient was never registered
-			// against — every recvPacket then reverts on a counterparty mismatch and the
-			// original client is orphaned to expire.
+			// selectCosmosSource sets to the cosmos_to_l2 module when the file declares
+			// no cosmos_to_eth one: on such a file the Ethereum MsgCreateClient lands and
+			// the write-back then fails because no cosmos_to_eth module carries that id,
+			// leaving an orphaned client on chain. And a file that carried both, sharing
+			// one id (config.example.json ships cosmos-to-eth and cosmos-to-op both on
+			// cosmoshub-1), would have had the write-back succeed and repoint the
+			// Ethereum module at a brand-new client the Ethereum-side SpectreClient was
+			// never registered against — every recvPacket then reverts on a counterparty
+			// mismatch and the original client is orphaned to expire. One path per file
+			// closes that second case at parse time; the first still needs this guard.
 			//
 			// Splitting the invocations removes the ambiguity instead of trying to detect
 			// it, and matches the one-command-per-chain direction of #255.
@@ -346,7 +341,6 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 	}
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	cmd.Flags().String(flagWasmChecksum, "", "wasm checksum for Ethereum light client (hex)")
-	cmd.Flags().String(flagSource, "", "ics26_client_id of the cosmos_to_eth source to target (required when several are configured)")
 	cmd.Flags().StringArray(flagL2Config, nil, "path to an L2 client config JSON; repeatable, one per L2 rollup source — creates its L2 wasm client on Cosmos")
 	return cmd
 }
@@ -368,14 +362,7 @@ func CreateClientsEth(logger *zap.Logger) *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
-			source, err := cmd.Flags().GetString(flagSource)
-			if err != nil {
-				return fmt.Errorf("failed to get source flag: %w", err)
-			}
-			cfg, err = selectSource(cfg, source)
-			if err != nil {
-				return err
-			}
+			cfg = selectCosmosSource(cfg)
 			logConfigTarget(logger, "create-clients-eth", configPath, cfg)
 			if err := preflightCreateClients(cfg); err != nil {
 				return err
@@ -399,6 +386,5 @@ func CreateClientsEth(logger *zap.Logger) *cobra.Command {
 	cmd.Flags().String(flagConfigPath, "config.json", "path to JSON config file")
 	cmd.Flags().String(flagTrustLevel, "2/3", "trust level for Cosmos light client (e.g., 1/3, 2/3)")
 	cmd.Flags().Uint32(flagTrustingPeriod, 0, "trusting period in seconds for Cosmos light client (default: 2/3 of chain unbonding period)")
-	cmd.Flags().String(flagSource, "", "ics26_client_id of the cosmos_to_eth source or cosmos_to_l2 destination to target (required when several are configured)")
 	return cmd
 }

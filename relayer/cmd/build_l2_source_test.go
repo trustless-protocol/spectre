@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 
@@ -123,10 +122,10 @@ func TestLoadConfigForClientCreation_AcceptsUncreatedWasmClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfigForClientCreation rejected a pre-creation config: %v", err)
 	}
-	if len(cfg.L2ToCosmosConfigs) != 1 {
-		t.Fatalf("L2ToCosmosConfigs = %d, want 1", len(cfg.L2ToCosmosConfigs))
+	if !cfg.HasL2ToCosmos {
+		t.Fatal("HasL2ToCosmos = false, want the module recorded")
 	}
-	if got := cfg.L2ToCosmosConfigs[0].L2ICS26ClientID; got != "arb-client-0" {
+	if got := cfg.L2ToCosmosConfig.L2ICS26ClientID; got != "arb-client-0" {
 		t.Errorf("l2_ics26_client_id = %q, want arb-client-0", got)
 	}
 
@@ -140,7 +139,7 @@ func TestLoadConfigForClientCreation_AcceptsUncreatedWasmClient(t *testing.T) {
 	if err != nil {
 		t.Fatalf("loadConfig after write-back: %v", err)
 	}
-	if got := reloaded.L2ToCosmosConfigs[0].L2WasmClientID; got != "08-wasm-0" {
+	if got := reloaded.L2ToCosmosConfig.L2WasmClientID; got != "08-wasm-0" {
 		t.Errorf("l2_wasm_client_id = %q, want 08-wasm-0", got)
 	}
 }
@@ -216,7 +215,7 @@ func TestL2RouterFromProfile(t *testing.T) {
 }
 
 // TestLoadConfig_L2Source confirms an l2_to_cosmos module parses into
-// appConfig.L2ToCosmosConfigs (no longer the fail-loud "not wired" error).
+// appConfig.L2ToCosmosConfig (no longer the fail-loud "not wired" error).
 func TestLoadConfig_L2Source(t *testing.T) {
 	raw := `{"modules":[{"name":"op","src_chain":"opstack","dst_chain":"cosmos","config":{
 		"l1_rpc_url":"http://l1","l2_rpc_url":"http://l2","tm_rpc_url":"http://tm",
@@ -244,69 +243,6 @@ func TestLoadConfig_L2Source(t *testing.T) {
 	}
 	if one.kind != chain.OPStack || one.AttestorSrcChain != "op-sepolia" {
 		t.Fatalf("parsed config mismatch: %+v", one)
-	}
-}
-
-func TestLoadConfig_RejectsAttestorKeyReuseAcrossFinalityTiers(t *testing.T) {
-	module := func(name, head string, attestors [][]byte) configModule {
-		cfg := validL2Config()
-		cfg.HeadKind = head
-		cfg.Attestors.PublicKeys = attestors
-		raw, err := json.Marshal(cfg)
-		if err != nil {
-			t.Fatalf("marshal L2 config: %v", err)
-		}
-		return configModule{
-			Name: name, SrcChain: string(chain.OPStack), DstChain: string(chain.Cosmos), Config: raw,
-		}
-	}
-	writeConfig := func(modules []configModule) string {
-		t.Helper()
-		raw, err := json.Marshal(jsonConfig{Modules: modules})
-		if err != nil {
-			t.Fatalf("marshal config: %v", err)
-		}
-		path := filepath.Join(t.TempDir(), "config.json")
-		if err := os.WriteFile(path, raw, 0o600); err != nil {
-			t.Fatalf("write config: %v", err)
-		}
-		return path
-	}
-
-	shared := validL2Attestors().PublicKeys
-	_, err := loadConfig(writeConfig([]configModule{
-		module("op-safe", "safe", shared),
-		module("op-finalized", "finalized", shared),
-	}))
-	if err == nil || !strings.Contains(err.Error(), "reuse attestor public key") || !strings.Contains(err.Error(), "disjoint keys per finality tier") {
-		t.Fatalf("cross-tier key reuse error = %v", err)
-	}
-
-	distinct := make([]byte, len(shared[0]))
-	copy(distinct, shared[0])
-	distinct[0]--
-	overlapping := [][]byte{shared[0], distinct}
-	sort.Slice(overlapping, func(i, j int) bool { return string(overlapping[i]) < string(overlapping[j]) })
-	_, err = loadConfig(writeConfig([]configModule{
-		module("op-safe", "safe", shared),
-		module("op-finalized", "finalized", overlapping),
-	}))
-	if err == nil || !strings.Contains(err.Error(), "reuse attestor public key") {
-		t.Fatalf("partially overlapping cross-tier keys error = %v", err)
-	}
-
-	if _, err := loadConfig(writeConfig([]configModule{
-		module("op-safe-a", "safe", shared),
-		module("op-safe-b", "", shared),
-	})); err != nil {
-		t.Fatalf("same-tier key reuse rejected: %v", err)
-	}
-
-	if _, err := loadConfig(writeConfig([]configModule{
-		module("op-safe", "safe", shared),
-		module("op-finalized", "finalized", [][]byte{distinct}),
-	})); err != nil {
-		t.Fatalf("separate finality-tier key sets rejected: %v", err)
 	}
 }
 

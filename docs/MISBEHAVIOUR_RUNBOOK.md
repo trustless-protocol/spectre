@@ -128,7 +128,6 @@ export PROVER_BIN_DIR='./bin'
 cd relayer
 ./relayer submit-misbehaviour \
   --config config.json \
-  --source client-0 \
   --evidence evidence.json \
   --dry-run
 ```
@@ -148,7 +147,6 @@ export MISBEHAVIOUR_PRIVATE_KEY='<dedicated-key>'
 cd relayer
 ./relayer submit-misbehaviour \
   --config config.json \
-  --source client-0 \
   --evidence evidence.json
 ```
 

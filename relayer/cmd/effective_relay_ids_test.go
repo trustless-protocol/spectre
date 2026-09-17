@@ -14,21 +14,10 @@ import (
 func TestEffectiveRelayIDs(t *testing.T) {
 	cfg := cosmosToEthConfig{ICS26ClientID: "from-json", CosmosWasmClientID: "wasm-from-json"}
 
-	t.Run("without overrides the config wins", func(t *testing.T) {
+	t.Run("the environment wins, for both ids", func(t *testing.T) {
 		t.Setenv("ICS26_CLIENT_ID", "from-env")
 		t.Setenv("COSMOS_WASM_CLIENT_ID", "wasm-from-env")
-		ids := effectiveRelayIDs(cfg, false)
-		router, wasm := ids.router, ids.wasm
-		if router != "from-json" || wasm != "wasm-from-json" {
-			t.Fatalf("got (%q, %q), want the config values: a caller that disabled overrides "+
-				"must not silently get the environment's", router, wasm)
-		}
-	})
-
-	t.Run("with overrides the environment wins, for both ids", func(t *testing.T) {
-		t.Setenv("ICS26_CLIENT_ID", "from-env")
-		t.Setenv("COSMOS_WASM_CLIENT_ID", "wasm-from-env")
-		ids := effectiveRelayIDs(cfg, true)
+		ids := effectiveRelayIDs(cfg)
 		router, wasm := ids.router, ids.wasm
 		if router != "from-env" || wasm != "wasm-from-env" {
 			t.Fatalf("got (%q, %q), want the environment values", router, wasm)
@@ -38,7 +27,7 @@ func TestEffectiveRelayIDs(t *testing.T) {
 	t.Run("an unset override leaves the config value", func(t *testing.T) {
 		t.Setenv("ICS26_CLIENT_ID", "")
 		t.Setenv("COSMOS_WASM_CLIENT_ID", "")
-		ids := effectiveRelayIDs(cfg, true)
+		ids := effectiveRelayIDs(cfg)
 		router, wasm := ids.router, ids.wasm
 		if router != "from-json" || wasm != "wasm-from-json" {
 			t.Fatalf("got (%q, %q); an empty override must not erase the configured id", router, wasm)
@@ -55,7 +44,7 @@ func TestStateDirFollowsTheOverride(t *testing.T) {
 
 	dirFor := func(override string) string {
 		t.Setenv("ICS26_CLIENT_ID", override)
-		return relayStateDir(configPath, "cosmos-to-eth", effectiveRelayIDs(cfg, true))
+		return relayStateDir(configPath, "cosmos-to-eth", effectiveRelayIDs(cfg))
 	}
 
 	first := dirFor("client-a")
@@ -81,8 +70,8 @@ func TestTwoConfigsOnOneEffectivePairShareOneStateDir(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	t.Setenv("ICS26_CLIENT_ID", "the-real-client")
 
-	one := effectiveRelayIDs(cosmosToEthConfig{ICS26ClientID: "stale-a"}, true)
-	two := effectiveRelayIDs(cosmosToEthConfig{ICS26ClientID: "stale-b"}, true)
+	one := effectiveRelayIDs(cosmosToEthConfig{ICS26ClientID: "stale-a"})
+	two := effectiveRelayIDs(cosmosToEthConfig{ICS26ClientID: "stale-b"})
 
 	dirOne := relayStateDir(configPath, "cosmos-to-eth", one)
 	dirTwo := relayStateDir(configPath, "cosmos-to-eth", two)
@@ -93,11 +82,10 @@ func TestTwoConfigsOnOneEffectivePairShareOneStateDir(t *testing.T) {
 	}
 }
 
-// allowEnvOverride is not a statement about identity. It means "the environment
-// may not speak for a source the operator selected by name", and it has to hold
-// for every value the environment could otherwise override -- which the
-// role-manager address did not, after the identity fix moved the client ids to
-// the caller and left this one reading the environment in the builder.
+// Every value the environment may override for a source is decided in one
+// place, beside effectiveRelayIDs -- which the role-manager address was not,
+// after the identity fix moved the client ids to the caller and left this one
+// reading the environment in the builder.
 //
 // It is not cosmetic: RouterManagesProofSubmission compares this address with
 // the router to choose ICS26Router versus direct SpectreClient submission, so a
@@ -105,71 +93,26 @@ func TestTwoConfigsOnOneEffectivePairShareOneStateDir(t *testing.T) {
 func TestEffectiveRoleManager(t *testing.T) {
 	cfg := cosmosToEthConfig{ICS26Address: "0xfromconfig"}
 
-	t.Run("the environment is ignored when overrides are disabled", func(t *testing.T) {
-		t.Setenv("ROLE_MANAGER", "0xstale")
-		if got := effectiveRoleManager(cfg, false); got != "0xfromconfig" {
-			t.Fatalf("role manager = %q, want the config's: a selected source must not read a stale environment", got)
-		}
-	})
-
-	t.Run("the environment wins when overrides are allowed", func(t *testing.T) {
+	t.Run("the environment wins", func(t *testing.T) {
 		t.Setenv("ROLE_MANAGER", "0xfromenv")
-		if got := effectiveRoleManager(cfg, true); got != "0xfromenv" {
+		if got := effectiveRoleManager(cfg); got != "0xfromenv" {
 			t.Fatalf("role manager = %q, want the override", got)
 		}
 	})
 
-	t.Run("an unset variable falls back to the config either way", func(t *testing.T) {
+	t.Run("an unset variable falls back to the config", func(t *testing.T) {
 		t.Setenv("ROLE_MANAGER", "")
-		for _, allow := range []bool{true, false} {
-			if got := effectiveRoleManager(cfg, allow); got != "0xfromconfig" {
-				t.Fatalf("role manager = %q with allow=%v, want the config's", got, allow)
-			}
+		if got := effectiveRoleManager(cfg); got != "0xfromconfig" {
+			t.Fatalf("role manager = %q, want the config's", got)
 		}
 	})
 }
 
-// The case the review named: a multi-source config narrowed with --source.
-// submit-misbehaviour computes the decision on the ORIGINAL config, before
-// selectSource narrows it, so narrowing cannot make a multi-source file look
-// single-source and re-enable the environment.
-func TestSelectedSourceIgnoresTheEnvironmentEntirely(t *testing.T) {
-	t.Setenv("ICS26_CLIENT_ID", "stale-router")
-	t.Setenv("COSMOS_WASM_CLIENT_ID", "stale-wasm")
-	t.Setenv("ROLE_MANAGER", "0xstale")
-
-	multi := &appConfig{CosmosToEthConfigs: []cosmosToEthConfig{
-		{ICS26ClientID: "chain-a", CosmosWasmClientID: "08-wasm-a", ICS26Address: "0xrouter-a"},
-		{ICS26ClientID: "chain-b", CosmosWasmClientID: "08-wasm-b", ICS26Address: "0xrouter-b"},
-	}}
-	if allowMisbehaviourEnvOverride(multi) {
-		t.Fatal("a two-source config allowed environment overrides; --source would then be overridable")
-	}
-
-	selected, err := selectSource(multi, "chain-b")
-	if err != nil {
-		t.Fatalf("selectSource: %v", err)
-	}
-	// The decision is taken on the original config, which is why it is passed in
-	// rather than recomputed from the narrowed one.
-	allow := allowMisbehaviourEnvOverride(multi)
-
-	ids := effectiveRelayIDs(selected.CosmosToEthConfig, allow)
-	// Both ids exactly, not "one of them": a condition that accepted either would
-	// pass even if selectSource had narrowed to the wrong source.
-	if ids.router != "chain-b" || ids.wasm != "08-wasm-b" {
-		t.Fatalf("ids = %+v, want {router: chain-b, wasm: 08-wasm-b}", ids)
-	}
-	if got := effectiveRoleManager(selected.CosmosToEthConfig, allow); got != "0xrouter-b" {
-		t.Fatalf("role manager = %q, want the selected source's 0xrouter-b; a stale value picks the wrong submission path", got)
-	}
-}
-
 // The structural half. Both regressions on this PR were the same shape: a value
-// the environment can override, resolved inside the builder, where the
-// allow/disable decision is not in scope. The fix moved every one of them to the
-// caller, and this is what keeps them there -- a new override added inside the
-// builder makes this red instead of silently escaping the rule.
+// the environment can override, resolved inside the builder rather than in the
+// caller beside the others. The fix moved every one of them to the caller, and
+// this is what keeps them there -- a new override added inside the builder makes
+// this red instead of silently escaping the rule.
 func TestBuilderReadsNoEnvironmentItself(t *testing.T) {
 	src, err := os.ReadFile("build_source.go")
 	if err != nil {
@@ -188,7 +131,7 @@ func TestBuilderReadsNoEnvironmentItself(t *testing.T) {
 	}
 	if strings.Contains(rest[:end], "envOrDefault(") {
 		t.Fatal("buildCosmosToEthSource reads the environment directly; resolve it in the caller " +
-			"beside effectiveRelayIDs/effectiveRoleManager, where allowEnvOverride is known")
+			"beside effectiveRelayIDs/effectiveRoleManager, where every override is decided")
 	}
 }
 
@@ -211,7 +154,7 @@ func TestStateDirTracksBothHalvesOfTheEffectivePair(t *testing.T) {
 		t.Helper()
 		t.Setenv("ICS26_CLIENT_ID", router)
 		t.Setenv("COSMOS_WASM_CLIENT_ID", wasm)
-		return relayStateDir(configPath, "cosmos-to-eth", effectiveRelayIDs(cfg, true))
+		return relayStateDir(configPath, "cosmos-to-eth", effectiveRelayIDs(cfg))
 	}
 
 	t.Run("the wasm half alone", func(t *testing.T) {

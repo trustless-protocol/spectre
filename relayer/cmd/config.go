@@ -54,7 +54,6 @@ const (
 	flagTargetHeight   = "target-height"
 	flagMaxHops        = "max-hops"
 	flagWasmChecksum   = "wasm-checksum"
-	flagSource         = "source"
 	flagBenchmark      = "benchmark"
 	configFilePerm     = 0o600
 )
@@ -193,35 +192,40 @@ type jsonConfig struct {
 	StatusAllowControl bool `json:"status_allow_control"`
 }
 
+// appConfig is one relay path: one process serves exactly one source →
+// destination pair (A1), and loadConfig rejects a file declaring more at parse
+// time (rejectExtraRelayPaths). So each direction is a single value with a
+// presence flag, never a list -- there is nothing to iterate, select from, or
+// disambiguate with a --source flag, and every command reads the field for the
+// direction it wants.
+//
+// The presence flags matter because a zero value is a legal-looking config: an
+// absent module and a configured module with every field empty must fail
+// differently (nothing to relay vs. a field to fill in).
 type appConfig struct {
-	// CosmosToEthConfig is the first configured Cosmos→ETH source. Retained for
-	// the single-source commands (create-clients*, update-client) and the env
-	// override helpers, which operate on one source at a time. It equals
-	// CosmosToEthConfigs[0] when at least one source is configured.
+	// HasCosmosToEth / CosmosToEthConfig: the Cosmos→ETH source. The same
+	// module also drives the ETH→Cosmos leg (runAdapterEngine), with
+	// eth_to_cosmos supplying only the beacon URL.
+	HasCosmosToEth    bool
 	CosmosToEthConfig cosmosToEthConfig
-	// CosmosToEthConfigs holds every configured Cosmos→ETH source in file order.
-	// `start` runs one independent relay loop per entry, so a second Cosmos
-	// source is just another `cosmos_to_eth` module — same circuit, prover and
-	// ETH contracts, a different Tendermint RPC and ICS-07 client.
-	CosmosToEthConfigs []cosmosToEthConfig
-	// CosmosToL2Configs holds every configured Cosmos→L2 destination in file order.
-	// Same schema as cosmos_to_eth (the groth16 path covers Cosmos → any EVM), but
-	// pointed at an L2 rollup's exec RPC + its deployed SpectreClient/ICS26Router;
-	// `start` runs one independent cosmos→l2 relay loop per entry.
-	CosmosToL2Configs []cosmosToEthConfig
-	// CosmosToL2Names mirrors CosmosToL2Configs and carries the config module labels
-	// used in startup diagnostics.
-	CosmosToL2Names []string
+	// HasCosmosToL2 / CosmosToL2Config: the Cosmos→L2 destination. Same schema
+	// as cosmos_to_eth (the groth16 path covers Cosmos → any EVM), pointed at an
+	// L2 rollup's exec RPC + its deployed SpectreClient/ICS26Router.
+	// CosmosToL2Name is the module's label, for startup diagnostics.
+	HasCosmosToL2    bool
+	CosmosToL2Config cosmosToEthConfig
+	CosmosToL2Name   string
 	// HasEthToCosmos records whether the direction was explicitly configured.
 	// It distinguishes an absent module from a configured module with an empty
 	// beacon endpoint, which must fail validation instead of silently disabling
 	// the ETH→Cosmos relay.
 	HasEthToCosmos    bool
 	EthToCosmosConfig ethToCosmosConfig
-	// L2ToCosmosConfigs holds every configured L2 (opstack/arbitrum) → Cosmos source
-	// in file order; `start` runs one independent relay module per entry.
-	L2ToCosmosConfigs []l2ToCosmosConfig
-	BatchConfig       services.BatchConfig
+	// HasL2ToCosmos / L2ToCosmosConfig: the L2 (opstack/arbitrum) → Cosmos
+	// source, the return leg of a Cosmos↔L2 path.
+	HasL2ToCosmos    bool
+	L2ToCosmosConfig l2ToCosmosConfig
+	BatchConfig      services.BatchConfig
 	// StatusAddress is the bind address for the read-only status endpoint, empty
 	// when it is off. Off is the default: adding a status feature must not make a
 	// relayer that was never asked to bind a port start listening.
@@ -694,17 +698,25 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 		return nil, fmt.Errorf("batch_config is deprecated; use batch")
 	}
 
-	var c2e cosmosToEthConfig
-	var c2eList []cosmosToEthConfig
-	var c2eNames []string
-	var c2l2List []cosmosToEthConfig
-	var c2l2Names []string
-	var l2List []l2ToCosmosConfig
-	type finalityOwner struct {
-		module string
-		head   string
+	// One relay path per file (A1), decided before any module is parsed in full:
+	// a file with two paths is refused for that reason alone, not for a missing
+	// field in the second one. Everything below therefore parses each direction
+	// into a single value.
+	census, err := censusRelayPaths(jc.Modules)
+	if err != nil {
+		return nil, err
 	}
-	seenAttestorKeyFinality := make(map[[32]byte]finalityOwner)
+	if err := rejectExtraRelayPaths(configPath, census); err != nil {
+		return nil, err
+	}
+
+	var (
+		c2e, c2l2         cosmosToEthConfig
+		c2eName, c2l2Name string
+		hasC2E, hasC2L2   bool
+		l2                l2ToCosmosConfig
+		hasL2             bool
+	)
 	var e2c ethToCosmosConfig
 	var hasEthToCosmos bool
 	batch := services.DefaultConfig().BatchConfig
@@ -731,8 +743,7 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 			if one.ICS26ClientID == "" && isLegacy {
 				one.ICS26ClientID = m.SrcChain
 			}
-			c2eList = append(c2eList, one)
-			c2eNames = append(c2eNames, m.Name)
+			c2e, c2eName, hasC2E = one, m.Name, true
 		case dirEthToCosmos:
 			hasEthToCosmos = true
 			if err := json.Unmarshal(m.Config, &e2c); err != nil {
@@ -744,8 +755,7 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 			if err := json.Unmarshal(m.Config, &one); err != nil {
 				return nil, fmt.Errorf("module %q: parse cosmos_to_l2 config: %w", m.Name, err)
 			}
-			c2l2List = append(c2l2List, one)
-			c2l2Names = append(c2l2Names, m.Name)
+			c2l2, c2l2Name, hasC2L2 = one, m.Name, true
 		case dirL2ToCosmos:
 			var one l2ToCosmosConfig
 			if err := json.Unmarshal(m.Config, &one); err != nil {
@@ -755,42 +765,16 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 			if err := one.validateWith(requireL2WasmClientID); err != nil {
 				return nil, fmt.Errorf("module %q: %w", m.Name, err)
 			}
-			head, err := parseHeadKind(one.HeadKind)
-			if err != nil {
+			if _, err := parseHeadKind(one.HeadKind); err != nil {
 				return nil, fmt.Errorf("module %q: %w", m.Name, err)
 			}
-			for _, publicKey := range one.Attestors.PublicKeys {
-				var key [32]byte
-				copy(key[:], publicKey)
-				if owner, exists := seenAttestorKeyFinality[key]; exists && owner.head != head.String() {
-					return nil, fmt.Errorf(
-						"modules %q (%s) and %q (%s) reuse attestor public key %x across different head_kind values; provision disjoint keys per finality tier",
-						owner.module, owner.head, m.Name, head.String(), key,
-					)
-				}
-				seenAttestorKeyFinality[key] = finalityOwner{module: m.Name, head: head.String()}
-			}
-			l2List = append(l2List, one)
+			l2, hasL2 = one, true
 		}
-	}
-	if len(c2eList) > 0 {
-		c2e = c2eList[0]
 	}
 
-	// Validate every cosmos_to_eth source. Distinct sources must not collide on
-	// the ICS-26 client id, or their ETH event streams (filtered by that id)
-	// would cross-feed.
-	seenClientIDs := make(map[string]struct{}, len(c2eList))
-	for i := range c2eList {
-		if err := validateCosmosToEthConfig(c2eList[i], moduleFieldPrefix(c2eNames[i], dirCosmosToEth)); err != nil {
+	if hasC2E {
+		if err := validateCosmosToEthConfig(c2e, moduleFieldPrefix(c2eName, dirCosmosToEth)); err != nil {
 			return nil, err
-		}
-		id := c2eList[i].ICS26ClientID
-		if id != "" {
-			if _, dup := seenClientIDs[id]; dup {
-				return nil, fmt.Errorf("duplicate cosmos_to_eth ics26_client_id %q; each source needs a distinct client id", id)
-			}
-			seenClientIDs[id] = struct{}{}
 		}
 	}
 
@@ -812,34 +796,115 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 		}
 	}
 
-	// Validate every cosmos_to_l2 destination (same schema/checks as cosmos_to_eth);
-	// distinct destinations must not collide on the ICS-26 client id.
-	seenL2ClientIDs := make(map[string]struct{}, len(c2l2List))
-	for i := range c2l2List {
-		if err := validateCosmosToEthConfig(c2l2List[i], moduleFieldPrefix(c2l2Names[i], dirCosmosToL2)); err != nil {
+	// Same schema and checks as cosmos_to_eth for the L2 destination.
+	if hasC2L2 {
+		if err := validateCosmosToEthConfig(c2l2, moduleFieldPrefix(c2l2Name, dirCosmosToL2)); err != nil {
 			return nil, err
-		}
-		id := c2l2List[i].ICS26ClientID
-		if id != "" {
-			if _, dup := seenL2ClientIDs[id]; dup {
-				return nil, fmt.Errorf("duplicate cosmos_to_l2 ics26_client_id %q; each destination needs a distinct client id", id)
-			}
-			seenL2ClientIDs[id] = struct{}{}
 		}
 	}
 
 	return &appConfig{
+		HasCosmosToEth:     hasC2E,
 		CosmosToEthConfig:  c2e,
-		CosmosToEthConfigs: c2eList,
-		CosmosToL2Configs:  c2l2List,
-		CosmosToL2Names:    c2l2Names,
+		HasCosmosToL2:      hasC2L2,
+		CosmosToL2Config:   c2l2,
+		CosmosToL2Name:     c2l2Name,
 		HasEthToCosmos:     hasEthToCosmos,
 		EthToCosmosConfig:  e2c,
-		L2ToCosmosConfigs:  l2List,
+		HasL2ToCosmos:      hasL2,
+		L2ToCosmosConfig:   l2,
 		BatchConfig:        batch,
 		StatusAddress:      jc.StatusAddress,
 		StatusAllowControl: jc.StatusAllowControl,
 	}, nil
+}
+
+// relayPathCensus is what rejectExtraRelayPaths needs and nothing more: how many
+// paths the file declares and what to call each one.
+type relayPathCensus struct {
+	// declared names every relay module, by the field an operator edits it by.
+	declared []string
+	// Legs, not paths: a cosmos_to_l2 destination and an l2_to_cosmos source pair
+	// up into one Cosmos↔L2 path, so those two are counted separately and
+	// combined by rejectExtraRelayPaths.
+	cosmosToEth, cosmosToL2Legs, l2ToCosmosLegs int
+}
+
+// censusRelayPaths reads only each module's direction and identity, before any
+// module is parsed in full. A malformed config body is left for the full parse
+// to report, in the words that name the field; here it just means "no id".
+func censusRelayPaths(modules []configModule) (relayPathCensus, error) {
+	var c relayPathCensus
+	for _, m := range modules {
+		dir, isLegacy, err := classifyModule(m)
+		if err != nil {
+			return c, err
+		}
+		var id struct {
+			ICS26ClientID    string `json:"ics26_client_id"`
+			AttestorSrcChain string `json:"attestor_src_chain"`
+		}
+		if len(m.Config) > 0 {
+			_ = json.Unmarshal(m.Config, &id)
+		}
+		switch dir {
+		case dirCosmosToEth:
+			// Legacy configs overloaded src_chain as the ics26_client_id fallback.
+			if id.ICS26ClientID == "" && isLegacy {
+				id.ICS26ClientID = m.SrcChain
+			}
+			c.cosmosToEth++
+			c.declared = append(c.declared, fmt.Sprintf("cosmos_to_eth ics26_client_id=%q", id.ICS26ClientID))
+		case dirCosmosToL2:
+			c.cosmosToL2Legs++
+			c.declared = append(c.declared, fmt.Sprintf("cosmos_to_l2 ics26_client_id=%q%s", id.ICS26ClientID, moduleNameSuffix(m.Name)))
+		case dirL2ToCosmos:
+			c.l2ToCosmosLegs++
+			c.declared = append(c.declared, fmt.Sprintf("l2_to_cosmos attestor_src_chain=%q", id.AttestorSrcChain))
+		}
+	}
+	return c, nil
+}
+
+// rejectExtraRelayPaths is where one-process-one-pair is enforced: at parse
+// time, before an appConfig exists, so nothing downstream ever holds more than
+// one module per direction -- no lists, no loops that run at most once, no
+// --source flag to pick among them.
+//
+// The rule is not a simplification for its own sake — running several paths in one
+// process is what forces every shared structure between them: one nonce cache
+// across unrelated chains (#320), one error path where a single dead loop takes
+// the others down (#321), and one state directory two paths write into. A process per
+// path removes all three by construction, so the blast radius of a failure is that
+// path alone.
+//
+// A Cosmos→L2 destination and its L2→Cosmos return leg are ONE pair: they relay
+// opposite directions of the same path, and the return leg resolves its timeout
+// path from the forward one (findL2TimeoutReturnPath). So the number of Cosmos↔L2
+// paths is however many legs the longer side declares. The Cosmos↔ETH pair needs no
+// equivalent grouping — runAdapterEngine already drives both directions from a
+// single cosmos_to_eth module, with eth_to_cosmos supplying only the beacon URL.
+//
+// The error names every path the file declares, individually rather than paired
+// up: which forward leg a return leg belongs to is resolved at runtime from the
+// L2 chain id, so pairing them here by file order would name the wrong partner
+// exactly when the counts disagree — the case this error exists for. And it
+// shows the way out, because telling the operator what is wrong without the
+// split command leaves them editing the config at random.
+func rejectExtraRelayPaths(configPath string, c relayPathCensus) error {
+	if c.cosmosToEth+max(c.cosmosToL2Legs, c.l2ToCosmosLegs) <= 1 {
+		return nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s declares more than one relay path, but one relayer process serves exactly one source → destination pair.\n", configPath)
+	b.WriteString("declared:\n")
+	for _, d := range c.declared {
+		fmt.Fprintf(&b, "  %s\n", d)
+	}
+	b.WriteString("a cosmos_to_l2 destination and its l2_to_cosmos return leg are one path; everything else is a path of its own.\n")
+	b.WriteString("keep one path per config file and start one process per file:\n")
+	b.WriteString("  ./relayer start --config <one-path>.json")
+	return fmt.Errorf("%s", b.String())
 }
 
 // validateRelayStartupConfig rejects a config that would start the relay loop
@@ -853,26 +918,21 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 // and then runs half-dead — the forward direction works, nothing ever picks up an
 // acknowledgement, and no later line says why. Fail before the prover load instead.
 //
-// Every source is checked, not just the first: runAdapterEngine spawns an
-// eth->cosmos leg per cosmos_to_eth source, and each leg subscribes with that
-// source's own eth_ws_url (build_source.go passes c2e.EthWsUrl into its context).
-// Validating only CosmosToEthConfigs[0] left every later source free to fail
-// exactly this way.
+// The eth->cosmos leg subscribes with the cosmos_to_eth module's own eth_ws_url
+// (build_source.go passes c2e.EthWsUrl into its context), so that is the field
+// checked.
 func validateRelayStartupConfig(cfg *appConfig) error {
-	if cfg == nil || !cfg.HasEthToCosmos {
+	if cfg == nil || !cfg.HasEthToCosmos || !cfg.HasCosmosToEth {
 		return nil
 	}
-	for i := range cfg.CosmosToEthConfigs {
-		if cfg.CosmosToEthConfigs[i].EthWsUrl != "" {
-			continue
-		}
-		return fmt.Errorf(
-			"eth_to_cosmos is configured but cosmos_to_eth[%d] (ics26_client_id %q) has an empty eth_ws_url; "+
-				"the ETH→Cosmos direction subscribes to ICS26Router events over eth_subscribe "+
-				"and cannot run without a ws:// or wss:// endpoint",
-			i, cfg.CosmosToEthConfigs[i].ICS26ClientID)
+	if cfg.CosmosToEthConfig.EthWsUrl != "" {
+		return nil
 	}
-	return nil
+	return fmt.Errorf(
+		"eth_to_cosmos is configured but cosmos_to_eth (ics26_client_id %q) has an empty eth_ws_url; "+
+			"the ETH→Cosmos direction subscribes to ICS26Router events over eth_subscribe "+
+			"and cannot run without a ws:// or wss:// endpoint",
+		cfg.CosmosToEthConfig.ICS26ClientID)
 }
 
 // resolveBeaconURL returns the L1 beacon endpoint to create/advance the Ethereum
@@ -1019,137 +1079,39 @@ func cosmosWasmClientIDOrDefault(cfg *appConfig) string {
 	return envOrDefault("COSMOS_WASM_CLIENT_ID", cfg.CosmosToEthConfig.CosmosWasmClientID)
 }
 
-// selectSource returns a shallow copy of cfg whose singular CosmosToEthConfig is
-// the source identified by clientID, so the single-source create-clients flow
-// (preflight, run funcs, config write-back) targets the chosen source. An empty
-// clientID selects the sole source, or errors when several are configured.
-// Legacy configs without a parsed slice fall back to the singular config.
-// selectSource picks the create-clients target by ics26_client_id. It searches both
-// cosmos_to_eth sources and cosmos_to_l2 destinations: the L2 destination's ETH-side
-// (its SpectreClient + ICS26Router on the L2) is created by the same create-clients-eth
-// flow — a cosmos_to_l2 entry is the same config struct pointed at the L2 exec RPC, so
-// the selected entry is placed in CosmosToEthConfig and the downstream deploy/write-back
-// treat it uniformly.
-func selectSource(cfg *appConfig, clientID string) (*appConfig, error) {
-	eth := cfg.CosmosToEthConfigs
-	l2 := cfg.CosmosToL2Configs
-	total := len(eth) + len(l2)
-
-	// Legacy single-config path (no modules parsed into the lists).
-	if total == 0 {
-		if clientID != "" && clientID != cfg.CosmosToEthConfig.ICS26ClientID {
-			return nil, fmt.Errorf("no cosmos_to_eth or cosmos_to_l2 source with ics26_client_id %q", clientID)
-		}
-		return cfg, nil
+// selectCosmosSource returns a shallow copy of cfg whose singular
+// CosmosToEthConfig is the Cosmos→EVM module the file declares, so the
+// create-clients and submit-misbehaviour flows (preflight, run funcs, config
+// write-back) read one field whichever direction they serve.
+//
+// This is the promotion half of what used to be --source selection. The
+// disambiguation half is gone with the lists: one path per file means there is
+// nothing to pick among. The promotion stays because a cosmos_to_l2 entry is the
+// same config struct pointed at the L2 exec RPC -- its ETH side (the SpectreClient
+// + ICS26Router on the L2) is created by the same create-clients-eth flow -- and
+// that flow reads CosmosToEthConfig. With neither module declared the config is
+// returned as is; the command's own preflight then reports the empty endpoint.
+func selectCosmosSource(cfg *appConfig) *appConfig {
+	if cfg.HasCosmosToEth || !cfg.HasCosmosToL2 {
+		return cfg
 	}
-
-	pick := func(c cosmosToEthConfig) *appConfig {
-		out := *cfg
-		out.CosmosToEthConfig = c
-		return &out
-	}
-
-	if clientID == "" {
-		if total == 1 {
-			if len(eth) == 1 {
-				return pick(eth[0]), nil
-			}
-			return pick(l2[0]), nil
-		}
-		ids := make([]string, 0, total)
-		for i := range eth {
-			ids = append(ids, eth[i].ICS26ClientID)
-		}
-		for i := range l2 {
-			ids = append(ids, l2[i].ICS26ClientID)
-		}
-		return nil, fmt.Errorf("config has %d cosmos_to_eth/cosmos_to_l2 sources (%s); pass --source <ics26_client_id> to pick one",
-			total, strings.Join(ids, ", "))
-	}
-	for i := range eth {
-		if eth[i].ICS26ClientID == clientID {
-			return pick(eth[i]), nil
-		}
-	}
-	for i := range l2 {
-		if l2[i].ICS26ClientID == clientID {
-			return pick(l2[i]), nil
-		}
-	}
-	return nil, fmt.Errorf("no cosmos_to_eth or cosmos_to_l2 source with ics26_client_id %q", clientID)
+	out := *cfg
+	out.CosmosToEthConfig = cfg.CosmosToL2Config
+	return &out
 }
 
-// validateSingleRelayPair enforces that one `start` process serves exactly one
-// source → destination pair.
-//
-// The rule is not a simplification for its own sake — running several paths in one
-// process is what forces every shared structure between them: one nonce cache
-// across unrelated chains (#320), one error path where a single dead loop takes
-// the others down (#321), and one state directory two paths write into. A process per
-// path removes all three by construction, so the blast radius of a failure is that
-// path alone.
-//
-// A Cosmos→L2 destination and its L2→Cosmos return leg are ONE pair: they relay
-// opposite directions of the same path, and the return leg resolves its timeout
-// path from the forward one (findL2TimeoutReturnPath). The Cosmos↔ETH pair needs no
-// equivalent grouping — runAdapterEngine already drives both directions from a
-// single cosmos_to_eth module, with eth_to_cosmos supplying only the beacon URL.
+// requireRelayPath is `start`'s half of the one-path rule: loadConfig has already
+// refused a file with more than one path (rejectExtraRelayPaths), so what is left
+// to check is that there is one at all. `start` with nothing to relay is a config
+// mistake, not an idle process.
 //
 // This runs before the prover load so a config mistake surfaces at once rather than
 // after the bucket registry is read.
-func validateSingleRelayPair(cfg *appConfig, configPath string) error {
-	if cfg == nil {
+func requireRelayPath(cfg *appConfig, configPath string) error {
+	if cfg == nil || !(cfg.HasCosmosToEth || cfg.HasCosmosToL2 || cfg.HasL2ToCosmos) {
 		return fmt.Errorf("no relay source configured in %s (need a cosmos_to_eth, cosmos_to_l2, or l2_to_cosmos module)", configPath)
 	}
-
-	declared := declaredRelayPaths(cfg)
-	if len(declared) == 0 {
-		return fmt.Errorf("no relay source configured in %s (need a cosmos_to_eth, cosmos_to_l2, or l2_to_cosmos module)", configPath)
-	}
-
-	// Count paths, not modules: the L2 forward and return legs pair up, so the
-	// number of Cosmos↔L2 paths is however many legs the longer side declares.
-	l2Paths := len(cfg.CosmosToL2Configs)
-	if n := len(cfg.L2ToCosmosConfigs); n > l2Paths {
-		l2Paths = n
-	}
-	if len(cfg.CosmosToEthConfigs)+l2Paths <= 1 {
-		return nil
-	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "%s declares more than one relay path, but one relayer process serves exactly one source → destination pair.\n", configPath)
-	b.WriteString("declared:\n")
-	for _, d := range declared {
-		fmt.Fprintf(&b, "  %s\n", d)
-	}
-	b.WriteString("a cosmos_to_l2 destination and its l2_to_cosmos return leg are one path; everything else is a path of its own.\n")
-	b.WriteString("keep one path per config file and start one process per file:\n")
-	b.WriteString("  ./relayer start --config <one-path>.json")
-	return fmt.Errorf("%s", b.String())
-}
-
-// declaredRelayPaths lists every relay module the config declares, each identified
-// by the field an operator edits it by. Modules are listed individually rather than
-// paired up: which forward leg a return leg belongs to is resolved at runtime from
-// the L2 chain id, so pairing them here by file order would name the wrong partner
-// exactly when the counts disagree — the case this error exists for.
-func declaredRelayPaths(cfg *appConfig) []string {
-	out := make([]string, 0, len(cfg.CosmosToEthConfigs)+len(cfg.CosmosToL2Configs)+len(cfg.L2ToCosmosConfigs))
-	for i := range cfg.CosmosToEthConfigs {
-		out = append(out, fmt.Sprintf("cosmos_to_eth ics26_client_id=%q", cfg.CosmosToEthConfigs[i].ICS26ClientID))
-	}
-	for i := range cfg.CosmosToL2Configs {
-		name := ""
-		if i < len(cfg.CosmosToL2Names) {
-			name = cfg.CosmosToL2Names[i]
-		}
-		out = append(out, fmt.Sprintf("cosmos_to_l2 ics26_client_id=%q%s", cfg.CosmosToL2Configs[i].ICS26ClientID, moduleNameSuffix(name)))
-	}
-	for i := range cfg.L2ToCosmosConfigs {
-		out = append(out, fmt.Sprintf("l2_to_cosmos attestor_src_chain=%q", cfg.L2ToCosmosConfigs[i].AttestorSrcChain))
-	}
-	return out
+	return nil
 }
 
 // relayPathID names the single relay path this process serves, compactly enough
@@ -1168,19 +1130,19 @@ func declaredRelayPaths(cfg *appConfig) []string {
 // apart. That merge is the problem this solves.
 func relayPathID(cfg *appConfig) string {
 	switch {
-	case len(cfg.CosmosToEthConfigs) > 0:
-		return "cosmos<->eth/" + cfg.CosmosToEthConfigs[0].ICS26ClientID
-	case len(cfg.CosmosToL2Configs) > 0:
+	case cfg.HasCosmosToEth:
+		return "cosmos<->eth/" + cfg.CosmosToEthConfig.ICS26ClientID
+	case cfg.HasCosmosToL2:
 		// Prefer the rollup's own name over a generic "l2": the return leg names
 		// the chain family (opstack / arbitrum / base) and an operator running two
 		// rollups needs to tell them apart.
 		kind := "l2"
-		if len(cfg.L2ToCosmosConfigs) > 0 && cfg.L2ToCosmosConfigs[0].AttestorSrcChain != "" {
-			kind = cfg.L2ToCosmosConfigs[0].AttestorSrcChain
+		if cfg.HasL2ToCosmos && cfg.L2ToCosmosConfig.AttestorSrcChain != "" {
+			kind = cfg.L2ToCosmosConfig.AttestorSrcChain
 		}
-		return "cosmos<->" + kind + "/" + cfg.CosmosToL2Configs[0].ICS26ClientID
-	case len(cfg.L2ToCosmosConfigs) > 0:
-		return cfg.L2ToCosmosConfigs[0].AttestorSrcChain + "->cosmos"
+		return "cosmos<->" + kind + "/" + cfg.CosmosToL2Config.ICS26ClientID
+	case cfg.HasL2ToCosmos:
+		return cfg.L2ToCosmosConfig.AttestorSrcChain + "->cosmos"
 	}
 	return "relayer"
 }
@@ -1219,11 +1181,9 @@ func moduleNameSuffix(name string) string {
 // Every finding is collected before returning rather than failing on the first.
 // A config with three wrong keys should take one run to diagnose, not three.
 //
-// It runs after validateSingleRelayPair, so every module list below holds at
-// most one entry. The lists are still walked rather than indexed: an empty list
-// is the normal shape for the direction this process does not serve, and a
-// first-entry-only check is the bug validateRelayStartupConfig was written to
-// fix.
+// It runs on a config loadConfig has already reduced to one path, so each
+// direction below is a single value behind a presence flag. An absent direction
+// is the normal shape for the one this process does not serve.
 //
 // NOT HERE, deliberately — the attestor half. Two checks belong to this
 // validation by intent and cannot be written correctly yet:
@@ -1388,8 +1348,8 @@ func validateCosmosChainID(stdCtx context.Context, cfg *appConfig) []configFindi
 }
 
 // cosmosEndpointsInConfig returns each distinct tm_rpc_url in the config, in file
-// order. Every relay direction here has a Cosmos side, so all three module lists
-// contribute one.
+// order. Every relay direction here has a Cosmos side, so each declared
+// direction contributes one.
 func cosmosEndpointsInConfig(cfg *appConfig) []string {
 	var urls []string
 	seen := map[string]bool{}
@@ -1400,14 +1360,14 @@ func cosmosEndpointsInConfig(cfg *appConfig) []string {
 		seen[u] = true
 		urls = append(urls, u)
 	}
-	for i := range cfg.CosmosToEthConfigs {
-		add(cfg.CosmosToEthConfigs[i].TmRpcUrl)
+	if cfg.HasCosmosToEth {
+		add(cfg.CosmosToEthConfig.TmRpcUrl)
 	}
-	for i := range cfg.CosmosToL2Configs {
-		add(cfg.CosmosToL2Configs[i].TmRpcUrl)
+	if cfg.HasCosmosToL2 {
+		add(cfg.CosmosToL2Config.TmRpcUrl)
 	}
-	for i := range cfg.L2ToCosmosConfigs {
-		add(cfg.L2ToCosmosConfigs[i].TmRpcUrl)
+	if cfg.HasL2ToCosmos {
+		add(cfg.L2ToCosmosConfig.TmRpcUrl)
 	}
 	return urls
 }
@@ -1642,8 +1602,8 @@ func evmDeploymentsInConfig(cfg *appConfig) []evmDeployment {
 			addresses:    addrs,
 		})
 	}
-	for i := range cfg.CosmosToEthConfigs {
-		c := cfg.CosmosToEthConfigs[i]
+	if cfg.HasCosmosToEth {
+		c := cfg.CosmosToEthConfig
 		// The EFFECTIVE ids, not the ones in the file: buildSource applies these
 		// same overrides (build_source.go:90-100), so validating the raw value
 		// proves a config startup then does not use. A stale ICS26_CLIENT_ID in
@@ -1653,8 +1613,8 @@ func evmDeploymentsInConfig(cfg *appConfig) []evmDeployment {
 			envOrDefault("ICS26_CLIENT_ID", c.ICS26ClientID),
 			envOrDefault("COSMOS_WASM_CLIENT_ID", c.CosmosWasmClientID))
 	}
-	for i := range cfg.CosmosToL2Configs {
-		c := cfg.CosmosToL2Configs[i]
+	if cfg.HasCosmosToL2 {
+		c := cfg.CosmosToL2Config
 		// NOT overridden, and the asymmetry is the point: buildCosmosToL2Dest
 		// reads c2l.ICS26ClientID directly and never consults the environment
 		// (build_cosmos_to_l2.go:57,112,125). Applying the override here validated
@@ -1665,15 +1625,11 @@ func evmDeploymentsInConfig(cfg *appConfig) []evmDeployment {
 		// reads, per path.
 		gather(c, "cosmos_to_l2", c.ICS26ClientID, c.CosmosWasmClientID)
 	}
-	for i := range cfg.L2ToCosmosConfigs {
-		src := cfg.L2ToCosmosConfigs[i]
-		if src.L2RpcUrl == "" {
-			continue
-		}
+	if src := cfg.L2ToCosmosConfig; cfg.HasL2ToCosmos && src.L2RpcUrl != "" {
 		router, err := l2RouterFromProfile(src.RollupProfile)
 		if err != nil {
 			// A malformed profile is already a load-time error; nothing to add.
-			continue
+			return out
 		}
 		out = append(out, evmDeployment{
 			label:       "l2_to_cosmos",

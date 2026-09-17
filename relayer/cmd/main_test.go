@@ -243,9 +243,12 @@ func TestLoadConfig_IgnoresLegacyServerBlock(t *testing.T) {
 func TestLoadConfigExample(t *testing.T) {
 	t.Parallel()
 
-	cfg, err := loadConfig(filepath.Join("..", "config.example.json"))
+	// The per-path Ethereum example, not the catalogue: config.example.json lists
+	// every module across every path and loadConfig refuses it for that reason
+	// (TestShippedExamplesCarryOnePathEach pins that).
+	cfg, err := loadConfig(filepath.Join("..", "config.ethereum.example.json"))
 	if err != nil {
-		t.Fatalf("loadConfig(config.example.json) error = %v", err)
+		t.Fatalf("loadConfig(config.ethereum.example.json) error = %v", err)
 	}
 	if cfg.CosmosToEthConfig.TmRpcUrl == "" {
 		t.Fatal("cosmos_to_eth.tm_rpc_url not parsed")
@@ -309,10 +312,11 @@ func moduleConfigByName(t *testing.T, data []byte, name string) map[string]any {
 	return nil
 }
 
-// TestLoadConfigMultipleCosmosSources confirms a config with two cosmos_to_eth
-// modules yields both in CosmosToEthConfigs (file order), with the singular
-// CosmosToEthConfig aliasing the first for the single-source commands.
-func TestLoadConfigMultipleCosmosSources(t *testing.T) {
+// A second cosmos_to_eth module is a second relay path, and loadConfig refuses
+// it before parsing either in full -- naming both, so the operator knows which
+// two to split, and showing the split command. This is the loadConfig-level
+// half of TestRejectExtraRelayPaths: that the census is wired in at all.
+func TestLoadConfigRejectsASecondCosmosSource(t *testing.T) {
 	t.Parallel()
 
 	configPath := filepath.Join(t.TempDir(), "config.json")
@@ -328,29 +332,20 @@ func TestLoadConfigMultipleCosmosSources(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte(cfgJSON), configFilePerm); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	cfg, err := loadConfig(configPath)
-	if err != nil {
-		t.Fatalf("loadConfig(multi) error = %v", err)
+	_, err := loadConfig(configPath)
+	if err == nil {
+		t.Fatal("loadConfig accepted two cosmos_to_eth modules; one process serves one path")
 	}
-	if got := len(cfg.CosmosToEthConfigs); got != 2 {
-		t.Fatalf("CosmosToEthConfigs len = %d, want 2", got)
-	}
-	if cfg.CosmosToEthConfigs[0].ICS26ClientID != "chain-a" ||
-		cfg.CosmosToEthConfigs[1].ICS26ClientID != "chain-b" {
-		t.Fatalf("source order/ids wrong: %q, %q",
-			cfg.CosmosToEthConfigs[0].ICS26ClientID, cfg.CosmosToEthConfigs[1].ICS26ClientID)
-	}
-	if cfg.CosmosToEthConfigs[1].TmRpcUrl != "http://localhost:36657" {
-		t.Fatalf("second source tm_rpc_url = %q, want distinct", cfg.CosmosToEthConfigs[1].TmRpcUrl)
-	}
-	if cfg.CosmosToEthConfig.ICS26ClientID != "chain-a" {
-		t.Fatalf("singular CosmosToEthConfig = %q, want alias of first source", cfg.CosmosToEthConfig.ICS26ClientID)
+	for _, want := range []string{"chain-a", "chain-b", "--config"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error must contain %q so the operator knows what to split and how; got: %v", want, err)
+		}
 	}
 }
 
-// TestLoadConfigRejectsDuplicateClientID confirms two sources sharing an
-// ics26_client_id are rejected — their ETH event streams (filtered by that id)
-// would otherwise cross-feed.
+// Two cosmos_to_eth modules sharing an ics26_client_id used to be refused as a
+// duplicate id (their ETH event streams, filtered by that id, would cross-feed).
+// They are still refused -- as two paths, which subsumes the duplicate case.
 func TestLoadConfigRejectsDuplicateClientID(t *testing.T) {
 	t.Parallel()
 
@@ -365,22 +360,8 @@ func TestLoadConfigRejectsDuplicateClientID(t *testing.T) {
 		t.Fatalf("write config: %v", err)
 	}
 	_, err := loadConfig(configPath)
-	if err == nil || !strings.Contains(err.Error(), "duplicate") {
-		t.Fatalf("loadConfig error = %v, want duplicate client id error", err)
-	}
-}
-
-// TestLoadConfigExampleSingleSource confirms the shipped example yields exactly
-// one source, so single-source behavior is unchanged.
-func TestLoadConfigExampleSingleSource(t *testing.T) {
-	t.Parallel()
-
-	cfg, err := loadConfig(filepath.Join("..", "config.example.json"))
-	if err != nil {
-		t.Fatalf("loadConfig(config.example.json) error = %v", err)
-	}
-	if got := len(cfg.CosmosToEthConfigs); got != 1 {
-		t.Fatalf("CosmosToEthConfigs len = %d, want 1", got)
+	if err == nil || !strings.Contains(err.Error(), "more than one relay path") {
+		t.Fatalf("loadConfig error = %v, want the second path refused", err)
 	}
 }
 
@@ -461,86 +442,44 @@ func TestReplaceConfigMemberForSourceCanonical(t *testing.T) {
 	}
 }
 
-func TestSelectSource(t *testing.T) {
+// selectCosmosSource is the promotion half of what --source used to do: the
+// create-clients and submit-misbehaviour flows read CosmosToEthConfig, and a
+// cosmos_to_l2 module is the same struct pointed at the L2, so a file declaring
+// only that module has it promoted into the field those flows read. There is no
+// disambiguation half any more -- loadConfig refuses a file with two paths.
+func TestSelectCosmosSource(t *testing.T) {
 	t.Parallel()
 
-	cfg := &appConfig{
-		CosmosToEthConfigs: []cosmosToEthConfig{
-			{ICS26ClientID: "chain-a", TmRpcUrl: "a"},
-			{ICS26ClientID: "chain-b", TmRpcUrl: "b"},
-		},
-	}
-	single := &appConfig{
-		CosmosToEthConfig:  cosmosToEthConfig{ICS26ClientID: "solo", TmRpcUrl: "s"},
-		CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "solo", TmRpcUrl: "s"}},
-	}
-
-	t.Run("by id", func(t *testing.T) {
-		got, err := selectSource(cfg, "chain-b")
-		if err != nil {
-			t.Fatalf("selectSource error = %v", err)
+	t.Run("a cosmos_to_eth module is read as is", func(t *testing.T) {
+		single := &appConfig{
+			HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{ICS26ClientID: "solo", TmRpcUrl: "s"},
 		}
-		if got.CosmosToEthConfig.TmRpcUrl != "b" {
-			t.Fatalf("selected wrong source: %+v", got.CosmosToEthConfig)
-		}
-	})
-	t.Run("empty with multiple errors", func(t *testing.T) {
-		_, err := selectSource(cfg, "")
-		if err == nil || !strings.Contains(err.Error(), "--source") {
-			t.Fatalf("error = %v, want ambiguous-source error", err)
-		}
-	})
-	t.Run("unknown id errors", func(t *testing.T) {
-		_, err := selectSource(cfg, "chain-x")
-		if err == nil || !strings.Contains(err.Error(), "chain-x") {
-			t.Fatalf("error = %v, want unknown-source error", err)
-		}
-	})
-	t.Run("empty with single selects sole", func(t *testing.T) {
-		got, err := selectSource(single, "")
-		if err != nil {
-			t.Fatalf("selectSource error = %v", err)
-		}
-		if got.CosmosToEthConfig.TmRpcUrl != "s" {
+		if got := selectCosmosSource(single); got.CosmosToEthConfig.TmRpcUrl != "s" {
 			t.Fatalf("selected wrong source: %+v", got.CosmosToEthConfig)
 		}
 	})
 
 	// create-clients-eth also targets cosmos_to_l2 destinations (the L2-side
 	// SpectreClient is created by the same flow).
-	t.Run("cosmos_to_l2 selected by id", func(t *testing.T) {
-		mixed := &appConfig{
-			CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "eth-a", TmRpcUrl: "a"}},
-			CosmosToL2Configs:  []cosmosToEthConfig{{ICS26ClientID: "l2-arb", TmRpcUrl: "l2"}},
-		}
-		got, err := selectSource(mixed, "l2-arb")
-		if err != nil {
-			t.Fatalf("selectSource error = %v", err)
-		}
-		if got.CosmosToEthConfig.TmRpcUrl != "l2" {
-			t.Fatalf("selected wrong dest: %+v", got.CosmosToEthConfig)
-		}
-	})
-	t.Run("sole cosmos_to_l2 selected when empty id", func(t *testing.T) {
+	t.Run("a sole cosmos_to_l2 module is promoted", func(t *testing.T) {
 		l2Only := &appConfig{
-			CosmosToL2Configs: []cosmosToEthConfig{{ICS26ClientID: "l2-solo", TmRpcUrl: "l2s"}},
+			HasCosmosToL2: true, CosmosToL2Config: cosmosToEthConfig{ICS26ClientID: "l2-solo", TmRpcUrl: "l2s"},
 		}
-		got, err := selectSource(l2Only, "")
-		if err != nil {
-			t.Fatalf("selectSource error = %v", err)
-		}
+		got := selectCosmosSource(l2Only)
 		if got.CosmosToEthConfig.TmRpcUrl != "l2s" {
 			t.Fatalf("selected wrong dest: %+v", got.CosmosToEthConfig)
 		}
-	})
-	t.Run("ambiguous across eth+l2 errors", func(t *testing.T) {
-		mixed := &appConfig{
-			CosmosToEthConfigs: []cosmosToEthConfig{{ICS26ClientID: "eth-a", TmRpcUrl: "a"}},
-			CosmosToL2Configs:  []cosmosToEthConfig{{ICS26ClientID: "l2-arb", TmRpcUrl: "l2"}},
+		// A copy, not a write into the caller's config: the L2 module must not
+		// start looking like a cosmos_to_eth one to anything that reads the flag.
+		if l2Only.HasCosmosToEth || l2Only.CosmosToEthConfig.TmRpcUrl != "" {
+			t.Fatalf("selectCosmosSource mutated its input: %+v", l2Only)
 		}
-		_, err := selectSource(mixed, "")
-		if err == nil || !strings.Contains(err.Error(), "--source") {
-			t.Fatalf("error = %v, want ambiguous-source error", err)
+	})
+
+	t.Run("nothing declared is returned unchanged", func(t *testing.T) {
+		empty := &appConfig{}
+		if got := selectCosmosSource(empty); got != empty {
+			t.Fatal("a config with no Cosmos→EVM module must come back as is, for the command's own preflight to report")
 		}
 	})
 }
@@ -568,41 +507,6 @@ func TestValidateRelayStartupConfigRequiresEthWs(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "eth_ws_url") {
 		t.Fatalf("error should name the missing field, got: %v", err)
-	}
-}
-
-// A first-entry-only check let every later source reach the same half-dead state
-// the guard exists to prevent. `start` now rejects a second source earlier
-// (validateSingleRelayPair), so this is the function's own contract rather than a
-// reachable deployment: it validates every entry it is handed.
-func TestValidateRelayStartupConfigChecksEverySource(t *testing.T) {
-	const cfg = `{
-		"modules": [
-			{"name": "cosmos_to_eth_a", "src_chain": "cosmos", "dst_chain": "ethereum",
-			 "config": {"tm_rpc_url": "http://localhost:26657", "eth_rpc_url": "http://localhost:8545",
-			            "eth_ws_url": "ws://localhost:8546",
-			            "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-a"}},
-			{"name": "cosmos_to_eth_b", "src_chain": "cosmos", "dst_chain": "ethereum",
-			 "config": {"tm_rpc_url": "http://localhost:36657", "eth_rpc_url": "http://localhost:8545",
-			            "ics26_address": "0x80741a37e3644612f0465145c9709a90b6d77ee3", "ics26_client_id": "chain-b"}},
-			{"name": "eth_to_cosmos", "src_chain": "ethereum", "dst_chain": "cosmos",
-			 "config": {"eth_beacon_api_url": "http://localhost:5052"}}
-		]
-	}`
-	appCfg, err := loadConfig(writeTempConfig(t, cfg))
-	if err != nil {
-		t.Fatalf("loadConfig must accept this: %v", err)
-	}
-	err = validateRelayStartupConfig(appCfg)
-	if err == nil {
-		t.Fatal("start accepted a second source with no eth_ws_url; its ETH→Cosmos leg cannot run")
-	}
-	if !strings.Contains(err.Error(), "eth_ws_url") {
-		t.Fatalf("error should name the missing field, got: %v", err)
-	}
-	// The operator has to know WHICH source is short, not just that one is.
-	if !strings.Contains(err.Error(), "chain-b") {
-		t.Fatalf("error should identify the offending source, got: %v", err)
 	}
 }
 

@@ -57,8 +57,8 @@ type buildCosmosToEthSourceOptions struct {
 	// Ethereum light client ON Cosmos.
 	//
 	// It is a property of the CALLER, not of the config, and treating it as the
-	// latter broke submit-misbehaviour for a cosmos_to_l2 source: selectSource
-	// offers L2 sources, cosmos_to_l2 deliberately carries no
+	// latter broke submit-misbehaviour for a cosmos_to_l2 source: selectCosmosSource
+	// promotes the L2 module, cosmos_to_l2 deliberately carries no
 	// cosmos_wasm_client_id, and the builder rejected it for a field the command
 	// never reads. The evidence was refused before it was looked at.
 	//
@@ -252,8 +252,13 @@ func checkLegacyStateLayout(configPath string) error {
 
 // effectiveRelayIDs resolves the client ids a cosmos_to_eth path will actually
 // RUN with, which is not always the pair written in the file: buildCosmosToEthSource
-// applies ICS26_CLIENT_ID and COSMOS_WASM_CLIENT_ID over the config when the
-// caller allows overrides.
+// applies ICS26_CLIENT_ID and COSMOS_WASM_CLIENT_ID over the config.
+//
+// The overrides apply unconditionally because a process serves one path, so the
+// environment can only ever speak for the source that is running. The flag that
+// used to gate them existed for a --source selection out of a multi-source
+// file, where a stale variable could speak for a source the operator had not
+// picked; both the selection and the file shape are gone (A7).
 //
 // It exists because two consumers must agree and they used to disagree. Start
 // named the state directory -- the lock, the cursors, the pending trackers --
@@ -268,34 +273,25 @@ func checkLegacyStateLayout(configPath string) error {
 //
 // Deriving both from one function is what makes "the directory is a pure
 // function of the relay identity" true rather than merely stated.
-func effectiveRelayIDs(c2e cosmosToEthConfig, allowEnvOverride bool) relayClientIDs {
-	ids := relayClientIDs{router: c2e.ICS26ClientID, wasm: c2e.CosmosWasmClientID}
-	if allowEnvOverride {
-		ids.router = envOrDefault("ICS26_CLIENT_ID", ids.router)
-		ids.wasm = envOrDefault("COSMOS_WASM_CLIENT_ID", ids.wasm)
+func effectiveRelayIDs(c2e cosmosToEthConfig) relayClientIDs {
+	return relayClientIDs{
+		router: envOrDefault("ICS26_CLIENT_ID", c2e.ICS26ClientID),
+		wasm:   envOrDefault("COSMOS_WASM_CLIENT_ID", c2e.CosmosWasmClientID),
 	}
-	return ids
 }
 
-// effectiveRoleManager resolves the role-manager address the same way, and for
-// the same reason: allowEnvOverride is not a statement about identity, it is
-// "the environment may not speak for a source the operator selected by name".
+// effectiveRoleManager resolves the role-manager address the same way.
 //
-// Getting that wrong is not cosmetic. RouterManagesProofSubmission compares this
+// Getting it wrong is not cosmetic. RouterManagesProofSubmission compares this
 // address with the router to decide whether proofs go through ICS26Router or
 // straight to SpectreClient, so a stale value routes incident evidence down the
-// wrong contract path -- and submit-misbehaviour is exactly the command that
-// disables overrides, because it is the one an operator runs with a narrowed
-// config during an incident.
+// wrong contract path.
 //
 // It lives beside effectiveRelayIDs rather than inside the builder so that
 // EVERY value the environment may override for a source is decided in one place.
-// The builder reading one of them itself is how this regressed: the identity
-// honoured allowEnvOverride and this did not.
-func effectiveRoleManager(c2e cosmosToEthConfig, allowEnvOverride bool) string {
-	if !allowEnvOverride {
-		return c2e.ICS26Address
-	}
+// The builder reading one of them itself is how this regressed once: the
+// identity honoured the override rule and this did not.
+func effectiveRoleManager(c2e cosmosToEthConfig) string {
 	return envOrDefault("ROLE_MANAGER", c2e.ICS26Address)
 }
 
