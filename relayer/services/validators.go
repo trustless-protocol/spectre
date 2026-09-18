@@ -50,11 +50,11 @@ func (s pinnedCosmosValidatorSet) powerByPubkey() map[[32]byte]int64 {
 }
 
 func getPinnedCosmosValidatorSet(stdCtx context.Context, ctx EVMEndpoint) (pinnedCosmosValidatorSet, error) {
-	ics07, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
+	spectre, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
 	if err != nil {
-		return pinnedCosmosValidatorSet{}, fmt.Errorf("failed to create ICS07 instance: %w", err)
+		return pinnedCosmosValidatorSet{}, fmt.Errorf("failed to bind SpectreClient: %w", err)
 	}
-	out, err := ics07.GetPinnedValidatorSet(&bind.CallOpts{Context: stdCtx})
+	out, err := spectre.GetPinnedValidatorSet(&bind.CallOpts{Context: stdCtx})
 	if err != nil {
 		return pinnedCosmosValidatorSet{}, fmt.Errorf("getPinnedValidatorSet: %w", err)
 	}

@@ -73,11 +73,11 @@ func reusableSpectreClientAt(
 		return false, fmt.Sprintf("nothing is deployed at %s", addr.Hex())
 	}
 
-	ics07, err := spectreContract.NewContractSpectreClient(addr, evm.EthClient())
+	spectre, err := spectreContract.NewContractSpectreClient(addr, evm.EthClient())
 	if err != nil {
 		return false, fmt.Sprintf("could not bind a SpectreClient at %s: %v", addr.Hex(), err)
 	}
-	stateBytes, err := ics07.GetClientState(nil)
+	stateBytes, err := spectre.GetClientState(nil)
 	if err != nil {
 		return false, fmt.Sprintf(
 			"the contract at %s does not answer getClientState (%v), so it is not a SpectreClient", addr.Hex(), err)

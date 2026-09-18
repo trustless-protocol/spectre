@@ -46,7 +46,7 @@ go test -race -count=1 ./<affected-packages>/...        # macOS ld LC_DYSYMTAB w
 # if Solidity touched:
 just build-contracts && just lint-solidity
 forge test --match-contract <affected> -vvv
-forge build --sizes | grep Groth16ICS07Tendermint        # if light-client touched — state EIP-170 margin
+forge build --sizes | grep SpectreClient        # if light-client touched — state EIP-170 margin
 # if encoding touched:
 forge test --match-contract EncodeTest -vvv
 gh pr checks <N> --repo decentrio/fast-ibc               # "no checks reported" is itself a finding

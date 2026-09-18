@@ -558,7 +558,7 @@ func validateRouterClientID(ctx context.Context, client *ethclient.Client, d evm
 	}
 
 	// getClient never returns the zero address: it reverts with
-	// IBCClientNotFound (contracts/utils/ICS02ClientUpgradeable.sol:78-80). So a
+	// IBCClientNotFound (contracts/core/client-registry/ICS02ClientUpgradeable.sol:78-80). So a
 	// revert IS the answer, and a transport error is not — telling them apart is
 	// what keeps this check inside the doctrine on validateStartupConfig.
 	if !isEVMRevert(err) {

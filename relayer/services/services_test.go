@@ -78,7 +78,7 @@ func TestTendermintClientExpiry(t *testing.T) {
 // location: it either fails verification, or -- worse for a non-membership proof
 // -- succeeds in showing that some unrelated slot is empty.
 //
-// Both are a cross-language contract with contracts/utils/ICS24Host.sol, so the
+// Both are a cross-language contract with contracts/core/libraries/ICS24Host.sol, so the
 // expectations here are transcribed from that file rather than from the Go code
 // they check. A test that derived them the same way the code does would agree
 // with any mistake.
@@ -159,7 +159,7 @@ func TestEthPath(t *testing.T) {
 
 // The storage slot is keccak256(keccak256(path) ‖ IBCSTORE_STORAGE_SLOT) — the
 // standard Solidity mapping-slot derivation against the ERC-7201 store root in
-// contracts/utils/IBCStoreUpgradeable.sol:26.
+// contracts/core/store/IBCStoreUpgradeable.sol:26.
 func TestEthIBCStorageKey(t *testing.T) {
 	t.Run("the storage root matches the Solidity constant", func(t *testing.T) {
 		// Transcribed from IBCStoreUpgradeable.sol:26. If this fails, the two

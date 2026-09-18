@@ -246,7 +246,7 @@ func main() {
 
 	rootCmd := &cobra.Command{
 		Use:   "relayer [command]",
-		Short: "fast-ibc operator — relay IBC packets between Cosmos and Ethereum",
+		Short: "Spectre relayer — relay IBC packets between Cosmos and Ethereum",
 		Run: func(cmd *cobra.Command, args []string) {
 			cmd.Help()
 		},

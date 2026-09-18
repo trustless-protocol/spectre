@@ -69,7 +69,7 @@ capture-l2-fixture config out:
 # Build the relayer docker image
 [group('build')]
 build-relayer-image:
-    docker build -t fast-ibc-relayer:latest -f programs/relayer/Dockerfile .
+    docker build -t spectre-relayer:latest -f programs/relayer/Dockerfile .
 
 # Install the Go relayer for use in the e2e tests.
 # Builds with an explicit -o name because the package dir is `cmd/`, so a plain

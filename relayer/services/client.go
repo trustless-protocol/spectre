@@ -224,7 +224,7 @@ func getOnChainPinnedValidatorsHash(stdCtx context.Context, ctx EVMEndpoint) ([3
 	return spectre.GetPinnedValidatorsHash(&bind.CallOpts{Context: stdCtx})
 }
 
-// FetchOnChainTrustedHeight reads the ICS07 client state on ETH and returns its
+// FetchOnChainTrustedHeight reads the SpectreClient state on ETH and returns its
 // latest trusted revision height. This is a cheap eth_call relative to the
 // Groth16 proof, so it's always worth doing before committing to proof gen.
 func FetchOnChainTrustedHeight(stdCtx context.Context, ctx EVMEndpoint) (int64, error) {
@@ -240,11 +240,11 @@ func FetchOnChainTrustedHeight(stdCtx context.Context, ctx EVMEndpoint) (int64, 
 }
 
 func fetchOnChainClientState(stdCtx context.Context, ctx EVMEndpoint) (relayerclient.ClientState, error) {
-	ics07, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
+	spectre, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
 	if err != nil {
-		return relayerclient.ClientState{}, fmt.Errorf("failed to create ICS07 instance: %w", err)
+		return relayerclient.ClientState{}, fmt.Errorf("failed to bind SpectreClient: %w", err)
 	}
-	clientStateBytes, err := ics07.GetClientState(&bind.CallOpts{Context: stdCtx})
+	clientStateBytes, err := spectre.GetClientState(&bind.CallOpts{Context: stdCtx})
 	if err != nil {
 		return relayerclient.ClientState{}, fmt.Errorf("failed to get on-chain client state: %w", err)
 	}

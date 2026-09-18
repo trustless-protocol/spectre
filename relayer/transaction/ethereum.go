@@ -486,7 +486,7 @@ func estimateCosmosClientDeployGas(
 ) (uint64, uint64, error) {
 	parsed, err := spectreContract.ContractSpectreClientMetaData.GetAbi()
 	if err != nil {
-		return 0, 0, fmt.Errorf("parse ICS07 ABI: %w", err)
+		return 0, 0, fmt.Errorf("parse SpectreClient ABI: %w", err)
 	}
 	constructorInput, err := parsed.Pack(
 		"",
@@ -499,7 +499,7 @@ func estimateCosmosClientDeployGas(
 		*endpoint.RoleManagerAddress(),
 	)
 	if err != nil {
-		return 0, 0, fmt.Errorf("pack ICS07 constructor args: %w", err)
+		return 0, 0, fmt.Errorf("pack SpectreClient constructor args: %w", err)
 	}
 	deployData := append(common.FromHex(spectreContract.ContractSpectreClientBin), constructorInput...)
 	estimate, err := endpoint.EthClient().EstimateGas(stdCtx, ethereum.CallMsg{
@@ -509,7 +509,7 @@ func estimateCosmosClientDeployGas(
 		Data:     deployData,
 	})
 	if err != nil {
-		return 0, 0, fmt.Errorf("estimate ICS07 deploy gas: %w", err)
+		return 0, 0, fmt.Errorf("estimate SpectreClient deploy gas: %w", err)
 	}
 
 	gasLimit := estimate + (estimate*ethDeployGasHeadroomPercent)/100
@@ -519,7 +519,7 @@ func estimateCosmosClientDeployGas(
 	if header, err := endpoint.EthClient().HeaderByNumber(stdCtx, nil); err == nil && header.GasLimit > 0 {
 		if estimate >= header.GasLimit {
 			return estimate, 0, fmt.Errorf(
-				"estimated ICS07 deploy gas %d exceeds latest block gas limit %d",
+				"estimated SpectreClient deploy gas %d exceeds latest block gas limit %d",
 				estimate,
 				header.GasLimit,
 			)
@@ -561,7 +561,7 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)
 	}
-	log.Printf("[CreateCosmosClient] ICS07 deploy gas estimate=%d limit=%d", estimatedDeployGas, deployGasLimit)
+	log.Printf("[CreateCosmosClient] SpectreClient deploy gas estimate=%d limit=%d", estimatedDeployGas, deployGasLimit)
 
 	var address common.Address
 	deployFn := func(auth *bind.TransactOpts) (*types.Transaction, error) {
@@ -586,7 +586,7 @@ func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint se
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed waiting for deploy receipt: %w", err)
 	}
-	log.Printf("[CreateCosmosClient] ICS07 deployed at %s (block %d, gasUsed=%d)", address.String(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
+	log.Printf("[CreateCosmosClient] SpectreClient deployed at %s (block %d, gasUsed=%d)", address.String(), receipt.BlockNumber.Uint64(), receipt.GasUsed)
 
 	ics26Router, err := routerContract.NewContractICS26Router(*endpoint.RouterContract(), endpoint.EthClient())
 	if err != nil {
@@ -641,12 +641,12 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 		}
 	}
 
-	ics07Tendermint, err := spectreContract.NewContractSpectreClient(
+	spectreClient, err := spectreContract.NewContractSpectreClient(
 		*endpoint.SpectreClientContract(),
 		endpoint.EthClient(),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create ICS07 Tendermint contract: %w", err)
+		return fmt.Errorf("failed to bind SpectreClient contract: %w", err)
 	}
 
 	ics26Router, err := contractICS26Router.NewContractICS26Router(
@@ -654,7 +654,7 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 		endpoint.EthClient(),
 	)
 	if err != nil {
-		return fmt.Errorf("failed to create ICS07 Tendermint contract: %w", err)
+		return fmt.Errorf("failed to bind SpectreClient contract: %w", err)
 	}
 
 	benchEnabled := utils.BenchEnabled()
@@ -679,7 +679,7 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 					return ics26Router.UpdateConsensusState(auth, cosmosClientID, data)
 				}
 				log.Printf("[SendEthTx] Sending direct SpectreClient.updateConsensusState tx...")
-				return ics07Tendermint.UpdateConsensusState(auth, data)
+				return spectreClient.UpdateConsensusState(auth, data)
 			default:
 				txLabel = "updateApplicationState"
 				data, err := relayerclient.EncodeUpdateApplicationStateMsg(msg.AppMsg)
@@ -691,7 +691,7 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 					return ics26Router.UpdateApplicationState(auth, cosmosClientID, data)
 				}
 				log.Printf("[SendEthTx] Sending direct SpectreClient.updateApplicationState tx...")
-				return ics07Tendermint.UpdateApplicationState(auth, data)
+				return spectreClient.UpdateApplicationState(auth, data)
 			}
 		case spectreContract.ILightClientMsgsMsgVerifyMembership:
 			txLabel = "verifyMembership"
@@ -699,14 +699,14 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 				return nil, fmt.Errorf("direct verifyMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead")
 			}
 			log.Printf("[SendEthTx] Sending verifyMembership tx...")
-			return ics07Tendermint.VerifyMembership(auth, msg)
+			return spectreClient.VerifyMembership(auth, msg)
 		case spectreContract.ILightClientMsgsMsgVerifyNonMembership:
 			txLabel = "verifyNonMembership"
 			if endpoint.RouterManagesProofSubmission() {
 				return nil, fmt.Errorf("direct verifyNonMembership is disabled when ROLE_MANAGER is the ICS26 router; use ICS26Router packet flows instead")
 			}
 			log.Printf("[SendEthTx] Sending verifyNonMembership tx...")
-			return ics07Tendermint.VerifyNonMembership(auth, msg)
+			return spectreClient.VerifyNonMembership(auth, msg)
 		case contractICS26Router.IICS26RouterMsgsMsgRecvPacket:
 			txLabel = fmt.Sprintf("recvPacket seq=%d", msg.Packet.Sequence)
 			log.Printf("[SendEthTx] Sending recvPacket seq=%d...", msg.Packet.Sequence)

@@ -87,7 +87,7 @@ unrecognised broadcast error invalidates the cached nonce and returns a transien
 error, so the packet is re-queued rather than dropped.
 
 **`start` enforces both rules**, with one advisory lock per contended resource, all
-under `/tmp/fast-ibc-relayer-<uid>/`.
+under `/tmp/spectre-relayer-<uid>/`.
 
 The EVM half takes one lock per nonce domain it can write: a file per
 `{chain id, address}`, named `evm-signer-<chain id>-<address>.lock`
