@@ -44,16 +44,16 @@ func TestPacketSettled_AsksPerEventType(t *testing.T) {
 	if settled, err := d.PacketSettled(context.Background(), chain.Event{Type: chain.SendPacket, Raw: rawTo}); err != nil || settled {
 		t.Fatalf("send with no receipt: settled=%v err=%v, want unsettled", settled, err)
 	}
-	present[string(utils.IbcPath("08-wasm-3", 3, []byte{2})[1])] = true
+	present[string(utils.IBCPath("08-wasm-3", 3, []byte{2})[1])] = true
 	if settled, err := d.PacketSettled(context.Background(), chain.Event{Type: chain.SendPacket, Raw: rawTo}); err != nil || !settled {
 		t.Fatalf("send with a receipt: settled=%v err=%v, want settled", settled, err)
 	}
 
-	present[string(utils.IbcCommitmentPath(fromCosmos, []byte{1})[1])] = true
+	present[string(utils.IBCCommitmentPath(fromCosmos, []byte{1})[1])] = true
 	if settled, err := d.PacketSettled(context.Background(), chain.Event{Type: chain.AckPacket, Raw: rawFrom}); err != nil || settled {
 		t.Fatalf("ack while the commitment stands: settled=%v err=%v, want unsettled", settled, err)
 	}
-	delete(present, string(utils.IbcCommitmentPath(fromCosmos, []byte{1})[1]))
+	delete(present, string(utils.IBCCommitmentPath(fromCosmos, []byte{1})[1]))
 	if settled, err := d.PacketSettled(context.Background(), chain.Event{Type: chain.AckPacket, Raw: rawFrom}); err != nil || !settled {
 		t.Fatalf("ack after the commitment is deleted: settled=%v err=%v, want settled", settled, err)
 	}

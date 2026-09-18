@@ -6,7 +6,7 @@
 //
 //	services.EventListener.SubscribeCosmos/SubscribeEth   -> Source.Subscribe
 //	services.TransactionHandler (mixed Cosmos+Eth methods) -> Destination.*
-//	services.Prover.GenerateProof (Groth16 only)           -> ClientUpdateBuilder.Build
+//	services.Prover.GenerateProof (Groth16 only)           -> Builder.Build
 //	the hardcoded finality/refresh in StartLoop            -> Source.LatestHeight + ClientExpiresAt
 //
 // Method names follow IBC / relayer convention (UpdateClient, RelayPackets,
@@ -187,7 +187,7 @@ type Source interface {
 	// It is always <= LatestHeight.
 	RelayableHeight(ctx context.Context) (uint64, error)
 
-	// QueryHeader returns the adapter-owned data a ClientUpdateBuilder needs to
+	// QueryHeader returns the adapter-owned data a Builder needs to
 	// build the update for source state at the given height.
 	QueryHeader(ctx context.Context, height uint64) ([]byte, error)
 
@@ -328,7 +328,7 @@ type FoldingDestination interface {
 	RelayWithUpdate(ctx context.Context, clientID string, update ClientUpdate, packets []RelayPacket) error
 }
 
-// ClientUpdateBuilder turns a source header into a destination-verifiable
+// Builder turns a source header into a destination-verifiable
 // ClientUpdate. The strategy is chosen by what the DESTINATION's light client
 // verifies, not one-size-fits-all:
 //   - "groth16":     batched Ed25519 ZK proof — the destination runs a ZK
@@ -347,7 +347,12 @@ type FoldingDestination interface {
 //     Source.HeadKind selects the requested latency tier; the request is carried
 //     to the builder and the wasm client independently authenticates the claimed
 //     finality evidence before applying its membership policy.
-type ClientUpdateBuilder interface {
+//
+// Implemented by cosmos.Groth16Builder, evm.BeaconBuilder and
+// l2rollup.AttestedBuilder -- listed so the interface greps to its
+// implementations, which `ClientUpdateBuilder` did not: no concrete type carried
+// that name.
+type Builder interface {
 	Name() string
 	Build(ctx context.Context, header []byte) (ClientUpdate, error)
 }

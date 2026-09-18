@@ -9,7 +9,7 @@ import (
 	"relayer/services"
 )
 
-// BeaconBuilder is the "beacon" chain.ClientUpdateBuilder for an Ethereum L1
+// BeaconBuilder is the "beacon" chain.Builder for an Ethereum L1
 // source: it assembles the sync-committee + storage-proof update that the
 // destination's 08-wasm beacon light client verifies (ETH L1 -> Cosmos). It does
 // NO relayer-side proving or re-execution — the wasm client verifies BLS +

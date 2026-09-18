@@ -90,7 +90,7 @@ ZK flow: top-N validator Ed25519 sigs (≥⅔ voting power) → padded to neares
 ```
 relayer/
 ├── bindings/       # GENERATED Go bindings — never hand-edit
-├── chain/          # multi-chain adapter contract (Source/Destination/ClientUpdateBuilder) + cosmos/ evm/ l2rollup/ adapters + codec/ (opaque-payload codecs) — see chain/README.md
+├── chain/          # multi-chain adapter contract (Source/Destination/Builder) + cosmos/ evm/ l2rollup/ adapters + codec/ (opaque-payload codecs) — see chain/README.md
 ├── relay/          # generic RelayModule that drives one source→dest path via the chain adapters (the cutover engine)
 ├── client/         # Tendermint + Ethereum RPC/Beacon API clients
 ├── prover/         # Bucketed Ed25519 batch prover

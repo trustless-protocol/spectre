@@ -54,7 +54,7 @@ func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 
 	router := evmflush.Router{
 		Client: s.evm.EthClient(), Address: *s.evm.RouterContract(),
-		Span: &s.flush.span, Label: "[FlushEth]", Logger: s.logger,
+		Span: &s.flush.span, Label: "[eth->cosmos Flush]", Logger: s.logger,
 	}
 	sends, err := s.unrelayedSends(queryCtx, router)
 	if err != nil {
@@ -62,7 +62,7 @@ func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 	}
 	acks, err := s.unrelayedAcks(queryCtx, router)
 	if err != nil {
-		s.logger.Printf("[FlushEth] acknowledgement leg: %v; the send leg's %d packet(s) still stand", err, len(sends))
+		s.logger.Printf("[eth->cosmos Flush] acknowledgement leg: %v; the send leg's %d packet(s) still stand", err, len(sends))
 	}
 	return append(sends, acks...), nil
 }
@@ -95,7 +95,7 @@ func (s *Source) unrelayedSends(ctx context.Context, router evmflush.Router) ([]
 		ev, found, err := router.SendLog(ctx, clientID, slot.Sequence, slot.Value)
 		if err != nil {
 			// One unresolvable sequence must not discard the rest.
-			s.logger.Printf("[FlushEth] resolve send seq=%d: %v", slot.Sequence, err)
+			s.logger.Printf("[eth->cosmos Flush] resolve send seq=%d: %v", slot.Sequence, err)
 			continue
 		}
 		if !found {
@@ -149,7 +149,7 @@ func (s *Source) unrelayedAcks(ctx context.Context, router evmflush.Router) ([]c
 	for _, slot := range written {
 		ev, found, err := router.WriteAckLog(ctx, s.ids.CosmosOnEVM, slot.Sequence, committed[slot.Sequence])
 		if err != nil {
-			s.logger.Printf("[FlushEth] resolve ack seq=%d: %v", slot.Sequence, err)
+			s.logger.Printf("[eth->cosmos Flush] resolve ack seq=%d: %v", slot.Sequence, err)
 			continue
 		}
 		if !found {

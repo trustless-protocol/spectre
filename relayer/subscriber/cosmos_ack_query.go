@@ -25,5 +25,5 @@ func HasCosmosPacketAcknowledgement(stdCtx context.Context, endpoint services.Co
 // for a caller that knows a packet is outstanding on the counterparty before it
 // has the packet's bytes -- which is exactly the enumeration case.
 func HasCosmosPacketAcknowledgementFor(stdCtx context.Context, endpoint services.CosmosEndpoint, destClient string, sequence uint64) (bool, error) {
-	return hasCosmosIBCPathValue(stdCtx, endpoint, utils.IbcPath(destClient, sequence, []byte{3}))
+	return hasCosmosIBCPathValue(stdCtx, endpoint, utils.IBCPath(destClient, sequence, []byte{3}))
 }

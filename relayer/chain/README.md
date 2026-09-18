@@ -15,7 +15,7 @@ method signatures. This README is the map.
 |---|---|---|
 | `Source` | a chain whose state we prove to a destination | `Chain`, `Subscribe`, `LatestHeight`, `RelayableHeight`, `QueryHeader`, `MembershipProof`, `NonMembershipProof` |
 | `Destination` | a chain hosting the light-client-of-source, where we submit | `Chain`, `UpdateClient`, `RelayPackets`, `HasPacketReceipt`, `ClientExpiresAt` |
-| `ClientUpdateBuilder` | the per-source strategy that builds a `ClientUpdate` | `Name`, `Build` |
+| `Builder` | the per-source strategy that builds a `ClientUpdate` | `Name`, `Build` |
 
 Data crossing the boundary is deliberately opaque (`[]byte` / small structs) so
 each adapter owns its own encoding. **Do not leak chain-specific types across
@@ -33,7 +33,7 @@ source events it:
 2. relayable := Source.RelayableHeight()   — cheap precondition
    • events above relayable  -> re-queue with WAITING backoff, no expensive work
    • none relayable          -> return (no client update, no proof)
-3. ClientUpdateBuilder.Build(...) — prepare an update when the client is behind
+3. Builder.Build(...) — prepare an update when the client is behind
 4. Source.Membership/NonMembershipProof(...) per provable packet, targeting the
    prepared update height when it is not on-chain yet
    • chain.IsPermanent(err)  -> DROP (timed out; the scanner refunds it)
@@ -73,7 +73,7 @@ Adapters are constructed **directly**, by their own package's constructor, in
 // cmd/build_l2_source.go
 source := l2rollup.NewSource(cfg.kind, l2, headKind, /* ... */)
 dest := l2rollup.NewDestination(worker, svcCtx, cfg.L2WasmClientID)
-builder := l2rollup.NewBuilder(headerBuilder)
+builder := l2rollup.NewAttestedBuilder(headerBuilder)
 ```
 
 `ChainType` still selects the branch — `src_chain` / `dst_chain` in config
@@ -82,7 +82,7 @@ factory. Adding a chain means adding a package under `chain/` and one branch in
 `cmd/`; `relay/` does not change, which is the property that matters.
 
 A registry (`RegisterSource` / `RegisterDestination` /
-`RegisterClientUpdateBuilder` / `UnknownAdapterError`) was built for this and
+`RegisterBuilder` / `UnknownAdapterError`) was built for this and
 never wired to anything: no caller, no writer, no reader, at any link in the
 chain. Both shapes satisfy the requirement, so the one that was actually running
 stayed and the other was deleted rather than left as a second way to do the same

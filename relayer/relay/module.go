@@ -119,7 +119,7 @@ type Module struct {
 	clientID string
 	src      chain.Source
 	dst      chain.Destination
-	builder  chain.ClientUpdateBuilder
+	builder  chain.Builder
 
 	// Optional timeout-recovery wiring (nil when the path has no timeout scanner,
 	// e.g. a mock or a permissioned client that cannot time out).
@@ -209,7 +209,7 @@ type waitLogState struct {
 // NewModule wires a relay path. name is a human label for logs; clientID is the
 // destination client this path advances. Optional timeout-recovery behavior is
 // added via WithTimeoutScanner / WithPacketTracker.
-func NewModule(name, clientID string, src chain.Source, dst chain.Destination, builder chain.ClientUpdateBuilder, opts ...Option) *Module {
+func NewModule(name, clientID string, src chain.Source, dst chain.Destination, builder chain.Builder, opts ...Option) *Module {
 	m := &Module{
 		name: name, clientID: clientID, src: src, dst: dst, builder: builder,
 		waits: newWaitTracker(),

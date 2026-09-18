@@ -26,7 +26,7 @@ type EthereumClientState struct {
 	GenesisSlot                  uint64         `json:"genesis_slot"`
 	GenesisTime                  uint64         `json:"genesis_time"`
 	GenesisValidatorsRoot        string         `json:"genesis_validators_root"`
-	IbcCommitmentSlot            string         `json:"ibc_commitment_slot"`
+	IBCCommitmentSlot            string         `json:"ibc_commitment_slot"`
 	IbcContractAddress           string         `json:"ibc_contract_address"`
 	IsFrozen                     bool           `json:"is_frozen"`
 	LatestExecutionBlockNumber   uint64         `json:"latest_execution_block_number"`
@@ -633,8 +633,8 @@ func GetBeaconSpec(ctx context.Context, beaconAPIURL string) (*BeaconSpec, error
 	return &response.Data, nil
 }
 
-func GetBeaconBlock(ctx context.Context, beaconAPIURL string, blockId string) (*BeaconBlock, error) {
-	url := fmt.Sprintf("%s/eth/v2/beacon/blocks/%s", beaconAPIURL, blockId)
+func GetBeaconBlock(ctx context.Context, beaconAPIURL string, blockID string) (*BeaconBlock, error) {
+	url := fmt.Sprintf("%s/eth/v2/beacon/blocks/%s", beaconAPIURL, blockID)
 	response, err := httpGet[BeaconBlockResponse](ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get beacon block root: %w", err)

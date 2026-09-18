@@ -247,7 +247,7 @@ func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 	defer cancel()
 	root, found, err := s.attestor.AttestedUpTo(cctx, s.srcChainID, s.includeProvisional)
 	if err != nil {
-		return 0, classifyAttestorFailure("L2Source:"+s.srcChainID,
+		return 0, classifyAttestorFailure("RelayableHeight",
 			fmt.Errorf("l2 source: attested-up-to (kind=%d): %w", s.headKind, err))
 	}
 	if !found {

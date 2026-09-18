@@ -245,7 +245,7 @@ func TestUnrelayedPackets_ListsAcksForSendsTheRouterStillHolds(t *testing.T) {
 	acks := [][]byte{[]byte(`{"result":"AQ=="}`)}
 	rpc := &flushRPC{
 		t:      t,
-		store:  map[string]bool{string(utils.IbcPath("08-wasm-7", 1, []byte{3})[1]): true},
+		store:  map[string]bool{string(utils.IBCPath("08-wasm-7", 1, []byte{3})[1]): true},
 		ackTxs: []*coretypes.ResultTx{txWithWriteAck(t, 77, acked, acks)},
 	}
 	server := httptest.NewServer(rpc)
@@ -306,7 +306,7 @@ func TestUnrelayedPackets_AckMustMatchTheRoutersCommitment(t *testing.T) {
 
 	rpc := &flushRPC{
 		t:      t,
-		store:  map[string]bool{string(utils.IbcPath("08-wasm-7", 1, []byte{3})[1]): true},
+		store:  map[string]bool{string(utils.IBCPath("08-wasm-7", 1, []byte{3})[1]): true},
 		ackTxs: []*coretypes.ResultTx{txWithWriteAck(t, 5, stale, [][]byte{[]byte("old")})},
 	}
 	server := httptest.NewServer(rpc)

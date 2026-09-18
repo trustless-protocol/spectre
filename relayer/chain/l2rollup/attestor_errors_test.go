@@ -103,7 +103,7 @@ func TestClassifyAttestorFailure_ErrorTable(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			buf := captureLog(t)
-			got := classifyAttestorFailure("L2Source:base", fmt.Errorf("call failed: %w", tc.err))
+			got := classifyAttestorFailure("RelayableHeight", fmt.Errorf("call failed: %w", tc.err))
 
 			if got.Outcome() != tc.want {
 				t.Fatalf("classified %s, want %s — %s", got.Outcome(), tc.want, tc.because)
@@ -121,7 +121,7 @@ func TestClassifyAttestorFailure_ErrorTable(t *testing.T) {
 				}
 				t.Fatalf("alarm raised for an ordinary failure; operators stop reading a channel that cries wolf: %q", buf.String())
 			}
-			if tc.alarm && !strings.Contains(buf.String(), "L2Source:base") {
+			if tc.alarm && !strings.Contains(buf.String(), "RelayableHeight") {
 				t.Fatalf("the alarm does not say which relay path raised it: %q", buf.String())
 			}
 		})

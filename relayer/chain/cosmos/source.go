@@ -1,5 +1,5 @@
 // Package cosmos adapts a Cosmos (Tendermint) chain to the chain.Source and
-// chain.ClientUpdateBuilder contracts. It wraps the existing relayer/client and
+// chain.Builder contracts. It wraps the existing relayer/client and
 // relayer/services code — it does not reimplement signature extraction, proof
 // generation, or gap-recovery.
 package cosmos

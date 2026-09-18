@@ -30,7 +30,7 @@ func (m *mockHeaderBuilder) BuildHeader(_ context.Context, request HeaderRequest
 	}
 	msg := m.msg
 	if msg == nil {
-		msg = &AttestedL2Header{
+		msg = &SignedAttestedL2Header{
 			L2Header:          CanonicalEvmHeader{Number: 999},
 			AttestorSignature: []IndexedAttestorSignature{{AttestorIndex: 0, Signature: make([]byte, 64)}},
 		}
@@ -74,7 +74,7 @@ func TestBuild(t *testing.T) {
 
 	t.Run("encodes header as payload", func(t *testing.T) {
 		m := &mockHeaderBuilder{}
-		b := NewBuilder(m)
+		b := NewAttestedBuilder(m)
 
 		upd, err := b.Build(context.Background(), headerRequest(4242))
 		if err != nil {
@@ -97,7 +97,7 @@ func TestBuild(t *testing.T) {
 		if env.Type != "header" {
 			t.Fatalf("envelope type = %q, want header", env.Type)
 		}
-		var got AttestedL2Header
+		var got SignedAttestedL2Header
 		if err := json.Unmarshal(env.Value, &got); err != nil {
 			t.Fatalf("envelope value is not an attested header: %v", err)
 		}
@@ -113,7 +113,7 @@ func TestBuild(t *testing.T) {
 	// silently advance the client past what it can prove.
 	t.Run("advances by committed height", func(t *testing.T) {
 		m := &mockHeaderBuilder{committed: 4200} // requested 4242, committed 4200
-		upd, err := NewBuilder(m).Build(context.Background(), headerRequest(4242))
+		upd, err := NewAttestedBuilder(m).Build(context.Background(), headerRequest(4242))
 		if err != nil {
 			t.Fatalf("build: %v", err)
 		}
@@ -126,7 +126,7 @@ func TestBuild(t *testing.T) {
 	})
 
 	t.Run("malformed header retryable", func(t *testing.T) {
-		b := NewBuilder(&mockHeaderBuilder{})
+		b := NewAttestedBuilder(&mockHeaderBuilder{})
 		_, err := b.Build(context.Background(), []byte{1, 2, 3})
 		if err == nil || !chain.IsRetryable(err) {
 			t.Fatalf("malformed header must be retryable, got %v", err)
@@ -146,7 +146,7 @@ func TestBuild(t *testing.T) {
 	// returns stops that direction silently — no error, no retry, nothing logged.
 	t.Run("hung header builder times out retryable", func(t *testing.T) {
 		mock := &blockingHeaderBuilder{}
-		b := NewBuilder(mock)
+		b := NewAttestedBuilder(mock)
 
 		// Cancelling the caller's context stands in for the deadline the Builder applies;
 		// asserting on the real 90s timeout would make this test take 90s.
@@ -177,9 +177,9 @@ func TestBuild(t *testing.T) {
 		var deadlineSeen bool
 		probe := headerBuilderFunc(func(ctx context.Context, _ HeaderRequest) (ClientMessage, uint64, error) {
 			_, deadlineSeen = ctx.Deadline()
-			return &AttestedL2Header{AttestorSignature: []IndexedAttestorSignature{{AttestorIndex: 0, Signature: make([]byte, 64)}}}, 42, nil
+			return &SignedAttestedL2Header{AttestorSignature: []IndexedAttestorSignature{{AttestorIndex: 0, Signature: make([]byte, 64)}}}, 42, nil
 		})
-		if _, err := NewBuilder(probe).Build(context.Background(), headerRequest(42)); err != nil {
+		if _, err := NewAttestedBuilder(probe).Build(context.Background(), headerRequest(42)); err != nil {
 			t.Fatalf("Build: %v", err)
 		}
 		if !deadlineSeen {
@@ -209,7 +209,7 @@ func TestSource_QueryHeaderRoundTrips(t *testing.T) {
 	}
 }
 
-func b(a HeaderBuilder) *Builder { return NewBuilder(a) }
+func b(a HeaderBuilder) *AttestedBuilder { return NewAttestedBuilder(a) }
 
 // blockingHeaderBuilder blocks until its context is done, standing in for an L1/L2
 // node that accepts the connection and never answers.

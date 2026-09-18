@@ -10,7 +10,7 @@ import (
 	"relayer/services"
 )
 
-// Groth16Builder is the "groth16" chain.ClientUpdateBuilder for a Cosmos source:
+// Groth16Builder is the "groth16" chain.Builder for a Cosmos source:
 // it produces a ZK Tendermint update that the destination's SpectreClient
 // verifies. It WRAPS the existing services.BuildCosmosClientUpdateMsg pipeline
 // (extract signatures -> select pinned quorum -> GenerateProof -> assemble) with

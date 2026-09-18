@@ -60,13 +60,13 @@ func TestBytesToBytes32(t *testing.T) {
 	})
 }
 
-func TestIbcCommitmentPath_NormalPacket(t *testing.T) {
+func TestIBCCommitmentPath_NormalPacket(t *testing.T) {
 	packet := channeltypesv2.Packet{
 		Sequence:     1,
 		SourceClient: "07-tendermint-0",
 	}
 
-	path := IbcCommitmentPath(packet, []byte{1})
+	path := IBCCommitmentPath(packet, []byte{1})
 
 	if len(path) != 2 {
 		t.Fatalf("expected 2 path elements, got %d", len(path))
@@ -88,7 +88,7 @@ func TestIbcCommitmentPath_NormalPacket(t *testing.T) {
 	}
 }
 
-func TestIbcCommitmentPath_HighSequence(t *testing.T) {
+func TestIBCCommitmentPath_HighSequence(t *testing.T) {
 	var seq uint64 = 999999999
 
 	packet := channeltypesv2.Packet{
@@ -96,7 +96,7 @@ func TestIbcCommitmentPath_HighSequence(t *testing.T) {
 		SourceClient: "07-tendermint-0",
 	}
 
-	path := IbcCommitmentPath(packet, []byte{1})
+	path := IBCCommitmentPath(packet, []byte{1})
 
 	if len(path) != 2 {
 		t.Fatalf("expected 2 path elements, got %d", len(path))

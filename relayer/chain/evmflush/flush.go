@@ -66,7 +66,7 @@ type Router struct {
 	// Span is the log range policy, narrowed in place when the provider refuses
 	// a range. Owned by the caller's flush goroutine, like every LogSpan.
 	Span *relayerclient.LogSpan
-	// Label prefixes every log line, e.g. "[FlushEth]".
+	// Label prefixes every log line, e.g. "[eth->cosmos Flush]".
 	Label  string
 	Logger *log.Logger
 }

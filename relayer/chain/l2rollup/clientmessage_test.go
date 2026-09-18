@@ -56,7 +56,7 @@ func TestAttestedL2Header(t *testing.T) {
 		if env.Type != "header" {
 			t.Fatalf("type = %q, want header", env.Type)
 		}
-		var h AttestedL2Header
+		var h SignedAttestedL2Header
 		if err := json.Unmarshal(env.Value, &h); err != nil {
 			t.Fatalf("decode header: %v", err)
 		}
@@ -86,7 +86,7 @@ func TestAttestedL2Header(t *testing.T) {
 	// The []byte→base64 gotcha at the struct level, not just the scalar unit test: an
 	// account proof must go out as arrays of numbers.
 	t.Run("proof is number arrays", func(t *testing.T) {
-		h := &AttestedL2Header{
+		h := &SignedAttestedL2Header{
 			RouterProof:       EvmAccountProof{Proof: byteMatrix{{222, 173}}},
 			AttestorSignature: []IndexedAttestorSignature{{AttestorIndex: 0, Signature: make([]byte, 64)}},
 		}
@@ -100,7 +100,7 @@ func TestAttestedL2Header(t *testing.T) {
 	})
 
 	t.Run("rejects unsigned encoding", func(t *testing.T) {
-		if _, err := (&AttestedL2Header{}).EncodeClientMessage(); err == nil {
+		if _, err := (&SignedAttestedL2Header{}).EncodeClientMessage(); err == nil {
 			t.Fatal("unsigned L2 header encoded successfully")
 		}
 	})

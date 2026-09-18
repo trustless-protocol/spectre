@@ -705,7 +705,7 @@ func (s *Services) buildCosmosTimeoutMsg(stdCtx context.Context, evm EVMEndpoint
 
 func CosmosMembership(stdCtx context.Context, ctx CosmosEndpoint, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {
 	height := latestLightBlock.BlockHeight
-	ibcPath := utils.IbcPath(clientID, packet.Sequence, pathType)
+	ibcPath := utils.IBCPath(clientID, packet.Sequence, pathType)
 	value, proof, err := client.ProvePath(stdCtx, ctx.CosmosClient(), height, ibcPath)
 	if err != nil {
 		return nil, err
@@ -752,7 +752,7 @@ func CosmosMembership(stdCtx context.Context, ctx CosmosEndpoint, packet channel
 
 func CosmosNonMembership(stdCtx context.Context, ctx CosmosEndpoint, packet channeltypesv2.Packet, clientID string, pathType []byte, latestLightBlock *client.LightBlock) ([]byte, error) {
 	height := latestLightBlock.BlockHeight
-	ibcPath := utils.IbcPath(clientID, packet.Sequence, pathType)
+	ibcPath := utils.IBCPath(clientID, packet.Sequence, pathType)
 	value, proof, err := client.ProvePath(stdCtx, ctx.CosmosClient(), height, ibcPath)
 	if err != nil {
 		return nil, err

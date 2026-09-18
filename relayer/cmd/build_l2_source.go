@@ -307,7 +307,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		source = source.WithRecoveryState(recoveryState)
 	}
 	dest := l2rollup.NewDestination(worker, svcCtx, cfg.L2WasmClientID)
-	builder := l2rollup.NewBuilder(headerBuilder)
+	builder := l2rollup.NewAttestedBuilder(headerBuilder)
 
 	ackDue, ackSettled := ackWatchHooks(timeoutReturn.svc)
 	module := relay.NewModule(

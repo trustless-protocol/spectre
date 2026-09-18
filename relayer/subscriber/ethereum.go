@@ -210,7 +210,7 @@ func hasCosmosIBCPathValue(stdCtx context.Context, endpoint services.CosmosEndpo
 }
 
 func hasPendingCosmosPacketCommitment(stdCtx context.Context, ctx ethDeps, packet channeltypesv2.Packet) (bool, error) {
-	return hasCosmosIBCPathValue(stdCtx, ctx.Cosmos, utils.IbcCommitmentPath(packet, []byte{1}))
+	return hasCosmosIBCPathValue(stdCtx, ctx.Cosmos, utils.IBCCommitmentPath(packet, []byte{1}))
 }
 
 // HasCosmosPacketReceipt is retained for one-shot callers. Long-running relay
@@ -225,11 +225,11 @@ func HasPendingCosmosPacketCommitment(
 	endpoint services.CosmosEndpoint,
 	packet channeltypesv2.Packet,
 ) (bool, error) {
-	return hasCosmosIBCPathValue(stdCtx, endpoint, utils.IbcCommitmentPath(packet, []byte{1}))
+	return hasCosmosIBCPathValue(stdCtx, endpoint, utils.IBCCommitmentPath(packet, []byte{1}))
 }
 
 func HasCosmosPacketReceipt(stdCtx context.Context, endpoint services.CosmosEndpoint, packet channeltypesv2.Packet) (bool, error) {
-	return hasCosmosIBCPathValue(stdCtx, endpoint, utils.IbcPath(packet.DestinationClient, packet.Sequence, []byte{2}))
+	return hasCosmosIBCPathValue(stdCtx, endpoint, utils.IBCPath(packet.DestinationClient, packet.Sequence, []byte{2}))
 }
 
 func recoverEthSendPackets(

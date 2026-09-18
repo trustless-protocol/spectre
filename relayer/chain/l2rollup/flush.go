@@ -61,14 +61,14 @@ func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, flushQueryTimeout)
 	defer cancel()
 
-	router := evmflush.Router{Client: s.eth, Address: s.router, Span: &s.flush.span, Label: "[FlushL2]"}
+	router := evmflush.Router{Client: s.eth, Address: s.router, Span: &s.flush.span, Label: "[l2->cosmos Flush]"}
 	sends, err := s.unrelayedSends(queryCtx, router)
 	if err != nil {
 		return nil, err
 	}
 	acks, err := s.unrelayedAcks(queryCtx, router)
 	if err != nil {
-		log.Printf("[FlushL2] acknowledgement leg: %v; the send leg's %d packet(s) still stand", err, len(sends))
+		log.Printf("[l2->cosmos Flush] acknowledgement leg: %v; the send leg's %d packet(s) still stand", err, len(sends))
 	}
 	return append(sends, acks...), nil
 }
@@ -94,7 +94,7 @@ func (s *Source) unrelayedSends(ctx context.Context, router evmflush.Router) ([]
 	for _, slot := range slots {
 		ev, found, err := router.SendLog(ctx, s.l2ClientID, slot.Sequence, slot.Value)
 		if err != nil {
-			log.Printf("[FlushL2] resolve send seq=%d: %v", slot.Sequence, err)
+			log.Printf("[l2->cosmos Flush] resolve send seq=%d: %v", slot.Sequence, err)
 			continue
 		}
 		if !found {
@@ -148,7 +148,7 @@ func (s *Source) unrelayedAcks(ctx context.Context, router evmflush.Router) ([]c
 	for _, slot := range written {
 		ev, found, err := router.WriteAckLog(ctx, s.l2ClientID, slot.Sequence, committed[slot.Sequence])
 		if err != nil {
-			log.Printf("[FlushL2] resolve ack seq=%d: %v", slot.Sequence, err)
+			log.Printf("[l2->cosmos Flush] resolve ack seq=%d: %v", slot.Sequence, err)
 			continue
 		}
 		if !found {
