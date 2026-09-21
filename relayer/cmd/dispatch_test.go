@@ -54,6 +54,17 @@ func TestClassifyModule(t *testing.T) {
 			wantDir: dirCosmosToL2,
 		},
 		{
+			// The C-Chain (an L1) reuses both rollup directions.
+			name:    "canonical avalanche->cosmos",
+			module:  configModule{Name: "avax", SrcChain: "avalanche", DstChain: "cosmos"},
+			wantDir: dirL2ToCosmos,
+		},
+		{
+			name:    "canonical cosmos->avalanche",
+			module:  configModule{Name: "avax-dst", SrcChain: "cosmos", DstChain: "avalanche"},
+			wantDir: dirCosmosToL2,
+		},
+		{
 			name:    "unrecognized legacy name fails loud",
 			module:  configModule{Name: "typo_to_eth"},
 			wantErr: true,

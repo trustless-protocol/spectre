@@ -175,6 +175,54 @@
           }
         }
       }
+    },
+    {
+      "name": "cosmos-to-avalanche",
+      "src_chain": "cosmos",
+      "dst_chain": "avalanche",
+      "config": {
+        "cosmos_wasm_client_id": "",
+        "eth_rpc_url": "http://127.0.0.1:9650/ext/bc/C/rpc",
+        "eth_ws_url": "ws://127.0.0.1:9650/ext/bc/C/ws",
+        "fetch_timeout": 15,
+        "spectre_client": "",
+        "ics26_address": "0xd519b00154653763d10354698c7c6c3e4ebf3acd",
+        "ics26_client_id": "avalanche-client-0",
+        "membership": "0x7de71ddb07d2dd0aaf8c1440e0fdb9fcd8f8b039",
+        "misbehaviour": "0x34a31cb698b962ae3298ea1e37510a18e623e0b7",
+        "tm_rpc_url": "http://127.0.0.1:26657",
+        "clock_drift": 60,
+        "app_hash_wait_retries": 30,
+        "app_hash_wait_interval_seconds": 1,
+        "update_client": "0x72af2d859a89a75646237f00d769e1b419c154f8",
+        "signature_verifier": "0x40a66b1bdbf67df96b362e8c162ff03171af1dcc",
+        "rotation_threshold": "5/6"
+      }
+    },
+    {
+      "name": "avalanche-to-cosmos",
+      "src_chain": "avalanche",
+      "dst_chain": "cosmos",
+      "config": {
+        "l2_rpc_url": "http://127.0.0.1:9650/ext/bc/C/rpc",
+        "tm_rpc_url": "http://127.0.0.1:26657",
+        "attestor_endpoints": [{"address": "127.0.0.1:3001", "attestor_index": 0}],
+        "attestor_src_chain": "avaxdev",
+        "attestors": {"public_keys": ["o+IGHINpSfBe/aq/3e++IpdnKD4pW41m387fjxUy5+4="], "threshold": 1},
+        "l2_wasm_client_id": "08-wasm-1",
+        "l2_ics26_client_id": "avalanche-client-0",
+        "head_kind": "finalized",
+        "log_scan_chunk": 0,
+        "rollup_profile": {
+          "common": {
+            "l2_chain_id": 43112,
+            "l2_router": "0xd519b00154653763d10354698c7c6c3e4ebf3acd",
+            "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
+            "profile_version": "avalanche_attestor_v1",
+            "l2_header_fork": "coreth"
+          }
+        }
+      }
     }
   ],
   "batch": {

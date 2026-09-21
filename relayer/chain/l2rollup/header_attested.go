@@ -13,7 +13,6 @@ import (
 	relayerclient "relayer/client"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
 
@@ -42,6 +41,13 @@ type attestedHeaderBuilder struct {
 	srcChain  string             // attestor src_chain key, same as the source's
 	runMode   attestorpb.RunMode // replica head the attestor must answer against
 	name      string             // registry builder name, for logs and errors
+	// readHeader fetches the canonical header at a height together with its
+	// block hash and state root. The default reads through go-ethereum's
+	// types.Header; coreth (Avalanche C-Chain) headers carry extra fields geth
+	// drops, so NewCorethAttestedHeaderBuilder swaps in the raw-RPC reader
+	// from coreth_header.go. Everything downstream — attestation binding,
+	// router proof, wire envelope — is shared.
+	readHeader func(ctx context.Context, height *big.Int) (CanonicalEvmHeader, ethcommon.Hash, ethcommon.Hash, error)
 }
 
 // SigningAttestor is one reachable attestor endpoint assigned to its immutable
@@ -89,7 +95,37 @@ func NewAttestedHeaderBuilder(l2 *ethclient.Client, router ethcommon.Address, ch
 	if err != nil {
 		return nil, fmt.Errorf("%s: derive attestor set hash: %w", name, err)
 	}
-	return &attestedHeaderBuilder{l2: l2, router: router, chainID: chainID, set: set, setHash: setHash, attestors: ordered, srcChain: srcChain, runMode: runMode, name: name}, nil
+	builder := &attestedHeaderBuilder{l2: l2, router: router, chainID: chainID, set: set, setHash: setHash, attestors: ordered, srcChain: srcChain, runMode: runMode, name: name}
+	builder.readHeader = builder.readGethHeader
+	return builder, nil
+}
+
+// NewCorethAttestedHeaderBuilder is NewAttestedHeaderBuilder with the header
+// path swapped for the coreth (Avalanche C-Chain) raw-RPC reader, which
+// preserves coreth's extra header fields and recomputes the coreth block hash.
+func NewCorethAttestedHeaderBuilder(l2 *ethclient.Client, router ethcommon.Address, chainID uint64, set attestation.AttestorConfig, attestors []SigningAttestor, srcChain string, runMode attestorpb.RunMode, name string) (HeaderBuilder, error) {
+	built, err := NewAttestedHeaderBuilder(l2, router, chainID, set, attestors, srcChain, runMode, name)
+	if err != nil {
+		return nil, err
+	}
+	builder, ok := built.(*attestedHeaderBuilder)
+	if !ok {
+		return nil, fmt.Errorf("%s: unexpected builder type %T", name, built)
+	}
+	rpcClient := l2.Client()
+	builder.readHeader = func(ctx context.Context, height *big.Int) (CanonicalEvmHeader, ethcommon.Hash, ethcommon.Hash, error) {
+		return readCorethHeader(ctx, rpcClient, height)
+	}
+	return builder, nil
+}
+
+// readGethHeader is the default header path for geth-family chains.
+func (a *attestedHeaderBuilder) readGethHeader(ctx context.Context, height *big.Int) (CanonicalEvmHeader, ethcommon.Hash, ethcommon.Hash, error) {
+	l2Header, err := a.l2.HeaderByNumber(ctx, height)
+	if err != nil {
+		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, err
+	}
+	return toCanonicalHeader(l2Header), l2Header.Hash(), l2Header.Root, nil
 }
 
 func (a *attestedHeaderBuilder) Name() string { return a.name }
@@ -102,11 +138,11 @@ func (a *attestedHeaderBuilder) Name() string { return a.name }
 func (a *attestedHeaderBuilder) BuildHeader(ctx context.Context, request HeaderRequest) (ClientMessage, uint64, error) {
 	height := new(big.Int).SetUint64(request.Height)
 
-	l2Header, err := a.l2.HeaderByNumber(ctx, height)
+	wireHeader, blockHash, stateRoot, err := a.readHeader(ctx, height)
 	if err != nil {
 		return nil, 0, fmt.Errorf("%s: L2 header at %d: %w", a.name, request.Height, err)
 	}
-	signatures, err := a.bindToAttestation(ctx, request.Height, l2Header)
+	signatures, err := a.bindToAttestation(ctx, request.Height, blockHash, stateRoot)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -116,7 +152,7 @@ func (a *attestedHeaderBuilder) BuildHeader(ctx context.Context, request HeaderR
 	}
 
 	return &AttestedL2Header{
-		L2Header:          toCanonicalHeader(l2Header),
+		L2Header:          wireHeader,
 		RouterProof:       EvmAccountProof{Proof: routerProof.AccountProof},
 		AttestorSignature: signatures,
 	}, request.Height, nil
@@ -130,9 +166,7 @@ func (a *attestedHeaderBuilder) BuildHeader(ctx context.Context, request HeaderR
 // Endpoints are queried concurrently. Individual causes retain their typed
 // classification, while the aggregate is permanent only when no recoverable
 // endpoint can bring the valid count up to the configured threshold.
-func (a *attestedHeaderBuilder) bindToAttestation(ctx context.Context, height uint64, l2Header *types.Header) ([]IndexedAttestorSignature, error) {
-	stateRoot := l2Header.Root
-	blockHash := l2Header.Hash()
+func (a *attestedHeaderBuilder) bindToAttestation(ctx context.Context, height uint64, blockHash, stateRoot ethcommon.Hash) ([]IndexedAttestorSignature, error) {
 	statement, err := attestation.SigningBytes(a.chainID, a.router.Bytes(), a.setHash[:], height, blockHash.Bytes(), stateRoot.Bytes())
 	if err != nil {
 		return nil, fmt.Errorf("%s: build attestation statement: %w", a.name, err)

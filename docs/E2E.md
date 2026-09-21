@@ -1,8 +1,8 @@
 # End-to-end runbooks
 
 Every local bring-up: Cosmos↔Ethereum, Cosmos↔OP, Cosmos↔Arbitrum, Cosmos↔Base,
-and running against an L2 someone else operates. Split out of the README, which
-had grown past the point where any of it was findable.
+Cosmos↔Avalanche, and running against an L2 someone else operates. Split out of
+the README, which had grown past the point where any of it was findable.
 
 Prerequisites are in [the README](../README.md#requirements); these runbooks assume
 the toolchain is in place and add Docker + Kurtosis on top.
@@ -1146,3 +1146,71 @@ Useful:
 ./scripts/local/run_base_node.sh --stop     # stop Base, leave the L1 running
 kurtosis enclave rm -f base-devnet          # remove the L1 and everything on it
 ```
+
+## Local Cosmos ↔ Avalanche E2E
+
+Avalanche is an L1 — the C-Chain is not a rollup. It reuses the same relay
+engine and attested-header wasm client the rollup paths run on (through a
+coreth header profile), and its bring-up is the simplest in this file: **no
+Ethereum L1 dependency, no Kurtosis, no settlement layer**. Avalanche
+acceptance is finality, so the whole stack is one avalanchego process and the
+attestor is a thin follower of its C-Chain RPC.
+
+Circuit artifacts are still required (a SpectreClient is deployed on the
+C-Chain to verify Cosmos), so step 1 of the [ETH runbook](#local-cosmos--ethereum-e2e)
+applies unchanged before deploying.
+
+```bash
+# 1. Single-node local Avalanche network (chain id 43112, every block final in
+#    ~1s). Needs AVALANCHEGO_BIN pointing at an avalanchego binary >= v1.14
+#    (Granite header layout; Helicon headers also parse). Writes
+#    .avalanche-devnet-run/attestor.env (C-Chain RPC/WS + prefunded ewoq key).
+AVALANCHEGO_BIN=~/bin/avalanchego ./scripts/local/run_avalanche_node.sh
+
+# 2. Attestor — follows the C-Chain over RPC and signs accepted block
+#    identities; serves gRPC :3001 (distinct ports if other attestors share the
+#    host). Its devnet identity is avalanche-specific: the relayer refuses one
+#    attestor key across different head_kind tiers, and Avalanche runs
+#    "finalized" where OP/Base/Arbitrum run "safe".
+./scripts/local/run_avalanche_attestor.sh
+
+# 3. Cosmos node, then gov-store the Avalanche light-client wasm.
+./scripts/local/run_cosmos_node.sh
+just build-cw-ics08-wasm-avalanche
+./scripts/local/wasm_avax.sh   # -> Avalanche client checksum
+
+# 4. IBC contracts on the C-Chain. The handoff env supplies the prefunded
+#    devnet key; align relayer/.env ETH_PRIVATE_KEY with it (deployer receives
+#    the ICS26Router relayer role).
+DST_CHAIN=avalanche ./scripts/local/deploy_l2_contracts.sh
+
+# 5. Clients: the Avalanche client on Cosmos, then the SpectreClient on the
+#    C-Chain. Copy avalanche-client-config.example.json, fill in the checksum
+#    from step 3 and the router from step 4 (l2_chain_id 43112 for this devnet;
+#    --l2-config is the shared client-creation flag, not a statement about the
+#    chain).
+cd relayer
+./relayer create-clients-cosmos --config config.json --l2-config avalanche-client-config.json
+./relayer create-clients-eth --config config.json --source <ics26_client_id> --trust-level 2/3
+
+# 6. Relay both directions.
+./relayer start --config config.json
+```
+
+Differences from the OP/Base/Arbitrum runbooks, all simplifications:
+
+- `head_kind` is `finalized` and means exactly what it says: coreth serves the
+  `finalized` block tag as the last *accepted* block, and accepted is final.
+  The attestor only answers `finalized` requests.
+- The relayer reads C-Chain headers over raw RPC, not `ethclient`: coreth
+  headers carry extra fields (`extDataHash`, the Granite/Helicon tail) that
+  geth's header type would silently drop, and the recomputed block hash is
+  checked against the node-reported one on every read
+  (`relayer/chain/l2rollup/coreth_header.go`; Rust mirror in
+  `packages/l2-client/src/canonical_header.rs`, fork `coreth`). Both sides are
+  pinned to the same real Fuji header fixture.
+- Running against Fuji instead of the local devnet: point `l2_rpc_url` and the
+  attestor's `c_chain_rpc_url` at the same Fuji endpoint (or better, your own
+  node — the attestor's endpoint is its replica and should be independent of
+  the relayer's), set `l2_chain_id` 43113 everywhere, and use a fresh signing
+  identity, not the checked-in devnet ones.

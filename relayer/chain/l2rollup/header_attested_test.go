@@ -72,7 +72,7 @@ func TestBindToAttestation_RejectsABlockTheAttestorDoesNotRecognise(t *testing.T
 	b := testSigningBuilder(t, at)
 	at.verifyValid = false
 
-	_, err := b.bindToAttestation(context.Background(), 4096, testL2Header(t))
+	_, err := b.bindToAttestation(context.Background(), 4096, testL2Header(t).Hash(), testL2Header(t).Root)
 	if err == nil || !strings.Contains(err.Error(), "only 0 valid attestor signatures") {
 		t.Fatalf("bindToAttestation error = %v, want insufficient signatures", err)
 	}
@@ -83,7 +83,7 @@ func TestBindToAttestation_SendsTheExactContextAndReturnsSignedIndex(t *testing.
 	b := testSigningBuilder(t, at)
 	header := testL2Header(t)
 
-	signatures, err := b.bindToAttestation(context.Background(), 4096, header)
+	signatures, err := b.bindToAttestation(context.Background(), 4096, header.Hash(), header.Root)
 	if err != nil {
 		t.Fatalf("bindToAttestation: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestBindToAttestation_RequiresThresholdAndAcceptsAnotherConfiguredSigner(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	signatures, err := built.(*attestedHeaderBuilder).bindToAttestation(context.Background(), 4096, testL2Header(t))
+	signatures, err := built.(*attestedHeaderBuilder).bindToAttestation(context.Background(), 4096, testL2Header(t).Hash(), testL2Header(t).Root)
 	if err != nil {
 		t.Fatalf("threshold quorum: %v", err)
 	}
@@ -165,7 +165,7 @@ func TestBindToAttestation_HangingEndpointDoesNotBlockAHealthyQuorum(t *testing.
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
-	signatures, err := built.(*attestedHeaderBuilder).bindToAttestation(ctx, 4096, testL2Header(t))
+	signatures, err := built.(*attestedHeaderBuilder).bindToAttestation(ctx, 4096, testL2Header(t).Hash(), testL2Header(t).Root)
 	if err != nil {
 		t.Fatalf("healthy quorum blocked by one hanging endpoint: %v", err)
 	}
@@ -177,7 +177,7 @@ func TestBindToAttestation_HangingEndpointDoesNotBlockAHealthyQuorum(t *testing.
 func TestBindToAttestation_PropagatesTransportFailureAsInsufficientQuorum(t *testing.T) {
 	at := &fakeAttestor{verifyErr: errors.New("connection refused")}
 	b := testSigningBuilder(t, at)
-	_, err := b.bindToAttestation(context.Background(), 4096, testL2Header(t))
+	_, err := b.bindToAttestation(context.Background(), 4096, testL2Header(t).Hash(), testL2Header(t).Root)
 	if err == nil || !strings.Contains(err.Error(), "connection refused") {
 		t.Fatalf("error = %v, want transport cause", err)
 	}
@@ -189,7 +189,7 @@ func TestBindToAttestation_PropagatesTransportFailureAsInsufficientQuorum(t *tes
 func TestBindToAttestation_ClassifiesImpossiblePermanentQuorum(t *testing.T) {
 	at := &fakeAttestor{verifyErr: fmt.Errorf("%w: invalid run mode", ErrAttestorBadRequest)}
 	b := testSigningBuilder(t, at)
-	_, err := b.bindToAttestation(context.Background(), 4096, testL2Header(t))
+	_, err := b.bindToAttestation(context.Background(), 4096, testL2Header(t).Hash(), testL2Header(t).Root)
 	if err == nil || !errors.Is(err, ErrAttestorBadRequest) || !chain.IsPermanent(err) {
 		t.Fatalf("error = %v, want permanent bad-request quorum failure", err)
 	}
@@ -203,7 +203,7 @@ func TestBindToAttestation_ClassifiesInvalidSignaturePermanent(t *testing.T) {
 		t.Fatal(err)
 	}
 	at.verifySigner = wrongSigner
-	_, bindErr := b.bindToAttestation(context.Background(), 4096, testL2Header(t))
+	_, bindErr := b.bindToAttestation(context.Background(), 4096, testL2Header(t).Hash(), testL2Header(t).Root)
 	if bindErr == nil || !errors.Is(bindErr, ErrAttestorSignature) || !chain.IsPermanent(bindErr) {
 		t.Fatalf("error = %v, want permanent invalid-signature quorum failure", bindErr)
 	}

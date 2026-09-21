@@ -111,6 +111,7 @@ fn attested(block: u8) -> SignedAttestedL2Header {
             excess_blob_gas: None,
             parent_beacon_block_root: None,
             requests_hash: None,
+            ..CanonicalEvmHeader::default()
         },
         router_proof: EvmAccountProof { proof: vec![] },
         attestor_signature: vec![IndexedAttestorSignature {

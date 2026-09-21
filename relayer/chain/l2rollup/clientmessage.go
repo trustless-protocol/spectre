@@ -67,6 +67,21 @@ type CanonicalEvmHeader struct {
 	ExcessBlobGas         *uint64   `json:"excess_blob_gas,omitempty"`
 	ParentBeaconBlockRoot *hexBytes `json:"parent_beacon_block_root,omitempty"`
 	RequestsHash          *hexBytes `json:"requests_hash,omitempty"`
+
+	// Coreth (Avalanche C-Chain) fields, mirroring canonical_header.rs. All nil
+	// for every geth-family chain, and omitted from JSON so the deployed
+	// OP/Base/Arbitrum wasm clients (deny_unknown_fields) never see them.
+	ExtDataHash         *hexBytes `json:"ext_data_hash,omitempty"`
+	ExtDataGasUsed      *u256     `json:"ext_data_gas_used,omitempty"`
+	BlockGasCost        *u256     `json:"block_gas_cost,omitempty"`
+	TimeMilliseconds    *uint64   `json:"time_milliseconds,omitempty"`
+	MinDelayExcess      *uint64   `json:"min_delay_excess,omitempty"`
+	TargetExponent      *uint64   `json:"target_exponent,omitempty"`
+	MinPriceExponent    *uint64   `json:"min_price_exponent,omitempty"`
+	SettledHeight       *uint64   `json:"settled_height,omitempty"`
+	SettledGasUnix      *uint64   `json:"settled_gas_unix,omitempty"`
+	SettledGasNumerator *uint64   `json:"settled_gas_numerator,omitempty"`
+	SettledExcess       *uint64   `json:"settled_excess,omitempty"`
 }
 
 // IndexedAttestorSignature mirrors l2-client `IndexedAttestorSignature`. Its

@@ -119,7 +119,7 @@ const (
 // isChainKind reports whether s names a known chain family (chain.ChainType).
 func isChainKind(s string) bool {
 	switch chain.ChainType(s) {
-	case chain.Cosmos, chain.Ethereum, chain.OPStack, chain.Arbitrum:
+	case chain.Cosmos, chain.Ethereum, chain.OPStack, chain.Arbitrum, chain.Avalanche:
 		return true
 	default:
 		return false
@@ -145,9 +145,13 @@ func classifyModule(m configModule) (dir moduleDirection, isLegacy bool, err err
 			return dirCosmosToEth, false, nil
 		case src == chain.Ethereum && dst == chain.Cosmos:
 			return dirEthToCosmos, false, nil
-		case (src == chain.OPStack || src == chain.Arbitrum) && dst == chain.Cosmos:
+		// Avalanche's C-Chain (an L1, not a rollup) deliberately reuses the same
+		// two directions as the rollups: the Cosmos->EVM leg is chain-agnostic
+		// groth16+EVM, and the return leg is the shared attested-header client
+		// with a coreth header profile.
+		case (src == chain.OPStack || src == chain.Arbitrum || src == chain.Avalanche) && dst == chain.Cosmos:
 			return dirL2ToCosmos, false, nil
-		case src == chain.Cosmos && (dst == chain.OPStack || dst == chain.Arbitrum):
+		case src == chain.Cosmos && (dst == chain.OPStack || dst == chain.Arbitrum || dst == chain.Avalanche):
 			return dirCosmosToL2, false, nil
 		default:
 			return "", false, fmt.Errorf("module %q: unsupported direction src_chain=%q dst_chain=%q", m.Name, m.SrcChain, m.DstChain)
@@ -733,7 +737,7 @@ func loadConfigWith(configPath string, requireL2WasmClientID bool) (*appConfig, 
 			if err := json.Unmarshal(m.Config, &one); err != nil {
 				return nil, fmt.Errorf("module %q: parse l2_to_cosmos config: %w", m.Name, err)
 			}
-			one.kind = chain.ChainType(m.SrcChain) // opstack | arbitrum
+			one.kind = chain.ChainType(m.SrcChain) // opstack | arbitrum | avalanche
 			if err := one.validateWith(requireL2WasmClientID); err != nil {
 				return nil, fmt.Errorf("module %q: %w", m.Name, err)
 			}

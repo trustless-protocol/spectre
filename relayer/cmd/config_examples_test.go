@@ -12,10 +12,11 @@ import (
 // carry. config.example.json is the catalogue of every module across every path;
 // these are the files an operator actually copies to config.json.
 var pathExamples = map[string][]string{
-	"config.ethereum.example.json": {"cosmos-to-eth", "eth-to-cosmos"},
-	"config.op.example.json":       {"cosmos-to-op", "op-to-cosmos"},
-	"config.arbitrum.example.json": {"cosmos-to-arbitrum", "arbitrum-to-cosmos"},
-	"config.base.example.json":     {"cosmos-to-base", "base-to-cosmos"},
+	"config.ethereum.example.json":  {"cosmos-to-eth", "eth-to-cosmos"},
+	"config.op.example.json":        {"cosmos-to-op", "op-to-cosmos"},
+	"config.arbitrum.example.json":  {"cosmos-to-arbitrum", "arbitrum-to-cosmos"},
+	"config.base.example.json":      {"cosmos-to-base", "base-to-cosmos"},
+	"config.avalanche.example.json": {"cosmos-to-avalanche", "avalanche-to-cosmos"},
 }
 
 func readModules(t *testing.T, path string) map[string]json.RawMessage {
@@ -174,13 +175,15 @@ func TestExampleRollupProfilesUseOnlyFreshV2Schema(t *testing.T) {
 	t.Parallel()
 
 	examples := map[string]int{
-		"config.example.json":          3,
-		"config.op.example.json":       1,
-		"config.base.example.json":     1,
-		"config.arbitrum.example.json": 1,
-		"op-l2-config.example.json":    1,
-		"base-l2-config.example.json":  1,
-		"arb-l2-config.example.json":   1,
+		"config.example.json":                  4,
+		"config.op.example.json":               1,
+		"config.base.example.json":             1,
+		"config.arbitrum.example.json":         1,
+		"config.avalanche.example.json":        1,
+		"op-l2-config.example.json":            1,
+		"base-l2-config.example.json":          1,
+		"arb-l2-config.example.json":           1,
+		"avalanche-client-config.example.json": 1,
 	}
 	wantKeys := map[string]struct{}{
 		"l2_chain_id": {}, "l2_router": {}, "commitment_slot": {},
@@ -188,6 +191,7 @@ func TestExampleRollupProfilesUseOnlyFreshV2Schema(t *testing.T) {
 	}
 	allowedVersions := map[string]struct{}{
 		"op_attestor_v1": {}, "base_attestor_v1": {}, "arbitrum_attestor_v1": {},
+		"avalanche_attestor_v1": {},
 	}
 
 	var collectProfiles func(any, *[]map[string]any)

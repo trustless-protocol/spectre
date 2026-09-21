@@ -1,0 +1,51 @@
+{
+  "_comment": [
+    "Template for `create-clients-cosmos --l2-config` on AVALANCHE (C-Chain). Copy to",
+    "avalanche-client-config.json (gitignored) and fill in your deployment's values.",
+    "(--l2-config is the shared client-creation flag; Avalanche is an L1, it",
+    "just reuses the same attested-header client machinery as the rollups.)",
+    "",
+    "The values below are FUJI (chain id 43113), so they are real and checkable. For",
+    "the local devnet (tmpnet) use l2_chain_id 43112 and the router address your",
+    "deploy printed. Its checked-in public key matches the local attestor handoff;",
+    "replace it with your own attestor public key on every other network.",
+    "",
+    "rollup_profile is submitted verbatim in MsgCreateClient and the Rust verifier",
+    "rejects unknown fields, so common carries exactly these five keys.",
+    "",
+    "Four fields must be right or the client fails, each in its own way:",
+    "  profile_version  must be avalanche_attestor_v1 (the cw-ics08-wasm-avalanche",
+    "                   artifact) - a mismatch fails at instantiate with",
+    "                   InvalidProfileVersion.",
+    "  l2_header_fork   must be coreth: C-Chain headers carry ext_data_hash plus",
+    "                   coreth's optional tail (Granite/Helicon fields), and the",
+    "                   client recomputes the block hash from exactly that layout.",
+    "                   A mismatch is rejected on EVERY update, not at creation.",
+    "  l2_chain_id      must be the chain the relayer's l2_rpc_url actually serves",
+    "                   (43114 mainnet / 43113 Fuji / 43112 local tmpnet).",
+    "  l2_router        the ICS26Router this deploy created on the C-Chain.",
+    "",
+    "wasm_checksum is printed by scripts/local/wasm_avax.sh, and is the sha256 of the",
+    "UNCOMPRESSED wasm. counterparty_client_id is the client id on the C-Chain router",
+    "that tracks Cosmos; create-clients-eth registers the SpectreClient under it."
+  ],
+  "wasm_checksum": "<hex checksum from `gaiad q ibc-wasm checksums`, e.g. a49e97b0...>",
+  "l2_rpc_url": "https://api.avax-test.network/ext/bc/C/rpc",
+  "attestors": {
+    "public_keys": [
+      "o+IGHINpSfBe/aq/3e++IpdnKD4pW41m387fjxUy5+4="
+    ],
+    "threshold": 1
+  },
+  "rollup_profile": {
+    "common": {
+      "l2_chain_id": 43113,
+      "l2_router": "0x0000000000000000000000000000000000000000",
+      "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
+      "profile_version": "avalanche_attestor_v1",
+      "l2_header_fork": "coreth"
+    }
+  },
+  "bootstrap_block": 0,
+  "counterparty_client_id": "avalanche-client-0"
+}

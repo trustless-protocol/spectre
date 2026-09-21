@@ -1,0 +1,19 @@
+{
+    "modules": [
+        {
+            "name": "avalanche_source",
+            "src_chain": "avaxdev",
+            "config": {
+                "c_chain_rpc_url": "http://127.0.0.1:9650/ext/bc/C/rpc",
+                "chain_id": 43112,
+                "poll_interval_seconds": 2,
+                "attestation_signing_key": "env:ATTESTOR_SIGNING_KEY"
+            }
+        }
+    ],
+    "server": {
+        "address": "127.0.0.1",
+        "log_level": "info",
+        "grpc_port": 3001
+    }
+}

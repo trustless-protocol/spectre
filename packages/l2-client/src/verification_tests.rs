@@ -64,6 +64,7 @@ fn header() -> SignedAttestedL2Header {
             excess_blob_gas: Some(12),
             parent_beacon_block_root: Some(B256::with_last_byte(13)),
             requests_hash: Some(B256::with_last_byte(14)),
+            ..CanonicalEvmHeader::default()
         },
         router_proof: EvmAccountProof { proof: vec![] },
         attestor_signature: vec![],

@@ -79,7 +79,8 @@ if [ -z "${L2_RPC:-}" ] && [ -z "${L2_ENV_FILE:-}" ]; then
         opstack) L2_ENV_FILE=$REPO_ROOT/.op-devnet-run/attestor.env ;;
         arbitrum) L2_ENV_FILE=$REPO_ROOT/.arbitrum-devnet-run/attestor.env ;;
         base) L2_ENV_FILE=$REPO_ROOT/.base-devnet-run/attestor.env ;;
-        *) echo "ERROR: unknown DST_CHAIN=$DST_CHAIN (want opstack|arbitrum|base)" >&2; exit 1 ;;
+        avalanche) L2_ENV_FILE=$REPO_ROOT/.avalanche-devnet-run/attestor.env ;;
+        *) echo "ERROR: unknown DST_CHAIN=$DST_CHAIN (want opstack|arbitrum|base|avalanche)" >&2; exit 1 ;;
     esac
 fi
 

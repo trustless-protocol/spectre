@@ -986,6 +986,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
+name = "avalanche-cchain"
+version = "0.1.0"
+dependencies = [
+ "l2-client",
+ "schemars",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "base16ct"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1531,6 +1541,16 @@ version = "0.1.0"
 dependencies = [
  "cosmwasm-std",
  "l2-arbitrum",
+ "l2-client",
+ "serde_json",
+]
+
+[[package]]
+name = "cw-ics08-wasm-avalanche"
+version = "0.1.0"
+dependencies = [
+ "avalanche-cchain",
+ "cosmwasm-std",
  "l2-client",
  "serde_json",
 ]

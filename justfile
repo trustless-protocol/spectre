@@ -25,6 +25,12 @@ build-arbitrum-attestor:
 	mkdir -p attestor/arbitrum/bin
 	cd attestor/arbitrum && go build -o bin/attestor ./cmd
 
+# Build the Avalanche C-Chain attestor sidecar.
+[group('build')]
+build-avalanche-attestor:
+	mkdir -p attestor/avalanche/bin
+	cd attestor/avalanche && go build -o bin/attestor ./cmd
+
 # Build the Optimism attestor sidecar binary
 [group('build')]
 build-attestor:
@@ -57,8 +63,14 @@ build-cw-ics08-wasm-op:
 	gzip -n e2e/interchaintestv8/wasm/cw_ics08_wasm_op.wasm -f
 
 [group('build')]
+build-cw-ics08-wasm-avalanche:
+	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0@sha256:7e0b9229c1a4118d0c9a2af2e7f5d95a91f264c26a2ce5681c779926e74d7f85 ./programs/cw-ics08-wasm-avalanche
+	cp artifacts/cw_ics08_wasm_avalanche.wasm e2e/interchaintestv8/wasm
+	gzip -n e2e/interchaintestv8/wasm/cw_ics08_wasm_avalanche.wasm -f
+
+[group('build')]
 build-cw-ics08-wasm-l2-native:
-	cargo build --target wasm32-unknown-unknown --release --package cw-ics08-wasm-arbitrum --package cw-ics08-wasm-base --package cw-ics08-wasm-op
+	cargo build --target wasm32-unknown-unknown --release --package cw-ics08-wasm-arbitrum --package cw-ics08-wasm-base --package cw-ics08-wasm-op --package cw-ics08-wasm-avalanche
 
 # Capture fixed-block L1/L2 proof evidence. The configuration is local-only because it contains RPC URLs.
 # The resulting fixture must be reviewed before it is added as a supported network configuration.

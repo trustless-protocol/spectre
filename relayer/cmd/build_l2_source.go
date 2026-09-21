@@ -247,7 +247,14 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	// account proof, and nothing about that is chain-specific any more. It takes the
 	// same endpoint set the source gates heights on, so the block it packages is
 	// bound to a threshold of replicas that independently recognise that height.
-	headerBuilder, err := l2rollup.NewAttestedHeaderBuilder(l2, router, chainID, cfg.Attestors, signingAttestors, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
+	// The single per-chain variation left is the header shape: Avalanche's C-Chain
+	// runs coreth, whose extra header fields geth's types.Header would drop, so it
+	// gets the raw-RPC reader variant of the same builder.
+	newHeaderBuilder := l2rollup.NewAttestedHeaderBuilder
+	if cfg.kind == chain.Avalanche {
+		newHeaderBuilder = l2rollup.NewCorethAttestedHeaderBuilder
+	}
+	headerBuilder, err := newHeaderBuilder(l2, router, chainID, cfg.Attestors, signingAttestors, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
 	if err != nil {
 		l2.Close()
 		if stopErr := cosmosClient.Stop(); stopErr != nil {

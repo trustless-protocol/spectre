@@ -34,6 +34,13 @@ const (
 	Ethereum ChainType = "ethereum" // L1
 	OPStack  ChainType = "opstack"  // Optimism + Base (same stack; differ by config/binary)
 	Arbitrum ChainType = "arbitrum" // Nitro
+	// Avalanche is the C-Chain (coreth) — an L1, not a rollup. It reuses the
+	// same adapter pair the rollups run on: Cosmos->C-Chain takes the
+	// groth16+EVM path verbatim, and C-Chain->Cosmos the attested-header path —
+	// acceptance is finality, so the attestor answers from its own C-Chain
+	// replica with no derivation. The only chain-specific piece is coreth's
+	// header shape (see coreth_header.go).
+	Avalanche ChainType = "avalanche"
 )
 
 // EventType classifies a relayable event by its IBC packet-lifecycle message,
