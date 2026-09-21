@@ -8,6 +8,7 @@ members = [
     "packages/l2-client",
     "packages/l2-arbitrum",
     "packages/avalanche-cchain",
+    "packages/avalanche-warp",
     "packages/l2-op-stack",
 
     "programs/cw-ics08-wasm-eth",
@@ -38,6 +39,7 @@ tree_hash                 = { path = "packages/ethereum/tree_hash", default-feat
 l2-client                 = { path = "packages/l2-client", default-features = false }
 l2-arbitrum               = { path = "packages/l2-arbitrum", default-features = false }
 avalanche-cchain          = { path = "packages/avalanche-cchain", default-features = false }
+avalanche-warp            = { path = "packages/avalanche-warp", default-features = false }
 l2-op-stack               = { path = "packages/l2-op-stack", default-features = false }
 
 serde      = { version = "1.0", default-features = false }

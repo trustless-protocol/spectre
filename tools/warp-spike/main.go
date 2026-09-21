@@ -29,6 +29,7 @@ import (
 
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/utils/constants"
+	"github.com/ava-labs/avalanchego/utils/crypto/bls"
 	"github.com/ava-labs/avalanchego/utils/set"
 	"github.com/ava-labs/avalanchego/vms/platformvm"
 	platformapi "github.com/ava-labs/avalanchego/vms/platformvm/api"
@@ -43,13 +44,45 @@ func main() {
 	count := flag.Int("count", 1, "number of aggregation attempts")
 	interval := flag.Duration("interval", 30*time.Second, "delay between attempts")
 	csvPath := flag.String("csv", "", "append results as CSV (default stdout only)")
+	fixturePath := flag.String("dump-fixture", "", "on a verified aggregate, write {unsigned, signed, canonical set} JSON here and stop — the cross-language test fixture for the wasm client")
 	flag.Parse()
 
 	ctx := context.Background()
+	dumpFixturePath = *fixturePath
 	if err := run(ctx, *baseURL, *aggregatorURL, *quorum, *count, *interval, *csvPath); err != nil {
 		fmt.Fprintln(os.Stderr, "warp-spike:", err)
 		os.Exit(1)
 	}
+}
+
+// dumpFixturePath, when set, makes the first verified attempt persist its full
+// evidence: the exact canonical validator set the aggregate verified against
+// (compressed keys, canonical order) plus the signed message. The wasm client's
+// tests replay this byte-for-byte, so its verifier is pinned to a real
+// primary-network aggregate rather than to synthetic keys.
+var dumpFixturePath string
+
+type fixtureValidator struct {
+	PublicKeyCompressed string `json:"public_key_compressed"`
+	Weight              uint64 `json:"weight"`
+}
+
+type fixture struct {
+	Network         string             `json:"network"`
+	CapturedAt      string             `json:"captured_at"`
+	NetworkID       uint32             `json:"network_id"`
+	SourceChainID   string             `json:"source_chain_id"`
+	BlockNumber     uint64             `json:"block_number"`
+	BlockHash       string             `json:"block_hash"`
+	UnsignedMessage string             `json:"unsigned_message"`
+	SignedMessage   string             `json:"signed_message"`
+	BitSet          string             `json:"bit_set"`
+	Signature       string             `json:"signature"`
+	QuorumNum       uint64             `json:"quorum_num"`
+	QuorumDen       uint64             `json:"quorum_den"`
+	TotalWeight     uint64             `json:"total_weight"`
+	SignedWeight    uint64             `json:"signed_weight"`
+	Validators      []fixtureValidator `json:"validators"`
 }
 
 func run(ctx context.Context, baseURL, aggregatorURL string, quorum uint64, count int, interval time.Duration, csvPath string) error {
@@ -207,6 +240,40 @@ func attempt(ctx context.Context, baseURL, aggregatorURL string, networkID uint3
 		}
 	}
 	pct := float64(signedWeight) * 100 / float64(warpSet.TotalWeight)
+
+	if dumpFixturePath != "" {
+		fix := fixture{
+			Network:         baseURL,
+			CapturedAt:      now,
+			NetworkID:       networkID,
+			SourceChainID:   "0x" + hex.EncodeToString(cChainID[:]),
+			BlockNumber:     blockNumber,
+			BlockHash:       blk.Hash,
+			UnsignedMessage: "0x" + hex.EncodeToString(unsigned.Bytes()),
+			SignedMessage:   "0x" + hex.EncodeToString(signedBytes),
+			BitSet:          "0x" + hex.EncodeToString(bitSetSig.Signers),
+			Signature:       "0x" + hex.EncodeToString(bitSetSig.Signature[:]),
+			QuorumNum:       quorum,
+			QuorumDen:       100,
+			TotalWeight:     warpSet.TotalWeight,
+			SignedWeight:    signedWeight,
+		}
+		for _, v := range warpSet.Validators {
+			fix.Validators = append(fix.Validators, fixtureValidator{
+				PublicKeyCompressed: "0x" + hex.EncodeToString(bls.PublicKeyToCompressedBytes(v.PublicKey)),
+				Weight:              v.Weight,
+			})
+		}
+		raw, err := json.MarshalIndent(fix, "", "  ")
+		if err != nil {
+			return fail(blockNumber, latency, err)
+		}
+		if err := os.WriteFile(dumpFixturePath, append(raw, '\n'), 0o644); err != nil {
+			return fail(blockNumber, latency, err)
+		}
+		fmt.Printf("# fixture written to %s\n", dumpFixturePath)
+	}
+
 	return fmt.Sprintf("%s,%d,%d,true,%d,%.2f,%d,", now, blockNumber, latency.Milliseconds(), signers, pct, len(warpSet.Validators)), true
 }
 

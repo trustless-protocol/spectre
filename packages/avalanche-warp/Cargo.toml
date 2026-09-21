@@ -1,0 +1,15 @@
+[package]
+name = "avalanche-warp"
+description = "Avalanche warp aggregate-signature verification for the C-Chain light client"
+version = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+thiserror = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+milagro_bls = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
