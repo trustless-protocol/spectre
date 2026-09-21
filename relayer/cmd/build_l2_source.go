@@ -14,6 +14,7 @@ import (
 	"go.uber.org/zap"
 
 	"relayer/chain"
+	"relayer/chain/avalanche"
 	"relayer/chain/l2rollup"
 	"relayer/chain/l2rollup/attestorgrpc"
 	relayerclient "relayer/client"
@@ -320,7 +321,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	if cfg.kind == chain.Avalanche {
 		sourceChainID, warpErr := cfg.Warp.validate()
 		if warpErr == nil {
-			headerBuilder, warpErr = l2rollup.NewWarpHeaderBuilder(
+			headerBuilder, warpErr = avalanche.NewWarpHeaderBuilder(
 				l2, router, cfg.Warp.NetworkID, sourceChainID, cfg.Warp.AggregatorURL, cfg.Warp.quorum(), "avalanche-warp")
 		}
 		if warpErr != nil {
@@ -367,6 +368,11 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		// same Services instance backs both directions of this pair, which is what
 		// lets a debt one side recorded be settled from the other.
 		WithAckSettleHook(settleL2OwedAck(timeoutReturn.svc))
+	if cfg.kind == chain.Avalanche {
+		// The settled-height proof mapping is the Avalanche provider's rule
+		// (asynchronous execution); the shared source stays chain-agnostic.
+		source = source.WithProofHeightResolver(avalanche.NewSettledProofHeightResolver(l2.Client()))
+	}
 	dest := l2rollup.NewDestination(worker, svcCtx, cfg.L2WasmClientID)
 	builder := l2rollup.NewBuilder(headerBuilder)
 

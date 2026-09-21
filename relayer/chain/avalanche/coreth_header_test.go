@@ -1,9 +1,11 @@
-package l2rollup
+package avalanche
 
 import (
 	"encoding/json"
 	"os"
 	"testing"
+
+	"relayer/chain/l2rollup"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 )
@@ -95,7 +97,7 @@ func TestCorethWireHeaderCarriesCorethFields(t *testing.T) {
 // A geth-family wire header must omit every coreth key, or the deployed
 // OP/Base/Arbitrum wasm clients (deny_unknown_fields) would reject it.
 func TestGethWireHeaderOmitsCorethFields(t *testing.T) {
-	raw, err := json.Marshal(CanonicalEvmHeader{})
+	raw, err := json.Marshal(l2rollup.CanonicalEvmHeader{})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}

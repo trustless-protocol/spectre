@@ -1,4 +1,4 @@
-package l2rollup
+package avalanche
 
 import (
 	"bytes"
@@ -7,6 +7,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	"relayer/chain/l2rollup"
 )
 
 // The fixture is the live-captured, avalanchego-verified Fuji aggregate shared
@@ -87,10 +89,10 @@ func TestSplitSignedWarpMessageMatchesTheFixture(t *testing.T) {
 func TestWarpSignedHeaderEncodesTheClientEnvelope(t *testing.T) {
 	fix := loadWarpFixture(t)
 	msg := &WarpSignedHeader{
-		Header:       CanonicalEvmHeader{},
+		Header:       l2rollup.CanonicalEvmHeader{},
 		SignerBitSet: unhex(t, fix.BitSet),
 		Signature:    unhex(t, fix.Signature),
-		RouterProof:  EvmAccountProof{Proof: [][]byte{{0x01}}},
+		RouterProof:  l2rollup.EvmAccountProof{Proof: [][]byte{{0x01}}},
 	}
 	encoded, err := msg.EncodeClientMessage()
 	if err != nil {

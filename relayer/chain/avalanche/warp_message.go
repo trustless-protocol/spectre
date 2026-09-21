@@ -1,4 +1,4 @@
-package l2rollup
+package avalanche
 
 import (
 	"bytes"
@@ -40,24 +40,24 @@ func buildBlockHashWarpMessage(networkID uint32, sourceChainID, blockHash [32]by
 // and the 96-byte aggregate signature.
 func splitSignedWarpMessage(raw []byte) (unsigned, bitSet []byte, signature [warpSignatureLen]byte, err error) {
 	if len(raw) < 42 {
-		return nil, nil, signature, fmt.Errorf("l2rollup: signed warp message shorter than the unsigned envelope")
+		return nil, nil, signature, fmt.Errorf("avalanche: signed warp message shorter than the unsigned envelope")
 	}
 	if raw[0] != 0 || raw[1] != 0 {
-		return nil, nil, signature, fmt.Errorf("l2rollup: unsupported warp codec version")
+		return nil, nil, signature, fmt.Errorf("avalanche: unsupported warp codec version")
 	}
 	payloadLen := binary.BigEndian.Uint32(raw[38:42])
 	unsignedLen := 42 + int(payloadLen)
 	if len(raw) < unsignedLen+8 {
-		return nil, nil, signature, fmt.Errorf("l2rollup: signed warp message truncated after the unsigned part")
+		return nil, nil, signature, fmt.Errorf("avalanche: signed warp message truncated after the unsigned part")
 	}
 	sig := raw[unsignedLen:]
 	if !bytes.Equal(sig[0:4], []byte{0, 0, 0, 0}) {
-		return nil, nil, signature, fmt.Errorf("l2rollup: unsupported warp signature type")
+		return nil, nil, signature, fmt.Errorf("avalanche: unsupported warp signature type")
 	}
 	bitSetLen := binary.BigEndian.Uint32(sig[4:8])
 	expected := 8 + int(bitSetLen) + warpSignatureLen
 	if len(sig) != expected {
-		return nil, nil, signature, fmt.Errorf("l2rollup: warp signature section is %d bytes, want %d", len(sig), expected)
+		return nil, nil, signature, fmt.Errorf("avalanche: warp signature section is %d bytes, want %d", len(sig), expected)
 	}
 	copy(signature[:], sig[8+bitSetLen:])
 	return raw[:unsignedLen], sig[8 : 8+bitSetLen], signature, nil

@@ -115,27 +115,5 @@ func (h *AttestedL2Header) EncodeClientMessage() ([]byte, error) {
 	return encodeHeaderMessage(h)
 }
 
-// WarpSignedHeader mirrors avalanche-light-client `WarpSignedHeader` — the
-// update shape the Avalanche warp wasm client accepts: a canonical coreth
-// header, the primary network's aggregate BLS signature over the block-hash
-// warp message (signer bitset + 96-byte signature, base64 JSON like every
-// CosmWasm Binary), and the router account proof at the header's settled
-// height.
-type WarpSignedHeader struct {
-	Header       CanonicalEvmHeader `json:"header"`
-	SignerBitSet []byte             `json:"signer_bit_set"`
-	Signature    []byte             `json:"signature"`
-	RouterProof  EvmAccountProof    `json:"router_proof"`
-}
-
-// EncodeClientMessage marshals the warp header into the ClientMessage envelope.
-func (h *WarpSignedHeader) EncodeClientMessage() ([]byte, error) {
-	if len(h.SignerBitSet) == 0 || len(h.Signature) != warpSignatureLen {
-		return nil, fmt.Errorf("l2 client message: warp header requires a signer bitset and a %d-byte aggregate signature", warpSignatureLen)
-	}
-	return encodeHeaderMessage(h)
-}
-
 // Header types satisfy ClientMessage.
 var _ ClientMessage = (*AttestedL2Header)(nil)
-var _ ClientMessage = (*WarpSignedHeader)(nil)

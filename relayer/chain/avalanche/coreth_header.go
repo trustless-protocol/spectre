@@ -1,10 +1,12 @@
-package l2rollup
+package avalanche
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"math/big"
+
+	"relayer/chain/l2rollup"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -13,7 +15,7 @@ import (
 	gethrpc "github.com/ethereum/go-ethereum/rpc"
 )
 
-// This file is the coreth (Avalanche C-Chain) counterpart of evm_header.go.
+// This file is the coreth (Avalanche C-Chain) counterpart of l2rollup/evm_header.go.
 // Coreth headers extend the geth header with a fixed ExtDataHash plus a
 // cascading optional tail (ExtDataGasUsed .. SettledExcess), so they cannot be
 // read through go-ethereum's types.Header — ethclient would silently drop the
@@ -23,7 +25,7 @@ import (
 // plugin/evm/customtypes/gen_header_serializable_rlp.go): a tail field is
 // emitted iff it or any later tail field is present, an absent field emitted
 // that way encodes as the RLP empty string (0x80), and trailing absents are
-// omitted. The Rust mirror is CanonicalEvmHeader::coreth_rlp_bytes in
+// omitted. The Rust mirror is l2rollup.CanonicalEvmHeader::coreth_rlp_bytes in
 // packages/l2-client/src/canonical_header.rs; the shared fixture test keeps the
 // two byte-identical.
 //
@@ -109,39 +111,50 @@ func corethSettledQueryHeight(ctx context.Context, client *gethrpc.Client, heigh
 	return uint64(header.Number), nil
 }
 
+// NewSettledProofHeightResolver returns the proof-height mapping installed on
+// the shared Source (WithProofHeightResolver): a client-update height resolves
+// to its header's settled height — identity for pre-Helicon headers. This
+// keeps the asynchronous-execution rule in the Avalanche provider; the shared
+// rollup machinery holds no chain-specific knowledge.
+func NewSettledProofHeightResolver(client *gethrpc.Client) func(context.Context, uint64) (uint64, error) {
+	return func(ctx context.Context, height uint64) (uint64, error) {
+		return corethSettledQueryHeight(ctx, client, height)
+	}
+}
+
 // readCorethHeader fetches the coreth header at height over raw RPC and returns
 // the wire header, its verified block hash, its state root, and the height any
 // paired proof must be queried at (the settled height under asynchronous
 // execution; see corethProofQueryHeight).
-func readCorethHeader(ctx context.Context, client *gethrpc.Client, height *big.Int) (CanonicalEvmHeader, ethcommon.Hash, ethcommon.Hash, uint64, error) {
+func readCorethHeader(ctx context.Context, client *gethrpc.Client, height *big.Int) (l2rollup.CanonicalEvmHeader, ethcommon.Hash, ethcommon.Hash, uint64, error) {
 	var raw json.RawMessage
 	if err := client.CallContext(ctx, &raw, "eth_getBlockByNumber", hexutil.EncodeBig(height), false); err != nil {
-		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, fmt.Errorf("l2rollup: coreth header at %s: %w", height, err)
+		return l2rollup.CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, fmt.Errorf("l2rollup: coreth header at %s: %w", height, err)
 	}
 	if len(raw) == 0 || string(raw) == "null" {
-		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, fmt.Errorf("l2rollup: coreth header at %s: block not found", height)
+		return l2rollup.CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, fmt.Errorf("l2rollup: coreth header at %s: block not found", height)
 	}
 	var header corethRPCHeader
 	if err := json.Unmarshal(raw, &header); err != nil {
-		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, fmt.Errorf("l2rollup: decode coreth header at %s: %w", height, err)
+		return l2rollup.CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, fmt.Errorf("l2rollup: decode coreth header at %s: %w", height, err)
 	}
 	computed, err := corethHeaderHash(header)
 	if err != nil {
-		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, err
+		return l2rollup.CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, err
 	}
 	if computed != header.Hash {
-		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, fmt.Errorf(
+		return l2rollup.CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, fmt.Errorf(
 			"l2rollup: coreth header %d: recomputed hash %s does not match reported %s (unknown header field set?)",
 			uint64(header.Number), computed, header.Hash)
 	}
 	return corethWireHeader(header), computed, header.StateRoot, corethProofQueryHeight(header), nil
 }
 
-// corethWireHeader maps the RPC header to the wire CanonicalEvmHeader. Optional
+// corethWireHeader maps the RPC header to the wire l2rollup.CanonicalEvmHeader. Optional
 // fields are carried through exactly as present or absent, because the Rust
 // side reproduces the RLP cascade from that presence.
-func corethWireHeader(h corethRPCHeader) CanonicalEvmHeader {
-	ch := CanonicalEvmHeader{
+func corethWireHeader(h corethRPCHeader) l2rollup.CanonicalEvmHeader {
+	ch := l2rollup.CanonicalEvmHeader{
 		ParentHash:       h.ParentHash.Bytes(),
 		OmmersHash:       h.Sha3Uncles.Bytes(),
 		Beneficiary:      h.Miner.Bytes(),
@@ -149,7 +162,7 @@ func corethWireHeader(h corethRPCHeader) CanonicalEvmHeader {
 		TransactionsRoot: h.TransactionsRoot.Bytes(),
 		ReceiptsRoot:     h.ReceiptsRoot.Bytes(),
 		LogsBloom:        []byte(h.LogsBloom),
-		Difficulty:       u256FromBig((*big.Int)(h.Difficulty)),
+		Difficulty:       corethU256((*big.Int)(h.Difficulty)),
 		Number:           uint64(h.Number),
 		GasLimit:         uint64(h.GasLimit),
 		GasUsed:          uint64(h.GasUsed),
@@ -158,24 +171,24 @@ func corethWireHeader(h corethRPCHeader) CanonicalEvmHeader {
 		MixHash:          h.MixHash.Bytes(),
 		Nonce:            []byte(h.Nonce),
 	}
-	edh := hexBytes(h.ExtDataHash.Bytes())
+	edh := l2rollup.HexBytes(h.ExtDataHash.Bytes())
 	ch.ExtDataHash = &edh
 	if h.BaseFeePerGas != nil {
-		v := u256FromBig((*big.Int)(h.BaseFeePerGas))
+		v := corethU256((*big.Int)(h.BaseFeePerGas))
 		ch.BaseFeePerGas = &v
 	}
 	if h.ExtDataGasUsed != nil {
-		v := u256FromBig((*big.Int)(h.ExtDataGasUsed))
+		v := corethU256((*big.Int)(h.ExtDataGasUsed))
 		ch.ExtDataGasUsed = &v
 	}
 	if h.BlockGasCost != nil {
-		v := u256FromBig((*big.Int)(h.BlockGasCost))
+		v := corethU256((*big.Int)(h.BlockGasCost))
 		ch.BlockGasCost = &v
 	}
 	ch.BlobGasUsed = uint64Ptr(h.BlobGasUsed)
 	ch.ExcessBlobGas = uint64Ptr(h.ExcessBlobGas)
 	if h.ParentBeaconBlockRoot != nil {
-		pb := hexBytes(h.ParentBeaconBlockRoot.Bytes())
+		pb := l2rollup.HexBytes(h.ParentBeaconBlockRoot.Bytes())
 		ch.ParentBeaconBlockRoot = &pb
 	}
 	ch.TimeMilliseconds = uint64Ptr(h.TimeMilliseconds)
@@ -187,6 +200,15 @@ func corethWireHeader(h corethRPCHeader) CanonicalEvmHeader {
 	ch.SettledGasNumerator = uint64Ptr(h.SettledGasNumerator)
 	ch.SettledExcess = uint64Ptr(h.SettledExcess)
 	return ch
+}
+
+// corethU256 builds the shared wire u256 from a big.Int (nil -> 0).
+func corethU256(v *big.Int) l2rollup.U256 {
+	var u l2rollup.U256
+	if v != nil {
+		u.Int.Set(v)
+	}
+	return u
 }
 
 func uint64Ptr(v *hexutil.Uint64) *uint64 {

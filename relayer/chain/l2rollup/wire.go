@@ -137,6 +137,16 @@ func (u *u256) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Exported aliases so provider packages (chain/avalanche) can construct the
+// shared wire types (CanonicalEvmHeader fields) without this package knowing
+// anything about them.
+type (
+	// HexBytes is the exported alias of the 0x-hex wire scalar.
+	HexBytes = hexBytes
+	// U256 is the exported alias of the minimal hex-quantity wire scalar.
+	U256 = u256
+)
+
 // clientMessageEnvelope is the serde-tagged ClientMessage the wasm client reads:
 // `{"type":"header","value":<header>}` (serde tag="type", content="value",
 // rename_all="snake_case"). Misbehaviour updates use this envelope too.

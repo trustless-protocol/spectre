@@ -115,6 +115,10 @@ type Source struct {
 	// terminal and settles no debt. nil means no ledger is running.
 	settleAck func(packet []byte)
 
+	// proofHeightResolver, when set, maps a client-update height to the height
+	// its stored state root commits (see WithProofHeightResolver).
+	proofHeightResolver func(context.Context, uint64) (uint64, error)
+
 	// logScanChunk caps the block span of a single eth_getLogs. 0 means "one call
 	// for the whole range", which is what every provider that does not cap the span
 	// wants. Providers that do cap it vary by three orders of magnitude (Alchemy's
@@ -288,7 +292,7 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint
 		return nil, fmt.Errorf("l2 source: MembershipProof: unsupported event type %d", eventType)
 	}
 	path := services.EthPath(clientID, pkt.Sequence, pathType)
-	proofHeight, err := s.proofQueryHeight(ctx, height)
+	proofHeight, err := s.resolveProofHeight(ctx, height)
 	if err != nil {
 		return nil, chain.Transient(fmt.Errorf("l2 source: resolve proof height for %d: %w", height, err))
 	}
@@ -308,14 +312,23 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint
 	return proof, nil
 }
 
-// proofQueryHeight maps a client-update height to the height its stored state
-// root actually commits. Identity for synchronous chains; the settled height
-// for coreth (the Avalanche C-Chain) under asynchronous execution.
-func (s *Source) proofQueryHeight(ctx context.Context, height uint64) (uint64, error) {
-	if s.chainType != chain.Avalanche {
+// resolveProofHeight maps a client-update height to the height its stored
+// state root actually commits: identity unless a chain-specific resolver was
+// installed (WithProofHeightResolver — the Avalanche provider installs its
+// settled-height mapping there; this package holds no chain-specific rule).
+func (s *Source) resolveProofHeight(ctx context.Context, height uint64) (uint64, error) {
+	if s.proofHeightResolver == nil {
 		return height, nil
 	}
-	return corethSettledQueryHeight(ctx, s.eth.Client(), height)
+	return s.proofHeightResolver(ctx, height)
+}
+
+// WithProofHeightResolver installs the mapping from a client-update height to
+// the height its stored state root commits, for chains whose execution is
+// asynchronous. Absent, the heights are the same.
+func (s *Source) WithProofHeightResolver(resolver func(context.Context, uint64) (uint64, error)) *Source {
+	s.proofHeightResolver = resolver
+	return s
 }
 
 // isZeroStorageProofValue reports whether an encoded EvmStorageProof proves an

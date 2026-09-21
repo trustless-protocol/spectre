@@ -1,4 +1,4 @@
-package l2rollup
+package avalanche
 
 import (
 	"bytes"
@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"relayer/chain"
+	"relayer/chain/l2rollup"
 	relayerclient "relayer/client"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
@@ -40,7 +41,7 @@ type warpHeaderBuilder struct {
 }
 
 // NewWarpHeaderBuilder wires the Avalanche C-Chain warp header builder.
-func NewWarpHeaderBuilder(l2 *ethclient.Client, router ethcommon.Address, networkID uint32, sourceChainID [32]byte, aggregatorURL string, quorum uint64, name string) (HeaderBuilder, error) {
+func NewWarpHeaderBuilder(l2 *ethclient.Client, router ethcommon.Address, networkID uint32, sourceChainID [32]byte, aggregatorURL string, quorum uint64, name string) (l2rollup.HeaderBuilder, error) {
 	if l2 == nil {
 		return nil, fmt.Errorf("%s: C-Chain client must not be nil", name)
 	}
@@ -73,7 +74,7 @@ func (w *warpHeaderBuilder) Name() string { return w.name }
 // BuildHeader packages the update for exactly request.Height. Aggregation has
 // no expiry — validators re-sign any accepted block — so a retry simply
 // re-aggregates; nothing is cached between attempts.
-func (w *warpHeaderBuilder) BuildHeader(ctx context.Context, request HeaderRequest) (ClientMessage, uint64, error) {
+func (w *warpHeaderBuilder) BuildHeader(ctx context.Context, request l2rollup.HeaderRequest) (l2rollup.ClientMessage, uint64, error) {
 	wireHeader, blockHash, _, proofHeight, err := readCorethHeader(ctx, w.l2.Client(), new(big.Int).SetUint64(request.Height))
 	if err != nil {
 		return nil, 0, chain.Transient(fmt.Errorf("%s: header at %d: %w", w.name, request.Height, err))
@@ -94,7 +95,7 @@ func (w *warpHeaderBuilder) BuildHeader(ctx context.Context, request HeaderReque
 		Header:       wireHeader,
 		SignerBitSet: bitSet,
 		Signature:    signature[:],
-		RouterProof:  EvmAccountProof{Proof: routerProof.AccountProof},
+		RouterProof:  l2rollup.EvmAccountProof{Proof: routerProof.AccountProof},
 	}, request.Height, nil
 }
 

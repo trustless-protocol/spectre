@@ -35,11 +35,12 @@ const (
 	OPStack  ChainType = "opstack"  // Optimism + Base (same stack; differ by config/binary)
 	Arbitrum ChainType = "arbitrum" // Nitro
 	// Avalanche is the C-Chain (coreth) — an L1, not a rollup. It reuses the
-	// same adapter pair the rollups run on: Cosmos->C-Chain takes the
-	// groth16+EVM path verbatim, and C-Chain->Cosmos the attested-header path —
-	// acceptance is finality, so the attestor answers from its own C-Chain
-	// replica with no derivation. The only chain-specific piece is coreth's
-	// header shape (see coreth_header.go).
+	// same adapter pair the rollups run on with its own trust model:
+	// Cosmos->C-Chain takes the groth16+EVM path verbatim, and C-Chain->Cosmos
+	// authenticates every update with the primary network's stake-weighted warp
+	// BLS aggregate (no attestors; acceptance is finality). Everything
+	// Avalanche-specific — coreth headers, warp messages, the settled-height
+	// proof mapping — lives in chain/avalanche.
 	Avalanche ChainType = "avalanche"
 )
 
