@@ -156,3 +156,37 @@ func (w *Worker) CreateL2Client(stdCtx context.Context, endpoint CosmosEndpoint,
 	}
 	return w.TxHandler.CreateWasmClient(stdCtx, endpoint, clientState, consensusState, p.CounterpartyClientID)
 }
+
+// RawWasmClientParams carries pre-assembled ICS-08 wasm client/consensus state
+// JSON for a client whose shapes this process does not construct — the
+// Avalanche warp client's states are built off-line from live chain data
+// (validator set, header, settled-height proof) and submitted verbatim.
+type RawWasmClientParams struct {
+	WasmChecksum         string
+	ClientState          json.RawMessage
+	ConsensusState       json.RawMessage
+	LatestHeight         uint64
+	CounterpartyClientID string
+}
+
+// CreateRawWasmClient submits MsgCreateClient with operator-supplied state
+// JSON, through the same generic wasm-create tx path as every other client.
+func (w *Worker) CreateRawWasmClient(stdCtx context.Context, endpoint CosmosEndpoint, p RawWasmClientParams) (string, error) {
+	checksumBz, err := decodeHexPrefixed(p.WasmChecksum)
+	if err != nil {
+		return "", fmt.Errorf("raw wasm client: decode checksum: %w", err)
+	}
+	if len(p.ClientState) == 0 || len(p.ConsensusState) == 0 || p.LatestHeight == 0 {
+		return "", fmt.Errorf("raw wasm client: client state, consensus state and latest height are required")
+	}
+	clientState := &ibcwasmtypes.ClientState{
+		Data:     p.ClientState,
+		Checksum: checksumBz,
+		LatestHeight: clienttypes.Height{
+			RevisionNumber: 0,
+			RevisionHeight: p.LatestHeight,
+		},
+	}
+	consensusState := &ibcwasmtypes.ConsensusState{Data: p.ConsensusState}
+	return w.TxHandler.CreateWasmClient(stdCtx, endpoint, clientState, consensusState, p.CounterpartyClientID)
+}

@@ -1,4 +1,4 @@
-//! Avalanche C-Chain ICS-08 Wasm client entrypoint crate.
+//! Avalanche C-Chain warp ICS-08 Wasm client entrypoint crate.
 
 #![deny(
     clippy::nursery,
@@ -8,9 +8,8 @@
     unused_crate_dependencies
 )]
 
-use avalanche_cchain as _;
+use avalanche_light_client as _;
 use cosmwasm_std as _;
-use l2_client as _;
 
 pub mod contract;
 pub mod msg;

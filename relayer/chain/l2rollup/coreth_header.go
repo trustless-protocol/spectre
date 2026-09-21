@@ -72,30 +72,69 @@ type corethRPCHeader struct {
 	Hash ethcommon.Hash `json:"hash"`
 }
 
+// corethProofQueryHeight maps a header to the height its state root commits.
+//
+// Measured on Fuji (post-Helicon, ACP-194 streaming asynchronous execution):
+// header(N).stateRoot equals the post-execution state of settledHeight(N)
+// (N-5 observed), and eth_getProof(Q) anchors to the post-execution state of
+// Q — probing Q ∈ {N-6..N} matches only at Q = settledHeight(N). So every
+// proof paired with a header must be fetched at the header's settled height.
+// Pre-Helicon headers carry no settled fields and keep the synchronous rule
+// (proofs at the header's own height), which makes this future-proof in both
+// directions: it reads the pairing from the header instead of the network's
+// upgrade calendar.
+func corethProofQueryHeight(h corethRPCHeader) uint64 {
+	if h.SettledHeight != nil {
+		return uint64(*h.SettledHeight)
+	}
+	return uint64(h.Number)
+}
+
+// corethSettledQueryHeight resolves the proof-query height for the header at
+// `height` with one light RPC read (only the fields the mapping needs).
+func corethSettledQueryHeight(ctx context.Context, client *gethrpc.Client, height uint64) (uint64, error) {
+	var header *struct {
+		Number        hexutil.Uint64  `json:"number"`
+		SettledHeight *hexutil.Uint64 `json:"settledHeight"`
+	}
+	if err := client.CallContext(ctx, &header, "eth_getBlockByNumber", hexutil.EncodeUint64(height), false); err != nil {
+		return 0, fmt.Errorf("l2rollup: coreth header at %d: %w", height, err)
+	}
+	if header == nil {
+		return 0, fmt.Errorf("l2rollup: coreth header at %d: block not found", height)
+	}
+	if header.SettledHeight != nil {
+		return uint64(*header.SettledHeight), nil
+	}
+	return uint64(header.Number), nil
+}
+
 // readCorethHeader fetches the coreth header at height over raw RPC and returns
-// the wire header plus its verified block hash and state root.
-func readCorethHeader(ctx context.Context, client *gethrpc.Client, height *big.Int) (CanonicalEvmHeader, ethcommon.Hash, ethcommon.Hash, error) {
+// the wire header, its verified block hash, its state root, and the height any
+// paired proof must be queried at (the settled height under asynchronous
+// execution; see corethProofQueryHeight).
+func readCorethHeader(ctx context.Context, client *gethrpc.Client, height *big.Int) (CanonicalEvmHeader, ethcommon.Hash, ethcommon.Hash, uint64, error) {
 	var raw json.RawMessage
 	if err := client.CallContext(ctx, &raw, "eth_getBlockByNumber", hexutil.EncodeBig(height), false); err != nil {
-		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, fmt.Errorf("l2rollup: coreth header at %s: %w", height, err)
+		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, fmt.Errorf("l2rollup: coreth header at %s: %w", height, err)
 	}
 	if len(raw) == 0 || string(raw) == "null" {
-		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, fmt.Errorf("l2rollup: coreth header at %s: block not found", height)
+		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, fmt.Errorf("l2rollup: coreth header at %s: block not found", height)
 	}
 	var header corethRPCHeader
 	if err := json.Unmarshal(raw, &header); err != nil {
-		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, fmt.Errorf("l2rollup: decode coreth header at %s: %w", height, err)
+		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, fmt.Errorf("l2rollup: decode coreth header at %s: %w", height, err)
 	}
 	computed, err := corethHeaderHash(header)
 	if err != nil {
-		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, err
+		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, err
 	}
 	if computed != header.Hash {
-		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, fmt.Errorf(
+		return CanonicalEvmHeader{}, ethcommon.Hash{}, ethcommon.Hash{}, 0, fmt.Errorf(
 			"l2rollup: coreth header %d: recomputed hash %s does not match reported %s (unknown header field set?)",
 			uint64(header.Number), computed, header.Hash)
 	}
-	return corethWireHeader(header), computed, header.StateRoot, nil
+	return corethWireHeader(header), computed, header.StateRoot, corethProofQueryHeight(header), nil
 }
 
 // corethWireHeader maps the RPC header to the wire CanonicalEvmHeader. Optional

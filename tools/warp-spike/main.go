@@ -45,9 +45,18 @@ func main() {
 	interval := flag.Duration("interval", 30*time.Second, "delay between attempts")
 	csvPath := flag.String("csv", "", "append results as CSV (default stdout only)")
 	fixturePath := flag.String("dump-fixture", "", "on a verified aggregate, write {unsigned, signed, canonical set} JSON here and stop — the cross-language test fixture for the wasm client")
+	bootstrapPath := flag.String("dump-bootstrap", "", "write the warp client's initial {client_state, consensus_state} JSON here and exit (requires -router)")
+	routerHex := flag.String("router", "", "ICS26Router address on the C-Chain, for -dump-bootstrap")
 	flag.Parse()
 
 	ctx := context.Background()
+	if *bootstrapPath != "" {
+		if err := dumpBootstrap(ctx, *baseURL, *routerHex, *bootstrapPath); err != nil {
+			fmt.Fprintln(os.Stderr, "warp-spike:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	dumpFixturePath = *fixturePath
 	if err := run(ctx, *baseURL, *aggregatorURL, *quorum, *count, *interval, *csvPath); err != nil {
 		fmt.Fprintln(os.Stderr, "warp-spike:", err)
@@ -329,4 +338,143 @@ func rpcCall(ctx context.Context, url, method string, params any, out any) error
 // ethCall is rpcCall with positional params (the eth namespace).
 func ethCall(ctx context.Context, url, method string, params []any, out any) error {
 	return rpcCall(ctx, url, method, params, out)
+}
+
+// icsCommitmentSlot is the ICS26Router commitment mapping slot (ERC-7201),
+// identical on every deployment of the router.
+const icsCommitmentSlot = "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600"
+
+// dumpBootstrap assembles the Avalanche warp client's initial states from live
+// chain data: the finalized C-Chain header, a router account proof at that
+// header's settled height (its state root commits the settled state under
+// asynchronous execution), and the canonical primary-network validator set.
+// The output is consumed verbatim by `create-clients-cosmos --l2-config`
+// (warp_bootstrap block) and by the wasm client's serde — the Rust test suite
+// pins this exact wire contract.
+func dumpBootstrap(ctx context.Context, baseURL, routerHex, outPath string) error {
+	var networkID uint32
+	if err := rpcCall(ctx, baseURL+"/ext/info", "info.getNetworkID", map[string]any{}, &struct {
+		NetworkID *jsonUint32 `json:"networkID"`
+	}{(*jsonUint32)(&networkID)}); err != nil {
+		return fmt.Errorf("info.getNetworkID: %w", err)
+	}
+	var chainIDStr struct {
+		BlockchainID string `json:"blockchainID"`
+	}
+	if err := rpcCall(ctx, baseURL+"/ext/info", "info.getBlockchainID", map[string]any{"alias": "C"}, &chainIDStr); err != nil {
+		return fmt.Errorf("info.getBlockchainID: %w", err)
+	}
+	cChainID, err := ids.FromString(chainIDStr.BlockchainID)
+	if err != nil {
+		return fmt.Errorf("parse C-Chain id: %w", err)
+	}
+
+	ethURL := baseURL + "/ext/bc/C/rpc"
+	var evmChainIDHex string
+	if err := rpcCall(ctx, ethURL, "eth_chainId", []any{}, &evmChainIDHex); err != nil {
+		return fmt.Errorf("eth_chainId: %w", err)
+	}
+	var evmChainID uint64
+	fmt.Sscanf(evmChainIDHex, "0x%x", &evmChainID)
+
+	var header struct {
+		Number        string  `json:"number"`
+		Hash          string  `json:"hash"`
+		ParentHash    string  `json:"parentHash"`
+		StateRoot     string  `json:"stateRoot"`
+		Timestamp     string  `json:"timestamp"`
+		SettledHeight *string `json:"settledHeight"`
+	}
+	if err := rpcCall(ctx, ethURL, "eth_getBlockByNumber", []any{"finalized", false}, &header); err != nil {
+		return fmt.Errorf("eth_getBlockByNumber: %w", err)
+	}
+	var height, timestamp uint64
+	fmt.Sscanf(header.Number, "0x%x", &height)
+	fmt.Sscanf(header.Timestamp, "0x%x", &timestamp)
+	proofHeight := height
+	if header.SettledHeight != nil {
+		fmt.Sscanf(*header.SettledHeight, "0x%x", &proofHeight)
+	}
+
+	var proof struct {
+		StorageHash string `json:"storageHash"`
+	}
+	if err := rpcCall(ctx, ethURL, "eth_getProof", []any{routerHex, []string{}, fmt.Sprintf("0x%x", proofHeight)}, &proof); err != nil {
+		return fmt.Errorf("eth_getProof at settled height %d: %w", proofHeight, err)
+	}
+	if proof.StorageHash == "" || proof.StorageHash == "0x0000000000000000000000000000000000000000000000000000000000000000" {
+		return fmt.Errorf("router %s has an empty storage root at %d — wrong address or not a deployed router", routerHex, proofHeight)
+	}
+
+	pClient := platformvm.NewClient(baseURL)
+	var pHeight uint64
+	if err := rpcCall(ctx, baseURL+"/ext/bc/P", "platform.getHeight", map[string]any{}, &struct {
+		Height *jsonUint32 `json:"height"`
+	}{}); err == nil {
+		// height is decoded below through GetAllValidatorsAt's proposed view;
+		// the platform.getHeight probe only confirms the endpoint answers.
+		_ = pHeight
+	}
+	warpSets, err := pClient.GetAllValidatorsAt(ctx, platformapi.ProposedHeight)
+	if err != nil {
+		return fmt.Errorf("getAllValidatorsAt: %w", err)
+	}
+	warpSet, ok := warpSets[constants.PrimaryNetworkID]
+	if !ok {
+		return fmt.Errorf("no primary network validator set in reply")
+	}
+	pHeightValue, err := platformvm.NewClient(baseURL).GetHeight(ctx)
+	if err != nil {
+		return fmt.Errorf("platform.getHeight: %w", err)
+	}
+
+	type wireValidator struct {
+		PublicKey []byte `json:"public_key"` // base64 via encoding/json
+		Weight    uint64 `json:"weight"`
+	}
+	validators := make([]wireValidator, 0, len(warpSet.Validators))
+	for _, v := range warpSet.Validators {
+		validators = append(validators, wireValidator{
+			PublicKey: bls.PublicKeyToCompressedBytes(v.PublicKey),
+			Weight:    v.Weight,
+		})
+	}
+
+	clientState := map[string]any{
+		"latest_height":   height,
+		"frozen_height":   nil,
+		"network_id":      networkID,
+		"source_chain_id": cChainID[:], // base64 via encoding/json
+		"evm_chain_id":    evmChainID,
+		"router":          strings.ToLower(routerHex),
+		"commitment_slot": icsCommitmentSlot,
+		"quorum_num":      67,
+		"quorum_den":      100,
+		"validator_set": map[string]any{
+			"validators":     validators,
+			"total_weight":   warpSet.TotalWeight,
+			"p_chain_height": pHeightValue,
+		},
+	}
+	consensusState := map[string]any{
+		"state_root":        header.StateRoot,
+		"ibc_storage_root":  proof.StorageHash,
+		"timestamp_nanos":   timestamp * 1_000_000_000,
+		"height":            height,
+		"block_hash":        header.Hash,
+		"parent_hash":       header.ParentHash,
+		"first_accepted_at": 0,
+	}
+	out, err := json.MarshalIndent(map[string]any{
+		"client_state":    clientState,
+		"consensus_state": consensusState,
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(outPath, append(out, '\n'), 0o644); err != nil {
+		return err
+	}
+	fmt.Printf("# bootstrap written to %s (height %d, proof height %d, %d validators)\n", outPath, height, proofHeight, len(validators))
+	return nil
 }

@@ -1,0 +1,22 @@
+[package]
+name = "avalanche-light-client"
+description = "Avalanche C-Chain ICS-08 light client verifying warp BLS quorums"
+version = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+alloy-primitives = { workspace = true }
+avalanche-warp = { workspace = true }
+cosmwasm-std = { workspace = true, features = ["std", "stargate"] }
+ibc-proto = { workspace = true }
+l2-client = { workspace = true }
+prost = { workspace = true }
+schemars = { workspace = true, features = ["derive"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, features = ["std"] }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+hex = { workspace = true }
+milagro_bls = { workspace = true }

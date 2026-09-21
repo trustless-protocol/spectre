@@ -1149,12 +1149,20 @@ kurtosis enclave rm -f base-devnet          # remove the L1 and everything on it
 
 ## Local Cosmos ↔ Avalanche E2E
 
-Avalanche is an L1 — the C-Chain is not a rollup. It reuses the same relay
-engine and attested-header wasm client the rollup paths run on (through a
-coreth header profile), and its bring-up is the simplest in this file: **no
-Ethereum L1 dependency, no Kurtosis, no settlement layer**. Avalanche
-acceptance is finality, so the whole stack is one avalanchego process and the
-attestor is a thin follower of its C-Chain RPC.
+Avalanche is an L1 — the C-Chain is not a rollup. Both directions reuse the L2
+relay engines, but the Cosmos-side client is the **warp light client**
+(`cw-ics08-wasm-avalanche`): every update carries the primary network's
+aggregate BLS signature over the block hash, verified against the validator set
+pinned in the client. **No attestor runs on this path** — the trust is
+Avalanche's own stake. The one extra process is Ava Labs' signature-aggregator
+sidecar, which fans ACP-118 signature requests out to validators.
+
+Proof pairing is settled-height aware: under asynchronous execution (Helicon,
+ACP-194 — Fuji today, mainnet imminent) `header(N).stateRoot` commits the state
+executed through `settledHeight(N)`, so the relayer fetches router and packet
+proofs at the header's settled height automatically (pre-Helicon headers carry
+no settled fields and keep proofs at N). Packets inside the settle lag are
+re-queued with a "not yet settled" log line and clear within a few blocks.
 
 Circuit artifacts are still required (a SpectreClient is deployed on the
 C-Chain to verify Cosmos), so step 1 of the [ETH runbook](#local-cosmos--ethereum-e2e)
@@ -1162,55 +1170,46 @@ applies unchanged before deploying.
 
 ```bash
 # 1. Single-node local Avalanche network (chain id 43112, every block final in
-#    ~1s). Needs AVALANCHEGO_BIN pointing at an avalanchego binary >= v1.14
-#    (Granite header layout; Helicon headers also parse). Writes
-#    .avalanche-devnet-run/attestor.env (C-Chain RPC/WS + prefunded ewoq key).
+#    ~1s). Needs AVALANCHEGO_BIN pointing at an avalanchego binary >= v1.14.
+#    Writes .avalanche-devnet-run/attestor.env (C-Chain RPC/WS + prefunded key;
+#    the file name matches the other stacks' handoff convention).
 AVALANCHEGO_BIN=~/bin/avalanchego ./scripts/local/run_avalanche_node.sh
 
-# 2. Attestor — follows the C-Chain over RPC and signs accepted block
-#    identities; serves gRPC :3001 (distinct ports if other attestors share the
-#    host). Its devnet identity is avalanche-specific: the relayer refuses one
-#    attestor key across different head_kind tiers, and Avalanche runs
-#    "finalized" where OP/Base/Arbitrum run "safe".
-./scripts/local/run_avalanche_attestor.sh
+# 2. Signature-aggregator sidecar (release binary from ava-labs/icm-services),
+#    pointed at the same node; serves POST /aggregate-signatures on :18080.
+#    Config: {"p-chain-api":{"base-url":"http://127.0.0.1:9650"},
+#             "info-api":{"base-url":"http://127.0.0.1:9650"},"api-port":18080}
+./signature-aggregator --config-file aggregator.json &
 
-# 3. Cosmos node, then gov-store the Avalanche light-client wasm.
+# 3. Cosmos node, then gov-store the Avalanche warp light-client wasm.
 ./scripts/local/run_cosmos_node.sh
 just build-cw-ics08-wasm-avalanche
 ./scripts/local/wasm_avax.sh   # -> Avalanche client checksum
 
-# 4. IBC contracts on the C-Chain. The handoff env supplies the prefunded
-#    devnet key; align relayer/.env ETH_PRIVATE_KEY with it (deployer receives
-#    the ICS26Router relayer role).
+# 4. IBC contracts on the C-Chain (prefunded devnet key from the handoff env;
+#    align relayer/.env ETH_PRIVATE_KEY with it — deployer receives the
+#    ICS26Router relayer role).
 DST_CHAIN=avalanche ./scripts/local/deploy_l2_contracts.sh
 
-# 5. Clients: the Avalanche client on Cosmos, then the SpectreClient on the
-#    C-Chain. Copy avalanche-client-config.example.json, fill in the checksum
-#    from step 3 and the router from step 4 (l2_chain_id 43112 for this devnet;
-#    --l2-config is the shared client-creation flag, not a statement about the
-#    chain).
+# 5. Generate the warp client's initial states from live chain data (validator
+#    set + bootstrap block + settled-height storage root), then create clients.
+#    Copy avalanche-client-config.example.json, paste the generated states under
+#    warp_bootstrap, fill in the checksum from step 3.
+cd tools/warp-spike && go run . -base-url http://127.0.0.1:9650 \
+  -router <ICS26Router from step 4> -dump-bootstrap bootstrap.json && cd ../..
 cd relayer
 ./relayer create-clients-cosmos --config config.json --l2-config avalanche-client-config.json
 ./relayer create-clients-eth --config config.json --source <ics26_client_id> --trust-level 2/3
 
-# 6. Relay both directions.
+# 6. Relay both directions. The avalanche-to-cosmos module carries a `warp`
+#    block (aggregator_url, network_id, source_chain_id) instead of attestor
+#    fields — see config.avalanche.example.json.
 ./relayer start --config config.json
 ```
 
-Differences from the OP/Base/Arbitrum runbooks, all simplifications:
-
-- `head_kind` is `finalized` and means exactly what it says: coreth serves the
-  `finalized` block tag as the last *accepted* block, and accepted is final.
-  The attestor only answers `finalized` requests.
-- The relayer reads C-Chain headers over raw RPC, not `ethclient`: coreth
-  headers carry extra fields (`extDataHash`, the Granite/Helicon tail) that
-  geth's header type would silently drop, and the recomputed block hash is
-  checked against the node-reported one on every read
-  (`relayer/chain/l2rollup/coreth_header.go`; Rust mirror in
-  `packages/l2-client/src/canonical_header.rs`, fork `coreth`). Both sides are
-  pinned to the same real Fuji header fixture.
-- Running against Fuji instead of the local devnet: point `l2_rpc_url` and the
-  attestor's `c_chain_rpc_url` at the same Fuji endpoint (or better, your own
-  node — the attestor's endpoint is its replica and should be independent of
-  the relayer's), set `l2_chain_id` 43113 everywhere, and use a fresh signing
-  identity, not the checked-in devnet ones.
+Validator-set rotation is governance-gated in this version: submit
+`MigrateMsg::ReplaceValidatorSet` (a strictly newer P-Chain snapshot, generated
+the same way as the bootstrap) through the chain's wasm-client governance.
+Running against Fuji instead of the local devnet: point every URL at a Fuji
+endpoint (aggregator config included), network_id 5, chain id 43113, and
+generate the bootstrap from that network.

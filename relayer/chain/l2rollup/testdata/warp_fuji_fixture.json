@@ -1,0 +1,310 @@
+{
+  "network": "https://api.avax-test.network",
+  "captured_at": "2026-09-21T08:59:42Z",
+  "network_id": 5,
+  "source_chain_id": "0x7fc93d85c6d62c5b2ac0b519c87010ea5294012d1e407030d6acd0021cac10d5",
+  "block_number": 58534295,
+  "block_hash": "0xc235e6a6b51bd828e1eaaa5804eb0047405e70c3af409c40ad4c07b4e44c98db",
+  "unsigned_message": "0x0000000000057fc93d85c6d62c5b2ac0b519c87010ea5294012d1e407030d6acd0021cac10d500000026000000000000c235e6a6b51bd828e1eaaa5804eb0047405e70c3af409c40ad4c07b4e44c98db",
+  "signed_message": "0x0000000000057fc93d85c6d62c5b2ac0b519c87010ea5294012d1e407030d6acd0021cac10d500000026000000000000c235e6a6b51bd828e1eaaa5804eb0047405e70c3af409c40ad4c07b4e44c98db0000000000000009800a240200004409038990798d9e8f9c04288d12cc7c1c3a60fb3f3eb31e905825de6492ae46f6f29502ae6b4377b0ee13f943c2e5f582348a09df316ebda262e86822cfbc055ea38d774c404ed35d94949773bfcba9acde86f334a6a694f92106e1a81903d023bc05",
+  "bit_set": "0x800a24020000440903",
+  "signature": "0x8990798d9e8f9c04288d12cc7c1c3a60fb3f3eb31e905825de6492ae46f6f29502ae6b4377b0ee13f943c2e5f582348a09df316ebda262e86822cfbc055ea38d774c404ed35d94949773bfcba9acde86f334a6a694f92106e1a81903d023bc05",
+  "quorum_num": 67,
+  "quorum_den": 100,
+  "total_weight": 36503128798463701,
+  "signed_weight": 24503021000000000,
+  "validators": [
+    {
+      "public_key_compressed": "0xa05228682efa350d578b459eba5eccb835693042cdfa9c5708cc8e4d55e353e2488b03fb04e23896f2a1044f44b61d77",
+      "weight": 2000000000000000
+    },
+    {
+      "public_key_compressed": "0xa093c6d03fd3bca53eab49df561e3735179497f273a1f13801028ae834156d1d69755e4411871249a045a2eeb961c7a0",
+      "weight": 2203005000000000
+    },
+    {
+      "public_key_compressed": "0xa0a14818908af2541d896888ed947bbd85d2b07bba477938201ce46d80bbd5f697b14eab5a6ff13c6abee3b983d7968e",
+      "weight": 4000000000
+    },
+    {
+      "public_key_compressed": "0x817b65ee393159fc7f33fc111509cafe6f80144e6aba7645e81829d917b04aa8e964c5ede5d323a1dddd8210bbfc670b",
+      "weight": 2000000000
+    },
+    {
+      "public_key_compressed": "0x81d37de61357d0d37f9eee0460ded97277912707d64013cbf698f508d8286e39dad72fb3945c9c1de5dd6a975db90755",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x81d4c316776bf077b24643bf23be294c7b15054031f74f61eab0f00d73ba03609cada8810b8f1ece35ce08ddfb825b84",
+      "weight": 4999800000
+    },
+    {
+      "public_key_compressed": "0xa1ec71579206c867468d61091a234d0ebbf06e487db1810ec49eb1d5168ef4e3a81af5ad03a4b9e4228217c94013cf4e",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xa1f0ad035133d6eeb3a304c3b7309e0a1d07a20bb621897d2391d3422973b3ad90c472957ceec4546608181776d75e43",
+      "weight": 3000000000
+    },
+    {
+      "public_key_compressed": "0xa28f2ade1b20e7fb03911c45b0e0c58a43d36bc42415eeee955e12f08eb341ce55ccdc78998321375a98b402b51fd390",
+      "weight": 2000000000000000
+    },
+    {
+      "public_key_compressed": "0xa379242cd06a4bc0d4391f770d91f336c9b9025dc97462131b0f8fc74319781dfcd5e9b4b993783c0fa575466a93aebd",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x83bb82f1fd0ef4719a8a0bef5cfa508fc786df5ff3e61cdc151405ab282505d1a7fc31acba55cf271a89dbad136d569e",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x8449117ca558f0bcf5c2e3edd03409fda21f2cc88bade05ebdacd3580e1bf448c375a2b8250c7be1ffb07d9e50386559",
+      "weight": 2300001000000000
+    },
+    {
+      "public_key_compressed": "0xa44b5d05818f8103f6109bfe3fc280a6eb66474b5c6317f8fcc6749ea45fceb8292d746dc2b5b941b2d29ffc1a90c5a2",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x84879df7389ffff51c42e82fbb296d0353e38e870083cee60f0c178678df11fc170cb8529dedbf5d0f2fe7a28796937d",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x848c31499109080dceaa5ed356ea6b664483b89db061e20756740890be38ca1275d51f429cca04651fa6b5f246854e7a",
+      "weight": 15000000000
+    },
+    {
+      "public_key_compressed": "0x85319ce706d28ef3f2b1bd4b9e60f18cecf7610e2b42aaafb640e4669cd75b0f792ae50c4dd0f95af58688d57f2582e3",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x8583828816e3d03cd2e6ce81f066fdc120fb138ffa7a6ecc56d03cd3c7b861332f3cb3ea869a37c23c7ca74e5b961757",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xa5dd618af213153ef6a7e0b4cb985b71750bef84aad3ae241df022731f8b865b595bcc9050cbccc8916cdd734b4b428f",
+      "weight": 2000000000
+    },
+    {
+      "public_key_compressed": "0x867764089ad767adcba816585c9733f7f2e818222564e284529ed89ae8668b984b86cc1e4bf85f1a6ac153b3476da4ac",
+      "weight": 2000004000000000
+    },
+    {
+      "public_key_compressed": "0xa6a4cecf08d69000cc9d00bc6756cc22ee64c2b6a3f25372767558b6e6ead8e4d07926c73ce370641cbfaf744d26e211",
+      "weight": 2000000000000000
+    },
+    {
+      "public_key_compressed": "0x86aea90d87ad44e2b63a2dca63faab4e25deb561ae764b3f997953700803081786cce2d934f0946d1f9fe50d117c33d2",
+      "weight": 2002864099
+    },
+    {
+      "public_key_compressed": "0x86bd4a38319bd93b8bb5306deed88f1297d6f3da5adce2a77a80e404f5654000a25614cb608f24531effee768265b281",
+      "weight": 2000000000
+    },
+    {
+      "public_key_compressed": "0xa7a48d9683da48944328596cf16451b3070b045b1d8e714f18f2d1c3f8a9fd834f961f5cb73baaf53d5f1b73f180a62f",
+      "weight": 2000000000000000
+    },
+    {
+      "public_key_compressed": "0x87f8d581877d59824d6804b7f39b87ea7fbc376a5bbb9033d064a2db215ac0cfbffdd09a35bd90ba179a93e1ebbb6feb",
+      "weight": 2000000000
+    },
+    {
+      "public_key_compressed": "0x88d96baa69c30f6b8eeaeca3b1db5997033b8f9128b98615f4641c613e068d2544d8918c74bc29b9c485b633b64a698c",
+      "weight": 2000000000
+    },
+    {
+      "public_key_compressed": "0xa8e03f0f976b12d409c1c08460680493df957e55cbdc720e76233654e69ab79ea6a21b2af98ad24d1e3a466f560526e9",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x8997554b6b1d0a4bd2cfd328a8bbaba76e6905599cd19d6c44c11d8aa06cd5c30285558101eed5f786fc60a21040c49f",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xa9c75ac88f4cd5edd4fc934b43471099055c54d66c17bae4739ae3ff6bdda03bf95d869c997ab34e90ca279945b98251",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xaa5cffa423beaf942b7cf544aca76ae915c34bca1c6a48ca0be873ca976b09aa0383369ce8330d6a18ed277c611b686b",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xaaf1c7eaaa863907f205bab44c8cb26f4eb48455c1cf2384f79181358f4d2a259333169f6d986c1becd8777229b8078b",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xab2739dd5c77b7a73fc069b5619e037c4c084d379d97027417f4d1d538c6f53ba0b0df761b5ef400159f777de67f2329",
+      "weight": 1001238932
+    },
+    {
+      "public_key_compressed": "0x8b7c21973794c1241931d09001a2a298d262188a33ffef567670136c5c4424ac41f272fe7440e10053d009cecb9b0107",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xabaf7efe335e8205687a79eff7cf849a2c3f45ce0723c707146cab432df13ae586d10a78b56aa93af2a3feb3e9366389",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x8bde5bfb5960ac365e19d6db18f3c52b4f2daedf10962f8e1c180893672186fd41126116a27bd04780581553fe32e475",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xabf40f62d14dbe2ffd8b79e7776951a8e6355823f30ef3be564b86afd5c4b02049c85f5742d9bd9a53609f36d50f8acb",
+      "weight": 2000001000000000
+    },
+    {
+      "public_key_compressed": "0xac114e57e2645d40cb7412576842863277be4f84d922d0caea859d0ed0222d3352f5000b99c9e14c33d3a3e243b05f09",
+      "weight": 5048138981
+    },
+    {
+      "public_key_compressed": "0x8c5637765dd4099d9cb2e3121b563c94a2791825bad1bfd54a88e3db7626f129378b94ee45ac57c1c8c13420c06daec1",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x8cb7bab4d1fecec4d34c1f04976c05ad97da84abbb978bec16f813d9116f2d6d980800cefbf6704dea5c90fd48927f7d",
+      "weight": 1474994821
+    },
+    {
+      "public_key_compressed": "0x8d2ae454866378baed9e76fcea46e745e83674bbaee0f935b800890742cf7c04bb381f7242ecdd44a4bf0587e9f0e503",
+      "weight": 3170000000
+    },
+    {
+      "public_key_compressed": "0x8dac1269f994df288421e3fb9ced070dbe0980306476bb0a84cb8649d9573e660f6de62611ed3d9e7ba96aef19b3c54c",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x8e3b57bffbf3c13696baf3875384b54af47c908b82afb1ee23c93ee77db69381933ad0e25558a310dc30e92f4adbcea8",
+      "weight": 5000000000
+    },
+    {
+      "public_key_compressed": "0x8e5f249b914417e18eedfc77fe9a306de950aa00386db69b07ffd833dcbd7132cdaf6d902dc7c87a6b92c106f2e2476a",
+      "weight": 2000001000000000
+    },
+    {
+      "public_key_compressed": "0xaec9c3ceecd3e676e89e8c08c4ae8427503bf682bef918017924bbc6430deb3958ec8d5bf6da2902aef12732c2f3f544",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x8ecd64f5f6bc010ae16af31fd8434fbfdf2e07e37b4b3d5548cc2e4614559e0b9501eaee0ebdbeed230c1582de5f98d8",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x8f991ef0432e34491b7f27b30328d5c3c92b421d88eb6ee7c919c2a696e597d7510e1dc3eb0e08c157fd5f3bf66ec1ad",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x8f9b7f6b2076ebe4e0fbc706febd54517856cbc8ac50440723eda194560028dc8fc10ef4a24d2bb9be5073fddab42f6d",
+      "weight": 3100000000
+    },
+    {
+      "public_key_compressed": "0xafdd40172f753df7f77590b243ba65f6b25b6a58425414474ec1e46dabf51da1adef25144503a4748f01b0cd1aa9f7b5",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xb0814b506acee16714be43eef2da8ed02d46f57d823728e682b222991b55518e26edc158820be9abdee11ec009ff0642",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xb087fdef5eda12cc391a6182797fd833247a2a8f983e8ec0d84d5c2004aa1e9f12b63551a65d50fbb0a02ebdde5ba2a0",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x911186feddb9e3c663c6648993eb1a0f5986c8dd8569c55efd341d59b80a7654ec17431c5bdeb425938c5324364b56d5",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x913f6a7eea71144f210f9db35e8ace3c6c5ea09577926f5bebeb9735a9c43d1cbfb5c84a9583f3d80d7f26c7bf059d04",
+      "weight": 2000000000000000
+    },
+    {
+      "public_key_compressed": "0x916a20725ad4c93d5e996d2708ba3f5c6fedac2051053b882ea13eb8e1e477df173b254a3b93148a2efa017104b29e83",
+      "weight": 2000000000000000
+    },
+    {
+      "public_key_compressed": "0x91f90139e8c64624ad404def30c228c3aef5e3ddfb970957922285f11cc800949938b55b1c50d6a77e304a185dc2636e",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x920e89a561cf4a942a50a5eb9aff2e2a7366d01f7d0bb45d4717d3e2badf96391a3e20f3d4b0aca7eadb859933713761",
+      "weight": 2000001000000000
+    },
+    {
+      "public_key_compressed": "0xb26f8f11b78b5f675644e12db198cd257fc4655905d7804d4e170938126874d64c32ca73ac090351dbf949f8a0de6539",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xb274df7147a737161a10ac48f14d49ee3361aa3fe3f6f810d6199dfe728857404f38f35d4ff36499ff6bd609e88595ab",
+      "weight": 2000000000
+    },
+    {
+      "public_key_compressed": "0xb417d46a85addb0f8d25eeb5f390d8fe74ae508d0bd51defbdf3683c1bf697604710f864b0399b0d97616e0580ddd34c",
+      "weight": 3000000000
+    },
+    {
+      "public_key_compressed": "0x948a41ac3cec1b487e51dd0aaac8db343aec0a2e0137aff905c3d6427c61ee0492270c78dc2c636f1fbf07fcdc14c9f6",
+      "weight": 2000001000000000
+    },
+    {
+      "public_key_compressed": "0xb574e72f50bf4c896eeb2b63696babcb72f498dceb6786e1aaef5da2c18cb59132c125c4e01a58057fc47090f36893e7",
+      "weight": 1001426868
+    },
+    {
+      "public_key_compressed": "0x963eaf720392a24b0493de9181fa502d043b5771b8fad11b2e95cdba3562d732c363d06708aee8b0194882f0d7356be7",
+      "weight": 2000000000000000
+    },
+    {
+      "public_key_compressed": "0x9658ab59b46d3290a31f65f08e150869ce1c8dff68069c36717cb295e0f216702c1f62eb9278e0d5e712205935ebd5db",
+      "weight": 2000000000000000
+    },
+    {
+      "public_key_compressed": "0x9746b9e10a474c34f77d605d1bb24f5ef940f2ec8913ceae2ab23c3df3f038f4e6c9784988283c762538dfc2785fcff5",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x974c85e76f8e32da049fc0db11d732a58b5152bdfc8f7f2c2a600ad78ffc06135239ed2280d9dc42c4bfa7f3c12ee110",
+      "weight": 2000000000000000
+    },
+    {
+      "public_key_compressed": "0x976cdf960a5ccc7308ecf2ea469a10b49ceb7cbd724c89f23dabb807a36c31f28ad4edf46a76f0b573c7b4f0d9a6eedf",
+      "weight": 7000000000
+    },
+    {
+      "public_key_compressed": "0xb796e966b4f1e785bb7fc11d3832c86b90da8574ff0dc40a9bcbfef2207d29a72212bce062f5d07a7d173d14f4a1e89e",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x97bb6b6584361d3e92b99e7815098ec8601915c281dffe4c57debbcf446a05ca640feb39ab5ea30195e11d01cc6862e8",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xb7e80e962e469a247b6e5b572be68807200f952e4dcde6959e7df29151e717e7ee9cdff91215df844b7703e48c078b8f",
+      "weight": 2000000000
+    },
+    {
+      "public_key_compressed": "0xb87ad5e969fa6d056efe6abb6b0fbbe3dd7a49feffcccb6bec1ae1bd7008ee7dea922d145b17fcf8edadacdc1a1f39bd",
+      "weight": 2000000000000000
+    },
+    {
+      "public_key_compressed": "0x98c297d143e221bc92dfc9ae75255b907ced231325be762d1b1c0fcd0443fa2cf27d81d809ed3db1c5f5f464e928b62b",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x9966427bc7d6982ca54a03f64471743f4cd6e6f76850a59dc07092747b2e0bc2e31cf8ee816c3fedce22ac198ec19056",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0x9968cb3d7f823d1f7648bbc4f1c64df87aaf34987cb001d3fcfd06560d2ad07a2228c2cff20eb5965cf8d24ec60e6b7c",
+      "weight": 1000000000
+    },
+    {
+      "public_key_compressed": "0xb9bad14ada9f26263e61b8f1f7a8296d9869da9503d81b336860ab5945555d135bbd7798b1db31a5ff4a95b7622be3ff",
+      "weight": 2000008000000000
+    },
+    {
+      "public_key_compressed": "0x99ec72cae29beb5cb6f17479dd6c5886acf47b188819bcf77ca2a30fe5a3807b85a72a0966f2fa3a86e8cc317edd2691",
+      "weight": 1000000000
+    }
+  ]
+}

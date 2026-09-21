@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 
 	"attestor/types/attestation"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
@@ -34,6 +36,11 @@ type l2ToCosmosConfig struct {
 
 	AttestorEndpoints []l2AttestorEndpointConfig `json:"attestor_endpoints"`
 	AttestorSrcChain  string                     `json:"attestor_src_chain"`
+	// Warp configures the Avalanche C-Chain path (src_chain "avalanche"): the
+	// wasm client there verifies the primary network's aggregate BLS signature
+	// per update, so this module runs no attestors at all — signatures come
+	// from validators through the aggregator sidecar.
+	Warp *l2WarpConfig `json:"warp,omitempty"`
 	// Attestors is the exact immutable key set stored in the paired wasm client.
 	// Every endpoint below names one key by its canonical set index.
 	Attestors       attestation.AttestorConfig `json:"attestors"`
@@ -65,6 +72,51 @@ type l2ToCosmosConfig struct {
 	// kind is the chain family (opstack/arbitrum) resolved from the module's
 	// src_chain by loadConfig; it selects the per-L2 header builder.
 	kind chain.ChainType
+}
+
+// l2WarpConfig is the Avalanche warp path's own block: where to aggregate
+// primary-network signatures, and the message identity the wasm client pins
+// (network id + C-Chain blockchain id). quorum_num defaults to Avalanche's 67.
+type l2WarpConfig struct {
+	AggregatorURL string `json:"aggregator_url"`
+	NetworkID     uint32 `json:"network_id"`
+	SourceChainID string `json:"source_chain_id"`
+	QuorumNum     uint64 `json:"quorum_num,omitempty"`
+}
+
+// validate checks the block and decodes the 32-byte source chain id.
+func (w *l2WarpConfig) validate() ([32]byte, error) {
+	var chainID [32]byte
+	if w == nil {
+		return chainID, fmt.Errorf("l2_to_cosmos config: warp block is required for an avalanche source")
+	}
+	if w.AggregatorURL == "" {
+		return chainID, fmt.Errorf("l2_to_cosmos config: warp.aggregator_url is required")
+	}
+	if w.NetworkID == 0 {
+		return chainID, fmt.Errorf("l2_to_cosmos config: warp.network_id is required")
+	}
+	raw := strings.TrimPrefix(w.SourceChainID, "0x")
+	decoded, err := hex.DecodeString(raw)
+	if err != nil || len(decoded) != 32 {
+		return chainID, fmt.Errorf("l2_to_cosmos config: warp.source_chain_id must be 32 hex bytes")
+	}
+	copy(chainID[:], decoded)
+	if chainID == [32]byte{} {
+		return chainID, fmt.Errorf("l2_to_cosmos config: warp.source_chain_id must be non-zero")
+	}
+	if w.QuorumNum > 100 {
+		return chainID, fmt.Errorf("l2_to_cosmos config: warp.quorum_num must be in 0..100")
+	}
+	return chainID, nil
+}
+
+// quorum returns the configured quorum numerator, defaulting to Avalanche's 67.
+func (w *l2WarpConfig) quorum() uint64 {
+	if w == nil || w.QuorumNum == 0 {
+		return 67
+	}
+	return w.QuorumNum
 }
 
 // l2AttestorEndpointConfig maps a reachable attestor daemon to its immutable
@@ -101,6 +153,17 @@ func (c l2ToCosmosConfig) validateWith(requireWasmClientID bool) error {
 		"attestor_src_chain": c.AttestorSrcChain,
 		"l2_ics26_client_id": c.L2ICS26ClientID,
 	}
+	if c.kind == chain.Avalanche {
+		// The warp path runs no attestors: per-update trust is the primary
+		// network's aggregate signature, collected through the aggregator.
+		delete(required, "attestor_src_chain")
+		if _, err := c.Warp.validate(); err != nil {
+			return err
+		}
+		if len(c.AttestorEndpoints) != 0 || len(c.Attestors.PublicKeys) != 0 {
+			return fmt.Errorf("l2_to_cosmos config: an avalanche source takes no attestor fields; remove them")
+		}
+	}
 	if requireWasmClientID {
 		required["l2_wasm_client_id"] = c.L2WasmClientID
 	}
@@ -120,6 +183,9 @@ func (c l2ToCosmosConfig) validateWith(requireWasmClientID bool) error {
 	}
 	if _, err := l2ChainIDFromProfile(c.RollupProfile); err != nil {
 		return fmt.Errorf("l2_to_cosmos config: %w", err)
+	}
+	if c.kind == chain.Avalanche {
+		return nil
 	}
 	if err := c.Attestors.Validate(); err != nil {
 		return fmt.Errorf("l2_to_cosmos config: invalid attestors: %w", err)
@@ -243,38 +309,50 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	svcCtx := services.CosmosEndpoint{Client: cosmosClient}
 	worker := services.NewWorker(txHandler, nil)
 
-	// One builder for every chain: the header is the canonical L2 block plus a router
-	// account proof, and nothing about that is chain-specific any more. It takes the
-	// same endpoint set the source gates heights on, so the block it packages is
-	// bound to a threshold of replicas that independently recognise that height.
-	// The single per-chain variation left is the header shape: Avalanche's C-Chain
-	// runs coreth, whose extra header fields geth's types.Header would drop, so it
-	// gets the raw-RPC reader variant of the same builder.
-	newHeaderBuilder := l2rollup.NewAttestedHeaderBuilder
+	// The builder and the height gate differ by trust model. Rollups: the
+	// attested-header builder binds each update to a threshold of independent
+	// replicas, and RelayableHeight gates on their quorum frontier. Avalanche's
+	// C-Chain (an L1; acceptance is finality): the warp builder collects the
+	// primary network's aggregate BLS signature through the aggregator sidecar,
+	// no attestors exist, and the frontier is the finalized (= accepted) head.
+	var headerBuilder l2rollup.HeaderBuilder
+	var frontier l2rollup.AttestationFrontier
 	if cfg.kind == chain.Avalanche {
-		newHeaderBuilder = l2rollup.NewCorethAttestedHeaderBuilder
-	}
-	headerBuilder, err := newHeaderBuilder(l2, router, chainID, cfg.Attestors, signingAttestors, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
-	if err != nil {
-		l2.Close()
-		if stopErr := cosmosClient.Stop(); stopErr != nil {
-			log.Printf("failed to terminate cosmos client: %v", stopErr)
+		sourceChainID, warpErr := cfg.Warp.validate()
+		if warpErr == nil {
+			headerBuilder, warpErr = l2rollup.NewWarpHeaderBuilder(
+				l2, router, cfg.Warp.NetworkID, sourceChainID, cfg.Warp.AggregatorURL, cfg.Warp.quorum(), "avalanche-warp")
 		}
-		for _, opened := range attestors {
-			_ = opened.Close()
+		if warpErr != nil {
+			l2.Close()
+			if stopErr := cosmosClient.Stop(); stopErr != nil {
+				log.Printf("failed to terminate cosmos client: %v", stopErr)
+			}
+			return nil, nil, warpErr
 		}
-		return nil, nil, err
-	}
-	frontier, err := l2rollup.NewQuorumAttestationFrontier(signingAttestors, cfg.Attestors.Threshold)
-	if err != nil {
-		l2.Close()
-		if stopErr := cosmosClient.Stop(); stopErr != nil {
-			log.Printf("failed to terminate cosmos client: %v", stopErr)
+	} else {
+		headerBuilder, err = l2rollup.NewAttestedHeaderBuilder(l2, router, chainID, cfg.Attestors, signingAttestors, cfg.AttestorSrcChain, headKind.RunMode(), fmt.Sprintf("l2-%s", cfg.kind))
+		if err != nil {
+			l2.Close()
+			if stopErr := cosmosClient.Stop(); stopErr != nil {
+				log.Printf("failed to terminate cosmos client: %v", stopErr)
+			}
+			for _, opened := range attestors {
+				_ = opened.Close()
+			}
+			return nil, nil, err
 		}
-		for _, opened := range attestors {
-			_ = opened.Close()
+		frontier, err = l2rollup.NewQuorumAttestationFrontier(signingAttestors, cfg.Attestors.Threshold)
+		if err != nil {
+			l2.Close()
+			if stopErr := cosmosClient.Stop(); stopErr != nil {
+				log.Printf("failed to terminate cosmos client: %v", stopErr)
+			}
+			for _, opened := range attestors {
+				_ = opened.Close()
+			}
+			return nil, nil, err
 		}
-		return nil, nil, err
 	}
 	trackL2Pending, untrackL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
 	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, frontier, includeProvisional).
@@ -309,8 +387,13 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		// alarm about acknowledgements it was never going to relay.
 		relay.WithAckWatch(0, 0, ackDue, ackSettled, timeoutReturn.svc.OverdueAcks),
 	)
-	logger.Sugar().Infof("l2->cosmos source: %s (attestors=%d threshold=%d src_chain=%s wasm_client=%s head=%s)",
-		cfg.kind, len(cfg.AttestorEndpoints), cfg.Attestors.Threshold, cfg.AttestorSrcChain, cfg.L2WasmClientID, cfg.HeadKind)
+	if cfg.kind == chain.Avalanche {
+		logger.Sugar().Infof("avalanche->cosmos source: warp aggregation via %s (quorum=%d wasm_client=%s head=%s)",
+			cfg.Warp.AggregatorURL, cfg.Warp.quorum(), cfg.L2WasmClientID, cfg.HeadKind)
+	} else {
+		logger.Sugar().Infof("l2->cosmos source: %s (attestors=%d threshold=%d src_chain=%s wasm_client=%s head=%s)",
+			cfg.kind, len(cfg.AttestorEndpoints), cfg.Attestors.Threshold, cfg.AttestorSrcChain, cfg.L2WasmClientID, cfg.HeadKind)
+	}
 
 	cleanup := func() {
 		l2.Close()

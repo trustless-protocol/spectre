@@ -1,51 +1,53 @@
 {
   "_comment": [
-    "Template for `create-clients-cosmos --l2-config` on AVALANCHE (C-Chain). Copy to",
-    "avalanche-client-config.json (gitignored) and fill in your deployment's values.",
-    "(--l2-config is the shared client-creation flag; Avalanche is an L1, it",
-    "just reuses the same attested-header client machinery as the rollups.)",
+    "Template for `create-clients-cosmos --l2-config` on AVALANCHE (C-Chain).",
+    "Copy to avalanche-client-config.json (gitignored).",
     "",
-    "The values below are FUJI (chain id 43113), so they are real and checkable. For",
-    "the local devnet (tmpnet) use l2_chain_id 43112 and the router address your",
-    "deploy printed. Its checked-in public key matches the local attestor handoff;",
-    "replace it with your own attestor public key on every other network.",
+    "The warp client's initial states carry live chain data (the pinned canonical",
+    "validator set, the bootstrap block identity, and the router storage root at",
+    "the header's settled height), so they are GENERATED, not hand-written:",
     "",
-    "rollup_profile is submitted verbatim in MsgCreateClient and the Rust verifier",
-    "rejects unknown fields, so common carries exactly these five keys.",
+    "  cd tools/warp-spike && go run . -base-url <avalanche api> \\",
+    "    -router <ICS26Router from the C-Chain deploy> -dump-bootstrap bootstrap.json",
     "",
-    "Four fields must be right or the client fails, each in its own way:",
-    "  profile_version  must be avalanche_attestor_v1 (the cw-ics08-wasm-avalanche",
-    "                   artifact) - a mismatch fails at instantiate with",
-    "                   InvalidProfileVersion.",
-    "  l2_header_fork   must be coreth: C-Chain headers carry ext_data_hash plus",
-    "                   coreth's optional tail (Granite/Helicon fields), and the",
-    "                   client recomputes the block hash from exactly that layout.",
-    "                   A mismatch is rejected on EVERY update, not at creation.",
-    "  l2_chain_id      must be the chain the relayer's l2_rpc_url actually serves",
-    "                   (43114 mainnet / 43113 Fuji / 43112 local tmpnet).",
-    "  l2_router        the ICS26Router this deploy created on the C-Chain.",
-    "",
-    "wasm_checksum is printed by scripts/local/wasm_avax.sh, and is the sha256 of the",
-    "UNCOMPRESSED wasm. counterparty_client_id is the client id on the C-Chain router",
-    "that tracks Cosmos; create-clients-eth registers the SpectreClient under it."
+    "then paste bootstrap.json's client_state/consensus_state under warp_bootstrap",
+    "below. The values here are a 1-validator dummy so the shape is visible;",
+    "create-clients re-checks the RPC's chain id against evm_chain_id before",
+    "submitting. wasm_checksum comes from scripts/local/wasm_avax.sh."
   ],
-  "wasm_checksum": "<hex checksum from `gaiad q ibc-wasm checksums`, e.g. a49e97b0...>",
-  "l2_rpc_url": "https://api.avax-test.network/ext/bc/C/rpc",
-  "attestors": {
-    "public_keys": [
-      "o+IGHINpSfBe/aq/3e++IpdnKD4pW41m387fjxUy5+4="
-    ],
-    "threshold": 1
-  },
-  "rollup_profile": {
-    "common": {
-      "l2_chain_id": 43113,
-      "l2_router": "0x0000000000000000000000000000000000000000",
+  "wasm_checksum": "<hex checksum from `gaiad q ibc-wasm checksums`>",
+  "l2_rpc_url": "http://127.0.0.1:9650/ext/bc/C/rpc",
+  "counterparty_client_id": "avalanche-client-0",
+  "warp_bootstrap": {
+    "client_state": {
+      "latest_height": 1,
+      "frozen_height": null,
+      "network_id": 12345,
+      "source_chain_id": "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=",
+      "evm_chain_id": 43112,
+      "router": "0xd519b00154653763d10354698c7c6c3e4ebf3acd",
       "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
-      "profile_version": "avalanche_attestor_v1",
-      "l2_header_fork": "coreth"
+      "quorum_num": 67,
+      "quorum_den": 100,
+      "validator_set": {
+        "validators": [
+          {
+            "public_key": "qFImaC76NQ1XizRZ66Xsy4NWkwQs36nFcIzI5NVeNT4kiwP7BOI4lvKhBE9Eth13",
+            "weight": 1
+          }
+        ],
+        "total_weight": 1,
+        "p_chain_height": 1
+      }
+    },
+    "consensus_state": {
+      "state_root": "0x0101010101010101010101010101010101010101010101010101010101010101",
+      "ibc_storage_root": "0x0202020202020202020202020202020202020202020202020202020202020202",
+      "timestamp_nanos": 1000000000,
+      "height": 1,
+      "block_hash": "0x0303030303030303030303030303030303030303030303030303030303030303",
+      "parent_hash": "0x0404040404040404040404040404040404040404040404040404040404040404",
+      "first_accepted_at": 0
     }
-  },
-  "bootstrap_block": 0,
-  "counterparty_client_id": "avalanche-client-0"
+  }
 }

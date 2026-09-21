@@ -288,7 +288,49 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint
 		return nil, fmt.Errorf("l2 source: MembershipProof: unsupported event type %d", eventType)
 	}
 	path := services.EthPath(clientID, pkt.Sequence, pathType)
-	return l2StorageProof(ctx, s.eth, s.router, path, height)
+	proofHeight, err := s.proofQueryHeight(ctx, height)
+	if err != nil {
+		return nil, chain.Transient(fmt.Errorf("l2 source: resolve proof height for %d: %w", height, err))
+	}
+	proof, err := l2StorageProof(ctx, s.eth, s.router, path, proofHeight)
+	if err != nil {
+		return nil, err
+	}
+	if isZeroStorageProofValue(proof) {
+		// Under asynchronous execution the update at `height` commits the state
+		// settled at proofHeight (< height): a commitment written after the
+		// settled point exists on-chain but not yet in any provable state. The
+		// window is a handful of blocks; retry once a newer update lands.
+		return nil, chain.Transient(fmt.Errorf(
+			"l2 source: seq=%d commitment not yet settled at update height %d (proof height %d); re-queued",
+			pkt.Sequence, height, proofHeight))
+	}
+	return proof, nil
+}
+
+// proofQueryHeight maps a client-update height to the height its stored state
+// root actually commits. Identity for synchronous chains; the settled height
+// for coreth (the Avalanche C-Chain) under asynchronous execution.
+func (s *Source) proofQueryHeight(ctx context.Context, height uint64) (uint64, error) {
+	if s.chainType != chain.Avalanche {
+		return height, nil
+	}
+	return corethSettledQueryHeight(ctx, s.eth.Client(), height)
+}
+
+// isZeroStorageProofValue reports whether an encoded EvmStorageProof proves an
+// all-zero (absent) commitment word.
+func isZeroStorageProofValue(encoded []byte) bool {
+	var proof EvmStorageProof
+	if err := json.Unmarshal(encoded, &proof); err != nil {
+		return false
+	}
+	for _, b := range proof.Value {
+		if b != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // l2StorageProof proves one ICS26Router commitment slot at an L2 height, in the shape

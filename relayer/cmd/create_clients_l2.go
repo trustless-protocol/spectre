@@ -43,6 +43,34 @@ type l2ClientConfig struct {
 	// Attestors is the exact immutable Ed25519 signing set stored in the wasm
 	// client. Its public_keys are base64-encoded 32-byte keys in strict byte order.
 	Attestors attestation.AttestorConfig `json:"attestors"`
+	// WarpBootstrap switches this file to the Avalanche warp client: the two
+	// state JSONs are submitted verbatim in MsgCreateClient (they carry the
+	// pinned canonical validator set and the bootstrap block identity, produced
+	// by `tools/warp-spike -dump-bootstrap`). rollup_profile and attestors are
+	// not used on this path.
+	WarpBootstrap *warpBootstrapConfig `json:"warp_bootstrap,omitempty"`
+}
+
+// warpBootstrapConfig carries the Avalanche warp client's initial states.
+type warpBootstrapConfig struct {
+	ClientState    json.RawMessage `json:"client_state"`
+	ConsensusState json.RawMessage `json:"consensus_state"`
+}
+
+// warpLatestHeight reads latest_height (and the declared EVM chain id) out of
+// the raw warp client state for the host envelope and the RPC identity check.
+func (w *warpBootstrapConfig) warpIdentity() (latestHeight, evmChainID uint64, err error) {
+	var probe struct {
+		LatestHeight uint64 `json:"latest_height"`
+		EvmChainID   uint64 `json:"evm_chain_id"`
+	}
+	if err := json.Unmarshal(w.ClientState, &probe); err != nil {
+		return 0, 0, fmt.Errorf("l2-config: parse warp_bootstrap.client_state: %w", err)
+	}
+	if probe.LatestHeight == 0 || probe.EvmChainID == 0 {
+		return 0, 0, fmt.Errorf("l2-config: warp_bootstrap.client_state must carry latest_height and evm_chain_id")
+	}
+	return probe.LatestHeight, probe.EvmChainID, nil
 }
 
 // profileCommon is the subset of the verifier Profile the command reads to locate
@@ -79,6 +107,15 @@ func (c *l2ClientConfig) validate() error {
 	}
 	if c.L2RPCURL == "" {
 		return fmt.Errorf("l2-config: l2_rpc_url is required")
+	}
+	if c.WarpBootstrap != nil {
+		if len(c.WarpBootstrap.ClientState) == 0 || len(c.WarpBootstrap.ConsensusState) == 0 {
+			return fmt.Errorf("l2-config: warp_bootstrap requires client_state and consensus_state")
+		}
+		if _, _, err := c.WarpBootstrap.warpIdentity(); err != nil {
+			return err
+		}
+		return nil
 	}
 	if len(c.RollupProfile) == 0 {
 		return fmt.Errorf("l2-config: rollup_profile is required")
@@ -164,6 +201,34 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 		return "", fmt.Errorf("wasm checksum %s has not been stored on Cosmos", l2cfg.WasmChecksum)
 	}
 
+	// Avalanche warp client: the state JSONs were assembled off-line from live
+	// chain data (warp-spike -dump-bootstrap) and are submitted verbatim; only
+	// the RPC's chain identity is re-checked here so a wrong endpoint cannot
+	// bootstrap a client that declares another chain.
+	if l2cfg.WarpBootstrap != nil {
+		latestHeight, evmChainID, err := l2cfg.WarpBootstrap.warpIdentity()
+		if err != nil {
+			return "", err
+		}
+		if err := verifyRPCEvmChainID(context.Background(), l2cfg.L2RPCURL, evmChainID); err != nil {
+			return "", err
+		}
+		worker := services.NewWorker(&transaction.Handler{}, nil)
+		clientID, err := worker.CreateRawWasmClient(context.Background(), deps.Cosmos, services.RawWasmClientParams{
+			WasmChecksum:         l2cfg.WasmChecksum,
+			ClientState:          l2cfg.WarpBootstrap.ClientState,
+			ConsensusState:       l2cfg.WarpBootstrap.ConsensusState,
+			LatestHeight:         latestHeight,
+			CounterpartyClientID: l2cfg.CounterpartyClientID,
+		})
+		if err != nil {
+			return "", fmt.Errorf("create Avalanche warp client on Cosmos: %w", err)
+		}
+		logger.Sugar().Infof("create-clients-cosmos[l2]: created Avalanche warp wasm client on Cosmos: clientID=%s", clientID)
+		fmt.Println(clientID)
+		return clientID, nil
+	}
+
 	// Verify the profile names the chain this RPC actually serves, BEFORE reading
 	// bootstrap roots from it and before committing the profile on-chain.
 	//
@@ -219,4 +284,22 @@ func runCreateClientsL2(logger *zap.Logger, cfg *appConfig, l2cfg *l2ClientConfi
 	logger.Sugar().Infof("create-clients-cosmos[l2]: created L2 wasm client on Cosmos: clientID=%s", clientID)
 	fmt.Println(clientID)
 	return clientID, nil
+}
+
+// verifyRPCEvmChainID confirms the endpoint serves the chain the warp client
+// state declares, before anything is committed on Cosmos.
+func verifyRPCEvmChainID(ctx context.Context, rpcURL string, want uint64) error {
+	client, err := relayerclient.DialEthRPC(ctx, rpcURL, relayerclient.DefaultRPCTimeout)
+	if err != nil {
+		return fmt.Errorf("dial rpc for chain-id check: %w", err)
+	}
+	defer client.Close()
+	observed, err := client.ChainID(ctx)
+	if err != nil {
+		return fmt.Errorf("query eth_chainId: %w", err)
+	}
+	if !observed.IsUint64() || observed.Uint64() != want {
+		return fmt.Errorf("rpc %s serves chain id %s, but warp_bootstrap.client_state declares %d", rpcURL, observed, want)
+	}
+	return nil
 }

@@ -25,12 +25,6 @@ build-arbitrum-attestor:
 	mkdir -p attestor/arbitrum/bin
 	cd attestor/arbitrum && go build -o bin/attestor ./cmd
 
-# Build the Avalanche C-Chain attestor sidecar.
-[group('build')]
-build-avalanche-attestor:
-	mkdir -p attestor/avalanche/bin
-	cd attestor/avalanche && go build -o bin/attestor ./cmd
-
 # Build the Optimism attestor sidecar binary
 [group('build')]
 build-attestor:

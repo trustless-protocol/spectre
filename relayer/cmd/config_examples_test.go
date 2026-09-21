@@ -183,7 +183,7 @@ func TestExampleRollupProfilesUseOnlyFreshV2Schema(t *testing.T) {
 		"op-l2-config.example.json":            1,
 		"base-l2-config.example.json":          1,
 		"arb-l2-config.example.json":           1,
-		"avalanche-client-config.example.json": 1,
+		"avalanche-client-config.example.json": 0,
 	}
 	wantKeys := map[string]struct{}{
 		"l2_chain_id": {}, "l2_router": {}, "commitment_slot": {},
@@ -191,7 +191,7 @@ func TestExampleRollupProfilesUseOnlyFreshV2Schema(t *testing.T) {
 	}
 	allowedVersions := map[string]struct{}{
 		"op_attestor_v1": {}, "base_attestor_v1": {}, "arbitrum_attestor_v1": {},
-		"avalanche_attestor_v1": {},
+		"avalanche_warp_v1": {},
 	}
 
 	var collectProfiles func(any, *[]map[string]any)

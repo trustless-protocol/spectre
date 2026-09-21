@@ -986,13 +986,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
-name = "avalanche-cchain"
+name = "avalanche-light-client"
 version = "0.1.0"
 dependencies = [
+ "alloy-primitives 1.6.1",
+ "avalanche-warp",
+ "cosmwasm-std",
+ "hex",
+ "ibc-proto 0.51.1 (registry+https://github.com/rust-lang/crates.io-index)",
  "l2-client",
+ "milagro_bls",
+ "prost",
  "schemars",
  "serde",
  "serde_json",
+ "thiserror 2.0.19",
 ]
 
 [[package]]
@@ -1560,10 +1568,8 @@ dependencies = [
 name = "cw-ics08-wasm-avalanche"
 version = "0.1.0"
 dependencies = [
- "avalanche-cchain",
+ "avalanche-light-client",
  "cosmwasm-std",
- "l2-client",
- "serde_json",
 ]
 
 [[package]]

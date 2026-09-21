@@ -30,18 +30,11 @@
       "config": {
         "l2_rpc_url": "http://127.0.0.1:9650/ext/bc/C/rpc",
         "tm_rpc_url": "http://127.0.0.1:26657",
-        "attestor_endpoints": [
-          {
-            "address": "127.0.0.1:3001",
-            "attestor_index": 0
-          }
-        ],
-        "attestor_src_chain": "avaxdev",
-        "attestors": {
-          "public_keys": [
-            "o+IGHINpSfBe/aq/3e++IpdnKD4pW41m387fjxUy5+4="
-          ],
-          "threshold": 1
+        "warp": {
+          "aggregator_url": "http://127.0.0.1:18080",
+          "network_id": 12345,
+          "source_chain_id": "0x0101010101010101010101010101010101010101010101010101010101010101",
+          "quorum_num": 67
         },
         "l2_wasm_client_id": "08-wasm-1",
         "l2_ics26_client_id": "avalanche-client-0",
@@ -52,7 +45,7 @@
             "l2_chain_id": 43112,
             "l2_router": "0xd519b00154653763d10354698c7c6c3e4ebf3acd",
             "commitment_slot": "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600",
-            "profile_version": "avalanche_attestor_v1",
+            "profile_version": "avalanche_warp_v1",
             "l2_header_fork": "coreth"
           }
         }

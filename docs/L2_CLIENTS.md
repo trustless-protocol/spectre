@@ -1,16 +1,19 @@
 # Authenticated L2 ICS-08 clients
 
-Spectre builds four checksum-distinct 08-wasm artifacts with unchanged filenames:
+Spectre builds three checksum-distinct attested 08-wasm artifacts with unchanged filenames:
 
 - `cw-ics08-wasm-arbitrum`;
 - `cw-ics08-wasm-base`;
-- `cw-ics08-wasm-op`; and
-- `cw-ics08-wasm-avalanche` (the Avalanche C-Chain — an L1, not a rollup or L2;
-  it reuses this kernel because acceptance is finality, which fits the
-  attested-header model directly. Its profile pins `l2_header_fork: "coreth"` —
-  the field name is shared wire schema — selecting coreth's header layout, the
-  fixed `ext_data_hash` plus the cascading Granite/Helicon optional tail, for
-  block-hash recomputation).
+- `cw-ics08-wasm-op`.
+
+A fourth artifact, `cw-ics08-wasm-avalanche`, is NOT part of this attested
+family: the Avalanche C-Chain is an L1, and its client verifies the primary
+network's stake-weighted warp BLS aggregate per update (see
+`packages/avalanche-light-client`). It reuses this kernel's leaf machinery —
+the canonical coreth header (`l2_header_fork: "coreth"`: the fixed
+`ext_data_hash` plus the cascading Granite/Helicon optional tail), bounded MPT
+proofs, packet paths, and host envelopes — but none of the attestor trust
+model.
 
 The artifacts share one authenticated client kernel. Their data-only profiles select the chain ID,
 router, commitment slot and canonical execution-header fork.
