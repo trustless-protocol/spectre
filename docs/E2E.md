@@ -1169,16 +1169,25 @@ C-Chain to verify Cosmos), so step 1 of the [ETH runbook](#local-cosmos--ethereu
 applies unchanged before deploying.
 
 ```bash
-# 1. Single-node local Avalanche network (chain id 43112, every block final in
-#    ~1s). Needs AVALANCHEGO_BIN pointing at an avalanchego binary >= v1.14.
-#    Writes .avalanche-devnet-run/attestor.env (C-Chain RPC/WS + prefunded key;
-#    the file name matches the other stacks' handoff convention).
+# 1. Local Avalanche network: the canonical FIVE validators (chain id 43112,
+#    every block final in ~2s). Five is load-bearing — warp signatures come
+#    from the registered validators over p2p, and a lone sybil-off node is not
+#    one of them (the aggregator cannot even bootstrap against it; verified).
+#    Needs AVALANCHEGO_BIN (>= v1.14); the canonical local staking + BLS keys
+#    are fetched pinned to AVALANCHEGO_TAG. Writes
+#    .avalanche-devnet-run/attestor.env (C-Chain RPC/WS + prefunded key; the
+#    file name matches the other stacks' handoff convention).
 AVALANCHEGO_BIN=~/bin/avalanchego ./scripts/local/run_avalanche_node.sh
 
 # 2. Signature-aggregator sidecar (release binary from ava-labs/icm-services),
-#    pointed at the same node; serves POST /aggregate-signatures on :18080.
-#    Config: {"p-chain-api":{"base-url":"http://127.0.0.1:9650"},
-#             "info-api":{"base-url":"http://127.0.0.1:9650"},"api-port":18080}
+#    pointed at node1; serves POST /aggregate-signatures on :18080.
+#    allow-private-ips is required to dial 127.0.0.1 validators; give it ~30s
+#    after boot to connect stake. Config:
+#      {"p-chain-api":{"base-url":"http://127.0.0.1:9650"},
+#       "info-api":{"base-url":"http://127.0.0.1:9650"},
+#       "api-port":18080,"allow-private-ips":true}
+#    Verified on this network: tools/warp-spike gets a verified 67% aggregate
+#    (4/5 signers, 80% stake) in single-digit milliseconds.
 ./signature-aggregator --config-file aggregator.json &
 
 # 3. Cosmos node, then gov-store the Avalanche warp light-client wasm.
