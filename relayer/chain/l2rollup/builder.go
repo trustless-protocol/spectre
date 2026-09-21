@@ -96,7 +96,14 @@ func (b *AttestedBuilder) Build(ctx context.Context, header []byte) (chain.Clien
 	}
 	// Advance by the height the header commits (may be < requested), so the module's
 	// lastHeight never overstates what the client can actually prove.
-	return chain.ClientUpdate{Height: committedHeight, Payloads: [][]byte{payload}}, nil
+	update := chain.ClientUpdate{Height: committedHeight, Payloads: [][]byte{payload}}
+	// Carry the header's block time so the client-update observer can report
+	// this client's age like the other two paths' -- without it the L2 process
+	// never logged a "last client update" line at all.
+	if stamped, ok := msg.(interface{ TrustedAt() time.Time }); ok {
+		update.TrustedAt = stamped.TrustedAt()
+	}
+	return update, nil
 }
 
 // decodeHeaderRequest reads the big-endian L2 height emitted by Source.QueryHeader.

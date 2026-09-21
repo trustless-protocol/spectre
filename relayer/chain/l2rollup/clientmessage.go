@@ -1,6 +1,9 @@
 package l2rollup
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // This file mirrors, byte-for-byte on the JSON wire, the header types the cw-ics08
 // L2 wasm light clients deserialize. Ground truth, and there is no longer a
@@ -93,6 +96,13 @@ type SignedAttestedL2Header struct {
 // no inner envelope any more: the Arbitrum verifier used to wrap its header in a
 // second tagged enum (`{"type":"bold_v2",...}`) because it had more than one header
 // variant, and it no longer does.
+// TrustedAt is the L2 block time the header carries: the source-chain timestamp
+// a client update installs, which is what the client-update observer measures
+// staleness from (the same figure the ETH and Cosmos builders report).
+func (h *SignedAttestedL2Header) TrustedAt() time.Time {
+	return time.Unix(int64(h.L2Header.Timestamp), 0).UTC()
+}
+
 func (h *SignedAttestedL2Header) EncodeClientMessage() ([]byte, error) {
 	if len(h.AttestorSignature) == 0 {
 		return nil, fmt.Errorf("l2 client message: signed header requires at least one attestor signature")

@@ -3,6 +3,7 @@ package evm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"math/big"
@@ -281,6 +282,45 @@ func TestUnrelayedPackets(t *testing.T) {
 		}
 		if len(events) != 1 || events[0].Type != chain.AckPacket || events[0].Sequence != 5 || events[0].Height != 700 {
 			t.Fatalf("events = %+v, want the acknowledgement of the current generation of seq 5 (block 700)", events)
+		}
+	})
+
+	// A probe that fails must not move the cursors. Advancing first skipped a
+	// whole window of sequences for one rotation on a single RPC blip -- the
+	// event-loss shape this backstop exists to close.
+	t.Run("a failed probe leaves both cursors where they were", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		cosmosNode := rpcmock.NewCosmosNode(t)
+		node.SetBlockNumber(500)
+		node.SetStorage(flushRouter, services.EthPrevSequenceSendKey(flushCosmosOnEVM), ethcommon.BigToHash(big.NewInt(4)))
+		open := flushEthPacket(7, flushEVMOnCosmos, flushCosmosOnEVM, 4_000_000_000)
+		cosmosCommitments(t, cosmosNode, []channeltypesv2.PacketState{{ClientId: flushEVMOnCosmos, Sequence: 7, Data: commitmentOf(open).Bytes()}})
+		s := newFlushSource(t, node, cosmosNode)
+
+		node.FailBatches(errors.New("probe down"))
+		if _, err := s.UnrelayedPackets(context.Background()); err == nil {
+			t.Fatal("the send-leg probe failed and the pass reported success")
+		}
+		if s.flush.sendCursor != 0 || s.flush.ackCursor != 0 {
+			t.Fatalf("cursors advanced on a failed probe: send=%d ack=%d", s.flush.sendCursor, s.flush.ackCursor)
+		}
+
+		// Send leg has nothing to probe (prev=0) so it never batches; the ack leg
+		// pages Cosmos fine and then its router probe fails.
+		node.SetStorage(flushRouter, services.EthPrevSequenceSendKey(flushCosmosOnEVM), ethcommon.Hash{})
+		if _, err := s.UnrelayedPackets(context.Background()); err != nil {
+			t.Fatalf("a failing ack leg is reported, not returned: %v", err)
+		}
+		if s.flush.ackCursor != 0 {
+			t.Fatalf("ack cursor advanced to %d on a failed probe", s.flush.ackCursor)
+		}
+
+		node.FailBatches(nil)
+		if _, err := s.UnrelayedPackets(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if s.flush.ackCursor != 7 {
+			t.Fatalf("ack cursor = %d after a successful probe, want 7", s.flush.ackCursor)
 		}
 	})
 }

@@ -56,6 +56,11 @@ type EVMNode struct {
 	// batches counts JSON-RPC batch requests, so a test can assert that a
 	// probe was one round trip rather than one per slot.
 	batches int
+	// batchErr, when set, makes every JSON-RPC BATCH request fail at the
+	// transport (HTTP 500) while single requests keep working. That is the
+	// shape of "the probe failed but the reads around it did not": the relayer
+	// batches its storage probes and sends everything else one call at a time.
+	batchErr error
 }
 
 // RawLog is one event log the stub serves. Topics[0] is the event signature
@@ -122,6 +127,10 @@ func (n *EVMNode) AddLog(l RawLog) { n.withLock(func() { n.logs = append(n.logs,
 func (n *EVMNode) CapLogRange(maxBlocks uint64, message string) {
 	n.withLock(func() { n.logRangeCap, n.logRangeMsg = maxBlocks, message })
 }
+
+// FailBatches makes every JSON-RPC batch request fail with an HTTP 500 carrying
+// err's text, leaving single requests untouched. Pass nil to serve batches again.
+func (n *EVMNode) FailBatches(err error) { n.withLock(func() { n.batchErr = err }) }
 
 // Batches counts JSON-RPC batch requests received.
 func (n *EVMNode) Batches() int {
@@ -276,6 +285,11 @@ func (n *EVMNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		n.mu.Lock()
 		n.batches++
+		if n.batchErr != nil {
+			n.mu.Unlock()
+			http.Error(w, n.batchErr.Error(), http.StatusInternalServerError)
+			return
+		}
 		responses := make([]rpcResponse, 0, len(reqs))
 		for _, req := range reqs {
 			n.methodCalls[req.Method]++

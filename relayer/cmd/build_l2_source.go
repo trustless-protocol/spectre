@@ -314,6 +314,9 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		fmt.Sprintf("%s->cosmos", cfg.kind),
 		cfg.L2ICS26ClientID,
 		source, dest, builder,
+		// The destination client here is the L2's wasm client on Cosmos, so its
+		// age is the "evm-on-cosmos" figure -- same slot the ETH path fills.
+		relay.WithClientUpdateObserver(timeoutReturn.svc.ObserveEVMOnCosmosUpdate),
 		relay.WithTimeoutScanner(0, func(c context.Context) {
 			timeoutReturn.svc.ScanL2Timeouts(c, timeoutReturn.deps.Cosmos, timeoutReturn.deps.EVM, timeoutReturn.deps.IDs.CosmosOnEVM)
 		}),

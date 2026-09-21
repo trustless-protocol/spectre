@@ -184,7 +184,7 @@ func (s *Services) logRoutineQueueLines(now time.Time, state queueState) {
 		state.cosmosPending, state.ethPending, state.l2Pending,
 		state.cosmosTimeoutDead, state.ethTimeoutDead, state.l2TimeoutDead)
 	if cosmosOnEVM, evmOnCosmos, ok := s.clientUpdateAges(now); ok {
-		log.Printf("[QueueState] last client update: cosmos-on-eth=%s ago, eth-on-cosmos=%s ago",
+		log.Printf("[QueueState] last client update: cosmos-on-evm=%s ago, evm-on-cosmos=%s ago",
 			cosmosOnEVM.Truncate(time.Second), evmOnCosmos.Truncate(time.Second))
 	}
 }

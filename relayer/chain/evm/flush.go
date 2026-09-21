@@ -79,13 +79,16 @@ func (s *Source) unrelayedSends(ctx context.Context, router evmflush.Router) ([]
 	if !ok {
 		return nil, nil
 	}
-	s.flush.sendCursor = lo
 	slots, err := router.OutstandingSlots(ctx, evmflush.Sequences(lo, hi), func(seq uint64) []byte {
 		return services.EthPath(clientID, seq, services.EthPathCommitment)
 	})
 	if err != nil {
 		return nil, err
 	}
+	// The cursor moves only once the probe has answered. A failed probe leaves
+	// the window to the next pass; advancing first would skip these sequences
+	// for a whole rotation on one RPC blip.
+	s.flush.sendCursor = lo
 
 	var events []chain.Event
 	for _, slot := range slots {
@@ -130,8 +133,6 @@ func (s *Source) unrelayedAcks(ctx context.Context, router evmflush.Router) ([]c
 	if len(window) == 0 {
 		return nil, nil
 	}
-	s.flush.ackCursor = window[len(window)-1].Sequence
-
 	committed := make(map[uint64][]byte, len(window))
 	sequences := make([]uint64, 0, len(window))
 	for _, c := range window {
@@ -144,6 +145,10 @@ func (s *Source) unrelayedAcks(ctx context.Context, router evmflush.Router) ([]c
 	if err != nil {
 		return nil, err
 	}
+	// The cursor moves only once the probe has answered. A failed probe leaves
+	// the window to the next pass; advancing first would skip these sequences
+	// for a whole rotation on one RPC blip.
+	s.flush.ackCursor = window[len(window)-1].Sequence
 
 	var events []chain.Event
 	for _, slot := range written {
