@@ -17,7 +17,7 @@ import { Misbehaviour } from "contracts/light-clients/spectre/modules/Misbehavio
 import { UpdateClient } from "contracts/light-clients/spectre/modules/UpdateClient.sol";
 import { ClientMigrationProposer } from "contracts/core/client-registry/migration/modules/ClientMigrationProposer.sol";
 import { ClientMigrationExecutor } from "contracts/core/client-registry/migration/modules/ClientMigrationExecutor.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
 import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { IICS20TransferMsgs } from "contracts/apps/ics20/messages/IICS20TransferMsgs.sol";
@@ -114,7 +114,7 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
                 sourceClient: SOURCE_CLIENT_ID,
                 destPort: ICS20Lib.DEFAULT_PORT_ID,
                 timeoutTimestamp: uint64(block.timestamp + 1 hours),
-                memo: "evm-rollup-fast-ibc"
+                memo: "evm-rollup-spectre"
             })
         );
         vm.stopPrank();
@@ -169,7 +169,7 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
                     sourceClient: SOURCE_CLIENT_ID,
                     destPort: ICS20Lib.DEFAULT_PORT_ID,
                     timeoutTimestamp: uint64(block.timestamp + 1 hours),
-                    memo: "evm-rollup-fast-ibc"
+                    memo: "evm-rollup-spectre"
                 })
             );
         vm.stopPrank();
@@ -205,9 +205,9 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         Membership membership = new Membership();
         UpdateClient updateClient = new UpdateClient(address(signatureVerifier));
         Misbehaviour misbehaviour = new Misbehaviour(address(signatureVerifier));
-        IICS07TendermintMsgs.ValidatorSet memory validatorSet = _validatorSet();
-        IICS07TendermintMsgs.ConsensusState memory consensusState = _consensusState(validatorSet);
-        IICS07TendermintMsgs.ClientState memory clientState = _clientState();
+        ISpectreTendermintMsgs.ValidatorSet memory validatorSet = _validatorSet();
+        ISpectreTendermintMsgs.ConsensusState memory consensusState = _consensusState(validatorSet);
+        ISpectreTendermintMsgs.ClientState memory clientState = _clientState();
 
         SpectreClient spectreClient = new SpectreClient(
             address(updateClient),
@@ -340,10 +340,10 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         core.router.addIBCApp(ICS20Lib.DEFAULT_PORT_ID, address(core.transfer));
     }
 
-    function _clientState() private pure returns (IICS07TendermintMsgs.ClientState memory) {
-        return IICS07TendermintMsgs.ClientState({
+    function _clientState() private pure returns (ISpectreTendermintMsgs.ClientState memory) {
+        return ISpectreTendermintMsgs.ClientState({
             chainId: "cosmoshub-0",
-            trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
+            trustLevel: ISpectreTendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
             latestHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 10 }),
             trustingPeriod: 14 days,
             unbondingPeriod: 21 days,
@@ -352,20 +352,20 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         });
     }
 
-    function _consensusState(IICS07TendermintMsgs.ValidatorSet memory validatorSet)
+    function _consensusState(ISpectreTendermintMsgs.ValidatorSet memory validatorSet)
         private
         view
-        returns (IICS07TendermintMsgs.ConsensusState memory)
+        returns (ISpectreTendermintMsgs.ConsensusState memory)
     {
-        return IICS07TendermintMsgs.ConsensusState({
+        return ISpectreTendermintMsgs.ConsensusState({
             timestamp: uint128(block.timestamp) * 1_000_000_000,
             root: bytes32(uint256(0xAAA)),
             nextValidatorsHash: Header.hashValSet(validatorSet)
         });
     }
 
-    function _validatorSet() private pure returns (IICS07TendermintMsgs.ValidatorSet memory validatorSet) {
-        validatorSet.validators = new IICS07TendermintMsgs.ValidatorInfo[](4);
+    function _validatorSet() private pure returns (ISpectreTendermintMsgs.ValidatorSet memory validatorSet) {
+        validatorSet.validators = new ISpectreTendermintMsgs.ValidatorInfo[](4);
         validatorSet.validators[0] = _validator(
             hex"0000000000000000000000000000000000000001",
             0x0000000000000000000000000000000000000000000000000000000000000001
@@ -391,11 +391,12 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
     )
         private
         pure
-        returns (IICS07TendermintMsgs.ValidatorInfo memory)
+        returns (ISpectreTendermintMsgs.ValidatorInfo memory)
     {
-        return IICS07TendermintMsgs.ValidatorInfo({
-            valAddress: valAddress, pubKey: pubKey, votingPower: 100, proposerPriority: 0
-        });
+        return
+            ISpectreTendermintMsgs.ValidatorInfo({
+                valAddress: valAddress, pubKey: pubKey, votingPower: 100, proposerPriority: 0
+            });
     }
 
     function _cosmosToEVMRollupPacket(
@@ -438,7 +439,7 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
             kvPairs: new IMembershipMsgs.KVPair[](0),
             merkleProofs: new IMembershipMsgs.MerkleProof[](0),
             appHash: bytes32(0),
-            trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+            trustedConsensusState: ISpectreTendermintMsgs.ConsensusState({
                 timestamp: 0, root: bytes32(0), nextValidatorsHash: bytes32(0)
             }),
             membershipType: IMembershipMsgs.MembershipType.Membership,

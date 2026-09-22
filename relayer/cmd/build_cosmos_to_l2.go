@@ -198,6 +198,9 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 
 	ackDue, ackSettled := ackWatchHooks(svc)
 	options := []relay.Option{
+		// The destination client here is the SpectreClient on the L2, so its
+		// age is the "cosmos-on-evm" figure -- same slot the ETH path fills.
+		relay.WithClientUpdateObserver(svc.ObserveCosmosOnEVMUpdate),
 		relay.WithTimeoutScanner(0, func(c context.Context) {
 			svc.ScanCosmosTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos)
 		}),

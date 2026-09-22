@@ -163,13 +163,16 @@ func (s *Source) unrelayedAcks(ctx context.Context) ([]chain.Event, error) {
 	if !ok {
 		return nil, nil
 	}
-	s.ackProbeCursor = lo
 	open, err := router.OutstandingSlots(ctx, evmflush.Sequences(lo, hi), func(seq uint64) []byte {
 		return services.EthPath(s.ids.CosmosOnEVM, seq, services.EthPathCommitment)
 	})
 	if err != nil {
 		return nil, err
 	}
+	// The cursor moves only once the probe has answered. A failed probe leaves
+	// the window to the next pass; advancing first would skip these sequences
+	// for a whole rotation on one RPC blip.
+	s.ackProbeCursor = lo
 
 	var events []chain.Event
 	for _, slot := range open {

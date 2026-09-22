@@ -5,7 +5,7 @@ pragma solidity ^0.8.28;
 
 import { Encode } from "contracts/light-clients/spectre/libraries/Encode.sol";
 import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 
 /// @title EncodeWrapper
 /// @notice Wrapper with primitive parameters for cross-validation via cast call.
@@ -13,21 +13,19 @@ import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/I
 ///         Solidity encoding functions and compare output with Go proto.Marshal().
 contract EncodeWrapper {
     function encodeVersion(uint64 blockVersion, uint64 appVersion) external pure returns (bytes memory) {
-        return Encode.encodeVersion(IICS07TendermintMsgs.Version(blockVersion, appVersion));
+        return Encode.encodeVersion(ISpectreTendermintMsgs.Version(blockVersion, appVersion));
     }
 
     function encodeValidator(bytes32 pubKey, uint64 votingPower) external pure returns (bytes memory) {
-        return Encode.encodeValidator(IICS07TendermintMsgs.SimpleValidator(pubKey, votingPower));
+        return Encode.encodeValidator(ISpectreTendermintMsgs.SimpleValidator(pubKey, votingPower));
     }
 
     function encodePartSetHeader(uint32 total, bytes32 hashData) external pure returns (bytes memory) {
-        return Encode.encodePartSetHeader(IICS07TendermintMsgs.PartSetHeader(total, hashData));
+        return Encode.encodePartSetHeader(ISpectreTendermintMsgs.PartSetHeader(total, hashData));
     }
 
     function encodeBlockId(bytes32 hashData, uint32 pshTotal, bytes32 pshHash) external pure returns (bytes memory) {
-        return Encode.encodeBlockId(
-            IICS07TendermintMsgs.BlockId(hashData, IICS07TendermintMsgs.PartSetHeader(pshTotal, pshHash))
-        );
+        return Encode.encodeBlockId(ISpectreTendermintMsgs.BlockId(hashData, ISpectreTendermintMsgs.PartSetHeader(pshTotal, pshHash)));
     }
 
     function cdcEncodeString(string calldata value) external pure returns (bytes memory) {
@@ -60,16 +58,14 @@ contract EncodeWrapper {
         pure
         returns (bytes memory)
     {
-        IICS07TendermintMsgs.CommitSig[] memory sigs = new IICS07TendermintMsgs.CommitSig[](1);
+        ISpectreTendermintMsgs.CommitSig[] memory sigs = new ISpectreTendermintMsgs.CommitSig[](1);
         // Canonical-vote encoding does not cover validatorAddress.
-        sigs[0] = IICS07TendermintMsgs.CommitSig({
-            flag: IICS07TendermintMsgs.CommitSigFlag(flag), validatorAddress: bytes20(0)
-        });
+        sigs[0] = ISpectreTendermintMsgs.CommitSig({ flag: ISpectreTendermintMsgs.CommitSigFlag(flag), validatorAddress: bytes20(0) });
 
-        IICS07TendermintMsgs.BlockCommit memory commit = IICS07TendermintMsgs.BlockCommit({
+        ISpectreTendermintMsgs.BlockCommit memory commit = ISpectreTendermintMsgs.BlockCommit({
             height: height,
             round: round,
-            blockId: IICS07TendermintMsgs.BlockId(blockIdHash, IICS07TendermintMsgs.PartSetHeader(pshTotal, pshHash)),
+            blockId: ISpectreTendermintMsgs.BlockId(blockIdHash, ISpectreTendermintMsgs.PartSetHeader(pshTotal, pshHash)),
             commitSigs: sigs
         });
 
@@ -79,17 +75,17 @@ contract EncodeWrapper {
     function hashValSet(bytes32[] calldata pubKeys, uint64[] calldata votingPowers) external pure returns (bytes32) {
         require(pubKeys.length == votingPowers.length, "length mismatch");
 
-        IICS07TendermintMsgs.ValidatorInfo[] memory vals = new IICS07TendermintMsgs.ValidatorInfo[](pubKeys.length);
+        ISpectreTendermintMsgs.ValidatorInfo[] memory vals = new ISpectreTendermintMsgs.ValidatorInfo[](pubKeys.length);
         for (uint256 i = 0; i < pubKeys.length; i++) {
-            vals[i] = IICS07TendermintMsgs.ValidatorInfo({
+            vals[i] = ISpectreTendermintMsgs.ValidatorInfo({
                 valAddress: hex"", pubKey: pubKeys[i], votingPower: votingPowers[i], proposerPriority: 0
             });
         }
 
-        IICS07TendermintMsgs.ValidatorSet memory valSet = IICS07TendermintMsgs.ValidatorSet({
+        ISpectreTendermintMsgs.ValidatorSet memory valSet = ISpectreTendermintMsgs.ValidatorSet({
             validators: vals,
             hasProposer: false,
-            proposer: IICS07TendermintMsgs.ValidatorInfo({
+            proposer: ISpectreTendermintMsgs.ValidatorInfo({
                 valAddress: hex"", pubKey: bytes32(0), votingPower: 0, proposerPriority: 0
             }),
             totalVotingPower: 0

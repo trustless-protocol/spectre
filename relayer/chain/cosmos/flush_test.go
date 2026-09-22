@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -227,109 +228,146 @@ func txWithWriteAck(t *testing.T, height int64, packet channeltypesv2.Packet, ac
 	}
 }
 
-// The acknowledgement leg answers "the router still holds the send AND this
-// chain wrote an ack for it". Both halves are asked; either alone is wrong.
-func TestUnrelayedPackets_ListsAcksForSendsTheRouterStillHolds(t *testing.T) {
-	// The router: two EVM->Cosmos sends still committed, seq 1 and 2.
-	evmNode := rpcmock.NewEVMNode(t)
-	evmNode.SetStorage(ackTestRouter, services.EthPrevSequenceSendKey("eth-side-id"), ethcommon.BigToHash(big.NewInt(2)))
-	acked := channeltypesv2.Packet{Sequence: 1, SourceClient: "eth-side-id", DestinationClient: "08-wasm-7", TimeoutTimestamp: 4_000_000_000}
-	unreceived := channeltypesv2.Packet{Sequence: 2, SourceClient: "eth-side-id", DestinationClient: "08-wasm-7", TimeoutTimestamp: 4_000_000_000}
-	for _, pkt := range []channeltypesv2.Packet{acked, unreceived} {
+func TestUnrelayedPackets(t *testing.T) {
+	// The acknowledgement leg answers "the router still holds the send AND this
+	// chain wrote an ack for it". Both halves are asked; either alone is wrong.
+	t.Run("lists acks for sends the router still holds", func(t *testing.T) {
+		// The router: two EVM->Cosmos sends still committed, seq 1 and 2.
+		evmNode := rpcmock.NewEVMNode(t)
+		evmNode.SetStorage(ackTestRouter, services.EthPrevSequenceSendKey("eth-side-id"), ethcommon.BigToHash(big.NewInt(2)))
+		acked := channeltypesv2.Packet{Sequence: 1, SourceClient: "eth-side-id", DestinationClient: "08-wasm-7", TimeoutTimestamp: 4_000_000_000}
+		unreceived := channeltypesv2.Packet{Sequence: 2, SourceClient: "eth-side-id", DestinationClient: "08-wasm-7", TimeoutTimestamp: 4_000_000_000}
+		for _, pkt := range []channeltypesv2.Packet{acked, unreceived} {
+			evmNode.SetStorage(ackTestRouter,
+				services.EthIBCStorageKey(services.EthPath("eth-side-id", pkt.Sequence, services.EthPathCommitment)),
+				ethcommon.BytesToHash(channeltypesv2.CommitPacket(pkt)))
+		}
+
+		// This chain: an ack written for seq 1 only, and its indexed transaction.
+		acks := [][]byte{[]byte(`{"result":"AQ=="}`)}
+		rpc := &flushRPC{
+			t:      t,
+			store:  map[string]bool{string(utils.IBCPath("08-wasm-7", 1, []byte{3})[1]): true},
+			ackTxs: []*coretypes.ResultTx{txWithWriteAck(t, 77, acked, acks)},
+		}
+		server := httptest.NewServer(rpc)
+		t.Cleanup(server.Close)
+		client, err := rpchttp.New(server.URL, "/websocket")
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := &Source{
+			cosmos: services.CosmosEndpoint{Client: client},
+			evm:    services.EVMEndpoint{Client: evmNode.Client(t), Contracts: services.EVMContracts{Router: ackTestRouter}},
+			ids:    services.ClientIDs{CosmosOnEVM: "eth-side-id", EVMOnCosmos: "08-wasm-7"},
+			logger: log.New(io.Discard, "", 0),
+		}
+
+		events, err := source.UnrelayedPackets(context.Background())
+		if err != nil {
+			t.Fatalf("UnrelayedPackets: %v", err)
+		}
+		var ackEvents []chain.Event
+		for _, e := range events {
+			if e.Type == chain.AckPacket {
+				ackEvents = append(ackEvents, e)
+			}
+		}
+		if len(ackEvents) != 1 || ackEvents[0].Sequence != 1 || ackEvents[0].Height != 77 {
+			t.Fatalf("ack events = %+v, want exactly seq 1 at height 77: seq 2 has no ack here yet", ackEvents)
+		}
+		if len(ackEvents[0].AckBytes) != 1 || string(ackEvents[0].AckBytes[0]) != string(acks[0]) {
+			t.Fatalf("ack bytes = %q, want the event's", ackEvents[0].AckBytes)
+		}
+		if ackEvents[0].ClientID != "08-wasm-7" {
+			t.Fatalf("event client = %q, want the packet's destination client on this chain", ackEvents[0].ClientID)
+		}
+		if source.ackProbeCursor != 1 {
+			t.Fatalf("ack probe cursor = %d, want 1 (the whole space, two sequences, in one pass)", source.ackProbeCursor)
+		}
+		// The cost, not only the answer: a send this chain has not acknowledged is
+		// not worth a transaction search. Without the ack-path check the pass costs
+		// one TxSearch per OPEN send on the router rather than per acknowledged one
+		// -- the answer would be the same, the backlog would not.
+		if rpc.txCalls != 1 {
+			t.Fatalf("tx_search calls = %d, want 1: only the send this chain acknowledged is searched for", rpc.txCalls)
+		}
+	})
+
+	// The transaction found for a sequence must be the packet the ROUTER's
+	// commitment names: a re-created client reuses sequences and the index keeps
+	// the old acknowledgement.
+	t.Run("ack must match the routers commitment", func(t *testing.T) {
+		evmNode := rpcmock.NewEVMNode(t)
+		evmNode.SetStorage(ackTestRouter, services.EthPrevSequenceSendKey("eth-side-id"), ethcommon.BigToHash(big.NewInt(1)))
+		current := channeltypesv2.Packet{Sequence: 1, SourceClient: "eth-side-id", DestinationClient: "08-wasm-7", TimeoutTimestamp: 4_000_000_000}
+		stale := channeltypesv2.Packet{Sequence: 1, SourceClient: "eth-side-id", DestinationClient: "08-wasm-7", TimeoutTimestamp: 1_000}
 		evmNode.SetStorage(ackTestRouter,
-			services.EthIBCStorageKey(services.EthPath("eth-side-id", pkt.Sequence, services.EthPathCommitment)),
-			ethcommon.BytesToHash(channeltypesv2.CommitPacket(pkt)))
-	}
+			services.EthIBCStorageKey(services.EthPath("eth-side-id", 1, services.EthPathCommitment)),
+			ethcommon.BytesToHash(channeltypesv2.CommitPacket(current)))
 
-	// This chain: an ack written for seq 1 only, and its indexed transaction.
-	acks := [][]byte{[]byte(`{"result":"AQ=="}`)}
-	rpc := &flushRPC{
-		t:      t,
-		store:  map[string]bool{string(utils.IBCPath("08-wasm-7", 1, []byte{3})[1]): true},
-		ackTxs: []*coretypes.ResultTx{txWithWriteAck(t, 77, acked, acks)},
-	}
-	server := httptest.NewServer(rpc)
-	t.Cleanup(server.Close)
-	client, err := rpchttp.New(server.URL, "/websocket")
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := &Source{
-		cosmos: services.CosmosEndpoint{Client: client},
-		evm:    services.EVMEndpoint{Client: evmNode.Client(t), Contracts: services.EVMContracts{Router: ackTestRouter}},
-		ids:    services.ClientIDs{CosmosOnEVM: "eth-side-id", EVMOnCosmos: "08-wasm-7"},
-		logger: log.New(io.Discard, "", 0),
-	}
-
-	events, err := source.UnrelayedPackets(context.Background())
-	if err != nil {
-		t.Fatalf("UnrelayedPackets: %v", err)
-	}
-	var ackEvents []chain.Event
-	for _, e := range events {
-		if e.Type == chain.AckPacket {
-			ackEvents = append(ackEvents, e)
+		rpc := &flushRPC{
+			t:      t,
+			store:  map[string]bool{string(utils.IBCPath("08-wasm-7", 1, []byte{3})[1]): true},
+			ackTxs: []*coretypes.ResultTx{txWithWriteAck(t, 5, stale, [][]byte{[]byte("old")})},
 		}
-	}
-	if len(ackEvents) != 1 || ackEvents[0].Sequence != 1 || ackEvents[0].Height != 77 {
-		t.Fatalf("ack events = %+v, want exactly seq 1 at height 77: seq 2 has no ack here yet", ackEvents)
-	}
-	if len(ackEvents[0].AckBytes) != 1 || string(ackEvents[0].AckBytes[0]) != string(acks[0]) {
-		t.Fatalf("ack bytes = %q, want the event's", ackEvents[0].AckBytes)
-	}
-	if ackEvents[0].ClientID != "08-wasm-7" {
-		t.Fatalf("event client = %q, want the packet's destination client on this chain", ackEvents[0].ClientID)
-	}
-	if source.ackProbeCursor != 1 {
-		t.Fatalf("ack probe cursor = %d, want 1 (the whole space, two sequences, in one pass)", source.ackProbeCursor)
-	}
-	// The cost, not only the answer: a send this chain has not acknowledged is
-	// not worth a transaction search. Without the ack-path check the pass costs
-	// one TxSearch per OPEN send on the router rather than per acknowledged one
-	// -- the answer would be the same, the backlog would not.
-	if rpc.txCalls != 1 {
-		t.Fatalf("tx_search calls = %d, want 1: only the send this chain acknowledged is searched for", rpc.txCalls)
-	}
-}
-
-// The transaction found for a sequence must be the packet the ROUTER's
-// commitment names: a re-created client reuses sequences and the index keeps
-// the old acknowledgement.
-func TestUnrelayedPackets_AckMustMatchTheRoutersCommitment(t *testing.T) {
-	evmNode := rpcmock.NewEVMNode(t)
-	evmNode.SetStorage(ackTestRouter, services.EthPrevSequenceSendKey("eth-side-id"), ethcommon.BigToHash(big.NewInt(1)))
-	current := channeltypesv2.Packet{Sequence: 1, SourceClient: "eth-side-id", DestinationClient: "08-wasm-7", TimeoutTimestamp: 4_000_000_000}
-	stale := channeltypesv2.Packet{Sequence: 1, SourceClient: "eth-side-id", DestinationClient: "08-wasm-7", TimeoutTimestamp: 1_000}
-	evmNode.SetStorage(ackTestRouter,
-		services.EthIBCStorageKey(services.EthPath("eth-side-id", 1, services.EthPathCommitment)),
-		ethcommon.BytesToHash(channeltypesv2.CommitPacket(current)))
-
-	rpc := &flushRPC{
-		t:      t,
-		store:  map[string]bool{string(utils.IBCPath("08-wasm-7", 1, []byte{3})[1]): true},
-		ackTxs: []*coretypes.ResultTx{txWithWriteAck(t, 5, stale, [][]byte{[]byte("old")})},
-	}
-	server := httptest.NewServer(rpc)
-	t.Cleanup(server.Close)
-	client, err := rpchttp.New(server.URL, "/websocket")
-	if err != nil {
-		t.Fatal(err)
-	}
-	source := &Source{
-		cosmos: services.CosmosEndpoint{Client: client},
-		evm:    services.EVMEndpoint{Client: evmNode.Client(t), Contracts: services.EVMContracts{Router: ackTestRouter}},
-		ids:    services.ClientIDs{CosmosOnEVM: "eth-side-id", EVMOnCosmos: "08-wasm-7"},
-		logger: log.New(io.Discard, "", 0),
-	}
-	events, err := source.UnrelayedPackets(context.Background())
-	if err != nil {
-		t.Fatalf("UnrelayedPackets: %v", err)
-	}
-	for _, e := range events {
-		if e.Type == chain.AckPacket {
-			t.Fatalf("relayed an acknowledgement for a packet the router does not commit to: %+v", e)
+		server := httptest.NewServer(rpc)
+		t.Cleanup(server.Close)
+		client, err := rpchttp.New(server.URL, "/websocket")
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
+		source := &Source{
+			cosmos: services.CosmosEndpoint{Client: client},
+			evm:    services.EVMEndpoint{Client: evmNode.Client(t), Contracts: services.EVMContracts{Router: ackTestRouter}},
+			ids:    services.ClientIDs{CosmosOnEVM: "eth-side-id", EVMOnCosmos: "08-wasm-7"},
+			logger: log.New(io.Discard, "", 0),
+		}
+		events, err := source.UnrelayedPackets(context.Background())
+		if err != nil {
+			t.Fatalf("UnrelayedPackets: %v", err)
+		}
+		for _, e := range events {
+			if e.Type == chain.AckPacket {
+				t.Fatalf("relayed an acknowledgement for a packet the router does not commit to: %+v", e)
+			}
+		}
+	})
+
+	// A probe that fails must not move the ack cursor (the EVM sources' rule).
+	t.Run("a failed router probe leaves the ack cursor alone", func(t *testing.T) {
+		evmNode := rpcmock.NewEVMNode(t)
+		evmNode.SetStorage(ackTestRouter, services.EthPrevSequenceSendKey("eth-side-id"), ethcommon.BigToHash(big.NewInt(3)))
+		rpc := &flushRPC{t: t, store: map[string]bool{}}
+		server := httptest.NewServer(rpc)
+		t.Cleanup(server.Close)
+		client, err := rpchttp.New(server.URL, "/websocket")
+		if err != nil {
+			t.Fatal(err)
+		}
+		source := &Source{
+			cosmos: services.CosmosEndpoint{Client: client},
+			evm:    services.EVMEndpoint{Client: evmNode.Client(t), Contracts: services.EVMContracts{Router: ackTestRouter}},
+			ids:    services.ClientIDs{CosmosOnEVM: "eth-side-id", EVMOnCosmos: "08-wasm-7"},
+			logger: log.New(io.Discard, "", 0),
+		}
+
+		evmNode.FailBatches(errors.New("probe down"))
+		if _, err := source.UnrelayedPackets(context.Background()); err != nil {
+			t.Fatalf("a failing ack leg is reported, not returned: %v", err)
+		}
+		if source.ackProbeCursor != 0 {
+			t.Fatalf("ack probe cursor advanced to %d on a failed probe", source.ackProbeCursor)
+		}
+
+		evmNode.FailBatches(nil)
+		if _, err := source.UnrelayedPackets(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if source.ackProbeCursor != 1 {
+			t.Fatalf("ack probe cursor = %d after a successful probe, want 1 (window 1..3 taken)", source.ackProbeCursor)
+		}
+	})
 }
 
 // flushRPC serves the two calls a flush pass makes -- the paginated commitment

@@ -3,10 +3,9 @@ pragma solidity ^0.8.28;
 
 import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 
-/// @title ICS07 Tendermint Messages
-/// @author srdtrk
-/// @notice Defines shared types for ICS07Tendermint implementations.
-interface IICS07TendermintMsgs {
+/// @title Spectre Messages
+/// @notice Defines shared types for Spectre light client implementations.
+interface ISpectreTendermintMsgs {
     /// @notice Fraction of validator overlap needed to update header
     /// @param numerator Numerator of the fraction
     /// @param denominator Denominator of the fraction
@@ -15,7 +14,7 @@ interface IICS07TendermintMsgs {
         uint8 denominator;
     }
 
-    /// @notice Defines the ICS07Tendermint ClientState for ibc-lite
+    /// @notice Defines the Spectre ClientState
     /// @param chainId Chain ID
     /// @param trustLevel Fraction of validator overlap needed to update header.
     /// @dev LC-05: `trustLevel` is decoded into `Options.trustThreshold` in both
@@ -40,7 +39,7 @@ interface IICS07TendermintMsgs {
         uint32 clockDrift;
     }
 
-    /// @notice Defines the Tendermint light client's consensus state at some height.
+    /// @notice Defines the Spectre light client's consensus state at some height.
     /// @param timestamp timestamp that corresponds to the counterparty block height
     /// in which the ConsensusState was generated. (in unix nanoseconds)
     /// @param root commitment root (i.e app hash)

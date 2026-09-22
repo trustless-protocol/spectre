@@ -157,7 +157,7 @@ func runCreateClientsCosmos(logger *zap.Logger, cfg *appConfig, configPath, wasm
 	return wasmClientID, nil
 }
 
-// runCreateClientsEth deploys the Cosmos (ICS07 Tendermint) light client on
+// runCreateClientsEth deploys the Cosmos light client (SpectreClient) on
 // Ethereum, registers wasmClientID as its counterparty, and persists the
 // spectre_client address back into config. wasmClientID must already be known
 // (created by the Cosmos step) so the on-chain counterparty is wired to the
@@ -175,7 +175,7 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 
 	// Idempotency: skip the deploy when the configured spectre_client is a light
 	// client this run can actually keep, so re-running after a partial failure
-	// does not redeploy ICS07. Reusability is a property of the client's state,
+	// does not redeploy SpectreClient. Reusability is a property of the client's state,
 	// not of the address having code — see reusableSpectreClientAt.
 	if cfg.CosmosToEthConfig.SpectreClient != "" {
 		addr := common.HexToAddress(cfg.CosmosToEthConfig.SpectreClient)
@@ -213,19 +213,19 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 		"Creating Cosmos light client on Ethereum (trustingPeriod=%d, trustLevel=%s, proofType=%s, clockDrift=%d, counterparty=%s)...",
 		trustingPeriod, trustLevel, proofType, clockDrift, wasmClientID,
 	)
-	ics07Addr, err := worker.CreateCosmosClient(context.Background(), deps.Cosmos, deps.EVM, deps.IDs, proofType, trustingPeriod, 0, trustLevel, clockDrift)
+	spectreAddr, err := worker.CreateCosmosClient(context.Background(), deps.Cosmos, deps.EVM, deps.IDs, proofType, trustingPeriod, 0, trustLevel, clockDrift)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("failed to create Cosmos client on Ethereum: %w", err)
 	}
-	if (ics07Addr == common.Address{}) {
-		return common.Address{}, fmt.Errorf("ics07 address missing after deploy")
+	if (spectreAddr == common.Address{}) {
+		return common.Address{}, fmt.Errorf("spectre_client address missing after deploy")
 	}
 
-	if err := writeSpectreClientAddress(configPath, cfg.CosmosToEthConfig.ICS26ClientID, ics07Addr.Hex()); err != nil {
-		return common.Address{}, fmt.Errorf("persist ics07 address to %s: %w", configPath, err)
+	if err := writeSpectreClientAddress(configPath, cfg.CosmosToEthConfig.ICS26ClientID, spectreAddr.Hex()); err != nil {
+		return common.Address{}, fmt.Errorf("persist spectre_client address to %s: %w", configPath, err)
 	}
-	logger.Sugar().Infof("create-clients-eth: wrote spectre_client=%s into %s", ics07Addr.Hex(), configPath)
-	return ics07Addr, nil
+	logger.Sugar().Infof("create-clients-eth: wrote spectre_client=%s into %s", spectreAddr.Hex(), configPath)
+	return spectreAddr, nil
 }
 
 // CreateClients runs the full two-chain setup as a one-shot (devnet bring-up):
@@ -345,7 +345,7 @@ func CreateClientsCosmos(logger *zap.Logger) *cobra.Command {
 	return cmd
 }
 
-// CreateClientsEth deploys only the Cosmos light client on Ethereum (ICS07) and
+// CreateClientsEth deploys only the Cosmos light client on Ethereum (SpectreClient) and
 // persists spectre_client. Requires cosmos_wasm_client_id (run create-clients-cosmos first).
 func CreateClientsEth(logger *zap.Logger) *cobra.Command {
 	cmd := &cobra.Command{

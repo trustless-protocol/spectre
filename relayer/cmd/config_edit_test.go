@@ -57,7 +57,7 @@ func TestUnrecordedClientError_NamesTheClientAndTheRecovery(t *testing.T) {
 	}
 }
 
-func TestReplaceConfigMember_ICS07Address(t *testing.T) {
+func TestReplaceConfigMember_SpectreClientAddress(t *testing.T) {
 	t.Parallel()
 
 	const addr = "0x1234567890abcdef1234567890abcdef12345678"
@@ -130,7 +130,7 @@ func TestReplaceConfigMember_ICS07Address(t *testing.T) {
 			name: "handles escaped strings and keys",
 			input: `{
 				"modules": [
-					{"name": "cosmos\u005fto\u005feth", "config": {"note": "quote: \" and slash: \\", "ics07\u005fclient": "0xold"}}
+					{"name": "cosmos\u005fto\u005feth", "config": {"note": "quote: \" and slash: \\", "spectre\u005fclient": "0xold"}}
 				]
 			}`,
 			assert: func(t *testing.T, _ []byte, cosmosToEth map[string]any) {
@@ -248,18 +248,18 @@ func TestReplaceConfigMemberForSource(t *testing.T) {
 	t.Parallel()
 
 	in := `{"modules":[` +
-		`{"name":"cosmos_to_eth","config":{"ics26_client_id":"chain-a","ics07_client":"0xAAA"}},` +
-		`{"name":"cosmos_to_eth","config":{"ics26_client_id":"chain-b","ics07_client":"0xBBB"}}` +
+		`{"name":"cosmos_to_eth","config":{"ics26_client_id":"chain-a","spectre_client":"0xAAA"}},` +
+		`{"name":"cosmos_to_eth","config":{"ics26_client_id":"chain-b","spectre_client":"0xBBB"}}` +
 		`]}`
-	out, err := replaceConfigMemberForSource([]byte(in), "chain-b", "ics07_client", "0xNEW")
+	out, err := replaceConfigMemberForSource([]byte(in), "chain-b", "spectre_client", "0xNEW")
 	if err != nil {
 		t.Fatalf("replaceConfigMemberForSource() error = %v", err)
 	}
 	got := string(out)
-	if !strings.Contains(got, `"chain-a","ics07_client":"0xAAA"`) {
+	if !strings.Contains(got, `"chain-a","spectre_client":"0xAAA"`) {
 		t.Fatalf("chain-a should be untouched, got: %s", got)
 	}
-	if !strings.Contains(got, `"chain-b","ics07_client":"0xNEW"`) {
+	if !strings.Contains(got, `"chain-b","spectre_client":"0xNEW"`) {
 		t.Fatalf("chain-b should be updated, got: %s", got)
 	}
 
@@ -269,7 +269,7 @@ func TestReplaceConfigMemberForSource(t *testing.T) {
 		t.Parallel()
 
 		in := `{"modules":[{"name":"cosmos_to_eth","config":{"ics26_client_id":"chain-a"}}]}`
-		_, err := replaceConfigMemberForSource([]byte(in), "chain-x", "ics07_client", "0x1")
+		_, err := replaceConfigMemberForSource([]byte(in), "chain-x", "spectre_client", "0x1")
 		if err == nil || !strings.Contains(err.Error(), "chain-x") {
 			t.Fatalf("error = %v, want unknown-source error", err)
 		}
@@ -281,12 +281,12 @@ func TestReplaceConfigMemberForSource(t *testing.T) {
 	t.Run("via src chain", func(t *testing.T) {
 		t.Parallel()
 
-		in := `{"modules":[{"name":"cosmos_to_eth","src_chain":"chain-a","config":{"ics07_client":"0xAAA"}}]}`
-		out, err := replaceConfigMemberForSource([]byte(in), "chain-a", "ics07_client", "0xNEW")
+		in := `{"modules":[{"name":"cosmos_to_eth","src_chain":"chain-a","config":{"spectre_client":"0xAAA"}}]}`
+		out, err := replaceConfigMemberForSource([]byte(in), "chain-a", "spectre_client", "0xNEW")
 		if err != nil {
 			t.Fatalf("replaceConfigMemberForSource() error = %v", err)
 		}
-		if !strings.Contains(string(out), `"ics07_client":"0xNEW"`) {
+		if !strings.Contains(string(out), `"spectre_client":"0xNEW"`) {
 			t.Fatalf("src_chain match failed, got: %s", string(out))
 		}
 	})
@@ -301,19 +301,19 @@ func TestReplaceConfigMemberForSource(t *testing.T) {
 		t.Parallel()
 
 		in := `{"modules":[` +
-			`{"name":"eth-to-cosmos","src_chain":"ethereum","dst_chain":"cosmos","config":{"ics26_client_id":"chain-a","ics07_client":"0xETH"}},` +
-			`{"name":"cosmos-to-eth","src_chain":"cosmos","dst_chain":"ethereum","config":{"ics26_client_id":"chain-a","ics07_client":"0xAAA"}}` +
+			`{"name":"eth-to-cosmos","src_chain":"ethereum","dst_chain":"cosmos","config":{"ics26_client_id":"chain-a","spectre_client":"0xETH"}},` +
+			`{"name":"cosmos-to-eth","src_chain":"cosmos","dst_chain":"ethereum","config":{"ics26_client_id":"chain-a","spectre_client":"0xAAA"}}` +
 			`]}`
-		out, err := replaceConfigMemberForSource([]byte(in), "chain-a", "ics07_client", "0xNEW")
+		out, err := replaceConfigMemberForSource([]byte(in), "chain-a", "spectre_client", "0xNEW")
 		if err != nil {
 			t.Fatalf("replaceConfigMemberForSource() error = %v", err)
 		}
 		got := string(out)
-		if !strings.Contains(got, `"ics26_client_id":"chain-a","ics07_client":"0xNEW"`) {
+		if !strings.Contains(got, `"ics26_client_id":"chain-a","spectre_client":"0xNEW"`) {
 			t.Fatalf("canonical cosmos->eth module not updated, got: %s", got)
 		}
 		// The eth->cosmos module (same source id, wrong direction) must be untouched.
-		if !strings.Contains(got, `"ics07_client":"0xETH"`) {
+		if !strings.Contains(got, `"spectre_client":"0xETH"`) {
 			t.Fatalf("eth->cosmos module must be skipped, got: %s", got)
 		}
 	})

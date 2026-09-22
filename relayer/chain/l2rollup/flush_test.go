@@ -2,6 +2,7 @@ package l2rollup
 
 import (
 	"context"
+	"errors"
 	"math/big"
 	contractICS26Router "relayer/bindings/ICS26Router"
 	"relayer/chain"
@@ -183,6 +184,40 @@ func TestUnrelayedPackets(t *testing.T) {
 		events, err := src.UnrelayedPackets(context.Background())
 		if err != nil || len(events) != 0 {
 			t.Fatalf("UnrelayedPackets = (%+v, %v), want nothing: the send is expired", events, err)
+		}
+	})
+
+	// A probe that fails must not move the cursors (the ETH source's rule, mirrored).
+	t.Run("a failed probe leaves both cursors where they were", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		node.SetBlockNumber(300)
+		node.SetStorage(l2FlushRouter, services.EthPrevSequenceSendKey(l2FlushClient), ethcommon.BigToHash(big.NewInt(2)))
+		fromCosmos := flushL2Packet(9, l2FlushWasmName, l2FlushClient)
+		state := &listingState{window: []services.PacketCommitment{{Sequence: 9, Data: l2Commitment(fromCosmos).Bytes()}}}
+		src := &Source{eth: node.Client(t), router: l2FlushRouter, l2ClientID: l2FlushClient, cosmosWasmClientID: l2FlushWasmName, cosmosState: state}
+
+		node.FailBatches(errors.New("probe down"))
+		if _, err := src.UnrelayedPackets(context.Background()); err == nil {
+			t.Fatal("the send-leg probe failed and the pass reported success")
+		}
+		if src.flush.sendCursor != 0 || src.flush.ackCursor != 0 {
+			t.Fatalf("cursors advanced on a failed probe: send=%d ack=%d", src.flush.sendCursor, src.flush.ackCursor)
+		}
+
+		node.SetStorage(l2FlushRouter, services.EthPrevSequenceSendKey(l2FlushClient), ethcommon.Hash{})
+		if _, err := src.UnrelayedPackets(context.Background()); err != nil {
+			t.Fatalf("a failing ack leg is reported, not returned: %v", err)
+		}
+		if src.flush.ackCursor != 0 {
+			t.Fatalf("ack cursor advanced to %d on a failed probe", src.flush.ackCursor)
+		}
+
+		node.FailBatches(nil)
+		if _, err := src.UnrelayedPackets(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		if src.flush.ackCursor != 9 {
+			t.Fatalf("ack cursor = %d after a successful probe, want 9", src.flush.ackCursor)
 		}
 	})
 }

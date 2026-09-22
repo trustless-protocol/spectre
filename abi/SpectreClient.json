@@ -25,7 +25,7 @@
       {
         "name": "consensusState_",
         "type": "tuple",
-        "internalType": "struct IICS07TendermintMsgs.ConsensusState",
+        "internalType": "struct ISpectreTendermintMsgs.ConsensusState",
         "components": [
           {
             "name": "timestamp",
@@ -47,12 +47,12 @@
       {
         "name": "initialPinnedValidatorSet",
         "type": "tuple",
-        "internalType": "struct IICS07TendermintMsgs.ValidatorSet",
+        "internalType": "struct ISpectreTendermintMsgs.ValidatorSet",
         "components": [
           {
             "name": "validators",
             "type": "tuple[]",
-            "internalType": "struct IICS07TendermintMsgs.ValidatorInfo[]",
+            "internalType": "struct ISpectreTendermintMsgs.ValidatorInfo[]",
             "components": [
               {
                 "name": "valAddress",
@@ -84,7 +84,7 @@
           {
             "name": "proposer",
             "type": "tuple",
-            "internalType": "struct IICS07TendermintMsgs.ValidatorInfo",
+            "internalType": "struct ISpectreTendermintMsgs.ValidatorInfo",
             "components": [
               {
                 "name": "valAddress",
@@ -675,7 +675,7 @@
           {
             "name": "trustedConsensusState",
             "type": "tuple",
-            "internalType": "struct IICS07TendermintMsgs.ConsensusState",
+            "internalType": "struct ISpectreTendermintMsgs.ConsensusState",
             "components": [
               {
                 "name": "timestamp",
@@ -1011,7 +1011,7 @@
           {
             "name": "trustedConsensusState",
             "type": "tuple",
-            "internalType": "struct IICS07TendermintMsgs.ConsensusState",
+            "internalType": "struct ISpectreTendermintMsgs.ConsensusState",
             "components": [
               {
                 "name": "timestamp",

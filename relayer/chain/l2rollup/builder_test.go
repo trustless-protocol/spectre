@@ -186,6 +186,23 @@ func TestBuild(t *testing.T) {
 			t.Fatal("BuildHeader received a context with no deadline; a hung RPC would never be cut off")
 		}
 	})
+
+	// The L2 process logged no "last client update" line at all: the builder
+	// left TrustedAt zero, so the observer never fired. The header's block time
+	// is the figure the other two paths report.
+	t.Run("carries the L2 block time as TrustedAt", func(t *testing.T) {
+		m := &mockHeaderBuilder{msg: &SignedAttestedL2Header{
+			L2Header:          CanonicalEvmHeader{Number: 4242, Timestamp: 1_700_000_000},
+			AttestorSignature: []IndexedAttestorSignature{{AttestorIndex: 0, Signature: make([]byte, 64)}},
+		}}
+		upd, err := NewAttestedBuilder(m).Build(context.Background(), headerRequest(4242))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := time.Unix(1_700_000_000, 0).UTC(); !upd.TrustedAt.Equal(want) {
+			t.Fatalf("TrustedAt = %v, want the header timestamp %v", upd.TrustedAt, want)
+		}
+	})
 }
 
 // The request is now nothing but a height, so the only malformed case is a wrong

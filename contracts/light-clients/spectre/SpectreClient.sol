@@ -4,7 +4,7 @@ pragma solidity ^0.8.28;
 // solhint-disable gas-strict-inequalities
 
 import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
 import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
 import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
@@ -25,7 +25,7 @@ import { SSTORE2 } from "contracts/light-clients/spectre/libraries/SSTORE2.sol";
 import { AccessControl } from "@openzeppelin-contracts/access/AccessControl.sol";
 
 /// @title SpectreClient
-/// @notice ICS-07 Tendermint light client using gnark Groth16. SpectreClient is the only stateful
+/// @notice Spectre light client using gnark Groth16. SpectreClient is the only stateful
 ///         piece: it owns the Store, performs the >2/3 quorum accounting, and applies every state
 ///         write. Header validation and signature verification are delegatecalled into the
 ///         UpdateClient / Misbehaviour modules; ICS-23 membership is staticcalled into the
@@ -61,12 +61,12 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         address membershipModule,
         address misbehaviourModule,
         bytes memory clientState_,
-        IICS07TendermintMsgs.ConsensusState memory consensusState_,
-        IICS07TendermintMsgs.ValidatorSet memory initialPinnedValidatorSet,
+        ISpectreTendermintMsgs.ConsensusState memory consensusState_,
+        ISpectreTendermintMsgs.ValidatorSet memory initialPinnedValidatorSet,
         address roleManager
     ) {
         SpectreStore.Store storage $ = SpectreStore.load();
-        IICS07TendermintMsgs.ClientState memory cs = abi.decode(clientState_, (IICS07TendermintMsgs.ClientState));
+        ISpectreTendermintMsgs.ClientState memory cs = abi.decode(clientState_, (ISpectreTendermintMsgs.ClientState));
         $.clientState = cs;
 
         require(cs.trustingPeriod > 0, LengthIsOutOfRange(cs.trustingPeriod, 1, type(uint32).max));
@@ -287,7 +287,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     function _verifyPinnedQuorum(
         SpectreStore.Store storage $,
         ISpectreClientMsgs.BatchProof memory proof_,
-        IICS07TendermintMsgs.Header memory header
+        ISpectreTendermintMsgs.Header memory header
     )
         private
         view
@@ -302,7 +302,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     function _verifyMisbehaviourQuorum(
         SpectreStore.Store storage $,
         ISpectreClientMsgs.BatchProof memory proof_,
-        IICS07TendermintMsgs.Header memory header
+        ISpectreTendermintMsgs.Header memory header
     )
         private
         view
@@ -312,7 +312,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
 
     function _verifyQuorum(
         ISpectreClientMsgs.BatchProof memory proof_,
-        IICS07TendermintMsgs.CommitSig[] memory commitSigs,
+        ISpectreTendermintMsgs.CommitSig[] memory commitSigs,
         SpectreStore.PinnedValidatorSetSnapshot memory snapshot
     )
         private
@@ -420,7 +420,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs,
         bytes32 appHash,
-        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState,
+        ISpectreTendermintMsgs.ConsensusState calldata trustedConsensusState,
         IMembershipMsgs.MembershipType membershipType,
         bytes[] calldata kvPath,
         bytes memory kvValue
@@ -440,7 +440,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         IMembershipMsgs.KVPair[] calldata kvPairs,
         IMembershipMsgs.MerkleProof[] calldata merkleProofs,
         bytes32 appHash,
-        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState,
+        ISpectreTendermintMsgs.ConsensusState calldata trustedConsensusState,
         bytes[] calldata kvPath,
         bytes memory kvValue
     )
@@ -481,7 +481,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     function _validateMembershipInput(
         bytes32 commitmentRoot,
         uint64 proofHeight,
-        IICS07TendermintMsgs.ConsensusState memory trustedConsensusState
+        ISpectreTendermintMsgs.ConsensusState memory trustedConsensusState
     )
         private
         view
@@ -574,7 +574,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
 
     // ============ Internal state writes ============
 
-    function _setPinnedValidatorSet(IICS07TendermintMsgs.ValidatorSet memory validatorSet) private {
+    function _setPinnedValidatorSet(ISpectreTendermintMsgs.ValidatorSet memory validatorSet) private {
         SpectreStore.Store storage $ = SpectreStore.load();
         bytes32 validatorsHash = Header.hashValSet(validatorSet);
         bytes memory cacheData = ValidatorSetLib.buildCache(validatorsHash, validatorSet);

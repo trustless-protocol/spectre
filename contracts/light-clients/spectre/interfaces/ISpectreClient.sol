@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 /// @title ISpectreClient
-/// @notice Interface for the SpectreClient ICS-07 Tendermint light client.
+/// @notice Interface for the Spectre light client.
 interface ISpectreClient {
     /// @notice Emitted when the application state (appHash / latest height) advances.
     /// @param height The new latest revision height.

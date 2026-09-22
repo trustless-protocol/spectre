@@ -20,7 +20,7 @@ Use the doc-side names consistently in prose; verify claims against the code sid
 
 | Doc term | Code |
 |---|---|
-| SpectreClient | `contracts/light-clients/Groth16ICS07Tendermint.sol` — owns ALL client state |
+| SpectreClient | `contracts/light-clients/spectre/SpectreClient.sol` — owns ALL client state |
 | UpdateClient (program) | `contracts/programs/UpdateClient.sol` — pure header checks |
 | Membership | `contracts/programs/Membership.sol` — ICS-23, no ZK |
 | Misbehaviour | `contracts/programs/Misbehaviour.sol` |
@@ -37,7 +37,7 @@ Quorum accounting (Σ voting power > ⅔ against the pinned set) happens in **Sp
 Every technical statement gets checked against the repo (`/Users/ducnt/Decentrio/fast-ibc`) before it survives review:
 
 - Witness/field tables ↔ `relayer/prover/hash_witness.go` (layout, `MaxMsgLen = 192`, which fields are hashed and why).
-- Flow descriptions ↔ `Groth16ICS07Tendermint.sol` (`updateClient`, `reAnchorPinnedSet`, `_verifyPinnedBatchAndQuorum`).
+- Flow descriptions ↔ `SpectreClient.sol` (`updateClient`, `reAnchorPinnedSet`, `_verifyPinnedBatchAndQuorum`).
 - Intervals/constants ↔ relayer source (e.g. the 24h `routineInterval` in `relayer/services/main.go`).
 - Misbehaviour rules ↔ `contracts/programs/Misbehaviour.sol`.
 - Report each verified claim with `file:line` in your findings. Claims you cannot ground: flag as unverified, don't rewrite them into confident prose.

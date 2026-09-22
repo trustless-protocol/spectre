@@ -289,7 +289,7 @@ func TestValidateEVMDeployments(t *testing.T) {
 		cfg := evmConfigFor(node)
 		deployAll(node, cfg)
 		// getClient reverts with IBCClientNotFound for an unregistered id
-		// (contracts/utils/ICS02ClientUpgradeable.sol:78-80).
+		// (contracts/core/client-registry/ICS02ClientUpgradeable.sol:78-80).
 		node.FailCall(errors.New("execution reverted"))
 
 		findings := validateEVMDeployments(context.Background(), &appConfig{

@@ -619,7 +619,7 @@ func GetBeaconGenesis(ctx context.Context, beaconAPIURL string) (*BeaconGenesis,
 	url := fmt.Sprintf("%s/eth/v1/beacon/genesis", beaconAPIURL)
 	response, err := httpGet[BeaconGenesisResponse](ctx, url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get beacon block root: %w", err)
+		return nil, fmt.Errorf("failed to get beacon genesis: %w", err)
 	}
 	return &response.Data, nil
 }
@@ -628,7 +628,7 @@ func GetBeaconSpec(ctx context.Context, beaconAPIURL string) (*BeaconSpec, error
 	url := fmt.Sprintf("%s/eth/v1/config/spec", beaconAPIURL)
 	response, err := httpGet[BeaconSpecResponse](ctx, url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get beacon block root: %w", err)
+		return nil, fmt.Errorf("failed to get beacon spec: %w", err)
 	}
 	return &response.Data, nil
 }
@@ -637,7 +637,7 @@ func GetBeaconBlock(ctx context.Context, beaconAPIURL string, blockID string) (*
 	url := fmt.Sprintf("%s/eth/v2/beacon/blocks/%s", beaconAPIURL, blockID)
 	response, err := httpGet[BeaconBlockResponse](ctx, url)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get beacon block root: %w", err)
+		return nil, fmt.Errorf("failed to get beacon block: %w", err)
 	}
 	return &response.Data, nil
 }

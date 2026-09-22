@@ -49,25 +49,25 @@ type LightBlock struct {
 	BlockHeight  int64
 }
 
-func (b *LightBlock) IntoHeader(trustedBlock LightBlock) (updateClientContract.IICS07TendermintMsgsHeader, error) {
+func (b *LightBlock) IntoHeader(trustedBlock LightBlock) (updateClientContract.ISpectreTendermintMsgsHeader, error) {
 	if b == nil {
-		return updateClientContract.IICS07TendermintMsgsHeader{}, fmt.Errorf("light block is nil")
+		return updateClientContract.ISpectreTendermintMsgsHeader{}, fmt.Errorf("light block is nil")
 	}
 	revisionNumer := clienttypes.ParseChainID(trustedBlock.SignedHeader.ChainID)
 	trustedHeight, err := nonNegativeInt64ToUint64("trusted block height", trustedBlock.BlockHeight)
 	if err != nil {
-		return updateClientContract.IICS07TendermintMsgsHeader{}, err
+		return updateClientContract.ISpectreTendermintMsgsHeader{}, err
 	}
 	headerHeight, err := nonNegativeInt64ToUint64("proposed block height", b.BlockHeight)
 	if err != nil {
-		return updateClientContract.IICS07TendermintMsgsHeader{}, err
+		return updateClientContract.ISpectreTendermintMsgsHeader{}, err
 	}
 	commitHeight, err := nonNegativeInt64ToUint64("commit height", b.SignedHeader.Commit.Height)
 	if err != nil {
-		return updateClientContract.IICS07TendermintMsgsHeader{}, err
+		return updateClientContract.ISpectreTendermintMsgsHeader{}, err
 	}
 
-	commitSigs := []updateClientContract.IICS07TendermintMsgsCommitSig{}
+	commitSigs := []updateClientContract.ISpectreTendermintMsgsCommitSig{}
 	for _, sig := range b.SignedHeader.Commit.Signatures {
 		// The validator address ties a commit slot to the validator it belongs to, so the
 		// on-chain quorum check can confirm that the slot a proof cites is the same validator
@@ -79,20 +79,20 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) (updateClientContract.I
 
 		// CometBFT: 0=UNKNOWN, 1=ABSENT, 2=COMMIT, 3=NIL
 		// Solidity:  0=UNKNOWN, 1=ABSENT, 2=COMMIT, 3=NIL
-		commitSigs = append(commitSigs, updateClientContract.IICS07TendermintMsgsCommitSig{
+		commitSigs = append(commitSigs, updateClientContract.ISpectreTendermintMsgsCommitSig{
 			Flag:             uint8(sig.BlockIDFlag),
 			ValidatorAddress: valAddr,
 		})
 	}
 
-	header := updateClientContract.IICS07TendermintMsgsHeader{
+	header := updateClientContract.ISpectreTendermintMsgsHeader{
 		TrustedHeight: updateClientContract.IICS02ClientMsgsHeight{
 			RevisionNumber: revisionNumer,
 			RevisionHeight: trustedHeight,
 		},
-		SignedHeader: updateClientContract.IICS07TendermintMsgsSignedHeader{
-			Header: updateClientContract.IICS07TendermintMsgsBlockHeader{
-				Version: updateClientContract.IICS07TendermintMsgsVersion{
+		SignedHeader: updateClientContract.ISpectreTendermintMsgsSignedHeader{
+			Header: updateClientContract.ISpectreTendermintMsgsBlockHeader{
+				Version: updateClientContract.ISpectreTendermintMsgsVersion{
 					BlockVersion: b.SignedHeader.Version.Block,
 					AppVersion:   b.SignedHeader.Version.App,
 				},
@@ -100,9 +100,9 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) (updateClientContract.I
 				Height:         headerHeight,
 				Time:           big.NewInt(b.SignedHeader.Time.UnixNano()),
 				HasLastBlockId: !b.SignedHeader.LastBlockID.IsZero(),
-				LastBlockId: updateClientContract.IICS07TendermintMsgsBlockId{
+				LastBlockId: updateClientContract.ISpectreTendermintMsgsBlockId{
 					HashData: bytesToBytes32(b.SignedHeader.LastBlockID.Hash),
-					PartSetHeader: updateClientContract.IICS07TendermintMsgsPartSetHeader{
+					PartSetHeader: updateClientContract.ISpectreTendermintMsgsPartSetHeader{
 						Total:    b.SignedHeader.LastBlockID.PartSetHeader.Total,
 						HashData: bytesToBytes32(b.SignedHeader.LastBlockID.PartSetHeader.Hash),
 					},
@@ -121,12 +121,12 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) (updateClientContract.I
 				EvidenceHash:       bytesToBytes32(b.SignedHeader.EvidenceHash),
 				ProposerAddress:    b.SignedHeader.ProposerAddress,
 			},
-			Commit: updateClientContract.IICS07TendermintMsgsBlockCommit{
+			Commit: updateClientContract.ISpectreTendermintMsgsBlockCommit{
 				Height: commitHeight,
 				Round:  uint32(b.SignedHeader.Commit.Round),
-				BlockId: updateClientContract.IICS07TendermintMsgsBlockId{
+				BlockId: updateClientContract.ISpectreTendermintMsgsBlockId{
 					HashData: bytesToBytes32(b.SignedHeader.Commit.BlockID.Hash),
-					PartSetHeader: updateClientContract.IICS07TendermintMsgsPartSetHeader{
+					PartSetHeader: updateClientContract.ISpectreTendermintMsgsPartSetHeader{
 						Total:    b.SignedHeader.Commit.BlockID.PartSetHeader.Total,
 						HashData: bytesToBytes32(b.SignedHeader.Commit.BlockID.PartSetHeader.Hash),
 					},
@@ -141,8 +141,8 @@ func (b *LightBlock) IntoHeader(trustedBlock LightBlock) (updateClientContract.I
 
 type SpectreClientGenesis struct {
 	TrustedClientState        ClientState
-	TrustedConsensusState     updateClientContract.IICS07TendermintMsgsConsensusState
-	InitialPinnedValidatorSet spectreContract.IICS07TendermintMsgsValidatorSet
+	TrustedConsensusState     updateClientContract.ISpectreTendermintMsgsConsensusState
+	InitialPinnedValidatorSet spectreContract.ISpectreTendermintMsgsValidatorSet
 }
 
 // DefaultClockDrift is the allowed gap (in seconds) between the proven
@@ -222,7 +222,7 @@ func spectreClientGenesisFromLightBlock(trustedLightBlock *LightBlock, unbonding
 		ClockDrift:      clockDrift,
 	}
 
-	consensusState := updateClientContract.IICS07TendermintMsgsConsensusState{
+	consensusState := updateClientContract.ISpectreTendermintMsgsConsensusState{
 		Timestamp:          big.NewInt(trustedLightBlock.SignedHeader.Header.Time.UnixNano()),
 		Root:               bytesToBytes32(trustedLightBlock.SignedHeader.Header.AppHash),
 		NextValidatorsHash: bytesToBytes32(trustedLightBlock.SignedHeader.NextValidatorsHash),
@@ -427,7 +427,7 @@ func ProvePath(ctx context.Context, client *rpchttp.HTTP, height int64, path [][
 
 // EncodeUpdateConsensusStateMsg abi-encodes a MsgUpdateConsensusState for
 // SpectreClient.updateConsensusState(bytes) / ICS26Router.updateConsensusState.
-func EncodeUpdateConsensusStateMsg(update updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState, newValidatorSet spectreContract.IICS07TendermintMsgsValidatorSet) ([]byte, error) {
+func EncodeUpdateConsensusStateMsg(update updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState, newValidatorSet spectreContract.ISpectreTendermintMsgsValidatorSet) ([]byte, error) {
 	args := abi.Arguments{
 		{Type: updateConsensusStateMsgType},
 	}

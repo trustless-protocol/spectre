@@ -3,7 +3,7 @@ pragma solidity ^0.8.28;
 
 import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 
 /// @title LightClient Messages
 /// @notice Interface defining light client messages
@@ -14,7 +14,7 @@ interface ILightClientMsgs {
         IMembershipMsgs.KVPair[] kvPairs;
         IMembershipMsgs.MerkleProof[] merkleProofs;
         bytes32 appHash;
-        IICS07TendermintMsgs.ConsensusState trustedConsensusState;
+        ISpectreTendermintMsgs.ConsensusState trustedConsensusState;
         IMembershipMsgs.MembershipType membershipType;
         bytes[] path;
         bytes value;
@@ -26,7 +26,7 @@ interface ILightClientMsgs {
         IMembershipMsgs.KVPair[] kvPairs;
         IMembershipMsgs.MerkleProof[] merkleProofs;
         bytes32 appHash;
-        IICS07TendermintMsgs.ConsensusState trustedConsensusState;
+        ISpectreTendermintMsgs.ConsensusState trustedConsensusState;
         IMembershipMsgs.MembershipType membershipType;
         bytes[] path;
     }

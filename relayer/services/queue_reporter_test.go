@@ -100,7 +100,7 @@ func TestReportQueueState(t *testing.T) {
 			t.Fatalf("client-update line printed %d times; the ages change every tick, so "+
 				"driving output from them means never de-duplicating:\n%s", got, out)
 		}
-		if !strings.Contains(out, "cosmos-on-eth=1h0m0s ago") {
+		if !strings.Contains(out, "cosmos-on-evm=1h0m0s ago") {
 			t.Fatalf("the age must still be printed on the line it accompanies:\n%s", out)
 		}
 	})
@@ -240,6 +240,6 @@ func TestClientUpdateAges_UseTrustedChainTimestamps(t *testing.T) {
 	svc.ObserveCosmosOnEVMUpdate(now.Add(-10 * time.Minute))
 	cosmosAge, _, _ = svc.clientUpdateAges(now)
 	if cosmosAge != 2*time.Minute {
-		t.Fatalf("older observation regressed cosmos-on-eth age to %s", cosmosAge)
+		t.Fatalf("older observation regressed cosmos-on-evm age to %s", cosmosAge)
 	}
 }
