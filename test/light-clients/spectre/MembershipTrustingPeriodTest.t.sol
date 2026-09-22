@@ -6,7 +6,7 @@ import { Test } from "forge-std/Test.sol";
 import { SpectreClient } from "contracts/light-clients/spectre/SpectreClient.sol";
 import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
 import { ISpectreClientErrors } from "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol";
 import { IMembership } from "contracts/light-clients/spectre/interfaces/IMembership.sol";
@@ -117,11 +117,11 @@ contract MembershipTrustingPeriodTest is Test {
     }
 
     function test_constructorRejectsZeroTrustingPeriod() public {
-        IICS07TendermintMsgs.ClientState memory clientState = _clientState();
+        ISpectreTendermintMsgs.ClientState memory clientState = _clientState();
         clientState.trustingPeriod = 0;
         // Built before expectRevert — see test_verifyMembershipRejectsExpiredConsensusState: the
         // sha256 precompile call inside _consensusState must not land inside the armed window.
-        IICS07TendermintMsgs.ConsensusState memory consensusState = _consensusState(_toNanos(block.timestamp));
+        ISpectreTendermintMsgs.ConsensusState memory consensusState = _consensusState(_toNanos(block.timestamp));
 
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -132,10 +132,10 @@ contract MembershipTrustingPeriodTest is Test {
     }
 
     function test_constructorRejectsZeroClockDrift() public {
-        IICS07TendermintMsgs.ClientState memory clientState = _clientState();
+        ISpectreTendermintMsgs.ClientState memory clientState = _clientState();
         clientState.clockDrift = 0;
         // Built before expectRevert — see test_verifyMembershipRejectsExpiredConsensusState.
-        IICS07TendermintMsgs.ConsensusState memory consensusState = _consensusState(_toNanos(block.timestamp));
+        ISpectreTendermintMsgs.ConsensusState memory consensusState = _consensusState(_toNanos(block.timestamp));
 
         vm.expectRevert(
             abi.encodeWithSelector(
@@ -151,7 +151,7 @@ contract MembershipTrustingPeriodTest is Test {
 
     function _deployWithClientState(
         uint128 consensusTimestamp,
-        IICS07TendermintMsgs.ClientState memory clientState
+        ISpectreTendermintMsgs.ClientState memory clientState
     )
         private
         returns (SpectreClient)
@@ -160,8 +160,8 @@ contract MembershipTrustingPeriodTest is Test {
     }
 
     function _deployWithConsensusState(
-        IICS07TendermintMsgs.ConsensusState memory consensusState,
-        IICS07TendermintMsgs.ClientState memory clientState
+        ISpectreTendermintMsgs.ConsensusState memory consensusState,
+        ISpectreTendermintMsgs.ClientState memory clientState
     )
         private
         returns (SpectreClient)
@@ -177,10 +177,10 @@ contract MembershipTrustingPeriodTest is Test {
         );
     }
 
-    function _clientState() private pure returns (IICS07TendermintMsgs.ClientState memory) {
-        return IICS07TendermintMsgs.ClientState({
+    function _clientState() private pure returns (ISpectreTendermintMsgs.ClientState memory) {
+        return ISpectreTendermintMsgs.ClientState({
             chainId: "test-chain-0",
-            trustLevel: IICS07TendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
+            trustLevel: ISpectreTendermintMsgs.TrustThreshold({ numerator: 1, denominator: 3 }),
             latestHeight: IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: HEIGHT }),
             trustingPeriod: TRUSTING_PERIOD,
             unbondingPeriod: UNBONDING_PERIOD,
@@ -223,20 +223,20 @@ contract MembershipTrustingPeriodTest is Test {
         });
     }
 
-    function _pinnedValidatorSet() private pure returns (IICS07TendermintMsgs.ValidatorSet memory vs) {
-        IICS07TendermintMsgs.ValidatorInfo[] memory vals = new IICS07TendermintMsgs.ValidatorInfo[](1);
-        vals[0] = IICS07TendermintMsgs.ValidatorInfo({
+    function _pinnedValidatorSet() private pure returns (ISpectreTendermintMsgs.ValidatorSet memory vs) {
+        ISpectreTendermintMsgs.ValidatorInfo[] memory vals = new ISpectreTendermintMsgs.ValidatorInfo[](1);
+        vals[0] = ISpectreTendermintMsgs.ValidatorInfo({
             valAddress: bytes("validator"), pubKey: bytes32(uint256(1)), votingPower: 100, proposerPriority: 0
         });
-        vs = IICS07TendermintMsgs.ValidatorSet({
+        vs = ISpectreTendermintMsgs.ValidatorSet({
             validators: vals, hasProposer: false, proposer: vals[0], totalVotingPower: 100
         });
     }
 
-    function _consensusState(uint128 timestamp) private pure returns (IICS07TendermintMsgs.ConsensusState memory) {
+    function _consensusState(uint128 timestamp) private pure returns (ISpectreTendermintMsgs.ConsensusState memory) {
         // nextValidatorsHash must match _pinnedValidatorSet()'s hash: the constructor now asserts
         // Header.hashValSet(initialPinnedValidatorSet) == consensusState.nextValidatorsHash (LC-03).
-        return IICS07TendermintMsgs.ConsensusState({
+        return ISpectreTendermintMsgs.ConsensusState({
             timestamp: timestamp, root: APP_HASH, nextValidatorsHash: Header.hashValSet(_pinnedValidatorSet())
         });
     }

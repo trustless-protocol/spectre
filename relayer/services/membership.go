@@ -136,7 +136,7 @@ func CosmosNonMembership(stdCtx context.Context, ctx CosmosEndpoint, packet chan
 		},
 		MerkleProofs: []spectreContract.IMembershipMsgsMerkleProof{merkleProof},
 		AppHash:      utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
-		TrustedConsensusState: spectreContract.IICS07TendermintMsgsConsensusState{
+		TrustedConsensusState: spectreContract.ISpectreTendermintMsgsConsensusState{
 			Timestamp:          big.NewInt(latestLightBlock.SignedHeader.Header.Time.UnixNano()),
 			Root:               utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
 			NextValidatorsHash: utils.BytesToBytes32(latestLightBlock.SignedHeader.Header.NextValidatorsHash),
@@ -183,7 +183,7 @@ func CosmosMembership(stdCtx context.Context, ctx CosmosEndpoint, packet channel
 		},
 		MerkleProofs: []spectreContract.IMembershipMsgsMerkleProof{merkleProof},
 		AppHash:      utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
-		TrustedConsensusState: spectreContract.IICS07TendermintMsgsConsensusState{
+		TrustedConsensusState: spectreContract.ISpectreTendermintMsgsConsensusState{
 			Timestamp:          big.NewInt(latestLightBlock.SignedHeader.Header.Time.UnixNano()),
 			Root:               utils.BytesToBytes32(latestLightBlock.SignedHeader.AppHash),
 			NextValidatorsHash: utils.BytesToBytes32(latestLightBlock.SignedHeader.Header.NextValidatorsHash),

@@ -10,7 +10,7 @@ pragma solidity ^0.8.28;
 import { stdJson } from "forge-std/StdJson.sol";
 import { Script } from "forge-std/Script.sol";
 
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { ICS26Router } from "contracts/core/ICS26Router.sol";
 import { ICS20Transfer } from "contracts/apps/ics20/ICS20Transfer.sol";
 import { TestERC20 } from "test/mocks/TestERC20.sol";
@@ -32,7 +32,7 @@ import { ClientMigrationExecutor } from "contracts/core/client-registry/migratio
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 
 /// @dev See the Solidity Scripting tutorial: https://book.getfoundry.sh/tutorials/solidity-scripting
-contract E2ETestDeploy is Script, IICS07TendermintMsgs, DeployAccessManagerWithRoles {
+contract E2ETestDeploy is Script, ISpectreTendermintMsgs, DeployAccessManagerWithRoles {
     using stdJson for string;
 
     string internal constant GENESIS_DIR = "/scripts/";

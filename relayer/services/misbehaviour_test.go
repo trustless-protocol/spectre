@@ -21,8 +21,8 @@ import (
 
 func TestUpdateCommitToMisbehaviour_PreservesValidatorAddress(t *testing.T) {
 	wantAddress := [20]byte{0x01, 0x23, 0x45, 0x67, 0x89}
-	converted := updateCommitToMisbehaviour(updateclientContract.IICS07TendermintMsgsBlockCommit{
-		CommitSigs: []updateclientContract.IICS07TendermintMsgsCommitSig{{
+	converted := updateCommitToMisbehaviour(updateclientContract.ISpectreTendermintMsgsBlockCommit{
+		CommitSigs: []updateclientContract.ISpectreTendermintMsgsCommitSig{{
 			Flag:             2,
 			ValidatorAddress: wantAddress,
 		}},
@@ -168,7 +168,7 @@ func TestMisbehaviourBatchProof_BuildsPinnedMetadata(t *testing.T) {
 // zero. Add a field to the Solidity struct and forget the assignment, and this
 // fails without anyone having to remember to extend the test.
 func TestUpdateBlockHeaderToMisbehaviour_CarriesEveryField(t *testing.T) {
-	var src updateclientContract.IICS07TendermintMsgsBlockHeader
+	var src updateclientContract.ISpectreTendermintMsgsBlockHeader
 	fillNonZero(t, reflect.ValueOf(&src).Elem(), "BlockHeader")
 	// Guard the fixture before trusting the comparison: equal values make a swap
 	// undetectable no matter how the comparison is written.
@@ -181,7 +181,7 @@ func TestUpdateBlockHeaderToMisbehaviour_CarriesEveryField(t *testing.T) {
 // Same argument one level up: the outer header carries the signed header, the
 // commit and the trusted height.
 func TestUpdateHeaderToMisbehaviourHeader_CarriesEveryField(t *testing.T) {
-	var src updateclientContract.IICS07TendermintMsgsHeader
+	var src updateclientContract.ISpectreTendermintMsgsHeader
 	fillNonZero(t, reflect.ValueOf(&src).Elem(), "Header")
 	// Guard the fixture before trusting the comparison: equal values make a swap
 	// undetectable no matter how the comparison is written.

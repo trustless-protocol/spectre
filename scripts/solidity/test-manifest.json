@@ -137,7 +137,11 @@
     {
       "path": "test/light-clients/spectre/ValidatorSetLibTest.t.sol",
       "classification": "non-shadowfork"
+    },
+    {
+      "path": "test/light-clients/spectre/WasmStorageLayoutCompatibility.t.sol",
+      "classification": "non-shadowfork"
     }
   ],
-  "current_count": 34
+  "current_count": 35
 }

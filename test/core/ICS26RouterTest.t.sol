@@ -18,7 +18,7 @@ import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessMa
 import { IIBCApp } from "contracts/core/interfaces/IIBCApp.sol";
 
 import { ICS26Router } from "contracts/core/ICS26Router.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { IMembershipMsgs } from "contracts/light-clients/spectre/messages/IMembershipMsgs.sol";
 import { ICS20Lib } from "contracts/apps/ics20/libraries/ICS20Lib.sol";
 import { ICS24Host } from "contracts/core/libraries/ICS24Host.sol";
@@ -85,7 +85,7 @@ contract ICS26RouterTest is Test {
                 kvPairs: new IMembershipMsgs.KVPair[](0),
                 merkleProofs: new IMembershipMsgs.MerkleProof[](0),
                 appHash: bytes32(0),
-                trustedConsensusState: IICS07TendermintMsgs.ConsensusState({
+                trustedConsensusState: ISpectreTendermintMsgs.ConsensusState({
                     timestamp: 0, root: bytes32(0), nextValidatorsHash: bytes32(0)
                 }),
                 membershipType: IMembershipMsgs.MembershipType.Membership,

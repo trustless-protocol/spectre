@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 
 /// @title Spectre Client Messages
@@ -37,8 +37,8 @@ interface ISpectreClientMsgs {
     /// @param time The current time in unix nanoseconds.
     /// @param proof The batched Ed25519 signature proof over the proposed header.
     struct MsgUpdateApplicationState {
-        IICS07TendermintMsgs.ConsensusState trustedConsensusState;
-        IICS07TendermintMsgs.Header proposedHeader;
+        ISpectreTendermintMsgs.ConsensusState trustedConsensusState;
+        ISpectreTendermintMsgs.Header proposedHeader;
         uint128 time;
         BatchProof proof;
     }
@@ -48,13 +48,13 @@ interface ISpectreClientMsgs {
     /// @param newValidatorSet The new validator set to pin; its hash must equal the header's nextValidatorsHash.
     struct MsgUpdateConsensusState {
         MsgUpdateApplicationState update;
-        IICS07TendermintMsgs.ValidatorSet newValidatorSet;
+        ISpectreTendermintMsgs.ValidatorSet newValidatorSet;
     }
 
     /// @notice Two conflicting signed headers at the same height, each proof-backed.
     struct Misbehaviour {
-        IICS07TendermintMsgs.Header header1;
-        IICS07TendermintMsgs.Header header2;
+        ISpectreTendermintMsgs.Header header1;
+        ISpectreTendermintMsgs.Header header2;
     }
 
     /// @notice Submits misbehaviour (two conflicting signed headers) to freeze the client.
@@ -66,8 +66,8 @@ interface ISpectreClientMsgs {
     /// @param proof2 The batched signature proof over header2.
     struct MsgSubmitMisbehaviour {
         Misbehaviour misbehaviour;
-        IICS07TendermintMsgs.ConsensusState trustedConsensusState1;
-        IICS07TendermintMsgs.ConsensusState trustedConsensusState2;
+        ISpectreTendermintMsgs.ConsensusState trustedConsensusState1;
+        ISpectreTendermintMsgs.ConsensusState trustedConsensusState2;
         uint128 time;
         BatchProof proof1;
         BatchProof proof2;
@@ -79,8 +79,8 @@ interface ISpectreClientMsgs {
     /// @param trustedHeight The trusted height.
     /// @param newHeight The new height.
     struct VerifyHeaderOutput {
-        IICS07TendermintMsgs.ConsensusState trustedConsensusState;
-        IICS07TendermintMsgs.ConsensusState newConsensusState;
+        ISpectreTendermintMsgs.ConsensusState trustedConsensusState;
+        ISpectreTendermintMsgs.ConsensusState newConsensusState;
         IICS02ClientMsgs.Height trustedHeight;
         IICS02ClientMsgs.Height newHeight;
     }

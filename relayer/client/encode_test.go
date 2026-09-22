@@ -34,21 +34,21 @@ func fullyPopulatedApplicationStateMsg() updateClientContract.ISpectreClientMsgs
 	zero2 := [2]*big.Int{big.NewInt(0), big.NewInt(0)}
 
 	msg := updateClientContract.ISpectreClientMsgsMsgUpdateApplicationState{
-		TrustedConsensusState: updateClientContract.IICS07TendermintMsgsConsensusState{
+		TrustedConsensusState: updateClientContract.ISpectreTendermintMsgsConsensusState{
 			Timestamp:          big.NewInt(1700000000000000000),
 			NextValidatorsHash: validatorsHash,
 		},
-		ProposedHeader: updateClientContract.IICS07TendermintMsgsHeader{
-			SignedHeader: updateClientContract.IICS07TendermintMsgsSignedHeader{
-				Header: updateClientContract.IICS07TendermintMsgsBlockHeader{
+		ProposedHeader: updateClientContract.ISpectreTendermintMsgsHeader{
+			SignedHeader: updateClientContract.ISpectreTendermintMsgsSignedHeader{
+				Header: updateClientContract.ISpectreTendermintMsgsBlockHeader{
 					ChainId:            "test-0",
 					Time:               big.NewInt(1700000001000000000),
 					ValidatorsHash:     validatorsHash,
 					NextValidatorsHash: validatorsHash,
 				},
-				Commit: updateClientContract.IICS07TendermintMsgsBlockCommit{
+				Commit: updateClientContract.ISpectreTendermintMsgsBlockCommit{
 					Height: 58,
-					CommitSigs: []updateClientContract.IICS07TendermintMsgsCommitSig{{
+					CommitSigs: []updateClientContract.ISpectreTendermintMsgsCommitSig{{
 						Flag:             2,
 						ValidatorAddress: [20]byte{0x12, 0x34, 0x56, 0x78},
 					}},
@@ -125,7 +125,7 @@ func TestEncodeUpdateApplicationStateMsg_MatchesGeneratedABI(t *testing.T) {
 
 func TestEncodeConsensusState(t *testing.T) {
 	t.Run("valid consensus state encodes without error", func(t *testing.T) {
-		consensusState := updateClientContract.IICS07TendermintMsgsConsensusState{
+		consensusState := updateClientContract.ISpectreTendermintMsgsConsensusState{
 			Timestamp:          big.NewInt(1700000000000),
 			Root:               [32]byte{0x01, 0x02, 0x03},
 			NextValidatorsHash: [32]byte{0x04, 0x05, 0x06},

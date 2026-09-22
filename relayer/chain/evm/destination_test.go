@@ -141,7 +141,7 @@ func TestRelayWithUpdate_SubmitsOneOrderedBatch(t *testing.T) {
 	payload, err := codec.EncodeCosmosUpdate(
 		int(services.ApplicationUpdate),
 		updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState{},
-		spectreContract.IICS07TendermintMsgsValidatorSet{},
+		spectreContract.ISpectreTendermintMsgsValidatorSet{},
 	)
 	if err != nil {
 		t.Fatalf("encode update: %v", err)

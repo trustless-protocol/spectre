@@ -5,7 +5,7 @@
   "import_path_policy": {
     "classification": "first-party",
     "evidence": [
-      "package.json marks @decentrio/fast-ibc as private",
+      "package.json marks @decentrio/spectre as private",
       "repository documentation exposes no supported Solidity package installation or import surface",
       "every known repository consumer is inventoried on its ownership entry"
     ],
@@ -611,7 +611,7 @@
     },
     {
       "current": "contracts/light-clients/msgs/IICS07TendermintMsgs.sol",
-      "target": "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol",
+      "target": "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol",
       "owner": "light-clients/spectre",
       "compatibility_class": "abi-locked",
       "consumers": [
@@ -761,7 +761,7 @@
         "contracts/core/messages/IICS26RouterMsgs.sol",
         "contracts/light-clients/messages/ILightClientMsgs.sol",
         "contracts/light-clients/spectre/SpectreClient.sol",
-        "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol",
+        "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol",
         "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol",
         "contracts/light-clients/spectre/modules/Misbehaviour.sol",
         "contracts/light-clients/spectre/modules/UpdateClient.sol",

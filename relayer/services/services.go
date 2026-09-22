@@ -29,7 +29,7 @@ func init() {
 }
 
 type TransactionHandler interface {
-	CreateCosmosClientContract(stdCtx context.Context, endpoint EVMEndpoint, clientIDs ClientIDs, clientState []byte, consensusState spectreContract.IICS07TendermintMsgsConsensusState, initialPinnedValidatorSet client.ContractValidatorSet) (ethcommon.Address, error)
+	CreateCosmosClientContract(stdCtx context.Context, endpoint EVMEndpoint, clientIDs ClientIDs, clientState []byte, consensusState spectreContract.ISpectreTendermintMsgsConsensusState, initialPinnedValidatorSet client.ContractValidatorSet) (ethcommon.Address, error)
 	// CreateWasmClient submits MsgCreateClient for any 08-wasm client (ETH beacon,
 	// L2 rollup, ...) from an already-built wasm ClientState/ConsensusState and returns
 	// the auto-assigned client id. counterpartyClientID is the client on the

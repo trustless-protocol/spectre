@@ -2,7 +2,7 @@
 pragma solidity ^0.8.28;
 
 import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { IUpdateClient } from "contracts/light-clients/spectre/interfaces/IUpdateClient.sol";
 import { ISignatureVerifier } from "contracts/light-clients/spectre/interfaces/ISignatureVerifier.sol";
@@ -43,16 +43,15 @@ contract UpdateClient is IUpdateClient {
         returns (ISpectreClientMsgs.VerifyHeaderOutput memory)
     {
         SpectreStore.Store storage $ = SpectreStore.load();
-        IICS07TendermintMsgs.ClientState storage clientState = $.clientState;
+        ISpectreTendermintMsgs.ClientState storage clientState = $.clientState;
 
-        IICS07TendermintMsgs.ChainId memory chainId = IICS07TendermintMsgs.ChainId({
-            id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber
-        });
+        ISpectreTendermintMsgs.ChainId memory chainId =
+            ISpectreTendermintMsgs.ChainId({ id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber });
         // NOTE (LC-05): `trustThreshold` is threaded through `options` into `_verifyHeader` /
         // `_verifyAgainstTrusted` below but is never actually read there — the real quorum
         // threshold is hardcoded `>2/3` in `SpectreClient._verifyQuorum`. Currently
         // decoded-but-unused / reserved; see the field comment on `ClientState.trustLevel`.
-        IICS07TendermintMsgs.Options memory options = IICS07TendermintMsgs.Options({
+        ISpectreTendermintMsgs.Options memory options = ISpectreTendermintMsgs.Options({
             trustThreshold: clientState.trustLevel,
             trustingPeriod: clientState.trustingPeriod,
             clockDrift: clientState.clockDrift
@@ -72,16 +71,16 @@ contract UpdateClient is IUpdateClient {
     }
 
     function _verifyHeader(
-        IICS07TendermintMsgs.Header calldata proposedHeader,
-        IICS07TendermintMsgs.ChainId memory chainId,
-        IICS07TendermintMsgs.Options memory options,
+        ISpectreTendermintMsgs.Header calldata proposedHeader,
+        ISpectreTendermintMsgs.ChainId memory chainId,
+        ISpectreTendermintMsgs.Options memory options,
         uint128 time,
-        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState
+        ISpectreTendermintMsgs.ConsensusState calldata trustedConsensusState
     )
         private
         pure
     {
-        IICS07TendermintMsgs.ChainId memory headerChainId = ChainId.get(proposedHeader.signedHeader.header.chainId);
+        ISpectreTendermintMsgs.ChainId memory headerChainId = ChainId.get(proposedHeader.signedHeader.header.chainId);
         _validateBasic(proposedHeader, headerChainId);
         if (chainId.revisionNumber != headerChainId.revisionNumber) {
             revert ISpectreClientErrors.ChainIdMismatch(chainId.id, headerChainId.id);
@@ -97,11 +96,11 @@ contract UpdateClient is IUpdateClient {
     }
 
     function _verifyAgainstTrusted(
-        IICS07TendermintMsgs.Header calldata proposedHeader,
+        ISpectreTendermintMsgs.Header calldata proposedHeader,
         string memory chainId,
-        IICS07TendermintMsgs.Options memory options,
+        ISpectreTendermintMsgs.Options memory options,
         uint128 time,
-        IICS07TendermintMsgs.ConsensusState calldata trustedConsensusState
+        ISpectreTendermintMsgs.ConsensusState calldata trustedConsensusState
     )
         private
         pure
@@ -130,8 +129,8 @@ contract UpdateClient is IUpdateClient {
     }
 
     function _validateBasic(
-        IICS07TendermintMsgs.Header calldata header,
-        IICS07TendermintMsgs.ChainId memory headerChainId
+        ISpectreTendermintMsgs.Header calldata header,
+        ISpectreTendermintMsgs.ChainId memory headerChainId
     )
         private
         pure
@@ -152,12 +151,12 @@ contract UpdateClient is IUpdateClient {
     }
 
     function _verifyBatchProof(
-        IICS07TendermintMsgs.Header calldata header,
+        ISpectreTendermintMsgs.Header calldata header,
         ISpectreClientMsgs.BatchProof calldata proof_
     )
         private
     {
-        IICS07TendermintMsgs.BlockCommit calldata commit = header.signedHeader.commit;
+        ISpectreTendermintMsgs.BlockCommit calldata commit = header.signedHeader.commit;
         require(
             commit.height == header.signedHeader.header.height, ISpectreClientErrors.InvalidHeaderHeight(commit.height)
         );
@@ -194,7 +193,7 @@ contract UpdateClient is IUpdateClient {
         IICS02ClientMsgs.Height memory newHeight = IICS02ClientMsgs.Height({
             revisionNumber: revisionNumber, revisionHeight: msg_.proposedHeader.signedHeader.header.height
         });
-        IICS07TendermintMsgs.ConsensusState memory newConsensusState = IICS07TendermintMsgs.ConsensusState({
+        ISpectreTendermintMsgs.ConsensusState memory newConsensusState = ISpectreTendermintMsgs.ConsensusState({
             timestamp: msg_.proposedHeader.signedHeader.header.time,
             root: msg_.proposedHeader.signedHeader.header.appHash,
             nextValidatorsHash: msg_.proposedHeader.signedHeader.header.nextValidatorsHash

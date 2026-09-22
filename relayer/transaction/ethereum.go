@@ -402,20 +402,20 @@ func ethLightClientIDOnCosmos(ids services.ClientIDs) (string, error) {
 	return clientID, nil
 }
 
-func toGroth16ValidatorSet(in relayerclient.ContractValidatorSet) spectreContract.IICS07TendermintMsgsValidatorSet {
-	validators := make([]spectreContract.IICS07TendermintMsgsValidatorInfo, len(in.Validators))
+func toGroth16ValidatorSet(in relayerclient.ContractValidatorSet) spectreContract.ISpectreTendermintMsgsValidatorSet {
+	validators := make([]spectreContract.ISpectreTendermintMsgsValidatorInfo, len(in.Validators))
 	for i, val := range in.Validators {
-		validators[i] = spectreContract.IICS07TendermintMsgsValidatorInfo{
+		validators[i] = spectreContract.ISpectreTendermintMsgsValidatorInfo{
 			ValAddress:       val.ValAddress,
 			PubKey:           val.PubKey,
 			VotingPower:      val.VotingPower,
 			ProposerPriority: val.ProposerPriority,
 		}
 	}
-	return spectreContract.IICS07TendermintMsgsValidatorSet{
+	return spectreContract.ISpectreTendermintMsgsValidatorSet{
 		Validators:  validators,
 		HasProposer: in.HasProposer,
-		Proposer: spectreContract.IICS07TendermintMsgsValidatorInfo{
+		Proposer: spectreContract.ISpectreTendermintMsgsValidatorInfo{
 			ValAddress:       in.Proposer.ValAddress,
 			PubKey:           in.Proposer.PubKey,
 			VotingPower:      in.Proposer.VotingPower,
@@ -481,8 +481,8 @@ func estimateCosmosClientDeployGas(
 	from common.Address,
 	gasPrice *big.Int,
 	clientState []byte,
-	consensusState spectreContract.IICS07TendermintMsgsConsensusState,
-	initialPinnedValidatorSet spectreContract.IICS07TendermintMsgsValidatorSet,
+	consensusState spectreContract.ISpectreTendermintMsgsConsensusState,
+	initialPinnedValidatorSet spectreContract.ISpectreTendermintMsgsValidatorSet,
 ) (uint64, uint64, error) {
 	parsed, err := spectreContract.ContractSpectreClientMetaData.GetAbi()
 	if err != nil {
@@ -531,7 +531,7 @@ func estimateCosmosClientDeployGas(
 	return estimate, gasLimit, nil
 }
 
-func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint services.EVMEndpoint, clientIDs services.ClientIDs, clientState []byte, consensusState spectreContract.IICS07TendermintMsgsConsensusState, initialPinnedValidatorSet relayerclient.ContractValidatorSet) (common.Address, error) {
+func (h *Handler) CreateCosmosClientContract(stdCtx context.Context, endpoint services.EVMEndpoint, clientIDs services.ClientIDs, clientState []byte, consensusState spectreContract.ISpectreTendermintMsgsConsensusState, initialPinnedValidatorSet relayerclient.ContractValidatorSet) (common.Address, error) {
 	cosmosClientID, err := cosmosRouterClientID(clientIDs)
 	if err != nil {
 		return common.Address{}, fmt.Errorf("[CreateCosmosClient] %w", err)

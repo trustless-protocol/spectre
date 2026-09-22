@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.28;
 
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { ISpectreClientErrors } from "contracts/light-clients/spectre/errors/ISpectreClientErrors.sol";
 import { SpectreStore } from "contracts/light-clients/spectre/store/SpectreStore.sol";
 import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
@@ -60,13 +60,13 @@ library ValidatorSetLib {
     /// @notice Packs a validator set into the SSTORE2 cache byte layout.
     function buildCache(
         bytes32 validatorsHash,
-        IICS07TendermintMsgs.ValidatorSet memory validatorSet
+        ISpectreTendermintMsgs.ValidatorSet memory validatorSet
     )
         internal
         pure
         returns (bytes memory data)
     {
-        IICS07TendermintMsgs.ValidatorInfo[] memory vals = validatorSet.validators;
+        ISpectreTendermintMsgs.ValidatorInfo[] memory vals = validatorSet.validators;
         uint256 validatorCount = vals.length;
         if (validatorCount == 0) {
             revert ISpectreClientErrors.BatchLengthMismatch();
@@ -84,7 +84,7 @@ library ValidatorSetLib {
 
         uint256 offset = VALIDATOR_CACHE_HEADER_LEN;
         for (uint256 i = 0; i < vals.length; i++) {
-            IICS07TendermintMsgs.ValidatorInfo memory val = vals[i];
+            ISpectreTendermintMsgs.ValidatorInfo memory val = vals[i];
             require(val.votingPower > 0, ISpectreClientErrors.ZeroVotingPower(i));
             // O(n^2) duplicate-pubkey scan: only runs at genesis/rotation time (bounded by
             // MAX_VALIDATOR_COUNT = 180), never per-packet, so the quadratic cost is cheap here.
@@ -198,7 +198,7 @@ library ValidatorSetLib {
     /// @param signerPubkeys per-slot compressed Ed25519 pubkey, already checked against the pinned set.
     /// @param active per-slot real-signer flag; padding slots are skipped.
     function requireProofSignersCommitSigs(
-        IICS07TendermintMsgs.CommitSig[] memory commitSigs,
+        ISpectreTendermintMsgs.CommitSig[] memory commitSigs,
         uint32[] memory signerIndices,
         bytes32[] memory signerPubkeys,
         bool[] memory active
@@ -225,7 +225,7 @@ library ValidatorSetLib {
     }
 
     function _requireProofSignerCommitSig(
-        IICS07TendermintMsgs.CommitSig[] memory commitSigs,
+        ISpectreTendermintMsgs.CommitSig[] memory commitSigs,
         uint32 signerIndex,
         bytes32 signerPubkey
     )
@@ -234,7 +234,7 @@ library ValidatorSetLib {
     {
         require(signerIndex < commitSigs.length, ISpectreClientErrors.SignerIndexOutOfRange(signerIndex));
         require(
-            commitSigs[signerIndex].flag == IICS07TendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
+            commitSigs[signerIndex].flag == ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT,
             ISpectreClientErrors.ProofSignerCommitSigMismatch(signerIndex)
         );
         require(

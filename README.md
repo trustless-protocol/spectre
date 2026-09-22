@@ -136,6 +136,10 @@ just lint                    # solidity + go + buf (`just lint-rust` is separate
 `just --list` shows every recipe, including the per-L2 wasm builds, the
 attestor sidecars, and Slither.
 
+When regenerating committed Solidity ABI or Go binding artifacts, update the
+corresponding SHA-256 entries in `scripts/solidity/tooling-rename-manifest.json`
+in the same change.
+
 ## Running it end to end
 
 Bring-up runbooks live in **[docs/E2E.md](docs/E2E.md)** — Cosmos↔Ethereum,

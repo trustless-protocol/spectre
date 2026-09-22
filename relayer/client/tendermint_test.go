@@ -28,15 +28,15 @@ func TestEncodeMisbehaviourContractMsg(t *testing.T) {
 		proof.Commitments[i] = big.NewInt(0)
 		proof.CommitmentPok[i] = big.NewInt(0)
 	}
-	header := misbehaviourContract.IICS07TendermintMsgsHeader{}
+	header := misbehaviourContract.ISpectreTendermintMsgsHeader{}
 	header.SignedHeader.Header.Time = big.NewInt(0)
 	msg := misbehaviourContract.ISpectreClientMsgsMsgSubmitMisbehaviour{
 		Misbehaviour: misbehaviourContract.ISpectreClientMsgsMisbehaviour{
 			Header1: header,
 			Header2: header,
 		},
-		TrustedConsensusState1: misbehaviourContract.IICS07TendermintMsgsConsensusState{Timestamp: big.NewInt(1)},
-		TrustedConsensusState2: misbehaviourContract.IICS07TendermintMsgsConsensusState{Timestamp: big.NewInt(2)},
+		TrustedConsensusState1: misbehaviourContract.ISpectreTendermintMsgsConsensusState{Timestamp: big.NewInt(1)},
+		TrustedConsensusState2: misbehaviourContract.ISpectreTendermintMsgsConsensusState{Timestamp: big.NewInt(2)},
 		Time:                   big.NewInt(3),
 		Proof1:                 proof,
 		Proof2:                 proof,
@@ -152,13 +152,13 @@ func TestEncodeUpdateConsensusStateMsg(t *testing.T) {
 		// exactly how the validatorAddress bug stayed green in the sibling test
 		// while the relayer reverted every packet on chain.
 		msg := fullyPopulatedApplicationStateMsg()
-		valSet := spectreContract.IICS07TendermintMsgsValidatorSet{
-			Validators: []spectreContract.IICS07TendermintMsgsValidatorInfo{
+		valSet := spectreContract.ISpectreTendermintMsgsValidatorSet{
+			Validators: []spectreContract.ISpectreTendermintMsgsValidatorInfo{
 				{ValAddress: []byte{0xa1, 0xa2}, PubKey: [32]byte{0x11}, VotingPower: 300, ProposerPriority: -7},
 				{ValAddress: []byte{0xb1, 0xb2}, PubKey: [32]byte{0x22}, VotingPower: 200, ProposerPriority: 5},
 			},
 			HasProposer:      true,
-			Proposer:         spectreContract.IICS07TendermintMsgsValidatorInfo{ValAddress: []byte{0xc1}, PubKey: [32]byte{0x33}, VotingPower: 300, ProposerPriority: -7},
+			Proposer:         spectreContract.ISpectreTendermintMsgsValidatorInfo{ValAddress: []byte{0xc1}, PubKey: [32]byte{0x33}, VotingPower: 300, ProposerPriority: -7},
 			TotalVotingPower: 500,
 		}
 

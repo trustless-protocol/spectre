@@ -72,10 +72,10 @@ func (w *Worker) CreateCosmosClient(stdCtx context.Context, cosmos CosmosEndpoin
 	// LC-03: the constructor now takes the full consensus state (not a pre-hashed
 	// bytes32) so it can assert the genesis pinned validator set actually matches
 	// consensusState.nextValidatorsHash on-chain, rather than trusting the deployer's
-	// hash and pin to agree. spectreContract.IICS07TendermintMsgsConsensusState is
+	// hash and pin to agree. spectreContract.ISpectreTendermintMsgsConsensusState is
 	// structurally identical to updateClientContract's (same ABI type, different
 	// generated Go package), so this is a direct field-for-field conversion.
-	spectreConsensusState := spectreContract.IICS07TendermintMsgsConsensusState{
+	spectreConsensusState := spectreContract.ISpectreTendermintMsgsConsensusState{
 		Timestamp:          consensusState.Timestamp,
 		Root:               consensusState.Root,
 		NextValidatorsHash: consensusState.NextValidatorsHash,
@@ -110,7 +110,7 @@ const (
 type CosmosClientUpdateBuildResult struct {
 	Kind       ClientUpdateKind
 	AppMsg     updateclientContract.ISpectreClientMsgsMsgUpdateApplicationState
-	NewValSet  spectreContract.IICS07TendermintMsgsValidatorSet
+	NewValSet  spectreContract.ISpectreTendermintMsgsValidatorSet
 	HasMsg     bool
 	IsHop      bool
 	HopTarget  int64
@@ -386,7 +386,7 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 	// extraction) and the trusted consensus state to prove against.
 	chainId := trustedLightBlock.SignedHeader.Header.ChainID
 
-	consensusState := updateclientContract.IICS07TendermintMsgsConsensusState{
+	consensusState := updateclientContract.ISpectreTendermintMsgsConsensusState{
 		Timestamp:          big.NewInt(trustedLightBlock.SignedHeader.Header.Time.UnixNano()),
 		Root:               bytesToBytes32(trustedLightBlock.SignedHeader.Header.AppHash),
 		NextValidatorsHash: bytesToBytes32(trustedLightBlock.SignedHeader.NextValidatorsHash),

@@ -5,7 +5,7 @@ import { Test } from "forge-std/Test.sol";
 
 import { SpectreClient } from "contracts/light-clients/spectre/SpectreClient.sol";
 import { Misbehaviour } from "contracts/light-clients/spectre/modules/Misbehaviour.sol";
-import { IICS07TendermintMsgs } from "contracts/light-clients/spectre/messages/IICS07TendermintMsgs.sol";
+import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 import { ISpectreClientMsgs } from "contracts/light-clients/spectre/messages/ISpectreClientMsgs.sol";
 import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { ISignatureVerifier } from "contracts/light-clients/spectre/interfaces/ISignatureVerifier.sol";
@@ -61,7 +61,7 @@ contract DummyUpdateClientForMisbehaviour is IUpdateClient {
     }
 }
 
-contract MisbehaviourTest is Test, IICS07TendermintMsgs {
+contract MisbehaviourTest is Test, ISpectreTendermintMsgs {
     SpectreClient internal lightClient;
     Misbehaviour internal misbehaviourVerifier;
     MockVerifierForMisbehaviour internal mockVerifier;
@@ -79,10 +79,10 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     string internal constant CHAIN_ID = "test-chain-0";
 
     struct LegacyMsgSubmitMisbehaviour {
-        IICS07TendermintMsgs.ClientState clientState;
+        ISpectreTendermintMsgs.ClientState clientState;
         ISpectreClientMsgs.Misbehaviour misbehaviour;
-        IICS07TendermintMsgs.ConsensusState trustedConsensusState1;
-        IICS07TendermintMsgs.ConsensusState trustedConsensusState2;
+        ISpectreTendermintMsgs.ConsensusState trustedConsensusState1;
+        ISpectreTendermintMsgs.ConsensusState trustedConsensusState2;
         uint128 time;
     }
 
@@ -325,8 +325,8 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     }
 
     function _buildValidMisbehaviourMsg() internal view returns (ISpectreClientMsgs.MsgSubmitMisbehaviour memory) {
-        IICS07TendermintMsgs.Header memory header1 = _buildHeader(15, bytes32(uint256(0xAAA1)));
-        IICS07TendermintMsgs.Header memory header2 = _buildHeader(15, bytes32(uint256(0xAAA2)));
+        ISpectreTendermintMsgs.Header memory header1 = _buildHeader(15, bytes32(uint256(0xAAA1)));
+        ISpectreTendermintMsgs.Header memory header2 = _buildHeader(15, bytes32(uint256(0xAAA2)));
 
         ISpectreClientMsgs.Misbehaviour memory misbehaviour_ =
             ISpectreClientMsgs.Misbehaviour({ header1: header1, header2: header2 });
@@ -385,14 +385,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         return state.isFrozen;
     }
 
-    function _buildHeader(
-        uint64 height,
-        bytes32 lastBlockIdHash
-    )
-        internal
-        view
-        returns (IICS07TendermintMsgs.Header memory)
-    {
+    function _buildHeader(uint64 height, bytes32 lastBlockIdHash) internal view returns (ISpectreTendermintMsgs.Header memory) {
         return _buildHeaderWithSets(height, lastBlockIdHash, valset_, valset_);
     }
 
@@ -404,7 +397,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
     )
         internal
         pure
-        returns (IICS07TendermintMsgs.Header memory)
+        returns (ISpectreTendermintMsgs.Header memory)
     {
         bytes32 currentValSetHash = HeaderLib.hashValSet(currentValSet);
         BlockHeader memory blockHeader = BlockHeader({
@@ -448,7 +441,7 @@ contract MisbehaviourTest is Test, IICS07TendermintMsgs {
         IICS02ClientMsgs.Height memory trustedHeight =
             IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 10 });
 
-        return IICS07TendermintMsgs.Header({ signedHeader: signedHeader, trustedHeight: trustedHeight });
+        return ISpectreTendermintMsgs.Header({ signedHeader: signedHeader, trustedHeight: trustedHeight });
     }
 
     function _attackerValidatorSet() internal pure returns (ValidatorSet memory validatorSet) {

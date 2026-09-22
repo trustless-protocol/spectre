@@ -26,7 +26,7 @@ func TestCosmosUpdate_GobRoundTrip(t *testing.T) {
 			Active:                 []bool{true, true, true, false},
 		},
 	}
-	newValSet := spectreContract.IICS07TendermintMsgsValidatorSet{TotalVotingPower: 42}
+	newValSet := spectreContract.ISpectreTendermintMsgsValidatorSet{TotalVotingPower: 42}
 
 	payload, err := EncodeCosmosUpdate(kindConsensusUpdate, appMsg, newValSet)
 	if err != nil {
