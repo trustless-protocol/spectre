@@ -86,7 +86,10 @@ for i in "${!USER_KEYS[@]}"; do
     "$GAIAD" keys add "${USER_KEYS[$i]}" --keyring-backend "$KEYRING" --home "$PRIMARY_HOME"
 done
 
-jq '.app_state["gov"]["params"]["voting_period"]="30s"' "$PRIMARY_HOME/config/genesis.json" > "$PRIMARY_HOME/config/tmp_genesis.json"
+# The four-validator local network can take roughly one consensus block per
+# 30 seconds on a loaded dev host. Give the automated validator votes one full
+# block to land before the proposal expires.
+jq '.app_state["gov"]["params"]["voting_period"]="60s"' "$PRIMARY_HOME/config/genesis.json" > "$PRIMARY_HOME/config/tmp_genesis.json"
 mv "$PRIMARY_HOME/config/tmp_genesis.json" "$PRIMARY_HOME/config/genesis.json"
 jq '.app_state["gov"]["params"]["expedited_voting_period"]="20s"' "$PRIMARY_HOME/config/genesis.json" > "$PRIMARY_HOME/config/tmp_genesis.json"
 mv "$PRIMARY_HOME/config/tmp_genesis.json" "$PRIMARY_HOME/config/genesis.json"

@@ -236,6 +236,7 @@ ENCLAVE="$ENCLAVE" ETH_PIN="$ETH_PIN" RUN_DIR="$RUN_DIR" \
 # shellcheck disable=SC1091
 . "$RUN_DIR/eth.env" # ETH_RPC / ETH_WS / ETH_BEACON_API
 L1_RPC_URL=$ETH_RPC
+L1_CHAIN_ID=$(cast chain-id --rpc-url "$L1_RPC_URL")
 
 # Validate up front: fail fast if the beacon endpoint itself is unreachable (wrong port
 # discovered, or the CL service is down) instead of the finality wait silently
@@ -296,10 +297,11 @@ done
 [ -n "$SEQ_EL_SVC" ] || SEQ_EL_SVC=${OP_EL_SVCS[0]}
 L2_RPC_URL="http://$(kurtosis port print "$ENCLAVE" "$SEQ_EL_SVC" rpc | sed 's|^http://||')"
 L2_WS_URL="ws://$(kurtosis port print "$ENCLAVE" "$SEQ_EL_SVC" ws 2>/dev/null | sed 's|^ws://||')" || L2_WS_URL=""
+L2_CHAIN_ID=$(cast chain-id --rpc-url "$L2_RPC_URL")
 
 log "L1 RPC:            $L1_RPC_URL"
 log "replica op-node:   $OP_NODE_RPC_URL   ($REPLICA_SVC)"
-log "sequencer op-geth: $L2_RPC_URL   ($SEQ_EL_SVC)"
+log "sequencer op-geth: $L2_RPC_URL   ($SEQ_EL_SVC, chain $L2_CHAIN_ID)"
 
 # Contract addresses from op-deployer's state artifact.
 rm -rf "$RUN_DIR/op-deployer"
@@ -350,6 +352,7 @@ ENV_FILE=$RUN_DIR/attestor.env
 cat > "$ENV_FILE" <<EOF
 export L1_RPC_URL=$L1_RPC_URL
 export L1_WS_URL=$ETH_WS
+export L1_CHAIN_ID=$L1_CHAIN_ID
 export ETH_BEACON_API=$ETH_BEACON_API
 export OP_NODE_RPC_URL=$OP_NODE_RPC_URL
 export L2_RPC_URL=$L2_RPC_URL

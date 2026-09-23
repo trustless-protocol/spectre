@@ -113,6 +113,7 @@ RUN_DIR=${ATTESTOR_RUN_DIR:-${RUN_DIR:-$REPO_ROOT/.op-attestor-run}}
 REPLICA_WAIT_SECS=${REPLICA_WAIT_SECS:-300}
 
 : "${L1_RPC_URL:?L1_RPC_URL is required (Ethereum L1 execution RPC)}"
+: "${L1_CHAIN_ID:?L1_CHAIN_ID is required (the L1 settlement-chain identity)}"
 : "${L2_CHAIN_ID:?L2_CHAIN_ID is required (the L2 attestation signing domain)}"
 : "${ATTESTOR_SIGNING_KEY:?ATTESTOR_SIGNING_KEY is required (32-byte Ed25519 seed in hex)}"
 export ATTESTOR_SIGNING_KEY
@@ -258,6 +259,7 @@ cat > "$CONFIG" <<EOF
       "src_chain": "$SRC_CHAIN",
       "config": {
         "l1_rpc_url": "$L1_RPC_URL",
+        "l1_chain_id": $L1_CHAIN_ID,
         "op_node_rpc_url": "$OP_NODE_RPC_URL",
         "dispute_game_factory": "$DISPUTE_GAME_FACTORY",
         "respected_game_type": $RESPECTED_GAME_TYPE,
