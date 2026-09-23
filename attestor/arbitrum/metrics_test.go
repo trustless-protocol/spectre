@@ -46,11 +46,11 @@ func TestMetricsExposeBoundedOperatorSignals(t *testing.T) {
 		}
 	}
 	for _, name := range []string{
-		"fast_ibc_arbitrum_attestor_nitro_unsafe_head",
-		"fast_ibc_arbitrum_attestor_assertions_pending",
-		"fast_ibc_arbitrum_attestor_runtime_refresh_failures_total",
-		"fast_ibc_arbitrum_attestor_finalized_divergence_total",
-		"fast_ibc_arbitrum_attestor_persistence_failures_total",
+		"spectre_arbitrum_attestor_nitro_unsafe_head",
+		"spectre_arbitrum_attestor_assertions_pending",
+		"spectre_arbitrum_attestor_runtime_refresh_failures_total",
+		"spectre_arbitrum_attestor_finalized_divergence_total",
+		"spectre_arbitrum_attestor_persistence_failures_total",
 	} {
 		if !got[name] {
 			t.Fatalf("missing metric family %s", name)

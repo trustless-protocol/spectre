@@ -17,7 +17,7 @@ Check the local boundary after a deployment:
 
 ```sh
 grpcurl -plaintext -d '{}' 127.0.0.1:3001 attestor.AttestorService/Info
-curl -fsS http://127.0.0.1:9090/metrics | grep fast_ibc_.*_attestor
+curl -fsS http://127.0.0.1:9090/metrics | grep spectre_.*_attestor
 ```
 
 Every production gRPC request must include the configured `src_chain`; an
@@ -25,7 +25,7 @@ empty value is rejected rather than inferred from a single feed.
 
 ## What to watch
 
-The Arbitrum endpoint exports `fast_ibc_arbitrum_attestor_*`, labeled only by
+The Arbitrum endpoint exports `spectre_arbitrum_attestor_*`, labeled only by
 `chain` (never block or assertion hash). The important signals are:
 
 | Signal | Meaning | First action |
@@ -37,7 +37,7 @@ The Arbitrum endpoint exports `fast_ibc_arbitrum_attestor_*`, labeled only by
 | `finalized_divergence_total`, `finalized_reorg_total`, or `mismatch_records` increases | Earlier evidence disagreed with the authoritative recheck | Follow the divergence procedure below |
 | `persistence_failures_total` increases | New feed state was not made durable | Stop relay progression, repair storage, and restart only after state-file inspection |
 
-OP uses the analogous `fast_ibc_op_attestor_*` metrics. `Info` is a useful
+OP uses the analogous `spectre_op_attestor_*` metrics. `Info` is a useful
 point-in-time diagnostic but is not a replacement for these histories.
 
 ## `VerifyStateRoot` mismatch or divergence

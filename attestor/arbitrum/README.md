@@ -144,7 +144,7 @@ the public key that must be pinned in the matching Cosmos client profile.
 attestor image, and connects it to the Nitro HTTP and WebSocket endpoints
 published by Kurtosis. Its runtime files live in `.arbitrum-attestor-run/`;
 assertion state lives in the persistent
-`fast-ibc-arbitrum-attestor-data` Docker volume.
+`spectre-arbitrum-attestor-data` Docker volume.
 
 The resulting local flow matches OP:
 
@@ -228,7 +228,7 @@ Keep `config.json` in a directory mounted into the container, then run:
 ```
 
 The image contains only the attestor. `attested-roots.json` is persisted in the
-`fast-ibc-attestor-data` Docker volume. The attestor gRPC service is published
+`spectre-attestor-data` Docker volume. The attestor gRPC service is published
 at `127.0.0.1:50051` by default. The configured L1 and Nitro endpoints must be
 reachable from inside the container.
 
@@ -311,7 +311,7 @@ The standard gRPC health service is also registered for readiness checks.
 
 ## Operations
 
-Prometheus metrics use the `fast_ibc_arbitrum_attestor_*` prefix and only the
+Prometheus metrics use the `spectre_arbitrum_attestor_*` prefix and only the
 configured `chain` label. They cover Nitro heads and refresh failures, L1
 assertion backlog, provisional roots, divergence/reorg records, and durable
 save failures. See the shared [attestor operations runbook](../../docs/ATTESTOR_RUNBOOK.md)

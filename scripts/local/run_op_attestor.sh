@@ -292,7 +292,7 @@ log "attestor is up. Useful commands:"
 cat <<EOF
 
   tail -f $RUN_DIR/attestor.log
-  curl -s localhost:$METRICS_PORT/metrics | grep fast_ibc_op_attestor
+  curl -s localhost:$METRICS_PORT/metrics | grep spectre_op_attestor
   grpcurl -plaintext -d '{}' 127.0.0.1:$GRPC_PORT attestor.AttestorService/Info
   grpcurl -plaintext -d '{"src_chain":"$SRC_CHAIN"}' 127.0.0.1:$GRPC_PORT attestor.AttestorService/AttestedUpTo
 
