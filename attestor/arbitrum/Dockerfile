@@ -26,8 +26,8 @@ RUN apt-get update \
 
 RUN groupadd --gid 10001 attestor \
     && useradd --uid 10001 --gid attestor --create-home attestor \
-    && mkdir -p /config /run/fast-ibc /var/lib/fast-ibc/attestor \
-    && chown -R attestor:attestor /run/fast-ibc /var/lib/fast-ibc/attestor
+    && mkdir -p /config /run/spectre /var/lib/spectre/attestor \
+    && chown -R attestor:attestor /run/spectre /var/lib/spectre/attestor
 
 COPY --from=attestor-builder /out/attestor /usr/local/bin/attestor
 COPY --chmod=0755 arbitrum/docker/entrypoint.sh /usr/local/bin/attestor-entrypoint
@@ -38,9 +38,9 @@ WORKDIR /config
 ENV ATTESTOR_CONFIG=/config/config.json \
     ATTESTOR_GRPC_LISTEN_ADDRESS=0.0.0.0:50051 \
     ATTESTOR_METRICS_LISTEN_ADDRESS=0.0.0.0:9090 \
-    ATTESTOR_STATE_PATH=/var/lib/fast-ibc/attestor/attested-roots.json
+    ATTESTOR_STATE_PATH=/var/lib/spectre/attestor/attested-roots.json
 
-VOLUME ["/var/lib/fast-ibc/attestor"]
+VOLUME ["/var/lib/spectre/attestor"]
 EXPOSE 50051 9090
 
 ENTRYPOINT ["/usr/local/bin/attestor-entrypoint"]

@@ -342,7 +342,7 @@ Pure ingest smoke with no replica at all: public L1 RPC + a dead
 
 ## Metrics reference
 
-All under `fast_ibc_op_attestor_*`, labeled `chain` (= `src_chain`):
+All under `spectre_op_attestor_*`, labeled `chain` (= `src_chain`):
 
 | Metric | Type | Meaning |
 |---|---|---|

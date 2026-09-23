@@ -3,7 +3,7 @@ package arbitrum
 import "github.com/prometheus/client_golang/prometheus"
 
 const (
-	arbitrumMetricsNamespace = "fast_ibc"
+	arbitrumMetricsNamespace = "spectre"
 	arbitrumMetricsSubsystem = "arbitrum_attestor"
 )
 

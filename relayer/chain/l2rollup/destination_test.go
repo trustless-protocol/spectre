@@ -103,6 +103,31 @@ func TestRelayWithUpdate(t *testing.T) {
 			t.Fatalf("the update is not first (%T); the packet proofs verify against the state it installs",
 				folded.atomic[0][0])
 		}
+		updateMsg := folded.atomic[0][0].(*clienttypes.MsgUpdateClient)
+		if updateMsg.ClientId != "08-wasm-3" {
+			t.Fatalf("folded update client id = %q, want destination wasm client %q", updateMsg.ClientId, "08-wasm-3")
+		}
+	})
+
+	// Relay.Module passes its source client id to a Destination. On this path the
+	// source id exists only on the L2 router; the update must target the paired
+	// Wasm client that exists on Cosmos.
+	t.Run("updates the destination wasm client rather than the L2 source client", func(t *testing.T) {
+		const height = 4210
+		handler := &countingTxHandler{}
+		d := &Destination{worker: services.NewWorker(handler, nil), clientID: "08-wasm-3"}
+		if err := d.RelayWithUpdate(context.Background(), "op-client-0",
+			chain.ClientUpdate{Height: height, Payloads: [][]byte{{0xaa}}},
+			[]chain.RelayPacket{l2Packet(t, 1, height)}); err != nil {
+			t.Fatalf("folded relay: %v", err)
+		}
+		updateMsg, ok := handler.atomic[0][0].(*clienttypes.MsgUpdateClient)
+		if !ok {
+			t.Fatalf("first message = %T, want MsgUpdateClient", handler.atomic[0][0])
+		}
+		if updateMsg.ClientId != "08-wasm-3" {
+			t.Fatalf("update client id = %q, want destination wasm client %q", updateMsg.ClientId, "08-wasm-3")
+		}
 	})
 
 	// The expensive half of F1. Unfolded, the proof height is READ from the chain and

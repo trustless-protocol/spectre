@@ -71,7 +71,7 @@
 #   STARTUP_WAIT_SECS (600)
 #   ATTESTOR_DOCKER_IMAGE (fast-ibc-arbitrum-attestor:local)
 #   ATTESTOR_CONTAINER_NAME (fast-ibc-arbitrum-attestor)
-#   ATTESTOR_STATE_VOLUME (fast-ibc-arbitrum-attestor-data)
+#   ATTESTOR_STATE_VOLUME (spectre-arbitrum-attestor-data)
 #   DETACH (0)                         exit after readiness and leave container running
 
 set -euo pipefail
@@ -200,7 +200,7 @@ RUN_DIR=${ATTESTOR_RUN_DIR:-${RUN_DIR:-$REPO_ROOT/.arbitrum-attestor-run}}
 STARTUP_WAIT_SECS=${STARTUP_WAIT_SECS:-600}
 ATTESTOR_DOCKER_IMAGE=${ATTESTOR_DOCKER_IMAGE:-fast-ibc-arbitrum-attestor:local}
 ATTESTOR_CONTAINER_NAME=${ATTESTOR_CONTAINER_NAME:-fast-ibc-arbitrum-attestor}
-ATTESTOR_STATE_VOLUME=${ATTESTOR_STATE_VOLUME:-fast-ibc-arbitrum-attestor-data}
+ATTESTOR_STATE_VOLUME=${ATTESTOR_STATE_VOLUME:-spectre-arbitrum-attestor-data}
 DETACH=${DETACH:-0}
 
 fail() {
@@ -350,7 +350,7 @@ jq -n \
         assertion_start_block: $assertion_start_block,
         assertion_poll_interval: $assertion_poll_interval,
         assertion_max_block_range: $assertion_max_block_range,
-        attestor_state_path: "/var/lib/fast-ibc/attestor/attested-roots.json",
+        attestor_state_path: "/var/lib/spectre/attestor/attested-roots.json",
         nitro_rpc_url: $nitro_rpc_url,
         nitro_ws_url: $nitro_ws_url
     }' >"$CONFIG"
@@ -390,7 +390,7 @@ docker run \
     --publish "127.0.0.1:$GRPC_PORT:50051" \
     --publish "127.0.0.1:$METRICS_PORT:9090" \
     --volume "$RUN_DIR:/config:ro" \
-    --volume "$ATTESTOR_STATE_VOLUME:/var/lib/fast-ibc/attestor" \
+    --volume "$ATTESTOR_STATE_VOLUME:/var/lib/spectre/attestor" \
     --env ATTESTOR_CONFIG=/config/config.json \
     --env ATTESTOR_SIGNING_KEY \
     "$ATTESTOR_DOCKER_IMAGE" >/dev/null

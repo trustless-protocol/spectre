@@ -20,8 +20,14 @@ fi
 
 chain_id="test-ibc-eth"
 keyring="test"
+# The shared voting helpers use uppercase shell variables. Keep the local names
+# above for this script's own CLI calls and initialise the helpers explicitly.
+CHAIN_ID=$chain_id
+KEYRING=$keyring
 signer="cosmos10d07y265gmmuvt4z0w9aw880jnsr700j6zn9kn"
-wasm_byte_code="$(gzip -n -c "$artifact_path" | base64 -w 0)"
+# GNU base64 spells this `-w 0`, whereas macOS/BSD base64 uses `-b`.  Remove
+# wrapping explicitly so the proposal payload is portable across both hosts.
+wasm_byte_code="$(gzip -n -c "$artifact_path" | base64 | tr -d '\n')"
 
 jq -n \
   --arg signer "$signer" \
@@ -56,8 +62,18 @@ proposal_id="$(
 )"
 sleep 5
 vote_default_validators "$proposal_id"
-sleep 30
 
 checksum="$(wasm_checksum_from_proposal proposal.json)"
+# The local Cosmos network produces a block roughly every 30 seconds and its
+# governance voting period is one minute.  Poll the chain rather than assuming
+# a fixed delay, so this works reliably on slower developer machines too.
+for _ in $(seq 1 45); do
+  if wasm_checksum_is_stored "$checksum"; then
+    echo "Checksum: 0x$checksum"
+    exit 0
+  fi
+  sleep 2
+done
+
 assert_wasm_checksum_stored "$checksum"
 echo "Checksum: 0x$checksum"

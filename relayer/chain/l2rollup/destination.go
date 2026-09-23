@@ -220,7 +220,7 @@ func (d *Destination) SupportsUpdatePacketFolding() bool {
 // proofs target the height this update installs rather than the height the
 // on-chain client still reports, which is only sound because requireProofsBuiltAt
 // checks it first.
-func (d *Destination) RelayWithUpdate(ctx context.Context, clientID string, update chain.ClientUpdate, packets []chain.RelayPacket) error {
+func (d *Destination) RelayWithUpdate(ctx context.Context, _ string, update chain.ClientUpdate, packets []chain.RelayPacket) error {
 	if err := ctx.Err(); err != nil {
 		return err // shutting down — do not start a folded tx
 	}
@@ -234,9 +234,6 @@ func (d *Destination) RelayWithUpdate(ctx context.Context, clientID string, upda
 	if !ok {
 		return fmt.Errorf("l2 dest: transaction handler does not support atomic update/packet batches")
 	}
-	if clientID == "" {
-		clientID = d.clientID
-	}
 	signer, err := d.worker.TxHandler.CosmosSignerAddress()
 	if err != nil {
 		return fmt.Errorf("l2 dest: signer address: %w", err)
@@ -248,7 +245,12 @@ func (d *Destination) RelayWithUpdate(ctx context.Context, clientID string, upda
 		return err
 	}
 
-	updateMsg, err := wasmclient.BuildUpdateClient(signer, clientID, update.Payloads[0])
+	// The module's client-id argument names the source client on the L2 router.
+	// This Cosmos destination must always update its own Wasm client instead.
+	// Passing the source id here produces a validly encoded MsgUpdateClient that
+	// Cosmos rejects because no such client is registered in its light-client
+	// router.
+	updateMsg, err := wasmclient.BuildUpdateClient(signer, d.clientID, update.Payloads[0])
 	if err != nil {
 		return err
 	}
