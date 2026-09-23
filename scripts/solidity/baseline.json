@@ -341,7 +341,7 @@
     "relayer/bindings/UpdateClient/binding.go": "a4dcb7d13c62b76500fa726665ff55c4c691ad1a94c97b3e7ee9f131c422e7ed",
     "test/fixtures/witness_hash_vectors.json": "379221dfeaa1fc78facbe41fe77b2c2c4120f2fefc71c3f4d2f002eb21f007cb"
   },
-  "test_count": 35,
+  "test_count": 36,
   "semantic_artifact_digests": {
     "abi/bytecode/SpectreClient.json": {
       "abi_sha256": "28275e2450b4b0c2c5a8e03366372efacd896b74e780ed4c4a01dafbd6b3e6a5",

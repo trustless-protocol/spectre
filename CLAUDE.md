@@ -107,11 +107,13 @@ relayer/
 
 ## Documentation map
 
-`docs/` is deliberately small: four operational runbooks, nothing else. Architecture, design conventions, security doctrine, test policy, observability guides, and benchmark results are **not** documented in this repo — the code is their only description, and performance numbers exist only in runs you make yourself. Earlier versions of those documents are recoverable from git history (`git log --diff-filter=D -- docs/`) but are stale by definition; do not resurrect a claim from one without re-verifying it against the code. Read the runbook whose domain the task touches.
+`docs/` is deliberately small: six operational runbooks, nothing else. Architecture, design conventions, security doctrine, test policy, observability guides, and benchmark results are **not** documented in this repo — the code is their only description, and performance numbers exist only in runs you make yourself. Earlier versions of those documents are recoverable from git history (`git log --diff-filter=D -- docs/`) but are stale by definition; do not resurrect a claim from one without re-verifying it against the code. Read the runbook whose domain the task touches.
 
 | Document | When to read |
 |----------|--------------|
+| [docs/ATTESTOR_RUNBOOK.md](docs/ATTESTOR_RUNBOOK.md) | Operating and recovering the attestor services |
 | [docs/E2E.md](docs/E2E.md) | Bringing up a devnet or running an end-to-end relay |
+| [docs/ERC20_LOCKBOX_ADAPTER.md](docs/ERC20_LOCKBOX_ADAPTER.md) | Deploying or operating an ERC20 lockbox adapter |
 | [docs/L2_CLIENTS.md](docs/L2_CLIENTS.md) | OP, Base, or Arbitrum ICS-08 client work |
 | [docs/PRODUCTION_DEPLOYMENT.md](docs/PRODUCTION_DEPLOYMENT.md) | Governance-gated deployment, escrow launch gate, governed client migration |
 | [docs/MISBEHAVIOUR_RUNBOOK.md](docs/MISBEHAVIOUR_RUNBOOK.md) | Cosmos equivocation incident response |

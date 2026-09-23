@@ -7,6 +7,10 @@
       "classification": "non-shadowfork"
     },
     {
+      "path": "test/apps/ics20/ERC20LockboxAdapterTest.t.sol",
+      "classification": "non-shadowfork"
+    },
+    {
       "path": "test/apps/ics20/IBCERC20Test.t.sol",
       "classification": "non-shadowfork"
     },
@@ -143,5 +147,5 @@
       "classification": "non-shadowfork"
     }
   ],
-  "current_count": 35
+  "current_count": 36
 }
