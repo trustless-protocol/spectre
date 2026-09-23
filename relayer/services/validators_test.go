@@ -4,14 +4,14 @@ import (
 	"context"
 	"errors"
 	relayerclient "relayer/client"
-	"relayer/prover"
+	"relayer/prover/witness"
 	"testing"
 )
 
 func TestFindHighestFeasibleHop_SearchRejectsAlreadyCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err := findHighestFeasibleHop(ctx, cosmosClientDeps{}, 1, 10, "chain-1", pinnedCosmosValidatorSet{}, nil)
+	_, err := findHighestFeasibleHop(ctx, cosmosClientDeps{}, 1, 10, "chain-1", pinnedCosmosValidatorSet{}, 4, nil)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v, want context.Canceled", err)
 	}
@@ -23,7 +23,7 @@ func TestSelectSignaturesForPinnedSet_ChoosesPinnedQuorum(t *testing.T) {
 	pubkey2 := [32]byte{0x03}
 	pubkey3 := [32]byte{0x04}
 
-	candidates := []prover.ValidatorSignature{
+	candidates := []witness.ValidatorSignature{
 		{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
 		{Index: 1, PublicKey: pubkey1[:], Power: 40, Active: true},
 		{Index: 2, PublicKey: pubkey2[:], Power: 30, Active: true},
@@ -36,7 +36,7 @@ func TestSelectSignaturesForPinnedSet_ChoosesPinnedQuorum(t *testing.T) {
 		totalPower:   100,
 	}
 
-	selected, err := selectSignaturesForPinnedSet(candidates, pinned)
+	selected, err := selectSignaturesForPinnedSet(candidates, pinned, 4)
 	if err != nil {
 		t.Fatalf("select signatures: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestPinnedOverlapPower(t *testing.T) {
 	pubkey1 := [32]byte{0x02}
 	pubkey2 := [32]byte{0x03}
 
-	candidates := []prover.ValidatorSignature{
+	candidates := []witness.ValidatorSignature{
 		{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
 		{Index: 1, PublicKey: pubkey1[:], Power: 40, Active: true}, // not pinned: contributes 0
 	}
@@ -108,7 +108,7 @@ func TestSelectSignaturesForPinnedSet_RejectsInsufficientOverlap(t *testing.T) {
 	pubkey0 := [32]byte{0x01}
 	pubkey1 := [32]byte{0x02}
 
-	candidates := []prover.ValidatorSignature{
+	candidates := []witness.ValidatorSignature{
 		{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
 	}
 	pinned := pinnedCosmosValidatorSet{
@@ -118,7 +118,7 @@ func TestSelectSignaturesForPinnedSet_RejectsInsufficientOverlap(t *testing.T) {
 		totalPower:   100,
 	}
 
-	if _, err := selectSignaturesForPinnedSet(candidates, pinned); err == nil {
+	if _, err := selectSignaturesForPinnedSet(candidates, pinned, 4); err == nil {
 		t.Fatal("expected insufficient pinned quorum error")
 	}
 }

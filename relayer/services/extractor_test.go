@@ -1,4 +1,4 @@
-package prover
+package services
 
 import (
 	"crypto/ed25519"
@@ -6,13 +6,14 @@ import (
 	"time"
 
 	relayerclient "relayer/client"
+	"relayer/prover/witness"
 
 	cmted25519 "github.com/cometbft/cometbft/crypto/ed25519"
 	"github.com/cometbft/cometbft/types"
 )
 
 func TestExtractValidatorSignatures_NilLightBlock(t *testing.T) {
-	_, err := ExtractValidatorSignatures(nil, "test-chain")
+	_, err := ExtractValidatorSignatures(nil, "test-chain", 4)
 	if err == nil {
 		t.Fatal("expected error for nil light block")
 	}
@@ -22,7 +23,7 @@ func TestExtractValidatorSignatures_NilCommit(t *testing.T) {
 	lb := &relayerclient.LightBlock{
 		SignedHeader: types.SignedHeader{Commit: nil},
 	}
-	_, err := ExtractValidatorSignatures(lb, "test-chain")
+	_, err := ExtractValidatorSignatures(lb, "test-chain", 4)
 	if err == nil {
 		t.Fatal("expected error for nil commit")
 	}
@@ -35,7 +36,7 @@ func TestExtractValidatorSignatures_EmptyValidators(t *testing.T) {
 		},
 		ValSet: types.ValidatorSet{Validators: []*types.Validator{}},
 	}
-	_, err := ExtractValidatorSignatures(lb, "test-chain")
+	_, err := ExtractValidatorSignatures(lb, "test-chain", 4)
 	if err == nil {
 		t.Fatal("expected error for empty validators")
 	}
@@ -113,7 +114,7 @@ func TestExtractValidatorSignatures_ReachesQuorum(t *testing.T) {
 	chainID := "test-chain"
 	// 4 validators with equal power; 3 sign = 75% ≥ 2/3.
 	lb := makeSignedCommit(t, chainID, []int64{10, 10, 10, 10}, []bool{true, true, true, false})
-	got, err := ExtractValidatorSignatures(lb, chainID)
+	got, err := ExtractValidatorSignatures(lb, chainID, 4)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +142,7 @@ func TestExtractValidatorSignatures_InsufficientPower(t *testing.T) {
 	chainID := "test-chain"
 	// 4 validators; only 2 of 4 sign = 50% < 2/3.
 	lb := makeSignedCommit(t, chainID, []int64{10, 10, 10, 10}, []bool{true, true, false, false})
-	_, err := ExtractValidatorSignatures(lb, chainID)
+	_, err := ExtractValidatorSignatures(lb, chainID, 4)
 	if err == nil {
 		t.Fatal("expected insufficient voting power error")
 	}
@@ -150,7 +151,7 @@ func TestExtractValidatorSignatures_InsufficientPower(t *testing.T) {
 func TestExtractValidatorSignatures_AllAbsent(t *testing.T) {
 	chainID := "test-chain"
 	lb := makeSignedCommit(t, chainID, []int64{10}, []bool{false})
-	_, err := ExtractValidatorSignatures(lb, chainID)
+	_, err := ExtractValidatorSignatures(lb, chainID, 4)
 	if err == nil {
 		t.Fatal("expected error when no signatures present")
 	}
@@ -160,7 +161,7 @@ func TestExtractValidatorSignatures_GreedyPicksSmallestPrefix(t *testing.T) {
 	chainID := "test-chain"
 	// One dominant validator (70%) covers quorum alone; extractor should stop at 1.
 	lb := makeSignedCommit(t, chainID, []int64{70, 10, 10, 10}, []bool{true, true, true, true})
-	got, err := ExtractValidatorSignatures(lb, chainID)
+	got, err := ExtractValidatorSignatures(lb, chainID, 4)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -177,7 +178,7 @@ func TestExtractValidatorSignatures_AllowedIndices(t *testing.T) {
 	lb := makeSignedCommit(t, chainID, []int64{30, 25, 25, 20}, []bool{true, true, true, true})
 
 	allowed := map[uint32]bool{1: true, 2: true, 3: true}
-	got, err := ExtractValidatorSignatures(lb, chainID, allowed)
+	got, err := ExtractValidatorSignatures(lb, chainID, 4, allowed)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -193,14 +194,14 @@ func TestExtractValidatorSignatures_AllowedIndices(t *testing.T) {
 		t.Fatalf("selected power %d below quorum %d", accumulated, quorum)
 	}
 
-	_, err = ExtractValidatorSignatures(lb, chainID, map[uint32]bool{3: true})
+	_, err = ExtractValidatorSignatures(lb, chainID, 4, map[uint32]bool{3: true})
 	if err == nil {
 		t.Fatal("expected insufficient voting power with too-small allowed subset")
 	}
 }
 
 func TestExtractValidatorSignatures_SortsSelectedSignersByIndex(t *testing.T) {
-	sigs := []ValidatorSignature{
+	sigs := []witness.ValidatorSignature{
 		{Index: 2, Power: 70},
 		{Index: 0, Power: 20},
 		{Index: 1, Power: 10},

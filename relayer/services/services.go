@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math/big"
 	spectreContract "relayer/bindings/SpectreClient"
 	client "relayer/client"
 	"relayer/prover"
+	"relayer/prover/witness"
 	"time"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
@@ -43,16 +43,18 @@ type TransactionHandler interface {
 	CosmosSignerAddress() (string, error)
 }
 
+// Prover is the async proof surface implemented by *prover.Service: submit
+// returns a deterministic ProofID immediately, GetProof reads the outcome on
+// the relayer's own cadence, WaitProof is the blocking convenience for
+// one-shot CLI flows. Retry/timeout policy belongs to the caller — see
+// submitAndAwaitProof for the relay-side mapping of the error taxonomy.
 type Prover interface {
-	GenerateProof(sigs []prover.ValidatorSignature) (
-		bucket int,
-		paddedSigs []prover.ValidatorSignature,
-		proof [8]*big.Int,
-		commitments [2]*big.Int,
-		commitmentPok [2]*big.Int,
-		err error,
-	)
-	GenerateMisbehaviourProof(header1Sigs, header2Sigs []prover.ValidatorSignature) (prover.MisbehaviourProof, error)
+	SubmitProof(sigs []witness.ValidatorSignature) (prover.ProofID, error)
+	// MaxBucket is the largest bucket the engine can prove — the ceiling
+	// signature selection must respect.
+	MaxBucket() int
+	GetProof(id prover.ProofID) (prover.ProofJob, error)
+	WaitProof(ctx context.Context, id prover.ProofID) (prover.ProofResult, error)
 }
 
 // Services holds the shared pieces the chain adapters reuse: the Worker (tx
@@ -85,14 +87,19 @@ func New(txHandler TransactionHandler, prover Prover, cosmosConfig Config, recov
 	}
 	svc := &Services{
 		cosmosConfig: cosmosConfig,
-		worker: &Worker{
-			txHandler,
-			prover,
-		},
+		worker:       NewWorker(txHandler, prover),
 		BatchBuilder: NewBatchBuilder(),
 		recovery:     recoveryStore,
 	}
 	svc.BatchBuilder.WithOwedAckSettler(svc.ClearAckDue)
+	return svc
+}
+
+// NewOneShot builds Services for operator commands. Proof jobs use WaitProof;
+// long-running relay services use New and poll GetProof on their own cadence.
+func NewOneShot(txHandler TransactionHandler, prover Prover, cosmosConfig Config) *Services {
+	svc := New(txHandler, prover, cosmosConfig)
+	svc.worker.awaitProof = submitAndWaitProof
 	return svc
 }
 
@@ -114,10 +121,7 @@ func NewWithPendingState(txHandler TransactionHandler, prover Prover, cosmosConf
 	}
 	svc := &Services{
 		cosmosConfig: cosmosConfig,
-		worker: &Worker{
-			txHandler,
-			prover,
-		},
+		worker:       NewWorker(txHandler, prover),
 		BatchBuilder: batchBuilder,
 		recovery:     recoveryStore,
 	}
@@ -229,7 +233,18 @@ type evmTimeoutScanOptions struct {
 
 func NewWorker(txHandler TransactionHandler, prover Prover) *Worker {
 	return &Worker{
-		txHandler,
-		prover,
+		TxHandler:  txHandler,
+		Prover:     prover,
+		awaitProof: submitAndAwaitProof,
+	}
+}
+
+// NewOneShotWorker is the operator-command variant: it blocks through
+// WaitProof rather than inheriting the relay loop's polling cadence.
+func NewOneShotWorker(txHandler TransactionHandler, prover Prover) *Worker {
+	return &Worker{
+		TxHandler:  txHandler,
+		Prover:     prover,
+		awaitProof: submitAndWaitProof,
 	}
 }

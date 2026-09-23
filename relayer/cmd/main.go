@@ -15,6 +15,9 @@ import (
 	"go.uber.org/zap"
 
 	"relayer/prover"
+	"relayer/prover/gnark"
+	"relayer/prover/memqueue"
+	"relayer/prover/memstore"
 	workergroup "relayer/workers"
 )
 
@@ -210,12 +213,32 @@ func runBounded(fn func(), budget time.Duration) error {
 	}
 }
 
+// buildProverService loads the gnark proof engine (backend resolved from
+// --gpu-prove / GPU_PROVE) and wraps it in the async proof service with the
+// in-memory queue and store adapters.
+func buildProverService(cmd *cobra.Command, binDir string) (*prover.Service, error) {
+	selectedBackend, hasBackendOverride, err := proofBackendFromFlags(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve proof backend: %w", err)
+	}
+	var engine *gnark.Engine
+	if hasBackendOverride {
+		engine, err = gnark.New(binDir, selectedBackend)
+	} else {
+		engine, err = gnark.NewFromEnv(binDir)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to load prover: %w", err)
+	}
+	return prover.New(engine, memqueue.New(0), memstore.New(0, 0), prover.Config{})
+}
+
 // proofBackendFromFlags resolves the GPU/CPU backend from --gpu-prove or the
 // GPU_PROVE env var. Returns (backend, true) when an explicit selection was
 // made, otherwise (nil, false) so the caller falls back to env-only defaults.
-func proofBackendFromFlags(cmd *cobra.Command) (prover.ProofBackend, bool, error) {
+func proofBackendFromFlags(cmd *cobra.Command) (gnark.ProofBackend, bool, error) {
 	flagSet := cmd.Flags().Changed(flagGPUProve)
-	envSet := prover.GPUProveEnvEnabled()
+	envSet := gnark.GPUProveEnvEnabled()
 	if !flagSet && !envSet {
 		return nil, false, nil
 	}
@@ -229,7 +252,7 @@ func proofBackendFromFlags(cmd *cobra.Command) (prover.ProofBackend, bool, error
 		useGPU = v
 	}
 
-	backend, err := prover.NewProofBackend(useGPU)
+	backend, err := gnark.NewProofBackend(useGPU)
 	if err != nil {
 		return nil, false, err
 	}

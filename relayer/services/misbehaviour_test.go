@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
-	updateclientContract "relayer/bindings/UpdateClient"
-	relayerclient "relayer/client"
-	"relayer/prover"
 	"strings"
 	"testing"
 	"time"
+
+	updateclientContract "relayer/bindings/UpdateClient"
+	relayerclient "relayer/client"
+	"relayer/prover"
+	"relayer/prover/witness"
 
 	cmted25519 "github.com/cometbft/cometbft/crypto/ed25519"
 	cmtproto "github.com/cometbft/cometbft/proto/tendermint/types"
@@ -50,7 +52,7 @@ func TestMisbehaviourEvidenceFromCandidates_DetectsPinnedSetEquivocation(t *test
 	header1 := misbehaviourHeaderCandidate{
 		height:    42,
 		blockHash: [32]byte{0xAA},
-		candidates: []prover.ValidatorSignature{
+		candidates: []witness.ValidatorSignature{
 			{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
 			{Index: 1, PublicKey: pubkey1[:], Power: 35, Active: true},
 		},
@@ -58,14 +60,14 @@ func TestMisbehaviourEvidenceFromCandidates_DetectsPinnedSetEquivocation(t *test
 	header2 := misbehaviourHeaderCandidate{
 		height:    42,
 		blockHash: [32]byte{0xBB},
-		candidates: []prover.ValidatorSignature{
+		candidates: []witness.ValidatorSignature{
 			{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
 			{Index: 2, PublicKey: pubkey2[:], Power: 25, Active: true},
 			{Index: 1, PublicKey: pubkey1[:], Power: 35, Active: true},
 		},
 	}
 
-	evidence, err := misbehaviourEvidenceFromCandidates(header1, header2, pinned, pinned)
+	evidence, err := misbehaviourEvidenceFromCandidates(header1, header2, pinned, pinned, 4)
 	if err != nil {
 		t.Fatalf("build evidence: %v", err)
 	}
@@ -75,7 +77,7 @@ func TestMisbehaviourEvidenceFromCandidates_DetectsPinnedSetEquivocation(t *test
 	if len(evidence.sigs1) != 2 || len(evidence.sigs2) != 2 {
 		t.Fatalf("selected signatures = %d/%d, want 2/2", len(evidence.sigs1), len(evidence.sigs2))
 	}
-	if _, err := misbehaviourEvidenceFromCandidates(header1, header1, pinned, pinned); err == nil {
+	if _, err := misbehaviourEvidenceFromCandidates(header1, header1, pinned, pinned, 4); err == nil {
 		t.Fatal("same block hash at the same height must be rejected")
 	}
 }
@@ -94,7 +96,7 @@ func TestMisbehaviourEvidenceFromCandidates_IgnoresConflictsWithoutPinnedQuorum(
 	header1 := misbehaviourHeaderCandidate{
 		height:    99,
 		blockHash: [32]byte{0xAA},
-		candidates: []prover.ValidatorSignature{
+		candidates: []witness.ValidatorSignature{
 			{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
 			{Index: 1, PublicKey: pubkey1[:], Power: 35, Active: true},
 		},
@@ -102,12 +104,12 @@ func TestMisbehaviourEvidenceFromCandidates_IgnoresConflictsWithoutPinnedQuorum(
 	header2 := misbehaviourHeaderCandidate{
 		height:    99,
 		blockHash: [32]byte{0xBB},
-		candidates: []prover.ValidatorSignature{
+		candidates: []witness.ValidatorSignature{
 			{Index: 0, PublicKey: pubkey0[:], Power: 40, Active: true},
 		},
 	}
 
-	if _, err := misbehaviourEvidenceFromCandidates(header1, header2, pinned, pinned); err == nil {
+	if _, err := misbehaviourEvidenceFromCandidates(header1, header2, pinned, pinned, 4); err == nil {
 		t.Fatal("conflicting headers without pinned quorum must be rejected")
 	}
 }
@@ -121,9 +123,9 @@ func TestMisbehaviourBatchProof_BuildsPinnedMetadata(t *testing.T) {
 		votingPowers: []uint64{50, 50},
 		totalPower:   100,
 	}
-	headerProof := prover.HeaderBatchProof{
+	headerProof := prover.ProofResult{
 		Bucket: 2,
-		PaddedSigs: []prover.ValidatorSignature{
+		PaddedSigs: []witness.ValidatorSignature{
 			{Index: 7, PublicKey: pubkey1[:], Active: true},
 			{Index: 0, PublicKey: make([]byte, 32), Active: false},
 		},
@@ -592,7 +594,7 @@ func TestMisbehaviourCandidateFromLightBlock_RejectsMalformedInput(t *testing.T)
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := misbehaviourCandidateFromLightBlock(tt.block(), "chain-a")
+			_, err := misbehaviourCandidateFromLightBlock(tt.block(), "chain-a", 4)
 			if err == nil {
 				t.Fatal("accepted a light block it cannot build a candidate from")
 			}

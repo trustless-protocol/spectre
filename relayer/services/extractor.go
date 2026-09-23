@@ -1,4 +1,4 @@
-package prover
+package services
 
 import (
 	"crypto/ed25519"
@@ -6,51 +6,16 @@ import (
 	"sort"
 
 	relayerclient "relayer/client"
+	"relayer/prover/witness"
 
 	"github.com/cometbft/cometbft/types"
 )
 
-// ValidatorSignature is the extracted Ed25519 signature data for one validator
-// in a block commit, alongside the canonical vote bytes that validator actually
-// signed (ready to feed into the circuit). The per-validator timestamp is part
-// of SignedBytes; as of #199 it is no longer carried separately because the
-// on-chain witness commits only the common prefix + block hash, not the full
-// per-slot vote.
-type ValidatorSignature struct {
-	Signature   []byte // 64 bytes: R || S
-	PublicKey   []byte // 32 bytes: compressed Ed25519 public key
-	Index       int    // index in the block's validator set
-	Power       int64  // validator voting power
-	SignedBytes []byte // cometbft.Commit.VoteSignBytes(chainID, idx)
-	// Active distinguishes real signers (true) from deterministic padding
-	// (false). Padding slots carry distinct dummy data so the in-circuit ECIP
-	// divisor stays well-formed; their contribution is gated to zero.
-	Active bool
-}
-
-// SharedBlockData is the subset of CanonicalVote fields that are identical
-// across every validator signing the same block. The on-chain SignatureVerifier
-// uses these fields to recompute each slot's canonical vote bytes via Encode.sol;
-// the circuit itself doesn't see them — it consumes only the per-slot signed
-// bytes via ValidatorSignature.SignedBytes.
-type SharedBlockData struct {
-	Height       int64
-	Round        int64
-	BlockIDHash  []byte // 32 bytes
-	PartSetTotal uint32
-	PartSetHash  []byte // 32 bytes
-	ChainID      string
-}
-
-// ExtractorResult bundles the valid signer candidates, the selected signer
-// prefix, and the shared block data needed by the on-chain quorum +
-// canonical-vote rebuild path.
-type ExtractorResult struct {
-	Shared     SharedBlockData
-	Candidates []ValidatorSignature
-	Signatures []ValidatorSignature
-}
-
+// ExtractValidatorSignatures lives in services rather than the prover package
+// because signature selection is relayer policy (greedy quorum, pinned-set
+// allowedIndices) and it needs cometbft + the RPC client; the prover only
+// consumes the resulting witness.ValidatorSignature slice (doc task #3).
+//
 // ExtractValidatorSignatures collects non-absent, locally-verified commit
 // signatures until their cumulative voting power exceeds 2/3 of
 // TotalVotingPower. Candidates are sorted by power for selection, while the
@@ -65,6 +30,7 @@ type ExtractorResult struct {
 func ExtractValidatorSignatures(
 	lightBlock *relayerclient.LightBlock,
 	chainID string,
+	maxBucket int,
 	allowedIndicesOpt ...map[uint32]bool,
 ) (*ExtractorResult, error) {
 	var allowedIndices map[uint32]bool
@@ -84,7 +50,7 @@ func ExtractValidatorSignatures(
 		return nil, fmt.Errorf("validator set is empty")
 	}
 
-	candidates := make([]ValidatorSignature, 0, len(commit.Signatures))
+	candidates := make([]witness.ValidatorSignature, 0, len(commit.Signatures))
 	for i, sig := range commit.Signatures {
 		if sig.BlockIDFlag == types.BlockIDFlagAbsent {
 			continue
@@ -107,7 +73,7 @@ func ExtractValidatorSignatures(
 		if !ed25519.Verify(pubKeyBytes, voteData, sig.Signature) {
 			continue
 		}
-		candidates = append(candidates, ValidatorSignature{
+		candidates = append(candidates, witness.ValidatorSignature{
 			Signature:   sig.Signature,
 			PublicKey:   pubKeyBytes,
 			Index:       i,
@@ -142,11 +108,11 @@ func ExtractValidatorSignatures(
 		return nil, fmt.Errorf("insufficient voting power: have %d, need %d of %d", accumulated, quorum, totalPower)
 	}
 
-	allCandidates := append([]ValidatorSignature(nil), candidates...)
-	selected := append([]ValidatorSignature(nil), candidates[:cutoff]...)
+	allCandidates := append([]witness.ValidatorSignature(nil), candidates...)
+	selected := append([]witness.ValidatorSignature(nil), candidates[:cutoff]...)
 	sortSelectedSignaturesByIndex(selected)
-	if len(selected) > MaxBucket() {
-		return nil, fmt.Errorf("quorum requires %d signers but largest bucket is %d", len(selected), MaxBucket())
+	if len(selected) > maxBucket {
+		return nil, fmt.Errorf("quorum requires %d signers but largest available bucket is %d", len(selected), maxBucket)
 	}
 
 	return &ExtractorResult{
@@ -163,8 +129,31 @@ func ExtractValidatorSignatures(
 	}, nil
 }
 
-func sortSelectedSignaturesByIndex(sigs []ValidatorSignature) {
+func sortSelectedSignaturesByIndex(sigs []witness.ValidatorSignature) {
 	sort.Slice(sigs, func(i, j int) bool {
 		return sigs[i].Index < sigs[j].Index
 	})
+}
+
+// SharedBlockData is the subset of CanonicalVote fields identical across every
+// validator signing one block. The on-chain SignatureVerifier rebuilds each
+// slot's canonical vote bytes from these via Encode.sol; the circuit itself
+// consumes only the per-slot SignedBytes.
+type SharedBlockData struct {
+	Height       int64
+	Round        int64
+	BlockIDHash  []byte // 32 bytes
+	PartSetTotal uint32
+	PartSetHash  []byte // 32 bytes
+	ChainID      string
+}
+
+// ExtractorResult bundles the valid signer candidates, the selected signer
+// set, and the shared block data needed by the on-chain quorum +
+// canonical-vote rebuild path. Selection policy lives in the relayer; this
+// type is the shape it hands back.
+type ExtractorResult struct {
+	Shared     SharedBlockData
+	Candidates []witness.ValidatorSignature
+	Signatures []witness.ValidatorSignature
 }

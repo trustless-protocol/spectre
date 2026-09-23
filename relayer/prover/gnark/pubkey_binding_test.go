@@ -1,6 +1,8 @@
-package prover
+package gnark
 
 import (
+	"relayer/prover/witness"
+
 	"crypto/ed25519"
 	"crypto/rand"
 	"math/big"
@@ -164,7 +166,7 @@ func TestCompressEdwardsToLE_BindsCanonicalRepresentation(t *testing.T) {
 
 // TestBatchCircuit_RejectsOffCurvePubkey is an end-to-end sanity check that a
 // perturbed pubkey coordinate does not solve under the honest witness
-// commitment. It is NOT the ZK-06 binding proof.
+// commitment. It is NOT the ZK-06 binding prover.
 //
 // The x+2 perturbation reuses the honest signature, which already fails the
 // Ed25519 verification equation against the moved point, so this test passes
@@ -187,18 +189,18 @@ func TestBatchCircuit_RejectsOffCurvePubkey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
-	padded, err := padWithDummies([]ValidatorSignature{{
+	padded, err := witness.PadWithDummies([]witness.ValidatorSignature{{
 		Signature:   ed25519.Sign(priv, vote),
 		PublicKey:   pub,
 		SignedBytes: vote,
 		Active:      true,
-	}}, generateDummySlots(n))
+	}}, n)
 	if err != nil {
-		t.Fatalf("padWithDummies: %v", err)
+		t.Fatalf("witness.PadWithDummies: %v", err)
 	}
-	hash, err := ComputeWitnessHash(padded)
+	hash, err := witness.ComputeWitnessHash(padded)
 	if err != nil {
-		t.Fatalf("ComputeWitnessHash: %v", err)
+		t.Fatalf("witness.ComputeWitnessHash: %v", err)
 	}
 	assignment, err := buildBatchAssignment(padded, hash)
 	if err != nil {

@@ -17,7 +17,6 @@ import (
 	"relayer/chain/cosmos"
 	"relayer/chain/evm"
 	relayerclient "relayer/client"
-	"relayer/prover"
 	"relayer/relay"
 	"relayer/services"
 	"relayer/status"
@@ -45,7 +44,7 @@ func buildCosmosToL2Dest(
 	logger *zap.Logger,
 	c2l cosmosToEthConfig,
 	batchCfg services.BatchConfig,
-	p *prover.EcipProver,
+	p services.Prover,
 	txHandler services.TransactionHandler,
 	relayStateDir string,
 ) (*services.Services, services.RelayDeps, func(), error) {

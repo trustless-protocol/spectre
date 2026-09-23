@@ -1,6 +1,6 @@
 //go:build !icicle
 
-package prover
+package gnark
 
 import "fmt"
 

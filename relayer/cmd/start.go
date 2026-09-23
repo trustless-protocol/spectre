@@ -17,7 +17,6 @@ import (
 
 	"time"
 
-	"relayer/prover"
 	"relayer/relay"
 	"relayer/services"
 	"relayer/status"
@@ -149,21 +148,12 @@ func Start(logger *zap.Logger) *cobra.Command {
 			// GenerateProof calls are safe. On a GPU backend the calls serialize
 			// on the device; correctness is unaffected.
 			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
-			selectedBackend, hasBackendOverride, err := proofBackendFromFlags(cmd)
+			logger.Sugar().Infof("start: loading prover artifacts from %s", binDir)
+			p, err := buildProverService(cmd, binDir)
 			if err != nil {
-				return fmt.Errorf("failed to resolve proof backend: %w", err)
+				return err
 			}
-
-			var p *prover.EcipProver
-			if hasBackendOverride {
-				logger.Sugar().Infof("start: overriding proof backend via flags: %s", selectedBackend.Name())
-				p, err = prover.NewProverWithBackend(binDir, selectedBackend)
-			} else {
-				p, err = prover.NewProver(binDir)
-			}
-			if err != nil {
-				return fmt.Errorf("failed to load prover: %w", err)
-			}
+			defer p.Stop()
 
 			// One path: loadConfig refused a file with more than one, and
 			// requireRelayPath proved there is at least one, so each direction

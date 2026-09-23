@@ -8,7 +8,6 @@ import (
 
 	contractICS26Router "relayer/bindings/ICS26Router"
 	spectreContract "relayer/bindings/SpectreClient"
-	"relayer/prover"
 	"relayer/services"
 	"relayer/transaction"
 
@@ -158,19 +157,11 @@ func SubmitMisbehaviour(logger *zap.Logger) *cobra.Command {
 			}
 
 			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
-			selectedBackend, hasBackendOverride, err := proofBackendFromFlags(cmd)
+			proverEngine, err := buildProverService(cmd, binDir)
 			if err != nil {
-				return fmt.Errorf("resolve proof backend: %w", err)
+				return err
 			}
-			var proverEngine *prover.EcipProver
-			if hasBackendOverride {
-				proverEngine, err = prover.NewProverWithBackend(binDir, selectedBackend)
-			} else {
-				proverEngine, err = prover.NewProver(binDir)
-			}
-			if err != nil {
-				return fmt.Errorf("load prover: %w", err)
-			}
+			defer proverEngine.Stop()
 
 			txHandler := &transaction.Handler{}
 			svc, evidenceDeps, cleanup, err := buildCosmosToEthSource(

@@ -21,6 +21,7 @@ import (
 	"relayer/chain"
 	relayerclient "relayer/client"
 	"relayer/prover"
+	"relayer/prover/witness"
 	"strconv"
 	"strings"
 	"time"
@@ -34,8 +35,17 @@ import (
 const ICS26_IBC_STORAGE_SLOT = "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600"
 
 type Worker struct {
-	TxHandler TransactionHandler
-	Prover    Prover
+	TxHandler  TransactionHandler
+	Prover     Prover
+	awaitProof func(context.Context, Prover, []witness.ValidatorSignature) (prover.ProofResult, error)
+}
+
+func (w *Worker) generateProof(ctx context.Context, sigs []witness.ValidatorSignature) (prover.ProofResult, error) {
+	await := w.awaitProof
+	if await == nil {
+		await = submitAndAwaitProof
+	}
+	return await(ctx, w.Prover, sigs)
 }
 
 // cosmosClientDeps is the narrow capability set shared by the Cosmos light
@@ -267,14 +277,14 @@ func clientStateRevisionHeightInt64(clientState relayerclient.ClientState) (int6
 // chosen by findHighestFeasibleHop as an RLY-01 multi-hop update target.
 type hopCandidate struct {
 	lightBlock *relayerclient.LightBlock
-	candidates []prover.ValidatorSignature
-	selected   []prover.ValidatorSignature
+	candidates []witness.ValidatorSignature
+	selected   []witness.ValidatorSignature
 }
 
 type hopProbeResult struct {
 	lightBlock *relayerclient.LightBlock
-	candidates []prover.ValidatorSignature
-	selected   []prover.ValidatorSignature
+	candidates []witness.ValidatorSignature
+	selected   []witness.ValidatorSignature
 	quorumErr  error
 }
 
@@ -408,16 +418,16 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 	// that happens, fall back to a multi-hop update through the highest
 	// intermediate height that still clears pinned-set quorum, rather than
 	// failing outright.
-	extracted, err := prover.ExtractValidatorSignatures(latestLightBlock, chainId, nil)
+	extracted, err := ExtractValidatorSignatures(latestLightBlock, chainId, w.Prover.MaxBucket(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("extract validator signatures: %w", err)
 	}
-	selected, err := selectSignaturesForPinnedSet(extracted.Candidates, pinnedValidatorSet)
+	selected, err := selectSignaturesForPinnedSet(extracted.Candidates, pinnedValidatorSet, w.Prover.MaxBucket())
 	isHop := false
 	if err != nil {
 		log.Printf("RLY01_HOP_FALLBACK direct update trusted=%d->target=%d failed pinned quorum (%v); searching for intermediate hop",
 			trustedBlock, target, err)
-		hop, hopErr := findHighestFeasibleHop(stdCtx, ctx, trustedBlock, target, chainId, pinnedValidatorSet, err)
+		hop, hopErr := findHighestFeasibleHop(stdCtx, ctx, trustedBlock, target, chainId, pinnedValidatorSet, w.Prover.MaxBucket(), err)
 		if hopErr != nil {
 			log.Printf("RLY01_HOP_EXHAUSTED no provable height beyond trusted=%d; manual intervention required", trustedBlock)
 			return nil, fmt.Errorf("RLY01_HOP_EXHAUSTED: no provable hop above trusted height %d: %w", trustedBlock, hopErr)
@@ -441,14 +451,16 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 	}
 	log.Printf("[UpdateCosmosClient] proposedHeader.Height=%d trustedBlock=%d updateToBlock=%d isHop=%t",
 		proposedHeader.SignedHeader.Header.Height, trustedLightBlock.BlockHeight, latestLightBlock.BlockHeight, isHop)
-	log.Printf("[UpdateCosmosClient] Generating Groth16 batch proof for %d validator signatures...", len(extracted.Signatures))
+	log.Printf("[UpdateCosmosClient] Submitting Groth16 batch proof job for %d validator signatures...", len(extracted.Signatures))
 	if err := stdCtx.Err(); err != nil {
 		return nil, err
 	}
-	bucket, paddedSigs, proof, commitments, commitmentPok, err := w.Prover.GenerateProof(extracted.Signatures)
+	proofResult, err := w.generateProof(stdCtx, extracted.Signatures)
 	if err != nil {
 		return nil, fmt.Errorf("error generating proof: %w", err)
 	}
+	bucket, paddedSigs := proofResult.Bucket, proofResult.PaddedSigs
+	proof, commitments, commitmentPok := proofResult.Proof, proofResult.Commitments, proofResult.CommitmentPok
 	log.Printf("[UpdateCosmosClient] Proof generated (bucket=%d). Sending Eth tx...", bucket)
 
 	// paddedSigs is the prover's bucket-sized slice (real signers + dummy

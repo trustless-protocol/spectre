@@ -19,7 +19,7 @@ import (
 	"math/big"
 	spectreContract "relayer/bindings/SpectreClient"
 	relayerclient "relayer/client"
-	"relayer/prover"
+	"relayer/prover/witness"
 	"sort"
 	"time"
 
@@ -82,7 +82,7 @@ func getPinnedCosmosValidatorSet(stdCtx context.Context, ctx EVMEndpoint) (pinne
 // set. Signers outside the pinned set contribute zero. The measurement is
 // per-commit: a pinned validator that merely missed this one block counts as
 // zero, which makes the rotation trigger conservative (fires early, not late).
-func pinnedOverlapPower(candidates []prover.ValidatorSignature, pinnedSet pinnedCosmosValidatorSet) int64 {
+func pinnedOverlapPower(candidates []witness.ValidatorSignature, pinnedSet pinnedCosmosValidatorSet) int64 {
 	powerByPubkey := pinnedSet.powerByPubkey()
 	var overlap int64
 	for _, candidate := range candidates {
@@ -121,14 +121,15 @@ func ethLatestHeaderTimestampNanos(stdCtx context.Context, ctx EVMEndpoint, fetc
 }
 
 func selectSignaturesForPinnedSet(
-	candidates []prover.ValidatorSignature,
+	candidates []witness.ValidatorSignature,
 	pinnedSet pinnedCosmosValidatorSet,
-) ([]prover.ValidatorSignature, error) {
+	maxBucket int,
+) ([]witness.ValidatorSignature, error) {
 	powerByPubkey := pinnedSet.powerByPubkey()
-	selected := make([]prover.ValidatorSignature, 0, len(candidates))
+	selected := make([]witness.ValidatorSignature, 0, len(candidates))
 	var pinnedAccum int64
 
-	pinnedCandidates := make([]prover.ValidatorSignature, 0, len(candidates))
+	pinnedCandidates := make([]witness.ValidatorSignature, 0, len(candidates))
 	for _, candidate := range candidates {
 		if powerByPubkey[bytesToBytes32(candidate.PublicKey)] == 0 {
 			continue
@@ -160,8 +161,8 @@ func selectSignaturesForPinnedSet(
 	if accum.Cmp(total) <= 0 {
 		return nil, fmt.Errorf("insufficient pinned-set quorum in proof candidates: have %d of %d", pinnedAccum, pinnedSet.totalPower)
 	}
-	if len(selected) > prover.MaxBucket() {
-		return nil, fmt.Errorf("pinned-set proof requires %d signers but largest bucket is %d", len(selected), prover.MaxBucket())
+	if len(selected) > maxBucket {
+		return nil, fmt.Errorf("pinned-set proof requires %d signers but largest bucket is %d", len(selected), maxBucket)
 	}
 
 	sort.Slice(selected, func(i, j int) bool {
@@ -214,6 +215,7 @@ func findHighestFeasibleHop(
 	trusted, latest int64,
 	chainId string,
 	pinnedSet pinnedCosmosValidatorSet,
+	maxBucket int,
 	directQuorumErr error,
 ) (hopCandidate, error) {
 	probed := make(map[int64]struct{})
@@ -231,11 +233,11 @@ func findHighestFeasibleHop(
 		if err != nil {
 			return hopProbeResult{}, fmt.Errorf("fetch light block at height %d: %w", height, err)
 		}
-		extracted, err := prover.ExtractValidatorSignatures(lb, chainId, nil)
+		extracted, err := ExtractValidatorSignatures(lb, chainId, maxBucket, nil)
 		if err != nil {
 			return hopProbeResult{}, fmt.Errorf("extract signatures at height %d: %w", height, err)
 		}
-		selected, err := selectSignaturesForPinnedSet(extracted.Candidates, pinnedSet)
+		selected, err := selectSignaturesForPinnedSet(extracted.Candidates, pinnedSet, maxBucket)
 		if err != nil {
 			return hopProbeResult{
 				lightBlock: lb,

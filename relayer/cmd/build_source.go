@@ -18,7 +18,6 @@ import (
 	"go.uber.org/zap"
 
 	relayerclient "relayer/client"
-	"relayer/prover"
 	"relayer/services"
 )
 
@@ -300,7 +299,7 @@ func buildCosmosToEthSource(
 	c2e cosmosToEthConfig,
 	e2c ethToCosmosConfig,
 	batchCfg services.BatchConfig,
-	p *prover.EcipProver,
+	p services.Prover,
 	txHandler services.TransactionHandler,
 	options buildCosmosToEthSourceOptions,
 ) (*services.Services, services.RelayDeps, func(), error) {
@@ -434,7 +433,11 @@ func buildCosmosToEthSource(
 			return nil, zero, nil, err
 		}
 	} else {
-		svc = services.New(txHandler, p, cosmosConfig, recoveryState)
+		if options.startSubscriptions {
+			svc = services.New(txHandler, p, cosmosConfig, recoveryState)
+		} else {
+			svc = services.NewOneShot(txHandler, p, cosmosConfig)
+		}
 	}
 	return svc, deps, cleanup, nil
 }

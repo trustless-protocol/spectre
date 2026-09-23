@@ -1,6 +1,8 @@
-package prover
+package gnark
 
 import (
+	"relayer/prover/witness"
+
 	"0x5ea000000/ecip-gnark/signature/eddsa"
 
 	"github.com/consensys/gnark/frontend"
@@ -13,86 +15,21 @@ import (
 type Fp25519 = emulated.Curve25519Fp
 type Fr25519 = emulated.Curve25519Fr
 
-// MaxMsgLen is the fixed-width buffer length the circuit allocates per slot
-// for the validator-signed bytes (CometBFT VoteSignBytes: length prefix +
-// CanonicalVote body). It is chosen from two hard bounds, both asserted by
-// TestMaxMsgLenBounds — do not raise it casually.
-//
-// Upper bound (cost). The signed bytes are hashed by SHA-512 for H_RAM, never
-// by the SHA-256 witness commitment, so what matters is the 128-byte SHA-512
-// block — not a 64-byte SHA-256 one. FixedLengthSum hashes 64 bytes of R||A
-// plus this buffer, then pads:
-//
-//	blocks = ceil((64 + MaxMsgLen + padding) / 128), padding >= 17
-//
-// 175 pads 239 -> 256 = 2 blocks; 176 pads 240 -> 384 = 3 blocks. Every slot
-// pays that third permutation, so crossing 175 costs ~17% of the circuit
-// (N=16: 1,569,995 -> 1,899,694 constraints, 6.03s -> 7.63s per proof on CPU).
-//
-// Lower bound (correctness). A vote must always fit, or GenerateProof rejects
-// the batch (see prover.go). The largest VoteSignBytes CometBFT can produce is
-// 167 bytes: a 50-char chain id (types.MaxChainIDLen, enforced at validation),
-// max-width height/round encodings and PartSetHeader.Total, a full BlockID,
-// and a pathological far-future timestamp — measured by TestMaxMsgLenBounds,
-// which rebuilds that vote from the CometBFT types.
-//
-// 175 is the largest value that keeps SHA-512 at two blocks, leaving 8 bytes
-// over the protocol maximum. If a future CometBFT raises MaxChainIDLen past
-// 50, the guard test fails and this constant must be revisited — note that
-// any value above 175 re-adds the third block.
-const MaxMsgLen = 175
-
-// #199 offsets within each signer's canonical-vote message, measured from the
-// start of the BODY — i.e. after the leading length varint that
-// MarshalDelimited prepends. That varint is 1 byte when bodyLen < 128 and 2
-// bytes otherwise; its width is detected PER-SLOT (see Define) rather than
-// assumed, because the per-validator timestamp shifts bodyLen across the 128
-// boundary, so signers in one commit can mix 1- and 2-byte varints.
-//
-//	body = Type(0x08 0x02)            // [0,2)
-//	     | Height(0x11 + 8B sfixed64) // [2,11)
-//	     | Round(0x19 + 8B)           // [11,20) — present only when round > 0
-//	     | BlockID(0x22 len 0x0a 0x20 hash[32] ...)
-//	     | Timestamp | ChainID
-//
-// PrefixHead = Type|Height = first 11 body bytes (always present). The 32-byte
-// block hash sits 4 bytes into BlockID, so at body offset 15 (no round) or 24
-// (round shifts BlockID by 9). The in-message index adds the per-slot varint
-// width (1 or 2) to these body offsets.
-const (
-	prefixHeadLen           = 11 // Type(2) + Height(9)
-	blockHashBodyOffNoRound = 15
-	blockHashBodyOffRound   = 24 // round shifts BlockID by 9
-
-	// blockIDFieldTag is the proto wire tag for CanonicalVote.block_id (field 4,
-	// wiretype 2 / length-delimited). It occupies body offset prefixHeadLen when
-	// the round field is absent, where roundFieldTag (hash_witness.go) sits when
-	// it is present — so this one byte distinguishes the two body layouts and is
-	// what RoundPresent is checked against (ZK-05).
-	blockIDFieldTag = 0x22
-
-	// blockHashEnd is the body offset one past the last byte the fixed-offset
-	// asserts below read, in the round-present layout — the widest of the two.
-	// A signed prefix shorter than this leaves those bytes outside what H_RAM
-	// covers, so it is the per-slot lower bound on MsgLens for active slots.
-	blockHashEnd = blockHashBodyOffRound + 32
-)
-
 // BatchCircuit verifies N Tendermint precommit Ed25519 signatures and commits
 // to its entire witness via a single SHA-256 digest, exposed publicly as two
 // 128-bit field elements. This keeps the generated Groth16 verifier compact
 // without losing the full 256-bit binding of the witness commitment.
 //
 // Each slot carries the canonical vote bytes the validator actually signed,
-// padded to MaxMsgLen and gated by a per-slot length variable. The on-chain
+// padded to witness.MaxMsgLen and gated by a per-slot length variable. The on-chain
 // SignatureVerifier rebuilds those bytes from `(blockHeader, timestamp_i)` via
 // Solidity proto encoding, hashes the witness exactly the same way, and
 // passes the digest in as two packed public inputs.
 //
 // N (slice lengths) is fixed per bucket; one circuit/(pk,vk) triple is built
-// per bucket in prover.Buckets.
+// per bucket in proof.Buckets.
 type BatchCircuit[Base, Scalars emulated.FieldParams] struct {
-	Hash [WitnessDigestFieldElements]frontend.Variable `gnark:",public"`
+	Hash [witness.WitnessDigestFieldElements]frontend.Variable `gnark:",public"`
 
 	// #199: bind only the security-critical common fields in-circuit, at fixed
 	// offsets in every signer's message, instead of hashing the full per-slot
@@ -102,15 +39,15 @@ type BatchCircuit[Base, Scalars emulated.FieldParams] struct {
 	// by 9 bytes). All three are committed (hashed) so calldata can't alter
 	// them. Round/timestamp/chainID are left unbound here — the Ed25519 verify
 	// binds them via H_RAM, and chainID is enforced on-chain.
-	PrefixHead   [prefixHeadLen]uints.U8 `gnark:",secret"`
-	BlockHash    [32]uints.U8            `gnark:",secret"`
-	RoundPresent frontend.Variable       `gnark:",secret"`
+	PrefixHead   [witness.PrefixHeadLen]uints.U8 `gnark:",secret"`
+	BlockHash    [32]uints.U8                    `gnark:",secret"`
+	RoundPresent frontend.Variable               `gnark:",secret"`
 
 	Sig []eddsa.Signature[Base, Scalars] `gnark:",secret"`
 	Pub []eddsa.PublicKey[Base, Scalars] `gnark:",secret"`
 
-	Msgs    [][MaxMsgLen]uints.U8 `gnark:",secret"` // per-slot signed bytes (zero-padded)
-	MsgLens []frontend.Variable   `gnark:",secret"` // per-slot meaningful prefix length
+	Msgs    [][witness.MaxMsgLen]uints.U8 `gnark:",secret"` // per-slot signed bytes (zero-padded)
+	MsgLens []frontend.Variable           `gnark:",secret"` // per-slot meaningful prefix length
 	// Active marks a slot as a real signer rather than padding. It does NOT
 	// gate the slot's contribution to the ECIP aggregate — every slot is
 	// verified and aggregated alike, which is why padding slots carry
@@ -164,9 +101,9 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	}
 	h.Write(buf)
 	digest := h.Sum()
-	for i := 0; i < WitnessDigestFieldElements; i++ {
-		start := i * WitnessDigestFieldBytes
-		end := start + WitnessDigestFieldBytes
+	for i := 0; i < witness.WitnessDigestFieldElements; i++ {
+		start := i * witness.WitnessDigestFieldBytes
+		end := start + witness.WitnessDigestFieldBytes
 		api.AssertIsEqual(c.Hash[i], packBytesToVariableBE(api, digest[start:end]))
 	}
 
@@ -204,13 +141,13 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 		byte0Bits := api.ToBinary(c.Msgs[i][0].Val, 8)
 		v2 := byte0Bits[7]
 
-		for j := 0; j < prefixHeadLen; j++ {
+		for j := 0; j < witness.PrefixHeadLen; j++ {
 			b := api.Select(v2, c.Msgs[i][2+j].Val, c.Msgs[i][1+j].Val)
 			api.AssertIsEqual(api.Mul(c.Active[i], b), api.Mul(c.Active[i], c.PrefixHead[j].Val))
 		}
 		for j := 0; j < 32; j++ {
-			noRound := api.Select(v2, c.Msgs[i][2+blockHashBodyOffNoRound+j].Val, c.Msgs[i][1+blockHashBodyOffNoRound+j].Val)
-			round := api.Select(v2, c.Msgs[i][2+blockHashBodyOffRound+j].Val, c.Msgs[i][1+blockHashBodyOffRound+j].Val)
+			noRound := api.Select(v2, c.Msgs[i][2+witness.BlockHashBodyOffNoRound+j].Val, c.Msgs[i][1+witness.BlockHashBodyOffNoRound+j].Val)
+			round := api.Select(v2, c.Msgs[i][2+witness.BlockHashBodyOffRound+j].Val, c.Msgs[i][1+witness.BlockHashBodyOffRound+j].Val)
 			b := api.Select(c.RoundPresent, round, noRound)
 			api.AssertIsEqual(api.Mul(c.Active[i], b), api.Mul(c.Active[i], c.BlockHash[j].Val))
 		}
@@ -219,16 +156,16 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 		// RoundPresent is a free witness that chooses which 32-byte window is
 		// compared against the committed block hash, so left untied the prover
 		// picks the window rather than reading it. The body byte at
-		// prefixHeadLen settles it from the message itself: proto emits the round
+		// witness.PrefixHeadLen settles it from the message itself: proto emits the round
 		// field (tag 0x19) there when round > 0 and BlockID (tag 0x22) otherwise,
 		// so the tag and the offset must agree.
-		tag := api.Select(v2, c.Msgs[i][2+prefixHeadLen].Val, c.Msgs[i][1+prefixHeadLen].Val)
-		wantTag := api.Select(c.RoundPresent, roundFieldTag, blockIDFieldTag)
+		tag := api.Select(v2, c.Msgs[i][2+witness.PrefixHeadLen].Val, c.Msgs[i][1+witness.PrefixHeadLen].Val)
+		wantTag := api.Select(c.RoundPresent, witness.RoundFieldTag, witness.BlockIDFieldTag)
 		api.AssertIsEqual(api.Mul(c.Active[i], tag), api.Mul(c.Active[i], wantTag))
 
 		// ZK-05, part 2: keep every byte the asserts above read inside the signed
 		// prefix. H_RAM covers only Msgs[i][:MsgLens[i]], while the offsets are
-		// fixed and reach as far as blockHashEnd — so without a lower bound on
+		// fixed and reach as far as witness.BlockHashEnd — so without a lower bound on
 		// MsgLens the prover supplies attacker-chosen bytes past the prefix and
 		// has them compared against the committed block hash, with the signature
 		// covering none of it.
@@ -236,9 +173,9 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 		// required = varint width + block-hash end, masked by Active[i]: padding
 		// slots carry an 18-byte dummy message and must stay exempt. The slack is
 		// range-checked to 8 bits, which forces MsgLens[i] >= required — MsgLens
-		// is already bounded above by MaxMsgLen inside FixedLengthSum, so the
+		// is already bounded above by witness.MaxMsgLen inside FixedLengthSum, so the
 		// difference cannot wrap.
-		blockHashOff := api.Select(c.RoundPresent, blockHashEnd, blockHashEnd-(blockHashBodyOffRound-blockHashBodyOffNoRound))
+		blockHashOff := api.Select(c.RoundPresent, witness.BlockHashEnd, witness.BlockHashEnd-(witness.BlockHashBodyOffRound-witness.BlockHashBodyOffNoRound))
 		required := api.Add(api.Add(1, v2), blockHashOff)
 		api.ToBinary(api.Sub(c.MsgLens[i], api.Mul(c.Active[i], required)), 8)
 	}
@@ -263,7 +200,7 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	// stricter per-slot bound that real votes need is asserted above, masked by
 	// Active[i].
 	return eddsa.VerifyBatchWithMsgBytes[Base, Scalars](
-		api, c.Sig, c.Pub, msgs, c.MsgLens, eddsa.Config{FromWei: false, MinMsgLen: DummyMsgLen},
+		api, c.Sig, c.Pub, msgs, c.MsgLens, eddsa.Config{FromWei: false, MinMsgLen: witness.DummyMsgLen},
 	)
 }
 
@@ -274,7 +211,7 @@ func NewBatchCircuit(n int) *BatchCircuit[Fp25519, Fr25519] {
 	return &BatchCircuit[Fp25519, Fr25519]{
 		Sig:     make([]eddsa.Signature[Fp25519, Fr25519], n),
 		Pub:     make([]eddsa.PublicKey[Fp25519, Fr25519], n),
-		Msgs:    make([][MaxMsgLen]uints.U8, n),
+		Msgs:    make([][witness.MaxMsgLen]uints.U8, n),
 		MsgLens: make([]frontend.Variable, n),
 		Active:  make([]frontend.Variable, n),
 	}

@@ -1,6 +1,8 @@
-package prover
+package gnark
 
 import (
+	"relayer/prover/witness"
+
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -36,8 +38,8 @@ func makeCanonicalVote(roundPresent bool, trailLen int, blockHash [32]byte) []by
 	return append(prefix[:n], body...)
 }
 
-func wantPrefixHead() [prefixHeadLen]byte {
-	return [prefixHeadLen]byte{0x08, 0x02, 0x11, 1, 2, 3, 4, 5, 6, 7, 8}
+func wantPrefixHead() [witness.PrefixHeadLen]byte {
+	return [witness.PrefixHeadLen]byte{0x08, 0x02, 0x11, 1, 2, 3, 4, 5, 6, 7, 8}
 }
 
 func TestCommonPrefixFields_VarintWidths(t *testing.T) {
@@ -64,9 +66,9 @@ func TestCommonPrefixFields_VarintWidths(t *testing.T) {
 			if gotTwoByte := vote[0] >= 0x80; gotTwoByte != tc.wantTwoByte {
 				t.Fatalf("varint width: got 2-byte=%v, want %v (sb[0]=%#x)", gotTwoByte, tc.wantTwoByte, vote[0])
 			}
-			head, hash, round, err := commonPrefixFields([]ValidatorSignature{{SignedBytes: vote, Active: true}})
+			head, hash, round, err := witness.CommonPrefixFields([]witness.ValidatorSignature{{SignedBytes: vote, Active: true}})
 			if err != nil {
-				t.Fatalf("commonPrefixFields: %v", err)
+				t.Fatalf("CommonPrefixFields: %v", err)
 			}
 			if head != wantHead {
 				t.Errorf("prefix head = %x, want %x", head, wantHead)
@@ -91,12 +93,12 @@ func TestCommonPrefixFields_SkipsInactive(t *testing.T) {
 	}
 	dummy := makeCanonicalVote(false, 90, [32]byte{}) // unrelated 2-byte vote, inactive
 	real := makeCanonicalVote(false, 10, blockHash)   // 1-byte vote, active
-	head, hash, _, err := commonPrefixFields([]ValidatorSignature{
+	head, hash, _, err := witness.CommonPrefixFields([]witness.ValidatorSignature{
 		{SignedBytes: dummy, Active: false},
 		{SignedBytes: real, Active: true},
 	})
 	if err != nil {
-		t.Fatalf("commonPrefixFields: %v", err)
+		t.Fatalf("CommonPrefixFields: %v", err)
 	}
 	if want := wantPrefixHead(); head != want {
 		t.Errorf("prefix head = %x, want %x", head, want)
@@ -124,13 +126,13 @@ func TestBatchCircuit_MixedVarintWidths(t *testing.T) {
 		makeCanonicalVote(false, 10, blockHash), // 1-byte varint
 		makeCanonicalVote(false, 90, blockHash), // 2-byte varint
 	}
-	sigs := make([]ValidatorSignature, 0, n)
+	sigs := make([]witness.ValidatorSignature, 0, n)
 	for _, vote := range votes {
 		pub, priv, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatalf("generate key: %v", err)
 		}
-		sigs = append(sigs, ValidatorSignature{
+		sigs = append(sigs, witness.ValidatorSignature{
 			Signature:   ed25519.Sign(priv, vote),
 			PublicKey:   pub,
 			SignedBytes: vote,
@@ -138,13 +140,13 @@ func TestBatchCircuit_MixedVarintWidths(t *testing.T) {
 		})
 	}
 
-	padded, err := padWithDummies(sigs, generateDummySlots(n))
+	padded, err := witness.PadWithDummies(sigs, n)
 	if err != nil {
-		t.Fatalf("padWithDummies: %v", err)
+		t.Fatalf("witness.PadWithDummies: %v", err)
 	}
-	hash, err := ComputeWitnessHash(padded)
+	hash, err := witness.ComputeWitnessHash(padded)
 	if err != nil {
-		t.Fatalf("ComputeWitnessHash: %v", err)
+		t.Fatalf("witness.ComputeWitnessHash: %v", err)
 	}
 	assignment, err := buildBatchAssignment(padded, hash)
 	if err != nil {

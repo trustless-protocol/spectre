@@ -1,4 +1,4 @@
-package prover
+package witness
 
 import (
 	"bytes"
@@ -32,7 +32,7 @@ import (
 var updateWitnessVectors = flag.Bool("update", false, "regenerate the Go↔Solidity witness-hash vectors")
 
 // witnessHashVectorsPath is relative to this package directory.
-const witnessHashVectorsPath = "../../test/fixtures/witness_hash_vectors.json"
+const witnessHashVectorsPath = "../../../test/fixtures/witness_hash_vectors.json"
 
 // witnessHashVector is one cross-check case. The fields are exactly what the
 // on-chain verifier receives: SharedBlock (height, round, blockIDHash) plus the

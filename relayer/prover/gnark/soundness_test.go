@@ -1,6 +1,8 @@
-package prover
+package gnark
 
 import (
+	"relayer/prover/witness"
+
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -28,7 +30,7 @@ func soundnessVote(blockHash [32]byte) []byte {
 }
 
 // witnessHashFor recomputes the witness commitment for a layout the assignment
-// carries, rather than for what the signed bytes say. ComputeWitnessHash derives
+// carries, rather than for what the signed bytes say. witness.ComputeWitnessHash derives
 // roundPresent and blockHash from a real signed message, which is exactly what a
 // malicious prover would not do — so the tests below need this to keep the public
 // Hash input consistent with the tampered witness.
@@ -36,13 +38,13 @@ func soundnessVote(blockHash [32]byte) []byte {
 // Layout (hash_witness.go): PrefixHead(11) || roundPresent(1) || BlockHash(32)
 // || per slot: active(1) || A(32).
 func witnessHashFor(
-	prefixHead [prefixHeadLen]byte,
+	prefixHead [witness.PrefixHeadLen]byte,
 	roundPresent byte,
 	blockHash [32]byte,
 	pubkeys [][]byte,
 	activeBytes []byte,
 ) [32]byte {
-	buf := make([]byte, 0, prefixHeadLen+1+32+len(pubkeys)*(1+32))
+	buf := make([]byte, 0, witness.PrefixHeadLen+1+32+len(pubkeys)*(1+32))
 	buf = append(buf, prefixHead[:]...)
 	buf = append(buf, roundPresent)
 	buf = append(buf, blockHash[:]...)
@@ -56,7 +58,7 @@ func witnessHashFor(
 // signedBatch returns a bucket-sized batch with one active signer over vote,
 // signing signedPrefix (which may be a strict prefix of vote — see the MsgLens
 // test). It returns the padded slots so callers can read back the dummy pubkeys.
-func signedBatch(t *testing.T, n int, vote, signedPrefix []byte) []ValidatorSignature {
+func signedBatch(t *testing.T, n int, vote, signedPrefix []byte) []witness.ValidatorSignature {
 	t.Helper()
 
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
@@ -64,19 +66,19 @@ func signedBatch(t *testing.T, n int, vote, signedPrefix []byte) []ValidatorSign
 		t.Fatalf("generate key: %v", err)
 	}
 
-	padded, err := padWithDummies([]ValidatorSignature{{
+	padded, err := witness.PadWithDummies([]witness.ValidatorSignature{{
 		Signature:   ed25519.Sign(priv, signedPrefix),
 		PublicKey:   pub,
 		SignedBytes: vote,
 		Active:      true,
-	}}, generateDummySlots(n))
+	}}, n)
 	if err != nil {
-		t.Fatalf("padWithDummies: %v", err)
+		t.Fatalf("witness.PadWithDummies: %v", err)
 	}
 	return padded
 }
 
-func slotBytes(sigs []ValidatorSignature) (pubkeys [][]byte, activeBytes []byte) {
+func slotBytes(sigs []witness.ValidatorSignature) (pubkeys [][]byte, activeBytes []byte) {
 	pubkeys = make([][]byte, len(sigs))
 	activeBytes = make([]byte, len(sigs))
 	for i, s := range sigs {
@@ -118,9 +120,9 @@ func TestBatchCircuit_RejectsUnsignedBlockHashBytes(t *testing.T) {
 
 	// Positive control: the same signer over the whole vote must solve.
 	honest := signedBatch(t, n, vote, vote)
-	honestHash, err := ComputeWitnessHash(honest)
+	honestHash, err := witness.ComputeWitnessHash(honest)
 	if err != nil {
-		t.Fatalf("ComputeWitnessHash: %v", err)
+		t.Fatalf("witness.ComputeWitnessHash: %v", err)
 	}
 	honestAssignment, err := buildBatchAssignment(honest, honestHash)
 	if err != nil {
@@ -134,9 +136,9 @@ func TestBatchCircuit_RejectsUnsignedBlockHashBytes(t *testing.T) {
 	// the short length. The bytes the block-hash assert reads past offset 20 are
 	// then attacker-supplied.
 	forged := signedBatch(t, n, vote, vote[:signedLen])
-	forgedHash, err := ComputeWitnessHash(forged)
+	forgedHash, err := witness.ComputeWitnessHash(forged)
 	if err != nil {
-		t.Fatalf("ComputeWitnessHash: %v", err)
+		t.Fatalf("witness.ComputeWitnessHash: %v", err)
 	}
 	assignment, err := buildBatchAssignment(forged, forgedHash)
 	if err != nil {
@@ -179,11 +181,11 @@ func TestBatchCircuit_RejectsMismatchedRoundPresent(t *testing.T) {
 	// The window a round-present layout would read, in a message that has no
 	// round field. One-byte leading varint, so body offset O is at index 1+O.
 	var shiftedWindow [32]byte
-	copy(shiftedWindow[:], vote[1+blockHashBodyOffRound:1+blockHashBodyOffRound+32])
+	copy(shiftedWindow[:], vote[1+witness.BlockHashBodyOffRound:1+witness.BlockHashBodyOffRound+32])
 
-	prefixHead, _, roundPresent, err := commonPrefixFields(padded)
+	prefixHead, _, roundPresent, err := witness.CommonPrefixFields(padded)
 	if err != nil {
-		t.Fatalf("commonPrefixFields: %v", err)
+		t.Fatalf("CommonPrefixFields: %v", err)
 	}
 	if roundPresent {
 		t.Fatal("test vector was built without a round field")
@@ -241,9 +243,9 @@ func TestBatchCircuit_RejectsNonBooleanActive(t *testing.T) {
 	vote := makeCanonicalVote(false, 60, blockHash)
 	padded := signedBatch(t, n, vote, vote)
 
-	prefixHead, committedHash, _, err := commonPrefixFields(padded)
+	prefixHead, committedHash, _, err := witness.CommonPrefixFields(padded)
 	if err != nil {
-		t.Fatalf("commonPrefixFields: %v", err)
+		t.Fatalf("CommonPrefixFields: %v", err)
 	}
 
 	pubkeys, activeBytes := slotBytes(padded)
@@ -284,9 +286,9 @@ func TestBatchCircuit_RejectsTamperedSignature(t *testing.T) {
 	vote := soundnessVote(blockHash)
 	padded := signedBatch(t, n, vote, vote)
 
-	hash, err := ComputeWitnessHash(padded)
+	hash, err := witness.ComputeWitnessHash(padded)
 	if err != nil {
-		t.Fatalf("ComputeWitnessHash: %v", err)
+		t.Fatalf("witness.ComputeWitnessHash: %v", err)
 	}
 	if _, err := buildBatchAssignment(padded, hash); err != nil {
 		t.Fatalf("buildBatchAssignment: %v", err)
@@ -294,7 +296,7 @@ func TestBatchCircuit_RejectsTamperedSignature(t *testing.T) {
 
 	// Flip a low bit of S. The scalar stays canonical, so the assignment builds;
 	// only the group equation can reject it.
-	tampered := make([]ValidatorSignature, len(padded))
+	tampered := make([]witness.ValidatorSignature, len(padded))
 	copy(tampered, padded)
 	sig := make([]byte, len(padded[0].Signature))
 	copy(sig, padded[0].Signature)

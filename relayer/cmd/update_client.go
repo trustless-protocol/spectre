@@ -14,7 +14,6 @@ import (
 	"go.uber.org/zap"
 
 	tendermintClient "relayer/client"
-	"relayer/prover"
 	"relayer/relay"
 	"relayer/services"
 	"relayer/transaction"
@@ -51,21 +50,11 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 			}
 
 			binDir := envOrDefault("PROVER_BIN_DIR", "./bin")
-			selectedBackend, hasBackendOverride, err := proofBackendFromFlags(cmd)
+			p, err := buildProverService(cmd, binDir)
 			if err != nil {
-				return fmt.Errorf("failed to resolve proof backend: %w", err)
+				return err
 			}
-
-			var p *prover.EcipProver
-			if hasBackendOverride {
-				logger.Sugar().Infof("update-client: overriding proof backend via flags: %s", selectedBackend.Name())
-				p, err = prover.NewProverWithBackend(binDir, selectedBackend)
-			} else {
-				p, err = prover.NewProver(binDir)
-			}
-			if err != nil {
-				return fmt.Errorf("failed to load prover: %w", err)
-			}
+			defer p.Stop()
 
 			cosmosWasmClientID := cosmosWasmClientIDOrDefault(cfg)
 			if cosmosWasmClientID == "" {
@@ -155,7 +144,7 @@ func UpdateClient(logger *zap.Logger) *cobra.Command {
 				return fmt.Errorf("update-client: --max-hops must be greater than 0")
 			}
 
-			worker := services.NewWorker(&transaction.Handler{}, p)
+			worker := services.NewOneShotWorker(&transaction.Handler{}, p)
 
 			// RLY-01: validator churn can force the builder onto a multi-hop
 			// path that only advances the client to an intermediate height
