@@ -951,7 +951,14 @@ func enqueueCosmosPackets(
 		// whether a packet still NEEDS relaying, which is not the question.
 		if packet.Type == services.CosmosAcknowledged {
 			seenEvents[key] = struct{}{}
-			batchBuilder.PendingTracker.RemovePacketIfCurrent(*packet.Packet)
+			// Persist the terminal fact even when there is no active entry. The
+			// packet may already be in a handed-off batch, where DropCosmosQueued
+			// cannot reach it; its later tracking attempt must see this tombstone
+			// instead of recreating a pending record after the cursor moved on.
+			if err := batchBuilder.PendingTracker.MarkSettled(*packet.Packet); err != nil {
+				ctx.Logger.Printf("[SubscribeCosmos][ATTENTION] failed to persist terminal settlement for seq=%d: %v",
+					packet.Packet.Sequence, err)
+			}
 			// The owed-acknowledgement ledger too, not only the pending tracker.
 			// This branch runs when the acknowledgement arrived -- whoever relayed
 			// it -- and a debt this process recorded is settled by that fact.

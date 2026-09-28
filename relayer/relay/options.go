@@ -29,6 +29,17 @@ type TrackFunc func(packet []byte, height uint64) bool
 // so the timeout scanner stops considering a packet that can no longer time out.
 type UntrackFunc func(packet []byte)
 
+// PendingSettledFunc reports whether a terminal source event has already closed
+// this exact packet in the durable pending tracker. It is intentionally separate
+// from chain.Destination settlement checks: this closes the local handoff race,
+// where a terminal event and the batch handler run concurrently.
+type PendingSettledFunc func(packet []byte) bool
+
+// MarkPendingSettledFunc persists a settlement learned from a destination check.
+// It returns false only when durable persistence failed; callers still skip the
+// known-settled packet and log the degraded persistence separately.
+type MarkPendingSettledFunc func(packet []byte) bool
+
 // ClientUpdateObserver records the source-chain timestamp trusted by a client
 // after an update is submitted or the builder confirms it is current.
 type ClientUpdateObserver func(trustedAt time.Time)
@@ -69,6 +80,16 @@ func WithPacketTracker(track TrackFunc, untrack UntrackFunc) Option {
 	return func(m *Module) {
 		m.track = track
 		m.untrack = untrack
+	}
+}
+
+// WithPendingSettlementGuard wires the durable terminal-tombstone operations for
+// a packet tracker. It is paired with WithPacketTracker on paths whose source can
+// emit a terminal event while a packet is already handed to handleBatch.
+func WithPendingSettlementGuard(isSettled PendingSettledFunc, markSettled MarkPendingSettledFunc) Option {
+	return func(m *Module) {
+		m.pendingSettled = isSettled
+		m.markPendingSettled = markSettled
 	}
 }
 

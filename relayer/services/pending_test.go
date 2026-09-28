@@ -112,6 +112,99 @@ func TestPendingPacketTracker(t *testing.T) {
 		}
 	})
 
+	t.Run("terminal tombstone blocks an in-flight replay but not a reused sequence", func(t *testing.T) {
+		pt := NewPendingPacketTracker()
+		settled := channeltypesv2.Packet{
+			SourceClient: "src-0", DestinationClient: "dst-old", Sequence: 7,
+			TimeoutTimestamp: 1000, Payloads: []channeltypesv2.Payload{{Value: []byte("old")}},
+		}
+		if err := pt.MarkSettled(settled); err != nil {
+			t.Fatal(err)
+		}
+		if !pt.IsSettled(settled) {
+			t.Fatal("terminal packet has no tombstone")
+		}
+		if !pt.Add(settled, 100) {
+			t.Fatal("a settled replay must be a successful no-op, not a persistence failure")
+		}
+		if got := pt.Len(); got != 0 {
+			t.Fatalf("settled replay recreated %d pending packet(s)", got)
+		}
+
+		// A client migration may reuse seq=7. The old terminal event must not
+		// hide the new packet merely because it occupies the same slot.
+		replacement := settled
+		replacement.DestinationClient = "dst-new"
+		replacement.Payloads = []channeltypesv2.Payload{{Value: []byte("new")}}
+		if pt.IsSettled(replacement) {
+			t.Fatal("old terminal tombstone matched a different packet identity")
+		}
+		if !pt.Add(replacement, 200) {
+			t.Fatal("replacement packet was not tracked")
+		}
+		if got := pt.Len(); got != 1 {
+			t.Fatalf("replacement left %d pending packet(s), want 1", got)
+		}
+	})
+
+	t.Run("terminal event right after add leaves no orphaned entry", func(t *testing.T) {
+		pt := NewPendingPacketTracker()
+		packet := channeltypesv2.Packet{
+			SourceClient: "src-0", DestinationClient: "dst-0", Sequence: 11,
+			TimeoutTimestamp: 1000, Payloads: []channeltypesv2.Payload{{Value: []byte("race")}},
+		}
+		// This is the other ordering of the handoff race: handleBatch's Add wins
+		// against the terminal event's MarkSettled, so the active record briefly
+		// exists before the terminal event lands.
+		if !pt.Add(packet, 100) {
+			t.Fatal("initial track failed")
+		}
+		if got := pt.Len(); got != 1 {
+			t.Fatalf("tracked packet count = %d, want 1", got)
+		}
+
+		// SubscribeCosmos observes acknowledge_packet immediately after the
+		// handler recorded the packet.
+		if err := pt.MarkSettled(packet); err != nil {
+			t.Fatal(err)
+		}
+		if got := pt.Len(); got != 0 {
+			t.Fatalf("MarkSettled right after Add left %d pending packet(s), want 0 -- an orphaned tracker entry", got)
+		}
+		if !pt.IsSettled(packet) {
+			t.Fatal("MarkSettled right after Add did not leave a tombstone")
+		}
+	})
+
+	t.Run("terminal tombstone survives restart", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "pending.json")
+		first, err := NewPersistentPendingPacketTracker(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		packet := channeltypesv2.Packet{
+			SourceClient: "src-0", DestinationClient: "dst-0", Sequence: 9,
+			TimeoutTimestamp: 1000, Payloads: []channeltypesv2.Payload{{Value: []byte("packet")}},
+		}
+		if err := first.MarkSettled(packet); err != nil {
+			t.Fatal(err)
+		}
+
+		restarted, err := NewPersistentPendingPacketTracker(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !restarted.IsSettled(packet) {
+			t.Fatal("restart lost the terminal tombstone")
+		}
+		if !restarted.Add(packet, 100) {
+			t.Fatal("settled replay reported a false durability failure")
+		}
+		if got := restarted.Len(); got != 0 {
+			t.Fatalf("restart replay recreated %d pending packet(s)", got)
+		}
+	})
+
 	t.Run("add replaces renewed packet when sequence is reused", func(t *testing.T) {
 		pt := NewPendingPacketTracker()
 		old := channeltypesv2.Packet{SourceClient: "src-0", DestinationClient: "dst-0", Sequence: 7, TimeoutTimestamp: 1000}

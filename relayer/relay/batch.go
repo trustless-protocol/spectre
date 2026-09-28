@@ -52,16 +52,48 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 
 	// Record every recv-relayed packet for timeout recovery BEFORE attempting the
 	// relay: even if the update/proof/submit below fails, the scanner must still be
-	// able to refund a packet that later expires undelivered. Only SendPacket opens
+	// able to refund a packet that later expires undelivered. A terminal event can
+	// race this handoff, so first consult the durable terminal tombstone and the
+	// destination, then check the tombstone again after Add. Only SendPacket opens
 	// a receive that can time out; Add is idempotent.
 	trackFailed := make([]bool, len(events))
+	skippedSettled := make([]bool, len(events))
 	var requeue []int
 	for i, e := range events {
+		if e.Type == chain.SendPacket && m.pendingSettled != nil && m.pendingSettled(e.Raw) {
+			log.Printf("[%s Relay] skipping settled packet seq=%d before tracking", m.name, e.Sequence)
+			skippedSettled[i] = true
+			continue
+		}
+		settled, err := m.packetSettled(ctx, e)
+		if err != nil {
+			// An unknown receipt must not be interpreted as delivery: omitting this
+			// packet would be worse than a duplicate, because it may be the only
+			// relayer able to move the user's funds.
+			log.Printf("[%s Relay] settlement check for %s seq=%d: %v; relaying anyway",
+				m.name, e.Type, e.Sequence, err)
+		} else if settled {
+			if e.Type == chain.SendPacket && m.markPendingSettled != nil && !m.markPendingSettled(e.Raw) {
+				log.Printf("[%s Relay][ATTENTION] packet %s seq=%d is settled but its terminal tombstone was not persisted",
+					m.name, e.Type, e.Sequence)
+			}
+			log.Printf("[%s Relay] skipping settled packet %s seq=%d before proof", m.name, e.Type, e.Sequence)
+			skippedSettled[i] = true
+			continue
+		}
 		if e.Type == chain.SendPacket && m.track != nil {
 			if !m.track(e.Raw, e.Height) {
 				log.Printf("[%s Relay] track pending packet seq=%d height=%d: durable write failed; re-queueing", m.name, e.Sequence, e.Height)
 				trackFailed[i] = true
 				requeue = append(requeue, i)
+				continue
+			}
+			// MarkSettled deletes an active record when it wins after Add. This
+			// second read turns the Add/terminal race into a clean skip instead of
+			// spending a proof and a reverting transaction.
+			if m.pendingSettled != nil && m.pendingSettled(e.Raw) {
+				log.Printf("[%s Relay] skipping packet seq=%d: it settled while being tracked", m.name, e.Sequence)
+				skippedSettled[i] = true
 			}
 		}
 	}
@@ -78,7 +110,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// refund -- the hold skips the RPC and the proof, never the durable record.
 	if m.sourceHeldOff(time.Now()) {
 		m.lastWait = waitLogState{}
-		return allIndices(len(events))
+		return nonSettledIndices(skippedSettled)
 	}
 	relayable, err := m.src.RelayableHeight(ctx)
 	if err != nil {
@@ -87,7 +119,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		// wait that resumes identically afterwards is news again rather than a
 		// repeat, and the error lines in between do not leave a silent gap.
 		m.lastWait = waitLogState{}
-		return allIndices(len(events))
+		return nonSettledIndices(skippedSettled)
 	}
 	m.noteSourceHealthy()
 
@@ -95,7 +127,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	provable := make([]chain.Event, 0, len(events))
 	provableIdx := make([]int, 0, len(events)) // original index behind provable[j]
 	for i, e := range events {
-		if trackFailed[i] {
+		if trackFailed[i] || skippedSettled[i] {
 			continue
 		}
 		if e.Height > relayable {
@@ -182,6 +214,18 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			log.Printf("[%s Relay] waiting: %s seq=%d at height %d not yet covered by the destination client (trusts %d, waiting %s); re-queued",
 				m.name, e.Type, e.Sequence, e.Height, proofHeight, m.waits.observe(e).Round(time.Second))
 			requeue = append(requeue, i)
+			continue
+		}
+
+		// Re-check the durable settlement tombstone right before spending a
+		// Groth16 proof on this packet. SubscribeCosmos runs on its own goroutine
+		// and can call MarkSettled at any point after the two checks at the top
+		// of this function ran -- including while an earlier packet in this very
+		// loop was being proven. Skipping here, rather than only at submission,
+		// is what stops that race from also burning a proof.
+		if e.Type == chain.SendPacket && m.pendingSettled != nil && m.pendingSettled(e.Raw) {
+			log.Printf("[%s Relay] skipping packet seq=%d: it settled before its proof was built", m.name, e.Sequence)
+			m.waits.clear(e)
 			continue
 		}
 
@@ -274,18 +318,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		// Advancing the client is independent of whether any packet can be
 		// relayed, so it must not be conditional on one.
 		if foldPlan != nil {
-			// Destination.UpdateClient, not the folding path: RelayWithUpdate is
-			// specified to carry packets, and there are none.
-			if err := m.dst.UpdateClient(ctx, m.clientID, foldPlan.update); err != nil {
-				log.Printf("[%s Relay] client update (no relayable packets) to height %d: %v",
-					m.name, foldPlan.update.Height, err)
-				return requeue
-			}
-			m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
-			m.recordClientUpdate(foldPlan.update)
-			foldPlan.release()
-			log.Printf("[%s Relay] advanced client to height %d with no packets to relay",
-				m.name, foldPlan.update.Height)
+			m.submitFoldedUpdateAlone(ctx, foldPlan)
 		}
 		return requeue
 	}
@@ -294,6 +327,33 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// packets rather than broadcasting during teardown.
 	if ctx.Err() != nil {
 		return append(requeue, relayedIdx...)
+	}
+
+	// Re-check the durable settlement tombstone one more time, immediately before
+	// the tx. A terminal event can land on SubscribeCosmos's goroutine at any
+	// point during the work above -- climbing the client, building every other
+	// packet's proof -- none of which the per-packet check inside that loop can
+	// see once IT has already passed for this packet. Filtering here shrinks the
+	// remaining window to the submission call itself.
+	if m.pendingSettled != nil {
+		kept := packets[:0]
+		keptIdx := relayedIdx[:0]
+		for j, p := range packets {
+			if p.Type == chain.SendPacket && m.pendingSettled(p.Packet) {
+				log.Printf("[%s Relay] skipping packet seq=%d: it settled while its batch was being prepared", m.name, p.Sequence)
+				m.waits.clearPacket(p)
+				continue
+			}
+			kept = append(kept, p)
+			keptIdx = append(keptIdx, relayedIdx[j])
+		}
+		packets, relayedIdx = kept, keptIdx
+		if len(packets) == 0 {
+			if foldPlan != nil {
+				m.submitFoldedUpdateAlone(ctx, foldPlan)
+			}
+			return requeue
+		}
 	}
 
 	// Submit the whole batch. A folded plan prepends the not-yet-on-chain client
@@ -435,6 +495,27 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	return append(requeue, m.relayIsolated(ctx, packets, relayedIdx)...)
 }
 
+// submitFoldedUpdateAlone submits a still-unsubmitted folded client update on
+// its own when no packet survives to carry it -- either because every proof
+// failed, or because the pre-submission settlement recheck filtered every
+// remaining packet out. Advancing the client must not be conditional on a
+// packet surviving either path, or a gap that only widens (see the comment at
+// the len(packets)==0 call site) can reopen for a second reason.
+func (m *Module) submitFoldedUpdateAlone(ctx context.Context, foldPlan *foldedUpdatePlan) {
+	// Destination.UpdateClient, not the folding path: RelayWithUpdate is
+	// specified to carry packets, and there are none.
+	if err := m.dst.UpdateClient(ctx, m.clientID, foldPlan.update); err != nil {
+		log.Printf("[%s Relay] client update (no relayable packets) to height %d: %v",
+			m.name, foldPlan.update.Height, err)
+		return
+	}
+	m.lastHeight = foldPlan.update.Height // foldPlan still holds m.mu
+	m.recordClientUpdate(foldPlan.update)
+	foldPlan.release()
+	log.Printf("[%s Relay] advanced client to height %d with no packets to relay",
+		m.name, foldPlan.update.Height)
+}
+
 type foldedUpdatePlan struct {
 	destination chain.FoldingDestination
 	update      chain.ClientUpdate
@@ -574,6 +655,20 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 		m.settleDelivered(single)
 	}
 	return requeue
+}
+
+// nonSettledIndices returns the indices that remain retryable after a batch
+// pass has identified terminal packets. Source errors and permanent-failure
+// holds happen after this filter, so they must never put a known-settled packet
+// back into the queue.
+func nonSettledIndices(skippedSettled []bool) []int {
+	indices := make([]int, 0, len(skippedSettled))
+	for i, settled := range skippedSettled {
+		if !settled {
+			indices = append(indices, i)
+		}
+	}
+	return indices
 }
 
 // sourceHeldOff reports whether the source is inside a permanent-failure hold,

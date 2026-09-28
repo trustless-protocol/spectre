@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 )
 
 func TestHandleBatch(t *testing.T) {
@@ -353,6 +355,258 @@ func TestHandleBatch(t *testing.T) {
 		}
 		if dst.relayCalls != 1 {
 			t.Fatalf("relay calls after tracking recovered = %d, want 1", dst.relayCalls)
+		}
+	})
+
+	// The source has already handed this packet to the unbuffered batch channel,
+	// so it is no longer reachable through DropCosmosQueued. A terminal event now
+	// must leave a durable tombstone that handleBatch sees before it tracks, proves,
+	// or submits the stale receive.
+	t.Run("terminal event after cosmos handoff skips tracking proof and submit", func(t *testing.T) {
+		bb := services.NewBatchBuilder()
+		packet := channeltypesv2.Packet{
+			SourceClient: "cosmos-client", DestinationClient: "eth-client", Sequence: 41,
+			TimeoutTimestamp: uint64(time.Now().Add(time.Hour).Unix()),
+			Payloads:         []channeltypesv2.Payload{{Value: []byte("handoff")}},
+		}
+		raw, err := packet.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		bb.AddCosmos(services.CosmosPacket{Type: services.CosmosSend, Packet: &packet, BlockNumber: 7})
+		ch := make(chan services.CosmosBatch)
+		handedOff := make(chan struct{})
+		go func() {
+			bb.CheckCosmos(context.Background(), services.BatchConfig{BatchSize: 1}, ch)
+			close(handedOff)
+		}()
+		batch := <-ch
+		<-handedOff
+		if len(batch.Packets) != 1 {
+			t.Fatalf("handoff contains %d packets, want 1", len(batch.Packets))
+		}
+
+		// This is SubscribeCosmos observing acknowledge_packet after the handoff.
+		if err := bb.PendingTracker.MarkSettled(packet); err != nil {
+			t.Fatal(err)
+		}
+		src := &mockSource{latest: 100}
+		dst := &mockDest{}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{},
+			WithPacketTracker(func(raw []byte, height uint64) bool {
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && bb.PendingTracker.Add(tracked, height)
+			}, nil),
+			WithPendingSettlementGuard(func(raw []byte) bool {
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && bb.PendingTracker.IsSettled(tracked)
+			}, func(raw []byte) bool {
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && bb.PendingTracker.MarkSettled(tracked) == nil
+			}),
+		)
+
+		if requeue := m.handleBatch(context.Background(), []chain.Event{{
+			Type: chain.SendPacket, Sequence: packet.Sequence, Height: 7, Raw: raw,
+		}}); len(requeue) != 0 {
+			t.Fatalf("settled handoff requeue = %v, want none", requeue)
+		}
+		if src.membershipCalls != 0 || dst.relayCalls != 0 {
+			t.Fatalf("settled handoff did proof=%d relay=%d, want neither", src.membershipCalls, dst.relayCalls)
+		}
+		if got := bb.PendingTracker.Len(); got != 0 {
+			t.Fatalf("settled handoff left %d pending tracker entry(ies)", got)
+		}
+		bb.ReleaseCosmosInFlight(batch)
+	})
+
+	t.Run("destination receipt skips before tracking and leaves a tombstone", func(t *testing.T) {
+		tracker := services.NewPendingPacketTracker()
+		packet := channeltypesv2.Packet{
+			SourceClient: "cosmos-client", DestinationClient: "eth-client", Sequence: 42,
+			TimeoutTimestamp: 1000, Payloads: []channeltypesv2.Payload{{Value: []byte("received")}},
+		}
+		raw, err := packet.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		trackCalls := 0
+		src := &mockSource{latest: 100}
+		dst := &mockDest{hasReceipt: true}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{},
+			WithPacketTracker(func(raw []byte, height uint64) bool {
+				trackCalls++
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && tracker.Add(tracked, height)
+			}, nil),
+			WithPendingSettlementGuard(func(raw []byte) bool {
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && tracker.IsSettled(tracked)
+			}, func(raw []byte) bool {
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && tracker.MarkSettled(tracked) == nil
+			}),
+		)
+
+		if requeue := m.handleBatch(context.Background(), []chain.Event{{
+			Type: chain.SendPacket, Sequence: packet.Sequence, Height: 7, Raw: raw,
+		}}); len(requeue) != 0 {
+			t.Fatalf("received packet requeue = %v, want none", requeue)
+		}
+		if trackCalls != 0 || src.membershipCalls != 0 || dst.relayCalls != 0 {
+			t.Fatalf("received packet track=%d proof=%d relay=%d, want none", trackCalls, src.membershipCalls, dst.relayCalls)
+		}
+		if !tracker.IsSettled(packet) {
+			t.Fatal("destination receipt did not persist a terminal tombstone")
+		}
+	})
+
+	// A duplicate inside an otherwise-clean batch must not cost the batch its
+	// proof or its submission: the settlement check drops only the one packet
+	// another relayer already delivered, and its siblings still fold into a
+	// single relay.
+	t.Run("one settled packet in a batch does not waste its siblings' proof or submit", func(t *testing.T) {
+		tracker := services.NewPendingPacketTracker()
+		mkPacket := func(seq uint64) (channeltypesv2.Packet, []byte) {
+			p := channeltypesv2.Packet{
+				SourceClient: "cosmos-client", DestinationClient: "eth-client", Sequence: seq,
+				TimeoutTimestamp: 1000, Payloads: []channeltypesv2.Payload{{Value: []byte(fmt.Sprintf("pkt-%d", seq))}},
+			}
+			raw, err := p.Marshal()
+			if err != nil {
+				t.Fatal(err)
+			}
+			return p, raw
+		}
+		pkt1, raw1 := mkPacket(1)
+		pkt2, raw2 := mkPacket(2) // this one is already delivered by another relayer
+		pkt3, raw3 := mkPacket(3)
+
+		trackCalls := 0
+		src := &mockSource{latest: 100}
+		// packetSettled is asked once per event, in order: false, true, false.
+		dst := &mockDest{receiptAnswers: []bool{false, true, false}}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{},
+			WithPacketTracker(func(raw []byte, height uint64) bool {
+				trackCalls++
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && tracker.Add(tracked, height)
+			}, nil),
+			WithPendingSettlementGuard(func(raw []byte) bool {
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && tracker.IsSettled(tracked)
+			}, func(raw []byte) bool {
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && tracker.MarkSettled(tracked) == nil
+			}),
+		)
+
+		requeue := m.handleBatch(context.Background(), []chain.Event{
+			{Type: chain.SendPacket, Sequence: pkt1.Sequence, Height: 7, Raw: raw1},
+			{Type: chain.SendPacket, Sequence: pkt2.Sequence, Height: 7, Raw: raw2},
+			{Type: chain.SendPacket, Sequence: pkt3.Sequence, Height: 7, Raw: raw3},
+		})
+		if len(requeue) != 0 {
+			t.Fatalf("clean batch with one duplicate requeue = %v, want none", requeue)
+		}
+		if trackCalls != 2 {
+			t.Fatalf("track calls = %d, want 2 (the settled packet must never be tracked)", trackCalls)
+		}
+		if src.membershipCalls != 2 {
+			t.Fatalf("membership proof calls = %d, want 2 (one per unsettled packet)", src.membershipCalls)
+		}
+		if dst.relayCalls != 1 {
+			t.Fatalf("relay calls = %d, want 1 -- the duplicate must not fragment the batch", dst.relayCalls)
+		}
+		if len(dst.relayed) != 2 {
+			t.Fatalf("relayed %d packet(s), want 2 (the duplicate excluded)", len(dst.relayed))
+		}
+		for _, p := range dst.relayed {
+			if p.Sequence == pkt2.Sequence {
+				t.Fatalf("duplicate packet seq=%d reached the destination", pkt2.Sequence)
+			}
+		}
+		if !tracker.IsSettled(pkt2) {
+			t.Fatal("duplicate packet did not persist a terminal tombstone")
+		}
+		if tracker.IsSettled(pkt1) || tracker.IsSettled(pkt3) {
+			t.Fatal("a sibling packet was wrongly marked settled")
+		}
+	})
+
+	// A terminal event can land on SubscribeCosmos's goroutine strictly AFTER the
+	// second IsSettled read at the top of handleBatchLocked (the one right after
+	// Add), AND after the per-packet recheck the proof loop runs just before
+	// calling MembershipProof -- landing instead while the proof itself is being
+	// built. Before the pre-submission recheck existed, the packet was already in
+	// `packets` by the time that happened, so nothing downstream would observe
+	// the new tombstone and it would reach RelayPackets as a duplicate receive.
+	// MembershipProof is where MarkSettled fires here, so the settlement lands in
+	// exactly that gap: after this packet's own proof-loop check already read
+	// false, but before submission. The proof is unavoidably spent in this exact
+	// window (asserted below); what must not happen is the submission.
+	t.Run("terminal event settling mid-proof-build is not submitted as a duplicate", func(t *testing.T) {
+		tracker := services.NewPendingPacketTracker()
+		packet := channeltypesv2.Packet{
+			SourceClient: "cosmos-client", DestinationClient: "eth-client", Sequence: 77,
+			TimeoutTimestamp: uint64(time.Now().Add(time.Hour).Unix()),
+			Payloads:         []channeltypesv2.Payload{{Value: []byte("mid-proof")}},
+		}
+		raw, err := packet.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		src := &mockSource{latest: 100}
+		// MembershipProof runs strictly after both settlement checks at the top of
+		// handleBatchLocked (before tracking, and right after Add) have already
+		// read false. This is SubscribeCosmos observing acknowledge_packet on its
+		// own goroutine while this handler is mid-proof for the same packet.
+		src.onMembershipProof = func(p []byte) {
+			if string(p) != string(raw) {
+				return
+			}
+			var tracked channeltypesv2.Packet
+			if err := tracked.Unmarshal(p); err != nil {
+				t.Fatal(err)
+			}
+			if err := tracker.MarkSettled(tracked); err != nil {
+				t.Fatal(err)
+			}
+		}
+		dst := &mockDest{}
+		m := NewModule("cosmos->eth", "client-0", src, dst, &mockBuilder{},
+			WithPacketTracker(func(raw []byte, height uint64) bool {
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && tracker.Add(tracked, height)
+			}, nil),
+			WithPendingSettlementGuard(func(raw []byte) bool {
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && tracker.IsSettled(tracked)
+			}, func(raw []byte) bool {
+				var tracked channeltypesv2.Packet
+				return tracked.Unmarshal(raw) == nil && tracker.MarkSettled(tracked) == nil
+			}),
+		)
+
+		if requeue := m.handleBatch(context.Background(), []chain.Event{{
+			Type: chain.SendPacket, Sequence: packet.Sequence, Height: 7, Raw: raw,
+		}}); len(requeue) != 0 {
+			t.Fatalf("settled-mid-proof requeue = %v, want none: it is done, not retryable", requeue)
+		}
+		if src.membershipCalls != 1 {
+			t.Fatalf("membership proof calls = %d, want 1: the proof-loop recheck runs before this packet's own "+
+				"proof build and cannot see a settlement landing during that build", src.membershipCalls)
+		}
+		if dst.relayCalls != 0 || len(dst.relayed) != 0 {
+			t.Fatalf("settled-mid-proof reached submission: relayCalls=%d relayed=%+v, want none -- this is the duplicate receive the guard exists to stop",
+				dst.relayCalls, dst.relayed)
+		}
+		if !tracker.IsSettled(packet) {
+			t.Fatal("the terminal tombstone set by MarkSettled must still be there")
+		}
+		if got := tracker.Len(); got != 0 {
+			t.Fatalf("the active tracker record must be gone once settled, got %d entries", got)
 		}
 	})
 
@@ -807,6 +1061,45 @@ func TestHandleBatch(t *testing.T) {
 	// and must not skip the durable tracking that pays for the timeout refund.
 	t.Run("permanent source failure is held off", func(t *testing.T) {
 		events := []chain.Event{{Type: chain.SendPacket, Sequence: 7, Height: 40, Raw: []byte("pkt-7")}}
+
+		// A terminal tombstone is authoritative even when the source cannot answer.
+		// These early exits occur after the settlement guard has filtered the batch,
+		// so they must retry only the remaining non-terminal events.
+		t.Run("settled packets are not requeued on source outage", func(t *testing.T) {
+			for _, tc := range []struct {
+				name           string
+				source         *mockSource
+				setHeldOff     bool
+				wantSourceCall int
+			}{
+				{
+					name:           "relayable height error",
+					source:         &mockSource{latest: 100, relayableErr: errors.New("source unavailable")},
+					wantSourceCall: 1,
+				},
+				{
+					name:           "permanent failure hold",
+					source:         &mockSource{latest: 100},
+					setHeldOff:     true,
+					wantSourceCall: 0,
+				},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					m := NewModule("l2->cosmos", "client-0", tc.source, &mockDest{}, &mockBuilder{},
+						WithPendingSettlementGuard(func([]byte) bool { return true }, nil))
+					if tc.setHeldOff {
+						m.sourceProbeAt = time.Now().Add(time.Minute)
+					}
+
+					if got := m.handleBatch(context.Background(), events); len(got) != 0 {
+						t.Fatalf("settled packet requeue = %v, want none", got)
+					}
+					if tc.source.relayableCalls != tc.wantSourceCall {
+						t.Fatalf("RelayableHeight calls = %d, want %d", tc.source.relayableCalls, tc.wantSourceCall)
+					}
+				})
+			}
+		})
 
 		t.Run("the source is not asked again during the hold", func(t *testing.T) {
 			src := &mockSource{latest: 100, relayableErr: chain.Permanent(errors.New("attestor does not serve this chain"))}

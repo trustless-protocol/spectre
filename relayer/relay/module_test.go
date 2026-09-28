@@ -26,6 +26,11 @@ type mockSource struct {
 	// thing the permanent-failure hold is about.
 	relayableErr   error
 	relayableCalls int
+	// onMembershipProof, when set, runs synchronously inside MembershipProof for
+	// the given packet. It is how a test simulates SubscribeCosmos's goroutine
+	// delivering a terminal event WHILE handleBatch is spending a Groth16 proof
+	// on that exact packet, a window no earlier settlement check can observe.
+	onMembershipProof func(packet []byte)
 }
 
 func (m *mockSource) Chain() chain.ChainType { return chain.Cosmos }
@@ -54,6 +59,9 @@ func (m *mockSource) QueryHeader(_ context.Context, h uint64) ([]byte, error) {
 func (m *mockSource) MembershipProof(_ context.Context, packet []byte, height uint64, _ chain.EventType) ([]byte, error) {
 	m.membershipCalls++
 	m.proofHeights = append(m.proofHeights, height)
+	if m.onMembershipProof != nil {
+		m.onMembershipProof(packet)
+	}
 	if m.permanentMembershipOn[string(packet)] {
 		return nil, chain.Permanent(errors.New("timed out"))
 	}

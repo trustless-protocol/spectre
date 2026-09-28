@@ -100,6 +100,8 @@ type Module struct {
 	flushInterval       time.Duration
 	track               TrackFunc
 	untrack             UntrackFunc
+	pendingSettled      PendingSettledFunc
+	markPendingSettled  MarkPendingSettledFunc
 	observeClientUpdate ClientUpdateObserver
 
 	// Optional fixed-cadence forced update (nil when the destination client's
