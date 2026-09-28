@@ -19,11 +19,14 @@ just capture-l2-fixture /secure/base-capture.json packages/l2-op-stack/fixtures/
 just capture-l2-fixture /secure/op-capture.json packages/l2-op-stack/fixtures/op-sepolia
 ```
 
-The command creates `fixture.json` and a schema-v2 `provenance.json` accepted by
-`l2_client::load_fixture`. Review the pinned source revisions, profile digest,
-contract identities, block hashes, layouts, finality evidence, and every proof
-role before committing them. A fixture is not a supported configuration until
-the Rust verifier accepts it in offline tests.
+The command creates `fixture.json` and a schema-v2 `provenance.json`
+(`relayer/l2fixtures/capture.go`). Review the pinned source revisions, profile
+digest, contract identities, block hashes, layouts, finality evidence, and
+every proof role before committing them. A fixture is not a supported
+configuration until the Rust verifier accepts it in offline tests. *(The
+current `l2-client` crate has no `load_fixture` entry point that consumes
+these files directly — unverified how the Rust side loads them; check
+`packages/l2-client/src/` before relying on that path.)*
 
 The generic capturer does not infer rollup finality. Arbitrum capture
 configuration must explicitly request RollupCore/assertion proof roles; Base

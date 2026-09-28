@@ -245,11 +245,13 @@ The protobuf contract is in
 `../../proto/attestor/attestor.proto`, with generated Go client code in
 `../types/attestor`. Regenerate it from the repository root with
 `buf generate --template buf.gen.attestor.yaml`. The reusable Nitro runtime state is in `runtime_state.go`;
-the gRPC transport implementation is in `server`. The service exposes:
+the gRPC transport implementation lives in the shared `attestor/grpc` and `attestor/host` packages. The service exposes:
 
 ```text
+attestor.AttestorService/Info
 attestor.AttestorService/AttestedUpTo
 attestor.AttestorService/AttestedRootAtOrBelow
+attestor.AttestorService/WatchAttested
 attestor.AttestorService/VerifyStateRoot
 ```
 

@@ -35,11 +35,15 @@ attestor/optimism/
 │   ├── store.go      persistent state: cursor, pending, rechecks, attested feed
 │   ├── challenge.go  mismatch hook (log-only placeholder for the on-chain challenger)
 │   └── config.go     op_source config + validation
-├── server/           read-only gRPC service over the running attestors
+├── adapter/          exposes the OP Stack attestor through the domain-neutral
+│                     core ports; owns no settlement logic or persistence
 ├── client/           typed Go client mirroring the store's read interface
 ├── cmd/              the `attestor` binary (own config loader, metrics, gRPC)
 └── bindings/         GENERATED abigen bindings — never hand-edit
 ```
+
+The gRPC transport itself lives in the shared `attestor/grpc` and
+`attestor/host` packages, not a per-chain `server/` package.
 
 Its own Go module, **no cgo** — builds and tests without `libgaraga_rs.so`.
 The gRPC proto (`../../proto/attestor/attestor.proto`, generated via
@@ -72,7 +76,7 @@ interchangeable.
 
 ```bash
 just build-attestor           # binary at attestor/optimism/attestor
-just test-attestor            # go test -race -count=1 ./... — no network needed
+just test-attestor            # go test -v ./... — no network needed
 ```
 
 Unit tests cover the verdict state machine, cursor rules,

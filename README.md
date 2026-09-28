@@ -45,10 +45,15 @@ The Tendermint commit is verified by batch-proving N Ed25519 signatures whose
 voting power sums to ≥ 2/3 of the validator set. To keep Groth16 circuits
 fixed-size, production retains the bucket topology N ∈ {4, 8, 16, 32, 64,
 128}. Each bucket has one inseparable `(r1cs, pk, vk)` set and matching
-`Groth16Verifier_N{N}.sol`. The checked-in repository generator/prover manifest
-currently enables N=4 only; serving a larger quorum requires enabling that
-bucket in the prover and publishing, deploying, and registering its matching
-artifact set.
+`Groth16Verifier_N{N}.sol`. The prover engine discovers which buckets are
+servable by scanning `bin/` for complete artifact triples at startup
+(`relayer/prover/gnark/engine.go`) — no code change is needed once a bucket's
+artifacts exist. No artifact triples are checked in (`relayer/bin/` is
+gitignored), so a fresh clone must generate or provision them before the prover
+can serve any bucket. By default the generator (`relayer/prover/cmd`,
+`-buckets` flag) builds N=4; serving a larger quorum requires generating that
+bucket's artifacts, then publishing, deploying, and registering its
+`Groth16Verifier_N{N}.sol`.
 
 The store keeps one 32-byte `keccak256(abi.encode(consensusState))` per height,
 not the root itself. A packet carries the consensus state and its commitment
@@ -59,7 +64,7 @@ checks the trusting period — all before the ICS23 proof is looked at.
 The update above is drawn router-managed, which is the access-controlled path
 (`ICS02ClientUpgradeable.updateApplicationState` is `restricted` and forwards to
 the client). A deployment that is not router-managed has the relayer call
-`SpectreClient` directly instead — `relayer/transaction/handler.go:638-642`
+`SpectreClient` directly instead — `relayer/transaction/ethereum.go:670-694`
 picks between the two. The packet path always goes through the router.
 
 ## Building
@@ -232,7 +237,7 @@ GPU_PROVE=1 ./relayer start --config config.json
 
 ### ICICLE Environment
 
-Optional ICICLE tuning env vars read by `relayer/prover/backend_icicle.go`:
+Optional ICICLE tuning env vars read by `relayer/prover/gnark/backend_icicle.go`:
 
 ```bash
 export GNARK_ICICLE_DEVICE_ID=0
@@ -298,10 +303,10 @@ diffed for performance regressions without rebuilding:
 
 | Prefix | Where | Fields |
 |---|---|---|
-| `[bench][prover]` | per `GenerateProof` | `sigs`, `bucket`, `witness`, `prove`, `verify`, `total` |
-| `[bench][eth]` | per `SendEthTx` / `SendEthTxBatch` | label or `multicall labels=...`, `gasUsed`, `submit`, `wait`, `total`, `tx` |
-| `[bench][eth] inner[i]` | per multicall inner | `label`, `gas` from `debug_traceTransaction` callTracer |
-| `[bench][cosmos]` | per `SendCosmosTx` / `SendCosmosTxBatch` | msg type or `batch msgs=N`, `gasWanted`, `gasUsed`, `broadcast`, `total`, `height`, `hash` |
+| `[prover]` | per proof job in the async prover (`relayer/prover/prover.go`), always on | `proof_id`, `bucket`, `witness` (queued) / `done in <duration>` |
+| `[bench] eth` | per `SendEthTx` / `SendEthTxBatch` (`relayer/transaction/ethereum.go`) | label or `multicall labels=...`, `gasUsed`, `submit`, `wait`, `total`, `tx` |
+| `[bench] eth inner[i]` | per multicall inner | `label`, `gas` from `debug_traceTransaction` callTracer |
+| `[bench] cosmos` | per `SendCosmosTx` / `SendCosmosTxBatch` (`relayer/transaction/cosmos.go`) | msg type or `batch msgs=N`, `gasWanted`, `gasUsed`, `broadcast`, `total`, `height`, `hash` |
 
 `SendEthTxBatch` packs N inner calls but the receipt only reports the total.
 For each multicall, after the tx confirms the relayer calls

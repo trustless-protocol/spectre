@@ -1,10 +1,13 @@
 # `chain` — multi-chain adapter contract
 
-This package is the **contract** that lets one relayer process serve many
-source/destination chains (Cosmos today; EVM L2s Arbitrum / Optimism / Base
-next) without the core knowing any chain's specifics. Implement the interfaces
-here, register your adapter, and the generic relay loop (`relay.Module`) drives
-it.
+This package is the **contract** that lets the relayer target any
+source/destination chain (Cosmos, Ethereum, and the Arbitrum / Optimism / Base
+EVM L2s) without the core knowing that chain's specifics. Implement the
+interfaces here, construct your adapter in `cmd/`, and the generic relay loop
+(`relay.Module`) drives it. One relayer **process** still serves exactly one
+source → destination path (`rejectExtraRelayPaths`, `cmd/config.go`) — this
+package is what lets each of those processes be built from the same generic
+loop regardless of which chain pair it drives.
 
 **Start here, then open `chain.go`** — it is the single source of truth for the
 method signatures. This README is the map.
@@ -48,21 +51,35 @@ refresh** (`Destination.ClientExpiresAt`), an optional **timeout scanner**
 (`WithTimeoutScanner`), and an optional **periodic forced update**
 (`WithPeriodicUpdate`, e.g. pinned-set rotation) — see "Reliability" below.
 
-## Error classification (`errors.go`)
+## Error classification (`errors.go`, `retry.go`)
 
 The module re-queues by default (never drop a valid packet) and only diverges on
-explicitly-tagged errors:
+explicitly-tagged errors. There are three classes (`retry.go`'s own design note
+puts it as "§3.6 of the component design says there are three, and the code had
+two"):
 
-| Tag | Meaning | Module action |
+| Tag | Meaning | Who acts on it |
 |---|---|---|
-| `chain.Retryable` | transient infra (RPC blip) | re-queue immediately |
-| *(waiting)* | not yet relayable (finality / AppHash H+2 lag) | re-queue with growing backoff |
-| `chain.Permanent` | deterministic (timed-out packet, on-chain revert) | **drop** (funds still safe via the timeout scanner) |
+| `chain.Transient` | transient infra (RPC blip) | relay module: re-queue immediately |
+| *(waiting)* | not yet relayable (finality / AppHash H+2 lag) | relay module: re-queue with growing backoff |
+| `chain.Permanent` | deterministic (timed-out packet, on-chain revert) | relay module: **drop** (funds still safe via the timeout scanner) |
+| `chain.NeedsChange` | not enough resources (out of gas, batch too large, provider refusing a log range) | the adapter call site: applies the paired `ChangeFunc` and climbs its own backoff ladder locally (see `retry.go:24-38,133`) before the failure ever reaches the relay module |
 
 Adapters tag their errors: e.g. a source's `MembershipProof` returns
 `chain.Permanent` for a send whose timeout has passed; a destination's
 `RelayPackets` wraps `services.ErrPermanentRelayFailure` (on-chain revert) as
-`chain.Permanent`.
+`chain.Permanent`. `chain.NeedsChange` is used where the raw failure mode is
+"the request itself is too big/expensive," not "the destination is offline" —
+e.g. `transaction/ethereum.go`, `chain/evmflush/flush.go`, and
+`chain/l2rollup/subscribe.go` all climb their own ladder (`Climb`/`Next`,
+`retry.go:144,210`) rather than retrying the same request unchanged. The
+generic relay module itself never inspects `NeedsChange`: it only branches on
+`chain.IsPermanent(err)` — drop if permanent, re-queue the whole batch
+otherwise (`relay/batch.go:343-349`) — so `NeedsChange` handling is resolved
+before the module sees the error, not by the module.
+`errors.go` still holds the older two-value sentinels (`ErrRetryable`/
+`IsRetryable`, `ErrPermanent`/`IsPermanent`) that `retry.go`'s `Retry` type
+wraps for backward compatibility.
 
 ## Adding a chain = a package here, plus one branch at the composition root
 
@@ -132,11 +149,16 @@ Two related hooks carry the confirmation policy:
 ⚠️ **Confirmation policy trades safety for latency.** Proving at the unsafe head
 exposes the bridge to L2 reorgs / sequencer equivocation (a released packet on
 the destination against a source state that later reverts). The L2 wasm client
-verifies the rollup **validity** proof (the state root is canonical per the L1
-rollup contract) but that is **not** anti-reorg by itself. The effective guarantee
-comes from both the `HeadKind` request and the matching on-chain `FinalityPolicy`;
-selecting an RPC tag does not let the relayer manufacture Safe or Finalized
-evidence. See the return-path threat model in the coordination issue.
+verifies an **attestor signature quorum** (ed25519, threshold-of-N) plus a
+router account proof against the L2 header's state root — it does not itself
+observe L1, so nothing on-chain distinguishes an unsafe-head attestation from a
+finalized one. The guarantee instead comes from **each `HeadKind`/`run_mode`
+using disjoint attestor keys**: an attestor daemon configured for `finalized`
+refuses to sign a `VerifyStateRoot` request whose `run_mode` doesn't match its
+own configured head (`attestor/optimism/adapter/adapter.go`). That per-daemon
+check is enforced; cross-tier key separation across an operator's whole fleet
+is not currently checked by the relayer config loader (see `docs/L2_CLIENTS.md`)
+— it's an operational requirement today, not yet a validated one.
 
 ## Reliability behaviors ported from the legacy `StartLoop`
 
@@ -169,25 +191,35 @@ The generic module reproduces every reliability property of the monolithic
 - **Graceful shutdown** — `handleBatch` takes the `Run` ctx and the background
   loops re-check `ctx.Err()` after each timer/tick, so cancellation stops new
   proof/tx work instead of continuing past teardown.
+- **Enumeration backstop** (`flushLoop`/`flushOnce`, `relay/module.go`) — for
+  sources implementing the optional `chain.PacketLister`, periodically
+  enumerates on-chain packet state directly instead of relying solely on the
+  event subscription, so a missed/reorged event cannot silently strand a
+  packet.
+- **Overdue-ack watch** (`ackWatchLoop`, `relay/module.go`, wired via
+  `WithAckWatch`/`WithPacketFlush`) — flags packets whose ack is overdue so a
+  stuck destination-side ack doesn't go unnoticed between timeout-scanner runs.
 
 ## L2 (rollup) adapters
 
-The L2→Cosmos path is **trustless**: no relayer signature or re-execution. The
-per-L2 `HeaderBuilder` (`l2rollup/header_op.go` and
-`l2rollup/header_arbitrum_bold.go`) assembles the exact typed JSON schema
-accepted by its wasm client: the L1 rollup-contract witnesses, decoded canonical
-L2 header, and L2 IBC-handler account proof. The generic `Builder`
-(`l2rollup/builder.go`) passes the requested height and finality to the selected
-header builder, then packages its single `ClientMessage` as `ClientUpdate.Payloads[0]` and
-advances to the height that proof actually commits. The L2 wasm client verifies
-the rollup proofs against the shared cw-ics08-wasm-eth client (see
-`l2rollup/clientmessage.go`).
+The L2→Cosmos path is **attestor-signed**, not trustless: a configured
+threshold of independent attestors sign the canonical L2 header plus a router
+account proof at the requested height (ed25519; `l2rollup/header_attested.go`'s
+`attestedHeaderBuilder`). The generic `AttestedBuilder` (`l2rollup/builder.go`)
+packages the result as `ClientUpdate.Payloads[0]`. The L2 wasm client
+(`programs/cw-ics08-wasm-{op,base,arbitrum}`) verifies the attestor signature
+quorum against its stored attestor public-key set, then the router account
+proof against the header's state root — it does **not** verify any L1
+rollup-contract witness, and it does not defer to the shared `cw-ics08-wasm-eth`
+client. See `docs/L2_CLIENTS.md` for the full wire contract and the
+development-only status gate.
 
-Source/Destination/Builder are shared across all rollups; only the per-L2
-`HeaderBuilder` differs. Optimism and Base share the OP-Stack `HeaderBuilder`
-(`l2-opstack`), differing only by config; Arbitrum has its own (`l2-arbitrum`).
-The builders fail closed when the required rollup evidence is unavailable or
-does not match the requested L2 height and finality policy.
+`attestedHeaderBuilder` is the single `HeaderBuilder` implementation, shared by
+OP-Stack (op/base) and Arbitrum; only its `name` label (`l2-op`/`l2-base`/
+`l2-arbitrum`) and the `profile_version` the wasm client checks differ by
+chain — there is no separate `l2-opstack`/`l2-arbitrum` package. The builder
+fails closed when the required attestor quorum is unavailable or does not
+match the requested L2 height and confirmation policy.
 
 ## Status
 
@@ -198,14 +230,22 @@ does not match the requested L2 height and finality policy.
   validated end-to-end on the local devnet.
 - The legacy `services.StartLoop` + `handleCosmos`/`handleEth` have been removed;
   `runAdapterEngine` is the sole `start` engine.
-- **L2 adapters** (`l2rollup/`, `l2-opstack` / `l2-arbitrum`): skeleton in place;
-  proof assembly + event listener TODO (see the L2 section above).
+- **L2 adapters** (`l2rollup/`): implemented — attestor-signed header assembly
+  (`header_attested.go`), event listener with gap-recovery (`subscribe.go`),
+  storage/account proof assembly (`source.go`), and Cosmos destination
+  submission (`destination.go`). See the L2 section above and
+  `docs/L2_CLIENTS.md`.
 - The former shared god-object has been removed. The command layer assembles
   `services.RelayDeps`, while adapters and transaction handlers receive only the
   scoped `CosmosEndpoint`, `EVMEndpoint`, `ClientIDs`, and config values they
   consume.
 
-Multi-source (many Cosmos chains, one ETH) works unchanged: `cmd` runs one
-independent `runAdapterEngine` per `cosmos_to_eth` source, sharing the prover,
-`TransactionHandler`, and ETH beacon endpoint; ETH events are partitioned by the
-per-source router client id.
+**One process serves exactly one source → destination pair**
+(`rejectExtraRelayPaths`, `cmd/config.go`) — a config declaring more than one
+relay path is rejected at parse time, before any module is even fully parsed.
+Multiple Cosmos sources to one ETH destination therefore means **one config
+file and one process per source**, each started independently
+(`./relayer start --config <path>.json`), sharing only the deployed
+contracts/clients, not a process. See CLAUDE.md's `rejectExtraRelayPaths`
+section for the private-key and nonce-domain implications of running multiple
+processes against the same destination.

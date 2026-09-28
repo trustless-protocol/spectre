@@ -62,7 +62,7 @@ Run these even if the PR doesn't mention them:
 - **Crash/restart**: for relayer changes — what state survives a restart? Are recovery scans (startup lookback, periodic gap ticker) still able to cover what the change assumes in-memory?
 - **Failure-path state**: no cursor/timestamp/tracker advances when an operation errored; errors logged with context, never swallowed.
 - **Goroutine ownership**: for new maps/cursors, state which goroutine owns them. Same-select-loop access needs no lock; anything crossing goroutines does.
-- **Witness/encoding boundary**: if `hash_witness.go`, `WrapperVerifier.sol`, `Encode.sol`, or proto types changed — both sides must change together, and the hashed-field set is a security boundary (demand a binding argument).
+- **Witness/encoding boundary**: if `relayer/prover/witness/witness.go`, `SignatureVerifier.sol`, `Encode.sol`, or proto types changed — both sides must change together, and the hashed-field set is a security boundary (demand a binding argument).
 - **Generated code**: diffs inside `relayer/bindings/`, `packages/go-abigen/`, `contracts/verifiers/Groth16Verifier_N*.sol` must come from regeneration, matching a source change in the same PR.
 - **Reorg/dedup**: for event-handling changes, check dedupe keys include block/tx identity so reorged events re-relay.
 

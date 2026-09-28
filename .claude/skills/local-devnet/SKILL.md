@@ -50,7 +50,7 @@ go build -o relayer ./cmd                              # use the binary, not `go
 go run ./prover/cmd ./bin ../contracts/verifiers       # only if bin/n{N}/ artifacts are missing or R1CS changed
 ```
 
-Circuit regeneration changes the vk → the generated `Groth16Verifier_N{N}.sol` must be **redeployed** and re-registered via `WrapperVerifier.setBucket(...)`. If contracts were just deployed by `run_eth_node.sh` from freshly generated verifiers, they already match — regeneration mid-session is what breaks the pairing.
+Circuit regeneration changes the vk → the generated `Groth16Verifier_N{N}.sol` must be **redeployed** and re-registered via `SignatureVerifier.setBucket(...)`. If contracts were just deployed by `run_eth_node.sh` from freshly generated verifiers, they already match — regeneration mid-session is what breaks the pairing.
 
 Bucket sizing: the prover picks the smallest N ∈ {4,8,16,32,64,128} that covers a greedy-by-power ≥⅔ quorum. Local devnets and even the Cosmos Hub `provider` testnet (top-4 validators > ⅔) need only N=4 — don't compile big buckets you won't use.
 
@@ -129,7 +129,7 @@ Load-bearing details, each one cost a debugging session:
         --format '{{range .Config.Cmd}}{{println .}}{{end}}' | grep -o '0x[0-9a-f]\{64\}'))
   cast send $P --value 200ether --private-key <l1-funded-key> --rpc-url $L1
   ```
-- **L2 startup recovery is bounded unless configured otherwise.** `SubscribeL2` has no persisted cursor and restarts one startup window below the head (`chain/l2rollup/subscribe.go`). The window is a duration (default 8m32s) converted to blocks at the chain's measured block time; set `L2_STARTUP_LOOKBACK` (a Go duration, e.g. `90m`) high enough to cover the expected attestation wait and downtime before restarting.
+- **L2 startup recovery is bounded unless configured otherwise.** `Source.Subscribe` has no persisted cursor and restarts one startup window below the head (`chain/l2rollup/subscribe.go`). The window is a duration (default 8m32s) converted to blocks at the chain's measured block time; set `L2_STARTUP_LOOKBACK` (a Go duration, e.g. `90m`) high enough to cover the expected attestation wait and downtime before restarting.
 
 - **The Ethereum client must be able to cross a sync-committee period.** Periods roll every 8192 slots. The relayer takes the next period's committee from the preceding period's light-client update, so the beacon must serve `/eth/v1/beacon/light_client/updates` — check before a long run:
   ```bash

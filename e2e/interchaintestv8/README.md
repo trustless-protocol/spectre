@@ -15,16 +15,16 @@ On top of the toolchain in the [repo root README](../../README.md#requirements):
 - **[Kurtosis CLI](https://docs.kurtosis.com/install/)** installed
 - The two sibling repos (`ecip-gnark`, `decentrio-gnark`) cloned per
   [Sibling repos](../../README.md#sibling-repos-required-to-build-the-relayer)
-- `relayer/prover/buckets.go` trimmed to `var Buckets = []int{4}` for local
-  runs — the suite only ever exercises bucket 4 (single-validator simd chain),
-  and building the full set takes 30+ minutes (n=128 alone ≈ 30 min). Revert
-  before pushing — production needs the full set.
+- Nothing to trim: the prover's `-buckets` flag already defaults to `"4"`
+  (`relayer/prover/cmd/main.go:35`), and the suite only ever exercises bucket 4
+  (single-validator simd chain). Building the full family takes 30+ minutes
+  (n=128 alone ≈ 30 min) and is only needed if you pass `-buckets` explicitly.
 
 The first invocation of `just test-e2e` auto-runs:
 
 - `install-go-relayer` — `go build -o $GOPATH/bin/relayer ./cmd`
 - `build-prover-artifacts` — `go run ./prover/cmd ./bin ../contracts/verifiers`
-  (compiles every bucket in `Buckets`, emits per-bucket `r1cs/pk/vk.bin` and
+  (compiles the default bucket, emits per-bucket `r1cs/pk/vk.bin` and
   `contracts/verifiers/Groth16Verifier_N{N}.sol`)
 - `clean-foundry` — wipes `cache/`, `out/`, `broadcast/`
 
@@ -83,5 +83,6 @@ service. Tests therefore *wait* for the daemon to drive each step (via
 relay tx via `s.RelayerClient.RelayByTx(...)` and broadcasting it themselves.
 
 The `s.RelayerClient` / `s.EthRelayerSubmitter` plumbing kept from upstream
-is still wired in `e2esuite/suite.go` for the out-of-scope raw-tx broadcast
-flows, but the EthCosmosTestSuite cases above avoid it entirely.
+is still wired in `ibc_eth_cosmos_test.go` (on `EthCosmosTestSuite`, mirrored
+on `MultichainTestSuite` in `multichain_test.go`) for the out-of-scope raw-tx
+broadcast flows, but the EthCosmosTestSuite cases above avoid it entirely.

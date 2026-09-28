@@ -88,8 +88,8 @@ type Event struct {
 // non-monotonic updates itself; this is defense in depth at the core layer.)
 //
 // Payloads are adapter-owned, destination-specific update bytes. Most adapters
-// emit exactly one payload (a Groth16 proof bundle for Cosmos->X or a trustless
-// rollup-proof JSON ClientMessage for L2->Cosmos); beacon updates may need an
+// emit exactly one payload (a Groth16 proof bundle for Cosmos->X or an
+// attestor-signed JSON ClientMessage for L2->Cosmos); beacon updates may need an
 // ordered sequence when crossing sync-committee periods. Only the destination
 // adapter understands their contents. An empty list means the client is already
 // current and no transaction is needed.
@@ -339,14 +339,16 @@ type FoldingDestination interface {
 //     ETH L1 -> Cosmos. NO relayer-side proving or re-execution; the wasm
 //     client verifies BLS + Merkle itself. This is the existing eth_to_cosmos
 //     path.
-//   - "l2-opstack" / "l2-arbitrum": assemble the trustless rollup proof — the L1
-//     rollup-contract witnesses (AnchorStateRegistry for OP-Stack, RollupCore for
-//     Arbitrum) + the RLP L2 header + L2 IBC-handler account proof, as a JSON
-//     ClientMessage. L2 -> Cosmos. NO relayer signature or re-execution; the L2
-//     wasm client verifies the rollup proofs against the shared ETH client. The
-//     Source.HeadKind selects the requested latency tier; the request is carried
-//     to the builder and the wasm client independently authenticates the claimed
-//     finality evidence before applying its membership policy.
+//   - "l2-op" / "l2-base" / "l2-arbitrum": assemble an attestor-signed header —
+//     a threshold of independent attestors sign the canonical L2 header + a
+//     router account proof (ed25519), as a JSON ClientMessage. L2 -> Cosmos.
+//     The L2 wasm client verifies the attestor signature quorum against its
+//     stored attestor public-key set, then the router account proof against the
+//     header's state root; it does not verify any L1 rollup-contract witness or
+//     defer to the shared ETH client. Source.HeadKind selects the requested
+//     latency tier; the request is carried to the builder, and each head_kind
+//     uses disjoint attestor keys so selecting an RPC tag alone cannot
+//     manufacture Safe or Finalized evidence.
 //
 // Implemented by cosmos.Groth16Builder, evm.BeaconBuilder and
 // l2rollup.AttestedBuilder -- listed so the interface greps to its

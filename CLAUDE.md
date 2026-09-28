@@ -85,7 +85,7 @@ ICS26Router (UUPS) ← main IBC entry point
           └─ Groth16Verifier_N{N}.sol ← GENERATED, one per N ∈ {4,8,16,32,64,128}, vk baked as constants
 ```
 
-ZK flow: top-N validator Ed25519 sigs (≥⅔ voting power) → padded to nearest bucket with deterministic dummy keypairs → circuit hashes the witness into a single SHA-256 public input + ECIP batch verify → per-bucket verifier checks the proof. **Pubkeys (A) are committed into the witness hash** so the on-chain pinned-set lookup is honest; **R/S are deliberately NOT in calldata or the hash** (bound by the Ed25519 verify itself). The witness layout must match byte-for-byte between `relayer/prover/hash_witness.go` and `contracts/light-clients/spectre/SignatureVerifier.sol`.
+ZK flow: top-N validator Ed25519 sigs (≥⅔ voting power) → padded to nearest bucket with deterministic dummy keypairs → circuit hashes the witness into a single SHA-256 public input + ECIP batch verify → per-bucket verifier checks the proof. **Pubkeys (A) are committed into the witness hash** so the on-chain pinned-set lookup is honest; **R/S are deliberately NOT in calldata or the hash** (bound by the Ed25519 verify itself). The witness layout must match byte-for-byte between `relayer/prover/witness/witness.go` and `contracts/light-clients/spectre/SignatureVerifier.sol`.
 
 ```
 relayer/
@@ -93,8 +93,11 @@ relayer/
 ├── chain/          # multi-chain adapter contract (Source/Destination/Builder) + cosmos/ evm/ l2rollup/ adapters + codec/ (opaque-payload codecs) — see chain/README.md
 ├── relay/          # generic RelayModule that drives one source→dest path via the chain adapters (the cutover engine)
 ├── client/         # Tendermint + Ethereum RPC/Beacon API clients
-├── prover/         # Bucketed Ed25519 batch prover
-│   ├── circuit.go / hash_witness.go / dummy.go / extractor.go / prover.go / buckets.go
+├── prover/         # Bucketed Ed25519 batch prover — async proof service
+│   ├── prover.go / job.go / validate.go / ports.go  # async service: submit/claim/prove/store a job
+│   ├── gnark/      # circuit, CPU + optional ICICLE GPU backend, setup
+│   ├── witness/    # witness layout + hashing, bucket family, dummy-signer padding
+│   ├── memqueue/ memstore/  # in-memory job queue/store implementations
 │   └── cmd/        # One-shot circuit setup tool (see Relayer CLI)
 ├── services/       # batch builder, PendingPacketTracker, timeout scanners, adapter_api.go surface consumed by the adapters (StartLoop removed at cutover; the adapter engine drives relay)
 ├── subscriber/     # Cosmos WebSocket + ETH event listeners (both sides have gap recovery — keep it that way)
@@ -165,7 +168,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 14. **Downgrading pinned deps to match a stale mirror** — a mirror lags, model "fixes" by downgrading. → *Never regress a pinned version to satisfy a mirror; fix the install source.*
 15. **Chat language leaking into GitHub** — non-English chat bleeds into an issue or commit. → *Hard limit 5.*
 16. **Misreading the permissionless escape hatch** — flags `hasRole(ROLE, address(0))` as a vulnerability. → *It's the documented permissionless mode; report it as design context, not a finding.*
-17. **Weakening witness binding** — moves a field out of the witness hash "to save gas", or adds R/S to calldata "for clarity". → *The hashed-field set in `hash_witness.go` is a security boundary; any change needs an explicit binding argument for both the before and after states.*
+17. **Weakening witness binding** — moves a field out of the witness hash "to save gas", or adds R/S to calldata "for clarity". → *The hashed-field set in `relayer/prover/witness/witness.go` is a security boundary; any change needs an explicit binding argument for both the before and after states.*
 
 ## Quality bar per deliverable — checkable, not adjectives
 

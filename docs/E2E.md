@@ -91,7 +91,7 @@ under `/tmp/spectre-relayer-<uid>/`.
 
 The EVM half takes one lock per nonce domain it can write: a file per
 `{chain id, address}`, named `evm-signer-<chain id>-<address>.lock`
-(`cmd/evm_signer_lock.go:221`). The chain id is resolved from each configured
+(`cmd/evm_signer_lock.go:220`). The chain id is resolved from each configured
 endpoint at startup rather than read from the config, so the lock names the domain
 the process will actually write. A `cosmos<->eth` and a `cosmos<->l2` process write
 different chains, take different locks, and may share one key -- the guard permits
@@ -182,16 +182,20 @@ $GAIAD version                         # -> test/ibc-host-customs-<sha>
 strings $GAIAD | grep -c ClientStatus  # -> non-zero
 ```
 
-> **Tip for local dev**: `relayer/prover/buckets.go` defaults to
-> `Buckets = []int{4, 8, 16, 32, 64, 128}`. Compiling all six takes 30+ minutes
-> (bucket 128 alone is ~30 min) and the local single-validator chain only ever
-> uses bucket 4. For local iteration, temporarily edit it to:
+> **Tip for local dev**: `go run ./prover/cmd ./bin ../contracts/verifiers`
+> already defaults `-buckets` to `"4"` (`relayer/prover/cmd/main.go:35`), which
+> is the only bucket the local single-validator chain uses — no edit needed.
+> Compiling the full family takes 30+ minutes (bucket 128 alone is ~30 min); to
+> build the full production set, or a specific subset, pass it explicitly:
 >
-> ```go
-> var Buckets = []int{4}
+> ```bash
+> go run ./prover/cmd -buckets 4,8,16,32,64,128 ./bin ../contracts/verifiers
 > ```
 >
-> before step 1 below. Revert before pushing — production needs the full set.
+> Each value must be a member of the protocol's bucket family declared in
+> `relayer/prover/witness/buckets.go:14` (`SupportedBuckets`); an unsupported
+> value is rejected before any compile starts (`relayer/prover/cmd/main.go:217-219`).
+> `-list-buckets` prints the resolved set without building anything.
 >
 > The repo ships **no** generated verifiers — `.gitignore` excludes
 > `contracts/verifiers/Groth16Verifier_N*.sol`, so `git ls-tree` lists none and a
@@ -871,7 +875,8 @@ Cosmos↔Base Sepolia round trips, same machine and same day as the OP numbers a
 
 The difference in the return leg is `DERIVED_GAP_BLOCKS`, not the chain: OP ran at the
 default 150, Base at 10. The Arbitrum figure is absent because its attestor stalled
-mid-run (#358), so the one number obtained would measure the stall rather than the gap.
+mid-run on the bounded-backfill bug (#358, fixed since); this cell needs a fresh
+measurement on current `main` rather than a number carried over from that run.
 
 Lower is not free: each derived root is an attestation, and at `unsafe`/`safe` heads
 they stay provisional until the finalized head catches up, so the provisional backlog
@@ -936,7 +941,7 @@ proves half the system.
 | `beacon api unavailable at ...:59717` | The `eth-to-cosmos` module still has the example's beacon URL. Point `eth_beacon_api_url` at this run's `ETH_BEACON_API` (from `attestor.env`). |
 | `MsgStoreCode` fails: `reference-types not enabled` | The wasm was built with a plain `cargo build`. Build through `cosmwasm/optimizer` (`just build-cw-ics08-wasm-*`); a raw release build embeds features the CosmWasm VM rejects. |
 | Optimizer fails: `rustc 1.86.0 is not supported ... requires rustc 1.90` | A dependency raised its MSRV above the optimizer image's Rust. Pin the dependency down (e.g. `cargo update -p ruint --precise 1.17.0`) or bump the optimizer image. |
-| `MsgCreateClient`: `status Unknown: client state is not active` | 08-wasm Stargate allowlist is missing `ClientStatus` — see [docs/L2_CLIENTS.md](L2_CLIENTS.md#host-requirements-and-verification). |
+| `MsgCreateClient`: `status Unknown: client state is not active` | 08-wasm Stargate allowlist is missing `ClientStatus` — see [Gaia binary](#gaia-binary). |
 | L2 client update panics the tx: `returning attributes from a contract is not allowed` | The deployed wasm predates the fix that made the client return data only. Rebuild through `cosmwasm/optimizer` and gov-store it. |
 | L2 client update fails: `unsigned L2 headers are unsupported` | The producer is stale or misconfigured: the authenticated client requires the relayer to collect the configured threshold of indexed attestor signatures before submitting any router proof. Confirm the relayer and wasm are from the same stack and that `attestor_endpoints`, indices and key set match the fresh authenticated client; see [docs/L2_CLIENTS.md](L2_CLIENTS.md#signed-update-contract). |
 | `only N valid attestor signatures` or `only N attestor frontiers available` | Fewer than the configured threshold of endpoints answered with a valid signature/frontier. The relayer queries endpoints concurrently, so one failed endpoint is tolerated whenever the remaining endpoints still satisfy the threshold; check every endpoint address, immutable index and daemon health. |
@@ -955,7 +960,7 @@ proves half the system.
 | Attestor exits: `failed to listen on attestor grpc address 127.0.0.1:3001: address already in use` | An earlier attestor still holds the port. Find it with `lsof -nP -iTCP:3001 -sTCP:LISTEN` — plain `lsof -ti :3001` also matches the relayer *connected* to that port, and killing that list takes the relayer down with it. |
 | `forge script` fails `insufficient funds ... have 0` | The deployer has no balance on the L2 — use an L2-funded account (step 4). Balances do not carry between rollups: funded on L1 Sepolia, OP or Arbitrum still means zero on Base. |
 | `eth_getProof` returns nothing at all — no result, no error, the call just hangs | The node prunes state below some depth and does not say so. Measure the boundary (see the external-L2 sections) and keep the attested height inside it; `DERIVED_GAP_BLOCKS=10` trails ~10–20 blocks, `head_kind=finalized` trails ~600. |
-| Arbitrum attestor stops attesting: last log line is a normal attestation, container still up | Its sequential per-block back-fill cannot keep pace with the chain — issue #358. Nothing is logged because the head never changes, so no error path is taken. `docker restart fast-ibc-arbitrum-attestor` re-anchors it at the head for roughly another minute. |
+| Arbitrum attestor stops attesting: last log line is a normal attestation, container still up | Was issue #358 (sequential per-block back-fill couldn't keep pace with the chain); fixed by bounding and parallelizing the back-fill (`runtime_backfill_max_blocks` / `runtime_backfill_concurrency`, `attestor/arbitrum/README.md`). If you still see a stall on current `main`, check those two settings are non-zero in your attestor config before filing a new issue. |
 | `start` refuses to boot: `l2_chain_id is N but l2_rpc_url ... serves chain M` | The profile and the RPC name different chains. Until this check existed the relayer started anyway and relayed against **M**, because transactions take their chain id from `eth_chainId` and nothing reads `l2_chain_id` — so the config, the client's committed profile and the docs all said **N** while the packets went to **M**. Fix whichever is wrong; the error prints both. |
 | `start` refuses to boot: `head_kind is "unsafe" but attestor N at ... gates "opstack" on attestation_head "finalized"` | `head_kind` and the attestor's `ATTESTATION_HEAD` disagree. The builder sends `head_kind` as the `run_mode` and the attestor refuses any `run_mode` but its own, so every header would be rejected at the first packet. Make them equal; the error names both. The sibling `serves [...], not attestor_src_chain` means the endpoint is an attestor for a different L2. An attestor that does not answer `Info` is skipped with a log line, not refused. |
 | Arbitrum attestor attests the wrong chain (`src_chain=arbdev`, `l2_chain_id=412346`) despite `CHAIN_PROFILE=arbitrum-sepolia` | A leftover `.arbitrum-devnet-run/attestor.env` was sourced; its exports are real env vars and beat the profile. Fixed — a non-`devnet` `CHAIN_PROFILE` now ignores the handoff and logs that it did. Delete the directory if you are on an older checkout. |
@@ -977,8 +982,9 @@ disturb an OP or Arbitrum devnet. Pass `ENCLAVE=op-devnet` to settle it on the s
 L1 as those instead.
 
 **Base and Optimism are the same chain type to the relayer.** `src_chain` /
-`dst_chain` stay `opstack` — `cmd/main.go` accepts only `cosmos | ethereum | opstack
-| arbitrum`. The two are told apart by module **name** and client id, which is why
+`dst_chain` stay `opstack` — those are the only four chain kinds (`relayer/chain/chain.go:33-36`),
+enforced when a module is parsed (`relayer/cmd/config.go:140`). The two are told
+apart by module **name** and client id, which is why
 the deploy step below needs `MODULE_NAME`.
 
 ```bash

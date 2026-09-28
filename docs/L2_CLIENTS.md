@@ -146,10 +146,15 @@ SHA256("SPECTRE_L2_ATTESTATION_V1")
 
 The statement remains exactly 164 bytes. Finality (`unsafe`, `safe`, or `finalized`) is an
 off-chain selection policy and is intentionally not another signed field. Therefore every
-finality tier must use disjoint attestor/KMS keys. Config loading rejects any public-key overlap
-between different `head_kind` values in one relayer config, even when their thresholds and
-attestor-set hashes differ. Each attestor daemon also rejects `VerifyStateRoot` requests whose
-`run_mode` does not exactly match its configured attestation head.
+finality tier must use disjoint attestor/KMS keys. Each attestor daemon rejects
+`VerifyStateRoot` requests whose `run_mode` does not exactly match its configured attestation
+head (`attestor/optimism/adapter/adapter.go`), so a single daemon can't be tricked into signing
+for the wrong tier. **Current limitation:** the relayer config loader does not itself check for
+public-key overlap across `head_kind` values or across config files/processes — a single config
+only ever declares one relay path (`relayer/cmd/config.go`), so there is no cross-tier
+comparison to make within one file, and nothing today compares keys across an operator's
+multiple config files or processes. Cross-tier key separation is presently an operational
+discipline the operator must enforce, not a validated invariant.
 
 Signature structure and Ed25519 verification complete before router-proof traversal. The contract
 then validates the configured header fork, derives the L2 block hash and verifies the router
