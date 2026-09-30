@@ -288,7 +288,9 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     ///      snapshot's consensus timestamp must remain inside the trusting period, but it need not
     ///      equal the trusted height's next validator set. Contrast `_verifyMisbehaviourQuorum`
     ///      below, which legitimately uses `snapshotAt(trustedHeight)` because misbehaviour evidence
-    ///      can reference any past trusted height, not just the latest.
+    ///      can reference any past trusted height, not just the latest. The selected historical
+    ///      snapshot must nevertheless remain inside the trusting period before its voting power
+    ///      can be counted.
     function _verifyPinnedQuorum(
         SpectreStore.Store storage $,
         ISpectreClientMsgs.BatchProof memory proof_,
@@ -302,8 +304,8 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         _verifyQuorum(proof_, header.signedHeader.commit.commitSigs, snapshot);
     }
 
-    /// @notice Sums the verified signers' voting power against the snapshot trusted at the header's
-    ///         trusted height, requiring >2/3.
+    /// @notice Validates and sums the verified signers' voting power against the snapshot trusted
+    ///         at the header's trusted height, requiring >2/3.
     function _verifyMisbehaviourQuorum(
         SpectreStore.Store storage $,
         ISpectreClientMsgs.BatchProof memory proof_,
@@ -312,7 +314,9 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         private
         view
     {
-        _verifyQuorum(proof_, header.signedHeader.commit.commitSigs, $.snapshotAt(header.trustedHeight.revisionHeight));
+        SpectreStore.PinnedValidatorSetSnapshot memory snapshot = $.snapshotAt(header.trustedHeight.revisionHeight);
+        _validateConsensusStateTrustingPeriod(snapshot.timestamp);
+        _verifyQuorum(proof_, header.signedHeader.commit.commitSigs, snapshot);
     }
 
     function _verifyQuorum(
@@ -539,9 +543,9 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
             abi.decode(misbehaviourMsg, (ISpectreClientMsgs.MsgSubmitMisbehaviour));
 
         SpectreStore.Store storage $ = SpectreStore.load();
-        // Bind the submitter-chosen time to the wall clock. Without this, `time` could be picked
-        // inside the trusting period of an arbitrarily old trusted state, letting a long-expired
-        // (unbonded) snapshot validator set freeze the client.
+        // Bind the submitter-chosen time to the wall clock so the delegatecalled header validation
+        // cannot accept stale trusted consensus states. `_verifyMisbehaviourQuorum` independently
+        // requires the snapshot selected at each trusted height to remain within the trusting period.
         _requireFreshness($, msg_.time);
 
         // Quorum accounting first: it gates the (expensive) signature proof and must revert before
