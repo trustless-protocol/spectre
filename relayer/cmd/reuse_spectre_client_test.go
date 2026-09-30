@@ -92,6 +92,39 @@ func TestSpectreClientIsReusable(t *testing.T) {
 	})
 }
 
+func TestConsensusStateHashIsReusable(t *testing.T) {
+	t.Parallel()
+
+	const (
+		chain  = "test-ibc-eth"
+		height = uint64(1634)
+	)
+
+	t.Run("matching stored and live state", func(t *testing.T) {
+		t.Parallel()
+		hash := [32]byte{0x11}
+		if err := consensusStateHashIsReusable(hash, hash, chain, height); err != nil {
+			t.Fatalf("healthy client rejected: %v", err)
+		}
+	})
+
+	// A replacement chain can grow past the client's old trusted height, making
+	// the height-only reset guard pass. Its consensus state at that height is
+	// still different, and must decline reuse before all later updates revert.
+	t.Run("re-created chain grown past trusted height", func(t *testing.T) {
+		t.Parallel()
+		err := consensusStateHashIsReusable([32]byte{0x11}, [32]byte{0x22}, chain, height)
+		if err == nil {
+			t.Fatal("accepted a different consensus state at the trusted height")
+		}
+		for _, want := range []string{"1634", chain, "re-created"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q does not mention %q", err, want)
+			}
+		}
+	})
+}
+
 // TestRouterWiringIsReusable covers the second half of "can this deploy be
 // skipped": whether the ICS26Router in this config is actually wired to the
 // SpectreClient we are about to reuse, AND to the Cosmos client this config

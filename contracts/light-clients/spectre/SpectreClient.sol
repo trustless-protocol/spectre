@@ -127,6 +127,11 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     }
 
     /// @inheritdoc ISpectreClient
+    function getConsensusStateHash(uint64 revisionHeight) external view returns (bytes32) {
+        return SpectreStore.load().getConsensusStateHash(revisionHeight);
+    }
+
+    /// @inheritdoc ISpectreClient
     function getPinnedValidatorSet()
         external
         view
