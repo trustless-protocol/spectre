@@ -211,6 +211,13 @@ test-attestor:
 	@echo "Running Optimism attestor tests..."
 	cd attestor/optimism && go test -v ./...
 
+# Run the non-destructive live attestor suite against an already-running local
+# sidecar. route is one of op, base, or arbitrum; the helper sources its
+# attestor.env and deliberately does not start/stop or reconfigure the stack.
+[group('test')]
+test-attestor-e2e route="op":
+	scripts/local/test_attestor_e2e.sh {{route}}
+
 # Run any e2e test using the test's full name. For example, `just test-e2e TestWithEthCosmosTestSuite/Test_Deploy`
 #
 # ETH_TESTNET_TYPE=pos picks the Kurtosis PoS network (with beacon API), which is what
