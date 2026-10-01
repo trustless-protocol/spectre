@@ -21,7 +21,6 @@ import (
 	"time"
 
 	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -32,6 +31,7 @@ import (
 	"attestor/host"
 	"attestor/optimism/adapter"
 	"attestor/optimism/opstack"
+	attestortypes "attestor/types"
 	"attestor/types/attestation"
 )
 
@@ -169,7 +169,7 @@ func buildOpAttestor(ctx context.Context, logger *zap.Logger, op opSourceConfig,
 		return nil, attestation.Signer{}, nil, err
 	}
 
-	l1Client, err := ethclient.DialContext(ctx, cfg.L1RpcUrl)
+	l1Client, err := attestortypes.DialEthRPC(ctx, cfg.L1RpcUrl, attestortypes.DefaultRPCTimeout)
 	if err != nil {
 		return nil, attestation.Signer{}, nil, fmt.Errorf("failed to dial L1 rpc %s: %w", cfg.L1RpcUrl, err)
 	}

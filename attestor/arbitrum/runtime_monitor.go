@@ -19,6 +19,7 @@ const (
 	refreshBackoffBase               = time.Second
 	refreshBackoffRateLimitBase      = 10 * time.Second
 	refreshBackoffMax                = time.Minute
+	defaultRuntimeRefreshTimeout     = 2 * time.Minute
 )
 
 // RuntimeRefresher refreshes the Nitro view consumed by the attestor.
@@ -37,6 +38,9 @@ type NitroHeadSubscriber interface {
 type RuntimeMonitorConfig struct {
 	ReconcileInterval         time.Duration
 	SubscriptionRetryInterval time.Duration
+	// RefreshTimeout bounds the full refresh, including its concurrent Nitro
+	// calls and derived-root sync. Zero selects the production default.
+	RefreshTimeout time.Duration
 }
 
 // MonitorRuntimeState keeps the runtime view current from both periodic polls
@@ -64,7 +68,14 @@ func MonitorRuntimeState(
 	if retryInterval < 0 {
 		return fmt.Errorf("Nitro subscription retry interval must not be negative")
 	}
-	monitorRuntimeStateWithRetry(ctx, runtimeState, subscriber, config.ReconcileInterval, retryInterval)
+	refreshTimeout := config.RefreshTimeout
+	if refreshTimeout == 0 {
+		refreshTimeout = defaultRuntimeRefreshTimeout
+	}
+	if refreshTimeout < 0 {
+		return fmt.Errorf("Nitro runtime refresh timeout must not be negative")
+	}
+	monitorRuntimeStateWithRetry(ctx, runtimeState, subscriber, config.ReconcileInterval, retryInterval, refreshTimeout)
 	return nil
 }
 
@@ -74,6 +85,7 @@ func monitorRuntimeStateWithRetry(
 	subscriber NitroHeadSubscriber,
 	reconcileInterval time.Duration,
 	subscriptionRetryInterval time.Duration,
+	refreshTimeout time.Duration,
 ) {
 	headUpdates := make(chan struct{}, 1)
 	go streamNitroHeadUpdates(ctx, subscriber, headUpdates, subscriptionRetryInterval)
@@ -85,7 +97,9 @@ func monitorRuntimeStateWithRetry(
 		start := time.Now()
 		refreshStartNanos.Store(start.UnixNano())
 		defer refreshStartNanos.Store(0)
-		checks, err := runtimeState.Refresh(ctx)
+		refreshCtx, cancel := context.WithTimeout(ctx, refreshTimeout)
+		defer cancel()
+		checks, err := runtimeState.Refresh(refreshCtx)
 		if elapsed := time.Since(start); elapsed > reconcileInterval {
 			log.Printf("attestor runtime refresh slow: elapsed=%s interval=%s", elapsed, reconcileInterval)
 		}
