@@ -386,7 +386,35 @@ func l2StorageProof(ctx context.Context, l2 *ethclient.Client, router ethcommon.
 	})
 }
 
-// NonMembershipProof is unused on the L2 source relay path: L2-origin packet
+// NonMembershipProof proves that the L2 router has not written the receipt for
+// a Cosmos-origin packet at height. It emits the bare EvmStorageProof expected
+// by the attestor-backed L2 wasm client; the Ethereum beacon proof envelope is
+// incompatible with that client.
+//
+// This is exported for the Cosmos->L2 timeout scanner. The normal L2 source
+// path only proves membership because its own timeouts are settled on the L2.
+func NonMembershipProof(ctx context.Context, l2 *ethclient.Client, router ethcommon.Address, packet channeltypesv2.Packet, height uint64) ([]byte, error) {
+	path := services.EthPath(packet.DestinationClient, packet.Sequence, 2)
+	storageKey := crypto.Keccak256Hash(crypto.Keccak256(path), ethcommon.HexToHash(services.ICS26_IBC_STORAGE_SLOT).Bytes())
+	raw, err := relayerclient.EthGetProof(ctx, l2, router, []ethcommon.Hash{storageKey}, new(big.Int).SetUint64(height))
+	if err != nil {
+		return nil, fmt.Errorf("l2 source: prove absent receipt at height %d: %w", height, err)
+	}
+	if len(raw.Storage) == 0 {
+		return nil, fmt.Errorf("l2 source: eth_getProof returned no storage proof for receipt key %s", storageKey.Hex())
+	}
+	sp := raw.Storage[0]
+	if len(sp.Value) != 0 {
+		return nil, fmt.Errorf("l2 source: receipt slot %s is populated at height %d: %w", storageKey.Hex(), height, relayerclient.ErrPacketAlreadyReceived)
+	}
+	return json.Marshal(EvmStorageProof{
+		Key:   hexBytes(storageKey.Bytes()),
+		Value: byteList(sp.Value),
+		Proof: byteMatrix(sp.Proof),
+	})
+}
+
+// Source.NonMembershipProof is unused on the L2 source relay path: L2-origin packet
 // timeouts are handled by the async timeout scanner (as on the ETH source), not the
 // Subscribe->relay flow, so no TimeoutPacket event reaches here.
 func (s *Source) NonMembershipProof(_ context.Context, _ []byte, _ uint64) ([]byte, error) {

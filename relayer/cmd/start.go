@@ -425,7 +425,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 					return err
 				}
 				stateLocks = append(stateLocks, l2SrcLock)
-				module, cleanup, err := buildL2ToCosmosModule(logger, src, txHandler, timeoutReturn, l2SrcStateDir)
+				module, timeoutRecovery, cleanup, err := buildL2ToCosmosModule(logger, src, txHandler, timeoutReturn, l2SrcStateDir)
 				if err != nil {
 					stopAndCleanup()
 					return fmt.Errorf("l2_to_cosmos source %q: %w", src.AttestorSrcChain, err)
@@ -440,6 +440,9 @@ func Start(logger *zap.Logger) *cobra.Command {
 				// from the same ledger.
 				if l2Dest != nil {
 					l2Dest.hasReturnLeg = destHasReturnLeg(l2Dest.svc, []*services.Services{timeoutReturn.svc})
+					if l2Dest.hasReturnLeg {
+						l2Dest.timeoutRecovery = &timeoutRecovery
+					}
 				}
 			}
 
@@ -449,7 +452,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 				wg.Add(1)
 				go func(d builtL2Dest) {
 					defer wg.Done()
-					err := runCosmosToL2Engine(relayCtx, d.svc, d.deps, statusReg, d.hasReturnLeg)
+					err := runCosmosToL2Engine(relayCtx, d.svc, d.deps, statusReg, d.timeoutRecovery, d.hasReturnLeg)
 					releaseOrHold(logger, d.cleanup, &workersStuck, err, "cosmos_to_l2", d.deps.IDs.CosmosOnEVM)
 					if err != nil {
 						recordEngineErr(fmt.Errorf("cosmos_to_l2 dest %q: %w", d.deps.IDs.CosmosOnEVM, err))

@@ -87,6 +87,7 @@ attestor/arbitrum/data/
 # Local Base devnet runtime state (scripts/local/run_base_node.sh)
 .base-attestor-run/
 .base-devnet-run/
+.base-devnet-run-recovery/
 # Address handoff written by scripts/local/deploy_l2_contracts.sh for create-clients-eth
 .l2-deployment.json
 # Gov proposal scratch file rewritten by every scripts/local/wasm*.sh run

@@ -934,6 +934,39 @@ The leg is done when the ack is relayed back and the packet leaves the pending
 tracker (`[CosmosTimeoutScan] Checking 0 pending packets`) — a forward-only success
 proves half the system.
 
+### Automated timeout recovery test
+
+`relayer/cmd/l2_timeout_devnet_test.go` (build tag `l2devnet`) drives the Cosmos → L2
+timeout lifecycle against a devnet that is already up through step 5, on either OP or
+Base; the config file decides which. It starts the relayer until a Cosmos cursor is
+durable, stops it, sends a 777-unit transfer with a 45 s absolute timeout, waits for
+the **L2** head timestamp to pass it, then restarts the relayer on the same config, so
+the same `.spectre-state` directory. It passes when:
+
+- the sender's balance is refunded by exactly the transfer amount (the send fee stays spent);
+- the L2 router holds no receipt, and a simulated late `recvPacket` reverts with
+  `IBCInvalidTimeoutTimestamp`;
+- the packet leaves both the relayer's live `/status` pending set and the persisted Cosmos
+  pending tracker.
+
+The config must set `status_address` (e.g. `"127.0.0.1:7071"`): the Cosmos commitment
+disappears when the `MsgTimeout` lands, a moment before the relayer retires its tracker
+entry, so only the live pending set says when the timeout has fully settled. The test also
+refuses a state directory that still owes a timeout on the client (a tracked packet whose
+Cosmos commitment still exists), since refunding it in the same run would skew the balance
+check; let the relayer settle it first.
+
+```bash
+just test-l2-timeout relayer/config.json
+```
+
+The sender defaults to the devnet's `test2` key. Override it with `L2_TIMEOUT_SENDER_KEY`
+(hex), and never use the relayer's `COSMOS_PRIVATE_KEY`: the relayer pays the `MsgTimeout`
+fee from that account, which would hide the refund. Stop any relayer already running on
+the config first, or the state-directory lock refuses the test's relayer.
+`L2_TIMEOUT_LOG_DIR` keeps the relayer logs, and `RELAYER_BINARY` runs a prebuilt binary
+instead of building one; `L2_TIMEOUT_WINDOW` and `L2_TIMEOUT_SETTLE` tune the waits.
+
 ### Failure modes
 
 | Symptom | Cause |

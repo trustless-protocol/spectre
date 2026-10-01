@@ -11,6 +11,28 @@ import (
 	client "relayer/client"
 )
 
+// L2TimeoutUpdate is the attestor-authenticated L2 state a Cosmos timeout
+// needs. Payload advances the L2 wasm client on Cosmos; Height and Timestamp
+// identify the exact L2 block from which the non-membership proof is taken.
+//
+// It deliberately contains only wire-neutral values. The attestor header
+// builder lives in chain/l2rollup, which already depends on services, so putting
+// its concrete type here would create an import cycle.
+type L2TimeoutUpdate struct {
+	Payload   []byte
+	Height    uint64
+	Timestamp uint64
+}
+
+// L2TimeoutRecovery supplies the L2-specific operations the shared Cosmos
+// timeout scanner cannot own without depending on the attestor adapter. The
+// callbacks must build their update and proof for the same L2 router and block.
+type L2TimeoutRecovery struct {
+	ClientID                string
+	BuildUpdate             func(context.Context) (L2TimeoutUpdate, error)
+	BuildNonMembershipProof func(context.Context, channeltypesv2.Packet, uint64) ([]byte, error)
+}
+
 // This file exposes the timeout-recovery surface (previously driven internally by
 // the now-removed StartLoop) so the chain-adapter relay path (package relay) can
 // reuse it verbatim instead of reimplementing the (subtle) scanners and
@@ -23,6 +45,14 @@ import (
 // aborts the in-scan Cosmos catch-up wait promptly on shutdown.
 func (s *Services) ScanCosmosTimeouts(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, ethClientID string) {
 	s.scanForCosmosTimeouts(stdCtx, cosmos, evm, ethClientID)
+}
+
+// ScanCosmosL2Timeouts detects Cosmos-origin packets that expired on an
+// attestor-backed L2 without a receipt. It advances the paired L2 wasm client
+// and submits MsgTimeout in one Cosmos batch. It must be used for OP/Base and
+// other L2 wasm clients; ScanCosmosTimeouts is the Ethereum beacon-client path.
+func (s *Services) ScanCosmosL2Timeouts(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, recovery L2TimeoutRecovery) {
+	s.scanForCosmosL2Timeouts(stdCtx, cosmos, evm, recovery)
 }
 
 // ScanEthTimeouts detects ETH-origin packets that expired on Cosmos without a

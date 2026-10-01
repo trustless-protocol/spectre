@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -44,6 +46,17 @@ type transientTimeoutBatchHandler struct{ TransactionHandler }
 type timeoutBatchHandler struct {
 	TransactionHandler
 	singletons [][]any
+}
+
+type l2TimeoutBatchHandler struct {
+	TransactionHandler
+	batches [][]any
+	err     error
+}
+
+func (h *l2TimeoutBatchHandler) SendCosmosTxBatch(_ context.Context, _ CosmosEndpoint, msgs []any) error {
+	h.batches = append(h.batches, msgs)
+	return h.err
 }
 
 func timeoutRetryPacket(sequence uint64) channeltypesv2.Packet {
@@ -344,6 +357,170 @@ func TestScanForCosmosTimeouts_HonorsCancellation(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("Cosmos timeout scan ignored cancellation")
 	}
+}
+
+// l2TimeoutRPC is the minimal L2 endpoint the timeout scanner needs before it
+// delegates attested header/proof construction to the L2 adapter.
+func l2TimeoutRPC(t *testing.T, timestamp uint64) *ethclient.Client {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatalf("decode rpc request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch req.Method {
+		case "eth_getBlockByNumber":
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":{
+				"number":"0x50","hash":"0x%064x","parentHash":"0x%064x","timestamp":"0x%x",
+				"sha3Uncles":"0x%064x","miner":"0x%040x","stateRoot":"0x%064x",
+				"transactionsRoot":"0x%064x","receiptsRoot":"0x%064x","logsBloom":"0x%0512x",
+				"difficulty":"0x0","gasLimit":"0x1","gasUsed":"0x0","extraData":"0x",
+				"mixHash":"0x%064x","nonce":"0x0000000000000000"}}`,
+				req.ID, 0, 0, timestamp, 0, 0, 0, 0, 0, 0, 0)
+		case "eth_getStorageAt":
+			// The receipt slot is empty, so the packet is eligible for timeout.
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"result":"0x"}`, req.ID)
+		default:
+			_, _ = fmt.Fprintf(w, `{"jsonrpc":"2.0","id":%s,"error":{"code":-32601,"message":"%s"}}`, req.ID, req.Method)
+		}
+	}))
+	t.Cleanup(server.Close)
+	client, err := ethclient.Dial(server.URL)
+	if err != nil {
+		t.Fatalf("dial L2 rpc: %v", err)
+	}
+	t.Cleanup(client.Close)
+	return client
+}
+
+func TestScanForCosmosL2Timeouts(t *testing.T) {
+	t.Run("attested update and matching timeout share one batch", func(t *testing.T) {
+		handler := &l2TimeoutBatchHandler{}
+		svc := New(handler, nil, DefaultConfig())
+		packet := channeltypesv2.Packet{
+			SourceClient: "08-wasm-0", DestinationClient: "op-client-0",
+			Sequence: 7, TimeoutTimestamp: 150,
+		}
+		svc.TrackCosmosPending(packet, 100)
+
+		builds, proofs := 0, 0
+		svc.scanForCosmosL2Timeouts(context.Background(), CosmosEndpoint{}, EVMEndpoint{
+			Client: l2TimeoutRPC(t, 200), Contracts: EVMContracts{Router: common.HexToAddress("0x1")},
+		}, L2TimeoutRecovery{
+			ClientID: "08-wasm-9",
+			BuildUpdate: func(context.Context) (L2TimeoutUpdate, error) {
+				builds++
+				return L2TimeoutUpdate{Payload: []byte(`{"type":"header"}`), Height: 77, Timestamp: 180}, nil
+			},
+			BuildNonMembershipProof: func(_ context.Context, got channeltypesv2.Packet, height uint64) ([]byte, error) {
+				proofs++
+				if got.Sequence != packet.Sequence || height != 77 {
+					t.Fatalf("proof request = seq=%d height=%d, want seq=%d height=77", got.Sequence, height, packet.Sequence)
+				}
+				return []byte("l2-absence-proof"), nil
+			},
+		})
+
+		if builds != 1 || proofs != 1 {
+			t.Fatalf("builds=%d proofs=%d, want one shared update and one proof", builds, proofs)
+		}
+		if svc.BatchBuilder.PendingTracker.Len() != 0 {
+			t.Fatalf("pending tracker still has %d packet(s), want completed timeout removed", svc.BatchBuilder.PendingTracker.Len())
+		}
+		if len(handler.batches) != 1 || len(handler.batches[0]) != 2 {
+			t.Fatalf("batches = %#v, want one [update, timeout] batch", handler.batches)
+		}
+		update, ok := handler.batches[0][0].(*clienttypes.MsgUpdateClient)
+		if !ok || update.ClientId != "08-wasm-9" {
+			t.Fatalf("first message = %#v, want L2 wasm client update for 08-wasm-9", handler.batches[0][0])
+		}
+		timeout, ok := handler.batches[0][1].(*channeltypesv2.MsgTimeout)
+		if !ok {
+			t.Fatalf("second message = %T, want MsgTimeout", handler.batches[0][1])
+		}
+		if timeout.ProofHeight.RevisionNumber != 0 || timeout.ProofHeight.RevisionHeight != 77 || string(timeout.ProofUnreceived) != "l2-absence-proof" {
+			t.Fatalf("timeout proof = height=%+v proof=%q, want L2 height 77 and adapter proof", timeout.ProofHeight, timeout.ProofUnreceived)
+		}
+	})
+
+	t.Run("split batch retires committed timeout prefix and defers the rest", func(t *testing.T) {
+		// The update and the first timeout committed before a transient failure.
+		handler := &l2TimeoutBatchHandler{err: &BatchPartialError{SucceededCount: 2, Err: errors.New("sub-batch out of gas")}}
+		svc := New(handler, nil, DefaultConfig())
+		for _, seq := range []uint64{21, 22, 23} {
+			svc.TrackCosmosPending(channeltypesv2.Packet{
+				SourceClient: "08-wasm-0", DestinationClient: "op-client-0",
+				Sequence: seq, TimeoutTimestamp: 150,
+			}, 100)
+		}
+
+		svc.scanForCosmosL2Timeouts(context.Background(), CosmosEndpoint{}, EVMEndpoint{
+			Client: l2TimeoutRPC(t, 200), Contracts: EVMContracts{Router: common.HexToAddress("0x1")},
+		}, L2TimeoutRecovery{
+			ClientID: "08-wasm-9",
+			BuildUpdate: func(context.Context) (L2TimeoutUpdate, error) {
+				return L2TimeoutUpdate{Payload: []byte(`{"type":"header"}`), Height: 77, Timestamp: 180}, nil
+			},
+			BuildNonMembershipProof: func(context.Context, channeltypesv2.Packet, uint64) ([]byte, error) {
+				return []byte("l2-absence-proof"), nil
+			},
+		})
+
+		if len(handler.batches) != 1 || len(handler.batches[0]) != 4 {
+			t.Fatalf("batches = %#v, want one [update, timeout x3] batch", handler.batches)
+		}
+		if _, ok := handler.batches[0][0].(*clienttypes.MsgUpdateClient); !ok {
+			t.Fatalf("first message = %T, want MsgUpdateClient", handler.batches[0][0])
+		}
+		committed, ok := handler.batches[0][1].(*channeltypesv2.MsgTimeout)
+		if !ok {
+			t.Fatalf("second message = %T, want MsgTimeout", handler.batches[0][1])
+		}
+		got := svc.BatchBuilder.PendingTracker.GetAll()
+		if len(got) != 2 {
+			t.Fatalf("tracked packets = %d, want the 2 timeouts behind the committed prefix", len(got))
+		}
+		for _, info := range got {
+			if info.Packet.Sequence == committed.Packet.Sequence {
+				t.Fatalf("seq=%d committed in the prefix but is still tracked", info.Packet.Sequence)
+			}
+			if info.TimeoutAttempts != 0 || info.Deferrals != 1 {
+				t.Fatalf("seq=%d retry state = attempts:%d deferrals:%d, want 0:1", info.Packet.Sequence, info.TimeoutAttempts, info.Deferrals)
+			}
+		}
+	})
+
+	t.Run("attestor outage defers without charging packets", func(t *testing.T) {
+		handler := &l2TimeoutBatchHandler{}
+		svc := New(handler, nil, DefaultConfig())
+		packet := channeltypesv2.Packet{SourceClient: "08-wasm-0", DestinationClient: "op-client-0", Sequence: 8, TimeoutTimestamp: 150}
+		svc.TrackCosmosPending(packet, 100)
+
+		svc.scanForCosmosL2Timeouts(context.Background(), CosmosEndpoint{}, EVMEndpoint{
+			Client: l2TimeoutRPC(t, 200), Contracts: EVMContracts{Router: common.HexToAddress("0x1")},
+		}, L2TimeoutRecovery{
+			ClientID: "08-wasm-9",
+			BuildUpdate: func(context.Context) (L2TimeoutUpdate, error) {
+				return L2TimeoutUpdate{}, errors.New("attestor quorum unavailable")
+			},
+			BuildNonMembershipProof: func(context.Context, channeltypesv2.Packet, uint64) ([]byte, error) {
+				t.Fatal("proof must not run after shared attestor failure")
+				return nil, nil
+			},
+		})
+
+		if len(handler.batches) != 0 {
+			t.Fatalf("submitted %d batch(es) after shared attestor failure", len(handler.batches))
+		}
+		got := svc.BatchBuilder.PendingTracker.GetAll()
+		if len(got) != 1 || got[0].Deferrals != 1 || got[0].TimeoutAttempts != 0 {
+			t.Fatalf("retry state = %#v, want one deferred uncharged packet", got)
+		}
+	})
 }
 
 func TestScanForEVMTimeouts(t *testing.T) {
