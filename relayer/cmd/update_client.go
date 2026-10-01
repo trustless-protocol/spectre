@@ -19,11 +19,11 @@ import (
 	"relayer/transaction"
 )
 
-// UpdateClient advances the Cosmos light client on Ethereum once.
+// UpdateClient advances the Cosmos light client that lives on Ethereum once.
 func UpdateClient(logger *zap.Logger) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "update-client",
-		Short: "update the Cosmos light client on Ethereum once",
+		Short: "update the Cosmos light client that lives on Ethereum (Cosmos → Ethereum) once",
 		Args:  cobra.ExactArgs(0),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			configPath, err := cmd.Flags().GetString(flagConfigPath)

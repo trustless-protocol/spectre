@@ -280,6 +280,7 @@ func main() {
 		CreateClientsCosmos(zLogger),
 		CreateClientsEth(zLogger),
 		UpdateClient(zLogger),
+		UpdateEthClient(zLogger),
 		SubmitMisbehaviour(zLogger),
 		Genesis(zLogger),
 		Status(zLogger),
