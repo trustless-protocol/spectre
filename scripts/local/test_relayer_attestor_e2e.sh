@@ -79,6 +79,22 @@ if [ -z "${ATTESTOR_PUBLIC_KEY:-}" ]; then
 fi
 DEVNET_SIGNING_KEY=$ATTESTOR_SIGNING_KEY
 
+# The Arbitrum handoff writes L1 endpoints exactly as `kurtosis port print`
+# returns them, a bare host:port; run_arbitrum_attestor.sh adds the scheme in
+# container_url. The daemons reject a URL without one, so normalize before any
+# config, cast/forge call, or Go suite sees it: HTTP for RPC, WS for sockets.
+with_scheme() {
+    case "$2" in
+        '' | http://* | https://* | ws://* | wss://*) printf '%s' "$2" ;;
+        *) printf '%s://%s' "$1" "$2" ;;
+    esac
+}
+L1_RPC_URL=$(with_scheme http "${L1_RPC_URL:-}")
+L2_RPC_URL=$(with_scheme http "${L2_RPC_URL:-}")
+OP_NODE_RPC_URL=$(with_scheme http "${OP_NODE_RPC_URL:-}")
+L1_WS_URL=$(with_scheme ws "${L1_WS_URL:-}")
+L2_WS_URL=$(with_scheme ws "${L2_WS_URL:-}")
+
 QUORUM_HEAD=${QUORUM_HEAD:-unsafe}
 WRONG_HEAD=finalized
 [ "$QUORUM_HEAD" != finalized ] || WRONG_HEAD=unsafe
