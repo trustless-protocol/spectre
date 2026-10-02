@@ -218,6 +218,14 @@ test-attestor:
 test-attestor-e2e route="op":
 	scripts/local/test_attestor_e2e.sh {{route}}
 
+# Run the long-running attestor feed-lifecycle suite against an ISOLATED route:
+# the helper starts its own attestor (temporary state, separate ports) beside
+# the running devnet and removes it afterwards. phase is provisional,
+# finalized, or all.
+[group('test')]
+test-attestor-lifecycle-e2e route="op" phase="all":
+	scripts/local/test_attestor_lifecycle_e2e.sh {{route}} {{phase}}
+
 # Run any e2e test using the test's full name. For example, `just test-e2e TestWithEthCosmosTestSuite/Test_Deploy`
 #
 # ETH_TESTNET_TYPE=pos picks the Kurtosis PoS network (with beacon API), which is what
