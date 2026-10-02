@@ -80,6 +80,17 @@ if [ -z "${ATTESTOR_PUBLIC_KEY:-}" ]; then
     . "$REPO_ROOT/scripts/local/devnet_attestor_identity.sh"
 fi
 
+# The Arbitrum handoff writes a bare host:port while the gRPC suite passes the
+# endpoint to net/http. Keep an explicit E2E override untouched, but give the
+# handoff value the HTTP scheme that getL2Header requires.
+with_scheme() {
+    case "$2" in
+        '' | http://* | https://* | ws://* | wss://*) printf '%s' "$2" ;;
+        *) printf '%s://%s' "$1" "$2" ;;
+    esac
+}
+L2_RPC_URL=$(with_scheme http "${L2_RPC_URL:-}")
+
 GRPC_PORT=${GRPC_PORT:-$DEFAULT_GRPC_PORT}
 METRICS_PORT=${METRICS_PORT:-$DEFAULT_METRICS_PORT}
 

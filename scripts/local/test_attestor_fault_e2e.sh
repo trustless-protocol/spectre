@@ -78,9 +78,25 @@ if [ -z "${ATTESTOR_PUBLIC_KEY:-}" ]; then
     # shellcheck disable=SC1091
     . "$REPO_ROOT/scripts/local/devnet_attestor_identity.sh"
 fi
+# The Arbitrum handoff writes L1 endpoints exactly as `kurtosis port print`
+# returns them, a bare host:port; run_arbitrum_attestor.sh adds the scheme in
+# container_url. The suite parses every endpoint as a URL to put a fault proxy
+# in front of it, so normalize before exporting: HTTP for RPC, WS for sockets.
+with_scheme() {
+    case "$2" in
+        '' | http://* | https://* | ws://* | wss://*) printf '%s' "$2" ;;
+        *) printf '%s://%s' "$1" "$2" ;;
+    esac
+}
+L1_RPC_URL=$(with_scheme http "${L1_RPC_URL:-}")
+L2_RPC_URL=$(with_scheme http "${L2_RPC_URL:-}")
+OP_NODE_RPC_URL=$(with_scheme http "${OP_NODE_RPC_URL:-}")
+L1_WS_URL=$(with_scheme ws "${L1_WS_URL:-}")
+L2_WS_URL=$(with_scheme ws "${L2_WS_URL:-}")
+
 # The suite reads the handoff variables by their handoff names.
 export SRC_CHAIN L1_RPC_URL L1_CHAIN_ID L2_RPC_URL L2_CHAIN_ID ATTESTOR_SIGNING_KEY ATTESTOR_PUBLIC_KEY
-export L1_WS_URL=${L1_WS_URL:-} L2_WS_URL=${L2_WS_URL:-} OP_NODE_RPC_URL=${OP_NODE_RPC_URL:-}
+export L1_WS_URL L2_WS_URL OP_NODE_RPC_URL
 export DISPUTE_GAME_FACTORY=${DISPUTE_GAME_FACTORY:-} RESPECTED_GAME_TYPE=${RESPECTED_GAME_TYPE:-}
 export ROLLUP_CORE_ADDRESS=${ROLLUP_CORE_ADDRESS:-} ROLLUP_DEPLOYMENT_BLOCK=${ROLLUP_DEPLOYMENT_BLOCK:-}
 export ASSERTIONS_MAPPING_SLOT=${ASSERTIONS_MAPPING_SLOT:-} ASSERTION_STATUS_OFFSET=${ASSERTION_STATUS_OFFSET:-}
