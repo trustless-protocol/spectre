@@ -119,6 +119,21 @@ else
     : "${RESPECTED_GAME_TYPE:?RESPECTED_GAME_TYPE missing from $HANDOFF}"
 fi
 
+# The Arbitrum handoff writes L1 endpoints exactly as `kurtosis port print`
+# returns them, a bare host:port; run_arbitrum_attestor.sh adds the scheme in
+# container_url. Normalize once here so the daemon config and the Go suite
+# both get a URL the daemons accept.
+with_scheme() {
+    case "$2" in
+        '' | http://* | https://* | ws://* | wss://*) printf '%s' "$2" ;;
+        *) printf '%s://%s' "$1" "$2" ;;
+    esac
+}
+L1_RPC_URL=$(with_scheme http "$L1_RPC_URL")
+L1_WS_URL=$(with_scheme ws "${L1_WS_URL:-}")
+L2_RPC_URL=$(with_scheme http "$L2_RPC_URL")
+L2_WS_URL=$(with_scheme ws "${L2_WS_URL:-}")
+
 PROVISIONAL_HEAD=${PROVISIONAL_HEAD:-unsafe}
 case "$PROVISIONAL_HEAD" in
     unsafe | safe) ;;
