@@ -168,8 +168,10 @@ func TestLiveAttestorFeedLifecycleE2E(t *testing.T) {
 			t.Skip("a finalized attestation head never records provisional roots; L3 covers it")
 		}
 		var candidate *attestorpb.AttestedRoot
+		// Only a derived root: an Arbitrum assertion is provisional independently
+		// of the head and is promoted on its own schedule (L6).
 		for _, sample := range derived {
-			if sample.root.GetProvisional() {
+			if sample.root.GetProvisional() && sample.root.GetSource() == "derived" {
 				candidate = sample.root
 				break
 			}
@@ -185,29 +187,54 @@ func TestLiveAttestorFeedLifecycleE2E(t *testing.T) {
 		if config.head != "finalized" {
 			t.Skipf("attestation head is %s; L2 covers provisional promotion", config.head)
 		}
+		// attestation_head gates derived roots (and OP game verdicts) only. An
+		// Arbitrum assertion is resolved at the safe head and stays provisional
+		// until its L1 confirmation and finalized-Nitro recheck, whatever the
+		// head (attestor/arbitrum/bold/attestor.go resolveProposal), so it is
+		// the one provisional entry a finalized Arbitrum route may hold.
+		allowed := func(source string, provisional bool) bool {
+			return !provisional || (config.family == familyArbitrum && source == "assertion")
+		}
 		for _, sample := range derived {
-			if sample.root.GetProvisional() {
-				t.Fatalf("finalized head served provisional root at l2 block %d", sample.root.GetL2BlockNumber())
+			if !allowed(sample.root.GetSource(), sample.root.GetProvisional()) {
+				t.Fatalf("finalized head served provisional %s root at l2 block %d", sample.root.GetSource(), sample.root.GetL2BlockNumber())
 			}
 		}
 		withProvisional := waitForLiveFrontier(t, ctx, client, src, true)
 		confirmed := waitForLiveFrontier(t, ctx, client, src, false)
-		if withProvisional.GetL2BlockNumber() < confirmed.GetL2BlockNumber() || withProvisional.GetProvisional() {
+		if withProvisional.GetL2BlockNumber() < confirmed.GetL2BlockNumber() ||
+			!allowed(withProvisional.GetSource(), withProvisional.GetProvisional()) {
 			t.Fatalf("include_provisional frontier %+v, confirmed frontier %+v", withProvisional, confirmed)
 		}
 		state := readStateOrFail(t, config)
+		provisionalAssertions := 0
 		for _, entry := range state.Attested {
-			if entry.Provisional {
+			if !allowed(entry.Source, entry.Provisional) {
 				t.Fatalf("state file holds provisional %s entry at l2 block %d", entry.Source, entry.L2BlockNumber)
 			}
+			if entry.Provisional {
+				provisionalAssertions++
+			}
 		}
-		metric := provisionalMetric(config)
-		value, _ := scrapeMetricOrFail(t, ctx, config, metric)
-		if value != 0 {
-			t.Fatalf("%s = %v, want 0 at a finalized head", metric, value)
+		var proof string
+		if config.family == familyArbitrum {
+			// roots_provisional also counts assertions, so it is not a derived
+			// signal here; every derived attestation logs its provisional flag.
+			derivedProvisional := "head=finalized provisional=true"
+			if strings.Contains(readLogOrFail(t, config), derivedProvisional) {
+				t.Fatalf("attestor log %s records a provisional derived root at the finalized head", config.logPath)
+			}
+			proof = fmt.Sprintf("no %q derived log line; %d provisional assertion entries (allowed)", derivedProvisional, provisionalAssertions)
+		} else {
+			const metric = "spectre_op_attestor_roots_provisional_total"
+			value, _ := scrapeMetricOrFail(t, ctx, config, metric)
+			if value != 0 {
+				t.Fatalf("%s = %v, want 0 at a finalized head", metric, value)
+			}
+			proof = fmt.Sprintf("%s=%v", metric, value)
 		}
-		evidence(t, "finalized head: %d watched derived roots all confirmed; frontier=%d; %d state entries non-provisional; %s=%v",
-			len(derived), confirmed.GetL2BlockNumber(), len(state.Attested), metric, value)
+		evidence(t, "finalized head: %d observed roots and %d state entries have no provisional derived/game entry; frontier=%d; %s",
+			len(derived), len(state.Attested), confirmed.GetL2BlockNumber(), proof)
 	})
 
 	t.Run("L4_retention_prunes_only_confirmed_derived_roots", func(t *testing.T) {
@@ -903,13 +930,6 @@ func divergenceMetric(config lifecycleConfig) string {
 		return "spectre_arbitrum_attestor_finalized_divergence_total"
 	}
 	return "spectre_op_attestor_head_divergence_total"
-}
-
-func provisionalMetric(config lifecycleConfig) string {
-	if config.family == familyArbitrum {
-		return "spectre_arbitrum_attestor_roots_provisional"
-	}
-	return "spectre_op_attestor_roots_provisional_total"
 }
 
 // derivedCount is how many derived attestations the route has made since it
