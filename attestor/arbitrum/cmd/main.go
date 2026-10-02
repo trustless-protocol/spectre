@@ -114,6 +114,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 		runtimeState,
 		attestedRootStore,
 		boldattestor.AssertionAttestorConfig{
+			L1IngestHead:    config.L1IngestHead,
 			PollInterval:    assertionPollInterval,
 			MaxL1BlockRange: config.AssertionBlockRange(),
 		},
@@ -129,6 +130,9 @@ func runAttestor(ctx context.Context, configPath string) error {
 		return true, store.BindSourceIdentity(sourceIdentity)
 	}); err != nil {
 		return fmt.Errorf("bind and persist attested-root source identity: %w", err)
+	}
+	if err := assertionLoop.ReconcileStartup(ctx); err != nil {
+		return err
 	}
 	attestationHead, err := config.NormalizedAttestationHead()
 	if err != nil {
