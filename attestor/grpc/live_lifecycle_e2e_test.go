@@ -599,6 +599,61 @@ func assertPromotion(t *testing.T, ctx context.Context, client attestorpb.Attest
 	}
 }
 
+// assertStateSettlementPromotion verifies a settlement entry directly from the
+// durable state when a same-height derived root wins the oracle-shaped gRPC
+// selection. The gRPC API intentionally exposes one root per height, so a
+// collision cannot make a game or assertion disappear from this coverage.
+func assertStateSettlementPromotion(t *testing.T, ctx context.Context, client attestorpb.AttestorServiceClient, config lifecycleConfig, candidate stateEntry) {
+	t.Helper()
+	key := settlementKey(candidate)
+	started := time.Now()
+	for {
+		state := readStateOrFail(t, config)
+		for _, entry := range state.Attested {
+			if settlementKey(entry) != key {
+				continue
+			}
+			if !bytes.Equal(entry.Root, candidate.Root) || !entry.AttestedAt.Equal(candidate.AttestedAt) {
+				t.Fatalf("promotion changed persisted %s entry %s: root %x -> %x, attested_at %s -> %s",
+					candidate.Source, key, candidate.Root, entry.Root, candidate.AttestedAt, entry.AttestedAt)
+			}
+			if entry.Provisional {
+				break
+			}
+			if entry.Source == "assertion" && !entry.Confirmed {
+				t.Fatalf("promoted assertion %x is not marked assertion_confirmed in state", entry.AssertionHash)
+			}
+			info, err := client.Info(ctx, &attestorpb.InfoRequest{})
+			if err != nil {
+				t.Fatalf("Info after persisted %s promotion: %v", candidate.Source, err)
+			}
+			chain := chainInfoForSource(info, config.live.sourceChain)
+			finalized := uint64(0)
+			if chain != nil {
+				finalized = chain.GetReplicaFinalizedL2()
+			}
+			if chain == nil || finalized < entry.L2BlockNumber {
+				t.Fatalf("persisted %s root at %d confirmed while replica finalized head is %d",
+					candidate.Source, entry.L2BlockNumber, finalized)
+			}
+			line := ""
+			if entry.Source == "game" {
+				line = fmt.Sprintf("finalized head confirmed provisional verdict for game %d (match=true)", entry.GameIndex)
+			}
+			if line != "" {
+				waitForLogLine(t, ctx, config, line)
+			}
+			evidence(t, "persisted %s root at l2 block %d promoted after %s: root=%x attested_at=%s unchanged; replica finalized=%d; log %q",
+				candidate.Source, entry.L2BlockNumber, time.Since(started).Round(time.Second), entry.Root, entry.AttestedAt,
+				finalized, line)
+			return
+		}
+		if !sleepCtx(ctx, 2*time.Second) {
+			t.Fatalf("provisional persisted %s entry %s was not promoted before %v", candidate.Source, key, ctx.Err())
+		}
+	}
+}
+
 // assertRetention samples the isolated state file until pruning has happened,
 // then proves through gRPC that a pruned confirmed derived height is gone while
 // every retained entry, and every settlement-backed entry, is still served.
@@ -743,12 +798,17 @@ func assertOPGames(t *testing.T, ctx context.Context, client attestorpb.Attestor
 	if !served.GetFound() || root.GetL2BlockNumber() != game.L2BlockNumber {
 		t.Fatalf("game at l2 %d not served: %+v", game.L2BlockNumber, served)
 	}
-	if root.GetSource() != "game" {
-		t.Skipf("a derived root shares l2 block %d with game %d; the feed serves the earlier entry", game.L2BlockNumber, game.GameIndex)
-	}
-	index, ok := root.GetProvenance().(*attestorpb.AttestedRoot_GameIndex)
-	if !ok || index.GameIndex != game.GameIndex || !bytes.Equal(root.GetRoot(), game.Root) {
-		t.Fatalf("served game %+v does not match state game %d root %x", root, game.GameIndex, game.Root)
+	servedGame := root.GetSource() == "game"
+	if servedGame {
+		index, ok := root.GetProvenance().(*attestorpb.AttestedRoot_GameIndex)
+		if !ok || index.GameIndex != game.GameIndex || !bytes.Equal(root.GetRoot(), game.Root) {
+			t.Fatalf("served game %+v does not match state game %d root %x", root, game.GameIndex, game.Root)
+		}
+	} else if root.GetSource() != "derived" {
+		t.Fatalf("game %d at l2 %d is persisted, but the feed serves unexpected %+v", game.GameIndex, game.L2BlockNumber, root)
+	} else {
+		evidence(t, "game %d at l2 %d collides with the served derived root; validating the persisted game entry directly",
+			game.GameIndex, game.L2BlockNumber)
 	}
 
 	// L1 provenance: the factory entry at that index, read at finalized L1,
@@ -759,8 +819,8 @@ func assertOPGames(t *testing.T, ctx context.Context, client attestorpb.Attestor
 	}
 	proxy := "0x" + hex.EncodeToString(proxyWord[64+12:96])
 	claim, err := ethCall(ctx, config.l1RPCURL, proxy, selectorRootClaim, "finalized")
-	if err != nil || !bytes.Equal(claim, root.GetRoot()) {
-		t.Fatalf("game %d proxy %s rootClaim = %x (%v), feed root %x", game.GameIndex, proxy, claim, err, root.GetRoot())
+	if err != nil || !bytes.Equal(claim, game.Root) {
+		t.Fatalf("game %d proxy %s rootClaim = %x (%v), persisted root %x", game.GameIndex, proxy, claim, err, game.Root)
 	}
 	l2Height, err := ethCallUint(ctx, config.l1RPCURL, proxy, selectorL2SequenceNumber, "finalized")
 	if err != nil {
@@ -776,8 +836,8 @@ func assertOPGames(t *testing.T, ctx context.Context, client attestorpb.Attestor
 	if err := liveRPC(ctx, config.opNodeRPCURL, "optimism_outputAtBlock", []any{fmt.Sprintf("0x%x", game.L2BlockNumber)}, &output); err != nil {
 		t.Fatalf("optimism_outputAtBlock(%d): %v", game.L2BlockNumber, err)
 	}
-	if replicaRoot, err := decodeExactHex(output.OutputRoot, 32); err != nil || !bytes.Equal(replicaRoot, root.GetRoot()) {
-		t.Fatalf("replica output root at %d = %s (%v), feed %x", game.L2BlockNumber, output.OutputRoot, err, root.GetRoot())
+	if replicaRoot, err := decodeExactHex(output.OutputRoot, 32); err != nil || !bytes.Equal(replicaRoot, game.Root) {
+		t.Fatalf("replica output root at %d = %s (%v), persisted game root %x", game.L2BlockNumber, output.OutputRoot, err, game.Root)
 	}
 
 	ingested, _ := scrapeMetricOrFail(t, ctx, config, "spectre_op_attestor_games_ingested_total")
@@ -788,11 +848,14 @@ func assertOPGames(t *testing.T, ctx context.Context, client attestorpb.Attestor
 	}
 	line := fmt.Sprintf("attested game %d (l2 block %d", game.GameIndex, game.L2BlockNumber)
 	waitForLogLine(t, ctx, config, line)
-	evidence(t, "game %d proxy %s: feed root %x at l2 %d == L1 rootClaim == replica outputAtBlock; provisional=%t; games_ingested=%v matched=%v mismatched=%v",
-		game.GameIndex, proxy, root.GetRoot(), game.L2BlockNumber, root.GetProvisional(), ingested, matched, mismatched)
+	evidence(t, "game %d proxy %s: persisted root %x at l2 %d == L1 rootClaim == replica outputAtBlock; served_by_grpc=%t; provisional=%t; games_ingested=%v matched=%v mismatched=%v",
+		game.GameIndex, proxy, game.Root, game.L2BlockNumber, servedGame, game.Provisional, ingested, matched, mismatched)
 
-	if root.GetProvisional() {
-		assertPromotion(t, ctx, client, config, root, "game")
+	if game.Provisional {
+		if servedGame {
+			assertPromotion(t, ctx, client, config, root, "game")
+		}
+		assertStateSettlementPromotion(t, ctx, client, config, game)
 	}
 }
 
@@ -854,11 +917,16 @@ func assertArbitrumAssertions(t *testing.T, ctx context.Context, client attestor
 	if !served.GetFound() || root.GetL2BlockNumber() != assertion.L2BlockNumber || !bytes.Equal(root.GetRoot(), assertion.Root) {
 		t.Fatalf("assertion at l2 %d not served: %+v", assertion.L2BlockNumber, served)
 	}
-	if root.GetSource() != "assertion" {
-		t.Skipf("a derived root shares l2 block %d with the assertion; the feed prefers it", assertion.L2BlockNumber)
-	}
-	if !bytes.Equal(root.GetAssertionHash(), assertion.AssertionHash) {
-		t.Fatalf("served assertion hash %x, state %x", root.GetAssertionHash(), assertion.AssertionHash)
+	servedAssertion := root.GetSource() == "assertion"
+	if servedAssertion {
+		if !bytes.Equal(root.GetAssertionHash(), assertion.AssertionHash) {
+			t.Fatalf("served assertion hash %x, state %x", root.GetAssertionHash(), assertion.AssertionHash)
+		}
+	} else if root.GetSource() != "derived" {
+		t.Fatalf("assertion %x at l2 %d is persisted, but the feed serves unexpected %+v", assertion.AssertionHash, assertion.L2BlockNumber, root)
+	} else {
+		evidence(t, "assertion %x at l2 %d collides with the served derived root; validating the persisted assertion directly",
+			assertion.AssertionHash, assertion.L2BlockNumber)
 	}
 
 	// L1 provenance: RollupCore emitted an event for this assertion hash in the
@@ -879,21 +947,18 @@ func assertArbitrumAssertions(t *testing.T, ctx context.Context, client attestor
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(header.hash, assertion.L2BlockHash) || !bytes.Equal(header.stateRoot, root.GetRoot()) {
+	if !bytes.Equal(header.hash, assertion.L2BlockHash) || !bytes.Equal(header.stateRoot, assertion.Root) {
 		t.Fatalf("Nitro block %d hash=%x root=%x, assertion commits hash=%x root=%x",
-			assertion.L2BlockNumber, header.hash, header.stateRoot, assertion.L2BlockHash, root.GetRoot())
+			assertion.L2BlockNumber, header.hash, header.stateRoot, assertion.L2BlockHash, assertion.Root)
 	}
-	evidence(t, "assertion %x from L1 block %d (log present) commits Nitro block %d hash=%x root=%x; provisional=%t",
-		assertion.AssertionHash, assertion.L1BlockNumber, assertion.L2BlockNumber, header.hash, root.GetRoot(), root.GetProvisional())
+	evidence(t, "assertion %x from L1 block %d (log present) commits Nitro block %d hash=%x root=%x; served_by_grpc=%t; provisional=%t",
+		assertion.AssertionHash, assertion.L1BlockNumber, assertion.L2BlockNumber, header.hash, assertion.Root, servedAssertion, assertion.Provisional)
 
-	if root.GetProvisional() {
-		assertPromotion(t, ctx, client, config, root, "assertion")
-		state := readStateOrFail(t, config)
-		for _, entry := range state.Attested {
-			if entry.Source == "assertion" && bytes.Equal(entry.AssertionHash, assertion.AssertionHash) && !entry.Confirmed {
-				t.Fatalf("promoted assertion %x is not marked assertion_confirmed in state", assertion.AssertionHash)
-			}
+	if assertion.Provisional {
+		if servedAssertion {
+			assertPromotion(t, ctx, client, config, root, "assertion")
 		}
+		assertStateSettlementPromotion(t, ctx, client, config, assertion)
 	}
 
 	// The cursor must keep following finalized L1 (one epoch is ~64s on the
