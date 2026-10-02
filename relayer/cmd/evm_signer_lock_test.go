@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -101,6 +102,8 @@ func TestEvmSignerLockKeys_CoverEveryEVMSubmitPath(t *testing.T) {
 }
 
 func TestEvmSignerLockKeysWithChainID_RefuseAnUnansweredEndpoint(t *testing.T) {
+	shortenEVMChainIDRetries(t)
+
 	_, err := evmSignerLockKeysWithChainID(context.Background(), &appConfig{
 		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: "http://unavailable"},
 	}, common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1"), func(context.Context, string) (string, error) {
@@ -113,5 +116,77 @@ func TestEvmSignerLockKeysWithChainID_RefuseAnUnansweredEndpoint(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q does not explain %q", err, want)
 		}
+	}
+}
+
+// shortenEVMChainIDRetries keeps the retry schedule's shape (four attempts)
+// while removing the real waits from the test.
+func shortenEVMChainIDRetries(t *testing.T) {
+	t.Helper()
+	restore := evmSignerLockChainIDRetryDelays
+	evmSignerLockChainIDRetryDelays = []time.Duration{0, 0, 0}
+	t.Cleanup(func() { evmSignerLockChainIDRetryDelays = restore })
+}
+
+func TestEvmSignerLockKeysWithChainID_RetryABlip(t *testing.T) {
+	shortenEVMChainIDRetries(t)
+
+	calls := 0
+	keys, err := evmSignerLockKeysWithChainID(context.Background(), &appConfig{
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: "http://slow-to-start"},
+	}, common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1"), func(context.Context, string) (string, error) {
+		calls++
+		if calls < 3 {
+			return "", errors.New("connection refused")
+		}
+		return "1", nil
+	})
+	if err != nil {
+		t.Fatalf("startup stopped on an endpoint that answered on attempt 3: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("eth_chainId was asked %d times, want 3", calls)
+	}
+	if len(keys) != 1 || keys[0].chainID != "1" {
+		t.Fatalf("keys = %+v, want one key on chain 1", keys)
+	}
+}
+
+func TestEvmSignerLockKeysWithChainID_BoundedAttempts(t *testing.T) {
+	shortenEVMChainIDRetries(t)
+
+	calls := 0
+	_, err := evmSignerLockKeysWithChainID(context.Background(), &appConfig{
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: "http://unavailable"},
+	}, common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1"), func(context.Context, string) (string, error) {
+		calls++
+		return "", errors.New("endpoint did not answer")
+	})
+	if err == nil {
+		t.Fatal("startup accepted an endpoint that never answered")
+	}
+	if want := len(evmSignerLockChainIDRetryDelays) + 1; calls != want {
+		t.Fatalf("eth_chainId was asked %d times, want %d", calls, want)
+	}
+	if !strings.Contains(err.Error(), "endpoint did not answer") {
+		t.Fatalf("error %q lost the last attempt's cause", err)
+	}
+}
+
+func TestEvmSignerLockKeysWithChainID_CancelStopsRetrying(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	_, err := evmSignerLockKeysWithChainID(ctx, &appConfig{
+		HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: "http://unavailable"},
+	}, common.HexToAddress("0xd58ed941051839DB5ffe8735905881d3C7460cE1"), func(context.Context, string) (string, error) {
+		calls++
+		cancel()
+		return "", errors.New("endpoint did not answer")
+	})
+	if err == nil {
+		t.Fatal("startup succeeded after its context was cancelled")
+	}
+	if calls != 1 {
+		t.Fatalf("eth_chainId was asked %d times after cancellation, want 1", calls)
 	}
 }

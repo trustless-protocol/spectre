@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -32,6 +33,16 @@ type evmSignerLockEndpoint struct {
 }
 
 const evmSignerLockChainIDTimeout = 10 * time.Second
+
+// evmSignerLockChainIDRetryDelays spaces the eth_chainId retries: four attempts
+// over about four seconds of waiting. That rides out an RPC blip or an endpoint
+// a moment slower to come up than the relayer, while an endpoint that is
+// genuinely down still stops the start promptly. Each attempt keeps its own
+// evmSignerLockChainIDTimeout, so a hung RPC is still bounded per attempt.
+// A var only so tests can shorten the waits.
+var evmSignerLockChainIDRetryDelays = []time.Duration{
+	500 * time.Millisecond, 1 * time.Second, 2 * time.Second,
+}
 
 // acquireEVMSignerLocks takes every EVM nonce-domain lock this relay can use
 // and holds it for the process lifetime. flock is local to a machine and inode,
@@ -81,7 +92,7 @@ func evmSignerLockKeysWithChainID(
 
 	unique := make(map[evmSignerLockKey]struct{}, len(endpoints))
 	for _, endpoint := range endpoints {
-		chainID, err := chainIDFor(stdCtx, endpoint.rpcURL)
+		chainID, err := evmChainIDWithRetry(stdCtx, endpoint, chainIDFor)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"EVM signer lock: read eth_chainId for %s at %s: %w. Startup stops rather than run without the nonce-domain lock",
@@ -103,6 +114,40 @@ func evmSignerLockKeysWithChainID(
 		return strings.ToLower(keys[i].address.Hex()) < strings.ToLower(keys[j].address.Hex())
 	})
 	return keys, nil
+}
+
+// evmChainIDWithRetry asks one endpoint for its chain id, retrying on the
+// evmSignerLockChainIDRetryDelays schedule. Only the number of attempts is
+// softened: the last error is returned unchanged, and the caller still treats
+// it as fatal. Each retry is logged so the boot log tells "answered on attempt
+// 3" apart from "never answered".
+func evmChainIDWithRetry(
+	stdCtx context.Context,
+	endpoint evmSignerLockEndpoint,
+	chainIDFor func(context.Context, string) (string, error),
+) (string, error) {
+	attempts := len(evmSignerLockChainIDRetryDelays) + 1
+	for attempt := 1; ; attempt++ {
+		chainID, err := chainIDFor(stdCtx, endpoint.rpcURL)
+		if err == nil {
+			if attempt > 1 {
+				log.Printf("EVM signer lock: eth_chainId for %s at %s answered on attempt %d/%d",
+					endpoint.label, endpoint.rpcURL, attempt, attempts)
+			}
+			return chainID, nil
+		}
+		if attempt == attempts {
+			return "", err
+		}
+		delay := evmSignerLockChainIDRetryDelays[attempt-1]
+		log.Printf("EVM signer lock: eth_chainId for %s at %s failed on attempt %d/%d, retrying in %s: %v",
+			endpoint.label, endpoint.rpcURL, attempt, attempts, delay, err)
+		select {
+		case <-stdCtx.Done():
+			return "", err
+		case <-time.After(delay):
+		}
+	}
 }
 
 // evmSignerLockEndpoints includes each direction that can submit to an EVM
