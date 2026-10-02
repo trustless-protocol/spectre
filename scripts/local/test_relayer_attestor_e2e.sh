@@ -200,6 +200,17 @@ public_key_b64() {
         "$WORK_DIR/$1/attestor.log" | tail -n 1
 }
 
+# AttestorConfig orders public keys by their decoded bytes, not their base64
+# encoding. The tuple keeps the daemon identity attached while sorting.
+key_sort_value() {
+    printf '%s' "$1" | openssl base64 -d -A | od -An -v -tx1 | tr -d '[:space:]'
+}
+
+member_tuple() {
+    local key=$1 seed=$2 endpoint=$3
+    printf '%s %s %s %s\n' "$(key_sort_value "$key")" "$key" "$seed" "$endpoint"
+}
+
 new_seed() { openssl rand -hex 32; }
 
 # ------------------------------------------------------------------ part 1
@@ -209,10 +220,40 @@ log "part 1: starting three set members, an imposter, and a wrong-head member (h
 start_attestor member0 "$SEED0" "$QUORUM_HEAD" "$(port 0)" "$(port 1)"
 start_attestor member1 "$SEED1" "$QUORUM_HEAD" "$(port 2)" "$(port 3)"
 start_attestor member2 "$SEED2" "$QUORUM_HEAD" "$(port 4)" "$(port 5)"
+KEY0=$(public_key_b64 member0)
+KEY1=$(public_key_b64 member1)
+KEY2=$(public_key_b64 member2)
+case "$KEY0,$KEY1,$KEY2" in *,,* | ,* | *,) fail "could not read every member's public key from its log" ;; esac
+
+MEMBER_KEYS=()
+MEMBER_SEEDS=()
+MEMBER_ENDPOINTS=()
+previous_sort_key=
+while IFS=' ' read -r sort_key key seed endpoint; do
+    [ -n "$sort_key" ] && [ -n "$key" ] && [ -n "$seed" ] && [ -n "$endpoint" ] ||
+        fail "could not decode every member public key"
+    [ "${#sort_key}" -eq 64 ] || fail "member public key is not an Ed25519 key"
+    [ "$sort_key" != "$previous_sort_key" ] || fail "generated duplicate attestor public keys"
+    previous_sort_key=$sort_key
+    MEMBER_KEYS+=("$key")
+    MEMBER_SEEDS+=("$seed")
+    MEMBER_ENDPOINTS+=("$endpoint")
+done < <(
+    member_tuple "$KEY0" "$SEED0" "127.0.0.1:$(port 0)"
+    member_tuple "$KEY1" "$SEED1" "127.0.0.1:$(port 2)"
+    member_tuple "$KEY2" "$SEED2" "127.0.0.1:$(port 4)" |
+        LC_ALL=C sort -k1,1
+)
+[ "${#MEMBER_KEYS[@]}" -eq 3 ] || fail "could not sort all three attestor members"
+KEYS=$(IFS=,; printf '%s' "${MEMBER_KEYS[*]}")
+MEMBERS=$(IFS=,; printf '%s' "${MEMBER_ENDPOINTS[*]}")
+
 start_attestor imposter "$SEEDX" "$QUORUM_HEAD" "$(port 6)" "$(port 7)"
-start_attestor wronghead "$SEED2" "$WRONG_HEAD" "$(port 8)" "$(port 9)"
-KEYS="$(public_key_b64 member0),$(public_key_b64 member1),$(public_key_b64 member2)"
-case "$KEYS" in *,,* | ,* | *,) fail "could not read every member's public key from its log" ;; esac
+# The wrong-head daemon must use canonical member 2's identity, not the third
+# seed generated before the key/endpoint tuples were sorted.
+start_attestor wronghead "${MEMBER_SEEDS[2]}" "$WRONG_HEAD" "$(port 8)" "$(port 9)"
+[ "$(public_key_b64 wronghead)" = "${MEMBER_KEYS[2]}" ] ||
+    fail "wrong-head daemon does not use canonical member 2's public key"
 
 ROUTER=0x0000000000000000000000000000000000000001
 if [ -f "$REPO_ROOT/.l2-deployment.json" ]; then
@@ -224,7 +265,7 @@ export RELAYER_QUORUM_E2E_L2_CHAIN_ID=$L2_CHAIN_ID
 export RELAYER_QUORUM_E2E_HEAD=$QUORUM_HEAD
 export RELAYER_QUORUM_E2E_ROUTER=$ROUTER
 export RELAYER_QUORUM_E2E_PUBLIC_KEYS=$KEYS
-export RELAYER_QUORUM_E2E_MEMBERS="127.0.0.1:$(port 0),127.0.0.1:$(port 2),127.0.0.1:$(port 4)"
+export RELAYER_QUORUM_E2E_MEMBERS=$MEMBERS
 export RELAYER_QUORUM_E2E_IMPOSTER=127.0.0.1:$(port 6)
 export RELAYER_QUORUM_E2E_WRONG_HEAD=127.0.0.1:$(port 8)
 # Nothing listens on port 10 (checked free above, never bound).
