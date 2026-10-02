@@ -775,9 +775,14 @@ type faultProxy struct {
 	mu       sync.Mutex
 	isDown   bool
 	conns    map[net.Conn]struct{}
+	dial     func(network, address string, timeout time.Duration) (net.Conn, error)
 }
 
 func newFaultProxy(t *testing.T, upstream string) *faultProxy {
+	return newFaultProxyWithDial(t, upstream, net.DialTimeout)
+}
+
+func newFaultProxyWithDial(t *testing.T, upstream string, dial func(network, address string, timeout time.Duration) (net.Conn, error)) *faultProxy {
 	t.Helper()
 	parsed, err := url.Parse(upstream)
 	if err != nil || parsed.Host == "" {
@@ -797,7 +802,13 @@ func newFaultProxy(t *testing.T, upstream string) *faultProxy {
 	}
 	proxied := *parsed
 	proxied.Host = listener.Addr().String()
-	proxy := &faultProxy{url: proxied.String(), target: target, listener: listener, conns: map[net.Conn]struct{}{}}
+	proxy := &faultProxy{
+		url:      proxied.String(),
+		target:   target,
+		listener: listener,
+		conns:    map[net.Conn]struct{}{},
+		dial:     dial,
+	}
 	go proxy.serve()
 	return proxy
 }
@@ -815,23 +826,34 @@ func (p *faultProxy) serve() {
 			_ = client.Close()
 			continue
 		}
-		upstream, err := net.DialTimeout("tcp", p.target, 5*time.Second)
+		upstream, err := p.dial("tcp", p.target, 5*time.Second)
 		if err != nil {
 			_ = client.Close()
 			continue
 		}
-		p.track(client, upstream)
+		if !p.track(client, upstream) {
+			_ = client.Close()
+			_ = upstream.Close()
+			continue
+		}
 		go p.pipe(client, upstream)
 		go p.pipe(upstream, client)
 	}
 }
 
-func (p *faultProxy) track(conns ...net.Conn) {
+// track atomically checks the outage state and registers both sides. A down()
+// that races an upstream dial either closes the registered pair or makes this
+// return false so serve closes the unregistered pair itself.
+func (p *faultProxy) track(conns ...net.Conn) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.isDown {
+		return false
+	}
 	for _, conn := range conns {
 		p.conns[conn] = struct{}{}
 	}
+	return true
 }
 
 func (p *faultProxy) pipe(dst, src net.Conn) {
@@ -993,5 +1015,57 @@ func TestFaultProxyCutsAndRestores(t *testing.T) {
 	defer restored.Close()
 	if err := roundTrip(restored); err != nil {
 		t.Fatalf("round trip after up(): %v", err)
+	}
+}
+
+// TestFaultProxyRefusesConnectionCutDuringUpstreamDial closes the gap between
+// the first outage check and connection registration. A dial that completes
+// after down() must not leave a usable relay connection behind.
+func TestFaultProxyRefusesConnectionCutDuringUpstreamDial(t *testing.T) {
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	go func() {
+		for {
+			conn, acceptErr := upstream.Accept()
+			if acceptErr != nil {
+				return
+			}
+			go func() { _, _ = io.Copy(conn, conn); _ = conn.Close() }()
+		}
+	}()
+
+	dialStarted := make(chan struct{})
+	releaseDial := make(chan struct{})
+	proxy := newFaultProxyWithDial(t, "http://"+upstream.Addr().String(), func(network, address string, timeout time.Duration) (net.Conn, error) {
+		close(dialStarted)
+		<-releaseDial
+		return net.DialTimeout(network, address, timeout)
+	})
+	defer proxy.close()
+
+	client, err := net.Dial("tcp", strings.TrimPrefix(proxy.url, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	select {
+	case <-dialStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("proxy never started the delayed upstream dial")
+	}
+	proxy.down()
+	close(releaseDial)
+
+	if err := client.SetDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Write([]byte("ping")); err == nil {
+		reply := make([]byte, 4)
+		if _, err := io.ReadFull(client, reply); err == nil {
+			t.Fatal("connection completed during the outage still forwarded traffic")
+		}
 	}
 }
