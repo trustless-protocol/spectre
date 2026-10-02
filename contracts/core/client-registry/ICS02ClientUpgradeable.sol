@@ -44,8 +44,10 @@ abstract contract ICS02ClientUpgradeable is IICS02Client, IICS02ClientErrors, Ac
     function _requireClientMigrationModule(address module, bytes32 expectedModuleId) private view {
         if (module.code.length == 0) revert IBCClientMigrationModuleMissing(module);
         (bool ok, bytes memory result) = module.staticcall(abi.encodeCall(IClientMigrationModule.moduleId, ()));
-        if (!ok || result.length != 32 || abi.decode(result, (bytes32)) != expectedModuleId) {
-            revert IBCClientMigrationModuleMismatch(module, expectedModuleId);
+        if (!ok || result.length != 32) revert IBCClientMigrationModuleNotResponding(module);
+        bytes32 actualModuleId = abi.decode(result, (bytes32));
+        if (actualModuleId != expectedModuleId) {
+            revert IBCClientMigrationModuleMismatch(module, expectedModuleId, actualModuleId);
         }
     }
 
