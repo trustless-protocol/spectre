@@ -3,7 +3,7 @@
 The attestor is a standalone gRPC backend for the relayer. Like the OP
 attestor, it publishes a proposal-independent root from a configured Nitro
 `unsafe`, `safe`, or `finalized` head. It also ingests BoLD v2 Arbitrum
-assertions from finalized Ethereum L1 blocks and checks each assertion's L2
+assertions from finalized Ethereum L1 blocks by default and checks each assertion's L2
 block against configured Nitro HTTP and WebSocket endpoints. It never starts,
 supervises, or stops a Nitro process.
 
@@ -17,8 +17,9 @@ database.
 For `source="assertion"` entries, the attested root comes from the assertion
 read out of `RollupCore` on Ethereum L1. Nitro supplies the runtime head and
 canonical-block view used to decide when that assertion can enter or advance in
-the feed. The attestor re-reads assertion status at finalized L1 during
-reconciliation and removes an entry that is no longer supported there.
+the feed. The attestor re-reads assertion status at finalized L1 once that
+snapshot reaches the assertion's creation block. Opt-in early ingestion also
+rebuilds the complete unfinalized L1 window and withdraws orphaned assertions.
 Consequently, an untrusted Nitro endpoint cannot fabricate an assertion-backed
 root; it can delay, suppress, or reject an otherwise valid assertion by
 misreporting its head or canonical view, which is a liveness failure rather
@@ -82,6 +83,10 @@ Copy `config.example.json` to `config.json` and configure:
   `unsafe` trusts the configured Nitro node and does not wait for an L1
   assertion; `safe` uses Nitro's L1-posted view; `finalized` uses Nitro's
   L1-finalized view. The default is `finalized` when omitted.
+- `l1_ingest_head`: Ethereum L1 head used to discover assertions: `finalized`
+  (the default), `safe`, or `latest`. This does not change `attestation_head`.
+  Assertions discovered before L1 finality stay provisional, even if their
+  confirmation is already visible at the ingest head.
 - `disable_derived_roots`: disables proposal-independent roots while retaining
   BoLD assertion verification and finalized rechecks of existing derived
   entries.
@@ -90,8 +95,10 @@ Copy `config.example.json` to `config.json` and configure:
 - `max_derived_roots`: maximum confirmed derived entries retained. Provisional
   derived entries and assertion-backed entries are never pruned.
 - `src_chain`: source-chain key used by relayer requests.
-- `l1_rpc_url`: Ethereum execution RPC used for finalized RollupCore logs and
-  assertion status reads. The endpoint must support the `finalized` block tag.
+- `l1_rpc_url`: Ethereum execution RPC used for RollupCore logs and assertion
+  status reads. The endpoint must support the `finalized` tag. Early ingestion
+  additionally requires the selected tag and `eth_getStorageAt` by block hash;
+  unsupported reads fail rather than silently falling back to another head.
 - `l1_chain_id` and `l2_chain_id`: expected Ethereum and Arbitrum IDs. Startup
   fails if the connected L1 or RollupCore reports a different chain.
 - `attestation_signing_key`: 32-byte Ed25519 seed as hex, or `env:NAME`. Keep
@@ -104,13 +111,43 @@ Copy `config.example.json` to `config.json` and configure:
 - `assertion_start_block`: first L1 block scanned on a new state database.
   Configure the RollupCore deployment block for full history, or the creation
   block of a known confirmed object when intentionally bootstrapping a frontier.
-- `assertion_poll_interval` and `assertion_max_block_range`: finalized-L1 scan
+- `assertion_poll_interval` and `assertion_max_block_range`: L1 scan
   cadence and maximum inclusive block count per log query.
 - `attestor_state_path`: durable JSON state for the assertion cursor and
   verified feed.
 - `nitro_rpc_url`: Nitro HTTP/HTTPS endpoint used for chain state, block
   lookups, and unsafe/safe/finalized head reads.
 - `nitro_ws_url`: Nitro WS/WSS endpoint used for `newHeads` notifications.
+
+### Early L1 ingestion and recovery
+
+The durable `next_l1_block` cursor advances only through finalized logs. With
+`l1_ingest_head="safe"` or `"latest"`, every pass rereads the entire unfinalized
+window in bounded log-query chunks, reads statuses at the ingest block hash,
+and checks that both L1 snapshots remain canonical before committing that
+window atomically. Reorg replacements and head regressions therefore do not
+skip previously scanned blocks. RPC and persistence failures publish no partial
+speculative snapshot; finalized backfill completed earlier in the pass remains
+durable. An extended finality stall increases the window and RPC load.
+
+Promotion still requires assertion confirmation at finalized L1 and a Nitro
+`finalized` recheck. Restart durably drops persisted unfinalized assertions before serving gRPC,
+without RPCs or backfill. The background loop rebuilds them on its first pass
+and retries transient failures. This can briefly lower the frontier seen by
+`include_provisional` consumers; storage failures still abort startup. Switching back to `finalized`
+withdraws the unfinalized assertion entries. The state format remains version 1.
+
+`include_provisional=true` with early ingestion accepts L1 reorg risk in addition
+to an assertion's challenge risk. The Cosmos Wasm client trusts the pinned
+attestor signatures and has no provisional flag or automatic root rollback.
+Removing a root from this feed cannot revoke a consensus state or packet Cosmos
+has already accepted; a conflicting signed update at the same height is rejected,
+and explicit authenticated misbehaviour can freeze the client.
+
+This option can advance the assertion-backed frontier sooner. It does not promise
+a fixed end-to-end latency gain: posting cadence, Nitro heads and derived roots
+also matter. OP now pins its game ingestion to finalized L1 as well; early
+ingestion is an opt-in Arbitrum policy, not a missing OP parity feature.
 
 ## Shared local L1 and Nitro devnet
 

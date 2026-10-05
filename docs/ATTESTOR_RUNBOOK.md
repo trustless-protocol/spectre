@@ -33,12 +33,42 @@ The Arbitrum endpoint exports `spectre_arbitrum_attestor_*`, labeled only by
 | `nitro_{unsafe,safe,finalized}_head` stops moving | Nitro RPC/WS or runtime reconciliation is stalled | Check Nitro HTTP and WebSocket health, then `runtime_refresh_failures_total` |
 | `runtime_refresh_failures_total` increases | Nitro unavailable/rate-limited | Inspect RPC error and backoff log; reduce backfill concurrency or use a dedicated endpoint |
 | `assertion_next_l1_block` and `assertions_pending` increase | Finalized-L1 ingestion/reconciliation is behind | Check L1 finalized head, RollupCore RPC, and block-range settings |
+| `assertion_ingest_head` stops moving | No new successful assertion ingest snapshot | Check `l1_ingest_head`, selected L1 tag, hash-based status RPC support and `assertion_sync_failures_total`; the durable cursor still tracks finalized logs only |
+| `assertion_revocations_total` increases | An assertion was withdrawn before L1 finality | Inspect L1 reorg/head regression or policy-change logs; inspect Cosmos state before retrying packets |
 | `roots_provisional` remains high | Finalized recheck is waiting | Compare Nitro finalized head with the provisional heights |
 | `finalized_divergence_total`, `finalized_reorg_total`, or `mismatch_records` increases | Earlier evidence disagreed with the authoritative recheck | Follow the divergence procedure below |
 | `persistence_failures_total` increases | New feed state was not made durable | Stop relay progression, repair storage, and restart only after state-file inspection |
 
 OP uses the analogous `spectre_op_attestor_*` metrics. `Info` is a useful
 point-in-time diagnostic but is not a replacement for these histories.
+
+## Opt-in early Arbitrum assertions
+
+Keep `l1_ingest_head: finalized` for the conservative default. To evaluate early
+ingestion on testnet, use `disable_derived_roots: true` to isolate the assertion
+feed, choose `safe` or `latest`, and enable the relayer's `include_provisional`
+policy explicitly. Keep `attestation_head` consistent with the relayer's Nitro
+`head_kind`; it is a separate L2 policy, not the L1 ingest selector.
+
+Compare the successful ingest head, finalized cursor and assertion-backed
+frontier under each mode. Historical latency figures from issue #314 are not
+a current performance guarantee. The full unfinalized window is reread every
+poll, so a finality stall can increase RPC load. Unsupported tags/hash reads
+cause retries, never fallback to another ingest head.
+
+Before gRPC starts, persisted early assertions at or beyond the finalized
+cursor are durably dropped locally. This step needs no RPC or backfill; storage
+failure still aborts startup. The background loop rebuilds the early window on
+its first pass and retries transient RPC failures. Consumers using
+`include_provisional` may briefly see a lower frontier after restart. Deployment
+identity checks still require RPC access at startup. Returning to `finalized`
+withdraws early assertions and leaves them out of subsequent ingestion.
+
+Early provisional relay admits L1 reorg and assertion challenge risk. Feed
+withdrawal cannot undo Cosmos consensus states or packets already accepted.
+The Wasm client authenticates signatures, rejects conflicting same-height
+updates, and can freeze on explicit authenticated misbehaviour; it has no
+automatic provisional-root replacement or rollback.
 
 ## `VerifyStateRoot` mismatch or divergence
 

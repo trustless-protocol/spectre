@@ -525,3 +525,13 @@ func (r *assertionTestResolver) ResolveCanonicalBlockHash(
 ) (arbitrum.BlockCommitment, error) {
 	return r.results[mode], r.errs[mode]
 }
+
+func (s *assertionTestSource) Head(_ context.Context, _ arbitrum.L1IngestHead) (L1Block, error) {
+	return L1Block{Number: s.finalizedBlock, Hash: common.BigToHash(new(big.Int).SetUint64(s.finalizedBlock))}, s.finalizedErr
+}
+func (s *assertionTestSource) CanonicalHash(_ context.Context, n uint64) (common.Hash, error) {
+	return common.BigToHash(new(big.Int).SetUint64(n)), nil
+}
+func (s *assertionTestSource) AssertionStatusAtHash(ctx context.Context, p arbitrum.ProposedAssertion, _ common.Hash) (uint8, error) {
+	return s.AssertionStatus(ctx, p, s.finalizedBlock)
+}
