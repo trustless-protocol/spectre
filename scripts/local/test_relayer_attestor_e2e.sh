@@ -239,10 +239,11 @@ while IFS=' ' read -r sort_key key seed endpoint; do
     MEMBER_SEEDS+=("$seed")
     MEMBER_ENDPOINTS+=("$endpoint")
 done < <(
-    member_tuple "$KEY0" "$SEED0" "127.0.0.1:$(port 0)"
-    member_tuple "$KEY1" "$SEED1" "127.0.0.1:$(port 2)"
-    member_tuple "$KEY2" "$SEED2" "127.0.0.1:$(port 4)" |
-        LC_ALL=C sort -k1,1
+    {
+        member_tuple "$KEY0" "$SEED0" "127.0.0.1:$(port 0)"
+        member_tuple "$KEY1" "$SEED1" "127.0.0.1:$(port 2)"
+        member_tuple "$KEY2" "$SEED2" "127.0.0.1:$(port 4)"
+    } | LC_ALL=C sort -k1,1
 )
 [ "${#MEMBER_KEYS[@]}" -eq 3 ] || fail "could not sort all three attestor members"
 KEYS=$(IFS=,; printf '%s' "${MEMBER_KEYS[*]}")
