@@ -130,7 +130,12 @@ cleanup() {
     fi
     rm -rf "$WORK_DIR"
 }
-trap cleanup EXIT INT TERM
+# Signals only exit; the EXIT trap does the cleanup. A handler that cleaned up
+# without exiting would let the script carry on after Ctrl-C and start daemons
+# no trap tracks any more.
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 port_in_use() { (exec 3<>"/dev/tcp/127.0.0.1/$1") 2>/dev/null; }
 for offset in $(seq 0 11); do
@@ -366,11 +371,15 @@ stop_relayer() {
 }
 
 # to_dec <value>: cast --json prints quantities as 0x-hex; accept decimal too.
+# Anything else (an empty answer, jq's "null") prints nothing, so the caller
+# fails on it instead of reading it as block 0.
 to_dec() {
     case "$1" in
-        0x* | 0X*) echo $((16#${1#0x})) ;;
-        *) echo $(($1)) ;;
+        0x[0-9a-fA-F]* | 0X[0-9a-fA-F]*)
+            [[ "${1:2}" =~ ^[0-9a-fA-F]+$ ]] && echo $((16#${1:2})) ;;
+        *) [[ "$1" =~ ^[0-9]+$ ]] && echo $((10#$1)) ;;
     esac
+    return 0
 }
 
 # A throwaway Cosmos receiver: its voucher balance is the relay signal.
@@ -400,13 +409,19 @@ send_packet() {
 # <expected> for the whole window. The expectation is absolute, not a sample
 # taken after the relayer started: a relay inside its startup would otherwise
 # become the baseline and pass both this check and the wait that follows.
+# A failed balance query is retried, not fatal and not a pass: the window
+# closes only on a successful read taken at or after its deadline, and reads
+# that keep failing for 60s past it fail the check.
 no_relay_for() {
     local seconds=${1%s} expected=$2 deadline balance
     deadline=$((SECONDS + seconds))
     while :; do
-        balance=$(received)
-        [ "$balance" = "$expected" ] || fail "$3: receiver balance is $balance, want $expected; a packet was relayed although it must not be"
-        [ "$SECONDS" -lt "$deadline" ] || return 0
+        if balance=$(received) && [ -n "$balance" ]; then
+            [ "$balance" = "$expected" ] || fail "$3: receiver balance is $balance, want $expected; a packet was relayed although it must not be"
+            [ "$SECONDS" -lt "$deadline" ] || return 0
+        else
+            [ "$SECONDS" -lt $((deadline + 60)) ] || fail "$3: could not read the receiver balance from $TM_RPC"
+        fi
         sleep 5
     done
 }
@@ -438,7 +453,9 @@ log "P2: relayer asks the pinned attestor while it is down, then it starts"
 # window from TX1's own block instead of relying on the default, and check
 # the scan really starts at or below it.
 TX1_BLOCK=$(to_dec "$(cast receipt "$TX1" --json --rpc-url "$L2_RPC_URL" | jq -r '.blockNumber')")
+[ -n "$TX1_BLOCK" ] || fail "P2: could not read the block of TX1 $TX1"
 TX1_TIME=$(to_dec "$(cast block "$TX1_BLOCK" --json --rpc-url "$L2_RPC_URL" | jq -r '.timestamp')")
+[ -n "$TX1_TIME" ] || fail "P2: could not read the timestamp of L2 block $TX1_BLOCK"
 export L2_STARTUP_LOOKBACK=$(($(date +%s) - TX1_TIME + 300))s
 relayer_config "127.0.0.1:$P_GRPC" "$WORK_DIR/relayer-pinned.json"
 no_relay_for 0 0 "P2 before start"
