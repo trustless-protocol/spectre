@@ -66,11 +66,6 @@ build-cw-ics08-wasm-l2-native:
 capture-l2-fixture config out:
 	cd relayer && go run ./l2fixtures/cmd -config {{config}} -out ../{{out}}
 
-# Build the relayer docker image
-[group('build')]
-build-relayer-image:
-    docker build -t spectre-relayer:latest -f programs/relayer/Dockerfile .
-
 # Install the Go relayer for use in the e2e tests.
 # Builds with an explicit -o name because the package dir is `cmd/`, so a plain
 # `go install ./cmd/...` would land at $GOPATH/bin/cmd, not $GOPATH/bin/relayer.
