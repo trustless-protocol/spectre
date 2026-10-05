@@ -19,6 +19,7 @@ import (
 	boldattestor "attestor/arbitrum/bold"
 	"attestor/core"
 	"attestor/host"
+	attestortypes "attestor/types"
 	"attestor/types/attestation"
 
 	"github.com/ethereum/go-ethereum/common"
@@ -43,7 +44,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 		return err
 	}
 
-	nitroClient, err := ethclient.DialContext(ctx, config.NitroRPCURL)
+	nitroClient, err := attestortypes.DialEthRPC(ctx, config.NitroRPCURL, attestortypes.DefaultRPCTimeout)
 	if err != nil {
 		return fmt.Errorf("connect to Nitro RPC: %w", err)
 	}
@@ -85,7 +86,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("load runtime poll interval: %w", err)
 	}
-	l1Client, err := ethclient.DialContext(ctx, config.L1RPCURL)
+	l1Client, err := attestortypes.DialEthRPC(ctx, config.L1RPCURL, attestortypes.DefaultRPCTimeout)
 	if err != nil {
 		return fmt.Errorf("connect to Ethereum L1 RPC: %w", err)
 	}
@@ -113,6 +114,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 		runtimeState,
 		attestedRootStore,
 		boldattestor.AssertionAttestorConfig{
+			L1IngestHead:    config.L1IngestHead,
 			PollInterval:    assertionPollInterval,
 			MaxL1BlockRange: config.AssertionBlockRange(),
 		},
@@ -128,6 +130,9 @@ func runAttestor(ctx context.Context, configPath string) error {
 		return true, store.BindSourceIdentity(sourceIdentity)
 	}); err != nil {
 		return fmt.Errorf("bind and persist attested-root source identity: %w", err)
+	}
+	if err := assertionLoop.ReconcileStartup(ctx); err != nil {
+		return err
 	}
 	attestationHead, err := config.NormalizedAttestationHead()
 	if err != nil {

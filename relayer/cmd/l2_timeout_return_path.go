@@ -225,6 +225,9 @@ type builtL2Dest struct {
 	svc     *services.Services
 	deps    services.RelayDeps
 	cleanup func()
+	// timeoutRecovery is populated only after this destination has been matched
+	// to the L2 source that owns its attestors and Cosmos-side wasm client.
+	timeoutRecovery *services.L2TimeoutRecovery
 	// hasReturnLeg gates the owed-ack ledger: unless the l2_to_cosmos source
 	// settles for THIS destination, nothing ever clears a debt it records.
 	hasReturnLeg bool

@@ -110,7 +110,11 @@ func buildCosmosToL2Dest(
 			Membership: common.HexToAddress(c2l.Membership), Misbehaviour: common.HexToAddress(c2l.Misbehaviour),
 			UpdateClient: common.HexToAddress(c2l.UpdateClient), RoleManager: common.HexToAddress(c2l.ICS26Address), SpectreClient: common.HexToAddress(c2l.SpectreClient),
 		}},
-		IDs: services.ClientIDs{CosmosOnEVM: c2l.ICS26ClientID}, Config: cosmosConfig, Logger: log.Default(),
+		// CosmosOnEVM identifies Cosmos to the L2 router. EVMOnCosmos is the
+		// paired attestor-backed L2 wasm client and is used by the Cosmos source's
+		// enumeration/reconciliation path; leaving it blank makes those queries
+		// fail with "identifier cannot be blank" after a restart.
+		IDs: services.ClientIDs{CosmosOnEVM: c2l.ICS26ClientID, EVMOnCosmos: c2l.CosmosWasmClientID}, Config: cosmosConfig, Logger: log.Default(),
 	}
 	cleanup := func() {
 		if err := cosmosClient.Stop(); err != nil {
@@ -153,7 +157,7 @@ func buildCosmosToL2Dest(
 // never sees the returning acknowledgement, so every entry stays owed forever --
 // durable, unsettleable, and eventually reported as overdue for packets another
 // relayer may well have acknowledged.
-func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps services.RelayDeps, reg *status.Registry, watchAcks bool) error {
+func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps services.RelayDeps, reg *status.Registry, timeoutRecovery *services.L2TimeoutRecovery, watchAcks bool) error {
 	worker := svc.Worker()
 	bb := svc.BatchBuilder
 	cfg := svc.CosmosConfig()
@@ -201,9 +205,6 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		// The destination client here is the SpectreClient on the L2, so its
 		// age is the "cosmos-on-evm" figure -- same slot the ETH path fills.
 		relay.WithClientUpdateObserver(svc.ObserveCosmosOnEVMUpdate),
-		relay.WithTimeoutScanner(0, func(c context.Context) {
-			svc.ScanCosmosTimeouts(c, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos)
-		}),
 		relay.WithPacketTracker(trackCosmosPending, untrackCosmosPending),
 		relay.WithPendingSettlementGuard(isCosmosPendingSettled, markCosmosPendingSettled),
 		relay.WithPeriodicUpdate(periodicUpdateInterval, initialRotationDelay, func(c context.Context) error {
@@ -214,6 +215,14 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		// the cosmos->eth leg alone, and this leg is the same source pointed at
 		// the L2.
 		relay.WithPacketFlush(0),
+	}
+	if timeoutRecovery != nil {
+		recovery := *timeoutRecovery
+		options = append(options, relay.WithTimeoutScanner(0, func(c context.Context) {
+			svc.ScanCosmosL2Timeouts(c, deps.Cosmos, deps.EVM, recovery)
+		}))
+	} else {
+		log.Printf("[CosmosTimeoutScan] no attestor-backed L2 timeout recovery is configured; Cosmos-origin timeout refunds are disabled")
 	}
 	if watchAcks {
 		// This direction RECORDS the debt; the l2->cosmos leg settles it and owns

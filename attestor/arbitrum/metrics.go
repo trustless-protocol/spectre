@@ -20,19 +20,21 @@ type AttestedRootStoreStats struct {
 // Metrics contains the Arbitrum attestor's bounded-cardinality operator
 // signals. A single configured source chain owns every vector instance.
 type Metrics struct {
-	NitroUnsafeHead     *prometheus.GaugeVec
-	NitroSafeHead       *prometheus.GaugeVec
-	NitroFinalizedHead  *prometheus.GaugeVec
-	AssertionCursor     *prometheus.GaugeVec
-	PendingAssertions   *prometheus.GaugeVec
-	ProvisionalRoots    *prometheus.GaugeVec
-	MismatchRecords     *prometheus.GaugeVec
-	RuntimeFailures     *prometheus.CounterVec
-	AssertionFailures   *prometheus.CounterVec
-	DerivedFailures     *prometheus.CounterVec
-	PersistenceFailures *prometheus.CounterVec
-	FinalizedDivergence *prometheus.CounterVec
-	FinalizedReorg      *prometheus.CounterVec
+	NitroUnsafeHead      *prometheus.GaugeVec
+	NitroSafeHead        *prometheus.GaugeVec
+	NitroFinalizedHead   *prometheus.GaugeVec
+	AssertionCursor      *prometheus.GaugeVec
+	AssertionIngestHead  *prometheus.GaugeVec
+	AssertionRevocations *prometheus.CounterVec
+	PendingAssertions    *prometheus.GaugeVec
+	ProvisionalRoots     *prometheus.GaugeVec
+	MismatchRecords      *prometheus.GaugeVec
+	RuntimeFailures      *prometheus.CounterVec
+	AssertionFailures    *prometheus.CounterVec
+	DerivedFailures      *prometheus.CounterVec
+	PersistenceFailures  *prometheus.CounterVec
+	FinalizedDivergence  *prometheus.CounterVec
+	FinalizedReorg       *prometheus.CounterVec
 }
 
 // NewMetrics registers the metrics used by the Arbitrum attestor. All metrics
@@ -60,19 +62,21 @@ func NewMetrics(reg prometheus.Registerer) *Metrics {
 		return metric
 	}
 	return &Metrics{
-		NitroUnsafeHead:     gauge("nitro_unsafe_head", "Latest observed Nitro unsafe L2 height."),
-		NitroSafeHead:       gauge("nitro_safe_head", "Latest observed Nitro safe L2 height."),
-		NitroFinalizedHead:  gauge("nitro_finalized_head", "Latest observed Nitro finalized L2 height."),
-		AssertionCursor:     gauge("assertion_next_l1_block", "Next finalized L1 block whose RollupCore logs must be scanned."),
-		PendingAssertions:   gauge("assertions_pending", "Assertion proposals or provisional assertion roots awaiting an authoritative verdict."),
-		ProvisionalRoots:    gauge("roots_provisional", "Attested roots awaiting finalized recheck."),
-		MismatchRecords:     gauge("mismatch_records", "Retained terminal assertion mismatch records."),
-		RuntimeFailures:     counter("runtime_refresh_failures_total", "Failed Nitro runtime refreshes."),
-		AssertionFailures:   counter("assertion_sync_failures_total", "Failed finalized-L1 assertion reconciliation passes."),
-		DerivedFailures:     counter("derived_sync_failures_total", "Failed derived-root reconciliation passes."),
-		PersistenceFailures: counter("persistence_failures_total", "Failed durable attested-root state saves."),
-		FinalizedDivergence: counter("finalized_divergence_total", "Finalized checks that contradicted earlier unsafe or safe observations."),
-		FinalizedReorg:      counter("finalized_reorg_total", "Observed finalized-head regressions or root changes."),
+		NitroUnsafeHead:      gauge("nitro_unsafe_head", "Latest observed Nitro unsafe L2 height."),
+		NitroSafeHead:        gauge("nitro_safe_head", "Latest observed Nitro safe L2 height."),
+		NitroFinalizedHead:   gauge("nitro_finalized_head", "Latest observed Nitro finalized L2 height."),
+		AssertionCursor:      gauge("assertion_next_l1_block", "Next finalized L1 block whose RollupCore logs must be scanned."),
+		AssertionIngestHead:  gauge("assertion_ingest_head", "L1 block of the last successfully committed assertion ingest snapshot."),
+		AssertionRevocations: counter("assertion_revocations_total", "Assertion proposals or roots withdrawn before L1 finality."),
+		PendingAssertions:    gauge("assertions_pending", "Assertion proposals or provisional assertion roots awaiting an authoritative verdict."),
+		ProvisionalRoots:     gauge("roots_provisional", "Attested roots awaiting finalized recheck."),
+		MismatchRecords:      gauge("mismatch_records", "Retained terminal assertion mismatch records."),
+		RuntimeFailures:      counter("runtime_refresh_failures_total", "Failed Nitro runtime refreshes."),
+		AssertionFailures:    counter("assertion_sync_failures_total", "Failed assertion ingestion or reconciliation passes."),
+		DerivedFailures:      counter("derived_sync_failures_total", "Failed derived-root reconciliation passes."),
+		PersistenceFailures:  counter("persistence_failures_total", "Failed durable attested-root state saves."),
+		FinalizedDivergence:  counter("finalized_divergence_total", "Finalized checks that contradicted earlier unsafe or safe observations."),
+		FinalizedReorg:       counter("finalized_reorg_total", "Observed finalized-head regressions or root changes."),
 	}
 }
 
