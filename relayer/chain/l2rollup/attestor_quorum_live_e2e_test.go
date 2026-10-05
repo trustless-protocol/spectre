@@ -190,15 +190,15 @@ func TestLiveAttestorQuorumE2E(t *testing.T) {
 		waitAttestedAtLeast(t, ctx, dial(env.imposter), env, height)
 		// Two imposters leave one valid signer: no retry can reach 2, so the
 		// relayer must give up permanently instead of waiting forever.
-		header, buildErr := build(t, env.members[0], env.imposter, env.imposter)
-		requireNoHeader(t, header, buildErr)
-		outcome := retryOutcome(buildErr)
-		if outcome != chain.OutcomePermanent || !errors.Is(buildErr, l2rollup.ErrAttestorSignature) {
-			t.Fatalf("two-imposter error = %v (%s), want permanent ErrAttestorSignature", buildErr, outcome)
+		header, twoImpostersErr := build(t, env.members[0], env.imposter, env.imposter)
+		requireNoHeader(t, header, twoImpostersErr)
+		outcome := retryOutcome(twoImpostersErr)
+		if outcome != chain.OutcomePermanent || !errors.Is(twoImpostersErr, l2rollup.ErrAttestorSignature) {
+			t.Fatalf("two-imposter error = %v (%s), want permanent ErrAttestorSignature", twoImpostersErr, outcome)
 		}
 		raw := rawVerdict(t, ctx, l2, env, dial(env.imposter))
 		// One imposter among two honest members: the honest pair carries it.
-		header, buildErr = build(t, env.members[0], env.imposter, env.members[2])
+		header, buildErr := build(t, env.members[0], env.imposter, env.members[2])
 		if buildErr != nil {
 			t.Fatalf("BuildHeader with one imposter: %v", buildErr)
 		}
@@ -207,7 +207,7 @@ func TestLiveAttestorQuorumE2E(t *testing.T) {
 			t.Fatalf("signatures from %v, want [0 2] around the imposter at index 1", indices)
 		}
 		evidence(t, "imposter answered valid=%t with a %d-byte signature that fails the pinned key; two imposters -> %s %v; one imposter -> quorum %v",
-			raw.Valid, len(raw.Signature), outcome, buildErr, indices)
+			raw.Valid, len(raw.Signature), outcome, twoImpostersErr, indices)
 	})
 
 	t.Run("Q5_wrong_head_member_cannot_complete_a_quorum", func(t *testing.T) {

@@ -282,7 +282,10 @@ if [ -f "$REPO_ROOT/.l2-deployment.json" ]; then
     ROUTER=$(jq -r '.ics26Router // "0x0000000000000000000000000000000000000001"' "$REPO_ROOT/.l2-deployment.json")
 fi
 export RELAYER_QUORUM_E2E_SRC_CHAIN=$SRC_CHAIN
-export RELAYER_QUORUM_E2E_L2_RPC_URL=$L2_RPC_URL
+# The builder proves the router at the attested height, below the head. The
+# Base sequencer serves no historical eth_getProof, so read proofs from the
+# follower the relayer itself is configured with (deploy_l2_contracts.sh).
+export RELAYER_QUORUM_E2E_L2_RPC_URL=$(with_scheme http "${L2_FOLLOWER_RPC_URL:-$L2_RPC_URL}")
 export RELAYER_QUORUM_E2E_L2_CHAIN_ID=$L2_CHAIN_ID
 export RELAYER_QUORUM_E2E_HEAD=$QUORUM_HEAD
 export RELAYER_QUORUM_E2E_ROUTER=$ROUTER
