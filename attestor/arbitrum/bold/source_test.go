@@ -13,6 +13,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/crypto"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 func TestParseAssertionCreatedRecomputesAssertionHash(t *testing.T) {
@@ -481,4 +482,80 @@ func (c *sourceTestL1Client) StorageAt(
 	c.storageKey = key
 	c.storageBlock = new(big.Int).Set(block)
 	return append([]byte(nil), c.storageOutput...), c.storageErr
+}
+
+func (c *sourceTestL1Client) StorageAtHash(_ context.Context, _ common.Address, key common.Hash, hash common.Hash) ([]byte, error) {
+	c.storageKey = key
+	return append([]byte(nil), c.storageOutput...), c.storageErr
+}
+
+type headRecordingL1Client struct {
+	sourceTestL1Client
+	tag        *big.Int
+	statusHash common.Hash
+}
+
+func (c *headRecordingL1Client) HeaderByNumber(ctx context.Context, n *big.Int) (*types.Header, error) {
+	c.tag = new(big.Int).Set(n)
+	return c.sourceTestL1Client.HeaderByNumber(ctx, n)
+}
+
+func (c *headRecordingL1Client) StorageAtHash(ctx context.Context, address common.Address, key, hash common.Hash) ([]byte, error) {
+	c.statusHash = hash
+	return c.sourceTestL1Client.StorageAtHash(ctx, address, key, hash)
+}
+
+func TestRollupSourceHeadTagsAndHashPinnedStatus(t *testing.T) {
+	c := &headRecordingL1Client{sourceTestL1Client: sourceTestL1Client{storageOutput: make([]byte, abiWordSize)}}
+	c.storageOutput[31] = assertionStatusPending
+	s, err := NewRollupCoreSource(c, common.HexToAddress("0x1"), common.Hash{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	for _, tc := range []struct {
+		head arbitrum.L1IngestHead
+		tag  rpc.BlockNumber
+	}{
+		{arbitrum.L1IngestFinalized, rpc.FinalizedBlockNumber},
+		{arbitrum.L1IngestSafe, rpc.SafeBlockNumber},
+		{arbitrum.L1IngestLatest, rpc.LatestBlockNumber},
+	} {
+		head, err := s.Head(ctx, tc.head)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.tag.Int64() != int64(tc.tag) || head.Number != 100 || head.Hash == (common.Hash{}) {
+			t.Fatalf("head %s: %+v, tag %v", tc.head, head, c.tag)
+		}
+		status, err := s.AssertionStatusAtHash(ctx, earlyProposal(1, 110), head.Hash)
+		if err != nil || status != assertionStatusPending || c.statusHash != head.Hash {
+			t.Fatalf("hash status: %d %v", status, err)
+		}
+	}
+	if _, err := s.CanonicalHash(ctx, 100); err != nil || c.tag.Uint64() != 100 {
+		t.Fatalf("canonical lookup: %v", err)
+	}
+	if _, err := s.CanonicalHash(ctx, 101); err == nil {
+		t.Fatal("accepted wrong-height header")
+	}
+	c.headerErr = errors.New("unsupported tag")
+	if _, err := s.Head(ctx, arbitrum.L1IngestSafe); err == nil {
+		t.Fatal("unsupported head silently accepted")
+	}
+	c.headerErr = nil
+	c.returnNilHeader = true
+	if _, err := s.Head(ctx, arbitrum.L1IngestLatest); err == nil {
+		t.Fatal("nil head accepted")
+	}
+	c.returnNilHeader = false
+	c.storageErr = errors.New("hash unavailable")
+	if _, err := s.AssertionStatusAtHash(ctx, earlyProposal(1, 110), blockHash(110)); err == nil {
+		t.Fatal("hash status failure ignored")
+	}
+	c.storageErr = nil
+	c.storageOutput = []byte{1}
+	if _, err := s.AssertionStatusAtHash(ctx, earlyProposal(1, 110), blockHash(110)); err == nil {
+		t.Fatal("malformed status accepted")
+	}
 }

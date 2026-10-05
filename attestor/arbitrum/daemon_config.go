@@ -16,32 +16,33 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
-// DaemonConfig contains the gRPC listener, finalized-L1 RollupCore source, and
+// DaemonConfig contains the gRPC listener, L1 RollupCore source, and
 // external Nitro RPC endpoints.
 type DaemonConfig struct {
-	GRPCListenAddress          string  `json:"grpc_listen_address"`
-	MetricsListenAddress       string  `json:"metrics_listen_address"`
-	RuntimePollInterval        string  `json:"runtime_poll_interval"`
-	RuntimeBackfillMaxBlocks   uint64  `json:"runtime_backfill_max_blocks"`
-	RuntimeBackfillConcurrency uint64  `json:"runtime_backfill_concurrency"`
-	AttestationHead            RunMode `json:"attestation_head"`
-	DisableDerivedRoots        bool    `json:"disable_derived_roots"`
-	DerivedGapBlocks           uint64  `json:"derived_attestation_gap_blocks"`
-	MaxDerivedRoots            uint64  `json:"max_derived_roots"`
-	SrcChain                   string  `json:"src_chain"`
-	L1RPCURL                   string  `json:"l1_rpc_url"`
-	L1ChainID                  uint64  `json:"l1_chain_id"`
-	L2ChainID                  uint64  `json:"l2_chain_id"`
-	AttestationSigningKey      string  `json:"attestation_signing_key"`
-	RollupCoreAddress          string  `json:"rollup_core_address"`
-	AssertionsMappingSlot      string  `json:"assertions_mapping_slot"`
-	AssertionStatusOffset      uint8   `json:"assertion_status_offset"`
-	AssertionStartBlock        uint64  `json:"assertion_start_block"`
-	AssertionPollInterval      string  `json:"assertion_poll_interval"`
-	AssertionMaxBlockRange     uint64  `json:"assertion_max_block_range"`
-	AttestorStatePath          string  `json:"attestor_state_path"`
-	NitroRPCURL                string  `json:"nitro_rpc_url"`
-	NitroWSURL                 string  `json:"nitro_ws_url"`
+	GRPCListenAddress          string       `json:"grpc_listen_address"`
+	MetricsListenAddress       string       `json:"metrics_listen_address"`
+	RuntimePollInterval        string       `json:"runtime_poll_interval"`
+	RuntimeBackfillMaxBlocks   uint64       `json:"runtime_backfill_max_blocks"`
+	RuntimeBackfillConcurrency uint64       `json:"runtime_backfill_concurrency"`
+	L1IngestHead               L1IngestHead `json:"l1_ingest_head"`
+	AttestationHead            RunMode      `json:"attestation_head"`
+	DisableDerivedRoots        bool         `json:"disable_derived_roots"`
+	DerivedGapBlocks           uint64       `json:"derived_attestation_gap_blocks"`
+	MaxDerivedRoots            uint64       `json:"max_derived_roots"`
+	SrcChain                   string       `json:"src_chain"`
+	L1RPCURL                   string       `json:"l1_rpc_url"`
+	L1ChainID                  uint64       `json:"l1_chain_id"`
+	L2ChainID                  uint64       `json:"l2_chain_id"`
+	AttestationSigningKey      string       `json:"attestation_signing_key"`
+	RollupCoreAddress          string       `json:"rollup_core_address"`
+	AssertionsMappingSlot      string       `json:"assertions_mapping_slot"`
+	AssertionStatusOffset      uint8        `json:"assertion_status_offset"`
+	AssertionStartBlock        uint64       `json:"assertion_start_block"`
+	AssertionPollInterval      string       `json:"assertion_poll_interval"`
+	AssertionMaxBlockRange     uint64       `json:"assertion_max_block_range"`
+	AttestorStatePath          string       `json:"attestor_state_path"`
+	NitroRPCURL                string       `json:"nitro_rpc_url"`
+	NitroWSURL                 string       `json:"nitro_ws_url"`
 }
 
 // LoadDaemonConfig reads, validates, and resolves filesystem paths relative to
@@ -108,6 +109,9 @@ func (c DaemonConfig) Validate() error {
 		return err
 	}
 	if _, err := c.RuntimePollDuration(); err != nil {
+		return err
+	}
+	if _, err := c.L1IngestHead.Normalize(); err != nil {
 		return err
 	}
 	if _, err := c.NormalizedAttestationHead(); err != nil {

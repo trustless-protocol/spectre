@@ -609,10 +609,12 @@ func assertStateSettlementPromotion(t *testing.T, ctx context.Context, client at
 	started := time.Now()
 	for {
 		state := readStateOrFail(t, config)
+		found := false
 		for _, entry := range state.Attested {
 			if settlementKey(entry) != key {
 				continue
 			}
+			found = true
 			if !bytes.Equal(entry.Root, candidate.Root) || !entry.AttestedAt.Equal(candidate.AttestedAt) {
 				t.Fatalf("promotion changed persisted %s entry %s: root %x -> %x, attested_at %s -> %s",
 					candidate.Source, key, candidate.Root, entry.Root, candidate.AttestedAt, entry.AttestedAt)
@@ -647,6 +649,9 @@ func assertStateSettlementPromotion(t *testing.T, ctx context.Context, client at
 				candidate.Source, entry.L2BlockNumber, time.Since(started).Round(time.Second), entry.Root, entry.AttestedAt,
 				finalized, line)
 			return
+		}
+		if !found {
+			t.Fatalf("provisional persisted %s entry %s disappeared before promotion (revoked or corrected)", candidate.Source, key)
 		}
 		if !sleepCtx(ctx, 2*time.Second) {
 			t.Fatalf("provisional persisted %s entry %s was not promoted before %v", candidate.Source, key, ctx.Err())
@@ -806,6 +811,9 @@ func assertOPGames(t *testing.T, ctx context.Context, client attestorpb.Attestor
 		}
 	} else if root.GetSource() != "derived" {
 		t.Fatalf("game %d at l2 %d is persisted, but the feed serves unexpected %+v", game.GameIndex, game.L2BlockNumber, root)
+	} else if !bytes.Equal(root.GetRoot(), game.Root) {
+		t.Fatalf("derived root at game %d collision height %d = %x, want game root %x",
+			game.GameIndex, game.L2BlockNumber, root.GetRoot(), game.Root)
 	} else {
 		evidence(t, "game %d at l2 %d collides with the served derived root; validating the persisted game entry directly",
 			game.GameIndex, game.L2BlockNumber)

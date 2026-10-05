@@ -248,6 +248,46 @@ func TestMonitorRuntimeStateLogsSlowAndStuckRefresh(t *testing.T) {
 	}
 }
 
+func TestMonitorRuntimeStateBoundsRefresh(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	refresher := &deadlineAwareBlockingRuntimeRefresher{cancelled: make(chan error, 1)}
+	subscriber := headSubscriberFunc(func(
+		_ context.Context,
+		_ chan<- *types.Header,
+	) (ethereum.Subscription, error) {
+		return newTestSubscription(), nil
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := arbitrum.MonitorRuntimeState(ctx, refresher, subscriber, arbitrum.RuntimeMonitorConfig{
+			ReconcileInterval:         time.Hour,
+			SubscriptionRetryInterval: time.Hour,
+			RefreshTimeout:            20 * time.Millisecond,
+		}); err != nil {
+			t.Errorf("MonitorRuntimeState: %v", err)
+		}
+	}()
+
+	select {
+	case err := <-refresher.cancelled:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("refresh cancellation = %v, want deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("refresh was not cancelled at its deadline")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("runtime monitor did not stop after cancellation")
+	}
+}
+
 func TestRefreshBackoffGrowsAndCaps(t *testing.T) {
 	cases := []struct {
 		failures    int
@@ -416,6 +456,18 @@ func waitForRefreshAt(t *testing.T, calls <-chan time.Time) time.Time {
 type blockingRuntimeRefresher struct {
 	started chan struct{}
 	release chan struct{}
+}
+
+type deadlineAwareBlockingRuntimeRefresher struct {
+	cancelled chan error
+}
+
+func (r *deadlineAwareBlockingRuntimeRefresher) Refresh(
+	ctx context.Context,
+) ([]arbitrum.FinalizedConsistency, error) {
+	<-ctx.Done()
+	r.cancelled <- ctx.Err()
+	return nil, ctx.Err()
 }
 
 func (r *blockingRuntimeRefresher) Refresh(

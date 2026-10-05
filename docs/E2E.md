@@ -131,11 +131,11 @@ cast send $AM "grantRole(uint64,address,uint32)" 1 <second-relayer-address> 0 \
 Then fund the address for gas. Repeat per extra EVM signer, and per chain: a key
 authorized on the L1 router has no standing on an L2 router.
 
-**`create-clients-cosmos` signs with the same key.** It is the one command besides
-`start` that writes to Cosmos, so running it against a chain a `start` process is
-already relaying will collide. Give it its own key, or run it while `start` is
-stopped. The other commands do not touch the Cosmos signer: `update-client` and
-`create-clients-eth` submit to Ethereum, `submit-misbehaviour` submits to Ethereum
+**`create-clients-cosmos` and `update-eth-client` sign with the same key.** They are
+the commands besides `start` that write to Cosmos, so running either against a chain a
+`start` process is already relaying will collide. Give it its own key, or run it while
+`start` is stopped. The other commands do not touch the Cosmos signer: `update-client`
+and `create-clients-eth` submit to Ethereum, `submit-misbehaviour` submits to Ethereum
 under its own `MISBEHAVIOUR_PRIVATE_KEY`, and `genesis` broadcasts nothing.
 
 Keys can be set per process without touching `relayer/.env`: `godotenv` does not
@@ -934,6 +934,39 @@ The leg is done when the ack is relayed back and the packet leaves the pending
 tracker (`[CosmosTimeoutScan] Checking 0 pending packets`) — a forward-only success
 proves half the system.
 
+### Automated timeout recovery test
+
+`relayer/cmd/l2_timeout_devnet_test.go` (build tag `l2devnet`) drives the Cosmos → L2
+timeout lifecycle against a devnet that is already up through step 5, on either OP or
+Base; the config file decides which. It starts the relayer until a Cosmos cursor is
+durable, stops it, sends a 777-unit transfer with a 45 s absolute timeout, waits for
+the **L2** head timestamp to pass it, then restarts the relayer on the same config, so
+the same `.spectre-state` directory. It passes when:
+
+- the sender's balance is refunded by exactly the transfer amount (the send fee stays spent);
+- the L2 router holds no receipt, and a simulated late `recvPacket` reverts with
+  `IBCInvalidTimeoutTimestamp`;
+- the packet leaves both the relayer's live `/status` pending set and the persisted Cosmos
+  pending tracker.
+
+The config must set `status_address` (e.g. `"127.0.0.1:7071"`): the Cosmos commitment
+disappears when the `MsgTimeout` lands, a moment before the relayer retires its tracker
+entry, so only the live pending set says when the timeout has fully settled. The test also
+refuses a state directory that still owes a timeout on the client (a tracked packet whose
+Cosmos commitment still exists), since refunding it in the same run would skew the balance
+check; let the relayer settle it first.
+
+```bash
+just test-l2-timeout relayer/config.json
+```
+
+The sender defaults to the devnet's `test2` key. Override it with `L2_TIMEOUT_SENDER_KEY`
+(hex), and never use the relayer's `COSMOS_PRIVATE_KEY`: the relayer pays the `MsgTimeout`
+fee from that account, which would hide the refund. Stop any relayer already running on
+the config first, or the state-directory lock refuses the test's relayer.
+`L2_TIMEOUT_LOG_DIR` keeps the relayer logs, and `RELAYER_BINARY` runs a prebuilt binary
+instead of building one; `L2_TIMEOUT_WINDOW` and `L2_TIMEOUT_SETTLE` tune the waits.
+
 ### Failure modes
 
 | Symptom | Cause |
@@ -948,9 +981,10 @@ proves half the system.
 | Relayer startup fails with `reuse attestor public key ... across different head_kind values` | Two finality tiers share at least one key. Provision disjoint attestor/KMS keys for each tier and update `attestors` plus endpoint indices; finality is deliberately outside the signed 164-byte statement. |
 | `updateApplicationState` reverts, ~82k gas, no revert string | The relayer's signer lacks the ICS26Router relayer role on the L2. `cast run <tx>` shows `canCall(...) → false`; funding the address does not help. |
 | Send fails: `timeout exceeds the maximum expected value` | Sent without `--absolute-timeouts`, so the CLI writes `timeout_timestamp` in nanoseconds while IBC v2 reads seconds. |
-| ETH client stops advancing: `404 NOT_FOUND: Sync committee for period N not found` | The beacon does not serve a `light_client/bootstrap` for that period. The relayer takes the committee from the preceding period's update instead, so this should only appear if that update is also unavailable — check the endpoint serves `/eth/v1/beacon/light_client/updates`. |
+| `eth_getProof failed: historical state ... is not available` | The Ethereum light client on Cosmos is behind, so the execution node has pruned the state it trusts. Stop the relayer that uses this Cosmos signer, run `./relayer update-eth-client --config config.json`, then restart it. The command prints the resulting `latest_slot` and `latest_execution_block_number`; if it says the client is already current, the stale proof has another cause. |
 | Ack fails: `unknown field account_proof, expected one of key, value, proof` | The L2 membership proof was built in the Ethereum L1 shape. The L2 client wants a bare `EvmStorageProof` — see [docs/L2_CLIENTS.md](L2_CLIENTS.md). |
-| `packet at height N not yet covered by the destination client (trusts M)` | Normal wait: the attestor frontier has not reached the packet's block yet, so `RelayableHeight` is still below it. It clears on the next attestation; if it never does, the attestor is stuck — check its log rather than the relayer's. |
+| `packet at height N not yet covered by the destination client (trusts M)` | **L2 → Cosmos:** the attestor frontier has not reached the packet's block yet, so `RelayableHeight` is still below it. It normally clears on the next attestation; if it persists, check the attestor's log. **Ethereum → Cosmos:** the Ethereum beacon light client on Cosmos may be lagging. If it stays behind, stop the relayer that uses this Cosmos signer, run `./relayer update-eth-client --config config.json`, check the reported `latest_slot` and `latest_execution_block_number`, then restart the relayer. If the client is already current, check whether the packet's block is finalized yet. |
+| ETH client stops advancing: `404 NOT_FOUND: Sync committee for period N not found` | The beacon does not serve a `light_client/bootstrap` for that period. The relayer takes the committee from the preceding period's update instead, so this should only appear if that update is also unavailable — check the endpoint serves `/eth/v1/beacon/light_client/updates`. |
 | `the attestor does not recognise L2 block N ... as canonical` | The relayer's L2 RPC and the attestor's replica disagree at that height — a reorg past the frontier, or the two pointed at different chains. Not retried away: confirm both use the same L2. |
 | A direction goes silent — no error, no retry, other directions healthy | A hung RPC. `kill -QUIT <relayer-pid>` dumps every goroutine; look for one blocked in `net/http.(*persistConn).roundTrip`. Note the dump kills the process. |
 | Gov proposal ends `REJECTED` without votes | `wasm.sh` resolves the proposal id after a fixed `sleep`; if indexing is slower the id is empty and the vote step is skipped. Vote manually before the (short devnet) voting period ends. |

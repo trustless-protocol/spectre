@@ -471,6 +471,29 @@ func (r *faultRoute) waitMetricAbove(t *testing.T, ctx context.Context, name str
 	}
 }
 
+// logOffset is the current size of the route's log. The log is append-only
+// across subtests and restarts, so a fault records the offset before it cuts
+// and then matches only what was written after it.
+func (r *faultRoute) logOffset(t *testing.T) int {
+	t.Helper()
+	return len(readLogOrFail(t, r.view))
+}
+
+// waitForLogLineAfter is waitForLogLine restricted to bytes written after
+// offset, so a line an earlier fault produced cannot satisfy a later one.
+func (r *faultRoute) waitForLogLineAfter(t *testing.T, ctx context.Context, offset int, line string) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if log := readLogOrFail(t, r.view); len(log) >= offset && strings.Contains(log[offset:], line) {
+			return
+		}
+		if time.Now().After(deadline) || !sleepCtx(ctx, time.Second) {
+			t.Fatalf("attestor log %s has no line containing %q after byte %d", r.view.logPath, line, offset)
+		}
+	}
+}
+
 func (r *faultRoute) verifyAt(ctx context.Context, header l2Header) (*attestorpb.VerifyStateRootResponse, error) {
 	mode, _ := runModeForHead(r.head)
 	key, err := decodeLivePublicKey(r.env.publicKey)
@@ -504,6 +527,7 @@ func (r *faultRoute) assertReplicaOutage(t *testing.T, ctx context.Context) {
 		failureMetric = "spectre_arbitrum_attestor_runtime_refresh_failures_total"
 	}
 	failuresBefore := r.metric(t, ctx, failureMetric)
+	logMark := r.logOffset(t)
 	r.replica.down()
 	if r.replicaWS != nil {
 		r.replicaWS.down()
@@ -535,7 +559,7 @@ func (r *faultRoute) assertReplicaOutage(t *testing.T, ctx context.Context) {
 	if r.env.family == familyArbitrum {
 		failureLine = "attestor runtime refresh failed"
 	}
-	waitForLogLine(t, ctx, r.view, failureLine)
+	r.waitForLogLineAfter(t, ctx, logMark, failureLine)
 
 	r.replica.up()
 	r.replicaWS.upIfSet()
@@ -559,6 +583,7 @@ func (r *faultRoute) assertL1Outage(t *testing.T, ctx context.Context) {
 	t.Helper()
 	before := r.waitFrontierAbove(t, ctx, 0)
 	cursorBefore := r.cursor(t)
+	logMark := r.logOffset(t)
 
 	r.l1.down()
 	t.Cleanup(r.l1.up)
@@ -566,6 +591,11 @@ func (r *faultRoute) assertL1Outage(t *testing.T, ctx context.Context) {
 		const failureMetric = "spectre_arbitrum_attestor_assertion_sync_failures_total"
 		failuresBefore := r.metric(t, ctx, failureMetric)
 		failuresDuring := r.waitMetricAbove(t, ctx, failureMetric, failuresBefore)
+		// Re-read the baseline only now. A scan that finished its L1 reads
+		// before the cut may still have persisted the cursor after it. Scans
+		// run one at a time and the counter moves only after a failed scan
+		// returns, so every scan from here on started with L1 already cut.
+		cursorBefore = r.cursor(t)
 		advanced := r.waitFrontierAbove(t, ctx, before.GetL2BlockNumber())
 		if cursor := r.cursor(t); cursor != cursorBefore {
 			// The cursor only moves on a successful scan of finalized L1.
@@ -579,7 +609,7 @@ func (r *faultRoute) assertL1Outage(t *testing.T, ctx context.Context) {
 	}
 
 	// OP exports no L1 failure counter; the failed pass is logged with its cause.
-	waitForLogLine(t, ctx, r.view, "read finalized DisputeGameFactory view")
+	r.waitForLogLineAfter(t, ctx, logMark, "read finalized DisputeGameFactory view")
 	frozen := r.frontier(t, ctx)
 	r.assertFrozen(t, ctx, frozen, r.env.outage)
 	if cursor := r.cursor(t); cursor < cursorBefore {
@@ -602,9 +632,12 @@ func (r *faultRoute) assertWebSocketLoss(t *testing.T, ctx context.Context) {
 		proxy, errorLine = r.replicaWS, "Nitro new" // "subscription ended" and "subscribe ... failed"
 	}
 	before := r.waitFrontierAbove(t, ctx, 0)
+	// On Arbitrum, R1 already cut this socket and logged errorLine, so only a
+	// line written after this cut counts.
+	logMark := r.logOffset(t)
 	proxy.down()
 	t.Cleanup(proxy.up)
-	waitForLogLine(t, ctx, r.view, errorLine)
+	r.waitForLogLineAfter(t, ctx, logMark, errorLine)
 	advanced := r.waitFrontierAbove(t, ctx, before.GetL2BlockNumber())
 
 	proxy.up()

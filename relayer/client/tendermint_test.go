@@ -270,6 +270,12 @@ func TestSpectreClientGenesis_PinsNextValidatorSet(t *testing.T) {
 	if got, want := genesis.TrustedConsensusState.NextValidatorsHash, bytesToBytes32(nextValSet.Hash()); got != want {
 		t.Fatalf("next validators hash: got %X, want %X", got, want)
 	}
+	if got, want := genesis.TrustedConsensusState.Timestamp, big.NewInt(trustedLightBlock.SignedHeader.Header.Time.UnixNano()); got.Cmp(want) != 0 {
+		t.Fatalf("consensus timestamp: got %s, want %s", got, want)
+	}
+	if got, want := genesis.TrustedConsensusState.Root, bytesToBytes32(trustedLightBlock.SignedHeader.Header.AppHash); got != want {
+		t.Fatalf("consensus root: got %X, want %X", got, want)
+	}
 	if !reflect.DeepEqual(genesis.InitialPinnedValidatorSet, nextPinned) {
 		t.Fatal("initial pinned validator set should come from the trusted light block's next validator set")
 	}

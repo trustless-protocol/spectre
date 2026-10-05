@@ -52,12 +52,24 @@ contract DummyMembershipForMisbehaviour is IMembership {
 }
 
 contract DummyUpdateClientForMisbehaviour is IUpdateClient {
-    function verifyHeader(ISpectreClientMsgs.MsgUpdateApplicationState calldata)
+    function verifyHeader(ISpectreClientMsgs.MsgUpdateApplicationState calldata msg_)
         external
         pure
         returns (ISpectreClientMsgs.VerifyHeaderOutput memory)
     {
-        revert("unused");
+        ISpectreTendermintMsgs.Header calldata header = msg_.proposedHeader;
+        return ISpectreClientMsgs.VerifyHeaderOutput({
+            trustedConsensusState: msg_.trustedConsensusState,
+            newConsensusState: ISpectreTendermintMsgs.ConsensusState({
+                timestamp: header.signedHeader.header.time,
+                root: header.signedHeader.header.appHash,
+                nextValidatorsHash: header.signedHeader.header.nextValidatorsHash
+            }),
+            trustedHeight: header.trustedHeight,
+            newHeight: IICS02ClientMsgs.Height({
+                revisionNumber: header.trustedHeight.revisionNumber, revisionHeight: header.signedHeader.header.height
+            })
+        });
     }
 }
 
@@ -231,6 +243,43 @@ contract MisbehaviourTest is Test, ISpectreTendermintMsgs {
         assertEq(mockVerifier.calls(), 2, "freshness must allow proof verification");
     }
 
+    function test_misbehaviour_revertsWhenHistoricalSnapshotHasExpired() public {
+        // Advance the trusted consensus state without re-anchoring the pinned validator set. The
+        // initial snapshot at height 10 then remains the quorum snapshot for evidence at height 20.
+        ConsensusState memory latestConsensus = _advanceApplicationState(20, uint128(block.timestamp) * 1e9);
+
+        // The height-20 consensus state is still trusted, while its validator snapshot at height 10
+        // is just outside the trusting period. `time` is deliberately fresh to isolate the snapshot.
+        vm.warp(uint256(TRUSTED_TIME_NANOS / 1e9) + clientState_.trustingPeriod + 1);
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        uint128 headerTime = uint128(block.timestamp) * 1e9;
+        msg_.misbehaviour.header1 =
+            _headerAtTrustedHeightAndTime(_buildHeader(25, bytes32(uint256(0xAAA1))), 20, headerTime);
+        msg_.misbehaviour.header2 =
+            _headerAtTrustedHeightAndTime(_buildHeader(25, bytes32(uint256(0xAAA2))), 20, headerTime);
+        msg_.trustedConsensusState1 = latestConsensus;
+        msg_.trustedConsensusState2 = latestConsensus;
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                ISpectreClientErrors.InsufficientTrustingPeriod.selector, uint128(3601), uint128(3600)
+            )
+        );
+        lightClient.misbehaviour(abi.encode(msg_));
+
+        assertFalse(_isFrozen(lightClient), "expired historical snapshot must not freeze");
+        assertEq(mockVerifier.calls(), 0, "expired snapshot must not reach verifier");
+    }
+
+    function test_misbehaviour_acceptsSnapshotJustInsideTrustingPeriod() public {
+        vm.warp(uint256(TRUSTED_TIME_NANOS / 1e9) + clientState_.trustingPeriod - 1);
+
+        lightClient.misbehaviour(abi.encode(_buildValidMisbehaviourMsg()));
+
+        assertTrue(_isFrozen(lightClient), "snapshot just inside trusting period must be accepted");
+        assertEq(mockVerifier.calls(), 2, "valid near-boundary evidence must reach verifier");
+    }
+
     function test_misbehaviour_rejectsSpoofedTrustedOverlapForNonAdjacentHeaders() public {
         ValidatorSet memory attackerValSet = _attackerValidatorSet();
         ValidatorSet memory spoofedTrustedValSet = _trustedValidatorSetWithSpoofedAddresses();
@@ -354,6 +403,32 @@ contract MisbehaviourTest is Test, ISpectreTendermintMsgs {
         );
     }
 
+    function _advanceApplicationState(
+        uint64 newHeight,
+        uint128 consensusTimestamp
+    )
+        internal
+        returns (ConsensusState memory latestConsensus)
+    {
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_;
+        msg_.proposedHeader = _headerAtTrustedHeightAndTime(
+            _buildHeader(newHeight, bytes32(uint256(0xBBBB))),
+            clientState_.latestHeight.revisionHeight,
+            consensusTimestamp
+        );
+        msg_.trustedConsensusState = consensusState_;
+        msg_.time = uint128(block.timestamp) * 1e9;
+        msg_.proof = _proof(3);
+
+        lightClient.updateApplicationState(abi.encode(msg_));
+
+        latestConsensus = ConsensusState({
+            timestamp: consensusTimestamp,
+            root: msg_.proposedHeader.signedHeader.header.appHash,
+            nextValidatorsHash: msg_.proposedHeader.signedHeader.header.nextValidatorsHash
+        });
+    }
+
     function _proof(uint256 activeCount) internal view returns (ISpectreClientMsgs.BatchProof memory proof_) {
         return _proofForValidatorSet(valset_, activeCount);
     }
@@ -385,7 +460,14 @@ contract MisbehaviourTest is Test, ISpectreTendermintMsgs {
         return state.isFrozen;
     }
 
-    function _buildHeader(uint64 height, bytes32 lastBlockIdHash) internal view returns (ISpectreTendermintMsgs.Header memory) {
+    function _buildHeader(
+        uint64 height,
+        bytes32 lastBlockIdHash
+    )
+        internal
+        view
+        returns (ISpectreTendermintMsgs.Header memory)
+    {
         return _buildHeaderWithSets(height, lastBlockIdHash, valset_, valset_);
     }
 
@@ -442,6 +524,21 @@ contract MisbehaviourTest is Test, ISpectreTendermintMsgs {
             IICS02ClientMsgs.Height({ revisionNumber: 0, revisionHeight: 10 });
 
         return ISpectreTendermintMsgs.Header({ signedHeader: signedHeader, trustedHeight: trustedHeight });
+    }
+
+    function _headerAtTrustedHeightAndTime(
+        ISpectreTendermintMsgs.Header memory header,
+        uint64 trustedHeight,
+        uint128 timestamp
+    )
+        internal
+        pure
+        returns (ISpectreTendermintMsgs.Header memory)
+    {
+        header.trustedHeight.revisionHeight = trustedHeight;
+        header.signedHeader.header.time = timestamp;
+        header.signedHeader.commit.blockId.hashData = HeaderLib.hashHeader(header.signedHeader.header);
+        return header;
     }
 
     function _attackerValidatorSet() internal pure returns (ValidatorSet memory validatorSet) {

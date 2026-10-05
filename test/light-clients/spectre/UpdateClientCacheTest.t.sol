@@ -70,6 +70,32 @@ contract UpdateClientCacheTest is Test {
         }
     }
 
+    function test_getConsensusStateHash_returnsTrustedStateHash() public {
+        ISpectreTendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        ISpectreTendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
+
+        assertEq(ics07.getConsensusStateHash(TRUSTED_HEIGHT), keccak256(abi.encode(trustedCS)));
+    }
+
+    function test_getConsensusStateHash_revertsAtUnstoredHeight() public {
+        ISpectreTendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        SpectreClient ics07 = _deployLightClient(_trustedConsensus(pinned), pinned);
+
+        vm.expectRevert(ISpectreClientErrors.ConsensusStateNotFound.selector);
+        ics07.getConsensusStateHash(TRUSTED_HEIGHT - 1);
+    }
+
+    function test_getConsensusStateHash_returnsUpdatedStateHash() public {
+        ISpectreTendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        ISpectreTendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _buildMsg(trustedCS, pinned, 3);
+
+        ics07.updateApplicationState(abi.encode(msg_));
+        assertEq(ics07.getConsensusStateHash(HEIGHT_1001), keccak256(abi.encode(_consensusFromMsg(msg_))));
+    }
+
     function test_constructor_reverts_whenGenesisPinnedSetMismatchesConsensusState() public {
         ISpectreTendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
         ISpectreTendermintMsgs.ValidatorSet memory other = _buildValSet(4, 100);

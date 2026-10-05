@@ -47,13 +47,14 @@ var (
 	errZeroAssertionL2BlockHash = errors.New("assertion has zero L2 block hash")
 )
 
-// L1Client is the finalized Ethereum RPC surface required by RollupCoreSource.
+// L1Client is the Ethereum RPC surface required by RollupCoreSource.
 type L1Client interface {
 	HeaderByNumber(context.Context, *big.Int) (*types.Header, error)
 	ChainID(context.Context) (*big.Int, error)
 	FilterLogs(context.Context, ethereum.FilterQuery) ([]types.Log, error)
 	CallContract(context.Context, ethereum.CallMsg, *big.Int) ([]byte, error)
 	StorageAt(context.Context, common.Address, common.Hash, *big.Int) ([]byte, error)
+	StorageAtHash(context.Context, common.Address, common.Hash, common.Hash) ([]byte, error)
 }
 
 // ConfirmedAssertion is one finalized-L1 AssertionConfirmed event.
@@ -63,9 +64,17 @@ type ConfirmedAssertion struct {
 	L1BlockNumber uint64
 }
 
-// AssertionSource is the testable finalized-L1 RollupCore input consumed by
-// the attestation loop.
+// L1Block identifies a fixed Ethereum snapshot.
+type L1Block struct {
+	Number uint64
+	Hash   common.Hash
+}
+
+// AssertionSource is the testable RollupCore input consumed by the attestation loop.
 type AssertionSource interface {
+	Head(context.Context, arbitrum.L1IngestHead) (L1Block, error)
+	CanonicalHash(context.Context, uint64) (common.Hash, error)
+	AssertionStatusAtHash(context.Context, arbitrum.ProposedAssertion, common.Hash) (uint8, error)
 	FinalizedBlockNumber(context.Context) (uint64, error)
 	ChainIDs(context.Context, uint64) (*big.Int, *big.Int, error)
 	Assertions(
@@ -77,7 +86,7 @@ type AssertionSource interface {
 }
 
 // RollupCoreSource reads a single Arbitrum RollupCore contract through an L1
-// execution RPC. Every log query and status read is pinned to finalized L1.
+// execution RPC. The caller selects fixed block numbers or hashes for reads.
 type RollupCoreSource struct {
 	client                L1Client
 	address               common.Address
@@ -128,6 +137,51 @@ func (s *RollupCoreSource) FinalizedBlockNumber(ctx context.Context) (uint64, er
 	return header.Number.Uint64(), nil
 }
 
+// Head resolves a tag once; callers must not repeatedly read a moving tag.
+func (s *RollupCoreSource) Head(ctx context.Context, head arbitrum.L1IngestHead) (L1Block, error) {
+	head, err := head.Normalize()
+	if err != nil {
+		return L1Block{}, err
+	}
+	tag := rpc.FinalizedBlockNumber
+	switch head {
+	case arbitrum.L1IngestSafe:
+		tag = rpc.SafeBlockNumber
+	case arbitrum.L1IngestLatest:
+		tag = rpc.LatestBlockNumber
+	}
+	header, err := s.client.HeaderByNumber(ctx, big.NewInt(int64(tag)))
+	if err != nil {
+		return L1Block{}, fmt.Errorf("query %s L1 head: %w", head, err)
+	}
+	if header == nil || header.Number == nil || !header.Number.IsUint64() {
+		return L1Block{}, fmt.Errorf("%s L1 head has invalid block number", head)
+	}
+	return L1Block{Number: header.Number.Uint64(), Hash: header.Hash()}, nil
+}
+
+// CanonicalHash returns the current canonical Ethereum hash at the given height.
+func (s *RollupCoreSource) CanonicalHash(ctx context.Context, number uint64) (common.Hash, error) {
+	header, err := s.client.HeaderByNumber(ctx, new(big.Int).SetUint64(number))
+	if err != nil {
+		return common.Hash{}, fmt.Errorf("query canonical L1 block %d: %w", number, err)
+	}
+	if header == nil || header.Number == nil || !header.Number.IsUint64() || header.Number.Uint64() != number {
+		return common.Hash{}, fmt.Errorf("canonical L1 block %d has invalid header", number)
+	}
+	return header.Hash(), nil
+}
+
+// AssertionStatusAtHash pins speculative status reads to the ingest snapshot.
+func (s *RollupCoreSource) AssertionStatusAtHash(ctx context.Context, proposal arbitrum.ProposedAssertion, hash common.Hash) (uint8, error) {
+	preimage := append(proposal.AssertionHash.Bytes(), s.assertionsMappingSlot.Bytes()...)
+	output, err := s.client.StorageAtHash(ctx, s.address, crypto.Keccak256Hash(preimage), hash)
+	if err != nil {
+		return 0, fmt.Errorf("query assertion %s status at L1 hash %s: %w", proposal.AssertionHash, hash, err)
+	}
+	return s.decodeAssertionStatus(proposal.AssertionHash, output)
+}
+
 // ChainIDs returns the connected Ethereum L1 chain ID and RollupCore's
 // configured Arbitrum L2 chain ID at the supplied finalized L1 block.
 func (s *RollupCoreSource) ChainIDs(
@@ -159,7 +213,7 @@ func (s *RollupCoreSource) ChainIDs(
 }
 
 // Assertions reads and validates AssertionCreated and AssertionConfirmed logs
-// from one inclusive finalized-L1 block range.
+// from one inclusive L1 block range.
 func (s *RollupCoreSource) Assertions(
 	ctx context.Context,
 	fromL1Block uint64,
@@ -192,7 +246,7 @@ func (s *RollupCoreSource) Assertions(
 	for _, event := range logs {
 		if event.Removed {
 			return nil, nil, fmt.Errorf(
-				"finalized RollupCore log at L1 block %d was marked removed",
+				"RollupCore log at L1 block %d was marked removed",
 				event.BlockNumber,
 			)
 		}
@@ -250,6 +304,10 @@ func (s *RollupCoreSource) AssertionStatus(
 	if err != nil {
 		return 0, fmt.Errorf("query assertion %s status: %w", assertionHash, err)
 	}
+	return s.decodeAssertionStatus(assertionHash, output)
+}
+
+func (s *RollupCoreSource) decodeAssertionStatus(assertionHash common.Hash, output []byte) (uint8, error) {
 	if len(output) != abiWordSize {
 		return 0, fmt.Errorf(
 			"assertion %s status slot returned %d bytes, want %d",
