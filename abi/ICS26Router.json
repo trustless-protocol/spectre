@@ -1719,12 +1719,28 @@
         "name": "expectedModuleId",
         "type": "bytes32",
         "internalType": "bytes32"
+      },
+      {
+        "name": "actualModuleId",
+        "type": "bytes32",
+        "internalType": "bytes32"
       }
     ]
   },
   {
     "type": "error",
     "name": "IBCClientMigrationModuleMissing",
+    "inputs": [
+      {
+        "name": "module",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "IBCClientMigrationModuleNotResponding",
     "inputs": [
       {
         "name": "module",

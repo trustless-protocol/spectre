@@ -97,10 +97,43 @@ contract ICS02ClientTest is Test {
             abi.encodeWithSelector(
                 IICS02ClientErrors.IBCClientMigrationModuleMismatch.selector,
                 address(clientMigrationExecutor),
-                ClientMigrationModuleIds.PROPOSER
+                ClientMigrationModuleIds.PROPOSER,
+                ClientMigrationModuleIds.EXECUTOR
             )
         );
         new ICS26Router(address(clientMigrationExecutor), address(clientMigrationExecutor));
+    }
+
+    function test_constructorRejectsWrongExecutorModule() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCClientMigrationModuleMismatch.selector,
+                address(clientMigrationProposer),
+                ClientMigrationModuleIds.EXECUTOR,
+                ClientMigrationModuleIds.PROPOSER
+            )
+        );
+        new ICS26Router(address(clientMigrationProposer), address(clientMigrationProposer));
+    }
+
+    function test_constructorRejectsModuleWithoutModuleId() public {
+        NoModuleIdContract unrelated = new NoModuleIdContract();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCClientMigrationModuleNotResponding.selector, address(unrelated)
+            )
+        );
+        new ICS26Router(address(unrelated), address(clientMigrationExecutor));
+    }
+
+    function test_constructorRejectsModuleWithMalformedModuleId() public {
+        MalformedModuleIdContract malformed = new MalformedModuleIdContract();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IICS02ClientErrors.IBCClientMigrationModuleNotResponding.selector, address(malformed)
+            )
+        );
+        new ICS26Router(address(clientMigrationProposer), address(malformed));
     }
 
     function test_success_customClientId() public {
@@ -552,5 +585,21 @@ contract ICS02ClientTest is Test {
         vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedUnauthorized.selector, unauthorized));
         vm.prank(unauthorized);
         ics02Client.updateApplicationState(clientIdentifier, updateMsg);
+    }
+}
+
+/// @dev A contract with code but no `moduleId()`: the staticcall reverts.
+contract NoModuleIdContract {
+    uint256 public value;
+}
+
+/// @dev Answers `moduleId()` with 64 bytes instead of a single `bytes32`.
+contract MalformedModuleIdContract {
+    fallback() external {
+        assembly ("memory-safe") {
+            mstore(0, 0)
+            mstore(32, 0)
+            return(0, 64)
+        }
     }
 }
