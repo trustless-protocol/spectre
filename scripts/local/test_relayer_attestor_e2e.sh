@@ -119,8 +119,13 @@ cleanup() {
     if [ "$STATUS" -ne 0 ] || [ "${KEEP_EVIDENCE:-0}" = 1 ]; then
         target=${EVIDENCE_DIR:-$REPO_ROOT/.attestor-e2e-evidence}/$STAMP-$ROUTE-relayer
         mkdir -p "$target"
-        find "$WORK_DIR" -maxdepth 2 -type f \( -name '*.log' -o -name '*.json' \) \
-            ! -path '*/gaia-recv/*' -exec cp {} "$target/" \; 2>/dev/null || true
+        # Keep the per-daemon layout: every attestor writes attestor.log,
+        # config.json, and attested-roots.json under its own name, and the
+        # relayer trackers live under .spectre-state/<identity>/. The receiver
+        # keyring and its mnemonic stay out.
+        (cd "$WORK_DIR" && find . -type f \( -name '*.log' -o -name '*.json' \) \
+            ! -path './gaia-recv/*' ! -name gaia-recv.json -print0 |
+            tar -cf - --null -T -) | tar -xf - -C "$target" 2>/dev/null || true
         log "evidence preserved in $target"
     fi
     rm -rf "$WORK_DIR"
@@ -187,11 +192,22 @@ start_attestor() {
     done
 }
 
+# forget_pid <pid>: drop a process this script already reaped, so cleanup
+# never signals a pid the OS may have handed to something else.
+forget_pid() {
+    local kept=() pid
+    for pid in "${PIDS[@]:-}"; do
+        [ -z "$pid" ] || [ "$pid" = "$1" ] || kept+=("$pid")
+    done
+    PIDS=("${kept[@]:-}")
+}
+
 stop_attestor() {
     local pid
     pid=$(cat "$WORK_DIR/$1/pid")
     kill "$pid" 2>/dev/null || true
     wait "$pid" 2>/dev/null || true
+    forget_pid "$pid"
 }
 
 # public_key_b64 <name>: the base64 key the daemon logs at startup.
@@ -273,7 +289,7 @@ export RELAYER_QUORUM_E2E_WRONG_HEAD=127.0.0.1:$(port 8)
 export RELAYER_QUORUM_E2E_UNREACHABLE=127.0.0.1:$(port 10)
 
 log "running the quorum and startup-validation suites"
-(cd relayer && go test -count=1 -timeout 30m -v \
+(cd relayer && go test -race -count=1 -timeout 30m -v \
     -run '^(TestLiveAttestorQuorumE2E|TestLiveAttestorStartupValidationE2E)$' \
     ./chain/l2rollup/ ./cmd/) 2>&1 | tee "$WORK_DIR/go-test.log" ||
     fail "quorum/startup suites failed"
@@ -322,24 +338,39 @@ relayer_config() {
         '(.modules[] | select(.config.attestor_endpoints != null) | .config.attestor_endpoints) = [{address: $endpoint, attestor_index: 0}]' \
         "$RELAYER_CONFIG" >"$2"
 }
+# The L2 source logs this once it has seeded its scan cursor: the relayer
+# passed startup validation and is polling the L2 router.
+RELAYER_READY='[l2->cosmos Subscribe] polling ICS26Router'
 RELAYER_PID=
 start_relayer() {
-    local config=$1 logfile=$2
+    local config=$1 logfile=$2 deadline=$((SECONDS + 120))
     (cd relayer && exec "$WORK_DIR/relayer" start --config "$config") >"$logfile" 2>&1 &
     RELAYER_PID=$!
     PIDS+=("$RELAYER_PID")
-    sleep 15
-    if ! kill -0 "$RELAYER_PID" 2>/dev/null; then
-        tail -n 30 "$logfile" >&2
-        grep -qi lock "$logfile" && fail "relayer refused to boot on a held signer lock: stop the shared relayer first"
-        fail "relayer exited during startup"
-    fi
+    until grep -qF "$RELAYER_READY" "$logfile"; do
+        if ! kill -0 "$RELAYER_PID" 2>/dev/null; then
+            tail -n 30 "$logfile" >&2
+            grep -qi lock "$logfile" && fail "relayer refused to boot on a held signer lock: stop the shared relayer first"
+            fail "relayer exited during startup"
+        fi
+        [ "$SECONDS" -lt "$deadline" ] || { tail -n 30 "$logfile" >&2; fail "relayer did not start polling the L2 within 120s"; }
+        sleep 2
+    done
 }
 stop_relayer() {
     [ -n "$RELAYER_PID" ] || return 0
     kill "$RELAYER_PID" 2>/dev/null || true
     wait "$RELAYER_PID" 2>/dev/null || true
+    forget_pid "$RELAYER_PID"
     RELAYER_PID=
+}
+
+# to_dec <value>: cast --json prints quantities as 0x-hex; accept decimal too.
+to_dec() {
+    case "$1" in
+        0x* | 0X*) echo $((16#${1#0x})) ;;
+        *) echo $(($1)) ;;
+    esac
 }
 
 # A throwaway Cosmos receiver: its voucher balance is the relay signal.
@@ -365,13 +396,17 @@ send_packet() {
         --private-key "$ETH_PRIVATE_KEY" --rpc-url "$L2_RPC_URL" --json | jq -r '.transactionHash'
 }
 
-# no_relay_for <duration> <what>: the receiver balance must not move.
+# no_relay_for <duration> <expected> <what>: the receiver balance must stay at
+# <expected> for the whole window. The expectation is absolute, not a sample
+# taken after the relayer started: a relay inside its startup would otherwise
+# become the baseline and pass both this check and the wait that follows.
 no_relay_for() {
-    local seconds=${1%s} before
-    before=$(received)
-    local deadline=$((SECONDS + seconds))
-    while [ "$SECONDS" -lt "$deadline" ]; do
-        [ "$(received)" = "$before" ] || fail "$2: a packet was relayed although it must not be"
+    local seconds=${1%s} expected=$2 deadline balance
+    deadline=$((SECONDS + seconds))
+    while :; do
+        balance=$(received)
+        [ "$balance" = "$expected" ] || fail "$3: receiver balance is $balance, want $expected; a packet was relayed although it must not be"
+        [ "$SECONDS" -lt "$deadline" ] || return 0
         sleep 5
     done
 }
@@ -388,9 +423,10 @@ P_GRPC=$(port 0) P_METRICS=$(port 1) I_GRPC=$(port 6) I_METRICS=$(port 7)
 log "P3: relayer asks only an imposter (key not pinned in the wasm client)"
 start_attestor packet-imposter "$(new_seed)" "$HEAD_KIND" "$I_GRPC" "$I_METRICS"
 relayer_config "127.0.0.1:$I_GRPC" "$WORK_DIR/relayer-imposter.json"
+no_relay_for 0 0 "P3 fresh receiver"
 start_relayer "$WORK_DIR/relayer-imposter.json" "$WORK_DIR/relayer-p3.log"
 TX1=$(send_packet 100)
-no_relay_for "$PACKET_OBSERVE" "P3 invalid quorum"
+no_relay_for "$PACKET_OBSERVE" 0 "P3 invalid quorum"
 grep -q "attestor signature does not verify" "$WORK_DIR/relayer-p3.log" ||
     fail "P3: relayer log has no signature rejection"
 stop_relayer
@@ -398,9 +434,19 @@ stop_attestor packet-imposter
 log "EVIDENCE P3: packet $TX1 not relayed for $PACKET_OBSERVE; relayer rejected the imposter signature (log: relayer-p3.log)"
 
 log "P2: relayer asks the pinned attestor while it is down, then it starts"
+# A fresh relayer finds TX1 only through its startup lookback. Size that
+# window from TX1's own block instead of relying on the default, and check
+# the scan really starts at or below it.
+TX1_BLOCK=$(to_dec "$(cast receipt "$TX1" --json --rpc-url "$L2_RPC_URL" | jq -r '.blockNumber')")
+TX1_TIME=$(to_dec "$(cast block "$TX1_BLOCK" --json --rpc-url "$L2_RPC_URL" | jq -r '.timestamp')")
+export L2_STARTUP_LOOKBACK=$(($(date +%s) - TX1_TIME + 300))s
 relayer_config "127.0.0.1:$P_GRPC" "$WORK_DIR/relayer-pinned.json"
+no_relay_for 0 0 "P2 before start"
 start_relayer "$WORK_DIR/relayer-pinned.json" "$WORK_DIR/relayer-p2.log"
-no_relay_for "$PACKET_OBSERVE" "P2 attestor down"
+SCAN_FROM=$(grep -F "$RELAYER_READY" "$WORK_DIR/relayer-p2.log" | sed -n 's/.* from block \([0-9]*\) .*/\1/p' | head -n 1)
+[ -n "$SCAN_FROM" ] && [ "$SCAN_FROM" -le "$TX1_BLOCK" ] ||
+    fail "P2: relayer scans from block ${SCAN_FROM:-?}, after TX1's block $TX1_BLOCK (L2_STARTUP_LOOKBACK=$L2_STARTUP_LOOKBACK)"
+no_relay_for "$PACKET_OBSERVE" 0 "P2 attestor down"
 start_attestor packet-pinned "$DEVNET_SIGNING_KEY" "$HEAD_KIND" "$P_GRPC" "$P_METRICS"
 P2_START=$SECONDS
 wait_balance 100

@@ -185,6 +185,9 @@ func TestLiveAttestorQuorumE2E(t *testing.T) {
 	})
 
 	t.Run("Q4_invalid_signatures_never_count", func(t *testing.T) {
+		// The imposter started after the members. Until its replica reaches the
+		// build height it answers "behind" (transient), not with a signature.
+		waitAttestedAtLeast(t, ctx, dial(env.imposter), env, height)
 		// Two imposters leave one valid signer: no retry can reach 2, so the
 		// relayer must give up permanently instead of waiting forever.
 		header, buildErr := build(t, env.members[0], env.imposter, env.imposter)
@@ -209,6 +212,9 @@ func TestLiveAttestorQuorumE2E(t *testing.T) {
 
 	t.Run("Q5_wrong_head_member_cannot_complete_a_quorum", func(t *testing.T) {
 		_, verifyErr := dial(env.wrongHead).VerifyStateRoot(ctx, verificationRequest(t, ctx, l2, env, height))
+		if verifyErr == nil {
+			t.Fatalf("wrong-head member answered a %s request; it must refuse a run mode it does not gate on", env.head)
+		}
 		header, buildErr := build(t, env.members[0], env.unreachable, env.wrongHead)
 		requireNoHeader(t, header, buildErr)
 		evidence(t, "wrong-head member refused the run mode (%v); with one other member down the quorum failed %s: %v",
@@ -290,6 +296,22 @@ func waitQuorumFrontier(t *testing.T, ctx context.Context, frontier l2rollup.Att
 		select {
 		case <-ctx.Done():
 			t.Fatalf("member quorum never reported a frontier (last error: %v)", err)
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// waitAttestedAtLeast blocks until one attestor's own frontier reaches height.
+func waitAttestedAtLeast(t *testing.T, ctx context.Context, client *attestorgrpc.Client, env quorumEnv, height uint64) {
+	t.Helper()
+	for {
+		root, found, err := client.AttestedUpTo(ctx, env.srcChain, env.head != l2rollup.Finalized)
+		if err == nil && found && root.GetL2BlockNumber() >= height {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("attestor never attested L2 block %d (last error: %v)", height, err)
 		case <-time.After(2 * time.Second):
 		}
 	}
