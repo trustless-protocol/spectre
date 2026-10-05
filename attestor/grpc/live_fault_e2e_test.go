@@ -428,16 +428,19 @@ func (r *faultRoute) waitFrontierAbove(t *testing.T, ctx context.Context, height
 // waitServing waits for health to report SERVING. The host refreshes health on
 // its own poll (attestor/host/host.go defaultHealthPoll), so the frontier can
 // appear before the first refresh that sees a ready route. The bound is a few
-// polls: a daemon that stays NOT_SERVING still fails.
+// polls: a daemon that stays NOT_SERVING still fails. Every Check runs under
+// the same bounded context, so a listener that accepts but never answers
+// cannot hold the call open until the suite deadline.
 func (r *faultRoute) waitServing(t *testing.T, ctx context.Context) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	waitCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
 	for {
-		response, err := r.health.Check(ctx, &healthpb.HealthCheckRequest{})
+		response, err := r.health.Check(waitCtx, &healthpb.HealthCheckRequest{})
 		if err == nil && response.GetStatus() == healthpb.HealthCheckResponse_SERVING {
 			return
 		}
-		if time.Now().After(deadline) || !sleepCtx(ctx, 500*time.Millisecond) {
+		if !sleepCtx(waitCtx, 500*time.Millisecond) {
 			t.Fatalf("health = %v (%v), want SERVING once the replica has been seen", response.GetStatus(), err)
 		}
 	}
