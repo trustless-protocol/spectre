@@ -226,6 +226,13 @@ test-attestor-e2e route="op":
 test-attestor-lifecycle-e2e route="op" phase="all":
 	scripts/local/test_attestor_lifecycle_e2e.sh {{route}} {{phase}}
 
+# Run the attestor fault-recovery suite: disposable attestors behind TCP fault
+# proxies (replica, L1 RPC, WebSocket outages; SIGTERM/SIGKILL restarts;
+# replica lag). The devnet itself is never stopped.
+[group('test')]
+test-attestor-fault-e2e route="op":
+	scripts/local/test_attestor_fault_e2e.sh {{route}}
+
 # Run any e2e test using the test's full name. For example, `just test-e2e TestWithEthCosmosTestSuite/Test_Deploy`
 #
 # ETH_TESTNET_TYPE=pos picks the Kurtosis PoS network (with beacon API), which is what
