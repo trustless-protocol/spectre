@@ -222,10 +222,9 @@ func spectreClientGenesisFromLightBlock(trustedLightBlock *LightBlock, unbonding
 		ClockDrift:      clockDrift,
 	}
 
-	consensusState := updateClientContract.ISpectreTendermintMsgsConsensusState{
-		Timestamp:          big.NewInt(trustedLightBlock.SignedHeader.Header.Time.UnixNano()),
-		Root:               bytesToBytes32(trustedLightBlock.SignedHeader.Header.AppHash),
-		NextValidatorsHash: bytesToBytes32(trustedLightBlock.SignedHeader.NextValidatorsHash),
+	consensusState, err := ConsensusStateFromLightBlock(trustedLightBlock)
+	if err != nil {
+		return nil, err
 	}
 
 	initialPinnedValidatorSet, err := ValidatorSetToContract(trustedLightBlock.NextValSet, "initial pinned")
@@ -239,6 +238,23 @@ func spectreClientGenesisFromLightBlock(trustedLightBlock *LightBlock, unbonding
 		InitialPinnedValidatorSet: initialPinnedValidatorSet,
 	}
 	return &genesis, nil
+}
+
+// ConsensusStateFromLightBlock reconstructs the Spectre consensus state committed by a
+// CometBFT light block. Its ABI encoding is the value SpectreClient hashes and stores for
+// the corresponding revision height.
+func ConsensusStateFromLightBlock(
+	lightBlock *LightBlock,
+) (updateClientContract.ISpectreTendermintMsgsConsensusState, error) {
+	if lightBlock == nil {
+		return updateClientContract.ISpectreTendermintMsgsConsensusState{}, fmt.Errorf("light block is nil")
+	}
+
+	return updateClientContract.ISpectreTendermintMsgsConsensusState{
+		Timestamp:          big.NewInt(lightBlock.SignedHeader.Header.Time.UnixNano()),
+		Root:               bytesToBytes32(lightBlock.SignedHeader.Header.AppHash),
+		NextValidatorsHash: bytesToBytes32(lightBlock.SignedHeader.NextValidatorsHash),
+	}, nil
 }
 
 func GetUnbondingTime(client *rpchttp.HTTP) (float64, error) {

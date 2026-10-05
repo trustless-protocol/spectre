@@ -7,10 +7,12 @@ import (
 	"log"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"attestor/types/attestation"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/ethclient"
 	"go.uber.org/zap"
 
 	"relayer/chain"
@@ -180,32 +182,33 @@ func l2RouterFromProfile(profile json.RawMessage) (common.Address, error) {
 // buildL2ToCosmosModule constructs one L2->Cosmos relay module: an l2rollup Source
 // (gated on the attestor), a Cosmos Destination hosting the L2 wasm client, the
 // per-L2 header builder, and timeout recovery through the matching Cosmos->L2
-// SpectreClient/ICS26Router return path. It returns the module and a cleanup that
+// SpectreClient/ICS26Router return path. It returns the module, the paired
+// Cosmos->L2 timeout recovery callbacks, and a cleanup that
 // closes the dialed clients. The caller runs module.Run(ctx) on its own goroutine.
 // stateDir may be empty, which keeps the scan cursor in memory only. `start`
 // always supplies one; the tests do not.
-func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler services.TransactionHandler, timeoutReturn l2TimeoutReturnPath, stateDir string) (*relay.Module, func(), error) {
+func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler services.TransactionHandler, timeoutReturn l2TimeoutReturnPath, stateDir string) (*relay.Module, services.L2TimeoutRecovery, func(), error) {
 	// Before anything dials: a retired env key that silently sizes nothing is the
 	// failure NFR 10 forbids. Checked here rather than globally because the key
 	// only ever affected this path, so a deployment without an l2_to_cosmos
 	// module has nothing to correct.
 	if err := l2rollup.RejectRetiredLookbackEnv(); err != nil {
-		return nil, nil, err
+		return nil, services.L2TimeoutRecovery{}, nil, err
 	}
 	headKind, err := parseHeadKind(cfg.HeadKind)
 	if err != nil {
-		return nil, nil, err
+		return nil, services.L2TimeoutRecovery{}, nil, err
 	}
 	router, err := l2RouterFromProfile(cfg.RollupProfile)
 	if err != nil {
-		return nil, nil, err
+		return nil, services.L2TimeoutRecovery{}, nil, err
 	}
 	if err := timeoutReturn.validate(); err != nil {
-		return nil, nil, err
+		return nil, services.L2TimeoutRecovery{}, nil, err
 	}
 	chainID, err := l2ChainIDFromProfile(cfg.RollupProfile)
 	if err != nil {
-		return nil, nil, fmt.Errorf("l2_to_cosmos config: %w", err)
+		return nil, services.L2TimeoutRecovery{}, nil, fmt.Errorf("l2_to_cosmos config: %w", err)
 	}
 	includeProvisional, warning := resolveIncludeProvisional(headKind, cfg.IncludeProvisional)
 	if warning != "" {
@@ -219,22 +222,22 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	if stateDir != "" {
 		recoveryState, err = services.LoadRecoveryState(filepath.Join(stateDir, services.RecoveryCursorsFileName))
 		if err != nil {
-			return nil, nil, fmt.Errorf("load L2 recovery state: %w", err)
+			return nil, services.L2TimeoutRecovery{}, nil, fmt.Errorf("load L2 recovery state: %w", err)
 		}
 	}
 
 	l2, err := relayerclient.DialEthRPC(context.Background(), cfg.L2RpcUrl, relayerclient.DefaultRPCTimeout)
 	if err != nil {
-		return nil, nil, fmt.Errorf("dial L2 rpc: %w", err)
+		return nil, services.L2TimeoutRecovery{}, nil, fmt.Errorf("dial L2 rpc: %w", err)
 	}
 	cosmosClient, err := relayerclient.DialCosmosRPC(cfg.TmRpcUrl, "/websocket", relayerclient.DefaultRPCTimeout)
 	if err != nil {
 		l2.Close()
-		return nil, nil, fmt.Errorf("create Cosmos rpc client: %w", err)
+		return nil, services.L2TimeoutRecovery{}, nil, fmt.Errorf("create Cosmos rpc client: %w", err)
 	}
 	if err := cosmosClient.Start(); err != nil {
 		l2.Close()
-		return nil, nil, fmt.Errorf("start Cosmos rpc client: %w", err)
+		return nil, services.L2TimeoutRecovery{}, nil, fmt.Errorf("start Cosmos rpc client: %w", err)
 	}
 	attestors := make([]*attestorgrpc.Client, 0, len(cfg.AttestorEndpoints))
 	signingAttestors := make([]l2rollup.SigningAttestor, 0, len(cfg.AttestorEndpoints))
@@ -248,7 +251,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 			for _, opened := range attestors {
 				_ = opened.Close()
 			}
-			return nil, nil, fmt.Errorf("dial attestor index %d (%s): %w", endpoint.AttestorIndex, endpoint.Address, err)
+			return nil, services.L2TimeoutRecovery{}, nil, fmt.Errorf("dial attestor index %d (%s): %w", endpoint.AttestorIndex, endpoint.Address, err)
 		}
 		attestors = append(attestors, attestor)
 		signingAttestors = append(signingAttestors, l2rollup.SigningAttestor{Index: endpoint.AttestorIndex, Client: attestor})
@@ -272,7 +275,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		for _, opened := range attestors {
 			_ = opened.Close()
 		}
-		return nil, nil, err
+		return nil, services.L2TimeoutRecovery{}, nil, err
 	}
 	frontier, err := l2rollup.NewQuorumAttestationFrontier(signingAttestors, cfg.Attestors.Threshold)
 	if err != nil {
@@ -283,7 +286,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		for _, opened := range attestors {
 			_ = opened.Close()
 		}
-		return nil, nil, err
+		return nil, services.L2TimeoutRecovery{}, nil, err
 	}
 	trackL2Pending, untrackL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
 	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, frontier, includeProvisional).
@@ -348,7 +351,53 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 			}
 		}
 	}
-	return module, cleanup, nil
+	timeoutRecovery := newL2TimeoutRecovery(cfg, headerBuilder, frontier, l2, router, includeProvisional)
+	return module, timeoutRecovery, cleanup, nil
+}
+
+// newL2TimeoutRecovery binds the Cosmos->L2 timeout scanner to the same
+// attestors, L2 router, and wasm client as the L2->Cosmos relay. Reusing this
+// construction is essential: a timeout proof is accepted only against the
+// exact attested block whose update is included in its Cosmos transaction.
+func newL2TimeoutRecovery(cfg l2ToCosmosConfig, headerBuilder l2rollup.HeaderBuilder, frontier l2rollup.AttestationFrontier, l2 *ethclient.Client, router common.Address, includeProvisional bool) services.L2TimeoutRecovery {
+	return services.L2TimeoutRecovery{
+		ClientID: cfg.L2WasmClientID,
+		BuildUpdate: func(stdCtx context.Context) (services.L2TimeoutUpdate, error) {
+			ctx, cancel := context.WithTimeout(stdCtx, 90*time.Second)
+			defer cancel()
+			root, found, err := frontier.AttestedUpTo(ctx, cfg.AttestorSrcChain, includeProvisional)
+			if err != nil {
+				return services.L2TimeoutUpdate{}, fmt.Errorf("attested L2 frontier: %w", err)
+			}
+			if !found || root == nil || root.GetL2BlockNumber() == 0 {
+				return services.L2TimeoutUpdate{}, fmt.Errorf("attestor has no relayable L2 height for %q", cfg.AttestorSrcChain)
+			}
+			requestedHeight := root.GetL2BlockNumber()
+			msg, committedHeight, err := headerBuilder.BuildHeader(ctx, l2rollup.HeaderRequest{Height: requestedHeight})
+			if err != nil {
+				return services.L2TimeoutUpdate{}, fmt.Errorf("attested L2 header at %d: %w", requestedHeight, err)
+			}
+			if committedHeight != requestedHeight {
+				return services.L2TimeoutUpdate{}, fmt.Errorf("attested L2 header committed height %d, want %d", committedHeight, requestedHeight)
+			}
+			payload, err := msg.EncodeClientMessage()
+			if err != nil {
+				return services.L2TimeoutUpdate{}, fmt.Errorf("encode attested L2 header at %d: %w", committedHeight, err)
+			}
+			trusted, ok := msg.(interface{ TrustedAt() time.Time })
+			if !ok {
+				return services.L2TimeoutUpdate{}, fmt.Errorf("attested L2 header at %d does not report its timestamp", committedHeight)
+			}
+			timestamp := trusted.TrustedAt().Unix()
+			if timestamp <= 0 {
+				return services.L2TimeoutUpdate{}, fmt.Errorf("attested L2 header at %d has invalid timestamp %d", committedHeight, timestamp)
+			}
+			return services.L2TimeoutUpdate{Payload: payload, Height: committedHeight, Timestamp: uint64(timestamp)}, nil
+		},
+		BuildNonMembershipProof: func(ctx context.Context, packet channeltypesv2.Packet, height uint64) ([]byte, error) {
+			return l2rollup.NonMembershipProof(ctx, l2, router, packet, height)
+		},
+	}
 }
 
 // resolveIncludeProvisional applies the documented default while retaining the

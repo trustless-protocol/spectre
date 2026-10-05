@@ -70,8 +70,8 @@ esac
 
 # Older Arbitrum handoffs predate ATTESTOR_PUBLIC_KEY. The local identity is
 # public test data and is exactly what run_arbitrum_node.sh uses when no key was
-# supplied by the caller; do not overwrite an explicit handoff identity.
-if [ -z "${ATTESTOR_PUBLIC_KEY:-}" ]; then
+# supplied by the caller; do not overwrite either handoff or E2E override data.
+if [ -z "${ATTESTOR_PUBLIC_KEY:-}" ] && [ -z "${ATTESTOR_E2E_PUBLIC_KEY:-}" ]; then
     if [ -n "${ATTESTOR_SIGNING_KEY:-}" ]; then
         printf 'ERROR: ATTESTOR_SIGNING_KEY is set but the handoff has no ATTESTOR_PUBLIC_KEY. Set ATTESTOR_E2E_PUBLIC_KEY explicitly.\n' >&2
         exit 1

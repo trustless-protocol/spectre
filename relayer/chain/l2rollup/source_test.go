@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
 )
@@ -309,6 +310,40 @@ func TestL2StorageProof(t *testing.T) {
 		}
 		if got.Value[31] != 0x2a {
 			t.Fatalf("value = %v, want the slot contents left-padded", got.Value)
+		}
+	})
+}
+
+func TestL2NonMembershipProof(t *testing.T) {
+	dial := func(t *testing.T, srv *httptest.Server) *ethclient.Client {
+		t.Helper()
+		c, err := ethclient.Dial(srv.URL)
+		if err != nil {
+			t.Fatalf("dial stub: %v", err)
+		}
+		t.Cleanup(c.Close)
+		return c
+	}
+	packet := channeltypesv2.Packet{DestinationClient: "op-client-0", Sequence: 12}
+
+	t.Run("empty receipt is encoded as the L2 wasm storage proof", func(t *testing.T) {
+		raw, err := NonMembershipProof(context.Background(), dial(t, l2ProofServer(t, "0x0")), ethcommon.Address{}, packet, 99)
+		if err != nil {
+			t.Fatalf("build L2 non-membership proof: %v", err)
+		}
+		var got EvmStorageProof
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Fatalf("decode proof: %v", err)
+		}
+		if len(got.Key) != 32 || len(got.Value) != 0 || len(got.Proof) == 0 {
+			t.Fatalf("proof = %+v, want a keyed empty-value L2 storage proof", got)
+		}
+	})
+
+	t.Run("written receipt is not timed out", func(t *testing.T) {
+		_, err := NonMembershipProof(context.Background(), dial(t, l2ProofServer(t, "0x2a")), ethcommon.Address{}, packet, 99)
+		if !errors.Is(err, relayerclient.ErrPacketAlreadyReceived) {
+			t.Fatalf("error = %v, want ErrPacketAlreadyReceived", err)
 		}
 	})
 }

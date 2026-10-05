@@ -45,4 +45,12 @@ interface ISpectreClient {
     ///      state (updateApplicationState).
     /// @return The pinned validators hash.
     function getPinnedValidatorsHash() external view returns (bytes32);
+
+    /// @notice Returns the hash of the consensus state trusted at `revisionHeight`.
+    /// @dev Reverts when the client has no consensus state at that height.
+    ///      This lets an operator verify that a live chain still matches the state this client
+    ///      stored before reusing the client after a restart.
+    /// @param revisionHeight The Cosmos revision height of the trusted consensus state.
+    /// @return The `keccak256(abi.encode(consensusState))` stored by the client.
+    function getConsensusStateHash(uint64 revisionHeight) external view returns (bytes32);
 }

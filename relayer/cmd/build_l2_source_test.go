@@ -1,6 +1,7 @@
 package main
 
 import (
+	attestorpb "attestor/types/attestor"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -12,8 +13,10 @@ import (
 	"relayer/services"
 	"strings"
 	"testing"
+	"time"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	"github.com/ethereum/go-ethereum/common"
 )
 
 func validL2Config() l2ToCosmosConfig {
@@ -193,6 +196,54 @@ func TestResolveIncludeProvisional(t *testing.T) {
 				t.Fatalf("resolveIncludeProvisional() = (%v, %q), want (%v, %q)", gotInclude, gotWarning, tc.wantInclude, tc.wantWarning)
 			}
 		})
+	}
+}
+
+type timeoutRecoveryFrontier struct {
+	root       *attestorpb.AttestedRoot
+	gotChain   string
+	gotInclude bool
+}
+
+func (f *timeoutRecoveryFrontier) AttestedUpTo(_ context.Context, srcChain string, includeProvisional bool) (*attestorpb.AttestedRoot, bool, error) {
+	f.gotChain = srcChain
+	f.gotInclude = includeProvisional
+	return f.root, true, nil
+}
+
+type timeoutRecoveryMessage struct{ at time.Time }
+
+func (m timeoutRecoveryMessage) EncodeClientMessage() ([]byte, error) {
+	return []byte(`{"type":"header"}`), nil
+}
+func (m timeoutRecoveryMessage) TrustedAt() time.Time { return m.at }
+
+type timeoutRecoveryHeaderBuilder struct{ requested uint64 }
+
+func (b *timeoutRecoveryHeaderBuilder) Name() string { return "test-attestor" }
+func (b *timeoutRecoveryHeaderBuilder) BuildHeader(_ context.Context, request l2rollup.HeaderRequest) (l2rollup.ClientMessage, uint64, error) {
+	b.requested = request.Height
+	return timeoutRecoveryMessage{at: time.Unix(1_700_000_000, 0)}, request.Height, nil
+}
+
+func TestNewL2TimeoutRecovery_UsesAttestedFrontier(t *testing.T) {
+	cfg := validL2Config()
+	frontier := &timeoutRecoveryFrontier{root: &attestorpb.AttestedRoot{L2BlockNumber: 88}}
+	builder := &timeoutRecoveryHeaderBuilder{}
+	recovery := newL2TimeoutRecovery(cfg, builder, frontier, nil, common.Address{}, false)
+
+	update, err := recovery.BuildUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("build timeout update: %v", err)
+	}
+	if frontier.gotChain != cfg.AttestorSrcChain || frontier.gotInclude {
+		t.Fatalf("frontier query = chain=%q include_provisional=%t, want %q false", frontier.gotChain, frontier.gotInclude, cfg.AttestorSrcChain)
+	}
+	if builder.requested != 88 || update.Height != 88 || update.Timestamp != 1_700_000_000 {
+		t.Fatalf("attested update = requested=%d height=%d timestamp=%d, want 88/88/1700000000", builder.requested, update.Height, update.Timestamp)
+	}
+	if recovery.ClientID != cfg.L2WasmClientID || string(update.Payload) != `{"type":"header"}` || recovery.BuildNonMembershipProof == nil {
+		t.Fatalf("recovery = %+v, want paired wasm client, header payload, and L2 proof callback", recovery)
 	}
 }
 

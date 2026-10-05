@@ -167,6 +167,22 @@ requires two independently authenticated, conflicting headers before the client 
 
 ## Packet proofs
 
+Arbitrum's `l1_ingest_head` selects the L1 snapshot used to discover assertions
+(`finalized` by default; opt-in `safe` or `latest`). It is independent of
+`attestation_head`, which selects the Nitro L2 signing/derived-root head, and
+`include_provisional`, which controls the frontier the relayer may use. Early
+assertions remain provisional until finalized L1 confirmation and a successful
+Nitro-finalized check. OP game ingestion currently uses finalized L1 evidence.
+
+Neither the signed header nor the Wasm consensus state carries `provisional`,
+assertion provenance or an L1 ingest head. The Wasm client trusts its active
+attestor set for block identity. Relaying early provisional assertions therefore
+accepts L1 reorg risk as well as challenge risk: withdrawing an assertion from
+the off-chain feed does not revoke a stored Cosmos root or reverse packet
+processing. Conflicting same-height updates are rejected; freezing requires
+explicit authenticated misbehaviour. No Wasm protocol change is implied by
+early L1 ingestion.
+
 Membership and non-membership load the exact stored L2 consensus height and verify a bounded
 `EvmStorageProof` against its authenticated router storage root and configured commitment mapping
 slot. Delay values other than zero fail closed.
