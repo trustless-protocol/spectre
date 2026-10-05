@@ -117,10 +117,7 @@ func TestLiveAttestorFaultRecoveryE2E(t *testing.T) {
 
 	if !t.Run("R0_baseline", func(t *testing.T) {
 		frontier := route.waitFrontierAbove(t, ctx, 0)
-		response, err := route.health.Check(ctx, &healthpb.HealthCheckRequest{})
-		if err != nil || response.GetStatus() != healthpb.HealthCheckResponse_SERVING {
-			t.Fatalf("health = %v (%v), want SERVING once the replica has been seen", response.GetStatus(), err)
-		}
+		route.waitServing(t, ctx)
 		evidence(t, "frontier %d (%s), health SERVING", frontier.GetL2BlockNumber(), frontier.GetSource())
 	}) {
 		return
@@ -424,6 +421,24 @@ func (r *faultRoute) waitFrontierAbove(t *testing.T, ctx context.Context, height
 		}
 		if !sleepCtx(ctx, 2*time.Second) {
 			t.Fatalf("frontier did not advance past %d before %v\n%s", height, ctx.Err(), tailFile(r.view.logPath, 30))
+		}
+	}
+}
+
+// waitServing waits for health to report SERVING. The host refreshes health on
+// its own poll (attestor/host/host.go defaultHealthPoll), so the frontier can
+// appear before the first refresh that sees a ready route. The bound is a few
+// polls: a daemon that stays NOT_SERVING still fails.
+func (r *faultRoute) waitServing(t *testing.T, ctx context.Context) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		response, err := r.health.Check(ctx, &healthpb.HealthCheckRequest{})
+		if err == nil && response.GetStatus() == healthpb.HealthCheckResponse_SERVING {
+			return
+		}
+		if time.Now().After(deadline) || !sleepCtx(ctx, 500*time.Millisecond) {
+			t.Fatalf("health = %v (%v), want SERVING once the replica has been seen", response.GetStatus(), err)
 		}
 	}
 }
