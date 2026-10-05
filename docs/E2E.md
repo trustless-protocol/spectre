@@ -768,7 +768,7 @@ Several L2s can still be created in one run:
 ```
 
 The `--l2-config` file carries the full ICS-08 profile (see
-[docs/L2_CLIENTS.md](L2_CLIENTS.md#l2-client-creation-config)). For the
+[docs/L2_CLIENTS.md](L2_CLIENTS.md#creation-and-profile)). For the
 attestor-trusted clients `rollup_profile.common` is five keys — `l2_chain_id`,
 `l2_router`, `commitment_slot`, `profile_version`, and `l2_header_fork` — and nothing
 else; an unknown key fails `instantiate` on the Rust side. `profile_version` must match
