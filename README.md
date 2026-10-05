@@ -1,4 +1,4 @@
-# fast-ibc
+# Spectre
 
 A ZK light client that lets Ethereum follow Tendermint consensus, and the Go
 relayer and prover that feed it. A purpose-built gnark Groth16 circuit
@@ -94,7 +94,7 @@ replace (
 - `third_party/ecip-gnark` → [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) — Ed25519 in-circuit ops + the `garaga_rs` Rust FFI.
 - `third_party/decentrio-gnark` → [`decentrio/gnark`](https://github.com/decentrio/gnark) — fork of consensys/gnark v0.13.0 with hash-aggregate verifier tweaks.
 
-fast-ibc stores only a **pinned commit** of each fork (a submodule pointer), not
+This repository stores only a **pinned commit** of each fork (a submodule pointer), not
 their files.
 
 #### First checkout
@@ -102,7 +102,7 @@ their files.
 Clone with submodules, or initialise them in an existing clone:
 
 ```bash
-git clone --recurse-submodules https://github.com/decentrio/fast-ibc
+git clone --recurse-submodules https://github.com/decentrio/spectre
 # or, after a plain clone:
 git submodule update --init --recursive
 ```
@@ -120,23 +120,24 @@ Without `submodule update --init`, `go build ./...` under `relayer/` fails with
 `replacement directory ../third_party/ecip-gnark does not exist`; without the
 built FFI it fails at link with `library 'garaga_rs' not found`.
 
-> **CI:** the fork repos are **private**, so the `Go` and `E2E (manual)`
-> workflows check the submodules out with a `SUBMODULE_TOKEN` secret (a
-> fine-grained PAT with read access to `decentrio/gnark` + `decentrio/ecip-gnark`)
-> and build `libgaraga_rs` before `go build`. See `.github/workflows/go.yml`.
-
 ### Build and test
 
 ```bash
 bun install                  # Solidity dependencies (never npm/yarn)
-just build-contracts         # forge build
 just build-go-relayer        # go build ./... in relayer/
-just build-prover-artifacts  # compile circuits into relayer/bin/n{N}/ and emit the verifiers
+just build-prover-artifacts  # compile circuits into relayer/bin/n{N}/ and emit contracts/verifiers/
+just build-contracts         # forge build — needs the generated verifier (see below)
 
 just test-foundry            # all Solidity tests
 just test-go-relayer         # all Go relayer tests
 just lint                    # solidity + go + buf (`just lint-rust` is separate)
 ```
+
+The order matters on a fresh clone. `contracts/verifiers/Groth16Verifier_N4.sol`
+is produced by `just build-prover-artifacts` and is not checked in, while the
+deploy scripts (`scripts/E2ETestDeploy.s.sol`, `scripts/E2ETestDeployL2.s.sol`)
+and two integration tests import it. Until it exists, `just build-contracts`
+stops with `Source "contracts/verifiers/Groth16Verifier_N4.sol" not found`.
 
 `just --list` shows every recipe, including the per-L2 wasm builds, the
 attestor sidecars, and Slither.
@@ -166,32 +167,37 @@ the production AccessManager deployment scripts. It documents the governance
 timelock requirement, the escrow launch gate, and the scheduled light-client
 provisioning flow.
 
-## Updating the gnark forks
+## One relay path per process
 
-Develop in the fork repos themselves and push there as usual — fast-ibc only
-pins a commit, so do **not** edit inside `third_party/` and forget to push the
-fork (CI fetches by SHA and an unpushed commit fails checkout). When a fork has
-changes fast-ibc should pick up, bump the pinned commit:
+`start` serves exactly one source→destination path and refuses a config declaring
+more than one, so any real deployment runs several processes side by side.
+
+**Give each `start` process its own `COSMOS_PRIVATE_KEY`.** Every path writes to
+Cosmos — even a Cosmos→L2 path that appears to write only to the L2, because its
+timeout scanner refunds expired Cosmos-origin packets on Cosmos. Two processes
+sharing a key share an account sequence with nothing coordinating them, and the
+loser of that race can have a single-packet transaction dropped, stranding the
+transfer in escrow until it times out.
+
+`ETH_PRIVATE_KEY` is a weaker rule: nonces are tracked per `{chain id, address}`,
+so a Cosmos↔Ethereum process (L1) and a Cosmos↔L2 process (L2) can share one key.
+Only processes writing the **same** EVM chain need separate ones.
+
+Set them per process rather than editing `relayer/.env` — `godotenv` does not
+override an already-set variable:
 
 ```bash
-# pull the tracked branch's latest into the submodule…
-git submodule update --remote third_party/ecip-gnark
-#   …or pin an exact commit/tag:
-#   cd third_party/ecip-gnark && git fetch && git checkout <sha-or-tag> && cd -
-
-git add third_party/ecip-gnark      # stage the new pointer
-git commit -m "chore: bump ecip-gnark to <sha>"
-git push                            # the PR diff is just a one-line submodule pointer
+COSMOS_PRIVATE_KEY=$KEY_ETH_PATH ./relayer start --config config.json &
+COSMOS_PRIVATE_KEY=$KEY_OP_PATH  ./relayer start --config config.op.json &
 ```
 
-- fast-ibc builds against the **pinned** commit, not your in-progress fork work, until you push + bump. For a tight fork↔fast-ibc co-development loop, temporarily point the `go.mod` replace at a local clone (e.g. `=> ../../ecip-gnark`) and do **not** commit that change; revert + bump when stable.
-- After someone else bumps, run `git submodule update --init --recursive` to sync your local tree.
+Full reasoning, including the one other command that shares the Cosmos key:
+[docs/E2E.md](docs/E2E.md#signing-keys-when-several-processes-share-a-chain).
 
 ## Optional GPU proving
 
-CPU proving remains the default. GPU proving is opt-in and follows the
-`test/gnark-gpu` approach: build with `-tags=icicle`, then enable the ICICLE
-backend via env or flag when needed.
+CPU proving remains the default. GPU proving is opt-in: build with
+`-tags=icicle`, then enable the ICICLE backend via env or flag when needed.
 
 Build requirements for the GPU path:
 
@@ -254,33 +260,6 @@ startup with errors such as `library 'icicle_device' not found`. In that case,
 ensure ICICLE shared libraries are installed and `LD_LIBRARY_PATH` covers the
 directory containing the `libicicle_*` files.
 
-### One relay path per process
-
-`start` serves exactly one source→destination path and refuses a config declaring
-more than one, so any real deployment runs several processes side by side.
-
-**Give each `start` process its own `COSMOS_PRIVATE_KEY`.** Every path writes to
-Cosmos — even a Cosmos→L2 path that appears to write only to the L2, because its
-timeout scanner refunds expired Cosmos-origin packets on Cosmos. Two processes
-sharing a key share an account sequence with nothing coordinating them, and the
-loser of that race can have a single-packet transaction dropped, stranding the
-transfer in escrow until it times out.
-
-`ETH_PRIVATE_KEY` is a weaker rule: nonces are tracked per `{chain id, address}`,
-so a Cosmos↔Ethereum process (L1) and a Cosmos↔L2 process (L2) can share one key.
-Only processes writing the **same** EVM chain need separate ones.
-
-Set them per process rather than editing `relayer/.env` — `godotenv` does not
-override an already-set variable:
-
-```bash
-COSMOS_PRIVATE_KEY=$KEY_ETH_PATH ./relayer start --config config.json &
-COSMOS_PRIVATE_KEY=$KEY_OP_PATH  ./relayer start --config config.op.json &
-```
-
-Full reasoning, including the one other command that shares the Cosmos key:
-[docs/E2E.md](docs/E2E.md#signing-keys-when-several-processes-share-a-chain).
-
 ## Benchmark mode
 
 Detailed per-step gas + timing logs are off by default (production noise) and
@@ -295,7 +274,7 @@ RELAYER_BENCHMARK=1 ./relayer start --config config.json
 ```
 
 Either source turns it on; flag is the override. The relayer logs
-`[benchmark] enabled: detailed gas/timing logs are active` at startup so it's
+`[bench] enabled: detailed gas/timing logs are active` at startup so it's
 obvious which mode you're in.
 
 When enabled, the relayer emits the following lines so a single E2E run can be
@@ -315,9 +294,9 @@ proxy → impl wrapper frame, and logs one `inner[i]` line per direct child of
 the multicall body. Sample output:
 
 ```
-[bench][eth] multicall labels=updateApplicationState,recvPacket:1 gasUsed=3322538 ...
-[bench][eth] inner[0] updateApplicationState gas=2491085 (from trace)
-[bench][eth] inner[1] recvPacket:1 gas=833989 (from trace)
+[bench] eth multicall labels=updateApplicationState,recvPacket:1 gasUsed=3322538 ...
+[bench] eth inner[0] updateApplicationState gas=2491085 (from trace)
+[bench] eth inner[1] recvPacket:1 gas=833989 (from trace)
 ```
 
 `gas=... (from trace)` is the **real on-chain gasUsed** of that inner CALL,
@@ -337,7 +316,3 @@ continues — the rest of the benchmark output is unaffected.
 
 `utils.SetBenchEnabled(true|false)` lets tests force the flag without touching
 env. Definitions live in `relayer/utils/bench.go`.
-
-## License
-
-MIT

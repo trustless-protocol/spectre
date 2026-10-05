@@ -10,6 +10,30 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 )
 
+func TestL1IngestHeadValidationAndDefault(t *testing.T) {
+	for _, head := range []L1IngestHead{"", L1IngestFinalized, L1IngestSafe, L1IngestLatest} {
+		config := validDaemonConfig(t)
+		config.L1IngestHead = head
+		if err := config.Validate(); err != nil {
+			t.Fatalf("head %q: %v", head, err)
+		}
+		got, err := head.Normalize()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if head == "" && got != L1IngestFinalized {
+			t.Fatal("omitted head must default to finalized")
+		}
+	}
+	for _, head := range []L1IngestHead{"unsafe", "SAFE", " safe", "unknown"} {
+		config := validDaemonConfig(t)
+		config.L1IngestHead = head
+		if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "l1_ingest_head") {
+			t.Fatalf("head %q accepted: %v", head, err)
+		}
+	}
+}
+
 func TestLoadDaemonConfigResolvesStatePathAndLoadsNitroEndpoints(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "attestor.json")
@@ -18,6 +42,7 @@ func TestLoadDaemonConfigResolvesStatePathAndLoadsNitroEndpoints(t *testing.T) {
 		"metrics_listen_address":"127.0.0.1:9090",
 		"runtime_poll_interval":"2s",
 		"attestation_head":"unsafe",
+		"l1_ingest_head":"safe",
 		"disable_derived_roots":true,
 		"derived_attestation_gap_blocks":12,
 		"max_derived_roots":34,
@@ -43,6 +68,9 @@ func TestLoadDaemonConfigResolvesStatePathAndLoadsNitroEndpoints(t *testing.T) {
 	config, err := LoadDaemonConfig(path)
 	if err != nil {
 		t.Fatalf("load daemon config: %v", err)
+	}
+	if config.L1IngestHead != L1IngestSafe {
+		t.Fatalf("L1 ingest head: %s", config.L1IngestHead)
 	}
 	if config.AttestorStatePath != filepath.Join(dir, "data", "attested-roots.json") {
 		t.Fatalf("attestor state path: got %q", config.AttestorStatePath)

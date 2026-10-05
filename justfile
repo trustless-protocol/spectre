@@ -66,11 +66,6 @@ build-cw-ics08-wasm-l2-native:
 capture-l2-fixture config out:
 	cd relayer && go run ./l2fixtures/cmd -config {{config}} -out ../{{out}}
 
-# Build the relayer docker image
-[group('build')]
-build-relayer-image:
-    docker build -t spectre-relayer:latest -f programs/relayer/Dockerfile .
-
 # Install the Go relayer for use in the e2e tests.
 # Builds with an explicit -o name because the package dir is `cmd/`, so a plain
 # `go install ./cmd/...` would land at $GOPATH/bin/cmd, not $GOPATH/bin/relayer.
@@ -210,6 +205,28 @@ test-arbitrum-attestor:
 test-attestor:
 	@echo "Running Optimism attestor tests..."
 	cd attestor/optimism && go test -v ./...
+
+# Run the non-destructive live attestor suite against an already-running local
+# sidecar. route is one of op, base, or arbitrum; the helper sources its
+# attestor.env and deliberately does not start/stop or reconfigure the stack.
+[group('test')]
+test-attestor-e2e route="op":
+	scripts/local/test_attestor_e2e.sh {{route}}
+
+# Run the long-running attestor feed-lifecycle suite against an ISOLATED route:
+# the helper starts its own attestor (temporary state, separate ports) beside
+# the running devnet and removes it afterwards. phase is provisional,
+# finalized, or all.
+[group('test')]
+test-attestor-lifecycle-e2e route="op" phase="all":
+	scripts/local/test_attestor_lifecycle_e2e.sh {{route}} {{phase}}
+
+# Run the attestor fault-recovery suite: disposable attestors behind TCP fault
+# proxies (replica, L1 RPC, WebSocket outages; SIGTERM/SIGKILL restarts;
+# replica lag). The devnet itself is never stopped.
+[group('test')]
+test-attestor-fault-e2e route="op":
+	scripts/local/test_attestor_fault_e2e.sh {{route}}
 
 # Run any e2e test using the test's full name. For example, `just test-e2e TestWithEthCosmosTestSuite/Test_Deploy`
 #
