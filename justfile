@@ -228,6 +228,14 @@ test-attestor-lifecycle-e2e route="op" phase="all":
 test-attestor-fault-e2e route="op":
 	scripts/local/test_attestor_fault_e2e.sh {{route}}
 
+# Run the attestor divergence drills (#533) on isolated routes: an invalid
+# on-chain OP game (permanent on L1), and provisional corrections driven by a
+# replica-RPC interposer. route is op or arbitrum; drill is invalid-game (op),
+# correction, or all.
+[group('test')]
+test-attestor-divergence-e2e route="op" drill="all":
+	scripts/local/test_attestor_divergence_e2e.sh {{route}} {{drill}}
+
 # Run any e2e test using the test's full name. For example, `just test-e2e TestWithEthCosmosTestSuite/Test_Deploy`
 #
 # ETH_TESTNET_TYPE=pos picks the Kurtosis PoS network (with beacon API), which is what

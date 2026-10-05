@@ -144,15 +144,35 @@ func TestLiveAttestorFaultRecoveryE2E(t *testing.T) {
 }
 
 func loadFaultEnv() (faultEnv, bool, error) {
-	family := strings.TrimSpace(os.Getenv(faultFamily))
+	env, enabled, err := loadRouteEnv(faultFamily, faultBinary, faultWorkDir, faultGRPCPort, faultMetrics)
+	if !enabled || err != nil {
+		return env, enabled, err
+	}
+	for name, target := range map[string]*time.Duration{faultTimeout: &env.timeout, faultOutageFor: &env.outage} {
+		if value := strings.TrimSpace(os.Getenv(name)); value != "" {
+			parsed, parseErr := time.ParseDuration(value)
+			if parseErr != nil || parsed <= 0 {
+				return env, true, fmt.Errorf("%s must be a positive duration, got %q", name, value)
+			}
+			*target = parsed
+		}
+	}
+	return env, true, nil
+}
+
+// loadRouteEnv reads the devnet handoff plus the suite-owned daemon settings
+// named by its arguments. The fault and divergence suites both start
+// disposable routes from it; each reads its own timeouts afterwards.
+func loadRouteEnv(familyVar, binaryVar, workDirVar, grpcPortVar, metricsPortVar string) (faultEnv, bool, error) {
+	family := strings.TrimSpace(os.Getenv(familyVar))
 	if family == "" {
 		return faultEnv{}, false, nil
 	}
 	get := func(name string) string { return strings.TrimSpace(os.Getenv(name)) }
 	env := faultEnv{
 		family:         family,
-		binary:         get(faultBinary),
-		workDir:        get(faultWorkDir),
+		binary:         get(binaryVar),
+		workDir:        get(workDirVar),
 		srcChain:       get("SRC_CHAIN"),
 		l1RPC:          get("L1_RPC_URL"),
 		l1WS:           get("L1_WS_URL"),
@@ -171,7 +191,7 @@ func loadFaultEnv() (faultEnv, bool, error) {
 		outage:         20 * time.Second,
 	}
 	required := map[string]string{
-		faultBinary: env.binary, faultWorkDir: env.workDir, "SRC_CHAIN": env.srcChain,
+		binaryVar: env.binary, workDirVar: env.workDir, "SRC_CHAIN": env.srcChain,
 		"L1_RPC_URL": env.l1RPC, "L1_CHAIN_ID": env.l1ChainID, "L2_RPC_URL": env.l2RPC,
 		"ATTESTOR_SIGNING_KEY": get("ATTESTOR_SIGNING_KEY"), "ATTESTOR_PUBLIC_KEY": env.publicKey,
 	}
@@ -188,31 +208,22 @@ func loadFaultEnv() (faultEnv, bool, error) {
 		required["ASSERTIONS_MAPPING_SLOT"] = env.assertionsSlot
 		required["ASSERTION_STATUS_OFFSET"] = env.statusOffset
 	default:
-		return env, true, fmt.Errorf("%s = %q, want op, base, or arbitrum", faultFamily, family)
+		return env, true, fmt.Errorf("%s = %q, want op, base, or arbitrum", familyVar, family)
 	}
 	for name, value := range required {
 		if value == "" {
-			return env, true, fmt.Errorf("%s is required for the %s fault suite", name, family)
+			return env, true, fmt.Errorf("%s is required for the %s route", name, family)
 		}
 	}
 	var err error
 	if env.l2ChainID, err = strconv.ParseUint(get("L2_CHAIN_ID"), 10, 64); err != nil || env.l2ChainID == 0 {
 		return env, true, fmt.Errorf("L2_CHAIN_ID must be a positive integer, got %q", get("L2_CHAIN_ID"))
 	}
-	if env.grpcPort, err = strconv.Atoi(get(faultGRPCPort)); err != nil {
-		return env, true, fmt.Errorf("%s: %w", faultGRPCPort, err)
+	if env.grpcPort, err = strconv.Atoi(get(grpcPortVar)); err != nil {
+		return env, true, fmt.Errorf("%s: %w", grpcPortVar, err)
 	}
-	if env.metricsPort, err = strconv.Atoi(get(faultMetrics)); err != nil {
-		return env, true, fmt.Errorf("%s: %w", faultMetrics, err)
-	}
-	for name, target := range map[string]*time.Duration{faultTimeout: &env.timeout, faultOutageFor: &env.outage} {
-		if value := get(name); value != "" {
-			parsed, parseErr := time.ParseDuration(value)
-			if parseErr != nil || parsed <= 0 {
-				return env, true, fmt.Errorf("%s must be a positive duration, got %q", name, value)
-			}
-			*target = parsed
-		}
+	if env.metricsPort, err = strconv.Atoi(get(metricsPortVar)); err != nil {
+		return env, true, fmt.Errorf("%s: %w", metricsPortVar, err)
 	}
 	return env, true, nil
 }
