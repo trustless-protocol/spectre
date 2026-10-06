@@ -481,7 +481,20 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 				continue
 			}
 			next := m.periodicUpdateInterval
-			if err := m.periodicUpdate(ctx); err != nil {
+			err := m.periodicUpdate(ctx)
+			switch {
+			case err == nil:
+				backoff = 0 // success resets the backoff
+			case m.armClientHoldFrom(err):
+				// Refused by an inactive client: the hold owns the cadence from here,
+				// exactly as on the held branch above, instead of a backoff that
+				// keeps paying for reverts.
+				backoff = 0
+				next = min(periodicUpdateBackoffMax, m.periodicUpdateInterval)
+				m.beats.record(workerPeriodicUpdate, "held: destination client not active; next in "+next.String())
+				timer.Reset(next)
+				continue
+			default:
 				// Exponential backoff on repeated failure (1m→15m) so a persistently
 				// failing client-update tx does not resubmit every interval and drain
 				// the signer's gas (the legacy routineBackoff). Never slower than the
@@ -489,8 +502,6 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 				backoff = nextPeriodicUpdateBackoff(backoff)
 				log.Printf("[%s UpdateClient] periodic update: %v; retrying after %s", m.name, err, backoff)
 				next = min(backoff, m.periodicUpdateInterval)
-			} else {
-				backoff = 0 // success resets the backoff
 			}
 			m.beats.record(workerPeriodicUpdate, "next in "+next.String())
 			timer.Reset(next)

@@ -122,6 +122,14 @@ func (m *Module) refreshLoop(ctx context.Context) {
 				continue
 			}
 			if err := m.updateClientTo(ctx, latest); err != nil {
+				// The hold now owns the retry cadence: the next tick skips on
+				// clientStillHeld and probes, and the refresh runs again as soon as
+				// the client is active -- not after a backoff built from reverts.
+				if m.armClientHoldFrom(err) {
+					backoff, retryAt = 0, time.Time{}
+					m.beats.record(workerRefresh, "held: destination client not active")
+					continue
+				}
 				backoff, retryAt = m.refreshFailed(backoff, trustingPeriod, fmt.Sprintf("update to %d", latest), err)
 				lastFailure = "refresh to " + strconv.FormatUint(latest, 10) + " failed: " + err.Error()
 				m.beats.record(workerRefresh, lastFailure)

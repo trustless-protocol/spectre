@@ -173,3 +173,22 @@ func (m *Module) clientStillHeld(ctx context.Context) bool {
 	defer m.batchMu.Unlock()
 	return m.clientHeldOff(ctx, time.Now())
 }
+
+// armClientHoldFrom arms the hold from a loop beside handleBatch -- the expiry
+// refresh or the periodic update -- when its client update was refused by an
+// inactive client. It reports whether it did.
+//
+// Without it a client that freezes on a QUIET path is never held: no batch runs
+// to notice, so clientStillHeld stays false, both loops keep submitting updates
+// that revert on their backoff, and Status never reports HELD.
+//
+// batchMu is taken only on this error, never on the ordinary failure paths.
+func (m *Module) armClientHoldFrom(err error) bool {
+	if !isClientNotActive(err) {
+		return false
+	}
+	m.batchMu.Lock()
+	defer m.batchMu.Unlock()
+	m.noteClientInactive("", err)
+	return true
+}

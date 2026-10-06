@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -235,4 +236,85 @@ func (d *freezingIsolationDest) RelayPackets(_ context.Context, packets []chain.
 	d.relayed = append(d.relayed, packets...)
 	d.frozen = true
 	return 1, nil
+}
+
+// frozenUpdateDest refuses every client update the way a frozen SpectreClient
+// does, and reports a client that is already due for refresh.
+type frozenUpdateDest struct {
+	mockDest
+	updateCalls atomic.Int32
+}
+
+func (d *frozenUpdateDest) UpdateClient(context.Context, string, chain.ClientUpdate) error {
+	d.updateCalls.Add(1)
+	return fmt.Errorf("evm: submit client update: %w", frozenRevert)
+}
+
+func (d *frozenUpdateDest) ClientExpiresAt(context.Context, string) (time.Time, time.Duration, error) {
+	return time.Now(), time.Hour, nil // inside the refresh margin: due now
+}
+
+// A client that freezes after startup on a QUIET path is noticed by the loops
+// that keep running there. Each one must arm the hold on its first refused
+// update and stop submitting, and Status must report HELD without waiting for a
+// packet to reach handleBatch.
+func TestClientHoldArmedByBackgroundUpdates(t *testing.T) {
+	// How long the loop is left running after the hold is armed. Far more than
+	// its fast cadence, far less than the hold's one-minute probe.
+	const settle = 100 * time.Millisecond
+
+	t.Run("refresh", func(t *testing.T) {
+		withFastRefreshTick(t)
+		dst := &frozenUpdateDest{}
+		m := NewModule("cosmos->eth", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done := make(chan struct{})
+		go func() { defer close(done); m.refreshLoop(ctx) }()
+
+		waitFor(t, ctx, func() bool { return m.clientHold.Load() != nil }, "refresh never armed the hold")
+		time.Sleep(settle)
+		cancel()
+		<-done
+
+		if got := dst.updateCalls.Load(); got != 1 {
+			t.Fatalf("refresh must stop after the first refused update, got %d submissions", got)
+		}
+		if got := m.Status(context.Background()).ClientHeld; got == "" {
+			t.Fatal("status must report HELD on a quiet path")
+		}
+	})
+
+	t.Run("periodic update", func(t *testing.T) {
+		var calls atomic.Int32
+		m := NewModule("cosmos->eth", "client-0", &mockSource{latest: 100}, &mockDest{}, &mockBuilder{},
+			WithPeriodicUpdate(time.Millisecond, 0, func(context.Context) error {
+				calls.Add(1)
+				return fmt.Errorf("[RefreshCosmosClient] send tx (hop 0): %w", frozenRevert)
+			}),
+		)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done := make(chan struct{})
+		go func() { defer close(done); m.periodicUpdateLoop(ctx) }()
+
+		waitFor(t, ctx, func() bool { return m.clientHold.Load() != nil }, "periodic update never armed the hold")
+		time.Sleep(settle)
+		cancel()
+		<-done
+
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("periodic update must stop after the first refused rotation, got %d", got)
+		}
+	})
+
+	// Any other failure keeps its own backoff and must not hold the path.
+	t.Run("ordinary failure does not hold", func(t *testing.T) {
+		m := NewModule("cosmos->eth", "client-0", &mockSource{latest: 100}, &mockDest{}, &mockBuilder{})
+		if m.armClientHoldFrom(errors.New("rpc unavailable")) || m.clientHold.Load() != nil {
+			t.Fatal("an ordinary failure must not arm the hold")
+		}
+	})
 }
