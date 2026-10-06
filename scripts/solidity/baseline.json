@@ -124,7 +124,7 @@
     "ICS26Router": {
       "abi_sha256": "9a39b5c6dc96e2534a50af07155d06cc8413577d3c045be8047ddea38b875f3d",
       "runtime_sha256": "4b697b868a77fb88c8c018e5e746bb0bfb4a58c6e6b9d06540efd3a90bdacc47",
-      "initcode_sha256": "3b93893358b401ed3ce6747b652679bc3b09da8912f0c460100d477cfccf4962",
+      "initcode_sha256": "492d3609ad90527b0b44b71b610de4907e5d1f212ca98ff59fa49041645f3b2d",
       "runtime_bytes": 24465,
       "initcode_bytes": 25513
     },
@@ -172,15 +172,15 @@
     },
     "ClientMigrationExecutor": {
       "abi_sha256": "58d3ddae921fa7a3582682215f483fa3b9c67c4b0fb9341d885c9a99036be3ab",
-      "runtime_sha256": "b7e25fb86e4e9140f6f49f9a7cc8aedff74d827e8489758d25b728cc6692df02",
-      "initcode_sha256": "7011f6d8963b9b22b45281a8778deb948a5ad7b67b55c1d8ecd65f81d9545624",
+      "runtime_sha256": "bb6a4e0e22cc5aa481589079bb5401542f490b5401cf4689202dcd03e943d2b3",
+      "initcode_sha256": "1be5b502fc42be58b1cf630e5399611c96caabcdfad05ad43361c2553416a564",
       "runtime_bytes": 3419,
       "initcode_bytes": 3464
     },
     "ClientMigrationProposer": {
       "abi_sha256": "329fd6886c87c94425bc2e9d97127dc71b96aa37539de5a57b95349336769877",
-      "runtime_sha256": "18a4b3b38426e6fb57699c701748929a1a4066e0b3a8b34c01ff2f5805908e97",
-      "initcode_sha256": "2037a5e5d5f4f139cda91ed3b752aa9af89aa1c613ebca9e36f6c59a74768bd8",
+      "runtime_sha256": "6e909bce3f5ede1416f565fbfbba6a6b5d773f95aa2c1ea3feef663b103a7789",
+      "initcode_sha256": "750cc9b864f269dbee22bb8a05c0aefe80cc314da8a79312760b7aef23dd6ca1",
       "runtime_bytes": 3302,
       "initcode_bytes": 3341
     },
