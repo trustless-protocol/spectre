@@ -3,6 +3,9 @@ package services
 import (
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 // ErrPermanentRelayFailure marks a relay failure as deterministic / on-chain:
@@ -148,4 +151,29 @@ func CommittedBeforeFailure(err error) int {
 		return partial.SucceededCount
 	}
 	return 0
+}
+
+// IsEVMRevert reports whether the node executed the call and the contract
+// reverted, as opposed to the call never reaching or never leaving the node.
+//
+// The distinction decides whether a failure is fatal, so it is made on the two
+// signals that mean the EVM ran: a JSON-RPC error carrying revert DATA, or
+// geth's "execution reverted" text for a revert that returned none.
+//
+// Implementing rpc.DataError is NOT one of those signals, even though it is the
+// obvious test. go-ethereum's jsonError satisfies that interface for every
+// JSON-RPC error a node returns, so "header not found" on a pruned node, a
+// -32005 rate limit and a real revert all match it. Treating those as a definite
+// disagreement would refuse to boot against a throttled endpoint — precisely the
+// blip-into-outage this validation must not cause. Only non-nil ErrorData
+// narrows it back to a call that actually executed.
+func IsEVMRevert(err error) bool {
+	if err == nil {
+		return false
+	}
+	var dataErr rpc.DataError
+	if errors.As(err, &dataErr) && dataErr.ErrorData() != nil {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "execution reverted")
 }

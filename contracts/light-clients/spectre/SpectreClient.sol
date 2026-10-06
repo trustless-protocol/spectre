@@ -132,6 +132,12 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     }
 
     /// @inheritdoc ISpectreClient
+    function getPinnedSnapshot() external view returns (uint64 height, uint128 timestamp) {
+        SpectreStore.Store storage $ = SpectreStore.load();
+        return ($.snapshotHeights[$.snapshotHeights.length - 1], $.pinnedTimestamp);
+    }
+
+    /// @inheritdoc ISpectreClient
     function getPinnedValidatorSet()
         external
         view

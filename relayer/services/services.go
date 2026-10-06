@@ -130,9 +130,16 @@ func NewWithPendingState(txHandler TransactionHandler, prover Prover, cosmosConf
 }
 
 // CosmosClientExpiry returns when the on-chain Cosmos SpectreClient expires: the
-// trusted consensus timestamp plus the trusting period. Unlike
-// seedCosmosClientFreshness this is side-effect-free (no timestamp mutation, no
-// logging), so the relay module's refresh routine can poll it periodically.
+// pinned validator-set snapshot's consensus timestamp plus the trusting period.
+// Unlike seedCosmosClientFreshness this is side-effect-free (no timestamp
+// mutation; one log line ever, for a pre-#541 client), so the relay module's
+// refresh routine can poll it periodically.
+//
+// The snapshot, not the latest height, is the anchor: updateApplicationState
+// advances latestHeight without touching the snapshot, so anchoring on the
+// latest header reported a client as healthy for hours after the contract had
+// already started rejecting every update (#541). The snapshot is pinned at or
+// below latestHeight, so its bound is never the looser of the two.
 func CosmosClientExpiry(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint) (time.Time, time.Duration, error) {
 	readCtx, cancelRead := fetchCtx(stdCtx, defaultFetchTimeout)
 	clientState, err := fetchOnChainClientState(readCtx, evm)
@@ -140,6 +147,20 @@ func CosmosClientExpiry(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEn
 	if err != nil {
 		return time.Time{}, 0, err
 	}
+	period := time.Duration(clientState.TrustingPeriod) * time.Second
+
+	snapCtx, cancelSnap := fetchCtx(stdCtx, defaultFetchTimeout)
+	snapshotTime, supported, err := fetchPinnedSnapshotTime(snapCtx, evm)
+	cancelSnap()
+	if err != nil {
+		return time.Time{}, 0, fmt.Errorf("cosmos client expiry: %w", err)
+	}
+	if supported {
+		return tendermintClientExpiry(snapshotTime, clientState.TrustingPeriod), period, nil
+	}
+
+	// Pre-#541 client: no snapshot getter, so the latest height's header time
+	// is the best anchor available.
 	trustedHeight, err := clientStateRevisionHeightInt64(clientState)
 	if err != nil {
 		return time.Time{}, 0, err
@@ -150,13 +171,12 @@ func CosmosClientExpiry(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEn
 	if err != nil {
 		return time.Time{}, 0, fmt.Errorf("cosmos client expiry: trusted light block %d: %w", trustedHeight, err)
 	}
-	period := time.Duration(clientState.TrustingPeriod) * time.Second
 	return tendermintClientExpiry(lightBlock.SignedHeader.Header.Time, clientState.TrustingPeriod), period, nil
 }
 
 // tendermintClientExpiry derives when the Tendermint light client on the EVM side
-// stops accepting updates: the trusting period measured from the TRUSTED HEADER's
-// time, not from now.
+// stops accepting updates: the trusting period measured from the trusted anchor's
+// time (the pinned snapshot, see CosmosClientExpiry), not from now.
 //
 // Measuring from now would report a client as healthy forever, since "now" always
 // moves with the check. The clock that matters belongs to the block the client

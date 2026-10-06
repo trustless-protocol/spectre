@@ -25,6 +25,7 @@ import (
 	"relayer/prover/witness"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	ibcwasmtypes "github.com/cosmos/ibc-go/modules/light-clients/08-wasm/v10/types"
@@ -233,6 +234,60 @@ func getOnChainPinnedValidatorsHash(stdCtx context.Context, ctx EVMEndpoint) ([3
 		return [32]byte{}, fmt.Errorf("failed to create Spectre client instance: %w", err)
 	}
 	return spectre.GetPinnedValidatorsHash(&bind.CallOpts{Context: stdCtx})
+}
+
+// warnNoPinnedSnapshotGetter logs once per process that the deployed
+// SpectreClient predates getPinnedSnapshot, so the refresh loop's per-minute
+// polls do not repeat it.
+var warnNoPinnedSnapshotGetter sync.Once
+
+// fetchPinnedSnapshotTime reads the consensus timestamp of the SpectreClient's
+// current pinned validator-set snapshot. This, not the latest height's header
+// time, is what the contract measures expiry from: both update paths reject the
+// client once the snapshot is a trusting period old, and only
+// updateConsensusState refreshes it (#541).
+//
+// supported=false with a nil error means the call reverted: the client was
+// deployed before getPinnedSnapshot existed (SpectreClient is not proxied), and
+// the caller falls back to the latest height's header time. Any other failure
+// -- the RPC never answered -- is returned, so a node blip is retried rather
+// than silently downgraded to the weaker anchor.
+func fetchPinnedSnapshotTime(stdCtx context.Context, ctx EVMEndpoint) (t time.Time, supported bool, err error) {
+	spectre, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("failed to create Spectre client instance: %w", err)
+	}
+	snapshot, err := spectre.GetPinnedSnapshot(&bind.CallOpts{Context: stdCtx})
+	if err != nil {
+		if IsEVMRevert(err) {
+			warnNoPinnedSnapshotGetter.Do(func() {
+				log.Printf("[UpdateCosmosClient] SpectreClient %s has no getPinnedSnapshot (pre-#541 deployment); "+
+					"client expiry falls back to the latest height's header time, which overestimates it when the "+
+					"pinned set has not rotated since", ctx.SpectreClientContract().Hex())
+			})
+			return time.Time{}, false, nil
+		}
+		return time.Time{}, false, fmt.Errorf("read pinned snapshot: %w", err)
+	}
+	t, err = snapshotTimestampToTime(snapshot.Timestamp)
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("pinned snapshot at height %d: %w", snapshot.Height, err)
+	}
+	return t, true, nil
+}
+
+// snapshotTimestampToTime converts the contract's uint128 nanosecond consensus
+// timestamp. Zero is rejected: the constructor always stores a real one, so a
+// zero read is a wrong contract or a broken node, and treating it as the epoch
+// would report the client as long expired.
+func snapshotTimestampToTime(nanos *big.Int) (time.Time, error) {
+	if nanos == nil || nanos.Sign() <= 0 {
+		return time.Time{}, fmt.Errorf("non-positive timestamp %v", nanos)
+	}
+	if !nanos.IsInt64() {
+		return time.Time{}, fmt.Errorf("timestamp %s overflows int64 nanoseconds", nanos)
+	}
+	return time.Unix(0, nanos.Int64()).UTC(), nil
 }
 
 // FetchOnChainTrustedHeight reads the SpectreClient state on ETH and returns its

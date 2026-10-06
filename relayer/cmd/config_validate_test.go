@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"relayer/rpcmock"
+	"relayer/services"
 	"strings"
 	"testing"
 
@@ -546,8 +547,8 @@ func TestIsEVMRevert_SeparatesExecutionFromTransport(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isEVMRevert(tc.err); got != tc.want {
-				t.Fatalf("isEVMRevert(%v) = %v, want %v", tc.err, got, tc.want)
+			if got := services.IsEVMRevert(tc.err); got != tc.want {
+				t.Fatalf("IsEVMRevert(%v) = %v, want %v", tc.err, got, tc.want)
 			}
 		})
 	}
