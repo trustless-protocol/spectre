@@ -34,7 +34,7 @@ const dummyMagicWidth = DummyMsgLen - 4
 // length up to dummyMagicWidth; a longer value fails to compile below.
 const dummyMagic = "spectre-dummy"
 
-var _ [dummyMagicWidth - len(dummyMagic)]struct{}
+var _ [dummyMagicWidth - len(dummyMagic)]struct{} // compile-time: len(dummyMagic) <= dummyMagicWidth
 
 // dummySeedFmt derives each slot's deterministic keypair seed.
 const dummySeedFmt = "spectre-dummy-seed|bucket=%d|slot=%d"

@@ -60,11 +60,13 @@ func TestPadWithDummies(t *testing.T) {
 }
 
 // DummyMsgLen is the circuit's SHA-512 MinMsgLen, so it is baked into the R1CS
-// and every published verifying key. Changing it needs re-setup + redeploy of
-// every Groth16Verifier_N{N} + setBucket — this pins it so that is never silent.
-func TestDummyMsgLenPinnedToCircuit(t *testing.T) {
+// and every published verifying key. This catches an edit to the constant, so
+// the re-setup + redeploy of every Groth16Verifier_N{N} + setBucket it implies
+// is never silent.
+func TestDummyMsgLenConstantUnchanged(t *testing.T) {
 	if DummyMsgLen != 18 {
-		t.Fatalf("DummyMsgLen = %d, want 18: changing it changes the circuit R1CS", DummyMsgLen)
+		t.Fatalf("DummyMsgLen constant edited to %d, want 18: this changes the circuit R1CS "+
+			"(re-setup + redeploy every Groth16Verifier_N{N} + setBucket)", DummyMsgLen)
 	}
 }
 
