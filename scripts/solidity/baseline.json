@@ -325,7 +325,7 @@
     "abi/ICS26Router.json": "8e4906f8347ad6630aa77cbb74fe907b0ab1666f76fa03fd6f7b73cec8712de8",
     "abi/RelayerHelper.json": "ba955f45976dc81174468654cabb63528a3bb61ba20b7567773f98652b323302",
     "abi/SpectreClient.json": "45ec8ede80e194cb0888731ef6bfaf50e8f9592470997975f05965bbb0dafcd4",
-    "packages/go-abigen/go.mod": "69938d48d439a8837a2486b4cf71ebdcc2c7ed9fe7187989884ad7cdea53b584",
+    "packages/go-abigen/go.mod": "6f993eaad703a3d4cc20f1ef37f9a519b5bdfb7130fccdf4eabf688572552e6f",
     "packages/go-abigen/go.sum": "7c0ae35dedc6fb6b691c557645c435f69b534b217fedb4bc55725b001ad27d94",
     "packages/go-abigen/ibcerc20/contract.go": "d6cdf7b828b7d99fdbb8424eabb7563175b84c9d8cdbb3fcb96a2e74bb896721",
     "packages/go-abigen/ics20transfer/contract.go": "2845c1c1a06d411227c4ca2bbf0adaaffb73151cff9577b204bdd6ae9e0b6713",

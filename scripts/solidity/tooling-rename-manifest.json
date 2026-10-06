@@ -25,6 +25,6 @@
   "consumer_digests": {
     "packages/solidity/src/msgs.rs": "eb59db12e6a4cbef7f6f2fe98f2969bef614363c383056d68c962e107d224cd7",
     "packages/solidity/src/groth16_ics07.rs": "1f421c0c33e1b595149391ac493cca161e6631a3c02bcff1a296ea7271930b64",
-    "e2e/interchaintestv8/testvalues/values.go": "cbd06991cc5d1c666013b9a4868d70e0283d7ee14de546586ed53bebf985f7a7"
+    "e2e/interchaintestv8/testvalues/values.go": "0548f97f872981a0a3fddd861bc5e1eed4d920f9f33aa2011bc126cc0492aeab"
   }
 }
