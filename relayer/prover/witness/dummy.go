@@ -22,7 +22,7 @@ import (
 
 // dummyMagic prefixes every dummy slot's signed-bytes buffer. Full layout:
 // dummyMagic || bucket(2 BE) || slot(2 BE) = 18 bytes.
-const dummyMagic = "spectre-dummy"
+const dummyMagic = "spectre-dummy1"
 
 // dummySeedFmt derives each slot's deterministic keypair seed.
 const dummySeedFmt = "spectre-dummy-seed|bucket=%d|slot=%d"
