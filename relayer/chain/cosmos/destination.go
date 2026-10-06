@@ -16,6 +16,7 @@ import (
 
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	ibcexported "github.com/cosmos/ibc-go/v10/modules/core/exported"
 )
 
 // Destination is the Cosmos implementation of chain.Destination for the ETH->Cosmos
@@ -386,4 +387,21 @@ func ethClientExpiry(cs *relayerclient.EthereumClientState) (time.Time, time.Dur
 	// is measured from.
 	return time.Unix(int64(cs.ComputeTimestampAtSlot(cs.LatestSlot)+periodSecs), 0),
 		time.Duration(periodSecs) * time.Second
+}
+
+// ClientActive asks ibc-go for the client's status. Anything but Active --
+// Frozen or Expired -- is a client that rejects every packet message.
+var _ chain.ClientStatusChecker = (*Destination)(nil)
+
+func (d *Destination) ClientActive(ctx context.Context) (bool, string, error) {
+	if d.cosmos.CosmosClient() == nil {
+		return false, "", fmt.Errorf("cosmos dest: no Cosmos client to query client status on")
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	status, err := relayerclient.GetClientStatus(readCtx, d.cosmos.CosmosClient(), d.clientID)
+	if err != nil {
+		return false, "", fmt.Errorf("cosmos dest: client status: %w", err)
+	}
+	return status == ibcexported.Active.String(), status, nil
 }

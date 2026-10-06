@@ -248,3 +248,16 @@ func NewOneShotWorker(txHandler TransactionHandler, prover Prover) *Worker {
 		awaitProof: submitAndWaitProof,
 	}
 }
+
+// CosmosClientFrozen reports whether the SpectreClient-of-Cosmos on the EVM side
+// is frozen. A frozen client reverts every call with FrozenClientState() until
+// an admin unfreeze() or a client migration.
+func CosmosClientFrozen(stdCtx context.Context, evm EVMEndpoint) (bool, error) {
+	readCtx, cancel := fetchCtx(stdCtx, defaultFetchTimeout)
+	defer cancel()
+	clientState, err := fetchOnChainClientState(readCtx, evm)
+	if err != nil {
+		return false, err
+	}
+	return clientState.IsFrozen, nil
+}

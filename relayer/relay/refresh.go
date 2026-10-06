@@ -75,6 +75,11 @@ func (m *Module) refreshLoop(ctx context.Context) {
 			// failing look the same again, which is the confusion this type
 			// exists to remove -- on the one loop whose liveness matters most
 			// exactly when an endpoint is down.
+			if m.clientStillHeld(ctx) {
+				m.beats.record(workerRefresh, "held: destination client not active")
+				continue
+			}
+
 			expiresAt, trustingPeriod, err := m.dst.ClientExpiresAt(ctx, m.clientID)
 			if err != nil {
 				// Sized by the LAST period this loop read, not by zero.

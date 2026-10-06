@@ -1653,6 +1653,23 @@ func TestValidatorCacheRaceErrorName(t *testing.T) {
 	}
 }
 
+// TestClientNotActiveErrorName pins #402: the replayed revert of a call into a
+// frozen SpectreClient is recognised, so it is held rather than dropped.
+func TestClientNotActiveErrorName(t *testing.T) {
+	selector := errorSelector("FrozenClientState()")
+	name, ok := clientNotActiveErrorName(testDataError{data: "0x" + hex.EncodeToString(selector[:])})
+	if !ok || name != "FrozenClientState" {
+		t.Fatalf("FrozenClientState not recognised: name=%q ok=%v", name, ok)
+	}
+	cacheMiss := errorSelector("ValidatorSetCacheMiss(bytes32)")
+	if _, ok := clientNotActiveErrorName(testDataError{data: "0x" + hex.EncodeToString(append(cacheMiss[:], make([]byte, 32)...))}); ok {
+		t.Fatal("a cache race is not an inactive client")
+	}
+	if _, ok := validatorCacheRaceErrorName(testDataError{data: selector[:]}); ok {
+		t.Fatal("a frozen client is not a cache race")
+	}
+}
+
 // TestMulticall_Wraps verifies that wrapping per-msg calldata into a multicall
 // produces the expected outer selector + that each inner blob is recoverable
 // after Unpack. This is the round-trip that on-chain MulticallUpgradeable

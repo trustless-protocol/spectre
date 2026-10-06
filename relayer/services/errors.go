@@ -52,6 +52,19 @@ var ErrUnresolvedEVMNonce = errors.New("the outcome of an abandoned EVM nonce is
 // make progress, so it is treated as transient (re-queued), not permanent.
 var ErrValidatorCacheRace = errors.New("validator cache race")
 
+// ErrClientNotActive marks a destination rejection caused by the light client
+// itself, not by anything in the submitted payload: the SpectreClient on EVM
+// reverted with FrozenClientState(), or ibc-go on Cosmos reported the client as
+// frozen or otherwise not Active.
+//
+// It is deliberately NOT ErrPermanentRelayFailure. Permanent means "this packet
+// is dead", and relay/batch.go drops a packet it is told that about. A frozen
+// client says nothing about the packet: the same packet succeeds after an
+// unfreeze() or a client migration. Dropping it on this error discarded every
+// packet in flight, one per transaction, with nothing in the log naming the
+// freeze (#402). The relay module holds the whole direction instead.
+var ErrClientNotActive = errors.New("destination light client is not active (frozen)")
+
 // CosmosTxFailure preserves ABCI failure metadata across package boundaries so
 // relay logic can classify specific failures without scraping formatted strings.
 type CosmosTxFailure struct {

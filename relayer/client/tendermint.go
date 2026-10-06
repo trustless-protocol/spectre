@@ -531,3 +531,27 @@ func GetWasmClientLatestHeight(ctx context.Context, cosmosClient *rpchttp.HTTP, 
 	}
 	return wasmClientState.LatestHeight, nil
 }
+
+// GetClientStatus asks ibc-go for a client's status ("Active", "Frozen",
+// "Expired", ...). It is the chain's own answer, so it covers every client type
+// -- the ETH beacon and the L2 wasm clients alike -- without decoding the
+// client-specific state, and it is the same predicate 04-channel/v2 applies
+// before it accepts a packet.
+func GetClientStatus(ctx context.Context, cosmosClient *rpchttp.HTTP, clientID string) (string, error) {
+	reqBytes, err := proto.Marshal(&clienttypes.QueryClientStatusRequest{ClientId: clientID})
+	if err != nil {
+		return "", fmt.Errorf("marshal client-status query: %w", err)
+	}
+	result, err := cosmosClient.ABCIQuery(ctx, "/ibc.core.client.v1.Query/ClientStatus", reqBytes)
+	if err != nil {
+		return "", fmt.Errorf("query client status %s: %w", clientID, err)
+	}
+	if result.Response.Code != 0 {
+		return "", fmt.Errorf("query client status %s failed with code %d: %s", clientID, result.Response.Code, result.Response.Log)
+	}
+	var resp clienttypes.QueryClientStatusResponse
+	if err := proto.Unmarshal(result.Response.Value, &resp); err != nil {
+		return "", fmt.Errorf("unmarshal client status %s: %w", clientID, err)
+	}
+	return resp.Status, nil
+}

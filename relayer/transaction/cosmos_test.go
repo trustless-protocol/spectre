@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	errorsmod "cosmossdk.io/errors"
 	abci "github.com/cometbft/cometbft/abci/types"
 	cmtbytes "github.com/cometbft/cometbft/libs/bytes"
 	cmtjson "github.com/cometbft/cometbft/libs/json"
@@ -416,6 +417,36 @@ func TestNewCosmosPreDeliverFailure_DuplicateFailuresBeforeDeliverTxArePermanent
 	err := newCosmosPreDeliverFailure("CheckTx", 32, "sdk", "account sequence mismatch", nil)
 	if errors.Is(err, services.ErrPermanentRelayFailure) {
 		t.Fatalf("transient CheckTx failure was marked permanent: %v", err)
+	}
+}
+
+// TestCosmosClientNotActiveIsNotPermanent pins #402 on the ETH->Cosmos mirror: a
+// frozen or expired client is refused by ibc-go with a client-codespace error at
+// every stage, and none of them may reach the relay module as a dead packet.
+func TestCosmosClientNotActiveIsNotPermanent(t *testing.T) {
+	// The codes are ibc-go's registrations, read from ibc-go rather than restated,
+	// so an upstream renumbering fails here instead of silently reclassifying.
+	for _, registered := range []*errorsmod.Error{clienttypes.ErrClientNotActive, clienttypes.ErrClientFrozen} {
+		codespace, code := registered.Codespace(), registered.ABCICode()
+		if !isCosmosClientNotActiveError(codespace, code) {
+			t.Fatalf("%s (codespace=%s code=%d) not recognised", registered, codespace, code)
+		}
+		for _, stage := range []string{"Simulation", "CheckTx"} {
+			err := newCosmosPreDeliverFailure(stage, code, codespace, registered.Error(), nil)
+			if !errors.Is(err, services.ErrClientNotActive) || errors.Is(err, services.ErrPermanentRelayFailure) {
+				t.Fatalf("%s %s: want ErrClientNotActive and not permanent, got %v", stage, registered, err)
+			}
+		}
+		if err := classifyCosmosFailure(codespace, code, services.ErrPermanentRelayFailure); err != services.ErrClientNotActive {
+			t.Fatalf("DeliverTx %s: want ErrClientNotActive, got %v", registered, err)
+		}
+	}
+	// Anything else at DeliverTx keeps its permanent classification.
+	if err := classifyCosmosFailure("channelv2", 3, services.ErrPermanentRelayFailure); err != services.ErrPermanentRelayFailure {
+		t.Fatalf("an unrelated DeliverTx failure must stay permanent, got %v", err)
+	}
+	if isCosmosClientNotActiveError("client", 4) {
+		t.Fatal("client not found is a configuration error, not an inactive client")
 	}
 }
 

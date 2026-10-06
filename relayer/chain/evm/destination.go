@@ -184,6 +184,21 @@ func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool
 	return services.HasEthPacketReceipt(ctx, d.evm, pkt)
 }
 
+// ClientActive reports whether the SpectreClient-of-Cosmos on this chain accepts
+// messages: false once it is frozen, until an unfreeze() or a migration.
+var _ chain.ClientStatusChecker = (*Destination)(nil)
+
+func (d *Destination) ClientActive(ctx context.Context) (bool, string, error) {
+	frozen, err := services.CosmosClientFrozen(ctx, d.evm)
+	if err != nil {
+		return false, "", fmt.Errorf("evm: read client state: %w", err)
+	}
+	if frozen {
+		return false, "Frozen", nil
+	}
+	return true, "Active", nil
+}
+
 // ClientExpiresAt returns when the SpectreClient-of-Cosmos on this chain expires
 // (trusted consensus timestamp + trusting period), so the RelayModule refresh
 // routine can advance the client before it lapses.

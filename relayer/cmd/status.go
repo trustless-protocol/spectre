@@ -148,6 +148,9 @@ func renderStatus(w io.Writer, snap status.Snapshot) error {
 
 	for _, path := range snap.Paths {
 		fmt.Fprintf(out, "\n%s\t%s -> %s\tclient %s\n", path.Path, path.Source, path.Dest, path.ClientID)
+		if path.ClientHeld != "" {
+			fmt.Fprintf(out, "  HELD\t%s\n", path.ClientHeld)
+		}
 		if path.UpdateInFlight {
 			fmt.Fprintf(out, "  trusted height\t(a client update is in flight)\n")
 		} else {

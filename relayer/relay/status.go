@@ -35,6 +35,10 @@ type Status struct {
 	// RelayableHeight is the highest source height provable right now. It is the
 	// number that answers "why has nothing moved", and the only one here that
 	// costs an RPC -- so it carries its own error instead of failing the snapshot.
+	// ClientHeld is set while relaying is held because the destination client
+	// is frozen or otherwise not active; it names the client and its status.
+	ClientHeld string `json:"client_held,omitempty"`
+
 	RelayableHeight    uint64 `json:"relayable_height"`
 	RelayableHeightErr string `json:"relayable_height_error,omitempty"`
 
@@ -74,6 +78,10 @@ func (m *Module) Status(ctx context.Context) Status {
 	// the Cosmos->EVM path means across proof generation -- and a status command
 	// that blocks for the length of a Groth16 proof is useless at exactly the
 	// moment someone runs it.
+	if held := m.clientHold.Load(); held != nil {
+		s.ClientHeld = *held
+	}
+
 	if m.mu.TryLock() {
 		s.TrustedHeight = m.lastHeight
 		m.mu.Unlock()

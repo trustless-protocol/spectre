@@ -108,6 +108,13 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// Held off while the source is in permanent failure. The events are already
 	// TRACKED above, so a packet queued during the hold still gets its timeout
 	// refund -- the hold skips the RPC and the proof, never the durable record.
+	//
+	// The destination-client hold works the same way: a frozen client rejects
+	// everything, so nothing is proven or submitted until it is active again.
+	if m.clientHeldOff(ctx, time.Now()) {
+		m.lastWait = waitLogState{}
+		return nonSettledIndices(skippedSettled)
+	}
 	if m.sourceHeldOff(time.Now()) {
 		m.lastWait = waitLogState{}
 		return nonSettledIndices(skippedSettled)
@@ -186,6 +193,10 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// tx completes, preventing a refresh update from racing the planned height.
 	foldPlan, proofHeight, err := m.prepareBatchUpdate(ctx, relayable)
 	if err != nil {
+		if isClientNotActive(err) {
+			m.noteClientInactive("", err)
+			return append(requeue, provableIdx...)
+		}
 		m.noteSourceFailure(err, fmt.Sprintf("update client to height %d", relayable))
 		return append(requeue, provableIdx...)
 	}
@@ -372,6 +383,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		committed, err = m.dst.RelayPackets(ctx, packets)
 	}
 	if err == nil {
+		m.noteClientActive("")
 		m.settleDelivered(packets)
 		return requeue
 	}
@@ -400,6 +412,17 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		}
 	}
 
+	// The client refused, not the packets: hold the direction and keep them all.
+	// Checked before the permanent/transient split, because neither ending is
+	// right -- a drop loses the packets, and a plain re-queue retries every flush
+	// against a client that will refuse again.
+	if isClientNotActive(err) {
+		if foldPlan != nil {
+			foldPlan.release()
+		}
+		m.noteClientInactive("", err)
+		return append(requeue, relayedIdx...)
+	}
 	if !chain.IsPermanent(err) {
 		// Transient (RPC, nonce, broadcast) → re-queue the whole batch for retry.
 		if foldPlan != nil {
@@ -433,6 +456,17 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		}
 		return requeue
 	}
+	// Last check before anything below can drop a packet: a deterministic revert
+	// whose cause did not survive to the relayer (no revert data, an unrecognised
+	// wrapper) may still be a frozen client. Asking costs one read on a path that
+	// is already rare, and a wrong answer here costs every packet in flight.
+	if status, inactive := m.destinationClientInactive(ctx); inactive {
+		if foldPlan != nil {
+			foldPlan.release()
+		}
+		m.noteClientInactive(status, err)
+		return append(requeue, relayedIdx...)
+	}
 	// A folded transaction carried the client update AND the packets, so a
 	// deterministic rejection of it does not say which of the two the chain
 	// refused. The poison logic below assumes it does -- and it is only entitled
@@ -454,6 +488,10 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			// any packet, so nothing may be dropped: hold them all and let the
 			// next flush rebuild against whatever the client then trusts.
 			foldPlan.release()
+			if isClientNotActive(updateErr) {
+				m.noteClientInactive("", updateErr)
+				return append(requeue, relayedIdx...)
+			}
 			log.Printf("[%s Relay][ATTENTION] the folded client update at height %d was refused on its own (%v); "+
 				"holding %d packet(s) rather than attributing that to them (folded failure: %v)",
 				m.name, foldPlan.update.Height, updateErr, len(packets), err)
@@ -505,6 +543,10 @@ func (m *Module) submitFoldedUpdateAlone(ctx context.Context, foldPlan *foldedUp
 	// Destination.UpdateClient, not the folding path: RelayWithUpdate is
 	// specified to carry packets, and there are none.
 	if err := m.dst.UpdateClient(ctx, m.clientID, foldPlan.update); err != nil {
+		if isClientNotActive(err) {
+			m.noteClientInactive("", err)
+			return
+		}
 		log.Printf("[%s Relay] client update (no relayable packets) to height %d: %v",
 			m.name, foldPlan.update.Height, err)
 		return
@@ -643,7 +685,19 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 		single := []chain.RelayPacket{p}
 		// One packet has no prefix to report: a nil error means it landed.
 		if _, err := m.dst.RelayPackets(ctx, single); err != nil {
+			// The client stopped accepting anything mid-isolation: this packet and
+			// every one after it are fine, so hold them all rather than drop.
+			if isClientNotActive(err) {
+				m.noteClientInactive("", err)
+				requeue = append(requeue, relayedIdx[j:]...)
+				break
+			}
 			if chain.IsPermanent(err) {
+				if status, inactive := m.destinationClientInactive(ctx); inactive {
+					m.noteClientInactive(status, err)
+					requeue = append(requeue, relayedIdx[j:]...)
+					break
+				}
 				m.waits.clearPacket(p) // dead for good — stop reporting a wait for it
 				log.Printf("[%s Relay] DROP packet (%s seq=%d height=%d, permanent): %v", m.name, p.Type, p.Sequence, p.Height, err)
 				continue
@@ -652,6 +706,7 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 			requeue = append(requeue, relayedIdx[j])
 			continue
 		}
+		m.noteClientActive("")
 		m.settleDelivered(single)
 	}
 	return requeue

@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -143,6 +144,18 @@ type Module struct {
 	sourceProbeAt time.Time
 	sourceBackoff time.Duration
 
+	// clientInactive is set while the destination's light client refuses every
+	// message (frozen, or on Cosmos otherwise not Active); clientProbeAt and
+	// clientBackoff space the re-checks the same way the source hold does. All
+	// three are guarded by batchMu. See client_hold.go.
+	//
+	// clientHold mirrors the hold for Status, which runs on another goroutine and
+	// must not wait on batchMu behind a batch that is proving.
+	clientInactive bool
+	clientProbeAt  time.Time
+	clientBackoff  time.Duration
+	clientHold     atomic.Pointer[string]
+
 	// batchMu serializes handleBatch.
 	//
 	// It has two callers now, not one: the Subscribe callback and the flush loop,
@@ -194,6 +207,8 @@ func NewModule(name, clientID string, src chain.Source, dst chain.Destination, b
 // events (the adapter owns gap recovery) and runs a background refresh routine
 // that keeps the destination client from expiring.
 func (m *Module) Run(ctx context.Context) error {
+	m.checkClientAtStartup(ctx)
+
 	runCtx, cancel := context.WithCancel(ctx)
 	workers := workergroup.New()
 	subscribeErr := make(chan error, 1)
@@ -456,6 +471,14 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 			// tx (the wired RotatePinnedSet does not yet honor ctx itself).
 			if ctx.Err() != nil {
 				return
+			}
+			// A frozen client reverts the rotation too; wait it out at the
+			// failure ceiling rather than paying for a revert each backoff step.
+			if m.clientStillHeld(ctx) {
+				next := min(periodicUpdateBackoffMax, m.periodicUpdateInterval)
+				m.beats.record(workerPeriodicUpdate, "held: destination client not active; next in "+next.String())
+				timer.Reset(next)
+				continue
 			}
 			next := m.periodicUpdateInterval
 			if err := m.periodicUpdate(ctx); err != nil {
