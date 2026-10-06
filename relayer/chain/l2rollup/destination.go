@@ -26,12 +26,14 @@ import (
 
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	ibcexported "github.com/cosmos/ibc-go/v10/modules/core/exported"
 )
 
 // Destination satisfies chain.Destination, and the folding half of it: the relay
 // engine folds automatically once an adapter advertises the capability.
 var _ chain.Destination = (*Destination)(nil)
 var _ chain.FoldingDestination = (*Destination)(nil)
+var _ chain.ClientStatusChecker = (*Destination)(nil)
 
 // atomicCosmosTxHandler is the submission guarantee folding needs: one
 // transaction, no recursive splitting. A split batch would land the update
@@ -307,4 +309,19 @@ func (d *Destination) HasPacketReceipt(ctx context.Context, packet []byte) (bool
 func (d *Destination) ClientExpiresAt(_ context.Context, _ string) (time.Time, time.Duration, error) {
 	// No self-expiry, so no trusting period to size a margin against.
 	return time.Now().Add(100 * 365 * 24 * time.Hour), 0, nil
+}
+
+// ClientActive asks ibc-go for the client's status. Anything but Active --
+// Frozen or Expired -- is a client that rejects every packet message.
+func (d *Destination) ClientActive(ctx context.Context) (bool, string, error) {
+	if d.cosmos.CosmosClient() == nil {
+		return false, "", fmt.Errorf("l2 dest: no Cosmos client to query client status on")
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	status, err := relayerclient.GetClientStatus(readCtx, d.cosmos.CosmosClient(), d.clientID)
+	if err != nil {
+		return false, "", fmt.Errorf("l2 dest: client status: %w", err)
+	}
+	return status == ibcexported.Active.String(), status, nil
 }

@@ -52,6 +52,37 @@ var ErrUnresolvedEVMNonce = errors.New("the outcome of an abandoned EVM nonce is
 // make progress, so it is treated as transient (re-queued), not permanent.
 var ErrValidatorCacheRace = errors.New("validator cache race")
 
+// ErrClientNotActive marks a destination rejection caused by the light client
+// itself, not by anything in the submitted payload: the SpectreClient on EVM
+// reverted with FrozenClientState(), or ibc-go on Cosmos reported the client as
+// frozen or otherwise not Active.
+//
+// It is deliberately NOT ErrPermanentRelayFailure. Permanent means "this packet
+// is dead", and relay/batch.go drops a packet it is told that about. A frozen
+// client says nothing about the packet: the same packet succeeds after an
+// unfreeze() or a client migration. Dropping it on this error discarded every
+// packet in flight, one per transaction, with nothing in the log naming the
+// freeze (#402). The relay module holds the whole direction instead.
+var ErrClientNotActive = errors.New("destination light client is not active (frozen)")
+
+// CosmosStageSimulation is CosmosTxFailure.Stage for a rejection returned by the
+// node's Simulate query: the node executed the messages and refused them.
+//
+// Its Code and Codespace are NOT the message handler's. Simulate is a gRPC query
+// routed through ABCI, and the SDK (v0.53.3) re-wraps the handler error as
+// sdk/6 (ErrUnknownRequest), keeping the original only as text in Log. So a
+// frozen client's client/29 arrives here as sdk/6, and a code-based classifier
+// cannot see it; callers that need the cause must ask the chain instead.
+const CosmosStageSimulation = "Simulation"
+
+// IsCosmosSimulationRejection reports whether err carries a Simulate-query
+// rejection -- the node ran the messages and refused them -- as opposed to a
+// transport failure reaching the node, which carries no ABCI metadata.
+func IsCosmosSimulationRejection(err error) bool {
+	var failure *CosmosTxFailure
+	return errors.As(err, &failure) && failure.Stage == CosmosStageSimulation
+}
+
 // CosmosTxFailure preserves ABCI failure metadata across package boundaries so
 // relay logic can classify specific failures without scraping formatted strings.
 type CosmosTxFailure struct {

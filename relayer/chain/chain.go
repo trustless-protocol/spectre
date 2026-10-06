@@ -315,6 +315,21 @@ type SettlementChecker interface {
 	PacketSettled(ctx context.Context, e Event) (bool, error)
 }
 
+// ClientStatusChecker is an OPTIONAL Destination capability: report whether the
+// destination's light-client-of-source accepts messages at all.
+//
+// A frozen client rejects every packet for a reason that is not the packet's,
+// and the same packet succeeds after the client is unfrozen or migrated. The
+// relay module asks this at startup, before it treats any deterministic
+// rejection as a dead packet, and while it holds a direction on an inactive
+// client -- so a freeze stops the path instead of draining it.
+//
+// status names the state for logs ("Active", "Frozen", "Expired"). A non-nil
+// error means "do not know"; callers must not read it as either answer.
+type ClientStatusChecker interface {
+	ClientActive(ctx context.Context) (active bool, status string, err error)
+}
+
 // FoldingDestination is an optional destination capability for submitting a
 // client update followed by packet messages in one atomic transaction. The
 // relay module uses it only when SupportsUpdatePacketFolding returns true;

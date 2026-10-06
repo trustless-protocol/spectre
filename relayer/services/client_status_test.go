@@ -1,0 +1,146 @@
+package services
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	routerContract "relayer/bindings/ICS26Router"
+	spectreContract "relayer/bindings/SpectreClient"
+	relayerclient "relayer/client"
+
+	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/ethclient"
+)
+
+var (
+	statusTestRouter     = common.HexToAddress("0x00000000000000000000000000000000000000aa")
+	statusTestConfigured = common.HexToAddress("0x00000000000000000000000000000000000000bb")
+	statusTestReplaced   = common.HexToAddress("0x00000000000000000000000000000000000000cc")
+)
+
+// fakeClientStatusRPC answers the two eth_calls CosmosClientStatus makes: the
+// router's getClient, and getClientState on whichever SpectreClient address is
+// asked. frozen maps a SpectreClient address to its isFrozen flag.
+func fakeClientStatusRPC(t *testing.T, registered common.Address, frozen map[common.Address]bool) EVMEndpoint {
+	t.Helper()
+	routerABI, err := routerContract.ContractICS26RouterMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spectreABI, err := spectreContract.ContractSpectreClientMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			ID     json.RawMessage   `json:"id"`
+			Method string            `json:"method"`
+			Params []json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal(body, &req); err != nil || req.Method != "eth_call" {
+			t.Errorf("unexpected request %s", body)
+			return
+		}
+		var call struct {
+			To    common.Address `json:"to"`
+			Input hexutil.Bytes  `json:"input"`
+			Data  hexutil.Bytes  `json:"data"`
+		}
+		if err := json.Unmarshal(req.Params[0], &call); err != nil {
+			t.Errorf("decode call: %v", err)
+			return
+		}
+		input := call.Input
+		if len(input) == 0 {
+			input = call.Data
+		}
+		var out []byte
+		switch {
+		case call.To == statusTestRouter && strings.HasPrefix(string(input), string(routerABI.Methods["getClient"].ID)):
+			out, err = routerABI.Methods["getClient"].Outputs.Pack(registered)
+		case strings.HasPrefix(string(input), string(spectreABI.Methods["getClientState"].ID)):
+			isFrozen, known := frozen[call.To]
+			if !known {
+				t.Errorf("getClientState on unexpected address %s", call.To.Hex())
+				return
+			}
+			var state []byte
+			state, err = relayerclient.EncodeClientState(relayerclient.ClientState{ChainId: "test", IsFrozen: isFrozen})
+			if err == nil {
+				out, err = spectreABI.Methods["getClientState"].Outputs.Pack(state)
+			}
+		default:
+			t.Errorf("unexpected eth_call to %s", call.To.Hex())
+			return
+		}
+		if err != nil {
+			t.Errorf("pack response: %v", err)
+			return
+		}
+		resp, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": hexutil.Encode(out)})
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(resp)
+	}))
+	t.Cleanup(server.Close)
+	client, err := ethclient.Dial(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(client.Close)
+	return EVMEndpoint{Client: client, Contracts: EVMContracts{Router: statusTestRouter, SpectreClient: statusTestConfigured}}
+}
+
+func TestCosmosClientStatus(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("registered client is the configured one", func(t *testing.T) {
+		for _, tc := range []struct {
+			frozen bool
+			want   string
+		}{{false, "Active"}, {true, "Frozen"}} {
+			evm := fakeClientStatusRPC(t, statusTestConfigured, map[common.Address]bool{statusTestConfigured: tc.frozen})
+			got, err := CosmosClientStatus(ctx, evm, "client-0")
+			if err != nil || got != tc.want {
+				t.Fatalf("frozen=%v: got %q, %v; want %q", tc.frozen, got, err, tc.want)
+			}
+		}
+	})
+
+	// After migrateClient the router routes the id to a replacement. The old,
+	// configured contract stays frozen forever; reading it alone reported Frozen
+	// forever. The status must name the migration and both addresses instead --
+	// and must not read the old contract's freeze flag as the answer.
+	t.Run("router migrated the client away from the configured address", func(t *testing.T) {
+		evm := fakeClientStatusRPC(t, statusTestReplaced, map[common.Address]bool{
+			statusTestConfigured: true,
+			statusTestReplaced:   false,
+		})
+		got, err := CosmosClientStatus(ctx, evm, "client-0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(got, "Migrated") ||
+			!strings.Contains(got, statusTestReplaced.Hex()) || !strings.Contains(got, statusTestConfigured.Hex()) {
+			t.Fatalf("want a Migrated status naming both addresses, got %q", got)
+		}
+	})
+
+	// No router configured: there is nothing to resolve through, so the
+	// configured contract is the client.
+	t.Run("no router falls back to the configured address", func(t *testing.T) {
+		evm := fakeClientStatusRPC(t, statusTestReplaced, map[common.Address]bool{statusTestConfigured: true})
+		evm.Contracts.Router = common.Address{}
+		got, err := CosmosClientStatus(ctx, evm, "client-0")
+		if err != nil || got != "Frozen" {
+			t.Fatalf("got %q, %v; want Frozen", got, err)
+		}
+	})
+}

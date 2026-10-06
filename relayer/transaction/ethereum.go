@@ -60,7 +60,24 @@ func errorSelector(signature string) [4]byte {
 	return selector
 }
 
+// clientNotActiveErrorSelectors are the SpectreClient custom errors that mean the
+// client, not the submitted message, refused the call. notFrozen gates every
+// state-reading and state-changing entry point with FrozenClientState().
+var clientNotActiveErrorSelectors = map[[4]byte]string{
+	errorSelector("FrozenClientState()"): "FrozenClientState",
+}
+
 func validatorCacheRaceErrorName(callErr error) (string, bool) {
+	return revertErrorName(callErr, validatorCacheRaceErrorSelectors)
+}
+
+func clientNotActiveErrorName(callErr error) (string, bool) {
+	return revertErrorName(callErr, clientNotActiveErrorSelectors)
+}
+
+// revertErrorName matches the custom-error selector carried in a replayed call's
+// revert data against selectors.
+func revertErrorName(callErr error, selectors map[[4]byte]string) (string, bool) {
 	type dataErr interface {
 		ErrorData() interface{}
 	}
@@ -86,7 +103,7 @@ func validatorCacheRaceErrorName(callErr error) (string, bool) {
 
 	var selector [4]byte
 	copy(selector[:], data[:4])
-	name, ok := validatorCacheRaceErrorSelectors[selector]
+	name, ok := selectors[selector]
 	return name, ok
 }
 
@@ -1578,6 +1595,15 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 						return receipt, submitDur, waitDur, fmt.Errorf(
 							"tx %s reverted with %s (status=0, gasUsed=%d): %w",
 							receipt.TxHash.Hex(), name, receipt.GasUsed, services.ErrValidatorCacheRace,
+						)
+					}
+					// Checked before the out-of-gas classifier: a frozen client reverts
+					// with data, so the gas ladder would never apply, and the generic
+					// permanent ending below would drop the packets (#402).
+					if name, ok := clientNotActiveErrorName(callErr); ok {
+						return receipt, submitDur, waitDur, fmt.Errorf(
+							"tx %s reverted with %s (status=0, gasUsed=%d): %w",
+							receipt.TxHash.Hex(), name, receipt.GasUsed, services.ErrClientNotActive,
 						)
 					}
 				}

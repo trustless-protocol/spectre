@@ -7,6 +7,7 @@ package transaction
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -452,6 +453,31 @@ func isCosmosDuplicatePacketError(codespace string, code uint32) bool {
 		(codespace == "channel" && code == 22)
 }
 
+// isCosmosClientNotActiveError matches ibc-go's 02-client refusals that are about
+// the light client, not the message:
+//
+//	codespace "client", code 5  = ErrClientFrozen
+//	codespace "client", code 29 = ErrClientNotActive -- raised by 04-channel/v2
+//	  RecvPacket/Acknowledgement and by the membership and update paths whenever
+//	  the client's status is not Active (Frozen or Expired)
+//
+// Neither says anything about the packet: it succeeds once the client is
+// recovered. Classifying them as permanent made the relay module drop every
+// in-flight packet (#402).
+func isCosmosClientNotActiveError(codespace string, code uint32) bool {
+	return codespace == "client" && (code == 5 || code == 29)
+}
+
+// classifyCosmosFailure picks the sentinel a deterministic ABCI failure carries:
+// ErrClientNotActive for a client that cannot accept anything, otherwise
+// fallback.
+func classifyCosmosFailure(codespace string, code uint32, fallback error) error {
+	if isCosmosClientNotActiveError(codespace, code) {
+		return services.ErrClientNotActive
+	}
+	return fallback
+}
+
 // duplicateDropIsSafe reports whether a duplicate response establishes that
 // the entire submitted batch is already complete. A Cosmos transaction is
 // atomic, so this is only true for a single-message batch.
@@ -472,6 +498,9 @@ func newCosmosPreDeliverFailure(stage string, code uint32, codespace, failureLog
 	}
 	if isCosmosDuplicatePacketError(codespace, code) {
 		failure.Err = services.ErrPermanentRelayFailure
+	}
+	if isCosmosClientNotActiveError(codespace, code) {
+		failure.Err = services.ErrClientNotActive
 	}
 	return failure
 }
@@ -594,7 +623,7 @@ func (h *Handler) simulateMsgs(stdCtx context.Context, svcCtx services.CosmosEnd
 
 	if result.Response.Code != 0 {
 		return 0, newCosmosPreDeliverFailure(
-			"Simulation", result.Response.Code, result.Response.Codespace, result.Response.Log, nil,
+			services.CosmosStageSimulation, result.Response.Code, result.Response.Codespace, result.Response.Log, nil,
 		)
 	}
 
@@ -646,6 +675,12 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 		simulatedGas, err := h.simulateMsgs(stdCtx, svcCtx, sdkMsgs, sequence)
 		if err != nil {
 			log.Printf("[SendCosmosTx] Simulation failed for batch of size %d: %v", len(sdkMsgs), err)
+			// A client that is not Active rejects every message in the batch, so
+			// splitting or broadcasting on fallback gas only pays fees to hear the
+			// same answer from DeliverTx.
+			if errors.Is(err, services.ErrClientNotActive) {
+				return sequence, 0, err
+			}
 			if !allowSplit {
 				return sequence, 0, fmt.Errorf("[SendCosmosTx] simulation failed; refusing to split atomic batch: %w", err)
 			}
@@ -953,7 +988,8 @@ func (h *Handler) sendCosmosTxBatchAtHeadroom(stdCtx context.Context, svcCtx ser
 			Codespace: txResult.TxResult.Codespace,
 			Log:       txResult.TxResult.Log,
 			Data:      txResult.TxResult.Data,
-			Err:       services.ErrPermanentRelayFailure,
+			Err: classifyCosmosFailure(txResult.TxResult.Codespace, txResult.TxResult.Code,
+				services.ErrPermanentRelayFailure),
 		}
 	}
 
