@@ -104,6 +104,28 @@ func TestShouldRotatePinnedSet(t *testing.T) {
 	}
 }
 
+// A static validator set keeps nextValidatorsHash equal to the pinned hash
+// forever. The forced rotation must still take the updateConsensusState path,
+// or the pinned snapshot timestamp never moves and the client expires one
+// trusting period after creation (#541).
+func TestRotationCandidate(t *testing.T) {
+	pinned := [32]byte{0xaa}
+	changed := [32]byte{0xbb}
+
+	if !rotationCandidate(true, pinned, pinned) {
+		t.Fatal("forced rotation with an unchanged valset must still re-pin")
+	}
+	if !rotationCandidate(true, changed, pinned) {
+		t.Fatal("forced rotation with a changed valset must re-pin")
+	}
+	if !rotationCandidate(false, changed, pinned) {
+		t.Fatal("a changed valset must be considered for rotation")
+	}
+	if rotationCandidate(false, pinned, pinned) {
+		t.Fatal("an unforced update with an unchanged valset must stay on updateApplicationState")
+	}
+}
+
 func TestSelectSignaturesForPinnedSet_RejectsInsufficientOverlap(t *testing.T) {
 	pubkey0 := [32]byte{0x01}
 	pubkey1 := [32]byte{0x02}

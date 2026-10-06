@@ -198,8 +198,10 @@ func (w *Worker) RefreshCosmosClient(
 		}
 
 		// forceRotation: the refresh routine only fires after RefreshInterval
-		// without updates, so it is the guaranteed rotation cadence — a stale
-		// pinned set is rotated here regardless of how much overlap remains.
+		// without updates, so it is the guaranteed rotation cadence — the pinned
+		// set is re-pinned here regardless of how much overlap remains, and even
+		// when it is unchanged, because that re-pin is what refreshes the pinned
+		// snapshot timestamp the contract measures expiry from (#541).
 		result, err := w.buildCosmosClientUpdateMsg(stdCtx, deps, proofType, onChainTrusted, trustLevel, true, 0)
 		if err != nil {
 			return nil, fmt.Errorf("[RefreshCosmosClient] build update msg: %w", err)
@@ -296,10 +298,11 @@ type hopProbeResult struct {
 // (UpdateCosmosClient/RefreshCosmosClient) or fold it into a multicall alongside
 // packet calls (handleCosmos / V2).
 //
-// When the target header's nextValidatorsHash differs from the on-chain pinned
-// hash, forceRotation=true (the refresh-routine cadence path) always upgrades
-// to ConsensusUpdate; forceRotation=false upgrades only once the pinned set's
-// overlap with the target block's signers has decayed to the configured
+// forceRotation=true (the refresh-routine cadence path) always upgrades to
+// ConsensusUpdate, even when the target nextValidatorsHash equals the pinned
+// hash: re-pinning is the only way to refresh the pinned snapshot timestamp.
+// With forceRotation=false, a differing hash upgrades only once the pinned
+// set's overlap with the target block's signers has decayed to the configured
 // rotation threshold (Config.RotationThreshold). Frequent callers pass false so
 // routine voting-power churn — which moves nextValidatorsHash almost every
 // block on live chains — doesn't push every update onto the heavy path.
@@ -526,7 +529,8 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 	// pinned set current for future proofs — but the rotation is the heavy path
 	// (full valset calldata + buildCache + SSTORE2 write + snapshot push), so
 	// it is gated by shouldRotatePinnedSet rather than taken on every hash
-	// difference. Otherwise the cheap application-state path suffices.
+	// difference. A forced rotation re-pins even an unchanged set (see
+	// rotationCandidate). Otherwise the cheap application-state path suffices.
 	pinnedHashCtx, cancelPinnedHash := fetchCtx(stdCtx, ctx.fetchTimeout)
 	pinnedHash, err := getOnChainPinnedValidatorsHash(pinnedHashCtx, ctx.evm)
 	cancelPinnedHash()
@@ -548,7 +552,7 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 		result.NewValSet = newValSet
 		log.Printf("RLY01_HOP_ROTATE hop height=%d pinned=%x target nextValHash=%x; rotating via updateConsensusState",
 			latestLightBlock.BlockHeight, pinnedHash[:4], targetNextValHash[:4])
-	case targetNextValHash != pinnedHash:
+	case rotationCandidate(forceRotation, targetNextValHash, pinnedHash):
 		rotationThreshold, err := ParseRotationThreshold(ctx.rotationThreshold)
 		if err != nil {
 			return nil, fmt.Errorf("invalid rotation threshold: %w", err)
@@ -561,8 +565,8 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 			}
 			result.Kind = ConsensusUpdate
 			result.NewValSet = newValSet
-			log.Printf("[UpdateCosmosClient] pinned set stale (pinned=%x target nextValHash=%x overlap=%d/%d force=%t); rotating via updateConsensusState",
-				pinnedHash[:4], targetNextValHash[:4], overlap, pinnedValidatorSet.totalPower, forceRotation)
+			log.Printf("[UpdateCosmosClient] rotating pinned set via updateConsensusState (pinned=%x target nextValHash=%x same=%t overlap=%d/%d force=%t)",
+				pinnedHash[:4], targetNextValHash[:4], targetNextValHash == pinnedHash, overlap, pinnedValidatorSet.totalPower, forceRotation)
 		} else {
 			log.Printf("[UpdateCosmosClient] pinned set differs from target nextValidatorsHash (pinned=%x target=%x) but overlap %d/%d is above rotation threshold %d/%d; staying on updateApplicationState",
 				pinnedHash[:4], targetNextValHash[:4], overlap, pinnedValidatorSet.totalPower,
