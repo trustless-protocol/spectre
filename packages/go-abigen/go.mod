@@ -1,4 +1,4 @@
-module github.com/decentrio/fast-ibc/packages/go-abigen
+module github.com/decentrio/spectre/packages/go-abigen
 
 go 1.23.6
 

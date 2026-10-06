@@ -53,3 +53,12 @@ func TestPadWithDummies(t *testing.T) {
 		t.Fatal("expected too-small bucket error")
 	}
 }
+
+// DummyMsgLen is the circuit's SHA-512 MinMsgLen, so it is baked into the R1CS
+// and every published verifying key. Changing it needs re-setup + redeploy of
+// every Groth16Verifier_N{N} + setBucket — this pins it so that is never silent.
+func TestDummyMsgLenPinnedToCircuit(t *testing.T) {
+	if DummyMsgLen != 18 {
+		t.Fatalf("DummyMsgLen = %d, want 18: changing it changes the circuit R1CS", DummyMsgLen)
+	}
+}

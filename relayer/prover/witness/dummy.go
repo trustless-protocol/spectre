@@ -14,18 +14,18 @@ import (
 // ECIP divisor). What marks a slot as padding is the committed Active byte
 // plus the on-chain quorum check.
 //
-// Both strings below are protocol constants: the on-chain SignatureVerifier
-// rebuilds dummy messages byte-for-byte from its own copy of dummyMagic, and
-// the seed string determines the dummy pubkeys committed into the witness
-// hash. Renaming them (fast-ibc → spectre, task #1) invalidates every vk:
-// re-setup + redeploy + setBucket.
+// Neither string below is checked on-chain: SignatureVerifier hashes only each
+// slot's Active byte and pubkey, and the dummy pubkeys travel in calldata. The
+// LENGTH of dummyMagic is a circuit constant, though — DummyMsgLen is the
+// circuit's SHA-512 MinMsgLen — so changing it changes the R1CS and requires
+// re-setup + redeploying every Groth16Verifier_N{N} + setBucket. Keep it 14 bytes.
 
 // dummyMagic prefixes every dummy slot's signed-bytes buffer. Full layout:
 // dummyMagic || bucket(2 BE) || slot(2 BE) = 18 bytes.
-const dummyMagic = "fast-ibc-dummy"
+const dummyMagic = "spectre-dummy"
 
 // dummySeedFmt derives each slot's deterministic keypair seed.
-const dummySeedFmt = "fast-ibc-dummy-seed|bucket=%d|slot=%d"
+const dummySeedFmt = "spectre-dummy-seed|bucket=%d|slot=%d"
 
 // DummyMsgLen is the length of every padding slot's signed-bytes buffer — the
 // shortest message any slot carries, hence the floor the circuit hands SHA-512
@@ -44,8 +44,7 @@ func DummyMsgBytes(bucket, slot uint16) []byte {
 
 // PadWithDummies extends sigs to exactly n slots with deterministic dummy
 // signatures (Active=false). Deterministic in (n, slot), so calldata is
-// reproducible across runs and the on-chain rebuild needs no calldata for
-// padding slots.
+// reproducible across runs.
 func PadWithDummies(sigs []ValidatorSignature, n int) ([]ValidatorSignature, error) {
 	if len(sigs) > n {
 		return nil, fmt.Errorf("bucket n=%d too small for %d signers", n, len(sigs))

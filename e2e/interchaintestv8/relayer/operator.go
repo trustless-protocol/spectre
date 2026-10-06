@@ -19,7 +19,7 @@ import (
 
 	tmclient "github.com/cosmos/ibc-go/v10/modules/light-clients/07-tendermint"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/spectreclient"
+	"github.com/decentrio/spectre/packages/go-abigen/spectreclient"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/testvalues"
 )
