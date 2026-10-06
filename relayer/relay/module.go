@@ -485,7 +485,7 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 			switch {
 			case err == nil:
 				backoff = 0 // success resets the backoff
-			case m.armClientHoldFrom(err):
+			case m.armClientHoldFrom(ctx, err):
 				// Refused by an inactive client: the hold owns the cadence from here,
 				// exactly as on the held branch above, instead of a backoff that
 				// keeps paying for reverts.

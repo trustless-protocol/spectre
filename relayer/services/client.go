@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	routerContract "relayer/bindings/ICS26Router"
 	spectreContract "relayer/bindings/SpectreClient"
 	updateclientContract "relayer/bindings/UpdateClient"
 	"relayer/chain"
@@ -900,3 +901,45 @@ func bytesToBytes32(data []byte) [32]byte {
 // looking for a servable checkpoint. One step is normally enough; the cap only stops a
 // pathological walk against a node that serves no bootstraps at all.
 const maxBootstrapCheckpointStepBack = 8
+
+// CosmosClientStatus reports the status of the SpectreClient-of-Cosmos that the
+// ICS26Router routes routerClientID to: "Active", "Frozen", or "Migrated".
+//
+// The router is asked rather than the configured address alone, because a
+// governed migration (migrateClient) re-points the client id at a replacement
+// contract while the configured address keeps naming the old one. Reading only
+// the old one would report a migrated-away frozen client as Frozen forever.
+//
+// "Migrated" is NOT active, even when the replacement is. Every other read this
+// process makes -- trusted height, pinned-set hash, expiry -- and every direct
+// (non-router) submission still targets the configured address, so relaying
+// against the replacement would mix two contracts' state. The status names both
+// addresses so the operator can update the configuration and restart.
+func CosmosClientStatus(stdCtx context.Context, evm EVMEndpoint, routerClientID string) (string, error) {
+	readCtx, cancel := fetchCtx(stdCtx, defaultFetchTimeout)
+	defer cancel()
+	configured := *evm.SpectreClientContract()
+	if router := *evm.RouterContract(); router != (common.Address{}) && routerClientID != "" {
+		ics26, err := routerContract.NewContractICS26Router(router, evm.EthClient())
+		if err != nil {
+			return "", fmt.Errorf("bind ICS26Router: %w", err)
+		}
+		registered, err := ics26.GetClient(&bind.CallOpts{Context: readCtx}, routerClientID)
+		if err != nil {
+			return "", fmt.Errorf("resolve client %s on ICS26Router %s: %w", routerClientID, router.Hex(), err)
+		}
+		if registered != configured {
+			return fmt.Sprintf("Migrated (ICS26Router routes %s to %s, but this relayer is configured for SpectreClient %s; "+
+				"update the configured SpectreClient address and restart)",
+				routerClientID, registered.Hex(), configured.Hex()), nil
+		}
+	}
+	clientState, err := fetchOnChainClientState(readCtx, evm)
+	if err != nil {
+		return "", err
+	}
+	if clientState.IsFrozen {
+		return "Frozen", nil
+	}
+	return "Active", nil
+}

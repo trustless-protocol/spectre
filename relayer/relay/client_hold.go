@@ -174,21 +174,47 @@ func (m *Module) clientStillHeld(ctx context.Context) bool {
 	return m.clientHeldOff(ctx, time.Now())
 }
 
-// armClientHoldFrom arms the hold from a loop beside handleBatch -- the expiry
-// refresh or the periodic update -- when its client update was refused by an
-// inactive client. It reports whether it did.
+// holdIfClientInactive arms the hold when a client-update failure was caused by
+// an inactive destination client, and reports whether it did.
+//
+// The sentinel is the cheap, explicit signal, but it depends on the revert
+// selector reaching the relayer, and an RPC that omits revert data turns a
+// frozen client's rejection into a bare ErrPermanentRelayFailure. So a
+// deterministic rejection without the sentinel also asks the destination, the
+// same fallback that guards every packet drop. Transient failures (RPC, nonce)
+// never trigger the query.
+//
+// Callers must hold batchMu.
+func (m *Module) holdIfClientInactive(ctx context.Context, err error) bool {
+	if isClientNotActive(err) {
+		m.noteClientInactive("", err)
+		return true
+	}
+	if !chain.IsPermanent(err) && !errors.Is(err, services.ErrPermanentRelayFailure) {
+		return false
+	}
+	status, inactive := m.destinationClientInactive(ctx)
+	if !inactive {
+		return false
+	}
+	m.noteClientInactive(status, err)
+	return true
+}
+
+// armClientHoldFrom is holdIfClientInactive for the loops beside handleBatch --
+// the expiry refresh and the periodic update -- which do not hold batchMu.
 //
 // Without it a client that freezes on a QUIET path is never held: no batch runs
 // to notice, so clientStillHeld stays false, both loops keep submitting updates
 // that revert on their backoff, and Status never reports HELD.
 //
-// batchMu is taken only on this error, never on the ordinary failure paths.
-func (m *Module) armClientHoldFrom(err error) bool {
-	if !isClientNotActive(err) {
+// batchMu is taken only when the failure could be the client's, never on the
+// transient failure paths.
+func (m *Module) armClientHoldFrom(ctx context.Context, err error) bool {
+	if !isClientNotActive(err) && !chain.IsPermanent(err) && !errors.Is(err, services.ErrPermanentRelayFailure) {
 		return false
 	}
 	m.batchMu.Lock()
 	defer m.batchMu.Unlock()
-	m.noteClientInactive("", err)
-	return true
+	return m.holdIfClientInactive(ctx, err)
 }

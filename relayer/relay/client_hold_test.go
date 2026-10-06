@@ -147,6 +147,38 @@ func TestClientHold(t *testing.T) {
 		}
 	})
 
+	// The packet path's client update, refused without a selector: the status
+	// fallback holds it, and the next batch spends no further update.
+	t.Run("refused client update without selector holds", func(t *testing.T) {
+		dst := &statusDest{mockDest: mockDest{updateErr: bareRevert}, status: "Frozen"}
+		b := &mockBuilder{}
+		m := NewModule("cosmos->eth", "client-0", &mockSource{latest: 100}, dst, b)
+
+		if rq := m.handleBatch(context.Background(), threePackets()); len(rq) != 3 {
+			t.Fatalf("want all 3 held, got %v", rq)
+		}
+		if m.clientHold.Load() == nil || !m.sourceProbeAt.IsZero() {
+			t.Fatal("a frozen client must be held, and not blamed on the source")
+		}
+		built := b.built
+		m.handleBatch(context.Background(), threePackets())
+		if b.built != built {
+			t.Fatalf("held: no further update may be built, got %d -> %d", built, b.built)
+		}
+	})
+
+	// The fallback only changes the frozen case: a permanent update failure on an
+	// active client keeps its previous handling.
+	t.Run("refused client update on an active client is not held", func(t *testing.T) {
+		dst := &statusDest{mockDest: mockDest{updateErr: bareRevert}, active: true, status: "Active"}
+		m := NewModule("cosmos->eth", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{})
+
+		m.handleBatch(context.Background(), threePackets())
+		if m.clientHold.Load() != nil {
+			t.Fatal("an active client must not be held")
+		}
+	})
+
 	// #402 task: a relayer restarted against an already-frozen client says so at
 	// startup, and resumes by itself once the client is active again.
 	t.Run("startup check holds, probe lifts", func(t *testing.T) {
@@ -243,12 +275,33 @@ func (d *freezingIsolationDest) RelayPackets(_ context.Context, packets []chain.
 type frozenUpdateDest struct {
 	mockDest
 	updateCalls atomic.Int32
+	// updateErr overrides the refusal; nil means the recognised frozenRevert.
+	updateErr error
 }
 
 func (d *frozenUpdateDest) UpdateClient(context.Context, string, chain.ClientUpdate) error {
 	d.updateCalls.Add(1)
+	if d.updateErr != nil {
+		return d.updateErr
+	}
 	return fmt.Errorf("evm: submit client update: %w", frozenRevert)
 }
+
+// selectorlessFrozenDest refuses updates the way a frozen client does through an
+// RPC that omits revert data -- a bare permanent failure -- while its status
+// query still says Frozen.
+type selectorlessFrozenDest struct {
+	frozenUpdateDest
+}
+
+func (d *selectorlessFrozenDest) ClientActive(context.Context) (bool, string, error) {
+	return false, "Frozen", nil
+}
+
+// bareRevert is what the EVM handler returns when the replay carried no revert
+// data to match a selector against.
+var bareRevert = fmt.Errorf("evm: submit client update: tx 0xabc reverted (status=0, gasUsed=1): %w",
+	services.ErrPermanentRelayFailure)
 
 func (d *frozenUpdateDest) ClientExpiresAt(context.Context, string) (time.Time, time.Duration, error) {
 	return time.Now(), time.Hour, nil // inside the refresh margin: due now
@@ -310,10 +363,57 @@ func TestClientHoldArmedByBackgroundUpdates(t *testing.T) {
 		}
 	})
 
+	// The revert reached the relayer without its selector. The status query is the
+	// fallback: one refused submission, then held.
+	t.Run("refresh, revert without selector", func(t *testing.T) {
+		withFastRefreshTick(t)
+		dst := &selectorlessFrozenDest{frozenUpdateDest{updateErr: bareRevert}}
+		m := NewModule("cosmos->eth", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done := make(chan struct{})
+		go func() { defer close(done); m.refreshLoop(ctx) }()
+
+		waitFor(t, ctx, func() bool { return m.clientHold.Load() != nil }, "refresh never armed the hold")
+		time.Sleep(settle)
+		cancel()
+		<-done
+
+		if got := dst.updateCalls.Load(); got != 1 {
+			t.Fatalf("want 1 refused submission, got %d", got)
+		}
+	})
+
+	t.Run("periodic update, revert without selector", func(t *testing.T) {
+		var calls atomic.Int32
+		dst := &selectorlessFrozenDest{}
+		m := NewModule("cosmos->eth", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{},
+			WithPeriodicUpdate(time.Millisecond, 0, func(context.Context) error {
+				calls.Add(1)
+				return fmt.Errorf("[RefreshCosmosClient] send tx (hop 0): %w", bareRevert)
+			}),
+		)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done := make(chan struct{})
+		go func() { defer close(done); m.periodicUpdateLoop(ctx) }()
+
+		waitFor(t, ctx, func() bool { return m.clientHold.Load() != nil }, "periodic update never armed the hold")
+		time.Sleep(settle)
+		cancel()
+		<-done
+
+		if got := calls.Load(); got != 1 {
+			t.Fatalf("want 1 refused rotation, got %d", got)
+		}
+	})
+
 	// Any other failure keeps its own backoff and must not hold the path.
 	t.Run("ordinary failure does not hold", func(t *testing.T) {
 		m := NewModule("cosmos->eth", "client-0", &mockSource{latest: 100}, &mockDest{}, &mockBuilder{})
-		if m.armClientHoldFrom(errors.New("rpc unavailable")) || m.clientHold.Load() != nil {
+		if m.armClientHoldFrom(context.Background(), errors.New("rpc unavailable")) || m.clientHold.Load() != nil {
 			t.Fatal("an ordinary failure must not arm the hold")
 		}
 	})

@@ -193,8 +193,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// tx completes, preventing a refresh update from racing the planned height.
 	foldPlan, proofHeight, err := m.prepareBatchUpdate(ctx, relayable)
 	if err != nil {
-		if isClientNotActive(err) {
-			m.noteClientInactive("", err)
+		if m.holdIfClientInactive(ctx, err) {
 			return append(requeue, provableIdx...)
 		}
 		m.noteSourceFailure(err, fmt.Sprintf("update client to height %d", relayable))
@@ -488,8 +487,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			// any packet, so nothing may be dropped: hold them all and let the
 			// next flush rebuild against whatever the client then trusts.
 			foldPlan.release()
-			if isClientNotActive(updateErr) {
-				m.noteClientInactive("", updateErr)
+			if m.holdIfClientInactive(ctx, updateErr) {
 				return append(requeue, relayedIdx...)
 			}
 			log.Printf("[%s Relay][ATTENTION] the folded client update at height %d was refused on its own (%v); "+
@@ -543,8 +541,7 @@ func (m *Module) submitFoldedUpdateAlone(ctx context.Context, foldPlan *foldedUp
 	// Destination.UpdateClient, not the folding path: RelayWithUpdate is
 	// specified to carry packets, and there are none.
 	if err := m.dst.UpdateClient(ctx, m.clientID, foldPlan.update); err != nil {
-		if isClientNotActive(err) {
-			m.noteClientInactive("", err)
+		if m.holdIfClientInactive(ctx, err) {
 			return
 		}
 		log.Printf("[%s Relay] client update (no relayable packets) to height %d: %v",
