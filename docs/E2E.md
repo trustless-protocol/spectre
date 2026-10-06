@@ -166,7 +166,7 @@ and require that checkout to be **on** `test/ibc-host-customs`:
 cd ../gaia
 git checkout test/ibc-host-customs
 GOTOOLCHAIN=go1.25.7 make build
-cd ../fast-ibc
+cd ../spectre
 ```
 
 `GAIAD=/path/to/gaiad` or `GAIA_DIR=/path/to/gaia` overrides that, and `GAIAD=`
@@ -716,7 +716,7 @@ exceeds the concurrent-request budget:
 
 - `deploy_l2_contracts.sh` fails outright with `Max retries exceeded HTTP error 429
   with empty body` when the attestor is already running. Pausing the attestor
-  (`docker stop fast-ibc-arbitrum-attestor`) makes the same command succeed.
+  (`docker stop spectre-arbitrum-attestor`) makes the same command succeed.
 - With both running, the attestor logs `backing off: failures=3 delay=40.5s
   rate_limited=true` and its frontier stops. The relayer then reports `source relayable
   height` frozen for minutes with `DERIVED_GAP_BLOCKS=10` set, which looks like a

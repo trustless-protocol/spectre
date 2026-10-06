@@ -47,10 +47,10 @@ import (
 	ictcosmos "github.com/cosmos/interchaintest/v10/chain/cosmos"
 	"github.com/cosmos/interchaintest/v10/ibc"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ibcerc20"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ics20transfer"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/spectreclient"
+	"github.com/decentrio/spectre/packages/go-abigen/ibcerc20"
+	"github.com/decentrio/spectre/packages/go-abigen/ics20transfer"
+	"github.com/decentrio/spectre/packages/go-abigen/ics26router"
+	"github.com/decentrio/spectre/packages/go-abigen/spectreclient"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/chainconfig"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/cosmos"
@@ -562,7 +562,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 
 		simdARelayerMnemonic, err := generateRelayerMnemonic()
 		s.Require().NoError(err)
-		s.SimdARelayerSubmitter, err = simdA.BuildWallet(ctx, "fast-ibc-relayer-a", simdARelayerMnemonic)
+		s.SimdARelayerSubmitter, err = simdA.BuildWallet(ctx, "spectre-relayer-a", simdARelayerMnemonic)
 		s.Require().NoError(err)
 		err = simdA.SendFunds(ctx, interchaintest.FaucetAccountKeyName, ibc.WalletAmount{
 			Address: s.SimdARelayerSubmitter.FormattedAddress(),
@@ -573,7 +573,7 @@ func (s *MultichainTestSuite) SetupSuite(ctx context.Context, proofType types.Su
 
 		simdBRelayerMnemonic, err := generateRelayerMnemonic()
 		s.Require().NoError(err)
-		s.SimdBRelayerSubmitter, err = simdB.BuildWallet(ctx, "fast-ibc-relayer-b", simdBRelayerMnemonic)
+		s.SimdBRelayerSubmitter, err = simdB.BuildWallet(ctx, "spectre-relayer-b", simdBRelayerMnemonic)
 		s.Require().NoError(err)
 		err = simdB.SendFunds(ctx, interchaintest.FaucetAccountKeyName, ibc.WalletAmount{
 			Address: s.SimdBRelayerSubmitter.FormattedAddress(),

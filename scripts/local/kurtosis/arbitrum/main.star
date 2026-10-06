@@ -244,7 +244,7 @@ tail -f /dev/null
         name = "arb-rollup-deployer",
         config = ServiceConfig(
             image = ImageBuildSpec(
-                image_name = "fast-ibc-arb-rollupcreator",
+                image_name = "spectre-arb-rollupcreator",
                 build_context_dir = "./rollupcreator",
                 build_args = {
                     "NITRO_CONTRACTS_REF": config["nitro_contracts_ref"],

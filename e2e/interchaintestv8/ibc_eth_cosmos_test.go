@@ -40,10 +40,10 @@ import (
 	interchaintest "github.com/cosmos/interchaintest/v10"
 	"github.com/cosmos/interchaintest/v10/ibc"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ibcerc20"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ics20transfer"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/spectreclient"
+	"github.com/decentrio/spectre/packages/go-abigen/ibcerc20"
+	"github.com/decentrio/spectre/packages/go-abigen/ics20transfer"
+	"github.com/decentrio/spectre/packages/go-abigen/ics26router"
+	"github.com/decentrio/spectre/packages/go-abigen/spectreclient"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/cosmos"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/e2esuite"
@@ -125,7 +125,7 @@ func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 		// container keyring via BuildWallet(ctx, name, mnemonic).
 		relayerMnemonic, err := generateRelayerMnemonic()
 		s.Require().NoError(err)
-		simdRelayerWallet, err := simd.BuildWallet(ctx, "fast-ibc-relayer", relayerMnemonic)
+		simdRelayerWallet, err := simd.BuildWallet(ctx, "spectre-relayer", relayerMnemonic)
 		s.Require().NoError(err)
 		err = simd.SendFunds(ctx, interchaintest.FaucetAccountKeyName, ibc.WalletAmount{
 			Address: simdRelayerWallet.FormattedAddress(),
@@ -455,7 +455,7 @@ func (s *EthCosmosTestSuite) DeployTest(ctx context.Context, proofType types.Sup
 	}))
 
 	// `s.RelayerClient.Info(...)` calls the upstream Rust relayer's gRPC InfoRequest
-	// endpoint — fast-ibc's auto-relay daemon doesn't expose gRPC, so these two
+	// endpoint — Spectre's auto-relay daemon doesn't expose gRPC, so these two
 	// reachability checks would nil-deref. The relay loop already proved both
 	// directions are wired correctly during create-clients / addClient / wasm-client
 	// register above; nothing extra to assert here.
@@ -715,7 +715,7 @@ func (s *EthCosmosTestSuite) ICS20TransferERC20TokenfromEthereumToCosmosAndBackT
 	s.Require().True(s.Run("Receive packets on Cosmos chain", func() {
 		denomOnCosmos = transfertypes.NewDenom(s.contractAddresses.Erc20, transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID))
 
-		// fast-ibc relayer auto-relays via the StartRelayer daemon. Instead of pulling a
+		// Spectre relayer auto-relays via the StartRelayer daemon. Instead of pulling a
 		// relay tx via gRPC RelayByTx and broadcasting it ourselves (the upstream Rust
 		// relayer's query pattern), we just wait for the daemon to deliver the packet
 		// and verify the resulting Cosmos balance.
@@ -1359,7 +1359,7 @@ func (s *EthCosmosTestSuite) ICS20TimeoutPacketFromEthereumTest(
 		}))
 	}))
 
-	// fast-ibc's auto-relay daemon either delivers a packet to Cosmos before its
+	// Spectre's auto-relay daemon either delivers a packet to Cosmos before its
 	// timeout OR — once the timeout window closes and the packet remains undelivered —
 	// the PendingPacketTracker scanner submits MsgTimeoutPacket to ETH and refunds the
 	// escrow. The daemon does not expose upstream RelayByTx sequence filtering, so the
@@ -1572,7 +1572,7 @@ func (s *EthCosmosTestSuite) ICS20TimeoutFromCosmosTest(
 	transferCoin := sdk.NewCoin(simd.Config().Denom, sdkmath.NewIntFromBigInt(transferAmount))
 	s.Require().True(s.Run("Send transfers on Cosmos chain", func() {
 		for range numOfTransfers {
-			// Short timeout: with fast-ibc's auto-relay, the relayer can deliver a 45s-timeout
+			// Short timeout: with Spectre's auto-relay, the relayer can deliver a 45s-timeout
 			// packet (~20s) before it expires, defeating the timeout test. Use a window so
 			// short the relayer's first batch tick + Groth16 proof can't beat it.
 			timeout := uint64(time.Now().Add(5 * time.Second).Unix())
@@ -1623,7 +1623,7 @@ func (s *EthCosmosTestSuite) ICS20TimeoutFromCosmosTest(
 		}))
 	}))
 
-	// fast-ibc's relayer can either deliver a Cosmos-originated packet before the
+	// Spectre's relayer can either deliver a Cosmos-originated packet before the
 	// TimeoutTimestamp or, after the timeout, the scanner submits MsgTimeout on Cosmos
 	// with an ETH non-membership proof. The daemon does not expose upstream RelayByTx
 	// sequence filtering, so the filtered variants validate the same terminal

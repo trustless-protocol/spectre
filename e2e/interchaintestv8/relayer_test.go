@@ -28,8 +28,8 @@ import (
 
 	"github.com/cosmos/interchaintest/v10/testutil"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ibcerc20"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ics20transfer"
+	"github.com/decentrio/spectre/packages/go-abigen/ibcerc20"
+	"github.com/decentrio/spectre/packages/go-abigen/ics20transfer"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/e2esuite"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/testvalues"
@@ -319,7 +319,7 @@ func (s *RelayerTestSuite) ICS20TransferERC20TokenBatchedAckToEthTest(
 }
 
 func (s *EthCosmosTestSuite) Test_5_FinalizedTimeoutPacketFromEth() {
-	s.T().Skip("requires upstream gRPC RelayByTx tx retrieval; fast-ibc's daemon auto-relays instead")
+	s.T().Skip("requires upstream gRPC RelayByTx tx retrieval; Spectre's daemon auto-relays instead")
 
 	ctx := context.Background()
 	proofType := types.GetEnvProofType()

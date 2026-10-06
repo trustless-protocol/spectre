@@ -19,7 +19,7 @@ require (
 	github.com/cosmos/ibc-go/v10 v10.3.0
 	github.com/cosmos/ics23/go v0.11.0
 	github.com/cosmos/interchaintest/v10 v10.0.0
-	github.com/decentrio/fast-ibc/packages/go-abigen v0.0.0
+	github.com/decentrio/spectre/packages/go-abigen v0.0.0
 	github.com/ethereum/go-ethereum v1.16.2
 	github.com/herumi/bls-eth-go-binary v1.31.0
 	github.com/holiman/uint256 v1.3.2
@@ -296,7 +296,7 @@ require (
 	sigs.k8s.io/yaml v1.6.0 // indirect
 )
 
-replace github.com/decentrio/fast-ibc/packages/go-abigen => ../../packages/go-abigen
+replace github.com/decentrio/spectre/packages/go-abigen => ../../packages/go-abigen
 
 replace github.com/gogo/protobuf => github.com/regen-network/protobuf v1.3.3-alpha.regen.1
 
