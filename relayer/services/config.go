@@ -79,6 +79,10 @@ type Config struct {
 	// DEFAULT_REFRESH_INTERVAL).
 	RefreshInterval           time.Duration
 	RefreshIntervalConfigured bool
+	// RouterDeployBlock is the block the ICS26Router was deployed at; 0 when not
+	// configured. The ETH source's enumeration backstop starts its log lookups
+	// there instead of walking bounded windows back from the head.
+	RouterDeployBlock uint64
 }
 
 func NewConfig(KeyPath string, params IntervalConfig, intervalType IntervalType) Config {

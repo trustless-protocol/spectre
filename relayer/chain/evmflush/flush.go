@@ -35,6 +35,7 @@ import (
 	contractICS26Router "relayer/bindings/ICS26Router"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
+	"github.com/ethereum/go-ethereum"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -50,14 +51,19 @@ const ProbeCap = 200
 // numbers; 100 is under every documented limit.
 const probeBatch = 100
 
-// MaxLogChunks bounds how far back from the head one log lookup walks once the
-// provider has refused the full range. A packet's commitment already proves it
+// MaxLogChunks bounds how far back from the head one log lookup walks. A packet's commitment already proves it
 // is outstanding; what this walk is looking for is the event carrying its
 // bytes, which was emitted when it was sent -- possibly a very long time ago.
 // Walking the whole history of a rollup in provider-sized chunks would be a
 // stampede, so the walk gives up, says so, and leaves the packet for a source
 // pointed at a provider that serves the range.
 const MaxLogChunks = 64
+
+// DefaultLogChunk is the widest span one log lookup asks for when nothing has
+// narrowed it and the router's deploy block is unknown: the walk back from the
+// head covers at most MaxLogChunks*DefaultLogChunk blocks (about 89 days of L1 at
+// 12s blocks). A configured or provider-narrowed LogSpan.Chunk takes precedence.
+const DefaultLogChunk = 10_000
 
 // Router is one ICS26Router to enumerate against.
 type Router struct {
@@ -66,6 +72,12 @@ type Router struct {
 	// Span is the log range policy, narrowed in place when the provider refuses
 	// a range. Owned by the caller's flush goroutine, like every LogSpan.
 	Span *relayerclient.LogSpan
+	// DeployBlock is the block the router was deployed at (router_deploy_block),
+	// 0 when not configured. No router log exists below it, so when it is known a
+	// lookup asks for [DeployBlock, head] in one call -- the whole of the
+	// router's history -- instead of walking DefaultLogChunk windows back from
+	// the head. A provider that refuses that range narrows it the usual way.
+	DeployBlock uint64
 	// Label prefixes every log line, e.g. "[eth->cosmos Flush]".
 	Label  string
 	Logger *log.Logger
@@ -179,15 +191,16 @@ func Sequences(lo, hi uint64) []uint64 {
 
 // SendLog finds the SendPacket log the router emitted for the packet whose
 // commitment the router holds at (clientID, sequence). Both are indexed topics,
-// so the filter is cheap; the range is the whole chain, narrowed the way the
-// scan loop narrows when the provider refuses it.
+// so the filter is cheap; the range is walked back from the head in bounded
+// chunks (see findLog), narrowed the way the scan loop narrows when the provider
+// refuses it.
 //
 // The filter can match MORE than one log: a client re-created on the same id
 // restarts its sequences, and the log index keeps every generation's send. Only
 // the packet whose commitment equals what the router holds is the current one,
 // so every candidate is checked and the older generations are passed over --
-// stopping at the first would rebuild a packet that closed long ago, and on a
-// full-range query the older log is the one that comes back first.
+// stopping at the first would rebuild a packet that closed long ago, and within
+// one chunk the older log is the one that comes back first.
 func (r Router) SendLog(ctx context.Context, clientID string, sequence uint64, commitment ethcommon.Hash) (*contractICS26Router.ContractICS26RouterSendPacket, bool, error) {
 	filterer, err := contractICS26Router.NewContractICS26RouterFilterer(r.Address, r.Client)
 	if err != nil {
@@ -260,15 +273,19 @@ func PacketCommitment(pkt contractICS26Router.IICS26RouterMsgsPacket, sequence *
 	return ethcommon.BytesToHash(channeltypesv2.CommitPacket(subscriber.EthPacketToCosmosPacket(pkt, sequence)))
 }
 
-// findLog runs one topic-filtered lookup over the whole chain, walking back from
-// the head in chunks once the provider has refused a range.
+// findLog runs one topic-filtered lookup, walking back from the head in chunks.
+// With a known DeployBlock the first chunk is [DeployBlock, head]; without one
+// it is the newest DefaultLogChunk blocks. Either way the span the provider
+// forced, once it has refused one, takes over.
 //
-// Full range first: a topic filter that matches one log is cheap for any
-// provider that does not cap the span, and most self-hosted nodes do not. On a
-// refusal the span is narrowed on the same ladder the scan loop uses and the
-// walk starts at the head, because the packets an enumeration is for are far
-// more likely recent than ancient. It stops after MaxLogChunks rather than
-// walking a rollup's whole history one provider-sized chunk at a time.
+// It never asks for [0, head]. The packets an enumeration is for are far more
+// likely recent than ancient, a full-range eth_getLogs is the most expensive
+// query a node can be asked -- once per probed sequence per pass -- and a node
+// with pruned history refuses any range that reaches below its cutoff (#537).
+// On a range refusal the span is narrowed on the same ladder the scan loop uses;
+// on a pruned-history refusal the walk learns the node's floor and stops there.
+// It stops after MaxLogChunks rather than walking a rollup's whole history one
+// provider-sized chunk at a time.
 func (r Router) findLog(ctx context.Context, sequence uint64, query func(*bind.FilterOpts) (bool, error)) (bool, error) {
 	head, err := r.Client.BlockNumber(ctx)
 	if err != nil {
@@ -278,10 +295,20 @@ func (r Router) findLog(ctx context.Context, sequence uint64, query func(*bind.F
 	if span == nil {
 		span = &relayerclient.LogSpan{}
 	}
-	from, to := uint64(0), head
+	from, to := max(r.DeployBlock, span.Floor), head
+	if from > to {
+		if r.DeployBlock > head {
+			r.logf("seq=%d: router_deploy_block %d is above the head %d; check that it names this chain's router",
+				sequence, r.DeployBlock, head)
+		}
+		return false, nil // the node keeps no history at or below its head
+	}
 	chunks := 0
 	for {
 		width := span.Width(from, to)
+		if span.Chunk == 0 && r.DeployBlock == 0 && width > DefaultLogChunk {
+			width = DefaultLogChunk
+		}
 		lo := from
 		if to-from+1 > width {
 			lo = to - width + 1
@@ -292,8 +319,13 @@ func (r Router) findLog(ctx context.Context, sequence uint64, query func(*bind.F
 			if found {
 				return true, nil
 			}
-			if lo == 0 || lo <= from {
-				return false, nil // the whole chain has been asked
+			if lo <= from {
+				if from == span.Floor && span.Floor > r.DeployBlock {
+					r.logf("seq=%d: no log between the provider's pruned-history floor %d and the head; "+
+						"its event is older than this provider keeps -- point this source at an archive provider to enumerate it",
+						sequence, from)
+				}
+				return false, nil // everything the provider serves has been asked
 			}
 			chunks++
 			if chunks >= MaxLogChunks {
@@ -305,6 +337,25 @@ func (r Router) findLog(ctx context.Context, sequence uint64, query func(*bind.F
 			}
 			to = lo - 1
 			continue
+		}
+		if relayerclient.IsPrunedHistory(err) {
+			floor, perr := r.prunedFloor(ctx, lo, to)
+			if perr != nil {
+				return false, fmt.Errorf("%s seq=%d: locate pruned-history floor in [%d,%d]: %w", r.Label, sequence, lo, to, perr)
+			}
+			if floor != span.Floor {
+				r.logf("provider has pruned history below block %d; log lookups start there from now on", floor)
+			}
+			span.Floor, from = floor, floor
+			if from > to {
+				// [lo,to] was all below the floor and everything above it was
+				// already asked.
+				r.logf("seq=%d: no log between the provider's pruned-history floor %d and the head; "+
+					"its event is older than this provider keeps -- point this source at an archive provider to enumerate it",
+					sequence, floor)
+				return false, nil
+			}
+			continue // re-ask [floor, to]: the part of the refused chunk the node still serves
 		}
 		if !relayerclient.IsLogRangeRejection(err) {
 			return false, fmt.Errorf("%s seq=%d logs [%d,%d]: %w", r.Label, sequence, lo, to, err)
@@ -319,6 +370,38 @@ func (r Router) findLog(ctx context.Context, sequence uint64, query func(*bind.F
 		span.Chunk = next.To
 		r.logf("provider refused a %d-block log range; narrowing to %d and walking back from %d: %v", width, next.To, to, err)
 	}
+}
+
+// prunedFloor finds the lowest block in (lo, to+1] the provider still serves logs
+// for, given that a query starting at lo was refused as pruned history. to+1
+// means the whole of [lo,to] is pruned.
+//
+// It bisects with single-block probes on a topic nothing emits, so a probe never
+// returns logs and never feeds the caller's query callback a range twice: the
+// callback sees [floor,to] exactly once, after this returns. A geth node
+// rejects on fromBlock alone, before it reads any log, so a probe is cheap.
+// The cost is about log2(chunk) calls, paid once per node: the floor is kept on
+// the LogSpan, and a node that prunes further is re-detected the same way.
+func (r Router) prunedFloor(ctx context.Context, lo, to uint64) (uint64, error) {
+	pruned, served := lo, to+1
+	for served-pruned > 1 {
+		mid := pruned + (served-pruned)/2
+		_, err := r.Client.FilterLogs(ctx, ethereum.FilterQuery{
+			FromBlock: new(big.Int).SetUint64(mid),
+			ToBlock:   new(big.Int).SetUint64(mid),
+			Addresses: []ethcommon.Address{r.Address},
+			Topics:    [][]ethcommon.Hash{{{}}}, // the zero topic: no event has it
+		})
+		switch {
+		case err == nil:
+			served = mid
+		case relayerclient.IsPrunedHistory(err):
+			pruned = mid
+		default:
+			return 0, fmt.Errorf("probe block %d: %w", mid, err)
+		}
+	}
+	return served, nil
 }
 
 func (r Router) logf(format string, args ...any) {

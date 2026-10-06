@@ -54,7 +54,7 @@ func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 
 	router := evmflush.Router{
 		Client: s.evm.EthClient(), Address: *s.evm.RouterContract(),
-		Span: &s.flush.span, Label: "[eth->cosmos Flush]", Logger: s.logger,
+		Span: &s.flush.span, DeployBlock: s.routerDeployBlock, Label: "[eth->cosmos Flush]", Logger: s.logger,
 	}
 	sends, err := s.unrelayedSends(queryCtx, router)
 	if err != nil {

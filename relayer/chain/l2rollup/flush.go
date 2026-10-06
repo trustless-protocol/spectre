@@ -61,7 +61,9 @@ func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, flushQueryTimeout)
 	defer cancel()
 
-	router := evmflush.Router{Client: s.eth, Address: s.router, Span: &s.flush.span, Label: "[l2->cosmos Flush]"}
+	router := evmflush.Router{
+		Client: s.eth, Address: s.router, Span: &s.flush.span, DeployBlock: s.routerDeployBlock, Label: "[l2->cosmos Flush]",
+	}
 	sends, err := s.unrelayedSends(queryCtx, router)
 	if err != nil {
 		return nil, err
