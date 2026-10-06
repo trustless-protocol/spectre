@@ -1,6 +1,11 @@
 package witness
 
-import "testing"
+import (
+	"bytes"
+	"crypto/ed25519"
+	"encoding/binary"
+	"testing"
+)
 
 func TestPadWithDummies(t *testing.T) {
 	real := []ValidatorSignature{{
@@ -60,5 +65,95 @@ func TestPadWithDummies(t *testing.T) {
 func TestDummyMsgLenPinnedToCircuit(t *testing.T) {
 	if DummyMsgLen != 18 {
 		t.Fatalf("DummyMsgLen = %d, want 18: changing it changes the circuit R1CS", DummyMsgLen)
+	}
+}
+
+// Layout: dummyMagic zero-padded to dummyMagicWidth || bucket(2 BE) || slot(2 BE).
+func TestDummyMsgBytesLayout(t *testing.T) {
+	cases := []struct{ bucket, slot uint16 }{{4, 0}, {4, 3}, {128, 127}, {0xFFFF, 0xFFFE}}
+	for _, c := range cases {
+		msg := DummyMsgBytes(c.bucket, c.slot)
+		if len(msg) != DummyMsgLen {
+			t.Fatalf("(%d,%d): len %d, want %d", c.bucket, c.slot, len(msg), DummyMsgLen)
+		}
+		if !bytes.HasPrefix(msg, []byte(dummyMagic)) {
+			t.Errorf("(%d,%d): missing magic prefix: %x", c.bucket, c.slot, msg)
+		}
+		if pad := msg[len(dummyMagic):dummyMagicWidth]; !bytes.Equal(pad, make([]byte, len(pad))) {
+			t.Errorf("(%d,%d): magic padding not zero: %x", c.bucket, c.slot, pad)
+		}
+		if got := binary.BigEndian.Uint16(msg[dummyMagicWidth:]); got != c.bucket {
+			t.Errorf("(%d,%d): bucket field %d", c.bucket, c.slot, got)
+		}
+		if got := binary.BigEndian.Uint16(msg[dummyMagicWidth+2:]); got != c.slot {
+			t.Errorf("(%d,%d): slot field %d", c.bucket, c.slot, got)
+		}
+	}
+}
+
+// Every padding slot of every supported bucket signs a distinct message.
+func TestDummyMsgBytesDistinct(t *testing.T) {
+	seen := map[string][2]int{}
+	for _, n := range []int{4, 8, 16, 32, 64, 128} {
+		for i := 0; i < n; i++ {
+			key := string(DummyMsgBytes(uint16(n), uint16(i)))
+			if prev, dup := seen[key]; dup {
+				t.Fatalf("(%d,%d) collides with (%d,%d)", n, i, prev[0], prev[1])
+			}
+			seen[key] = [2]int{n, i}
+		}
+	}
+}
+
+// Every dummy slot must carry a valid Ed25519 signature over DummyMsgBytes(n, slot):
+// the circuit verifies every slot, padding included. Pubkeys stay distinct across
+// the whole bucket so the ECIP divisor never hits the doubling branch.
+func TestPadWithDummiesSignaturesVerify(t *testing.T) {
+	for _, n := range []int{4, 8, 16, 32, 64, 128} {
+		padded, err := PadWithDummies(nil, n)
+		if err != nil {
+			t.Fatalf("n=%d: %v", n, err)
+		}
+		seenPub := map[string]bool{}
+		seenR := map[string]bool{}
+		for i, s := range padded {
+			if s.Active || s.Power != 0 {
+				t.Errorf("n=%d slot %d: padding must be inactive with zero power, got %+v", n, i, s)
+			}
+			if !bytes.Equal(s.SignedBytes, DummyMsgBytes(uint16(n), uint16(i))) {
+				t.Errorf("n=%d slot %d: signed bytes %x", n, i, s.SignedBytes)
+			}
+			if !ed25519.Verify(s.PublicKey, s.SignedBytes, s.Signature) {
+				t.Errorf("n=%d slot %d: dummy signature does not verify", n, i)
+			}
+			if seenPub[string(s.PublicKey)] || seenR[string(s.Signature[:32])] {
+				t.Errorf("n=%d slot %d: duplicate pubkey or R point", n, i)
+			}
+			seenPub[string(s.PublicKey)] = true
+			seenR[string(s.Signature[:32])] = true
+		}
+	}
+}
+
+func TestPadWithDummiesEdges(t *testing.T) {
+	full := make([]ValidatorSignature, 4)
+	for i := range full {
+		full[i] = ValidatorSignature{Index: i, Active: true}
+	}
+	padded, err := PadWithDummies(full, 4)
+	if err != nil {
+		t.Fatalf("exact fit: %v", err)
+	}
+	for i, s := range padded {
+		if !s.Active || s.Index != i {
+			t.Errorf("exact fit slot %d altered: %+v", i, s)
+		}
+	}
+
+	if padded, err := PadWithDummies(nil, 0); err != nil || len(padded) != 0 {
+		t.Errorf("n=0: got %d slots, err %v", len(padded), err)
+	}
+	if _, err := PadWithDummies(nil, 0x10000); err == nil {
+		t.Error("expected 16-bit slot encoding error for n=0x10000")
 	}
 }
