@@ -418,3 +418,86 @@ func TestClientHoldArmedByBackgroundUpdates(t *testing.T) {
 		}
 	})
 }
+
+// sdkSimulationRejection is what a folded Cosmos/L2 batch returns on a frozen
+// client: the SDK re-wraps the Simulate handler's client/29 as sdk/6, so the
+// error is neither the sentinel nor permanent (PR #536 review).
+var sdkSimulationRejection = fmt.Errorf("[SendCosmosTx] simulation failed; refusing to split atomic batch: %w",
+	&services.CosmosTxFailure{
+		Stage: services.CosmosStageSimulation, Code: 6, Codespace: "sdk",
+		Log: "rpc error: code = Unknown desc = 08-wasm-0 is Frozen: client state is not active: unknown request",
+	})
+
+// foldingStatusDest is a folding Cosmos destination that can report its
+// client's status, like chain/cosmos and chain/l2rollup.
+type foldingStatusDest struct {
+	foldingMockDest
+	active      bool
+	status      string
+	statusCalls int
+}
+
+func (d *foldingStatusDest) ClientActive(context.Context) (bool, string, error) {
+	d.statusCalls++
+	return d.active, d.status, nil
+}
+
+func TestClientHoldOnSimulationRejection(t *testing.T) {
+	t.Run("folded batch on a frozen client is held", func(t *testing.T) {
+		dst := &foldingStatusDest{foldingMockDest: foldingMockDest{enabled: true, foldErr: sdkSimulationRejection}, status: "Frozen"}
+		b := &mockBuilder{}
+		m := NewModule("eth->cosmos", "08-wasm-0", &mockSource{latest: 100}, dst, b)
+
+		if rq := m.handleBatch(context.Background(), threePackets()); len(rq) != 3 {
+			t.Fatalf("want all 3 kept, got %v", rq)
+		}
+		if m.clientHold.Load() == nil {
+			t.Fatal("a Simulate rejection on a frozen client must arm the hold")
+		}
+		// Held: the next flush builds no update and submits nothing.
+		built := b.built
+		m.handleBatch(context.Background(), threePackets())
+		if dst.foldCalls != 1 || b.built != built {
+			t.Fatalf("held batch re-proved or re-submitted: foldCalls=%d built=%d->%d", dst.foldCalls, built, b.built)
+		}
+	})
+
+	t.Run("unfolded batch on a frozen client is held", func(t *testing.T) {
+		dst := &statusDest{mockDest: mockDest{relayErr: sdkSimulationRejection}, status: "Frozen"}
+		m := NewModule("eth->cosmos", "08-wasm-0", &mockSource{latest: 100}, dst, &mockBuilder{})
+
+		if rq := m.handleBatch(context.Background(), threePackets()); len(rq) != 3 || m.clientHold.Load() == nil {
+			t.Fatalf("want all 3 kept and the path held, got rq=%v held=%v", rq, m.clientHold.Load() != nil)
+		}
+		m.handleBatch(context.Background(), threePackets())
+		if dst.relayCalls != 1 {
+			t.Fatalf("held batch re-submitted: %d RelayPackets calls", dst.relayCalls)
+		}
+	})
+
+	// A Simulate rejection on an ACTIVE client is a real message failure: it keeps
+	// the transient re-queue it had, after one status query.
+	t.Run("active client keeps the transient re-queue", func(t *testing.T) {
+		dst := &foldingStatusDest{foldingMockDest: foldingMockDest{enabled: true, foldErr: sdkSimulationRejection}, active: true, status: "Active"}
+		m := NewModule("eth->cosmos", "08-wasm-0", &mockSource{latest: 100}, dst, &mockBuilder{})
+
+		if rq := m.handleBatch(context.Background(), threePackets()); len(rq) != 3 {
+			t.Fatalf("want all 3 re-queued, got %v", rq)
+		}
+		if m.clientHold.Load() != nil || dst.statusCalls != 1 {
+			t.Fatalf("want no hold after exactly one status query, got held=%v statusCalls=%d",
+				m.clientHold.Load() != nil, dst.statusCalls)
+		}
+	})
+
+	// A transport failure carries no ABCI metadata and costs no status query.
+	t.Run("transport failure does not query the status", func(t *testing.T) {
+		dst := &foldingStatusDest{foldingMockDest: foldingMockDest{enabled: true, foldErr: errors.New("simulate ABCI query failed: connection refused")}, status: "Frozen"}
+		m := NewModule("eth->cosmos", "08-wasm-0", &mockSource{latest: 100}, dst, &mockBuilder{})
+
+		m.handleBatch(context.Background(), threePackets())
+		if dst.statusCalls != 0 || m.clientHold.Load() != nil {
+			t.Fatalf("a transport failure must not query or hold: statusCalls=%d", dst.statusCalls)
+		}
+	})
+}

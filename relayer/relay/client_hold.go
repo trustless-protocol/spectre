@@ -28,6 +28,26 @@ func isClientNotActive(err error) bool {
 	return errors.Is(err, services.ErrClientNotActive)
 }
 
+// mayBeClientRefusal reports whether a failure is one an inactive destination
+// client could have caused, and so is worth one status query to find out:
+//
+//   - the sentinel itself;
+//   - a deterministic rejection that lost its cause on the way -- an EVM revert
+//     whose selector the RPC omitted;
+//   - a Cosmos Simulate rejection. The SDK re-wraps every Simulate handler
+//     error as sdk/6, so a frozen client's client/29 is unrecognisable there,
+//     and the error is not even permanent: without this a folded Cosmos or L2
+//     batch on a frozen client re-proves and retries every flush, never held.
+//
+// Transport failures (RPC down, nonce, broadcast) match none of these, so they
+// never cost a query.
+func mayBeClientRefusal(err error) bool {
+	return isClientNotActive(err) ||
+		chain.IsPermanent(err) ||
+		errors.Is(err, services.ErrPermanentRelayFailure) ||
+		services.IsCosmosSimulationRejection(err)
+}
+
 // checkClientAtStartup reads the destination client's status once before the
 // workers start, so a relayer restarted against an already-frozen client says so
 // in one line instead of discovering it one packet at a time.
@@ -190,7 +210,7 @@ func (m *Module) holdIfClientInactive(ctx context.Context, err error) bool {
 		m.noteClientInactive("", err)
 		return true
 	}
-	if !chain.IsPermanent(err) && !errors.Is(err, services.ErrPermanentRelayFailure) {
+	if !mayBeClientRefusal(err) {
 		return false
 	}
 	status, inactive := m.destinationClientInactive(ctx)
@@ -211,7 +231,7 @@ func (m *Module) holdIfClientInactive(ctx context.Context, err error) bool {
 // batchMu is taken only when the failure could be the client's, never on the
 // transient failure paths.
 func (m *Module) armClientHoldFrom(ctx context.Context, err error) bool {
-	if !isClientNotActive(err) && !chain.IsPermanent(err) && !errors.Is(err, services.ErrPermanentRelayFailure) {
+	if !mayBeClientRefusal(err) {
 		return false
 	}
 	m.batchMu.Lock()

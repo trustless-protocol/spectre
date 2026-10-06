@@ -91,10 +91,13 @@ type cosmosOOGRPC struct {
 
 	checkTxOOG   int
 	deliverTxOOG int
-	broadcasts   int
-	txQueries    int
-	gasLimits    []uint64
-	feeAmounts   []int64
+	// simulation, when set, is the Simulate query's response; nil keeps the
+	// generic "simulation unavailable" failure the OOG tests rely on.
+	simulation *abci.ResponseQuery
+	broadcasts int
+	txQueries  int
+	gasLimits  []uint64
+	feeAmounts []int64
 }
 
 type cosmosRPCRequest struct {
@@ -123,6 +126,10 @@ func (m *cosmosOOGRPC) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "consensus_params":
 		m.writeError(w, req.ID, -32603, "block max unavailable")
 	case "abci_query":
+		if m.simulation != nil {
+			m.writeResult(w, req.ID, &coretypes.ResultABCIQuery{Response: *m.simulation})
+			return
+		}
 		m.writeResult(w, req.ID, &coretypes.ResultABCIQuery{
 			Response: abci.ResponseQuery{Code: 1, Codespace: "sdk", Log: "simulation unavailable"},
 		})
@@ -447,6 +454,51 @@ func TestCosmosClientNotActiveIsNotPermanent(t *testing.T) {
 	}
 	if isCosmosClientNotActiveError("client", 4) {
 		t.Fatal("client not found is a configuration error, not an inactive client")
+	}
+}
+
+// TestCosmosSimulationRejection_SDKEnvelope pins the shape a frozen client's
+// Simulate rejection actually has. The SDK (v0.53.3) answers the Simulate query
+// with sdk/6 and keeps client/29 only as text -- the response below is the one
+// recorded from a real BaseApp query in the PR #536 review. The code-based
+// classifier cannot recognise it, so the relay module's status fallback depends
+// on this error staying identifiable as a Simulate rejection.
+func TestCosmosSimulationRejection_SDKEnvelope(t *testing.T) {
+	configureCosmosOOGTest(t)
+	mock := &cosmosOOGRPC{t: t, simulation: &abci.ResponseQuery{
+		Code:      errortypes.ErrUnknownRequest.ABCICode(),
+		Codespace: errortypes.ErrUnknownRequest.Codespace(),
+		Log: "rpc error: code = Unknown desc = 08-wasm-0 is Frozen: client state is not active " +
+			"[cosmossdk.io/errors@v1.0.2/errors.go:151] with gas used: '123': unknown request",
+	}}
+	endpoint := newCosmosOOGEndpoint(t, mock)
+
+	// allowSplit=false is the atomic path folded Cosmos/L2 batches take.
+	_, _, err := (&Handler{}).sendCosmosTxBatchWithSplitting(
+		context.Background(), endpoint, []sdk.Msg{cosmosOOGTestMessage()}, 7, 10, false,
+	)
+	if err == nil {
+		t.Fatal("a rejected simulation must fail the atomic batch")
+	}
+	if !services.IsCosmosSimulationRejection(err) {
+		t.Fatalf("the rejection must stay identifiable as a Simulate rejection: %v", err)
+	}
+	var failure *services.CosmosTxFailure
+	if !errors.As(err, &failure) || failure.Codespace != "sdk" || failure.Code != 6 {
+		t.Fatalf("want the SDK envelope sdk/6 preserved, got %v", err)
+	}
+	// Documented limitation, not a goal: nothing at this layer can name the client.
+	if errors.Is(err, services.ErrClientNotActive) || errors.Is(err, services.ErrPermanentRelayFailure) {
+		t.Fatalf("sdk/6 must not be classified by code: %v", err)
+	}
+	if mock.broadcasts != 0 {
+		t.Fatalf("an atomic batch whose simulation was rejected must not broadcast, got %d", mock.broadcasts)
+	}
+
+	// A transport failure reaching the node carries no ABCI metadata, so it is not
+	// a Simulate rejection -- the module must not spend a status query on it.
+	if services.IsCosmosSimulationRejection(errors.New("simulate ABCI query failed: connection refused")) {
+		t.Fatal("a transport failure is not a Simulate rejection")
 	}
 }
 

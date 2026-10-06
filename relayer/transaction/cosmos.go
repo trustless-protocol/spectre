@@ -623,7 +623,7 @@ func (h *Handler) simulateMsgs(stdCtx context.Context, svcCtx services.CosmosEnd
 
 	if result.Response.Code != 0 {
 		return 0, newCosmosPreDeliverFailure(
-			"Simulation", result.Response.Code, result.Response.Codespace, result.Response.Log, nil,
+			services.CosmosStageSimulation, result.Response.Code, result.Response.Codespace, result.Response.Log, nil,
 		)
 	}
 

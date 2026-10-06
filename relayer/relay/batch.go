@@ -423,10 +423,16 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		return append(requeue, relayedIdx...)
 	}
 	if !chain.IsPermanent(err) {
-		// Transient (RPC, nonce, broadcast) → re-queue the whole batch for retry.
+		// Not permanent is not the same as transient. A Cosmos Simulate rejection
+		// is neither -- the SDK hides a frozen client's code behind sdk/6 -- so
+		// ask before re-queueing into a client that will refuse again.
 		if foldPlan != nil {
 			foldPlan.release()
 		}
+		if m.holdIfClientInactive(ctx, err) {
+			return append(requeue, relayedIdx...)
+		}
+		// Transient (RPC, nonce, broadcast) → re-queue the whole batch for retry.
 		log.Printf("[%s Relay] relay %d packet(s) at height %d: %v", m.name, len(packets), proofHeight, err)
 		return append(requeue, relayedIdx...)
 	}
@@ -698,6 +704,10 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 				m.waits.clearPacket(p) // dead for good — stop reporting a wait for it
 				log.Printf("[%s Relay] DROP packet (%s seq=%d height=%d, permanent): %v", m.name, p.Type, p.Sequence, p.Height, err)
 				continue
+			}
+			if m.holdIfClientInactive(ctx, err) {
+				requeue = append(requeue, relayedIdx[j:]...)
+				break
 			}
 			log.Printf("[%s Relay] isolated relay (%s seq=%d height=%d): %v", m.name, p.Type, p.Sequence, p.Height, err)
 			requeue = append(requeue, relayedIdx[j])
