@@ -49,6 +49,8 @@ type EVMNode struct {
 	// address, by positional topic (each position an OR-list), by block range.
 	logs        []RawLog
 	blockNumber uint64
+	// blockTime is the timestamp eth_getBlockByNumber reports, in seconds.
+	blockTime uint64
 	// logRangeCap, when non-zero, makes eth_getLogs refuse any span wider than
 	// it with logRangeMsg -- the shape of a provider's block-range limit.
 	logRangeCap uint64
@@ -211,6 +213,10 @@ func normalizeSelector(selector string) string {
 // FailCall makes eth_call return an RPC error, the shape a reverting contract
 // read takes.
 func (n *EVMNode) FailCall(err error) { n.withLock(func() { n.callErr = err }) }
+
+// SetBlockTime sets the timestamp (unix seconds) eth_getBlockByNumber reports:
+// the destination chain's clock, for checks that compare against block.timestamp.
+func (n *EVMNode) SetBlockTime(unixSeconds uint64) { n.withLock(func() { n.blockTime = unixSeconds }) }
 
 // SetBlockGasLimit changes the limit reported by eth_getBlockByNumber, which is
 // what batch-splitting decisions are measured against.
@@ -534,7 +540,7 @@ func (n *EVMNode) blockJSON() map[string]any {
 		"number":           "0x1",
 		"gasLimit":         hexUint(n.blockGasLim),
 		"gasUsed":          "0x0",
-		"timestamp":        "0x0",
+		"timestamp":        hexUint(n.blockTime),
 		"extraData":        "0x",
 		"mixHash":          zeroHash,
 		"nonce":            "0x0000000000000000",

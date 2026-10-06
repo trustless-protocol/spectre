@@ -24,9 +24,9 @@ var (
 	statusTestReplaced   = common.HexToAddress("0x00000000000000000000000000000000000000cc")
 )
 
-// fakeClientStatusRPC answers the two eth_calls CosmosClientStatus makes: the
-// router's getClient, and getClientState on whichever SpectreClient address is
-// asked. frozen maps a SpectreClient address to its isFrozen flag.
+// fakeClientStatusRPC answers the eth_calls CosmosClientStatus makes: the
+// router's getClient, getClientState on whichever SpectreClient address is
+// asked, and getPinnedSnapshot as a pre-#541 client (a revert). frozen maps a SpectreClient address to its isFrozen flag.
 func fakeClientStatusRPC(t *testing.T, registered common.Address, frozen map[common.Address]bool) EVMEndpoint {
 	t.Helper()
 	routerABI, err := routerContract.ContractICS26RouterMetaData.GetAbi()
@@ -61,6 +61,15 @@ func fakeClientStatusRPC(t *testing.T, registered common.Address, frozen map[com
 		input := call.Input
 		if len(input) == 0 {
 			input = call.Data
+		}
+		// A pre-#541 SpectreClient has no getPinnedSnapshot and reverts on the
+		// unknown selector, so the status falls back to the frozen flag alone.
+		if strings.HasPrefix(string(input), string(spectreABI.Methods["getPinnedSnapshot"].ID)) {
+			resp, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]any{"code": 3, "message": "execution reverted"}})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(resp)
+			return
 		}
 		var out []byte
 		switch {

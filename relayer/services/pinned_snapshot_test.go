@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,5 +136,57 @@ func TestRotationDueIn(t *testing.T) {
 	}
 	if got := rotationDueIn(anchor, time.Hour, now); got != 0 {
 		t.Fatalf("overdue = %v, want 0 (rotate now)", got)
+	}
+}
+
+// The #541 client by the chain's clock: Active up to the last second of the
+// trusting period, Expired from the boundary on. Expired is what arms the relay
+// module's client hold, so the refresh and rotation loops stop paying for
+// reverts.
+func TestCosmosClientStatus_ExpiresWithPinnedSnapshot(t *testing.T) {
+	ctx := context.Background()
+	snapshotTime := time.Date(2026, 8, 20, 12, 43, 56, 0, time.UTC)
+	node, evm := pinnedSnapshotNode(t, 6593231, snapshotTime, 57600)
+
+	node.SetBlockTime(uint64(snapshotTime.Add(16*time.Hour - time.Second).Unix()))
+	if got, err := CosmosClientStatus(ctx, evm, ""); err != nil || got != "Active" {
+		t.Fatalf("one second before expiry: got %q, %v; want Active", got, err)
+	}
+
+	node.SetBlockTime(uint64(snapshotTime.Add(16 * time.Hour).Unix()))
+	got, err := CosmosClientStatus(ctx, evm, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "Expired") || !strings.Contains(got, "migrateClient") {
+		t.Fatalf("at the trusting-period boundary: got %q; want an Expired status naming migrateClient", got)
+	}
+}
+
+// pinnedSnapshotExpired must agree with the contract's check to the second, or
+// the relayer either holds a client that still accepts updates or pays for a
+// revert on one that does not.
+func TestPinnedSnapshotExpired(t *testing.T) {
+	snapshot := time.Date(2026, 8, 20, 12, 43, 56, 900_000_000, time.UTC)
+	const period = 57600
+	for _, tc := range []struct {
+		name    string
+		now     time.Time
+		wantAge time.Duration
+		expired bool
+	}{
+		{"fresh", snapshot.Add(time.Hour), time.Hour, false},
+		// Sub-second parts are floored on both sides, as nanos / 1e9 is on-chain.
+		{"last valid second", snapshot.Add(16*time.Hour - time.Second), 16*time.Hour - time.Second, false},
+		{"boundary", snapshot.Add(16 * time.Hour), 16 * time.Hour, true},
+		{"#541", snapshot.Add(4042888 * time.Second), 4042888 * time.Second, true},
+		{"snapshot ahead of the chain clock", snapshot.Add(-time.Minute), 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			age, expired := pinnedSnapshotExpired(snapshot, tc.now, period)
+			if age != tc.wantAge || expired != tc.expired {
+				t.Fatalf("got age=%v expired=%v; want age=%v expired=%v", age, expired, tc.wantAge, tc.expired)
+			}
+		})
 	}
 }

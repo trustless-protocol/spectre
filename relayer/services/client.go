@@ -958,7 +958,8 @@ func bytesToBytes32(data []byte) [32]byte {
 const maxBootstrapCheckpointStepBack = 8
 
 // CosmosClientStatus reports the status of the SpectreClient-of-Cosmos that the
-// ICS26Router routes routerClientID to: "Active", "Frozen", or "Migrated".
+// ICS26Router routes routerClientID to: "Active", "Frozen", "Expired", or
+// "Migrated".
 //
 // The router is asked rather than the configured address alone, because a
 // governed migration (migrateClient) re-points the client id at a replacement
@@ -996,5 +997,55 @@ func CosmosClientStatus(stdCtx context.Context, evm EVMEndpoint, routerClientID 
 	if clientState.IsFrozen {
 		return "Frozen", nil
 	}
+	expired, err := pinnedSnapshotExpiredStatus(readCtx, evm, clientState.TrustingPeriod)
+	if err != nil {
+		return "", err
+	}
+	if expired != "" {
+		return expired, nil
+	}
 	return "Active", nil
+}
+
+// pinnedSnapshotExpiredStatus returns a non-empty "Expired (...)" status when the
+// pinned validator-set snapshot is a trusting period old by the destination
+// chain's clock.
+//
+// Expired is terminal, unlike Frozen: both update paths check this same snapshot
+// before anything else, so no update -- not even the rotation that would refresh
+// it -- can land again, and only a governed migrateClient recovers the path.
+// Reporting it as not active is what arms the relay module's client hold, so the
+// refresh and rotation loops stop paying for a proof and a reverting
+// transaction on every attempt (#541).
+//
+// A pre-#541 client has no snapshot getter, and its expiry cannot be read from
+// the EVM side alone; it reports "" (not expired) as before.
+func pinnedSnapshotExpiredStatus(stdCtx context.Context, evm EVMEndpoint, trustingPeriodSeconds uint32) (string, error) {
+	snapshotTime, supported, err := fetchPinnedSnapshotTime(stdCtx, evm)
+	if err != nil || !supported {
+		return "", err
+	}
+	nowNanos, err := ethLatestHeaderTimestampNanos(stdCtx, evm, defaultFetchTimeout)
+	if err != nil {
+		return "", fmt.Errorf("read destination chain time: %w", err)
+	}
+	chainNow := time.Unix(0, nowNanos.Int64()).UTC()
+	age, expired := pinnedSnapshotExpired(snapshotTime, chainNow, trustingPeriodSeconds)
+	if !expired {
+		return "", nil
+	}
+	return fmt.Sprintf("Expired (pinned validator-set snapshot from %s is %s old, trusting period %s; "+
+		"no update can land again -- replace the client with a governed migrateClient)",
+		snapshotTime.Format(time.RFC3339), age, time.Duration(trustingPeriodSeconds)*time.Second), nil
+}
+
+// pinnedSnapshotExpired mirrors SpectreClient._validateConsensusStateTrustingPeriod:
+// whole seconds on both sides, a snapshot in the future counts as age zero, and
+// the client is expired once age >= trustingPeriod.
+func pinnedSnapshotExpired(snapshotTime, chainNow time.Time, trustingPeriodSeconds uint32) (time.Duration, bool) {
+	var ageSeconds int64
+	if snapshotSec, nowSec := snapshotTime.Unix(), chainNow.Unix(); snapshotSec < nowSec {
+		ageSeconds = nowSec - snapshotSec
+	}
+	return time.Duration(ageSeconds) * time.Second, ageSeconds >= int64(trustingPeriodSeconds)
 }
