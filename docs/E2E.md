@@ -331,16 +331,37 @@ round-trip; the `[UpdateCosmosClient]` log line reports the chosen bucket.
 Optional, for every EVM source. The packet-flush backstop fetches each outstanding
 packet's event with `eth_getLogs`; this setting picks the block range it searches.
 
-- **Unset (`0`):** walks back from the head in windows of **10 000 blocks, at most 64
-  windows — 640 000 blocks**. Both numbers are fixed. That is about 89 days on L1
-  (12 s blocks) but about 15 days on a 2 s L2. An older event is skipped with
-  `no log in the newest N blocks ... giving up on it this pass`.
-- **Set:** one query over `[router_deploy_block, head]`. If the provider caps the
-  range, the relayer narrows it, but never goes below `router_deploy_block`.
+- **Unset (`0`):** walks back from the head at most **64 windows**. A window is the
+  first of these that applies:
+  1. `log_scan_chunk`, on an L2 return module that sets it;
+  2. the span the provider narrowed to after refusing a wider range — once narrowed,
+     it stays narrowed for every later lookup in the process;
+  3. otherwise **10 000 blocks**.
+
+  So the walk covers `64 × window` blocks, not a fixed 640 000. With the 10 000
+  default that is about 89 days on L1 (12 s blocks), about 15 days on a 2 s L2, and
+  about 44 hours on Arbitrum (~0.25 s blocks). With `log_scan_chunk: 10` (Alchemy free
+  tier) it is **640 blocks — under 3 minutes on Arbitrum**. An older event is skipped
+  with `no log in the newest N blocks ... giving up on it this pass`; `N` is
+  approximate if the window narrowed during that walk.
+- **Set:** the first query is one call over `[router_deploy_block, head]`, which
+  covers the whole history **only if the provider serves that range in one call**. If
+  it refuses, the relayer narrows the window and walks back from the head as above:
+  never below `router_deploy_block`, but still capped at 64 windows. On a provider
+  with a range cap, a deploy block therefore does **not** reach events older than
+  `64 × cap` blocks — for those, use a provider without a range cap. On an uncapped
+  provider, a deploy block far below the oldest outstanding packet costs one wider
+  `eth_getLogs` per outstanding sequence per flush pass.
 
 On a node with pruned history (`pruned history unavailable`), the relayer starts at
 the lowest block the node still serves and logs `provider has pruned history below
-block N`. Events older than that need an archive provider.
+block N`. Events older than that need an archive provider. This mostly hits L1 geth
+nodes.
+
+| Log line | Meaning |
+|----------|---------|
+| `[... Flush] provider has pruned history below block N` | The node dropped older logs; lookups start at N. Older packets need an archive provider. |
+| `[... Flush] seq=N: no log in the newest M blocks ... giving up` | The event is older than the 64-window walk. On an uncapped provider, set `router_deploy_block`. On a capped one (`provider refused a ... log range` earlier in the log, or `log_scan_chunk` set), a deploy block does not help; use a provider without a range cap. |
 
 **Value:** the block the router **proxy** was deployed at (`ics26_address`, or
 `l2_router` on an L2). Too low only widens the query; too high silently hides older
@@ -1033,7 +1054,7 @@ instead of building one; `L2_TIMEOUT_WINDOW` and `L2_TIMEOUT_SETTLE` tune the wa
 | Arbitrum attestor attests the wrong chain (`src_chain=arbdev`, `l2_chain_id=412346`) despite `CHAIN_PROFILE=arbitrum-sepolia` | A leftover `.arbitrum-devnet-run/attestor.env` was sourced; its exports are real env vars and beat the profile. Fixed — a non-`devnet` `CHAIN_PROFILE` now ignores the handoff and logs that it did. Delete the directory if you are on an older checkout. |
 | `eth_getLogs` rejected: `you can make eth_getLogs requests with up to a 10 block range` | The provider caps the log span. Set `log_scan_chunk` in the `l2_to_cosmos` module to that cap (Alchemy free tier 10, drpc 10 000). |
 | `[... Flush] provider has pruned history below block N` | The node dropped older logs; lookups start at N. Older packets need an archive provider — see [`router_deploy_block`](#router_deploy_block-where-packet-flush-log-lookups-start). |
-| `[... Flush] seq=N: no log in the newest M blocks ... giving up` | The event is older than the 640 000-block walk. Set [`router_deploy_block`](#router_deploy_block-where-packet-flush-log-lookups-start). |
+| `[... Flush] seq=N: no log in the newest M blocks ... giving up` | The event is older than the 64-window walk — with `log_scan_chunk: 10` that is only 640 blocks, under 3 minutes on Arbitrum. A capped provider cannot reach it, even with `router_deploy_block` set; use one without a range cap (then `router_deploy_block` covers the whole history). See [`router_deploy_block`](#router_deploy_block-where-packet-flush-log-lookups-start). |
 | Return direction sees no events at all, forward direction fine | `l2_ics26_client_id` does not equal the forward module's `ics26_client_id`. The L2 subscriber filters events on it, so a mismatch drops every one silently. |
 
 ## Local Cosmos ↔ Base E2E
