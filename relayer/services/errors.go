@@ -52,6 +52,15 @@ var ErrUnresolvedEVMNonce = errors.New("the outcome of an abandoned EVM nonce is
 // make progress, so it is treated as transient (re-queued), not permanent.
 var ErrValidatorCacheRace = errors.New("validator cache race")
 
+// ErrForcedRotationNotReady marks a forced pinned-set rotation that could not be
+// built because the on-chain client already sits at the target height.
+// updateConsensusState requires a strictly newer height (NonMonotonicHeightUpdate),
+// so the re-pin has to wait for the source chain to produce a block. Reporting
+// this as success would let the periodic rotation wait a full interval with the
+// pinned snapshot unrefreshed (#541); it is transient — retrying once the chain
+// has advanced succeeds.
+var ErrForcedRotationNotReady = errors.New("forced rotation not ready: client already at target height")
+
 // ErrClientNotActive marks a destination rejection caused by the light client
 // itself, not by anything in the submitted payload: the SpectreClient on EVM
 // reverted with FrozenClientState(), or ibc-go on Cosmos reported the client as

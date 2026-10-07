@@ -165,9 +165,11 @@ const hopExhaustionSampleLimit = 4
 // (updateApplicationState vs updateConsensusState — the latter rotates the
 // pinned validator set to the block's nextValidatorsHash).
 //
-// When the on-chain client is already caught up AND its pinned set is current,
-// the builder returns HasMsg=false and this function submits nothing, returning
-// the current light block so the caller can refresh its cached timestamp/height.
+// Because the rotation is forced, a client already at the chain's latest height
+// (e.g. a packet update landed just before this tick) is not "nothing to do": the
+// builder fails with ErrForcedRotationNotReady, which this returns so the
+// periodic loop retries on its short failure backoff rather than waiting a full
+// rotation interval with the pinned snapshot unrefreshed (#541).
 //
 // RLY-01: validator churn can force BuildCosmosClientUpdateMsg onto a
 // multi-hop path that only advances the client to one intermediate height per
@@ -309,7 +311,9 @@ type hopProbeResult struct {
 //
 // HasMsg=false signals the on-chain client is already at the latest block —
 // no update needed; LightBlock still returned so callers can use it for
-// membership proofs.
+// membership proofs. With forceRotation=true that case is an error wrapping
+// ErrForcedRotationNotReady instead: the rotation is still owed, and only a
+// newer height can carry it.
 //
 // targetHeight overrides the update destination: 0 uses the chain's current
 // latest height; a nonzero value must not exceed it. This is the RLY-01
@@ -361,6 +365,11 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 	}
 	trustedBlock = onChainTrusted
 	if trustedBlock >= target {
+		if forcedRotationBlockedAtHeight(forceRotation, trustedBlock, target) {
+			log.Printf("[UpdateCosmosClient] forced rotation owed but client already at target (trusted=%d, target=%d); retry once the chain advances",
+				trustedBlock, target)
+			return nil, fmt.Errorf("trusted=%d target=%d: %w", trustedBlock, target, ErrForcedRotationNotReady)
+		}
 		if trustedBlock == target {
 			log.Printf("[UpdateCosmosClient] client is up to date (trusted=%d, target=%d), skipping tx",
 				trustedBlock, target)
