@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"relayer/chain"
+	"relayer/services"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -624,3 +627,125 @@ func TestRefreshClientTo_ForcesRotation(t *testing.T) {
 		}
 	})
 }
+
+// Review of 2e26071: a packet update can bring the client to the source head
+// without rotating the pinned snapshot. The forced refresh used to stop at
+// "height already covered" and return nil before BuildRotation was ever asked,
+// so the anti-expiry loop reported "refreshed" with the deadline unchanged.
+func TestRefreshClientTo_RotationOwedAtCoveredHeight(t *testing.T) {
+	t.Run("a covered height still asks for the rotation, and reports it owed", func(t *testing.T) {
+		b := &rotatingBuilder{}
+		dst := &mockDest{}
+		m := NewModule("test", "client-0", &mockSource{latest: 50}, dst, b)
+
+		if err := m.updateClientTo(context.Background(), 50); err != nil {
+			t.Fatalf("packet update: %v", err)
+		}
+		err := m.refreshClientTo(context.Background(), 50)
+		if !errors.Is(err, services.ErrForcedRotationNotReady) {
+			t.Fatalf("refresh at a covered height = %v, want ErrForcedRotationNotReady", err)
+		}
+		if b.rotations != 1 {
+			t.Fatalf("refresh must still ask for the rotation, got %d BuildRotation calls", b.rotations)
+		}
+		if len(dst.updates) != 1 {
+			t.Fatalf("only the packet update may be submitted, a rotation that installs nothing must not be; got %d updates", len(dst.updates))
+		}
+	})
+
+	// The real Groth16 builder says it itself when the source has not moved
+	// (services.ErrForcedRotationNotReady); that must reach the loop intact.
+	t.Run("the builder's own not-ready error reaches the caller", func(t *testing.T) {
+		b := &ownedRotationBuilder{notReady: 1}
+		m := NewModule("test", "client-0", &mockSource{latest: 50}, &mockDest{}, b)
+
+		if err := m.refreshClientTo(context.Background(), 50); !errors.Is(err, services.ErrForcedRotationNotReady) {
+			t.Fatalf("got %v, want ErrForcedRotationNotReady", err)
+		}
+	})
+
+	// The short-circuit is kept where nothing is owed: a packet update, and a
+	// builder with no snapshot to rotate.
+	t.Run("a covered height is still a no-op without a rotation owed", func(t *testing.T) {
+		for name, b := range map[string]chain.Builder{"packet update on a rotating builder": &rotatingBuilder{}, "plain builder": &mockBuilder{}} {
+			m := NewModule("test", "client-0", &mockSource{latest: 50}, &mockDest{}, b)
+			m.lastHeight = 50
+			var err error
+			if name == "plain builder" {
+				err = m.refreshClientTo(context.Background(), 50)
+			} else {
+				err = m.updateClientTo(context.Background(), 50)
+			}
+			if err != nil {
+				t.Fatalf("%s: covered height = %v, want nil", name, err)
+			}
+		}
+	})
+}
+
+// ownedRotationBuilder answers BuildRotation the way the Groth16 pipeline does
+// while the source is still at the client's height: ErrForcedRotationNotReady,
+// notReady times, then a real rotation one block on. Counted atomically, since
+// the loop test reads it while refreshLoop runs.
+type ownedRotationBuilder struct {
+	notReady  int32
+	rotations atomic.Int32
+}
+
+func (b *ownedRotationBuilder) Name() string { return "owed-rotation" }
+
+func (b *ownedRotationBuilder) Build(context.Context, []byte) (chain.ClientUpdate, error) {
+	return chain.ClientUpdate{}, errors.New("refresh must not take the plain build")
+}
+
+func (b *ownedRotationBuilder) BuildRotation(_ context.Context, header []byte) (chain.ClientUpdate, error) {
+	if b.rotations.Add(1) <= b.notReady {
+		return chain.ClientUpdate{}, fmt.Errorf("groth16: build cosmos update: %w", services.ErrForcedRotationNotReady)
+	}
+	return chain.ClientUpdate{Height: uint64(header[0]) + 1, Payloads: [][]byte{header}}, nil
+}
+
+// The loop half: an owed rotation is neither a success nor a failure. It must
+// not log "refreshed", must not grow a failure backoff (nothing failed), and
+// must keep retrying until a block lets the rotation land.
+func TestRefreshLoop_RetriesAnOwedRotation(t *testing.T) {
+	withFastRefreshTick(t)
+	b := &ownedRotationBuilder{notReady: 3}
+	dst := &mockDest{expiresAt: time.Now(), trustingPeriod: time.Hour} // inside the margin: due
+	m := NewModule("cosmos->eth", "client-0", &mockSource{latest: 50}, dst, b)
+
+	var logs bytes.Buffer
+	var logMu sync.Mutex
+	prevOut := log.Writer()
+	log.SetOutput(writerFunc(func(p []byte) (int, error) { logMu.Lock(); defer logMu.Unlock(); return logs.Write(p) }))
+	t.Cleanup(func() { log.SetOutput(prevOut) })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { defer close(done); m.refreshLoop(ctx) }()
+
+	waitFor(t, ctx, func() bool { return b.rotations.Load() > 3 }, "refresh never retried the owed rotation")
+	cancel()
+	<-done
+
+	if len(dst.updates) == 0 {
+		t.Fatal("the rotation must land once the source moves")
+	}
+	logMu.Lock()
+	out := logs.String()
+	logMu.Unlock()
+	head, _, _ := strings.Cut(out, "advanced the client") // what the loop said while the rotation was owed
+	if !strings.Contains(head, "pinned snapshot is unrotated") {
+		t.Errorf("the owed rotation must be logged as such, got:\n%s", head)
+	}
+	if strings.Contains(head, "next attempt in") {
+		t.Errorf("an owed rotation is not a failure and must not be backed off, got:\n%s", head)
+	}
+}
+
+// writerFunc adapts a function to io.Writer, so a test can capture log output
+// under its own lock while the loop writes from another goroutine.
+type writerFunc func(p []byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }

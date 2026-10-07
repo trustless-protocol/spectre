@@ -707,8 +707,17 @@ func (m *Module) updateClient(ctx context.Context, height uint64, forceRotation 
 // moved. Both halves matter: without the first, an adapter that simply cannot
 // prove as far as asked would be climbed at forever; without the second, a hop
 // that installs nothing would loop without progress.
+//
+// A forced step owes a rotation, not a height. "Already covered" is therefore
+// never success for it: a packet update can have brought the client to the
+// source head while leaving the pinned snapshot -- and so the expiry -- exactly
+// where it was. It goes to BuildRotation anyway, and a result that installs
+// nothing comes back as services.ErrForcedRotationNotReady, so the refresh
+// retries instead of reporting a refresh that did not happen.
 func (m *Module) updateClientStepLocked(ctx context.Context, height uint64, forceRotation bool) (again bool, err error) {
-	if height <= m.lastHeight {
+	_, rotating := m.builder.(chain.RotatingBuilder)
+	owesRotation := forceRotation && rotating
+	if height <= m.lastHeight && !owesRotation {
 		return false, nil // already covered — nothing to prove
 	}
 
@@ -730,12 +739,18 @@ func (m *Module) updateClientStepLocked(ctx context.Context, height uint64, forc
 			m.lastHeight = update.Height
 		}
 		m.recordClientUpdate(update)
+		if owesRotation {
+			return false, rotationNotLanded(update.Height)
+		}
 		return false, nil
 	}
 	// A stale update (at or below what we already trust) is skipped without a tx.
 	// This is also the anti-spin guard for the climb: a hop that installs nothing
 	// ends the loop instead of repeating.
 	if update.Height <= m.lastHeight {
+		if owesRotation {
+			return false, rotationNotLanded(update.Height)
+		}
 		return false, nil
 	}
 
@@ -745,6 +760,12 @@ func (m *Module) updateClientStepLocked(ctx context.Context, height uint64, forc
 	m.lastHeight = update.Height
 	m.recordClientUpdate(update)
 	return update.IsHop, nil
+}
+
+// rotationNotLanded reports a forced step that submitted nothing: the rotation
+// is still owed, and only a new source block can carry it.
+func rotationNotLanded(height uint64) error {
+	return fmt.Errorf("rotation build at %d installs nothing: %w", height, services.ErrForcedRotationNotReady)
 }
 
 // buildUpdate picks the build the caller needs. forceRotation falls back to

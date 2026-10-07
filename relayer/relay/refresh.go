@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"relayer/services"
@@ -125,6 +126,20 @@ func (m *Module) refreshLoop(ctx context.Context) {
 			// the pinned snapshot's, which only a rotation moves. A plain update
 			// here lands as updateApplicationState and the client expires anyway.
 			if err := m.refreshClientTo(ctx, latest); err != nil {
+				// The source has no block past the client yet, so the rotation the
+				// refresh owes cannot be built. Nothing failed -- no proof, no tx --
+				// so this is not backed off; it stays owed and the next tick, which
+				// re-reads the unchanged expiry, tries again. The same case
+				// periodicUpdateLoop polls for. Checked before the hold, which must
+				// not read a caught-up source as an inactive client.
+				if errors.Is(err, services.ErrForcedRotationNotReady) {
+					backoff, retryAt = 0, time.Time{}
+					lastFailure = "rotation owed, waiting for a source block past " + strconv.FormatUint(latest, 10)
+					log.Printf("[%s UpdateClient] refresh: client already at %d but its pinned snapshot is unrotated; "+
+						"retrying on the next tick (%s of trust left)", m.name, latest, trustLeft)
+					m.beats.record(workerRefresh, lastFailure)
+					continue
+				}
 				// The hold now owns the retry cadence: the next tick skips on
 				// clientStillHeld and probes, and the refresh runs again as soon as
 				// the client is active -- not after a backoff built from reverts.
