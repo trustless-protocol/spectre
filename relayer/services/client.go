@@ -32,6 +32,7 @@ import (
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/core/types"
 )
 
 const ICS26_IBC_STORAGE_SLOT = "0x1260944489272988d9df285149b5aa1b0f48f2136d6f416159f840a3e0747600"
@@ -267,7 +268,12 @@ func fetchPinnedSnapshotTimeAt(stdCtx context.Context, ctx EVMEndpoint, block *b
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("failed to create Spectre client instance: %w", err)
 	}
-	snapshot, err := spectre.GetPinnedSnapshot(&bind.CallOpts{Context: stdCtx, BlockNumber: block})
+	// Bounded here, not only by callers: CosmosClientStatus hands its expiry
+	// check the parent context so the confirming read can wait out a lagging
+	// backend, and every read inside it still needs a ceiling.
+	readCtx, cancel := fetchCtx(stdCtx, defaultFetchTimeout)
+	defer cancel()
+	snapshot, err := spectre.GetPinnedSnapshot(&bind.CallOpts{Context: readCtx, BlockNumber: block})
 	if err != nil {
 		if IsEVMRevert(err) {
 			warnNoPinnedSnapshotGetter.Do(func() {
@@ -1016,7 +1022,9 @@ func CosmosClientStatus(stdCtx context.Context, evm EVMEndpoint, routerClientID 
 	if clientState.IsFrozen {
 		return "Frozen", nil
 	}
-	expired, err := pinnedSnapshotExpiredStatus(readCtx, evm, clientState.TrustingPeriod)
+	// stdCtx, not readCtx: each read inside takes its own fetch timeout, and the
+	// confirming read may wait out a lagging backend for longer than one.
+	expired, err := pinnedSnapshotExpiredStatus(stdCtx, evm, clientState.TrustingPeriod)
 	if err != nil {
 		return "", err
 	}
@@ -1037,38 +1045,136 @@ func CosmosClientStatus(stdCtx context.Context, evm EVMEndpoint, routerClientID 
 // refresh and rotation loops stop paying for a proof and a reverting
 // transaction on every attempt (#541).
 //
-// The snapshot and the clock are read at ONE block: the latest header first,
-// then getPinnedSnapshot at that header's number. Two independent "latest"
-// reads can straddle a rotation that lands just before the deadline -- the old
-// snapshot from before it, the timestamp from after -- and that pairing reports
-// a live client as Expired, arming the hold and recommending a migration it
-// does not need (review of 65786fb). At one block the pair is exactly what the
-// contract's own check would see there.
+// The snapshot and the clock are read as a PAIR at one block: the latest
+// header first, then getPinnedSnapshot at that header's number. Two
+// independent "latest" reads can straddle a rotation that lands just before the
+// deadline -- the old snapshot from before it, the timestamp from after -- and
+// that pairing reports a live client as Expired, arming the hold and
+// recommending a migration it does not need (review of 65786fb). Only this pair
+// is pinned: CosmosClientStatus reads the router's getClient and the client
+// state at "latest", which is sound because neither the routing nor the
+// trusting period moves between two blocks the way the snapshot can.
+//
+// The pinned read can fail where a "latest" one would not. A load-balanced RPC
+// (Infura, Alchemy) may serve the header from one backend and the eth_call from
+// another a block behind, which answers "header not found". That is not a
+// revert, and an error here makes destinationClientInactive answer "do not
+// know" -- the drop path. So a failed pinned read falls back to the snapshot at
+// "latest", trusted in ONE direction only: a backend behind the header can only
+// show an older snapshot, overstating its age, so a fallback that says "not
+// expired" is safe to report (Active). One that says expired may be that lag,
+// and is reported only after a pinned read confirms it.
+//
+// The confirming read is pinned at the SAME block as the first, retried with a
+// doubling delay for up to pinnedConfirmBudget. A backend a block behind holds
+// that block one block time later; re-reading the head instead would ask the
+// same lagging backend for a block it is still one behind on. The budget covers
+// an L1 slot (12s) with room to spare, so the common lag resolves to an answer
+// rather than an error -- an error here is "do not know", which is the drop
+// path. The wait happens only on this error path.
 //
 // A pre-#541 client has no snapshot getter, and its expiry cannot be read from
 // the EVM side alone; it reports "" (not expired) as before.
 func pinnedSnapshotExpiredStatus(stdCtx context.Context, evm EVMEndpoint, trustingPeriodSeconds uint32) (string, error) {
-	headCtx, cancelHead := fetchCtx(stdCtx, defaultFetchTimeout)
-	head, err := evm.EthClient().HeaderByNumber(headCtx, nil)
-	cancelHead()
+	head, err := readDestinationHead(stdCtx, evm)
 	if err != nil {
-		return "", fmt.Errorf("read destination chain head: %w", err)
-	}
-	if head == nil || head.Number == nil || head.Time == 0 {
-		return "", fmt.Errorf("read destination chain head: header is nil or has no number or timestamp")
-	}
-	snapshotTime, supported, err := fetchPinnedSnapshotTimeAt(stdCtx, evm, head.Number)
-	if err != nil || !supported {
 		return "", err
 	}
+	snapshotTime, supported, pinnedErr := fetchPinnedSnapshotTimeAt(stdCtx, evm, head.Number)
+	if pinnedErr == nil {
+		if !supported {
+			return "", nil
+		}
+		return expiredStatusAt(snapshotTime, head, trustingPeriodSeconds), nil
+	}
+
+	snapshotTime, supported, err = fetchPinnedSnapshotTime(stdCtx, evm)
+	if err != nil {
+		return "", fmt.Errorf("pinned snapshot at block %s: %v; at latest: %w", head.Number, pinnedErr, err)
+	}
+	if !supported {
+		return "", nil
+	}
+	if expiredStatusAt(snapshotTime, head, trustingPeriodSeconds) == "" {
+		return "", nil
+	}
+
+	// The fallback says expired; confirm at the first read's block before
+	// saying so.
+	snapshotTime, supported, err = confirmPinnedSnapshotAt(stdCtx, evm, head.Number)
+	if err != nil {
+		return "", fmt.Errorf("confirm expiry: pinned snapshot at block %s: %w (first pinned read: %v)",
+			head.Number, err, pinnedErr)
+	}
+	if !supported {
+		return "", nil
+	}
+	return expiredStatusAt(snapshotTime, head, trustingPeriodSeconds), nil
+}
+
+// The confirming read's retry schedule: first wait, then doubling, until the
+// total wait would pass the budget (1s, 2s, 4s, 8s -- reads at 1s, 3s, 7s, 15s).
+// Variables so a test can shrink them.
+var (
+	pinnedConfirmFirstDelay = time.Second
+	pinnedConfirmBudget     = 15 * time.Second
+)
+
+// confirmPinnedSnapshotAt reads the snapshot at block, waiting for a lagging
+// backend to reach it. A revert is an answer (supported=false) and ends the
+// retry like a success; ctx cancellation ends it with ctx's error.
+func confirmPinnedSnapshotAt(stdCtx context.Context, evm EVMEndpoint, block *big.Int) (time.Time, bool, error) {
+	delay, waited := pinnedConfirmFirstDelay, time.Duration(0)
+	var lastErr error
+	for waited+delay <= pinnedConfirmBudget {
+		timer := time.NewTimer(delay)
+		select {
+		case <-stdCtx.Done():
+			timer.Stop()
+			if lastErr != nil {
+				return time.Time{}, false, fmt.Errorf("%w (last read: %v)", stdCtx.Err(), lastErr)
+			}
+			return time.Time{}, false, stdCtx.Err()
+		case <-timer.C:
+		}
+		waited += delay
+		delay *= 2
+
+		snapshotTime, supported, err := fetchPinnedSnapshotTimeAt(stdCtx, evm, block)
+		if err == nil {
+			return snapshotTime, supported, nil
+		}
+		lastErr = err
+	}
+	return time.Time{}, false, fmt.Errorf("still failing after waiting %s: %w", waited, lastErr)
+}
+
+// readDestinationHead reads the latest header, whose number pins the snapshot
+// read and whose timestamp is the contract's block.timestamp there.
+func readDestinationHead(stdCtx context.Context, evm EVMEndpoint) (*types.Header, error) {
+	headCtx, cancel := fetchCtx(stdCtx, defaultFetchTimeout)
+	defer cancel()
+	head, err := evm.EthClient().HeaderByNumber(headCtx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("read destination chain head: %w", err)
+	}
+	if head == nil || head.Number == nil || head.Time == 0 {
+		return nil, fmt.Errorf("read destination chain head: header is nil or has no number or timestamp")
+	}
+	return head, nil
+}
+
+// expiredStatusAt is the Expired status for a snapshot judged by one header's
+// clock, or "" when it is still inside the trusting period.
+func expiredStatusAt(snapshotTime time.Time, head *types.Header, trustingPeriodSeconds uint32) string {
 	chainNow := time.Unix(int64(head.Time), 0).UTC()
 	age, expired := pinnedSnapshotExpired(snapshotTime, chainNow, trustingPeriodSeconds)
 	if !expired {
-		return "", nil
+		return ""
 	}
 	return fmt.Sprintf("Expired (pinned validator-set snapshot from %s is %s old, trusting period %s; "+
 		"no update can land again -- replace the client with a governed migrateClient)",
-		snapshotTime.Format(time.RFC3339), age, time.Duration(trustingPeriodSeconds)*time.Second), nil
+		snapshotTime.Format(time.RFC3339), age, time.Duration(trustingPeriodSeconds)*time.Second)
 }
 
 // pinnedSnapshotExpired mirrors SpectreClient._validateConsensusStateTrustingPeriod:

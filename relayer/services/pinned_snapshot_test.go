@@ -225,6 +225,115 @@ func TestCosmosClientStatus_ReadsSnapshotAndClockAtOneBlock(t *testing.T) {
 	}
 }
 
+// Review of bfbbd2a: on a load-balanced RPC the header and the pinned eth_call
+// can land on different backends, and one a block behind answers "header not
+// found". That is not a revert, and an error status makes
+// destinationClientInactive answer "do not know" -- the drop path. A failed
+// pinned read falls back to "latest", believed only when it says not expired;
+// Expired needs a pinned read to confirm it.
+func TestCosmosClientStatus_PinnedReadOnALaggingBackend(t *testing.T) {
+	ctx := context.Background()
+	const period = 57600 // 16h
+	const head = 101
+	headTime := time.Date(2026, 8, 21, 4, 44, 8, 0, time.UTC)
+	staleSnapshot := headTime.Add(-16*time.Hour - 12*time.Second) // past its deadline at head
+	const headerNotFound = "header not found"
+
+	spectreABI, err := spectreContract.ContractSpectreClientMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotAt := func(node *rpcmock.EVMNode, block uint64, at time.Time) {
+		out, err := spectreABI.Methods["getPinnedSnapshot"].Outputs.Pack(uint64(6650000), big.NewInt(at.UnixNano()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		node.SetCallResultForAt(block, hexutil.Encode(spectreABI.Methods["getPinnedSnapshot"].ID), hexutil.Encode(out))
+	}
+	setup := func(latestSnapshot time.Time) (*rpcmock.EVMNode, EVMEndpoint) {
+		node, evm := pinnedSnapshotNode(t, 6593231, latestSnapshot, period)
+		node.SetBlockNumber(head)
+		node.SetBlockTime(uint64(headTime.Unix()))
+		return node, evm
+	}
+
+	t.Run("healthy client: the latest fallback answers Active", func(t *testing.T) {
+		node, evm := setup(headTime.Add(-time.Hour))
+		node.FailCallAt(head, 1, -32000, headerNotFound)
+		if got, err := CosmosClientStatus(ctx, evm, ""); err != nil || got != "Active" {
+			t.Fatalf("got %q, %v; want Active with no error", got, err)
+		}
+	})
+
+	t.Run("fallback says expired, the confirming pinned read agrees", func(t *testing.T) {
+		shortConfirmWait(t)
+		node, evm := setup(staleSnapshot)
+		node.FailCallAt(head, 1, -32000, headerNotFound)
+		got, err := CosmosClientStatus(ctx, evm, "")
+		if err != nil || !strings.HasPrefix(got, "Expired") {
+			t.Fatalf("got %q, %v; want Expired once a pinned read confirms it", got, err)
+		}
+	})
+
+	// The lag the fallback can show: the "latest" backend still has the
+	// pre-rotation snapshot. The confirming pinned read sees the rotation.
+	t.Run("fallback says expired, the confirming pinned read sees the rotation", func(t *testing.T) {
+		shortConfirmWait(t)
+		node, evm := setup(staleSnapshot)
+		node.FailCallAt(head, 1, -32000, headerNotFound)
+		snapshotAt(node, head, headTime.Add(-12*time.Second))
+		if got, err := CosmosClientStatus(ctx, evm, ""); err != nil || got != "Active" {
+			t.Fatalf("got %q, %v; want Active: the fallback's Expired was lag", got, err)
+		}
+	})
+
+	// The common lag: the backend reaches the block a few retries later. The
+	// confirm waits for it at the SAME block, so the answer is a status, not an
+	// error -- an error is "do not know", the drop path.
+	t.Run("the confirm waits for a lagging backend to reach the block", func(t *testing.T) {
+		shortConfirmWait(t)
+		node, evm := setup(staleSnapshot)
+		node.FailCallAt(head, 3, -32000, headerNotFound) // first read + two confirm retries
+		snapshotAt(node, head, headTime.Add(-12*time.Second))
+		if got, err := CosmosClientStatus(ctx, evm, ""); err != nil || got != "Active" {
+			t.Fatalf("got %q, %v; want Active once the backend catches up", got, err)
+		}
+	})
+
+	t.Run("an unconfirmed Expired is an error, never Expired", func(t *testing.T) {
+		shortConfirmWait(t)
+		node, evm := setup(staleSnapshot)
+		node.FailCallAt(head, 1000, -32000, headerNotFound) // never catches up
+		got, err := CosmosClientStatus(ctx, evm, "")
+		if err == nil || got != "" {
+			t.Fatalf("got %q, %v; want an error and no status", got, err)
+		}
+	})
+
+	t.Run("the confirm wait honours cancellation", func(t *testing.T) {
+		node, evm := setup(staleSnapshot)
+		node.FailCallAt(head, 1000, -32000, headerNotFound)
+		cctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond) // the real 1s first delay never fires
+		defer cancel()
+		start := time.Now()
+		if got, err := CosmosClientStatus(cctx, evm, ""); err == nil || got != "" {
+			t.Fatalf("got %q, %v; want an error and no status", got, err)
+		}
+		if took := time.Since(start); took > 2*time.Second {
+			t.Fatalf("cancellation took %s; the wait must end with the context", took)
+		}
+	})
+}
+
+// shortConfirmWait shrinks the confirming read's retry schedule to keep the
+// lagging-backend tests fast; the budget still allows several retries.
+func shortConfirmWait(t *testing.T) {
+	t.Helper()
+	prevDelay, prevBudget := pinnedConfirmFirstDelay, pinnedConfirmBudget
+	pinnedConfirmFirstDelay, pinnedConfirmBudget = time.Millisecond, 15*time.Millisecond
+	t.Cleanup(func() { pinnedConfirmFirstDelay, pinnedConfirmBudget = prevDelay, prevBudget })
+}
+
 // pinnedSnapshotExpired must agree with the contract's check to the second, or
 // the relayer either holds a client that still accepts updates or pays for a
 // revert on one that does not.

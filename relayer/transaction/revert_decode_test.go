@@ -40,6 +40,8 @@ func TestDecodeRevert(t *testing.T) {
 			"InsufficientTrustingPeriod(4042888, 57600)", true},
 		{"Reverted prefix, any case and spacing", testDataError{data: "  reverted  " + insufficientTrustingPeriodRevert},
 			"InsufficientTrustingPeriod(4042888, 57600)", true},
+		{"execution reverted: prefix", testDataError{data: "execution reverted: " + insufficientTrustingPeriodRevert},
+			"InsufficientTrustingPeriod(4042888, 57600)", true},
 		{"other prefix is not stripped", testDataError{data: "boom " + insufficientTrustingPeriodRevert}, "", false},
 		{"no data", testDataError{data: nil}, "", false},
 		{"short data", testDataError{data: "0xdb02"}, "", false},

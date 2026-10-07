@@ -40,7 +40,10 @@ type EVMNode struct {
 	// block then selector. A call tagged "latest" never reads it, so a test can
 	// model a "latest" read served on one side of a state change and a
 	// block-pinned read on the other.
-	callAtBlock  map[uint64]map[string]string
+	callAtBlock map[uint64]map[string]string
+	// failCallAt makes the next N eth_calls pinned at a block fail -- a
+	// load-balanced backend a block behind answering "header not found".
+	failCallAt   map[uint64]*failCallAt
 	callErr      error
 	callRPCErr   *rpcError
 	sentRawTxs   []string
@@ -259,6 +262,23 @@ func (n *EVMNode) SetCallResultForAt(block uint64, selector, hexData string) {
 	})
 }
 
+type failCallAt struct {
+	remaining int
+	err       rpcError
+}
+
+// FailCallAt makes the next times eth_calls that name block explicitly fail
+// with this JSON-RPC error, then answer normally. A call tagged "latest" is
+// never failed by it.
+func (n *EVMNode) FailCallAt(block uint64, times, code int, message string) {
+	n.withLock(func() {
+		if n.failCallAt == nil {
+			n.failCallAt = make(map[uint64]*failCallAt)
+		}
+		n.failCallAt[block] = &failCallAt{remaining: times, err: rpcError{Code: code, Message: message}}
+	})
+}
+
 // FailCall makes eth_call return an RPC error, the shape a reverting contract
 // read takes.
 func (n *EVMNode) FailCall(err error) { n.withLock(func() { n.callErr = err }) }
@@ -423,6 +443,13 @@ func (n *EVMNode) dispatch(req rpcRequest) (any, *rpcError) {
 		}
 		if n.callErr != nil {
 			return nil, &rpcError{Code: -32000, Message: n.callErr.Error()}
+		}
+		if block, ok := explicitCallBlock(req.Params); ok {
+			if f := n.failCallAt[block]; f != nil && f.remaining > 0 {
+				f.remaining--
+				e := f.err
+				return nil, &e
+			}
 		}
 		if result, ok := n.callResultAtBlock(req.Params); ok {
 			return result, nil
@@ -621,18 +648,14 @@ func (n *EVMNode) blockJSON() map[string]any {
 // callResultAtBlock picks a SetCallResultForAt answer when the call names an
 // explicit block number that has one for its selector.
 func (n *EVMNode) callResultAtBlock(params []json.RawMessage) (string, bool) {
-	if len(n.callAtBlock) == 0 || len(params) < 2 {
+	if len(n.callAtBlock) == 0 {
 		return "", false
 	}
-	var tag string
-	if err := json.Unmarshal(params[1], &tag); err != nil || !strings.HasPrefix(tag, "0x") {
+	block, ok := explicitCallBlock(params)
+	if !ok {
 		return "", false
 	}
-	block, ok := new(big.Int).SetString(strings.TrimPrefix(tag, "0x"), 16)
-	if !ok || !block.IsUint64() {
-		return "", false
-	}
-	bySelector := n.callAtBlock[block.Uint64()]
+	bySelector := n.callAtBlock[block]
 	if bySelector == nil {
 		return "", false
 	}
@@ -653,6 +676,23 @@ func (n *EVMNode) callResultAtBlock(params []json.RawMessage) (string, bool) {
 	}
 	result, ok := bySelector[data[:8]]
 	return result, ok
+}
+
+// explicitCallBlock reads an eth_call's block parameter when it is a number,
+// not a tag.
+func explicitCallBlock(params []json.RawMessage) (uint64, bool) {
+	if len(params) < 2 {
+		return 0, false
+	}
+	var tag string
+	if err := json.Unmarshal(params[1], &tag); err != nil || !strings.HasPrefix(tag, "0x") {
+		return 0, false
+	}
+	block, ok := new(big.Int).SetString(strings.TrimPrefix(tag, "0x"), 16)
+	if !ok || !block.IsUint64() {
+		return 0, false
+	}
+	return block.Uint64(), true
 }
 
 // callResultForRequest picks a per-selector answer when one was registered.

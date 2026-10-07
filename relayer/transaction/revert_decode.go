@@ -79,14 +79,23 @@ func revertData(err error) []byte {
 	}
 }
 
-// revertHex strips the prefix some nodes put before the hex: Nethermind and
-// Erigon send "Reverted 0x..." where geth sends "0x...". services.IsEVMRevert
-// already accepts that shape; handed to common.FromHex whole, it decoded to
-// garbage and the contract's reason was lost (review of 65786fb).
+// revertHex strips the text some nodes put before the hex: Nethermind and
+// Erigon send "Reverted 0x..." and others "execution reverted: 0x...", where
+// geth sends "0x...". It strips whatever precedes the first 0x when that text
+// names a revert -- the same test services.isRevertData applies when it decides
+// the data is revert data -- and leaves anything else alone. Handed to
+// common.FromHex whole, such data decoded to garbage and the contract's reason
+// was lost (review of 65786fb).
+//
+// The index is taken on raw itself, not on a lowercased copy, so it is a valid
+// offset into raw whatever the prefix's encoding.
 func revertHex(raw string) string {
 	raw = strings.TrimSpace(raw)
-	if i := strings.Index(strings.ToLower(raw), "0x"); i > 0 &&
-		strings.EqualFold(strings.TrimSpace(raw[:i]), "reverted") {
+	i := strings.Index(raw, "0x")
+	if j := strings.Index(raw, "0X"); j >= 0 && (i < 0 || j < i) {
+		i = j
+	}
+	if i > 0 && strings.Contains(strings.ToLower(raw[:i]), "revert") {
 		return raw[i:]
 	}
 	return raw
