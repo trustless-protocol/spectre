@@ -45,13 +45,13 @@ type l2ToCosmosConfig struct {
 	L2WasmClientID  string                     `json:"l2_wasm_client_id"`
 	L2ICS26ClientID string                     `json:"l2_ics26_client_id"`
 	HeadKind        string                     `json:"head_kind"`
-	// IncludeProvisional accepts attestor verdicts that have not yet been re-derived
-	// from finalized L1 data. It is deliberately its own field: it used to be inferred
-	// from head_kind, which conflated two independent axes — head_kind selects which
-	// L2 head is read, provisional is about whether the attestor's finality re-check
-	// has completed. "safe" therefore silently implied "accept provisional", with no
-	// way to ask for one without the other. Defaults to true for anything but
-	// finalized, preserving the previous behaviour.
+	// IncludeProvisional accepts attestor roots whose irreversible-finality check has
+	// not passed yet; what such a root can still lose depends on its source (see
+	// docs/L2_CLIENTS.md, "Provisional attestations"). It is deliberately its own
+	// field: it used to be inferred from head_kind, which conflated two independent
+	// axes — head_kind selects which L2 head is read, provisional is about whether
+	// the attestor's finality re-check has completed. Defaults to true for anything
+	// but finalized, an accepted trade-off documented in the same section.
 	IncludeProvisional *bool `json:"include_provisional,omitempty"`
 	// LogScanChunk caps the block span of a single eth_getLogs on the L2 packet
 	// scan. 0 (the default) issues one call per range, which is right for any

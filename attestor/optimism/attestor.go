@@ -23,16 +23,16 @@ type Cursor struct {
 //
 // Contract shared by all implementations:
 //   - the attestor is the sole authority on whether source state is legit;
-//   - AttestedUpTo never advances on a failed operation;
+//   - ConfirmedUpTo never advances on a failed operation;
 //   - a failed or lagging attestor means "affirm nothing", never "affirm".
 type Attestor interface {
 	// Name identifies the attestor in logs and metrics, e.g. "opstack:op-mainnet".
 	Name() string
 	// Run blocks until ctx is done, continuously attesting source state.
 	Run(ctx context.Context) error
-	// AttestedUpTo reports the highest fully-attested source state. ok is
-	// false when nothing has been attested yet.
-	AttestedUpTo() (cursor Cursor, ok bool)
+	// ConfirmedUpTo reports the highest fully-attested (non-provisional)
+	// source state. ok is false when nothing has been confirmed yet.
+	ConfirmedUpTo() (cursor Cursor, ok bool)
 }
 
 const (

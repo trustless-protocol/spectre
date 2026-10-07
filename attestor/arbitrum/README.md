@@ -82,7 +82,11 @@ Copy `config.example.json` to `config.json` and configure:
 - `attestation_head`: Nitro head used for proposal-independent attestations.
   `unsafe` trusts the configured Nitro node and does not wait for an L1
   assertion; `safe` uses Nitro's L1-posted view; `finalized` uses Nitro's
-  L1-finalized view. The default is `finalized` when omitted.
+  L1-finalized view. The default is `finalized` when omitted. It applies only
+  to derived entries: assertion-backed entries are resolved at Nitro's
+  `finalized` head, or at `safe` and served provisional until that head
+  reaches the block. `docs/L2_CLIENTS.md` ("Provisional attestations")
+  explains why.
 - `l1_ingest_head`: Ethereum L1 head used to discover assertions: `finalized`
   (the default), `safe`, or `latest`. This does not change `attestation_head`.
   Assertions discovered before L1 finality stay provisional, even if their
