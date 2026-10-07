@@ -24,9 +24,9 @@ var (
 	statusTestReplaced   = common.HexToAddress("0x00000000000000000000000000000000000000cc")
 )
 
-// fakeClientStatusRPC answers the two eth_calls CosmosClientStatus makes: the
-// router's getClient, and getClientState on whichever SpectreClient address is
-// asked. frozen maps a SpectreClient address to its isFrozen flag.
+// fakeClientStatusRPC answers the eth_calls CosmosClientStatus makes: the
+// router's getClient, getClientState on whichever SpectreClient address is
+// asked, and getPinnedSnapshot as a pre-#541 client (a revert). frozen maps a SpectreClient address to its isFrozen flag.
 func fakeClientStatusRPC(t *testing.T, registered common.Address, frozen map[common.Address]bool) EVMEndpoint {
 	t.Helper()
 	routerABI, err := routerContract.ContractICS26RouterMetaData.GetAbi()
@@ -45,7 +45,19 @@ func fakeClientStatusRPC(t *testing.T, registered common.Address, frozen map[com
 			Method string            `json:"method"`
 			Params []json.RawMessage `json:"params"`
 		}
-		if err := json.Unmarshal(body, &req); err != nil || req.Method != "eth_call" {
+		if err := json.Unmarshal(body, &req); err != nil {
+			t.Errorf("unexpected request %s", body)
+			return
+		}
+		// The expiry check reads the head first, so the snapshot can be read at
+		// that same block.
+		if req.Method == "eth_getBlockByNumber" {
+			resp, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": statusTestHead})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(resp)
+			return
+		}
+		if req.Method != "eth_call" {
 			t.Errorf("unexpected request %s", body)
 			return
 		}
@@ -61,6 +73,15 @@ func fakeClientStatusRPC(t *testing.T, registered common.Address, frozen map[com
 		input := call.Input
 		if len(input) == 0 {
 			input = call.Data
+		}
+		// A pre-#541 SpectreClient has no getPinnedSnapshot and reverts on the
+		// unknown selector, so the status falls back to the frozen flag alone.
+		if strings.HasPrefix(string(input), string(spectreABI.Methods["getPinnedSnapshot"].ID)) {
+			resp, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": req.ID,
+				"error": map[string]any{"code": 3, "message": "execution reverted"}})
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(resp)
+			return
 		}
 		var out []byte
 		switch {
@@ -96,6 +117,26 @@ func fakeClientStatusRPC(t *testing.T, registered common.Address, frozen map[com
 	}
 	t.Cleanup(client.Close)
 	return EVMEndpoint{Client: client, Contracts: EVMContracts{Router: statusTestRouter, SpectreClient: statusTestConfigured}}
+}
+
+// statusTestHead is the minimal block go-ethereum's header decoder accepts.
+var statusTestHead = map[string]any{
+	"parentHash":       common.Hash{}.Hex(),
+	"sha3Uncles":       "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347",
+	"miner":            common.Address{}.Hex(),
+	"stateRoot":        common.Hash{}.Hex(),
+	"transactionsRoot": "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+	"receiptsRoot":     "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
+	"logsBloom":        "0x" + strings.Repeat("0", 512),
+	"difficulty":       "0x0",
+	"number":           "0x64",
+	"gasLimit":         "0x1c9c380",
+	"gasUsed":          "0x0",
+	"timestamp":        "0x6500a3c0",
+	"extraData":        "0x",
+	"mixHash":          common.Hash{}.Hex(),
+	"nonce":            "0x0000000000000000",
+	"baseFeePerGas":    "0x1",
 }
 
 func TestCosmosClientStatus(t *testing.T) {

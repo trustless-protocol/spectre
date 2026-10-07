@@ -78,25 +78,7 @@ func clientNotActiveErrorName(callErr error) (string, bool) {
 // revertErrorName matches the custom-error selector carried in a replayed call's
 // revert data against selectors.
 func revertErrorName(callErr error, selectors map[[4]byte]string) (string, bool) {
-	type dataErr interface {
-		ErrorData() interface{}
-	}
-	de, ok := callErr.(dataErr)
-	if !ok {
-		return "", false
-	}
-
-	var data []byte
-	switch raw := de.ErrorData().(type) {
-	case string:
-		data = common.FromHex(raw)
-	case fmt.Stringer:
-		data = common.FromHex(raw.String())
-	case []byte:
-		data = raw
-	default:
-		return "", false
-	}
+	data := revertData(callErr)
 	if len(data) < 4 {
 		return "", false
 	}
@@ -1589,8 +1571,14 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 				callCtx, callCancel := context.WithTimeout(stdCtx, ethRevertProbeTimeout)
 				_, callErr := endpoint.EthClient().CallContract(callCtx, callMsg, receipt.BlockNumber)
 				callCancel()
+				// Carried into the permanent error below, so the relay log names
+				// the contract's reason rather than only "reverted".
+				revertCause := ""
+				if decoded, ok := decodeRevert(callErr); ok {
+					revertCause = " with " + decoded
+				}
 				if callErr != nil {
-					log.Printf("[SendEthTx] Revert reason: %v", callErr)
+					log.Printf("[SendEthTx] Revert reason: %s", describeRevert(callErr))
 					if name, ok := validatorCacheRaceErrorName(callErr); ok {
 						return receipt, submitDur, waitDur, fmt.Errorf(
 							"tx %s reverted with %s (status=0, gasUsed=%d): %w",
@@ -1653,8 +1641,8 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 					return retryReceipt, submitDur + retrySubmitDur, waitDur + retryWaitDur, retryErr
 				}
 				return receipt, submitDur, waitDur, fmt.Errorf(
-					"tx %s reverted (status=0, gasUsed=%d): %w",
-					receipt.TxHash.Hex(), receipt.GasUsed, services.ErrPermanentRelayFailure,
+					"tx %s reverted%s (status=0, gasUsed=%d): %w",
+					receipt.TxHash.Hex(), revertCause, receipt.GasUsed, services.ErrPermanentRelayFailure,
 				)
 			}
 			return receipt, submitDur, waitDur, nil

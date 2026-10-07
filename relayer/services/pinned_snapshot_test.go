@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/big"
+	"strings"
 	"testing"
 	"time"
 
@@ -157,5 +158,206 @@ func TestRotationDueIn(t *testing.T) {
 	}
 	if got := rotationDueIn(anchor, time.Hour, now); got != 0 {
 		t.Fatalf("overdue = %v, want 0 (rotate now)", got)
+	}
+}
+
+// The #541 client by the chain's clock: Active up to the last second of the
+// trusting period, Expired from the boundary on. Expired is what arms the relay
+// module's client hold, so the refresh and rotation loops stop paying for
+// reverts.
+func TestCosmosClientStatus_ExpiresWithPinnedSnapshot(t *testing.T) {
+	ctx := context.Background()
+	snapshotTime := time.Date(2026, 8, 20, 12, 43, 56, 0, time.UTC)
+	node, evm := pinnedSnapshotNode(t, 6593231, snapshotTime, 57600)
+
+	node.SetBlockTime(uint64(snapshotTime.Add(16*time.Hour - time.Second).Unix()))
+	if got, err := CosmosClientStatus(ctx, evm, ""); err != nil || got != "Active" {
+		t.Fatalf("one second before expiry: got %q, %v; want Active", got, err)
+	}
+
+	node.SetBlockTime(uint64(snapshotTime.Add(16 * time.Hour).Unix()))
+	got, err := CosmosClientStatus(ctx, evm, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, "Expired") || !strings.Contains(got, "migrateClient") {
+		t.Fatalf("at the trusting-period boundary: got %q; want an Expired status naming migrateClient", got)
+	}
+}
+
+// Review of 65786fb: the snapshot and the clock came from two independent
+// "latest" reads. A rotation landing just before the deadline could fall
+// between them -- old snapshot, new block time -- and a live client was
+// reported Expired, arming the hold and recommending a migration.
+//
+// Modelled with one node: the head is block 101, past the old snapshot's
+// deadline, and the rotation landed in it. A "latest"-tagged getPinnedSnapshot
+// answers the pre-rotation snapshot (the read served before the block), a call
+// pinned at 101 answers the rotated one. Read at one block, the client is Active.
+func TestCosmosClientStatus_ReadsSnapshotAndClockAtOneBlock(t *testing.T) {
+	ctx := context.Background()
+	oldSnapshot := time.Date(2026, 8, 20, 12, 43, 56, 0, time.UTC)
+	const period = 57600 // 16h
+	node, evm := pinnedSnapshotNode(t, 6593231, oldSnapshot, period)
+
+	const head = 101
+	headTime := oldSnapshot.Add(16*time.Hour + 12*time.Second) // past the OLD deadline
+	node.SetBlockNumber(head)
+	node.SetBlockTime(uint64(headTime.Unix()))
+
+	spectreABI, err := spectreContract.ContractSpectreClientMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated := headTime.Add(-12 * time.Second) // the rotation's own header, one block back
+	out, err := spectreABI.Methods["getPinnedSnapshot"].Outputs.Pack(uint64(6650000), big.NewInt(rotated.UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.SetCallResultForAt(head, hexutil.Encode(spectreABI.Methods["getPinnedSnapshot"].ID), hexutil.Encode(out))
+
+	got, err := CosmosClientStatus(ctx, evm, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Active" {
+		t.Fatalf("snapshot and clock read at one block must report the rotated client Active, got %q", got)
+	}
+}
+
+// Review of bfbbd2a: on a load-balanced RPC the header and the pinned eth_call
+// can land on different backends, and one a block behind answers "header not
+// found". That is not a revert, and an error status makes
+// destinationClientInactive answer "do not know" -- the drop path. A failed
+// pinned read falls back to "latest", believed only when it says not expired;
+// Expired needs a pinned read to confirm it.
+func TestCosmosClientStatus_PinnedReadOnALaggingBackend(t *testing.T) {
+	ctx := context.Background()
+	const period = 57600 // 16h
+	const head = 101
+	headTime := time.Date(2026, 8, 21, 4, 44, 8, 0, time.UTC)
+	staleSnapshot := headTime.Add(-16*time.Hour - 12*time.Second) // past its deadline at head
+	const headerNotFound = "header not found"
+
+	spectreABI, err := spectreContract.ContractSpectreClientMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshotAt := func(node *rpcmock.EVMNode, block uint64, at time.Time) {
+		out, err := spectreABI.Methods["getPinnedSnapshot"].Outputs.Pack(uint64(6650000), big.NewInt(at.UnixNano()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		node.SetCallResultForAt(block, hexutil.Encode(spectreABI.Methods["getPinnedSnapshot"].ID), hexutil.Encode(out))
+	}
+	setup := func(latestSnapshot time.Time) (*rpcmock.EVMNode, EVMEndpoint) {
+		node, evm := pinnedSnapshotNode(t, 6593231, latestSnapshot, period)
+		node.SetBlockNumber(head)
+		node.SetBlockTime(uint64(headTime.Unix()))
+		return node, evm
+	}
+
+	t.Run("healthy client: the latest fallback answers Active", func(t *testing.T) {
+		node, evm := setup(headTime.Add(-time.Hour))
+		node.FailCallAt(head, 1, -32000, headerNotFound)
+		if got, err := CosmosClientStatus(ctx, evm, ""); err != nil || got != "Active" {
+			t.Fatalf("got %q, %v; want Active with no error", got, err)
+		}
+	})
+
+	t.Run("fallback says expired, the confirming pinned read agrees", func(t *testing.T) {
+		shortConfirmWait(t)
+		node, evm := setup(staleSnapshot)
+		node.FailCallAt(head, 1, -32000, headerNotFound)
+		got, err := CosmosClientStatus(ctx, evm, "")
+		if err != nil || !strings.HasPrefix(got, "Expired") {
+			t.Fatalf("got %q, %v; want Expired once a pinned read confirms it", got, err)
+		}
+	})
+
+	// The lag the fallback can show: the "latest" backend still has the
+	// pre-rotation snapshot. The confirming pinned read sees the rotation.
+	t.Run("fallback says expired, the confirming pinned read sees the rotation", func(t *testing.T) {
+		shortConfirmWait(t)
+		node, evm := setup(staleSnapshot)
+		node.FailCallAt(head, 1, -32000, headerNotFound)
+		snapshotAt(node, head, headTime.Add(-12*time.Second))
+		if got, err := CosmosClientStatus(ctx, evm, ""); err != nil || got != "Active" {
+			t.Fatalf("got %q, %v; want Active: the fallback's Expired was lag", got, err)
+		}
+	})
+
+	// The common lag: the backend reaches the block a few retries later. The
+	// confirm waits for it at the SAME block, so the answer is a status, not an
+	// error -- an error is "do not know", the drop path.
+	t.Run("the confirm waits for a lagging backend to reach the block", func(t *testing.T) {
+		shortConfirmWait(t)
+		node, evm := setup(staleSnapshot)
+		node.FailCallAt(head, 3, -32000, headerNotFound) // first read + two confirm retries
+		snapshotAt(node, head, headTime.Add(-12*time.Second))
+		if got, err := CosmosClientStatus(ctx, evm, ""); err != nil || got != "Active" {
+			t.Fatalf("got %q, %v; want Active once the backend catches up", got, err)
+		}
+	})
+
+	t.Run("an unconfirmed Expired is an error, never Expired", func(t *testing.T) {
+		shortConfirmWait(t)
+		node, evm := setup(staleSnapshot)
+		node.FailCallAt(head, 1000, -32000, headerNotFound) // never catches up
+		got, err := CosmosClientStatus(ctx, evm, "")
+		if err == nil || got != "" {
+			t.Fatalf("got %q, %v; want an error and no status", got, err)
+		}
+	})
+
+	t.Run("the confirm wait honours cancellation", func(t *testing.T) {
+		node, evm := setup(staleSnapshot)
+		node.FailCallAt(head, 1000, -32000, headerNotFound)
+		cctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond) // the real 1s first delay never fires
+		defer cancel()
+		start := time.Now()
+		if got, err := CosmosClientStatus(cctx, evm, ""); err == nil || got != "" {
+			t.Fatalf("got %q, %v; want an error and no status", got, err)
+		}
+		if took := time.Since(start); took > 2*time.Second {
+			t.Fatalf("cancellation took %s; the wait must end with the context", took)
+		}
+	})
+}
+
+// shortConfirmWait shrinks the confirming read's retry schedule to keep the
+// lagging-backend tests fast; the budget still allows several retries.
+func shortConfirmWait(t *testing.T) {
+	t.Helper()
+	prevDelay, prevBudget := pinnedConfirmFirstDelay, pinnedConfirmBudget
+	pinnedConfirmFirstDelay, pinnedConfirmBudget = time.Millisecond, 15*time.Millisecond
+	t.Cleanup(func() { pinnedConfirmFirstDelay, pinnedConfirmBudget = prevDelay, prevBudget })
+}
+
+// pinnedSnapshotExpired must agree with the contract's check to the second, or
+// the relayer either holds a client that still accepts updates or pays for a
+// revert on one that does not.
+func TestPinnedSnapshotExpired(t *testing.T) {
+	snapshot := time.Date(2026, 8, 20, 12, 43, 56, 900_000_000, time.UTC)
+	const period = 57600
+	for _, tc := range []struct {
+		name    string
+		now     time.Time
+		wantAge time.Duration
+		expired bool
+	}{
+		{"fresh", snapshot.Add(time.Hour), time.Hour, false},
+		// Sub-second parts are floored on both sides, as nanos / 1e9 is on-chain.
+		{"last valid second", snapshot.Add(16*time.Hour - time.Second), 16*time.Hour - time.Second, false},
+		{"boundary", snapshot.Add(16 * time.Hour), 16 * time.Hour, true},
+		{"#541", snapshot.Add(4042888 * time.Second), 4042888 * time.Second, true},
+		{"snapshot ahead of the chain clock", snapshot.Add(-time.Minute), 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			age, expired := pinnedSnapshotExpired(snapshot, tc.now, period)
+			if age != tc.wantAge || expired != tc.expired {
+				t.Fatalf("got age=%v expired=%v; want age=%v expired=%v", age, expired, tc.wantAge, tc.expired)
+			}
+		})
 	}
 }
