@@ -69,14 +69,27 @@ func revertData(err error) []byte {
 	}
 	switch raw := dataErr.ErrorData().(type) {
 	case string:
-		return common.FromHex(raw)
+		return common.FromHex(revertHex(raw))
 	case fmt.Stringer:
-		return common.FromHex(raw.String())
+		return common.FromHex(revertHex(raw.String()))
 	case []byte:
 		return raw
 	default:
 		return nil
 	}
+}
+
+// revertHex strips the prefix some nodes put before the hex: Nethermind and
+// Erigon send "Reverted 0x..." where geth sends "0x...". services.IsEVMRevert
+// already accepts that shape; handed to common.FromHex whole, it decoded to
+// garbage and the contract's reason was lost (review of 65786fb).
+func revertHex(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if i := strings.Index(strings.ToLower(raw), "0x"); i > 0 &&
+		strings.EqualFold(strings.TrimSpace(raw[:i]), "reverted") {
+		return raw[i:]
+	}
+	return raw
 }
 
 // decodeRevert names the custom error in a failed call's revert data, with its

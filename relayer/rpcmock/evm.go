@@ -36,12 +36,17 @@ type EVMNode struct {
 	sendErr        error
 	callResult     string
 	callBySelector map[string]string
-	callErr        error
-	callRPCErr     *rpcError
-	sentRawTxs     []string
-	nonceQueries   map[common.Address]int
-	methodCalls    map[string]int
-	code           map[common.Address]string
+	// callAtBlock answers an eth_call made AT an explicit block number, keyed by
+	// block then selector. A call tagged "latest" never reads it, so a test can
+	// model a "latest" read served on one side of a state change and a
+	// block-pinned read on the other.
+	callAtBlock  map[uint64]map[string]string
+	callErr      error
+	callRPCErr   *rpcError
+	sentRawTxs   []string
+	nonceQueries map[common.Address]int
+	methodCalls  map[string]int
+	code         map[common.Address]string
 	// storage is served by eth_getStorageAt, keyed by contract then slot. A slot
 	// nobody set answers zero, which is what a real node says about an empty
 	// mapping entry -- the honest default for "no commitment here".
@@ -240,6 +245,20 @@ func normalizeSelector(selector string) string {
 	return strings.ToLower(strings.TrimPrefix(selector, "0x"))
 }
 
+// SetCallResultForAt answers one selector differently when the call names an
+// explicit block number. See callAtBlock.
+func (n *EVMNode) SetCallResultForAt(block uint64, selector, hexData string) {
+	n.withLock(func() {
+		if n.callAtBlock == nil {
+			n.callAtBlock = make(map[uint64]map[string]string)
+		}
+		if n.callAtBlock[block] == nil {
+			n.callAtBlock[block] = make(map[string]string)
+		}
+		n.callAtBlock[block][normalizeSelector(selector)] = hexData
+	})
+}
+
 // FailCall makes eth_call return an RPC error, the shape a reverting contract
 // read takes.
 func (n *EVMNode) FailCall(err error) { n.withLock(func() { n.callErr = err }) }
@@ -404,6 +423,9 @@ func (n *EVMNode) dispatch(req rpcRequest) (any, *rpcError) {
 		}
 		if n.callErr != nil {
 			return nil, &rpcError{Code: -32000, Message: n.callErr.Error()}
+		}
+		if result, ok := n.callResultAtBlock(req.Params); ok {
+			return result, nil
 		}
 		if result, ok := n.callResultForRequest(req.Params); ok {
 			return result, nil
@@ -585,7 +607,7 @@ func (n *EVMNode) blockJSON() map[string]any {
 		"receiptsRoot":     "0x56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421",
 		"logsBloom":        "0x" + strings.Repeat("0", 512),
 		"difficulty":       "0x0",
-		"number":           "0x1",
+		"number":           hexUint(max(n.blockNumber, 1)),
 		"gasLimit":         hexUint(n.blockGasLim),
 		"gasUsed":          "0x0",
 		"timestamp":        hexUint(n.blockTime),
@@ -594,6 +616,43 @@ func (n *EVMNode) blockJSON() map[string]any {
 		"nonce":            "0x0000000000000000",
 		"baseFeePerGas":    "0x" + n.gasPrice.Text(16),
 	}
+}
+
+// callResultAtBlock picks a SetCallResultForAt answer when the call names an
+// explicit block number that has one for its selector.
+func (n *EVMNode) callResultAtBlock(params []json.RawMessage) (string, bool) {
+	if len(n.callAtBlock) == 0 || len(params) < 2 {
+		return "", false
+	}
+	var tag string
+	if err := json.Unmarshal(params[1], &tag); err != nil || !strings.HasPrefix(tag, "0x") {
+		return "", false
+	}
+	block, ok := new(big.Int).SetString(strings.TrimPrefix(tag, "0x"), 16)
+	if !ok || !block.IsUint64() {
+		return "", false
+	}
+	bySelector := n.callAtBlock[block.Uint64()]
+	if bySelector == nil {
+		return "", false
+	}
+	var arg struct {
+		Data  string `json:"data"`
+		Input string `json:"input"`
+	}
+	if err := json.Unmarshal(params[0], &arg); err != nil {
+		return "", false
+	}
+	data := arg.Data
+	if data == "" {
+		data = arg.Input
+	}
+	data = normalizeSelector(data)
+	if len(data) < 8 {
+		return "", false
+	}
+	result, ok := bySelector[data[:8]]
+	return result, ok
 }
 
 // callResultForRequest picks a per-selector answer when one was registered.

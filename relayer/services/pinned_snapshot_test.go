@@ -185,6 +185,46 @@ func TestCosmosClientStatus_ExpiresWithPinnedSnapshot(t *testing.T) {
 	}
 }
 
+// Review of 65786fb: the snapshot and the clock came from two independent
+// "latest" reads. A rotation landing just before the deadline could fall
+// between them -- old snapshot, new block time -- and a live client was
+// reported Expired, arming the hold and recommending a migration.
+//
+// Modelled with one node: the head is block 101, past the old snapshot's
+// deadline, and the rotation landed in it. A "latest"-tagged getPinnedSnapshot
+// answers the pre-rotation snapshot (the read served before the block), a call
+// pinned at 101 answers the rotated one. Read at one block, the client is Active.
+func TestCosmosClientStatus_ReadsSnapshotAndClockAtOneBlock(t *testing.T) {
+	ctx := context.Background()
+	oldSnapshot := time.Date(2026, 8, 20, 12, 43, 56, 0, time.UTC)
+	const period = 57600 // 16h
+	node, evm := pinnedSnapshotNode(t, 6593231, oldSnapshot, period)
+
+	const head = 101
+	headTime := oldSnapshot.Add(16*time.Hour + 12*time.Second) // past the OLD deadline
+	node.SetBlockNumber(head)
+	node.SetBlockTime(uint64(headTime.Unix()))
+
+	spectreABI, err := spectreContract.ContractSpectreClientMetaData.GetAbi()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated := headTime.Add(-12 * time.Second) // the rotation's own header, one block back
+	out, err := spectreABI.Methods["getPinnedSnapshot"].Outputs.Pack(uint64(6650000), big.NewInt(rotated.UnixNano()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	node.SetCallResultForAt(head, hexutil.Encode(spectreABI.Methods["getPinnedSnapshot"].ID), hexutil.Encode(out))
+
+	got, err := CosmosClientStatus(ctx, evm, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "Active" {
+		t.Fatalf("snapshot and clock read at one block must report the rotated client Active, got %q", got)
+	}
+}
+
 // pinnedSnapshotExpired must agree with the contract's check to the second, or
 // the relayer either holds a client that still accepts updates or pays for a
 // revert on one that does not.

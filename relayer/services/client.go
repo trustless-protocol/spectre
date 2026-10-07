@@ -257,11 +257,17 @@ var warnNoPinnedSnapshotGetter sync.Once
 // -- the RPC never answered -- is returned, so a node blip is retried rather
 // than silently downgraded to the weaker anchor.
 func fetchPinnedSnapshotTime(stdCtx context.Context, ctx EVMEndpoint) (t time.Time, supported bool, err error) {
+	return fetchPinnedSnapshotTimeAt(stdCtx, ctx, nil)
+}
+
+// fetchPinnedSnapshotTimeAt is fetchPinnedSnapshotTime read at one block (nil =
+// latest), for a caller that compares the snapshot with that block's own time.
+func fetchPinnedSnapshotTimeAt(stdCtx context.Context, ctx EVMEndpoint, block *big.Int) (t time.Time, supported bool, err error) {
 	spectre, err := spectreContract.NewContractSpectreClient(*ctx.SpectreClientContract(), ctx.EthClient())
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("failed to create Spectre client instance: %w", err)
 	}
-	snapshot, err := spectre.GetPinnedSnapshot(&bind.CallOpts{Context: stdCtx})
+	snapshot, err := spectre.GetPinnedSnapshot(&bind.CallOpts{Context: stdCtx, BlockNumber: block})
 	if err != nil {
 		if IsEVMRevert(err) {
 			warnNoPinnedSnapshotGetter.Do(func() {
@@ -1031,18 +1037,31 @@ func CosmosClientStatus(stdCtx context.Context, evm EVMEndpoint, routerClientID 
 // refresh and rotation loops stop paying for a proof and a reverting
 // transaction on every attempt (#541).
 //
+// The snapshot and the clock are read at ONE block: the latest header first,
+// then getPinnedSnapshot at that header's number. Two independent "latest"
+// reads can straddle a rotation that lands just before the deadline -- the old
+// snapshot from before it, the timestamp from after -- and that pairing reports
+// a live client as Expired, arming the hold and recommending a migration it
+// does not need (review of 65786fb). At one block the pair is exactly what the
+// contract's own check would see there.
+//
 // A pre-#541 client has no snapshot getter, and its expiry cannot be read from
 // the EVM side alone; it reports "" (not expired) as before.
 func pinnedSnapshotExpiredStatus(stdCtx context.Context, evm EVMEndpoint, trustingPeriodSeconds uint32) (string, error) {
-	snapshotTime, supported, err := fetchPinnedSnapshotTime(stdCtx, evm)
+	headCtx, cancelHead := fetchCtx(stdCtx, defaultFetchTimeout)
+	head, err := evm.EthClient().HeaderByNumber(headCtx, nil)
+	cancelHead()
+	if err != nil {
+		return "", fmt.Errorf("read destination chain head: %w", err)
+	}
+	if head == nil || head.Number == nil || head.Time == 0 {
+		return "", fmt.Errorf("read destination chain head: header is nil or has no number or timestamp")
+	}
+	snapshotTime, supported, err := fetchPinnedSnapshotTimeAt(stdCtx, evm, head.Number)
 	if err != nil || !supported {
 		return "", err
 	}
-	nowNanos, err := ethLatestHeaderTimestampNanos(stdCtx, evm, defaultFetchTimeout)
-	if err != nil {
-		return "", fmt.Errorf("read destination chain time: %w", err)
-	}
-	chainNow := time.Unix(0, nowNanos.Int64()).UTC()
+	chainNow := time.Unix(int64(head.Time), 0).UTC()
 	age, expired := pinnedSnapshotExpired(snapshotTime, chainNow, trustingPeriodSeconds)
 	if !expired {
 		return "", nil

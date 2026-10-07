@@ -34,6 +34,13 @@ func TestDecodeRevert(t *testing.T) {
 		{"unknown selector", testDataError{data: "0xdeadbeef"}, "unknown custom error 0xdeadbeef", true},
 		{"selector with bad arguments", testDataError{data: "0xdb020436" + "00"},
 			"InsufficientTrustingPeriod(<undecodable arguments", true},
+		// Nethermind / Erigon put "Reverted 0x..." in the data member, a shape
+		// services.IsEVMRevert already accepts; the decoder lost it (review of 65786fb).
+		{"Reverted prefix", testDataError{data: "Reverted " + insufficientTrustingPeriodRevert},
+			"InsufficientTrustingPeriod(4042888, 57600)", true},
+		{"Reverted prefix, any case and spacing", testDataError{data: "  reverted  " + insufficientTrustingPeriodRevert},
+			"InsufficientTrustingPeriod(4042888, 57600)", true},
+		{"other prefix is not stripped", testDataError{data: "boom " + insufficientTrustingPeriodRevert}, "", false},
 		{"no data", testDataError{data: nil}, "", false},
 		{"short data", testDataError{data: "0xdb02"}, "", false},
 		{"plain error", errors.New("execution reverted"), "", false},
