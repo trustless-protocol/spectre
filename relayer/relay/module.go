@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log"
 	"relayer/chain"
+	"relayer/services"
 	workergroup "relayer/workers"
 	"strconv"
 	"strings"
@@ -449,11 +450,22 @@ func nextPeriodicUpdateBackoff(current time.Duration) time.Duration {
 	return min(current*2, periodicUpdateBackoffMax)
 }
 
+// forcedRotationPollInterval waits for a new source block without spending the
+// rotation's safety margin on transaction-failure backoff. This path has not
+// generated a proof or submitted a transaction. For short trusting periods the
+// rotation interval is at most 3/4 of the period, so interval/12 uses at most
+// 1/4 of its safety margin. The one-second ceiling keeps repeated caught-up
+// results cheap to retry even when the snapshot is already near expiry.
+func forcedRotationPollInterval(interval time.Duration) time.Duration {
+	return min(time.Second, max(time.Nanosecond, interval/12))
+}
+
 // periodicUpdateLoop runs the fixed-cadence forced client update (e.g. the
 // pinned-set rotation). It fires on periodicUpdateInterval on success and on an
 // exponential backoff (periodicUpdateBackoffMin→Max) after a failure, so a
 // transient failure of the infrequent update is retried promptly rather than
-// waiting a full interval.
+// waiting a full interval. A caught-up source is polled separately: no proof or
+// transaction failed, and the pinned snapshot still needs its rotation.
 func (m *Module) periodicUpdateLoop(ctx context.Context) {
 	// The first fire uses the on-chain-freshness-derived initial delay (0 = due
 	// now); every fire after that uses the full interval (a success resets the
@@ -485,6 +497,10 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 			switch {
 			case err == nil:
 				backoff = 0 // success resets the backoff
+			case errors.Is(err, services.ErrForcedRotationNotReady):
+				backoff = 0
+				next = forcedRotationPollInterval(m.periodicUpdateInterval)
+				log.Printf("[%s UpdateClient] waiting for a new source block to rotate the pinned set; retrying after %s", m.name, next)
 			case m.armClientHoldFrom(ctx, err):
 				// Refused by an inactive client: the hold owns the cadence from here,
 				// exactly as on the held branch above, instead of a backoff that

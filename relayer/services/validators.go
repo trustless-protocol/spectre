@@ -107,8 +107,8 @@ func rotationCandidate(forceRotation bool, targetNextValHash, pinnedHash [32]byt
 // forcedRotationBlockedAtHeight reports whether a forced rotation cannot be
 // built because the client is already at the target height. Without a forced
 // rotation, an up-to-date client simply needs no update; with one, the re-pin is
-// still owed, and updateConsensusState only accepts a strictly newer height, so
-// the caller must retry once the chain advances rather than report success (#541).
+// still owed. The builder anchors the proof at the latest trusted height, so it
+// needs a newer source block and must retry rather than report success (#541).
 func forcedRotationBlockedAtHeight(forceRotation bool, trustedHeight, targetHeight int64) bool {
 	return forceRotation && trustedHeight == targetHeight
 }

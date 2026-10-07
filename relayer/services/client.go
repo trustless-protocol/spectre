@@ -168,7 +168,7 @@ const hopExhaustionSampleLimit = 4
 // Because the rotation is forced, a client already at the chain's latest height
 // (e.g. a packet update landed just before this tick) is not "nothing to do": the
 // builder fails with ErrForcedRotationNotReady, which this returns so the
-// periodic loop retries on its short failure backoff rather than waiting a full
+// periodic loop polls for a new source block rather than waiting a full
 // rotation interval with the pinned snapshot unrefreshed (#541).
 //
 // RLY-01: validator churn can force BuildCosmosClientUpdateMsg onto a
