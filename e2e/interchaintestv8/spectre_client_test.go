@@ -21,8 +21,8 @@ import (
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
-	"github.com/decentrio/fast-ibc/packages/go-abigen/spectreclient"
+	"github.com/decentrio/spectre/packages/go-abigen/ics26router"
+	"github.com/decentrio/spectre/packages/go-abigen/spectreclient"
 
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/e2esuite"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/ethereum"
@@ -107,7 +107,7 @@ func (s *SpectreClientTestSuite) SetupSuite(ctx context.Context, proofType types
 
 		relayerMnemonic, err := generateRelayerMnemonic()
 		s.Require().NoError(err)
-		simdRelayerWallet, err := simd.BuildWallet(ctx, "fast-ibc-groth16-relayer", relayerMnemonic)
+		simdRelayerWallet, err := simd.BuildWallet(ctx, "spectre-groth16-relayer", relayerMnemonic)
 		s.Require().NoError(err)
 		err = simd.SendFunds(ctx, interchaintest.FaucetAccountKeyName, ibc.WalletAmount{
 			Address: simdRelayerWallet.FormattedAddress(),

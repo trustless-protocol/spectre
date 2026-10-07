@@ -13,6 +13,7 @@ import (
 	"relayer/services"
 	"relayer/subscriber"
 	"testing"
+	"time"
 
 	abci "github.com/cometbft/cometbft/abci/types"
 	cmtbytes "github.com/cometbft/cometbft/libs/bytes"
@@ -288,6 +289,115 @@ func TestUnrelayedPackets(t *testing.T) {
 	// A probe that fails must not move the cursors. Advancing first skipped a
 	// whole window of sequences for one rotation on a single RPC blip -- the
 	// event-loss shape this backstop exists to close.
+	// #538 review: old sends each cost a walk of log queries, and the send leg
+	// ran first on the pass's whole deadline, so a backlog left the ack leg
+	// nothing, pass after pass. The send leg now has its own budget, and a send
+	// it did not reach is where the next pass resumes, not a rotation away.
+	t.Run("an exhausted send budget leaves the ack leg its time and resumes the sends", func(t *testing.T) {
+		budget := flushSendBudget
+		flushSendBudget = 200 * time.Millisecond
+		t.Cleanup(func() { flushSendBudget = budget })
+
+		node := rpcmock.NewEVMNode(t)
+		cosmosNode := rpcmock.NewCosmosNode(t)
+		a := flushABI(t)
+		node.SetBlockNumber(500)
+		node.SetStorage(flushRouter, services.EthPrevSequenceSendKey(flushCosmosOnEVM), ethcommon.BigToHash(big.NewInt(3)))
+		for seq := uint64(1); seq <= 3; seq++ {
+			pkt := flushEthPacket(seq, flushCosmosOnEVM, flushEVMOnCosmos, 4_000_000_000)
+			node.SetStorage(flushRouter, services.EthIBCStorageKey(services.EthPath(flushCosmosOnEVM, seq, services.EthPathCommitment)), commitmentOf(pkt))
+			data, err := a.Events["SendPacket"].Inputs.NonIndexed().Pack(pkt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			node.AddLog(rpcmock.RawLog{Address: flushRouter, Topics: topics(a, "SendPacket", flushCosmosOnEVM, seq), Data: data, BlockNumber: 100 + seq})
+		}
+		acked := flushEthPacket(7, flushEVMOnCosmos, flushCosmosOnEVM, 4_000_000_000)
+		cosmosCommitments(t, cosmosNode, []channeltypesv2.PacketState{{ClientId: flushEVMOnCosmos, Sequence: 7, Data: commitmentOf(acked).Bytes()}})
+		node.SetStorage(flushRouter, services.EthIBCStorageKey(services.EthPath(flushCosmosOnEVM, 7, services.EthPathAck)), ethcommon.HexToHash("0xac"))
+		data, err := a.Events["WriteAcknowledgement"].Inputs.NonIndexed().Pack(acked, [][]byte{[]byte("ok")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		node.AddLog(rpcmock.RawLog{Address: flushRouter, Topics: topics(a, "WriteAcknowledgement", flushCosmosOnEVM, 7), Data: data, BlockNumber: 207})
+
+		// The second lookup (seq 2) outlasts the send budget; nothing else is slow.
+		node.OnLogs(func(call int) {
+			if call == 2 {
+				time.Sleep(2 * flushSendBudget)
+			}
+		})
+		s := newFlushSource(t, node, cosmosNode)
+		events, err := s.UnrelayedPackets(context.Background())
+		if err != nil {
+			t.Fatalf("UnrelayedPackets: %v", err)
+		}
+		if len(events) != 2 || events[0].Type != chain.SendPacket || events[0].Sequence != 3 || events[1].Type != chain.AckPacket || events[1].Sequence != 7 {
+			t.Fatalf("events = %+v, want send 3 (resolved in budget) and ack 7 (the ack leg still ran)", events)
+		}
+		if s.flush.sendCursor != 3 {
+			t.Fatalf("send cursor = %d, want 3: the next pass resumes at seq 2, the send it did not resolve", s.flush.sendCursor)
+		}
+
+		node.OnLogs(nil)
+		events, err = s.UnrelayedPackets(context.Background())
+		if err != nil {
+			t.Fatalf("UnrelayedPackets: %v", err)
+		}
+		var sends []uint64
+		for _, e := range events {
+			if e.Type == chain.SendPacket {
+				sends = append(sends, e.Sequence)
+			}
+		}
+		if len(sends) != 2 || sends[0] != 2 || sends[1] != 1 {
+			t.Fatalf("second pass sends = %v, want [2 1]: the ones the first pass did not reach", sends)
+		}
+		if s.flush.sendCursor != 1 {
+			t.Fatalf("send cursor = %d after a finished pass, want 1", s.flush.sendCursor)
+		}
+	})
+
+	// Review of the fix above: a send probe (prevSequenceSend / the slot batch)
+	// slower than the send budget failed the whole pass, so the ack leg still
+	// lost its time. Only the send budget ran out, so the ack leg runs, and the
+	// send cursor stays where it was.
+	t.Run("a send probe that outlasts the send budget still runs the ack leg", func(t *testing.T) {
+		budget := flushSendBudget
+		flushSendBudget = time.Nanosecond
+		t.Cleanup(func() { flushSendBudget = budget })
+
+		node := rpcmock.NewEVMNode(t)
+		cosmosNode := rpcmock.NewCosmosNode(t)
+		a := flushABI(t)
+		node.SetBlockNumber(500)
+		node.SetStorage(flushRouter, services.EthPrevSequenceSendKey(flushCosmosOnEVM), ethcommon.BigToHash(big.NewInt(3)))
+		acked := flushEthPacket(7, flushEVMOnCosmos, flushCosmosOnEVM, 4_000_000_000)
+		cosmosCommitments(t, cosmosNode, []channeltypesv2.PacketState{{ClientId: flushEVMOnCosmos, Sequence: 7, Data: commitmentOf(acked).Bytes()}})
+		node.SetStorage(flushRouter, services.EthIBCStorageKey(services.EthPath(flushCosmosOnEVM, 7, services.EthPathAck)), ethcommon.HexToHash("0xac"))
+		data, err := a.Events["WriteAcknowledgement"].Inputs.NonIndexed().Pack(acked, [][]byte{[]byte("ok")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		node.AddLog(rpcmock.RawLog{Address: flushRouter, Topics: topics(a, "WriteAcknowledgement", flushCosmosOnEVM, 7), Data: data, BlockNumber: 207})
+
+		s := newFlushSource(t, node, cosmosNode)
+		s.flush.sendCursor = 2
+		events, err := s.UnrelayedPackets(context.Background())
+		if err != nil {
+			t.Fatalf("UnrelayedPackets: %v; only the send budget ran out, the pass must still recover acks", err)
+		}
+		if len(events) != 1 || events[0].Type != chain.AckPacket || events[0].Sequence != 7 {
+			t.Fatalf("events = %+v, want ack 7", events)
+		}
+		if s.flush.sendCursor != 2 {
+			t.Fatalf("send cursor = %d, want 2: a probe that never answered must not move it", s.flush.sendCursor)
+		}
+		if s.flush.ackCursor != 7 {
+			t.Fatalf("ack cursor = %d, want 7", s.flush.ackCursor)
+		}
+	})
+
 	t.Run("a failed probe leaves both cursors where they were", func(t *testing.T) {
 		node := rpcmock.NewEVMNode(t)
 		cosmosNode := rpcmock.NewCosmosNode(t)

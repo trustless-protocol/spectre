@@ -54,6 +54,18 @@ type EVMNode struct {
 	// it with logRangeMsg -- the shape of a provider's block-range limit.
 	logRangeCap uint64
 	logRangeMsg string
+	// historyFloor, when non-zero, makes eth_getLogs refuse any query whose
+	// fromBlock is below it with historyMsg -- the shape of geth's history
+	// expiry, which refuses on the lower bound however narrow the range.
+	historyFloor uint64
+	historyMsg   string
+	// logRanges records every eth_getLogs [fromBlock,toBlock] asked, refused or
+	// not, so a test can assert what span a lookup requested.
+	logRanges [][2]uint64
+	// onLogs, when set, is called with the running eth_getLogs count each time
+	// one is asked, before it is answered -- so a test can make the Nth lookup
+	// slow. It runs under n.mu.
+	onLogs func(call int)
 	// batches counts JSON-RPC batch requests, so a test can assert that a
 	// probe was one round trip rather than one per slot.
 	batches int
@@ -128,6 +140,23 @@ func (n *EVMNode) AddLog(l RawLog) { n.withLock(func() { n.logs = append(n.logs,
 func (n *EVMNode) CapLogRange(maxBlocks uint64, message string) {
 	n.withLock(func() { n.logRangeCap, n.logRangeMsg = maxBlocks, message })
 }
+
+// PruneLogsBelow makes eth_getLogs refuse any query starting below floor with
+// message (code 4444), which is how a history-pruned geth node answers. 0 lifts it.
+func (n *EVMNode) PruneLogsBelow(floor uint64, message string) {
+	n.withLock(func() { n.historyFloor, n.historyMsg = floor, message })
+}
+
+// LogRanges returns every [fromBlock,toBlock] eth_getLogs was asked, in order.
+func (n *EVMNode) LogRanges() [][2]uint64 {
+	var out [][2]uint64
+	n.withLock(func() { out = append(out, n.logRanges...) })
+	return out
+}
+
+// OnLogs registers f to run, with the running eth_getLogs count, each time one
+// is asked and before it is answered. Pass nil to remove it.
+func (n *EVMNode) OnLogs(f func(call int)) { n.withLock(func() { n.onLogs = f }) }
 
 // FailBatches makes every JSON-RPC batch request fail with an HTTP 500 carrying
 // err's text, leaving single requests untouched. Pass nil to serve batches again.
@@ -405,6 +434,13 @@ func (n *EVMNode) getLogs(params []json.RawMessage) (any, *rpcError) {
 	}
 	from := n.blockParam(filter.FromBlock, 0)
 	to := n.blockParam(filter.ToBlock, n.blockNumber)
+	n.logRanges = append(n.logRanges, [2]uint64{from, to})
+	if n.onLogs != nil {
+		n.onLogs(len(n.logRanges))
+	}
+	if from < n.historyFloor {
+		return nil, &rpcError{Code: 4444, Message: n.historyMsg}
+	}
 	if n.logRangeCap > 0 && to >= from && to-from+1 > n.logRangeCap {
 		return nil, &rpcError{Code: -32005, Message: n.logRangeMsg}
 	}

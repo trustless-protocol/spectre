@@ -21,7 +21,7 @@
     "Cargo.lock": "cafd5352ddc789a410768288f886e139ef8fbcb484afc7b7bb304341e92cdbc8",
     "relayer/go.mod": "1416a4693c4094a220286c5fe5223b0b012ad901f1ba57a244f3d1d8fe6f3a30",
     "relayer/go.sum": "6ea31d227bcb43e5ba23b1ee6b7fc70fbac50c1bcb7baea5e0f4087b0285fedd",
-    "packages/go-abigen/go.mod": "69938d48d439a8837a2486b4cf71ebdcc2c7ed9fe7187989884ad7cdea53b584",
+    "packages/go-abigen/go.mod": "6f993eaad703a3d4cc20f1ef37f9a519b5bdfb7130fccdf4eabf688572552e6f",
     "packages/go-abigen/go.sum": "7c0ae35dedc6fb6b691c557645c435f69b534b217fedb4bc55725b001ad27d94"
   }
 }

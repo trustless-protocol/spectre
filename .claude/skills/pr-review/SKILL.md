@@ -1,9 +1,9 @@
 ---
 name: pr-review
-description: Review a fast-ibc PR, branch, or teammate's changes end-to-end — verify each claimed fix against the linked issue, build + vet + race-test locally, run the relayer path-symmetry and concurrency checks, and deliver a blockers-vs-nits verdict. Use whenever asked to review a PR number, a branch, or a directory of changes.
+description: Review a Spectre PR, branch, or teammate's changes end-to-end — verify each claimed fix against the linked issue, build + vet + race-test locally, run the relayer path-symmetry and concurrency checks, and deliver a blockers-vs-nits verdict. Use whenever asked to review a PR number, a branch, or a directory of changes.
 ---
 
-# fast-ibc PR / branch review
+# Spectre PR / branch review
 
 The deliverable is an **assessment**, not fixes. Do not edit code, do not post to GitHub, unless explicitly asked. Deliver the chat verdict in the language of the conversation; anything posted to GitHub is English. Confirm approve-vs-comment before posting a review.
 
@@ -12,7 +12,7 @@ The deliverable is an **assessment**, not fixes. Do not edit code, do not post t
 ### 1. Establish what you are actually reviewing
 
 ```bash
-gh pr view <N> --repo decentrio/fast-ibc --json title,body,baseRefName,headRefName,state,additions,deletions,changedFiles,commits
+gh pr view <N> --repo decentrio/spectre --json title,body,baseRefName,headRefName,state,additions,deletions,changedFiles,commits
 git fetch origin pull/<N>/head:pr-<N>
 git merge-base main pr-<N>          # branch may be stale vs main — SHAs in `git log main..` can be rebased duplicates
 git show <head-sha> --stat          # when the PR is one commit, review that commit, not a noisy range diff
@@ -49,12 +49,12 @@ forge test --match-contract <affected> -vvv
 forge build --sizes | grep SpectreClient        # if light-client touched — state EIP-170 margin
 # if encoding touched:
 forge test --match-contract EncodeTest -vvv
-gh pr checks <N> --repo decentrio/fast-ibc               # "no checks reported" is itself a finding
+gh pr checks <N> --repo decentrio/spectre               # "no checks reported" is itself a finding
 ```
 
 Quote results verbatim. Local green does not substitute for CI — if CI didn't run, flag it as a merge blocker to resolve.
 
-### 5. fast-ibc-specific review dimensions
+### 5. Spectre-specific review dimensions
 
 Run these even if the PR doesn't mention them:
 

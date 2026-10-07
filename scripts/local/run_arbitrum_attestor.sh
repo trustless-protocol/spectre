@@ -69,8 +69,8 @@
 #       but prefer ATTESTOR_RUN_DIR: the devnet bring-up scripts use RUN_DIR for
 #       their own artifacts
 #   STARTUP_WAIT_SECS (600)
-#   ATTESTOR_DOCKER_IMAGE (fast-ibc-arbitrum-attestor:local)
-#   ATTESTOR_CONTAINER_NAME (fast-ibc-arbitrum-attestor)
+#   ATTESTOR_DOCKER_IMAGE (spectre-arbitrum-attestor:local)
+#   ATTESTOR_CONTAINER_NAME (spectre-arbitrum-attestor)
 #   ATTESTOR_STATE_VOLUME (spectre-arbitrum-attestor-data)
 #   DETACH (0)                         exit after readiness and leave container running
 
@@ -198,8 +198,8 @@ RUNTIME_BACKFILL_CONCURRENCY=${RUNTIME_BACKFILL_CONCURRENCY:-8}
 # instead; RUN_DIR still works for anything that already sets it.
 RUN_DIR=${ATTESTOR_RUN_DIR:-${RUN_DIR:-$REPO_ROOT/.arbitrum-attestor-run}}
 STARTUP_WAIT_SECS=${STARTUP_WAIT_SECS:-600}
-ATTESTOR_DOCKER_IMAGE=${ATTESTOR_DOCKER_IMAGE:-fast-ibc-arbitrum-attestor:local}
-ATTESTOR_CONTAINER_NAME=${ATTESTOR_CONTAINER_NAME:-fast-ibc-arbitrum-attestor}
+ATTESTOR_DOCKER_IMAGE=${ATTESTOR_DOCKER_IMAGE:-spectre-arbitrum-attestor:local}
+ATTESTOR_CONTAINER_NAME=${ATTESTOR_CONTAINER_NAME:-spectre-arbitrum-attestor}
 ATTESTOR_STATE_VOLUME=${ATTESTOR_STATE_VOLUME:-spectre-arbitrum-attestor-data}
 DETACH=${DETACH:-0}
 

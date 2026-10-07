@@ -64,8 +64,14 @@ type l2ToCosmosConfig struct {
 	// creation.
 	//
 	// Known caps: Alchemy free tier 10, drpc 10_000.
-	LogScanChunk  uint64          `json:"log_scan_chunk,omitempty"`
-	RollupProfile json.RawMessage `json:"rollup_profile"`
+	LogScanChunk uint64 `json:"log_scan_chunk,omitempty"`
+	// RouterDeployBlock is the block the L2 ICS26 router was deployed at.
+	// Optional: when set, the packet-flush backstop resolves an outstanding
+	// packet's event with one eth_getLogs over [router_deploy_block, head]; when
+	// unset it walks bounded windows back from the head. Relayer-only, so it lives
+	// here and not in rollup_profile for the reason given above.
+	RouterDeployBlock uint64          `json:"router_deploy_block,omitempty"`
+	RollupProfile     json.RawMessage `json:"rollup_profile"`
 
 	// kind is the chain family (opstack/arbitrum) resolved from the module's
 	// src_chain by loadConfig; it selects the per-L2 header builder.
@@ -291,6 +297,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	trackL2Pending, untrackL2Pending := l2PendingTrackerHooks(timeoutReturn.svc)
 	source := l2rollup.NewSource(cfg.kind, l2, headKind, cfg.L2ICS26ClientID, cfg.L2WasmClientID, cfg.AttestorSrcChain, router, frontier, includeProvisional).
 		WithLogScanChunk(cfg.LogScanChunk).
+		WithRouterDeployBlock(cfg.RouterDeployBlock).
 		// AckPacket / TimeoutPacket on the L2 close a packet's lifecycle. Reading
 		// them lets the tracker drop a packet another relayer settled without
 		// waiting for a timeout scan to query for it. Same hook the module uses to

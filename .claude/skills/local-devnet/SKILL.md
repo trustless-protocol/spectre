@@ -3,7 +3,7 @@ name: local-devnet
 description: Bring up the local ETH↔Cosmos or Cosmos↔OP devnet and relayer in the proven order (L1 → beacon finality → [OP L2 + attestor] → cosmos → wasm gov → build relayer → circuits → create-clients → start), with wait conditions, failure modes, and recovery. Use when running E2E manually, testing the relayer against live local chains, or debugging devnet bring-up.
 ---
 
-# fast-ibc local devnet runbook
+# Spectre local devnet runbook
 
 The order below is load-bearing: the Tendermint light-client on ETH can only be created after Ethereum has **finalized** at least one epoch, and the ETH light-client on Cosmos needs the WASM code stored via governance. Doing these out of order produces confusing downstream failures, not clear errors at the wrong step.
 
