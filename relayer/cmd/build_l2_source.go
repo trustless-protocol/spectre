@@ -45,13 +45,18 @@ type l2ToCosmosConfig struct {
 	L2WasmClientID  string                     `json:"l2_wasm_client_id"`
 	L2ICS26ClientID string                     `json:"l2_ics26_client_id"`
 	HeadKind        string                     `json:"head_kind"`
-	// IncludeProvisional accepts attestor verdicts that have not yet been re-derived
-	// from finalized L1 data. It is deliberately its own field: it used to be inferred
-	// from head_kind, which conflated two independent axes — head_kind selects which
-	// L2 head is read, provisional is about whether the attestor's finality re-check
-	// has completed. "safe" therefore silently implied "accept provisional", with no
-	// way to ask for one without the other. Defaults to true for anything but
-	// finalized, preserving the previous behaviour.
+	// IncludeProvisional accepts attestor roots whose irreversible-finality check has
+	// not passed yet. What that risks depends on the root's source: an OP game/derived
+	// or Arbitrum derived root can still revert on an L1 reorg (or sequencer
+	// divergence at unsafe), while an Arbitrum assertion root is still inside its
+	// challenge window and can be rejected by a lost challenge. It is deliberately its
+	// own field: it used to be inferred from head_kind, which conflated two independent
+	// axes — head_kind selects which L2 head is read, provisional is about whether the
+	// attestor's finality re-check has completed. Defaults to true for anything but
+	// finalized. That is an accepted trade-off: confirmed-only Arbitrum relaying waits
+	// out every assertion's challenge period, and the attestor only serves a pending
+	// assertion that matches its own Nitro replica. See docs/L2_CLIENTS.md,
+	// "Provisional attestations".
 	IncludeProvisional *bool `json:"include_provisional,omitempty"`
 	// LogScanChunk caps the block span of a single eth_getLogs on the L2 packet
 	// scan. 0 (the default) issues one call per range, which is right for any

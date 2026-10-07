@@ -74,8 +74,10 @@ func (a *OpStackAttestor) Name() string {
 	return "opstack:" + a.cfg.SrcChain
 }
 
-// AttestedUpTo reports the highest confirmed (non-provisional) attested root.
-func (a *OpStackAttestor) AttestedUpTo() (attestor.Cursor, bool) {
+// ConfirmedUpTo reports the highest confirmed (non-provisional) attested root.
+// It is deliberately not named after the AttestedUpTo RPC: that RPC takes
+// include_provisional, while this view never includes provisional entries.
+func (a *OpStackAttestor) ConfirmedUpTo() (attestor.Cursor, bool) {
 	return a.store.AttestedUpTo(false)
 }
 
