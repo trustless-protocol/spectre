@@ -37,6 +37,7 @@ type EVMNode struct {
 	callResult     string
 	callBySelector map[string]string
 	callErr        error
+	callRPCErr     *rpcError
 	sentRawTxs     []string
 	nonceQueries   map[common.Address]int
 	methodCalls    map[string]int
@@ -212,6 +213,13 @@ func normalizeSelector(selector string) string {
 // read takes.
 func (n *EVMNode) FailCall(err error) { n.withLock(func() { n.callErr = err }) }
 
+// FailCallWith makes eth_call return a JSON-RPC error with this exact code and
+// data member, for a test that must tell a revert from a node error that also
+// carries data (a rate limit's {"retryAfter": 1}). data nil omits the member.
+func (n *EVMNode) FailCallWith(code int, message string, data any) {
+	n.withLock(func() { n.callRPCErr = &rpcError{Code: code, Message: message, Data: data} })
+}
+
 // SetBlockGasLimit changes the limit reported by eth_getBlockByNumber, which is
 // what batch-splitting decisions are measured against.
 func (n *EVMNode) SetBlockGasLimit(limit uint64) { n.withLock(func() { n.blockGasLim = limit }) }
@@ -265,6 +273,7 @@ type rpcResponse struct {
 type rpcError struct {
 	Code    int    `json:"code"`
 	Message string `json:"message"`
+	Data    any    `json:"data,omitempty"`
 }
 
 func (n *EVMNode) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -355,6 +364,9 @@ func (n *EVMNode) dispatch(req rpcRequest) (any, *rpcError) {
 		}
 		return "0x", nil
 	case "eth_call":
+		if n.callRPCErr != nil {
+			return nil, n.callRPCErr
+		}
 		if n.callErr != nil {
 			return nil, &rpcError{Code: -32000, Message: n.callErr.Error()}
 		}

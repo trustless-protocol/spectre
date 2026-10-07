@@ -653,6 +653,19 @@ const MaxClientUpdateHops = chain.MaxClientUpdateHops
 // The climb is bounded and each step is logged with its number, because linear
 // cost with no ceiling is how a fix becomes an outage.
 func (m *Module) updateClientTo(ctx context.Context, height uint64) error {
+	return m.updateClient(ctx, height, false)
+}
+
+// refreshClientTo is updateClientTo for the expiry-driven refresh: every step
+// is built with BuildRotation when the builder has one, so the update moves the
+// snapshot the destination measures expiry from rather than only its latest
+// height (see chain.RotatingBuilder). Packet-driven updates stay on Build --
+// forcing the heavy path there would pay for a rotation on every batch.
+func (m *Module) refreshClientTo(ctx context.Context, height uint64) error {
+	return m.updateClient(ctx, height, true)
+}
+
+func (m *Module) updateClient(ctx context.Context, height uint64, forceRotation bool) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -662,7 +675,7 @@ func (m *Module) updateClientTo(ctx context.Context, height uint64) error {
 				"relay %s: client still short of height %d after %d hop(s); the trust overlap has not been re-established",
 				m.name, height, hop)
 		}
-		again, err := m.updateClientStepLocked(ctx, height)
+		again, err := m.updateClientStepLocked(ctx, height, forceRotation)
 		if err != nil || !again {
 			return err
 		}
@@ -678,7 +691,7 @@ func (m *Module) updateClientTo(ctx context.Context, height uint64) error {
 // moved. Both halves matter: without the first, an adapter that simply cannot
 // prove as far as asked would be climbed at forever; without the second, a hop
 // that installs nothing would loop without progress.
-func (m *Module) updateClientStepLocked(ctx context.Context, height uint64) (again bool, err error) {
+func (m *Module) updateClientStepLocked(ctx context.Context, height uint64, forceRotation bool) (again bool, err error) {
 	if height <= m.lastHeight {
 		return false, nil // already covered — nothing to prove
 	}
@@ -687,7 +700,7 @@ func (m *Module) updateClientStepLocked(ctx context.Context, height uint64) (aga
 	if err != nil {
 		return false, fmt.Errorf("query header at %d: %w", height, err)
 	}
-	update, err := m.builder.Build(ctx, header)
+	update, err := m.buildUpdate(ctx, header, forceRotation)
 	if err != nil {
 		return false, fmt.Errorf("build client update: %w", err)
 	}
@@ -716,6 +729,18 @@ func (m *Module) updateClientStepLocked(ctx context.Context, height uint64) (aga
 	m.lastHeight = update.Height
 	m.recordClientUpdate(update)
 	return update.IsHop, nil
+}
+
+// buildUpdate picks the build the caller needs. forceRotation falls back to
+// Build for a builder with no snapshot to rotate, whose plain update already
+// moves its expiry.
+func (m *Module) buildUpdate(ctx context.Context, header []byte, forceRotation bool) (chain.ClientUpdate, error) {
+	if forceRotation {
+		if rb, ok := m.builder.(chain.RotatingBuilder); ok {
+			return rb.BuildRotation(ctx, header)
+		}
+	}
+	return m.builder.Build(ctx, header)
 }
 
 func (m *Module) recordClientUpdate(update chain.ClientUpdate) {

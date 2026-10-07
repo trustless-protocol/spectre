@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"os"
+	"relayer/chain"
 	"strings"
 	"sync"
 	"testing"
@@ -519,6 +520,107 @@ func TestNeedsRefresh(t *testing.T) {
 		const period = 14 * 24 * time.Hour
 		if got := refreshMarginFor(period); got <= defaultRefreshMargin {
 			t.Fatalf("margin for a %s period = %s, want more than the %s default", period, got, defaultRefreshMargin)
+		}
+	})
+}
+
+// rotatingBuilder is a mockBuilder that also offers the forced build, and
+// counts each kind separately so a test can tell which one the engine chose.
+type rotatingBuilder struct {
+	mockBuilder
+	rotations int
+}
+
+func (b *rotatingBuilder) BuildRotation(ctx context.Context, header []byte) (chain.ClientUpdate, error) {
+	b.rotations++
+	b.built-- // counted as a rotation, not a plain build
+	return b.mockBuilder.Build(ctx, header)
+}
+
+// The expiry-driven refresh must ask for a rotation. On SpectreClient the expiry
+// is the pinned snapshot's, and only updateConsensusState moves it: a refresh
+// built as a plain update lands as updateApplicationState, succeeds, and leaves
+// the client expiring on schedule (#541). Packet-driven updates must NOT pay for
+// that -- a rotation per batch is the heavy path on every packet.
+func TestRefreshClientTo_ForcesRotation(t *testing.T) {
+	t.Run("refresh builds a rotation", func(t *testing.T) {
+		b := &rotatingBuilder{}
+		dst := &mockDest{}
+		m := NewModule("test", "client-0", &mockSource{latest: 50}, dst, b)
+
+		if err := m.refreshClientTo(context.Background(), 50); err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+		if b.rotations != 1 || b.built != 0 {
+			t.Fatalf("refresh must build one rotation and no plain update, got rotations=%d built=%d", b.rotations, b.built)
+		}
+		if len(dst.updates) != 1 {
+			t.Fatalf("the rotation must be submitted, got %d updates", len(dst.updates))
+		}
+	})
+
+	t.Run("a packet-driven update stays on Build", func(t *testing.T) {
+		b := &rotatingBuilder{}
+		m := NewModule("test", "client-0", &mockSource{latest: 50}, &mockDest{}, b)
+
+		if err := m.updateClientTo(context.Background(), 50); err != nil {
+			t.Fatalf("update: %v", err)
+		}
+		if b.rotations != 0 || b.built != 1 {
+			t.Fatalf("updateClientTo must not force a rotation, got rotations=%d built=%d", b.rotations, b.built)
+		}
+	})
+
+	t.Run("every hop of a refresh climb is a rotation", func(t *testing.T) {
+		b := &rotatingBuilder{mockBuilder: mockBuilder{hops: []uint64{20, 35, 50}}}
+		m := NewModule("test", "client-0", &mockSource{latest: 50}, &mockDest{}, b)
+
+		if err := m.refreshClientTo(context.Background(), 50); err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+		if b.rotations != 3 || b.built != 0 {
+			t.Fatalf("each hop must be built as a rotation, got rotations=%d built=%d", b.rotations, b.built)
+		}
+	})
+
+	// Beacon and attested-L2 builders have no snapshot to rotate; their plain
+	// update already moves the expiry, so the refresh uses it.
+	t.Run("a builder with nothing to rotate falls back to Build", func(t *testing.T) {
+		b := &mockBuilder{}
+		dst := &mockDest{}
+		m := NewModule("test", "client-0", &mockSource{latest: 50}, dst, b)
+
+		if err := m.refreshClientTo(context.Background(), 50); err != nil {
+			t.Fatalf("refresh: %v", err)
+		}
+		if b.built != 1 || len(dst.updates) != 1 {
+			t.Fatalf("want one plain build submitted, got built=%d updates=%d", b.built, len(dst.updates))
+		}
+	})
+
+	// Pinned on the call site, as above: driving refreshLoop to a due refresh
+	// needs a destination near expiry and a ticker, and the property is which
+	// method the loop calls.
+	t.Run("refreshLoop advances through refreshClientTo", func(t *testing.T) {
+		src, err := os.ReadFile("refresh.go")
+		if err != nil {
+			t.Fatalf("read refresh.go: %v", err)
+		}
+		body := string(src)
+		start := strings.Index(body, "func (m *Module) refreshLoop(")
+		if start < 0 {
+			t.Fatal("refreshLoop not found")
+		}
+		end := strings.Index(body[start:], "\nfunc ")
+		if end < 0 {
+			end = len(body) - start
+		}
+		fn := body[start : start+end]
+		if !strings.Contains(fn, "m.refreshClientTo(ctx, latest)") {
+			t.Error("refreshLoop does not advance the client through refreshClientTo")
+		}
+		if strings.Contains(fn, "m.updateClientTo(") {
+			t.Error("refreshLoop calls updateClientTo, whose update never rotates the pinned set")
 		}
 	})
 }

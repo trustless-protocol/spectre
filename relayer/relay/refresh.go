@@ -121,7 +121,10 @@ func (m *Module) refreshLoop(ctx context.Context) {
 				m.beats.record(workerRefresh, lastFailure)
 				continue
 			}
-			if err := m.updateClientTo(ctx, latest); err != nil {
+			// refreshClientTo, not updateClientTo: on SpectreClient the expiry is
+			// the pinned snapshot's, which only a rotation moves. A plain update
+			// here lands as updateApplicationState and the client expires anyway.
+			if err := m.refreshClientTo(ctx, latest); err != nil {
 				// The hold now owns the retry cadence: the next tick skips on
 				// clientStillHeld and probes, and the refresh runs again as soon as
 				// the client is active -- not after a backoff built from reverts.

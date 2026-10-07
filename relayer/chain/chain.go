@@ -373,3 +373,20 @@ type Builder interface {
 	Name() string
 	Build(ctx context.Context, header []byte) (ClientUpdate, error)
 }
+
+// RotatingBuilder is implemented by a Builder whose destination client expires
+// from a snapshot that only a heavier update refreshes. BuildRotation is Build
+// with that refresh forced, and the engine asks for it on the expiry-driven
+// refresh alone.
+//
+// Implemented by cosmos.Groth16Builder: SpectreClient measures its trusting
+// period from the pinned validator-set snapshot, and only updateConsensusState
+// moves it. A plain Build takes updateApplicationState whenever the set is
+// unchanged or still overlaps enough, so an anti-expiry refresh built that way
+// lands and leaves the expiry exactly where it was (#541). Builders without
+// such a snapshot (beacon, attested L2) do not implement it, and the refresh
+// uses Build.
+type RotatingBuilder interface {
+	Builder
+	BuildRotation(ctx context.Context, header []byte) (ClientUpdate, error)
+}

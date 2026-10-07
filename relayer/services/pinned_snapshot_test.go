@@ -76,6 +76,28 @@ func TestFetchPinnedSnapshotTime(t *testing.T) {
 		}
 	})
 
+	// A revert that carries data arrives as code 3 with hex data: still a revert.
+	t.Run("code-3 revert with data means a pre-#541 client", func(t *testing.T) {
+		node, evm := pinnedSnapshotNode(t, 6593231, snapshotTime, 57600)
+		node.FailCallWith(3, "execution reverted", "0x08c379a0")
+		_, supported, err := fetchPinnedSnapshotTime(ctx, evm)
+		if err != nil || supported {
+			t.Fatalf("supported=%v err=%v; want unsupported with no error", supported, err)
+		}
+	})
+
+	// Review of d85c8cd: a throttled endpoint whose error carries diagnostic
+	// data was read as a revert, and the expiry silently fell back to the
+	// latest-height anchor. Data alone is not a revert signal.
+	t.Run("rate limit with data is an error, not a fallback", func(t *testing.T) {
+		node, evm := pinnedSnapshotNode(t, 6593231, snapshotTime, 57600)
+		node.FailCallWith(-32005, "limit exceeded", map[string]any{"retryAfter": 1})
+		_, supported, err := fetchPinnedSnapshotTime(ctx, evm)
+		if err == nil || supported {
+			t.Fatalf("supported=%v err=%v; want an error so the caller retries", supported, err)
+		}
+	})
+
 	// A node that never ran the call must not be read as an old contract:
 	// downgrading to the latest-height anchor on a blip is the #541 bug.
 	t.Run("transport failure is an error", func(t *testing.T) {

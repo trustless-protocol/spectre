@@ -45,6 +45,21 @@ func (b *Groth16Builder) Name() string { return "groth16" }
 // on-chain trusted Cosmos height with a nil payload, so the module learns the
 // client's real height (seeding the provability guard) without submitting a tx.
 func (b *Groth16Builder) Build(ctx context.Context, _ []byte) (chain.ClientUpdate, error) {
+	return b.build(ctx, false)
+}
+
+// BuildRotation is Build with forceRotation=true: the update re-pins the
+// validator set (updateConsensusState) and so refreshes the snapshot the
+// SpectreClient measures expiry from. The engine calls it from the
+// expiry-driven refresh, where an updateApplicationState would succeed without
+// moving the expiry at all (#541).
+func (b *Groth16Builder) BuildRotation(ctx context.Context, _ []byte) (chain.ClientUpdate, error) {
+	return b.build(ctx, true)
+}
+
+var _ chain.RotatingBuilder = (*Groth16Builder)(nil)
+
+func (b *Groth16Builder) build(ctx context.Context, forceRotation bool) (chain.ClientUpdate, error) {
 	readCtx, cancel := context.WithTimeout(ctx, b.fetchTimeout)
 	defer cancel()
 	trustedBlock, err := services.FetchOnChainTrustedHeight(readCtx, b.evm)
@@ -54,7 +69,7 @@ func (b *Groth16Builder) Build(ctx context.Context, _ []byte) (chain.ClientUpdat
 	if trustedBlock < 0 {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: negative trusted height %d", trustedBlock)
 	}
-	result, err := b.worker.BuildCosmosClientUpdateMsg(ctx, b.cosmos, b.evm, b.fetchTimeout, b.rotationThreshold, b.proofType, trustedBlock, b.trustLevel, false, 0)
+	result, err := b.worker.BuildCosmosClientUpdateMsg(ctx, b.cosmos, b.evm, b.fetchTimeout, b.rotationThreshold, b.proofType, trustedBlock, b.trustLevel, forceRotation, 0)
 	if err != nil {
 		return chain.ClientUpdate{}, fmt.Errorf("groth16: build cosmos update: %w", err)
 	}
