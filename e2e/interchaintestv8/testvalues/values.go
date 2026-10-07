@@ -14,7 +14,7 @@ import (
 
 	"github.com/cosmos/interchaintest/v10/chain/ethereum"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/ics26router"
+	"github.com/decentrio/spectre/packages/go-abigen/ics26router"
 )
 
 const (

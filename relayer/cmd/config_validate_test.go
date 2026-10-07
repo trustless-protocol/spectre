@@ -544,6 +544,13 @@ func TestIsEVMRevert_SeparatesExecutionFromTransport(t *testing.T) {
 		{"revert with data", jsonRPCError{msg: "execution reverted", data: "0x08c379a0"}, true},
 		{"pruned node", jsonRPCError{msg: "header not found"}, false},
 		{"rate limited", jsonRPCError{msg: "your app has exceeded its compute units"}, false},
+
+		// Data alone is not a revert signal: JSON-RPC lets a server put any
+		// detail there. Only revert-shaped data, or code 3, means the EVM ran.
+		{"code 3 without revert text", jsonRPCError{code: 3, msg: "VM Exception", data: "0x"}, true},
+		{"nethermind revert data", jsonRPCError{code: -32015, msg: "VM execution error.", data: "Reverted 0x08c379a0"}, true},
+		{"rate limit with structured data", jsonRPCError{code: -32005, msg: "limit exceeded", data: map[string]any{"retryAfter": 1}}, false},
+		{"node error with a string detail", jsonRPCError{code: -32000, msg: "header not found", data: "pruned at 1200"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -650,10 +657,10 @@ func deployAll(node *rpcmock.EVMNode, c cosmosToEthConfig) {
 	node.SetCallResult("0x000000000000000000000000" + strings.Repeat("ab", 20))
 }
 
-// jsonRPCError mirrors go-ethereum's jsonError: it satisfies rpc.DataError for
-// every node-returned error, carrying data only when the call actually reverted
-// with a reason.
+// jsonRPCError mirrors go-ethereum's jsonError: it satisfies rpc.Error and
+// rpc.DataError for every node-returned error, whatever its data holds.
 type jsonRPCError struct {
+	code int // 0 means -32000, the generic server error
 	msg  string
 	data any
 }
@@ -662,7 +669,12 @@ func (e jsonRPCError) Error() string { return e.msg }
 
 func (e jsonRPCError) ErrorData() any { return e.data }
 
-func (e jsonRPCError) ErrorCode() int { return -32000 }
+func (e jsonRPCError) ErrorCode() int {
+	if e.code == 0 {
+		return -32000
+	}
+	return e.code
+}
 
 // statusResult is the minimal /status reply: validation reads only the
 // network name, so the stub models only that.

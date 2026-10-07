@@ -12,7 +12,7 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      # Check out fast-ibc with the default GITHUB_TOKEN (which only has access to
+      # Check out spectre with the default GITHUB_TOKEN (which only has access to
       # this repo), then init the submodules separately — see below.
       - uses: actions/checkout@v4
 

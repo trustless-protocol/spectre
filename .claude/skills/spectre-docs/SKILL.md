@@ -34,7 +34,7 @@ Quorum accounting (Σ voting power > ⅔ against the pinned set) happens in **Sp
 
 ## Claim verification
 
-Every technical statement gets checked against this repo (the `fast-ibc` checkout this skill file lives in) before it survives review:
+Every technical statement gets checked against this repo (the `spectre` checkout this skill file lives in) before it survives review:
 
 - Witness/field tables ↔ `relayer/prover/witness/witness.go` (layout, `MaxMsgLen = 175`, which fields are hashed and why).
 - Flow descriptions ↔ `SpectreClient.sol` (`updateApplicationState`, `updateConsensusState`, `_verifyPinnedQuorum`).

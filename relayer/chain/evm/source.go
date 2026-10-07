@@ -35,6 +35,10 @@ type Source struct {
 	bb          *services.BatchBuilder
 	recovery    *services.RecoveryStateStore
 
+	// routerDeployBlock is the block the ICS26Router was deployed at; 0 when not
+	// configured. The flush's log lookups start there (see evmflush.Router).
+	routerDeployBlock uint64
+
 	// flush is the enumeration backstop's cursors and log-range policy; see
 	// flush.go. Touched only from UnrelayedPackets, which the relay module calls
 	// on one goroutine.
@@ -44,6 +48,14 @@ type Source struct {
 // NewSource wires the Ethereum source to its endpoints and the shared batch builder.
 func NewSource(cosmos services.CosmosEndpoint, evm services.EVMEndpoint, ids services.ClientIDs, batchConfig services.BatchConfig, logger *log.Logger, bb *services.BatchBuilder, recovery *services.RecoveryStateStore) *Source {
 	return &Source{cosmos: cosmos, evm: evm, ids: ids, batchConfig: batchConfig, logger: logger, bb: bb, recovery: recovery}
+}
+
+// WithRouterDeployBlock sets the block the ICS26Router was deployed at, so the
+// enumeration backstop asks for the router's whole history in one log query
+// instead of walking bounded windows back from the head. 0 keeps the walk.
+func (s *Source) WithRouterDeployBlock(n uint64) *Source {
+	s.routerDeployBlock = n
+	return s
 }
 
 func (s *Source) Chain() chain.ChainType { return chain.Ethereum }

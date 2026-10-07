@@ -537,6 +537,7 @@ func buildCosmosConfig(c2e cosmosToEthConfig, batchCfg services.BatchConfig) (se
 	if c2e.RotationThreshold != "" {
 		cfg.RotationThreshold = c2e.RotationThreshold
 	}
+	cfg.RouterDeployBlock = c2e.RouterDeployBlock
 	if c2e.RefreshInterval != 0 {
 		d, err := secondsToDuration("refresh_interval_seconds", c2e.RefreshInterval)
 		if err != nil {

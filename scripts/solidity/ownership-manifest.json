@@ -1182,13 +1182,8 @@
   "terminology_allowlist": [
     {
       "term": "fast-ibc",
-      "owner": "repository identity and Go module paths",
-      "removal_condition": "separate repository/module rename with downstream migration"
-    },
-    {
-      "term": "fast-ibc-dummy",
-      "owner": "Groth16 witness protocol bytes",
-      "removal_condition": "versioned circuit and proof protocol migration"
+      "owner": "legacy relayer on-disk state directory name (relayer/cmd/build_source.go legacyTrackerDirName), kept so startup refuses pre-rename state by name",
+      "removal_condition": "removal of the legacy state-layout startup check"
     },
     {
       "term": "IBC Eureka",

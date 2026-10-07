@@ -6,7 +6,7 @@ import (
 
 	"github.com/ethereum/go-ethereum/accounts/abi"
 
-	"github.com/decentrio/fast-ibc/packages/go-abigen/spectreclient"
+	"github.com/decentrio/spectre/packages/go-abigen/spectreclient"
 )
 
 // The SpectreClient contract exposes its client state only as

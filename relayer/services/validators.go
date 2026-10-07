@@ -91,9 +91,31 @@ func pinnedOverlapPower(candidates []witness.ValidatorSignature, pinnedSet pinne
 	return overlap
 }
 
-// shouldRotatePinnedSet decides whether an update whose target
-// nextValidatorsHash differs from the on-chain pinned hash rotates the pinned
-// set (updateConsensusState) or defers and stays on updateApplicationState.
+// rotationCandidate reports whether an update is considered for the
+// updateConsensusState path at all. A changed nextValidatorsHash always is.
+// forceRotation (the periodic rotation cadence) is too, even when the hash is
+// unchanged: SpectreClient checks the trusting period against the pinned
+// snapshot's timestamp, and only updateConsensusState refreshes it. On a chain
+// whose validator set never changes, gating rotation on a hash difference
+// leaves the snapshot frozen at client creation, and the client expires after
+// one trusting period no matter how many updateApplicationState calls land
+// (#541).
+func rotationCandidate(forceRotation bool, targetNextValHash, pinnedHash [32]byte) bool {
+	return forceRotation || targetNextValHash != pinnedHash
+}
+
+// forcedRotationBlockedAtHeight reports whether a forced rotation cannot be
+// built because the client is already at the target height. Without a forced
+// rotation, an up-to-date client simply needs no update; with one, the re-pin is
+// still owed. The builder anchors the proof at the latest trusted height, so it
+// needs a newer source block and must retry rather than report success (#541).
+func forcedRotationBlockedAtHeight(forceRotation bool, trustedHeight, targetHeight int64) bool {
+	return forceRotation && trustedHeight == targetHeight
+}
+
+// shouldRotatePinnedSet decides whether a rotationCandidate update rotates the
+// pinned set (updateConsensusState) or defers and stays on
+// updateApplicationState.
 // forceRotation (the refresh-routine cadence path) always rotates; otherwise
 // rotate once overlap/total ≤ threshold. With threshold "1/1" this rotates on
 // any pinned-set change.

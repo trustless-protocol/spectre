@@ -148,7 +148,8 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	ethToCosmos := relay.NewModule(
 		"eth->cosmos",
 		deps.IDs.EVMOnCosmos,
-		evm.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.BatchConfig, deps.Logger, bb, svc.RecoveryState()),
+		evm.NewSource(deps.Cosmos, deps.EVM, deps.IDs, deps.Config.BatchConfig, deps.Logger, bb, svc.RecoveryState()).
+			WithRouterDeployBlock(deps.Config.RouterDeployBlock),
 		cosmos.NewDestination(worker, deps.Cosmos, deps.IDs.EVMOnCosmos),
 		evm.NewBeaconBuilder(worker, deps.Cosmos, deps.EVM, deps.IDs.EVMOnCosmos),
 		relay.WithClientUpdateObserver(svc.ObserveEVMOnCosmosUpdate),

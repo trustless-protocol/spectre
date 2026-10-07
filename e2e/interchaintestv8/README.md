@@ -2,7 +2,7 @@
 
 The e2e tests are built on the [interchaintest](https://github.com/cosmos/interchaintest)
 library. Each run boots a real Ethereum PoS devnet (Kurtosis + ethereum-package),
-a real IBC-Go simd chain (Docker), starts the fast-ibc relayer binary against
+a real IBC-Go simd chain (Docker), starts the Spectre relayer binary against
 them, then drives ICS-20 packet flows end-to-end.
 
 Each test takes **8–15 minutes** wall-time. Designed for both CI and local dev.
@@ -68,7 +68,7 @@ and `PROVER_BIN_DIR=<repo>/relayer/bin` for you.
 ## Out-of-scope suites
 
 These suites still assume upstream-only flows or tooling and are not part of the
-fast-ibc daemon matrix.
+Spectre daemon matrix.
 
 - `spectre_client_test.go` (standalone Spectre client/deployment flow) —
   fixture generation remains explicitly unsupported.
@@ -77,7 +77,7 @@ fast-ibc daemon matrix.
 
 ## Architecture note
 
-fast-ibc's relayer is an **event-driven daemon**, not the upstream Rust gRPC
+Spectre's relayer is an **event-driven daemon**, not the upstream Rust gRPC
 service. Tests therefore *wait* for the daemon to drive each step (via
 `require.Eventually` polling the post-relay end state) instead of pulling a
 relay tx via `s.RelayerClient.RelayByTx(...)` and broadcasting it themselves.
