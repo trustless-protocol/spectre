@@ -355,6 +355,12 @@ func TestAdapterContract(t *testing.T) {
 	chaintest.RunDestinationContract(t, chaintest.DestinationFixture{Name: "l2rollup", Unwired: &Destination{}})
 }
 
+func TestWithRouterDeployBlock_IsRecorded(t *testing.T) {
+	if got := (&Source{}).WithRouterDeployBlock(42).routerDeployBlock; got != 42 {
+		t.Fatalf("routerDeployBlock = %d, want 42", got)
+	}
+}
+
 func TestWithLogScanChunk_IsRecorded(t *testing.T) {
 	s := (&Source{}).WithLogScanChunk(10)
 	if s.logScanChunk != 10 {

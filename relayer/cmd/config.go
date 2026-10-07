@@ -60,6 +60,11 @@ type cosmosToEthConfig struct {
 	FetchTimeout          uint64 `json:"fetch_timeout"`
 	RotationThreshold     string `json:"rotation_threshold"`
 	RefreshInterval       uint64 `json:"refresh_interval_seconds"`
+	// RouterDeployBlock is the block ics26_address was deployed at. Optional:
+	// when set, the packet-flush backstop resolves an outstanding packet's event
+	// with one eth_getLogs over [router_deploy_block, head]; when unset it walks
+	// bounded windows back from the head.
+	RouterDeployBlock uint64 `json:"router_deploy_block,omitempty"`
 }
 
 type ethToCosmosConfig struct {

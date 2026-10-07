@@ -116,6 +116,58 @@ func TestWindow(t *testing.T) {
 	}
 }
 
+// A pass that runs out of time resumes at the first slot it did not resolve,
+// and a pass that resolved nothing still moves past one slot.
+func TestSendCursor(t *testing.T) {
+	slots := []evmflush.Slot{{Sequence: 90}, {Sequence: 70}, {Sequence: 50}} // window [41,100], newest first
+	for _, tc := range []struct {
+		name string
+		stop int
+		want uint64
+	}{
+		{name: "a finished pass moves to the bottom of the window", stop: 3, want: 41},
+		{name: "a pass stopped at 70 resumes there", stop: 1, want: 71},
+		{name: "a pass stopped at the last slot resumes there", stop: 2, want: 51},
+		{name: "a pass that resolved nothing still moves past the first slot", stop: 0, want: 90},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := evmflush.SendCursor(41, slots, tc.stop)
+			if got != tc.want {
+				t.Fatalf("SendCursor(stop=%d) = %d, want %d", tc.stop, got, tc.want)
+			}
+			// The cursor's meaning, checked through Window: the next pass's top.
+			if lo, hi, _ := evmflush.Window(100, got, 200); tc.stop > 0 && tc.stop < len(slots) && hi != slots[tc.stop].Sequence {
+				t.Fatalf("next window [%d,%d] does not start at the unresolved seq %d", lo, hi, slots[tc.stop].Sequence)
+			}
+		})
+	}
+	if got := evmflush.SendCursor(41, nil, 0); got != 41 {
+		t.Fatalf("SendCursor with nothing outstanding = %d, want the window's bottom 41", got)
+	}
+}
+
+func TestAckCursor(t *testing.T) {
+	// The ack window after cursor 10: 11..13, then wrapped to 2..3.
+	window := []uint64{11, 12, 13, 2, 3}
+	written := []evmflush.Slot{{Sequence: 12}, {Sequence: 2}, {Sequence: 3}}
+	for _, tc := range []struct {
+		name string
+		stop int
+		want uint64
+	}{
+		{name: "a finished pass moves to the window's last", stop: 3, want: 3},
+		{name: "a pass stopped past the wrap resumes at 2", stop: 1, want: 1},
+		{name: "a pass stopped at 3 resumes there", stop: 2, want: 2},
+		{name: "a pass that resolved nothing still moves past the first slot", stop: 0, want: 12},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := evmflush.AckCursor(window, written, tc.stop); got != tc.want {
+				t.Fatalf("AckCursor(stop=%d) = %d, want %d", tc.stop, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSequences_AreNewestFirst(t *testing.T) {
 	got := evmflush.Sequences(3, 5)
 	if len(got) != 3 || got[0] != 5 || got[2] != 3 {
@@ -165,7 +217,7 @@ func TestOutstandingSlots_IsBatchedAndReturnsOnlyHeldSlots(t *testing.T) {
 }
 
 func TestSendLog(t *testing.T) {
-	t.Run("finds the event by topic over the whole chain", func(t *testing.T) {
+	t.Run("finds the event by topic on a short chain in one call", func(t *testing.T) {
 		node := rpcmock.NewEVMNode(t)
 		a := routerABI(t)
 		node.SetBlockNumber(5000)
@@ -181,7 +233,206 @@ func TestSendLog(t *testing.T) {
 			t.Fatalf("wrong log: client=%s seq=%d block=%d", ev.Packet.SourceClient, ev.Sequence.Uint64(), ev.Raw.BlockNumber)
 		}
 		if got := node.MethodCalls("eth_getLogs"); got != 1 {
-			t.Fatalf("eth_getLogs calls = %d, want 1: an uncapped provider is asked once for the whole chain", got)
+			t.Fatalf("eth_getLogs calls = %d, want 1: a chain shorter than DefaultLogChunk is one window", got)
+		}
+	})
+
+	// #537: never [0, head]. Even an uncapped provider is asked for bounded
+	// windows walking back from the head -- a full-range eth_getLogs per probed
+	// sequence is the most expensive query a node can be asked.
+	t.Run("walks back from the head in bounded windows, never from block zero", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		a := routerABI(t)
+		const head = 1_000_000
+		node.SetBlockNumber(head)
+		node.AddLog(sendLog(t, a, "client-0", packet(7, "client-0", "08-wasm-0"), head-500))
+		node.AddLog(sendLog(t, a, "client-0", packet(8, "client-0", "08-wasm-0"), head-3*evmflush.DefaultLogChunk))
+
+		router := newRouter(t, node)
+		ev, found, err := router.SendLog(context.Background(), "client-0", 7, commitmentOf(packet(7, "client-0", "08-wasm-0")))
+		if err != nil || !found || ev.Raw.BlockNumber != head-500 {
+			t.Fatalf("SendLog(recent) = (found=%v, %v), want the log near the head", found, err)
+		}
+		if got := node.MethodCalls("eth_getLogs"); got != 1 {
+			t.Fatalf("eth_getLogs calls = %d, want 1: a log in the newest window is one query", got)
+		}
+		ev, found, err = router.SendLog(context.Background(), "client-0", 8, commitmentOf(packet(8, "client-0", "08-wasm-0")))
+		if err != nil || !found || ev.Raw.BlockNumber != head-3*evmflush.DefaultLogChunk {
+			t.Fatalf("SendLog(older) = (found=%v, %v), want the log four windows down", found, err)
+		}
+		for _, r := range node.LogRanges() {
+			if r[0] == 0 || r[1]-r[0]+1 > evmflush.DefaultLogChunk {
+				t.Fatalf("eth_getLogs asked [%d,%d]: a lookup must stay within DefaultLogChunk below the head", r[0], r[1])
+			}
+		}
+		if router.Span.Chunk != 0 {
+			t.Fatalf("span chunk = %d, want untouched: no provider refused anything", router.Span.Chunk)
+		}
+	})
+
+	// #537, observed live: geth with history expiry refuses ANY range whose
+	// fromBlock is below its cutoff, so every lookup failed and the backstop
+	// recovered nothing. The walk must find the floor inside the chunk that
+	// straddles it, still find a log above it, report a log below it as not
+	// found (not an error), and remember the floor so later lookups never ask
+	// below it again.
+	t.Run("learns a pruned-history floor and stops there", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		a := routerABI(t)
+		const head, floor = 100_000, 95_500
+		node.SetBlockNumber(head)
+		node.PruneLogsBelow(floor, "pruned history unavailable")
+		node.AddLog(sendLog(t, a, "client-0", packet(1, "client-0", "08-wasm-0"), floor+100)) // inside the straddling chunk
+		node.AddLog(sendLog(t, a, "client-0", packet(2, "client-0", "08-wasm-0"), 50_000))    // below the floor
+
+		router := newRouter(t, node)
+		ev, found, err := router.SendLog(context.Background(), "client-0", 1, commitmentOf(packet(1, "client-0", "08-wasm-0")))
+		if err != nil || !found || ev.Raw.BlockNumber != floor+100 {
+			t.Fatalf("SendLog(above floor) = (found=%v, %v), want the log at %d", found, err, floor+100)
+		}
+		if router.Span.Floor != floor {
+			t.Fatalf("span floor = %d, want %d", router.Span.Floor, floor)
+		}
+		if router.Span.Chunk != 0 {
+			t.Fatalf("span chunk = %d: a pruned-history refusal is not a range refusal and must not narrow", router.Span.Chunk)
+		}
+		if got := node.MethodCalls("eth_getLogs"); got > 20 {
+			t.Fatalf("eth_getLogs calls = %d, want about log2(DefaultLogChunk) probes plus two lookups", got)
+		}
+
+		before := node.MethodCalls("eth_getLogs")
+		_, found, err = router.SendLog(context.Background(), "client-0", 2, commitmentOf(packet(2, "client-0", "08-wasm-0")))
+		if err != nil {
+			t.Fatalf("a log below the pruned floor is not an error: %v", err)
+		}
+		if found {
+			t.Fatal("a log below the pruned floor was found")
+		}
+		if got := node.MethodCalls("eth_getLogs") - before; got != 1 {
+			t.Fatalf("second lookup cost %d eth_getLogs calls, want 1: the floor is known, [floor, head] is one window", got)
+		}
+		ranges := node.LogRanges()
+		if last := ranges[len(ranges)-1]; last[0] != floor || last[1] != head {
+			t.Fatalf("second lookup asked [%d,%d], want [%d,%d]", last[0], last[1], floor, head)
+		}
+	})
+
+	// A node keeps pruning. A floor learned earlier is just the next refused
+	// lower bound, found the same way.
+	t.Run("re-learns a floor that moved up", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		a := routerABI(t)
+		node.SetBlockNumber(100_000)
+		node.PruneLogsBelow(95_500, "pruned history unavailable")
+		node.AddLog(sendLog(t, a, "client-0", packet(3, "client-0", "08-wasm-0"), 98_000))
+
+		router := newRouter(t, node)
+		if _, _, err := router.SendLog(context.Background(), "client-0", 9, ethcommon.HexToHash("0x01")); err != nil {
+			t.Fatalf("first lookup: %v", err)
+		}
+		node.PruneLogsBelow(97_000, "pruned history unavailable")
+		ev, found, err := router.SendLog(context.Background(), "client-0", 3, commitmentOf(packet(3, "client-0", "08-wasm-0")))
+		if err != nil || !found || ev.Raw.BlockNumber != 98_000 {
+			t.Fatalf("SendLog after the floor moved = (found=%v, %v), want the log at 98000", found, err)
+		}
+		if router.Span.Floor != 97_000 {
+			t.Fatalf("span floor = %d, want the new floor 97000", router.Span.Floor)
+		}
+	})
+
+	// With router_deploy_block configured there is nothing to guess: the router's
+	// whole history is [deploy, head], asked in one call -- including an event
+	// older than the default walk would ever reach.
+	t.Run("asks [deploy block, head] in one call when the deploy block is known", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		a := routerABI(t)
+		const head, deploy = 2_000_000, 1_000_000
+		node.SetBlockNumber(head)
+		pkt := packet(5, "client-0", "08-wasm-0")
+		node.AddLog(sendLog(t, a, "client-0", pkt, deploy+50)) // ~1M blocks back, past the default walk's reach
+
+		router := newRouter(t, node)
+		router.DeployBlock = deploy
+		ev, found, err := router.SendLog(context.Background(), "client-0", 5, commitmentOf(pkt))
+		if err != nil || !found || ev.Raw.BlockNumber != deploy+50 {
+			t.Fatalf("SendLog = (found=%v, %v), want the log at %d", found, err, deploy+50)
+		}
+		ranges := node.LogRanges()
+		if len(ranges) != 1 || ranges[0] != [2]uint64{deploy, head} {
+			t.Fatalf("eth_getLogs ranges = %v, want exactly [[%d %d]]", ranges, deploy, head)
+		}
+
+		// The same lookup without the deploy block walks bounded windows and
+		// gives up before reaching it -- the reason the setting exists.
+		_, found, err = newRouter(t, node).SendLog(context.Background(), "client-0", 5, commitmentOf(pkt))
+		if err != nil || found {
+			t.Fatalf("without a deploy block = (found=%v, %v), want not found after MaxLogChunks windows", found, err)
+		}
+	})
+
+	// A capped provider still narrows, and the walk never goes below the deploy
+	// block.
+	t.Run("narrows from [deploy block, head] and never asks below it", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		a := routerABI(t)
+		const head, deploy = 1_200_000, 1_000_000
+		node.SetBlockNumber(head)
+		node.CapLogRange(50_000, "block range too large")
+		pkt := packet(6, "client-0", "08-wasm-0")
+		node.AddLog(sendLog(t, a, "client-0", pkt, deploy+10))
+
+		router := newRouter(t, node)
+		router.DeployBlock = deploy
+		ev, found, err := router.SendLog(context.Background(), "client-0", 6, commitmentOf(pkt))
+		if err != nil || !found || ev.Raw.BlockNumber != deploy+10 {
+			t.Fatalf("SendLog = (found=%v, %v), want the log at %d", found, err, deploy+10)
+		}
+		for _, r := range node.LogRanges() {
+			if r[0] < deploy {
+				t.Fatalf("eth_getLogs asked [%d,%d], below the deploy block %d", r[0], r[1], deploy)
+			}
+		}
+	})
+
+	// A pruned floor above the deploy block wins; the deploy block is not a
+	// reason to keep asking for history the node no longer has.
+	t.Run("a pruned floor above the deploy block takes over", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		a := routerABI(t)
+		const head, deploy, floor = 1_200_000, 1_000_000, 1_150_000
+		node.SetBlockNumber(head)
+		node.PruneLogsBelow(floor, "pruned history unavailable")
+		above, below := packet(7, "client-0", "08-wasm-0"), packet(8, "client-0", "08-wasm-0")
+		node.AddLog(sendLog(t, a, "client-0", above, floor+10_000))
+		node.AddLog(sendLog(t, a, "client-0", below, deploy+10))
+
+		router := newRouter(t, node)
+		router.DeployBlock = deploy
+		if _, found, err := router.SendLog(context.Background(), "client-0", 7, commitmentOf(above)); err != nil || !found {
+			t.Fatalf("SendLog(above floor) = (found=%v, %v), want found", found, err)
+		}
+		if router.Span.Floor != floor {
+			t.Fatalf("span floor = %d, want %d", router.Span.Floor, floor)
+		}
+		before := node.MethodCalls("eth_getLogs")
+		if _, found, err := router.SendLog(context.Background(), "client-0", 8, commitmentOf(below)); err != nil || found {
+			t.Fatalf("SendLog(below floor) = (found=%v, %v), want not found and no error", found, err)
+		}
+		if got := node.MethodCalls("eth_getLogs") - before; got != 1 {
+			t.Fatalf("lookup after the floor is known cost %d calls, want 1 ([floor, head])", got)
+		}
+	})
+
+	t.Run("a deploy block above the head asks nothing", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		node.SetBlockNumber(1_000)
+		router := newRouter(t, node)
+		router.DeployBlock = 5_000
+		if _, found, err := router.SendLog(context.Background(), "client-0", 1, ethcommon.HexToHash("0x01")); err != nil || found {
+			t.Fatalf("SendLog = (found=%v, %v), want not found and no error", found, err)
+		}
+		if got := node.MethodCalls("eth_getLogs"); got != 0 {
+			t.Fatalf("eth_getLogs calls = %d, want 0: nothing of this router exists below the head", got)
 		}
 	})
 
@@ -261,7 +512,7 @@ func TestSendLog(t *testing.T) {
 			t.Fatalf("SendLog(unknown commitment) = (found=%v, %v), want not found and no error", found, err)
 		}
 		if got := node.MethodCalls("eth_getLogs") - calls; got != 1 {
-			t.Fatalf("an unmatched commitment cost %d eth_getLogs calls, want 1: the whole chain was already asked", got)
+			t.Fatalf("an unmatched commitment cost %d eth_getLogs calls, want 1: the whole (short) chain was already asked", got)
 		}
 	})
 }

@@ -10,6 +10,7 @@ import (
 	"relayer/services"
 	"relayer/subscriber"
 	"testing"
+	"time"
 
 	channeltypesv2 "github.com/cosmos/ibc-go/v10/modules/core/04-channel/v2/types"
 	"github.com/ethereum/go-ethereum/accounts/abi"
@@ -184,6 +185,90 @@ func TestUnrelayedPackets(t *testing.T) {
 		events, err := src.UnrelayedPackets(context.Background())
 		if err != nil || len(events) != 0 {
 			t.Fatalf("UnrelayedPackets = (%+v, %v), want nothing: the send is expired", events, err)
+		}
+	})
+
+	// The ETH source's send-budget rule, mirrored: a slow send backlog leaves the
+	// ack leg its own time, and the next pass resumes at the unresolved send.
+	t.Run("an exhausted send budget leaves the ack leg its time and resumes the sends", func(t *testing.T) {
+		budget := flushSendBudget
+		flushSendBudget = 200 * time.Millisecond
+		t.Cleanup(func() { flushSendBudget = budget })
+
+		node := rpcmock.NewEVMNode(t)
+		a := l2FlushABI(t)
+		node.SetBlockNumber(300)
+		node.SetStorage(l2FlushRouter, services.EthPrevSequenceSendKey(l2FlushClient), ethcommon.BigToHash(big.NewInt(3)))
+		for seq := uint64(1); seq <= 3; seq++ {
+			pkt := flushL2Packet(seq, l2FlushClient, l2FlushWasmName)
+			node.SetStorage(l2FlushRouter, services.EthIBCStorageKey(services.EthPath(l2FlushClient, seq, services.EthPathCommitment)), l2Commitment(pkt))
+			node.AddLog(l2Log(t, a, "SendPacket", l2FlushClient, 10+seq, pkt))
+		}
+		fromCosmos := flushL2Packet(9, l2FlushWasmName, l2FlushClient)
+		state := &listingState{window: []services.PacketCommitment{{Sequence: 9, Data: l2Commitment(fromCosmos).Bytes()}}}
+		node.SetStorage(l2FlushRouter, services.EthIBCStorageKey(services.EthPath(l2FlushClient, 9, services.EthPathAck)), ethcommon.HexToHash("0xac"))
+		node.AddLog(l2Log(t, a, "WriteAcknowledgement", l2FlushClient, 42, fromCosmos, [][]byte{[]byte("ok")}))
+
+		node.OnLogs(func(call int) {
+			if call == 2 {
+				time.Sleep(2 * flushSendBudget)
+			}
+		})
+		src := &Source{eth: node.Client(t), router: l2FlushRouter, l2ClientID: l2FlushClient, cosmosWasmClientID: l2FlushWasmName, cosmosState: state}
+		events, err := src.UnrelayedPackets(context.Background())
+		if err != nil {
+			t.Fatalf("UnrelayedPackets: %v", err)
+		}
+		if len(events) != 2 || events[0].Type != chain.SendPacket || events[0].Sequence != 3 || events[1].Type != chain.AckPacket || events[1].Sequence != 9 {
+			t.Fatalf("events = %+v, want send 3 (resolved in budget) and ack 9 (the ack leg still ran)", events)
+		}
+		if src.flush.sendCursor != 3 {
+			t.Fatalf("send cursor = %d, want 3: the next pass resumes at seq 2", src.flush.sendCursor)
+		}
+
+		node.OnLogs(nil)
+		events, err = src.UnrelayedPackets(context.Background())
+		if err != nil {
+			t.Fatalf("UnrelayedPackets: %v", err)
+		}
+		if len(events) < 2 || events[0].Sequence != 2 || events[1].Sequence != 1 || events[1].Type != chain.SendPacket {
+			t.Fatalf("second pass events = %+v, want sends 2 then 1 first", events)
+		}
+		if src.flush.sendCursor != 1 {
+			t.Fatalf("send cursor = %d after a finished pass, want 1", src.flush.sendCursor)
+		}
+	})
+
+	// Mirrors the ETH case: a send probe slower than the send budget leaves the
+	// send cursor alone and still runs the ack leg.
+	t.Run("a send probe that outlasts the send budget still runs the ack leg", func(t *testing.T) {
+		budget := flushSendBudget
+		flushSendBudget = time.Nanosecond
+		t.Cleanup(func() { flushSendBudget = budget })
+
+		node := rpcmock.NewEVMNode(t)
+		a := l2FlushABI(t)
+		node.SetBlockNumber(300)
+		node.SetStorage(l2FlushRouter, services.EthPrevSequenceSendKey(l2FlushClient), ethcommon.BigToHash(big.NewInt(3)))
+		fromCosmos := flushL2Packet(9, l2FlushWasmName, l2FlushClient)
+		state := &listingState{window: []services.PacketCommitment{{Sequence: 9, Data: l2Commitment(fromCosmos).Bytes()}}}
+		node.SetStorage(l2FlushRouter, services.EthIBCStorageKey(services.EthPath(l2FlushClient, 9, services.EthPathAck)), ethcommon.HexToHash("0xac"))
+		node.AddLog(l2Log(t, a, "WriteAcknowledgement", l2FlushClient, 42, fromCosmos, [][]byte{[]byte("ok")}))
+
+		src := &Source{eth: node.Client(t), router: l2FlushRouter, l2ClientID: l2FlushClient, cosmosWasmClientID: l2FlushWasmName, cosmosState: state}
+		src.flush.sendCursor = 2
+		events, err := src.UnrelayedPackets(context.Background())
+		if err != nil {
+			t.Fatalf("UnrelayedPackets: %v; only the send budget ran out, the pass must still recover acks", err)
+		}
+		if len(events) != 1 || events[0].Type != chain.AckPacket || events[0].Sequence != 9 {
+			t.Fatalf("events = %+v, want ack 9", events)
+		}
+		if src.flush.sendCursor != 2 {
+			t.Fatalf("send cursor = %d, want 2: a probe that never answered must not move it", src.flush.sendCursor)
+		}
+		if src.flush.ackCursor != 9 {
+			t.Fatalf("ack cursor = %d, want 9", src.flush.ackCursor)
 		}
 	})
 

@@ -132,6 +132,10 @@ type Source struct {
 	// not a constant.
 	logScanChunk uint64
 
+	// routerDeployBlock is the block the L2 router was deployed at; 0 when not
+	// configured. The flush's log lookups start there (see evmflush.Router).
+	routerDeployBlock uint64
+
 	// flush is the enumeration backstop's cursors and log-range policy; see
 	// flush.go. Touched only from UnrelayedPackets, which the relay module calls
 	// on one goroutine.
@@ -223,6 +227,14 @@ func (s *Source) WithAckSettleHook(settle func(packet []byte)) *Source {
 
 func (s *Source) WithLogScanChunk(n uint64) *Source {
 	s.logScanChunk = n
+	return s
+}
+
+// WithRouterDeployBlock sets the block the L2 router was deployed at, so the
+// enumeration backstop asks for the router's whole history in one log query
+// instead of walking bounded windows back from the head. 0 keeps the walk.
+func (s *Source) WithRouterDeployBlock(n uint64) *Source {
+	s.routerDeployBlock = n
 	return s
 }
 
