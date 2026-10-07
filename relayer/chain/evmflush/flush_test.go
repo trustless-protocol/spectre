@@ -116,6 +116,58 @@ func TestWindow(t *testing.T) {
 	}
 }
 
+// A pass that runs out of time resumes at the first slot it did not resolve,
+// and a pass that resolved nothing still moves past one slot.
+func TestSendCursor(t *testing.T) {
+	slots := []evmflush.Slot{{Sequence: 90}, {Sequence: 70}, {Sequence: 50}} // window [41,100], newest first
+	for _, tc := range []struct {
+		name string
+		stop int
+		want uint64
+	}{
+		{name: "a finished pass moves to the bottom of the window", stop: 3, want: 41},
+		{name: "a pass stopped at 70 resumes there", stop: 1, want: 71},
+		{name: "a pass stopped at the last slot resumes there", stop: 2, want: 51},
+		{name: "a pass that resolved nothing still moves past the first slot", stop: 0, want: 90},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := evmflush.SendCursor(41, slots, tc.stop)
+			if got != tc.want {
+				t.Fatalf("SendCursor(stop=%d) = %d, want %d", tc.stop, got, tc.want)
+			}
+			// The cursor's meaning, checked through Window: the next pass's top.
+			if lo, hi, _ := evmflush.Window(100, got, 200); tc.stop > 0 && tc.stop < len(slots) && hi != slots[tc.stop].Sequence {
+				t.Fatalf("next window [%d,%d] does not start at the unresolved seq %d", lo, hi, slots[tc.stop].Sequence)
+			}
+		})
+	}
+	if got := evmflush.SendCursor(41, nil, 0); got != 41 {
+		t.Fatalf("SendCursor with nothing outstanding = %d, want the window's bottom 41", got)
+	}
+}
+
+func TestAckCursor(t *testing.T) {
+	// The ack window after cursor 10: 11..13, then wrapped to 2..3.
+	window := []uint64{11, 12, 13, 2, 3}
+	written := []evmflush.Slot{{Sequence: 12}, {Sequence: 2}, {Sequence: 3}}
+	for _, tc := range []struct {
+		name string
+		stop int
+		want uint64
+	}{
+		{name: "a finished pass moves to the window's last", stop: 3, want: 3},
+		{name: "a pass stopped past the wrap resumes at 2", stop: 1, want: 1},
+		{name: "a pass stopped at 3 resumes there", stop: 2, want: 2},
+		{name: "a pass that resolved nothing still moves past the first slot", stop: 0, want: 12},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := evmflush.AckCursor(window, written, tc.stop); got != tc.want {
+				t.Fatalf("AckCursor(stop=%d) = %d, want %d", tc.stop, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestSequences_AreNewestFirst(t *testing.T) {
 	got := evmflush.Sequences(3, 5)
 	if len(got) != 3 || got[0] != 5 || got[2] != 3 {

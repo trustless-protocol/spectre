@@ -2,6 +2,7 @@ package evm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -27,6 +28,14 @@ type flushState struct {
 // flushQueryTimeout bounds one enumeration pass, for the same reason the Cosmos
 // source bounds its own: a hung endpoint must not wedge the flush worker.
 const flushQueryTimeout = 60 * time.Second
+
+// flushSendBudget bounds the send leg inside one pass. Sends run first and
+// share the pass's flushQueryTimeout with acknowledgements; a backlog of old
+// sends -- each a walk of up to evmflush.MaxLogChunks log queries -- would
+// otherwise spend the whole pass and leave the ack leg nothing, pass after
+// pass. The ack leg keeps whatever the send leg leaves, at least
+// flushQueryTimeout-flushSendBudget. A var only so tests can shorten it.
+var flushSendBudget = 40 * time.Second
 
 // UnrelayedPackets enumerates what this ETH source still owes the Cosmos side,
 // without being told which packets to look for. It implements
@@ -56,9 +65,20 @@ func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 		Client: s.evm.EthClient(), Address: *s.evm.RouterContract(),
 		Span: &s.flush.span, DeployBlock: s.routerDeployBlock, Label: "[eth->cosmos Flush]", Logger: s.logger,
 	}
-	sends, err := s.unrelayedSends(queryCtx, router)
+	sendCtx, cancelSends := context.WithTimeout(queryCtx, flushSendBudget)
+	sends, err := s.unrelayedSends(sendCtx, router)
+	// Read before cancelSends, which would turn every Err into Canceled.
+	sendBudgetSpent := errors.Is(sendCtx.Err(), context.DeadlineExceeded) && queryCtx.Err() == nil
+	cancelSends()
 	if err != nil {
-		return nil, err
+		// Only the send leg's own budget ran out -- its probe was slow, and it
+		// has left the cursor where it was -- so the ack leg still has its time.
+		// Any other failure fails the pass, as before.
+		if !sendBudgetSpent {
+			return nil, err
+		}
+		s.logger.Printf("[eth->cosmos Flush] send leg out of time before its probe answered; the cursor stays and the ack leg runs: %v", err)
+		sends = nil
 	}
 	acks, err := s.unrelayedAcks(queryCtx, router)
 	if err != nil {
@@ -85,18 +105,23 @@ func (s *Source) unrelayedSends(ctx context.Context, router evmflush.Router) ([]
 	if err != nil {
 		return nil, err
 	}
-	// The cursor moves only once the probe has answered. A failed probe leaves
-	// the window to the next pass; advancing first would skip these sequences
-	// for a whole rotation on one RPC blip.
-	s.flush.sendCursor = lo
-
+	// The cursor moves only once the probe has answered -- a failed probe leaves
+	// the window to the next pass -- and only as far as the lookups got: a pass
+	// that runs out of budget resumes at the first send it did not resolve.
+	stop := len(slots)
 	var events []chain.Event
-	for _, slot := range slots {
+	for i, slot := range slots {
 		// The slot's value says WHICH packet this sequence names; SendLog
 		// resolves it past the older generations a re-created client leaves in
 		// the log index.
 		ev, found, err := router.SendLog(ctx, clientID, slot.Sequence, slot.Value)
 		if err != nil {
+			if ctx.Err() != nil {
+				stop = i
+				s.logger.Printf("[eth->cosmos Flush] send leg out of time at seq=%d with %d of %d send(s) resolved; the next pass resumes there: %v",
+					slot.Sequence, i, len(slots), err)
+				break
+			}
 			// One unresolvable sequence must not discard the rest.
 			s.logger.Printf("[eth->cosmos Flush] resolve send seq=%d: %v", slot.Sequence, err)
 			continue
@@ -114,6 +139,7 @@ func (s *Source) unrelayedSends(ctx context.Context, router evmflush.Router) ([]
 			events = append(events, e)
 		}
 	}
+	s.flush.sendCursor = evmflush.SendCursor(lo, slots, stop)
 	return events, nil
 }
 
@@ -145,15 +171,20 @@ func (s *Source) unrelayedAcks(ctx context.Context, router evmflush.Router) ([]c
 	if err != nil {
 		return nil, err
 	}
-	// The cursor moves only once the probe has answered. A failed probe leaves
-	// the window to the next pass; advancing first would skip these sequences
-	// for a whole rotation on one RPC blip.
-	s.flush.ackCursor = window[len(window)-1].Sequence
-
+	// The cursor moves only once the probe has answered -- a failed probe leaves
+	// the window to the next pass -- and only as far as the lookups got: a pass
+	// that runs out of budget resumes at the first ack it did not resolve.
+	stop := len(written)
 	var events []chain.Event
-	for _, slot := range written {
+	for i, slot := range written {
 		ev, found, err := router.WriteAckLog(ctx, s.ids.CosmosOnEVM, slot.Sequence, committed[slot.Sequence])
 		if err != nil {
+			if ctx.Err() != nil {
+				stop = i
+				s.logger.Printf("[eth->cosmos Flush] ack leg out of time at seq=%d with %d of %d ack(s) resolved; the next pass resumes there: %v",
+					slot.Sequence, i, len(written), err)
+				break
+			}
 			s.logger.Printf("[eth->cosmos Flush] resolve ack seq=%d: %v", slot.Sequence, err)
 			continue
 		}
@@ -167,6 +198,7 @@ func (s *Source) unrelayedAcks(ctx context.Context, router evmflush.Router) ([]c
 			events = append(events, e)
 		}
 	}
+	s.flush.ackCursor = evmflush.AckCursor(sequences, written, stop)
 	return events, nil
 }
 

@@ -189,6 +189,44 @@ func Sequences(lo, hi uint64) []uint64 {
 	}
 }
 
+// SendCursor is the send cursor after a pass over the window starting at lo,
+// whose outstanding slots (newest first, as OutstandingSlots returns them) were
+// resolved up to but not including slots[stop]; stop == len(slots) means the
+// pass got through all of them.
+//
+// A pass that runs out of time mid-window must not skip what it never looked at:
+// setting the cursor to lo regardless would leave every unresolved send for a
+// whole rotation. So the next pass resumes at slots[stop]. A pass that resolved
+// nothing still moves past slots[0], so one lookup slower than the whole budget
+// cannot pin the cursor and starve every sequence below it.
+func SendCursor(lo uint64, slots []Slot, stop int) uint64 {
+	switch {
+	case stop >= len(slots):
+		return lo
+	case stop <= 0:
+		return slots[0].Sequence
+	default:
+		return slots[stop].Sequence + 1 // Window resumes at cursor-1
+	}
+}
+
+// AckCursor is the acknowledgement cursor after a pass over window (the
+// sequences services.CosmosCommitmentWindow returned, in its order), whose
+// written slots (a subsequence of window, as OutstandingSlots preserves order)
+// were resolved up to but not including written[stop]. Same rules as
+// SendCursor: resume at the first unresolved slot, but always move past at
+// least one.
+func AckCursor(window []uint64, written []Slot, stop int) uint64 {
+	switch {
+	case stop >= len(written):
+		return window[len(window)-1]
+	case stop <= 0:
+		return written[0].Sequence
+	default:
+		return written[stop].Sequence - 1 // CosmosCommitmentWindow resumes at cursor+1
+	}
+}
+
 // SendLog finds the SendPacket log the router emitted for the packet whose
 // commitment the router holds at (clientID, sequence). Both are indexed topics,
 // so the filter is cheap; the range is walked back from the head in bounded

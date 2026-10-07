@@ -61,6 +61,10 @@ type EVMNode struct {
 	// logRanges records every eth_getLogs [fromBlock,toBlock] asked, refused or
 	// not, so a test can assert what span a lookup requested.
 	logRanges [][2]uint64
+	// onLogs, when set, is called with the running eth_getLogs count each time
+	// one is asked, before it is answered -- so a test can make the Nth lookup
+	// slow. It runs under n.mu.
+	onLogs func(call int)
 	// batches counts JSON-RPC batch requests, so a test can assert that a
 	// probe was one round trip rather than one per slot.
 	batches int
@@ -148,6 +152,10 @@ func (n *EVMNode) LogRanges() [][2]uint64 {
 	n.withLock(func() { out = append(out, n.logRanges...) })
 	return out
 }
+
+// OnLogs registers f to run, with the running eth_getLogs count, each time one
+// is asked and before it is answered. Pass nil to remove it.
+func (n *EVMNode) OnLogs(f func(call int)) { n.withLock(func() { n.onLogs = f }) }
 
 // FailBatches makes every JSON-RPC batch request fail with an HTTP 500 carrying
 // err's text, leaving single requests untouched. Pass nil to serve batches again.
@@ -415,6 +423,9 @@ func (n *EVMNode) getLogs(params []json.RawMessage) (any, *rpcError) {
 	from := n.blockParam(filter.FromBlock, 0)
 	to := n.blockParam(filter.ToBlock, n.blockNumber)
 	n.logRanges = append(n.logRanges, [2]uint64{from, to})
+	if n.onLogs != nil {
+		n.onLogs(len(n.logRanges))
+	}
 	if from < n.historyFloor {
 		return nil, &rpcError{Code: 4444, Message: n.historyMsg}
 	}
