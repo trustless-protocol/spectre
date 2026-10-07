@@ -57,6 +57,37 @@ func TestIsLogRangeRejection(t *testing.T) {
 	}
 }
 
+// A pruned-history refusal is fixed by a higher lower bound, not a narrower span,
+// so it must be told apart from a range rejection in BOTH directions: read as a
+// range rejection it would shrink the span to one block -- still refused, since
+// geth rejects on fromBlock alone -- and then be reported permanent (#537).
+func TestIsPrunedHistory(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msg  string
+		want bool
+	}{
+		{"geth history expiry", "pruned history unavailable", true},
+		{"wrapped by the flush", "[eth->cosmos Flush] seq=1511 logs [0,11847537]: pruned history unavailable", true},
+		{"other wording", "history has been pruned for block 0x0", true},
+		{"range rejection", "block range too large", false},
+		{"transport", "dial tcp 127.0.0.1:8545: connect: connection refused", false},
+		{"empty", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsPrunedHistory(errors.New(tc.msg)); got != tc.want {
+				t.Fatalf("IsPrunedHistory(%q) = %v, want %v", tc.msg, got, tc.want)
+			}
+			if tc.want && IsLogRangeRejection(errors.New(tc.msg)) {
+				t.Fatalf("%q is also classified a range rejection; narrowing cannot fix it", tc.msg)
+			}
+		})
+	}
+	if IsPrunedHistory(nil) {
+		t.Fatal("nil classified as pruned history")
+	}
+}
+
 // Width is what makes narrowing work for a source nobody configured: with no
 // chunk set, the ladder must anchor on the span the provider actually refused,
 // not on a zero that would end the ladder immediately.

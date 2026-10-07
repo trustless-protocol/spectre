@@ -48,6 +48,34 @@ var rateLimitPhrases = []string{
 	"compute unit",
 }
 
+// prunedHistoryPhrases are the ways a node says the blocks a log query starts at
+// are below its history cutoff. Geth's history expiry answers "pruned history
+// unavailable" (code 4444) for any fromBlock under the cutoff, however narrow the
+// range.
+var prunedHistoryPhrases = []string{
+	"pruned history unavailable",
+	"history has been pruned",
+}
+
+// IsPrunedHistory reports whether err is a node refusing a log query because the
+// range reaches below the history it still keeps.
+//
+// It is a different failure from IsLogRangeRejection and must not be read as one:
+// asking for a narrower span starting at the same block is refused the same way.
+// The fix is a HIGHER lower bound, not a smaller width.
+func IsPrunedHistory(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, phrase := range prunedHistoryPhrases {
+		if strings.Contains(msg, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsLogRangeRejection reports whether err is a provider refusing a log query
 // because the span, or the result set it produced, was too large.
 //
@@ -86,7 +114,15 @@ func IsLogRangeRejection(err error) bool {
 //
 // Chunk is 0 for "one call for the whole range", which is what a provider that
 // caps nothing wants.
-type LogSpan struct{ Chunk uint64 }
+//
+// Floor is the lowest block the provider still serves logs for, learned from a
+// pruned-history refusal (see IsPrunedHistory); 0 means none has been seen. A
+// lookup that walks back stops there instead of asking for blocks the node has
+// already said it no longer has.
+type LogSpan struct {
+	Chunk uint64
+	Floor uint64
+}
 
 // Width is the span this policy would actually ask for over [from,to].
 //

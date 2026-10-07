@@ -188,7 +188,10 @@ fi
 # helper enabled for the batcher/proposer launchers. Set OP_OBSERVABILITY=1 to restore
 # the package default.
 MAIN_STAR=$PKG_DIR/main.star
-if [ "$OP_OBSERVABILITY" = "0" ] && ! grep -Fq 'fast-ibc: observability intentionally skipped' "$MAIN_STAR"; then
+# The marker is matched without its project prefix so a main.star patched by an
+# older checkout (which used a different prefix) is still recognised.
+OBS_MARKER=': observability intentionally skipped in the local devnet.'
+if [ "$OP_OBSERVABILITY" = "0" ] && ! grep -Fq "$OBS_MARKER" "$MAIN_STAR"; then
     log "patching main.star (skip optional observability bundle in local devnet)"
     python3 - "$MAIN_STAR" <<'PYEOF'
 import sys
@@ -199,24 +202,26 @@ anchor = '''    observability.launch(
     )'''
 if anchor not in src:
     sys.exit("anchor for observability patch not found in main.star")
-src = src.replace(anchor, '''    # fast-ibc: observability intentionally skipped in the local devnet.
+src = src.replace(anchor, '''    # spectre: observability intentionally skipped in the local devnet.
     plan.print("Skipping optional observability bundle")''', 1)
 open(path, "w").write(src)
 PYEOF
-elif [ "$OP_OBSERVABILITY" = "1" ] && grep -Fq 'fast-ibc: observability intentionally skipped' "$MAIN_STAR"; then
+elif [ "$OP_OBSERVABILITY" = "1" ] && grep -Fq "$OBS_MARKER" "$MAIN_STAR"; then
     log "restoring main.star (enable optional observability bundle)"
     python3 - "$MAIN_STAR" <<'PYEOF'
-import sys
+import re, sys
 path = sys.argv[1]
 src = open(path).read()
-skipped = '''    # fast-ibc: observability intentionally skipped in the local devnet.
-    plan.print("Skipping optional observability bundle")'''
+skipped = re.compile(
+    r'    # [\w-]+: observability intentionally skipped in the local devnet\.\n'
+    r'    plan\.print\("Skipping optional observability bundle"\)'
+)
 launch = '''    observability.launch(
         plan, observability_helper, global_node_selectors, observability_params
     )'''
-if skipped not in src:
+if not skipped.search(src):
     sys.exit("anchor for observability restore not found in main.star")
-src = src.replace(skipped, launch, 1)
+src = skipped.sub(lambda _: launch, src, count=1)
 open(path, "w").write(src)
 PYEOF
 fi

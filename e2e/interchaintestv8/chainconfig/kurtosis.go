@@ -153,7 +153,7 @@ func SpinUpKurtosisPoS(ctx context.Context) (EthKurtosisChain, error) {
 	rpcPortSpec := executionCtx.GetPublicPorts()["rpc"]
 	rpc := fmt.Sprintf("http://localhost:%d", rpcPortSpec.GetNumber())
 	// ethereum-package exposes geth's WebSocket endpoint on a separate port from HTTP RPC.
-	// The fast-ibc relayer subscribes to ICS26Router events via this WS endpoint.
+	// The Spectre relayer subscribes to ICS26Router events via this WS endpoint.
 	wsPortSpec, ok := executionCtx.GetPublicPorts()["ws"]
 	if !ok {
 		return EthKurtosisChain{}, fmt.Errorf("ws port not exposed by %s service — check ethereum-package version", executionService)

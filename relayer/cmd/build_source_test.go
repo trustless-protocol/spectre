@@ -514,6 +514,23 @@ func TestBuildCosmosConfig_RejectsAMalformedFetchTimeout(t *testing.T) {
 	}
 }
 
+// router_deploy_block is optional and must reach the ETH source's flush intact:
+// 0 keeps the bounded walk from the head, anything else starts lookups there.
+func TestBuildCosmosConfig_CarriesRouterDeployBlock(t *testing.T) {
+	t.Setenv("FETCH_TIMEOUT", "")
+	cfg, err := buildCosmosConfig(cosmosToEthConfig{RouterDeployBlock: 11_000_000}, services.BatchConfig{})
+	if err != nil {
+		t.Fatalf("buildCosmosConfig: %v", err)
+	}
+	if cfg.RouterDeployBlock != 11_000_000 {
+		t.Fatalf("RouterDeployBlock = %d, want 11000000", cfg.RouterDeployBlock)
+	}
+	cfg, err = buildCosmosConfig(cosmosToEthConfig{}, services.BatchConfig{})
+	if err != nil || cfg.RouterDeployBlock != 0 {
+		t.Fatalf("unset router_deploy_block = (%d, %v), want 0", cfg.RouterDeployBlock, err)
+	}
+}
+
 func TestBuildCosmosToEthSource(t *testing.T) {
 	// Config that can be judged without a network must be judged BEFORE any client
 	// is dialled or started, because the early return has no way to release one:

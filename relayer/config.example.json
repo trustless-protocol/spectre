@@ -23,7 +23,8 @@
         "app_hash_wait_interval_seconds": 1,
         "update_client": "0x086f77c5686dfe3f2f8fe487c5f8d357952c8556",
         "signature_verifier": "0x703848f4c85f18e3acd8196c8ec91eb0b7bd0797",
-        "rotation_threshold": "5/6"
+        "rotation_threshold": "5/6",
+        "router_deploy_block": 0
       }
     },
     {
@@ -71,6 +72,7 @@
         "l2_ics26_client_id": "op-client-0",
         "head_kind": "safe",
         "log_scan_chunk": 0,
+        "router_deploy_block": 0,
         "rollup_profile": {
           "common": {
             "l2_chain_id": 2151908,
@@ -119,6 +121,7 @@
         "l2_ics26_client_id": "arb-client-0",
         "head_kind": "safe",
         "log_scan_chunk": 0,
+        "router_deploy_block": 0,
         "include_provisional": true,
         "rollup_profile": {
           "common": {
@@ -167,6 +170,7 @@
         "l2_wasm_client_id": "08-wasm-3",
         "l2_ics26_client_id": "base-client-0",
         "head_kind": "safe",
+        "router_deploy_block": 0,
         "rollup_profile": {
           "common": {
             "l2_chain_id": 84538453,
