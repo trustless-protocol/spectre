@@ -90,18 +90,16 @@ type AttestedRoot struct {
 	//	*AttestedRoot_AssertionHash
 	Provenance isAttestedRoot_Provenance `protobuf_oneof:"provenance"`
 	// Provisional is true while the commitment still awaits the chain-specific
-	// irreversible-finality check. What that check is, and therefore what a
-	// provisional entry can still lose, depends on source:
-	//   - "game" (OP) and "derived" (OP, Arbitrum): the L2 block is above the
-	//     replica's finalized head. It can revert on an L1 reorg or, at the
-	//     unsafe head, a sequencer divergence; the finalized recheck corrects
-	//     or confirms it.
-	//   - "assertion" (Arbitrum): the BoLD assertion is still pending, inside
-	//     its challenge window. It can be rejected by losing a challenge — an
-	//     adversarial failure, not a reorg.
+	// irreversible-finality check. What that check is, and so what a provisional
+	// root can still lose, depends on source:
+	//   - "game" (OP) and "derived" (OP, Arbitrum): provisional until the
+	//     finalized head reaches the L2 block. An L1 reorg, or a sequencer
+	//     divergence at the unsafe head, can still replace the root.
+	//   - "assertion" (Arbitrum): provisional until the BoLD assertion is
+	//     confirmed at finalized L1 and Nitro's finalized head reaches the L2
+	//     block. While pending, the assertion can still lose a challenge.
 	//
-	// Consumers that set include_provisional accept the risk of whichever
-	// source answered; see docs/L2_CLIENTS.md.
+	// See docs/L2_CLIENTS.md, "Provisional attestations".
 	Provisional bool `protobuf:"varint,5,opt,name=provisional,proto3" json:"provisional,omitempty"`
 	// AttestedAt is the Unix timestamp when the local verifier accepted it.
 	AttestedAt    int64 `protobuf:"varint,6,opt,name=attested_at,json=attestedAt,proto3" json:"attested_at,omitempty"`

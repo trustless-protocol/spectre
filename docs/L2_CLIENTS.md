@@ -167,54 +167,60 @@ requires two independently authenticated, conflicting headers before the client 
 
 ## Provisional attestations
 
-Every `AttestedRoot` carries a `provisional` flag, and the relayer's `include_provisional` setting
-decides whether such entries may advance its frontier. The flag means "the irreversible-finality
-check has not passed yet", but which check that is, and therefore what a provisional entry can
-still lose, depends on the entry's `source`:
+Every `AttestedRoot` carries a `provisional` flag: the attestor has verified the root, but its
+irreversible-finality check has not passed yet. The relayer's `include_provisional` setting decides
+whether provisional roots may advance its frontier. Which check applies, and so what a provisional
+root can still lose, depends on the root's `source`:
 
-| `source` | Chain | Provisional while | Can still revert by | Recheck |
-| --- | --- | --- | --- | --- |
-| `game`, `derived` | OP | L2 block is above the replica's finalized head | L1 reorg; at `unsafe`, sequencer divergence | re-derived from finalized L1; mismatch corrects the root and logs `HEAD DIVERGENCE` |
-| `derived` | Arbitrum | L2 block is above Nitro's finalized head | L1 reorg; at `unsafe`, sequencer divergence | recomputed at Nitro's finalized head; mismatch corrects the root and logs `HEAD DIVERGENCE` |
-| `assertion` | Arbitrum | BoLD assertion is pending, still inside its challenge window | the assertion **losing a challenge** (and, with early `l1_ingest_head`, an L1 reorg) | promoted once RollupCore reports it confirmed at finalized L1 and Nitro's finalized head agrees; otherwise removed |
+| `source` | Chain | Provisional until | Can still be lost to |
+| --- | --- | --- | --- |
+| `game`, `derived` | OP | the replica's finalized head reaches the L2 block | an L1 reorg; at `unsafe`, a sequencer divergence |
+| `derived` | Arbitrum | Nitro's finalized head reaches the L2 block | an L1 reorg; at `unsafe`, a sequencer divergence |
+| `assertion` | Arbitrum | RollupCore reports the assertion confirmed at finalized L1 **and** Nitro's finalized head reaches the L2 block | a lost challenge; with an early `l1_ingest_head`, also an L1 reorg |
 
-The first two rows are probabilistic failures on the L2 axis. The last is on the L1 axis and is
-adversarial: the entry stays provisional for the whole challenge period, however old its L2 block.
+For `game` and `derived` roots the finalized recheck either confirms the root or replaces it and
+logs `HEAD DIVERGENCE`. These failures are probabilistic. An `assertion` root is different: it stays
+provisional for the assertion's whole challenge period, however old its L2 block, and is removed
+from the feed if the assertion is rejected or stops matching Nitro. That failure is adversarial.
 
-**Relaying against pending Arbitrum assertions is an accepted trade-off, and the default enables
-it.** `include_provisional` defaults to `true` for every `head_kind` except `finalized`
-(`relayer/cmd/build_l2_source.go`). On Arbitrum a confirmed-only frontier cannot advance until an
-assertion's challenge period has elapsed, which is most of the path's latency. The extra risk is
-small because the attestor checks a pending assertion before serving it: the assertion's L2 block
-must be canonical under the attestor's own Nitro safe head, and an assertion that does not match the
-replica is never returned. An honest replica agrees only with a correct assertion, and BoLD
-guarantees a correct assertion wins any challenge, so a served pending entry can lose its challenge
-only if the attestor's Nitro replica is itself wrong. Operators who need
-confirmed-only roots set `include_provisional: false`. Doing so costs the full challenge period on
-every Arbitrum update.
+A provisional root that is later lost cannot be undone on Cosmos. Neither the signed header nor the
+Wasm consensus state carries `provisional`, assertion provenance or an L1 ingest head; the Wasm
+client trusts its active attestor set for block identity. Removing a root from the attestor feed
+therefore does not revoke a consensus state Cosmos has already stored, nor reverse packets
+processed against it. Conflicting same-height updates are rejected, and freezing the client
+requires explicit authenticated misbehaviour.
 
-Arbitrum's `attestation_head` applies only to `derived` entries. The assertion path always resolves
-a pending assertion at Nitro's `safe` head and a confirmed one at `finalized`
-(`attestor/arbitrum/bold/attestor.go`, `resolveProposal`), and that is deliberate. An assertion
-commits to an L2 block only after the block's batch is already posted to L1, so the block sits at
-or below Nitro's safe head by the time the assertion can be read. The binding constraint is the
-assertion's L1 confirmation, not the L2 head. A knob there would make no difference.
+**The default accepts pending Arbitrum assertions, deliberately.** `include_provisional` defaults to
+`true` for every `head_kind` except `finalized` (`relayer/cmd/build_l2_source.go`). A confirmed-only
+Arbitrum frontier cannot advance until each assertion's challenge period has elapsed, which is most
+of the path's latency. Two properties bound the risk of not waiting:
 
-Arbitrum's `l1_ingest_head` selects the L1 snapshot used to discover assertions
-(`finalized` by default; opt-in `safe` or `latest`). It is independent of
-`attestation_head`, which selects the Nitro L2 signing/derived-root head, and
-`include_provisional`, which controls the frontier the relayer may use. Early
-assertions remain provisional until finalized L1 confirmation and a successful
-Nitro-finalized check. OP game ingestion currently uses finalized L1 evidence.
+- The attestor serves a pending assertion only if its L2 block is canonical under the attestor's
+  own Nitro safe head. An assertion that does not match the replica is never returned.
+- BoLD lets a correct assertion win its challenge, provided at least one honest, funded and online
+  party defends it.
 
-Neither the signed header nor the Wasm consensus state carries `provisional`,
-assertion provenance or an L1 ingest head. The Wasm client trusts its active
-attestor set for block identity. Relaying early provisional assertions therefore
-accepts L1 reorg risk as well as challenge risk: withdrawing an assertion from
-the off-chain feed does not revoke a stored Cosmos root or reverse packet
-processing. Conflicting same-height updates are rejected; freezing requires
-explicit authenticated misbehaviour. No Wasm protocol change is implied by
-early L1 ingestion.
+Under that assumption, a served assertion can lose its challenge only if the attestor's Nitro
+replica is itself wrong. With an early `l1_ingest_head`, an L1 reorg can also withdraw it. Operators
+who cannot accept either outcome set `include_provisional: false`, at the cost of the full challenge
+period on every Arbitrum update.
+
+Arbitrum has three independent settings that touch this path:
+
+- `l1_ingest_head` (attestor): the L1 snapshot used to discover assertions, `finalized` by default
+  or opt-in `safe`/`latest`. Assertions discovered before L1 finality stay provisional until both
+  finality checks above pass. Early ingestion changes nothing in the Wasm protocol. OP game
+  ingestion always uses finalized L1 evidence.
+- `attestation_head` (attestor): the Nitro head used to sign `derived` roots.
+- `include_provisional` (relayer): whether provisional roots may advance the relayer's frontier.
+
+`attestation_head` deliberately does not apply to `assertion` roots. The assertion path resolves a
+confirmed assertion at Nitro's `finalized` head. A pending assertion, or a confirmed one whose block
+the finalized head has not reached yet, is resolved at `safe` and served as provisional
+(`resolveProposal` in `attestor/arbitrum/bold/attestor.go`). An assertion commits to an L2 block
+only after that block's batch is posted to L1, so the block is already at or below Nitro's safe head
+when the assertion can be read. The binding constraint is the assertion's L1 confirmation, not the
+L2 head, so a head setting there would change nothing.
 
 ## Packet proofs
 
