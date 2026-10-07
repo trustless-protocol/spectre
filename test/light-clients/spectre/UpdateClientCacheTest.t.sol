@@ -266,6 +266,38 @@ contract UpdateClientCacheTest is Test {
         ics07.updateApplicationState(abi.encode(update1002));
     }
 
+    /// @dev The relayer's forced rotation re-pins an unchanged validator set (#541). That must be
+    ///      accepted and must refresh the snapshot timestamp, or a chain with a static validator set
+    ///      expires one trusting period after client creation.
+    function test_updateConsensusState_rePinningUnchangedSetRefreshesSnapshot() public {
+        ISpectreTendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        ISpectreTendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+        SpectreClient ics07 = _deployLightClient(trustedCS, pinned);
+        bytes32 pinnedHash = Header.hashValSet(pinned);
+
+        uint128 nearSnapshotExpiry = TRUSTED_TS_NS + (uint128(TRUSTING_PERIOD) - 1) * 1e9;
+        vm.warp(uint256(nearSnapshotExpiry / 1e9));
+
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1001 =
+            _buildMsgAt(TRUSTED_HEIGHT, HEIGHT_1001, trustedCS, pinned, pinnedHash, nearSnapshotExpiry, 3);
+        update1001.time = nearSnapshotExpiry;
+        _updateConsensusState(ics07, update1001, pinned);
+        assertEq(ics07.getPinnedValidatorsHash(), pinnedHash, "pinned hash unchanged");
+
+        // Past the creation snapshot's trusting period: without the re-pin this reverts with
+        // InsufficientTrustingPeriod (see test_updateApplicationState_reverts_whenPinnedSnapshotOutsideTrustingPeriod).
+        ISpectreTendermintMsgs.ConsensusState memory trustedCS1001 = _consensusFromMsg(update1001);
+        uint128 afterOriginalExpiry = TRUSTED_TS_NS + (uint128(TRUSTING_PERIOD) + 1) * 1e9;
+        vm.warp(uint256(afterOriginalExpiry / 1e9));
+
+        ISpectreClientMsgs.MsgUpdateApplicationState memory update1002 =
+            _buildMsgAt(HEIGHT_1001, HEIGHT_1002, trustedCS1001, pinned, pinnedHash, nearSnapshotExpiry + 1e9, 3);
+        update1002.time = afterOriginalExpiry;
+        ILightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(update1002));
+
+        assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update));
+    }
+
     function test_updateApplicationState_revertsAtTrustingPeriodBoundary() public {
         ISpectreTendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
         ISpectreTendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
