@@ -183,6 +183,24 @@
   },
   {
     "type": "function",
+    "name": "getPinnedSnapshot",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "height",
+        "type": "uint64",
+        "internalType": "uint64"
+      },
+      {
+        "name": "timestamp",
+        "type": "uint128",
+        "internalType": "uint128"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "getPinnedValidatorSet",
     "inputs": [],
     "outputs": [

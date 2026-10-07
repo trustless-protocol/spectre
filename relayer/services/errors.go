@@ -3,6 +3,9 @@ package services
 import (
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 // ErrPermanentRelayFailure marks a relay failure as deterministic / on-chain:
@@ -157,4 +160,58 @@ func CommittedBeforeFailure(err error) int {
 		return partial.SucceededCount
 	}
 	return 0
+}
+
+// IsEVMRevert reports whether the node executed the call and the contract
+// reverted, as opposed to the call never reaching or never leaving the node.
+//
+// The distinction decides whether a failure is fatal or switches a caller onto a
+// fallback, so it is made only on signals that mean the EVM ran:
+//
+//   - JSON-RPC error code 3, which geth, Anvil and Hardhat return for a revert
+//     that carries data;
+//   - error data that IS revert data: a 0x-prefixed hex string (geth's encoding
+//     of the returned bytes) or a string naming the revert (Nethermind and
+//     Erigon put "Reverted 0x..." there under their own codes);
+//   - "execution reverted" in the message, for a revert that returned nothing.
+//
+// Non-nil ErrorData alone is NOT one of them. The JSON-RPC spec lets the data
+// member carry any server-defined detail, so a -32005 rate limit with
+// {"retryAfter": 1} has data too. Treating it as a revert read a throttled
+// endpoint as a pre-#541 SpectreClient and silently fell back to the latest-height
+// expiry anchor -- the inaccurate one -- instead of retrying (review of d85c8cd).
+// Implementing rpc.DataError is weaker still: go-ethereum's jsonError satisfies
+// it for every node-returned error.
+func IsEVMRevert(err error) bool {
+	if err == nil {
+		return false
+	}
+	var rpcErr rpc.Error
+	if errors.As(err, &rpcErr) && rpcErr.ErrorCode() == jsonRPCExecutionError {
+		return true
+	}
+	var dataErr rpc.DataError
+	if errors.As(err, &dataErr) && isRevertData(dataErr.ErrorData()) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "execution reverted")
+}
+
+// jsonRPCExecutionError is the JSON-RPC error code nodes use for a call the EVM
+// executed and the contract reverted, with the revert bytes as data.
+const jsonRPCExecutionError = 3
+
+// isRevertData reports whether a JSON-RPC error's data member is revert output
+// rather than some other server-defined detail. Only a string can be: revert
+// bytes travel hex-encoded, and a structured object is a server's own payload.
+func isRevertData(data any) bool {
+	str, ok := data.(string)
+	if !ok {
+		return false
+	}
+	str = strings.TrimSpace(str)
+	if strings.HasPrefix(str, "0x") || strings.HasPrefix(str, "0X") {
+		return true
+	}
+	return strings.Contains(strings.ToLower(str), "revert")
 }

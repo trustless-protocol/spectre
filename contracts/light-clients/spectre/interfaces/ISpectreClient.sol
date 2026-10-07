@@ -53,4 +53,13 @@ interface ISpectreClient {
     /// @param revisionHeight The Cosmos revision height of the trusted consensus state.
     /// @return The `keccak256(abi.encode(consensusState))` stored by the client.
     function getConsensusStateHash(uint64 revisionHeight) external view returns (bytes32);
+
+    /// @notice Returns the height and consensus timestamp of the currently pinned validator-set snapshot.
+    /// @dev Both update paths reject the client once `block.timestamp - timestamp / 1e9` reaches the
+    ///      trusting period, and only `updateConsensusState` refreshes it — `updateApplicationState`
+    ///      advances `latestHeight` without touching the snapshot. Off-chain expiry tracking must
+    ///      therefore anchor here, not on the latest height's header time.
+    /// @return height    The revision height the snapshot was pinned at.
+    /// @return timestamp The pinned consensus state's timestamp, in nanoseconds.
+    function getPinnedSnapshot() external view returns (uint64 height, uint128 timestamp);
 }

@@ -369,6 +369,30 @@ contract UpdateClientCacheTest is Test {
         assertEq(pubkeys[0], pinnedB.validators[0].pubKey, "re-anchored pubkey");
     }
 
+    /// @dev The relayer anchors client expiry on getPinnedSnapshot (#541). It must report the
+    ///      snapshot the trusting-period check uses: unmoved by updateApplicationState even though
+    ///      latestHeight advances, moved by updateConsensusState.
+    function test_getPinnedSnapshot_tracksRotationNotApplicationUpdates() public {
+        ISpectreTendermintMsgs.ValidatorSet memory pinned = _buildValSet(4, 0);
+        ISpectreTendermintMsgs.ConsensusState memory trustedCS = _trustedConsensus(pinned);
+
+        SpectreClient appOnly = _deployLightClient(trustedCS, pinned);
+        (uint64 height, uint128 timestamp) = appOnly.getPinnedSnapshot();
+        assertEq(height, TRUSTED_HEIGHT, "constructor snapshot height");
+        assertEq(timestamp, TRUSTED_TS_NS, "constructor snapshot timestamp");
+
+        appOnly.updateApplicationState(abi.encode(_buildMsg(trustedCS, pinned, 3)));
+        (height, timestamp) = appOnly.getPinnedSnapshot();
+        assertEq(height, TRUSTED_HEIGHT, "app-state update must not move the snapshot height");
+        assertEq(timestamp, TRUSTED_TS_NS, "app-state update must not move the snapshot timestamp");
+
+        SpectreClient rotated = _deployLightClient(trustedCS, pinned);
+        _updateConsensusState(rotated, _buildMsg(trustedCS, pinned, 3), pinned);
+        (height, timestamp) = rotated.getPinnedSnapshot();
+        assertEq(height, HEIGHT_1001, "rotation moves the snapshot height");
+        assertEq(timestamp, TS_1001_NS, "rotation moves the snapshot timestamp");
+    }
+
     function test_updateConsensusState_reverts_whenNewSetHashDoesNotMatchHeader() public {
         ISpectreTendermintMsgs.ValidatorSet memory pinnedA = _buildValSet(4, 0);
         ISpectreTendermintMsgs.ValidatorSet memory pinnedB = _buildValSet(4, 100);

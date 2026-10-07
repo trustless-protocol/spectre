@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"net/url"
@@ -19,7 +18,6 @@ import (
 	"github.com/ethereum/go-ethereum/accounts/abi/bind"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/ethereum/go-ethereum/rpc"
 )
 
 // Everything that can prove a loaded config wrong before a relay loop opens:
@@ -561,7 +559,7 @@ func validateRouterClientID(ctx context.Context, client *ethclient.Client, d evm
 	// IBCClientNotFound (contracts/core/client-registry/ICS02ClientUpgradeable.sol:78-80). So a
 	// revert IS the answer, and a transport error is not — telling them apart is
 	// what keeps this check inside the doctrine on validateStartupConfig.
-	if !isEVMRevert(err) {
+	if !services.IsEVMRevert(err) {
 		log.Printf("[start] %s: could not ask router %s for client id %q (%v); skipping that check. "+
 			"The relay loops keep retrying it.", d.label, d.routerAddr, d.routerCliID, err)
 		return nil
@@ -661,31 +659,6 @@ func evmDeploymentsInConfig(cfg *appConfig) []evmDeployment {
 		})
 	}
 	return out
-}
-
-// isEVMRevert reports whether the node executed the call and the contract
-// reverted, as opposed to the call never reaching or never leaving the node.
-//
-// The distinction decides whether a failure is fatal, so it is made on the two
-// signals that mean the EVM ran: a JSON-RPC error carrying revert DATA, or
-// geth's "execution reverted" text for a revert that returned none.
-//
-// Implementing rpc.DataError is NOT one of those signals, even though it is the
-// obvious test. go-ethereum's jsonError satisfies that interface for every
-// JSON-RPC error a node returns, so "header not found" on a pruned node, a
-// -32005 rate limit and a real revert all match it. Treating those as a definite
-// disagreement would refuse to boot against a throttled endpoint — precisely the
-// blip-into-outage this validation must not cause. Only non-nil ErrorData
-// narrows it back to a call that actually executed.
-func isEVMRevert(err error) bool {
-	if err == nil {
-		return false
-	}
-	var dataErr rpc.DataError
-	if errors.As(err, &dataErr) && dataErr.ErrorData() != nil {
-		return true
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "execution reverted")
 }
 
 // sortedKeys keeps findings and log lines in a stable order, so two runs against

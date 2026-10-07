@@ -167,8 +167,9 @@ func (s *Services) PinnedSetRotationInterval(stdCtx context.Context, evm EVMEndp
 }
 
 // PinnedSetRotationDueIn reports how long until the next pinned-set rotation is
-// due, based on the ON-CHAIN trusted timestamp (not process uptime): it is the
-// remaining time until trustedTime + interval, clamped to >= 0. A client that is
+// due, based on the ON-CHAIN pinned snapshot timestamp (not process uptime, and
+// not the latest height): it is the remaining time until snapshotTime +
+// interval, clamped to >= 0. A client that is
 // already at or past its rotation interval at startup returns 0 (rotate now),
 // mirroring the legacy seedCosmosClientFreshness behavior — so a relayer restart
 // near the rotation deadline does not wait a full fresh interval before the first
@@ -194,12 +195,35 @@ func (s *Services) PinnedSetRotationDueIn(stdCtx context.Context, cosmos CosmosE
 	if trustedTime.IsZero() {
 		return 0, fmt.Errorf("zero trusted light block timestamp at height %d", trustedHeight)
 	}
+	// The update-age metric tracks the latest height: that is when the client
+	// last moved, whatever the pinned set did.
 	s.ObserveCosmosOnEVMUpdate(trustedTime)
-	due := time.Until(trustedTime.Add(interval))
-	if due < 0 {
-		return 0, nil
+
+	// The rotation deadline tracks the pinned snapshot: it is what the contract
+	// expires, and app-state updates advance the latest height without moving
+	// it. Anchoring on trustedTime let a restart after a few packet updates push
+	// the first rotation past the snapshot's real expiry (#541).
+	snapCtx, cancelSnap := fetchCtx(stdCtx, s.cosmosConfig.FetchTimeout)
+	snapshotTime, supported, err := fetchPinnedSnapshotTime(snapCtx, evm)
+	cancelSnap()
+	if err != nil {
+		return 0, err
 	}
-	return due, nil
+	anchor := trustedTime
+	if supported {
+		anchor = snapshotTime
+	}
+	return rotationDueIn(anchor, interval, time.Now()), nil
+}
+
+// rotationDueIn is the time left until anchor+interval, clamped to zero so an
+// overdue rotation fires immediately.
+func rotationDueIn(anchor time.Time, interval time.Duration, now time.Time) time.Duration {
+	due := anchor.Add(interval).Sub(now)
+	if due < 0 {
+		return 0
+	}
+	return due
 }
 
 // SeedEVMOnCosmosUpdate records the timestamp already trusted by the on-chain
