@@ -23,8 +23,7 @@ import (
 // direction. It holds the endpoints and IDs needed by beacon proofs and state reads,
 // and the shared *services.BatchBuilder so Subscribe drains the same queue the
 // Services instance owns (where the ETH subscriber records EthPendingTracker
-// entries) and can re-queue handler failures (with a waiting backoff) — the
-// re-queue behavior of the legacy handleEth, expressed generically.
+// entries) and can re-queue handler failures (with a waiting backoff).
 // Constructed by the wiring, not the cfg-only registry.
 type Source struct {
 	cosmos      services.CosmosEndpoint
@@ -76,7 +75,7 @@ func (s *Source) LatestHeight(ctx context.Context) (uint64, error) {
 // beacon header — the highest ETH block the beacon light client can prove against
 // right now. The module compares packet event heights (execution block numbers)
 // against this, so a packet whose block is not yet finalized is re-queued without
-// building a proof (the legacy waitBeaconFinality precondition, as a value).
+// building a proof.
 func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 	return s.finalizedExecBlock(ctx)
 }
@@ -194,8 +193,8 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 // same invariant in chain/cosmos.
 //
 // settle removes an acked or timed-out ETH-origin send from the pending tracker so
-// the timeout scanner stops considering it (the legacy handleEth EthAck/EthTimeout
-// tracker removal); such a packet is then skipped, as there is nothing to relay.
+// the timeout scanner stops considering it; such a packet is then skipped, as
+// there is nothing to relay.
 func eventsWithOrigins(
 	packets []services.EthPacket,
 	settle func(channeltypesv2.Packet) error,
@@ -248,7 +247,7 @@ func ethPacketToEvent(p services.EthPacket) (chain.Event, bool) {
 		e.Type = chain.SendPacket
 	case services.EthWriteAck:
 		// Skip an ack with no acknowledgement bytes — it cannot be built into a
-		// MsgAcknowledgement (mirrors the legacy handleEth EthWriteAck no-ack skip).
+		// MsgAcknowledgement.
 		if len(p.AckBytes) == 0 {
 			return chain.Event{}, false
 		}

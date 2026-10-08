@@ -55,7 +55,7 @@ type OpStackAttestor struct {
 }
 
 // New assembles an attestor from already-validated config and dialed
-// dependencies (see cmd/attest.go for the production wiring).
+// dependencies (see cmd/main.go for the production wiring).
 func New(cfg Config, games gameSource, rep replica, store *AttestedRootStore, hook ChallengeHook, metrics *Metrics, logger *zap.SugaredLogger) *OpStackAttestor {
 	return &OpStackAttestor{
 		cfg:     cfg,

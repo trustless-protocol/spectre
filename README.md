@@ -142,10 +142,6 @@ stops with `Source "contracts/verifiers/Groth16Verifier_N4.sol" not found`.
 `just --list` shows every recipe, including the per-L2 wasm builds, the
 attestor sidecars, and Slither.
 
-When regenerating committed Solidity ABI or Go binding artifacts, update the
-corresponding SHA-256 entries in `scripts/solidity/tooling-rename-manifest.json`
-in the same change.
-
 ## Running it end to end
 
 Bring-up runbooks live in **[docs/E2E.md](docs/E2E.md)** — Cosmos↔Ethereum,
@@ -241,6 +237,18 @@ go build -tags=icicle -o relayer ./cmd
 GPU_PROVE=1 ./relayer start --config config.json
 ```
 
+**Regenerating prover artifacts changes the verifying key.** The `go run` example
+above writes straight into `relayer/bin` and `contracts/verifiers`. The supported
+path is `just build-prover-artifacts` (`scripts/solidity/build-prover-artifacts.sh`),
+which covers the configured buckets (N4 by default): it generates into ignored
+staging (`.artifacts/solidity/prover`), checks that the staged set is complete,
+publishes it, records provenance, and does nothing when every artifact already
+exists unless you pass `--force`. It does not pass `-tags=icicle`, so it cannot use
+the GPU backend. However you regenerate, every deployed `Groth16Verifier_N{N}` must
+be redeployed and re-registered with `SignatureVerifier.setBucket(...)`, or every
+proof fails on-chain. Do not regenerate for a live deployment without agreeing that
+redeploy first.
+
 ### ICICLE Environment
 
 Optional ICICLE tuning env vars read by `relayer/prover/gnark/backend_icicle.go`:
@@ -291,12 +299,12 @@ diffed for performance regressions without rebuilding:
 For each multicall, after the tx confirms the relayer calls
 `debug_traceTransaction` with the `callTracer`, descends past the UUPS
 proxy → impl wrapper frame, and logs one `inner[i]` line per direct child of
-the multicall body. Sample output:
+the multicall body. The lines look like this (values elided):
 
 ```
-[bench] eth multicall labels=updateApplicationState,recvPacket:1 gasUsed=3322538 ...
-[bench] eth inner[0] updateApplicationState gas=2491085 (from trace)
-[bench] eth inner[1] recvPacket:1 gas=833989 (from trace)
+[bench] eth multicall labels=updateApplicationState,recvPacket:1 gasUsed=<total> ...
+[bench] eth inner[0] updateApplicationState gas=<n> (from trace)
+[bench] eth inner[1] recvPacket:1 gas=<n> (from trace)
 ```
 
 `gas=... (from trace)` is the **real on-chain gasUsed** of that inner CALL,

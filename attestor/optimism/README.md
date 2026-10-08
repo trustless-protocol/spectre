@@ -10,8 +10,8 @@ op-reth) that re-derives the L2 chain from data posted on Ethereum L1, and
 not trust.
 
 - To deploy, configure, and operate it: the **[Operator Guide](GUIDE.md)**.
-- Design rationale, trust model, and the OP Stack IBC roadmap: the Ethereum
-  L2 architecture doc (upcoming; local draft `OPTIMISM_IBC_DESIGN.md`).
+- The signed update contract and finality tiers of the L2 clients that consume this
+  attestor: [docs/L2_CLIENTS.md](../../docs/L2_CLIENTS.md).
 
 ## Architecture
 

@@ -8,9 +8,8 @@ import (
 	"relayer/chain"
 )
 
-// This file is the whose-fault-is-it table for the attestor, from §C1 of the
-// relayer design doc. Every failure the attestor can hand back gets a class, and
-// two of them get an alarm.
+// This file is the whose-fault-is-it table for the attestor. Every failure the
+// attestor can hand back gets a class, and two of them get an alarm.
 //
 // Before it, the relayer distinguished exactly ONE attestor failure —
 // Unimplemented on VerifyStateRoot — and every other one arrived as a bare

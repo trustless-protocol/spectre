@@ -7,8 +7,8 @@
 //
 // This is the missing half. One suite, written against the interfaces, run by
 // every adapter on its own fixtures. Adding an adapter is then a package plus a
-// three-line contract_test.go -- and breaking a promise from design section 3.8
-// is red in that adapter, not in a review comment.
+// three-line contract_test.go -- and breaking one of the promises documented in
+// chain.go is red in that adapter, not in a review comment.
 //
 // It asserts what holds for an adapter with NO endpoints wired, which is what
 // lets one suite cover three packages whose fakes have nothing in common. That

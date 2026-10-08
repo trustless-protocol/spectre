@@ -9,7 +9,7 @@ import { ILightClient } from "contracts/light-clients/interfaces/ILightClient.so
 /// @notice Interface for the access controlled functions of the IBC v2 light client router
 interface IICS02ClientAccessControlled {
     /// @notice Adds a client to the client router.
-    /// @dev Only a caller with `CLIENT_ID_CUSTOMIZER_ROLE` can call this function.
+    /// @dev Only a caller with `ID_CUSTOMIZER_ROLE` can call this function.
     /// @param clientId The custom client identifier
     /// @param counterpartyInfo The counterparty client information
     /// @param client The address of the client contract

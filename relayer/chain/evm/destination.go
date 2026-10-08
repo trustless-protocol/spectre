@@ -78,7 +78,7 @@ func decodeClientUpdate(update chain.ClientUpdate) (services.CosmosClientUpdateB
 // RelayPackets builds the concrete ICS26 messages (recv/ack/timeout) from the
 // given source packets + injected proofs and submits them via SendEthTxBatch.
 // The proofs are already built by the source (Membership/NonMembershipProof), so
-// unlike the legacy planCosmosPacketMsgs this does no proof generation.
+// this does no proof generation.
 // Every packet rides in one ICS26Router multicall, so this destination has no
 // partial state to report: committed is len(packets) or zero, never in between.
 func (d *Destination) RelayPackets(ctx context.Context, packets []chain.RelayPacket) (int, error) {

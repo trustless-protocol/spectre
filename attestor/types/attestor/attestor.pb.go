@@ -25,10 +25,16 @@ const (
 type RunMode int32
 
 const (
+	// Unspecified is not a valid request value; VerifyStateRoot rejects it with
+	// INVALID_ARGUMENT.
 	RunMode_RUN_MODE_UNSPECIFIED RunMode = 0
-	RunMode_RUN_MODE_UNSAFE      RunMode = 1
-	RunMode_RUN_MODE_SAFE        RunMode = 2
-	RunMode_RUN_MODE_FINALIZED   RunMode = 3
+	// Unsafe requires the block to be included in the replica's unsafe L2 head.
+	RunMode_RUN_MODE_UNSAFE RunMode = 1
+	// Safe requires the block to be included in the replica's safe L2 head.
+	RunMode_RUN_MODE_SAFE RunMode = 2
+	// Finalized requires the block to be included in the replica's finalized L2
+	// head.
+	RunMode_RUN_MODE_FINALIZED RunMode = 3
 )
 
 // Enum value maps for RunMode.
@@ -84,6 +90,9 @@ type AttestedRoot struct {
 	// Source identifies the commitment mechanism, such as "game", "derived",
 	// or "assertion".
 	Source string `protobuf:"bytes,3,opt,name=source,proto3" json:"source,omitempty"`
+	// Provenance carries the chain-specific on-chain object that the relayer
+	// must prove. At most one identifier can be present.
+	//
 	// Types that are valid to be assigned to Provenance:
 	//
 	//	*AttestedRoot_GameIndex
@@ -373,8 +382,9 @@ func (x *ChainInfo) GetAttestedUpToProvisional() *AttestedRoot {
 
 // InfoResponse reports every configured chain.
 type InfoResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Chains        []*ChainInfo           `protobuf:"bytes,1,rep,name=chains,proto3" json:"chains,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Chains has one entry per configured source chain.
+	Chains        []*ChainInfo `protobuf:"bytes,1,rep,name=chains,proto3" json:"chains,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -764,13 +774,13 @@ type VerifyStateRootRequest struct {
 	// RunMode selects the replica finality level for this verification request.
 	RunMode RunMode `protobuf:"varint,4,opt,name=run_mode,json=runMode,proto3,enum=attestor.RunMode" json:"run_mode,omitempty"`
 	// SrcChain names the chain to verify against, matching the src_chain of the
-	// oracle requests. It was missing while this RPC had a single caller, which
-	// left a daemon serving several chains unable to tell which replica was
-	// meant — and guessing answers valid=false for a perfectly good header,
-	// which the caller reads as a divergence rather than a misroute.
+	// oracle requests. A daemon serving several chains uses it to pick the
+	// replica.
 	//
 	// Required for production callers. An empty value is rejected rather than
-	// inferred from a configured route.
+	// inferred from a configured route: a guessed route would answer valid=false
+	// for a good header, which the caller reads as a divergence rather than a
+	// misroute.
 	SrcChain string `protobuf:"bytes,5,opt,name=src_chain,json=srcChain,proto3" json:"src_chain,omitempty"`
 	// L2Router is the 20-byte ICS26Router address in the receiving wasm client
 	// profile. It is included in the signed update statement so a signature for

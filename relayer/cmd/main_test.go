@@ -117,7 +117,7 @@ func stringLiterals(line string) []string {
 
 // Two label families are the target: [<direction> <Work>] and the closed
 // lowercase list. Neither can contain "][", which is how a caller fakes a second
-// tier when the function it calls is missing a parameter (subscriber/event.go
+// tier when the function it calls is missing a parameter (relayer/subscriber
 // passed "SubscribeCosmos][recovery" as a label). This fails on the forgery, not
 // on the confusing log line it produces months later.
 //

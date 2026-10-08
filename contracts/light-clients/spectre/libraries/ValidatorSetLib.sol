@@ -21,8 +21,9 @@ library ValidatorSetLib {
     ///      simplifying assumption of equal voting power per validator that's
     ///      `floor(2*180/3)+1 = 121` unique signers in one Groth16 proof. Production preserves a
     ///      largest bucket of N=128, leaving only ~7 validators of headroom (128 - 121 = 7) before
-    ///      quorum becomes unprovable by any bucket. The checked-in local prover configuration in
-    ///      `relayer/prover/buckets.go` enables N=4 only; production buckets require separately
+    ///      quorum becomes unprovable by any bucket. The prover setup tool (`relayer/prover/cmd`)
+    ///      builds N=4 only by default; the supported bucket family is in
+    ///      `relayer/prover/witness/buckets.go`. Production buckets require separately
     ///      published, deployed, and registered artifact sets.
     ///      That headroom is a BEST case, not a worst case: 121 assumes power is spread evenly, so
     ///      each honest signer contributes the same marginal power. Under a skewed distribution

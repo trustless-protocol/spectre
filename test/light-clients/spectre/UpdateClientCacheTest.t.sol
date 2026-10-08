@@ -170,7 +170,8 @@ contract UpdateClientCacheTest is Test {
         ILightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(msg_));
 
         assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update));
-        ISpectreTendermintMsgs.ClientState memory updated = abi.decode(ics07.getClientState(), (ISpectreTendermintMsgs.ClientState));
+        ISpectreTendermintMsgs.ClientState memory updated =
+            abi.decode(ics07.getClientState(), (ISpectreTendermintMsgs.ClientState));
         assertEq(updated.latestHeight.revisionHeight, HEIGHT_1001, "latest height");
     }
 
@@ -197,7 +198,8 @@ contract UpdateClientCacheTest is Test {
         ILightClientMsgs.UpdateResult result = ics07.updateApplicationState(abi.encode(update1002));
 
         assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update));
-        ISpectreTendermintMsgs.ClientState memory updated = abi.decode(ics07.getClientState(), (ISpectreTendermintMsgs.ClientState));
+        ISpectreTendermintMsgs.ClientState memory updated =
+            abi.decode(ics07.getClientState(), (ISpectreTendermintMsgs.ClientState));
         assertEq(updated.latestHeight.revisionHeight, HEIGHT_1002, "latest height");
 
         (,, uint64[] memory votingPowers) = ics07.getPinnedValidatorSet();
@@ -226,7 +228,8 @@ contract UpdateClientCacheTest is Test {
         );
 
         assertEq(uint8(result), uint8(ILightClientMsgs.UpdateResult.Update));
-        ISpectreTendermintMsgs.ClientState memory updated = abi.decode(ics07.getClientState(), (ISpectreTendermintMsgs.ClientState));
+        ISpectreTendermintMsgs.ClientState memory updated =
+            abi.decode(ics07.getClientState(), (ISpectreTendermintMsgs.ClientState));
         assertEq(updated.latestHeight.revisionHeight, HEIGHT_1002, "latest height");
 
         (, bytes32[] memory pubkeys,) = ics07.getPinnedValidatorSet();
@@ -425,7 +428,8 @@ contract UpdateClientCacheTest is Test {
 
         (, bytes32[] memory pubkeys,) = ics07.getPinnedValidatorSet();
         assertEq(pubkeys[0], pinnedA.validators[0].pubKey, "misbehaviour re-anchor must not mutate pin");
-        ISpectreTendermintMsgs.ClientState memory updated = abi.decode(ics07.getClientState(), (ISpectreTendermintMsgs.ClientState));
+        ISpectreTendermintMsgs.ClientState memory updated =
+            abi.decode(ics07.getClientState(), (ISpectreTendermintMsgs.ClientState));
         assertTrue(updated.isFrozen, "misbehaviour still freezes");
     }
 
@@ -539,7 +543,8 @@ contract UpdateClientCacheTest is Test {
         msg_.proof2 = _buildMisbehaviourProof(pinnedB, 3);
 
         ics07.misbehaviour(abi.encode(msg_));
-        ISpectreTendermintMsgs.ClientState memory updated = abi.decode(ics07.getClientState(), (ISpectreTendermintMsgs.ClientState));
+        ISpectreTendermintMsgs.ClientState memory updated =
+            abi.decode(ics07.getClientState(), (ISpectreTendermintMsgs.ClientState));
         assertTrue(updated.isFrozen, "historical pinned evidence freezes");
     }
 
@@ -740,7 +745,14 @@ contract UpdateClientCacheTest is Test {
         }
     }
 
-    function _buildValSet(uint16 valCount, uint256 seed) internal pure returns (ISpectreTendermintMsgs.ValidatorSet memory vs) {
+    function _buildValSet(
+        uint16 valCount,
+        uint256 seed
+    )
+        internal
+        pure
+        returns (ISpectreTendermintMsgs.ValidatorSet memory vs)
+    {
         ISpectreTendermintMsgs.ValidatorInfo[] memory vals = new ISpectreTendermintMsgs.ValidatorInfo[](valCount);
         uint64 total = 0;
         for (uint256 i = 0; i < valCount; i++) {

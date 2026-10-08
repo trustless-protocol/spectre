@@ -1739,8 +1739,8 @@ func TestMulticall_Wraps(t *testing.T) {
 }
 
 // TestSelectorForUpdateApplicationState pins the selectors for the split
-// ICS26Router update entry points, which handleCosmos batches into the same
-// multicall as recvPacket/ackPacket/timeoutPacket.
+// ICS26Router update entry points, which the cosmos→eth path batches into the
+// same multicall as recvPacket/ackPacket/timeoutPacket.
 func TestSelectorForUpdateApplicationState(t *testing.T) {
 	parsedABI, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
 	if err != nil {
@@ -1764,8 +1764,8 @@ func TestSelectorForUpdateApplicationState(t *testing.T) {
 }
 
 // TestMulticall_WithUpdateApplicationState verifies that an updateApplicationState
-// + packet combo produces a valid multicall payload — the layout handleCosmos
-// folds so the packet proof verifies against the just-applied client state.
+// + packet combo produces a valid multicall payload — the layout the cosmos→eth
+// path folds so the packet proof verifies against the just-applied client state.
 func TestMulticall_WithUpdateApplicationState(t *testing.T) {
 	parsedABI, err := contractICS26Router.ContractICS26RouterMetaData.GetAbi()
 	if err != nil {

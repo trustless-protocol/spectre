@@ -43,9 +43,10 @@ message AttestedRoot {
   // or "assertion".
   string source = 3;
 
+  reserved 8;
+
   // Provenance carries the chain-specific on-chain object that the relayer
   // must prove. At most one identifier can be present.
-  reserved 8;
   oneof provenance {
     // GameIndex identifies an OP dispute game when source is "game".
     uint64 game_index = 4;
@@ -106,6 +107,7 @@ message ChainInfo {
 
 // InfoResponse reports every configured chain.
 message InfoResponse {
+  // Chains has one entry per configured source chain.
   repeated ChainInfo chains = 1;
 }
 
@@ -170,9 +172,18 @@ message WatchAttestedResponse {
 
 // RunMode selects which replica head must include a requested block.
 enum RunMode {
+  // Unspecified is not a valid request value; VerifyStateRoot rejects it with
+  // INVALID_ARGUMENT.
   RUN_MODE_UNSPECIFIED = 0;
+
+  // Unsafe requires the block to be included in the replica's unsafe L2 head.
   RUN_MODE_UNSAFE = 1;
+
+  // Safe requires the block to be included in the replica's safe L2 head.
   RUN_MODE_SAFE = 2;
+
+  // Finalized requires the block to be included in the replica's finalized L2
+  // head.
   RUN_MODE_FINALIZED = 3;
 }
 
@@ -192,13 +203,13 @@ message VerifyStateRootRequest {
   RunMode run_mode = 4;
 
   // SrcChain names the chain to verify against, matching the src_chain of the
-  // oracle requests. It was missing while this RPC had a single caller, which
-  // left a daemon serving several chains unable to tell which replica was
-  // meant — and guessing answers valid=false for a perfectly good header,
-  // which the caller reads as a divergence rather than a misroute.
+  // oracle requests. A daemon serving several chains uses it to pick the
+  // replica.
   //
   // Required for production callers. An empty value is rejected rather than
-  // inferred from a configured route.
+  // inferred from a configured route: a guessed route would answer valid=false
+  // for a good header, which the caller reads as a divergence rather than a
+  // misroute.
   string src_chain = 5;
 
   // L2Router is the 20-byte ICS26Router address in the receiving wasm client

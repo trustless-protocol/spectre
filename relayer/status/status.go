@@ -20,8 +20,7 @@
 // asked about a packet is "where is THIS one and how long has it been there" --
 // an identity and an age, which is a snapshot rather than a counter. A counter
 // answers "how many", which nobody has needed to ask of a process that relays
-// one path. docs/metrics.md used to read as if metrics existed; it was a
-// best-practices guide describing nothing implemented, and #461 deleted it.
+// one path.
 //
 // Expect the asymmetry with the attestor to look like an oversight and it is
 // not: attestor/optimism DOES serve Prometheus (cmd/main.go, opstack/metrics.go)

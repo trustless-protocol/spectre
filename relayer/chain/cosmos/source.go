@@ -35,8 +35,7 @@ var (
 //
 // It also holds the shared *services.BatchBuilder so Subscribe drains the same
 // queue the (single) Services instance owns and can re-queue handler failures
-// back onto it (with a waiting backoff) — the re-queue behavior of the legacy
-// handleCosmos, expressed generically.
+// back onto it (with a waiting backoff).
 type Source struct {
 	cosmos       services.CosmosEndpoint
 	evm          services.EVMEndpoint
@@ -88,8 +87,7 @@ func (s *Source) LatestHeight(ctx context.Context) (uint64, error) {
 const cosmosAppHashLag = 2
 
 // RelayableHeight returns latest committed height minus the AppHash lag, so the
-// module only proves a Cosmos packet once its commitment is queryable (the legacy
-// waitCosmosAppHash(maxPacketHeight+2) precondition, as a value).
+// module only proves a Cosmos packet once its commitment is queryable.
 func (s *Source) RelayableHeight(ctx context.Context) (uint64, error) {
 	latest, err := s.LatestHeight(ctx)
 	if err != nil {
@@ -148,8 +146,7 @@ func (s *Source) MembershipProof(ctx context.Context, packet []byte, height uint
 		// A Cosmos->ETH send whose timeout has passed (measured against ETH block
 		// time, the destination clock) can never be received on ETH — recvPacket
 		// would revert. Report it permanent so the module DROPS it and the async
-		// timeout scanner refunds it on Cosmos instead (mirrors the legacy
-		// planCosmosPacketMsgs ethBlockTime>=TimeoutTimestamp skip). Without this the
+		// timeout scanner refunds it on Cosmos instead. Without this the
 		// module retries the dead packet forever, each retry re-running a full
 		// client update and draining gas.
 		if timedOut, err := s.sendTimedOutOnEth(ctx, pkt); err != nil {
@@ -335,8 +332,7 @@ func eventsWithOrigins(packets []services.CosmosPacket, clientID string) ([]chai
 // commitment for it — relaying an ETH timeoutPacket would waste a Groth16 proof +
 // tx (and historically blocked the relay loop). The live subscribe path enqueues
 // these (destination_client == routerClientID matches the configured-client
-// filter), so the check the legacy planCosmosPacketMsgs applied at plan time is
-// applied here instead. ETH-originated timeouts (destination_client != routerClientID)
+// filter), so the check is applied here. ETH-originated timeouts (destination_client != routerClientID)
 // still relay so ETH deletes its commitment + refunds.
 func cosmosPacketToEvent(p services.CosmosPacket, routerClientID string) (chain.Event, bool) {
 	if p.Packet == nil {
@@ -357,8 +353,8 @@ func cosmosPacketToEvent(p services.CosmosPacket, routerClientID string) (chain.
 		e.Type = chain.SendPacket
 	case services.CosmosAck:
 		// An ack with no acknowledgement bytes cannot be built into a MsgAckPacket
-		// (the ETH side needs the ack) — skip it like the legacy planCosmosPacketMsgs
-		// did, rather than emitting an event that would error and re-queue forever.
+		// (the ETH side needs the ack) — skip it, rather than emitting an event that
+		// would error and re-queue forever.
 		if len(p.AckBytes) == 0 {
 			return chain.Event{}, false
 		}

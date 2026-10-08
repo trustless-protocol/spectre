@@ -5,7 +5,9 @@ library. Each run boots a real Ethereum PoS devnet (Kurtosis + ethereum-package)
 a real IBC-Go simd chain (Docker), starts the Spectre relayer binary against
 them, then drives ICS-20 packet flows end-to-end.
 
-Each test takes **8–15 minutes** wall-time. Designed for both CI and local dev.
+Each test boots a full devnet from scratch and is slow; `just test-e2e` allows up to
+120 minutes per invocation (`-timeout 120m` in the `justfile`). Designed for both CI
+and local dev.
 
 ## Prerequisites
 
@@ -13,23 +15,25 @@ On top of the toolchain in the [repo root README](../../README.md#requirements):
 
 - **Docker** daemon running
 - **[Kurtosis CLI](https://docs.kurtosis.com/install/)** installed
-- The two sibling repos (`ecip-gnark`, `decentrio-gnark`) cloned per
-  [Sibling repos](../../README.md#sibling-repos-required-to-build-the-relayer)
+- The gnark submodules initialised (`git submodule update --init --recursive`) and
+  `libgaraga_rs` built, per [gnark submodules](../../README.md#gnark-submodules)
 - Nothing to trim: the prover's `-buckets` flag already defaults to `"4"`
   (`relayer/prover/cmd/main.go:35`), and the suite only ever exercises bucket 4
-  (single-validator simd chain). Building the full family takes 30+ minutes
-  (n=128 alone ≈ 30 min) and is only needed if you pass `-buckets` explicitly.
+  (single-validator simd chain). Building the full bucket family takes far longer
+  than building N=4 and is only needed if you pass `-buckets` explicitly.
 
-The first invocation of `just test-e2e` auto-runs:
+`just test-e2e` first runs these recipes:
 
-- `install-go-relayer` — `go build -o $GOPATH/bin/relayer ./cmd`
-- `build-prover-artifacts` — `go run ./prover/cmd ./bin ../contracts/verifiers`
-  (compiles the default bucket, emits per-bucket `r1cs/pk/vk.bin` and
-  `contracts/verifiers/Groth16Verifier_N{N}.sol`)
 - `clean-foundry` — wipes `cache/`, `out/`, `broadcast/`
+- `install-go-relayer` — `go build -o $GOPATH/bin/relayer ./cmd`
+- `build-prover-artifacts` — `scripts/solidity/build-prover-artifacts.sh`
+  (generates the configured buckets, N=4 by default, as `relayer/bin/n{N}/{r1cs,pk,vk}.bin`
+  and `contracts/verifiers/Groth16Verifier_N{N}.sol`)
 
-Subsequent runs reuse the cached prover artifacts (a `relayer/bin/n4/vk.bin`
-probe keeps `build-prover-artifacts` a no-op).
+When every configured artifact already exists the script exits without regenerating
+anything, so later runs reuse them. `scripts/solidity/build-prover-artifacts.sh --force`
+rebuilds on purpose, which changes the verifying key (see "Optional GPU proving" in
+the root README).
 
 ## Run a test
 
@@ -41,7 +45,7 @@ just test-e2e TestWithEthCosmosTestSuite/Test_ICS20TransferERC20TokenfromEthereu
 
 # Shortcut by suite (drops the TestWith...Suite/ prefix)
 just test-e2e-eth-cosmos Test_Deploy
-just test-e2e-relayer Test_RelayerInfo
+just test-e2e-relayer Test_5_RecvPacketToEth
 just test-e2e-multichain Test_Deploy
 ```
 
@@ -65,24 +69,33 @@ and `PROVER_BIN_DIR=<repo>/relayer/bin` for you.
 | `Test_TimeoutPacketCosmosRemintsVouchers` | timed-out Cosmos→ETH voucher transfer remints/restores the Cosmos-side voucher balance |
 | `Test_ErrorAckToEthereum` | Cosmos transfer module writes error ack → `MsgAck` on ETH → escrow refund |
 
-## Out-of-scope suites
+## `RelayerTestSuite` daemon cases
 
-These suites still assume upstream-only flows or tooling and are not part of the
-Spectre daemon matrix.
+`TestWithRelayerTestSuite` (`relayer_test.go`) is driven by the same daemon and
+waits for it instead of pulling a relay transaction. Run one case with
+`just test-e2e-relayer <name>`, or dispatch the manual "E2E — Relayer" workflow.
+
+| Test | What it verifies |
+|------|------------------|
+| `Test_5_RecvPacketToEth`, `Test_10_RecvPacketToEth` | 5 / 10 transfers sent on Cosmos are delivered to Ethereum by the daemon |
+| `Test_5_BatchedAckPacketToEth`, `Test_10_BatchedAckPacketToEth` | 5 / 10 ERC20 transfers sent from Ethereum are delivered to Cosmos and their acks relayed back; the commitments are removed |
+| `Test_10_RecvPacketToCosmos` | 10 ERC20 transfers sent from Ethereum are delivered to Cosmos by the daemon |
+| `Test_10_BatchedAckPacketToCosmos` | transfers sent on Cosmos are received on Ethereum and acknowledged on Cosmos; the commitments are removed |
+
+## Out-of-scope cases
+
+These still assume upstream-only flows or tooling and are not part of the Spectre
+daemon matrix.
 
 - `spectre_client_test.go` (standalone Spectre client/deployment flow) —
   fixture generation remains explicitly unsupported.
-- `relayer_test.go` `RelayerTestSuite` cases — still use gRPC `RelayByTx` +
-  manual broadcast pattern.
 
 ## Architecture note
 
 Spectre's relayer is an **event-driven daemon**, not the upstream Rust gRPC
 service. Tests therefore *wait* for the daemon to drive each step (via
-`require.Eventually` polling the post-relay end state) instead of pulling a
-relay tx via `s.RelayerClient.RelayByTx(...)` and broadcasting it themselves.
+`require.Eventually` polling the post-relay end state) instead of requesting a
+relay tx over gRPC and broadcasting it themselves.
 
-The `s.RelayerClient` / `s.EthRelayerSubmitter` plumbing kept from upstream
-is still wired in `ibc_eth_cosmos_test.go` (on `EthCosmosTestSuite`, mirrored
-on `MultichainTestSuite` in `multichain_test.go`) for the out-of-scope raw-tx
-broadcast flows, but the EthCosmosTestSuite cases above avoid it entirely.
+`s.EthRelayerSubmitter` is still funded in `ibc_eth_cosmos_test.go` and
+`multichain_test.go`, but no test uses it.

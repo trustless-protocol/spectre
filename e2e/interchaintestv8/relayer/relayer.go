@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/cosmos/gogoproto/proto"
-	grpc "google.golang.org/grpc"
-	insecure "google.golang.org/grpc/credentials/insecure"
 
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	txtypes "github.com/cosmos/cosmos-sdk/types/tx"
@@ -20,7 +18,6 @@ import (
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 
 	ethereumtypes "github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/ethereum"
-	relayertypes "github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/relayer"
 )
 
 // DefaultRelayerGRPCAddress returns the default gRPC address for the relayer.
@@ -47,9 +44,9 @@ func binaryPath() string {
 
 // proverEnv exposes the per-bucket prover artifact directory to the spawned relayer process.
 //
-// The relayer loads artifacts via prover.NewProver(binDir) and expects a directory layout of
-// $PROVER_BIN_DIR/n{N}/{r1cs.bin,pk.bin,vk.bin} for each compiled bucket. Run
-// `just build-prover-artifacts` (or `go run ./relayer/prover/cmd`) to populate it.
+// The relayer loads artifacts via gnark.NewFromEnv(binDir) (relayer/cmd/main.go, buildProverService),
+// which serves every bucket whose $PROVER_BIN_DIR/n{N}/ directory holds r1cs.bin, pk.bin and vk.bin.
+// Run `just build-prover-artifacts` to populate it.
 func proverEnv() []string {
 	dir := os.Getenv("PROVER_BIN_DIR")
 	if dir == "" {
@@ -147,16 +144,6 @@ func RunUpdateClient(configPath string, extraArgs ...string) error {
 	cmd.Env = append(os.Environ(), proverEnv()...)
 
 	return cmd.Run()
-}
-
-// GetGRPCClient returns a gRPC client for the relayer.
-func GetGRPCClient(addr string) (relayertypes.RelayerServiceClient, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, err
-	}
-
-	return relayertypes.NewRelayerServiceClient(conn), nil
 }
 
 // GetRelayUpdateSlot extracts the latest update slot from the relay body's update messages.

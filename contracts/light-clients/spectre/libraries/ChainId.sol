@@ -5,10 +5,10 @@ import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages
 
 /// @title ChainId
 /// @notice Parses a Cosmos-style chain identifier `<prefix>-<revision>` into its
-///         components. Extracted from the legacy inline `getChainId` helpers
-///         that lived in both `UpdateClient.sol` and `Misbehaviour.sol` so the
-///         logic has a single source of truth and the per-call cost is paid
-///         only when the parsed value cannot be cached on chain.
+///         components. Shared by `SpectreClient.sol`, `UpdateClient.sol` and
+///         `Misbehaviour.sol` so the logic has a single source of truth and the
+///         per-call cost is paid only when the parsed value cannot be cached
+///         on chain.
 library ChainId {
     error InvalidChainIdLength();
     error InvalidChainPrefixLength();

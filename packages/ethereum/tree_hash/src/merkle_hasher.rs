@@ -72,7 +72,7 @@ impl HalfNode {
 ///
 /// ### Start
 ///
-/// ```ignore
+/// ```text
 ///           -
 ///          / \
 ///         -   -
@@ -82,7 +82,7 @@ impl HalfNode {
 ///
 /// ### Provide first leaf
 ///
-/// ```ignore
+/// ```text
 ///           -
 ///          / \
 ///         2   -
@@ -92,7 +92,7 @@ impl HalfNode {
 ///
 /// ### Provide second leaf
 ///
-/// ```ignore
+/// ```text
 ///           1
 ///          / \
 ///         X   -
@@ -102,7 +102,7 @@ impl HalfNode {
 ///
 /// ### Provide third leaf
 ///
-/// ```ignore
+/// ```text
 ///           1
 ///          / \
 ///         X   3
@@ -112,7 +112,7 @@ impl HalfNode {
 ///
 /// ### Provide fourth and final leaf
 ///
-/// ```ignore
+/// ```text
 ///           1
 ///          / \
 ///         X   X

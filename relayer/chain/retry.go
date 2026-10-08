@@ -5,10 +5,10 @@ import (
 	"fmt"
 )
 
-// This file is the third error class. §3.6 of the component design says there
-// are three, and the code had two: Retryable and Permanent (see errors.go).
+// This file is the third error class. There are three: Retryable and Permanent
+// (see errors.go), and this one.
 //
-// The missing one is "not enough resources": out of gas, batch too large,
+// The third is "not enough resources": out of gas, batch too large,
 // provider refusing a log range. It is the easiest of the three to get wrong,
 // and both wrong answers cost real money:
 //

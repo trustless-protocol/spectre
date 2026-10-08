@@ -1,6 +1,5 @@
 // Package relay drives one relay path (source -> destination) using only the
-// chain adapter contract. It replaces the hardcoded Cosmos<->ETH orchestration
-// in services.StartLoop: chain-specific work (RPC, event decode, proof/attest,
+// chain adapter contract. Chain-specific work (RPC, event decode, proof/attest,
 // gap recovery) lives inside the adapters, so this loop is generic and depends
 // only on the chain interfaces — no god-object, testable with mock adapters.
 package relay
@@ -47,7 +46,7 @@ const refreshBackoffCeiling = 5 * time.Minute
 // margin is seconds wide.
 const refreshBackoffFloor = time.Second
 
-// defaultScanInterval matches the legacy StartLoop timeout scan cadence (30s).
+// defaultScanInterval is the default timeout scan cadence.
 const defaultScanInterval = 30 * time.Second
 
 // defaultAckWatchInterval is how often the owed-acknowledgement records are
@@ -534,8 +533,7 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 // It also removes each delivered SendPacket from the pending tracker: once
 // received on the destination it can no longer time out, so leaving it in the
 // tracker only bloats it and makes the timeout scanner keep querying a receipt
-// it will always find. Mirrors the legacy handleCosmos
-// PendingTracker.Remove-on-recv. Only paths that supply an untracker
+// it will always find. Only paths that supply an untracker
 // (cosmos->eth) do this; eth->cosmos removes via its source's terminal
 // EthAck/EthTimeout instead.
 func (m *Module) settleDelivered(packets []chain.RelayPacket) {

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// §3.6 says there are three error classes and the third carries its own remedy.
+// There are three error classes and the third carries its own remedy.
 // The type exists so that carrying it is not optional: the compiler, not a
 // comment, is what stops a NeedsChange without a change.
 func TestRetry_Classification(t *testing.T) {

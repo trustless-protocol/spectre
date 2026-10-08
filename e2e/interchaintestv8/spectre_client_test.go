@@ -40,9 +40,9 @@ type SpectreClientTestSuite struct {
 	generateFixtures bool
 
 	// Addresses of the deployed contracts
-	contractAddresses   ethereum.DeployedContracts
-	groth16Ics07Address ethcommon.Address
-	ics26Address        ethcommon.Address
+	contractAddresses    ethereum.DeployedContracts
+	spectreClientAddress ethcommon.Address
+	ics26Address         ethcommon.Address
 
 	// The private key of a test account
 	key *ecdsa.PrivateKey
@@ -185,9 +185,9 @@ func (s *SpectreClientTestSuite) SetupSuite(ctx context.Context, proofType types
 		cosmosToEthConfig, err := readCosmosToEthConfig(testvalues.RelayerConfigFilePath)
 		s.Require().NoError(err)
 		s.Require().NotEmpty(cosmosToEthConfig.SpectreClient)
-		s.groth16Ics07Address = ethcommon.HexToAddress(cosmosToEthConfig.SpectreClient)
+		s.spectreClientAddress = ethcommon.HexToAddress(cosmosToEthConfig.SpectreClient)
 
-		s.contract, err = spectreclient.NewContract(s.groth16Ics07Address, eth.RPCClient)
+		s.contract, err = spectreclient.NewContract(s.spectreClientAddress, eth.RPCClient)
 		s.Require().NoError(err)
 	}))
 

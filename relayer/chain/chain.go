@@ -2,20 +2,16 @@
 // serve many source/destination chains (Cosmos, and EVM L2s such as Arbitrum,
 // Optimism, Base) without the core knowing any chain's specifics.
 //
-// It replaces the hardcoded Cosmos<->ETH coupling in the current core:
-//
-//	services.EventListener.SubscribeCosmos/SubscribeEth   -> Source.Subscribe
-//	services.TransactionHandler (mixed Cosmos+Eth methods) -> Destination.*
-//	services.Prover.GenerateProof (Groth16 only)           -> Builder.Build
-//	the hardcoded finality/refresh in StartLoop            -> Source.LatestHeight + ClientExpiresAt
+// A relay path is a Source (subscribe to events, report heights, build packet
+// proofs), a Destination (submit client updates and packets, report client expiry)
+// and a Builder (turn a source header into a client update).
 //
 // Method names follow IBC / relayer convention (UpdateClient, RelayPackets,
 // HasPacketReceipt, QueryHeader, LatestHeight) so the contract reads the same
 // as any Cosmos relayer.
 //
-// This is the v0 contract for review. Payload types are intentionally opaque
-// ([]byte / small structs) so each adapter owns its own encoding; later wiring
-// slices refine them. Adapters must not leak chain-specific types across this
+// Payload types are intentionally opaque ([]byte / small structs) so each adapter
+// owns its own encoding. Adapters must not leak chain-specific types across this
 // boundary — that is the whole point.
 package chain
 
@@ -152,8 +148,7 @@ type Source interface {
 	// Batching (not per-event) is deliberate: it lets the destination fold N
 	// packet messages into one multicall (amortizing the ~21k per-tx intrinsic gas
 	// and one client-update over the batch) and lets the module perform batch-level
-	// waits (source-provability / finality) once instead of per packet — the
-	// handleCosmos/handleEth structure, expressed generically.
+	// waits (source-provability / finality) once instead of per packet.
 	//
 	// handler returns the indices (into the passed slice) of events that failed
 	// TRANSIENTLY and must be re-queued for retry; Subscribe re-queues exactly
@@ -176,9 +171,8 @@ type Source interface {
 	// AND relayed right now. It is the CHEAP precondition the relay module checks
 	// before doing any expensive client-update / proof work: a packet above this
 	// height is re-queued without burning a proof, instead of proving repeatedly
-	// while its source state is not yet available (the legacy waitCosmosAppHash /
-	// waitBeaconFinality guards, expressed as a value instead of a blocking wait).
-	// It encodes each chain's state-availability lag:
+	// while its source state is not yet available. It encodes each chain's
+	// state-availability lag:
 	//   - Cosmos: latest committed height minus the AppHash lag — a commitment
 	//     written at H is only reflected in the queryable app state at H+2, so
 	//     latest-2.
@@ -367,8 +361,7 @@ type FoldingDestination interface {
 //
 // Implemented by cosmos.Groth16Builder, evm.BeaconBuilder and
 // l2rollup.AttestedBuilder -- listed so the interface greps to its
-// implementations, which `ClientUpdateBuilder` did not: no concrete type carried
-// that name.
+// implementations.
 type Builder interface {
 	Name() string
 	Build(ctx context.Context, header []byte) (ClientUpdate, error)

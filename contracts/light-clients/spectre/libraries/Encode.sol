@@ -3,28 +3,11 @@
 pragma solidity ^0.8.28;
 
 import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
-import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 
 /// @dev CometBFT valid-commit-domain encoders, not a general-purpose proto3 encoder.
 /// Some helpers intentionally assume valid commit fields are populated and do not implement
 /// every zero-value omission edge case for malformed or unreachable commit data.
 library Encode {
-    function encodeVarint(uint256 value) internal pure returns (bytes memory) {
-        bytes memory out = new bytes(_varintLen(value));
-        _writeVarint(out, 0, value);
-        return out;
-    }
-
-    function encodeString(string memory value) internal pure returns (bytes memory) {
-        bytes memory valueBytes = bytes(value);
-        uint256 valueLen = valueBytes.length;
-        uint256 prefixLen = _varintLen(valueLen);
-        bytes memory out = new bytes(prefixLen + valueLen);
-        uint256 offset = _writeVarint(out, 0, valueLen);
-        _copyBytes(out, offset, valueBytes);
-        return out;
-    }
-
     /// @notice Encodes a nanosecond timestamp as a protobuf google.protobuf.Timestamp.
     /// @dev Omits fields with zero value per proto3 rules.
     function encodeTimestamp(uint128 nanos) internal pure returns (bytes memory) {
@@ -52,7 +35,11 @@ library Encode {
         return out;
     }
 
-    function encodeValidator(ISpectreTendermintMsgs.SimpleValidator memory validator) internal pure returns (bytes memory) {
+    function encodeValidator(ISpectreTendermintMsgs.SimpleValidator memory validator)
+        internal
+        pure
+        returns (bytes memory)
+    {
         uint256 totalLen = 36;
         if (validator.votingPower > 0) {
             totalLen += 1 + _varintLen(uint256(validator.votingPower));
@@ -193,7 +180,11 @@ library Encode {
         return result;
     }
 
-    function encodePartSetHeader(ISpectreTendermintMsgs.PartSetHeader memory partSetHeader) internal pure returns (bytes memory) {
+    function encodePartSetHeader(ISpectreTendermintMsgs.PartSetHeader memory partSetHeader)
+        internal
+        pure
+        returns (bytes memory)
+    {
         // Valid commits always carry total >= 1 and a populated part set hash.
         bytes memory out = new bytes(1 + _varintLen(uint256(partSetHeader.total)) + 34);
         uint256 offset = 0;
@@ -206,87 +197,6 @@ library Encode {
         offset = _storeByte(out, offset, 0x12);
         offset = _storeByte(out, offset, 0x20);
         _storeBytes32(out, offset, partSetHeader.hashData);
-
-        return out;
-    }
-
-    /// @notice Encodes a CanonicalVote as protobuf bytes (equivalent to CometBFT's VoteSignBytes).
-    /// @param commit The block commit.
-    /// @param chainId The chain ID string.
-    /// @param valIdx The validator index into commitSigs.
-    /// @return The protobuf-encoded canonical vote bytes.
-    function voteSignBytes(
-        ISpectreTendermintMsgs.BlockCommit memory commit,
-        string memory chainId,
-        uint32 valIdx,
-        uint128 timestamp
-    )
-        internal
-        pure
-        returns (bytes memory)
-    {
-        ISpectreTendermintMsgs.CommitSig memory commitSig = commit.commitSigs[valIdx];
-
-        bool useCommitBlockId = commitSig.flag == ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT;
-        bytes memory encodedBlockId = useCommitBlockId ? encodeBlockId(commit.blockId) : new bytes(0);
-        bytes memory encodedTimestamp = encodeTimestamp(timestamp);
-        bytes memory chainIdBytes = bytes(chainId);
-        uint256 encodedLen = 2; // field 1: tag + PrecommitType(2)
-
-        if (commit.height > 0) {
-            encodedLen += 9;
-        }
-        if (commit.round > 0) {
-            encodedLen += 9;
-        }
-        if (encodedBlockId.length > 0) {
-            encodedLen += 1 + _varintLen(encodedBlockId.length) + encodedBlockId.length;
-        }
-        // Timestamp is always present in CanonicalVote (matches Go/CometBFT).
-        encodedLen += 1 + _varintLen(encodedTimestamp.length) + encodedTimestamp.length;
-        if (chainIdBytes.length > 0) {
-            encodedLen += 1 + _varintLen(chainIdBytes.length) + chainIdBytes.length;
-        }
-
-        uint256 prefixLen = _varintLen(encodedLen);
-        bytes memory out = new bytes(prefixLen + encodedLen);
-        uint256 offset = _writeVarint(out, 0, encodedLen);
-
-        // Field 1: type = PrecommitType (2), varint, tag 0x08
-        offset = _storeByte(out, offset, 0x08);
-        offset = _storeByte(out, offset, 0x02);
-
-        // Field 2: height, sfixed64 (fixed 8-byte little-endian), tag 0x11
-        if (commit.height > 0) {
-            offset = _storeByte(out, offset, 0x11);
-            offset = _copyBytes(out, offset, encodeSfixed64(int64(uint64(commit.height))));
-        }
-
-        // Field 3: round, sfixed64 (fixed 8-byte little-endian), tag 0x19
-        if (commit.round > 0) {
-            offset = _storeByte(out, offset, 0x19);
-            offset = _copyBytes(out, offset, encodeSfixed64(int64(uint64(commit.round))));
-        }
-
-        // Field 4: block_id, length-delimited, tag 0x22
-        if (encodedBlockId.length > 0) {
-            offset = _storeByte(out, offset, 0x22);
-            offset = _writeVarint(out, offset, encodedBlockId.length);
-            offset = _copyBytes(out, offset, encodedBlockId);
-        }
-
-        // Field 5: timestamp, length-delimited, tag 0x2a
-        // Always included to match Go/CometBFT CanonicalVote encoding.
-        offset = _storeByte(out, offset, 0x2A);
-        offset = _writeVarint(out, offset, encodedTimestamp.length);
-        offset = _copyBytes(out, offset, encodedTimestamp);
-
-        // Field 6: chain_id, length-delimited string, tag 0x32
-        if (chainIdBytes.length > 0) {
-            offset = _storeByte(out, offset, 0x32);
-            offset = _writeVarint(out, offset, chainIdBytes.length);
-            _copyBytes(out, offset, chainIdBytes);
-        }
 
         return out;
     }

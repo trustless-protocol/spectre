@@ -108,10 +108,9 @@ library Header {
     }
 
     function simpleValidatorLeafHash(bytes32 pubKey, uint64 votingPower) internal pure returns (bytes32) {
-        return
-            _leafHash(
-                Encode.encodeValidator(ISpectreTendermintMsgs.SimpleValidator({ pubKey: pubKey, votingPower: votingPower }))
-            );
+        return _leafHash(
+            Encode.encodeValidator(ISpectreTendermintMsgs.SimpleValidator({ pubKey: pubKey, votingPower: votingPower }))
+        );
     }
 
     function innerHash(bytes32 left, bytes32 right) internal pure returns (bytes32) {

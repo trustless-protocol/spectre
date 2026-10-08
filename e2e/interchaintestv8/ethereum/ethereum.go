@@ -112,7 +112,7 @@ func (e Ethereum) ForgeScript(deployer *ecdsa.PrivateKey, solidityContract strin
 
 	faucetAddress := crypto.PubkeyToAddress(e.Faucet.PublicKey)
 	extraEnv := []string{
-		fmt.Sprintf("%s=%s", testvalues.EnvKeyE2EFacuetAddress, faucetAddress.Hex()),
+		fmt.Sprintf("%s=%s", testvalues.EnvKeyE2EFaucetAddress, faucetAddress.Hex()),
 	}
 
 	cmd.Env = os.Environ()
