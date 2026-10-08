@@ -18,8 +18,6 @@ import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages
 contract EncodeTest is Test {
     // ─── Test data (hard-coded; see the contract NatSpec for provenance) ───
 
-    uint128 private constant VOTE_TIMESTAMP_NANOS = 1_704_067_200_000_000_000;
-
     function _pubKey() internal pure returns (bytes32) {
         bytes32 pk;
         assembly {
@@ -372,111 +370,6 @@ contract EncodeTest is Test {
                 header, Header.chainIdLeafHash(header.chainId), Header.bytes32LeafHash(header.validatorsHash)
             ),
             Header.hashHeader(header)
-        );
-    }
-
-    // ─── voteSignBytes golden-vector tests ───
-    // Golden vectors derived from Go/CometBFT types.Commit.VoteSignBytes().
-    // These MUST be kept in sync with Go — a divergence indicates a serious
-    // encoding bug that would break mainnet relaying.
-
-    function _makeBlockCommit(
-        uint64 height,
-        uint32 round,
-        ISpectreTendermintMsgs.CommitSigFlag flag
-    )
-        internal
-        pure
-        returns (ISpectreTendermintMsgs.BlockCommit memory)
-    {
-        ISpectreTendermintMsgs.CommitSig[] memory sigs = new ISpectreTendermintMsgs.CommitSig[](1);
-        // Canonical-vote encoding does not cover validatorAddress.
-        sigs[0] = ISpectreTendermintMsgs.CommitSig({ flag: flag, validatorAddress: bytes20(0) });
-
-        return ISpectreTendermintMsgs.BlockCommit({
-            height: height,
-            round: round,
-            blockId: ISpectreTendermintMsgs.BlockId({
-                hashData: _hash2(),
-                partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
-            }),
-            commitSigs: sigs
-        });
-    }
-
-    function test_voteSignBytes_full() public pure {
-        ISpectreTendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(100, 0, ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
-            hex"69080211640000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
-        );
-    }
-
-    function test_voteSignBytes_zeroHeightZeroRound() public pure {
-        // When height and round are 0 the fields are omitted entirely.
-        ISpectreTendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(0, 0, ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
-            hex"60080222480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
-        );
-    }
-
-    function test_voteSignBytes_zeroHeightNonZeroRound() public pure {
-        ISpectreTendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(0, 5, ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
-            hex"69080219050000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
-        );
-    }
-
-    function test_voteSignBytes_nonZeroHeightZeroRound() public pure {
-        ISpectreTendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(10, 0, ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
-            hex"690802110a0000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
-        );
-    }
-
-    function test_voteSignBytes_absentFlag() public pure {
-        // Absent flag => block_id is omitted.
-        ISpectreTendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(100, 0, ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_ABSENT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
-            hex"1f08021164000000000000002a06088081c8ac06320a746573742d636861696e"
-        );
-    }
-
-    function test_voteSignBytes_noChainId() public pure {
-        ISpectreTendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(100, 0, ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "", 0, VOTE_TIMESTAMP_NANOS),
-            hex"5d080211640000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06"
-        );
-    }
-
-    function test_voteSignBytes_zeroTimestamp() public pure {
-        // Zero timestamp is encoded as an empty length-delimited message (2a00),
-        // matching Go/CometBFT CanonicalVote behavior.
-        ISpectreTendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(100, 0, ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, 0),
-            hex"63080211640000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a00320a746573742d636861696e"
-        );
-    }
-
-    function test_voteSignBytes_nonZeroHeightAndRound() public pure {
-        ISpectreTendermintMsgs.BlockCommit memory commit =
-            _makeBlockCommit(128, 127, ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
-        assertEq(
-            Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
-            hex"720802118000000000000000197f0000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
         );
     }
 

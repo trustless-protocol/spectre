@@ -46,38 +46,6 @@ contract EncodeWrapper {
         return Encode.encodeTimestamp(nanos);
     }
 
-    function voteSignBytes(
-        uint64 height,
-        uint32 round,
-        bytes32 blockIdHash,
-        uint32 pshTotal,
-        bytes32 pshHash,
-        uint8 flag,
-        uint128 timestamp,
-        string calldata chainId
-    )
-        external
-        pure
-        returns (bytes memory)
-    {
-        ISpectreTendermintMsgs.CommitSig[] memory sigs = new ISpectreTendermintMsgs.CommitSig[](1);
-        // Canonical-vote encoding does not cover validatorAddress.
-        sigs[0] = ISpectreTendermintMsgs.CommitSig({
-            flag: ISpectreTendermintMsgs.CommitSigFlag(flag), validatorAddress: bytes20(0)
-        });
-
-        ISpectreTendermintMsgs.BlockCommit memory commit = ISpectreTendermintMsgs.BlockCommit({
-            height: height,
-            round: round,
-            blockId: ISpectreTendermintMsgs.BlockId(
-                blockIdHash, ISpectreTendermintMsgs.PartSetHeader(pshTotal, pshHash)
-            ),
-            commitSigs: sigs
-        });
-
-        return Encode.voteSignBytes(commit, chainId, 0, timestamp);
-    }
-
     function hashValSet(bytes32[] calldata pubKeys, uint64[] calldata votingPowers) external pure returns (bytes32) {
         require(pubKeys.length == votingPowers.length, "length mismatch");
 

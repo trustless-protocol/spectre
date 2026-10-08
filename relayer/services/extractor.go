@@ -136,9 +136,8 @@ func sortSelectedSignaturesByIndex(sigs []witness.ValidatorSignature) {
 }
 
 // SharedBlockData is the subset of CanonicalVote fields identical across every
-// validator signing one block. The on-chain SignatureVerifier rebuilds each
-// slot's canonical vote bytes from these via Encode.sol; the circuit itself
-// consumes only the per-slot SignedBytes.
+// validator signing one block. The circuit consumes only the per-slot
+// SignedBytes, not these.
 type SharedBlockData struct {
 	Height       int64
 	Round        int64
@@ -149,9 +148,8 @@ type SharedBlockData struct {
 }
 
 // ExtractorResult bundles the valid signer candidates, the selected signer
-// set, and the shared block data needed by the on-chain quorum +
-// canonical-vote rebuild path. Selection policy lives in the relayer; this
-// type is the shape it hands back.
+// set, and the block fields every signer shares. Selection policy lives in the
+// relayer; this type is the shape it hands back.
 type ExtractorResult struct {
 	Shared     SharedBlockData
 	Candidates []witness.ValidatorSignature
