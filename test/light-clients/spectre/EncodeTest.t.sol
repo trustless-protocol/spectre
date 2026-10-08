@@ -10,11 +10,15 @@ import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
 import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 
 /// @title EncodeTest
-/// @notice Checks Encode.sol output against hard-coded reference vectors. Go proto.Marshal() is the
-///         intended source of truth for them, but the Go program that produced them is not in this
-///         repository (tracked as SUP-06 in #288), so they cannot be regenerated from here.
-///         `TestWitnessHashVectors` (relayer/prover/witness) is the pattern to follow for a
-///         Go-generated fixture.
+/// @notice Checks Encode.sol and Header.sol against CometBFT.
+///         - `test_goVectors_*` read test/fixtures/encode_vectors.json, which `TestEncodeVectors`
+///           (relayer/client) computes with CometBFT's own types. Regenerate it with
+///           `cd relayer && go test ./client -run TestEncodeVectors -update`.
+///         - The remaining tests use hard-coded vectors whose generator is not in this repository
+///           (SUP-06 in #288). The fixture-driven tests are the authoritative cross-check; these
+///           are kept as readable examples.
+///         One known gap: a header with an empty last_block_id is hashed differently on-chain and by
+///         CometBFT, so no such header is in the fixture (see TestEmptyBlockIDMarshalsToTwoBytes).
 contract EncodeTest is Test {
     // ─── Test data (hard-coded; see the contract NatSpec for provenance) ───
 
@@ -350,6 +354,184 @@ contract EncodeTest is Test {
             ),
             Header.hashHeader(header)
         );
+    }
+
+    // ─── CometBFT cross-check vectors ───
+    // test/fixtures/encode_vectors.json is written by relayer/client TestEncodeVectors, which computes every
+    // expected value with CometBFT's own types. A failure here with a passing Go test means Encode.sol or
+    // Header.sol drifted from CometBFT; a failing Go test means the fixture is stale (rerun it with -update).
+
+    string private constant VECTORS = "test/fixtures/encode_vectors.json";
+
+    function _path(string memory array, uint256 i, string memory field) private pure returns (string memory) {
+        return string.concat(".", array, "[", vm.toString(i), "].", field);
+    }
+
+    function _count(string memory raw, string memory name) private view returns (uint256 n) {
+        n = vm.parseJsonUint(raw, string.concat(".counts.", name));
+        assertGt(n, 0, name);
+    }
+
+    function test_goVectors_versions() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "versions"); i++) {
+            ISpectreTendermintMsgs.Version memory v = ISpectreTendermintMsgs.Version({
+                blockVersion: uint64(vm.parseJsonUint(raw, _path("versions", i, "block"))),
+                appVersion: uint64(vm.parseJsonUint(raw, _path("versions", i, "app")))
+            });
+            assertEq(Encode.encodeVersion(v), vm.parseJsonBytes(raw, _path("versions", i, "encoded")), "version");
+        }
+    }
+
+    function test_goVectors_validators() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "validators"); i++) {
+            ISpectreTendermintMsgs.SimpleValidator memory v = ISpectreTendermintMsgs.SimpleValidator({
+                pubKey: vm.parseJsonBytes32(raw, _path("validators", i, "pubKey")),
+                votingPower: uint64(vm.parseJsonUint(raw, _path("validators", i, "votingPower")))
+            });
+            assertEq(Encode.encodeValidator(v), vm.parseJsonBytes(raw, _path("validators", i, "encoded")), "validator");
+        }
+    }
+
+    function test_goVectors_blockIds() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "blockIds"); i++) {
+            ISpectreTendermintMsgs.BlockId memory id = ISpectreTendermintMsgs.BlockId({
+                hashData: vm.parseJsonBytes32(raw, _path("blockIds", i, "hash")),
+                partSetHeader: ISpectreTendermintMsgs.PartSetHeader({
+                    total: uint32(vm.parseJsonUint(raw, _path("blockIds", i, "total"))),
+                    hashData: vm.parseJsonBytes32(raw, _path("blockIds", i, "partSetHash"))
+                })
+            });
+            assertEq(Encode.encodeBlockId(id), vm.parseJsonBytes(raw, _path("blockIds", i, "encoded")), "blockId");
+        }
+    }
+
+    function test_goVectors_partSetHeaders() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "partSetHeaders"); i++) {
+            ISpectreTendermintMsgs.PartSetHeader memory psh = ISpectreTendermintMsgs.PartSetHeader({
+                total: uint32(vm.parseJsonUint(raw, _path("partSetHeaders", i, "total"))),
+                hashData: vm.parseJsonBytes32(raw, _path("partSetHeaders", i, "hash"))
+            });
+            assertEq(
+                Encode.encodePartSetHeader(psh), vm.parseJsonBytes(raw, _path("partSetHeaders", i, "encoded")), "psh"
+            );
+        }
+    }
+
+    function test_goVectors_timestamps() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "timestamps"); i++) {
+            uint128 nanos = uint128(vm.parseJsonUint(raw, _path("timestamps", i, "nanos")));
+            assertEq(Encode.encodeTimestamp(nanos), vm.parseJsonBytes(raw, _path("timestamps", i, "encoded")), "ts");
+        }
+    }
+
+    function test_goVectors_cdcEncode() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "cdcStrings"); i++) {
+            assertEq(
+                Encode.cdcEncodeString(vm.parseJsonString(raw, _path("cdcStrings", i, "value"))),
+                vm.parseJsonBytes(raw, _path("cdcStrings", i, "encoded")),
+                "cdcString"
+            );
+        }
+        for (uint256 i = 0; i < _count(raw, "cdcInt64s"); i++) {
+            assertEq(
+                Encode.cdcEncodeInt64(vm.parseJsonUint(raw, _path("cdcInt64s", i, "value"))),
+                vm.parseJsonBytes(raw, _path("cdcInt64s", i, "encoded")),
+                "cdcInt64"
+            );
+        }
+        for (uint256 i = 0; i < _count(raw, "cdcBytes"); i++) {
+            assertEq(
+                Encode.cdcEncodeBytes(vm.parseJsonBytes(raw, _path("cdcBytes", i, "value"))),
+                vm.parseJsonBytes(raw, _path("cdcBytes", i, "encoded")),
+                "cdcBytes"
+            );
+        }
+        for (uint256 i = 0; i < _count(raw, "cdcBytes32s"); i++) {
+            assertEq(
+                Encode.cdcEncodeBytes32(vm.parseJsonBytes32(raw, _path("cdcBytes32s", i, "value"))),
+                vm.parseJsonBytes(raw, _path("cdcBytes32s", i, "encoded")),
+                "cdcBytes32"
+            );
+        }
+    }
+
+    function test_goVectors_validatorSetHashes() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "valSets"); i++) {
+            bytes32[] memory pubKeys = vm.parseJsonBytes32Array(raw, _path("valSets", i, "pubKeys"));
+            uint256[] memory powers = vm.parseJsonUintArray(raw, _path("valSets", i, "votingPowers"));
+            assertEq(pubKeys.length, powers.length, "length");
+
+            ISpectreTendermintMsgs.ValidatorSet memory valSet;
+            valSet.validators = new ISpectreTendermintMsgs.ValidatorInfo[](pubKeys.length);
+            for (uint256 j = 0; j < pubKeys.length; j++) {
+                valSet.validators[j].pubKey = pubKeys[j];
+                valSet.validators[j].votingPower = uint64(powers[j]);
+            }
+
+            assertEq(
+                Header.hashValSet(valSet),
+                vm.parseJsonBytes32(raw, _path("valSets", i, "hash")),
+                vm.parseJsonString(raw, _path("valSets", i, "name"))
+            );
+        }
+    }
+
+    function test_goVectors_headerHashes() public view {
+        string memory raw = vm.readFile(VECTORS);
+        for (uint256 i = 0; i < _count(raw, "headers"); i++) {
+            ISpectreTendermintMsgs.BlockHeader memory header = _headerVector(raw, i);
+            bytes32 want = vm.parseJsonBytes32(raw, _path("headers", i, "hash"));
+            string memory name = vm.parseJsonString(raw, _path("headers", i, "name"));
+
+            assertEq(Header.hashHeader(header), want, name);
+            assertEq(Header.hashHeaderWithCachedChainId(header, Header.chainIdLeafHash(header.chainId)), want, name);
+        }
+    }
+
+    function _headerVector(
+        string memory raw,
+        uint256 i
+    )
+        private
+        view
+        returns (ISpectreTendermintMsgs.BlockHeader memory h)
+    {
+        h.version = ISpectreTendermintMsgs.Version({
+            blockVersion: uint64(vm.parseJsonUint(raw, _path("headers", i, "versionBlock"))),
+            appVersion: uint64(vm.parseJsonUint(raw, _path("headers", i, "versionApp")))
+        });
+        h.chainId = vm.parseJsonString(raw, _path("headers", i, "chainId"));
+        h.height = uint64(vm.parseJsonUint(raw, _path("headers", i, "height")));
+        h.time = uint128(vm.parseJsonUint(raw, _path("headers", i, "timeNanos")));
+
+        h.hasLastBlockId = vm.parseJsonBool(raw, _path("headers", i, "hasLastBlockId"));
+        h.lastBlockId = ISpectreTendermintMsgs.BlockId({
+            hashData: vm.parseJsonBytes32(raw, _path("headers", i, "lastBlockIdHash")),
+            partSetHeader: ISpectreTendermintMsgs.PartSetHeader({
+                total: uint32(vm.parseJsonUint(raw, _path("headers", i, "lastPartSetTotal"))),
+                hashData: vm.parseJsonBytes32(raw, _path("headers", i, "lastPartSetHash"))
+            })
+        });
+        h.hasLastCommitHash = vm.parseJsonBool(raw, _path("headers", i, "hasLastCommitHash"));
+        h.lastCommitHash = vm.parseJsonBytes32(raw, _path("headers", i, "lastCommitHash"));
+        h.hasDataHash = vm.parseJsonBool(raw, _path("headers", i, "hasDataHash"));
+        h.dataHash = vm.parseJsonBytes32(raw, _path("headers", i, "dataHash"));
+        h.validatorsHash = vm.parseJsonBytes32(raw, _path("headers", i, "validatorsHash"));
+        h.nextValidatorsHash = vm.parseJsonBytes32(raw, _path("headers", i, "nextValidatorsHash"));
+        h.consensusHash = vm.parseJsonBytes32(raw, _path("headers", i, "consensusHash"));
+        h.appHash = vm.parseJsonBytes32(raw, _path("headers", i, "appHash"));
+        h.hasLastResultsHash = vm.parseJsonBool(raw, _path("headers", i, "hasLastResultsHash"));
+        h.lastResultsHash = vm.parseJsonBytes32(raw, _path("headers", i, "lastResultsHash"));
+        h.hasEvidenceHash = vm.parseJsonBool(raw, _path("headers", i, "hasEvidenceHash"));
+        h.evidenceHash = vm.parseJsonBytes32(raw, _path("headers", i, "evidenceHash"));
+        h.proposerAddress = vm.parseJsonBytes(raw, _path("headers", i, "proposerAddress"));
     }
 
     // ─── Debug: emit encoded bytes for manual inspection ───
