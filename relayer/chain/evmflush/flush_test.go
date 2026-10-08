@@ -146,6 +146,24 @@ func TestSendCursor(t *testing.T) {
 	}
 }
 
+// A send the pass refused to handle is retried next time, even when it is the
+// first slot: that is the one case SendCursor's step past slots[0] is wrong for.
+func TestSendCursorAt(t *testing.T) {
+	slots := []evmflush.Slot{{Sequence: 90}, {Sequence: 70}, {Sequence: 50}} // window [41,100], newest first
+	for at, slot := range slots {
+		got := evmflush.SendCursorAt(slots, at)
+		if _, hi, _ := evmflush.Window(100, got, 200); hi != slot.Sequence {
+			t.Fatalf("SendCursorAt(%d) = %d: next window tops at %d, want the refused seq %d", at, got, hi, slot.Sequence)
+		}
+	}
+	// The newest outstanding send is the router's last: the cursor lands above
+	// prevSequenceSend, which Window treats as "start from the newest".
+	newest := []evmflush.Slot{{Sequence: 100}}
+	if _, hi, _ := evmflush.Window(100, evmflush.SendCursorAt(newest, 0), 200); hi != 100 {
+		t.Fatalf("next window tops at %d, want 100", hi)
+	}
+}
+
 func TestAckCursor(t *testing.T) {
 	// The ack window after cursor 10: 11..13, then wrapped to 2..3.
 	window := []uint64{11, 12, 13, 2, 3}

@@ -30,7 +30,8 @@ import (
 //   - ETH→Cosmos ("beacon"): ETH source → 08-wasm-on-Cosmos destination. The ETH
 //     subscriber already records EthPendingTracker entries, so the module adds no
 //     tracker (avoiding a redundant double-add); ScanEthTimeouts drains that
-//     tracker.
+//     tracker. The enumeration backstop registers the sends it finds itself
+//     (evm.Source.unrelayedSends), since those are the ones the subscriber missed.
 //
 // Engine names. One services instance per engine, and the name is what a
 // reactivation addresses -- so they are declared together rather than written as

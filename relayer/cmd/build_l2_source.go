@@ -304,6 +304,10 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		// untrack after its own successful relay -- one settlement path, two ways
 		// of learning about it.
 		WithSettleHook(untrackL2Pending).
+		// The enumeration backstop skips a send already past its timeout, so the
+		// module's track hook never sees it; the backstop registers it itself so
+		// the timeout scanner can refund it.
+		WithPendingTracker(trackL2Pending).
 		// Reconcile against what Cosmos already records, so a packet another
 		// relayer settled is not proven a second time.
 		WithCosmosPacketState(l2rollup.NewCosmosPacketState(svcCtx)).

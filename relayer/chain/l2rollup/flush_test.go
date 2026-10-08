@@ -6,6 +6,7 @@ import (
 	"math/big"
 	contractICS26Router "relayer/bindings/ICS26Router"
 	"relayer/chain"
+	"relayer/chain/evmflush"
 	"relayer/rpcmock"
 	"relayer/services"
 	"relayer/subscriber"
@@ -185,6 +186,71 @@ func TestUnrelayedPackets(t *testing.T) {
 		events, err := src.UnrelayedPackets(context.Background())
 		if err != nil || len(events) != 0 {
 			t.Fatalf("UnrelayedPackets = (%+v, %v), want nothing: the send is expired", events, err)
+		}
+	})
+
+	// RLY-01: skipping an expired send is only safe if the timeout scanner can still
+	// find it, and the scanner reads only the pending tracker. A send the block scan
+	// missed was never put there, so the backstop registers it before it skips.
+	t.Run("L2 registers the expired send it skips", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		a := l2FlushABI(t)
+		node.SetBlockNumber(300)
+		node.SetStorage(l2FlushRouter, services.EthPrevSequenceSendKey(l2FlushClient), ethcommon.BigToHash(big.NewInt(2)))
+		expired := flushL2Packet(1, l2FlushClient, l2FlushWasmName)
+		expired.TimeoutTimestamp = 1
+		// Expired, but bound for a different Cosmos client: not this path's packet,
+		// so it must not enter this path's tracker.
+		foreign := flushL2Packet(2, l2FlushClient, "08-wasm-9")
+		foreign.TimeoutTimestamp = 1
+		for _, pkt := range []contractICS26Router.IICS26RouterMsgsPacket{expired, foreign} {
+			node.SetStorage(l2FlushRouter, services.EthIBCStorageKey(services.EthPath(l2FlushClient, pkt.Sequence, services.EthPathCommitment)), l2Commitment(pkt))
+			node.AddLog(l2Log(t, a, "SendPacket", l2FlushClient, 10+pkt.Sequence, pkt))
+		}
+
+		tracker := services.NewPendingPacketTracker()
+		track := func(raw []byte, height uint64) bool {
+			var pkt channeltypesv2.Packet
+			if err := pkt.Unmarshal(raw); err != nil {
+				t.Errorf("tracked packet does not decode: %v", err)
+				return false
+			}
+			return tracker.Add(pkt, height)
+		}
+		src := (&Source{eth: node.Client(t), router: l2FlushRouter, l2ClientID: l2FlushClient, cosmosWasmClientID: l2FlushWasmName}).WithPendingTracker(track)
+		events, err := src.UnrelayedPackets(context.Background())
+		if err != nil || len(events) != 0 {
+			t.Fatalf("UnrelayedPackets = (%+v, %v), want nothing relayed: the send is expired", events, err)
+		}
+		got := tracker.GetAll()
+		if len(got) != 1 || got[0].Packet.Sequence != 1 || got[0].BlockNumber != 11 {
+			t.Fatalf("tracked = %+v, want only the expired send for this path (seq 1 at block 11)", got)
+		}
+	})
+
+	// A tracker write that fails must leave the send to the next pass: moving the
+	// cursor on would mean nobody watches a packet no scanner can find.
+	t.Run("L2 holds the cursor when the tracker write fails", func(t *testing.T) {
+		node := rpcmock.NewEVMNode(t)
+		a := l2FlushABI(t)
+		node.SetBlockNumber(300)
+		node.SetStorage(l2FlushRouter, services.EthPrevSequenceSendKey(l2FlushClient), ethcommon.BigToHash(big.NewInt(2)))
+		for seq := uint64(1); seq <= 2; seq++ {
+			pkt := flushL2Packet(seq, l2FlushClient, l2FlushWasmName)
+			pkt.TimeoutTimestamp = 1
+			node.SetStorage(l2FlushRouter, services.EthIBCStorageKey(services.EthPath(l2FlushClient, seq, services.EthPathCommitment)), l2Commitment(pkt))
+			node.AddLog(l2Log(t, a, "SendPacket", l2FlushClient, 10+seq, pkt))
+		}
+
+		src := (&Source{eth: node.Client(t), router: l2FlushRouter, l2ClientID: l2FlushClient, cosmosWasmClientID: l2FlushWasmName}).
+			WithPendingTracker(func([]byte, uint64) bool { return false })
+		if _, err := src.UnrelayedPackets(context.Background()); err != nil {
+			t.Fatalf("UnrelayedPackets: %v", err)
+		}
+		// The refused send is the FIRST slot (seq 2, the newest). The next pass must
+		// start at it again, not step past it as a lookup that resolved nothing would.
+		if _, hi, _ := evmflush.Window(2, src.flush.sendCursor, evmflush.ProbeCap); hi != 2 {
+			t.Fatalf("send cursor = %d: the next window tops at %d, want 2, the send that could not be tracked", src.flush.sendCursor, hi)
 		}
 	})
 

@@ -109,6 +109,7 @@ func (s *Source) unrelayedSends(ctx context.Context, router evmflush.Router) ([]
 	// the window to the next pass -- and only as far as the lookups got: a pass
 	// that runs out of budget resumes at the first send it did not resolve.
 	stop := len(slots)
+	hold := -1 // a send the pass refused to handle (it could not be tracked), or -1
 	var events []chain.Event
 	for i, slot := range slots {
 		// The slot's value says WHICH packet this sequence names; SendLog
@@ -130,6 +131,19 @@ func (s *Source) unrelayedSends(ctx context.Context, router evmflush.Router) ([]
 			continue // SendLog has already said why
 		}
 		pkt := subscriber.EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
+		// Register the send BEFORE deciding whether it is worth relaying. The
+		// timeout scanner reads only this tracker, and the live subscriber is its
+		// only other writer: a send the block scan missed -- the reason this pass
+		// exists -- is otherwise invisible to it, so an expired one below would
+		// never be refunded. Add is idempotent for a packet the subscriber already
+		// tracked. A failed durable write stops the pass at this send, so the
+		// cursor does not move past a packet nobody is watching.
+		if !s.bb.EthPendingTracker.Add(pkt, ev.Raw.BlockNumber) {
+			hold = i
+			s.logger.Printf("[eth->cosmos Flush] track send seq=%d from block %d: durable write failed; the next pass resumes there: %v",
+				slot.Sequence, ev.Raw.BlockNumber, s.bb.EthPendingTracker.PersistenceError())
+			break
+		}
 		// Past its timeout it can never be received; the timeout scanner refunds
 		// it. Same rule the live path applies.
 		if sendPacketExpired(pkt, time.Now()) {
@@ -139,7 +153,13 @@ func (s *Source) unrelayedSends(ctx context.Context, router evmflush.Router) ([]
 			events = append(events, e)
 		}
 	}
-	s.flush.sendCursor = evmflush.SendCursor(lo, slots, stop)
+	if hold >= 0 {
+		// Unlike a lookup that ran out of time, this send must be retried even when
+		// it is the first: SendCursor would step past it.
+		s.flush.sendCursor = evmflush.SendCursorAt(slots, hold)
+	} else {
+		s.flush.sendCursor = evmflush.SendCursor(lo, slots, stop)
+	}
 	return events, nil
 }
 

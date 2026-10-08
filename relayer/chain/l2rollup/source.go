@@ -124,6 +124,10 @@ type Source struct {
 	// terminal and settles no debt. nil means no ledger is running.
 	settleAck func(packet []byte)
 
+	// track registers a send with the pending tracker; see WithPendingTracker.
+	// nil means the enumeration backstop cannot register what it skips.
+	track func(packet []byte, height uint64) bool
+
 	// logScanChunk caps the block span of a single eth_getLogs. 0 means "one call
 	// for the whole range", which is what every provider that does not cap the span
 	// wants. Providers that do cap it vary by three orders of magnitude (Alchemy's
@@ -222,6 +226,22 @@ func (s *Source) WithSettleHook(settle func(packet []byte)) *Source {
 // restart, and reported overdue forever for a packet that is settled on-chain.
 func (s *Source) WithAckSettleHook(settle func(packet []byte)) *Source {
 	s.settleAck = settle
+	return s
+}
+
+// WithPendingTracker lets the enumeration backstop register a send it is about
+// to skip. The backstop drops a send already past its timeout instead of
+// relaying it, leaving the refund to the timeout scanner -- but the scanner reads
+// only the pending tracker, and a send the block scan missed was never put there.
+// Sends the backstop DOES return are tracked by the module's own hook; this one
+// covers the ones it does not.
+//
+// It takes the proto-marshaled packet and its block height, the form of the
+// module's relay.TrackFunc, and reports false when the durable write failed.
+//
+// Optional; without it an expired send found only by the backstop is not refunded.
+func (s *Source) WithPendingTracker(track func(packet []byte, height uint64) bool) *Source {
+	s.track = track
 	return s
 }
 
