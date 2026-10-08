@@ -114,6 +114,7 @@ func (s *Source) unrelayedSends(ctx context.Context, router evmflush.Router) ([]
 	// the window to the next pass -- and only as far as the lookups got: a pass
 	// that runs out of budget resumes at the first send it did not resolve.
 	stop := len(slots)
+	hold := -1 // a send the pass refused to handle (it could not be tracked), or -1
 	var events []chain.Event
 	for i, slot := range slots {
 		ev, found, err := router.SendLog(ctx, s.l2ClientID, slot.Sequence, slot.Value)
@@ -130,19 +131,39 @@ func (s *Source) unrelayedSends(ctx context.Context, router evmflush.Router) ([]
 		if !found {
 			continue
 		}
+		// l2SendToEvent applies the same destination-client filter the scan does.
+		e, ok := l2SendToEvent(ev, s.cosmosWasmClientID)
+		if !ok {
+			continue
+		}
 		// Past its timeout it can never be received on Cosmos; the L2 timeout
 		// scanner refunds it. The same rule MembershipProof applies, applied here
 		// so an old expired send does not cost a proof build per pass -- and so
 		// this leg matches the ETH source's.
+		//
+		// Skipping it must not hide it from that scanner, which reads only the
+		// tracker: a send the block scan missed was never registered, so the
+		// module's own track hook (which only sees events returned below) cannot
+		// have. Register it here. A failed durable write stops the pass at this
+		// send, so the cursor does not move past a packet nobody is watching.
 		if ev.Packet.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= ev.Packet.TimeoutTimestamp {
+			if s.track != nil && !s.track(e.Raw, e.Height) {
+				hold = i
+				log.Printf("[l2->cosmos Flush] track expired send seq=%d from block %d: durable write failed; the next pass resumes there",
+					slot.Sequence, e.Height)
+				break
+			}
 			continue
 		}
-		// l2SendToEvent applies the same destination-client filter the scan does.
-		if e, ok := l2SendToEvent(ev, s.cosmosWasmClientID); ok {
-			events = append(events, e)
-		}
+		events = append(events, e)
 	}
-	s.flush.sendCursor = evmflush.SendCursor(lo, slots, stop)
+	if hold >= 0 {
+		// Unlike a lookup that ran out of time, this send must be retried even when
+		// it is the first: SendCursor would step past it.
+		s.flush.sendCursor = evmflush.SendCursorAt(slots, hold)
+	} else {
+		s.flush.sendCursor = evmflush.SendCursor(lo, slots, stop)
+	}
 	return events, nil
 }
 

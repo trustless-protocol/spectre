@@ -7,8 +7,11 @@ import (
 	"io"
 	"log"
 	"math/big"
+	"os"
+	"path/filepath"
 	contractICS26Router "relayer/bindings/ICS26Router"
 	"relayer/chain"
+	"relayer/chain/evmflush"
 	"relayer/rpcmock"
 	"relayer/services"
 	"relayer/subscriber"
@@ -89,12 +92,22 @@ func cosmosCommitments(t *testing.T, node *rpcmock.CosmosNode, states []channelt
 	})
 }
 
+// trackedSequences is the set of sequences a pending tracker currently holds.
+func trackedSequences(tracker *services.PendingPacketTracker) map[uint64]bool {
+	got := map[uint64]bool{}
+	for _, info := range tracker.GetAll() {
+		got[info.Packet.Sequence] = true
+	}
+	return got
+}
+
 func newFlushSource(t *testing.T, evmNode *rpcmock.EVMNode, cosmosNode *rpcmock.CosmosNode) *Source {
 	t.Helper()
 	s := &Source{
 		evm:    services.EVMEndpoint{Client: evmNode.Client(t), Contracts: services.EVMContracts{Router: flushRouter}},
 		ids:    services.ClientIDs{CosmosOnEVM: flushCosmosOnEVM, EVMOnCosmos: flushEVMOnCosmos},
 		logger: log.New(io.Discard, "", 0),
+		bb:     services.NewBatchBuilder(),
 	}
 	if cosmosNode != nil {
 		s.cosmos = services.CosmosEndpoint{Client: cosmosNode.Client(t)}
@@ -147,6 +160,64 @@ func TestUnrelayedPackets(t *testing.T) {
 		}
 		if got := node.Batches(); got != 1 {
 			t.Fatalf("storage probe took %d batches, want 1 round trip for 4 sequences", got)
+		}
+		// RLY-01: the flush finds sends the block scan missed, so it must also
+		// register them -- the timeout scanner reads only this tracker. The expired
+		// send is the one that matters: it is not relayed, so nothing else would
+		// ever hand it to the scanner. The send whose commitment does not match its
+		// log is not this client's packet and stays out.
+		if got := trackedSequences(s.bb.EthPendingTracker); len(got) != 2 || !got[2] || !got[3] {
+			t.Fatalf("tracked sequences = %v, want the live (2) and the expired (3) send", got)
+		}
+	})
+
+	// A send the tracker cannot record durably must not be relayed or skipped as if
+	// it were watched: nobody would refund it if the relay then failed, and the
+	// cursor must not rotate past it as though the pass had handled it.
+	t.Run("a send the tracker cannot record holds the cursor", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("a read-only directory does not stop root")
+		}
+		node := rpcmock.NewEVMNode(t)
+		a := flushABI(t)
+		node.SetBlockNumber(500)
+		node.SetStorage(flushRouter, services.EthPrevSequenceSendKey(flushCosmosOnEVM), ethcommon.BigToHash(big.NewInt(3)))
+		for seq, timeout := range map[uint64]uint64{2: 4_000_000_000, 3: 1} {
+			pkt := flushEthPacket(seq, flushCosmosOnEVM, flushEVMOnCosmos, timeout)
+			node.SetStorage(flushRouter, services.EthIBCStorageKey(services.EthPath(flushCosmosOnEVM, seq, services.EthPathCommitment)), commitmentOf(pkt))
+			data, err := a.Events["SendPacket"].Inputs.NonIndexed().Pack(pkt)
+			if err != nil {
+				t.Fatal(err)
+			}
+			node.AddLog(rpcmock.RawLog{Address: flushRouter, Topics: topics(a, "SendPacket", flushCosmosOnEVM, seq), Data: data, BlockNumber: 100 + seq})
+		}
+
+		dir := t.TempDir()
+		tracker, err := services.NewPersistentPendingPacketTracker(filepath.Join(dir, "pending.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+		s := newFlushSource(t, node, nil)
+		s.bb.EthPendingTracker = tracker
+		events, err := s.UnrelayedPackets(context.Background())
+		if err != nil {
+			t.Fatalf("UnrelayedPackets: %v", err)
+		}
+		if len(events) != 0 {
+			t.Fatalf("events = %+v, want none: a send nobody can watch is not relayed", events)
+		}
+		if tracker.Len() != 0 {
+			t.Fatalf("tracker holds %d packet(s), want 0 after a failed durable write", tracker.Len())
+		}
+		// The refused send is the FIRST slot (seq 3, the newest). The next pass must
+		// start at it again, not step past it as a lookup that resolved nothing would.
+		if _, hi, _ := evmflush.Window(3, s.flush.sendCursor, evmflush.ProbeCap); hi != 3 {
+			t.Fatalf("send cursor = %d: the next window tops at %d, want 3, the send that could not be tracked", s.flush.sendCursor, hi)
 		}
 	})
 

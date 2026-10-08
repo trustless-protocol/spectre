@@ -210,6 +210,16 @@ func SendCursor(lo uint64, slots []Slot, stop int) uint64 {
 	}
 }
 
+// SendCursorAt is the send cursor for a pass that must retry slots[at] next time,
+// even when at is 0. SendCursor moves past slots[0] when a pass resolved nothing,
+// because a lookup slower than the whole budget would otherwise pin the cursor;
+// that guard is wrong for a send the pass REFUSED to handle (it could not be
+// tracked), where skipping it leaves a packet nobody is watching until the
+// rotation wraps. The next window's top is slots[at].Sequence.
+func SendCursorAt(slots []Slot, at int) uint64 {
+	return slots[at].Sequence + 1 // Window resumes at cursor-1
+}
+
 // AckCursor is the acknowledgement cursor after a pass over window (the
 // sequences services.CosmosCommitmentWindow returned, in its order), whose
 // written slots (a subsequence of window, as OutstandingSlots preserves order)
