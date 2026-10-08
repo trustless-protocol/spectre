@@ -52,7 +52,6 @@ import (
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/testvalues"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types"
 	"github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/erc20"
-	relayertypes "github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/relayer"
 )
 
 // EthCosmosTestSuite is a suite of tests that wraps TestSuite
@@ -77,8 +76,6 @@ type EthCosmosTestSuite struct {
 	ics20Contract         *ics20transfer.Contract
 	erc20Contract         *erc20.Contract
 
-	RelayerClient relayertypes.RelayerServiceClient
-
 	SimdRelayerSubmitter ibc.Wallet
 	EthRelayerSubmitter  *ecdsa.PrivateKey
 }
@@ -90,7 +87,7 @@ func TestWithEthCosmosTestSuite(t *testing.T) {
 
 // SetupSuite calls the underlying EthCosmosTestSuite's SetupSuite method
 // and deploys the IBC v2 contracts. It uses the relayer binary directly
-// (via create-clients + start) rather than gRPC.
+// (via create-clients + start).
 func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.SupportedProofType) {
 	s.TestSuite.SetupSuite(ctx)
 
@@ -150,8 +147,8 @@ func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 		// ETH_PRIVATE_KEY is used by the relayer binary to sign ETH transactions.
 		// We reuse s.deployer here so the relayer inherits all roles granted by
 		// E2ETestDeploy.s.sol (RELAYER_ROLE, ID_CUSTOMIZER_ROLE, admin) without needing
-		// a separate grant flow. EthRelayerSubmitter still exists for tests that build
-		// raw txs and broadcast them directly (relayer_test.go, multichain_test.go).
+		// a separate grant flow. EthRelayerSubmitter is funded here but no test currently
+		// uses it.
 		os.Setenv("ETH_PRIVATE_KEY", hex.EncodeToString(crypto.FromECDSA(s.deployer)))
 		os.Setenv("COSMOS_CHAIN_ID", simd.Config().ChainID)
 		os.Setenv("COSMOS_FEE_DENOM", simd.Config().Denom)
@@ -455,11 +452,9 @@ func (s *EthCosmosTestSuite) DeployTest(ctx context.Context, proofType types.Sup
 		s.Require().Equal(testvalues.CustomClientID, counterpartyInfoResp.CounterpartyInfo.ClientId)
 	}))
 
-	// `s.RelayerClient.Info(...)` calls the upstream Rust relayer's gRPC InfoRequest
-	// endpoint — Spectre's auto-relay daemon doesn't expose gRPC, so these two
-	// reachability checks would nil-deref. The relay loop already proved both
-	// directions are wired correctly during create-clients / addClient / wasm-client
-	// register above; nothing extra to assert here.
+	// Spectre's relayer exposes no gRPC info endpoint, so there is no reachability check
+	// here. The relay loop already proved both directions are wired correctly during
+	// create-clients / addClient / wasm-client register above.
 }
 
 func (s *EthCosmosTestSuite) Test_ICS20TransferERC20TokenfromEthereumToCosmosAndBack() {
@@ -717,10 +712,8 @@ func (s *EthCosmosTestSuite) ICS20TransferERC20TokenfromEthereumToCosmosAndBackT
 	s.Require().True(s.Run("Receive packets on Cosmos chain", func() {
 		denomOnCosmos = transfertypes.NewDenom(s.contractAddresses.Erc20, transfertypes.NewHop(transfertypes.PortID, testvalues.FirstWasmClientID))
 
-		// Spectre relayer auto-relays via the StartRelayer daemon. Instead of pulling a
-		// relay tx via gRPC RelayByTx and broadcasting it ourselves (the upstream Rust
-		// relayer's query pattern), we just wait for the daemon to deliver the packet
-		// and verify the resulting Cosmos balance.
+		// Spectre relayer auto-relays via the StartRelayer daemon, so we wait for it to
+		// deliver the packet and verify the resulting Cosmos balance.
 		s.Require().True(s.Run("Wait for auto-relay to deliver", func() {
 			require.Eventuallyf(s.T(), func() bool {
 				resp, err := e2esuite.GRPCQuery[banktypes.QueryBalanceResponse](ctx, simd, &banktypes.QueryBalanceRequest{
@@ -1364,7 +1357,7 @@ func (s *EthCosmosTestSuite) ICS20TimeoutPacketFromEthereumTest(
 	// Spectre's auto-relay daemon either delivers a packet to Cosmos before its
 	// timeout OR — once the timeout window closes and the packet remains undelivered —
 	// the PendingPacketTracker scanner submits MsgTimeoutPacket to ETH and refunds the
-	// escrow. The daemon does not expose upstream RelayByTx sequence filtering, so the
+	// escrow. The daemon cannot be asked to relay only selected sequences, so the
 	// filtered variants validate the same terminal accounting invariant after reopening.
 
 	// Wait past the 30s packet-level timeout. The scanner ticks every 30s, so allow a
@@ -1627,8 +1620,8 @@ func (s *EthCosmosTestSuite) ICS20TimeoutFromCosmosTest(
 
 	// Spectre's relayer can either deliver a Cosmos-originated packet before the
 	// TimeoutTimestamp or, after the timeout, the scanner submits MsgTimeout on Cosmos
-	// with an ETH non-membership proof. The daemon does not expose upstream RelayByTx
-	// sequence filtering, so the filtered variants validate the same terminal
+	// with an ETH non-membership proof. The daemon cannot be asked to relay only selected
+	// sequences, so the filtered variants validate the same terminal
 	// accounting invariant after reopening.
 
 	time.Sleep(15 * time.Second) // ensure packet timestamp has expired; scanner ticks every 30s and will pick it up

@@ -151,11 +151,10 @@ generate-ethereum-types:
 	rm -f e2e/interchaintestv8/types/ethereum/types.gen.go.bak # this is to be linux and mac compatible (coming from the sed command)
 	cd e2e/interchaintestv8 && golangci-lint run --fix types/ethereum/types.gen.go
 
-# Generate the code from pritibuf using `buf generate`. (Only used for relayer testing at the moment)
+# Generate the attestor sidecar gRPC bindings from proto/attestor using `buf generate`.
 [group('generate')]
 generate-buf:
-    @echo "Generating Protobuf files for relayer"
-    buf generate --template buf.gen.yaml
+    @echo "Generating Protobuf files for the attestor"
     buf generate --template buf.gen.attestor.yaml
 
 shadowfork := if env("ETH_RPC_URL", "") == "" { "--no-match-path test/shadowfork/*" } else { "" }

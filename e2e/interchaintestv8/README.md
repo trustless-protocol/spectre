@@ -89,17 +89,13 @@ daemon matrix.
 
 - `spectre_client_test.go` (standalone Spectre client/deployment flow) —
   fixture generation remains explicitly unsupported.
-- `Test_5_FinalizedTimeoutPacketFromEth` (an `EthCosmosTestSuite` case that lives in
-  `relayer_test.go`) is skipped: it needs the upstream gRPC `RelayByTx` retrieval.
 
 ## Architecture note
 
 Spectre's relayer is an **event-driven daemon**, not the upstream Rust gRPC
 service. Tests therefore *wait* for the daemon to drive each step (via
-`require.Eventually` polling the post-relay end state) instead of pulling a
-relay tx via `s.RelayerClient.RelayByTx(...)` and broadcasting it themselves.
+`require.Eventually` polling the post-relay end state) instead of requesting a
+relay tx over gRPC and broadcasting it themselves.
 
-The `s.RelayerClient` field and `relayer.GetGRPCClient` are leftovers from upstream:
-nothing assigns the client, so only the skipped timeout case above refers to it.
 `s.EthRelayerSubmitter` is still funded in `ibc_eth_cosmos_test.go` and
-`multichain_test.go`, and is used by that skipped case only.
+`multichain_test.go`, but no test uses it.

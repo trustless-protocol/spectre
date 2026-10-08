@@ -10,8 +10,6 @@ import (
 	"time"
 
 	"github.com/cosmos/gogoproto/proto"
-	grpc "google.golang.org/grpc"
-	insecure "google.golang.org/grpc/credentials/insecure"
 
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	txtypes "github.com/cosmos/cosmos-sdk/types/tx"
@@ -20,7 +18,6 @@ import (
 	clienttypes "github.com/cosmos/ibc-go/v10/modules/core/02-client/types"
 
 	ethereumtypes "github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/ethereum"
-	relayertypes "github.com/srdtrk/solidity-ibc-eureka/e2e/v8/types/relayer"
 )
 
 // DefaultRelayerGRPCAddress returns the default gRPC address for the relayer.
@@ -147,16 +144,6 @@ func RunUpdateClient(configPath string, extraArgs ...string) error {
 	cmd.Env = append(os.Environ(), proverEnv()...)
 
 	return cmd.Run()
-}
-
-// GetGRPCClient returns a gRPC client for the relayer.
-func GetGRPCClient(addr string) (relayertypes.RelayerServiceClient, error) {
-	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		return nil, err
-	}
-
-	return relayertypes.NewRelayerServiceClient(conn), nil
 }
 
 // GetRelayUpdateSlot extracts the latest update slot from the relay body's update messages.
