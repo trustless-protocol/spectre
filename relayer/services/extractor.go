@@ -14,7 +14,7 @@ import (
 // ExtractValidatorSignatures lives in services rather than the prover package
 // because signature selection is relayer policy (greedy quorum, pinned-set
 // allowedIndices) and it needs cometbft + the RPC client; the prover only
-// consumes the resulting witness.ValidatorSignature slice (doc task #3).
+// consumes the resulting witness.ValidatorSignature slice.
 //
 // ExtractValidatorSignatures collects non-absent, locally-verified commit
 // signatures until their cumulative voting power exceeds 2/3 of
@@ -116,14 +116,6 @@ func ExtractValidatorSignatures(
 	}
 
 	return &ExtractorResult{
-		Shared: SharedBlockData{
-			Height:       commit.Height,
-			Round:        int64(commit.Round),
-			BlockIDHash:  commit.BlockID.Hash,
-			PartSetTotal: commit.BlockID.PartSetHeader.Total,
-			PartSetHash:  commit.BlockID.PartSetHeader.Hash,
-			ChainID:      chainID,
-		},
 		Candidates: allCandidates,
 		Signatures: selected,
 	}, nil
@@ -135,23 +127,10 @@ func sortSelectedSignaturesByIndex(sigs []witness.ValidatorSignature) {
 	})
 }
 
-// SharedBlockData is the subset of CanonicalVote fields identical across every
-// validator signing one block. The circuit consumes only the per-slot
-// SignedBytes, not these.
-type SharedBlockData struct {
-	Height       int64
-	Round        int64
-	BlockIDHash  []byte // 32 bytes
-	PartSetTotal uint32
-	PartSetHash  []byte // 32 bytes
-	ChainID      string
-}
-
-// ExtractorResult bundles the valid signer candidates, the selected signer
-// set, and the block fields every signer shares. Selection policy lives in the
-// relayer; this type is the shape it hands back.
+// ExtractorResult bundles the valid signer candidates and the selected signer
+// set. Selection policy lives in the relayer; this type is the shape it hands
+// back.
 type ExtractorResult struct {
-	Shared     SharedBlockData
 	Candidates []witness.ValidatorSignature
 	Signatures []witness.ValidatorSignature
 }

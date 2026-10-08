@@ -54,62 +54,6 @@ contract EncodeTest is Test {
         return bytes32(0x707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f);
     }
 
-    // ─── encodeVarint tests ───
-
-    function test_encodeVarint_zero() public pure {
-        assertEq(Encode.encodeVarint(0), hex"00");
-    }
-
-    function test_encodeVarint_one() public pure {
-        assertEq(Encode.encodeVarint(1), hex"01");
-    }
-
-    function test_encodeVarint_127() public pure {
-        assertEq(Encode.encodeVarint(127), hex"7f");
-    }
-
-    function test_encodeVarint_128() public pure {
-        assertEq(Encode.encodeVarint(128), hex"8001");
-    }
-
-    function test_encodeVarint_255() public pure {
-        assertEq(Encode.encodeVarint(255), hex"ff01");
-    }
-
-    function test_encodeVarint_256() public pure {
-        assertEq(Encode.encodeVarint(256), hex"8002");
-    }
-
-    function test_encodeVarint_300() public pure {
-        assertEq(Encode.encodeVarint(300), hex"ac02");
-    }
-
-    function test_encodeVarint_16384() public pure {
-        assertEq(Encode.encodeVarint(16_384), hex"808001");
-    }
-
-    function test_encodeVarint_1000000() public pure {
-        assertEq(Encode.encodeVarint(1_000_000), hex"c0843d");
-    }
-
-    // ─── encodeString tests ───
-
-    function test_encodeString_empty() public pure {
-        assertEq(Encode.encodeString(""), hex"00");
-    }
-
-    function test_encodeString_cosmoshub4() public pure {
-        assertEq(Encode.encodeString("cosmoshub-4"), hex"0b636f736d6f736875622d34");
-    }
-
-    function test_encodeString_testChain() public pure {
-        assertEq(Encode.encodeString("test-chain"), hex"0a746573742d636861696e");
-    }
-
-    function test_encodeString_singleChar() public pure {
-        assertEq(Encode.encodeString("a"), hex"0161");
-    }
-
     // ─── encodeValidator tests ───
     // Go reference: proto.Marshal(SimpleValidator{PubKey: &PublicKey{Ed25519: pubKey}, VotingPower: vp})
 
@@ -206,6 +150,41 @@ contract EncodeTest is Test {
 
     function test_cdcEncodeInt64_zero() public pure {
         assertEq(Encode.cdcEncodeInt64(0), hex"");
+    }
+
+    // cdcEncodeInt64(v) is tag 0x08 followed by the protobuf varint of v, so these cases also pin
+    // _varintLen/_writeVarint at every varint width boundary. Every encoder in this library shares them.
+
+    function test_cdcEncodeInt64_one() public pure {
+        assertEq(Encode.cdcEncodeInt64(1), hex"0801");
+    }
+
+    function test_cdcEncodeInt64_127() public pure {
+        assertEq(Encode.cdcEncodeInt64(127), hex"087f");
+    }
+
+    function test_cdcEncodeInt64_128() public pure {
+        assertEq(Encode.cdcEncodeInt64(128), hex"088001");
+    }
+
+    function test_cdcEncodeInt64_255() public pure {
+        assertEq(Encode.cdcEncodeInt64(255), hex"08ff01");
+    }
+
+    function test_cdcEncodeInt64_256() public pure {
+        assertEq(Encode.cdcEncodeInt64(256), hex"088002");
+    }
+
+    function test_cdcEncodeInt64_300() public pure {
+        assertEq(Encode.cdcEncodeInt64(300), hex"08ac02");
+    }
+
+    function test_cdcEncodeInt64_16384() public pure {
+        assertEq(Encode.cdcEncodeInt64(16_384), hex"08808001");
+    }
+
+    function test_cdcEncodeInt64_1000000() public pure {
+        assertEq(Encode.cdcEncodeInt64(1_000_000), hex"08c0843d");
     }
 
     function test_cdcEncodeBytes32() public pure {
@@ -376,12 +355,6 @@ contract EncodeTest is Test {
     // ─── Debug: emit encoded bytes for manual inspection ───
 
     function test_debug_printEncodings() public pure {
-        console.log("=== encodeVarint ===");
-        console.logBytes(Encode.encodeVarint(0));
-        console.logBytes(Encode.encodeVarint(128));
-        console.logBytes(Encode.encodeVarint(300));
-        console.logBytes(Encode.encodeVarint(1_000_000));
-
         console.log("=== encodeVersion ===");
         console.logBytes(Encode.encodeVersion(ISpectreTendermintMsgs.Version({ blockVersion: 11, appVersion: 0 })));
 

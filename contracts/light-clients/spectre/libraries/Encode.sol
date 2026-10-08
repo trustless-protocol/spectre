@@ -3,28 +3,11 @@
 pragma solidity ^0.8.28;
 
 import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
-import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 
 /// @dev CometBFT valid-commit-domain encoders, not a general-purpose proto3 encoder.
 /// Some helpers intentionally assume valid commit fields are populated and do not implement
 /// every zero-value omission edge case for malformed or unreachable commit data.
 library Encode {
-    function encodeVarint(uint256 value) internal pure returns (bytes memory) {
-        bytes memory out = new bytes(_varintLen(value));
-        _writeVarint(out, 0, value);
-        return out;
-    }
-
-    function encodeString(string memory value) internal pure returns (bytes memory) {
-        bytes memory valueBytes = bytes(value);
-        uint256 valueLen = valueBytes.length;
-        uint256 prefixLen = _varintLen(valueLen);
-        bytes memory out = new bytes(prefixLen + valueLen);
-        uint256 offset = _writeVarint(out, 0, valueLen);
-        _copyBytes(out, offset, valueBytes);
-        return out;
-    }
-
     /// @notice Encodes a nanosecond timestamp as a protobuf google.protobuf.Timestamp.
     /// @dev Omits fields with zero value per proto3 rules.
     function encodeTimestamp(uint128 nanos) internal pure returns (bytes memory) {

@@ -118,9 +118,6 @@ func TestExtractValidatorSignatures_ReachesQuorum(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if got.Shared.ChainID != chainID {
-		t.Fatalf("shared.ChainID=%q want %q", got.Shared.ChainID, chainID)
-	}
 	if len(got.Signatures) < 3 {
 		t.Fatalf("expected at least 3 signers, got %d", len(got.Signatures))
 	}
