@@ -393,10 +393,9 @@ contract EVMRollupIBCFlowTest is Test, DeployAccessManagerWithRoles {
         pure
         returns (ISpectreTendermintMsgs.ValidatorInfo memory)
     {
-        return
-            ISpectreTendermintMsgs.ValidatorInfo({
-                valAddress: valAddress, pubKey: pubKey, votingPower: 100, proposerPriority: 0
-            });
+        return ISpectreTendermintMsgs.ValidatorInfo({
+            valAddress: valAddress, pubKey: pubKey, votingPower: 100, proposerPriority: 0
+        });
     }
 
     function _cosmosToEVMRollupPacket(

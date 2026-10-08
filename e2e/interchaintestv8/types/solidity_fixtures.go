@@ -14,7 +14,7 @@ import (
 )
 
 type SolidityFixtureGenerator struct {
-	Enabled           bool
+	Enabled               bool
 	groth16GenesisFixture *Groth16GenesisFixture
 }
 
@@ -90,10 +90,10 @@ func (g *SolidityFixtureGenerator) generateFixture(erc20Address string, msgBz []
 	// Generate the fixture
 	fixture := GenericSolidityFixture{
 		Groth16GenesisFixture: hex.EncodeToString(genesisBz),
-		Msg:               hex.EncodeToString(msgBz),
-		Erc20Address:      erc20Address,
-		Timestamp:         time.Now().Unix(),
-		Packet:            hex.EncodeToString(packetBz),
+		Msg:                   hex.EncodeToString(msgBz),
+		Erc20Address:          erc20Address,
+		Timestamp:             time.Now().Unix(),
+		Packet:                hex.EncodeToString(packetBz),
 	}
 	return fixture, nil
 }

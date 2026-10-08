@@ -132,9 +132,9 @@ type CosmosClientUpdateBuildResult struct {
 
 // UpdateCosmosClient builds the next MsgUpdateClient for the Tendermint light
 // client on Ethereum and submits it via SendEthTx. Used by background routines
-// that want to advance the client without packets attached. handleCosmos uses
-// the split BuildCosmosClientUpdateMsg builder so it can fold updateClient
-// into the same multicall as its packet calls (issue #67 V2).
+// that want to advance the client without packets attached. The relay module uses
+// the split BuildCosmosClientUpdateMsg builder (through cosmos.Groth16Builder) so
+// it can fold updateClient into the same multicall as its packet calls.
 
 func (w *Worker) UpdateCosmosClient(stdCtx context.Context, cosmos CosmosEndpoint, evm EVMEndpoint, clientID string, fetchTimeout time.Duration, rotationThreshold, proofType string, trustedBlock int64, trustLevel string, forceRotation bool, targetHeight int64) (*relayerclient.LightBlock, error) {
 	deps := cosmosClientDeps{cosmos: cosmos, evm: evm, fetchTimeout: fetchTimeout, rotationThreshold: rotationThreshold}
@@ -365,7 +365,7 @@ type hopProbeResult struct {
 // (discriminated by Kind into application-state vs consensus-state update)
 // WITHOUT submitting it. Callers either pass the result to SendEthTx directly
 // (UpdateCosmosClient/RefreshCosmosClient) or fold it into a multicall alongside
-// packet calls (handleCosmos / V2).
+// packet calls (cosmos.Groth16Builder / relay.Module).
 //
 // forceRotation=true (the refresh-routine cadence path) always upgrades to
 // ConsensusUpdate, even when the target nextValidatorsHash equals the pinned

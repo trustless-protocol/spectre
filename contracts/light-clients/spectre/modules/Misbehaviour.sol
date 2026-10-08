@@ -59,8 +59,9 @@ contract Misbehaviour is IMisbehaviour {
             trustingPeriod: clientState.trustingPeriod,
             clockDrift: clientState.clockDrift
         });
-        ISpectreTendermintMsgs.ChainId memory chainId =
-            ISpectreTendermintMsgs.ChainId({ id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber });
+        ISpectreTendermintMsgs.ChainId memory chainId = ISpectreTendermintMsgs.ChainId({
+            id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber
+        });
 
         _verifyMisbehaviourHeader(
             misbehaviour_.header1, chainId, options, msg_.trustedConsensusState1.timestamp, msg_.time

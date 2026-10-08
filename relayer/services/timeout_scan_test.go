@@ -690,8 +690,9 @@ func TestScanForEVMTimeouts(t *testing.T) {
 //     DestinationClient="cosmoshub-1" (ETH's client identifying Cosmos).
 //   - For an ETH→Cosmos packet, it's mirrored: source=cosmoshub-1, dest=08-wasm-0.
 //
-// `CosmosRouterClientID` in the relayer config is the ETH-side router's name
-// for this Cosmos chain ("cosmoshub-1"), so the correct field to compare is
+// The router client ID (`ics26_client_id` in the cosmos_to_eth module config; the
+// cosmosRouterClientID field below) is the ETH-side router's name for this
+// Cosmos chain ("cosmoshub-1"), so the correct field to compare is
 // `DestinationClient`. The old comparison silently inverted both branches.
 func TestShouldRelayCosmosTimeoutToEth(t *testing.T) {
 	tests := []struct {

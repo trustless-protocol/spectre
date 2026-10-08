@@ -8,9 +8,9 @@ import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
 import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 
 /// @title EncodeWrapper
-/// @notice Wrapper with primitive parameters for cross-validation via cast call.
-///         Used by Go test (operator/cmd/encode_debug/cross_test.go) to call
-///         Solidity encoding functions and compare output with Go proto.Marshal().
+/// @notice Wrapper with primitive parameters so the Encode library functions can be called through
+///         `cast call` and compared with Go proto.Marshal() output. Nothing in this repository
+///         calls it today: the Go side of that comparison is tracked as SUP-06 in #288.
 contract EncodeWrapper {
     function encodeVersion(uint64 blockVersion, uint64 appVersion) external pure returns (bytes memory) {
         return Encode.encodeVersion(ISpectreTendermintMsgs.Version(blockVersion, appVersion));
@@ -25,7 +25,9 @@ contract EncodeWrapper {
     }
 
     function encodeBlockId(bytes32 hashData, uint32 pshTotal, bytes32 pshHash) external pure returns (bytes memory) {
-        return Encode.encodeBlockId(ISpectreTendermintMsgs.BlockId(hashData, ISpectreTendermintMsgs.PartSetHeader(pshTotal, pshHash)));
+        return Encode.encodeBlockId(
+            ISpectreTendermintMsgs.BlockId(hashData, ISpectreTendermintMsgs.PartSetHeader(pshTotal, pshHash))
+        );
     }
 
     function cdcEncodeString(string calldata value) external pure returns (bytes memory) {
@@ -60,12 +62,16 @@ contract EncodeWrapper {
     {
         ISpectreTendermintMsgs.CommitSig[] memory sigs = new ISpectreTendermintMsgs.CommitSig[](1);
         // Canonical-vote encoding does not cover validatorAddress.
-        sigs[0] = ISpectreTendermintMsgs.CommitSig({ flag: ISpectreTendermintMsgs.CommitSigFlag(flag), validatorAddress: bytes20(0) });
+        sigs[0] = ISpectreTendermintMsgs.CommitSig({
+            flag: ISpectreTendermintMsgs.CommitSigFlag(flag), validatorAddress: bytes20(0)
+        });
 
         ISpectreTendermintMsgs.BlockCommit memory commit = ISpectreTendermintMsgs.BlockCommit({
             height: height,
             round: round,
-            blockId: ISpectreTendermintMsgs.BlockId(blockIdHash, ISpectreTendermintMsgs.PartSetHeader(pshTotal, pshHash)),
+            blockId: ISpectreTendermintMsgs.BlockId(
+                blockIdHash, ISpectreTendermintMsgs.PartSetHeader(pshTotal, pshHash)
+            ),
             commitSigs: sigs
         });
 

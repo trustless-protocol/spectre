@@ -21,7 +21,7 @@ const (
 // submitAndAwaitProof drives the async prover API from a synchronous relay
 // step: submit, then poll GetProof on the relayer's cadence until the job
 // finishes or ctx expires. Retry policy lives here — the prover never
-// retries — and follows the settled error table (02-Prover §3 / 03 C1):
+// retries — and follows this error table:
 //
 //	ErrInvalidInput      → permanent: same input fails the same way
 //	ErrQueueFull         → backoff and resubmit

@@ -21,7 +21,7 @@ import (
 //
 // This test closes that by pinning vectors both sides can evaluate: Go writes
 // the inputs and the digest it computes, and the Foundry test
-// (test/solidity-ibc/SignatureVerifierHashEquivalenceTest.t.sol) reads the same
+// (test/light-clients/spectre/SignatureVerifierHashEquivalenceTest.t.sol) reads the same
 // file and asserts _hashWitness reproduces the digest.
 //
 // Run with -update to regenerate after an intentional layout change. Keeping the

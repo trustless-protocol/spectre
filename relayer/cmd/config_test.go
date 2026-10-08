@@ -10,10 +10,10 @@ import (
 	"testing"
 )
 
-// One relayer process serves exactly one source → destination pair (03-Relayer
-// §2.1 requirement 5). Before this guard, `start` looped over every configured
-// module and ran them in one process, which is what made a shared nonce cache and
-// a shared error path necessary in the first place. A7 moved the guard to parse
+// One relayer process serves exactly one source → destination pair. Before this
+// guard, `start` looped over every configured module and ran them in one process,
+// which is what made a shared nonce cache and a shared error path necessary in
+// the first place. A7 moved the guard to parse
 // time: loadConfig takes a census of the modules and refuses a second path
 // before any module is parsed in full, so nothing downstream ever holds a list.
 //

@@ -155,9 +155,9 @@ var failureCatalog = []failureRow{
 	},
 	{
 		Stage: "build update", Point: "the prover reports one of its six job states",
-		Class: classTransient, // five of six; failed{internal} is permanent -- see 3.9
-		Doing: "classify per the prover error table in C1; the relayer decides retries, the prover never does",
-		Owed:  "the async SubmitProof/GetProof API is not wired yet (design 3.9); blocked on 02-Prover",
+		Class: classTransient, // five of six; failed{internal} is permanent -- see the table on submitAndAwaitProof
+		Doing: "classify per the error table on submitAndAwaitProof (relayer/services/proofclient.go); the relayer decides retries, the prover never does",
+		Test:  "TestSubmitAndAwaitProof_RetryTable",
 	},
 
 	// ---- submitting the client update -----------------------------------------
@@ -313,7 +313,7 @@ var failureCatalog = []failureRow{
 		Stage: "shutdown", Point: "the drain exceeds its bound",
 		Class: classPermanent,
 		Doing: "exit non-zero and name the worker that did not stop",
-		Owed:  "the bounded drain is slice A5, not on main yet",
+		Test:  "TestRun_ReportsASourceThatCouldNotStopItsOwnWorkers",
 	},
 }
 

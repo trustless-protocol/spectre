@@ -315,7 +315,7 @@ Run these before trusting a deployment — each must leave the feed
 The fastest way to see real verdicts (minutes, no mainnet sync):
 
 ```bash
-./scripts/local/run_op_stack.sh          # full local OP Stack via Kurtosis:
+./scripts/local/run_optimism_node.sh     # full local OP Stack via Kurtosis:
                                          # L1 + sequencer + replica + proposer
                                          # posting real dispute games every 60s
 source .op-devnet-run/attestor.env

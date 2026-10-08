@@ -33,10 +33,9 @@ type L2TimeoutRecovery struct {
 	BuildNonMembershipProof func(context.Context, channeltypesv2.Packet, uint64) ([]byte, error)
 }
 
-// This file exposes the timeout-recovery surface (previously driven internally by
-// the now-removed StartLoop) so the chain-adapter relay path (package relay) can
-// reuse it verbatim instead of reimplementing the (subtle) scanners and
-// pending-tracker bookkeeping. These are thin wrappers over the unexported
+// This file exposes the timeout-recovery surface so the chain-adapter relay path
+// (package relay) can reuse the (subtle) scanners and pending-tracker bookkeeping
+// instead of reimplementing them. These are thin wrappers over the unexported
 // originals — no logic is duplicated.
 
 // ScanCosmosTimeouts detects Cosmos-origin packets that expired on ETH without a
@@ -135,8 +134,8 @@ func (s *Services) CosmosConfig() Config { return s.cosmosConfig }
 
 // RotatePinnedSet force-rotates the on-chain SpectreClient's pinned
 // validator set (RefreshCosmosClient with forceRotation=true), regardless of how
-// much overlap remains. This is the guaranteed rotation the legacy
-// StartLoop routine ran on a fixed cadence: the per-packet and expiry-driven
+// much overlap remains. This is the guaranteed rotation, run on a fixed cadence
+// by relay.WithPeriodicUpdate: the per-packet and expiry-driven
 // refresh paths only rotate when overlap has already decayed to the threshold, so
 // during a quiet period (no packet traffic) the pinned set could otherwise decay
 // below the 2/3 quorum needed to update OR rotate the client — bricking it. This

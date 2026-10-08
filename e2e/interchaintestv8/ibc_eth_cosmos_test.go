@@ -69,13 +69,13 @@ type EthCosmosTestSuite struct {
 	// The private key of the faucet account of interchaintest
 	deployer *ecdsa.PrivateKey
 
-	contractAddresses   ethereum.DeployedContracts
-	groth16Ics07Address ethcommon.Address
+	contractAddresses    ethereum.DeployedContracts
+	spectreClientAddress ethcommon.Address
 
-	groth16Ics07Contract *spectreclient.Contract
-	ics26Contract        *ics26router.Contract
-	ics20Contract        *ics20transfer.Contract
-	erc20Contract        *erc20.Contract
+	spectreClientContract *spectreclient.Contract
+	ics26Contract         *ics26router.Contract
+	ics20Contract         *ics20transfer.Contract
+	erc20Contract         *erc20.Contract
 
 	RelayerClient relayertypes.RelayerServiceClient
 
@@ -182,7 +182,7 @@ func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 		s.Require().NotEmpty(checksumHex)
 	}))
 
-	// Compute the ICS07 address that will be deployed by create-clients.
+	// Compute the SpectreClient address that will be deployed by create-clients.
 	// The relayer binary signs with ETH_PRIVATE_KEY which is set to s.deployer (see
 	// the env setup above) — using EthRelayerSubmitter's nonce here would mispredict
 	// the address and the subsequent equality check in "Add Cosmos light client" fails.
@@ -193,9 +193,9 @@ func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 		preNonce, err = eth.RPCClient.PendingNonceAt(ctx, ethRelayerAddr)
 		s.Require().NoError(err)
 	}))
-	s.groth16Ics07Address = crypto.CreateAddress(ethRelayerAddr, preNonce)
+	s.spectreClientAddress = crypto.CreateAddress(ethRelayerAddr, preNonce)
 
-	s.Require().True(s.Run("Generate relayer config (pre-ICS07)", func() {
+	s.Require().True(s.Run("Generate relayer config (pre-SpectreClient)", func() {
 		beaconAPI := ""
 		if eth.BeaconAPIClient != nil {
 			beaconAPI = eth.BeaconAPIClient.GetBeaconAPIURL()
@@ -231,7 +231,7 @@ func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 		os.Remove(testvalues.RelayerConfigFilePath)
 	})
 
-	// Run create-clients: deploys ICS07 on ETH (and creates wasm ETH client on Cosmos for PoS mode)
+	// Run create-clients: deploys SpectreClient on ETH (and creates wasm ETH client on Cosmos for PoS mode)
 	s.Require().True(s.Run("Create light clients", func() {
 		args := []string{"--trust-level", "1/3"}
 		// Pass wasm checksum only for PoS mode (beacon URL required by relayer)
@@ -242,11 +242,11 @@ func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 		s.Require().NoError(err)
 	}))
 
-	// The relayer's create-clients deploys ICS07, but AddClient may fail (wrong signer role).
+	// The relayer's create-clients deploys SpectreClient, but AddClient may fail (wrong signer role).
 	// Call AddClient from the deployer who has ID_CUSTOMIZER_ROLE.
 	s.Require().True(s.Run("Add Cosmos light client to ICS26Router", func() {
 		var err error
-		s.groth16Ics07Contract, err = spectreclient.NewContract(s.groth16Ics07Address, eth.RPCClient)
+		s.spectreClientContract, err = spectreclient.NewContract(s.spectreClientAddress, eth.RPCClient)
 		s.Require().NoError(err)
 
 		counterpartyInfo := ics26router.IICS02ClientMsgsCounterpartyInfo{
@@ -254,12 +254,12 @@ func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 			MerklePrefix: [][]byte{[]byte(ibcexported.StoreKey), []byte("")},
 		}
 		// Try AddClient; if client already exists (relayer succeeded), this is a no-op error we can ignore
-		tx, err := s.ics26Contract.AddClient(s.GetTransactOpts(s.deployer, eth), testvalues.CustomClientID, counterpartyInfo, s.groth16Ics07Address)
+		tx, err := s.ics26Contract.AddClient(s.GetTransactOpts(s.deployer, eth), testvalues.CustomClientID, counterpartyInfo, s.spectreClientAddress)
 		if err != nil {
 			// Check if client already registered (relayer may have succeeded with AddClient)
 			existingAddr, queryErr := s.ics26Contract.GetClient(nil, testvalues.CustomClientID)
 			s.Require().NoError(queryErr, "AddClient failed and GetClient also failed: %v", err)
-			s.Require().Equal(s.groth16Ics07Address, existingAddr, "AddClient failed but client registered at wrong address")
+			s.Require().Equal(s.spectreClientAddress, existingAddr, "AddClient failed but client registered at wrong address")
 		} else {
 			receipt, err := eth.GetTxReciept(ctx, tx.Hash())
 			s.Require().NoError(err)
@@ -324,7 +324,7 @@ func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 		}))
 	}
 
-	// Regenerate config with ICS07 address so the relay loop can use it
+	// Regenerate config with the SpectreClient address so the relay loop can use it
 	var relayerProcess *os.Process
 	s.Require().True(s.Run("Start relay loop", func() {
 		beaconAPI := ""
@@ -343,7 +343,7 @@ func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 				BeaconAPI:          beaconAPI,
 				SignerAddress:      s.SimdRelayerSubmitter.FormattedAddress(),
 				MockWasmClient:     os.Getenv(testvalues.EnvKeyEthTestnetType) == testvalues.EthTestnetTypePoW,
-				SpectreClient:      s.groth16Ics07Address.Hex(),
+				SpectreClient:      s.spectreClientAddress.Hex(),
 				SignatureVerifier:  s.contractAddresses.SignatureVerifier,
 				Membership:         s.contractAddresses.Membership,
 				Misbehaviour:       s.contractAddresses.Misbehaviour,
@@ -376,12 +376,13 @@ func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 			s.T().Skip("Skipping solidity fixture generation")
 		}
 
-		clientStateBz, err := s.groth16Ics07Contract.GetClientState(nil)
+		clientStateBz, err := s.spectreClientContract.GetClientState(nil)
 		s.Require().NoError(err)
-		// The Groth16 ICS07 contract ABI exposes neither the program vkeys nor a
-		// consensus-state-hash getter (the consensus hash mapping is private), so
-		// these genesis-fixture fields are left zero. Genesis fixture generation is
-		// a dev-only path (skipped in CI via the Enabled guard above).
+		// SpectreClient has no program verification keys (its Groth16 verifying keys are
+		// constants in the per-bucket verifier contracts), so the vkey fields of the
+		// genesis fixture stay zero, as does the consensus-state hash (SpectreClient
+		// has a getConsensusStateHash getter, but this path does not read it). Genesis
+		// fixture generation is a dev-only path (skipped in CI via the Enabled guard above).
 		var consensusStateHash, updateClientVkey, membershipVkey, ucAndMembershipVkey, misbehaviourVkey [32]byte
 		s.solidityFixtureGenerator.SetGenesisFixture(
 			clientStateBz, consensusStateHash, updateClientVkey,
@@ -403,7 +404,7 @@ func (s *EthCosmosTestSuite) DeployTest(ctx context.Context, proofType types.Sup
 	_, simd := s.EthChain, s.CosmosChains[0] // eth used only by the removed gRPC Info blocks
 
 	s.Require().True(s.Run("Verify Groth16 Client", func() {
-		clientState, err := getGroth16ClientState(s.groth16Ics07Contract)
+		clientState, err := getGroth16ClientState(s.spectreClientContract)
 		s.Require().NoError(err)
 
 		stakingParams, err := simd.StakingQueryParams(ctx)
@@ -422,7 +423,7 @@ func (s *EthCosmosTestSuite) DeployTest(ctx context.Context, proofType types.Sup
 	s.Require().True(s.Run("Verify ICS02 Client", func() {
 		clientAddress, err := s.ics26Contract.GetClient(nil, testvalues.CustomClientID)
 		s.Require().NoError(err)
-		s.Require().Equal(s.groth16Ics07Address, clientAddress)
+		s.Require().Equal(s.spectreClientAddress, clientAddress)
 
 		counterpartyInfo, err := s.ics26Contract.GetCounterparty(nil, testvalues.CustomClientID)
 		s.Require().NoError(err)
@@ -498,9 +499,10 @@ func autoRelayTimeoutPacketTimeout(numOfTransfers int) time.Duration {
 	const relayBatchSize = 5
 	batches := (numOfTransfers + relayBatchSize - 1) / relayBatchSize
 
-	// Timeout proofs can sit behind beacon finality. The relayer itself allows
-	// up to 10 minutes in waitBeaconFinality, then still needs scanner ticks,
-	// proof construction, and per-batch transaction submission.
+	// Timeout proofs can sit behind beacon finality: the relayer re-queues a packet
+	// until its block is finalized, then still needs scanner ticks, proof
+	// construction, and per-batch transaction submission. The base below is this
+	// test's own budget for that.
 	return 12*time.Minute + time.Duration(batches)*2*time.Minute
 }
 

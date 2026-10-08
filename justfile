@@ -268,7 +268,7 @@ test-e2e-eth-cosmos testname:
 	@echo "Running {{testname}} test..."
 	just test-e2e TestWithEthCosmosTestSuite/{{testname}}
 
-# Run any e2e test in the RelayerTestSuite. For example, `just test-e2e-relayer Test_RelayerInfo`
+# Run any e2e test in the RelayerTestSuite. For example, `just test-e2e-relayer Test_5_RecvPacketToEth`
 [group('test')]
 test-e2e-relayer testname:
 	@echo "Running {{testname}} test..."

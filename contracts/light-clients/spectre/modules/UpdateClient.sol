@@ -20,7 +20,7 @@ import { ChainId } from "contracts/light-clients/spectre/libraries/ChainId.sol";
 contract UpdateClient is IUpdateClient {
     using SpectreStore for SpectreStore.Store;
 
-    /// @notice The Groth16 signature verifier (lives "inside" UpdateClient per the spec).
+    /// @notice The signature verifier this module forwards the batched Groth16 proof to.
     ISignatureVerifier internal immutable SIGNATURE_VERIFIER;
     /// @notice This module's own address, used to reject direct (non-delegatecall) invocation.
     address private immutable SELF;
@@ -45,8 +45,9 @@ contract UpdateClient is IUpdateClient {
         SpectreStore.Store storage $ = SpectreStore.load();
         ISpectreTendermintMsgs.ClientState storage clientState = $.clientState;
 
-        ISpectreTendermintMsgs.ChainId memory chainId =
-            ISpectreTendermintMsgs.ChainId({ id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber });
+        ISpectreTendermintMsgs.ChainId memory chainId = ISpectreTendermintMsgs.ChainId({
+            id: clientState.chainId, revisionNumber: clientState.latestHeight.revisionNumber
+        });
         // NOTE (LC-05): `trustThreshold` is threaded through `options` into `_verifyHeader` /
         // `_verifyAgainstTrusted` below but is never actually read there — the real quorum
         // threshold is hardcoded `>2/3` in `SpectreClient._verifyQuorum`. Currently

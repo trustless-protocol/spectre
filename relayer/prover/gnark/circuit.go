@@ -66,7 +66,7 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	}
 
 	// 1. Hash all witness bytes and bind to the public commitment.
-	//    Layout (must match hash_witness.go and SignatureVerifier._hashWitness):
+	//    Layout (must match witness/witness.go and SignatureVerifier._hashWitness):
 	//      PrefixHead(11) || roundPresent(1) || BlockHash(32) || per slot: active(1) || A(32)
 	//    Binding A protects the on-chain quorum lookup — Solidity matches
 	//    pubkeys[i] against the validator set to attribute voting power, so

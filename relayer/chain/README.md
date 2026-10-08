@@ -98,12 +98,8 @@ resolve to one — but the branch calls the constructor rather than looking up a
 factory. Adding a chain means adding a package under `chain/` and one branch in
 `cmd/`; `relay/` does not change, which is the property that matters.
 
-A registry (`RegisterSource` / `RegisterDestination` /
-`RegisterBuilder` / `UnknownAdapterError`) was built for this and
-never wired to anything: no caller, no writer, no reader, at any link in the
-chain. Both shapes satisfy the requirement, so the one that was actually running
-stayed and the other was deleted rather than left as a second way to do the same
-thing. Constructors also take the shared `services` context and worker, which a
+Adapters are built by direct constructor calls rather than through a registry of
+factories: constructors take the shared `services` context and worker, which a
 cfg-only factory could not.
 
 ## Principle: wrap, don't rewrite
@@ -143,8 +139,7 @@ Two related hooks carry the confirmation policy:
   now*, ≤ `LatestHeight`, encoding each chain's state-availability lag (Cosmos:
   `latest-2` for the AppHash H+2 lag; ETH: the finalized execution block). The
   module uses it as the cheap precondition so it never burns a proof for a packet
-  that isn't yet provable (replaces the legacy blocking `waitCosmosAppHash` /
-  `waitBeaconFinality`).
+  that isn't yet provable.
 
 ⚠️ **Confirmation policy trades safety for latency.** Proving at the unsafe head
 exposes the bridge to L2 reorgs / sequencer equivocation (a released packet on
@@ -160,16 +155,27 @@ check is enforced; cross-tier key separation across an operator's whole fleet
 is not currently checked by the relayer config loader (see `docs/L2_CLIENTS.md`)
 — it's an operational requirement today, not yet a validated one.
 
-## Reliability behaviors ported from the legacy `StartLoop`
+## Reliability behaviors
 
-The generic module reproduces every reliability property of the monolithic
-`services.StartLoop`, so the cutover is behavior-preserving:
+The generic module provides these reliability properties:
 
-- **Requeue transient / drop permanent** — see the error table above. There is no
-  dead-letter queue or retry budget (removed at cutover): a permanent packet is
-  dropped and the timeout scanner refunds it. Because a multicall is atomic, a
+- **Requeue transient / drop permanent** — see the error table above. The relay
+  path has no retry budget and no dead-letter set: a packet whose own transaction
+  deterministically reverts is dropped (logged as `DROP packet … (permanent)`), and
+  the timeout scanner refunds it if it expires. Because a multicall is atomic, a
   permanent BATCH failure retries each packet individually (`relayIsolated`), so a
-  poison packet drops alone while its valid siblings still relay.
+  poison packet drops alone while its valid siblings still relay. Two cases are
+  never dropped: a destination client that is not active holds the direction and
+  keeps the packets queued, and an unresolved EVM nonce leaves them in the pending
+  tracker to settle on their acknowledgement or time out.
+- **Timeout submission has a retry budget and a dead-letter set**
+  (`services/pending.go`, `services/timeout_retry.go`). Only a deterministic revert is
+  charged; RPC, broadcast and proof-endpoint failures are deferred with backoff and
+  never charged. After `maxTimeoutAttempts` (8) charged failures the packet moves to
+  the dead-letter set. It is kept, not dropped, because its funds are still escrowed:
+  the relayer logs `[ATTENTION] … exhausted timeout attempts`, `relayer status` lists
+  it, and `relayer status reactivate` returns it to the scan set with a fresh budget
+  (the running relayer must have `status_allow_control` enabled).
 - **Timeout recovery** — `WithPacketTracker` records every send and untracks it once
   the relay succeeds (a delivered packet can no longer time out); `WithTimeoutScanner`
   runs the existing `ScanCosmosTimeouts` / `ScanEthTimeouts` on a ticker, refunding
@@ -223,22 +229,18 @@ match the requested L2 height and confirmation policy.
 
 ## Status
 
-- **Contract** (`chain.go`, `errors.go`) + **Cosmos↔ETH adapters**
-  (`cosmos/`, `evm/`, `codec/`) + **generic `relay.Module`** + **`cmd` cutover**
-  (`runAdapterEngine` replaces `svc.StartLoop` as the `start` engine): **done**.
-  Both directions (Cosmos→ETH groth16, ETH→Cosmos beacon) relay via adapters,
-  validated end-to-end on the local devnet.
-- The legacy `services.StartLoop` + `handleCosmos`/`handleEth` have been removed;
-  `runAdapterEngine` is the sole `start` engine.
+- **Contract** (`chain.go`, `errors.go`), the **Cosmos↔ETH adapters**
+  (`cosmos/`, `evm/`, `codec/`), the generic **`relay.Module`** and the `cmd`
+  wiring are in place: `runAdapterEngine` is the sole `start` engine. Both
+  directions (Cosmos→ETH groth16, ETH→Cosmos beacon) relay via adapters.
 - **L2 adapters** (`l2rollup/`): implemented — attestor-signed header assembly
   (`header_attested.go`), event listener with gap-recovery (`subscribe.go`),
   storage/account proof assembly (`source.go`), and Cosmos destination
   submission (`destination.go`). See the L2 section above and
   `docs/L2_CLIENTS.md`.
-- The former shared god-object has been removed. The command layer assembles
-  `services.RelayDeps`, while adapters and transaction handlers receive only the
-  scoped `CosmosEndpoint`, `EVMEndpoint`, `ClientIDs`, and config values they
-  consume.
+- The command layer assembles `services.RelayDeps`, while adapters and transaction
+  handlers receive only the scoped `CosmosEndpoint`, `EVMEndpoint`, `ClientIDs`,
+  and config values they consume.
 
 **One process serves exactly one source → destination pair**
 (`rejectExtraRelayPaths`, `cmd/config.go`) — a config declaring more than one

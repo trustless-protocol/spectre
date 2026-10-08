@@ -35,7 +35,7 @@ func soundnessVote(blockHash [32]byte) []byte {
 // malicious prover would not do — so the tests below need this to keep the public
 // Hash input consistent with the tampered witness.
 //
-// Layout (hash_witness.go): PrefixHead(11) || roundPresent(1) || BlockHash(32)
+// Layout (witness/witness.go): PrefixHead(11) || roundPresent(1) || BlockHash(32)
 // || per slot: active(1) || A(32).
 func witnessHashFor(
 	prefixHead [witness.PrefixHeadLen]byte,

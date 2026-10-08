@@ -20,11 +20,11 @@ import { Encode } from "contracts/light-clients/spectre/libraries/Encode.sol";
 ///         both the witness commitment (fewer circuit constraints) and calldata
 ///         (no per-slot timestamps).
 ///
-///         The in-circuit hash (see prover/hash_witness.go) reproduces the same
-///         byte layout; any drift between this file, hash_witness.go, and
+///         The in-circuit hash (see relayer/prover/witness/witness.go) reproduces the same
+///         byte layout; any drift between this file, witness.go, and
 ///         BatchCircuit.Define() fails the proof's public-input assertion.
 contract SignatureVerifier is ISignatureVerifier {
-    /// Witness byte layout (must match prover/hash_witness.go::encodeWitnessBytes
+    /// Witness byte layout (must match relayer/prover/witness/witness.go::encodeWitnessBytes
     /// and BatchCircuit.Define exactly):
     ///   PrefixHead(11) || roundPresent(1) || BlockHash(32)
     ///   || per slot: active(1) || A(32)
@@ -108,7 +108,7 @@ contract SignatureVerifier is ISignatureVerifier {
     }
 
     /// @dev Canonical witness byte layout — must match Go's
-    ///      prover.ComputeWitnessHash and BatchCircuit.Define exactly:
+    ///      witness.ComputeWitnessHash and BatchCircuit.Define exactly:
     ///        PrefixHead(11) || roundPresent(1) || BlockHash(32)
     ///        || per slot: active(1) || A(32)
     ///      PrefixHead = Type(0x08 0x02) || Height(0x11 || sfixed64(height)) — the

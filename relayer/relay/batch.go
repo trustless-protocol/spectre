@@ -102,8 +102,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// above it (its source state not yet available — Cosmos AppHash H+2 lag, or ETH
 	// beacon finality lag) is re-queued WITHOUT any client update or proof, so the
 	// module does not burn an expensive Groth16 proof / beacon build every flush
-	// while waiting. This replaces the legacy blocking waitCosmosAppHash /
-	// waitBeaconFinality with a non-blocking value check.
+	// while waiting.
 	//
 	// Held off while the source is in permanent failure. The events are already
 	// TRACKED above, so a packet queued during the hold still gets its timeout
@@ -204,8 +203,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	}
 
 	// Build proofs per packet. A proof-build failure is transient and per-packet:
-	// re-queue just that event and keep the rest in the multicall (mirrors the
-	// planCosmosPacketMsgs transient-failure routing).
+	// re-queue just that event and keep the rest in the multicall.
 	packets := make([]chain.RelayPacket, 0, len(provable))
 	relayedIdx := make([]int, 0, len(provable)) // original event index behind packets[j]
 	for j, e := range provable {

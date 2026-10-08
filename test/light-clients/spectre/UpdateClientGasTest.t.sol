@@ -12,10 +12,10 @@ import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages
 import { IICS02ClientMsgs } from "contracts/core/messages/IICS02ClientMsgs.sol";
 import { ILightClientMsgs } from "contracts/light-clients/messages/ILightClientMsgs.sol";
 
-/// @dev Stub bucket verifier — always returns true so gas measurement excludes
-///      only the ~250K-gas BN254 pairing cost. Everything else (real
-///      `UPDATE_CLIENT.updateClient`, `_verifyBatchAndQuorum`, `_hashWitness`,
-///      `_voteSignBytes`) runs unmodified.
+/// @dev Stub bucket verifier — always returns true so the gas measurement excludes only
+///      the cost of the real Groth16 verification. Everything else (the real
+///      `SpectreClient.updateApplicationState`, `SpectreClient._verifyPinnedQuorum`,
+///      `UpdateClient.verifyHeader` and `SignatureVerifier._hashWitness`) runs unmodified.
 contract AlwaysTrueVerifier {
     function verifyProof(bytes calldata, uint256[2] calldata) external pure returns (bool) {
         return true;
@@ -27,11 +27,10 @@ contract AlwaysTrueVerifier {
 ///         header field, header merkle root matches commit.blockId.hashData,
 ///         commitSigs cover the validator set) so the real `UpdateClient.verifyHeader`
 ///         path executes end-to-end. Only the per-bucket Groth16 verifier is
-///         stubbed — adding ~372K to each measured number recovers prod gas.
+///         stubbed, so each measured number excludes the real Groth16 verification
+///         cost; add that cost, measured separately, to estimate production gas.
 ///
 ///         Run:    forge test --match-contract UpdateClientGasTest -vv
-///         Prod:   real updateClient ≈ measured + ~372K Groth16 verify, which is
-///                 bucket-independent (e.g. n=16 ≈ 245K + ~372K ≈ 617K).
 ///
 ///         === Topology (bench-matched) ===
 ///         For each bucket, validator set + active count just clear the 2/3

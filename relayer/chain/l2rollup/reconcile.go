@@ -40,9 +40,9 @@ const reconcileTimeout = 10 * time.Second
 // underneath us, so they need re-checking; doing it every poll tick would issue
 // two ABCI queries per pending packet every few seconds for no gain.
 //
-// NOTE for B2: this is a third fixed interval of the same shape as
-// ethGapRecoveryInterval and cosmosGapRecoveryInterval (subscriber/event.go).
-// When those are derived from measured block time, derive this one with them.
+// NOTE for B2: unlike the subscribers' gap-recovery tick (recoveryTick in
+// relayer/subscriber/blockrate.go, which is derived from the measured block
+// time), this interval is fixed. Derive it the same way.
 var l2ReconcileInterval = 30 * time.Second
 
 // NewCosmosPacketState reads packet state straight from a Cosmos RPC endpoint.
@@ -142,7 +142,7 @@ func (s *Source) alreadyHandled(ctx context.Context, eventType chain.EventType, 
 		// NOTE for B5, which adds TimeoutPacket to the L2 scan: it lands here and
 		// is relayed unreconciled until it gets a branch. The ETH mirror's is
 		// shouldEnqueueRecoveredCosmosPacket's CosmosTimeout case
-		// (subscriber/event.go) -- a timeout is settled by the SOURCE commitment
+		// (relayer/subscriber/cosmos.go) -- a timeout is settled by the SOURCE commitment
 		// being gone, the same direction as the ack branch above.
 		return false, nil
 	}

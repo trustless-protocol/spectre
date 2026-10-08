@@ -74,7 +74,7 @@ func DialCosmosRPC(remote, wsEndpoint string, timeout time.Duration) (*rpchttp.H
 //
 // Both are silent losses: neither closes the Go channel the subscriber selects
 // on, so without this adapter a subscription can stop delivering and leave no
-// trace in any log. See cosmosLiveEventBuffer in subscriber/event.go for the
+// trace in any log. See cosmosLiveEventBuffer in relayer/subscriber/subscriber.go for the
 // drop, and the resubscribe path for the other.
 //
 // Scope note: rpchttp builds its inner WSClient before SetLogger can reach it

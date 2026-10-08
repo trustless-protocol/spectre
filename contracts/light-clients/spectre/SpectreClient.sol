@@ -55,7 +55,7 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     ///      becomes permanently uncallable if this client ever freezes while in that mode — the
     ///      only recovery path is migrating the router to a replacement client. Production
     ///      deployments must pass a real `roleManager` (the relayer defaults it to the router,
-    ///      see `relayer/transaction/handler.go`). This is documented, not a bug.
+    ///      see `effectiveRoleManager` in `relayer/cmd/build_source.go`). This is documented, not a bug.
     constructor(
         address updateClientModule,
         address membershipModule,

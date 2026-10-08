@@ -51,8 +51,7 @@ policy explicitly. Keep `attestation_head` consistent with the relayer's Nitro
 `head_kind`; it is a separate L2 policy, not the L1 ingest selector.
 
 Compare the successful ingest head, finalized cursor and assertion-backed
-frontier under each mode. Historical latency figures from issue #314 are not
-a current performance guarantee. The full unfinalized window is reread every
+frontier under each mode. The full unfinalized window is reread every
 poll, so a finality stall can increase RPC load. Unsupported tags/hash reads
 cause retries, never fallback to another ingest head.
 

@@ -502,7 +502,8 @@ fail against the client or relayer configuration.
 | `eth_rpc_url` | `cosmos-to-op` | your L2 HTTP endpoint |
 | `eth_ws_url` | `cosmos-to-op` | your L2 WebSocket endpoint; optional, the relayer skips the WS client when empty |
 | `l2_rpc_url` | `op-to-cosmos` | the same L2 HTTP endpoint (step 4 overwrites it with `L2_RPC` anyway) |
-| `attestor_addr` | `op-to-cosmos` | `127.0.0.1:$GRPC_PORT` from step 1; the example ships `127.0.0.1:3001`, which matches the script default |
+| `attestor_endpoints[0].address` | `op-to-cosmos` | `127.0.0.1:$GRPC_PORT` from step 1; the example ships `127.0.0.1:3001`, which matches the script default. The list takes one `{address, attestor_index}` entry per attestor daemon, and the config is rejected when it has fewer entries than `attestors.threshold` |
+| `attestor_endpoints[0].attestor_index` | `op-to-cosmos` | the position of that attestor's key in `attestors.public_keys` (`0` for the single local attestor). Each index may appear once and must lie inside the key list |
 | `attestor_src_chain` | `op-to-cosmos` | the `SRC_CHAIN` you passed in step 1 (`op-sepolia`) — must match, or `AttestedUpTo` answers for another chain |
 | `head_kind` | `op-to-cosmos` | the same choice as `ATTESTATION_HEAD` in step 1. `start` asks each attestor's `Info` for the head it gates on and refuses to boot when the two differ — the attestor signs only its configured head, so a mismatch relays nothing |
 | `rollup_profile.common.l2_chain_id` | `op-to-cosmos` | `eth_chainId` on your L2 (`11155420` on OP Sepolia). `start` verifies this against the RPC and refuses to boot on a mismatch |
@@ -589,7 +590,7 @@ L2_DEPLOYER_PRIVATE_KEY=bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214
 # It patches the cosmos_to_l2 module whose dst_chain is arbitrum.
 
 # 5. Clients. Cosmos side first, one invocation per kind, then the L2 side
-#    (SpectreClient deployed + addClient'd). The Arbitrum client no longer anchors to
+#    (SpectreClient deployed + addClient'd). The Arbitrum client does not anchor to
 #    an Ethereum client, so create it on its own:
 cd relayer
 ./relayer create-clients-cosmos --config config.json --l2-config <arb-l2-config.json>
@@ -607,9 +608,9 @@ cd relayer
 
 Copy `relayer/arb-l2-config.example.json` and fill in three values. It is the same
 shape as OP's and Base's `--l2-config` — five profile keys and nothing else. There is
-no `protocol` block, no `assertions_mapping_slot` and no `rollup` address in it: since
-#345/#347 the client verifies no assertion, so nothing about BoLD reaches it. Those
-values configure the **attestor**, not the client.
+no `protocol` block, no `assertions_mapping_slot` and no `rollup` address in it: the
+client verifies no assertion, so nothing about BoLD reaches it. Those values configure
+the **attestor**, not the client.
 
 - `wasm_checksum`: checksum printed by `wasm_arb.sh`.
 - `l2_rpc_url`: `.arbitrum-devnet-run/attestor.env` `L2_RPC_URL`.
@@ -677,9 +678,8 @@ ETH_PRIVATE_KEY=<deployer-key> ./relayer start --config config.json
 
 **`l2_wasm_client_id` is an output, not an input.** `create-clients-cosmos` creates that
 client and writes its id back into the module, overwriting whatever is there — the
-example's `08-wasm-N` placeholder or an empty string alike. It used to *reject* an empty
-one, forcing a made-up id that it then overwrote (#309); it no longer does. Every other
-command still requires it, because by then the client must exist.
+example's `08-wasm-N` placeholder or an empty string alike. Every other command still
+requires it, because by then the client must exist.
 
 **Set `log_scan_chunk` to your provider's `eth_getLogs` span cap.** The relayer scans
 L2 packet logs over ranges, and a provider that caps the span rejects the call rather
@@ -700,11 +700,11 @@ H=$(cast block-number --rpc-url $L2)
 cast rpc eth_getProof '["<router>",[],"'$(printf '0x%x' $((H-5000)))'"]' --rpc-url $L2
 ```
 
-**A leftover `.arbitrum-devnet-run/` no longer hijacks the run.** The devnet handoff
-exports `ROLLUP_CORE_ADDRESS` and both chain ids as real environment variables, which
-beat the profile — a stale one used to silently produce `l2_chain_id=412346` and
-`src_chain=arbdev` against a public RPC. With `CHAIN_PROFILE` set to anything but
-`devnet` the handoff is now ignored, and the script says so.
+**With `CHAIN_PROFILE` set to anything but `devnet`, a leftover `.arbitrum-devnet-run/`
+is ignored.** The devnet handoff exports `ROLLUP_CORE_ADDRESS` and both chain ids as real
+environment variables, which would otherwise beat the profile and silently produce
+`l2_chain_id=412346` and `src_chain=arbdev` against a public RPC. The script says so when
+it skips the handoff.
 
 #### Values you fill in by hand, and where each comes from
 
@@ -724,7 +724,8 @@ fail against the client or relayer configuration.
 | `eth_rpc_url` | `cosmos-to-arbitrum` | your L2 HTTP endpoint |
 | `eth_ws_url` | `cosmos-to-arbitrum` | your L2 WebSocket endpoint. Optional — the relayer skips the WS client when it is empty, and the L2→Cosmos direction polls regardless |
 | `l2_rpc_url` | `arbitrum-to-cosmos` | the same L2 HTTP endpoint. Step 4 overwrites this with `L2_RPC`, so a mismatch here is corrected rather than fatal |
-| `attestor_addr` | `arbitrum-to-cosmos` | `127.0.0.1:$GRPC_PORT` from step 1. The example ships `127.0.0.1:3002`, which matches the `GRPC_PORT=3002` above — **change it if you used a different port**, or the relayer dials a closed socket |
+| `attestor_endpoints[0].address` | `arbitrum-to-cosmos` | `127.0.0.1:$GRPC_PORT` from step 1. The example ships `127.0.0.1:3002`, which matches the `GRPC_PORT=3002` above — **change it if you used a different port**, or the relayer dials a closed socket. The list takes one `{address, attestor_index}` entry per attestor daemon, and the config is rejected when it has fewer entries than `attestors.threshold` |
+| `attestor_endpoints[0].attestor_index` | `arbitrum-to-cosmos` | the position of that attestor's key in `attestors.public_keys` (`0` for the single local attestor). Each index may appear once and must lie inside the key list |
 | `attestor_src_chain` | `arbitrum-to-cosmos` | `src_chain` in `attestor/arbitrum/config.<profile>.json` (`arbitrum-sepolia`). Must equal what the attestor reports, or `AttestedUpTo` answers for a chain you did not ask about |
 | `head_kind` | `arbitrum-to-cosmos` | `unsafe`, `safe` or `finalized` — the same choice as `ATTESTATION_HEAD` in step 1. `start` asks each attestor's `Info` for the head it gates on and refuses to boot when the two differ — the attestor signs only its configured head, so a mismatch relays nothing |
 | `rollup_profile.common.l2_chain_id` | `arbitrum-to-cosmos` | `eth_chainId` on your L2 (`421614` on Arbitrum Sepolia, `412346` on the local devnet). `start` verifies this against the RPC and refuses to boot on a mismatch |
@@ -887,24 +888,15 @@ works at all, and both fail silently — nothing errors, the direction just neve
 
 #### Return-direction latency is set by the attestor, not the prover
 
-The forward leg costs a Groth16 proof; the return leg costs a wait. Measured on a
-Cosmos↔OP Sepolia round trip against an external replica:
-
-| step | time |
-|---|---|
-| prover loads `bin/n4/pk.bin` (162 MB, once per process) | 17 s |
-| Groth16 proof, 604 761 constraints, CPU | 4.3 s |
-| forward leg lands on the L2 (`updateApplicationState` + `recvPacket`) | ~3 s |
-| **ack waits for the attestor frontier to reach its block** | **4 min 12 s** |
-
-The wait is `DERIVED_GAP_BLOCKS`: the attestor publishes one derived root per gap, and
+The forward leg costs a Groth16 proof; the return leg costs a wait. The wait is
+`DERIVED_GAP_BLOCKS`: the attestor publishes one derived root per gap, and
 `RelayableHeight` follows that frontier, so a packet written just after an attestation
-waits nearly a full gap. At the default 150 blocks that is ~5 minutes on a 2 s chain.
+waits nearly a full gap. At the default 150 blocks that is about 5 minutes on a 2 s chain
+(150 × 2 s).
 
 All three local devnet handoffs (`run_optimism_node.sh`, `run_base_node.sh`,
 `run_arbitrum_node.sh`) export `DERIVED_GAP_BLOCKS=5`, so a devnet return leg is
-seconds. Arbitrum's did not until the rename made the name uniform, which is why a
-local Arbitrum devnet used to pay the 150-block wait that OP and Base did not.
+seconds.
 **An attestor attached to an external replica inherits none of this** — it takes the
 script default of 150. Pass the knob explicitly for an E2E:
 
@@ -912,32 +904,22 @@ script default of 150. Pass the knob explicitly for an E2E:
 DERIVED_GAP_BLOCKS=10 OP_NODE_RPC_URL=... ./scripts/local/run_op_attestor.sh
 ```
 
-`run_arbitrum_attestor.sh` takes the same variable under the same name. It used to call
-it `DERIVED_ATTESTATION_GAP_BLOCKS`, so an invocation copied from here was silently
-ignored and the run took the 150 default with nothing in the log to explain the wait.
+`run_arbitrum_attestor.sh` takes the same variable under the same name.
 
-The forward leg costs the same on every stack. Measured on Cosmos↔Arbitrum Sepolia and
-Cosmos↔Base Sepolia round trips, same machine and same day as the OP numbers above:
-
-| step | OP Sepolia | Arbitrum Sepolia | Base Sepolia |
-|---|---|---|---|
-| Groth16 proof (604 761 constraints, CPU, bucket N=4) | 5 s | 6 s | 5 s |
-| forward leg lands on the L2 | 3 s | 3 s | 3 s |
-| `recvPacket` gas (`updateApplicationState` + `recvPacket`) | 1 509 605 | 1 506 525 | 1 509 792 |
-| ack gas (`updateApplicationState` + `ackPacket`) | — | 855 883 | 855 955 |
-| return leg, send → `MsgRecvPacket` on Cosmos | 4 min 25 s (gap 150) | — | ~1 min (gap 10) |
-
-The difference in the return leg is `DERIVED_GAP_BLOCKS`, not the chain: OP ran at the
-default 150, Base at 10. The Arbitrum figure is absent because its attestor stalled
-mid-run on the bounded-backfill bug (#358, fixed since); this cell needs a fresh
-measurement on current `main` rather than a number carried over from that run.
+The forward leg has the same shape on every stack: one Groth16 proof, then
+`updateApplicationState` + `recvPacket` on the L2. What differs between stacks is the
+return leg's wait, which is the gap times the chain's block time. This runbook stores no
+timings or gas figures; measure your own. The relayer logs each proof job's duration
+(`[prover] … done in <duration>`, always on) and, with `--benchmark`, the gas of every
+multicall inner call (see [Benchmark mode](../README.md#benchmark-mode)). Quote any
+figure together with the hardware and the number of runs behind it.
 
 Lower is not free: each derived root is an attestation, and at `unsafe`/`safe` heads
 they stay provisional until the finalized head catches up, so the provisional backlog
 grows as the gap shrinks.
 
 While a packet waits, the relayer logs one `waiting: N packet(s) not yet relayable` line
-per batch period — ~100 identical lines across a default-gap wait. That is expected, not
+per batch period — many identical lines across a default-gap wait. That is expected, not
 a stall; `source relayable height` climbing is the thing to watch.
 
 #### Sending back (L2 → Cosmos)
@@ -962,7 +944,7 @@ cast send <ICS20Transfer> \
   --private-key $ETH_PRIVATE_KEY --rpc-url $L2
 ```
 
-The tuple is `SendTransferMsg` in field order (`contracts/msgs/IICS20TransferMsgs.sol`):
+The tuple is `SendTransferMsg` in field order (`contracts/apps/ics20/messages/IICS20TransferMsgs.sol`):
 denom, amount, receiver, sourceClient, destPort, timeoutTimestamp, memo.
 
 `<l2-router-client-id>` is `sourceClient`: the client id **on the L2 router** — the one
@@ -1048,10 +1030,10 @@ instead of building one; `L2_TIMEOUT_WINDOW` and `L2_TIMEOUT_SETTLE` tune the wa
 | Attestor exits: `failed to listen on attestor grpc address 127.0.0.1:3001: address already in use` | An earlier attestor still holds the port. Find it with `lsof -nP -iTCP:3001 -sTCP:LISTEN` — plain `lsof -ti :3001` also matches the relayer *connected* to that port, and killing that list takes the relayer down with it. |
 | `forge script` fails `insufficient funds ... have 0` | The deployer has no balance on the L2 — use an L2-funded account (step 4). Balances do not carry between rollups: funded on L1 Sepolia, OP or Arbitrum still means zero on Base. |
 | `eth_getProof` returns nothing at all — no result, no error, the call just hangs | The node prunes state below some depth and does not say so. Measure the boundary (see the external-L2 sections) and keep the attested height inside it; `DERIVED_GAP_BLOCKS=10` trails ~10–20 blocks, `head_kind=finalized` trails ~600. |
-| Arbitrum attestor stops attesting: last log line is a normal attestation, container still up | Was issue #358 (sequential per-block back-fill couldn't keep pace with the chain); fixed by bounding and parallelizing the back-fill (`runtime_backfill_max_blocks` / `runtime_backfill_concurrency`, `attestor/arbitrum/README.md`). If you still see a stall on current `main`, check those two settings are non-zero in your attestor config before filing a new issue. |
-| `start` refuses to boot: `l2_chain_id is N but l2_rpc_url ... serves chain M` | The profile and the RPC name different chains. Until this check existed the relayer started anyway and relayed against **M**, because transactions take their chain id from `eth_chainId` and nothing reads `l2_chain_id` — so the config, the client's committed profile and the docs all said **N** while the packets went to **M**. Fix whichever is wrong; the error prints both. |
+| Arbitrum attestor stops attesting: last log line is a normal attestation, container still up | The runtime back-fill is bounded (`runtime_backfill_max_blocks`, default 2048) and parallel (`runtime_backfill_concurrency`, default 8); an omitted or zero value uses the default. If the concurrency is too low for the endpoint's latency the attestor falls behind the chain, and skipped heights are logged as `backfill capped`. Size both as described in `attestor/arbitrum/README.md` before filing an issue. |
+| `start` refuses to boot: `l2_chain_id is N but l2_rpc_url ... serves chain M` | The profile and the RPC name different chains. Transactions take their chain id from `eth_chainId` on the RPC and nothing else reads `l2_chain_id`, so without this check the relayer would relay against **M** while the config, the client's committed profile and the docs all said **N**. Fix whichever is wrong; the error prints both. |
 | `start` refuses to boot: `head_kind is "unsafe" but attestor N at ... gates "opstack" on attestation_head "finalized"` | `head_kind` and the attestor's `ATTESTATION_HEAD` disagree. The builder sends `head_kind` as the `run_mode` and the attestor refuses any `run_mode` but its own, so every header would be rejected at the first packet. Make them equal; the error names both. The sibling `serves [...], not attestor_src_chain` means the endpoint is an attestor for a different L2. An attestor that does not answer `Info` is skipped with a log line, not refused. |
-| Arbitrum attestor attests the wrong chain (`src_chain=arbdev`, `l2_chain_id=412346`) despite `CHAIN_PROFILE=arbitrum-sepolia` | A leftover `.arbitrum-devnet-run/attestor.env` was sourced; its exports are real env vars and beat the profile. Fixed — a non-`devnet` `CHAIN_PROFILE` now ignores the handoff and logs that it did. Delete the directory if you are on an older checkout. |
+| Arbitrum attestor attests the wrong chain (`src_chain=arbdev`, `l2_chain_id=412346`) despite `CHAIN_PROFILE=arbitrum-sepolia` | A leftover `.arbitrum-devnet-run/attestor.env` was sourced; its exports are real env vars and beat the profile. A non-`devnet` `CHAIN_PROFILE` makes the script ignore the handoff and log that it did; if you do not see that log line, delete the directory and check you are on a current checkout. |
 | `eth_getLogs` rejected: `you can make eth_getLogs requests with up to a 10 block range` | The provider caps the log span. Set `log_scan_chunk` in the `l2_to_cosmos` module to that cap (Alchemy free tier 10, drpc 10 000). |
 | `[... Flush] provider has pruned history below block N` | The node dropped older logs; lookups start at N. Older packets need an archive provider — see [`router_deploy_block`](#router_deploy_block-where-packet-flush-log-lookups-start). |
 | `[... Flush] seq=N: no log in the newest M blocks ... giving up` | The event is older than the 64-window walk — with `log_scan_chunk: 10` that is only 640 blocks, under 3 minutes on Arbitrum. A capped provider cannot reach it, even with `router_deploy_block` set; use one without a range cap (then `router_deploy_block` covers the whole history). See [`router_deploy_block`](#router_deploy_block-where-packet-flush-log-lookups-start). |
@@ -1105,8 +1087,8 @@ DST_CHAIN=base ./scripts/local/deploy_l2_contracts.sh
 
 # 5. Create the clients. Copy relayer/base-l2-config.example.json and fill in the
 #    checksum from step 3, the L2 router from step 4, and the L2 chain id. There is
-#    only ONE checksum: the file carries no ethereum_client since #345/#347, because
-#    the client verifies nothing against L1.
+#    only ONE checksum: the file carries no ethereum_client, because the client
+#    verifies nothing against L1.
 cd relayer && go build -o relayer ./cmd
 ./relayer create-clients-cosmos --config config.json --l2-config base-l2-config.json
 ./relayer create-clients-eth --config config.json \
@@ -1193,7 +1175,8 @@ fail against the client or relayer configuration.
 | `eth_rpc_url` | `cosmos-to-base` | your L2 HTTP endpoint |
 | `eth_ws_url` | `cosmos-to-base` | your L2 WebSocket endpoint; optional, the relayer skips the WS client when empty |
 | `l2_rpc_url` | `base-to-cosmos` | the same L2 HTTP endpoint (step 4 overwrites it with `L2_RPC` anyway) |
-| `attestor_addr` | `base-to-cosmos` | `127.0.0.1:$GRPC_PORT` from step 1. The example ships `127.0.0.1:3003`, matching the `GRPC_PORT=3003` above — Base needs its own port so it can coexist with an OP attestor on 3001 |
+| `attestor_endpoints[0].address` | `base-to-cosmos` | `127.0.0.1:$GRPC_PORT` from step 1. The example ships `127.0.0.1:3003`, matching the `GRPC_PORT=3003` above — Base needs its own port so it can coexist with an OP attestor on 3001. The list takes one `{address, attestor_index}` entry per attestor daemon, and the config is rejected when it has fewer entries than `attestors.threshold` |
+| `attestor_endpoints[0].attestor_index` | `base-to-cosmos` | the position of that attestor's key in `attestors.public_keys` (`0` for the single local attestor). Each index may appear once and must lie inside the key list |
 | `attestor_src_chain` | `base-to-cosmos` | the `SRC_CHAIN` you passed in step 1 (`base-sepolia`) |
 | `head_kind` | `base-to-cosmos` | the same choice as `ATTESTATION_HEAD` in step 1. `start` asks each attestor's `Info` for the head it gates on and refuses to boot when the two differ — the attestor signs only its configured head, so a mismatch relays nothing |
 | `rollup_profile.common.l2_chain_id` | `base-to-cosmos` | `eth_chainId` on your L2 (`84532` on Base Sepolia). `start` verifies this against the RPC and refuses to boot on a mismatch |

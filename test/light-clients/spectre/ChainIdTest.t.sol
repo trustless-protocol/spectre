@@ -6,10 +6,7 @@ import { Test } from "forge-std/Test.sol";
 import { ChainId } from "contracts/light-clients/spectre/libraries/ChainId.sol";
 import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 
-/// @notice Unit tests for the extracted `ChainId.get(...)` parser.
-/// @dev Mirrors the legacy `getChainId` behaviour that lived inline in
-///      `UpdateClient.sol` and `Misbehaviour.sol`, plus exercises the edge
-///      cases that previously had zero coverage.
+/// @notice Unit tests for the `ChainId.get(...)` parser, including its edge cases.
 contract ChainIdTest is Test {
     // Helper — exposes `ChainId.get` via the test contract so the call is a
     // single internal-library call that Foundry can measure.

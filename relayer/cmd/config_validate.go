@@ -320,7 +320,7 @@ func validateStateDir(stateDir string) []configFinding {
 // Cosmos endpoint actually serves.
 //
 // The variable is read only when a Cosmos transaction is built
-// (transaction/handler.go), so today a wrong or missing value surfaces at the
+// (transaction/cosmos.go), so today a wrong or missing value surfaces at the
 // first Cosmos send — after the packet was received, the proof was built and the
 // fee was budgeted.
 //

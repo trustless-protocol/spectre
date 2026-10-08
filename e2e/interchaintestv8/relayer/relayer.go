@@ -47,9 +47,9 @@ func binaryPath() string {
 
 // proverEnv exposes the per-bucket prover artifact directory to the spawned relayer process.
 //
-// The relayer loads artifacts via prover.NewProver(binDir) and expects a directory layout of
-// $PROVER_BIN_DIR/n{N}/{r1cs.bin,pk.bin,vk.bin} for each compiled bucket. Run
-// `just build-prover-artifacts` (or `go run ./relayer/prover/cmd`) to populate it.
+// The relayer loads artifacts via gnark.NewFromEnv(binDir) (relayer/cmd/main.go, buildProverService),
+// which serves every bucket whose $PROVER_BIN_DIR/n{N}/ directory holds r1cs.bin, pk.bin and vk.bin.
+// Run `just build-prover-artifacts` to populate it.
 func proverEnv() []string {
 	dir := os.Getenv("PROVER_BIN_DIR")
 	if dir == "" {

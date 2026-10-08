@@ -106,7 +106,7 @@ func solveBinding(t *testing.T, x, y *big.Int, enc [32]byte) error {
 
 // TestCompressEdwardsToLE_BindsCanonicalRepresentation is the ZK-06 regression
 // for the half of the fix that lives in this repo: the two AssertIsInRange calls
-// in compressEdwardsToLE (hash_witness.go).
+// in compressEdwardsToLE (circuit_helpers.go).
 //
 // A witness coordinate is only width-constrained, so v and v+p are both legal
 // limb packings of the same field value, and the compression reads the limbs as

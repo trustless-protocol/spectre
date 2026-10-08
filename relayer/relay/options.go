@@ -70,12 +70,11 @@ func WithTimeoutScanner(interval time.Duration, scan ScanFunc) Option {
 
 // WithPacketTracker records every recv-relayed (SendPacket) packet via track, so
 // the path's timeout scanner can refund it if delivery never completes. Tracking
-// happens regardless of relay outcome (mirrors the legacy "track every send"
-// invariant), so a packet that fails to relay and then times out is still
-// refunded. untrack removes a packet once the relay succeeds — after delivery it
-// can no longer time out, so keeping it in the tracker only bloats it and makes
-// the scanner query a receipt it will always find (mirrors the legacy handleCosmos
-// PendingTracker.Remove-on-recv). untrack may be nil (no removal hook).
+// happens regardless of relay outcome, so a packet that fails to relay and then
+// times out is still refunded. untrack removes a packet once the relay succeeds —
+// after delivery it can no longer time out, so keeping it in the tracker only
+// bloats it and makes the scanner query a receipt it will always find. untrack
+// may be nil (no removal hook).
 func WithPacketTracker(track TrackFunc, untrack UntrackFunc) Option {
 	return func(m *Module) {
 		m.track = track

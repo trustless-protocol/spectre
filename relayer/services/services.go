@@ -59,8 +59,7 @@ type Prover interface {
 
 // Services holds the shared pieces the chain adapters reuse: the Worker (tx
 // handler + prover), the resolved Cosmos-source config, and the BatchBuilder the
-// subscriber pushes into and the adapters drain. (The legacy StartLoop's own
-// event channels, listener and cross-chunk memoization were removed with it.)
+// subscriber pushes into and the adapters drain.
 type Services struct {
 	worker        *Worker
 	cosmosConfig  Config

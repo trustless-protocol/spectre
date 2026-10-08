@@ -342,8 +342,7 @@ func Start(logger *zap.Logger) *cobra.Command {
 				wg.Add(1)
 				go func(svc *services.Services, deps services.RelayDeps, cleanup func()) {
 					defer wg.Done()
-					// Chain-adapter RelayModule engine — the sole relay engine since
-					// the legacy services.StartLoop was removed after the cutover.
+					// Chain-adapter RelayModule engine — the sole relay engine.
 					err := runAdapterEngine(relayCtx, svc, deps, statusReg)
 					releaseOrHold(logger, cleanup, &workersStuck, err, "cosmos_to_eth", deps.IDs.CosmosOnEVM)
 					if err != nil {

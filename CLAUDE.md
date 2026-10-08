@@ -42,7 +42,7 @@ forge test --match-contract EncodeTest -vvv  # Encoding cross-validation
 ./scripts/local/wasm.sh                    # 3. Submit ETH light client WASM via governance
 ```
 
-**Prerequisites**: `bun` (never npm/yarn), `just`, Foundry, Go 1.21+. E2E also needs Docker + Kurtosis.
+**Prerequisites**: `bun` (never npm/yarn), `just`, Foundry, Go (the version in `relayer/go.mod`). E2E also needs Docker + Kurtosis.
 
 ## Relayer CLI
 
@@ -103,7 +103,7 @@ relayer/
 ├── subscriber/     # Cosmos WebSocket + ETH event listeners (both sides have gap recovery — keep it that way)
 ├── transaction/    # ETH tx (nonce under h.mu) + Cosmos tx (account sequence under cosmosMu)
 ├── utils/          # IBC path helpers, byte utils
-└── cmd/main.go     # CLI: start (runAdapterEngine per source), create-clients-{cosmos,eth}, update-client, genesis, fixtures
+└── cmd/main.go     # CLI: start (runAdapterEngine per source), status (+ `status reactivate`), create-clients-{cosmos,eth}, update-client, update-eth-client, submit-misbehaviour, genesis
 ```
 
 `packages/go-abigen/` — GENERATED bindings consumed by the relayer (`spectreclient`, `ics26router`, `ics20transfer`, `ibcerc20`, `relayerhelper`).
@@ -177,7 +177,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 - [ ] Targeted tests pass (`forge test --match-test/-contract ... -vvv`); full `just test-foundry` before handoff
 - [ ] If encoding touched: `EncodeTest` passes and the Go counterpart changed in the same diff
 - [ ] If ABI changed: bindings regenerated in the same diff
-- [ ] If light-client/verifier touched: `forge build --sizes` run and the new `SpectreClient` EIP-170 margin stated (headroom is only ~1.8KB)
+- [ ] If light-client/verifier touched: `forge build --sizes` run and the new `SpectreClient` EIP-170 margin stated
 - [ ] `just slither` run for anything touching access control, upgrades, or value transfer
 
 **Go relayer change**

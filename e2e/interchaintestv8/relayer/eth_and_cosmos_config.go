@@ -41,15 +41,15 @@ type EthCosmosConfigInfo struct {
 	SignerAddress string
 	// Whether we use the mock client in Cosmos
 	MockWasmClient bool
-	// ICS07 Tendermint light client address (set after create-clients)
+	// SpectreClient light client address (set after create-clients)
 	SpectreClient string
 	// SignatureVerifier contract address
 	SignatureVerifier string
-	// Membership program contract address
+	// Membership module contract address
 	Membership string
-	// Misbehaviour program contract address
+	// Misbehaviour module contract address
 	Misbehaviour string
-	// UpdateClient program contract address
+	// UpdateClient module contract address
 	UpdateClient string
 	// Cosmos wasm client ID (e.g. "08-wasm-0") — required by relayer cosmos_to_eth config.
 	CosmosWasmClientID string

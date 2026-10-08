@@ -190,7 +190,7 @@ assertion state lives in the persistent
 The resulting local flow matches OP:
 
 ```text
-run_*_stack.sh    -> .*-devnet-run/attestor.env
+run_*_node.sh     -> .*-devnet-run/attestor.env
 run_*_attestor.sh -> external rollup-node endpoint + attestor gRPC on :3001
 ```
 

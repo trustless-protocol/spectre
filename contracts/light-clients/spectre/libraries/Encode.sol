@@ -52,7 +52,11 @@ library Encode {
         return out;
     }
 
-    function encodeValidator(ISpectreTendermintMsgs.SimpleValidator memory validator) internal pure returns (bytes memory) {
+    function encodeValidator(ISpectreTendermintMsgs.SimpleValidator memory validator)
+        internal
+        pure
+        returns (bytes memory)
+    {
         uint256 totalLen = 36;
         if (validator.votingPower > 0) {
             totalLen += 1 + _varintLen(uint256(validator.votingPower));
@@ -193,7 +197,11 @@ library Encode {
         return result;
     }
 
-    function encodePartSetHeader(ISpectreTendermintMsgs.PartSetHeader memory partSetHeader) internal pure returns (bytes memory) {
+    function encodePartSetHeader(ISpectreTendermintMsgs.PartSetHeader memory partSetHeader)
+        internal
+        pure
+        returns (bytes memory)
+    {
         // Valid commits always carry total >= 1 and a populated part set hash.
         bytes memory out = new bytes(1 + _varintLen(uint256(partSetHeader.total)) + 34);
         uint256 offset = 0;

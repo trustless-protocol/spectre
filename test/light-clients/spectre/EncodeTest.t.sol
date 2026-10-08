@@ -10,11 +10,13 @@ import { Header } from "contracts/light-clients/spectre/libraries/Header.sol";
 import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages/ISpectreTendermintMsgs.sol";
 
 /// @title EncodeTest
-/// @notice Cross-validates Encode.sol output against Go proto.Marshal() reference data.
-///         Go proto.Marshal() is the SOURCE OF TRUTH.
-///         Run Go reference: cd operator && go run ./cmd/encode_debug/
+/// @notice Checks Encode.sol output against hard-coded reference vectors. Go proto.Marshal() is the
+///         intended source of truth for them, but the Go program that produced them is not in this
+///         repository (tracked as SUP-06 in #288), so they cannot be regenerated from here.
+///         `TestWitnessHashVectors` (relayer/prover/witness) is the pattern to follow for a
+///         Go-generated fixture.
 contract EncodeTest is Test {
-    // ─── Test data (same as Go cmd/encode_debug/main.go) ───
+    // ─── Test data (hard-coded; see the contract NatSpec for provenance) ───
 
     uint128 private constant VOTE_TIMESTAMP_NANOS = 1_704_067_200_000_000_000;
 
@@ -114,21 +116,24 @@ contract EncodeTest is Test {
     // Go reference: proto.Marshal(SimpleValidator{PubKey: &PublicKey{Ed25519: pubKey}, VotingPower: vp})
 
     function test_encodeValidator_power100() public pure {
-        ISpectreTendermintMsgs.SimpleValidator memory v = ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 100 });
+        ISpectreTendermintMsgs.SimpleValidator memory v =
+            ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 100 });
         assertEq(
             Encode.encodeValidator(v), hex"0a220a20aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c91064"
         );
     }
 
     function test_encodeValidator_power1() public pure {
-        ISpectreTendermintMsgs.SimpleValidator memory v = ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 1 });
+        ISpectreTendermintMsgs.SimpleValidator memory v =
+            ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 1 });
         assertEq(
             Encode.encodeValidator(v), hex"0a220a20aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c91001"
         );
     }
 
     function test_encodeValidator_power0() public pure {
-        ISpectreTendermintMsgs.SimpleValidator memory v = ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 0 });
+        ISpectreTendermintMsgs.SimpleValidator memory v =
+            ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 0 });
         // Go proto.Marshal skips votingPower=0
         assertEq(
             Encode.encodeValidator(v), hex"0a220a20aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9"
@@ -165,7 +170,8 @@ contract EncodeTest is Test {
     // ─── encodePartSetHeader tests ───
 
     function test_encodePartSetHeader() public pure {
-        ISpectreTendermintMsgs.PartSetHeader memory psh = ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() });
+        ISpectreTendermintMsgs.PartSetHeader memory psh =
+            ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() });
         assertEq(
             Encode.encodePartSetHeader(psh),
             hex"08011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f"
@@ -240,8 +246,9 @@ contract EncodeTest is Test {
 
     function test_hashValSet() public pure {
         ISpectreTendermintMsgs.ValidatorInfo[] memory vals = new ISpectreTendermintMsgs.ValidatorInfo[](2);
-        vals[0] =
-            ISpectreTendermintMsgs.ValidatorInfo({ valAddress: hex"", pubKey: _pubKey(), votingPower: 100, proposerPriority: 0 });
+        vals[0] = ISpectreTendermintMsgs.ValidatorInfo({
+            valAddress: hex"", pubKey: _pubKey(), votingPower: 100, proposerPriority: 0
+        });
         vals[1] = ISpectreTendermintMsgs.ValidatorInfo({
             valAddress: hex"",
             pubKey: bytes32(0xbbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9da),
@@ -272,7 +279,8 @@ contract EncodeTest is Test {
             time: uint128(1_700_000_000) * 1e9,
             hasLastBlockId: true,
             lastBlockId: ISpectreTendermintMsgs.BlockId({
-                hashData: _hash2(), partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+                hashData: _hash2(),
+                partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
             }),
             hasLastCommitHash: true,
             lastCommitHash: _hash3(),
@@ -301,7 +309,8 @@ contract EncodeTest is Test {
             time: uint128(1_700_000_000) * 1e9,
             hasLastBlockId: true,
             lastBlockId: ISpectreTendermintMsgs.BlockId({
-                hashData: _hash2(), partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+                hashData: _hash2(),
+                partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
             }),
             hasLastCommitHash: true,
             lastCommitHash: _hash3(),
@@ -332,7 +341,8 @@ contract EncodeTest is Test {
             time: uint128(1_700_000_000) * 1e9,
             hasLastBlockId: true,
             lastBlockId: ISpectreTendermintMsgs.BlockId({
-                hashData: _hash2(), partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+                hashData: _hash2(),
+                partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
             }),
             hasLastCommitHash: true,
             lastCommitHash: _hash3(),
@@ -387,7 +397,8 @@ contract EncodeTest is Test {
             height: height,
             round: round,
             blockId: ISpectreTendermintMsgs.BlockId({
-                hashData: _hash2(), partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+                hashData: _hash2(),
+                partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
             }),
             commitSigs: sigs
         });
@@ -404,7 +415,8 @@ contract EncodeTest is Test {
 
     function test_voteSignBytes_zeroHeightZeroRound() public pure {
         // When height and round are 0 the fields are omitted entirely.
-        ISpectreTendermintMsgs.BlockCommit memory commit = _makeBlockCommit(0, 0, ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
+        ISpectreTendermintMsgs.BlockCommit memory commit =
+            _makeBlockCommit(0, 0, ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
         assertEq(
             Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
             hex"60080222480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
@@ -412,7 +424,8 @@ contract EncodeTest is Test {
     }
 
     function test_voteSignBytes_zeroHeightNonZeroRound() public pure {
-        ISpectreTendermintMsgs.BlockCommit memory commit = _makeBlockCommit(0, 5, ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
+        ISpectreTendermintMsgs.BlockCommit memory commit =
+            _makeBlockCommit(0, 5, ISpectreTendermintMsgs.CommitSigFlag.BLOCK_ID_FLAG_COMMIT);
         assertEq(
             Encode.voteSignBytes(commit, "test-chain", 0, VOTE_TIMESTAMP_NANOS),
             hex"69080219050000000000000022480a20202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f122408011220101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f2a06088081c8ac06320a746573742d636861696e"
@@ -480,13 +493,16 @@ contract EncodeTest is Test {
         console.logBytes(Encode.encodeVersion(ISpectreTendermintMsgs.Version({ blockVersion: 11, appVersion: 0 })));
 
         console.log("=== encodeValidator ===");
-        console.logBytes(Encode.encodeValidator(ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 100 })));
+        console.logBytes(
+            Encode.encodeValidator(ISpectreTendermintMsgs.SimpleValidator({ pubKey: _pubKey(), votingPower: 100 }))
+        );
 
         console.log("=== encodeBlockId ===");
         console.logBytes(
             Encode.encodeBlockId(
                 ISpectreTendermintMsgs.BlockId({
-                    hashData: _hash2(), partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
+                    hashData: _hash2(),
+                    partSetHeader: ISpectreTendermintMsgs.PartSetHeader({ total: 1, hashData: _hash1() })
                 })
             )
         );

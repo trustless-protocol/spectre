@@ -29,7 +29,7 @@ contract SignatureVerifierHashHarness is SignatureVerifier {
 /// builds PrefixHead with low-level mstore/mcopy; the reference re-derives the
 /// same bytes via `abi.encodePacked`, so any drift in offsets, the round-present
 /// byte, or per-slot packing is caught Solidity-vs-Solidity. The off-chain Go
-/// path (prover/hash_witness.go) and the in-circuit commit are cross-checked
+/// path (relayer/prover/witness/witness.go) and the in-circuit commit are cross-checked
 /// separately via test.IsSolved.
 contract SignatureVerifierHashEquivalenceTest is Test {
     SignatureVerifierHashHarness internal harness;
@@ -73,11 +73,11 @@ contract SignatureVerifierHashEquivalenceTest is Test {
     }
 
     /// @notice ZK-07: cross-checks `_hashWitness` against digests computed by the Go prover.
-    /// @dev The witness commitment is computed in Go (prover.ComputeWitnessHash), in-circuit
+    /// @dev The witness commitment is computed in Go (witness.ComputeWitnessHash), in-circuit
     ///      (BatchCircuit.Define) and here, and a proof only verifies when all three agree — but
     ///      the tests above compare Solidity to Solidity, so a Go-vs-Solidity drift would have
     ///      surfaced only in E2E. The vectors are produced by
-    ///      `go test ./prover -run TestWitnessHashVectors -update` from `relayer/`, which also
+    ///      `go test ./prover/witness -run TestWitnessHashVectors -update` from `relayer/`, which also
     ///      re-verifies them on every run, so the generator cannot rot away from the fixture.
     ///
     ///      A failure here means the two layouts disagree. Read the Go test's output first: if it
