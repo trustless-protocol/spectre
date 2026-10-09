@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+
+# Checks that the Groth16 proving key the relayer will use belongs to the
+# Groth16Verifier_N{N}.sol that is (or will be) deployed. A pk from one setup
+# against a verifier from another does not fail loudly: every Cosmos -> EVM
+# updateApplicationState / updateConsensusState reverts with a bare
+# ProofVerificationFailed(), and the packet is re-queued forever.
+#
+# Two modes:
+#
+#   check_prover_pairing.sh
+#       BEFORE DEPLOY. Local files only: r1cs/pk/vk/verifier all exist and their
+#       sha256 equals the set that scripts/solidity/build-prover-artifacts.sh
+#       published together (.artifacts/solidity/prover/provenance.json).
+#
+#   check_prover_pairing.sh --rpc <evm-rpc> [--signature-verifier <addr>]
+#       BEFORE SENDING PACKETS (and before `relayer start`). Everything above, plus
+#       the verifier registered in SignatureVerifier.buckets(N) on that chain
+#       must carry exactly the runtime bytecode forge compiled from the local
+#       Groth16Verifier_N{N}.sol. The vk is baked into that bytecode as constants,
+#       so equal bytecode means the on-chain vk is the one this pk was set up with.
+#       --signature-verifier defaults to .l2-deployment.json (.signatureVerifier),
+#       which deploy_l2_contracts.sh writes; pass it explicitly for an L1 deploy.
+#
+# Exit 1 on any mismatch. PROVER_PAIRING=warn prints the same banner but exits 0.
+# Fix for a mismatch: regenerate the set with scripts/solidity/build-prover-artifacts.sh
+# --force, then REDEPLOY the verifier (deploy_*_contracts.sh) and create the
+# clients again; or restore the matching pk.bin.
+
+set -euo pipefail
+
+cd "$(dirname "$0")/../.."
+REPO_ROOT=$PWD
+PROVENANCE=$REPO_ROOT/.artifacts/solidity/prover/provenance.json
+
+RPC=""
+SIG_VERIFIER=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --rpc) RPC=${2:?--rpc needs a URL}; shift 2 ;;
+        --signature-verifier) SIG_VERIFIER=${2:?--signature-verifier needs an address}; shift 2 ;;
+        -h | --help) sed -n '3,/^$/p' "$0" | sed -e '/^$/d' -e 's/^# \{0,1\}//'; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
+
+for tool in jq; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "check_prover_pairing: $tool is required" >&2; exit 2; }
+done
+if [ -n "$RPC" ]; then
+    command -v cast >/dev/null 2>&1 || { echo "check_prover_pairing: cast is required for --rpc" >&2; exit 2; }
+fi
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1; else shasum -a 256 "$1" | cut -d' ' -f1; fi
+}
+
+PROBLEMS=()
+problem() { PROBLEMS+=("$*"); }
+
+if [ ! -f "$PROVENANCE" ]; then
+    problem "no provenance at ${PROVENANCE#"$REPO_ROOT/"}: nothing records which pk was set up with which verifier. Run scripts/solidity/build-prover-artifacts.sh --force"
+    BUCKETS=""
+else
+    BUCKETS=$(jq -r '.supported_buckets[]' "$PROVENANCE")
+fi
+
+# Local files vs the set that was published together.
+for N in $BUCKETS; do
+    for key in r1cs proving_key verifying_key solidity_verifier; do
+        rel=$(jq -r --arg k "n${N}_${key}" '.artifacts[$k].path // empty' "$PROVENANCE")
+        want=$(jq -r --arg k "n${N}_${key}" '.artifacts[$k].sha256 // empty' "$PROVENANCE")
+        if [ -z "$rel" ] || [ -z "$want" ]; then
+            problem "n${N}_${key}: not recorded in provenance"
+        elif [ ! -s "$REPO_ROOT/$rel" ]; then
+            problem "$rel is missing or empty (pk.bin is git-ignored and cannot be recovered; the set must be regenerated together)"
+        else
+            got=$(sha256_of "$REPO_ROOT/$rel")
+            [ "$got" = "$want" ] || problem "$rel sha256 ${got:0:16}... differs from the published set (${want:0:16}...): it did not come from the same build-prover-artifacts.sh run as the other files"
+        fi
+    done
+done
+
+# On-chain verifier vs what forge compiled from the local .sol.
+if [ -n "$RPC" ] && [ -n "$BUCKETS" ]; then
+    if [ -z "$SIG_VERIFIER" ] && [ -f "$REPO_ROOT/.l2-deployment.json" ]; then
+        SIG_VERIFIER=$(jq -r '.signatureVerifier // empty' "$REPO_ROOT/.l2-deployment.json")
+    fi
+    if [ -z "$SIG_VERIFIER" ]; then
+        problem "no SignatureVerifier address: pass --signature-verifier (no .l2-deployment.json to read it from)"
+    else
+        for N in $BUCKETS; do
+            artifact=$REPO_ROOT/out/Groth16Verifier_N${N}.sol/Groth16Verifier_N${N}.json
+            sol=$REPO_ROOT/contracts/verifiers/Groth16Verifier_N${N}.sol
+            if [ ! -f "$artifact" ] || [ "$sol" -nt "$artifact" ]; then
+                problem "n${N}: out/ is missing or older than Groth16Verifier_N${N}.sol, so the bytecode comparison would be against a stale build. Run: forge build"
+                continue
+            fi
+            verifier=$(cast call "$SIG_VERIFIER" "buckets(uint16)(address,bytes4)" "$N" --rpc-url "$RPC" 2>/dev/null | head -1 || true)
+            if [ -z "$verifier" ] || [ "$verifier" = 0x0000000000000000000000000000000000000000 ]; then
+                problem "n${N}: SignatureVerifier $SIG_VERIFIER has no bucket $N registered on $RPC"
+                continue
+            fi
+            onchain=$(cast code "$verifier" --rpc-url "$RPC" 2>/dev/null || true)
+            local_code=$(jq -r '.deployedBytecode.object' "$artifact")
+            if [ "$onchain" != "$local_code" ]; then
+                problem "n${N}: verifier $verifier registered on-chain is NOT the local Groth16Verifier_N${N}.sol (code differs); proofs from the local pk will revert with ProofVerificationFailed(). Redeploy the contracts and recreate the clients"
+            else
+                echo "check_prover_pairing: n${N} on-chain verifier $verifier == local Groth16Verifier_N${N}.sol"
+            fi
+        done
+    fi
+fi
+
+if [ ${#PROBLEMS[@]} -eq 0 ]; then
+    echo "check_prover_pairing: OK (buckets: $(echo $BUCKETS | tr '\n' ' '))"
+    exit 0
+fi
+
+{
+    echo
+    echo "=================================================================="
+    echo " WARNING: proving key / Groth16 verifier pairing is NOT established"
+    echo "=================================================================="
+    for p in "${PROBLEMS[@]}"; do echo " - $p"; done
+    echo
+    echo " Consequence: Cosmos -> EVM packets will not be delivered; the relayer"
+    echo " logs ProofVerificationFailed() and re-queues them indefinitely."
+    echo "=================================================================="
+} >&2
+
+if [ "${PROVER_PAIRING:-}" = warn ]; then
+    echo "check_prover_pairing: PROVER_PAIRING=warn, continuing anyway" >&2
+    exit 0
+fi
+exit 1

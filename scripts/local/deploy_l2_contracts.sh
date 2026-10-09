@@ -182,6 +182,12 @@ else
     fi
 fi
 
+# The relayer proves with relayer/bin/n*/pk.bin; the verifier deployed below is compiled
+# from contracts/verifiers/Groth16Verifier_N*.sol. A pk from another setup deploys fine
+# and then fails every Cosmos -> L2 update with a bare ProofVerificationFailed().
+# PROVER_PAIRING=warn downgrades a mismatch to a warning.
+scripts/local/check_prover_pairing.sh
+
 # ------------------------------------------------------------------ deploy ---
 DEPLOY_OUT=$REPO_ROOT/.l2-deployment.json
 export E2E_L2_DEPLOYMENT_OUT=$DEPLOY_OUT
