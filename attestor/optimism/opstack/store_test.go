@@ -477,3 +477,104 @@ func TestResolveGame0DoesNotTouchDerivedEntries(t *testing.T) {
 		}
 	})
 }
+
+// ATT-03: the identity Save at startup creates the state file before bootstrap
+// has run. A restart in between must still see a store that needs bootstrap.
+func TestFreshSurvivesIdentitySaveUntilBootstrapCommits(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	identity := DeploymentIdentity{
+		SrcChain:           "op-mainnet",
+		L1ChainID:          1,
+		L2ChainID:          10,
+		DisputeGameFactory: common.HexToAddress("0x0000000000000000000000000000000000000001"),
+		RespectedGameType:  8,
+	}
+
+	first, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if err := first.BindDeploymentIdentity(identity); err != nil {
+		t.Fatalf("BindDeploymentIdentity: %v", err)
+	}
+	if err := first.Save(); err != nil {
+		t.Fatalf("Save identity: %v", err)
+	}
+
+	// First boot died here: bootstrap never committed.
+	restarted, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("reload after identity save: %v", err)
+	}
+	if !restarted.Fresh() {
+		t.Fatal("store lost Fresh after the identity save; bootstrap would be skipped on restart")
+	}
+	if err := restarted.BindDeploymentIdentity(identity); err != nil {
+		t.Fatalf("rebind identity: %v", err)
+	}
+
+	// Bootstrap to index 0 is still a durable change while pending.
+	if err := restarted.Commit(func(s *AttestedRootStore) (bool, error) { return s.Bootstrap(0), nil }); err != nil {
+		t.Fatalf("Commit bootstrap: %v", err)
+	}
+	if restarted.Fresh() {
+		t.Fatal("store still Fresh after Bootstrap committed")
+	}
+
+	done, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("reload after bootstrap: %v", err)
+	}
+	if done.Fresh() {
+		t.Fatal("bootstrap completion was not persisted")
+	}
+}
+
+func TestFailedBootstrapCommitKeepsStoreFresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if err := store.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	fs := realStateFileSystem()
+	fs.rename = func(string, string) error { return errors.New("rename failed") }
+	store.fs = fs
+
+	if err := store.Commit(func(s *AttestedRootStore) (bool, error) { return s.Bootstrap(5), nil }); err == nil {
+		t.Fatal("Commit succeeded despite persistence failure")
+	}
+	if !store.Fresh() {
+		t.Fatal("failed bootstrap commit cleared Fresh in memory")
+	}
+	re, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if !re.Fresh() || re.NextGameIndex() != 0 {
+		t.Fatalf("failed bootstrap leaked to disk: fresh=%t cursor=%d", re.Fresh(), re.NextGameIndex())
+	}
+}
+
+// State files written before BootstrapPending existed omit the field. They are
+// already bootstrapped and must not be re-bootstrapped (which would reset the
+// ingest cursor).
+func TestLegacyStateFileWithoutBootstrapFieldIsNotFresh(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	legacy := `{"version":1,"src_chain":"op-mainnet","source_identity":"x","next_game_index":42,"pending":[],"attested":[]}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatalf("write legacy state: %v", err)
+	}
+	store, err := LoadStore(path)
+	if err != nil {
+		t.Fatalf("LoadStore: %v", err)
+	}
+	if store.Fresh() {
+		t.Fatal("legacy state file was treated as fresh")
+	}
+	if got := store.NextGameIndex(); got != 42 {
+		t.Fatalf("legacy cursor = %d, want 42", got)
+	}
+}
