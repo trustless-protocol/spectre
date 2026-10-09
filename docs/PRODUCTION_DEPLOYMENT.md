@@ -25,6 +25,14 @@ launch gate and, for each configured client, creates its escrow, installs
 non-zero limits for each configured ERC-20, then activates the escrow. Both
 deployment and verification reject zero-address or non-contract token entries.
 
+Every id in `PRODUCTION_ESCROW_CONFIG` must be a **custom** client id, not one
+in the `client-` namespace (or `channel-`). The escrow is created and activated
+before any client exists, and the default-ID `addClient` is permissionless, so
+the first caller could take a launch id such as `client-0` and inherit its
+activated escrow. Custom ids are disjoint from that namespace and can only be
+registered by the `ID_CUSTOMIZER_ROLE` holder. Deployment and verification
+reject any other id.
+
 For a later client, preserve the same order: `createEscrow(clientId)` through
 governance, install non-zero limits from the rate-limiter account, then call
 `activateEscrow(clientId, tokens)` through governance. Packet processing
@@ -46,12 +54,26 @@ gate is enabled, which permits this safe migration order.
 ## Light-client provisioning
 
 The documented `./relayer create-clients-eth` flow submits `addClient` directly
-from the relayer key. A production deployment grants `addClient` to governance
+from the relayer key. A production deployment grants the custom-ID overload,
+`addClient(string clientId, CounterpartyInfo, address client)`, to governance
 with an AccessManager delay, so that command is not a complete production
-provisioning flow. Deploy the light-client implementation separately, then
-schedule and execute the `addClient` calldata through the governance and
-AccessManager timelocks before writing the resulting client address to relayer
-configuration.
+provisioning flow. The default-ID overload, `addClient(CounterpartyInfo,
+address)`, is **not** access-controlled in any deployment: anyone can call it
+and receive the next `client-<seq>` id. Do not rely on `client-N` ids for
+anything that must be operator-controlled, and register launch clients under
+their custom id. Deploy the light-client implementation separately, then
+schedule and execute the custom-ID `addClient` calldata through the governance
+and AccessManager timelocks before writing the resulting client address to
+relayer configuration.
+
+Once the launch clients are registered, re-run `ProductionVerify.s.sol` with
+`PRODUCTION_LIGHT_CLIENTS='{"lightClients":["0x..", ..]}'`: one light-client
+address per id in `PRODUCTION_ESCROW_CONFIG` `.clients`, in the same order.
+Verification then requires `getClient(<launch id>)` to return exactly that
+address, so a launch id registered to any other contract fails. The variable is
+optional because the clients do not exist when the bootstrap is first verified;
+when it is unset the script logs that registration was not verified and passes,
+so a pass without it says nothing about the launch clients.
 
 ### Governed client migration
 

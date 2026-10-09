@@ -3,16 +3,19 @@ pragma solidity ^0.8.28;
 
 import { stdJson } from "forge-std/StdJson.sol";
 import { Script } from "forge-std/Script.sol";
+import { console } from "forge-std/console.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 import { TimelockController } from "@openzeppelin-contracts/governance/TimelockController.sol";
 import { ICS26Router } from "contracts/core/ICS26Router.sol";
 import { ICS20Transfer } from "contracts/apps/ics20/ICS20Transfer.sol";
 import { SignatureVerifier } from "contracts/light-clients/spectre/SignatureVerifier.sol";
 import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
+import { IBCIdentifiers } from "contracts/shared/access/IBCIdentifiers.sol";
 import { IBCSelectorLib } from "scripts/deployments/IBCSelectorLib.sol";
 import { ProductionConfigLib } from "scripts/deployments/ProductionConfigLib.sol";
 import { IGroth16Verifier } from "contracts/light-clients/spectre/interfaces/IGroth16Verifier.sol";
 import { IRateLimit } from "contracts/apps/ics20/interfaces/IRateLimit.sol";
+import { ILightClient } from "contracts/light-clients/interfaces/ILightClient.sol";
 
 /// @notice Read-only post-deployment checks for ProductionDeploy.
 /// @dev Governance must be a timelock whose minimum delay covers the
@@ -125,7 +128,31 @@ contract ProductionVerify is Script {
                 require(IRateLimit(escrow).getRateLimit(launch.tokens[j]) == launch.limits[j], "rate limit mismatch");
             }
         }
+        _checkLaunchLightClients(router, launch);
         return true;
+    }
+
+    /// @dev Optional, because the launch clients are registered through governance after the bootstrap and so do
+    ///      not exist when this script first runs. Once they do, set PRODUCTION_LIGHT_CLIENTS to
+    ///      `{"lightClients":["0x..", ..]}`, one address per launch client id, in the same order as
+    ///      PRODUCTION_ESCROW_CONFIG `.clients`, to prove each launch id resolves to the light client you deployed.
+    function _checkLaunchLightClients(address router, LaunchConfig memory launch) private view {
+        string memory encoded = vm.envOr("PRODUCTION_LIGHT_CLIENTS", string(""));
+        if (bytes(encoded).length == 0) {
+            console.log("PRODUCTION_LIGHT_CLIENTS not set: launch client registration not verified");
+            return;
+        }
+
+        address[] memory expected = encoded.readAddressArray(".lightClients");
+        require(expected.length == launch.clientIds.length, "light client count mismatch");
+        for (uint256 i = 0; i < launch.clientIds.length; ++i) {
+            require(expected[i] != address(0) && expected[i].code.length != 0, "expected light client has no code");
+            try ICS26Router(router).getClient(launch.clientIds[i]) returns (ILightClient registered) {
+                require(address(registered) == expected[i], "launch client address mismatch");
+            } catch {
+                revert("launch client not registered");
+            }
+        }
     }
 
     function _loadLaunchConfig() internal view returns (LaunchConfig memory config) {
@@ -141,6 +168,13 @@ contract ProductionVerify is Script {
 
         for (uint256 i = 0; i < launch.clientIds.length; ++i) {
             require(bytes(launch.clientIds[i]).length != 0, "empty production client id");
+            // The default-ID `addClient` is permissionless and hands out `client-<seq>`, so a launch id in
+            // that namespace can be taken by the first caller, who then inherits the pre-activated escrow.
+            // Custom ids are disjoint from it and only the ID_CUSTOMIZER_ROLE can register one.
+            require(
+                IBCIdentifiers.validateCustomIBCIdentifier(bytes(launch.clientIds[i])),
+                "production client id must be a custom id"
+            );
             for (uint256 j = 0; j < i; ++j) {
                 require(
                     keccak256(bytes(launch.clientIds[i])) != keccak256(bytes(launch.clientIds[j])),
