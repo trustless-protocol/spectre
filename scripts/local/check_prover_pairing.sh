@@ -11,13 +11,20 @@
 #   check_prover_pairing.sh
 #       BEFORE DEPLOY. Local files only: r1cs/pk/vk/verifier all exist and their
 #       sha256 equals the set that scripts/solidity/build-prover-artifacts.sh
-#       published together (.artifacts/solidity/prover/provenance.json).
+#       published together (.artifacts/solidity/prover/provenance.json). The
+#       r1cs/pk/vk are read from the directory the relayer will actually load them
+#       from, not from the path recorded in provenance: PROVER_BIN_DIR from the
+#       environment, else from the .env in the relayer's working directory, else
+#       ./bin (the same order `relayer start` resolves it; a relative value is
+#       taken against the relayer's working directory, relayer/ by default,
+#       override with --relayer-dir).
 #
 #   check_prover_pairing.sh --rpc <evm-rpc> [--signature-verifier <addr>]
 #       BEFORE SENDING PACKETS (and before `relayer start`). Everything above, plus
 #       the verifier registered in SignatureVerifier.buckets(N) on that chain
 #       must carry exactly the runtime bytecode forge compiled from the local
-#       Groth16Verifier_N{N}.sol. The vk is baked into that bytecode as constants,
+#       Groth16Verifier_N{N}.sol (out/ is matched to the source by content hash,
+#       so an old file timestamp is not mistaken for a stale build). The vk is baked into that bytecode as constants,
 #       so equal bytecode means the on-chain vk is the one this pk was set up with.
 #       --signature-verifier defaults to .l2-deployment.json (.signatureVerifier),
 #       which deploy_l2_contracts.sh writes; pass it explicitly for an L1 deploy.
@@ -35,10 +42,12 @@ PROVENANCE=$REPO_ROOT/.artifacts/solidity/prover/provenance.json
 
 RPC=""
 SIG_VERIFIER=""
+RELAYER_DIR=""
 while [ $# -gt 0 ]; do
     case "$1" in
         --rpc) RPC=${2:?--rpc needs a URL}; shift 2 ;;
         --signature-verifier) SIG_VERIFIER=${2:?--signature-verifier needs an address}; shift 2 ;;
+        --relayer-dir) RELAYER_DIR=${2:?--relayer-dir needs a path}; shift 2 ;;
         -h | --help) sed -n '3,/^$/p' "$0" | sed -e '/^$/d' -e 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -65,18 +74,45 @@ else
     BUCKETS=$(jq -r '.supported_buckets[]' "$PROVENANCE")
 fi
 
+# The directory `relayer start` / `update-client` / `submit-misbehaviour` load keys from.
+# Mirrors cmd: godotenv.Load() reads .env from the working directory and never overrides
+# a variable already present in the environment; envOrDefault then treats "" as unset.
+RELAYER_DIR=${RELAYER_DIR:-$REPO_ROOT/relayer}
+env_file_value() {
+    [ -f "$1" ] || return 0
+    grep -E '^[[:space:]]*(export[[:space:]]+)?PROVER_BIN_DIR[[:space:]]*=' "$1" | tail -1 |
+        sed -E 's/^[^=]*=[[:space:]]*//; s/^"([^"]*)".*$/\1/; s/^'"'"'([^'"'"']*)'"'"'.*$/\1/; s/[[:space:]]+#.*$//; s/[[:space:]]+$//'
+}
+if [ -n "${PROVER_BIN_DIR+x}" ]; then
+    BIN_DIR=$PROVER_BIN_DIR
+    BIN_DIR_SRC="PROVER_BIN_DIR in the environment"
+else
+    BIN_DIR=$(env_file_value "$RELAYER_DIR/.env")
+    BIN_DIR_SRC="PROVER_BIN_DIR in ${RELAYER_DIR#"$REPO_ROOT/"}/.env"
+fi
+if [ -z "$BIN_DIR" ]; then
+    BIN_DIR=./bin
+    BIN_DIR_SRC="the relayer default ./bin"
+fi
+case "$BIN_DIR" in /*) ;; *) BIN_DIR=$RELAYER_DIR/${BIN_DIR#./} ;; esac
+
 # Local files vs the set that was published together.
 for N in $BUCKETS; do
     for key in r1cs proving_key verifying_key solidity_verifier; do
-        rel=$(jq -r --arg k "n${N}_${key}" '.artifacts[$k].path // empty' "$PROVENANCE")
         want=$(jq -r --arg k "n${N}_${key}" '.artifacts[$k].sha256 // empty' "$PROVENANCE")
-        if [ -z "$rel" ] || [ -z "$want" ]; then
+        case "$key" in
+            r1cs) file=$BIN_DIR/n${N}/r1cs.bin ;;
+            proving_key) file=$BIN_DIR/n${N}/pk.bin ;;
+            verifying_key) file=$BIN_DIR/n${N}/vk.bin ;;
+            solidity_verifier) file=$REPO_ROOT/contracts/verifiers/Groth16Verifier_N${N}.sol ;;
+        esac
+        if [ -z "$want" ]; then
             problem "n${N}_${key}: not recorded in provenance"
-        elif [ ! -s "$REPO_ROOT/$rel" ]; then
-            problem "$rel is missing or empty (pk.bin is git-ignored and cannot be recovered; the set must be regenerated together)"
+        elif [ ! -s "$file" ]; then
+            problem "$file is missing or empty (the relayer reads keys from $BIN_DIR, set by $BIN_DIR_SRC; pk.bin is git-ignored and cannot be recovered, so the set must be regenerated together)"
         else
-            got=$(sha256_of "$REPO_ROOT/$rel")
-            [ "$got" = "$want" ] || problem "$rel sha256 ${got:0:16}... differs from the published set (${want:0:16}...): it did not come from the same build-prover-artifacts.sh run as the other files"
+            got=$(sha256_of "$file")
+            [ "$got" = "$want" ] || problem "$file sha256 ${got:0:16}... differs from the published set (${want:0:16}...): it did not come from the same build-prover-artifacts.sh run as the other files"
         fi
     done
 done
@@ -92,8 +128,18 @@ if [ -n "$RPC" ] && [ -n "$BUCKETS" ]; then
         for N in $BUCKETS; do
             artifact=$REPO_ROOT/out/Groth16Verifier_N${N}.sol/Groth16Verifier_N${N}.json
             sol=$REPO_ROOT/contracts/verifiers/Groth16Verifier_N${N}.sol
-            if [ ! -f "$artifact" ] || [ "$sol" -nt "$artifact" ]; then
-                problem "n${N}: out/ is missing or older than Groth16Verifier_N${N}.sol, so the bytecode comparison would be against a stale build. Run: forge build"
+            # out/ must have been compiled from THIS source: forge records the keccak256 of
+            # every source in the artifact metadata. Timestamps say nothing (a restored or
+            # touched file is newer than an up-to-date build that forge will not redo).
+            if [ ! -f "$artifact" ]; then
+                problem "n${N}: no forge artifact at ${artifact#"$REPO_ROOT/"}. Run: forge build"
+                continue
+            fi
+            src_key="contracts/verifiers/Groth16Verifier_N${N}.sol"
+            built=$(jq -r --arg k "$src_key" '.metadata.sources[$k].keccak256 // empty' "$artifact")
+            have=$(cast keccak < "$sol")
+            if [ -z "$built" ] || [ "$built" != "$have" ]; then
+                problem "n${N}: out/ was not compiled from the current $src_key (source keccak256 ${have:0:12}... vs recorded ${built:-none}), so the bytecode comparison would be against another build. Run: forge build"
                 continue
             fi
             verifier=$(cast call "$SIG_VERIFIER" "buckets(uint16)(address,bytes4)" "$N" --rpc-url "$RPC" 2>/dev/null | head -1 || true)
@@ -113,7 +159,7 @@ if [ -n "$RPC" ] && [ -n "$BUCKETS" ]; then
 fi
 
 if [ ${#PROBLEMS[@]} -eq 0 ]; then
-    echo "check_prover_pairing: OK (buckets: $(echo $BUCKETS | tr '\n' ' '))"
+    echo "check_prover_pairing: OK (buckets: $(echo $BUCKETS | tr '\n' ' '); keys from $BIN_DIR)"
     exit 0
 fi
 

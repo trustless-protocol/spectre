@@ -47,10 +47,10 @@ Checksum facts (matter when targeting a real testnet, not just local):
 ```bash
 cd relayer
 go build -o relayer ./cmd                              # use the binary, not `go run`, for all ops
-cd .. && ./scripts/local/check_prover_pairing.sh       # MUST pass before any deploy (deploy_*_contracts.sh run it too)
+(cd .. && ./scripts/local/check_prover_pairing.sh)     # subshell: stay in relayer/ for the next steps; MUST pass before any deploy (deploy_*_contracts.sh run it too)
 ```
 
-**`pk.bin` must be the pair of `contracts/verifiers/Groth16Verifier_N{N}.sol`.** `pk.bin` is git-ignored and unrecoverable; a `pk` from any other setup deploys and sends fine, then every Cosmos→EVM `updateApplicationState`/`updateConsensusState` reverts `ProofVerificationFailed()` and the packet re-queues forever (nothing else in the log says why). `check_prover_pairing.sh` compares r1cs/pk/vk/verifier on disk with `.artifacts/solidity/prover/provenance.json` and exits 1 with a warning banner on any mismatch or missing file. If it fails, do **not** deploy or send packets: regenerate the whole set with `scripts/solidity/build-prover-artifacts.sh --force` (overwrites `relayer/bin/n4` and the git-ignored verifier — ask the user first, CLAUDE.md), then redeploy and recreate the clients. Do not use `go run ./prover/cmd <dir>` outside that script: it writes no provenance, and a set generated into a scratch dir has a different vk than any verifier already deployed.
+**`pk.bin` must be the pair of `contracts/verifiers/Groth16Verifier_N{N}.sol`.** `pk.bin` is git-ignored and unrecoverable; a `pk` from any other setup deploys and sends fine, then every Cosmos→EVM `updateApplicationState`/`updateConsensusState` reverts `ProofVerificationFailed()` and the packet re-queues forever (nothing else in the log says why). `check_prover_pairing.sh` compares r1cs/pk/vk/verifier on disk with `.artifacts/solidity/prover/provenance.json` (r1cs/pk/vk are read from the directory the relayer will really load — `PROVER_BIN_DIR` from the environment, else `relayer/.env`, else `./bin` — so a redirected `PROVER_BIN_DIR` cannot pass on the strength of `relayer/bin`) and exits 1 with a warning banner on any mismatch or missing file. If it fails, do **not** deploy or send packets: regenerate the whole set with `scripts/solidity/build-prover-artifacts.sh --force` (overwrites `relayer/bin/n4` and the git-ignored verifier — ask the user first, CLAUDE.md), then redeploy and recreate the clients. Do not use `go run ./prover/cmd <dir>` outside that script: it writes no provenance, and a set generated into a scratch dir has a different vk than any verifier already deployed.
 
 Circuit regeneration changes the vk → the generated `Groth16Verifier_N{N}.sol` must be **redeployed** (a fresh router via `deploy_*_contracts.sh`, then recreate both clients — the Cosmos-side client profile pins `l2_router`) or re-registered via `SignatureVerifier.setBucket(...)`. If contracts were just deployed by `run_eth_node.sh` from freshly generated verifiers, they already match — regeneration mid-session is what breaks the pairing.
 
@@ -70,7 +70,7 @@ One command per chain — the umbrella `create-clients` was removed in #255. Run
 Before `start` and before sending the first packet, check the verifier **registered on the destination chain** is the pk's pair (needs a current `forge build`; `--signature-verifier` defaults to `.l2-deployment.json`, pass it for an L1 deploy). A mismatch prints a warning banner and exits 1 — stop and fix it rather than sending packets:
 
 ```bash
-forge build && ./scripts/local/check_prover_pairing.sh --rpc <evm-rpc> [--signature-verifier <addr>]
+(cd .. && forge build && ./scripts/local/check_prover_pairing.sh --rpc <evm-rpc> [--signature-verifier <addr>])   # subshell: `./relayer start` below must run from relayer/
 ```
 
 ```bash

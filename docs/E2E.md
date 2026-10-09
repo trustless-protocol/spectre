@@ -167,12 +167,15 @@ different setup, even though it looks identical.
 ```bash
 # Before deploying: r1cs/pk/vk/verifier on disk are the set that
 # build-prover-artifacts.sh published together (.artifacts/solidity/prover/provenance.json).
+# r1cs/pk/vk are read from where the relayer will load them: PROVER_BIN_DIR from the
+# environment, else from relayer/.env, else ./bin (relative to relayer/; --relayer-dir
+# overrides) -- not blindly from relayer/bin.
 # deploy_eth_contracts.sh and deploy_l2_contracts.sh already run this and stop on a mismatch.
 ./scripts/local/check_prover_pairing.sh
 
 # Before sending a packet or starting the relayer: additionally, the verifier registered
 # on-chain is byte-identical to what forge compiled from the local Groth16Verifier_N4.sol.
-# Needs a current `forge build`; --signature-verifier defaults to .l2-deployment.json.
+# Needs a `forge build` of the current source (matched by content hash, not by timestamp); --signature-verifier defaults to .l2-deployment.json.
 ./scripts/local/check_prover_pairing.sh --rpc <evm-rpc> [--signature-verifier <addr>]
 ```
 
