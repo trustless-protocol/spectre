@@ -71,7 +71,7 @@ picks between the two. The packet path always goes through the router.
 
 ### Requirements
 
-- [Go](https://golang.org/) >= 1.25 (`relayer/go.mod` pins 1.25.7)
+- [Go](https://golang.org/) >= 1.26 (`relayer/go.mod` pins 1.26.0, toolchain 1.26.9)
 - [Foundry](https://getfoundry.sh/)
 - [Bun](https://bun.sh/)
 - [Just](https://github.com/casey/just)
