@@ -6,12 +6,18 @@ WORKDIR /src/arbitrum
 
 COPY arbitrum/go.mod arbitrum/go.sum ./
 COPY types/go.mod types/go.sum ../types/
+COPY core/go.mod ../core/
+COPY grpc/go.mod grpc/go.sum ../grpc/
+COPY host/go.mod host/go.sum ../host/
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 
 COPY types ../types
+COPY core ../core
+COPY grpc ../grpc
+COPY host ../host
 COPY arbitrum/*.go ./
 COPY arbitrum/cmd ./cmd
-COPY arbitrum/server ./server
+COPY arbitrum/adapter ./adapter
 COPY arbitrum/bold ./bold
 
 RUN --mount=type=cache,target=/root/.cache/go-build \
