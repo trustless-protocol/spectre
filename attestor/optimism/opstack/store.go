@@ -116,6 +116,12 @@ type persistedState struct {
 	SrcChain             string `json:"src_chain"`
 	SourceIdentity       string `json:"source_identity"`
 	LastFinalizedL1Block uint64 `json:"last_finalized_l1_block,omitempty"`
+	// BootstrapPending is true from the first Save of a new state file until a
+	// Bootstrap commits the ingest cursor. It lives in the file, not in memory,
+	// so a boot that dies between binding the identity and bootstrapping is
+	// retried on restart. Files written before this field existed omit it and
+	// are treated as already bootstrapped, which is what they were.
+	BootstrapPending bool `json:"bootstrap_pending,omitempty"`
 	// NextGameIndex is the ingest cursor: the next factory index to fetch.
 	NextGameIndex uint64           `json:"next_game_index"`
 	Pending       []ProposedRoot   `json:"pending"`
@@ -172,18 +178,21 @@ type AttestedRootStore struct {
 	commitMu sync.Mutex
 	path     string
 	state    persistedState
-	fresh    bool // true when no state file existed at load (bootstrap needed)
 	fs       stateFileSystem
 }
 
 // LoadStore reads the state file at path. A missing file yields a fresh store
-// (Fresh() == true, awaiting a bootstrap cursor); an unreadable or corrupt
+// (Fresh() == true, awaiting a bootstrap cursor) whose first Save persists that
+// pending state, so it survives a restart until Bootstrap commits; an unreadable or corrupt
 // file is a hard error — never silently reset, the operator deletes the file
 // to re-bootstrap (re-attesting old games is safe, silently skipping is not).
 func LoadStore(path string) (*AttestedRootStore, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return &AttestedRootStore{path: path, fresh: true, state: persistedState{Version: opstackStateVersion}}, nil
+		return &AttestedRootStore{
+			path:  path,
+			state: persistedState{Version: opstackStateVersion, BootstrapPending: true},
+		}, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to read attestor state file %s: %w", path, err)
@@ -281,7 +290,6 @@ func (s *AttestedRootStore) Commit(mutate func(*AttestedRootStore) (bool, error)
 	staged := &AttestedRootStore{
 		path:  s.path,
 		state: clonePersistedState(s.state),
-		fresh: s.fresh,
 		fs:    s.fs,
 	}
 	s.mu.RUnlock()
@@ -301,7 +309,6 @@ func (s *AttestedRootStore) Commit(mutate func(*AttestedRootStore) (bool, error)
 	}
 	s.mu.Lock()
 	s.state = staged.state
-	s.fresh = staged.fresh
 	s.mu.Unlock()
 	return nil
 }
@@ -354,12 +361,13 @@ func (s *AttestedRootStore) fileSystem() stateFileSystem {
 	return osStateFileSystem{}
 }
 
-// Fresh reports whether the store was created without a state file and still
-// needs its bootstrap ingest cursor.
+// Fresh reports whether the store still needs its bootstrap ingest cursor:
+// it was created without a state file and no Bootstrap has committed since,
+// including across restarts.
 func (s *AttestedRootStore) Fresh() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.fresh
+	return s.state.BootstrapPending
 }
 
 // Bootstrap sets the initial ingest cursor on a fresh store and reports
@@ -367,11 +375,11 @@ func (s *AttestedRootStore) Fresh() bool {
 func (s *AttestedRootStore) Bootstrap(nextGameIndex uint64) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.fresh && s.state.NextGameIndex == nextGameIndex {
+	if !s.state.BootstrapPending && s.state.NextGameIndex == nextGameIndex {
 		return false
 	}
 	s.state.NextGameIndex = nextGameIndex
-	s.fresh = false
+	s.state.BootstrapPending = false
 	return true
 }
 
