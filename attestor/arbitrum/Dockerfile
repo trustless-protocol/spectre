@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-FROM golang:1.25.7-bookworm AS attestor-builder
+FROM golang:1.26.9-bookworm AS attestor-builder
 
 WORKDIR /src/arbitrum
 
