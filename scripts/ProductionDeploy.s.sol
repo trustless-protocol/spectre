@@ -24,6 +24,7 @@ import { ISpectreTendermintMsgs } from "contracts/light-clients/spectre/messages
 import { DeployAccessManagerWithRoles } from "scripts/deployments/DeployAccessManagerWithRoles.sol";
 import { ProductionConfigLib } from "scripts/deployments/ProductionConfigLib.sol";
 import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
+import { IBCIdentifiers } from "contracts/shared/access/IBCIdentifiers.sol";
 import { IGroth16Verifier } from "contracts/light-clients/spectre/interfaces/IGroth16Verifier.sol";
 import { IRateLimit } from "contracts/apps/ics20/interfaces/IRateLimit.sol";
 
@@ -205,6 +206,13 @@ contract ProductionDeploy is Script, ISpectreTendermintMsgs, DeployAccessManager
 
         for (uint256 i = 0; i < launch.clientIds.length; ++i) {
             require(bytes(launch.clientIds[i]).length != 0, "empty production client id");
+            // The default-ID `addClient` is permissionless and hands out `client-<seq>`, so a launch id in
+            // that namespace can be taken by the first caller, who then inherits the pre-activated escrow.
+            // Custom ids are disjoint from it and only the ID_CUSTOMIZER_ROLE can register one.
+            require(
+                IBCIdentifiers.validateCustomIBCIdentifier(bytes(launch.clientIds[i])),
+                "production client id must be a custom id"
+            );
             for (uint256 j = 0; j < i; ++j) {
                 require(
                     keccak256(bytes(launch.clientIds[i])) != keccak256(bytes(launch.clientIds[j])),

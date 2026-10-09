@@ -50,7 +50,7 @@ objects and arrays are deliberately empty):
 
 ```json
 {
-  "client_id": "client-0",
+  "client_id": "eth-main",
   "header_1": {
     "signed_header": { "header": {}, "commit": {} },
     "validator_set": { "validators": [], "proposer": {}, "total_voting_power": "0" },

@@ -147,8 +147,8 @@ never be used.
 Order matters. `setCustomERC20` and enabling the launch gate are irreversible.
 
 ```solidity
-string memory clientId = "client-0";
-string memory denom = "transfer/client-0/uatom";
+string memory clientId = "eth-main";
+string memory denom = "transfer/eth-main/uatom";
 
 // 1. Pre-create the client escrow through production governance.
 address escrow = ics20Transfer.getEscrow(clientId);
