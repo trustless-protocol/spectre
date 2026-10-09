@@ -5,6 +5,15 @@
 !types/
 !types/**
 
+!core/
+!core/**
+
+!grpc/
+!grpc/**
+
+!host/
+!host/**
+
 !arbitrum/
 !arbitrum/Dockerfile
 !arbitrum/go.mod
@@ -13,8 +22,8 @@
 
 !arbitrum/cmd/
 !arbitrum/cmd/**
-!arbitrum/server/
-!arbitrum/server/**
+!arbitrum/adapter/
+!arbitrum/adapter/**
 !arbitrum/bold/
 !arbitrum/bold/**
 
