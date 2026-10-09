@@ -150,6 +150,40 @@ COSMOS_PRIVATE_KEY=$KEY_OP_PATH  ./relayer start --config config.op.json &
 
 Each key is a distinct account and needs its own gas balance on the Cosmos chain.
 
+## Prover key and verifier must be a pair
+
+Every Cosmos → EVM update (`updateApplicationState`, `updateConsensusState`) carries a
+Groth16 proof made with `relayer/bin/n4/pk.bin` and checked by the
+`Groth16Verifier_N4` registered in `SignatureVerifier.buckets(4)` on the destination
+chain (L1 or L2). The two come from one `scripts/solidity/build-prover-artifacts.sh`
+run. If they are from different setups nothing fails at deploy or at send time:
+the packet is accepted on Cosmos and the relayer then logs `ProofVerificationFailed()` on
+every attempt and re-queues it forever. `pk.bin` is git-ignored and cannot be recovered
+once lost; a set generated elsewhere (for example with `go run ./prover/cmd <dir>`) is a
+different setup, even though it looks identical.
+
+`scripts/local/check_prover_pairing.sh` checks this and exits 1 with a warning banner:
+
+```bash
+# Before deploying: r1cs/pk/vk/verifier on disk are the set that
+# build-prover-artifacts.sh published together (.artifacts/solidity/prover/provenance.json).
+# r1cs/pk/vk are read from where the relayer will load them: PROVER_BIN_DIR from the
+# environment, else from relayer/.env, else ./bin (relative to relayer/; --relayer-dir
+# overrides) -- not blindly from relayer/bin.
+# deploy_eth_contracts.sh and deploy_l2_contracts.sh already run this and stop on a mismatch.
+./scripts/local/check_prover_pairing.sh
+
+# Before sending a packet or starting the relayer: additionally, the verifier registered
+# on-chain is byte-identical to what forge compiled from the local Groth16Verifier_N4.sol.
+# Needs a `forge build` of the current source (matched by content hash, not by timestamp); --signature-verifier defaults to .l2-deployment.json.
+./scripts/local/check_prover_pairing.sh --rpc <evm-rpc> [--signature-verifier <addr>]
+```
+
+`PROVER_PAIRING=warn` prints the banner but continues. On a mismatch, regenerate the set
+with `scripts/solidity/build-prover-artifacts.sh --force`, then redeploy the contracts and
+recreate both clients (a new router also changes `l2_router` in the Cosmos-side client
+profile) — see the `ProofVerificationFailed()` row in the L2 [Failure modes](#failure-modes) table.
+
 ## Local Cosmos ↔ Ethereum E2E
 
 End-to-end run on local Cosmos + Ethereum nodes. Requires Docker + Kurtosis on
@@ -409,7 +443,10 @@ if one is already up — see [One L1, shared between rollups](#one-l1-shared-bet
 #    updateApplicationState reverts. The values below are the devnet-only key that
 #    relayer/.env ships as ETH_PRIVATE_KEY — change BOTH together or they drift apart.
 #    The account also needs an L2 balance (the L1 devnet faucet address has none
-#    there), but funding alone does NOT fix the role.
+#    there), but funding alone does NOT fix the role. Fund it by depositing through
+#    the OptimismPortal (OPTIMISM_PORTAL in .op-devnet-run/attestor.env).
+#    The script first runs check_prover_pairing.sh and stops when pk.bin does not
+#    belong to Groth16Verifier_N4.sol -- see "Prover key and verifier must be a pair".
 DST_CHAIN=opstack \
 L2_DEPLOYER_ADDRESS=0x8943545177806ED17B9F23F0a21ee5948eCaa776 \
 L2_DEPLOYER_PRIVATE_KEY=bcdf20249abf0ed6d944c0288fad489e33f66b3960d9e6229c1cd214ed3bbe31 \
@@ -424,7 +461,10 @@ cd relayer
 ./relayer create-clients-cosmos --config config.json --l2-config op-l2-config.json
 ./relayer create-clients-eth --config config.json --trust-level 2/3
 
-# 6. Relay both directions.
+# 6. Relay both directions. Before this (and before the first packet), confirm the
+#    verifier now registered on the L2 is the one pk.bin was set up with; a mismatch
+#    prints a warning and exits 1 instead of letting packets re-queue forever.
+(cd .. && . .op-devnet-run/attestor.env && forge build && ./scripts/local/check_prover_pairing.sh --rpc "$L2_RPC_URL")
 ./relayer start --config config.json
 ```
 
@@ -1016,6 +1056,7 @@ instead of building one; `L2_TIMEOUT_WINDOW` and `L2_TIMEOUT_SETTLE` tune the wa
 | `only N valid attestor signatures` or `only N attestor frontiers available` | Fewer than the configured threshold of endpoints answered with a valid signature/frontier. The relayer queries endpoints concurrently, so one failed endpoint is tolerated whenever the remaining endpoints still satisfy the threshold; check every endpoint address, immutable index and daemon health. |
 | Relayer startup fails with `reuse attestor public key ... across different head_kind values` | Two finality tiers share at least one key. Provision disjoint attestor/KMS keys for each tier and update `attestors` plus endpoint indices; finality is deliberately outside the signed 164-byte statement. |
 | `updateApplicationState` reverts, ~82k gas, no revert string | The relayer's signer lacks the ICS26Router relayer role on the L2. `cast run <tx>` shows `canCall(...) → false`; funding the address does not help. |
+| `updateApplicationState` / `updateConsensusState` reverts with `ProofVerificationFailed()` on every attempt; packet re-queued forever | `relayer/bin/n4/pk.bin` is not from the same setup as the `Groth16Verifier_N4` registered on that chain (typically `pk.bin` was lost and a new set was generated, or the contracts predate a regeneration). Run `./scripts/local/check_prover_pairing.sh --rpc <evm-rpc>`; fix per [Prover key and verifier must be a pair](#prover-key-and-verifier-must-be-a-pair). |
 | Send fails: `timeout exceeds the maximum expected value` | Sent without `--absolute-timeouts`, so the CLI writes `timeout_timestamp` in nanoseconds while IBC v2 reads seconds. |
 | `eth_getProof failed: historical state ... is not available` | The Ethereum light client on Cosmos is behind, so the execution node has pruned the state it trusts. Stop the relayer that uses this Cosmos signer, run `./relayer update-eth-client --config config.json`, then restart it. The command prints the resulting `latest_slot` and `latest_execution_block_number`; if it says the client is already current, the stale proof has another cause. |
 | Ack fails: `unknown field account_proof, expected one of key, value, proof` | The L2 membership proof was built in the Ethereum L1 shape. The L2 client wants a bare `EvmStorageProof` — see [docs/L2_CLIENTS.md](L2_CLIENTS.md). |

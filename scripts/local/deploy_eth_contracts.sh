@@ -68,6 +68,12 @@ echo "ETH_BEACON_API: ${ETH_BEACON_API:-}"
 echo "deployer: $ETH_DEPLOYER_ADDRESS"
 echo "faucet:   $E2E_FAUCET_ADDRESS"
 
+# The relayer proves with relayer/bin/n*/pk.bin; the verifier deployed below is compiled
+# from contracts/verifiers/Groth16Verifier_N*.sol. A mismatched pair deploys fine and then
+# fails every Cosmos -> EVM update with a bare ProofVerificationFailed().
+# PROVER_PAIRING=warn downgrades a mismatch to a warning.
+scripts/local/check_prover_pairing.sh
+
 # Deploy ETH contracts
 RESULT=$(forge script scripts/E2ETestDeploy.s.sol:E2ETestDeploy \
     --rpc-url "$ETH_RPC" \
