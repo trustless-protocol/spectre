@@ -335,16 +335,16 @@ contract ICS20Transfer is
         uint64 sequence = _getICS26Router()
             .sendPacket(
                 IICS26RouterMsgs.MsgSendPacket({
-                sourceClient: msg_.sourceClient,
-                timeoutTimestamp: msg_.timeoutTimestamp,
-                payload: IICS26RouterMsgs.Payload({
-                sourcePort: ICS20Lib.DEFAULT_PORT_ID,
-                destPort: ICS20Lib.DEFAULT_PORT_ID,
-                version: ICS20Lib.ICS20_VERSION,
-                encoding: ICS20Lib.ICS20_ENCODING,
-                value: abi.encode(packetData)
-            })
-            })
+                    sourceClient: msg_.sourceClient,
+                    timeoutTimestamp: msg_.timeoutTimestamp,
+                    payload: IICS26RouterMsgs.Payload({
+                        sourcePort: ICS20Lib.DEFAULT_PORT_ID,
+                        destPort: ICS20Lib.DEFAULT_PORT_ID,
+                        version: ICS20Lib.ICS20_VERSION,
+                        encoding: ICS20Lib.ICS20_ENCODING,
+                        value: abi.encode(packetData)
+                    })
+                })
             );
 
         _getICS20TransferStorage()._refundRateLimitCredits[msg_.sourceClient][sequence] = usageRemoved;
