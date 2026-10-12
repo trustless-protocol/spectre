@@ -182,11 +182,11 @@ func (s *MultichainTestSuite) createEthCosmosClients(
 
 	s.generateEthCosmosRelayerConfig(eth, chain, signer, ics26ClientID, "", configPath, proofType)
 
-	args := []string{"--trust-level", "1/3"}
+	wasmChecksum := ""
 	if eth.BeaconAPIClient != nil {
-		args = append(args, "--wasm-checksum", checksumHex)
+		wasmChecksum = checksumHex
 	}
-	err = relayer.RunCreateClients(configPath, args...)
+	err = relayer.RunCreateClients(configPath, wasmChecksum, "1/3")
 	s.Require().NoError(err)
 
 	clientAddress, err := s.ics26Contract.GetClient(nil, ics26ClientID)

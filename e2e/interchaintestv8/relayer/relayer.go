@@ -95,15 +95,32 @@ func StartRelayer(configPath string) (*os.Process, error) {
 	return cmd.Process, nil
 }
 
-// RunCreateClients runs the relayer's create-clients command synchronously (blocks until completion).
-func RunCreateClients(configPath string, extraArgs ...string) error {
+// RunCreateClients brings up both light clients, one relayer command per chain (the umbrella
+// create-clients command was removed): create-clients-cosmos first (creates the wasm Ethereum client
+// on Cosmos and writes its client id into the config), then create-clients-eth (deploys SpectreClient
+// wired to that id). An empty wasmChecksum skips the Cosmos half (PoW mode: no beacon API, so no
+// Ethereum light client on Cosmos).
+func RunCreateClients(configPath, wasmChecksum, trustLevel string) error {
+	if wasmChecksum != "" {
+		if err := RunCreateClientsCosmos(configPath, "--wasm-checksum", wasmChecksum); err != nil {
+			return fmt.Errorf("create-clients-cosmos: %w", err)
+		}
+	}
+	if err := RunCreateClientsEth(configPath, "--trust-level", trustLevel); err != nil {
+		return fmt.Errorf("create-clients-eth: %w", err)
+	}
+	return nil
+}
+
+// RunCreateClientsCosmos runs the relayer's create-clients-cosmos command synchronously.
+func RunCreateClientsCosmos(configPath string, extraArgs ...string) error {
 	config, err := os.ReadFile(configPath)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Running create-clients with config:\n%s\n", config)
+	fmt.Printf("Running create-clients-cosmos with config:\n%s\n", config)
 
-	args := append([]string{"create-clients", "--config", configPath}, extraArgs...)
+	args := append([]string{"create-clients-cosmos", "--config", configPath}, extraArgs...)
 	cmd := exec.Command(binaryPath(), args...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
