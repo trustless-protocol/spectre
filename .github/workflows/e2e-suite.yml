@@ -115,7 +115,7 @@ jobs:
         with:
           # Pinning avoids foundryup's "latest stable" GitHub API lookup, which
           # has intermittently failed CI with 504s before tests even start.
-          version: v1.7.1
+          version: v1.8.5
 
       - uses: oven-sh/setup-bun@v2
 

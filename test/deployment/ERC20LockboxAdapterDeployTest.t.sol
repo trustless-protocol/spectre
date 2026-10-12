@@ -22,6 +22,33 @@ import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
 import { IntegrationEnv } from "test/utils/IntegrationEnv.sol";
 import { FixedSupplyERC20, ToggleFeeERC20 } from "test/apps/ics20/ERC20LockboxAdapterTest.t.sol";
 
+/// @dev USDT-style token: `transfer`/`transferFrom` succeed but return no data, so a typed `bool` return cannot be
+/// decoded. The adapter handles such tokens through SafeERC20; the deploy script must too.
+contract NoReturnERC20 {
+    uint8 public constant decimals = 18;
+    mapping(address account => uint256 balance) public balanceOf;
+    mapping(address owner => mapping(address spender => uint256 amount)) public allowance;
+
+    constructor(uint256 supply) {
+        balanceOf[msg.sender] = supply;
+    }
+
+    function transfer(address to, uint256 amount) external {
+        balanceOf[msg.sender] -= amount;
+        balanceOf[to] += amount;
+    }
+
+    function transferFrom(address from, address to, uint256 amount) external {
+        allowance[from][msg.sender] -= amount;
+        balanceOf[from] -= amount;
+        balanceOf[to] += amount;
+    }
+
+    function approve(address spender, uint256 amount) external {
+        allowance[msg.sender][spender] = amount;
+    }
+}
+
 contract ERC20LockboxAdapterDeployHarness is ERC20LockboxAdapterDeploy {
     function resolveUnderlyingDecimals(address underlying, uint256 declared) external view returns (uint8) {
         return _resolveUnderlyingDecimals(underlying, declared);
@@ -124,6 +151,19 @@ contract ERC20LockboxAdapterDeployTest is Test {
         assertFalse(ics20Transfer.isEscrowActive(CLIENT), "inactive before");
         script.execute(cfg);
         assertTrue(ics20Transfer.isEscrowActive(CLIENT), "active after");
+    }
+
+    function test_success_fundsReserveWithTokenThatReturnsNothing() public {
+        vm.prank(BROADCASTER);
+        NoReturnERC20 token = new NoReturnERC20(1_000_000e18);
+        ERC20LockboxAdapterDeploy.Config memory cfg = _cfg();
+        cfg.underlying = address(token);
+        cfg.reserveAmount = RESERVE;
+
+        ERC20LockboxAdapter adapter = _adapterOf(script.execute(cfg));
+
+        assertEq(adapter.reserve(), RESERVE, "reserve funded despite the missing bool return");
+        assertEq(token.balanceOf(address(adapter)), RESERVE, "tokens actually moved");
     }
 
     function test_success_reusesExistingEscrow() public {

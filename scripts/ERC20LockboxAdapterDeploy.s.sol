@@ -31,6 +31,7 @@ pragma solidity ^0.8.28;
 import { stdJson } from "forge-std/StdJson.sol";
 import { Script } from "forge-std/Script.sol";
 import { IERC20 } from "@openzeppelin-contracts/token/ERC20/IERC20.sol";
+import { SafeERC20 } from "@openzeppelin-contracts/token/ERC20/utils/SafeERC20.sol";
 import { IERC20Metadata } from "@openzeppelin-contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
 import { IAccessManager } from "@openzeppelin-contracts/access/manager/IAccessManager.sol";
@@ -46,6 +47,7 @@ import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
 
 contract ERC20LockboxAdapterDeploy is Script {
     using stdJson for string;
+    using SafeERC20 for IERC20;
 
     /// @dev `10 ** exponent` must fit in a uint256; mirrors the adapter constructor.
     uint256 internal constant MAX_SCALE_EXPONENT = 77;
@@ -122,7 +124,8 @@ contract ERC20LockboxAdapterDeploy is Script {
         // 5. Fund last, by a plain transfer, and verify the exact balance (rejects fee-on-transfer tokens).
         if (cfg.reserveAmount != 0) {
             uint256 before = adapter.reserve();
-            require(IERC20(cfg.underlying).transfer(address(adapter), cfg.reserveAmount), "reserve transfer failed");
+            // safeTransfer: tokens such as USDT succeed without returning a bool, which a typed call cannot decode.
+            IERC20(cfg.underlying).safeTransfer(address(adapter), cfg.reserveAmount);
             require(adapter.reserve() == before + cfg.reserveAmount, "reserve funded with a different amount");
         }
 
