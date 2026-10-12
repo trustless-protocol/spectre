@@ -43,6 +43,7 @@ import { IICS20Transfer, IICS20TransferAccessControlled } from "contracts/apps/i
 import { IICS20Errors } from "contracts/apps/ics20/errors/IICS20Errors.sol";
 import { IRateLimit } from "contracts/apps/ics20/interfaces/IRateLimit.sol";
 import { ICS20Lib } from "contracts/apps/ics20/libraries/ICS20Lib.sol";
+import { IBCIdentifiers } from "contracts/shared/access/IBCIdentifiers.sol";
 import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
 
 contract ERC20LockboxAdapterDeploy is Script {
@@ -191,6 +192,13 @@ contract ERC20LockboxAdapterDeploy is Script {
         require(cfg.ics20.code.length != 0, "ICS20_TRANSFER has no code");
         require(cfg.underlying.code.length != 0, "UNDERLYING has no code");
         require(bytes(cfg.clientId).length != 0, "empty CLIENT_ID");
+        // Same rule as the production launch config. The default `client-<seq>` namespace is handed out by the
+        // permissionless `addClient`, so an adapter bound to such an id could be inherited by whoever registers it
+        // first. `/` would make `transfer/<client>/<denom>` ambiguous, and an id the router cannot accept would leave
+        // a funded adapter that never receives a packet. This runs before anything is sent, reserve funding included.
+        require(
+            IBCIdentifiers.validateCustomIBCIdentifier(bytes(cfg.clientId)), "CLIENT_ID must be a custom IBC identifier"
+        );
         require(bytes(cfg.baseDenom).length != 0, "empty BASE_DENOM");
         require(cfg.underlyingDecimals >= cfg.denomDecimals, "underlying decimals below denom decimals");
         uint256 exponent = uint256(cfg.underlyingDecimals) - uint256(cfg.denomDecimals);

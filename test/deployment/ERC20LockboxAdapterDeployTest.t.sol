@@ -242,6 +242,25 @@ contract ERC20LockboxAdapterDeployTest is Test {
         script.execute(cfg);
     }
 
+    function test_failure_invalidClientIdRejectedBeforeAnyStateChange() public {
+        // `client-N` is handed out by the permissionless `addClient`, so a funded adapter bound to it could be
+        // inherited by whoever registers that id first; `/` makes the denom path ambiguous; short or odd ids can
+        // never be a router client id at all.
+        string[6] memory invalid = ["client-1", "channel-0", "a/b", "eth", "eth main", "eth-main/"];
+        for (uint256 i = 0; i < invalid.length; ++i) {
+            ERC20LockboxAdapterDeploy.Config memory cfg = _cfg();
+            cfg.clientId = invalid[i];
+            cfg.reserveAmount = RESERVE;
+            uint256 balanceBefore = underlying.balanceOf(BROADCASTER);
+
+            vm.expectRevert("CLIENT_ID must be a custom IBC identifier");
+            script.execute(cfg);
+
+            assertEq(underlying.balanceOf(BROADCASTER), balanceBefore, "no reserve may move");
+            assertEq(ics20Transfer.getEscrow(invalid[i]), address(0), "no escrow may be created");
+        }
+    }
+
     function test_failure_emptyClientOrDenom() public {
         ERC20LockboxAdapterDeploy.Config memory cfg = _cfg();
         cfg.clientId = "";

@@ -205,7 +205,7 @@ that order. It reads its configuration from the environment:
 | Variable | Meaning |
 |---|---|
 | `ICS20_TRANSFER`, `UNDERLYING` | the `ICS20Transfer` proxy and the existing ERC20 |
-| `CLIENT_ID` | the router client id on this chain the denom arrives on |
+| `CLIENT_ID` | the router client id on this chain the denom arrives on; must be a custom identifier (no `client-` / `channel-` prefix, no `/`, 4 to 128 characters), the same rule as the production launch config |
 | `BASE_DENOM` | the denom exactly as the counterparty puts it in the packet: `uatom`, or the full trace such as `transfer/channel-536/uusdc` for a voucher |
 | `DENOM_DECIMALS` | the Cosmos exponent; **not verifiable on Ethereum**, check the bank metadata first |
 | `UNDERLYING_DECIMALS` | optional; read from `decimals()` when unset |
