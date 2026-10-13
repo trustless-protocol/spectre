@@ -53,9 +53,13 @@ pub struct ForkParameters {
     /// value, so an Electra-only chain behaves exactly as before.
     #[serde(default = "fork_not_scheduled")]
     pub fulu: Fork,
+    /// The gloas (Glamsterdam) fork. Same convention as `fulu`: `epoch` is `u64::MAX` on a
+    /// chain that has not scheduled Gloas, and absent input deserializes to that value.
+    #[serde(default = "fork_not_scheduled")]
+    pub gloas: Fork,
 }
 
-/// The default `fulu` fork for inputs that predate Fulu support: a zero version
+/// The default `fulu`/`gloas` fork for inputs that predate that fork's support: a zero version
 /// pinned to `u64::MAX` so `compute_fork_version` never selects it.
 const fn fork_not_scheduled() -> Fork {
     Fork {
@@ -64,10 +68,10 @@ const fn fork_not_scheduled() -> Fork {
     }
 }
 
-// Hand-written so `fulu` defaults to the not-scheduled sentinel (`u64::MAX`) rather
+// Hand-written so `fulu` and `gloas` default to the not-scheduled sentinel (`u64::MAX`) rather
 // than `Fork::default()`'s epoch 0. A derived Default would make
-// `ForkParameters::default().compute_fork_version(_)` return the zero Fulu version
-// for every epoch, since the Fulu arm is checked first.
+// `ForkParameters::default().compute_fork_version(_)` return the zero Gloas version
+// for every epoch, since the newest arm is checked first.
 impl Default for ForkParameters {
     fn default() -> Self {
         Self {
@@ -79,6 +83,7 @@ impl Default for ForkParameters {
             deneb: Fork::default(),
             electra: Fork::default(),
             fulu: fork_not_scheduled(),
+            gloas: fork_not_scheduled(),
         }
     }
 }
@@ -89,6 +94,7 @@ impl ForkParameters {
     #[must_use]
     pub const fn compute_fork_version(&self, epoch: u64) -> Version {
         match epoch {
+            _ if epoch >= self.gloas.epoch => self.gloas.version,
             _ if epoch >= self.fulu.epoch => self.fulu.version,
             _ if epoch >= self.electra.epoch => self.electra.version,
             _ if epoch >= self.deneb.epoch => self.deneb.version,
@@ -123,6 +129,10 @@ mod tests {
     }
 
     fn params(electra_epoch: u64, fulu_epoch: u64) -> ForkParameters {
+        params_with_gloas(electra_epoch, fulu_epoch, u64::MAX)
+    }
+
+    fn params_with_gloas(electra_epoch: u64, fulu_epoch: u64, gloas_epoch: u64) -> ForkParameters {
         ForkParameters {
             genesis_fork_version: v(0),
             genesis_slot: 0,
@@ -149,6 +159,10 @@ mod tests {
             fulu: Fork {
                 version: v(6),
                 epoch: fulu_epoch,
+            },
+            gloas: Fork {
+                version: v(7),
+                epoch: gloas_epoch,
             },
         }
     }
@@ -188,5 +202,47 @@ mod tests {
         let p: ForkParameters = serde_json::from_str(json).unwrap();
         assert_eq!(p.fulu.epoch, u64::MAX);
         assert_eq!(p.compute_fork_version(1_000_000), p.electra.version);
+    }
+
+    #[test]
+    fn compute_fork_version_selects_gloas_at_and_past_its_epoch() {
+        let p = params_with_gloas(100, 200, 300);
+        assert_eq!(
+            p.compute_fork_version(250),
+            v(6),
+            "between fulu and gloas -> fulu"
+        );
+        assert_eq!(
+            p.compute_fork_version(299),
+            v(6),
+            "just before gloas -> fulu"
+        );
+        assert_eq!(p.compute_fork_version(300), v(7), "at gloas -> gloas");
+        assert_eq!(p.compute_fork_version(999), v(7), "past gloas -> gloas");
+    }
+
+    #[test]
+    fn compute_fork_version_ignores_unscheduled_gloas() {
+        let p = params_with_gloas(100, 200, u64::MAX);
+        assert_eq!(p.compute_fork_version(1_000_000), v(6));
+    }
+
+    #[test]
+    fn deserializes_without_gloas_to_never() {
+        // A pre-Gloas client state omits "gloas"; it must default to epoch u64::MAX so
+        // compute_fork_version never selects it.
+        let json = r#"{
+            "genesis_fork_version": "0x00000000",
+            "genesis_slot": 0,
+            "altair": {"version":"0x01000000","epoch":0},
+            "bellatrix": {"version":"0x02000000","epoch":0},
+            "capella": {"version":"0x03000000","epoch":0},
+            "deneb": {"version":"0x04000000","epoch":0},
+            "electra": {"version":"0x05000000","epoch":100},
+            "fulu": {"version":"0x06000000","epoch":200}
+        }"#;
+        let p: ForkParameters = serde_json::from_str(json).unwrap();
+        assert_eq!(p.gloas.epoch, u64::MAX);
+        assert_eq!(p.compute_fork_version(1_000_000), p.fulu.version);
     }
 }

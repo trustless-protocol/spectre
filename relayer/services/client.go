@@ -710,10 +710,24 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, cosmos CosmosEndpoint, 
 	if err != nil {
 		return "", fmt.Errorf("failed to get beacon block: %w", err)
 	}
-	log.Printf("[CreateEthClient] beacon block fetched: executionBlock=%s", beaconBlock.Message.Body.ExecutionPayload.BlockNumber)
-
-	if bootstrap.Data.Header.Execution.BlockNumber != beaconBlock.Message.Body.ExecutionPayload.BlockNumber {
-		return "", fmt.Errorf("light client bootstrap block number does not match execution block number")
+	// A Gloas-format bootstrap names its execution block by hash only and the Gloas beacon block
+	// body has no execution payload to compare against, so the block hash and RLP header
+	// check inside ResolveExecution below is the cross-check there.
+	var headerSource relayerclient.RawHeaderSource
+	if evm.Client != nil {
+		headerSource = relayerclient.EthRawHeaderSource{Client: evm.EthClient()}
+	}
+	execBctx, execBcancel := context.WithTimeout(stdCtx, 30*time.Second)
+	bootstrapExecution, _, err := relayerclient.ResolveExecution(execBctx, headerSource, bootstrap.Data.Header)
+	execBcancel()
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve bootstrap execution header: %w", err)
+	}
+	if !bootstrap.Data.Header.IsGloasFormat() {
+		log.Printf("[CreateEthClient] beacon block fetched: executionBlock=%s", beaconBlock.Message.Body.ExecutionPayload.BlockNumber)
+		if bootstrap.Data.Header.Execution.BlockNumber != beaconBlock.Message.Body.ExecutionPayload.BlockNumber {
+			return "", fmt.Errorf("light client bootstrap block number does not match execution block number")
+		}
 	}
 
 	log.Printf("[CreateEthClient] querying ethereum chain id")
@@ -728,7 +742,7 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, cosmos CosmosEndpoint, 
 		return "", err
 	}
 
-	// The full fork schedule (through Fulu) is baked into the client state; the
+	// The full fork schedule (through Gloas) is baked into the client state; the
 	// light client selects the active version per header — see ToForkParameters.
 	forkParameters, err := spec.ToForkParameters()
 	if err != nil {
@@ -740,10 +754,7 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, cosmos CosmosEndpoint, 
 		return "", err
 	}
 
-	blockNumber, err := strconv.ParseUint(bootstrap.Data.Header.Execution.BlockNumber, 10, 64)
-	if err != nil {
-		return "", err
-	}
+	blockNumber := bootstrapExecution.BlockNumber
 	slot, err := strconv.ParseUint(bootstrap.Data.Header.Beacon.Slot, 10, 64)
 	if err != nil {
 		return "", err
@@ -795,11 +806,6 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, cosmos CosmosEndpoint, 
 		},
 	}
 
-	timestamp, err := strconv.ParseUint(bootstrap.Data.Header.Execution.Timestamp, 10, 64)
-	if err != nil {
-		return "", err
-	}
-
 	currentSyncCommittee, err := bootstrap.Data.CurrentSyncCommittee.ToSummarizedSyncCommittee()
 	if err != nil {
 		return "", fmt.Errorf("failed to hash pubkeys for CurrentSyncCommittee: %w", err)
@@ -825,8 +831,8 @@ func (w *Worker) CreateEthClient(stdCtx context.Context, cosmos CosmosEndpoint, 
 
 	consensusState := relayerclient.EthereumConsensusState{
 		Slot:                 clientState.LatestSlot,
-		StateRoot:            bootstrap.Data.Header.Execution.StateRoot,
-		Timestamp:            timestamp,
+		StateRoot:            bootstrapExecution.StateRoot,
+		Timestamp:            bootstrapExecution.Timestamp,
 		CurrentSyncCommittee: *currentSyncCommittee,
 		NextSyncCommittee:    nextSyncCommittee,
 	}
@@ -910,12 +916,19 @@ func (w *Worker) BuildEthClientUpdateHeaders(stdCtx context.Context, cosmos Cosm
 
 	log.Printf("[UpdateEthClient] trustedPeriod=%d targetPeriod=%d", trustedPeriod, targetPeriod)
 
-	headers, err := w.buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx, beaconAPIURL, ethClientState, trustedSlot, trustedPeriod, targetPeriod, finalityUpdate, finalizedSlot)
+	// Only a Gloas-format finalized header needs the execution node: it names the block by hash
+	// and the wasm client takes the state root, timestamp and number from that block's header.
+	var headerSource relayerclient.RawHeaderSource
+	if evm.Client != nil {
+		headerSource = relayerclient.EthRawHeaderSource{Client: evm.EthClient()}
+	}
+
+	headers, err := w.buildEthClientUpdateHeadersWithPeriodCrossing(stdCtx, beaconAPIURL, headerSource, ethClientState, trustedSlot, trustedPeriod, targetPeriod, finalityUpdate, finalizedSlot)
 	if err != nil {
 		return nil, err
 	}
 
-	proofState, proofTimestamp, err := ethProofStateFromFinalityUpdate(ethClientState, finalityUpdate, finalizedSlot)
+	proofState, proofTimestamp, err := ethProofStateFromFinalityUpdate(stdCtx, headerSource, ethClientState, finalityUpdate, finalizedSlot)
 	if err != nil {
 		return nil, err
 	}

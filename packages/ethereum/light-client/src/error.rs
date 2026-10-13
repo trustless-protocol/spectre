@@ -46,6 +46,33 @@ pub enum EthereumIBCError {
     #[error("unsupported fork version, must be electra or later")]
     MustBeElectraOrLater,
 
+    #[error("light client header must set exactly one of `execution` and `execution_block_hash`")]
+    InvalidLightClientHeaderFormat,
+
+    #[error("light client header at or after the gloas fork must use `execution_block_hash`, not a full execution payload header")]
+    ExecutionPayloadHeaderAfterGloas,
+
+    #[error("{name} length is invalid: expected {expected}, found {found}")]
+    InvalidBranchLength {
+        name: &'static str,
+        expected: usize,
+        found: usize,
+    },
+
+    #[error("finalized header carries only an execution block hash, so `execution_header_rlp` is required to derive the execution state")]
+    MissingExecutionHeaderRlp,
+
+    #[error("`execution_header_rlp` must not be set when the finalized header carries a full execution payload header")]
+    UnexpectedExecutionHeaderRlp,
+
+    #[error(
+        "execution header rlp hashes to {found}, but the proven execution block hash is {expected}"
+    )]
+    ExecutionHeaderHashMismatch { expected: B256, found: B256 },
+
+    #[error("invalid execution header rlp: {0}")]
+    InvalidExecutionHeaderRlp(&'static str),
+
     #[error(
         "execution payload header must have blob_gas_used and excess_blog_gas set after deneb"
     )]
