@@ -31,9 +31,15 @@ build-attestor:
 	cd attestor/optimism && go build -o attestor ./cmd
 
 # Build and optimize the eth wasm light client using `cosmwasm/optimizer`. Requires `docker` and `gzip`
+#
+# RUSTUP_TOOLCHAIN pins the image's own Rust 1.86.0. Without it rustup inside the container follows
+# rust-toolchain.toml and downloads that newer Rust, which breaks the optimizer two ways. On 1.97.1 the
+# link fails with `undefined symbol: db_read` etc.: Rust 1.96 stopped passing --allow-undefined and the
+# optimizer sets RUSTFLAGS, which drops the flag in .cargo/config.toml. On 1.95.0 the link passes but the
+# image's wasm-opt rejects the bulk-memory instructions with "Bulk memory operations require bulk memory".
 [group('build')]
 build-cw-ics08-wasm-eth:
-	docker run --rm -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0@sha256:7e0b9229c1a4118d0c9a2af2e7f5d95a91f264c26a2ce5681c779926e74d7f85 ./programs/cw-ics08-wasm-eth
+	docker run --rm -e RUSTUP_TOOLCHAIN=1.86.0-x86_64-unknown-linux-musl -v "$(pwd)":/code --mount type=volume,source="$(basename "$(pwd)")_cache",target=/target --mount type=volume,source=registry_cache,target=/usr/local/cargo/registry cosmwasm/optimizer:0.17.0@sha256:7e0b9229c1a4118d0c9a2af2e7f5d95a91f264c26a2ce5681c779926e74d7f85 ./programs/cw-ics08-wasm-eth
 	cp artifacts/cw_ics08_wasm_eth.wasm e2e/interchaintestv8/wasm
 	gzip -n e2e/interchaintestv8/wasm/cw_ics08_wasm_eth.wasm -f
 
