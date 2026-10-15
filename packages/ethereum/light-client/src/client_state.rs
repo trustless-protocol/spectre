@@ -57,6 +57,12 @@ impl ClientState {
         Ok(())
     }
 
+    /// Returns whether `epoch` is at or after the Gloas fork.
+    #[must_use]
+    pub const fn is_gloas_epoch(&self, epoch: u64) -> bool {
+        epoch >= self.fork_parameters.gloas.epoch
+    }
+
     /// Returns the computed slot at a given `timestamp_seconds`.
     #[must_use]
     pub fn compute_slot_at_timestamp(&self, timestamp_seconds: u64) -> Option<u64> {

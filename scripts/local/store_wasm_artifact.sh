@@ -27,11 +27,17 @@ KEYRING=$keyring
 signer="cosmos10d07y265gmmuvt4z0w9aw880jnsr700j6zn9kn"
 # GNU base64 spells this `-w 0`, whereas macOS/BSD base64 uses `-b`.  Remove
 # wrapping explicitly so the proposal payload is portable across both hosts.
-wasm_byte_code="$(gzip -n -c "$artifact_path" | base64 | tr -d '\n')"
+#
+# The payload goes to jq through a file (--rawfile), never through --arg. The gzipped, base64 wasm is
+# about 300 KB, and Linux caps a single command-line argument at 128 KiB (MAX_ARG_STRLEN), so
+# `jq --arg` fails with "Argument list too long" there even though it happens to work on macOS.
+wasm_byte_code_file="$(mktemp)"
+trap 'rm -f "$wasm_byte_code_file"' EXIT
+gzip -n -c "$artifact_path" | base64 | tr -d '\n' > "$wasm_byte_code_file"
 
 jq -n \
   --arg signer "$signer" \
-  --arg wasm_byte_code "$wasm_byte_code" \
+  --rawfile wasm_byte_code "$wasm_byte_code_file" \
   --arg title "$proposal_title" \
   --arg summary "$proposal_summary" \
   '{

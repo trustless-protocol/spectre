@@ -16,10 +16,11 @@ use crate::{
     error::EthereumIBCError,
     header::Header,
     sync_protocol_helpers::{
-        finalized_root_gindex_at_slot, is_valid_light_client_header,
+        ensure_branch_length, finalized_root_gindex_at_slot, is_valid_light_client_header,
         next_sync_committee_gindex_at_slot, normalize_merkle_branch,
     },
     trie::is_valid_normalized_merkle_branch,
+    update::finalized_execution_summary,
 };
 
 /// The BLS verifier trait.
@@ -56,6 +57,9 @@ pub fn verify_header<V: BlsVerify>(
     bls_verifier: V,
 ) -> Result<(), EthereumIBCError> {
     validate_light_client_update_bounds(&header.consensus_update)?;
+    // Rejects a Gloas-format finalized header whose execution header is missing or does not hash
+    // to the proven block hash, before any signature work.
+    finalized_execution_summary(header)?;
     let trusted_consensus_state = TrustedConsensusState::new(
         client_state,
         consensus_state.clone(),
@@ -250,6 +254,11 @@ pub fn validate_light_client_update<V: BlsVerify>(
     // This confirms that the `finalized_header` is really finalized.
     let finalized_root_gindex =
         finalized_root_gindex_at_slot(client_state, update.attested_header.beacon.slot)?;
+    ensure_branch_length(
+        "finality branch",
+        &update.finality_branch,
+        finalized_root_gindex,
+    )?;
     is_valid_normalized_merkle_branch(
         finalized_root,
         &normalize_merkle_branch(&update.finality_branch, finalized_root_gindex)?,
@@ -282,6 +291,11 @@ pub fn validate_light_client_update<V: BlsVerify>(
         // This validates the given next sync committee against the attested header's state root.
         let next_sync_committee_gindex =
             next_sync_committee_gindex_at_slot(client_state, update.attested_header.beacon.slot)?;
+        ensure_branch_length(
+            "next sync committee branch",
+            update.next_sync_committee_branch.as_ref().unwrap(),
+            next_sync_committee_gindex,
+        )?;
         is_valid_normalized_merkle_branch(
             update
                 .next_sync_committee
@@ -364,10 +378,12 @@ pub fn validate_light_client_update_bounds(
     update: &LightClientUpdate,
 ) -> Result<(), EthereumIBCError> {
     const MAX_EXTRA_DATA_BYTES: usize = 32;
-    for extra_data in [
-        &update.attested_header.execution.extra_data,
-        &update.finalized_header.execution.extra_data,
-    ] {
+    // Gloas-format headers carry no execution payload header, so there is nothing to bound.
+    for extra_data in [&update.attested_header, &update.finalized_header]
+        .into_iter()
+        .filter_map(|header| header.execution.as_ref())
+        .map(|execution| &execution.extra_data)
+    {
         if extra_data.len() > MAX_EXTRA_DATA_BYTES {
             return Err(EthereumIBCError::ResourceLimit {
                 resource: "execution payload extra_data",
@@ -459,7 +475,14 @@ mod test {
         verify_header(
             &consensus_state,
             &client_state,
-            header.consensus_update.attested_header.execution.timestamp + 1000,
+            header
+                .consensus_update
+                .attested_header
+                .execution
+                .as_ref()
+                .unwrap()
+                .timestamp
+                + 1000,
             &header,
             bls_verifier,
         )
@@ -483,13 +506,26 @@ mod test {
         )
         .unwrap();
         let mut header: Header = serde_json::from_slice(&client_message.data).unwrap();
-        header.consensus_update.attested_header.execution.extra_data = vec![0; 33].into();
+        header
+            .consensus_update
+            .attested_header
+            .execution
+            .as_mut()
+            .unwrap()
+            .extra_data = vec![0; 33].into();
 
         assert!(matches!(
             verify_header(
                 &initial_state.consensus_state,
                 &initial_state.client_state,
-                header.consensus_update.attested_header.execution.timestamp + 1_000,
+                header
+                    .consensus_update
+                    .attested_header
+                    .execution
+                    .as_ref()
+                    .unwrap()
+                    .timestamp
+                    + 1_000,
                 &header,
                 UnreachableBlsVerifier,
             ),

@@ -52,6 +52,7 @@ type ForkParameters struct {
 	Deneb              Fork   `json:"deneb"`
 	Electra            Fork   `json:"electra"`
 	Fulu               Fork   `json:"fulu"`
+	Gloas              Fork   `json:"gloas"`
 	GenesisForkVersion string `json:"genesis_fork_version"`
 	GenesisSlot        uint64 `json:"genesis_slot"`
 }
@@ -175,10 +176,13 @@ type SummarizedSyncCommittee struct {
 	AggregatePubkey string `json:"aggregate_pubkey"`
 }
 
+// LightClientHeader is a light client header in either wire format: pre-Gloas headers carry the
+// full Execution payload header, Gloas headers only ExecutionBlockHash. Exactly one is set.
 type LightClientHeader struct {
-	Beacon          BeaconBlockHeader      `json:"beacon"`
-	Execution       ExecutionPayloadHeader `json:"execution"`
-	ExecutionBranch []string               `json:"execution_branch"`
+	Beacon             BeaconBlockHeader       `json:"beacon"`
+	Execution          *ExecutionPayloadHeader `json:"execution,omitempty"`
+	ExecutionBlockHash string                  `json:"execution_block_hash,omitempty"`
+	ExecutionBranch    []string                `json:"execution_branch"`
 }
 
 type BeaconBlockHeader struct {
@@ -320,6 +324,8 @@ type BeaconSpec struct {
 	ElectraForkEpoch     string `json:"ELECTRA_FORK_EPOCH"`
 	FuluForkVersion      string `json:"FULU_FORK_VERSION"`
 	FuluForkEpoch        string `json:"FULU_FORK_EPOCH"`
+	GloasForkVersion     string `json:"GLOAS_FORK_VERSION"`
+	GloasForkEpoch       string `json:"GLOAS_FORK_EPOCH"`
 
 	// Time
 	SecondsPerSlot      string `json:"SECONDS_PER_SLOT"`
@@ -508,6 +514,9 @@ type EthereumHeader struct {
 	ActiveSyncCommittee ActiveSyncCommittee `json:"active_sync_committee"`
 	ConsensusUpdate     LightClientUpdate   `json:"consensus_update"`
 	TrustedSlot         uint64              `json:"trusted_slot"`
+	// ExecutionHeaderRLP is the hex RLP execution block header of the finalized header. Set
+	// exactly when that header is in the Gloas format; see ResolveExecution.
+	ExecutionHeaderRLP string `json:"execution_header_rlp,omitempty"`
 }
 
 type FinalityUpdateResponse struct {
@@ -538,7 +547,7 @@ type BootstrapResponse struct {
 	Data struct {
 		Header                     LightClientHeader `json:"header"`
 		CurrentSyncCommittee       SyncCommittee     `json:"current_sync_committee"`
-		CurrentSyncCommitteeBranch [6]string         `json:"current_sync_committee_branch"`
+		CurrentSyncCommitteeBranch []string          `json:"current_sync_committee_branch"`
 	} `json:"data"`
 }
 
@@ -652,7 +661,7 @@ func GetLightClientBootstrap(ctx context.Context, beaconAPIURL, blockRoot string
 }
 
 // ToForkParameters maps the beacon spec into the client-state fork schedule. Every
-// fork (through Fulu) is passed through with its own version+epoch; the light client
+// fork (through Gloas) is passed through with its own version+epoch; the light client
 // picks the active version per header via compute_fork_version, so no head epoch is
 // needed here.
 func (s *BeaconSpec) ToForkParameters() (*ForkParameters, error) {
@@ -694,6 +703,19 @@ func (s *BeaconSpec) ToForkParameters() (*ForkParameters, error) {
 	if fuluForkVersion == "" {
 		fuluForkVersion = "0x00000000"
 	}
+	// Gloas (Glamsterdam) fork, same convention as Fulu: a spec that omits GLOAS_FORK_* maps to
+	// epoch ^uint64(0) and the zero version, so the light client never selects it.
+	gloasForkEpoch := ^uint64(0)
+	if s.GloasForkEpoch != "" {
+		gloasForkEpoch, err = strconv.ParseUint(s.GloasForkEpoch, 10, 64)
+		if err != nil {
+			return nil, err
+		}
+	}
+	gloasForkVersion := s.GloasForkVersion
+	if gloasForkVersion == "" {
+		gloasForkVersion = "0x00000000"
+	}
 	return &ForkParameters{
 		GenesisForkVersion: s.GenesisForkVersion,
 		GenesisSlot:        0,
@@ -720,6 +742,10 @@ func (s *BeaconSpec) ToForkParameters() (*ForkParameters, error) {
 		Fulu: Fork{
 			Version: fuluForkVersion,
 			Epoch:   fuluForkEpoch,
+		},
+		Gloas: Fork{
+			Version: gloasForkVersion,
+			Epoch:   gloasForkEpoch,
 		},
 	}, nil
 }

@@ -197,6 +197,42 @@ tokens[0] = address(adapter);
 ics20Transfer.activateEscrow(clientId, tokens);
 ```
 
+### Scripted deployment
+
+[`scripts/ERC20LockboxAdapterDeploy.s.sol`](../scripts/ERC20LockboxAdapterDeploy.s.sol) performs the steps above in
+that order. It reads its configuration from the environment:
+
+| Variable | Meaning |
+|---|---|
+| `ICS20_TRANSFER`, `UNDERLYING` | the `ICS20Transfer` proxy and the existing ERC20 |
+| `CLIENT_ID` | the router client id on this chain the denom arrives on; must be a custom identifier (no `client-` / `channel-` prefix, no `/`, 4 to 128 characters), the same rule as the production launch config |
+| `BASE_DENOM` | the denom exactly as the counterparty puts it in the packet: `uatom`, or the full trace such as `transfer/channel-536/uusdc` for a voucher |
+| `DENOM_DECIMALS` | the Cosmos exponent; **not verifiable on Ethereum**, check the bank metadata first |
+| `UNDERLYING_DECIMALS` | optional; read from `decimals()` when unset |
+| `RATE_LIMIT` | optional; required behind the launch gate or with `ACTIVATE_ESCROW`; denom units |
+| `LOW_RESERVE_THRESHOLD` | optional; denom units |
+| `RESERVE_AMOUNT` | optional; underlying units, a multiple of `scale`, transferred **last** from the broadcaster |
+| `ACTIVATE_ESCROW` | optional; calls `activateEscrow` after everything else is verified |
+| `ALLOW_ACTIVE_CLIENT` | optional; acknowledges a client that is already active (pause packet processing first) |
+
+```bash
+ICS20_TRANSFER=<proxy> UNDERLYING=<erc20> CLIENT_ID=eth-main BASE_DENOM=uatom DENOM_DECIMALS=6 \
+RESERVE_AMOUNT=<n * scale> \
+  forge script scripts/ERC20LockboxAdapterDeploy.s.sol:ERC20LockboxAdapterDeploy \
+  --rpc-url $RPC --broadcast --sender <deployer> --private-key <key>
+```
+
+The script builds the denom key itself (`transfer/<CLIENT_ID>/<BASE_DENOM>`, the same construction as
+`onRecvPacket`), so the exact-string hazard above cannot come from a typo in a pasted denom. It refuses to run if
+the denom already has a registered token, and its preflight runs **before** anything is sent: if the broadcaster lacks
+a role it reverts and the escrow is not even created. It needs, with zero execution delay, `ADMIN_ROLE`,
+`ERC20_CUSTOMIZER_ROLE` (for `setCustomERC20`) and, when `RATE_LIMIT` is set, `RATE_LIMITER_ROLE`. An `AccessManager`
+that sits behind a timelock has to execute the same calls through governance instead; the script is not a way
+around that.
+
+It prints a JSON receipt (`adapter`, `underlying`, `escrow`, `denom`, `scale`, `reserve`, `capacity`). It does not
+check `DENOM_DECIMALS` against the counterparty, and it does not enable the launch gate.
+
 **Do not pre-fund the adapter.** It intentionally has no direct withdrawal or rescue function. If
 the escrow, decimals or denom mapping is wrong, a balance sent before the checks above may be
 unreachable even through the emergency IBC path. Verify the underlying token's transfer behaviour

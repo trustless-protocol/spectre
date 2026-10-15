@@ -216,6 +216,7 @@ mod tests {
         };
 
         #[test]
+        #[allow(clippy::too_many_lines)]
         fn test_instantiate() {
             let mut deps = mk_deps();
             let creator = deps.api.addr_make("creator");
@@ -252,6 +253,10 @@ mod tests {
                         epoch: 0,
                     },
                     fulu: Fork {
+                        version: FixedBytes([0; 4]),
+                        epoch: u64::MAX,
+                    },
+                    gloas: Fork {
                         version: FixedBytes([0; 4]),
                         epoch: u64::MAX,
                     },
@@ -412,7 +417,14 @@ mod tests {
             for header_bz in client_msgs {
                 let header: Header = serde_json::from_slice(&header_bz).unwrap();
                 env.block.time = Timestamp::from_seconds(
-                    header.consensus_update.attested_header.execution.timestamp + 1000,
+                    header
+                        .consensus_update
+                        .attested_header
+                        .execution
+                        .as_ref()
+                        .unwrap()
+                        .timestamp
+                        + 1000,
                 );
 
                 let query_verify_client_msg =
@@ -556,7 +568,14 @@ mod tests {
                 let header_manipulated = serde_json::to_vec(&header).unwrap();
 
                 env.block.time = Timestamp::from_seconds(
-                    header.consensus_update.attested_header.execution.timestamp + 1000,
+                    header
+                        .consensus_update
+                        .attested_header
+                        .execution
+                        .as_ref()
+                        .unwrap()
+                        .timestamp
+                        + 1000,
                 );
 
                 let query_verify_client_msg =
@@ -663,7 +682,14 @@ mod tests {
                 let header_manipulated = serde_json::to_vec(&header).unwrap();
 
                 env.block.time = Timestamp::from_seconds(
-                    header.consensus_update.attested_header.execution.timestamp + 1000,
+                    header
+                        .consensus_update
+                        .attested_header
+                        .execution
+                        .as_ref()
+                        .unwrap()
+                        .timestamp
+                        + 1000,
                 );
 
                 let query_verify_client_msg =
@@ -757,6 +783,10 @@ mod tests {
                         epoch: 0,
                     },
                     fulu: Fork {
+                        version: FixedBytes([0; 4]),
+                        epoch: u64::MAX,
+                    },
+                    gloas: Fork {
                         version: FixedBytes([0; 4]),
                         epoch: u64::MAX,
                     },
@@ -872,6 +902,10 @@ mod tests {
                         version: FixedBytes([0; 4]),
                         epoch: u64::MAX,
                     },
+                    gloas: Fork {
+                        version: FixedBytes([0; 4]),
+                        epoch: u64::MAX,
+                    },
                 },
                 sync_committee_size: 512,
                 seconds_per_slot: 10,
@@ -929,6 +963,10 @@ mod tests {
                         epoch: 5000,
                     },
                     fulu: Fork {
+                        version: FixedBytes([0; 4]),
+                        epoch: u64::MAX,
+                    },
+                    gloas: Fork {
                         version: FixedBytes([0; 4]),
                         epoch: u64::MAX,
                     },

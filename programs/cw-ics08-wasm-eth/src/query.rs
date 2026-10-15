@@ -230,7 +230,14 @@ mod tests {
 
         let mut env = mock_env();
         env.block.time = Timestamp::from_seconds(
-            header.consensus_update.attested_header.execution.timestamp + 1000,
+            header
+                .consensus_update
+                .attested_header
+                .execution
+                .as_ref()
+                .unwrap()
+                .timestamp
+                + 1000,
         );
 
         verify_client_message(

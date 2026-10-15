@@ -6,13 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr};
 use tree_hash_derive::TreeHash;
 
-use super::{
-    merkle::{
-        floorlog2, EXECUTION_PAYLOAD_GINDEX, FINALIZED_ROOT_GINDEX_ELECTRA,
-        NEXT_SYNC_COMMITTEE_GINDEX_ELECTRA,
-    },
-    sync_committee::{SyncAggregate, SyncCommittee},
-};
+use super::sync_committee::{SyncAggregate, SyncCommittee};
 
 /// A light client update
 #[serde_as]
@@ -23,14 +17,18 @@ pub struct LightClientUpdate {
     pub attested_header: LightClientHeader,
     /// Next sync committee corresponding to `attested_header.state_root`
     pub next_sync_committee: Option<SyncCommittee>,
-    /// The branch of the next sync committee
-    #[schemars(with = "Vec<String>")]
-    pub next_sync_committee_branch: Option<[B256; floorlog2(NEXT_SYNC_COMMITTEE_GINDEX_ELECTRA)]>,
+    /// The branch of the next sync committee. Its length is fork-dependent
+    /// (`floorlog2(next_sync_committee_gindex_at_slot(attested_slot))`); it is normalized
+    /// before verification.
+    #[schemars(with = "Option<Vec<String>>")]
+    pub next_sync_committee_branch: Option<Vec<B256>>,
     /// Finalized header corresponding to `attested_header.state_root`
     pub finalized_header: LightClientHeader,
-    /// Branch of the finalized header
+    /// Branch of the finalized header. Its length is fork-dependent
+    /// (`floorlog2(finalized_root_gindex_at_slot(attested_slot))`); it is normalized
+    /// before verification.
     #[schemars(with = "Vec<String>")]
-    pub finality_branch: [B256; floorlog2(FINALIZED_ROOT_GINDEX_ELECTRA)],
+    pub finality_branch: Vec<B256>,
     /// Sync committee aggregate signature
     pub sync_aggregate: SyncAggregate,
     /// Slot at which the aggregate signature was created (untrusted)
@@ -48,9 +46,11 @@ pub struct LightClientFinalityUpdate {
     pub attested_header: LightClientHeader,
     /// Finalized header corresponding to `attested_header.state_root`
     pub finalized_header: LightClientHeader,
-    /// Branch of the finalized header
+    /// Branch of the finalized header. Its length is fork-dependent
+    /// (`floorlog2(finalized_root_gindex_at_slot(attested_slot))`); it is normalized
+    /// before verification.
     #[schemars(with = "Vec<String>")]
-    pub finality_branch: [B256; floorlog2(FINALIZED_ROOT_GINDEX_ELECTRA)],
+    pub finality_branch: Vec<B256>,
     /// Sync committee aggregate signature
     pub sync_aggregate: SyncAggregate,
     /// Slot at which the aggregate signature was created (untrusted)
@@ -74,17 +74,35 @@ impl From<LightClientFinalityUpdate> for LightClientUpdate {
     }
 }
 
-/// The header of a light client
-#[derive(Serialize, Deserialize, JsonSchema, PartialEq, Eq, Clone, Debug, Default, TreeHash)]
+/// The header of a light client.
+///
+/// Two wire formats exist, distinguished by which execution field is present:
+///
+/// * **Pre-Gloas format** (Capella through Fulu light-client data): `execution` carries the
+///   full execution payload header and `execution_branch` proves its root in the beacon block
+///   body.
+/// * **Gloas format** ([Gloas light-client spec](https://github.com/ethereum/consensus-specs/blob/dev/specs/gloas/light-client/sync-protocol.md)):
+///   the payload header is gone. `execution_block_hash` is proven against the beacon block body
+///   by `execution_branch`, and the execution state root, timestamp and block number are no
+///   longer part of light-client data.
+///
+/// Exactly one of `execution` and `execution_block_hash` must be set;
+/// `is_valid_light_client_header` enforces this together with the epoch rules.
+#[derive(Serialize, Deserialize, JsonSchema, PartialEq, Eq, Clone, Debug, Default)]
 #[allow(clippy::module_name_repetitions)]
 pub struct LightClientHeader {
     /// The beacon block header
     pub beacon: BeaconBlockHeader,
-    /// The execution payload header
-    pub execution: ExecutionPayloadHeader,
-    /// The execution branch
+    /// The execution payload header (pre-Gloas format only)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<ExecutionPayloadHeader>,
+    /// The execution block hash (Gloas format only)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(with = "Option<String>")]
+    pub execution_block_hash: Option<B256>,
+    /// The execution branch. Its length is fork-dependent; it is normalized before verification.
     #[schemars(with = "Vec<String>")]
-    pub execution_branch: [B256; floorlog2(EXECUTION_PAYLOAD_GINDEX)],
+    pub execution_branch: Vec<B256>,
 }
 
 /// The beacon block header

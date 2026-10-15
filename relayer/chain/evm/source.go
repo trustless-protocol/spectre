@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"math/big"
-	"strconv"
 	"time"
 
 	"relayer/chain"
@@ -94,9 +93,9 @@ func (s *Source) finalizedExecBlock(parent context.Context) (uint64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("eth source: finality update: %w", err)
 	}
-	block, err := strconv.ParseUint(fu.FinalizedHeader.Execution.BlockNumber, 10, 64)
+	block, err := relayerclient.FinalizedExecutionBlockNumber(ctx, s.evm.EthClient(), fu.FinalizedHeader)
 	if err != nil {
-		return 0, fmt.Errorf("eth source: parse finalized exec block %q: %w", fu.FinalizedHeader.Execution.BlockNumber, err)
+		return 0, fmt.Errorf("eth source: finalized exec block: %w", err)
 	}
 	return block, nil
 }

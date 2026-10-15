@@ -230,12 +230,12 @@ func (s *EthCosmosTestSuite) SetupSuite(ctx context.Context, proofType types.Sup
 
 	// Run create-clients: deploys SpectreClient on ETH (and creates wasm ETH client on Cosmos for PoS mode)
 	s.Require().True(s.Run("Create light clients", func() {
-		args := []string{"--trust-level", "1/3"}
 		// Pass wasm checksum only for PoS mode (beacon URL required by relayer)
+		wasmChecksum := ""
 		if checksumHex != "" && eth.BeaconAPIClient != nil {
-			args = append(args, "--wasm-checksum", checksumHex)
+			wasmChecksum = checksumHex
 		}
-		err := relayer.RunCreateClients(testvalues.RelayerConfigFilePath, args...)
+		err := relayer.RunCreateClients(testvalues.RelayerConfigFilePath, wasmChecksum, "1/3")
 		s.Require().NoError(err)
 	}))
 
