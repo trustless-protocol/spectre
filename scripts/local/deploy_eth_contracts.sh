@@ -75,13 +75,26 @@ echo "faucet:   $E2E_FAUCET_ADDRESS"
 scripts/local/check_prover_pairing.sh
 
 # Deploy ETH contracts
-RESULT=$(forge script scripts/E2ETestDeploy.s.sol:E2ETestDeploy \
+#
+# forge prints a failed script's traces on stdout and its error on stderr. Both are kept in a log and
+# shown when the script fails. Discarding stderr and holding stdout only in a variable that `set -e`
+# then dropped left a reverted or out-of-gas transaction with no trace anywhere.
+#
+# --slow sends one transaction at a time and waits for its receipt, so the first failure stops the
+# run instead of letting transactions that depend on it go out after it.
+DEPLOY_LOG=$(mktemp)
+if ! forge script scripts/E2ETestDeploy.s.sol:E2ETestDeploy \
     --rpc-url "$ETH_RPC" \
     --broadcast \
+    --slow \
     --ffi \
     --sender "$ETH_DEPLOYER_ADDRESS" --private-key "$ETH_DEPLOYER_PRIVATE_KEY" \
-    2>/dev/null
-)
+    >"$DEPLOY_LOG" 2>&1; then
+    echo "ERROR: forge script failed. Its output follows (also kept at $DEPLOY_LOG):" >&2
+    cat "$DEPLOY_LOG" >&2
+    exit 1
+fi
+RESULT=$(cat "$DEPLOY_LOG")
 
 # The script returns the deployment JSON as `0: string "<escaped-json>"`; unwrap it once.
 DEPLOYMENT_JSON=$(echo "$RESULT" \
@@ -103,6 +116,43 @@ echo "VERIFIER_ADDRESS: $VERIFIER_ADDRESS"
 echo "MEMBERSHIP_ADDRESS: $MEMBERSHIP_ADDRESS"
 echo "UPDATE_CLIENT_ADDRESS: $UPDATE_CLIENT_ADDRESS"
 echo "MISBEHAVIOUR_ADDRESS: $MISBEHAVIOUR_ADDRESS"
+
+[ -n "$DEPLOYMENT_JSON" ] || {
+    echo "ERROR: no deployment JSON in the forge output (see $DEPLOY_LOG)" >&2
+    exit 1
+}
+
+# forge computes every address before it broadcasts, so a transaction that reverted, ran out of gas or
+# never landed still leaves an address in the output above. Check the chain before the config is
+# patched with them, otherwise the relayer only reports an unexplained revert at its first packet.
+BROADCAST_FILE=broadcast/E2ETestDeploy.s.sol/$(cast chain-id --rpc-url "$ETH_RPC")/run-latest.json
+[ -f "$BROADCAST_FILE" ] || {
+    echo "ERROR: forge left no broadcast file at $BROADCAST_FILE (see $DEPLOY_LOG)" >&2
+    exit 1
+}
+FAILED_TXS=$(jq '[.receipts[] | select(.status != "0x1")] | length' "$BROADCAST_FILE")
+UNMINED_TXS=$(jq '(.transactions | length) - (.receipts | length)' "$BROADCAST_FILE")
+if [ "$FAILED_TXS" -ne 0 ] || [ "$UNMINED_TXS" -ne 0 ]; then
+    echo "ERROR: $FAILED_TXS failed and $UNMINED_TXS unmined deploy transactions in $BROADCAST_FILE." >&2
+    echo "Failed ones (type, contract, address, tx):" >&2
+    jq -r '. as $r | $r.receipts[] | select(.status != "0x1") | .transactionHash as $h
+        | $r.transactions[] | select(.hash == $h)
+        | [.transactionType, .contractName, .contractAddress, .hash] | @tsv' "$BROADCAST_FILE" >&2
+    echo "Inspect one with: cast receipt <tx> --rpc-url $ETH_RPC (forge output: $DEPLOY_LOG)" >&2
+    exit 1
+fi
+
+for name in erc20 ics20Transfer ics26Router signatureVerifier membership updateClient misbehaviour; do
+    address=$(echo "$DEPLOYMENT_JSON" | jq -r --arg name "$name" '.[$name] // empty')
+    [ -n "$address" ] || {
+        echo "ERROR: $name is missing from the deployment output (see $DEPLOY_LOG)" >&2
+        exit 1
+    }
+    [ "$(cast codesize "$address" --rpc-url "$ETH_RPC")" -gt 0 ] || {
+        echo "ERROR: $name $address holds no code on $ETH_RPC (see $DEPLOY_LOG)" >&2
+        exit 1
+    }
+done
 
 # Patch the relayer config with the deployed addresses + endpoints.
 jq \
