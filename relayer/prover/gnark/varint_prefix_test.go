@@ -23,12 +23,23 @@ import (
 // and the 32-byte block hash content stay fixed regardless of varint width, so
 // votes built with different trailLen still share the committed common prefix.
 func makeCanonicalVote(roundPresent bool, trailLen int, blockHash [32]byte) []byte {
+	var round uint64
+	if roundPresent {
+		round = 1
+	}
+	return makeCanonicalVoteAtRound(round, trailLen, blockHash)
+}
+
+// makeCanonicalVoteAtRound is makeCanonicalVote with an explicit round. Like
+// proto3 it omits the round field when round == 0, and otherwise emits it as
+// 0x19 || sfixed64 (little-endian).
+func makeCanonicalVoteAtRound(round uint64, trailLen int, blockHash [32]byte) []byte {
 	body := []byte{0x08, 0x02} // Type = precommit (field 1)
 	body = append(body, 0x11)  // Height tag (field 2, sfixed64)
 	body = append(body, 1, 2, 3, 4, 5, 6, 7, 8)
-	if roundPresent {
+	if round != 0 {
 		body = append(body, 0x19) // Round tag (field 3, fixed64)
-		body = append(body, 0, 0, 0, 0, 0, 0, 0, 1)
+		body = binary.LittleEndian.AppendUint64(body, round)
 	}
 	body = append(body, 0x22, 0x48, 0x0a, 0x20) // BlockID tag/len + inner hash tag/len
 	body = append(body, blockHash[:]...)
@@ -66,7 +77,7 @@ func TestCommonPrefixFields_VarintWidths(t *testing.T) {
 			if gotTwoByte := vote[0] >= 0x80; gotTwoByte != tc.wantTwoByte {
 				t.Fatalf("varint width: got 2-byte=%v, want %v (sb[0]=%#x)", gotTwoByte, tc.wantTwoByte, vote[0])
 			}
-			head, hash, round, err := witness.CommonPrefixFields([]witness.ValidatorSignature{{SignedBytes: vote, Active: true}})
+			head, round, hash, err := witness.CommonPrefixFields([]witness.ValidatorSignature{{SignedBytes: vote, Active: true}})
 			if err != nil {
 				t.Fatalf("CommonPrefixFields: %v", err)
 			}
@@ -76,8 +87,12 @@ func TestCommonPrefixFields_VarintWidths(t *testing.T) {
 			if hash != blockHash {
 				t.Errorf("block hash = %x, want %x", hash, blockHash)
 			}
-			if round != tc.roundPresent {
-				t.Errorf("roundPresent = %v, want %v", round, tc.roundPresent)
+			var wantRound [witness.RoundLen]byte
+			if tc.roundPresent {
+				wantRound[0] = 1 // makeCanonicalVote encodes round 1, sfixed64 LE
+			}
+			if round != wantRound {
+				t.Errorf("round = %x, want %x", round, wantRound)
 			}
 		})
 	}
@@ -93,7 +108,7 @@ func TestCommonPrefixFields_SkipsInactive(t *testing.T) {
 	}
 	dummy := makeCanonicalVote(false, 90, [32]byte{}) // unrelated 2-byte vote, inactive
 	real := makeCanonicalVote(false, 10, blockHash)   // 1-byte vote, active
-	head, hash, _, err := witness.CommonPrefixFields([]witness.ValidatorSignature{
+	head, _, hash, err := witness.CommonPrefixFields([]witness.ValidatorSignature{
 		{SignedBytes: dummy, Active: false},
 		{SignedBytes: real, Active: true},
 	})
