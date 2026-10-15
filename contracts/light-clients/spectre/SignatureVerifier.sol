@@ -12,8 +12,8 @@ import { Encode } from "contracts/light-clients/spectre/libraries/Encode.sol";
 ///         for that size.
 ///
 ///         As of #199 the witness commitment binds only the common-prefix fields
-///         (Type|Height), whether the round field is present, the 32-byte block
-///         hash, and the per-slot pubkey + active flag — instead of rebuilding
+///         (Type|Height), the vote round, the 32-byte block hash, and the
+///         per-slot pubkey + active flag — instead of rebuilding
 ///         every validator's full canonical vote. The in-circuit Ed25519 verify
 ///         binds the full signed bytes (timestamp, chainID, part-set header), so
 ///         dropping them from the on-chain hash costs no security while shrinking
@@ -26,12 +26,14 @@ import { Encode } from "contracts/light-clients/spectre/libraries/Encode.sol";
 contract SignatureVerifier is ISignatureVerifier {
     /// Witness byte layout (must match relayer/prover/witness/witness.go::encodeWitnessBytes
     /// and BatchCircuit.Define exactly):
-    ///   PrefixHead(11) || roundPresent(1) || BlockHash(32)
+    ///   PrefixHead(11) || Round(8) || BlockHash(32)
     ///   || per slot: active(1) || A(32)
     /// PrefixHead = Type(0x08 0x02) || Height(0x11 || sfixed64) — the first 11
-    /// bytes of every signer's canonical-vote body.
+    /// bytes of every signer's canonical-vote body. Round = sfixed64 LE, zero
+    /// when the round field is absent.
     uint256 constant PREFIX_HEAD_LEN = 11;
-    uint256 constant WITNESS_HEAD_LEN = PREFIX_HEAD_LEN + 1 + 32; // + roundPresent + blockHash = 44
+    uint256 constant ROUND_LEN = 8;
+    uint256 constant WITNESS_HEAD_LEN = PREFIX_HEAD_LEN + ROUND_LEN + 32; // + round + blockHash = 51
     uint256 constant WITNESS_SLOT_LEN = 1 + 32; // active + pubkey
 
     /// @param verifier Address of the per-bucket gnark-generated Groth16 verifier.
@@ -109,13 +111,15 @@ contract SignatureVerifier is ISignatureVerifier {
 
     /// @dev Canonical witness byte layout — must match Go's
     ///      witness.ComputeWitnessHash and BatchCircuit.Define exactly:
-    ///        PrefixHead(11) || roundPresent(1) || BlockHash(32)
+    ///        PrefixHead(11) || Round(8) || BlockHash(32)
     ///        || per slot: active(1) || A(32)
     ///      PrefixHead = Type(0x08 0x02) || Height(0x11 || sfixed64(height)) — the
-    ///      first 11 bytes of every signer's canonical-vote body. roundPresent is
-    ///      1 when the round field is encoded (round > 0); the circuit uses it to
-    ///      select the block-hash offset (the round field shifts BlockID by 9
-    ///      bytes). BlockHash is the 32-byte BlockID hash. A is hashed so calldata
+    ///      first 11 bytes of every signer's canonical-vote body. Round is
+    ///      sfixed64(round) (LE, all zero when round == 0, where proto omits the
+    ///      field); the circuit asserts it equal in every active slot — so one
+    ///      proof cannot mix precommits from different rounds — and derives
+    ///      round-presence from it to select the block-hash offset (the round
+    ///      field shifts BlockID by 9 bytes). BlockHash is the 32-byte BlockID hash. A is hashed so calldata
     ///      pubkey swaps can't misattribute voting power; R/S are bound by the
     ///      in-circuit Ed25519 verify, not here.
     function _hashWitness(
@@ -135,9 +139,10 @@ contract SignatureVerifier is ISignatureVerifier {
         _storeByte(buf, 2, 0x11);
         _copyBytes(buf, 3, Encode.encodeSfixed64(int64(shared.height)));
 
-        // roundPresent (1) || BlockHash (32).
-        _storeByte(buf, PREFIX_HEAD_LEN, shared.round > 0 ? 1 : 0);
-        _storeBytes32(buf, PREFIX_HEAD_LEN + 1, shared.blockIDHash);
+        // Round (8) || BlockHash (32).
+        // forge-lint: disable-next-line(unsafe-typecast)
+        _copyBytes(buf, PREFIX_HEAD_LEN, Encode.encodeSfixed64(int64(shared.round)));
+        _storeBytes32(buf, PREFIX_HEAD_LEN + ROUND_LEN, shared.blockIDHash);
 
         uint256 offset = WITNESS_HEAD_LEN;
         for (uint256 i = 0; i < pubkeys.length; i++) {

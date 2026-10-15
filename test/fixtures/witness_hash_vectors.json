@@ -42,7 +42,7 @@
         false,
         false
       ],
-      "witnessHash": "0x8b2544a4276d6104a35c2d9454bc0c06e2022b96c9ccec2febef7edbaec5dbe3"
+      "witnessHash": "0x26522df850357fe4d8a0d0679d835e121b375a5874a4bdb052cf37c8ef594e61"
     },
     {
       "name": "bucket8_round_wideHeight_twoByteVarint",
@@ -69,7 +69,7 @@
         false,
         false
       ],
-      "witnessHash": "0x0f7f047b850c647e79bf87bd094727b94aefe64c4c7e00e2685e8006d9123ead"
+      "witnessHash": "0xcd605bb53739fd74091bb42a3012514d829b9dec6ef6922aa3adc936e92b13e4"
     },
     {
       "name": "bucket4_noRound_allActive",
@@ -88,7 +88,7 @@
         true,
         true
       ],
-      "witnessHash": "0x6fe93aa653eda7be9b85fce2b2afc251e46f56a077eeda1e20d89f2c872c0717"
+      "witnessHash": "0xc00f151ebacc596db71e50ef6ed447a3d9fec603898414ac834112927aa31184"
     },
     {
       "name": "bucket4_round_singleSigner",
@@ -107,7 +107,7 @@
         false,
         false
       ],
-      "witnessHash": "0xed21800ee1ac864d47259ed262fa25cc636d2ae4ff55e87167cd35262fac16bf"
+      "witnessHash": "0xd9019afd746531c5961da626a6f60972f54de1849069d68357dfb657ad367321"
     }
   ]
 }

@@ -167,7 +167,7 @@ func makeSmokeVote() []byte {
 		msg[4+j] = byte(j + 1)
 	}
 	// BlockID: field 4 (0x22), length 0x48, inner hash tag 0x0a length 0x20.
-	// msg[12] must not be the round tag 0x19 so roundPresent stays false, which
+	// msg[12] must not be the round tag 0x19 so the round is absent (committed Round = 0), which
 	// places the 32-byte block hash at no-round in-message index 16 (msg[16:48]).
 	msg[12] = 0x22
 	msg[13] = 0x48

@@ -22,7 +22,7 @@ func MakeTestVote() []byte {
 	for j := 0; j < 8; j++ {
 		msg[4+j] = byte(j + 1)
 	}
-	msg[12] = 0x22 // BlockID tag (not 0x19 → roundPresent = false)
+	msg[12] = 0x22 // BlockID tag (not 0x19 → no round, Round = 0)
 	msg[13] = 0x48
 	msg[14] = 0x0a
 	msg[15] = 0x20

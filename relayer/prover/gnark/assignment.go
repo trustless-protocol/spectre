@@ -43,23 +43,21 @@ func buildBatchAssignment(sigs []witness.ValidatorSignature, hash [32]byte) (*Ba
 		a.Hash[i] = publicInputs[i]
 	}
 
-	// #199 committed common fields (Type|Height prefix head, block hash, round
-	// presence) — derived from a real active signer's bytes so they match the
+	// #199 committed common fields (Type|Height prefix head, round, block hash)
+	// — derived from a real active signer's bytes so they match the
 	// witness commit and what the circuit binds each active slot against.
-	prefixHead, blockHash, roundPresent, err := witness.CommonPrefixFields(sigs)
+	prefixHead, round, blockHash, err := witness.CommonPrefixFields(sigs)
 	if err != nil {
 		return nil, err
 	}
 	for j := 0; j < witness.PrefixHeadLen; j++ {
 		a.PrefixHead[j] = uints.NewU8(prefixHead[j])
 	}
+	for j := 0; j < witness.RoundLen; j++ {
+		a.Round[j] = uints.NewU8(round[j])
+	}
 	for j := 0; j < 32; j++ {
 		a.BlockHash[j] = uints.NewU8(blockHash[j])
-	}
-	if roundPresent {
-		a.RoundPresent = 1
-	} else {
-		a.RoundPresent = 0
 	}
 
 	for i := 0; i < n; i++ {

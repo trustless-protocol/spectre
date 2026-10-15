@@ -35,13 +35,18 @@ type BatchCircuit[Base, Scalars emulated.FieldParams] struct {
 	// offsets in every signer's message, instead of hashing the full per-slot
 	// canonical vote. PrefixHead = Type(precommit)+Height. BlockHash = the
 	// 32-byte block hash inside BlockID (→ binds the header → AppHash, chainId,
-	// height). RoundPresent selects the block-hash offset (round shifts BlockID
-	// by 9 bytes). All three are committed (hashed) so calldata can't alter
-	// them. Round/timestamp/chainID are left unbound here — the Ed25519 verify
-	// binds them via H_RAM, and chainID is enforced on-chain.
-	PrefixHead   [witness.PrefixHeadLen]uints.U8 `gnark:",secret"`
-	BlockHash    [32]uints.U8                    `gnark:",secret"`
-	RoundPresent frontend.Variable               `gnark:",secret"`
+	// height). Round is the vote round as its 8 wire bytes (sfixed64 LE, zero
+	// when the field is absent); round != 0 selects the block-hash offset
+	// (round shifts BlockID by 9 bytes) and every active slot must carry
+	// exactly these bytes. All three are committed (hashed) so calldata can't
+	// alter them. Timestamp/chainID are left unbound here — the Ed25519 verify
+	// binds them via H_RAM, and chainID is enforced on-chain. Round is bound
+	// ACROSS slots on purpose: the Ed25519 verify only ties a slot to its own
+	// bytes, so without it one proof could mix precommits from different
+	// rounds, which CometBFT's single Commit.Round does not allow.
+	PrefixHead [witness.PrefixHeadLen]uints.U8 `gnark:",secret"`
+	Round      [witness.RoundLen]uints.U8      `gnark:",secret"`
+	BlockHash  [32]uints.U8                    `gnark:",secret"`
 
 	Sig []eddsa.Signature[Base, Scalars] `gnark:",secret"`
 	Pub []eddsa.PublicKey[Base, Scalars] `gnark:",secret"`
@@ -67,7 +72,7 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 
 	// 1. Hash all witness bytes and bind to the public commitment.
 	//    Layout (must match witness/witness.go and SignatureVerifier._hashWitness):
-	//      PrefixHead(11) || roundPresent(1) || BlockHash(32) || per slot: active(1) || A(32)
+	//      PrefixHead(11) || Round(8) || BlockHash(32) || per slot: active(1) || A(32)
 	//    Binding A protects the on-chain quorum lookup — Solidity matches
 	//    pubkeys[i] against the validator set to attribute voting power, so
 	//    without this hash binding an attacker could swap calldata pubkeys.
@@ -88,7 +93,7 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 	//    + the in-circuit Ed25519 verify. This shrinks the witness commit.
 	var buf []uints.U8
 	buf = append(buf, c.PrefixHead[:]...)
-	buf = append(buf, varToBytesBE(api, c.RoundPresent, 1)...)
+	buf = append(buf, c.Round[:]...)
 	buf = append(buf, c.BlockHash[:]...)
 	for i := range c.Sig {
 		buf = append(buf, varToBytesBE(api, c.Active[i], 1)...)
@@ -107,20 +112,32 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 		api.AssertIsEqual(c.Hash[i], packBytesToVariableBE(api, digest[start:end]))
 	}
 
-	// #199 prefix binding (cheap: fixed offsets + a single RoundPresent select,
+	// #199 prefix binding (cheap: fixed offsets + a single roundPresent select,
 	// no per-byte comparator). For each signer's message:
 	//   - PrefixHead (Type=precommit | Height) is always at [prefixBodyOffset, +11).
+	//   - the 8 round bytes are at [RoundBodyOff, +8) when the round field is
+	//     present, and must equal the committed Round (same round in every slot).
 	//   - the 32-byte block hash is at blockHashOffNoRound or blockHashOffRound,
-	//     selected by RoundPresent (round, when present, shifts BlockID by 9 B).
-	// Binds Type, Height and the block hash (→ header → AppHash/chainId/height).
-	// A committed-vs-actual mismatch (wrong RoundPresent, wrong bytes) fails the
+	//     selected by roundPresent (round, when present, shifts BlockID by 9 B).
+	// Binds Type, Height, Round and the block hash (→ header → AppHash/chainId/height).
+	// A committed-vs-actual mismatch (wrong Round, wrong bytes) fails the
 	// equality; everything else in the message is covered by the Ed25519 verify.
+	//
+	// roundPresent is derived from the committed Round value, not witnessed
+	// separately: proto3 omits the field exactly when round == 0. Round bytes
+	// are range-checked to 8 bits here so the packed sum below is injective
+	// (it cannot alias zero) and zero iff every byte is zero.
+	roundSum := frontend.Variable(0)
+	for k := 0; k < witness.RoundLen; k++ {
+		api.ToBinary(c.Round[k].Val, 8)
+		roundSum = api.Add(roundSum, api.Mul(c.Round[k].Val, uint64(1)<<(8*uint(k))))
+	}
+	roundPresent := api.Sub(1, api.IsZero(roundSum))
 	// Only ACTIVE slots carry the real canonical vote — padding/dummy slots sign
 	// deterministic dummy bytes, so their prefix must NOT be checked against the
 	// committed common prefix. Mask each assert by Active[i] (a single bit
 	// already in the witness): for active slots it enforces equality, for padding
 	// it is vacuous (0 == 0).
-	api.AssertIsBoolean(c.RoundPresent)
 	for i := range c.Sig {
 		// Active[i] is the mask on every assert below and one byte of the witness
 		// commitment. varToBytesBE range-checks it to 8 bits, which is not the
@@ -148,19 +165,29 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 		for j := 0; j < 32; j++ {
 			noRound := api.Select(v2, c.Msgs[i][2+witness.BlockHashBodyOffNoRound+j].Val, c.Msgs[i][1+witness.BlockHashBodyOffNoRound+j].Val)
 			round := api.Select(v2, c.Msgs[i][2+witness.BlockHashBodyOffRound+j].Val, c.Msgs[i][1+witness.BlockHashBodyOffRound+j].Val)
-			b := api.Select(c.RoundPresent, round, noRound)
+			b := api.Select(roundPresent, round, noRound)
 			api.AssertIsEqual(api.Mul(c.Active[i], b), api.Mul(c.Active[i], c.BlockHash[j].Val))
 		}
 
-		// ZK-05, part 1: tie RoundPresent to the message it selects an offset in.
-		// RoundPresent is a free witness that chooses which 32-byte window is
-		// compared against the committed block hash, so left untied the prover
-		// picks the window rather than reading it. The body byte at
-		// witness.PrefixHeadLen settles it from the message itself: proto emits the round
-		// field (tag 0x19) there when round > 0 and BlockID (tag 0x22) otherwise,
-		// so the tag and the offset must agree.
+		// Round binding: when the round field is present, its 8 bytes in this
+		// slot must equal the committed Round. Masked by Active[i] (padding
+		// signs dummy bytes) and by roundPresent (with no round field, those
+		// body offsets belong to BlockID and the committed Round is all zero).
+		roundMask := api.Mul(c.Active[i], roundPresent)
+		for k := 0; k < witness.RoundLen; k++ {
+			b := api.Select(v2, c.Msgs[i][2+witness.RoundBodyOff+k].Val, c.Msgs[i][1+witness.RoundBodyOff+k].Val)
+			api.AssertIsEqual(api.Mul(roundMask, api.Sub(b, c.Round[k].Val)), 0)
+		}
+
+		// ZK-05, part 1: tie roundPresent to the message it selects an offset in.
+		// roundPresent chooses which 32-byte window is compared against the
+		// committed block hash, so left untied the prover picks the window rather
+		// than reading it. The body byte at witness.PrefixHeadLen settles it from
+		// the message itself: proto emits the round field (tag 0x19) there when
+		// round > 0 and BlockID (tag 0x22) otherwise, so the tag and the offset
+		// must agree.
 		tag := api.Select(v2, c.Msgs[i][2+witness.PrefixHeadLen].Val, c.Msgs[i][1+witness.PrefixHeadLen].Val)
-		wantTag := api.Select(c.RoundPresent, witness.RoundFieldTag, witness.BlockIDFieldTag)
+		wantTag := api.Select(roundPresent, witness.RoundFieldTag, witness.BlockIDFieldTag)
 		api.AssertIsEqual(api.Mul(c.Active[i], tag), api.Mul(c.Active[i], wantTag))
 
 		// ZK-05, part 2: keep every byte the asserts above read inside the signed
@@ -175,7 +202,7 @@ func (c *BatchCircuit[Base, Scalars]) Define(api frontend.API) error {
 		// range-checked to 8 bits, which forces MsgLens[i] >= required — MsgLens
 		// is already bounded above by witness.MaxMsgLen inside FixedLengthSum, so the
 		// difference cannot wrap.
-		blockHashOff := api.Select(c.RoundPresent, witness.BlockHashEnd, witness.BlockHashEnd-(witness.BlockHashBodyOffRound-witness.BlockHashBodyOffNoRound))
+		blockHashOff := api.Select(roundPresent, witness.BlockHashEnd, witness.BlockHashEnd-(witness.BlockHashBodyOffRound-witness.BlockHashBodyOffNoRound))
 		required := api.Add(api.Add(1, v2), blockHashOff)
 		api.ToBinary(api.Sub(c.MsgLens[i], api.Mul(c.Active[i], required)), 8)
 	}

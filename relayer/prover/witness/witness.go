@@ -16,7 +16,7 @@ import (
 // Layout:
 //
 //	PrefixHead[11]           // Type || Height, first 11 bytes of CanonicalVote body
-//	roundPresent[1]          // 0x01 when round is encoded, else 0x00
+//	Round[8]                 // sfixed64 LE round as on the wire; 0x00*8 when the field is absent
 //	BlockHash[32]            // BlockID hash from the canonical vote body
 //	per slot i ∈ [0, bucket):
 //	  active[1]              // 0x00 padding slot, 0x01 real signer
@@ -27,6 +27,13 @@ import (
 // misattribute the quorum. R/S are deliberately NOT in calldata or hash —
 // the Groth16 proof itself binds them via the in-circuit Ed25519 verify, and
 // no on-chain logic consumes them.
+//
+// Round is committed by VALUE (not just presence) and asserted equal in every
+// active slot's signed bytes. Each Ed25519 verify binds only that slot's own
+// round, so without this a single proof could aggregate precommits for one
+// block id cast in different rounds — which CometBFT's light-client rule
+// (one Commit.Round for every signature) does not allow. Presence is derived
+// from the value: proto3 omits the field exactly when round == 0.
 
 const (
 	// WitnessDigestBytes is the width of the SHA-256 witness commitment.
@@ -63,6 +70,8 @@ const MaxMsgLen = 175
 //	     | Timestamp | ChainID
 const (
 	PrefixHeadLen           = 11 // Type(2) + Height(9)
+	RoundLen                = 8  // sfixed64 payload; follows the 0x19 tag at body offset PrefixHeadLen
+	RoundBodyOff            = PrefixHeadLen + 1
 	BlockHashBodyOffNoRound = 15
 	BlockHashBodyOffRound   = 24 // round shifts BlockID by 9
 
@@ -80,7 +89,8 @@ const (
 
 // RoundFieldTag is the proto wire tag for CanonicalVote.round (field 3,
 // fixed64). Its presence at body offset PrefixHeadLen means round > 0, which
-// shifts the BlockID — and the block hash inside it — 9 bytes later.
+// shifts the BlockID — and the block hash inside it — 9 bytes later. The 8
+// round bytes themselves sit at [RoundBodyOff, RoundBodyOff+RoundLen).
 const RoundFieldTag = 0x19
 
 // ComputeWitnessHash serializes the batch into the canonical layout above and
@@ -105,19 +115,20 @@ func DigestPublicInputs(hash [WitnessDigestBytes]byte) [WitnessDigestFieldElemen
 }
 
 // CommonPrefixFields derives the #199 committed common fields from the first
-// active signer's canonical-vote bytes: PrefixHead (Type|Height), the 32-byte
-// block hash inside BlockID, and whether the round field is present. All
-// active signers of one block share these contents; deriving them from a real
-// signed message guarantees the off-chain hash matches what the circuit
-// commits.
-func CommonPrefixFields(sigs []ValidatorSignature) (prefixHead [PrefixHeadLen]byte, blockHash [32]byte, roundPresent bool, err error) {
+// active signer's canonical-vote bytes: PrefixHead (Type|Height), the 8 round
+// bytes exactly as they appear on the wire (all zero when the round field is
+// absent), and the 32-byte block hash inside BlockID. All active signers of one
+// block share these contents — the circuit asserts it per slot; deriving them
+// from a real signed message guarantees the off-chain hash matches what the
+// circuit commits.
+func CommonPrefixFields(sigs []ValidatorSignature) (prefixHead [PrefixHeadLen]byte, round [RoundLen]byte, blockHash [32]byte, err error) {
 	for _, s := range sigs {
 		if !s.Active {
 			continue
 		}
 		sb := s.SignedBytes
 		if len(sb) == 0 {
-			return prefixHead, blockHash, false, fmt.Errorf("signed bytes empty")
+			return prefixHead, round, blockHash, fmt.Errorf("signed bytes empty")
 		}
 		// Leading length varint: 1 byte unless the continuation bit is set.
 		bodyStart := 1
@@ -125,35 +136,40 @@ func CommonPrefixFields(sigs []ValidatorSignature) (prefixHead [PrefixHeadLen]by
 			bodyStart = 2
 		}
 		if len(sb) < bodyStart+PrefixHeadLen+1 {
-			return prefixHead, blockHash, false, fmt.Errorf("signed bytes too short (%d) for prefix head at offset %d", len(sb), bodyStart)
+			return prefixHead, round, blockHash, fmt.Errorf("signed bytes too short (%d) for prefix head at offset %d", len(sb), bodyStart)
 		}
-		roundPresent = sb[bodyStart+PrefixHeadLen] == RoundFieldTag
+		roundPresent := sb[bodyStart+PrefixHeadLen] == RoundFieldTag
 		off := bodyStart + BlockHashBodyOffNoRound
 		if roundPresent {
 			off = bodyStart + BlockHashBodyOffRound
 		}
 		if len(sb) < off+32 {
-			return prefixHead, blockHash, false, fmt.Errorf("signed bytes too short (%d) for block hash at offset %d", len(sb), off)
+			return prefixHead, round, blockHash, fmt.Errorf("signed bytes too short (%d) for block hash at offset %d", len(sb), off)
 		}
 		copy(prefixHead[:], sb[bodyStart:bodyStart+PrefixHeadLen])
+		if roundPresent {
+			copy(round[:], sb[bodyStart+RoundBodyOff:bodyStart+RoundBodyOff+RoundLen])
+			// The circuit derives presence from the value (round != 0), so a
+			// round field carrying zero would be rejected in-circuit. proto3
+			// never emits it; fail here rather than at prove time.
+			if round == ([RoundLen]byte{}) {
+				return prefixHead, round, blockHash, fmt.Errorf("non-canonical vote: round field present with value 0")
+			}
+		}
 		copy(blockHash[:], sb[off:off+32])
-		return prefixHead, blockHash, roundPresent, nil
+		return prefixHead, round, blockHash, nil
 	}
-	return prefixHead, blockHash, false, fmt.Errorf("no active signer to derive common prefix")
+	return prefixHead, round, blockHash, fmt.Errorf("no active signer to derive common prefix")
 }
 
 func encodeWitnessBytes(sigs []ValidatorSignature) ([]byte, error) {
-	prefixHead, blockHash, roundPresent, err := CommonPrefixFields(sigs)
+	prefixHead, round, blockHash, err := CommonPrefixFields(sigs)
 	if err != nil {
 		return nil, err
 	}
-	buf := make([]byte, 0, PrefixHeadLen+1+32+len(sigs)*(1+32))
+	buf := make([]byte, 0, PrefixHeadLen+RoundLen+32+len(sigs)*(1+32))
 	buf = append(buf, prefixHead[:]...)
-	var roundByte byte
-	if roundPresent {
-		roundByte = 1
-	}
-	buf = append(buf, roundByte)
+	buf = append(buf, round[:]...)
 	buf = append(buf, blockHash[:]...)
 	for i, v := range sigs {
 		if len(v.PublicKey) != 32 {
