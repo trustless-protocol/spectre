@@ -9,7 +9,8 @@ manifest="test/fixtures/wasm-contracts/test-manifest.txt"
 generated="$(mktemp)"
 trap 'rm -f "$generated"' EXIT
 go_cache="${GOCACHE:-/tmp/spectre-wasm-manifest-go-cache}"
-go_library_path="$root/third_party/ecip-gnark${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+go_library_path="$root/.artifacts/native${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export CGO_LDFLAGS="-L$root/.artifacts/native${CGO_LDFLAGS:+ $CGO_LDFLAGS}"
 
 sha256_files() {
   if command -v sha256sum >/dev/null 2>&1; then

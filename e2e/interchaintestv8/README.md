@@ -15,8 +15,8 @@ On top of the toolchain in the [repo root README](../../README.md#requirements):
 
 - **Docker** daemon running
 - **[Kurtosis CLI](https://docs.kurtosis.com/install/)** installed
-- The gnark submodules initialised (`git submodule update --init --recursive`) and
-  `libgaraga_rs` built, per [gnark submodules](../../README.md#gnark-submodules)
+- Access to the private gnark forks (`GOPRIVATE`) and `libgaraga_rs` built with
+  `scripts/build-garaga-ffi.sh`, per [gnark forks](../../README.md#gnark-forks)
 - Nothing to trim: the prover's `-buckets` flag already defaults to `"4"`
   (`relayer/prover/cmd/main.go:35`), and the suite only ever exercises bucket 4
   (single-validator simd chain). Building the full bucket family takes far longer

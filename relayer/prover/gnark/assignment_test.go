@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"0x5ea000000/ecip-gnark/utils"
+	"github.com/decentrio/ecip-gnark/utils"
 
 	"filippo.io/edwards25519"
 	curve_bn254 "github.com/consensys/gnark-crypto/ecc/bn254"

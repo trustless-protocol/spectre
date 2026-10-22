@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math/big"
 
-	"0x5ea000000/ecip-gnark/signature/eddsa"
-	"0x5ea000000/ecip-gnark/utils"
+	"github.com/decentrio/ecip-gnark/signature/eddsa"
+	"github.com/decentrio/ecip-gnark/utils"
 
 	"filippo.io/edwards25519"
 	"github.com/consensys/gnark/backend/groth16"

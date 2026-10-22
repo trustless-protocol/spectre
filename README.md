@@ -78,47 +78,52 @@ picks between the two. The packet path always goes through the router.
 - Optional for GPU proving: ICICLE runtime/libs installed on the host, plus an
   `icicle` build of the relayer/prover tool
 
-### gnark submodules
+### gnark forks
 
-The relayer/prover depend on two forks of gnark, vendored as **git submodules**
-under `third_party/` and wired through `relayer/go.mod`:
+The relayer/prover depend on two private forks of gnark, pinned as ordinary Go
+modules in `relayer/go.mod`:
 
 ```
-replace (
-    0x5ea000000/ecip-gnark      => ../third_party/ecip-gnark
-    attestor/types              => ../attestor/types
-    github.com/consensys/gnark  => ../third_party/decentrio-gnark
-)
+require github.com/decentrio/ecip-gnark v0.1.0-rc.2
+
+replace github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork
 ```
 
-- `third_party/ecip-gnark` → [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) — Ed25519 in-circuit ops + the `garaga_rs` Rust FFI.
-- `third_party/decentrio-gnark` → [`decentrio/gnark`](https://github.com/decentrio/gnark) — fork of consensys/gnark v0.13.0 with hash-aggregate verifier tweaks.
+- [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) — Ed25519 in-circuit ops + the `garaga_rs` Rust FFI.
+- [`decentrio/gnark`](https://github.com/decentrio/gnark) — fork of consensys/gnark with hash-aggregate verifier tweaks.
 
-This repository stores only a **pinned commit** of each fork (a submodule pointer), not
-their files.
-
-#### First checkout
-
-Clone with submodules, or initialise them in an existing clone:
+Both repositories are private, so the Go proxy and checksum DB cannot serve
+them. One-time setup:
 
 ```bash
-git clone --recurse-submodules https://github.com/decentrio/spectre
-# or, after a plain clone:
-git submodule update --init --recursive
+go env -w GOPRIVATE='github.com/decentrio/*'
+gh auth setup-git        # or any other git credential for github.com/decentrio
 ```
 
-`ecip-gnark`'s prover links a Rust FFI (`libgaraga_rs`) that cgo expects at the
-ecip-gnark root. Build it once (and after any garaga change):
+To hack on a fork, point a local `replace` at your checkout while you work and
+never commit it (machine-local paths do not belong in `go.mod`).
+
+#### Garaga FFI
+
+`ecip-gnark`'s prover links a Rust FFI (`libgaraga_rs`). Its cgo directive is
+`-L..`, which lands in the read-only Go module cache, so the library is built
+into `.artifacts/native/` instead. Build it once (and after bumping the
+`ecip-gnark` version):
 
 ```bash
-cd third_party/ecip-gnark/ffi/garaga_rs
-cargo build --release
-cp target/release/libgaraga_rs.so ../..      # Linux; on macOS: libgaraga_rs.dylib
+scripts/build-garaga-ffi.sh
 ```
 
-Without `submodule update --init`, `go build ./...` under `relayer/` fails with
-`replacement directory ../third_party/ecip-gnark does not exist`; without the
-built FFI it fails at link with `library 'garaga_rs' not found`.
+Then point the linker and the loader at it (the `just` recipes and the scripts
+under `scripts/` already set `CGO_LDFLAGS`; the loader path is still yours to set):
+
+```bash
+export CGO_LDFLAGS="-L$PWD/.artifacts/native"
+export LD_LIBRARY_PATH="$PWD/.artifacts/native"       # DYLD_LIBRARY_PATH on macOS
+```
+
+Without the built FFI, `go build ./...` under `relayer/` fails at link with
+`library 'garaga_rs' not found`.
 
 ### Build and test
 
