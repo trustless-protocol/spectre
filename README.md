@@ -84,9 +84,9 @@ The relayer/prover depend on two private forks of gnark, pinned as ordinary Go
 modules in `relayer/go.mod`:
 
 ```
-require github.com/decentrio/ecip-gnark v0.1.0-rc.2
+require github.com/decentrio/ecip-gnark v0.1.0-rc.3
 
-replace github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork
+replace github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork.2
 ```
 
 - [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) — Ed25519 in-circuit ops + the `garaga_rs` Rust FFI.
