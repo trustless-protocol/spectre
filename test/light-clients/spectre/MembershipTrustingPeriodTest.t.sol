@@ -30,10 +30,16 @@ contract MembershipTrustingPeriodTest is Test {
     uint256 private constant CURRENT_TIME = 1_700_000_000;
     bytes32 private constant APP_HASH = bytes32(uint256(0xA11CE));
 
+    // SpectreClient refuses a module without code. These two are never reached by these tests.
+    address private constant STUB_UPDATE_CLIENT = address(0xC0DE01);
+    address private constant STUB_MISBEHAVIOUR = address(0xC0DE02);
+
     DummyMembershipForTrustingPeriod private membership;
 
     function setUp() public {
         membership = new DummyMembershipForTrustingPeriod();
+        vm.etch(STUB_UPDATE_CLIENT, hex"00");
+        vm.etch(STUB_MISBEHAVIOUR, hex"00");
         vm.warp(CURRENT_TIME);
     }
 
@@ -167,9 +173,9 @@ contract MembershipTrustingPeriodTest is Test {
         returns (SpectreClient)
     {
         return new SpectreClient(
-            address(0),
+            STUB_UPDATE_CLIENT,
             address(membership),
-            address(0),
+            STUB_MISBEHAVIOUR,
             abi.encode(clientState),
             consensusState,
             _pinnedValidatorSet(),

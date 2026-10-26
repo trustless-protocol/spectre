@@ -181,6 +181,8 @@ contract RecvPacketGasTest is IntegrationTest {
         ISpectreTendermintMsgs.ClientState memory cs = _clientState();
 
         DummyMembership stubMembership = new DummyMembership();
+        // SpectreClient refuses a module without code; this one is never reached by the test.
+        vm.etch(STUB_MISBEHAVIOUR, hex"00");
 
         // Deploy the real light client with stubMembership so it succeeds
         SpectreClient realClient = new SpectreClient(
