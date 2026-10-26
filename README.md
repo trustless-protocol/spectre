@@ -314,15 +314,16 @@ A line's level says what it asks of the operator, not how chatty it is:
 
 | Level | Meaning |
 |---|---|
-| `error` | a person has to act or look: a packet dropped, state that could not be made durable, an operation abandoned, a recovered panic |
-| `warn` | something went wrong or is degraded and the relayer is handling it: a retry, a fallback, a skipped check, a resubscribe |
+| `error` | a person has to act or look: a packet dropped that nothing else refunds (an ack or a timeout), state that could not be made durable and that no later pass re-derives from the chain (an owed acknowledgement, a settlement tombstone, retry state), an operation abandoned, a recovered panic |
+| `warn` | something went wrong or is degraded and the relayer is handling it: a retry, a fallback, a skipped check, a resubscribe, a dropped send the timeout scanner refunds, a failed write that the next pass or a restart scan repeats (a recovery cursor, a packet tracked before it is relayed) |
 | `info` | lifecycle, progress, and every state change a packet goes through |
 | `debug` | output that repeats with nothing new to say, such as the batch builder's `re-queued ... (waiting)` echo and gnark's three lines per proof |
 
 For contributors: the engine logs with `log.Printf`. Start the message with `WARN`,
 `ERROR` or `DEBUG` and one space to give it a level, ahead of the `[Label]`; with no
 token it is `info`. The token is stripped, so the logged text is unchanged.
-`relayer/logbridge` documents the convention, and its test rejects a misspelt token.
+`relayer/logbridge` documents the convention, and its test rejects a misspelt token
+and an `[ATTENTION]` line that has none.
 
 ## Benchmark mode
 

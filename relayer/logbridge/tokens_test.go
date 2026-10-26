@@ -97,6 +97,9 @@ func tokenProblems(root string) (problems []string, scanned int, err error) {
 				problems = append(problems, fmt.Sprintf("%s: %q: a level token must be followed by exactly one space", pos, msg))
 			case behindTag.MatchString(msg):
 				problems = append(problems, fmt.Sprintf("%s: %q: the level token must come before the [Component] tag", pos, msg))
+			case strings.Contains(msg, "ATTENTION") && !strings.HasPrefix(msg, Warn) && !strings.HasPrefix(msg, Error):
+				problems = append(problems, fmt.Sprintf("%s: %q: an ATTENTION line asks an operator to look, "+
+					"so it must start with WARN or ERROR; unmarked it is info and a viewer will not surface it", pos, msg))
 			}
 			return true
 		})
@@ -153,6 +156,10 @@ func f(s l) {
 	log.Printf("[A] WARN behind the tag")
 	log.Fatalf("FATAL [A] not a token")
 	log.Print("WARN ", "fine")
+	log.Printf("[A][ATTENTION] unmarked is info")
+	log.Printf("DEBUG [A][ATTENTION] debug is hidden by default")
+	log.Printf("WARN [A][ATTENTION] fine")
+	log.Printf("ERROR [A] ATTENTION: fine")
 }
 `
 	if err := os.WriteFile(filepath.Join(dir, "x.go"), []byte(src), 0o600); err != nil {
@@ -168,8 +175,8 @@ func f(s l) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if scanned != 13 {
-		t.Errorf("scanned %d log calls, want 13 (the test file must not count)", scanned)
+	if scanned != 17 {
+		t.Errorf("scanned %d log calls, want 17 (the test file must not count)", scanned)
 	}
 	wantSubstrings := []string{
 		`"WARNING [A] not a token"`,
@@ -179,6 +186,8 @@ func f(s l) {
 		`"ERROR  [A] two spaces"`,
 		`"[A] WARN behind the tag"`,
 		`"FATAL [A] not a token"`,
+		`"[A][ATTENTION] unmarked is info"`,
+		`"DEBUG [A][ATTENTION] debug is hidden by default"`,
 	}
 	if len(problems) != len(wantSubstrings) {
 		t.Fatalf("got %d problems, want %d:\n%s", len(problems), len(wantSubstrings), strings.Join(problems, "\n"))

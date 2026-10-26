@@ -15,10 +15,16 @@
 //
 // Choosing a level is a statement about the operator, not about verbosity:
 //
-//	ERROR   a person has to act or look: a packet dropped, state that could not be
-//	        made durable, an operation abandoned, a recovered panic.
+//	ERROR   a person has to act or look: a packet dropped that nothing else
+//	        refunds (an ack or a timeout), state that could not be made durable and
+//	        that no later pass re-derives from the chain (an owed acknowledgement, a
+//	        settlement tombstone, retry state), an operation abandoned, a recovered
+//	        panic.
 //	WARN    something went wrong or is degraded and the relayer is handling it
-//	        itself: a retry, a fallback, a skipped check, a resubscribe.
+//	        itself: a retry, a fallback, a skipped check, a resubscribe, a dropped
+//	        send the timeout scanner refunds, a failed write that the next pass or a
+//	        restart scan repeats (a recovery cursor, a packet tracked before it is
+//	        relayed).
 //	(none)  lifecycle, progress, and every state change a packet goes through.
 //	DEBUG   repeats with nothing new to say. Never for a line docs/ or scripts/
 //	        tell someone to look for: the default level hides it.

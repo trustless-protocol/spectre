@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"relayer/chain"
+	"relayer/logbridge"
 	"relayer/services"
 )
 
@@ -256,7 +257,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 				// Dead for good — forget any recorded wait so the entry does not sit in
 				// the tracker until its TTL.
 				m.waits.clear(e)
-				log.Printf("ERROR [%s Relay] DROP packet (%s seq=%d height=%d): %v", m.name, e.Type, e.Sequence, e.Height, err)
+				log.Printf(dropToken(e.Type)+"[%s Relay] DROP packet (%s seq=%d height=%d): %v", m.name, e.Type, e.Sequence, e.Height, err)
 				continue
 			}
 			// Every proof failure here re-queues, so logging one line per flush
@@ -527,12 +528,26 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// per-packet txs are acceptable to avoid losing valid packets.
 	if len(packets) == 1 {
 		m.waits.clearPacket(packets[0]) // dead for good — stop reporting a wait for it
-		log.Printf("ERROR [%s Relay] DROP packet (%s seq=%d) at height %d (permanent): %v",
+		log.Printf(dropToken(packets[0].Type)+"[%s Relay] DROP packet (%s seq=%d) at height %d (permanent): %v",
 			m.name, packets[0].Type, packets[0].Sequence, proofHeight, err)
 		return requeue
 	}
 	log.Printf("WARN [%s Relay] permanent batch failure at height %d (%v); isolating %d packet(s) individually", m.name, proofHeight, err, len(packets))
 	return append(requeue, m.relayIsolated(ctx, packets, relayedIdx)...)
+}
+
+// dropToken is the level of a DROP line. A dropped SendPacket still has an exit:
+// the timeout scanner refunds it once it expires, so the drop is the designed
+// outcome for a packet that timed out or was already received, and a warning. An
+// ack or a timeout that is dropped has no other exit -- the same split the STUCK
+// lines make in handleBatchLocked -- and is an error, so alerting on level=error
+// does not page on a routine timeout. The token goes ahead of the label because
+// logbridge reads it from the start of the message.
+func dropToken(t chain.EventType) string {
+	if t == chain.SendPacket {
+		return logbridge.Warn
+	}
+	return logbridge.Error
 }
 
 // submitFoldedUpdateAlone submits a still-unsubmitted folded client update on
@@ -700,7 +715,7 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 					break
 				}
 				m.waits.clearPacket(p) // dead for good — stop reporting a wait for it
-				log.Printf("ERROR [%s Relay] DROP packet (%s seq=%d height=%d, permanent): %v", m.name, p.Type, p.Sequence, p.Height, err)
+				log.Printf(dropToken(p.Type)+"[%s Relay] DROP packet (%s seq=%d height=%d, permanent): %v", m.name, p.Type, p.Sequence, p.Height, err)
 				continue
 			}
 			if m.holdIfClientInactive(ctx, err) {

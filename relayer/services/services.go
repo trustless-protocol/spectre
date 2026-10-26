@@ -24,7 +24,7 @@ var initErr error
 func init() {
 	tendermintAbiJson, initErr = spectreContract.ContractSpectreClientMetaData.GetAbi()
 	if initErr != nil {
-		log.Fatalf("ERROR %v", initErr)
+		log.Fatal(initErr)
 	}
 }
 

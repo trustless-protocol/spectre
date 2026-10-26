@@ -855,7 +855,7 @@ func decodeCosmosPacketsFromEvents(
 					continue
 				}
 				if len(acknowledgement.AppAcknowledgements) == 0 {
-					logger.Printf("WARN %s write_ack seq=%d: missing app acknowledgements", label, packet.Sequence)
+					logger.Printf("ERROR %s write_ack seq=%d: missing app acknowledgements", label, packet.Sequence)
 					continue
 				}
 
