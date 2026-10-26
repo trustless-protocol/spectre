@@ -66,6 +66,23 @@ schedule and execute the custom-ID `addClient` calldata through the governance
 and AccessManager timelocks before writing the resulting client address to
 relayer configuration.
 
+A `SpectreClient` is built with its UpdateClient, Membership and Misbehaviour
+modules as immutables, and its constructor reverts with
+`ModuleHasNoCode(module)` for an address that holds no code, `address(0)`
+included, so deploy the three modules first. `./relayer create-clients-eth`
+applies the same rule before it spends gas: it refuses to deploy unless
+`update_client`, `membership` and `misbehaviour` are set and hold code on
+`eth_rpc_url`.
+
+A client deployed before this check, with a misbehaviour module that has no
+code, treats a call to that module as a verified proof. Whoever may submit
+misbehaviour (anyone, when the client was deployed with
+`roleManager == address(0)`) can then freeze it with two identical headers and
+a quorum in the proof metadata. The module addresses are private immutables
+with no getter, so read them from the constructor arguments of the deployment
+transaction, and migrate any client whose misbehaviour module has no code (see
+Governed client migration).
+
 Once the launch clients are registered, re-run `ProductionVerify.s.sol` with
 `PRODUCTION_LIGHT_CLIENTS='{"lightClients":["0x..", ..]}'`: one light-client
 address per id in `PRODUCTION_ESCROW_CONFIG` `.clients`, in the same order.
