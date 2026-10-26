@@ -14,6 +14,12 @@ interface IICS02ClientErrors {
     /// @notice The counterparty client identifier is malformed.
     error IBCInvalidCounterpartyClientId();
 
+    /// @notice The counterparty Merkle prefix has no elements, so no packet path could be proven against it.
+    error IBCInvalidCounterpartyMerklePrefix();
+
+    /// @notice The light client address is zero or holds no contract code.
+    error IBCInvalidClientAddress();
+
     /// @notice Proposed counterparty information differs from the client's existing binding.
     error IBCCounterpartyMismatch();
 
