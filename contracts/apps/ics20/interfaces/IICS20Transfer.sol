@@ -25,7 +25,7 @@ interface IICS20TransferAccessControlled {
     /// @dev This is a permissioned function requiring the `DELEGATE_SENDER_ROLE`
     /// @dev Useful for contracts that need to refund the tokens to a sender.
     /// @param msg_ The message for sending a transfer
-    /// @param sender The sender of the transfer
+    /// @param sender The sender of the transfer, who is refunded if the packet fails. It cannot be the zero address.
     /// @return sequence The sequence number of the packet created
     function sendTransferWithSender(
         IICS20TransferMsgs.SendTransferMsg calldata msg_,
@@ -37,6 +37,7 @@ interface IICS20TransferAccessControlled {
     /// @notice Inserts a custom ERC20 contract for a given IBC denom
     /// @dev This must be called prior to the first transfer of the token so that the is no existing entry for the
     /// denom.
+    /// @dev The denom cannot be a token address: that names a native token, whose refunds a mapping would redirect.
     /// @dev This function requires the `ERC20_CUSTOMIZER_ROLE`
     /// @param denom The IBC denom
     /// @param token The address of the custom ERC20 contract
@@ -162,10 +163,10 @@ interface IICS20Transfer is IICS20TransferAccessControlled {
     event ICS20EscrowLaunchGateEnabled();
     /// @notice Emitted when a sender acknowledgement callback reverts or runs out of gas
     /// @param callbackAddress The address of the sender callback contract
-    /// @param reason The revert reason, or empty bytes if unavailable
+    /// @param reason The revert reason, truncated to its first 256 bytes, or empty bytes if unavailable
     event IBCSenderAckPacketCallbackError(address indexed callbackAddress, bytes reason);
     /// @notice Emitted when a sender timeout callback reverts or runs out of gas
     /// @param callbackAddress The address of the sender callback contract
-    /// @param reason The revert reason, or empty bytes if unavailable
+    /// @param reason The revert reason, truncated to its first 256 bytes, or empty bytes if unavailable
     event IBCSenderTimeoutPacketCallbackError(address indexed callbackAddress, bytes reason);
 }

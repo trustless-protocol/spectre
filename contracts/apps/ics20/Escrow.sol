@@ -46,6 +46,9 @@ contract Escrow is IEscrowErrors, IEscrow, ContextUpgradeable, RateLimitUpgradea
     /// @inheritdoc IEscrow
     function initializeV2() external onlyVersion(1) reinitializer(2) {
         address authority = IAccessManaged(_getEscrowStorage()._ics20).authority();
+        // Anyone can call this, and ICS20Transfer reports no authority until its own `initializeV2` has run.
+        // An escrow initialized before that would have no authority for good, and its rate limit could never be set.
+        require(authority != address(0), IAccessManaged.AccessManagedInvalidAuthority(authority));
         __RateLimit_init(authority);
     }
 

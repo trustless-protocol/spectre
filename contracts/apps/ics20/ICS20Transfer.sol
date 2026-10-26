@@ -284,6 +284,9 @@ contract ICS20Transfer is
         returns (uint64)
     {
         require(msg_.amount > 0, IICS20Errors.ICS20InvalidAmount(0));
+        // The sender is the refundee, and a token will not transfer to the zero address: the packet could not be
+        // settled
+        require(sender != address(0), ICS20InvalidAddress(Strings.toHexString(sender)));
         // transfer the tokens to us (requires the allowance to be set)
         IEscrow escrow = _getOrCreateEscrow(msg_.sourceClient);
         _transferFrom(_msgSender(), address(escrow), msg_.denom, msg_.amount);
@@ -354,6 +357,11 @@ contract ICS20Transfer is
     /// @inheritdoc IICS20TransferAccessControlled
     function setCustomERC20(string calldata denom, address token) external restricted {
         ICS20TransferStorage storage $ = _getICS20TransferStorage();
+        // A denom that is a token address names that native token. A mapping would take over the refunds of its
+        // in-flight packets, which are paid in whatever the denom maps to.
+        // slither-disable-next-line unused-return
+        (bool isAddress,) = Strings.tryParseAddress(denom);
+        require(!isAddress, ICS20CustomDenomIsAddress(denom));
         require(address($._ibcERC20Contracts[denom]) == address(0), IICS20Errors.ICS20DenomAlreadyExists(denom));
         require(
             bytes($._ibcERC20Denoms[token]).length == 0, IICS20Errors.ICS20TokenAlreadyExists($._ibcERC20Denoms[token])
