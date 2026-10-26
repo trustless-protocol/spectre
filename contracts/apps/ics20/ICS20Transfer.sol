@@ -379,12 +379,19 @@ contract ICS20Transfer is
     }
 
     /// @inheritdoc IIBCApp
+    /// @dev A failure with a non-empty reason is committed by the router as an error acknowledgement, which
+    /// finalizes the packet. That is the intended outcome for a packet this contract cannot process, but not for
+    /// a rejection that says nothing about the packet: re-entry is turned into an empty revert (see
+    /// `abortIfReentered`) and the router then aborts the whole `recvPacket`. A pause of this contract alone is
+    /// still reported with `EnforcedPause()`, so every inbound packet relayed while only ICS20 is paused is
+    /// finalized with an error acknowledgement and refunded on the source chain; pausing the router holds them.
     // NOTE: Reentrancy disabled for this function via the `nonReentrant` modifier.
     // slither-disable-next-line reentrancy-no-eth
     function onRecvPacket(IIBCAppCallbacks.OnRecvPacketCallback calldata msg_)
         // solhint-disable-previous-line function-max-lines
         external
         onlyRouter
+        abortIfReentered
         nonReentrant
         whenNotPaused
         returns (bytes memory)
@@ -681,6 +688,21 @@ contract ICS20Transfer is
     /// @notice Modifier to check if the caller is the ICS26Router contract
     modifier onlyRouter() {
         require(_msgSender() == address(_getICS26Router()), ICS20Unauthorized(_msgSender()));
+        _;
+    }
+
+    /// @notice Modifier to revert without a reason when this contract is re-entered
+    /// @dev `sendTransfer` holds this contract's lock while it calls the token, but the router's lock is taken
+    /// only later, inside `sendPacket`. A hostile token can therefore call `ICS26Router.recvPacket` with a packet
+    /// that was proven for somebody else. The router writes the receipt before it calls the app and turns any
+    /// non-empty revert reason into a committed error acknowledgement, so the reason of `nonReentrant` would
+    /// finalize that packet as failed and no relayer could ever deliver it. An empty reason makes the router
+    /// revert instead, which rolls the receipt back. This modifier must come before `nonReentrant`.
+    modifier abortIfReentered() {
+        if (_reentrancyGuardEntered()) {
+            // solhint-disable-next-line gas-custom-errors, reason-string
+            revert();
+        }
         _;
     }
 
