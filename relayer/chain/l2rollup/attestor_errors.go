@@ -103,19 +103,19 @@ var ErrVerifyStateRootUnsupported = fmt.Errorf("%w: VerifyStateRoot", ErrAttesto
 func classifyAttestorFailure(tag string, err error) chain.Retry {
 	switch {
 	case errors.Is(err, ErrAttestorUnimplemented):
-		log.Printf("[l2->cosmos %s][ATTENTION] the attestor does not implement an RPC this relayer requires: %v; "+
+		log.Printf("ERROR [l2->cosmos %s][ATTENTION] the attestor does not implement an RPC this relayer requires: %v; "+
 			"startup is supposed to reject such a daemon, so this relay path is running unverified — "+
 			"check the attestor build matches the relayer", tag, err)
 		return chain.Permanent(err)
 
 	case errors.Is(err, ErrAttestorDivergence):
-		log.Printf("[l2->cosmos %s][ATTENTION] the attestor replica disagrees with the L2 RPC: %v; "+
+		log.Printf("WARN [l2->cosmos %s][ATTENTION] the attestor replica disagrees with the L2 RPC: %v; "+
 			"this retries, but if it does not clear within a few blocks the two are genuinely diverged "+
 			"and no header from this L2 RPC is attested state", tag, err)
 		return chain.Transient(err)
 
 	case errors.Is(err, ErrAttestorSignature):
-		log.Printf("[l2->cosmos %s][ATTENTION] the attestor signature does not verify against the pinned profile: %v; "+
+		log.Printf("ERROR [l2->cosmos %s][ATTENTION] the attestor signature does not verify against the pinned profile: %v; "+
 			"either rollup_profile.common.attestor_public_key is not this daemon's key, or the daemon is not "+
 			"signing the block identity it was asked about — no retry resolves either", tag, err)
 		return chain.Permanent(err)

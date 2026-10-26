@@ -399,7 +399,7 @@ func buildCosmosToEthSource(
 	cleanup := func() {
 		if options.startSubscriptions {
 			if err := cosmosClient.Stop(); err != nil {
-				log.Printf("failed to terminate cosmos client: %v", err)
+				log.Printf("WARN failed to terminate cosmos client: %v", err)
 			}
 		}
 		ethClient.Close()

@@ -29,6 +29,7 @@ import (
 
 	"relayer/chain"
 	relayerclient "relayer/client"
+	"relayer/logbridge"
 	"relayer/services"
 	"relayer/subscriber"
 
@@ -272,7 +273,7 @@ func (r Router) SendLog(ctx context.Context, clientID string, sequence uint64, c
 		return false, it.Error()
 	})
 	if err == nil && !ok && stale > 0 {
-		r.logf("seq=%d: %d SendPacket log(s) carry this sequence and none matches the commitment the router holds (re-created client?); skipping",
+		r.warnf("seq=%d: %d SendPacket log(s) carry this sequence and none matches the commitment the router holds (re-created client?); skipping",
 			sequence, stale)
 	}
 	return found, ok, err
@@ -306,7 +307,7 @@ func (r Router) WriteAckLog(ctx context.Context, clientID string, sequence uint6
 		return false, it.Error()
 	})
 	if err == nil && !ok && stale > 0 {
-		r.logf("ack seq=%d: %d WriteAcknowledgement log(s) carry this sequence and none matches the commitment the sender holds; skipping",
+		r.warnf("ack seq=%d: %d WriteAcknowledgement log(s) carry this sequence and none matches the commitment the sender holds; skipping",
 			sequence, stale)
 	}
 	return found, ok, err
@@ -346,7 +347,7 @@ func (r Router) findLog(ctx context.Context, sequence uint64, query func(*bind.F
 	from, to := max(r.DeployBlock, span.Floor), head
 	if from > to {
 		if r.DeployBlock > head {
-			r.logf("seq=%d: router_deploy_block %d is above the head %d; check that it names this chain's router",
+			r.warnf("seq=%d: router_deploy_block %d is above the head %d; check that it names this chain's router",
 				sequence, r.DeployBlock, head)
 		}
 		return false, nil // the node keeps no history at or below its head
@@ -369,7 +370,7 @@ func (r Router) findLog(ctx context.Context, sequence uint64, query func(*bind.F
 			}
 			if lo <= from {
 				if from == span.Floor && span.Floor > r.DeployBlock {
-					r.logf("seq=%d: no log between the provider's pruned-history floor %d and the head; "+
+					r.warnf("seq=%d: no log between the provider's pruned-history floor %d and the head; "+
 						"its event is older than this provider keeps -- point this source at an archive provider to enumerate it",
 						sequence, from)
 				}
@@ -377,7 +378,7 @@ func (r Router) findLog(ctx context.Context, sequence uint64, query func(*bind.F
 			}
 			chunks++
 			if chunks >= MaxLogChunks {
-				r.logf("seq=%d: no log in the newest %d blocks (%d chunks of %d); giving up on it this pass. "+
+				r.warnf("seq=%d: no log in the newest %d blocks (%d chunks of %d); giving up on it this pass. "+
 					"Its commitment says it is outstanding, so the event is older than this provider will serve in one walk -- "+
 					"point this source at a provider without a block-range cap to enumerate it",
 					sequence, to-lo+1+uint64(chunks-1)*width, chunks, width)
@@ -392,13 +393,13 @@ func (r Router) findLog(ctx context.Context, sequence uint64, query func(*bind.F
 				return false, fmt.Errorf("%s seq=%d: locate pruned-history floor in [%d,%d]: %w", r.Label, sequence, lo, to, perr)
 			}
 			if floor != span.Floor {
-				r.logf("provider has pruned history below block %d; log lookups start there from now on", floor)
+				r.warnf("provider has pruned history below block %d; log lookups start there from now on", floor)
 			}
 			span.Floor, from = floor, floor
 			if from > to {
 				// [lo,to] was all below the floor and everything above it was
 				// already asked.
-				r.logf("seq=%d: no log between the provider's pruned-history floor %d and the head; "+
+				r.warnf("seq=%d: no log between the provider's pruned-history floor %d and the head; "+
 					"its event is older than this provider keeps -- point this source at an archive provider to enumerate it",
 					sequence, floor)
 				return false, nil
@@ -416,7 +417,7 @@ func (r Router) findLog(ctx context.Context, sequence uint64, query func(*bind.F
 			return false, fmt.Errorf("%s seq=%d: %w", r.Label, sequence, bottom)
 		}
 		span.Chunk = next.To
-		r.logf("provider refused a %d-block log range; narrowing to %d and walking back from %d: %v", width, next.To, to, err)
+		r.warnf("provider refused a %d-block log range; narrowing to %d and walking back from %d: %v", width, next.To, to, err)
 	}
 }
 
@@ -452,10 +453,14 @@ func (r Router) prunedFloor(ctx context.Context, lo, to uint64) (uint64, error) 
 	return served, nil
 }
 
-func (r Router) logf(format string, args ...any) {
+// warnf logs a lookup problem, and every message sent through it is one: a
+// provider that cannot answer, history that is gone, a sequence whose logs do not
+// match. The level token goes ahead of the label because logbridge reads it from
+// the start of the message.
+func (r Router) warnf(format string, args ...any) {
 	if r.Logger == nil {
-		log.Printf(r.Label+" "+format, args...)
+		log.Printf(logbridge.Warn+r.Label+" "+format, args...)
 		return
 	}
-	r.Logger.Printf(r.Label+" "+format, args...)
+	r.Logger.Printf(logbridge.Warn+r.Label+" "+format, args...)
 }

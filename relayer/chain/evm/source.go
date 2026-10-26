@@ -128,7 +128,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		if len(running) == 0 {
 			return
 		}
-		s.logger.Printf("[eth->cosmos Subscribe] shutdown drain timed out after %s; workers still running: %v",
+		s.logger.Printf("ERROR [eth->cosmos Subscribe] shutdown drain timed out after %s; workers still running: %v",
 			workergroup.SourceDrainTimeout, running)
 		// RETURN it, do not only log it. The caller cancels on SIGTERM and then
 		// normalises context.Canceled to a clean exit, so a stuck worker reported
@@ -204,7 +204,7 @@ func eventsWithOrigins(
 	for _, p := range packets {
 		if p.Packet != nil && (p.Type == services.EthAck || p.Type == services.EthTimeout) {
 			if err := settle(*p.Packet); err != nil {
-				log.Printf("[PendingTracker][ATTENTION] failed to persist removal of settled ETH packet seq=%d: %v", p.Packet.Sequence, err)
+				log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist removal of settled ETH packet seq=%d: %v", p.Packet.Sequence, err)
 			}
 			// Only EthAck settles an owed acknowledgement. A timeout is the other
 			// ending: the packet is refunded, no acknowledgement is owed or coming,

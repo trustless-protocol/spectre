@@ -156,7 +156,7 @@ func (s *Service) SubmitProof(sigs []witness.ValidatorSignature) (ProofID, error
 		// Roll the pending entry back so no ghost job sits queued forever;
 		// if the delete also fails, the store TTL collects it.
 		if delErr := s.store.Delete(s.ctx, id); delErr != nil {
-			log.Printf("[prover] proof_id=%s rollback delete failed: %v", id, delErr)
+			log.Printf("WARN [prover] proof_id=%s rollback delete failed: %v", id, delErr)
 		}
 		if errors.Is(err, ErrQueueFull) {
 			s.metrics.QueueFull()
@@ -211,7 +211,7 @@ func (s *Service) worker(workerID string) {
 			if s.ctx.Err() != nil {
 				return
 			}
-			log.Printf("[prover] %s dequeue error, backing off: %v", workerID, err)
+			log.Printf("WARN [prover] %s dequeue error, backing off: %v", workerID, err)
 			select {
 			case <-s.ctx.Done():
 				return
@@ -236,7 +236,7 @@ func (s *Service) process(workerID string, job ProofRequest, ack func()) {
 			ack()
 			return
 		}
-		log.Printf("[prover] proof_id=%s claim error: %v", job.ID, err)
+		log.Printf("WARN [prover] proof_id=%s claim error: %v", job.ID, err)
 		return // no ack → redelivery
 	}
 	if !claimed {
@@ -253,7 +253,7 @@ func (s *Service) process(workerID string, job ProofRequest, ack func()) {
 		return
 	}
 	if err := s.store.SetProving(s.ctx, job.ID, token); err != nil {
-		log.Printf("[prover] proof_id=%s set proving error: %v", job.ID, err)
+		log.Printf("WARN [prover] proof_id=%s set proving error: %v", job.ID, err)
 		return // no ack → redelivery; dedup absorbs the duplicate
 	}
 	s.metrics.JobStarted(time.Since(job.EnqueuedAt))
@@ -273,16 +273,16 @@ func (s *Service) process(workerID string, job ProofRequest, ack func()) {
 			class = FailureTransient
 		}
 		s.metrics.JobFailed(class)
-		log.Printf("[prover] proof_id=%s failed class=%s cause=%v", job.ID, class, err)
+		log.Printf("WARN [prover] proof_id=%s failed class=%s cause=%v", job.ID, class, err)
 		if serr := s.store.SetFailed(s.ctx, job.ID, token, class, err.Error()); serr != nil {
-			log.Printf("[prover] proof_id=%s set failed error: %v", job.ID, serr)
+			log.Printf("WARN [prover] proof_id=%s set failed error: %v", job.ID, serr)
 			return // no ack → redelivery re-proves; wasteful, never wrong
 		}
 		ack()
 		return
 	}
 	if serr := s.store.SetDone(s.ctx, job.ID, token, result); serr != nil {
-		log.Printf("[prover] proof_id=%s set done error: %v", job.ID, serr)
+		log.Printf("WARN [prover] proof_id=%s set done error: %v", job.ID, serr)
 		return // no ack → redelivery re-proves rather than losing the result
 	}
 	s.metrics.JobDone(time.Since(start))

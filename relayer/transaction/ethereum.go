@@ -103,7 +103,7 @@ type Handler struct {
 // turn the next send into a nil-pointer panic.
 func (h *Handler) SetSigner(s Signer) {
 	if s == nil {
-		log.Printf("[start] SetSigner(nil) ignored; keeping the existing key source")
+		log.Printf("WARN [start] SetSigner(nil) ignored; keeping the existing key source")
 		return
 	}
 	h.signer = s
@@ -332,7 +332,7 @@ func logInnerGasFromTrace(stdCtx context.Context, endpoint services.EVMEndpoint,
 	for i, child := range frame.Calls {
 		gasUsed, perr := hexToUint64(child.GasUsed)
 		if perr != nil {
-			log.Printf("[bench] eth inner[%d] gas parse failed: %v", i, perr)
+			log.Printf("WARN [bench] eth inner[%d] gas parse failed: %v", i, perr)
 			continue
 		}
 		label := fmt.Sprintf("inner[%d]", i)
@@ -634,7 +634,7 @@ func (h *Handler) SendEthTx(stdCtx context.Context, endpoint services.EVMEndpoin
 	if gasStr := os.Getenv("ETH_GAS_LIMIT"); gasStr != "" {
 		configuredGasLimit, err := EthGasLimit(gasStr)
 		if err != nil {
-			log.Printf("[SendEthTx] %v; using default %d", err, defaultEthGasLimit)
+			log.Printf("WARN [SendEthTx] %v; using default %d", err, defaultEthGasLimit)
 		} else {
 			gasLimit = configuredGasLimit
 		}
@@ -965,7 +965,7 @@ func (h *Handler) SendEthTxBatch(stdCtx context.Context, endpoint services.EVMEn
 		log.Printf("[bench] eth multicall labels=%s gasUsed=%d submit=%s wait=%s total=%s tx=%s",
 			labelStr, receipt.GasUsed, submitDur, waitDur, time.Since(benchStart), receipt.TxHash.Hex())
 		if traceErr := logInnerGasFromTrace(stdCtx, endpoint, receipt.TxHash, labels); traceErr != nil {
-			log.Printf("[bench] eth inner gas trace unavailable (RPC may lack debug_ namespace): %v", traceErr)
+			log.Printf("WARN [bench] eth inner gas trace unavailable (RPC may lack debug_ namespace): %v", traceErr)
 		}
 	}
 
@@ -1011,7 +1011,7 @@ func waitForReceipts(ctx context.Context, client *ethclient.Client, hashes []com
 					continue
 				}
 				if err != nil && !errors.Is(err, ethereum.NotFound) {
-					log.Printf("[SendEthTx] Transient error polling receipt for %s: %v. Retrying...", hash.Hex(), err)
+					log.Printf("WARN [SendEthTx] Transient error polling receipt for %s: %v. Retrying...", hash.Hex(), err)
 					continue
 				}
 			}
@@ -1204,7 +1204,7 @@ func (h *Handler) cancelAbandonedTx(
 		return cancelUnresolved, fmt.Errorf("broadcast cancellation for nonce %d: %w", tx.Nonce(), sendErr)
 	}
 
-	log.Printf("[SendEthTx] Broadcast a cancellation for abandoned tx %s: nonce %d replaced with a zero-value self-transfer %s",
+	log.Printf("WARN [SendEthTx] Broadcast a cancellation for abandoned tx %s: nonce %d replaced with a zero-value self-transfer %s",
 		tx.Hash().Hex(), tx.Nonce(), signedCancel.Hash().Hex())
 	return cancelBroadcast, nil
 }
@@ -1504,7 +1504,7 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 		}
 
 		if isNonceTooLowError(callErr) {
-			log.Printf("[SendEthTx] Nonce %d too low (attempt %d/%d). Resetting nonce cache.", currentNonce, nonceAttempt, maxNonceRetries)
+			log.Printf("WARN [SendEthTx] Nonce %d too low (attempt %d/%d). Resetting nonce cache.", currentNonce, nonceAttempt, maxNonceRetries)
 			state.nonceValid = false
 			h.mu.Unlock()
 			continue
@@ -1578,7 +1578,7 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 					revertCause = " with " + decoded
 				}
 				if callErr != nil {
-					log.Printf("[SendEthTx] Revert reason: %s", describeRevert(callErr))
+					log.Printf("WARN [SendEthTx] Revert reason: %s", describeRevert(callErr))
 					if name, ok := validatorCacheRaceErrorName(callErr); ok {
 						return receipt, submitDur, waitDur, fmt.Errorf(
 							"tx %s reverted with %s (status=0, gasUsed=%d): %w",
@@ -1633,7 +1633,7 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 					if nextCeiling > 0 && nextGasLimit > nextCeiling {
 						nextGasLimit = nextCeiling
 					}
-					log.Printf("[SendEthTx] Tx %s ran out of gas at %d; retrying with fresh nonce and gas limit %d (step %d/%d)",
+					log.Printf("WARN [SendEthTx] Tx %s ran out of gas at %d; retrying with fresh nonce and gas limit %d (step %d/%d)",
 						receipt.TxHash.Hex(), tx.Gas(), nextGasLimit, nextStep+1, len(evmGasHeadroomBasisPoints))
 					retryReceipt, retrySubmitDur, retryWaitDur, retryErr := h.executeWithRetryAndResubmissionAtGasStep(
 						stdCtx, endpoint, privateKey, baseGasLimit, nextStep, nextCeiling, senderFn, knob,
@@ -1659,7 +1659,7 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 			// Equal means our transaction is simply not in the pool — a drop, which
 			// a resubmit can still fix — so only the strict inequality short-circuits.
 			if pending, nonceErr := endpoint.EthClient().PendingNonceAt(stdCtx, fromAddress); nonceErr != nil {
-				log.Printf("[SendEthTx] Tx %s not mined in %s; pending-nonce probe failed: %v",
+				log.Printf("WARN [SendEthTx] Tx %s not mined in %s; pending-nonce probe failed: %v",
 					tx.Hash().Hex(), attemptTimeout, nonceErr)
 			} else if pending < tx.Nonce() {
 				cause := fmt.Errorf(
@@ -1676,10 +1676,10 @@ func (h *Handler) executeWithRetryAndResubmissionAtGasStep(
 					h.onGiveUp(stdCtx, endpoint, privateKey, tx, fromAddress, chainIdInt, sentHashes, cause)
 			}
 
-			log.Printf("[SendEthTx] Tx %s not mined in %s, bumping gas price...", tx.Hash().Hex(), attemptTimeout)
+			log.Printf("WARN [SendEthTx] Tx %s not mined in %s, bumping gas price...", tx.Hash().Hex(), attemptTimeout)
 			bumpedTx, bumpErr := h.bumpGasAndResubmit(stdCtx, endpoint, tx, auth, attempt)
 			if bumpErr != nil {
-				log.Printf("[SendEthTx] Gas bump attempt %d failed: %v. Will continue waiting.", attempt, bumpErr)
+				log.Printf("WARN [SendEthTx] Gas bump attempt %d failed: %v. Will continue waiting.", attempt, bumpErr)
 			} else {
 				tx = bumpedTx
 				sentHashes = append(sentHashes, tx.Hash())

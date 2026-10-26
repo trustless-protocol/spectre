@@ -273,6 +273,57 @@ startup with errors such as `library 'icicle_device' not found`. In that case,
 ensure ICICLE shared libraries are installed and `LD_LIBRARY_PATH` covers the
 directory containing the `libicicle_*` files.
 
+## Logging
+
+Every log line the relayer emits carries a level, so a log viewer can filter and alert
+on it. Both settings are global flags, accepted by every subcommand, with an
+environment variable each; the flag wins:
+
+```bash
+./relayer start --config config.json --log-level warn --log-format json
+
+# Env (equivalent)
+RELAYER_LOG_LEVEL=debug RELAYER_LOG_FORMAT=console ./relayer start --config config.json
+```
+
+| Flag / env | Values | Default |
+|---|---|---|
+| `--log-level` / `RELAYER_LOG_LEVEL` | `debug`, `info`, `warn`, `error` | `info` |
+| `--log-format` / `RELAYER_LOG_FORMAT` | `json`, `console`, `auto` | `auto`: `console` on a terminal, `json` otherwise |
+
+The variables are read from the process environment, not from `relayer/.env`: that
+file is loaded inside each command, after the logger exists. An invalid value never
+stops the relayer; it is ignored, reported in the log, and the default is used.
+
+`json` is what a log viewer reads. Each line has `level`, `ts` (epoch seconds),
+`caller`, `msg` and, under `start`, `relay_path`. If the relayer runs with a terminal
+attached (`docker run -t`), pass `--log-format json` explicitly, or `auto` will pick
+`console`.
+
+When a command fails, cobra also prints its own `Error: ...` line and the usage text
+as plain lines. The same error is then logged once at `fatal`; alert on that line, not
+on the plain text.
+
+gnark logs through a logger of its own, which would otherwise print three console lines
+on stdout for every proof. It goes through the same stream: its lines read
+`[gnark] <message>`, carry `"component":"gnark"` and no `caller`, and keep gnark's own
+fields (`took` is in milliseconds) under a `gnark` key so they cannot shadow `level` or
+`msg`. The per-proof lines are `debug`; a warning or error from gnark keeps its level.
+
+A line's level says what it asks of the operator, not how chatty it is:
+
+| Level | Meaning |
+|---|---|
+| `error` | a person has to act or look: a packet dropped, state that could not be made durable, an operation abandoned, a recovered panic |
+| `warn` | something went wrong or is degraded and the relayer is handling it: a retry, a fallback, a skipped check, a resubscribe |
+| `info` | lifecycle, progress, and every state change a packet goes through |
+| `debug` | output that repeats with nothing new to say, such as the batch builder's `re-queued ... (waiting)` echo and gnark's three lines per proof |
+
+For contributors: the engine logs with `log.Printf`. Start the message with `WARN`,
+`ERROR` or `DEBUG` and one space to give it a level, ahead of the `[Label]`; with no
+token it is `info`. The token is stripped, so the logged text is unchanged.
+`relayer/logbridge` documents the convention, and its test rejects a misspelt token.
+
 ## Benchmark mode
 
 Detailed per-step gas + timing logs are off by default (production noise) and

@@ -22,6 +22,7 @@ require (
 	github.com/gogo/protobuf v1.3.2
 	github.com/gorilla/websocket v1.5.3
 	github.com/joho/godotenv v1.5.1
+	github.com/rs/zerolog v1.35.1
 	github.com/spf13/cobra v1.10.2
 	go.uber.org/zap v1.28.0
 	google.golang.org/grpc v1.83.2
@@ -152,7 +153,6 @@ require (
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/ronanh/intcomp v1.1.1 // indirect
 	github.com/rs/cors v1.11.1 // indirect
-	github.com/rs/zerolog v1.35.1 // indirect
 	github.com/sagikazarmark/locafero v0.7.0 // indirect
 	github.com/sasha-s/go-deadlock v0.3.5 // indirect
 	github.com/shamaton/msgpack/v2 v2.2.0 // indirect

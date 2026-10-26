@@ -85,12 +85,12 @@ func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 		if !sendBudgetSpent {
 			return nil, err
 		}
-		log.Printf("[l2->cosmos Flush] send leg out of time before its probe answered; the cursor stays and the ack leg runs: %v", err)
+		log.Printf("WARN [l2->cosmos Flush] send leg out of time before its probe answered; the cursor stays and the ack leg runs: %v", err)
 		sends = nil
 	}
 	acks, err := s.unrelayedAcks(queryCtx, router)
 	if err != nil {
-		log.Printf("[l2->cosmos Flush] acknowledgement leg: %v; the send leg's %d packet(s) still stand", err, len(sends))
+		log.Printf("WARN [l2->cosmos Flush] acknowledgement leg: %v; the send leg's %d packet(s) still stand", err, len(sends))
 	}
 	return append(sends, acks...), nil
 }
@@ -121,11 +121,11 @@ func (s *Source) unrelayedSends(ctx context.Context, router evmflush.Router) ([]
 		if err != nil {
 			if ctx.Err() != nil {
 				stop = i
-				log.Printf("[l2->cosmos Flush] send leg out of time at seq=%d with %d of %d send(s) resolved; the next pass resumes there: %v",
+				log.Printf("WARN [l2->cosmos Flush] send leg out of time at seq=%d with %d of %d send(s) resolved; the next pass resumes there: %v",
 					slot.Sequence, i, len(slots), err)
 				break
 			}
-			log.Printf("[l2->cosmos Flush] resolve send seq=%d: %v", slot.Sequence, err)
+			log.Printf("WARN [l2->cosmos Flush] resolve send seq=%d: %v", slot.Sequence, err)
 			continue
 		}
 		if !found {
@@ -149,7 +149,7 @@ func (s *Source) unrelayedSends(ctx context.Context, router evmflush.Router) ([]
 		if ev.Packet.TimeoutTimestamp > 0 && uint64(time.Now().Unix()) >= ev.Packet.TimeoutTimestamp {
 			if s.track != nil && !s.track(e.Raw, e.Height) {
 				hold = i
-				log.Printf("[l2->cosmos Flush] track expired send seq=%d from block %d: durable write failed; the next pass resumes there",
+				log.Printf("WARN [l2->cosmos Flush] track expired send seq=%d from block %d: durable write failed; the next pass resumes there",
 					slot.Sequence, e.Height)
 				break
 			}
@@ -203,11 +203,11 @@ func (s *Source) unrelayedAcks(ctx context.Context, router evmflush.Router) ([]c
 		if err != nil {
 			if ctx.Err() != nil {
 				stop = i
-				log.Printf("[l2->cosmos Flush] ack leg out of time at seq=%d with %d of %d ack(s) resolved; the next pass resumes there: %v",
+				log.Printf("WARN [l2->cosmos Flush] ack leg out of time at seq=%d with %d of %d ack(s) resolved; the next pass resumes there: %v",
 					slot.Sequence, i, len(written), err)
 				break
 			}
-			log.Printf("[l2->cosmos Flush] resolve ack seq=%d: %v", slot.Sequence, err)
+			log.Printf("WARN [l2->cosmos Flush] resolve ack seq=%d: %v", slot.Sequence, err)
 			continue
 		}
 		if !found {

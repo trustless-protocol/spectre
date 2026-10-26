@@ -252,7 +252,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 		if err != nil {
 			l2.Close()
 			if stopErr := cosmosClient.Stop(); stopErr != nil {
-				log.Printf("failed to terminate cosmos client: %v", stopErr)
+				log.Printf("WARN failed to terminate cosmos client: %v", stopErr)
 			}
 			for _, opened := range attestors {
 				_ = opened.Close()
@@ -276,7 +276,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	if err != nil {
 		l2.Close()
 		if stopErr := cosmosClient.Stop(); stopErr != nil {
-			log.Printf("failed to terminate cosmos client: %v", stopErr)
+			log.Printf("WARN failed to terminate cosmos client: %v", stopErr)
 		}
 		for _, opened := range attestors {
 			_ = opened.Close()
@@ -287,7 +287,7 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	if err != nil {
 		l2.Close()
 		if stopErr := cosmosClient.Stop(); stopErr != nil {
-			log.Printf("failed to terminate cosmos client: %v", stopErr)
+			log.Printf("WARN failed to terminate cosmos client: %v", stopErr)
 		}
 		for _, opened := range attestors {
 			_ = opened.Close()
@@ -354,11 +354,11 @@ func buildL2ToCosmosModule(logger *zap.Logger, cfg l2ToCosmosConfig, txHandler s
 	cleanup := func() {
 		l2.Close()
 		if err := cosmosClient.Stop(); err != nil {
-			log.Printf("failed to terminate cosmos client: %v", err)
+			log.Printf("WARN failed to terminate cosmos client: %v", err)
 		}
 		for _, attestor := range attestors {
 			if err := attestor.Close(); err != nil {
-				log.Printf("failed to close attestor client: %v", err)
+				log.Printf("WARN failed to close attestor client: %v", err)
 			}
 		}
 	}
@@ -431,7 +431,7 @@ func settleL2OwedAck(svc *services.Services) func(raw []byte) {
 	return func(raw []byte) {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[AckWatch] settle owed ack from terminal L2 event: decode packet: %v", err)
+			log.Printf("ERROR [AckWatch] settle owed ack from terminal L2 event: decode packet: %v", err)
 			return
 		}
 		svc.ClearAckDue(pkt)
@@ -442,7 +442,7 @@ func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.Untra
 	trackL2Pending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[l2->cosmos Relay] track pending: decode packet: %v", err)
+			log.Printf("ERROR [l2->cosmos Relay] track pending: decode packet: %v", err)
 			return false
 		}
 		return svc.TrackL2Pending(pkt, height)
@@ -450,7 +450,7 @@ func l2PendingTrackerHooks(svc *services.Services) (relay.TrackFunc, relay.Untra
 	untrackL2Pending := func(raw []byte) {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[l2->cosmos Relay] untrack pending: decode packet: %v", err)
+			log.Printf("ERROR [l2->cosmos Relay] untrack pending: decode packet: %v", err)
 			return
 		}
 		svc.UntrackL2Pending(pkt)

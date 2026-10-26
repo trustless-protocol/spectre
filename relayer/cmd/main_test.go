@@ -22,37 +22,39 @@ import (
 	"go.uber.org/zap/zaptest/observer"
 )
 
-// The prefix has to land AFTER the timestamp. Without log.Lmsgprefix the
-// standard logger writes it first, so every line starts with the path and the
-// times stop lining up as a column — which is how a merged log is actually read.
-func TestStampRelayPath_OnLogsPutsThePathAfterTheTimestamp(t *testing.T) {
-	origFlags, origPrefix := log.Flags(), log.Prefix()
-	origOut := log.Writer()
+// The path travels as a field, standard-library lines included. Two things would
+// break that: never routing the standard logger into the scoped logger, and
+// routing it while the old Lmsgprefix prefix and LstdFlags timestamp stayed set,
+// which would put both inside every message a second time -- the timestamp zap
+// already writes, and a path the field already carries.
+func TestStampRelayPath_CarriesThePathOnStdlibLines(t *testing.T) {
+	origFlags, origPrefix, origOut := log.Flags(), log.Prefix(), log.Writer()
 	t.Cleanup(func() {
 		log.SetFlags(origFlags)
 		log.SetPrefix(origPrefix)
 		log.SetOutput(origOut)
 	})
+	restoreGnarkLogger(t)
 
-	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	stampRelayPath(zap.NewNop(), "cosmos<->eth/cosmoshub-1")
-	log.Printf("[Subscribe] send_packet received: seq=7")
+	core, logs := observer.New(zapcore.InfoLevel)
+	stampRelayPath(zap.New(core), "cosmos<->eth/cosmoshub-1")
+	log.Printf("[Subscribe] send_packet received: seq=%d", 7)
 
-	line := buf.String()
-	if !strings.Contains(line, "[cosmos<->eth/cosmoshub-1]") {
-		t.Fatalf("line %q does not carry the path", line)
+	entries := logs.All()
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1: the standard logger is not routed into the scoped one", len(entries))
 	}
-	if !strings.Contains(line, "[Subscribe] send_packet received: seq=7") {
-		t.Fatalf("line %q lost the original message", line)
+	if got, want := entries[0].Message, "[Subscribe] send_packet received: seq=7"; got != want {
+		t.Fatalf("message = %q, want %q: the text must arrive alone, without a timestamp or "+
+			"path prefix of the standard logger's own", got, want)
 	}
-	pathAt := strings.Index(line, "[cosmos<->eth/cosmoshub-1]")
-	if pathAt == 0 {
-		t.Fatalf("the path is written before the timestamp; log.Lmsgprefix is missing: %q", line)
+	got, ok := entries[0].ContextMap()[relayPathLogField]
+	if !ok {
+		t.Fatalf("the line carries no %q field: %+v; a merged log cannot attribute it to a relay path",
+			relayPathLogField, entries[0].ContextMap())
 	}
-	// The timestamp must be everything before the path, not a substring of it.
-	if stamp := strings.TrimSpace(line[:pathAt]); stamp == "" {
-		t.Fatalf("nothing precedes the path, so the timestamp was dropped: %q", line)
+	if got != "cosmos<->eth/cosmoshub-1" {
+		t.Fatalf("%s = %v, want the relay path", relayPathLogField, got)
 	}
 }
 
@@ -68,6 +70,7 @@ func TestStampRelayPath_ScopesTheZapLoggerToo(t *testing.T) {
 		log.SetPrefix(origPrefix)
 		log.SetOutput(origOut)
 	})
+	restoreGnarkLogger(t)
 	log.SetOutput(&bytes.Buffer{})
 
 	core, logs := observer.New(zapcore.InfoLevel)
@@ -244,7 +247,11 @@ func TestLogLabelsStayOnTheAgreedList(t *testing.T) {
 		"%s": true,
 	}
 
-	labelRe := regexp.MustCompile(`\.(?:Printf|Println|Fatalf|Infof|Warnf|Errorf|Debugf)\("(?:\\n)?\[([^\]"]+)\]`)
+	// A level token (logbridge) may stand in front of the label, and the label is
+	// still what the line is about. Without the optional group every line that gains
+	// a token would silently drop out of this check, which would stay green while
+	// covering less.
+	labelRe := regexp.MustCompile(`\.(?:Printf|Println|Fatalf|Infof|Warnf|Errorf|Debugf)\("(?:(?:DEBUG|WARN|ERROR) )?(?:\\n)?\[([^\]"]+)\]`)
 	var offenders []string
 	err := filepath.Walk("..", func(path string, info os.FileInfo, err error) error {
 		if err != nil {
