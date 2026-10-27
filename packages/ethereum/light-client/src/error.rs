@@ -210,6 +210,9 @@ pub enum EthereumIBCError {
     #[error("client's store period must be equal to update's finalized period")]
     StorePeriodMustBeEqualToFinalizedPeriod,
 
+    #[error("client's store period must be equal to update's attested period")]
+    StorePeriodMustBeEqualToAttestedPeriod,
+
     #[error("failed to compute slot at timestamp with  \
         (timestamp ({timestamp}) - genesis ({genesis})) / seconds_per_slot ({seconds_per_slot}) + genesis_slot ({genesis_slot})"
     )]

@@ -5,6 +5,7 @@ use ethereum_light_client::{
     client_state::ClientState as EthClientState,
     consensus_state::ConsensusState as EthConsensusState,
 };
+use ethereum_types::consensus::fork::{Fork, ForkParameters};
 use ibc_proto::ibc::{
     core::client::v1::Height as IbcProtoHeight,
     lightclients::wasm::v1::{
@@ -88,6 +89,29 @@ pub fn prepare_client(msg: InstantiateMsg) -> Result<PreparedClient, ContractErr
         ContractError::InvalidClientState("epochs_per_sync_committee_period must be non-zero")
     );
 
+    ensure!(
+        !client_state.is_frozen,
+        ContractError::InvalidClientState("a new client state must not be frozen")
+    );
+    ensure!(
+        client_state.sync_committee_size != 0,
+        ContractError::InvalidClientState("sync_committee_size must be non-zero")
+    );
+    ensure!(
+        client_state.min_sync_committee_participants != 0
+            && client_state.min_sync_committee_participants <= client_state.sync_committee_size,
+        ContractError::InvalidClientState(
+            "min_sync_committee_participants must be between 1 and sync_committee_size"
+        )
+    );
+    validate_fork_order(&client_state.fork_parameters)?;
+    // A client bootstrapped without its next sync committee cannot cross into the next period, and
+    // the committee stored from a later update is only trusted to follow the store's own period.
+    ensure!(
+        consensus_state.next_sync_committee.is_some(),
+        ContractError::InvalidConsensusState("next_sync_committee must be set")
+    );
+
     client_state
         .verify_supported_fork_at_epoch(
             client_state.compute_epoch_at_slot(client_state.latest_slot),
@@ -99,4 +123,80 @@ pub fn prepare_client(msg: InstantiateMsg) -> Result<PreparedClient, ContractErr
         consensus_key: consensus_db_key(consensus_state.slot).into_bytes(),
         consensus: encode_consensus_state(&wasm_consensus_state)?,
     })
+}
+
+/// The forks in activation order, with the name used in errors.
+const fn forks(fork_parameters: &ForkParameters) -> [(&'static str, &Fork); 7] {
+    [
+        ("altair", &fork_parameters.altair),
+        ("bellatrix", &fork_parameters.bellatrix),
+        ("capella", &fork_parameters.capella),
+        ("deneb", &fork_parameters.deneb),
+        ("electra", &fork_parameters.electra),
+        ("fulu", &fork_parameters.fulu),
+        ("gloas", &fork_parameters.gloas),
+    ]
+}
+
+/// Checks that no fork activates before the one that precedes it.
+fn validate_fork_order(fork_parameters: &ForkParameters) -> Result<(), ContractError> {
+    for pair in forks(fork_parameters).windows(2) {
+        let ((_, previous), (name, fork)) = (pair[0], pair[1]);
+        ensure!(
+            previous.epoch <= fork.epoch,
+            ContractError::InvalidForkParameters {
+                fork: name,
+                reason: "activates before the fork that precedes it",
+            }
+        );
+    }
+    Ok(())
+}
+
+/// Validates replacing the fork parameters of a running client.
+///
+/// The fork version selects the signing domain, so changing one that is already active would make
+/// every signature the client has accepted, and every one it will be shown, verify against a
+/// different domain. Only forks that have not activated yet can be scheduled or moved, and only to
+/// an epoch after the client's latest one.
+/// # Errors
+/// Returns an error if the new parameters are out of order, change the genesis parameters or a
+/// fork that is already active, or move a scheduled fork to an epoch the client has passed.
+pub fn validate_fork_parameters_update(
+    client_state: &EthClientState,
+    new: &ForkParameters,
+) -> Result<(), ContractError> {
+    validate_fork_order(new)?;
+
+    let current = &client_state.fork_parameters;
+    ensure!(
+        new.genesis_fork_version == current.genesis_fork_version
+            && new.genesis_slot == current.genesis_slot,
+        ContractError::InvalidForkParameters {
+            fork: "genesis",
+            reason: "the genesis fork parameters cannot change",
+        }
+    );
+
+    let latest_epoch = client_state.compute_epoch_at_slot(client_state.latest_slot);
+    for ((name, current), (_, new)) in forks(current).into_iter().zip(forks(new)) {
+        if current.epoch <= latest_epoch {
+            ensure!(
+                current == new,
+                ContractError::InvalidForkParameters {
+                    fork: name,
+                    reason: "an active fork cannot change",
+                }
+            );
+        } else {
+            ensure!(
+                new.epoch > latest_epoch,
+                ContractError::InvalidForkParameters {
+                    fork: name,
+                    reason: "a fork that has not activated cannot move to an epoch the client has passed",
+                }
+            );
+        }
+    }
+    Ok(())
 }

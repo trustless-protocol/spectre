@@ -55,6 +55,17 @@ pub enum ContractError {
     #[error("invalid Ethereum client state: {0}")]
     InvalidClientState(&'static str),
 
+    #[error("invalid Ethereum consensus state: {0}")]
+    InvalidConsensusState(&'static str),
+
+    #[error("invalid fork parameters for {fork}: {reason}")]
+    InvalidForkParameters {
+        /// The fork the rule failed for.
+        fork: &'static str,
+        /// The rule that failed.
+        reason: &'static str,
+    },
+
     #[error("client state not found")]
     ClientStateNotFound,
 

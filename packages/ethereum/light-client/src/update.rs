@@ -89,6 +89,16 @@ pub fn update_consensus_state(
             update_finalized_period == store_period,
             EthereumIBCError::StorePeriodMustBeEqualToFinalizedPeriod
         );
+        // The next sync committee in the update is proven against the attested header's state, so
+        // it is the committee of the period after the attested one. It is only the committee of the
+        // period after the store's if the two periods are the same.
+        let update_attested_period = current_client_state.compute_sync_committee_period_at_slot(
+            header.consensus_update.attested_header.beacon.slot,
+        );
+        ensure!(
+            update_attested_period == store_period,
+            EthereumIBCError::StorePeriodMustBeEqualToAttestedPeriod
+        );
         new_consensus_state.next_sync_committee = header
             .consensus_update
             .next_sync_committee
@@ -264,5 +274,32 @@ mod test {
         let new_client_state = new_client_state.expect("client state advances with the slot");
         assert_eq!(new_client_state.latest_slot, FINALIZED_SLOT);
         assert_eq!(new_client_state.latest_execution_block_number, 999);
+    }
+    #[test]
+    fn next_sync_committee_is_not_stored_from_an_update_attested_in_a_later_period() {
+        use crate::test_utils::synthetic::{SyntheticChain, COMMITTEE_SIZE, PERIOD_END_SLOT};
+
+        let chain = SyntheticChain::new();
+        // A client that does not know its next sync committee yet.
+        let consensus_state = ConsensusState {
+            next_sync_committee: None,
+            ..chain.consensus_state()
+        };
+        let mut update = chain.update(B256::repeat_byte(0x11), COMMITTEE_SIZE);
+        // The committee the update carries is the one that follows the attested period, which is
+        // not the period after the store's once the attested header is in a later period.
+        update.next_sync_committee = Some(chain.committee().clone());
+        update.attested_header.beacon.slot = PERIOD_END_SLOT + 1;
+        let header = Header {
+            active_sync_committee: ActiveSyncCommittee::Current(chain.committee().clone()),
+            consensus_update: update,
+            trusted_slot: consensus_state.slot,
+            execution_header_rlp: None,
+        };
+
+        assert!(matches!(
+            update_consensus_state(consensus_state, chain.client_state(), header),
+            Err(EthereumIBCError::StorePeriodMustBeEqualToAttestedPeriod)
+        ));
     }
 }
