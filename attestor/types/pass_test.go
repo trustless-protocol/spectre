@@ -3,9 +3,13 @@ package types
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/rpc"
 )
 
 func TestRunPassWithoutTimeoutLeavesTheContextAlone(t *testing.T) {
@@ -140,5 +144,63 @@ func TestDialRPCBoundsHangingHTTPCall(t *testing.T) {
 func TestDialRPCRejectsAnUnparsableURL(t *testing.T) {
 	if _, err := DialRPC(context.Background(), "http://[::1", time.Second); err == nil {
 		t.Fatal("DialRPC accepted a malformed URL")
+	}
+}
+
+// silentBlockNumberService receives the request and never answers it, as a
+// WebSocket peer that keeps its connection up and drops one response does.
+type silentBlockNumberService struct{}
+
+func (silentBlockNumberService) BlockNumber(ctx context.Context) (hexutil.Uint64, error) {
+	<-ctx.Done()
+	return 0, ctx.Err()
+}
+
+// DialRPC puts no timeout on a WebSocket connection, so a call on one that is
+// never answered is bounded only by the context it is made with. That is what
+// makes the pass deadline the thing that frees a feed runner, for the endpoints
+// a transport timeout cannot reach.
+func TestRunPassFreesACallOnAWebSocketThatNeverAnswers(t *testing.T) {
+	rpcServer := rpc.NewServer()
+	t.Cleanup(rpcServer.Stop)
+	if err := rpcServer.RegisterName("eth", silentBlockNumberService{}); err != nil {
+		t.Fatalf("register RPC service: %v", err)
+	}
+	server := httptest.NewServer(rpcServer.WebsocketHandler(nil))
+	t.Cleanup(server.Close)
+
+	dialCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	client, err := DialRPC(dialCtx, "ws"+strings.TrimPrefix(server.URL, "http"), 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("DialRPC: %v", err)
+	}
+	t.Cleanup(client.Close)
+
+	started := time.Now()
+	err = RunPass(context.Background(), 100*time.Millisecond, func(ctx context.Context) error {
+		var blockNumber hexutil.Uint64
+		return client.CallContext(ctx, &blockNumber, "eth_blockNumber")
+	})
+	if err == nil || !strings.Contains(err.Error(), "pass exceeded its 100ms deadline") {
+		t.Fatalf("pass on a silent WebSocket = %v, want the pass deadline", err)
+	}
+	if elapsed := time.Since(started); elapsed > 5*time.Second {
+		t.Fatalf("the pass was freed after %s, want about 100ms", elapsed)
+	}
+
+	// The same call with only the dial's 50ms transport timeout in play, and no
+	// pass deadline, is not freed by it: that timeout does not apply to a
+	// WebSocket. A caller's own context is the only bound.
+	probe, probeCancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer probeCancel()
+	var blockNumber hexutil.Uint64
+	probeStarted := time.Now()
+	err = client.CallContext(probe, &blockNumber, "eth_blockNumber")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("call bounded by the caller's context = %v, want context.DeadlineExceeded", err)
+	}
+	if elapsed := time.Since(probeStarted); elapsed < 250*time.Millisecond {
+		t.Fatalf("the call returned after %s: the dial's transport timeout freed a WebSocket call", elapsed)
 	}
 }
