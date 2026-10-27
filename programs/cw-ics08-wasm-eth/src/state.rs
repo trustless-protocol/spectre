@@ -72,6 +72,40 @@ pub fn get_eth_consensus_state(
     Ok(serde_json::from_slice(&wasm_consensus_state.data)?)
 }
 
+/// Checks that a client message is anchored at the latest consensus state of the client.
+///
+/// A message names the consensus state it is verified against (`trusted_slot`), but `UpdateState`
+/// applies the result on top of the latest one. Verifying against an older consensus state would
+/// let the keys of a past sync committee, which carry no stake any more, forge a root or freeze the
+/// client. Every consensus state older than the latest is therefore refused as an anchor.
+/// # Errors
+/// Returns an error if `trusted_slot` is not the latest slot of the client
+pub const fn ensure_trusted_slot_is_latest(
+    client_state: &EthClientState,
+    trusted_slot: u64,
+) -> Result<(), ContractError> {
+    if trusted_slot != client_state.latest_slot {
+        return Err(ContractError::TrustedSlotNotLatest {
+            trusted_slot,
+            latest_slot: client_state.latest_slot,
+        });
+    }
+    Ok(())
+}
+
+/// Get the consensus state a client message is verified against
+/// # Errors
+/// Returns an error if `trusted_slot` is not the latest slot of the client, or if its consensus
+/// state is not found or cannot be deserialized
+pub fn get_trusted_consensus_state(
+    storage: &dyn Storage,
+    client_state: &EthClientState,
+    trusted_slot: u64,
+) -> Result<EthConsensusState, ContractError> {
+    ensure_trusted_slot_is_latest(client_state, trusted_slot)?;
+    get_eth_consensus_state(storage, trusted_slot)
+}
+
 /// Store the consensus state
 /// # Errors
 /// Returns an error if the consensus state cannot be serialized into an Any
