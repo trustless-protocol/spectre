@@ -47,6 +47,9 @@ type Config struct {
 	EnableReflection    bool
 	HealthPoll          time.Duration
 	GracefulStopTimeout time.Duration
+	// ErrorLog receives the cause of every error the gRPC server answers with
+	// only a classified message, URLs redacted. Nil discards them.
+	ErrorLog func(format string, args ...any)
 }
 
 // Host owns a shared gRPC server and runner supervisor.
@@ -68,7 +71,7 @@ func New(config Config) (*Host, error) {
 	if len(config.Routes) == 0 {
 		return nil, fmt.Errorf("attestor host requires at least one route")
 	}
-	service, err := attestorgrpc.New(config.Routes)
+	service, err := attestorgrpc.New(config.Routes, attestorgrpc.WithErrorLog(config.ErrorLog))
 	if err != nil {
 		return nil, err
 	}

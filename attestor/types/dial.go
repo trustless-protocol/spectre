@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"time"
 
+	"attestor/types/redact"
+
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
 )
@@ -20,10 +22,13 @@ const DefaultRPCTimeout = 2 * time.Minute
 // transport timeout; WebSocket endpoints do not, because their connections are
 // intentionally long-lived and do not use http.Client. A call on such a
 // connection is bounded only by the context it is made with.
+//
+// An error from here can quote rawURL, and an RPC provider's API key travels in
+// the URL, so callers redact it (redact.Error) before it is logged or returned.
 func DialRPC(ctx context.Context, rawURL string, timeout time.Duration) (*rpc.Client, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, fmt.Errorf("parse url: %w", err)
+		return nil, fmt.Errorf("parse url: %w", redact.Error(err))
 	}
 
 	var opts []rpc.ClientOption
@@ -34,11 +39,11 @@ func DialRPC(ctx context.Context, rawURL string, timeout time.Duration) (*rpc.Cl
 }
 
 // DialEthRPC connects to an Ethereum-family JSON-RPC endpoint with DialRPC's
-// transport timeout.
+// transport timeout. Its errors name the endpoint by scheme and host only.
 func DialEthRPC(ctx context.Context, rawURL string, timeout time.Duration) (*ethclient.Client, error) {
 	rpcClient, err := DialRPC(ctx, rawURL, timeout)
 	if err != nil {
-		return nil, fmt.Errorf("eth rpc %s: %w", rawURL, err)
+		return nil, fmt.Errorf("eth rpc %s: %w", redact.URL(rawURL), redact.Error(err))
 	}
 	return ethclient.NewClient(rpcClient), nil
 }

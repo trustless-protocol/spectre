@@ -14,6 +14,7 @@ import (
 	"time"
 
 	attestortypes "attestor/types"
+	"attestor/types/redact"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -300,7 +301,7 @@ func validateRPCURL(raw, field string, allowedSchemes ...string) error {
 	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("parse %s: %w", field, err)
+		return fmt.Errorf("parse %s: %w", field, redact.Error(err))
 	}
 	allowed := false
 	for _, scheme := range allowedSchemes {

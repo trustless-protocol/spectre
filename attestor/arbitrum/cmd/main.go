@@ -21,6 +21,7 @@ import (
 	"attestor/host"
 	attestortypes "attestor/types"
 	"attestor/types/attestation"
+	"attestor/types/redact"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
@@ -34,7 +35,9 @@ func main() {
 	defer stop()
 
 	if err := execute(ctx, os.Args[1:]); err != nil && !errors.Is(err, context.Canceled) {
-		log.Fatal(err)
+		// A startup failure on an RPC endpoint quotes the endpoint URL, whose
+		// path or query can hold the provider's API key.
+		log.Fatal(redact.Error(err))
 	}
 }
 
@@ -55,7 +58,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 
 	nitroWSClient, err := ethclient.DialContext(ctx, config.NitroWSURL)
 	if err != nil {
-		return fmt.Errorf("connect to Nitro WebSocket: %w", err)
+		return fmt.Errorf("connect to Nitro WebSocket: %w", redact.Error(err))
 	}
 	defer nitroWSClient.Close()
 	if err := validateNitroChainID(ctx, nitroWSClient, config.L2ChainID, "WebSocket"); err != nil {
@@ -229,6 +232,7 @@ func runAttestor(ctx context.Context, configPath string) error {
 			},
 		},
 		Listener: listener,
+		ErrorLog: log.Printf,
 	})
 	if err != nil {
 		return fmt.Errorf("initialize attestor host: %w", err)

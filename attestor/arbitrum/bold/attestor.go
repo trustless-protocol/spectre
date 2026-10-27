@@ -11,6 +11,7 @@ import (
 
 	arbitrum "attestor/arbitrum"
 	attestortypes "attestor/types"
+	"attestor/types/redact"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -172,7 +173,7 @@ func (a *AssertionAttestor) RunWithObserver(ctx context.Context, observe func(er
 			return
 		}
 		if err != nil {
-			log.Printf("Arbitrum assertion attestation failed: %v", err)
+			log.Printf("Arbitrum assertion attestation failed: %v", redact.Error(err))
 		}
 		if observe != nil {
 			observe(err)

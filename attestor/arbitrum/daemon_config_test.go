@@ -346,3 +346,25 @@ func validDaemonConfig(t *testing.T) DaemonConfig {
 		NitroWSURL:            "wss://arbitrum.example",
 	}
 }
+
+// A URL that fails to parse is quoted by the parse error; it must not be
+// echoed with its key into the startup log.
+func TestDaemonConfigValidateDoesNotEchoTheKeyOfAnUnparsableURL(t *testing.T) {
+	for name, set := range map[string]func(*DaemonConfig){
+		"L1 RPC":    func(c *DaemonConfig) { c.L1RPCURL = "http://[::1/v2/SECRET-KEY" },
+		"Nitro RPC": func(c *DaemonConfig) { c.NitroRPCURL = "http://[::1/v2/SECRET-KEY" },
+		"Nitro WS":  func(c *DaemonConfig) { c.NitroWSURL = "ws://[::1/ws/SECRET-KEY" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := validDaemonConfig(t)
+			set(&config)
+			err := config.Validate()
+			if err == nil {
+				t.Fatal("Validate accepted an unparsable URL")
+			}
+			if strings.Contains(err.Error(), "SECRET-KEY") {
+				t.Fatalf("Validate error %q echoes the key", err)
+			}
+		})
+	}
+}

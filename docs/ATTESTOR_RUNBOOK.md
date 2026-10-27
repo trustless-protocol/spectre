@@ -23,6 +23,19 @@ curl -fsS http://127.0.0.1:9090/metrics | grep spectre_.*_attestor
 Every production gRPC request must include the configured `src_chain`; an
 empty value is rejected rather than inferred from a single feed.
 
+A failed request returns the code of the error's class and one classified
+message (for example `read replica finalized head`), never the upstream error
+behind it. That error quotes the RPC endpoint URL, and a provider's API key can
+be in its path or query, so any peer that reaches the unauthenticated API would
+read it out of an upstream outage. The cause is in the attestor's own log as
+`attestor gRPC <method> failed (<message>): <cause>`. Every URL in that line is
+reduced to scheme and host, as it is in the other lines that log an upstream
+failure (`attestation pass failed`, `Arbitrum assertion attestation failed`,
+`attestor runtime refresh failed`, the Nitro new-head subscription lines, the OP
+`DisputeGameCreated` hint line), in dial and configuration errors at startup,
+and in the fatal error that ends the process. A key that is part of the host
+name is not removed.
+
 ## What to watch
 
 The Arbitrum endpoint exports `spectre_arbitrum_attestor_*`, labeled only by

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	attestortypes "attestor/types"
+	"attestor/types/redact"
 
 	"github.com/ethereum/go-ethereum/common"
 )
@@ -22,7 +23,7 @@ func validateRPCURL(value, name string, allowIPC bool, schemes ...string) error 
 	parsed, err := url.ParseRequestURI(value)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		if err != nil {
-			return fmt.Errorf("%s is not a valid URL: %w", name, err)
+			return fmt.Errorf("%s is not a valid URL: %w", name, redact.Error(err))
 		}
 		if allowIPC {
 			return fmt.Errorf("%s must be an absolute URL with scheme and host, or an absolute IPC path", name)

@@ -94,3 +94,25 @@ func TestConfigValidateFailureMatrix(t *testing.T) {
 		})
 	}
 }
+
+// A URL that fails to parse is quoted by the parse error; it must not be
+// echoed with its key into the startup log.
+func TestConfigValidateDoesNotEchoTheKeyOfAnUnparsableURL(t *testing.T) {
+	for name, set := range map[string]func(*Config){
+		"L1 RPC":     func(c *Config) { c.L1RpcUrl = "http://[::1/v2/SECRET-KEY" },
+		"op-node":    func(c *Config) { c.OpNodeRpcUrl = "http://[::1/v2/SECRET-KEY" },
+		"L1 hint ws": func(c *Config) { c.L1WsUrl = "ws://[::1/ws/SECRET-KEY" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := validConfig()
+			set(&config)
+			err := config.Validate()
+			if err == nil {
+				t.Fatal("Validate accepted an unparsable URL")
+			}
+			if strings.Contains(err.Error(), "SECRET-KEY") {
+				t.Fatalf("Validate error %q echoes the key", err)
+			}
+		})
+	}
+}

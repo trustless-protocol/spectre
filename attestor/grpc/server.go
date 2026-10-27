@@ -5,12 +5,14 @@ package grpc
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
 
 	"attestor/core"
 	attestorpb "attestor/types/attestor"
+	"attestor/types/redact"
 
 	googlegrpc "google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -24,11 +26,24 @@ type Server struct {
 	attestorpb.UnimplementedAttestorServiceServer
 	routes       map[string]core.Ports
 	sourceChains []string
+	logf         func(format string, args ...any)
+}
+
+// Option configures a Server.
+type Option func(*Server)
+
+// WithErrorLog sets where the server reports the cause of an error it answers
+// with only a classified message (see mapError). The cause is logged with its
+// URLs reduced to scheme and host, because an upstream transport error quotes
+// the endpoint it failed on, and an RPC provider's API key travels in that
+// URL. A nil logf, the default, discards the causes.
+func WithErrorLog(logf func(format string, args ...any)) Option {
+	return func(s *Server) { s.logf = logf }
 }
 
 // New validates and copies the composition root's routing table. Subsequent
 // mutation by the caller cannot make a request route to a different plugin.
-func New(routes map[string]core.Ports) (*Server, error) {
+func New(routes map[string]core.Ports, options ...Option) (*Server, error) {
 	if len(routes) == 0 {
 		return nil, fmt.Errorf("attestor routing table must not be empty")
 	}
@@ -45,7 +60,11 @@ func New(routes map[string]core.Ports) (*Server, error) {
 		names = append(names, srcChain)
 	}
 	sort.Strings(names)
-	return &Server{routes: copied, sourceChains: names}, nil
+	server := &Server{routes: copied, sourceChains: names}
+	for _, option := range options {
+		option(server)
+	}
+	return server, nil
 }
 
 // Register attaches this adapter to a gRPC server.
@@ -64,7 +83,7 @@ func (s *Server) Info(ctx context.Context, request *attestorpb.InfoRequest) (*at
 		ports := s.routes[srcChain]
 		feedStatus, err := ports.Status.Status(ctx)
 		if err != nil {
-			return nil, mapError(err)
+			return nil, s.mapError("Info", err)
 		}
 		chain := &attestorpb.ChainInfo{
 			SrcChain:           srcChain,
@@ -77,12 +96,12 @@ func (s *Server) Info(ctx context.Context, request *attestorpb.InfoRequest) (*at
 		}
 		if ports.Feed != nil {
 			if root, found, err := ports.Feed.AttestedUpTo(ctx, core.AttestationPolicy{}); err != nil {
-				return nil, mapError(err)
+				return nil, s.mapError("Info", err)
 			} else if found {
 				chain.AttestedUpTo = rootToProto(root)
 			}
 			if root, found, err := ports.Feed.AttestedUpTo(ctx, core.AttestationPolicy{IncludeProvisional: true}); err != nil {
-				return nil, mapError(err)
+				return nil, s.mapError("Info", err)
 			} else if found {
 				chain.AttestedUpToProvisional = rootToProto(root)
 			}
@@ -105,7 +124,7 @@ func (s *Server) AttestedUpTo(ctx context.Context, request *attestorpb.AttestedU
 	}
 	root, found, err := ports.Feed.AttestedUpTo(ctx, core.AttestationPolicy{IncludeProvisional: request.GetIncludeProvisional()})
 	if err != nil {
-		return nil, mapError(err)
+		return nil, s.mapError("AttestedUpTo", err)
 	}
 	response := &attestorpb.AttestedUpToResponse{Found: found}
 	if found {
@@ -131,7 +150,7 @@ func (s *Server) AttestedRootAtOrBelow(ctx context.Context, request *attestorpb.
 		core.AttestationPolicy{IncludeProvisional: request.GetIncludeProvisional()},
 	)
 	if err != nil {
-		return nil, mapError(err)
+		return nil, s.mapError("AttestedRootAtOrBelow", err)
 	}
 	response := &attestorpb.AttestedRootAtOrBelowResponse{Found: found}
 	if found {
@@ -155,7 +174,7 @@ func (s *Server) WatchAttested(request *attestorpb.WatchAttestedRequest, stream 
 		Policy: core.AttestationPolicy{IncludeProvisional: request.GetIncludeProvisional()},
 	})
 	if err != nil {
-		return mapError(err)
+		return s.mapError("WatchAttested", err)
 	}
 	for {
 		select {
@@ -195,7 +214,7 @@ func (s *Server) VerifyStateRoot(ctx context.Context, request *attestorpb.Verify
 	}
 	verdict, err := ports.Verifier.VerifyStateRoot(ctx, decoded)
 	if err != nil {
-		return nil, mapError(err)
+		return nil, s.mapError("VerifyStateRoot", err)
 	}
 	if verdict.Valid && len(verdict.Signature) != signatureLength {
 		return nil, status.Errorf(codes.Internal, "positive attestation verdict has %d-byte signature, want %d", len(verdict.Signature), signatureLength)
@@ -276,25 +295,63 @@ func rootToProto(root core.AttestedRoot) *attestorpb.AttestedRoot {
 	return response
 }
 
-func mapError(err error) error {
+// mapError turns a plugin error into the status a caller sees. The caller gets
+// the code of the error's class and the message of the classified error only:
+// never its cause. The cause of an upstream failure is a transport error that
+// quotes the endpoint it failed on, an RPC provider's API key travels in that
+// URL, and this API is unauthenticated, so any peer that can reach it would
+// otherwise read the operator's key out of an upstream outage. The cause goes
+// to the server's error log instead, with its URLs redacted.
+func (s *Server) mapError(method string, err error) error {
 	if err == nil {
 		return nil
 	}
 	if _, ok := status.FromError(err); ok {
 		return err
 	}
-	switch core.ErrorKindOf(err) {
+	kind := core.ErrorKindOf(err)
+	message := clientMessage(err, kind)
+	if s.logf != nil && err.Error() != message {
+		s.logf("attestor gRPC %s failed (%s): %s", method, message, redact.URLs(err.Error()))
+	}
+	switch kind {
 	case core.ErrorInvalidArgument:
-		return status.Error(codes.InvalidArgument, err.Error())
+		return status.Error(codes.InvalidArgument, message)
 	case core.ErrorNotFound:
-		return status.Error(codes.NotFound, err.Error())
+		return status.Error(codes.NotFound, message)
 	case core.ErrorFailedPrecondition:
-		return status.Error(codes.FailedPrecondition, err.Error())
+		return status.Error(codes.FailedPrecondition, message)
 	case core.ErrorUnavailable:
-		return status.Error(codes.Unavailable, err.Error())
+		return status.Error(codes.Unavailable, message)
 	case core.ErrorUnimplemented:
-		return status.Error(codes.Unimplemented, err.Error())
+		return status.Error(codes.Unimplemented, message)
 	default:
-		return status.Error(codes.Internal, err.Error())
+		return status.Error(codes.Internal, message)
+	}
+}
+
+// clientMessage is the only text of a plugin error that reaches a caller: the
+// message its adapter wrote for the classified error, which names what was
+// being done and never quotes an upstream error. An error with no classified
+// message, which includes every unclassified one, gets a fixed message for its
+// class.
+func clientMessage(err error, kind core.ErrorKind) string {
+	var classified *core.Error
+	if errors.As(err, &classified) && classified != nil && classified.Msg != "" {
+		return classified.Msg
+	}
+	switch kind {
+	case core.ErrorInvalidArgument:
+		return "invalid argument"
+	case core.ErrorNotFound:
+		return "not found"
+	case core.ErrorFailedPrecondition:
+		return "failed precondition"
+	case core.ErrorUnavailable:
+		return "upstream unavailable"
+	case core.ErrorUnimplemented:
+		return "not implemented"
+	default:
+		return "internal error"
 	}
 }

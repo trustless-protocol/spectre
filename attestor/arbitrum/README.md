@@ -305,6 +305,12 @@ attestor.AttestorService/WatchAttested
 attestor.AttestorService/VerifyStateRoot
 ```
 
+A failed call returns its gRPC code and a classified message only (for example
+`query Nitro finalized head`). The upstream error behind it is not returned,
+because it quotes the Nitro or L1 URL and an RPC provider's API key can be part
+of that URL; it is in the attestor's log with URLs reduced to scheme and host
+(see the [runbook](../../docs/ATTESTOR_RUNBOOK.md#supported-transport-boundary)).
+
 `AttestedUpTo(src_chain, include_provisional)` returns the highest qualifying
 verified commitment. `AttestedRootAtOrBelow` applies an inclusive L2-height
 bound so the relayer's header builder can resolve the assertion provenance for

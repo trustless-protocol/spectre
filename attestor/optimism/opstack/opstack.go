@@ -11,6 +11,7 @@ import (
 
 	"attestor/optimism"
 	attestortypes "attestor/types"
+	"attestor/types/redact"
 )
 
 // gameSource and replica are the two upstream dependencies of the attestation
@@ -169,7 +170,7 @@ func (a *OpStackAttestor) CommitmentAt(ctx context.Context, l2Block uint64) (L2C
 func (a *OpStackAttestor) Run(ctx context.Context) error {
 	if a.store.Fresh() {
 		if err := a.bootstrap(ctx); err != nil {
-			return fmt.Errorf("%s: bootstrap failed: %w", a.Name(), err)
+			return fmt.Errorf("%s: bootstrap failed: %w", a.Name(), redact.Error(err))
 		}
 	}
 	if a.cfg.L1WsUrl != "" {
@@ -189,7 +190,7 @@ func (a *OpStackAttestor) Run(ctx context.Context) error {
 				}
 				delay := a.backoff.RecordFailure(a.now())
 				a.count(func(m *Metrics) { m.PassFailures.WithLabelValues(a.cfg.SrcChain).Inc() })
-				a.logger.Warnf("%s: attestation pass failed (nothing affirmed, retrying in %s): %v", a.Name(), delay, err)
+				a.logger.Warnf("%s: attestation pass failed (nothing affirmed, retrying in %s): %v", a.Name(), delay, redact.Error(err))
 			} else {
 				a.backoff.RecordSuccess()
 			}
