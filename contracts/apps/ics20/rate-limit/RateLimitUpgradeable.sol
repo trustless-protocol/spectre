@@ -7,6 +7,7 @@ import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
 
 import { IAccessManaged } from "@openzeppelin-contracts/access/manager/IAccessManaged.sol";
 import { IAccessManager } from "@openzeppelin-contracts/access/manager/IAccessManager.sol";
+import { Math } from "@openzeppelin-contracts/utils/math/Math.sol";
 import { AccessManagedUpgradeable } from "@openzeppelin-upgradeable/access/manager/AccessManagedUpgradeable.sol";
 
 /// @title Rate Limit Upgradeable contract
@@ -69,7 +70,14 @@ abstract contract RateLimitUpgradeable is IRateLimitErrors, IRateLimit, AccessMa
         (bool isMember, uint32 executionDelay) = manager.hasRole(IBCRolesLib.RATE_LIMITER_ROLE, _msgSender());
         require(isMember && executionDelay == 0, IAccessManaged.AccessManagedUnauthorized(_msgSender()));
 
-        _getRateLimitStorage()._rateLimits[token] = rateLimit;
+        RateLimitStorage storage $ = _getRateLimitStorage();
+        // Usage decays at `limit / period` from its last update. Settling it first keeps the new limit from being
+        // applied to the time that has already passed, which would hand back decay that was granted, or take it away.
+        if ($._lastUpdate[token] != 0) {
+            $._usage[token] = _getCurrentUsage(token);
+            $._lastUpdate[token] = block.timestamp;
+        }
+        $._rateLimits[token] = rateLimit;
     }
 
     /// @inheritdoc IRateLimit
@@ -156,7 +164,9 @@ abstract contract RateLimitUpgradeable is IRateLimitErrors, IRateLimit, AccessMa
         if (elapsed >= RATE_LIMIT_PERIOD) {
             return 0;
         }
-        uint256 decay = (elapsed * $._rateLimits[token]) / RATE_LIMIT_PERIOD;
+        // `elapsed * limit` does not fit in 256 bits for a limit of about 2**256 / 1 days or more, and the
+        // multiplication would then revert every send, receive and refund of the token
+        uint256 decay = Math.mulDiv(elapsed, $._rateLimits[token], RATE_LIMIT_PERIOD);
         uint256 usage = $._usage[token];
         if (decay >= usage) {
             return 0;

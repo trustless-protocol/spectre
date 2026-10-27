@@ -3,7 +3,7 @@ package gnark
 import (
 	"relayer/prover/witness"
 
-	"0x5ea000000/ecip-gnark/signature/eddsa"
+	"github.com/decentrio/ecip-gnark/signature/eddsa"
 
 	"github.com/consensys/gnark/frontend"
 	"github.com/consensys/gnark/std/hash/sha2"

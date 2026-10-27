@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"relayer/logbridge"
 )
 
 // blackHoleServer accepts the request and then never writes a response, holding
@@ -164,6 +166,18 @@ func TestCometLogger_Format(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("log line missing %q:\n%s", want, got)
 		}
+	}
+	// The level has to lead the line: logbridge reads it from the start, and a viewer
+	// shows an ERROR buried mid-message as info. These are the lines that report an
+	// abandoned resubscribe and a dropped event.
+	if !strings.HasPrefix(got, logbridge.Error+"[cometbft] ") {
+		t.Fatalf("an Error must start with the error token, got:\n%s", got)
+	}
+
+	buf.Reset()
+	cometLogger{}.Info("resubscribed", "query", "tm.event='Tx'")
+	if got := buf.String(); !strings.HasPrefix(got, "[cometbft] resubscribed") {
+		t.Fatalf("an Info line is unmarked, so it is info; got:\n%s", got)
 	}
 	if strings.Contains(got, "noisy") {
 		t.Fatalf("Debug must be dropped, it would bury the relayer's own log:\n%s", got)

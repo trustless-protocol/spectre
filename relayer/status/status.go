@@ -176,7 +176,7 @@ func reactivateHandler(reactivate func(DeadLetterSelector) error) http.HandlerFu
 			return
 		}
 		if origin := r.Header.Get("Origin"); origin != "" {
-			log.Printf("[status][ATTENTION] refused a %s request carrying Origin %q: "+
+			log.Printf("WARN [status][ATTENTION] refused a %s request carrying Origin %q: "+
 				"this control is for an operator on this host, not for a web page", ReactivatePath, origin)
 			http.Error(w, "reactivate does not accept requests from a browser", http.StatusForbidden)
 			return
@@ -251,7 +251,7 @@ func serveOn(ctx context.Context, listener net.Listener, snap SnapshotFunc, ctl 
 
 	log.Printf("[status] serving %s on http://%s%s", Path, listener.Addr(), Path)
 	if ctl != nil && ctl.Reactivate != nil {
-		log.Printf("[status][ATTENTION] %s is enabled: this endpoint can change relayer state, not only report it", ReactivatePath)
+		log.Printf("WARN [status][ATTENTION] %s is enabled: this endpoint can change relayer state, not only report it", ReactivatePath)
 	}
 	err := srv.Serve(listener)
 	// Release the waiter before joining it: on a serve failure the parent context
@@ -311,7 +311,7 @@ func warnIfReachable(addr net.Addr) {
 	if !ok || tcp.IP.IsLoopback() {
 		return
 	}
-	log.Printf("[status][ATTENTION] listening on %s, which is not loopback: the snapshot exposes packet sequences and client ids to anyone who can reach it", addr)
+	log.Printf("WARN [status][ATTENTION] listening on %s, which is not loopback: the snapshot exposes packet sequences and client ids to anyone who can reach it", addr)
 }
 
 // Fetch reads a running relayer's snapshot. Used by the CLI, and the reason

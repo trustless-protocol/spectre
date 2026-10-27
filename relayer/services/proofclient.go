@@ -50,7 +50,7 @@ func submitAndAwaitProofWithTiming(
 		job, err := p.GetProof(id)
 		switch {
 		case errors.Is(err, prover.ErrNotFound):
-			log.Printf("[prover] proof_id=%s not found (TTL or prover restart), resubmitting", id)
+			log.Printf("WARN [prover] proof_id=%s not found (TTL or prover restart), resubmitting", id)
 			if id, err = submitProofWithBackoffTiming(ctx, p, sigs, retryBackoff); err != nil {
 				return prover.ProofResult{}, err
 			}
@@ -59,7 +59,7 @@ func submitAndAwaitProofWithTiming(
 		case job.Status == prover.StatusDone:
 			return *job.Result, nil
 		case job.Status == prover.StatusFailed && job.Class == prover.FailureTransient:
-			log.Printf("[prover] proof_id=%s failed transiently (%s), resubmitting", id, job.Cause)
+			log.Printf("WARN [prover] proof_id=%s failed transiently (%s), resubmitting", id, job.Cause)
 			if id, err = submitProofWithBackoffTiming(ctx, p, sigs, retryBackoff); err != nil {
 				return prover.ProofResult{}, err
 			}
@@ -91,10 +91,10 @@ func submitAndWaitProof(ctx context.Context, p Prover, sigs []witness.ValidatorS
 		var failed *prover.ErrProofFailed
 		switch {
 		case errors.Is(err, prover.ErrNotFound):
-			log.Printf("[prover] proof_id=%s not found (TTL or prover restart), resubmitting", id)
+			log.Printf("WARN [prover] proof_id=%s not found (TTL or prover restart), resubmitting", id)
 			continue
 		case errors.As(err, &failed) && failed.Class == prover.FailureTransient:
-			log.Printf("[prover] proof_id=%s failed transiently (%s), resubmitting", id, failed.Cause)
+			log.Printf("WARN [prover] proof_id=%s failed transiently (%s), resubmitting", id, failed.Cause)
 			continue
 		case errors.As(err, &failed):
 			return prover.ProofResult{}, fmt.Errorf("%v: %w", failed, ErrPermanentRelayFailure)
@@ -124,7 +124,7 @@ func submitProofWithBackoffTiming(
 			// Deterministic rejection — retrying the same input is useless.
 			return prover.ProofID{}, fmt.Errorf("submit proof: %v: %w", err, ErrPermanentRelayFailure)
 		case errors.Is(err, prover.ErrQueueFull), errors.Is(err, prover.ErrStoreUnavailable):
-			log.Printf("[prover] submit backing off: %v", err)
+			log.Printf("WARN [prover] submit backing off: %v", err)
 			select {
 			case <-ctx.Done():
 				return prover.ProofID{}, ctx.Err()

@@ -170,7 +170,7 @@ func startupWindowFromEnv(raw string) time.Duration {
 	}
 	window, err := time.ParseDuration(raw)
 	if err != nil || window < 0 {
-		log.Printf("[start] ignoring invalid %s=%q; using the default window", l2StartupLookbackEnv, raw)
+		log.Printf("WARN [start] ignoring invalid %s=%q; using the default window", l2StartupLookbackEnv, raw)
 		return 0
 	}
 	return window
@@ -221,7 +221,7 @@ func (s *Source) startupLookback(ctx context.Context, head uint64) uint64 {
 	window := startupWindow(startupWindowFromEnv(os.Getenv(l2StartupLookbackEnv)))
 	blockTime, err := s.measureBlockTime(ctx, head)
 	if err != nil {
-		log.Printf("[l2->cosmos Subscribe] block time unmeasurable (%v); sizing the %s startup window at %s per block",
+		log.Printf("WARN [l2->cosmos Subscribe] block time unmeasurable (%v); sizing the %s startup window at %s per block",
 			err, window, fallbackBlockTime)
 		blockTime = fallbackBlockTime
 	}
@@ -283,7 +283,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 
 		head, err := s.head(ctx)
 		if err != nil {
-			log.Printf("[l2->cosmos Subscribe] head: %v", err)
+			log.Printf("WARN [l2->cosmos Subscribe] head: %v", err)
 			continue // do NOT advance the cursor on failure
 		}
 		if !seeded {
@@ -315,7 +315,7 @@ func (s *Source) Subscribe(ctx context.Context, handler func(context.Context, []
 		if head >= from {
 			fresh, settled, err = s.scanPacketLogs(ctx, filterer, from, head, &span)
 			if err != nil {
-				log.Printf("[l2->cosmos Subscribe] scan [%d,%d]: %v", from, head, err)
+				log.Printf("WARN [l2->cosmos Subscribe] scan [%d,%d]: %v", from, head, err)
 				continue // do NOT advance the cursor on failure (re-scan next tick)
 			}
 			from = head + 1 // range consumed; fresh events are now carried in the batch
@@ -392,7 +392,7 @@ func (s *Source) persistCursor(next uint64, batches ...[]chain.Event) {
 		}
 	}
 	if err := s.recovery.SaveCheckpoint(services.RecoveryCursors{cursorL2: next}); err != nil {
-		log.Printf("[l2->cosmos Subscribe] failed to persist scan cursor (block %d): %v", next, err)
+		log.Printf("WARN [l2->cosmos Subscribe] failed to persist scan cursor (block %d): %v", next, err)
 	}
 }
 
@@ -483,7 +483,7 @@ func scanNarrowing(
 			return nil, nil, bottom
 		}
 		span.Chunk = next.To
-		log.Printf("[l2->cosmos Subscribe] provider refused a %d-block log range; narrowing to %d and rescanning [%d,%d]: %v",
+		log.Printf("WARN [l2->cosmos Subscribe] provider refused a %d-block log range; narrowing to %d and rescanning [%d,%d]: %v",
 			width, next.To, from, to, failed)
 	}
 }
@@ -641,7 +641,7 @@ func (s *Source) settleTerminal(kind string, acknowledged bool, packet contractI
 		// The packet came from the chain's own log, so this cannot happen without
 		// the binding and the proto type having diverged. Say so rather than
 		// settling a packet identity nobody can reproduce.
-		log.Printf("[l2->cosmos Subscribe] %s seq=%d: marshal for settlement: %v", kind, cosmosPacket.Sequence, err)
+		log.Printf("ERROR [l2->cosmos Subscribe] %s seq=%d: marshal for settlement: %v", kind, cosmosPacket.Sequence, err)
 		return
 	}
 	log.Printf("[l2->cosmos Subscribe] %s seq=%d settled; dropped from the pending tracker", kind, cosmosPacket.Sequence)

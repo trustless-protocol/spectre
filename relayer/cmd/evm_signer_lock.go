@@ -140,7 +140,7 @@ func evmChainIDWithRetry(
 			return "", err
 		}
 		delay := evmSignerLockChainIDRetryDelays[attempt-1]
-		log.Printf("EVM signer lock: eth_chainId for %s at %s failed on attempt %d/%d, retrying in %s: %v",
+		log.Printf("WARN EVM signer lock: eth_chainId for %s at %s failed on attempt %d/%d, retrying in %s: %v",
 			endpoint.label, endpoint.rpcURL, attempt, attempts, delay, err)
 		select {
 		case <-stdCtx.Done():

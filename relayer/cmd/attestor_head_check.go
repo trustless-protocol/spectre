@@ -55,13 +55,13 @@ func validateAttestorHeads(stdCtx context.Context, cfg *appConfig) []configFindi
 			// Reachable, but a build without Info. That is a different fact from
 			// "down": it will answer VerifyStateRoot, and nothing here can say at
 			// which head, so the log must not read like a transient outage.
-			log.Printf("[start] attestor %d (%s) does not implement Info; its attestation_head cannot be checked "+
+			log.Printf("WARN [start] attestor %d (%s) does not implement Info; its attestation_head cannot be checked "+
 				"against head_kind %q before the first header. Upgrade it to have the check run at startup.",
 				endpoint.AttestorIndex, endpoint.Address, headKind)
 			continue
 		}
 		if err != nil {
-			log.Printf("[start] attestor %d (%s) did not answer Info (%v); skipping the attestation_head check for it "+
+			log.Printf("WARN [start] attestor %d (%s) did not answer Info (%v); skipping the attestation_head check for it "+
 				"(head_kind %q, attestor_src_chain %q). The header builder keeps retrying it.",
 				endpoint.AttestorIndex, endpoint.Address, err, headKind, src.AttestorSrcChain)
 			continue
@@ -72,7 +72,7 @@ func validateAttestorHeads(stdCtx context.Context, cfg *appConfig) []configFindi
 			continue
 		}
 		if warning != "" {
-			log.Printf("[start] WARNING: %s", warning)
+			log.Printf("WARN [start] WARNING: %s", warning)
 		}
 		log.Printf("[start] attestor %d (%s) verified for %q: attestation_head=%s matches head_kind, include_provisional=%t",
 			endpoint.AttestorIndex, endpoint.Address, src.AttestorSrcChain, headKind, includeProvisional)

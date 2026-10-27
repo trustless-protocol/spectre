@@ -302,7 +302,7 @@ func findHighestFeasibleHop(
 				return hopCandidate{}, fmt.Errorf("hop search sample height %d: %w", h, err)
 			}
 			if result.selected != nil {
-				log.Printf("RLY01_HOP_NON_MONOTONIC_SAMPLE trusted=%d target=%d hop=%d",
+				log.Printf("WARN RLY01_HOP_NON_MONOTONIC_SAMPLE trusted=%d target=%d hop=%d",
 					trusted, latest, h)
 				return hopCandidate{
 					lightBlock: result.lightBlock,

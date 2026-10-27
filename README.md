@@ -78,47 +78,52 @@ picks between the two. The packet path always goes through the router.
 - Optional for GPU proving: ICICLE runtime/libs installed on the host, plus an
   `icicle` build of the relayer/prover tool
 
-### gnark submodules
+### gnark forks
 
-The relayer/prover depend on two forks of gnark, vendored as **git submodules**
-under `third_party/` and wired through `relayer/go.mod`:
+The relayer/prover depend on two private forks of gnark, pinned as ordinary Go
+modules in `relayer/go.mod`:
 
 ```
-replace (
-    0x5ea000000/ecip-gnark      => ../third_party/ecip-gnark
-    attestor/types              => ../attestor/types
-    github.com/consensys/gnark  => ../third_party/decentrio-gnark
-)
+require github.com/decentrio/ecip-gnark v0.1.0-rc.3
+
+replace github.com/consensys/gnark => github.com/decentrio/gnark v0.16.4-decentrio-fork.2
 ```
 
-- `third_party/ecip-gnark` → [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) — Ed25519 in-circuit ops + the `garaga_rs` Rust FFI.
-- `third_party/decentrio-gnark` → [`decentrio/gnark`](https://github.com/decentrio/gnark) — fork of consensys/gnark v0.13.0 with hash-aggregate verifier tweaks.
+- [`decentrio/ecip-gnark`](https://github.com/decentrio/ecip-gnark) — Ed25519 in-circuit ops + the `garaga_rs` Rust FFI.
+- [`decentrio/gnark`](https://github.com/decentrio/gnark) — fork of consensys/gnark with hash-aggregate verifier tweaks.
 
-This repository stores only a **pinned commit** of each fork (a submodule pointer), not
-their files.
-
-#### First checkout
-
-Clone with submodules, or initialise them in an existing clone:
+Both repositories are private, so the Go proxy and checksum DB cannot serve
+them. One-time setup:
 
 ```bash
-git clone --recurse-submodules https://github.com/decentrio/spectre
-# or, after a plain clone:
-git submodule update --init --recursive
+go env -w GOPRIVATE='github.com/decentrio/*'
+gh auth setup-git        # or any other git credential for github.com/decentrio
 ```
 
-`ecip-gnark`'s prover links a Rust FFI (`libgaraga_rs`) that cgo expects at the
-ecip-gnark root. Build it once (and after any garaga change):
+To hack on a fork, point a local `replace` at your checkout while you work and
+never commit it (machine-local paths do not belong in `go.mod`).
+
+#### Garaga FFI
+
+`ecip-gnark`'s prover links a Rust FFI (`libgaraga_rs`). Its cgo directive is
+`-L..`, which lands in the read-only Go module cache, so the library is built
+into `.artifacts/native/` instead. Build it once (and after bumping the
+`ecip-gnark` version):
 
 ```bash
-cd third_party/ecip-gnark/ffi/garaga_rs
-cargo build --release
-cp target/release/libgaraga_rs.so ../..      # Linux; on macOS: libgaraga_rs.dylib
+scripts/build-garaga-ffi.sh
 ```
 
-Without `submodule update --init`, `go build ./...` under `relayer/` fails with
-`replacement directory ../third_party/ecip-gnark does not exist`; without the
-built FFI it fails at link with `library 'garaga_rs' not found`.
+Then point the linker and the loader at it (the `just` recipes and the scripts
+under `scripts/` already set `CGO_LDFLAGS`; the loader path is still yours to set):
+
+```bash
+export CGO_LDFLAGS="-L$PWD/.artifacts/native"
+export LD_LIBRARY_PATH="$PWD/.artifacts/native"       # DYLD_LIBRARY_PATH on macOS
+```
+
+Without the built FFI, `go build ./...` under `relayer/` fails at link with
+`library 'garaga_rs' not found`.
 
 ### Build and test
 
@@ -267,6 +272,58 @@ If the ICICLE runtime is missing, the `icicle` build typically fails at link or
 startup with errors such as `library 'icicle_device' not found`. In that case,
 ensure ICICLE shared libraries are installed and `LD_LIBRARY_PATH` covers the
 directory containing the `libicicle_*` files.
+
+## Logging
+
+Every log line the relayer emits carries a level, so a log viewer can filter and alert
+on it. Both settings are global flags, accepted by every subcommand, with an
+environment variable each; the flag wins:
+
+```bash
+./relayer start --config config.json --log-level warn --log-format json
+
+# Env (equivalent)
+RELAYER_LOG_LEVEL=debug RELAYER_LOG_FORMAT=console ./relayer start --config config.json
+```
+
+| Flag / env | Values | Default |
+|---|---|---|
+| `--log-level` / `RELAYER_LOG_LEVEL` | `debug`, `info`, `warn`, `error` | `info` |
+| `--log-format` / `RELAYER_LOG_FORMAT` | `json`, `console`, `auto` | `auto`: `console` on a terminal, `json` otherwise |
+
+The variables are read from the process environment, not from `relayer/.env`: that
+file is loaded inside each command, after the logger exists. An invalid value never
+stops the relayer; it is ignored, reported in the log, and the default is used.
+
+`json` is what a log viewer reads. Each line has `level`, `ts` (epoch seconds),
+`caller`, `msg` and, under `start`, `relay_path`. If the relayer runs with a terminal
+attached (`docker run -t`), pass `--log-format json` explicitly, or `auto` will pick
+`console`.
+
+When a command fails, cobra also prints its own `Error: ...` line and the usage text
+as plain lines. The same error is then logged once at `fatal`; alert on that line, not
+on the plain text.
+
+gnark logs through a logger of its own, which would otherwise print three console lines
+on stdout for every proof. It goes through the same stream: its lines read
+`[gnark] <message>`, carry `"component":"gnark"` and no `caller`, and keep gnark's own
+fields (`took` is in milliseconds) under a `gnark` key so they cannot shadow `level` or
+`msg`. The per-proof lines are `debug`; a warning or error from gnark keeps its level.
+
+A line's level says what it asks of the operator, not how chatty it is:
+
+| Level | Meaning |
+|---|---|
+| `error` | a person has to act or look: a packet dropped that nothing else refunds (an ack or a timeout), state that could not be made durable and that no later pass re-derives from the chain (an owed acknowledgement, a settlement tombstone, retry state), an operation abandoned, a recovered panic |
+| `warn` | something went wrong or is degraded and the relayer is handling it: a retry, a fallback, a skipped check, a resubscribe, a dropped send the timeout scanner refunds, a failed write that the next pass or a restart scan repeats (a recovery cursor, a packet tracked before it is relayed) |
+| `info` | lifecycle, progress, and every state change a packet goes through |
+| `debug` | output that repeats with nothing new to say, such as the batch builder's `re-queued ... (waiting)` echo and gnark's three lines per proof |
+
+For contributors: the engine logs with `log.Printf`. Start the message with `WARN`,
+`ERROR` or `DEBUG` and one space to give it a level, ahead of the `[Label]`; with no
+token it is `info`. The token is stripped, so the logged text is unchanged.
+`relayer/logbridge` documents the convention, and its test rejects a misspelt token
+and an `[ATTENTION]` line that has none.
 
 ## Benchmark mode
 

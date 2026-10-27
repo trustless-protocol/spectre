@@ -140,7 +140,7 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 - **Solidity**: 120-col lines, 4-space width, double quotes (`foundry.toml` enforces). UUPS proxies for core contracts, Beacon for per-instance contracts. Modules under `contracts/light-clients/spectre/modules/` stay `pure`/stateless (read the Store, never write) — all client state lives in `SpectreClient`.
 - **Go**: wrap errors with `%w` + context; classify relayer failures transient vs permanent (`ErrPermanentRelayFailure`); every shared mutation under its owning mutex; tests run with `-race`.
 - **Bindings**: after any Solidity ABI change, regenerate with `abigen` into `packages/go-abigen/` (and `relayer/bindings/` where applicable) in the same PR.
-- **Tooling**: `bun` for JS deps; `just` recipes over raw commands when a recipe exists. `go.mod` has replace directives for local `ecip-gnark`/`decentrio-gnark` — adjust per dev setup, never commit machine-local paths.
+- **Tooling**: `bun` for JS deps; `just` recipes over raw commands when a recipe exists. `relayer/go.mod` pins `decentrio/ecip-gnark` (require) and `decentrio/gnark` (replace of `consensys/gnark`) as private Go modules — needs `GOPRIVATE=github.com/decentrio/*`; there is no `third_party/` submodule. `libgaraga_rs` is built by `scripts/build-garaga-ffi.sh` into `.artifacts/native/` and found via `CGO_LDFLAGS=-L…` + `LD_LIBRARY_PATH` (`DYLD_LIBRARY_PATH` on macOS). Never commit machine-local `replace` paths.
 
 ### Added — rules this codebase needs that you won't infer
 
@@ -247,3 +247,13 @@ Docs can lag the code (they have before — "cache"/"planned" wording for featur
 - He delegates via GitHub issues — write findings so a teammate can pick them up without re-deriving context.
 - Explanations: conclusion first, then evidence. If he says it's hard to follow, simplify with a concrete analogy — don't repeat the same abstraction louder.
 - Obsidian vault (`/Users/ducnt/Documents/tmp`): duplicate a note to `<name>-duc.md` before editing; never touch the original unless told per-file.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on Spectre's `origin` remote, via the `gh` CLI. Labels are not used. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. `docs/agents/` and `docs/adr/` are exempt from the "six runbooks only" rule above. See `docs/agents/domain.md`.
