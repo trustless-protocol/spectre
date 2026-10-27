@@ -52,7 +52,7 @@ func (s *Subscriber) SubscribeCosmos(stdCtx context.Context, cosmos services.Cos
 		if nextRecoveryStartHeight == 0 {
 			latestHeight, err := latestCosmosHeight(stdCtx, ctx)
 			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] Failed to get latest Cosmos height before subscription: %v", err)
+				ctx.Logger.Printf("WARN [SubscribeCosmos] Failed to get latest Cosmos height before subscription: %v", err)
 				if !sleepOrDone(stdCtx, cosmosSubscriptionReconnectDelay) {
 					return
 				}
@@ -70,7 +70,13 @@ func (s *Subscriber) SubscribeCosmos(stdCtx context.Context, cosmos services.Cos
 		var rate blockRate
 
 		err := s.subscribeCosmosOnce(stdCtx, ctx, batchBuilder, &nextRecoveryStartHeight, seenEvents, &quietScans, &liveHealth, &rate)
-		ctx.Logger.Printf("[SubscribeCosmos] Subscription loop ended: %v", err)
+		// A stop the process asked for ends the loop too, and nothing went wrong
+		// there: only a subscription that dropped is worth a warning.
+		if stdCtx.Err() != nil {
+			ctx.Logger.Printf("[SubscribeCosmos] Subscription loop ended: %v", err)
+		} else {
+			ctx.Logger.Printf("WARN [SubscribeCosmos] Subscription loop ended: %v", err)
+		}
 		s.persistCosmosCursor(ctx, batchBuilder, nextRecoveryStartHeight)
 		if !sleepOrDone(stdCtx, cosmosSubscriptionReconnectDelay) {
 			return
@@ -107,7 +113,7 @@ func (s *Subscriber) persistCosmosCursor(ctx cosmosDeps, batchBuilder *services.
 		return
 	}
 	if err := s.recovery.SaveCheckpoint(services.RecoveryCursors{cursorCosmos: height}); err != nil {
-		ctx.Logger.Printf("[SubscribeCosmos] failed to persist recovery cursor (height %d): %v", height, err)
+		ctx.Logger.Printf("WARN [SubscribeCosmos] failed to persist recovery cursor (height %d): %v", height, err)
 	}
 }
 
@@ -333,7 +339,7 @@ func (s *Subscriber) subscribeCosmosOnce(
 	// which happens whenever this pass fails, since the failure is non-fatal
 	// below -- is held off by the same boundary rather than by its caller.
 	if _, err := s.recoverCosmosGapToLatest(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth, rate); err != nil {
-		ctx.Logger.Printf("[SubscribeCosmos] startup recovery failed: %v", err)
+		ctx.Logger.Printf("WARN [SubscribeCosmos] startup recovery failed: %v", err)
 	}
 
 	// Starts at the ceiling and narrows once the chain's rate is observable.
@@ -367,7 +373,7 @@ func (s *Subscriber) subscribeCosmosOnce(
 		case <-gapRecoveryTicker.C:
 			stale, err := s.recoverCosmosGapToLatest(stdCtx, ctx, batchBuilder, nextRecoveryStartHeight, seenEvents, quietScans, liveHealth, rate)
 			if err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos] periodic recovery failed: %v", err)
+				ctx.Logger.Printf("WARN [SubscribeCosmos] periodic recovery failed: %v", err)
 			}
 			if blockTime, ok := rate.blockTime(); ok {
 				gapRecoveryTicker.Reset(recoveryTick(blockTime))
@@ -398,7 +404,7 @@ func (s *Subscriber) processLiveCosmosEvent(
 	if height > 0 && *nextRecoveryStartHeight > 0 && height > *nextRecoveryStartHeight {
 		stats, err := recoverCosmosEvents(stdCtx, ctx, batchBuilder, *nextRecoveryStartHeight, height-1, seenEvents)
 		if err != nil {
-			ctx.Logger.Printf("[SubscribeCosmos] gap recovery before live height %d failed: %v", height, err)
+			ctx.Logger.Printf("WARN [SubscribeCosmos] gap recovery before live height %d failed: %v", height, err)
 		} else {
 			ctx.Logger.Printf("[SubscribeCosmos] gap recovery complete before live height %d: recovered=%d skipped=%d",
 				height, stats.recovered, stats.skipped)
@@ -412,7 +418,7 @@ func (s *Subscriber) processLiveCosmosEvent(
 	packets := decodeCosmosPacketsFromEvents(ctx.Logger, e.Data, e.Events, "SubscribeCosmos", "")
 	stats, err := enqueueCosmosPackets(stdCtx, ctx, batchBuilder, packets, seenEvents, false)
 	if err != nil {
-		ctx.Logger.Printf("[SubscribeCosmos] live enqueue failed: %v", err)
+		ctx.Logger.Printf("WARN [SubscribeCosmos] live enqueue failed: %v", err)
 	}
 	if stats.skipped > 0 {
 		ctx.Logger.Printf("[SubscribeCosmos] skipped %d live Cosmos event(s)", stats.skipped)
@@ -554,7 +560,7 @@ func (s *Subscriber) recoverCosmosGapToLatest(
 	// pass's, so nothing here waits on the scan below.
 	stale, silence, report := liveHealth.livePathStale(liveHealth.hadTrafficToDeliver(), time.Now())
 	if report {
-		ctx.Logger.Printf("[SubscribeCosmos] ATTENTION: live subscription has delivered nothing for %s "+
+		ctx.Logger.Printf("WARN [SubscribeCosmos] ATTENTION: live subscription has delivered nothing for %s "+
 			"while the chain advanced to height %d (%d live event(s) this run). Gap recovery is the "+
 			"BACKSTOP, not the delivery path -- it stops short of the head, so a packet in the newest "+
 			"blocks can still be missed. Reconnecting.",
@@ -792,14 +798,14 @@ func decodeCosmosPacketsFromEvents(
 	for _, packetEncodedStr := range sendPacketEvent {
 		packetBytes, err := hex.DecodeString(packetEncodedStr)
 		if err != nil {
-			logger.Printf("%s send_packet: failed to decode hex: %v", label, err)
+			logger.Printf("ERROR %s send_packet: failed to decode hex: %v", label, err)
 			continue
 		}
 
 		var packet channeltypesv2.Packet
 		err = proto.Unmarshal(packetBytes, &packet)
 		if err != nil {
-			logger.Printf("%s send_packet: failed to unmarshal: %v", label, err)
+			logger.Printf("ERROR %s send_packet: failed to unmarshal: %v", label, err)
 			continue
 		}
 
@@ -817,26 +823,26 @@ func decodeCosmosPacketsFromEvents(
 	ackEvent := events[EVENT_ACKNOWLEDGEMENT_FIELD]
 	if len(ackPacketEvent) != 0 || len(ackEvent) != 0 {
 		if len(ackPacketEvent) != len(ackEvent) {
-			logger.Printf("%s write_ack: packet/ack count mismatch (%d vs %d), skipping",
+			logger.Printf("ERROR %s write_ack: packet/ack count mismatch (%d vs %d), skipping",
 				logPrefix, len(ackPacketEvent), len(ackEvent))
 		} else {
 			for i := range ackPacketEvent {
 				packetBytes, err := hex.DecodeString(ackPacketEvent[i])
 				if err != nil {
-					logger.Printf("%s write_ack: failed to decode packet hex: %v", label, err)
+					logger.Printf("ERROR %s write_ack: failed to decode packet hex: %v", label, err)
 					continue
 				}
 
 				var packet channeltypesv2.Packet
 				err = proto.Unmarshal(packetBytes, &packet)
 				if err != nil {
-					logger.Printf("%s write_ack: failed to unmarshal packet: %v", label, err)
+					logger.Printf("ERROR %s write_ack: failed to unmarshal packet: %v", label, err)
 					continue
 				}
 
 				ackBytes, err := hex.DecodeString(ackEvent[i])
 				if err != nil {
-					logger.Printf("%s write_ack seq=%d: failed to decode ack hex: %v",
+					logger.Printf("ERROR %s write_ack seq=%d: failed to decode ack hex: %v",
 						logPrefix, packet.Sequence, err)
 					continue
 				}
@@ -844,12 +850,12 @@ func decodeCosmosPacketsFromEvents(
 				var acknowledgement channeltypesv2.Acknowledgement
 				err = proto.Unmarshal(ackBytes, &acknowledgement)
 				if err != nil {
-					logger.Printf("%s write_ack seq=%d: failed to unmarshal ack: %v",
+					logger.Printf("ERROR %s write_ack seq=%d: failed to unmarshal ack: %v",
 						logPrefix, packet.Sequence, err)
 					continue
 				}
 				if len(acknowledgement.AppAcknowledgements) == 0 {
-					logger.Printf("%s write_ack seq=%d: missing app acknowledgements", label, packet.Sequence)
+					logger.Printf("ERROR %s write_ack seq=%d: missing app acknowledgements", label, packet.Sequence)
 					continue
 				}
 
@@ -870,14 +876,14 @@ func decodeCosmosPacketsFromEvents(
 	for _, packetEncodedStr := range timeoutPacketEvent {
 		packetBytes, err := hex.DecodeString(packetEncodedStr)
 		if err != nil {
-			logger.Printf("%s timeout: failed to decode hex: %v", label, err)
+			logger.Printf("ERROR %s timeout: failed to decode hex: %v", label, err)
 			continue
 		}
 
 		var packet channeltypesv2.Packet
 		err = proto.Unmarshal(packetBytes, &packet)
 		if err != nil {
-			logger.Printf("%s timeout: failed to unmarshal: %v", label, err)
+			logger.Printf("ERROR %s timeout: failed to unmarshal: %v", label, err)
 			continue
 		}
 
@@ -895,13 +901,13 @@ func decodeCosmosPacketsFromEvents(
 	for _, packetEncodedStr := range settledEvent {
 		packetBytes, err := hex.DecodeString(packetEncodedStr)
 		if err != nil {
-			logger.Printf("[%s] acknowledge_packet: failed to decode hex: %v", logPrefix, err)
+			logger.Printf("ERROR [%s] acknowledge_packet: failed to decode hex: %v", logPrefix, err)
 			continue
 		}
 
 		var packet channeltypesv2.Packet
 		if err := proto.Unmarshal(packetBytes, &packet); err != nil {
-			logger.Printf("[%s] acknowledge_packet: failed to unmarshal: %v", logPrefix, err)
+			logger.Printf("ERROR [%s] acknowledge_packet: failed to unmarshal: %v", logPrefix, err)
 			continue
 		}
 
@@ -956,7 +962,7 @@ func enqueueCosmosPackets(
 			// cannot reach it; its later tracking attempt must see this tombstone
 			// instead of recreating a pending record after the cursor moved on.
 			if err := batchBuilder.PendingTracker.MarkSettled(*packet.Packet); err != nil {
-				ctx.Logger.Printf("[SubscribeCosmos][ATTENTION] failed to persist terminal settlement for seq=%d: %v",
+				ctx.Logger.Printf("ERROR [SubscribeCosmos][ATTENTION] failed to persist terminal settlement for seq=%d: %v",
 					packet.Packet.Sequence, err)
 			}
 			// The owed-acknowledgement ledger too, not only the pending tracker.

@@ -8,7 +8,7 @@ import (
 	"math/big"
 	"testing"
 
-	"0x5ea000000/ecip-gnark/utils"
+	"github.com/decentrio/ecip-gnark/utils"
 
 	"github.com/consensys/gnark-crypto/ecc"
 	"github.com/consensys/gnark/frontend"

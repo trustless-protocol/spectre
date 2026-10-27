@@ -118,7 +118,7 @@ func buildCosmosToL2Dest(
 	}
 	cleanup := func() {
 		if err := cosmosClient.Stop(); err != nil {
-			log.Printf("failed to terminate cosmos client: %v", err)
+			log.Printf("WARN failed to terminate cosmos client: %v", err)
 		}
 		ethClient.Close()
 		if ethWsClient != nil {
@@ -167,7 +167,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 	trackCosmosPending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[cosmos->l2 Relay] track pending: decode packet: %v", err)
+			log.Printf("ERROR [cosmos->l2 Relay] track pending: decode packet: %v", err)
 			return false
 		}
 		return svc.TrackCosmosPending(pkt, height)
@@ -175,7 +175,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 	untrackCosmosPending := func(raw []byte) {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[cosmos->l2 Relay] untrack pending: decode packet: %v", err)
+			log.Printf("ERROR [cosmos->l2 Relay] untrack pending: decode packet: %v", err)
 			return
 		}
 		svc.UntrackCosmosPending(pkt)
@@ -196,7 +196,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 		if isShutdownErr(err) && ctx.Err() != nil {
 			return nil
 		}
-		log.Printf("[cosmos->l2 UpdateClient] derive initial rotation delay: %v; rotating on startup", err)
+		log.Printf("WARN [cosmos->l2 UpdateClient] derive initial rotation delay: %v; rotating on startup", err)
 		initialRotationDelay = 0
 	}
 
@@ -222,7 +222,7 @@ func runCosmosToL2Engine(ctx context.Context, svc *services.Services, deps servi
 			svc.ScanCosmosL2Timeouts(c, deps.Cosmos, deps.EVM, recovery)
 		}))
 	} else {
-		log.Printf("[CosmosTimeoutScan] no attestor-backed L2 timeout recovery is configured; Cosmos-origin timeout refunds are disabled")
+		log.Printf("WARN [CosmosTimeoutScan] no attestor-backed L2 timeout recovery is configured; Cosmos-origin timeout refunds are disabled")
 	}
 	if watchAcks {
 		// This direction RECORDS the debt; the l2->cosmos leg settles it and owns

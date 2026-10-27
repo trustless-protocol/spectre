@@ -146,7 +146,7 @@ func (w *Worker) UpdateCosmosClient(stdCtx context.Context, cosmos CosmosEndpoin
 		return result.LightBlock, nil
 	}
 	if err := w.TxHandler.SendEthTx(stdCtx, deps.evm, clientID, *result); err != nil {
-		log.Printf("[UpdateCosmosClient] SendEthTx failed: %v", err)
+		log.Printf("WARN [UpdateCosmosClient] SendEthTx failed: %v", err)
 		return nil, err
 	}
 	log.Printf("[UpdateCosmosClient] SendEthTx succeeded")
@@ -225,7 +225,7 @@ func (w *Worker) RefreshCosmosClient(
 			return lastBlock, nil
 		}
 	}
-	log.Printf("RLY01_HOP_CAP_REACHED refresh did not fully catch up after %d hops; will retry via periodic backoff", maxHopsPerRefresh)
+	log.Printf("WARN RLY01_HOP_CAP_REACHED refresh did not fully catch up after %d hops; will retry via periodic backoff", maxHopsPerRefresh)
 	return lastBlock, fmt.Errorf("RLY01: pinned-set catch-up incomplete after %d hops", maxHopsPerRefresh)
 }
 
@@ -277,7 +277,7 @@ func fetchPinnedSnapshotTimeAt(stdCtx context.Context, ctx EVMEndpoint, block *b
 	if err != nil {
 		if IsEVMRevert(err) {
 			warnNoPinnedSnapshotGetter.Do(func() {
-				log.Printf("[UpdateCosmosClient] SpectreClient %s has no getPinnedSnapshot (pre-#541 deployment); "+
+				log.Printf("WARN [UpdateCosmosClient] SpectreClient %s has no getPinnedSnapshot (pre-#541 deployment); "+
 					"client expiry falls back to the latest height's header time, which overestimates it when the "+
 					"pinned set has not rotated since", ctx.SpectreClientContract().Hex())
 			})
@@ -427,7 +427,7 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 	// stored consensus state. A cached hint can point at an unstored sparse
 	// height and make _getConsensusStateHash revert with ConsensusStateNotFound.
 	if trustedBlock != 0 && trustedBlock != onChainTrusted {
-		log.Printf("[UpdateCosmosClient] cached trusted height %d differs from on-chain %d; using on-chain",
+		log.Printf("WARN [UpdateCosmosClient] cached trusted height %d differs from on-chain %d; using on-chain",
 			trustedBlock, onChainTrusted)
 	}
 	trustedBlock = onChainTrusted
@@ -505,11 +505,11 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 	selected, err := selectSignaturesForPinnedSet(extracted.Candidates, pinnedValidatorSet, w.Prover.MaxBucket())
 	isHop := false
 	if err != nil {
-		log.Printf("RLY01_HOP_FALLBACK direct update trusted=%d->target=%d failed pinned quorum (%v); searching for intermediate hop",
+		log.Printf("WARN RLY01_HOP_FALLBACK direct update trusted=%d->target=%d failed pinned quorum (%v); searching for intermediate hop",
 			trustedBlock, target, err)
 		hop, hopErr := findHighestFeasibleHop(stdCtx, ctx, trustedBlock, target, chainId, pinnedValidatorSet, w.Prover.MaxBucket(), err)
 		if hopErr != nil {
-			log.Printf("RLY01_HOP_EXHAUSTED no provable height beyond trusted=%d; manual intervention required", trustedBlock)
+			log.Printf("ERROR RLY01_HOP_EXHAUSTED no provable height beyond trusted=%d; manual intervention required", trustedBlock)
 			return nil, fmt.Errorf("RLY01_HOP_EXHAUSTED: no provable hop above trusted height %d: %w", trustedBlock, hopErr)
 		}
 		latestLightBlock = hop.lightBlock
@@ -520,7 +520,7 @@ func (w *Worker) buildCosmosClientUpdateMsg(stdCtx context.Context, ctx cosmosCl
 		// RLY-01 leading indicator: overlap is closing in on the 2/3 floor
 		// (<=3/4 of total) even though this update still succeeds outright.
 		// Greppable warning for ops until a real metrics stack exists (RLY-02).
-		log.Printf("RLY01_QUORUM_WARN pinned-set overlap approaching 2/3 floor: overlap=%d total=%d height=%d chainId=%s",
+		log.Printf("WARN RLY01_QUORUM_WARN pinned-set overlap approaching 2/3 floor: overlap=%d total=%d height=%d chainId=%s",
 			overlap, pinnedValidatorSet.totalPower, latestLightBlock.BlockHeight, chainId)
 	}
 	extracted.Signatures = selected

@@ -328,7 +328,7 @@ func (b *BatchBuilder) RequeueCosmosWaiting(packets []CosmosPacket) {
 	b.cosmosPackets = append(packets, b.cosmosPackets...)
 	remaining := len(b.cosmosPackets)
 	b.cosmosMtx.Unlock()
-	log.Printf("[BatchBuilder] re-queued %d cosmos packet(s) (waiting) for retry (queue now %d)", len(packets), remaining)
+	log.Printf("DEBUG [BatchBuilder] re-queued %d cosmos packet(s) (waiting) for retry (queue now %d)", len(packets), remaining)
 }
 
 // RequeueEthWaiting — see RequeueCosmosWaiting.
@@ -345,7 +345,7 @@ func (b *BatchBuilder) RequeueEthWaiting(packets []EthPacket) {
 	b.ethPackets = append(packets, b.ethPackets...)
 	remaining := len(b.ethPackets)
 	b.ethMtx.Unlock()
-	log.Printf("[BatchBuilder] re-queued %d eth packet(s) (waiting) for retry (queue now %d)", len(packets), remaining)
+	log.Printf("DEBUG [BatchBuilder] re-queued %d eth packet(s) (waiting) for retry (queue now %d)", len(packets), remaining)
 }
 
 // BatchHandoffCapacity is the capacity the source bridges must give the channel

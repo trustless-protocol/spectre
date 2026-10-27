@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"relayer/chain"
+	"relayer/logbridge"
 	"relayer/services"
 )
 
@@ -70,11 +71,11 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			// An unknown receipt must not be interpreted as delivery: omitting this
 			// packet would be worse than a duplicate, because it may be the only
 			// relayer able to move the user's funds.
-			log.Printf("[%s Relay] settlement check for %s seq=%d: %v; relaying anyway",
+			log.Printf("WARN [%s Relay] settlement check for %s seq=%d: %v; relaying anyway",
 				m.name, e.Type, e.Sequence, err)
 		} else if settled {
 			if e.Type == chain.SendPacket && m.markPendingSettled != nil && !m.markPendingSettled(e.Raw) {
-				log.Printf("[%s Relay][ATTENTION] packet %s seq=%d is settled but its terminal tombstone was not persisted",
+				log.Printf("ERROR [%s Relay][ATTENTION] packet %s seq=%d is settled but its terminal tombstone was not persisted",
 					m.name, e.Type, e.Sequence)
 			}
 			log.Printf("[%s Relay] skipping settled packet %s seq=%d before proof", m.name, e.Type, e.Sequence)
@@ -83,7 +84,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		}
 		if e.Type == chain.SendPacket && m.track != nil {
 			if !m.track(e.Raw, e.Height) {
-				log.Printf("[%s Relay] track pending packet seq=%d height=%d: durable write failed; re-queueing", m.name, e.Sequence, e.Height)
+				log.Printf("WARN [%s Relay] track pending packet seq=%d height=%d: durable write failed; re-queueing", m.name, e.Sequence, e.Height)
 				trackFailed[i] = true
 				requeue = append(requeue, i)
 				continue
@@ -256,7 +257,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 				// Dead for good — forget any recorded wait so the entry does not sit in
 				// the tracker until its TTL.
 				m.waits.clear(e)
-				log.Printf("[%s Relay] DROP packet (%s seq=%d height=%d): %v", m.name, e.Type, e.Sequence, e.Height, err)
+				log.Printf(dropToken(e.Type)+"[%s Relay] DROP packet (%s seq=%d height=%d): %v", m.name, e.Type, e.Sequence, e.Height, err)
 				continue
 			}
 			// Every proof failure here re-queues, so logging one line per flush
@@ -285,13 +286,13 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			if age, report := m.waits.observeProofFailure(e); report {
 				switch {
 				case age < proofFailureStuckAfter:
-					log.Printf("[%s Relay] proof for packet (%s seq=%d height=%d, failing for %s): %v",
+					log.Printf("WARN [%s Relay] proof for packet (%s seq=%d height=%d, failing for %s): %v",
 						m.name, e.Type, e.Sequence, e.Height, age.Round(time.Second), err)
 				case e.Type == chain.SendPacket:
-					log.Printf("[%s Relay] STUCK: %s seq=%d height=%d has failed to prove for %s; it is refunded by the timeout scanner once past its timeout; last error: %v",
+					log.Printf("WARN [%s Relay] STUCK: %s seq=%d height=%d has failed to prove for %s; it is refunded by the timeout scanner once past its timeout; last error: %v",
 						m.name, e.Type, e.Sequence, e.Height, age.Round(time.Second), err)
 				default:
-					log.Printf("[%s Relay] STUCK: %s seq=%d height=%d has failed to prove for %s and has no other exit, so its escrow stays locked; last error: %v",
+					log.Printf("ERROR [%s Relay] STUCK: %s seq=%d height=%d has failed to prove for %s and has no other exit, so its escrow stays locked; last error: %v",
 						m.name, e.Type, e.Sequence, e.Height, age.Round(time.Second), err)
 				}
 			}
@@ -391,12 +392,12 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// packets-only path can stop part way -- a folded transaction is atomic, so
 	// committed is 0 on its failure and this block is a no-op there.
 	if committed > len(packets) {
-		log.Printf("[%s Relay][ATTENTION] destination reported %d of %d packet(s) committed; clamping, the adapter is breaking its contract",
+		log.Printf("ERROR [%s Relay][ATTENTION] destination reported %d of %d packet(s) committed; clamping, the adapter is breaking its contract",
 			m.name, committed, len(packets))
 		committed = len(packets)
 	}
 	if committed > 0 {
-		log.Printf("[%s Relay] %d of %d packet(s) were committed before the failure at height %d; settling those and retrying the rest",
+		log.Printf("WARN [%s Relay] %d of %d packet(s) were committed before the failure at height %d; settling those and retrying the rest",
 			m.name, committed, len(packets), proofHeight)
 		m.settleDelivered(packets[:committed])
 		packets = packets[committed:]
@@ -431,7 +432,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			return append(requeue, relayedIdx...)
 		}
 		// Transient (RPC, nonce, broadcast) → re-queue the whole batch for retry.
-		log.Printf("[%s Relay] relay %d packet(s) at height %d: %v", m.name, len(packets), proofHeight, err)
+		log.Printf("WARN [%s Relay] relay %d packet(s) at height %d: %v", m.name, len(packets), proofHeight, err)
 		return append(requeue, relayedIdx...)
 	}
 	// An UNRESOLVED abandoned nonce is permanent, but it is not a revert, and the
@@ -450,7 +451,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// settles them when the acknowledgement arrives or refunds them when they time
 	// out; this path stops touching them.
 	if errors.Is(err, services.ErrUnresolvedEVMNonce) {
-		log.Printf("[%s Relay][ATTENTION] %d packet(s) at height %d left in an unresolved state: %v; "+
+		log.Printf("ERROR [%s Relay][ATTENTION] %d packet(s) at height %d left in an unresolved state: %v; "+
 			"not retried and not dropped, because the abandoned transaction may still execute. "+
 			"They stay in the pending tracker and settle on their acknowledgement or time out.",
 			m.name, len(packets), proofHeight, err)
@@ -494,7 +495,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 			if m.holdIfClientInactive(ctx, updateErr) {
 				return append(requeue, relayedIdx...)
 			}
-			log.Printf("[%s Relay][ATTENTION] the folded client update at height %d was refused on its own (%v); "+
+			log.Printf("ERROR [%s Relay][ATTENTION] the folded client update at height %d was refused on its own (%v); "+
 				"holding %d packet(s) rather than attributing that to them (folded failure: %v)",
 				m.name, foldPlan.update.Height, updateErr, len(packets), err)
 			return append(requeue, relayedIdx...)
@@ -513,7 +514,7 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 		m.lastHeight = foldPlan.update.Height
 		m.recordClientUpdate(foldPlan.update)
 		foldPlan.release()
-		log.Printf("[%s Relay] folded transaction at height %d failed (%v) but its client update landed alone; relaying %d packet(s) on their own",
+		log.Printf("WARN [%s Relay] folded transaction at height %d failed (%v) but its client update landed alone; relaying %d packet(s) on their own",
 			m.name, proofHeight, err, len(packets))
 		return append(requeue, m.relayIsolated(ctx, packets, relayedIdx)...)
 	}
@@ -527,12 +528,26 @@ func (m *Module) handleBatchLocked(ctx context.Context, events []chain.Event) []
 	// per-packet txs are acceptable to avoid losing valid packets.
 	if len(packets) == 1 {
 		m.waits.clearPacket(packets[0]) // dead for good — stop reporting a wait for it
-		log.Printf("[%s Relay] DROP packet (%s seq=%d) at height %d (permanent): %v",
+		log.Printf(dropToken(packets[0].Type)+"[%s Relay] DROP packet (%s seq=%d) at height %d (permanent): %v",
 			m.name, packets[0].Type, packets[0].Sequence, proofHeight, err)
 		return requeue
 	}
-	log.Printf("[%s Relay] permanent batch failure at height %d (%v); isolating %d packet(s) individually", m.name, proofHeight, err, len(packets))
+	log.Printf("WARN [%s Relay] permanent batch failure at height %d (%v); isolating %d packet(s) individually", m.name, proofHeight, err, len(packets))
 	return append(requeue, m.relayIsolated(ctx, packets, relayedIdx)...)
+}
+
+// dropToken is the level of a DROP line. A dropped SendPacket still has an exit:
+// the timeout scanner refunds it once it expires, so the drop is the designed
+// outcome for a packet that timed out or was already received, and a warning. An
+// ack or a timeout that is dropped has no other exit -- the same split the STUCK
+// lines make in handleBatchLocked -- and is an error, so alerting on level=error
+// does not page on a routine timeout. The token goes ahead of the label because
+// logbridge reads it from the start of the message.
+func dropToken(t chain.EventType) string {
+	if t == chain.SendPacket {
+		return logbridge.Warn
+	}
+	return logbridge.Error
 }
 
 // submitFoldedUpdateAlone submits a still-unsubmitted folded client update on
@@ -548,7 +563,7 @@ func (m *Module) submitFoldedUpdateAlone(ctx context.Context, foldPlan *foldedUp
 		if m.holdIfClientInactive(ctx, err) {
 			return
 		}
-		log.Printf("[%s Relay] client update (no relayable packets) to height %d: %v",
+		log.Printf("WARN [%s Relay] client update (no relayable packets) to height %d: %v",
 			m.name, foldPlan.update.Height, err)
 		return
 	}
@@ -700,14 +715,14 @@ func (m *Module) relayIsolated(ctx context.Context, packets []chain.RelayPacket,
 					break
 				}
 				m.waits.clearPacket(p) // dead for good — stop reporting a wait for it
-				log.Printf("[%s Relay] DROP packet (%s seq=%d height=%d, permanent): %v", m.name, p.Type, p.Sequence, p.Height, err)
+				log.Printf(dropToken(p.Type)+"[%s Relay] DROP packet (%s seq=%d height=%d, permanent): %v", m.name, p.Type, p.Sequence, p.Height, err)
 				continue
 			}
 			if m.holdIfClientInactive(ctx, err) {
 				requeue = append(requeue, relayedIdx[j:]...)
 				break
 			}
-			log.Printf("[%s Relay] isolated relay (%s seq=%d height=%d): %v", m.name, p.Type, p.Sequence, p.Height, err)
+			log.Printf("WARN [%s Relay] isolated relay (%s seq=%d height=%d): %v", m.name, p.Type, p.Sequence, p.Height, err)
 			requeue = append(requeue, relayedIdx[j])
 			continue
 		}
@@ -758,14 +773,14 @@ func (m *Module) sourceHeldOff(now time.Time) bool {
 func (m *Module) noteSourceFailure(err error, what string) {
 	if !chain.IsPermanent(err) {
 		m.noteSourceHealthy() // a transient answer means the source is reachable
-		log.Printf("[%s Relay] %s: %v", m.name, what, err)
+		log.Printf("WARN [%s Relay] %s: %v", m.name, what, err)
 		return
 	}
 	// Same 1m->15m ladder the periodic client update uses; one cadence for
 	// "this keeps failing, stop asking so often" rather than two.
 	m.sourceBackoff = nextPeriodicUpdateBackoff(m.sourceBackoff)
 	m.sourceProbeAt = time.Now().Add(m.sourceBackoff)
-	log.Printf("[%s Relay][ATTENTION] %s: %v; this is PERMANENT — no retry resolves it, "+
+	log.Printf("ERROR [%s Relay][ATTENTION] %s: %v; this is PERMANENT — no retry resolves it, "+
 		"so the source is held off for %s rather than asked every pass. Queued packets are kept and "+
 		"still time out normally; fix the configuration to clear it.",
 		m.name, what, err, m.sourceBackoff)

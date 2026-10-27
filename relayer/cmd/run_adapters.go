@@ -59,7 +59,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	trackCosmosPending := func(raw []byte, height uint64) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[cosmos->eth Relay] track pending: decode packet: %v", err)
+			log.Printf("ERROR [cosmos->eth Relay] track pending: decode packet: %v", err)
 			return false
 		}
 		return svc.TrackCosmosPending(pkt, height)
@@ -67,7 +67,7 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 	untrackCosmosPending := func(raw []byte) {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[cosmos->eth Relay] untrack pending: decode packet: %v", err)
+			log.Printf("ERROR [cosmos->eth Relay] untrack pending: decode packet: %v", err)
 			return
 		}
 		svc.UntrackCosmosPending(pkt)
@@ -95,11 +95,11 @@ func runAdapterEngine(ctx context.Context, svc *services.Services, deps services
 		if isShutdownErr(err) && ctx.Err() != nil {
 			return nil
 		}
-		log.Printf("[cosmos->eth UpdateClient] derive initial rotation delay: %v; rotating on startup", err)
+		log.Printf("WARN [cosmos->eth UpdateClient] derive initial rotation delay: %v; rotating on startup", err)
 		initialRotationDelay = 0
 	}
 	if err := svc.SeedEVMOnCosmosUpdate(ctx, deps.Cosmos, deps.IDs.EVMOnCosmos); err != nil {
-		log.Printf("[eth->cosmos UpdateClient] seed client-update age: %v", err)
+		log.Printf("WARN [eth->cosmos UpdateClient] seed client-update age: %v", err)
 	}
 
 	// A delivered receive makes its acknowledgement owed; a relayed ack closes the
@@ -204,7 +204,7 @@ func cosmosPendingSettlementGuard(svc *services.Services, label string) (relay.P
 	decode := func(raw []byte) (channeltypesv2.Packet, bool) {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[%s Relay] pending-settlement guard: decode packet: %v", label, err)
+			log.Printf("ERROR [%s Relay] pending-settlement guard: decode packet: %v", label, err)
 			return channeltypesv2.Packet{}, false
 		}
 		return pkt, true
@@ -231,7 +231,7 @@ func ackWatchHooks(svc *services.Services) (func([]byte) bool, func([]byte)) {
 	due := func(raw []byte) bool {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[AckWatch] record owed ack: decode packet: %v", err)
+			log.Printf("ERROR [AckWatch] record owed ack: decode packet: %v", err)
 			return false
 		}
 		return svc.RecordAckDue(pkt)
@@ -239,7 +239,7 @@ func ackWatchHooks(svc *services.Services) (func([]byte) bool, func([]byte)) {
 	settled := func(raw []byte) {
 		var pkt channeltypesv2.Packet
 		if err := pkt.Unmarshal(raw); err != nil {
-			log.Printf("[AckWatch] settle owed ack: decode packet: %v", err)
+			log.Printf("ERROR [AckWatch] settle owed ack: decode packet: %v", err)
 			return
 		}
 		svc.ClearAckDue(pkt)

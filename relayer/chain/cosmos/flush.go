@@ -103,7 +103,7 @@ func (s *Source) UnrelayedPackets(ctx context.Context) ([]chain.Event, error) {
 	}
 	acks, err := s.unrelayedAcks(queryCtx)
 	if err != nil {
-		s.logger.Printf("[FlushCosmos] acknowledgement leg: %v; the send leg's %d packet(s) still stand", err, len(sends))
+		s.logger.Printf("WARN [FlushCosmos] acknowledgement leg: %v; the send leg's %d packet(s) still stand", err, len(sends))
 	}
 	return append(sends, acks...), nil
 }
@@ -124,7 +124,7 @@ func (s *Source) unrelayedSends(ctx context.Context) ([]chain.Event, error) {
 		if err != nil {
 			// One unresolvable sequence must not discard the rest: the others are
 			// exactly the packets this pass exists to recover.
-			s.logger.Printf("[FlushCosmos] resolve send packet seq=%d: %v", commitment.sequence, err)
+			s.logger.Printf("WARN [FlushCosmos] resolve send packet seq=%d: %v", commitment.sequence, err)
 			continue
 		}
 		if !found {
@@ -132,7 +132,7 @@ func (s *Source) unrelayedSends(ctx context.Context) ([]chain.Event, error) {
 			// it commits to. On a pruned node that is expected for an old packet, and
 			// it is worth saying so once per pass rather than silently returning a
 			// shorter list.
-			s.logger.Printf("[FlushCosmos] commitment for seq=%d has no indexed send_packet tx matching it (pruned history?)",
+			s.logger.Printf("WARN [FlushCosmos] commitment for seq=%d has no indexed send_packet tx matching it (pruned history?)",
 				commitment.sequence)
 			continue
 		}
@@ -178,7 +178,7 @@ func (s *Source) unrelayedAcks(ctx context.Context) ([]chain.Event, error) {
 	for _, slot := range open {
 		written, err := subscriber.HasCosmosPacketAcknowledgementFor(ctx, s.cosmos, s.ids.EVMOnCosmos, slot.Sequence)
 		if err != nil {
-			s.logger.Printf("[FlushCosmos] ack seq=%d: %v", slot.Sequence, err)
+			s.logger.Printf("WARN [FlushCosmos] ack seq=%d: %v", slot.Sequence, err)
 			continue
 		}
 		if !written {
@@ -186,11 +186,11 @@ func (s *Source) unrelayedAcks(ctx context.Context) ([]chain.Event, error) {
 		}
 		event, found, err := s.ackEventForCommitment(ctx, slot)
 		if err != nil {
-			s.logger.Printf("[FlushCosmos] resolve ack seq=%d: %v", slot.Sequence, err)
+			s.logger.Printf("WARN [FlushCosmos] resolve ack seq=%d: %v", slot.Sequence, err)
 			continue
 		}
 		if !found {
-			s.logger.Printf("[FlushCosmos] acknowledgement for seq=%d has no indexed write_acknowledgement tx matching the router's commitment (pruned history?)",
+			s.logger.Printf("WARN [FlushCosmos] acknowledgement for seq=%d has no indexed write_acknowledgement tx matching the router's commitment (pruned history?)",
 				slot.Sequence)
 			continue
 		}
@@ -318,7 +318,7 @@ func (s *Source) findIndexedEvent(ctx context.Context, q string, sequence uint64
 			return chain.Event{}, false, nil
 		}
 		if scanned >= flushTxSearchMaxResults {
-			log.Printf("[FlushCosmos] sequence %d on %s: scanned %d of %d indexed transactions without "+
+			log.Printf("WARN [FlushCosmos] sequence %d on %s: scanned %d of %d indexed transactions without "+
 				"finding the commitment the chain holds; giving up on this sequence for this pass. "+
 				"That many matches for one (sequence, client) pair means the node's transaction "+
 				"index is conflating events -- a psql index, or kv entries in the legacy format",

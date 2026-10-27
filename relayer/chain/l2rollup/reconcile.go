@@ -96,7 +96,7 @@ func (s *Source) dropAlreadyHandled(ctx context.Context, events []chain.Event, r
 func (s *Source) stillNeedsRelay(ctx context.Context, event chain.Event, reason string) bool {
 	var packet channeltypesv2.Packet
 	if err := packet.Unmarshal(event.Raw); err != nil {
-		log.Printf("[l2->cosmos Subscribe] %s: seq=%d decode packet: %v; keeping it", reason, event.Sequence, err)
+		log.Printf("WARN [l2->cosmos Subscribe] %s: seq=%d decode packet: %v; keeping it", reason, event.Sequence, err)
 		return true
 	}
 
@@ -105,7 +105,7 @@ func (s *Source) stillNeedsRelay(ctx context.Context, event chain.Event, reason 
 
 	handled, err := s.alreadyHandled(queryCtx, event.Type, packet)
 	if err != nil {
-		log.Printf("[l2->cosmos Subscribe] %s: seq=%d %v; keeping it", reason, event.Sequence, err)
+		log.Printf("WARN [l2->cosmos Subscribe] %s: seq=%d %v; keeping it", reason, event.Sequence, err)
 		return true
 	}
 	if handled {

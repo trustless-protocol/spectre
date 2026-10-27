@@ -78,7 +78,7 @@ func validateL2ChainID(stdCtx context.Context, src l2ToCosmosConfig) error {
 	// l2_chain_id check" immediately followed by "l2_chain_id verified",
 	// which is the one thing the log must not say.
 	if !verified {
-		log.Printf("[start] could not read eth_chainId from %s; skipping the l2_chain_id check for %q "+
+		log.Printf("WARN [start] could not read eth_chainId from %s; skipping the l2_chain_id check for %q "+
 			"(declared %d). The EVM signer lock still needs that answer, so startup will stop rather than run without its nonce guard.",
 			src.L2RpcUrl, src.AttestorSrcChain, want)
 		return nil

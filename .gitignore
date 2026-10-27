@@ -99,6 +99,7 @@ proposal.json
 .specify/
 specs/
 .artifacts/solidity/
+.artifacts/native/
 
 # Merge/patch backups. `patch` writes <file>.orig and <file>.rej beside the file
 # it edits, and a blanket `git add <dir>` sweeps them in -- which is how an
