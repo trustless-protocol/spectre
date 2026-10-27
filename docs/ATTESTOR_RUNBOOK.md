@@ -34,13 +34,17 @@ The Arbitrum endpoint exports `spectre_arbitrum_attestor_*`, labeled only by
 | `runtime_refresh_failures_total` increases | Nitro unavailable/rate-limited | Inspect RPC error and backoff log; reduce backfill concurrency or use a dedicated endpoint |
 | `assertion_next_l1_block` and `assertions_pending` increase | Finalized-L1 ingestion/reconciliation is behind | Check L1 finalized head, RollupCore RPC, and block-range settings |
 | `assertion_ingest_head` stops moving | No new successful assertion ingest snapshot | Check `l1_ingest_head`, selected L1 tag, hash-based status RPC support and `assertion_sync_failures_total`; the durable cursor still tracks finalized logs only |
+| `assertion_sync_failures_total` increases and the log says `finalized L1 block N is behind the assertion cursor M` | The L1 RPC answered a finalized-block read from behind, as a lagging backend behind a load balancer or a failover does. The pass is refused before it changes anything, so no assertion is pruned | Normally clears once the backend catches up. If it persists, the endpoint is permanently behind, or serves a different chain than the one `attestor_state_path` was built against |
+| `assertion_sync_failures_total` increases and the log says `pass exceeded its … deadline` | An L1 or Nitro call did not return within `assertion_pass_timeout` and the pass was cut. Progress committed before the cut is kept | Check the endpoint that stopped answering (a WebSocket connection that stays open but drops a response, for example) |
+| gRPC health is NOT_SERVING while `nitro_*_head` still moves | The assertion loop has not come back around for `assertion_pass_timeout` plus two `assertion_poll_interval`s | Look at the last `Arbitrum assertion attestation failed` line; a loop that logs nothing is blocked somewhere the pass deadline does not reach (a stalled disk write, for example), so restart it |
 | `assertion_revocations_total` increases | An assertion was withdrawn before L1 finality | Inspect L1 reorg/head regression or policy-change logs; inspect Cosmos state before retrying packets |
 | `roots_provisional` remains high | Finalized recheck is waiting | Compare Nitro finalized head with the provisional heights |
 | `finalized_divergence_total`, `finalized_reorg_total`, or `mismatch_records` increases | Earlier evidence disagreed with the authoritative recheck | Follow the divergence procedure below |
 | `persistence_failures_total` increases | New feed state was not made durable | Stop relay progression, repair storage, and restart only after state-file inspection |
 
-OP uses the analogous `spectre_op_attestor_*` metrics. `Info` is a useful
-point-in-time diagnostic but is not a replacement for these histories.
+OP uses the analogous `spectre_op_attestor_*` metrics; its failed passes, including
+those cut by `pass_timeout_seconds`, count in `pass_failures_total`. `Info` is a
+useful point-in-time diagnostic but is not a replacement for these histories.
 
 ## Opt-in early Arbitrum assertions
 

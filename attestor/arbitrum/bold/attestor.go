@@ -10,6 +10,7 @@ import (
 	"time"
 
 	arbitrum "attestor/arbitrum"
+	attestortypes "attestor/types"
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -30,8 +31,12 @@ type CommitmentResolver interface {
 
 // AssertionAttestorConfig controls L1 assertion ingestion and reconciliation.
 type AssertionAttestorConfig struct {
-	L1IngestHead    arbitrum.L1IngestHead
-	PollInterval    time.Duration
+	L1IngestHead arbitrum.L1IngestHead
+	PollInterval time.Duration
+	// PassTimeout bounds one pass of Run, so a call that never returns (a
+	// silent WebSocket peer) becomes a failed pass that is logged and counted
+	// instead of parking the loop. Zero selects attestortypes.DefaultPassTimeout.
+	PassTimeout     time.Duration
 	MaxL1BlockRange uint64
 }
 
@@ -44,6 +49,9 @@ type AssertionAttestor struct {
 	config  AssertionAttestorConfig
 	now     func() time.Time
 	syncMu  sync.Mutex
+	// heartbeat is beaten by the Run goroutine each time its loop comes back
+	// around, and read by the sidecar's readiness probe (see RunnerAlive).
+	heartbeat attestortypes.Heartbeat
 }
 
 // NewAssertionAttestor constructs an assertion ingestion loop.
@@ -72,6 +80,12 @@ func NewAssertionAttestor(
 	}
 	if config.PollInterval < 0 {
 		return nil, errors.New("assertion poll interval must be greater than zero")
+	}
+	if config.PassTimeout == 0 {
+		config.PassTimeout = attestortypes.DefaultPassTimeout
+	}
+	if config.PassTimeout < 0 {
+		return nil, errors.New("assertion pass timeout must be greater than zero")
 	}
 	if config.MaxL1BlockRange == 0 {
 		config.MaxL1BlockRange = defaultMaxL1BlockRange
@@ -129,12 +143,27 @@ func (a *AssertionAttestor) Run(ctx context.Context) {
 	a.RunWithObserver(ctx, nil)
 }
 
+// RunnerAlive reports whether Run's loop has come back around recently enough
+// to be making progress. A loop parked on a call that never returns stops
+// beating, so this goes false even though nothing has failed and nothing is
+// logged. A loop whose passes keep failing still beats: those failures are
+// logged and counted, and a long backfill that the pass timeout cuts into
+// several passes keeps beating too.
+func (a *AssertionAttestor) RunnerAlive() bool {
+	return a.heartbeat.Alive(a.now(), attestortypes.FeedStaleAfter(a.config.PassTimeout, a.config.PollInterval))
+}
+
 // RunWithObserver is Run with an optional per-pass callback for composition
 // roots. The callback observes only the pass outcome; it cannot alter
 // settlement ingestion or the durable feed.
+//
+// Every pass runs under config.PassTimeout. The check on ctx below is
+// deliberately the caller's, not the pass's, so a pass that hits its deadline
+// is a failed pass to log and observe, and not a shutdown.
 func (a *AssertionAttestor) RunWithObserver(ctx context.Context, observe func(error)) {
+	a.heartbeat.Beat(a.now())
 	sync := func() {
-		err := a.SyncOnce(ctx)
+		err := attestortypes.RunPass(ctx, a.config.PassTimeout, a.SyncOnce)
 		if err != nil && ctx.Err() != nil {
 			return
 		}
@@ -144,6 +173,7 @@ func (a *AssertionAttestor) RunWithObserver(ctx context.Context, observe func(er
 		if observe != nil {
 			observe(err)
 		}
+		a.heartbeat.Beat(a.now())
 	}
 	sync()
 
@@ -175,6 +205,22 @@ func (a *AssertionAttestor) SyncOnce(ctx context.Context) error {
 	}
 	if err != nil {
 		return err
+	}
+
+	// L1 finality never moves backwards, and the cursor only ever advances to a
+	// block at or below a finalized read, so a read below cursor-1 came from a
+	// lagging or failed-over backend. Acting on it would skip reconciliation of
+	// every entry above it and then prune, as unfinalized, the assertions
+	// already ingested between it and the cursor. The cursor does not move back
+	// and the speculative window starts at max(finalized+1, cursor), so they
+	// would not be read again. Fail the pass before touching anything.
+	if cursor := a.store.NextL1Block(); cursor > 0 && finalizedL1Block < cursor-1 {
+		return fmt.Errorf(
+			"finalized L1 block %d is behind the assertion cursor %d: L1 finality does not move backwards, "+
+				"so the L1 backend answered from behind; skipping this pass so the feed is not pruned against it",
+			finalizedL1Block,
+			cursor,
+		)
 	}
 
 	// Track both retained and rejected assertions at this finalized snapshot.

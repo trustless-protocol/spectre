@@ -81,6 +81,7 @@ as must `state_path` (both enforced at config load).
 | `respected_game_type` | 0 | Only games of this type are verified; others counted + skipped |
 | `attestation_head` | `finalized` | Gating head: `finalized` \| `safe` \| `unsafe` (see below) |
 | `poll_interval_seconds` | 30 | Attestation-pass cadence |
+| `pass_timeout_seconds` | 300 | Deadline for one attestation pass and for the first-run bootstrap. A call that never returns (an op-node or L1 WebSocket peer that accepts a request and drops the response) fails the pass at this deadline instead of parking the loop. Work committed earlier in the pass is kept |
 | `state_path` | required | JSON state file (cursor, pending, rechecks, feed) |
 | `l1_bootstrap_lookback_blocks` | 7200 | First-run ingest window (~24 h of L1 blocks) |
 | `l1_ws_url` | off | Optional `DisputeGameCreated` wake hint; poll loop fully correct without it |
@@ -249,6 +250,14 @@ With **no replica reachable**, the correct posture is: proposals ingest,
 `pending` fills, `attestation pass failed (nothing affirmed, retrying in …)`
 with backoff 1 m → 15 m, feed stays empty. Nothing is ever affirmed by a down
 or lagging replica.
+
+A call that never returns is cut at `pass_timeout_seconds` and then behaves the
+same way: `attestation pass failed (…): pass exceeded its 5m0s deadline: …`,
+`pass_failures_total` and the backoff above, and the next pass resumes from what
+the cut one had already committed. Once a replica snapshot exists, the gRPC
+health service turns NOT_SERVING if the loop itself stops coming back around for
+longer than `pass_timeout_seconds` plus two `poll_interval_seconds`; a loop whose
+passes fail keeps reporting SERVING with the heads of its last good snapshot.
 
 ### Fail-safe invariants
 

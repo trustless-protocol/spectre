@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	attestortypes "attestor/types"
+
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -56,6 +58,7 @@ func TestLoadDaemonConfigResolvesStatePathAndLoadsNitroEndpoints(t *testing.T) {
 		"assertion_status_offset":25,
 		"assertion_start_block":123,
 		"assertion_poll_interval":"3s",
+		"assertion_pass_timeout":"90s",
 		"assertion_max_block_range":1000,
 		"attestor_state_path":"data/attested-roots.json",
 		"nitro_rpc_url":"https://arbitrum.example",
@@ -101,6 +104,13 @@ func TestLoadDaemonConfigResolvesStatePathAndLoadsNitroEndpoints(t *testing.T) {
 	}
 	if assertionPollInterval != 3*time.Second {
 		t.Fatalf("assertion poll interval: got %s want %s", assertionPollInterval, 3*time.Second)
+	}
+	assertionPassTimeout, err := config.AssertionPassTimeoutDuration()
+	if err != nil {
+		t.Fatalf("assertion pass timeout: %v", err)
+	}
+	if assertionPassTimeout != 90*time.Second {
+		t.Fatalf("assertion pass timeout: got %s want %s", assertionPassTimeout, 90*time.Second)
 	}
 	if config.AssertionBlockRange() != 1000 {
 		t.Fatalf("assertion block range: got %d want 1000", config.AssertionBlockRange())
@@ -226,6 +236,14 @@ func TestDaemonConfigAssertionDefaults(t *testing.T) {
 	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "assertion_poll_interval") {
 		t.Fatalf("validate assertion poll interval: got %v", err)
 	}
+
+	passTimeout, err := validDaemonConfig(t).AssertionPassTimeoutDuration()
+	if err != nil {
+		t.Fatalf("default assertion pass timeout: %v", err)
+	}
+	if passTimeout != attestortypes.DefaultPassTimeout {
+		t.Fatalf("default assertion pass timeout: got %s want %s", passTimeout, attestortypes.DefaultPassTimeout)
+	}
 }
 
 func TestDaemonConfigRequiresBoLDStorageLayout(t *testing.T) {
@@ -268,6 +286,9 @@ func TestDaemonConfigValidationFailureMatrix(t *testing.T) {
 		{name: "status offset outside word", mutate: func(c *DaemonConfig) { c.AssertionStatusOffset = 32 }, want: "assertion_status_offset"},
 		{name: "zero assertion start", mutate: func(c *DaemonConfig) { c.AssertionStartBlock = 0 }, want: "assertion_start_block"},
 		{name: "invalid assertion poll", mutate: func(c *DaemonConfig) { c.AssertionPollInterval = "-1s" }, want: "assertion_poll_interval"},
+		{name: "negative assertion pass timeout", mutate: func(c *DaemonConfig) { c.AssertionPassTimeout = "-1s" }, want: "assertion_pass_timeout"},
+		{name: "zero assertion pass timeout", mutate: func(c *DaemonConfig) { c.AssertionPassTimeout = "0s" }, want: "assertion_pass_timeout"},
+		{name: "unparsable assertion pass timeout", mutate: func(c *DaemonConfig) { c.AssertionPassTimeout = "soon" }, want: "assertion_pass_timeout"},
 		{name: "relative state path", mutate: func(c *DaemonConfig) { c.AttestorStatePath = "state.json" }, want: "attestor_state_path"},
 		{name: "invalid Nitro HTTP URL", mutate: func(c *DaemonConfig) { c.NitroRPCURL = "wss://nitro.example" }, want: "nitro_rpc_url"},
 		{name: "invalid Nitro websocket URL", mutate: func(c *DaemonConfig) { c.NitroWSURL = "https://nitro.example" }, want: "nitro_ws_url"},

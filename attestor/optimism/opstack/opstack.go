@@ -10,6 +10,7 @@ import (
 	"go.uber.org/zap"
 
 	"attestor/optimism"
+	attestortypes "attestor/types"
 )
 
 // gameSource and replica are the two upstream dependencies of the attestation
@@ -52,6 +53,9 @@ type OpStackAttestor struct {
 	// for read-only observers (the sidecar gRPC server); nil until the first
 	// successful poll.
 	lastStatus atomic.Pointer[SyncStatus]
+	// heartbeat is beaten by the Run goroutine each time its loop comes back
+	// around, and read by the sidecar's readiness probe (see RunnerAlive).
+	heartbeat attestortypes.Heartbeat
 }
 
 // New assembles an attestor from already-validated config and dialed
@@ -106,6 +110,15 @@ func (a *OpStackAttestor) LastSyncStatus() (SyncStatus, bool) {
 	return SyncStatus{}, false
 }
 
+// RunnerAlive reports whether Run's loop has come back around recently enough
+// to be making progress. A loop parked on a call that never returns stops
+// beating, so this goes false even though nothing has failed and nothing is
+// logged. A loop whose passes keep failing still beats: those failures are
+// visible in the log and the pass-failure counter, and the loop backs off.
+func (a *OpStackAttestor) RunnerAlive() bool {
+	return a.heartbeat.Alive(a.now(), attestortypes.FeedStaleAfter(a.cfg.PassTimeout, a.cfg.PollInterval))
+}
+
 // ErrNoReplica reports that this attestor was built without a replica, so the
 // read-only replica queries below cannot be served. The attestation loop needs
 // one, so it only happens in tests.
@@ -146,10 +159,14 @@ func (a *OpStackAttestor) CommitmentAt(ctx context.Context, l2Block uint64) (L2C
 }
 
 // Run executes the attestation loop until ctx is done: poll ticker plus the
-// optional DisputeGameCreated wake hint, with failure backoff.
+// optional DisputeGameCreated wake hint, with failure backoff. Every pass, and
+// the bootstrap that precedes the first one, runs under cfg.PassTimeout, so no
+// upstream call can park the loop; the checks on ctx below deliberately use the
+// caller's context, not a pass's, so a pass that hits its deadline is a failed
+// pass and not a shutdown.
 func (a *OpStackAttestor) Run(ctx context.Context) error {
 	if a.store.Fresh() {
-		if err := a.bootstrap(ctx); err != nil {
+		if err := attestortypes.RunPass(ctx, a.cfg.PassTimeout, a.bootstrap); err != nil {
 			return fmt.Errorf("%s: bootstrap failed: %w", a.Name(), err)
 		}
 	}
@@ -161,18 +178,21 @@ func (a *OpStackAttestor) Run(ctx context.Context) error {
 
 	ticker := time.NewTicker(a.cfg.PollInterval)
 	defer ticker.Stop()
+	a.heartbeat.Beat(a.now())
 	for {
 		if a.backoff.Ready(a.now()) {
-			if err := a.runOnce(ctx); err != nil {
+			if err := attestortypes.RunPass(ctx, a.cfg.PassTimeout, a.runOnce); err != nil {
 				if ctx.Err() != nil {
 					return nil
 				}
 				delay := a.backoff.RecordFailure(a.now())
+				a.count(func(m *Metrics) { m.PassFailures.WithLabelValues(a.cfg.SrcChain).Inc() })
 				a.logger.Warnf("%s: attestation pass failed (nothing affirmed, retrying in %s): %v", a.Name(), delay, err)
 			} else {
 				a.backoff.RecordSuccess()
 			}
 		}
+		a.heartbeat.Beat(a.now())
 		select {
 		case <-ctx.Done():
 			return nil

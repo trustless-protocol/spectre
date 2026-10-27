@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	attestortypes "attestor/types"
+
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -28,6 +30,7 @@ func TestConfigValidateAppliesSafeDefaults(t *testing.T) {
 	}
 	if config.AttestationHead != HeadFinalized ||
 		config.PollInterval != defaultPollInterval ||
+		config.PassTimeout != attestortypes.DefaultPassTimeout ||
 		config.BootstrapLookbackBlocks != defaultBootstrapLookback ||
 		config.DerivedGapBlocks != defaultDerivedGapBlocks ||
 		config.MaxDerivedRoots != defaultMaxDerivedRoots {
@@ -79,6 +82,7 @@ func TestConfigValidateFailureMatrix(t *testing.T) {
 		{name: "invalid head", mutate: func(c *Config) { c.AttestationHead = Head("confirmed") }, want: "attestation_head"},
 		{name: "missing state path", mutate: func(c *Config) { c.StatePath = "" }, want: "state_path"},
 		{name: "negative poll interval", mutate: func(c *Config) { c.PollInterval = -time.Second }, want: "poll_interval"},
+		{name: "negative pass timeout", mutate: func(c *Config) { c.PassTimeout = -time.Second }, want: "pass_timeout"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config := validConfig()

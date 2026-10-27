@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	attestortypes "attestor/types"
+
 	"github.com/ethereum/go-ethereum/common"
 )
 
@@ -39,6 +41,7 @@ type DaemonConfig struct {
 	AssertionStatusOffset      uint8        `json:"assertion_status_offset"`
 	AssertionStartBlock        uint64       `json:"assertion_start_block"`
 	AssertionPollInterval      string       `json:"assertion_poll_interval"`
+	AssertionPassTimeout       string       `json:"assertion_pass_timeout"`
 	AssertionMaxBlockRange     uint64       `json:"assertion_max_block_range"`
 	AttestorStatePath          string       `json:"attestor_state_path"`
 	NitroRPCURL                string       `json:"nitro_rpc_url"`
@@ -148,6 +151,9 @@ func (c DaemonConfig) Validate() error {
 	if _, err := c.AssertionPollDuration(); err != nil {
 		return err
 	}
+	if _, err := c.AssertionPassTimeoutDuration(); err != nil {
+		return err
+	}
 	if c.AttestorStatePath == "" || !filepath.IsAbs(c.AttestorStatePath) {
 		return errors.New("attestor_state_path must resolve to an absolute path")
 	}
@@ -236,6 +242,15 @@ func (c DaemonConfig) AssertionPollDuration() (time.Duration, error) {
 		return defaultAssertionPollInterval, nil
 	}
 	return parsePositiveDuration(c.AssertionPollInterval, "assertion_poll_interval")
+}
+
+// AssertionPassTimeoutDuration returns the deadline for one assertion sync
+// pass. An omitted value defaults to attestortypes.DefaultPassTimeout.
+func (c DaemonConfig) AssertionPassTimeoutDuration() (time.Duration, error) {
+	if c.AssertionPassTimeout == "" {
+		return attestortypes.DefaultPassTimeout, nil
+	}
+	return parsePositiveDuration(c.AssertionPassTimeout, "assertion_pass_timeout")
 }
 
 // AssertionBlockRange returns the maximum number of finalized L1 blocks read

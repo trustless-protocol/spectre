@@ -117,6 +117,12 @@ Copy `config.example.json` to `config.json` and configure:
   block of a known confirmed object when intentionally bootstrapping a frontier.
 - `assertion_poll_interval` and `assertion_max_block_range`: L1 scan
   cadence and maximum inclusive block count per log query.
+- `assertion_pass_timeout`: deadline for one assertion sync pass, as a Go
+  duration (default `5m`). A call that never returns, such as an L1 WebSocket
+  peer that accepts a request and drops the response, fails the pass at this
+  deadline instead of parking the loop. The failure is logged and counted in
+  `assertion_sync_failures_total`, and the next pass resumes from the cursor the
+  cut one had already committed.
 - `attestor_state_path`: durable JSON state for the assertion cursor and
   verified feed.
 - `nitro_rpc_url`: Nitro HTTP/HTTPS endpoint used for chain state, block
@@ -350,7 +356,13 @@ the finalized root with both earlier observations and logs a consistency
 result. This in-memory result is intended as the source for future alerting;
 Nitro remains the persistent owner of chain state.
 
-The standard gRPC health service is also registered for readiness checks.
+The standard gRPC health service is also registered for readiness checks. The
+route is ready once Nitro has reported the configured `attestation_head` and the
+assertion loop is still coming back around, that is, has come back within
+`assertion_pass_timeout` plus two `assertion_poll_interval`s. A loop whose
+passes fail still counts as running: those failures are in the log and in
+`assertion_sync_failures_total`. A loop parked on a call that never returns does
+not, and neither does a feed that is frozen behind it.
 
 ## Operations
 

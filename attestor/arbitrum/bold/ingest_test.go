@@ -8,11 +8,14 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	arbitrum "attestor/arbitrum"
+	attestortypes "attestor/types"
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -678,4 +681,306 @@ func TestFinalizedReconciliationKeepsRepostedCreationBlock(t *testing.T) {
 	if !found || root.L1BlockNumber != 113 || len(s.statusBlocks) != 1 {
 		t.Fatalf("reposted root=%+v status reads=%v", root, s.statusBlocks)
 	}
+}
+
+// One finalized-L1 read from a lagging backend (behind a load balancer, or just
+// after a failover) must not cost the feed the assertions already ingested
+// between that read and the cursor. Before the guard it did: both reconcile
+// passes skipped them, the prune then dropped them as unfinalized, and since
+// the cursor does not move back and the speculative window starts at
+// max(finalized+1, cursor), they were never read again.
+func TestSyncOnceRefusesAFinalizedReadBehindTheCursor(t *testing.T) {
+	// The tracked assertion is either already attested provisionally, or still
+	// a bare proposal because Nitro has not reached its block yet. The prune
+	// took both.
+	for _, variant := range []struct {
+		name     string
+		nitroLag bool
+	}{
+		{"attested provisionally", false},
+		{"pending on Nitro", true},
+	} {
+		for _, mode := range []arbitrum.L1IngestHead{arbitrum.L1IngestFinalized, arbitrum.L1IngestSafe, arbitrum.L1IngestLatest} {
+			t.Run(variant.name+"/"+string(mode), func(t *testing.T) {
+				a, s, r := newHeadTestLoop(t, mode)
+				if variant.nitroLag {
+					r.err = arbitrum.ErrCommitmentNotReady
+				}
+				ctx := context.Background()
+				if err := a.SyncOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+
+				// L1 finalizes past the assertion's block: it is ingested from the
+				// finalized logs and the cursor moves past it.
+				s.finalizedBlock, s.head = 130, 135
+				if err := a.SyncOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if got := a.store.NextL1Block(); got != 131 {
+					t.Fatalf("cursor after the finalized pass = %d, want 131", got)
+				}
+				provisional, proposals := a.store.ProvisionalAssertions(), a.store.Proposals()
+				if len(provisional)+len(proposals) != 1 {
+					t.Fatalf("setup: %d provisional entries and %d proposals, want exactly one tracked assertion", len(provisional), len(proposals))
+				}
+
+				// One read from a backend that is behind.
+				s.finalizedBlock = 105
+				err := a.SyncOnce(ctx)
+				if err == nil || !strings.Contains(err.Error(), "behind the assertion cursor") {
+					t.Fatalf("SyncOnce on a regressed finalized read = %v, want the behind-the-cursor error", err)
+				}
+				if !reflect.DeepEqual(provisional, a.store.ProvisionalAssertions()) ||
+					!reflect.DeepEqual(proposals, a.store.Proposals()) ||
+					a.store.NextL1Block() != 131 {
+					t.Fatal("the refused pass changed the feed or the cursor")
+				}
+
+				// L1 answers correctly again. The assertion is still tracked and
+				// reaches the finalized frontier.
+				s.finalizedBlock, s.head = 140, 140
+				s.confirmed = true
+				r.err, r.finalized = nil, true
+				if err := a.SyncOnce(ctx); err != nil {
+					t.Fatal(err)
+				}
+				root, found := a.store.HighestAttested(false)
+				if !found || root.Provisional || root.AssertionHash != s.events[0].AssertionHash {
+					t.Fatalf("finalized frontier after recovery = (%+v, found=%t), want the assertion", root, found)
+				}
+			})
+		}
+	}
+}
+
+// The guard is exactly "behind the cursor": a read at cursor-1 is the normal
+// steady state, and a store that has not scanned anything yet has no cursor to
+// be behind.
+func TestSyncOnceFinalizedReadGuardBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		cursor    uint64
+		finalized uint64
+		wantErr   bool
+	}{
+		{"at cursor-1 (nothing new)", 101, 100, false},
+		{"past the cursor", 101, 120, false},
+		{"one block behind cursor-1", 101, 99, true},
+		{"far behind", 101, 5, true},
+		{"fresh store at genesis", 0, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, s, _ := newHeadTestLoop(t, arbitrum.L1IngestFinalized)
+			a.store.SetNextL1Block(tc.cursor)
+			s.finalizedBlock = tc.finalized
+			s.events = nil
+			err := a.SyncOnce(context.Background())
+			if tc.wantErr != (err != nil) {
+				t.Fatalf("SyncOnce(cursor=%d, finalized=%d) error = %v, want error: %t", tc.cursor, tc.finalized, err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// parkingSource parks the finalized-block read, the first call of a pass, until
+// the pass context ends. It stands in for an L1 WebSocket peer that keeps
+// answering pings and drops one response.
+type parkingSource struct {
+	headTestSource
+	calls atomic.Int32
+	// parkFromCall is the 1-based call from which reads park; 0 parks none.
+	parkFromCall int32
+}
+
+func (p *parkingSource) FinalizedBlockNumber(ctx context.Context) (uint64, error) {
+	call := p.calls.Add(1)
+	if p.parkFromCall != 0 && call >= p.parkFromCall {
+		<-ctx.Done()
+		return 0, ctx.Err()
+	}
+	return p.finalizedBlock, p.finalizedErr
+}
+
+func newParkingLoop(t *testing.T, parkFromCall int32, config AssertionAttestorConfig) (*AssertionAttestor, *parkingSource) {
+	t.Helper()
+	store, err := arbitrum.NewAttestedRootStore("arb", 101)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := &parkingSource{parkFromCall: parkFromCall}
+	source.finalizedBlock = 100
+	a, err := NewAssertionAttestor(source, &headTestResolver{}, store, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a, source
+}
+
+func waitUntil(t *testing.T, what string, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s", what)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+func stopRun(t *testing.T, cancel context.CancelFunc, done <-chan struct{}) {
+	t.Helper()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return after its context was cancelled")
+	}
+}
+
+// A call that never returns used to park the single feed goroutine forever: no
+// error, no log, no metric. The pass deadline turns it into an ordinary failed
+// pass that the observer sees.
+func TestRunWithObserverCutsAPassParkedOnAHungL1Call(t *testing.T) {
+	a, _ := newParkingLoop(t, 1, AssertionAttestorConfig{PollInterval: time.Hour, PassTimeout: 50 * time.Millisecond})
+	observed := make(chan error, 4)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.RunWithObserver(ctx, func(err error) { observed <- err })
+	}()
+	defer stopRun(t, cancel, done)
+
+	select {
+	case err := <-observed:
+		if err == nil || !strings.Contains(err.Error(), "pass exceeded its 50ms deadline") ||
+			!errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("observed pass error = %v, want one naming the 50ms pass deadline", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hung pass was never reported: the loop is parked")
+	}
+}
+
+// The pass deadline must not discard a backlog it interrupts. Each log chunk is
+// committed as it completes, so the pass that follows resumes from the cursor
+// and the backlog still drains.
+func TestPassDeadlineKeepsTheChunksAlreadyCommitted(t *testing.T) {
+	a, s, _ := newHeadTestLoop(t, arbitrum.L1IngestFinalized)
+	s.finalizedBlock = 120
+	s.events = nil
+	blocking := &chunkBlockingSource{headTestSource: s, blockFrom: 106}
+	a.source = blocking
+
+	err := attestortypes.RunPass(context.Background(), 50*time.Millisecond, a.SyncOnce)
+	if err == nil || !strings.Contains(err.Error(), "pass exceeded its 50ms deadline") {
+		t.Fatalf("pass with a parked chunk = %v, want the pass deadline", err)
+	}
+	if got := a.store.NextL1Block(); got != 106 {
+		t.Fatalf("cursor after the cut pass = %d, want 106: the first chunk (101-105) was committed", got)
+	}
+
+	blocking.blockFrom = 0
+	if err := a.SyncOnce(context.Background()); err != nil {
+		t.Fatalf("pass after the park cleared: %v", err)
+	}
+	if got := a.store.NextL1Block(); got != 121 {
+		t.Fatalf("cursor after the resumed pass = %d, want 121", got)
+	}
+}
+
+// chunkBlockingSource parks every log read from blockFrom upward.
+type chunkBlockingSource struct {
+	*headTestSource
+	blockFrom uint64
+}
+
+func (c *chunkBlockingSource) Assertions(ctx context.Context, from, to uint64) ([]arbitrum.ProposedAssertion, []ConfirmedAssertion, error) {
+	if c.blockFrom != 0 && from >= c.blockFrom {
+		<-ctx.Done()
+		return nil, nil, ctx.Err()
+	}
+	return c.headTestSource.Assertions(ctx, from, to)
+}
+
+// testClock is a clock the test advances by hand; it is read by the run loop's
+// goroutine and the test's, so it is atomic.
+type testClock struct{ ns atomic.Int64 }
+
+func newTestClock(at time.Time) *testClock {
+	c := &testClock{}
+	c.ns.Store(at.UnixNano())
+	return c
+}
+
+func (c *testClock) now() time.Time          { return time.Unix(0, c.ns.Load()) }
+func (c *testClock) advance(d time.Duration) { c.ns.Add(int64(d)) }
+
+// RunnerAlive is what tells a parked loop from a healthy one: the Nitro
+// snapshot keeps looking fresh over a frozen assertion feed, so health that
+// read only that stayed SERVING.
+func TestRunnerAliveTellsAParkedLoopFromAHealthyOne(t *testing.T) {
+	// The second pass parks. A long pass deadline keeps it parked for the whole
+	// test, so what is measured is the heartbeat and not the deadline.
+	a, source := newParkingLoop(t, 2, AssertionAttestorConfig{PollInterval: 10 * time.Millisecond, PassTimeout: time.Hour})
+	clock := newTestClock(time.Unix(5000, 0))
+	a.now = clock.now
+	staleAfter := time.Hour + 20*time.Millisecond
+
+	if a.RunnerAlive() {
+		t.Fatal("a loop that never started is alive")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.Run(ctx)
+	}()
+	defer stopRun(t, cancel, done)
+
+	// The second pass starts only after the first has finished and the loop
+	// has beaten, so a parked second pass proves the loop was alive until then.
+	waitUntil(t, "the second pass to park", func() bool { return source.calls.Load() >= 2 })
+	if !a.RunnerAlive() {
+		t.Fatal("a loop that completed a pass and is inside the next one reads as dead")
+	}
+
+	clock.advance(30 * time.Minute)
+	if !a.RunnerAlive() {
+		t.Fatal("a pass that has run for less than the pass timeout read as a dead loop")
+	}
+	clock.advance(staleAfter)
+	if a.RunnerAlive() {
+		t.Fatal("a loop parked beyond the pass timeout and two ticks still reads as alive")
+	}
+}
+
+// A pass that fails is not a parked loop: it is logged and counted, but the
+// loop keeps coming back around.
+func TestRunnerStaysAliveWhilePassesFail(t *testing.T) {
+	a, source := newParkingLoop(t, 0, AssertionAttestorConfig{PollInterval: 10 * time.Millisecond, PassTimeout: time.Second})
+	source.finalizedErr = errors.New("L1 unavailable")
+	clock := newTestClock(time.Unix(5000, 0))
+	a.now = clock.now
+	failures := make(chan struct{}, 64)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		a.RunWithObserver(ctx, func(err error) {
+			if err != nil {
+				select {
+				case failures <- struct{}{}:
+				default:
+				}
+			}
+		})
+	}()
+	defer stopRun(t, cancel, done)
+
+	<-failures
+	clock.advance(time.Minute) // far past staleAfter (about 1s): only a new beat revives it
+	waitUntil(t, "the failing loop to beat again", a.RunnerAlive)
 }
