@@ -230,6 +230,14 @@ pub enum EthereumIBCError {
     MisbehaviourStorageRootsMatch(B256),
 
     #[error(
+        "misbehaviour is signed in sync committee period {signature_period}, before the client's latest period {latest_period}"
+    )]
+    MisbehaviourSignedByPastCommittee {
+        signature_period: u64,
+        latest_period: u64,
+    },
+
+    #[error(
         "update must be against a previous consensus state: \
         stored consensus state slot: {consensus_state_slot}, \
         update finalized header slot: {update_finalized_slot}"

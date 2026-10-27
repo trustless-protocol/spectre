@@ -118,6 +118,7 @@ impl Setup {
     /// so this is how a test gets a client whose latest slot is in a later period.
     fn move_latest_to(&mut self, slot: u64) {
         let mut client_state = get_eth_client_state(&self.deps.storage).unwrap();
+        let previous_latest_slot = client_state.latest_slot;
         client_state.latest_slot = slot;
         let mut wasm_client_state = get_wasm_client_state(&self.deps.storage).unwrap();
         wasm_client_state.data = serde_json::to_vec(&client_state).unwrap();
@@ -127,12 +128,43 @@ impl Setup {
         });
         store_client_state(&mut self.deps.storage, &wasm_client_state).unwrap();
 
-        let mut consensus_state = get_eth_consensus_state(&self.deps.storage, THIRD_SLOT).unwrap();
+        let mut consensus_state =
+            get_eth_consensus_state(&self.deps.storage, previous_latest_slot).unwrap();
         consensus_state.slot = slot;
         let wasm_consensus_state = WasmConsensusState {
             data: serde_json::to_vec(&consensus_state).unwrap(),
         };
         store_consensus_state(&mut self.deps.storage, &wasm_consensus_state, slot).unwrap();
+    }
+
+    /// Moves the client across the period boundary the way a valid rotation header leaves it: the
+    /// latest consensus state is at `slot` in period 1, its current committee is the former next
+    /// committee, and no next committee is known yet. The earlier consensus states stay.
+    fn rotate_to_next_period(&mut self, slot: u64) {
+        self.move_latest_to(slot);
+        let mut consensus_state = get_eth_consensus_state(&self.deps.storage, slot).unwrap();
+        consensus_state.current_sync_committee =
+            self.chain.next_committee().to_summarized_sync_committee();
+        consensus_state.next_sync_committee = None;
+        let wasm_consensus_state = WasmConsensusState {
+            data: serde_json::to_vec(&consensus_state).unwrap(),
+        };
+        store_consensus_state(&mut self.deps.storage, &wasm_consensus_state, slot).unwrap();
+    }
+
+    /// Evidence in period 1, anchored at the consensus state at `ANCHOR_SLOT` in period 0 and
+    /// signed by the next committee, which that consensus state knows by its summary.
+    fn next_period_evidence(&self, signers: usize) -> EthereumMisbehaviourMsg {
+        EthereumMisbehaviourMsg {
+            trusted_slot: ANCHOR_SLOT,
+            sync_committee: ActiveSyncCommittee::Next(self.chain.next_committee().clone()),
+            update_1: self
+                .chain
+                .next_period_update(B256::repeat_byte(0x11), signers),
+            update_2: self
+                .chain
+                .next_period_update(B256::repeat_byte(0x22), signers),
+        }
     }
 
     fn latest_slot(&self) -> u64 {
@@ -387,26 +419,59 @@ fn evidence_for_an_earlier_slot_cannot_be_anchored_at_the_latest_consensus_state
 }
 
 #[test]
-fn misbehaviour_anchored_in_an_earlier_period_is_rejected() {
+fn evidence_signed_by_a_committee_the_client_has_left_is_rejected() {
     let mut setup = Setup::advanced();
+    // Signed by the committee of period 0 and valid against the consensus state at ANCHOR_SLOT,
+    // which the client still holds.
     let evidence = setup.evidence(ANCHOR_SLOT, COMMITTEE_SIZE);
-    // Valid against the consensus state at ANCHOR_SLOT, and the client still holds it.
     assert!(setup.check_evidence(&evidence).unwrap().found_misbehaviour);
 
-    // The client moves into the next sync committee period. The committee that signed the
-    // evidence is now one the client has moved past.
-    let later_period_slot = PERIOD_END_SLOT + 100;
-    setup.move_latest_to(later_period_slot);
+    // The client moves into period 1. The committee that signed the evidence has been replaced
+    // by the one that was next, so its keys are no longer ones the client trusts.
+    setup.rotate_to_next_period(PERIOD_END_SLOT + 100);
 
+    let past_committee = |result: Result<_, ContractError>| {
+        matches!(
+            result,
+            Err(ContractError::VerifyClientMessageFailed(
+                EthereumIBCError::MisbehaviourSignedByPastCommittee {
+                    signature_period: 0,
+                    latest_period: 1,
+                }
+            ))
+        )
+    };
+    assert!(past_committee(setup.check_evidence(&evidence).map(|_| ())));
+    assert!(past_committee(setup.verify_evidence(&evidence).map(|_| ())));
+}
+
+#[test]
+fn evidence_signed_by_the_current_committee_stays_reportable_across_a_period_rotation() {
+    let mut setup = Setup::new();
+    // Signed by the committee of period 1 and verified against the consensus state in period 0,
+    // which knows that committee as its next one.
+    let evidence = setup.next_period_evidence(COMMITTEE_SIZE);
+    assert!(setup.check_evidence(&evidence).unwrap().found_misbehaviour);
+
+    // A valid rotation moves the client into period 1, past the evidence's attested slot. The
+    // committee that signed it is now the client's current one.
+    let rotated_slot = PERIOD_END_SLOT + 400;
+    setup.rotate_to_next_period(rotated_slot);
+
+    setup.verify_evidence(&evidence).unwrap();
+    assert!(setup.check_evidence(&evidence).unwrap().found_misbehaviour);
+
+    // No consensus state in period 1 is old enough to anchor it, which is why the period 0 one
+    // has to keep working. At the latest one the signing committee is the current committee.
+    let reanchored = EthereumMisbehaviourMsg {
+        trusted_slot: rotated_slot,
+        sync_committee: ActiveSyncCommittee::Current(setup.chain.next_committee().clone()),
+        ..evidence
+    };
     assert!(matches!(
-        setup.check_evidence(&evidence),
-        Err(ContractError::MisbehaviourAnchorOutsideLatestPeriod {
-            trusted_slot: ANCHOR_SLOT,
-            latest_slot,
-        }) if latest_slot == later_period_slot
-    ));
-    assert!(matches!(
-        setup.verify_evidence(&evidence),
-        Err(ContractError::MisbehaviourAnchorOutsideLatestPeriod { .. })
+        setup.check_evidence(&reanchored),
+        Err(ContractError::VerifyClientMessageFailed(
+            EthereumIBCError::IrrelevantUpdate { .. }
+        ))
     ));
 }

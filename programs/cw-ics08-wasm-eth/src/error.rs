@@ -80,16 +80,6 @@ pub enum ContractError {
         latest_slot: u64,
     },
 
-    #[error(
-        "misbehaviour anchor at slot {trusted_slot} is outside the sync committee period of the latest slot {latest_slot}"
-    )]
-    MisbehaviourAnchorOutsideLatestPeriod {
-        /// The slot the evidence names as its trusted consensus state.
-        trusted_slot: u64,
-        /// The latest slot of the client.
-        latest_slot: u64,
-    },
-
     #[error("invalid revision number {0}; only revision zero is supported")]
     InvalidRevision(u64),
 

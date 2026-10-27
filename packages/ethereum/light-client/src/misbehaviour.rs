@@ -47,6 +47,14 @@ const fn execution_block_hash(header: &LightClientHeader) -> Result<B256, Ethere
 /// Sync committee signatures are not slashable, so evidence signed by fewer keys than that would
 /// let a minority of the committee freeze the client.
 ///
+/// The consensus state the evidence is anchored at may be any the client still holds, because
+/// evidence has to be anchored below its attested slot and the client keeps advancing. What the
+/// client does not accept is evidence signed by a committee it has left: the signature period of
+/// both updates must be the period of the client's latest slot or a later one. The keys of an
+/// earlier committee can belong to validators that exited long ago and carry no stake. An anchor
+/// from the previous period is still enough for evidence signed by the committee that took over
+/// from it, which the anchor knows as its next sync committee.
+///
 /// * `client_state`: The current client state.
 /// * `consensus_state`: The current consensus state (previously verified and stored)
 /// * `full_sync_committee`: The full sync committee data. (untrusted)
@@ -94,6 +102,20 @@ pub fn verify_misbehaviour<V: BlsVerify>(
         state_root_1 != state_root_2,
         EthereumIBCError::MisbehaviourStorageRootsMatch(state_root_1)
     );
+
+    let latest_period =
+        client_state.compute_sync_committee_period_at_slot(client_state.latest_slot);
+    for update in [update_1, update_2] {
+        let signature_period =
+            client_state.compute_sync_committee_period_at_slot(update.signature_slot);
+        ensure!(
+            signature_period >= latest_period,
+            EthereumIBCError::MisbehaviourSignedByPastCommittee {
+                signature_period,
+                latest_period,
+            }
+        );
+    }
 
     let current_slot = client_state
         .compute_slot_at_timestamp(current_timestamp)
@@ -146,7 +168,7 @@ mod test {
         header::ActiveSyncCommittee,
         test_utils::{
             bls_verifier::{BlsError, TestBlsVerifier},
-            synthetic::{SyntheticChain, COMMITTEE_SIZE},
+            synthetic::{SyntheticChain, COMMITTEE_SIZE, PERIOD_END_SLOT},
         },
         verify::BlsVerify,
     };
@@ -277,5 +299,73 @@ mod test {
                 found: 33,
             })
         ));
+    }
+    /// A client state whose latest slot has moved into period 1, as after a rotation.
+    fn client_in_period_1(chain: &SyntheticChain) -> crate::client_state::ClientState {
+        crate::client_state::ClientState {
+            latest_slot: PERIOD_END_SLOT + 400,
+            ..chain.client_state()
+        }
+    }
+
+    fn verify_with(
+        client_state: &crate::client_state::ClientState,
+        chain: &SyntheticChain,
+        full_sync_committee: &ActiveSyncCommittee,
+        update_1: &LightClientUpdate,
+        update_2: &LightClientUpdate,
+    ) -> Result<(), EthereumIBCError> {
+        verify_misbehaviour(
+            client_state,
+            &chain.consensus_state(),
+            full_sync_committee,
+            update_1,
+            update_2,
+            chain.current_timestamp(),
+            TestBlsVerifier,
+        )
+    }
+
+    #[test]
+    fn a_previous_period_anchor_authenticates_the_committee_that_took_over() {
+        let chain = SyntheticChain::new();
+        let (update_1, update_2) = (
+            chain.next_period_update(B256::repeat_byte(0x11), COMMITTEE_SIZE),
+            chain.next_period_update(B256::repeat_byte(0x22), COMMITTEE_SIZE),
+        );
+
+        // The client is in period 1 and the anchor is in period 0. The evidence is signed in
+        // period 1 by the committee the anchor knows as its next one.
+        verify_with(
+            &client_in_period_1(&chain),
+            &chain,
+            &ActiveSyncCommittee::Next(chain.next_committee().clone()),
+            &update_1,
+            &update_2,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn evidence_signed_before_the_latest_period_is_rejected() {
+        let chain = SyntheticChain::new();
+        let (update_1, update_2) = conflicting_updates(&chain, COMMITTEE_SIZE);
+
+        // Valid against the anchor, signed by the committee of period 0, which the client has left.
+        assert_eq!(
+            verify_with(
+                &client_in_period_1(&chain),
+                &chain,
+                &ActiveSyncCommittee::Current(chain.committee().clone()),
+                &update_1,
+                &update_2,
+            ),
+            Err(EthereumIBCError::MisbehaviourSignedByPastCommittee {
+                signature_period: 0,
+                latest_period: 1,
+            })
+        );
+        // The same evidence is accepted while the client is still in period 0.
+        verify(&chain, &update_1, &update_2, TestBlsVerifier).unwrap();
     }
 }

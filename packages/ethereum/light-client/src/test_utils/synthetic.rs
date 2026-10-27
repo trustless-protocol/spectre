@@ -5,7 +5,8 @@
 //! holds. The signatures are real BLS signatures (milagro) over the real signing root; only the
 //! beacon data around them is synthetic.
 //!
-//! Every slot the chain uses lies in sync committee period 0, so the committee never rotates.
+//! The chain's own updates lie in sync committee period 0. [`SyntheticChain::next_period_update`]
+//! builds the one kind of update that crosses into period 1, signed by the next committee.
 
 use alloy_primitives::{Bytes, FixedBytes, B256};
 use ethereum_types::consensus::{
@@ -40,10 +41,11 @@ const SECONDS_PER_SLOT: u64 = 12;
 /// How far the attested header of an update is past its finalized header.
 const ATTESTED_SLOT_STEP: u64 = 64;
 
-/// A synthetic chain with an 8-member sync committee, all inside one sync committee period.
+/// A synthetic chain with an 8-member sync committee, and a distinct 8-member next committee.
 pub struct SyntheticChain {
     secret_keys: Vec<milagro_bls::SecretKey>,
     committee: SyncCommittee,
+    next_secret_keys: Vec<milagro_bls::SecretKey>,
     next_committee: SyncCommittee,
 }
 
@@ -61,12 +63,12 @@ impl SyntheticChain {
     #[must_use]
     pub fn new() -> Self {
         let (secret_keys, committee) = derive_committee(1);
-        // Nothing signs as the next committee: only its summary is part of the trusted state.
-        let (_, next_committee) = derive_committee(101);
+        let (next_secret_keys, next_committee) = derive_committee(101);
 
         Self {
             secret_keys,
             committee,
+            next_secret_keys,
             next_committee,
         }
     }
@@ -75,6 +77,13 @@ impl SyntheticChain {
     #[must_use]
     pub const fn committee(&self) -> &SyncCommittee {
         &self.committee
+    }
+
+    /// The full next sync committee, the one the consensus state at [`ANCHOR_SLOT`] knows by its
+    /// summary and that takes over in period 1.
+    #[must_use]
+    pub const fn next_committee(&self) -> &SyncCommittee {
+        &self.next_committee
     }
 
     /// A client state whose latest slot is [`ANCHOR_SLOT`].
@@ -120,10 +129,11 @@ impl SyntheticChain {
         }
     }
 
-    /// A timestamp at the end of the period, so no update is from the future.
+    /// A timestamp past every slot the chain signs, including the ones in period 1, so no update
+    /// is from the future.
     #[must_use]
     pub const fn current_timestamp(&self) -> u64 {
-        (PERIOD_END_SLOT - 1) * SECONDS_PER_SLOT
+        (PERIOD_END_SLOT + 1_000) * SECONDS_PER_SLOT
     }
 
     /// An update on top of the [`ANCHOR_SLOT`] consensus state, signed by the first `signers`
@@ -149,16 +159,56 @@ impl SyntheticChain {
         execution_state_root: B256,
         signers: usize,
     ) -> LightClientUpdate {
-        assert!(
-            signers <= COMMITTEE_SIZE,
-            "more signers than committee members"
-        );
         let finalized_slot = trusted_slot + FINALIZED_SLOT_STEP;
         let attested_slot = finalized_slot + ATTESTED_SLOT_STEP;
         let signature_slot = attested_slot + 1;
         assert!(
             signature_slot < PERIOD_END_SLOT,
             "the update would leave sync committee period 0"
+        );
+        self.signed_update(
+            &self.secret_keys,
+            [finalized_slot, attested_slot, signature_slot],
+            execution_state_root,
+            signers,
+        )
+    }
+
+    /// An update whose slots are in period 1, signed by the first `signers` members of the *next*
+    /// committee, which is how the current committee of period 1 authenticates itself to a client
+    /// whose consensus state is still in period 0 (`ActiveSyncCommittee::Next`).
+    ///
+    /// It finalizes at `PERIOD_END_SLOT + FINALIZED_SLOT_STEP`. Two of them that differ only in
+    /// `execution_state_root` attest to conflicting execution states at one slot.
+    ///
+    /// # Panics
+    /// Panics if `signers` exceeds [`COMMITTEE_SIZE`].
+    #[must_use]
+    pub fn next_period_update(
+        &self,
+        execution_state_root: B256,
+        signers: usize,
+    ) -> LightClientUpdate {
+        let finalized_slot = PERIOD_END_SLOT + FINALIZED_SLOT_STEP;
+        let attested_slot = finalized_slot + ATTESTED_SLOT_STEP;
+        self.signed_update(
+            &self.next_secret_keys,
+            [finalized_slot, attested_slot, attested_slot + 1],
+            execution_state_root,
+            signers,
+        )
+    }
+
+    fn signed_update(
+        &self,
+        secret_keys: &[milagro_bls::SecretKey],
+        [finalized_slot, attested_slot, signature_slot]: [u64; 3],
+        execution_state_root: B256,
+        signers: usize,
+    ) -> LightClientUpdate {
+        assert!(
+            signers <= COMMITTEE_SIZE,
+            "more signers than committee members"
         );
 
         let finalized_header = header(finalized_slot, B256::ZERO, B256::repeat_byte(0xaa));
@@ -182,7 +232,7 @@ impl SyntheticChain {
         );
         let signing_root = compute_signing_root(&attested_header.beacon, domain);
 
-        let signatures = self.secret_keys[..signers]
+        let signatures = secret_keys[..signers]
             .iter()
             .map(|sk| milagro_bls::Signature::new(signing_root.as_slice(), sk))
             .collect::<Vec<_>>();
