@@ -77,4 +77,16 @@ interface IICS20Errors {
     /// @notice IBCERC20 token already exists
     /// @param denom The IBC denom of the token
     error ICS20TokenAlreadyExists(string denom);
+
+    /// @notice A custom ERC20 cannot stand in for a denom that is itself a token address.
+    /// @dev Such a denom names a native token, whose in-flight packets are refunded in that token.
+    /// @param denom The rejected denom
+    error ICS20CustomDenomIsAddress(string denom);
+
+    /// @notice Not enough gas is left to give a sender callback its full gas allowance.
+    /// @dev The callback is not made with less than its allowance: its failure is not allowed to
+    /// fail the packet, so whoever submits the transaction could otherwise starve it by choosing the gas limit.
+    /// @param required Gas that must be left before the callback is made
+    /// @param available Gas that was left
+    error ICS20InsufficientCallbackGas(uint256 required, uint256 available);
 }

@@ -4,6 +4,7 @@ pragma solidity ^0.8.28;
 // solhint-disable custom-errors,max-line-length,function-max-lines
 
 import { Test } from "forge-std/Test.sol";
+import { Vm } from "forge-std/Vm.sol";
 
 import { IICS26RouterMsgs } from "contracts/core/messages/IICS26RouterMsgs.sol";
 import { IICS20TransferMsgs } from "contracts/apps/ics20/messages/IICS20TransferMsgs.sol";
@@ -22,6 +23,7 @@ import { TestERC20, MalfunctioningERC20 } from "test/mocks/TestERC20.sol";
 import { ICS20Lib } from "contracts/apps/ics20/libraries/ICS20Lib.sol";
 import { ICS24Host } from "contracts/core/libraries/ICS24Host.sol";
 import { Strings } from "@openzeppelin-contracts/utils/Strings.sol";
+import { Bytes } from "@openzeppelin-contracts/utils/Bytes.sol";
 import { ERC1967Proxy } from "@openzeppelin-contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import { IBCERC20 } from "contracts/apps/ics20/IBCERC20.sol";
 import { Escrow } from "contracts/apps/ics20/Escrow.sol";
@@ -31,8 +33,11 @@ import { PermitSignature } from "test/utils/PermitSignature.sol";
 import {
     CallbackReceiver,
     GasConsumingCallbackReceiver,
-    RevertingCallbackReceiver
+    GasProbeCallbackReceiver,
+    RevertingCallbackReceiver,
+    ReturnBombCallbackReceiver
 } from "test/mocks/CallbackReceiver.sol";
+import { IBCSenderCallbacksLib } from "contracts/apps/ics20/libraries/IBCSenderCallbacksLib.sol";
 import { AccessManager } from "@openzeppelin-contracts/access/manager/AccessManager.sol";
 import { IBCRolesLib } from "contracts/shared/access/IBCRolesLib.sol";
 import { IBCSelectorLib } from "scripts/deployments/IBCSelectorLib.sol";
@@ -585,6 +590,56 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
         assertEq(sequence, seq);
 
         vm.stopPrank();
+    }
+
+    function test_failure_sendTransferWithSenderZeroSender() public {
+        address delegate = makeAddr("delegate");
+        accessManager.grantRole(IBCRolesLib.DELEGATE_SENDER_ROLE, delegate, 0);
+        accessManager.setTargetFunctionRole(
+            address(ics20Transfer), IBCSelectorLib.delegateSenderSelectors(), IBCRolesLib.DELEGATE_SENDER_ROLE
+        );
+        TestERC20 token = env.erc20();
+        token.mint(delegate, 1);
+        IICS20TransferMsgs.SendTransferMsg memory msgSendTransfer = IICS20TransferMsgs.SendTransferMsg({
+            denom: address(token),
+            amount: 1,
+            receiver: "receiver",
+            sourceClient: "client-0",
+            destPort: ICS20Lib.DEFAULT_PORT_ID,
+            timeoutTimestamp: uint64(block.timestamp + 1),
+            memo: ""
+        });
+
+        vm.startPrank(delegate);
+        token.approve(address(ics20Transfer), 1);
+        // A refund to address(0) would revert in the token, leaving the packet and its funds unsettleable
+        vm.expectRevert(
+            abi.encodeWithSelector(IICS20Errors.ICS20InvalidAddress.selector, Strings.toHexString(address(0)))
+        );
+        ics20Transfer.sendTransferWithSender(msgSendTransfer, address(0));
+        vm.stopPrank();
+        assertEq(token.balanceOf(delegate), 1, "nothing may be taken from the delegate");
+    }
+
+    function test_failure_setCustomERC20ForTokenAddressDenom() public {
+        address customToken = makeAddr("customToken");
+        address nativeToken = address(env.erc20());
+
+        // Refunds of in-flight native packets would be paid in the custom token instead of in the native one
+        string memory lowercase = Strings.toHexString(nativeToken);
+        vm.expectRevert(abi.encodeWithSelector(IICS20Errors.ICS20CustomDenomIsAddress.selector, lowercase));
+        ics20Transfer.setCustomERC20(lowercase, customToken);
+
+        string memory unprefixed = Strings.toHexString(uint256(uint160(nativeToken)), 20);
+        string memory checksummed = Strings.toChecksumHexString(nativeToken);
+        vm.expectRevert(abi.encodeWithSelector(IICS20Errors.ICS20CustomDenomIsAddress.selector, checksummed));
+        ics20Transfer.setCustomERC20(checksummed, customToken);
+        assertEq(ics20Transfer.ibcERC20Denom(customToken), "", "nothing may be registered");
+        assertEq(bytes(unprefixed).length, 42);
+
+        // Any other denom is still accepted
+        ics20Transfer.setCustomERC20("transfer/client-0/uatom", customToken);
+        assertEq(ics20Transfer.ibcERC20Denom(customToken), "transfer/client-0/uatom");
     }
 
     function testFuzz_success_onAcknowledgementPacketCallback(
@@ -1440,6 +1495,197 @@ contract ICS20TransferTest is Test, DeployPermit2, PermitSignature {
         vm.prank(ics26);
         ics20Transfer.onTimeoutPacket(timeoutCallbackMsg);
         assertEq(IBCERC20(ibcERC20Address).balanceOf(sender), amount * 2);
+    }
+
+    function test_success_ackCallbackRevertDataIsBounded() public {
+        address sender = address(new ReturnBombCallbackReceiver());
+        IIBCAppCallbacks.OnAcknowledgementPacketCallback memory callbackMsg = _successAckMsg(sender);
+        bytes memory expectedReason =
+            _boundedRevertData(sender, abi.encodeCall(IIBCSenderCallbacks.onAckPacket, (true, callbackMsg)));
+
+        vm.recordLogs();
+        vm.prank(ics26);
+        uint256 gasBefore = gasleft();
+        ics20Transfer.onAcknowledgementPacket(callbackMsg);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        _assertCallbackError(IICS20Transfer.IBCSenderAckPacketCallbackError.selector, sender, expectedReason, gasUsed);
+    }
+
+    function test_success_timeoutCallbackRevertDataIsBounded() public {
+        address sender = address(new ReturnBombCallbackReceiver());
+        IIBCAppCallbacks.OnTimeoutPacketCallback memory callbackMsg = _timeoutMsg(sender);
+        bytes memory expectedReason =
+            _boundedRevertData(sender, abi.encodeCall(IIBCSenderCallbacks.onTimeoutPacket, (callbackMsg)));
+
+        vm.recordLogs();
+        vm.prank(ics26);
+        uint256 gasBefore = gasleft();
+        ics20Transfer.onTimeoutPacket(callbackMsg);
+        uint256 gasUsed = gasBefore - gasleft();
+
+        _assertCallbackError(
+            IICS20Transfer.IBCSenderTimeoutPacketCallbackError.selector, sender, expectedReason, gasUsed
+        );
+    }
+
+    /// @dev Whenever the acknowledgement is processed the callback ran with its full allowance: a transaction gas
+    /// limit that cannot afford that is rejected instead of starving a callback whose failure may not fail the packet
+    function test_success_ackCallbackIsNeverStarved() public {
+        GasProbeCallbackReceiver probe = new GasProbeCallbackReceiver();
+        bytes memory call_ = abi.encodeCall(ICS20Transfer.onAcknowledgementPacket, (_successAckMsg(address(probe))));
+
+        // The first gas limit that processes the ack is a little over 142,000 with this message
+        _assertCallbackNeverStarved(call_, probe, 130_000, 155_000, 25);
+    }
+
+    function test_success_timeoutCallbackIsNeverStarved() public {
+        GasProbeCallbackReceiver probe = new GasProbeCallbackReceiver();
+        bytes memory call_ = abi.encodeCall(ICS20Transfer.onTimeoutPacket, (_timeoutMsg(address(probe))));
+
+        _assertCallbackNeverStarved(call_, probe, 100_000, 260_000, 100);
+    }
+
+    /// @dev Calls `ics20Transfer` as the router with every gas limit in the range
+    function _assertCallbackNeverStarved(
+        bytes memory call_,
+        GasProbeCallbackReceiver probe,
+        uint256 fromGas,
+        uint256 toGas,
+        uint256 step
+    )
+        private
+    {
+        uint256 allowance = IBCSenderCallbacksLib.SENDER_CALLBACK_GAS_LIMIT;
+        uint256 processed;
+        uint256 rejectedForGas;
+
+        vm.startPrank(ics26);
+        for (uint256 gasLimit = fromGas; gasLimit <= toGas; gasLimit += step) {
+            vm.recordLogs();
+            (bool ok, bytes memory ret) = address(ics20Transfer).call{ gas: gasLimit }(call_);
+            Vm.Log[] memory logs = vm.getRecordedLogs();
+            (bool ran, uint256 gasAtEntry) = _callbackEntry(logs, address(probe));
+
+            if (ok) {
+                ++processed;
+                assertTrue(ran, "the callback must run when the packet is processed");
+                // The callback starts with what is left of its allowance after the dispatcher
+                assertGe(gasAtEntry, allowance - 1000, "the callback was starved");
+            } else {
+                assertFalse(ran, "the callback must not run when the packet is rejected");
+                if (ret.length != 0) {
+                    assertEq(bytes4(ret), IICS20Errors.ICS20InsufficientCallbackGas.selector, "unexpected revert");
+                    ++rejectedForGas;
+                }
+            }
+        }
+        vm.stopPrank();
+
+        assertGt(processed, 0, "no gas limit in the range processed the packet");
+        assertGt(rejectedForGas, 0, "no gas limit in the range was rejected for lack of callback gas");
+    }
+
+    /// @dev The ICS20 contract cannot tell a callback that failed for lack of gas from one that failed on its own, so
+    /// a failing callback must not be able to hide behind a gas limit that is too low
+    function test_failure_callbackGasFloorReportsRequirement() public {
+        GasProbeCallbackReceiver probe = new GasProbeCallbackReceiver();
+        bytes memory call_ = abi.encodeCall(ICS20Transfer.onAcknowledgementPacket, (_successAckMsg(address(probe))));
+
+        // Just enough to reach the floor check, but not to pass it
+        vm.prank(ics26);
+        (bool ok, bytes memory ret) = address(ics20Transfer).call{ gas: 120_000 }(call_);
+        assertFalse(ok);
+        assertEq(bytes4(ret), IICS20Errors.ICS20InsufficientCallbackGas.selector);
+
+        (uint256 required, uint256 available) = abi.decode(_stripSelector(ret), (uint256, uint256));
+        assertEq(required, IBCSenderCallbacksLib.SENDER_CALLBACK_MIN_GAS, "the floor must be reported");
+        assertLt(available, required, "the reported gas must be below the floor");
+    }
+
+    function _boundedRevertData(address sender, bytes memory callData) private returns (bytes memory) {
+        (bool ok, bytes memory fullRevertData) = sender.call(callData);
+        assertFalse(ok);
+        assertEq(fullRevertData.length, ReturnBombCallbackReceiver(sender).BOMB_SIZE(), "unexpected bomb size");
+        return Bytes.slice(fullRevertData, 0, IBCSenderCallbacksLib.MAX_REVERT_REASON_LENGTH);
+    }
+
+    function _assertCallbackError(
+        bytes32 eventSelector,
+        address sender,
+        bytes memory expectedReason,
+        uint256 gasUsed
+    )
+        private
+    {
+        Vm.Log[] memory logs = vm.getRecordedLogs();
+        uint256 found;
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].topics[0] != eventSelector) {
+                continue;
+            }
+            ++found;
+            assertEq(address(uint160(uint256(logs[i].topics[1]))), sender);
+            assertEq(abi.decode(logs[i].data, (bytes)), expectedReason, "reason must be the truncated revert data");
+        }
+        assertEq(found, 1, "exactly one callback error event");
+        // Copying and logging the whole payload costs more than a million gas
+        assertLt(gasUsed, 400_000, "the callback revert data must not be paid for in full");
+    }
+
+    function _callbackEntry(Vm.Log[] memory logs, address probe) private pure returns (bool ran, uint256 gasAtEntry) {
+        for (uint256 i = 0; i < logs.length; ++i) {
+            if (logs[i].emitter == probe && logs[i].topics[0] == GasProbeCallbackReceiver.CallbackEntered.selector) {
+                return (true, abi.decode(logs[i].data, (uint256)));
+            }
+        }
+    }
+
+    function _stripSelector(bytes memory data) private pure returns (bytes memory) {
+        return Bytes.slice(data, 4);
+    }
+
+    function _callbackPayload(address sender) private view returns (IICS26RouterMsgs.Payload memory) {
+        return IICS26RouterMsgs.Payload({
+            sourcePort: ICS20Lib.DEFAULT_PORT_ID,
+            destPort: ICS20Lib.DEFAULT_PORT_ID,
+            version: ICS20Lib.ICS20_VERSION,
+            encoding: ICS20Lib.ICS20_ENCODING,
+            value: abi.encode(
+                IICS20TransferMsgs.FungibleTokenPacketData({
+                    denom: Strings.toHexString(address(env.erc20())),
+                    amount: 1,
+                    sender: Strings.toHexString(sender),
+                    receiver: "receiver",
+                    memo: ""
+                })
+            )
+        });
+    }
+
+    function _successAckMsg(address sender) private returns (IIBCAppCallbacks.OnAcknowledgementPacketCallback memory) {
+        return IIBCAppCallbacks.OnAcknowledgementPacketCallback({
+            sourceClient: "client-0",
+            destinationClient: "client-1",
+            sequence: 1,
+            payload: _callbackPayload(sender),
+            acknowledgement: ICS20Lib.SUCCESSFUL_ACKNOWLEDGEMENT_JSON,
+            relayer: makeAddr("relayer")
+        });
+    }
+
+    function _timeoutMsg(address sender) private returns (IIBCAppCallbacks.OnTimeoutPacketCallback memory) {
+        // The refund goes to an escrow that is only a stand-in
+        bytes32 escrow = keccak256("escrow");
+        vm.store(address(ics20Transfer), _getEscrowMappingSlot("client-0"), escrow);
+        vm.mockCall(address(uint160(uint256(escrow))), Escrow.recvCallback.selector, abi.encode(uint256(0)));
+        return IIBCAppCallbacks.OnTimeoutPacketCallback({
+            sourceClient: "client-0",
+            destinationClient: "client-1",
+            sequence: 1,
+            payload: _callbackPayload(sender),
+            relayer: makeAddr("relayer")
+        });
     }
 
     function _getEscrowMappingSlot(string memory clientId) internal pure returns (bytes32) {

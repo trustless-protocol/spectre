@@ -284,6 +284,125 @@ contract EscrowTest is Test {
         assertEq(escrow.getDailyUsage(mockToken), 1000);
     }
 
+    function test_success_hugeRateLimitDoesNotBlockUsageAccounting() public {
+        address mockToken = makeAddr("mockToken");
+        vm.mockCall(mockToken, IERC20.transfer.selector, abi.encode(true));
+
+        // With the largest limit, `elapsed * limit` is out of range after a single second
+        vm.prank(rateLimiter);
+        escrow.setRateLimit(mockToken, type(uint256).max);
+
+        escrow.send(IERC20(mockToken), address(this), 1000);
+        vm.warp(block.timestamp + 1 hours);
+        assertEq(escrow.getDailyUsage(mockToken), 0, "an hour of such a limit decays any usage");
+
+        // Every path that reads the decayed usage keeps working, including the uncapped refund
+        escrow.send(IERC20(mockToken), address(this), 1000);
+        vm.warp(block.timestamp + 1 seconds);
+        uint256 usageRemoved = escrow.recvCallback(mockToken, address(this), 400);
+        escrow.sendRefund(IERC20(mockToken), address(this), 400, usageRemoved);
+    }
+
+    function test_success_hugeRateLimitDecayIsExact() public {
+        address mockToken = makeAddr("mockToken");
+        vm.mockCall(mockToken, IERC20.transfer.selector, abi.encode(true));
+        vm.prank(rateLimiter);
+        escrow.setRateLimit(mockToken, type(uint256).max);
+
+        uint256 usage = 2 ** 255;
+        escrow.send(IERC20(mockToken), address(this), usage);
+
+        // Half a day decays floor(max / 2) = 2**255 - 1, leaving exactly one unit
+        vm.warp(block.timestamp + 12 hours);
+        assertEq(escrow.getDailyUsage(mockToken), 1);
+    }
+
+    function test_success_raisingRateLimitKeepsDecayAccruedUnderTheOldOne() public {
+        address mockToken = makeAddr("mockToken");
+        vm.mockCall(mockToken, IERC20.transfer.selector, abi.encode(true));
+        vm.prank(rateLimiter);
+        escrow.setRateLimit(mockToken, 1000);
+
+        escrow.send(IERC20(mockToken), address(this), 1000);
+        vm.warp(block.timestamp + 12 hours);
+        assertEq(escrow.getDailyUsage(mockToken), 500);
+
+        // The twelve hours that passed decayed 500 at the old rate. A new limit prices only the time to come.
+        vm.prank(rateLimiter);
+        escrow.setRateLimit(mockToken, 10_000);
+        assertEq(escrow.getDailyUsage(mockToken), 500, "elapsed time must not be re-priced");
+
+        // 500 - 1 hour * 10_000 / 1 day
+        vm.warp(block.timestamp + 1 hours);
+        assertEq(escrow.getDailyUsage(mockToken), 84, "the new rate applies from now on");
+    }
+
+    function test_success_loweringRateLimitKeepsDecayAccruedUnderTheOldOne() public {
+        address mockToken = makeAddr("mockToken");
+        vm.mockCall(mockToken, IERC20.transfer.selector, abi.encode(true));
+        vm.prank(rateLimiter);
+        escrow.setRateLimit(mockToken, 10_000);
+
+        escrow.send(IERC20(mockToken), address(this), 10_000);
+        vm.warp(block.timestamp + 12 hours);
+        assertEq(escrow.getDailyUsage(mockToken), 5000);
+
+        // Lowering the limit must not hand back the decay that had already been granted
+        vm.prank(rateLimiter);
+        escrow.setRateLimit(mockToken, 1000);
+        assertEq(escrow.getDailyUsage(mockToken), 5000, "elapsed time must not be re-priced");
+    }
+
+    function test_success_setRateLimitWithoutUsageStillWorks() public {
+        address mockToken = makeAddr("mockToken");
+
+        // First limit of a token that never had one
+        vm.prank(rateLimiter);
+        escrow.setRateLimit(mockToken, 1000);
+        assertEq(escrow.getRateLimit(mockToken), 1000);
+        assertEq(escrow.getDailyUsage(mockToken), 0);
+
+        // Disabling and enabling a limit that has no recorded usage
+        vm.startPrank(rateLimiter);
+        escrow.setRateLimit(mockToken, 0);
+        escrow.setRateLimit(mockToken, 500);
+        vm.stopPrank();
+        assertEq(escrow.getRateLimit(mockToken), 500);
+    }
+
+    function test_failure_initializeV2RejectsUnsetAuthority() public {
+        address ics20 = makeAddr("ics20");
+        Escrow firstVersion = _escrowOfFirstVersion(ics20);
+
+        // ICS20Transfer has not been migrated yet, so it reports no authority. Fixing the escrow's authority
+        // there would be permanent: the escrow could then never be configured.
+        vm.mockCall(ics20, IAccessManaged.authority.selector, abi.encode(address(0)));
+        vm.expectRevert(abi.encodeWithSelector(IAccessManaged.AccessManagedInvalidAuthority.selector, address(0)));
+        firstVersion.initializeV2();
+
+        // The same call succeeds once ICS20Transfer has an authority, so the failed attempt cost nothing
+        vm.mockCall(ics20, IAccessManaged.authority.selector, abi.encode(address(accessManager)));
+        firstVersion.initializeV2();
+        assertEq(IAccessManaged(address(firstVersion)).authority(), address(accessManager));
+
+        vm.prank(rateLimiter);
+        firstVersion.setRateLimit(makeAddr("mockToken"), 1000);
+    }
+
+    /// @dev An escrow as the first version left it: ICS20 recorded, no authority, initialized to version 1
+    function _escrowOfFirstVersion(address ics20) private returns (Escrow) {
+        address escrowBeacon = address(new UpgradeableBeacon(address(new Escrow()), address(this)));
+        address proxy = address(new BeaconProxy(escrowBeacon, ""));
+        // OpenZeppelin Initializable._initialized, ERC-7201 "openzeppelin.storage.Initializable"
+        vm.store(proxy, 0xf0c57e16840df040f15088dc2f81fe391c3923bec73e23a9662efc9c229c6a00, bytes32(uint256(1)));
+        // Escrow._ics20, ERC-7201 "ibc.storage.Escrow"
+        vm.store(
+            proxy, 0x537eb9d931756581e7ea6f7811162c646321946650ac0ac6bf83b24932e41600, bytes32(uint256(uint160(ics20)))
+        );
+        assertEq(Escrow(proxy).ics20(), ics20);
+        return Escrow(proxy);
+    }
+
     function test_refund_credit_is_zero_when_limit_is_disabled() public {
         address mockToken = makeAddr("mockToken");
 

@@ -54,3 +54,43 @@ contract GasConsumingCallbackReceiver is IBCCallbackReceiver {
         }
     }
 }
+
+/// @notice Fails every callback with a huge revert payload, hoping the caller copies and re-emits all of it
+contract ReturnBombCallbackReceiver is IBCCallbackReceiver {
+    /// @notice The size of the revert payload. Its memory is paid for by this contract within the callback gas limit.
+    uint256 public constant BOMB_SIZE = 180_000;
+    /// @notice The first bytes of the revert payload, the rest of which is zeroes
+    bytes4 public constant MARKER = 0xdeadbeef;
+
+    function onAckPacket(bool, IIBCAppCallbacks.OnAcknowledgementPacketCallback calldata) external pure override {
+        _bomb();
+    }
+
+    function onTimeoutPacket(IIBCAppCallbacks.OnTimeoutPacketCallback calldata) external pure override {
+        _bomb();
+    }
+
+    function _bomb() private pure {
+        // solhint-disable-next-line no-inline-assembly
+        assembly {
+            mstore(0, shl(224, 0xdeadbeef))
+            revert(0, 180000)
+        }
+    }
+}
+
+/// @notice Announces the gas it was given, so tests can tell whether a callback got its full allowance
+/// @dev An event keeps the callback cheap: creating state costs more than the callback allowance
+contract GasProbeCallbackReceiver is IBCCallbackReceiver {
+    /// @notice Emitted when a callback starts
+    /// @param gasAtEntry The gas left at the start of the callback
+    event CallbackEntered(uint256 gasAtEntry);
+
+    function onAckPacket(bool, IIBCAppCallbacks.OnAcknowledgementPacketCallback calldata) external override {
+        emit CallbackEntered(gasleft());
+    }
+
+    function onTimeoutPacket(IIBCAppCallbacks.OnTimeoutPacketCallback calldata) external override {
+        emit CallbackEntered(gasleft());
+    }
+}

@@ -66,6 +66,23 @@ schedule and execute the custom-ID `addClient` calldata through the governance
 and AccessManager timelocks before writing the resulting client address to
 relayer configuration.
 
+`addClient` (both overloads) rejects a light-client address that holds no code
+and a counterparty whose Merkle prefix has no elements, so the scheduled
+custom-ID call reverts at execution if the light client has not been deployed
+by then. A prefix with a single empty element is valid; an empty list is not.
+
+The router does not deduplicate clients. Two local clients that name the same
+counterparty client id share that counterparty's receipt and acknowledgement
+paths (`ICS24Host.packetReceiptCommitmentPathCalldata` and
+`packetAcknowledgementCommitmentPathCalldata`). A packet sent through an
+unofficial duplicate can therefore be acknowledged with the official packet's
+acknowledgement when their sequences coincide, and it can never time out. Only
+funds a user chose to send through the duplicate are affected, but the
+default-ID overload is permissionless, so anyone can create one. Wallets,
+front ends and relayer configurations must use the launch ids listed in
+`PRODUCTION_ESCROW_CONFIG`, never a `client-N` id they have not checked against
+`getClient` and `getCounterparty`.
+
 Once the launch clients are registered, re-run `ProductionVerify.s.sol` with
 `PRODUCTION_LIGHT_CLIENTS='{"lightClients":["0x..", ..]}'`: one light-client
 address per id in `PRODUCTION_ESCROW_CONFIG` `.clients`, in the same order.
@@ -77,8 +94,21 @@ so a pass without it says nothing about the launch clients.
 
 ### Governed client migration
 
-Migration is scoped by `LIGHT_CLIENT_MIGRATOR_ROLE_<clientId>`, which cannot be
-granted during bootstrap because the client ID does not yet exist.
+Migration is scoped by `LIGHT_CLIENT_MIGRATOR_ROLE_<clientId>`. No deployment
+script grants it: the bootstrap cannot grant it for a `client-N` id, which does
+not exist yet. For a custom launch id the role id is derived from the id alone,
+so `getLightClientMigratorRole(clientId)` already answers and the grant can be
+made before the client is registered.
+
+A frozen client rejects `verifyMembership` and `verifyNonMembership`
+(`SpectreClient.sol`, `notFrozen`), so acknowledgements and timeouts, and with
+them every refund of an escrowed transfer, stop until the client is unfrozen
+(a governance action, see `MISBEHAVIOUR_RUNBOOK.md`) or replaced by a migration.
+Without a migrator in place, a migration also has to wait for the role grant to
+clear the governance delay before its own wait of at least 48 hours can start.
+Grant the role, with a non-zero delay, for every launch client **before** its
+escrow is activated, so that recovering from a freeze costs only the proposal
+wait.
 
 1. Read the role ID from `getLightClientMigratorRole(clientId)`.
 2. Through governance, grant that role to the approved migrator with a
@@ -93,9 +123,12 @@ granted during bootstrap because the client ID does not yet exist.
 6. Revoke the per-client role after the approved migration is complete.
 
 The contract enforces a wait of `max(role execution delay, 48 hours)` and
-re-checks at execution that the original proposer still holds the role.
-The proposal must preserve the client's existing counterparty client ID and
-Merkle prefix; changing either binding is rejected before the delay begins.
+re-checks at execution that the original proposer still holds the role, and
+still with a non-zero execution delay. The proposal must preserve the client's
+existing counterparty client ID and Merkle prefix; changing either binding is
+rejected before the delay begins. Both `proposeClientMigration` and
+`executeClientMigration` reject a replacement client address that holds no code,
+so a migration can neither unregister a client nor leave it unable to verify.
 
 `migrateClient` remains an ABI-compatible alias for
 `executeClientMigration`; it executes a mature matching proposal rather than
@@ -106,10 +139,42 @@ Cancellation requires `PAUSER_ROLE` with AccessManager execution delay
 **exactly zero**. Such a pauser may call `cancelClientMigration` even while the
 router target is closed.
 
+`executeClientMigration` is not gated by the router's pause. It checks only that
+the router target is not closed in the AccessManager, so a mature proposal can
+still be executed by anyone while the router is paused. During an incident the
+control is `cancelClientMigration`, together with revoking the migrator role.
+
 An authorized migrator can occupy a client ID with an unwanted proposal for the
 full proposal window. Revoking that migrator blocks execution, but does not free
 the proposal slot until it expires. For an unwanted proposal, revoke the role
 and have a zero-delay pauser cancel it before granting a replacement migrator.
+
+## Pausing
+
+The router and ICS20Transfer have separate pause switches and they do not stop
+the same things.
+
+Pausing the router stops `sendPacket` and `recvPacket` (`ICS26Router.sol`,
+`whenNotPaused`). `ackPacket` and `timeoutPacket` stay open, so refunds of
+packets that were already sent are still processed. A relayed `recvPacket`
+reverts as a whole before any receipt is written, so the packet is not consumed
+and can still be delivered after the router is unpaused.
+
+Pausing ICS20Transfer alone stops `sendTransfer`, `sendTransferWithPermit2`,
+`sendTransferWithSender` and `onRecvPacket`, but not acknowledgements and
+timeouts (`ICS20Transfer.sol`). The router does not know about it: it still
+accepts `recvPacket`, writes the receipt, calls the paused application and
+commits the resulting `EnforcedPause()` failure as an error acknowledgement.
+Every inbound packet relayed in that window is refunded on its source chain and
+**can never be delivered**, not even after ICS20Transfer is unpaused.
+
+Pause and unpause in this order, so that the router is never open while
+ICS20Transfer is closed:
+
+1. Pause the router.
+2. Pause ICS20Transfer, if it has to be paused as well.
+3. Unpause ICS20Transfer.
+4. Unpause the router last.
 
 ## Escrow upgrade compatibility
 
@@ -174,3 +239,21 @@ proxy.upgradeToAndCall(
 configured, so it cannot replace an escrow or run twice. Perform this call
 before allowing return-to-source voucher sends; those sends route the burn
 through the configured escrow.
+
+## Upgrading a deployment that predates the AccessManager
+
+Each of these contracts has a one-time `initializeV2` that installs the
+AccessManager as its authority. Run them in this order:
+
+1. `ICS20Transfer.initializeV2(authority)`. It authenticates the caller through
+   the router's legacy `isAdmin`, which a router running the current
+   implementation no longer exposes (`ICS20Transfer.sol`, `initializeV2`), so
+   ICS20Transfer has to be initialized while the router is still on the legacy
+   implementation.
+2. `ICS26Router.initializeV2(authority)`. It requires a legacy administrator
+   and clears the legacy administrators.
+3. `Escrow.initializeV2()` on every escrow. Anyone can call it, and it copies
+   the authority from ICS20Transfer, so it has to follow step 1. Called earlier
+   it reverts with `AccessManagedInvalidAuthority(address(0))`: an escrow
+   initialized without an authority would keep none, and its rate limit could
+   never be set.

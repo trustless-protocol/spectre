@@ -67,6 +67,9 @@ contract ClientMigrationProposer is IClientMigrationProposer, IICS02ClientErrors
                 && _equalMerklePrefix(existingCounterparty.merklePrefix, counterpartyInfo.merklePrefix),
             IBCCounterpartyMismatch()
         );
+        // A client without code cannot verify any packet, and executing a migration to `address(0)` would
+        // unregister the client altogether.
+        require(client.code.length != 0, IBCInvalidClientAddress());
 
         ICS02ClientStore.ClientMigration storage migration = $.migrations[clientId];
         bool active = migration.digest != bytes32(0) && block.timestamp <= migration.expireAfter;
