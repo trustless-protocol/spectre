@@ -158,6 +158,7 @@ pub fn migrate(
         }
         Migration::UpdateForkParameters(fork_parameters) => {
             let mut client_state = state::get_eth_client_state(deps.storage)?;
+            instantiate::validate_fork_parameters_update(&client_state, &fork_parameters)?;
             client_state.fork_parameters = fork_parameters;
             let client_state_bz: Vec<u8> = serde_json::to_vec(&client_state)
                 .map_err(ContractError::SerializeClientStateFailed)?;
@@ -225,8 +226,8 @@ mod tests {
             let client_state = EthClientState {
                 chain_id: 0,
                 genesis_validators_root: B256::from([0; 32]),
-                min_sync_committee_participants: 0,
-                sync_committee_size: 0,
+                min_sync_committee_participants: 171,
+                sync_committee_size: 512,
                 genesis_time: 0,
                 genesis_slot: 0,
                 fork_parameters: ForkParameters {
@@ -277,7 +278,7 @@ mod tests {
                 state_root: B256::from([0; 32]),
                 timestamp: 0,
                 current_sync_committee: SummarizedSyncCommittee::default(),
-                next_sync_committee: None,
+                next_sync_committee: Some(SummarizedSyncCommittee::default()),
             };
             let consensus_state_bz: Vec<u8> = serde_json::to_vec(&consensus_state).unwrap();
 
@@ -756,7 +757,7 @@ mod tests {
             let client_state = EthClientState {
                 chain_id: 0,
                 genesis_validators_root: B256::from([0; 32]),
-                min_sync_committee_participants: 0,
+                min_sync_committee_participants: 171,
                 genesis_time: 0,
                 genesis_slot: 0,
                 fork_parameters: ForkParameters {
@@ -808,7 +809,7 @@ mod tests {
                 state_root: B256::from([0; 32]),
                 timestamp: 0,
                 current_sync_committee: SummarizedSyncCommittee::default(),
-                next_sync_committee: None,
+                next_sync_committee: Some(SummarizedSyncCommittee::default()),
             };
             let consensus_state_bz: Vec<u8> = serde_json::to_vec(&consensus_state).unwrap();
 
@@ -872,7 +873,7 @@ mod tests {
             let client_state = EthClientState {
                 chain_id: 0,
                 genesis_validators_root: B256::from([0; 32]),
-                min_sync_committee_participants: 0,
+                min_sync_committee_participants: 171,
                 genesis_time: 0,
                 genesis_slot: 0,
                 fork_parameters: ForkParameters {
@@ -924,7 +925,7 @@ mod tests {
                 state_root: B256::from([0; 32]),
                 timestamp: 0,
                 current_sync_committee: SummarizedSyncCommittee::default(),
-                next_sync_committee: None,
+                next_sync_committee: Some(SummarizedSyncCommittee::default()),
             };
             let consensus_state_bz: Vec<u8> = serde_json::to_vec(&consensus_state).unwrap();
 
@@ -960,11 +961,13 @@ mod tests {
                     },
                     electra: Fork {
                         version: FixedBytes([0; 4]),
-                        epoch: 5000,
+                        epoch: 0,
                     },
+                    // Electra is already active at the client's latest slot, so the migration
+                    // schedules Fulu instead of moving it.
                     fulu: Fork {
                         version: FixedBytes([0; 4]),
-                        epoch: u64::MAX,
+                        epoch: 5000,
                     },
                     gloas: Fork {
                         version: FixedBytes([0; 4]),
@@ -994,10 +997,14 @@ mod tests {
                 serde_json::from_slice(&wasm_client_state.data).unwrap();
             assert_eq!(eth_client_state.latest_slot, client_state.latest_slot);
             assert_ne!(
-                eth_client_state.fork_parameters.electra.epoch,
-                client_state.fork_parameters.electra.epoch
+                eth_client_state.fork_parameters.fulu.epoch,
+                client_state.fork_parameters.fulu.epoch
             );
-            assert_eq!(eth_client_state.fork_parameters.electra.epoch, 5000);
+            assert_eq!(eth_client_state.fork_parameters.fulu.epoch, 5000);
+            assert_eq!(
+                eth_client_state.fork_parameters.electra,
+                client_state.fork_parameters.electra
+            );
         }
     }
 }

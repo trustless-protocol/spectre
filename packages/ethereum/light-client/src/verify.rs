@@ -269,23 +269,23 @@ pub fn validate_light_client_update<V: BlsVerify>(
 
     // Verify that if the update contains the next sync committee, and the signature periods do match,
     // next sync committees match too.
-    if is_next_sync_committee_update {
-        if update_attested_period == stored_period && is_next_sync_committee_known {
-            ensure!(
-                update.next_sync_committee.as_ref().unwrap()
-                    == trusted_consensus_state.next_sync_committee().unwrap(),
-                EthereumIBCError::NextSyncCommitteeMismatch {
-                    expected: trusted_consensus_state
-                        .next_sync_committee()
-                        .unwrap()
-                        .aggregate_pubkey,
-                    found: update
-                        .next_sync_committee
-                        .as_ref()
-                        .unwrap()
-                        .aggregate_pubkey,
-                }
-            );
+    if let Some(next_sync_committee_branch) = &update.next_sync_committee_branch {
+        // A branch without the committee it proves is malformed input, not a reason to abort.
+        let next_sync_committee = update
+            .next_sync_committee
+            .as_ref()
+            .ok_or(EthereumIBCError::ExpectedNextSyncCommitteeUpdate)?;
+
+        if let Some(trusted_next_sync_committee) = trusted_consensus_state.next_sync_committee() {
+            if update_attested_period == stored_period {
+                ensure!(
+                    next_sync_committee == trusted_next_sync_committee,
+                    EthereumIBCError::NextSyncCommitteeMismatch {
+                        expected: trusted_next_sync_committee.aggregate_pubkey,
+                        found: next_sync_committee.aggregate_pubkey,
+                    }
+                );
+            }
         }
 
         // This validates the given next sync committee against the attested header's state root.
@@ -293,19 +293,12 @@ pub fn validate_light_client_update<V: BlsVerify>(
             next_sync_committee_gindex_at_slot(client_state, update.attested_header.beacon.slot)?;
         ensure_branch_length(
             "next sync committee branch",
-            update.next_sync_committee_branch.as_ref().unwrap(),
+            next_sync_committee_branch,
             next_sync_committee_gindex,
         )?;
         is_valid_normalized_merkle_branch(
-            update
-                .next_sync_committee
-                .as_ref()
-                .unwrap()
-                .tree_hash_root(),
-            &normalize_merkle_branch(
-                update.next_sync_committee_branch.as_ref().unwrap(),
-                next_sync_committee_gindex,
-            )?,
+            next_sync_committee.tree_hash_root(),
+            &normalize_merkle_branch(next_sync_committee_branch, next_sync_committee_gindex)?,
             next_sync_committee_gindex,
             update.attested_header.beacon.state_root,
         )
@@ -535,5 +528,49 @@ mod test {
                 found: 33,
             })
         ));
+    }
+    #[test]
+    fn next_sync_committee_branch_without_the_committee_is_an_error_not_a_panic() {
+        use crate::{
+            header::ActiveSyncCommittee,
+            test_utils::synthetic::{SyntheticChain, COMMITTEE_SIZE},
+        };
+
+        let chain = SyntheticChain::new();
+        let client_state = chain.client_state();
+        let current_slot = client_state
+            .compute_slot_at_timestamp(chain.current_timestamp())
+            .unwrap();
+        let known_next = chain.consensus_state();
+        let unknown_next = ConsensusState {
+            next_sync_committee: None,
+            ..chain.consensus_state()
+        };
+
+        // The two states reach different unwraps: the equality check against a known next
+        // committee, and the Merkle proof of the committee itself.
+        for consensus_state in [known_next, unknown_next] {
+            let mut update = chain.update(B256::repeat_byte(0x11), COMMITTEE_SIZE);
+            update.next_sync_committee = None;
+            update.next_sync_committee_branch = Some(vec![B256::ZERO; 6]);
+            let trusted = TrustedConsensusState::new(
+                &client_state,
+                consensus_state,
+                ActiveSyncCommittee::Current(chain.committee().clone()),
+                &TestBlsVerifier,
+            )
+            .unwrap();
+
+            assert!(matches!(
+                validate_light_client_update(
+                    &client_state,
+                    &trusted,
+                    &update,
+                    current_slot,
+                    &TestBlsVerifier,
+                ),
+                Err(EthereumIBCError::ExpectedNextSyncCommitteeUpdate)
+            ));
+        }
     }
 }

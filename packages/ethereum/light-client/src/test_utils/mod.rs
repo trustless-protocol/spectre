@@ -2,3 +2,4 @@
 
 pub mod bls_verifier;
 pub mod fixtures;
+pub mod synthetic;

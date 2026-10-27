@@ -172,6 +172,39 @@ full proposal window. Revoking that migrator blocks execution, but does not free
 the proposal slot until it expires. For an unwanted proposal, revoke the role
 and have a zero-delay pauser cancel it before granting a replacement migrator.
 
+### Migrating the Ethereum 08-wasm client on Cosmos
+
+The Ethereum client that Cosmos runs (`programs/cw-ics08-wasm-eth`, an ICS-08 wasm
+client) is not covered by the router procedure above. It is migrated by a
+governance `MsgMigrateContract` whose `migration` is `code_only`, `reinstantiate`
+or `update_fork_parameters`. Every migration needs a wasm checksum the client does
+not already run, because ibc-go refuses a migration to the current checksum
+(`ErrWasmCodeExists`, `modules/light-clients/08-wasm/v10@v10.3.0/keeper/keeper.go:154-156`).
+
+- `code_only` swaps the code and writes no client or consensus state.
+- `update_fork_parameters` replaces the fork schedule. The genesis parameters and
+  any fork the client has already reached (its epoch is at or before the epoch of
+  the client's latest slot) cannot change, because the fork version selects the
+  signing domain. A fork that has not activated can be scheduled or moved, but only
+  to an epoch after the client's latest one, and activation epochs must not
+  decrease from Altair to Gloas. A client created with a wrong version for an
+  active fork is repaired with `reinstantiate`, not with this variant.
+- `reinstantiate` is the only way to unfreeze the client. It deletes **every**
+  stored consensus state, then writes the new client state and its bootstrap
+  consensus state. Nothing else removes a consensus state, so before this the set
+  only grows. Membership proofs verify against stored consensus states only: a
+  proof built at a height older than the bootstrap stops verifying, and packets in
+  flight must be proven again at the bootstrap height or later. The work grows with
+  the number of stored consensus states, so check that it fits the proposal's gas
+  limit before relying on it for a recovery.
+
+`reinstantiate` rejects a bootstrap whose client state is already frozen, has
+`sync_committee_size` of zero, has `min_sync_committee_participants` outside
+`1..=sync_committee_size`, or has fork epochs that decrease. It also rejects a
+consensus state without `next_sync_committee`, because a client that does not know
+its next committee cannot cross into the next sync-committee period.
+`create-clients-cosmos` always sets it; a hand-written bootstrap must too.
+
 ## Pausing
 
 The router and ICS20Transfer have separate pause switches and they do not stop

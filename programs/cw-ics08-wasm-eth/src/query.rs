@@ -10,7 +10,7 @@ use crate::{
         CheckForMisbehaviourMsg, CheckForMisbehaviourResult, EthereumMisbehaviourMsg, Status,
         StatusResult, TimestampAtHeightMsg, TimestampAtHeightResult, VerifyClientMessageMsg,
     },
-    state::{get_eth_client_state, get_eth_consensus_state},
+    state::{get_eth_client_state, get_eth_consensus_state, get_trusted_consensus_state},
     ContractError,
 };
 
@@ -37,7 +37,8 @@ pub fn verify_client_message(
 
     if let Ok(header) = serde_json::from_slice::<Header>(&verify_client_message_msg.client_message)
     {
-        let eth_consensus_state = get_eth_consensus_state(deps.storage, header.trusted_slot)?;
+        let eth_consensus_state =
+            get_trusted_consensus_state(deps.storage, &eth_client_state, header.trusted_slot)?;
 
         ethereum_light_client::verify::verify_header(
             &eth_consensus_state,

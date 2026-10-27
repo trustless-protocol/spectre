@@ -65,6 +65,13 @@ The only accepted profile identifiers are `op_attestor_v1`, `base_attestor_v1` a
 `arbitrum_attestor_v1`. Public keys must be unique, byte-sorted, exactly 32 bytes each and contain
 at most 32 members. The threshold must be between one and the member count.
 
+Creation and `replace_attestors` also refuse keys that no honest attestor holds
+(`AttestorConfig::validate_for_install`, `packages/l2-client/src/state.rs`): the ten encodings of
+small-order points, and any `y` coordinate at or above the field prime. A small-order key such as
+the identity verifies a signature nobody made, so one such attestor would let anyone sign for it. The
+check applies only when a set is installed. A client that already holds such a key keeps loading, and
+should be rotated away from it.
+
 These development artifacts are fresh-authenticated-state-only. A client state missing `attestors`
 is rejected with a typed error before any migration write; create a fresh authenticated client
 instead. The strict signed-header and required-attestors schemas prevent unsigned state or messages
@@ -101,6 +108,12 @@ accepted immediately after a successful replacement.
 
 Rotation applies only to an already-valid authenticated client. It cannot add attestors to legacy
 unsigned state; both `keep_attestors` and `replace_attestors` fail without writes for that input.
+
+The checksum has to be new every time. ibc-go refuses a migration to the checksum the client already
+runs (`ErrWasmCodeExists`, `modules/light-clients/08-wasm/v10@v10.3.0/keeper/keeper.go:154-156`) and
+refuses to store code whose checksum it already holds (`keeper.go:109-111`). A second rotation
+therefore needs a built artifact whose bytes, and so checksum, differ from the one the client runs,
+even though the attestor set is the only thing that changes.
 
 This operation is a proactive rotation mechanism: use it before a retiring key can be abused, or
 to restore liveness when an unavailable key has not already produced untrusted updates. It is not
@@ -189,6 +202,18 @@ client trusts its active attestor set for block identity. Removing a root from t
 therefore does not revoke a consensus state Cosmos has already stored, nor reverse packets
 processed against it. Conflicting same-height updates are rejected, and freezing the client
 requires explicit authenticated misbehaviour.
+
+**A replaced root is freeze evidence.** The signed statement binds the domain, chain ID, router,
+attestor-set hash, block number, block hash and state root, and nothing else
+(`packages/l2-client/src/verification.rs:19-41`): not `provisional`, not a finality tier. When a
+provisional root is lost and the attestor then signs a different block identity for the same
+height, both certificates are valid, the client cannot tell the replacement from equivocation, and
+anyone who holds both can submit them as misbehaviour. The client freezes at that height
+(`packages/l2-client/src/runtime.rs:290-295`) and stays frozen. A deployment whose attestors sign
+roots that can still be lost accepts this. Whether a third party can obtain both certificates
+depends on who can reach the attestor feed, which these artifacts do not decide. Binding the
+finality tier into the statement would change the wire format of the attestor, the contract and the
+relayer together, and is not part of the current artifacts.
 
 **The default accepts pending Arbitrum assertions, deliberately.** `include_provisional` defaults to
 `true` for every `head_kind` except `finalized` (`relayer/cmd/build_l2_source.go`). A confirmed-only
