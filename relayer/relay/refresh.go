@@ -135,7 +135,7 @@ func (m *Module) refreshLoop(ctx context.Context) {
 				if errors.Is(err, services.ErrForcedRotationNotReady) {
 					backoff, retryAt = 0, time.Time{}
 					lastFailure = "rotation owed, waiting for a source block past " + strconv.FormatUint(latest, 10)
-					log.Printf("[%s UpdateClient] refresh: client already at %d but its pinned snapshot is unrotated; "+
+					log.Printf("WARN [%s UpdateClient] refresh: client already at %d but its pinned snapshot is unrotated; "+
 						"retrying on the next tick (%s of trust left)", m.name, latest, trustLeft)
 					m.beats.record(workerRefresh, lastFailure)
 					continue
@@ -166,7 +166,7 @@ func (m *Module) refreshLoop(ctx context.Context) {
 // different ones.
 func (m *Module) refreshFailed(backoff, trustingPeriod time.Duration, what string, err error) (time.Duration, time.Time) {
 	next := nextRefreshBackoff(backoff, trustingPeriod)
-	log.Printf("[%s UpdateClient] refresh: %s: %v; next attempt in %s", m.name, what, err, next)
+	log.Printf("WARN [%s UpdateClient] refresh: %s: %v; next attempt in %s", m.name, what, err, next)
 	return next, time.Now().Add(next)
 }
 

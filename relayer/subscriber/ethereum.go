@@ -151,7 +151,7 @@ func enqueueEthTerminal(
 ) {
 	cosmosPacket := EthPacketToCosmosPacket(packet, sequence)
 	if err := batchBuilder.EthPendingTracker.RemovePacketIfCurrent(cosmosPacket); err != nil {
-		logger.Printf("[eth->cosmos Subscribe][ATTENTION] failed to persist removal of settled ETH packet seq=%d: %v",
+		logger.Printf("ERROR [eth->cosmos Subscribe][ATTENTION] failed to persist removal of settled ETH packet seq=%d: %v",
 			cosmosPacket.Sequence, err)
 	}
 	batchBuilder.AddEth(services.EthPacket{
@@ -274,7 +274,7 @@ func recoverEthSendPackets(
 
 		received, err := HasCosmosPacketReceipt(stdCtx, ctx.Cosmos, cosmosPacket)
 		if err != nil {
-			ctx.Logger.Printf("[eth->cosmos Subscribe] recovery: seq=%d failed to check Cosmos packet receipt: %v",
+			ctx.Logger.Printf("WARN [eth->cosmos Subscribe] recovery: seq=%d failed to check Cosmos packet receipt: %v",
 				cosmosPacket.Sequence, err)
 			if firstErr == nil {
 				firstErr = err
@@ -291,7 +291,7 @@ func recoverEthSendPackets(
 
 		pending, err := services.HasPendingEthPacketCommitment(stdCtx, ctx.EVM, cosmosPacket)
 		if err != nil {
-			ctx.Logger.Printf("[eth->cosmos Subscribe] recovery: seq=%d failed to check ETH packet commitment: %v",
+			ctx.Logger.Printf("WARN [eth->cosmos Subscribe] recovery: seq=%d failed to check ETH packet commitment: %v",
 				cosmosPacket.Sequence, err)
 			if firstErr == nil {
 				firstErr = err
@@ -301,7 +301,7 @@ func recoverEthSendPackets(
 		if !pending {
 			markEthEventSeen(seenEvents, key)
 			if err := batchBuilder.EthPendingTracker.RemovePacketIfCurrent(cosmosPacket); err != nil {
-				ctx.Logger.Printf("[eth->cosmos Subscribe][ATTENTION] recovery: failed to persist removal of cleared ETH packet seq=%d: %v",
+				ctx.Logger.Printf("ERROR [eth->cosmos Subscribe][ATTENTION] recovery: failed to persist removal of cleared ETH packet seq=%d: %v",
 					cosmosPacket.Sequence, err)
 			}
 			stats.skipped++
@@ -312,7 +312,7 @@ func recoverEthSendPackets(
 
 		enqueued, err := enqueueEthSendPacket(batchBuilder, ev, seenEvents)
 		if err != nil {
-			ctx.Logger.Printf("[eth->cosmos Subscribe][ATTENTION] recovery: %v; leaving SendPacket range [%d,%d] retryable", err, startBlock, endBlock)
+			ctx.Logger.Printf("ERROR [eth->cosmos Subscribe][ATTENTION] recovery: %v; leaving SendPacket range [%d,%d] retryable", err, startBlock, endBlock)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -328,7 +328,7 @@ func recoverEthSendPackets(
 	}
 
 	if err := iter.Error(); err != nil {
-		ctx.Logger.Printf("[eth->cosmos Subscribe] recovery: SendPacket iterator error in [%d,%d]: %v", startBlock, endBlock, err)
+		ctx.Logger.Printf("WARN [eth->cosmos Subscribe] recovery: SendPacket iterator error in [%d,%d]: %v", startBlock, endBlock, err)
 		if firstErr == nil {
 			firstErr = err
 		}
@@ -383,7 +383,7 @@ func recoverEthWriteAcknowledgements(
 
 		pending, err := hasPendingCosmosPacketCommitment(stdCtx, ctx, cosmosPacket)
 		if err != nil {
-			ctx.Logger.Printf("[eth->cosmos Subscribe] recovery: seq=%d failed to check Cosmos packet commitment: %v",
+			ctx.Logger.Printf("WARN [eth->cosmos Subscribe] recovery: seq=%d failed to check Cosmos packet commitment: %v",
 				cosmosPacket.Sequence, err)
 			if firstErr == nil {
 				firstErr = err
@@ -393,7 +393,7 @@ func recoverEthWriteAcknowledgements(
 		if !pending {
 			markEthEventSeen(seenEvents, key)
 			if err := batchBuilder.PendingTracker.RemovePacketIfCurrent(cosmosPacket); err != nil {
-				ctx.Logger.Printf("[eth->cosmos Subscribe][ATTENTION] recovery: failed to persist removal of cleared Cosmos packet seq=%d: %v",
+				ctx.Logger.Printf("ERROR [eth->cosmos Subscribe][ATTENTION] recovery: failed to persist removal of cleared Cosmos packet seq=%d: %v",
 					cosmosPacket.Sequence, err)
 			}
 			stats.skipped++
@@ -404,7 +404,7 @@ func recoverEthWriteAcknowledgements(
 
 		if enqueueEthWriteAcknowledgement(batchBuilder, ev, seenEvents) {
 			if err := batchBuilder.PendingTracker.RemovePacketIfCurrent(cosmosPacket); err != nil {
-				ctx.Logger.Printf("[eth->cosmos Subscribe][ATTENTION] recovery: failed to persist removal after recovered WriteAcknowledgement seq=%d: %v",
+				ctx.Logger.Printf("ERROR [eth->cosmos Subscribe][ATTENTION] recovery: failed to persist removal after recovered WriteAcknowledgement seq=%d: %v",
 					cosmosPacket.Sequence, err)
 			}
 			ctx.Logger.Printf("[eth->cosmos Subscribe] recovery: recovered WriteAcknowledgement seq=%d from ETH block %d",
@@ -416,7 +416,7 @@ func recoverEthWriteAcknowledgements(
 	}
 
 	if err := iter.Error(); err != nil {
-		ctx.Logger.Printf("[eth->cosmos Subscribe] recovery: WriteAcknowledgement iterator error in [%d,%d]: %v", startBlock, endBlock, err)
+		ctx.Logger.Printf("WARN [eth->cosmos Subscribe] recovery: WriteAcknowledgement iterator error in [%d,%d]: %v", startBlock, endBlock, err)
 		if firstErr == nil {
 			firstErr = err
 		}
@@ -483,15 +483,15 @@ func (s *Subscriber) scanEthRangeInChunks(
 				)
 				if ok {
 					span.Chunk = next.To
-					ctx.Logger.Printf("[eth->cosmos Subscribe] %s: provider refused a %d-block log range at [%d,%d]; narrowing to %d: %v",
+					ctx.Logger.Printf("WARN [eth->cosmos Subscribe] %s: provider refused a %d-block log range at [%d,%d]; narrowing to %d: %v",
 						label, width, *cursor, to, next.To, err)
 					continue // same cursor, smaller span — the cursor never advances on a failure
 				}
-				ctx.Logger.Printf("[eth->cosmos Subscribe] %s recovery failed at [%d,%d] and the range cannot be narrowed further: %v",
+				ctx.Logger.Printf("WARN [eth->cosmos Subscribe] %s recovery failed at [%d,%d] and the range cannot be narrowed further: %v",
 					label, *cursor, to, err)
 				return combined, bottom
 			}
-			ctx.Logger.Printf("[eth->cosmos Subscribe] %s recovery failed at [%d,%d]: %v", label, *cursor, to, err)
+			ctx.Logger.Printf("WARN [eth->cosmos Subscribe] %s recovery failed at [%d,%d]: %v", label, *cursor, to, err)
 			return combined, err
 		}
 		*cursor = to + 1
@@ -524,7 +524,7 @@ func (s *Subscriber) recoverEthGapToBlock(
 				return recoverEthSendPackets(stdCtx, ctx, batchBuilder, filterer, from, to, seenEvents)
 			}, persist)
 		if err != nil {
-			ctx.Logger.Printf("[eth->cosmos Subscribe] SendPacket recovery failed: %v", err)
+			ctx.Logger.Printf("WARN [eth->cosmos Subscribe] SendPacket recovery failed: %v", err)
 			firstErr = err
 		} else {
 			found = found || stats.foundSomething()
@@ -537,7 +537,7 @@ func (s *Subscriber) recoverEthGapToBlock(
 				return recoverEthWriteAcknowledgements(stdCtx, ctx, batchBuilder, filterer, from, to, seenEvents)
 			}, persist)
 		if err != nil {
-			ctx.Logger.Printf("[eth->cosmos Subscribe] WriteAcknowledgement recovery failed: %v", err)
+			ctx.Logger.Printf("WARN [eth->cosmos Subscribe] WriteAcknowledgement recovery failed: %v", err)
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -681,7 +681,7 @@ func (s *Subscriber) subscribeEthOnce(
 			enqueueEthWriteAcknowledgement(batchBuilder, ev, seenEvents)
 			cosmosPacket := EthPacketToCosmosPacket(ev.Packet, ev.Sequence)
 			if err := batchBuilder.PendingTracker.RemovePacketIfCurrent(cosmosPacket); err != nil {
-				ctx.Logger.Printf("[eth->cosmos Subscribe][ATTENTION] failed to persist removal after WriteAcknowledgement seq=%d: %v",
+				ctx.Logger.Printf("ERROR [eth->cosmos Subscribe][ATTENTION] failed to persist removal after WriteAcknowledgement seq=%d: %v",
 					cosmosPacket.Sequence, err)
 			}
 
@@ -726,7 +726,7 @@ func (s *Subscriber) subscribeEthOnce(
 				span,
 				rate,
 			); err != nil {
-				ctx.Logger.Printf("[eth->cosmos Subscribe] periodic recovery failed: %v", err)
+				ctx.Logger.Printf("WARN [eth->cosmos Subscribe] periodic recovery failed: %v", err)
 			}
 			if blockTime, ok := rate.blockTime(); ok {
 				gapRecoveryTicker.Reset(recoveryTick(blockTime))
@@ -742,13 +742,13 @@ func (s *Subscriber) SubscribeEth(stdCtx context.Context, cosmos services.Cosmos
 		return
 	}
 	if ctx.EVM.EthWsURL() == "" {
-		ctx.Logger.Printf("Failed to subscribe to Ethereum events: eth websocket URL is not configured")
+		ctx.Logger.Printf("ERROR Failed to subscribe to Ethereum events: eth websocket URL is not configured")
 		return
 	}
 
 	recoveryFilterer, err := contractICS26Router.NewContractICS26RouterFilterer(*ctx.EVM.RouterContract(), ctx.EVM.EthClient())
 	if err != nil {
-		ctx.Logger.Printf("Failed to create ICS26Router recovery filterer instance: %v", err)
+		ctx.Logger.Printf("ERROR Failed to create ICS26Router recovery filterer instance: %v", err)
 		return
 	}
 
@@ -772,7 +772,7 @@ func (s *Subscriber) SubscribeEth(stdCtx context.Context, cosmos services.Cosmos
 		latestBlock, err := ctx.EVM.EthClient().BlockNumber(rpcCtx)
 		cancel()
 		if err != nil {
-			ctx.Logger.Printf("[eth->cosmos Subscribe] Failed to get latest Ethereum block before subscription: %v", err)
+			ctx.Logger.Printf("WARN [eth->cosmos Subscribe] Failed to get latest Ethereum block before subscription: %v", err)
 			if !sleepOrDone(stdCtx, ethSubscriptionReconnectDelay) {
 				return
 			}
@@ -801,7 +801,7 @@ func (s *Subscriber) SubscribeEth(stdCtx context.Context, cosmos services.Cosmos
 			&quietScans,
 			&span,
 		); err != nil {
-			ctx.Logger.Printf("[eth->cosmos Subscribe] startup recovery failed: %v", err)
+			ctx.Logger.Printf("WARN [eth->cosmos Subscribe] startup recovery failed: %v", err)
 		}
 
 		watchStartBlock := latestBlock + 1
@@ -813,7 +813,7 @@ func (s *Subscriber) SubscribeEth(stdCtx context.Context, cosmos services.Cosmos
 		watchClient, err := ethclient.DialContext(dialCtx, ctx.EVM.EthWsURL())
 		cancelDial()
 		if err != nil {
-			ctx.Logger.Printf("[eth->cosmos Subscribe] Failed to connect to Ethereum WS at %s: %v", ctx.EVM.EthWsURL(), err)
+			ctx.Logger.Printf("WARN [eth->cosmos Subscribe] Failed to connect to Ethereum WS at %s: %v", ctx.EVM.EthWsURL(), err)
 			if !sleepOrDone(stdCtx, ethSubscriptionReconnectDelay) {
 				return
 			}
@@ -843,7 +843,12 @@ func (s *Subscriber) SubscribeEth(stdCtx context.Context, cosmos services.Cosmos
 			&rate,
 		)
 		watchClient.Close()
-		ctx.Logger.Printf("[eth->cosmos Subscribe] Subscription loop ended: %v", err)
+		// Mirror of SubscribeCosmos: a requested stop is not a dropped subscription.
+		if stdCtx.Err() != nil {
+			ctx.Logger.Printf("[eth->cosmos Subscribe] Subscription loop ended: %v", err)
+		} else {
+			ctx.Logger.Printf("WARN [eth->cosmos Subscribe] Subscription loop ended: %v", err)
+		}
 		s.persistEthCursors(ctx, batchBuilder, nextSendRecoveryStartBlock, nextWriteAckRecoveryStartBlock)
 		if !sleepOrDone(stdCtx, ethSubscriptionReconnectDelay) {
 			return
@@ -879,6 +884,6 @@ func (s *Subscriber) persistEthCursors(ctx ethDeps, batchBuilder *services.Batch
 		writeAck = clampRecoveryCursor(writeAck, floor)
 	}
 	if err := s.recovery.SaveCheckpoint(services.RecoveryCursors{cursorEthSend: send, cursorEthWriteAck: writeAck}); err != nil {
-		ctx.Logger.Printf("[eth->cosmos Subscribe] failed to persist recovery cursors (send=%d write_ack=%d): %v", send, writeAck, err)
+		ctx.Logger.Printf("WARN [eth->cosmos Subscribe] failed to persist recovery cursors (send=%d write_ack=%d): %v", send, writeAck, err)
 	}
 }

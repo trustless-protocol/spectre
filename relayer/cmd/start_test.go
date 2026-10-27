@@ -35,6 +35,7 @@ func TestStart(t *testing.T) {
 			log.SetPrefix(origPrefix)
 			log.SetOutput(origOut)
 		})
+		restoreGnarkLogger(t)
 		log.SetOutput(&bytes.Buffer{})
 		log.SetPrefix("")
 
@@ -85,17 +86,14 @@ func TestStart(t *testing.T) {
 		command.SetErr(&bytes.Buffer{})
 		err = command.Execute()
 
-		if got := log.Prefix(); !strings.Contains(got, "cosmoshub-1") {
-			t.Fatalf("log prefix = %q, want it to carry the relay path; "+
-				"start never called stampRelayPath, so every relay line is unlabelled "+
-				"(command returned %v)", got, err)
-		}
+		// Taken before the probe below, so that "start emitted a zap line" is still a
+		// claim about start and not about the probe.
+		entries := logs.All()
 
 		// The zap half, which the first version of this test could not see: Start and
 		// the builders emit their lifecycle lines through the injected logger, and a
 		// stamp that only touches log.Default() leaves every one of them
 		// unattributable in a merged log.
-		entries := logs.All()
 		if len(entries) == 0 {
 			t.Fatalf("start emitted no zap line before failing (%v), so the scoped logger "+
 				"is unverified here; the test needs a line between the stamp and the failure", err)
@@ -109,6 +107,22 @@ func TestStart(t *testing.T) {
 			if !strings.Contains(fmt.Sprint(got), "cosmoshub-1") {
 				t.Fatalf("zap line %q has %s = %v, want the relay path", e.Message, relayPathLogField, got)
 			}
+		}
+
+		// The standard-library half. The engine's own lines go through log.Printf, so a
+		// line logged after Start returned has to reach the same scoped logger and
+		// carry the path there. If start never stamped, it goes to the buffer set above
+		// and the observer sees nothing.
+		const probe = "[probe] logged after start returned"
+		log.Print(probe)
+		all := logs.All()
+		if len(all) != len(entries)+1 || all[len(all)-1].Message != probe {
+			t.Fatalf("a standard-library line logged after start returned never reached the scoped "+
+				"logger (command returned %v); start never called stampRelayPath, so every relay "+
+				"line is unlabelled", err)
+		}
+		if got := all[len(all)-1].ContextMap()[relayPathLogField]; !strings.Contains(fmt.Sprint(got), "cosmoshub-1") {
+			t.Fatalf("standard-library line has %s = %v, want the relay path", relayPathLogField, got)
 		}
 	})
 
@@ -125,8 +139,16 @@ func TestStart(t *testing.T) {
 	// Without this, nothing holds the order: the test above passes with the stamp on
 	// either side of that gate, because its config gets past it.
 	t.Run("stamps the path before the checks that need a read", func(t *testing.T) {
-		log.SetPrefix("")
-		t.Cleanup(func() { log.SetPrefix("") })
+		// Start points the standard logger at its scoped logger and never points it
+		// back, so this puts it back, and keeps the buffer's lines out of the output.
+		origFlags, origPrefix, origOut := log.Flags(), log.Prefix(), log.Writer()
+		t.Cleanup(func() {
+			log.SetFlags(origFlags)
+			log.SetPrefix(origPrefix)
+			log.SetOutput(origOut)
+		})
+		restoreGnarkLogger(t)
+		log.SetOutput(&bytes.Buffer{})
 
 		// From a scratch directory: checkLegacyStateLayout looks for the previous
 		// layout in the working directory too, so a stray .relayer-state left in the
@@ -156,7 +178,8 @@ func TestStart(t *testing.T) {
 		// run. That is the failure whose label this test is about.
 		t.Setenv("COSMOS_CHAIN_ID", "")
 
-		command := Start(zap.NewNop())
+		core, logs := observer.New(zapcore.InfoLevel)
+		command := Start(zap.New(core))
 		command.SetArgs([]string{"--config", configPath, "--gpu-prove=false"})
 		command.SetOut(&bytes.Buffer{})
 		command.SetErr(&bytes.Buffer{})
@@ -168,9 +191,19 @@ func TestStart(t *testing.T) {
 		if !strings.Contains(err.Error(), "COSMOS_CHAIN_ID") {
 			t.Fatalf("start stopped at a different gate (%v); the ordering this test pins was not exercised", err)
 		}
-		if got := log.Prefix(); !strings.Contains(got, "cosmoshub-1") {
-			t.Fatalf("log prefix = %q when the read-based gate reported its finding; "+
-				"every line from that gate onward is unattributable in a merged log", got)
+		// A line logged now, after the gate has reported, must already be labelled: the
+		// stamp has to have happened before that gate, or by the time it fails the
+		// standard logger still points at the buffer above.
+		const probe = "[probe] logged after the read-based gate reported"
+		log.Print(probe)
+		entries := logs.All()
+		if len(entries) == 0 || entries[len(entries)-1].Message != probe {
+			t.Fatal("a standard-library line logged after the read-based gate reported its finding never " +
+				"reached the scoped logger: every line from that gate onward is unattributable in a merged log")
+		}
+		if got := entries[len(entries)-1].ContextMap()[relayPathLogField]; !strings.Contains(fmt.Sprint(got), "cosmoshub-1") {
+			t.Fatalf("standard-library line has %s = %v, want the relay path: every line from that gate "+
+				"onward is unattributable in a merged log", relayPathLogField, got)
 		}
 	})
 

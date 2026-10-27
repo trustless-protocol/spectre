@@ -388,7 +388,7 @@ func (t *PendingPacketTracker) commitLocked(mutate func()) error {
 		t.deadLetteredByKey = before.deadLetteredByKey
 		t.settled = before.settled
 		t.persistenceErr = fmt.Errorf("persist pending packet state %s: %w", t.statePath, err)
-		log.Printf("[PendingTracker][ATTENTION] %v; mutation rolled back and timeout retries are paused", t.persistenceErr)
+		log.Printf("ERROR [PendingTracker][ATTENTION] %v; mutation rolled back and timeout retries are paused", t.persistenceErr)
 		return t.persistenceErr
 	}
 	if t.persistenceErr != nil {

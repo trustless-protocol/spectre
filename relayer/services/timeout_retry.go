@@ -41,13 +41,13 @@ func timeoutOutcomeForError(err error) timeoutSendOutcome {
 func deferTimeoutRetries(tracker *PendingPacketTracker, pending []pendingPacketInfo, now time.Time, tag string) bool {
 	deferralCounts, err := tracker.DeferTimeoutRetriesIfCurrent(pending, now)
 	if err != nil {
-		log.Printf("[%sTimeoutScan][ATTENTION] timeout retry state was not durable: %v; pausing timeout work", tag, err)
+		log.Printf("ERROR [%sTimeoutScan][ATTENTION] timeout retry state was not durable: %v; pausing timeout work", tag, err)
 		return false
 	}
 	for i, info := range pending {
 		deferrals := deferralCounts[i]
 		if deferralIsStuck(deferrals) {
-			log.Printf("[%sTimeoutScan] STUCK: src=%s seq=%d has deferred timeout %d times; funds remain escrowed", tag, info.Packet.SourceClient, info.Packet.Sequence, deferrals)
+			log.Printf("ERROR [%sTimeoutScan] STUCK: src=%s seq=%d has deferred timeout %d times; funds remain escrowed", tag, info.Packet.SourceClient, info.Packet.Sequence, deferrals)
 		}
 	}
 	return true
@@ -56,11 +56,11 @@ func deferTimeoutRetries(tracker *PendingPacketTracker, pending []pendingPacketI
 func chargeTimeoutFailure(tracker *PendingPacketTracker, info pendingPacketInfo, now time.Time, tag string) bool {
 	deadLettered, err := tracker.RecordTimeoutFailureIfCurrent(info, now)
 	if err != nil {
-		log.Printf("[%sTimeoutScan][ATTENTION] timeout attempt state was not durable: %v; pausing timeout work", tag, err)
+		log.Printf("ERROR [%sTimeoutScan][ATTENTION] timeout attempt state was not durable: %v; pausing timeout work", tag, err)
 		return false
 	}
 	if deadLettered {
-		log.Printf("[%sTimeoutScan][ATTENTION] src=%s seq=%d exhausted timeout attempts; escrowed funds require operator action", tag, info.Packet.SourceClient, info.Packet.Sequence)
+		log.Printf("ERROR [%sTimeoutScan][ATTENTION] src=%s seq=%d exhausted timeout attempts; escrowed funds require operator action", tag, info.Packet.SourceClient, info.Packet.Sequence)
 	}
 	return true
 }
@@ -69,7 +69,7 @@ func applyTimeoutOutcome(tracker *PendingPacketTracker, info pendingPacketInfo, 
 	switch {
 	case outcome.packetIsDone():
 		if err := tracker.RemoveIfCurrent(info); err != nil {
-			log.Printf("[%sTimeoutScan][ATTENTION] completed timeout state was not durable: %v; pausing timeout work", tag, err)
+			log.Printf("ERROR [%sTimeoutScan][ATTENTION] completed timeout state was not durable: %v; pausing timeout work", tag, err)
 			return false
 		}
 		return true

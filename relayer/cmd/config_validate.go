@@ -346,7 +346,7 @@ func validateCosmosChainID(stdCtx context.Context, cfg *appConfig) []configFindi
 	for _, url := range urls {
 		got, ok := probeCosmosNetwork(stdCtx, url)
 		if !ok {
-			log.Printf("[start] could not read the chain id from %s; skipping the COSMOS_CHAIN_ID check "+
+			log.Printf("WARN [start] could not read the chain id from %s; skipping the COSMOS_CHAIN_ID check "+
 				"for that endpoint (declared %q). The relay loops keep retrying it.", url, want)
 			continue
 		}
@@ -447,7 +447,7 @@ func validateEVMDeployments(stdCtx context.Context, cfg *appConfig) []configFind
 		client, err := tendermintClient.DialEthRPC(ctx, d.rpcURL, configProbeTimeout)
 		if err != nil {
 			cancel()
-			log.Printf("[start] could not dial %s for %s; skipping its contract checks. "+
+			log.Printf("WARN [start] could not dial %s for %s; skipping its contract checks. "+
 				"The relay loops keep retrying it.", d.rpcURL, d.label)
 			continue
 		}
@@ -461,7 +461,7 @@ func validateEVMDeployments(stdCtx context.Context, cfg *appConfig) []configFind
 				// that the contract is missing. Stop probing it rather than
 				// reporting every remaining address as absent.
 				reachable = false
-				log.Printf("[start] %s: could not read code at %s (%s) from %s; skipping the remaining "+
+				log.Printf("WARN [start] %s: could not read code at %s (%s) from %s; skipping the remaining "+
 					"contract checks for this endpoint", d.label, key, addr, d.rpcURL)
 				break
 			}
@@ -535,7 +535,7 @@ func validateRouterClientID(ctx context.Context, client *ethclient.Client, d evm
 		if cp, cpErr := caller.GetCounterparty(&bind.CallOpts{Context: ctx}, d.routerCliID); cpErr == nil {
 			counterparty = cp.ClientId
 		} else if addr == expected {
-			log.Printf("[start] %s: could not read the counterparty for client id %q (%v); "+
+			log.Printf("WARN [start] %s: could not read the counterparty for client id %q (%v); "+
 				"skipping the counterparty half of the wiring check",
 				d.label, d.routerCliID, cpErr)
 			return nil
@@ -560,7 +560,7 @@ func validateRouterClientID(ctx context.Context, client *ethclient.Client, d evm
 	// revert IS the answer, and a transport error is not — telling them apart is
 	// what keeps this check inside the doctrine on validateStartupConfig.
 	if !services.IsEVMRevert(err) {
-		log.Printf("[start] %s: could not ask router %s for client id %q (%v); skipping that check. "+
+		log.Printf("WARN [start] %s: could not ask router %s for client id %q (%v); skipping that check. "+
 			"The relay loops keep retrying it.", d.label, d.routerAddr, d.routerCliID, err)
 		return nil
 	}

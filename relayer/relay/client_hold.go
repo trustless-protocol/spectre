@@ -61,7 +61,7 @@ func (m *Module) checkClientAtStartup(ctx context.Context) {
 	}
 	active, status, err := checker.ClientActive(ctx)
 	if err != nil {
-		log.Printf("[%s Relay] could not read destination client %s status at startup: %v; continuing",
+		log.Printf("WARN [%s Relay] could not read destination client %s status at startup: %v; continuing",
 			m.name, m.clientID, err)
 		return
 	}
@@ -87,7 +87,7 @@ func (m *Module) destinationClientInactive(ctx context.Context) (string, bool) {
 	}
 	active, status, err := checker.ClientActive(ctx)
 	if err != nil {
-		log.Printf("[%s Relay] destination client %s status unknown before a drop: %v",
+		log.Printf("WARN [%s Relay] destination client %s status unknown before a drop: %v",
 			m.name, m.clientID, err)
 		return "", false
 	}
@@ -115,7 +115,7 @@ func (m *Module) clientHeldOff(ctx context.Context, now time.Time) bool {
 	if err != nil {
 		// Unknown is not active: keep holding, and ask again at the same spacing.
 		m.clientProbeAt = now.Add(m.clientBackoff)
-		log.Printf("[%s Relay] destination client %s status unknown while held: %v; re-checking in %s",
+		log.Printf("WARN [%s Relay] destination client %s status unknown while held: %v; re-checking in %s",
 			m.name, m.clientID, err, m.clientBackoff)
 		return true
 	}
@@ -142,7 +142,7 @@ func (m *Module) noteClientInactive(status string, cause error) {
 	held := "destination client " + m.clientID + " is " + status + "; relaying held"
 	m.clientHold.Store(&held)
 	if !first {
-		log.Printf("[%s Relay] destination client %s still %s; holding, re-checking in %s",
+		log.Printf("WARN [%s Relay] destination client %s still %s; holding, re-checking in %s",
 			m.name, m.clientID, status, m.clientBackoff)
 		return
 	}
@@ -150,7 +150,7 @@ func (m *Module) noteClientInactive(status string, cause error) {
 	if cause != nil {
 		reason = " (" + cause.Error() + ")"
 	}
-	log.Printf("[%s Relay][ATTENTION] destination client %s is %s%s. "+
+	log.Printf("ERROR [%s Relay][ATTENTION] destination client %s is %s%s. "+
 		"No packet will be relayed on this path, and none is dropped: queued packets stay queued and "+
 		"tracked, and the timeout scanner still sees them. Relaying resumes by itself once the client "+
 		"is unfrozen or migrated. Re-checking in %s.",

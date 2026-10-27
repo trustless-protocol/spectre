@@ -330,7 +330,7 @@ func (m *Module) flushLoop(ctx context.Context, lister chain.PacketLister) {
 func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	candidates, err := lister.UnrelayedPackets(ctx)
 	if err != nil {
-		log.Printf("[%s Relay] packet flush: %v", m.name, err)
+		log.Printf("WARN [%s Relay] packet flush: %v", m.name, err)
 		// A failed pass beats too, which is heartbeats.record's stated contract.
 		// Reported by @DongLieu: this loop recorded nothing at all, so `relayer
 		// status` omitted it entirely -- and it is the ENUMERATION backstop, the
@@ -368,6 +368,12 @@ func (m *Module) flushOnce(ctx context.Context, lister chain.PacketLister) {
 	// Worth a line every time. A flush that finds work means the block scan
 	// missed it, which is the condition an operator wants to know about even
 	// though the packet is now being relayed.
+	//
+	// Info, not a warning: the enumeration lists every outstanding commitment, so
+	// it also returns packets the live path already holds while it waits for the
+	// source to become provable. On an Ethereum source that wait outlasts the flush
+	// interval, so this fires on an ordinary transfer -- seen in the local devnet
+	// run, three packets the subscriber had logged a minute earlier.
 	log.Printf("[%s Relay] packet flush found %d packet(s) the scan did not: %s",
 		m.name, len(unsettled), describeEvents(unsettled))
 	m.beats.record(workerPacketFlush, "relaying "+strconv.Itoa(len(unsettled))+" the scan did not find")
@@ -392,7 +398,7 @@ func (m *Module) dropSettled(ctx context.Context, candidates []chain.Event) []ch
 	for _, e := range candidates {
 		settled, err := m.packetSettled(ctx, e)
 		if err != nil {
-			log.Printf("[%s Relay] packet flush: settlement check for %s seq=%d: %v; relaying anyway",
+			log.Printf("WARN [%s Relay] packet flush: settlement check for %s seq=%d: %v; relaying anyway",
 				m.name, e.Type, e.Sequence, err)
 			unsettled = append(unsettled, e)
 			continue
@@ -515,7 +521,7 @@ func (m *Module) periodicUpdateLoop(ctx context.Context) {
 				// the signer's gas (the legacy routineBackoff). Never slower than the
 				// normal cadence (guards a configuration with a shorter interval).
 				backoff = nextPeriodicUpdateBackoff(backoff)
-				log.Printf("[%s UpdateClient] periodic update: %v; retrying after %s", m.name, err, backoff)
+				log.Printf("WARN [%s UpdateClient] periodic update: %v; retrying after %s", m.name, err, backoff)
 				next = min(backoff, m.periodicUpdateInterval)
 			}
 			m.beats.record(workerPeriodicUpdate, "next in "+next.String())
@@ -587,7 +593,7 @@ func (m *Module) handOverDeliveredSend(p chain.RelayPacket) {
 		return
 	}
 	if !m.ackDue(p.Packet) {
-		log.Printf("[%s Relay] ATTENTION: could not durably record the owed acknowledgement for seq=%d; "+
+		log.Printf("ERROR [%s Relay] ATTENTION: could not durably record the owed acknowledgement for seq=%d; "+
 			"keeping the pending record so the packet stays recoverable, and queued for retry",
 			m.name, p.Sequence)
 		return
@@ -624,7 +630,7 @@ func (m *Module) ackWatchLoop(ctx context.Context) {
 			if len(overdue) > len(shown) {
 				line += fmt.Sprintf(", +%d more", len(overdue)-len(shown))
 			}
-			log.Printf("[%s Relay] %d acknowledgement(s) owed for more than %s and never seen: %s",
+			log.Printf("WARN [%s Relay] %d acknowledgement(s) owed for more than %s and never seen: %s",
 				m.name, len(overdue), m.ackOverdueAfter, line)
 		}
 	}

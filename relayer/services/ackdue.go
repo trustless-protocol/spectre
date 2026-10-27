@@ -137,7 +137,7 @@ func (s *Services) removeAckDueLocked(packet channeltypesv2.Packet) bool {
 	// file. Nothing else could ever settle it: the packet it belonged to no longer
 	// exists on the source. See RemoveSlotIfPresent.
 	if _, err := s.BatchBuilder.AckDueTracker.RemoveSlotIfPresent(packet.SourceClient, packet.Sequence); err != nil {
-		log.Printf("[AckWatch][ATTENTION] failed to persist settlement of owed acknowledgement seq=%d: %v; queued for retry",
+		log.Printf("ERROR [AckWatch][ATTENTION] failed to persist settlement of owed acknowledgement seq=%d: %v; queued for retry",
 			packet.Sequence, err)
 		return false
 	}

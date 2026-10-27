@@ -7,13 +7,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"os"
 	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 
+	"relayer/logbridge"
 	"relayer/prover"
 	"relayer/prover/gnark"
 	"relayer/prover/memqueue"
@@ -151,20 +153,16 @@ func awaitRelayExit(
 	}
 }
 
-// stampRelayPathOnLogs prefixes every standard-library log line with the relay
-// path this process serves.
-//
-// It reaches every relay-path log line in one call because they all go through
-// the standard logger: services and subscriber take an injected *log.Logger, and
-// the composition root passes log.Default() (cmd/build_source.go,
-// cmd/build_cosmos_to_l2.go) -- there is no log.New anywhere in the tree. zap is
-// used only in cmd/ for startup and CLI messages, which already name the path.
-//
-// Lmsgprefix is not optional: without it the standard logger writes the prefix
-// BEFORE the timestamp, so every line would start with the path and the times
-// would no longer line up when read as a column.
 // stampRelayPath labels BOTH loggers with the relay path and returns the
 // path-scoped zap logger the caller must use from then on.
+//
+// The path is a field on every line from here on, standard-library lines
+// included: logbridge.Install points the standard logger at the scoped logger,
+// and services and subscriber take an injected *log.Logger that the composition
+// root fills with log.Default() (cmd/build_source.go, cmd/build_cosmos_to_l2.go),
+// so one call reaches every relay-path line. It used to be a text prefix on the
+// standard logger, held after the timestamp by Lmsgprefix. As a field it can be
+// filtered on, and a viewer no longer has to pick it out of the message.
 //
 // One function rather than two calls, because the first version stamped only
 // log.Default() and every line the injected *zap.Logger emitted after it stayed
@@ -174,13 +172,13 @@ func awaitRelayExit(
 // that returns the scoped logger cannot be half-used: the caller either takes
 // the return value or has nothing to log with.
 func stampRelayPath(logger *zap.Logger, pathID string) *zap.Logger {
-	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("[" + pathID + "] ")
-	return logger.With(zap.String(relayPathLogField, pathID))
+	scoped := logger.With(zap.String(relayPathLogField, pathID))
+	logbridge.Install(scoped)
+	return scoped
 }
 
-// relayPathLogField is the structured key; the stdlib side has no fields and
-// carries the same value as a message prefix instead.
+// relayPathLogField is the key the path is logged under, on the zap lines and on
+// the standard-library lines bridged into them.
 const relayPathLogField = "relay_path"
 
 // logShutdownFailure reports a shutdown that overran its budget on a path whose
@@ -262,8 +260,17 @@ func proofBackendFromFlags(cmd *cobra.Command) (gnark.ProofBackend, bool, error)
 // --- Main ---
 
 func main() {
-	zLogger, _ := zap.NewProduction(zap.AddStacktrace(zap.DPanicLevel))
+	settings := resolveLogSettings(os.Args[1:], os.Getenv, stderrIsTerminal())
+	zLogger := newLogger(settings, zapcore.Lock(os.Stderr))
 	defer zLogger.Sync()
+	for _, msg := range settings.ignored {
+		zLogger.Warn(msg)
+	}
+	// One pipeline for the process. The engine logs through the standard logger,
+	// which has no levels; this gives every such line a level and the same format as
+	// the zap lines, so a viewer sees one stream. `start` re-points it at a
+	// path-scoped logger once it knows the path (stampRelayPath).
+	logbridge.Install(zLogger)
 
 	logger := zLogger.Sugar()
 
@@ -274,6 +281,7 @@ func main() {
 			cmd.Help()
 		},
 	}
+	registerLogFlags(rootCmd)
 
 	rootCmd.AddCommand(
 		Start(zLogger),

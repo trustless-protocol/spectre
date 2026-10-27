@@ -14,6 +14,8 @@ import (
 	jsonrpcclient "github.com/cometbft/cometbft/rpc/jsonrpc/client"
 	"github.com/ethereum/go-ethereum/ethclient"
 	"github.com/ethereum/go-ethereum/rpc"
+
+	"relayer/logbridge"
 )
 
 // DefaultRPCTimeout is the transport-level ceiling on a single JSON-RPC round
@@ -89,9 +91,15 @@ var _ cmtlog.Logger = cometLogger{}
 // would bury the relayer's own log without adding a decision an operator makes.
 func (cometLogger) Debug(string, ...interface{}) {}
 
-func (l cometLogger) Info(msg string, keyvals ...interface{}) { l.print("INFO", msg, keyvals) }
+func (l cometLogger) Info(msg string, keyvals ...interface{}) { l.print("", msg, keyvals) }
 
-func (l cometLogger) Error(msg string, keyvals ...interface{}) { l.print("ERROR", msg, keyvals) }
+// Error is the whole reason this adapter exists, so it must arrive as an error:
+// the two lines in the comment above are an abandoned resubscribe and a dropped
+// event. It used to carry the word in the middle of the text, which a log viewer
+// does not read as a level; the token has to lead the message for logbridge.
+func (l cometLogger) Error(msg string, keyvals ...interface{}) {
+	l.print(logbridge.Error, msg, keyvals)
+}
 
 func (l cometLogger) With(keyvals ...interface{}) cmtlog.Logger {
 	// Copy rather than append in place: the receiver's backing array may be
@@ -102,9 +110,10 @@ func (l cometLogger) With(keyvals ...interface{}) cmtlog.Logger {
 	return cometLogger{fields: fields}
 }
 
-func (l cometLogger) print(level, msg string, keyvals []interface{}) {
+// print writes one line. token is a logbridge level token, or empty for info.
+func (l cometLogger) print(token, msg string, keyvals []interface{}) {
 	var b strings.Builder
-	fmt.Fprintf(&b, "[cometbft] %s %s", level, msg)
+	fmt.Fprintf(&b, "%s[cometbft] %s", token, msg)
 	all := make([]interface{}, 0, len(l.fields)+len(keyvals))
 	all = append(all, l.fields...)
 	all = append(all, keyvals...)

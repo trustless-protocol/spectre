@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"relayer/chain"
+	"relayer/logbridge"
 	"relayer/services"
 	"strings"
 	"sync"
@@ -1565,4 +1566,89 @@ func TestHandleBatch(t *testing.T) {
 			}
 		})
 	})
+}
+
+// A dropped packet is logged at the level of what is left to do for it. A SendPacket
+// still has an exit (the timeout scanner refunds it), so dropping one is routine and
+// a warning; an ack or a timeout has none, so dropping one is an error. All three
+// DROP sites must say the same, or alerting on level=error pages on an ordinary
+// timeout at one of them and stays quiet about a stranded ack at another.
+//
+// captureLog sees the raw standard-library line, with the token still on it.
+func TestDrop_LevelFollowsTheEventType(t *testing.T) {
+	dropLine := func(t *testing.T, out string) string {
+		t.Helper()
+		for _, line := range strings.Split(out, "\n") {
+			if strings.Contains(line, "DROP packet") {
+				return line
+			}
+		}
+		t.Fatalf("no DROP line was logged:\n%s", out)
+		return ""
+	}
+
+	sites := []struct {
+		name string
+		run  func(typ chain.EventType) []int
+	}{
+		{"permanent proof failure", func(typ chain.EventType) []int {
+			src := &mockSource{latest: 100, permanentMembershipOn: map[string]bool{"dead": true}}
+			m := NewModule("test", "client-0", src, &mockDest{}, &mockBuilder{})
+			return m.handleBatch(context.Background(), []chain.Event{{Type: typ, Sequence: 7, Height: 4, Raw: []byte("dead")}})
+		}},
+		{"single packet reverted on chain", func(typ chain.EventType) []int {
+			dst := &mockDest{relayErr: chain.Permanent(errors.New("reverted"))}
+			m := NewModule("test", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{})
+			return m.handleBatch(context.Background(), []chain.Event{{Type: typ, Sequence: 7, Height: 5, Raw: []byte("p")}})
+		}},
+		{"poison packet isolated from its batch", func(typ chain.EventType) []int {
+			dst := &mockDest{poison: map[string]bool{"bad": true}}
+			m := NewModule("test", "client-0", &mockSource{latest: 100}, dst, &mockBuilder{})
+			return m.handleBatch(context.Background(), []chain.Event{
+				{Type: typ, Sequence: 6, Height: 4, Raw: []byte("good")},
+				{Type: typ, Sequence: 7, Height: 5, Raw: []byte("bad")},
+			})
+		}},
+	}
+	types := []struct {
+		name string
+		typ  chain.EventType
+		want string
+	}{
+		{"send", chain.SendPacket, logbridge.Warn},
+		{"ack", chain.AckPacket, logbridge.Error},
+	}
+
+	for _, site := range sites {
+		for _, c := range types {
+			t.Run(site.name+"/"+c.name, func(t *testing.T) {
+				var rq []int
+				out := captureLog(func() { rq = site.run(c.typ) })
+				if len(rq) != 0 {
+					t.Fatalf("a permanent failure must drop, not re-queue, got %v", rq)
+				}
+				line := dropLine(t, out)
+				if want := c.want + "[test Relay] DROP packet"; !strings.HasPrefix(line, want) {
+					t.Fatalf("a dropped %s packet must be logged at %q, got:\n%s", c.name, strings.TrimSpace(c.want), line)
+				}
+			})
+		}
+	}
+}
+
+func TestDropToken(t *testing.T) {
+	for _, c := range []struct {
+		typ  chain.EventType
+		want string
+	}{
+		{chain.SendPacket, logbridge.Warn},
+		{chain.AckPacket, logbridge.Error},
+		{chain.TimeoutPacket, logbridge.Error},
+		// A type this code has never heard of has no known exit, so it is loud.
+		{chain.EventType(99), logbridge.Error},
+	} {
+		if got := dropToken(c.typ); got != c.want {
+			t.Errorf("dropToken(%s) = %q, want %q", c.typ, got, c.want)
+		}
+	}
 }

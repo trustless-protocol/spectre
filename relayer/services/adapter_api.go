@@ -88,7 +88,7 @@ func (s *Services) CosmosPendingSettled(packet channeltypesv2.Packet) bool {
 // should log the failure, but must not relay a packet already known settled.
 func (s *Services) MarkCosmosPendingSettled(packet channeltypesv2.Packet) bool {
 	if err := s.BatchBuilder.PendingTracker.MarkSettled(packet); err != nil {
-		log.Printf("[PendingTracker][ATTENTION] failed to persist terminal Cosmos settlement seq=%d: %v", packet.Sequence, err)
+		log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist terminal Cosmos settlement seq=%d: %v", packet.Sequence, err)
 		return false
 	}
 	return true
@@ -100,7 +100,7 @@ func (s *Services) MarkCosmosPendingSettled(packet channeltypesv2.Packet) bool {
 // the packet remains tracked and the failure is logged for operator attention.
 func (s *Services) UntrackCosmosPending(packet channeltypesv2.Packet) {
 	if err := s.BatchBuilder.PendingTracker.RemovePacketIfCurrent(packet); err != nil {
-		log.Printf("[PendingTracker][ATTENTION] failed to persist removal of settled Cosmos packet seq=%d: %v", packet.Sequence, err)
+		log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist removal of settled Cosmos packet seq=%d: %v", packet.Sequence, err)
 	}
 }
 
@@ -117,7 +117,7 @@ func (s *Services) TrackL2Pending(packet channeltypesv2.Packet, blockNumber uint
 // operator attention.
 func (s *Services) UntrackL2Pending(packet channeltypesv2.Packet) {
 	if err := s.BatchBuilder.L2PendingTracker.RemovePacketIfCurrent(packet); err != nil {
-		log.Printf("[PendingTracker][ATTENTION] failed to persist removal of settled L2 packet seq=%d: %v", packet.Sequence, err)
+		log.Printf("ERROR [PendingTracker][ATTENTION] failed to persist removal of settled L2 packet seq=%d: %v", packet.Sequence, err)
 	}
 }
 
