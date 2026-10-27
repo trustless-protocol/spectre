@@ -1,6 +1,6 @@
 //! State management for the Ethereum light client
 
-use cosmwasm_std::Storage;
+use cosmwasm_std::{Order, Storage};
 use ethereum_light_client::client_state::ClientState as EthClientState;
 use ethereum_light_client::consensus_state::ConsensusState as EthConsensusState;
 use ibc_proto::{
@@ -22,6 +22,28 @@ pub const HOST_CONSENSUS_STATES_KEY: &str = "consensusStates";
 #[must_use]
 pub fn consensus_db_key(slot: u64) -> String {
     format!("{}/{}-{}", HOST_CONSENSUS_STATES_KEY, 0, slot)
+}
+
+/// Removes every stored consensus state.
+///
+/// Only the keys under `consensusStates/` are touched; the client state and the contract version
+/// are left alone.
+pub fn clear_consensus_states(storage: &mut dyn Storage) {
+    // The range is `[consensusStates/, consensusStates0)`: '0' is the byte after '/', so it covers
+    // exactly the keys that have the `consensusStates/` prefix.
+    let start = format!("{HOST_CONSENSUS_STATES_KEY}/");
+    let end = format!("{HOST_CONSENSUS_STATES_KEY}0");
+    // The keys are collected first because the storage cannot be written while it is iterated.
+    let keys = storage
+        .range_keys(
+            Some(start.as_bytes()),
+            Some(end.as_bytes()),
+            Order::Ascending,
+        )
+        .collect::<Vec<_>>();
+    for key in keys {
+        storage.remove(&key);
+    }
 }
 
 /// Get the Wasm client state

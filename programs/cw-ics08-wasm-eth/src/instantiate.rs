@@ -14,7 +14,10 @@ use ibc_proto::ibc::{
 
 use crate::{
     msg::InstantiateMsg,
-    state::{consensus_db_key, encode_client_state, encode_consensus_state, HOST_CLIENT_STATE_KEY},
+    state::{
+        clear_consensus_states, consensus_db_key, encode_client_state, encode_consensus_state,
+        HOST_CLIENT_STATE_KEY,
+    },
     ContractError,
 };
 
@@ -27,7 +30,14 @@ pub struct PreparedClient {
 
 impl PreparedClient {
     /// Commits the already validated bootstrap state without fallible work between writes.
+    ///
+    /// Every consensus state already in the store is discarded first. `Reinstantiate` is the only
+    /// way to unfreeze a client, and it is used after the roots the client accepted can no longer
+    /// be trusted. Membership proofs are accepted against any stored consensus state, so keeping
+    /// them would keep accepting exactly the roots the recovery was meant to drop. On a fresh
+    /// store there is nothing to discard.
     pub fn commit(self, storage: &mut dyn Storage) {
+        clear_consensus_states(storage);
         storage.set(HOST_CLIENT_STATE_KEY.as_bytes(), &self.client);
         storage.set(&self.consensus_key, &self.consensus);
     }

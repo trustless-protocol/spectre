@@ -1,5 +1,6 @@
 //! End-to-end checks, through the contract entry points, of which consensus state a client message
-//! may be verified against and how much of the sync committee must sign misbehaviour evidence.
+//! may be verified against, how much of the sync committee must sign misbehaviour evidence, and
+//! which consensus states survive a governance `Reinstantiate`.
 
 use alloy_primitives::B256;
 use cosmwasm_std::{
@@ -15,11 +16,12 @@ use ethereum_light_client::{
 };
 
 use crate::{
-    contract::{instantiate, query, sudo},
+    contract::{instantiate, migrate, query, sudo},
     custom_query::EthereumCustomQuery,
     msg::{
-        CheckForMisbehaviourMsg, CheckForMisbehaviourResult, EthereumMisbehaviourMsg,
-        InstantiateMsg, QueryMsg, SudoMsg, UpdateStateMsg, VerifyClientMessageMsg,
+        CheckForMisbehaviourMsg, CheckForMisbehaviourResult, EthereumMisbehaviourMsg, Height,
+        InstantiateMsg, MerklePath, MigrateMsg, Migration, QueryMsg, SudoMsg, UpdateStateMsg,
+        VerifyClientMessageMsg, VerifyMembershipMsg,
     },
     state::{consensus_db_key, get_eth_client_state},
     test::helpers::mk_deps,
@@ -145,6 +147,49 @@ impl Setup {
         .map(|bz| from_json(bz).unwrap())
     }
 
+    /// Verifies a garbage membership proof at `slot`. It can only fail with
+    /// `ConsensusStateNotFound` when no consensus state is stored there.
+    fn verify_membership(&mut self, slot: u64) -> ContractError {
+        sudo(
+            self.deps.as_mut(),
+            self.env.clone(),
+            SudoMsg::VerifyMembership(VerifyMembershipMsg {
+                height: Height {
+                    revision_number: 0,
+                    revision_height: slot,
+                },
+                delay_time_period: 0,
+                delay_block_period: 0,
+                proof: Binary::default(),
+                merkle_path: MerklePath {
+                    key_path: vec![Binary::from(b"ibc".as_slice())],
+                },
+                value: Binary::default(),
+            }),
+        )
+        .unwrap_err()
+    }
+
+    fn reinstantiate_at(&mut self, slot: u64) {
+        let mut client_state = self.chain.client_state();
+        client_state.latest_slot = slot;
+        let mut consensus_state = self.chain.consensus_state();
+        consensus_state.slot = slot;
+
+        migrate(
+            self.deps.as_mut(),
+            self.env.clone(),
+            MigrateMsg {
+                migration: Migration::Reinstantiate(InstantiateMsg {
+                    client_state: serde_json::to_vec(&client_state).unwrap().into(),
+                    consensus_state: serde_json::to_vec(&consensus_state).unwrap().into(),
+                    checksum: b"checksum".into(),
+                }),
+            },
+        )
+        .unwrap();
+    }
+
     fn update_state(&mut self, header: &Header) -> Result<(), ContractError> {
         sudo(
             self.deps.as_mut(),
@@ -245,4 +290,56 @@ fn minority_misbehaviour_cannot_freeze_the_client() {
             EthereumIBCError::NotEnoughSignatures
         ))
     ));
+}
+
+#[test]
+fn reinstantiate_discards_every_consensus_state_it_did_not_bootstrap() {
+    let mut setup = Setup::advanced();
+    // The client trusts roots at three slots, and governance restarts it from a slot in between.
+    for slot in [ANCHOR_SLOT, SECOND_SLOT, THIRD_SLOT] {
+        assert!(matches!(
+            setup.verify_membership(slot),
+            ContractError::VerifyMembershipFailed(_)
+        ));
+    }
+    let bootstrap_slot = ANCHOR_SLOT + 50;
+
+    setup.reinstantiate_at(bootstrap_slot);
+
+    assert_eq!(setup.latest_slot(), bootstrap_slot);
+    for slot in [ANCHOR_SLOT, SECOND_SLOT, THIRD_SLOT] {
+        assert!(
+            matches!(
+                setup.verify_membership(slot),
+                ContractError::ConsensusStateNotFound
+            ),
+            "the consensus state at {slot} must not survive Reinstantiate"
+        );
+    }
+    // The bootstrap one is there: the proof is rejected, not the height.
+    assert!(matches!(
+        setup.verify_membership(bootstrap_slot),
+        ContractError::VerifyMembershipFailed(_)
+    ));
+}
+
+#[test]
+fn reinstantiate_only_touches_keys_under_the_consensus_state_prefix() {
+    let mut setup = Setup::advanced();
+    // The keys that sort right around the prefix range, and the contract version.
+    let neighbours: [&[u8]; 3] = [b"consensusStates", b"consensusStatesX", b"consensusState"];
+    for key in neighbours {
+        setup.deps.storage.set(key, b"kept");
+    }
+    let contract_info = setup.deps.storage.get(b"contract_info").unwrap();
+
+    setup.reinstantiate_at(ANCHOR_SLOT + 50);
+
+    for key in neighbours {
+        assert_eq!(setup.deps.storage.get(key).unwrap(), b"kept");
+    }
+    assert_eq!(
+        setup.deps.storage.get(b"contract_info").unwrap(),
+        contract_info
+    );
 }

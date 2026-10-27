@@ -14,7 +14,7 @@ ethereum-types = { workspace = true }
 
 alloy-primitives = { workspace = true, default-features = false }
 
-cosmwasm-std = { workspace = true, features = ["std"] }
+cosmwasm-std = { workspace = true, features = ["std", "iterator"] }
 cosmwasm-schema = { workspace = true }
 cw2 = { workspace = true }
 prost = { workspace = true, features = ["std"] }
