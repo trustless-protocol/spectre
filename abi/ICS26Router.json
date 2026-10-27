@@ -1815,6 +1815,11 @@
   },
   {
     "type": "error",
+    "name": "IBCInvalidClientAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
     "name": "IBCInvalidClientId",
     "inputs": [
       {
@@ -1843,6 +1848,11 @@
   {
     "type": "error",
     "name": "IBCInvalidCounterpartyClientId",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "IBCInvalidCounterpartyMerklePrefix",
     "inputs": []
   },
   {
