@@ -12,7 +12,13 @@ use ethereum_light_client::{
     consensus_state::ConsensusState,
     error::EthereumIBCError,
     header::{ActiveSyncCommittee, Header},
-    test_utils::synthetic::{SyntheticChain, ANCHOR_SLOT, COMMITTEE_SIZE, FINALIZED_SLOT_STEP},
+    test_utils::synthetic::{
+        SyntheticChain, ANCHOR_SLOT, COMMITTEE_SIZE, FINALIZED_SLOT_STEP, PERIOD_END_SLOT,
+    },
+};
+use ibc_proto::ibc::{
+    core::client::v1::Height as IbcProtoHeight,
+    lightclients::wasm::v1::ConsensusState as WasmConsensusState,
 };
 
 use crate::{
@@ -23,7 +29,10 @@ use crate::{
         InstantiateMsg, MerklePath, MigrateMsg, Migration, QueryMsg, SudoMsg, UpdateStateMsg,
         VerifyClientMessageMsg, VerifyMembershipMsg,
     },
-    state::{consensus_db_key, get_eth_client_state},
+    state::{
+        consensus_db_key, get_eth_client_state, get_eth_consensus_state, get_wasm_client_state,
+        store_client_state, store_consensus_state,
+    },
     test::helpers::mk_deps,
     ContractError,
 };
@@ -102,6 +111,28 @@ impl Setup {
                 .chain
                 .update_after(trusted_slot, B256::repeat_byte(0x22), signers),
         }
+    }
+
+    /// Moves the client's latest slot, and a copy of its latest consensus state, to `slot`, keeping
+    /// the earlier consensus states. The synthetic chain only signs inside sync committee period 0,
+    /// so this is how a test gets a client whose latest slot is in a later period.
+    fn move_latest_to(&mut self, slot: u64) {
+        let mut client_state = get_eth_client_state(&self.deps.storage).unwrap();
+        client_state.latest_slot = slot;
+        let mut wasm_client_state = get_wasm_client_state(&self.deps.storage).unwrap();
+        wasm_client_state.data = serde_json::to_vec(&client_state).unwrap();
+        wasm_client_state.latest_height = Some(IbcProtoHeight {
+            revision_number: 0,
+            revision_height: slot,
+        });
+        store_client_state(&mut self.deps.storage, &wasm_client_state).unwrap();
+
+        let mut consensus_state = get_eth_consensus_state(&self.deps.storage, THIRD_SLOT).unwrap();
+        consensus_state.slot = slot;
+        let wasm_consensus_state = WasmConsensusState {
+            data: serde_json::to_vec(&consensus_state).unwrap(),
+        };
+        store_consensus_state(&mut self.deps.storage, &wasm_consensus_state, slot).unwrap();
     }
 
     fn latest_slot(&self) -> u64 {
@@ -245,25 +276,6 @@ fn a_stale_header_cannot_overwrite_a_stored_consensus_state() {
 }
 
 #[test]
-fn misbehaviour_anchored_at_an_older_consensus_state_is_rejected() {
-    let setup = Setup::advanced();
-    // Fully signed evidence that is valid against the bootstrap consensus state.
-    let stale = setup.evidence(ANCHOR_SLOT, COMMITTEE_SIZE);
-
-    assert!(matches!(
-        setup.check_evidence(&stale),
-        Err(ContractError::TrustedSlotNotLatest {
-            trusted_slot: ANCHOR_SLOT,
-            latest_slot: THIRD_SLOT,
-        })
-    ));
-    assert!(matches!(
-        setup.verify_evidence(&stale),
-        Err(ContractError::TrustedSlotNotLatest { .. })
-    ));
-}
-
-#[test]
 fn supermajority_misbehaviour_anchored_at_the_latest_consensus_state_is_found() {
     let setup = Setup::advanced();
     let evidence = setup.evidence(THIRD_SLOT, 6);
@@ -342,4 +354,59 @@ fn reinstantiate_only_touches_keys_under_the_consensus_state_prefix() {
         setup.deps.storage.get(b"contract_info").unwrap(),
         contract_info
     );
+}
+
+#[test]
+fn misbehaviour_stays_reportable_after_the_client_advances_within_its_period() {
+    let setup = Setup::advanced();
+    // Two fully signed conflicting headers at one attested slot, built when the client was at
+    // ANCHOR_SLOT. The client has since moved on twice, inside the same sync committee period.
+    let evidence = setup.evidence(ANCHOR_SLOT, COMMITTEE_SIZE);
+
+    setup.verify_evidence(&evidence).unwrap();
+    assert!(setup.check_evidence(&evidence).unwrap().found_misbehaviour);
+}
+
+#[test]
+fn evidence_for_an_earlier_slot_cannot_be_anchored_at_the_latest_consensus_state() {
+    let setup = Setup::advanced();
+    // The conflicting headers are at an attested slot below the latest finalized slot, so they are
+    // not newer than the latest consensus state and cannot be verified against it. That is why
+    // evidence may be anchored at an earlier consensus state of the same period.
+    let evidence = EthereumMisbehaviourMsg {
+        trusted_slot: THIRD_SLOT,
+        ..setup.evidence(ANCHOR_SLOT, COMMITTEE_SIZE)
+    };
+
+    assert!(matches!(
+        setup.check_evidence(&evidence),
+        Err(ContractError::VerifyClientMessageFailed(
+            EthereumIBCError::IrrelevantUpdate { .. }
+        ))
+    ));
+}
+
+#[test]
+fn misbehaviour_anchored_in_an_earlier_period_is_rejected() {
+    let mut setup = Setup::advanced();
+    let evidence = setup.evidence(ANCHOR_SLOT, COMMITTEE_SIZE);
+    // Valid against the consensus state at ANCHOR_SLOT, and the client still holds it.
+    assert!(setup.check_evidence(&evidence).unwrap().found_misbehaviour);
+
+    // The client moves into the next sync committee period. The committee that signed the
+    // evidence is now one the client has moved past.
+    let later_period_slot = PERIOD_END_SLOT + 100;
+    setup.move_latest_to(later_period_slot);
+
+    assert!(matches!(
+        setup.check_evidence(&evidence),
+        Err(ContractError::MisbehaviourAnchorOutsideLatestPeriod {
+            trusted_slot: ANCHOR_SLOT,
+            latest_slot,
+        }) if latest_slot == later_period_slot
+    ));
+    assert!(matches!(
+        setup.verify_evidence(&evidence),
+        Err(ContractError::MisbehaviourAnchorOutsideLatestPeriod { .. })
+    ));
 }

@@ -94,12 +94,14 @@ pub fn get_eth_consensus_state(
     Ok(serde_json::from_slice(&wasm_consensus_state.data)?)
 }
 
-/// Checks that a client message is anchored at the latest consensus state of the client.
+/// Checks that a header is anchored at the latest consensus state of the client.
 ///
-/// A message names the consensus state it is verified against (`trusted_slot`), but `UpdateState`
+/// A header names the consensus state it is verified against (`trusted_slot`), but `UpdateState`
 /// applies the result on top of the latest one. Verifying against an older consensus state would
-/// let the keys of a past sync committee, which carry no stake any more, forge a root or freeze the
-/// client. Every consensus state older than the latest is therefore refused as an anchor.
+/// let the keys of a past sync committee, which carry no stake any more, forge a root, and write
+/// the header at a slot that is already stored. Every consensus state older than the latest is
+/// therefore refused as an anchor. Misbehaviour evidence writes nothing and has its own rule, see
+/// [`get_misbehaviour_anchor`].
 /// # Errors
 /// Returns an error if `trusted_slot` is not the latest slot of the client
 pub const fn ensure_trusted_slot_is_latest(
@@ -115,7 +117,7 @@ pub const fn ensure_trusted_slot_is_latest(
     Ok(())
 }
 
-/// Get the consensus state a client message is verified against
+/// Get the consensus state a header is verified against
 /// # Errors
 /// Returns an error if `trusted_slot` is not the latest slot of the client, or if its consensus
 /// state is not found or cannot be deserialized
@@ -126,6 +128,39 @@ pub fn get_trusted_consensus_state(
 ) -> Result<EthConsensusState, ContractError> {
     ensure_trusted_slot_is_latest(client_state, trusted_slot)?;
     get_eth_consensus_state(storage, trusted_slot)
+}
+
+/// Get the consensus state misbehaviour evidence is verified against
+///
+/// Evidence is not anchored at the latest consensus state the way a header is. A conflicting pair
+/// has to be anchored at a consensus state that is older than its attested slot, because
+/// `validate_light_client_update` rejects an update that is not newer than its anchor. Pinning the
+/// anchor to the latest slot would let the client advancing defeat evidence it could have verified.
+///
+/// What matters is whose keys can sign it. Every consensus state in the latest period carries that
+/// period's sync committee, so the anchor may be any of them, and the signature period it allows is
+/// the anchor's period or the next. A consensus state from an earlier period carries the committee
+/// of a period the client has moved past, whose keys can belong to validators that left long ago,
+/// so it is refused.
+/// # Errors
+/// Returns an error if the consensus state is not found or cannot be deserialized, or if it is not
+/// in the same sync committee period as the latest slot of the client
+pub fn get_misbehaviour_anchor(
+    storage: &dyn Storage,
+    client_state: &EthClientState,
+    trusted_slot: u64,
+) -> Result<EthConsensusState, ContractError> {
+    let consensus_state = get_eth_consensus_state(storage, trusted_slot)?;
+    let anchor_period = client_state.compute_sync_committee_period_at_slot(consensus_state.slot);
+    let latest_period =
+        client_state.compute_sync_committee_period_at_slot(client_state.latest_slot);
+    if anchor_period != latest_period {
+        return Err(ContractError::MisbehaviourAnchorOutsideLatestPeriod {
+            trusted_slot,
+            latest_slot: client_state.latest_slot,
+        });
+    }
+    Ok(consensus_state)
 }
 
 /// Store the consensus state
