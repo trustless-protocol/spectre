@@ -35,7 +35,34 @@ type AttestorConfig struct {
 	Threshold  uint16   `json:"threshold"`
 }
 
-// Validate applies exactly the bounds and ordering rules of the wasm client.
+// smallOrderPublicKeys lists the compressed Ed25519 encodings of the points of order 1, 2, 4 and 8:
+// five y coordinates, each valid with either sign bit. A key from this list satisfies the
+// verification equation for signatures nobody made, so the wasm client refuses it at install time.
+// The list mirrors SMALL_ORDER_ED25519_KEYS in packages/l2-client/src/state.rs.
+var smallOrderPublicKeys = [][]byte{
+	mustHex("0000000000000000000000000000000000000000000000000000000000000000"),
+	mustHex("0000000000000000000000000000000000000000000000000000000000000080"),
+	mustHex("0100000000000000000000000000000000000000000000000000000000000000"),
+	mustHex("0100000000000000000000000000000000000000000000000000000000000080"),
+	mustHex("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05"),
+	mustHex("26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85"),
+	mustHex("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a"),
+	mustHex("c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa"),
+	mustHex("ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f"),
+	mustHex("ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+}
+
+func mustHex(s string) []byte {
+	b, err := hex.DecodeString(s)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+// Validate applies the bounds and ordering rules the wasm client applies on every call. It does
+// not apply the stricter key rules the client applies when a set is installed, so that a set the
+// client already holds keeps loading; ValidateForInstall adds them.
 func (c AttestorConfig) Validate() error {
 	if len(c.PublicKeys) == 0 {
 		return fmt.Errorf("attestor set must contain at least one public key")
@@ -55,6 +82,47 @@ func (c AttestorConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// ValidateForInstall validates a set that is about to be installed, at client creation or on
+// rotation. On top of Validate, every key must be a canonical Ed25519 encoding of a point that
+// does not have small order, which is what the wasm client enforces (AttestorConfig::validate_for_install
+// in packages/l2-client/src/state.rs). It is not part of Validate, because SetHash depends on
+// Validate and a client that already holds such a key must keep working until it is rotated.
+func (c AttestorConfig) ValidateForInstall() error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	for i, key := range c.PublicKeys {
+		if !hasCanonicalY(key) {
+			return fmt.Errorf("attestor public key %d has a non-canonical y coordinate", i)
+		}
+		for _, weak := range smallOrderPublicKeys {
+			if bytes.Equal(key, weak) {
+				return fmt.Errorf("attestor public key %d is a small-order point", i)
+			}
+		}
+	}
+	return nil
+}
+
+// hasCanonicalY reports whether the low 255 bits of the key, its y coordinate, are below the field
+// prime 2^255 - 19. RFC 8032 requires it, but ZIP-215 verification, which the wasm client's
+// ed25519_verify follows, also accepts y in [p, 2^255), a second encoding of the point with y - p.
+// The key must be PublicKeyLength bytes.
+func hasCanonicalY(key []byte) bool {
+	last := len(key) - 1
+	// p is 0x7fff...ffed in little-endian bytes, so y >= p exactly when the top byte is 0x7f (sign
+	// bit aside), every byte below it is 0xff, and the lowest byte is at least 0xed.
+	if key[last]&0x7f != 0x7f {
+		return true
+	}
+	for _, b := range key[1:last] {
+		if b != 0xff {
+			return true
+		}
+	}
+	return key[0] < 0xed
 }
 
 // SetHash returns SHA-256(u16be(threshold) || u16be(count) || sorted keys),

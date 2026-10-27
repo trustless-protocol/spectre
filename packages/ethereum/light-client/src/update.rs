@@ -92,6 +92,11 @@ pub fn update_consensus_state(
         // The next sync committee in the update is proven against the attested header's state, so
         // it is the committee of the period after the attested one. It is only the committee of the
         // period after the store's if the two periods are the same.
+        //
+        // After `verify_header` this cannot fail: with no next committee known,
+        // `validate_light_client_update` pins the signature period to the store's, and
+        // `finalized <= attested < signature` makes the attested period the store's too. The check
+        // stays as a guard for a caller that applies an update without having verified it.
         let update_attested_period = current_client_state.compute_sync_committee_period_at_slot(
             header.consensus_update.attested_header.beacon.slot,
         );
