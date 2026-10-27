@@ -1555,6 +1555,17 @@
   },
   {
     "type": "error",
+    "name": "ModuleHasNoCode",
+    "inputs": [
+      {
+        "name": "module",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "NonMonotonicHeightUpdate",
     "inputs": [
       {

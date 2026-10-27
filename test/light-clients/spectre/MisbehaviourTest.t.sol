@@ -138,10 +138,24 @@ contract MisbehaviourTest is Test, ISpectreTendermintMsgs {
     }
 
     function _deploy(address roleManager) internal returns (SpectreClient) {
+        return _deployWithModules(
+            address(dummyUpdateClient), address(dummyMembership), address(misbehaviourVerifier), roleManager
+        );
+    }
+
+    function _deployWithModules(
+        address updateClientModule,
+        address membershipModule,
+        address misbehaviourModule,
+        address roleManager
+    )
+        internal
+        returns (SpectreClient)
+    {
         return new SpectreClient(
-            address(dummyUpdateClient),
-            address(dummyMembership),
-            address(misbehaviourVerifier),
+            updateClientModule,
+            membershipModule,
+            misbehaviourModule,
             abi.encode(clientState_),
             consensusState_,
             valset_,
@@ -373,6 +387,84 @@ contract MisbehaviourTest is Test, ISpectreTendermintMsgs {
         managedClient.unfreeze();
     }
 
+    // ============ Modules without code ============
+
+    /// @dev A delegatecall to an address without code succeeds and returns nothing, which for a module whose interface
+    /// returns nothing reads as "verified". The addresses are immutable, so the constructor is the only chance.
+    function test_constructor_revertsWhenAnyModuleHasNoCode() public {
+        address notAContract = makeAddr("not-a-contract");
+        address[2] memory withoutCode = [address(0), notAContract];
+
+        for (uint256 i = 0; i < withoutCode.length; ++i) {
+            address bad = withoutCode[i];
+            bytes memory expected = abi.encodeWithSelector(ISpectreClientErrors.ModuleHasNoCode.selector, bad);
+
+            vm.expectRevert(expected);
+            _deployWithModules(bad, address(dummyMembership), address(misbehaviourVerifier), address(0));
+
+            vm.expectRevert(expected);
+            _deployWithModules(address(dummyUpdateClient), bad, address(misbehaviourVerifier), address(0));
+
+            vm.expectRevert(expected);
+            _deployWithModules(address(dummyUpdateClient), address(dummyMembership), bad, address(0));
+        }
+    }
+
+    /// @dev Control for the reproduction of the missing-module freeze: two identical headers are not misbehaviour, so
+    /// the real module rejects them even though their proof metadata names a >2/3 quorum.
+    function test_misbehaviour_identicalHeadersNeverFreeze() public {
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        msg_.misbehaviour.header2 = msg_.misbehaviour.header1;
+        bytes memory encoded = abi.encode(msg_);
+
+        vm.expectRevert(Misbehaviour.MisbehaviourNotDetected.selector);
+        lightClient.misbehaviour(encoded);
+
+        assertFalse(_isFrozen(lightClient), "identical headers must not freeze");
+        assertEq(mockVerifier.calls(), 0, "identical headers must not reach the verifier");
+    }
+
+    /// @dev The same evidence with the module's code gone. This used to freeze the client without a single proof
+    /// check: the delegatecall to the empty address succeeded and `verifyMisbehaviour` returns nothing.
+    function test_misbehaviour_revertsWhenModuleHasNoCode() public {
+        ISpectreClientMsgs.MsgSubmitMisbehaviour memory msg_ = _buildValidMisbehaviourMsg();
+        msg_.misbehaviour.header2 = msg_.misbehaviour.header1;
+        bytes memory encoded = abi.encode(msg_);
+        vm.etch(address(misbehaviourVerifier), hex"");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ISpectreClientErrors.ModuleHasNoCode.selector, address(misbehaviourVerifier))
+        );
+        lightClient.misbehaviour(encoded);
+
+        assertFalse(_isFrozen(lightClient), "a module without code must not freeze the client");
+        assertEq(mockVerifier.calls(), 0, "no proof was checked");
+    }
+
+    function test_updateApplicationState_revertsWhenModuleHasNoCode() public {
+        bytes memory encoded = abi.encode(_applicationUpdateMsg(20, uint128(block.timestamp) * 1e9));
+        vm.etch(address(dummyUpdateClient), hex"");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ISpectreClientErrors.ModuleHasNoCode.selector, address(dummyUpdateClient))
+        );
+        lightClient.updateApplicationState(encoded);
+    }
+
+    function test_updateConsensusState_revertsWhenModuleHasNoCode() public {
+        bytes memory encoded = abi.encode(
+            ISpectreClientMsgs.MsgUpdateConsensusState({
+                update: _applicationUpdateMsg(20, uint128(block.timestamp) * 1e9), newValidatorSet: valset_
+            })
+        );
+        vm.etch(address(dummyUpdateClient), hex"");
+
+        vm.expectRevert(
+            abi.encodeWithSelector(ISpectreClientErrors.ModuleHasNoCode.selector, address(dummyUpdateClient))
+        );
+        lightClient.updateConsensusState(encoded);
+    }
+
     function _buildValidMisbehaviourMsg() internal view returns (ISpectreClientMsgs.MsgSubmitMisbehaviour memory) {
         ISpectreTendermintMsgs.Header memory header1 = _buildHeader(15, bytes32(uint256(0xAAA1)));
         ISpectreTendermintMsgs.Header memory header2 = _buildHeader(15, bytes32(uint256(0xAAA2)));
@@ -403,14 +495,14 @@ contract MisbehaviourTest is Test, ISpectreTendermintMsgs {
         );
     }
 
-    function _advanceApplicationState(
+    function _applicationUpdateMsg(
         uint64 newHeight,
         uint128 consensusTimestamp
     )
         internal
-        returns (ConsensusState memory latestConsensus)
+        view
+        returns (ISpectreClientMsgs.MsgUpdateApplicationState memory msg_)
     {
-        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_;
         msg_.proposedHeader = _headerAtTrustedHeightAndTime(
             _buildHeader(newHeight, bytes32(uint256(0xBBBB))),
             clientState_.latestHeight.revisionHeight,
@@ -419,6 +511,16 @@ contract MisbehaviourTest is Test, ISpectreTendermintMsgs {
         msg_.trustedConsensusState = consensusState_;
         msg_.time = uint128(block.timestamp) * 1e9;
         msg_.proof = _proof(3);
+    }
+
+    function _advanceApplicationState(
+        uint64 newHeight,
+        uint128 consensusTimestamp
+    )
+        internal
+        returns (ConsensusState memory latestConsensus)
+    {
+        ISpectreClientMsgs.MsgUpdateApplicationState memory msg_ = _applicationUpdateMsg(newHeight, consensusTimestamp);
 
         lightClient.updateApplicationState(abi.encode(msg_));
 

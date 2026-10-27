@@ -54,6 +54,10 @@ contract UpdateClientCacheTest is Test {
         failingStub = new CacheAlwaysFailingVerifier();
         updateClientImpl = new UpdateClient(address(wrapper));
         wrapper.setBucket(BUCKET, address(stubBucket), CacheAlwaysTrueVerifier.verifyProof.selector);
+
+        // SpectreClient refuses a module without code. These two are never reached by these tests.
+        vm.etch(STUB_MEMBERSHIP, hex"00");
+        vm.etch(STUB_MISBEHAVIOUR, hex"00");
     }
 
     function test_constructor_pinsInitialValidatorSet() public {

@@ -6,7 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ethereum/go-ethereum/common"
 	"go.uber.org/zap"
+
+	"relayer/rpcmock"
+	"relayer/services"
 )
 
 // ethToCosmosPlusL2Config is the shape that makes #310 reachable: an eth_to_cosmos
@@ -79,3 +83,89 @@ const validCosmosToEthConfig = `{
 		 "config": {"eth_beacon_api_url": "http://127.0.0.1:5052"}}
 	]
 }`
+
+// TestDeployCosmosClientOnEth_ChecksTheModulesBeforeSpendingAnything is the #568
+// regression for create-clients-eth. A module left out of the config reaches the
+// SpectreClient constructor as address(0), and a module without code makes the
+// client accept whatever it is shown; the deploy has to stop first, before any
+// Cosmos work and before a transaction is sent.
+//
+// spectre_client is left empty on purpose: a configured one that is reusable returns
+// early and is never deployed, so it is not judged here.
+func TestDeployCosmosClientOnEth_ChecksTheModulesBeforeSpendingAnything(t *testing.T) {
+	contracts := services.EVMContracts{
+		UpdateClient: updateClientAddr, Membership: membershipAddr, Misbehaviour: misbehaviourAddr,
+	}
+	run := func(t *testing.T, evmNode *rpcmock.EVMNode, cosmosNode *rpcmock.CosmosNode, c services.EVMContracts) error {
+		t.Helper()
+		cfg := &appConfig{HasCosmosToEth: true, CosmosToEthConfig: cosmosToEthConfig{EthRpcUrl: evmNode.URL()}}
+		deps := services.RelayDeps{
+			Cosmos: services.CosmosEndpoint{Client: cosmosNode.Client(t)},
+			EVM:    services.EVMEndpoint{Client: evmNode.Client(t), Contracts: c},
+			IDs:    services.ClientIDs{CosmosOnEVM: "client-0", EVMOnCosmos: "08-wasm-0"},
+		}
+		// A trusting period is passed so the unbonding-time query is not what fails.
+		_, err := deployCosmosClientOnEth(zap.NewNop(), cfg, "", "08-wasm-0", "2/3", 100, deps, deps.Cosmos.Client)
+		return err
+	}
+
+	t.Run("an unset misbehaviour module", func(t *testing.T) {
+		evmNode, cosmosNode := rpcmock.NewEVMNode(t), rpcmock.NewCosmosNode(t)
+		evmNode.SetCode(updateClientAddr, deployedCode)
+		evmNode.SetCode(membershipAddr, deployedCode)
+		unset := contracts
+		unset.Misbehaviour = common.HexToAddress("") // what an empty config field becomes
+
+		err := run(t, evmNode, cosmosNode, unset)
+
+		if err == nil || !strings.Contains(err.Error(), "cosmos_to_eth.misbehaviour is not set") {
+			t.Fatalf("error = %v; want a refusal naming the unset misbehaviour module", err)
+		}
+		assertNothingSpent(t, evmNode, cosmosNode)
+	})
+
+	t.Run("a misbehaviour module without code", func(t *testing.T) {
+		evmNode, cosmosNode := rpcmock.NewEVMNode(t), rpcmock.NewCosmosNode(t)
+		evmNode.SetCode(updateClientAddr, deployedCode)
+		evmNode.SetCode(membershipAddr, deployedCode) // nothing at misbehaviourAddr
+
+		err := run(t, evmNode, cosmosNode, contracts)
+
+		if err == nil || !strings.Contains(err.Error(), misbehaviourAddr.Hex()+" holds no code") {
+			t.Fatalf("error = %v; want a refusal naming the module without code", err)
+		}
+		assertNothingSpent(t, evmNode, cosmosNode)
+	})
+
+	// The control: with every module deployed the check lets the run through, which
+	// here means it fails later, on the Cosmos side that the stand-in does not serve.
+	t.Run("all three deployed goes on to the Cosmos side", func(t *testing.T) {
+		evmNode, cosmosNode := rpcmock.NewEVMNode(t), rpcmock.NewCosmosNode(t)
+		for _, a := range []common.Address{updateClientAddr, membershipAddr, misbehaviourAddr} {
+			evmNode.SetCode(a, deployedCode)
+		}
+
+		err := run(t, evmNode, cosmosNode, contracts)
+
+		if err == nil || !strings.Contains(err.Error(), "failed to get genesis") {
+			t.Fatalf("error = %v; want the run to get past the module check and fail fetching the Cosmos genesis", err)
+		}
+		if strings.Contains(err.Error(), "refusing to deploy") {
+			t.Fatalf("refused to deploy modules that are all deployed: %v", err)
+		}
+	})
+}
+
+// assertNothingSpent proves the refusal came first: no transaction reached the
+// Ethereum node and the Cosmos node was not asked for anything the deploy needs.
+func assertNothingSpent(t *testing.T, evmNode *rpcmock.EVMNode, cosmosNode *rpcmock.CosmosNode) {
+	t.Helper()
+	if sent := evmNode.SentRawTxs(); len(sent) != 0 {
+		t.Fatalf("%d transaction(s) were sent before the modules were checked", len(sent))
+	}
+	for _, method := range []string{"status", "block", "commit", "validators", "abci_query"} {
+		if n := cosmosNode.Calls(method); n != 0 {
+			t.Fatalf("the Cosmos node was asked %q %d time(s) before the modules were checked", method, n)
+		}
+	}
+}

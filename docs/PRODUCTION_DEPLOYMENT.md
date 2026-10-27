@@ -66,6 +66,29 @@ schedule and execute the custom-ID `addClient` calldata through the governance
 and AccessManager timelocks before writing the resulting client address to
 relayer configuration.
 
+A `SpectreClient` is built with its UpdateClient, Membership and Misbehaviour
+modules as immutables, and its constructor reverts with
+`ModuleHasNoCode(module)` for an address that holds no code, `address(0)`
+included, so deploy the three modules first. `./relayer create-clients-eth`
+applies the same rule before it spends gas: it refuses to deploy unless
+`update_client`, `membership` and `misbehaviour` are set and hold code on
+`eth_rpc_url`.
+
+A client deployed before this check, with a misbehaviour module that has no
+code, treats a call to that module as a verified proof. Whoever may submit
+misbehaviour (anyone, when the client was deployed with
+`roleManager == address(0)`) can then freeze it with two identical headers and
+a quorum in the proof metadata. The module addresses are private immutables
+with no getter, so they have to be read from the constructor arguments. For a
+client created by a plain contract-creation transaction, which is what
+`./relayer create-clients-eth` sends, the ABI-encoded arguments follow the
+creation code in that transaction's input data, and their first three 32-byte
+words are the UpdateClient, Membership and Misbehaviour module addresses, in
+that order. A client created through a factory or with `CREATE2` has no such
+transaction: its arguments are in the factory call's input or in the internal
+call trace of the transaction that created it. Migrate any client whose
+misbehaviour module has no code (see Governed client migration).
+
 `addClient` (both overloads) rejects a light-client address that holds no code
 and a counterparty whose Merkle prefix has no elements, so the scheduled
 custom-ID call reverts at execution if the light client has not been deployed

@@ -50,6 +50,11 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
     ///      constructor can assert `initialPinnedValidatorSet` actually matches the genesis
     ///      consensus state's `nextValidatorsHash` — otherwise a mis-pinned genesis validator set
     ///      (deployer mistake or malice) would be undetectable on-chain.
+    /// @dev Each module must already be deployed. They are reached with a delegatecall (or a call) whose success
+    ///      is read as "verified", and a call to an address without code succeeds with no return data, so a module
+    ///      that was never deployed (for instance `address(0)`) would accept anything: with no misbehaviour module,
+    ///      two identical headers and a quorum in the proof metadata would freeze the client without a proof check.
+    ///      The addresses are immutable, so the constructor is the only place to catch that.
     /// @dev roleManager==address(0) is the intentional permissionless escape hatch (devnet/test):
     ///      no account is granted `DEFAULT_ADMIN_ROLE` in that branch, which means `unfreeze()`
     ///      becomes permanently uncallable if this client ever freezes while in that mode — the
@@ -65,6 +70,10 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
         ISpectreTendermintMsgs.ValidatorSet memory initialPinnedValidatorSet,
         address roleManager
     ) {
+        _requireDeployed(updateClientModule);
+        _requireDeployed(membershipModule);
+        _requireDeployed(misbehaviourModule);
+
         SpectreStore.Store storage $ = SpectreStore.load();
         ISpectreTendermintMsgs.ClientState memory cs = abi.decode(clientState_, (ISpectreTendermintMsgs.ClientState));
         $.clientState = cs;
@@ -624,8 +633,16 @@ contract SpectreClient is ISpectreClientErrors, ISpectreClient, ILightClient, Ac
 
     // ============ Helpers ============
 
+    /// @notice Reverts unless `module` holds contract code.
+    function _requireDeployed(address module) private view {
+        require(module.code.length != 0, ModuleHasNoCode(module));
+    }
+
     /// @notice Delegatecalls a module, bubbling up any revert data (so custom errors survive).
+    /// @dev A delegatecall to an address without code succeeds and returns nothing. The constructor already
+    ///      rejects such modules; the check here keeps that success from ever being read as a verified proof.
     function _delegate(address target, bytes memory data) private returns (bytes memory) {
+        _requireDeployed(target);
         (bool ok, bytes memory ret) = target.delegatecall(data);
         if (!ok) {
             assembly ("memory-safe") {

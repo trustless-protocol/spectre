@@ -80,6 +80,12 @@ func validateCosmosToEthConfig(c2e cosmosToEthConfig, fieldPrefix string) error 
 	if err := validateHexAddress(c2e.ICS26Address, fieldPrefix+".ics26_address"); err != nil {
 		return err
 	}
+	// An empty address is accepted for every field here on purpose. Only the
+	// SpectreClient deploy reads membership, misbehaviour and update_client, so a
+	// relay-only config that names an already-deployed spectre_client must still
+	// load. A value that is set is checked for shape here and for code by
+	// validateEVMDeployments at start. Where an empty module does matter,
+	// create-clients-eth refuses it (checkSpectreModulesBeforeDeploy, #568).
 	for _, f := range []struct {
 		val, name string
 	}{

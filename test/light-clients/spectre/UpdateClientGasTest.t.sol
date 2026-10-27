@@ -122,6 +122,10 @@ contract UpdateClientGasTest is Test {
         for (uint256 i = 0; i < bs.length; i++) {
             wrapper.setBucket(bs[i], address(stubBucket), AlwaysTrueVerifier.verifyProof.selector);
         }
+
+        // SpectreClient refuses a module without code. These two are never reached by this test.
+        vm.etch(STUB_MEMBERSHIP, hex"00");
+        vm.etch(STUB_MISBEHAVIOUR, hex"00");
     }
 
     function _clientState() internal pure returns (ISpectreTendermintMsgs.ClientState memory) {

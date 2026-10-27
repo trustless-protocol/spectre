@@ -293,6 +293,10 @@ cp relayer/config.ethereum.example.json relayer/config.json
 #    (creates the 08-wasm ETH client, writing cosmos_wasm_client_id), then the ETH
 #    side deploys the Tendermint light client wired to that id (writing
 #    spectre_client). Both write back into relayer/config.json automatically.
+#    create-clients-eth refuses to deploy unless update_client, membership and
+#    misbehaviour are set in the config and hold code on eth_rpc_url (the
+#    SpectreClient constructor rejects a module without code as well); the deploy
+#    script in step 3 patches all three in.
 ./relayer create-clients-cosmos --config config.json --wasm-checksum <hex-from-wasm.sh>
 ./relayer create-clients-eth    --config config.json --trust-level 2/3
 

@@ -173,6 +173,20 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 	}
 	defer cosmosClient.Stop()
 
+	return deployCosmosClientOnEth(logger, cfg, configPath, wasmClientID, trustLevel, trustingPeriod, deps, cosmosClient)
+}
+
+// deployCosmosClientOnEth is runCreateClientsEth once both chains are dialed. It is
+// split out so the checks that guard the deploy can be exercised against stand-in
+// nodes: dialing is the one step that needs a real Cosmos websocket.
+func deployCosmosClientOnEth(
+	logger *zap.Logger,
+	cfg *appConfig,
+	configPath, wasmClientID, trustLevel string,
+	trustingPeriod uint32,
+	deps services.RelayDeps,
+	cosmosClient *rpchttp.HTTP,
+) (common.Address, error) {
 	// Idempotency: skip the deploy when the configured spectre_client is a light
 	// client this run can actually keep, so re-running after a partial failure
 	// does not redeploy SpectreClient. Reusability is a property of the client's state,
@@ -188,6 +202,14 @@ func runCreateClientsEth(logger *zap.Logger, cfg *appConfig, configPath, wasmCli
 		logger.Sugar().Warnf(
 			"create-clients-eth: not reusing spectre_client %s — %s; deploying a new one",
 			addr.Hex(), reason)
+	}
+
+	// Past this point a SpectreClient is going to be deployed, and its modules are
+	// immutable. Refuse before any Cosmos work or gas is spent if one is unset or
+	// holds no code (#568). A reused client has already been deployed and is not
+	// judged here.
+	if err := checkSpectreModulesBeforeDeploy(context.Background(), cfg, deps.EVM); err != nil {
+		return common.Address{}, err
 	}
 
 	if trustingPeriod == 0 {
